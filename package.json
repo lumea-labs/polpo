@@ -1,7 +1,7 @@
 {
   "name": "polpo-ai",
   "version": "0.4.0",
-  "description": "The open runtime for agentic development",
+  "description": "The open backend for AI agents",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

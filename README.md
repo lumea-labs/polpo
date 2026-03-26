@@ -5,9 +5,9 @@
 <h1 align="center">Polpo</h1>
 
 <p align="center">
-  The open runtime for agentic development.
+  The open backend for AI agents.
   <br />
-  Orchestrate AI agents with tasks, missions, tools, and real-time streaming.
+  Define your agent, deploy it, and get a fully working API with memory, tools, sandboxing, completions — out of the box.
 </p>
 
 <p align="center">
