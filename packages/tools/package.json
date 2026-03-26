@@ -1,6 +1,6 @@
 {
   "name": "@polpo-ai/tools",
-  "version": "0.2.9",
+  "version": "0.4.0",
   "description": "Agent tools for Polpo — coding, browser, email, search, and more. Core tools work everywhere, extended tools are opt-in.",
   "type": "module",
   "main": "dist/index.js",
@@ -20,7 +20,7 @@
     "README.md"
   ],
   "dependencies": {
-    "@polpo-ai/core": "^0.2.4",
+    "@polpo-ai/core": "workspace:*",
     "@mariozechner/pi-agent-core": "^0.57.1",
     "@sinclair/typebox": "^0.34.0",
     "nanoid": "^5.0.0"

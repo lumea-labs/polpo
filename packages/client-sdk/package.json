@@ -1,6 +1,6 @@
 {
   "name": "@polpo-ai/sdk",
-  "version": "0.3.3",
+  "version": "0.4.0",
   "description": "Polpo SDK — typed HTTP client, SSE streaming, and reactive store for AI agent orchestration",
   "type": "module",
   "main": "dist/index.js",
@@ -28,7 +28,10 @@
   "devDependencies": {
     "typescript": "^5.7.0"
   },
-  "files": ["dist", "README.md"],
+  "files": [
+    "dist",
+    "README.md"
+  ],
   "license": "MIT",
   "keywords": [
     "polpo",

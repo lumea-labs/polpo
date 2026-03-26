@@ -1,6 +1,6 @@
 {
   "name": "polpo-ai",
-  "version": "0.3.13",
+  "version": "0.4.0",
   "description": "The open runtime for agentic development",
   "type": "module",
   "main": "dist/index.js",
@@ -40,7 +40,7 @@
     "start": "node dist/cli/index.js",
     "test": "vitest",
     "test:coverage": "vitest run --coverage",
-    "typecheck": "pnpm --filter @polpo-ai/core build && pnpm --filter @polpo-ai/drizzle build && ./node_modules/.bin/tsc --noEmit",
+    "typecheck": "pnpm --filter @polpo-ai/core build && pnpm --filter @polpo-ai/vault-crypto build && pnpm --filter @polpo-ai/drizzle build && pnpm --filter @polpo-ai/tools build && pnpm --filter @polpo-ai/server build && ./node_modules/.bin/tsc --noEmit",
     "clean": "rm -rf dist"
   },
   "keywords": [
@@ -71,9 +71,9 @@
     "@hono/zod-openapi": "^1.2.2",
     "@mariozechner/pi-agent-core": "^0.62.0",
     "@mariozechner/pi-ai": "^0.62.0",
-    "@polpo-ai/core": "^0.3.9",
-    "@polpo-ai/server": "^0.2.14",
-    "@polpo-ai/vault-crypto": "^0.2.4",
+    "@polpo-ai/core": "workspace:*",
+    "@polpo-ai/server": "workspace:*",
+    "@polpo-ai/vault-crypto": "workspace:*",
     "@sinclair/typebox": "^0.34.48",
     "chalk": "^5.4.1",
     "commander": "^13.1.0",
@@ -84,7 +84,7 @@
     "zod": "^4.3.6"
   },
   "optionalDependencies": {
-    "@polpo-ai/drizzle": "^0.2.10",
+    "@polpo-ai/drizzle": "workspace:*",
     "better-sqlite3": "^12.6.2",
     "drizzle-orm": "^0.44.0",
     "nodemailer": "^8.0.1",

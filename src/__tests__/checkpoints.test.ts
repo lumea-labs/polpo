@@ -600,58 +600,5 @@ describe("Checkpoints", () => {
     });
   });
 
-  describe("notification rules", () => {
-    it("registers notification rules for checkpoint notifyChannels", async () => {
-      const addedRules: Array<{ id: string; events: string[] }> = [];
-      const mockRouter = {
-        addRule: (rule: { id: string; events: string[] }) => { addedRules.push(rule); },
-      };
-      missionExec.setNotificationRouter(mockRouter as any);
-
-      const missionData = JSON.stringify({
-        tasks: [
-          { title: "Task A", description: "Do A" },
-          { title: "Task B", description: "Do B", dependsOn: ["Task A"] },
-        ],
-        checkpoints: [
-          { name: "review-a", afterTasks: ["Task A"], blocksTasks: ["Task B"], notifyChannels: ["slack-alerts"] },
-        ],
-      });
-      const mission = await missionExec.saveMission({ data: missionData, name: "my-mission" });
-      await missionExec.executeMission(mission.id);
-
-      const tasks = [createDoneTask("Task A"), createPendingTask("Task B")];
-      await missionExec.getBlockingCheckpoint("my-mission", "Task B", "id-b", tasks);
-
-      // Should have registered 2 rules: reached + resumed
-      expect(addedRules).toHaveLength(2);
-      expect(addedRules[0].events).toContain("checkpoint:reached");
-      expect(addedRules[1].events).toContain("checkpoint:resumed");
-    });
-
-    it("does not register rules when no notifyChannels", async () => {
-      const addedRules: unknown[] = [];
-      const mockRouter = {
-        addRule: (rule: unknown) => { addedRules.push(rule); },
-      };
-      missionExec.setNotificationRouter(mockRouter as any);
-
-      const missionData = JSON.stringify({
-        tasks: [
-          { title: "Task A", description: "Do A" },
-          { title: "Task B", description: "Do B", dependsOn: ["Task A"] },
-        ],
-        checkpoints: [
-          { name: "review-a", afterTasks: ["Task A"], blocksTasks: ["Task B"] },
-        ],
-      });
-      const mission = await missionExec.saveMission({ data: missionData, name: "my-mission" });
-      await missionExec.executeMission(mission.id);
-
-      const tasks = [createDoneTask("Task A"), createPendingTask("Task B")];
-      await missionExec.getBlockingCheckpoint("my-mission", "Task B", "id-b", tasks);
-
-      expect(addedRules).toHaveLength(0);
-    });
-  });
+  // notification rules tests removed — notification system was removed from OSS
 });
