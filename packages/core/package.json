@@ -193,6 +193,10 @@
     "./retry": {
       "types": "./dist/retry.d.ts",
       "import": "./dist/retry.js"
+    },
+    "./context-compactor": {
+      "types": "./dist/context-compactor.d.ts",
+      "import": "./dist/context-compactor.js"
     }
   },
   "sideEffects": false,

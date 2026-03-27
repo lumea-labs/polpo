@@ -22,12 +22,14 @@ export function createActivity(): AgentActivity {
   };
 }
 import { Agent } from "@mariozechner/pi-agent-core";
-import type { AgentEvent } from "@mariozechner/pi-agent-core";
+import type { AgentEvent, AgentMessage } from "@mariozechner/pi-agent-core";
 import { join, sep } from "node:path";
 import { resolveModel, resolveApiKeyAsync, enforceModelAllowlist } from "../llm/pi-client.js";
 import { createSystemTools, createAllTools } from "../tools/system-tools.js";
 import { loadAgentSkills, buildSkillPrompt } from "../llm/skills.js";
 import { nanoid } from "nanoid";
+import { compactIfNeeded, type SummarizeFn, type CompactionEvent } from "@polpo-ai/core";
+import { completeSimple } from "@mariozechner/pi-ai";
 
 /**
  * Build an "## Available Tools" section for the agent's system prompt.
@@ -414,12 +416,58 @@ export function spawnEngine(agentConfig: AgentConfig, task: Task, cwd: string, c
   // Resolve reasoning level: agent config > global settings (via SpawnContext) > "off"
   const thinkingLevel = agentConfig.reasoning ?? ctx?.reasoning ?? "off";
 
+  // Build the system prompt once for reuse in both the Agent and context compaction
+  const systemPrompt = buildSystemPrompt(agentConfig, cwd, ctx?.polpoDir, outputDir, effectiveAllowedPaths);
+
   // Create the pi-agent-core Agent (starts with coding tools only; extended tools added before prompt)
   // Pass model.maxTokens to override pi-ai's 32K default cap, so each model uses its full output capacity.
   const agent = new Agent({
     getApiKey: (provider: string) => resolveApiKeyAsync(provider),
+    // Context compaction: prune old tool outputs, then LLM-summarize if still over threshold.
+    // Runs before every LLM call. Under threshold → zero overhead (just token estimation).
+    transformContext: async (messages: AgentMessage[]) => {
+      const summarize: SummarizeFn = async (msgs, prompt) => {
+        const apiKey = await resolveApiKeyAsync(model.provider as string);
+        const response = await completeSimple(model, {
+          systemPrompt: prompt,
+          messages: msgs as any[],
+        }, apiKey ? { apiKey, maxTokens: model.maxTokens } : { maxTokens: model.maxTokens });
+        return response.content
+          .filter((c: any): c is { type: "text"; text: string } => c.type === "text")
+          .map((c: { type: "text"; text: string }) => c.text)
+          .join("\n")
+          .trim();
+      };
+
+      const result = await compactIfNeeded({
+        systemPrompt,
+        messages,
+        tools: agent.state.tools,
+        config: {
+          contextWindow: model.contextWindow ?? 200_000,
+          maxOutputTokens: model.maxTokens ?? 8192,
+        },
+        summarize,
+        mode: "task",
+        onCompaction: (event: CompactionEvent) => {
+          handle.onTranscript?.({
+            type: "compaction",
+            phase: event.phase,
+            tokensBefore: event.tokensBefore,
+            tokensAfter: event.tokensAfter,
+            tokensReclaimed: event.tokensReclaimed,
+            messagesBefore: event.messagesBefore,
+            messagesAfter: event.messagesAfter,
+            toolOutputsPruned: event.toolOutputsPruned,
+            summary: event.summary,
+          });
+        },
+      });
+
+      return result.compacted ? result.messages as AgentMessage[] : messages;
+    },
     initialState: {
-      systemPrompt: buildSystemPrompt(agentConfig, cwd, ctx?.polpoDir, outputDir, effectiveAllowedPaths),
+      systemPrompt,
       model,
       thinkingLevel,
       maxTokens: model.maxTokens,

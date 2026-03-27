@@ -72,10 +72,17 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm run build
-      - run: pnpm pack
+      - name: Pack all workspace packages
+        run: |
+          pnpm --filter @polpo-ai/core pack --pack-destination /tmp/tarballs
+          pnpm --filter @polpo-ai/vault-crypto pack --pack-destination /tmp/tarballs
+          pnpm --filter @polpo-ai/drizzle pack --pack-destination /tmp/tarballs
+          pnpm --filter @polpo-ai/server pack --pack-destination /tmp/tarballs
+          pnpm --filter @polpo-ai/tools pack --pack-destination /tmp/tarballs
+          pnpm pack --pack-destination /tmp/tarballs
       - name: Verify npm install from tarball
         run: |
           mkdir /tmp/install-test && cd /tmp/install-test
           npm init -y
-          npm install $GITHUB_WORKSPACE/polpo-ai-*.tgz
+          npm install /tmp/tarballs/*.tgz
           node --input-type=module -e "import 'polpo-ai'"

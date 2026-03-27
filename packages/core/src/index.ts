@@ -112,3 +112,25 @@ export { assessTask, runCheck, runMetric, type AssessmentDeps, type CheckProgres
 export { DEFAULT_DIMENSIONS, buildRubricSection, computeWeightedScore, computeMedianScores } from "./assessment-scoring.js";
 export { validateReviewPayload, ReviewPayloadSchema, ReviewScoreSchema, REVIEW_JSON_SCHEMA, type ValidatedReviewPayload } from "./assessment-schemas.js";
 export { withRetry, isTransientError, type RetryOptions } from "./retry.js";
+
+// ── Context Compaction ──────────────────────────────────────────────────
+export {
+  estimateTokens,
+  estimateMessagesTokens,
+  shouldCompact,
+  pruneToolOutputs,
+  compactIfNeeded,
+  getCompactionPrompt,
+  PRUNE_PROTECT,
+  PRUNE_MINIMUM,
+  TRIGGER_THRESHOLD,
+  TARGET_AFTER,
+} from "./context-compactor.js";
+export type {
+  CompactionConfig,
+  CompactionEvent,
+  OnCompactionFn,
+  SummarizeFn,
+  CompactionInput,
+  CompactionResult,
+} from "./context-compactor.js";

@@ -18,7 +18,7 @@
 import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
 import { streamSSE } from "hono/streaming";
 import { nanoid } from "nanoid";
-import { agentMemoryScope } from "@polpo-ai/core";
+import { agentMemoryScope, compactIfNeeded, type SummarizeFn, type CompactionEvent } from "@polpo-ai/core";
 
 const MAX_TURNS = 20;
 
@@ -265,6 +265,32 @@ function sseChunk(
   });
 }
 
+/**
+ * Build a SummarizeFn from deps.streamLLM.
+ * Collects all text deltas from a streaming LLM call and returns the full text.
+ */
+function buildSummarizeFn(
+  deps: CompletionRouteDeps,
+  model: any,
+  streamOpts: any,
+): SummarizeFn {
+  return async (msgs: any[], prompt: string): Promise<string> => {
+    const piStream = deps.streamLLM(model, {
+      systemPrompt: prompt,
+      messages: msgs,
+      tools: [],
+    }, streamOpts);
+
+    let text = "";
+    for await (const event of piStream) {
+      if (event.type === "text_delta") {
+        text += event.delta;
+      }
+    }
+    return text.trim();
+  };
+}
+
 function completionResponse(id: string, content: string, promptTokens: number, completionTokens: number) {
   return {
     id,
@@ -479,6 +505,37 @@ export function completionRoutes(getDeps: () => CompletionRouteDeps, apiKeys?: s
           for (let turn = 0; turn < MAX_TURNS; turn++) {
             // Bail out early if the client already disconnected
             if (abortController.signal.aborted) break;
+
+            // Compact context if approaching the model's context window limit.
+            // Under threshold this is just a cheap token estimation — zero LLM calls.
+            const compactionResult = await compactIfNeeded({
+              systemPrompt: fullSystemPrompt,
+              messages,
+              tools: effectiveTools,
+              config: {
+                contextWindow: m.contextWindow ?? 200_000,
+                maxOutputTokens: m.maxTokens ?? 8192,
+              },
+              summarize: buildSummarizeFn(deps, m, streamOpts),
+              mode: "chat",
+              onCompaction: async (event: CompactionEvent) => {
+                await stream.writeSSE({
+                  data: sseChunk(completionId, {}, null, {
+                    compaction: {
+                      phase: event.phase,
+                      tokensBefore: event.tokensBefore,
+                      tokensAfter: event.tokensAfter,
+                      tokensReclaimed: event.tokensReclaimed,
+                      messagesBefore: event.messagesBefore,
+                      messagesAfter: event.messagesAfter,
+                    },
+                  }),
+                });
+              },
+            });
+            if (compactionResult.compacted) {
+              messages.splice(0, messages.length, ...compactionResult.messages);
+            }
 
             const piStream = deps.streamLLM(m, {
               systemPrompt: fullSystemPrompt,
@@ -699,6 +756,24 @@ export function completionRoutes(getDeps: () => CompletionRouteDeps, apiKeys?: s
 
       try {
         for (let turn = 0; turn < MAX_TURNS; turn++) {
+          // Compact context if approaching the model's context window limit.
+          // Under threshold this is just a cheap token estimation — zero LLM calls.
+          const compactionResult = await compactIfNeeded({
+            systemPrompt: fullSystemPrompt,
+            messages,
+            tools: effectiveTools,
+            config: {
+              contextWindow: m.contextWindow ?? 200_000,
+              maxOutputTokens: m.maxTokens ?? 8192,
+            },
+            summarize: buildSummarizeFn(deps, m, streamOpts),
+            mode: "chat",
+            // Non-streaming: no SSE to write to, compaction is silent
+          });
+          if (compactionResult.compacted) {
+            messages.splice(0, messages.length, ...compactionResult.messages);
+          }
+
           const piStream = deps.streamLLM(m, {
             systemPrompt: fullSystemPrompt,
             messages,
