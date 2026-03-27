@@ -12,6 +12,7 @@ COPY packages/server/package.json packages/server/
 COPY packages/tools/package.json packages/tools/
 COPY packages/client-sdk/package.json packages/client-sdk/
 COPY packages/react-sdk/package.json packages/react-sdk/
+COPY .npmrc* ./
 RUN pnpm install --frozen-lockfile
 
 # Build
@@ -42,7 +43,6 @@ COPY --from=build /app/packages/vault-crypto/package.json ./packages/vault-crypt
 COPY --from=build /app/packages/drizzle/package.json ./packages/drizzle/
 COPY --from=build /app/packages/server/package.json ./packages/server/
 COPY --from=build /app/packages/tools/package.json ./packages/tools/
-COPY --from=build /app/playbooks ./playbooks
 
 ENV NODE_ENV=production
 ENV PORT=3890
