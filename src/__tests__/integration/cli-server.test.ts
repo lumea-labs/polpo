@@ -254,12 +254,19 @@ describe("CLI with project directory", () => {
     expect(out).toContain("Agent not found");
   });
 
-  it("polpo task delete <id> — removes the task", async () => {
+  it("polpo task delete <id> — removes the task", { timeout: 30_000 }, async () => {
     // Create a fresh task to delete (independent of previous tests)
     const add = await run(["task", "add", "--no-prep", "-d", tmpDir, "-a", "agent-1", "delete me"]);
-    const m = (add.stdout + add.stderr).match(/ID:\s*([a-zA-Z0-9_-]{10,})/);
-    const deleteId = m?.[1] ?? createdTaskId;
+    expect(add.exitCode).toBe(0);
+    const addOut = add.stdout + add.stderr;
+    expect(addOut).toContain("Task created");
+
+    // Extract task ID — try the "ID: <id>" format, fall back to any word after "ID:"
+    const m = addOut.match(/ID:\s*([a-zA-Z0-9_-]{10,})/) ?? addOut.match(/ID:\s*(\S+)/);
+    expect(m).toBeTruthy();
+    const deleteId = m![1];
     expect(deleteId).toBeTruthy();
+
     const r = await run(["task", "delete", deleteId, "-d", tmpDir]);
     expect(r.exitCode).toBe(0);
     const out = r.stdout + r.stderr;

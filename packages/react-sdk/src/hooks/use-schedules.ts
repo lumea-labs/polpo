@@ -1,13 +1,24 @@
 import { useCallback, useEffect, useState, useRef } from "react";
 import { usePolpoContext } from "../provider/polpo-context.js";
 import { useEvents } from "./use-events.js";
-import type { ScheduleEntry } from "@polpo-ai/sdk";
+import { useMutation } from "./use-mutation.js";
+import type {
+  ScheduleEntry,
+  CreateScheduleRequest,
+  UpdateScheduleRequest,
+} from "@polpo-ai/sdk";
 
 export interface UseSchedulesReturn {
   schedules: ScheduleEntry[];
   isLoading: boolean;
   error: Error | null;
   refetch: () => Promise<void>;
+  createSchedule: (req: CreateScheduleRequest) => Promise<ScheduleEntry>;
+  isCreating: boolean;
+  updateSchedule: (missionId: string, req: UpdateScheduleRequest) => Promise<ScheduleEntry>;
+  isUpdating: boolean;
+  deleteSchedule: (missionId: string) => Promise<void>;
+  isDeleting: boolean;
 }
 
 const SCHEDULE_EVENTS = ["schedule:created", "schedule:triggered", "schedule:completed"];
@@ -43,5 +54,40 @@ export function useSchedules(): UseSchedulesReturn {
     }
   }, [events.length, fetchSchedules]);
 
-  return { schedules, isLoading, error, refetch: fetchSchedules };
+  const { mutate: createSchedule, isPending: isCreating } = useMutation(
+    useCallback(
+      (req: CreateScheduleRequest) => client.createSchedule(req),
+      [client],
+    ),
+    { onSuccess: () => { fetchSchedules(); } },
+  );
+
+  const { mutate: updateSchedule, isPending: isUpdating } = useMutation(
+    useCallback(
+      (missionId: string, req: UpdateScheduleRequest) => client.updateSchedule(missionId, req),
+      [client],
+    ),
+    { onSuccess: () => { fetchSchedules(); } },
+  );
+
+  const { mutate: deleteSchedule_, isPending: isDeleting } = useMutation(
+    useCallback(
+      async (missionId: string) => { await client.deleteSchedule(missionId); },
+      [client],
+    ),
+    { onSuccess: () => { fetchSchedules(); } },
+  );
+
+  return {
+    schedules,
+    isLoading,
+    error,
+    refetch: fetchSchedules,
+    createSchedule,
+    isCreating,
+    updateSchedule,
+    isUpdating,
+    deleteSchedule: deleteSchedule_,
+    isDeleting,
+  };
 }

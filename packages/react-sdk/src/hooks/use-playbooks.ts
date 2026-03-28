@@ -1,9 +1,11 @@
 import { useState, useEffect, useCallback } from "react";
 import { usePolpo } from "./use-polpo.js";
+import { useMutation } from "./use-mutation.js";
 import type {
   PlaybookInfo,
   PlaybookDefinition,
   PlaybookRunResult,
+  CreatePlaybookRequest,
 } from "@polpo-ai/sdk";
 
 export interface UsePlaybooksReturn {
@@ -20,6 +22,12 @@ export interface UsePlaybooksReturn {
     name: string,
     params?: Record<string, string | number | boolean>,
   ) => Promise<PlaybookRunResult>;
+  /** Create or update a playbook definition. */
+  createPlaybook: (req: CreatePlaybookRequest) => Promise<{ name: string; path: string }>;
+  isCreating: boolean;
+  /** Delete a playbook by name. */
+  deletePlaybook: (name: string) => Promise<void>;
+  isDeleting: boolean;
 
   // Backward-compat aliases
   /** @deprecated Use playbooks instead. */
@@ -80,8 +88,32 @@ export function usePlaybooks(): UsePlaybooksReturn {
     [client, refetch],
   );
 
+  const { mutate: createPlaybook, isPending: isCreating } = useMutation(
+    useCallback(
+      (req: CreatePlaybookRequest) => {
+        if (!client) throw new Error("Client not initialized");
+        return client.createPlaybook(req);
+      },
+      [client],
+    ),
+    { onSuccess: () => { refetch(); } },
+  );
+
+  const { mutate: deletePlaybook_, isPending: isDeleting } = useMutation(
+    useCallback(
+      async (name: string) => {
+        if (!client) throw new Error("Client not initialized");
+        await client.deletePlaybook(name);
+      },
+      [client],
+    ),
+    { onSuccess: () => { refetch(); } },
+  );
+
   return {
     playbooks, loading, refetch, getPlaybook, runPlaybook,
+    createPlaybook, isCreating,
+    deletePlaybook: deletePlaybook_, isDeleting,
     // Backward-compat aliases
     templates: playbooks,
     getTemplate: getPlaybook,

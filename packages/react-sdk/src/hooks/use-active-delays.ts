@@ -1,6 +1,7 @@
 import { useSyncExternalStore, useState, useEffect, useCallback } from "react";
 import { usePolpoContext } from "../provider/polpo-context.js";
-import type { ActiveDelay } from "@polpo-ai/sdk";
+import { useMutation } from "./use-mutation.js";
+import type { ActiveDelay, AddMissionDelayRequest, UpdateMissionDelayRequest, Mission } from "@polpo-ai/sdk";
 
 export interface UseActiveDelaysReturn {
   /** Active delays from SSE events (live, updated by delay:started/delay:expired). */
@@ -10,6 +11,12 @@ export interface UseActiveDelaysReturn {
   /** Refetch from server. */
   refetch: () => void;
   loading: boolean;
+  addDelay: (missionId: string, req: AddMissionDelayRequest) => Promise<Mission>;
+  isAdding: boolean;
+  updateDelay: (missionId: string, delayName: string, req: UpdateMissionDelayRequest) => Promise<Mission>;
+  isUpdating: boolean;
+  removeDelay: (missionId: string, delayName: string) => Promise<Mission>;
+  isRemoving: boolean;
 }
 
 /**
@@ -18,6 +25,8 @@ export interface UseActiveDelaysReturn {
  * Combines two sources:
  * 1. SSE events (delay:started / delay:expired) → store.activeDelays (real-time)
  * 2. Initial fetch from GET /missions/delays (catches delays that started before SSE connected)
+ *
+ * Includes mutations: addDelay, updateDelay, removeDelay — each auto-refetches on success.
  */
 export function useActiveDelays(): UseActiveDelaysReturn {
   const { client, store } = usePolpoContext();
@@ -54,5 +63,49 @@ export function useActiveDelays(): UseActiveDelaysReturn {
   // Merge: store has real-time data, fetched fills in pre-existing delays
   const activeDelays = Array.from(storeDelays.values());
 
-  return { activeDelays, fetchedDelays, refetch, loading };
+  const { mutate: addDelay, isPending: isAdding } = useMutation(
+    useCallback(
+      async (missionId: string, req: AddMissionDelayRequest) => {
+        const result = await client.addMissionDelay(missionId, req);
+        return result;
+      },
+      [client],
+    ),
+    { onSuccess: () => { refetch(); } },
+  );
+
+  const { mutate: updateDelay, isPending: isUpdating } = useMutation(
+    useCallback(
+      async (missionId: string, delayName: string, req: UpdateMissionDelayRequest) => {
+        const result = await client.updateMissionDelay(missionId, delayName, req);
+        return result;
+      },
+      [client],
+    ),
+    { onSuccess: () => { refetch(); } },
+  );
+
+  const { mutate: removeDelay, isPending: isRemoving } = useMutation(
+    useCallback(
+      async (missionId: string, delayName: string) => {
+        const result = await client.removeMissionDelay(missionId, delayName);
+        return result;
+      },
+      [client],
+    ),
+    { onSuccess: () => { refetch(); } },
+  );
+
+  return {
+    activeDelays,
+    fetchedDelays,
+    refetch,
+    loading,
+    addDelay,
+    isAdding,
+    updateDelay,
+    isUpdating,
+    removeDelay,
+    isRemoving,
+  };
 }

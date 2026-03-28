@@ -62,9 +62,19 @@ import type {
   ApprovalRequest,
   ApprovalStatus,
   ScheduleEntry,
+  CreateScheduleRequest,
+  UpdateScheduleRequest,
   PlaybookInfo,
   PlaybookDefinition,
   PlaybookRunResult,
+  CreatePlaybookRequest,
+  CreateSkillRequest,
+  InstallSkillsResult,
+  InstallSkillsOptions,
+  Attachment,
+  FileRoot,
+  FileEntry,
+  FilePreview,
 } from "./types.js";
 
 export interface PolpoClientConfig {
@@ -531,6 +541,21 @@ export class PolpoClient {
     return this.get<ScheduleEntry[]>("/schedules");
   }
 
+  /** Create a schedule for a mission. */
+  createSchedule(req: CreateScheduleRequest): Promise<ScheduleEntry> {
+    return this.post<ScheduleEntry>("/schedules", req);
+  }
+
+  /** Update an existing schedule. */
+  updateSchedule(missionId: string, req: UpdateScheduleRequest): Promise<ScheduleEntry> {
+    return this.patch<ScheduleEntry>(`/schedules/${encodeURIComponent(missionId)}`, req);
+  }
+
+  /** Delete a schedule by mission ID. */
+  deleteSchedule(missionId: string): Promise<{ deleted: boolean }> {
+    return this.del<{ deleted: boolean }>(`/schedules/${encodeURIComponent(missionId)}`);
+  }
+
   // ── Agents ───────────────────────────────────────────────
 
   getAgents(): Promise<AgentConfig[]> {
@@ -677,6 +702,21 @@ export class PolpoClient {
     return this.put<{ skill: string; tags?: string[]; category?: string }>(`/skills/${encodeURIComponent(name)}/index`, entry);
   }
 
+  /** Create a new skill with a SKILL.md file. */
+  createSkill(req: CreateSkillRequest): Promise<{ name: string; path: string }> {
+    return this.post<{ name: string; path: string }>("/skills/create", req);
+  }
+
+  /** Install skills from a GitHub repo or local path. */
+  installSkills(source: string, opts?: InstallSkillsOptions): Promise<InstallSkillsResult> {
+    return this.post<InstallSkillsResult>("/skills/add", { source, ...opts });
+  }
+
+  /** Delete a skill by name. */
+  deleteSkill(name: string): Promise<{ removed: boolean; name: string }> {
+    return this.del<{ removed: boolean; name: string }>(`/skills/${encodeURIComponent(name)}`);
+  }
+
   // ── Run Activity ────────────────────────────────────────────
 
   /** Get the full activity history for a task from its run JSONL log. */
@@ -806,6 +846,95 @@ export class PolpoClient {
   /** Run a playbook with parameters. Returns the created mission + task count. */
   runPlaybook(name: string, params?: Record<string, string | number | boolean>): Promise<PlaybookRunResult> {
     return this.post<PlaybookRunResult>(`/playbooks/${encodeURIComponent(name)}/run`, { params });
+  }
+
+  /** Create or update a playbook definition. */
+  createPlaybook(req: CreatePlaybookRequest): Promise<{ name: string; path: string }> {
+    return this.post<{ name: string; path: string }>("/playbooks", req);
+  }
+
+  /** Delete a playbook by name. */
+  deletePlaybook(name: string): Promise<void> {
+    return this.del<void>(`/playbooks/${encodeURIComponent(name)}`);
+  }
+
+  // ── Attachments ─────────────────────────────────────────
+
+  /**
+   * Upload a file attachment for a chat session.
+   * Uses multipart/form-data — does NOT go through the JSON `request()` helper.
+   */
+  async uploadAttachment(sessionId: string, file: File | Blob, filename: string): Promise<Attachment> {
+    const form = new FormData();
+    form.append("sessionId", sessionId);
+    form.append("file", file, filename);
+
+    const headers: Record<string, string> = {};
+    if (this.headers["Authorization"]) {
+      headers["Authorization"] = this.headers["Authorization"];
+    }
+
+    const res = await this.fetchFn(this.apiUrl("/attachments"), {
+      method: "POST",
+      headers,
+      body: form,
+    });
+    const json = (await res.json()) as ApiResult<Attachment>;
+    if (!json.ok) {
+      throw new PolpoApiError(json.error, json.code, res.status, json.details);
+    }
+    return json.data;
+  }
+
+  listAttachments(sessionId: string): Promise<Attachment[]> {
+    return this.get<Attachment[]>(`/attachments?sessionId=${encodeURIComponent(sessionId)}`);
+  }
+
+  getAttachment(id: string): Promise<Attachment> {
+    return this.get<Attachment>(`/attachments/${id}`);
+  }
+
+  /**
+   * Download attachment file content as a Blob.
+   * Uses a raw fetch — the server returns binary data, not JSON.
+   */
+  async downloadAttachment(id: string): Promise<Blob> {
+    const url = this.apiUrl(`/attachments/${id}/download`);
+    const res = await this.fetchFn(url, {
+      method: "GET",
+      headers: this.headers,
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: "Download failed" }));
+      throw new PolpoApiError(
+        (err as any).error ?? "Download failed",
+        res.status === 404 ? "NOT_FOUND" : "INTERNAL_ERROR",
+        res.status,
+      );
+    }
+    return res.blob();
+  }
+
+  async deleteAttachment(id: string): Promise<boolean> {
+    await this.del<void>(`/attachments/${id}`);
+    return true;
+  }
+
+  // ── Files ──────────────────────────────────────────────
+
+  getFileRoots(): Promise<{ roots: FileRoot[] }> {
+    return this.get<{ roots: FileRoot[] }>("/files/roots");
+  }
+
+  listFiles(root: string, path?: string): Promise<{ path: string; entries: FileEntry[] }> {
+    const targetPath = path ?? root;
+    return this.get<{ path: string; entries: FileEntry[] }>(`/files/list?path=${encodeURIComponent(targetPath)}`);
+  }
+
+  previewFile(root: string, path: string, maxLines?: number): Promise<FilePreview> {
+    const params = new URLSearchParams({ path });
+    if (maxLines !== undefined) params.set("maxLines", String(maxLines));
+    return this.get<FilePreview>(`/files/preview?${params.toString()}`);
   }
 
   // Backward-compat aliases

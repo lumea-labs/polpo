@@ -24,17 +24,25 @@ export { useLogs } from "./hooks/use-logs.js";
 export { useSessions } from "./hooks/use-sessions.js";
 export { useTaskActivity } from "./hooks/use-task-activity.js";
 export { useSkills } from "./hooks/use-skills.js";
+export type { UseSkillsReturn } from "./hooks/use-skills.js";
 export { useOrchestratorSkills } from "./hooks/use-orchestrator-skills.js";
 export { useNotifications } from "./hooks/use-notifications.js";
 export { useApprovals } from "./hooks/use-approvals.js";
 export type { UseApprovalsReturn } from "./hooks/use-approvals.js";
 export { useActiveDelays } from "./hooks/use-active-delays.js";
+export type { UseActiveDelaysReturn } from "./hooks/use-active-delays.js";
 export { usePlaybooks, useTemplates } from "./hooks/use-playbooks.js";
+export type { UsePlaybooksReturn } from "./hooks/use-playbooks.js";
 export { useSchedules } from "./hooks/use-schedules.js";
+export type { UseSchedulesReturn } from "./hooks/use-schedules.js";
 export { useVaultEntries } from "./hooks/use-vault-entries.js";
-export type { UseVaultEntriesReturn } from "./hooks/use-vault-entries.js";
+export type { UseVaultEntriesReturn, SaveVaultEntryRequest } from "./hooks/use-vault-entries.js";
 export { useAuthStatus } from "./hooks/use-auth-status.js";
 export { useAssessmentProgress } from "./hooks/use-assessment-progress.js";
+export { useAttachments } from "./hooks/use-attachments.js";
+export type { UseAttachmentsReturn } from "./hooks/use-attachments.js";
+export { useFiles } from "./hooks/use-files.js";
+export type { UseFilesReturn } from "./hooks/use-files.js";
 
 // Re-export client SDK for convenience (backward compat — consumers can also use @polpo-ai/sdk directly)
 export {
@@ -169,15 +177,25 @@ export type {
   ApprovalRequest,
   ApprovalStatus,
   ScheduleEntry,
+  CreateScheduleRequest,
+  UpdateScheduleRequest,
   QualityMetrics,
   PlaybookParameter,
   PlaybookInfo,
   PlaybookDefinition,
   PlaybookRunResult,
+  CreatePlaybookRequest,
+  CreateSkillRequest,
+  InstallSkillsResult,
+  InstallSkillsOptions,
   TemplateParameter,
   TemplateInfo,
   TemplateDefinition,
   TemplateRunResult,
+  Attachment,
+  FileRoot,
+  FileEntry,
+  FilePreview,
   StoreState,
   PolpoStats,
   AssessmentProgressEntry,

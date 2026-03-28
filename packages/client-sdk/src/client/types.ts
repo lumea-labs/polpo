@@ -995,6 +995,52 @@ export interface ResumeMissionResult {
   pending: number;
 }
 
+// === Attachment types ===
+
+export interface Attachment {
+  id: string;
+  sessionId: string;
+  messageId?: string;
+  filename: string;
+  mimeType: string;
+  size: number;
+  path: string;
+  createdAt: string;
+}
+
+// === File Browser types ===
+
+export interface FileRoot {
+  id: string;
+  name: string;
+  path: string;
+  absolutePath: string;
+  description: string;
+  icon: string;
+  totalFiles: number;
+  totalSize: number;
+}
+
+export interface FileEntry {
+  name: string;
+  type: "file" | "directory";
+  size?: number;
+  mimeType?: string;
+  modifiedAt?: string;
+}
+
+export interface FilePreview {
+  path: string;
+  name: string;
+  mimeType: string;
+  size: number;
+  previewable: boolean;
+  type: "text" | "image" | "pdf" | "audio" | "video" | "binary";
+  url: string;
+  content?: string;
+  truncated?: boolean;
+}
+
 // === Log types ===
 
 export interface LogSession {
@@ -1086,6 +1132,52 @@ export interface SkillIndexEntry {
 
 /** The full skills index: maps skill names to their index metadata. */
 export type SkillIndex = Record<string, SkillIndexEntry>;
+
+/** Request body for creating a new skill. */
+export interface CreateSkillRequest {
+  name: string;
+  description: string;
+  content: string;
+  allowedTools?: string[];
+}
+
+/** Result of installing skills from a source (GitHub repo or local path). */
+export interface InstallSkillsResult {
+  installed: string[];
+  skipped: string[];
+  errors: string[];
+  source: string;
+}
+
+/** Options for installing skills. */
+export interface InstallSkillsOptions {
+  skillNames?: string[];
+  force?: boolean;
+}
+
+/** Request body for creating a schedule. */
+export interface CreateScheduleRequest {
+  missionId: string;
+  expression: string;
+  recurring?: boolean;
+  endDate?: string;
+}
+
+/** Request body for updating a schedule. */
+export interface UpdateScheduleRequest {
+  expression?: string;
+  recurring?: boolean;
+  enabled?: boolean;
+  endDate?: string | null;
+}
+
+/** Request body for creating/updating a playbook. */
+export interface CreatePlaybookRequest {
+  name: string;
+  description: string;
+  mission: Record<string, unknown>;
+  parameters?: PlaybookParameter[];
+}
 
 // === Chat Session types ===
 
