@@ -12,6 +12,7 @@ export type { ParsedModelSpec } from "@polpo-ai/core";
 import { getCatalogSync, type GatewayLanguageModelEntry, type ModelInfo } from "./gateway-catalog.js";
 import { createCustomProviderModel, createGatewayModel } from "./provider-factory.js";
 import { resolveApiKey, resolveApiKeyAsync, hasOAuthProfiles, PROVIDER_ENV_MAP } from "./api-keys.js";
+import { getGatewayConfig } from "./gateway-config.js";
 
 // ─── ResolvedModel ───────────────────────────────────
 
@@ -148,7 +149,22 @@ export function resolveModel(spec?: string): ResolvedModel {
     };
   }
 
-  // Standard provider -> route through AI Gateway
+  // Validate that some gateway or provider key is available
+  const hasGateway = !!getGatewayConfig();
+  const hasVercelGatewayKey = !!process.env.AI_GATEWAY_API_KEY;
+  const hasProviderKey = !!resolveApiKey(provider) || hasOAuthProfiles(provider);
+
+  if (!hasGateway && !hasVercelGatewayKey && !hasProviderKey) {
+    throw new Error(
+      `No LLM gateway configured and no API key found for provider "${provider}". ` +
+      `Set settings.gateway in polpo.json, ` +
+      `or set AI_GATEWAY_API_KEY env var for Vercel AI Gateway, ` +
+      `or set ${PROVIDER_ENV_MAP[provider] ?? `the API key env var for "${provider}"`} for direct provider access. ` +
+      `See: https://docs.polpo.sh/docs/quickstart`,
+    );
+  }
+
+  // Standard provider -> route through configured gateway (or Vercel AI Gateway fallback)
   const aiModel = createGatewayModel(provider, modelId);
 
   // Try to get metadata from cached catalog

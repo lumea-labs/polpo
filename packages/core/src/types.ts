@@ -710,6 +710,15 @@ export interface PolpoSettings {
   defaultQualityThreshold?: number;
   /** Allowed recipient email domains — applies to all agents (can be overridden per-agent). */
   emailAllowedDomains?: string[];
+  /** LLM gateway configuration. */
+  gateway?: {
+    /** Gateway endpoint URL (e.g. "https://ai-gateway.vercel.sh/v1", "http://localhost:11434/v1") */
+    url: string;
+    /** Environment variable name containing the API key (e.g. "AI_GATEWAY_API_KEY"). The key itself is NOT stored in config. */
+    apiKeyEnv?: string;
+    /** Custom headers to send with every request (e.g. OpenRouter requires HTTP-Referer). */
+    headers?: Record<string, string>;
+  };
 }
 
 // === Polpo State (persisted in .polpo/state.json) ===

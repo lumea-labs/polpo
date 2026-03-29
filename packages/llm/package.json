@@ -21,12 +21,13 @@
     "LICENSE"
   ],
   "dependencies": {
-    "@polpo-ai/core": "workspace:*",
-    "@ai-sdk/openai": "^3.0.48"
+    "@ai-sdk/openai": "^3.0.48",
+    "@ai-sdk/openai-compatible": "^2.0.37",
+    "@polpo-ai/core": "workspace:*"
   },
   "peerDependencies": {
-    "ai": ">=6.0.0",
-    "@ai-sdk/gateway": ">=3.0.0"
+    "@ai-sdk/gateway": ">=3.0.0",
+    "ai": ">=6.0.0"
   },
   "license": "MIT",
   "repository": {
