@@ -2,12 +2,17 @@
  * Integration tests for POST /v1/chat/completions.
  *
  * These tests use a real Orchestrator with file stores in a temp dir,
- * and mock only the pi-ai LLM boundary. All Polpo code — model resolution,
- * system prompt, tool execution, SSE formatting, session persistence — runs
- * for real.
+ * and mock only the LLM boundary via AI SDK's MockLanguageModelV3.
+ * All Polpo code — model resolution, system prompt, tool execution,
+ * SSE formatting, session persistence — runs for real.
  *
  * All requests use agent-direct mode (`agent: "agent-1"`) since orchestrator
  * mode has been removed (returns 501 "not available").
+ *
+ * Mock strategy: vi.mock the pi-client module so resolveModel returns our
+ * MockLanguageModelV3 wrapped in a ResolvedModel. The completions route
+ * calls resolveAgentModel -> resolveModel -> returns our mock.
+ * We swap the mock model per test via setMockModel().
  */
 
 import { describe, test, expect, beforeAll, afterAll, vi, type Mock } from "vitest";
@@ -15,53 +20,31 @@ import { mkdtemp, writeFile, mkdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Orchestrator } from "../core/orchestrator.js";
+import {
+  MockLanguageModelV3,
+  mockTextModel,
+  mockToolCallModel,
+  mockTurnSequenceModel,
+  mockResolvedModel,
+  type MockResponse,
+} from "./helpers/mock-llm.js";
 
-// ── Mock pi-ai and pi-client BEFORE any imports that pull them in ──
+// ── Mock pi-client BEFORE any imports that pull it in ──
 
-// We dynamically set what streamSimple returns per test via `streamSimpleImpl`.
-let streamSimpleImpl: (...args: unknown[]) => unknown;
+// The active mock model — tests swap this via setMockModel().
+let activeMockModel: MockLanguageModelV3 = mockTextModel("Default mock response.");
 
-vi.mock("@mariozechner/pi-ai", async () => {
-  const { buildPiAiMock, mockTextStream } = await import("./helpers/mock-llm.js");
-  // Default: return a simple text response. Tests override via setStreamImpl().
-  streamSimpleImpl = () => mockTextStream("Default mock response.");
-  const base = buildPiAiMock((...args: unknown[]) => streamSimpleImpl(...args) as any);
-  return {
-    ...base,
-    // Override streamSimple to delegate to our mutable impl
-    streamSimple: (...args: unknown[]) => streamSimpleImpl(...args),
-  };
-});
-
-// Mock the Polpo pi-client layer — resolveModel, resolveApiKeyAsync, etc.
-// These functions normally need a real model spec from config; we bypass them.
 vi.mock("../llm/pi-client.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../llm/pi-client.js")>();
-  const { mockModel } = await import("./helpers/mock-llm.js");
   return {
     ...actual,
-    resolveModel: () => mockModel(),
-    resolveModelSpec: (spec: unknown) => spec ?? "anthropic:mock-model",
+    resolveModel: () => mockResolvedModel(activeMockModel),
+    resolveModelSpec: (spec: unknown) => spec ?? "mock:mock-model",
     resolveApiKeyAsync: async () => "mock-api-key",
-    buildStreamOpts: (apiKey?: string, reasoning?: string, maxTokens?: number) => {
-      const opts: Record<string, unknown> = {};
-      if (apiKey) opts.apiKey = apiKey;
-      return Object.keys(opts).length > 0 ? opts : undefined;
-    },
+    enforceModelAllowlist: () => {},
+    mapReasoningToProviderOptions: () => undefined,
   };
 });
-
-// Import after mock is set up
-import {
-  mockTextStream,
-  mockToolCallStream,
-  mockTextResponse,
-  mockToolCallResponse,
-  mockTurnSequence,
-  mockStream,
-  mockTextStreamEvents,
-  mockToolCallStreamEvents,
-} from "./helpers/mock-llm.js";
 
 // ── Test Setup ──────────────────────────────────────────
 
@@ -80,9 +63,9 @@ let tmpDir: string;
 let app: any; // OpenAPIHono — `any` to avoid Hono<> vs OpenAPIHono<> generic mismatch
 let orchestrator: Orchestrator;
 
-/** Override the streamSimple implementation for the next call(s). */
-function setStreamImpl(impl: (...args: unknown[]) => unknown) {
-  streamSimpleImpl = impl;
+/** Override the mock model for the next call(s). */
+function setMockModel(model: MockLanguageModelV3) {
+  activeMockModel = model;
 }
 
 /** POST /v1/chat/completions helper — always uses agent-direct mode. */
@@ -135,7 +118,7 @@ beforeAll(async () => {
   const sseBridge = new SSEBridge(orchestrator);
   sseBridge.start();
 
-  // No API keys → no auth required
+  // No API keys -> no auth required
   app = createApp(orchestrator, sseBridge);
 });
 
@@ -151,7 +134,7 @@ describe("POST /v1/chat/completions", () => {
 
   describe("non-streaming", () => {
     test("returns OpenAI-compatible completion for simple text response", async () => {
-      setStreamImpl(() => mockTextStream("Hello from Polpo!"));
+      setMockModel(mockTextModel("Hello from Polpo!"));
 
       const res = await postCompletions({
         messages: [{ role: "user", content: "Hi" }],
@@ -186,7 +169,7 @@ describe("POST /v1/chat/completions", () => {
 
   describe("streaming", () => {
     test("returns SSE stream with text deltas and [DONE]", async () => {
-      setStreamImpl(() => mockTextStream("Streamed response!"));
+      setMockModel(mockTextModel("Streamed response!"));
 
       const res = await postCompletions({
         messages: [{ role: "user", content: "Hello" }],
@@ -210,7 +193,7 @@ describe("POST /v1/chat/completions", () => {
     });
 
     test("SSE chunks have correct OpenAI format", async () => {
-      setStreamImpl(() => mockTextStream("Test"));
+      setMockModel(mockTextModel("Test"));
 
       const res = await postCompletions({
         messages: [{ role: "user", content: "Hi" }],
@@ -239,11 +222,10 @@ describe("POST /v1/chat/completions", () => {
     test("executes get_status tool and returns result in non-streaming mode", async () => {
       // Turn 1: LLM calls get_status tool
       // Turn 2: After receiving tool result, LLM responds with text
-      const turnSequence = mockTurnSequence([
-        mockToolCallResponse("get_status", {}),
-        mockTextResponse("The project has 0 tasks and 1 agent."),
-      ]);
-      setStreamImpl(turnSequence);
+      setMockModel(mockTurnSequenceModel([
+        { type: "tool-call", toolName: "get_status", args: {} },
+        { type: "text", text: "The project has 0 tasks and 1 agent." },
+      ]));
 
       const res = await postCompletions({
         messages: [{ role: "user", content: "What is the project status?" }],
@@ -258,11 +240,10 @@ describe("POST /v1/chat/completions", () => {
     });
 
     test("executes get_status tool in streaming mode with tool_call events", async () => {
-      const turnSequence = mockTurnSequence([
-        mockToolCallResponse("get_status", {}),
-        mockTextResponse("Status summary."),
-      ]);
-      setStreamImpl(turnSequence);
+      setMockModel(mockTurnSequenceModel([
+        { type: "tool-call", toolName: "get_status", args: {} },
+        { type: "text", text: "Status summary." },
+      ]));
 
       const res = await postCompletions({
         messages: [{ role: "user", content: "Status?" }],
@@ -296,11 +277,10 @@ describe("POST /v1/chat/completions", () => {
     });
 
     test("executes list_tasks tool and returns structured data", async () => {
-      const turnSequence = mockTurnSequence([
-        mockToolCallResponse("list_tasks", {}),
-        mockTextResponse("There are no tasks yet."),
-      ]);
-      setStreamImpl(turnSequence);
+      setMockModel(mockTurnSequenceModel([
+        { type: "tool-call", toolName: "list_tasks", args: {} },
+        { type: "text", text: "There are no tasks yet." },
+      ]));
 
       const res = await postCompletions({
         messages: [{ role: "user", content: "List all tasks" }],
@@ -316,12 +296,11 @@ describe("POST /v1/chat/completions", () => {
       // Turn 1: list_tasks
       // Turn 2: list_agents (LLM wants more info)
       // Turn 3: final text response
-      const turnSequence = mockTurnSequence([
-        mockToolCallResponse("list_tasks", {}),
-        mockToolCallResponse("list_agents", {}),
-        mockTextResponse("You have 0 tasks and 1 agent: agent-1."),
-      ]);
-      setStreamImpl(turnSequence);
+      setMockModel(mockTurnSequenceModel([
+        { type: "tool-call", toolName: "list_tasks", args: {} },
+        { type: "tool-call", toolName: "list_agents", args: {} },
+        { type: "text", text: "You have 0 tasks and 1 agent: agent-1." },
+      ]));
 
       const res = await postCompletions({
         messages: [{ role: "user", content: "Give me a full overview" }],
@@ -343,7 +322,7 @@ describe("POST /v1/chat/completions", () => {
 
   describe("auth", () => {
     test("succeeds without auth when no API keys configured", async () => {
-      setStreamImpl(() => mockTextStream("No auth needed."));
+      setMockModel(mockTextModel("No auth needed."));
 
       const res = await postCompletions({
         messages: [{ role: "user", content: "Hi" }],
@@ -357,7 +336,7 @@ describe("POST /v1/chat/completions", () => {
 
   describe("message formatting", () => {
     test("handles multi-part content (text array)", async () => {
-      setStreamImpl(() => mockTextStream("Got your multi-part message."));
+      setMockModel(mockTextModel("Got your multi-part message."));
 
       const res = await postCompletions({
         messages: [{
@@ -376,7 +355,7 @@ describe("POST /v1/chat/completions", () => {
     });
 
     test("handles system + user messages", async () => {
-      setStreamImpl(() => mockTextStream("I see the system context."));
+      setMockModel(mockTextModel("I see the system context."));
 
       const res = await postCompletions({
         messages: [
@@ -392,7 +371,7 @@ describe("POST /v1/chat/completions", () => {
     });
 
     test("handles conversation history with assistant messages", async () => {
-      setStreamImpl(() => mockTextStream("Continuing our conversation."));
+      setMockModel(mockTextModel("Continuing our conversation."));
 
       const res = await postCompletions({
         messages: [
@@ -413,7 +392,7 @@ describe("POST /v1/chat/completions", () => {
 
   describe("session persistence", () => {
     test("returns x-session-id header", async () => {
-      setStreamImpl(() => mockTextStream("Session test."));
+      setMockModel(mockTextModel("Session test."));
 
       const res = await postCompletions({
         messages: [{ role: "user", content: "Hi" }],
@@ -426,14 +405,14 @@ describe("POST /v1/chat/completions", () => {
     });
 
     test("reuses session when x-session-id header is sent back", async () => {
-      setStreamImpl(() => mockTextStream("First."));
+      setMockModel(mockTextModel("First."));
       const res1 = await postCompletions({
         messages: [{ role: "user", content: "Hi" }],
         stream: false,
       });
       const sessionId = res1.headers.get("x-session-id")!;
 
-      setStreamImpl(() => mockTextStream("Second."));
+      setMockModel(mockTextModel("Second."));
       const res2 = await postCompletions(
         { messages: [{ role: "user", content: "Follow up" }], stream: false },
         { "x-session-id": sessionId },
@@ -443,14 +422,14 @@ describe("POST /v1/chat/completions", () => {
     });
 
     test("creates new session when x-session-id is 'new'", async () => {
-      setStreamImpl(() => mockTextStream("First."));
+      setMockModel(mockTextModel("First."));
       const res1 = await postCompletions({
         messages: [{ role: "user", content: "Hi" }],
         stream: false,
       });
       const firstSessionId = res1.headers.get("x-session-id")!;
 
-      setStreamImpl(() => mockTextStream("New session."));
+      setMockModel(mockTextModel("New session."));
       const res2 = await postCompletions(
         { messages: [{ role: "user", content: "New convo" }], stream: false },
         { "x-session-id": "new" },
@@ -466,7 +445,7 @@ describe("POST /v1/chat/completions", () => {
 
   describe("edge cases", () => {
     test("handles empty LLM response gracefully", async () => {
-      setStreamImpl(() => mockTextStream(""));
+      setMockModel(mockTextModel(""));
 
       const res = await postCompletions({
         messages: [{ role: "user", content: "Hi" }],
