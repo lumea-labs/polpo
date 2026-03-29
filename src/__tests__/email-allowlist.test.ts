@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { createEmailTools } from "../tools/email-tools.js";
+import { createEmailTools } from "@polpo-ai/tools";
 
 /**
  * Tests for email recipient domain allowlist.

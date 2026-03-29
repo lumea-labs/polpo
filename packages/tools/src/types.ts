@@ -11,8 +11,3 @@ export interface ResolvedVault {
   has(service: string): boolean;
   list(): Array<{ service: string; type: string; keys: string[] }>;
 }
-
-/** WhatsApp message store interface. Uses any for maximum compatibility. */
-export interface WhatsAppStore {
-  [method: string]: (...args: any[]) => any;
-}

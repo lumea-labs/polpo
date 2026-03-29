@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { safeEnv, bashSafeEnv } from "../tools/safe-env.js";
+import { safeEnv, bashSafeEnv } from "@polpo-ai/tools";
 
 describe("safeEnv", () => {
   const originalEnv = { ...process.env };

@@ -31,7 +31,7 @@ import {
   type ToolSet,
 } from "ai";
 import { resolveModel, enforceModelAllowlist, mapReasoningToProviderOptions } from "../llm/pi-client.js";
-import { createSystemTools, createAllTools } from "../tools/system-tools.js";
+import { createSystemTools, createAllTools, cleanupAgentBrowserSession } from "@polpo-ai/tools";
 import { NodeFileSystem } from "./node-filesystem.js";
 import { NodeShell } from "./node-shell.js";
 import type { FileSystem } from "@polpo-ai/core/filesystem";
@@ -105,18 +105,6 @@ function describeToolsForAgent(agent: AgentConfig): string {
       "- `email_count` — count emails matching filters without downloading content (returns total and unread counts)",
       "- `email_verify` — verify SMTP connection and credentials",
       "ALWAYS use these tools for email operations. Never use bash/curl to send emails.",
-    );
-  }
-
-  if (hasPattern("whatsapp_")) {
-    extended.push(
-      "",
-      "**WhatsApp:**",
-      "- `whatsapp_send` — send a WhatsApp message (WARNING: irreversible side effect)",
-      "- `whatsapp_list` — list recent conversations",
-      "- `whatsapp_read` — read messages in a conversation",
-      "- `whatsapp_search` — search messages",
-      "- `whatsapp_contacts` — list contacts",
     );
   }
 
@@ -442,7 +430,7 @@ export function spawnEngine(agentConfig: AgentConfig, task: Task, cwd: string, c
     return lc.startsWith("browser_") || lc.startsWith("email_")
       || lc.startsWith("image_") || lc.startsWith("video_") || lc.startsWith("audio_")
       || lc.startsWith("excel_") || lc.startsWith("pdf_") || lc.startsWith("docx_")
-      || lc.startsWith("search_") || lc.startsWith("whatsapp_") || lc.startsWith("phone_");
+      || lc.startsWith("search_") || lc.startsWith("phone_");
   }) ?? false;
 
   // Derive output directory from context (per-task output dir for deliverables)
@@ -734,7 +722,6 @@ export function spawnEngine(agentConfig: AgentConfig, task: Task, cwd: string, c
     } finally {
       // Close agent-browser session (profile data auto-persisted by --profile)
       if (hasExtendedTools) {
-        const { cleanupAgentBrowserSession } = await import("../tools/browser-tools.js");
         await cleanupAgentBrowserSession(agentConfig.name).catch(() => {});
       }
     }

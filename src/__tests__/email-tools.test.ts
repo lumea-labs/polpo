@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { createEmailTools, ALL_EMAIL_TOOL_NAMES } from "../tools/email-tools.js";
+import { createEmailTools, ALL_EMAIL_TOOL_NAMES } from "@polpo-ai/tools";
 import type { ResolvedVault, SmtpCredentials } from "../vault/resolver.js";
 
 // Mock nodemailer so we never actually connect to SMTP

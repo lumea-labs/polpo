@@ -6,7 +6,7 @@
  */
 import { execaCommand } from "execa";
 import type { Shell, ShellOptions, ShellResult } from "@polpo-ai/core/shell";
-import { bashSafeEnv } from "../tools/safe-env.js";
+import { bashSafeEnv } from "@polpo-ai/tools";
 
 export class NodeShell implements Shell {
   async execute(command: string, options?: ShellOptions): Promise<ShellResult> {

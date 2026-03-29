@@ -18,10 +18,6 @@ import { createOutcomeTools as createOutcomeToolsCore } from "./outcome-tools.js
 import { createHttpTools as createHttpToolsCore, ALL_HTTP_TOOL_NAMES as CORE_HTTP_TOOL_NAMES } from "./http-tools.js";
 import { createVaultToolsCore } from "./vault-tools.js";
 import type { ResolvedVault } from "./types.js";
-import type { WhatsAppStore } from "./types.js";
-// ink-tools stays in polpo-ai root (too coupled to core/ink.js, core/config.js, file stores)
-// Consumers can add ink tools separately if needed
-const ALL_INK_TOOL_NAMES: string[] = [];
 
 const MAX_READ_LINES = 500;
 const MAX_OUTPUT_BYTES = 30_000;
@@ -388,7 +384,6 @@ import { createExcelTools, ALL_EXCEL_TOOL_NAMES } from "./excel-tools.js";
 import { createPdfTools, ALL_PDF_TOOL_NAMES } from "./pdf-tools.js";
 import { createDocxTools, ALL_DOCX_TOOL_NAMES } from "./docx-tools.js";
 import { createSearchTools, ALL_SEARCH_TOOL_NAMES } from "./search-tools.js";
-import { createWhatsAppTools, ALL_WHATSAPP_TOOL_NAMES } from "./whatsapp-tools.js";
 import { createPhoneTools, ALL_PHONE_TOOL_NAMES } from "./phone-tools.js";
 import { ALL_OUTCOME_TOOL_NAMES } from "./outcome-tools.js";
 
@@ -403,10 +398,7 @@ export type { ExcelToolName } from "./excel-tools.js";
 export type { PdfToolName } from "./pdf-tools.js";
 export type { DocxToolName } from "./docx-tools.js";
 export type { SearchToolName } from "./search-tools.js";
-export type { WhatsAppToolName } from "./whatsapp-tools.js";
 export type { PhoneToolName } from "./phone-tools.js";
-// ink-tools stays in root (InkToolName not available here)
-export type InkToolName = string;
 
 /** All known tool names across all categories */
 export type ExtendedToolName = SystemToolName
@@ -421,9 +413,7 @@ export type ExtendedToolName = SystemToolName
   | import("./pdf-tools.js").PdfToolName
   | import("./docx-tools.js").DocxToolName
   | import("./search-tools.js").SearchToolName
-  | import("./whatsapp-tools.js").WhatsAppToolName
-  | import("./phone-tools.js").PhoneToolName
-  | InkToolName;
+  | import("./phone-tools.js").PhoneToolName;
 
 /** All available tool names for documentation/config validation */
 export const ALL_EXTENDED_TOOL_NAMES: string[] = [
@@ -439,9 +429,7 @@ export const ALL_EXTENDED_TOOL_NAMES: string[] = [
   ...ALL_PDF_TOOL_NAMES,
   ...ALL_DOCX_TOOL_NAMES,
   ...ALL_SEARCH_TOOL_NAMES,
-  ...ALL_WHATSAPP_TOOL_NAMES,
   ...ALL_PHONE_TOOL_NAMES,
-  ...ALL_INK_TOOL_NAMES,
 ];
 
 export interface CreateAllToolsOptions {
@@ -464,12 +452,6 @@ export interface CreateAllToolsOptions {
   emailAllowedDomains?: string[];
   /** Per-task output directory for deliverables. Passed to outcome tools. */
   outputDir?: string;
-  /** WhatsApp message store (for whatsapp_* tools). */
-  whatsappStore?: WhatsAppStore;
-  /** WhatsApp send function (for whatsapp_send tool). */
-  whatsappSendMessage?: (jid: string, text: string) => Promise<string | undefined>;
-  /** Polpo directory (.polpo/) for Ink tools. */
-  polpoDir?: string;
   /** FileSystem implementation (default: NodeFileSystem). */
   fs?: FileSystem;
   /** Shell implementation (default: NodeShell). */
@@ -504,12 +486,6 @@ export async function createAllTools(options: CreateAllToolsOptions): Promise<Ag
 
   // Core coding tools (always included unless filtered out) — includes vault_get/vault_list
   tools.push(...createSystemTools(cwd, allowedTools, allowedPaths, options.outputDir, options.vault, options.fs, options.shell));
-
-  // Ink tools (always included when polpoDir is available)
-  if (options.polpoDir) {
-    // ink tools are added by polpo-ai root (too coupled to core/config/file stores)
-    // Consumers can add them via createInkTools() from polpo-ai if needed
-  }
 
   // Browser tools — activated when any browser_* tool is in allowedTools
   if (categoryRequested(ALL_BROWSER_TOOL_NAMES)) {
@@ -549,14 +525,6 @@ export async function createAllTools(options: CreateAllToolsOptions): Promise<Ag
   // Search tools (Exa) — activated when any search_* tool is in allowedTools
   if (categoryRequested(ALL_SEARCH_TOOL_NAMES)) {
     tools.push(...createSearchTools(options.vault, allowedTools));
-  }
-
-  // WhatsApp tools — activated when any whatsapp_* tool is in allowedTools AND store is available
-  if (categoryRequested(ALL_WHATSAPP_TOOL_NAMES) && options.whatsappStore && options.whatsappSendMessage) {
-    tools.push(...createWhatsAppTools(
-      { store: options.whatsappStore, sendMessage: options.whatsappSendMessage },
-      allowedTools,
-    ));
   }
 
   // Phone tools (VAPI) — activated when any phone_* tool is in allowedTools

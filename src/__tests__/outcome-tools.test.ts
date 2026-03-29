@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { createOutcomeTools } from "../tools/outcome-tools.js";
+import { createOutcomeTools } from "@polpo-ai/tools";
 
 const TMP = "/tmp/polpo-outcome-tools-test";
 const txt = (r: any) => r.content.map((c: any) => c.text).join("");

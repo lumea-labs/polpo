@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { join } from "node:path";
-import { createAudioTools } from "../tools/audio-tools.js";
+import { createAudioTools } from "@polpo-ai/tools";
 
 const TEST_DIR = join("/tmp", "polpo-audio-tools-test");
 

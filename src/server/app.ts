@@ -114,8 +114,7 @@ export function createApp(orchestrator: Orchestrator, sseBridge: SSEBridge, opts
       return buildSystemPrompt(agentConfig, o.getAgentWorkDir(), o.getPolpoDir());
     },
     resolveAgentTools: async (agentConfig: any) => {
-      const { createSystemTools } = await import("../tools/system-tools.js");
-      const { createMemoryTools } = await import("../tools/memory-tools.js");
+      const { createSystemTools, createMemoryTools } = await import("@polpo-ai/tools");
       const { resolveAgentVault } = await import("../vault/index.js");
       const { nanoid } = await import("nanoid");
       const vaultEntries = await o.getVaultStore()?.getAllForAgent(agentConfig.name);

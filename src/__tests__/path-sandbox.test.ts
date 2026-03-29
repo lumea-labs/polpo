@@ -1,10 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { resolveAllowedPaths, isPathAllowed, assertPathAllowed } from "../tools/path-sandbox.js";
-import { createSystemTools } from "../tools/system-tools.js";
-import { NodeFileSystem } from "../adapters/node-filesystem.js";
-import { NodeShell } from "../adapters/node-shell.js";
+import { resolveAllowedPaths, isPathAllowed, assertPathAllowed, createSystemTools, NodeFileSystem, NodeShell } from "@polpo-ai/tools";
 
 const fs = new NodeFileSystem();
 const shell = new NodeShell();

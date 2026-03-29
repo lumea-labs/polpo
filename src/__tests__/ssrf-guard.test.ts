@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { assertUrlAllowed } from "../tools/ssrf-guard.js";
+import { assertUrlAllowed } from "@polpo-ai/tools";
 
 describe("assertUrlAllowed", () => {
   // ── Blocked addresses ──
