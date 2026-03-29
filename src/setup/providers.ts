@@ -1,7 +1,7 @@
 import { PROVIDER_ENV_MAP, listProviders } from "../llm/pi-client.js";
 
 export interface DetectedProvider {
-  /** Provider name exactly as it appears in the pi-ai catalog (e.g. "openai", "openai-codex", "google") */
+  /** Provider name exactly as it appears in the AI Gateway catalog (e.g. "openai", "openai-codex", "google") */
   name: string;
   /** Environment variable for API key (if any) */
   envVar: string | undefined;
@@ -12,9 +12,9 @@ export interface DetectedProvider {
 }
 
 /**
- * Detect all providers from the pi-ai catalog with their credential status.
+ * Detect all providers from the AI Gateway catalog with their credential status.
  *
- * This is a 1:1 pass-through of the catalog — every provider that pi-ai knows about
+ * This is a 1:1 pass-through of the catalog — every provider the gateway knows about
  * is returned. No deduplication, no name mapping. The UI is a mere wrapper on this.
  *
  * Credential detection:

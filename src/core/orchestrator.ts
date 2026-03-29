@@ -358,15 +358,14 @@ export class Orchestrator extends TypedEmitter {
       loadConfig: () => loadPolpoConfig(this.polpoDir),
       saveConfig: (config) => savePolpoConfig(this.polpoDir, config),
       queryLLM: async (prompt, model) => {
-        const { queryText, queryTextWithFallback, resolveModelSpec } = await import("../llm/pi-client.js");
+        const { queryText, queryTextWithFallback, resolveModelSpec, estimateCost } = await import("../llm/pi-client.js");
         const { withRetry } = await import("../llm/retry.js");
-        const { calculateCost } = await import("@mariozechner/pi-ai");
         // If ModelConfig with fallbacks, use fallback-aware query
         if (model && typeof model === "object" && (model as any).fallbacks?.length > 0) {
           return withRetry(async () => {
             const result = await queryTextWithFallback(prompt, model as any);
             let costUsd: number | undefined;
-            if (result.usage) { try { costUsd = calculateCost(result.model, result.usage).total; } catch {} }
+            if (result.usage) { try { costUsd = estimateCost(result.model, result.usage).totalCost; } catch {} }
             return { text: result.text, usage: result.usage, model: result.model, usedSpec: result.usedSpec, costUsd };
           }, { maxRetries: 1 });
         }
@@ -374,7 +373,7 @@ export class Orchestrator extends TypedEmitter {
         return withRetry(async () => {
           const result = await queryText(prompt, spec);
           let costUsd: number | undefined;
-          if (result.usage) { try { costUsd = calculateCost(result.model, result.usage).total; } catch {} }
+          if (result.usage) { try { costUsd = estimateCost(result.model, result.usage).totalCost; } catch {} }
           return { text: result.text, usage: result.usage, model: result.model, costUsd };
         }, { maxRetries: 2 });
       },
