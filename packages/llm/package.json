@@ -1,0 +1,56 @@
+{
+  "name": "@polpo-ai/llm",
+  "version": "0.5.1",
+  "description": "LLM abstraction for Polpo — multi-provider model resolution, streaming, cost tracking, and failover built on Vercel AI SDK + AI Gateway",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "prepublishOnly": "tsc"
+  },
+  "files": [
+    "dist/",
+    "README.md",
+    "LICENSE"
+  ],
+  "dependencies": {
+    "@polpo-ai/core": "workspace:*",
+    "@ai-sdk/openai": "^3.0.48"
+  },
+  "peerDependencies": {
+    "ai": ">=6.0.0",
+    "@ai-sdk/gateway": ">=3.0.0"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/lumea-labs/polpo.git",
+    "directory": "packages/llm"
+  },
+  "homepage": "https://github.com/lumea-labs/polpo/tree/main/packages/llm",
+  "bugs": {
+    "url": "https://github.com/lumea-labs/polpo/issues"
+  },
+  "keywords": [
+    "polpo",
+    "llm",
+    "ai-sdk",
+    "ai-gateway",
+    "multi-provider",
+    "model-resolution"
+  ],
+  "author": "Lumea Labs",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

@@ -23,6 +23,9 @@ importers:
       '@polpo-ai/core':
         specifier: workspace:*
         version: link:packages/core
+      '@polpo-ai/llm':
+        specifier: workspace:*
+        version: link:packages/llm
       '@polpo-ai/server':
         specifier: workspace:*
         version: link:packages/server
@@ -150,6 +153,21 @@ importers:
       typescript:
         specifier: ^5.7.3
         version: 5.9.3
+
+  packages/llm:
+    dependencies:
+      '@ai-sdk/gateway':
+        specifier: '>=3.0.0'
+        version: 3.0.83(zod@4.3.6)
+      '@ai-sdk/openai':
+        specifier: ^3.0.48
+        version: 3.0.48(zod@4.3.6)
+      '@polpo-ai/core':
+        specifier: workspace:*
+        version: link:../core
+      ai:
+        specifier: '>=6.0.0'
+        version: 6.0.141(zod@4.3.6)
 
   packages/react-sdk:
     dependencies:

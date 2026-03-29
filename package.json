@@ -35,12 +35,12 @@
     "LICENSE"
   ],
   "scripts": {
-    "build": "pnpm --filter @polpo-ai/core build && pnpm --filter @polpo-ai/vault-crypto build && pnpm --filter @polpo-ai/drizzle build && pnpm --filter @polpo-ai/tools build && pnpm --filter @polpo-ai/server build && tsc && pnpm --filter @polpo-ai/sdk build && pnpm --filter @polpo-ai/react build",
+    "build": "pnpm --filter @polpo-ai/core build && pnpm --filter @polpo-ai/vault-crypto build && pnpm --filter @polpo-ai/drizzle build && pnpm --filter @polpo-ai/llm build && pnpm --filter @polpo-ai/tools build && pnpm --filter @polpo-ai/server build && tsc && pnpm --filter @polpo-ai/sdk build && pnpm --filter @polpo-ai/react build",
     "dev": "tsc --watch",
     "start": "node dist/cli/index.js",
     "test": "vitest",
     "test:coverage": "vitest run --coverage",
-    "typecheck": "pnpm --filter @polpo-ai/core build && pnpm --filter @polpo-ai/vault-crypto build && pnpm --filter @polpo-ai/drizzle build && pnpm --filter @polpo-ai/tools build && pnpm --filter @polpo-ai/server build && ./node_modules/.bin/tsc --noEmit",
+    "typecheck": "pnpm --filter @polpo-ai/core build && pnpm --filter @polpo-ai/vault-crypto build && pnpm --filter @polpo-ai/drizzle build && pnpm --filter @polpo-ai/llm build && pnpm --filter @polpo-ai/tools build && pnpm --filter @polpo-ai/server build && ./node_modules/.bin/tsc --noEmit",
     "clean": "rm -rf dist"
   },
   "keywords": [
@@ -72,6 +72,7 @@
     "@hono/node-server": "^1.19.9",
     "@hono/zod-openapi": "^1.2.2",
     "@polpo-ai/core": "workspace:*",
+    "@polpo-ai/llm": "workspace:*",
     "@polpo-ai/server": "workspace:*",
     "@polpo-ai/vault-crypto": "workspace:*",
     "@sinclair/typebox": "^0.34.48",
