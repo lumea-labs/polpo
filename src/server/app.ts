@@ -105,7 +105,7 @@ export function createApp(orchestrator: Orchestrator, sseBridge: SSEBridge, opts
     emit: (event: string, data: any) => o.emit(event as any, data),
     resolveAgentModel: async (agentConfig: any, reasoning?: string) => {
       const { resolveModel, mapReasoningToProviderOptions } = await import("../llm/pi-client.js");
-      const m = resolveModel(agentConfig.model);
+      const m = resolveModel(agentConfig.model, { gateway: o.getGatewayConfig() });
       const r = agentConfig.reasoning ?? reasoning;
       const providerOptions = mapReasoningToProviderOptions(m.provider, r, m.maxTokens);
       return { model: m, providerOptions };

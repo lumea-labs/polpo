@@ -55,4 +55,6 @@ export interface SpawnContext {
   fs?: FileSystem;
   /** Shell implementation — created by the orchestrator, passed down to tools. */
   shell?: Shell;
+  /** LLM gateway configuration — passed per-request for multi-tenant support. */
+  gatewayConfig?: unknown;
 }

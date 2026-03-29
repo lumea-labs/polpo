@@ -401,7 +401,7 @@ export function spawnEngine(agentConfig: AgentConfig, task: Task, cwd: string, c
   }
 
   // Resolve model
-  const model = resolveModel(agentConfig.model);
+  const model = resolveModel(agentConfig.model, { gateway: ctx?.gatewayConfig as any });
 
   // Create all tools scoped to working directory with path sandboxing
   // Core tools (always available): read, write, edit, bash, glob, grep, ls, http_fetch, http_download, register_outcome, vault_get, vault_list

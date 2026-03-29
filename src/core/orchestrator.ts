@@ -43,7 +43,8 @@ import {
   sleep,
 } from "./assessment-prompts.js";
 import type { AssessFn } from "./orchestrator-context.js";
-import { setProviderOverrides, validateProviderKeys, setModelAllowlist, configureGateway } from "../llm/pi-client.js";
+import { setProviderOverrides, validateProviderKeys, setModelAllowlist } from "../llm/pi-client.js";
+import type { GatewayConfig } from "@polpo-ai/llm";
 import { HookRegistry } from "./hooks.js";
 import { ApprovalManager } from "./approval-manager.js";
 import { FileApprovalStore } from "../stores/file-approval-store.js";
@@ -112,6 +113,7 @@ export class Orchestrator extends TypedEmitter {
   private playbookStore!: PlaybookStore;
   private fs: FileSystem;
   private shell: Shell;
+  private gatewayConfig: GatewayConfig | undefined;
 
   // Managers
   private agentMgr!: AgentManager;
@@ -237,11 +239,11 @@ export class Orchestrator extends TypedEmitter {
     // Configure LLM gateway from settings
     const gatewaySettings = this.config.settings.gateway;
     if (gatewaySettings) {
-      configureGateway({
+      this.gatewayConfig = {
         url: gatewaySettings.url,
         apiKey: gatewaySettings.apiKeyEnv ? process.env[gatewaySettings.apiKeyEnv] : undefined,
         headers: gatewaySettings.headers,
-      });
+      };
     }
 
     const stores = this.injectedStore
@@ -383,7 +385,7 @@ export class Orchestrator extends TypedEmitter {
         // If ModelConfig with fallbacks, use fallback-aware query
         if (model && typeof model === "object" && (model as any).fallbacks?.length > 0) {
           return withRetry(async () => {
-            const result = await queryTextWithFallback(prompt, model as any);
+            const result = await queryTextWithFallback(prompt, model as any, { gateway: this.gatewayConfig });
             let costUsd: number | undefined;
             if (result.usage) { try { costUsd = estimateCost(result.model, result.usage).totalCost; } catch {} }
             return { text: result.text, usage: result.usage, model: result.model, usedSpec: result.usedSpec, costUsd };
@@ -391,7 +393,7 @@ export class Orchestrator extends TypedEmitter {
         }
         const spec = resolveModelSpec(model);
         return withRetry(async () => {
-          const result = await queryText(prompt, spec);
+          const result = await queryText(prompt, spec, undefined, { gateway: this.gatewayConfig });
           let costUsd: number | undefined;
           if (result.usage) { try { costUsd = estimateCost(result.model, result.usage).totalCost; } catch {} }
           return { text: result.text, usage: result.usage, model: result.model, costUsd };
@@ -598,11 +600,11 @@ export class Orchestrator extends TypedEmitter {
     // Configure LLM gateway from settings
     const gatewaySettings = this.config.settings.gateway;
     if (gatewaySettings) {
-      configureGateway({
+      this.gatewayConfig = {
         url: gatewaySettings.url,
         apiKey: gatewaySettings.apiKeyEnv ? process.env[gatewaySettings.apiKeyEnv] : undefined,
         headers: gatewaySettings.headers,
-      });
+      };
     }
 
     await this.initManagers();
@@ -705,6 +707,7 @@ export class Orchestrator extends TypedEmitter {
   getTeamStore(): TeamStore { return this.teamStore; }
   getFs(): FileSystem { return this.fs; }
   getShell(): Shell { return this.shell; }
+  getGatewayConfig(): GatewayConfig | undefined { return this.gatewayConfig; }
   getAgentStore(): AgentStore { return this.agentStore; }
 
   /**
@@ -1008,11 +1011,11 @@ export class Orchestrator extends TypedEmitter {
 
     // Re-configure LLM gateway from updated settings
     if (newSettings.gateway) {
-      configureGateway({
+      this.gatewayConfig = {
         url: newSettings.gateway.url,
         apiKey: newSettings.gateway.apiKeyEnv ? process.env[newSettings.gateway.apiKeyEnv] : undefined,
         headers: newSettings.gateway.headers,
-      });
+      };
     }
 
     // Re-sync config.teams from TeamStore/AgentStore (authoritative source)

@@ -40,12 +40,8 @@ export {
 export type { ResolvedModel, ParsedModelSpec, ProviderValidationResult } from "./model-resolver.js";
 
 // ─── Gateway Config ─────────────────────────────────
-export {
-  configureGateway,
-  getGatewayConfig,
-  resetGatewayConfig,
-} from "./gateway-config.js";
 export type { GatewayConfig } from "./gateway-config.js";
+export type { ResolveModelOptions } from "./model-resolver.js";
 
 // ─── Provider Factory ─────────────────────────────────
 export {

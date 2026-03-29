@@ -12,7 +12,7 @@ export type { ParsedModelSpec } from "@polpo-ai/core";
 import { getCatalogSync, type GatewayLanguageModelEntry, type ModelInfo } from "./gateway-catalog.js";
 import { createCustomProviderModel, createGatewayModel } from "./provider-factory.js";
 import { resolveApiKey, resolveApiKeyAsync, hasOAuthProfiles, PROVIDER_ENV_MAP } from "./api-keys.js";
-import { getGatewayConfig } from "./gateway-config.js";
+import type { GatewayConfig } from "./gateway-config.js";
 
 // ─── ResolvedModel ───────────────────────────────────
 
@@ -112,7 +112,12 @@ export function parseModelSpec(spec?: string): { provider: string; modelId: stri
  *
  * This ensures custom providers (Ollama, vLLM, etc.) work without being in the gateway.
  */
-export function resolveModel(spec?: string): ResolvedModel {
+export interface ResolveModelOptions {
+  /** Gateway configuration — passed per-request for multi-tenant support. */
+  gateway?: GatewayConfig;
+}
+
+export function resolveModel(spec?: string, opts?: ResolveModelOptions): ResolvedModel {
   const { provider, modelId } = parseModelSpec(spec);
   const override = providerOverrides[provider];
 
@@ -150,7 +155,7 @@ export function resolveModel(spec?: string): ResolvedModel {
   }
 
   // Validate that some gateway or provider key is available
-  const hasGateway = !!getGatewayConfig();
+  const hasGateway = !!opts?.gateway;
   const hasVercelGatewayKey = !!process.env.AI_GATEWAY_API_KEY;
   const hasProviderKey = !!resolveApiKey(provider) || hasOAuthProfiles(provider);
 
@@ -164,8 +169,8 @@ export function resolveModel(spec?: string): ResolvedModel {
     );
   }
 
-  // Standard provider -> route through configured gateway (or Vercel AI Gateway fallback)
-  const aiModel = createGatewayModel(provider, modelId);
+  // Standard provider -> route through gateway (explicit config > env var fallback)
+  const aiModel = createGatewayModel(provider, modelId, opts?.gateway);
 
   // Try to get metadata from cached catalog
   const catalog = getCatalogSync();
@@ -381,7 +386,7 @@ export function resolveModelSpec(spec: string | ModelConfig | undefined): string
  * Tries primary first, then each fallback in order.
  * Returns the first model that has a valid API key.
  */
-export function resolveModelWithFallback(config: ModelConfig): { model: ResolvedModel; spec: string } {
+export function resolveModelWithFallback(config: ModelConfig, opts?: ResolveModelOptions): { model: ResolvedModel; spec: string } {
   const primary = config.primary;
   if (!primary) {
     throw new Error("No primary model configured. Run 'polpo setup' or set POLPO_MODEL env var.");
@@ -389,7 +394,7 @@ export function resolveModelWithFallback(config: ModelConfig): { model: Resolved
   const { provider: primaryProvider } = parseModelSpec(primary);
   if (resolveApiKey(primaryProvider)) {
     try {
-      return { model: resolveModel(primary), spec: primary };
+      return { model: resolveModel(primary, opts), spec: primary };
     } catch {
       // Primary model not found — try fallbacks
     }
@@ -400,7 +405,7 @@ export function resolveModelWithFallback(config: ModelConfig): { model: Resolved
       const { provider: fbProvider } = parseModelSpec(fallback);
       if (resolveApiKey(fbProvider)) {
         try {
-          return { model: resolveModel(fallback), spec: fallback };
+          return { model: resolveModel(fallback, opts), spec: fallback };
         } catch {
           // Model not found — try next
         }
@@ -409,7 +414,7 @@ export function resolveModelWithFallback(config: ModelConfig): { model: Resolved
   }
 
   // Last resort: try primary anyway (will fail at call time with a clear error)
-  return { model: resolveModel(primary), spec: primary };
+  return { model: resolveModel(primary, opts), spec: primary };
 }
 
 /**
@@ -417,7 +422,7 @@ export function resolveModelWithFallback(config: ModelConfig): { model: Resolved
  * Tries primary first, then each fallback in order.
  * Checks the FULL API key resolution chain including OAuth profiles with auto-refresh.
  */
-export async function resolveModelWithFallbackAsync(config: ModelConfig): Promise<{ model: ResolvedModel; spec: string }> {
+export async function resolveModelWithFallbackAsync(config: ModelConfig, opts?: ResolveModelOptions): Promise<{ model: ResolvedModel; spec: string }> {
   const primary = config.primary;
   if (!primary) {
     throw new Error("No primary model configured. Run 'polpo setup' or set POLPO_MODEL env var.");
@@ -425,7 +430,7 @@ export async function resolveModelWithFallbackAsync(config: ModelConfig): Promis
   const { provider: primaryProvider } = parseModelSpec(primary);
   if (await resolveApiKeyAsync(primaryProvider)) {
     try {
-      return { model: resolveModel(primary), spec: primary };
+      return { model: resolveModel(primary, opts), spec: primary };
     } catch {
       // Primary model not found — try fallbacks
     }
@@ -436,7 +441,7 @@ export async function resolveModelWithFallbackAsync(config: ModelConfig): Promis
       const { provider: fbProvider } = parseModelSpec(fallback);
       if (await resolveApiKeyAsync(fbProvider)) {
         try {
-          return { model: resolveModel(fallback), spec: fallback };
+          return { model: resolveModel(fallback, opts), spec: fallback };
         } catch {
           // Model not found — try next
         }
@@ -444,7 +449,7 @@ export async function resolveModelWithFallbackAsync(config: ModelConfig): Promis
     }
   }
 
-  return { model: resolveModel(primary), spec: primary };
+  return { model: resolveModel(primary, opts), spec: primary };
 }
 
 // ─── Provider Validation ─────────────────────────────

@@ -11,7 +11,7 @@ import { createOpenAI } from "@ai-sdk/openai";
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import type { ProviderConfig, ReasoningLevel } from "@polpo-ai/core";
 import { resolveApiKey } from "./api-keys.js";
-import { getGatewayConfig } from "./gateway-config.js";
+import type { GatewayConfig } from "./gateway-config.js";
 
 /**
  * Create an AI SDK LanguageModel for a custom (non-gateway) provider.
@@ -46,11 +46,9 @@ export function createCustomProviderModel(
  *
  * The gateway expects "provider/modelId" format for model identifiers.
  */
-export function createGatewayModel(provider: string, modelId: string): LanguageModel {
-  const config = getGatewayConfig();
-
+export function createGatewayModel(provider: string, modelId: string, config?: GatewayConfig): LanguageModel {
   if (!config) {
-    // No gateway configured — use Vercel AI Gateway as default
+    // No explicit config — fall back to Vercel AI Gateway (reads AI_GATEWAY_API_KEY from env)
     const gatewayModelId = `${provider}/${modelId}`;
     return gateway(gatewayModelId as any) as unknown as LanguageModel;
   }
@@ -63,7 +61,6 @@ export function createGatewayModel(provider: string, modelId: string): LanguageM
     headers: config.headers,
   });
 
-  // Most gateways use provider/model format
   const modelSpec = `${provider}/${modelId}`;
   return gatewayProvider.languageModel(modelSpec);
 }

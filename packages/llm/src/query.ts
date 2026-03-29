@@ -7,7 +7,7 @@ import { generateText, streamText, type LanguageModelUsage } from "ai";
 import type { ReasoningLevel, ModelConfig } from "@polpo-ai/core";
 
 import { resolveModel, parseModelSpec } from "./model-resolver.js";
-import type { ResolvedModel } from "./model-resolver.js";
+import type { ResolvedModel, ResolveModelOptions } from "./model-resolver.js";
 import { mapReasoningToProviderOptions } from "./provider-factory.js";
 import {
   isProviderInCooldown,
@@ -35,8 +35,9 @@ export async function queryText(
   prompt: string,
   model?: string,
   reasoning?: ReasoningLevel,
+  resolveOpts?: ResolveModelOptions,
 ): Promise<{ text: string; usage?: LanguageModelUsage; model: ResolvedModel }> {
-  const m = resolveModel(model);
+  const m = resolveModel(model, resolveOpts);
   const provider = m.provider;
 
   try {
@@ -80,8 +81,9 @@ export async function queryStream(
   model?: string,
   onProgress?: (text: string) => void,
   reasoning?: ReasoningLevel,
+  resolveOpts?: ResolveModelOptions,
 ): Promise<{ text: string; usage?: LanguageModelUsage; model: ResolvedModel }> {
-  const m = resolveModel(model);
+  const m = resolveModel(model, resolveOpts);
   const provider = m.provider;
 
   try {
@@ -131,6 +133,7 @@ export async function queryStream(
 export async function queryTextWithFallback(
   prompt: string,
   modelConfig: ModelConfig,
+  resolveOpts?: ResolveModelOptions,
 ): Promise<{ text: string; usage?: LanguageModelUsage; model: ResolvedModel; usedSpec: string }> {
   if (!modelConfig.primary) {
     throw new Error("No primary model configured. Run 'polpo setup' or set POLPO_MODEL env var.");
@@ -146,7 +149,7 @@ export async function queryTextWithFallback(
     if (isProviderInCooldown(provider)) continue;
 
     try {
-      const result = await queryText(prompt, spec);
+      const result = await queryText(prompt, spec, undefined, resolveOpts);
       clearProviderCooldown(provider);
       return { ...result, usedSpec: spec };
     } catch (err) {
