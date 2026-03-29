@@ -1,7 +1,6 @@
 import { getPolpoDir } from "../core/constants.js";
 import { OpenAPIHono } from "@hono/zod-openapi";
 import { cors } from "hono/cors";
-import { streamSimple } from "@mariozechner/pi-ai";
 import { buildSystemPrompt } from "../adapters/engine.js";
 import { NodeFileSystem } from "../adapters/node-filesystem.js";
 import type { Orchestrator } from "../core/orchestrator.js";
@@ -105,11 +104,11 @@ export function createApp(orchestrator: Orchestrator, sseBridge: SSEBridge, opts
     getStore: () => o.getStore(),
     emit: (event: string, data: any) => o.emit(event as any, data),
     resolveAgentModel: async (agentConfig: any, reasoning?: string) => {
-      const { resolveModel, resolveApiKeyAsync, buildStreamOpts } = await import("../llm/pi-client.js");
+      const { resolveModel, mapReasoningToProviderOptions } = await import("../llm/pi-client.js");
       const m = resolveModel(agentConfig.model);
-      const apiKey = await resolveApiKeyAsync(m.provider as string);
       const r = agentConfig.reasoning ?? reasoning;
-      return { model: m, streamOpts: buildStreamOpts(apiKey, r, m.maxTokens) };
+      const providerOptions = mapReasoningToProviderOptions(m.provider, r, m.maxTokens);
+      return { model: m, providerOptions };
     },
     buildAgentPrompt: (agentConfig: any) => {
       return buildSystemPrompt(agentConfig, o.getAgentWorkDir(), o.getPolpoDir());
@@ -137,7 +136,6 @@ export function createApp(orchestrator: Orchestrator, sseBridge: SSEBridge, opts
       };
       return { tools, executor };
     },
-    streamLLM: streamSimple as any,
   }), opts?.apiKeys));
 
   // ── Authenticated routes (require initialized orchestrator) ───────────

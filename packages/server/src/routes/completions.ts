@@ -13,12 +13,17 @@
  * - **Agent-direct mode** (`agent` field): The caller talks directly to a
  *   specific agent. The agent uses its own model, system prompt, and coding
  *   tools — bypassing the orchestrator entirely.
+ *
+ * LLM calls use Vercel AI SDK's streamText/generateText directly.
+ * Tools are passed WITHOUT execute functions — execution is manual via
+ * the effectiveToolExecutor callback from deps.
  */
 
 import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
 import { streamSSE } from "hono/streaming";
 import { nanoid } from "nanoid";
 import { agentMemoryScope, compactIfNeeded, type SummarizeFn, type CompactionEvent } from "@polpo-ai/core";
+import { streamText, generateText, jsonSchema, type LanguageModel, type LanguageModelUsage } from "ai";
 
 const MAX_TURNS = 20;
 
@@ -200,7 +205,7 @@ function extractText(content: z.infer<typeof messageSchema>["content"]): string 
     .join("\n");
 }
 
-/** Resolve file content parts → text references. Called before toPiContent to inject attachment paths. */
+/** Resolve file content parts → text references. Called before toAIContent to inject attachment paths. */
 async function resolveFileContentParts(
   content: z.infer<typeof messageSchema>["content"],
   attachmentStore: any,
@@ -236,8 +241,13 @@ async function resolveFileContentParts(
   return resolved;
 }
 
-/** Convert OpenAI-format content to pi-ai UserMessage content. */
-function toPiContent(content: z.infer<typeof messageSchema>["content"]): string | ({ type: "text"; text: string } | { type: "image"; data: string; mimeType: string })[] {
+/**
+ * Convert OpenAI-format content to AI SDK UserContent.
+ *
+ * AI SDK ImagePart: { type: "image", image: DataContent | URL, mediaType?: string }
+ * AI SDK TextPart:  { type: "text", text: string }
+ */
+function toAIContent(content: z.infer<typeof messageSchema>["content"]): string | ({ type: "text"; text: string } | { type: "image"; image: string; mediaType?: string })[] {
   if (typeof content === "string") return content;
 
   // Check if there are any image parts
@@ -247,7 +257,7 @@ function toPiContent(content: z.infer<typeof messageSchema>["content"]): string 
     return content.map((p) => (p as { type: "text"; text: string }).text).join("\n");
   }
 
-  // Mixed content → convert to pi-ai TextContent | ImageContent array
+  // Mixed content → convert to AI SDK TextPart | ImagePart array
   return content.map((p) => {
     if (p.type === "text") {
       return { type: "text" as const, text: p.text };
@@ -256,40 +266,43 @@ function toPiContent(content: z.infer<typeof messageSchema>["content"]): string 
       const url = p.image_url.url;
       const match = url.match(/^data:([^;]+);base64,(.+)$/);
       if (match) {
-        return { type: "image" as const, data: match[2], mimeType: match[1] };
+        return { type: "image" as const, image: match[2], mediaType: match[1] };
       }
-      return { type: "image" as const, data: url, mimeType: "image/png" };
+      return { type: "image" as const, image: url, mediaType: "image/png" };
     }
     // file parts should have been resolved by resolveFileContentParts already
     return { type: "text" as const, text: "" };
   }).filter((p) => p.type !== "text" || p.text !== "");
 }
 
+/**
+ * Convert OpenAI-format messages from the request into AI SDK ModelMessage format.
+ *
+ * - System messages → extracted as extra context (appended to system prompt)
+ * - User messages → { role: "user", content } with AI SDK content parts
+ * - Assistant messages → { role: "assistant", content: string }
+ */
 async function convertMessages(
   messages: z.infer<typeof messageSchema>[],
   attachmentStore?: any,
   sessionId?: string | null,
-): Promise<{ piMessages: any[]; extraSystemParts: string[] }> {
-  const piMessages: any[] = [];
+): Promise<{ aiMessages: any[]; extraSystemParts: string[] }> {
+  const aiMessages: any[] = [];
   const extraSystemParts: string[] = [];
 
   for (const msg of messages) {
     if (msg.role === "system") {
       extraSystemParts.push(extractText(msg.content));
     } else if (msg.role === "user") {
-      // Resolve file content parts → text references (only in the pi-ai message, not persisted)
+      // Resolve file content parts → text references (only in the AI SDK message, not persisted)
       const resolvedContent = await resolveFileContentParts(msg.content, attachmentStore, sessionId ?? null);
-      piMessages.push({ role: "user", content: toPiContent(resolvedContent), timestamp: Date.now() });
+      aiMessages.push({ role: "user", content: toAIContent(resolvedContent) });
     } else if (msg.role === "assistant") {
-      piMessages.push({
-        role: "user",
-        content: `[Previous assistant response]\n${extractText(msg.content)}\n[End previous response]`,
-        timestamp: Date.now(),
-      });
+      aiMessages.push({ role: "assistant", content: extractText(msg.content) });
     }
   }
 
-  return { piMessages, extraSystemParts };
+  return { aiMessages, extraSystemParts };
 }
 
 function sseChunk(
@@ -313,32 +326,25 @@ function sseChunk(
 }
 
 /**
- * Build a SummarizeFn from deps.streamLLM.
- * Collects all text deltas from a streaming LLM call and returns the full text.
+ * Build a SummarizeFn using AI SDK's generateText.
+ * Used by context compaction to summarize conversation history.
  */
 function buildSummarizeFn(
-  deps: CompletionRouteDeps,
-  model: any,
-  streamOpts: any,
+  m: ResolvedModelInfo,
+  providerOptions?: Record<string, any>,
 ): SummarizeFn {
   return async (msgs: any[], prompt: string): Promise<string> => {
-    const piStream = deps.streamLLM(model, {
-      systemPrompt: prompt,
+    const result = await generateText({
+      model: m.aiModel,
+      system: prompt,
       messages: msgs,
-      tools: [],
-    }, streamOpts);
-
-    let text = "";
-    for await (const event of piStream) {
-      if (event.type === "text_delta") {
-        text += event.delta;
-      }
-    }
-    return text.trim();
+      providerOptions,
+    });
+    return result.text.trim();
   };
 }
 
-function completionResponse(id: string, content: string, promptTokens: number, completionTokens: number) {
+function completionResponse(id: string, content: string, usage: LanguageModelUsage) {
   return {
     id,
     object: "chat.completion" as const,
@@ -350,20 +356,49 @@ function completionResponse(id: string, content: string, promptTokens: number, c
       finish_reason: "stop" as const,
     }],
     usage: {
-      prompt_tokens: promptTokens,
-      completion_tokens: completionTokens,
-      total_tokens: promptTokens + completionTokens,
+      prompt_tokens: usage.inputTokens ?? 0,
+      completion_tokens: usage.outputTokens ?? 0,
+      total_tokens: usage.totalTokens ?? 0,
     },
   };
 }
 
+/**
+ * Convert Polpo tools to AI SDK tool format (without execute functions).
+ *
+ * AI SDK tools: Record<string, { description, inputSchema }>
+ * Tools without execute are "manual" — tool calls are returned but not auto-executed.
+ */
+function toAITools(tools: any[]): Record<string, { description?: string; inputSchema: any }> {
+  if (!tools.length) return {};
+  return Object.fromEntries(
+    tools.map(t => [t.name, {
+      description: t.description,
+      inputSchema: jsonSchema(t.parameters),
+    }]),
+  );
+}
+
 // ── Route factory ──────────────────────────────────────────────────────
+
+/**
+ * Minimal model info needed by the completions route.
+ * Matches the shape returned by resolveAgentModel.
+ */
+interface ResolvedModelInfo {
+  aiModel: LanguageModel;
+  provider: string;
+  contextWindow: number;
+  maxTokens: number;
+}
 
 /**
  * Completion route dependencies.
  *
  * The consumer provides LLM resolution and tool creation — this allows
  * the route to run on any runtime (Node.js with full tools, or edge with no tools).
+ *
+ * LLM streaming is handled directly via AI SDK streamText/generateText.
  */
 export interface CompletionRouteDeps {
   getAgents: () => Promise<any[]>;
@@ -373,8 +408,11 @@ export interface CompletionRouteDeps {
   getAttachmentStore: () => any;
   getStore: () => any;
   emit: (event: string, data: any) => void;
-  /** Resolve agent model + streaming options. */
-  resolveAgentModel: (agentConfig: any, settingsReasoning?: string) => Promise<{ model: any; streamOpts: any }>;
+  /** Resolve agent model. Must return an object with aiModel (LanguageModel), provider, contextWindow, maxTokens, and providerOptions. */
+  resolveAgentModel: (agentConfig: any, settingsReasoning?: string) => Promise<{
+    model: ResolvedModelInfo;
+    providerOptions?: Record<string, any>;
+  }>;
   /** Build agent system prompt for conversational mode. */
   buildAgentPrompt: (agentConfig: any) => string | Promise<string>;
   /** Create tools + executor for the agent. Return empty arrays for chat-only. */
@@ -382,13 +420,11 @@ export interface CompletionRouteDeps {
     tools: any[];
     executor: (name: string, args: Record<string, unknown>) => Promise<string>;
   }>;
-  /** LLM streaming function (streamSimple from pi-ai). */
-  streamLLM: (model: any, opts: { systemPrompt: string; messages: any[]; tools: any[] }, streamOpts: any) => any;
   /** Orchestrator mode support (optional — returns 501 if not provided). */
   resolveOrchestratorContext?: () => Promise<{
     systemPrompt: string;
-    model: any;
-    streamOpts: any;
+    model: ResolvedModelInfo;
+    providerOptions?: Record<string, any>;
     tools: any[];
     executor: (name: string, args: Record<string, unknown>) => Promise<string>;
     isInteractive: (name: string) => boolean;
@@ -416,15 +452,15 @@ export function completionRoutes(getDeps: () => CompletionRouteDeps, apiKeys?: s
 
     // ── Resolve effective context (orchestrator vs agent-direct) ──
     let fullSystemPrompt: string;
-    let m: any;
-    let streamOpts: any;
+    let m: ResolvedModelInfo;
+    let providerOpts: Record<string, any> | undefined;
     let effectiveTools: any[];
     let effectiveToolExecutor: (name: string, args: Record<string, unknown>) => Promise<string>;
     let isInteractiveFn: ((name: string) => boolean) | undefined;
 
     const attachmentStore = deps.getAttachmentStore();
     const rawSessionId = c.req.header("x-session-id") ?? null;
-    const { piMessages, extraSystemParts } = await convertMessages(body.messages, attachmentStore, rawSessionId);
+    const { aiMessages, extraSystemParts } = await convertMessages(body.messages, attachmentStore, rawSessionId);
 
     if (agentMode) {
       // ── Agent-direct mode ──
@@ -465,7 +501,7 @@ export function completionRoutes(getDeps: () => CompletionRouteDeps, apiKeys?: s
         return c.json({ error: { message: msg, type: "invalid_request_error" } }, 400 as any);
       }
       m = resolved.model;
-      streamOpts = resolved.streamOpts;
+      providerOpts = resolved.providerOptions;
 
       // Resolve tools via dep
       const { tools, executor } = await deps.resolveAgentTools(agentConfig);
@@ -484,7 +520,7 @@ export function completionRoutes(getDeps: () => CompletionRouteDeps, apiKeys?: s
         ? `${ctx.systemPrompt}\n\n## Additional context from caller\n\n${extraSystemParts.join("\n\n")}`
         : ctx.systemPrompt;
       m = ctx.model;
-      streamOpts = ctx.streamOpts;
+      providerOpts = ctx.providerOptions;
       effectiveTools = ctx.tools;
       effectiveToolExecutor = ctx.executor;
       isInteractiveFn = ctx.isInteractive;
@@ -519,6 +555,9 @@ export function completionRoutes(getDeps: () => CompletionRouteDeps, apiKeys?: s
       c.header("x-session-id", sessionId);
     }
 
+    // Convert Polpo tools to AI SDK format (no execute — manual execution)
+    const aiTools = toAITools(effectiveTools);
+
     if (body.stream) {
       // ── Streaming mode ──
       return streamSSE(c, async (stream) => {
@@ -536,8 +575,9 @@ export function completionRoutes(getDeps: () => CompletionRouteDeps, apiKeys?: s
           assistantMsgId = placeholder.id;
         }
 
-        const messages: any[] = [...piMessages];
+        const messages: any[] = [...aiMessages];
         let finalText = "";
+        let totalUsage: LanguageModelUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 } as LanguageModelUsage;
         const toolCallsAccum: any[] = [];
 
         try {
@@ -555,7 +595,7 @@ export function completionRoutes(getDeps: () => CompletionRouteDeps, apiKeys?: s
                 contextWindow: m.contextWindow ?? 200_000,
                 maxOutputTokens: m.maxTokens ?? 8192,
               },
-              summarize: buildSummarizeFn(deps, m, streamOpts),
+              summarize: buildSummarizeFn(m, providerOpts),
               mode: "chat",
               onCompaction: async (event: CompactionEvent) => {
                 await stream.writeSSE({
@@ -576,36 +616,39 @@ export function completionRoutes(getDeps: () => CompletionRouteDeps, apiKeys?: s
               messages.splice(0, messages.length, ...compactionResult.messages);
             }
 
-            const piStream = deps.streamLLM(m, {
-              systemPrompt: fullSystemPrompt,
+            const result = streamText({
+              model: m.aiModel,
+              system: fullSystemPrompt,
               messages,
-              tools: effectiveTools,
-            }, { ...streamOpts, signal: abortController.signal });
+              tools: aiTools,
+              maxOutputTokens: m.maxTokens,
+              providerOptions: providerOpts,
+              abortSignal: abortController.signal,
+            });
 
             let turnText = "";
             let streamError: string | undefined;
 
-            for await (const event of piStream) {
+            for await (const part of result.fullStream) {
               if (abortController.signal.aborted) break;
-              if (event.type === "thinking_delta") {
-                await stream.writeSSE({ data: sseChunk(completionId, {}, null, { thinking: event.delta }) });
-              } else if (event.type === "text_delta") {
-                turnText += event.delta;
-                await stream.writeSSE({ data: sseChunk(completionId, { content: event.delta }) });
-              } else if (event.type === "toolcall_start") {
+              if (part.type === "reasoning-delta") {
+                await stream.writeSSE({ data: sseChunk(completionId, {}, null, { thinking: part.text }) });
+              } else if (part.type === "text-delta") {
+                turnText += part.text;
+                await stream.writeSSE({ data: sseChunk(completionId, { content: part.text }) });
+              } else if (part.type === "tool-input-start") {
                 // Emit early "preparing" signal — the LLM has started generating a tool call
                 // but arguments are not yet complete. Lets the UI show immediate feedback.
-                const block = event.partial.content[event.contentIndex] as
-                  | { type: "toolCall"; id: string; name: string } | undefined;
-                if (block?.type === "toolCall") {
-                  await stream.writeSSE({
-                    data: sseChunk(completionId, {}, null, {
-                      tool_call: { id: block.id, name: block.name, state: "preparing" },
-                    }),
-                  });
+                await stream.writeSSE({
+                  data: sseChunk(completionId, {}, null, {
+                    tool_call: { id: part.id, name: part.toolName, state: "preparing" },
+                  }),
+                });
+              } else if (part.type === "finish") {
+                // Capture error from finish reason if applicable
+                if (part.finishReason === "error") {
+                  streamError = "Model returned an error";
                 }
-              } else if (event.type === "error") {
-                streamError = (event as any).error?.errorMessage ?? "Model returned an error";
               }
             }
 
@@ -621,35 +664,58 @@ export function completionRoutes(getDeps: () => CompletionRouteDeps, apiKeys?: s
               break;
             }
 
-            const response = await piStream.result();
-            messages.push(response);
-            finalText += turnText;
+            // Get tool calls and usage after stream completes
+            const toolCalls = await result.toolCalls;
+            const usage = await result.usage;
+            totalUsage = {
+              inputTokens: (totalUsage.inputTokens ?? 0) + (usage.inputTokens ?? 0),
+              outputTokens: (totalUsage.outputTokens ?? 0) + (usage.outputTokens ?? 0),
+              totalTokens: (totalUsage.totalTokens ?? 0) + (usage.totalTokens ?? 0),
+            } as LanguageModelUsage;
 
-            const toolCalls = response.content.filter(
-              (cc: any): cc is { type: "toolCall"; id: string; name: string; arguments: Record<string, any> } =>
-                cc.type === "toolCall"
-            );
+            // Push assistant response message into conversation history
+            // AI SDK format: assistant message with text + tool calls
+            const assistantContent: any[] = [];
+            if (turnText) {
+              assistantContent.push({ type: "text", text: turnText });
+            }
+            for (const tc of toolCalls) {
+              assistantContent.push({
+                type: "tool-call",
+                toolCallId: tc.toolCallId,
+                toolName: tc.toolName,
+                input: tc.input,
+              });
+            }
+            messages.push({
+              role: "assistant",
+              content: assistantContent.length === 1 && assistantContent[0].type === "text"
+                ? turnText
+                : assistantContent,
+            });
+
+            finalText += turnText;
 
             if (toolCalls.length === 0) break;
 
             // Check for interactive tools — only in orchestrator mode (agents don't have interactive tools)
-            const interactiveCall = agentMode ? undefined : toolCalls.find((tc: any) => isInteractiveFn?.(tc.name));
+            const interactiveCall = agentMode ? undefined : toolCalls.find((tc: any) => isInteractiveFn?.(tc.toolName));
             if (interactiveCall) {
               // Persist the interactive tool call so it survives session reload
               toolCallsAccum.push({
-                id: interactiveCall.id,
-                name: interactiveCall.name,
-                arguments: interactiveCall.arguments,
+                id: interactiveCall.toolCallId,
+                name: interactiveCall.toolName,
+                arguments: interactiveCall.input,
                 state: "interrupted",
               });
 
-              if (interactiveCall.name === "ask_user") {
-                const questions = (interactiveCall.arguments as any)?.questions as any[] ?? [];
+              if (interactiveCall.toolName === "ask_user") {
+                const questions = (interactiveCall.input as any)?.questions as any[] ?? [];
                 await stream.writeSSE({
                   data: sseChunk(completionId, {}, "ask_user", { ask_user: { questions } }),
                 });
-              } else if (interactiveCall.name === "create_mission") {
-                const args = interactiveCall.arguments as Record<string, unknown>;
+              } else if (interactiveCall.toolName === "create_mission") {
+                const args = interactiveCall.input as Record<string, unknown>;
                 let missionData: unknown;
                 try { missionData = JSON.parse(args.data as string); } catch { missionData = args.data; }
                 await stream.writeSSE({
@@ -661,8 +727,8 @@ export function completionRoutes(getDeps: () => CompletionRouteDeps, apiKeys?: s
                     },
                   }),
                 });
-              } else if (interactiveCall.name === "set_vault_entry") {
-                const args = interactiveCall.arguments as Record<string, unknown>;
+              } else if (interactiveCall.toolName === "set_vault_entry") {
+                const args = interactiveCall.input as Record<string, unknown>;
                 await stream.writeSSE({
                   data: sseChunk(completionId, {}, "vault_preview", {
                     vault_preview: {
@@ -674,8 +740,8 @@ export function completionRoutes(getDeps: () => CompletionRouteDeps, apiKeys?: s
                     },
                   }),
                 });
-              } else if (interactiveCall.name === "open_file") {
-                const args = interactiveCall.arguments as Record<string, unknown>;
+              } else if (interactiveCall.toolName === "open_file") {
+                const args = interactiveCall.input as Record<string, unknown>;
                 await stream.writeSSE({
                   data: sseChunk(completionId, {}, "open_file", {
                     open_file: {
@@ -683,8 +749,8 @@ export function completionRoutes(getDeps: () => CompletionRouteDeps, apiKeys?: s
                     },
                   }),
                 });
-              } else if (interactiveCall.name === "navigate_to") {
-                const args = interactiveCall.arguments as Record<string, unknown>;
+              } else if (interactiveCall.toolName === "navigate_to") {
+                const args = interactiveCall.input as Record<string, unknown>;
                 await stream.writeSSE({
                   data: sseChunk(completionId, {}, "navigate_to", {
                     navigate_to: {
@@ -696,8 +762,8 @@ export function completionRoutes(getDeps: () => CompletionRouteDeps, apiKeys?: s
                     },
                   }),
                 });
-              } else if (interactiveCall.name === "open_tab") {
-                const args = interactiveCall.arguments as Record<string, unknown>;
+              } else if (interactiveCall.toolName === "open_tab") {
+                const args = interactiveCall.input as Record<string, unknown>;
                 await stream.writeSSE({
                   data: sseChunk(completionId, {}, "open_tab", {
                     open_tab: {
@@ -715,22 +781,24 @@ export function completionRoutes(getDeps: () => CompletionRouteDeps, apiKeys?: s
               // Stop executing tools if client disconnected
               if (abortController.signal.aborted) break;
 
+              const callArgs = call.input as Record<string, unknown>;
+
               // Notify client that a tool is being called
               await stream.writeSSE({
                 data: sseChunk(completionId, {}, null, {
-                  tool_call: { id: call.id, name: call.name, arguments: call.arguments, state: "calling" },
+                  tool_call: { id: call.toolCallId, name: call.toolName, arguments: callArgs, state: "calling" },
                 }),
               });
 
-              const result = await effectiveToolExecutor(call.name, call.arguments);
+              const result = await effectiveToolExecutor(call.toolName, callArgs);
               const isError = result.startsWith("Error:");
-              emitFileChanged(call.name, call.arguments, result, deps.emit);
+              emitFileChanged(call.toolName, callArgs, result, deps.emit);
 
               // Accumulate for persistence
               toolCallsAccum.push({
-                id: call.id,
-                name: call.name,
-                arguments: call.arguments,
+                id: call.toolCallId,
+                name: call.toolName,
+                arguments: callArgs,
                 result,
                 state: isError ? "error" : "completed",
               });
@@ -739,18 +807,22 @@ export function completionRoutes(getDeps: () => CompletionRouteDeps, apiKeys?: s
               if (!abortController.signal.aborted) {
                 await stream.writeSSE({
                   data: sseChunk(completionId, {}, null, {
-                    tool_call: { id: call.id, name: call.name, result, state: isError ? "error" : "completed" },
+                    tool_call: { id: call.toolCallId, name: call.toolName, result, state: isError ? "error" : "completed" },
                   }),
                 });
               }
 
+              // Push tool result message in AI SDK format
               messages.push({
-                role: "toolResult",
-                toolCallId: call.id,
-                toolName: call.name,
-                content: [{ type: "text", text: result }],
-                isError,
-                timestamp: Date.now(),
+                role: "tool",
+                content: [{
+                  type: "tool-result",
+                  toolCallId: call.toolCallId,
+                  toolName: call.toolName,
+                  output: isError
+                    ? { type: "error-text" as const, value: result }
+                    : { type: "text" as const, value: result },
+                }],
               });
             }
           }
@@ -789,8 +861,9 @@ export function completionRoutes(getDeps: () => CompletionRouteDeps, apiKeys?: s
         assistantMsgId = placeholder.id;
       }
 
-      const messages: any[] = [...piMessages];
+      const messages: any[] = [...aiMessages];
       let finalText = "";
+      let totalUsage: LanguageModelUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 } as LanguageModelUsage;
       const toolCallsAccum: any[] = [];
 
       try {
@@ -805,7 +878,7 @@ export function completionRoutes(getDeps: () => CompletionRouteDeps, apiKeys?: s
               contextWindow: m.contextWindow ?? 200_000,
               maxOutputTokens: m.maxTokens ?? 8192,
             },
-            summarize: buildSummarizeFn(deps, m, streamOpts),
+            summarize: buildSummarizeFn(m, providerOpts),
             mode: "chat",
             // Non-streaming: no SSE to write to, compaction is silent
           });
@@ -813,45 +886,56 @@ export function completionRoutes(getDeps: () => CompletionRouteDeps, apiKeys?: s
             messages.splice(0, messages.length, ...compactionResult.messages);
           }
 
-          const piStream = deps.streamLLM(m, {
-            systemPrompt: fullSystemPrompt,
+          const genResult = await generateText({
+            model: m.aiModel,
+            system: fullSystemPrompt,
             messages,
-            tools: effectiveTools,
-          }, streamOpts);
+            tools: aiTools,
+            maxOutputTokens: m.maxTokens,
+            providerOptions: providerOpts,
+          });
 
-          let turnText = "";
-          let streamError: string | undefined;
-          for await (const event of piStream) {
-            if (event.type === "text_delta") {
-              turnText += event.delta;
-            } else if (event.type === "error") {
-              streamError = (event as any).error?.errorMessage ?? "Model returned an error";
-            }
+          const turnText = genResult.text;
+          const usage = genResult.usage;
+          totalUsage = {
+            inputTokens: (totalUsage.inputTokens ?? 0) + (usage.inputTokens ?? 0),
+            outputTokens: (totalUsage.outputTokens ?? 0) + (usage.outputTokens ?? 0),
+            totalTokens: (totalUsage.totalTokens ?? 0) + (usage.totalTokens ?? 0),
+          } as LanguageModelUsage;
+
+          // Push assistant response message into conversation history
+          const assistantContent: any[] = [];
+          if (turnText) {
+            assistantContent.push({ type: "text", text: turnText });
           }
-
-          if (streamError) {
-            return c.json({ error: { message: streamError, type: "upstream_error" } }, 502 as any);
+          for (const tc of genResult.toolCalls) {
+            assistantContent.push({
+              type: "tool-call",
+              toolCallId: tc.toolCallId,
+              toolName: tc.toolName,
+              input: tc.input,
+            });
           }
+          messages.push({
+            role: "assistant",
+            content: assistantContent.length === 1 && assistantContent[0].type === "text"
+              ? turnText
+              : assistantContent,
+          });
 
-          const response = await piStream.result();
-          messages.push(response);
           finalText += turnText;
 
-          const toolCalls = response.content.filter(
-            (cc: any): cc is { type: "toolCall"; id: string; name: string; arguments: Record<string, any> } =>
-              cc.type === "toolCall"
-          );
-
+          const toolCalls = genResult.toolCalls;
           if (toolCalls.length === 0) break;
 
           // Check for interactive tools — only in orchestrator mode (agents don't have interactive tools)
-          const interactiveCall = agentMode ? undefined : toolCalls.find((tc: any) => isInteractiveFn?.(tc.name));
+          const interactiveCall = agentMode ? undefined : toolCalls.find((tc: any) => isInteractiveFn?.(tc.toolName));
           if (interactiveCall) {
             // Persist the interactive tool call so it survives session reload
             toolCallsAccum.push({
-              id: interactiveCall.id,
-              name: interactiveCall.name,
-              arguments: interactiveCall.arguments,
+              id: interactiveCall.toolCallId,
+              name: interactiveCall.toolName,
+              arguments: interactiveCall.input,
               state: "interrupted",
             });
 
@@ -861,14 +945,14 @@ export function completionRoutes(getDeps: () => CompletionRouteDeps, apiKeys?: s
               created: Math.floor(Date.now() / 1000),
               model: "polpo" as const,
               usage: {
-                prompt_tokens: Math.ceil(fullSystemPrompt.length / 4),
-                completion_tokens: Math.ceil(finalText.length / 4),
-                total_tokens: Math.ceil(fullSystemPrompt.length / 4) + Math.ceil(finalText.length / 4),
+                prompt_tokens: totalUsage.inputTokens ?? 0,
+                completion_tokens: totalUsage.outputTokens ?? 0,
+                total_tokens: totalUsage.totalTokens ?? 0,
               },
             };
 
-            if (interactiveCall.name === "ask_user") {
-              const questions = (interactiveCall.arguments as any)?.questions as any[] ?? [];
+            if (interactiveCall.toolName === "ask_user") {
+              const questions = (interactiveCall.input as any)?.questions as any[] ?? [];
               return c.json({
                 ...baseResponse,
                 choices: [{
@@ -880,8 +964,8 @@ export function completionRoutes(getDeps: () => CompletionRouteDeps, apiKeys?: s
               });
             }
 
-            if (interactiveCall.name === "create_mission") {
-              const args = interactiveCall.arguments as Record<string, unknown>;
+            if (interactiveCall.toolName === "create_mission") {
+              const args = interactiveCall.input as Record<string, unknown>;
               let missionData: unknown;
               try { missionData = JSON.parse(args.data as string); } catch { missionData = args.data; }
               return c.json({
@@ -899,8 +983,8 @@ export function completionRoutes(getDeps: () => CompletionRouteDeps, apiKeys?: s
               });
             }
 
-            if (interactiveCall.name === "set_vault_entry") {
-              const args = interactiveCall.arguments as Record<string, unknown>;
+            if (interactiveCall.toolName === "set_vault_entry") {
+              const args = interactiveCall.input as Record<string, unknown>;
               return c.json({
                 ...baseResponse,
                 choices: [{
@@ -918,8 +1002,8 @@ export function completionRoutes(getDeps: () => CompletionRouteDeps, apiKeys?: s
               });
             }
 
-            if (interactiveCall.name === "open_file") {
-              const args = interactiveCall.arguments as Record<string, unknown>;
+            if (interactiveCall.toolName === "open_file") {
+              const args = interactiveCall.input as Record<string, unknown>;
               return c.json({
                 ...baseResponse,
                 choices: [{
@@ -933,8 +1017,8 @@ export function completionRoutes(getDeps: () => CompletionRouteDeps, apiKeys?: s
               });
             }
 
-            if (interactiveCall.name === "navigate_to") {
-              const args = interactiveCall.arguments as Record<string, unknown>;
+            if (interactiveCall.toolName === "navigate_to") {
+              const args = interactiveCall.input as Record<string, unknown>;
               return c.json({
                 ...baseResponse,
                 choices: [{
@@ -952,8 +1036,8 @@ export function completionRoutes(getDeps: () => CompletionRouteDeps, apiKeys?: s
               });
             }
 
-            if (interactiveCall.name === "open_tab") {
-              const args = interactiveCall.arguments as Record<string, unknown>;
+            if (interactiveCall.toolName === "open_tab") {
+              const args = interactiveCall.input as Record<string, unknown>;
               return c.json({
                 ...baseResponse,
                 choices: [{
@@ -971,33 +1055,36 @@ export function completionRoutes(getDeps: () => CompletionRouteDeps, apiKeys?: s
           }
 
           for (const call of toolCalls) {
-            const result = await effectiveToolExecutor(call.name, call.arguments);
+            const callArgs = call.input as Record<string, unknown>;
+            const result = await effectiveToolExecutor(call.toolName, callArgs);
             const isError = result.startsWith("Error:");
-            emitFileChanged(call.name, call.arguments, result, deps.emit);
+            emitFileChanged(call.toolName, callArgs, result, deps.emit);
 
             // Accumulate for persistence
             toolCallsAccum.push({
-              id: call.id,
-              name: call.name,
-              arguments: call.arguments,
+              id: call.toolCallId,
+              name: call.toolName,
+              arguments: callArgs,
               result,
               state: isError ? "error" : "completed",
             });
 
+            // Push tool result message in AI SDK format
             messages.push({
-              role: "toolResult",
-              toolCallId: call.id,
-              toolName: call.name,
-              content: [{ type: "text", text: result }],
-              isError,
-              timestamp: Date.now(),
+              role: "tool",
+              content: [{
+                type: "tool-result",
+                toolCallId: call.toolCallId,
+                toolName: call.toolName,
+                output: isError
+                  ? { type: "error-text" as const, value: result }
+                  : { type: "text" as const, value: result },
+              }],
             });
           }
         }
 
-        const promptTokens = Math.ceil(fullSystemPrompt.length / 4);
-        const completionTokens = Math.ceil(finalText.length / 4);
-        return c.json(completionResponse(completionId, finalText, promptTokens, completionTokens));
+        return c.json(completionResponse(completionId, finalText, totalUsage));
       } finally {
         // Always persist the final text + tool calls — even on early return (ask_user) or error
         // SECURITY: Redact vault credentials before persisting to SQLite
