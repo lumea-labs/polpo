@@ -7,7 +7,7 @@
  */
 
 import { Type } from "@sinclair/typebox";
-import type { AgentTool } from "@mariozechner/pi-agent-core";
+import type { PolpoTool as AgentTool } from "@polpo-ai/core";
 import type { WhatsAppStore } from "./types.js";
 
 // ─── Schemas ──────────────────────────────────

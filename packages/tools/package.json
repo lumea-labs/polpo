@@ -21,7 +21,6 @@
   ],
   "dependencies": {
     "@polpo-ai/core": "workspace:*",
-    "@mariozechner/pi-agent-core": "^0.57.1",
     "@sinclair/typebox": "^0.34.0",
     "nanoid": "^5.0.0"
   },

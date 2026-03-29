@@ -10,7 +10,7 @@
  */
 
 import { Type } from "@sinclair/typebox";
-import type { AgentTool } from "@mariozechner/pi-agent-core";
+import type { PolpoTool as AgentTool } from "@polpo-ai/core";
 import type { ResolvedVault } from "../vault/index.js";
 
 const EXA_BASE = "https://api.exa.ai";

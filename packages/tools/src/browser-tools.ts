@@ -17,7 +17,7 @@
 import { execSync, spawn as spawnChild } from "node:child_process";
 import { resolve } from "node:path";
 import { Type } from "@sinclair/typebox";
-import type { AgentTool, AgentToolResult } from "@mariozechner/pi-agent-core";
+import type { PolpoTool as AgentTool, ToolResult as AgentToolResult } from "@polpo-ai/core";
 
 const MAX_OUTPUT_BYTES = 50_000;
 const DEFAULT_TIMEOUT = 30_000;

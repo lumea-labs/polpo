@@ -1,6 +1,9 @@
 // ── Types ────────────────────────────────────────────────────────────────
 export * from "./types.js";
 
+// ── Tool Types (Polpo-owned, decoupled from pi-agent-core) ─────────────
+export type { PolpoTool, ToolResult, ToolUpdateCallback } from "./tool-types.js";
+
 // ── Events (pure type definitions only, TypedEmitter lives in shell) ─────
 export * from "./events.js";
 

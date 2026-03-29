@@ -12,7 +12,7 @@ import type { Shell } from "@polpo-ai/core/shell";
 import { NodeFileSystem } from "../adapters/node-filesystem.js";
 import { NodeShell } from "../adapters/node-shell.js";
 import { Type } from "@sinclair/typebox";
-import type { AgentTool } from "@mariozechner/pi-agent-core";
+import type { PolpoTool as AgentTool } from "@polpo-ai/core";
 import { resolveAllowedPaths, assertPathAllowed } from "./path-sandbox.js";
 import { createOutcomeTools as createOutcomeToolsCore } from "./outcome-tools.js";
 import { createHttpTools as createHttpToolsCore, ALL_HTTP_TOOL_NAMES as CORE_HTTP_TOOL_NAMES } from "./http-tools.js";

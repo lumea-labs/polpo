@@ -15,7 +15,7 @@
  */
 
 import { Type } from "@sinclair/typebox";
-import type { AgentTool } from "@mariozechner/pi-agent-core";
+import type { PolpoTool as AgentTool } from "@polpo-ai/core";
 import type { ResolvedVault } from "./types.js";
 
 const VAPI_BASE = "https://api.vapi.ai";
