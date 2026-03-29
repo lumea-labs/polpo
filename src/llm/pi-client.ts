@@ -215,7 +215,7 @@ export function parseModelSpec(spec?: string): { provider: string; modelId: stri
  * - OpenAI: reasoningEffort
  * - Google: thinkingConfig.thinkingBudget
  */
-function mapReasoningToProviderOptions(
+export function mapReasoningToProviderOptions(
   provider: string,
   level: ReasoningLevel | undefined,
   maxTokens: number,
