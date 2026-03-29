@@ -71,8 +71,6 @@
     "@ai-sdk/openai": "^3.0.48",
     "@hono/node-server": "^1.19.9",
     "@hono/zod-openapi": "^1.2.2",
-    "@mariozechner/pi-agent-core": "^0.62.0",
-    "@mariozechner/pi-ai": "^0.62.0",
     "@polpo-ai/core": "workspace:*",
     "@polpo-ai/server": "workspace:*",
     "@polpo-ai/vault-crypto": "workspace:*",

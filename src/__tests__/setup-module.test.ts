@@ -76,69 +76,6 @@ describe("env-persistence", () => {
   });
 });
 
-// ── providers ──────────────────────────────────────────────────────
-
-// ── detectProviders ────────────────────────────────────────────────
-
-describe("detectProviders", () => {
-  const originalEnv = { ...process.env };
-
-  afterEach(() => {
-    // Restore env
-    for (const key of Object.keys(process.env)) {
-      if (!(key in originalEnv)) delete process.env[key];
-    }
-    for (const [key, val] of Object.entries(originalEnv)) {
-      process.env[key] = val;
-    }
-  });
-
-  it("detects provider from env var", async () => {
-    const { detectProviders } = await import("../setup/providers.js");
-    process.env.GROQ_API_KEY = "test-groq-key";
-
-    const providers = detectProviders();
-    const groq = providers.find((p) => p.name === "groq");
-
-    expect(groq).toBeDefined();
-    expect(groq!.hasKey).toBe(true);
-    expect(groq!.source).toBe("env");
-    expect(groq!.envVar).toBe("GROQ_API_KEY");
-  });
-
-  it("marks providers without keys as source: none", async () => {
-    const { detectProviders } = await import("../setup/providers.js");
-    delete process.env.CEREBRAS_API_KEY;
-
-    const providers = detectProviders();
-    const cerebras = providers.find((p) => p.name === "cerebras");
-
-    expect(cerebras).toBeDefined();
-    expect(cerebras!.hasKey).toBe(false);
-    expect(cerebras!.source).toBe("none");
-  });
-
-  it("returns all catalog providers without deduplication", async () => {
-    const { detectProviders } = await import("../setup/providers.js");
-
-    const providers = detectProviders();
-    const names = providers.map((p) => p.name);
-
-    // Both openai and openai-codex should appear (no deduplication)
-    expect(names).toContain("openai");
-    expect(names).toContain("openai-codex");
-
-    // All google variants should appear
-    expect(names).toContain("google");
-    expect(names).toContain("google-gemini-cli");
-    expect(names).toContain("google-antigravity");
-
-    // Standard providers
-    expect(names).toContain("anthropic");
-    expect(names).toContain("groq");
-    expect(names).toContain("mistral");
-  });
-});
 
 // ── hasOAuthProfilesForProvider (OAuth removed — always returns false) ──
 
@@ -150,34 +87,6 @@ describe("hasOAuthProfilesForProvider", () => {
   });
 });
 
-// ── detectProviders with OAuth profiles ────────────────────────────
-
-// ── detectProviders (OAuth removed — env-only detection) ──────────
-
-describe("detectProviders without OAuth", () => {
-  const originalEnv = { ...process.env };
-
-  afterEach(() => {
-    for (const key of Object.keys(process.env)) {
-      if (!(key in originalEnv)) delete process.env[key];
-    }
-    for (const [key, val] of Object.entries(originalEnv)) {
-      process.env[key] = val;
-    }
-  });
-
-  it("detects provider from env key", async () => {
-    process.env.ANTHROPIC_API_KEY = "sk-ant-test";
-
-    const { detectProviders } = await import("../setup/providers.js");
-    const providers = detectProviders();
-    const anthropic = providers.find((p) => p.name === "anthropic");
-
-    expect(anthropic).toBeDefined();
-    expect(anthropic!.hasKey).toBe(true);
-    expect(anthropic!.source).toBe("env");
-  });
-});
 
 // ── auth-options (OAuth removed — only manual API key) ──────────
 
