@@ -9,8 +9,6 @@
 import { join, dirname, resolve, relative } from "node:path";
 import type { FileSystem } from "@polpo-ai/core/filesystem";
 import type { Shell } from "@polpo-ai/core/shell";
-import { NodeFileSystem } from "../adapters/node-filesystem.js";
-import { NodeShell } from "../adapters/node-shell.js";
 import { Type } from "@sinclair/typebox";
 import type { PolpoTool as AgentTool } from "@polpo-ai/core";
 import { resolveAllowedPaths, assertPathAllowed } from "./path-sandbox.js";
@@ -335,8 +333,11 @@ const ALL_TOOL_NAMES: SystemToolName[] = ["read", "write", "edit", "bash", "glob
  * - vault_get, vault_list (when vault is provided)
  */
 export function createSystemTools(cwd: string, allowedTools?: string[], allowedPaths?: string[], outputDir?: string, vault?: ResolvedVault, fs?: FileSystem, shell?: Shell): AgentTool<any>[] {
-  const _fs = fs ?? new NodeFileSystem();
-  const _shell = shell ?? new NodeShell();
+  if (!fs || !shell) {
+    throw new Error("createSystemTools requires fs and shell arguments. Use NodeFileSystem/NodeShell for Node.js or SandboxProxyFS/SandboxProxyShell for cloud.");
+  }
+  const _fs = fs;
+  const _shell = shell;
   const sandbox = resolveAllowedPaths(cwd, allowedPaths);
 
   const factories: Record<SystemToolName, () => AgentTool<any>> = {

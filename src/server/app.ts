@@ -2,7 +2,7 @@ import { getPolpoDir } from "../core/constants.js";
 import { OpenAPIHono } from "@hono/zod-openapi";
 import { cors } from "hono/cors";
 import { buildSystemPrompt } from "../adapters/engine.js";
-import { NodeFileSystem } from "../adapters/node-filesystem.js";
+// NodeFileSystem no longer instantiated here — use orchestrator's getFs() instead
 import type { Orchestrator } from "../core/orchestrator.js";
 import type { SSEBridge } from "./sse-bridge.js";
 import { authMiddleware } from "./middleware/auth.js";
@@ -120,7 +120,7 @@ export function createApp(orchestrator: Orchestrator, sseBridge: SSEBridge, opts
       const { nanoid } = await import("nanoid");
       const vaultEntries = await o.getVaultStore()?.getAllForAgent(agentConfig.name);
       const vault = resolveAgentVault(vaultEntries);
-      const tools: any[] = createSystemTools(o.getAgentWorkDir(), agentConfig.allowedTools, undefined, undefined, vault);
+      const tools: any[] = createSystemTools(o.getAgentWorkDir(), agentConfig.allowedTools, undefined, undefined, vault, o.getFs(), o.getShell());
       const memoryStore = o.getMemoryStore();
       if (memoryStore) tools.push(...createMemoryTools(memoryStore, agentConfig.name));
       const toolMap = new Map(tools.map((t: any) => [t.name, t]));
@@ -220,7 +220,7 @@ export function createApp(orchestrator: Orchestrator, sseBridge: SSEBridge, opts
     taskStore: o.getStore(),
     runStore: o.getRunStore(),
     polpoDir: o.getPolpoDir(),
-    fs: new NodeFileSystem(),
+    fs: o.getFs(),
   })));
 
   authed.route("/events", eventRoutes(sseBridge));
@@ -284,13 +284,13 @@ export function createApp(orchestrator: Orchestrator, sseBridge: SSEBridge, opts
     polpoDir: o.getPolpoDir(),
     workDir: o.getWorkDir(),
     agentWorkDir: o.getAgentWorkDir(),
-    fs: new NodeFileSystem(),
+    fs: o.getFs(),
     emit: (event: string, data: any) => o.emit(event as any, data),
   })));
 
   authed.route("/attachments", attachmentRoutes(() => ({
     attachmentStore: new FileAttachmentStore(o.getPolpoDir()),
-    fs: new NodeFileSystem(),
+    fs: o.getFs(),
     workDir: o.getWorkDir(),
   })));
 

@@ -22,6 +22,8 @@ import type { RunnerConfig, TaskResult } from "./types.js";
 import { sanitizeTranscriptEntry } from "../server/security.js";
 import { EncryptedVaultStore } from "../vault/encrypted-store.js";
 import type { VaultStore } from "./vault-store.js";
+import { NodeFileSystem } from "../adapters/node-filesystem.js";
+import { NodeShell } from "../adapters/node-shell.js";
 
 const ACTIVITY_POLL_MS = 1500;
 
@@ -193,6 +195,9 @@ async function main(): Promise<void> {
       emailAllowedDomains: config.emailAllowedDomains,
       reasoning: config.reasoning,
       vaultStore,
+      // Runner is a subprocess — creates its own fs/shell instances
+      fs: new NodeFileSystem(),
+      shell: new NodeShell(),
     };
     handle = spawnEngine(config.agent, config.task, config.cwd, spawnCtx);
     // Wire transcript persistence — every agent message gets written to the run log

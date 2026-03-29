@@ -63,6 +63,10 @@ import type { PlaybookStore } from "./playbook-store.js";
 import { FilePlaybookStore } from "../stores/file-playbook-store.js";
 import { NodeSpawner } from "../adapters/node-spawner.js";
 import type { Spawner } from "./spawner.js";
+import { NodeFileSystem } from "../adapters/node-filesystem.js";
+import { NodeShell } from "../adapters/node-shell.js";
+import type { FileSystem } from "@polpo-ai/core/filesystem";
+import type { Shell } from "@polpo-ai/core/shell";
 
 // Re-export for backward compatibility (consumed by core/index.ts and external modules)
 export { buildFixPrompt, buildRetryPrompt };
@@ -106,6 +110,8 @@ export class Orchestrator extends TypedEmitter {
   private configReloadTimer?: ReturnType<typeof setTimeout>;
   private vaultStore?: VaultStore;
   private playbookStore!: PlaybookStore;
+  private fs: FileSystem;
+  private shell: Shell;
 
   // Managers
   private agentMgr!: AgentManager;
@@ -139,6 +145,10 @@ export class Orchestrator extends TypedEmitter {
 
   constructor(workDirOrOptions?: string | OrchestratorOptions) {
     super();
+    // Centralized fs/shell creation — the ONE place that creates Node.js defaults.
+    // Everything downstream receives these via getters or SpawnContext.
+    this.fs = new NodeFileSystem();
+    this.shell = new NodeShell();
     if (typeof workDirOrOptions === "string" || workDirOrOptions === undefined) {
       const workDir = workDirOrOptions ?? ".";
       this.workDir = resolve(workDir);
@@ -673,6 +683,8 @@ export class Orchestrator extends TypedEmitter {
   getVaultStore(): VaultStore | undefined { return this.vaultStore; }
   getPlaybookStore(): PlaybookStore { return this.playbookStore; }
   getTeamStore(): TeamStore { return this.teamStore; }
+  getFs(): FileSystem { return this.fs; }
+  getShell(): Shell { return this.shell; }
   getAgentStore(): AgentStore { return this.agentStore; }
 
   /**

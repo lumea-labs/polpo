@@ -3,6 +3,11 @@ import { mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { resolveAllowedPaths, isPathAllowed, assertPathAllowed } from "../tools/path-sandbox.js";
 import { createSystemTools } from "../tools/system-tools.js";
+import { NodeFileSystem } from "../adapters/node-filesystem.js";
+import { NodeShell } from "../adapters/node-shell.js";
+
+const fs = new NodeFileSystem();
+const shell = new NodeShell();
 
 // ── resolveAllowedPaths ──
 
@@ -118,14 +123,14 @@ describe("createSystemTools with allowedPaths", () => {
   });
 
   it("read tool allows files inside sandbox", async () => {
-    const tools = createSystemTools(tmpDir, undefined, ["src"]);
+    const tools = createSystemTools(tmpDir, undefined, ["src"], undefined, undefined, fs, shell);
     const readTool = tools.find(t => t.name === "read")!;
     const result = await readTool.execute("tc1", { path: "src/hello.ts" });
     expect((result.content[0] as any).text).toContain("export const x = 1");
   });
 
   it("read tool rejects files outside sandbox", async () => {
-    const tools = createSystemTools(tmpDir, undefined, ["src"]);
+    const tools = createSystemTools(tmpDir, undefined, ["src"], undefined, undefined, fs, shell);
     const readTool = tools.find(t => t.name === "read")!;
     await expect(readTool.execute("tc2", { path: "outside/secret.ts" })).rejects.toThrow(
       /\[sandbox\] read: access denied/,
@@ -133,7 +138,7 @@ describe("createSystemTools with allowedPaths", () => {
   });
 
   it("read tool rejects absolute escape paths", async () => {
-    const tools = createSystemTools(tmpDir, undefined, ["src"]);
+    const tools = createSystemTools(tmpDir, undefined, ["src"], undefined, undefined, fs, shell);
     const readTool = tools.find(t => t.name === "read")!;
     await expect(readTool.execute("tc3", { path: "/etc/hostname" })).rejects.toThrow(
       /\[sandbox\] read: access denied/,
@@ -141,7 +146,7 @@ describe("createSystemTools with allowedPaths", () => {
   });
 
   it("read tool rejects parent traversal", async () => {
-    const tools = createSystemTools(tmpDir, undefined, ["src"]);
+    const tools = createSystemTools(tmpDir, undefined, ["src"], undefined, undefined, fs, shell);
     const readTool = tools.find(t => t.name === "read")!;
     await expect(readTool.execute("tc4", { path: "src/../outside/secret.ts" })).rejects.toThrow(
       /\[sandbox\] read: access denied/,
@@ -149,7 +154,7 @@ describe("createSystemTools with allowedPaths", () => {
   });
 
   it("write tool rejects writes outside sandbox", async () => {
-    const tools = createSystemTools(tmpDir, undefined, ["src"]);
+    const tools = createSystemTools(tmpDir, undefined, ["src"], undefined, undefined, fs, shell);
     const writeTool = tools.find(t => t.name === "write")!;
     await expect(writeTool.execute("tc5", { path: "outside/evil.ts", content: "hacked" })).rejects.toThrow(
       /\[sandbox\] write: access denied/,
@@ -157,7 +162,7 @@ describe("createSystemTools with allowedPaths", () => {
   });
 
   it("edit tool rejects edits outside sandbox", async () => {
-    const tools = createSystemTools(tmpDir, undefined, ["src"]);
+    const tools = createSystemTools(tmpDir, undefined, ["src"], undefined, undefined, fs, shell);
     const editTool = tools.find(t => t.name === "edit")!;
     await expect(
       editTool.execute("tc6", { path: "outside/secret.ts", old_text: "password", new_text: "hacked" }),
@@ -165,7 +170,7 @@ describe("createSystemTools with allowedPaths", () => {
   });
 
   it("ls tool rejects listing outside sandbox", async () => {
-    const tools = createSystemTools(tmpDir, undefined, ["src"]);
+    const tools = createSystemTools(tmpDir, undefined, ["src"], undefined, undefined, fs, shell);
     const lsTool = tools.find(t => t.name === "ls")!;
     await expect(lsTool.execute("tc7", { path: "outside" })).rejects.toThrow(
       /\[sandbox\] ls: access denied/,
@@ -173,7 +178,7 @@ describe("createSystemTools with allowedPaths", () => {
   });
 
   it("glob tool rejects searching outside sandbox", async () => {
-    const tools = createSystemTools(tmpDir, undefined, ["src"]);
+    const tools = createSystemTools(tmpDir, undefined, ["src"], undefined, undefined, fs, shell);
     const globTool = tools.find(t => t.name === "glob")!;
     await expect(globTool.execute("tc8", { pattern: "*.ts", path: "outside" })).rejects.toThrow(
       /\[sandbox\] glob: access denied/,
@@ -181,7 +186,7 @@ describe("createSystemTools with allowedPaths", () => {
   });
 
   it("grep tool rejects searching outside sandbox", async () => {
-    const tools = createSystemTools(tmpDir, undefined, ["src"]);
+    const tools = createSystemTools(tmpDir, undefined, ["src"], undefined, undefined, fs, shell);
     const grepTool = tools.find(t => t.name === "grep")!;
     await expect(grepTool.execute("tc9", { pattern: "secret", path: "outside" })).rejects.toThrow(
       /\[sandbox\] grep: access denied/,
@@ -189,7 +194,7 @@ describe("createSystemTools with allowedPaths", () => {
   });
 
   it("allows everything when no allowedPaths (defaults to cwd)", async () => {
-    const tools = createSystemTools(tmpDir);
+    const tools = createSystemTools(tmpDir, undefined, undefined, undefined, undefined, fs, shell);
     const readTool = tools.find(t => t.name === "read")!;
     // Both src and outside are under tmpDir, so both should work
     const r1 = await readTool.execute("tc10", { path: "src/hello.ts" });
@@ -199,7 +204,7 @@ describe("createSystemTools with allowedPaths", () => {
   });
 
   it("supports multiple allowed paths", async () => {
-    const tools = createSystemTools(tmpDir, undefined, ["src", "outside"]);
+    const tools = createSystemTools(tmpDir, undefined, ["src", "outside"], undefined, undefined, fs, shell);
     const readTool = tools.find(t => t.name === "read")!;
     // Both should work
     const r1 = await readTool.execute("tc12", { path: "src/hello.ts" });
@@ -209,7 +214,7 @@ describe("createSystemTools with allowedPaths", () => {
   });
 
   it("bash tool is still accessible (not path-sandboxed)", async () => {
-    const tools = createSystemTools(tmpDir, undefined, ["src"]);
+    const tools = createSystemTools(tmpDir, undefined, ["src"], undefined, undefined, fs, shell);
     const bashTool = tools.find(t => t.name === "bash")!;
     // Bash runs with cwd=tmpDir, not sandboxed at path level
     const result = await bashTool.execute("tc14", { command: "echo hello" });

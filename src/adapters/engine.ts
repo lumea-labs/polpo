@@ -32,6 +32,10 @@ import {
 } from "ai";
 import { resolveModel, enforceModelAllowlist, mapReasoningToProviderOptions } from "../llm/pi-client.js";
 import { createSystemTools, createAllTools } from "../tools/system-tools.js";
+import { NodeFileSystem } from "./node-filesystem.js";
+import { NodeShell } from "./node-shell.js";
+import type { FileSystem } from "@polpo-ai/core/filesystem";
+import type { Shell } from "@polpo-ai/core/shell";
 import { loadAgentSkills } from "../llm/skills.js";
 import { nanoid } from "nanoid";
 import { compactIfNeeded, type SummarizeFn, type CompactionEvent } from "@polpo-ai/core";
@@ -423,6 +427,11 @@ export function spawnEngine(agentConfig: AgentConfig, task: Task, cwd: string, c
   }
   const polpoDir = ctx.polpoDir;
 
+  // Extract fs/shell from context — safety fallback to NodeFileSystem/NodeShell
+  // In practice the orchestrator (or runner subprocess) always provides them via SpawnContext.
+  const fs: FileSystem = ctx?.fs ?? new NodeFileSystem();
+  const shell: Shell = ctx?.shell ?? new NodeShell();
+
   // Browser profile directory for agent-browser persistent state (cookies, auth, localStorage)
   const browserProfileDir = join(polpoDir, "browser-profiles", agentConfig.browserProfile || agentConfig.name);
 
@@ -466,7 +475,7 @@ export function spawnEngine(agentConfig: AgentConfig, task: Task, cwd: string, c
 
   // Vault resolution is async — will be resolved in handle.done before tools are used.
   // Start with core coding tools WITHOUT vault; vault tools are added in the async phase.
-  const codingTools = createSystemTools(cwd, agentConfig.allowedTools, effectiveAllowedPaths, outputDir, undefined);
+  const codingTools = createSystemTools(cwd, agentConfig.allowedTools, effectiveAllowedPaths, outputDir, undefined, fs, shell);
 
 
   // Resolve reasoning level: agent config > global settings (via SpawnContext) > "off"
@@ -510,7 +519,7 @@ export function spawnEngine(agentConfig: AgentConfig, task: Task, cwd: string, c
       const vault = resolveAgentVault(vaultEntries);
 
       // Rebuild tools with vault resolved
-      let allPolpoTools = createSystemTools(cwd, agentConfig.allowedTools, effectiveAllowedPaths, outputDir, vault);
+      let allPolpoTools = createSystemTools(cwd, agentConfig.allowedTools, effectiveAllowedPaths, outputDir, vault, fs, shell);
 
       if (hasExtendedTools) {
         allPolpoTools = await createAllTools({
@@ -522,6 +531,8 @@ export function spawnEngine(agentConfig: AgentConfig, task: Task, cwd: string, c
           vault,
           emailAllowedDomains: agentConfig.emailAllowedDomains ?? ctx?.emailAllowedDomains,
           outputDir,
+          fs,
+          shell,
         });
       }
 

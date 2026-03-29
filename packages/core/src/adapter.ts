@@ -7,6 +7,8 @@
  */
 
 import type { AgentActivity, TaskResult, TaskOutcome, ReasoningLevel } from "./types.js";
+import type { FileSystem } from "./filesystem.js";
+import type { Shell } from "./shell.js";
 
 /**
  * Handle returned by the engine after spawning an agent.
@@ -60,4 +62,8 @@ export interface SpawnContext {
   whatsappStore?: unknown;
   /** WhatsApp send function — runtime-specific, provided by the shell layer. */
   whatsappSendMessage?: (jid: string, text: string) => Promise<string | undefined>;
+  /** FileSystem implementation — created by the orchestrator, passed down to tools. */
+  fs?: FileSystem;
+  /** Shell implementation — created by the orchestrator, passed down to tools. */
+  shell?: Shell;
 }
