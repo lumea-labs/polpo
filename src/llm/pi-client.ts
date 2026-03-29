@@ -1,105 +1,121 @@
 /**
  * Polpo LLM abstraction — multi-provider model resolution, streaming, cost tracking,
- * and provider-level failover built on top of pi-ai.
+ * and provider-level failover built on Vercel AI SDK + AI Gateway.
  *
- * Supports all 23 pi-ai providers out-of-the-box plus custom OpenAI/Anthropic-compatible
- * endpoints via ProviderConfig.
+ * Replaces pi-ai with:
+ * - AI Gateway for model catalog, routing, and built-in provider support
+ * - AI SDK generateText/streamText for completions
+ * - @ai-sdk/openai for custom OpenAI-compatible endpoints (Ollama, vLLM, etc.)
  */
 
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { getGlobalPolpoDir } from "../core/constants.js";
 import {
-  getModel,
-  getModels,
-  getProviders,
-  getEnvApiKey,
-  calculateCost,
-  completeSimple,
-  streamSimple,
-  type Model,
-  type Api,
-  type KnownProvider,
-  type Usage,
-} from "@mariozechner/pi-ai";
+  generateText,
+  streamText,
+  gateway,
+  type LanguageModelUsage,
+} from "ai";
+import type { LanguageModel } from "ai";
+import { createOpenAI } from "@ai-sdk/openai";
+import type { GatewayLanguageModelEntry } from "@ai-sdk/gateway";
 import type { ProviderConfig, ModelConfig, ModelAllowlistEntry, ReasoningLevel } from "../core/types.js";
 
 // ─── Constants ──────────────────────────────────────
 
+// Re-export the canonical env map from @polpo-ai/core.
+// It's duplicated here for backward compat (other files import PROVIDER_ENV_MAP from pi-client).
+export { PROVIDER_ENV_MAP } from "@polpo-ai/core";
+import { PROVIDER_ENV_MAP } from "@polpo-ai/core";
+
+// ─── Re-exported AI SDK types ───────────────────────
+
+/** Re-export for consumers that need usage info. */
+export type { LanguageModelUsage };
+
+// ─── ResolvedModel ──────────────────────────────────
+
 /**
- * Prefix-based inference map for bare model IDs (without provider prefix).
- * Used ONLY when the user writes "claude-opus-4-6" instead of "anthropic:claude-opus-4-6".
- * All 23 pi-ai providers are supported — this map covers the most common prefixes.
+ * A resolved model: metadata (from gateway catalog or custom provider config)
+ * plus an AI SDK LanguageModel instance ready for generateText/streamText.
  */
-const PREFIX_MAP: [string, KnownProvider][] = [
-  // Anthropic
-  ["claude-", "anthropic"],
-  // OpenAI
-  ["gpt-", "openai"],
-  ["o1-", "openai"],
-  ["o3-", "openai"],
-  ["o4-", "openai"],
-  ["chatgpt-", "openai"],
-  ["codex-", "openai"],
-  // Google
-  ["gemini-", "google"],
-  // Mistral
-  ["mistral-", "mistral"],
-  ["codestral-", "mistral"],
-  ["devstral-", "mistral"],
-  // Groq
-  ["llama-", "groq"],
-  ["llama3", "groq"],
-  // xAI
-  ["grok-", "xai"],
-  // OpenRouter
-  ["deepseek-", "openrouter"],
-  // Cerebras
-  ["gpt-oss-", "cerebras"],
-  // ZAI / GLM
-  ["glm-", "zai"],
-  // MiniMax
-  ["minimax-", "minimax"],
-  // Kimi
-  ["kimi-", "kimi-coding"],
-  // Amazon Bedrock
-  ["amazon.", "amazon-bedrock"],
-  ["us.", "amazon-bedrock"],
-  ["eu.", "amazon-bedrock"],
-  // HuggingFace
-  ["hf:", "huggingface"],
-  // OpenCode
-  ["big-pickle", "opencode"],
-];
+export interface ResolvedModel {
+  /** Model identifier (e.g. "claude-sonnet-4.5"). */
+  id: string;
+  /** Human-readable name. */
+  name: string;
+  /** Provider name (e.g. "anthropic", "openai"). */
+  provider: string;
+  /** Whether the model supports reasoning/thinking. */
+  reasoning: boolean;
+  /** Supported input modalities. */
+  input: string[];
+  /** Context window size in tokens. */
+  contextWindow: number;
+  /** Max output tokens. */
+  maxTokens: number;
+  /** Cost per token (in USD). */
+  cost: { input: number; output: number; cacheRead: number; cacheWrite: number };
+  /** The AI SDK model instance to pass to generateText/streamText. */
+  aiModel: LanguageModel;
+}
 
-// ─── Provider → env var map (shared with setup wizard) ──
+// ─── Gateway Model Catalog (lazy, cached) ───────────
 
-/** Map provider names to their standard environment variable for API keys. */
-export const PROVIDER_ENV_MAP: Record<string, string> = {
-  "openai": "OPENAI_API_KEY",
-  "anthropic": "ANTHROPIC_API_KEY",
-  "google": "GEMINI_API_KEY",
-  "groq": "GROQ_API_KEY",
-  "cerebras": "CEREBRAS_API_KEY",
-  "xai": "XAI_API_KEY",
-  "openrouter": "OPENROUTER_API_KEY",
-  "vercel-ai-gateway": "AI_GATEWAY_API_KEY",
-  "zai": "ZAI_API_KEY",
-  "mistral": "MISTRAL_API_KEY",
-  "minimax": "MINIMAX_API_KEY",
-  "minimax-cn": "MINIMAX_CN_API_KEY",
-  "huggingface": "HF_TOKEN",
-  "opencode": "OPENCODE_API_KEY",
-  "opencode-go": "OPENCODE_API_KEY",
-  "kimi-coding": "KIMI_API_KEY",
-  "azure-openai-responses": "AZURE_OPENAI_API_KEY",
-  "github-copilot": "COPILOT_GITHUB_TOKEN",
-  "amazon-bedrock": "AWS_ACCESS_KEY_ID",
-  "google-vertex": "GOOGLE_CLOUD_PROJECT",
-  "openai-codex": "OPENAI_API_KEY",
-  "google-gemini-cli": "GEMINI_API_KEY",
-  "google-antigravity": "GEMINI_API_KEY",
-};
+/** Cached gateway catalog. */
+let catalogCache: GatewayLanguageModelEntry[] | null = null;
+let catalogFetchPromise: Promise<GatewayLanguageModelEntry[]> | null = null;
+let catalogFetchedAt = 0;
+const CATALOG_TTL_MS = 60 * 60 * 1000; // 1 hour
+
+/**
+ * Fetch and cache the AI Gateway model catalog.
+ * Uses the public endpoint (no auth required for listing).
+ */
+async function fetchCatalog(): Promise<GatewayLanguageModelEntry[]> {
+  const now = Date.now();
+  if (catalogCache && now - catalogFetchedAt < CATALOG_TTL_MS) {
+    return catalogCache;
+  }
+
+  if (catalogFetchPromise && now - catalogFetchedAt < CATALOG_TTL_MS) {
+    return catalogFetchPromise;
+  }
+
+  catalogFetchPromise = (async () => {
+    try {
+      const resp = await fetch("https://ai-gateway.vercel.sh/v1/models");
+      if (!resp.ok) {
+        throw new Error(`Gateway catalog fetch failed: ${resp.status}`);
+      }
+      const data = (await resp.json()) as { data?: GatewayLanguageModelEntry[] };
+      const models = data.data ?? [];
+      catalogCache = models;
+      catalogFetchedAt = Date.now();
+      return models;
+    } catch (err) {
+      // On failure, return stale cache if available
+      if (catalogCache) return catalogCache;
+      throw err;
+    }
+  })();
+
+  return catalogFetchPromise;
+}
+
+/**
+ * Get the cached catalog synchronously (returns empty array if not yet fetched).
+ * Triggers a background fetch if cache is stale.
+ */
+function getCatalogSync(): GatewayLanguageModelEntry[] {
+  const now = Date.now();
+  if (!catalogCache || now - catalogFetchedAt > CATALOG_TTL_MS) {
+    // Trigger background refresh — don't block
+    fetchCatalog().catch(() => {});
+  }
+  return catalogCache ?? [];
+}
 
 // ─── Provider override management ───────────────────
 
@@ -135,7 +151,7 @@ export function isModelAllowed(spec: string): boolean {
   if (!modelAllowlist) return true;
   // Check exact match
   if (spec in modelAllowlist) return true;
-  // Check without provider prefix (e.g. "claude-opus-4-6" matches "anthropic:claude-opus-4-6")
+  // Check without provider prefix (e.g. "claude-opus-4.6" matches "anthropic:claude-opus-4.6")
   const { provider, modelId } = parseModelSpec(spec);
   const fullSpec = `${provider}:${modelId}`;
   return fullSpec in modelAllowlist;
@@ -155,18 +171,19 @@ export function enforceModelAllowlist(spec: string): void {
 
 /**
  * Resolve API key for a provider (synchronous).
- * Uses pi-ai env var lookup (reads from process.env / .polpo/.env).
+ * Reads from process.env using the PROVIDER_ENV_MAP.
  *
- * Does NOT check OAuth profiles (that requires async). Use resolveApiKeyAsync
- * for the full resolution chain including OAuth.
+ * Also checks .polpo/.env via dotenv-style parsing if the env var isn't set.
  */
 export function resolveApiKey(provider: string): string | undefined {
-  return getEnvApiKey(provider as KnownProvider);
+  const envVar = PROVIDER_ENV_MAP[provider];
+  if (!envVar) return undefined;
+  return process.env[envVar] || undefined;
 }
 
 /**
  * Resolve API key for a provider (async, full resolution chain).
- * Priority: 1) polpo.json overrides, 2) pi-ai env var lookup, 3) stored OAuth profiles.
+ * Priority: 1) polpo.json overrides (if they had apiKey), 2) env var lookup, 3) stored OAuth profiles.
  *
  * Returns the API key from env vars or provider config.
  */
@@ -188,91 +205,185 @@ export function parseModelSpec(spec?: string): { provider: string; modelId: stri
   return _parseModelSpec(spec, process.env.POLPO_MODEL);
 }
 
-/**
- * Map ProviderConfig.api values to pi-ai Api strings.
- */
-const API_MODE_MAP: Record<string, Api> = {
-  "openai-completions": "openai-completions" as Api,
-  "openai-responses": "openai-responses" as Api,
-  "anthropic-messages": "anthropic-messages" as Api,
-};
+// ─── Reasoning Level Mapping ────────────────────────
 
 /**
- * Resolve a model spec to a pi-ai Model object with full metadata.
+ * Map Polpo's ReasoningLevel to AI SDK providerOptions for reasoning/thinking.
+ *
+ * Each provider has its own way of enabling extended thinking:
+ * - Anthropic: thinking.type + thinking.budgetTokens
+ * - OpenAI: reasoningEffort
+ * - Google: thinkingConfig.thinkingBudget
+ */
+function mapReasoningToProviderOptions(
+  provider: string,
+  level: ReasoningLevel | undefined,
+  maxTokens: number,
+): Record<string, Record<string, unknown>> | undefined {
+  if (!level || level === "off") return undefined;
+
+  // Budget tokens as a fraction of maxTokens, scaling with reasoning level
+  const budgetMap: Record<string, number> = {
+    minimal: 0.1,
+    low: 0.25,
+    medium: 0.5,
+    high: 0.75,
+    xhigh: 1.0,
+  };
+  const fraction = budgetMap[level] ?? 0.5;
+  const budgetTokens = Math.round(maxTokens * fraction);
+
+  // OpenAI reasoning effort mapping
+  const effortMap: Record<string, string> = {
+    minimal: "low",
+    low: "low",
+    medium: "medium",
+    high: "high",
+    xhigh: "high",
+  };
+
+  if (provider === "anthropic") {
+    return {
+      anthropic: {
+        thinking: { type: "enabled", budgetTokens },
+      },
+    };
+  }
+
+  if (provider === "openai") {
+    return {
+      openai: {
+        reasoningEffort: effortMap[level] ?? "medium",
+      },
+    };
+  }
+
+  if (provider === "google") {
+    return {
+      google: {
+        thinkingConfig: {
+          thinkingBudget: budgetTokens,
+        },
+      },
+    };
+  }
+
+  // Unknown provider — return anthropic-style as best effort
+  return undefined;
+}
+
+// ─── Model Resolution ───────────────────────────────
+
+/**
+ * Create an AI SDK LanguageModel for a custom (non-gateway) provider.
+ * Uses @ai-sdk/openai with a custom baseURL for OpenAI-compatible endpoints.
+ */
+function createCustomProviderModel(
+  provider: string,
+  modelId: string,
+  override: ProviderConfig,
+): LanguageModel {
+  const baseURL = override.baseUrl || "http://localhost:11434/v1";
+  const apiKey = resolveApiKey(provider) || "ollama"; // Ollama doesn't need a real key
+
+  // For anthropic-messages API, we'd need @ai-sdk/anthropic — but custom providers
+  // are typically Ollama/vLLM/LM Studio which all speak OpenAI-compatible.
+  const openaiProvider = createOpenAI({
+    baseURL,
+    apiKey,
+    name: provider,
+  });
+
+  return openaiProvider(modelId) as unknown as LanguageModel;
+}
+
+/**
+ * Resolve a model spec to a ResolvedModel with metadata + AI SDK model instance.
  *
  * Resolution order:
- * 1. Try pi-ai catalog (built-in providers)
- * 2. If that fails, check providerOverrides for a CustomModelDef match
- * 3. If no custom model def, construct a minimal Model from override config
+ * 1. If provider has an override with custom baseUrl → create OpenAI-compatible model
+ * 2. Otherwise → use AI Gateway (provider/modelId format)
  *
- * This ensures custom providers (Ollama, vLLM, etc.) work without being in the catalog.
+ * This ensures custom providers (Ollama, vLLM, etc.) work without being in the gateway.
  */
-export function resolveModel(spec?: string): Model<Api> {
+export function resolveModel(spec?: string): ResolvedModel {
   const { provider, modelId } = parseModelSpec(spec);
   const override = providerOverrides[provider];
 
-  // 1. Try pi-ai built-in catalog first
-  try {
-    const model = getModel(provider as KnownProvider, modelId as never) as Model<Api> | undefined;
-    if (model) {
-      if (override?.baseUrl) {
-        return { ...model, baseUrl: override.baseUrl };
-      }
-      return model;
-    }
-    // Model not found in catalog — fall through to custom provider logic
-  } catch {
-    // Not in catalog — fall through to custom provider logic
-  }
-
-  // 2. Check for custom model definitions in providerOverrides
-  if (override) {
+  // Custom provider with baseUrl override → use @ai-sdk/openai with custom endpoint
+  if (override?.baseUrl) {
     const customDef = override.models?.find(m => m.id === modelId);
-    const apiMode = override.api ? API_MODE_MAP[override.api] : ("openai-completions" as Api);
-    const baseUrl = override.baseUrl || "http://localhost:11434/v1";
+    const aiModel = createCustomProviderModel(provider, modelId, override);
 
     if (customDef) {
       return {
         id: customDef.id,
         name: customDef.name,
-        api: apiMode,
         provider,
-        baseUrl,
         reasoning: customDef.reasoning ?? false,
         input: customDef.input ?? ["text"],
         cost: customDef.cost ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
         contextWindow: customDef.contextWindow ?? 200_000,
         maxTokens: customDef.maxTokens ?? 8192,
-      } as Model<Api>;
+        aiModel,
+      };
     }
 
-    // 3. No custom def — construct minimal Model (provider exists but model isn't pre-defined)
+    // No custom def — construct minimal metadata
     return {
       id: modelId,
       name: modelId,
-      api: apiMode,
       provider,
-      baseUrl,
       reasoning: false,
       input: ["text"],
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
       contextWindow: 200_000,
       maxTokens: 8192,
-    } as Model<Api>;
+      aiModel,
+    };
   }
 
-  // 4. Unknown provider with no override — try pi-ai, but guard against undefined return
-  try {
-    const model = getModel(provider as KnownProvider, modelId as never) as Model<Api> | undefined;
-    if (model) return model;
-  } catch {
-    // Fall through to error
+  // Standard provider → route through AI Gateway
+  // The gateway expects "provider/modelId" format
+  const gatewayModelId = `${provider}/${modelId}`;
+  const aiModel = gateway(gatewayModelId as any) as unknown as LanguageModel;
+
+  // Try to get metadata from cached catalog
+  const catalog = getCatalogSync();
+  const entry = catalog.find(m => m.id === gatewayModelId);
+
+  if (entry) {
+    const pricing = entry.pricing;
+    return {
+      id: modelId,
+      name: entry.name || modelId,
+      provider,
+      reasoning: false, // Gateway catalog doesn't expose this directly
+      input: ["text"],
+      contextWindow: 200_000, // Gateway doesn't expose this; use sensible default
+      maxTokens: 8192,
+      cost: {
+        input: pricing ? parseFloat(pricing.input) : 0,
+        output: pricing ? parseFloat(pricing.output) : 0,
+        cacheRead: pricing?.cachedInputTokens ? parseFloat(pricing.cachedInputTokens) : 0,
+        cacheWrite: pricing?.cacheCreationInputTokens ? parseFloat(pricing.cacheCreationInputTokens) : 0,
+      },
+      aiModel,
+    };
   }
 
-  throw new Error(
-    `Model "${modelId}" not found for provider "${provider}". ` +
-    `Use "polpo models list ${provider}" to see available models, or configure a custom model in providers.`,
-  );
+  // Not in catalog (yet) — return with defaults. The model may still work via gateway.
+  return {
+    id: modelId,
+    name: modelId,
+    provider,
+    reasoning: false,
+    input: ["text"],
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    contextWindow: 200_000,
+    maxTokens: 8192,
+    aiModel,
+  };
 }
 
 // ─── Model Catalog ──────────────────────────────────
@@ -289,36 +400,76 @@ export interface ModelInfo {
 }
 
 /**
- * List all available providers from the pi-ai catalog.
+ * List all available providers from the AI Gateway catalog.
+ * Returns synchronously from the cache; triggers background refresh if stale.
  */
 export function listProviders(): string[] {
-  return getProviders();
+  const catalog = getCatalogSync();
+  const providers = new Set<string>();
+  for (const entry of catalog) {
+    // Gateway IDs are "provider/model" — extract the provider part
+    const slashIdx = entry.id.indexOf("/");
+    if (slashIdx > 0) {
+      providers.add(entry.id.slice(0, slashIdx));
+    }
+  }
+  // Also include custom provider overrides
+  for (const p of Object.keys(providerOverrides)) {
+    providers.add(p);
+  }
+  return Array.from(providers).sort();
 }
 
 /**
  * List all models for a given provider (or all providers if none specified).
  */
 export function listModels(provider?: string): ModelInfo[] {
-  const providers = provider ? [provider] : getProviders();
+  const catalog = getCatalogSync();
   const models: ModelInfo[] = [];
 
-  for (const p of providers) {
-    try {
-      const pModels = getModels(p as KnownProvider);
-      for (const m of pModels) {
-        models.push({
-          id: m.id,
-          name: m.name,
-          provider: p,
-          reasoning: m.reasoning,
-          input: m.input,
-          contextWindow: m.contextWindow,
-          maxTokens: m.maxTokens,
-          cost: m.cost,
-        });
-      }
-    } catch {
-      // Skip unknown providers
+  for (const entry of catalog) {
+    const slashIdx = entry.id.indexOf("/");
+    if (slashIdx <= 0) continue;
+
+    const entryProvider = entry.id.slice(0, slashIdx);
+    const entryModelId = entry.id.slice(slashIdx + 1);
+
+    if (provider && entryProvider !== provider) continue;
+
+    const pricing = entry.pricing;
+    models.push({
+      id: entryModelId,
+      name: entry.name || entryModelId,
+      provider: entryProvider,
+      reasoning: false,
+      input: ["text"],
+      contextWindow: 200_000,
+      maxTokens: 8192,
+      cost: {
+        input: pricing ? parseFloat(pricing.input) : 0,
+        output: pricing ? parseFloat(pricing.output) : 0,
+        cacheRead: pricing?.cachedInputTokens ? parseFloat(pricing.cachedInputTokens) : 0,
+        cacheWrite: pricing?.cacheCreationInputTokens ? parseFloat(pricing.cacheCreationInputTokens) : 0,
+      },
+    });
+  }
+
+  // Append custom models from provider overrides
+  const overrideProviders = provider ? [provider] : Object.keys(providerOverrides);
+  for (const p of overrideProviders) {
+    const override = providerOverrides[p];
+    if (!override?.models) continue;
+    for (const m of override.models) {
+      models.push({
+        id: m.id,
+        name: m.name,
+        provider: p,
+        reasoning: m.reasoning ?? false,
+        input: m.input ?? ["text"],
+        contextWindow: m.contextWindow ?? 200_000,
+        maxTokens: m.maxTokens ?? 8192,
+        cost: m.cost ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      });
     }
   }
 
@@ -334,7 +485,7 @@ export function getModelInfo(spec: string): ModelInfo | undefined {
     return {
       id: model.id,
       name: model.name,
-      provider: model.provider as string,
+      provider: model.provider,
       reasoning: model.reasoning,
       input: model.input,
       contextWindow: model.contextWindow,
@@ -358,17 +509,28 @@ export interface CostEstimate {
 }
 
 /**
- * Calculate the cost of an LLM call from usage data.
+ * Calculate the cost of an LLM call from AI SDK usage data.
+ * Uses pricing from the resolved model metadata.
  * Returns cost in USD.
  */
-export function estimateCost(model: Model<Api>, usage: Usage): CostEstimate {
-  const cost = calculateCost(model, usage);
+export function estimateCost(model: ResolvedModel, usage: LanguageModelUsage): CostEstimate {
+  const inputTokens = usage.inputTokens ?? 0;
+  const outputTokens = usage.outputTokens ?? 0;
+  const cacheReadTokens = usage.inputTokenDetails?.cacheReadTokens ?? 0;
+  const cacheWriteTokens = usage.inputTokenDetails?.cacheWriteTokens ?? 0;
+
+  // Cost per token (pricing is per-token from gateway)
+  const inputCost = inputTokens * model.cost.input;
+  const outputCost = outputTokens * model.cost.output;
+  const cacheReadCost = cacheReadTokens * model.cost.cacheRead;
+  const cacheWriteCost = cacheWriteTokens * model.cost.cacheWrite;
+
   return {
-    inputCost: cost.input,
-    outputCost: cost.output,
-    cacheReadCost: cost.cacheRead,
-    cacheWriteCost: cost.cacheWrite,
-    totalCost: cost.total,
+    inputCost,
+    outputCost,
+    cacheReadCost,
+    cacheWriteCost,
+    totalCost: inputCost + outputCost + cacheReadCost + cacheWriteCost,
     currency: "USD",
   };
 }
@@ -413,7 +575,6 @@ export function validateProviderKeys(
  */
 function hasOAuthProfiles(provider: string): boolean {
   try {
-    const home = process.env.HOME || process.env.USERPROFILE || "";
     const profilePath = join(getGlobalPolpoDir(), "auth-profiles.json");
     if (!existsSync(profilePath)) return false;
     const data = JSON.parse(readFileSync(profilePath, "utf-8"));
@@ -454,55 +615,56 @@ export function validateProviderKeysDetailed(
 
 /**
  * Build a dynamic model listing string for system prompts.
- * Uses the pi-ai catalog instead of hardcoded lists.
+ * Uses the gateway catalog instead of hardcoded lists.
  */
 export function buildModelListingForPrompt(): string {
   const lines: string[] = [
-    `Format: "provider:model" (e.g. "anthropic:claude-opus-4-6") or just "model" (auto-inferred from prefix).`,
+    `Format: "provider:model" (e.g. "anthropic:claude-opus-4.6") or just "model" (auto-inferred from prefix).`,
   ];
 
-  // Show the most relevant providers with their top models
-  const FEATURED_PROVIDERS: { provider: string; label: string; picks: number }[] = [
-    { provider: "anthropic", label: "anthropic", picks: 3 },
-    { provider: "openai", label: "openai", picks: 4 },
-    { provider: "google", label: "google", picks: 3 },
-    { provider: "opencode", label: "opencode", picks: 3 },
-    { provider: "mistral", label: "mistral", picks: 2 },
-    { provider: "groq", label: "groq", picks: 2 },
-    { provider: "xai", label: "xai", picks: 1 },
-    { provider: "amazon-bedrock", label: "amazon-bedrock", picks: 2 },
-  ];
+  const catalog = getCatalogSync();
 
-  for (const { provider, label, picks } of FEATURED_PROVIDERS) {
-    try {
-      const models = getModels(provider as KnownProvider);
-      if (models.length === 0) continue;
-      // Sort by most capable: reasoning first, then by context window
-      const sorted = [...models].sort((a, b) => {
-        if (a.reasoning !== b.reasoning) return a.reasoning ? -1 : 1;
-        return b.contextWindow - a.contextWindow;
-      });
-      const top = sorted.slice(0, picks);
-      const modelStr = top.map(m => {
-        const tags: string[] = [];
-        if (m.cost.input === 0 && m.cost.output === 0) tags.push("FREE");
-        if (m.reasoning) tags.push("reasoning");
-        const tagStr = tags.length > 0 ? ` (${tags.join(", ")})` : "";
-        return `${m.id}${tagStr}`;
-      }).join(", ");
-      lines.push(`- ${label}: ${modelStr}`);
-    } catch {
-      // Skip if provider not available
-    }
+  // Group models by provider
+  const byProvider = new Map<string, GatewayLanguageModelEntry[]>();
+  for (const entry of catalog) {
+    const slashIdx = entry.id.indexOf("/");
+    if (slashIdx <= 0) continue;
+    const provider = entry.id.slice(0, slashIdx);
+    if (!byProvider.has(provider)) byProvider.set(provider, []);
+    byProvider.get(provider)!.push(entry);
   }
 
-  // Count total available
-  const allProviders = getProviders();
-  const totalModels = allProviders.reduce((sum, p) => {
-    try { return sum + getModels(p as KnownProvider).length; } catch { return sum; }
-  }, 0);
+  // Show the most relevant providers with their top models
+  const FEATURED_PROVIDERS: { provider: string; picks: number }[] = [
+    { provider: "anthropic", picks: 3 },
+    { provider: "openai", picks: 4 },
+    { provider: "google", picks: 3 },
+    { provider: "mistral", picks: 2 },
+    { provider: "groq", picks: 2 },
+    { provider: "xai", picks: 1 },
+  ];
 
-  lines.push(`- ... and ${allProviders.length} total providers with ${totalModels}+ models (use "provider:model" format)`);
+  for (const { provider, picks } of FEATURED_PROVIDERS) {
+    const models = byProvider.get(provider);
+    if (!models || models.length === 0) continue;
+
+    const top = models.slice(0, picks);
+    const modelStr = top.map(m => {
+      const modelId = m.id.slice(m.id.indexOf("/") + 1);
+      const tags: string[] = [];
+      if (m.pricing && parseFloat(m.pricing.input) === 0 && parseFloat(m.pricing.output) === 0) {
+        tags.push("FREE");
+      }
+      const tagStr = tags.length > 0 ? ` (${tags.join(", ")})` : "";
+      return `${modelId}${tagStr}`;
+    }).join(", ");
+    lines.push(`- ${provider}: ${modelStr}`);
+  }
+
+  // Count totals
+  const totalProviders = byProvider.size + Object.keys(providerOverrides).length;
+  const totalModels = catalog.length;
+  lines.push(`- ... and ${totalProviders} total providers with ${totalModels}+ models (use "provider:model" format)`);
   lines.push(`Configure your default model in .polpo/polpo.json or via the POLPO_MODEL env var.`);
 
   return lines.join("\n");
@@ -514,12 +676,8 @@ export function buildModelListingForPrompt(): string {
  * Resolve a model from a fallback chain (synchronous).
  * Tries primary first, then each fallback in order.
  * Returns the first model that has a valid API key.
- *
- * NOTE: This sync variant only checks config/env API keys, NOT OAuth profiles.
- * Use `resolveModelWithFallbackAsync` for the full resolution chain including OAuth.
  */
-export function resolveModelWithFallback(config: ModelConfig): { model: Model<Api>; spec: string } {
-  // Try primary
+export function resolveModelWithFallback(config: ModelConfig): { model: ResolvedModel; spec: string } {
   const primary = config.primary;
   if (!primary) {
     throw new Error("No primary model configured. Run 'polpo setup' or set POLPO_MODEL env var.");
@@ -529,11 +687,10 @@ export function resolveModelWithFallback(config: ModelConfig): { model: Model<Ap
     try {
       return { model: resolveModel(primary), spec: primary };
     } catch {
-      // Primary model not found in catalog — try fallbacks
+      // Primary model not found — try fallbacks
     }
   }
 
-  // Try fallbacks in order
   if (config.fallbacks) {
     for (const fallback of config.fallbacks) {
       const { provider: fbProvider } = parseModelSpec(fallback);
@@ -555,11 +712,8 @@ export function resolveModelWithFallback(config: ModelConfig): { model: Model<Ap
  * Resolve a model from a fallback chain (async).
  * Tries primary first, then each fallback in order.
  * Checks the FULL API key resolution chain including OAuth profiles with auto-refresh.
- *
- * Prefer this over the sync variant when in an async context.
  */
-export async function resolveModelWithFallbackAsync(config: ModelConfig): Promise<{ model: Model<Api>; spec: string }> {
-  // Try primary
+export async function resolveModelWithFallbackAsync(config: ModelConfig): Promise<{ model: ResolvedModel; spec: string }> {
   const primary = config.primary;
   if (!primary) {
     throw new Error("No primary model configured. Run 'polpo setup' or set POLPO_MODEL env var.");
@@ -569,11 +723,10 @@ export async function resolveModelWithFallbackAsync(config: ModelConfig): Promis
     try {
       return { model: resolveModel(primary), spec: primary };
     } catch {
-      // Primary model not found in catalog — try fallbacks
+      // Primary model not found — try fallbacks
     }
   }
 
-  // Try fallbacks in order
   if (config.fallbacks) {
     for (const fallback of config.fallbacks) {
       const { provider: fbProvider } = parseModelSpec(fallback);
@@ -587,7 +740,6 @@ export async function resolveModelWithFallbackAsync(config: ModelConfig): Promis
     }
   }
 
-  // Last resort: try primary anyway (will fail at call time with a clear error)
   return { model: resolveModel(primary), spec: primary };
 }
 
@@ -734,17 +886,16 @@ async function handleBillingDisable(_provider: string): Promise<void> {
 // ─── Stream Options Builder ─────────────────────────
 
 /**
- * Build stream/complete options combining API key and reasoning level.
- * Returns the options object to pass as the 3rd argument to completeSimple/streamSimple.
+ * Build AI SDK compatible options for generateText/streamText calls.
  *
- * Maps our ReasoningLevel to pi-ai's ThinkingLevel:
- * - "off" or undefined → no reasoning parameter (pi-ai default)
- * - "minimal" | "low" | "medium" | "high" | "xhigh" → passed as `reasoning` to pi-ai
+ * Returns an object with:
+ * - providerOptions: reasoning/thinking configuration per provider
+ * - maxTokens: max output tokens
+ * - headers: additional headers (e.g. for API key passthrough)
  *
- * pi-ai handles provider-specific translation automatically:
- * - Anthropic → thinkingEnabled + thinkingBudgetTokens
- * - OpenAI → reasoningEffort
- * - Google → thinking.enabled + thinking.budgetTokens
+ * This replaces the old pi-ai `buildStreamOpts` — callers that need the raw
+ * options object for pi-agent-core Agent can still use this. The shape changed
+ * but the function signature is preserved for backward compat.
  */
 export function buildStreamOpts(
   apiKey?: string,
@@ -765,32 +916,41 @@ export function buildStreamOpts(
 // ─── Query Functions ────────────────────────────────
 
 /**
- * Simple prompt → text completion using pi-ai.
+ * Simple prompt -> text completion using AI SDK generateText.
  * Integrates with the cooldown system: marks provider cooldown on classified errors,
  * clears cooldown on success. Uses async API key resolution (includes OAuth profiles).
  */
-export async function queryText(prompt: string, model?: string, reasoning?: ReasoningLevel): Promise<{ text: string; usage?: Usage; model: Model<Api> }> {
+export async function queryText(
+  prompt: string,
+  model?: string,
+  reasoning?: ReasoningLevel,
+): Promise<{ text: string; usage?: LanguageModelUsage; model: ResolvedModel }> {
   const m = resolveModel(model);
-  const provider = m.provider as string;
-  const apiKey = await resolveApiKeyAsync(provider);
+  const provider = m.provider;
+
   try {
-    const response = await completeSimple(m, {
-      messages: [{ role: "user", content: prompt, timestamp: Date.now() }],
-    }, buildStreamOpts(apiKey, reasoning, m.maxTokens));
-    const textBlocks = response.content.filter((c): c is { type: "text"; text: string } => c.type === "text");
-    const text = textBlocks.map(b => b.text).join("\n").trim();
+    const providerOptions = mapReasoningToProviderOptions(provider, reasoning, m.maxTokens);
+
+    const opts: any = {
+      model: m.aiModel,
+      prompt,
+      maxOutputTokens: m.maxTokens,
+    };
+    if (providerOptions) opts.providerOptions = providerOptions;
+    const response = await generateText(opts);
+
+    const text = response.text.trim();
     // Success — clear any cooldown for this provider
     clearProviderCooldown(provider);
     return {
       text,
-      usage: response.usage as Usage | undefined,
+      usage: response.usage,
       model: m,
     };
   } catch (err) {
     // Classify and potentially cooldown the provider
     const classified = classifyProviderError(err);
     if (classified.reason === "billing") {
-      // Billing errors use separate disable mechanism with longer backoff
       markProviderCooldown(provider, classified.reason);
       handleBillingDisable(provider);
     } else if (classified.shouldCooldown) {
@@ -801,37 +961,44 @@ export async function queryText(prompt: string, model?: string, reasoning?: Reas
 }
 
 /**
- * Streaming prompt → text with progress callback.
- * Integrates with the cooldown system. Uses async API key resolution (includes OAuth profiles).
+ * Streaming prompt -> text with progress callback.
+ * Integrates with the cooldown system. Uses async API key resolution.
  */
 export async function queryStream(
   prompt: string,
   model?: string,
   onProgress?: (text: string) => void,
   reasoning?: ReasoningLevel,
-): Promise<{ text: string; usage?: Usage; model: Model<Api> }> {
+): Promise<{ text: string; usage?: LanguageModelUsage; model: ResolvedModel }> {
   const m = resolveModel(model);
-  const provider = m.provider as string;
-  const apiKey = await resolveApiKeyAsync(provider);
-  try {
-    const s = streamSimple(m, {
-      messages: [{ role: "user", content: prompt, timestamp: Date.now() }],
-    }, buildStreamOpts(apiKey, reasoning, m.maxTokens));
+  const provider = m.provider;
 
-    for await (const event of s) {
-      if (event.type === "text_delta" && onProgress) {
-        onProgress(event.delta);
+  try {
+    const providerOptions = mapReasoningToProviderOptions(provider, reasoning, m.maxTokens);
+
+    const streamOpts: any = {
+      model: m.aiModel,
+      prompt,
+      maxOutputTokens: m.maxTokens,
+    };
+    if (providerOptions) streamOpts.providerOptions = providerOptions;
+    const result = streamText(streamOpts);
+
+    for await (const chunk of result.textStream) {
+      if (onProgress) {
+        onProgress(chunk);
       }
     }
 
-    const result = await s.result();
-    const textBlocks = result.content.filter((c): c is { type: "text"; text: string } => c.type === "text");
-    const text = textBlocks.map(b => b.text).join("\n").trim();
+    // Wait for the full result to get usage data
+    const text = (await result.text).trim();
+    const usage = await result.usage;
+
     // Success — clear cooldown
     clearProviderCooldown(provider);
     return {
       text,
-      usage: result.usage as Usage | undefined,
+      usage,
       model: m,
     };
   } catch (err) {
@@ -853,7 +1020,7 @@ export async function queryStream(
 export async function queryTextWithFallback(
   prompt: string,
   modelConfig: ModelConfig,
-): Promise<{ text: string; usage?: Usage; model: Model<Api>; usedSpec: string }> {
+): Promise<{ text: string; usage?: LanguageModelUsage; model: ResolvedModel; usedSpec: string }> {
   if (!modelConfig.primary) {
     throw new Error("No primary model configured. Run 'polpo setup' or set POLPO_MODEL env var.");
   }

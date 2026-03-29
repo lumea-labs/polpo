@@ -67,6 +67,8 @@
     "node": ">=20.0.0"
   },
   "dependencies": {
+    "@ai-sdk/gateway": "^3.0.83",
+    "@ai-sdk/openai": "^3.0.48",
     "@hono/node-server": "^1.19.9",
     "@hono/zod-openapi": "^1.2.2",
     "@mariozechner/pi-agent-core": "^0.62.0",
@@ -75,6 +77,7 @@
     "@polpo-ai/server": "workspace:*",
     "@polpo-ai/vault-crypto": "workspace:*",
     "@sinclair/typebox": "^0.34.48",
+    "ai": "^6.0.141",
     "chalk": "^5.4.1",
     "commander": "^13.1.0",
     "execa": "^9.6.1",
