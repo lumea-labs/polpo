@@ -1,6 +1,6 @@
 import { eq, desc, asc, count as drizzleCount, isNull, and } from "drizzle-orm";
 import { nanoid } from "nanoid";
-import type { SessionStore, Session, Message, MessageRole, ToolCallInfo } from "@polpo-ai/core/session-store";
+import type { SessionStore, Session, Message, MessageRole, ToolCallInfo, SessionContentPart } from "@polpo-ai/core/session-store";
 import { type Dialect, deserializeJson, extractAffectedRows } from "../utils.js";
 
 type AnyTable = any;
@@ -12,6 +12,20 @@ export class DrizzleSessionStore implements SessionStore {
     private messages: AnyTable,
     private dialect: Dialect,
   ) {}
+
+  /** Serialize content for DB TEXT column: arrays → JSON string, plain strings → as-is. */
+  private serializeContent(content: string | SessionContentPart[]): string {
+    return Array.isArray(content) ? JSON.stringify(content) : content;
+  }
+
+  /** Deserialize content from DB TEXT column: try JSON parse → array, fallback to plain string. */
+  private deserializeContent(raw: string): string | SessionContentPart[] {
+    try {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) return parsed as SessionContentPart[];
+    } catch { /* plain string — not JSON */ }
+    return raw;
+  }
 
   private rowToSession(row: any, messageCount: number): Session {
     return {
@@ -28,7 +42,7 @@ export class DrizzleSessionStore implements SessionStore {
     return {
       id: row.id,
       role: row.role as MessageRole,
-      content: row.content,
+      content: this.deserializeContent(row.content),
       ts: row.ts,
       toolCalls: deserializeJson<ToolCallInfo[] | undefined>(row.toolCalls, undefined, this.dialect),
     };
@@ -47,14 +61,15 @@ export class DrizzleSessionStore implements SessionStore {
     return id;
   }
 
-  async addMessage(sessionId: string, role: MessageRole, content: string): Promise<Message> {
+  async addMessage(sessionId: string, role: MessageRole, content: string | SessionContentPart[]): Promise<Message> {
     const id = nanoid();
     const ts = new Date().toISOString();
+    const serialized = this.serializeContent(content);
     await this.db.insert(this.messages).values({
       id,
       sessionId,
       role,
-      content,
+      content: serialized,
       ts,
       toolCalls: null,
     });
@@ -65,12 +80,13 @@ export class DrizzleSessionStore implements SessionStore {
     return { id, role, content, ts };
   }
 
-  async updateMessage(sessionId: string, messageId: string, content: string, toolCalls?: ToolCallInfo[]): Promise<boolean> {
+  async updateMessage(sessionId: string, messageId: string, content: string | SessionContentPart[], toolCalls?: ToolCallInfo[]): Promise<boolean> {
     const now = new Date().toISOString();
     const tcValue = toolCalls ? JSON.stringify(toolCalls) : null;
+    const serialized = this.serializeContent(content);
 
     const result = await this.db.update(this.messages)
-      .set({ content, toolCalls: tcValue })
+      .set({ content: serialized, toolCalls: tcValue })
       .where(eq(this.messages.id, messageId));
 
     const changed = extractAffectedRows(result) > 0;

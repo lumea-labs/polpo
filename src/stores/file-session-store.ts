@@ -10,7 +10,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { nanoid } from "nanoid";
-import type { SessionStore, Session, Message, MessageRole, ToolCallInfo } from "../core/session-store.js";
+import type { SessionStore, Session, Message, MessageRole, ToolCallInfo, SessionContentPart } from "../core/session-store.js";
 
 /**
  * File-backed SessionStore.
@@ -45,7 +45,7 @@ export class FileSessionStore implements SessionStore {
     return sessionId;
   }
 
-  async addMessage(sessionId: string, role: MessageRole, content: string): Promise<Message> {
+  async addMessage(sessionId: string, role: MessageRole, content: string | SessionContentPart[]): Promise<Message> {
     const message: Message = {
       id: nanoid(10),
       role,
@@ -60,7 +60,7 @@ export class FileSessionStore implements SessionStore {
     return message;
   }
 
-  async updateMessage(sessionId: string, messageId: string, content: string, toolCalls?: ToolCallInfo[]): Promise<boolean> {
+  async updateMessage(sessionId: string, messageId: string, content: string | SessionContentPart[], toolCalls?: ToolCallInfo[]): Promise<boolean> {
     const file = this.sessionFile(sessionId);
     if (!existsSync(file)) return false;
     try {

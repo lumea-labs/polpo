@@ -626,6 +626,45 @@ describe("DrizzleSessionStore", () => {
     const msgs = await stores.sessionStore.getMessages(sid);
     expect(msgs[0].content).toBe("final");
   });
+
+  it("addMessage with ContentPart[] round-trips correctly", async () => {
+    const sid = await stores.sessionStore.create();
+    const parts = [
+      { type: "text" as const, text: "Check this image" },
+      { type: "image_url" as const, image_url: { url: "https://example.com/img.png", detail: "auto" } },
+      { type: "file" as const, file_id: "att_abc123" },
+    ];
+    const msg = await stores.sessionStore.addMessage(sid, "user", parts);
+    expect(msg.content).toEqual(parts);
+
+    const msgs = await stores.sessionStore.getMessages(sid);
+    expect(msgs).toHaveLength(1);
+    expect(msgs[0].content).toEqual(parts);
+    expect(Array.isArray(msgs[0].content)).toBe(true);
+  });
+
+  it("updateMessage with ContentPart[] round-trips correctly", async () => {
+    const sid = await stores.sessionStore.create();
+    const msg = await stores.sessionStore.addMessage(sid, "assistant", "draft");
+    const parts = [
+      { type: "text" as const, text: "Updated with parts" },
+      { type: "file" as const, file_id: "att_xyz789" },
+    ];
+    const ok = await stores.sessionStore.updateMessage(sid, msg.id, parts);
+    expect(ok).toBe(true);
+
+    const msgs = await stores.sessionStore.getMessages(sid);
+    expect(msgs[0].content).toEqual(parts);
+  });
+
+  it("plain string content still reads back as string", async () => {
+    const sid = await stores.sessionStore.create();
+    await stores.sessionStore.addMessage(sid, "user", "just a string");
+
+    const msgs = await stores.sessionStore.getMessages(sid);
+    expect(msgs[0].content).toBe("just a string");
+    expect(typeof msgs[0].content).toBe("string");
+  });
 });
 
 // ═══════════════════════════════════════════════════════════════════════

@@ -1196,7 +1196,7 @@ export interface ChatSession {
 export interface ChatMessage {
   id: string;
   role: "user" | "assistant";
-  content: string;
+  content: string | ContentPart[];
   ts: string;
   /** Tool calls executed during this assistant message (only for role=assistant) */
   toolCalls?: ToolCallEvent[];

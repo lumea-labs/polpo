@@ -546,7 +546,7 @@ export function completionRoutes(getDeps: () => CompletionRouteDeps, apiKeys?: s
       // Persist user message (only the last one — earlier messages are already persisted)
       const lastUserMsg = [...body.messages].reverse().find(m => m.role === "user");
       if (lastUserMsg && sessionId) {
-        await sessionStore.addMessage(sessionId, "user", extractText(lastUserMsg.content));
+        await sessionStore.addMessage(sessionId, "user", lastUserMsg.content);
       }
     }
 

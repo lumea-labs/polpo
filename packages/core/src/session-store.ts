@@ -5,6 +5,12 @@
 
 export type MessageRole = "user" | "assistant";
 
+/** Multimodal content parts — mirrors OpenAI content-part format. */
+export type SessionContentPart =
+  | { type: "text"; text: string }
+  | { type: "image_url"; image_url: { url: string; detail?: string } }
+  | { type: "file"; file_id: string };
+
 export type ToolCallState = "preparing" | "calling" | "completed" | "error" | "interrupted";
 
 export interface ToolCallInfo {
@@ -23,7 +29,7 @@ export interface ToolCallInfo {
 export interface Message {
   id: string;              // nanoid(10)
   role: MessageRole;
-  content: string;
+  content: string | SessionContentPart[];
   ts: string;              // ISO timestamp
   /** Tool calls executed during this assistant message (only for role=assistant) */
   toolCalls?: ToolCallInfo[];
@@ -41,9 +47,9 @@ export interface Session {
 
 export interface SessionStore {
   create(title?: string, agent?: string): Promise<string>;
-  addMessage(sessionId: string, role: MessageRole, content: string): Promise<Message>;
+  addMessage(sessionId: string, role: MessageRole, content: string | SessionContentPart[]): Promise<Message>;
   /** Update the content of an existing message (e.g. finalize a streaming response). */
-  updateMessage(sessionId: string, messageId: string, content: string, toolCalls?: ToolCallInfo[]): Promise<boolean>;
+  updateMessage(sessionId: string, messageId: string, content: string | SessionContentPart[], toolCalls?: ToolCallInfo[]): Promise<boolean>;
   getMessages(sessionId: string): Promise<Message[]>;
   getRecentMessages(sessionId: string, limit: number): Promise<Message[]>;
   listSessions(): Promise<Session[]>;
