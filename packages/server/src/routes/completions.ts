@@ -205,12 +205,10 @@ function extractText(content: z.infer<typeof messageSchema>["content"]): string 
     .join("\n");
 }
 
-/** Resolve file content parts → text references. Called before toAIContent to inject attachment paths. */
-async function resolveFileContentParts(
+/** Resolve file content parts → text references the agent can act on with its tools. */
+function resolveFileContentParts(
   content: z.infer<typeof messageSchema>["content"],
-  attachmentStore: any,
-  sessionId: string | null,
-): Promise<z.infer<typeof messageSchema>["content"]> {
+): z.infer<typeof messageSchema>["content"] {
   if (typeof content === "string" || !content.some((p) => p.type === "file")) return content;
 
   const resolved: z.infer<typeof contentPartSchema>[] = [];
@@ -219,23 +217,11 @@ async function resolveFileContentParts(
       resolved.push(part);
       continue;
     }
-    // Resolve file_id → attachment metadata
-    const attachment = await attachmentStore?.get?.(part.file_id);
-    if (!attachment) {
-      resolved.push({ type: "text", text: `[File not found: ${part.file_id}]` });
-      continue;
-    }
-    // Bind loose file to session if needed
-    if (!attachment.sessionId && sessionId && attachmentStore.updateSessionId) {
-      await attachmentStore.updateSessionId(part.file_id, sessionId);
-    }
-    // Inject text reference — agent will use read_attachment tool to read the actual file
-    const sizeStr = attachment.size > 1024 * 1024
-      ? `${(attachment.size / (1024 * 1024)).toFixed(1)}MB`
-      : `${(attachment.size / 1024).toFixed(1)}KB`;
+    // file_id is a workspace-relative path — just pass it as a text reference.
+    // The agent has read_file / list_files tools to access the actual content.
     resolved.push({
       type: "text",
-      text: `[Attached file: ${attachment.filename} (${attachment.mimeType}, ${sizeStr}) — path: ${attachment.path}]`,
+      text: `[Attached file: ${part.file_id}]`,
     });
   }
   return resolved;
@@ -282,11 +268,9 @@ function toAIContent(content: z.infer<typeof messageSchema>["content"]): string 
  * - User messages → { role: "user", content } with AI SDK content parts
  * - Assistant messages → { role: "assistant", content: string }
  */
-async function convertMessages(
+function convertMessages(
   messages: z.infer<typeof messageSchema>[],
-  attachmentStore?: any,
-  sessionId?: string | null,
-): Promise<{ aiMessages: any[]; extraSystemParts: string[] }> {
+): { aiMessages: any[]; extraSystemParts: string[] } {
   const aiMessages: any[] = [];
   const extraSystemParts: string[] = [];
 
@@ -295,7 +279,7 @@ async function convertMessages(
       extraSystemParts.push(extractText(msg.content));
     } else if (msg.role === "user") {
       // Resolve file content parts → text references (only in the AI SDK message, not persisted)
-      const resolvedContent = await resolveFileContentParts(msg.content, attachmentStore, sessionId ?? null);
+      const resolvedContent = resolveFileContentParts(msg.content);
       aiMessages.push({ role: "user", content: toAIContent(resolvedContent) });
     } else if (msg.role === "assistant") {
       aiMessages.push({ role: "assistant", content: extractText(msg.content) });
@@ -405,7 +389,6 @@ export interface CompletionRouteDeps {
   getConfig: () => any;
   getMemoryStore: () => any;
   getSessionStore: () => any;
-  getAttachmentStore: () => any;
   getStore: () => any;
   emit: (event: string, data: any) => void;
   /** Resolve agent model. Must return an object with aiModel (LanguageModel), provider, contextWindow, maxTokens, and providerOptions. */
@@ -458,9 +441,7 @@ export function completionRoutes(getDeps: () => CompletionRouteDeps, apiKeys?: s
     let effectiveToolExecutor: (name: string, args: Record<string, unknown>) => Promise<string>;
     let isInteractiveFn: ((name: string) => boolean) | undefined;
 
-    const attachmentStore = deps.getAttachmentStore();
-    const rawSessionId = c.req.header("x-session-id") ?? null;
-    const { aiMessages, extraSystemParts } = await convertMessages(body.messages, attachmentStore, rawSessionId);
+    const { aiMessages, extraSystemParts } = convertMessages(body.messages);
 
     if (agentMode) {
       // ── Agent-direct mode ──

@@ -10,6 +10,10 @@
  * This store only persists metadata (filename, mimeType, size, path).
  */
 
+/**
+ * @deprecated Attachment metadata is no longer used. Files are referenced by workspace path.
+ * This interface is retained for backward compatibility with existing drizzle stores and DB schemas.
+ */
 export interface Attachment {
   id: string;
   /** Session this file belongs to. Optional — files can be uploaded before a session exists. */
@@ -24,6 +28,10 @@ export interface Attachment {
   createdAt: string;
 }
 
+/**
+ * @deprecated AttachmentStore is no longer used. Files are referenced by workspace path.
+ * This interface is retained for backward compatibility with existing drizzle stores and DB schemas.
+ */
 export interface AttachmentStore {
   save(attachment: Attachment): Promise<void>;
   getBySession(sessionId: string): Promise<Attachment[]>;

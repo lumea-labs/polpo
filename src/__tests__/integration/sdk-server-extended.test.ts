@@ -89,49 +89,7 @@ afterAll(async () => {
   }
 });
 
-// ── Attachments (via SDK methods) ────────────────────────────────────
-
-describe("Attachments", () => {
-  it("upload, list, get metadata, download, and delete via SDK", async () => {
-    const sessionId = "sdk-ext-attach-session";
-    const content = "Extended SDK integration test content";
-    const filename = "sdk-ext-test.txt";
-
-    // Upload
-    const blob = new Blob([content], { type: "text/plain" });
-    const uploaded = await client.uploadAttachment(sessionId, blob, filename);
-    expect(uploaded.id).toBeDefined();
-    expect(uploaded.filename).toBe(filename);
-    expect(uploaded.sessionId).toBe(sessionId);
-    expect(uploaded.mimeType).toBe("text/plain");
-    expect(uploaded.size).toBe(content.length);
-
-    // List by session
-    const list = await client.listAttachments(sessionId);
-    expect(Array.isArray(list)).toBe(true);
-    expect(list.find((a) => a.id === uploaded.id)).toBeDefined();
-
-    // Get metadata
-    const meta = await client.getAttachment(uploaded.id);
-    expect(meta.id).toBe(uploaded.id);
-    expect(meta.filename).toBe(filename);
-
-    // Download
-    const downloaded = await client.downloadAttachment(uploaded.id);
-    const text = await downloaded.text();
-    expect(text).toBe(content);
-
-    // Delete
-    const deleted = await client.deleteAttachment(uploaded.id);
-    expect(deleted).toBe(true);
-
-    // Verify deleted — listing for the session should no longer include it
-    const afterDelete = await client.listAttachments(sessionId);
-    expect(afterDelete.find((a) => a.id === uploaded.id)).toBeUndefined();
-  });
-});
-
-// ── Files ─────────────────────────────────────────────────────────────
+// ── Files ──────────────────────────────────────────────────────��──────
 
 describe("Files", () => {
   it("getFileRoots returns workspace and polpo roots", async () => {

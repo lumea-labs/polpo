@@ -5,6 +5,10 @@ import type { Dialect } from "../utils.js";
 
 type AnyTable = any;
 
+/**
+ * @deprecated AttachmentStore is no longer used. Files are referenced by workspace path.
+ * This class is retained for backward compatibility with existing DB schemas.
+ */
 export class DrizzleAttachmentStore implements AttachmentStore {
   constructor(
     private db: any,

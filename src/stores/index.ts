@@ -10,4 +10,3 @@ export { FileCheckpointStore } from "./file-checkpoint-store.js";
 export { FileDelayStore } from "./file-delay-store.js";
 export { FileTeamStore } from "./file-team-store.js";
 export { FileAgentStore } from "./file-agent-store.js";
-export { FileAttachmentStore } from "./file-attachment-store.js";

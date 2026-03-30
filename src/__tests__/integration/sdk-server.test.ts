@@ -266,51 +266,6 @@ describe("SSE Events", () => {
   });
 });
 
-// ── Attachments ───────────────────────────────────────────────────────
-
-describe("Attachments", () => {
-  it("upload, list, download, and delete an attachment", async () => {
-    const prefix = "/api/v1";
-
-    // Upload
-    const formData = new FormData();
-    formData.append("sessionId", "sdk-integration-session");
-    formData.append("file", new File(["SDK integration test content"], "sdk-test.txt", { type: "text/plain" }));
-
-    const uploadRes = await fetch(`${baseUrl}${prefix}/attachments`, {
-      method: "POST",
-      body: formData,
-    });
-    expect(uploadRes.status).toBe(201);
-    const uploaded = await uploadRes.json();
-    expect(uploaded.ok).toBe(true);
-    expect(uploaded.data.filename).toBe("sdk-test.txt");
-    const attachmentId = uploaded.data.id;
-
-    // List by session
-    const listRes = await fetch(`${baseUrl}${prefix}/attachments?sessionId=sdk-integration-session`);
-    expect(listRes.status).toBe(200);
-    const listed = await listRes.json();
-    expect(listed.data.find((a: any) => a.id === attachmentId)).toBeDefined();
-
-    // Download
-    const dlRes = await fetch(`${baseUrl}${prefix}/attachments/${attachmentId}/download`);
-    expect(dlRes.status).toBe(200);
-    const content = await dlRes.text();
-    expect(content).toBe("SDK integration test content");
-
-    // Delete
-    const delRes = await fetch(`${baseUrl}${prefix}/attachments/${attachmentId}`, {
-      method: "DELETE",
-    });
-    expect(delRes.status).toBe(200);
-
-    // Verify deleted
-    const getRes = await fetch(`${baseUrl}${prefix}/attachments/${attachmentId}`);
-    expect(getRes.status).toBe(404);
-  });
-});
-
 // ── Sessions ──────────────────────────────────────────────────────────
 
 describe("Sessions", () => {
