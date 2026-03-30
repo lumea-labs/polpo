@@ -88,13 +88,19 @@ const contentPartSchema = z.discriminatedUnion("type", [
 ]);
 
 const messageSchema = z.object({
-  role: z.enum(["system", "user", "assistant"]).openapi({
-    description: "Message role. System messages are appended as additional context (Polpo has its own system prompt).",
+  role: z.enum(["system", "user", "assistant", "tool"]).openapi({
+    description: "Message role. System messages are appended as additional context. Tool messages carry results of client-side tool calls.",
   }),
   content: z.union([
     z.string(),
     z.array(contentPartSchema),
   ]).openapi({ description: "Message content — plain string or array of content parts (text / image_url)" }),
+  tool_call_id: z.string().optional().openapi({
+    description: "ID of the tool call this message responds to (required for role=tool)",
+  }),
+  name: z.string().optional().openapi({
+    description: "Tool name (for role=tool messages)",
+  }),
 });
 
 const completionRequestSchema = z.object({
@@ -283,6 +289,17 @@ function convertMessages(
       aiMessages.push({ role: "user", content: toAIContent(resolvedContent) });
     } else if (msg.role === "assistant") {
       aiMessages.push({ role: "assistant", content: extractText(msg.content) });
+    } else if (msg.role === "tool" && msg.tool_call_id) {
+      // Client-side tool result — convert to AI SDK tool-result format
+      aiMessages.push({
+        role: "tool",
+        content: [{
+          type: "tool-result",
+          toolCallId: msg.tool_call_id,
+          toolName: msg.name ?? "unknown",
+          output: { type: "text" as const, value: extractText(msg.content) },
+        }],
+      });
     }
   }
 
@@ -362,6 +379,64 @@ function toAITools(tools: any[]): Record<string, { description?: string; inputSc
     }]),
   );
 }
+
+// ── Client-side tools ────────────────────────────────────────────────────
+// These tools have NO server-side execute. When the LLM calls them, the
+// server stops the tool loop and returns the tool call to the client via
+// standard OpenAI finish_reason: "tool_calls". The client handles them
+// (shows UI, collects input) and sends the result back as a tool message.
+
+const CLIENT_SIDE_TOOLS: Record<string, { description: string; inputSchema: any }> = {
+  ask_user_question: {
+    description: [
+      "Ask the user clarifying questions before proceeding.",
+      "Use when the request is ambiguous or has multiple valid interpretations.",
+      "Each question has pre-populated selectable options the user can pick from.",
+      "Do NOT ask for information you can infer from context or memory.",
+      "Do NOT ask obvious questions — if there's one clear interpretation, just do it.",
+      "Pre-populate options with the most likely choices. Be concise (1-5 words per label).",
+      "If you recommend one option, put it first and add '(Recommended)' to its label.",
+      "After receiving answers, proceed immediately — don't summarize the answers back.",
+      "Max 5 questions per call. Prefer fewer, more focused questions.",
+    ].join(" "),
+    inputSchema: jsonSchema({
+      type: "object",
+      properties: {
+        questions: {
+          type: "array",
+          description: "List of questions to ask the user",
+          items: {
+            type: "object",
+            properties: {
+              id: { type: "string", description: "Unique question key for matching answers (e.g. 'auth-method')" },
+              question: { type: "string", description: "The question text" },
+              header: { type: "string", description: "Short label for compact display (max 30 chars)" },
+              options: {
+                type: "array",
+                description: "Pre-populated selectable options",
+                items: {
+                  type: "object",
+                  properties: {
+                    label: { type: "string", description: "Option label (1-5 words)" },
+                    description: { type: "string", description: "Optional longer description" },
+                  },
+                  required: ["label"],
+                },
+              },
+              multiple: { type: "boolean", description: "Allow selecting multiple options (default: false)" },
+              custom: { type: "boolean", description: "Show a 'Type your own answer' input (default: true)" },
+            },
+            required: ["id", "question", "options"],
+          },
+        },
+      },
+      required: ["questions"],
+    }),
+  },
+};
+
+/** Set of tool names that are client-side (no server execute). */
+const CLIENT_SIDE_TOOL_NAMES = new Set(Object.keys(CLIENT_SIDE_TOOLS));
 
 // ── Route factory ──────────────────────────────────────────────────────
 
@@ -537,7 +612,9 @@ export function completionRoutes(getDeps: () => CompletionRouteDeps, apiKeys?: s
     }
 
     // Convert Polpo tools to AI SDK format (no execute — manual execution)
-    const aiTools = toAITools(effectiveTools);
+    // Client-side tools (ask_user_question, etc.) are added on top — they stop
+    // the server loop and return to the client as standard tool_calls.
+    const aiTools = { ...toAITools(effectiveTools), ...CLIENT_SIDE_TOOLS };
 
     if (body.stream) {
       // ── Streaming mode ──
@@ -678,6 +755,43 @@ export function completionRoutes(getDeps: () => CompletionRouteDeps, apiKeys?: s
             finalText += turnText;
 
             if (toolCalls.length === 0) break;
+
+            // ── Client-side tools — return to client as standard tool_calls ──
+            const clientSideCall = toolCalls.find((tc: any) => CLIENT_SIDE_TOOL_NAMES.has(tc.toolName));
+            if (clientSideCall) {
+              // Persist for session history
+              toolCallsAccum.push({
+                id: clientSideCall.toolCallId,
+                name: clientSideCall.toolName,
+                arguments: clientSideCall.input,
+                state: "interrupted",
+              });
+              // Send as standard OpenAI tool_calls finish reason
+              await stream.writeSSE({
+                data: JSON.stringify({
+                  id: completionId,
+                  object: "chat.completion.chunk",
+                  choices: [{
+                    index: 0,
+                    delta: {
+                      role: "assistant",
+                      tool_calls: [{
+                        index: 0,
+                        id: clientSideCall.toolCallId,
+                        type: "function",
+                        function: {
+                          name: clientSideCall.toolName,
+                          arguments: JSON.stringify(clientSideCall.input),
+                        },
+                      }],
+                    },
+                    finish_reason: "tool_calls",
+                  }],
+                }),
+              });
+              await stream.writeSSE({ data: "[DONE]" });
+              return;
+            }
 
             // Check for interactive tools — only in orchestrator mode (agents don't have interactive tools)
             const interactiveCall = agentMode ? undefined : toolCalls.find((tc: any) => isInteractiveFn?.(tc.toolName));
@@ -908,6 +1022,51 @@ export function completionRoutes(getDeps: () => CompletionRouteDeps, apiKeys?: s
 
           const toolCalls = genResult.toolCalls;
           if (toolCalls.length === 0) break;
+
+          // ── Client-side tools — return to client as standard tool_calls ──
+          const clientSideCall = toolCalls.find((tc: any) => CLIENT_SIDE_TOOL_NAMES.has(tc.toolName));
+          if (clientSideCall) {
+            toolCallsAccum.push({
+              id: clientSideCall.toolCallId,
+              name: clientSideCall.toolName,
+              arguments: clientSideCall.input,
+              state: "interrupted",
+            });
+            // Persist before returning
+            if (sessionStore && sessionId) {
+              const assistantMsg = finalText + (turnText ? "" : "");
+              if (assistantMsg) {
+                await sessionStore.addMessage(sessionId, "assistant", assistantMsg, toolCallsAccum);
+              }
+            }
+            return c.json({
+              id: completionId,
+              object: "chat.completion",
+              created: Math.floor(Date.now() / 1000),
+              model: "polpo",
+              choices: [{
+                index: 0,
+                message: {
+                  role: "assistant",
+                  content: finalText || null,
+                  tool_calls: [{
+                    id: clientSideCall.toolCallId,
+                    type: "function",
+                    function: {
+                      name: clientSideCall.toolName,
+                      arguments: JSON.stringify(clientSideCall.input),
+                    },
+                  }],
+                },
+                finish_reason: "tool_calls",
+              }],
+              usage: {
+                prompt_tokens: totalUsage.inputTokens ?? 0,
+                completion_tokens: totalUsage.outputTokens ?? 0,
+                total_tokens: totalUsage.totalTokens ?? 0,
+              },
+            });
+          }
 
           // Check for interactive tools — only in orchestrator mode (agents don't have interactive tools)
           const interactiveCall = agentMode ? undefined : toolCalls.find((tc: any) => isInteractiveFn?.(tc.toolName));
