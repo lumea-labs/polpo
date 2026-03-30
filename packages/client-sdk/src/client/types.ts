@@ -1250,7 +1250,7 @@ export interface ChatCompletionRequest {
 export interface ChatCompletionChoice {
   index: number;
   message: { role: "assistant"; content: string };
-  finish_reason: "stop" | "length" | "ask_user" | "mission_preview" | "vault_preview" | "open_file" | "navigate_to" | "open_tab";
+  finish_reason: "stop" | "length" | "tool_calls" | "ask_user" | "mission_preview" | "vault_preview" | "open_file" | "navigate_to" | "open_tab";
   /** Present when finish_reason is "ask_user" — structured questions for the user. */
   ask_user?: AskUserPayload;
   /** Present when finish_reason is "mission_preview" — proposed mission for user review. */
@@ -1281,6 +1281,13 @@ export interface ChatCompletionResponse {
 export interface ChatCompletionChunkDelta {
   role?: string;
   content?: string;
+  /** Standard OpenAI tool_calls in the delta (for client-side tools like ask_user_question). */
+  tool_calls?: Array<{
+    index: number;
+    id: string;
+    type: "function";
+    function: { name: string; arguments: string };
+  }>;
 }
 
 // === Tool Call streaming ===

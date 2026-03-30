@@ -40,7 +40,7 @@ export type { UseVaultEntriesReturn, SaveVaultEntryRequest } from "./hooks/use-v
 export { useAuthStatus } from "./hooks/use-auth-status.js";
 export { useAssessmentProgress } from "./hooks/use-assessment-progress.js";
 export { useChat } from "./hooks/use-chat.js";
-export type { UseChatReturn, UseChatOptions, ChatStatus } from "./hooks/use-chat.js";
+export type { UseChatReturn, UseChatOptions, ChatStatus, PendingToolCall } from "./hooks/use-chat.js";
 export { useAttachments } from "./hooks/use-attachments.js";
 export type { UseAttachmentsReturn } from "./hooks/use-attachments.js";
 export { useFiles } from "./hooks/use-files.js";
