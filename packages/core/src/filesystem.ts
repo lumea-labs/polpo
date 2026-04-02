@@ -47,6 +47,10 @@ export interface FileEntry {
   name: string;
   isDirectory: boolean;
   isFile: boolean;
+  /** File size in bytes (optional — populated when available from listing) */
+  size?: number;
+  /** Last modified date (optional — populated when available from listing) */
+  modifiedAt?: Date;
 }
 
 export interface FileStat {
