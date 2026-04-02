@@ -1,14 +1,10 @@
 import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
 import { resolve, relative, extname, basename, dirname } from "node:path";
-import type { FileSystem } from "@polpo-ai/core";
+import type { FileSystem, FileEntry } from "@polpo-ai/core";
 
 const POLPO_DIR_NAME = ".polpo";
 
-// ── FS helpers for optional methods ──────────────────────────────────────────
-// Optional methods use `as any` cast because they're defined with `?` on the interface.
-// At runtime, implementations (NodeFileSystem, SandboxProxyFS) always provide them.
-
-interface FileEntry { name: string; isDirectory: boolean; isFile: boolean; }
+// ── FS helpers ──────────────────────────────────────────────────────────────
 
 async function readdirTyped(fs: FileSystem, path: string): Promise<FileEntry[]> {
   if ((fs as any).readdirWithTypes) return (fs as any).readdirWithTypes(path);
