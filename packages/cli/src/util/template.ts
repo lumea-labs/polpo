@@ -73,13 +73,18 @@ export function findTemplate(id: string): TemplateDefinition | undefined {
 /**
  * Write a minimal .polpo/ scaffold into `targetDir` (blank template).
  * Creates:
- *   .polpo/polpo.json
- *   .polpo/agents/agent-1.json
+ *   .polpo/polpo.json  — project config (projectId added later by create)
+ *   .polpo/teams.json  — single "default" team
+ *   .polpo/agents.json — array of wrapped agents: [{agent, teamName}]
  *   .env.local.example
  *   README.md
+ *
+ * Layout follows the canonical format read by FileAgentStore / FileTeamStore
+ * and validated by `polpo deploy`: agents live in a single agents.json array
+ * with each entry as `{ agent: AgentConfig, teamName: string }`.
  */
 export function writeBlankScaffold(targetDir: string, projectName: string): void {
-  fs.mkdirSync(path.join(targetDir, ".polpo", "agents"), { recursive: true });
+  fs.mkdirSync(path.join(targetDir, ".polpo"), { recursive: true });
 
   fs.writeFileSync(
     path.join(targetDir, ".polpo", "polpo.json"),
@@ -87,13 +92,27 @@ export function writeBlankScaffold(targetDir: string, projectName: string): void
   );
 
   fs.writeFileSync(
-    path.join(targetDir, ".polpo", "agents", "agent-1.json"),
+    path.join(targetDir, ".polpo", "teams.json"),
     JSON.stringify(
-      {
-        name: "agent-1",
-        role: "helpful assistant",
-        model: "anthropic/claude-sonnet-4-5",
-      },
+      [{ name: "default", description: "Default team" }],
+      null,
+      2,
+    ) + "\n",
+  );
+
+  fs.writeFileSync(
+    path.join(targetDir, ".polpo", "agents.json"),
+    JSON.stringify(
+      [
+        {
+          agent: {
+            name: "agent-1",
+            role: "helpful assistant",
+            model: "xai/grok-4-fast",
+          },
+          teamName: "default",
+        },
+      ],
       null,
       2,
     ) + "\n",
