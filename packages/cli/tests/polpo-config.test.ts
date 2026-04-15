@@ -141,4 +141,27 @@ describe("writePolpoConfig", () => {
     writePolpoConfig(tmpDir, { project: "recovered" });
     expect(readPolpoConfig(tmpDir)).toEqual({ project: "recovered" });
   });
+
+  it("persists projectSlug + projectId together (canonical post-F4 shape)", () => {
+    writePolpoConfig(tmpDir, {
+      project: "demo",
+      projectSlug: "abcdefghijklmnopqrst",
+      projectId: "550e8400-e29b-41d4-a716-446655440000",
+    });
+    expect(readPolpoConfig(tmpDir)).toEqual({
+      project: "demo",
+      projectSlug: "abcdefghijklmnopqrst",
+      projectId: "550e8400-e29b-41d4-a716-446655440000",
+    });
+  });
+
+  it("backfilling projectSlug into a legacy id-only file preserves the id", () => {
+    writePolpoConfig(tmpDir, { project: "legacy", projectId: "old-uuid" });
+    writePolpoConfig(tmpDir, { projectSlug: "abcdefghijklmnopqrst" });
+    expect(readPolpoConfig(tmpDir)).toEqual({
+      project: "legacy",
+      projectId: "old-uuid",
+      projectSlug: "abcdefghijklmnopqrst",
+    });
+  });
 });

@@ -38,12 +38,13 @@ import { friendlyError } from "../util/errors.js";
 import { slugify } from "../util/slugify.js";
 import { installCodingAgentSkills, skillsInstallHint, type SkillsScope } from "../util/skills.js";
 import { isPolpoOnPath, installPolpoGlobally, globalInstallHint } from "../util/install-cli.js";
+import { POLPO_API_DOMAIN } from "../util/base-url.js";
 
 interface CreateOptions {
   name?: string;
   orgId?: string;
   template?: string;
-  url?: string;
+  apiUrl?: string;
   skills?: string;
   installCli?: string; // "yes" | "no"
   yes?: boolean;
@@ -59,7 +60,7 @@ export function registerCreateCommand(program: Command): void {
       "--template <id>",
       `Template: ${TEMPLATES.map((t) => t.id).join(", ")}`,
     )
-    .option("--url <base-url>", "API base URL override")
+    .option("--api-url <url>", "Override the API base URL (self-hosted, custom domain, dev)")
     .option("--skills <scope>", "Coding-agent skills install: global | project | skip", "")
     .option("--install-cli <yes|no>", "Install the polpo CLI globally after scaffold", "")
     .option("-y, --yes", "Skip confirmations (use defaults)")
@@ -68,12 +69,12 @@ export function registerCreateCommand(program: Command): void {
 
       // Step 1: Auth (auto-browser if needed)
       const creds = await requireAuth({
-        apiUrl: opts.url,
+        apiUrl: opts.apiUrl,
         context: "Creating a project requires an authenticated session.",
       });
       const client = createApiClient({
         apiKey: creds.apiKey,
-        baseUrl: opts.url ?? creds.baseUrl,
+        baseUrl: opts.apiUrl ?? creds.baseUrl,
       });
 
       // Step 2: Organization
@@ -214,17 +215,24 @@ export function registerCreateCommand(program: Command): void {
       }
 
       // Step 9: Write polpo.json + .env.local
+      // The data plane URL is derived from the slug — `{slug}.polpo.cloud`.
+      // For self-hosted or custom-domain users, set `apiUrl` in polpo.json
+      // (or the POLPO_API_URL env var at runtime) to override.
+      const tenantUrl = project.slug
+        ? `https://${project.slug}.${POLPO_API_DOMAIN}`
+        : creds.baseUrl;
+
       writePolpoConfig(targetDir, {
         project: project.name,
+        projectSlug: project.slug,
         projectId: project.id,
-        apiUrl: creds.baseUrl,
       });
 
       if (apiKey) {
         const envLocal = path.join(targetDir, ".env.local");
         const envContent =
           `POLPO_API_KEY=${apiKey.rawKey}\n` +
-          `POLPO_API_URL=${creds.baseUrl}\n`;
+          `POLPO_API_URL=${tenantUrl}\n`;
         try {
           fs.writeFileSync(envLocal, envContent, { flag: "wx" });
           clack.log.info(`Wrote ${pc.bold(".env.local")} with project credentials`);

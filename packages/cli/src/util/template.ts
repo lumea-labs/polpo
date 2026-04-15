@@ -120,7 +120,11 @@ export function writeBlankScaffold(targetDir: string, projectName: string): void
 
   fs.writeFileSync(
     path.join(targetDir, ".env.local.example"),
-    "POLPO_API_KEY=\nPOLPO_API_URL=https://api.polpo.sh\n",
+    "# Cloud usage: POLPO_API_URL is set automatically by `polpo create` to your\n" +
+      "# project's subdomain (https://{slug}.polpo.cloud). Override here only for\n" +
+      "# self-hosted, custom domains, or local dev.\n" +
+      "POLPO_API_KEY=\n" +
+      "POLPO_API_URL=https://your-project-slug.polpo.cloud\n",
   );
 
   fs.writeFileSync(

@@ -11,9 +11,22 @@ import * as path from "node:path";
 export interface PolpoProjectConfig {
   /** Project name shown in dashboards/logs. */
   project?: string;
-  /** Cloud project UUID. Set after `polpo create` or `polpo link`. */
+  /**
+   * Public project ref (Supabase-style, `^[a-z]{20}$`) — the canonical
+   * identifier the CLI uses to compute the data plane URL
+   * `https://{projectSlug}.polpo.cloud`. Set by `polpo create` / `polpo link`.
+   */
+  projectSlug?: string;
+  /**
+   * Cloud project UUID. Cache for display purposes (e.g. dashboard URL).
+   * Legacy clients pre-subdomain may have only this; the CLI backfills
+   * `projectSlug` from it on first read.
+   */
   projectId?: string;
-  /** API base URL override (defaults to https://api.polpo.sh). */
+  /**
+   * Explicit API base URL override. Wins over `projectSlug`-derived URL.
+   * Use for self-hosted, dev loopback, or custom domains.
+   */
   apiUrl?: string;
   /** Anything else (gateway settings, storage backend, …). */
   [key: string]: unknown;

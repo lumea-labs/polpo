@@ -132,7 +132,7 @@ describe("writeBlankScaffold", () => {
       "utf-8",
     );
     expect(env).toContain("POLPO_API_KEY=");
-    expect(env).toContain("POLPO_API_URL=https://api.polpo.sh");
+    expect(env).toContain("POLPO_API_URL=https://your-project-slug.polpo.cloud");
   });
 
   it("writes README.md with the project name as heading", () => {

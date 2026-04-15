@@ -26,18 +26,18 @@ export function registerLinkCommand(program: Command): void {
     .description("Link the current directory to an existing cloud project")
     .requiredOption("--project-id <id>", "Cloud project UUID")
     .option("-d, --dir <path>", "Working directory", ".")
-    .option("--url <base-url>", "API base URL override")
+    .option("--api-url <url>", "Override the API base URL (self-hosted, custom domain, dev)")
     .action(async (opts) => {
       clack.intro(pc.bold("Polpo — Link project"));
 
       const creds = await requireAuth({
-        apiUrl: opts.url,
+        apiUrl: opts.apiUrl,
         context: "Linking a project requires an authenticated session.",
       });
 
       const client = createApiClient({
         apiKey: creds.apiKey,
-        baseUrl: opts.url ?? creds.baseUrl,
+        baseUrl: opts.apiUrl ?? creds.baseUrl,
       });
 
       const s = clack.spinner();
@@ -75,10 +75,13 @@ export function registerLinkCommand(program: Command): void {
         }
       }
 
+      // Persist slug as the canonical identifier; UUID is kept for display.
+      // Don't pin apiUrl — the slug derives the data plane URL automatically.
+      // Self-hosted users can add `apiUrl` manually to override.
       writePolpoConfig(cwd, {
         project: project.name,
+        projectSlug: project.slug,
         projectId: project.id,
-        apiUrl: opts.url ?? creds.baseUrl,
       });
 
       clack.log.success(`Wrote ${pc.bold(".polpo/polpo.json")}`);

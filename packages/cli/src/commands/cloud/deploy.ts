@@ -499,6 +499,7 @@ export function registerDeployCommand(program: Command): void {
 
       // ── Step 1: Resolve project ────────────────────────
       let projectId: string | undefined = polpoConfig?.projectId;
+      let projectSlug: string | undefined = polpoConfig?.projectSlug;
 
       if (!projectId) {
         try {
@@ -511,6 +512,7 @@ export function registerDeployCommand(program: Command): void {
             interactive: isTTY(),
           });
           projectId = project.id;
+          projectSlug = project.slug;
           console.log(`  Project: ${project.name}\n`);
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
@@ -524,12 +526,22 @@ export function registerDeployCommand(program: Command): void {
         process.exit(1);
       }
 
-      // Data plane client — always sends x-project-id
+      // Backfill `projectSlug` for users with legacy polpo.json (id only).
+      if (!projectSlug && projectId) {
+        try {
+          const fresh = await import("../../util/project.js").then((m) =>
+            m.getProject(cpClient, projectId!),
+          );
+          if (fresh?.slug) projectSlug = fresh.slug;
+        } catch {}
+      }
+
       const client = createApiClient(creds, projectId);
 
-      // Save projectId in local polpo.json for future deploys
-      if (projectId && polpoConfig && !polpoConfig.projectId) {
+      // Persist whichever fields we resolved/discovered for next time.
+      if (polpoConfig && (!polpoConfig.projectId || (projectSlug && !polpoConfig.projectSlug))) {
         polpoConfig.projectId = projectId;
+        if (projectSlug) polpoConfig.projectSlug = projectSlug;
         fs.writeFileSync(path.join(polpoDir, "polpo.json"), JSON.stringify(polpoConfig, null, 2), "utf-8");
       }
 
