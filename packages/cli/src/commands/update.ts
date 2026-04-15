@@ -1,6 +1,6 @@
 import { execSync } from "node:child_process";
 import type { Command } from "commander";
-import chalk from "chalk";
+import pc from "picocolors";
 
 /**
  * Check if running inside an Electron (desktop) app.
@@ -50,22 +50,22 @@ export function registerUpdateCommand(program: Command): void {
     .action(async (opts) => {
       try {
         const currentVersion = program.version();
-        console.log(chalk.dim(`  Current version: ${currentVersion}`));
-        console.log(chalk.dim("  Checking for updates..."));
+        console.log(pc.dim(`  Current version: ${currentVersion}`));
+        console.log(pc.dim("  Checking for updates..."));
 
         const latest = await getLatestVersion();
 
         if (latest === currentVersion) {
-          console.log(chalk.green(`\n  Already up to date (${currentVersion})`));
+          console.log(pc.green(`\n  Already up to date (${currentVersion})`));
           return;
         }
 
         console.log(
-          `\n  ${chalk.yellow("Update available:")} ${chalk.dim(currentVersion)} → ${chalk.cyan.bold(latest)}`,
+          `\n  ${pc.yellow("Update available:")} ${pc.dim(currentVersion)} → ${pc.bold(pc.cyan(latest))}`,
         );
 
         if (opts.check) {
-          console.log(chalk.dim(`\n  Run ${chalk.white("polpo update")} to install.`));
+          console.log(pc.dim(`\n  Run ${pc.white("polpo update")} to install.`));
           return;
         }
 
@@ -81,30 +81,30 @@ export function registerUpdateCommand(program: Command): void {
             ? `pnpm add -g polpo-ai@${latest}`
             : `npm install -g polpo-ai@${latest}`;
 
-        console.log(chalk.dim(`\n  Updating via ${pm}...`));
-        console.log(chalk.dim(`  $ ${cmd}\n`));
+        console.log(pc.dim(`\n  Updating via ${pm}...`));
+        console.log(pc.dim(`  $ ${cmd}\n`));
 
         execSync(cmd, { stdio: "inherit", timeout: 120_000 });
 
         // Verify
         try {
           const newVer = execSync("polpo --version", { encoding: "utf-8" }).trim();
-          console.log(chalk.green(`\n  Updated to ${newVer}`));
+          console.log(pc.green(`\n  Updated to ${newVer}`));
         } catch {
-          console.log(chalk.green(`\n  Update complete. Restart your shell to use the new version.`));
+          console.log(pc.green(`\n  Update complete. Restart your shell to use the new version.`));
         }
 
         if (isDesktopApp()) {
           console.log(
-            chalk.yellow(`\n  You're running inside the Polpo desktop app.`),
+            pc.yellow(`\n  You're running inside the Polpo desktop app.`),
           );
           console.log(
-            chalk.yellow(`  Restart the app to apply the update to the desktop binary.`),
+            pc.yellow(`  Restart the app to apply the update to the desktop binary.`),
           );
         }
       } catch (err: any) {
-        console.error(chalk.red(`\n  Update failed: ${err.message}`));
-        console.log(chalk.dim("  Try manually: npm install -g polpo-ai@latest"));
+        console.error(pc.red(`\n  Update failed: ${err.message}`));
+        console.log(pc.dim("  Try manually: npm install -g polpo-ai@latest"));
         process.exit(1);
       }
     });

@@ -39,7 +39,7 @@ for (const envPath of [".env", ".polpo/.env"]) {
     }
   } catch { /* ignore */ }
 }
-import chalk from "chalk";
+import pc from "picocolors";
 
 import { registerModelsCommands } from "./commands/models.js";
 // Removed: task, mission, team, memory, config, playbook, skills, schedule,
@@ -78,11 +78,17 @@ const _gradColors: [number, number, number][] = [
   [93, 59, 87],
   [59, 62, 115],   // #3B3E73
 ];
+/** Apply bold + 24-bit RGB foreground via raw ANSI escapes (picocolors has no truecolor). */
+function rgbBold(r: number, g: number, b: number, s: string): string {
+  return `\x1b[1;38;2;${r};${g};${b}m${s}\x1b[0m`;
+}
+
 function _buildLogo(center = false): string {
   const cols = process.stdout.columns || 80;
   return "\n" + _logoLines.map((l, i) => {
     const pad = center ? " ".repeat(Math.max(0, Math.floor((cols - l.length) / 2))) : "  ";
-    return pad + chalk.bold.rgb(..._gradColors[i])(l);
+    const [r, g, b] = _gradColors[i];
+    return pad + rgbBold(r, g, b, l);
   }).join("\n") + "\n";
 }
 const LOGO = _buildLogo(false);
@@ -99,13 +105,13 @@ program
   .action(() => {
     console.log(LOGO);
     console.log(
-      chalk.bold("  Get started:\n") +
-      chalk.dim("    polpo login                         authenticate\n") +
-      chalk.dim("    polpo create                        create a new project\n") +
-      chalk.dim("    polpo link --project-id <id>        link an existing one\n") +
-      chalk.dim("    polpo deploy                        push to cloud\n"),
+      pc.bold("  Get started:\n") +
+      pc.dim("    polpo login                         authenticate\n") +
+      pc.dim("    polpo create                        create a new project\n") +
+      pc.dim("    polpo link --project-id <id>        link an existing one\n") +
+      pc.dim("    polpo deploy                        push to cloud\n"),
     );
-    console.log(chalk.dim("  See `polpo --help` for all commands."));
+    console.log(pc.dim("  See `polpo --help` for all commands."));
   });
 
 

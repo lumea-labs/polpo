@@ -5,7 +5,7 @@
  * at the right cloud. Honours --json for scripting.
  */
 import type { Command } from "commander";
-import chalk from "chalk";
+import pc from "picocolors";
 import { getAuth } from "../util/auth.js";
 import { createApiClient } from "./cloud/api.js";
 
@@ -31,7 +31,7 @@ export function registerWhoamiCommand(program: Command): void {
         if (opts.json) {
           console.log(JSON.stringify({ loggedIn: false }));
         } else {
-          console.log(chalk.red("Not logged in.") + " Run: " + chalk.bold("polpo login"));
+          console.log(pc.red("Not logged in.") + " Run: " + pc.bold("polpo login"));
         }
         process.exit(1);
       }
@@ -61,17 +61,17 @@ export function registerWhoamiCommand(program: Command): void {
 
       console.log();
       if (user?.email) {
-        console.log(chalk.bold("  User:   ") + user.email + (user.name ? chalk.dim(` (${user.name})`) : ""));
+        console.log(pc.bold("  User:   ") + user.email + (user.name ? pc.dim(` (${user.name})`) : ""));
       }
-      console.log(chalk.bold("  API:    ") + creds.baseUrl);
+      console.log(pc.bold("  API:    ") + creds.baseUrl);
       if (orgs.length === 0) {
-        console.log(chalk.bold("  Orgs:   ") + chalk.dim("none"));
+        console.log(pc.bold("  Orgs:   ") + pc.dim("none"));
       } else if (orgs.length === 1) {
-        console.log(chalk.bold("  Org:    ") + orgs[0].name + chalk.dim(` (${orgs[0].id})`));
+        console.log(pc.bold("  Org:    ") + orgs[0].name + pc.dim(` (${orgs[0].id})`));
       } else {
-        console.log(chalk.bold(`  Orgs:   ${orgs.length}`));
+        console.log(pc.bold(`  Orgs:   ${orgs.length}`));
         for (const o of orgs) {
-          console.log(chalk.dim(`    · ${o.name} (${o.id})`));
+          console.log(pc.dim(`    · ${o.name} (${o.id})`));
         }
       }
       console.log();

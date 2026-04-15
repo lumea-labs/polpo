@@ -6,7 +6,7 @@
  * can resolve orgIds without hitting the dashboard.
  */
 import type { Command } from "commander";
-import chalk from "chalk";
+import pc from "picocolors";
 import { requireAuth } from "../util/auth.js";
 import { createApiClient } from "./cloud/api.js";
 
@@ -36,7 +36,7 @@ export function registerOrgsCommand(program: Command): void {
         const res = await client.get<Org[]>("/v1/orgs");
         list = Array.isArray(res.data) ? res.data : [];
       } catch (err) {
-        console.error(chalk.red(`Failed to list orgs: ${(err as Error).message}`));
+        console.error(pc.red(`Failed to list orgs: ${(err as Error).message}`));
         process.exit(1);
       }
 
@@ -46,15 +46,15 @@ export function registerOrgsCommand(program: Command): void {
       }
 
       if (list.length === 0) {
-        console.log(chalk.dim("No organizations found."));
+        console.log(pc.dim("No organizations found."));
         return;
       }
 
       console.log();
       for (const o of list) {
-        const slug = o.slug ? chalk.dim(`  (${o.slug})`) : "";
-        console.log(`  ${chalk.bold(o.name)}${slug}`);
-        console.log(chalk.dim(`    id: ${o.id}`));
+        const slug = o.slug ? pc.dim(`  (${o.slug})`) : "";
+        console.log(`  ${pc.bold(o.name)}${slug}`);
+        console.log(pc.dim(`    id: ${o.id}`));
       }
       console.log();
     });

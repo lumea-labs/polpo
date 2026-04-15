@@ -14,7 +14,7 @@
  * The retry loop keeps the user unblocked without a separate "run login
  * and come back" round-trip.
  */
-import chalk from "chalk";
+import pc from "picocolors";
 import * as clack from "@clack/prompts";
 import { loadCredentials, type Credentials } from "../commands/cloud/config.js";
 import { performDeviceCodeLogin, DeviceCodeError } from "./device-code.js";
@@ -39,8 +39,8 @@ export async function requireAuth(
   if (existing) return existing;
 
   if (!isInteractive()) {
-    if (opts.context) console.error(chalk.red(opts.context));
-    console.error(chalk.red("Not logged in. Run: ") + chalk.bold("polpo login"));
+    if (opts.context) console.error(pc.red(opts.context));
+    console.error(pc.red("Not logged in. Run: ") + pc.bold("polpo login"));
     process.exit(1);
   }
 
@@ -72,9 +72,9 @@ export async function requireAuth(
   }
 
   clack.outro(
-    chalk.red("Authentication required. Run ") +
-      chalk.bold("polpo login") +
-      chalk.red(" to try again."),
+    pc.red("Authentication required. Run ") +
+      pc.bold("polpo login") +
+      pc.red(" to try again."),
   );
   process.exit(1);
 }

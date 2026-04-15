@@ -13,7 +13,7 @@
  * Does NOT retry automatically. Callers (requireAuth) can wrap in a
  * retry loop if they want the user to try again on failure.
  */
-import chalk from "chalk";
+import pc from "picocolors";
 import { openBrowser } from "./browser.js";
 import { saveCredentials, type Credentials } from "../commands/cloud/config.js";
 
@@ -81,14 +81,14 @@ export async function performDeviceCodeLogin(
   }
 
   // 2. Prompt + open browser
-  console.log(`\n  Authorization code: ${chalk.bold(code)}\n`);
+  console.log(`\n  Authorization code: ${pc.bold(code)}\n`);
 
   const authUrl = `${dashboardUrl}/cli-auth?code=${code}`;
   if (opts.noBrowser) {
     console.log(`  Open this URL to authorize:\n  ${authUrl}\n`);
   } else {
     console.log("  Opening browser...");
-    console.log(chalk.dim(`  If it doesn't open, visit: ${authUrl}\n`));
+    console.log(pc.dim(`  If it doesn't open, visit: ${authUrl}\n`));
     await openBrowser(authUrl);
   }
 
@@ -112,8 +112,8 @@ export async function performDeviceCodeLogin(
 
       if (data.status === "approved" && data.token) {
         saveCredentials(data.token, baseUrl);
-        console.log(chalk.green("\n\n  Logged in successfully."));
-        console.log(chalk.dim(`  Base URL: ${baseUrl}\n`));
+        console.log(pc.green("\n\n  Logged in successfully."));
+        console.log(pc.dim(`  Base URL: ${baseUrl}\n`));
         return { apiKey: data.token, baseUrl };
       }
 

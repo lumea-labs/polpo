@@ -20,7 +20,7 @@ import type { Command } from "commander";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as clack from "@clack/prompts";
-import chalk from "chalk";
+import pc from "picocolors";
 import { requireAuth } from "../util/auth.js";
 import { createApiClient } from "./cloud/api.js";
 import { pickOrg } from "../util/org.js";
@@ -61,7 +61,7 @@ export function registerCreateCommand(program: Command): void {
     .option("--skills <scope>", "Coding-agent skills install: global | project | skip", "")
     .option("-y, --yes", "Skip confirmations (use defaults)")
     .action(async (opts: CreateOptions) => {
-      clack.intro(chalk.bold("Polpo — Create a new project"));
+      clack.intro(pc.bold("Polpo — Create a new project"));
 
       // Step 1: Auth (auto-browser if needed)
       const creds = await requireAuth({
@@ -102,7 +102,7 @@ export function registerCreateCommand(program: Command): void {
         template = findTemplate(opts.template);
         if (!template) {
           clack.outro(
-            chalk.red(`Unknown template "${opts.template}". Valid: ${TEMPLATES.map((t) => t.id).join(", ")}`),
+            pc.red(`Unknown template "${opts.template}". Valid: ${TEMPLATES.map((t) => t.id).join(", ")}`),
           );
           process.exit(1);
         }
@@ -144,7 +144,7 @@ export function registerCreateCommand(program: Command): void {
         dirName = path.basename(input as string).replace(/[^a-zA-Z0-9._-]/g, "-");
         targetDir = path.resolve(originalCwd, dirName);
         if (fs.existsSync(targetDir)) {
-          clack.outro(chalk.red(`Directory "${dirName}" already exists.`));
+          clack.outro(pc.red(`Directory "${dirName}" already exists.`));
           process.exit(1);
         }
       }
@@ -163,7 +163,7 @@ export function registerCreateCommand(program: Command): void {
         s.stop(`Project "${project.name}" created`);
       } catch (err) {
         s.stop("Project creation failed.");
-        clack.outro(chalk.red(friendlyError((err as Error).message)));
+        clack.outro(pc.red(friendlyError((err as Error).message)));
         process.exit(1);
       }
 
@@ -189,7 +189,7 @@ export function registerCreateCommand(program: Command): void {
           s.stop(".polpo/ scaffold written");
         } catch (err) {
           s.stop("Scaffold failed.");
-          clack.outro(chalk.red((err as Error).message));
+          clack.outro(pc.red((err as Error).message));
           process.exit(1);
         }
       } else {
@@ -224,11 +224,11 @@ export function registerCreateCommand(program: Command): void {
           `POLPO_API_URL=${creds.baseUrl}\n`;
         try {
           fs.writeFileSync(envLocal, envContent, { flag: "wx" });
-          clack.log.info(`Wrote ${chalk.bold(".env.local")} with project credentials`);
+          clack.log.info(`Wrote ${pc.bold(".env.local")} with project credentials`);
         } catch {
           // .env.local exists already — leave it alone, just log the key once.
           clack.log.warn(".env.local exists — not overwriting. Your key:");
-          console.log(chalk.bold(`    POLPO_API_KEY=${apiKey.rawKey}`));
+          console.log(pc.bold(`    POLPO_API_KEY=${apiKey.rawKey}`));
         }
       }
 
@@ -263,7 +263,7 @@ export function registerCreateCommand(program: Command): void {
           s.stop("Coding-agent skills installed");
         } else {
           s.stop("Coding-agent skills install failed.");
-          clack.log.warn(`Install manually later: ${chalk.bold(skillsInstallHint())}`);
+          clack.log.warn(`Install manually later: ${pc.bold(skillsInstallHint())}`);
         }
       }
 
@@ -276,9 +276,9 @@ export function registerCreateCommand(program: Command): void {
         skillsScope === "skip" ? `# skills: ${skillsInstallHint()}` : undefined,
       ].filter(Boolean) as string[];
       clack.outro(
-        chalk.green(`✓ Project "${project.name}" ready in ${relDir}\n`) +
-          chalk.dim("  Next:\n") +
-          nextSteps.map((step) => chalk.dim(`    ${step}\n`)).join(""),
+        pc.green(`✓ Project "${project.name}" ready in ${relDir}\n`) +
+          pc.dim("  Next:\n") +
+          nextSteps.map((step) => pc.dim(`    ${step}\n`)).join(""),
       );
     });
 }

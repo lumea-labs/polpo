@@ -110,7 +110,7 @@ export function startUpdateCheck(currentVersion: string): () => void {
 }
 
 function printNotice(current: string, latest: string): void {
-  // Dynamic import would be async; just use plain ANSI since chalk is ESM-heavy
+  // Plain ANSI escapes — no color lib needed for a single-line notice
   const yellow = "\x1b[33m";
   const cyan = "\x1b[36m";
   const dim = "\x1b[2m";

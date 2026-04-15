@@ -13,7 +13,7 @@
 import type { Command } from "commander";
 import * as path from "node:path";
 import * as clack from "@clack/prompts";
-import chalk from "chalk";
+import pc from "picocolors";
 import { requireAuth } from "../util/auth.js";
 import { createApiClient } from "./cloud/api.js";
 import { getProject } from "../util/project.js";
@@ -28,7 +28,7 @@ export function registerLinkCommand(program: Command): void {
     .option("-d, --dir <path>", "Working directory", ".")
     .option("--url <base-url>", "API base URL override")
     .action(async (opts) => {
-      clack.intro(chalk.bold("Polpo — Link project"));
+      clack.intro(pc.bold("Polpo — Link project"));
 
       const creds = await requireAuth({
         apiUrl: opts.url,
@@ -48,15 +48,15 @@ export function registerLinkCommand(program: Command): void {
         if (!project) {
           s.stop("Project not found.");
           clack.outro(
-            chalk.red(`No project with id ${opts.projectId} — check the URL or run `) +
-              chalk.bold("polpo projects"),
+            pc.red(`No project with id ${opts.projectId} — check the URL or run `) +
+              pc.bold("polpo projects"),
           );
           process.exit(1);
         }
         s.stop(`Project: ${project.name}`);
       } catch (err) {
         s.stop("Failed to verify project.");
-        clack.outro(chalk.red(friendlyError((err as Error).message)));
+        clack.outro(pc.red(friendlyError((err as Error).message)));
         process.exit(1);
       }
 
@@ -81,11 +81,11 @@ export function registerLinkCommand(program: Command): void {
         apiUrl: opts.url ?? creds.baseUrl,
       });
 
-      clack.log.success(`Wrote ${chalk.bold(".polpo/polpo.json")}`);
+      clack.log.success(`Wrote ${pc.bold(".polpo/polpo.json")}`);
       clack.outro(
-        chalk.green("✓ Linked. Next: ") +
-          chalk.bold("polpo deploy") +
-          chalk.dim(" to push your agents."),
+        pc.green("✓ Linked. Next: ") +
+          pc.bold("polpo deploy") +
+          pc.dim(" to push your agents."),
       );
     });
 }

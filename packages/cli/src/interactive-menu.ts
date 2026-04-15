@@ -18,7 +18,7 @@ import type { Command } from "commander";
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import * as clack from "@clack/prompts";
-import chalk from "chalk";
+import pc from "picocolors";
 import { loadCredentials } from "./commands/cloud/config.js";
 
 function hasLinkedProject(cwd: string = process.cwd()): boolean {
@@ -33,7 +33,7 @@ export async function runInteractiveMenu(program: Command): Promise<void> {
   const isLoggedIn = !!loadCredentials();
   const linked = hasLinkedProject();
 
-  clack.intro(chalk.bold("Polpo"));
+  clack.intro(pc.bold("Polpo"));
 
   const options: { value: string; label: string; hint?: string }[] = [];
 
@@ -70,12 +70,12 @@ export async function runInteractiveMenu(program: Command): Promise<void> {
   if (choice === "docs") {
     const { openBrowser } = await import("./util/browser.js");
     await openBrowser("https://docs.polpo.sh");
-    clack.outro(chalk.dim("Opened https://docs.polpo.sh"));
+    clack.outro(pc.dim("Opened https://docs.polpo.sh"));
     return;
   }
 
   if (choice === "help") {
-    clack.outro(chalk.dim("Showing full command list."));
+    clack.outro(pc.dim("Showing full command list."));
     program.outputHelp();
     return;
   }

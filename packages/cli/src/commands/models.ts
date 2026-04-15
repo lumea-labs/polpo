@@ -2,7 +2,7 @@
  * polpo models list — list available models from the Polpo AI Gateway.
  */
 import { Command } from "commander";
-import chalk from "chalk";
+import pc from "picocolors";
 
 const GATEWAY_URL = "https://polpo.sh/api/gateway/models";
 
@@ -62,13 +62,13 @@ export function registerModelsCommands(parent: Command): void {
         byProvider.get(provider)!.push(m);
       }
 
-      console.log(`\n  ${chalk.bold(`${data.length} models`)} from ${byProvider.size} providers\n`);
+      console.log(`\n  ${pc.bold(`${data.length} models`)} from ${byProvider.size} providers\n`);
 
       for (const [provider, models] of byProvider) {
-        console.log(`  ${chalk.bold(provider)} (${models.length})`);
+        console.log(`  ${pc.bold(provider)} (${models.length})`);
         for (const m of models) {
-          const ctx = m.context_window ? chalk.dim(` ${(m.context_window / 1000).toFixed(0)}k`) : "";
-          const price = m.pricing ? chalk.dim(` $${m.pricing.input}/$${m.pricing.output}`) : "";
+          const ctx = m.context_window ? pc.dim(` ${(m.context_window / 1000).toFixed(0)}k`) : "";
+          const price = m.pricing ? pc.dim(` $${m.pricing.input}/$${m.pricing.output}`) : "";
           console.log(`    ${m.id}${ctx}${price}`);
         }
         console.log();
