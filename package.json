@@ -31,9 +31,9 @@
     "LICENSE"
   ],
   "scripts": {
-    "build": "pnpm --filter @polpo-ai/core build && pnpm --filter @polpo-ai/vault-crypto build && pnpm --filter @polpo-ai/drizzle build && pnpm --filter @polpo-ai/llm build && pnpm --filter @polpo-ai/tools build && pnpm --filter @polpo-ai/server build && tsc && pnpm --filter @polpo-ai/sdk build && pnpm --filter @polpo-ai/react build",
+    "build": "pnpm --filter @polpo-ai/core build && pnpm --filter @polpo-ai/vault-crypto build && pnpm --filter @polpo-ai/drizzle build && pnpm --filter @polpo-ai/llm build && pnpm --filter @polpo-ai/tools build && pnpm --filter @polpo-ai/server build && tsc && pnpm --filter @polpo-ai/sdk build && pnpm --filter @polpo-ai/react build && pnpm --filter @polpo-ai/cli build",
     "dev": "tsc --watch",
-    "start": "node dist/cli/index.js",
+    "start": "node packages/cli/dist/index.js",
     "test": "vitest",
     "test:coverage": "vitest run --coverage",
     "typecheck": "pnpm --filter @polpo-ai/core build && pnpm --filter @polpo-ai/vault-crypto build && pnpm --filter @polpo-ai/drizzle build && pnpm --filter @polpo-ai/llm build && pnpm --filter @polpo-ai/tools build && pnpm --filter @polpo-ai/server build && ./node_modules/.bin/tsc --noEmit",

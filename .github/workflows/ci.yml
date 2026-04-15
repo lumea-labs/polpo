@@ -80,6 +80,7 @@ jobs:
           pnpm --filter @polpo-ai/llm pack --pack-destination /tmp/tarballs
           pnpm --filter @polpo-ai/server pack --pack-destination /tmp/tarballs
           pnpm --filter @polpo-ai/tools pack --pack-destination /tmp/tarballs
+          pnpm --filter @polpo-ai/cli pack --pack-destination /tmp/tarballs
           pnpm pack --pack-destination /tmp/tarballs
       - name: Verify npm install from tarball
         run: |
