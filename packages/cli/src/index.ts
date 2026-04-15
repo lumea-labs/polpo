@@ -13,9 +13,8 @@ import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { Command } from "commander";
 
-// Read version from package.json at build time fallback
 const __dirname_cli = dirname(fileURLToPath(import.meta.url));
-const pkgPath = resolve(__dirname_cli, "..", "..", "package.json");
+const pkgPath = resolve(__dirname_cli, "..", "package.json");
 const PKG_VERSION = existsSync(pkgPath)
   ? JSON.parse(readFileSync(pkgPath, "utf-8")).version
   : "0.0.0";
