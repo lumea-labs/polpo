@@ -9,20 +9,6 @@ export function isTTY(): boolean {
   return process.stdin.isTTY === true;
 }
 
-export function prompt(question: string): Promise<string> {
-  return new Promise((resolve) => {
-    const rl = readline.createInterface({
-      input: process.stdin,
-      output: process.stdout,
-    });
-
-    rl.question(question, (answer) => {
-      rl.close();
-      resolve(answer.trim());
-    });
-  });
-}
-
 export function promptMasked(question: string): Promise<string> {
   return new Promise((resolve) => {
     const rl = readline.createInterface({

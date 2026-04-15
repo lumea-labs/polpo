@@ -12,9 +12,9 @@
  *   5. Directory name        — where to scaffold
  *   6. Create cloud project  — POST /v1/projects + wait active
  *   7. Generate scoped API key
- *   8. Scaffold files        — inline (blank) or tiged clone
+ *   8. Scaffold files        — inline (blank) or shell to create-polpo-app
  *   9. Write polpo.json + .env.local
- *  10. npm install (if template has package.json)
+ *  10. Install coding-agent skills (optional wizard step)
  */
 import type { Command } from "commander";
 import * as fs from "node:fs";
@@ -36,7 +36,7 @@ import {
 } from "../util/template.js";
 import { friendlyError } from "../util/errors.js";
 import { slugify } from "../util/slugify.js";
-import { installPolpoSkills, skillsInstallHint, type SkillsScope } from "../util/skills.js";
+import { installCodingAgentSkills, skillsInstallHint, type SkillsScope } from "../util/skills.js";
 
 interface CreateOptions {
   name?: string;
@@ -258,7 +258,7 @@ export function registerCreateCommand(program: Command): void {
       let skillsInstalled = false;
       if (skillsScope !== "skip") {
         s.start(`Installing coding-agent skills (${skillsScope})...`);
-        skillsInstalled = await installPolpoSkills({ scope: skillsScope, cwd: targetDir });
+        skillsInstalled = await installCodingAgentSkills({ scope: skillsScope, cwd: targetDir });
         if (skillsInstalled) {
           s.stop("Coding-agent skills installed");
         } else {

@@ -39,7 +39,7 @@ export interface InstallSkillsOptions {
  * install is an enhancement, not a prerequisite. Callers should log
  * the failure as a warning and continue.
  */
-export async function installPolpoSkills(opts: InstallSkillsOptions): Promise<boolean> {
+export async function installCodingAgentSkills(opts: InstallSkillsOptions): Promise<boolean> {
   if (opts.scope === "skip") return false;
 
   const flags = [
