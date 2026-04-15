@@ -55,6 +55,7 @@ import { registerProjectsCommand } from "./commands/cloud/projects.js";
 import { registerStatusCommand as registerCloudStatusCommand } from "./commands/cloud/status.js";
 import { registerLogsCommand as registerCloudLogsCommand } from "./commands/cloud/logs.js";
 import { registerLinkCommand } from "./commands/link.js";
+import { registerCreateCommand } from "./commands/create.js";
 import { startUpdateCheck } from "./update-check.js";
 import { isBareInteractiveInvocation, runInteractiveMenu } from "./interactive-menu.js";
 
