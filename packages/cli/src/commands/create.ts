@@ -58,7 +58,7 @@ export function registerCreateCommand(program: Command): void {
       `Template: ${TEMPLATES.map((t) => t.id).join(", ")}`,
     )
     .option("--url <base-url>", "API base URL override")
-    .option("--skills <scope>", "Editor skills install: global | project | skip", "")
+    .option("--skills <scope>", "Coding-agent skills install: global | project | skip", "")
     .option("-y, --yes", "Skip confirmations (use defaults)")
     .action(async (opts: CreateOptions) => {
       clack.intro(chalk.bold("Polpo — Create a new project"));
@@ -171,7 +171,7 @@ export function registerCreateCommand(program: Command): void {
       s.start("Generating API key...");
       let apiKey;
       try {
-        apiKey = await createProjectApiKey(client, project.id, "Created by polpo create");
+        apiKey = await createProjectApiKey(client, orgId, project.id, "Created by polpo create");
         s.stop("API key generated");
       } catch (err) {
         s.stop("API key generation failed.");
@@ -220,7 +220,7 @@ export function registerCreateCommand(program: Command): void {
       if (apiKey) {
         const envLocal = path.join(targetDir, ".env.local");
         const envContent =
-          `POLPO_API_KEY=${apiKey.key}\n` +
+          `POLPO_API_KEY=${apiKey.rawKey}\n` +
           `POLPO_API_URL=${creds.baseUrl}\n`;
         try {
           fs.writeFileSync(envLocal, envContent, { flag: "wx" });
@@ -228,11 +228,11 @@ export function registerCreateCommand(program: Command): void {
         } catch {
           // .env.local exists already — leave it alone, just log the key once.
           clack.log.warn(".env.local exists — not overwriting. Your key:");
-          console.log(chalk.bold(`    POLPO_API_KEY=${apiKey.key}`));
+          console.log(chalk.bold(`    POLPO_API_KEY=${apiKey.rawKey}`));
         }
       }
 
-      // Step 10: Editor skills
+      // Step 10: Coding-agent skills
       let skillsScope: SkillsScope;
       if (opts.skills === "global" || opts.skills === "project" || opts.skills === "skip") {
         skillsScope = opts.skills;
@@ -240,7 +240,7 @@ export function registerCreateCommand(program: Command): void {
         skillsScope = "global";
       } else {
         const choice = await clack.select<SkillsScope>({
-          message: "Install editor skills? (rules for Cursor, Claude Code, Windsurf, …)",
+          message: "Install skills for your coding agent? (Cursor, Claude Code, Windsurf, …)",
           options: [
             { value: "global", label: "Yes, globally", hint: "recommended — once per machine" },
             { value: "project", label: "Yes, just for this project" },
@@ -257,12 +257,12 @@ export function registerCreateCommand(program: Command): void {
 
       let skillsInstalled = false;
       if (skillsScope !== "skip") {
-        s.start(`Installing editor skills (${skillsScope})...`);
+        s.start(`Installing coding-agent skills (${skillsScope})...`);
         skillsInstalled = await installPolpoSkills({ scope: skillsScope, cwd: targetDir });
         if (skillsInstalled) {
-          s.stop("Editor skills installed");
+          s.stop("Coding-agent skills installed");
         } else {
-          s.stop("Editor skills install failed.");
+          s.stop("Coding-agent skills install failed.");
           clack.log.warn(`Install manually later: ${chalk.bold(skillsInstallHint())}`);
         }
       }

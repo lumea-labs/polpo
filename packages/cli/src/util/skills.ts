@@ -3,10 +3,10 @@
  * (Cursor, Claude Code, Windsurf, Codex, Roo, etc.) via the canonical
  * `skills` CLI.
  *
- * Rule packs teach the user's IDE assistant how to work with Polpo
+ * Rule packs teach the user's coding agent how to work with Polpo
  * (agents.json schema, `polpo deploy` flow, playbook YAML conventions,
  * ...). They are additive: the `skills` tool merges into existing
- * editor configs rather than replacing them.
+ * agent configs rather than replacing them.
  *
  * Scope:
  *   - `global`  → user's machine (~/.claude, ~/.cursor, etc.)
