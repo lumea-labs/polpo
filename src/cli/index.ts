@@ -9,11 +9,9 @@ if (major < 20) {
 }
 
 import { resolve, dirname } from "node:path";
-// fs/promises no longer needed (init removed)
 import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { Command } from "commander";
-import { getPolpoDir } from "../core/constants.js";
 
 // Read version from package.json at build time fallback
 const __dirname_cli = dirname(fileURLToPath(import.meta.url));
@@ -42,16 +40,12 @@ for (const envPath of [".env", ".polpo/.env"]) {
   } catch { /* ignore */ }
 }
 import chalk from "chalk";
-// generatePolpoConfigDefault + savePolpoConfig used via dynamic import in setup.ts
-import { Orchestrator } from "../core/orchestrator.js";
-import type { PolpoState, Task, TaskStatus } from "../core/types.js";
 
 import { registerModelsCommands } from "./commands/models.js";
 // Removed: task, mission, team, memory, config, playbook, skills, schedule,
 // agent-onboard, logs, browser-profile — all file-based commands.
 // Resources are defined in files and synced via polpo deploy.
 import { registerUpdateCommand } from "./commands/update.js";
-import { registerDevCommand } from "./commands/dev.js";
 // Cloud commands (unified CLI)
 import { registerLoginCommand } from "./commands/cloud/login.js";
 import { registerLogoutCommand } from "./commands/cloud/logout.js";
@@ -60,108 +54,7 @@ import { registerByokCommand } from "./commands/cloud/byok.js";
 import { registerProjectsCommand } from "./commands/cloud/projects.js";
 import { registerStatusCommand as registerCloudStatusCommand } from "./commands/cloud/status.js";
 import { registerLogsCommand as registerCloudLogsCommand } from "./commands/cloud/logs.js";
-// ensureSetup removed — no longer gating on polpo.json
 import { startUpdateCheck } from "./update-check.js";
-
-/** Wire orchestrator events to console output with chalk formatting. */
-function wireConsoleEvents(orchestrator: Orchestrator): void {
-  orchestrator.on("orchestrator:started", ({ project, agents }) => {
-    const ts = new Date().toLocaleTimeString();
-    console.log(chalk.dim(`[${ts}]`) + ` ${chalk.bold(`Polpo started — ${project}`)}`);
-    console.log(chalk.dim(`[${ts}]`) + ` ${chalk.dim(`Team agents: ${agents.join(", ")}`)}`);
-    console.log();
-  });
-
-  orchestrator.on("task:created", ({ task }) => {
-    const ts = new Date().toLocaleTimeString();
-    console.log(chalk.dim(`[${ts}]`) + ` ${chalk.cyan(`[${task.id}] Task added: ${task.title}`)}`);
-  });
-
-  orchestrator.on("agent:spawned", ({ taskId, agentName, taskTitle }) => {
-    const ts = new Date().toLocaleTimeString();
-    console.log(chalk.dim(`[${ts}]`) + ` ${chalk.blue(`[${taskId}] Spawning "${agentName}" for: ${taskTitle}`)}`);
-  });
-
-  orchestrator.on("agent:finished", ({ taskId, exitCode, duration }) => {
-    const ts = new Date().toLocaleTimeString();
-    console.log(chalk.dim(`[${ts}]`) + ` [${taskId}] Agent finished — exit ${exitCode} (${(duration / 1000).toFixed(1)}s)`);
-  });
-
-  orchestrator.on("assessment:complete", ({ taskId, passed, globalScore, message }) => {
-    const ts = new Date().toLocaleTimeString();
-    const scoreInfo = globalScore !== undefined ? ` (score: ${globalScore.toFixed(1)}/5)` : "";
-    if (passed) {
-      console.log(chalk.dim(`[${ts}]`) + ` ${chalk.green(`[${taskId}] PASSED${scoreInfo} — ${message}`)}`);
-    } else {
-      console.log(chalk.dim(`[${ts}]`) + ` ${chalk.red(`[${taskId}] FAILED${scoreInfo} — ${message}`)}`);
-    }
-  });
-
-  orchestrator.on("task:transition", ({ taskId, to, task }) => {
-    if (to === "done") {
-      const ts = new Date().toLocaleTimeString();
-      console.log(chalk.dim(`[${ts}]`) + ` ${chalk.green(`[${taskId}] DONE — ${task.title}`)}`);
-    }
-  });
-
-  orchestrator.on("task:retry", ({ taskId, attempt, maxRetries }) => {
-    const ts = new Date().toLocaleTimeString();
-    console.log(chalk.dim(`[${ts}]`) + ` ${chalk.yellow(`[${taskId}] Retrying (${attempt}/${maxRetries})...`)}`);
-  });
-
-  orchestrator.on("task:retry:blocked", ({ taskId, reason }) => {
-    const ts = new Date().toLocaleTimeString();
-    console.log(chalk.dim(`[${ts}]`) + ` ${chalk.yellow(`[${taskId}] ⚠ Retry blocked: ${reason}`)}`);
-  });
-
-  orchestrator.on("task:maxRetries", ({ taskId }) => {
-    const ts = new Date().toLocaleTimeString();
-    console.log(chalk.dim(`[${ts}]`) + ` ${chalk.red(`[${taskId}] Max retries reached — giving up`)}`);
-  });
-
-  orchestrator.on("orchestrator:deadlock", () => {
-    const ts = new Date().toLocaleTimeString();
-    console.log(chalk.dim(`[${ts}]`) + ` ${chalk.red("Deadlock detected: tasks have unresolvable dependencies.")}`);
-  });
-
-  orchestrator.on("orchestrator:shutdown", () => {
-    const ts = new Date().toLocaleTimeString();
-    console.log(chalk.dim(`[${ts}]`) + ` ${chalk.dim("Polpo shut down cleanly.")}`);
-  });
-
-  orchestrator.on("task:recovered", ({ title, previousStatus }) => {
-    const ts = new Date().toLocaleTimeString();
-    console.log(chalk.dim(`[${ts}]`) + ` ${chalk.yellow(`Recovering orphaned task: "${title}" (was ${previousStatus})`)}`);
-  });
-
-  orchestrator.on("log", ({ level, message }) => {
-    const ts = new Date().toLocaleTimeString();
-    const color = level === "error" ? chalk.red
-      : level === "warn" ? chalk.yellow
-      : chalk.dim;
-    console.log(chalk.dim(`[${ts}]`) + ` ${color(message)}`);
-  });
-
-  orchestrator.on("checkpoint:reached", ({ group, checkpointName, message }) => {
-    const ts = new Date().toLocaleTimeString();
-    console.log(chalk.dim(`[${ts}]`) + ` ${chalk.yellow(`[${group}] Checkpoint reached: "${checkpointName}"${message ? ` — ${message}` : ""}`)}`);
-  });
-
-  orchestrator.on("checkpoint:resumed", ({ group, checkpointName }) => {
-    const ts = new Date().toLocaleTimeString();
-    console.log(chalk.dim(`[${ts}]`) + ` ${chalk.green(`[${group}] Checkpoint resumed: "${checkpointName}"`)}`);
-  });
-
-  orchestrator.on("delay:started", ({ group, delayName, duration, message }) => {
-    const ts = new Date().toLocaleTimeString();
-    console.log(chalk.dim(`[${ts}]`) + ` ${chalk.blue(`[${group}] Delay started: "${delayName}" (${duration})${message ? ` — ${message}` : ""}`)}`);
-  });
-
-  orchestrator.on("delay:expired", ({ group, delayName }) => {
-    const ts = new Date().toLocaleTimeString();
-    console.log(chalk.dim(`[${ts}]`) + ` ${chalk.green(`[${group}] Delay expired: "${delayName}" — blocked tasks unblocked`)}`);
-  });
-}
 
 // Gradient from pink (#F78B97) to indigo (#3B3E73) — 6 rows
 const _logoLines = [
@@ -189,8 +82,6 @@ function _buildLogo(center = false): string {
 }
 const LOGO = _buildLogo(false);
 
-const LOGO_MINI = `  ${chalk.bold.white("🐙 P O L P O")}  `;
-
 const program = new Command();
 
 program
@@ -204,283 +95,14 @@ program
     console.log(LOGO);
     console.log(
       chalk.bold("  Get started:\n") +
+      chalk.dim("    polpo login                         authenticate\n") +
       chalk.dim("    polpo create                        create a new project\n") +
       chalk.dim("    polpo link --project-id <id>        link an existing one\n") +
-      chalk.dim("    polpo dev                           run the local server + dashboard\n") +
       chalk.dim("    polpo deploy                        push to cloud\n"),
     );
     console.log(chalk.dim("  See `polpo --help` for all commands."));
   });
 
-registerDevCommand(program);
-
-// polpo run
-program
-  .command("run")
-  .description("Run the orchestration (execute pending tasks)")
-  .option("-d, --dir <path>", "Working directory", ".")
-  .action(async (opts) => {
-    console.log(LOGO);
-    try {
-      const orchestrator = new Orchestrator(opts.dir);
-      wireConsoleEvents(orchestrator);
-      await orchestrator.run();
-    } catch (err: any) {
-      console.error(chalk.red(`Error: ${err.message}`));
-      process.exit(1);
-    }
-  });
-
-// polpo status
-program
-  .command("status")
-  .description("Show current task status (live dashboard)")
-  .option("-d, --dir <path>", "Working directory", ".")
-  .option("-w, --watch", "Watch mode: auto-refresh", false)
-  .action(async (opts) => {
-    const polpoDir = getPolpoDir(resolve(opts.dir));
-    let frame = 0;
-    const startTime = Date.now();
-    let lastState: PolpoState | null = null;
-    let orchestrator: Orchestrator | null = null;
-
-    const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-    const PULSE  = ["●", "◉", "○", "◉"];
-
-    const printStatus = async () => {
-      if (!existsSync(resolve(polpoDir, "polpo.json"))) {
-        console.log(chalk.red("  No .polpo/polpo.json found. Run 'polpo create' or 'polpo link --project-id <id>' first."));
-        return;
-      }
-
-      try {
-        if (!orchestrator) {
-          orchestrator = new Orchestrator(resolve(opts.dir));
-          await orchestrator.init();
-        }
-        lastState = await orchestrator.getStore().getState();
-      } catch { /* store error — use last state */
-      }
-
-      const state = lastState;
-      if (!state) return;
-
-      if (state.tasks.length === 0) {
-        console.log(chalk.dim("  No tasks yet."));
-        return;
-      }
-
-      const spin = SPINNER[frame % SPINNER.length];
-      const pulse = PULSE[frame % PULSE.length];
-
-      const getIcon = (status: TaskStatus) => {
-        switch (status) {
-          case "draft":             return chalk.gray("✎");
-          case "pending":           return chalk.gray("○");
-          case "awaiting_approval": return chalk.yellow("⏳");
-          case "assigned":          return chalk.cyan(pulse);
-          case "in_progress":       return chalk.yellow(spin);
-          case "review":            return chalk.magenta(spin);
-          case "done":              return chalk.green("●");
-          case "failed":            return chalk.red("✗");
-        }
-      };
-
-      const getLabel = (status: TaskStatus) => {
-        switch (status) {
-          case "draft":             return chalk.gray("DRAFT     ");
-          case "pending":           return chalk.gray("PENDING   ");
-          case "awaiting_approval": return chalk.yellow("APPROVAL  ");
-          case "assigned":          return chalk.cyan("ASSIGNED  ");
-          case "in_progress":       return chalk.yellow.bold("RUNNING   ");
-          case "review":            return chalk.magenta.bold("REVIEW    ");
-          case "done":              return chalk.green("DONE      ");
-          case "failed":            return chalk.red.bold("FAILED    ");
-        }
-      };
-
-      const formatTime = (ms: number): string => {
-        const sec = Math.round(ms / 1000);
-        if (sec < 60) return `${sec}s`;
-        const min = Math.floor(sec / 60);
-        const s = sec % 60;
-        if (min < 60) return `${min}m${s}s`;
-        const hr = Math.floor(min / 60);
-        const m = min % 60;
-        return `${hr}h${m}m`;
-      };
-
-      const getElapsed = (task: Task): string => {
-        if (task.result) return chalk.dim(formatTime(task.result.duration));
-        if (task.status === "in_progress" || task.status === "review" || task.status === "assigned") {
-          const ms = Date.now() - new Date(task.updatedAt).getTime();
-          return chalk.yellow(formatTime(ms));
-        }
-        return chalk.dim("-");
-      };
-
-      const getFailReason = (task: Task): string => {
-        if (task.status !== "failed") return "";
-        if (!task.result) {
-          const blockedBy = task.dependsOn
-            .map(depId => state.tasks.find(t => t.id === depId))
-            .filter(t => t && t.status === "failed")
-            .map(t => t!.title);
-          if (blockedBy.length > 0) return chalk.red(`dependency failed: ${blockedBy.join(", ")}`);
-          return chalk.red("never ran");
-        }
-        if (task.result.assessment) {
-          const failedChecks = task.result.assessment.checks.filter(c => !c.passed);
-          const failedMetrics = task.result.assessment.metrics.filter(m => !m.passed);
-          const reasons = [
-            ...failedChecks.map(c => c.message),
-            ...failedMetrics.map(m => `${m.name}: ${m.value}/${m.threshold}`),
-          ];
-          if (reasons.length > 0) return chalk.red(reasons[0]);
-        }
-        if (task.result.exitCode !== 0) {
-          const stderr = task.result.stderr.split("\n").filter(l => l.trim()).pop() || "";
-          return chalk.red(`exit ${task.result.exitCode}${stderr ? `: ${stderr.slice(0, 60)}` : ""}`);
-        }
-        return "";
-      };
-
-      // Counts
-      const total = state.tasks.length;
-      const counts: Record<string, number> = {};
-      for (const t of state.tasks) counts[t.status] = (counts[t.status] || 0) + 1;
-      const doneCount = counts["done"] || 0;
-      const failedCount = counts["failed"] || 0;
-      const pendingCount = counts["pending"] || 0;
-      const runningCount = (counts["in_progress"] || 0) + (counts["review"] || 0) + (counts["assigned"] || 0);
-
-      const processedCount = doneCount + failedCount;
-      const pct = Math.round((processedCount / total) * 100);
-      const barLen = 30;
-      const greenFill = Math.round((doneCount / total) * barLen);
-      const redFill = Math.round((failedCount / total) * barLen);
-      const grayFill = barLen - greenFill - redFill;
-      const bar = chalk.green("█".repeat(greenFill)) + chalk.red("█".repeat(redFill)) + chalk.gray("░".repeat(Math.max(0, grayFill)));
-
-      const isAllDone = processedCount === total;
-      const headerIcon = isAllDone
-        ? (failedCount > 0 ? chalk.red("✗") : chalk.green("✓"))
-        : chalk.yellow(spin);
-
-      // Elapsed since watch started
-      const totalElapsed = formatTime(Date.now() - (state.startedAt ? new Date(state.startedAt).getTime() : startTime));
-
-      // Header — read teams/agents from stores for accurate display
-      let teamsLabel = "-";
-      let agentsLabel = "-";
-      if (orchestrator) {
-        try {
-          const teams = await orchestrator.getTeamStore().getTeams();
-          const agents = await orchestrator.getAgentStore().getAgents();
-          teamsLabel = teams.map(t => t.name).join(", ") || "-";
-          agentsLabel = agents.map(a => a.name).join(", ") || "-";
-        } catch { /* fallback to state */ }
-      }
-      console.log(`\n  ${headerIcon} ${LOGO_MINI} ${headerIcon}`);
-      console.log(chalk.dim(`    ${state.project || "project"} | Teams: ${teamsLabel} | Agents: ${agentsLabel}`));
-      console.log(chalk.dim(`    Elapsed: ${totalElapsed}`));
-
-      // Progress bar
-      const statusParts = [];
-      if (doneCount > 0) statusParts.push(chalk.green(`${doneCount} done`));
-      if (runningCount > 0) statusParts.push(chalk.yellow(`${runningCount} running`));
-      if (pendingCount > 0) statusParts.push(chalk.gray(`${pendingCount} pending`));
-      if (failedCount > 0) statusParts.push(chalk.red(`${failedCount} failed`));
-      console.log(`\n    ${bar} ${pct}%  ${statusParts.join(chalk.dim(" | "))}\n`);
-
-      // Task list
-      for (const task of state.tasks) {
-        const icon = getIcon(task.status);
-        const label = getLabel(task.status);
-        const agent = chalk.dim(`${task.assignTo}`);
-        const time = getElapsed(task);
-        const retries = task.retries > 0 ? chalk.yellow(` retry ${task.retries}/${task.maxRetries}`) : "";
-        const reason = getFailReason(task);
-
-        const proc = (state.processes || []).find(p => p.taskId === task.id);
-        const pid = proc && proc.alive ? chalk.dim(` PID:${proc.pid}`) : "";
-        const dead = proc && !proc.alive && task.status === "in_progress" ? chalk.red.bold(" DEAD") : "";
-
-        console.log(`    ${icon} ${label} ${task.title}`);
-        console.log(chalk.dim(`      agent: ${agent}  time: ${time}${pid}${dead}${retries}`));
-        if (reason) console.log(`      ${reason}`);
-
-        // Show live agent activity for running tasks
-        if (proc && proc.alive && proc.activity) {
-          const act = proc.activity;
-          const actParts: string[] = [];
-          if (act.lastTool) actParts.push(`tool: ${act.lastTool}`);
-          if (act.lastFile) actParts.push(`file: ${act.lastFile}`);
-          if (act.toolCalls > 0) actParts.push(`calls: ${act.toolCalls}`);
-          if (act.filesCreated.length > 0) actParts.push(`created: ${act.filesCreated.length}`);
-          if (act.filesEdited.length > 0) actParts.push(`edited: ${act.filesEdited.length}`);
-          if (actParts.length > 0) {
-            console.log(chalk.cyan(`      ${spin} ${actParts.join("  ")}`));
-          }
-          if (act.summary) {
-            console.log(chalk.dim(`      "${act.summary.slice(0, 80)}${act.summary.length > 80 ? "..." : ""}"`));
-          }
-        }
-
-        // Show LLM evaluation scores for completed tasks
-        if (task.result?.assessment?.scores && task.result.assessment.scores.length > 0) {
-          const a = task.result.assessment;
-          const scoreBar = a.scores!.map(s => {
-            const stars = "★".repeat(Math.round(s.score)) + "☆".repeat(5 - Math.round(s.score));
-            const color = s.score >= 4 ? chalk.green : s.score >= 3 ? chalk.yellow : chalk.red;
-            return `${s.dimension}: ${color(stars)}`;
-          }).join("  ");
-          const globalColor = (a.globalScore ?? 0) >= 4 ? chalk.green : (a.globalScore ?? 0) >= 3 ? chalk.yellow : chalk.red;
-          console.log(`      ${scoreBar}`);
-          console.log(`      ${globalColor(`Global: ${a.globalScore?.toFixed(1)}/5`)}`);
-        } else if (task.result?.assessment?.llmReview && task.status === "done") {
-          console.log(chalk.green(`      review: ${task.result.assessment.llmReview.slice(0, 100)}`));
-        }
-      }
-
-      // Active processes summary
-      const aliveProcs = (state.processes || []).filter(p => p.alive);
-      if (aliveProcs.length > 0) {
-        console.log(chalk.dim(`\n    Active agents: ${aliveProcs.length}`));
-      }
-
-      // Footer
-      if (isAllDone) {
-        if (failedCount > 0) {
-          console.log(chalk.red.bold(`\n    Finished: ${doneCount} done, ${failedCount} failed (${totalElapsed})`));
-        } else {
-          console.log(chalk.green.bold(`\n    All ${total} tasks completed! (${totalElapsed})`));
-        }
-      }
-      console.log();
-      frame++;
-    };
-
-    if (opts.watch) {
-      // Use alternate screen buffer to avoid flicker
-      process.stdout.write("\x1B[?1049h"); // enter alt screen
-      process.on("SIGINT", () => {
-        process.stdout.write("\x1B[?1049l"); // restore screen
-        process.exit(0);
-      });
-
-      const tick = async () => {
-        process.stdout.write("\x1B[H"); // cursor home (no clear)
-        await printStatus();
-        process.stdout.write("\x1B[J"); // clear from cursor to end
-      };
-      await tick();
-      setInterval(tick, 2000);
-    } else {
-      console.log(LOGO_MINI);
-      await printStatus();
-    }
-  });
 
 // Register subcommand groups
 registerModelsCommands(program);
