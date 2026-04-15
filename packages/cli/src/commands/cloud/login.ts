@@ -1,21 +1,18 @@
 /**
  * polpo login — authenticate with the Polpo Cloud API.
  *
- * Default: browser-based flow (opens browser, user approves, CLI gets session token).
+ * Default: browser-based device-code flow (user approves in the dashboard,
+ * CLI polls for the issued token).
  * Fallback: --api-key for CI/CD and headless environments.
  */
 import type { Command } from "commander";
 import { loadCredentials, saveCredentials } from "./config.js";
 import { createApiClient } from "./api.js";
 import { isTTY, promptMasked, confirm } from "./prompt.js";
-import { openBrowser } from "../../util/browser.js";
+import { performDeviceCodeLogin, DeviceCodeError } from "../../util/device-code.js";
 
 const DEFAULT_API_URL = "https://api.polpo.sh";
 const DEFAULT_DASHBOARD_URL = "https://polpo.sh";
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
 
 /** After login, try to auto-resolve the project if user has exactly one. */
 async function autoResolveProject(apiKey: string, baseUrl: string): Promise<void> {
@@ -92,81 +89,22 @@ export function registerLoginCommand(program: Command): void {
         process.exit(1);
       }
 
-      // --- Browser-based flow ---
-      console.log("\n  Logging in to Polpo Cloud...\n");
-
-      let code: string;
-      let expiresAt: string;
+      // --- Browser-based device-code flow ---
+      console.log("\n  Logging in to Polpo Cloud...");
       try {
-        const res = await fetch(`${baseUrl}/v1/cli-auth/request`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
+        const creds = await performDeviceCodeLogin({
+          apiUrl: baseUrl,
+          dashboardUrl,
+          noBrowser: opts.browser === false,
         });
-        if (!res.ok) {
-          console.error(`  Error: Server returned ${res.status}. Is ${baseUrl} reachable?`);
+        await autoResolveProject(creds.apiKey, creds.baseUrl);
+      } catch (err) {
+        if (err instanceof DeviceCodeError) {
+          console.error(`\n\n  ${err.message}`);
+          console.error("  Run `polpo login` again when ready.");
           process.exit(1);
         }
-        const data = (await res.json()) as { code: string; expiresAt: string };
-        code = data.code;
-        expiresAt = data.expiresAt;
-      } catch (err: any) {
-        console.error(`  Error: Could not reach the API at ${baseUrl}`);
-        console.error(`  ${err.message}`);
-        process.exit(1);
+        throw err;
       }
-
-      console.log(`  Your authorization code:\n`);
-      console.log(`    ${code}\n`);
-
-      const authUrl = `${dashboardUrl}/cli-auth?code=${code}`;
-
-      if (opts.browser !== false) {
-        console.log("  Opening browser...");
-        console.log(`  If it doesn't open, visit: ${authUrl}\n`);
-        await openBrowser(authUrl);
-      } else {
-        console.log(`  Open this URL to authorize:\n  ${authUrl}\n`);
-      }
-
-      process.stdout.write("  Waiting for authorization...");
-
-      const expiry = new Date(expiresAt).getTime();
-      const POLL_MS = 2000;
-
-      while (Date.now() < expiry) {
-        await sleep(POLL_MS);
-
-        try {
-          const res = await fetch(`${baseUrl}/v1/cli-auth/poll/${code}`);
-
-          if (res.status === 404) {
-            console.log("\n\n  Code expired. Run `polpo login` again.");
-            process.exit(1);
-          }
-
-          const data = (await res.json()) as { status: string; token?: string };
-
-          if (data.status === "approved" && data.token) {
-            saveCredentials(data.token, baseUrl);
-            console.log("\n\n  Logged in successfully.");
-            console.log(`  Base URL: ${baseUrl}`);
-            await autoResolveProject(data.token, baseUrl);
-            console.log();
-            return;
-          }
-
-          if (data.status === "expired") {
-            console.log("\n\n  Code expired. Run `polpo login` again.");
-            process.exit(1);
-          }
-
-          process.stdout.write(".");
-        } catch {
-          // Network blip — retry
-        }
-      }
-
-      console.log("\n\n  Timed out. Run `polpo login` again.");
-      process.exit(1);
     });
 }

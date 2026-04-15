@@ -55,6 +55,7 @@ import { registerProjectsCommand } from "./commands/cloud/projects.js";
 import { registerStatusCommand as registerCloudStatusCommand } from "./commands/cloud/status.js";
 import { registerLogsCommand as registerCloudLogsCommand } from "./commands/cloud/logs.js";
 import { startUpdateCheck } from "./update-check.js";
+import { isBareInteractiveInvocation, runInteractiveMenu } from "./interactive-menu.js";
 
 // Gradient from pink (#F78B97) to indigo (#3B3E73) — 6 rows
 const _logoLines = [
@@ -121,4 +122,13 @@ registerCloudLogsCommand(program);
 const printUpdateNotice = startUpdateCheck(PKG_VERSION);
 process.on("exit", printUpdateNotice);
 
-program.parse();
+// Bare `polpo` on an interactive TTY → show the picker menu.
+// Non-TTY (CI/pipe) or any args → standard commander dispatch.
+if (isBareInteractiveInvocation()) {
+  runInteractiveMenu(program).catch((err) => {
+    console.error(err);
+    process.exit(1);
+  });
+} else {
+  program.parse();
+}
