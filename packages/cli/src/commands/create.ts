@@ -37,6 +37,7 @@ import {
 import { friendlyError } from "../util/errors.js";
 import { slugify } from "../util/slugify.js";
 import { installCodingAgentSkills, skillsInstallHint, type SkillsScope } from "../util/skills.js";
+import { isPolpoOnPath, installPolpoGlobally, globalInstallHint } from "../util/install-cli.js";
 
 interface CreateOptions {
   name?: string;
@@ -44,6 +45,7 @@ interface CreateOptions {
   template?: string;
   url?: string;
   skills?: string;
+  installCli?: string; // "yes" | "no"
   yes?: boolean;
 }
 
@@ -59,6 +61,7 @@ export function registerCreateCommand(program: Command): void {
     )
     .option("--url <base-url>", "API base URL override")
     .option("--skills <scope>", "Coding-agent skills install: global | project | skip", "")
+    .option("--install-cli <yes|no>", "Install the polpo CLI globally after scaffold", "")
     .option("-y, --yes", "Skip confirmations (use defaults)")
     .action(async (opts: CreateOptions) => {
       clack.intro(pc.bold("Polpo — Create a new project"));
@@ -267,13 +270,47 @@ export function registerCreateCommand(program: Command): void {
         }
       }
 
+      // Step 11: Install polpo globally (skip if already on PATH)
+      let cliInstalled = false;
+      let cliInstallCommand = globalInstallHint();
+      if (!isPolpoOnPath()) {
+        let doInstall: boolean;
+        if (opts.installCli === "yes") doInstall = true;
+        else if (opts.installCli === "no") doInstall = false;
+        else if (opts.yes) doInstall = true;
+        else {
+          const choice = await clack.confirm({
+            message: "Install polpo CLI globally so you can run `polpo` from anywhere?",
+            initialValue: true,
+          });
+          doInstall = !clack.isCancel(choice) && !!choice;
+        }
+
+        if (doInstall) {
+          s.start("Installing polpo CLI globally...");
+          const result = await installPolpoGlobally();
+          cliInstallCommand = result.command;
+          if (result.ok) {
+            s.stop("polpo CLI installed");
+            cliInstalled = true;
+          } else {
+            s.stop("Global install failed.");
+            clack.log.warn(`Install manually later: ${pc.bold(result.command)}`);
+          }
+        }
+      } else {
+        cliInstalled = true; // already on PATH
+      }
+
       // Outro
       const relDir = dirName ?? ".";
+      const polpoRun = cliInstalled ? "polpo" : `npx ${CLI_PACKAGE_FOR_OUTRO}`;
       const nextSteps = [
         dirName ? `cd ${dirName}` : undefined,
         template.installsDeps ? "npm run dev" : undefined,
-        "polpo deploy",
+        `${polpoRun} deploy`,
         skillsScope === "skip" ? `# skills: ${skillsInstallHint()}` : undefined,
+        !cliInstalled ? `# install polpo: ${cliInstallCommand}` : undefined,
       ].filter(Boolean) as string[];
       clack.outro(
         pc.green(`✓ Project "${project.name}" ready in ${relDir}\n`) +
@@ -282,3 +319,5 @@ export function registerCreateCommand(program: Command): void {
       );
     });
 }
+
+const CLI_PACKAGE_FOR_OUTRO = "@polpo-ai/cli";
