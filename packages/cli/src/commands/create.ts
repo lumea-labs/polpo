@@ -36,12 +36,14 @@ import {
 } from "../util/template.js";
 import { friendlyError } from "../util/errors.js";
 import { slugify } from "../util/slugify.js";
+import { installPolpoSkills, skillsInstallHint, type SkillsScope } from "../util/skills.js";
 
 interface CreateOptions {
   name?: string;
   orgId?: string;
   template?: string;
   url?: string;
+  skills?: string;
   yes?: boolean;
 }
 
@@ -56,6 +58,7 @@ export function registerCreateCommand(program: Command): void {
       `Template: ${TEMPLATES.map((t) => t.id).join(", ")}`,
     )
     .option("--url <base-url>", "API base URL override")
+    .option("--skills <scope>", "Editor skills install: global | project | skip", "")
     .option("-y, --yes", "Skip confirmations (use defaults)")
     .action(async (opts: CreateOptions) => {
       clack.intro(chalk.bold("Polpo — Create a new project"));
@@ -229,17 +232,53 @@ export function registerCreateCommand(program: Command): void {
         }
       }
 
+      // Step 10: Editor skills
+      let skillsScope: SkillsScope;
+      if (opts.skills === "global" || opts.skills === "project" || opts.skills === "skip") {
+        skillsScope = opts.skills;
+      } else if (opts.yes) {
+        skillsScope = "global";
+      } else {
+        const choice = await clack.select<SkillsScope>({
+          message: "Install editor skills? (rules for Cursor, Claude Code, Windsurf, …)",
+          options: [
+            { value: "global", label: "Yes, globally", hint: "recommended — once per machine" },
+            { value: "project", label: "Yes, just for this project" },
+            { value: "skip", label: "Skip" },
+          ],
+          initialValue: "global",
+        });
+        if (clack.isCancel(choice)) {
+          skillsScope = "skip";
+        } else {
+          skillsScope = choice;
+        }
+      }
+
+      let skillsInstalled = false;
+      if (skillsScope !== "skip") {
+        s.start(`Installing editor skills (${skillsScope})...`);
+        skillsInstalled = await installPolpoSkills({ scope: skillsScope, cwd: targetDir });
+        if (skillsInstalled) {
+          s.stop("Editor skills installed");
+        } else {
+          s.stop("Editor skills install failed.");
+          clack.log.warn(`Install manually later: ${chalk.bold(skillsInstallHint())}`);
+        }
+      }
+
       // Outro
       const relDir = dirName ?? ".";
       const nextSteps = [
         dirName ? `cd ${dirName}` : undefined,
         template.installsDeps ? "npm run dev" : undefined,
         "polpo deploy",
+        skillsScope === "skip" ? `# skills: ${skillsInstallHint()}` : undefined,
       ].filter(Boolean) as string[];
       clack.outro(
         chalk.green(`✓ Project "${project.name}" ready in ${relDir}\n`) +
           chalk.dim("  Next:\n") +
-          nextSteps.map((s) => chalk.dim(`    ${s}\n`)).join(""),
+          nextSteps.map((step) => chalk.dim(`    ${step}\n`)).join(""),
       );
     });
 }
