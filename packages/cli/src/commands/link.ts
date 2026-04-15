@@ -1,0 +1,91 @@
+/**
+ * polpo link — attach the current directory to an existing cloud project.
+ *
+ *   polpo link --project-id <uuid>
+ *
+ * Writes `.polpo/polpo.json` with the linked project info so subsequent
+ * `polpo deploy` runs target the right project automatically.
+ *
+ * Does NOT scaffold any code — pairs with `polpo create` (which scaffolds
+ * + links in one step). Use this when you already have a codebase and
+ * want to bolt Polpo onto it.
+ */
+import type { Command } from "commander";
+import * as path from "node:path";
+import * as clack from "@clack/prompts";
+import chalk from "chalk";
+import { requireAuth } from "../util/auth.js";
+import { createApiClient } from "./cloud/api.js";
+import { getProject } from "../util/project.js";
+import { writePolpoConfig, readPolpoConfig } from "../util/polpo-config.js";
+import { friendlyError } from "../util/errors.js";
+
+export function registerLinkCommand(program: Command): void {
+  program
+    .command("link")
+    .description("Link the current directory to an existing cloud project")
+    .requiredOption("--project-id <id>", "Cloud project UUID")
+    .option("-d, --dir <path>", "Working directory", ".")
+    .option("--url <base-url>", "API base URL override")
+    .action(async (opts) => {
+      clack.intro(chalk.bold("Polpo — Link project"));
+
+      const creds = await requireAuth({
+        apiUrl: opts.url,
+        context: "Linking a project requires an authenticated session.",
+      });
+
+      const client = createApiClient({
+        apiKey: creds.apiKey,
+        baseUrl: opts.url ?? creds.baseUrl,
+      });
+
+      const s = clack.spinner();
+      s.start("Verifying project...");
+      let project;
+      try {
+        project = await getProject(client, opts.projectId);
+        if (!project) {
+          s.stop("Project not found.");
+          clack.outro(
+            chalk.red(`No project with id ${opts.projectId} — check the URL or run `) +
+              chalk.bold("polpo projects"),
+          );
+          process.exit(1);
+        }
+        s.stop(`Project: ${project.name}`);
+      } catch (err) {
+        s.stop("Failed to verify project.");
+        clack.outro(chalk.red(friendlyError((err as Error).message)));
+        process.exit(1);
+      }
+
+      const cwd = path.resolve(opts.dir);
+
+      // Warn if already linked to a different project.
+      const existing = readPolpoConfig(cwd);
+      if (existing?.projectId && existing.projectId !== project.id) {
+        const ok = await clack.confirm({
+          message: `This directory is already linked to "${existing.project ?? existing.projectId}". Replace?`,
+          initialValue: false,
+        });
+        if (clack.isCancel(ok) || !ok) {
+          clack.cancel("Cancelled.");
+          process.exit(0);
+        }
+      }
+
+      writePolpoConfig(cwd, {
+        project: project.name,
+        projectId: project.id,
+        apiUrl: opts.url ?? creds.baseUrl,
+      });
+
+      clack.log.success(`Wrote ${chalk.bold(".polpo/polpo.json")}`);
+      clack.outro(
+        chalk.green("✓ Linked. Next: ") +
+          chalk.bold("polpo deploy") +
+          chalk.dim(" to push your agents."),
+      );
+    });
+}

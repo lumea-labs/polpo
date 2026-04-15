@@ -54,6 +54,7 @@ import { registerByokCommand } from "./commands/cloud/byok.js";
 import { registerProjectsCommand } from "./commands/cloud/projects.js";
 import { registerStatusCommand as registerCloudStatusCommand } from "./commands/cloud/status.js";
 import { registerLogsCommand as registerCloudLogsCommand } from "./commands/cloud/logs.js";
+import { registerLinkCommand } from "./commands/link.js";
 import { startUpdateCheck } from "./update-check.js";
 import { isBareInteractiveInvocation, runInteractiveMenu } from "./interactive-menu.js";
 
@@ -117,6 +118,7 @@ registerByokCommand(program);
 registerProjectsCommand(program);
 registerCloudStatusCommand(program);
 registerCloudLogsCommand(program);
+registerLinkCommand(program);
 
 // Non-blocking update check — prints notice at exit if a new version exists
 const printUpdateNotice = startUpdateCheck(PKG_VERSION);

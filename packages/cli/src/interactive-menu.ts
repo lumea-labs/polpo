@@ -80,8 +80,61 @@ export async function runInteractiveMenu(program: Command): Promise<void> {
     return;
   }
 
+  // For "link" we need a --project-id. Ask the user up front so the
+  // command receives a valid argv.
+  if (choice === "link") {
+    const projectId = await promptForProjectId();
+    if (!projectId) {
+      clack.cancel("Cancelled.");
+      process.exit(0);
+    }
+    await program.parseAsync([
+      process.argv[0], process.argv[1],
+      "link", "--project-id", projectId,
+    ]);
+    return;
+  }
+
   // Dispatch to the real subcommand. Commander consumes argv shape
   // ['node', 'polpo', '<cmd>', ...args], so we rebuild that here.
-  const args = choice === "link" ? [choice, "--help"] : [choice];
-  await program.parseAsync([process.argv[0], process.argv[1], ...args]);
+  await program.parseAsync([process.argv[0], process.argv[1], choice]);
+}
+
+/**
+ * Fetch the user's projects and let them pick, with a paste-id fallback
+ * for folks whose creds are valid but org/project listing is gated.
+ */
+async function promptForProjectId(): Promise<string | null> {
+  const creds = loadCredentials();
+  if (!creds) return null;
+
+  const { createApiClient } = await import("./commands/cloud/api.js");
+  const { pickOrg } = await import("./util/org.js");
+  const { listProjects } = await import("./util/project.js");
+
+  try {
+    const client = createApiClient({ apiKey: creds.apiKey, baseUrl: creds.baseUrl });
+    const org = await pickOrg(client);
+    const projects = await listProjects(client, org.id);
+
+    if (projects.length === 0) {
+      clack.log.warn("No projects found in this organization.");
+      return null;
+    }
+
+    const choice = await clack.select<string>({
+      message: "Select a project to link:",
+      options: projects.map((p) => ({ value: p.id, label: p.name })),
+    });
+    if (clack.isCancel(choice)) return null;
+    return choice;
+  } catch {
+    // Fallback to manual paste if the API call fails.
+    const id = await clack.text({
+      message: "Project ID:",
+      placeholder: "c816c3b5-0eab-46a5-aeb0-311a036b271b",
+    });
+    if (clack.isCancel(id) || !id) return null;
+    return id;
+  }
 }
