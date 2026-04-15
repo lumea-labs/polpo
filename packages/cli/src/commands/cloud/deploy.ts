@@ -23,6 +23,9 @@ import { createApiClient, type ApiClient } from "./api.js";
 import { isTTY, confirm } from "./prompt.js";
 import { resolveKey, decrypt } from "@polpo-ai/vault-crypto";
 import { AddAgentSchema } from "@polpo-ai/server";
+import { friendlyError } from "../../util/errors.js";
+import { resolveDefaultOrg } from "../../util/org.js";
+import { resolveOrCreateProject } from "../../util/project.js";
 
 // ── Deploy result tracking ──────────────────────────────
 
@@ -44,14 +47,6 @@ function mergeResult(target: DeployResult, source: DeployResult): void {
   target.skipped += source.skipped;
   target.failed += source.failed;
   target.errors.push(...source.errors);
-}
-
-/** Translate raw API errors to actionable CLI messages */
-function friendlyError(msg: string): string {
-  if (msg.includes("Multiple projects found")) return "Multiple projects found. Run: polpo projects set";
-  if (/HTTP 401|Unauthorized/i.test(msg)) return "Session expired or invalid. Run: polpo login";
-  if (/HTTP 403|Forbidden/i.test(msg)) return "Access denied. Check your credentials or project permissions.";
-  return msg;
 }
 
 // ── Helpers ──────────────────────────────────────────────
@@ -504,59 +499,22 @@ export function registerDeployCommand(program: Command): void {
 
       // ── Step 1: Resolve project ────────────────────────
       let projectId: string | undefined = polpoConfig?.projectId;
-      let orgId: string | undefined;
 
       if (!projectId) {
         try {
-          const orgsRes = await cpClient.get<any>("/v1/orgs");
-          const orgs = Array.isArray(orgsRes.data) ? orgsRes.data : [];
-          if (orgs.length === 0) {
-            console.error("  No organization found. Complete onboarding at polpo.sh first.");
-            process.exit(1);
-          }
-          orgId = orgs[0].id;
-
-          const projRes = await cpClient.get<any>(`/v1/projects?orgId=${orgId}`);
-          const projects = Array.isArray(projRes.data) ? projRes.data : [];
-
-          if (projects.length === 1) {
-            // Auto-select single project
-            projectId = projects[0].id;
-            console.log(`  Project: ${projects[0].name}\n`);
-          } else if (projects.length > 1) {
-            // Multiple projects — ask which one
-            if (!isTTY()) {
-              console.error("  Multiple projects found. Set projectId in .polpo/polpo.json");
-              process.exit(1);
-            }
-            console.log("  Select a project:\n");
-            for (let i = 0; i < projects.length; i++) {
-              console.log(`    ${i + 1}. ${projects[i].name}`);
-            }
-            const { prompt } = await import("./prompt.js");
-            const answer = await prompt(`\n  Select (1-${projects.length}): `);
-            const idx = parseInt(answer, 10) - 1;
-            if (idx < 0 || idx >= projects.length) {
-              console.error("  Invalid selection.");
-              process.exit(1);
-            }
-            projectId = projects[idx].id;
-            console.log(`\n  Project: ${projects[idx].name}\n`);
-          } else {
-            // No projects — create one
-            const slug = projectName.toLowerCase().replace(/[^a-z0-9-]/g, "-").replace(/-+/g, "-");
-            const ok = force ? true : await confirm(`  No projects found. Create "${projectName}"?`);
-            if (ok) {
-              const createRes = await cpClient.post<any>("/v1/projects", { name: projectName, slug, orgId });
-              projectId = createRes.data?.id;
-              console.log(`\n  Project: ${projectName} (created)\n`);
-            } else {
-              console.log("  Aborted.");
-              process.exit(0);
-            }
-          }
-        } catch {
-          console.error("  Could not resolve project. Run: polpo login");
+          const org = await resolveDefaultOrg(cpClient);
+          const project = await resolveOrCreateProject({
+            client: cpClient,
+            orgId: org.id,
+            name: projectName,
+            force,
+            interactive: isTTY(),
+          });
+          projectId = project.id;
+          console.log(`  Project: ${project.name}\n`);
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          console.error(`  ${friendlyError(msg)}`);
           process.exit(1);
         }
       }
