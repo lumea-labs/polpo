@@ -8,17 +8,10 @@ import type { Command } from "commander";
 import { loadCredentials, saveCredentials } from "./config.js";
 import { createApiClient } from "./api.js";
 import { isTTY, promptMasked, confirm } from "./prompt.js";
+import { openBrowser } from "../../util/browser.js";
 
 const DEFAULT_API_URL = "https://api.polpo.sh";
 const DEFAULT_DASHBOARD_URL = "https://polpo.sh";
-
-async function openBrowser(url: string): Promise<void> {
-  const { platform } = await import("node:os");
-  const { exec } = await import("node:child_process");
-  const os = platform();
-  const cmd = os === "darwin" ? "open" : os === "win32" ? "start" : "xdg-open";
-  exec(`${cmd} "${url}"`);
-}
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));

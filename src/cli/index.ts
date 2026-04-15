@@ -13,7 +13,7 @@ import { resolve, dirname } from "node:path";
 import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { Command } from "commander";
-import { DEFAULT_SERVER_PORT, DEFAULT_SERVER_HOST, getPolpoDir } from "../core/constants.js";
+import { getPolpoDir } from "../core/constants.js";
 
 // Read version from package.json at build time fallback
 const __dirname_cli = dirname(fileURLToPath(import.meta.url));
@@ -51,6 +51,7 @@ import { registerModelsCommands } from "./commands/models.js";
 // agent-onboard, logs, browser-profile — all file-based commands.
 // Resources are defined in files and synced via polpo deploy.
 import { registerUpdateCommand } from "./commands/update.js";
+import { registerDevCommand } from "./commands/dev.js";
 // Cloud commands (unified CLI)
 import { registerLoginCommand } from "./commands/cloud/login.js";
 import { registerLogoutCommand } from "./commands/cloud/logout.js";
@@ -190,58 +191,6 @@ const LOGO = _buildLogo(false);
 
 const LOGO_MINI = `  ${chalk.bold.white("🐙 P O L P O")}  `;
 
-// ── Default action: start server + dashboard ────────────────────────
-const serveAction = async (opts: any) => {
-    console.log(LOGO);
-    const { PolpoServer } = await import("../server/index.js");
-
-    const workDir = resolve(opts.dir);
-    const port = parseInt(opts.port, 10);
-
-    const apiKeys = opts.apiKey ? [opts.apiKey] : [];
-
-    const corsRaw = opts.corsOrigins ?? process.env.POLPO_CORS_ORIGINS;
-    const corsOrigins = corsRaw
-      ? corsRaw.split(",").map((o: string) => o.trim()).filter(Boolean)
-      : undefined;
-
-    const configPath = resolve(getPolpoDir(workDir), "polpo.json");
-    const hasConfig = existsSync(configPath);
-
-    if (!hasConfig) {
-      console.log(
-        chalk.yellow.bold("  No Polpo project found here.\n") +
-        chalk.dim("  Run: polpo create   — to create a new project\n") +
-        chalk.dim("       polpo link --project-id <id>   — to link an existing one\n"),
-      );
-    }
-
-    // Security warning: no authentication configured
-    if (hasConfig && apiKeys.length === 0) {
-      const isExposed = opts.host === "0.0.0.0" || opts.host === "::";
-      console.log(
-        chalk.yellow.bold("\n  WARNING: No API key configured — server has no authentication.\n") +
-        (isExposed
-          ? chalk.yellow(`  The server is binding to ${opts.host} (all interfaces) and is accessible\n`) +
-            chalk.yellow("  from the network. Anyone on your network can control your agents.\n\n") +
-            chalk.yellow("  To secure it, use: ") + chalk.white("polpo-ai --api-key <secret>\n")
-          : chalk.dim("  Server is localhost-only. Use --api-key <secret> for network access.\n")),
-      );
-    }
-
-    const server = new PolpoServer({
-      port,
-      host: opts.host,
-      workDir,
-      apiKeys,
-      corsOrigins,
-      autoStart: hasConfig,
-    });
-
-    await server.start();
-
-};
-
 const program = new Command();
 
 program
@@ -250,13 +199,20 @@ program
   .version(PKG_VERSION)
   .enablePositionalOptions()
   .passThroughOptions()
-  // Default action: start server + dashboard when no subcommand is given
-  .option("-p, --port <port>", "Port to listen on", String(DEFAULT_SERVER_PORT))
-  .option("-H, --host <host>", "Host to bind to", DEFAULT_SERVER_HOST)
-  .option("-d, --dir <path>", "Working directory", ".")
-  .option("--api-key <key>", "API key for authentication (optional)")
-  .option("--cors-origins <origins>", "Comma-separated allowed CORS origins (env: POLPO_CORS_ORIGINS)")
-  .action(serveAction);
+  // Default (no subcommand): print a short get-started message + help.
+  .action(() => {
+    console.log(LOGO);
+    console.log(
+      chalk.bold("  Get started:\n") +
+      chalk.dim("    polpo create                        create a new project\n") +
+      chalk.dim("    polpo link --project-id <id>        link an existing one\n") +
+      chalk.dim("    polpo dev                           run the local server + dashboard\n") +
+      chalk.dim("    polpo deploy                        push to cloud\n"),
+    );
+    console.log(chalk.dim("  See `polpo --help` for all commands."));
+  });
+
+registerDevCommand(program);
 
 // polpo run
 program
@@ -525,19 +481,6 @@ program
       await printStatus();
     }
   });
-
-// polpo start (primary) + polpo serve (backward compat)
-program
-  .command("start")
-  .alias("serve")
-  .description("Start the Polpo HTTP API server + dashboard")
-  .option("-p, --port <port>", "Port to listen on", String(DEFAULT_SERVER_PORT))
-  .option("-H, --host <host>", "Host to bind to", DEFAULT_SERVER_HOST)
-  .option("-d, --dir <path>", "Working directory", ".")
-  .option("--setup", "Launch the setup wizard in the dashboard")
-  .option("--api-key <key>", "API key for authentication (optional)")
-  .option("--cors-origins <origins>", "Comma-separated allowed CORS origins (env: POLPO_CORS_ORIGINS)")
-  .action(serveAction);
 
 // Register subcommand groups
 registerModelsCommands(program);
