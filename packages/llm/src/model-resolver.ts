@@ -389,7 +389,7 @@ export function resolveModelSpec(spec: string | ModelConfig | undefined): string
 export function resolveModelWithFallback(config: ModelConfig, opts?: ResolveModelOptions): { model: ResolvedModel; spec: string } {
   const primary = config.primary;
   if (!primary) {
-    throw new Error("No primary model configured. Run 'polpo setup' or set POLPO_MODEL env var.");
+    throw new Error("No primary model configured. Set `settings.orchestratorModel` in .polpo/polpo.json or the POLPO_MODEL env var.");
   }
   const { provider: primaryProvider } = parseModelSpec(primary);
   if (resolveApiKey(primaryProvider)) {
@@ -425,7 +425,7 @@ export function resolveModelWithFallback(config: ModelConfig, opts?: ResolveMode
 export async function resolveModelWithFallbackAsync(config: ModelConfig, opts?: ResolveModelOptions): Promise<{ model: ResolvedModel; spec: string }> {
   const primary = config.primary;
   if (!primary) {
-    throw new Error("No primary model configured. Run 'polpo setup' or set POLPO_MODEL env var.");
+    throw new Error("No primary model configured. Set `settings.orchestratorModel` in .polpo/polpo.json or the POLPO_MODEL env var.");
   }
   const { provider: primaryProvider } = parseModelSpec(primary);
   if (await resolveApiKeyAsync(primaryProvider)) {

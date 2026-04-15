@@ -3,14 +3,14 @@ import { join } from "node:path";
 import { getPolpoDir } from "../core/constants.js";
 
 /**
- * Ensure the project directory has been initialized with `polpo init`.
+ * Ensure the project directory is linked to a Polpo project.
  * If `.polpo/polpo.json` doesn't exist, print a hint and exit.
  */
 export async function ensureSetup(dir: string): Promise<void> {
   const configPath = join(getPolpoDir(dir), "polpo.json");
   if (!existsSync(configPath)) {
     console.error(
-      `No Polpo project found in ${dir}.\nRun \`polpo init\` to create one, or \`polpo setup\` for guided configuration.`,
+      `No Polpo project found in ${dir}.\nRun \`polpo create\` to create one, or \`polpo link --project-id <id>\` to link an existing project.`,
     );
     process.exit(1);
   }

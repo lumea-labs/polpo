@@ -210,9 +210,9 @@ const serveAction = async (opts: any) => {
 
     if (!hasConfig) {
       console.log(
-        chalk.yellow.bold("  No configuration found.\n") +
-        chalk.dim("  The dashboard will open in setup mode.\n") +
-        chalk.dim("  You can also run: polpo-ai --setup\n"),
+        chalk.yellow.bold("  No Polpo project found here.\n") +
+        chalk.dim("  Run: polpo create   — to create a new project\n") +
+        chalk.dim("       polpo link --project-id <id>   — to link an existing one\n"),
       );
     }
 
@@ -254,12 +254,9 @@ program
   .option("-p, --port <port>", "Port to listen on", String(DEFAULT_SERVER_PORT))
   .option("-H, --host <host>", "Host to bind to", DEFAULT_SERVER_HOST)
   .option("-d, --dir <path>", "Working directory", ".")
-  .option("--setup", "Launch the setup wizard in the dashboard")
   .option("--api-key <key>", "API key for authentication (optional)")
   .option("--cors-origins <origins>", "Comma-separated allowed CORS origins (env: POLPO_CORS_ORIGINS)")
   .action(serveAction);
-
-// polpo init — removed. Create .polpo/agents.json directly or let your coding agent do it.
 
 // polpo run
 program
@@ -296,7 +293,7 @@ program
 
     const printStatus = async () => {
       if (!existsSync(resolve(polpoDir, "polpo.json"))) {
-        console.log(chalk.red("  No .polpo/polpo.json found. Run 'polpo init' first."));
+        console.log(chalk.red("  No .polpo/polpo.json found. Run 'polpo create' or 'polpo link --project-id <id>' first."));
         return;
       }
 

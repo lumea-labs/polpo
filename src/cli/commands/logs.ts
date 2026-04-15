@@ -39,7 +39,7 @@ export function registerLogsCommands(program: Command): void {
       const orchestrator = await initOrchestrator(opts.dir);
       const logStore = orchestrator.getLogStore();
       if (!logStore) {
-        console.error(chalk.red("No log store available. Run 'polpo init' first."));
+        console.error(chalk.red("No log store available. Run 'polpo create' or 'polpo link --project-id <id>' first."));
         process.exit(1);
       }
 
@@ -70,7 +70,7 @@ export function registerLogsCommands(program: Command): void {
       const orchestrator = await initOrchestrator(opts.dir);
       const logStore = orchestrator.getLogStore();
       if (!logStore) {
-        console.error(chalk.red("No log store available. Run 'polpo init' first."));
+        console.error(chalk.red("No log store available. Run 'polpo create' or 'polpo link --project-id <id>' first."));
         process.exit(1);
       }
 

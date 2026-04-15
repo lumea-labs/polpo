@@ -330,7 +330,7 @@ export class Orchestrator extends TypedEmitter {
     if (modelSpecs.length === 0) {
       this.emit("log", {
         level: "warn",
-        message: "No model configured for any agent. Agent spawning will fail. Run 'polpo setup' or set POLPO_MODEL env var.",
+        message: "No model configured for any agent. Agent spawning will fail. Set a model in .polpo/polpo.json (`settings.orchestratorModel`) or on the agent (`model` field), and set the provider API key env var.",
       });
       return;
     }
@@ -342,7 +342,7 @@ export class Orchestrator extends TypedEmitter {
         .join("\n");
       this.emit("log", {
         level: "warn",
-        message: `Missing API keys for providers:\n${details}\nSet the corresponding environment variables or run 'polpo setup'`,
+        message: `Missing API keys for providers:\n${details}\nSet the corresponding environment variables in your shell or .polpo/.env.`,
       });
     }
   }

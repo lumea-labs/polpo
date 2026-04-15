@@ -215,7 +215,7 @@ export async function parseConfig(workDir: string): Promise<PolpoConfig> {
   const polpoConfig = loadPolpoConfig(polpoDir);
 
   if (!polpoConfig) {
-    throw new Error(`No configuration found: missing .polpo/polpo.json in ${workDir}. Run 'polpo init' first.`);
+    throw new Error(`No configuration found: missing .polpo/polpo.json in ${workDir}. Run 'polpo create' or 'polpo link --project-id <id>' first.`);
   }
 
   // Teams/agents are no longer read from polpo.json.

@@ -136,7 +136,7 @@ export async function queryTextWithFallback(
   resolveOpts?: ResolveModelOptions,
 ): Promise<{ text: string; usage?: LanguageModelUsage; model: ResolvedModel; usedSpec: string }> {
   if (!modelConfig.primary) {
-    throw new Error("No primary model configured. Run 'polpo setup' or set POLPO_MODEL env var.");
+    throw new Error("No primary model configured. Set `settings.orchestratorModel` in .polpo/polpo.json or the POLPO_MODEL env var.");
   }
   const specs = [modelConfig.primary, ...(modelConfig.fallbacks || [])];
 
