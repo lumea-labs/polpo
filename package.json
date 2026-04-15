@@ -23,10 +23,6 @@
       "import": "./dist/assessment/index.js"
     }
   },
-  "bin": {
-    "polpo-ai": "dist/cli/index.js",
-    "polpo": "dist/cli/index.js"
-  },
   "files": [
     "dist/",
     "!dist/__tests__/",

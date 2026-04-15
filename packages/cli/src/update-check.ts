@@ -8,16 +8,16 @@
  * Rate-limited to once per 24 hours via a tiny timestamp file in ~/.polpo/.
  */
 
-import { resolve } from "node:path";
+import { resolve, join } from "node:path";
+import { homedir } from "node:os";
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
-import { getGlobalPolpoDir } from "../core/constants.js";
 
 const PACKAGE_NAME = "polpo-ai";
 const CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 hours
 
 /** File where we store the last check timestamp + latest version. */
 function stateFilePath(): string {
-  const dir = getGlobalPolpoDir();
+  const dir = join(homedir(), ".polpo");
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
   return resolve(dir, ".update-check");
 }
