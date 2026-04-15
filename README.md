@@ -43,19 +43,19 @@ Polpo is an open-source runtime for building, running, and managing AI agents. I
 ## Quick start
 
 ```bash
-npx polpo-ai create
+npx polpo create
 ```
 
 Scaffolds a new Polpo project (cloud + local) with an interactive wizard: pick an org, a project name, and a template. Link an existing project instead:
 
 ```bash
-npx polpo-ai link --project-id <id>
+npx polpo link --project-id <id>
 ```
 
-Then run locally (once the `polpo-ai` package is installed globally):
+Install globally so `polpo` is on your PATH:
 
 ```bash
-polpo dev
+npm i -g @polpo-ai/cli
 ```
 
 The local server starts on `http://localhost:3890`. Open the API at `/api/v1/health`.

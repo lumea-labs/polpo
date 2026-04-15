@@ -99,6 +99,11 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
+      - name: Publish @polpo-ai/cli
+        run: pnpm --filter @polpo-ai/cli publish --no-git-checks --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
       - name: Publish polpo-ai
         run: pnpm publish --no-git-checks --provenance --access public
         env:
