@@ -56,6 +56,8 @@ import { registerStatusCommand as registerCloudStatusCommand } from "./commands/
 import { registerLogsCommand as registerCloudLogsCommand } from "./commands/cloud/logs.js";
 import { registerLinkCommand } from "./commands/link.js";
 import { registerCreateCommand } from "./commands/create.js";
+import { registerWhoamiCommand } from "./commands/whoami.js";
+import { registerOrgsCommand } from "./commands/orgs.js";
 import { startUpdateCheck } from "./update-check.js";
 import { isBareInteractiveInvocation, runInteractiveMenu } from "./interactive-menu.js";
 
@@ -120,6 +122,9 @@ registerProjectsCommand(program);
 registerCloudStatusCommand(program);
 registerCloudLogsCommand(program);
 registerLinkCommand(program);
+registerCreateCommand(program);
+registerWhoamiCommand(program);
+registerOrgsCommand(program);
 
 // Non-blocking update check — prints notice at exit if a new version exists
 const printUpdateNotice = startUpdateCheck(PKG_VERSION);
