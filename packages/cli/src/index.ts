@@ -55,6 +55,7 @@ import { registerStatusCommand as registerCloudStatusCommand } from "./commands/
 import { registerLogsCommand as registerCloudLogsCommand } from "./commands/cloud/logs.js";
 import { registerLinkCommand } from "./commands/link.js";
 import { registerCreateCommand } from "./commands/create.js";
+import { registerInstallCommand } from "./commands/install.js";
 import { registerWhoamiCommand } from "./commands/whoami.js";
 import { registerOrgsCommand } from "./commands/orgs.js";
 import { startUpdateCheck } from "./update-check.js";
@@ -128,6 +129,7 @@ registerCloudStatusCommand(program);
 registerCloudLogsCommand(program);
 registerLinkCommand(program);
 registerCreateCommand(program);
+registerInstallCommand(program);
 registerWhoamiCommand(program);
 registerOrgsCommand(program);
 

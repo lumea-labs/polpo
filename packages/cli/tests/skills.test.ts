@@ -89,6 +89,50 @@ describe("installCodingAgentSkills", () => {
     });
   });
 
+  describe("clients targeting", () => {
+    it("no clients → no -a flags (upstream auto-detects with -g)", async () => {
+      execMock.mockReturnValue({ stdout: "", stderr: "" });
+      await installCodingAgentSkills({ scope: "global" });
+      const cmd = execMock.mock.calls[0][0] as string;
+      expect(cmd).not.toContain("-a ");
+    });
+
+    it("single client → one -a flag", async () => {
+      execMock.mockReturnValue({ stdout: "", stderr: "" });
+      await installCodingAgentSkills({ scope: "global", clients: ["claude-code"] });
+      const cmd = execMock.mock.calls[0][0] as string;
+      expect(cmd).toContain("-a claude-code");
+    });
+
+    it("multiple clients → one -a per client, order preserved", async () => {
+      execMock.mockReturnValue({ stdout: "", stderr: "" });
+      await installCodingAgentSkills({
+        scope: "global",
+        clients: ["claude-code", "cursor", "zed"],
+      });
+      const cmd = execMock.mock.calls[0][0] as string;
+      expect(cmd).toMatch(/-a claude-code.*-a cursor.*-a zed/);
+    });
+
+    it("empty clients array → no -a flag (same as omitted)", async () => {
+      execMock.mockReturnValue({ stdout: "", stderr: "" });
+      await installCodingAgentSkills({ scope: "global", clients: [] });
+      const cmd = execMock.mock.calls[0][0] as string;
+      expect(cmd).not.toContain("-a ");
+    });
+
+    it("clients with project scope → -a flags, no --global", async () => {
+      execMock.mockReturnValue({ stdout: "", stderr: "" });
+      await installCodingAgentSkills({
+        scope: "project",
+        clients: ["cursor"],
+      });
+      const cmd = execMock.mock.calls[0][0] as string;
+      expect(cmd).toContain("-a cursor");
+      expect(cmd).not.toContain("--global");
+    });
+  });
+
   describe("skip scope", () => {
     it("scope='skip' short-circuits (returns false, no exec)", async () => {
       const ok = await installCodingAgentSkills({ scope: "skip" });

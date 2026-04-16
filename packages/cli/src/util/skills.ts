@@ -30,10 +30,16 @@ export interface InstallSkillsOptions {
   cwd?: string;
   /** Timeout for the npx subprocess (ms). Default 90s. */
   timeoutMs?: number;
+  /**
+   * Explicit coding agents to target. Each becomes a `-a <client>` flag.
+   * When omitted + `scope="global"`, the upstream `skills` CLI auto-detects
+   * every installed agent on the machine (filesystem probe).
+   */
+  clients?: string[];
 }
 
 /**
- * Shell out to `npx skills@latest add lumea-labs/polpo-skills [-g] -y`.
+ * Shell out to `npx skills@latest add lumea-labs/polpo-skills [-g] [-a <c>]... -y`.
  *
  * Returns `true` on success, `false` on failure. We never throw — skills
  * install is an enhancement, not a prerequisite. Callers should log
@@ -42,10 +48,13 @@ export interface InstallSkillsOptions {
 export async function installCodingAgentSkills(opts: InstallSkillsOptions): Promise<boolean> {
   if (opts.scope === "skip") return false;
 
-  const flags = [
+  const flags: string[] = [
     "--yes", // non-interactive across all prompts inside `skills`
   ];
   if (opts.scope === "global") flags.push("--global");
+  for (const client of opts.clients ?? []) {
+    flags.push("-a", client);
+  }
 
   const cmd = `npx --yes skills@latest add ${POLPO_SKILLS_REPO} ${flags.join(" ")}`;
 
