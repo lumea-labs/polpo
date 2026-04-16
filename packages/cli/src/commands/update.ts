@@ -1,6 +1,11 @@
 import { execSync } from "node:child_process";
 import type { Command } from "commander";
 import pc from "picocolors";
+import {
+  detectPackageManager,
+  getLatestVersion,
+  runSelfUpdate,
+} from "../util/self-update.js";
 
 /**
  * Check if running inside an Electron (desktop) app.
@@ -13,32 +18,6 @@ function isDesktopApp(): boolean {
     execPath.includes("polpo-server") ||
     !!process.env.ELECTRON_RUN_AS_NODE
   );
-}
-
-/**
- * Detect which package manager installed polpo globally.
- */
-function detectPackageManager(): "pnpm" | "npm" {
-  try {
-    const out = execSync("pnpm list -g polpo-ai --depth=0 2>/dev/null", {
-      encoding: "utf-8",
-      timeout: 10_000,
-    });
-    if (out.includes("polpo-ai")) return "pnpm";
-  } catch { /* not pnpm */ }
-  return "npm";
-}
-
-/**
- * Get the latest version from the npm registry.
- */
-async function getLatestVersion(): Promise<string> {
-  const res = await fetch("https://registry.npmjs.org/polpo-ai/latest", {
-    headers: { Accept: "application/json" },
-  });
-  if (!res.ok) throw new Error(`Registry returned ${res.status}`);
-  const data = (await res.json()) as { version: string };
-  return data.version;
 }
 
 export function registerUpdateCommand(program: Command): void {
@@ -70,30 +49,15 @@ export function registerUpdateCommand(program: Command): void {
         }
 
         const pm = detectPackageManager();
-
-        // Clear cache to avoid stale versions
-        try {
-          if (pm === "npm") execSync("npm cache clean --force", { stdio: "ignore", timeout: 30_000 });
-        } catch { /* best effort */ }
-
-        const cmd =
-          pm === "pnpm"
-            ? `pnpm add -g polpo-ai@${latest}`
-            : `npm install -g polpo-ai@${latest}`;
-
         console.log(pc.dim(`\n  Updating via ${pm}...`));
-        console.log(pc.dim(`  $ ${cmd}\n`));
+        const result = runSelfUpdate(latest);
 
-        try {
-          execSync(cmd, { stdio: "inherit", timeout: 120_000 });
-        } catch (err) {
-          // EACCES on a system-managed npm prefix is the typical failure mode.
-          // Surface a hint instead of a raw stack.
-          const msg = (err as Error).message ?? "";
+        if (!result.success) {
+          const msg = result.error ?? "";
           if (/EACCES|permission denied/i.test(msg)) {
             console.error(pc.red("\n  Permission denied while installing."));
             console.error(pc.dim("  Try one of:"));
-            console.error(pc.dim(`    sudo ${cmd}`));
+            console.error(pc.dim(`    sudo ${result.cmd}`));
             console.error(pc.dim(`    npm config set prefix ~/.npm-global  (one-time)`));
           } else {
             console.error(pc.red("\n  Update failed: ") + (msg || "unknown error"));

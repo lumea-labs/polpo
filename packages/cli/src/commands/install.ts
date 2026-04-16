@@ -29,6 +29,7 @@ import {
   skillsInstallHint,
   type SkillsScope,
 } from "../util/skills.js";
+import { promptForUpdateIfAvailable } from "../update-check.js";
 
 interface InstallOptions {
   client?: string;
@@ -78,6 +79,12 @@ export function registerInstallCommand(program: Command): void {
     .option("-i, --interactive", "Prompt interactively for choices")
     .action(async (opts: InstallOptions) => {
       clack.intro(pc.bold("Polpo — Install"));
+
+      // Offer an in-flow upgrade if the cached registry check spotted a
+      // newer CLI. Smart default: YES (press Enter to update). If the user
+      // updates, we exit so they re-run with the new binary.
+      const { updated } = await promptForUpdateIfAvailable(program.version() ?? "0.0.0");
+      if (updated) process.exit(0);
 
       let scope = normalizeScope(opts.scope);
       let clients = parseClientsCsv(opts.client);

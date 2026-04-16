@@ -37,6 +37,7 @@ import {
 import { friendlyError } from "../util/errors.js";
 import { slugify } from "../util/slugify.js";
 import { installCodingAgentSkills, skillsInstallHint, type SkillsScope } from "../util/skills.js";
+import { promptForUpdateIfAvailable } from "../update-check.js";
 import { isPolpoOnPath, installPolpoGlobally, globalInstallHint } from "../util/install-cli.js";
 import { POLPO_API_DOMAIN } from "../util/base-url.js";
 
@@ -66,6 +67,12 @@ export function registerCreateCommand(program: Command): void {
     .option("-y, --yes", "Skip confirmations (use defaults)")
     .action(async (opts: CreateOptions) => {
       clack.intro(pc.bold("Polpo — Create a new project"));
+
+      // Offer an in-flow upgrade before the wizard eats minutes on an
+      // outdated binary. Smart default: YES. Exits on successful update
+      // so the user lands back on the shell and re-runs with the new CLI.
+      const { updated } = await promptForUpdateIfAvailable(program.version() ?? "0.0.0");
+      if (updated) process.exit(0);
 
       // Step 1: Auth (auto-browser if needed)
       const creds = await requireAuth({
