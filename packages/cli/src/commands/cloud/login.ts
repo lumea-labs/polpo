@@ -63,6 +63,14 @@ export function registerLoginCommand(program: Command): void {
             console.error("  Error: Invalid API key. Check the key and try again.");
             process.exit(1);
           }
+          if (res.status >= 500) {
+            console.error(`  Error: Polpo Cloud is having issues (HTTP ${res.status}). Try again shortly.`);
+            process.exit(1);
+          }
+          if (res.status >= 400) {
+            console.error(`  Error: Could not validate the API key (HTTP ${res.status}).`);
+            process.exit(1);
+          }
         } catch (err: any) {
           console.error(`  Error: Could not reach the API at ${baseUrl}`);
           console.error(`  ${err.message}`);

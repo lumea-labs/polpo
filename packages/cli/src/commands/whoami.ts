@@ -40,14 +40,27 @@ export function registerWhoamiCommand(program: Command): void {
 
       let user: User | null = null;
       let orgs: Org[] = [];
+      let staleAuth = false;
       try {
         const meRes = await client.get<User>("/v1/me");
-        user = (meRes.data as User) ?? null;
+        if (meRes.status === 401 || meRes.status === 403) staleAuth = true;
+        else user = (meRes.data as User) ?? null;
       } catch { /* endpoint may not exist — graceful */ }
       try {
         const orgsRes = await client.get<Org[]>("/v1/orgs");
-        orgs = Array.isArray(orgsRes.data) ? orgsRes.data : [];
+        if (orgsRes.status === 401 || orgsRes.status === 403) staleAuth = true;
+        else orgs = Array.isArray(orgsRes.data) ? orgsRes.data : [];
       } catch { /* graceful */ }
+
+      if (staleAuth) {
+        if (opts.json) {
+          console.log(JSON.stringify({ loggedIn: false, reason: "stale_token", apiUrl: creds.baseUrl }, null, 2));
+        } else {
+          console.error(pc.red("Session expired or invalid."));
+          console.error(pc.dim("Run ") + pc.bold("polpo login") + pc.dim(" to refresh."));
+        }
+        process.exit(1);
+      }
 
       if (opts.json) {
         console.log(JSON.stringify({

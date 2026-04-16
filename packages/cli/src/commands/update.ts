@@ -84,7 +84,22 @@ export function registerUpdateCommand(program: Command): void {
         console.log(pc.dim(`\n  Updating via ${pm}...`));
         console.log(pc.dim(`  $ ${cmd}\n`));
 
-        execSync(cmd, { stdio: "inherit", timeout: 120_000 });
+        try {
+          execSync(cmd, { stdio: "inherit", timeout: 120_000 });
+        } catch (err) {
+          // EACCES on a system-managed npm prefix is the typical failure mode.
+          // Surface a hint instead of a raw stack.
+          const msg = (err as Error).message ?? "";
+          if (/EACCES|permission denied/i.test(msg)) {
+            console.error(pc.red("\n  Permission denied while installing."));
+            console.error(pc.dim("  Try one of:"));
+            console.error(pc.dim(`    sudo ${cmd}`));
+            console.error(pc.dim(`    npm config set prefix ~/.npm-global  (one-time)`));
+          } else {
+            console.error(pc.red("\n  Update failed: ") + (msg || "unknown error"));
+          }
+          process.exit(1);
+        }
 
         // Verify
         try {

@@ -1,9 +1,12 @@
 /**
  * HTTP client for the Polpo Cloud API.
  *
- * Wraps fetch with Authorization header and JSON handling.
+ * Wraps fetch with Authorization header, JSON handling, and a typed
+ * network error so callers can surface "Could not reach api.polpo.sh"
+ * instead of a raw `TypeError: fetch failed`.
  */
 import type { Credentials } from "./config.js";
+import { ApiNetworkError } from "../../util/errors.js";
 
 export interface ApiResponse<T = unknown> {
   status: number;
@@ -33,11 +36,18 @@ export function createApiClient(credentials: Credentials, projectId?: string): A
   ): Promise<ApiResponse<T>> {
     const url = `${baseUrl.replace(/\/$/, "")}${path}`;
 
-    const res = await fetch(url, {
-      method,
-      headers,
-      body: body !== undefined ? JSON.stringify(body) : undefined,
-    });
+    let res: Response;
+    try {
+      res = await fetch(url, {
+        method,
+        headers,
+        body: body !== undefined ? JSON.stringify(body) : undefined,
+      });
+    } catch (err) {
+      // fetch() throws on DNS / TCP / TLS / abort failures. Wrap so callers
+      // (and friendlyError) can produce a useful "check your network" hint.
+      throw new ApiNetworkError(baseUrl, err);
+    }
 
     let data: T;
     const contentType = res.headers.get("content-type") ?? "";

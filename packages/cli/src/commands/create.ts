@@ -128,28 +128,41 @@ export function registerCreateCommand(program: Command): void {
 
       // Step 5: Directory
       // Blank templates can scaffold into cwd; remote templates always
-      // get their own subdirectory.
+      // get their own subdirectory. If the chosen dir already exists we
+      // ask the user for an alternative name instead of dead-ending.
       const originalCwd = process.cwd();
       let targetDir = originalCwd;
       let dirName: string | null = null;
       if (template.kind === "remote") {
         const defaultDir = slugify(projectName);
-        const input = opts.yes
-          ? defaultDir
-          : await clack.text({
+        let candidate = opts.yes ? defaultDir : null;
+        // Loop until we land on a non-existing directory (or the user cancels).
+        // Keeps the wizard inside the terminal — no manual `rm -rf` round-trip.
+        while (true) {
+          if (candidate === null) {
+            const input = await clack.text({
               message: "Directory name",
               initialValue: defaultDir,
               validate: (v) => (!v || v === "." || v === ".." ? "Invalid directory" : undefined),
             });
-        if (clack.isCancel(input)) {
-          clack.cancel("Cancelled.");
-          process.exit(0);
-        }
-        dirName = path.basename(input as string).replace(/[^a-zA-Z0-9._-]/g, "-");
-        targetDir = path.resolve(originalCwd, dirName);
-        if (fs.existsSync(targetDir)) {
-          clack.outro(pc.red(`Directory "${dirName}" already exists.`));
-          process.exit(1);
+            if (clack.isCancel(input)) {
+              clack.cancel("Cancelled.");
+              process.exit(0);
+            }
+            candidate = path.basename(input as string).replace(/[^a-zA-Z0-9._-]/g, "-");
+          }
+          const resolved = path.resolve(originalCwd, candidate);
+          if (!fs.existsSync(resolved)) {
+            dirName = candidate;
+            targetDir = resolved;
+            break;
+          }
+          if (opts.yes) {
+            clack.outro(pc.red(`Directory "${candidate}" already exists.`));
+            process.exit(1);
+          }
+          clack.log.warn(`"${candidate}" already exists in this folder.`);
+          candidate = null; // re-prompt
         }
       }
 
@@ -162,11 +175,24 @@ export function registerCreateCommand(program: Command): void {
           orgId,
           name: projectName,
         });
+      } catch (err) {
+        s.stop("Project creation failed.");
+        clack.outro(pc.red(friendlyError((err as Error).message)));
+        process.exit(1);
+      }
+      // Project row exists in the cloud now even if `waitForActive` times out.
+      // We surface a recovery path so the user can finish the bootstrap manually
+      // instead of orphaning a half-provisioned project in the dashboard.
+      try {
         s.message("Waiting for project to become active...");
         await waitForProjectActive(client, project.id);
         s.stop(`Project "${project.name}" created`);
       } catch (err) {
-        s.stop("Project creation failed.");
+        s.stop("Project provisioning timed out — but the project was created.");
+        clack.log.warn(`Project ID: ${pc.bold(project.id)} (check it in the dashboard)`);
+        clack.log.info(
+          `Once it shows as active, finish setup with: ${pc.bold(`polpo link --project-id ${project.id}`)}`,
+        );
         clack.outro(pc.red(friendlyError((err as Error).message)));
         process.exit(1);
       }

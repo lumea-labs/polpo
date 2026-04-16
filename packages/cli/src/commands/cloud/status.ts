@@ -2,9 +2,10 @@
  * polpo cloud-status — show project status summary.
  */
 import type { Command } from "commander";
-import { loadCredentials } from "./config.js";
+import pc from "picocolors";
 import { createApiClient } from "./api.js";
 import { loadProjectId } from "./project-context.js";
+import { requireAuth } from "../../util/auth.js";
 
 export function registerStatusCommand(program: Command): void {
   program
@@ -12,13 +13,17 @@ export function registerStatusCommand(program: Command): void {
     .description("Show project status summary")
     .option("-d, --dir <path>", "Project directory", ".")
     .action(async (opts) => {
-      const creds = loadCredentials();
-      if (!creds) {
-        console.error("Not logged in. Run: polpo login --api-key <key>");
+      const creds = await requireAuth({
+        context: "Showing project status requires an authenticated session.",
+      });
+
+      const projectId = loadProjectId(opts.dir);
+      if (!projectId) {
+        console.error(pc.red("No project linked in this directory."));
+        console.error(pc.dim("\n  Run ") + pc.bold("polpo create") + pc.dim(" or ") + pc.bold("polpo link --project-id <id>") + pc.dim(" first."));
         process.exit(1);
       }
 
-      const projectId = loadProjectId(opts.dir);
       const client = createApiClient(creds, projectId);
 
       let taskSummary = "";

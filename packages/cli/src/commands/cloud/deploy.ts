@@ -18,14 +18,15 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { Command } from "commander";
-import { loadCredentials } from "./config.js";
+import pc from "picocolors";
 import { createApiClient, type ApiClient } from "./api.js";
 import { isTTY, confirm } from "./prompt.js";
 import { resolveKey, decrypt } from "@polpo-ai/vault-crypto";
 import { AddAgentSchema } from "@polpo-ai/server";
 import { friendlyError } from "../../util/errors.js";
-import { resolveDefaultOrg } from "../../util/org.js";
+import { pickOrg } from "../../util/org.js";
 import { resolveOrCreateProject } from "../../util/project.js";
+import { requireAuth } from "../../util/auth.js";
 
 // ── Deploy result tracking ──────────────────────────────
 
@@ -54,7 +55,10 @@ function mergeResult(target: DeployResult, source: DeployResult): void {
 function resolvePolpoDir(dir: string): string {
   const polpoDir = path.resolve(dir, ".polpo");
   if (!fs.existsSync(polpoDir)) {
-    console.error(`Error: .polpo/ directory not found in ${path.resolve(dir)}`);
+    console.error(pc.red(`No .polpo/ found in ${path.resolve(dir)}`));
+    console.error(pc.dim("\n  This directory isn't a Polpo project yet. To get started:\n"));
+    console.error(pc.dim("    polpo create               ") + pc.bold("scaffold a new project here"));
+    console.error(pc.dim("    polpo link --project-id X  ") + pc.bold("attach this dir to an existing cloud project"));
     process.exit(1);
   }
   return polpoDir;
@@ -481,11 +485,12 @@ export function registerDeployCommand(program: Command): void {
     .option("--include-sessions", "Also deploy chat sessions")
     .option("--all", "Deploy everything (full local→cloud migration)")
     .action(async (opts) => {
-      const creds = loadCredentials();
-      if (!creds) {
-        console.error("Not logged in. Run: polpo login");
-        process.exit(1);
-      }
+      // requireAuth auto-triggers device-code login if creds are missing/expired,
+      // so a fresh user typing `polpo deploy` first goes through browser auth
+      // instead of getting a "Not logged in" wall.
+      const creds = await requireAuth({
+        context: "Deploying requires an authenticated session.",
+      });
 
       const polpoDir = resolvePolpoDir(opts.dir);
       const polpoConfig = loadJson(path.join(polpoDir, "polpo.json"));
@@ -503,7 +508,10 @@ export function registerDeployCommand(program: Command): void {
 
       if (!projectId) {
         try {
-          const org = await resolveDefaultOrg(cpClient);
+          // pickOrg handles the 0-org case inline (prompts to create one),
+          // so a fresh user running `polpo deploy` against an empty account
+          // gets a single graceful prompt instead of an exit.
+          const org = await pickOrg(cpClient);
           const project = await resolveOrCreateProject({
             client: cpClient,
             orgId: org.id,

@@ -2,9 +2,11 @@
  * polpo cloud-logs — view logs or follow events via SSE.
  */
 import type { Command } from "commander";
-import { loadCredentials } from "./config.js";
+import pc from "picocolors";
 import { createApiClient } from "./api.js";
 import { loadProjectId } from "./project-context.js";
+import { requireAuth } from "../../util/auth.js";
+import { friendlyError } from "../../util/errors.js";
 
 export function registerLogsCommand(program: Command): void {
   program
@@ -13,15 +15,16 @@ export function registerLogsCommand(program: Command): void {
     .option("--follow", "Follow live events via SSE")
     .option("-d, --dir <path>", "Project directory", ".")
     .action(async (opts) => {
-      const creds = loadCredentials();
-      if (!creds) {
-        console.error(
-          "Not logged in. Run: polpo login --api-key <key>",
-        );
-        process.exit(1);
-      }
+      const creds = await requireAuth({
+        context: "Viewing logs requires an authenticated session.",
+      });
 
       const projectId = loadProjectId(opts.dir);
+      if (!projectId) {
+        console.error(pc.red("No project linked in this directory."));
+        console.error(pc.dim("\n  Run ") + pc.bold("polpo create") + pc.dim(" or ") + pc.bold("polpo link --project-id <id>") + pc.dim(" first."));
+        process.exit(1);
+      }
 
       if (opts.follow) {
         // SSE streaming
@@ -36,12 +39,12 @@ export function registerLogsCommand(program: Command): void {
           });
 
           if (!res.ok) {
-            console.error(`Error: SSE connection failed with status ${res.status}`);
+            console.error(pc.red(friendlyError(`HTTP ${res.status}: SSE connection failed`)));
             process.exit(1);
           }
 
           if (!res.body) {
-            console.error("Error: No response body for SSE stream.");
+            console.error(pc.red("No response body for SSE stream."));
             process.exit(1);
           }
 
@@ -76,7 +79,7 @@ export function registerLogsCommand(program: Command): void {
           }
         } catch (err: any) {
           if (err.name === "AbortError") return;
-          console.error("Error: " + err.message);
+          console.error(pc.red(friendlyError(err.message)));
           process.exit(1);
         }
       } else {
@@ -105,11 +108,11 @@ export function registerLogsCommand(program: Command): void {
               console.log(JSON.stringify(data, null, 2));
             }
           } else {
-            console.error("Error fetching logs: status " + res.status);
+            console.error(pc.red(friendlyError(`HTTP ${res.status}`)));
             process.exit(1);
           }
         } catch (err: any) {
-          console.error("Error: " + err.message);
+          console.error(pc.red(friendlyError(err.message)));
           process.exit(1);
         }
       }

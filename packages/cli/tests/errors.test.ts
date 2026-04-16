@@ -54,18 +54,46 @@ describe("friendlyError", () => {
     });
   });
 
-  describe("passthrough", () => {
-    it("returns the original message when no pattern matches", () => {
-      expect(friendlyError("connect ECONNREFUSED")).toBe("connect ECONNREFUSED");
+  describe("network errors", () => {
+    it("maps ECONNREFUSED to a network hint", () => {
+      expect(friendlyError("connect ECONNREFUSED")).toMatch(/Could not reach the Polpo API/);
     });
 
+    it("maps fetch failed to the same hint", () => {
+      expect(friendlyError("fetch failed")).toMatch(/Could not reach the Polpo API/);
+    });
+
+    it("maps DNS errors (ENOTFOUND, EAI_AGAIN) to the same hint", () => {
+      expect(friendlyError("getaddrinfo ENOTFOUND api.polpo.sh")).toMatch(/Could not reach/);
+      expect(friendlyError("getaddrinfo EAI_AGAIN")).toMatch(/Could not reach/);
+    });
+  });
+
+  describe("HTTP status mapping", () => {
+    it("maps 404 to a friendly message", () => {
+      expect(friendlyError("HTTP 404 not found")).toBe("Resource not found.");
+    });
+
+    it("maps 5xx to a service-status hint", () => {
+      expect(friendlyError("HTTP 500 internal")).toMatch(/status\.polpo\.sh/);
+    });
+
+    it("maps 429 to a rate-limit hint", () => {
+      expect(friendlyError("HTTP 429 rate limit exceeded")).toMatch(/Rate limited/);
+    });
+
+    it("maps 409 to a conflict hint", () => {
+      expect(friendlyError("HTTP 409 Conflict")).toMatch(/already exists/);
+    });
+  });
+
+  describe("passthrough", () => {
     it("returns empty string unchanged", () => {
       expect(friendlyError("")).toBe("");
     });
 
-    it("returns unrelated 4xx/5xx untouched", () => {
-      expect(friendlyError("HTTP 404 not found")).toBe("HTTP 404 not found");
-      expect(friendlyError("HTTP 500 internal")).toBe("HTTP 500 internal");
+    it("returns unrelated free-form messages untouched", () => {
+      expect(friendlyError("Something weird happened")).toBe("Something weird happened");
     });
   });
 

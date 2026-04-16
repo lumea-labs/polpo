@@ -2,9 +2,31 @@
  * polpo byok — manage BYOK (Bring Your Own Key) API keys.
  */
 import type { Command } from "commander";
-import { loadCredentials } from "./config.js";
+import pc from "picocolors";
 import { createApiClient } from "./api.js";
 import { isTTY, promptMasked } from "./prompt.js";
+import { requireAuth } from "../../util/auth.js";
+import { friendlyError } from "../../util/errors.js";
+
+const KNOWN_PROVIDERS = [
+  "openai",
+  "anthropic",
+  "xai",
+  "google",
+  "groq",
+  "openrouter",
+  "cerebras",
+  "gemini",
+];
+
+function warnUnknownProvider(provider: string): void {
+  if (!KNOWN_PROVIDERS.includes(provider.toLowerCase())) {
+    console.error(
+      pc.yellow(`Warning: "${provider}" isn't a recognised provider name.`),
+    );
+    console.error(pc.dim(`  Known: ${KNOWN_PROVIDERS.join(", ")}`));
+  }
+}
 
 export function registerByokCommand(program: Command): void {
   const byok = program
@@ -18,49 +40,38 @@ export function registerByokCommand(program: Command): void {
     .option("--label <label>", "Optional label")
     .option("--project <project-id>", "Project ID (if not in credentials)")
     .action(async (provider: string, opts) => {
-      const creds = loadCredentials();
-      if (!creds) {
-        console.error(
-          "Not logged in. Run: polpo login --api-key <key>",
-        );
-        process.exit(1);
-      }
+      const creds = await requireAuth({
+        context: "Managing BYOK keys requires an authenticated session.",
+      });
+      warnUnknownProvider(provider);
 
       let key: string | undefined = opts.key;
-
       if (!key) {
         if (isTTY()) {
           key = await promptMasked(`API key for ${provider}: `);
           if (!key) {
-            console.error("Error: API key is required.");
+            console.error(pc.red("API key is required."));
             process.exit(1);
           }
         } else {
-          console.error("Error: --key is required.");
+          console.error(pc.red("--key is required in non-interactive mode."));
           process.exit(1);
         }
       }
 
       const client = createApiClient(creds);
-
       try {
-        const res = await client.post("/v1/byok", {
-          provider,
-          key,
-          label: opts.label,
-        });
+        const res = await client.post("/v1/byok", { provider, key, label: opts.label });
 
         if (res.status >= 200 && res.status < 300) {
-          console.log(`BYOK key set for provider "${provider}".`);
+          console.log(pc.green(`✓ BYOK key set for "${provider}".`));
         } else {
-          const data = res.data as any;
-          console.error(
-            "Error: " + (data?.error ?? JSON.stringify(data)),
-          );
+          const data = res.data as { error?: string };
+          console.error(pc.red(friendlyError(data?.error ?? `HTTP ${res.status}`)));
           process.exit(1);
         }
-      } catch (err: any) {
-        console.error("Error: " + err.message);
+      } catch (err) {
+        console.error(pc.red(friendlyError((err as Error).message)));
         process.exit(1);
       }
     });
@@ -69,25 +80,21 @@ export function registerByokCommand(program: Command): void {
     .command("list")
     .description("List BYOK keys")
     .option("--project <project-id>", "Project ID (if not in credentials)")
-    .action(async (opts) => {
-      const creds = loadCredentials();
-      if (!creds) {
-        console.error(
-          "Not logged in. Run: polpo login --api-key <key>",
-        );
-        process.exit(1);
-      }
-
+    .action(async () => {
+      const creds = await requireAuth({
+        context: "Listing BYOK keys requires an authenticated session.",
+      });
       const client = createApiClient(creds);
 
       try {
         const res = await client.get("/v1/byok");
 
         if (res.status >= 200 && res.status < 300) {
-          const data = res.data as any;
+          const data = res.data as { data?: Array<{ provider: string; maskedKey: string; label?: string }> };
           const keys = data?.data ?? [];
           if (keys.length === 0) {
-            console.log("No BYOK keys configured.");
+            console.log(pc.dim("No BYOK keys configured."));
+            console.log(pc.dim("Add one with ") + pc.bold("polpo byok set <provider>"));
           } else {
             console.log("BYOK keys:");
             for (const k of keys) {
@@ -96,14 +103,12 @@ export function registerByokCommand(program: Command): void {
             }
           }
         } else {
-          const data = res.data as any;
-          console.error(
-            "Error: " + (data?.error ?? JSON.stringify(data)),
-          );
+          const data = res.data as { error?: string };
+          console.error(pc.red(friendlyError(data?.error ?? `HTTP ${res.status}`)));
           process.exit(1);
         }
-      } catch (err: any) {
-        console.error("Error: " + err.message);
+      } catch (err) {
+        console.error(pc.red(friendlyError((err as Error).message)));
         process.exit(1);
       }
     });
@@ -112,34 +117,27 @@ export function registerByokCommand(program: Command): void {
     .command("remove <provider>")
     .description("Remove a BYOK key")
     .option("--project <project-id>", "Project ID (if not in credentials)")
-    .action(async (provider: string, opts) => {
-      const creds = loadCredentials();
-      if (!creds) {
-        console.error(
-          "Not logged in. Run: polpo login --api-key <key>",
-        );
-        process.exit(1);
-      }
-
+    .action(async (provider: string) => {
+      const creds = await requireAuth({
+        context: "Removing BYOK keys requires an authenticated session.",
+      });
       const client = createApiClient(creds);
 
       try {
         const res = await client.delete(`/v1/byok/${provider}`);
 
         if (res.status >= 200 && res.status < 300) {
-          console.log(`BYOK key removed for provider "${provider}".`);
+          console.log(pc.green(`✓ BYOK key removed for "${provider}".`));
         } else if (res.status === 404) {
-          console.error(`No BYOK key found for provider "${provider}".`);
+          console.error(pc.yellow(`No BYOK key found for "${provider}".`));
           process.exit(1);
         } else {
-          const data = res.data as any;
-          console.error(
-            "Error: " + (data?.error ?? JSON.stringify(data)),
-          );
+          const data = res.data as { error?: string };
+          console.error(pc.red(friendlyError(data?.error ?? `HTTP ${res.status}`)));
           process.exit(1);
         }
-      } catch (err: any) {
-        console.error("Error: " + err.message);
+      } catch (err) {
+        console.error(pc.red(friendlyError((err as Error).message)));
         process.exit(1);
       }
     });
