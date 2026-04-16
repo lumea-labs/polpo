@@ -33,7 +33,9 @@ describe("resolveDefaultOrg", () => {
     expect(org).toEqual({ id: "o1", name: "First" });
   });
 
-  it("throws a friendly error when the user has zero orgs", async () => {
+  it("throws a friendly error when the user has zero orgs (non-interactive mode)", async () => {
+    // resolveDefaultOrg is the non-interactive variant — `polpo create` uses
+    // pickOrg() instead, which prompts to create one inline.
     const get = vi.fn().mockResolvedValue(ok([] as Org[]));
     await expect(resolveDefaultOrg(mockClient(get))).rejects.toThrow(
       /No organization found/,
