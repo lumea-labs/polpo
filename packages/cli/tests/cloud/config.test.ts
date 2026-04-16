@@ -139,3 +139,30 @@ describe("clearCredentials", () => {
     expect(fs.existsSync(path.join(homeHolder.path, ".polpo"))).toBe(true);
   });
 });
+
+// Skip on Windows — POSIX permission bits aren't meaningful there.
+const isPosix = process.platform !== "win32";
+
+describe.skipIf(!isPosix)("file permissions (POSIX)", () => {
+  it("writes credentials with 0600 (owner-only read/write)", () => {
+    config.saveCredentials("sk_live_abc");
+    const mode = fs.statSync(credsFile()).mode & 0o777;
+    expect(mode).toBe(0o600);
+  });
+
+  it("creates the .polpo dir with 0700 (owner-only)", () => {
+    config.saveCredentials("sk_live_abc");
+    const mode = fs.statSync(path.join(homeHolder.path, ".polpo")).mode & 0o777;
+    expect(mode).toBe(0o700);
+  });
+
+  it("downgrades permissions on an existing overly-permissive file", () => {
+    // Simulate a credentials file that predates the chmod fix
+    // (e.g. written by a previous CLI version with default umask 0644).
+    fs.mkdirSync(path.join(homeHolder.path, ".polpo"), { recursive: true });
+    fs.writeFileSync(credsFile(), "{}", { mode: 0o644 });
+    config.saveCredentials("sk_live_abc");
+    const mode = fs.statSync(credsFile()).mode & 0o777;
+    expect(mode).toBe(0o600);
+  });
+});
