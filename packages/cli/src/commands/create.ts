@@ -134,17 +134,51 @@ export function registerCreateCommand(program: Command): void {
       }
 
       // Step 5: Directory
-      // Blank templates can scaffold into cwd; remote templates always
-      // get their own subdirectory. If the chosen dir already exists we
-      // ask the user for an alternative name instead of dead-ending.
+      // Both blank and remote templates ask for a target directory.
+      // Blank offers "current directory" as the default (add .polpo/ to
+      // an existing project); remote templates always get a subdirectory.
       const originalCwd = process.cwd();
       let targetDir = originalCwd;
       let dirName: string | null = null;
-      if (template.kind === "remote") {
+
+      if (template.kind === "blank" && !opts.yes) {
+        const dirChoice = await clack.select<string>({
+          message: "Where should we scaffold?",
+          options: [
+            { value: ".", label: "Current directory", hint: path.basename(originalCwd) },
+            { value: "new", label: "New directory" },
+          ],
+          initialValue: ".",
+        });
+        if (clack.isCancel(dirChoice)) {
+          clack.cancel("Cancelled.");
+          process.exit(0);
+        }
+        if (dirChoice === "new") {
+          const defaultDir = slugify(projectName);
+          const input = await clack.text({
+            message: "Directory name",
+            initialValue: defaultDir,
+            validate: (v) => (!v || v === "." || v === ".." ? "Invalid directory" : undefined),
+          });
+          if (clack.isCancel(input)) {
+            clack.cancel("Cancelled.");
+            process.exit(0);
+          }
+          const candidate = path.basename(input as string).replace(/[^a-zA-Z0-9._-]/g, "-");
+          const resolved = path.resolve(originalCwd, candidate);
+          if (fs.existsSync(resolved)) {
+            clack.log.warn(`"${candidate}" already exists — scaffolding into it.`);
+          } else {
+            fs.mkdirSync(resolved, { recursive: true });
+          }
+          dirName = candidate;
+          targetDir = resolved;
+        }
+      } else if (template.kind === "remote") {
         const defaultDir = slugify(projectName);
         let candidate = opts.yes ? defaultDir : null;
         // Loop until we land on a non-existing directory (or the user cancels).
-        // Keeps the wizard inside the terminal — no manual `rm -rf` round-trip.
         while (true) {
           if (candidate === null) {
             const input = await clack.text({
@@ -346,18 +380,41 @@ export function registerCreateCommand(program: Command): void {
       // Outro
       const relDir = dirName ?? ".";
       const polpoRun = cliInstalled ? "polpo" : `npx ${CLI_PACKAGE_FOR_OUTRO}`;
-      const nextSteps = [
-        dirName ? `cd ${dirName}` : undefined,
-        template.installsDeps ? "npm run dev" : undefined,
-        `${polpoRun} deploy`,
-        skillsScope === "skip" ? `# skills: ${skillsInstallHint()}` : undefined,
-        !cliInstalled ? `# install polpo: ${cliInstallCommand}` : undefined,
-      ].filter(Boolean) as string[];
-      clack.outro(
-        pc.green(`✓ Project "${project.name}" ready in ${relDir}\n`) +
-          pc.dim("  Next:\n") +
-          nextSteps.map((step) => pc.dim(`    ${step}\n`)).join(""),
-      );
+      const cdLine = dirName ? `cd ${dirName}` : undefined;
+
+      const lines: string[] = [];
+      lines.push(pc.green(`✓ Project "${project.name}" ready in ${relDir}`));
+      lines.push("");
+
+      // Section 1: Navigate
+      if (cdLine) {
+        lines.push(pc.dim("  Navigate:"));
+        lines.push(`    ${pc.bold(cdLine)}`);
+        lines.push("");
+      }
+
+      // Section 2: Configure agents
+      lines.push(pc.dim("  Configure your agents:"));
+      lines.push(`    ${pc.dim("Edit")} ${pc.bold(".polpo/agents.json")} ${pc.dim("to add agents, tools, and system prompts")}`);
+      if (skillsInstalled) {
+        lines.push(`    ${pc.dim("Or ask your coding agent:")} ${pc.bold('"Set up Polpo agents for this project"')}`);
+      }
+      lines.push("");
+
+      // Section 3: Deploy
+      lines.push(pc.dim("  Deploy to cloud:"));
+      lines.push(`    ${pc.bold(`${polpoRun} deploy`)}`);
+      lines.push("");
+
+      // Section 4: Fallbacks
+      if (skillsScope === "skip") {
+        lines.push(pc.dim(`  Install coding-agent skills later: ${pc.bold(skillsInstallHint())}`));
+      }
+      if (!cliInstalled) {
+        lines.push(pc.dim(`  Install CLI globally: ${pc.bold(cliInstallCommand)}`));
+      }
+
+      clack.outro(lines.join("\n"));
     });
 }
 
