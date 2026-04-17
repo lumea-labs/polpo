@@ -19,8 +19,9 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import type { Command } from "commander";
 import pc from "picocolors";
+import * as clack from "@clack/prompts";
 import { createApiClient, type ApiClient } from "./api.js";
-import { isTTY, confirm } from "./prompt.js";
+import { isTTY } from "./prompt.js";
 import { resolveKey, decrypt } from "@polpo-ai/vault-crypto";
 import { AddAgentSchema } from "@polpo-ai/server";
 import { friendlyError } from "../../util/errors.js";
@@ -485,9 +486,8 @@ export function registerDeployCommand(program: Command): void {
     .option("--include-sessions", "Also deploy chat sessions")
     .option("--all", "Deploy everything (full local→cloud migration)")
     .action(async (opts) => {
-      // requireAuth auto-triggers device-code login if creds are missing/expired,
-      // so a fresh user typing `polpo deploy` first goes through browser auth
-      // instead of getting a "Not logged in" wall.
+      clack.intro(pc.bold("Polpo — Deploy"));
+
       const creds = await requireAuth({
         context: "Deploying requires an authenticated session.",
       });
@@ -496,11 +496,10 @@ export function registerDeployCommand(program: Command): void {
       const polpoConfig = loadJson(path.join(polpoDir, "polpo.json"));
       const projectName = polpoConfig?.project ?? path.basename(path.resolve(opts.dir));
       const force = opts.force || opts.yes || false;
+      const interactive = !force && isTTY();
 
-      // Control plane client (no project context needed for orgs/projects)
       const cpClient = createApiClient(creds);
-
-      console.log("\n  Polpo Deploy\n");
+      const s = clack.spinner();
 
       // ── Step 1: Resolve project ────────────────────────
       let projectId: string | undefined = polpoConfig?.projectId;
@@ -508,9 +507,6 @@ export function registerDeployCommand(program: Command): void {
 
       if (!projectId) {
         try {
-          // pickOrg handles the 0-org case inline (prompts to create one),
-          // so a fresh user running `polpo deploy` against an empty account
-          // gets a single graceful prompt instead of an exit.
           const org = await pickOrg(cpClient);
           const project = await resolveOrCreateProject({
             client: cpClient,
@@ -521,16 +517,16 @@ export function registerDeployCommand(program: Command): void {
           });
           projectId = project.id;
           projectSlug = project.slug;
-          console.log(`  Project: ${project.name}\n`);
+          clack.log.success(`Project: ${pc.bold(project.name)}`);
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
-          console.error(`  ${friendlyError(msg)}`);
+          clack.outro(pc.red(friendlyError(msg)));
           process.exit(1);
         }
       }
 
       if (!projectId) {
-        console.error("  No project resolved. Deploy from a project directory with .polpo/polpo.json");
+        clack.outro(pc.red("No project resolved. Deploy from a directory with .polpo/polpo.json"));
         process.exit(1);
       }
 
@@ -592,23 +588,29 @@ export function registerDeployCommand(program: Command): void {
       }
 
       if (detected.length > 0) {
-        console.log("  Detected LLM keys:");
-        for (const { envVar, value } of detected) {
-          console.log(`    ${envVar.padEnd(25)} ${value.slice(0, 8)}...${value.slice(-4)}`);
-        }
-        console.log();
+        clack.log.info(
+          `Detected LLM keys:\n` +
+          detected.map(({ envVar, value }) =>
+            `  ${pc.dim(envVar.padEnd(25))} ${pc.bold(value.slice(0, 8))}...${value.slice(-4)}`
+          ).join("\n"),
+        );
 
-        if (isTTY() && !force) {
-          const push = await confirm("  Push LLM keys to cloud?");
-          if (push) {
-            let n = 0;
-            for (const { provider, value } of detected) {
-              try { await cpClient.post("/v1/byok", { provider, key: value }); n++; } catch {}
-            }
-            if (n > 0) console.log(`  Pushed ${n} LLM key(s)\n`);
-          } else {
-            console.log();
+        let pushKeys = force;
+        if (!pushKeys && interactive) {
+          const answer = await clack.confirm({
+            message: "Push LLM keys to cloud?",
+            initialValue: true,
+          });
+          pushKeys = !clack.isCancel(answer) && !!answer;
+        }
+
+        if (pushKeys) {
+          s.start("Pushing LLM keys...");
+          let n = 0;
+          for (const { provider, value } of detected) {
+            try { await cpClient.post("/v1/byok", { provider, key: value }); n++; } catch {}
           }
+          s.stop(n > 0 ? `Pushed ${n} LLM key(s)` : "No keys pushed");
         }
       }
 
@@ -637,81 +639,166 @@ export function registerDeployCommand(program: Command): void {
       const includeTasks = opts.all || opts.includeTasks;
       const includeSessions = opts.all || opts.includeSessions;
 
-      console.log("  Resources to deploy:");
+      // Build resource summary lines
+      const resourceLines: string[] = [];
       if (hasAgents) {
         const agentsData = loadJson(path.join(polpoDir, "agents.json"));
         if (Array.isArray(agentsData)) {
           const names = agentsData.map((e: any) => (e.agent ?? e).name).filter(Boolean);
-          console.log(`    Agents .......... ${names.length} (${names.join(", ")})`);
+          resourceLines.push(`  ${pc.bold("Agents")}       ${names.length} ${pc.dim(`(${names.join(", ")})`)}`)
         }
       }
       if (hasTeams) {
         const teamsData = loadJson(path.join(polpoDir, "teams.json"));
         if (Array.isArray(teamsData)) {
-          console.log(`    Teams ........... ${teamsData.length} (${teamsData.map((t: any) => t.name).join(", ")})`);
+          resourceLines.push(`  ${pc.bold("Teams")}        ${teamsData.length} ${pc.dim(`(${teamsData.map((t: any) => t.name).join(", ")})`)}`);
         }
       }
-      if (hasMemory) console.log("    Memory .......... yes");
+      if (hasMemory) resourceLines.push(`  ${pc.bold("Memory")}       ${pc.dim("shared + agent")}`);
       if (hasMissions) {
         const n = fs.readdirSync(path.join(polpoDir, "missions")).filter(f => f.endsWith(".json")).length;
-        console.log(`    Missions ........ ${n}`);
+        resourceLines.push(`  ${pc.bold("Missions")}     ${n}`);
       }
-      if (hasPlaybooks) console.log("    Playbooks ....... yes");
+      if (hasPlaybooks) resourceLines.push(`  ${pc.bold("Playbooks")}    yes`);
       if (hasSkills) {
         const n = fs.readdirSync(path.join(polpoDir, "skills")).filter(
           (d) => fs.statSync(path.join(polpoDir, "skills", d)).isDirectory()
         ).length;
-        console.log(`    Skills .......... ${n}`);
+        resourceLines.push(`  ${pc.bold("Skills")}       ${n}`);
       }
       if (hasSchedules) {
         const n = fs.readdirSync(path.join(polpoDir, "schedules")).filter(f => f.endsWith(".json")).length;
-        console.log(`    Schedules ....... ${n}`);
+        resourceLines.push(`  ${pc.bold("Schedules")}    ${n}`);
       }
-      if (hasVault) console.log("    Vault ........... yes");
-      if (hasAvatars) console.log("    Avatars ......... yes");
-      if (includeTasks && hasTasks) console.log("    Tasks ........... yes");
-      if (includeSessions && hasSessions) console.log("    Sessions ........ yes");
-      console.log("");
+      if (hasVault) resourceLines.push(`  ${pc.bold("Vault")}        ${pc.dim("encrypted credentials")}`);
+      if (hasAvatars) resourceLines.push(`  ${pc.bold("Avatars")}      yes`);
+      if (includeTasks && hasTasks) resourceLines.push(`  ${pc.bold("Tasks")}        yes`);
+      if (includeSessions && hasSessions) resourceLines.push(`  ${pc.bold("Sessions")}     yes`);
 
-      if (!force && isTTY()) {
-        const ok = await confirm("  Deploy?");
-        if (!ok) {
-          console.log("  Aborted.");
+      if (resourceLines.length === 0) {
+        clack.outro(pc.yellow("Nothing to deploy — .polpo/ has no resources."));
+        process.exit(0);
+      }
+
+      clack.log.info(`Resources to deploy:\n${resourceLines.join("\n")}`);
+
+      if (interactive) {
+        const ok = await clack.confirm({
+          message: "Deploy these resources to cloud?",
+          initialValue: true,
+        });
+        if (clack.isCancel(ok) || !ok) {
+          clack.outro(pc.dim("Deploy cancelled."));
           process.exit(0);
         }
-        console.log();
       }
 
-      // ── Step 4: Deploy ────────────────────────
-      console.log("  Deploying...");
+      // ── Step 4: Deploy each resource ────────────────────
       const total = emptyResult();
 
-      if (hasTeams) { mergeResult(total, await deployTeams(client, polpoDir)); }
-      if (hasAgents) { mergeResult(total, await deployAgents(client, polpoDir, force)); }
-      if (hasMemory) { mergeResult(total, await deployMemory(client, polpoDir)); }
-      if (hasMissions) { mergeResult(total, await deployMissions(client, polpoDir)); }
-      if (hasPlaybooks) { mergeResult(total, await deployPlaybooks(client, polpoDir)); }
-      if (hasSkills) { mergeResult(total, await deploySkills(client, polpoDir, force)); }
-      if (hasSchedules) { mergeResult(total, await deploySchedules(client, polpoDir)); }
-      if (hasVault) { mergeResult(total, await deployVault(client, polpoDir)); }
-      if (hasAvatars) { mergeResult(total, await deployAvatars(client, polpoDir, creds.baseUrl, creds.apiKey)); }
-      if (includeTasks && hasTasks) { mergeResult(total, await deployTasks(client, polpoDir)); }
-      if (includeSessions && hasSessions) { mergeResult(total, await deploySessions(client, polpoDir)); }
-
-      // ── Summary ────────────────────────
-      const parts: string[] = [];
-      if (total.created > 0) parts.push(`${total.created} created`);
-      if (total.updated > 0) parts.push(`${total.updated} updated`);
-      if (total.skipped > 0) parts.push(`${total.skipped} skipped`);
-      if (total.failed > 0) parts.push(`${total.failed} failed`);
-
-      if (total.errors.length > 0) {
-        console.log("\n  Errors:");
-        for (const err of total.errors) console.log(`    - ${err}`);
+      if (hasTeams) {
+        s.start("Deploying teams...");
+        const r = await deployTeams(client, polpoDir);
+        mergeResult(total, r);
+        s.stop(`Teams: ${r.created} created, ${r.skipped} skipped${r.failed ? `, ${r.failed} failed` : ""}`);
       }
 
-      console.log(`\n  Result: ${parts.join(", ") || "nothing to deploy"}\n`);
+      if (hasAgents) {
+        s.start("Deploying agents...");
+        const r = await deployAgents(client, polpoDir, force);
+        mergeResult(total, r);
+        s.stop(`Agents: ${r.created} created, ${r.updated} updated${r.skipped ? `, ${r.skipped} skipped` : ""}${r.failed ? `, ${r.failed} failed` : ""}`);
+      }
 
+      if (hasMemory) {
+        s.start("Deploying memory...");
+        const r = await deployMemory(client, polpoDir);
+        mergeResult(total, r);
+        s.stop(`Memory: ${r.updated} updated${r.failed ? `, ${r.failed} failed` : ""}`);
+      }
+
+      if (hasMissions) {
+        s.start("Deploying missions...");
+        const r = await deployMissions(client, polpoDir);
+        mergeResult(total, r);
+        s.stop(`Missions: ${r.created} created${r.failed ? `, ${r.failed} failed` : ""}`);
+      }
+
+      if (hasPlaybooks) {
+        s.start("Deploying playbooks...");
+        const r = await deployPlaybooks(client, polpoDir);
+        mergeResult(total, r);
+        s.stop(`Playbooks: ${r.created} created${r.failed ? `, ${r.failed} failed` : ""}`);
+      }
+
+      if (hasSkills) {
+        s.start("Deploying skills...");
+        const r = await deploySkills(client, polpoDir, force);
+        mergeResult(total, r);
+        s.stop(`Skills: ${r.created} created, ${r.updated} updated${r.skipped ? `, ${r.skipped} skipped` : ""}${r.failed ? `, ${r.failed} failed` : ""}`);
+      }
+
+      if (hasSchedules) {
+        s.start("Deploying schedules...");
+        const r = await deploySchedules(client, polpoDir);
+        mergeResult(total, r);
+        s.stop(`Schedules: ${r.created} created${r.failed ? `, ${r.failed} failed` : ""}`);
+      }
+
+      if (hasVault) {
+        s.start("Deploying vault...");
+        const r = await deployVault(client, polpoDir);
+        mergeResult(total, r);
+        s.stop(`Vault: ${r.created} created${r.failed ? `, ${r.failed} failed` : ""}`);
+      }
+
+      if (hasAvatars) {
+        s.start("Deploying avatars...");
+        const r = await deployAvatars(client, polpoDir, creds.baseUrl, creds.apiKey);
+        mergeResult(total, r);
+        s.stop(`Avatars: ${r.created} uploaded${r.failed ? `, ${r.failed} failed` : ""}`);
+      }
+
+      if (includeTasks && hasTasks) {
+        s.start("Deploying tasks...");
+        const r = await deployTasks(client, polpoDir);
+        mergeResult(total, r);
+        s.stop(`Tasks: ${r.created} created${r.failed ? `, ${r.failed} failed` : ""}`);
+      }
+
+      if (includeSessions && hasSessions) {
+        s.start("Deploying sessions...");
+        const r = await deploySessions(client, polpoDir);
+        mergeResult(total, r);
+        s.stop(`Sessions: ${r.created} imported${r.failed ? `, ${r.failed} failed` : ""}`);
+      }
+
+      // ── Summary ────────────────────────
+      if (total.errors.length > 0) {
+        clack.log.warn(
+          `Errors:\n` +
+          total.errors.map(e => `  ${pc.red("x")} ${e}`).join("\n"),
+        );
+      }
+
+      const summaryParts: string[] = [];
+      if (total.created > 0) summaryParts.push(`${total.created} created`);
+      if (total.updated > 0) summaryParts.push(`${total.updated} updated`);
+      if (total.skipped > 0) summaryParts.push(`${total.skipped} skipped`);
+      if (total.failed > 0) summaryParts.push(pc.red(`${total.failed} failed`));
+
+      const endpoint = projectSlug ? `https://${projectSlug}.polpo.cloud` : "";
+      const outroLines: string[] = [];
+      if (total.failed === 0) {
+        outroLines.push(pc.green(`✓ Deployed: ${summaryParts.join(", ")}`));
+      } else {
+        outroLines.push(pc.yellow(`Deployed with errors: ${summaryParts.join(", ")}`));
+      }
+      if (endpoint) {
+        outroLines.push(pc.dim(`  Endpoint: ${pc.bold(endpoint)}`));
+      }
+
+      clack.outro(outroLines.join("\n"));
       process.exit(total.failed > 0 ? 1 : 0);
     });
 }
