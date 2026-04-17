@@ -21,13 +21,14 @@ import type { Command } from "commander";
 import pc from "picocolors";
 import * as clack from "@clack/prompts";
 import { createApiClient, type ApiClient } from "./api.js";
-import { isTTY } from "./prompt.js";
 import { resolveKey, decrypt } from "@polpo-ai/vault-crypto";
 import { AddAgentSchema } from "@polpo-ai/server";
 import { friendlyError } from "../../util/errors.js";
 import { pickOrg } from "../../util/org.js";
 import { resolveOrCreateProject } from "../../util/project.js";
 import { requireAuth } from "../../util/auth.js";
+import { isTTY } from "./prompt.js";
+import { resolveDeployConflict, type ConflictOptions } from "../../util/conflicts.js";
 
 // ── Deploy result tracking ──────────────────────────────
 
@@ -87,10 +88,22 @@ function listJsonFiles(dir: string): string[] {
 
 // ── Core deployers ──────────────────────────────────────
 
-async function deployTeams(client: ApiClient, polpoDir: string): Promise<DeployResult> {
+async function deployTeams(client: ApiClient, polpoDir: string, opts: ConflictOptions): Promise<DeployResult> {
   const result = emptyResult();
   const teams = loadJson(path.join(polpoDir, "teams.json"));
   if (!teams || !Array.isArray(teams)) return result;
+
+  // Fetch existing teams for conflict detection
+  let existingTeams: Record<string, any> = {};
+  try {
+    const res = await client.get<any>("/v1/agents/teams");
+    if (res.status === 200) {
+      const data = res.data?.data ?? res.data ?? [];
+      if (Array.isArray(data)) {
+        for (const t of data) existingTeams[t.name] = t;
+      }
+    }
+  } catch { /* proceed without comparison */ }
 
   for (const team of teams) {
     if (!team.name || typeof team.name !== "string") {
@@ -98,21 +111,39 @@ async function deployTeams(client: ApiClient, polpoDir: string): Promise<DeployR
       result.failed++;
       continue;
     }
-    const res = await client.post("/v1/agents/teams", { name: team.name, description: team.description });
-    if (res.status >= 200 && res.status < 300) {
-      result.created++;
-    } else if (res.status === 409 || (res.data as any)?.error?.includes("already exists")) {
+
+    const remote = existingTeams[team.name];
+    const local = { name: team.name, description: team.description };
+    const action = await resolveDeployConflict(local, remote, `team "${team.name}"`, opts);
+
+    if (action === "skip") {
       result.skipped++;
+      continue;
+    }
+
+    if (remote) {
+      // Update existing
+      const res = await client.put(`/v1/agents/team`, { name: team.name, description: team.description });
+      if (res.status >= 200 && res.status < 300) { result.updated++; }
+      else {
+        const msg = (res.data as any)?.error ?? `HTTP ${res.status}`;
+        result.errors.push(`team "${team.name}": ${friendlyError(msg)}`);
+        result.failed++;
+      }
     } else {
-      const msg = (res.data as any)?.error ?? `HTTP ${res.status}`;
-      result.errors.push(`team "${team.name}": ${friendlyError(msg)}`);
-      result.failed++;
+      const res = await client.post("/v1/agents/teams", local);
+      if (res.status >= 200 && res.status < 300) { result.created++; }
+      else {
+        const msg = (res.data as any)?.error ?? `HTTP ${res.status}`;
+        result.errors.push(`team "${team.name}": ${friendlyError(msg)}`);
+        result.failed++;
+      }
     }
   }
   return result;
 }
 
-async function deployAgents(client: ApiClient, polpoDir: string, force: boolean): Promise<DeployResult> {
+async function deployAgents(client: ApiClient, polpoDir: string, opts: ConflictOptions): Promise<DeployResult> {
   const result = emptyResult();
   const raw = loadJson(path.join(polpoDir, "agents.json"));
   if (!raw || !Array.isArray(raw)) {
@@ -123,21 +154,22 @@ async function deployAgents(client: ApiClient, polpoDir: string, force: boolean)
     return result;
   }
 
-  // Fetch existing agents for upsert detection
-  let existingNames = new Set<string>();
+  // Fetch existing agents for conflict detection
+  let existingAgents: Record<string, any> = {};
   try {
     const res = await client.get<any>("/v1/agents");
     if (res.status === 200) {
       const data = res.data?.data ?? res.data ?? [];
-      if (Array.isArray(data)) existingNames = new Set(data.map((a: any) => a.name));
+      if (Array.isArray(data)) {
+        for (const a of data) existingAgents[a.name] = a;
+      }
     }
-  } catch { /* can't check — will try create */ }
+  } catch { /* proceed without comparison */ }
 
   for (const entry of raw) {
     const agent = entry.agent ?? entry;
     const teamName = entry.teamName ?? "default";
 
-    // Validate agent schema
     const parsed = AddAgentSchema.safeParse(agent);
     if (!parsed.success) {
       const issues = parsed.error.issues.map((i: any) => `${i.path.join(".")}: ${i.message}`).join(", ");
@@ -146,26 +178,26 @@ async function deployAgents(client: ApiClient, polpoDir: string, force: boolean)
       continue;
     }
 
-    const exists = existingNames.has(agent.name);
+    const remote = existingAgents[agent.name];
+    const action = await resolveDeployConflict(agent, remote, `agent "${agent.name}"`, opts);
 
-    if (exists) {
-      if (!force && isTTY()) {
-        const ok = await confirm(`  Agent "${agent.name}" already exists. Override?`);
-        if (!ok) { result.skipped++; continue; }
-      }
+    if (action === "skip") {
+      result.skipped++;
+      continue;
+    }
+
+    if (remote) {
       const res = await client.put(`/v1/agents/${encodeURIComponent(agent.name)}`, { ...agent, team: teamName });
-      if (res.status >= 200 && res.status < 300) {
-        result.updated++;
-      } else {
+      if (res.status >= 200 && res.status < 300) { result.updated++; }
+      else {
         const msg = (res.data as any)?.error ?? `HTTP ${res.status}`;
         result.errors.push(`agent "${agent.name}": update failed — ${friendlyError(msg)}`);
         result.failed++;
       }
     } else {
       const res = await client.post("/v1/agents", { ...agent, team: teamName });
-      if (res.status >= 200 && res.status < 300) {
-        result.created++;
-      } else {
+      if (res.status >= 200 && res.status < 300) { result.created++; }
+      else {
         const msg = (res.data as any)?.error ?? `HTTP ${res.status}`;
         result.errors.push(`agent "${agent.name}": create failed — ${friendlyError(msg)}`);
         result.failed++;
@@ -175,23 +207,47 @@ async function deployAgents(client: ApiClient, polpoDir: string, force: boolean)
   return result;
 }
 
-async function deployMemory(client: ApiClient, polpoDir: string): Promise<DeployResult> {
+async function deployMemory(client: ApiClient, polpoDir: string, opts: ConflictOptions): Promise<DeployResult> {
   const result = emptyResult();
   const shared = loadText(path.join(polpoDir, "memory.md"));
   if (shared) {
-    const res = await client.put("/v1/memory", { content: shared });
-    if (res.status >= 200 && res.status < 300) { result.updated++; }
-    else { result.errors.push(`memory: ${friendlyError((res.data as any)?.error ?? `HTTP ${res.status}`)}`); result.failed++; }
+    // Fetch existing shared memory for comparison
+    let remoteShared: string | null = null;
+    try {
+      const r = await client.get<any>("/v1/memory");
+      if (r.status === 200) remoteShared = r.data?.content ?? null;
+    } catch {}
+
+    const action = await resolveDeployConflict(shared, remoteShared, "shared memory", opts);
+    if (action === "write") {
+      const res = await client.put("/v1/memory", { content: shared });
+      if (res.status >= 200 && res.status < 300) { result.updated++; }
+      else { result.errors.push(`memory: ${friendlyError((res.data as any)?.error ?? `HTTP ${res.status}`)}`); result.failed++; }
+    } else {
+      result.skipped++;
+    }
   }
+
   const memDir = path.join(polpoDir, "memory");
   if (fs.existsSync(memDir)) {
     for (const file of fs.readdirSync(memDir).filter(f => f.endsWith(".md"))) {
       const agentName = file.replace(".md", "");
       const content = loadText(path.join(memDir, file));
       if (content) {
-        const res = await client.put(`/v1/memory/agent/${agentName}`, { content });
-        if (res.status >= 200 && res.status < 300) { result.updated++; }
-        else { result.errors.push(`memory "${agentName}": ${friendlyError((res.data as any)?.error ?? `HTTP ${res.status}`)}`); result.failed++; }
+        let remoteAgent: string | null = null;
+        try {
+          const r = await client.get<any>(`/v1/memory/agent/${agentName}`);
+          if (r.status === 200) remoteAgent = r.data?.content ?? null;
+        } catch {}
+
+        const action = await resolveDeployConflict(content, remoteAgent, `memory "${agentName}"`, opts);
+        if (action === "write") {
+          const res = await client.put(`/v1/memory/agent/${agentName}`, { content });
+          if (res.status >= 200 && res.status < 300) { result.updated++; }
+          else { result.errors.push(`memory "${agentName}": ${friendlyError((res.data as any)?.error ?? `HTTP ${res.status}`)}`); result.failed++; }
+        } else {
+          result.skipped++;
+        }
       }
     }
   }
@@ -248,10 +304,23 @@ async function deployPlaybooks(client: ApiClient, polpoDir: string): Promise<Dep
   return result;
 }
 
-async function deploySkills(client: ApiClient, polpoDir: string, force: boolean): Promise<DeployResult> {
+async function deploySkills(client: ApiClient, polpoDir: string, opts: ConflictOptions): Promise<DeployResult> {
   const result = emptyResult();
   const skillsDir = path.join(polpoDir, "skills");
   if (!fs.existsSync(skillsDir)) return result;
+
+  // Fetch existing skills for conflict detection
+  let existingSkills: Record<string, any> = {};
+  try {
+    const res = await client.get<any>("/v1/skills");
+    if (res.status === 200) {
+      const data = res.data?.data ?? res.data ?? [];
+      if (Array.isArray(data)) {
+        for (const s of data) existingSkills[s.name] = s;
+      }
+    }
+  } catch {}
+
   for (const entry of fs.readdirSync(skillsDir, { withFileTypes: true })) {
     if (!entry.isDirectory()) continue;
     const skillFile = path.join(skillsDir, entry.name, "SKILL.md");
@@ -282,31 +351,37 @@ async function deploySkills(client: ApiClient, polpoDir: string, force: boolean)
 
     const bodyMatch = raw.match(/^---\n[\s\S]*?\n---\n?([\s\S]*)$/);
     const content = bodyMatch ? bodyMatch[1].trim() : raw.trim();
+    const localSkill = { name, description, content };
+    const remote = existingSkills[name];
+    const action = await resolveDeployConflict(localSkill, remote ? { name: remote.name, description: remote.description, content: remote.content } : null, `skill "${name}"`, opts);
 
-    // Try create first
-    const res = await client.post("/v1/skills/create", {
-      name, description, content,
-      ...(allowedTools?.length ? { allowedTools } : {}),
-    });
+    if (action === "skip") {
+      result.skipped++;
+      continue;
+    }
 
-    if (res.status >= 200 && res.status < 300) {
-      result.created++;
-    } else if (res.status === 409 || (res.data as any)?.error?.includes("already exists")) {
-      if (force) {
-        // Update existing skill
-        const updateRes = await client.put(`/v1/skills/${encodeURIComponent(name)}`, {
-          description, content,
-          ...(allowedTools?.length ? { allowedTools } : {}),
-        });
-        if (updateRes.status >= 200 && updateRes.status < 300) { result.updated++; }
-        else { result.skipped++; }
-      } else {
-        result.skipped++;
+    if (remote) {
+      const updateRes = await client.put(`/v1/skills/${encodeURIComponent(name)}`, {
+        description, content,
+        ...(allowedTools?.length ? { allowedTools } : {}),
+      });
+      if (updateRes.status >= 200 && updateRes.status < 300) { result.updated++; }
+      else {
+        const msg = (updateRes.data as any)?.error ?? `HTTP ${updateRes.status}`;
+        result.errors.push(`skill "${name}": ${friendlyError(msg)}`);
+        result.failed++;
       }
     } else {
-      const msg = (res.data as any)?.error ?? `HTTP ${res.status}`;
-      result.errors.push(`skill "${name}": ${friendlyError(msg)}`);
-      result.failed++;
+      const res = await client.post("/v1/skills/create", {
+        name, description, content,
+        ...(allowedTools?.length ? { allowedTools } : {}),
+      });
+      if (res.status >= 200 && res.status < 300) { result.created++; }
+      else {
+        const msg = (res.data as any)?.error ?? `HTTP ${res.status}`;
+        result.errors.push(`skill "${name}": ${friendlyError(msg)}`);
+        result.failed++;
+      }
     }
   }
   return result;
@@ -695,26 +770,27 @@ export function registerDeployCommand(program: Command): void {
 
       // ── Step 4: Deploy each resource ────────────────────
       const total = emptyResult();
+      const conflictOpts: ConflictOptions = { force, interactive };
 
       if (hasTeams) {
         s.start("Deploying teams...");
-        const r = await deployTeams(client, polpoDir);
+        const r = await deployTeams(client, polpoDir, conflictOpts);
         mergeResult(total, r);
-        s.stop(`Teams: ${r.created} created, ${r.skipped} skipped${r.failed ? `, ${r.failed} failed` : ""}`);
+        s.stop(`Teams: ${r.created} created, ${r.updated} updated${r.skipped ? `, ${r.skipped} skipped` : ""}${r.failed ? `, ${r.failed} failed` : ""}`);
       }
 
       if (hasAgents) {
         s.start("Deploying agents...");
-        const r = await deployAgents(client, polpoDir, force);
+        const r = await deployAgents(client, polpoDir, conflictOpts);
         mergeResult(total, r);
         s.stop(`Agents: ${r.created} created, ${r.updated} updated${r.skipped ? `, ${r.skipped} skipped` : ""}${r.failed ? `, ${r.failed} failed` : ""}`);
       }
 
       if (hasMemory) {
         s.start("Deploying memory...");
-        const r = await deployMemory(client, polpoDir);
+        const r = await deployMemory(client, polpoDir, conflictOpts);
         mergeResult(total, r);
-        s.stop(`Memory: ${r.updated} updated${r.failed ? `, ${r.failed} failed` : ""}`);
+        s.stop(`Memory: ${r.updated} updated${r.skipped ? `, ${r.skipped} skipped` : ""}${r.failed ? `, ${r.failed} failed` : ""}`);
       }
 
       if (hasMissions) {
@@ -733,7 +809,7 @@ export function registerDeployCommand(program: Command): void {
 
       if (hasSkills) {
         s.start("Deploying skills...");
-        const r = await deploySkills(client, polpoDir, force);
+        const r = await deploySkills(client, polpoDir, conflictOpts);
         mergeResult(total, r);
         s.stop(`Skills: ${r.created} created, ${r.updated} updated${r.skipped ? `, ${r.skipped} skipped` : ""}${r.failed ? `, ${r.failed} failed` : ""}`);
       }
