@@ -3,6 +3,7 @@
  */
 import type { Command } from "commander";
 import pc from "picocolors";
+import * as clack from "@clack/prompts";
 import { createApiClient } from "./api.js";
 import { loadProjectId } from "./project-context.js";
 import { requireAuth } from "../../util/auth.js";
@@ -13,18 +14,24 @@ export function registerStatusCommand(program: Command): void {
     .description("Show project status summary")
     .option("-d, --dir <path>", "Project directory", ".")
     .action(async (opts) => {
+      clack.intro(pc.bold("Polpo — Project Status"));
+
       const creds = await requireAuth({
         context: "Showing project status requires an authenticated session.",
       });
 
       const projectId = loadProjectId(opts.dir);
       if (!projectId) {
-        console.error(pc.red("No project linked in this directory."));
-        console.error(pc.dim("\n  Run ") + pc.bold("polpo create") + pc.dim(" or ") + pc.bold("polpo link --project-id <id>") + pc.dim(" first."));
+        clack.log.error(pc.red("No project linked in this directory."));
+        clack.outro(
+          pc.dim("Run ") + pc.bold("polpo create") + pc.dim(" or ") + pc.bold("polpo link --project-id <id>") + pc.dim(" first.")
+        );
         process.exit(1);
       }
 
       const client = createApiClient(creds, projectId);
+      const s = clack.spinner();
+      s.start("Fetching project status");
 
       let taskSummary = "";
       try {
@@ -73,11 +80,9 @@ export function registerStatusCommand(program: Command): void {
         }
       } catch { missionSummary = "Missions: unavailable"; }
 
-      console.log("\n  Project Status");
-      console.log("  ==============");
-      console.log(`  ${taskSummary}`);
-      console.log(`  ${agentSummary}`);
-      console.log(`  ${missionSummary}`);
-      console.log();
+      s.stop("Status retrieved");
+
+      clack.log.info(`${taskSummary}\n${agentSummary}\n${missionSummary}`);
+      clack.outro(pc.green("Done"));
     });
 }

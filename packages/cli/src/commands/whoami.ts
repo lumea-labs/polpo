@@ -5,6 +5,7 @@
  * at the right cloud. Honours --json for scripting.
  */
 import type { Command } from "commander";
+import * as clack from "@clack/prompts";
 import pc from "picocolors";
 import { getAuth } from "../util/auth.js";
 import { createApiClient } from "./cloud/api.js";
@@ -31,12 +32,20 @@ export function registerWhoamiCommand(program: Command): void {
         if (opts.json) {
           console.log(JSON.stringify({ loggedIn: false }));
         } else {
-          console.log(pc.red("Not logged in.") + " Run: " + pc.bold("polpo login"));
+          clack.intro(pc.bold("Polpo — Whoami"));
+          clack.outro(pc.red("Not logged in.") + " Run: " + pc.bold("polpo login"));
         }
         process.exit(1);
       }
 
+      if (!opts.json) {
+        clack.intro(pc.bold("Polpo — Whoami"));
+      }
+
       const client = createApiClient({ apiKey: creds.apiKey, baseUrl: creds.baseUrl });
+
+      const s = clack.spinner();
+      s.start("Fetching account info");
 
       let user: User | null = null;
       let orgs: Org[] = [];
@@ -52,12 +61,14 @@ export function registerWhoamiCommand(program: Command): void {
         else orgs = Array.isArray(orgsRes.data) ? orgsRes.data : [];
       } catch { /* graceful */ }
 
+      s.stop("Account info fetched");
+
       if (staleAuth) {
         if (opts.json) {
           console.log(JSON.stringify({ loggedIn: false, reason: "stale_token", apiUrl: creds.baseUrl }, null, 2));
         } else {
-          console.error(pc.red("Session expired or invalid."));
-          console.error(pc.dim("Run ") + pc.bold("polpo login") + pc.dim(" to refresh."));
+          clack.log.error(pc.red("Session expired or invalid."));
+          clack.outro(pc.dim("Run ") + pc.bold("polpo login") + pc.dim(" to refresh."));
         }
         process.exit(1);
       }
@@ -72,21 +83,20 @@ export function registerWhoamiCommand(program: Command): void {
         return;
       }
 
-      console.log();
       if (user?.email) {
-        console.log(pc.bold("  User:   ") + user.email + (user.name ? pc.dim(` (${user.name})`) : ""));
+        clack.log.info(pc.bold("User:  ") + user.email + (user.name ? pc.dim(` (${user.name})`) : ""));
       }
-      console.log(pc.bold("  API:    ") + creds.baseUrl);
+      clack.log.info(pc.bold("API:   ") + creds.baseUrl);
       if (orgs.length === 0) {
-        console.log(pc.bold("  Orgs:   ") + pc.dim("none"));
+        clack.log.info(pc.bold("Orgs:  ") + pc.dim("none"));
       } else if (orgs.length === 1) {
-        console.log(pc.bold("  Org:    ") + orgs[0].name + pc.dim(` (${orgs[0].id})`));
+        clack.log.info(pc.bold("Org:   ") + orgs[0].name + pc.dim(` (${orgs[0].id})`));
       } else {
-        console.log(pc.bold(`  Orgs:   ${orgs.length}`));
+        clack.log.info(pc.bold(`Orgs:  ${orgs.length}`));
         for (const o of orgs) {
-          console.log(pc.dim(`    · ${o.name} (${o.id})`));
+          clack.log.info(pc.dim(`  ${o.name} (${o.id})`));
         }
       }
-      console.log();
+      clack.outro("Done");
     });
 }
