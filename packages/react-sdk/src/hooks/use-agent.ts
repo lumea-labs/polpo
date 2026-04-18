@@ -11,14 +11,21 @@ export interface UseAgentReturn {
 
 /**
  * Fetch a single agent by name from the `/agents/:name` endpoint.
+ *
+ * Pass `undefined` or `null` when the name is not yet known (e.g. a session
+ * without an associated agent, or data still loading) and the hook will
+ * no-op — no HTTP request, no spurious 404s. Previously consumers had
+ * to invent sentinel strings like `"__none__"` to avoid the call; that
+ * pattern is no longer necessary.
  */
-export function useAgent(name: string): UseAgentReturn {
+export function useAgent(name: string | undefined | null): UseAgentReturn {
   const { client } = usePolpoContext();
   const [agent, setAgent] = useState<AgentConfig | null>(null);
-  const [isLoading, setIsLoading] = useState(true);
+  const [isLoading, setIsLoading] = useState(!!name);
   const [error, setError] = useState<Error | null>(null);
 
   const fetchAgent = useCallback(async () => {
+    if (!name) return;
     try {
       setError(null);
       const data = await client.getAgent(name);
@@ -32,6 +39,7 @@ export function useAgent(name: string): UseAgentReturn {
   useEffect(() => {
     if (!name) {
       setAgent(null);
+      setError(null);
       setIsLoading(false);
       return;
     }
