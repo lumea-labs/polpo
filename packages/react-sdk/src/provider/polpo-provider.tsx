@@ -11,6 +11,22 @@ export interface PolpoProviderProps {
   /** @deprecated No longer used. Kept for backwards compatibility. */
   projectId?: string;
   apiKey?: string;
+  /**
+   * Override the fetch implementation used by the underlying `PolpoClient`.
+   * Useful for cookie-auth scenarios (`credentials: "include"`), request
+   * logging/tracing, injecting custom headers, retry middleware, or mocking
+   * in tests.
+   *
+   * If omitted, the default uses `globalThis.fetch`.
+   */
+  fetch?: typeof globalThis.fetch;
+  /**
+   * Override the API path prefix. Defaults to `/v1` for `*.polpo.sh` /
+   * `*.polpo.cloud`, `/api/v1` otherwise. Set explicitly when the request
+   * target is a proxy (e.g. a session-auth dashboard proxy that already
+   * includes the full `/v1/...` path downstream).
+   */
+  apiPrefix?: string;
   children: ReactNode;
   autoConnect?: boolean;
   eventFilter?: string[];
@@ -19,18 +35,22 @@ export interface PolpoProviderProps {
 export function PolpoProvider({
   baseUrl,
   apiKey,
+  fetch,
+  apiPrefix,
   children,
   autoConnect = true,
   eventFilter,
 }: PolpoProviderProps) {
-  const configKey = `${baseUrl}|${apiKey ?? ""}`;
+  // Config key includes fetch identity + apiPrefix so that swapping either
+  // rebuilds the client (same reasoning as baseUrl/apiKey today).
+  const configKey = `${baseUrl}|${apiKey ?? ""}|${apiPrefix ?? ""}|${fetch ? "custom-fetch" : "default-fetch"}`;
   const storeRef = useRef<PolpoStore>(null as unknown as PolpoStore);
   const clientRef = useRef<PolpoClient>(null as unknown as PolpoClient);
   const lastConfigKey = useRef("");
 
   if (lastConfigKey.current !== configKey) {
     lastConfigKey.current = configKey;
-    clientRef.current = new PolpoClient({ baseUrl, apiKey });
+    clientRef.current = new PolpoClient({ baseUrl, apiKey, fetch, apiPrefix });
     storeRef.current = new PolpoStore();
   }
 
