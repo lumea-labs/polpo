@@ -1,5 +1,59 @@
 import type { SSEEvent } from "./types.js";
 
+/**
+ * All Polpo SSE event types — must stay in sync with server-side ALL_EVENTS
+ * in src/server/sse-bridge.ts. The EventSource API requires explicit
+ * addEventListener() calls for each named event type; `onmessage` only
+ * receives unnamed events.
+ */
+const ALL_SSE_EVENTS = [
+  // Task lifecycle
+  "task:created", "task:transition", "task:updated", "task:removed",
+  // Agent lifecycle
+  "agent:spawned", "agent:finished", "agent:activity",
+  // Assessment pipeline
+  "assessment:started", "assessment:progress", "assessment:check:started",
+  "assessment:check:complete", "assessment:complete", "assessment:corrected",
+  // Orchestrator lifecycle
+  "orchestrator:started", "orchestrator:tick", "orchestrator:deadlock", "orchestrator:shutdown",
+  // Retry & Fix
+  "task:retry", "task:retry:blocked", "task:fix", "task:maxRetries",
+  // Question detection
+  "task:question", "task:answered",
+  // Deadlock resolution
+  "deadlock:detected", "deadlock:resolving", "deadlock:resolved", "deadlock:unresolvable",
+  // Resilience
+  "task:timeout", "agent:stale",
+  // Recovery
+  "task:recovered",
+  // Missions
+  "mission:saved", "mission:executed", "mission:completed", "mission:resumed", "mission:deleted",
+  // Chat sessions
+  "session:created", "message:added",
+  // Approval gates
+  "approval:requested", "approval:resolved", "approval:rejected", "approval:timeout",
+  // Escalation
+  "escalation:triggered", "escalation:resolved", "escalation:human",
+  // SLA & Deadlines
+  "sla:warning", "sla:violated", "sla:met",
+  // Checkpoints (mission-level)
+  "checkpoint:reached", "checkpoint:resumed",
+  // Delays (mission-level)
+  "delay:started", "delay:expired",
+  // Quality gates
+  "quality:gate:passed", "quality:gate:failed", "quality:threshold:failed",
+  // Scheduling
+  "schedule:triggered", "schedule:created", "schedule:completed",
+  // Task watchers
+  "watcher:created", "watcher:fired", "watcher:removed",
+  // Notification actions
+  "action:triggered",
+  // Filesystem
+  "file:changed",
+  // General
+  "log",
+] as const;
+
 export type ConnectionStatus =
   | "connecting"
   | "connected"
@@ -57,41 +111,14 @@ export class EventSourceManager {
       this.handleMessage(e);
     };
 
-    // Listen for named events (Polpo sends typed event names)
-    // EventSource API: use addEventListener for named events
-    es.addEventListener("task:created", (e) => this.handleMessage(e as MessageEvent));
-    es.addEventListener("task:transition", (e) => this.handleMessage(e as MessageEvent));
-    es.addEventListener("task:updated", (e) => this.handleMessage(e as MessageEvent));
-    es.addEventListener("task:removed", (e) => this.handleMessage(e as MessageEvent));
-    es.addEventListener("task:retry", (e) => this.handleMessage(e as MessageEvent));
-    es.addEventListener("task:fix", (e) => this.handleMessage(e as MessageEvent));
-    es.addEventListener("task:maxRetries", (e) => this.handleMessage(e as MessageEvent));
-    es.addEventListener("task:question", (e) => this.handleMessage(e as MessageEvent));
-    es.addEventListener("task:answered", (e) => this.handleMessage(e as MessageEvent));
-    es.addEventListener("task:timeout", (e) => this.handleMessage(e as MessageEvent));
-    es.addEventListener("task:recovered", (e) => this.handleMessage(e as MessageEvent));
-    es.addEventListener("agent:spawned", (e) => this.handleMessage(e as MessageEvent));
-    es.addEventListener("agent:finished", (e) => this.handleMessage(e as MessageEvent));
-    es.addEventListener("agent:activity", (e) => this.handleMessage(e as MessageEvent));
-    es.addEventListener("agent:stale", (e) => this.handleMessage(e as MessageEvent));
-    es.addEventListener("assessment:started", (e) => this.handleMessage(e as MessageEvent));
-    es.addEventListener("assessment:progress", (e) => this.handleMessage(e as MessageEvent));
-    es.addEventListener("assessment:complete", (e) => this.handleMessage(e as MessageEvent));
-    es.addEventListener("assessment:corrected", (e) => this.handleMessage(e as MessageEvent));
-    es.addEventListener("orchestrator:started", (e) => this.handleMessage(e as MessageEvent));
-    es.addEventListener("orchestrator:tick", (e) => this.handleMessage(e as MessageEvent));
-    es.addEventListener("orchestrator:deadlock", (e) => this.handleMessage(e as MessageEvent));
-    es.addEventListener("orchestrator:shutdown", (e) => this.handleMessage(e as MessageEvent));
-    es.addEventListener("deadlock:detected", (e) => this.handleMessage(e as MessageEvent));
-    es.addEventListener("deadlock:resolving", (e) => this.handleMessage(e as MessageEvent));
-    es.addEventListener("deadlock:resolved", (e) => this.handleMessage(e as MessageEvent));
-    es.addEventListener("deadlock:unresolvable", (e) => this.handleMessage(e as MessageEvent));
-    es.addEventListener("mission:saved", (e) => this.handleMessage(e as MessageEvent));
-    es.addEventListener("mission:executed", (e) => this.handleMessage(e as MessageEvent));
-    es.addEventListener("mission:completed", (e) => this.handleMessage(e as MessageEvent));
-    es.addEventListener("mission:resumed", (e) => this.handleMessage(e as MessageEvent));
-    es.addEventListener("mission:deleted", (e) => this.handleMessage(e as MessageEvent));
-    es.addEventListener("log", (e) => this.handleMessage(e as MessageEvent));
+    // Subscribe to ALL named events emitted by the Polpo SSE bridge.
+    // The EventSource API only delivers named events (those with an `event:`
+    // field in the SSE stream) to explicit addEventListener() calls — the
+    // generic `onmessage` handler does NOT receive them. This list must stay
+    // in sync with the server-side ALL_EVENTS in src/server/sse-bridge.ts.
+    for (const eventName of ALL_SSE_EVENTS) {
+      es.addEventListener(eventName, (e) => this.handleMessage(e as MessageEvent));
+    }
 
     es.onerror = () => {
       this.scheduleReconnect();

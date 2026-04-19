@@ -197,4 +197,123 @@ describe("sanitizeTranscriptEntry", () => {
       expect(SENSITIVE_PARAM_RE.test(key)).toBe(false);
     }
   });
+
+  // ── Nested object redaction (Bug fix: previously only top-level keys) ──
+
+  it("redacts secrets nested inside child objects", () => {
+    const entry = {
+      type: "tool_use",
+      tool: "http_fetch",
+      input: {
+        url: "https://api.example.com",
+        config: {
+          password: "hunter2",
+          database_token: "sk-secret-123",
+          retries: 3,
+        },
+      },
+    };
+
+    const result = sanitizeTranscriptEntry(entry);
+    const input = result.input as Record<string, unknown>;
+    expect(input.url).toBe("https://api.example.com");
+    const config = input.config as Record<string, unknown>;
+    expect(config.password).toBe("[REDACTED]");
+    expect(config.database_token).toBe("[REDACTED]");
+    expect(config.retries).toBe(3);
+  });
+
+  it("redacts secrets deeply nested (3+ levels)", () => {
+    const entry = {
+      type: "tool_use",
+      tool: "deploy",
+      input: {
+        service: "web",
+        env: {
+          production: {
+            credentials: {
+              api_key: "real-key",
+              secret: "real-secret",
+            },
+            region: "us-east-1",
+          },
+        },
+      },
+    };
+
+    const result = sanitizeTranscriptEntry(entry);
+    const creds = ((result.input as any).env.production.credentials) as Record<string, unknown>;
+    expect(creds.api_key).toBe("[REDACTED]");
+    expect(creds.secret).toBe("[REDACTED]");
+    expect((result.input as any).env.production.region).toBe("us-east-1");
+  });
+
+  it("redacts secrets inside arrays of objects", () => {
+    const entry = {
+      type: "tool_use",
+      tool: "multi_request",
+      input: {
+        requests: [
+          { url: "https://a.com", auth_token: "tok-1" },
+          { url: "https://b.com", auth_token: "tok-2" },
+          { url: "https://c.com" },
+        ],
+      },
+    };
+
+    const result = sanitizeTranscriptEntry(entry);
+    const requests = (result.input as any).requests as Array<Record<string, unknown>>;
+    expect(requests[0].url).toBe("https://a.com");
+    expect(requests[0].auth_token).toBe("[REDACTED]");
+    expect(requests[1].auth_token).toBe("[REDACTED]");
+    expect(requests[2].url).toBe("https://c.com");
+  });
+
+  it("handles mixed nesting: top-level + nested secrets", () => {
+    const entry = {
+      type: "tool_use",
+      tool: "email",
+      input: {
+        smtp_pass: "top-level-secret",
+        server: {
+          auth_token: "nested-secret",
+          host: "smtp.example.com",
+        },
+      },
+    };
+
+    const result = sanitizeTranscriptEntry(entry);
+    const input = result.input as Record<string, unknown>;
+    expect(input.smtp_pass).toBe("[REDACTED]");
+    expect((input.server as any).auth_token).toBe("[REDACTED]");
+    expect((input.server as any).host).toBe("smtp.example.com");
+  });
+
+  it("does not mutate nested objects in original entry", () => {
+    const entry = {
+      type: "tool_use",
+      tool: "deploy",
+      input: {
+        config: { password: "real-pass", host: "db.local" },
+      },
+    };
+
+    sanitizeTranscriptEntry(entry);
+    // Original must be untouched
+    expect((entry.input as any).config.password).toBe("real-pass");
+  });
+
+  it("returns entry unchanged when nested objects have no secrets", () => {
+    const entry = {
+      type: "tool_use",
+      tool: "deploy",
+      input: {
+        config: { host: "db.local", port: 5432 },
+        options: { verbose: true },
+      },
+    };
+
+    const result = sanitizeTranscriptEntry(entry);
+    expect(result).toBe(entry); // same reference — no redaction needed
+  });
 });
