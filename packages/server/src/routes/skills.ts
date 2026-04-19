@@ -39,18 +39,18 @@ type SkillIndex = Record<string, { tags?: string[]; category?: string }>;
 
 export interface SkillRouteDeps {
   polpoDir: string;
+  /** FileSystem for CRUD on installed skills under `<polpoDir>/skills/*`. */
   fs: FileSystem;
   /** Shell for executing git clone (optional — install route disabled without it). */
   shell?: Shell;
+  /** FileSystem used by the install route to scan the cloned repo in `/tmp`.
+   *  Defaults to `fs` when the clone target shares the same namespace. */
+  installFs?: FileSystem;
   getAgents: () => Promise<Array<{ name: string; skills?: string[] }>>;
   /** Update an agent's skills list. Used for assign/unassign. */
   updateAgentSkills?: (agentName: string, skills: string[]) => Promise<void>;
-  /**
-   * Optional metadata store. When provided, list/get/install/remove
-   * write through to the store so GET /skills can answer from a fast
-   * lookup without scanning the filesystem. Falls back to fs scan
-   * when absent (back-compat with deployments that don't wire it).
-   */
+  /** Optional metadata index. When provided, list/install/remove mirror
+   *  through it so GET /skills can answer from a fast lookup. */
   skillStore?: import("@polpo-ai/core").SkillStore;
 }
 
@@ -371,10 +371,11 @@ export function skillRoutes(getDeps: () => SkillRouteDeps): OpenAPIHono {
       },
     }),
     async (c: any) => {
-      const { fs, shell, polpoDir, getAgents, updateAgentSkills, skillStore } = getDeps();
+      const { fs, shell, polpoDir, getAgents, updateAgentSkills, skillStore, installFs } = getDeps();
       if (!shell) {
         return c.json({ ok: false, error: "Skill installation not available (no shell)" }, 400);
       }
+      const scanFs = installFs ?? fs;
 
       const { source, skillNames, force, assignTo } = await c.req.json();
 
@@ -384,7 +385,7 @@ export function skillRoutes(getDeps: () => SkillRouteDeps): OpenAPIHono {
 
       if (source.startsWith("/") || source.startsWith("./") || source.startsWith("../")) {
         // Local path
-        if (!(await fs.exists(source))) {
+        if (!(await scanFs.exists(source))) {
           return c.json({ ok: false, error: `Local path not found: ${source}` }, 400);
         }
         sourceDir = source;
@@ -414,18 +415,18 @@ export function skillRoutes(getDeps: () => SkillRouteDeps): OpenAPIHono {
         if (depth > 3) return;
         const SKIP = new Set(["node_modules", ".git"]);
         try {
-          const entries = (fs as any).readdirWithTypes
-            ? await (fs as any).readdirWithTypes(dir)
-            : (await fs.readdir(dir)).map((n: string) => ({ name: n, isDirectory: true, isFile: false }));
+          const entries = (scanFs as any).readdirWithTypes
+            ? await (scanFs as any).readdirWithTypes(dir)
+            : (await scanFs.readdir(dir)).map((n: string) => ({ name: n, isDirectory: true, isFile: false }));
 
           for (const entry of entries) {
             if (SKIP.has(entry.name)) continue;
             if (!entry.isDirectory) continue;
             const entryPath = resolve(dir, entry.name);
             const skillMd = join(entryPath, "SKILL.md");
-            if (await fs.exists(skillMd)) {
+            if (await scanFs.exists(skillMd)) {
               try {
-                const raw = await fs.readFile(skillMd);
+                const raw = await scanFs.readFile(skillMd);
                 const core = await coreImport();
                 const fm = core.parseSkillFrontmatter(raw);
                 found.push({ name: fm?.name ?? entry.name, description: fm?.description ?? "", path: entryPath });
@@ -438,8 +439,8 @@ export function skillRoutes(getDeps: () => SkillRouteDeps): OpenAPIHono {
       }
 
       // Check root
-      if (await fs.exists(join(sourceDir, "SKILL.md"))) {
-        const raw = await fs.readFile(join(sourceDir, "SKILL.md"));
+      if (await scanFs.exists(join(sourceDir, "SKILL.md"))) {
+        const raw = await scanFs.readFile(join(sourceDir, "SKILL.md"));
         const core = await coreImport();
         const fm = core.parseSkillFrontmatter(raw);
         found.push({ name: fm?.name ?? basename(sourceDir), description: fm?.description ?? "", path: sourceDir });
@@ -448,7 +449,7 @@ export function skillRoutes(getDeps: () => SkillRouteDeps): OpenAPIHono {
       // Check standard locations
       for (const sub of ["skills", ".polpo/skills", ".agents/skills", ".claude/skills"]) {
         const subDir = join(sourceDir, sub);
-        if (await fs.exists(subDir)) await scanDir(subDir, 0);
+        if (await scanFs.exists(subDir)) await scanDir(subDir, 0);
       }
 
       // Fallback: recursive scan
