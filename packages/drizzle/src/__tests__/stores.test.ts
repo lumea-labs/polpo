@@ -216,6 +216,15 @@ function createTables(raw: InstanceType<typeof Database>) {
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS skills (
+      name TEXT PRIMARY KEY,
+      description TEXT NOT NULL DEFAULT '',
+      source TEXT,
+      installed_at TEXT NOT NULL,
+      allowed_tools TEXT,
+      tags TEXT,
+      category TEXT
+    );
     PRAGMA foreign_keys = ON;
   `);
 }
@@ -1277,6 +1286,105 @@ describe("DrizzlePlaybookStore", () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════
+// SkillStore
+// ═══════════════════════════════════════════════════════════════════════
+
+describe("DrizzleSkillStore (SQLite)", () => {
+  const baseRecord = {
+    description: "A test skill",
+    installedAt: "2026-04-19T00:00:00.000Z",
+  };
+
+  it("list() returns [] when table is empty", async () => {
+    expect(await stores.skillStore.list()).toEqual([]);
+  });
+
+  it("get() returns undefined for unknown name", async () => {
+    expect(await stores.skillStore.get("nope")).toBeUndefined();
+  });
+
+  it("upsert + get round-trip", async () => {
+    await stores.skillStore.upsert({ name: "alpha", ...baseRecord });
+    const got = await stores.skillStore.get("alpha");
+    expect(got).toBeDefined();
+    expect(got?.description).toBe("A test skill");
+    expect(got?.installedAt).toBe("2026-04-19T00:00:00.000Z");
+  });
+
+  it("upsert overwrites the existing record (by name)", async () => {
+    await stores.skillStore.upsert({ name: "x", ...baseRecord, description: "first" });
+    await stores.skillStore.upsert({ name: "x", ...baseRecord, description: "second" });
+    expect((await stores.skillStore.get("x"))?.description).toBe("second");
+    expect((await stores.skillStore.list()).length).toBe(1);
+  });
+
+  it("list returns all upserted records", async () => {
+    await stores.skillStore.upsert({ name: "a", ...baseRecord });
+    await stores.skillStore.upsert({ name: "b", ...baseRecord });
+    const names = (await stores.skillStore.list()).map((r) => r.name).sort();
+    expect(names).toEqual(["a", "b"]);
+  });
+
+  it("remove returns true when the record existed", async () => {
+    await stores.skillStore.upsert({ name: "rm", ...baseRecord });
+    expect(await stores.skillStore.remove("rm")).toBe(true);
+    expect(await stores.skillStore.get("rm")).toBeUndefined();
+  });
+
+  it("remove returns false when the record did not exist", async () => {
+    expect(await stores.skillStore.remove("never-existed")).toBe(false);
+  });
+
+  it("round-trips all optional fields (source, tags, category, allowedTools)", async () => {
+    await stores.skillStore.upsert({
+      name: "full",
+      description: "Everything set",
+      source: "anthropics/skills",
+      installedAt: "2026-04-19T12:34:56.000Z",
+      allowedTools: ["read", "write", "http_fetch"],
+      tags: ["ui", "react"],
+      category: "frontend",
+    });
+    const got = await stores.skillStore.get("full");
+    expect(got?.source).toBe("anthropics/skills");
+    expect(got?.allowedTools).toEqual(["read", "write", "http_fetch"]);
+    expect(got?.tags).toEqual(["ui", "react"]);
+    expect(got?.category).toBe("frontend");
+  });
+
+  it("null/undefined optional fields are preserved across upsert", async () => {
+    await stores.skillStore.upsert({ name: "minimal", ...baseRecord });
+    const got = await stores.skillStore.get("minimal");
+    expect(got?.source).toBeUndefined();
+    expect(got?.allowedTools).toBeUndefined();
+    expect(got?.tags).toBeUndefined();
+    expect(got?.category).toBeUndefined();
+  });
+
+  it("upsert updates tags without touching other fields", async () => {
+    await stores.skillStore.upsert({
+      name: "mutate",
+      ...baseRecord,
+      tags: ["old"],
+    });
+    await stores.skillStore.upsert({
+      name: "mutate",
+      ...baseRecord,
+      tags: ["new", "fresh"],
+    });
+    const got = await stores.skillStore.get("mutate");
+    expect(got?.tags).toEqual(["new", "fresh"]);
+  });
+
+  it("remove preserves unrelated records", async () => {
+    await stores.skillStore.upsert({ name: "keep", ...baseRecord });
+    await stores.skillStore.upsert({ name: "drop", ...baseRecord });
+    await stores.skillStore.remove("drop");
+    expect((await stores.skillStore.list()).map((r) => r.name)).toEqual(["keep"]);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════
 // Factory function
 // ═══════════════════════════════════════════════════════════════════════
 
@@ -1295,5 +1403,6 @@ describe("createSqliteStores", () => {
     expect(stores.agentStore).toBeDefined();
     expect(stores.vaultStore).toBeDefined();
     expect(stores.playbookStore).toBeDefined();
+    expect(stores.skillStore).toBeDefined();
   });
 });

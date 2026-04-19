@@ -45,6 +45,13 @@ export interface SkillRouteDeps {
   getAgents: () => Promise<Array<{ name: string; skills?: string[] }>>;
   /** Update an agent's skills list. Used for assign/unassign. */
   updateAgentSkills?: (agentName: string, skills: string[]) => Promise<void>;
+  /**
+   * Optional metadata store. When provided, list/get/install/remove
+   * write through to the store so GET /skills can answer from a fast
+   * lookup without scanning the filesystem. Falls back to fs scan
+   * when absent (back-compat with deployments that don't wire it).
+   */
+  skillStore?: import("@polpo-ai/core").SkillStore;
 }
 
 // ── Helpers ──
@@ -86,13 +93,35 @@ export function skillRoutes(getDeps: () => SkillRouteDeps): OpenAPIHono {
       responses: { 200: { content: { "application/json": { schema: z.object({ ok: z.boolean(), data: z.array(z.any()) }) } }, description: "Skills list" } },
     }),
     async (c) => {
-      const { fs, polpoDir, getAgents } = getDeps();
+      const { fs, polpoDir, getAgents, skillStore } = getDeps();
       const agents = await getAgents();
       const agentNames = agents.map((a) => a.name);
       const configSkills = new Map<string, string[]>();
       for (const a of agents) {
         if (a.skills?.length) configSkills.set(a.name, a.skills);
       }
+
+      // Fast path: read from the indexed SkillStore and compute
+      // per-agent assignments from `agent.skills[]` (single query).
+      if (skillStore) {
+        const records = await skillStore.list();
+        const data = records.map((r) => ({
+          name: r.name,
+          description: r.description,
+          source: "project" as const,
+          path: resolve(polpoDir, "skills", r.name),
+          allowedTools: r.allowedTools,
+          tags: r.tags,
+          category: r.category,
+          assignedTo: agentNames.filter(
+            (n) => configSkills.get(n)?.includes(r.name),
+          ),
+        }));
+        return c.json({ ok: true, data });
+      }
+
+      // Fallback: walk the filesystem (back-compat for deployments
+      // that don't wire a skillStore).
       const core = await coreImport();
       const skills = await core.listSkillsWithAssignments(fs, polpoDir, agentNames, configSkills);
       return c.json({ ok: true, data: skills });
@@ -146,9 +175,21 @@ export function skillRoutes(getDeps: () => SkillRouteDeps): OpenAPIHono {
       responses: { 200: { content: { "application/json": { schema: z.object({ ok: z.boolean(), data: z.any() }) } }, description: "Updated" } },
     }),
     async (c: any) => {
-      const { fs, polpoDir } = getDeps();
+      const { fs, polpoDir, skillStore } = getDeps();
       const name = c.req.param("name");
       const body = await c.req.json();
+
+      // Mirror the update into skillStore if wired.
+      if (skillStore) {
+        const existing = await skillStore.get(name);
+        if (existing) {
+          const next = { ...existing };
+          if ("tags" in body) next.tags = body.tags?.length ? body.tags : undefined;
+          if ("category" in body) next.category = body.category || undefined;
+          await skillStore.upsert(next);
+        }
+      }
+
       const index = (await loadSkillIndex(fs, polpoDir)) ?? {};
       index[name] = { ...index[name], ...body };
       if (index[name].tags?.length === 0) delete index[name].tags;
@@ -183,7 +224,7 @@ export function skillRoutes(getDeps: () => SkillRouteDeps): OpenAPIHono {
       },
     }),
     async (c: any) => {
-      const { fs, polpoDir } = getDeps();
+      const { fs, polpoDir, skillStore } = getDeps();
       const { name, description, content, allowedTools } = await c.req.json();
 
       const targetDir = join(polpoDir, "skills", name);
@@ -201,6 +242,16 @@ export function skillRoutes(getDeps: () => SkillRouteDeps): OpenAPIHono {
       fmLines.push(`---`, ``);
 
       await fs.writeFile(join(targetDir, "SKILL.md"), fmLines.join("\n") + content);
+
+      // Mirror to skillStore if wired.
+      await skillStore?.upsert({
+        name,
+        description,
+        source: "local",
+        installedAt: new Date().toISOString(),
+        allowedTools,
+      });
+
       return c.json({ ok: true, data: { name, path: targetDir } });
     },
   );
@@ -216,13 +267,14 @@ export function skillRoutes(getDeps: () => SkillRouteDeps): OpenAPIHono {
       },
     }),
     async (c: any) => {
-      const { fs, polpoDir } = getDeps();
+      const { fs, polpoDir, skillStore } = getDeps();
       const name = c.req.param("name");
       const targetDir = join(polpoDir, "skills", name);
       if (!(await fs.exists(targetDir))) {
         return c.json({ ok: false, error: "Skill not found" }, 404);
       }
       await fs.remove(targetDir);
+      await skillStore?.remove(name);
       return c.json({ ok: true, data: { removed: true, name } });
     },
   );
@@ -319,7 +371,7 @@ export function skillRoutes(getDeps: () => SkillRouteDeps): OpenAPIHono {
       },
     }),
     async (c: any) => {
-      const { fs, shell, polpoDir, getAgents, updateAgentSkills } = getDeps();
+      const { fs, shell, polpoDir, getAgents, updateAgentSkills, skillStore } = getDeps();
       if (!shell) {
         return c.json({ ok: false, error: "Skill installation not available (no shell)" }, 400);
       }
@@ -439,6 +491,14 @@ export function skillRoutes(getDeps: () => SkillRouteDeps): OpenAPIHono {
         const cpResult = await shell.execute(`cp -r "${skill.path}" "${targetDir}"`);
         if (cpResult.exitCode === 0) {
           installed.push(skill.name);
+          // Mirror to skillStore for fast-path list reads.
+          await skillStore?.upsert({
+            name: skill.name,
+            description: skill.description,
+            source,
+            installedAt: new Date().toISOString(),
+            allowedTools: (skill as any).allowedTools,
+          }).catch(() => { /* best-effort — fs write already succeeded */ });
         } else {
           errors.push(`${skill.name}: ${cpResult.stderr}`);
         }

@@ -229,4 +229,14 @@ export async function ensurePgSchema(db: any): Promise<void> {
       END IF;
     END $$
   `);
+
+  await db.execute(sql`CREATE TABLE IF NOT EXISTS skills (
+    name          TEXT PRIMARY KEY,
+    description   TEXT NOT NULL DEFAULT '',
+    source        TEXT,
+    installed_at  TEXT NOT NULL,
+    allowed_tools JSONB,
+    tags          JSONB,
+    category      TEXT
+  )`);
 }

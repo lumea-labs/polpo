@@ -38,6 +38,7 @@ import {
 import { vaultPg, vaultSqlite } from "./schema/vault.js";
 import { playbooksPg, playbooksSqlite } from "./schema/playbooks.js";
 import { attachmentsPg, attachmentsSqlite } from "./schema/attachments.js";
+import { skillsPg, skillsSqlite } from "./schema/skills.js";
 
 // ── Store classes ─────────────────────────────────────────────────────
 
@@ -55,6 +56,7 @@ import { DrizzleAgentStore } from "./stores/agent-store.js";
 import { DrizzleVaultStore } from "./stores/vault-store.js";
 import { DrizzlePlaybookStore } from "./stores/playbook-store.js";
 import { DrizzleAttachmentStore } from "./stores/attachment-store.js";
+import { DrizzleSkillStore } from "./stores/skill-store.js";
 
 // ── Store bundle type ─────────────────────────────────────────────────
 
@@ -72,6 +74,7 @@ import type { AgentStore } from "@polpo-ai/core/agent-store";
 import type { VaultStore } from "@polpo-ai/core/vault-store";
 import type { PlaybookStore } from "@polpo-ai/core/playbook-store";
 import type { AttachmentStore } from "@polpo-ai/core/attachment-store";
+import type { SkillStore } from "@polpo-ai/core/skill-store";
 
 export interface DrizzleStores {
   taskStore: TaskStore;
@@ -88,6 +91,7 @@ export interface DrizzleStores {
   vaultStore: VaultStore;
   playbookStore: PlaybookStore;
   attachmentStore: AttachmentStore;
+  skillStore: SkillStore;
 }
 
 // ── PostgreSQL factory ────────────────────────────────────────────────
@@ -115,6 +119,7 @@ export function createPgStores(db: any): DrizzleStores {
     vaultStore: new DrizzleVaultStore(db, vaultPg),
     playbookStore: new DrizzlePlaybookStore(db, playbooksPg, "pg"),
     attachmentStore: new DrizzleAttachmentStore(db, attachmentsPg, "pg"),
+    skillStore: new DrizzleSkillStore(db, skillsPg, "pg"),
   };
 }
 
@@ -143,6 +148,7 @@ export function createSqliteStores(db: any): DrizzleStores {
     vaultStore: new DrizzleVaultStore(db, vaultSqlite),
     playbookStore: new DrizzlePlaybookStore(db, playbooksSqlite, "sqlite"),
     attachmentStore: new DrizzleAttachmentStore(db, attachmentsSqlite, "sqlite"),
+    skillStore: new DrizzleSkillStore(db, skillsSqlite, "sqlite"),
   };
 }
 
@@ -165,6 +171,7 @@ export const pgSchema = {
   vault: vaultPg,
   playbooks: playbooksPg,
   attachments: attachmentsPg,
+  skills: skillsPg,
 };
 
 export const sqliteSchema = {
@@ -184,4 +191,5 @@ export const sqliteSchema = {
   vault: vaultSqlite,
   playbooks: playbooksSqlite,
   attachments: attachmentsSqlite,
+  skills: skillsSqlite,
 };
