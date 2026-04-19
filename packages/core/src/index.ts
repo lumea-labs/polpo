@@ -36,6 +36,7 @@ export type { SessionStore, Session, Message, MessageRole, ToolCallInfo, ToolCal
 export type { ApprovalStore } from "./approval-store.js";
 export type { TeamStore } from "./team-store.js";
 export type { AgentStore } from "./agent-store.js";
+export type { SkillStore, SkillRecord } from "./skill-store.js";
 export type { VaultStore } from "./vault-store.js";
 export type { PlaybookStore } from "./playbook-store.js";
 export type { AttachmentStore, Attachment } from "./attachment-store.js";

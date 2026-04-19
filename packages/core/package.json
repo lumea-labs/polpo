@@ -86,6 +86,10 @@
       "types": "./dist/attachment-store.d.ts",
       "import": "./dist/attachment-store.js"
     },
+    "./skill-store": {
+      "types": "./dist/skill-store.d.ts",
+      "import": "./dist/skill-store.js"
+    },
     "./adapter": {
       "types": "./dist/adapter.d.ts",
       "import": "./dist/adapter.js"

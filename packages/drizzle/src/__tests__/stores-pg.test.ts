@@ -37,6 +37,7 @@ const ALL_TABLES = [
   "teams",
   "vault",
   "playbooks",
+  "skills",
 ] as const;
 
 // ── Connection check ──────────────────────────────────────────────────
@@ -1168,6 +1169,67 @@ describe.skipIf(!canConnect)("PostgreSQL Drizzle stores", () => {
   // Factory function
   // ═══════════════════════════════════════════════════════════════════════
 
+  describe("DrizzleSkillStore", () => {
+    const baseRecord = {
+      description: "A test skill",
+      installedAt: "2026-04-19T00:00:00.000Z",
+    };
+
+    it("list() returns [] when the table is empty", async () => {
+      expect(await stores.skillStore.list()).toEqual([]);
+    });
+
+    it("get() returns undefined for unknown names", async () => {
+      expect(await stores.skillStore.get("nope")).toBeUndefined();
+    });
+
+    it("upsert + get round-trip", async () => {
+      await stores.skillStore.upsert({ name: "alpha", ...baseRecord });
+      const got = await stores.skillStore.get("alpha");
+      expect(got).toBeDefined();
+      expect(got?.description).toBe("A test skill");
+    });
+
+    it("upsert overwrites existing record by name", async () => {
+      await stores.skillStore.upsert({ name: "x", ...baseRecord, description: "first" });
+      await stores.skillStore.upsert({ name: "x", ...baseRecord, description: "second" });
+      expect((await stores.skillStore.get("x"))?.description).toBe("second");
+      expect((await stores.skillStore.list()).length).toBe(1);
+    });
+
+    it("remove returns true/false correctly", async () => {
+      await stores.skillStore.upsert({ name: "rm", ...baseRecord });
+      expect(await stores.skillStore.remove("rm")).toBe(true);
+      expect(await stores.skillStore.remove("rm")).toBe(false);
+    });
+
+    it("round-trips optional fields including JSONB arrays", async () => {
+      await stores.skillStore.upsert({
+        name: "full",
+        description: "Everything set",
+        source: "anthropics/skills",
+        installedAt: "2026-04-19T12:34:56.000Z",
+        allowedTools: ["read", "write"],
+        tags: ["ui"],
+        category: "frontend",
+      });
+      const got = await stores.skillStore.get("full");
+      expect(got?.source).toBe("anthropics/skills");
+      expect(got?.allowedTools).toEqual(["read", "write"]);
+      expect(got?.tags).toEqual(["ui"]);
+      expect(got?.category).toBe("frontend");
+    });
+
+    it("null optional fields are preserved", async () => {
+      await stores.skillStore.upsert({ name: "minimal", ...baseRecord });
+      const got = await stores.skillStore.get("minimal");
+      expect(got?.source).toBeUndefined();
+      expect(got?.allowedTools).toBeUndefined();
+      expect(got?.tags).toBeUndefined();
+      expect(got?.category).toBeUndefined();
+    });
+  });
+
   describe("createPgStores", () => {
     it("returns all stores", () => {
       expect(stores.taskStore).toBeDefined();
@@ -1184,6 +1246,7 @@ describe.skipIf(!canConnect)("PostgreSQL Drizzle stores", () => {
       expect(stores.vaultStore).toBeDefined();
       expect(stores.playbookStore).toBeDefined();
       expect(stores.attachmentStore).toBeDefined();
+      expect(stores.skillStore).toBeDefined();
     });
   });
 });
