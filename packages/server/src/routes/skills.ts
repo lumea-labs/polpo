@@ -307,6 +307,7 @@ export function skillRoutes(getDeps: () => SkillRouteDeps): OpenAPIHono {
                 source: z.string().min(1).describe("GitHub owner/repo, full URL, or local path"),
                 skillNames: z.array(z.string()).optional().describe("Only install specific skill names"),
                 force: z.boolean().optional().describe("Overwrite existing skills"),
+                assignTo: z.string().optional().describe("Agent name to assign the installed skills to. If provided, the agent's `skills` list is updated with the newly installed skill names."),
               }),
             },
           },
@@ -318,12 +319,12 @@ export function skillRoutes(getDeps: () => SkillRouteDeps): OpenAPIHono {
       },
     }),
     async (c: any) => {
-      const { fs, shell, polpoDir } = getDeps();
+      const { fs, shell, polpoDir, getAgents, updateAgentSkills } = getDeps();
       if (!shell) {
         return c.json({ ok: false, error: "Skill installation not available (no shell)" }, 400);
       }
 
-      const { source, skillNames, force } = await c.req.json();
+      const { source, skillNames, force, assignTo } = await c.req.json();
 
       // Parse source
       let cloneUrl: string | null = null;
@@ -446,7 +447,30 @@ export function skillRoutes(getDeps: () => SkillRouteDeps): OpenAPIHono {
       // Cleanup cloned repo
       if (cloneUrl) await shell.execute(`rm -rf "${sourceDir}"`).catch(() => {});
 
-      return c.json({ ok: true, data: { installed, skipped, errors, source } });
+      // Optional: assign installed skills to an agent. Closes the onboarding
+      // "install + assign" loop in a single call. Silent no-op if the agent
+      // doesn't exist or the deps don't expose updateAgentSkills.
+      let assigned: string[] = [];
+      if (assignTo && installed.length > 0 && getAgents && updateAgentSkills) {
+        try {
+          const agents = await getAgents();
+          const agent = agents.find((a: any) => a.name === assignTo);
+          if (agent) {
+            const current: string[] = (agent.skills as string[] | undefined) ?? [];
+            const toAdd = installed.filter((name) => !current.includes(name));
+            if (toAdd.length > 0) {
+              await updateAgentSkills(assignTo, [...current, ...toAdd]);
+              assigned = toAdd;
+            }
+          } else {
+            errors.push(`assignTo: agent "${assignTo}" not found`);
+          }
+        } catch (err) {
+          errors.push(`assignTo: ${(err as Error).message}`);
+        }
+      }
+
+      return c.json({ ok: true, data: { installed, skipped, errors, source, assigned } });
     },
   );
 
