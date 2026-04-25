@@ -138,3 +138,6 @@ export type {
   CompactionInput,
   CompactionResult,
 } from "./context-compactor.js";
+
+export { EVENT_CATALOG } from "./events-catalog.js";
+export type { EventCatalogGroup, EventCatalogEntry } from "./events-catalog.js";
