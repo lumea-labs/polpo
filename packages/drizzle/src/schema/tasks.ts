@@ -31,6 +31,8 @@ export const tasksSqlite = sqliteTable("tasks", {
   priority: text("priority"),
   sideEffects: integer("side_effects"),
   revisionCount: integer("revision_count"),
+  /** OpenAI-compat opaque end-user id. Propagates to runs at spawn time. */
+  user: text("user"),
   createdAt: text("created_at").notNull(),
   updatedAt: text("updated_at").notNull(),
 }, (table) => [
@@ -38,6 +40,7 @@ export const tasksSqlite = sqliteTable("tasks", {
   index("idx_tasks_group").on(table.group),
   index("idx_tasks_assign_to").on(table.assignTo),
   index("idx_tasks_mission_id").on(table.missionId),
+  index("idx_tasks_user").on(table.user),
 ]);
 
 export const missionsSqlite = sqliteTable("missions", {
@@ -52,10 +55,13 @@ export const missionsSqlite = sqliteTable("missions", {
   deadline: text("deadline"),
   notifications: text("notifications"),
   executionCount: integer("execution_count").notNull().default(0),
+  /** OpenAI-compat opaque end-user id. Inherited by tasks created from this mission. */
+  user: text("user"),
   createdAt: text("created_at").notNull(),
   updatedAt: text("updated_at").notNull(),
 }, (table) => [
   index("idx_missions_status").on(table.status),
+  index("idx_missions_user").on(table.user),
 ]);
 
 export const metadataSqlite = sqliteTable("metadata", {
@@ -102,6 +108,8 @@ export const tasksPg = pgTable("tasks", {
   priority: pgText("priority"),
   sideEffects: pgInteger("side_effects"),
   revisionCount: pgInteger("revision_count"),
+  /** OpenAI-compat opaque end-user id. Propagates to runs at spawn time. */
+  user: pgText("user"),
   createdAt: pgText("created_at").notNull(),
   updatedAt: pgText("updated_at").notNull(),
 }, (table) => [
@@ -109,6 +117,7 @@ export const tasksPg = pgTable("tasks", {
   pgIndex("idx_pg_tasks_group").on(table.group),
   pgIndex("idx_pg_tasks_assign_to").on(table.assignTo),
   pgIndex("idx_pg_tasks_mission_id").on(table.missionId),
+  pgIndex("idx_pg_tasks_user").on(table.user),
 ]);
 
 export const missionsPg = pgTable("missions", {
@@ -123,10 +132,13 @@ export const missionsPg = pgTable("missions", {
   deadline: pgText("deadline"),
   notifications: jsonb("notifications"),
   executionCount: pgInteger("execution_count").notNull().default(0),
+  /** OpenAI-compat opaque end-user id. Inherited by tasks created from this mission. */
+  user: pgText("user"),
   createdAt: pgText("created_at").notNull(),
   updatedAt: pgText("updated_at").notNull(),
 }, (table) => [
   pgIndex("idx_pg_missions_status").on(table.status),
+  pgIndex("idx_pg_missions_user").on(table.user),
 ]);
 
 export const metadataPg = pgTable("metadata", {

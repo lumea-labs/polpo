@@ -10,7 +10,17 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { nanoid } from "nanoid";
-import type { SessionStore, Session, Message, MessageRole, ToolCallInfo, SessionContentPart } from "../core/session-store.js";
+import type {
+  SessionStore,
+  Session,
+  Message,
+  MessageRole,
+  ToolCallInfo,
+  SessionContentPart,
+  SessionCreateOptions,
+  SessionListFilter,
+} from "../core/session-store.js";
+import { normalizeSessionCreateArgs } from "../core/session-store.js";
 
 /**
  * File-backed SessionStore.
@@ -26,7 +36,8 @@ export class FileSessionStore implements SessionStore {
     this.sessionsDir = join(polpoDir, "sessions");
   }
 
-  async create(title?: string, agent?: string): Promise<string> {
+  async create(arg1?: string | SessionCreateOptions, arg2?: string): Promise<string> {
+    const opts = normalizeSessionCreateArgs(arg1, arg2);
     if (!existsSync(this.sessionsDir)) {
       mkdirSync(this.sessionsDir, { recursive: true });
     }
@@ -34,10 +45,12 @@ export class FileSessionStore implements SessionStore {
     const header: Record<string, unknown> = {
       _session: true,
       id: sessionId,
-      title,
+      title: opts.title,
       createdAt: new Date().toISOString(),
     };
-    if (agent) header.agent = agent;
+    if (opts.agent) header.agent = opts.agent;
+    if (opts.user) header.user = opts.user;
+    if (opts.metadata) header.metadata = opts.metadata;
     try {
       appendFileSync(this.sessionFile(sessionId), JSON.stringify(header) + "\n", "utf-8");
     } catch { /* best-effort: non-critical */
@@ -110,7 +123,22 @@ export class FileSessionStore implements SessionStore {
     return messages.slice(-limit);
   }
 
-  async listSessions(): Promise<Session[]> {
+  /** Build a Session out of a session file's first line + mtime. */
+  private headerToSession(header: any, filePath: string, fallbackId: string): Session {
+    const updatedAt = new Date(statSync(filePath).mtimeMs).toISOString();
+    return {
+      id: header.id ?? fallbackId,
+      title: header.title,
+      createdAt: header.createdAt ?? updatedAt,
+      updatedAt,
+      messageCount: 0,
+      ...(header.agent ? { agent: header.agent } : {}),
+      ...(header.user ? { user: header.user } : {}),
+      ...(header.metadata ? { metadata: header.metadata } : {}),
+    };
+  }
+
+  async listSessions(filter?: SessionListFilter): Promise<Session[]> {
     if (!existsSync(this.sessionsDir)) return [];
     const files = readdirSync(this.sessionsDir)
       .filter(f => f.endsWith(".jsonl"));
@@ -129,16 +157,20 @@ export class FileSessionStore implements SessionStore {
         const content = readFileSync(filePath, "utf-8");
         const lines = content.split("\n").filter(Boolean);
         const header = JSON.parse(lines[0]);
-        const messageCount = lines.length - 1; // exclude header
-        const updatedAt = new Date(statSync(filePath).mtimeMs).toISOString();
-        sessions.push({
-          id: header.id ?? file.replace(".jsonl", ""),
-          title: header.title,
-          createdAt: header.createdAt ?? updatedAt,
-          updatedAt,
-          messageCount,
-          ...(header.agent ? { agent: header.agent } : {}),
-        });
+        const session = this.headerToSession(header, filePath, file.replace(".jsonl", ""));
+        session.messageCount = lines.length - 1;
+
+        // In-memory filter — file store has no index, so we scan + filter.
+        // Acceptable here because file store is for dev/CLI, not high-traffic.
+        if (filter?.user && session.user !== filter.user) continue;
+        if (filter?.metadata) {
+          const sessMeta = session.metadata ?? {};
+          const allMatch = Object.entries(filter.metadata).every(
+            ([k, v]) => sessMeta[k] === v,
+          );
+          if (!allMatch) continue;
+        }
+        sessions.push(session);
       } catch { /* skip corrupt file */
       }
     }
@@ -152,16 +184,9 @@ export class FileSessionStore implements SessionStore {
       const content = readFileSync(file, "utf-8");
       const lines = content.split("\n").filter(Boolean);
       const header = JSON.parse(lines[0]);
-      const messageCount = lines.length - 1; // exclude header
-      const updatedAt = new Date(statSync(file).mtimeMs).toISOString();
-      return {
-        id: header.id ?? sessionId,
-        title: header.title,
-        createdAt: header.createdAt ?? updatedAt,
-        updatedAt,
-        messageCount,
-        ...(header.agent ? { agent: header.agent } : {}),
-      };
+      const session = this.headerToSession(header, file, sessionId);
+      session.messageCount = lines.length - 1;
+      return session;
     } catch { /* unreadable session file */
       return undefined;
     }

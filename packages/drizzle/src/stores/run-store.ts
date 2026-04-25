@@ -34,6 +34,7 @@ export class DrizzleRunStore implements RunStore {
       outcomes: deserializeJson<TaskOutcome[] | undefined>(row.outcomes, undefined, d),
       config: deserializeJson<RunnerConfig | undefined>(row.config, undefined, d),
       configPath: row.configPath,
+      user: row.user ?? undefined,
     };
   }
 
@@ -54,6 +55,7 @@ export class DrizzleRunStore implements RunStore {
       outcomes: serializeJson(run.outcomes, d),
       config: serializeJson(run.config, d),
       configPath: run.configPath,
+      user: run.user ?? null,
     };
     await this.db.insert(this.runs).values(values)
       .onConflictDoUpdate({

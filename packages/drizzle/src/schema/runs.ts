@@ -18,9 +18,12 @@ export const runsSqlite = sqliteTable("runs", {
   outcomes: text("outcomes"),
   config: text("config"),
   configPath: text("config_path").notNull(),
+  /** Propagated from Task.user at spawn time. Used for per-user run analytics. */
+  user: text("user"),
 }, (table) => [
   index("idx_runs_status").on(table.status),
   index("idx_runs_task_id").on(table.taskId),
+  index("idx_runs_user").on(table.user),
 ]);
 
 // ── PostgreSQL schema ──────────────────────────────────────────────────
@@ -40,7 +43,10 @@ export const runsPg = pgTable("runs", {
   outcomes: jsonb("outcomes"),
   config: jsonb("config"),
   configPath: pgText("config_path").notNull(),
+  /** Propagated from Task.user at spawn time. Used for per-user run analytics. */
+  user: pgText("user"),
 }, (table) => [
   pgIndex("idx_pg_runs_status").on(table.status),
   pgIndex("idx_pg_runs_task_id").on(table.taskId),
+  pgIndex("idx_pg_runs_user").on(table.user),
 ]);

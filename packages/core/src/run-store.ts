@@ -18,6 +18,11 @@ export interface RunRecord {
   /** Full runner configuration (used by runners that read config from DB instead of file). */
   config?: RunnerConfig;
   configPath: string;
+  /**
+   * Opaque end-user identifier (OpenAI-compat `user`), propagated from the
+   * parent Task. Used for per-user analytics and billing attribution.
+   */
+  user?: string;
 }
 
 export interface RunStore {

@@ -85,6 +85,15 @@ export interface PolpoClientConfig {
   fetch?: typeof globalThis.fetch;
   /** API path prefix. Default: "/v1" for polpo.sh, "/api/v1" for self-hosted. */
   apiPrefix?: string;
+  /**
+   * Default end-user identifier (OpenAI-compat `user`). When set, every
+   * `chatCompletions` / `chatCompletionsStream` / task / mission call that
+   * doesn't supply its own `user` will inherit this value. The intended
+   * pattern is: read your authenticated end-user id once (Supabase / Clerk /
+   * NextAuth / whatever) and pass it here; every subsequent SDK call will
+   * carry it without further wiring.
+   */
+  user?: string;
 }
 
 /**
@@ -253,6 +262,12 @@ export class PolpoClient {
   private readonly fetchFn: typeof globalThis.fetch;
   /** In-flight GET deduplication */
   private readonly inflight = new Map<string, Promise<unknown>>();
+  /**
+   * Default end-user identifier auto-applied to chat / task / mission calls
+   * when the call doesn't explicitly set its own `user`. Settable post-construct
+   * via {@link setUser} so a Provider can update it on auth state change.
+   */
+  private defaultUser: string | undefined;
 
   constructor(config: PolpoClientConfig) {
     this.baseUrl = config.baseUrl.replace(/\/$/, "");
@@ -280,6 +295,21 @@ export class PolpoClient {
     if (config.apiKey) {
       this.headers["Authorization"] = `Bearer ${config.apiKey}`;
     }
+    this.defaultUser = config.user;
+  }
+
+  /**
+   * Update the default end-user identifier auto-applied to subsequent calls.
+   * Call from a React Provider whenever auth state changes. Pass `undefined`
+   * to clear (e.g. on logout) so further calls go un-scoped.
+   */
+  setUser(user: string | undefined): void {
+    this.defaultUser = user;
+  }
+
+  /** Read the currently-active default user, primarily for debugging. */
+  getUser(): string | undefined {
+    return this.defaultUser;
   }
 
   // ── Helpers ──────────────────────────────────────────────
@@ -353,7 +383,11 @@ export class PolpoClient {
   }
 
   createTask(req: CreateTaskRequest): Promise<Task> {
-    return this.post<Task>("/tasks", req);
+    const body =
+      req.user === undefined && this.defaultUser !== undefined
+        ? { ...req, user: this.defaultUser }
+        : req;
+    return this.post<Task>("/tasks", body);
   }
 
   updateTask(taskId: string, req: UpdateTaskRequest): Promise<Task> {
@@ -395,7 +429,11 @@ export class PolpoClient {
   }
 
   createMission(req: CreateMissionRequest): Promise<Mission> {
-    return this.post<Mission>("/missions", req);
+    const body =
+      req.user === undefined && this.defaultUser !== undefined
+        ? { ...req, user: this.defaultUser }
+        : req;
+    return this.post<Mission>("/missions", body);
   }
 
   updateMission(missionId: string, req: UpdateMissionRequest): Promise<Mission> {
@@ -757,7 +795,14 @@ export class PolpoClient {
     if (req.sessionId) {
       headers["x-session-id"] = req.sessionId;
     }
-    const { sessionId: _, ...body } = req;
+    // Apply the constructor-level default user when the call didn't pass one.
+    // Per-call `user` always wins so a single SDK instance can serve multiple
+    // end-users by overriding case-by-case.
+    const reqWithUser: ChatCompletionRequest =
+      req.user === undefined && this.defaultUser !== undefined
+        ? { ...req, user: this.defaultUser }
+        : req;
+    const { sessionId: _, ...body } = reqWithUser;
     const res = await this.fetchFn(url, {
       method: "POST",
       headers,
@@ -780,7 +825,11 @@ export class PolpoClient {
    */
   chatCompletionsStream(req: ChatCompletionRequest): ChatCompletionStream {
     const url = `${this.baseUrl}/v1/chat/completions`;
-    return new ChatCompletionStream(this.fetchFn, url, this.headers, req);
+    const reqWithUser: ChatCompletionRequest =
+      req.user === undefined && this.defaultUser !== undefined
+        ? { ...req, user: this.defaultUser }
+        : req;
+    return new ChatCompletionStream(this.fetchFn, url, this.headers, reqWithUser);
   }
 
   // ── Sessions ────────────────────────────────────────────

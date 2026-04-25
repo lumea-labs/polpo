@@ -50,9 +50,11 @@ function createTables(raw: InstanceType<typeof Database>) {
       priority TEXT,
       side_effects INTEGER,
       revision_count INTEGER,
+      "user" TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
+    CREATE INDEX IF NOT EXISTS idx_tasks_user ON tasks("user");
     CREATE TABLE IF NOT EXISTS missions (
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL UNIQUE,
@@ -65,9 +67,11 @@ function createTables(raw: InstanceType<typeof Database>) {
       deadline TEXT,
       notifications TEXT,
       execution_count INTEGER NOT NULL DEFAULT 0,
+      "user" TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
+    CREATE INDEX IF NOT EXISTS idx_missions_user ON missions("user");
     CREATE TABLE IF NOT EXISTS metadata (
       key TEXT PRIMARY KEY,
       value TEXT NOT NULL
@@ -94,15 +98,20 @@ function createTables(raw: InstanceType<typeof Database>) {
       result TEXT,
       outcomes TEXT,
       config TEXT,
-      config_path TEXT NOT NULL
+      config_path TEXT NOT NULL,
+      "user" TEXT
     );
+    CREATE INDEX IF NOT EXISTS idx_runs_user ON runs("user");
     CREATE TABLE IF NOT EXISTS sessions (
       id TEXT PRIMARY KEY,
       title TEXT,
       agent TEXT,
+      "user" TEXT,
+      metadata TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
+    CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions("user");
     CREATE TABLE IF NOT EXISTS messages (
       id TEXT PRIMARY KEY,
       session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
@@ -265,6 +274,23 @@ describe("DrizzleTaskStore", () => {
     expect(fetched).toBeDefined();
     expect(fetched!.title).toBe("Fix bug");
     expect(fetched!.expectations).toEqual([{ type: "llm_review", criteria: "Login works" }]);
+  });
+
+  it("addTask persists OpenAI-compat user identifier", async () => {
+    const task = await stores.taskStore.addTask({
+      title: "Per-user task",
+      description: "Scoped to end-user",
+      assignTo: "claude",
+      dependsOn: [],
+      maxRetries: 2,
+      expectations: [],
+      metrics: [],
+      user: "u-42",
+    });
+    expect(task.user).toBe("u-42");
+
+    const fetched = await stores.taskStore.getTask(task.id);
+    expect(fetched!.user).toBe("u-42");
   });
 
   it("getAllTasks returns ordered by createdAt", async () => {
@@ -474,6 +500,16 @@ describe("DrizzleRunStore", () => {
     expect(fetched!.status).toBe("running");
   });
 
+  it("upsertRun persists OpenAI-compat user identifier", async () => {
+    await stores.runStore.upsertRun({
+      ...makeRun("r-user", "t-user"),
+      user: "u-42",
+    } as any);
+
+    const fetched = await stores.runStore.getRun("r-user");
+    expect(fetched!.user).toBe("u-42");
+  });
+
   it("upsertRun updates on conflict", async () => {
     await stores.runStore.upsertRun(makeRun("r1", "t1") as any);
     await stores.runStore.upsertRun({ ...makeRun("r1", "t1"), status: "completed" as any } as any);
@@ -584,6 +620,59 @@ describe("DrizzleSessionStore", () => {
     expect(list).toHaveLength(2);
     const withMessages = list.find((s) => s.title === "S1");
     expect(withMessages!.messageCount).toBe(2);
+  });
+
+  it("create with user + metadata persists both", async () => {
+    const id = await stores.sessionStore.create({
+      title: "Tagged",
+      user: "u-42",
+      metadata: { tenant: "acme", plan: "premium" },
+    });
+    const session = await stores.sessionStore.getSession(id);
+    expect(session).toBeDefined();
+    expect(session!.user).toBe("u-42");
+    expect(session!.metadata).toEqual({ tenant: "acme", plan: "premium" });
+  });
+
+  it("listSessions filters by user", async () => {
+    await stores.sessionStore.create({ title: "S-u1-a", user: "u1" });
+    await stores.sessionStore.create({ title: "S-u1-b", user: "u1" });
+    await stores.sessionStore.create({ title: "S-u2", user: "u2" });
+    await stores.sessionStore.create({ title: "S-no-user" });
+
+    const u1 = await stores.sessionStore.listSessions({ user: "u1" });
+    expect(u1).toHaveLength(2);
+    expect(u1.every((s) => s.user === "u1")).toBe(true);
+
+    const u2 = await stores.sessionStore.listSessions({ user: "u2" });
+    expect(u2).toHaveLength(1);
+    expect(u2[0].title).toBe("S-u2");
+  });
+
+  it("listSessions filters by metadata (single key)", async () => {
+    await stores.sessionStore.create({
+      title: "Acme-prod",
+      metadata: { tenant: "acme", env: "prod" },
+    });
+    await stores.sessionStore.create({
+      title: "Acme-dev",
+      metadata: { tenant: "acme", env: "dev" },
+    });
+    await stores.sessionStore.create({
+      title: "Other",
+      metadata: { tenant: "globex" },
+    });
+
+    const acme = await stores.sessionStore.listSessions({
+      metadata: { tenant: "acme" },
+    });
+    expect(acme).toHaveLength(2);
+
+    const acmeProd = await stores.sessionStore.listSessions({
+      metadata: { tenant: "acme", env: "prod" },
+    });
+    expect(acmeProd).toHaveLength(1);
+    expect(acmeProd[0].title).toBe("Acme-prod");
   });
 
   it("renameSession updates title", async () => {

@@ -27,6 +27,23 @@ export interface PolpoProviderProps {
    * includes the full `/v1/...` path downstream).
    */
   apiPrefix?: string;
+  /**
+   * Default end-user identifier (OpenAI-compat `user`). When set, every
+   * SDK call (`chatCompletions`, `createTask`, `createMission`) will carry
+   * it as default — pass per-call `user` to override.
+   *
+   * Wire this from your auth provider (Supabase, Clerk, NextAuth) so the
+   * Polpo client always knows which end-user is acting:
+   *
+   * ```tsx
+   * const { user } = useSupabaseUser();
+   * <PolpoProvider baseUrl={...} apiKey={...} user={user?.id}>
+   * ```
+   *
+   * Updates propagate without rebuilding the client — only the default value
+   * changes, so React Query caches and SSE connections stay alive.
+   */
+  user?: string;
   children: ReactNode;
   autoConnect?: boolean;
   eventFilter?: string[];
@@ -37,12 +54,16 @@ export function PolpoProvider({
   apiKey,
   fetch,
   apiPrefix,
+  user,
   children,
   autoConnect = true,
   eventFilter,
 }: PolpoProviderProps) {
   // Config key includes fetch identity + apiPrefix so that swapping either
   // rebuilds the client (same reasoning as baseUrl/apiKey today).
+  // Note: `user` is intentionally NOT in the config key — we update it via
+  // setUser() on the existing client to avoid tearing down SSE on every
+  // login/logout cycle.
   const configKey = `${baseUrl}|${apiKey ?? ""}|${apiPrefix ?? ""}|${fetch ? "custom-fetch" : "default-fetch"}`;
   const storeRef = useRef<PolpoStore>(null as unknown as PolpoStore);
   const clientRef = useRef<PolpoClient>(null as unknown as PolpoClient);
@@ -50,13 +71,19 @@ export function PolpoProvider({
 
   if (lastConfigKey.current !== configKey) {
     lastConfigKey.current = configKey;
-    clientRef.current = new PolpoClient({ baseUrl, apiKey, fetch, apiPrefix });
+    clientRef.current = new PolpoClient({ baseUrl, apiKey, fetch, apiPrefix, user });
     storeRef.current = new PolpoStore();
   }
 
   const client = clientRef.current!;
   const store = storeRef.current!;
   const stableEventFilter = useStableValue(eventFilter);
+
+  // Sync the default user without rebuilding the client. Cheap; no-op when
+  // unchanged. Lets a chat session survive a token-refresh round-trip.
+  useEffect(() => {
+    client.setUser(user);
+  }, [client, user]);
 
   // SSE connection lifecycle
   useEffect(() => {

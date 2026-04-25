@@ -32,6 +32,7 @@ export function ensureSqliteSchema(db: { exec(sql: string): void }): void {
       priority TEXT,
       side_effects INTEGER,
       revision_count INTEGER,
+      "user" TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
@@ -39,6 +40,7 @@ export function ensureSqliteSchema(db: { exec(sql: string): void }): void {
     CREATE INDEX IF NOT EXISTS idx_tasks_group ON tasks("group");
     CREATE INDEX IF NOT EXISTS idx_tasks_assign_to ON tasks(assign_to);
     CREATE INDEX IF NOT EXISTS idx_tasks_mission_id ON tasks(mission_id);
+    CREATE INDEX IF NOT EXISTS idx_tasks_user ON tasks("user");
 
     CREATE TABLE IF NOT EXISTS missions (
       id TEXT PRIMARY KEY,
@@ -52,10 +54,12 @@ export function ensureSqliteSchema(db: { exec(sql: string): void }): void {
       deadline TEXT,
       notifications TEXT,
       execution_count INTEGER NOT NULL DEFAULT 0,
+      "user" TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_missions_status ON missions(status);
+    CREATE INDEX IF NOT EXISTS idx_missions_user ON missions("user");
 
     CREATE TABLE IF NOT EXISTS metadata (
       key TEXT PRIMARY KEY,
@@ -85,17 +89,22 @@ export function ensureSqliteSchema(db: { exec(sql: string): void }): void {
       result TEXT,
       outcomes TEXT,
       config TEXT,
-      config_path TEXT NOT NULL
+      config_path TEXT NOT NULL,
+      "user" TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_runs_status ON runs(status);
     CREATE INDEX IF NOT EXISTS idx_runs_task_id ON runs(task_id);
+    CREATE INDEX IF NOT EXISTS idx_runs_user ON runs("user");
 
     CREATE TABLE IF NOT EXISTS sessions (
       id TEXT PRIMARY KEY,
       title TEXT,
+      "user" TEXT,
+      metadata TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
+    CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions("user");
 
     CREATE TABLE IF NOT EXISTS messages (
       id TEXT PRIMARY KEY,
