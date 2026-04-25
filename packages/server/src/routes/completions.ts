@@ -522,6 +522,9 @@ export interface CompletionRouteDeps {
     model: string;
     agent?: string;
     sessionId?: string;
+    /** OpenAI-compat opaque end-user id from the request, when set. Lets the
+     *  cloud meter attribute the usage row to the dev's authenticated user. */
+    user?: string;
     providerMetadata?: Record<string, unknown>;
   }) => void;
   /** Orchestrator mode support (optional — returns 501 if not provided). */
@@ -1003,6 +1006,7 @@ export function completionRoutes(getDeps: () => CompletionRouteDeps, apiKeys?: s
               model: m.id ?? m.provider,
               agent: body.agent,
               sessionId: sessionId ?? undefined,
+              user: body.user,
               providerMetadata: lastProviderMetadata,
             });
           } catch { /* never fail on callback */ }
@@ -1306,6 +1310,7 @@ export function completionRoutes(getDeps: () => CompletionRouteDeps, apiKeys?: s
             model: m.id ?? m.provider,
             agent: body.agent,
             sessionId: sessionId ?? undefined,
+            user: body.user,
             providerMetadata: lastProviderMetadata,
           });
         } catch { /* never fail on callback */ }
