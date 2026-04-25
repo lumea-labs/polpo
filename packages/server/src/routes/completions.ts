@@ -125,6 +125,23 @@ const completionRequestSchema = z.object({
   project: z.string().optional().openapi({
     description: "Deprecated. Ignored.",
   }),
+  // OpenAI-compat identity fields. Persisted on the Session row and exposed
+  // via GET /v1/chat/sessions filters. Polpo does NOT verify `user`; the
+  // caller's API key is the trust anchor — `user` is purely opaque scoping.
+  user: z.string().optional().openapi({
+    description:
+      "Opaque end-user identifier (OpenAI-compat). Persisted on the session and used for filtering, per-user analytics, and pass-through to billing integrations (e.g. Autumn customer_id). Polpo does not verify this — set it from your authenticated end-user id.",
+  }),
+  metadata: z
+    .record(z.string(), z.string())
+    .refine((m) => Object.keys(m).length <= 16, { message: "metadata: max 16 keys" })
+    .refine((m) => Object.keys(m).every((k) => k.length <= 64), { message: "metadata: key max 64 chars" })
+    .refine((m) => Object.values(m).every((v) => v.length <= 512), { message: "metadata: value max 512 chars" })
+    .optional()
+    .openapi({
+      description:
+        "Arbitrary key/value tags (OpenAI-compat). Up to 16 keys, key ≤64 chars, value ≤512 chars. Persisted on the session for filtering and analytics. Use for tenant_id, plan, identity_provider, ab_variant, etc.",
+    }),
 });
 
 const completionResponseSchema = z.object({
@@ -626,7 +643,12 @@ export function completionRoutes(getDeps: () => CompletionRouteDeps, apiKeys?: s
 
         // No session ID provided — always create a new session.
         // Clients that want to continue a conversation must pass x-session-id explicitly.
-        sessionId = await sessionStore.create(sessionTitle, agentScope ?? undefined);
+        sessionId = await sessionStore.create({
+          title: sessionTitle,
+          agent: agentScope ?? undefined,
+          user: body.user,
+          metadata: body.metadata,
+        });
       }
       // Persist user message (only the last one — earlier messages are already persisted)
       const lastUserMsg = [...body.messages].reverse().find(m => m.role === "user");

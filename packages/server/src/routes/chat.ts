@@ -7,6 +7,17 @@ const listSessionsRoute = createRoute({
   path: "/sessions",
   tags: ["Chat Sessions"],
   summary: "List chat sessions",
+  request: {
+    query: z.object({
+      user: z.string().optional().openapi({
+        description:
+          "Filter to sessions whose `user` field matches exactly. Equality only.",
+      }),
+    }).passthrough().openapi({
+      description:
+        "Optional filters. Use `user=<id>` to scope to one end-user. Metadata filters: pass `metadata.<key>=<value>` (e.g. `metadata.tenant=acme`) — multiple keys ANDed together.",
+    }),
+  },
   responses: {
     200: {
       content: { "application/json": { schema: z.object({ ok: z.boolean(), data: z.any() }) } },
@@ -99,13 +110,33 @@ const deleteSessionRoute = createRoute({
 export function chatRoutes(getDeps: () => { sessionStore?: any }): OpenAPIHono {
   const app = new OpenAPIHono();
 
-  // GET /chat/sessions — list chat sessions
+  // GET /chat/sessions — list chat sessions, optionally filtered.
+  //
+  // Query string accepts:
+  //   - user=<id>            → equality filter on Session.user
+  //   - metadata.<key>=<val> → equality filter on Session.metadata[key]
+  //                            multiple metadata.* keys are ANDed together
   app.openapi(listSessionsRoute, async (c) => {
     const { sessionStore } = getDeps();
     if (!sessionStore) {
       return c.json({ ok: true, data: { sessions: [] } });
     }
-    const sessions = await sessionStore.listSessions();
+
+    // Build filter from query string. Hono's typed query object only knows
+    // about declared params (`user`); metadata.* keys come in via raw URL.
+    const query = c.req.query();
+    const filter: { user?: string; metadata?: Record<string, string> } = {};
+    if (query.user) filter.user = query.user;
+    for (const [k, v] of Object.entries(query)) {
+      if (k.startsWith("metadata.") && v) {
+        filter.metadata ??= {};
+        filter.metadata[k.slice("metadata.".length)] = v;
+      }
+    }
+
+    const sessions = await sessionStore.listSessions(
+      Object.keys(filter).length > 0 ? filter : undefined,
+    );
     return c.json({ ok: true, data: { sessions } });
   });
 

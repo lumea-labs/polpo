@@ -1,6 +1,16 @@
-import { eq, desc, asc, count as drizzleCount, isNull, and } from "drizzle-orm";
+import { eq, desc, asc, count as drizzleCount, isNull, and, sql } from "drizzle-orm";
 import { nanoid } from "nanoid";
-import type { SessionStore, Session, Message, MessageRole, ToolCallInfo, SessionContentPart } from "@polpo-ai/core/session-store";
+import type {
+  SessionStore,
+  Session,
+  Message,
+  MessageRole,
+  ToolCallInfo,
+  SessionContentPart,
+  SessionCreateOptions,
+  SessionListFilter,
+} from "@polpo-ai/core/session-store";
+import { normalizeSessionCreateArgs } from "@polpo-ai/core/session-store";
 import { type Dialect, deserializeJson, extractAffectedRows } from "../utils.js";
 
 type AnyTable = any;
@@ -27,7 +37,25 @@ export class DrizzleSessionStore implements SessionStore {
     return raw;
   }
 
+  /** Parse the metadata column. Postgres returns JSONB as object; SQLite stores
+   *  it as a JSON string we have to deserialize. Both null/undefined → undefined. */
+  private parseMetadata(raw: unknown): Record<string, string> | undefined {
+    if (raw == null) return undefined;
+    if (typeof raw === "object") return raw as Record<string, string>;
+    if (typeof raw === "string") {
+      try { return JSON.parse(raw) as Record<string, string>; } catch { return undefined; }
+    }
+    return undefined;
+  }
+
+  /** Inverse of parseMetadata — Postgres takes the object, SQLite takes a string. */
+  private serializeMetadata(metadata: Record<string, string> | undefined): unknown {
+    if (!metadata) return null;
+    return this.dialect === "pg" ? metadata : JSON.stringify(metadata);
+  }
+
   private rowToSession(row: any, messageCount: number): Session {
+    const metadata = this.parseMetadata(row.metadata);
     return {
       id: row.id,
       title: row.title ?? undefined,
@@ -35,6 +63,8 @@ export class DrizzleSessionStore implements SessionStore {
       updatedAt: row.updatedAt,
       messageCount,
       ...(row.agent ? { agent: row.agent } : {}),
+      ...(row.user ? { user: row.user } : {}),
+      ...(metadata ? { metadata } : {}),
     };
   }
 
@@ -48,13 +78,16 @@ export class DrizzleSessionStore implements SessionStore {
     };
   }
 
-  async create(title?: string, agent?: string): Promise<string> {
+  async create(arg1?: string | SessionCreateOptions, arg2?: string): Promise<string> {
+    const opts = normalizeSessionCreateArgs(arg1, arg2);
     const id = nanoid(10);
     const now = new Date().toISOString();
     await this.db.insert(this.sessions).values({
       id,
-      title: title ?? null,
-      agent: agent ?? null,
+      title: opts.title ?? null,
+      agent: opts.agent ?? null,
+      user: opts.user ?? null,
+      metadata: this.serializeMetadata(opts.metadata),
       createdAt: now,
       updatedAt: now,
     });
@@ -113,18 +146,40 @@ export class DrizzleSessionStore implements SessionStore {
     return rows.reverse().map((r) => this.rowToMessage(r));
   }
 
-  async listSessions(): Promise<Session[]> {
-    const rows: any[] = await this.db
+  async listSessions(filter?: SessionListFilter): Promise<Session[]> {
+    let query = this.db
       .select({
         id: this.sessions.id,
         title: this.sessions.title,
         agent: this.sessions.agent,
+        user: this.sessions.user,
+        metadata: this.sessions.metadata,
         createdAt: this.sessions.createdAt,
         updatedAt: this.sessions.updatedAt,
         messageCount: drizzleCount(this.messages.id),
       })
       .from(this.sessions)
-      .leftJoin(this.messages, eq(this.sessions.id, this.messages.sessionId))
+      .leftJoin(this.messages, eq(this.sessions.id, this.messages.sessionId));
+
+    // Apply equality-only filters. Metadata key/value pairs ANDed together;
+    // dialect split is necessary because SQLite stores metadata as a JSON
+    // string (substring search) while Postgres uses native JSONB containment.
+    const conditions: any[] = [];
+    if (filter?.user) conditions.push(eq(this.sessions.user, filter.user));
+    if (filter?.metadata) {
+      for (const [k, v] of Object.entries(filter.metadata)) {
+        if (this.dialect === "pg") {
+          conditions.push(sql`${this.sessions.metadata} @> ${JSON.stringify({ [k]: v })}::jsonb`);
+        } else {
+          // SQLite fallback — substring match on the JSON-stringified column.
+          // Good enough for low-cardinality tagging; not a hot path.
+          conditions.push(sql`${this.sessions.metadata} LIKE ${"%" + JSON.stringify({ [k]: v }).slice(1, -1) + "%"}`);
+        }
+      }
+    }
+    if (conditions.length > 0) query = query.where(and(...conditions));
+
+    const rows: any[] = await query
       .groupBy(this.sessions.id)
       .orderBy(desc(this.sessions.updatedAt));
 
@@ -137,6 +192,8 @@ export class DrizzleSessionStore implements SessionStore {
         id: this.sessions.id,
         title: this.sessions.title,
         agent: this.sessions.agent,
+        user: this.sessions.user,
+        metadata: this.sessions.metadata,
         createdAt: this.sessions.createdAt,
         updatedAt: this.sessions.updatedAt,
         messageCount: drizzleCount(this.messages.id),
@@ -155,6 +212,8 @@ export class DrizzleSessionStore implements SessionStore {
         id: this.sessions.id,
         title: this.sessions.title,
         agent: this.sessions.agent,
+        user: this.sessions.user,
+        metadata: this.sessions.metadata,
         createdAt: this.sessions.createdAt,
         updatedAt: this.sessions.updatedAt,
         messageCount: drizzleCount(this.messages.id),

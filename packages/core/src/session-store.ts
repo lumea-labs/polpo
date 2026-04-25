@@ -43,16 +43,55 @@ export interface Session {
   messageCount: number;
   /** Agent name when this session targets a specific agent (agent-direct mode). Null/undefined for orchestrator sessions. */
   agent?: string;
+  /**
+   * Opaque end-user identifier (OpenAI-compat `user` field).
+   * Set by integrators to scope sessions to their authenticated end-user.
+   * Polpo never verifies this — caller's API key auth is the trust anchor.
+   */
+  user?: string;
+  /**
+   * Arbitrary key/value tags (OpenAI-compat). Up to 16 keys, key ≤64 chars,
+   * value ≤512 chars. Validation enforced at the API boundary, not here.
+   */
+  metadata?: Record<string, string>;
+}
+
+export interface SessionCreateOptions {
+  title?: string;
+  agent?: string;
+  user?: string;
+  metadata?: Record<string, string>;
+}
+
+export interface SessionListFilter {
+  /** Equality match on `Session.user` (OpenAI-compat end-user filter). */
+  user?: string;
+  /**
+   * Equality match on metadata key/value pairs. ALL pairs must match.
+   * Example: `{ tenant: "acme", env: "prod" }` → only sessions with both.
+   */
+  metadata?: Record<string, string>;
 }
 
 export interface SessionStore {
-  create(title?: string, agent?: string): Promise<string>;
+  /**
+   * Create a new session. Pass an options object to scope it to an end-user
+   * (`user`) or attach `metadata`. Backward-compatible with the legacy
+   * positional form `(title, agent)` — internally normalised.
+   */
+  create(opts?: SessionCreateOptions): Promise<string>;
+  /** @deprecated Use `create({ title, agent })` — kept for callers still on the positional form. */
+  create(title: string | undefined, agent?: string): Promise<string>;
   addMessage(sessionId: string, role: MessageRole, content: string | SessionContentPart[]): Promise<Message>;
   /** Update the content of an existing message (e.g. finalize a streaming response). */
   updateMessage(sessionId: string, messageId: string, content: string | SessionContentPart[], toolCalls?: ToolCallInfo[]): Promise<boolean>;
   getMessages(sessionId: string): Promise<Message[]>;
   getRecentMessages(sessionId: string, limit: number): Promise<Message[]>;
-  listSessions(): Promise<Session[]>;
+  /**
+   * List sessions, optionally filtered by `user` and/or `metadata`.
+   * Filter is equality-only; no LIKE / regex / IN. YAGNI.
+   */
+  listSessions(filter?: SessionListFilter): Promise<Session[]>;
   getSession(sessionId: string): Promise<Session | undefined>;
   /** Get the most recent session, optionally filtered by agent name. Pass `null` to match only orchestrator sessions. */
   getLatestSession(agent?: string | null): Promise<Session | undefined>;
@@ -61,4 +100,17 @@ export interface SessionStore {
   deleteSession(sessionId: string): Promise<boolean>;
   prune(keepSessions: number): Promise<number>;
   close(): Promise<void> | void;
+}
+
+/**
+ * Normalise the legacy positional signature `create(title?, agent?)` into the
+ * options-object form. Implementations call this so they only have to handle
+ * one shape internally.
+ */
+export function normalizeSessionCreateArgs(
+  arg1?: string | SessionCreateOptions,
+  arg2?: string,
+): SessionCreateOptions {
+  if (arg1 && typeof arg1 === "object") return arg1;
+  return { title: arg1, agent: arg2 };
 }

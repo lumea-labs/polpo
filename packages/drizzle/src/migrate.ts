@@ -114,9 +114,14 @@ export async function ensurePgSchema(db: any): Promise<void> {
     id         TEXT PRIMARY KEY,
     title      TEXT,
     agent      TEXT,
+    "user"     TEXT,
+    metadata   JSONB,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
   )`);
+  await db.execute(sql`ALTER TABLE sessions ADD COLUMN IF NOT EXISTS "user" TEXT`);
+  await db.execute(sql`ALTER TABLE sessions ADD COLUMN IF NOT EXISTS metadata JSONB`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_pg_sessions_user ON sessions("user")`);
 
   await db.execute(sql`CREATE TABLE IF NOT EXISTS messages (
     id         TEXT PRIMARY KEY,
