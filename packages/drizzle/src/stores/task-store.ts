@@ -56,6 +56,7 @@ export class DrizzleTaskStore implements TaskStore {
       priority: row.priority ? Number(row.priority) : undefined,
       sideEffects: row.sideEffects ? Boolean(row.sideEffects) : undefined,
       revisionCount: row.revisionCount ?? undefined,
+      user: row.user ?? undefined,
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
     };
@@ -91,6 +92,7 @@ export class DrizzleTaskStore implements TaskStore {
     if (task.priority !== undefined) v.priority = String(task.priority);
     if (task.sideEffects !== undefined) v.sideEffects = task.sideEffects ? 1 : 0;
     if (task.revisionCount !== undefined) v.revisionCount = task.revisionCount;
+    if (task.user !== undefined) v.user = task.user;
     if (task.createdAt !== undefined) v.createdAt = task.createdAt;
     if (task.updatedAt !== undefined) v.updatedAt = task.updatedAt;
     return v;
@@ -110,6 +112,7 @@ export class DrizzleTaskStore implements TaskStore {
       deadline: row.deadline ?? undefined,
       notifications: deserializeJson(row.notifications, undefined, d),
       executionCount: row.executionCount ?? 0,
+      user: row.user ?? undefined,
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
     };
@@ -323,6 +326,7 @@ export class DrizzleTaskStore implements TaskStore {
       deadline: mission.deadline ?? null,
       notifications: serializeJson(mission.notifications, d),
       executionCount: mission.executionCount ?? 0,
+      user: mission.user ?? null,
       createdAt: mission.createdAt,
       updatedAt: mission.updatedAt,
     });
@@ -365,6 +369,7 @@ export class DrizzleTaskStore implements TaskStore {
     if (updates.deadline !== undefined) values.deadline = updates.deadline;
     if (updates.notifications !== undefined) values.notifications = serializeJson(updates.notifications, d);
     if (updates.executionCount !== undefined) values.executionCount = updates.executionCount;
+    if (updates.user !== undefined) values.user = updates.user;
 
     await this.db.update(this.schema.missions).set(values)
       .where(eq(this.schema.missions.id, missionId));

@@ -500,6 +500,9 @@ export class TaskRunner {
         activity: { filesCreated: [], filesEdited: [], toolCalls: 0, totalTokens: 0, lastUpdate: now },
         config: runnerConfig,
         configPath: spawnResult.configPath,
+        // Propagate the OpenAI-compat end-user id from Task → Run so per-user
+        // analytics / billing pass-through can attribute the run correctly.
+        user: task.user,
       };
       await this.ctx.runStore.upsertRun(runRecord);
 

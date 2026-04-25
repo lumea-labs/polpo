@@ -50,9 +50,11 @@ function createTables(raw: InstanceType<typeof Database>) {
       priority TEXT,
       side_effects INTEGER,
       revision_count INTEGER,
+      "user" TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
+    CREATE INDEX IF NOT EXISTS idx_tasks_user ON tasks("user");
     CREATE TABLE IF NOT EXISTS missions (
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL UNIQUE,
@@ -65,9 +67,11 @@ function createTables(raw: InstanceType<typeof Database>) {
       deadline TEXT,
       notifications TEXT,
       execution_count INTEGER NOT NULL DEFAULT 0,
+      "user" TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
+    CREATE INDEX IF NOT EXISTS idx_missions_user ON missions("user");
     CREATE TABLE IF NOT EXISTS metadata (
       key TEXT PRIMARY KEY,
       value TEXT NOT NULL
@@ -94,8 +98,10 @@ function createTables(raw: InstanceType<typeof Database>) {
       result TEXT,
       outcomes TEXT,
       config TEXT,
-      config_path TEXT NOT NULL
+      config_path TEXT NOT NULL,
+      "user" TEXT
     );
+    CREATE INDEX IF NOT EXISTS idx_runs_user ON runs("user");
     CREATE TABLE IF NOT EXISTS sessions (
       id TEXT PRIMARY KEY,
       title TEXT,
@@ -268,6 +274,23 @@ describe("DrizzleTaskStore", () => {
     expect(fetched).toBeDefined();
     expect(fetched!.title).toBe("Fix bug");
     expect(fetched!.expectations).toEqual([{ type: "llm_review", criteria: "Login works" }]);
+  });
+
+  it("addTask persists OpenAI-compat user identifier", async () => {
+    const task = await stores.taskStore.addTask({
+      title: "Per-user task",
+      description: "Scoped to end-user",
+      assignTo: "claude",
+      dependsOn: [],
+      maxRetries: 2,
+      expectations: [],
+      metrics: [],
+      user: "u-42",
+    });
+    expect(task.user).toBe("u-42");
+
+    const fetched = await stores.taskStore.getTask(task.id);
+    expect(fetched!.user).toBe("u-42");
   });
 
   it("getAllTasks returns ordered by createdAt", async () => {
@@ -475,6 +498,16 @@ describe("DrizzleRunStore", () => {
     expect(fetched).toBeDefined();
     expect(fetched!.taskId).toBe("t1");
     expect(fetched!.status).toBe("running");
+  });
+
+  it("upsertRun persists OpenAI-compat user identifier", async () => {
+    await stores.runStore.upsertRun({
+      ...makeRun("r-user", "t-user"),
+      user: "u-42",
+    } as any);
+
+    const fetched = await stores.runStore.getRun("r-user");
+    expect(fetched!.user).toBe("u-42");
   });
 
   it("upsertRun updates on conflict", async () => {

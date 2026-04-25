@@ -62,6 +62,9 @@ export async function ensurePgSchema(db: any): Promise<void> {
   await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_pg_tasks_group ON tasks("group")`);
   await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_pg_tasks_assign_to ON tasks(assign_to)`);
   await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_pg_tasks_mission_id ON tasks(mission_id)`);
+  // OpenAI-compat user column — additive, idempotent
+  await db.execute(sql`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS "user" TEXT`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_pg_tasks_user ON tasks("user")`);
 
   await db.execute(sql`CREATE TABLE IF NOT EXISTS missions (
     id               TEXT PRIMARY KEY,
@@ -80,6 +83,8 @@ export async function ensurePgSchema(db: any): Promise<void> {
   )`);
 
   await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_pg_missions_status ON missions(status)`);
+  await db.execute(sql`ALTER TABLE missions ADD COLUMN IF NOT EXISTS "user" TEXT`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_pg_missions_user ON missions("user")`);
 
   await db.execute(sql`CREATE TABLE IF NOT EXISTS processes (
     agent_name TEXT NOT NULL,
@@ -109,6 +114,8 @@ export async function ensurePgSchema(db: any): Promise<void> {
 
   await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_pg_runs_status ON runs(status)`);
   await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_pg_runs_task_id ON runs(task_id)`);
+  await db.execute(sql`ALTER TABLE runs ADD COLUMN IF NOT EXISTS "user" TEXT`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_pg_runs_user ON runs("user")`);
 
   await db.execute(sql`CREATE TABLE IF NOT EXISTS sessions (
     id         TEXT PRIMARY KEY,

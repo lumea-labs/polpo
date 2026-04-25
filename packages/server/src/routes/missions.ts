@@ -419,6 +419,7 @@ export function missionRoutes(getDeps: () => {
       name: body.name,
       status: body.status,
       notifications: body.notifications,
+      user: body.user,
     });
 
     return c.json({ ok: true, data: mission }, 201);

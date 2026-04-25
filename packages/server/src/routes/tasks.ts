@@ -283,6 +283,7 @@ export function taskRoutes(getDeps: () => {
       notifications: body.notifications,
       sideEffects: body.sideEffects,
       draft: body.draft,
+      user: body.user,
     });
 
     return c.json({ ok: true, data: task }, 201);
