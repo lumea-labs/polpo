@@ -93,7 +93,7 @@ export interface UseChatReturn {
 // ── Hook ─────────────────────────────────────────────────
 
 export function useChat(options: UseChatOptions = {}): UseChatReturn {
-  const { client } = usePolpoContext();
+  const { client, store } = usePolpoContext();
 
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [sessionId, setSessionIdState] = useState<string | null>(options.sessionId ?? null);
@@ -192,6 +192,22 @@ export function useChat(options: UseChatOptions = {}): UseChatReturn {
         if (stream.sessionId && !sessionIdRef.current) {
           sessionIdRef.current = stream.sessionId;
           setSessionIdState(stream.sessionId);
+          // Push the new session into the shared store so any other consumer
+          // of `useSessions()` (sidebar, switcher, etc.) sees it without a
+          // manual refetch — fixes #41. We don't have the server's authoritative
+          // ChatSession object here, but a minimal optimistic record is enough
+          // to render in the list; a `refetch()` will reconcile titles/counts
+          // on next mount.
+          if (!store.getSnapshot().sessions.has(stream.sessionId)) {
+            const now = new Date().toISOString();
+            store.upsertSession({
+              id: stream.sessionId,
+              createdAt: now,
+              updatedAt: now,
+              messageCount: 1,
+              agent: optionsRef.current.agent,
+            });
+          }
           optionsRef.current.onSessionCreated?.(stream.sessionId);
         }
 

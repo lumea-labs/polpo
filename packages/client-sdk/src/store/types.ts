@@ -5,6 +5,7 @@ import type {
   ActiveDelay,
   AgentConfig,
   AgentProcess,
+  ChatSession,
   SSEEvent,
 } from "../client/types.js";
 import type { ConnectionStatus } from "../client/event-source.js";
@@ -53,4 +54,12 @@ export interface StoreState {
   assessmentChecks: Map<string, AssessmentCheckStatus[]>;
   /** Active delay timers keyed by "group:delayName". Updated from delay:started/delay:expired SSE events. */
   activeDelays: Map<string, ActiveDelay>;
+  /**
+   * Chat sessions keyed by id. Populated by `useSessions()`'s initial fetch
+   * and kept in sync by `useChat` when it observes a new sessionId in the
+   * stream (see issue #41 — without a shared store, `useSessions` consumers
+   * stay stale after a chat creates a session). SSE events
+   * `session:started` upsert here too.
+   */
+  sessions: Map<string, ChatSession>;
 }

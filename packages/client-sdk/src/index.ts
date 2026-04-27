@@ -18,6 +18,8 @@ export {
   selectEvents,
   selectAssessmentProgress,
   selectAssessmentChecks,
+  selectSessions,
+  selectSession,
 } from "./store/selectors.js";
 
 // ── Types ─────────────────────────────────────────────────────

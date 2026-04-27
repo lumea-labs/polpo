@@ -11,5 +11,7 @@ export {
   selectEvents,
   selectAssessmentProgress,
   selectAssessmentChecks,
+  selectSessions,
+  selectSession,
 } from "./selectors.js";
 export type { TaskFilter } from "./selectors.js";
