@@ -3,6 +3,7 @@ import type {
   Mission,
   AgentConfig,
   AgentProcess,
+  ChatSession,
   SSEEvent,
 } from "../client/types.js";
 import type { ConnectionStatus } from "../client/event-source.js";
@@ -27,6 +28,7 @@ function createInitialState(): StoreState {
     assessmentProgress: new Map(),
     assessmentChecks: new Map(),
     activeDelays: new Map(),
+    sessions: new Map(),
   };
 }
 
@@ -139,6 +141,54 @@ export class PolpoStore {
 
   setActiveDelays(delays: Map<string, import("../client/types.js").ActiveDelay>): void {
     this.state = { ...this.state, activeDelays: delays };
+    this.notify();
+  }
+
+  // ── Sessions (issue #41) ────────────────────────────────────
+  // Sessions live in the store so any consumer of `useSessions()` reflects
+  // changes coming from elsewhere — most importantly, a new session created
+  // mid-stream by `useChat`'s first message. Mirrors the tasks/missions
+  // pattern exactly.
+
+  setSessions(sessions: ChatSession[]): void {
+    const prev = this.state.sessions;
+    if (prev.size === sessions.length && sessions.every((s) => prev.get(s.id) === s)) {
+      return;
+    }
+    this.state = {
+      ...this.state,
+      sessions: new Map(sessions.map((s) => [s.id, s])),
+    };
+    this.notify();
+  }
+
+  /** Insert or replace a single session. Used by `useChat` when it observes
+   *  a new `sessionId` arriving in the stream, and by SSE `session:started`. */
+  upsertSession(session: ChatSession): void {
+    const prev = this.state.sessions.get(session.id);
+    if (prev === session) return;
+    const sessions = new Map(this.state.sessions);
+    sessions.set(session.id, session);
+    this.state = { ...this.state, sessions };
+    this.notify();
+  }
+
+  /** Patch a session in place (e.g. on rename / messageCount bump). */
+  patchSession(sessionId: string, patch: Partial<ChatSession>): void {
+    const prev = this.state.sessions.get(sessionId);
+    if (!prev) return;
+    const merged = { ...prev, ...patch, id: prev.id };
+    const sessions = new Map(this.state.sessions);
+    sessions.set(sessionId, merged);
+    this.state = { ...this.state, sessions };
+    this.notify();
+  }
+
+  removeSession(sessionId: string): void {
+    if (!this.state.sessions.has(sessionId)) return;
+    const sessions = new Map(this.state.sessions);
+    sessions.delete(sessionId);
+    this.state = { ...this.state, sessions };
     this.notify();
   }
 

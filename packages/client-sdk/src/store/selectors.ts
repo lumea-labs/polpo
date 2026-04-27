@@ -1,4 +1,4 @@
-import type { Task, Mission, MissionReport, AgentProcess, SSEEvent, TaskStatus } from "../client/types.js";
+import type { Task, Mission, MissionReport, AgentProcess, ChatSession, SSEEvent, TaskStatus } from "../client/types.js";
 import type { StoreState } from "./types.js";
 
 export interface TaskFilter {
@@ -85,6 +85,27 @@ export function selectMissionReport(state: StoreState, missionId: string): Missi
 
 export function selectProcesses(state: StoreState): AgentProcess[] {
   return state.processes;
+}
+
+// ── Session selectors ───────────────────────────────────────
+// Same pattern as missions: stable array reference per Map identity, so
+// `useSyncExternalStore` doesn't see a "new" value when nothing changed.
+// Sorted by `updatedAt` desc — the natural order for a sidebar list.
+
+let lastSessionsMap: Map<string, ChatSession> | null = null;
+let lastSessionResult: ChatSession[] = [];
+
+export function selectSessions(state: StoreState): ChatSession[] {
+  if (state.sessions === lastSessionsMap) return lastSessionResult;
+  lastSessionsMap = state.sessions;
+  lastSessionResult = Array.from(state.sessions.values()).sort((a, b) => {
+    return (b.updatedAt ?? b.createdAt).localeCompare(a.updatedAt ?? a.createdAt);
+  });
+  return lastSessionResult;
+}
+
+export function selectSession(state: StoreState, sessionId: string): ChatSession | undefined {
+  return state.sessions.get(sessionId);
 }
 
 // ── Events selector with multi-key cache ────────────────────

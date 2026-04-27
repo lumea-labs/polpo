@@ -5,7 +5,7 @@ import type { PolpoContextValue } from "../provider/polpo-context.js";
 import type { PolpoClient } from "@polpo-ai/sdk";
 import type { PolpoStore } from "@polpo-ai/sdk";
 import type { StoreState } from "@polpo-ai/sdk";
-import type { Task, Mission, AgentConfig, AgentProcess, Team, ApprovalRequest } from "@polpo-ai/sdk";
+import type { Task, Mission, AgentConfig, AgentProcess, Team, ApprovalRequest, ChatSession } from "@polpo-ai/sdk";
 
 // ---------------------------------------------------------------------------
 // Fake data factories
@@ -90,6 +90,7 @@ function createInitialState(): StoreState {
     assessmentProgress: new Map(),
     assessmentChecks: new Map(),
     activeDelays: new Map(),
+    sessions: new Map(),
   };
 }
 
@@ -142,6 +143,31 @@ export function createMockStore(initialState?: Partial<StoreState>): PolpoStore 
     },
     setActiveDelays: (delays: StoreState["activeDelays"]) => {
       state = { ...state, activeDelays: delays };
+      listeners.forEach((l) => l());
+    },
+    setSessions: (sessions: ChatSession[]) => {
+      state = { ...state, sessions: new Map(sessions.map((s) => [s.id, s])) };
+      listeners.forEach((l) => l());
+    },
+    upsertSession: (session: ChatSession) => {
+      const sessions = new Map(state.sessions);
+      sessions.set(session.id, session);
+      state = { ...state, sessions };
+      listeners.forEach((l) => l());
+    },
+    patchSession: (id: string, patch: Partial<ChatSession>) => {
+      const prev = state.sessions.get(id);
+      if (!prev) return;
+      const sessions = new Map(state.sessions);
+      sessions.set(id, { ...prev, ...patch, id: prev.id });
+      state = { ...state, sessions };
+      listeners.forEach((l) => l());
+    },
+    removeSession: (id: string) => {
+      if (!state.sessions.has(id)) return;
+      const sessions = new Map(state.sessions);
+      sessions.delete(id);
+      state = { ...state, sessions };
       listeners.forEach((l) => l());
     },
     applyEvent: () => {},
@@ -204,6 +230,12 @@ export function createMockClient(overrides: Record<string, unknown> = {}): Polpo
     getPendingApprovals: vi.fn().mockResolvedValue([]),
     approveRequest: vi.fn().mockResolvedValue(fakeApproval({ status: "approved" })),
     rejectRequest: vi.fn().mockResolvedValue(fakeApproval({ status: "rejected" })),
+
+    // Sessions
+    getSessions: vi.fn().mockResolvedValue({ sessions: [] as ChatSession[] }),
+    getSessionMessages: vi.fn().mockResolvedValue({ messages: [] }),
+    renameSession: vi.fn().mockResolvedValue({ renamed: true }),
+    deleteSession: vi.fn().mockResolvedValue({ deleted: true }),
 
     // Events URL
     getEventsUrl: vi.fn().mockReturnValue("http://localhost:3000/api/v1/events"),

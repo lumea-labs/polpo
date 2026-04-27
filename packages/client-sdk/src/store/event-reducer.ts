@@ -375,6 +375,34 @@ export function reduceEvent(state: StoreState, sseEvent: SSEEvent): StoreState {
       return { ...next, activeDelays };
     }
 
+    // ── Sessions (issue #41) ──────────────────────────────────
+    // The cloud handler emits `session:started` on first message of a new
+    // session. Mirrors into the store so `useSessions()` consumers see it
+    // without needing a manual refetch.
+
+    case "session:started": {
+      const d = data as {
+        sessionId: string;
+        agent?: string;
+        user?: string;
+        title?: string;
+      };
+      if (!d?.sessionId) return next;
+      if (state.sessions.has(d.sessionId)) return next;
+      const now = new Date().toISOString();
+      const sessions = new Map(state.sessions);
+      sessions.set(d.sessionId, {
+        id: d.sessionId,
+        title: d.title,
+        createdAt: now,
+        updatedAt: now,
+        messageCount: 0,
+        agent: d.agent,
+        user: d.user,
+      });
+      return { ...next, sessions };
+    }
+
     // ── Quality gates ─────────────────────────────────────────
 
     case "quality:gate:passed":

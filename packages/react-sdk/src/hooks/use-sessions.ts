@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
+import { selectSessions } from "@polpo-ai/sdk";
 import { usePolpoContext } from "../provider/polpo-context.js";
 import type { ChatSession, ChatMessage } from "@polpo-ai/sdk";
 
@@ -14,26 +15,51 @@ export interface UseSessionsReturn {
   refetch: () => Promise<void>;
 }
 
+/**
+ * Reads sessions from the shared `PolpoStore`. The initial list is fetched
+ * lazily (first hook mount populates the store), and any change pushed by
+ * other hooks — most importantly `useChat` observing a new sessionId
+ * mid-stream — is reflected here automatically. Mirrors `useTasks` /
+ * `useMissions`.
+ *
+ * Fixes #41: before this rewrite, each `useSessions()` instance held its
+ * own `useState` array, so creating a session in one component left every
+ * other consumer stale until a manual refetch.
+ */
 export function useSessions(): UseSessionsReturn {
-  const { client } = usePolpoContext();
+  const { client, store } = usePolpoContext();
 
-  const [sessions, setSessions] = useState<ChatSession[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
+  const sessions = useSyncExternalStore(
+    store.subscribe,
+    () => selectSessions(store.getSnapshot()),
+    () => selectSessions(store.getServerSnapshot()),
+  );
+
+  const [isLoading, setIsLoading] = useState(store.getSnapshot().sessions.size === 0);
   const [error, setError] = useState<Error | null>(null);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
 
   const refetch = useCallback(async () => {
     try {
       const data = await client.getSessions();
-      setSessions(data.sessions);
+      store.setSessions(data.sessions);
+      setError(null);
     } catch (err) {
       setError(err as Error);
     }
-  }, [client]);
+  }, [client, store]);
 
+  // Initial fetch — only the first mount populates the store; subsequent
+  // hook instances reuse the same data.
   useEffect(() => {
+    let cancelled = false;
     setIsLoading(true);
-    refetch().finally(() => setIsLoading(false));
+    refetch().finally(() => {
+      if (!cancelled) setIsLoading(false);
+    });
+    return () => {
+      cancelled = true;
+    };
   }, [refetch]);
 
   const getMessages = useCallback(
@@ -47,22 +73,20 @@ export function useSessions(): UseSessionsReturn {
   const renameSession = useCallback(
     async (sessionId: string, title: string) => {
       await client.renameSession(sessionId, title);
-      setSessions((prev) =>
-        prev.map((s) => (s.id === sessionId ? { ...s, title } : s)),
-      );
+      store.patchSession(sessionId, { title, updatedAt: new Date().toISOString() });
     },
-    [client],
+    [client, store],
   );
 
   const deleteSession = useCallback(
     async (sessionId: string) => {
       await client.deleteSession(sessionId);
-      setSessions((prev) => prev.filter((s) => s.id !== sessionId));
+      store.removeSession(sessionId);
       if (activeSessionId === sessionId) {
         setActiveSessionId(null);
       }
     },
-    [client, activeSessionId],
+    [client, store, activeSessionId],
   );
 
   return {
