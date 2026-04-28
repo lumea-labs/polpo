@@ -111,7 +111,7 @@ export function createApp(orchestrator: Orchestrator, sseBridge: SSEBridge, opts
       return buildSystemPrompt(agentConfig, o.getAgentWorkDir(), o.getPolpoDir());
     },
     resolveAgentTools: async (agentConfig: any) => {
-      const { createSystemTools, createMemoryTools } = await import("@polpo-ai/tools");
+      const { createSystemTools, createMemoryTools, resolveAgentMcpTools } = await import("@polpo-ai/tools");
       const { resolveAgentVault } = await import("../vault/index.js");
       const { nanoid } = await import("nanoid");
       const vaultEntries = await o.getVaultStore()?.getAllForAgent(agentConfig.name);
@@ -119,6 +119,12 @@ export function createApp(orchestrator: Orchestrator, sseBridge: SSEBridge, opts
       const tools: any[] = createSystemTools(o.getAgentWorkDir(), agentConfig.allowedTools, undefined, undefined, vault, o.getFs(), o.getShell());
       const memoryStore = o.getMemoryStore();
       if (memoryStore) tools.push(...createMemoryTools(memoryStore, agentConfig.name));
+      // External MCP-server tools (stdio / SSE / HTTP) declared on the agent.
+      // The connections are opened once per request; `dispose` is wired into
+      // the `cleanup` callback so transports close as soon as the agent's
+      // turn finishes — no orphaned file descriptors / keep-alives.
+      const mcp = await resolveAgentMcpTools(agentConfig.name, agentConfig.mcpServers, vault);
+      tools.push(...mcp.tools);
       const toolMap = new Map(tools.map((t: any) => [t.name, t]));
       const executor = async (name: string, args: Record<string, unknown>): Promise<string> => {
         const tool = toolMap.get(name);
@@ -130,7 +136,7 @@ export function createApp(orchestrator: Orchestrator, sseBridge: SSEBridge, opts
           return `Error: ${err.message}`;
         }
       };
-      return { tools, executor };
+      return { tools, executor, cleanup: mcp.dispose };
     },
   }), opts?.apiKeys));
 
