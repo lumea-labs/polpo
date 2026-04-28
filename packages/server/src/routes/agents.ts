@@ -89,6 +89,7 @@ export function agentRoutes(getDeps: () => {
       identity: body.identity,
       reportsTo: body.reportsTo,
       browserProfile: body.browserProfile,
+      mcpServers: body.mcpServers,
     }, teamName);
 
     return c.json({ ok: true, data: { added: true } }, 201);
@@ -386,6 +387,9 @@ export function agentRoutes(getDeps: () => {
       ...(body.emailAllowedDomains !== undefined && { emailAllowedDomains: body.emailAllowedDomains }),
       ...(body.identity && { identity: { ...(existing.identity ?? {}), ...body.identity } }),
       ...(body.team !== undefined && { team: body.team }),
+      // Replace the whole MCP server map. Pass `{}` to clear all servers,
+      // omit the field to leave existing config untouched.
+      ...(body.mcpServers !== undefined && { mcpServers: body.mcpServers }),
     };
 
     await deps.updateAgent(name, updates);
