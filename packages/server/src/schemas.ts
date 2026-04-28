@@ -252,6 +252,36 @@ const AgentIdentitySchema = z.object({
   socials: z.record(z.string(), z.string()).optional(),
 });
 
+/**
+ * MCP server config attached to an agent. Three transport variants —
+ * mirrors the type union in `@polpo-ai/sdk` (`McpServerConfig`). Validated
+ * here so payloads from the dashboard / CLI / direct API all converge on
+ * the same shape before the agent runtime resolves the actual tools at
+ * completion time. Header values support `${vault:service:key}`
+ * templating, resolved server-side (the regex isn't enforced at this
+ * layer — strings are accepted as-is).
+ */
+const McpServerConfigSchema = z.union([
+  z.object({
+    type: z.literal("stdio").optional(),
+    command: z.string().min(1),
+    args: z.array(z.string()).optional(),
+    env: z.record(z.string(), z.string()).optional(),
+  }),
+  z.object({
+    type: z.literal("sse"),
+    url: z.string().url(),
+    headers: z.record(z.string(), z.string()).optional(),
+  }),
+  z.object({
+    type: z.literal("http"),
+    url: z.string().url(),
+    headers: z.record(z.string(), z.string()).optional(),
+  }),
+]);
+
+const McpServersRecordSchema = z.record(z.string().min(1), McpServerConfigSchema);
+
 export const AddAgentSchema = z.object({
   name: z.string().min(1),
   role: z.string().optional(),
@@ -265,6 +295,9 @@ export const AddAgentSchema = z.object({
   reportsTo: z.string().optional(),
   // Extended tool categories (browser, email, vault, image, video, audio, excel, pdf, docx, search — HTTP is always-on core)
   browserProfile: z.string().optional(),
+  /** External MCP servers — keyed by user-chosen name. Tools from each
+   *  server are namespaced `mcp__<key>__<tool>` at runtime. */
+  mcpServers: McpServersRecordSchema.optional(),
 });
 
 export const UpdateAgentSchema = z.object({
@@ -282,6 +315,8 @@ export const UpdateAgentSchema = z.object({
   browserProfile: z.string().optional(),
   emailAllowedDomains: z.array(z.string()).optional(),
   team: z.string().optional(),
+  /** Replace the agent's MCP server map. Pass an empty object to clear. */
+  mcpServers: McpServersRecordSchema.optional(),
 });
 
 export const RenameTeamSchema = z.object({
