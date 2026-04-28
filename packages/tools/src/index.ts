@@ -19,6 +19,8 @@ export type { ExtendedToolName, CreateAllToolsOptions } from "./system-tools.js"
 export { createOutcomeTools } from "./outcome-tools.js";
 export { createHttpTools, ALL_HTTP_TOOL_NAMES } from "./http-tools.js";
 export { createVaultToolsCore, createVaultTools, ALL_VAULT_TOOL_NAMES } from "./vault-tools.js";
+export { resolveAgentMcpTools } from "./mcp-client.js";
+export type { McpServerSpec, ResolvedMcpTools, VaultLookup } from "./mcp-client.js";
 
 // Extended tool factories
 export { createBrowserTools, ALL_BROWSER_TOOL_NAMES, cleanupAgentBrowserSession } from "./browser-tools.js";

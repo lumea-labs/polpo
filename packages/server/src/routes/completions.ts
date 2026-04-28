@@ -511,10 +511,13 @@ export interface CompletionRouteDeps {
   }>;
   /** Build agent system prompt for conversational mode. */
   buildAgentPrompt: (agentConfig: any) => string | Promise<string>;
-  /** Create tools + executor for the agent. Return empty arrays for chat-only. */
+  /** Create tools + executor for the agent. Return empty arrays for chat-only.
+   *  Optional `cleanup` is invoked once the response finishes — used to close
+   *  long-lived resources like MCP transports. */
   resolveAgentTools: (agentConfig: any) => Promise<{
     tools: any[];
     executor: (name: string, args: Record<string, unknown>) => Promise<string>;
+    cleanup?: () => Promise<void>;
   }>;
   /** Called after each completion finishes (streaming or non-streaming). Receives usage, model info, and provider metadata. Fire-and-forget — errors are silently ignored. */
   onCompletionFinished?: (info: {
@@ -564,6 +567,14 @@ export function completionRoutes(getDeps: () => CompletionRouteDeps, apiKeys?: s
     let effectiveTools: any[];
     let effectiveToolExecutor: (name: string, args: Record<string, unknown>) => Promise<string>;
     let isInteractiveFn: ((name: string) => boolean) | undefined;
+    /**
+     * Resource cleanup hook — set when an agent's tool resolver opens
+     * long-lived connections (today: MCP transports). Invoked exactly
+     * once after the response finishes, regardless of streaming/non-
+     * streaming/error path. Wrapped in try/catch by the caller so a
+     * misbehaving cleanup can't leak the request itself.
+     */
+    let onResponseFinished: (() => Promise<void>) | undefined;
 
     const { aiMessages, extraSystemParts } = convertMessages(body.messages);
 
@@ -609,9 +620,10 @@ export function completionRoutes(getDeps: () => CompletionRouteDeps, apiKeys?: s
       providerOpts = resolved.providerOptions;
 
       // Resolve tools via dep
-      const { tools, executor } = await deps.resolveAgentTools(agentConfig);
+      const { tools, executor, cleanup } = await deps.resolveAgentTools(agentConfig);
       effectiveTools = tools;
       effectiveToolExecutor = executor;
+      onResponseFinished = cleanup;
     } else {
       // ── Orchestrator mode (default) ──
       if (!deps.resolveOrchestratorContext) {
@@ -1010,6 +1022,12 @@ export function completionRoutes(getDeps: () => CompletionRouteDeps, apiKeys?: s
               providerMetadata: lastProviderMetadata,
             });
           } catch { /* never fail on callback */ }
+          // Close per-request resources (MCP transports, etc.). Errors
+          // are intentionally swallowed — a stuck cleanup must not block
+          // the response from finishing.
+          if (onResponseFinished) {
+            onResponseFinished().catch(() => {});
+          }
         }
       }) as any;
     } else {
@@ -1314,6 +1332,9 @@ export function completionRoutes(getDeps: () => CompletionRouteDeps, apiKeys?: s
             providerMetadata: lastProviderMetadata,
           });
         } catch { /* never fail on callback */ }
+        if (onResponseFinished) {
+          onResponseFinished().catch(() => {});
+        }
       }
     }
   });
