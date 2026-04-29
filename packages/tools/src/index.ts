@@ -12,7 +12,7 @@
  */
 
 // Core tool factory
-export { createSystemTools, createSystemTools as createCodingTools, createAllTools, matchToolPattern, expandToolWildcards, ALL_EXTENDED_TOOL_NAMES } from "./system-tools.js";
+export { createSystemTools, createSystemTools as createCodingTools, createAllTools, matchToolPattern, expandToolWildcards, TOOL_CATALOG } from "./system-tools.js";
 export type { ExtendedToolName, CreateAllToolsOptions } from "./system-tools.js";
 
 // Individual tool factories (for custom composition)

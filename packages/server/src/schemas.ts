@@ -1,5 +1,27 @@
 import { z } from "@hono/zod-openapi";
+import { TOOL_CATALOG, matchToolPattern } from "@polpo-ai/tools";
 import { ApiHttpError } from "./errors.js";
+
+/**
+ * Allowed-tool name validator.
+ *
+ * Accepts:
+ *  - any built-in tool name from the catalog (case-insensitive exact match)
+ *  - the wildcard `*` (everything)
+ *  - a category wildcard like `browser_*` — only valid if it actually
+ *    matches at least one catalog entry
+ *  - any `mcp__<server>__<tool>` name — those are external (the user-defined
+ *    MCP servers ship them at runtime), so we can't validate the suffix.
+ */
+const ToolNameSchema = z.string().refine((value) => {
+  const v = value.toLowerCase();
+  if (v === "*") return true;
+  if (v.startsWith("mcp__")) return true;
+  if (v.includes("*")) return TOOL_CATALOG.some((name) => matchToolPattern(v, name));
+  return TOOL_CATALOG.includes(v);
+}, {
+  message: "Unknown tool. Use a built-in tool name, a category wildcard like `browser_*`, the global `*`, or an MCP tool prefixed `mcp__<server>__<name>`.",
+});
 
 // ── Outcome schemas ───────────────────────────────────────────────────
 
@@ -202,7 +224,7 @@ export const AddMissionTeamMemberSchema = z.object({
   role: z.string().optional(),
   model: z.string().optional(),
   systemPrompt: z.string().optional(),
-  allowedTools: z.array(z.string()).optional(),
+  allowedTools: z.array(ToolNameSchema).optional(),
 });
 
 export const UpdateMissionTeamMemberSchema = z.object({
@@ -210,7 +232,7 @@ export const UpdateMissionTeamMemberSchema = z.object({
   role: z.string().optional(),
   model: z.string().optional(),
   systemPrompt: z.string().optional(),
-  allowedTools: z.array(z.string()).optional(),
+  allowedTools: z.array(ToolNameSchema).optional(),
 });
 
 export const UpdateMissionNotificationsSchema = z.object({
@@ -286,7 +308,7 @@ export const AddAgentSchema = z.object({
   name: z.string().min(1),
   role: z.string().optional(),
   model: z.string().optional(),
-  allowedTools: z.array(z.string()).optional(),
+  allowedTools: z.array(ToolNameSchema).optional(),
   systemPrompt: z.string().optional(),
   skills: z.array(z.string()).optional(),
   maxTurns: z.number().int().positive().optional(),
@@ -303,7 +325,7 @@ export const AddAgentSchema = z.object({
 export const UpdateAgentSchema = z.object({
   role: z.string().optional(),
   model: z.string().optional(),
-  allowedTools: z.array(z.string()).optional(),
+  allowedTools: z.array(ToolNameSchema).optional(),
   allowedPaths: z.array(z.string()).optional(),
   systemPrompt: z.string().optional(),
   skills: z.array(z.string()).optional(),
