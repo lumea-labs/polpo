@@ -10,12 +10,13 @@
  * Enforces output size limits and timeout controls.
  */
 
-import { writeFileSync, mkdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { Type } from "@sinclair/typebox";
 import type { PolpoTool as AgentTool, ToolResult as AgentToolResult } from "@polpo-ai/core";
+import type { FileSystem } from "@polpo-ai/core/filesystem";
 import { resolveAllowedPaths, assertPathAllowed } from "./path-sandbox.js";
 import { assertUrlAllowed } from "./ssrf-guard.js";
+import { NodeFileSystem } from "./adapters/node-filesystem.js";
 
 const MAX_RESPONSE_BYTES = 100_000;
 const DEFAULT_TIMEOUT = 30_000;
@@ -148,7 +149,7 @@ const HttpDownloadSchema = Type.Object({
   headers: Type.Optional(Type.Record(Type.String(), Type.String(), { description: "Optional request headers" })),
 });
 
-function createHttpDownloadTool(cwd: string, sandbox: string[]): AgentTool<typeof HttpDownloadSchema> {
+function createHttpDownloadTool(cwd: string, sandbox: string[], fs: FileSystem): AgentTool<typeof HttpDownloadSchema> {
   return {
     name: "http_download",
     label: "HTTP Download",
@@ -198,9 +199,15 @@ function createHttpDownloadTool(cwd: string, sandbox: string[]): AgentTool<typeo
           };
         }
 
-        const buffer = Buffer.from(await response.arrayBuffer());
-        mkdirSync(dirname(filePath), { recursive: true });
-        writeFileSync(filePath, buffer);
+        const buffer = new Uint8Array(await response.arrayBuffer());
+        if (!fs.writeFileBuffer) {
+          return {
+            content: [{ type: "text", text: "Error: FileSystem.writeFileBuffer required for binary downloads" }],
+            details: { url, error: "writeFileBuffer_unavailable" },
+          };
+        }
+        await fs.mkdir(dirname(filePath));
+        await fs.writeFileBuffer(filePath, buffer);
 
         return {
           content: [{ type: "text", text: `Downloaded ${buffer.byteLength} bytes to ${filePath}` }],
@@ -229,17 +236,20 @@ export const ALL_HTTP_TOOL_NAMES: HttpToolName[] = ["http_fetch", "http_download
  * @param cwd - Working directory for resolving download paths
  * @param allowedPaths - Sandbox paths for download destination validation
  * @param allowedTools - Optional filter
+ * @param fs - FileSystem implementation (default: NodeFileSystem). Used for http_download.
  */
 export function createHttpTools(
   cwd: string,
   allowedPaths?: string[],
   allowedTools?: string[],
+  fs?: FileSystem,
 ): AgentTool<any>[] {
   const sandbox = resolveAllowedPaths(cwd, allowedPaths);
+  const _fs = fs ?? new NodeFileSystem();
 
   const factories: Record<HttpToolName, () => AgentTool<any>> = {
     http_fetch: () => createHttpFetchTool(),
-    http_download: () => createHttpDownloadTool(cwd, sandbox),
+    http_download: () => createHttpDownloadTool(cwd, sandbox, _fs),
   };
 
   const names = allowedTools

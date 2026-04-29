@@ -17,11 +17,12 @@
  * IMAP env vars: IMAP_HOST, IMAP_PORT, IMAP_USER, IMAP_PASS
  */
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { resolve, basename, join, dirname } from "node:path";
 import { Type } from "@sinclair/typebox";
 import type { PolpoTool as AgentTool } from "@polpo-ai/core";
+import type { FileSystem } from "@polpo-ai/core/filesystem";
 import { resolveAllowedPaths, assertPathAllowed } from "./path-sandbox.js";
+import { NodeFileSystem } from "./adapters/node-filesystem.js";
 import type { ResolvedVault } from "./types.js";
 
 // ─── Tool: email_send ───
@@ -96,7 +97,7 @@ function validateRecipientDomains(addresses: string | string[], allowedDomains: 
   }
 }
 
-function createEmailSendTool(cwd: string, sandbox: string[], vault?: ResolvedVault, emailAllowedDomains?: string[]): AgentTool<typeof EmailSendSchema> {
+function createEmailSendTool(cwd: string, sandbox: string[], fs: FileSystem, vault?: ResolvedVault, emailAllowedDomains?: string[]): AgentTool<typeof EmailSendSchema> {
   return {
     name: "email_send",
     label: "Send Email",
@@ -135,13 +136,17 @@ function createEmailSendTool(cwd: string, sandbox: string[], vault?: ResolvedVau
       // Process attachments
       const attachments: Array<{ filename: string; content: Buffer }> = [];
       if (params.attachments) {
+        if (!fs.readFileBuffer) {
+          throw new Error("Binary read not supported by injected FileSystem; cannot read email attachments");
+        }
         for (const att of params.attachments) {
           const attPath = resolve(cwd, att.path);
           assertPathAllowed(attPath, sandbox, "email_send");
-          if (!existsSync(attPath)) throw new Error(`Attachment not found: ${att.path}`);
+          if (!(await fs.exists(attPath))) throw new Error(`Attachment not found: ${att.path}`);
+          const data = await fs.readFileBuffer(attPath);
           attachments.push({
             filename: att.filename ?? basename(attPath),
-            content: readFileSync(attPath),
+            content: Buffer.from(data),
           });
         }
       }
@@ -185,7 +190,7 @@ function createEmailSendTool(cwd: string, sandbox: string[], vault?: ResolvedVau
   };
 }
 
-function createEmailDraftTool(cwd: string, sandbox: string[], vault?: ResolvedVault, emailAllowedDomains?: string[]): AgentTool<typeof EmailDraftSchema> {
+function createEmailDraftTool(cwd: string, sandbox: string[], fs: FileSystem, vault?: ResolvedVault, emailAllowedDomains?: string[]): AgentTool<typeof EmailDraftSchema> {
   return {
     name: "email_draft",
     label: "Save Draft Email",
@@ -205,13 +210,17 @@ function createEmailDraftTool(cwd: string, sandbox: string[], vault?: ResolvedVa
 
       const attachments: Array<{ filename: string; content: Buffer }> = [];
       if (params.attachments) {
+        if (!fs.readFileBuffer) {
+          throw new Error("Binary read not supported by injected FileSystem; cannot read email attachments");
+        }
         for (const att of params.attachments) {
           const attPath = resolve(cwd, att.path);
           assertPathAllowed(attPath, sandbox, "email_draft");
-          if (!existsSync(attPath)) throw new Error(`Attachment not found: ${att.path}`);
+          if (!(await fs.exists(attPath))) throw new Error(`Attachment not found: ${att.path}`);
+          const data = await fs.readFileBuffer(attPath);
           attachments.push({
             filename: att.filename ?? basename(attPath),
-            content: readFileSync(attPath),
+            content: Buffer.from(data),
           });
         }
       }
@@ -488,7 +497,7 @@ const EmailReadSchema = Type.Object({
   download_attachments: Type.Optional(Type.Boolean({ description: "Download all attachments to the output directory (default: false). Use email_download_attachment for selective download." })),
 });
 
-function createEmailReadTool(vault?: ResolvedVault, outputDir?: string, sandbox?: string[]): AgentTool<typeof EmailReadSchema> {
+function createEmailReadTool(fs: FileSystem, vault?: ResolvedVault, outputDir?: string, sandbox?: string[]): AgentTool<typeof EmailReadSchema> {
   return {
     name: "email_read",
     label: "Read Email",
@@ -536,6 +545,9 @@ function createEmailReadTool(vault?: ResolvedVault, outputDir?: string, sandbox?
         // Optionally download all attachments
         const downloadedFiles: string[] = [];
         if (params.download_attachments && attachments.length > 0) {
+          if (!fs.writeFileBuffer) {
+            throw new Error("Binary write not supported by injected FileSystem; cannot download attachments");
+          }
           const downloadDir = outputDir ?? process.cwd();
           for (const att of attachments) {
             const { content } = await client.download(String(params.uid), att.part, { uid: true }) as any;
@@ -545,8 +557,8 @@ function createEmailReadTool(vault?: ResolvedVault, outputDir?: string, sandbox?
             }
             const buffer = Buffer.concat(chunks);
             const filePath = join(downloadDir, att.filename);
-            mkdirSync(dirname(filePath), { recursive: true });
-            writeFileSync(filePath, buffer);
+            await fs.mkdir(dirname(filePath));
+            await fs.writeFileBuffer(filePath, buffer);
             downloadedFiles.push(filePath);
           }
         }
@@ -607,7 +619,7 @@ const EmailDownloadAttachmentSchema = Type.Object({
   output_path: Type.Optional(Type.String({ description: "Custom output path relative to working directory (default: output directory)" })),
 });
 
-function createEmailDownloadAttachmentTool(vault?: ResolvedVault, cwd?: string, outputDir?: string, sandbox?: string[]): AgentTool<typeof EmailDownloadAttachmentSchema> {
+function createEmailDownloadAttachmentTool(fs: FileSystem, vault?: ResolvedVault, cwd?: string, outputDir?: string, sandbox?: string[]): AgentTool<typeof EmailDownloadAttachmentSchema> {
   return {
     name: "email_download_attachment",
     label: "Download Email Attachment",
@@ -658,8 +670,11 @@ function createEmailDownloadAttachmentTool(vault?: ResolvedVault, cwd?: string, 
           assertPathAllowed(filePath, sandbox, "email_download_attachment");
         }
 
-        mkdirSync(dirname(filePath), { recursive: true });
-        writeFileSync(filePath, buffer);
+        if (!fs.writeFileBuffer) {
+          throw new Error("Binary write not supported by injected FileSystem; cannot download attachment");
+        }
+        await fs.mkdir(dirname(filePath));
+        await fs.writeFileBuffer(filePath, buffer);
 
         const contentType = meta?.contentType ?? "application/octet-stream";
         return {
@@ -839,19 +854,21 @@ export const ALL_EMAIL_TOOL_NAMES: EmailToolName[] = ["email_send", "email_draft
  * @param vault - Resolved vault credentials (per-agent SMTP/IMAP)
  * @param emailAllowedDomains - Allowed recipient email domains (omit for unrestricted)
  * @param outputDir - Per-task output directory for downloaded attachments
+ * @param fs - FileSystem implementation (default: NodeFileSystem)
  */
-export function createEmailTools(cwd: string, allowedPaths?: string[], allowedTools?: string[], vault?: ResolvedVault, emailAllowedDomains?: string[], outputDir?: string): AgentTool<any>[] {
+export function createEmailTools(cwd: string, allowedPaths?: string[], allowedTools?: string[], vault?: ResolvedVault, emailAllowedDomains?: string[], outputDir?: string, fs?: FileSystem): AgentTool<any>[] {
   const sandbox = resolveAllowedPaths(cwd, allowedPaths);
+  const _fs = fs ?? new NodeFileSystem();
 
   const factories: Record<EmailToolName, () => AgentTool<any>> = {
-    email_send: () => createEmailSendTool(cwd, sandbox, vault, emailAllowedDomains),
-    email_draft: () => createEmailDraftTool(cwd, sandbox, vault, emailAllowedDomains),
+    email_send: () => createEmailSendTool(cwd, sandbox, _fs, vault, emailAllowedDomains),
+    email_draft: () => createEmailDraftTool(cwd, sandbox, _fs, vault, emailAllowedDomains),
     email_verify: () => createEmailVerifyTool(vault),
     email_list: () => createEmailListTool(vault),
-    email_read: () => createEmailReadTool(vault, outputDir, sandbox),
+    email_read: () => createEmailReadTool(_fs, vault, outputDir, sandbox),
     email_search: () => createEmailSearchTool(vault),
     email_count: () => createEmailCountTool(vault),
-    email_download_attachment: () => createEmailDownloadAttachmentTool(vault, cwd, outputDir, sandbox),
+    email_download_attachment: () => createEmailDownloadAttachmentTool(_fs, vault, cwd, outputDir, sandbox),
   };
 
   const names = allowedTools

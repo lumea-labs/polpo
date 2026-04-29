@@ -23,10 +23,11 @@
  *   ANTHROPIC_API_KEY   — anthropic vision provider
  */
 
-import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { resolve, dirname, extname } from "node:path";
 import { Type } from "@sinclair/typebox";
 import type { PolpoTool as AgentTool, ToolResult as AgentToolResult } from "@polpo-ai/core";
+import type { FileSystem } from "@polpo-ai/core/filesystem";
+import { NodeFileSystem } from "./adapters/node-filesystem.js";
 import { resolveAllowedPaths, assertPathAllowed } from "./path-sandbox.js";
 import type { ResolvedVault } from "./types.js";
 
@@ -178,7 +179,7 @@ const ImageGenerateSchema = Type.Object({
   })),
 });
 
-function createGenerateTool(cwd: string, sandbox: string[], vault?: ResolvedVault): AgentTool<typeof ImageGenerateSchema> {
+function createGenerateTool(cwd: string, sandbox: string[], fs: FileSystem, vault?: ResolvedVault): AgentTool<typeof ImageGenerateSchema> {
   return {
     name: "image_generate",
     label: "Generate Image",
@@ -192,7 +193,7 @@ function createGenerateTool(cwd: string, sandbox: string[], vault?: ResolvedVaul
       assertPathAllowed(filePath, sandbox, "image_generate");
 
       try {
-        return await generateFal(filePath, params, vault, signal);
+        return await generateFal(filePath, params, fs, vault, signal);
       } catch (err: any) {
         return {
           content: [{ type: "text", text: `Image generation error: ${err.message}` }],
@@ -213,6 +214,7 @@ async function generateFal(
     guidance_scale?: number;
     seed?: number;
   },
+  fs: FileSystem,
   vault?: ResolvedVault,
   signal?: AbortSignal,
 ): Promise<ToolResult> {
@@ -251,8 +253,11 @@ async function generateFal(
   if (!imgResp.ok) throw new Error(`Failed to download generated image: ${imgResp.status}`);
   const buffer = Buffer.from(await imgResp.arrayBuffer());
 
-  mkdirSync(dirname(filePath), { recursive: true });
-  writeFileSync(filePath, buffer);
+  if (!fs.writeFileBuffer) {
+    throw new Error("FileSystem implementation does not support writeFileBuffer (required for binary writes).");
+  }
+  await fs.mkdir(dirname(filePath));
+  await fs.writeFileBuffer(filePath, new Uint8Array(buffer));
 
   const info = [
     `Image saved: ${filePath}`,
@@ -299,7 +304,7 @@ const VideoGenerateSchema = Type.Object({
   })),
 });
 
-function createVideoGenerateTool(cwd: string, sandbox: string[], vault?: ResolvedVault): AgentTool<typeof VideoGenerateSchema> {
+function createVideoGenerateTool(cwd: string, sandbox: string[], fs: FileSystem, vault?: ResolvedVault): AgentTool<typeof VideoGenerateSchema> {
   return {
     name: "video_generate",
     label: "Generate Video",
@@ -314,7 +319,7 @@ function createVideoGenerateTool(cwd: string, sandbox: string[], vault?: Resolve
       assertPathAllowed(filePath, sandbox, "video_generate");
 
       try {
-        return await generateVideo(filePath, params, vault, signal);
+        return await generateVideo(filePath, params, fs, vault, signal);
       } catch (err: any) {
         return {
           content: [{ type: "text", text: `Video generation error: ${err.message}` }],
@@ -336,6 +341,7 @@ async function generateVideo(
     guidance_scale?: number;
     seed?: number;
   },
+  fs: FileSystem,
   vault?: ResolvedVault,
   signal?: AbortSignal,
 ): Promise<ToolResult> {
@@ -371,8 +377,11 @@ async function generateVideo(
   if (!videoResp.ok) throw new Error(`Failed to download generated video: ${videoResp.status}`);
   const buffer = Buffer.from(await videoResp.arrayBuffer());
 
-  mkdirSync(dirname(filePath), { recursive: true });
-  writeFileSync(filePath, buffer);
+  if (!fs.writeFileBuffer) {
+    throw new Error("FileSystem implementation does not support writeFileBuffer (required for binary writes).");
+  }
+  await fs.mkdir(dirname(filePath));
+  await fs.writeFileBuffer(filePath, new Uint8Array(buffer));
 
   const sizeMB = (buffer.byteLength / 1024 / 1024).toFixed(2);
   const info = [
@@ -405,7 +414,7 @@ const ImageAnalyzeSchema = Type.Object({
   max_tokens: Type.Optional(Type.Number({ description: "Max tokens in response (default: 1024)" })),
 });
 
-function createAnalyzeTool(cwd: string, sandbox: string[], vault?: ResolvedVault): AgentTool<typeof ImageAnalyzeSchema> {
+function createAnalyzeTool(cwd: string, sandbox: string[], fs: FileSystem, vault?: ResolvedVault): AgentTool<typeof ImageAnalyzeSchema> {
   return {
     name: "image_analyze",
     label: "Analyze Image",
@@ -418,9 +427,17 @@ function createAnalyzeTool(cwd: string, sandbox: string[], vault?: ResolvedVault
       const filePath = resolve(cwd, params.path);
       assertPathAllowed(filePath, sandbox, "image_analyze");
 
+      if (!fs.readFileBuffer) {
+        return {
+          content: [{ type: "text", text: "FileSystem implementation does not support readFileBuffer (required for binary reads)." }],
+          details: { error: "unsupported_filesystem" },
+        };
+      }
+
       let fileBuffer: Buffer;
       try {
-        fileBuffer = readFileSync(filePath);
+        const bytes = await fs.readFileBuffer(filePath);
+        fileBuffer = Buffer.from(bytes);
       } catch (err: any) {
         return {
           content: [{ type: "text", text: `Error reading image file: ${err.message}` }],
@@ -632,13 +649,15 @@ export function createImageTools(
   allowedPaths?: string[],
   allowedTools?: string[],
   vault?: ResolvedVault,
+  fs?: FileSystem,
 ): AgentTool<any>[] {
   const sandbox = resolveAllowedPaths(cwd, allowedPaths);
+  const _fs = fs ?? new NodeFileSystem();
 
   const factories: Record<ImageToolName, () => AgentTool<any>> = {
-    image_generate: () => createGenerateTool(cwd, sandbox, vault),
-    image_analyze: () => createAnalyzeTool(cwd, sandbox, vault),
-    video_generate: () => createVideoGenerateTool(cwd, sandbox, vault),
+    image_generate: () => createGenerateTool(cwd, sandbox, _fs, vault),
+    image_analyze: () => createAnalyzeTool(cwd, sandbox, _fs, vault),
+    video_generate: () => createVideoGenerateTool(cwd, sandbox, _fs, vault),
   };
 
   const names = allowedTools

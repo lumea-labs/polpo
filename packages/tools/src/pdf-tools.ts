@@ -12,10 +12,11 @@
  * All file operations enforce path sandboxing.
  */
 
-import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { Type } from "@sinclair/typebox";
 import type { PolpoTool as AgentTool, ToolResult as AgentToolResult } from "@polpo-ai/core";
+import type { FileSystem } from "@polpo-ai/core/filesystem";
+import { NodeFileSystem } from "./adapters/node-filesystem.js";
 import { resolveAllowedPaths, assertPathAllowed } from "./path-sandbox.js";
 
 const MAX_TEXT_OUTPUT = 50_000;
@@ -28,7 +29,7 @@ const PdfReadSchema = Type.Object({
   max_chars: Type.Optional(Type.Number({ description: "Max characters to return (default: 50000)" })),
 });
 
-function createPdfReadTool(cwd: string, sandbox: string[]): AgentTool<typeof PdfReadSchema> {
+function createPdfReadTool(cwd: string, sandbox: string[], fs: FileSystem): AgentTool<typeof PdfReadSchema> {
   return {
     name: "pdf_read",
     label: "Read PDF",
@@ -39,19 +40,23 @@ function createPdfReadTool(cwd: string, sandbox: string[]): AgentTool<typeof Pdf
       assertPathAllowed(filePath, sandbox, "pdf_read");
 
       try {
+        if (!fs.readFileBuffer) {
+          return {
+            content: [{ type: "text", text: "PDF read error: Binary read not supported by injected FileSystem" }],
+            details: { error: "binary_read_unsupported" },
+          };
+        }
         const { PDFDocument } = await import("pdf-lib");
-        const bytes = readFileSync(filePath);
+        const bytes = await fs.readFileBuffer(filePath);
         const pdfDoc = await PDFDocument.load(bytes);
         const pageCount = pdfDoc.getPageCount();
         const title = pdfDoc.getTitle() ?? "";
         const author = pdfDoc.getAuthor() ?? "";
 
-        // pdf-lib doesn't extract text - we use a basic approach via page content streams
-        // For production, agents should use the bash tool with a CLI like pdftotext
-        // Here we provide metadata and suggest using bash for full text extraction
+        // Full text extraction is best-effort via pdf-lib; for production text extraction
+        // use a dedicated PDF parsing service.
         const maxChars = params.max_chars ?? MAX_TEXT_OUTPUT;
 
-        // Try to extract text using pdf-lib's low-level API
         const selectedPages = params.pages ?? Array.from({ length: pageCount }, (_, i) => i + 1);
         const textParts: string[] = [];
 
@@ -60,27 +65,10 @@ function createPdfReadTool(cwd: string, sandbox: string[]): AgentTool<typeof Pdf
           const page = pdfDoc.getPage(pageNum - 1);
           const { width, height } = page.getSize();
           textParts.push(`--- Page ${pageNum} (${Math.round(width)}x${Math.round(height)}) ---`);
-          // Note: pdf-lib doesn't support text extraction natively.
-          // We extract what we can from content streams
-          textParts.push(`[Page ${pageNum} content - use 'bash' tool with 'pdftotext' for full text extraction]`);
+          textParts.push(`[Page ${pageNum} content - pdf-lib does not support native text extraction; use a dedicated PDF parsing service for full text]`);
         }
 
-        // If pdftotext is available, try to use it
-        let extractedText = "";
-        try {
-          const { execSync } = await import("node:child_process");
-          const pagesArg = params.pages
-            ? `-f ${Math.min(...params.pages)} -l ${Math.max(...params.pages)}`
-            : "";
-          extractedText = execSync(
-            `pdftotext ${pagesArg} -layout ${JSON.stringify(filePath)} -`,
-            { encoding: "utf-8", timeout: 15_000 },
-          ).trim();
-        } catch {
-          // pdftotext not available - that's fine
-        }
-
-        const text = extractedText || textParts.join("\n");
+        const text = textParts.join("\n");
         const truncated = text.length > maxChars
           ? text.slice(0, maxChars) + `\n[truncated — ${text.length} total chars]`
           : text;
@@ -132,7 +120,7 @@ const PdfCreateSchema = Type.Object({
   wait_for_network: Type.Optional(Type.Boolean({ description: "Wait for network idle before rendering (default: true). Disable for offline HTML with no external resources." })),
 });
 
-function createPdfCreateTool(cwd: string, sandbox: string[]): AgentTool<typeof PdfCreateSchema> {
+function createPdfCreateTool(cwd: string, sandbox: string[], fs: FileSystem): AgentTool<typeof PdfCreateSchema> {
   return {
     name: "pdf_create",
     label: "Create PDF",
@@ -165,7 +153,7 @@ function createPdfCreateTool(cwd: string, sandbox: string[]): AgentTool<typeof P
 
       const filePath = resolve(cwd, params.path);
       assertPathAllowed(filePath, sandbox, "pdf_create");
-      mkdirSync(dirname(filePath), { recursive: true });
+      await fs.mkdir(dirname(filePath));
 
       // Resolve HTML content
       let htmlContent: string;
@@ -173,7 +161,7 @@ function createPdfCreateTool(cwd: string, sandbox: string[]): AgentTool<typeof P
         const htmlFilePath = resolve(cwd, params.html_path);
         assertPathAllowed(htmlFilePath, sandbox, "pdf_create");
         try {
-          htmlContent = readFileSync(htmlFilePath, "utf-8");
+          htmlContent = await fs.readFile(htmlFilePath);
         } catch (err: any) {
           return {
             content: [{ type: "text", text: `Error reading HTML file: ${err.message}` }],
@@ -207,9 +195,14 @@ function createPdfCreateTool(cwd: string, sandbox: string[]): AgentTool<typeof P
         // Determine if custom header/footer templates are provided
         const hasHeaderFooter = !!(params.header_template || params.footer_template);
 
-        // Generate PDF
+        // Generate PDF (capture buffer instead of writing to path so we can route through fs)
+        if (!fs.writeFileBuffer) {
+          return {
+            content: [{ type: "text", text: "PDF create error: Binary write not supported by injected FileSystem" }],
+            details: { error: "binary_write_unsupported" },
+          };
+        }
         const pdfBuffer = await page.pdf({
-          path: filePath,
           format: params.format ?? "A4",
           landscape: params.landscape ?? false,
           printBackground: params.print_background ?? true,
@@ -222,13 +215,14 @@ function createPdfCreateTool(cwd: string, sandbox: string[]): AgentTool<typeof P
           } : {}),
         });
 
+        await fs.writeFileBuffer(filePath, new Uint8Array(pdfBuffer));
         const bytes = pdfBuffer.byteLength;
 
         // Count pages in the generated PDF for reporting
         let pageCount = 0;
         try {
           const { PDFDocument } = await import("pdf-lib");
-          const doc = await PDFDocument.load(readFileSync(filePath));
+          const doc = await PDFDocument.load(new Uint8Array(pdfBuffer));
           pageCount = doc.getPageCount();
         } catch {
           // Best effort — pdf-lib may fail on some PDFs
@@ -268,7 +262,7 @@ const PdfMergeSchema = Type.Object({
   output: Type.String({ description: "Output merged PDF path" }),
 });
 
-function createPdfMergeTool(cwd: string, sandbox: string[]): AgentTool<typeof PdfMergeSchema> {
+function createPdfMergeTool(cwd: string, sandbox: string[], fs: FileSystem): AgentTool<typeof PdfMergeSchema> {
   return {
     name: "pdf_merge",
     label: "Merge PDFs",
@@ -277,9 +271,15 @@ function createPdfMergeTool(cwd: string, sandbox: string[]): AgentTool<typeof Pd
     async execute(_id, params) {
       const outputPath = resolve(cwd, params.output);
       assertPathAllowed(outputPath, sandbox, "pdf_merge");
-      mkdirSync(dirname(outputPath), { recursive: true });
+      await fs.mkdir(dirname(outputPath));
 
       try {
+        if (!fs.readFileBuffer || !fs.writeFileBuffer) {
+          return {
+            content: [{ type: "text", text: "PDF merge error: Binary I/O not supported by injected FileSystem" }],
+            details: { error: "binary_io_unsupported" },
+          };
+        }
         const { PDFDocument } = await import("pdf-lib");
         const merged = await PDFDocument.create();
         let totalPages = 0;
@@ -287,7 +287,7 @@ function createPdfMergeTool(cwd: string, sandbox: string[]): AgentTool<typeof Pd
         for (const inputPath of params.inputs) {
           const fullPath = resolve(cwd, inputPath);
           assertPathAllowed(fullPath, sandbox, "pdf_merge");
-          const bytes = readFileSync(fullPath);
+          const bytes = await fs.readFileBuffer(fullPath);
           const src = await PDFDocument.load(bytes);
           const indices = Array.from({ length: src.getPageCount() }, (_, i) => i);
           const copiedPages = await merged.copyPages(src, indices);
@@ -296,7 +296,7 @@ function createPdfMergeTool(cwd: string, sandbox: string[]): AgentTool<typeof Pd
         }
 
         const mergedBytes = await merged.save();
-        writeFileSync(outputPath, mergedBytes);
+        await fs.writeFileBuffer(outputPath, mergedBytes);
 
         return {
           content: [{ type: "text", text: `Merged ${params.inputs.length} PDFs -> ${outputPath} (${totalPages} pages, ${mergedBytes.byteLength} bytes)` }],
@@ -318,7 +318,7 @@ const PdfInfoSchema = Type.Object({
   path: Type.String({ description: "Path to PDF file" }),
 });
 
-function createPdfInfoTool(cwd: string, sandbox: string[]): AgentTool<typeof PdfInfoSchema> {
+function createPdfInfoTool(cwd: string, sandbox: string[], fs: FileSystem): AgentTool<typeof PdfInfoSchema> {
   return {
     name: "pdf_info",
     label: "PDF Info",
@@ -329,8 +329,14 @@ function createPdfInfoTool(cwd: string, sandbox: string[]): AgentTool<typeof Pdf
       assertPathAllowed(filePath, sandbox, "pdf_info");
 
       try {
+        if (!fs.readFileBuffer) {
+          return {
+            content: [{ type: "text", text: "PDF info error: Binary read not supported by injected FileSystem" }],
+            details: { error: "binary_read_unsupported" },
+          };
+        }
         const { PDFDocument } = await import("pdf-lib");
-        const bytes = readFileSync(filePath);
+        const bytes = await fs.readFileBuffer(filePath);
         const pdfDoc = await PDFDocument.load(bytes);
 
         const pages = pdfDoc.getPageCount();
@@ -390,14 +396,15 @@ export const ALL_PDF_TOOL_NAMES: PdfToolName[] = ["pdf_read", "pdf_create", "pdf
  * @param allowedPaths - Sandbox paths
  * @param allowedTools - Optional filter
  */
-export function createPdfTools(cwd: string, allowedPaths?: string[], allowedTools?: string[]): AgentTool<any>[] {
+export function createPdfTools(cwd: string, allowedPaths?: string[], allowedTools?: string[], fs?: FileSystem): AgentTool<any>[] {
   const sandbox = resolveAllowedPaths(cwd, allowedPaths);
+  const _fs = fs ?? new NodeFileSystem();
 
   const factories: Record<PdfToolName, () => AgentTool<any>> = {
-    pdf_read: () => createPdfReadTool(cwd, sandbox),
-    pdf_create: () => createPdfCreateTool(cwd, sandbox),
-    pdf_merge: () => createPdfMergeTool(cwd, sandbox),
-    pdf_info: () => createPdfInfoTool(cwd, sandbox),
+    pdf_read: () => createPdfReadTool(cwd, sandbox, _fs),
+    pdf_create: () => createPdfCreateTool(cwd, sandbox, _fs),
+    pdf_merge: () => createPdfMergeTool(cwd, sandbox, _fs),
+    pdf_info: () => createPdfInfoTool(cwd, sandbox, _fs),
   };
 
   const names = allowedTools
