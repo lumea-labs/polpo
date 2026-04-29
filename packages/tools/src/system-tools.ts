@@ -358,8 +358,15 @@ export function createSystemTools(cwd: string, allowedTools?: string[], allowedP
 
   const tools = names.map(n => factories[n]());
 
-  // register_outcome is always included — agents must always be able to declare artifacts
-  tools.push(...createOutcomeToolsCore(cwd, allowedPaths, allowedTools, outputDir));
+  // register_outcome is task-only by design: it's injected when an
+  // outputDir is provided (i.e. the caller is running a task/run that
+  // wants to collect declared deliverables). In chat-completion flows
+  // outputDir is unset, so the tool is not exposed — outcomes there
+  // are derived from the message log instead. Removed from the public
+  // TOOL_CATALOG so it can't be configured via `allowedTools`.
+  if (outputDir) {
+    tools.push(...createOutcomeToolsCore(cwd, allowedPaths, allowedTools, outputDir));
+  }
 
   // http_fetch + http_download are always included — core tools with SSRF protection
   tools.push(...createHttpToolsCore(cwd, allowedPaths, allowedTools));
@@ -385,7 +392,6 @@ import { createPdfTools, ALL_PDF_TOOL_NAMES } from "./pdf-tools.js";
 import { createDocxTools, ALL_DOCX_TOOL_NAMES } from "./docx-tools.js";
 import { createSearchTools, ALL_SEARCH_TOOL_NAMES } from "./search-tools.js";
 import { createPhoneTools, ALL_PHONE_TOOL_NAMES } from "./phone-tools.js";
-import { ALL_OUTCOME_TOOL_NAMES } from "./outcome-tools.js";
 
 export type { BrowserToolName } from "./browser-tools.js";
 export type { HttpToolName } from "./http-tools.js";
@@ -416,17 +422,21 @@ export type ExtendedToolName = SystemToolName
   | import("./phone-tools.js").PhoneToolName;
 
 /**
- * Full catalog of every built-in tool name across all categories
- * (core coding + http + outcome + vault + browser + email + image +
- * audio + excel + pdf + docx + search + phone). Use this for config
- * validation, documentation, and the `/v1/tools` endpoint.
+ * Public catalog of every configurable built-in tool name (core coding
+ * + http + vault + browser + email + image + audio + excel + pdf +
+ * docx + search + phone). Use this for config validation,
+ * documentation, and the `/v1/tools` endpoint.
+ *
+ * Notable exclusion: `register_outcome` is not listed. It's a
+ * task-only infrastructural tool, injected automatically when the
+ * caller passes an `outputDir`, and is not configurable via
+ * `allowedTools`.
  */
 export const TOOL_CATALOG: string[] = [
   ...CORE_TOOL_NAMES,
   ...ALL_BROWSER_TOOL_NAMES,
   ...ALL_HTTP_TOOL_NAMES,
   ...ALL_EMAIL_TOOL_NAMES,
-  ...ALL_OUTCOME_TOOL_NAMES,
   ...ALL_VAULT_TOOL_NAMES,
   ...ALL_IMAGE_TOOL_NAMES,
   ...ALL_AUDIO_TOOL_NAMES,
