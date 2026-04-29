@@ -54,7 +54,7 @@ export {
 export { safeEnv, bashSafeEnv } from "@polpo-ai/tools";
 
 // Extended Tools
-export { createSystemTools, createSystemTools as createCodingTools, createAllTools, ALL_EXTENDED_TOOL_NAMES } from "@polpo-ai/tools";
+export { createSystemTools, createSystemTools as createCodingTools, createAllTools, TOOL_CATALOG } from "@polpo-ai/tools";
 export type { ExtendedToolName, CreateAllToolsOptions } from "@polpo-ai/tools";
 export { createBrowserTools, ALL_BROWSER_TOOL_NAMES } from "@polpo-ai/tools";
 export { createHttpTools, ALL_HTTP_TOOL_NAMES } from "@polpo-ai/tools";

@@ -321,7 +321,7 @@ export function expandToolWildcards(allowedTools: string[], allNames: readonly s
 /** Tool name to filter by in allowedTools config */
 type SystemToolName = "read" | "write" | "edit" | "bash" | "glob" | "grep" | "ls";
 
-const ALL_TOOL_NAMES: SystemToolName[] = ["read", "write", "edit", "bash", "glob", "grep", "ls"];
+const CORE_TOOL_NAMES: SystemToolName[] = ["read", "write", "edit", "bash", "glob", "grep", "ls"];
 
 /**
  * Create the standard set of coding tools scoped to a working directory.
@@ -353,8 +353,8 @@ export function createSystemTools(cwd: string, allowedTools?: string[], allowedP
   };
 
   const names = allowedTools
-    ? ALL_TOOL_NAMES.filter(n => allowedTools.some(a => a.toLowerCase() === n))
-    : ALL_TOOL_NAMES;
+    ? CORE_TOOL_NAMES.filter(n => allowedTools.some(a => a.toLowerCase() === n))
+    : CORE_TOOL_NAMES;
 
   const tools = names.map(n => factories[n]());
 
@@ -415,9 +415,14 @@ export type ExtendedToolName = SystemToolName
   | import("./search-tools.js").SearchToolName
   | import("./phone-tools.js").PhoneToolName;
 
-/** All available tool names for documentation/config validation */
-export const ALL_EXTENDED_TOOL_NAMES: string[] = [
-  ...ALL_TOOL_NAMES,
+/**
+ * Full catalog of every built-in tool name across all categories
+ * (core coding + http + outcome + vault + browser + email + image +
+ * audio + excel + pdf + docx + search + phone). Use this for config
+ * validation, documentation, and the `/v1/tools` endpoint.
+ */
+export const TOOL_CATALOG: string[] = [
+  ...CORE_TOOL_NAMES,
   ...ALL_BROWSER_TOOL_NAMES,
   ...ALL_HTTP_TOOL_NAMES,
   ...ALL_EMAIL_TOOL_NAMES,
@@ -477,7 +482,7 @@ export async function createAllTools(options: CreateAllToolsOptions): Promise<Ag
   // This way individual factory functions don't need wildcard awareness.
   const rawAllowed = options.allowedTools;
   const allowedTools = rawAllowed
-    ? expandToolWildcards(rawAllowed, ALL_EXTENDED_TOOL_NAMES)
+    ? expandToolWildcards(rawAllowed, TOOL_CATALOG)
     : undefined;
 
   // Helper: check if any tool from a category is in the (expanded) allowedTools list
