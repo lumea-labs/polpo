@@ -494,32 +494,32 @@ export async function createAllTools(options: CreateAllToolsOptions): Promise<Ag
 
   // Email tools — activated when any email_* tool is in allowedTools
   if (categoryRequested(ALL_EMAIL_TOOL_NAMES)) {
-    tools.push(...createEmailTools(cwd, allowedPaths, allowedTools, options.vault, options.emailAllowedDomains, options.outputDir));
+    tools.push(...createEmailTools(cwd, allowedPaths, allowedTools, options.vault, options.emailAllowedDomains, options.outputDir, options.fs));
   }
 
   // Image & video tools — activated when any image_* or video_* tool is in allowedTools
   if (categoryRequested(ALL_IMAGE_TOOL_NAMES)) {
-    tools.push(...createImageTools(cwd, allowedPaths, allowedTools, options.vault));
+    tools.push(...createImageTools(cwd, allowedPaths, allowedTools, options.vault, options.fs));
   }
 
   // Audio tools — activated when any audio_* tool is in allowedTools
   if (categoryRequested(ALL_AUDIO_TOOL_NAMES)) {
-    tools.push(...createAudioTools(cwd, allowedPaths, allowedTools, options.vault));
+    tools.push(...createAudioTools(cwd, allowedPaths, allowedTools, options.vault, options.fs));
   }
 
   // Excel tools — activated when any excel_* tool is in allowedTools
   if (categoryRequested(ALL_EXCEL_TOOL_NAMES)) {
-    tools.push(...createExcelTools(cwd, allowedPaths, allowedTools));
+    tools.push(...createExcelTools(cwd, allowedPaths, allowedTools, options.fs));
   }
 
   // PDF tools — activated when any pdf_* tool is in allowedTools
   if (categoryRequested(ALL_PDF_TOOL_NAMES)) {
-    tools.push(...createPdfTools(cwd, allowedPaths, allowedTools));
+    tools.push(...createPdfTools(cwd, allowedPaths, allowedTools, options.fs));
   }
 
   // Docx tools — activated when any docx_* tool is in allowedTools
   if (categoryRequested(ALL_DOCX_TOOL_NAMES)) {
-    tools.push(...createDocxTools(cwd, allowedPaths, allowedTools));
+    tools.push(...createDocxTools(cwd, allowedPaths, allowedTools, options.fs));
   }
 
   // Search tools (Exa) — activated when any search_* tool is in allowedTools

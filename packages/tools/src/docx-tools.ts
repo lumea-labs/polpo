@@ -9,10 +9,11 @@
  * All file operations enforce path sandboxing.
  */
 
-import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { Type } from "@sinclair/typebox";
 import type { PolpoTool as AgentTool, ToolResult as AgentToolResult } from "@polpo-ai/core";
+import type { FileSystem } from "@polpo-ai/core/filesystem";
+import { NodeFileSystem } from "./adapters/node-filesystem.js";
 import { resolveAllowedPaths, assertPathAllowed } from "./path-sandbox.js";
 
 const MAX_TEXT_OUTPUT = 50_000;
@@ -58,7 +59,7 @@ const DocxReadSchema = Type.Object({
   ], { description: "Output format: 'text' (plain), 'markdown', or 'html'. Default: 'text'" })),
 });
 
-function createDocxReadTool(cwd: string, sandbox: string[]): AgentTool<typeof DocxReadSchema> {
+function createDocxReadTool(cwd: string, sandbox: string[], fs: FileSystem): AgentTool<typeof DocxReadSchema> {
   return {
     name: "docx_read",
     label: "Read DOCX",
@@ -70,19 +71,29 @@ function createDocxReadTool(cwd: string, sandbox: string[]): AgentTool<typeof Do
       assertPathAllowed(filePath, sandbox, "docx_read");
 
       try {
+        if (!fs.readFileBuffer) {
+          return {
+            content: [{ type: "text", text: "DOCX read error: Binary read not supported by injected FileSystem" }],
+            details: { error: "binary_read_unsupported" },
+          };
+        }
         const mammoth = await import("mammoth");
         const format = params.format ?? "text";
 
+        const bytes = await fs.readFileBuffer(filePath);
+        // mammoth expects a Node Buffer; convert from Uint8Array
+        const buffer = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+
         let result;
         if (format === "html") {
-          result = await mammoth.convertToHtml({ path: filePath });
+          result = await mammoth.convertToHtml({ buffer });
         } else if (format === "markdown") {
           // mammoth doesn't export convertToMarkdown in all versions — use HTML + basic conversion
-          const htmlResult = await mammoth.convertToHtml({ path: filePath });
+          const htmlResult = await mammoth.convertToHtml({ buffer });
           const md = htmlToBasicMarkdown(htmlResult.value);
           result = { value: md, messages: htmlResult.messages };
         } else {
-          result = await mammoth.extractRawText({ path: filePath });
+          result = await mammoth.extractRawText({ buffer });
         }
 
         const text = result.value;
@@ -134,7 +145,7 @@ const DocxCreateSchema = Type.Object({
   ),
 });
 
-function createDocxCreateTool(cwd: string, sandbox: string[]): AgentTool<typeof DocxCreateSchema> {
+function createDocxCreateTool(cwd: string, sandbox: string[], fs: FileSystem): AgentTool<typeof DocxCreateSchema> {
   return {
     name: "docx_create",
     label: "Create DOCX",
@@ -144,9 +155,15 @@ function createDocxCreateTool(cwd: string, sandbox: string[]): AgentTool<typeof 
     async execute(_id, params) {
       const filePath = resolve(cwd, params.path);
       assertPathAllowed(filePath, sandbox, "docx_create");
-      mkdirSync(dirname(filePath), { recursive: true });
+      await fs.mkdir(dirname(filePath));
 
       try {
+        if (!fs.writeFileBuffer) {
+          return {
+            content: [{ type: "text", text: "DOCX create error: Binary write not supported by injected FileSystem" }],
+            details: { error: "binary_write_unsupported" },
+          };
+        }
         const docxModule = await import("docx");
         const {
           Document, Paragraph, TextRun, HeadingLevel, Packer,
@@ -227,7 +244,8 @@ function createDocxCreateTool(cwd: string, sandbox: string[]): AgentTool<typeof 
         });
 
         const buffer = await Packer.toBuffer(doc);
-        writeFileSync(filePath, buffer);
+        const u8 = new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength);
+        await fs.writeFileBuffer(filePath, u8);
 
         return {
           content: [{ type: "text", text: `DOCX created: ${filePath} (${params.content.length} blocks, ${buffer.byteLength} bytes)` }],
@@ -256,12 +274,13 @@ export const ALL_DOCX_TOOL_NAMES: DocxToolName[] = ["docx_read", "docx_create"];
  * @param allowedPaths - Sandbox paths
  * @param allowedTools - Optional filter
  */
-export function createDocxTools(cwd: string, allowedPaths?: string[], allowedTools?: string[]): AgentTool<any>[] {
+export function createDocxTools(cwd: string, allowedPaths?: string[], allowedTools?: string[], fs?: FileSystem): AgentTool<any>[] {
   const sandbox = resolveAllowedPaths(cwd, allowedPaths);
+  const _fs = fs ?? new NodeFileSystem();
 
   const factories: Record<DocxToolName, () => AgentTool<any>> = {
-    docx_read: () => createDocxReadTool(cwd, sandbox),
-    docx_create: () => createDocxCreateTool(cwd, sandbox),
+    docx_read: () => createDocxReadTool(cwd, sandbox, _fs),
+    docx_create: () => createDocxCreateTool(cwd, sandbox, _fs),
   };
 
   const names = allowedTools

@@ -27,11 +27,12 @@
  *   ELEVENLABS_API_KEY — elevenlabs provider (TTS)
  */
 
-import { readFileSync, writeFileSync, mkdirSync, statSync } from "node:fs";
 import { resolve, dirname, extname } from "node:path";
 import { execFile } from "node:child_process";
 import { Type } from "@sinclair/typebox";
 import type { PolpoTool as AgentTool, ToolResult as AgentToolResult } from "@polpo-ai/core";
+import type { FileSystem } from "@polpo-ai/core/filesystem";
+import { NodeFileSystem } from "./adapters/node-filesystem.js";
 
 // Re-export with concrete generic to avoid "requires 1 type argument" errors
 type ToolResult = AgentToolResult<any>;
@@ -94,7 +95,7 @@ const AudioTranscribeSchema = Type.Object({
   prompt: Type.Optional(Type.String({ description: "Optional context/prompt to guide transcription (OpenAI only)" })),
 });
 
-function createTranscribeTool(cwd: string, sandbox: string[], vault?: ResolvedVault): AgentTool<typeof AudioTranscribeSchema> {
+function createTranscribeTool(cwd: string, sandbox: string[], fs: FileSystem, vault?: ResolvedVault): AgentTool<typeof AudioTranscribeSchema> {
   return {
     name: "audio_transcribe",
     label: "Transcribe Audio",
@@ -108,9 +109,18 @@ function createTranscribeTool(cwd: string, sandbox: string[], vault?: ResolvedVa
       assertPathAllowed(filePath, sandbox, "audio_transcribe");
 
       const provider = params.provider ?? "openai";
+
+      if (!fs.readFileBuffer) {
+        return {
+          content: [{ type: "text", text: "FileSystem implementation does not support readFileBuffer (required for binary reads)." }],
+          details: { error: "unsupported_filesystem" },
+        };
+      }
+
       let fileBuffer: Buffer;
       try {
-        fileBuffer = readFileSync(filePath);
+        const bytes = await fs.readFileBuffer(filePath);
+        fileBuffer = Buffer.from(bytes);
       } catch (err: any) {
         return {
           content: [{ type: "text", text: `Error reading audio file: ${err.message}` }],
@@ -295,7 +305,7 @@ const AudioSpeakSchema = Type.Object({
   instructions: Type.Optional(Type.String({ description: "Voice style instructions (OpenAI gpt-4o-mini-tts only, e.g. 'Speak in a cheerful tone')" })),
 });
 
-function createSpeakTool(cwd: string, sandbox: string[], vault?: ResolvedVault): AgentTool<typeof AudioSpeakSchema> {
+function createSpeakTool(cwd: string, sandbox: string[], fs: FileSystem, vault?: ResolvedVault): AgentTool<typeof AudioSpeakSchema> {
   return {
     name: "audio_speak",
     label: "Text to Speech",
@@ -314,6 +324,12 @@ function createSpeakTool(cwd: string, sandbox: string[], vault?: ResolvedVault):
 
       // Direct edge-tts request — no fallback needed
       if (provider === "edge") {
+        if (!edgeTtsAvailable()) {
+          return {
+            content: [{ type: "text", text: "Edge TTS not available in this environment. Use openai/deepgram/elevenlabs instead." }],
+            details: { provider: "edge", error: "edge_tts_unavailable" },
+          };
+        }
         try {
           return await speakEdgeTts(filePath, params, signal);
         } catch (err: any) {
@@ -327,11 +343,11 @@ function createSpeakTool(cwd: string, sandbox: string[], vault?: ResolvedVault):
       // Provider with edge-tts fallback
       try {
         if (provider === "openai") {
-          return await speakOpenAI(filePath, params, vault, signal);
+          return await speakOpenAI(filePath, params, fs, vault, signal);
         } else if (provider === "deepgram") {
-          return await speakDeepgram(filePath, params, vault, signal);
+          return await speakDeepgram(filePath, params, fs, vault, signal);
         } else {
-          return await speakElevenLabs(filePath, params, vault, signal);
+          return await speakElevenLabs(filePath, params, fs, vault, signal);
         }
       } catch (err: any) {
         // Automatic fallback to edge-tts if available
@@ -364,6 +380,7 @@ function createSpeakTool(cwd: string, sandbox: string[], vault?: ResolvedVault):
 async function speakOpenAI(
   filePath: string,
   params: { text: string; model?: string; voice?: string; speed?: number; instructions?: string },
+  fs: FileSystem,
   vault?: ResolvedVault,
   signal?: AbortSignal,
 ): Promise<ToolResult> {
@@ -408,8 +425,11 @@ async function speakOpenAI(
   }
 
   const buffer = Buffer.from(await response.arrayBuffer());
-  mkdirSync(dirname(filePath), { recursive: true });
-  writeFileSync(filePath, buffer);
+  if (!fs.writeFileBuffer) {
+    throw new Error("FileSystem implementation does not support writeFileBuffer (required for binary writes).");
+  }
+  await fs.mkdir(dirname(filePath));
+  await fs.writeFileBuffer(filePath, new Uint8Array(buffer));
 
   return {
     content: [{ type: "text", text: `Speech audio saved: ${filePath} (${(buffer.byteLength / 1024).toFixed(1)} KB, ${responseFormat}, voice: ${voice}, model: ${model})` }],
@@ -428,6 +448,7 @@ async function speakOpenAI(
 async function speakDeepgram(
   filePath: string,
   params: { text: string; model?: string },
+  fs: FileSystem,
   vault?: ResolvedVault,
   signal?: AbortSignal,
 ): Promise<ToolResult> {
@@ -459,8 +480,11 @@ async function speakDeepgram(
   }
 
   const buffer = Buffer.from(await response.arrayBuffer());
-  mkdirSync(dirname(filePath), { recursive: true });
-  writeFileSync(filePath, buffer);
+  if (!fs.writeFileBuffer) {
+    throw new Error("FileSystem implementation does not support writeFileBuffer (required for binary writes).");
+  }
+  await fs.mkdir(dirname(filePath));
+  await fs.writeFileBuffer(filePath, new Uint8Array(buffer));
 
   return {
     content: [{ type: "text", text: `Speech audio saved: ${filePath} (${(buffer.byteLength / 1024).toFixed(1)} KB, model: ${model})` }],
@@ -478,6 +502,7 @@ async function speakDeepgram(
 async function speakElevenLabs(
   filePath: string,
   params: { text: string; model?: string; voice?: string },
+  fs: FileSystem,
   vault?: ResolvedVault,
   signal?: AbortSignal,
 ): Promise<ToolResult> {
@@ -520,8 +545,11 @@ async function speakElevenLabs(
   }
 
   const buffer = Buffer.from(await response.arrayBuffer());
-  mkdirSync(dirname(filePath), { recursive: true });
-  writeFileSync(filePath, buffer);
+  if (!fs.writeFileBuffer) {
+    throw new Error("FileSystem implementation does not support writeFileBuffer (required for binary writes).");
+  }
+  await fs.mkdir(dirname(filePath));
+  await fs.writeFileBuffer(filePath, new Uint8Array(buffer));
 
   return {
     content: [{ type: "text", text: `Speech audio saved: ${filePath} (${(buffer.byteLength / 1024).toFixed(1)} KB, voice: ${voiceId}, model: ${model})` }],
@@ -578,6 +606,8 @@ function resolveEdgeVoice(voice?: string, language?: string, gender?: "male" | "
 
 /** Check if edge-tts CLI is available on the system. */
 function isEdgeTtsAvailable(): boolean {
+  // Allow operators (e.g. cloud chat-completion path) to opt out explicitly.
+  if (process.env.POLPO_DISABLE_EDGE_TTS === "1") return false;
   try {
     const { execFileSync } = require("node:child_process") as typeof import("node:child_process");
     execFileSync("edge-tts", ["--version"], { stdio: "pipe", timeout: 5000 });
@@ -604,7 +634,10 @@ async function speakEdgeTts(
   }
 
   const voice = resolveEdgeVoice(params.voice, params.language, params.gender);
-  mkdirSync(dirname(filePath), { recursive: true });
+  // edge-tts is a local Node-only path — direct node:fs is acceptable here
+  // since the provider is gated by isEdgeTtsAvailable() which already requires Node.
+  const nodeFs = require("node:fs") as typeof import("node:fs");
+  nodeFs.mkdirSync(dirname(filePath), { recursive: true });
 
   // Determine rate from speed if present
   const args = [
@@ -622,7 +655,7 @@ async function speakEdgeTts(
 
       let bytes = 0;
       try {
-        bytes = statSync(filePath).size;
+        bytes = nodeFs.statSync(filePath).size;
       } catch { /* ignore */ }
 
       resolvePromise({
@@ -662,12 +695,14 @@ export function createAudioTools(
   allowedPaths?: string[],
   allowedTools?: string[],
   vault?: ResolvedVault,
+  fs?: FileSystem,
 ): AgentTool<any>[] {
   const sandbox = resolveAllowedPaths(cwd, allowedPaths);
+  const _fs = fs ?? new NodeFileSystem();
 
   const factories: Record<AudioToolName, () => AgentTool<any>> = {
-    audio_transcribe: () => createTranscribeTool(cwd, sandbox, vault),
-    audio_speak: () => createSpeakTool(cwd, sandbox, vault),
+    audio_transcribe: () => createTranscribeTool(cwd, sandbox, _fs, vault),
+    audio_speak: () => createSpeakTool(cwd, sandbox, _fs, vault),
   };
 
   const names = allowedTools
