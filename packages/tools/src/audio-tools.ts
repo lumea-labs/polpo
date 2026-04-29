@@ -28,11 +28,12 @@
  */
 
 import { resolve, dirname, extname } from "node:path";
-import { execFile } from "node:child_process";
 import { Type } from "@sinclair/typebox";
 import type { PolpoTool as AgentTool, ToolResult as AgentToolResult } from "@polpo-ai/core";
 import type { FileSystem } from "@polpo-ai/core/filesystem";
+import type { Shell } from "@polpo-ai/core";
 import { NodeFileSystem } from "./adapters/node-filesystem.js";
+import { NodeShell } from "./adapters/node-shell.js";
 
 // Re-export with concrete generic to avoid "requires 1 type argument" errors
 type ToolResult = AgentToolResult<any>;
@@ -305,7 +306,7 @@ const AudioSpeakSchema = Type.Object({
   instructions: Type.Optional(Type.String({ description: "Voice style instructions (OpenAI gpt-4o-mini-tts only, e.g. 'Speak in a cheerful tone')" })),
 });
 
-function createSpeakTool(cwd: string, sandbox: string[], fs: FileSystem, vault?: ResolvedVault): AgentTool<typeof AudioSpeakSchema> {
+function createSpeakTool(cwd: string, sandbox: string[], fs: FileSystem, shell: Shell, vault?: ResolvedVault): AgentTool<typeof AudioSpeakSchema> {
   return {
     name: "audio_speak",
     label: "Text to Speech",
@@ -324,14 +325,14 @@ function createSpeakTool(cwd: string, sandbox: string[], fs: FileSystem, vault?:
 
       // Direct edge-tts request — no fallback needed
       if (provider === "edge") {
-        if (!edgeTtsAvailable()) {
+        if (!(await edgeTtsAvailable(shell))) {
           return {
             content: [{ type: "text", text: "Edge TTS not available in this environment. Use openai/deepgram/elevenlabs instead." }],
             details: { provider: "edge", error: "edge_tts_unavailable" },
           };
         }
         try {
-          return await speakEdgeTts(filePath, params, signal);
+          return await speakEdgeTts(filePath, params, fs, shell);
         } catch (err: any) {
           return {
             content: [{ type: "text", text: `TTS error (edge): ${err.message}` }],
@@ -351,9 +352,9 @@ function createSpeakTool(cwd: string, sandbox: string[], fs: FileSystem, vault?:
         }
       } catch (err: any) {
         // Automatic fallback to edge-tts if available
-        if (edgeTtsAvailable()) {
+        if (await edgeTtsAvailable(shell)) {
           try {
-            const result = await speakEdgeTts(filePath, params, signal);
+            const result = await speakEdgeTts(filePath, params, fs, shell);
             // Prepend fallback notice
             const notice = `[Fallback] ${provider} failed (${err.message}), used edge-tts instead.\n`;
             return {
@@ -604,76 +605,69 @@ function resolveEdgeVoice(voice?: string, language?: string, gender?: "male" | "
   return gender === "male" ? pair[1] : pair[0]; // default female if no gender hint
 }
 
-/** Check if edge-tts CLI is available on the system. */
-function isEdgeTtsAvailable(): boolean {
-  // Allow operators (e.g. cloud chat-completion path) to opt out explicitly.
-  if (process.env.POLPO_DISABLE_EDGE_TTS === "1") return false;
-  try {
-    const { execFileSync } = require("node:child_process") as typeof import("node:child_process");
-    execFileSync("edge-tts", ["--version"], { stdio: "pipe", timeout: 5000 });
-    return true;
-  } catch {
-    return false;
-  }
+/** Per-Shell cache of "is edge-tts on PATH" — checked once per shell. */
+const _edgeTtsAvailable = new WeakMap<Shell, Promise<boolean>>();
+
+/** Check if edge-tts CLI is available, routed through the Shell so the
+ *  check runs in the same environment as the actual TTS call (sandbox
+ *  in cloud, local Node in OSS). */
+function edgeTtsAvailable(shell: Shell): Promise<boolean> {
+  const existing = _edgeTtsAvailable.get(shell);
+  if (existing) return existing;
+  const fresh: Promise<boolean> = shell
+    .execute("edge-tts --version", { timeout: 5000 })
+    .then((r: { exitCode: number }) => r.exitCode === 0)
+    .catch(() => false);
+  _edgeTtsAvailable.set(shell, fresh);
+  return fresh;
 }
 
-// Cache the availability check
-let _edgeTtsAvailable: boolean | undefined;
-function edgeTtsAvailable(): boolean {
-  if (_edgeTtsAvailable === undefined) _edgeTtsAvailable = isEdgeTtsAvailable();
-  return _edgeTtsAvailable;
+/** Quote a CLI argument for inclusion in a `shell.execute` command line. */
+function quoteArg(arg: string): string {
+  return `'${arg.replace(/'/g, `'\\''`)}'`;
 }
 
 async function speakEdgeTts(
   filePath: string,
   params: { text: string; voice?: string; language?: string; gender?: "male" | "female" },
-  signal?: AbortSignal,
+  fs: FileSystem,
+  shell: Shell,
 ): Promise<ToolResult> {
-  if (!edgeTtsAvailable()) {
+  if (!(await edgeTtsAvailable(shell))) {
     throw new Error("edge-tts CLI is not installed. Install it with: pip install edge-tts");
   }
 
   const voice = resolveEdgeVoice(params.voice, params.language, params.gender);
-  // edge-tts is a local Node-only path — direct node:fs is acceptable here
-  // since the provider is gated by isEdgeTtsAvailable() which already requires Node.
-  const nodeFs = require("node:fs") as typeof import("node:fs");
-  nodeFs.mkdirSync(dirname(filePath), { recursive: true });
+  await fs.mkdir(dirname(filePath));
 
-  // Determine rate from speed if present
-  const args = [
-    "--text", params.text,
-    "--voice", voice,
-    "--write-media", filePath,
-  ];
+  const cmd = [
+    "edge-tts",
+    "--text", quoteArg(params.text),
+    "--voice", quoteArg(voice),
+    "--write-media", quoteArg(filePath),
+  ].join(" ");
 
-  return new Promise<ToolResult>((resolvePromise, reject) => {
-    const child = execFile("edge-tts", args, { timeout: DEFAULT_TIMEOUT }, (err, _stdout, stderr) => {
-      if (err) {
-        reject(new Error(`edge-tts failed: ${err.message}${stderr ? ` — ${stderr}` : ""}`));
-        return;
-      }
+  const result = await shell.execute(cmd, { timeout: DEFAULT_TIMEOUT });
+  if (result.exitCode !== 0) {
+    throw new Error(`edge-tts failed: ${(result.stderr || result.stdout || "").trim() || `exit ${result.exitCode}`}`);
+  }
 
-      let bytes = 0;
-      try {
-        bytes = nodeFs.statSync(filePath).size;
-      } catch { /* ignore */ }
+  let bytes = 0;
+  try {
+    const stat = await fs.stat(filePath);
+    bytes = stat?.size ?? 0;
+  } catch { /* ignore */ }
 
-      resolvePromise({
-        content: [{ type: "text", text: `Speech audio saved: ${filePath} (${(bytes / 1024).toFixed(1)} KB, voice: ${voice}, provider: edge-tts)` }],
-        details: {
-          provider: "edge",
-          voice,
-          path: filePath,
-          bytes,
-          textLength: params.text.length,
-        },
-      });
-    });
-
-    if (signal) {
-      signal.addEventListener("abort", () => child.kill(), { once: true });
-    }
-  });
+  return {
+    content: [{ type: "text", text: `Speech audio saved: ${filePath} (${(bytes / 1024).toFixed(1)} KB, voice: ${voice}, provider: edge-tts)` }],
+    details: {
+      provider: "edge",
+      voice,
+      path: filePath,
+      bytes,
+      textLength: params.text.length,
+    },
+  };
 }
 
 // ─── Factory ───
@@ -696,13 +690,15 @@ export function createAudioTools(
   allowedTools?: string[],
   vault?: ResolvedVault,
   fs?: FileSystem,
+  shell?: Shell,
 ): AgentTool<any>[] {
   const sandbox = resolveAllowedPaths(cwd, allowedPaths);
   const _fs = fs ?? new NodeFileSystem();
+  const _shell = shell ?? new NodeShell();
 
   const factories: Record<AudioToolName, () => AgentTool<any>> = {
     audio_transcribe: () => createTranscribeTool(cwd, sandbox, _fs, vault),
-    audio_speak: () => createSpeakTool(cwd, sandbox, _fs, vault),
+    audio_speak: () => createSpeakTool(cwd, sandbox, _fs, _shell, vault),
   };
 
   const names = allowedTools
