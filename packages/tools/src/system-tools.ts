@@ -504,7 +504,7 @@ export async function createAllTools(options: CreateAllToolsOptions): Promise<Ag
 
   // Browser tools — activated when any browser_* tool is in allowedTools
   if (categoryRequested(ALL_BROWSER_TOOL_NAMES)) {
-    tools.push(...createBrowserTools(cwd, browserSession, allowedTools, options.browserProfileDir));
+    tools.push(...createBrowserTools(cwd, browserSession, allowedTools, options.browserProfileDir, options.shell));
   }
 
   // Email tools — activated when any email_* tool is in allowedTools
@@ -519,7 +519,7 @@ export async function createAllTools(options: CreateAllToolsOptions): Promise<Ag
 
   // Audio tools — activated when any audio_* tool is in allowedTools
   if (categoryRequested(ALL_AUDIO_TOOL_NAMES)) {
-    tools.push(...createAudioTools(cwd, allowedPaths, allowedTools, options.vault, options.fs));
+    tools.push(...createAudioTools(cwd, allowedPaths, allowedTools, options.vault, options.fs, options.shell));
   }
 
   // Excel tools — activated when any excel_* tool is in allowedTools

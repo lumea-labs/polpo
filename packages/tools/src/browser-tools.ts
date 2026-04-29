@@ -2,38 +2,47 @@
  * Browser automation tools powered by agent-browser.
  *
  * Uses the agent-browser CLI (https://github.com/vercel-labs/agent-browser)
- * via child_process with --json output for structured results.
+ * with --json output for structured results, routed through the
+ * Shell abstraction so it works the same in three environments:
+ *   - OSS standalone (NodeShell): agent-browser must be on PATH
+ *     locally (`npm install -g agent-browser && agent-browser install`).
+ *   - Polpo task runner: NodeShell inside the sandbox; agent-browser
+ *     is baked into the snapshot.
+ *   - Cloud chat-completion (SandboxProxyShell): the worker proxies
+ *     every command into the project's sandbox, where agent-browser
+ *     lives. Without this routing the worker would `spawn` locally
+ *     and fail with `ENOENT`, since the worker container has no
+ *     Chromium and no agent-browser binary.
  *
- * The agent-browser CLI manages a daemon process that keeps the browser alive
- * between commands, making sequential tool calls fast (no cold-start per command).
- *
- * Requires `agent-browser` to be installed globally or in PATH.
- * Install: `npm install -g agent-browser && agent-browser install`
- *
- * Session isolation: Each agent gets its own browser session via --session flag,
- * preventing cross-agent interference when multiple agents use browser tools.
+ * Session isolation: each agent gets its own browser session via
+ * --session, preventing cross-agent interference.
  */
 
-import { execSync, spawn as spawnChild } from "node:child_process";
 import { resolve } from "node:path";
 import { Type } from "@sinclair/typebox";
 import type { PolpoTool as AgentTool, ToolResult as AgentToolResult } from "@polpo-ai/core";
+import type { Shell } from "@polpo-ai/core";
+import { NodeShell } from "./adapters/node-shell.js";
 
 const MAX_OUTPUT_BYTES = 50_000;
 const DEFAULT_TIMEOUT = 30_000;
+
+/** Quote a CLI argument so it survives `shell.execute` (which takes a
+ *  full command line, not an argv). Conservative: single-quote and
+ *  escape any embedded single quotes. */
+function quote(arg: string): string {
+  return `'${arg.replace(/'/g, `'\\''`)}'`;
+}
 
 /**
  * Cleanup an agent-browser session: close the session.
  * Profile data is automatically persisted by agent-browser when --profile is used.
  * Called by the engine on agent exit.
  */
-export async function cleanupAgentBrowserSession(session: string): Promise<void> {
+export async function cleanupAgentBrowserSession(session: string, shell?: Shell): Promise<void> {
+  const _shell = shell ?? new NodeShell();
   try {
-    execSync(`agent-browser --session ${session} close`, {
-      encoding: "utf-8",
-      timeout: 10_000,
-      stdio: ["ignore", "pipe", "pipe"],
-    });
+    await _shell.execute(`agent-browser --session ${quote(session)} close`, { timeout: 10_000 });
   } catch {
     // Already closed
   }
@@ -41,84 +50,49 @@ export async function cleanupAgentBrowserSession(session: string): Promise<void>
 
 // ─── Helpers ───
 
-/** Execute agent-browser CLI command and return parsed result */
-function execBrowser(
+/** Execute an agent-browser CLI command via the Shell abstraction
+ *  and parse the --json response. */
+async function execBrowserAsync(
+  shell: Shell,
   args: string[],
   options: { session?: string; profileDir?: string; timeout?: number; cwd?: string } = {},
-): { success: boolean; data?: any; error?: string; raw: string } {
-  const sessionArgs = options.session ? ["--session", options.session] : [];
-  const profileArgs = options.profileDir ? ["--profile", options.profileDir] : [];
-  const cmd = ["agent-browser", ...sessionArgs, ...profileArgs, ...args, "--json"].join(" ");
+): Promise<{ success: boolean; data?: any; error?: string; raw: string }> {
+  const parts = ["agent-browser"];
+  if (options.session) parts.push("--session", quote(options.session));
+  if (options.profileDir) parts.push("--profile", quote(options.profileDir));
+  for (const a of args) parts.push(quote(a));
+  parts.push("--json");
+  const cmd = parts.join(" ");
+
+  let result;
   try {
-    const raw = execSync(cmd, {
-      encoding: "utf-8",
-      timeout: options.timeout ?? DEFAULT_TIMEOUT,
-      cwd: options.cwd,
-      stdio: ["ignore", "pipe", "pipe"],
-    }).trim();
+    result = await shell.execute(cmd, { cwd: options.cwd, timeout: options.timeout ?? DEFAULT_TIMEOUT });
+  } catch (err: any) {
+    return { success: false, error: err?.message ?? String(err), raw: err?.message ?? String(err) };
+  }
+
+  let raw = (result.stdout || result.stderr || "").trim();
+  if (raw.length > MAX_OUTPUT_BYTES) {
+    raw = raw.slice(-MAX_OUTPUT_BYTES) + "\n[truncated]";
+  }
+
+  if (result.exitCode !== 0) {
+    // agent-browser still emits structured JSON on failure when --json
+    // is set; try to parse it before falling back to raw stderr.
     try {
       const parsed = JSON.parse(raw);
-      return { success: parsed.success ?? true, data: parsed.data ?? parsed, raw };
+      return { success: false, error: parsed.error ?? raw, data: parsed.data, raw };
     } catch {
-      return { success: true, data: raw, raw };
+      return { success: false, error: raw || `exit ${result.exitCode}`, raw };
     }
-  } catch (err: any) {
-    const stderr = err.stderr?.toString() ?? "";
-    const stdout = err.stdout?.toString() ?? "";
-    return { success: false, error: stderr || stdout || err.message, raw: stderr || stdout };
   }
-}
 
-/** Execute agent-browser command async with signal support */
-function execBrowserAsync(
-  args: string[],
-  options: { session?: string; profileDir?: string; timeout?: number; cwd?: string; signal?: AbortSignal } = {},
-): Promise<{ success: boolean; data?: any; error?: string; raw: string }> {
-  return new Promise((resolve) => {
-    const sessionArgs = options.session ? ["--session", options.session] : [];
-    const profileArgs = options.profileDir ? ["--profile", options.profileDir] : [];
-    const fullArgs = [...sessionArgs, ...profileArgs, ...args, "--json"];
-
-    const child = spawnChild("agent-browser", fullArgs, {
-      cwd: options.cwd,
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-
-    const chunks: Buffer[] = [];
-    let killed = false;
-
-    const timer = setTimeout(() => {
-      killed = true;
-      child.kill("SIGTERM");
-    }, options.timeout ?? DEFAULT_TIMEOUT);
-
-    const onAbort = () => { killed = true; child.kill("SIGTERM"); };
-    options.signal?.addEventListener("abort", onAbort, { once: true });
-
-    child.stdout.on("data", (d: Buffer) => chunks.push(d));
-    child.stderr.on("data", (d: Buffer) => chunks.push(d));
-
-    child.on("close", (code) => {
-      clearTimeout(timer);
-      options.signal?.removeEventListener("abort", onAbort);
-      let raw = Buffer.concat(chunks).toString("utf-8").trim();
-      if (raw.length > MAX_OUTPUT_BYTES) {
-        raw = raw.slice(-MAX_OUTPUT_BYTES) + "\n[truncated]";
-      }
-      try {
-        const parsed = JSON.parse(raw);
-        resolve({ success: parsed.success ?? (code === 0), data: parsed.data ?? parsed, raw });
-      } catch {
-        resolve({ success: code === 0, data: raw, raw });
-      }
-    });
-
-    child.on("error", (err) => {
-      clearTimeout(timer);
-      options.signal?.removeEventListener("abort", onAbort);
-      resolve({ success: false, error: err.message, raw: err.message });
-    });
-  });
+  try {
+    const parsed = JSON.parse(raw);
+    return { success: parsed.success ?? true, data: parsed.data ?? parsed, raw };
+  } catch {
+    return { success: true, data: raw, raw };
+  }
 }
 
 function browserResult(result: { success: boolean; data?: any; error?: string; raw: string }): AgentToolResult<any> {
@@ -141,14 +115,14 @@ const BrowserNavigateSchema = Type.Object({
   url: Type.String({ description: "URL to navigate to (e.g. 'https://example.com')" }),
 });
 
-function createBrowserNavigateTool(session: string, profileDir?: string): AgentTool<typeof BrowserNavigateSchema> {
+function createBrowserNavigateTool(shell: Shell, session: string, profileDir?: string): AgentTool<typeof BrowserNavigateSchema> {
   return {
     name: "browser_navigate",
     label: "Browser Navigate",
     description: "Open a URL in the browser. Launches the browser if not already running.",
     parameters: BrowserNavigateSchema,
     async execute(_id, params, signal) {
-      const result = await execBrowserAsync(["open", params.url], { session, profileDir, signal });
+      const result = await execBrowserAsync(shell, ["open", params.url], { session, profileDir });
       return browserResult(result);
     },
   };
@@ -163,7 +137,7 @@ const BrowserSnapshotSchema = Type.Object({
   selector: Type.Optional(Type.String({ description: "Scope snapshot to a CSS selector" })),
 });
 
-function createBrowserSnapshotTool(session: string, profileDir?: string): AgentTool<typeof BrowserSnapshotSchema> {
+function createBrowserSnapshotTool(shell: Shell, session: string, profileDir?: string): AgentTool<typeof BrowserSnapshotSchema> {
   return {
     name: "browser_snapshot",
     label: "Browser Snapshot",
@@ -176,7 +150,7 @@ function createBrowserSnapshotTool(session: string, profileDir?: string): AgentT
       if (params.compact) args.push("-c");
       if (params.max_depth) args.push("-d", String(params.max_depth));
       if (params.selector) args.push("-s", params.selector);
-      const result = await execBrowserAsync(args, { session, profileDir, signal, timeout: 15_000 });
+      const result = await execBrowserAsync(shell, args, { session, profileDir, timeout: 15_000 });
       return browserResult(result);
     },
   };
@@ -188,14 +162,14 @@ const BrowserClickSchema = Type.Object({
   selector: Type.String({ description: "Element ref from snapshot (e.g. '@e2') or CSS selector" }),
 });
 
-function createBrowserClickTool(session: string, profileDir?: string): AgentTool<typeof BrowserClickSchema> {
+function createBrowserClickTool(shell: Shell, session: string, profileDir?: string): AgentTool<typeof BrowserClickSchema> {
   return {
     name: "browser_click",
     label: "Browser Click",
     description: "Click an element. Use refs from snapshot (e.g. @e2) for reliable targeting.",
     parameters: BrowserClickSchema,
     async execute(_id, params, signal) {
-      const result = await execBrowserAsync(["click", params.selector], { session, profileDir, signal });
+      const result = await execBrowserAsync(shell, ["click", params.selector], { session, profileDir });
       return browserResult(result);
     },
   };
@@ -208,14 +182,14 @@ const BrowserFillSchema = Type.Object({
   text: Type.String({ description: "Text to fill into the input" }),
 });
 
-function createBrowserFillTool(session: string, profileDir?: string): AgentTool<typeof BrowserFillSchema> {
+function createBrowserFillTool(shell: Shell, session: string, profileDir?: string): AgentTool<typeof BrowserFillSchema> {
   return {
     name: "browser_fill",
     label: "Browser Fill",
     description: "Clear an input field and type new text. Use refs from snapshot for targeting.",
     parameters: BrowserFillSchema,
     async execute(_id, params, signal) {
-      const result = await execBrowserAsync(["fill", params.selector, params.text], { session, profileDir, signal });
+      const result = await execBrowserAsync(shell, ["fill", params.selector, params.text], { session, profileDir });
       return browserResult(result);
     },
   };
@@ -228,14 +202,14 @@ const BrowserTypeSchema = Type.Object({
   text: Type.String({ description: "Text to type (appends to existing content)" }),
 });
 
-function createBrowserTypeTool(session: string, profileDir?: string): AgentTool<typeof BrowserTypeSchema> {
+function createBrowserTypeTool(shell: Shell, session: string, profileDir?: string): AgentTool<typeof BrowserTypeSchema> {
   return {
     name: "browser_type",
     label: "Browser Type",
     description: "Type text into an element without clearing it first. Use for appending text.",
     parameters: BrowserTypeSchema,
     async execute(_id, params, signal) {
-      const result = await execBrowserAsync(["type", params.selector, params.text], { session, profileDir, signal });
+      const result = await execBrowserAsync(shell, ["type", params.selector, params.text], { session, profileDir });
       return browserResult(result);
     },
   };
@@ -247,14 +221,14 @@ const BrowserPressSchema = Type.Object({
   key: Type.String({ description: "Key to press (e.g. 'Enter', 'Tab', 'Control+a', 'Escape')" }),
 });
 
-function createBrowserPressTool(session: string, profileDir?: string): AgentTool<typeof BrowserPressSchema> {
+function createBrowserPressTool(shell: Shell, session: string, profileDir?: string): AgentTool<typeof BrowserPressSchema> {
   return {
     name: "browser_press",
     label: "Browser Press Key",
     description: "Press a keyboard key. Supports modifiers like 'Control+a', 'Shift+Enter'.",
     parameters: BrowserPressSchema,
     async execute(_id, params, signal) {
-      const result = await execBrowserAsync(["press", params.key], { session, profileDir, signal });
+      const result = await execBrowserAsync(shell, ["press", params.key], { session, profileDir });
       return browserResult(result);
     },
   };
@@ -267,7 +241,7 @@ const BrowserScreenshotSchema = Type.Object({
   full_page: Type.Optional(Type.Boolean({ description: "Capture full page, not just viewport" })),
 });
 
-function createBrowserScreenshotTool(session: string, cwd: string, profileDir?: string): AgentTool<typeof BrowserScreenshotSchema> {
+function createBrowserScreenshotTool(shell: Shell, session: string, cwd: string, profileDir?: string): AgentTool<typeof BrowserScreenshotSchema> {
   return {
     name: "browser_screenshot",
     label: "Browser Screenshot",
@@ -277,7 +251,7 @@ function createBrowserScreenshotTool(session: string, cwd: string, profileDir?: 
       const args = ["screenshot"];
       if (params.path) args.push(resolve(cwd, params.path));
       if (params.full_page) args.push("--full");
-      const result = await execBrowserAsync(args, { session, profileDir, signal });
+      const result = await execBrowserAsync(shell, args, { session, profileDir });
       return browserResult(result);
     },
   };
@@ -296,7 +270,7 @@ const BrowserGetSchema = Type.Object({
   selector: Type.Optional(Type.String({ description: "Element ref or CSS selector (required for text/html/value)" })),
 });
 
-function createBrowserGetTool(session: string, profileDir?: string): AgentTool<typeof BrowserGetSchema> {
+function createBrowserGetTool(shell: Shell, session: string, profileDir?: string): AgentTool<typeof BrowserGetSchema> {
   return {
     name: "browser_get",
     label: "Browser Get Info",
@@ -305,7 +279,7 @@ function createBrowserGetTool(session: string, profileDir?: string): AgentTool<t
     async execute(_id, params, signal) {
       const args = ["get", params.what];
       if (params.selector) args.push(params.selector);
-      const result = await execBrowserAsync(args, { session, profileDir, signal });
+      const result = await execBrowserAsync(shell, args, { session, profileDir });
       return browserResult(result);
     },
   };
@@ -318,14 +292,14 @@ const BrowserSelectSchema = Type.Object({
   value: Type.String({ description: "Option value to select" }),
 });
 
-function createBrowserSelectTool(session: string, profileDir?: string): AgentTool<typeof BrowserSelectSchema> {
+function createBrowserSelectTool(shell: Shell, session: string, profileDir?: string): AgentTool<typeof BrowserSelectSchema> {
   return {
     name: "browser_select",
     label: "Browser Select",
     description: "Select an option from a dropdown <select> element.",
     parameters: BrowserSelectSchema,
     async execute(_id, params, signal) {
-      const result = await execBrowserAsync(["select", params.selector, params.value], { session, profileDir, signal });
+      const result = await execBrowserAsync(shell, ["select", params.selector, params.value], { session, profileDir });
       return browserResult(result);
     },
   };
@@ -337,14 +311,14 @@ const BrowserHoverSchema = Type.Object({
   selector: Type.String({ description: "Element ref or CSS selector to hover" }),
 });
 
-function createBrowserHoverTool(session: string, profileDir?: string): AgentTool<typeof BrowserHoverSchema> {
+function createBrowserHoverTool(shell: Shell, session: string, profileDir?: string): AgentTool<typeof BrowserHoverSchema> {
   return {
     name: "browser_hover",
     label: "Browser Hover",
     description: "Hover over an element to trigger hover states, tooltips, or dropdown menus.",
     parameters: BrowserHoverSchema,
     async execute(_id, params, signal) {
-      const result = await execBrowserAsync(["hover", params.selector], { session, profileDir, signal });
+      const result = await execBrowserAsync(shell, ["hover", params.selector], { session, profileDir });
       return browserResult(result);
     },
   };
@@ -362,7 +336,7 @@ const BrowserScrollSchema = Type.Object({
   pixels: Type.Optional(Type.Number({ description: "Number of pixels to scroll (default: varies)" })),
 });
 
-function createBrowserScrollTool(session: string, profileDir?: string): AgentTool<typeof BrowserScrollSchema> {
+function createBrowserScrollTool(shell: Shell, session: string, profileDir?: string): AgentTool<typeof BrowserScrollSchema> {
   return {
     name: "browser_scroll",
     label: "Browser Scroll",
@@ -371,7 +345,7 @@ function createBrowserScrollTool(session: string, profileDir?: string): AgentToo
     async execute(_id, params, signal) {
       const args = ["scroll", params.direction];
       if (params.pixels) args.push(String(params.pixels));
-      const result = await execBrowserAsync(args, { session, profileDir, signal });
+      const result = await execBrowserAsync(shell, args, { session, profileDir });
       return browserResult(result);
     },
   };
@@ -391,7 +365,7 @@ const BrowserWaitSchema = Type.Object({
   ], { description: "Wait for load state" })),
 });
 
-function createBrowserWaitTool(session: string, profileDir?: string): AgentTool<typeof BrowserWaitSchema> {
+function createBrowserWaitTool(shell: Shell, session: string, profileDir?: string): AgentTool<typeof BrowserWaitSchema> {
   return {
     name: "browser_wait",
     label: "Browser Wait",
@@ -404,7 +378,7 @@ function createBrowserWaitTool(session: string, profileDir?: string): AgentTool<
       if (params.url) args.push("--url", params.url);
       if (params.timeout_ms) args.push(String(params.timeout_ms));
       if (params.load_state) args.push("--load", params.load_state);
-      const result = await execBrowserAsync(args, { session, profileDir, signal, timeout: 60_000 });
+      const result = await execBrowserAsync(shell, args, { session, profileDir, timeout: 60_000 });
       return browserResult(result);
     },
   };
@@ -416,7 +390,7 @@ const BrowserEvalSchema = Type.Object({
   javascript: Type.String({ description: "JavaScript code to execute in the browser page context" }),
 });
 
-function createBrowserEvalTool(session: string, profileDir?: string): AgentTool<typeof BrowserEvalSchema> {
+function createBrowserEvalTool(shell: Shell, session: string, profileDir?: string): AgentTool<typeof BrowserEvalSchema> {
   return {
     name: "browser_eval",
     label: "Browser Evaluate JS",
@@ -426,7 +400,7 @@ function createBrowserEvalTool(session: string, profileDir?: string): AgentTool<
     async execute(_id, params, signal) {
       // Use base64 encoding for safe transport of complex JS
       const b64 = Buffer.from(params.javascript).toString("base64");
-      const result = await execBrowserAsync(["eval", b64, "-b"], { session, profileDir, signal });
+      const result = await execBrowserAsync(shell, ["eval", b64, "-b"], { session, profileDir });
       return browserResult(result);
     },
   };
@@ -436,14 +410,14 @@ function createBrowserEvalTool(session: string, profileDir?: string): AgentTool<
 
 const BrowserCloseSchema = Type.Object({});
 
-function createBrowserCloseTool(session: string): AgentTool<typeof BrowserCloseSchema> {
+function createBrowserCloseTool(shell: Shell, session: string): AgentTool<typeof BrowserCloseSchema> {
   return {
     name: "browser_close",
     label: "Browser Close",
     description: "Close the browser session. Profile data (cookies, login) is saved automatically.",
     parameters: BrowserCloseSchema,
     async execute(_id, _params, signal) {
-      const result = await execBrowserAsync(["close"], { session, signal });
+      const result = await execBrowserAsync(shell, ["close"], { session });
       return browserResult(result);
     },
   };
@@ -453,38 +427,38 @@ function createBrowserCloseTool(session: string): AgentTool<typeof BrowserCloseS
 
 const BrowserNavActionSchema = Type.Object({});
 
-function createBrowserBackTool(session: string, profileDir?: string): AgentTool<typeof BrowserNavActionSchema> {
+function createBrowserBackTool(shell: Shell, session: string, profileDir?: string): AgentTool<typeof BrowserNavActionSchema> {
   return {
     name: "browser_back",
     label: "Browser Back",
     description: "Navigate back in browser history.",
     parameters: BrowserNavActionSchema,
     async execute(_id, _params, signal) {
-      return browserResult(await execBrowserAsync(["back"], { session, profileDir, signal }));
+      return browserResult(await execBrowserAsync(shell, ["back"], { session, profileDir }));
     },
   };
 }
 
-function createBrowserForwardTool(session: string, profileDir?: string): AgentTool<typeof BrowserNavActionSchema> {
+function createBrowserForwardTool(shell: Shell, session: string, profileDir?: string): AgentTool<typeof BrowserNavActionSchema> {
   return {
     name: "browser_forward",
     label: "Browser Forward",
     description: "Navigate forward in browser history.",
     parameters: BrowserNavActionSchema,
     async execute(_id, _params, signal) {
-      return browserResult(await execBrowserAsync(["forward"], { session, profileDir, signal }));
+      return browserResult(await execBrowserAsync(shell, ["forward"], { session, profileDir }));
     },
   };
 }
 
-function createBrowserReloadTool(session: string, profileDir?: string): AgentTool<typeof BrowserNavActionSchema> {
+function createBrowserReloadTool(shell: Shell, session: string, profileDir?: string): AgentTool<typeof BrowserNavActionSchema> {
   return {
     name: "browser_reload",
     label: "Browser Reload",
     description: "Reload the current page.",
     parameters: BrowserNavActionSchema,
     async execute(_id, _params, signal) {
-      return browserResult(await execBrowserAsync(["reload"], { session, profileDir, signal }));
+      return browserResult(await execBrowserAsync(shell, ["reload"], { session, profileDir }));
     },
   };
 }
@@ -502,7 +476,7 @@ const BrowserTabsSchema = Type.Object({
   url: Type.Optional(Type.String({ description: "URL to open in new tab" })),
 });
 
-function createBrowserTabsTool(session: string, profileDir?: string): AgentTool<typeof BrowserTabsSchema> {
+function createBrowserTabsTool(shell: Shell, session: string, profileDir?: string): AgentTool<typeof BrowserTabsSchema> {
   return {
     name: "browser_tabs",
     label: "Browser Tabs",
@@ -525,7 +499,7 @@ function createBrowserTabsTool(session: string, profileDir?: string): AgentTool<
           if (params.index !== undefined) args.push(String(params.index));
           break;
       }
-      const result = await execBrowserAsync(args, { session, profileDir, signal });
+      const result = await execBrowserAsync(shell, args, { session, profileDir });
       return browserResult(result);
     },
   };
@@ -563,26 +537,28 @@ export function createBrowserTools(
   session: string = "default",
   allowedTools?: string[],
   profileDir?: string,
+  shell?: Shell,
 ): AgentTool<any>[] {
+  const _shell = shell ?? new NodeShell();
   const factories: Record<BrowserToolName, () => AgentTool<any>> = {
-    browser_navigate: () => createBrowserNavigateTool(session, profileDir),
-    browser_snapshot: () => createBrowserSnapshotTool(session, profileDir),
-    browser_click: () => createBrowserClickTool(session, profileDir),
-    browser_fill: () => createBrowserFillTool(session, profileDir),
-    browser_type: () => createBrowserTypeTool(session, profileDir),
-    browser_press: () => createBrowserPressTool(session, profileDir),
-    browser_screenshot: () => createBrowserScreenshotTool(session, cwd, profileDir),
-    browser_get: () => createBrowserGetTool(session, profileDir),
-    browser_select: () => createBrowserSelectTool(session, profileDir),
-    browser_hover: () => createBrowserHoverTool(session, profileDir),
-    browser_scroll: () => createBrowserScrollTool(session, profileDir),
-    browser_wait: () => createBrowserWaitTool(session, profileDir),
-    browser_eval: () => createBrowserEvalTool(session, profileDir),
-    browser_close: () => createBrowserCloseTool(session),
-    browser_back: () => createBrowserBackTool(session, profileDir),
-    browser_forward: () => createBrowserForwardTool(session, profileDir),
-    browser_reload: () => createBrowserReloadTool(session, profileDir),
-    browser_tabs: () => createBrowserTabsTool(session, profileDir),
+    browser_navigate: () => createBrowserNavigateTool(_shell, session, profileDir),
+    browser_snapshot: () => createBrowserSnapshotTool(_shell, session, profileDir),
+    browser_click: () => createBrowserClickTool(_shell, session, profileDir),
+    browser_fill: () => createBrowserFillTool(_shell, session, profileDir),
+    browser_type: () => createBrowserTypeTool(_shell, session, profileDir),
+    browser_press: () => createBrowserPressTool(_shell, session, profileDir),
+    browser_screenshot: () => createBrowserScreenshotTool(_shell, session, cwd, profileDir),
+    browser_get: () => createBrowserGetTool(_shell, session, profileDir),
+    browser_select: () => createBrowserSelectTool(_shell, session, profileDir),
+    browser_hover: () => createBrowserHoverTool(_shell, session, profileDir),
+    browser_scroll: () => createBrowserScrollTool(_shell, session, profileDir),
+    browser_wait: () => createBrowserWaitTool(_shell, session, profileDir),
+    browser_eval: () => createBrowserEvalTool(_shell, session, profileDir),
+    browser_close: () => createBrowserCloseTool(_shell, session),
+    browser_back: () => createBrowserBackTool(_shell, session, profileDir),
+    browser_forward: () => createBrowserForwardTool(_shell, session, profileDir),
+    browser_reload: () => createBrowserReloadTool(_shell, session, profileDir),
+    browser_tabs: () => createBrowserTabsTool(_shell, session, profileDir),
   };
 
   const names = allowedTools
