@@ -17,12 +17,21 @@ name: Runtime Smoke
 on:
   push:
     branches: [main]
-    tags: ["v*"]
+    # Tag pushes are handled via `workflow_run` below — they MUST
+    # wait for `release.yml` to publish to npm first, otherwise the
+    # Dockerfile's `npm install polpo-ai@<version>` races against an
+    # unpublished version and fails. Triggering directly on tag would
+    # reintroduce that race.
   pull_request:
     paths:
       - "docker/runner/**"
       - ".github/workflows/runtime-smoke.yml"
       - "packages/tools/**"
+  # Chain after a successful Release run so npm has the new version
+  # by the time we try to install it inside the image.
+  workflow_run:
+    workflows: ["Release"]
+    types: [completed]
   workflow_dispatch:
   schedule:
     - cron: "0 2 * * *" # 02:00 UTC daily
@@ -40,32 +49,51 @@ jobs:
   # published image instead, see `nightly-published` below.
   build-and-smoke:
     name: Build runner image + Layer-2 smoke
-    if: github.event_name != 'schedule'
+    # Skip the cron schedule (handled by the dedicated nightly job
+    # below). Skip workflow_run firings that didn't come from a
+    # successful Release (we only want to rebuild after a tag-driven
+    # release succeeds, not after random Release retries).
+    if: |
+      github.event_name != 'schedule' &&
+      (github.event_name != 'workflow_run' ||
+       (github.event.workflow_run.conclusion == 'success' &&
+        startsWith(github.event.workflow_run.head_branch, 'v')))
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
     steps:
       - uses: actions/checkout@v6
+        with:
+          # When triggered by workflow_run, default $GITHUB_SHA is the
+          # commit on the default branch — but we want the tagged
+          # commit that the Release ran against, so the Dockerfile
+          # picks up the right packages/core/package.json version.
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
 
       # Buildx is needed for cache-from/cache-to type=gha.
       - uses: docker/setup-buildx-action@v3
 
       # `polpo_version` is the npm package version the Dockerfile
       # installs INSIDE the image — must always be a published, real
-      # version. We read it from packages/core/package.json so it
-      # tracks main automatically.
+      # version. We read it from packages/core/package.json (at the
+      # checked-out commit) so it tracks whatever the trigger ref is.
       #
       # `image_tag` is the Docker tag we attach to the built image
-      # (separate concern from the npm version).
+      # (separate concern from the npm version). On workflow_run after
+      # a Release we use the tag that Release ran against; on main
+      # push we use `main`; on PR we use `pr-N`.
       - name: Compute build inputs
         id: ver
         run: |
           POLPO_VERSION=$(node -p "require('./packages/core/package.json').version")
           echo "polpo_version=$POLPO_VERSION" >> "$GITHUB_OUTPUT"
 
-          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
-            echo "image_tag=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
+          if [[ "${{ github.event_name }}" == "workflow_run" ]]; then
+            # workflow_run.head_branch is the tag name (e.g. "v0.7.1")
+            # because Release was triggered by `tags: ["v*"]`.
+            HEAD_BRANCH="${{ github.event.workflow_run.head_branch }}"
+            echo "image_tag=${HEAD_BRANCH#v}" >> "$GITHUB_OUTPUT"
           elif [[ "${{ github.ref }}" == refs/heads/main ]]; then
             echo "image_tag=main" >> "$GITHUB_OUTPUT"
           else
@@ -98,7 +126,9 @@ jobs:
 
       # Push only happens after smoke is green AND we're on main/tag.
       - name: Login to GHCR
-        if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+        if: |
+          (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+          (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success' && startsWith(github.event.workflow_run.head_branch, 'v'))
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
@@ -106,7 +136,9 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Push to GHCR (main / tag only)
-        if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+        if: |
+          (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+          (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success' && startsWith(github.event.workflow_run.head_branch, 'v'))
         uses: docker/build-push-action@v6
         with:
           context: docker/runner
