@@ -24,6 +24,7 @@ import { join } from "node:path";
 import { createImageTools } from "../image-tools.js";
 import { createAudioTools } from "../audio-tools.js";
 import { createSearchTools } from "../search-tools.js";
+import { ExaSearchProvider } from "../lib/exa-search-provider.js";
 import type { PolpoTool as AgentTool } from "@polpo-ai/core";
 import type { ResolvedVault } from "../types.js";
 
@@ -618,7 +619,7 @@ describe("audio_transcribe", () => {
 // ────────────────────────────────────────────────────────────
 describe("search_web", () => {
   function build() {
-    return createSearchTools(makeVault(), ["search_web"]);
+    return createSearchTools(new ExaSearchProvider({ apiKey: "fake-exa-key" }), ["search_web"]);
   }
 
   it("posts to Exa /search and formats the results", async () => {
@@ -689,7 +690,7 @@ describe("search_web", () => {
 
 describe("search_find_similar", () => {
   function build() {
-    return createSearchTools(makeVault(), ["search_find_similar"]);
+    return createSearchTools(new ExaSearchProvider({ apiKey: "fake-exa-key" }), ["search_find_similar"]);
   }
 
   it("posts to Exa /findSimilar and returns formatted results", async () => {
@@ -1250,7 +1251,7 @@ describe("audio_transcribe — paranoid", () => {
 });
 
 describe("search_web — paranoid", () => {
-  function build() { return createSearchTools(makeVault(), ["search_web"]); }
+  function build() { return createSearchTools(new ExaSearchProvider({ apiKey: "fake-exa-key" }), ["search_web"]); }
 
   it("survives a 5KB query without errors", async () => {
     routeFetch([
@@ -1322,7 +1323,7 @@ describe("search_web — paranoid", () => {
 });
 
 describe("search_find_similar — paranoid", () => {
-  function build() { return createSearchTools(makeVault(), ["search_find_similar"]); }
+  function build() { return createSearchTools(new ExaSearchProvider({ apiKey: "fake-exa-key" }), ["search_find_similar"]); }
 
   it("doesn't crash on an empty URL string (defers to Exa for validation)", async () => {
     routeFetch([

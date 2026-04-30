@@ -12,7 +12,7 @@ import type { Shell } from "@polpo-ai/core/shell";
 // NodeFileSystem and NodeShell are loaded lazily to avoid pulling in
 // node:fs and execa when the consumer provides their own implementations.
 import { Type } from "@sinclair/typebox";
-import type { PolpoTool as AgentTool } from "@polpo-ai/core";
+import type { PolpoTool as AgentTool, SearchProvider } from "@polpo-ai/core";
 import { resolveAllowedPaths, assertPathAllowed } from "./path-sandbox.js";
 import { createOutcomeTools as createOutcomeToolsCore } from "./outcome-tools.js";
 import { createHttpTools as createHttpToolsCore, ALL_HTTP_TOOL_NAMES as CORE_HTTP_TOOL_NAMES } from "./http-tools.js";
@@ -475,6 +475,24 @@ export interface CreateAllToolsOptions {
   fs?: FileSystem;
   /** Shell implementation (default: NodeShell). */
   shell?: Shell;
+  // ── Agent-config-driven media models (resolved by the engine) ──
+  // Format: "provider/model". When omitted the tool layer applies its
+  // own default (`DEFAULT_*_MODEL` from @polpo-ai/core).
+  /** image_generate model. e.g. "fal/fal-ai/flux/dev" */
+  imageModel?: string;
+  /** video_generate model. e.g. "fal/luma-ray-2-flash" */
+  videoModel?: string;
+  /** image_analyze model. e.g. "openai/gpt-4o-mini" */
+  visionModel?: string;
+  /** audio_transcribe model. e.g. "openai/whisper-1" */
+  transcribeModel?: string;
+  /** audio_speak model. e.g. "openai/tts-1" or "edge/edge-tts" */
+  ttsModel?: string;
+  /** Pre-instantiated SearchProvider. When omitted, falls back to
+   *  ExaSearchProvider built from the vault's "exa" key. The cloud
+   *  shell can swap in a Gateway-routed provider here without
+   *  touching the tool layer. */
+  searchProvider?: SearchProvider;
 }
 
 /**
@@ -541,9 +559,21 @@ export async function createAllTools(options: CreateAllToolsOptions): Promise<Ag
     tools.push(...createDocxTools(cwd, allowedPaths, allowedTools, options.fs));
   }
 
-  // Search tools (Exa) — activated when any search_* tool is in allowedTools
+  // Search tools — activated when any search_* tool is in allowedTools.
+  // Provider injection: pre-instantiated `searchProvider` wins;
+  // otherwise we default to ExaSearchProvider built from the vault.
   if (categoryRequested(ALL_SEARCH_TOOL_NAMES)) {
-    tools.push(...createSearchTools(options.vault, allowedTools));
+    let provider = options.searchProvider;
+    if (!provider) {
+      const exaKey = options.vault?.getKey("exa", "key") ?? process.env.EXA_API_KEY;
+      if (exaKey) {
+        const { ExaSearchProvider } = await import("./lib/exa-search-provider.js");
+        provider = new ExaSearchProvider({ apiKey: exaKey });
+      }
+    }
+    if (provider) {
+      tools.push(...createSearchTools(provider, allowedTools));
+    }
   }
 
   // HTTP, register_outcome, and vault are already included via createSystemTools() above — no need to add again

@@ -31,6 +31,17 @@ export type { RunStore, RunRecord, RunStatus } from "./run-store.js";
 export type { ConfigStore } from "./config-store.js";
 export type { MemoryStore } from "./memory-store.js";
 export { agentMemoryScope } from "./memory-store.js";
+export type { SearchProvider, SearchResult, SearchOptions } from "./search-provider.js";
+export {
+  parseModelString,
+  DEFAULT_IMAGE_MODEL,
+  DEFAULT_VIDEO_MODEL,
+  DEFAULT_VISION_MODEL,
+  DEFAULT_TRANSCRIBE_MODEL,
+  DEFAULT_TTS_MODEL,
+  DEFAULT_SEARCH_PROVIDER,
+} from "./agent-models.js";
+export type { ParsedModel } from "./agent-models.js";
 export type { LogStore, LogEntry, SessionInfo } from "./log-store.js";
 export type { SessionStore, Session, Message, MessageRole, ToolCallInfo, ToolCallState, SessionContentPart } from "./session-store.js";
 export type { ApprovalStore } from "./approval-store.js";
