@@ -1,20 +1,13 @@
 /**
  * Image & video tools for generation and vision/analysis.
  *
- * Provides agent capabilities to:
- * - Generate images from text prompts (image_generate) — via fal.ai
- * - Generate videos from text prompts (video_generate) — via fal.ai
- * - Analyze/describe images using vision models (image_analyze) — via OpenAI/Anthropic
+ * Architecture: thin wrappers over the Vercel AI SDK v6.
+ *   - image_generate  → `generateImage` against `@ai-sdk/fal`
+ *   - video_generate  → `experimental_generateVideo` against `@ai-sdk/fal`
+ *   - image_analyze   → `generateText` (multimodal) against `@ai-sdk/openai` or `@ai-sdk/anthropic`
  *
- * Architecture: direct fetch() to provider REST APIs — zero vendor SDK dependencies.
- *
- * Providers:
- *   Image generation: fal.ai (FLUX models — fal-ai/flux/dev default)
- *   Video generation: fal.ai (Wan 2.2 — fal-ai/wan/v2.2-1.3b/text-to-video default)
- *   Vision/analysis:  openai (gpt-4.1-mini), anthropic (Claude)
- *
- * Credential resolution order (same as email tools):
- *   1. Agent vault (per-agent credentials — e.g. service "fal" with key "key")
+ * Credential resolution order:
+ *   1. Agent vault (per-agent credentials — e.g. service "fal-ai" with key "key")
  *   2. Environment variables (global fallback)
  *
  * Environment variables (fallback):
@@ -30,17 +23,11 @@ import type { FileSystem } from "@polpo-ai/core/filesystem";
 import { NodeFileSystem } from "./adapters/node-filesystem.js";
 import { resolveAllowedPaths, assertPathAllowed } from "./path-sandbox.js";
 import type { ResolvedVault } from "./types.js";
+import { resolveImageProvider, resolveVideoProvider, resolveVisionProvider } from "./lib/provider-resolver.js";
 
 type ToolResult = AgentToolResult<any>;
 
-// ─── Constants ───
-
 const MAX_IMAGE_SIZE = 20 * 1024 * 1024; // 20 MB
-const DEFAULT_TIMEOUT = 120_000; // 2 min for image generation
-const VIDEO_TIMEOUT = 300_000; // 5 min for video generation
-const FAL_QUEUE_POLL_INTERVAL = 3_000; // 3 sec polling for async queue
-
-// ─── Helpers ───
 
 function requireEnv(key: string): string {
   const val = process.env[key];
@@ -67,93 +54,6 @@ function imageMime(ext: string): string {
     ".tiff": "image/tiff",
   };
   return map[ext.toLowerCase()] ?? "image/png";
-}
-
-/**
- * Submit a request to fal.ai queue and poll until completion.
- * Uses the queue endpoint (POST https://queue.fal.run/<model>) for reliability,
- * then polls the status endpoint until the result is ready.
- */
-async function falQueueRequest(
-  modelId: string,
-  input: Record<string, unknown>,
-  apiKey: string,
-  timeout: number,
-  signal?: AbortSignal,
-): Promise<Record<string, unknown>> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeout);
-  if (signal) signal.addEventListener("abort", () => controller.abort(), { once: true });
-
-  try {
-    // Submit to queue
-    const submitResp = await fetch(`https://queue.fal.run/${modelId}`, {
-      method: "POST",
-      headers: {
-        Authorization: `Key ${apiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(input),
-      signal: controller.signal,
-    });
-
-    if (!submitResp.ok) {
-      const errText = await submitResp.text();
-      throw new Error(`fal.ai queue submit ${submitResp.status}: ${errText}`);
-    }
-
-    const queueData = await submitResp.json() as {
-      request_id: string;
-      status_url?: string;
-      response_url?: string;
-    };
-
-    const requestId = queueData.request_id;
-    const statusUrl = queueData.status_url ?? `https://queue.fal.run/${modelId}/requests/${requestId}/status`;
-    const responseUrl = queueData.response_url ?? `https://queue.fal.run/${modelId}/requests/${requestId}`;
-
-    // Poll for completion
-    while (true) {
-      await new Promise(r => setTimeout(r, FAL_QUEUE_POLL_INTERVAL));
-
-      const statusResp = await fetch(statusUrl, {
-        headers: { Authorization: `Key ${apiKey}` },
-        signal: controller.signal,
-      });
-
-      if (!statusResp.ok) {
-        throw new Error(`fal.ai status poll ${statusResp.status}`);
-      }
-
-      const status = await statusResp.json() as {
-        status: string;
-        error?: string;
-      };
-
-      if (status.status === "COMPLETED") {
-        break;
-      }
-      if (status.status === "FAILED") {
-        throw new Error(`fal.ai request failed: ${status.error ?? "unknown error"}`);
-      }
-      // IN_QUEUE or IN_PROGRESS — keep polling
-    }
-
-    // Fetch result
-    const resultResp = await fetch(responseUrl, {
-      headers: { Authorization: `Key ${apiKey}` },
-      signal: controller.signal,
-    });
-
-    if (!resultResp.ok) {
-      const errText = await resultResp.text();
-      throw new Error(`fal.ai result fetch ${resultResp.status}: ${errText}`);
-    }
-
-    return await resultResp.json() as Record<string, unknown>;
-  } finally {
-    clearTimeout(timer);
-  }
 }
 
 // ─── Tool: image_generate ───
@@ -183,7 +83,7 @@ function createGenerateTool(cwd: string, sandbox: string[], fs: FileSystem, vaul
   return {
     name: "image_generate",
     label: "Generate Image",
-    description: "Generate an image from a text prompt using fal.ai (FLUX models). " +
+    description: "Generate an image from a text prompt via fal.ai (FLUX models). " +
       "Output format inferred from file extension (png, jpg, webp). " +
       "Models: fal-ai/flux/dev (default, balanced), fal-ai/flux-pro/v1.1 (best quality), " +
       "fal-ai/flux/schnell (fastest). Credentials resolved from: agent vault > FAL_KEY env var.",
@@ -218,62 +118,55 @@ async function generateFal(
   vault?: ResolvedVault,
   signal?: AbortSignal,
 ): Promise<ToolResult> {
+  const { generateImage } = await import("ai");
+
   const apiKey = resolveFalKey(vault);
   const model = params.model ?? "fal-ai/flux/dev";
+  const provider = await resolveImageProvider("fal", apiKey);
 
-  // Parse size into width/height
-  let width = 1024, height = 1024;
-  if (params.size) {
-    const parts = params.size.split("x").map(Number);
-    if (parts.length === 2 && parts[0] > 0 && parts[1] > 0) {
-      width = parts[0];
-      height = parts[1];
-    }
-  }
+  // fal-specific knobs go through providerOptions; the SDK passes them
+  // through to the model's input untouched.
+  const falOptions: Record<string, number> = {};
+  if (params.num_inference_steps != null) falOptions.num_inference_steps = params.num_inference_steps;
+  if (params.guidance_scale != null) falOptions.guidance_scale = params.guidance_scale;
 
-  const input: Record<string, unknown> = {
+  const result = await generateImage({
+    model: provider.image(model) as any,
     prompt: params.prompt,
-    image_size: { width, height },
-    num_images: 1,
-  };
-  if (params.num_inference_steps != null) input.num_inference_steps = params.num_inference_steps;
-  if (params.guidance_scale != null) input.guidance_scale = params.guidance_scale;
-  if (params.seed != null) input.seed = params.seed;
+    size: params.size as `${number}x${number}` | undefined,
+    seed: params.seed,
+    providerOptions: Object.keys(falOptions).length ? { fal: falOptions } : undefined,
+    abortSignal: signal,
+  });
 
-  const result = await falQueueRequest(model, input, apiKey, DEFAULT_TIMEOUT, signal);
-
-  // fal.ai FLUX response: { images: [{ url, width, height, content_type }], ... }
-  const images = result.images as { url: string; width: number; height: number; content_type?: string }[] | undefined;
-  if (!images || images.length === 0) {
-    throw new Error("No images in fal.ai response");
+  // The SDK guarantees `result.image` for a successful generation. No
+  // download step needed — the SDK has already pulled the bytes.
+  const bytes = result.image.uint8Array;
+  if (!bytes || bytes.byteLength === 0) {
+    throw new Error("No image bytes in SDK response");
   }
-
-  const imageUrl = images[0].url;
-  const imgResp = await fetch(imageUrl);
-  if (!imgResp.ok) throw new Error(`Failed to download generated image: ${imgResp.status}`);
-  const buffer = Buffer.from(await imgResp.arrayBuffer());
 
   if (!fs.writeFileBuffer) {
     throw new Error("FileSystem implementation does not support writeFileBuffer (required for binary writes).");
   }
   await fs.mkdir(dirname(filePath));
-  await fs.writeFileBuffer(filePath, new Uint8Array(buffer));
+  await fs.writeFileBuffer(filePath, bytes);
 
   const info = [
     `Image saved: ${filePath}`,
-    `Size: ${(buffer.byteLength / 1024).toFixed(1)} KB`,
+    `Size: ${(bytes.byteLength / 1024).toFixed(1)} KB`,
     `Model: ${model}`,
-    `Dimensions: ${images[0].width}x${images[0].height}`,
   ];
+  if (params.size) info.push(`Dimensions: ${params.size}`);
 
   return {
     content: [{ type: "text", text: info.join("\n") }],
     details: {
       provider: "fal",
       model,
-      size: `${images[0].width}x${images[0].height}`,
+      size: params.size,
       path: filePath,
-      bytes: buffer.byteLength,
+      bytes: bytes.byteLength,
     },
   };
 }
@@ -284,20 +177,21 @@ const VideoGenerateSchema = Type.Object({
   prompt: Type.String({ description: "Text prompt describing the video to generate" }),
   path: Type.String({ description: "Output file path (e.g. 'output.mp4')." }),
   model: Type.Optional(Type.String({
-    description: "fal.ai video model ID. Default: 'fal-ai/wan/v2.2-1.3b/text-to-video'. " +
-      "Other options: 'fal-ai/wan/v2.2-a14b/text-to-video' (higher quality, slower).",
+    description: "fal.ai video model ID. Default: 'luma-ray-2-flash' (fast). " +
+      "Other typed options: 'luma-ray-2', 'luma-dream-machine', 'minimax-video', 'minimax-video-01', 'hunyuan-video'. " +
+      "Any other fal video model id is accepted as a passthrough string.",
   })),
-  num_frames: Type.Optional(Type.Number({
-    description: "Number of frames to generate. Default: 81 (~5 seconds at 16fps).",
+  aspect_ratio: Type.Optional(Type.String({
+    description: "Aspect ratio as 'WIDTH:HEIGHT' (e.g. '16:9', '9:16', '1:1').",
   })),
   resolution: Type.Optional(Type.String({
-    description: "Video resolution as 'WIDTHxHEIGHT' (e.g. '854x480', '1280x720'). Default: '854x480' (480p).",
+    description: "Resolution as 'WIDTHxHEIGHT' (e.g. '1280x720'). Provider-dependent.",
   })),
-  num_inference_steps: Type.Optional(Type.Number({
-    description: "Number of inference steps (higher = better quality, slower). Default: 30.",
+  duration: Type.Optional(Type.Number({
+    description: "Video duration in seconds. Provider-dependent — typical range 4-10.",
   })),
-  guidance_scale: Type.Optional(Type.Number({
-    description: "Guidance scale — how closely to follow the prompt. Default: 5.0.",
+  fps: Type.Optional(Type.Number({
+    description: "Frames per second. Provider-dependent.",
   })),
   seed: Type.Optional(Type.Number({
     description: "Random seed for reproducible results. Omit for random.",
@@ -308,10 +202,9 @@ function createVideoGenerateTool(cwd: string, sandbox: string[], fs: FileSystem,
   return {
     name: "video_generate",
     label: "Generate Video",
-    description: "Generate a video from a text prompt using fal.ai (Wan 2.2 models). " +
-      "Output saved as MP4. Models: fal-ai/wan/v2.2-1.3b/text-to-video (default, faster), " +
-      "fal-ai/wan/v2.2-a14b/text-to-video (best quality). " +
-      "Video generation takes 1-5 minutes depending on model and resolution. " +
+    description: "Generate a video from a text prompt via fal.ai (Luma / MiniMax / Hunyuan models). " +
+      "Output saved as MP4. Models: luma-ray-2-flash (default, fast), luma-ray-2, luma-dream-machine, " +
+      "minimax-video, minimax-video-01, hunyuan-video. Generation takes 1-5 minutes depending on model. " +
       "Credentials resolved from: agent vault > FAL_KEY env var.",
     parameters: VideoGenerateSchema,
     async execute(_id, params, signal) {
@@ -335,55 +228,45 @@ async function generateVideo(
   params: {
     prompt: string;
     model?: string;
-    num_frames?: number;
+    aspect_ratio?: string;
     resolution?: string;
-    num_inference_steps?: number;
-    guidance_scale?: number;
+    duration?: number;
+    fps?: number;
     seed?: number;
   },
   fs: FileSystem,
   vault?: ResolvedVault,
   signal?: AbortSignal,
 ): Promise<ToolResult> {
+  const { experimental_generateVideo } = await import("ai");
+
   const apiKey = resolveFalKey(vault);
-  const model = params.model ?? "fal-ai/wan/v2.2-1.3b/text-to-video";
+  const model = params.model ?? "luma-ray-2-flash";
+  const provider = await resolveVideoProvider("fal", apiKey);
 
-  const input: Record<string, unknown> = {
+  const result = await experimental_generateVideo({
+    model: provider.video(model) as any,
     prompt: params.prompt,
-  };
+    aspectRatio: params.aspect_ratio as `${number}:${number}` | undefined,
+    resolution: params.resolution as `${number}x${number}` | undefined,
+    duration: params.duration,
+    fps: params.fps,
+    seed: params.seed,
+    abortSignal: signal,
+  });
 
-  if (params.num_frames != null) input.num_frames = params.num_frames;
-  if (params.num_inference_steps != null) input.num_inference_steps = params.num_inference_steps;
-  if (params.guidance_scale != null) input.guidance_scale = params.guidance_scale;
-  if (params.seed != null) input.seed = params.seed;
-
-  // Parse resolution
-  if (params.resolution) {
-    const parts = params.resolution.split("x").map(Number);
-    if (parts.length === 2 && parts[0] > 0 && parts[1] > 0) {
-      input.resolution = { width: parts[0], height: parts[1] };
-    }
+  const bytes = result.video?.uint8Array;
+  if (!bytes || bytes.byteLength === 0) {
+    throw new Error("No video bytes in SDK response");
   }
-
-  const result = await falQueueRequest(model, input, apiKey, VIDEO_TIMEOUT, signal);
-
-  // fal.ai video response: { video: { url, content_type, file_name, file_size } }
-  const video = result.video as { url: string; content_type?: string; file_name?: string; file_size?: number } | undefined;
-  if (!video?.url) {
-    throw new Error("No video in fal.ai response");
-  }
-
-  const videoResp = await fetch(video.url);
-  if (!videoResp.ok) throw new Error(`Failed to download generated video: ${videoResp.status}`);
-  const buffer = Buffer.from(await videoResp.arrayBuffer());
 
   if (!fs.writeFileBuffer) {
     throw new Error("FileSystem implementation does not support writeFileBuffer (required for binary writes).");
   }
   await fs.mkdir(dirname(filePath));
-  await fs.writeFileBuffer(filePath, new Uint8Array(buffer));
+  await fs.writeFileBuffer(filePath, bytes);
 
-  const sizeMB = (buffer.byteLength / 1024 / 1024).toFixed(2);
+  const sizeMB = (bytes.byteLength / 1024 / 1024).toFixed(2);
   const info = [
     `Video saved: ${filePath}`,
     `Size: ${sizeMB} MB`,
@@ -396,7 +279,7 @@ async function generateVideo(
       provider: "fal",
       model,
       path: filePath,
-      bytes: buffer.byteLength,
+      bytes: bytes.byteLength,
     },
   };
 }
@@ -455,11 +338,7 @@ function createAnalyzeTool(cwd: string, sandbox: string[], fs: FileSystem, vault
       const provider = params.provider ?? "openai";
 
       try {
-        if (provider === "openai") {
-          return await analyzeOpenAI(filePath, fileBuffer, params, vault, signal);
-        } else {
-          return await analyzeAnthropic(filePath, fileBuffer, params, vault, signal);
-        }
+        return await analyzeWithSdk(filePath, fileBuffer, provider, params, vault, signal);
       } catch (err: any) {
         return {
           content: [{ type: "text", text: `Image analysis error (${provider}): ${err.message}` }],
@@ -470,160 +349,52 @@ function createAnalyzeTool(cwd: string, sandbox: string[], fs: FileSystem, vault
   };
 }
 
-async function analyzeOpenAI(
+async function analyzeWithSdk(
   filePath: string,
   fileBuffer: Buffer,
+  providerName: "openai" | "anthropic",
   params: { prompt?: string; model?: string; max_tokens?: number },
   vault?: ResolvedVault,
   signal?: AbortSignal,
 ): Promise<ToolResult> {
-  const apiKey = vault?.getKey("openai", "key") ?? requireEnv("OPENAI_API_KEY");
-  const model = params.model ?? "gpt-4.1-mini";
+  const { generateText } = await import("ai");
+
+  const apiKey = providerName === "openai"
+    ? vault?.getKey("openai", "key") ?? requireEnv("OPENAI_API_KEY")
+    : vault?.getKey("anthropic", "key") ?? requireEnv("ANTHROPIC_API_KEY");
+
+  const defaultModel = providerName === "openai" ? "gpt-4o-mini" : "claude-sonnet-4-20250514";
+  const model = params.model ?? defaultModel;
   const prompt = params.prompt ?? "Describe this image in detail.";
-  const maxTokens = params.max_tokens ?? 1024;
+
+  const provider = await resolveVisionProvider(providerName, apiKey);
 
   const ext = extname(filePath).toLowerCase();
-  const mime = imageMime(ext);
-  const base64 = fileBuffer.toString("base64");
-  const dataUrl = `data:${mime};base64,${base64}`;
+  const mediaType = imageMime(ext);
 
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT);
-  if (signal) signal.addEventListener("abort", () => controller.abort(), { once: true });
-
-  const response = await fetch("https://api.openai.com/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      model,
-      max_tokens: maxTokens,
-      messages: [
-        {
-          role: "user",
-          content: [
-            { type: "text", text: prompt },
-            { type: "image_url", image_url: { url: dataUrl, detail: "auto" } },
-          ],
-        },
+  const result = await generateText({
+    model: provider(model) as any,
+    maxOutputTokens: params.max_tokens ?? 1024,
+    messages: [{
+      role: "user",
+      content: [
+        { type: "text", text: prompt },
+        { type: "image", image: new Uint8Array(fileBuffer), mediaType },
       ],
-    }),
-    signal: controller.signal,
+    }],
+    abortSignal: signal,
   });
 
-  clearTimeout(timer);
-
-  if (!response.ok) {
-    const errText = await response.text();
-    throw new Error(`OpenAI Vision API ${response.status}: ${errText}`);
-  }
-
-  const data = await response.json() as {
-    choices: { message: { content: string } }[];
-    usage?: { prompt_tokens: number; completion_tokens: number; total_tokens: number };
-  };
-
-  const analysis = data.choices[0]?.message?.content ?? "";
-  const usage = data.usage;
-
   return {
-    content: [{ type: "text", text: analysis }],
+    content: [{ type: "text", text: result.text }],
     details: {
-      provider: "openai",
+      provider: providerName,
       model,
       path: filePath,
       imageSize: fileBuffer.byteLength,
-      tokens: usage?.total_tokens,
-      promptTokens: usage?.prompt_tokens,
-      completionTokens: usage?.completion_tokens,
-    },
-  };
-}
-
-async function analyzeAnthropic(
-  filePath: string,
-  fileBuffer: Buffer,
-  params: { prompt?: string; model?: string; max_tokens?: number },
-  vault?: ResolvedVault,
-  signal?: AbortSignal,
-): Promise<ToolResult> {
-  const apiKey = vault?.getKey("anthropic", "key") ?? requireEnv("ANTHROPIC_API_KEY");
-  const model = params.model ?? "claude-sonnet-4-20250514";
-  const prompt = params.prompt ?? "Describe this image in detail.";
-  const maxTokens = params.max_tokens ?? 1024;
-
-  const ext = extname(filePath).toLowerCase();
-  const mime = imageMime(ext);
-  const base64 = fileBuffer.toString("base64");
-
-  // Anthropic only supports specific media types
-  const supportedTypes = ["image/jpeg", "image/png", "image/gif", "image/webp"];
-  const mediaType = supportedTypes.includes(mime) ? mime : "image/png";
-
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT);
-  if (signal) signal.addEventListener("abort", () => controller.abort(), { once: true });
-
-  const response = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: {
-      "x-api-key": apiKey,
-      "anthropic-version": "2023-06-01",
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      model,
-      max_tokens: maxTokens,
-      messages: [
-        {
-          role: "user",
-          content: [
-            {
-              type: "image",
-              source: {
-                type: "base64",
-                media_type: mediaType,
-                data: base64,
-              },
-            },
-            { type: "text", text: prompt },
-          ],
-        },
-      ],
-    }),
-    signal: controller.signal,
-  });
-
-  clearTimeout(timer);
-
-  if (!response.ok) {
-    const errText = await response.text();
-    throw new Error(`Anthropic Vision API ${response.status}: ${errText}`);
-  }
-
-  const data = await response.json() as {
-    content: { type: string; text?: string }[];
-    usage?: { input_tokens: number; output_tokens: number };
-  };
-
-  const analysis = data.content
-    .filter(b => b.type === "text" && b.text)
-    .map(b => b.text)
-    .join("\n");
-
-  const usage = data.usage;
-
-  return {
-    content: [{ type: "text", text: analysis }],
-    details: {
-      provider: "anthropic",
-      model,
-      path: filePath,
-      imageSize: fileBuffer.byteLength,
-      inputTokens: usage?.input_tokens,
-      outputTokens: usage?.output_tokens,
+      tokens: result.usage?.totalTokens,
+      promptTokens: result.usage?.inputTokens,
+      completionTokens: result.usage?.outputTokens,
     },
   };
 }

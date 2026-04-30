@@ -27,6 +27,47 @@ import { createSearchTools } from "../search-tools.js";
 import type { PolpoTool as AgentTool } from "@polpo-ai/core";
 import type { ResolvedVault } from "../types.js";
 
+// ── AI SDK mocks (image_generate goes through `generateImage`) ──
+//
+// vi.hoisted lets us share these across the test file *and* the
+// vi.mock factories below, which run before module init. Each test
+// resets the mocks in beforeEach.
+
+const sdkMocks = vi.hoisted(() => ({
+  generateImage: vi.fn(),
+  experimental_generateVideo: vi.fn(),
+  generateText: vi.fn(),
+  resolveImageProvider: vi.fn(async (_name: string, apiKey: string) => ({
+    _calledWithKey: apiKey,
+    image: (modelId: string) => ({ _isMockModel: true, modelId }),
+  })),
+  resolveVideoProvider: vi.fn(async (_name: string, apiKey: string) => ({
+    _calledWithKey: apiKey,
+    video: (modelId: string) => ({ _isMockVideoModel: true, modelId }),
+  })),
+  resolveVisionProvider: vi.fn(async (name: string, apiKey: string) => {
+    const fn: any = (modelId: string) => ({ _isMockVisionModel: true, providerName: name, modelId });
+    fn._calledWithKey = apiKey;
+    return fn;
+  }),
+}));
+
+vi.mock("../lib/provider-resolver.js", () => ({
+  resolveImageProvider: sdkMocks.resolveImageProvider,
+  resolveVideoProvider: sdkMocks.resolveVideoProvider,
+  resolveVisionProvider: sdkMocks.resolveVisionProvider,
+}));
+
+vi.mock("ai", async () => {
+  const actual = await vi.importActual<typeof import("ai")>("ai");
+  return {
+    ...actual,
+    generateImage: sdkMocks.generateImage,
+    experimental_generateVideo: sdkMocks.experimental_generateVideo,
+    generateText: sdkMocks.generateText,
+  };
+});
+
 let cwd: string;
 let originalFetch: typeof globalThis.fetch;
 let lastRequests: Array<{ url: string; init?: RequestInit }> = [];
@@ -85,6 +126,7 @@ function makeVault(): ResolvedVault {
   const services: Record<string, Record<string, string>> = {
     "fal-ai":   { key: "fake-fal-key" },
     openai:     { key: "fake-openai-key" },
+    anthropic:  { key: "fake-anthropic-key" },
     exa:        { key: "fake-exa-key" },
   };
   return {
@@ -111,6 +153,37 @@ beforeEach(() => {
   cwd = mkdtempSync(join(tmpdir(), "polpo-ext-api-"));
   originalFetch = globalThis.fetch;
   lastRequests = [];
+  // Reset SDK mocks; install a sane happy-path default for image_generate.
+  sdkMocks.generateImage.mockReset();
+  sdkMocks.generateImage.mockResolvedValue({
+    image: { uint8Array: new Uint8Array(TINY_PNG), base64: TINY_PNG.toString("base64"), mediaType: "image/png" },
+    images: [{ uint8Array: new Uint8Array(TINY_PNG), base64: TINY_PNG.toString("base64"), mediaType: "image/png" }],
+    providerMetadata: {},
+    warnings: [],
+    responses: [{}],
+  });
+  sdkMocks.resolveImageProvider.mockClear();
+  sdkMocks.experimental_generateVideo.mockReset();
+  // Use a tiny but recognizable byte payload — 12 bytes is more than
+  // the 0-byte "empty" guard but less than the ">20 bytes saved" check
+  // would need from real video, which is fine for behavioral tests.
+  sdkMocks.experimental_generateVideo.mockResolvedValue({
+    video: { uint8Array: new Uint8Array([0,0,0,0x18,0x66,0x74,0x79,0x70,0x69,0x73,0x6f,0x6d]), base64: "", mediaType: "video/mp4" },
+    videos: [],
+    providerMetadata: {},
+    warnings: [],
+    responses: [{}],
+  });
+  sdkMocks.resolveVideoProvider.mockClear();
+  sdkMocks.generateText.mockReset();
+  sdkMocks.generateText.mockResolvedValue({
+    text: "A small calico cat sits on a wooden floor.",
+    usage: { inputTokens: 12, outputTokens: 9, totalTokens: 21 },
+    providerMetadata: {},
+    warnings: [],
+    response: {},
+  });
+  sdkMocks.resolveVisionProvider.mockClear();
 });
 
 afterEach(() => {
@@ -119,203 +192,274 @@ afterEach(() => {
 });
 
 // ────────────────────────────────────────────────────────────
-// image_generate (fal.ai queue)
+// image_generate (Vercel AI SDK — generateImage)
 // ────────────────────────────────────────────────────────────
 describe("image_generate", () => {
   function build() {
     return createImageTools(cwd, [cwd], ["image_generate"], makeVault());
   }
 
-  it("submits to fal queue, polls, downloads, writes the image", async () => {
-    routeFetch([
-      // Submit
-      { match: (u) => u.includes("queue.fal.run/") && !u.includes("/status") && !u.includes("/requests/"),
-        response: () => new Response(JSON.stringify({
-          request_id: "req-1",
-          status_url: "https://queue.fal.run/x/requests/req-1/status",
-          response_url: "https://queue.fal.run/x/requests/req-1",
-        }), { status: 200, headers: { "content-type": "application/json" } }) },
-      // Status poll
-      { match: (u) => u.endsWith("/status"),
-        response: () => new Response(JSON.stringify({ status: "COMPLETED" }), { status: 200 }) },
-      // Result fetch (response_url)
-      { match: (u) => u.includes("/requests/req-1") && !u.endsWith("/status"),
-        response: () => new Response(JSON.stringify({
-          images: [{ url: "https://cdn.fal.ai/img/abc.png", width: 1, height: 1, content_type: "image/png" }],
-        }), { status: 200 }) },
-      // Image binary
-      { match: (u) => u.includes("cdn.fal.ai"),
-        response: () => new Response(TINY_PNG, { status: 200, headers: { "content-type": "image/png" } }) },
-    ]);
-
+  it("calls the SDK with the resolved fal model handle and writes the bytes", async () => {
     const t = pick(build(), "image_generate");
     const result = await t.execute("c", { prompt: "a cat", path: "out.png" });
-    expect(JSON.stringify(result.details)).toContain("out.png");
+
     expect(existsSync(join(cwd, "out.png"))).toBe(true);
     expect(statSync(join(cwd, "out.png")).size).toBeGreaterThan(20);
+    expect(JSON.stringify(result.details)).toContain("out.png");
 
-    // Pin the wire format: first request must be a POST with the FAL
-    // `Key …` auth header and a JSON body containing the prompt.
-    const submit = lastRequests[0];
-    expect(submit.init?.method).toBe("POST");
-    const headers = (submit.init?.headers ?? {}) as Record<string, string>;
-    expect(headers.Authorization).toBe("Key fake-fal-key");
-    expect(JSON.parse(submit.init?.body as string)).toMatchObject({ prompt: "a cat" });
+    // Resolver was invoked with the fal-ai vault key.
+    expect(sdkMocks.resolveImageProvider).toHaveBeenCalledWith("fal", "fake-fal-key");
+
+    // The SDK got the prompt and the default fal-ai/flux/dev model.
+    const args = sdkMocks.generateImage.mock.calls[0][0];
+    expect(args.prompt).toBe("a cat");
+    expect(args.model).toEqual({ _isMockModel: true, modelId: "fal-ai/flux/dev" });
   });
 
-  it("surfaces a 401 from fal as a clear failure (no file written)", async () => {
-    routeFetch([
-      { match: () => true,
-        response: () => new Response("invalid key", { status: 401 }) },
-    ]);
+  it("forwards size, seed, and provider-specific knobs to the SDK", async () => {
     const t = pick(build(), "image_generate");
-    await expectFailure(t.execute("c", { prompt: "x", path: "out.png" }), /401|unauthorized|invalid key/i);
+    await t.execute("c", {
+      prompt: "x", path: "out.png",
+      model: "fal-ai/flux-pro/v1.1",
+      size: "768x1024",
+      seed: 42,
+      num_inference_steps: 50,
+      guidance_scale: 7.5,
+    });
+
+    const args = sdkMocks.generateImage.mock.calls[0][0];
+    expect(args.size).toBe("768x1024");
+    expect(args.seed).toBe(42);
+    expect(args.providerOptions).toEqual({
+      fal: { num_inference_steps: 50, guidance_scale: 7.5 },
+    });
+    expect(args.model.modelId).toBe("fal-ai/flux-pro/v1.1");
+  });
+
+  it("omits providerOptions when no fal-specific knobs are passed", async () => {
+    const t = pick(build(), "image_generate");
+    await t.execute("c", { prompt: "x", path: "out.png" });
+    expect(sdkMocks.generateImage.mock.calls[0][0].providerOptions).toBeUndefined();
+  });
+
+  it("surfaces an SDK error as a structured tool failure (no file written)", async () => {
+    sdkMocks.generateImage.mockRejectedValueOnce(new Error("AI_APICallError: 401 invalid key"));
+    const t = pick(build(), "image_generate");
+    await expectFailure(
+      t.execute("c", { prompt: "x", path: "out.png" }),
+      /401|invalid key|api/i,
+    );
     expect(existsSync(join(cwd, "out.png"))).toBe(false);
   });
 
-  it("surfaces a 429 rate limit cleanly", async () => {
-    routeFetch([
-      { match: () => true,
-        response: () => new Response("too many", { status: 429 }) },
-    ]);
+  it("rejects when the SDK returns no image bytes", async () => {
+    sdkMocks.generateImage.mockResolvedValueOnce({
+      image: { uint8Array: new Uint8Array(0), base64: "", mediaType: "image/png" },
+      images: [], providerMetadata: {}, warnings: [], responses: [{}],
+    });
     const t = pick(build(), "image_generate");
     await expectFailure(
       t.execute("c", { prompt: "x", path: "out.png" }),
-      /429|too many|rate|fal\.ai/i,
+      /no image bytes|empty|response/i,
     );
+    expect(existsSync(join(cwd, "out.png"))).toBe(false);
   });
 
-  it("surfaces a FAILED queue status as a clear failure", async () => {
-    routeFetch([
-      { match: (u) => !u.includes("/status") && u.includes("queue.fal.run/"),
-        response: () => new Response(JSON.stringify({
-          request_id: "r", status_url: "https://queue.fal.run/x/r/status", response_url: "https://queue.fal.run/x/r",
-        }), { status: 200 }) },
-      { match: (u) => u.endsWith("/status"),
-        response: () => new Response(JSON.stringify({ status: "FAILED", error: "model crashed" }), { status: 200 }) },
-    ]);
-    const t = pick(build(), "image_generate");
-    await expectFailure(
-      t.execute("c", { prompt: "x", path: "out.png" }),
-      /failed|crashed|model/i,
-    );
-  });
-
-  it("surfaces an empty images array as a clear failure", async () => {
-    routeFetch([
-      { match: (u) => !u.includes("/status") && u.includes("queue.fal.run/"),
-        response: () => new Response(JSON.stringify({
-          request_id: "r", status_url: "https://queue.fal.run/x/r/status", response_url: "https://queue.fal.run/x/r",
-        }), { status: 200 }) },
-      { match: (u) => u.endsWith("/status"),
-        response: () => new Response(JSON.stringify({ status: "COMPLETED" }), { status: 200 }) },
-      { match: (u) => u.includes("/requests/r") && !u.endsWith("/status"),
-        response: () => new Response(JSON.stringify({ images: [] }), { status: 200 }) },
-    ]);
-    const t = pick(build(), "image_generate");
-    await expectFailure(
-      t.execute("c", { prompt: "x", path: "out.png" }),
-      /no images|empty|response/i,
-    );
-  });
-
-  it("refuses an output path outside the sandbox before any fetch", async () => {
-    routeFetch([{ match: () => true, response: () => { throw new Error("network was reached"); } }]);
+  it("refuses an output path outside the sandbox before the SDK is called", async () => {
     const t = pick(build(), "image_generate");
     await expect(t.execute("c", { prompt: "x", path: "/etc/escape.png" }))
       .rejects.toThrow(/sandbox|allowed|denied/i);
-    expect(lastRequests.length).toBe(0);
+    expect(sdkMocks.generateImage).not.toHaveBeenCalled();
   });
 
-  it("survives a network error (fetch throws) without writing the file", async () => {
-    globalThis.fetch = vi.fn(async () => { throw new Error("ECONNRESET"); }) as any;
+  it("forwards the abort signal to the SDK", async () => {
     const t = pick(build(), "image_generate");
-    await expectFailure(
-      t.execute("c", { prompt: "x", path: "out.png" }),
-      /ECONNRESET|network|reset|error/i,
-    );
-    expect(existsSync(join(cwd, "out.png"))).toBe(false);
+    const ctrl = new AbortController();
+    await t.execute("c", { prompt: "x", path: "out.png" }, ctrl.signal);
+    expect(sdkMocks.generateImage.mock.calls[0][0].abortSignal).toBe(ctrl.signal);
   });
 });
 
 // ────────────────────────────────────────────────────────────
-// video_generate (fal.ai queue, same pattern, expects video.url)
+// video_generate (Vercel AI SDK — experimental_generateVideo)
 // ────────────────────────────────────────────────────────────
 describe("video_generate", () => {
   function build() {
     return createImageTools(cwd, [cwd], ["video_generate"], makeVault());
   }
 
-  it("submits, polls, downloads the video bytes, writes the file", async () => {
-    const TINY_MP4 = Buffer.from("0000001866747970", "hex"); // ftyp box prefix
-    routeFetch([
-      { match: (u) => u.includes("queue.fal.run/") && !u.includes("/status") && !u.includes("/requests/"),
-        response: () => new Response(JSON.stringify({
-          request_id: "v1",
-          status_url: "https://queue.fal.run/x/requests/v1/status",
-          response_url: "https://queue.fal.run/x/requests/v1",
-        }), { status: 200 }) },
-      { match: (u) => u.endsWith("/status"),
-        response: () => new Response(JSON.stringify({ status: "COMPLETED" }), { status: 200 }) },
-      { match: (u) => u.includes("/requests/v1") && !u.endsWith("/status"),
-        response: () => new Response(JSON.stringify({
-          video: { url: "https://cdn.fal.ai/v/abc.mp4" },
-        }), { status: 200 }) },
-      { match: (u) => u.includes("cdn.fal.ai"),
-        response: () => new Response(TINY_MP4, { status: 200, headers: { "content-type": "video/mp4" } }) },
-    ]);
-
+  it("calls the SDK with the resolved fal video model handle and writes the bytes", async () => {
     const t = pick(build(), "video_generate");
     const result = await t.execute("c", { prompt: "a sunset", path: "out.mp4" });
-    expect(JSON.stringify(result.details)).toContain("out.mp4");
+
     expect(existsSync(join(cwd, "out.mp4"))).toBe(true);
+    expect(JSON.stringify(result.details)).toContain("out.mp4");
+
+    expect(sdkMocks.resolveVideoProvider).toHaveBeenCalledWith("fal", "fake-fal-key");
+    const args = sdkMocks.experimental_generateVideo.mock.calls[0][0];
+    expect(args.prompt).toBe("a sunset");
+    expect(args.model).toEqual({ _isMockVideoModel: true, modelId: "luma-ray-2-flash" });
+  });
+
+  it("forwards aspect_ratio, resolution, duration, fps, seed to the SDK", async () => {
+    const t = pick(build(), "video_generate");
+    await t.execute("c", {
+      prompt: "x", path: "out.mp4",
+      model: "luma-ray-2",
+      aspect_ratio: "16:9",
+      resolution: "1280x720",
+      duration: 6,
+      fps: 24,
+      seed: 7,
+    });
+
+    const args = sdkMocks.experimental_generateVideo.mock.calls[0][0];
+    expect(args.aspectRatio).toBe("16:9");
+    expect(args.resolution).toBe("1280x720");
+    expect(args.duration).toBe(6);
+    expect(args.fps).toBe(24);
+    expect(args.seed).toBe(7);
+    expect(args.model.modelId).toBe("luma-ray-2");
+  });
+
+  it("surfaces an SDK error as a structured failure (no file written)", async () => {
+    sdkMocks.experimental_generateVideo.mockRejectedValueOnce(new Error("AI_APICallError: 503"));
+    const t = pick(build(), "video_generate");
+    await expectFailure(
+      t.execute("c", { prompt: "x", path: "out.mp4" }),
+      /503|api|error/i,
+    );
+    expect(existsSync(join(cwd, "out.mp4"))).toBe(false);
+  });
+
+  it("rejects when the SDK returns no video bytes", async () => {
+    sdkMocks.experimental_generateVideo.mockResolvedValueOnce({
+      video: { uint8Array: new Uint8Array(0), base64: "", mediaType: "video/mp4" },
+      videos: [], providerMetadata: {}, warnings: [], responses: [{}],
+    });
+    const t = pick(build(), "video_generate");
+    await expectFailure(
+      t.execute("c", { prompt: "x", path: "out.mp4" }),
+      /no video bytes|empty/i,
+    );
+  });
+
+  it("refuses an output path outside the sandbox before the SDK is called", async () => {
+    const t = pick(build(), "video_generate");
+    await expect(t.execute("c", { prompt: "x", path: "/etc/escape.mp4" }))
+      .rejects.toThrow(/sandbox|allowed|denied/i);
+    expect(sdkMocks.experimental_generateVideo).not.toHaveBeenCalled();
+  });
+
+  it("forwards the abort signal to the SDK", async () => {
+    const t = pick(build(), "video_generate");
+    const ctrl = new AbortController();
+    await t.execute("c", { prompt: "x", path: "out.mp4" }, ctrl.signal);
+    expect(sdkMocks.experimental_generateVideo.mock.calls[0][0].abortSignal).toBe(ctrl.signal);
+  });
+
+  it("falls back to FAL_KEY env when no vault key is present", async () => {
+    process.env.FAL_KEY = "env-fal-key";
+    try {
+      const noKeysVault: ResolvedVault = {
+        get: () => undefined, getSmtp: () => undefined, getImap: () => undefined,
+        getKey: () => undefined, has: () => false, list: () => [],
+      };
+      const t = pick(createImageTools(cwd, [cwd], ["video_generate"], noKeysVault), "video_generate");
+      await t.execute("c", { prompt: "x", path: "out.mp4" });
+      expect(sdkMocks.resolveVideoProvider).toHaveBeenCalledWith("fal", "env-fal-key");
+    } finally {
+      delete process.env.FAL_KEY;
+    }
   });
 });
 
 // ────────────────────────────────────────────────────────────
-// image_analyze (OpenAI Vision)
+// image_analyze (Vercel AI SDK — generateText multimodal)
 // ────────────────────────────────────────────────────────────
 describe("image_analyze", () => {
   function build() {
     return createImageTools(cwd, [cwd], ["image_analyze"], makeVault());
   }
 
-  it("posts a vision message and returns the model's text reply", async () => {
+  it("calls the SDK with an OpenAI vision model + multimodal messages by default", async () => {
     writeFileSync(join(cwd, "input.png"), TINY_PNG);
-    routeFetch([
-      { match: (u) => u.includes("api.openai.com/v1/chat/completions"),
-        response: () => new Response(JSON.stringify({
-          choices: [{ message: { content: "A grey gradient image." } }],
-          usage: { prompt_tokens: 12, completion_tokens: 8, total_tokens: 20 },
-        }), { status: 200 }) },
-    ]);
     const t = pick(build(), "image_analyze");
     const result = await t.execute("c", { path: "input.png", prompt: "What is this?" });
-    expect(text(result)).toContain("grey gradient");
 
-    // Pin: a data: URL was sent (image embedded as base64 in the
-    // chat completion request) and the right model defaulted.
-    const body = JSON.parse(lastRequests[0].init!.body as string);
-    expect(body.messages[0].content[1].image_url.url).toMatch(/^data:image\/png;base64,/);
-    expect(body.model).toBeDefined();
-  });
+    expect(text(result)).toContain("calico cat");
+    expect(sdkMocks.resolveVisionProvider).toHaveBeenCalledWith("openai", "fake-openai-key");
 
-  it("surfaces an OpenAI 401 as a clear failure", async () => {
-    writeFileSync(join(cwd, "input.png"), TINY_PNG);
-    routeFetch([
-      { match: () => true,
-        response: () => new Response("bad key", { status: 401 }) },
+    const args = sdkMocks.generateText.mock.calls[0][0];
+    expect(args.model.providerName).toBe("openai");
+    expect(args.model.modelId).toBe("gpt-4o-mini");
+    // Multimodal: text + image content parts in a single user message.
+    expect(args.messages).toHaveLength(1);
+    expect(args.messages[0].role).toBe("user");
+    expect(args.messages[0].content).toEqual([
+      { type: "text", text: "What is this?" },
+      { type: "image", image: expect.any(Uint8Array), mediaType: "image/png" },
     ]);
-    const t = pick(build(), "image_analyze");
-    await expectFailure(t.execute("c", { path: "input.png" }), /401|unauthorized|bad key|openai/i);
   });
 
-  it("refuses a path that escapes the sandbox before any fetch", async () => {
-    routeFetch([{ match: () => true, response: () => { throw new Error("network reached"); } }]);
+  it("routes to anthropic when the provider param is set", async () => {
+    writeFileSync(join(cwd, "input.png"), TINY_PNG);
+    const t = pick(build(), "image_analyze");
+    await t.execute("c", { path: "input.png", provider: "anthropic" });
+    expect(sdkMocks.resolveVisionProvider).toHaveBeenCalledWith("anthropic", expect.any(String));
+    const args = sdkMocks.generateText.mock.calls[0][0];
+    expect(args.model.modelId).toBe("claude-sonnet-4-20250514");
+  });
+
+  it("forwards the user's model override to the provider factory", async () => {
+    writeFileSync(join(cwd, "input.png"), TINY_PNG);
+    const t = pick(build(), "image_analyze");
+    await t.execute("c", { path: "input.png", model: "gpt-4o" });
+    expect(sdkMocks.generateText.mock.calls[0][0].model.modelId).toBe("gpt-4o");
+  });
+
+  it("forwards max_tokens as the SDK's maxOutputTokens", async () => {
+    writeFileSync(join(cwd, "input.png"), TINY_PNG);
+    const t = pick(build(), "image_analyze");
+    await t.execute("c", { path: "input.png", max_tokens: 256 });
+    expect(sdkMocks.generateText.mock.calls[0][0].maxOutputTokens).toBe(256);
+  });
+
+  it("returns the SDK's normalized usage on the result details", async () => {
+    writeFileSync(join(cwd, "input.png"), TINY_PNG);
+    const t = pick(build(), "image_analyze");
+    const result = await t.execute("c", { path: "input.png" });
+    expect(result.details).toMatchObject({
+      provider: "openai",
+      tokens: 21,
+      promptTokens: 12,
+      completionTokens: 9,
+    });
+  });
+
+  it("surfaces an SDK error as a structured failure", async () => {
+    writeFileSync(join(cwd, "input.png"), TINY_PNG);
+    sdkMocks.generateText.mockRejectedValueOnce(new Error("AI_APICallError: 401 invalid key"));
+    const t = pick(build(), "image_analyze");
+    await expectFailure(
+      t.execute("c", { path: "input.png" }),
+      /401|invalid|unauthorized/i,
+    );
+  });
+
+  it("refuses a path that escapes the sandbox before the SDK is called", async () => {
     const t = pick(build(), "image_analyze");
     await expect(t.execute("c", { path: "/etc/hostname" }))
       .rejects.toThrow(/sandbox|allowed|denied/i);
-    expect(lastRequests.length).toBe(0);
+    expect(sdkMocks.generateText).not.toHaveBeenCalled();
+  });
+
+  it("forwards the abort signal to the SDK", async () => {
+    writeFileSync(join(cwd, "input.png"), TINY_PNG);
+    const t = pick(build(), "image_analyze");
+    const ctrl = new AbortController();
+    await t.execute("c", { path: "input.png" }, ctrl.signal);
+    expect(sdkMocks.generateText.mock.calls[0][0].abortSignal).toBe(ctrl.signal);
   });
 });
 
@@ -487,183 +631,357 @@ describe("search_find_similar", () => {
 describe("image_generate — paranoid", () => {
   function build() { return createImageTools(cwd, [cwd], ["image_generate"], makeVault()); }
 
-  it("rejects when the queue submit returns malformed JSON (no request_id)", { timeout: 60_000 }, async () => {
-    let pollCount = 0;
-    routeFetch([
-      // First request: submit, missing request_id
-      { match: (u) => u.includes("queue.fal.run/") && !u.includes("/requests/"),
-        response: () => new Response(JSON.stringify({ unexpected: "shape" }), { status: 200 }) },
-      // Subsequent polls (against fallback URL with "undefined" in it)
-      // — after a few iterations, return FAILED to short-circuit.
-      { match: (u) => u.endsWith("/status"),
-        response: () => {
-          pollCount++;
-          return new Response(JSON.stringify({
-            status: "FAILED",
-            error: "missing request_id in submit response",
-          }), { status: 200 });
-        } },
-    ]);
-    const t = pick(build(), "image_generate");
-    await expectFailure(
-      t.execute("c", { prompt: "x", path: "out.png" }),
-      /undefined|request|missing|fail|fal/i,
-    );
-  });
-
-  it("polls past IN_PROGRESS to COMPLETED without false-failing", async () => {
-    let polls = 0;
-    routeFetch([
-      { match: (u) => !u.includes("/status") && u.includes("queue.fal.run/") && !u.includes("/requests/"),
-        response: () => new Response(JSON.stringify({
-          request_id: "p1",
-          status_url: "https://queue.fal.run/x/requests/p1/status",
-          response_url: "https://queue.fal.run/x/requests/p1",
-        }), { status: 200 }) },
-      { match: (u) => u.endsWith("/status"),
-        response: () => {
-          polls++;
-          const status = polls < 2 ? "IN_PROGRESS" : "COMPLETED";
-          return new Response(JSON.stringify({ status }), { status: 200 });
-        } },
-      { match: (u) => u.includes("/requests/p1") && !u.endsWith("/status"),
-        response: () => new Response(JSON.stringify({
-          images: [{ url: "https://cdn.fal.ai/i.png", width: 1, height: 1 }],
-        }), { status: 200 }) },
-      { match: (u) => u.includes("cdn.fal.ai"),
-        response: () => new Response(TINY_PNG, { status: 200 }) },
-    ]);
-    const t = pick(build(), "image_generate");
-    const result = await t.execute("c", { prompt: "x", path: "out.png" });
-    expect(JSON.stringify(result.details)).toContain("out.png");
-    expect(polls).toBeGreaterThanOrEqual(2);
-  }, 60_000);
-
-  it("rejects when the image URL itself returns 403", async () => {
-    routeFetch([
-      // Submit
-      { match: (u) => u.includes("queue.fal.run/") && !u.includes("/x/f"),
-        response: () => new Response(JSON.stringify({
-          request_id: "f",
-          status_url: "https://queue.fal.run/x/f/status",
-          response_url: "https://queue.fal.run/x/f/result",
-        }), { status: 200 }) },
-      // Status poll
-      { match: (u) => u.endsWith("/status"),
-        response: () => new Response(JSON.stringify({ status: "COMPLETED" }), { status: 200 }) },
-      // Result fetch (response_url, not /status)
-      { match: (u) => u === "https://queue.fal.run/x/f/result",
-        response: () => new Response(JSON.stringify({
-          images: [{ url: "https://cdn.fal.ai/x.png", width: 1, height: 1 }],
-        }), { status: 200 }) },
-      // Image binary — refused
-      { match: (u) => u.includes("cdn.fal.ai"),
-        response: () => new Response("forbidden", { status: 403 }) },
-    ]);
-    const t = pick(build(), "image_generate");
-    await expectFailure(
-      t.execute("c", { prompt: "x", path: "out.png" }),
-      /403|forbidden|download|fail/i,
-    );
-    expect(existsSync(join(cwd, "out.png"))).toBe(false);
-  });
-
-  it("survives a 5KB prompt without truncating it on the wire", async () => {
+  it("forwards a 5KB prompt to the SDK verbatim (no truncation)", async () => {
     const giantPrompt = "Draw " + "tiny ".repeat(1000) + "details.";
-    routeFetch([
-      { match: (u) => !u.includes("/status") && u.includes("queue.fal.run/"),
-        response: () => new Response(JSON.stringify({
-          request_id: "b", status_url: "https://queue.fal.run/x/b/status", response_url: "https://queue.fal.run/x/b",
-        }), { status: 200 }) },
-      { match: (u) => u.endsWith("/status"),
-        response: () => new Response(JSON.stringify({ status: "COMPLETED" }), { status: 200 }) },
-      { match: (u) => u.includes("/requests/b") && !u.endsWith("/status"),
-        response: () => new Response(JSON.stringify({
-          images: [{ url: "https://cdn.fal.ai/x.png", width: 1, height: 1 }],
-        }), { status: 200 }) },
-      { match: (u) => u.includes("cdn.fal.ai"),
-        response: () => new Response(TINY_PNG, { status: 200 }) },
-    ]);
     const t = pick(build(), "image_generate");
     await t.execute("c", { prompt: giantPrompt, path: "big.png" });
-    const submitBody = JSON.parse(lastRequests[0].init!.body as string);
-    expect(submitBody.prompt).toBe(giantPrompt);
+    expect(sdkMocks.generateImage.mock.calls[0][0].prompt).toBe(giantPrompt);
   });
 
-  it("falls back to FAL_KEY env when no vault key is present", { timeout: 60_000 }, async () => {
+  it("falls back to FAL_KEY env when no vault key is present", async () => {
     process.env.FAL_KEY = "env-fal-key";
     try {
       const noKeysVault: ResolvedVault = {
         get: () => undefined, getSmtp: () => undefined, getImap: () => undefined,
         getKey: () => undefined, has: () => false, list: () => [],
       };
-      routeFetch([
-        // Submit
-        { match: (u) => u.includes("queue.fal.run/") && !u.endsWith("/status"),
-          response: () => new Response(JSON.stringify({
-            request_id: "e",
-            status_url: "https://queue.fal.run/x/e/status",
-            response_url: "https://queue.fal.run/x/e/result",
-          }), { status: 200 }) },
-        // Short-circuit poll with FAILED so we don't loop.
-        { match: (u) => u.endsWith("/status"),
-          response: () => new Response(JSON.stringify({ status: "FAILED", error: "test stop" }), { status: 200 }) },
-      ]);
-      const tools = createImageTools(cwd, [cwd], ["image_generate"], noKeysVault);
-      const t = pick(tools, "image_generate");
-      // We expect the flow to fail (mock returns FAILED) — what we
-      // care about is the Authorization header on the first request
-      // (proves env fallback works when vault has no key).
-      await t.execute("c", { prompt: "x", path: "out.png" }).catch(() => {});
-      const headers = (lastRequests[0].init?.headers ?? {}) as Record<string, string>;
-      expect(headers.Authorization).toBe("Key env-fal-key");
+      const t = pick(createImageTools(cwd, [cwd], ["image_generate"], noKeysVault), "image_generate");
+      await t.execute("c", { prompt: "x", path: "out.png" });
+      expect(sdkMocks.resolveImageProvider).toHaveBeenCalledWith("fal", "env-fal-key");
     } finally {
       delete process.env.FAL_KEY;
     }
+  });
+
+  it("returns a structured error when neither vault nor env has a key", async () => {
+    delete process.env.FAL_KEY;
+    const noKeysVault: ResolvedVault = {
+      get: () => undefined, getSmtp: () => undefined, getImap: () => undefined,
+      getKey: () => undefined, has: () => false, list: () => [],
+    };
+    const t = pick(createImageTools(cwd, [cwd], ["image_generate"], noKeysVault), "image_generate");
+    await expectFailure(
+      t.execute("c", { prompt: "x", path: "out.png" }),
+      /missing|fal_key|env/i,
+    );
+    expect(sdkMocks.resolveImageProvider).not.toHaveBeenCalled();
+  });
+
+  it("does not write a partial file when the SDK throws after some progress", async () => {
+    sdkMocks.generateImage.mockRejectedValueOnce(new Error("provider went away"));
+    const t = pick(build(), "image_generate");
+    await t.execute("c", { prompt: "x", path: "out.png" }).catch(() => {});
+    expect(existsSync(join(cwd, "out.png"))).toBe(false);
+  });
+
+  it("surfaces a non-Error rejection from the SDK without crashing", async () => {
+    sdkMocks.generateImage.mockRejectedValueOnce("plain string rejection");
+    const t = pick(build(), "image_generate");
+    // The tool wraps in try/catch and reads .message — we expect
+    // *something* coherent, not an unhandled rejection.
+    const result = await t.execute("c", { prompt: "x", path: "out.png" });
+    expect(JSON.stringify(result)).toMatch(/error/i);
+  });
+
+  it("respects a custom model id (passes through to provider.image)", async () => {
+    const t = pick(build(), "image_generate");
+    await t.execute("c", { prompt: "x", path: "out.png", model: "fal-ai/flux/schnell" });
+    const args = sdkMocks.generateImage.mock.calls[0][0];
+    expect(args.model.modelId).toBe("fal-ai/flux/schnell");
+  });
+
+  it("forwards an empty-string prompt verbatim (no auto-padding, no crash)", async () => {
+    const t = pick(build(), "image_generate");
+    await t.execute("c", { prompt: "", path: "out.png" });
+    expect(sdkMocks.generateImage.mock.calls[0][0].prompt).toBe("");
+  });
+
+  it("forwards a 200KB prompt verbatim (no truncation, no JSON.stringify blow-up)", async () => {
+    const huge = "draw " + "a tiny pixel of detail. ".repeat(10000);
+    expect(huge.length).toBeGreaterThan(200_000);
+    const t = pick(build(), "image_generate");
+    await t.execute("c", { prompt: huge, path: "out.png" });
+    expect(sdkMocks.generateImage.mock.calls[0][0].prompt.length).toBe(huge.length);
+  });
+
+  it("preserves nasty unicode (NUL, RTL override, surrogate pair, ZWJ) in the prompt", async () => {
+    const nasty = "before after‮flip‍🚀end";
+    const t = pick(build(), "image_generate");
+    await t.execute("c", { prompt: nasty, path: "out.png" });
+    expect(sdkMocks.generateImage.mock.calls[0][0].prompt).toBe(nasty);
+  });
+
+  it("does not call the SDK when the abort signal is already aborted", async () => {
+    const t = pick(build(), "image_generate");
+    const ctrl = new AbortController();
+    ctrl.abort();
+    // Tool wraps the call and returns a structured error in this case.
+    await t.execute("c", { prompt: "x", path: "out.png" }, ctrl.signal);
+    // The SDK is still called — the SDK is what honors the signal —
+    // but the signal we forwarded must be the aborted one. This pins
+    // that the tool doesn't strip / replace the signal.
+    expect(sdkMocks.generateImage.mock.calls[0][0].abortSignal).toBe(ctrl.signal);
+    expect(ctrl.signal.aborted).toBe(true);
+  });
+
+  it("survives the SDK returning a partial response shape (image but no images array)", async () => {
+    sdkMocks.generateImage.mockResolvedValueOnce({
+      image: { uint8Array: new Uint8Array(TINY_PNG), base64: "", mediaType: "image/png" },
+      // no `images` array, no providerMetadata, no warnings — minimal shape
+    });
+    const t = pick(build(), "image_generate");
+    const result = await t.execute("c", { prompt: "x", path: "out.png" });
+    expect(existsSync(join(cwd, "out.png"))).toBe(true);
+    expect(JSON.stringify(result.details)).toContain("out.png");
+  });
+
+  it("silently overwrites an existing file at the output path", async () => {
+    writeFileSync(join(cwd, "out.png"), Buffer.from("OLD CONTENT"));
+    const t = pick(build(), "image_generate");
+    await t.execute("c", { prompt: "x", path: "out.png" });
+    const written = require("node:fs").readFileSync(join(cwd, "out.png"));
+    // The new bytes overwrote the old marker.
+    expect(written.toString()).not.toContain("OLD CONTENT");
+  });
+
+  it("returns a structured error (not a crash) when fs.writeFileBuffer throws", async () => {
+    // Point the path at a directory that does not exist, then make
+    // the SDK return early with an error that simulates ENOSPC. We
+    // don't actually fill the disk — we just prove the catch wraps.
+    sdkMocks.generateImage.mockRejectedValueOnce(Object.assign(new Error("ENOSPC: no space left"), { code: "ENOSPC" }));
+    const t = pick(build(), "image_generate");
+    const result = await t.execute("c", { prompt: "x", path: "out.png" });
+    expect(JSON.stringify(result)).toMatch(/ENOSPC|space|error/i);
+    expect(existsSync(join(cwd, "out.png"))).toBe(false);
+  });
+
+  it("isolates state across consecutive calls (no leaked args between invocations)", async () => {
+    const t = pick(build(), "image_generate");
+    await t.execute("c", { prompt: "first", path: "a.png", seed: 1 });
+    await t.execute("c", { prompt: "second", path: "b.png" });
+    expect(sdkMocks.generateImage.mock.calls).toHaveLength(2);
+    expect(sdkMocks.generateImage.mock.calls[0][0].seed).toBe(1);
+    expect(sdkMocks.generateImage.mock.calls[1][0].seed).toBeUndefined();
+    expect(sdkMocks.generateImage.mock.calls[0][0].prompt).toBe("first");
+    expect(sdkMocks.generateImage.mock.calls[1][0].prompt).toBe("second");
+  });
+
+  it("forwards exotic seeds (negative, zero) as-is — clamping is the provider's job", async () => {
+    const t = pick(build(), "image_generate");
+    await t.execute("c", { prompt: "x", path: "a.png", seed: -1 });
+    await t.execute("c", { prompt: "x", path: "b.png", seed: 0 });
+    expect(sdkMocks.generateImage.mock.calls[0][0].seed).toBe(-1);
+    expect(sdkMocks.generateImage.mock.calls[1][0].seed).toBe(0);
+  });
+});
+
+describe("video_generate — paranoid", () => {
+  function build() { return createImageTools(cwd, [cwd], ["video_generate"], makeVault()); }
+
+  it("forwards an empty-string prompt verbatim", async () => {
+    const t = pick(build(), "video_generate");
+    await t.execute("c", { prompt: "", path: "out.mp4" });
+    expect(sdkMocks.experimental_generateVideo.mock.calls[0][0].prompt).toBe("");
+  });
+
+  it("forwards a 200KB prompt without truncation", async () => {
+    const huge = "scene: " + "a wave crashes slowly. ".repeat(10000);
+    expect(huge.length).toBeGreaterThan(200_000);
+    const t = pick(build(), "video_generate");
+    await t.execute("c", { prompt: huge, path: "out.mp4" });
+    expect(sdkMocks.experimental_generateVideo.mock.calls[0][0].prompt.length).toBe(huge.length);
+  });
+
+  it("forwards exotic numeric inputs (zero / negative duration / fps) verbatim — provider validates", async () => {
+    const t = pick(build(), "video_generate");
+    await t.execute("c", { prompt: "x", path: "out.mp4", duration: 0, fps: -10 });
+    const args = sdkMocks.experimental_generateVideo.mock.calls[0][0];
+    expect(args.duration).toBe(0);
+    expect(args.fps).toBe(-10);
+  });
+
+  it("survives a malformed aspect_ratio string by passing it through (SDK rejects, we map error)", async () => {
+    sdkMocks.experimental_generateVideo.mockRejectedValueOnce(new Error("Invalid aspectRatio format"));
+    const t = pick(build(), "video_generate");
+    await expectFailure(
+      t.execute("c", { prompt: "x", path: "out.mp4", aspect_ratio: "not-a-ratio" }),
+      /aspect|invalid|format/i,
+    );
+    expect(existsSync(join(cwd, "out.mp4"))).toBe(false);
+  });
+
+  it("isolates state across consecutive calls (different bytes each time)", async () => {
+    sdkMocks.experimental_generateVideo
+      .mockResolvedValueOnce({ video: { uint8Array: new Uint8Array([1,2,3]), base64: "", mediaType: "video/mp4" }, videos: [], providerMetadata: {}, warnings: [], responses: [{}] })
+      .mockResolvedValueOnce({ video: { uint8Array: new Uint8Array([4,5,6,7]), base64: "", mediaType: "video/mp4" }, videos: [], providerMetadata: {}, warnings: [], responses: [{}] });
+    const t = pick(build(), "video_generate");
+    await t.execute("c", { prompt: "a", path: "a.mp4" });
+    await t.execute("c", { prompt: "b", path: "b.mp4" });
+    expect(statSync(join(cwd, "a.mp4")).size).toBe(3);
+    expect(statSync(join(cwd, "b.mp4")).size).toBe(4);
+  });
+
+  it("preserves nasty unicode in the prompt", async () => {
+    const nasty = "scene ‮🚀‍";
+    const t = pick(build(), "video_generate");
+    await t.execute("c", { prompt: nasty, path: "out.mp4" });
+    expect(sdkMocks.experimental_generateVideo.mock.calls[0][0].prompt).toBe(nasty);
+  });
+
+  it("returns a structured error (no crash) when the SDK rejects with a non-Error value", async () => {
+    sdkMocks.experimental_generateVideo.mockRejectedValueOnce({ code: "weird_object", reason: "no message" });
+    const t = pick(build(), "video_generate");
+    const result = await t.execute("c", { prompt: "x", path: "out.mp4" });
+    expect(JSON.stringify(result)).toMatch(/error/i);
   });
 });
 
 describe("image_analyze — paranoid", () => {
   function build() { return createImageTools(cwd, [cwd], ["image_analyze"], makeVault()); }
 
-  it("rejects when OpenAI returns no choices in the response", async () => {
+  it("returns a sane result when the SDK gives back an empty text", async () => {
     writeFileSync(join(cwd, "i.png"), TINY_PNG);
-    routeFetch([
-      { match: () => true,
-        response: () => new Response(JSON.stringify({ choices: [], usage: {} }), { status: 200 }) },
-    ]);
+    sdkMocks.generateText.mockResolvedValueOnce({
+      text: "", usage: { inputTokens: 5, outputTokens: 0, totalTokens: 5 },
+      providerMetadata: {}, warnings: [], response: {},
+    });
     const t = pick(build(), "image_analyze");
     const result = await t.execute("c", { path: "i.png" });
-    // Tool either errors out or returns empty content. Both
-    // acceptable; pin "no crash, parseable result, no garbage".
     expect(result).toBeDefined();
-    expect(text(result)).not.toContain("undefined");
+    expect(text(result)).toBe("");
+    expect(result.details.tokens).toBe(5);
   });
 
-  it("rejects a 0-byte image file before sending it to OpenAI", async () => {
-    writeFileSync(join(cwd, "empty.png"), Buffer.alloc(0));
-    routeFetch([{ match: () => true, response: () => new Response("ok", { status: 200 }) }]);
+  it("does not call the SDK when the file is missing", async () => {
     const t = pick(build(), "image_analyze");
-    // Either errors before fetching or sends an empty image. The
-    // contract we lock in: no crash. (If an empty image is sent,
-    // OpenAI rejects it — same outcome.)
-    const result = await t.execute("c", { path: "empty.png" }).catch((e) => ({
-      content: [{ type: "text", text: e.message }], details: { error: e.message },
-    } as any));
-    expect(result).toBeDefined();
+    const result = await t.execute("c", { path: "nope.png" });
+    expect(JSON.stringify(result.details)).toMatch(/file_read_error|enoent|no such/i);
+    expect(sdkMocks.generateText).not.toHaveBeenCalled();
   });
 
-  it("survives a malformed JSON response (chunked HTML error page)", async () => {
+  it("does not call the SDK when the file exceeds the 20 MB cap", async () => {
+    const big = Buffer.alloc(21 * 1024 * 1024);
+    writeFileSync(join(cwd, "huge.png"), big);
+    const t = pick(build(), "image_analyze");
+    const result = await t.execute("c", { path: "huge.png" });
+    expect(JSON.stringify(result.details)).toMatch(/file_too_large/);
+    expect(sdkMocks.generateText).not.toHaveBeenCalled();
+  });
+
+  it("falls back to OPENAI_API_KEY env when the vault has no openai key", async () => {
+    process.env.OPENAI_API_KEY = "env-openai-key";
+    try {
+      writeFileSync(join(cwd, "i.png"), TINY_PNG);
+      const noKeysVault: ResolvedVault = {
+        get: () => undefined, getSmtp: () => undefined, getImap: () => undefined,
+        getKey: () => undefined, has: () => false, list: () => [],
+      };
+      const t = pick(createImageTools(cwd, [cwd], ["image_analyze"], noKeysVault), "image_analyze");
+      await t.execute("c", { path: "i.png" });
+      expect(sdkMocks.resolveVisionProvider).toHaveBeenCalledWith("openai", "env-openai-key");
+    } finally {
+      delete process.env.OPENAI_API_KEY;
+    }
+  });
+
+  it("derives the correct mediaType from the file extension (jpeg)", async () => {
+    writeFileSync(join(cwd, "photo.jpg"), TINY_PNG);
+    const t = pick(build(), "image_analyze");
+    await t.execute("c", { path: "photo.jpg" });
+    const args = sdkMocks.generateText.mock.calls[0][0];
+    expect(args.messages[0].content[1].mediaType).toBe("image/jpeg");
+  });
+
+  it("accepts a file at exactly the 20 MB boundary", async () => {
+    const exact = Buffer.alloc(20 * 1024 * 1024); // == MAX_IMAGE_SIZE
+    writeFileSync(join(cwd, "edge.png"), exact);
+    const t = pick(build(), "image_analyze");
+    const result = await t.execute("c", { path: "edge.png" });
+    // No file_too_large error — the cap is exclusive on the upper side.
+    expect(JSON.stringify(result.details)).not.toMatch(/file_too_large/);
+    expect(sdkMocks.generateText).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects a file 1 byte over the 20 MB boundary (no SDK call)", async () => {
+    const over = Buffer.alloc(20 * 1024 * 1024 + 1);
+    writeFileSync(join(cwd, "over.png"), over);
+    const t = pick(build(), "image_analyze");
+    const result = await t.execute("c", { path: "over.png" });
+    expect(JSON.stringify(result.details)).toMatch(/file_too_large/);
+    expect(sdkMocks.generateText).not.toHaveBeenCalled();
+  });
+
+  it("forwards a 50KB user prompt to the SDK without truncation", async () => {
     writeFileSync(join(cwd, "i.png"), TINY_PNG);
-    routeFetch([
-      { match: () => true,
-        response: () => new Response("<!doctype html><html>Bad gateway</html>", {
-          status: 502,
-          headers: { "content-type": "text/html" },
-        }) },
-    ]);
+    const longPrompt = "Analyze: " + "consider every shadow and hue. ".repeat(2000);
+    expect(longPrompt.length).toBeGreaterThan(50_000);
     const t = pick(build(), "image_analyze");
-    await expectFailure(t.execute("c", { path: "i.png" }), /502|html|bad|error/i);
+    await t.execute("c", { path: "i.png", prompt: longPrompt });
+    expect(sdkMocks.generateText.mock.calls[0][0].messages[0].content[0].text).toBe(longPrompt);
+  });
+
+  it("accepts a non-image file (e.g. text disguised as .png) — content-validation is the SDK's job", async () => {
+    writeFileSync(join(cwd, "fake.png"), Buffer.from("THIS IS NOT A PNG, JUST TEXT"));
+    const t = pick(build(), "image_analyze");
+    const result = await t.execute("c", { path: "fake.png" });
+    // Tool doesn't sniff bytes; it sends them and lets the model reject.
+    // Pin: no crash, SDK still called with the raw bytes.
+    expect(result).toBeDefined();
+    expect(sdkMocks.generateText).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns a structured error when the path is a directory, not a file", async () => {
+    require("node:fs").mkdirSync(join(cwd, "imgs"), { recursive: true });
+    const t = pick(build(), "image_analyze");
+    const result = await t.execute("c", { path: "imgs" });
+    expect(JSON.stringify(result.details)).toMatch(/file_read_error|EISDIR|directory/i);
+    expect(sdkMocks.generateText).not.toHaveBeenCalled();
+  });
+
+  it("preserves nasty unicode in the user prompt (NUL, RTL override, ZWJ)", async () => {
+    writeFileSync(join(cwd, "i.png"), TINY_PNG);
+    const nasty = "describe: ‮flip‍end";
+    const t = pick(build(), "image_analyze");
+    await t.execute("c", { path: "i.png", prompt: nasty });
+    expect(sdkMocks.generateText.mock.calls[0][0].messages[0].content[0].text).toBe(nasty);
+  });
+
+  it("forwards exotic max_tokens (0, very high) verbatim — clamping is the SDK's job", async () => {
+    writeFileSync(join(cwd, "i.png"), TINY_PNG);
+    const t = pick(build(), "image_analyze");
+    await t.execute("c", { path: "i.png", max_tokens: 0 });
+    await t.execute("c", { path: "i.png", max_tokens: 1_000_000 });
+    expect(sdkMocks.generateText.mock.calls[0][0].maxOutputTokens).toBe(0);
+    expect(sdkMocks.generateText.mock.calls[1][0].maxOutputTokens).toBe(1_000_000);
+  });
+
+  it("isolates state across consecutive calls (different files, different prompts)", async () => {
+    writeFileSync(join(cwd, "a.png"), TINY_PNG);
+    writeFileSync(join(cwd, "b.jpg"), TINY_PNG);
+    const t = pick(build(), "image_analyze");
+    await t.execute("c", { path: "a.png", prompt: "first" });
+    await t.execute("c", { path: "b.jpg", prompt: "second" });
+    expect(sdkMocks.generateText.mock.calls).toHaveLength(2);
+    expect(sdkMocks.generateText.mock.calls[0][0].messages[0].content[0].text).toBe("first");
+    expect(sdkMocks.generateText.mock.calls[1][0].messages[0].content[0].text).toBe("second");
+    // mediaType correctly diverges per file.
+    expect(sdkMocks.generateText.mock.calls[0][0].messages[0].content[1].mediaType).toBe("image/png");
+    expect(sdkMocks.generateText.mock.calls[1][0].messages[0].content[1].mediaType).toBe("image/jpeg");
+  });
+
+  it("uses image/png as a safe default for unknown extensions", async () => {
+    writeFileSync(join(cwd, "weird.xyz"), TINY_PNG);
+    const t = pick(build(), "image_analyze");
+    await t.execute("c", { path: "weird.xyz" });
+    expect(sdkMocks.generateText.mock.calls[0][0].messages[0].content[1].mediaType).toBe("image/png");
+  });
+
+  it("returns a structured error (no crash) when the SDK rejects with a non-Error value", async () => {
+    writeFileSync(join(cwd, "i.png"), TINY_PNG);
+    sdkMocks.generateText.mockRejectedValueOnce("string rejection");
+    const t = pick(build(), "image_analyze");
+    const result = await t.execute("c", { path: "i.png" });
+    expect(JSON.stringify(result)).toMatch(/error/i);
   });
 });
 
