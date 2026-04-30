@@ -83,14 +83,23 @@ const EmailDraftSchema = Type.Object({
 
 /**
  * Validate that all recipient addresses are in allowed domains.
- * Throws if any address has a domain not in the allowlist.
+ * Throws if any address has a domain not in the allowlist OR is
+ * malformed (no `@` / empty domain). With an allowlist configured,
+ * we fail closed on malformed addresses: refusing the send is
+ * safer than delegating to SMTP, since lax relays may still accept
+ * and silently misroute (or worse, leak the body).
  */
 function validateRecipientDomains(addresses: string | string[], allowedDomains: string[]): void {
   const addrs = Array.isArray(addresses) ? addresses : [addresses];
   for (const addr of addrs) {
     const atIdx = addr.lastIndexOf("@");
-    if (atIdx < 0) continue; // malformed — let SMTP reject it
+    if (atIdx < 0 || atIdx === addr.length - 1) {
+      throw new Error(`Recipient address "${addr}" is malformed (no domain). Cannot validate against the allowed domains: ${allowedDomains.join(", ")}`);
+    }
     const domain = addr.slice(atIdx + 1).toLowerCase().trim();
+    if (!domain) {
+      throw new Error(`Recipient address "${addr}" has an empty domain. Cannot validate against the allowed domains: ${allowedDomains.join(", ")}`);
+    }
     if (!allowedDomains.some(d => d.toLowerCase() === domain)) {
       throw new Error(`Recipient domain "${domain}" is not in the allowed domains: ${allowedDomains.join(", ")}`);
     }

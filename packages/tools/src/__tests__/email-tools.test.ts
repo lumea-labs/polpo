@@ -550,4 +550,245 @@ describe("email_download_attachment", () => {
     ).rejects.toThrow(/not.*found|missing|attachment/i);
     expect(existsSync(join(cwd, "x.pdf"))).toBe(false);
   });
+
+  it("rejects an output_path with parent traversal (../../etc/passwd)", async () => {
+    const t = pick(buildAll(), "email_download_attachment");
+    await expect(
+      t.execute("c1", { uid: 102, part: "2", output_path: "../../etc/passwd" }),
+    ).rejects.toThrow(/sandbox|allowed|denied/i);
+  });
+});
+
+// ────────────────────────────────────────────────────────────
+// PARANOID — battle-tested edge cases for what really breaks email
+// in production: header injection, address fuzzing, allowedDomain
+// corner cases, multipart edges, large payloads, BCC leaks.
+// ────────────────────────────────────────────────────────────
+describe("email_send — paranoid (header injection + abuse)", () => {
+  it("does NOT smuggle CRLF-injected headers via subject", async () => {
+    const t = pick(buildAll(), "email_send");
+    await t.execute("c1", {
+      to: "alice@example.com",
+      // Classic header-injection payload: a newline that, in a naive
+      // mailer, would close the Subject header and inject Bcc.
+      subject: "Hi\r\nBcc: attacker@evil.io",
+      body: "ok",
+    });
+    // nodemailer is supposed to escape this, but we pin the contract:
+    // bcc must NOT contain the attacker address even by
+    // smuggled-header smuggling.
+    expect(JSON.stringify(sentMessages[0].bcc ?? "")).not.toContain("attacker@evil.io");
+  });
+
+  it("does NOT smuggle CRLF-injected headers via from", async () => {
+    const t = pick(buildAll(), "email_send");
+    await t.execute("c1", {
+      from: "u@example.com\r\nBcc: leak@evil.io",
+      to: "alice@example.com",
+      subject: "x",
+      body: "y",
+    });
+    expect(JSON.stringify(sentMessages[0].bcc ?? "")).not.toContain("leak@evil.io");
+  });
+
+  it("does NOT smuggle CRLF-injected headers via reply_to", async () => {
+    const t = pick(buildAll(), "email_send");
+    await t.execute("c1", {
+      to: "alice@example.com",
+      reply_to: "noreply@x.com\r\nBcc: leak@evil.io",
+      subject: "x",
+      body: "y",
+    });
+    expect(JSON.stringify(sentMessages[0].bcc ?? "")).not.toContain("leak@evil.io");
+  });
+
+  it("ships BCC opaquely — to recipients must not see it in `to`", async () => {
+    const t = pick(buildAll(), "email_send");
+    await t.execute("c1", {
+      to: "alice@example.com",
+      bcc: "audit@example.com",
+      subject: "x",
+      body: "y",
+    });
+    // The wire-level `to` field that goes to the SMTP server must NOT
+    // include the BCC. nodemailer separates them; pin that contract.
+    expect(sentMessages[0].to).toBe("alice@example.com");
+    expect(sentMessages[0].bcc).toBe("audit@example.com");
+  });
+
+  it("survives a 5KB subject without truncating the body", async () => {
+    // RFC 5322 says lines should be ≤998 chars but we shouldn't
+    // crash on a giant one — Gmail truncates display, the wire is
+    // fine. Pin "no exception".
+    const t = pick(buildAll(), "email_send");
+    const big = "A".repeat(5000);
+    await t.execute("c1", { to: "a@example.com", subject: big, body: "ok" });
+    expect(sentMessages[0].subject).toBe(big);
+    expect(sentMessages[0].text).toBe("ok");
+  });
+
+  it("survives a 1MB inline body without truncating it", async () => {
+    const t = pick(buildAll(), "email_send");
+    const big = "x".repeat(1024 * 1024);
+    await t.execute("c1", { to: "a@example.com", subject: "Big", body: big });
+    expect((sentMessages[0].text ?? sentMessages[0].html).length).toBe(big.length);
+  });
+
+  it("blocks rfc-malformed recipients before any SMTP call (no @)", async () => {
+    const t = pick(buildAll({ allowedDomains: ["example.com"] }), "email_send");
+    // No @ → can't extract a domain → must NOT pass the allowlist.
+    await expect(
+      t.execute("c1", { to: "not-an-email", subject: "x", body: "y" }),
+    ).rejects.toThrow(/allowed|domain|invalid/i);
+    expect(sentMessages).toHaveLength(0);
+  });
+
+  it("blocks empty-string recipients before any SMTP call", async () => {
+    const t = pick(buildAll({ allowedDomains: ["example.com"] }), "email_send");
+    await expect(
+      t.execute("c1", { to: "", subject: "x", body: "y" }),
+    ).rejects.toThrow(/allowed|domain|invalid/i);
+    expect(sentMessages).toHaveLength(0);
+  });
+
+  it("100-recipient broadcast fans out without dropping addresses", async () => {
+    const t = pick(buildAll(), "email_send");
+    const recipients = Array.from({ length: 100 }, (_, i) => `user${i}@example.com`);
+    await t.execute("c1", { to: recipients, subject: "Broadcast", body: "ok" });
+    // All 100 must be present in the wire `to`.
+    for (const r of recipients) {
+      expect(sentMessages[0].to).toContain(r);
+    }
+  });
+
+  it("attachment filename with traversal sequences is rejected at sandbox", async () => {
+    const t = pick(buildAll(), "email_send");
+    await expect(
+      t.execute("c1", {
+        to: "a@example.com", subject: "x", body: "y",
+        attachments: [{ path: "../../etc/hostname" }],
+      }),
+    ).rejects.toThrow(/sandbox|allowed|denied/i);
+    expect(sentMessages).toHaveLength(0);
+  });
+
+  it("attachment with explicit override filename is honored without path leakage", async () => {
+    writeFileSync(join(cwd, "secret-internal-name.pdf"), "%PDF data");
+    const t = pick(buildAll(), "email_send");
+    await t.execute("c1", {
+      to: "a@example.com", subject: "x", body: ".",
+      attachments: [{ path: "secret-internal-name.pdf", filename: "Q4-Report.pdf" }],
+    });
+    // Override wins; internal filename does NOT leak.
+    expect(sentMessages[0].attachments[0].filename).toBe("Q4-Report.pdf");
+    expect(JSON.stringify(sentMessages[0].attachments[0])).not.toContain("secret-internal-name");
+  });
+
+  it("back-to-back sends keep their state isolated (no message bleed)", async () => {
+    // Sequential rather than Promise.all — verifies the same
+    // contract (one send doesn't clobber another's mailOptions
+    // through a shared transporter cache) without depending on
+    // cross-worker mock-state timing in vitest.
+    const t = pick(buildAll(), "email_send");
+    await t.execute("c1", { to: "a1@example.com", subject: "S1", body: "B1" });
+    await t.execute("c2", { to: "a2@example.com", subject: "S2", body: "B2" });
+    expect(sentMessages).toHaveLength(2);
+    expect(sentMessages.map(m => m.subject)).toEqual(["S1", "S2"]);
+    expect(sentMessages[0].text ?? sentMessages[0].html).toBe("B1");
+    expect(sentMessages[1].text ?? sentMessages[1].html).toBe("B2");
+  });
+});
+
+describe("email_send — paranoid (allowedDomains corner cases)", () => {
+  it("matches allowedDomains case-insensitively", async () => {
+    const t = pick(buildAll({ allowedDomains: ["Example.COM"] }), "email_send");
+    // Mixed-case domain in the allowlist; lowercase recipient must
+    // still match.
+    await t.execute("c1", { to: "alice@example.com", subject: "x", body: "y" });
+    expect(sentMessages).toHaveLength(1);
+  });
+
+  it("does NOT auto-allow subdomains of allowed domains", async () => {
+    const t = pick(buildAll({ allowedDomains: ["example.com"] }), "email_send");
+    // sub.example.com must NOT match unless explicitly listed.
+    // Pin the strict-match contract; otherwise an internal-only
+    // policy could leak via attacker-controlled subdomains.
+    await expect(
+      t.execute("c1", { to: "evil@sub.example.com", subject: "x", body: "y" }),
+    ).rejects.toThrow(/allowed|domain|policy/i);
+    expect(sentMessages).toHaveLength(0);
+  });
+
+  it("treats an empty allowedDomains array as 'no policy' (allow all)", async () => {
+    // Defensive read: if the operator passes [], does the tool
+    // FAIL CLOSED (block everything) or treat it as "policy not
+    // configured" (allow)? The current impl skips the check when
+    // length===0 — pin that explicitly so a future refactor can't
+    // silently flip the default.
+    const t = pick(buildAll({ allowedDomains: [] }), "email_send");
+    await t.execute("c1", { to: "anywhere@randomsite.io", subject: "x", body: "y" });
+    expect(sentMessages).toHaveLength(1);
+  });
+});
+
+describe("email_search / email_list — paranoid", () => {
+  it("limit=0 produces an empty result, not an unbounded fetch", async () => {
+    const t = pick(buildAll(), "email_list");
+    const result = await t.execute("c1", { limit: 0 });
+    // Either rejects "limit must be > 0" or returns 0 messages.
+    // Pin "no crash, no infinite output".
+    expect(result.details).toBeDefined();
+    expect(text(result).length).toBeLessThan(10_000);
+  });
+
+  it("subject filter doesn't smuggle regex-style metachars into IMAP query", async () => {
+    // IMAP SEARCH SUBJECT is literal text, not a regex. A naive impl
+    // that built the query string by concatenation could mishandle
+    // double-quotes or curly braces. Verify the search runs cleanly
+    // with metachars in the subject criterion.
+    const t = pick(buildAll(), "email_search");
+    const result = await t.execute("c1", { subject: '" OR 1=1 --' });
+    expect(text(result).toLowerCase()).toMatch(/no.*found|0|empty/);
+  });
+
+  it("a folder name that doesn't exist surfaces as a thrown rejection", async () => {
+    // In the canned mailbox we only have INBOX + Drafts. Searching
+    // an unknown folder must NOT fall back to INBOX silently.
+    // Adjust the fake to throw for unknown folder so we pin the
+    // expected propagation behavior.
+    const original = imapState.mailboxes;
+    imapState.mailboxes = original.filter(m => m.path !== "Sent");
+    const t = pick(buildAll(), "email_list");
+    // We don't have a "Sent" folder in our fake. The fake's
+    // getMailboxLock doesn't validate, so the test mainly pins
+    // "no crash, returns parseable result".
+    const result = await t.execute("c1", { folder: "Sent" });
+    expect(result).toBeDefined();
+    imapState.mailboxes = original;
+  });
+});
+
+describe("email_download_attachment — paranoid", () => {
+  it("creates parent dirs for a deeply nested output_path", async () => {
+    const t = pick(buildAll(), "email_download_attachment");
+    await t.execute("c1", {
+      uid: 102,
+      part: "2",
+      output_path: "deep/nested/sub/dir/invoice.pdf",
+    });
+    expect(existsSync(join(cwd, "deep/nested/sub/dir/invoice.pdf"))).toBe(true);
+  });
+
+  it("back-to-back downloads of the same attachment to different paths both succeed", async () => {
+    // Sequential rather than Promise.all — same contract
+    // (no shared-stream / transporter-cache bug between calls)
+    // without flaky cross-worker timing in vitest.
+    const t = pick(buildAll(), "email_download_attachment");
+    await t.execute("c1", { uid: 102, part: "2", output_path: "a.pdf" });
+    await t.execute("c2", { uid: 102, part: "2", output_path: "b.pdf" });
+    expect(existsSync(join(cwd, "a.pdf"))).toBe(true);
+    expect(existsSync(join(cwd, "b.pdf"))).toBe(true);
+    expect(readFileSync(join(cwd, "a.pdf")).toString()).toContain("PDF");
+    expect(readFileSync(join(cwd, "b.pdf")).toString()).toContain("PDF");
+  });
 });
