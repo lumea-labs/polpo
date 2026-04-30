@@ -39,12 +39,11 @@ import { NodeShell } from "./adapters/node-shell.js";
 type ToolResult = AgentToolResult<any>;
 import { resolveAllowedPaths, assertPathAllowed } from "./path-sandbox.js";
 import type { ResolvedVault } from "./types.js";
-import { resolveTranscribeProvider, type TranscribeProviderName } from "./lib/provider-resolver.js";
+import { resolveTranscribeProvider, resolveSpeakProvider, type TranscribeProviderName, type SpeakProviderName } from "./lib/provider-resolver.js";
 
 // ─── Constants ───
 
 const MAX_AUDIO_SIZE = 25 * 1024 * 1024; // 25 MB (OpenAI Whisper limit)
-const DEFAULT_TIMEOUT = 120_000; // 2 min for audio processing
 
 // ─── Helpers ───
 
@@ -204,60 +203,64 @@ const AudioSpeakSchema = Type.Object({
   instructions: Type.Optional(Type.String({ description: "Voice style instructions (OpenAI gpt-4o-mini-tts only, e.g. 'Speak in a cheerful tone')" })),
 });
 
-function createSpeakTool(cwd: string, sandbox: string[], fs: FileSystem, shell: Shell, vault?: ResolvedVault): AgentTool<typeof AudioSpeakSchema> {
+// Defaults are kept identical to pre-SDK behavior so agent prompts that
+// omit `model` / `voice` get the same output as before.
+const SPEAK_DEFAULTS: Record<SpeakProviderName, { model: string; voice?: string }> = {
+  openai:     { model: "tts-1", voice: "alloy" },
+  deepgram:   { model: "aura-2-asteria-en" }, // voice is encoded in the model id
+  elevenlabs: { model: "eleven_multilingual_v2", voice: "21m00Tcm4TlvDq8ikWAM" /* Rachel */ },
+  edge:       { model: "edge-tts" /* internal label — voice resolved from language+gender */ },
+};
+
+function audioFormat(filePath: string, providerName: SpeakProviderName): string {
+  const ext = extname(filePath).toLowerCase().replace(".", "");
+  if (providerName === "elevenlabs") {
+    // ElevenLabs uses a more granular format string; map common
+    // extensions and fall back to the standard mp3 codec.
+    const map: Record<string, string> = { mp3: "mp3_44100_128", wav: "pcm_44100", flac: "flac" };
+    return map[ext] ?? "mp3_44100_128";
+  }
+  return ext || "mp3";
+}
+
+function createSpeakTool(
+  cwd: string,
+  sandbox: string[],
+  fs: FileSystem,
+  shell: Shell,
+  vault?: ResolvedVault,
+): AgentTool<typeof AudioSpeakSchema> {
   return {
     name: "audio_speak",
     label: "Text to Speech",
     description: "Generate speech audio from text using text-to-speech AI. " +
-      "Output format is inferred from file extension (mp3, wav, flac, opus, aac, pcm). " +
+      "Output format inferred from file extension (mp3, wav, flac, opus, aac, pcm). " +
       "Providers: openai (default), deepgram (Aura), elevenlabs, edge (free, no API key — Microsoft Edge neural voices). " +
-      "If the chosen provider fails (quota, auth, billing), edge-tts is tried automatically as fallback. " +
-      "Use 'language' (ISO 639-1) and 'gender' params to help select the right voice, especially for edge provider. " +
+      "If the chosen cloud provider fails (quota, auth, billing), edge-tts is tried automatically as fallback. " +
+      "Use 'language' (ISO 639-1) and 'gender' params to help select the right voice, especially for the edge provider. " +
       "Credentials resolved from: agent vault > OPENAI_API_KEY, DEEPGRAM_API_KEY, or ELEVENLABS_API_KEY env var.",
     parameters: AudioSpeakSchema,
     async execute(_id, params, signal) {
       const filePath = resolve(cwd, params.path);
       assertPathAllowed(filePath, sandbox, "audio_speak");
 
-      const provider = params.provider ?? "openai";
+      const provider = (params.provider ?? "openai") as SpeakProviderName;
 
-      // Direct edge-tts request — no fallback needed
-      if (provider === "edge") {
-        if (!(await edgeTtsAvailable(shell))) {
-          return {
-            content: [{ type: "text", text: "Edge TTS not available in this environment. Use openai/deepgram/elevenlabs instead." }],
-            details: { provider: "edge", error: "edge_tts_unavailable" },
-          };
-        }
-        try {
-          return await speakEdgeTts(filePath, params, fs, shell);
-        } catch (err: any) {
-          return {
-            content: [{ type: "text", text: `TTS error (edge): ${err.message}` }],
-            details: { provider: "edge", error: err.message },
-          };
-        }
-      }
-
-      // Provider with edge-tts fallback
       try {
-        if (provider === "openai") {
-          return await speakOpenAI(filePath, params, fs, vault, signal);
-        } else if (provider === "deepgram") {
-          return await speakDeepgram(filePath, params, fs, vault, signal);
-        } else {
-          return await speakElevenLabs(filePath, params, fs, vault, signal);
-        }
+        return await speakWithSdk(filePath, provider, params, fs, shell, vault, signal);
       } catch (err: any) {
-        // Automatic fallback to edge-tts if available
-        if (await edgeTtsAvailable(shell)) {
+        // Auto-fallback to edge-tts on cloud failures (preserved behavior).
+        if (provider !== "edge") {
           try {
-            const result = await speakEdgeTts(filePath, params, fs, shell);
-            // Prepend fallback notice
+            const fallback = await speakWithSdk(filePath, "edge", params, fs, shell, vault, signal);
             const notice = `[Fallback] ${provider} failed (${err.message}), used edge-tts instead.\n`;
             return {
-              content: [{ type: "text", text: notice + (result.content[0] as any).text }],
-              details: { ...result.details as Record<string, unknown>, fallbackFrom: provider, fallbackReason: err.message },
+              content: [{ type: "text", text: notice + (fallback.content[0] as any).text }],
+              details: {
+                ...(fallback.details as Record<string, unknown>),
+                fallbackFrom: provider,
+                fallbackReason: err.message,
+              },
             };
           } catch (edgeErr: any) {
             return {
@@ -266,7 +269,6 @@ function createSpeakTool(cwd: string, sandbox: string[], fs: FileSystem, shell: 
             };
           }
         }
-
         return {
           content: [{ type: "text", text: `TTS error (${provider}): ${err.message}` }],
           details: { provider, error: err.message },
@@ -276,293 +278,91 @@ function createSpeakTool(cwd: string, sandbox: string[], fs: FileSystem, shell: 
   };
 }
 
-async function speakOpenAI(
+async function speakWithSdk(
   filePath: string,
-  params: { text: string; model?: string; voice?: string; speed?: number; instructions?: string },
-  fs: FileSystem,
-  vault?: ResolvedVault,
-  signal?: AbortSignal,
-): Promise<ToolResult> {
-  const apiKey = vault?.getKey("openai", "key") ?? requireEnv("OPENAI_API_KEY");
-  const model = params.model ?? "tts-1";
-  const voice = params.voice ?? "alloy";
-
-  const ext = extname(filePath).toLowerCase().replace(".", "");
-  const formatMap: Record<string, string> = {
-    mp3: "mp3", wav: "wav", flac: "flac", opus: "opus", aac: "aac", pcm: "pcm",
-  };
-  const responseFormat = formatMap[ext] ?? "mp3";
-
-  const body: Record<string, unknown> = {
-    model,
-    input: params.text,
-    voice,
-    response_format: responseFormat,
-  };
-  if (params.speed !== undefined) body.speed = params.speed;
-  if (params.instructions) body.instructions = params.instructions;
-
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT);
-  if (signal) signal.addEventListener("abort", () => controller.abort(), { once: true });
-
-  const response = await fetch("https://api.openai.com/v1/audio/speech", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(body),
-    signal: controller.signal,
-  });
-
-  clearTimeout(timer);
-
-  if (!response.ok) {
-    const errText = await response.text();
-    throw new Error(`OpenAI TTS API ${response.status}: ${errText}`);
-  }
-
-  const buffer = Buffer.from(await response.arrayBuffer());
-  if (!fs.writeFileBuffer) {
-    throw new Error("FileSystem implementation does not support writeFileBuffer (required for binary writes).");
-  }
-  await fs.mkdir(dirname(filePath));
-  await fs.writeFileBuffer(filePath, new Uint8Array(buffer));
-
-  return {
-    content: [{ type: "text", text: `Speech audio saved: ${filePath} (${(buffer.byteLength / 1024).toFixed(1)} KB, ${responseFormat}, voice: ${voice}, model: ${model})` }],
-    details: {
-      provider: "openai",
-      model,
-      voice,
-      format: responseFormat,
-      path: filePath,
-      bytes: buffer.byteLength,
-      textLength: params.text.length,
-    },
-  };
-}
-
-async function speakDeepgram(
-  filePath: string,
-  params: { text: string; model?: string },
-  fs: FileSystem,
-  vault?: ResolvedVault,
-  signal?: AbortSignal,
-): Promise<ToolResult> {
-  const apiKey = vault?.getKey("deepgram", "key") ?? requireEnv("DEEPGRAM_API_KEY");
-  const model = params.model ?? "aura-2-en";
-
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT);
-  if (signal) signal.addEventListener("abort", () => controller.abort(), { once: true });
-
-  const response = await fetch(
-    `https://api.deepgram.com/v1/speak?model=${encodeURIComponent(model)}`,
-    {
-      method: "POST",
-      headers: {
-        Authorization: `Token ${apiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ text: params.text }),
-      signal: controller.signal,
-    },
-  );
-
-  clearTimeout(timer);
-
-  if (!response.ok) {
-    const errText = await response.text();
-    throw new Error(`Deepgram TTS API ${response.status}: ${errText}`);
-  }
-
-  const buffer = Buffer.from(await response.arrayBuffer());
-  if (!fs.writeFileBuffer) {
-    throw new Error("FileSystem implementation does not support writeFileBuffer (required for binary writes).");
-  }
-  await fs.mkdir(dirname(filePath));
-  await fs.writeFileBuffer(filePath, new Uint8Array(buffer));
-
-  return {
-    content: [{ type: "text", text: `Speech audio saved: ${filePath} (${(buffer.byteLength / 1024).toFixed(1)} KB, model: ${model})` }],
-    details: {
-      provider: "deepgram",
-      model,
-      format: "mp3",
-      path: filePath,
-      bytes: buffer.byteLength,
-      textLength: params.text.length,
-    },
-  };
-}
-
-async function speakElevenLabs(
-  filePath: string,
-  params: { text: string; model?: string; voice?: string },
-  fs: FileSystem,
-  vault?: ResolvedVault,
-  signal?: AbortSignal,
-): Promise<ToolResult> {
-  const apiKey = vault?.getKey("elevenlabs", "key") ?? requireEnv("ELEVENLABS_API_KEY");
-  const model = params.model ?? "eleven_multilingual_v2";
-  // ElevenLabs default voice: "Rachel" (21m00Tcm4TlvDq8ikWAM)
-  const voiceId = params.voice ?? "21m00Tcm4TlvDq8ikWAM";
-
-  const ext = extname(filePath).toLowerCase().replace(".", "");
-  const formatMap: Record<string, string> = {
-    mp3: "mp3_44100_128", wav: "pcm_44100", flac: "flac",
-  };
-  const outputFormat = formatMap[ext] ?? "mp3_44100_128";
-
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT);
-  if (signal) signal.addEventListener("abort", () => controller.abort(), { once: true });
-
-  const response = await fetch(
-    `https://api.elevenlabs.io/v1/text-to-speech/${voiceId}?output_format=${outputFormat}`,
-    {
-      method: "POST",
-      headers: {
-        "xi-api-key": apiKey,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        text: params.text,
-        model_id: model,
-      }),
-      signal: controller.signal,
-    },
-  );
-
-  clearTimeout(timer);
-
-  if (!response.ok) {
-    const errText = await response.text();
-    throw new Error(`ElevenLabs API ${response.status}: ${errText}`);
-  }
-
-  const buffer = Buffer.from(await response.arrayBuffer());
-  if (!fs.writeFileBuffer) {
-    throw new Error("FileSystem implementation does not support writeFileBuffer (required for binary writes).");
-  }
-  await fs.mkdir(dirname(filePath));
-  await fs.writeFileBuffer(filePath, new Uint8Array(buffer));
-
-  return {
-    content: [{ type: "text", text: `Speech audio saved: ${filePath} (${(buffer.byteLength / 1024).toFixed(1)} KB, voice: ${voiceId}, model: ${model})` }],
-    details: {
-      provider: "elevenlabs",
-      model,
-      voiceId,
-      format: outputFormat,
-      path: filePath,
-      bytes: buffer.byteLength,
-      textLength: params.text.length,
-    },
-  };
-}
-
-// ─── Edge TTS (free, local CLI, automatic fallback) ───
-
-/**
- * Default Edge TTS voices per language+gender.
- * Format: `${lang}-${region}-${name}Neural`
- * Each entry: [female, male]. First match wins.
- */
-const EDGE_VOICES: Record<string, [female: string, male: string]> = {
-  "it": ["it-IT-ElsaNeural", "it-IT-DiegoNeural"],
-  "en": ["en-US-EmmaMultilingualNeural", "en-US-AndrewMultilingualNeural"],
-  "es": ["es-ES-ElviraNeural", "es-ES-AlvaroNeural"],
-  "fr": ["fr-FR-DeniseNeural", "fr-FR-HenriNeural"],
-  "de": ["de-DE-KatjaNeural", "de-DE-ConradNeural"],
-  "pt": ["pt-BR-FranciscaNeural", "pt-BR-AntonioNeural"],
-  "ja": ["ja-JP-NanamiNeural", "ja-JP-KeitaNeural"],
-  "zh": ["zh-CN-XiaoxiaoNeural", "zh-CN-YunxiNeural"],
-  "ko": ["ko-KR-SunHiNeural", "ko-KR-InJoonNeural"],
-  "ar": ["ar-SA-ZariyahNeural", "ar-SA-HamedNeural"],
-  "hi": ["hi-IN-SwaraNeural", "hi-IN-MadhurNeural"],
-  "ru": ["ru-RU-SvetlanaNeural", "ru-RU-DmitryNeural"],
-  "nl": ["nl-NL-ColetteNeural", "nl-NL-MaartenNeural"],
-  "pl": ["pl-PL-AgnieszkaNeural", "pl-PL-MarekNeural"],
-  "tr": ["tr-TR-EmelNeural", "tr-TR-AhmetNeural"],
-  "sv": ["sv-SE-SofieNeural", "sv-SE-MattiasNeural"],
-};
-
-/**
- * Resolve the best Edge TTS voice for a given language and gender hint.
- * Falls back to en-US if the language is unknown.
- */
-function resolveEdgeVoice(voice?: string, language?: string, gender?: "male" | "female"): string {
-  // If the agent passed an explicit voice name like "it-IT-DiegoNeural", use it directly
-  if (voice && voice.includes("-") && voice.endsWith("Neural")) return voice;
-
-  const lang = (language ?? "en").toLowerCase().split("-")[0]; // "it-IT" → "it"
-  const pair = EDGE_VOICES[lang] ?? EDGE_VOICES["en"]!;
-  return gender === "male" ? pair[1] : pair[0]; // default female if no gender hint
-}
-
-/** Per-Shell cache of "is edge-tts on PATH" — checked once per shell. */
-const _edgeTtsAvailable = new WeakMap<Shell, Promise<boolean>>();
-
-/** Check if edge-tts CLI is available, routed through the Shell so the
- *  check runs in the same environment as the actual TTS call (sandbox
- *  in cloud, local Node in OSS). */
-function edgeTtsAvailable(shell: Shell): Promise<boolean> {
-  const existing = _edgeTtsAvailable.get(shell);
-  if (existing) return existing;
-  const fresh: Promise<boolean> = shell
-    .execute("edge-tts --version", { timeout: 5000 })
-    .then((r: { exitCode: number }) => r.exitCode === 0)
-    .catch(() => false);
-  _edgeTtsAvailable.set(shell, fresh);
-  return fresh;
-}
-
-/** Quote a CLI argument for inclusion in a `shell.execute` command line. */
-function quoteArg(arg: string): string {
-  return `'${arg.replace(/'/g, `'\\''`)}'`;
-}
-
-async function speakEdgeTts(
-  filePath: string,
-  params: { text: string; voice?: string; language?: string; gender?: "male" | "female" },
+  providerName: SpeakProviderName,
+  params: {
+    text: string;
+    model?: string;
+    voice?: string;
+    language?: string;
+    gender?: "male" | "female";
+    speed?: number;
+    instructions?: string;
+  },
   fs: FileSystem,
   shell: Shell,
+  vault?: ResolvedVault,
+  signal?: AbortSignal,
 ): Promise<ToolResult> {
-  if (!(await edgeTtsAvailable(shell))) {
-    throw new Error("edge-tts CLI is not installed. Install it with: pip install edge-tts");
+  const { experimental_generateSpeech } = await import("ai");
+
+  const defaults = SPEAK_DEFAULTS[providerName];
+  const model = params.model ?? defaults.model;
+  const voice = params.voice ?? defaults.voice;
+
+  // Cloud providers need an apiKey. The edge provider needs shell+fs.
+  let apiKey: string | undefined;
+  if (providerName === "openai") {
+    apiKey = vault?.getKey("openai", "key") ?? requireEnv("OPENAI_API_KEY");
+  } else if (providerName === "deepgram") {
+    apiKey = vault?.getKey("deepgram", "key") ?? requireEnv("DEEPGRAM_API_KEY");
+  } else if (providerName === "elevenlabs") {
+    apiKey = vault?.getKey("elevenlabs", "key") ?? requireEnv("ELEVENLABS_API_KEY");
   }
 
-  const voice = resolveEdgeVoice(params.voice, params.language, params.gender);
+  const provider = await resolveSpeakProvider(providerName, { apiKey, shell, fs });
+
+  // Provider-specific knobs flow through providerOptions. The SDK
+  // forwards them to each provider unchanged.
+  const providerOptions: Record<string, Record<string, unknown>> = {};
+  if (providerName === "openai") {
+    const opts: Record<string, unknown> = {};
+    if (params.speed !== undefined) opts.speed = params.speed;
+    if (params.instructions) opts.instructions = params.instructions;
+    if (Object.keys(opts).length) providerOptions.openai = opts;
+  }
+  if (providerName === "edge" && params.gender) {
+    providerOptions.edge = { gender: params.gender };
+  }
+
+  const outputFormat = audioFormat(filePath, providerName);
+
+  const result = await experimental_generateSpeech({
+    model: provider.speech(model) as any,
+    text: params.text,
+    voice,
+    outputFormat,
+    language: params.language,
+    instructions: params.instructions,
+    speed: params.speed,
+    providerOptions: Object.keys(providerOptions).length ? providerOptions as any : undefined,
+    abortSignal: signal,
+  });
+
+  const bytes = result.audio.uint8Array;
+  if (!bytes || bytes.byteLength === 0) {
+    throw new Error("No audio bytes in SDK response");
+  }
+
+  if (!fs.writeFileBuffer) {
+    throw new Error("FileSystem implementation does not support writeFileBuffer (required for binary writes).");
+  }
   await fs.mkdir(dirname(filePath));
+  await fs.writeFileBuffer(filePath, bytes);
 
-  const cmd = [
-    "edge-tts",
-    "--text", quoteArg(params.text),
-    "--voice", quoteArg(voice),
-    "--write-media", quoteArg(filePath),
-  ].join(" ");
-
-  const result = await shell.execute(cmd, { timeout: DEFAULT_TIMEOUT });
-  if (result.exitCode !== 0) {
-    throw new Error(`edge-tts failed: ${(result.stderr || result.stdout || "").trim() || `exit ${result.exitCode}`}`);
-  }
-
-  let bytes = 0;
-  try {
-    const stat = await fs.stat(filePath);
-    bytes = stat?.size ?? 0;
-  } catch { /* ignore */ }
+  const voiceLabel = voice ?? "(model-bound)";
+  const summary = `Speech audio saved: ${filePath} (${(bytes.byteLength / 1024).toFixed(1)} KB, ${outputFormat}, voice: ${voiceLabel}, model: ${model})`;
 
   return {
-    content: [{ type: "text", text: `Speech audio saved: ${filePath} (${(bytes / 1024).toFixed(1)} KB, voice: ${voice}, provider: edge-tts)` }],
+    content: [{ type: "text", text: summary }],
     details: {
-      provider: "edge",
-      voice,
+      provider: providerName,
+      model,
+      voice: voiceLabel,
+      format: outputFormat,
       path: filePath,
-      bytes,
+      bytes: bytes.byteLength,
       textLength: params.text.length,
     },
   };

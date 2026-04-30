@@ -23,10 +23,14 @@
 // promotion. The downstream `generateImage({ model })` /
 // `generateText({ model })` calls do their own type checking.
 
+import type { FileSystem } from "@polpo-ai/core/filesystem";
+import type { Shell } from "@polpo-ai/core";
+
 export type ImageProviderName = "fal";
 export type VisionProviderName = "openai" | "anthropic";
 export type VideoProviderName = "fal";
 export type TranscribeProviderName = "openai" | "deepgram";
+export type SpeakProviderName = "openai" | "deepgram" | "elevenlabs" | "edge";
 
 export interface ImageProvider {
   image(modelId: string): unknown;
@@ -38,6 +42,10 @@ export interface VideoProvider {
 
 export interface TranscribeProvider {
   transcription(modelId: string): unknown;
+}
+
+export interface SpeakProvider {
+  speech(modelId: string): unknown;
 }
 
 /** Mirrors the `@ai-sdk/openai` / `@ai-sdk/anthropic` factory shape: a callable that returns a language-model handle for a given model id. */
@@ -96,6 +104,43 @@ export async function resolveTranscribeProvider(
     return { transcription: (modelId: string) => deepgram.transcription(modelId) };
   }
   throw new Error(`Unknown transcribe provider: ${name}`);
+}
+
+/** Build a text-to-speech provider. The local `edge` provider needs a
+ *  Shell + FileSystem (no API key); cloud providers need an API key. */
+export async function resolveSpeakProvider(
+  name: SpeakProviderName,
+  config: { apiKey?: string; shell?: Shell; fs?: FileSystem },
+): Promise<SpeakProvider> {
+  if (name === "edge") {
+    if (!config.shell || !config.fs) {
+      throw new Error("edge provider requires shell and fs to be supplied");
+    }
+    const { createEdgeSpeechProvider } = await import("./edge-speech-model.js");
+    return createEdgeSpeechProvider({ shell: config.shell, fs: config.fs });
+  }
+  if (!config.apiKey) {
+    throw new Error(`${name} speech provider requires an apiKey`);
+  }
+  if (name === "openai") {
+    const mod = await loadOptional("@ai-sdk/openai", "audio_speak (openai)");
+    // @ts-ignore — mod typed as `any` from the dynamic import helper
+    const openai = mod.createOpenAI({ apiKey: config.apiKey });
+    return { speech: (modelId: string) => openai.speech(modelId) };
+  }
+  if (name === "deepgram") {
+    const mod = await loadOptional("@ai-sdk/deepgram", "audio_speak (deepgram)");
+    // @ts-ignore — mod typed as `any` from the dynamic import helper
+    const deepgram = mod.createDeepgram({ apiKey: config.apiKey });
+    return { speech: (modelId: string) => deepgram.speech(modelId) };
+  }
+  if (name === "elevenlabs") {
+    const mod = await loadOptional("@ai-sdk/elevenlabs", "audio_speak (elevenlabs)");
+    // @ts-ignore — mod typed as `any` from the dynamic import helper
+    const elevenlabs = mod.createElevenLabs({ apiKey: config.apiKey });
+    return { speech: (modelId: string) => elevenlabs.speech(modelId) };
+  }
+  throw new Error(`Unknown speak provider: ${name}`);
 }
 
 /** Build a vision (multimodal LanguageModel) provider. */
