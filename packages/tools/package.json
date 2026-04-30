@@ -12,8 +12,8 @@
     }
   },
   "scripts": {
-    "build": "tsc",
-    "prepublishOnly": "tsc"
+    "build": "tsc && cp src/pdf-render.mjs dist/",
+    "prepublishOnly": "tsc && cp src/pdf-render.mjs dist/"
   },
   "files": [
     "dist",

@@ -13,11 +13,37 @@
  */
 
 import { resolve, dirname } from "node:path";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { Type } from "@sinclair/typebox";
 import type { PolpoTool as AgentTool, ToolResult as AgentToolResult } from "@polpo-ai/core";
 import type { FileSystem } from "@polpo-ai/core/filesystem";
+import type { Shell } from "@polpo-ai/core";
 import { NodeFileSystem } from "./adapters/node-filesystem.js";
+import { NodeShell } from "./adapters/node-shell.js";
 import { resolveAllowedPaths, assertPathAllowed } from "./path-sandbox.js";
+
+/**
+ * Embedded driver script source. Loaded at module init from the .mjs
+ * sibling shipped in dist/. We don't `import()` the driver because we
+ * need to execute it inside the *Shell* — which in cloud chat-completion
+ * is `SandboxProxyShell`, i.e. a different process/host. Instead we
+ * read the source here and write it into the agent's filesystem on
+ * first call so `node <path>` runs in the same place where the
+ * Chromium binary lives. Same trick works in OSS standalone (FS and
+ * Shell both local) and in the runner-in-sandbox (FS and Shell both
+ * sandbox-local).
+ */
+const PDF_RENDER_DRIVER_SRC = readFileSync(
+  fileURLToPath(new URL("./pdf-render.mjs", import.meta.url)),
+  "utf8",
+);
+
+/** Quote a CLI argument so it survives shell.execute (which takes a
+ *  full command line, not an argv). */
+function quote(arg: string): string {
+  return `'${arg.replace(/'/g, `'\\''`)}'`;
+}
 
 const MAX_TEXT_OUTPUT = 50_000;
 
@@ -120,7 +146,22 @@ const PdfCreateSchema = Type.Object({
   wait_for_network: Type.Optional(Type.Boolean({ description: "Wait for network idle before rendering (default: true). Disable for offline HTML with no external resources." })),
 });
 
-function createPdfCreateTool(cwd: string, sandbox: string[], fs: FileSystem): AgentTool<typeof PdfCreateSchema> {
+function createPdfCreateTool(cwd: string, sandbox: string[], fs: FileSystem, shell: Shell): AgentTool<typeof PdfCreateSchema> {
+  // Stage the driver lazily on first invocation. Subsequent calls reuse it.
+  // Path lives under cwd so it's in whichever filesystem the Shell will
+  // run `node` against (sandbox in cloud, local in OSS standalone).
+  const driverPath = `${cwd}/.polpo-internal/pdf-render.mjs`;
+  let driverStaged: Promise<void> | null = null;
+  const stageDriver = (): Promise<void> => {
+    if (!driverStaged) {
+      driverStaged = (async () => {
+        await fs.mkdir(dirname(driverPath));
+        await fs.writeFile(driverPath, PDF_RENDER_DRIVER_SRC);
+      })();
+    }
+    return driverStaged;
+  };
+
   return {
     name: "pdf_create",
     label: "Create PDF",
@@ -155,102 +196,80 @@ function createPdfCreateTool(cwd: string, sandbox: string[], fs: FileSystem): Ag
       assertPathAllowed(filePath, sandbox, "pdf_create");
       await fs.mkdir(dirname(filePath));
 
-      // Resolve HTML content
-      let htmlContent: string;
+      // Resolve HTML source path (driver reads the file itself, so we
+      // pass htmlPath through; only validate it's inside the sandbox).
+      let driverParams: Record<string, unknown>;
       if (params.html_path) {
         const htmlFilePath = resolve(cwd, params.html_path);
         assertPathAllowed(htmlFilePath, sandbox, "pdf_create");
-        try {
-          htmlContent = await fs.readFile(htmlFilePath);
-        } catch (err: any) {
-          return {
-            content: [{ type: "text", text: `Error reading HTML file: ${err.message}` }],
-            details: { error: "html_read_failed", path: htmlFilePath },
-          };
-        }
+        driverParams = { htmlPath: htmlFilePath };
       } else {
-        htmlContent = params.html!;
+        driverParams = { html: params.html };
       }
 
-      let browser: any;
+      // Pass the rest of the rendering options through verbatim.
+      if (params.format) driverParams.format = params.format;
+      if (params.landscape !== undefined) driverParams.landscape = params.landscape;
+      if (params.print_background !== undefined) driverParams.printBackground = params.print_background;
+      if (params.scale !== undefined) driverParams.scale = params.scale;
+      if (params.margin) driverParams.margin = params.margin;
+      if (params.header_template) driverParams.headerTemplate = params.header_template;
+      if (params.footer_template) driverParams.footerTemplate = params.footer_template;
+      if (params.wait_for_network !== undefined) driverParams.waitForNetwork = params.wait_for_network;
+
       try {
-        const { chromium } = await import("playwright-core");
-
-        browser = await chromium.launch({
-          headless: true,
-          args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"],
-        });
-        const page = await browser.newPage();
-
-        // Load HTML content
-        const waitUntil = (params.wait_for_network ?? true) ? "networkidle" : "domcontentloaded";
-        await page.setContent(htmlContent, { waitUntil, timeout: 30_000 });
-
-        // Default margins
-        const defaultMargin = { top: "20mm", right: "15mm", bottom: "25mm", left: "15mm" };
-        const margin = params.margin
-          ? { ...defaultMargin, ...params.margin }
-          : defaultMargin;
-
-        // Determine if custom header/footer templates are provided
-        const hasHeaderFooter = !!(params.header_template || params.footer_template);
-
-        // Generate PDF (capture buffer instead of writing to path so we can route through fs)
-        if (!fs.writeFileBuffer) {
-          return {
-            content: [{ type: "text", text: "PDF create error: Binary write not supported by injected FileSystem" }],
-            details: { error: "binary_write_unsupported" },
-          };
-        }
-        const pdfBuffer = await page.pdf({
-          format: params.format ?? "A4",
-          landscape: params.landscape ?? false,
-          printBackground: params.print_background ?? true,
-          scale: Math.max(0.1, Math.min(2, params.scale ?? 1)),
-          margin,
-          displayHeaderFooter: hasHeaderFooter,
-          ...(hasHeaderFooter ? {
-            headerTemplate: params.header_template ?? "<div></div>",
-            footerTemplate: params.footer_template ?? "<div></div>",
-          } : {}),
-        });
-
-        await fs.writeFileBuffer(filePath, new Uint8Array(pdfBuffer));
-        const bytes = pdfBuffer.byteLength;
-
-        // Count pages in the generated PDF for reporting
-        let pageCount = 0;
-        try {
-          const { PDFDocument } = await import("pdf-lib");
-          const doc = await PDFDocument.load(new Uint8Array(pdfBuffer));
-          pageCount = doc.getPageCount();
-        } catch {
-          // Best effort — pdf-lib may fail on some PDFs
-        }
-
-        const pageInfo = pageCount > 0 ? `${pageCount} pages, ` : "";
-        return {
-          content: [{ type: "text", text: `PDF created: ${filePath} (${pageInfo}${bytes} bytes)` }],
-          details: { path: filePath, pages: pageCount, bytes },
-        };
+        await stageDriver();
       } catch (err: any) {
-        const msg = err.message ?? String(err);
-        // Provide actionable hints for common errors
-        if (msg.includes("Executable doesn't exist") || msg.includes("browserType.launch")) {
+        return {
+          content: [{ type: "text", text: `PDF create error: failed to stage renderer: ${err.message}` }],
+          details: { error: "driver_stage_failed", message: err.message },
+        };
+      }
+
+      const cmd = `node ${quote(driverPath)} ${quote(JSON.stringify(driverParams))} ${quote(filePath)}`;
+      const result = await shell.execute(cmd, { timeout: 60_000 });
+      if (result.exitCode !== 0) {
+        const stderr = (result.stderr || "").trim();
+        const stdout = (result.stdout || "").trim();
+        // Driver emits structured JSON on failure when it can; bubble it up.
+        let parsed: any = null;
+        try { parsed = JSON.parse(stderr); } catch { /* not JSON */ }
+        const errMsg = parsed?.error ?? stderr ?? stdout ?? `node exit ${result.exitCode}`;
+        // Friendly hint for the common case.
+        if (errMsg.includes("Chromium") || errMsg.includes("agent-browser")) {
           return {
-            content: [{ type: "text", text: `PDF create error: Chromium not found. Install it with: npx playwright install chromium\n\nOriginal error: ${msg}` }],
-            details: { error: "chromium_not_installed" },
+            content: [{ type: "text", text: `PDF create error: Chromium not found. Install it with: npm install -g agent-browser && agent-browser install\n\nOriginal error: ${errMsg}` }],
+            details: { error: "chromium_not_installed", message: errMsg },
           };
         }
         return {
-          content: [{ type: "text", text: `PDF create error: ${msg}` }],
-          details: { error: msg },
+          content: [{ type: "text", text: `PDF create error: ${errMsg}` }],
+          details: { error: errMsg },
         };
-      } finally {
-        if (browser) {
-          await browser.close().catch(() => {});
-        }
       }
+
+      let driverResult: any = null;
+      try { driverResult = JSON.parse((result.stdout || "").trim()); } catch { /* fall through */ }
+      const bytes = driverResult?.bytes ?? 0;
+
+      // Count pages in the generated PDF for reporting (best effort).
+      let pageCount = 0;
+      try {
+        if (fs.readFileBuffer) {
+          const { PDFDocument } = await import("pdf-lib");
+          const buf = await fs.readFileBuffer(filePath);
+          const doc = await PDFDocument.load(buf);
+          pageCount = doc.getPageCount();
+        }
+      } catch {
+        // Best effort
+      }
+
+      const pageInfo = pageCount > 0 ? `${pageCount} pages, ` : "";
+      return {
+        content: [{ type: "text", text: `PDF created: ${filePath} (${pageInfo}${bytes} bytes)` }],
+        details: { path: filePath, pages: pageCount, bytes },
+      };
     },
   };
 }
@@ -396,13 +415,14 @@ export const ALL_PDF_TOOL_NAMES: PdfToolName[] = ["pdf_read", "pdf_create", "pdf
  * @param allowedPaths - Sandbox paths
  * @param allowedTools - Optional filter
  */
-export function createPdfTools(cwd: string, allowedPaths?: string[], allowedTools?: string[], fs?: FileSystem): AgentTool<any>[] {
+export function createPdfTools(cwd: string, allowedPaths?: string[], allowedTools?: string[], fs?: FileSystem, shell?: Shell): AgentTool<any>[] {
   const sandbox = resolveAllowedPaths(cwd, allowedPaths);
   const _fs = fs ?? new NodeFileSystem();
+  const _shell = shell ?? new NodeShell();
 
   const factories: Record<PdfToolName, () => AgentTool<any>> = {
     pdf_read: () => createPdfReadTool(cwd, sandbox, _fs),
-    pdf_create: () => createPdfCreateTool(cwd, sandbox, _fs),
+    pdf_create: () => createPdfCreateTool(cwd, sandbox, _fs, _shell),
     pdf_merge: () => createPdfMergeTool(cwd, sandbox, _fs),
     pdf_info: () => createPdfInfoTool(cwd, sandbox, _fs),
   };
