@@ -397,7 +397,8 @@ import { createExcelTools, ALL_EXCEL_TOOL_NAMES } from "./excel-tools.js";
 import { createPdfTools, ALL_PDF_TOOL_NAMES } from "./pdf-tools.js";
 import { createDocxTools, ALL_DOCX_TOOL_NAMES } from "./docx-tools.js";
 import { createSearchTools, ALL_SEARCH_TOOL_NAMES } from "./search-tools.js";
-import { createPhoneTools, ALL_PHONE_TOOL_NAMES } from "./phone-tools.js";
+// Phone tools removed in favour of a future MCP-based integration —
+// VAPI key + voice-call surface didn't fit "first-class built-in".
 
 export type { BrowserToolName } from "./browser-tools.js";
 export type { HttpToolName } from "./http-tools.js";
@@ -410,7 +411,6 @@ export type { ExcelToolName } from "./excel-tools.js";
 export type { PdfToolName } from "./pdf-tools.js";
 export type { DocxToolName } from "./docx-tools.js";
 export type { SearchToolName } from "./search-tools.js";
-export type { PhoneToolName } from "./phone-tools.js";
 
 /** All known tool names across all categories */
 export type ExtendedToolName = SystemToolName
@@ -424,14 +424,13 @@ export type ExtendedToolName = SystemToolName
   | import("./excel-tools.js").ExcelToolName
   | import("./pdf-tools.js").PdfToolName
   | import("./docx-tools.js").DocxToolName
-  | import("./search-tools.js").SearchToolName
-  | import("./phone-tools.js").PhoneToolName;
+  | import("./search-tools.js").SearchToolName;
 
 /**
  * Public catalog of every configurable built-in tool name (core coding
  * + http + vault + browser + email + image + audio + excel + pdf +
- * docx + search + phone). Use this for config validation,
- * documentation, and the `/v1/tools` endpoint.
+ * docx + search). Use this for config validation, documentation,
+ * and the `/v1/tools` endpoint.
  *
  * Notable exclusion: `register_outcome` is not listed. It's a
  * task-only infrastructural tool, injected automatically when the
@@ -450,7 +449,6 @@ export const TOOL_CATALOG: string[] = [
   ...ALL_PDF_TOOL_NAMES,
   ...ALL_DOCX_TOOL_NAMES,
   ...ALL_SEARCH_TOOL_NAMES,
-  ...ALL_PHONE_TOOL_NAMES,
 ];
 
 export interface CreateAllToolsOptions {
@@ -546,11 +544,6 @@ export async function createAllTools(options: CreateAllToolsOptions): Promise<Ag
   // Search tools (Exa) — activated when any search_* tool is in allowedTools
   if (categoryRequested(ALL_SEARCH_TOOL_NAMES)) {
     tools.push(...createSearchTools(options.vault, allowedTools));
-  }
-
-  // Phone tools (VAPI) — activated when any phone_* tool is in allowedTools
-  if (categoryRequested(ALL_PHONE_TOOL_NAMES)) {
-    tools.push(...createPhoneTools(options.vault, allowedTools));
   }
 
   // HTTP, register_outcome, and vault are already included via createSystemTools() above — no need to add again
