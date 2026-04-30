@@ -35,19 +35,29 @@ import type { ResolvedVault } from "../types.js";
 
 const sdkMocks = vi.hoisted(() => ({
   generateImage: vi.fn(),
+  experimental_generateVideo: vi.fn(),
   resolveImageProvider: vi.fn(async (_name: string, apiKey: string) => ({
     _calledWithKey: apiKey,
     image: (modelId: string) => ({ _isMockModel: true, modelId }),
+  })),
+  resolveVideoProvider: vi.fn(async (_name: string, apiKey: string) => ({
+    _calledWithKey: apiKey,
+    video: (modelId: string) => ({ _isMockVideoModel: true, modelId }),
   })),
 }));
 
 vi.mock("../lib/provider-resolver.js", () => ({
   resolveImageProvider: sdkMocks.resolveImageProvider,
+  resolveVideoProvider: sdkMocks.resolveVideoProvider,
 }));
 
 vi.mock("ai", async () => {
   const actual = await vi.importActual<typeof import("ai")>("ai");
-  return { ...actual, generateImage: sdkMocks.generateImage };
+  return {
+    ...actual,
+    generateImage: sdkMocks.generateImage,
+    experimental_generateVideo: sdkMocks.experimental_generateVideo,
+  };
 });
 
 let cwd: string;
@@ -144,6 +154,18 @@ beforeEach(() => {
     responses: [{}],
   });
   sdkMocks.resolveImageProvider.mockClear();
+  sdkMocks.experimental_generateVideo.mockReset();
+  // Use a tiny but recognizable byte payload — 12 bytes is more than
+  // the 0-byte "empty" guard but less than the ">20 bytes saved" check
+  // would need from real video, which is fine for behavioral tests.
+  sdkMocks.experimental_generateVideo.mockResolvedValue({
+    video: { uint8Array: new Uint8Array([0,0,0,0x18,0x66,0x74,0x79,0x70,0x69,0x73,0x6f,0x6d]), base64: "", mediaType: "video/mp4" },
+    videos: [],
+    providerMetadata: {},
+    warnings: [],
+    responses: [{}],
+  });
+  sdkMocks.resolveVideoProvider.mockClear();
 });
 
 afterEach(() => {
@@ -241,36 +263,96 @@ describe("image_generate", () => {
 });
 
 // ────────────────────────────────────────────────────────────
-// video_generate (fal.ai queue, same pattern, expects video.url)
+// video_generate (Vercel AI SDK — experimental_generateVideo)
 // ────────────────────────────────────────────────────────────
 describe("video_generate", () => {
   function build() {
     return createImageTools(cwd, [cwd], ["video_generate"], makeVault());
   }
 
-  it("submits, polls, downloads the video bytes, writes the file", async () => {
-    const TINY_MP4 = Buffer.from("0000001866747970", "hex"); // ftyp box prefix
-    routeFetch([
-      { match: (u) => u.includes("queue.fal.run/") && !u.includes("/status") && !u.includes("/requests/"),
-        response: () => new Response(JSON.stringify({
-          request_id: "v1",
-          status_url: "https://queue.fal.run/x/requests/v1/status",
-          response_url: "https://queue.fal.run/x/requests/v1",
-        }), { status: 200 }) },
-      { match: (u) => u.endsWith("/status"),
-        response: () => new Response(JSON.stringify({ status: "COMPLETED" }), { status: 200 }) },
-      { match: (u) => u.includes("/requests/v1") && !u.endsWith("/status"),
-        response: () => new Response(JSON.stringify({
-          video: { url: "https://cdn.fal.ai/v/abc.mp4" },
-        }), { status: 200 }) },
-      { match: (u) => u.includes("cdn.fal.ai"),
-        response: () => new Response(TINY_MP4, { status: 200, headers: { "content-type": "video/mp4" } }) },
-    ]);
-
+  it("calls the SDK with the resolved fal video model handle and writes the bytes", async () => {
     const t = pick(build(), "video_generate");
     const result = await t.execute("c", { prompt: "a sunset", path: "out.mp4" });
-    expect(JSON.stringify(result.details)).toContain("out.mp4");
+
     expect(existsSync(join(cwd, "out.mp4"))).toBe(true);
+    expect(JSON.stringify(result.details)).toContain("out.mp4");
+
+    expect(sdkMocks.resolveVideoProvider).toHaveBeenCalledWith("fal", "fake-fal-key");
+    const args = sdkMocks.experimental_generateVideo.mock.calls[0][0];
+    expect(args.prompt).toBe("a sunset");
+    expect(args.model).toEqual({ _isMockVideoModel: true, modelId: "luma-ray-2-flash" });
+  });
+
+  it("forwards aspect_ratio, resolution, duration, fps, seed to the SDK", async () => {
+    const t = pick(build(), "video_generate");
+    await t.execute("c", {
+      prompt: "x", path: "out.mp4",
+      model: "luma-ray-2",
+      aspect_ratio: "16:9",
+      resolution: "1280x720",
+      duration: 6,
+      fps: 24,
+      seed: 7,
+    });
+
+    const args = sdkMocks.experimental_generateVideo.mock.calls[0][0];
+    expect(args.aspectRatio).toBe("16:9");
+    expect(args.resolution).toBe("1280x720");
+    expect(args.duration).toBe(6);
+    expect(args.fps).toBe(24);
+    expect(args.seed).toBe(7);
+    expect(args.model.modelId).toBe("luma-ray-2");
+  });
+
+  it("surfaces an SDK error as a structured failure (no file written)", async () => {
+    sdkMocks.experimental_generateVideo.mockRejectedValueOnce(new Error("AI_APICallError: 503"));
+    const t = pick(build(), "video_generate");
+    await expectFailure(
+      t.execute("c", { prompt: "x", path: "out.mp4" }),
+      /503|api|error/i,
+    );
+    expect(existsSync(join(cwd, "out.mp4"))).toBe(false);
+  });
+
+  it("rejects when the SDK returns no video bytes", async () => {
+    sdkMocks.experimental_generateVideo.mockResolvedValueOnce({
+      video: { uint8Array: new Uint8Array(0), base64: "", mediaType: "video/mp4" },
+      videos: [], providerMetadata: {}, warnings: [], responses: [{}],
+    });
+    const t = pick(build(), "video_generate");
+    await expectFailure(
+      t.execute("c", { prompt: "x", path: "out.mp4" }),
+      /no video bytes|empty/i,
+    );
+  });
+
+  it("refuses an output path outside the sandbox before the SDK is called", async () => {
+    const t = pick(build(), "video_generate");
+    await expect(t.execute("c", { prompt: "x", path: "/etc/escape.mp4" }))
+      .rejects.toThrow(/sandbox|allowed|denied/i);
+    expect(sdkMocks.experimental_generateVideo).not.toHaveBeenCalled();
+  });
+
+  it("forwards the abort signal to the SDK", async () => {
+    const t = pick(build(), "video_generate");
+    const ctrl = new AbortController();
+    await t.execute("c", { prompt: "x", path: "out.mp4" }, ctrl.signal);
+    expect(sdkMocks.experimental_generateVideo.mock.calls[0][0].abortSignal).toBe(ctrl.signal);
+  });
+
+  it("falls back to FAL_KEY env when no vault key is present", async () => {
+    process.env.FAL_KEY = "env-fal-key";
+    try {
+      const noKeysVault: ResolvedVault = {
+        get: () => undefined, getSmtp: () => undefined, getImap: () => undefined,
+        getKey: () => undefined, has: () => false, list: () => [],
+      };
+      const t = pick(createImageTools(cwd, [cwd], ["video_generate"], noKeysVault), "video_generate");
+      await t.execute("c", { prompt: "x", path: "out.mp4" });
+      expect(sdkMocks.resolveVideoProvider).toHaveBeenCalledWith("fal", "env-fal-key");
+    } finally {
+      delete process.env.FAL_KEY;
+    }
   });
 });
 

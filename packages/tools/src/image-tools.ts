@@ -30,7 +30,7 @@ import type { FileSystem } from "@polpo-ai/core/filesystem";
 import { NodeFileSystem } from "./adapters/node-filesystem.js";
 import { resolveAllowedPaths, assertPathAllowed } from "./path-sandbox.js";
 import type { ResolvedVault } from "./types.js";
-import { resolveImageProvider } from "./lib/provider-resolver.js";
+import { resolveImageProvider, resolveVideoProvider } from "./lib/provider-resolver.js";
 
 type ToolResult = AgentToolResult<any>;
 
@@ -278,20 +278,21 @@ const VideoGenerateSchema = Type.Object({
   prompt: Type.String({ description: "Text prompt describing the video to generate" }),
   path: Type.String({ description: "Output file path (e.g. 'output.mp4')." }),
   model: Type.Optional(Type.String({
-    description: "fal.ai video model ID. Default: 'fal-ai/wan/v2.2-1.3b/text-to-video'. " +
-      "Other options: 'fal-ai/wan/v2.2-a14b/text-to-video' (higher quality, slower).",
+    description: "fal.ai video model ID. Default: 'luma-ray-2-flash' (fast). " +
+      "Other typed options: 'luma-ray-2', 'luma-dream-machine', 'minimax-video', 'minimax-video-01', 'hunyuan-video'. " +
+      "Any other fal video model id is accepted as a passthrough string.",
   })),
-  num_frames: Type.Optional(Type.Number({
-    description: "Number of frames to generate. Default: 81 (~5 seconds at 16fps).",
+  aspect_ratio: Type.Optional(Type.String({
+    description: "Aspect ratio as 'WIDTH:HEIGHT' (e.g. '16:9', '9:16', '1:1').",
   })),
   resolution: Type.Optional(Type.String({
-    description: "Video resolution as 'WIDTHxHEIGHT' (e.g. '854x480', '1280x720'). Default: '854x480' (480p).",
+    description: "Resolution as 'WIDTHxHEIGHT' (e.g. '1280x720'). Provider-dependent.",
   })),
-  num_inference_steps: Type.Optional(Type.Number({
-    description: "Number of inference steps (higher = better quality, slower). Default: 30.",
+  duration: Type.Optional(Type.Number({
+    description: "Video duration in seconds. Provider-dependent — typical range 4-10.",
   })),
-  guidance_scale: Type.Optional(Type.Number({
-    description: "Guidance scale — how closely to follow the prompt. Default: 5.0.",
+  fps: Type.Optional(Type.Number({
+    description: "Frames per second. Provider-dependent.",
   })),
   seed: Type.Optional(Type.Number({
     description: "Random seed for reproducible results. Omit for random.",
@@ -302,10 +303,9 @@ function createVideoGenerateTool(cwd: string, sandbox: string[], fs: FileSystem,
   return {
     name: "video_generate",
     label: "Generate Video",
-    description: "Generate a video from a text prompt using fal.ai (Wan 2.2 models). " +
-      "Output saved as MP4. Models: fal-ai/wan/v2.2-1.3b/text-to-video (default, faster), " +
-      "fal-ai/wan/v2.2-a14b/text-to-video (best quality). " +
-      "Video generation takes 1-5 minutes depending on model and resolution. " +
+    description: "Generate a video from a text prompt via fal.ai (Luma / MiniMax / Hunyuan models). " +
+      "Output saved as MP4. Models: luma-ray-2-flash (default, fast), luma-ray-2, luma-dream-machine, " +
+      "minimax-video, minimax-video-01, hunyuan-video. Generation takes 1-5 minutes depending on model. " +
       "Credentials resolved from: agent vault > FAL_KEY env var.",
     parameters: VideoGenerateSchema,
     async execute(_id, params, signal) {
@@ -329,55 +329,45 @@ async function generateVideo(
   params: {
     prompt: string;
     model?: string;
-    num_frames?: number;
+    aspect_ratio?: string;
     resolution?: string;
-    num_inference_steps?: number;
-    guidance_scale?: number;
+    duration?: number;
+    fps?: number;
     seed?: number;
   },
   fs: FileSystem,
   vault?: ResolvedVault,
   signal?: AbortSignal,
 ): Promise<ToolResult> {
+  const { experimental_generateVideo } = await import("ai");
+
   const apiKey = resolveFalKey(vault);
-  const model = params.model ?? "fal-ai/wan/v2.2-1.3b/text-to-video";
+  const model = params.model ?? "luma-ray-2-flash";
+  const provider = await resolveVideoProvider("fal", apiKey);
 
-  const input: Record<string, unknown> = {
+  const result = await experimental_generateVideo({
+    model: provider.video(model) as any,
     prompt: params.prompt,
-  };
+    aspectRatio: params.aspect_ratio as `${number}:${number}` | undefined,
+    resolution: params.resolution as `${number}x${number}` | undefined,
+    duration: params.duration,
+    fps: params.fps,
+    seed: params.seed,
+    abortSignal: signal,
+  });
 
-  if (params.num_frames != null) input.num_frames = params.num_frames;
-  if (params.num_inference_steps != null) input.num_inference_steps = params.num_inference_steps;
-  if (params.guidance_scale != null) input.guidance_scale = params.guidance_scale;
-  if (params.seed != null) input.seed = params.seed;
-
-  // Parse resolution
-  if (params.resolution) {
-    const parts = params.resolution.split("x").map(Number);
-    if (parts.length === 2 && parts[0] > 0 && parts[1] > 0) {
-      input.resolution = { width: parts[0], height: parts[1] };
-    }
+  const bytes = result.video?.uint8Array;
+  if (!bytes || bytes.byteLength === 0) {
+    throw new Error("No video bytes in SDK response");
   }
-
-  const result = await falQueueRequest(model, input, apiKey, VIDEO_TIMEOUT, signal);
-
-  // fal.ai video response: { video: { url, content_type, file_name, file_size } }
-  const video = result.video as { url: string; content_type?: string; file_name?: string; file_size?: number } | undefined;
-  if (!video?.url) {
-    throw new Error("No video in fal.ai response");
-  }
-
-  const videoResp = await fetch(video.url);
-  if (!videoResp.ok) throw new Error(`Failed to download generated video: ${videoResp.status}`);
-  const buffer = Buffer.from(await videoResp.arrayBuffer());
 
   if (!fs.writeFileBuffer) {
     throw new Error("FileSystem implementation does not support writeFileBuffer (required for binary writes).");
   }
   await fs.mkdir(dirname(filePath));
-  await fs.writeFileBuffer(filePath, new Uint8Array(buffer));
+  await fs.writeFileBuffer(filePath, bytes);
 
-  const sizeMB = (buffer.byteLength / 1024 / 1024).toFixed(2);
+  const sizeMB = (bytes.byteLength / 1024 / 1024).toFixed(2);
   const info = [
     `Video saved: ${filePath}`,
     `Size: ${sizeMB} MB`,
@@ -390,7 +380,7 @@ async function generateVideo(
       provider: "fal",
       model,
       path: filePath,
-      bytes: buffer.byteLength,
+      bytes: bytes.byteLength,
     },
   };
 }
