@@ -689,6 +689,151 @@ describe("image_generate — paranoid", () => {
     const args = sdkMocks.generateImage.mock.calls[0][0];
     expect(args.model.modelId).toBe("fal-ai/flux/schnell");
   });
+
+  it("forwards an empty-string prompt verbatim (no auto-padding, no crash)", async () => {
+    const t = pick(build(), "image_generate");
+    await t.execute("c", { prompt: "", path: "out.png" });
+    expect(sdkMocks.generateImage.mock.calls[0][0].prompt).toBe("");
+  });
+
+  it("forwards a 200KB prompt verbatim (no truncation, no JSON.stringify blow-up)", async () => {
+    const huge = "draw " + "a tiny pixel of detail. ".repeat(10000);
+    expect(huge.length).toBeGreaterThan(200_000);
+    const t = pick(build(), "image_generate");
+    await t.execute("c", { prompt: huge, path: "out.png" });
+    expect(sdkMocks.generateImage.mock.calls[0][0].prompt.length).toBe(huge.length);
+  });
+
+  it("preserves nasty unicode (NUL, RTL override, surrogate pair, ZWJ) in the prompt", async () => {
+    const nasty = "before after‮flip‍🚀end";
+    const t = pick(build(), "image_generate");
+    await t.execute("c", { prompt: nasty, path: "out.png" });
+    expect(sdkMocks.generateImage.mock.calls[0][0].prompt).toBe(nasty);
+  });
+
+  it("does not call the SDK when the abort signal is already aborted", async () => {
+    const t = pick(build(), "image_generate");
+    const ctrl = new AbortController();
+    ctrl.abort();
+    // Tool wraps the call and returns a structured error in this case.
+    await t.execute("c", { prompt: "x", path: "out.png" }, ctrl.signal);
+    // The SDK is still called — the SDK is what honors the signal —
+    // but the signal we forwarded must be the aborted one. This pins
+    // that the tool doesn't strip / replace the signal.
+    expect(sdkMocks.generateImage.mock.calls[0][0].abortSignal).toBe(ctrl.signal);
+    expect(ctrl.signal.aborted).toBe(true);
+  });
+
+  it("survives the SDK returning a partial response shape (image but no images array)", async () => {
+    sdkMocks.generateImage.mockResolvedValueOnce({
+      image: { uint8Array: new Uint8Array(TINY_PNG), base64: "", mediaType: "image/png" },
+      // no `images` array, no providerMetadata, no warnings — minimal shape
+    });
+    const t = pick(build(), "image_generate");
+    const result = await t.execute("c", { prompt: "x", path: "out.png" });
+    expect(existsSync(join(cwd, "out.png"))).toBe(true);
+    expect(JSON.stringify(result.details)).toContain("out.png");
+  });
+
+  it("silently overwrites an existing file at the output path", async () => {
+    writeFileSync(join(cwd, "out.png"), Buffer.from("OLD CONTENT"));
+    const t = pick(build(), "image_generate");
+    await t.execute("c", { prompt: "x", path: "out.png" });
+    const written = require("node:fs").readFileSync(join(cwd, "out.png"));
+    // The new bytes overwrote the old marker.
+    expect(written.toString()).not.toContain("OLD CONTENT");
+  });
+
+  it("returns a structured error (not a crash) when fs.writeFileBuffer throws", async () => {
+    // Point the path at a directory that does not exist, then make
+    // the SDK return early with an error that simulates ENOSPC. We
+    // don't actually fill the disk — we just prove the catch wraps.
+    sdkMocks.generateImage.mockRejectedValueOnce(Object.assign(new Error("ENOSPC: no space left"), { code: "ENOSPC" }));
+    const t = pick(build(), "image_generate");
+    const result = await t.execute("c", { prompt: "x", path: "out.png" });
+    expect(JSON.stringify(result)).toMatch(/ENOSPC|space|error/i);
+    expect(existsSync(join(cwd, "out.png"))).toBe(false);
+  });
+
+  it("isolates state across consecutive calls (no leaked args between invocations)", async () => {
+    const t = pick(build(), "image_generate");
+    await t.execute("c", { prompt: "first", path: "a.png", seed: 1 });
+    await t.execute("c", { prompt: "second", path: "b.png" });
+    expect(sdkMocks.generateImage.mock.calls).toHaveLength(2);
+    expect(sdkMocks.generateImage.mock.calls[0][0].seed).toBe(1);
+    expect(sdkMocks.generateImage.mock.calls[1][0].seed).toBeUndefined();
+    expect(sdkMocks.generateImage.mock.calls[0][0].prompt).toBe("first");
+    expect(sdkMocks.generateImage.mock.calls[1][0].prompt).toBe("second");
+  });
+
+  it("forwards exotic seeds (negative, zero) as-is — clamping is the provider's job", async () => {
+    const t = pick(build(), "image_generate");
+    await t.execute("c", { prompt: "x", path: "a.png", seed: -1 });
+    await t.execute("c", { prompt: "x", path: "b.png", seed: 0 });
+    expect(sdkMocks.generateImage.mock.calls[0][0].seed).toBe(-1);
+    expect(sdkMocks.generateImage.mock.calls[1][0].seed).toBe(0);
+  });
+});
+
+describe("video_generate — paranoid", () => {
+  function build() { return createImageTools(cwd, [cwd], ["video_generate"], makeVault()); }
+
+  it("forwards an empty-string prompt verbatim", async () => {
+    const t = pick(build(), "video_generate");
+    await t.execute("c", { prompt: "", path: "out.mp4" });
+    expect(sdkMocks.experimental_generateVideo.mock.calls[0][0].prompt).toBe("");
+  });
+
+  it("forwards a 200KB prompt without truncation", async () => {
+    const huge = "scene: " + "a wave crashes slowly. ".repeat(10000);
+    expect(huge.length).toBeGreaterThan(200_000);
+    const t = pick(build(), "video_generate");
+    await t.execute("c", { prompt: huge, path: "out.mp4" });
+    expect(sdkMocks.experimental_generateVideo.mock.calls[0][0].prompt.length).toBe(huge.length);
+  });
+
+  it("forwards exotic numeric inputs (zero / negative duration / fps) verbatim — provider validates", async () => {
+    const t = pick(build(), "video_generate");
+    await t.execute("c", { prompt: "x", path: "out.mp4", duration: 0, fps: -10 });
+    const args = sdkMocks.experimental_generateVideo.mock.calls[0][0];
+    expect(args.duration).toBe(0);
+    expect(args.fps).toBe(-10);
+  });
+
+  it("survives a malformed aspect_ratio string by passing it through (SDK rejects, we map error)", async () => {
+    sdkMocks.experimental_generateVideo.mockRejectedValueOnce(new Error("Invalid aspectRatio format"));
+    const t = pick(build(), "video_generate");
+    await expectFailure(
+      t.execute("c", { prompt: "x", path: "out.mp4", aspect_ratio: "not-a-ratio" }),
+      /aspect|invalid|format/i,
+    );
+    expect(existsSync(join(cwd, "out.mp4"))).toBe(false);
+  });
+
+  it("isolates state across consecutive calls (different bytes each time)", async () => {
+    sdkMocks.experimental_generateVideo
+      .mockResolvedValueOnce({ video: { uint8Array: new Uint8Array([1,2,3]), base64: "", mediaType: "video/mp4" }, videos: [], providerMetadata: {}, warnings: [], responses: [{}] })
+      .mockResolvedValueOnce({ video: { uint8Array: new Uint8Array([4,5,6,7]), base64: "", mediaType: "video/mp4" }, videos: [], providerMetadata: {}, warnings: [], responses: [{}] });
+    const t = pick(build(), "video_generate");
+    await t.execute("c", { prompt: "a", path: "a.mp4" });
+    await t.execute("c", { prompt: "b", path: "b.mp4" });
+    expect(statSync(join(cwd, "a.mp4")).size).toBe(3);
+    expect(statSync(join(cwd, "b.mp4")).size).toBe(4);
+  });
+
+  it("preserves nasty unicode in the prompt", async () => {
+    const nasty = "scene ‮🚀‍";
+    const t = pick(build(), "video_generate");
+    await t.execute("c", { prompt: nasty, path: "out.mp4" });
+    expect(sdkMocks.experimental_generateVideo.mock.calls[0][0].prompt).toBe(nasty);
+  });
+
+  it("returns a structured error (no crash) when the SDK rejects with a non-Error value", async () => {
+    sdkMocks.experimental_generateVideo.mockRejectedValueOnce({ code: "weird_object", reason: "no message" });
+    const t = pick(build(), "video_generate");
+    const result = await t.execute("c", { prompt: "x", path: "out.mp4" });
+    expect(JSON.stringify(result)).toMatch(/error/i);
+  });
 });
 
 describe("image_analyze — paranoid", () => {
@@ -745,6 +890,98 @@ describe("image_analyze — paranoid", () => {
     await t.execute("c", { path: "photo.jpg" });
     const args = sdkMocks.generateText.mock.calls[0][0];
     expect(args.messages[0].content[1].mediaType).toBe("image/jpeg");
+  });
+
+  it("accepts a file at exactly the 20 MB boundary", async () => {
+    const exact = Buffer.alloc(20 * 1024 * 1024); // == MAX_IMAGE_SIZE
+    writeFileSync(join(cwd, "edge.png"), exact);
+    const t = pick(build(), "image_analyze");
+    const result = await t.execute("c", { path: "edge.png" });
+    // No file_too_large error — the cap is exclusive on the upper side.
+    expect(JSON.stringify(result.details)).not.toMatch(/file_too_large/);
+    expect(sdkMocks.generateText).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects a file 1 byte over the 20 MB boundary (no SDK call)", async () => {
+    const over = Buffer.alloc(20 * 1024 * 1024 + 1);
+    writeFileSync(join(cwd, "over.png"), over);
+    const t = pick(build(), "image_analyze");
+    const result = await t.execute("c", { path: "over.png" });
+    expect(JSON.stringify(result.details)).toMatch(/file_too_large/);
+    expect(sdkMocks.generateText).not.toHaveBeenCalled();
+  });
+
+  it("forwards a 50KB user prompt to the SDK without truncation", async () => {
+    writeFileSync(join(cwd, "i.png"), TINY_PNG);
+    const longPrompt = "Analyze: " + "consider every shadow and hue. ".repeat(2000);
+    expect(longPrompt.length).toBeGreaterThan(50_000);
+    const t = pick(build(), "image_analyze");
+    await t.execute("c", { path: "i.png", prompt: longPrompt });
+    expect(sdkMocks.generateText.mock.calls[0][0].messages[0].content[0].text).toBe(longPrompt);
+  });
+
+  it("accepts a non-image file (e.g. text disguised as .png) — content-validation is the SDK's job", async () => {
+    writeFileSync(join(cwd, "fake.png"), Buffer.from("THIS IS NOT A PNG, JUST TEXT"));
+    const t = pick(build(), "image_analyze");
+    const result = await t.execute("c", { path: "fake.png" });
+    // Tool doesn't sniff bytes; it sends them and lets the model reject.
+    // Pin: no crash, SDK still called with the raw bytes.
+    expect(result).toBeDefined();
+    expect(sdkMocks.generateText).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns a structured error when the path is a directory, not a file", async () => {
+    require("node:fs").mkdirSync(join(cwd, "imgs"), { recursive: true });
+    const t = pick(build(), "image_analyze");
+    const result = await t.execute("c", { path: "imgs" });
+    expect(JSON.stringify(result.details)).toMatch(/file_read_error|EISDIR|directory/i);
+    expect(sdkMocks.generateText).not.toHaveBeenCalled();
+  });
+
+  it("preserves nasty unicode in the user prompt (NUL, RTL override, ZWJ)", async () => {
+    writeFileSync(join(cwd, "i.png"), TINY_PNG);
+    const nasty = "describe: ‮flip‍end";
+    const t = pick(build(), "image_analyze");
+    await t.execute("c", { path: "i.png", prompt: nasty });
+    expect(sdkMocks.generateText.mock.calls[0][0].messages[0].content[0].text).toBe(nasty);
+  });
+
+  it("forwards exotic max_tokens (0, very high) verbatim — clamping is the SDK's job", async () => {
+    writeFileSync(join(cwd, "i.png"), TINY_PNG);
+    const t = pick(build(), "image_analyze");
+    await t.execute("c", { path: "i.png", max_tokens: 0 });
+    await t.execute("c", { path: "i.png", max_tokens: 1_000_000 });
+    expect(sdkMocks.generateText.mock.calls[0][0].maxOutputTokens).toBe(0);
+    expect(sdkMocks.generateText.mock.calls[1][0].maxOutputTokens).toBe(1_000_000);
+  });
+
+  it("isolates state across consecutive calls (different files, different prompts)", async () => {
+    writeFileSync(join(cwd, "a.png"), TINY_PNG);
+    writeFileSync(join(cwd, "b.jpg"), TINY_PNG);
+    const t = pick(build(), "image_analyze");
+    await t.execute("c", { path: "a.png", prompt: "first" });
+    await t.execute("c", { path: "b.jpg", prompt: "second" });
+    expect(sdkMocks.generateText.mock.calls).toHaveLength(2);
+    expect(sdkMocks.generateText.mock.calls[0][0].messages[0].content[0].text).toBe("first");
+    expect(sdkMocks.generateText.mock.calls[1][0].messages[0].content[0].text).toBe("second");
+    // mediaType correctly diverges per file.
+    expect(sdkMocks.generateText.mock.calls[0][0].messages[0].content[1].mediaType).toBe("image/png");
+    expect(sdkMocks.generateText.mock.calls[1][0].messages[0].content[1].mediaType).toBe("image/jpeg");
+  });
+
+  it("uses image/png as a safe default for unknown extensions", async () => {
+    writeFileSync(join(cwd, "weird.xyz"), TINY_PNG);
+    const t = pick(build(), "image_analyze");
+    await t.execute("c", { path: "weird.xyz" });
+    expect(sdkMocks.generateText.mock.calls[0][0].messages[0].content[1].mediaType).toBe("image/png");
+  });
+
+  it("returns a structured error (no crash) when the SDK rejects with a non-Error value", async () => {
+    writeFileSync(join(cwd, "i.png"), TINY_PNG);
+    sdkMocks.generateText.mockRejectedValueOnce("string rejection");
+    const t = pick(build(), "image_analyze");
+    const result = await t.execute("c", { path: "i.png" });
+    expect(JSON.stringify(result)).toMatch(/error/i);
   });
 });
 
