@@ -1720,3 +1720,226 @@ describe("audio_speak — paranoid", () => {
     expect(sdkMocks.experimental_generateSpeech.mock.calls[1][0].abortSignal).toBe(b.signal);
   });
 });
+
+// ════════════════════════════════════════════════════════════
+// Agent-config model precedence — adversarial pinning
+//
+// Each tool resolves its effective model in priority:
+//   1. per-call `model` input override
+//   2. agent-config default (passed to factory as imageModel/videoModel/...)
+//   3. DEFAULT_*_MODEL constant from @polpo-ai/core
+// These tests pin every transition in that chain so a regression
+// in one layer doesn't get masked by a fallback in another.
+// ════════════════════════════════════════════════════════════
+
+describe("agent-config model precedence — image_generate", () => {
+  it("uses the agent-configured imageModel when no per-call override is passed", async () => {
+    const tools = createImageTools({
+      cwd, allowedPaths: [cwd], allowedTools: ["image_generate"], vault: makeVault(),
+      imageModel: "fal/fal-ai/flux-pro/v1.1",
+    });
+    const t = pick(tools, "image_generate");
+    await t.execute("c", { prompt: "x", path: "out.png" });
+    expect(sdkMocks.generateImage.mock.calls[0][0].model.modelId).toBe("fal-ai/flux-pro/v1.1");
+  });
+
+  it("per-call override beats the agent-configured imageModel", async () => {
+    const tools = createImageTools({
+      cwd, allowedPaths: [cwd], allowedTools: ["image_generate"], vault: makeVault(),
+      imageModel: "fal/fal-ai/flux-pro/v1.1",
+    });
+    const t = pick(tools, "image_generate");
+    await t.execute("c", { prompt: "x", path: "out.png", model: "fal/fal-ai/flux/schnell" });
+    expect(sdkMocks.generateImage.mock.calls[0][0].model.modelId).toBe("fal-ai/flux/schnell");
+  });
+
+  it("falls through to DEFAULT_IMAGE_MODEL when neither override nor config is set", async () => {
+    const tools = createImageTools({
+      cwd, allowedPaths: [cwd], allowedTools: ["image_generate"], vault: makeVault(),
+    });
+    const t = pick(tools, "image_generate");
+    await t.execute("c", { prompt: "x", path: "out.png" });
+    expect(sdkMocks.generateImage.mock.calls[0][0].model.modelId).toBe("fal-ai/flux/dev");
+  });
+
+  it("returns a structured error when the agent-configured imageModel is malformed", async () => {
+    const tools = createImageTools({
+      cwd, allowedPaths: [cwd], allowedTools: ["image_generate"], vault: makeVault(),
+      imageModel: "no-slash-here",
+    });
+    const t = pick(tools, "image_generate");
+    const result = await t.execute("c", { prompt: "x", path: "out.png" });
+    expect(JSON.stringify(result)).toMatch(/invalid|provider|model/i);
+    expect(sdkMocks.generateImage).not.toHaveBeenCalled();
+  });
+
+  it("returns a structured error when the per-call override is malformed", async () => {
+    const tools = createImageTools({
+      cwd, allowedPaths: [cwd], allowedTools: ["image_generate"], vault: makeVault(),
+    });
+    const t = pick(tools, "image_generate");
+    const result = await t.execute("c", { prompt: "x", path: "out.png", model: "/empty-provider" });
+    expect(JSON.stringify(result)).toMatch(/invalid|provider|model|non-empty/i);
+    expect(sdkMocks.generateImage).not.toHaveBeenCalled();
+  });
+
+  it("rejects an unknown image provider with a clear error", async () => {
+    const tools = createImageTools({
+      cwd, allowedPaths: [cwd], allowedTools: ["image_generate"], vault: makeVault(),
+      imageModel: "google/imagen-3",
+    });
+    const t = pick(tools, "image_generate");
+    const result = await t.execute("c", { prompt: "x", path: "out.png" });
+    // The provider-resolver mock captures every call name; only "fal"
+    // is in the supported set today. The tool surfaces the resolver's
+    // error untouched.
+    expect(JSON.stringify(result)).toMatch(/error|google|provider/i);
+  });
+});
+
+describe("agent-config model precedence — video_generate", () => {
+  it("uses the agent-configured videoModel by default", async () => {
+    const tools = createImageTools({
+      cwd, allowedPaths: [cwd], allowedTools: ["video_generate"], vault: makeVault(),
+      videoModel: "fal/luma-ray-2",
+    });
+    const t = pick(tools, "video_generate");
+    await t.execute("c", { prompt: "x", path: "out.mp4" });
+    expect(sdkMocks.experimental_generateVideo.mock.calls[0][0].model.modelId).toBe("luma-ray-2");
+  });
+
+  it("falls through to DEFAULT_VIDEO_MODEL when nothing is configured", async () => {
+    const tools = createImageTools({
+      cwd, allowedPaths: [cwd], allowedTools: ["video_generate"], vault: makeVault(),
+    });
+    const t = pick(tools, "video_generate");
+    await t.execute("c", { prompt: "x", path: "out.mp4" });
+    expect(sdkMocks.experimental_generateVideo.mock.calls[0][0].model.modelId).toBe("luma-ray-2-flash");
+  });
+});
+
+describe("agent-config model precedence — image_analyze", () => {
+  it("uses the agent-configured visionModel (anthropic) when no override", async () => {
+    writeFileSync(join(cwd, "i.png"), TINY_PNG);
+    const tools = createImageTools({
+      cwd, allowedPaths: [cwd], allowedTools: ["image_analyze"], vault: makeVault(),
+      visionModel: "anthropic/claude-sonnet-4-20250514",
+    });
+    const t = pick(tools, "image_analyze");
+    await t.execute("c", { path: "i.png" });
+    expect(sdkMocks.resolveVisionProvider).toHaveBeenCalledWith("anthropic", expect.any(String));
+    expect(sdkMocks.generateText.mock.calls[0][0].model.modelId).toBe("claude-sonnet-4-20250514");
+  });
+
+  it("falls through to DEFAULT_VISION_MODEL (openai/gpt-4o-mini) when nothing is configured", async () => {
+    writeFileSync(join(cwd, "i.png"), TINY_PNG);
+    const tools = createImageTools({
+      cwd, allowedPaths: [cwd], allowedTools: ["image_analyze"], vault: makeVault(),
+    });
+    const t = pick(tools, "image_analyze");
+    await t.execute("c", { path: "i.png" });
+    expect(sdkMocks.generateText.mock.calls[0][0].model.modelId).toBe("gpt-4o-mini");
+  });
+});
+
+describe("agent-config model precedence — audio_transcribe", () => {
+  it("uses the agent-configured transcribeModel (deepgram) when no override", async () => {
+    writeFileSync(join(cwd, "r.mp3"), Buffer.from("data"));
+    const tools = createAudioTools({
+      cwd, allowedPaths: [cwd], allowedTools: ["audio_transcribe"], vault: makeVault(),
+      transcribeModel: "deepgram/nova-3",
+    });
+    const t = pick(tools, "audio_transcribe");
+    await t.execute("c", { path: "r.mp3" });
+    expect(sdkMocks.resolveTranscribeProvider).toHaveBeenCalledWith("deepgram", expect.any(String));
+    expect(sdkMocks.experimental_transcribe.mock.calls[0][0].model.modelId).toBe("nova-3");
+  });
+
+  it("per-call override beats the configured transcribeModel", async () => {
+    writeFileSync(join(cwd, "r.mp3"), Buffer.from("data"));
+    const tools = createAudioTools({
+      cwd, allowedPaths: [cwd], allowedTools: ["audio_transcribe"], vault: makeVault(),
+      transcribeModel: "deepgram/nova-3",
+    });
+    const t = pick(tools, "audio_transcribe");
+    await t.execute("c", { path: "r.mp3", model: "openai/whisper-1" });
+    expect(sdkMocks.experimental_transcribe.mock.calls[0][0].model.modelId).toBe("whisper-1");
+  });
+});
+
+describe("agent-config model precedence — audio_speak", () => {
+  it("uses the agent-configured ttsModel (elevenlabs) when no override", async () => {
+    const tools = createAudioTools({
+      cwd, allowedPaths: [cwd], allowedTools: ["audio_speak"], vault: makeVault(),
+      ttsModel: "elevenlabs/eleven_multilingual_v2",
+    });
+    const t = pick(tools, "audio_speak");
+    await t.execute("c", { text: "hi", path: "out.mp3" });
+    expect(sdkMocks.resolveSpeakProvider.mock.calls[0][0]).toBe("elevenlabs");
+    expect(sdkMocks.experimental_generateSpeech.mock.calls[0][0].model.modelId).toBe("eleven_multilingual_v2");
+  });
+
+  it("uses the agent-configured ttsModel (edge) without requiring a vault key", async () => {
+    delete process.env.OPENAI_API_KEY;
+    const noKeysVault: ResolvedVault = {
+      get: () => undefined, getSmtp: () => undefined, getImap: () => undefined,
+      getKey: () => undefined, has: () => false, list: () => [],
+    };
+    const tools = createAudioTools({
+      cwd, allowedPaths: [cwd], allowedTools: ["audio_speak"], vault: noKeysVault,
+      ttsModel: "edge/edge-tts",
+    });
+    const t = pick(tools, "audio_speak");
+    await t.execute("c", { text: "ciao", path: "out.mp3", language: "it" });
+    expect(sdkMocks.resolveSpeakProvider.mock.calls[0][0]).toBe("edge");
+    const cfg = sdkMocks.resolveSpeakProvider.mock.calls[0][1];
+    expect(cfg.apiKey).toBeUndefined();
+    expect(cfg.shell).toBeDefined();
+    expect(cfg.fs).toBeDefined();
+  });
+
+  it("falls through to DEFAULT_TTS_MODEL when nothing is configured", async () => {
+    const tools = createAudioTools({
+      cwd, allowedPaths: [cwd], allowedTools: ["audio_speak"], vault: makeVault(),
+    });
+    const t = pick(tools, "audio_speak");
+    await t.execute("c", { text: "x", path: "out.mp3" });
+    expect(sdkMocks.experimental_generateSpeech.mock.calls[0][0].model.modelId).toBe("tts-1");
+  });
+
+  it("returns a structured error when ttsModel string is malformed", async () => {
+    const tools = createAudioTools({
+      cwd, allowedPaths: [cwd], allowedTools: ["audio_speak"], vault: makeVault(),
+      ttsModel: "openai/", // empty model
+    });
+    const t = pick(tools, "audio_speak");
+    const result = await t.execute("c", { text: "x", path: "out.mp3" });
+    expect(JSON.stringify(result)).toMatch(/invalid|provider|model|non-empty/i);
+    expect(sdkMocks.experimental_generateSpeech).not.toHaveBeenCalled();
+  });
+});
+
+describe("agent-config — model strings with multi-segment ids round-trip", () => {
+  // fal exposes models like "fal-ai/flux/dev" that themselves contain
+  // slashes. The first slash splits provider/model; everything after
+  // is one opaque id. Pin this end-to-end through the tool layer.
+  it("image_generate preserves a 4-segment fal model id", async () => {
+    const tools = createImageTools({
+      cwd, allowedPaths: [cwd], allowedTools: ["image_generate"], vault: makeVault(),
+      imageModel: "fal/fal-ai/wan/v2.2-1.3b/text-to-video",
+    });
+    const t = pick(tools, "image_generate");
+    await t.execute("c", { prompt: "x", path: "out.png" });
+    expect(sdkMocks.generateImage.mock.calls[0][0].model.modelId).toBe("fal-ai/wan/v2.2-1.3b/text-to-video");
+  });
+
+  it("video_generate preserves a 3-segment fal video id", async () => {
+    const tools = createImageTools({
+      cwd, allowedPaths: [cwd], allowedTools: ["video_generate"], vault: makeVault(),
+      videoModel: "fal/fal-ai/wan/v2.2-1.3b/text-to-video",
+    });
+    const t = pick(tools, "video_generate");
+    await t.execute("c", { prompt: "x", path: "out.mp4" });
+    expect(sdkMocks.experimental_generateVideo.mock.calls[0][0].model.modelId).toBe("fal-ai/wan/v2.2-1.3b/text-to-video");
+  });
+});
