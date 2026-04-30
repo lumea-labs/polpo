@@ -51,19 +51,25 @@ jobs:
       # Buildx is needed for cache-from/cache-to type=gha.
       - uses: docker/setup-buildx-action@v3
 
-      # Pick a POLPO_VERSION:
-      # - tag push v0.7.0 → 0.7.0
-      # - main push       → "main"
-      # - PR              → the PR's head ref (just for the build label)
-      - name: Compute version
+      # `polpo_version` is the npm package version the Dockerfile
+      # installs INSIDE the image — must always be a published, real
+      # version. We read it from packages/core/package.json so it
+      # tracks main automatically.
+      #
+      # `image_tag` is the Docker tag we attach to the built image
+      # (separate concern from the npm version).
+      - name: Compute build inputs
         id: ver
         run: |
+          POLPO_VERSION=$(node -p "require('./packages/core/package.json').version")
+          echo "polpo_version=$POLPO_VERSION" >> "$GITHUB_OUTPUT"
+
           if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
-            echo "version=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
+            echo "image_tag=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
           elif [[ "${{ github.ref }}" == refs/heads/main ]]; then
-            echo "version=main" >> "$GITHUB_OUTPUT"
+            echo "image_tag=main" >> "$GITHUB_OUTPUT"
           else
-            echo "version=pr-${{ github.event.pull_request.number || 'manual' }}" >> "$GITHUB_OUTPUT"
+            echo "image_tag=pr-${{ github.event.pull_request.number || 'manual' }}" >> "$GITHUB_OUTPUT"
           fi
 
       # Build the image but DON'T push yet — we want smoke to pass first.
@@ -76,9 +82,9 @@ jobs:
           context: docker/runner
           file: docker/runner/Dockerfile
           load: true
-          tags: ${{ env.IMAGE_NAME }}:${{ steps.ver.outputs.version }}
+          tags: ${{ env.IMAGE_NAME }}:${{ steps.ver.outputs.image_tag }}
           build-args: |
-            POLPO_VERSION=${{ steps.ver.outputs.version == 'main' && '0.7.0' || steps.ver.outputs.version }}
+            POLPO_VERSION=${{ steps.ver.outputs.polpo_version }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -87,7 +93,7 @@ jobs:
           docker run --rm \
             -v "$PWD/docker/runner/tests:/tests:ro" \
             -w /home/daytona \
-            ${{ env.IMAGE_NAME }}:${{ steps.ver.outputs.version }} \
+            ${{ env.IMAGE_NAME }}:${{ steps.ver.outputs.image_tag }} \
             node /tests/runtime-smoke.mjs
 
       # Push only happens after smoke is green AND we're on main/tag.
@@ -107,10 +113,10 @@ jobs:
           file: docker/runner/Dockerfile
           push: true
           tags: |
-            ${{ env.IMAGE_NAME }}:${{ steps.ver.outputs.version }}
+            ${{ env.IMAGE_NAME }}:${{ steps.ver.outputs.image_tag }}
             ${{ env.IMAGE_NAME }}:latest
           build-args: |
-            POLPO_VERSION=${{ steps.ver.outputs.version == 'main' && '0.7.0' || steps.ver.outputs.version }}
+            POLPO_VERSION=${{ steps.ver.outputs.polpo_version }}
           cache-from: type=gha
 
   # ─── Nightly: pull whatever is published on :latest and re-run
