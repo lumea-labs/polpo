@@ -308,6 +308,14 @@ export const AddAgentSchema = z.object({
   name: z.string().min(1),
   role: z.string().optional(),
   model: z.string().optional(),
+  // Per-modality media models (provider/model strings; format checked
+  // by parseModelString at tool-call time). Undefined → DEFAULT_*_MODEL.
+  image_model:      z.string().optional(),
+  video_model:      z.string().optional(),
+  vision_model:     z.string().optional(),
+  transcribe_model: z.string().optional(),
+  tts_model:        z.string().optional(),
+  search_provider:  z.string().optional(),
   allowedTools: z.array(ToolNameSchema).optional(),
   systemPrompt: z.string().optional(),
   skills: z.array(z.string()).optional(),
@@ -325,6 +333,13 @@ export const AddAgentSchema = z.object({
 export const UpdateAgentSchema = z.object({
   role: z.string().optional(),
   model: z.string().optional(),
+  // Per-modality media models (optional, mirror AddAgentSchema).
+  image_model:      z.string().optional(),
+  video_model:      z.string().optional(),
+  vision_model:     z.string().optional(),
+  transcribe_model: z.string().optional(),
+  tts_model:        z.string().optional(),
+  search_provider:  z.string().optional(),
   allowedTools: z.array(ToolNameSchema).optional(),
   allowedPaths: z.array(z.string()).optional(),
   systemPrompt: z.string().optional(),
