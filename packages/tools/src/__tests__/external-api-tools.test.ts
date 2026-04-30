@@ -27,6 +27,29 @@ import { createSearchTools } from "../search-tools.js";
 import type { PolpoTool as AgentTool } from "@polpo-ai/core";
 import type { ResolvedVault } from "../types.js";
 
+// ── AI SDK mocks (image_generate goes through `generateImage`) ──
+//
+// vi.hoisted lets us share these across the test file *and* the
+// vi.mock factories below, which run before module init. Each test
+// resets the mocks in beforeEach.
+
+const sdkMocks = vi.hoisted(() => ({
+  generateImage: vi.fn(),
+  resolveImageProvider: vi.fn(async (_name: string, apiKey: string) => ({
+    _calledWithKey: apiKey,
+    image: (modelId: string) => ({ _isMockModel: true, modelId }),
+  })),
+}));
+
+vi.mock("../lib/provider-resolver.js", () => ({
+  resolveImageProvider: sdkMocks.resolveImageProvider,
+}));
+
+vi.mock("ai", async () => {
+  const actual = await vi.importActual<typeof import("ai")>("ai");
+  return { ...actual, generateImage: sdkMocks.generateImage };
+});
+
 let cwd: string;
 let originalFetch: typeof globalThis.fetch;
 let lastRequests: Array<{ url: string; init?: RequestInit }> = [];
@@ -111,6 +134,16 @@ beforeEach(() => {
   cwd = mkdtempSync(join(tmpdir(), "polpo-ext-api-"));
   originalFetch = globalThis.fetch;
   lastRequests = [];
+  // Reset SDK mocks; install a sane happy-path default for image_generate.
+  sdkMocks.generateImage.mockReset();
+  sdkMocks.generateImage.mockResolvedValue({
+    image: { uint8Array: new Uint8Array(TINY_PNG), base64: TINY_PNG.toString("base64"), mediaType: "image/png" },
+    images: [{ uint8Array: new Uint8Array(TINY_PNG), base64: TINY_PNG.toString("base64"), mediaType: "image/png" }],
+    providerMetadata: {},
+    warnings: [],
+    responses: [{}],
+  });
+  sdkMocks.resolveImageProvider.mockClear();
 });
 
 afterEach(() => {
@@ -119,122 +152,91 @@ afterEach(() => {
 });
 
 // ────────────────────────────────────────────────────────────
-// image_generate (fal.ai queue)
+// image_generate (Vercel AI SDK — generateImage)
 // ────────────────────────────────────────────────────────────
 describe("image_generate", () => {
   function build() {
     return createImageTools(cwd, [cwd], ["image_generate"], makeVault());
   }
 
-  it("submits to fal queue, polls, downloads, writes the image", async () => {
-    routeFetch([
-      // Submit
-      { match: (u) => u.includes("queue.fal.run/") && !u.includes("/status") && !u.includes("/requests/"),
-        response: () => new Response(JSON.stringify({
-          request_id: "req-1",
-          status_url: "https://queue.fal.run/x/requests/req-1/status",
-          response_url: "https://queue.fal.run/x/requests/req-1",
-        }), { status: 200, headers: { "content-type": "application/json" } }) },
-      // Status poll
-      { match: (u) => u.endsWith("/status"),
-        response: () => new Response(JSON.stringify({ status: "COMPLETED" }), { status: 200 }) },
-      // Result fetch (response_url)
-      { match: (u) => u.includes("/requests/req-1") && !u.endsWith("/status"),
-        response: () => new Response(JSON.stringify({
-          images: [{ url: "https://cdn.fal.ai/img/abc.png", width: 1, height: 1, content_type: "image/png" }],
-        }), { status: 200 }) },
-      // Image binary
-      { match: (u) => u.includes("cdn.fal.ai"),
-        response: () => new Response(TINY_PNG, { status: 200, headers: { "content-type": "image/png" } }) },
-    ]);
-
+  it("calls the SDK with the resolved fal model handle and writes the bytes", async () => {
     const t = pick(build(), "image_generate");
     const result = await t.execute("c", { prompt: "a cat", path: "out.png" });
-    expect(JSON.stringify(result.details)).toContain("out.png");
+
     expect(existsSync(join(cwd, "out.png"))).toBe(true);
     expect(statSync(join(cwd, "out.png")).size).toBeGreaterThan(20);
+    expect(JSON.stringify(result.details)).toContain("out.png");
 
-    // Pin the wire format: first request must be a POST with the FAL
-    // `Key …` auth header and a JSON body containing the prompt.
-    const submit = lastRequests[0];
-    expect(submit.init?.method).toBe("POST");
-    const headers = (submit.init?.headers ?? {}) as Record<string, string>;
-    expect(headers.Authorization).toBe("Key fake-fal-key");
-    expect(JSON.parse(submit.init?.body as string)).toMatchObject({ prompt: "a cat" });
+    // Resolver was invoked with the fal-ai vault key.
+    expect(sdkMocks.resolveImageProvider).toHaveBeenCalledWith("fal", "fake-fal-key");
+
+    // The SDK got the prompt and the default fal-ai/flux/dev model.
+    const args = sdkMocks.generateImage.mock.calls[0][0];
+    expect(args.prompt).toBe("a cat");
+    expect(args.model).toEqual({ _isMockModel: true, modelId: "fal-ai/flux/dev" });
   });
 
-  it("surfaces a 401 from fal as a clear failure (no file written)", async () => {
-    routeFetch([
-      { match: () => true,
-        response: () => new Response("invalid key", { status: 401 }) },
-    ]);
+  it("forwards size, seed, and provider-specific knobs to the SDK", async () => {
     const t = pick(build(), "image_generate");
-    await expectFailure(t.execute("c", { prompt: "x", path: "out.png" }), /401|unauthorized|invalid key/i);
+    await t.execute("c", {
+      prompt: "x", path: "out.png",
+      model: "fal-ai/flux-pro/v1.1",
+      size: "768x1024",
+      seed: 42,
+      num_inference_steps: 50,
+      guidance_scale: 7.5,
+    });
+
+    const args = sdkMocks.generateImage.mock.calls[0][0];
+    expect(args.size).toBe("768x1024");
+    expect(args.seed).toBe(42);
+    expect(args.providerOptions).toEqual({
+      fal: { num_inference_steps: 50, guidance_scale: 7.5 },
+    });
+    expect(args.model.modelId).toBe("fal-ai/flux-pro/v1.1");
+  });
+
+  it("omits providerOptions when no fal-specific knobs are passed", async () => {
+    const t = pick(build(), "image_generate");
+    await t.execute("c", { prompt: "x", path: "out.png" });
+    expect(sdkMocks.generateImage.mock.calls[0][0].providerOptions).toBeUndefined();
+  });
+
+  it("surfaces an SDK error as a structured tool failure (no file written)", async () => {
+    sdkMocks.generateImage.mockRejectedValueOnce(new Error("AI_APICallError: 401 invalid key"));
+    const t = pick(build(), "image_generate");
+    await expectFailure(
+      t.execute("c", { prompt: "x", path: "out.png" }),
+      /401|invalid key|api/i,
+    );
     expect(existsSync(join(cwd, "out.png"))).toBe(false);
   });
 
-  it("surfaces a 429 rate limit cleanly", async () => {
-    routeFetch([
-      { match: () => true,
-        response: () => new Response("too many", { status: 429 }) },
-    ]);
+  it("rejects when the SDK returns no image bytes", async () => {
+    sdkMocks.generateImage.mockResolvedValueOnce({
+      image: { uint8Array: new Uint8Array(0), base64: "", mediaType: "image/png" },
+      images: [], providerMetadata: {}, warnings: [], responses: [{}],
+    });
     const t = pick(build(), "image_generate");
     await expectFailure(
       t.execute("c", { prompt: "x", path: "out.png" }),
-      /429|too many|rate|fal\.ai/i,
+      /no image bytes|empty|response/i,
     );
+    expect(existsSync(join(cwd, "out.png"))).toBe(false);
   });
 
-  it("surfaces a FAILED queue status as a clear failure", async () => {
-    routeFetch([
-      { match: (u) => !u.includes("/status") && u.includes("queue.fal.run/"),
-        response: () => new Response(JSON.stringify({
-          request_id: "r", status_url: "https://queue.fal.run/x/r/status", response_url: "https://queue.fal.run/x/r",
-        }), { status: 200 }) },
-      { match: (u) => u.endsWith("/status"),
-        response: () => new Response(JSON.stringify({ status: "FAILED", error: "model crashed" }), { status: 200 }) },
-    ]);
-    const t = pick(build(), "image_generate");
-    await expectFailure(
-      t.execute("c", { prompt: "x", path: "out.png" }),
-      /failed|crashed|model/i,
-    );
-  });
-
-  it("surfaces an empty images array as a clear failure", async () => {
-    routeFetch([
-      { match: (u) => !u.includes("/status") && u.includes("queue.fal.run/"),
-        response: () => new Response(JSON.stringify({
-          request_id: "r", status_url: "https://queue.fal.run/x/r/status", response_url: "https://queue.fal.run/x/r",
-        }), { status: 200 }) },
-      { match: (u) => u.endsWith("/status"),
-        response: () => new Response(JSON.stringify({ status: "COMPLETED" }), { status: 200 }) },
-      { match: (u) => u.includes("/requests/r") && !u.endsWith("/status"),
-        response: () => new Response(JSON.stringify({ images: [] }), { status: 200 }) },
-    ]);
-    const t = pick(build(), "image_generate");
-    await expectFailure(
-      t.execute("c", { prompt: "x", path: "out.png" }),
-      /no images|empty|response/i,
-    );
-  });
-
-  it("refuses an output path outside the sandbox before any fetch", async () => {
-    routeFetch([{ match: () => true, response: () => { throw new Error("network was reached"); } }]);
+  it("refuses an output path outside the sandbox before the SDK is called", async () => {
     const t = pick(build(), "image_generate");
     await expect(t.execute("c", { prompt: "x", path: "/etc/escape.png" }))
       .rejects.toThrow(/sandbox|allowed|denied/i);
-    expect(lastRequests.length).toBe(0);
+    expect(sdkMocks.generateImage).not.toHaveBeenCalled();
   });
 
-  it("survives a network error (fetch throws) without writing the file", async () => {
-    globalThis.fetch = vi.fn(async () => { throw new Error("ECONNRESET"); }) as any;
+  it("forwards the abort signal to the SDK", async () => {
     const t = pick(build(), "image_generate");
-    await expectFailure(
-      t.execute("c", { prompt: "x", path: "out.png" }),
-      /ECONNRESET|network|reset|error/i,
-    );
-    expect(existsSync(join(cwd, "out.png"))).toBe(false);
+    const ctrl = new AbortController();
+    await t.execute("c", { prompt: "x", path: "out.png" }, ctrl.signal);
+    expect(sdkMocks.generateImage.mock.calls[0][0].abortSignal).toBe(ctrl.signal);
   });
 });
 
@@ -487,139 +489,63 @@ describe("search_find_similar", () => {
 describe("image_generate — paranoid", () => {
   function build() { return createImageTools(cwd, [cwd], ["image_generate"], makeVault()); }
 
-  it("rejects when the queue submit returns malformed JSON (no request_id)", { timeout: 60_000 }, async () => {
-    let pollCount = 0;
-    routeFetch([
-      // First request: submit, missing request_id
-      { match: (u) => u.includes("queue.fal.run/") && !u.includes("/requests/"),
-        response: () => new Response(JSON.stringify({ unexpected: "shape" }), { status: 200 }) },
-      // Subsequent polls (against fallback URL with "undefined" in it)
-      // — after a few iterations, return FAILED to short-circuit.
-      { match: (u) => u.endsWith("/status"),
-        response: () => {
-          pollCount++;
-          return new Response(JSON.stringify({
-            status: "FAILED",
-            error: "missing request_id in submit response",
-          }), { status: 200 });
-        } },
-    ]);
-    const t = pick(build(), "image_generate");
-    await expectFailure(
-      t.execute("c", { prompt: "x", path: "out.png" }),
-      /undefined|request|missing|fail|fal/i,
-    );
-  });
-
-  it("polls past IN_PROGRESS to COMPLETED without false-failing", async () => {
-    let polls = 0;
-    routeFetch([
-      { match: (u) => !u.includes("/status") && u.includes("queue.fal.run/") && !u.includes("/requests/"),
-        response: () => new Response(JSON.stringify({
-          request_id: "p1",
-          status_url: "https://queue.fal.run/x/requests/p1/status",
-          response_url: "https://queue.fal.run/x/requests/p1",
-        }), { status: 200 }) },
-      { match: (u) => u.endsWith("/status"),
-        response: () => {
-          polls++;
-          const status = polls < 2 ? "IN_PROGRESS" : "COMPLETED";
-          return new Response(JSON.stringify({ status }), { status: 200 });
-        } },
-      { match: (u) => u.includes("/requests/p1") && !u.endsWith("/status"),
-        response: () => new Response(JSON.stringify({
-          images: [{ url: "https://cdn.fal.ai/i.png", width: 1, height: 1 }],
-        }), { status: 200 }) },
-      { match: (u) => u.includes("cdn.fal.ai"),
-        response: () => new Response(TINY_PNG, { status: 200 }) },
-    ]);
-    const t = pick(build(), "image_generate");
-    const result = await t.execute("c", { prompt: "x", path: "out.png" });
-    expect(JSON.stringify(result.details)).toContain("out.png");
-    expect(polls).toBeGreaterThanOrEqual(2);
-  }, 60_000);
-
-  it("rejects when the image URL itself returns 403", async () => {
-    routeFetch([
-      // Submit
-      { match: (u) => u.includes("queue.fal.run/") && !u.includes("/x/f"),
-        response: () => new Response(JSON.stringify({
-          request_id: "f",
-          status_url: "https://queue.fal.run/x/f/status",
-          response_url: "https://queue.fal.run/x/f/result",
-        }), { status: 200 }) },
-      // Status poll
-      { match: (u) => u.endsWith("/status"),
-        response: () => new Response(JSON.stringify({ status: "COMPLETED" }), { status: 200 }) },
-      // Result fetch (response_url, not /status)
-      { match: (u) => u === "https://queue.fal.run/x/f/result",
-        response: () => new Response(JSON.stringify({
-          images: [{ url: "https://cdn.fal.ai/x.png", width: 1, height: 1 }],
-        }), { status: 200 }) },
-      // Image binary — refused
-      { match: (u) => u.includes("cdn.fal.ai"),
-        response: () => new Response("forbidden", { status: 403 }) },
-    ]);
-    const t = pick(build(), "image_generate");
-    await expectFailure(
-      t.execute("c", { prompt: "x", path: "out.png" }),
-      /403|forbidden|download|fail/i,
-    );
-    expect(existsSync(join(cwd, "out.png"))).toBe(false);
-  });
-
-  it("survives a 5KB prompt without truncating it on the wire", async () => {
+  it("forwards a 5KB prompt to the SDK verbatim (no truncation)", async () => {
     const giantPrompt = "Draw " + "tiny ".repeat(1000) + "details.";
-    routeFetch([
-      { match: (u) => !u.includes("/status") && u.includes("queue.fal.run/"),
-        response: () => new Response(JSON.stringify({
-          request_id: "b", status_url: "https://queue.fal.run/x/b/status", response_url: "https://queue.fal.run/x/b",
-        }), { status: 200 }) },
-      { match: (u) => u.endsWith("/status"),
-        response: () => new Response(JSON.stringify({ status: "COMPLETED" }), { status: 200 }) },
-      { match: (u) => u.includes("/requests/b") && !u.endsWith("/status"),
-        response: () => new Response(JSON.stringify({
-          images: [{ url: "https://cdn.fal.ai/x.png", width: 1, height: 1 }],
-        }), { status: 200 }) },
-      { match: (u) => u.includes("cdn.fal.ai"),
-        response: () => new Response(TINY_PNG, { status: 200 }) },
-    ]);
     const t = pick(build(), "image_generate");
     await t.execute("c", { prompt: giantPrompt, path: "big.png" });
-    const submitBody = JSON.parse(lastRequests[0].init!.body as string);
-    expect(submitBody.prompt).toBe(giantPrompt);
+    expect(sdkMocks.generateImage.mock.calls[0][0].prompt).toBe(giantPrompt);
   });
 
-  it("falls back to FAL_KEY env when no vault key is present", { timeout: 60_000 }, async () => {
+  it("falls back to FAL_KEY env when no vault key is present", async () => {
     process.env.FAL_KEY = "env-fal-key";
     try {
       const noKeysVault: ResolvedVault = {
         get: () => undefined, getSmtp: () => undefined, getImap: () => undefined,
         getKey: () => undefined, has: () => false, list: () => [],
       };
-      routeFetch([
-        // Submit
-        { match: (u) => u.includes("queue.fal.run/") && !u.endsWith("/status"),
-          response: () => new Response(JSON.stringify({
-            request_id: "e",
-            status_url: "https://queue.fal.run/x/e/status",
-            response_url: "https://queue.fal.run/x/e/result",
-          }), { status: 200 }) },
-        // Short-circuit poll with FAILED so we don't loop.
-        { match: (u) => u.endsWith("/status"),
-          response: () => new Response(JSON.stringify({ status: "FAILED", error: "test stop" }), { status: 200 }) },
-      ]);
-      const tools = createImageTools(cwd, [cwd], ["image_generate"], noKeysVault);
-      const t = pick(tools, "image_generate");
-      // We expect the flow to fail (mock returns FAILED) — what we
-      // care about is the Authorization header on the first request
-      // (proves env fallback works when vault has no key).
-      await t.execute("c", { prompt: "x", path: "out.png" }).catch(() => {});
-      const headers = (lastRequests[0].init?.headers ?? {}) as Record<string, string>;
-      expect(headers.Authorization).toBe("Key env-fal-key");
+      const t = pick(createImageTools(cwd, [cwd], ["image_generate"], noKeysVault), "image_generate");
+      await t.execute("c", { prompt: "x", path: "out.png" });
+      expect(sdkMocks.resolveImageProvider).toHaveBeenCalledWith("fal", "env-fal-key");
     } finally {
       delete process.env.FAL_KEY;
     }
+  });
+
+  it("returns a structured error when neither vault nor env has a key", async () => {
+    delete process.env.FAL_KEY;
+    const noKeysVault: ResolvedVault = {
+      get: () => undefined, getSmtp: () => undefined, getImap: () => undefined,
+      getKey: () => undefined, has: () => false, list: () => [],
+    };
+    const t = pick(createImageTools(cwd, [cwd], ["image_generate"], noKeysVault), "image_generate");
+    await expectFailure(
+      t.execute("c", { prompt: "x", path: "out.png" }),
+      /missing|fal_key|env/i,
+    );
+    expect(sdkMocks.resolveImageProvider).not.toHaveBeenCalled();
+  });
+
+  it("does not write a partial file when the SDK throws after some progress", async () => {
+    sdkMocks.generateImage.mockRejectedValueOnce(new Error("provider went away"));
+    const t = pick(build(), "image_generate");
+    await t.execute("c", { prompt: "x", path: "out.png" }).catch(() => {});
+    expect(existsSync(join(cwd, "out.png"))).toBe(false);
+  });
+
+  it("surfaces a non-Error rejection from the SDK without crashing", async () => {
+    sdkMocks.generateImage.mockRejectedValueOnce("plain string rejection");
+    const t = pick(build(), "image_generate");
+    // The tool wraps in try/catch and reads .message — we expect
+    // *something* coherent, not an unhandled rejection.
+    const result = await t.execute("c", { prompt: "x", path: "out.png" });
+    expect(JSON.stringify(result)).toMatch(/error/i);
+  });
+
+  it("respects a custom model id (passes through to provider.image)", async () => {
+    const t = pick(build(), "image_generate");
+    await t.execute("c", { prompt: "x", path: "out.png", model: "fal-ai/flux/schnell" });
+    const args = sdkMocks.generateImage.mock.calls[0][0];
+    expect(args.model.modelId).toBe("fal-ai/flux/schnell");
   });
 });
 

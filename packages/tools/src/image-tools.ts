@@ -30,6 +30,7 @@ import type { FileSystem } from "@polpo-ai/core/filesystem";
 import { NodeFileSystem } from "./adapters/node-filesystem.js";
 import { resolveAllowedPaths, assertPathAllowed } from "./path-sandbox.js";
 import type { ResolvedVault } from "./types.js";
+import { resolveImageProvider } from "./lib/provider-resolver.js";
 
 type ToolResult = AgentToolResult<any>;
 
@@ -183,7 +184,7 @@ function createGenerateTool(cwd: string, sandbox: string[], fs: FileSystem, vaul
   return {
     name: "image_generate",
     label: "Generate Image",
-    description: "Generate an image from a text prompt using fal.ai (FLUX models). " +
+    description: "Generate an image from a text prompt via fal.ai (FLUX models). " +
       "Output format inferred from file extension (png, jpg, webp). " +
       "Models: fal-ai/flux/dev (default, balanced), fal-ai/flux-pro/v1.1 (best quality), " +
       "fal-ai/flux/schnell (fastest). Credentials resolved from: agent vault > FAL_KEY env var.",
@@ -218,62 +219,55 @@ async function generateFal(
   vault?: ResolvedVault,
   signal?: AbortSignal,
 ): Promise<ToolResult> {
+  const { generateImage } = await import("ai");
+
   const apiKey = resolveFalKey(vault);
   const model = params.model ?? "fal-ai/flux/dev";
+  const provider = await resolveImageProvider("fal", apiKey);
 
-  // Parse size into width/height
-  let width = 1024, height = 1024;
-  if (params.size) {
-    const parts = params.size.split("x").map(Number);
-    if (parts.length === 2 && parts[0] > 0 && parts[1] > 0) {
-      width = parts[0];
-      height = parts[1];
-    }
-  }
+  // fal-specific knobs go through providerOptions; the SDK passes them
+  // through to the model's input untouched.
+  const falOptions: Record<string, number> = {};
+  if (params.num_inference_steps != null) falOptions.num_inference_steps = params.num_inference_steps;
+  if (params.guidance_scale != null) falOptions.guidance_scale = params.guidance_scale;
 
-  const input: Record<string, unknown> = {
+  const result = await generateImage({
+    model: provider.image(model) as any,
     prompt: params.prompt,
-    image_size: { width, height },
-    num_images: 1,
-  };
-  if (params.num_inference_steps != null) input.num_inference_steps = params.num_inference_steps;
-  if (params.guidance_scale != null) input.guidance_scale = params.guidance_scale;
-  if (params.seed != null) input.seed = params.seed;
+    size: params.size as `${number}x${number}` | undefined,
+    seed: params.seed,
+    providerOptions: Object.keys(falOptions).length ? { fal: falOptions } : undefined,
+    abortSignal: signal,
+  });
 
-  const result = await falQueueRequest(model, input, apiKey, DEFAULT_TIMEOUT, signal);
-
-  // fal.ai FLUX response: { images: [{ url, width, height, content_type }], ... }
-  const images = result.images as { url: string; width: number; height: number; content_type?: string }[] | undefined;
-  if (!images || images.length === 0) {
-    throw new Error("No images in fal.ai response");
+  // The SDK guarantees `result.image` for a successful generation. No
+  // download step needed — the SDK has already pulled the bytes.
+  const bytes = result.image.uint8Array;
+  if (!bytes || bytes.byteLength === 0) {
+    throw new Error("No image bytes in SDK response");
   }
-
-  const imageUrl = images[0].url;
-  const imgResp = await fetch(imageUrl);
-  if (!imgResp.ok) throw new Error(`Failed to download generated image: ${imgResp.status}`);
-  const buffer = Buffer.from(await imgResp.arrayBuffer());
 
   if (!fs.writeFileBuffer) {
     throw new Error("FileSystem implementation does not support writeFileBuffer (required for binary writes).");
   }
   await fs.mkdir(dirname(filePath));
-  await fs.writeFileBuffer(filePath, new Uint8Array(buffer));
+  await fs.writeFileBuffer(filePath, bytes);
 
   const info = [
     `Image saved: ${filePath}`,
-    `Size: ${(buffer.byteLength / 1024).toFixed(1)} KB`,
+    `Size: ${(bytes.byteLength / 1024).toFixed(1)} KB`,
     `Model: ${model}`,
-    `Dimensions: ${images[0].width}x${images[0].height}`,
   ];
+  if (params.size) info.push(`Dimensions: ${params.size}`);
 
   return {
     content: [{ type: "text", text: info.join("\n") }],
     details: {
       provider: "fal",
       model,
-      size: `${images[0].width}x${images[0].height}`,
+      size: params.size,
       path: filePath,
-      bytes: buffer.byteLength,
+      bytes: bytes.byteLength,
     },
   };
 }
