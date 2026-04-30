@@ -1,20 +1,13 @@
 /**
  * Image & video tools for generation and vision/analysis.
  *
- * Provides agent capabilities to:
- * - Generate images from text prompts (image_generate) — via fal.ai
- * - Generate videos from text prompts (video_generate) — via fal.ai
- * - Analyze/describe images using vision models (image_analyze) — via OpenAI/Anthropic
+ * Architecture: thin wrappers over the Vercel AI SDK v6.
+ *   - image_generate  → `generateImage` against `@ai-sdk/fal`
+ *   - video_generate  → `experimental_generateVideo` against `@ai-sdk/fal`
+ *   - image_analyze   → `generateText` (multimodal) against `@ai-sdk/openai` or `@ai-sdk/anthropic`
  *
- * Architecture: direct fetch() to provider REST APIs — zero vendor SDK dependencies.
- *
- * Providers:
- *   Image generation: fal.ai (FLUX models — fal-ai/flux/dev default)
- *   Video generation: fal.ai (Wan 2.2 — fal-ai/wan/v2.2-1.3b/text-to-video default)
- *   Vision/analysis:  openai (gpt-4.1-mini), anthropic (Claude)
- *
- * Credential resolution order (same as email tools):
- *   1. Agent vault (per-agent credentials — e.g. service "fal" with key "key")
+ * Credential resolution order:
+ *   1. Agent vault (per-agent credentials — e.g. service "fal-ai" with key "key")
  *   2. Environment variables (global fallback)
  *
  * Environment variables (fallback):
@@ -34,14 +27,7 @@ import { resolveImageProvider, resolveVideoProvider, resolveVisionProvider } fro
 
 type ToolResult = AgentToolResult<any>;
 
-// ─── Constants ───
-
 const MAX_IMAGE_SIZE = 20 * 1024 * 1024; // 20 MB
-const DEFAULT_TIMEOUT = 120_000; // 2 min for image generation
-const VIDEO_TIMEOUT = 300_000; // 5 min for video generation
-const FAL_QUEUE_POLL_INTERVAL = 3_000; // 3 sec polling for async queue
-
-// ─── Helpers ───
 
 function requireEnv(key: string): string {
   const val = process.env[key];
@@ -68,93 +54,6 @@ function imageMime(ext: string): string {
     ".tiff": "image/tiff",
   };
   return map[ext.toLowerCase()] ?? "image/png";
-}
-
-/**
- * Submit a request to fal.ai queue and poll until completion.
- * Uses the queue endpoint (POST https://queue.fal.run/<model>) for reliability,
- * then polls the status endpoint until the result is ready.
- */
-async function falQueueRequest(
-  modelId: string,
-  input: Record<string, unknown>,
-  apiKey: string,
-  timeout: number,
-  signal?: AbortSignal,
-): Promise<Record<string, unknown>> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeout);
-  if (signal) signal.addEventListener("abort", () => controller.abort(), { once: true });
-
-  try {
-    // Submit to queue
-    const submitResp = await fetch(`https://queue.fal.run/${modelId}`, {
-      method: "POST",
-      headers: {
-        Authorization: `Key ${apiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(input),
-      signal: controller.signal,
-    });
-
-    if (!submitResp.ok) {
-      const errText = await submitResp.text();
-      throw new Error(`fal.ai queue submit ${submitResp.status}: ${errText}`);
-    }
-
-    const queueData = await submitResp.json() as {
-      request_id: string;
-      status_url?: string;
-      response_url?: string;
-    };
-
-    const requestId = queueData.request_id;
-    const statusUrl = queueData.status_url ?? `https://queue.fal.run/${modelId}/requests/${requestId}/status`;
-    const responseUrl = queueData.response_url ?? `https://queue.fal.run/${modelId}/requests/${requestId}`;
-
-    // Poll for completion
-    while (true) {
-      await new Promise(r => setTimeout(r, FAL_QUEUE_POLL_INTERVAL));
-
-      const statusResp = await fetch(statusUrl, {
-        headers: { Authorization: `Key ${apiKey}` },
-        signal: controller.signal,
-      });
-
-      if (!statusResp.ok) {
-        throw new Error(`fal.ai status poll ${statusResp.status}`);
-      }
-
-      const status = await statusResp.json() as {
-        status: string;
-        error?: string;
-      };
-
-      if (status.status === "COMPLETED") {
-        break;
-      }
-      if (status.status === "FAILED") {
-        throw new Error(`fal.ai request failed: ${status.error ?? "unknown error"}`);
-      }
-      // IN_QUEUE or IN_PROGRESS — keep polling
-    }
-
-    // Fetch result
-    const resultResp = await fetch(responseUrl, {
-      headers: { Authorization: `Key ${apiKey}` },
-      signal: controller.signal,
-    });
-
-    if (!resultResp.ok) {
-      const errText = await resultResp.text();
-      throw new Error(`fal.ai result fetch ${resultResp.status}: ${errText}`);
-    }
-
-    return await resultResp.json() as Record<string, unknown>;
-  } finally {
-    clearTimeout(timer);
-  }
 }
 
 // ─── Tool: image_generate ───
