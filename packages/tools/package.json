@@ -29,6 +29,7 @@
   },
   "optionalDependencies": {
     "@ai-sdk/anthropic": "^2.0.79",
+    "@ai-sdk/deepgram": "^2.0.31",
     "@ai-sdk/fal": "^2.0.31",
     "docx": "^9.5.0",
     "exceljs": "^4.4.0",

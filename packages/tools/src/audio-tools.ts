@@ -39,6 +39,7 @@ import { NodeShell } from "./adapters/node-shell.js";
 type ToolResult = AgentToolResult<any>;
 import { resolveAllowedPaths, assertPathAllowed } from "./path-sandbox.js";
 import type { ResolvedVault } from "./types.js";
+import { resolveTranscribeProvider, type TranscribeProviderName } from "./lib/provider-resolver.js";
 
 // ─── Constants ───
 
@@ -51,36 +52,6 @@ function requireEnv(key: string): string {
   const val = process.env[key];
   if (!val) throw new Error(`Missing environment variable: ${key}. Set it before using this tool.`);
   return val;
-}
-
-/** Build a FormData-like multipart body for fetch (Node 18+). */
-function audioFormData(
-  fileBuffer: Buffer,
-  filename: string,
-  fields: Record<string, string>,
-): { body: FormData; } {
-  const form = new FormData();
-  const blob = new Blob([new Uint8Array(fileBuffer)], { type: mimeFromExt(extname(filename)) });
-  form.append("file", blob, filename);
-  for (const [k, v] of Object.entries(fields)) {
-    form.append(k, v);
-  }
-  return { body: form };
-}
-
-function mimeFromExt(ext: string): string {
-  const map: Record<string, string> = {
-    ".mp3": "audio/mpeg",
-    ".wav": "audio/wav",
-    ".flac": "audio/flac",
-    ".ogg": "audio/ogg",
-    ".m4a": "audio/mp4",
-    ".webm": "audio/webm",
-    ".mp4": "audio/mp4",
-    ".mpeg": "audio/mpeg",
-    ".mpga": "audio/mpeg",
-  };
-  return map[ext.toLowerCase()] ?? "application/octet-stream";
 }
 
 // ─── Tool: audio_transcribe ───
@@ -137,11 +108,7 @@ function createTranscribeTool(cwd: string, sandbox: string[], fs: FileSystem, va
       }
 
       try {
-        if (provider === "openai") {
-          return await transcribeOpenAI(filePath, fileBuffer, params, vault, signal);
-        } else {
-          return await transcribeDeepgram(filePath, fileBuffer, params, vault, signal);
-        }
+        return await transcribeWithSdk(filePath, fileBuffer, provider, params, vault, signal);
       } catch (err: any) {
         return {
           content: [{ type: "text", text: `Transcription error (${provider}): ${err.message}` }],
@@ -152,134 +119,65 @@ function createTranscribeTool(cwd: string, sandbox: string[], fs: FileSystem, va
   };
 }
 
-async function transcribeOpenAI(
-  filePath: string,
+async function transcribeWithSdk(
+  _filePath: string,
   fileBuffer: Buffer,
+  providerName: TranscribeProviderName,
   params: { model?: string; language?: string; prompt?: string },
   vault?: ResolvedVault,
   signal?: AbortSignal,
 ): Promise<ToolResult> {
-  const apiKey = vault?.getKey("openai", "key") ?? requireEnv("OPENAI_API_KEY");
-  const model = params.model ?? "whisper-1";
+  const { experimental_transcribe } = await import("ai");
 
-  const fields: Record<string, string> = { model };
-  if (params.language) fields.language = params.language;
-  if (params.prompt) fields.prompt = params.prompt;
-  fields.response_format = "verbose_json";
+  const apiKey = providerName === "openai"
+    ? vault?.getKey("openai", "key") ?? requireEnv("OPENAI_API_KEY")
+    : vault?.getKey("deepgram", "key") ?? requireEnv("DEEPGRAM_API_KEY");
 
-  const { body } = audioFormData(fileBuffer, filePath.split("/").pop()!, fields);
+  const defaultModel = providerName === "openai" ? "whisper-1" : "nova-3";
+  const model = params.model ?? defaultModel;
 
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT);
-  if (signal) signal.addEventListener("abort", () => controller.abort(), { once: true });
+  const provider = await resolveTranscribeProvider(providerName, apiKey);
 
-  const response = await fetch("https://api.openai.com/v1/audio/transcriptions", {
-    method: "POST",
-    headers: { Authorization: `Bearer ${apiKey}` },
-    body,
-    signal: controller.signal,
-  });
-
-  clearTimeout(timer);
-
-  if (!response.ok) {
-    const errText = await response.text();
-    throw new Error(`OpenAI API ${response.status}: ${errText}`);
-  }
-
-  const data = await response.json() as {
-    text: string;
-    language?: string;
-    duration?: number;
-    segments?: { start: number; end: number; text: string }[];
-  };
-
-  const info = [
-    `Language: ${data.language ?? "unknown"}`,
-    `Duration: ${data.duration ? `${data.duration.toFixed(1)}s` : "unknown"}`,
-    `Model: ${model}`,
-  ].join(" | ");
-
-  return {
-    content: [{ type: "text", text: `${info}\n\n${data.text}` }],
-    details: {
-      provider: "openai",
-      model,
-      language: data.language,
-      duration: data.duration,
-      textLength: data.text.length,
-    },
-  };
-}
-
-async function transcribeDeepgram(
-  filePath: string,
-  fileBuffer: Buffer,
-  params: { model?: string; language?: string },
-  vault?: ResolvedVault,
-  signal?: AbortSignal,
-): Promise<ToolResult> {
-  const apiKey = vault?.getKey("deepgram", "key") ?? requireEnv("DEEPGRAM_API_KEY");
-  const model = params.model ?? "nova-3";
-
-  const queryParams = new URLSearchParams({
-    model,
-    smart_format: "true",
-    punctuate: "true",
-  });
-  if (params.language) queryParams.set("language", params.language);
-
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT);
-  if (signal) signal.addEventListener("abort", () => controller.abort(), { once: true });
-
-  const ext = extname(filePath).toLowerCase();
-  const mime = mimeFromExt(ext);
-
-  const response = await fetch(`https://api.deepgram.com/v1/listen?${queryParams}`, {
-    method: "POST",
-    headers: {
-      Authorization: `Token ${apiKey}`,
-      "Content-Type": mime,
-    },
-    body: new Uint8Array(fileBuffer),
-    signal: controller.signal,
-  });
-
-  clearTimeout(timer);
-
-  if (!response.ok) {
-    const errText = await response.text();
-    throw new Error(`Deepgram API ${response.status}: ${errText}`);
-  }
-
-  const data = await response.json() as {
-    results?: {
-      channels?: {
-        alternatives?: { transcript?: string; confidence?: number }[];
-      }[];
+  // Provider-specific knobs. OpenAI/Whisper gets language + prompt;
+  // Deepgram gets language + smart_format/punctuate (always on).
+  const providerOptions: Record<string, Record<string, unknown>> = {};
+  if (providerName === "openai") {
+    const opts: Record<string, unknown> = {};
+    if (params.language) opts.language = params.language;
+    if (params.prompt) opts.prompt = params.prompt;
+    if (Object.keys(opts).length) providerOptions.openai = opts;
+  } else {
+    const opts: Record<string, unknown> = {
+      smart_format: true,
+      punctuate: true,
     };
-    metadata?: { duration?: number; models?: string[] };
-  };
+    if (params.language) opts.language = params.language;
+    providerOptions.deepgram = opts;
+  }
 
-  const transcript = data.results?.channels?.[0]?.alternatives?.[0]?.transcript ?? "";
-  const confidence = data.results?.channels?.[0]?.alternatives?.[0]?.confidence;
-  const duration = data.metadata?.duration;
+  const result = await experimental_transcribe({
+    model: provider.transcription(model) as any,
+    audio: new Uint8Array(fileBuffer),
+    providerOptions: Object.keys(providerOptions).length
+      ? providerOptions as any
+      : undefined,
+    abortSignal: signal,
+  });
 
   const info = [
-    `Confidence: ${confidence ? `${(confidence * 100).toFixed(1)}%` : "unknown"}`,
-    `Duration: ${duration ? `${duration.toFixed(1)}s` : "unknown"}`,
+    `Language: ${result.language ?? "unknown"}`,
+    `Duration: ${result.durationInSeconds ? `${result.durationInSeconds.toFixed(1)}s` : "unknown"}`,
     `Model: ${model}`,
   ].join(" | ");
 
   return {
-    content: [{ type: "text", text: `${info}\n\n${transcript}` }],
+    content: [{ type: "text", text: `${info}\n\n${result.text}` }],
     details: {
-      provider: "deepgram",
+      provider: providerName,
       model,
-      confidence,
-      duration,
-      textLength: transcript.length,
+      language: result.language,
+      duration: result.durationInSeconds,
+      textLength: result.text.length,
     },
   };
 }
