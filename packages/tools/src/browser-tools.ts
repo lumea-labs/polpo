@@ -400,7 +400,11 @@ function createBrowserEvalTool(shell: Shell, session: string, profileDir?: strin
     async execute(_id, params, signal) {
       // Use base64 encoding for safe transport of complex JS
       const b64 = Buffer.from(params.javascript).toString("base64");
-      const result = await execBrowserAsync(shell, ["eval", b64, "-b"], { session, profileDir });
+      // `-b` must come BEFORE the positional script — agent-browser's
+      // CLI parser silently ignores the flag if it follows the arg,
+      // and runs the base64 string verbatim as JS (ReferenceError on
+      // every call). Discovered via the layer-2 paranoid smoke.
+      const result = await execBrowserAsync(shell, ["eval", "-b", b64], { session, profileDir });
       return browserResult(result);
     },
   };
