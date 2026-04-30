@@ -36,6 +36,7 @@ import type { ResolvedVault } from "../types.js";
 const sdkMocks = vi.hoisted(() => ({
   generateImage: vi.fn(),
   experimental_generateVideo: vi.fn(),
+  generateText: vi.fn(),
   resolveImageProvider: vi.fn(async (_name: string, apiKey: string) => ({
     _calledWithKey: apiKey,
     image: (modelId: string) => ({ _isMockModel: true, modelId }),
@@ -44,11 +45,17 @@ const sdkMocks = vi.hoisted(() => ({
     _calledWithKey: apiKey,
     video: (modelId: string) => ({ _isMockVideoModel: true, modelId }),
   })),
+  resolveVisionProvider: vi.fn(async (name: string, apiKey: string) => {
+    const fn: any = (modelId: string) => ({ _isMockVisionModel: true, providerName: name, modelId });
+    fn._calledWithKey = apiKey;
+    return fn;
+  }),
 }));
 
 vi.mock("../lib/provider-resolver.js", () => ({
   resolveImageProvider: sdkMocks.resolveImageProvider,
   resolveVideoProvider: sdkMocks.resolveVideoProvider,
+  resolveVisionProvider: sdkMocks.resolveVisionProvider,
 }));
 
 vi.mock("ai", async () => {
@@ -57,6 +64,7 @@ vi.mock("ai", async () => {
     ...actual,
     generateImage: sdkMocks.generateImage,
     experimental_generateVideo: sdkMocks.experimental_generateVideo,
+    generateText: sdkMocks.generateText,
   };
 });
 
@@ -118,6 +126,7 @@ function makeVault(): ResolvedVault {
   const services: Record<string, Record<string, string>> = {
     "fal-ai":   { key: "fake-fal-key" },
     openai:     { key: "fake-openai-key" },
+    anthropic:  { key: "fake-anthropic-key" },
     exa:        { key: "fake-exa-key" },
   };
   return {
@@ -166,6 +175,15 @@ beforeEach(() => {
     responses: [{}],
   });
   sdkMocks.resolveVideoProvider.mockClear();
+  sdkMocks.generateText.mockReset();
+  sdkMocks.generateText.mockResolvedValue({
+    text: "A small calico cat sits on a wooden floor.",
+    usage: { inputTokens: 12, outputTokens: 9, totalTokens: 21 },
+    providerMetadata: {},
+    warnings: [],
+    response: {},
+  });
+  sdkMocks.resolveVisionProvider.mockClear();
 });
 
 afterEach(() => {
@@ -357,49 +375,91 @@ describe("video_generate", () => {
 });
 
 // ────────────────────────────────────────────────────────────
-// image_analyze (OpenAI Vision)
+// image_analyze (Vercel AI SDK — generateText multimodal)
 // ────────────────────────────────────────────────────────────
 describe("image_analyze", () => {
   function build() {
     return createImageTools(cwd, [cwd], ["image_analyze"], makeVault());
   }
 
-  it("posts a vision message and returns the model's text reply", async () => {
+  it("calls the SDK with an OpenAI vision model + multimodal messages by default", async () => {
     writeFileSync(join(cwd, "input.png"), TINY_PNG);
-    routeFetch([
-      { match: (u) => u.includes("api.openai.com/v1/chat/completions"),
-        response: () => new Response(JSON.stringify({
-          choices: [{ message: { content: "A grey gradient image." } }],
-          usage: { prompt_tokens: 12, completion_tokens: 8, total_tokens: 20 },
-        }), { status: 200 }) },
-    ]);
     const t = pick(build(), "image_analyze");
     const result = await t.execute("c", { path: "input.png", prompt: "What is this?" });
-    expect(text(result)).toContain("grey gradient");
 
-    // Pin: a data: URL was sent (image embedded as base64 in the
-    // chat completion request) and the right model defaulted.
-    const body = JSON.parse(lastRequests[0].init!.body as string);
-    expect(body.messages[0].content[1].image_url.url).toMatch(/^data:image\/png;base64,/);
-    expect(body.model).toBeDefined();
-  });
+    expect(text(result)).toContain("calico cat");
+    expect(sdkMocks.resolveVisionProvider).toHaveBeenCalledWith("openai", "fake-openai-key");
 
-  it("surfaces an OpenAI 401 as a clear failure", async () => {
-    writeFileSync(join(cwd, "input.png"), TINY_PNG);
-    routeFetch([
-      { match: () => true,
-        response: () => new Response("bad key", { status: 401 }) },
+    const args = sdkMocks.generateText.mock.calls[0][0];
+    expect(args.model.providerName).toBe("openai");
+    expect(args.model.modelId).toBe("gpt-4o-mini");
+    // Multimodal: text + image content parts in a single user message.
+    expect(args.messages).toHaveLength(1);
+    expect(args.messages[0].role).toBe("user");
+    expect(args.messages[0].content).toEqual([
+      { type: "text", text: "What is this?" },
+      { type: "image", image: expect.any(Uint8Array), mediaType: "image/png" },
     ]);
-    const t = pick(build(), "image_analyze");
-    await expectFailure(t.execute("c", { path: "input.png" }), /401|unauthorized|bad key|openai/i);
   });
 
-  it("refuses a path that escapes the sandbox before any fetch", async () => {
-    routeFetch([{ match: () => true, response: () => { throw new Error("network reached"); } }]);
+  it("routes to anthropic when the provider param is set", async () => {
+    writeFileSync(join(cwd, "input.png"), TINY_PNG);
+    const t = pick(build(), "image_analyze");
+    await t.execute("c", { path: "input.png", provider: "anthropic" });
+    expect(sdkMocks.resolveVisionProvider).toHaveBeenCalledWith("anthropic", expect.any(String));
+    const args = sdkMocks.generateText.mock.calls[0][0];
+    expect(args.model.modelId).toBe("claude-sonnet-4-20250514");
+  });
+
+  it("forwards the user's model override to the provider factory", async () => {
+    writeFileSync(join(cwd, "input.png"), TINY_PNG);
+    const t = pick(build(), "image_analyze");
+    await t.execute("c", { path: "input.png", model: "gpt-4o" });
+    expect(sdkMocks.generateText.mock.calls[0][0].model.modelId).toBe("gpt-4o");
+  });
+
+  it("forwards max_tokens as the SDK's maxOutputTokens", async () => {
+    writeFileSync(join(cwd, "input.png"), TINY_PNG);
+    const t = pick(build(), "image_analyze");
+    await t.execute("c", { path: "input.png", max_tokens: 256 });
+    expect(sdkMocks.generateText.mock.calls[0][0].maxOutputTokens).toBe(256);
+  });
+
+  it("returns the SDK's normalized usage on the result details", async () => {
+    writeFileSync(join(cwd, "input.png"), TINY_PNG);
+    const t = pick(build(), "image_analyze");
+    const result = await t.execute("c", { path: "input.png" });
+    expect(result.details).toMatchObject({
+      provider: "openai",
+      tokens: 21,
+      promptTokens: 12,
+      completionTokens: 9,
+    });
+  });
+
+  it("surfaces an SDK error as a structured failure", async () => {
+    writeFileSync(join(cwd, "input.png"), TINY_PNG);
+    sdkMocks.generateText.mockRejectedValueOnce(new Error("AI_APICallError: 401 invalid key"));
+    const t = pick(build(), "image_analyze");
+    await expectFailure(
+      t.execute("c", { path: "input.png" }),
+      /401|invalid|unauthorized/i,
+    );
+  });
+
+  it("refuses a path that escapes the sandbox before the SDK is called", async () => {
     const t = pick(build(), "image_analyze");
     await expect(t.execute("c", { path: "/etc/hostname" }))
       .rejects.toThrow(/sandbox|allowed|denied/i);
-    expect(lastRequests.length).toBe(0);
+    expect(sdkMocks.generateText).not.toHaveBeenCalled();
+  });
+
+  it("forwards the abort signal to the SDK", async () => {
+    writeFileSync(join(cwd, "input.png"), TINY_PNG);
+    const t = pick(build(), "image_analyze");
+    const ctrl = new AbortController();
+    await t.execute("c", { path: "input.png" }, ctrl.signal);
+    expect(sdkMocks.generateText.mock.calls[0][0].abortSignal).toBe(ctrl.signal);
   });
 });
 
@@ -634,44 +694,57 @@ describe("image_generate — paranoid", () => {
 describe("image_analyze — paranoid", () => {
   function build() { return createImageTools(cwd, [cwd], ["image_analyze"], makeVault()); }
 
-  it("rejects when OpenAI returns no choices in the response", async () => {
+  it("returns a sane result when the SDK gives back an empty text", async () => {
     writeFileSync(join(cwd, "i.png"), TINY_PNG);
-    routeFetch([
-      { match: () => true,
-        response: () => new Response(JSON.stringify({ choices: [], usage: {} }), { status: 200 }) },
-    ]);
+    sdkMocks.generateText.mockResolvedValueOnce({
+      text: "", usage: { inputTokens: 5, outputTokens: 0, totalTokens: 5 },
+      providerMetadata: {}, warnings: [], response: {},
+    });
     const t = pick(build(), "image_analyze");
     const result = await t.execute("c", { path: "i.png" });
-    // Tool either errors out or returns empty content. Both
-    // acceptable; pin "no crash, parseable result, no garbage".
     expect(result).toBeDefined();
-    expect(text(result)).not.toContain("undefined");
+    expect(text(result)).toBe("");
+    expect(result.details.tokens).toBe(5);
   });
 
-  it("rejects a 0-byte image file before sending it to OpenAI", async () => {
-    writeFileSync(join(cwd, "empty.png"), Buffer.alloc(0));
-    routeFetch([{ match: () => true, response: () => new Response("ok", { status: 200 }) }]);
+  it("does not call the SDK when the file is missing", async () => {
     const t = pick(build(), "image_analyze");
-    // Either errors before fetching or sends an empty image. The
-    // contract we lock in: no crash. (If an empty image is sent,
-    // OpenAI rejects it — same outcome.)
-    const result = await t.execute("c", { path: "empty.png" }).catch((e) => ({
-      content: [{ type: "text", text: e.message }], details: { error: e.message },
-    } as any));
-    expect(result).toBeDefined();
+    const result = await t.execute("c", { path: "nope.png" });
+    expect(JSON.stringify(result.details)).toMatch(/file_read_error|enoent|no such/i);
+    expect(sdkMocks.generateText).not.toHaveBeenCalled();
   });
 
-  it("survives a malformed JSON response (chunked HTML error page)", async () => {
-    writeFileSync(join(cwd, "i.png"), TINY_PNG);
-    routeFetch([
-      { match: () => true,
-        response: () => new Response("<!doctype html><html>Bad gateway</html>", {
-          status: 502,
-          headers: { "content-type": "text/html" },
-        }) },
-    ]);
+  it("does not call the SDK when the file exceeds the 20 MB cap", async () => {
+    const big = Buffer.alloc(21 * 1024 * 1024);
+    writeFileSync(join(cwd, "huge.png"), big);
     const t = pick(build(), "image_analyze");
-    await expectFailure(t.execute("c", { path: "i.png" }), /502|html|bad|error/i);
+    const result = await t.execute("c", { path: "huge.png" });
+    expect(JSON.stringify(result.details)).toMatch(/file_too_large/);
+    expect(sdkMocks.generateText).not.toHaveBeenCalled();
+  });
+
+  it("falls back to OPENAI_API_KEY env when the vault has no openai key", async () => {
+    process.env.OPENAI_API_KEY = "env-openai-key";
+    try {
+      writeFileSync(join(cwd, "i.png"), TINY_PNG);
+      const noKeysVault: ResolvedVault = {
+        get: () => undefined, getSmtp: () => undefined, getImap: () => undefined,
+        getKey: () => undefined, has: () => false, list: () => [],
+      };
+      const t = pick(createImageTools(cwd, [cwd], ["image_analyze"], noKeysVault), "image_analyze");
+      await t.execute("c", { path: "i.png" });
+      expect(sdkMocks.resolveVisionProvider).toHaveBeenCalledWith("openai", "env-openai-key");
+    } finally {
+      delete process.env.OPENAI_API_KEY;
+    }
+  });
+
+  it("derives the correct mediaType from the file extension (jpeg)", async () => {
+    writeFileSync(join(cwd, "photo.jpg"), TINY_PNG);
+    const t = pick(build(), "image_analyze");
+    await t.execute("c", { path: "photo.jpg" });
+    const args = sdkMocks.generateText.mock.calls[0][0];
+    expect(args.messages[0].content[1].mediaType).toBe("image/jpeg");
   });
 });
 

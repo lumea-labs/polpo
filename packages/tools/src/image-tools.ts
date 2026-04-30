@@ -30,7 +30,7 @@ import type { FileSystem } from "@polpo-ai/core/filesystem";
 import { NodeFileSystem } from "./adapters/node-filesystem.js";
 import { resolveAllowedPaths, assertPathAllowed } from "./path-sandbox.js";
 import type { ResolvedVault } from "./types.js";
-import { resolveImageProvider, resolveVideoProvider } from "./lib/provider-resolver.js";
+import { resolveImageProvider, resolveVideoProvider, resolveVisionProvider } from "./lib/provider-resolver.js";
 
 type ToolResult = AgentToolResult<any>;
 
@@ -439,11 +439,7 @@ function createAnalyzeTool(cwd: string, sandbox: string[], fs: FileSystem, vault
       const provider = params.provider ?? "openai";
 
       try {
-        if (provider === "openai") {
-          return await analyzeOpenAI(filePath, fileBuffer, params, vault, signal);
-        } else {
-          return await analyzeAnthropic(filePath, fileBuffer, params, vault, signal);
-        }
+        return await analyzeWithSdk(filePath, fileBuffer, provider, params, vault, signal);
       } catch (err: any) {
         return {
           content: [{ type: "text", text: `Image analysis error (${provider}): ${err.message}` }],
@@ -454,160 +450,52 @@ function createAnalyzeTool(cwd: string, sandbox: string[], fs: FileSystem, vault
   };
 }
 
-async function analyzeOpenAI(
+async function analyzeWithSdk(
   filePath: string,
   fileBuffer: Buffer,
+  providerName: "openai" | "anthropic",
   params: { prompt?: string; model?: string; max_tokens?: number },
   vault?: ResolvedVault,
   signal?: AbortSignal,
 ): Promise<ToolResult> {
-  const apiKey = vault?.getKey("openai", "key") ?? requireEnv("OPENAI_API_KEY");
-  const model = params.model ?? "gpt-4.1-mini";
+  const { generateText } = await import("ai");
+
+  const apiKey = providerName === "openai"
+    ? vault?.getKey("openai", "key") ?? requireEnv("OPENAI_API_KEY")
+    : vault?.getKey("anthropic", "key") ?? requireEnv("ANTHROPIC_API_KEY");
+
+  const defaultModel = providerName === "openai" ? "gpt-4o-mini" : "claude-sonnet-4-20250514";
+  const model = params.model ?? defaultModel;
   const prompt = params.prompt ?? "Describe this image in detail.";
-  const maxTokens = params.max_tokens ?? 1024;
+
+  const provider = await resolveVisionProvider(providerName, apiKey);
 
   const ext = extname(filePath).toLowerCase();
-  const mime = imageMime(ext);
-  const base64 = fileBuffer.toString("base64");
-  const dataUrl = `data:${mime};base64,${base64}`;
+  const mediaType = imageMime(ext);
 
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT);
-  if (signal) signal.addEventListener("abort", () => controller.abort(), { once: true });
-
-  const response = await fetch("https://api.openai.com/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      model,
-      max_tokens: maxTokens,
-      messages: [
-        {
-          role: "user",
-          content: [
-            { type: "text", text: prompt },
-            { type: "image_url", image_url: { url: dataUrl, detail: "auto" } },
-          ],
-        },
+  const result = await generateText({
+    model: provider(model) as any,
+    maxOutputTokens: params.max_tokens ?? 1024,
+    messages: [{
+      role: "user",
+      content: [
+        { type: "text", text: prompt },
+        { type: "image", image: new Uint8Array(fileBuffer), mediaType },
       ],
-    }),
-    signal: controller.signal,
+    }],
+    abortSignal: signal,
   });
 
-  clearTimeout(timer);
-
-  if (!response.ok) {
-    const errText = await response.text();
-    throw new Error(`OpenAI Vision API ${response.status}: ${errText}`);
-  }
-
-  const data = await response.json() as {
-    choices: { message: { content: string } }[];
-    usage?: { prompt_tokens: number; completion_tokens: number; total_tokens: number };
-  };
-
-  const analysis = data.choices[0]?.message?.content ?? "";
-  const usage = data.usage;
-
   return {
-    content: [{ type: "text", text: analysis }],
+    content: [{ type: "text", text: result.text }],
     details: {
-      provider: "openai",
+      provider: providerName,
       model,
       path: filePath,
       imageSize: fileBuffer.byteLength,
-      tokens: usage?.total_tokens,
-      promptTokens: usage?.prompt_tokens,
-      completionTokens: usage?.completion_tokens,
-    },
-  };
-}
-
-async function analyzeAnthropic(
-  filePath: string,
-  fileBuffer: Buffer,
-  params: { prompt?: string; model?: string; max_tokens?: number },
-  vault?: ResolvedVault,
-  signal?: AbortSignal,
-): Promise<ToolResult> {
-  const apiKey = vault?.getKey("anthropic", "key") ?? requireEnv("ANTHROPIC_API_KEY");
-  const model = params.model ?? "claude-sonnet-4-20250514";
-  const prompt = params.prompt ?? "Describe this image in detail.";
-  const maxTokens = params.max_tokens ?? 1024;
-
-  const ext = extname(filePath).toLowerCase();
-  const mime = imageMime(ext);
-  const base64 = fileBuffer.toString("base64");
-
-  // Anthropic only supports specific media types
-  const supportedTypes = ["image/jpeg", "image/png", "image/gif", "image/webp"];
-  const mediaType = supportedTypes.includes(mime) ? mime : "image/png";
-
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT);
-  if (signal) signal.addEventListener("abort", () => controller.abort(), { once: true });
-
-  const response = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: {
-      "x-api-key": apiKey,
-      "anthropic-version": "2023-06-01",
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      model,
-      max_tokens: maxTokens,
-      messages: [
-        {
-          role: "user",
-          content: [
-            {
-              type: "image",
-              source: {
-                type: "base64",
-                media_type: mediaType,
-                data: base64,
-              },
-            },
-            { type: "text", text: prompt },
-          ],
-        },
-      ],
-    }),
-    signal: controller.signal,
-  });
-
-  clearTimeout(timer);
-
-  if (!response.ok) {
-    const errText = await response.text();
-    throw new Error(`Anthropic Vision API ${response.status}: ${errText}`);
-  }
-
-  const data = await response.json() as {
-    content: { type: string; text?: string }[];
-    usage?: { input_tokens: number; output_tokens: number };
-  };
-
-  const analysis = data.content
-    .filter(b => b.type === "text" && b.text)
-    .map(b => b.text)
-    .join("\n");
-
-  const usage = data.usage;
-
-  return {
-    content: [{ type: "text", text: analysis }],
-    details: {
-      provider: "anthropic",
-      model,
-      path: filePath,
-      imageSize: fileBuffer.byteLength,
-      inputTokens: usage?.input_tokens,
-      outputTokens: usage?.output_tokens,
+      tokens: result.usage?.totalTokens,
+      promptTokens: result.usage?.inputTokens,
+      completionTokens: result.usage?.outputTokens,
     },
   };
 }
