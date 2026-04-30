@@ -37,6 +37,7 @@ const sdkMocks = vi.hoisted(() => ({
   generateImage: vi.fn(),
   experimental_generateVideo: vi.fn(),
   generateText: vi.fn(),
+  experimental_transcribe: vi.fn(),
   resolveImageProvider: vi.fn(async (_name: string, apiKey: string) => ({
     _calledWithKey: apiKey,
     image: (modelId: string) => ({ _isMockModel: true, modelId }),
@@ -50,12 +51,17 @@ const sdkMocks = vi.hoisted(() => ({
     fn._calledWithKey = apiKey;
     return fn;
   }),
+  resolveTranscribeProvider: vi.fn(async (name: string, apiKey: string) => ({
+    _calledWithKey: apiKey,
+    transcription: (modelId: string) => ({ _isMockTranscribeModel: true, providerName: name, modelId }),
+  })),
 }));
 
 vi.mock("../lib/provider-resolver.js", () => ({
   resolveImageProvider: sdkMocks.resolveImageProvider,
   resolveVideoProvider: sdkMocks.resolveVideoProvider,
   resolveVisionProvider: sdkMocks.resolveVisionProvider,
+  resolveTranscribeProvider: sdkMocks.resolveTranscribeProvider,
 }));
 
 vi.mock("ai", async () => {
@@ -65,6 +71,7 @@ vi.mock("ai", async () => {
     generateImage: sdkMocks.generateImage,
     experimental_generateVideo: sdkMocks.experimental_generateVideo,
     generateText: sdkMocks.generateText,
+    experimental_transcribe: sdkMocks.experimental_transcribe,
   };
 });
 
@@ -127,6 +134,7 @@ function makeVault(): ResolvedVault {
     "fal-ai":   { key: "fake-fal-key" },
     openai:     { key: "fake-openai-key" },
     anthropic:  { key: "fake-anthropic-key" },
+    deepgram:   { key: "fake-deepgram-key" },
     exa:        { key: "fake-exa-key" },
   };
   return {
@@ -184,6 +192,17 @@ beforeEach(() => {
     response: {},
   });
   sdkMocks.resolveVisionProvider.mockClear();
+  sdkMocks.experimental_transcribe.mockReset();
+  sdkMocks.experimental_transcribe.mockResolvedValue({
+    text: "Hello world, this is a test.",
+    segments: [{ text: "Hello world, this is a test.", startSecond: 0, endSecond: 3.4 }],
+    language: "en",
+    durationInSeconds: 3.4,
+    warnings: [],
+    providerMetadata: {},
+    responses: [{}],
+  });
+  sdkMocks.resolveTranscribeProvider.mockClear();
 });
 
 afterEach(() => {
@@ -464,52 +483,114 @@ describe("image_analyze", () => {
 });
 
 // ────────────────────────────────────────────────────────────
-// audio_transcribe (OpenAI Whisper)
+// audio_transcribe (Vercel AI SDK — experimental_transcribe)
 // ────────────────────────────────────────────────────────────
 describe("audio_transcribe", () => {
   function build() {
     return createAudioTools(cwd, [cwd], ["audio_transcribe"], makeVault());
   }
 
-  it("uploads the audio and returns the transcript text", async () => {
+  it("calls the SDK with the resolved openai whisper model and returns the transcript", async () => {
     writeFileSync(join(cwd, "rec.mp3"), Buffer.from("ID3\x03\x00\x00\x00\x00\x00\x00audio"));
-    routeFetch([
-      { match: (u) => u.includes("api.openai.com/v1/audio/transcriptions"),
-        response: () => new Response(JSON.stringify({
-          text: "Hello world, this is a test.",
-          language: "en",
-          duration: 3.4,
-        }), { status: 200 }) },
-    ]);
     const t = pick(build(), "audio_transcribe");
     const result = await t.execute("c", { path: "rec.mp3" });
+
     expect(text(result)).toContain("Hello world");
     expect(text(result)).toMatch(/Language: en/i);
+    expect(text(result)).toMatch(/Duration: 3\.4s/);
+
+    expect(sdkMocks.resolveTranscribeProvider).toHaveBeenCalledWith("openai", "fake-openai-key");
+    const args = sdkMocks.experimental_transcribe.mock.calls[0][0];
+    expect(args.model).toEqual({ _isMockTranscribeModel: true, providerName: "openai", modelId: "whisper-1" });
+    expect(args.audio).toBeInstanceOf(Uint8Array);
   });
 
-  it("surfaces a 500 from OpenAI as a clear failure", async () => {
+  it("routes to deepgram with smart_format / punctuate when provider=deepgram", async () => {
     writeFileSync(join(cwd, "rec.mp3"), Buffer.from("data"));
-    routeFetch([
-      { match: () => true,
-        response: () => new Response("server error", { status: 500 }) },
-    ]);
     const t = pick(build(), "audio_transcribe");
-    await expectFailure(t.execute("c", { path: "rec.mp3" }), /500|server|openai|error/i);
+    await t.execute("c", { path: "rec.mp3", provider: "deepgram" });
+
+    expect(sdkMocks.resolveTranscribeProvider).toHaveBeenCalledWith("deepgram", "fake-deepgram-key");
+    const args = sdkMocks.experimental_transcribe.mock.calls[0][0];
+    expect(args.model.modelId).toBe("nova-3");
+    expect(args.providerOptions).toEqual({
+      deepgram: { smart_format: true, punctuate: true },
+    });
   });
 
-  it("rejects an audio path outside the sandbox", async () => {
-    routeFetch([{ match: () => true, response: () => { throw new Error("network reached"); } }]);
+  it("forwards openai-specific knobs (language, prompt) via providerOptions", async () => {
+    writeFileSync(join(cwd, "rec.mp3"), Buffer.from("data"));
+    const t = pick(build(), "audio_transcribe");
+    await t.execute("c", {
+      path: "rec.mp3",
+      language: "it",
+      prompt: "Glossary: Polpo, Lumea, Daytona.",
+    });
+    const args = sdkMocks.experimental_transcribe.mock.calls[0][0];
+    expect(args.providerOptions).toEqual({
+      openai: { language: "it", prompt: "Glossary: Polpo, Lumea, Daytona." },
+    });
+  });
+
+  it("forwards language to deepgram alongside the always-on options", async () => {
+    writeFileSync(join(cwd, "rec.mp3"), Buffer.from("data"));
+    const t = pick(build(), "audio_transcribe");
+    await t.execute("c", { path: "rec.mp3", provider: "deepgram", language: "es" });
+    expect(sdkMocks.experimental_transcribe.mock.calls[0][0].providerOptions).toEqual({
+      deepgram: { smart_format: true, punctuate: true, language: "es" },
+    });
+  });
+
+  it("respects a custom model id (passes through to provider.transcription)", async () => {
+    writeFileSync(join(cwd, "rec.mp3"), Buffer.from("data"));
+    const t = pick(build(), "audio_transcribe");
+    await t.execute("c", { path: "rec.mp3", model: "gpt-4o-transcribe" });
+    expect(sdkMocks.experimental_transcribe.mock.calls[0][0].model.modelId).toBe("gpt-4o-transcribe");
+  });
+
+  it("surfaces an SDK error as a structured failure", async () => {
+    writeFileSync(join(cwd, "rec.mp3"), Buffer.from("data"));
+    sdkMocks.experimental_transcribe.mockRejectedValueOnce(new Error("AI_APICallError: 500"));
+    const t = pick(build(), "audio_transcribe");
+    await expectFailure(
+      t.execute("c", { path: "rec.mp3" }),
+      /500|api|error/i,
+    );
+  });
+
+  it("rejects an audio path outside the sandbox before the SDK is called", async () => {
     const t = pick(build(), "audio_transcribe");
     await expect(t.execute("c", { path: "/etc/hostname" }))
       .rejects.toThrow(/sandbox|allowed|denied/i);
-    expect(lastRequests.length).toBe(0);
+    expect(sdkMocks.experimental_transcribe).not.toHaveBeenCalled();
   });
 
-  it("surfaces a missing audio file as a clear failure", async () => {
-    routeFetch([{ match: () => true, response: () => { throw new Error("network reached"); } }]);
+  it("surfaces a missing audio file with a structured error (no SDK call)", async () => {
     const t = pick(build(), "audio_transcribe");
-    await expectFailure(t.execute("c", { path: "ghost.mp3" }), /not found|missing|enoent|no such/i);
-    expect(lastRequests.length).toBe(0);
+    const result = await t.execute("c", { path: "ghost.mp3" });
+    expect(JSON.stringify(result.details)).toMatch(/file_read_error|enoent|no such/i);
+    expect(sdkMocks.experimental_transcribe).not.toHaveBeenCalled();
+  });
+
+  it("forwards the abort signal to the SDK", async () => {
+    writeFileSync(join(cwd, "rec.mp3"), Buffer.from("data"));
+    const t = pick(build(), "audio_transcribe");
+    const ctrl = new AbortController();
+    await t.execute("c", { path: "rec.mp3" }, ctrl.signal);
+    expect(sdkMocks.experimental_transcribe.mock.calls[0][0].abortSignal).toBe(ctrl.signal);
+  });
+
+  it("returns the SDK's normalized duration on result.details (the audio billing signal)", async () => {
+    writeFileSync(join(cwd, "rec.mp3"), Buffer.from("data"));
+    const t = pick(build(), "audio_transcribe");
+    const result = await t.execute("c", { path: "rec.mp3" });
+    expect(result.details).toMatchObject({
+      provider: "openai",
+      model: "whisper-1",
+      language: "en",
+      duration: 3.4,
+      textLength: "Hello world, this is a test.".length,
+    });
   });
 });
 
@@ -988,40 +1069,164 @@ describe("image_analyze — paranoid", () => {
 describe("audio_transcribe — paranoid", () => {
   function build() { return createAudioTools(cwd, [cwd], ["audio_transcribe"], makeVault()); }
 
-  it("handles an API response with no language field", async () => {
+  it("formats unknown language / unknown duration gracefully when the SDK omits them", async () => {
     writeFileSync(join(cwd, "r.mp3"), Buffer.from("data"));
-    routeFetch([
-      { match: () => true,
-        response: () => new Response(JSON.stringify({ text: "Just transcript text." }), { status: 200 }) },
-    ]);
+    sdkMocks.experimental_transcribe.mockResolvedValueOnce({
+      text: "Just transcript text.",
+      segments: [],
+      // no language, no durationInSeconds
+      warnings: [], providerMetadata: {}, responses: [{}],
+    });
     const t = pick(build(), "audio_transcribe");
     const result = await t.execute("c", { path: "r.mp3" });
-    expect(text(result)).toContain("transcript");
-    // Empty/unknown language must not break formatting.
-    expect(text(result)).toMatch(/Language: (unknown|—|n\/a|)/i);
+    expect(text(result)).toContain("Just transcript text.");
+    expect(text(result)).toMatch(/Language: unknown/i);
+    expect(text(result)).toMatch(/Duration: unknown/i);
   });
 
-  it("handles an API response with empty transcript text", async () => {
+  it("returns a sane result when the SDK gives back an empty transcript", async () => {
     writeFileSync(join(cwd, "r.mp3"), Buffer.from("data"));
-    routeFetch([
-      { match: () => true,
-        response: () => new Response(JSON.stringify({ text: "", language: "en" }), { status: 200 }) },
-    ]);
+    sdkMocks.experimental_transcribe.mockResolvedValueOnce({
+      text: "",
+      segments: [],
+      language: "en",
+      durationInSeconds: 0.5,
+      warnings: [], providerMetadata: {}, responses: [{}],
+    });
     const t = pick(build(), "audio_transcribe");
     const result = await t.execute("c", { path: "r.mp3" });
     expect(result).toBeDefined();
-    // Pin "no crash; result is parseable even when transcript is empty".
+    expect(result.details.textLength).toBe(0);
   });
 
-  it("rejects when fetch times out (AbortError)", async () => {
-    writeFileSync(join(cwd, "r.mp3"), Buffer.from("data"));
-    globalThis.fetch = vi.fn(async () => {
-      const e: any = new Error("aborted");
-      e.name = "AbortError";
-      throw e;
-    }) as any;
+  it("does not call the SDK when the file is missing", async () => {
     const t = pick(build(), "audio_transcribe");
-    await expectFailure(t.execute("c", { path: "r.mp3" }), /abort|timeout|fail|error/i);
+    const result = await t.execute("c", { path: "ghost.mp3" });
+    expect(JSON.stringify(result.details)).toMatch(/file_read_error|enoent|no such/i);
+    expect(sdkMocks.experimental_transcribe).not.toHaveBeenCalled();
+  });
+
+  it("does not call the SDK when the file exceeds the 25 MB cap", async () => {
+    const big = Buffer.alloc(26 * 1024 * 1024);
+    writeFileSync(join(cwd, "huge.wav"), big);
+    const t = pick(build(), "audio_transcribe");
+    const result = await t.execute("c", { path: "huge.wav" });
+    expect(JSON.stringify(result.details)).toMatch(/file_too_large/);
+    expect(sdkMocks.experimental_transcribe).not.toHaveBeenCalled();
+  });
+
+  it("accepts a file at exactly the 25 MB boundary", async () => {
+    writeFileSync(join(cwd, "edge.wav"), Buffer.alloc(25 * 1024 * 1024));
+    const t = pick(build(), "audio_transcribe");
+    const result = await t.execute("c", { path: "edge.wav" });
+    expect(JSON.stringify(result.details)).not.toMatch(/file_too_large/);
+    expect(sdkMocks.experimental_transcribe).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not call the SDK when the path is a directory", async () => {
+    require("node:fs").mkdirSync(join(cwd, "audio_dir"), { recursive: true });
+    const t = pick(build(), "audio_transcribe");
+    const result = await t.execute("c", { path: "audio_dir" });
+    expect(JSON.stringify(result.details)).toMatch(/file_read_error|EISDIR|directory/i);
+    expect(sdkMocks.experimental_transcribe).not.toHaveBeenCalled();
+  });
+
+  it("falls back to OPENAI_API_KEY env when the vault has no openai key", async () => {
+    process.env.OPENAI_API_KEY = "env-openai-key";
+    try {
+      writeFileSync(join(cwd, "r.mp3"), Buffer.from("data"));
+      const noKeysVault: ResolvedVault = {
+        get: () => undefined, getSmtp: () => undefined, getImap: () => undefined,
+        getKey: () => undefined, has: () => false, list: () => [],
+      };
+      const t = pick(createAudioTools(cwd, [cwd], ["audio_transcribe"], noKeysVault), "audio_transcribe");
+      await t.execute("c", { path: "r.mp3" });
+      expect(sdkMocks.resolveTranscribeProvider).toHaveBeenCalledWith("openai", "env-openai-key");
+    } finally {
+      delete process.env.OPENAI_API_KEY;
+    }
+  });
+
+  it("falls back to DEEPGRAM_API_KEY env for the deepgram provider", async () => {
+    process.env.DEEPGRAM_API_KEY = "env-dg-key";
+    try {
+      writeFileSync(join(cwd, "r.mp3"), Buffer.from("data"));
+      const noKeysVault: ResolvedVault = {
+        get: () => undefined, getSmtp: () => undefined, getImap: () => undefined,
+        getKey: () => undefined, has: () => false, list: () => [],
+      };
+      const t = pick(createAudioTools(cwd, [cwd], ["audio_transcribe"], noKeysVault), "audio_transcribe");
+      await t.execute("c", { path: "r.mp3", provider: "deepgram" });
+      expect(sdkMocks.resolveTranscribeProvider).toHaveBeenCalledWith("deepgram", "env-dg-key");
+    } finally {
+      delete process.env.DEEPGRAM_API_KEY;
+    }
+  });
+
+  it("returns a structured error when neither vault nor env has the right key", async () => {
+    delete process.env.OPENAI_API_KEY;
+    delete process.env.DEEPGRAM_API_KEY;
+    writeFileSync(join(cwd, "r.mp3"), Buffer.from("data"));
+    const noKeysVault: ResolvedVault = {
+      get: () => undefined, getSmtp: () => undefined, getImap: () => undefined,
+      getKey: () => undefined, has: () => false, list: () => [],
+    };
+    const t = pick(createAudioTools(cwd, [cwd], ["audio_transcribe"], noKeysVault), "audio_transcribe");
+    await expectFailure(
+      t.execute("c", { path: "r.mp3" }),
+      /missing|openai_api_key|env/i,
+    );
+    expect(sdkMocks.resolveTranscribeProvider).not.toHaveBeenCalled();
+  });
+
+  it("forwards a 5KB whisper prompt verbatim to providerOptions (no truncation)", async () => {
+    writeFileSync(join(cwd, "r.mp3"), Buffer.from("data"));
+    const giant = "Glossary: " + "Polpo, ".repeat(700);
+    expect(giant.length).toBeGreaterThan(4000);
+    const t = pick(build(), "audio_transcribe");
+    await t.execute("c", { path: "r.mp3", prompt: giant });
+    expect(sdkMocks.experimental_transcribe.mock.calls[0][0].providerOptions.openai.prompt).toBe(giant);
+  });
+
+  it("preserves nasty unicode (NUL, RTL override, ZWJ) in the prompt", async () => {
+    writeFileSync(join(cwd, "r.mp3"), Buffer.from("data"));
+    const nasty = "before after‮flip‍end";
+    const t = pick(build(), "audio_transcribe");
+    await t.execute("c", { path: "r.mp3", prompt: nasty });
+    expect(sdkMocks.experimental_transcribe.mock.calls[0][0].providerOptions.openai.prompt).toBe(nasty);
+  });
+
+  it("isolates state across consecutive calls (different bytes, different opts)", async () => {
+    writeFileSync(join(cwd, "a.mp3"), Buffer.from("AAA"));
+    writeFileSync(join(cwd, "b.wav"), Buffer.from("BBBB"));
+    const t = pick(build(), "audio_transcribe");
+    await t.execute("c", { path: "a.mp3", language: "en" });
+    await t.execute("c", { path: "b.wav", provider: "deepgram", language: "it" });
+    expect(sdkMocks.experimental_transcribe.mock.calls).toHaveLength(2);
+    expect(sdkMocks.experimental_transcribe.mock.calls[0][0].providerOptions.openai.language).toBe("en");
+    expect(sdkMocks.experimental_transcribe.mock.calls[1][0].providerOptions.deepgram.language).toBe("it");
+    // Each call sees its own bytes.
+    const firstBytes = sdkMocks.experimental_transcribe.mock.calls[0][0].audio;
+    const secondBytes = sdkMocks.experimental_transcribe.mock.calls[1][0].audio;
+    expect(firstBytes.byteLength).toBe(3);
+    expect(secondBytes.byteLength).toBe(4);
+  });
+
+  it("returns a structured error (no crash) when the SDK rejects with a non-Error value", async () => {
+    writeFileSync(join(cwd, "r.mp3"), Buffer.from("data"));
+    sdkMocks.experimental_transcribe.mockRejectedValueOnce("plain string rejection");
+    const t = pick(build(), "audio_transcribe");
+    const result = await t.execute("c", { path: "r.mp3" });
+    expect(JSON.stringify(result)).toMatch(/error/i);
+  });
+
+  it("survives a corrupt-looking input (bytes that look like text, not audio)", async () => {
+    writeFileSync(join(cwd, "fake.mp3"), Buffer.from("THIS IS NOT REALLY AN MP3"));
+    const t = pick(build(), "audio_transcribe");
+    // Tool doesn't sniff format — just ships bytes. Pin: no crash.
+    const result = await t.execute("c", { path: "fake.mp3" });
+    expect(result).toBeDefined();
+    expect(sdkMocks.experimental_transcribe).toHaveBeenCalledTimes(1);
   });
 });
 

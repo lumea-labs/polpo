@@ -26,6 +26,7 @@
 export type ImageProviderName = "fal";
 export type VisionProviderName = "openai" | "anthropic";
 export type VideoProviderName = "fal";
+export type TranscribeProviderName = "openai" | "deepgram";
 
 export interface ImageProvider {
   image(modelId: string): unknown;
@@ -33,6 +34,10 @@ export interface ImageProvider {
 
 export interface VideoProvider {
   video(modelId: string): unknown;
+}
+
+export interface TranscribeProvider {
+  transcription(modelId: string): unknown;
 }
 
 /** Mirrors the `@ai-sdk/openai` / `@ai-sdk/anthropic` factory shape: a callable that returns a language-model handle for a given model id. */
@@ -71,6 +76,26 @@ export async function resolveVideoProvider(
   // @ts-ignore — mod typed as `any` from the dynamic import helper
   const fal = mod.createFal({ apiKey });
   return { video: (modelId: string) => fal.video(modelId) };
+}
+
+/** Build a speech-to-text (transcription) provider. */
+export async function resolveTranscribeProvider(
+  name: TranscribeProviderName,
+  apiKey: string,
+): Promise<TranscribeProvider> {
+  if (name === "openai") {
+    const mod = await loadOptional("@ai-sdk/openai", "audio_transcribe (openai)");
+    // @ts-ignore — mod typed as `any` from the dynamic import helper
+    const openai = mod.createOpenAI({ apiKey });
+    return { transcription: (modelId: string) => openai.transcription(modelId) };
+  }
+  if (name === "deepgram") {
+    const mod = await loadOptional("@ai-sdk/deepgram", "audio_transcribe (deepgram)");
+    // @ts-ignore — mod typed as `any` from the dynamic import helper
+    const deepgram = mod.createDeepgram({ apiKey });
+    return { transcription: (modelId: string) => deepgram.transcription(modelId) };
+  }
+  throw new Error(`Unknown transcribe provider: ${name}`);
 }
 
 /** Build a vision (multimodal LanguageModel) provider. */
