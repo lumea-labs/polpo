@@ -2,28 +2,42 @@
  * Image & video tools for generation and vision/analysis.
  *
  * Architecture: thin wrappers over the Vercel AI SDK v6.
- *   - image_generate  → `generateImage` against `@ai-sdk/fal`
- *   - video_generate  → `experimental_generateVideo` against `@ai-sdk/fal`
- *   - image_analyze   → `generateText` (multimodal) against `@ai-sdk/openai` or `@ai-sdk/anthropic`
+ *   - image_generate  → `generateImage` against a configurable provider
+ *   - video_generate  → `experimental_generateVideo` against a configurable provider
+ *   - image_analyze   → `generateText` (multimodal) against a configurable provider
  *
- * Credential resolution order:
- *   1. Agent vault (per-agent credentials — e.g. service "fal-ai" with key "key")
- *   2. Environment variables (global fallback)
+ * Model selection: each tool picks its model in this order:
+ *   1. per-call `model` input parameter (`<provider>/<model>` string),
+ *   2. agent-config default passed to the factory (image/video/vision),
+ *   3. hardcoded fallback constant from @polpo-ai/core.
  *
- * Environment variables (fallback):
- *   FAL_KEY             — fal.ai image/video generation
- *   OPENAI_API_KEY      — openai vision provider
- *   ANTHROPIC_API_KEY   — anthropic vision provider
+ * Provider names are not in the input schema anymore — they ride along
+ * with the model string. Every supported provider has a vault key
+ * convention (fal-ai, openai, anthropic) with an env-var fallback.
  */
 
 import { resolve, dirname, extname } from "node:path";
 import { Type } from "@sinclair/typebox";
 import type { PolpoTool as AgentTool, ToolResult as AgentToolResult } from "@polpo-ai/core";
 import type { FileSystem } from "@polpo-ai/core/filesystem";
+import {
+  parseModelString,
+  DEFAULT_IMAGE_MODEL,
+  DEFAULT_VIDEO_MODEL,
+  DEFAULT_VISION_MODEL,
+  type ParsedModel,
+} from "@polpo-ai/core";
 import { NodeFileSystem } from "./adapters/node-filesystem.js";
 import { resolveAllowedPaths, assertPathAllowed } from "./path-sandbox.js";
 import type { ResolvedVault } from "./types.js";
-import { resolveImageProvider, resolveVideoProvider, resolveVisionProvider } from "./lib/provider-resolver.js";
+import {
+  resolveImageProvider,
+  resolveVideoProvider,
+  resolveVisionProvider,
+  type ImageProviderName,
+  type VideoProviderName,
+  type VisionProviderName,
+} from "./lib/provider-resolver.js";
 
 type ToolResult = AgentToolResult<any>;
 
@@ -35,11 +49,28 @@ function requireEnv(key: string): string {
   return val;
 }
 
-/** Resolve fal.ai API key: vault (service "fal-ai", key "key") > FAL_KEY env var. */
-function resolveFalKey(vault?: ResolvedVault): string {
-  const fromVault = vault?.getKey("fal-ai", "key");
-  if (fromVault) return fromVault;
-  return requireEnv("FAL_KEY");
+/** Resolve which model to actually use, in priority order. */
+function resolveEffectiveModel(
+  override: string | undefined,
+  configured: string | undefined,
+  fallback: string,
+): ParsedModel {
+  return parseModelString(override ?? configured ?? fallback);
+}
+
+/** Vault-key resolution per provider. Throws with a clear message
+ *  when neither vault nor env var has the credential. */
+function resolveProviderKey(provider: string, vault?: ResolvedVault): string {
+  switch (provider) {
+    case "fal":
+      return vault?.getKey("fal-ai", "key") ?? requireEnv("FAL_KEY");
+    case "openai":
+      return vault?.getKey("openai", "key") ?? requireEnv("OPENAI_API_KEY");
+    case "anthropic":
+      return vault?.getKey("anthropic", "key") ?? requireEnv("ANTHROPIC_API_KEY");
+    default:
+      throw new Error(`Unknown provider '${provider}': no credential lookup defined`);
+  }
 }
 
 function imageMime(ext: string): string {
@@ -62,8 +93,8 @@ const ImageGenerateSchema = Type.Object({
   prompt: Type.String({ description: "Text prompt describing the image to generate" }),
   path: Type.String({ description: "Output file path (e.g. 'output.png'). Format inferred from extension." }),
   model: Type.Optional(Type.String({
-    description: "fal.ai model ID. Default: 'fal-ai/flux/dev'. " +
-      "Other options: 'fal-ai/flux-pro/v1.1' (higher quality), 'fal-ai/flux/schnell' (faster).",
+    description: "Override the agent's image_model for this call. Format: '<provider>/<model>' " +
+      "(e.g. 'fal/fal-ai/flux/dev', 'fal/fal-ai/flux-pro/v1.1'). When omitted, uses the agent's configured image_model.",
   })),
   size: Type.Optional(Type.String({
     description: "Image size as 'WIDTHxHEIGHT' (e.g. '1024x1024', '1024x768', '768x1024'). Default: '1024x1024'.",
@@ -79,21 +110,28 @@ const ImageGenerateSchema = Type.Object({
   })),
 });
 
-function createGenerateTool(cwd: string, sandbox: string[], fs: FileSystem, vault?: ResolvedVault): AgentTool<typeof ImageGenerateSchema> {
+function createGenerateTool(
+  cwd: string,
+  sandbox: string[],
+  fs: FileSystem,
+  configuredModel: string | undefined,
+  vault?: ResolvedVault,
+): AgentTool<typeof ImageGenerateSchema> {
   return {
     name: "image_generate",
     label: "Generate Image",
-    description: "Generate an image from a text prompt via fal.ai (FLUX models). " +
+    description: "Generate an image from a text prompt. " +
       "Output format inferred from file extension (png, jpg, webp). " +
-      "Models: fal-ai/flux/dev (default, balanced), fal-ai/flux-pro/v1.1 (best quality), " +
-      "fal-ai/flux/schnell (fastest). Credentials resolved from: agent vault > FAL_KEY env var.",
+      "Model is configured at agent level (image_model) — pass `model` here only to override per-call. " +
+      "Default: fal/fal-ai/flux/dev. Currently supports fal as image provider.",
     parameters: ImageGenerateSchema,
     async execute(_id, params, signal) {
       const filePath = resolve(cwd, params.path);
       assertPathAllowed(filePath, sandbox, "image_generate");
 
       try {
-        return await generateFal(filePath, params, fs, vault, signal);
+        const parsed = resolveEffectiveModel(params.model, configuredModel, DEFAULT_IMAGE_MODEL);
+        return await generateImageWithSdk(filePath, parsed, params, fs, vault, signal);
       } catch (err: any) {
         return {
           content: [{ type: "text", text: `Image generation error: ${err.message}` }],
@@ -104,11 +142,11 @@ function createGenerateTool(cwd: string, sandbox: string[], fs: FileSystem, vaul
   };
 }
 
-async function generateFal(
+async function generateImageWithSdk(
   filePath: string,
+  parsed: ParsedModel,
   params: {
     prompt: string;
-    model?: string;
     size?: string;
     num_inference_steps?: number;
     guidance_scale?: number;
@@ -120,9 +158,8 @@ async function generateFal(
 ): Promise<ToolResult> {
   const { generateImage } = await import("ai");
 
-  const apiKey = resolveFalKey(vault);
-  const model = params.model ?? "fal-ai/flux/dev";
-  const provider = await resolveImageProvider("fal", apiKey);
+  const apiKey = resolveProviderKey(parsed.provider, vault);
+  const provider = await resolveImageProvider(parsed.provider as ImageProviderName, apiKey);
 
   // fal-specific knobs go through providerOptions; the SDK passes them
   // through to the model's input untouched.
@@ -131,16 +168,16 @@ async function generateFal(
   if (params.guidance_scale != null) falOptions.guidance_scale = params.guidance_scale;
 
   const result = await generateImage({
-    model: provider.image(model) as any,
+    model: provider.image(parsed.model) as any,
     prompt: params.prompt,
     size: params.size as `${number}x${number}` | undefined,
     seed: params.seed,
-    providerOptions: Object.keys(falOptions).length ? { fal: falOptions } : undefined,
+    providerOptions: parsed.provider === "fal" && Object.keys(falOptions).length
+      ? { fal: falOptions }
+      : undefined,
     abortSignal: signal,
   });
 
-  // The SDK guarantees `result.image` for a successful generation. No
-  // download step needed — the SDK has already pulled the bytes.
   const bytes = result.image.uint8Array;
   if (!bytes || bytes.byteLength === 0) {
     throw new Error("No image bytes in SDK response");
@@ -155,15 +192,15 @@ async function generateFal(
   const info = [
     `Image saved: ${filePath}`,
     `Size: ${(bytes.byteLength / 1024).toFixed(1)} KB`,
-    `Model: ${model}`,
+    `Model: ${parsed.provider}/${parsed.model}`,
   ];
   if (params.size) info.push(`Dimensions: ${params.size}`);
 
   return {
     content: [{ type: "text", text: info.join("\n") }],
     details: {
-      provider: "fal",
-      model,
+      provider: parsed.provider,
+      model: parsed.model,
       size: params.size,
       path: filePath,
       bytes: bytes.byteLength,
@@ -177,9 +214,8 @@ const VideoGenerateSchema = Type.Object({
   prompt: Type.String({ description: "Text prompt describing the video to generate" }),
   path: Type.String({ description: "Output file path (e.g. 'output.mp4')." }),
   model: Type.Optional(Type.String({
-    description: "fal.ai video model ID. Default: 'luma-ray-2-flash' (fast). " +
-      "Other typed options: 'luma-ray-2', 'luma-dream-machine', 'minimax-video', 'minimax-video-01', 'hunyuan-video'. " +
-      "Any other fal video model id is accepted as a passthrough string.",
+    description: "Override the agent's video_model for this call. Format: '<provider>/<model>' " +
+      "(e.g. 'fal/luma-ray-2-flash', 'fal/luma-ray-2', 'fal/hunyuan-video'). When omitted, uses the agent's configured video_model.",
   })),
   aspect_ratio: Type.Optional(Type.String({
     description: "Aspect ratio as 'WIDTH:HEIGHT' (e.g. '16:9', '9:16', '1:1').",
@@ -198,21 +234,27 @@ const VideoGenerateSchema = Type.Object({
   })),
 });
 
-function createVideoGenerateTool(cwd: string, sandbox: string[], fs: FileSystem, vault?: ResolvedVault): AgentTool<typeof VideoGenerateSchema> {
+function createVideoGenerateTool(
+  cwd: string,
+  sandbox: string[],
+  fs: FileSystem,
+  configuredModel: string | undefined,
+  vault?: ResolvedVault,
+): AgentTool<typeof VideoGenerateSchema> {
   return {
     name: "video_generate",
     label: "Generate Video",
-    description: "Generate a video from a text prompt via fal.ai (Luma / MiniMax / Hunyuan models). " +
-      "Output saved as MP4. Models: luma-ray-2-flash (default, fast), luma-ray-2, luma-dream-machine, " +
-      "minimax-video, minimax-video-01, hunyuan-video. Generation takes 1-5 minutes depending on model. " +
-      "Credentials resolved from: agent vault > FAL_KEY env var.",
+    description: "Generate a video from a text prompt. " +
+      "Output saved as MP4. Model is configured at agent level (video_model) — pass `model` here only to override " +
+      "per-call. Default: fal/luma-ray-2-flash. Currently supports fal as video provider.",
     parameters: VideoGenerateSchema,
     async execute(_id, params, signal) {
       const filePath = resolve(cwd, params.path);
       assertPathAllowed(filePath, sandbox, "video_generate");
 
       try {
-        return await generateVideo(filePath, params, fs, vault, signal);
+        const parsed = resolveEffectiveModel(params.model, configuredModel, DEFAULT_VIDEO_MODEL);
+        return await generateVideoWithSdk(filePath, parsed, params, fs, vault, signal);
       } catch (err: any) {
         return {
           content: [{ type: "text", text: `Video generation error: ${err.message}` }],
@@ -223,11 +265,11 @@ function createVideoGenerateTool(cwd: string, sandbox: string[], fs: FileSystem,
   };
 }
 
-async function generateVideo(
+async function generateVideoWithSdk(
   filePath: string,
+  parsed: ParsedModel,
   params: {
     prompt: string;
-    model?: string;
     aspect_ratio?: string;
     resolution?: string;
     duration?: number;
@@ -240,12 +282,11 @@ async function generateVideo(
 ): Promise<ToolResult> {
   const { experimental_generateVideo } = await import("ai");
 
-  const apiKey = resolveFalKey(vault);
-  const model = params.model ?? "luma-ray-2-flash";
-  const provider = await resolveVideoProvider("fal", apiKey);
+  const apiKey = resolveProviderKey(parsed.provider, vault);
+  const provider = await resolveVideoProvider(parsed.provider as VideoProviderName, apiKey);
 
   const result = await experimental_generateVideo({
-    model: provider.video(model) as any,
+    model: provider.video(parsed.model) as any,
     prompt: params.prompt,
     aspectRatio: params.aspect_ratio as `${number}:${number}` | undefined,
     resolution: params.resolution as `${number}x${number}` | undefined,
@@ -270,14 +311,14 @@ async function generateVideo(
   const info = [
     `Video saved: ${filePath}`,
     `Size: ${sizeMB} MB`,
-    `Model: ${model}`,
+    `Model: ${parsed.provider}/${parsed.model}`,
   ];
 
   return {
     content: [{ type: "text", text: info.join("\n") }],
     details: {
-      provider: "fal",
-      model,
+      provider: parsed.provider,
+      model: parsed.model,
       path: filePath,
       bytes: bytes.byteLength,
     },
@@ -289,22 +330,27 @@ async function generateVideo(
 const ImageAnalyzeSchema = Type.Object({
   path: Type.String({ description: "Path to the image file to analyze" }),
   prompt: Type.Optional(Type.String({ description: "Question or instruction for the vision model (default: 'Describe this image in detail')" })),
-  provider: Type.Optional(Type.Union([
-    Type.Literal("openai"),
-    Type.Literal("anthropic"),
-  ], { description: "Vision provider (default: openai)" })),
-  model: Type.Optional(Type.String({ description: "Model name. OpenAI: 'gpt-4.1-mini' (default). Anthropic: 'claude-sonnet-4-20250514' (default)." })),
+  model: Type.Optional(Type.String({
+    description: "Override the agent's vision_model for this call. Format: '<provider>/<model>' " +
+      "(e.g. 'openai/gpt-4o-mini', 'anthropic/claude-sonnet-4-20250514'). When omitted, uses the agent's configured vision_model.",
+  })),
   max_tokens: Type.Optional(Type.Number({ description: "Max tokens in response (default: 1024)" })),
 });
 
-function createAnalyzeTool(cwd: string, sandbox: string[], fs: FileSystem, vault?: ResolvedVault): AgentTool<typeof ImageAnalyzeSchema> {
+function createAnalyzeTool(
+  cwd: string,
+  sandbox: string[],
+  fs: FileSystem,
+  configuredModel: string | undefined,
+  vault?: ResolvedVault,
+): AgentTool<typeof ImageAnalyzeSchema> {
   return {
     name: "image_analyze",
     label: "Analyze Image",
     description: "Analyze an image using AI vision models. Can describe contents, extract text (OCR), " +
       "answer questions about the image, identify objects, read charts, etc. " +
-      "Providers: openai (GPT-4.1-mini, default), anthropic (Claude). " +
-      "Credentials resolved from: agent vault > OPENAI_API_KEY or ANTHROPIC_API_KEY env var.",
+      "Model is configured at agent level (vision_model) — pass `model` here only to override per-call. " +
+      "Default: openai/gpt-4o-mini. Supported providers: openai, anthropic.",
     parameters: ImageAnalyzeSchema,
     async execute(_id, params, signal) {
       const filePath = resolve(cwd, params.path);
@@ -335,14 +381,13 @@ function createAnalyzeTool(cwd: string, sandbox: string[], fs: FileSystem, vault
         };
       }
 
-      const provider = params.provider ?? "openai";
-
       try {
-        return await analyzeWithSdk(filePath, fileBuffer, provider, params, vault, signal);
+        const parsed = resolveEffectiveModel(params.model, configuredModel, DEFAULT_VISION_MODEL);
+        return await analyzeWithSdk(filePath, fileBuffer, parsed, params, vault, signal);
       } catch (err: any) {
         return {
-          content: [{ type: "text", text: `Image analysis error (${provider}): ${err.message}` }],
-          details: { provider, error: err.message },
+          content: [{ type: "text", text: `Image analysis error: ${err.message}` }],
+          details: { error: err.message },
         };
       }
     },
@@ -352,33 +397,26 @@ function createAnalyzeTool(cwd: string, sandbox: string[], fs: FileSystem, vault
 async function analyzeWithSdk(
   filePath: string,
   fileBuffer: Buffer,
-  providerName: "openai" | "anthropic",
-  params: { prompt?: string; model?: string; max_tokens?: number },
+  parsed: ParsedModel,
+  params: { prompt?: string; max_tokens?: number },
   vault?: ResolvedVault,
   signal?: AbortSignal,
 ): Promise<ToolResult> {
   const { generateText } = await import("ai");
 
-  const apiKey = providerName === "openai"
-    ? vault?.getKey("openai", "key") ?? requireEnv("OPENAI_API_KEY")
-    : vault?.getKey("anthropic", "key") ?? requireEnv("ANTHROPIC_API_KEY");
-
-  const defaultModel = providerName === "openai" ? "gpt-4o-mini" : "claude-sonnet-4-20250514";
-  const model = params.model ?? defaultModel;
-  const prompt = params.prompt ?? "Describe this image in detail.";
-
-  const provider = await resolveVisionProvider(providerName, apiKey);
+  const apiKey = resolveProviderKey(parsed.provider, vault);
+  const provider = await resolveVisionProvider(parsed.provider as VisionProviderName, apiKey);
 
   const ext = extname(filePath).toLowerCase();
   const mediaType = imageMime(ext);
 
   const result = await generateText({
-    model: provider(model) as any,
+    model: provider(parsed.model) as any,
     maxOutputTokens: params.max_tokens ?? 1024,
     messages: [{
       role: "user",
       content: [
-        { type: "text", text: prompt },
+        { type: "text", text: params.prompt ?? "Describe this image in detail." },
         { type: "image", image: new Uint8Array(fileBuffer), mediaType },
       ],
     }],
@@ -388,8 +426,8 @@ async function analyzeWithSdk(
   return {
     content: [{ type: "text", text: result.text }],
     details: {
-      provider: providerName,
-      model,
+      provider: parsed.provider,
+      model: parsed.model,
       path: filePath,
       imageSize: fileBuffer.byteLength,
       tokens: result.usage?.totalTokens,
@@ -405,34 +443,48 @@ export type ImageToolName = "image_generate" | "image_analyze" | "video_generate
 
 export const ALL_IMAGE_TOOL_NAMES: ImageToolName[] = ["image_generate", "image_analyze", "video_generate"];
 
+export interface CreateImageToolsOptions {
+  cwd: string;
+  allowedPaths?: string[];
+  allowedTools?: string[];
+  vault?: ResolvedVault;
+  fs?: FileSystem;
+  /** Resolved agent.image_model. Format: "provider/model". */
+  imageModel?: string;
+  /** Resolved agent.video_model. Format: "provider/model". */
+  videoModel?: string;
+  /** Resolved agent.vision_model. Format: "provider/model". */
+  visionModel?: string;
+}
+
 /**
  * Create image & video tools for generation, vision analysis, and video creation.
  *
- * @param cwd - Working directory for resolving file paths
- * @param allowedPaths - Sandbox paths for file validation
- * @param allowedTools - Optional filter — only include tools whose names appear here.
- *   Supports wildcards expanded upstream (e.g. "image_*", "video_*").
- * @param vault - Resolved vault for credential resolution (fal-ai, openai, anthropic).
- *   Credentials are resolved as: vault > environment variable.
+ * The 6-arg positional signature is preserved for back-compat. Prefer the
+ * options-object form (`{ cwd, vault, imageModel, ... }`) for new callers.
  */
 export function createImageTools(
-  cwd: string,
+  cwd: string | CreateImageToolsOptions,
   allowedPaths?: string[],
   allowedTools?: string[],
   vault?: ResolvedVault,
   fs?: FileSystem,
 ): AgentTool<any>[] {
-  const sandbox = resolveAllowedPaths(cwd, allowedPaths);
-  const _fs = fs ?? new NodeFileSystem();
+  const opts: CreateImageToolsOptions = typeof cwd === "string"
+    ? { cwd, allowedPaths, allowedTools, vault, fs }
+    : cwd;
+
+  const sandbox = resolveAllowedPaths(opts.cwd, opts.allowedPaths);
+  const _fs = opts.fs ?? new NodeFileSystem();
 
   const factories: Record<ImageToolName, () => AgentTool<any>> = {
-    image_generate: () => createGenerateTool(cwd, sandbox, _fs, vault),
-    image_analyze: () => createAnalyzeTool(cwd, sandbox, _fs, vault),
-    video_generate: () => createVideoGenerateTool(cwd, sandbox, _fs, vault),
+    image_generate: () => createGenerateTool(opts.cwd, sandbox, _fs, opts.imageModel, opts.vault),
+    image_analyze:  () => createAnalyzeTool(opts.cwd, sandbox, _fs, opts.visionModel, opts.vault),
+    video_generate: () => createVideoGenerateTool(opts.cwd, sandbox, _fs, opts.videoModel, opts.vault),
   };
 
-  const names = allowedTools
-    ? ALL_IMAGE_TOOL_NAMES.filter(n => allowedTools.some(a => a.toLowerCase() === n))
+  const names = opts.allowedTools
+    ? ALL_IMAGE_TOOL_NAMES.filter(n => opts.allowedTools!.some(a => a.toLowerCase() === n))
     : ALL_IMAGE_TOOL_NAMES;
 
   return names.map(n => factories[n]());
