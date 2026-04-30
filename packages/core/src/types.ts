@@ -248,6 +248,31 @@ export interface AgentConfig {
   role?: string;
   /** Model to use. Format: "provider/model" (e.g. "anthropic/claude-sonnet-4-5-20250929") or bare model ID (auto-inferred). */
   model?: string;
+  /** Image generation model. Format: "provider/model".
+   *  Default: "fal/fal-ai/flux/dev". Drives the image_generate tool.
+   *  Provider must be in the supported set: fal. */
+  image_model?: string;
+  /** Video generation model. Format: "provider/model".
+   *  Default: "fal/luma-ray-2-flash". Drives the video_generate tool.
+   *  Provider must be in the supported set: fal. */
+  video_model?: string;
+  /** Vision model for image_analyze. Format: "provider/model".
+   *  Default: "openai/gpt-4o-mini". Must be a multimodal LLM.
+   *  Provider must be in the supported set: openai, anthropic. */
+  vision_model?: string;
+  /** Speech-to-text model. Format: "provider/model".
+   *  Default: "openai/whisper-1". Drives the audio_transcribe tool.
+   *  Provider must be in the supported set: openai, deepgram. */
+  transcribe_model?: string;
+  /** Text-to-speech model. Format: "provider/model".
+   *  Default: "openai/tts-1". Drives the audio_speak tool.
+   *  Provider must be in the supported set: openai, deepgram, elevenlabs, edge.
+   *  Use "edge/edge-tts" for the free local Microsoft Edge voices. */
+  tts_model?: string;
+  /** Web search backend for search_web / search_find_similar.
+   *  Default: "exa". Currently only "exa" is supported in OSS;
+   *  cloud may add more. */
+  search_provider?: string;
   /** Allowed tools for the agent (e.g. ["read", "write", "edit", "bash", "glob", "grep", "browser_*", "email_*", "image_*", "video_*", "audio_*", "excel_*", "pdf_*", "docx_*"]).
    *  Core tools (always available): read, write, edit, bash, glob, grep, ls, http_fetch, http_download, register_outcome, vault_get, vault_list. */
   allowedTools?: string[];

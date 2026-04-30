@@ -505,6 +505,13 @@ export function spawnEngine(agentConfig: AgentConfig, task: Task, cwd: string, c
           outputDir,
           fs,
           shell,
+          // Per-modality models from agent config. When undefined, the
+          // tool layer applies its own DEFAULT_*_MODEL.
+          imageModel:      agentConfig.image_model,
+          videoModel:      agentConfig.video_model,
+          visionModel:     agentConfig.vision_model,
+          transcribeModel: agentConfig.transcribe_model,
+          ttsModel:        agentConfig.tts_model,
         });
       }
 
