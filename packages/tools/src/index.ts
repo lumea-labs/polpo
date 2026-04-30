@@ -8,7 +8,7 @@
  *
  * Extended tools (opt-in, require optional deps):
  *   browser_*, email_*, excel_*, pdf_*, docx_*,
- *   image_*, audio_*, search_*, phone_*, memory_*
+ *   image_*, audio_*, search_*, memory_*
  */
 
 // Core tool factory
@@ -31,7 +31,8 @@ export { createDocxTools, ALL_DOCX_TOOL_NAMES } from "./docx-tools.js";
 export { createImageTools, ALL_IMAGE_TOOL_NAMES } from "./image-tools.js";
 export { createAudioTools, ALL_AUDIO_TOOL_NAMES } from "./audio-tools.js";
 export { createSearchTools, ALL_SEARCH_TOOL_NAMES } from "./search-tools.js";
-export { createPhoneTools, ALL_PHONE_TOOL_NAMES } from "./phone-tools.js";
+// Phone tools removed — VAPI integration moved out of the
+// first-class catalog. Future: MCP-based.
 export { createMemoryTools } from "./memory-tools.js";
 
 // Adapters (FileSystem/Shell implementations)
