@@ -185,9 +185,15 @@ describe("write — adversarial", () => {
   });
 
   it("rejects writing through a symlink that escapes the sandbox", async () => {
+    // Symlink target must exist on disk for realpathSync to resolve
+    // it — a dangling symlink throws and the sandbox check falls back
+    // to the logical (still-inside-cwd) path, which would then let
+    // fs.writeFile follow the link and clobber the host. We point at
+    // /etc/hostname (universally present on Linux runners) so the
+    // canonical path lands outside cwd and the sandbox refuses
+    // before write() is called.
     const link = join(cwd, "out.txt");
-    symlinkSync("/tmp/should-not-be-touched", link);
-    // path-sandbox should refuse before the write hits the FS.
+    symlinkSync("/etc/hostname", link);
     await expect(
       tool("write").execute("c1", { path: "out.txt", content: "pwned" }),
     ).rejects.toThrow(/sandbox|allowed|denied/i);
