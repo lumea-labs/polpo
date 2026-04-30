@@ -55,6 +55,11 @@ const sdkMocks = vi.hoisted(() => ({
     _calledWithKey: apiKey,
     transcription: (modelId: string) => ({ _isMockTranscribeModel: true, providerName: name, modelId }),
   })),
+  experimental_generateSpeech: vi.fn(),
+  resolveSpeakProvider: vi.fn(async (name: string, config: { apiKey?: string; shell?: unknown; fs?: unknown }) => ({
+    _calledWith: { name, apiKey: config.apiKey, hasShell: Boolean(config.shell), hasFs: Boolean(config.fs) },
+    speech: (modelId: string) => ({ _isMockSpeechModel: true, providerName: name, modelId }),
+  })),
 }));
 
 vi.mock("../lib/provider-resolver.js", () => ({
@@ -62,6 +67,7 @@ vi.mock("../lib/provider-resolver.js", () => ({
   resolveVideoProvider: sdkMocks.resolveVideoProvider,
   resolveVisionProvider: sdkMocks.resolveVisionProvider,
   resolveTranscribeProvider: sdkMocks.resolveTranscribeProvider,
+  resolveSpeakProvider: sdkMocks.resolveSpeakProvider,
 }));
 
 vi.mock("ai", async () => {
@@ -72,6 +78,7 @@ vi.mock("ai", async () => {
     experimental_generateVideo: sdkMocks.experimental_generateVideo,
     generateText: sdkMocks.generateText,
     experimental_transcribe: sdkMocks.experimental_transcribe,
+    experimental_generateSpeech: sdkMocks.experimental_generateSpeech,
   };
 });
 
@@ -131,11 +138,12 @@ function makeVault(): ResolvedVault {
   //   audio_transcribe                → vault.getKey("openai", "key")
   //   search_web / search_find_similar → vault.getKey("exa", "key")
   const services: Record<string, Record<string, string>> = {
-    "fal-ai":   { key: "fake-fal-key" },
-    openai:     { key: "fake-openai-key" },
-    anthropic:  { key: "fake-anthropic-key" },
-    deepgram:   { key: "fake-deepgram-key" },
-    exa:        { key: "fake-exa-key" },
+    "fal-ai":    { key: "fake-fal-key" },
+    openai:      { key: "fake-openai-key" },
+    anthropic:   { key: "fake-anthropic-key" },
+    deepgram:    { key: "fake-deepgram-key" },
+    elevenlabs:  { key: "fake-elevenlabs-key" },
+    exa:         { key: "fake-exa-key" },
   };
   return {
     get: (s) => services[s],
@@ -203,6 +211,17 @@ beforeEach(() => {
     responses: [{}],
   });
   sdkMocks.resolveTranscribeProvider.mockClear();
+  sdkMocks.experimental_generateSpeech.mockReset();
+  // Tiny but recognizable mp3 prefix bytes — enough to satisfy the
+  // ">0 bytes" guard in the tool layer.
+  sdkMocks.experimental_generateSpeech.mockResolvedValue({
+    audio: { uint8Array: new Uint8Array([0xff, 0xfb, 0x90, 0x00, 0x00, 0x00]), base64: "", mediaType: "audio/mpeg" },
+    warnings: [],
+    request: {},
+    response: { timestamp: new Date(), modelId: "tts-1" },
+    providerMetadata: {},
+  });
+  sdkMocks.resolveSpeakProvider.mockClear();
 });
 
 afterEach(() => {
@@ -1335,5 +1354,373 @@ describe("search_find_similar — paranoid", () => {
     const t = pick(build(), "search_find_similar");
     const result = await t.execute("c", { url: "https://x" });
     expect(text(result).toLowerCase()).toMatch(/503|maintenance|error|server/);
+  });
+});
+
+// ════════════════════════════════════════════════════════════
+// audio_speak (Vercel AI SDK — experimental_generateSpeech)
+// ════════════════════════════════════════════════════════════
+
+describe("audio_speak", () => {
+  function build() { return createAudioTools(cwd, [cwd], ["audio_speak"], makeVault()); }
+
+  it("calls the SDK with the resolved openai tts-1 model and writes the bytes (default provider)", async () => {
+    const t = pick(build(), "audio_speak");
+    const result = await t.execute("c", { text: "Hello world", path: "out.mp3" });
+
+    expect(existsSync(join(cwd, "out.mp3"))).toBe(true);
+    expect(JSON.stringify(result.details)).toContain("out.mp3");
+    expect(result.details).toMatchObject({
+      provider: "openai",
+      model: "tts-1",
+      voice: "alloy",
+      format: "mp3",
+      textLength: 11,
+    });
+
+    expect(sdkMocks.resolveSpeakProvider).toHaveBeenCalledTimes(1);
+    expect(sdkMocks.resolveSpeakProvider.mock.calls[0][0]).toBe("openai");
+    expect(sdkMocks.resolveSpeakProvider.mock.calls[0][1]).toMatchObject({ apiKey: "fake-openai-key" });
+
+    const args = sdkMocks.experimental_generateSpeech.mock.calls[0][0];
+    expect(args.model).toEqual({ _isMockSpeechModel: true, providerName: "openai", modelId: "tts-1" });
+    expect(args.text).toBe("Hello world");
+    expect(args.voice).toBe("alloy");
+    expect(args.outputFormat).toBe("mp3");
+  });
+
+  it("forwards openai-specific knobs (speed, instructions) via providerOptions", async () => {
+    const t = pick(build(), "audio_speak");
+    await t.execute("c", {
+      text: "x", path: "out.mp3",
+      speed: 1.5,
+      instructions: "Speak in a cheerful tone",
+    });
+    const args = sdkMocks.experimental_generateSpeech.mock.calls[0][0];
+    expect(args.speed).toBe(1.5);
+    expect(args.instructions).toBe("Speak in a cheerful tone");
+    expect(args.providerOptions).toEqual({
+      openai: { speed: 1.5, instructions: "Speak in a cheerful tone" },
+    });
+  });
+
+  it("routes to deepgram with the aura-2 default model", async () => {
+    const t = pick(build(), "audio_speak");
+    await t.execute("c", { text: "hi", path: "out.mp3", provider: "deepgram" });
+    expect(sdkMocks.resolveSpeakProvider.mock.calls[0][0]).toBe("deepgram");
+    expect(sdkMocks.resolveSpeakProvider.mock.calls[0][1]).toMatchObject({ apiKey: "fake-deepgram-key" });
+    expect(sdkMocks.experimental_generateSpeech.mock.calls[0][0].model.modelId).toBe("aura-2-asteria-en");
+  });
+
+  it("routes to elevenlabs with the multilingual default + Rachel voice ID", async () => {
+    const t = pick(build(), "audio_speak");
+    await t.execute("c", { text: "hi", path: "out.mp3", provider: "elevenlabs" });
+    expect(sdkMocks.resolveSpeakProvider.mock.calls[0][0]).toBe("elevenlabs");
+    expect(sdkMocks.resolveSpeakProvider.mock.calls[0][1]).toMatchObject({ apiKey: "fake-elevenlabs-key" });
+    const args = sdkMocks.experimental_generateSpeech.mock.calls[0][0];
+    expect(args.model.modelId).toBe("eleven_multilingual_v2");
+    expect(args.voice).toBe("21m00Tcm4TlvDq8ikWAM");
+    // ElevenLabs uses a more granular outputFormat string.
+    expect(args.outputFormat).toBe("mp3_44100_128");
+  });
+
+  it("routes to edge with shell+fs (no apiKey) and forwards gender via providerOptions", async () => {
+    const t = pick(build(), "audio_speak");
+    await t.execute("c", {
+      text: "ciao", path: "out.mp3",
+      provider: "edge",
+      language: "it",
+      gender: "male",
+    });
+    expect(sdkMocks.resolveSpeakProvider.mock.calls[0][0]).toBe("edge");
+    const cfg = sdkMocks.resolveSpeakProvider.mock.calls[0][1];
+    expect(cfg.apiKey).toBeUndefined();
+    expect(cfg.shell).toBeDefined();
+    expect(cfg.fs).toBeDefined();
+    const args = sdkMocks.experimental_generateSpeech.mock.calls[0][0];
+    expect(args.language).toBe("it");
+    expect(args.providerOptions).toEqual({ edge: { gender: "male" } });
+  });
+
+  it("respects an explicit voice override on openai", async () => {
+    const t = pick(build(), "audio_speak");
+    await t.execute("c", { text: "x", path: "out.mp3", voice: "onyx" });
+    expect(sdkMocks.experimental_generateSpeech.mock.calls[0][0].voice).toBe("onyx");
+  });
+
+  it("respects custom model override on every provider", async () => {
+    const t = pick(build(), "audio_speak");
+    await t.execute("c", { text: "x", path: "out.mp3", model: "tts-1-hd" });
+    expect(sdkMocks.experimental_generateSpeech.mock.calls[0][0].model.modelId).toBe("tts-1-hd");
+  });
+
+  it("forwards the abort signal to the SDK", async () => {
+    const t = pick(build(), "audio_speak");
+    const ctrl = new AbortController();
+    await t.execute("c", { text: "x", path: "out.mp3" }, ctrl.signal);
+    expect(sdkMocks.experimental_generateSpeech.mock.calls[0][0].abortSignal).toBe(ctrl.signal);
+  });
+
+  it("refuses an output path outside the sandbox before the SDK is called", async () => {
+    const t = pick(build(), "audio_speak");
+    await expect(t.execute("c", { text: "x", path: "/etc/escape.mp3" }))
+      .rejects.toThrow(/sandbox|allowed|denied/i);
+    expect(sdkMocks.experimental_generateSpeech).not.toHaveBeenCalled();
+  });
+
+  it("rejects when the SDK returns no audio bytes", async () => {
+    sdkMocks.experimental_generateSpeech.mockResolvedValueOnce({
+      audio: { uint8Array: new Uint8Array(0), base64: "", mediaType: "audio/mpeg" },
+      warnings: [], request: {}, response: { timestamp: new Date(), modelId: "tts-1" }, providerMetadata: {},
+    });
+    // Cloud failure → tries edge fallback. Mock the second call (edge)
+    // also as empty, so the whole thing surfaces a structured failure.
+    sdkMocks.experimental_generateSpeech.mockResolvedValueOnce({
+      audio: { uint8Array: new Uint8Array(0), base64: "", mediaType: "audio/mpeg" },
+      warnings: [], request: {}, response: { timestamp: new Date(), modelId: "edge-tts" }, providerMetadata: {},
+    });
+    const t = pick(build(), "audio_speak");
+    const result = await t.execute("c", { text: "x", path: "out.mp3" });
+    expect(JSON.stringify(result)).toMatch(/no audio bytes|error|fallback/i);
+    expect(existsSync(join(cwd, "out.mp3"))).toBe(false);
+  });
+});
+
+describe("audio_speak — fallback behavior", () => {
+  function build() { return createAudioTools(cwd, [cwd], ["audio_speak"], makeVault()); }
+
+  it("falls back to edge-tts when the cloud provider throws (and prepends a [Fallback] notice)", async () => {
+    // First call (openai) throws; second call (edge) succeeds.
+    sdkMocks.experimental_generateSpeech
+      .mockRejectedValueOnce(new Error("AI_APICallError: 401 invalid key"))
+      .mockResolvedValueOnce({
+        audio: { uint8Array: new Uint8Array([0x49, 0x44, 0x33, 0x04]), base64: "", mediaType: "audio/mpeg" },
+        warnings: [], request: {}, response: { timestamp: new Date(), modelId: "edge-tts" }, providerMetadata: {},
+      });
+    const t = pick(build(), "audio_speak");
+    const result = await t.execute("c", { text: "ciao", path: "out.mp3", language: "it" });
+
+    expect(text(result)).toMatch(/\[Fallback\]/);
+    expect(text(result)).toMatch(/openai failed/);
+    expect(existsSync(join(cwd, "out.mp3"))).toBe(true);
+
+    // Tool resolved the cloud provider first, then edge.
+    expect(sdkMocks.resolveSpeakProvider.mock.calls.map(c => c[0])).toEqual(["openai", "edge"]);
+
+    expect(result.details).toMatchObject({ fallbackFrom: "openai" });
+  });
+
+  it("returns a structured error when both the cloud provider AND edge fail", async () => {
+    sdkMocks.experimental_generateSpeech
+      .mockRejectedValueOnce(new Error("AI_APICallError: 401"))
+      .mockRejectedValueOnce(new Error("edge-tts CLI is not installed"));
+    const t = pick(build(), "audio_speak");
+    const result = await t.execute("c", { text: "x", path: "out.mp3" });
+    expect(JSON.stringify(result)).toMatch(/401/);
+    expect(JSON.stringify(result)).toMatch(/edge-tts.*not installed/i);
+    expect(result.details).toMatchObject({ provider: "openai" });
+    expect(existsSync(join(cwd, "out.mp3"))).toBe(false);
+  });
+
+  it("does NOT attempt a fallback when the failing provider is edge itself", async () => {
+    sdkMocks.experimental_generateSpeech.mockRejectedValueOnce(new Error("edge-tts CLI is not installed"));
+    const t = pick(build(), "audio_speak");
+    const result = await t.execute("c", { text: "x", path: "out.mp3", provider: "edge" });
+    expect(JSON.stringify(result)).toMatch(/edge.*not installed/i);
+    // SDK called exactly once — no second attempt.
+    expect(sdkMocks.experimental_generateSpeech).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("audio_speak — paranoid", () => {
+  function build() { return createAudioTools(cwd, [cwd], ["audio_speak"], makeVault()); }
+
+  it("forwards an empty-string text verbatim (no auto-pad, no crash)", async () => {
+    const t = pick(build(), "audio_speak");
+    await t.execute("c", { text: "", path: "out.mp3" });
+    expect(sdkMocks.experimental_generateSpeech.mock.calls[0][0].text).toBe("");
+  });
+
+  it("forwards a 200KB text without truncation", async () => {
+    const huge = "Read aloud: " + "A long sentence. ".repeat(13000);
+    expect(huge.length).toBeGreaterThan(200_000);
+    const t = pick(build(), "audio_speak");
+    await t.execute("c", { text: huge, path: "out.mp3" });
+    expect(sdkMocks.experimental_generateSpeech.mock.calls[0][0].text.length).toBe(huge.length);
+  });
+
+  it("preserves nasty unicode (NUL, RTL override, ZWJ, emoji) in the text", async () => {
+    const nasty = "before after‮flip‍🚀end";
+    const t = pick(build(), "audio_speak");
+    await t.execute("c", { text: nasty, path: "out.mp3" });
+    expect(sdkMocks.experimental_generateSpeech.mock.calls[0][0].text).toBe(nasty);
+  });
+
+  it("forwards exotic numeric speed values (0.25, 4.0) verbatim", async () => {
+    const t = pick(build(), "audio_speak");
+    await t.execute("c", { text: "x", path: "a.mp3", speed: 0.25 });
+    await t.execute("c", { text: "x", path: "b.mp3", speed: 4.0 });
+    expect(sdkMocks.experimental_generateSpeech.mock.calls[0][0].speed).toBe(0.25);
+    expect(sdkMocks.experimental_generateSpeech.mock.calls[1][0].speed).toBe(4.0);
+  });
+
+  it("infers outputFormat from extension for openai (.wav, .opus, .flac)", async () => {
+    const t = pick(build(), "audio_speak");
+    await t.execute("c", { text: "x", path: "a.wav" });
+    await t.execute("c", { text: "x", path: "b.opus" });
+    await t.execute("c", { text: "x", path: "c.flac" });
+    expect(sdkMocks.experimental_generateSpeech.mock.calls[0][0].outputFormat).toBe("wav");
+    expect(sdkMocks.experimental_generateSpeech.mock.calls[1][0].outputFormat).toBe("opus");
+    expect(sdkMocks.experimental_generateSpeech.mock.calls[2][0].outputFormat).toBe("flac");
+  });
+
+  it("uses elevenlabs-specific format string for known extensions", async () => {
+    const t = pick(build(), "audio_speak");
+    await t.execute("c", { text: "x", path: "a.wav", provider: "elevenlabs" });
+    await t.execute("c", { text: "x", path: "b.flac", provider: "elevenlabs" });
+    expect(sdkMocks.experimental_generateSpeech.mock.calls[0][0].outputFormat).toBe("pcm_44100");
+    expect(sdkMocks.experimental_generateSpeech.mock.calls[1][0].outputFormat).toBe("flac");
+  });
+
+  it("falls back to mp3_44100_128 for unknown extensions on elevenlabs", async () => {
+    const t = pick(build(), "audio_speak");
+    await t.execute("c", { text: "x", path: "weird.xyz", provider: "elevenlabs" });
+    expect(sdkMocks.experimental_generateSpeech.mock.calls[0][0].outputFormat).toBe("mp3_44100_128");
+  });
+
+  it("falls back to OPENAI_API_KEY env when the vault has no openai key", async () => {
+    process.env.OPENAI_API_KEY = "env-openai-key";
+    try {
+      const noKeysVault: ResolvedVault = {
+        get: () => undefined, getSmtp: () => undefined, getImap: () => undefined,
+        getKey: () => undefined, has: () => false, list: () => [],
+      };
+      const t = pick(createAudioTools(cwd, [cwd], ["audio_speak"], noKeysVault), "audio_speak");
+      await t.execute("c", { text: "x", path: "out.mp3" });
+      expect(sdkMocks.resolveSpeakProvider.mock.calls[0][1]).toMatchObject({ apiKey: "env-openai-key" });
+    } finally {
+      delete process.env.OPENAI_API_KEY;
+    }
+  });
+
+  it("falls back to ELEVENLABS_API_KEY env for the elevenlabs provider", async () => {
+    process.env.ELEVENLABS_API_KEY = "env-el-key";
+    try {
+      const noKeysVault: ResolvedVault = {
+        get: () => undefined, getSmtp: () => undefined, getImap: () => undefined,
+        getKey: () => undefined, has: () => false, list: () => [],
+      };
+      const t = pick(createAudioTools(cwd, [cwd], ["audio_speak"], noKeysVault), "audio_speak");
+      await t.execute("c", { text: "x", path: "out.mp3", provider: "elevenlabs" });
+      expect(sdkMocks.resolveSpeakProvider.mock.calls[0][1]).toMatchObject({ apiKey: "env-el-key" });
+    } finally {
+      delete process.env.ELEVENLABS_API_KEY;
+    }
+  });
+
+  it("the edge provider doesn't need any apiKey at all (no env, no vault)", async () => {
+    delete process.env.OPENAI_API_KEY;
+    delete process.env.DEEPGRAM_API_KEY;
+    delete process.env.ELEVENLABS_API_KEY;
+    const noKeysVault: ResolvedVault = {
+      get: () => undefined, getSmtp: () => undefined, getImap: () => undefined,
+      getKey: () => undefined, has: () => false, list: () => [],
+    };
+    const t = pick(createAudioTools(cwd, [cwd], ["audio_speak"], noKeysVault), "audio_speak");
+    const result = await t.execute("c", { text: "ciao", path: "out.mp3", provider: "edge", language: "it" });
+    // No requireEnv crash; edge resolver got no key.
+    const cfg = sdkMocks.resolveSpeakProvider.mock.calls[0][1];
+    expect(cfg.apiKey).toBeUndefined();
+    expect(cfg.shell).toBeDefined();
+    expect(cfg.fs).toBeDefined();
+    expect(existsSync(join(cwd, "out.mp3"))).toBe(true);
+    expect((result.details as any).provider).toBe("edge");
+  });
+
+  it("isolates state across consecutive calls (different providers, different bytes)", async () => {
+    sdkMocks.experimental_generateSpeech
+      .mockResolvedValueOnce({
+        audio: { uint8Array: new Uint8Array([1, 2, 3]), base64: "", mediaType: "audio/mpeg" },
+        warnings: [], request: {}, response: { timestamp: new Date(), modelId: "tts-1" }, providerMetadata: {},
+      })
+      .mockResolvedValueOnce({
+        audio: { uint8Array: new Uint8Array([4, 5, 6, 7]), base64: "", mediaType: "audio/mpeg" },
+        warnings: [], request: {}, response: { timestamp: new Date(), modelId: "aura-2-asteria-en" }, providerMetadata: {},
+      });
+    const t = pick(build(), "audio_speak");
+    await t.execute("c", { text: "first", path: "a.mp3" });
+    await t.execute("c", { text: "second", path: "b.mp3", provider: "deepgram" });
+    expect(statSync(join(cwd, "a.mp3")).size).toBe(3);
+    expect(statSync(join(cwd, "b.mp3")).size).toBe(4);
+    expect(sdkMocks.experimental_generateSpeech.mock.calls[0][0].text).toBe("first");
+    expect(sdkMocks.experimental_generateSpeech.mock.calls[1][0].text).toBe("second");
+  });
+
+  it("silently overwrites an existing file at the output path", async () => {
+    writeFileSync(join(cwd, "out.mp3"), Buffer.from("OLD"));
+    const t = pick(build(), "audio_speak");
+    await t.execute("c", { text: "fresh", path: "out.mp3" });
+    const written = require("node:fs").readFileSync(join(cwd, "out.mp3"));
+    expect(written.toString()).not.toContain("OLD");
+  });
+
+  it("does not write a partial file when the SDK throws after some progress", async () => {
+    sdkMocks.experimental_generateSpeech
+      .mockRejectedValueOnce(new Error("provider went away"))
+      .mockRejectedValueOnce(new Error("edge-tts not installed"));
+    const t = pick(build(), "audio_speak");
+    await t.execute("c", { text: "x", path: "out.mp3" }).catch(() => {});
+    expect(existsSync(join(cwd, "out.mp3"))).toBe(false);
+  });
+
+  it("returns a structured error (no crash) when the SDK rejects with a non-Error value", async () => {
+    sdkMocks.experimental_generateSpeech
+      .mockRejectedValueOnce("plain string")
+      .mockRejectedValueOnce("plain string 2");
+    const t = pick(build(), "audio_speak");
+    const result = await t.execute("c", { text: "x", path: "out.mp3" });
+    expect(JSON.stringify(result)).toMatch(/error/i);
+  });
+
+  it("returns a structured error when neither vault nor env has the right key (cloud path)", async () => {
+    delete process.env.OPENAI_API_KEY;
+    delete process.env.DEEPGRAM_API_KEY;
+    delete process.env.ELEVENLABS_API_KEY;
+    const noKeysVault: ResolvedVault = {
+      get: () => undefined, getSmtp: () => undefined, getImap: () => undefined,
+      getKey: () => undefined, has: () => false, list: () => [],
+    };
+    const t = pick(createAudioTools(cwd, [cwd], ["audio_speak"], noKeysVault), "audio_speak");
+    // Mock edge fallback also missing edge-tts.
+    sdkMocks.experimental_generateSpeech.mockRejectedValueOnce(new Error("edge-tts CLI is not installed"));
+    const result = await t.execute("c", { text: "x", path: "out.mp3" });
+    expect(JSON.stringify(result)).toMatch(/openai_api_key|missing|env|edge-tts/i);
+    expect(existsSync(join(cwd, "out.mp3"))).toBe(false);
+  });
+
+  it("respects custom voice override on openai (alloy → onyx)", async () => {
+    const t = pick(build(), "audio_speak");
+    await t.execute("c", { text: "x", path: "out.mp3", voice: "onyx" });
+    expect(sdkMocks.experimental_generateSpeech.mock.calls[0][0].voice).toBe("onyx");
+    expect(sdkMocks.experimental_generateSpeech.mock.calls[0][0].model.modelId).toBe("tts-1");
+  });
+
+  it("forwards an explicit edge voice (it-IT-DiegoNeural) verbatim", async () => {
+    const t = pick(build(), "audio_speak");
+    await t.execute("c", {
+      text: "ciao", path: "out.mp3",
+      provider: "edge", voice: "it-IT-DiegoNeural",
+    });
+    expect(sdkMocks.experimental_generateSpeech.mock.calls[0][0].voice).toBe("it-IT-DiegoNeural");
+  });
+
+  it("isolates abort across consecutive calls (per-call signal forwarded)", async () => {
+    const t = pick(build(), "audio_speak");
+    const a = new AbortController();
+    const b = new AbortController();
+    await t.execute("c", { text: "1", path: "a.mp3" }, a.signal);
+    await t.execute("c", { text: "2", path: "b.mp3" }, b.signal);
+    expect(sdkMocks.experimental_generateSpeech.mock.calls[0][0].abortSignal).toBe(a.signal);
+    expect(sdkMocks.experimental_generateSpeech.mock.calls[1][0].abortSignal).toBe(b.signal);
   });
 });

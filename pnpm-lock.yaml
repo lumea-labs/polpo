@@ -289,6 +289,9 @@ importers:
       '@ai-sdk/deepgram':
         specifier: ^2.0.31
         version: 2.0.31(zod@4.3.6)
+      '@ai-sdk/elevenlabs':
+        specifier: ^2.0.31
+        version: 2.0.31(zod@4.3.6)
       '@ai-sdk/fal':
         specifier: ^2.0.31
         version: 2.0.31(zod@4.3.6)
@@ -339,6 +342,12 @@ packages:
 
   '@ai-sdk/deepgram@2.0.31':
     resolution: {integrity: sha512-hCvz/oKF4yEDloXwLDjqdxkk/o8XiziBMr+3QI2Wh1R98licjzU6j1iEtC/xPXezdEWDu6CDEpqu9wbBjsGtQQ==}
+    engines: {node: '>=18'}
+    peerDependencies:
+      zod: ^3.25.76 || ^4.1.8
+
+  '@ai-sdk/elevenlabs@2.0.31':
+    resolution: {integrity: sha512-+5M1ssMmitVdq0P0J6PFYpSq+qA+ge8yC3EgVNIc4qfJ4T9t6dF26YMzxQ6mqbsJ5CFEAnPzOmX4nld5i9hNkg==}
     engines: {node: '>=18'}
     peerDependencies:
       zod: ^3.25.76 || ^4.1.8
@@ -3173,6 +3182,13 @@ snapshots:
     optional: true
 
   '@ai-sdk/deepgram@2.0.31(zod@4.3.6)':
+    dependencies:
+      '@ai-sdk/provider': 3.0.10
+      '@ai-sdk/provider-utils': 4.0.25(zod@4.3.6)
+      zod: 4.3.6
+    optional: true
+
+  '@ai-sdk/elevenlabs@2.0.31(zod@4.3.6)':
     dependencies:
       '@ai-sdk/provider': 3.0.10
       '@ai-sdk/provider-utils': 4.0.25(zod@4.3.6)
