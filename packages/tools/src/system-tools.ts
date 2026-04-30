@@ -6,7 +6,7 @@
  * The bash tool runs with cwd set to the agent's primary working directory.
  */
 
-import { join, dirname, resolve, relative } from "node:path";
+import { join, dirname, resolve } from "node:path";
 import type { FileSystem } from "@polpo-ai/core/filesystem";
 import type { Shell } from "@polpo-ai/core/shell";
 // NodeFileSystem and NodeShell are loaded lazily to avoid pulling in
@@ -164,41 +164,38 @@ const GlobSchema = Type.Object({
   path: Type.Optional(Type.String({ description: "Directory to search in (default: cwd)" })),
 });
 
-function createGlobTool(cwd: string, sandbox: string[], shell: Shell): AgentTool<typeof GlobSchema> {
+function createGlobTool(cwd: string, sandbox: string[], _shell: Shell): AgentTool<typeof GlobSchema> {
   return {
     name: "glob",
     label: "Find Files",
-    description: "Find files matching a glob pattern. Returns matching file paths.",
+    description: "Find files matching a glob pattern. Supports `**` (recursive), `*`, `?`, `[abc]`, `{a,b}`. Examples: `**/*.ts`, `src/**/*.{ts,tsx}`, `**/test.spec.js`.",
     parameters: GlobSchema,
     async execute(_toolCallId, params) {
       const searchDir = params.path ? resolve(cwd, params.path) : cwd;
       assertPathAllowed(searchDir, sandbox, "glob");
       try {
-        const result = await shell.execute(
-          `find ${JSON.stringify(searchDir)} -type f -name ${JSON.stringify(params.pattern)} 2>/dev/null | head -200`,
-          { cwd, timeout: 10_000 },
-        );
-        const output = result.stdout.trim();
-        if (!output) {
-          const fallback = await shell.execute(
-            `cd ${JSON.stringify(searchDir)} && ls -1 ${JSON.stringify(params.pattern)} 2>/dev/null | head -200`,
-            { cwd, timeout: 10_000 },
-          );
-          const files = fallback.stdout.trim() ? fallback.stdout.trim().split("\n") : [];
-          return {
-            content: [{ type: "text", text: files.length > 0 ? files.join("\n") : "No files found" }],
-            details: { pattern: params.pattern, count: files.length },
-          };
-        }
-        const files = output.split("\n").map((f: string) => relative(cwd, f));
+        // Real glob lib (tinyglobby) — supports `**`, `?`, `[abc]`, `{a,b}`.
+        // The previous shell-out to `find -name` only matched basenames,
+        // so the patterns advertised in the description literally didn't
+        // work. Lazy import keeps it optional for consumers who don't
+        // need glob support at all.
+        const { glob } = await import("tinyglobby");
+        const matches = await glob(params.pattern, {
+          cwd: searchDir,
+          absolute: false,
+          onlyFiles: true,
+          dot: false,
+        });
+        matches.sort();
+        const limited = matches.slice(0, 200);
         return {
-          content: [{ type: "text", text: files.join("\n") }],
-          details: { pattern: params.pattern, count: files.length },
+          content: [{ type: "text", text: limited.length > 0 ? limited.join("\n") : "No files found" }],
+          details: { pattern: params.pattern, count: limited.length, truncated: matches.length > 200 },
         };
-      } catch {
+      } catch (err: any) {
         return {
-          content: [{ type: "text", text: "No files found" }],
-          details: { pattern: params.pattern, count: 0 },
+          content: [{ type: "text", text: `Glob error: ${err.message ?? err}` }],
+          details: { pattern: params.pattern, count: 0, error: err.message },
         };
       }
     },
@@ -217,15 +214,24 @@ function createGrepTool(cwd: string, sandbox: string[], shell: Shell): AgentTool
   return {
     name: "grep",
     label: "Search Code",
-    description: "Search for a regex pattern in files. Returns matching lines with file paths and line numbers.",
+    description:
+      "Search for a regex pattern in files. PCRE flavor (supports `\\d`, `\\w`, `\\s`, " +
+      "lookahead `(?=...)`, lookbehind `(?<=...)`, non-greedy `.*?`). " +
+      "Returns matching lines with file paths and line numbers.",
     parameters: GrepSchema,
     async execute(_toolCallId, params) {
       const searchPath = params.path ? resolve(cwd, params.path) : cwd;
       assertPathAllowed(searchPath, sandbox, "grep");
       const includeFlag = params.include ? `--include=${JSON.stringify(params.include)}` : "";
       try {
+        // -P selects PCRE (Perl regex). Matches what an LLM trained on
+        // JS/Python regex expects: `\d`, `\w`, `\s`, lookahead/behind,
+        // non-greedy quantifiers. -E (POSIX ERE) was the previous
+        // setting and silently rejected all of those.
+        // -a forces text mode so binary files with the right bytes
+        // don't dominate the output.
         const r = await shell.execute(
-          `grep -rn ${includeFlag} -E ${JSON.stringify(params.pattern)} ${JSON.stringify(searchPath)} 2>/dev/null | head -100`,
+          `grep -arn ${includeFlag} -P ${JSON.stringify(params.pattern)} ${JSON.stringify(searchPath)} 2>/dev/null | head -100`,
           { cwd, timeout: 15_000 },
         );
         const result = r.stdout.trim();

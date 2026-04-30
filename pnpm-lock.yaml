@@ -300,6 +300,9 @@ importers:
       playwright-core:
         specifier: ^1.52.0
         version: 1.58.2
+      tinyglobby:
+        specifier: ^0.2.0
+        version: 0.2.15
 
   packages/vault-crypto:
     devDependencies:
