@@ -225,10 +225,10 @@ describe("Vault", () => {
       service: "sdk-test-service",
       type: "api_key",
       label: "SDK integration test key",
-      credentials: { token: "test-secret-123" },
+      credentials: { key: "test-secret-123" },
     });
     expect(saved.service).toBe("sdk-test-service");
-    expect(saved.keys).toContain("token");
+    expect(saved.keys).toContain("key");
 
     // List
     const entries = await client.listVaultEntries("agent-1");

@@ -11,6 +11,155 @@
 import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
 import type { VaultEntry } from "@polpo-ai/core/types";
 
+// ─── Per-type credential schemas ────────────────────
+//
+// Why discriminated unions and not `z.record(z.string(), z.string())`:
+// every consumer of the vault looks up credentials by a *fixed* field
+// name (e.g. tools call `vault.getKey("fal-ai", "key")`, the SMTP tool
+// reads `host/port/user/pass/from`, IMAP reads `host/port/user/pass`,
+// and so on). If callers stored the field under a different name —
+// `api_key` instead of `key`, say — the lookup silently returned
+// `undefined` and the user only found out when a tool failed at
+// runtime with "Missing environment variable". Previously the schema
+// allowed this; now we reject the request up front with a clear
+// validation error.
+//
+// "custom" is the escape hatch for arbitrary key-value bags that
+// don't fit any of the typed shapes — for those the user is on their
+// own to remember the field names.
+
+const ApiKeyCredentialsSchema = z.object({
+  key: z.string().min(1).describe("The API key value (must be named exactly `key`)"),
+}).strict();
+
+const SmtpCredentialsSchema = z.object({
+  host: z.string().min(1),
+  port: z.string().regex(/^\d+$/, "port must be a numeric string").describe("Port as string, e.g. \"587\""),
+  user: z.string().min(1),
+  pass: z.string().min(1),
+  from: z.string().min(1).describe("From address — usually an email"),
+  secure: z.enum(["true", "false", "1", "0"]).optional(),
+}).strict();
+
+const ImapCredentialsSchema = z.object({
+  host: z.string().min(1),
+  port: z.string().regex(/^\d+$/, "port must be a numeric string"),
+  user: z.string().min(1),
+  pass: z.string().min(1),
+  tls: z.enum(["true", "false", "1", "0"]).optional(),
+}).strict();
+
+// OAuth shapes vary widely by provider; we require at least an
+// access_token but allow extra fields with `.passthrough()` so
+// provider-specific keys (id_token, expires_at, scope, etc.) survive.
+const OauthCredentialsSchema = z.object({
+  access_token: z.string().min(1).describe("OAuth access token"),
+  refresh_token: z.string().optional(),
+  client_id: z.string().optional(),
+  client_secret: z.string().optional(),
+  expires_at: z.string().optional(),
+  scope: z.string().optional(),
+}).passthrough();
+
+const LoginCredentialsSchema = z.object({
+  username: z.string().min(1),
+  password: z.string().min(1),
+}).strict();
+
+const CustomCredentialsSchema = z.record(z.string(), z.string()).refine(
+  (r) => Object.keys(r).length > 0,
+  { message: "credentials must have at least one field" },
+);
+
+// ─── Discriminated body schemas ─────────────────────
+
+/** POST /vault/entries body — all credential fields required per type. */
+const SaveVaultEntryBody = z.discriminatedUnion("type", [
+  z.object({
+    agent:   z.string().min(1).describe("Agent name"),
+    service: z.string().min(1).describe("Service name (vault key)"),
+    label:   z.string().optional().describe("Human-readable label"),
+    type:    z.literal("api_key"),
+    credentials: ApiKeyCredentialsSchema,
+  }),
+  z.object({
+    agent:   z.string().min(1),
+    service: z.string().min(1),
+    label:   z.string().optional(),
+    type:    z.literal("smtp"),
+    credentials: SmtpCredentialsSchema,
+  }),
+  z.object({
+    agent:   z.string().min(1),
+    service: z.string().min(1),
+    label:   z.string().optional(),
+    type:    z.literal("imap"),
+    credentials: ImapCredentialsSchema,
+  }),
+  z.object({
+    agent:   z.string().min(1),
+    service: z.string().min(1),
+    label:   z.string().optional(),
+    type:    z.literal("oauth"),
+    credentials: OauthCredentialsSchema,
+  }),
+  z.object({
+    agent:   z.string().min(1),
+    service: z.string().min(1),
+    label:   z.string().optional(),
+    type:    z.literal("login"),
+    credentials: LoginCredentialsSchema,
+  }),
+  z.object({
+    agent:   z.string().min(1),
+    service: z.string().min(1),
+    label:   z.string().optional(),
+    type:    z.literal("custom"),
+    credentials: CustomCredentialsSchema,
+  }),
+]);
+
+/**
+ * PATCH /vault/entries/{agent}/{service} body.
+ *
+ * `type` must be provided so the schema knows which credential shape
+ * to validate. `credentials` is partial (each field optional) since
+ * patches merge — but the field NAMES must still match the type's
+ * schema. `label` can be updated independently.
+ */
+const PatchVaultEntryBody = z.discriminatedUnion("type", [
+  z.object({
+    type:        z.literal("api_key"),
+    label:       z.string().optional(),
+    credentials: ApiKeyCredentialsSchema.partial().optional(),
+  }),
+  z.object({
+    type:        z.literal("smtp"),
+    label:       z.string().optional(),
+    credentials: SmtpCredentialsSchema.partial().optional(),
+  }),
+  z.object({
+    type:        z.literal("imap"),
+    label:       z.string().optional(),
+    credentials: ImapCredentialsSchema.partial().optional(),
+  }),
+  z.object({
+    type:        z.literal("oauth"),
+    label:       z.string().optional(),
+    credentials: OauthCredentialsSchema.partial().optional(),
+  }),
+  z.object({
+    type:        z.literal("login"),
+    label:       z.string().optional(),
+    credentials: LoginCredentialsSchema.partial().optional(),
+  }),
+  z.object({
+    type:        z.literal("custom"),
+    label:       z.string().optional(),
+    credentials: CustomCredentialsSchema.optional(),
+  }),
+]);
+
 export function vaultRoutes(getDeps: () => { vaultStore?: any }): OpenAPIHono {
   const app = new OpenAPIHono();
 
@@ -25,13 +174,7 @@ export function vaultRoutes(getDeps: () => { vaultStore?: any }): OpenAPIHono {
       body: {
         content: {
           "application/json": {
-            schema: z.object({
-              agent: z.string().min(1).describe("Agent name"),
-              service: z.string().min(1).describe("Service name (vault key)"),
-              type: z.enum(["smtp", "imap", "oauth", "api_key", "login", "custom"]).describe("Credential type"),
-              label: z.string().optional().describe("Human-readable label"),
-              credentials: z.record(z.string(), z.string()).describe("Key-value credential fields"),
-            }),
+            schema: SaveVaultEntryBody,
           },
         },
       },
@@ -70,7 +213,7 @@ export function vaultRoutes(getDeps: () => { vaultStore?: any }): OpenAPIHono {
     const entry: VaultEntry = {
       type: body.type,
       ...(body.label ? { label: body.label } : {}),
-      credentials: body.credentials,
+      credentials: body.credentials as Record<string, string>,
     };
 
     await vaultStore.set(body.agent, body.service, entry);
@@ -149,11 +292,7 @@ export function vaultRoutes(getDeps: () => { vaultStore?: any }): OpenAPIHono {
       body: {
         content: {
           "application/json": {
-            schema: z.object({
-              type: z.enum(["smtp", "imap", "oauth", "api_key", "login", "custom"]).optional().describe("Update credential type"),
-              label: z.string().optional().describe("Update human-readable label"),
-              credentials: z.record(z.string(), z.string()).optional().describe("Credential fields to add or update (merged with existing)"),
-            }),
+            schema: PatchVaultEntryBody,
           },
         },
       },

@@ -100,11 +100,35 @@ jobs:
             echo "image_tag=pr-${{ github.event.pull_request.number || 'manual' }}" >> "$GITHUB_OUTPUT"
           fi
 
+      # PR-bump race guard: when a PR bumps the version (the standard
+      # release-prep flow), `@polpo-ai/core@<bumped>` is by definition not
+      # yet on npm — the publish only happens post-merge. The Dockerfile's
+      # `npm install @polpo-ai/core@${POLPO_VERSION}` would then fail with
+      # `ETARGET notarget`, blocking the PR.
+      #
+      # Symmetric to the tag-push race that #57 already fixed via
+      # `workflow_run`. Here we detect "version not on npm yet" and skip
+      # the build cleanly — the post-merge `workflow_run` (chained off
+      # Release) will exercise the same Dockerfile against the now-published
+      # version, so coverage isn't lost.
+      - name: Check version is published on npm
+        id: published
+        if: github.event_name == 'pull_request'
+        run: |
+          V="${{ steps.ver.outputs.polpo_version }}"
+          if npm view "@polpo-ai/core@$V" version >/dev/null 2>&1; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::@polpo-ai/core@$V is not on npm yet — skipping PR-time build (will run post-merge via Release → workflow_run)."
+          fi
+
       # Build the image but DON'T push yet — we want smoke to pass first.
       # `load: true` puts the image into the local Docker daemon so we
       # can `docker run` it in the next step.
       - name: Build image
         id: build
+        if: github.event_name != 'pull_request' || steps.published.outputs.available == 'true'
         uses: docker/build-push-action@v6
         with:
           context: docker/runner
@@ -117,6 +141,7 @@ jobs:
           cache-to: type=gha,mode=max
 
       - name: Run Layer-2 smoke tests
+        if: github.event_name != 'pull_request' || steps.published.outputs.available == 'true'
         run: |
           docker run --rm \
             -v "$PWD/docker/runner/tests:/tests:ro" \
