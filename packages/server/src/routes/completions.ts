@@ -513,11 +513,19 @@ export interface CompletionRouteDeps {
   buildAgentPrompt: (agentConfig: any) => string | Promise<string>;
   /** Create tools + executor for the agent. Return empty arrays for chat-only.
    *  Optional `cleanup` is invoked once the response finishes — used to close
-   *  long-lived resources like MCP transports. */
+   *  long-lived resources like MCP transports.
+   *
+   *  `extraAiTools` is an escape hatch for tools already in AI SDK shape that
+   *  should be merged into the LLM's tool palette as-is (no Polpo conversion,
+   *  no manual execution). Used by cloud to inject Vercel Gateway provider
+   *  tools (e.g. `gateway.tools.perplexitySearch`) which are server-executed
+   *  by the gateway during `generateText` — Polpo never sees the tool-call.
+   *  The keys here MUST NOT collide with names in `tools`. */
   resolveAgentTools: (agentConfig: any) => Promise<{
     tools: any[];
     executor: (name: string, args: Record<string, unknown>) => Promise<string>;
     cleanup?: () => Promise<void>;
+    extraAiTools?: Record<string, any>;
   }>;
   /** Called after each completion finishes (streaming or non-streaming). Receives usage, model info, and provider metadata. Fire-and-forget — errors are silently ignored. */
   onCompletionFinished?: (info: {
@@ -566,6 +574,13 @@ export function completionRoutes(getDeps: () => CompletionRouteDeps, apiKeys?: s
     let providerOpts: Record<string, any> | undefined;
     let effectiveTools: any[];
     let effectiveToolExecutor: (name: string, args: Record<string, unknown>) => Promise<string>;
+    /**
+     * Provider-executed tools the host wants merged into the AI SDK tool
+     * palette as-is. Polpo never invokes these — they're handled inside
+     * `generateText` by the SDK / model provider (Vercel Gateway today).
+     * Keys here MUST be skipped by the manual tool-call dispatcher.
+     */
+    let extraAiTools: Record<string, any> | undefined;
     let isInteractiveFn: ((name: string) => boolean) | undefined;
     /**
      * Resource cleanup hook — set when an agent's tool resolver opens
@@ -620,10 +635,11 @@ export function completionRoutes(getDeps: () => CompletionRouteDeps, apiKeys?: s
       providerOpts = resolved.providerOptions;
 
       // Resolve tools via dep
-      const { tools, executor, cleanup } = await deps.resolveAgentTools(agentConfig);
-      effectiveTools = tools;
-      effectiveToolExecutor = executor;
-      onResponseFinished = cleanup;
+      const resolvedTools = await deps.resolveAgentTools(agentConfig);
+      effectiveTools = resolvedTools.tools;
+      effectiveToolExecutor = resolvedTools.executor;
+      onResponseFinished = resolvedTools.cleanup;
+      extraAiTools = resolvedTools.extraAiTools;
     } else {
       // ── Orchestrator mode (default) ──
       if (!deps.resolveOrchestratorContext) {
@@ -677,10 +693,16 @@ export function completionRoutes(getDeps: () => CompletionRouteDeps, apiKeys?: s
       c.header("x-session-id", sessionId);
     }
 
-    // Convert Polpo tools to AI SDK format (no execute — manual execution)
-    // Client-side tools (ask_user_question, etc.) are added on top — they stop
-    // the server loop and return to the client as standard tool_calls.
-    const aiTools = { ...toAITools(effectiveTools), ...CLIENT_SIDE_TOOLS };
+    // Convert Polpo tools to AI SDK format (no execute — manual execution).
+    // Client-side tools (ask_user_question, etc.) stop the server loop and
+    // return to the client as standard tool_calls.
+    // `extraAiTools` are provider-executed (e.g. Vercel Gateway native
+    // tools) — already in AI SDK shape, must NOT be Polpo-converted.
+    const aiTools = {
+      ...toAITools(effectiveTools),
+      ...(extraAiTools ?? {}),
+      ...CLIENT_SIDE_TOOLS,
+    };
 
     if (body.stream) {
       // ── Streaming mode ──
@@ -940,11 +962,37 @@ export function completionRoutes(getDeps: () => CompletionRouteDeps, apiKeys?: s
               return; // finally block will persist whatever finalText we have
             }
 
+            // Provider tools (extraAiTools) are executed by the SDK / gateway
+            // inside generateText itself — their results are already on
+            // `result.toolResults`. Skip them in our manual dispatcher; just
+            // forward the result message into history for the next turn.
+            const providerToolNames = new Set(Object.keys(extraAiTools ?? {}));
+            const providerToolResults = new Map<string, any>();
+            try {
+              const settled = (await (result as any).toolResults) as any[] | undefined;
+              for (const tr of settled ?? []) providerToolResults.set(tr.toolCallId, tr);
+            } catch { /* best effort */ }
+
             for (const call of toolCalls) {
               // Stop executing tools if client disconnected
               if (abortController.signal.aborted) break;
 
               const callArgs = call.input as Record<string, unknown>;
+
+              if (providerToolNames.has(call.toolName)) {
+                const tr = providerToolResults.get(call.toolCallId);
+                const value = tr?.output ?? tr?.result ?? null;
+                messages.push({
+                  role: "tool",
+                  content: [{
+                    type: "tool-result",
+                    toolCallId: call.toolCallId,
+                    toolName: call.toolName,
+                    output: { type: "json" as const, value },
+                  }],
+                });
+                continue;
+              }
 
               // Notify client that a tool is being called
               await stream.writeSSE({
@@ -1279,8 +1327,33 @@ export function completionRoutes(getDeps: () => CompletionRouteDeps, apiKeys?: s
             // Note: finally block persists finalText + toolCallsAccum
           }
 
+          // Provider tools (extraAiTools) are executed by the SDK / gateway
+          // inside generateText itself — their results are already on
+          // `genResult.toolResults`. Skip them in the manual dispatcher.
+          const providerToolNames = new Set(Object.keys(extraAiTools ?? {}));
+          const providerToolResults = new Map<string, any>();
+          for (const tr of (genResult.toolResults as any[] | undefined) ?? []) {
+            providerToolResults.set(tr.toolCallId, tr);
+          }
+
           for (const call of toolCalls) {
             const callArgs = call.input as Record<string, unknown>;
+
+            if (providerToolNames.has(call.toolName)) {
+              const tr = providerToolResults.get(call.toolCallId);
+              const value = tr?.output ?? tr?.result ?? null;
+              messages.push({
+                role: "tool",
+                content: [{
+                  type: "tool-result",
+                  toolCallId: call.toolCallId,
+                  toolName: call.toolName,
+                  output: { type: "json" as const, value },
+                }],
+              });
+              continue;
+            }
+
             const result = await effectiveToolExecutor(call.toolName, callArgs);
             const isError = result.startsWith("Error:");
             emitFileChanged(call.toolName, callArgs, result, deps.emit);
