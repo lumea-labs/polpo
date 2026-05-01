@@ -1468,7 +1468,7 @@ describe("Vault API", () => {
         service: "github",
         type: "api_key",
         label: "GitHub token",
-        credentials: { token: "ghp_test123" },
+        credentials: { key: "ghp_test123" },
       }),
     );
     expect(res.status).toBe(200);
@@ -1477,7 +1477,7 @@ describe("Vault API", () => {
     expect(body.data.agent).toBe("agent-1");
     expect(body.data.service).toBe("github");
     expect(body.data.type).toBe("api_key");
-    expect(body.data.keys).toEqual(["token"]);
+    expect(body.data.keys).toEqual(["key"]);
     // Ensure credentials are NOT returned
     expect(body.data).not.toHaveProperty("credentials");
   });
@@ -1524,14 +1524,21 @@ describe("Vault API", () => {
         agent: "agent-1",
         service: "smtp-patch",
         type: "smtp",
-        credentials: { host: "smtp.example.com", port: "587", user: "old-user" },
+        credentials: {
+          host: "smtp.example.com",
+          port: "587",
+          user: "old-user",
+          pass: "old-pass",
+          from: "noreply@example.com",
+        },
       }),
     );
 
-    // Patch — update user, add pass (host and port should survive)
+    // Patch — update user, change pass (host, port, from should survive)
     const res = await app.request(
       vault("/entries/agent-1/smtp-patch"),
       jsonReq("PATCH", {
+        type: "smtp",
         credentials: { user: "new-user", pass: "secret" },
       }),
     );
@@ -1594,6 +1601,7 @@ describe("Vault API", () => {
     const res = await app.request(
       vault("/entries/agent-1/nonexistent-service"),
       jsonReq("PATCH", {
+        type: "api_key",
         credentials: { key: "val" },
       }),
     );
@@ -1611,7 +1619,7 @@ describe("Vault API", () => {
         agent: "agent-1",
         service: "delete-me",
         type: "login",
-        credentials: { user: "u", pass: "p" },
+        credentials: { username: "u", password: "p" },
       }),
     );
 
@@ -1646,7 +1654,13 @@ describe("Vault API", () => {
         service: svc,
         type: "smtp",
         label: "SMTP creds",
-        credentials: { host: "mail.example.com", port: "465", user: "admin" },
+        credentials: {
+          host: "mail.example.com",
+          port: "465",
+          user: "admin",
+          pass: "old-pass",
+          from: "noreply@example.com",
+        },
       }),
     );
     expect(createRes.status).toBe(200);
@@ -1659,10 +1673,11 @@ describe("Vault API", () => {
     expect(found.type).toBe("smtp");
     expect(found.keys).toContain("host");
 
-    // 3. Patch — add password, change user
+    // 3. Patch — change user and pass (host, port, from preserved)
     const patchRes = await app.request(
       vault(`/entries/${ag}/${svc}`),
       jsonReq("PATCH", {
+        type: "smtp",
         credentials: { user: "new-admin", pass: "hunter2" },
       }),
     );
