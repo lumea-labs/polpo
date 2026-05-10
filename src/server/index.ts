@@ -89,6 +89,15 @@ export class PolpoServer {
       hostname: this.config.host,
     });
 
+    // Disable Node 18+ requestTimeout (default 5 min). This is a wall-clock
+    // timer — NOT idle-based — so it kills long-running streaming responses
+    // (e.g. multi-turn tool loops in chat completions) even when data is
+    // actively flowing. Setting to 0 disables it entirely.
+    // See: https://nodejs.org/api/http.html#serverrequesttimeout
+    if ("requestTimeout" in this.server) {
+      (this.server as import("node:http").Server).requestTimeout = 0;
+    }
+
     const base = `http://${this.config.host}:${this.config.port}`;
 
     console.log(`\n  Listening  ${base}`);

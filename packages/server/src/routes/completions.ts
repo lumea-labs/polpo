@@ -711,6 +711,21 @@ export function completionRoutes(getDeps: () => CompletionRouteDeps, apiKeys?: s
         const abortController = new AbortController();
         stream.onAbort(() => { abortController.abort(); });
 
+        // SSE heartbeat: write a comment (`: ping`) every 20s to prevent
+        // proxy idle timeouts (nginx 60s, Cloudflare 100s) during long tool
+        // execution pauses. SSE comments are invisible to compliant clients.
+        // WritableStream serializes writes, so heartbeats cannot interleave
+        // mid-payload with writeSSE calls.
+        const heartbeatInterval = setInterval(() => {
+          if (abortController.signal.aborted) {
+            clearInterval(heartbeatInterval);
+            return;
+          }
+          stream.write(": ping\n\n").catch(() => {
+            clearInterval(heartbeatInterval);
+          });
+        }, 20_000);
+
         await stream.writeSSE({ data: sseChunk(completionId, { role: "assistant" }) });
 
         // Reserve a placeholder message in the store BEFORE streaming.
@@ -1048,6 +1063,7 @@ export function completionRoutes(getDeps: () => CompletionRouteDeps, apiKeys?: s
             throw err;
           }
         } finally {
+          clearInterval(heartbeatInterval);
           // Always persist the assistant response — even on disconnect.
           // SECURITY: Redact vault credentials before persisting to SQLite
           const safeToolCalls = redactVaultToolCalls(toolCallsAccum);
