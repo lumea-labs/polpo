@@ -109,6 +109,18 @@ export function writeBlankScaffold(targetDir: string, projectName: string): void
             name: "agent-1",
             role: "helpful assistant",
             model: "xai/grok-4-fast",
+            // Mirror the cloud onboarding default — the bare set of tools that
+            // covers "I want to do useful stuff" without overwhelming a brand-new
+            // agent. Users can add browser_*, email_*, doc_*, etc. as needed.
+            allowedTools: [
+              "bash",
+              "read",
+              "write",
+              "edit",
+              "glob",
+              "grep",
+              "http_fetch",
+            ],
           },
           teamName: "default",
         },

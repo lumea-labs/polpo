@@ -17,6 +17,7 @@ export interface ApiClient {
   get<T = unknown>(path: string): Promise<ApiResponse<T>>;
   post<T = unknown>(path: string, body?: unknown): Promise<ApiResponse<T>>;
   put<T = unknown>(path: string, body?: unknown): Promise<ApiResponse<T>>;
+  patch<T = unknown>(path: string, body?: unknown): Promise<ApiResponse<T>>;
   delete<T = unknown>(path: string): Promise<ApiResponse<T>>;
 }
 
@@ -66,6 +67,8 @@ export function createApiClient(credentials: Credentials, projectId?: string): A
       request<T>("POST", path, body),
     put: <T = unknown>(path: string, body?: unknown) =>
       request<T>("PUT", path, body),
+    patch: <T = unknown>(path: string, body?: unknown) =>
+      request<T>("PATCH", path, body),
     delete: <T = unknown>(path: string) => request<T>("DELETE", path),
   };
 }

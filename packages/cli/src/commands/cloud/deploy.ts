@@ -122,8 +122,9 @@ async function deployTeams(client: ApiClient, polpoDir: string, opts: ConflictOp
     }
 
     if (remote) {
-      // Update existing
-      const res = await client.put(`/v1/agents/team`, { name: team.name, description: team.description });
+      // Update existing — server exposes PATCH /v1/agents/team (rename + describe),
+      // not PUT. Using PUT here would 404 ("Resource not found") on the server side.
+      const res = await client.patch(`/v1/agents/team`, { name: team.name, description: team.description });
       if (res.status >= 200 && res.status < 300) { result.updated++; }
       else {
         const msg = (res.data as any)?.error ?? `HTTP ${res.status}`;
@@ -187,7 +188,9 @@ async function deployAgents(client: ApiClient, polpoDir: string, opts: ConflictO
     }
 
     if (remote) {
-      const res = await client.put(`/v1/agents/${encodeURIComponent(agent.name)}`, { ...agent, team: teamName });
+      // Update existing — server exposes PATCH /v1/agents/{name}, not PUT.
+      // Using PUT here would 404 ("Resource not found") on the server side.
+      const res = await client.patch(`/v1/agents/${encodeURIComponent(agent.name)}`, { ...agent, team: teamName });
       if (res.status >= 200 && res.status < 300) { result.updated++; }
       else {
         const msg = (res.data as any)?.error ?? `HTTP ${res.status}`;
