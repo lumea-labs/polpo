@@ -122,7 +122,7 @@ describe("writeBlankScaffold", () => {
     expect(agents[0].teamName).toBe("default");
     expect(agents[0].agent.name).toBe("agent-1");
     expect(agents[0].agent.role).toBe("helpful assistant");
-    expect(agents[0].agent.model).toBe("xai/grok-4-fast");
+    expect(agents[0].agent.model).toBe("xai/grok-4.1-fast-non-reasoning");
   });
 
   it("writes .env.local.example with POLPO_API_KEY placeholder", () => {
