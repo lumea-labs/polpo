@@ -381,6 +381,43 @@ function buildSummarizeFn(
   };
 }
 
+/**
+ * Detect Vercel AI Gateway "model not found" errors so callers see a
+ * clean 400 (with the offending model id + agent name) instead of a
+ * generic 500 surfaced by Hono's default error handler.
+ *
+ * Triggers on:
+ *   - `GatewayModelNotFoundError` constructor name from `@ai-sdk/gateway`
+ *   - any 404 response whose body mentions `model_not_found` (covers
+ *     custom gateways that don't ship the typed error class)
+ *
+ * Returns the error envelope to send back, or null if the error isn't a
+ * model-not-found and should propagate untouched.
+ */
+function modelNotFoundEnvelope(
+  err: unknown,
+  fallbackModelId: string | undefined,
+  agent: string | undefined,
+): { message: string; type: "model_not_found"; param: { modelId: string; agent?: string } } | null {
+  if (!err || typeof err !== "object") return null;
+  const e = err as any;
+  const isGatewayNotFound =
+    e.name === "GatewayModelNotFoundError" ||
+    e.constructor?.name === "GatewayModelNotFoundError" ||
+    (e.statusCode === 404 &&
+      typeof e.responseBody === "string" &&
+      e.responseBody.includes("model_not_found"));
+  if (!isGatewayNotFound) return null;
+  const modelId: string = e.modelId ?? fallbackModelId ?? "unknown";
+  return {
+    message:
+      `Model "${modelId}" is not available on the gateway. ` +
+      `It may have been renamed or deprecated — update the agent config (or the orchestrator default).`,
+    type: "model_not_found",
+    param: { modelId, ...(agent ? { agent } : {}) },
+  };
+}
+
 function completionResponse(id: string, content: string, usage: LanguageModelUsage) {
   return {
     id,
@@ -1059,8 +1096,21 @@ export function completionRoutes(getDeps: () => CompletionRouteDeps, apiKeys?: s
           }
         } catch (err) {
           // Suppress AbortError — expected when client disconnects
-          if (!(err instanceof DOMException && err.name === "AbortError") && !abortController.signal.aborted) {
-            throw err;
+          if ((err instanceof DOMException && err.name === "AbortError") || abortController.signal.aborted) {
+            // fall through to finally — no SSE error event needed
+          } else {
+            // Friendly model_not_found surface — gateway returns 404 for
+            // renamed/deprecated SKUs (e.g. xai/grok-4-fast after the 4.1
+            // rename). Without this catch the error propagates as a 500.
+            const notFound = modelNotFoundEnvelope(err, m?.id, body.agent);
+            if (notFound) {
+              await stream.writeSSE({
+                data: sseChunk(completionId, {}, "stop", { error: notFound }),
+              });
+              await stream.writeSSE({ data: "[DONE]" });
+            } else {
+              throw err;
+            }
           }
         } finally {
           clearInterval(heartbeatInterval);
@@ -1399,6 +1449,15 @@ export function completionRoutes(getDeps: () => CompletionRouteDeps, apiKeys?: s
         }
 
         return c.json(completionResponse(completionId, finalText, totalUsage));
+      } catch (err) {
+        // Friendly model_not_found surface — gateway returns 404 for
+        // renamed/deprecated SKUs (e.g. xai/grok-4-fast after the 4.1
+        // rename). Without this catch the error propagates as a 500.
+        const notFound = modelNotFoundEnvelope(err, m?.id, body.agent);
+        if (notFound) {
+          return c.json({ error: notFound }, 400 as any);
+        }
+        throw err;
       } finally {
         // Always persist the final text + tool calls — even on early return (ask_user) or error
         // SECURITY: Redact vault credentials before persisting to SQLite
