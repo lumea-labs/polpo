@@ -466,7 +466,7 @@ export function registerCreateCommand(program: Command): void {
         lines.push(`    ${pc.bold(`curl $POLPO_URL/v1/chat/completions \\`)}`);
         lines.push(`      ${pc.bold(`-H "Authorization: Bearer $POLPO_API_KEY" \\`)}`);
         lines.push(`      ${pc.bold(`-H "Content-Type: application/json" \\`)}`);
-        lines.push(`      ${pc.bold(`-d '{"agent":"agent-1","messages":[{"role":"user","content":"Hello"}]}'`)}`);
+        lines.push(`      ${pc.bold(`-d '{"agent":"agent-1","stream":true,"messages":[{"role":"user","content":"Hello"}]}'`)}`);
         lines.push("");
       }
 

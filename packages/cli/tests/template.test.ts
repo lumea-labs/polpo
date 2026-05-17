@@ -123,6 +123,13 @@ describe("writeBlankScaffold", () => {
     expect(agents[0].agent.name).toBe("agent-1");
     expect(agents[0].agent.role).toBe("helpful assistant");
     expect(agents[0].agent.model).toBe("xai/grok-4.1-fast-non-reasoning");
+    // Full demo-ready palette — assert a representative subset covering
+    // every category (core + each extended group via wildcards).
+    expect(agents[0].agent.allowedTools).toEqual(expect.arrayContaining([
+      "bash", "read", "write", "edit", "glob", "grep", "ls",
+      "http_*", "browser_*", "search_*", "vault_*",
+      "image_*", "audio_*", "pdf_*", "docx_*", "excel_*", "email_*",
+    ]));
   });
 
   it("writes .env.local.example with POLPO_API_KEY placeholder", () => {

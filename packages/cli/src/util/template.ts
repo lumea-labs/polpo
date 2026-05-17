@@ -109,17 +109,24 @@ export function writeBlankScaffold(targetDir: string, projectName: string): void
             name: "agent-1",
             role: "helpful assistant",
             model: "xai/grok-4.1-fast-non-reasoning",
-            // Mirror the cloud onboarding default — the bare set of tools that
-            // covers "I want to do useful stuff" without overwhelming a brand-new
-            // agent. Users can add browser_*, email_*, doc_*, etc. as needed.
+            // Full demo-ready palette: every built-in tool category is
+            // enabled out of the box so `polpo create` → first prompt can
+            // exercise the whole stack (browser navigation, doc/sheet/pdf
+            // creation, web search, image/audio generation, vault lookups,
+            // email send). For tighter production agents, strip the
+            // categories you don't need.
             allowedTools: [
-              "bash",
-              "read",
-              "write",
-              "edit",
-              "glob",
-              "grep",
-              "http_fetch",
+              "bash", "read", "write", "edit", "glob", "grep", "ls",
+              "http_*",
+              "browser_*",
+              "search_*",
+              "vault_*",
+              "image_*",
+              "audio_*",
+              "pdf_*",
+              "docx_*",
+              "excel_*",
+              "email_*",
             ],
           },
           teamName: "default",
