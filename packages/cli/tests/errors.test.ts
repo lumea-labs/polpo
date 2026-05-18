@@ -110,4 +110,51 @@ describe("friendlyError", () => {
       );
     });
   });
+
+  // ── Defensive normalization ─────────────────────────────────────
+  //
+  // Regression: deploy.ts feeds res.data.error straight into friendlyError,
+  // and that field can be an object (Zod issue list), an array, undefined,
+  // or null when the server returns a 4xx body that doesn't match the
+  // happy-path { error: "…" } shape. Calling `.includes` on a non-string
+  // crashed the entire deploy with `TypeError: msg.includes is not a function`.
+
+  describe("accepts non-string inputs without crashing", () => {
+    it("undefined → empty string passes through", () => {
+      expect(friendlyError(undefined)).toBe("");
+    });
+
+    it("null → empty string passes through", () => {
+      expect(friendlyError(null)).toBe("");
+    });
+
+    it("a Zod-style error object gets JSON-stringified", () => {
+      const out = friendlyError({ code: "ValidationError", issues: [{ path: "name", message: "required" }] });
+      expect(out).toContain("ValidationError");
+      expect(out).toContain("required");
+    });
+
+    it("an array of error strings gets JSON-stringified", () => {
+      const out = friendlyError(["bad name", "bad model"]);
+      expect(out).toContain("bad name");
+      expect(out).toContain("bad model");
+    });
+
+    it("an Error instance uses its .message", () => {
+      const out = friendlyError(new Error("boom"));
+      expect(out).toBe("boom");
+    });
+
+    it("a number gets coerced safely", () => {
+      const out = friendlyError(42);
+      expect(out).toBe("42");
+    });
+
+    it("an object whose string form matches a pattern still maps to its hint", () => {
+      // JSON.stringify of { http: 401 } produces '{"http":401}' — doesn't trigger 401 rule on its own.
+      // But if the stringified body contains 'Unauthorized' we should still recognize it.
+      const out = friendlyError({ message: "Unauthorized: stale token" });
+      expect(out).toBe("Session expired or invalid. Run: polpo login");
+    });
+  });
 });
