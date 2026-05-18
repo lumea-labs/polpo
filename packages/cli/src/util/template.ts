@@ -104,39 +104,40 @@ export function writeBlankScaffold(targetDir: string, projectName: string, scena
   const agentName = scenario?.agent.name ?? "agent-1";
   const agentRole = scenario?.agent.role ?? "helpful assistant";
 
+  // Full demo-ready palette: every built-in tool category is enabled out of
+  // the box so `polpo create` → first prompt can exercise the whole stack
+  // (browser navigation, doc/sheet/pdf creation, web search, image/audio
+  // generation, vault lookups, email send). For tighter production agents,
+  // strip the categories you don't need.
+  const agentConfig: Record<string, unknown> = {
+    name: agentName,
+    role: agentRole,
+    model: "xai/grok-4.1-fast-non-reasoning",
+    allowedTools: [
+      "bash", "read", "write", "edit", "glob", "grep", "ls",
+      "http_*",
+      "browser_*",
+      "search_*",
+      "vault_*",
+      "image_*",
+      "audio_*",
+      "pdf_*",
+      "docx_*",
+      "excel_*",
+      "email_*",
+      "memory_*",
+    ],
+  };
+  // Persona / instructions specific to the scenario, dropped in only when
+  // a scenario was selected. The blank agent stays minimal.
+  if (scenario?.agent.systemPrompt) {
+    agentConfig.systemPrompt = scenario.agent.systemPrompt;
+  }
+
   fs.writeFileSync(
     path.join(targetDir, ".polpo", "agents.json"),
     JSON.stringify(
-      [
-        {
-          agent: {
-            name: agentName,
-            role: agentRole,
-            model: "xai/grok-4.1-fast-non-reasoning",
-            // Full demo-ready palette: every built-in tool category is
-            // enabled out of the box so `polpo create` → first prompt can
-            // exercise the whole stack (browser navigation, doc/sheet/pdf
-            // creation, web search, image/audio generation, vault lookups,
-            // email send). For tighter production agents, strip the
-            // categories you don't need.
-            allowedTools: [
-              "bash", "read", "write", "edit", "glob", "grep", "ls",
-              "http_*",
-              "browser_*",
-              "search_*",
-              "vault_*",
-              "image_*",
-              "audio_*",
-              "pdf_*",
-              "docx_*",
-              "excel_*",
-              "email_*",
-              "memory_*",
-            ],
-          },
-          teamName: "default",
-        },
-      ],
+      [{ agent: agentConfig, teamName: "default" }],
       null,
       2,
     ) + "\n",
@@ -166,10 +167,10 @@ export function writeBlankScaffold(targetDir: string, projectName: string, scena
 
 /**
  * Write the scenario's seed data: project + agent memory, a single draft
- * task, and a multi-step draft mission. Caller is responsible for picking
- * `includeTasks: true` when deploying so the task gets pushed alongside
- * the mission (missions are part of the default deploy scope; tasks are
- * opt-in).
+ * task, a multi-step draft mission, and one custom skill. Caller is
+ * responsible for picking `includeTasks: true` when deploying so the
+ * task gets pushed alongside the mission (missions + skills are part of
+ * the default deploy scope; tasks are opt-in).
  */
 function writeScenarioSeed(targetDir: string, scenario: Scenario): void {
   const polpoDir = path.join(targetDir, ".polpo");
@@ -197,6 +198,23 @@ function writeScenarioSeed(targetDir: string, scenario: Scenario): void {
     path.join(missionsDir, `${scenario.mission.filename}.json`),
     JSON.stringify(scenario.mission.payload, null, 2) + "\n",
   );
+
+  // Custom skill — one SKILL.md per scenario, scoped to the tools the
+  // mission actually uses. Frontmatter keys match what `deploySkills`
+  // parses (`name`, `description`, `allowed-tools` list).
+  const skillDir = path.join(polpoDir, "skills", scenario.skill.name);
+  fs.mkdirSync(skillDir, { recursive: true });
+  const allowedToolsBlock = scenario.skill.allowedTools
+    .map((t) => `  - ${t}`)
+    .join("\n");
+  const skillFile =
+    `---\n` +
+    `name: ${scenario.skill.name}\n` +
+    `description: ${scenario.skill.description}\n` +
+    `allowed-tools:\n${allowedToolsBlock}\n` +
+    `---\n\n` +
+    scenario.skill.content;
+  fs.writeFileSync(path.join(skillDir, "SKILL.md"), skillFile);
 }
 
 export interface RemoteTemplateOptions {

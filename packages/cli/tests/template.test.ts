@@ -8,7 +8,7 @@ import {
   writeBlankScaffold,
 } from "../src/util/template.js";
 import { SCENARIOS, findScenario } from "../src/util/scenarios.js";
-import { parseMissionDocument } from "@polpo-ai/core/schemas";
+import { parseMissionDocument, parseExpectation } from "@polpo-ai/core/schemas";
 
 let tmpDir: string;
 
@@ -226,6 +226,63 @@ describe("scenario seeding", () => {
         expect(types).toContain("file_exists");
       });
 
+      it("task expectations use `paths: string[]` shape, validated by parseExpectation", () => {
+        // Regression: the helper used to return `{path: string}` singular,
+        // which the core sanitizer silently dropped. Lock in the plural shape.
+        const taskPath = path.join(tmpDir, ".polpo", "tasks", `${sc.task.filename}.json`);
+        const task = JSON.parse(fs.readFileSync(taskPath, "utf-8"));
+        for (const exp of task.expectations as unknown[]) {
+          const parsed = parseExpectation(exp);
+          expect(parsed).not.toBeNull();
+          if (parsed && (parsed as { type: string }).type === "file_exists") {
+            expect((parsed as { paths: string[] }).paths.length).toBeGreaterThan(0);
+          }
+        }
+      });
+
+      it("agent has a non-empty systemPrompt persona", () => {
+        const agents = JSON.parse(
+          fs.readFileSync(path.join(tmpDir, ".polpo", "agents.json"), "utf-8"),
+        );
+        expect(typeof agents[0].agent.systemPrompt).toBe("string");
+        expect(agents[0].agent.systemPrompt.length).toBeGreaterThan(50);
+      });
+
+      it("scaffolds one SKILL.md with the scenario's tool scope in frontmatter", () => {
+        const skillPath = path.join(tmpDir, ".polpo", "skills", sc.skill.name, "SKILL.md");
+        const raw = fs.readFileSync(skillPath, "utf-8");
+        const fm = raw.match(/^---\n([\s\S]*?)\n---/)?.[1] ?? "";
+        expect(fm).toContain(`name: ${sc.skill.name}`);
+        expect(fm).toContain(`description: ${sc.skill.description}`);
+        for (const tool of sc.skill.allowedTools) {
+          expect(fm).toContain(`- ${tool}`);
+        }
+        // Body is non-empty.
+        const body = raw.split(/^---$/m).slice(2).join("---").trim();
+        expect(body.length).toBeGreaterThan(50);
+      });
+
+      it("no seeded task or skill references `browser_*` (kept lightweight per design)", () => {
+        const missionPath = path.join(tmpDir, ".polpo", "missions", `${sc.mission.filename}.json`);
+        const mission = JSON.parse(fs.readFileSync(missionPath, "utf-8"));
+        const allText = JSON.stringify(mission) + "\n" +
+          fs.readFileSync(path.join(tmpDir, ".polpo", "skills", sc.skill.name, "SKILL.md"), "utf-8");
+        expect(allText).not.toMatch(/browser_\*/);
+      });
+
+      it("every mission task and the standalone task assign to the scenario's agent", () => {
+        // assignTo must match the agent name or the orchestrator can't pick the task up.
+        const taskPath = path.join(tmpDir, ".polpo", "tasks", `${sc.task.filename}.json`);
+        const task = JSON.parse(fs.readFileSync(taskPath, "utf-8"));
+        expect(task.assignTo).toBe(sc.agent.name);
+
+        const missionPath = path.join(tmpDir, ".polpo", "missions", `${sc.mission.filename}.json`);
+        const mission = JSON.parse(fs.readFileSync(missionPath, "utf-8"));
+        for (const t of mission.data.tasks) {
+          expect(t.assignTo).toBe(sc.agent.name);
+        }
+      });
+
       it("writes a draft mission whose data parses against missionDocumentSchema", () => {
         const missionPath = path.join(tmpDir, ".polpo", "missions", `${sc.mission.filename}.json`);
         const file = JSON.parse(fs.readFileSync(missionPath, "utf-8"));
@@ -266,9 +323,12 @@ describe("scenario seeding", () => {
     );
     expect(agents[0].agent.name).toBe("agent-1");
     expect(agents[0].agent.role).toBe("helpful assistant");
+    // No systemPrompt on the blank agent — only scenarios scaffold one.
+    expect(agents[0].agent.systemPrompt).toBeUndefined();
     // And no scenario directories are created.
     expect(fs.existsSync(path.join(tmpDir, ".polpo", "tasks"))).toBe(false);
     expect(fs.existsSync(path.join(tmpDir, ".polpo", "missions"))).toBe(false);
     expect(fs.existsSync(path.join(tmpDir, ".polpo", "memory.md"))).toBe(false);
+    expect(fs.existsSync(path.join(tmpDir, ".polpo", "skills"))).toBe(false);
   });
 });

@@ -1,20 +1,35 @@
 /**
  * Example scenarios for `polpo create` — optional seeded data so a fresh
  * project lands in the dashboard with a working agent, project + agent
- * memory, a single draft task, and a multi-step draft mission ready to
- * run. Picking "none" keeps the legacy behavior (single blank agent).
+ * memory, a single draft task, a multi-step draft mission, and one
+ * custom skill ready to use. Picking "none" keeps the legacy behavior
+ * (single blank agent).
  *
  * Every scenario keeps the same shape so callers can iterate the seed:
- *   - agent: name + role; tool palette is the default full palette
- *     (see writeBlankScaffold) so we don't duplicate the list here.
+ *   - agent: name + role + systemPrompt; tool palette is the default
+ *     full palette (see writeBlankScaffold) so we don't duplicate it
+ *     here.
  *   - projectMemory / agentMemory: free-form markdown.
- *   - task: a single, standalone task in draft status (no llm_review —
- *     verification is a file_exists check so the run is deterministic).
+ *   - task: a single, standalone task in draft status with a
+ *     file_exists expectation. Verification is deterministic — no
+ *     llm_review.
  *   - mission: a 4-step graph — brief → research → (spreadsheet || pdf)
  *     where the last two run in parallel because they share dependsOn.
+ *   - skill: one SKILL.md scaffold per scenario, scoped to the tools
+ *     the mission actually uses.
  *
  * Output paths are all under `.polpo/output/<…>` so the agent's
  * sandboxed write tool can hit them without extra config.
+ *
+ * Schema alignment (verified against core + server):
+ *   - file_exists expectations use `paths: string[]` per
+ *     `core/src/schemas.ts:21-24` (NOT `path: string` — that gets
+ *     silently dropped by `sanitizeExpectations`).
+ *   - agent.systemPrompt is an optional field on `AddAgentSchema`
+ *     (`server/src/schemas.ts:320`).
+ *   - mission.data is a structured object here; `deploy.ts:295`
+ *     stringifies it before POST so both shapes are accepted at
+ *     write time.
  */
 
 export interface ScenarioTask {
@@ -27,21 +42,40 @@ export interface ScenarioMission {
   payload: Record<string, unknown>;
 }
 
+export interface ScenarioSkill {
+  /** Directory + frontmatter `name` — kebab-case slug. */
+  name: string;
+  /** Short summary, used as SKILL.md frontmatter `description`. */
+  description: string;
+  /** Tool patterns scoped to this skill (frontmatter `allowed-tools`). */
+  allowedTools: string[];
+  /** Markdown body of SKILL.md (after the frontmatter block). */
+  content: string;
+}
+
 export interface Scenario {
   id: "data-analyst" | "marketing-researcher" | "product-manager";
   label: string;
   hint: string;
-  agent: { name: string; role: string };
+  agent: { name: string; role: string; systemPrompt: string };
   projectMemory: string;
   agentMemory: string;
   task: ScenarioTask;
   mission: ScenarioMission;
+  skill: ScenarioSkill;
 }
 
 // ─── Shared helpers ────────────────────────────────────────────────
 
+/**
+ * file_exists expectations are validated by `parseExpectation` in
+ * @polpo-ai/core; the schema requires `paths` (plural array), not
+ * `path` (singular). Building the wrong shape causes the runtime
+ * sanitizer to silently drop the expectation, so the task appears
+ * unverified.
+ */
 function fileExists(path: string) {
-  return { type: "file_exists", path };
+  return { type: "file_exists" as const, paths: [path] };
 }
 
 // ─── Scenario A: Data Analyst ──────────────────────────────────────
@@ -53,6 +87,16 @@ const dataAnalyst: Scenario = {
   agent: {
     name: "analyst",
     role: "Senior data analyst — turns raw datasets into clear, actionable reports for leadership.",
+    systemPrompt:
+      "You are a Senior Data Analyst preparing recurring quarterly KPI reviews for leadership.\n\n" +
+      "Style: numbers first, narrative second. Every section ends with a one-line takeaway.\n" +
+      "Always include a 'what changed since last quarter' note. Default visuals: bar for absolute " +
+      "values, line for trends, table for raw data.\n\n" +
+      "Confirm whether ARR or MRR is the headline metric before drafting any section. Validate the " +
+      "CAC payback assumption (currently 14 months) against the latest data before quoting it. " +
+      "When you cite an industry benchmark, include the source URL and the date you accessed it.\n\n" +
+      "Output formats by task: brief.md (markdown), kpis.xlsx (spreadsheet), Q1-executive-summary.pdf " +
+      "(one-page PDF, monochrome, header + body sections).",
   },
   projectMemory: `# Project — Quarterly KPI Review
 
@@ -69,7 +113,7 @@ Recurring quarterly KPI review for the leadership team.
 Style:
 - Numbers first, narrative second.
 - Always include a "what changed since last quarter" section.
-- Default visuals: bar for absolute values, line for trends, table for raw.
+- Default visuals: bar for absolute values, line for trends, table for raw data.
 
 Open questions:
 - Confirm whether ARR or MRR is the headline metric.
@@ -136,6 +180,41 @@ Open questions:
       },
     },
   },
+  skill: {
+    name: "kpi-review-framework",
+    description: "Structured workflow for quarterly KPI reviews — scope → benchmarks → spreadsheet → executive summary.",
+    allowedTools: ["search_*", "excel_*", "pdf_*", "read", "write"],
+    content:
+`# KPI Review Framework
+
+Use this skill when preparing a quarterly review for leadership.
+
+## Step 1 — Scope the questions
+Before pulling any number, list the 3-5 questions leadership will actually ask:
+- Revenue movement: YoY/QoQ growth, ARR/MRR breakdown
+- Churn: logo churn vs dollar churn, by cohort
+- Biggest win / biggest risk this quarter
+- One recommended action with a clear owner
+
+## Step 2 — Gather benchmarks
+Use \`search_web\` to find 5-7 SaaS industry benchmarks (median churn, CAC payback, LTV/CAC).
+For each benchmark capture: value, source URL, date accessed, sample size if reported.
+
+## Step 3 — Build the spreadsheet
+Two sheets in \`.polpo/output/kpis.xlsx\`:
+1. **Our Metrics** — one row per metric (revenue, churn, NPS, CAC, LTV), columns: Q-prev, Q-current, Δ, Δ%
+2. **Industry Benchmark** — pulled from research, one row per benchmark
+
+## Step 4 — Compose the executive summary
+1-page PDF with: headline metric, what changed since last quarter, two takeaways, recommended action.
+Monochrome, no decorative graphics. Use \`pdf_*\` tools.
+
+## Quality checks
+- Every external number has a URL + access date.
+- Every section ends with a one-line takeaway.
+- No section longer than 5 lines without a chart or table.
+`,
+  },
 };
 
 // ─── Scenario B: Marketing Researcher ──────────────────────────────
@@ -147,6 +226,16 @@ const marketingResearcher: Scenario = {
   agent: {
     name: "researcher",
     role: "Marketing researcher — competitive analysis, audience research, and launch briefs.",
+    systemPrompt:
+      "You are a Marketing Researcher running pre-launch competitive intelligence for a B2B SaaS " +
+      "targeting technical founders and early-stage CTOs.\n\n" +
+      "Voice: technical, no-fluff, builder-to-builder. No marketing buzzwords. Contrast against " +
+      "competitors, never list features in a vacuum.\n\n" +
+      "Workflow: audience definition → competitor scan → feature matrix → launch deck. Every external " +
+      "source carries a URL + the date you accessed it. Competitor research must include: name, " +
+      "pricing, killer feature, weakness, primary audience.\n\n" +
+      "Output formats: launch-brief.md (markdown), competitors.md (markdown with URLs), " +
+      "feature-matrix.xlsx (rows=features, cols=competitors + 'Us'), launch-deck.pdf (3 pages max).",
   },
   projectMemory: `# Project — Product Launch Marketing
 
@@ -202,7 +291,7 @@ Anti-patterns to avoid:
           {
             title: "research_competitors",
             description:
-              "Using `search_web` and `browser_*`, identify 5-8 direct competitors. " +
+              "Using `search_web`, identify 5-8 direct competitors. " +
               "For each capture: name, pricing tier, killer feature, weakness, primary audience. " +
               "Save to `.polpo/output/competitors.md` with URLs.",
             assignTo: "researcher",
@@ -233,6 +322,37 @@ Anti-patterns to avoid:
       },
     },
   },
+  skill: {
+    name: "competitor-research",
+    description: "Framework for B2B SaaS competitive analysis — captures features, pricing, gaps, and positioning.",
+    allowedTools: ["search_*", "excel_*", "pdf_*", "read", "write"],
+    content:
+`# Competitor Research Skill
+
+Use this skill when scoping a launch or repositioning. The output is a competitors.md
+file and a feature-matrix.xlsx that can be reviewed by founders + GTM.
+
+## For each competitor, capture
+- **Name + URL**
+- **Pricing**: tier names, monthly price, packaging (seat vs usage), annual discount
+- **Killer feature**: the one thing they do better than anyone
+- **Weakness**: what they don't do — features missing, pricing complaints, support gaps
+- **Primary audience**: who buys (company size, industry, role)
+- **Source**: every claim cites a URL + the date you accessed it
+
+## Workflow
+1. \`search_web("<category> top SaaS")\` → seed list
+2. \`search_web("<competitor> pricing")\` + \`search_web("<competitor> reviews")\` → features + weaknesses
+3. Cross-check against G2 / Capterra / dev.to reviews for the "weakness" column
+4. Build the feature matrix: rows = features, cols = competitors + 'Us', mark ✓/✗/partial
+
+## Anti-patterns
+- Listing features without contrasting against your product
+- Generic positioning that could fit any competitor
+- Pricing data older than 3 months
+- More than 8 competitors in the first pass (you'll never finish)
+`,
+  },
 };
 
 // ─── Scenario C: Product Manager ───────────────────────────────────
@@ -244,6 +364,17 @@ const productManager: Scenario = {
   agent: {
     name: "pm",
     role: "Product manager — prioritizes feature work, writes specs, tracks user needs.",
+    systemPrompt:
+      "You are a Product Manager for an early-stage SaaS (~50 paying customers, 3-engineer team, " +
+      "~6 weeks of effective capacity per quarter).\n\n" +
+      "Frame: always start from user need, not solution. Score every candidate with RICE " +
+      "(Reach × Impact × Confidence / Effort) before committing. Every decision needs a one-line " +
+      "'why now' rationale.\n\n" +
+      "Confidence calibration: 100% = validated with 5+ user interviews + analytics signal; " +
+      "80% = 3+ interviews OR strong analytics signal; 50% = hypothesis with only anecdotal evidence " +
+      "(needs more data before commitment).\n\n" +
+      "Specs include: problem statement, user story, acceptance criteria, out-of-scope, why-now. " +
+      "Output formats: q1-brief.md, user-signals.md, rice-scoring.xlsx, q1-spec.pdf (2-3 pages).",
   },
   projectMemory: `# Project — Q1 Feature Planning
 
@@ -330,6 +461,42 @@ Confidence calibration:
         ],
       },
     },
+  },
+  skill: {
+    name: "rice-prioritization",
+    description: "RICE scoring workflow for feature prioritization — from user signals to spec.",
+    allowedTools: ["search_*", "excel_*", "pdf_*", "read", "write"],
+    content:
+`# RICE Prioritization Skill
+
+Use this skill when scoping a quarter or sprint. Output is a rice-scoring.xlsx and a
+spec PDF for the top candidate.
+
+## The RICE formula
+\`Score = (Reach × Impact × Confidence) / Effort\`
+
+- **Reach**: how many users hit this in one quarter? (absolute count or %)
+- **Impact**: per-user benefit on a 5-point scale (massive=3, large=2, medium=1, small=0.5, minimal=0.25)
+- **Confidence**: 50% / 80% / 100% — based on user-interview + analytics evidence
+- **Effort**: person-weeks (1-12 cap; if >12 split the feature)
+
+## Workflow
+1. Gather demand signals per candidate via \`search_web\` (forums, X threads, GitHub issues, blog comments)
+2. For each candidate fill: Reach (estimate), Impact (rubric above), Confidence (calibration), Effort (eng estimate)
+3. Sort by descending RICE in \`rice-scoring.xlsx\`
+4. Spec the top feature: problem, user story, acceptance criteria, out-of-scope, 'why now'
+
+## Confidence calibration
+- 100% — validated with 5+ user interviews AND a clear analytics signal
+- 80%  — 3+ interviews OR strong analytics signal
+- 50%  — hypothesis with anecdotal evidence only; needs more data before commit
+
+## Anti-patterns
+- High Confidence on a feature you haven't talked to users about
+- "Reach = all users" without quantifying
+- Effort that ignores QA, docs, and migration work
+- Skipping the 'why now' — anything can wait if there's no clock
+`,
   },
 };
 
