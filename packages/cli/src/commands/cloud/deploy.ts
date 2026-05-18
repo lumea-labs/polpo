@@ -502,6 +502,7 @@ async function deployTasks(client: ApiClient, polpoDir: string): Promise<DeployR
       expectations: task.expectations, metrics: task.metrics,
       maxRetries: task.maxRetries, maxDuration: task.maxDuration,
       deadline: task.deadline, priority: task.priority,
+      draft: task.draft,
     });
     if (res.status >= 200 && res.status < 300) { result.created++; }
     else {

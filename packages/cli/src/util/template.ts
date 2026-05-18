@@ -14,6 +14,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { exec } from "node:child_process";
 import { promisify } from "node:util";
+import type { Scenario } from "./scenarios.js";
 
 const execAsync = promisify(exec);
 
@@ -83,7 +84,7 @@ export function findTemplate(id: string): TemplateDefinition | undefined {
  * and validated by `polpo deploy`: agents live in a single agents.json array
  * with each entry as `{ agent: AgentConfig, teamName: string }`.
  */
-export function writeBlankScaffold(targetDir: string, projectName: string): void {
+export function writeBlankScaffold(targetDir: string, projectName: string, scenario?: Scenario): void {
   fs.mkdirSync(path.join(targetDir, ".polpo"), { recursive: true });
 
   fs.writeFileSync(
@@ -100,14 +101,17 @@ export function writeBlankScaffold(targetDir: string, projectName: string): void
     ) + "\n",
   );
 
+  const agentName = scenario?.agent.name ?? "agent-1";
+  const agentRole = scenario?.agent.role ?? "helpful assistant";
+
   fs.writeFileSync(
     path.join(targetDir, ".polpo", "agents.json"),
     JSON.stringify(
       [
         {
           agent: {
-            name: "agent-1",
-            role: "helpful assistant",
+            name: agentName,
+            role: agentRole,
             model: "xai/grok-4.1-fast-non-reasoning",
             // Full demo-ready palette: every built-in tool category is
             // enabled out of the box so `polpo create` → first prompt can
@@ -155,6 +159,43 @@ export function writeBlankScaffold(targetDir: string, projectName: string): void
       "polpo deploy   # push .polpo/ to cloud\n" +
       "polpo logs     # tail cloud logs\n" +
       "```\n",
+  );
+
+  if (scenario) writeScenarioSeed(targetDir, scenario);
+}
+
+/**
+ * Write the scenario's seed data: project + agent memory, a single draft
+ * task, and a multi-step draft mission. Caller is responsible for picking
+ * `includeTasks: true` when deploying so the task gets pushed alongside
+ * the mission (missions are part of the default deploy scope; tasks are
+ * opt-in).
+ */
+function writeScenarioSeed(targetDir: string, scenario: Scenario): void {
+  const polpoDir = path.join(targetDir, ".polpo");
+
+  // Project-level shared memory.
+  fs.writeFileSync(path.join(polpoDir, "memory.md"), scenario.projectMemory);
+
+  // Per-agent memory under .polpo/memory/<agent>.md
+  const memDir = path.join(polpoDir, "memory");
+  fs.mkdirSync(memDir, { recursive: true });
+  fs.writeFileSync(path.join(memDir, `${scenario.agent.name}.md`), scenario.agentMemory);
+
+  // Single draft task.
+  const tasksDir = path.join(polpoDir, "tasks");
+  fs.mkdirSync(tasksDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(tasksDir, `${scenario.task.filename}.json`),
+    JSON.stringify(scenario.task.payload, null, 2) + "\n",
+  );
+
+  // Multi-step draft mission.
+  const missionsDir = path.join(polpoDir, "missions");
+  fs.mkdirSync(missionsDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(missionsDir, `${scenario.mission.filename}.json`),
+    JSON.stringify(scenario.mission.payload, null, 2) + "\n",
   );
 }
 
