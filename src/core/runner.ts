@@ -22,6 +22,8 @@ import type { RunnerConfig, TaskResult } from "./types.js";
 import { sanitizeTranscriptEntry } from "../server/security.js";
 import { EncryptedVaultStore } from "../vault/encrypted-store.js";
 import type { VaultStore } from "./vault-store.js";
+import type { MemoryStore } from "./memory-store.js";
+import { FileMemoryStore } from "../stores/file-memory-store.js";
 import { NodeFileSystem } from "../adapters/node-filesystem.js";
 import { NodeShell } from "../adapters/node-shell.js";
 
@@ -120,6 +122,7 @@ interface RunnerStores {
   runStore: RunStore;
   logStore?: LogStore;
   vaultStore?: VaultStore;
+  memoryStore?: MemoryStore;
 }
 
 async function createStores(config: RunnerConfig): Promise<RunnerStores> {
@@ -130,7 +133,7 @@ async function createStores(config: RunnerConfig): Promise<RunnerStores> {
     const sql = postgres(config.databaseUrl);
     const db = drizzle(sql);
     const stores = createPgStores(db);
-    return { runStore: stores.runStore, logStore: stores.logStore, vaultStore: stores.vaultStore };
+    return { runStore: stores.runStore, logStore: stores.logStore, vaultStore: stores.vaultStore, memoryStore: stores.memoryStore };
   }
   if (config.storage === "sqlite") {
     const { createSqliteStores } = await import("@polpo-ai/drizzle");
@@ -147,7 +150,7 @@ async function createStores(config: RunnerConfig): Promise<RunnerStores> {
     const { drizzle } = await import("drizzle-orm/better-sqlite3");
     const db = drizzle(sqlite);
     const stores = createSqliteStores(db);
-    return { runStore: stores.runStore, logStore: stores.logStore, vaultStore: stores.vaultStore };
+    return { runStore: stores.runStore, logStore: stores.logStore, vaultStore: stores.vaultStore, memoryStore: stores.memoryStore };
   }
   return { runStore: new FileRunStore(config.polpoDir) };
 }
@@ -155,7 +158,7 @@ async function createStores(config: RunnerConfig): Promise<RunnerStores> {
 async function main(): Promise<void> {
   const isDbMode = process.argv.includes("--run-id");
   const config = isDbMode ? await readConfigFromDb() : readConfigFromFile();
-  const { runStore, logStore, vaultStore: drizzleVaultStore } = await createStores(config);
+  const { runStore, logStore, vaultStore: drizzleVaultStore, memoryStore: drizzleMemoryStore } = await createStores(config);
   const actLog = new RunActivityLog(config.polpoDir, config.runId, config.taskId, config.agent.name);
 
   // When LogStore is available (postgres/sqlite), persist transcript to DB.
@@ -189,12 +192,15 @@ async function main(): Promise<void> {
       try { vaultStore = new EncryptedVaultStore(config.polpoDir); } catch { /* vault unavailable */ }
     }
 
+    const memoryStore: MemoryStore = drizzleMemoryStore ?? new FileMemoryStore(config.polpoDir);
+
     const spawnCtx = {
       polpoDir: config.polpoDir,
       outputDir: config.outputDir,
       emailAllowedDomains: config.emailAllowedDomains,
       reasoning: config.reasoning,
       vaultStore,
+      memoryStore,
       // Runner is a subprocess — creates its own fs/shell instances
       fs: new NodeFileSystem(),
       shell: new NodeShell(),

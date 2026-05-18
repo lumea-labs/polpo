@@ -505,6 +505,8 @@ export function spawnEngine(agentConfig: AgentConfig, task: Task, cwd: string, c
           outputDir,
           fs,
           shell,
+          memoryStore: ctx?.memoryStore,
+          agentName: agentConfig.name,
           // Per-modality models from agent config. When undefined, the
           // tool layer applies its own DEFAULT_*_MODEL.
           imageModel:      agentConfig.image_model,

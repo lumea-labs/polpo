@@ -127,6 +127,7 @@ export function writeBlankScaffold(targetDir: string, projectName: string): void
               "docx_*",
               "excel_*",
               "email_*",
+              "memory_*",
             ],
           },
           teamName: "default",

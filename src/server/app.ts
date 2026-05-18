@@ -111,14 +111,24 @@ export function createApp(orchestrator: Orchestrator, sseBridge: SSEBridge, opts
       return buildSystemPrompt(agentConfig, o.getAgentWorkDir(), o.getPolpoDir());
     },
     resolveAgentTools: async (agentConfig: any) => {
-      const { createSystemTools, createMemoryTools, resolveAgentMcpTools } = await import("@polpo-ai/tools");
+      const { createSystemTools, createMemoryTools, resolveAgentMcpTools, expandToolWildcards, TOOL_CATALOG } = await import("@polpo-ai/tools");
       const { resolveAgentVault } = await import("../vault/index.js");
       const { nanoid } = await import("nanoid");
       const vaultEntries = await o.getVaultStore()?.getAllForAgent(agentConfig.name);
       const vault = resolveAgentVault(vaultEntries);
       const tools: any[] = createSystemTools(o.getAgentWorkDir(), agentConfig.allowedTools, undefined, undefined, vault, o.getFs(), o.getShell());
       const memoryStore = o.getMemoryStore();
-      if (memoryStore) tools.push(...createMemoryTools(memoryStore, agentConfig.name));
+      if (memoryStore) {
+        const memoryTools = createMemoryTools(memoryStore, agentConfig.name);
+        // Respect allowedTools — when omitted, all memory tools load (back-compat).
+        const allowed = agentConfig.allowedTools
+          ? expandToolWildcards(agentConfig.allowedTools, TOOL_CATALOG)
+          : null;
+        const filtered = allowed
+          ? memoryTools.filter((t: any) => allowed.includes(t.name))
+          : memoryTools;
+        tools.push(...filtered);
+      }
       // External MCP-server tools (stdio / SSE / HTTP) declared on the agent.
       // The connections are opened once per request; `dispose` is wired into
       // the `cleanup` callback so transports close as soon as the agent's

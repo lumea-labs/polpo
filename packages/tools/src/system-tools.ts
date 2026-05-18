@@ -17,6 +17,8 @@ import { resolveAllowedPaths, assertPathAllowed } from "./path-sandbox.js";
 import { createOutcomeTools as createOutcomeToolsCore } from "./outcome-tools.js";
 import { createHttpTools as createHttpToolsCore, ALL_HTTP_TOOL_NAMES as CORE_HTTP_TOOL_NAMES } from "./http-tools.js";
 import { createVaultToolsCore } from "./vault-tools.js";
+import { ALL_MEMORY_TOOL_NAMES, createMemoryTools } from "./memory-tools.js";
+import type { MemoryStore } from "@polpo-ai/core";
 import type { ResolvedVault } from "./types.js";
 
 const MAX_READ_LINES = 500;
@@ -449,6 +451,7 @@ export const TOOL_CATALOG: string[] = [
   ...ALL_PDF_TOOL_NAMES,
   ...ALL_DOCX_TOOL_NAMES,
   ...ALL_SEARCH_TOOL_NAMES,
+  ...ALL_MEMORY_TOOL_NAMES,
 ];
 
 export interface CreateAllToolsOptions {
@@ -493,6 +496,11 @@ export interface CreateAllToolsOptions {
    *  shell can swap in a Gateway-routed provider here without
    *  touching the tool layer. */
   searchProvider?: SearchProvider;
+  /** MemoryStore for memory_* tools. When omitted, memory tools are not loaded
+   *  even if requested via allowedTools. */
+  memoryStore?: MemoryStore;
+  /** Agent name — required for memory_* tools to scope memory access. */
+  agentName?: string;
 }
 
 /**
@@ -574,6 +582,16 @@ export async function createAllTools(options: CreateAllToolsOptions): Promise<Ag
     if (provider) {
       tools.push(...createSearchTools(provider, allowedTools));
     }
+  }
+
+  // Memory tools — activated when any memory_* tool is in allowedTools.
+  // Requires a MemoryStore and agentName to scope memory access.
+  if (categoryRequested(ALL_MEMORY_TOOL_NAMES) && options.memoryStore && options.agentName) {
+    const allMemoryTools = createMemoryTools(options.memoryStore, options.agentName);
+    const filtered = allowedTools
+      ? allMemoryTools.filter(t => allowedTools.includes(t.name))
+      : allMemoryTools;
+    tools.push(...filtered);
   }
 
   // HTTP, register_outcome, and vault are already included via createSystemTools() above — no need to add again
