@@ -87,6 +87,20 @@ function listJsonFiles(dir: string): string[] {
 }
 
 /**
+ * Returns a spinner-shaped object whose start/stop/message are no-ops.
+ * Used when `runDeploy` is invoked under a caller that already drives a
+ * spinner (e.g. `polpo create`'s "Deploying agents to cloud...") so we
+ * don't get two animations fighting for the same TTY row.
+ */
+function createNullSpinner() {
+  return {
+    start: (_msg?: string) => undefined,
+    stop:  (_msg?: string) => undefined,
+    message: (_msg?: string) => undefined,
+  } as ReturnType<typeof clack.spinner>;
+}
+
+/**
  * Extract the most useful error string from an API response body, regardless
  * of whether the server returned `{ error: "string" }`, `{ error: { ... } }`,
  * `{ error: [issue, …] }`, or nothing. Falls back to "HTTP <status>" so
@@ -615,7 +629,12 @@ export async function runDeploy(opts: DeployOptions): Promise<DeployReport> {
   const interactive = !opts.silent && !force && isTTY();
 
   const cpClient = createApiClient(creds);
-  const s = clack.spinner();
+  // When called by an outer flow (e.g. `polpo create`) with `silent: true`,
+  // that flow already owns a spinner — opening another here causes terminal
+  // flicker (two spinners writing to the same row at the same time). The
+  // null-spinner is a tiny shim that no-ops start/stop so all the existing
+  // `s.start(...)` / `s.stop(...)` call sites keep working unchanged.
+  const s = opts.silent ? createNullSpinner() : clack.spinner();
 
   // ── Step 1: Resolve project ────────────────────────
   let projectId: string | undefined = polpoConfig?.projectId;
