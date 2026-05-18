@@ -1,5 +1,6 @@
 import type { AgentConfig, AgentActivity, Task, TaskResult, TaskOutcome, ReasoningLevel } from "./types.js";
 import type { VaultStore } from "./vault-store.js";
+import type { MemoryStore } from "./memory-store.js";
 import type { FileSystem } from "@polpo-ai/core/filesystem";
 import type { Shell } from "@polpo-ai/core/shell";
 
@@ -51,6 +52,8 @@ export interface SpawnContext {
   reasoning?: ReasoningLevel;
   /** Vault store — for resolving agent credentials at runtime. */
   vaultStore?: VaultStore;
+  /** Memory store — for agent-scoped memory_* tools. */
+  memoryStore?: MemoryStore;
   /** FileSystem implementation — created by the orchestrator, passed down to tools. */
   fs?: FileSystem;
   /** Shell implementation — created by the orchestrator, passed down to tools. */

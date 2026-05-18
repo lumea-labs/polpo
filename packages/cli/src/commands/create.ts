@@ -34,6 +34,7 @@ import {
   scaffoldRemoteTemplate,
   type TemplateDefinition,
 } from "../util/template.js";
+import { SCENARIOS, findScenario, type Scenario } from "../util/scenarios.js";
 import { friendlyError } from "../util/errors.js";
 import { slugify } from "../util/slugify.js";
 import { installCodingAgentSkills, skillsInstallHint, type SkillsScope } from "../util/skills.js";
@@ -45,6 +46,7 @@ interface CreateOptions {
   name?: string;
   orgId?: string;
   template?: string;
+  scenario?: string;   // "none" or one of SCENARIOS[].id
   apiUrl?: string;
   skills?: string;
   installCli?: string; // "yes" | "no"
@@ -62,6 +64,11 @@ export function registerCreateCommand(program: Command): void {
       `Template: ${TEMPLATES.map((t) => t.id).join(", ")}`,
     )
     .option("--api-url <url>", "Override the API base URL (self-hosted, custom domain, dev)")
+    .option(
+      "--scenario <id>",
+      `Seed demo data: none | ${SCENARIOS.map((s) => s.id).join(" | ")}`,
+      "",
+    )
     .option("--skills <scope>", "Coding-agent skills install: global | project | skip", "")
     .option("--install-cli <yes|no>", "Install the polpo CLI globally after scaffold", "")
     .option("-y, --yes", "Skip confirmations (use defaults)")
@@ -131,6 +138,41 @@ export function registerCreateCommand(program: Command): void {
           process.exit(0);
         }
         template = findTemplate(choice)!;
+      }
+
+      // Step 4b: Scenario (blank template only — remote templates ship their
+      // own .polpo/ scaffold). User can opt into seeded demo data: agent +
+      // project/agent memory + a single draft task + a multi-step draft mission.
+      // Default: none (single empty agent, legacy behavior).
+      let scenario: Scenario | undefined;
+      if (template.kind === "blank") {
+        if (opts.scenario) {
+          if (opts.scenario !== "none") {
+            scenario = findScenario(opts.scenario);
+            if (!scenario) {
+              clack.outro(
+                pc.red(
+                  `Unknown scenario "${opts.scenario}". Valid: none, ${SCENARIOS.map((s) => s.id).join(", ")}`,
+                ),
+              );
+              process.exit(1);
+            }
+          }
+        } else if (!opts.yes) {
+          const choice = await clack.select<string>({
+            message: "Seed demo data? (project memory + draft task + multi-step draft mission)",
+            options: [
+              { value: "none", label: "No — single empty agent", hint: "current default" },
+              ...SCENARIOS.map((s) => ({ value: s.id, label: `Yes — ${s.label}`, hint: s.hint })),
+            ],
+            initialValue: "none",
+          });
+          if (clack.isCancel(choice)) {
+            clack.cancel("Cancelled.");
+            process.exit(0);
+          }
+          if (choice !== "none") scenario = findScenario(choice);
+        }
       }
 
       // Step 5: Directory
@@ -256,7 +298,7 @@ export function registerCreateCommand(program: Command): void {
       if (template.kind === "blank") {
         s.start("Writing .polpo/ scaffold...");
         try {
-          writeBlankScaffold(targetDir, projectName);
+          writeBlankScaffold(targetDir, projectName, scenario);
           s.stop(".polpo/ scaffold written");
         } catch (err) {
           s.stop("Scaffold failed.");
@@ -277,7 +319,7 @@ export function registerCreateCommand(program: Command): void {
           clack.log.warn(`${(err as Error).message}`);
           clack.log.info("You can retry manually: `npx create-polpo-app@latest`. Falling back to blank scaffold.");
           if (!fs.existsSync(targetDir)) fs.mkdirSync(targetDir, { recursive: true });
-          writeBlankScaffold(targetDir, projectName);
+          writeBlankScaffold(targetDir, projectName, scenario);
         }
       }
 
@@ -403,6 +445,10 @@ export function registerCreateCommand(program: Command): void {
           yes: true,
           force: true,
           silent: true,
+          // When a scenario was seeded, we also want the standalone draft task
+          // pushed alongside the mission so the dashboard lights up immediately.
+          // Missions are part of the default scope; tasks are opt-in.
+          includeTasks: !!scenario,
         });
         if (report.nothingToDeploy) {
           s.stop("Nothing to deploy.");

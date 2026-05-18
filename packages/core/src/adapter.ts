@@ -68,4 +68,6 @@ export interface SpawnContext {
   shell?: Shell;
   /** LLM gateway configuration — passed per-request for gateway routing. */
   gatewayConfig?: unknown;
+  /** MemoryStore — passed down so memory_* tools can scope to the agent. */
+  memoryStore?: unknown;
 }
