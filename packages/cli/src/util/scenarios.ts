@@ -1,5 +1,5 @@
 /**
- * Demo scenarios for `polpo create` — optional seeded data so a fresh
+ * Example scenarios for `polpo create` — optional seeded data so a fresh
  * project lands in the dashboard with a working agent, project + agent
  * memory, a single draft task, and a multi-step draft mission ready to
  * run. Picking "none" keeps the legacy behavior (single blank agent).
@@ -9,7 +9,7 @@
  *     (see writeBlankScaffold) so we don't duplicate the list here.
  *   - projectMemory / agentMemory: free-form markdown.
  *   - task: a single, standalone task in draft status (no llm_review —
- *     verification is a file_exists check so the demo is deterministic).
+ *     verification is a file_exists check so the run is deterministic).
  *   - mission: a 4-step graph — brief → research → (spreadsheet || pdf)
  *     where the last two run in parallel because they share dependsOn.
  *

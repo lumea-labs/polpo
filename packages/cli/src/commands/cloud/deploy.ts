@@ -86,6 +86,19 @@ function listJsonFiles(dir: string): string[] {
   return fs.readdirSync(dir).filter(f => f.endsWith(".json")).map(f => path.join(dir, f));
 }
 
+/**
+ * Extract the most useful error string from an API response body, regardless
+ * of whether the server returned `{ error: "string" }`, `{ error: { ... } }`,
+ * `{ error: [issue, …] }`, or nothing. Falls back to "HTTP <status>" so
+ * downstream consumers (friendlyError) always get a non-empty input.
+ */
+function readErrorBody(body: unknown, status: number): unknown {
+  const err = (body as { error?: unknown } | null)?.error;
+  if (typeof err === "string" && err.length > 0) return err;
+  if (err && typeof err === "object") return err;
+  return `HTTP ${status}`;
+}
+
 // ── Core deployers ──────────────────────────────────────
 
 async function deployTeams(client: ApiClient, polpoDir: string, opts: ConflictOptions): Promise<DeployResult> {
@@ -127,7 +140,7 @@ async function deployTeams(client: ApiClient, polpoDir: string, opts: ConflictOp
       const res = await client.patch(`/v1/agents/team`, { name: team.name, description: team.description });
       if (res.status >= 200 && res.status < 300) { result.updated++; }
       else {
-        const msg = (res.data as any)?.error ?? `HTTP ${res.status}`;
+        const msg = readErrorBody(res.data, res.status);
         result.errors.push(`team "${team.name}": ${friendlyError(msg)}`);
         result.failed++;
       }
@@ -135,7 +148,7 @@ async function deployTeams(client: ApiClient, polpoDir: string, opts: ConflictOp
       const res = await client.post("/v1/agents/teams", local);
       if (res.status >= 200 && res.status < 300) { result.created++; }
       else {
-        const msg = (res.data as any)?.error ?? `HTTP ${res.status}`;
+        const msg = readErrorBody(res.data, res.status);
         result.errors.push(`team "${team.name}": ${friendlyError(msg)}`);
         result.failed++;
       }
@@ -193,7 +206,7 @@ async function deployAgents(client: ApiClient, polpoDir: string, opts: ConflictO
       const res = await client.patch(`/v1/agents/${encodeURIComponent(agent.name)}`, { ...agent, team: teamName });
       if (res.status >= 200 && res.status < 300) { result.updated++; }
       else {
-        const msg = (res.data as any)?.error ?? `HTTP ${res.status}`;
+        const msg = readErrorBody(res.data, res.status);
         result.errors.push(`agent "${agent.name}": update failed — ${friendlyError(msg)}`);
         result.failed++;
       }
@@ -201,7 +214,7 @@ async function deployAgents(client: ApiClient, polpoDir: string, opts: ConflictO
       const res = await client.post("/v1/agents", { ...agent, team: teamName });
       if (res.status >= 200 && res.status < 300) { result.created++; }
       else {
-        const msg = (res.data as any)?.error ?? `HTTP ${res.status}`;
+        const msg = readErrorBody(res.data, res.status);
         result.errors.push(`agent "${agent.name}": create failed — ${friendlyError(msg)}`);
         result.failed++;
       }
@@ -218,14 +231,15 @@ async function deployMemory(client: ApiClient, polpoDir: string, opts: ConflictO
     let remoteShared: string | null = null;
     try {
       const r = await client.get<any>("/v1/memory");
-      if (r.status === 200) remoteShared = r.data?.content ?? null;
+      // Server returns { ok, data: { exists, content } } — unwrap both layers.
+      if (r.status === 200) remoteShared = r.data?.data?.content ?? r.data?.content ?? null;
     } catch {}
 
     const action = await resolveDeployConflict(shared, remoteShared, "shared memory", opts);
     if (action === "write") {
       const res = await client.put("/v1/memory", { content: shared });
       if (res.status >= 200 && res.status < 300) { result.updated++; }
-      else { result.errors.push(`memory: ${friendlyError((res.data as any)?.error ?? `HTTP ${res.status}`)}`); result.failed++; }
+      else { result.errors.push(`memory: ${friendlyError(readErrorBody(res.data, res.status))}`); result.failed++; }
     } else {
       result.skipped++;
     }
@@ -240,14 +254,14 @@ async function deployMemory(client: ApiClient, polpoDir: string, opts: ConflictO
         let remoteAgent: string | null = null;
         try {
           const r = await client.get<any>(`/v1/memory/agent/${agentName}`);
-          if (r.status === 200) remoteAgent = r.data?.content ?? null;
+          if (r.status === 200) remoteAgent = r.data?.data?.content ?? r.data?.content ?? null;
         } catch {}
 
         const action = await resolveDeployConflict(content, remoteAgent, `memory "${agentName}"`, opts);
         if (action === "write") {
           const res = await client.put(`/v1/memory/agent/${agentName}`, { content });
           if (res.status >= 200 && res.status < 300) { result.updated++; }
-          else { result.errors.push(`memory "${agentName}": ${friendlyError((res.data as any)?.error ?? `HTTP ${res.status}`)}`); result.failed++; }
+          else { result.errors.push(`memory "${agentName}": ${friendlyError(readErrorBody(res.data, res.status))}`); result.failed++; }
         } else {
           result.skipped++;
         }
@@ -274,7 +288,7 @@ async function deployMissions(client: ApiClient, polpoDir: string): Promise<Depl
     });
     if (res.status >= 200 && res.status < 300) { result.created++; }
     else {
-      const msg = (res.data as any)?.error ?? `HTTP ${res.status}`;
+      const msg = readErrorBody(res.data, res.status);
       result.errors.push(`mission "${mission.name ?? path.basename(file)}": ${friendlyError(msg)}`);
       result.failed++;
     }
@@ -299,7 +313,7 @@ async function deployPlaybooks(client: ApiClient, polpoDir: string): Promise<Dep
     });
     if (res.status >= 200 && res.status < 300) { result.created++; }
     else {
-      const msg = (res.data as any)?.error ?? `HTTP ${res.status}`;
+      const msg = readErrorBody(res.data, res.status);
       result.errors.push(`playbook "${entry.name}": ${friendlyError(msg)}`);
       result.failed++;
     }
@@ -363,15 +377,27 @@ async function deploySkills(client: ApiClient, polpoDir: string, opts: ConflictO
       continue;
     }
 
+    // The server doesn't expose `PUT /v1/skills/{name}` for in-place updates —
+    // only POST /v1/skills/create + DELETE /v1/skills/{name} exist. So
+    // "update existing skill" is implemented as delete-then-recreate. The
+    // DELETE failure is logged but we still try the create: if it succeeds
+    // the user ends up with a fresh copy, which is the intent.
     if (remote) {
-      const updateRes = await client.put(`/v1/skills/${encodeURIComponent(name)}`, {
-        description, content,
+      const delRes = await client.delete(`/v1/skills/${encodeURIComponent(name)}`);
+      if (delRes.status >= 400 && delRes.status !== 404) {
+        const msg = readErrorBody(delRes.data, delRes.status);
+        result.errors.push(`skill "${name}": delete-before-update failed — ${friendlyError(msg)}`);
+        result.failed++;
+        continue;
+      }
+      const res = await client.post("/v1/skills/create", {
+        name, description, content,
         ...(allowedTools?.length ? { allowedTools } : {}),
       });
-      if (updateRes.status >= 200 && updateRes.status < 300) { result.updated++; }
+      if (res.status >= 200 && res.status < 300) { result.updated++; }
       else {
-        const msg = (updateRes.data as any)?.error ?? `HTTP ${updateRes.status}`;
-        result.errors.push(`skill "${name}": ${friendlyError(msg)}`);
+        const msg = readErrorBody(res.data, res.status);
+        result.errors.push(`skill "${name}": recreate failed — ${friendlyError(msg)}`);
         result.failed++;
       }
     } else {
@@ -381,7 +407,7 @@ async function deploySkills(client: ApiClient, polpoDir: string, opts: ConflictO
       });
       if (res.status >= 200 && res.status < 300) { result.created++; }
       else {
-        const msg = (res.data as any)?.error ?? `HTTP ${res.status}`;
+        const msg = readErrorBody(res.data, res.status);
         result.errors.push(`skill "${name}": ${friendlyError(msg)}`);
         result.failed++;
       }
@@ -423,7 +449,7 @@ async function deployVault(client: ApiClient, polpoDir: string): Promise<DeployR
       });
       if (res.status >= 200 && res.status < 300) { result.created++; }
       else {
-        const msg = (res.data as any)?.error ?? `HTTP ${res.status}`;
+        const msg = readErrorBody(res.data, res.status);
         result.errors.push(`vault "${agent}/${service}": ${friendlyError(msg)}`);
         result.failed++;
       }
@@ -481,7 +507,7 @@ async function deploySchedules(client: ApiClient, polpoDir: string): Promise<Dep
     const res = await client.post("/v1/schedules", schedule);
     if (res.status >= 200 && res.status < 300) { result.created++; }
     else {
-      const msg = (res.data as any)?.error ?? `HTTP ${res.status}`;
+      const msg = readErrorBody(res.data, res.status);
       result.errors.push(`schedule "${schedule.name ?? path.basename(file)}": ${friendlyError(msg)}`);
       result.failed++;
     }
@@ -506,7 +532,7 @@ async function deployTasks(client: ApiClient, polpoDir: string): Promise<DeployR
     });
     if (res.status >= 200 && res.status < 300) { result.created++; }
     else {
-      const msg = (res.data as any)?.error ?? `HTTP ${res.status}`;
+      const msg = readErrorBody(res.data, res.status);
       result.errors.push(`task "${task.title ?? path.basename(file)}": ${friendlyError(msg)}`);
       result.failed++;
     }
@@ -544,7 +570,7 @@ async function deploySessions(client: ApiClient, polpoDir: string): Promise<Depl
     const res = await client.post("/v1/chat/sessions/import", { title, agent, messages });
     if (res.status >= 200 && res.status < 300) { result.created++; }
     else {
-      const msg = (res.data as any)?.error ?? `HTTP ${res.status}`;
+      const msg = readErrorBody(res.data, res.status);
       result.errors.push(`session "${title ?? file}": ${friendlyError(msg)}`);
       result.failed++;
     }
@@ -778,27 +804,47 @@ export async function runDeploy(opts: DeployOptions): Promise<DeployReport> {
 
       // ── Step 4: Deploy each resource ────────────────────
       const total = emptyResult();
-      const conflictOpts: ConflictOptions = { force, interactive };
+
+      // Track the current spinner label so the conflict-resolver can pause
+      // the spinner before a `clack.confirm` (otherwise the spinner keeps
+      // animating on top of the prompt → flicker + invisible question)
+      // and resume it after the user answers.
+      let activeSpinnerLabel: string | null = null;
+      const conflictOpts: ConflictOptions = {
+        force,
+        interactive,
+        beforePrompt: () => { if (activeSpinnerLabel) s.stop(""); },
+        afterPrompt:  () => { if (activeSpinnerLabel) s.start(activeSpinnerLabel); },
+      };
+
+      const startSpinner = (label: string) => {
+        activeSpinnerLabel = label;
+        s.start(label);
+      };
+      const stopSpinner = (final: string) => {
+        activeSpinnerLabel = null;
+        s.stop(final);
+      };
 
       if (hasTeams) {
-        s.start("Deploying teams...");
+        startSpinner("Deploying teams...");
         const r = await deployTeams(client, polpoDir, conflictOpts);
         mergeResult(total, r);
-        s.stop(`Teams: ${r.created} created, ${r.updated} updated${r.skipped ? `, ${r.skipped} skipped` : ""}${r.failed ? `, ${r.failed} failed` : ""}`);
+        stopSpinner(`Teams: ${r.created} created, ${r.updated} updated${r.skipped ? `, ${r.skipped} skipped` : ""}${r.failed ? `, ${r.failed} failed` : ""}`);
       }
 
       if (hasAgents) {
-        s.start("Deploying agents...");
+        startSpinner("Deploying agents...");
         const r = await deployAgents(client, polpoDir, conflictOpts);
         mergeResult(total, r);
-        s.stop(`Agents: ${r.created} created, ${r.updated} updated${r.skipped ? `, ${r.skipped} skipped` : ""}${r.failed ? `, ${r.failed} failed` : ""}`);
+        stopSpinner(`Agents: ${r.created} created, ${r.updated} updated${r.skipped ? `, ${r.skipped} skipped` : ""}${r.failed ? `, ${r.failed} failed` : ""}`);
       }
 
       if (hasMemory) {
-        s.start("Deploying memory...");
+        startSpinner("Deploying memory...");
         const r = await deployMemory(client, polpoDir, conflictOpts);
         mergeResult(total, r);
-        s.stop(`Memory: ${r.updated} updated${r.skipped ? `, ${r.skipped} skipped` : ""}${r.failed ? `, ${r.failed} failed` : ""}`);
+        stopSpinner(`Memory: ${r.updated} updated${r.skipped ? `, ${r.skipped} skipped` : ""}${r.failed ? `, ${r.failed} failed` : ""}`);
       }
 
       if (hasMissions) {
@@ -816,10 +862,10 @@ export async function runDeploy(opts: DeployOptions): Promise<DeployReport> {
       }
 
       if (hasSkills) {
-        s.start("Deploying skills...");
+        startSpinner("Deploying skills...");
         const r = await deploySkills(client, polpoDir, conflictOpts);
         mergeResult(total, r);
-        s.stop(`Skills: ${r.created} created, ${r.updated} updated${r.skipped ? `, ${r.skipped} skipped` : ""}${r.failed ? `, ${r.failed} failed` : ""}`);
+        stopSpinner(`Skills: ${r.created} created, ${r.updated} updated${r.skipped ? `, ${r.skipped} skipped` : ""}${r.failed ? `, ${r.failed} failed` : ""}`);
       }
 
       if (hasSchedules) {

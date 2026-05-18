@@ -66,7 +66,7 @@ export function registerCreateCommand(program: Command): void {
     .option("--api-url <url>", "Override the API base URL (self-hosted, custom domain, dev)")
     .option(
       "--scenario <id>",
-      `Seed demo data: none | ${SCENARIOS.map((s) => s.id).join(" | ")}`,
+      `Seed example data: none | ${SCENARIOS.map((s) => s.id).join(" | ")}`,
       "",
     )
     .option("--skills <scope>", "Coding-agent skills install: global | project | skip", "")
@@ -141,7 +141,7 @@ export function registerCreateCommand(program: Command): void {
       }
 
       // Step 4b: Scenario (blank template only — remote templates ship their
-      // own .polpo/ scaffold). User can opt into seeded demo data: agent +
+      // own .polpo/ scaffold). User can opt into seeded example data: agent +
       // project/agent memory + a single draft task + a multi-step draft mission.
       // Default: none (single empty agent, legacy behavior).
       let scenario: Scenario | undefined;
@@ -160,7 +160,7 @@ export function registerCreateCommand(program: Command): void {
           }
         } else if (!opts.yes) {
           const choice = await clack.select<string>({
-            message: "Seed demo data? (project memory + draft task + multi-step draft mission)",
+            message: "Seed example data? (project memory + draft task + multi-step draft mission)",
             options: [
               { value: "none", label: "No — single empty agent", hint: "current default" },
               ...SCENARIOS.map((s) => ({ value: s.id, label: `Yes — ${s.label}`, hint: s.hint })),
@@ -512,7 +512,8 @@ export function registerCreateCommand(program: Command): void {
         lines.push(`    ${pc.bold(`curl $POLPO_URL/v1/chat/completions \\`)}`);
         lines.push(`      ${pc.bold(`-H "Authorization: Bearer $POLPO_API_KEY" \\`)}`);
         lines.push(`      ${pc.bold(`-H "Content-Type: application/json" \\`)}`);
-        lines.push(`      ${pc.bold(`-d '{"agent":"agent-1","stream":true,"messages":[{"role":"user","content":"Hello"}]}'`)}`);
+        const exampleAgent = scenario?.agent.name ?? "agent-1";
+        lines.push(`      ${pc.bold(`-d '{"agent":"${exampleAgent}","stream":true,"messages":[{"role":"user","content":"Hello"}]}'`)}`);
         lines.push("");
       }
 

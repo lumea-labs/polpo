@@ -3,8 +3,14 @@
  *
  * Order matters: more specific patterns first. Falls through to the original
  * message when nothing matches, so we never lose information.
+ *
+ * Accepts `unknown` because callers pull `error` straight off API response
+ * bodies and that field can be a string, a Zod issue array, an object, or
+ * undefined. We normalize defensively here so a malformed 4xx body can't
+ * crash the deploy with `msg.includes is not a function`.
  */
-export function friendlyError(msg: string): string {
+export function friendlyError(input: unknown): string {
+  const msg = normalizeToString(input);
   if (msg.includes("Multiple projects found")) return "Multiple projects found. Run: polpo projects set";
   if (/HTTP 401|Unauthorized/i.test(msg)) return "Session expired or invalid. Run: polpo login";
   if (/HTTP 403|Forbidden/i.test(msg)) return "Access denied. Check your credentials or project permissions.";
@@ -20,6 +26,22 @@ export function friendlyError(msg: string): string {
     return "Could not reach the Polpo API. Check your network or run: polpo whoami";
   }
   return msg;
+}
+
+/**
+ * Coerce any value to a short, human-readable string suitable for an error
+ * message. Strings pass through. Objects/arrays JSON.stringify, with a safe
+ * fallback when stringify throws (e.g. circular refs).
+ */
+function normalizeToString(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (value == null) return "";
+  if (value instanceof Error) return value.message;
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
 }
 
 /**
