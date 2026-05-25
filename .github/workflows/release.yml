@@ -130,11 +130,25 @@ jobs:
       - uses: docker/build-push-action@v6
         with:
           context: .
+          file: ./docker/runner/Dockerfile
           push: true
           platforms: linux/amd64,linux/arm64
+          # POLPO_VERSION drives `npm install polpo-ai@${POLPO_VERSION}` inside
+          # the Dockerfile. Without this build-arg the Dockerfile fell back to
+          # its hardcoded `ARG POLPO_VERSION=0.7.0` and every image we ever
+          # pushed (regardless of tag) contained polpo-ai@0.7.0. That's why the
+          # Daytona sandbox runtime stayed pinned to 0.7.0 even after months of
+          # npm releases.
+          build-args: |
+            POLPO_VERSION=${{ steps.version.outputs.VERSION }}
+          # Image name aligned with what the cloud snapshot script pulls
+          # (`ghcr.io/lumea-labs/polpo-runner:<v>`). Before this change the
+          # workflow published as `ghcr.io/lumea-labs/polpo:<v>` — different
+          # package — so the cloud either 404'd or pulled some manually-
+          # published copy that never got refreshed.
           tags: |
-            ghcr.io/${{ github.repository }}:latest
-            ghcr.io/${{ github.repository }}:${{ steps.version.outputs.VERSION }}
+            ghcr.io/${{ github.repository_owner }}/polpo-runner:latest
+            ghcr.io/${{ github.repository_owner }}/polpo-runner:${{ steps.version.outputs.VERSION }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
