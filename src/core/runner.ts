@@ -177,7 +177,19 @@ async function main(): Promise<void> {
     status: "running",
     startedAt: now,
     updatedAt: now,
-    activity: { filesCreated: [], filesEdited: [], toolCalls: 0, totalTokens: 0, lastUpdate: now },
+    // sessionId starts at the LogStore session we just opened, so the
+    // run record is linked to its transcript from the very first poll.
+    // Without this, downstream readers (the cloud task-activity endpoint,
+    // a future dashboard, anything that joins runs to log sessions) have
+    // to guess by time-proximity — fragile on cold sandboxes where the
+    // log session is created hundreds of ms before the first stream
+    // chunk lands. In file mode this is mostly cosmetic because
+    // RunActivityLog writes a parallel JSONL side-channel; in DB mode
+    // (cloud) it's the only link that ever gets persisted.
+    activity: {
+      filesCreated: [], filesEdited: [], toolCalls: 0, totalTokens: 0, lastUpdate: now,
+      ...(logSessionId ? { sessionId: logSessionId } : {}),
+    },
     configPath: isDbMode ? `db://${config.runId}` : join(process.argv[process.argv.indexOf("--config") + 1]),
   };
   // In DB mode, run record already exists (created by spawner) — update it with PID
@@ -206,6 +218,14 @@ async function main(): Promise<void> {
       shell: new NodeShell(),
     };
     handle = spawnEngine(config.agent, config.task, config.cwd, spawnCtx);
+    // Propagate the LogStore sessionId onto the agent's activity blob so
+    // the poll loop's updateActivity() persists it on every tick. Without
+    // this the run record has activity.sessionId = undefined forever, and
+    // downstream readers (cloud task-activity endpoint, dashboards) can't
+    // resolve the transcript except via fragile time-proximity fallback.
+    if (logSessionId) {
+      handle.activity.sessionId = logSessionId;
+    }
     // Wire transcript persistence — every agent message gets written to the run log
     handle.onTranscript = (entry) => {
       actLog.logTranscript(entry);
