@@ -49,6 +49,7 @@ import type {
   NavigateToPayload,
   OpenTabPayload,
   RunActivityEntry,
+  TaskActivityPayload,
   SkillInfo,
   LoadedSkill,
   SkillWithAssignment,
@@ -776,6 +777,18 @@ export class PolpoClient {
   /** Get the full activity history for a task from its run JSONL log. */
   getTaskActivity(taskId: string): Promise<RunActivityEntry[]> {
     return this.get<RunActivityEntry[]>(`/agents/processes/${taskId}/activity`);
+  }
+
+  /**
+   * Composite task activity — task row + current run + resolved log
+   * session + entries in a single call. Replaces the four-round-trip
+   * fan-out (getTask + getRunByTaskId + listSessions + getSessionEntries)
+   * that dashboards used to do, and centralizes the session-resolution
+   * heuristic (explicit sessionId → time-window match against log
+   * sessions). Backed by GET /tasks/:id/activity (server 0.7.13+).
+   */
+  getTaskActivityFull(taskId: string): Promise<TaskActivityPayload> {
+    return this.get<TaskActivityPayload>(`/tasks/${taskId}/activity`);
   }
 
   // ── Chat Completions (OpenAI-compatible) ─────────────────

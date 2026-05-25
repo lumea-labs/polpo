@@ -164,6 +164,31 @@ describe("Tasks", () => {
     const removed = await client.deleteTask(task.id);
     expect(removed.removed).toBe(true);
   });
+
+  // GET /tasks/:id/activity composite endpoint (server 0.7.13+).
+  // Replaces the cloud's custom override that used to live in
+  // packages/server/src/data-plane/handler.ts.
+  it("returns composite activity payload via getTaskActivityFull", async () => {
+    const task = await client.createTask({
+      title: "SDK activity task",
+      description: "For activity probe",
+      assignTo: "agent-1",
+      draft: true,
+    });
+
+    const activity = await client.getTaskActivityFull(task.id);
+    // Shape assertions — exact run/session state depends on store
+    // residue from prior tests (test fixtures don't isolate runs), so
+    // we only verify the composite endpoint returns the documented
+    // fields with reasonable types.
+    expect(activity.task?.id).toBe(task.id);
+    expect("run" in activity).toBe(true);
+    expect("sessionId" in activity).toBe(true);
+    expect(["explicit", "matched-log-session", "missing"]).toContain(activity.sessionResolution);
+    expect(Array.isArray(activity.entries)).toBe(true);
+
+    await client.deleteTask(task.id);
+  });
 });
 
 // ── Missions ──────────────────────────────────────────────────────────

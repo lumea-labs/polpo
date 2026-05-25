@@ -1113,6 +1113,29 @@ export interface RunActivityEntry {
   pid?: number;
 }
 
+/**
+ * Composite task activity response — returned by GET /tasks/:id/activity.
+ * Bundles the task row, its current run, the resolved log session, and
+ * the session entries in a single call so dashboards don't have to fan
+ * out across getTask + getRun + listSessions + getSessionEntries.
+ */
+export interface TaskActivityPayload {
+  /** The task row (null if the task doesn't exist). */
+  task: Task | null;
+  /** The current run for the task (null if never executed). */
+  run: AgentProcess | null;
+  /** Resolved log session ID, or null if no session could be matched. */
+  sessionId: string | null;
+  /** How `sessionId` was resolved:
+   *  - "explicit": from run.sessionId / task.sessionId set by the runner
+   *  - "matched-log-session": time-window match against log_sessions
+   *  - "missing": no session found
+   */
+  sessionResolution: "explicit" | "matched-log-session" | "missing";
+  /** Log entries for the resolved session (empty if sessionId is null). */
+  entries: LogEntry[];
+}
+
 // === Skill types ===
 
 /** A discovered skill from the project skill pool. */

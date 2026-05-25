@@ -196,6 +196,51 @@ const forceFailTaskRoute = createRoute({
   },
 });
 
+/**
+ * Task activity — composite endpoint that returns the task row, its
+ * current run, and the resolved log session entries in one call. Used
+ * by the dashboard's activity tab. Replaces three round-trips
+ * (getTask + getRunByTaskId + listSessions + getSessionEntries) with
+ * one, and centralizes the session-resolution heuristic.
+ *
+ * Session resolution order:
+ *   1. `run.sessionId` (explicit, set by the runner on first stream)
+ *   2. `run.activity.sessionId` (legacy fallback)
+ *   3. `task.sessionId` (set by mission executor at create time)
+ *   4. Time-window match against log_sessions started within 5 minutes
+ *      of the task/run start time. Wide window accounts for cold
+ *      sandboxes + LLM init that can delay the first stream chunk
+ *      well past the run's startedAt.
+ */
+const getTaskActivityRoute = createRoute({
+  method: "get",
+  path: "/{taskId}/activity",
+  tags: ["Tasks"],
+  summary: "Get task activity (task + run + log entries)",
+  request: {
+    params: z.object({ taskId: z.string() }),
+  },
+  responses: {
+    200: {
+      content: {
+        "application/json": {
+          schema: z.object({
+            ok: z.boolean(),
+            data: z.object({
+              task: z.any().nullable(),
+              run: z.any().nullable(),
+              sessionId: z.string().nullable(),
+              sessionResolution: z.enum(["explicit", "matched-log-session", "missing"]),
+              entries: z.array(z.any()),
+            }),
+          }),
+        },
+      },
+      description: "Task activity bundle",
+    },
+  },
+});
+
 const bulkDeleteTasksRoute = createRoute({
   method: "delete",
   path: "/",
@@ -227,6 +272,11 @@ const bulkDeleteTasksRoute = createRoute({
  */
 export function taskRoutes(getDeps: () => {
   taskStore: any;
+  /** Optional — required for GET /:id/activity. Falls back to a degraded
+   *  response (task only, no run/entries) when absent. */
+  runStore?: any;
+  /** Optional — required for log-session entries on GET /:id/activity. */
+  logStore?: any;
   addTask: (opts: any) => Promise<any>;
   deleteTask: (taskId: string) => Promise<any>;
   retryTask: (taskId: string) => Promise<any>;
@@ -377,6 +427,83 @@ export function taskRoutes(getDeps: () => {
     }
     await deps.taskStore.transition(taskId, "pending");
     return c.json({ ok: true, data: { queued: true } }, 200);
+  });
+
+  // GET /tasks/:taskId/activity — composite task + run + log entries
+  app.openapi(getTaskActivityRoute, async (c) => {
+    const deps = getDeps();
+    const { taskId } = c.req.valid("param");
+    const task = await deps.taskStore.getTask(taskId);
+
+    // Degraded response when run/log stores aren't wired (e.g. a minimal
+    // file-only setup). Returns task-only with empty entries.
+    if (!deps.runStore || !deps.logStore) {
+      return c.json({
+        ok: true,
+        data: {
+          task: task ?? null,
+          run: null,
+          sessionId: null,
+          sessionResolution: "missing" as const,
+          entries: [],
+        },
+      });
+    }
+
+    const run = await deps.runStore.getRunByTaskId(taskId);
+    const explicitSessionId = run?.sessionId
+      ?? run?.activity?.sessionId
+      ?? (task as { sessionId?: string } | undefined)?.sessionId;
+
+    let sessionId: string | undefined = explicitSessionId;
+    let sessionResolution: "explicit" | "matched-log-session" | "missing" = sessionId ? "explicit" : "missing";
+
+    if (!sessionId && (run || task)) {
+      try {
+        const sessions = await deps.logStore.listSessions();
+        const startedAt = new Date(run?.startedAt ?? task?.createdAt ?? "").getTime();
+        // 5-minute window. Cold sandboxes + LLM init routinely take 5-30s
+        // before the first stream chunk (and thus before logStore creates a
+        // session row). A narrower window would miss draft → running
+        // transitions; a wider one risks matching the wrong session.
+        const MATCH_WINDOW_MS = 5 * 60_000;
+        const candidates = sessions
+          .filter((session: { entries: number }) => session.entries > 0)
+          .map((session: { sessionId: string; startedAt: string }) => ({
+            session,
+            delta: Math.abs(new Date(session.startedAt).getTime() - startedAt),
+          }))
+          .filter((candidate: { delta: number }) => Number.isFinite(candidate.delta) && candidate.delta <= MATCH_WINDOW_MS)
+          .sort((a: { delta: number }, b: { delta: number }) => a.delta - b.delta);
+
+        if (candidates.length > 0) {
+          sessionId = candidates[0].session.sessionId;
+          sessionResolution = "matched-log-session";
+        }
+      } catch {
+        // Best-effort match — fall through with sessionResolution: "missing"
+      }
+    }
+
+    let entries: unknown[] = [];
+    if (sessionId) {
+      try {
+        entries = await deps.logStore.getSessionEntries(sessionId);
+      } catch {
+        entries = [];
+      }
+    }
+
+    return c.json({
+      ok: true,
+      data: {
+        task: task ?? null,
+        run: run ?? null,
+        sessionId: sessionId ?? null,
+        sessionResolution,
+        entries,
+      },
+    });
   });
 
   // POST /tasks/:taskId/force-fail — force a task to failed state

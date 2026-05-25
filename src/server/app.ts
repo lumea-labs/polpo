@@ -176,6 +176,8 @@ export function createApp(orchestrator: Orchestrator, sseBridge: SSEBridge, opts
 
   authed.route("/tasks", taskRoutes(() => ({
     taskStore: o.getStore(),
+    runStore: o.getRunStore(),
+    logStore: o.getLogStore(),
     addTask: (opts: any) => o.addTask(opts),
     deleteTask: (id: string) => o.deleteTask(id),
     retryTask: (id: string) => o.retryTask(id),

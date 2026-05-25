@@ -88,6 +88,7 @@ export type {
   LogSession,
   LogEntry,
   RunActivityEntry,
+  TaskActivityPayload,
   ChatSession,
   ChatMessage,
   MessageSegment,
