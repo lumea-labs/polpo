@@ -193,6 +193,40 @@ describe("Missions", () => {
     const deleted = await client.deleteMission(mission.id);
     expect(deleted.deleted).toBe(true);
   });
+
+  // Regression: schedule / deadline / endDate were silently stripped by
+  // Zod validation + the route handler's explicit field list. Cron
+  // missions deployed via CLI would land as `status: recurring` but
+  // `schedule: null`, so the Scheduler never registered them and they
+  // never fired.
+  it("persists schedule, deadline, endDate on create and update", async () => {
+    const cron = "*/5 * * * *";
+    const deadline = "2099-01-01T00:00:00.000Z";
+    const endDate = "2099-06-01T00:00:00.000Z";
+    const mission = await client.createMission({
+      name: `sdk-int-sched-${Date.now()}`,
+      prompt: "schedule regression",
+      data: JSON.stringify({ tasks: [{ title: "noop", description: "noop", assignTo: "agent-1" }] }),
+      status: "recurring",
+      schedule: cron,
+      deadline,
+      endDate,
+    });
+    const fetched = await client.getMission(mission.id);
+    expect(fetched.schedule).toBe(cron);
+    expect(fetched.deadline).toBe(deadline);
+    expect(fetched.endDate).toBe(endDate);
+
+    // Update path: change cron, then clear it
+    const newCron = "0 0 * * *";
+    const updated = await client.updateMission(mission.id, { schedule: newCron });
+    expect(updated.schedule).toBe(newCron);
+
+    const cleared = await client.updateMission(mission.id, { schedule: null });
+    expect(cleared.schedule).toBeUndefined();
+
+    await client.deleteMission(mission.id);
+  });
 });
 
 // ── Memory ────────────────────────────────────────────────────────────

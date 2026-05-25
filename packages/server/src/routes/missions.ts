@@ -418,6 +418,9 @@ export function missionRoutes(getDeps: () => {
       prompt: body.prompt,
       name: body.name,
       status: body.status,
+      schedule: body.schedule,
+      deadline: body.deadline,
+      endDate: body.endDate,
       notifications: body.notifications,
       user: body.user,
     });
@@ -429,11 +432,16 @@ export function missionRoutes(getDeps: () => {
   app.openapi(updateMissionRoute, async (c) => {
     const deps = getDeps();
     const { missionId } = c.req.valid("param");
-    const { endDate, ...rest } = c.req.valid("json");
-    // Convert null endDate (clear) to undefined for the Mission interface
+    const { endDate, schedule, deadline, ...rest } = c.req.valid("json");
+    // Nullable fields ("set to null to clear") map to `undefined` on the
+    // Mission interface so the store sees an actual unset rather than a
+    // stored `null`. `undefined` in the JSON body parses as "absent" and
+    // is skipped entirely.
     const updates: Partial<Omit<import("@polpo-ai/core/types").Mission, "id">> = {
       ...rest,
       ...(endDate !== undefined ? { endDate: endDate ?? undefined } : {}),
+      ...(schedule !== undefined ? { schedule: schedule ?? undefined } : {}),
+      ...(deadline !== undefined ? { deadline: deadline ?? undefined } : {}),
     };
     const mission = await deps.updateMission(missionId, updates);
     return c.json({ ok: true, data: mission });

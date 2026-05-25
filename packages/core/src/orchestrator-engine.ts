@@ -77,7 +77,17 @@ export interface AssessmentOrchestratorPort {
  */
 export interface MissionExecutorPort {
   readonly ready: Promise<void>;
-  saveMission(opts: { data: string; prompt?: string; name?: string; status?: MissionStatus; notifications?: ScopedNotificationRules }): Promise<Mission>;
+  saveMission(opts: {
+    data: string;
+    prompt?: string;
+    name?: string;
+    status?: MissionStatus;
+    schedule?: string;
+    deadline?: string;
+    endDate?: string;
+    notifications?: ScopedNotificationRules;
+    user?: string;
+  }): Promise<Mission>;
   getMission(missionId: string): Promise<Mission | undefined>;
   getMissionByName(name: string): Promise<Mission | undefined>;
   getAllMissions(): Promise<Mission[]>;
@@ -552,7 +562,17 @@ export class OrchestratorEngine {
 
   // ── Mission Management (delegates to MissionExecutor) ───────────────
 
-  async saveMission(opts: { data: string; prompt?: string; name?: string; status?: MissionStatus; notifications?: ScopedNotificationRules }): Promise<Mission> { return this.missionExec.saveMission(opts); }
+  async saveMission(opts: {
+    data: string;
+    prompt?: string;
+    name?: string;
+    status?: MissionStatus;
+    schedule?: string;
+    deadline?: string;
+    endDate?: string;
+    notifications?: ScopedNotificationRules;
+    user?: string;
+  }): Promise<Mission> { return this.missionExec.saveMission(opts); }
   async getMission(missionId: string): Promise<Mission | undefined> { return this.missionExec.getMission(missionId); }
   async getMissionByName(name: string): Promise<Mission | undefined> { return this.missionExec.getMissionByName(name); }
   async getAllMissions(): Promise<Mission[]> { return this.missionExec.getAllMissions(); }

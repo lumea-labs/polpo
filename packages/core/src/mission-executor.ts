@@ -355,7 +355,21 @@ export class MissionExecutor {
     return this.resolveMissionForGroup(groupTasks, group);
   }
 
-  async saveMission(opts: { data: string; prompt?: string; name?: string; status?: MissionStatus; notifications?: ScopedNotificationRules }): Promise<Mission> {
+  async saveMission(opts: {
+    data: string;
+    prompt?: string;
+    name?: string;
+    status?: MissionStatus;
+    /** Cron expression or ISO timestamp for scheduled execution. */
+    schedule?: string;
+    /** Absolute deadline for the entire mission (ISO timestamp). */
+    deadline?: string;
+    /** End date for recurring schedules (ISO timestamp). */
+    endDate?: string;
+    notifications?: ScopedNotificationRules;
+    /** Opaque end-user identifier (OpenAI-compat). */
+    user?: string;
+  }): Promise<Mission> {
     if (!this.ctx.registry.saveMission) throw new Error("Store does not support missions");
     const name = opts.name ?? (await this.ctx.registry.nextMissionName?.()) ?? `mission-${Date.now()}`;
     const mission = await this.ctx.registry.saveMission({
@@ -363,7 +377,11 @@ export class MissionExecutor {
       data: opts.data,
       prompt: opts.prompt,
       status: opts.status ?? "draft",
+      schedule: opts.schedule,
+      deadline: opts.deadline,
+      endDate: opts.endDate,
       notifications: opts.notifications,
+      user: opts.user,
     });
     this.ctx.emitter.emit("mission:saved", { missionId: mission.id, name: mission.name, status: mission.status });
     return mission;
