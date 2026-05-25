@@ -133,6 +133,14 @@ export function writeBlankScaffold(targetDir: string, projectName: string, scena
   if (scenario?.agent.systemPrompt) {
     agentConfig.systemPrompt = scenario.agent.systemPrompt;
   }
+  // Assign the scenario's custom skill to the agent. Without this, the
+  // skill is scaffolded in `.polpo/skills/<name>/SKILL.md` but never
+  // wired to anyone — the agent never reads it. The `skills` field on
+  // AgentConfig is the link the orchestrator uses to inject the skill's
+  // body into the agent's system prompt.
+  if (scenario?.skill?.name) {
+    agentConfig.skills = [scenario.skill.name];
+  }
 
   fs.writeFileSync(
     path.join(targetDir, ".polpo", "agents.json"),

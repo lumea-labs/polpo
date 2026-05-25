@@ -18,8 +18,11 @@
  *   - skill: one SKILL.md scaffold per scenario, scoped to the tools
  *     the mission actually uses.
  *
- * Output paths are all under `.polpo/output/<…>` so the agent's
- * sandboxed write tool can hit them without extra config.
+ * Output paths are all under `output/<…>` — a relative path against
+ * the agent's cwd (which is the workspace dir on cloud and the project
+ * root on local). Keeping outputs in their own top-level subdir avoids
+ * polluting `.polpo/` (config-only) and the project root, and gives the
+ * dashboard file-browser a clean "agent-produced files" surface.
  *
  * Schema alignment (verified against core + server):
  *   - file_exists expectations use `paths: string[]` per
@@ -124,12 +127,12 @@ Open questions:
     payload: {
       title: "Draft Q1 highlights summary",
       description:
-        "Create `.polpo/output/summary.txt` with 5 bullet points covering Q1: " +
+        "Create `output/summary.txt` with 5 bullet points covering Q1: " +
         "revenue movement, churn rate, top customer win, biggest risk, recommended action. " +
         "Plain text only — no markdown, no formatting beyond bullets.",
       assignTo: "analyst",
       draft: true,
-      expectations: [fileExists(".polpo/output/summary.txt")],
+      expectations: [fileExists("output/summary.txt")],
     },
   },
   mission: {
@@ -143,38 +146,38 @@ Open questions:
           {
             title: "create_brief",
             description:
-              "Write `.polpo/output/brief.md` — one-page brief outlining the Q1 review scope, " +
+              "Write `output/brief.md` — one-page brief outlining the Q1 review scope, " +
               "the 3-5 key questions leadership wants answered, and the target audience (CEO/CFO/COO).",
             assignTo: "analyst",
-            expectations: [fileExists(".polpo/output/brief.md")],
+            expectations: [fileExists("output/brief.md")],
           },
           {
             title: "research_benchmarks",
             description:
               "Using `search_web`, gather 5-7 SaaS industry benchmarks (median churn, CAC payback, LTV/CAC) " +
-              "from public sources. Save to `.polpo/output/benchmarks.md` with cited URLs and access dates.",
+              "from public sources. Save to `output/benchmarks.md` with cited URLs and access dates.",
             assignTo: "analyst",
             dependsOn: ["create_brief"],
-            expectations: [fileExists(".polpo/output/benchmarks.md")],
+            expectations: [fileExists("output/benchmarks.md")],
           },
           {
             title: "build_spreadsheet",
             description:
-              "Create `.polpo/output/kpis.xlsx` with two sheets. Sheet 1 ('Our Metrics'): placeholder rows for " +
+              "Create `output/kpis.xlsx` with two sheets. Sheet 1 ('Our Metrics'): placeholder rows for " +
               "revenue, churn, NPS, CAC, LTV (one row per metric, columns: Q4 prev, Q1 current, Δ). " +
               "Sheet 2 ('Industry Benchmark'): pull from benchmarks.md.",
             assignTo: "analyst",
             dependsOn: ["research_benchmarks"],
-            expectations: [fileExists(".polpo/output/kpis.xlsx")],
+            expectations: [fileExists("output/kpis.xlsx")],
           },
           {
             title: "build_pdf",
             description:
-              "Produce `.polpo/output/Q1-executive-summary.pdf` — 1 page max. Pull narrative from brief.md, " +
+              "Produce `output/Q1-executive-summary.pdf` — 1 page max. Pull narrative from brief.md, " +
               "headline numbers from kpis.xlsx, finish with 2-3 takeaway bullets. Visual style: clean, monochrome.",
             assignTo: "analyst",
             dependsOn: ["research_benchmarks"],
-            expectations: [fileExists(".polpo/output/Q1-executive-summary.pdf")],
+            expectations: [fileExists("output/Q1-executive-summary.pdf")],
           },
         ],
       },
@@ -201,7 +204,7 @@ Use \`search_web\` to find 5-7 SaaS industry benchmarks (median churn, CAC payba
 For each benchmark capture: value, source URL, date accessed, sample size if reported.
 
 ## Step 3 — Build the spreadsheet
-Two sheets in \`.polpo/output/kpis.xlsx\`:
+Two sheets in \`output/kpis.xlsx\`:
 1. **Our Metrics** — one row per metric (revenue, churn, NPS, CAC, LTV), columns: Q-prev, Q-current, Δ, Δ%
 2. **Industry Benchmark** — pulled from research, one row per benchmark
 
@@ -265,11 +268,11 @@ Anti-patterns to avoid:
     payload: {
       title: "Draft target audience profile",
       description:
-        "Create `.polpo/output/audience-profile.txt` covering: 3-sentence persona, " +
+        "Create `output/audience-profile.txt` covering: 3-sentence persona, " +
         "top 3 pain points, where they hang out online, what they read. Plain text — no markdown.",
       assignTo: "researcher",
       draft: true,
-      expectations: [fileExists(".polpo/output/audience-profile.txt")],
+      expectations: [fileExists("output/audience-profile.txt")],
     },
   },
   mission: {
@@ -283,40 +286,40 @@ Anti-patterns to avoid:
           {
             title: "create_brief",
             description:
-              "Write `.polpo/output/launch-brief.md` covering: target persona (1 paragraph), " +
+              "Write `output/launch-brief.md` covering: target persona (1 paragraph), " +
               "top 3 customer pains, value proposition hypothesis, success metrics for launch week.",
             assignTo: "researcher",
-            expectations: [fileExists(".polpo/output/launch-brief.md")],
+            expectations: [fileExists("output/launch-brief.md")],
           },
           {
             title: "research_competitors",
             description:
               "Using `search_web`, identify 5-8 direct competitors. " +
               "For each capture: name, pricing tier, killer feature, weakness, primary audience. " +
-              "Save to `.polpo/output/competitors.md` with URLs.",
+              "Save to `output/competitors.md` with URLs.",
             assignTo: "researcher",
             dependsOn: ["create_brief"],
-            expectations: [fileExists(".polpo/output/competitors.md")],
+            expectations: [fileExists("output/competitors.md")],
           },
           {
             title: "build_spreadsheet",
             description:
-              "Create `.polpo/output/feature-matrix.xlsx` — single sheet. Rows = features (extracted from " +
+              "Create `output/feature-matrix.xlsx` — single sheet. Rows = features (extracted from " +
               "competitors.md), columns = each competitor + 'Us'. Mark ✓/✗/partial per cell. Add a " +
               "'gap analysis' column on the right summarizing where we differentiate.",
             assignTo: "researcher",
             dependsOn: ["research_competitors"],
-            expectations: [fileExists(".polpo/output/feature-matrix.xlsx")],
+            expectations: [fileExists("output/feature-matrix.xlsx")],
           },
           {
             title: "build_pdf",
             description:
-              "Produce `.polpo/output/launch-deck.pdf` — 3 pages: (1) market overview + audience, " +
+              "Produce `output/launch-deck.pdf` — 3 pages: (1) market overview + audience, " +
               "(2) our positioning + 3 differentiators, (3) initial GTM plan (channel, message, week-1 KPIs). " +
               "Pull from launch-brief.md and competitors.md.",
             assignTo: "researcher",
             dependsOn: ["research_competitors"],
-            expectations: [fileExists(".polpo/output/launch-deck.pdf")],
+            expectations: [fileExists("output/launch-deck.pdf")],
           },
         ],
       },
@@ -404,11 +407,11 @@ Confidence calibration:
     payload: {
       title: "Draft Q1 roadmap notes",
       description:
-        "Create `.polpo/output/roadmap.txt` listing 3 candidate Q1 features. " +
+        "Create `output/roadmap.txt` listing 3 candidate Q1 features. " +
         "One per line, format: `feature name — one-line user benefit`. Plain text.",
       assignTo: "pm",
       draft: true,
-      expectations: [fileExists(".polpo/output/roadmap.txt")],
+      expectations: [fileExists("output/roadmap.txt")],
     },
   },
   mission: {
@@ -422,41 +425,41 @@ Confidence calibration:
           {
             title: "create_brief",
             description:
-              "Write `.polpo/output/q1-brief.md` outlining: Q1 goal, primary success metric, " +
+              "Write `output/q1-brief.md` outlining: Q1 goal, primary success metric, " +
               "engineering capacity constraints, and the 5 candidate features under consideration " +
               "(one paragraph each).",
             assignTo: "pm",
-            expectations: [fileExists(".polpo/output/q1-brief.md")],
+            expectations: [fileExists("output/q1-brief.md")],
           },
           {
             title: "research_user_needs",
             description:
               "Using `search_web`, find 3-5 public demand signals per candidate (forum posts, X threads, " +
-              "GitHub issues, blog comments). Save to `.polpo/output/user-signals.md` grouped by feature, " +
+              "GitHub issues, blog comments). Save to `output/user-signals.md` grouped by feature, " +
               "with quoted snippets + URLs.",
             assignTo: "pm",
             dependsOn: ["create_brief"],
-            expectations: [fileExists(".polpo/output/user-signals.md")],
+            expectations: [fileExists("output/user-signals.md")],
           },
           {
             title: "build_spreadsheet",
             description:
-              "Create `.polpo/output/rice-scoring.xlsx` — single sheet. Columns: Feature, Reach, Impact, " +
+              "Create `output/rice-scoring.xlsx` — single sheet. Columns: Feature, Reach, Impact, " +
               "Confidence, Effort, RICE Score, Notes. One row per candidate, scored using research from " +
               "user-signals.md. Sort by descending RICE.",
             assignTo: "pm",
             dependsOn: ["research_user_needs"],
-            expectations: [fileExists(".polpo/output/rice-scoring.xlsx")],
+            expectations: [fileExists("output/rice-scoring.xlsx")],
           },
           {
             title: "build_pdf",
             description:
-              "Produce `.polpo/output/q1-spec.pdf` — 2-3 pages covering the top-RICE feature only. " +
+              "Produce `output/q1-spec.pdf` — 2-3 pages covering the top-RICE feature only. " +
               "Sections: problem statement, user story, acceptance criteria, out-of-scope, " +
               "one-line 'why now'.",
             assignTo: "pm",
             dependsOn: ["research_user_needs"],
-            expectations: [fileExists(".polpo/output/q1-spec.pdf")],
+            expectations: [fileExists("output/q1-spec.pdf")],
           },
         ],
       },

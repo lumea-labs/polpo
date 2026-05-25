@@ -262,6 +262,14 @@ describe("scenario seeding", () => {
         expect(body.length).toBeGreaterThan(50);
       });
 
+      // Regression: the seed scaffolded a custom skill but did not wire it
+      // to the agent. Result: the agent's prompt never included the skill
+      // body, so the scenario looked broken on first run.
+      it("assigns the scaffolded skill to the seeded agent", () => {
+        const agents = JSON.parse(fs.readFileSync(path.join(tmpDir, ".polpo", "agents.json"), "utf-8"));
+        expect(agents[0].agent.skills).toEqual([sc.skill.name]);
+      });
+
       it("no seeded task or skill references `browser_*` (kept lightweight per design)", () => {
         const missionPath = path.join(tmpDir, ".polpo", "missions", `${sc.mission.filename}.json`);
         const mission = JSON.parse(fs.readFileSync(missionPath, "utf-8"));
