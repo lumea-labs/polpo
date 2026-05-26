@@ -29,7 +29,13 @@ jobs:
           --health-retries 5
     steps:
       - uses: actions/checkout@v6
-      - uses: pnpm/action-setup@v6
+      # Corepack ships with Node 22 and respects `packageManager` in
+      # package.json — avoids the pnpm/action-setup action which
+      # intermittently 404s on codeload.github.com (2026-05-26).
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - run: corepack enable
       - uses: actions/setup-node@v6
         with:
           node-version: 22
@@ -47,7 +53,13 @@ jobs:
     needs: [test]
     steps:
       - uses: actions/checkout@v6
-      - uses: pnpm/action-setup@v6
+      # Corepack ships with Node 22 and respects `packageManager` in
+      # package.json — avoids the pnpm/action-setup action which
+      # intermittently 404s on codeload.github.com (2026-05-26).
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - run: corepack enable
       - uses: actions/setup-node@v6
         with:
           node-version: 22
