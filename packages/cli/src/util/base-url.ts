@@ -52,3 +52,40 @@ export function resolveBaseUrl(inputs: BaseUrlInputs): string {
 function stripTrailingSlash(s: string): string {
   return s.endsWith("/") ? s.slice(0, -1) : s;
 }
+
+const DEFAULT_DASHBOARD_URL = "https://polpo.sh";
+
+/**
+ * Derive the dashboard URL from an API URL — used by CLI commands that
+ * want to show users a clickable link to the project's web UI.
+ *
+ * Rules (cheap heuristics that cover canonical setups):
+ *   - `https://api.polpo.sh` → `https://polpo.sh` (strip `api.` host prefix)
+ *   - `https://<slug>.polpo.cloud` → `https://polpo.sh` (data-plane subdomain
+ *     isn't a dashboard host — fall back to the canonical dashboard)
+ *   - `http://localhost:4000` → `http://localhost:3000` (dev convention:
+ *     API on 4000, dashboard on 3000)
+ *   - anything else → unchanged (self-hosted users typically run both on
+ *     the same host)
+ *
+ * Returns a clean origin (no trailing slash, no path).
+ */
+export function dashboardUrlFor(apiUrl: string): string {
+  try {
+    const u = new URL(apiUrl);
+    if (u.host.endsWith(`.${POLPO_API_DOMAIN}`)) {
+      return DEFAULT_DASHBOARD_URL;
+    }
+    if (u.host.startsWith("api.")) {
+      u.host = u.host.slice(4);
+      return u.origin;
+    }
+    if (u.port === "4000") {
+      u.port = "3000";
+      return u.origin;
+    }
+    return u.origin;
+  } catch {
+    return DEFAULT_DASHBOARD_URL;
+  }
+}

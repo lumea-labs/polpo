@@ -33,7 +33,7 @@ import { friendlyError } from "../util/errors.js";
 import { installCodingAgentSkills, skillsInstallHint, type SkillsScope } from "../util/skills.js";
 import { promptForUpdateIfAvailable } from "../update-check.js";
 import { isPolpoOnPath, installPolpoGlobally, globalInstallHint } from "../util/install-cli.js";
-import { POLPO_API_DOMAIN } from "../util/base-url.js";
+import { POLPO_API_DOMAIN, dashboardUrlFor } from "../util/base-url.js";
 import * as fs from "node:fs";
 
 export function registerLinkCommand(program: Command): void {
@@ -234,8 +234,17 @@ export function registerLinkCommand(program: Command): void {
 
       // Step 9: Outro — focus on MODIFY, not deploy
       const polpoRun = cliInstalled ? "polpo" : "npx @polpo-ai/cli";
+      const apiUrl = opts.apiUrl ?? creds.baseUrl;
+      const dashboardUrl = `${dashboardUrlFor(apiUrl)}/projects/${project.id}`;
       const lines: string[] = [];
       lines.push(pc.green(`✓ Linked to "${project.name}"`));
+      lines.push("");
+
+      // Clickable in most modern terminals (iTerm2, WezTerm, GNOME
+      // Terminal, Windows Terminal) — they auto-detect URLs. Put it
+      // first so users can jump to the dashboard immediately.
+      lines.push(pc.dim("  Open in dashboard:"));
+      lines.push(`    ${pc.cyan(dashboardUrl)}`);
       lines.push("");
 
       if (pullResult.pulled.length > 0) {
