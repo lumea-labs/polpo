@@ -344,18 +344,12 @@ async function generateVideoWithSdk(
 ): Promise<ToolResult> {
   const { experimental_generateVideo } = await import("ai");
 
-  // Managed video is gated behind an explicit opt-in: each clip costs ~$1.20
-  // and there's no in-sandbox balance pre-check, so it must not bill by
-  // accident. Image has no such gate (≈$0.04). Set POLPO_MANAGED_VIDEO=1 to
-  // enable managed video; otherwise the agent must BYOK a fal key.
-  const gatewayAvailable = shouldUseGateway(parsed.provider, vault);
-  const managed = gatewayAvailable && process.env.POLPO_MANAGED_VIDEO === "1";
-  if (gatewayAvailable && !managed) {
-    throw new Error(
-      "Managed video generation is disabled. Set POLPO_MANAGED_VIDEO=1 to enable it " +
-        "(billed per clip), or give the agent a fal key (vault `fal-ai`/`key` or FAL_KEY) for BYOK.",
-    );
-  }
+  // Managed video is ON by default (same as image) — routed through the
+  // gateway when there's no provider key + an AI_GATEWAY_API_KEY. Each clip
+  // costs ~$1.20 with no in-sandbox balance pre-check, so a kill switch is
+  // kept: set POLPO_MANAGED_VIDEO=0 to force BYOK (direct fal) instead.
+  const managed =
+    shouldUseGateway(parsed.provider, vault) && process.env.POLPO_MANAGED_VIDEO !== "0";
 
   let model: unknown;
   if (managed) {
