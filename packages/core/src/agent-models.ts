@@ -24,7 +24,8 @@ export const DEFAULT_IMAGE_MODEL      = "fal/fal-ai/flux/dev";
 export const DEFAULT_VIDEO_MODEL      = "fal/luma-ray-2-flash";
 export const DEFAULT_VISION_MODEL     = "openai/gpt-4o-mini";
 export const DEFAULT_TRANSCRIBE_MODEL = "openai/whisper-1";
-export const DEFAULT_TTS_MODEL        = "openai/tts-1";
+// Edge TTS is free + local (no API key) — the sensible zero-config default.
+export const DEFAULT_TTS_MODEL        = "edge/edge-tts";
 export const DEFAULT_SEARCH_PROVIDER  = "exa";
 
 // ── Parse helper ──

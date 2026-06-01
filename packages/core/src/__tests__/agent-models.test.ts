@@ -135,8 +135,8 @@ describe("DEFAULT_*_MODEL constants — wire format", () => {
   });
 
   it("DEFAULT_TTS_MODEL is parseable", () => {
-    expect(DEFAULT_TTS_MODEL).toBe("openai/tts-1");
-    expect(parseModelString(DEFAULT_TTS_MODEL).provider).toBe("openai");
+    expect(DEFAULT_TTS_MODEL).toBe("edge/edge-tts");
+    expect(parseModelString(DEFAULT_TTS_MODEL).provider).toBe("edge");
   });
 
   it("DEFAULT_SEARCH_PROVIDER is just the bare provider name (no model)", () => {
