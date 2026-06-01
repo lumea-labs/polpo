@@ -1365,9 +1365,9 @@ describe("search_find_similar — paranoid", () => {
 describe("audio_speak", () => {
   function build() { return createAudioTools(cwd, [cwd], ["audio_speak"], makeVault()); }
 
-  it("calls the SDK with the resolved openai tts-1 model and writes the bytes (default provider)", async () => {
+  it("calls the SDK with the resolved openai tts-1 model and writes the bytes (explicit openai)", async () => {
     const t = pick(build(), "audio_speak");
-    const result = await t.execute("c", { text: "Hello world", path: "out.mp3" });
+    const result = await t.execute("c", { text: "Hello world", path: "out.mp3", model: "openai/tts-1" });
 
     expect(existsSync(join(cwd, "out.mp3"))).toBe(true);
     expect(JSON.stringify(result.details)).toContain("out.mp3");
@@ -1394,6 +1394,7 @@ describe("audio_speak", () => {
     const t = pick(build(), "audio_speak");
     await t.execute("c", {
       text: "x", path: "out.mp3",
+      model: "openai/tts-1",
       speed: 1.5,
       instructions: "Speak in a cheerful tone",
     });
@@ -1499,7 +1500,7 @@ describe("audio_speak — no auto-fallback (explicit failure)", () => {
       new Error("AI_APICallError: 401 invalid key"),
     );
     const t = pick(build(), "audio_speak");
-    const result = await t.execute("c", { text: "ciao", path: "out.mp3", language: "it" });
+    const result = await t.execute("c", { text: "ciao", path: "out.mp3", model: "openai/tts-1", language: "it" });
 
     // The error is returned verbatim — no [Fallback] prefix, no
     // second SDK call, no edge-tts attempt.
@@ -1592,7 +1593,7 @@ describe("audio_speak — paranoid", () => {
         getKey: () => undefined, has: () => false, list: () => [],
       };
       const t = pick(createAudioTools(cwd, [cwd], ["audio_speak"], noKeysVault), "audio_speak");
-      await t.execute("c", { text: "x", path: "out.mp3" });
+      await t.execute("c", { text: "x", path: "out.mp3", model: "openai/tts-1" });
       expect(sdkMocks.resolveSpeakProvider.mock.calls[0][1]).toMatchObject({ apiKey: "env-openai-key" });
     } finally {
       delete process.env.OPENAI_API_KEY;
@@ -1696,7 +1697,7 @@ describe("audio_speak — paranoid", () => {
 
   it("respects custom voice override on openai (alloy → onyx)", async () => {
     const t = pick(build(), "audio_speak");
-    await t.execute("c", { text: "x", path: "out.mp3", voice: "onyx" });
+    await t.execute("c", { text: "x", path: "out.mp3", model: "openai/tts-1", voice: "onyx" });
     expect(sdkMocks.experimental_generateSpeech.mock.calls[0][0].voice).toBe("onyx");
     expect(sdkMocks.experimental_generateSpeech.mock.calls[0][0].model.modelId).toBe("tts-1");
   });
@@ -1898,13 +1899,14 @@ describe("agent-config model precedence — audio_speak", () => {
     expect(cfg.fs).toBeDefined();
   });
 
-  it("falls through to DEFAULT_TTS_MODEL when nothing is configured", async () => {
+  it("falls through to DEFAULT_TTS_MODEL (edge) when nothing is configured", async () => {
     const tools = createAudioTools({
       cwd, allowedPaths: [cwd], allowedTools: ["audio_speak"], vault: makeVault(),
     });
     const t = pick(tools, "audio_speak");
     await t.execute("c", { text: "x", path: "out.mp3" });
-    expect(sdkMocks.experimental_generateSpeech.mock.calls[0][0].model.modelId).toBe("tts-1");
+    expect(sdkMocks.resolveSpeakProvider.mock.calls[0][0]).toBe("edge");
+    expect(sdkMocks.experimental_generateSpeech.mock.calls[0][0].model.modelId).toBe("edge-tts");
   });
 
   it("returns a structured error when ttsModel string is malformed", async () => {
