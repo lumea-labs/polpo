@@ -32,6 +32,7 @@
     "@ai-sdk/deepgram": "^2.0.31",
     "@ai-sdk/elevenlabs": "^2.0.31",
     "@ai-sdk/fal": "^2.0.31",
+    "@ai-sdk/gateway": "^3.0.83",
     "docx": "^9.5.0",
     "exceljs": "^4.4.0",
     "execa": "^9.0.0",
@@ -40,7 +41,8 @@
     "nodemailer": "^8.0.0",
     "pdf-lib": "^1.17.0",
     "playwright-core": "^1.52.0",
-    "tinyglobby": "^0.2.0"
+    "tinyglobby": "^0.2.0",
+    "undici": "^7.0.0"
   },
   "peerDependencies": {
     "@ai-sdk/openai": "^3.0.48",

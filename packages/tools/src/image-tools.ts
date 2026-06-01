@@ -34,6 +34,8 @@ import {
   resolveImageProvider,
   resolveVideoProvider,
   resolveVisionProvider,
+  resolveManagedImageProvider,
+  resolveManagedVideoProvider,
   type ImageProviderName,
   type VideoProviderName,
   type VisionProviderName,
@@ -71,6 +73,52 @@ function resolveProviderKey(provider: string, vault?: ResolvedVault): string {
     default:
       throw new Error(`Unknown provider '${provider}': no credential lookup defined`);
   }
+}
+
+/** Non-throwing variant of resolveProviderKey — returns undefined when no
+ *  credential is configured (vault or env), instead of throwing. */
+function tryResolveProviderKey(provider: string, vault?: ResolvedVault): string | undefined {
+  try {
+    return resolveProviderKey(provider, vault);
+  } catch {
+    return undefined;
+  }
+}
+
+/** Managed = route through the Vercel AI Gateway. True only when the agent
+ *  has NO provider key of its own AND an AI_GATEWAY_API_KEY is present (the
+ *  cloud case). BYOK / self-host with a provider key stays on direct-SDK. */
+function shouldUseGateway(provider: string, vault?: ResolvedVault): boolean {
+  return !tryResolveProviderKey(provider, vault) && !!process.env.AI_GATEWAY_API_KEY;
+}
+
+// Managed defaults: gateway model ids (the fal-namespaced defaults have no
+// gateway equivalent, so they can't be used on the gateway path).
+const DEFAULT_MANAGED_IMAGE_MODEL = "bfl/flux-pro-1.1";
+const DEFAULT_MANAGED_VIDEO_MODEL = "google/veo-3.0-fast-generate-001";
+
+/** Build the gateway model id from a parsed model. fal-namespaced models
+ *  have no gateway equivalent → fall back to the managed default. */
+function gatewayModelId(parsed: ParsedModel, managedDefault: string): string {
+  if (parsed.provider === "fal") return managedDefault;
+  return `${parsed.provider}/${parsed.model}`;
+}
+
+/** Extract the billable gateway usage from an AI SDK result's
+ *  providerMetadata (same shape completions meter). Undefined when the call
+ *  didn't go through the gateway (BYOK / direct provider) — then no cost
+ *  rides back and nothing is billed. */
+function extractGatewayUsage(result: any): Record<string, unknown> | undefined {
+  const gw = result?.providerMetadata?.gateway;
+  if (!gw?.generationId) return undefined;
+  return {
+    generationId: gw.generationId,
+    marketCostUsd: parseFloat(gw.marketCost ?? gw.cost ?? "0") || undefined,
+    actualCostUsd: parseFloat(gw.cost ?? "0") || undefined,
+    resolvedModel: gw.routing?.canonicalSlug ?? gw.routing?.originalModelId,
+    finalProvider: gw.routing?.finalProvider,
+    credentialType: gw.routing?.modelAttempts?.[0]?.providerAttempts?.[0]?.credentialType,
+  };
 }
 
 function imageMime(ext: string): string {
@@ -158,23 +206,35 @@ async function generateImageWithSdk(
 ): Promise<ToolResult> {
   const { generateImage } = await import("ai");
 
-  const apiKey = resolveProviderKey(parsed.provider, vault);
-  const provider = await resolveImageProvider(parsed.provider as ImageProviderName, apiKey);
+  const managed = shouldUseGateway(parsed.provider, vault);
 
-  // fal-specific knobs go through providerOptions; the SDK passes them
-  // through to the model's input untouched.
-  const falOptions: Record<string, number> = {};
-  if (params.num_inference_steps != null) falOptions.num_inference_steps = params.num_inference_steps;
-  if (params.guidance_scale != null) falOptions.guidance_scale = params.guidance_scale;
+  let model: unknown;
+  let providerOptions: Record<string, unknown> | undefined;
+  if (managed) {
+    // Managed: route through the gateway (platform key pays, cost metered).
+    const provider = await resolveManagedImageProvider();
+    model = provider.image(gatewayModelId(parsed, DEFAULT_MANAGED_IMAGE_MODEL));
+  } else {
+    // BYOK / self-host: direct provider SDK with the agent's own key.
+    const apiKey = resolveProviderKey(parsed.provider, vault);
+    const provider = await resolveImageProvider(parsed.provider as ImageProviderName, apiKey);
+    model = provider.image(parsed.model);
+    // fal-specific knobs go through providerOptions; the SDK passes them
+    // through to the model's input untouched.
+    const falOptions: Record<string, number> = {};
+    if (params.num_inference_steps != null) falOptions.num_inference_steps = params.num_inference_steps;
+    if (params.guidance_scale != null) falOptions.guidance_scale = params.guidance_scale;
+    providerOptions = parsed.provider === "fal" && Object.keys(falOptions).length
+      ? { fal: falOptions }
+      : undefined;
+  }
 
   const result = await generateImage({
-    model: provider.image(parsed.model) as any,
+    model: model as any,
     prompt: params.prompt,
     size: params.size as `${number}x${number}` | undefined,
     seed: params.seed,
-    providerOptions: parsed.provider === "fal" && Object.keys(falOptions).length
-      ? { fal: falOptions }
-      : undefined,
+    providerOptions: providerOptions as any,
     abortSignal: signal,
   });
 
@@ -199,11 +259,13 @@ async function generateImageWithSdk(
   return {
     content: [{ type: "text", text: info.join("\n") }],
     details: {
-      provider: parsed.provider,
+      provider: managed ? "gateway" : parsed.provider,
       model: parsed.model,
       size: params.size,
       path: filePath,
       bytes: bytes.byteLength,
+      // Billable cost (managed/gateway only) — harvested by the runner.
+      usage: extractGatewayUsage(result),
     },
   };
 }
@@ -282,11 +344,21 @@ async function generateVideoWithSdk(
 ): Promise<ToolResult> {
   const { experimental_generateVideo } = await import("ai");
 
-  const apiKey = resolveProviderKey(parsed.provider, vault);
-  const provider = await resolveVideoProvider(parsed.provider as VideoProviderName, apiKey);
+  const managed = shouldUseGateway(parsed.provider, vault);
+
+  let model: unknown;
+  if (managed) {
+    // Managed: gateway with an extended-timeout fetch (long renders).
+    const provider = await resolveManagedVideoProvider();
+    model = provider.video(gatewayModelId(parsed, DEFAULT_MANAGED_VIDEO_MODEL));
+  } else {
+    const apiKey = resolveProviderKey(parsed.provider, vault);
+    const provider = await resolveVideoProvider(parsed.provider as VideoProviderName, apiKey);
+    model = provider.video(parsed.model);
+  }
 
   const result = await experimental_generateVideo({
-    model: provider.video(parsed.model) as any,
+    model: model as any,
     prompt: params.prompt,
     aspectRatio: params.aspect_ratio as `${number}:${number}` | undefined,
     resolution: params.resolution as `${number}x${number}` | undefined,
@@ -317,10 +389,12 @@ async function generateVideoWithSdk(
   return {
     content: [{ type: "text", text: info.join("\n") }],
     details: {
-      provider: parsed.provider,
+      provider: managed ? "gateway" : parsed.provider,
       model: parsed.model,
       path: filePath,
       bytes: bytes.byteLength,
+      // Billable cost (managed/gateway only) — harvested by the runner.
+      usage: extractGatewayUsage(result),
     },
   };
 }
