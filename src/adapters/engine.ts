@@ -546,6 +546,24 @@ export function spawnEngine(agentConfig: AgentConfig, task: Task, cwd: string, c
             }
           }
 
+          // Harvest billable per-tool inference cost (managed image/video via
+          // the gateway). Rides back in `details.usage`; the cloud data plane
+          // reads activity.toolUsage after the run → Autumn + usage_logs.
+          if (!isError && details?.usage && typeof details.usage === "object") {
+            const u = details.usage as Record<string, unknown>;
+            if (u.generationId || typeof u.marketCostUsd === "number") {
+              (activity.toolUsage ??= []).push({
+                toolName,
+                generationId: u.generationId as string | undefined,
+                marketCostUsd: u.marketCostUsd as number | undefined,
+                actualCostUsd: u.actualCostUsd as number | undefined,
+                resolvedModel: u.resolvedModel as string | undefined,
+                finalProvider: u.finalProvider as string | undefined,
+                credentialType: u.credentialType as string | undefined,
+              });
+            }
+          }
+
           // Emit tool result transcript
           const resultText = result.content
             .map((c: any) => c.text ?? "")

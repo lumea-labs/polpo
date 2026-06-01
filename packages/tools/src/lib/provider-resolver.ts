@@ -86,6 +86,55 @@ export async function resolveVideoProvider(
   return { video: (modelId: string) => fal.video(modelId) };
 }
 
+// ── Managed (Vercel AI Gateway) resolvers ──
+//
+// Used when the runtime has an AI_GATEWAY_API_KEY and the agent has NO
+// provider key of its own (the cloud "managed" case). The gateway pays via
+// the platform key and returns cost in `providerMetadata.gateway`
+// (generationId/marketCost/cost) — the same shape completions already meter.
+// BYOK stays on the direct-SDK path above; this is purely additive.
+
+/** A fetch with an extended Undici timeout. Video generation can take
+ *  5–15 min — well past Undici's default 5-min headers/body timeout, which
+ *  would otherwise abort the request mid-render. Degrades to the default
+ *  fetch if `undici` can't be loaded. */
+async function makeLongTimeoutFetch(
+  timeoutMs: number,
+): Promise<typeof globalThis.fetch | undefined> {
+  try {
+    const undici: any = await import("undici");
+    const dispatcher = new undici.Agent({
+      headersTimeout: timeoutMs,
+      bodyTimeout: timeoutMs,
+    });
+    return ((input: any, init: any = {}) =>
+      undici.fetch(input, { ...init, dispatcher })) as unknown as typeof globalThis.fetch;
+  } catch {
+    return undefined; // undici unavailable — fall back to default fetch
+  }
+}
+
+/** Build a managed image provider routed through the Vercel AI Gateway.
+ *  Authenticates via `AI_GATEWAY_API_KEY` (read by the gateway provider). */
+export async function resolveManagedImageProvider(): Promise<ImageProvider> {
+  const mod = await loadOptional("@ai-sdk/gateway", "managed image_generate");
+  // @ts-ignore — mod typed as `any` from the dynamic import helper
+  const gw = mod.createGatewayProvider();
+  return { image: (modelId: string) => gw.image(modelId) };
+}
+
+/** Build a managed video provider routed through the Vercel AI Gateway,
+ *  with an extended-timeout fetch so long renders aren't cut off. */
+export async function resolveManagedVideoProvider(
+  timeoutMs = 20 * 60 * 1000,
+): Promise<VideoProvider> {
+  const mod = await loadOptional("@ai-sdk/gateway", "managed video_generate");
+  const fetchImpl = await makeLongTimeoutFetch(timeoutMs);
+  // @ts-ignore — mod typed as `any` from the dynamic import helper
+  const gw = mod.createGatewayProvider(fetchImpl ? { fetch: fetchImpl } : undefined);
+  return { video: (modelId: string) => gw.video(modelId) };
+}
+
 /** Build a speech-to-text (transcription) provider. */
 export async function resolveTranscribeProvider(
   name: TranscribeProviderName,

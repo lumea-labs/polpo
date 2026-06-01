@@ -340,6 +340,25 @@ export interface AgentActivity {
   lastUpdate: string;       // ISO timestamp of last activity
   summary?: string;         // agent's last text output / message
   sessionId?: string;       // SDK session ID for transcript access
+  /**
+   * Billable per-tool inference cost captured from a tool's gateway
+   * response (e.g. managed image/video generation). Each entry mirrors the
+   * fields the completions billing path meters. Absent for tools that don't
+   * go through the gateway (BYOK / direct provider). Consumed by the cloud
+   * data plane after a run completes → Autumn + usage_logs.
+   */
+  toolUsage?: ToolUsageRecord[];
+}
+
+/** One billable tool inference, harvested from `result.details.usage`. */
+export interface ToolUsageRecord {
+  toolName: string;
+  generationId?: string;
+  marketCostUsd?: number;
+  actualCostUsd?: number;
+  resolvedModel?: string;
+  finalProvider?: string;
+  credentialType?: string;
 }
 
 export interface AgentProcess {
