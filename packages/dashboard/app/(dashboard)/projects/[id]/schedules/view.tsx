@@ -15,14 +15,14 @@ import {
   AlertTriangle,
 } from "lucide-react";
 import type { Mission, ScheduleEntry, UpdateScheduleRequest } from "@polpo-ai/sdk";
-import { usePolpoClient } from "#/lib/polpo-client";
+import { usePolpoClient } from "../../../../../lib/polpo-client";
 import {
   Dialog,
   DialogContent,
   DialogHeader,
   DialogTitle,
   DialogDescription,
-} from "#/components/ui/dialog";
+} from "../../../../../components/ui/dialog";
 
 /**
  * Schedules — client + pure-dogfood list of the project's active schedules.

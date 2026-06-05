@@ -3,9 +3,9 @@
 import { useQuery } from "@tanstack/react-query";
 import { useParams } from "next/navigation";
 import { useState } from "react";
-import { usePolpoClient } from "#/lib/polpo-client";
-import { LogsViewSkeleton, LogsEntriesSkeleton } from "#/components/dashboard/skeletons";
-import { ManualRefreshButton } from "#/components/dashboard/manual-refresh-button";
+import { usePolpoClient } from "../../../../../lib/polpo-client";
+import { LogsViewSkeleton, LogsEntriesSkeleton } from "../../../../../components/dashboard/skeletons";
+import { ManualRefreshButton } from "../../../../../components/dashboard/manual-refresh-button";
 
 interface SessionInfo {
   sessionId: string;

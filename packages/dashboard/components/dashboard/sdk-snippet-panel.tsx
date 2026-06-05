@@ -1,10 +1,10 @@
 "use client";
 
 import { useCallback, useMemo, useState } from "react";
-import { CopyCard } from "#/components/dashboard/copy-card";
-import { AgentPickerCard } from "#/components/dashboard/agent-picker-card";
-import { TabToggle } from "#/components/dashboard/tab-toggle";
-import { AgentModelSelector } from "#/components/dashboard/agent-model-selector";
+import { CopyCard } from "../../components/dashboard/copy-card";
+import { AgentPickerCard } from "../../components/dashboard/agent-picker-card";
+import { TabToggle } from "../../components/dashboard/tab-toggle";
+import { AgentModelSelector } from "../../components/dashboard/agent-model-selector";
 import { PolpoProvider } from "@polpo-ai/react";
 import { Chat } from "@polpo-ai/chat";
 import type { AgentConfig } from "@polpo-ai/core";

@@ -6,9 +6,9 @@ import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import { ArrowLeft, Play, Loader2, AlertTriangle, Workflow, Braces, Copy, Check, GitBranch, List } from "lucide-react";
 import type { Task } from "@polpo-ai/core";
-import { usePolpoClient } from "#/lib/polpo-client";
-import { MissionGraph } from "#/components/dashboard/mission-graph";
-import { ManualRefreshButton } from "#/components/dashboard/manual-refresh-button";
+import { usePolpoClient } from "../../../../../../lib/polpo-client";
+import { MissionGraph } from "../../../../../../components/dashboard/mission-graph";
+import { ManualRefreshButton } from "../../../../../../components/dashboard/manual-refresh-button";
 import {
   Dialog,
   DialogContent,
@@ -17,7 +17,7 @@ import {
   DialogDescription,
   DialogFooter,
   DialogClose,
-} from "#/components/ui/dialog";
+} from "../../../../../../components/ui/dialog";
 
 interface PlaybookParam {
   name: string;

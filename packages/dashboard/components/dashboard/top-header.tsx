@@ -13,8 +13,8 @@ import {
   SquarePen,
   Settings,
 } from "lucide-react";
-import { ConnectButton } from "#/components/dashboard/connect-dialog";
-import { Popover, PopoverContent, PopoverTrigger } from "#/components/ui/popover";
+import { ConnectButton } from "../../components/dashboard/connect-dialog";
+import { Popover, PopoverContent, PopoverTrigger } from "../../components/ui/popover";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000";
 

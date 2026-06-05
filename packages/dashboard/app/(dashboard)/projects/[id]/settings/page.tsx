@@ -1,7 +1,7 @@
-import { api } from "#/lib/api";
-import type { Project } from "#/lib/api";
-import { SettingsForm } from "#/components/dashboard/settings-form";
-import type { AutumnStatusResponse } from "#/components/dashboard/settings-form";
+import { api } from "../../../../../lib/api";
+import type { Project } from "../../../../../lib/api";
+import { SettingsForm } from "../../../../../components/dashboard/settings-form";
+import type { AutumnStatusResponse } from "../../../../../components/dashboard/settings-form";
 
 /**
  * Tenant data-plane URL. Mirrors the helper in connect-dialog.tsx so what

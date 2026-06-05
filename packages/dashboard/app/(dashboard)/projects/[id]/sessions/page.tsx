@@ -1,6 +1,6 @@
 import { Suspense } from "react";
-import { dataApi } from "#/lib/api";
-import { SessionsListSkeleton } from "#/components/dashboard/skeletons";
+import { dataApi } from "../../../../../lib/api";
+import { SessionsListSkeleton } from "../../../../../components/dashboard/skeletons";
 import SessionsView, { type Session } from "./view";
 
 async function SessionsData({ id }: { id: string }) {

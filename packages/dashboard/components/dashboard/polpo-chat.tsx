@@ -44,7 +44,7 @@ import {
   type AskUserQuestion,
   type PromptInputMessage,
 } from "@lumea-labs/chat";
-import { ChatShell } from "#/components/dashboard/chat-shell";
+import { ChatShell } from "../../components/dashboard/chat-shell";
 import {
   FileManagerProvider,
   FileList,
@@ -63,7 +63,7 @@ import { audioHandler } from "@lumea-labs/file-manager-polpo/handlers/audio-hand
 import { videoHandler } from "@lumea-labs/file-manager-polpo/handlers/video-handler";
 import { NextIntlClientProvider } from "next-intl";
 import { ArrowUp, Paperclip, Square, X } from "lucide-react";
-import { Sheet, SheetContent, SheetTitle } from "#/components/ui/sheet";
+import { Sheet, SheetContent, SheetTitle } from "../../components/ui/sheet";
 
 /* ------------------------------------------------------------------ */
 /*  PolpoChat — high-level wrapper (providers + session lifecycle)      */

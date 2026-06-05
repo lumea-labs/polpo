@@ -3,7 +3,7 @@
 import { useState, useCallback, useEffect, useRef } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useParams } from "next/navigation";
-import { usePolpoClient } from "#/lib/polpo-client";
+import { usePolpoClient } from "../../../../../lib/polpo-client";
 import {
   Folder, FileText, File, Image, Music, Video, Archive,
   ChevronRight, ChevronLeft, Download, Search,

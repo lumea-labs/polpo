@@ -1,6 +1,6 @@
 import { Suspense } from "react";
-import { dataApi } from "#/lib/api";
-import { SkillDetailSkeleton } from "#/components/dashboard/skeletons";
+import { dataApi } from "../../../../../../lib/api";
+import { SkillDetailSkeleton } from "../../../../../../components/dashboard/skeletons";
 import SkillDetailView, { type LoadedSkill, type FileEntry } from "./view";
 
 /** Slim shape for the list-entry merge. Keep in sync with `SkillsListEntry`

@@ -2,12 +2,12 @@
 
 import { useMemo, useState } from "react";
 import { ExternalLink } from "lucide-react";
-import { CopyCard } from "#/components/dashboard/copy-card";
+import { CopyCard } from "../../components/dashboard/copy-card";
 import {
   ClaudeCodeIcon,
   CursorIcon,
   WindsurfIcon,
-} from "#/components/icons/coding-agents";
+} from "../../components/icons/coding-agents";
 
 /**
  * MCP install panel — rendered inside the Connect dialog's "Coding Agent"

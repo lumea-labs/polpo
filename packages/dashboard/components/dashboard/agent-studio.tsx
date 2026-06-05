@@ -28,16 +28,16 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import type { AgentConfig } from "@polpo-ai/core";
-import { BuilderChat } from "#/components/dashboard/builder-chat";
-import { AgentIdentityHeader } from "#/components/dashboard/agent-identity-header";
-import { Breadcrumb } from "#/components/dashboard/breadcrumb";
-import { useCopilot } from "#/components/dashboard/project-copilot";
-import AgentModelsView from "#/app/(dashboard)/projects/[id]/agents/[name]/models-view";
-import AgentSkillsView from "#/app/(dashboard)/projects/[id]/agents/[name]/skills/view";
-import AgentToolsView from "#/app/(dashboard)/projects/[id]/agents/[name]/tools/view";
-import AgentPromptView from "#/app/(dashboard)/projects/[id]/agents/[name]/prompt/view";
-import AgentMemoryView from "#/app/(dashboard)/projects/[id]/agents/[name]/memory/view";
-import AgentVaultView from "#/app/(dashboard)/projects/[id]/agents/[name]/vault/view";
+import { BuilderChat } from "../../components/dashboard/builder-chat";
+import { AgentIdentityHeader } from "../../components/dashboard/agent-identity-header";
+import { Breadcrumb } from "../../components/dashboard/breadcrumb";
+import { useCopilot } from "../../components/dashboard/project-copilot";
+import AgentModelsView from "../../app/(dashboard)/projects/[id]/agents/[name]/models-view";
+import AgentSkillsView from "../../app/(dashboard)/projects/[id]/agents/[name]/skills/view";
+import AgentToolsView from "../../app/(dashboard)/projects/[id]/agents/[name]/tools/view";
+import AgentPromptView from "../../app/(dashboard)/projects/[id]/agents/[name]/prompt/view";
+import AgentMemoryView from "../../app/(dashboard)/projects/[id]/agents/[name]/memory/view";
+import AgentVaultView from "../../app/(dashboard)/projects/[id]/agents/[name]/vault/view";
 
 export interface VaultEntry {
   service: string;

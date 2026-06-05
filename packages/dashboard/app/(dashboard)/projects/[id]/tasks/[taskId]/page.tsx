@@ -1,10 +1,10 @@
 import { Suspense } from "react";
-import { dataApi } from "#/lib/api";
+import { dataApi } from "../../../../../../lib/api";
 import type { Task } from "@polpo-ai/core";
-import { TaskDetailSkeleton } from "#/components/dashboard/skeletons";
+import { TaskDetailSkeleton } from "../../../../../../components/dashboard/skeletons";
 import { resolveBlueprint, type BlueprintContext } from "./blueprint";
 import type { TaskActivityPayload } from "./activity/view";
-import { TaskStudio, type TaskStudioInitialData } from "#/components/dashboard/task-studio";
+import { TaskStudio, type TaskStudioInitialData } from "../../../../../../components/dashboard/task-studio";
 
 /**
  * Task detail = the Task Studio (fast client surface, like the Agent

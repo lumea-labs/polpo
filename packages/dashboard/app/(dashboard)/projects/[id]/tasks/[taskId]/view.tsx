@@ -1,5 +1,5 @@
 import type { Task } from "@polpo-ai/core";
-import { ManualRefreshButton } from "#/components/dashboard/manual-refresh-button";
+import { ManualRefreshButton } from "../../../../../../components/dashboard/manual-refresh-button";
 import type { BlueprintContext } from "./blueprint";
 
 const statusColor: Record<string, string> = {

@@ -2,7 +2,7 @@
 
 import { useState, useCallback } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { usePolpoClient } from "#/lib/polpo-client";
+import { usePolpoClient } from "../../lib/polpo-client";
 import {
   Folder, FileText, File, Image, Music, Video, Archive,
   ChevronRight, ChevronLeft, Download,

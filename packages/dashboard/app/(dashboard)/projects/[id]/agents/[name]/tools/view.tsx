@@ -58,13 +58,13 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import type { AgentConfig } from "@polpo-ai/core";
-import { SectionHeader } from "#/components/dashboard/section-header";
+import { SectionHeader } from "../../../../../../../components/dashboard/section-header";
 import {
   TOOL_CATALOG,
   CATALOG_TOOL_NAMES,
   isToolEnabled,
   hasGroupWildcard,
-} from "#/lib/tool-catalog";
+} from "../../../../../../../lib/tool-catalog";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000";
 

@@ -1,6 +1,6 @@
 import { Suspense } from "react";
-import { dataApi } from "#/lib/api";
-import { ProjectMemorySkeleton } from "#/components/dashboard/skeletons";
+import { dataApi } from "../../../../../lib/api";
+import { ProjectMemorySkeleton } from "../../../../../components/dashboard/skeletons";
 import MemoryView from "./view";
 
 async function MemoryData({ id }: { id: string }) {

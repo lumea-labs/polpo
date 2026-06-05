@@ -1,6 +1,6 @@
 import { Suspense } from "react";
-import { dataApi } from "#/lib/api";
-import { SkillsListSkeleton } from "#/components/dashboard/skeletons";
+import { dataApi } from "../../../../../lib/api";
+import { SkillsListSkeleton } from "../../../../../components/dashboard/skeletons";
 import SkillsView, { type SkillInfo } from "./view";
 
 async function SkillsData({ id }: { id: string }) {

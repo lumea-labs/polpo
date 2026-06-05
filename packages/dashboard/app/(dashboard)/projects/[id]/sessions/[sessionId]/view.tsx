@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { ArrowLeft, ExternalLink } from "lucide-react";
-import { ManualRefreshButton } from "#/components/dashboard/manual-refresh-button";
+import { ManualRefreshButton } from "../../../../../../components/dashboard/manual-refresh-button";
 import RawView from "./raw-view";
 
 export interface Attachment {

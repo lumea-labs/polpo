@@ -1,9 +1,9 @@
 import { Suspense } from "react";
 import Link from "next/link";
 import { ArrowLeft } from "lucide-react";
-import { dataApi } from "#/lib/api";
+import { dataApi } from "../../../../../../lib/api";
 import type { Mission, Task } from "@polpo-ai/core";
-import { MissionGraphSkeleton, MissionHeaderSkeleton } from "#/components/dashboard/skeletons";
+import { MissionGraphSkeleton, MissionHeaderSkeleton } from "../../../../../../components/dashboard/skeletons";
 import { MissionHeader, MissionTasksPanel } from "./view";
 
 async function MissionHeaderData({

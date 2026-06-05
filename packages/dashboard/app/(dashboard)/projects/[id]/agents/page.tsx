@@ -1,7 +1,7 @@
 import { Suspense } from "react";
-import { dataApi } from "#/lib/api";
+import { dataApi } from "../../../../../lib/api";
 import type { AgentConfig } from "@polpo-ai/core";
-import { AgentsListSkeleton } from "#/components/dashboard/skeletons";
+import { AgentsListSkeleton } from "../../../../../components/dashboard/skeletons";
 import AgentsView, { type Team } from "./view";
 
 async function AgentsData({ id }: { id: string }) {

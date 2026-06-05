@@ -29,8 +29,8 @@ import {
   type PendingToolCall,
 } from "@lumea-labs/chat";
 import type { ToolCallEvent } from "@lumea-labs/tool-calls";
-import { ChatShell } from "#/components/dashboard/chat-shell";
-import type { BuilderContext, NavigateTarget } from "#/lib/builder-context";
+import { ChatShell } from "../../components/dashboard/chat-shell";
+import type { BuilderContext, NavigateTarget } from "../../lib/builder-context";
 
 /**
  * A tool-call mutated project data → trigger a refresh. The builder's data

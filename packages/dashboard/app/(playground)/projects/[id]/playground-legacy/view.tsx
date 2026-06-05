@@ -8,7 +8,7 @@ import { PolpoProvider } from "@polpo-ai/react";
 import { Chat } from "@polpo-ai/chat";
 import type { AgentConfig } from "@polpo-ai/core";
 import { ArrowLeft, Plus } from "lucide-react";
-import { AgentModelSelector } from "#/components/dashboard/agent-model-selector";
+import { AgentModelSelector } from "../../../../../components/dashboard/agent-model-selector";
 
 interface Props {
   projectId: string;

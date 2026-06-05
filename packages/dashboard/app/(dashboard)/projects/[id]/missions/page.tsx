@@ -1,7 +1,7 @@
 import { Suspense } from "react";
-import { dataApi } from "#/lib/api";
+import { dataApi } from "../../../../../lib/api";
 import type { Mission } from "@polpo-ai/core";
-import { MissionsListSkeleton } from "#/components/dashboard/skeletons";
+import { MissionsListSkeleton } from "../../../../../components/dashboard/skeletons";
 import MissionsView from "./view";
 
 async function MissionsData({ id }: { id: string }) {

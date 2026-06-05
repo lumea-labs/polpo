@@ -6,8 +6,8 @@ import { useParams } from "next/navigation";
 import Link from "next/link";
 import type { AgentConfig, Task, Mission } from "@polpo-ai/core";
 import { Users, ListChecks, Target, MessageSquare } from "lucide-react";
-import { usePolpoClient } from "#/lib/polpo-client";
-import { ManualRefreshButton } from "#/components/dashboard/manual-refresh-button";
+import { usePolpoClient } from "../../../../lib/polpo-client";
+import { ManualRefreshButton } from "../../../../components/dashboard/manual-refresh-button";
 import OnboardingChecklist, { deriveChecklistSteps, hasDeployedCheck } from "./onboarding-checklist";
 import {
   SwarmStatusBar,
@@ -15,7 +15,7 @@ import {
   type RunRow,
   type RunStatus,
   type RunCounts,
-} from "#/components/dashboard/swarm-runs";
+} from "../../../../components/dashboard/swarm-runs";
 
 interface SessionInfo {
   id: string;
@@ -66,7 +66,7 @@ export default function ProjectOverviewView({
   initialMissions: Mission[];
   projectName: string;
   projectSlug?: string;
-  initialChecklist?: import("#/lib/api").OnboardingChecklist;
+  initialChecklist?: import("../../../../lib/api").OnboardingChecklist;
   welcomeBanner?: React.ReactNode;
 }) {
   const { id } = useParams<{ id: string }>();

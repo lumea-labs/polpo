@@ -5,11 +5,11 @@ import { useQuery } from "@tanstack/react-query";
 import { useParams } from "next/navigation";
 import Link from "next/link";
 import { ChevronRight, RefreshCw, Search, ListFilter, X } from "lucide-react";
-import { usePolpoClient } from "#/lib/polpo-client";
-import { Button } from "#/components/ui/button";
-import { Badge } from "#/components/ui/badge";
-import { Popover, PopoverContent, PopoverTrigger } from "#/components/ui/popover";
-import { Command, CommandInput, CommandList, CommandEmpty, CommandGroup, CommandItem } from "#/components/ui/command";
+import { usePolpoClient } from "../../../../../lib/polpo-client";
+import { Button } from "../../../../../components/ui/button";
+import { Badge } from "../../../../../components/ui/badge";
+import { Popover, PopoverContent, PopoverTrigger } from "../../../../../components/ui/popover";
+import { Command, CommandInput, CommandList, CommandEmpty, CommandGroup, CommandItem } from "../../../../../components/ui/command";
 
 export interface Session {
   id: string;

@@ -1,9 +1,9 @@
-import { Sidebar, MobileSidebar, MobileHeader } from "#/components/dashboard/sidebar";
-import { TopHeader } from "#/components/dashboard/top-header";
-import { Providers } from "#/components/providers";
-import { MobileSidebarProvider } from "#/hooks/use-mobile-sidebar";
-import { DesktopSidebarProvider } from "#/hooks/use-desktop-sidebar";
-import { CopilotLayout } from "#/components/dashboard/project-copilot";
+import { Sidebar, MobileSidebar, MobileHeader } from "../../components/dashboard/sidebar";
+import { TopHeader } from "../../components/dashboard/top-header";
+import { Providers } from "../../components/providers";
+import { MobileSidebarProvider } from "../../hooks/use-mobile-sidebar";
+import { DesktopSidebarProvider } from "../../hooks/use-desktop-sidebar";
+import { CopilotLayout } from "../../components/dashboard/project-copilot";
 
 /**
  * Single-tenant self-host shell. No Better Auth session, no org list, no

@@ -1,6 +1,6 @@
 import type { Task } from "@polpo-ai/core";
-import { Markdown } from "#/components/dashboard/markdown";
-import { ManualRefreshButton } from "#/components/dashboard/manual-refresh-button";
+import { Markdown } from "../../../../../../../components/dashboard/markdown";
+import { ManualRefreshButton } from "../../../../../../../components/dashboard/manual-refresh-button";
 import type { BlueprintContext } from "../blueprint";
 
 function formatDuration(ms: number) {

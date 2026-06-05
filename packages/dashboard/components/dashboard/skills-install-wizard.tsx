@@ -13,7 +13,7 @@ import {
   Loader2,
   Search,
 } from "lucide-react";
-import { usePolpoClient } from "#/lib/polpo-client";
+import { usePolpoClient } from "../../lib/polpo-client";
 import { usePolpoSkillsAdapter } from "@lumea-labs/skills-polpo";
 import { SkillsProvider, SkillCreateForm } from "@lumea-labs/skills";
 import {
@@ -23,7 +23,7 @@ import {
   DialogHeader,
   DialogTitle,
   DialogTrigger,
-} from "#/components/ui/dialog";
+} from "../../components/ui/dialog";
 
 /**
  * SkillsInstallWizard — replaces the old read-only "how to install" dialog

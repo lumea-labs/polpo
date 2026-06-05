@@ -1,7 +1,7 @@
 import { Suspense } from "react";
-import { dataApi } from "#/lib/api";
+import { dataApi } from "../../../../../lib/api";
 import type { Mission, ScheduleEntry } from "@polpo-ai/core";
-import { SchedulesListSkeleton } from "#/components/dashboard/skeletons";
+import { SchedulesListSkeleton } from "../../../../../components/dashboard/skeletons";
 import SchedulesView from "./view";
 
 async function SchedulesData({ id }: { id: string }) {

@@ -5,7 +5,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import { RefreshCw, Search, Play, Loader2, Trash2, Workflow, AlertTriangle } from "lucide-react";
-import { usePolpoClient } from "#/lib/polpo-client";
+import { usePolpoClient } from "../../../../../lib/polpo-client";
 import {
   Dialog,
   DialogContent,
@@ -14,7 +14,7 @@ import {
   DialogDescription,
   DialogFooter,
   DialogClose,
-} from "#/components/ui/dialog";
+} from "../../../../../components/ui/dialog";
 
 interface PlaybookParam {
   name: string;

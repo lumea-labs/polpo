@@ -1,7 +1,7 @@
 import { Suspense } from "react";
-import { dataApi } from "#/lib/api";
+import { dataApi } from "../../../../../lib/api";
 import type { Task, Mission } from "@polpo-ai/core";
-import { TasksListSkeleton } from "#/components/dashboard/skeletons";
+import { TasksListSkeleton } from "../../../../../components/dashboard/skeletons";
 import TasksView from "./view";
 
 async function TasksData({ id }: { id: string }) {
