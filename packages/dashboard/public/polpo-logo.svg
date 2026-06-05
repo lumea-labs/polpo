@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="625" height="136" viewBox="0 0 625 136">
+  <rect x="0" y="2" width="59" height="59" fill="#FAFAFA"/>
+  <rect x="72" y="74" width="59" height="59" fill="#FAFAFA"/>
+  <text x="173" y="104" font-family="JetBrains Mono, Geist Mono, monospace"
+    font-weight="700" font-size="100" letter-spacing="30" fill="#FAFAFA">POLPO</text>
+</svg>

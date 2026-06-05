@@ -1,0 +1,181 @@
+/* =============================================================
+ * Machine view — fullscreen overlay with markdown-styled content.
+ * Activated by ?mode=machine query param.
+ *
+ * Targets vision-based AI agents browsing the page (Claude computer-use,
+ * ChatGPT browsing, Operator). The page underneath stays untouched; this
+ * overlay displays the same content as /llms-full.txt rendered with
+ * markdown syntax visible as a structural signal.
+ * ============================================================= */
+
+.machine-overlay {
+  background: #0a0a0a;
+  color: #f2f2f2;
+  font-family: var(--font-mono), "Geist Mono", "JetBrains Mono", ui-monospace, monospace;
+  font-size: 13px;
+  line-height: 1.65;
+  letter-spacing: 0;
+}
+
+/* Headings — visually scaled like a real markdown render, but with the
+ * hash prefix shown explicitly as a structural cue for vision agents. */
+.machine-overlay h1 {
+  font-size: 1.95rem;
+  font-weight: 700;
+  margin: 1.4rem 0 0.6rem;
+  line-height: 1.15;
+  letter-spacing: -0.01em;
+}
+.machine-overlay h1::before {
+  content: "# ";
+  font-weight: 400;
+  opacity: 0.4;
+}
+
+.machine-overlay h2 {
+  font-size: 1.45rem;
+  font-weight: 700;
+  margin: 1.6rem 0 0.5rem;
+  line-height: 1.2;
+}
+.machine-overlay h2::before {
+  content: "## ";
+  font-weight: 400;
+  opacity: 0.4;
+}
+
+.machine-overlay h3 {
+  font-size: 1.15rem;
+  font-weight: 600;
+  margin: 1.2rem 0 0.4rem;
+}
+.machine-overlay h3::before {
+  content: "### ";
+  font-weight: 400;
+  opacity: 0.4;
+}
+
+.machine-overlay h4 {
+  font-size: 1rem;
+  font-weight: 600;
+  margin: 1rem 0 0.3rem;
+}
+.machine-overlay h4::before {
+  content: "#### ";
+  font-weight: 400;
+  opacity: 0.4;
+}
+
+/* Paragraphs and basic block elements */
+.machine-overlay p {
+  margin: 0.6rem 0;
+}
+
+.machine-overlay blockquote {
+  margin: 0.8rem 0;
+  padding-left: 0.9rem;
+  border-left: 2px solid rgba(255, 255, 255, 0.25);
+  opacity: 0.85;
+}
+
+/* Lists */
+.machine-overlay ul,
+.machine-overlay ol {
+  margin: 0.6rem 0 0.6rem 1.5rem;
+  padding: 0;
+}
+.machine-overlay ul {
+  list-style: disc;
+}
+.machine-overlay ol {
+  list-style: decimal;
+}
+.machine-overlay li {
+  margin: 0.2rem 0;
+}
+.machine-overlay li::marker {
+  color: rgba(255, 255, 255, 0.45);
+}
+
+/* Inline code and code blocks */
+.machine-overlay code {
+  background: rgba(255, 255, 255, 0.07);
+  padding: 0.1rem 0.4rem;
+  border-radius: 2px;
+  font-size: 0.92em;
+  color: #e5e5e5;
+}
+.machine-overlay pre {
+  background: rgba(255, 255, 255, 0.04);
+  border-left: 2px solid rgba(255, 255, 255, 0.2);
+  padding: 0.85rem 1rem;
+  margin: 0.85rem 0;
+  overflow-x: auto;
+  font-size: 12px;
+  line-height: 1.55;
+}
+.machine-overlay pre code {
+  background: transparent;
+  padding: 0;
+  font-size: inherit;
+}
+
+/* Links */
+.machine-overlay a {
+  color: #7dd3fc;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  text-decoration-color: rgba(125, 211, 252, 0.45);
+}
+.machine-overlay a:hover {
+  color: #38bdf8;
+  text-decoration-color: #38bdf8;
+}
+
+/* Tables (rendered as raw markdown text without remark-gfm — pipes and
+ * dashes are visible. We still style any actual <table> if it appears.) */
+.machine-overlay table {
+  border-collapse: collapse;
+  margin: 0.8rem 0;
+  font-size: 0.92em;
+}
+.machine-overlay th,
+.machine-overlay td {
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  padding: 0.4rem 0.7rem;
+  text-align: left;
+}
+.machine-overlay th {
+  background: rgba(255, 255, 255, 0.05);
+  font-weight: 700;
+}
+
+/* Horizontal rule */
+.machine-overlay hr {
+  border: none;
+  border-top: 1px dashed rgba(255, 255, 255, 0.2);
+  margin: 1.4rem 0;
+}
+
+/* ── Loading state — terminal-style ─────────────────────────── */
+.machine-loading {
+  font-size: 13px;
+}
+.machine-loading > div + div {
+  margin-top: 0.4rem;
+}
+.machine-blink {
+  display: inline-block;
+  margin-left: 4px;
+  animation: machine-blink 1s steps(2) infinite;
+}
+@keyframes machine-blink {
+  to {
+    opacity: 0;
+  }
+}
+
+/* ── Error state ─────────────────────────────────────────────── */
+.machine-error {
+  color: #fca5a5;
+}

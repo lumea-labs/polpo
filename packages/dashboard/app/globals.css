@@ -1,0 +1,385 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+
+/* Tailwind 4 doesn't scan node_modules by default. Without these
+ * @source directives, classes used only inside @polpo-ai/chat (like
+ * `bg-current` on the typing dots) never make it into the generated
+ * CSS — the dots are rendered transparent and invisible. */
+@source "../node_modules/@polpo-ai/chat/dist/**/*.{js,mjs}";
+@source "../node_modules/@polpo-ai/react/dist/**/*.{js,mjs}";
+/* Same reason for the lumea-labs surface used by playground v2. */
+@source "../node_modules/@lumea-labs/chat/dist/**/*.{js,mjs}";
+@source "../node_modules/@lumea-labs/chat-polpo/dist/**/*.{js,mjs}";
+@source "../node_modules/@lumea-labs/tool-calls/dist/**/*.{js,mjs}";
+@source "../node_modules/@lumea-labs/llm-polpo/dist/**/*.{js,mjs}";
+@source "../node_modules/@lumea-labs/file-manager/dist/**/*.{js,mjs}";
+@source "../node_modules/@lumea-labs/orchestrator/dist/**/*.{js,mjs}";
+@source "../node_modules/@lumea-labs/file-manager-polpo/dist/**/*.{js,mjs}";
+@import "../styles/feature-cards.css";
+@import "../styles/machine-mode.css";
+
+@plugin "@tailwindcss/typography";
+
+/* Copilot panel — tighten the chat gutters (the chat package hardcodes
+ * px-6) so more fits in the narrow docked panel. Unlayered rule → wins
+ * over the layered Tailwind utility without !important. Scoped to the
+ * copilot wrapper so the playground / Studio chat is unaffected. */
+.copilot-chat-dense .px-6 {
+  padding-left: 0.875rem;
+  padding-right: 0.875rem;
+}
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: "Geist", "Geist Fallback", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "Geist Mono", "Geist Mono Fallback", ui-monospace, monospace;
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar: var(--sidebar);
+  --color-chart-5: var(--chart-5);
+  --color-chart-4: var(--chart-4);
+  --color-chart-3: var(--chart-3);
+  --color-chart-2: var(--chart-2);
+  --color-chart-1: var(--chart-1);
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-border: var(--border);
+  --color-destructive: var(--destructive);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent: var(--accent);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-muted: var(--muted);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+  --color-brand: var(--brand);
+  --color-brand-foreground: var(--brand-foreground);
+  /* Polpo design-system tokens consumed by @lumea-labs/chat (the
+   * `bg-p-*`, `text-p-*`, `border-p-*` Tailwind classes). Mapped onto
+   * our existing shadcn vars so they render in our theme without us
+   * having to ship a second palette. */
+  --color-p-bg: var(--background);
+  --color-p-surface: var(--card);
+  --color-p-warm: var(--secondary);
+  --color-p-line: var(--border);
+  --color-p-ink: var(--foreground);
+  --color-p-ink-2: var(--foreground);
+  --color-p-ink-3: var(--muted-foreground);
+  --color-p-accent: var(--brand);
+  --color-p-accent-light: var(--accent);
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+  --radius-2xl: calc(var(--radius) * 1.8);
+  --radius-3xl: calc(var(--radius) * 2.2);
+  --radius-4xl: calc(var(--radius) * 2.6);
+}
+
+:root {
+  --background: #ffffff;
+  --foreground: #171717;
+  --card: #ffffff;
+  --card-foreground: #171717;
+  --popover: #ffffff;
+  --popover-foreground: #171717;
+  --primary: #171717;
+  --primary-foreground: #fafafa;
+  --secondary: #f5f5f5;
+  --secondary-foreground: #171717;
+  --muted: #f5f5f5;
+  --muted-foreground: #737373;
+  --accent: #f5f5f5;
+  --accent-foreground: #171717;
+  --destructive: #dc2626;
+  --border: #e5e5e5;
+  --input: #e5e5e5;
+  --ring: #171717;
+  --radius: 0.5rem;
+  --brand: #3ecf8e;
+  --brand-foreground: #0d1117;
+}
+
+.dark {
+  /* Stone-family dark surface hierarchy — background deepest, card
+     raised a clear step, secondary on top for active/hover. Warmer
+     neutral than the prior blue-grey set; reads less "tech cold" and
+     more "editorial" without shouting.
+     Values cross-reference Tailwind stone-950 / 900 / 800 so the whole
+     palette stays coherent with utility classes if we ever need them. */
+  --background: #111111;        /* lifted from neutral-950 for softer contrast */
+  --foreground: #ededed;
+  --card: #1a1a1a;              /* +9pt over bg — subtle pop without gap */
+  --card-foreground: #ededed;
+  --popover: #1a1a1a;
+  --popover-foreground: #ededed;
+  --primary: #ededed;
+  --primary-foreground: #111111;
+  --secondary: #262626;         /* neutral-800 — active row, hover */
+  --secondary-foreground: #ededed;
+  --muted: #1f1f1f;
+  --muted-foreground: #a3a3a3;  /* neutral-400 — readable secondary text */
+  --accent: #262626;
+  --accent-foreground: #ededed;
+  --destructive: #f85149;
+  --border: #2e2e2e;            /* softer divider */
+  --input: #2e2e2e;
+  --ring: #ededed;
+  --brand: #3ecf8e;
+  --brand-foreground: #1a1a1a;
+}
+
+/* sugar-high token colors — GitHub Dark (primer/github-syntax-dark) */
+:root {
+  --sh-class: #c8e1ff;
+  --sh-identifier: #ededed;
+  --sh-keyword: #ea4a5a;
+  --sh-string: #79b8ff;
+  --sh-property: #c8e1ff;
+  --sh-entity: #b392f0;
+  --sh-jsxliterals: #b392f0;
+  --sh-sign: #ededed;
+  --sh-comment: #959da5;
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+}
+
+/* Fine cross-hatch grid */
+.bg-grid-fine {
+  background-image:
+    linear-gradient(to right, var(--border) 0.5px, transparent 0.5px),
+    linear-gradient(to bottom, var(--border) 0.5px, transparent 0.5px);
+  background-size: 48px 48px;
+}
+
+/* Dot pattern */
+.bg-dots {
+  background-image: radial-gradient(circle, var(--border) 1px, transparent 1px);
+  background-size: 20px 20px;
+}
+
+/* Diagonal lines */
+.bg-diag {
+  background-image: repeating-linear-gradient(
+    -45deg,
+    transparent,
+    transparent 28px,
+    var(--border) 28px,
+    var(--border) 28.5px
+  );
+}
+
+/* Terminal cursor */
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+.cursor-blink {
+  animation: blink 1s step-end infinite;
+}
+
+/* Hide scrollbar for horizontal tab scroll */
+.scrollbar-none {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+.scrollbar-none::-webkit-scrollbar {
+  display: none;
+}
+
+/* Brand-wide thin scrollbars — applied globally so every scrollable
+   container (including third-party surfaces like @lumea-labs/chat's
+   message list and popovers) matches the dashboard's neo-brutalist
+   identity: sharp edges (no border-radius), no shadow, theme-aware
+   border/muted-foreground tokens. The `*` selector is harmless on
+   non-scrollable elements — webkit pseudos are no-ops there. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+*::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 0;
+  transition: background 120ms ease;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--muted-foreground);
+}
+*::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* Opt-in utilities kept for backwards compatibility — both now alias
+   the global behaviour above. Existing call-sites need no changes. */
+.scrollbar-thin,
+.scrollbar-thin-nested {
+  /* inherits everything from `*` rules above */
+}
+
+/* Neo-brutalist brand scope — flattens rounded corners on third-party
+   surfaces (e.g. @lumea-labs/orchestrator's SwarmStatusBar, RunList,
+   RunRow) when they're rendered inside a `.polpo-sharp` wrapper.
+   Excludes `rounded-full` so circular status dots / monogram avatars
+   stay round, which is the intended affordance there. */
+.polpo-sharp .rounded-xl,
+.polpo-sharp .rounded-lg,
+.polpo-sharp .rounded-md,
+.polpo-sharp .rounded {
+  border-radius: 0 !important;
+}
+
+/* Infinite horizontal scroll for logo strips */
+@keyframes scroll {
+  0% { transform: translateX(0); }
+  100% { transform: translateX(-50%); }
+}
+.animate-scroll {
+  animation: scroll 50s linear infinite;
+}
+.animate-scroll:hover {
+  animation-play-state: paused;
+}
+
+@keyframes scroll-reverse {
+  0% { transform: translateX(-50%); }
+  100% { transform: translateX(0); }
+}
+.animate-scroll-reverse {
+  animation: scroll-reverse 60s linear infinite;
+}
+.animate-scroll-reverse:hover {
+  animation-play-state: paused;
+}
+
+.animate-marquee {
+  animation: scroll 80s linear infinite;
+}
+.animate-marquee:hover {
+  animation-play-state: paused;
+}
+
+/* Infinite vertical scroll for stacked logo/feature columns.
+   Pair with a column whose cells are duplicated once (two identical halves)
+   so translateY(-50%) loops seamlessly. */
+@keyframes scroll-y {
+  0% { transform: translateY(0); }
+  100% { transform: translateY(-50%); }
+}
+.animate-scroll-y {
+  animation: scroll-y var(--scroll-y-duration, 24s) linear infinite;
+}
+@keyframes scroll-y-reverse {
+  0% { transform: translateY(-50%); }
+  100% { transform: translateY(0); }
+}
+.animate-scroll-y-reverse {
+  animation: scroll-y-reverse var(--scroll-y-duration, 24s) linear infinite;
+}
+
+/* Orbit — slow continuous rotation for the model-provider ring.
+   The ring spins one way; each logo counter-spins (reverse) to stay upright. */
+@keyframes orbit-spin {
+  to { transform: rotate(360deg); }
+}
+.animate-orbit {
+  animation: orbit-spin 44s linear infinite;
+}
+.animate-orbit-reverse {
+  animation: orbit-spin 44s linear infinite reverse;
+}
+
+/* Dot flow — staggered fade pulses create a "stream of light" effect
+   when applied to a row of dots with negative animation-delay per dot.
+   Forward flow: delays run -100ms, -200ms, -300ms...
+   Reverse flow: delays run -1000ms, -900ms, -800ms... */
+@keyframes dot-flow {
+  0%, 60%, 100% { opacity: 0.18; transform: scale(0.85); }
+  25% { opacity: 1; transform: scale(1); }
+}
+.animate-dot-flow {
+  animation: dot-flow 1s linear infinite;
+}
+
+/* Skeleton shimmer — horizontal gradient sweep over muted background.
+   Pair with `bg-muted` + overflow-hidden parent. */
+@keyframes shimmer {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(100%); }
+}
+.skeleton-bar {
+  position: relative;
+  overflow: hidden;
+  background: var(--muted);
+}
+.skeleton-bar::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    color-mix(in oklab, var(--foreground) 8%, transparent),
+    transparent
+  );
+  animation: shimmer 1.8s linear infinite;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+
+/* Blog Streamdown code blocks — squared style */
+.blog-content [data-streamdown="code-block"] {
+  border: 1px solid hsl(var(--border));
+  border-radius: 0;
+  margin: 1.5rem 0;
+  overflow: hidden;
+}
+.blog-content [data-streamdown="code-block"] pre {
+  border-radius: 0;
+  margin: 0;
+}
+.blog-content [data-streamdown="inline-code"] {
+  font-family: var(--font-mono);
+  font-size: 0.875em;
+  background: hsl(var(--card));
+  border: 1px solid hsl(var(--border));
+  padding: 0.15em 0.4em;
+  border-radius: 0;
+}
+
+/* Blog code blocks — squared corners */
+.blog-code-block [data-element="code-block"],
+.blog-code-block pre,
+.blog-code-block [class*="rounded"] {
+  border-radius: 0 !important;
+}

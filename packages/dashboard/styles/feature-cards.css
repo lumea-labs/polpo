@@ -1,0 +1,453 @@
+/* ══════════════════════════════════════════════════════════════════
+   Feature Cards — SVG illustration styles only.
+   Card shell, content, layout = Tailwind (in feature-cards.tsx).
+   This file handles: hover FX, particles, SVG animations.
+══════════════════════════════════════════════════════════════════ */
+
+/* ── Shared vars ── */
+:root {
+  --fc-accent: 62, 207, 142; /* matches --brand: #3ecf8e */
+  --fc-mono: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, monospace;
+  --fc-fast: .4s ease;
+  --fc-med: .5s ease;
+}
+
+/* ── Card hover overlays (::before gradient, ::after light sweep) ── */
+.fc-card::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(147deg, rgba(255,255,255,.04), transparent 60%);
+  opacity: 0;
+  transition: opacity var(--fc-med);
+  pointer-events: none;
+  z-index: 0;
+}
+.fc-card:hover::before { opacity: 1; }
+
+.fc-card::after {
+  content: '';
+  position: absolute;
+  top: -50%;
+  left: -60%;
+  width: 40%;
+  height: 200%;
+  background: linear-gradient(105deg, transparent 20%, rgba(255,255,255,.02) 40%, rgba(255,255,255,.06) 50%, rgba(255,255,255,.02) 60%, transparent 80%);
+  transform: skewX(-15deg);
+  opacity: 0;
+  pointer-events: none;
+  z-index: 2;
+  transition: opacity .3s ease;
+}
+.fc-card:hover::after {
+  opacity: 1;
+  animation: fc-lightSweep .8s .1s ease-out forwards;
+}
+@keyframes fc-lightSweep { 0% { left: -60%; } 100% { left: 120%; } }
+
+/* ── Particles ── */
+.fc-particle {
+  position: absolute;
+  width: 3px;
+  height: 3px;
+  background: rgba(var(--fc-accent), .5);
+  border-radius: 50%;
+  opacity: 0;
+  transition: opacity .3s ease;
+}
+.fc-card:hover .fc-particle { opacity: 1; animation: fc-float 2.5s ease-in-out infinite; }
+.fc-particle:nth-child(1) { left: 12%; bottom: 30%; }
+.fc-particle:nth-child(2) { left: 75%; bottom: 45%; animation-delay: .4s; width: 2px; height: 2px; }
+.fc-particle:nth-child(3) { left: 88%; bottom: 55%; animation-delay: .8s; }
+.fc-particle:nth-child(4) { left: 45%; bottom: 25%; animation-delay: 1.2s; width: 2px; height: 2px; background: rgba(var(--fc-accent), .3); }
+.fc-particle:nth-child(5) { left: 60%; bottom: 65%; animation-delay: .6s; width: 4px; height: 4px; background: rgba(var(--fc-accent), .2); }
+@keyframes fc-float {
+  0% { transform: translateY(0) scale(1); opacity: .6; }
+  50% { transform: translateY(-25px) scale(1.2); opacity: 1; }
+  100% { transform: translateY(-50px) scale(.5); opacity: 0; }
+}
+
+/* ── Edge glow ── */
+.fc-edge-glow::after {
+  content: '';
+  position: absolute;
+  bottom: 0;
+  left: -60%;
+  width: 50%;
+  height: 100%;
+  background: linear-gradient(90deg, transparent, rgba(var(--fc-accent), .6), transparent);
+  opacity: 0;
+  transition: opacity .3s ease;
+}
+.fc-card:hover .fc-edge-glow::after {
+  opacity: 1;
+  animation: fc-edgeScan 2s .3s ease-in-out infinite;
+}
+@keyframes fc-edgeScan { 0% { left: -50%; } 100% { left: 100%; } }
+
+/* ══════════════════════════════════════════════════════
+   SANDBOX CARD
+══════════════════════════════════════════════════════ */
+.fc-sandbox-face { transition: fill var(--fc-med), stroke var(--fc-med); }
+.fc-sb-top   { fill: rgba(255,255,255,.08); stroke: rgba(255,255,255,.14); }
+.fc-sb-front { fill: rgba(255,255,255,.05); stroke: rgba(255,255,255,.1); }
+.fc-sb-side  { fill: rgba(255,255,255,.03); stroke: rgba(255,255,255,.08); }
+
+.fc-card:hover .fc-s1 .fc-sb-top   { fill: rgba(var(--fc-accent),.15); stroke: rgba(var(--fc-accent),.35); }
+.fc-card:hover .fc-s1 .fc-sb-front { fill: rgba(var(--fc-accent),.1); stroke: rgba(var(--fc-accent),.25); }
+.fc-card:hover .fc-s1 .fc-sb-side  { fill: rgba(var(--fc-accent),.06); stroke: rgba(var(--fc-accent),.18); }
+.fc-card:hover .fc-s2 .fc-sb-top   { fill: rgba(var(--fc-accent),.07); stroke: rgba(var(--fc-accent),.16); }
+.fc-card:hover .fc-s2 .fc-sb-front { fill: rgba(var(--fc-accent),.04); stroke: rgba(var(--fc-accent),.12); }
+.fc-card:hover .fc-s2 .fc-sb-side  { fill: rgba(var(--fc-accent),.025); stroke: rgba(var(--fc-accent),.08); }
+
+.fc-sandbox-group { transition: transform var(--fc-med), filter var(--fc-med); }
+.fc-card:hover .fc-s1 { transform: translateY(-5px); filter: drop-shadow(0 6px 18px rgba(var(--fc-accent),.07)); }
+.fc-card:hover .fc-s2 { transform: translateY(-2px); filter: drop-shadow(0 4px 12px rgba(var(--fc-accent),.04)); }
+.fc-s2 { transition-delay: .06s; }
+
+.fc-agent-ring { fill: none; stroke: rgba(255,255,255,.18); stroke-width: 1; transition: stroke var(--fc-fast), filter var(--fc-fast); }
+.fc-agent-dot { fill: #555; transition: fill var(--fc-fast); }
+.fc-card:hover .fc-agent-ring { stroke: rgba(var(--fc-accent),.5); filter: drop-shadow(0 0 6px rgba(var(--fc-accent),.25)); }
+.fc-card:hover .fc-agent-dot { fill: #3ecf8e; }
+.fc-card:hover .fc-a1 .fc-agent-dot { animation: fc-agentPulse 2s ease-in-out infinite; }
+.fc-card:hover .fc-a2 .fc-agent-dot { animation: fc-agentPulse 2s .4s ease-in-out infinite; }
+.fc-card:hover .fc-a3 .fc-agent-dot { animation: fc-agentPulse 2s .8s ease-in-out infinite; }
+@keyframes fc-agentPulse { 0%,100% { r: 4; } 50% { r: 5; } }
+
+.fc-agent-label { font-family: var(--fc-mono); font-size: 10px; fill: rgba(255,255,255,.22); transition: fill var(--fc-fast); }
+.fc-card:hover .fc-agent-label { fill: rgba(255,255,255,.35); }
+
+.fc-conn { stroke: rgba(255,255,255,.1); stroke-width: .8; stroke-dasharray: 3 4; fill: none; transition: stroke var(--fc-med); }
+.fc-card:hover .fc-conn { stroke: rgba(var(--fc-accent),.35); animation: fc-dashFlow 1.5s linear infinite; }
+@keyframes fc-dashFlow { 0% { stroke-dashoffset: 0; } 100% { stroke-dashoffset: -14; } }
+
+.fc-sb-label { font-family: var(--fc-mono); font-size: 10px; fill: rgba(255,255,255,.25); transition: fill var(--fc-fast); }
+.fc-card:hover .fc-sb-label { fill: rgba(255,255,255,.22); }
+
+.fc-tline { stroke: rgba(255,255,255,.12); stroke-width: 1.2; stroke-linecap: round; transition: stroke var(--fc-fast), opacity var(--fc-fast); opacity: .7; }
+.fc-card:hover .fc-tline { stroke: rgba(var(--fc-accent),.5); opacity: 1; }
+.fc-card:hover .fc-t2 { transition-delay: .1s; }
+.fc-card:hover .fc-t3 { transition-delay: .2s; }
+
+/* ══════════════════════════════════════════════════════
+   API CARD
+══════════════════════════════════════════════════════ */
+.fc-term-method { font-family: var(--fc-mono); font-size: 15px; font-weight: 600; fill: rgba(255,255,255,.3); transition: fill var(--fc-fast); }
+.fc-card:hover .fc-term-method { fill: rgba(var(--fc-accent),.9); }
+
+.fc-term-path { font-family: var(--fc-mono); font-size: 15px; fill: rgba(255,255,255,.22); transition: fill var(--fc-fast); }
+.fc-card:hover .fc-term-path { fill: rgba(255,255,255,.4); }
+
+.fc-term-divider { stroke: rgba(255,255,255,.08); stroke-width: .5; transition: stroke var(--fc-fast); }
+.fc-card:hover .fc-term-divider { stroke: rgba(var(--fc-accent),.06); }
+
+.fc-ready-dot { fill: rgba(var(--fc-accent),.25); animation: fc-readyPulse 2.5s ease-in-out infinite; transition: opacity .25s ease; }
+.fc-card:hover .fc-ready-dot { opacity: 0; }
+.fc-ready-text { font-family: var(--fc-mono); font-size: 10px; fill: rgba(255,255,255,.08); transition: opacity .25s ease; }
+.fc-card:hover .fc-ready-text { opacity: 0; }
+@keyframes fc-readyPulse { 0%,100% { opacity: .25; } 50% { opacity: .65; } }
+
+.fc-hover-status { font-family: var(--fc-mono); font-size: 10px; font-weight: 600; fill: rgba(255,255,255,.3); opacity: 0; transition: opacity .25s ease; }
+.fc-card:hover .fc-hover-status { opacity: 1; transition-delay: .15s; }
+
+.fc-term-status { font-family: var(--fc-mono); font-size: 10px; font-weight: 600; fill: rgba(var(--fc-accent),.6); opacity: 0; }
+.fc-card:hover .fc-term-status { animation: fc-doneIn 1s ease forwards; animation-delay: 1.8s; }
+
+.fc-stream-line { font-family: var(--fc-mono); font-size: 9.5px; fill: rgba(255,255,255,.04); opacity: 0; }
+.fc-card:hover .fc-stream-line { animation: fc-chunkIn 3.5s ease-in-out forwards; }
+.fc-card:hover .fc-sl1 { animation-delay: .25s; }
+.fc-card:hover .fc-sl2 { animation-delay: .5s; }
+.fc-card:hover .fc-sl3 { animation-delay: .75s; }
+.fc-card:hover .fc-sl4 { animation-delay: 1.0s; }
+.fc-card:hover .fc-sl5 { animation-delay: 1.25s; }
+@keyframes fc-chunkIn {
+  0% { opacity: 0; fill: rgba(255,255,255,.04); }
+  15% { opacity: 1; fill: rgba(var(--fc-accent),.4); }
+  30% { fill: rgba(255,255,255,.22); }
+  100% { opacity: 1; fill: rgba(255,255,255,.18); }
+}
+
+.fc-stream-done { font-family: var(--fc-mono); font-size: 9.5px; fill: rgba(var(--fc-accent),.04); opacity: 0; }
+.fc-card:hover .fc-stream-done { animation: fc-doneIn 1s ease forwards; animation-delay: 1.5s; }
+@keyframes fc-doneIn {
+  0% { opacity: 0; }
+  30% { opacity: 1; fill: rgba(var(--fc-accent),.5); }
+  100% { opacity: 1; fill: rgba(var(--fc-accent),.35); }
+}
+
+/* ══════════════════════════════════════════════════════
+   AGENT TOOLKIT CARD
+══════════════════════════════════════════════════════ */
+.fc-brain-ring { fill: none; stroke: rgba(255,255,255,.15); stroke-width: 1; transition: stroke var(--fc-med), filter var(--fc-med); }
+.fc-brain-orbit { fill: none; stroke: rgba(255,255,255,.08); stroke-width: .6; stroke-dasharray: 4 3; transition: stroke var(--fc-med); }
+.fc-card:hover .fc-brain-ring { stroke: rgba(var(--fc-accent),.45); filter: drop-shadow(0 0 10px rgba(var(--fc-accent),.2)); }
+.fc-card:hover .fc-brain-orbit { stroke: rgba(var(--fc-accent),.2); animation: fc-orbitSpin 6s linear infinite; }
+@keyframes fc-orbitSpin { 0% { stroke-dashoffset: 0; } 100% { stroke-dashoffset: -28; } }
+
+.fc-brain-core { fill: rgba(255,255,255,.08); transition: fill var(--fc-fast); }
+.fc-card:hover .fc-brain-core { fill: rgba(var(--fc-accent),.3); }
+
+/* Brain: always visible */
+.fc-brain-pulse { fill: none; stroke: rgba(255,255,255,.02); stroke-width: .8; opacity: 0; transition: opacity .3s ease; }
+.fc-card:hover .fc-brain-pulse { stroke: rgba(var(--fc-accent),.08); opacity: 1; animation: fc-pulse 2.2s ease-out infinite; }
+.fc-card:hover .fc-bp2 { animation-delay: .7s; }
+@keyframes fc-pulse { 0% { r: 22; opacity: .5; } 100% { r: 44; opacity: 0; } }
+
+.fc-mem-block { fill: rgba(255,255,255,.04); stroke: rgba(255,255,255,.1); stroke-width: .5; transition: fill var(--fc-fast), stroke var(--fc-fast), transform var(--fc-fast); }
+.fc-card:hover .fc-mem-block { fill: rgba(var(--fc-accent),.04); stroke: rgba(var(--fc-accent),.14); }
+/* Quadrant labels: always visible */
+.fc-quad-label { font-family: var(--fc-mono); font-size: 11px; font-weight: 600; letter-spacing: .06em; fill: rgba(255,255,255,.2); transition: fill var(--fc-fast); }
+.fc-card:hover .fc-quad-label { fill: rgba(255,255,255,.4); }
+
+/* Quadrant connector lines: always visible, subtle */
+.fc-quad-line { stroke: rgba(255,255,255,.06); stroke-width: .5; stroke-dasharray: 3 3; transition: stroke var(--fc-fast); }
+.fc-card:hover .fc-quad-line { stroke: rgba(var(--fc-accent),.2); }
+
+/* Hover details — appear under labels on hover */
+.fc-quad-detail { font-family: var(--fc-mono); font-size: 8px; fill: rgba(255,255,255,.0); transition: fill .4s ease, opacity .4s ease; opacity: 0; }
+.fc-card:hover .fc-qd-mem { opacity: 1; fill: rgba(var(--fc-accent),.45); transition-delay: .2s; }
+.fc-card:hover .fc-qd-ctx { opacity: 1; fill: rgba(var(--fc-accent),.45); transition-delay: .4s; }
+.fc-card:hover .fc-qd-skills .fc-quad-detail { opacity: 1; fill: rgba(var(--fc-accent),.45); transition-delay: .6s; }
+.fc-qd-skills { opacity: 0; transition: opacity .4s ease; }
+.fc-card:hover .fc-qd-skills { opacity: 1; transition-delay: .5s; }
+
+/* Quadrant title (shown during solo cycle) */
+.fc-quad-title { font-family: var(--fc-mono); font-size: 11px; font-weight: 600; letter-spacing: .08em; fill: rgba(var(--fc-accent),.6); }
+
+/* Context blocks */
+.fc-ctx-block { fill: rgba(255,255,255,.04); stroke: rgba(255,255,255,.1); stroke-width: .5; }
+.fc-card:hover .fc-ctx-block { fill: rgba(var(--fc-accent),.04); stroke: rgba(var(--fc-accent),.15); }
+.fc-ctx-text { font-family: var(--fc-mono); font-size: 7px; fill: rgba(255,255,255,.25); }
+.fc-card:hover .fc-ctx-text { fill: rgba(255,255,255,.4); }
+
+/* Skill files */
+.fc-skill-file { fill: rgba(255,255,255,.04); stroke: rgba(255,255,255,.1); stroke-width: .5; }
+.fc-card:hover .fc-skill-file { fill: rgba(var(--fc-accent),.04); stroke: rgba(var(--fc-accent),.15); }
+.fc-skill-fname { font-family: var(--fc-mono); font-size: 6.5px; fill: rgba(255,255,255,.25); }
+.fc-card:hover .fc-skill-fname { fill: rgba(255,255,255,.4); }
+
+.fc-mem-line { stroke: rgba(255,255,255,.1); stroke-width: 1; stroke-linecap: round; transition: stroke var(--fc-fast); }
+.fc-card:hover .fc-mem-line { stroke: rgba(var(--fc-accent),.25); }
+
+.fc-mem-label { font-family: var(--fc-mono); font-size: 7px; fill: rgba(255,255,255,.15); transition: fill var(--fc-fast); }
+.fc-card:hover .fc-mem-label { fill: rgba(255,255,255,.22); }
+
+.fc-tool-cell { fill: rgba(255,255,255,.03); stroke: rgba(255,255,255,.08); stroke-width: .5; transition: fill var(--fc-fast), stroke var(--fc-fast), transform var(--fc-fast); }
+.fc-card:hover .fc-tool-cell { fill: rgba(var(--fc-accent),.035); stroke: rgba(var(--fc-accent),.14); }
+/* Tool cells inside fc-q-tools are shown/hidden by parent group */
+
+.fc-tool-icon { stroke: rgba(255,255,255,.15); stroke-width: .8; fill: none; stroke-linecap: round; stroke-linejoin: round; transition: stroke var(--fc-fast); }
+.fc-card:hover .fc-tool-icon { stroke: rgba(var(--fc-accent),.6); }
+
+.fc-tool-label { font-family: var(--fc-mono); font-size: 7px; fill: rgba(255,255,255,.14); transition: fill var(--fc-fast); }
+.fc-card:hover .fc-tool-label { fill: rgba(255,255,255,.25); }
+
+.fc-skill-pill { fill: rgba(255,255,255,.012); stroke: rgba(255,255,255,.035); stroke-width: .4; transition: fill .3s ease, stroke .3s ease, transform .3s ease; opacity: 0; transform: translateX(-4px); }
+.fc-card:hover .fc-skill-pill { opacity: 1; transform: translateX(0); fill: rgba(var(--fc-accent),.04); stroke: rgba(var(--fc-accent),.14); }
+.fc-card:hover .fc-sp1 { transition-delay: .24s; }
+.fc-card:hover .fc-sp2 { transition-delay: .28s; }
+.fc-card:hover .fc-sp3 { transition-delay: .32s; }
+.fc-card:hover .fc-sp4 { transition-delay: .36s; }
+
+.fc-skill-text { font-size: 6.5px; font-weight: 500; fill: rgba(255,255,255,.05); transition: fill .3s ease, opacity .3s ease; opacity: 0; }
+.fc-card:hover .fc-skill-text { opacity: 1; fill: rgba(255,255,255,.28); }
+.fc-card:hover .fc-st1 { transition-delay: .24s; }
+.fc-card:hover .fc-st2 { transition-delay: .28s; }
+.fc-card:hover .fc-st3 { transition-delay: .32s; }
+.fc-card:hover .fc-st4 { transition-delay: .36s; }
+
+.fc-conn-l, .fc-conn-r { stroke: rgba(255,255,255,.03); stroke-width: .7; fill: none; stroke-dasharray: 3 3; opacity: 0; transition: stroke var(--fc-med), opacity .3s ease; }
+.fc-card:hover .fc-conn-l { opacity: 1; stroke: rgba(var(--fc-accent),.3); animation: fc-dashL 1.5s linear infinite; transition-delay: .3s; }
+.fc-card:hover .fc-conn-r { opacity: 1; stroke: rgba(var(--fc-accent),.3); animation: fc-dashR 1.5s linear infinite; transition-delay: .6s; }
+@keyframes fc-dashL { 0% { stroke-dashoffset: 0; } 100% { stroke-dashoffset: -12; } }
+@keyframes fc-dashR { 0% { stroke-dashoffset: 0; } 100% { stroke-dashoffset: 12; } }
+
+.fc-section-label { font-size: 7px; font-weight: 600; letter-spacing: .06em; fill: rgba(255,255,255,.14); transition: fill var(--fc-fast); }
+.fc-card:hover .fc-section-label { fill: rgba(255,255,255,.18); }
+
+/* ══════════════════════════════════════════════════════
+   ORCHESTRATION CARD
+══════════════════════════════════════════════════════ */
+.fc-trigger { fill: rgba(255,255,255,.1); }
+.fc-card:hover .fc-trigger { animation: fc-trigPulse 4s ease-in-out infinite; }
+.fc-card:hover .fc-tr1 { animation-delay: 0s; }
+.fc-card:hover .fc-tr2 { animation-delay: .5s; }
+.fc-card:hover .fc-tr3 { animation-delay: 1s; }
+.fc-card:hover .fc-tr4 { animation-delay: 1.5s; }
+.fc-card:hover .fc-tr5 { animation-delay: 2s; }
+@keyframes fc-trigPulse { 0%,20%,100% { fill: rgba(var(--fc-accent),.12); } 8% { fill: rgba(var(--fc-accent),.55); } }
+
+.fc-trigger-line { stroke: rgba(255,255,255,.05); stroke-width: .5; stroke-dasharray: 2 4; transition: stroke var(--fc-fast); }
+.fc-card:hover .fc-trigger-line { stroke: rgba(var(--fc-accent),.12); }
+
+.fc-trigger-label { font-family: var(--fc-mono); font-size: 7px; fill: rgba(255,255,255,.12); transition: fill var(--fc-fast); }
+.fc-card:hover .fc-trigger-label { fill: rgba(255,255,255,.15); }
+
+/* Task bars: visible at rest (muted), on hover they reset and slide in fresh with brand color */
+.fc-t1, .fc-t2, .fc-t3 { transition: opacity .4s ease, transform .4s ease; }
+
+.fc-task-bg { fill: rgba(255,255,255,.04); stroke: rgba(255,255,255,.1); stroke-width: .5; transition: fill .4s ease, stroke .4s ease; }
+.fc-task-name { font-family: var(--fc-mono); font-size: 8px; fill: rgba(255,255,255,.15); transition: fill .4s ease; }
+
+/* On hover: all vanish, then each appears → runs (pulsing) → completes (green) → next starts */
+.fc-card:hover .fc-t1 { animation: fc-taskLife 1.2s .2s ease both; }
+.fc-card:hover .fc-t2 { animation: fc-taskLife 1.2s 1.0s ease both; }
+.fc-card:hover .fc-t3 { animation: fc-taskLife 1.2s 1.6s ease both; }
+
+.fc-card:hover .fc-t1 .fc-task-bg,
+.fc-card:hover .fc-t2 .fc-task-bg,
+.fc-card:hover .fc-t3 .fc-task-bg { transition: none; }
+
+.fc-card:hover .fc-t1 .fc-task-bg { animation: fc-taskBarColor 1.2s .2s ease both; }
+.fc-card:hover .fc-t2 .fc-task-bg { animation: fc-taskBarColor 1.2s 1.0s ease both; }
+.fc-card:hover .fc-t3 .fc-task-bg { animation: fc-taskBarColor 1.2s 1.6s ease both; }
+
+@keyframes fc-taskLife {
+  0% { opacity: 0; transform: translateX(-10px); }
+  15% { opacity: 1; transform: translateX(0); }
+  85% { opacity: 1; transform: translateX(0); }
+  100% { opacity: 1; transform: translateX(0); }
+}
+
+@keyframes fc-taskBarColor {
+  0%,15% { fill: rgba(255,255,255,.04); stroke: rgba(255,255,255,.1); }
+  40% { fill: rgba(255,255,255,.06); stroke: rgba(255,255,255,.15); }
+  75% { fill: rgba(var(--fc-accent),.08); stroke: rgba(var(--fc-accent),.3); }
+  100% { fill: rgba(var(--fc-accent),.06); stroke: rgba(var(--fc-accent),.2); }
+}
+
+.fc-task-dur { font-family: var(--fc-mono); font-size: 7.5px; font-weight: 600; fill: rgba(255,255,255,.1); transition: fill .35s ease; }
+.fc-card:hover .fc-t1 .fc-task-dur { fill: rgba(var(--fc-accent),.4); transition-delay: .1s; }
+.fc-card:hover .fc-t2 .fc-task-dur { fill: rgba(var(--fc-accent),.4); transition-delay: .3s; }
+.fc-card:hover .fc-t3 .fc-task-dur { fill: rgba(var(--fc-accent),.4); transition-delay: .5s; }
+
+.fc-run-dot { fill: rgba(var(--fc-accent),.5); opacity: 0; transition: opacity .3s ease; }
+.fc-card:hover .fc-rd1 { opacity: 1; transition-delay: .1s; animation: fc-runPulse 1.5s ease-in-out infinite .1s; }
+.fc-card:hover .fc-rd2 { opacity: 1; transition-delay: .3s; animation: fc-runPulse 1.5s ease-in-out infinite .3s; }
+.fc-card:hover .fc-rd3 { opacity: 1; transition-delay: .5s; animation: fc-runPulse 1.5s ease-in-out infinite .5s; }
+@keyframes fc-runPulse { 0%,100% { r: 3; opacity: .35; } 50% { r: 4.5; opacity: 1; } }
+
+.fc-time-axis { stroke: rgba(255,255,255,.07); stroke-width: .6; transition: stroke var(--fc-fast); }
+.fc-card:hover .fc-time-axis { stroke: rgba(255,255,255,.06); }
+
+.fc-time-tick { stroke: rgba(255,255,255,.08); stroke-width: .6; transition: stroke var(--fc-fast); }
+.fc-card:hover .fc-time-tick { stroke: rgba(255,255,255,.08); }
+
+.fc-time-label { font-family: var(--fc-mono); font-size: 7px; fill: rgba(255,255,255,.12); transition: fill var(--fc-fast); }
+.fc-card:hover .fc-time-label { fill: rgba(255,255,255,.16); }
+
+/* ══════════════════════════════════════════════════════
+   LLM JUDGE CARD
+══════════════════════════════════════════════════════ */
+.fc-grid-diamond { fill: none; stroke: rgba(255,255,255,.06); stroke-width: .5; transition: stroke var(--fc-fast); }
+.fc-card:hover .fc-grid-diamond { stroke: rgba(255,255,255,.08); }
+
+.fc-grid-outer { fill: none; stroke: rgba(255,255,255,.1); stroke-width: .6; transition: stroke var(--fc-fast); }
+.fc-card:hover .fc-grid-outer { stroke: rgba(255,255,255,.14); }
+
+.fc-axis-line { stroke: rgba(255,255,255,.06); stroke-width: .4; transition: stroke var(--fc-fast); }
+.fc-card:hover .fc-axis-line { stroke: rgba(255,255,255,.1); }
+
+.fc-scale-tick { font-family: var(--fc-mono); font-size: 5.5px; fill: rgba(255,255,255,.06); transition: fill var(--fc-fast); }
+.fc-card:hover .fc-scale-tick { fill: rgba(255,255,255,.12); }
+
+.fc-dim-label { font-size: 10px; font-weight: 500; fill: rgba(255,255,255,.14); transition: fill var(--fc-fast); }
+.fc-card:hover .fc-dim-label { fill: rgba(255,255,255,.35); }
+
+.fc-score-poly {
+  fill: rgba(var(--fc-accent), .05);
+  stroke: rgba(var(--fc-accent), .22);
+  stroke-width: 1.2;
+  transform: scale(0);
+  transform-origin: 180px 100px;
+  opacity: 0;
+  transition: transform .7s cubic-bezier(.22,1,.36,1), opacity .3s ease;
+}
+.fc-card:hover .fc-score-poly { transform: scale(1); opacity: 1; }
+
+.fc-score-dot { fill: rgba(var(--fc-accent), .6); opacity: 0; transition: opacity .2s ease; }
+.fc-card:hover .fc-score-dot { opacity: 1; }
+.fc-card:hover .fc-sd0 { transition-delay: .5s; }
+.fc-card:hover .fc-sd1 { transition-delay: .58s; }
+.fc-card:hover .fc-sd2 { transition-delay: .66s; }
+.fc-card:hover .fc-sd3 { transition-delay: .74s; }
+
+.fc-score-val { font-family: var(--fc-mono); font-size: 10px; font-weight: 600; fill: rgba(var(--fc-accent), .55); opacity: 0; transition: opacity .2s ease; }
+.fc-card:hover .fc-score-val { opacity: 1; }
+.fc-card:hover .fc-sv0 { transition-delay: .55s; }
+.fc-card:hover .fc-sv1 { transition-delay: .63s; }
+.fc-card:hover .fc-sv2 { transition-delay: .71s; }
+.fc-card:hover .fc-sv3 { transition-delay: .79s; }
+
+.fc-overall-ring { fill: rgba(255,255,255,.03); stroke: rgba(255,255,255,.08); stroke-width: .5; transition: fill var(--fc-fast), stroke var(--fc-fast); }
+.fc-card:hover .fc-overall-ring { fill: rgba(var(--fc-accent), .05); stroke: rgba(var(--fc-accent), .18); transition-delay: .85s; }
+
+.fc-overall-num { font-family: var(--fc-mono); font-size: 13px; font-weight: 700; fill: rgba(255,255,255,.1); transition: fill .3s ease; }
+.fc-card:hover .fc-overall-num { fill: rgba(var(--fc-accent), .65); transition-delay: .85s; }
+
+.fc-overall-label { font-size: 7px; font-weight: 500; letter-spacing: .05em; fill: rgba(255,255,255,.08); transition: fill .3s ease; }
+.fc-card:hover .fc-overall-label { fill: rgba(255,255,255,.25); transition-delay: .85s; }
+
+/* ══════════════════════════════════════════════════════
+   SCHEDULE CARD
+══════════════════════════════════════════════════════ */
+
+/* Clock */
+.fc-clock-ring { fill: none; stroke: rgba(255,255,255,.12); stroke-width: 1.2; transition: stroke var(--fc-med); }
+.fc-card:hover .fc-clock-ring { stroke: rgba(var(--fc-accent),.35); }
+
+.fc-clock-center { fill: rgba(255,255,255,.15); transition: fill var(--fc-fast); }
+.fc-card:hover .fc-clock-center { fill: rgba(var(--fc-accent),.6); }
+
+.fc-clock-tick { stroke: rgba(255,255,255,.1); stroke-width: .8; transition: stroke var(--fc-fast); }
+.fc-card:hover .fc-clock-tick { stroke: rgba(255,255,255,.2); }
+
+.fc-clock-hour { stroke: rgba(255,255,255,.2); stroke-width: 1.8; stroke-linecap: round; transition: stroke var(--fc-fast); }
+.fc-card:hover .fc-clock-hour { stroke: rgba(255,255,255,.4); }
+
+.fc-clock-min { stroke: rgba(255,255,255,.15); stroke-width: 1.2; stroke-linecap: round; transition: stroke var(--fc-fast); }
+.fc-card:hover .fc-clock-min { stroke: rgba(var(--fc-accent),.5); animation: fc-clockTick 4s linear infinite; transform-origin: 130px 90px; }
+@keyframes fc-clockTick { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+
+/* Section labels */
+.fc-sched-section { font-family: var(--fc-mono); font-size: 8px; font-weight: 600; letter-spacing: .06em; fill: rgba(255,255,255,.12); transition: fill var(--fc-fast); }
+.fc-card:hover .fc-sched-section { fill: rgba(255,255,255,.25); }
+
+/* Running task — progress bar */
+.fc-running-bar-bg { fill: rgba(255,255,255,.06); }
+.fc-running-bar-fill { fill: rgba(var(--fc-accent),.3); transition: width .3s ease; }
+.fc-card:hover .fc-running-bar-fill { animation: fc-progressFill 3s ease-in-out infinite; }
+@keyframes fc-progressFill {
+  0% { width: 20px; }
+  50% { width: 76px; }
+  100% { width: 96px; }
+}
+
+.fc-running-time { font-family: var(--fc-mono); font-size: 10px; font-weight: 600; fill: rgba(255,255,255,.1); transition: fill var(--fc-fast); }
+.fc-card:hover .fc-running-time { fill: rgba(var(--fc-accent),.5); }
+
+/* Cron box */
+.fc-cron-box { fill: rgba(255,255,255,.03); stroke: rgba(255,255,255,.08); stroke-width: .5; transition: fill var(--fc-fast), stroke var(--fc-fast); }
+.fc-card:hover .fc-cron-box { fill: rgba(var(--fc-accent),.04); stroke: rgba(var(--fc-accent),.18); }
+
+.fc-cron-expr { font-family: var(--fc-mono); font-size: 12px; font-weight: 600; fill: rgba(255,255,255,.18); transition: fill var(--fc-fast); }
+.fc-card:hover .fc-cron-expr { fill: rgba(var(--fc-accent),.6); }
+
+/* Scheduled runs — appear one by one on hover */
+.fc-sched-run { opacity: 0; transform: translateX(-6px); transition: opacity .3s ease, transform .3s ease; }
+.fc-card:hover .fc-sr1 { opacity: 1; transform: translateX(0); transition-delay: .2s; }
+.fc-card:hover .fc-sr2 { opacity: 1; transform: translateX(0); transition-delay: .5s; }
+.fc-card:hover .fc-sr3 { opacity: 1; transform: translateX(0); transition-delay: .8s; }
+.fc-card:hover .fc-sr4 { opacity: 1; transform: translateX(0); transition-delay: 1.1s; }
+
+.fc-sched-bar { fill: rgba(255,255,255,.04); stroke: rgba(255,255,255,.08); stroke-width: .5; }
+.fc-card:hover .fc-sched-bar { fill: rgba(var(--fc-accent),.04); stroke: rgba(var(--fc-accent),.15); }
+
+.fc-sched-text { font-family: var(--fc-mono); font-size: 7px; fill: rgba(255,255,255,.2); }
+.fc-card:hover .fc-sched-text { fill: rgba(255,255,255,.35); }
+
+/* Status dots */
+.fc-sched-dot { fill: rgba(var(--fc-accent),.4); }
+.fc-sched-dot-active { fill: rgba(var(--fc-accent),.6); }
+.fc-card:hover .fc-sched-dot-active { animation: fc-readyPulse 1.5s ease-in-out infinite; }
+.fc-sched-dot-pending { fill: rgba(255,255,255,.1); }

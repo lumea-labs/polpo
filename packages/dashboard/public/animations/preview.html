@@ -1,0 +1,430 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>polpo-spawn — lottie preview</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400;500;600&family=Geist:wght@400;500;600&display=swap" rel="stylesheet" />
+<style>
+  :root {
+    --bg: #111111;
+    --fg: #ededed;
+    --muted: #737373;
+    --border: #2e2e2e;
+    --brand: #3ecf8e;
+    --card: #1a1a1a;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+  body {
+    background: var(--bg);
+    color: var(--fg);
+    font-family: "Geist", ui-sans-serif, system-ui, sans-serif;
+    font-feature-settings: "ss01", "ss03";
+    -webkit-font-smoothing: antialiased;
+    min-height: 100vh;
+    padding: 48px 32px;
+    background-image:
+      radial-gradient(circle at 20% 10%, rgba(62, 207, 142, 0.04) 0%, transparent 40%),
+      linear-gradient(to right, var(--border) 0.5px, transparent 0.5px),
+      linear-gradient(to bottom, var(--border) 0.5px, transparent 0.5px);
+    background-size: 100% 100%, 64px 64px, 64px 64px;
+  }
+  .mono { font-family: "Geist Mono", ui-monospace, monospace; }
+  .wrap {
+    max-width: 1280px;
+    margin: 0 auto;
+  }
+  header {
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-between;
+    gap: 48px;
+    padding-bottom: 24px;
+    margin-bottom: 48px;
+    border-bottom: 1px solid var(--border);
+  }
+  .brand {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+  }
+  .brand-mark {
+    display: inline-block;
+    width: 20px;
+    height: 20px;
+    position: relative;
+    flex-shrink: 0;
+  }
+  .brand-mark::before, .brand-mark::after {
+    content: "";
+    position: absolute;
+    background: var(--fg);
+  }
+  .brand-mark::before { top: 0; left: 0; width: 9px; height: 9px; }
+  .brand-mark::after { bottom: 0; right: 0; width: 9px; height: 9px; }
+  .brand-text {
+    font-family: "Geist Mono", monospace;
+    font-weight: 600;
+    letter-spacing: 0.28em;
+    font-size: 13px;
+  }
+  .title {
+    font-family: "Geist Mono", monospace;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.24em;
+    color: var(--muted);
+  }
+  .title strong {
+    color: var(--fg);
+    font-weight: 600;
+  }
+  h1 {
+    font-size: 36px;
+    font-weight: 500;
+    letter-spacing: -0.025em;
+    line-height: 1.1;
+    margin-top: 14px;
+  }
+  h1 .accent { color: var(--muted); }
+  .meta {
+    display: flex;
+    gap: 24px;
+    align-items: flex-end;
+    color: var(--muted);
+    font-family: "Geist Mono", monospace;
+    font-size: 11px;
+    letter-spacing: 0.08em;
+  }
+  .meta b { color: var(--fg); font-weight: 600; }
+
+  /* Stage grid */
+  .stages {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0;
+    border: 1px solid var(--border);
+    background: var(--card);
+    position: relative;
+  }
+  .stage {
+    aspect-ratio: 1 / 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    position: relative;
+    overflow: hidden;
+  }
+  .stage.dark { background: #111111; }
+  .stage.light { background: #fafafa; }
+  .stage .corner {
+    position: absolute;
+    font-family: "Geist Mono", monospace;
+    font-size: 10px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    padding: 14px 18px;
+    pointer-events: none;
+  }
+  .stage.dark .corner { color: rgba(237, 237, 237, 0.4); }
+  .stage.light .corner { color: rgba(23, 23, 23, 0.35); }
+  .stage .corner.tl { top: 0; left: 0; }
+  .stage .corner.br { bottom: 0; right: 0; }
+  .stages::before {
+    content: "";
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 50%;
+    width: 1px;
+    background: var(--border);
+    pointer-events: none;
+    z-index: 2;
+  }
+
+  .lottie {
+    width: 62%;
+    height: 62%;
+    max-width: 400px;
+    max-height: 400px;
+  }
+
+  /* Scrubber panel */
+  .panel {
+    margin-top: 32px;
+    padding: 24px;
+    border: 1px solid var(--border);
+    background: var(--card);
+  }
+  .controls {
+    display: flex;
+    align-items: center;
+    gap: 20px;
+    flex-wrap: wrap;
+  }
+  button {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--fg);
+    padding: 8px 14px;
+    font-family: "Geist Mono", monospace;
+    font-size: 11px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    cursor: pointer;
+    transition: all 140ms ease;
+  }
+  button:hover {
+    border-color: var(--brand);
+    color: var(--brand);
+  }
+  button.active {
+    background: var(--brand);
+    color: #111;
+    border-color: var(--brand);
+  }
+  .scrubber {
+    flex: 1;
+    min-width: 280px;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+  }
+  .scrubber input[type="range"] {
+    flex: 1;
+    -webkit-appearance: none;
+    appearance: none;
+    height: 2px;
+    background: var(--border);
+    outline: none;
+  }
+  .scrubber input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 14px;
+    height: 14px;
+    background: var(--brand);
+    border: none;
+    cursor: pointer;
+  }
+  .scrubber input[type="range"]::-moz-range-thumb {
+    width: 14px;
+    height: 14px;
+    background: var(--brand);
+    border: none;
+    cursor: pointer;
+  }
+  .frame-readout {
+    font-family: "Geist Mono", monospace;
+    font-size: 11px;
+    color: var(--muted);
+    letter-spacing: 0.12em;
+    min-width: 90px;
+  }
+  .frame-readout b { color: var(--fg); font-weight: 600; }
+
+  /* Timeline map */
+  .timeline {
+    margin-top: 32px;
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 16px;
+  }
+  .beat {
+    padding: 18px;
+    border: 1px solid var(--border);
+    background: var(--card);
+    position: relative;
+    overflow: hidden;
+  }
+  .beat::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    width: 2px;
+    background: var(--brand);
+    opacity: 0;
+    transition: opacity 200ms ease;
+  }
+  .beat.on::before { opacity: 1; }
+  .beat .frames {
+    font-family: "Geist Mono", monospace;
+    font-size: 10px;
+    color: var(--muted);
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    margin-bottom: 8px;
+  }
+  .beat .beat-name {
+    font-family: "Geist Mono", monospace;
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    color: var(--fg);
+    margin-bottom: 6px;
+  }
+  .beat .beat-desc {
+    font-size: 12px;
+    color: var(--muted);
+    line-height: 1.45;
+  }
+
+  footer {
+    margin-top: 48px;
+    padding-top: 24px;
+    border-top: 1px solid var(--border);
+    display: flex;
+    justify-content: space-between;
+    font-family: "Geist Mono", monospace;
+    font-size: 11px;
+    color: var(--muted);
+    letter-spacing: 0.1em;
+  }
+
+  @media (max-width: 820px) {
+    body { padding: 24px 16px; }
+    .stages { grid-template-columns: 1fr; }
+    .stages::before { display: none; }
+    .timeline { grid-template-columns: 1fr 1fr; }
+    h1 { font-size: 24px; }
+  }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <div>
+        <div class="brand">
+          <span class="brand-mark" aria-hidden="true"></span>
+          <span class="brand-text">POLPO</span>
+        </div>
+        <h1 style="margin-top: 24px;">
+          polpo-spawn.<span class="accent">json</span>
+        </h1>
+        <p class="title" style="margin-top: 10px;">
+          <strong>Brandmark loop</strong> · 512×512 · 30fps · 60-frame seamless cycle
+        </p>
+      </div>
+      <div class="meta">
+        <div>v <b>5.9.0</b></div>
+        <div>format <b>lottie</b></div>
+        <div>bg <b>transparent</b></div>
+      </div>
+    </header>
+
+    <div class="stages">
+      <div class="stage dark">
+        <span class="corner tl">01 · dark surface</span>
+        <div id="lottie-dark" class="lottie"></div>
+        <span class="corner br">#111111</span>
+      </div>
+      <div class="stage light">
+        <span class="corner tl">02 · light surface</span>
+        <div id="lottie-light" class="lottie"></div>
+        <span class="corner br">#fafafa</span>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="controls">
+        <button id="btn-play" class="active">Play</button>
+        <button id="btn-pause">Pause</button>
+        <button id="btn-restart">Restart</button>
+        <div class="scrubber">
+          <input id="scrubber" type="range" min="0" max="59" value="0" step="0.1" />
+          <div class="frame-readout">
+            frame <b id="frame-val">00</b> / 59
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="timeline">
+      <div class="beat" data-from="0" data-to="15">
+        <div class="frames">00 — 15</div>
+        <div class="beat-name">I · Spawn</div>
+        <div class="beat-desc">Four ghost modules fan out diagonally in a +3f stagger. Agents materialising.</div>
+      </div>
+      <div class="beat" data-from="15" data-to="34">
+        <div class="frames">15 — 34</div>
+        <div class="beat-name">II · Hold</div>
+        <div class="beat-desc">Ghosts steady. Brandmark holds center. Grid at full presence.</div>
+      </div>
+      <div class="beat" data-from="34" data-to="46">
+        <div class="frames">34 — 46</div>
+        <div class="beat-name">III · Collapse</div>
+        <div class="beat-desc">Ghosts dissolve back to the brandmark. Many return to one.</div>
+      </div>
+      <div class="beat" data-from="46" data-to="60">
+        <div class="frames">46 — 59</div>
+        <div class="beat-name">IV · Exhale</div>
+        <div class="beat-desc">Brand-green scanline sweeps NW→SE. Primaries breathe +3%. Loop.</div>
+      </div>
+    </div>
+
+    <footer>
+      <div>POLPO · the agent-native cloud</div>
+      <div>spawn one, or thousands</div>
+    </footer>
+  </div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/bodymovin/5.12.2/lottie.min.js"></script>
+  <script>
+    (async () => {
+      const [dark, light] = await Promise.all([
+        fetch("./polpo-spawn.json").then(r => r.json()),
+        fetch("./polpo-spawn-light.json").then(r => r.json()),
+      ]);
+
+      const mkAnim = (id, data) => lottie.loadAnimation({
+        container: document.getElementById(id),
+        renderer: "svg",
+        loop: true,
+        autoplay: true,
+        animationData: data,
+      });
+
+      const anims = [mkAnim("lottie-dark", dark), mkAnim("lottie-light", light)];
+
+      const scrubber = document.getElementById("scrubber");
+      const frameVal = document.getElementById("frame-val");
+      const btnPlay = document.getElementById("btn-play");
+      const btnPause = document.getElementById("btn-pause");
+      const btnRestart = document.getElementById("btn-restart");
+      const beats = Array.from(document.querySelectorAll(".beat"));
+
+      let paused = false;
+      const setMode = (mode) => {
+        if (mode === "play") { anims.forEach(a => a.play()); paused = false; btnPlay.classList.add("active"); btnPause.classList.remove("active"); }
+        if (mode === "pause") { anims.forEach(a => a.pause()); paused = true; btnPause.classList.add("active"); btnPlay.classList.remove("active"); }
+        if (mode === "restart") { anims.forEach(a => a.goToAndPlay(0, true)); paused = false; btnPlay.classList.add("active"); btnPause.classList.remove("active"); }
+      };
+      btnPlay.onclick = () => setMode("play");
+      btnPause.onclick = () => setMode("pause");
+      btnRestart.onclick = () => setMode("restart");
+
+      scrubber.addEventListener("input", (e) => {
+        const frame = parseFloat(e.target.value);
+        anims.forEach(a => a.goToAndStop(frame, true));
+        setMode("pause");
+      });
+
+      anims[0].addEventListener("enterFrame", () => {
+        if (paused) return;
+        const f = anims[0].currentFrame;
+        scrubber.value = f;
+        frameVal.textContent = String(Math.floor(f)).padStart(2, "0");
+        beats.forEach((b) => {
+          const from = +b.dataset.from, to = +b.dataset.to;
+          b.classList.toggle("on", f >= from && f < to);
+        });
+      });
+    })();
+  </script>
+</body>
+</html>

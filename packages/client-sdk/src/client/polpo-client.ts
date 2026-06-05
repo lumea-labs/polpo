@@ -313,6 +313,16 @@ export class PolpoClient {
     return this.defaultUser;
   }
 
+  /**
+   * Low-level escape hatch: issue a request against any data-plane path
+   * (resolved through `apiPrefix`) and return the unwrapped `data`. Exposed
+   * for path-addressed consumers like the self-hosted dashboard; prefer the
+   * typed resource methods where they exist.
+   */
+  requestPath<T>(method: string, path: string, body?: unknown): Promise<T> {
+    return this.request<T>(method, this.apiUrl(path), body);
+  }
+
   // ── Helpers ──────────────────────────────────────────────
 
   private apiUrl(path: string): string {
