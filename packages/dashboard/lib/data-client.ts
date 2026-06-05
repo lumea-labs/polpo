@@ -43,15 +43,25 @@ export async function mutateDataPlane<T>(
 
 /**
  * Control-plane fetch. There is no control plane in single-tenant self-host —
- * orgs, billing and keys live only in the cloud. The cloud build overrides this
- * module; in OSS this is wired to local equivalents (or no-ops) as the shell is
- * adapted. Kept as a thin direct call for now.
+ * orgs, billing and keys live only in the cloud.
+ *
+ * GATING (temporary): short-circuit with benign single-tenant stubs so the
+ * shell (sidebar / copilot project chrome) renders without hitting endpoints
+ * that don't exist on the OSS server. This is a band-aid, NOT the final design.
+ *
+ * TODO — un-mix scope per component instead of gating:
+ *   - project name/org (`/v1/projects/:id`) → pure cloud chrome → drop / static.
+ *   - BYOK (`/v1/byok/:id`) → has an OSS equivalent: re-point to the data-plane
+ *     `vault` route. Same concept, different plane (control in cloud, vault in OSS).
+ *   - api-keys / autumn billing → pure cloud → not in the OSS shell.
+ * The raw `fetch('/v1/api-keys' | '/v1/byok' | '/v1/integrations')` calls in
+ * connect-dialog / settings-form are NOT covered here (they fire on interaction,
+ * not load) and are part of the same deferred decision.
  */
 export async function fetchControlPlane<T>(path: string): Promise<T> {
-  const res = await fetch(`${API_URL}${path}`, {
-    credentials: "include",
-    headers: { "Content-Type": "application/json" },
-  });
-  if (!res.ok) throw new Error(`API error ${res.status}`);
-  return res.json();
+  // `/v1/projects/:id` → the chrome only reads { name, orgId } for display.
+  if (/^\/v1\/projects\/[^/]+$/.test(path)) {
+    return { name: "Local", orgId: "local" } as T;
+  }
+  return {} as T;
 }
