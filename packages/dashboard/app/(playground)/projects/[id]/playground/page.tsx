@@ -1,6 +1,6 @@
 import { Suspense } from "react";
-import { api, dataApi } from "@/lib/api";
-import type { Project } from "@/lib/api";
+import { api, dataApi } from "#/lib/api";
+import type { Project } from "#/lib/api";
 import type { AgentConfig } from "@polpo-ai/core";
 import PlaygroundView from "./view";
 import { PlaygroundSkeleton } from "../playground-legacy/skeleton";

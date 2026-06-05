@@ -13,15 +13,15 @@ import {
 } from "lucide-react";
 import {
   Sheet, SheetContent, SheetTitle,
-} from "@/components/ui/sheet";
+} from "#/components/ui/sheet";
 import {
   Tooltip, TooltipTrigger, TooltipContent,
-} from "@/components/ui/tooltip";
-import { useMobileSidebar } from "@/hooks/use-mobile-sidebar";
-import { useDesktopSidebar } from "@/hooks/use-desktop-sidebar";
+} from "#/components/ui/tooltip";
+import { useMobileSidebar } from "#/hooks/use-mobile-sidebar";
+import { useDesktopSidebar } from "#/hooks/use-desktop-sidebar";
 import { useQuery } from "@tanstack/react-query";
-import { fetchControlPlane } from "@/lib/data-client";
-import { ProjectSwitcher } from "@/components/dashboard/top-header";
+import { fetchControlPlane } from "#/lib/data-client";
+import { ProjectSwitcher } from "#/components/dashboard/top-header";
 
 const globalNav = [
   { label: "Projects", href: "/projects", icon: Boxes },

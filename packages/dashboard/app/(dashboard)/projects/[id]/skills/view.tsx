@@ -12,8 +12,8 @@ import {
   Terminal,
   Download,
 } from "lucide-react";
-import { usePolpoClient } from "@/lib/polpo-client";
-import { CommandSnippet } from "@/components/dashboard/command-snippet";
+import { usePolpoClient } from "#/lib/polpo-client";
+import { CommandSnippet } from "#/components/dashboard/command-snippet";
 import {
   Dialog,
   DialogContent,
@@ -21,7 +21,7 @@ import {
   DialogHeader,
   DialogTitle,
   DialogTrigger,
-} from "@/components/ui/dialog";
+} from "#/components/ui/dialog";
 
 export interface SkillInfo {
   name: string;

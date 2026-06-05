@@ -30,9 +30,9 @@ import {
 import { useRouter } from "next/navigation";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { SquarePen, X } from "lucide-react";
-import { BuilderChat } from "@/components/dashboard/builder-chat";
-import { useBuilderContext, type NavigateTarget } from "@/lib/builder-context";
-import { fetchControlPlane } from "@/lib/data-client";
+import { BuilderChat } from "#/components/dashboard/builder-chat";
+import { useBuilderContext, type NavigateTarget } from "#/lib/builder-context";
+import { fetchControlPlane } from "#/lib/data-client";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000";
 

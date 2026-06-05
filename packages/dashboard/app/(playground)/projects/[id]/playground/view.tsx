@@ -15,8 +15,8 @@ import Link from "next/link";
 import Image from "next/image";
 import type { AgentConfig } from "@polpo-ai/core";
 import { ArrowLeft, FolderOpen, Plus } from "lucide-react";
-import { AgentModelSelector } from "@/components/dashboard/agent-model-selector";
-import { PolpoChat } from "@/components/dashboard/polpo-chat";
+import { AgentModelSelector } from "#/components/dashboard/agent-model-selector";
+import { PolpoChat } from "#/components/dashboard/polpo-chat";
 
 interface Props {
   projectId: string;

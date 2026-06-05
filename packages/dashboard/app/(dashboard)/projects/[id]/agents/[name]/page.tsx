@@ -1,7 +1,7 @@
 import { Suspense } from "react";
-import { dataApi, getAgent } from "@/lib/api";
-import { AgentProfileSkeleton } from "@/components/dashboard/skeletons";
-import { AgentStudio, type VaultEntry } from "@/components/dashboard/agent-studio";
+import { dataApi, getAgent } from "#/lib/api";
+import { AgentProfileSkeleton } from "#/components/dashboard/skeletons";
+import { AgentStudio, type VaultEntry } from "#/components/dashboard/agent-studio";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000";
 

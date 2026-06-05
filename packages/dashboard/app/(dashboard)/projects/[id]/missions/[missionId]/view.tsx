@@ -12,9 +12,9 @@ import { Loader2, Play, Square, RotateCcw, GitBranch, List, Braces, Copy, Check,
 // `Task` from core because we need `missionId` to filter. `Mission` doesn't matter
 // here — both shapes are equivalent for what this file consumes.
 import type { Mission, Task } from "@polpo-ai/core";
-import { usePolpoClient } from "@/lib/polpo-client";
-import { MissionGraph } from "@/components/dashboard/mission-graph";
-import { ManualRefreshButton } from "@/components/dashboard/manual-refresh-button";
+import { usePolpoClient } from "#/lib/polpo-client";
+import { MissionGraph } from "#/components/dashboard/mission-graph";
+import { ManualRefreshButton } from "#/components/dashboard/manual-refresh-button";
 
 function highlightJson(json: string): string {
   return json.replace(

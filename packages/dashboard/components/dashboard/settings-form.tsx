@@ -22,9 +22,9 @@ import {
   Pencil,
   Eye,
 } from "lucide-react";
-import { fetchDataPlane, mutateDataPlane } from "@/lib/data-client";
-import { fetchControlPlane } from "@/lib/data-client";
-import type { ProjectSettings, ProjectGatewaySettings } from "@/lib/api";
+import { fetchDataPlane, mutateDataPlane } from "#/lib/data-client";
+import { fetchControlPlane } from "#/lib/data-client";
+import type { ProjectSettings, ProjectGatewaySettings } from "#/lib/api";
 import {
   Dialog,
   DialogContent,
@@ -33,12 +33,12 @@ import {
   DialogDescription,
   DialogFooter,
   DialogClose,
-} from "@/components/ui/dialog";
-import { CopyCard } from "@/components/dashboard/copy-card";
-import { useEventCatalog } from "@/lib/use-event-catalog";
-import { WebhookDeliveries } from "@/components/dashboard/webhook-deliveries";
-import { InferenceModeRadio, type InferenceMode } from "@/components/dashboard/inference-mode";
-import type { ByokEntry } from "@/lib/api";
+} from "#/components/ui/dialog";
+import { CopyCard } from "#/components/dashboard/copy-card";
+import { useEventCatalog } from "#/lib/use-event-catalog";
+import { WebhookDeliveries } from "#/components/dashboard/webhook-deliveries";
+import { InferenceModeRadio, type InferenceMode } from "#/components/dashboard/inference-mode";
+import type { ByokEntry } from "#/lib/api";
 
 const SALES_EMAIL = "hello@polpo.sh";
 

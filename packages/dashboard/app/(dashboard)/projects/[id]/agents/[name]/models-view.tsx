@@ -1,5 +1,5 @@
 import type { AgentConfig } from "@polpo-ai/core";
-import { AgentCapabilities } from "@/components/dashboard/agent-capabilities";
+import { AgentCapabilities } from "#/components/dashboard/agent-capabilities";
 
 /** Models tab — the per-capability model grid (one row per modality). */
 export default function AgentModelsView({

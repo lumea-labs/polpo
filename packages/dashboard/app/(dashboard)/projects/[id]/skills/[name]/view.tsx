@@ -5,10 +5,10 @@ import { useQuery } from "@tanstack/react-query";
 import { useParams } from "next/navigation";
 import Link from "next/link";
 import { ArrowLeft, Users, Tag } from "lucide-react";
-import { usePolpoClient } from "@/lib/polpo-client";
-import { Markdown } from "@/components/dashboard/markdown";
-import { ManualRefreshButton } from "@/components/dashboard/manual-refresh-button";
-import { FileBrowser } from "@/components/dashboard/file-browser";
+import { usePolpoClient } from "#/lib/polpo-client";
+import { Markdown } from "#/components/dashboard/markdown";
+import { ManualRefreshButton } from "#/components/dashboard/manual-refresh-button";
+import { FileBrowser } from "#/components/dashboard/file-browser";
 
 export interface LoadedSkill {
   name: string;

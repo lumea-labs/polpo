@@ -1,4 +1,4 @@
-import { Markdown } from "@/components/dashboard/markdown";
+import { Markdown } from "#/components/dashboard/markdown";
 
 export default function MemoryView({ memoryContent }: { memoryContent: string }) {
   if (memoryContent) {

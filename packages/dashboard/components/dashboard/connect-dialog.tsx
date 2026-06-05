@@ -3,12 +3,12 @@
 import { useEffect, useState } from "react";
 import { usePathname } from "next/navigation";
 import { useQuery } from "@tanstack/react-query";
-import { fetchControlPlane } from "@/lib/data-client";
+import { fetchControlPlane } from "#/lib/data-client";
 import { Plug, KeyRound, Terminal, CodeXml, SquareTerminal } from "lucide-react";
-import { CopyCard } from "@/components/dashboard/copy-card";
-import { ClientPicker } from "@/components/dashboard/client-picker";
-import { SdkSnippetPanel } from "@/components/dashboard/sdk-snippet-panel";
-import { McpInstallPanel } from "@/components/dashboard/mcp-install-panel";
+import { CopyCard } from "#/components/dashboard/copy-card";
+import { ClientPicker } from "#/components/dashboard/client-picker";
+import { SdkSnippetPanel } from "#/components/dashboard/sdk-snippet-panel";
+import { McpInstallPanel } from "#/components/dashboard/mcp-install-panel";
 import {
   Dialog,
   DialogContent,
@@ -17,9 +17,9 @@ import {
   DialogDescription,
   DialogFooter,
   DialogClose,
-} from "@/components/ui/dialog";
-import type { Project } from "@/lib/api";
-import { createPolpoClient } from "@/lib/polpo-client";
+} from "#/components/ui/dialog";
+import type { Project } from "#/lib/api";
+import { createPolpoClient } from "#/lib/polpo-client";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "https://api.polpo.sh";
 

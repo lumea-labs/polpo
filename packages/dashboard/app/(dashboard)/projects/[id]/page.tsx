@@ -1,8 +1,8 @@
 import { Suspense } from "react";
-import { api, dataApi } from "@/lib/api";
-import type { Project } from "@/lib/api";
+import { api, dataApi } from "#/lib/api";
+import type { Project } from "#/lib/api";
 import type { AgentConfig, Task, Mission } from "@polpo-ai/core";
-import { ProjectOverviewSkeleton } from "@/components/dashboard/skeletons";
+import { ProjectOverviewSkeleton } from "#/components/dashboard/skeletons";
 import ProjectOverviewView from "./view";
 import WelcomeBanner from "./welcome-banner";
 

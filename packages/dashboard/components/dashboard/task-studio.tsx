@@ -26,15 +26,15 @@ import {
 } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import type { Task } from "@polpo-ai/core";
-import { usePolpoClient } from "@/lib/polpo-client";
-import { Breadcrumb } from "@/components/dashboard/breadcrumb";
-import type { BlueprintContext } from "@/app/(dashboard)/projects/[id]/tasks/[taskId]/blueprint";
-import TaskOverviewView from "@/app/(dashboard)/projects/[id]/tasks/[taskId]/view";
-import TaskOutputView from "@/app/(dashboard)/projects/[id]/tasks/[taskId]/output/view";
-import TaskAssessmentView from "@/app/(dashboard)/projects/[id]/tasks/[taskId]/assessment/view";
+import { usePolpoClient } from "#/lib/polpo-client";
+import { Breadcrumb } from "#/components/dashboard/breadcrumb";
+import type { BlueprintContext } from "#/app/(dashboard)/projects/[id]/tasks/[taskId]/blueprint";
+import TaskOverviewView from "#/app/(dashboard)/projects/[id]/tasks/[taskId]/view";
+import TaskOutputView from "#/app/(dashboard)/projects/[id]/tasks/[taskId]/output/view";
+import TaskAssessmentView from "#/app/(dashboard)/projects/[id]/tasks/[taskId]/assessment/view";
 import TaskActivityView, {
   type TaskActivityPayload,
-} from "@/app/(dashboard)/projects/[id]/tasks/[taskId]/activity/view";
+} from "#/app/(dashboard)/projects/[id]/tasks/[taskId]/activity/view";
 
 const statusColor: Record<string, string> = {
   done: "bg-brand",

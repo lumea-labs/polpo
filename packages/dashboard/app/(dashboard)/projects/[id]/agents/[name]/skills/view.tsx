@@ -1,7 +1,7 @@
 import Link from "next/link";
 import type { AgentConfig } from "@polpo-ai/core";
 import { BookMarked, ExternalLink } from "lucide-react";
-import { SectionHeader } from "@/components/dashboard/section-header";
+import { SectionHeader } from "#/components/dashboard/section-header";
 
 export default function AgentSkillsView({
   agent,

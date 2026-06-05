@@ -10,14 +10,14 @@ import { RefreshCw, X, ListFilter, Search } from "lucide-react";
 // build ships a degraded copy (e.g. NotificationRule.condition: unknown vs
 // NotificationCondition). Track in OSS issue: SDK should re-export from core.
 import type { Mission } from "@polpo-ai/sdk";
-import { usePolpoClient } from "@/lib/polpo-client";
-import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { usePolpoClient } from "#/lib/polpo-client";
+import { Button } from "#/components/ui/button";
+import { Badge } from "#/components/ui/badge";
+import { Popover, PopoverContent, PopoverTrigger } from "#/components/ui/popover";
 import {
   Command, CommandInput, CommandList, CommandEmpty,
   CommandGroup, CommandItem,
-} from "@/components/ui/command";
+} from "#/components/ui/command";
 
 const ALL_STATUSES = [
   "draft", "scheduled", "recurring", "active", "paused", "completed", "failed", "cancelled",

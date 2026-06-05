@@ -1,4 +1,4 @@
-import { Hint } from "@/components/dashboard/hint";
+import { Hint } from "#/components/dashboard/hint";
 
 interface VaultEntry {
   service: string;

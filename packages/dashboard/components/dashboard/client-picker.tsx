@@ -1,6 +1,6 @@
 "use client";
 
-import { MultiSelect } from "@/components/ui/multi-select";
+import { MultiSelect } from "#/components/ui/multi-select";
 import {
   ClaudeCodeIcon,
   ClineIcon,
@@ -12,7 +12,7 @@ import {
   RooIcon,
   TraeIcon,
   WindsurfIcon,
-} from "@/components/icons/coding-agents";
+} from "#/components/icons/coding-agents";
 
 /**
  * Coding agent client definitions — shared across ConnectDialog and

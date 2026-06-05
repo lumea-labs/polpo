@@ -3,16 +3,16 @@
 import { useState } from "react";
 import { Eye } from "lucide-react";
 import type { AgentConfig } from "@polpo-ai/core";
-import { Markdown } from "@/components/dashboard/markdown";
-import { CopyButton } from "@/components/dashboard/copy-button";
-import { Hint } from "@/components/dashboard/hint";
+import { Markdown } from "#/components/dashboard/markdown";
+import { CopyButton } from "#/components/dashboard/copy-button";
+import { Hint } from "#/components/dashboard/hint";
 import {
   Dialog,
   DialogContent,
   DialogDescription,
   DialogHeader,
   DialogTitle,
-} from "@/components/ui/dialog";
+} from "#/components/ui/dialog";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000";
 

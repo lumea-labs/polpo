@@ -3,8 +3,8 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import type { Task } from "@polpo-ai/core";
-import { usePolpoClient } from "@/lib/polpo-client";
-import { ManualRefreshButton } from "@/components/dashboard/manual-refresh-button";
+import { usePolpoClient } from "#/lib/polpo-client";
+import { ManualRefreshButton } from "#/components/dashboard/manual-refresh-button";
 import type { BlueprintContext } from "../blueprint";
 
 export interface LogEntry {

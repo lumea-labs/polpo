@@ -1,6 +1,6 @@
 import { dehydrate, HydrationBoundary } from "@tanstack/react-query";
-import getQueryClient from "@/lib/get-query-client";
-import { dataApi } from "@/lib/api";
+import getQueryClient from "#/lib/get-query-client";
+import { dataApi } from "#/lib/api";
 import LogsView from "./view";
 
 export default async function LogsPage({

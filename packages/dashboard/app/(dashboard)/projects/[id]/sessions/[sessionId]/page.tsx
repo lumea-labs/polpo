@@ -1,6 +1,6 @@
 import { Suspense } from "react";
-import { dataApi } from "@/lib/api";
-import { SessionDetailSkeleton } from "@/components/dashboard/skeletons";
+import { dataApi } from "#/lib/api";
+import { SessionDetailSkeleton } from "#/components/dashboard/skeletons";
 import SessionDetailView, {
   type Attachment,
   type Message,

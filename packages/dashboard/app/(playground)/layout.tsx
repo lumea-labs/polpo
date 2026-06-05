@@ -1,6 +1,6 @@
 import { redirect } from "next/navigation";
-import { Providers } from "@/components/providers";
-import { getOrgs } from "@/lib/api";
+import { Providers } from "#/components/providers";
+import { getOrgs } from "#/lib/api";
 
 /**
  * Isolated layout for the Playground tab. No project sidebar — this is a

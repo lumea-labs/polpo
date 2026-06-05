@@ -15,7 +15,7 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { ChevronDown, ChevronRight, Loader2, RefreshCw } from "lucide-react";
-import { fetchDataPlane, mutateDataPlane } from "@/lib/data-client";
+import { fetchDataPlane, mutateDataPlane } from "#/lib/data-client";
 
 interface Webhook {
   id: string;

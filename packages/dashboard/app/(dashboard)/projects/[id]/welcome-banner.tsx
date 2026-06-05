@@ -14,8 +14,8 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { X } from "lucide-react";
-import { CopyCard } from "@/components/dashboard/copy-card";
-import { ClientPicker, buildInstallCommand } from "@/components/dashboard/client-picker";
+import { CopyCard } from "#/components/dashboard/copy-card";
+import { ClientPicker, buildInstallCommand } from "#/components/dashboard/client-picker";
 
 interface Props {
   projectId: string;

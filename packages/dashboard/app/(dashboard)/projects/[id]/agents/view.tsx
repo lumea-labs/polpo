@@ -7,7 +7,7 @@ import Link from "next/link";
 // SDK-bundled types — consistent with what `polpo.X()` returns.
 import type { AgentConfig } from "@polpo-ai/sdk";
 import { RefreshCw, ChevronRight, Users, User, Search, Plus, Loader2 } from "lucide-react";
-import { usePolpoClient } from "@/lib/polpo-client";
+import { usePolpoClient } from "#/lib/polpo-client";
 import {
   Dialog,
   DialogContent,
@@ -15,7 +15,7 @@ import {
   DialogHeader,
   DialogTitle,
   DialogTrigger,
-} from "@/components/ui/dialog";
+} from "#/components/ui/dialog";
 
 export interface Team {
   name: string;

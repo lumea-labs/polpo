@@ -9,14 +9,14 @@ import { ChevronRight, RefreshCw, X, ListFilter, Search } from "lucide-react";
 // Mission from SDK is fine. Track in OSS issue: SDK types should re-export from core.
 import type { Task } from "@polpo-ai/core";
 import type { Mission } from "@polpo-ai/sdk";
-import { usePolpoClient } from "@/lib/polpo-client";
-import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { usePolpoClient } from "#/lib/polpo-client";
+import { Button } from "#/components/ui/button";
+import { Badge } from "#/components/ui/badge";
+import { Popover, PopoverContent, PopoverTrigger } from "#/components/ui/popover";
 import {
   Command, CommandInput, CommandList, CommandEmpty,
   CommandGroup, CommandItem,
-} from "@/components/ui/command";
+} from "#/components/ui/command";
 
 const ALL_STATUSES = [
   "draft", "pending", "awaiting_approval", "assigned",

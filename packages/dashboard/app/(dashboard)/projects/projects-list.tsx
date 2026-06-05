@@ -3,7 +3,7 @@
 import { useState } from "react";
 import Link from "next/link";
 import { LayoutGrid, List } from "lucide-react";
-import type { Project } from "@/lib/api";
+import type { Project } from "#/lib/api";
 
 function timeAgo(date: string) {
   const diff = Date.now() - new Date(date).getTime();

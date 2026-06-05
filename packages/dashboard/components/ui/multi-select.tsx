@@ -2,8 +2,8 @@
 
 import type { ReactNode } from "react";
 import { Check, ChevronDown } from "lucide-react";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { cn } from "@/lib/utils";
+import { Popover, PopoverContent, PopoverTrigger } from "#/components/ui/popover";
+import { cn } from "#/lib/utils";
 
 export interface MultiSelectOption {
   value: string;

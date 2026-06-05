@@ -2,9 +2,9 @@
 
 import { useEffect, useState } from "react";
 import { Check, Copy, MessageSquare, BookMarked, Brain, ListChecks, Rocket } from "lucide-react";
-import { CopyCard } from "@/components/dashboard/copy-card";
-import { SdkSnippetPanel } from "@/components/dashboard/sdk-snippet-panel";
-import { TabToggle } from "@/components/dashboard/tab-toggle";
+import { CopyCard } from "#/components/dashboard/copy-card";
+import { SdkSnippetPanel } from "#/components/dashboard/sdk-snippet-panel";
+import { TabToggle } from "#/components/dashboard/tab-toggle";
 
 export interface ChecklistStep {
   id: string;
