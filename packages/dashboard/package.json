@@ -31,6 +31,8 @@
     "@lumea-labs/llm-polpo": "^0.1.1",
     "@lumea-labs/markdown": "^0.1.2",
     "@lumea-labs/orchestrator": "^0.1.1",
+    "@lumea-labs/skills": "^0.1.1",
+    "@lumea-labs/skills-polpo": "^0.1.1",
     "@lumea-labs/spreadsheet": "^0.1.3",
     "@lumea-labs/tool-calls": "^0.1.2",
     "@polpo-ai/chat": "^0.11.1",

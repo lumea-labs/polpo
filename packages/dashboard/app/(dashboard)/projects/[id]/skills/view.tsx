@@ -13,6 +13,7 @@ import {
   Download,
 } from "lucide-react";
 import { usePolpoClient } from "#/lib/polpo-client";
+import { SkillsInstallWizard } from "#/components/dashboard/skills-install-wizard";
 import { CommandSnippet } from "#/components/dashboard/command-snippet";
 import {
   Dialog,
@@ -54,7 +55,7 @@ export default function SkillsView({ initialSkills }: { initialSkills: SkillInfo
           </p>
         </div>
         <div className="flex items-center gap-3">
-          <InstallSkillsDialog />
+          <SkillsInstallWizard />
           <button
             onClick={() => refetch()}
             disabled={isFetching}
@@ -141,7 +142,7 @@ export default function SkillsView({ initialSkills }: { initialSkills: SkillInfo
         <div className="mt-4 flex flex-col items-center gap-3 border border-dashed border-border p-10 text-center">
           <BookMarked className="h-5 w-5 text-muted-foreground/40" strokeWidth={1.5} />
           <p className="text-sm text-muted-foreground">No skills installed yet.</p>
-          <InstallSkillsDialog />
+          <SkillsInstallWizard />
         </div>
       )}
     </div>
