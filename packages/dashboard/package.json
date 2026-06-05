@@ -1,6 +1,6 @@
 {
   "name": "@polpo-ai/dashboard",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "publishConfig": {
     "access": "public"
   },
@@ -13,7 +13,13 @@
     "README.md"
   ],
   "imports": {
-    "#/*": "./*"
+    "#/*": [
+      "./*.tsx",
+      "./*.ts",
+      "./*/index.tsx",
+      "./*/index.ts",
+      "./*"
+    ]
   },
   "exports": {
     ".": "./index.ts"
