@@ -26,7 +26,7 @@ single-tenant self-host has one project, and the data client ignores the id.
 | Env var | Default | What |
 | --- | --- | --- |
 | `NEXT_PUBLIC_API_URL` | `http://localhost:4000` | Your Polpo server base URL |
-| `NEXT_PUBLIC_POLPO_API_PREFIX` | `/api` | Prepended to the views' `/v1/...` paths → `/api/v1/...` (the standalone server's mount) |
+| `NEXT_PUBLIC_POLPO_API_PREFIX` | `/api/v1` | API root the server mounts under (the standalone server serves at `/api/v1`) |
 | `NEXT_PUBLIC_POLPO_API_KEY` | — | `sk_...` key for the server (optional if it runs without auth) |
 
 ## How the data layer works

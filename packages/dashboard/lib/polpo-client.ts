@@ -4,26 +4,22 @@ import { PolpoClient } from "@polpo-ai/sdk";
 import { useMemo } from "react";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000";
+const API_PREFIX = process.env.NEXT_PUBLIC_POLPO_API_PREFIX ?? "/api/v1";
+const API_KEY = process.env.NEXT_PUBLIC_POLPO_API_KEY;
 
 /**
- * Dashboard-flavored PolpoClient — points at the session-proxy URL
- * (`/v1/projects/:projectId/data/*`) and forwards cookies instead of an
- * API key. The data plane on the other end strips the `data/` prefix
- * and routes to the per-project Polpo instance.
+ * Dashboard PolpoClient for single-tenant self-host: points straight at the OSS
+ * server with a Bearer key. `projectId` is accepted for call-site parity but
+ * ignored (one instance, no per-project routing). The cloud build swaps this
+ * factory for its session-proxy variant.
  *
- * Use this everywhere the dashboard needs to talk to a project's data
- * plane. It's the same SDK we publish to customers — every bug they'd
- * hit, we hit first.
+ * It's the same SDK we publish to customers — every bug they'd hit, we hit first.
  */
-export function createPolpoClient(projectId: string): PolpoClient {
+export function createPolpoClient(_projectId: string): PolpoClient {
   return new PolpoClient({
-    baseUrl: `${API_URL}/v1/projects/${projectId}/data`,
-    apiPrefix: "/v1",
-    fetch: (input, init) =>
-      fetch(input, {
-        ...init,
-        credentials: "include",
-      }),
+    baseUrl: API_URL,
+    apiPrefix: API_PREFIX,
+    apiKey: API_KEY,
   });
 }
 

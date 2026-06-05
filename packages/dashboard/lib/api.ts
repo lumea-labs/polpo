@@ -11,7 +11,9 @@ import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import type { AgentConfig } from "@polpo-ai/core";
 
-const API_URL = process.env.POLPO_API_URL ?? "http://localhost:4000";
+const API_URL = process.env.POLPO_API_URL ?? process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000";
+const API_PREFIX = process.env.NEXT_PUBLIC_POLPO_API_PREFIX ?? "/api/v1";
+const API_KEY = process.env.POLPO_API_KEY ?? process.env.NEXT_PUBLIC_POLPO_API_KEY;
 
 /** Control-plane API error carrying the HTTP status, so callers can tell an
  *  auth failure (401) apart from a transient backend error (5xx/network). */
@@ -55,15 +57,16 @@ export async function api<T>(path: string, opts?: RequestInit): Promise<T> {
  * Routes through /v1/projects/:projectId/data/* which uses session auth.
  * No API key needed — the server resolves the project internally.
  */
-export async function dataApi<T>(projectId: string, path: string, opts?: RequestInit): Promise<T> {
-  const cookieStore = await cookies();
-  const cookieHeader = cookieStore.toString();
-
-  const res = await fetch(`${API_URL}/v1/projects/${projectId}/data${path}`, {
+export async function dataApi<T>(_projectId: string, path: string, opts?: RequestInit): Promise<T> {
+  // Single-tenant self-host: straight at the OSS server (`/api/v1/...`) with a
+  // Bearer key. projectId is ignored. Callers pass `/v1/...`, so strip the
+  // leading `/v1` and let API_PREFIX carry the root. Cloud overrides with its
+  // session-proxy variant.
+  const res = await fetch(`${API_URL}${API_PREFIX}${path.replace(/^\/v1(?=\/|$)/, "")}`, {
     ...opts,
     headers: {
       "Content-Type": "application/json",
-      cookie: cookieHeader,
+      ...(API_KEY ? { Authorization: `Bearer ${API_KEY}` } : {}),
       ...opts?.headers,
     },
     cache: "no-store",
