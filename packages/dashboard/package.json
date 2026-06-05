@@ -1,7 +1,17 @@
 {
   "name": "@polpo-ai/dashboard",
   "version": "0.1.0",
-  "private": true,
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    "index.ts",
+    "app",
+    "components",
+    "lib",
+    "hooks",
+    "README.md"
+  ],
   "imports": {
     "#/*": "./*"
   },

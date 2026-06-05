@@ -1,0 +1,40 @@
+name: Publish Dashboard
+
+# Publishes @polpo-ai/dashboard (the self-hosted / shared dashboard) to npm.
+# Separate from release.yml so it ships on its own cadence without re-publishing
+# every other @polpo-ai/* package (which would hit version conflicts).
+# Source package: ships .tsx; consumers transpile it (transpilePackages).
+#
+# Trigger: push a tag like `dashboard-v0.1.0`.
+
+on:
+  push:
+    tags:
+      - 'dashboard-v*'
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    name: Publish @polpo-ai/dashboard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - run: corepack enable
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+          registry-url: https://registry.npmjs.org
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Publish @polpo-ai/dashboard
+        run: pnpm --filter @polpo-ai/dashboard publish --no-git-checks --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
