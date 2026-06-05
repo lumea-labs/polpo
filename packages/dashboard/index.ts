@@ -12,3 +12,6 @@ export type { PolpoClientFactory } from "./lib/polpo-client";
 
 export { default as AgentsView } from "./app/(dashboard)/projects/[id]/agents/view";
 export type { Team } from "./app/(dashboard)/projects/[id]/agents/view";
+
+export { default as SkillsView } from "./app/(dashboard)/projects/[id]/skills/view";
+export type { SkillInfo } from "./app/(dashboard)/projects/[id]/skills/view";

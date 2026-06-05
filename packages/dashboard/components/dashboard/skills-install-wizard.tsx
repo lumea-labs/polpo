@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useParams } from "next/navigation";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -14,8 +14,13 @@ import {
   Search,
 } from "lucide-react";
 import { usePolpoClient } from "../../lib/polpo-client";
-import { usePolpoSkillsAdapter } from "@lumea-labs/skills-polpo";
-import { SkillsProvider, SkillCreateForm } from "@lumea-labs/skills";
+import {
+  SkillsProvider,
+  SkillCreateForm,
+  type SkillsAdapter,
+  type SkillCreateInput,
+  type Skill,
+} from "@lumea-labs/skills";
 import {
   Dialog,
   DialogContent,
@@ -63,18 +68,32 @@ function sourceFor(s: RegistrySkill): string {
 }
 
 export function SkillsInstallWizard() {
-  const { adapter } = usePolpoSkillsAdapter();
-  return (
-    <SkillsProvider adapter={adapter}>
-      <WizardDialog />
-    </SkillsProvider>
-  );
+  return <WizardDialog />;
 }
 
 function WizardDialog() {
   const { id } = useParams<{ id: string }>();
   const client = usePolpoClient(id);
   const qc = useQueryClient();
+
+  // Minimal SkillsAdapter built directly on the PolpoClient (the same seam
+  // usePolpoClient resolves: OSS direct, cloud session-proxy). Avoids
+  // @polpo-ai/react's <PolpoProvider>. Only createSkill is needed here —
+  // registry/URL installs go through client.installSkills directly.
+  const adapter = useMemo<SkillsAdapter>(
+    () => ({
+      createSkill: async (input: SkillCreateInput): Promise<Skill> => {
+        const res = await client.createSkill({
+          name: input.name,
+          description: input.description,
+          content: input.body,
+          allowedTools: (input.frontmatter as { allowedTools?: string[] })?.allowedTools,
+        });
+        return { id: res.name, name: res.name, description: input.description, installed: true } as Skill;
+      },
+    }),
+    [client],
+  );
 
   const [open, setOpen] = useState(false);
   const [source, setSource] = useState<Source | null>(null);
@@ -244,7 +263,9 @@ function WizardDialog() {
 
             {/* ── Paste / create (dogfood lumea-agents UI) ──── */}
             {source === "paste" && (
-              <SkillCreateForm onCreated={afterCreate} onCancel={() => setSource(null)} />
+              <SkillsProvider adapter={adapter}>
+                <SkillCreateForm onCreated={afterCreate} onCancel={() => setSource(null)} />
+              </SkillsProvider>
             )}
 
             {install.isError && source === "registry" && (
