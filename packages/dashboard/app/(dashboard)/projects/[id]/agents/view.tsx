@@ -31,6 +31,7 @@ export default function AgentsView({
   initialTeams: Team[];
 }) {
   const { id } = useParams<{ id: string }>();
+  const router = useRouter();
   const [tab, setTab] = useState<"agents" | "teams">("agents");
   const [search, setSearch] = useState("");
 
@@ -122,14 +123,22 @@ export default function AgentsView({
                 </tr>
               </thead>
               <tbody>
-                {filteredAgents.map(agent => (
-                  <Link
+                {filteredAgents.map(agent => {
+                  const href = `/projects/${id}/agents/${encodeURIComponent(agent.name)}`;
+                  return (
+                  <tr
                     key={agent.name}
-                    href={`/projects/${id}/agents/${encodeURIComponent(agent.name)}`}
-                    className="table-row border-b border-border last:border-0 hover:bg-secondary/30 transition-colors group"
+                    onClick={() => router.push(href)}
+                    className="border-b border-border last:border-0 hover:bg-secondary/30 transition-colors group cursor-pointer"
                   >
                     <td className="px-4 py-3">
-                      <span className="font-mono text-xs font-semibold">{agent.name}</span>
+                      <Link
+                        href={href}
+                        onClick={(e) => e.stopPropagation()}
+                        className="font-mono text-xs font-semibold hover:underline"
+                      >
+                        {agent.name}
+                      </Link>
                       {agent.role && (
                         <span className="block mt-0.5 text-[11px] text-muted-foreground/60 truncate max-w-[200px]">{agent.role}</span>
                       )}
@@ -150,8 +159,9 @@ export default function AgentsView({
                     <td className="px-2 py-3">
                       <ChevronRight className="h-3.5 w-3.5 text-muted-foreground/30 group-hover:text-muted-foreground transition-colors" />
                     </td>
-                  </Link>
-                ))}
+                  </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>

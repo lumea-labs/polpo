@@ -5,6 +5,9 @@
   "imports": {
     "#/*": "./*"
   },
+  "exports": {
+    ".": "./index.ts"
+  },
   "scripts": {
     "dev": "next dev --turbopack",
     "build": "next build",
