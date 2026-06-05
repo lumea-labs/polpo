@@ -617,10 +617,8 @@ export function ConnectDialog({
               Book a demo
             </a>
           </p>
-          <DialogClose>
-            <button className="rounded-md border border-border px-4 py-2 text-sm hover:border-foreground/30 transition-colors">
-              Close
-            </button>
+          <DialogClose className="rounded-md border border-border px-4 py-2 text-sm hover:border-foreground/30 transition-colors">
+            Close
           </DialogClose>
         </DialogFooter>
       </DialogContent>
