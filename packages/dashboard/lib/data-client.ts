@@ -17,9 +17,11 @@ const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000";
 
 const client = new PolpoClient({
   baseUrl: API_URL,
-  // Paths are passed verbatim (they already carry their own prefix, exactly as
-  // the cloud proxy forwarded them to the data plane). No extra prefix here.
-  apiPrefix: "",
+  // Views address the data plane with `/v1/...` paths (verbatim, exactly as the
+  // cloud proxy forwarded them). The standalone OSS server mounts those under
+  // `/api/v1`, so prepend `/api` here → `${baseUrl}/api/v1/...`. Override via
+  // NEXT_PUBLIC_POLPO_API_PREFIX if the server is mounted elsewhere.
+  apiPrefix: process.env.NEXT_PUBLIC_POLPO_API_PREFIX ?? "/api",
   apiKey: process.env.NEXT_PUBLIC_POLPO_API_KEY,
 });
 

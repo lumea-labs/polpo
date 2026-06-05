@@ -1,36 +1,44 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# @polpo-ai/dashboard
 
-## Getting Started
+The self-hosted Polpo dashboard — the single-instance debugger UI for one Polpo
+server: agents, tasks, missions, sessions, memory, skills, playbooks, schedules,
+storage, logs and a chat playground.
 
-First, run the development server:
+It talks to your Polpo server through the public SDK (`@polpo-ai/sdk`). There is
+no auth, billing, org or onboarding here — those are cloud-only. One server, one
+dashboard.
+
+## Run it
+
+You need a running Polpo server (the data plane). Then:
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+cp .env.example .env.local      # point NEXT_PUBLIC_API_URL at your server
+pnpm install
+pnpm dev                        # http://localhost:3000
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+`/` redirects to `/projects/local/agents`. `local` is a placeholder project id —
+single-tenant self-host has one project, and the data client ignores the id.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Config
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+| Env var | Default | What |
+| --- | --- | --- |
+| `NEXT_PUBLIC_API_URL` | `http://localhost:4000` | Your Polpo server base URL |
+| `NEXT_PUBLIC_POLPO_API_PREFIX` | `/api` | Prepended to the views' `/v1/...` paths → `/api/v1/...` (the standalone server's mount) |
+| `NEXT_PUBLIC_POLPO_API_KEY` | — | `sk_...` key for the server (optional if it runs without auth) |
 
-## Learn More
+## How the data layer works
 
-To learn more about Next.js, take a look at the following resources:
+Views address the data plane by path (`/v1/agents`, `/v1/tasks`, …). `lib/data-client.ts`
+drives a single `PolpoClient` from `@polpo-ai/sdk` (transport, auth, errors) and
+re-wraps the result in the `{ ok, data }` envelope the views expect. Swapping the
+server is just `NEXT_PUBLIC_API_URL`.
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## Not wired yet
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+A few shell/settings surfaces still reach for cloud-only control-plane endpoints
+(project name, BYOK keys, billing). These are gated to single-tenant stubs so the
+dashboard runs; see the `TODO` in `lib/data-client.ts`. BYOK will be re-pointed to
+the data-plane `vault` route.
