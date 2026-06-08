@@ -335,6 +335,40 @@ async function deployPlaybooks(client: ApiClient, polpoDir: string): Promise<Dep
   return result;
 }
 
+/** Push custom tools (defineTool) from .polpo/tools/*.ts to the cloud. [beta] */
+async function deployTools(client: ApiClient, polpoDir: string): Promise<DeployResult> {
+  const result = emptyResult();
+  const toolsDir = path.join(polpoDir, "tools");
+  if (!fs.existsSync(toolsDir)) return result;
+
+  const existing = new Set<string>();
+  try {
+    const res = await client.get<any>("/v1/tools");
+    if (res.status >= 200 && res.status < 300) {
+      for (const t of (res.data?.data ?? [])) existing.add(t.name);
+    }
+  } catch { /* listing is best-effort for create/update counting */ }
+
+  for (const file of fs.readdirSync(toolsDir).filter((f) => f.endsWith(".ts"))) {
+    const source = fs.readFileSync(path.join(toolsDir, file), "utf-8");
+    const name = source.match(/name\s*:\s*["'`]([a-z][a-z0-9_]*)["'`]/)?.[1] ?? file.replace(/\.ts$/, "");
+    try {
+      const res = await client.post<any>("/v1/tools", { name, source });
+      if (res.status >= 200 && res.status < 300) {
+        if (existing.has(name)) result.updated++; else result.created++;
+      } else {
+        const d = res.data as { error?: string; details?: string[] };
+        result.errors.push(`tool "${name}": ${friendlyError(d?.details?.join("; ") ?? d?.error ?? `HTTP ${res.status}`)}`);
+        result.failed++;
+      }
+    } catch (err) {
+      result.errors.push(`tool "${name}": ${(err as Error).message}`);
+      result.failed++;
+    }
+  }
+  return result;
+}
+
 async function deploySkills(client: ApiClient, polpoDir: string, opts: ConflictOptions): Promise<DeployResult> {
   const result = emptyResult();
   const skillsDir = path.join(polpoDir, "skills");
@@ -757,6 +791,8 @@ export async function runDeploy(opts: DeployOptions): Promise<DeployReport> {
       const hasSchedules = fs.existsSync(path.join(polpoDir, "schedules")) &&
         fs.readdirSync(path.join(polpoDir, "schedules")).length > 0;
       const hasVault = fs.existsSync(path.join(polpoDir, "vault.enc"));
+      const hasTools = fs.existsSync(path.join(polpoDir, "tools")) &&
+        fs.readdirSync(path.join(polpoDir, "tools")).some((f) => f.endsWith(".ts"));
       const hasAvatars = fs.existsSync(path.join(polpoDir, "avatars")) &&
         fs.readdirSync(path.join(polpoDir, "avatars")).length > 0;
       const hasTasks = fs.existsSync(path.join(polpoDir, "tasks")) &&
@@ -793,6 +829,10 @@ export async function runDeploy(opts: DeployOptions): Promise<DeployReport> {
           (d) => fs.statSync(path.join(polpoDir, "skills", d)).isDirectory()
         ).length;
         resourceLines.push(`  ${pc.bold("Skills")}       ${n}`);
+      }
+      if (hasTools) {
+        const n = fs.readdirSync(path.join(polpoDir, "tools")).filter((f) => f.endsWith(".ts")).length;
+        resourceLines.push(`  ${pc.bold("Tools")}        ${n} ${pc.dim("(beta)")}`);
       }
       if (hasSchedules) {
         const n = fs.readdirSync(path.join(polpoDir, "schedules")).filter(f => f.endsWith(".json")).length;
@@ -885,6 +925,13 @@ export async function runDeploy(opts: DeployOptions): Promise<DeployReport> {
         const r = await deploySkills(client, polpoDir, conflictOpts);
         mergeResult(total, r);
         stopSpinner(`Skills: ${r.created} created, ${r.updated} updated${r.skipped ? `, ${r.skipped} skipped` : ""}${r.failed ? `, ${r.failed} failed` : ""}`);
+      }
+
+      if (hasTools) {
+        s.start("Deploying custom tools...");
+        const r = await deployTools(client, polpoDir);
+        mergeResult(total, r);
+        s.stop(`Tools: ${r.created} created${r.updated ? `, ${r.updated} updated` : ""}${r.failed ? `, ${r.failed} failed` : ""}`);
       }
 
       if (hasSchedules) {

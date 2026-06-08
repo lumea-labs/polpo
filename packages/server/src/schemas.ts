@@ -18,9 +18,13 @@ const ToolNameSchema = z.string().refine((value) => {
   if (v === "*") return true;
   if (v.startsWith("mcp__")) return true;
   if (v.includes("*")) return TOOL_CATALOG.some((name) => matchToolPattern(v, name));
-  return TOOL_CATALOG.includes(v);
+  if (TOOL_CATALOG.includes(v)) return true;
+  // Custom tools (defineTool) register project-defined snake_case names that
+  // aren't in the built-in catalog. Accept any snake_case identifier as a
+  // possible custom tool — the runtime resolves/filters unknown names safely.
+  return /^[a-z][a-z0-9_]*$/.test(v);
 }, {
-  message: "Unknown tool. Use a built-in tool name, a category wildcard like `browser_*`, the global `*`, or an MCP tool prefixed `mcp__<server>__<name>`.",
+  message: "Invalid tool name. Use a built-in tool, a category wildcard like `browser_*`, the global `*`, an MCP tool `mcp__<server>__<name>`, or a snake_case custom tool name.",
 });
 
 // ── Outcome schemas ───────────────────────────────────────────────────
