@@ -44,5 +44,23 @@ export { assertPathAllowed, resolveAllowedPaths, isPathAllowed } from "./path-sa
 export { safeEnv, bashSafeEnv } from "./safe-env.js";
 export { assertUrlAllowed } from "./ssrf-guard.js";
 
+// Custom tools (defineTool)
+export {
+  defineTool,
+  getCustomToolErrors,
+  isCustomTool,
+  normalizeToolResult,
+  bindCustomTool,
+  extractCustomTool,
+  loadCustomToolBundle,
+} from "./custom-tools.js";
+export type {
+  CustomTool,
+  CustomToolSpec,
+  CustomToolContext,
+  CustomToolBindContext,
+  CustomToolExecuteResult,
+} from "./custom-tools.js";
+
 // Types
 export type { ResolvedVault } from "./types.js";
