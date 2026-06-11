@@ -3,6 +3,7 @@ import type { OrchestratorContext } from "./orchestrator-context.js";
 import type { ApprovalStore } from "./approval-store.js";
 import type { ApprovalGate, ApprovalRequest, ApprovalStatus } from "./types.js";
 import type { LifecycleHook } from "./hooks.js";
+import { SafeExpressionEvaluator } from "./loop/expression.js";
 /**
  * Manages approval gates — both automatic (condition-based) and human (blocking).
  *
@@ -16,6 +17,7 @@ import type { LifecycleHook } from "./hooks.js";
 export class ApprovalManager {
   private timers = new Map<string, ReturnType<typeof setTimeout>>();
   private registeredGateRules = new Set<string>();
+  private evaluator = new SafeExpressionEvaluator();
 
   constructor(
     private ctx: OrchestratorContext,
@@ -275,14 +277,11 @@ export class ApprovalManager {
   }
 
   private evaluateCondition(expression: string, data: unknown): boolean {
-    try {
-      const fn = new Function("data", "task", "mission", `try { return !!(${expression}); } catch { return false; }`);
-      const taskData = this.isRecord(data) ? (data as Record<string, unknown>).task : undefined;
-      const missionData = this.isRecord(data) ? (data as Record<string, unknown>).mission : undefined;
-      return fn(data, taskData, missionData) === true;
-    } catch {
-      return false;
-    }
+    // SAFE: no `new Function`/eval. Expressions can read `data`, `task`,
+    // `mission` (the hook payload + its task/mission), combined with
+    // comparisons/boolean logic only — nothing else.
+    const d = this.isRecord(data) ? (data as Record<string, unknown>) : {};
+    return this.evaluator.evaluate(expression, { data: d, task: d.task, mission: d.mission });
   }
 
   private isRecord(v: unknown): v is Record<string, unknown> {
