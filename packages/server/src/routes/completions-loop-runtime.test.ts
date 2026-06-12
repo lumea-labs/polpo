@@ -2,9 +2,9 @@ import { describe, expect, it } from "vitest";
 import { completionRoutes, type CompletionRouteDeps } from "./completions.js";
 
 describe("completionRoutes project loop runtime", () => {
-  it("executes an assigned default project loop and returns shared tool context", async () => {
+  function makeDeps(): CompletionRouteDeps {
     let now = 100;
-    const deps: CompletionRouteDeps = {
+    return {
       getAgents: async () => [{
         name: "timer",
         model: "test",
@@ -52,6 +52,10 @@ describe("completionRoutes project loop runtime", () => {
         },
       }),
     };
+  }
+
+  it("executes an assigned default project loop and returns shared tool context", async () => {
+    const deps = makeDeps();
 
     const app = completionRoutes(() => deps);
     const res = await app.request("/", {
@@ -73,5 +77,40 @@ describe("completionRoutes project loop runtime", () => {
         end: "105",
       },
     });
+  });
+
+  it("streams project loop step tool call events", async () => {
+    const app = completionRoutes(() => makeDeps());
+    const res = await app.request("/", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        agent: "timer",
+        stream: true,
+        messages: [{ role: "user", content: "track it" }],
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get("x-loop")).toBe("time-tracker");
+    const body = await res.text();
+    const chunks = body
+      .split("\n\n")
+      .map((block) => block.trim())
+      .filter((block) => block.startsWith("data: "))
+      .map((block) => block.slice("data: ".length))
+      .filter((data) => data !== "[DONE]")
+      .map((data) => JSON.parse(data));
+    const toolEvents = chunks
+      .map((chunk) => chunk.choices?.[0]?.tool_call)
+      .filter(Boolean);
+
+    expect(toolEvents.map((event: any) => event.state)).toContain("calling");
+    expect(toolEvents).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ name: "unix_time", result: "100", state: "completed" }),
+        expect.objectContaining({ name: "unix_time", result: "105", state: "completed" }),
+      ]),
+    );
   });
 });

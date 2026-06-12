@@ -21,6 +21,8 @@ import { ChatCompletionStream } from "@polpo-ai/sdk";
 export interface UseChatOptions {
   /** Target a specific agent for direct conversation. Omit for orchestrator mode. */
   agent?: string;
+  /** Target a project-level loop assigned to the selected agent. */
+  loop?: string;
   /** Resume an existing session by ID. If omitted, the server auto-creates or reuses one (30-min window). */
   sessionId?: string;
   /** Called on each streaming text chunk. */
@@ -173,6 +175,7 @@ export function useChat(options: UseChatOptions = {}): UseChatReturn {
         messages: historyMessages,
         sessionId: sessionIdRef.current ?? undefined,
         agent: optionsRef.current.agent,
+        loop: optionsRef.current.loop,
       });
       streamRef.current = stream;
 
