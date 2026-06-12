@@ -202,6 +202,38 @@ export interface AgentIdentity {
   socials?: Record<string, string>;
 }
 
+export interface Condition {
+  expression: string;
+}
+
+export interface LoopConfig {
+  name?: string;
+  systemPrompt?: string;
+  tools?: string[];
+  model?: string;
+  reasoning?: string;
+  maxTurns?: number;
+  stopWhen?: Condition;
+  output?: { schema?: unknown };
+}
+
+export interface SwitchCase {
+  when: string;
+  steps: Step[];
+}
+
+export type Step =
+  | { loop: string; when?: string }
+  | { parallel: Step[]; join?: "all" | "any" | number; when?: string }
+  | { switch: { cases: SwitchCase[]; default?: { steps: Step[] } }; when?: string }
+  | { human: string; output?: { schema?: unknown }; notify?: string[]; when?: string };
+
+export interface Pipeline {
+  mode?: "sequential" | "parallel";
+  context?: "shared";
+  steps: Step[];
+}
+
 export interface AgentConfig {
   name: string;
   /** ISO timestamp of when this agent was created / added to the team. */
@@ -226,6 +258,12 @@ export interface AgentConfig {
   maxConcurrency?: number;
   /** Reasoning / deep thinking level for this agent's LLM calls. */
   reasoning?: ReasoningLevel;
+  /** Runtime/environment ref for configurable loop execution. */
+  runtime?: string;
+  /** Named loop collection. */
+  loops?: Record<string, LoopConfig>;
+  /** Deterministic loop pipeline. */
+  pipeline?: Pipeline;
   volatile?: boolean;
   missionGroup?: string;
 
@@ -937,6 +975,9 @@ export interface AddAgentRequest {
   systemPrompt?: string;
   skills?: string[];
   maxTurns?: number;
+  runtime?: string;
+  loops?: Record<string, LoopConfig>;
+  pipeline?: Pipeline;
   /** Max concurrent tasks for this agent. */
   maxConcurrency?: number;
   /** MCP servers to connect to. */
@@ -962,6 +1003,9 @@ export interface UpdateAgentRequest {
   skills?: string[];
   maxTurns?: number;
   maxConcurrency?: number;
+  runtime?: string;
+  loops?: Record<string, LoopConfig>;
+  pipeline?: Pipeline;
   identity?: AgentIdentity;
   reportsTo?: string;
   reasoning?: string;

@@ -1,3 +1,5 @@
+import type { LoopConfig, Pipeline } from "./loop/types.js";
+
 // === Reasoning / Thinking ===
 
 /** Reasoning level for LLM calls (maps to pi-ai ThinkingLevel). */
@@ -299,6 +301,12 @@ export interface AgentConfig {
    *  "off" disables thinking (default). Higher levels = more reasoning tokens = better quality but slower + more expensive.
    *  Falls back to the global `settings.reasoning` when not set. */
   reasoning?: ReasoningLevel;
+  /** Runtime/environment ref for configurable loop execution. */
+  runtime?: string;
+  /** Named loop collection. Each loop may override prompt, tools, model, reasoning, and stop condition. */
+  loops?: Record<string, LoopConfig>;
+  /** Deterministic pipeline wiring loop, switch, parallel, and human steps. */
+  pipeline?: Pipeline;
   /** Volatile agent — created for a specific mission, auto-removed when mission completes */
   volatile?: boolean;
   /** Mission group this volatile agent belongs to */

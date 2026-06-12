@@ -152,3 +152,9 @@ export type {
 
 export { EVENT_CATALOG } from "./events-catalog.js";
 export type { EventCatalogGroup, EventCatalogEntry } from "./events-catalog.js";
+
+// Configurable agentic loops (design: loop collection + pipeline + hooks). P0:
+// the safe expression evaluator (replaces the gates' `new Function`) + config types.
+export { evaluateExpression, SafeExpressionEvaluator } from "./loop/expression.js";
+export type { AgentLoopConfig, LoopConfig, Pipeline, Step, SwitchCase, Condition } from "./loop/types.js";
+export { isLoopStep, isParallelStep, isSwitchStep, isHumanStep } from "./loop/types.js";

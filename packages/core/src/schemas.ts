@@ -214,6 +214,108 @@ export const missionDocumentSchema = z.object({
 
 export type MissionDocumentParsed = z.infer<typeof missionDocumentSchema>;
 
+// ── Loop Contract Schemas ───────────────────────────────────────────
+
+export const conditionSchema = z.object({
+  expression: z.string().min(1, "condition requires an expression"),
+});
+
+export const loopConfigSchema = z.object({
+  name: z.string().min(1).optional(),
+  systemPrompt: z.string().optional(),
+  tools: z.array(z.string().min(1)).optional(),
+  model: z.string().optional(),
+  reasoning: z.string().optional(),
+  maxTurns: z.number().int().positive().optional(),
+  stopWhen: conditionSchema.optional(),
+  output: z.object({
+    schema: z.unknown().optional(),
+  }).optional(),
+});
+
+export const loopStepSchema: z.ZodType<unknown> = z.lazy(() => z.union([
+  z.object({
+    loop: z.string().min(1),
+    when: z.string().min(1).optional(),
+  }),
+  z.object({
+    parallel: z.array(loopStepSchema).min(1),
+    join: z.union([z.literal("all"), z.literal("any"), z.number().int().positive()]).optional(),
+    when: z.string().min(1).optional(),
+  }),
+  z.object({
+    switch: z.object({
+      cases: z.array(z.object({
+        when: z.string().min(1),
+        steps: z.array(loopStepSchema).min(1),
+      })).min(1),
+      default: z.object({
+        steps: z.array(loopStepSchema).min(1),
+      }).optional(),
+    }),
+    when: z.string().min(1).optional(),
+  }),
+  z.object({
+    human: z.string().min(1),
+    output: z.object({
+      schema: z.unknown().optional(),
+    }).optional(),
+    notify: z.array(z.string().min(1)).optional(),
+    when: z.string().min(1).optional(),
+  }),
+]));
+
+export const pipelineSchema = z.object({
+  mode: z.enum(["sequential", "parallel"]).optional(),
+  context: z.literal("shared").optional(),
+  steps: z.array(loopStepSchema).min(1),
+});
+
+function collectLoopStepRefs(step: unknown, refs: string[]): void {
+  if (!step || typeof step !== "object") return;
+  const node = step as Record<string, unknown>;
+  if (typeof node.loop === "string") {
+    refs.push(node.loop);
+    return;
+  }
+  if (Array.isArray(node.parallel)) {
+    for (const child of node.parallel) collectLoopStepRefs(child, refs);
+    return;
+  }
+  if (node.switch && typeof node.switch === "object") {
+    const switchStep = node.switch as {
+      cases?: Array<{ steps?: unknown[] }>;
+      default?: { steps?: unknown[] };
+    };
+    for (const branch of switchStep.cases ?? []) {
+      for (const child of branch.steps ?? []) collectLoopStepRefs(child, refs);
+    }
+    for (const child of switchStep.default?.steps ?? []) collectLoopStepRefs(child, refs);
+  }
+}
+
+export const agentLoopConfigSchema = z.object({
+  name: z.string().min(1).optional(),
+  model: z.string().optional(),
+  runtime: z.string().optional(),
+  loops: z.record(z.string().min(1), loopConfigSchema),
+  pipeline: pipelineSchema.optional(),
+}).superRefine((config, ctx) => {
+  if (!config.pipeline) return;
+  const knownLoops = new Set(Object.keys(config.loops));
+  const refs: string[] = [];
+  for (const step of config.pipeline.steps) collectLoopStepRefs(step, refs);
+  for (const ref of refs) {
+    if (!knownLoops.has(ref)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `pipeline references unknown loop "${ref}"`,
+        path: ["pipeline"],
+      });
+    }
+  }
+});
+
 /**
  * Parse and validate a mission JSON document strictly.
  * Returns the validated document or throws with a clear error message.
