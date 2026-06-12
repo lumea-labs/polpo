@@ -34,7 +34,7 @@ Polpo is an open-source runtime for building, running, and managing AI agents. I
 - **Missions** -- multi-step workflows with checkpoints and delays
 - **Tools** -- filesystem, browser, HTTP, email, PDF, Excel, audio, images, vault
 - **Completions** -- OpenAI-compatible `/v1/chat/completions` endpoint
-- **Loops** -- beta declarative loop contracts with deterministic pipelines
+- **Loops** -- beta project-level deterministic graphs assigned to agents
 - **Real-time** -- SSE event streaming for live agent activity
 - **Storage** -- file (default), SQLite, or PostgreSQL via Drizzle
 - **Assessment** -- built-in quality scoring with LLM review
@@ -132,7 +132,71 @@ Agents get access to tools based on their configuration. Built-in tool groups:
 
 ## Loops Beta
 
-Agents can declare a named loop collection plus an optional deterministic pipeline in `.polpo/agents.json`. This is the contract-first surface for multi-loop agents: each loop can narrow prompt, tools, model, reasoning, max turns, output schema, and stop condition; the pipeline wires loops with sequential, parallel, switch, and human steps.
+Loops are project-level deterministic graphs stored in `.polpo/loops/*.json` and assigned to agents from `.polpo/agents.json`. This avoids duplicating loop definitions across agents: a loop has `name`, `context`, `start`, and `steps`; an agent has `assignedLoops` and `defaultLoop`.
+
+Use `type: "tool"` for deterministic sandbox/tool actions without an LLM turn, and `toolChoice` on `type: "agent"` when the model should still reason but must use a tool. Secrets stay in Vault; loop JSON should only contain non-secret input, while custom tools resolve credentials with `ctx.vault`.
+
+`.polpo/loops/router-flow.json`:
+
+```jsonc
+{
+  "name": "router-flow",
+  "context": "shared",
+  "start": "clone_repo",
+  "steps": {
+    "clone_repo": {
+      "type": "tool",
+      "tool": "clone_repository",
+      "input": {
+        "repoUrl": "https://github.com/acme/app.git",
+        "targetDir": "workspace/app"
+      },
+      "saveAs": "repo.clone",
+      "next": "classify"
+    },
+    "classify": {
+      "type": "agent",
+      "systemPrompt": "Classify the incoming request.",
+      "tools": ["read"],
+      "skills": ["classification"],
+      "output": {
+        "schema": {
+          "type": "object",
+          "properties": {
+            "route": { "type": "string" }
+          }
+        }
+      },
+      "stopWhen": { "expression": "classify.route != null" },
+      "next": [
+        { "when": "classify.route == 'answer'", "to": "answer" },
+        { "to": "human_review" }
+      ]
+    },
+    "answer": {
+      "type": "agent",
+      "systemPrompt": "Answer using the selected route.",
+      "tools": ["write"],
+      "toolChoice": { "mode": "required", "tool": "write" },
+      "next": "end"
+    },
+    "human_review": {
+      "type": "human",
+      "output": {
+        "schema": {
+          "type": "object",
+          "properties": {
+            "decision": { "type": "string" }
+          }
+        }
+      },
+      "next": "end"
+    }
+  }
+}
+```
+
+`.polpo/agents.json`:
 
 ```jsonc
 [
@@ -141,60 +205,27 @@ Agents can declare a named loop collection plus an optional deterministic pipeli
       "name": "router",
       "role": "Deterministic request router",
       "runtime": "polpo-runner",
-      "loops": {
-        "classify": {
-          "systemPrompt": "Classify the incoming request.",
-          "tools": ["read"],
-          "output": {
-            "schema": {
-              "type": "object",
-              "properties": {
-                "route": { "type": "string" }
-              }
-            }
-          },
-          "stopWhen": { "expression": "output.route != null" }
-        },
-        "answer": {
-          "systemPrompt": "Answer using the selected route.",
-          "tools": ["write"]
-        }
-      },
-      "pipeline": {
-        "context": "shared",
-        "steps": [
-          { "loop": "classify" },
-          {
-            "switch": {
-              "cases": [
-                {
-                  "when": "output.route == 'answer'",
-                  "steps": [{ "loop": "answer" }]
-                }
-              ]
-            }
-          }
-        ]
-      }
+      "assignedLoops": ["router-flow"],
+      "defaultLoop": "router-flow"
     },
     "teamName": "default"
   }
 ]
 ```
 
-Loop conditions use Polpo's safe expression evaluator instead of JavaScript `eval` or `new Function`. The OSS surface validates and round-trips the contract through core types, API schemas, SDK types, `polpo deploy`, and `polpo pull`.
+Loop guards use Polpo's safe expression evaluator instead of JavaScript `eval` or `new Function`. Step outputs are available in the shared context bag by step id or `saveAs` path, e.g. `classify.route`, `review.approved`, or `timing.start`. `saveAs` writes context data; it does not create shell variables inside later `bash` commands. The OSS surface validates and round-trips the contract through core types, API schemas, SDK types, `polpo deploy`, and `polpo pull`.
 
 Agent-direct chat can target a loop explicitly:
 
 ```json
 {
   "agent": "router",
-  "loop": "classify",
+  "loop": "router-flow",
   "messages": [{ "role": "user", "content": "Route this request" }]
 }
 ```
 
-At runtime, the selected loop narrows the effective prompt, tools, model, reasoning, and max turns for that request. Core also ships a pure `PipelineExecutor` for sequential, switch, parallel, and human pipeline nodes; hosts wire `runLoop` and `handleHuman` callbacks to their concrete runtime.
+At runtime, the selected project loop can narrow the effective prompt, tools, skills, model, reasoning, tool choice, and max turns per agent step. If a step omits `skills`, it inherits the agent-level `skills`. Project loop execution in chat completions uses the shared context graph: deterministic tool steps run first, store outputs in the context bag, and later agent steps receive that context as runtime data in their system prompt. Core keeps a compatibility normalizer for legacy inline `loops` + `pipeline` configs and ships a pure `PipelineExecutor` for sequential, tool, switch, parallel, and human nodes; hosts wire `runLoop`, `runTool`, and `handleHuman` callbacks to their concrete runtime.
 
 ## SDK
 

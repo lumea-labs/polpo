@@ -237,6 +237,27 @@ async function deployAgents(client: ApiClient, polpoDir: string, opts: ConflictO
   return result;
 }
 
+async function deployLoops(client: ApiClient, polpoDir: string): Promise<DeployResult> {
+  const result = emptyResult();
+  const files = listJsonFiles(path.join(polpoDir, "loops"));
+  for (const file of files) {
+    const loop = loadJson(file);
+    if (!loop?.name) {
+      result.errors.push(`loop "${path.basename(file)}": missing name`);
+      result.failed++;
+      continue;
+    }
+    const res = await client.post("/v1/loops", loop);
+    if (res.status >= 200 && res.status < 300) result.updated++;
+    else {
+      const msg = readErrorBody(res.data, res.status);
+      result.errors.push(`loop "${loop.name}": deploy failed — ${friendlyError(msg)}`);
+      result.failed++;
+    }
+  }
+  return result;
+}
+
 async function deployMemory(client: ApiClient, polpoDir: string, opts: ConflictOptions): Promise<DeployResult> {
   const result = emptyResult();
   const shared = loadText(path.join(polpoDir, "memory.md"));
@@ -779,6 +800,8 @@ export async function runDeploy(opts: DeployOptions): Promise<DeployReport> {
       // ── Step 3: Scan & show resources ────────────────────
       const hasTeams = fs.existsSync(path.join(polpoDir, "teams.json"));
       const hasAgents = fs.existsSync(path.join(polpoDir, "agents.json"));
+      const hasLoops = fs.existsSync(path.join(polpoDir, "loops")) &&
+        fs.readdirSync(path.join(polpoDir, "loops")).some((f) => f.endsWith(".json"));
       const hasMemory = fs.existsSync(path.join(polpoDir, "memory.md")) ||
         fs.existsSync(path.join(polpoDir, "memory"));
       const hasMissions = fs.existsSync(path.join(polpoDir, "missions")) &&
@@ -817,6 +840,10 @@ export async function runDeploy(opts: DeployOptions): Promise<DeployReport> {
         if (Array.isArray(teamsData)) {
           resourceLines.push(`  ${pc.bold("Teams")}        ${teamsData.length} ${pc.dim(`(${teamsData.map((t: any) => t.name).join(", ")})`)}`);
         }
+      }
+      if (hasLoops) {
+        const n = fs.readdirSync(path.join(polpoDir, "loops")).filter((f) => f.endsWith(".json")).length;
+        resourceLines.push(`  ${pc.bold("Loops")}        ${n} ${pc.dim("(beta)")}`);
       }
       if (hasMemory) resourceLines.push(`  ${pc.bold("Memory")}       ${pc.dim("shared + agent")}`);
       if (hasMissions) {
@@ -890,6 +917,13 @@ export async function runDeploy(opts: DeployOptions): Promise<DeployReport> {
         const r = await deployTeams(client, polpoDir, conflictOpts);
         mergeResult(total, r);
         stopSpinner(`Teams: ${r.created} created, ${r.updated} updated${r.skipped ? `, ${r.skipped} skipped` : ""}${r.failed ? `, ${r.failed} failed` : ""}`);
+      }
+
+      if (hasLoops) {
+        s.start("Deploying loops...");
+        const r = await deployLoops(client, polpoDir);
+        mergeResult(total, r);
+        s.stop(`Loops: ${r.updated} updated${r.failed ? `, ${r.failed} failed` : ""}`);
       }
 
       if (hasAgents) {

@@ -5,6 +5,7 @@ import type {
   Task,
   Mission,
   AgentConfig,
+  ProjectLoopConfig,
   AgentProcess,
   Team,
   PolpoState,
@@ -632,6 +633,28 @@ export class PolpoClient {
 
   updateAgent(name: string, req: UpdateAgentRequest): Promise<AgentConfig> {
     return this.patch<AgentConfig>(`/agents/${encodeURIComponent(name)}`, req);
+  }
+
+  // ── Agentic Loops ────────────────────────────────────────
+
+  getLoops(): Promise<ProjectLoopConfig[]> {
+    return this.get<ProjectLoopConfig[]>("/loops");
+  }
+
+  getLoop(name: string): Promise<ProjectLoopConfig> {
+    return this.get<ProjectLoopConfig>(`/loops/${encodeURIComponent(name)}`);
+  }
+
+  createLoop(req: ProjectLoopConfig): Promise<ProjectLoopConfig> {
+    return this.post<ProjectLoopConfig>("/loops", req);
+  }
+
+  updateLoop(name: string, req: ProjectLoopConfig): Promise<ProjectLoopConfig> {
+    return this.put<ProjectLoopConfig>(`/loops/${encodeURIComponent(name)}`, req);
+  }
+
+  deleteLoop(name: string): Promise<{ removed: boolean; name: string }> {
+    return this.del<{ removed: boolean; name: string }>(`/loops/${encodeURIComponent(name)}`);
   }
 
   getTeams(): Promise<Team[]> {

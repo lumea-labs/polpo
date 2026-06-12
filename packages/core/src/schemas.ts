@@ -220,10 +220,20 @@ export const conditionSchema = z.object({
   expression: z.string().min(1, "condition requires an expression"),
 });
 
+export const loopToolChoiceSchema = z.union([
+  z.enum(["auto", "none", "required"]),
+  z.object({
+    mode: z.enum(["auto", "none", "required"]),
+    tool: z.string().min(1).optional(),
+  }),
+]);
+
 export const loopConfigSchema = z.object({
   name: z.string().min(1).optional(),
   systemPrompt: z.string().optional(),
   tools: z.array(z.string().min(1)).optional(),
+  skills: z.array(z.string().min(1)).optional(),
+  toolChoice: loopToolChoiceSchema.optional(),
   model: z.string().optional(),
   reasoning: z.string().optional(),
   temperature: z.number().min(0).max(2).optional(),
@@ -234,9 +244,123 @@ export const loopConfigSchema = z.object({
   }).optional(),
 });
 
+export const loopNextSchema: z.ZodType<unknown> = z.union([
+  z.string().min(1),
+  z.array(z.object({
+    when: z.string().min(1).optional(),
+    to: z.string().min(1),
+  })).min(1),
+]);
+
+export const loopStepConfigSchema = z.discriminatedUnion("type", [
+  loopConfigSchema.extend({
+    type: z.literal("agent"),
+    when: z.string().min(1).optional(),
+    next: loopNextSchema.optional(),
+  }),
+  z.object({
+    type: z.literal("human"),
+    when: z.string().min(1).optional(),
+    output: z.object({
+      schema: z.unknown().optional(),
+    }).optional(),
+    notify: z.array(z.string().min(1)).optional(),
+    next: loopNextSchema.optional(),
+  }),
+  z.object({
+    type: z.literal("parallel"),
+    when: z.string().min(1).optional(),
+    branches: z.array(z.string().min(1)).min(1),
+    join: z.union([z.literal("all"), z.literal("any"), z.number().int().positive()]).optional(),
+    next: loopNextSchema.optional(),
+  }),
+  z.object({
+    type: z.literal("tool"),
+    when: z.string().min(1).optional(),
+    tool: z.string().min(1),
+    input: z.unknown().optional(),
+    saveAs: z.string().min(1).optional(),
+    next: loopNextSchema.optional(),
+  }),
+]);
+
+export const projectLoopConfigSchema = z.object({
+  name: z.string().min(1),
+  description: z.string().optional(),
+  context: z.literal("shared").optional(),
+  start: z.string().min(1),
+  steps: z.record(z.string().min(1), z.union([
+    loopConfigSchema.extend({
+      type: z.literal("agent").optional(),
+      when: z.string().min(1).optional(),
+      next: loopNextSchema.optional(),
+    }),
+    z.object({
+      type: z.literal("human"),
+      when: z.string().min(1).optional(),
+      output: z.object({ schema: z.unknown().optional() }).optional(),
+      notify: z.array(z.string().min(1)).optional(),
+      next: loopNextSchema.optional(),
+    }),
+    z.object({
+      type: z.literal("parallel"),
+      when: z.string().min(1).optional(),
+      branches: z.array(z.string().min(1)).min(1),
+      join: z.union([z.literal("all"), z.literal("any"), z.number().int().positive()]).optional(),
+      next: loopNextSchema.optional(),
+    }),
+    z.object({
+      type: z.literal("tool"),
+      when: z.string().min(1).optional(),
+      tool: z.string().min(1),
+      input: z.unknown().optional(),
+      saveAs: z.string().min(1).optional(),
+      next: loopNextSchema.optional(),
+    }),
+  ])),
+}).superRefine((loop, ctx) => {
+  const knownSteps = new Set(Object.keys(loop.steps));
+  if (!knownSteps.has(loop.start)) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: `start references unknown step "${loop.start}"`, path: ["start"] });
+  }
+  const checkTarget = (target: string, path: (string | number)[]) => {
+    if (target !== "end" && !knownSteps.has(target)) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: `transition references unknown step "${target}"`, path });
+    }
+  };
+  for (const [name, step] of Object.entries(loop.steps)) {
+    if (step.type === "parallel") {
+      step.branches.forEach((branch, i) => checkTarget(branch, ["steps", name, "branches", i]));
+    }
+    const toolChoice = (step as { toolChoice?: unknown }).toolChoice;
+    if (toolChoice && typeof toolChoice === "object" && "tool" in toolChoice) {
+      const forcedTool = (toolChoice as { tool?: unknown }).tool;
+      const tools = (step as { tools?: unknown }).tools;
+      if (typeof forcedTool === "string" && Array.isArray(tools) && !tools.includes(forcedTool)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `toolChoice references tool "${forcedTool}" not listed in step tools`,
+          path: ["steps", name, "toolChoice"],
+        });
+      }
+    }
+    const next = (step as { next?: unknown }).next;
+    if (typeof next === "string") checkTarget(next, ["steps", name, "next"]);
+    if (Array.isArray(next)) {
+      next.forEach((transition, i) => checkTarget(transition.to, ["steps", name, "next", i, "to"]));
+    }
+  }
+});
+
 export const loopStepSchema: z.ZodType<unknown> = z.lazy(() => z.union([
   z.object({
     loop: z.string().min(1),
+    when: z.string().min(1).optional(),
+  }),
+  z.object({
+    tool: z.string().min(1),
+    input: z.unknown().optional(),
+    saveAs: z.string().min(1).optional(),
     when: z.string().min(1).optional(),
   }),
   z.object({

@@ -69,6 +69,8 @@ export async function pullProject(
             maxConcurrency: a.maxConcurrency,
             reasoning: a.reasoning,
             runtime: a.runtime,
+            assignedLoops: a.assignedLoops,
+            defaultLoop: a.defaultLoop,
             loops: a.loops,
             pipeline: a.pipeline,
             reportsTo: a.reportsTo,
@@ -94,6 +96,31 @@ export async function pullProject(
     }
   } catch (err) {
     result.errors.push(`agents: ${(err as Error).message}`);
+  }
+
+  // ── Loops ──────────────────────────────────
+  try {
+    const res = await client.get<any>("/v1/loops");
+    if (res.status === 200) {
+      const loops = res.data?.data ?? res.data ?? [];
+      if (Array.isArray(loops) && loops.length > 0) {
+        for (const loop of loops) {
+          if (!loop?.name) continue;
+          const filePath = path.join(polpoDir, "loops", `${loop.name}.json`);
+          const action = await resolveJsonConflict(filePath, loop, `loops/${loop.name}.json`, opts);
+          if (action === "write") {
+            writeJson(filePath, loop);
+            result.pulled.push(`loop ${loop.name}`);
+          } else if (action === "skip") {
+            result.skipped.push(`loop ${loop.name} (local kept)`);
+          }
+        }
+      } else {
+        result.unchanged.push("loops (none in cloud)");
+      }
+    }
+  } catch (err) {
+    result.errors.push(`loops: ${(err as Error).message}`);
   }
 
   // ── Teams ──────────────────────────────────

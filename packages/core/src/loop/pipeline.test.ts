@@ -71,6 +71,32 @@ describe("PipelineExecutor", () => {
     expect(result.context.underwriter).toEqual({ decision: "approve" });
   });
 
+  it("runs deterministic tool steps and stores output at saveAs path", async () => {
+    const executor = new PipelineExecutor();
+    const result = await executor.execute({
+      loops: { plan: {} },
+      pipeline: {
+        steps: [
+          { tool: "clone_repository", input: { repoUrl: "https://github.com/acme/app.git" }, saveAs: "repo.clone" },
+          { loop: "plan", when: "repo.clone.ok == true" },
+        ],
+      },
+      runTool: async (name, input, context) => {
+        expect(name).toBe("clone_repository");
+        expect(input).toEqual({ repoUrl: "https://github.com/acme/app.git" });
+        expect(() => ((context as any).mutated = true)).toThrow();
+        return { output: { ok: true, path: "workspace/app" } };
+      },
+      runLoop: async (name) => ({ output: { planned: name } }),
+    });
+
+    expect(result.context).toMatchObject({
+      repo: { clone: { ok: true, path: "workspace/app" } },
+      plan: { planned: "plan" },
+    });
+    expect(result.trace.map(e => e.type)).toEqual(["tool", "loop"]);
+  });
+
   it("fires loop:transition hooks between sequential loop nodes", async () => {
     const hooks = new LoopHookRegistry();
     const transitions: string[] = [];

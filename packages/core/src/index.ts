@@ -156,8 +156,22 @@ export type { EventCatalogGroup, EventCatalogEntry } from "./events-catalog.js";
 // Configurable agentic loops (design: loop collection + pipeline + hooks). P0:
 // the safe expression evaluator (replaces the gates' `new Function`) + config types.
 export { evaluateExpression, SafeExpressionEvaluator } from "./loop/expression.js";
-export type { AgentLoopConfig, ContextBag, LoopConfig, Pipeline, Step, SwitchCase, Condition } from "./loop/types.js";
-export { isLoopStep, isParallelStep, isSwitchStep, isHumanStep } from "./loop/types.js";
+export type {
+  AgentLoopConfig,
+  ContextBag,
+  LoopConfig,
+  LoopNext,
+  LoopStepConfig,
+  LoopToolChoice,
+  Pipeline,
+  ProjectLoopConfig,
+  Step,
+  SwitchCase,
+  Condition,
+  ToolLoopStep,
+} from "./loop/types.js";
+export { isLoopStep, isToolStep, isParallelStep, isSwitchStep, isHumanStep } from "./loop/types.js";
+export { normalizeProjectLoop } from "./loop/normalize.js";
 export { LoopHookRegistry } from "./loop/hooks.js";
 export type {
   LoopBeforeHookResult,
@@ -175,7 +189,7 @@ export type {
 } from "./loop/hooks.js";
 export { LoopRunner } from "./loop/runner.js";
 export type { LoopModelInput, LoopModelResult, LoopRunnerOptions, LoopRunResult } from "./loop/runner.js";
-export { resolveLoopSelection, resolveActiveLoopTools } from "./loop/selector.js";
+export { resolveLoopSelection, resolveActiveLoopTools, resolveActiveLoopSkills } from "./loop/selector.js";
 export type { LoopSelection } from "./loop/selector.js";
 export { PipelineExecutor } from "./loop/pipeline.js";
 export type {
@@ -183,5 +197,6 @@ export type {
   PipelineExecutorOptions,
   PipelineHumanResult,
   PipelineLoopResult,
+  PipelineToolResult,
   PipelineTraceEvent,
 } from "./loop/pipeline.js";
