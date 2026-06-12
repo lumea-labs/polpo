@@ -241,6 +241,172 @@ const AgentIdentitySchema = z.object({
   socials: z.record(z.string(), z.string()).optional(),
 });
 
+const LoopConditionSchema = z.object({
+  expression: z.string().min(1),
+});
+
+const LoopOutputSchema = z.object({
+  schema: z.unknown().optional(),
+});
+
+const LoopConfigSchema = z.object({
+  name: z.string().min(1).optional(),
+  systemPrompt: z.string().optional(),
+  tools: z.array(z.string().min(1)).optional(),
+  model: z.string().optional(),
+  reasoning: z.string().optional(),
+  maxTurns: z.number().int().positive().optional(),
+  stopWhen: LoopConditionSchema.optional(),
+  output: LoopOutputSchema.optional(),
+});
+
+type ValidationContext = {
+  addIssue(issue: { code: typeof z.ZodIssueCode.custom; message: string; path?: (string | number)[] }): void;
+};
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function validateNonEmptyString(value: unknown, ctx: ValidationContext, path: (string | number)[], label: string): void {
+  if (typeof value !== "string" || value.trim() === "") {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: `${label} must be a non-empty string`, path });
+  }
+}
+
+function validateOptionalWhen(node: Record<string, unknown>, ctx: ValidationContext, path: (string | number)[]): void {
+  if (node.when !== undefined) validateNonEmptyString(node.when, ctx, [...path, "when"], "when");
+}
+
+function validateLoopStep(step: unknown, ctx: ValidationContext, path: (string | number)[] = []): void {
+  if (!isPlainObject(step)) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: "step must be an object", path });
+    return;
+  }
+
+  const kinds = ["loop", "parallel", "switch", "human"].filter((kind) => kind in step);
+  if (kinds.length !== 1) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "step requires exactly one of loop, parallel, switch, or human",
+      path,
+    });
+    return;
+  }
+
+  validateOptionalWhen(step, ctx, path);
+
+  if ("loop" in step) {
+    validateNonEmptyString(step.loop, ctx, [...path, "loop"], "loop");
+    return;
+  }
+
+  if ("parallel" in step) {
+    if (!Array.isArray(step.parallel) || step.parallel.length === 0) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: "parallel must contain at least one step", path: [...path, "parallel"] });
+    } else {
+      step.parallel.forEach((child, index) => validateLoopStep(child, ctx, [...path, "parallel", index]));
+    }
+    if (
+      step.join !== undefined
+      && step.join !== "all"
+      && step.join !== "any"
+      && !(typeof step.join === "number" && Number.isInteger(step.join) && step.join > 0)
+    ) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: "join must be all, any, or a positive integer", path: [...path, "join"] });
+    }
+    return;
+  }
+
+  if ("switch" in step) {
+    if (!isPlainObject(step.switch)) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: "switch must be an object", path: [...path, "switch"] });
+      return;
+    }
+    const cases = step.switch.cases;
+    if (!Array.isArray(cases) || cases.length === 0) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: "switch.cases must contain at least one case", path: [...path, "switch", "cases"] });
+    } else {
+      cases.forEach((branch, index) => {
+        if (!isPlainObject(branch)) {
+          ctx.addIssue({ code: z.ZodIssueCode.custom, message: "switch case must be an object", path: [...path, "switch", "cases", index] });
+          return;
+        }
+        validateNonEmptyString(branch.when, ctx, [...path, "switch", "cases", index, "when"], "when");
+        if (!Array.isArray(branch.steps) || branch.steps.length === 0) {
+          ctx.addIssue({ code: z.ZodIssueCode.custom, message: "case steps must contain at least one step", path: [...path, "switch", "cases", index, "steps"] });
+        } else {
+          branch.steps.forEach((child, childIndex) => validateLoopStep(child, ctx, [...path, "switch", "cases", index, "steps", childIndex]));
+        }
+      });
+    }
+    if (step.switch.default !== undefined) {
+      if (!isPlainObject(step.switch.default) || !Array.isArray(step.switch.default.steps) || step.switch.default.steps.length === 0) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: "switch.default.steps must contain at least one step", path: [...path, "switch", "default", "steps"] });
+      } else {
+        step.switch.default.steps.forEach((child, index) => validateLoopStep(child, ctx, [...path, "switch", "default", "steps", index]));
+      }
+    }
+    return;
+  }
+
+  validateNonEmptyString(step.human, ctx, [...path, "human"], "human");
+  if (step.notify !== undefined && (!Array.isArray(step.notify) || step.notify.some((item) => typeof item !== "string" || item.trim() === ""))) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: "notify must be an array of non-empty strings", path: [...path, "notify"] });
+  }
+}
+
+const LoopStepSchema = z.unknown().superRefine((step, ctx) => validateLoopStep(step, ctx));
+
+const PipelineSchema = z.object({
+  mode: z.enum(["sequential", "parallel"]).optional(),
+  context: z.literal("shared").optional(),
+  steps: z.array(LoopStepSchema).min(1),
+});
+
+function collectLoopRefs(step: unknown, refs: string[]): void {
+  if (!step || typeof step !== "object") return;
+  const node = step as Record<string, unknown>;
+  if (typeof node.loop === "string") {
+    refs.push(node.loop);
+    return;
+  }
+  if (Array.isArray(node.parallel)) {
+    for (const child of node.parallel) collectLoopRefs(child, refs);
+    return;
+  }
+  if (node.switch && typeof node.switch === "object") {
+    const switchStep = node.switch as {
+      cases?: Array<{ steps?: unknown[] }>;
+      default?: { steps?: unknown[] };
+    };
+    for (const branch of switchStep.cases ?? []) {
+      for (const child of branch.steps ?? []) collectLoopRefs(child, refs);
+    }
+    for (const child of switchStep.default?.steps ?? []) collectLoopRefs(child, refs);
+  }
+}
+
+const AgentLoopFieldsSchema = z.object({
+  runtime: z.string().optional(),
+  loops: z.record(z.string().min(1), LoopConfigSchema).optional(),
+  pipeline: PipelineSchema.optional(),
+}).superRefine((config, ctx) => {
+  if (!config.loops || !config.pipeline) return;
+  const knownLoops = new Set(Object.keys(config.loops));
+  const refs: string[] = [];
+  for (const step of config.pipeline.steps) collectLoopRefs(step, refs);
+  for (const ref of refs) {
+    if (!knownLoops.has(ref)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `pipeline references unknown loop "${ref}"`,
+        path: ["pipeline"],
+      });
+    }
+  }
+});
+
 export const AddAgentSchema = z.object({
   name: z.string().min(1),
   role: z.string().optional(),
@@ -254,7 +420,7 @@ export const AddAgentSchema = z.object({
   reportsTo: z.string().optional(),
   // Extended tool categories (browser, email, vault, image, video, audio, excel, pdf, docx, search — HTTP is always-on core)
   browserProfile: z.string().optional(),
-});
+}).and(AgentLoopFieldsSchema);
 
 export const UpdateAgentSchema = z.object({
   role: z.string().optional(),
@@ -271,7 +437,7 @@ export const UpdateAgentSchema = z.object({
   browserProfile: z.string().optional(),
   emailAllowedDomains: z.array(z.string()).optional(),
   team: z.string().optional(),
-});
+}).and(AgentLoopFieldsSchema);
 
 export const RenameTeamSchema = z.object({
   oldName: z.string().min(1),

@@ -34,6 +34,7 @@ Polpo is an open-source runtime for building, running, and managing AI agents. I
 - **Missions** -- multi-step workflows with checkpoints and delays
 - **Tools** -- filesystem, browser, HTTP, email, PDF, Excel, audio, images, vault
 - **Completions** -- OpenAI-compatible `/v1/chat/completions` endpoint
+- **Loops** -- beta declarative loop contracts with deterministic pipelines
 - **Real-time** -- SSE event streaming for live agent activity
 - **Storage** -- file (default), SQLite, or PostgreSQL via Drizzle
 - **Assessment** -- built-in quality scoring with LLM review
@@ -128,6 +129,60 @@ Agents get access to tools based on their configuration. Built-in tool groups:
 - **Audio** -- STT/TTS (Deepgram, OpenAI Whisper, ElevenLabs)
 - **Image** -- generation and analysis
 - **Vault** -- encrypted secret management
+
+## Loops Beta
+
+Agents can declare a named loop collection plus an optional deterministic pipeline in `.polpo/agents.json`. This is the contract-first surface for multi-loop agents: each loop can narrow prompt, tools, model, reasoning, max turns, output schema, and stop condition; the pipeline wires loops with sequential, parallel, switch, and human steps.
+
+```jsonc
+[
+  {
+    "agent": {
+      "name": "router",
+      "role": "Deterministic request router",
+      "runtime": "polpo-runner",
+      "loops": {
+        "classify": {
+          "systemPrompt": "Classify the incoming request.",
+          "tools": ["read"],
+          "output": {
+            "schema": {
+              "type": "object",
+              "properties": {
+                "route": { "type": "string" }
+              }
+            }
+          },
+          "stopWhen": { "expression": "output.route != null" }
+        },
+        "answer": {
+          "systemPrompt": "Answer using the selected route.",
+          "tools": ["write"]
+        }
+      },
+      "pipeline": {
+        "context": "shared",
+        "steps": [
+          { "loop": "classify" },
+          {
+            "switch": {
+              "cases": [
+                {
+                  "when": "output.route == 'answer'",
+                  "steps": [{ "loop": "answer" }]
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    "teamName": "default"
+  }
+]
+```
+
+Loop conditions use Polpo's safe expression evaluator instead of JavaScript `eval` or `new Function`. The current OSS surface validates and round-trips the contract through core types, API schemas, SDK types, `polpo deploy`, and `polpo pull`; execution scheduling is being built in the next phases.
 
 ## SDK
 

@@ -482,6 +482,30 @@ describe("Agents API", () => {
     expect(agent2.role).toBe("helper");
   });
 
+  test("POST /agents preserves loop contract fields", async () => {
+    const res = await app.request(
+      api("/agents"),
+      jsonReq("POST", {
+        name: "agent-loop-create",
+        role: "loop router",
+        runtime: "polpo-runner",
+        loops: {
+          classify: { systemPrompt: "Classify.", tools: ["read"] },
+          answer: { systemPrompt: "Answer." },
+        },
+        pipeline: { steps: [{ loop: "classify" }, { loop: "answer" }] },
+      }),
+    );
+    expect(res.status).toBe(201);
+
+    const listRes = await app.request(api("/agents"));
+    const listBody = await listRes.json();
+    const agent = listBody.data.find((a: any) => a.name === "agent-loop-create");
+    expect(agent.runtime).toBe("polpo-runner");
+    expect(agent.loops.classify.tools).toEqual(["read"]);
+    expect(agent.pipeline.steps).toEqual([{ loop: "classify" }, { loop: "answer" }]);
+  });
+
   test("DELETE /agents/:name removes an agent", async () => {
     // First add a disposable agent
     await app.request(
@@ -1133,6 +1157,29 @@ describe("Update Agent API", () => {
 
     // Cleanup
     await app.request(api("/agents/agent-update-test"), { method: "DELETE" });
+  });
+
+  test("PATCH /agents/:name updates loop contract fields", async () => {
+    await app.request(api("/agents"), jsonReq("POST", { name: "agent-loop-update", role: "original" }));
+
+    const res = await app.request(
+      api("/agents/agent-loop-update"),
+      jsonReq("PATCH", {
+        runtime: "polpo-runner",
+        loops: {
+          classify: { systemPrompt: "Classify.", tools: ["read"] },
+        },
+        pipeline: { steps: [{ loop: "classify" }] },
+      }),
+    );
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.ok).toBe(true);
+    expect(body.data.runtime).toBe("polpo-runner");
+    expect(body.data.loops.classify.tools).toEqual(["read"]);
+    expect(body.data.pipeline.steps).toEqual([{ loop: "classify" }]);
+
+    await app.request(api("/agents/agent-loop-update"), { method: "DELETE" });
   });
 });
 
