@@ -1,6 +1,8 @@
 import { getPolpoDir } from "../core/constants.js";
 import { OpenAPIHono } from "@hono/zod-openapi";
 import { cors } from "hono/cors";
+import { join } from "node:path";
+import { projectLoopConfigSchema } from "@polpo-ai/core/schemas";
 import { buildSystemPrompt } from "../adapters/engine.js";
 // NodeFileSystem no longer instantiated here — use orchestrator's getFs() instead
 import type { Orchestrator } from "../core/orchestrator.js";
@@ -22,6 +24,7 @@ import {
   watcherRoutes,
   vaultRoutes,
   agentRoutes,
+  loopRoutes,
   eventRoutes,
   configRoutes,
 } from "@polpo-ai/server";
@@ -148,6 +151,13 @@ export function createApp(orchestrator: Orchestrator, sseBridge: SSEBridge, opts
       };
       return { tools, executor, cleanup: mcp.dispose };
     },
+    getProjectLoop: async (name: string) => {
+      const path = join(o.getPolpoDir(), "loops", `${name}.json`);
+      const fs = o.getFs();
+      if (!(await fs.exists(path))) return null;
+      const raw = await fs.readFile(path);
+      return projectLoopConfigSchema.parse(JSON.parse(raw)) as any;
+    },
   }), opts?.apiKeys));
 
   // ── Authenticated routes (require initialized orchestrator) ───────────
@@ -233,6 +243,11 @@ export function createApp(orchestrator: Orchestrator, sseBridge: SSEBridge, opts
     renameTeam: (oldName: string, newName: string) => o.renameTeam(oldName, newName),
     taskStore: o.getStore(),
     runStore: o.getRunStore(),
+    polpoDir: o.getPolpoDir(),
+    fs: o.getFs(),
+  })));
+
+  authed.route("/loops", loopRoutes(() => ({
     polpoDir: o.getPolpoDir(),
     fs: o.getFs(),
   })));

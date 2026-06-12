@@ -1,6 +1,6 @@
 /**
  * SafeExpressionEvaluator — a tiny, SANDBOXED condition evaluator for the
- * declarative config surface (approval gates, and the upcoming loop/pipeline
+ * declarative config surface (approval gates and Agentic Loop routing
  * routers). NO `eval`/`new Function`/globals: a recursive-descent parser over a
  * restricted grammar, so a tenant-authored expression can only read fields of
  * the supplied context and combine them with comparisons/boolean logic — it can

@@ -1,6 +1,6 @@
 import { SafeExpressionEvaluator } from "./expression.js";
 import type { LoopHookRegistry } from "./hooks.js";
-import { isHumanStep, isLoopStep, isParallelStep, isSwitchStep, type ContextBag, type LoopConfig, type Pipeline, type Step } from "./types.js";
+import { isHumanStep, isLoopStep, isParallelStep, isSwitchStep, isToolStep, type ContextBag, type LoopConfig, type Pipeline, type Step } from "./types.js";
 
 export interface PipelineLoopResult {
   output?: unknown;
@@ -12,8 +12,13 @@ export interface PipelineHumanResult {
   context?: ContextBag;
 }
 
+export interface PipelineToolResult {
+  output?: unknown;
+  context?: ContextBag;
+}
+
 export interface PipelineTraceEvent {
-  type: "loop" | "human" | "switch" | "parallel" | "skip";
+  type: "loop" | "tool" | "human" | "switch" | "parallel" | "skip";
   name?: string;
   when?: string;
   matched?: boolean;
@@ -30,6 +35,7 @@ export interface PipelineExecutorOptions {
   context?: ContextBag;
   hooks?: LoopHookRegistry;
   runLoop: (name: string, loop: LoopConfig, context: Readonly<ContextBag>) => Promise<PipelineLoopResult>;
+  runTool?: (name: string, input: unknown, context: Readonly<ContextBag>, step: Extract<Step, { tool: string }>) => Promise<PipelineToolResult>;
   handleHuman?: (name: string, step: Extract<Step, { human: string }>, context: Readonly<ContextBag>) => Promise<PipelineHumanResult>;
 }
 
@@ -65,6 +71,16 @@ export class PipelineExecutor {
         mergeLoopResult(context, step.loop, result);
         trace.push({ type: "loop", name: step.loop, when: step.when, matched: true });
         lastNode = step.loop;
+        continue;
+      }
+
+      if (isToolStep(step)) {
+        if (!options.runTool) throw new Error(`Pipeline tool step "${step.tool}" requires a tool handler`);
+        await this.runTransitionHook(lastNode, step.tool, context, options);
+        const result = await options.runTool(step.tool, step.input, freezeContext(context), step);
+        mergeStepResult(context, step.saveAs ?? step.tool, result);
+        trace.push({ type: "tool", name: step.tool, when: step.when, matched: true });
+        lastNode = step.tool;
         continue;
       }
 
@@ -142,7 +158,25 @@ function freezeContext(context: ContextBag): Readonly<ContextBag> {
   return Object.freeze({ ...context });
 }
 
-function mergeLoopResult(context: ContextBag, name: string, result: PipelineLoopResult | PipelineHumanResult): void {
+function setContextPath(context: ContextBag, path: string, value: unknown): void {
+  const parts = path.split(".").filter(Boolean);
+  if (parts.length === 0) return;
+  let cursor: Record<string, unknown> = context;
+  for (const part of parts.slice(0, -1)) {
+    const current = cursor[part];
+    if (!current || typeof current !== "object" || Array.isArray(current)) {
+      cursor[part] = {};
+    }
+    cursor = cursor[part] as Record<string, unknown>;
+  }
+  cursor[parts[parts.length - 1]!] = value;
+}
+
+function mergeStepResult(context: ContextBag, name: string, result: PipelineLoopResult | PipelineHumanResult | PipelineToolResult): void {
   if (result.context) Object.assign(context, result.context);
-  if (result.output !== undefined) context[name] = result.output;
+  if (result.output !== undefined) setContextPath(context, name, result.output);
+}
+
+function mergeLoopResult(context: ContextBag, name: string, result: PipelineLoopResult | PipelineHumanResult): void {
+  mergeStepResult(context, name, result);
 }

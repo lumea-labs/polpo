@@ -12,8 +12,19 @@ export function resolveActiveLoopTools(agent: AgentConfig, loop?: LoopConfig): s
   return loop?.tools ?? agent.allowedTools;
 }
 
+export function resolveActiveLoopSkills(agent: AgentConfig, loop?: LoopConfig): string[] | undefined {
+  return loop?.skills ?? agent.skills;
+}
+
 export function resolveLoopSelection(agent: AgentConfig, requestedLoop?: string): LoopSelection {
   if (!requestedLoop) {
+    if (agent.defaultLoop) {
+      return {
+        name: agent.defaultLoop,
+        loop: { name: agent.defaultLoop, tools: agent.allowedTools, model: agent.model, reasoning: agent.reasoning, maxTurns: agent.maxTurns },
+        agent,
+      };
+    }
     const defaultLoop = agent.loops?.default;
     if (!defaultLoop) {
       return {
@@ -27,10 +38,19 @@ export function resolveLoopSelection(agent: AgentConfig, requestedLoop?: string)
 
   const loop = agent.loops?.[requestedLoop];
   if (!loop) {
+    if (agent.assignedLoops?.includes(requestedLoop)) {
+      return {
+        name: requestedLoop,
+        loop: { name: requestedLoop, tools: agent.allowedTools, model: agent.model, reasoning: agent.reasoning, maxTurns: agent.maxTurns },
+        agent,
+      };
+    }
     const available = Object.keys(agent.loops ?? {});
+    const assigned = agent.assignedLoops ?? [];
+    const allAvailable = [...available, ...assigned];
     throw new Error(
-      available.length > 0
-        ? `Unknown loop "${requestedLoop}". Available loops: ${available.join(", ")}`
+      allAvailable.length > 0
+        ? `Unknown loop "${requestedLoop}". Available loops: ${allAvailable.join(", ")}`
         : `Agent "${agent.name}" does not define configurable loops`,
     );
   }
@@ -52,9 +72,11 @@ function materializeLoopSelection(agent: AgentConfig, name: string, loop: LoopCo
       ...agent,
       systemPrompt,
       allowedTools: resolveActiveLoopTools(agent, loop),
+      skills: resolveActiveLoopSkills(agent, loop),
       model: loop.model ?? agent.model,
       reasoning: (loop.reasoning as ReasoningLevel | undefined) ?? agent.reasoning,
       maxTurns: loop.maxTurns ?? agent.maxTurns,
+      toolChoice: loop.toolChoice ?? agent.toolChoice,
     },
   };
 }

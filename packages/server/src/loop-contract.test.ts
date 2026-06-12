@@ -2,11 +2,37 @@ import { describe, expect, it } from "vitest";
 import { AddAgentSchema, UpdateAgentSchema } from "./schemas.js";
 
 describe("agent loop API contract", () => {
+  it("accepts project-level loop assignments on agents", () => {
+    expect(AddAgentSchema.parse({
+      name: "loop-agent",
+      assignedLoops: ["coding-flow"],
+      defaultLoop: "coding-flow",
+    })).toMatchObject({ assignedLoops: ["coding-flow"], defaultLoop: "coding-flow" });
+
+    expect(UpdateAgentSchema.parse({
+      assignedLoops: ["coding-flow", "support-flow"],
+      defaultLoop: "support-flow",
+    })).toMatchObject({ defaultLoop: "support-flow" });
+  });
+
+  it("rejects defaultLoop when it is not assigned", () => {
+    const parsed = AddAgentSchema.safeParse({
+      name: "loop-agent",
+      assignedLoops: ["coding-flow"],
+      defaultLoop: "missing-flow",
+    });
+
+    expect(parsed.success).toBe(false);
+    expect(parsed.error?.issues[0]?.message).toContain("is not in assignedLoops");
+  });
+
   it("accepts loops on agent create/update payloads", () => {
     const loops = {
       classify: {
         systemPrompt: "Classify the incoming request.",
         tools: ["read"],
+        skills: ["classification"],
+        toolChoice: { mode: "required", tool: "read" },
         output: { schema: { type: "object" } },
       },
       answer: {
@@ -16,7 +42,11 @@ describe("agent loop API contract", () => {
     const pipeline = {
       mode: "sequential" as const,
       context: "shared" as const,
-      steps: [{ loop: "classify" }, { loop: "answer", when: "output.route == 'answer'" }],
+      steps: [
+        { tool: "clone_repository", input: { repoUrl: "https://github.com/acme/app.git" }, saveAs: "repo.clone" },
+        { loop: "classify" },
+        { loop: "answer", when: "output.route == 'answer'" },
+      ],
     };
 
     expect(AddAgentSchema.parse({

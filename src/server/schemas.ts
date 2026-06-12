@@ -249,10 +249,20 @@ const LoopOutputSchema = z.object({
   schema: z.unknown().optional(),
 });
 
+const LoopToolChoiceSchema = z.union([
+  z.enum(["auto", "none", "required"]),
+  z.object({
+    mode: z.enum(["auto", "none", "required"]),
+    tool: z.string().min(1).optional(),
+  }),
+]);
+
 const LoopConfigSchema = z.object({
   name: z.string().min(1).optional(),
   systemPrompt: z.string().optional(),
   tools: z.array(z.string().min(1)).optional(),
+  skills: z.array(z.string().min(1)).optional(),
+  toolChoice: LoopToolChoiceSchema.optional(),
   model: z.string().optional(),
   reasoning: z.string().optional(),
   temperature: z.number().min(0).max(2).optional(),
@@ -285,11 +295,11 @@ function validateLoopStep(step: unknown, ctx: ValidationContext, path: (string |
     return;
   }
 
-  const kinds = ["loop", "parallel", "switch", "human"].filter((kind) => kind in step);
+  const kinds = ["loop", "tool", "parallel", "switch", "human"].filter((kind) => kind in step);
   if (kinds.length !== 1) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
-      message: "step requires exactly one of loop, parallel, switch, or human",
+      message: "step requires exactly one of loop, tool, parallel, switch, or human",
       path,
     });
     return;
@@ -299,6 +309,12 @@ function validateLoopStep(step: unknown, ctx: ValidationContext, path: (string |
 
   if ("loop" in step) {
     validateNonEmptyString(step.loop, ctx, [...path, "loop"], "loop");
+    return;
+  }
+
+  if ("tool" in step) {
+    validateNonEmptyString(step.tool, ctx, [...path, "tool"], "tool");
+    if (step.saveAs !== undefined) validateNonEmptyString(step.saveAs, ctx, [...path, "saveAs"], "saveAs");
     return;
   }
 
@@ -390,9 +406,18 @@ function collectLoopRefs(step: unknown, refs: string[]): void {
 
 const AgentLoopFieldsSchema = z.object({
   runtime: z.string().optional(),
+  assignedLoops: z.array(z.string().min(1)).optional(),
+  defaultLoop: z.string().min(1).optional(),
   loops: z.record(z.string().min(1), LoopConfigSchema).optional(),
   pipeline: PipelineSchema.optional(),
 }).superRefine((config, ctx) => {
+  if (config.defaultLoop && config.assignedLoops && !config.assignedLoops.includes(config.defaultLoop)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: `defaultLoop "${config.defaultLoop}" is not in assignedLoops`,
+      path: ["defaultLoop"],
+    });
+  }
   if (!config.loops || !config.pipeline) return;
   const knownLoops = new Set(Object.keys(config.loops));
   const refs: string[] = [];

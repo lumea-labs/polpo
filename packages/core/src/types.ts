@@ -1,4 +1,4 @@
-import type { LoopConfig, Pipeline } from "./loop/types.js";
+import type { LoopConfig, LoopToolChoice, Pipeline } from "./loop/types.js";
 
 // === Reasoning / Thinking ===
 
@@ -303,9 +303,15 @@ export interface AgentConfig {
   reasoning?: ReasoningLevel;
   /** Runtime/environment ref for configurable loop execution. */
   runtime?: string;
-  /** Named loop collection. Each loop may override prompt, tools, model, reasoning, and stop condition. */
+  /** Runtime-only model tool-choice policy materialized from an active loop step. */
+  toolChoice?: LoopToolChoice;
+  /** Project-level loop names this agent is allowed to use. */
+  assignedLoops?: string[];
+  /** Default project-level loop name for this agent. */
+  defaultLoop?: string;
+  /** Legacy inline loop steps. Prefer project-level loops + assignedLoops. */
   loops?: Record<string, LoopConfig>;
-  /** Deterministic pipeline wiring loop, switch, parallel, and human steps. */
+  /** Legacy inline pipeline wiring loop, switch, parallel, and human steps. */
   pipeline?: Pipeline;
   /** Volatile agent — created for a specific mission, auto-removed when mission completes */
   volatile?: boolean;

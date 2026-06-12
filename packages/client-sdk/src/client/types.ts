@@ -210,12 +210,31 @@ export interface LoopConfig {
   name?: string;
   systemPrompt?: string;
   tools?: string[];
+  skills?: string[];
+  toolChoice?: LoopToolChoice;
   model?: string;
   reasoning?: string;
   temperature?: number;
   maxTurns?: number;
   stopWhen?: Condition;
   output?: { schema?: unknown };
+}
+
+export type LoopNext = string | Array<{ when?: string; to: string }>;
+export type LoopToolChoice = "auto" | "none" | "required" | { mode: "auto" | "none" | "required"; tool?: string };
+
+export type LoopStepConfig =
+  | (LoopConfig & { type?: "agent"; when?: string; next?: LoopNext })
+  | { type: "human"; when?: string; output?: { schema?: unknown }; notify?: string[]; next?: LoopNext }
+  | { type: "parallel"; when?: string; branches: string[]; join?: "all" | "any" | number; next?: LoopNext }
+  | { type: "tool"; when?: string; tool: string; input?: unknown; saveAs?: string; next?: LoopNext };
+
+export interface ProjectLoopConfig {
+  name: string;
+  description?: string;
+  context?: "shared";
+  start: string;
+  steps: Record<string, LoopStepConfig>;
 }
 
 export interface SwitchCase {
@@ -225,6 +244,7 @@ export interface SwitchCase {
 
 export type Step =
   | { loop: string; when?: string }
+  | { tool: string; input?: unknown; saveAs?: string; when?: string }
   | { parallel: Step[]; join?: "all" | "any" | number; when?: string }
   | { switch: { cases: SwitchCase[]; default?: { steps: Step[] } }; when?: string }
   | { human: string; output?: { schema?: unknown }; notify?: string[]; when?: string };
@@ -261,9 +281,15 @@ export interface AgentConfig {
   reasoning?: ReasoningLevel;
   /** Runtime/environment ref for configurable loop execution. */
   runtime?: string;
-  /** Named loop collection. */
+  /** Runtime-only model tool-choice policy materialized from an active loop step. */
+  toolChoice?: LoopToolChoice;
+  /** Project-level loop names this agent can use. */
+  assignedLoops?: string[];
+  /** Default project-level loop name for this agent. */
+  defaultLoop?: string;
+  /** Legacy inline loop collection. Prefer project-level loops + assignedLoops. */
   loops?: Record<string, LoopConfig>;
-  /** Deterministic loop pipeline. */
+  /** Legacy deterministic loop pipeline. */
   pipeline?: Pipeline;
   volatile?: boolean;
   missionGroup?: string;
@@ -977,6 +1003,8 @@ export interface AddAgentRequest {
   skills?: string[];
   maxTurns?: number;
   runtime?: string;
+  assignedLoops?: string[];
+  defaultLoop?: string;
   loops?: Record<string, LoopConfig>;
   pipeline?: Pipeline;
   /** Max concurrent tasks for this agent. */
@@ -1005,6 +1033,8 @@ export interface UpdateAgentRequest {
   maxTurns?: number;
   maxConcurrency?: number;
   runtime?: string;
+  assignedLoops?: string[];
+  defaultLoop?: string;
   loops?: Record<string, LoopConfig>;
   pipeline?: Pipeline;
   identity?: AgentIdentity;
@@ -1352,7 +1382,7 @@ export interface ChatCompletionRequest {
   sessionId?: string;
   /** Target a specific agent by name for direct conversation. Uses the agent's own model, system prompt, and coding tools. Omit to talk to the orchestrator (default). */
   agent?: string;
-  /** Polpo extension: target a configured loop on the selected agent. */
+  /** Polpo extension: target a project-level loop assigned to the selected agent. */
   loop?: string;
   /**
    * Opaque end-user identifier (OpenAI-compat). Persisted on the session and
