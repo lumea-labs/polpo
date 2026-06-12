@@ -633,6 +633,14 @@ interface ProjectLoopRunResult {
   context: ContextBag;
 }
 
+type LoopRuntimeToolCall = {
+  id: string;
+  name: string;
+  arguments?: Record<string, unknown>;
+  result?: string;
+  state: "preparing" | "calling" | "completed" | "error" | "interrupted";
+};
+
 function addUsage(a: LanguageModelUsage, b: LanguageModelUsage): LanguageModelUsage {
   return {
     inputTokens: (a.inputTokens ?? 0) + (b.inputTokens ?? 0),
@@ -877,8 +885,9 @@ async function runProjectLoopCompletion(options: {
   projectLoop: ProjectLoopConfig;
   aiMessages: any[];
   extraSystemParts: string[];
+  onToolCall?: (toolCall: LoopRuntimeToolCall) => Promise<void>;
 }): Promise<ProjectLoopRunResult> {
-  const { deps, agentConfig, projectLoop, aiMessages, extraSystemParts } = options;
+  const { deps, agentConfig, projectLoop, aiMessages, extraSystemParts, onToolCall } = options;
   const normalized = normalizeProjectLoop(projectLoop);
   if (!normalized.pipeline) throw new Error(`Loop "${projectLoop.name}" does not define a pipeline`);
 
@@ -897,20 +906,36 @@ async function runProjectLoopCompletion(options: {
       context: {},
       runTool: async (name, input) => {
         const args = normalizeToolInput(input);
+        const id = `loop-tool-${nanoid(12)}`;
+        await onToolCall?.({
+          id,
+          name,
+          arguments: args,
+          state: "calling",
+        });
         const output = await rootTools.executor(name, args);
         const isError = output.startsWith("Error:");
         emitFileChanged(name, args, output, deps.emit);
-        toolCallsAccum.push({
-          id: `loop-tool-${nanoid(12)}`,
+        const event = {
+          id,
           name,
           arguments: args,
           result: output,
-          state: isError ? "error" : "completed",
-        });
+          state: isError ? "error" as const : "completed" as const,
+        };
+        toolCallsAccum.push(event);
+        await onToolCall?.(event);
         if (isError) throw new Error(output);
         return { output: maybeParseJson(output) };
       },
       runLoop: async (name, loop, context) => {
+        const id = `loop-step-${nanoid(12)}`;
+        await onToolCall?.({
+          id,
+          name: `loop:${name}`,
+          arguments: { loop: projectLoop.name, step: name },
+          state: "calling",
+        });
         const stepAgent = buildLoopStepAgent(agentConfig, name, loop);
         const stepResult = await runAgentStepCompletion({
           deps,
@@ -925,6 +950,16 @@ async function runProjectLoopCompletion(options: {
         lastModel = stepResult.model;
         lastProviderMetadata = stepResult.providerMetadata;
         toolCallsAccum.push(...stepResult.toolCalls);
+        const output = stringifyLoopContext({ [name]: stepResult.output });
+        const event = {
+          id,
+          name: `loop:${name}`,
+          arguments: { loop: projectLoop.name, step: name },
+          result: output,
+          state: "completed" as const,
+        };
+        toolCallsAccum.push(event);
+        await onToolCall?.(event);
         return { output: stepResult.output };
       },
       handleHuman: async (name) => {
@@ -1152,6 +1187,12 @@ export function completionRoutes(getDeps: () => CompletionRouteDeps, apiKeys?: s
               projectLoop: projectLoopRuntime.projectLoop,
               aiMessages,
               extraSystemParts,
+              onToolCall: async (toolCall) => {
+                if (abortController.signal.aborted) return;
+                await stream.writeSSE({
+                  data: sseChunk(completionId, {}, null, { tool_call: toolCall }),
+                });
+              },
             });
             finalText = run.text;
             runUsage = run.usage;
