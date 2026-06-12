@@ -23,6 +23,7 @@ export interface LoopConfig {
   tools?: string[];
   model?: string;
   reasoning?: string;
+  temperature?: number;
   maxTurns?: number;
   /** Deterministic stop condition over the context bag. */
   stopWhen?: Condition;

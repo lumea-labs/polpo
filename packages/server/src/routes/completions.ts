@@ -22,7 +22,7 @@
 import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
 import { streamSSE } from "hono/streaming";
 import { nanoid } from "nanoid";
-import { agentMemoryScope, compactIfNeeded, type SummarizeFn, type CompactionEvent } from "@polpo-ai/core";
+import { agentMemoryScope, compactIfNeeded, resolveLoopSelection, type SummarizeFn, type CompactionEvent } from "@polpo-ai/core";
 import { streamText, generateText, jsonSchema, type LanguageModel, type LanguageModelUsage } from "ai";
 
 const MAX_TURNS = 20;
@@ -121,6 +121,9 @@ const completionRequestSchema = z.object({
   }),
   agent: z.string().optional().openapi({
     description: "Target a specific agent by name for direct conversation. Uses the agent's own model, system prompt, and coding tools instead of the orchestrator. Omit to talk to the orchestrator (default).",
+  }),
+  loop: z.string().optional().openapi({
+    description: "Optional configurable loop name for agent-direct mode. Applies that loop's prompt, tools, model, reasoning, and maxTurns overrides.",
   }),
   project: z.string().optional().openapi({
     description: "Deprecated. Ignored.",
@@ -633,9 +636,17 @@ export function completionRoutes(getDeps: () => CompletionRouteDeps, apiKeys?: s
     if (agentMode) {
       // ── Agent-direct mode ──
       const agents = await deps.getAgents();
-      const agentConfig = agents.find((a: any) => a.name === body.agent);
+      let agentConfig = agents.find((a: any) => a.name === body.agent);
       if (!agentConfig) {
         return c.json({ error: { message: `Agent "${body.agent}" not found`, type: "invalid_request_error", code: "agent_not_found" } }, 404);
+      }
+      try {
+        const selection = resolveLoopSelection(agentConfig, body.loop);
+        agentConfig = selection.agent;
+        c.header("x-loop", selection.name);
+      } catch (loopErr) {
+        const msg = loopErr instanceof Error ? loopErr.message : String(loopErr);
+        return c.json({ error: { message: msg, type: "invalid_request_error", code: "loop_not_found" } }, 400 as any);
       }
 
       // Build system prompt via dep

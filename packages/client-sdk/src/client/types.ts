@@ -212,6 +212,7 @@ export interface LoopConfig {
   tools?: string[];
   model?: string;
   reasoning?: string;
+  temperature?: number;
   maxTurns?: number;
   stopWhen?: Condition;
   output?: { schema?: unknown };
@@ -1351,6 +1352,8 @@ export interface ChatCompletionRequest {
   sessionId?: string;
   /** Target a specific agent by name for direct conversation. Uses the agent's own model, system prompt, and coding tools. Omit to talk to the orchestrator (default). */
   agent?: string;
+  /** Polpo extension: target a configured loop on the selected agent. */
+  loop?: string;
   /**
    * Opaque end-user identifier (OpenAI-compat). Persisted on the session and
    * available for filtering, per-user analytics, and pass-through to billing

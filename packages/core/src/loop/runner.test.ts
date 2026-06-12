@@ -108,4 +108,28 @@ describe("LoopRunner", () => {
     expect(result.turns).toBe(2);
     expect(result.reason).toBe("completed");
   });
+
+  it("uses stopWhen as the deterministic stop condition when configured", async () => {
+    const hooks = new LoopHookRegistry();
+    hooks.register({
+      hook: "step:after",
+      phase: "after",
+      handler: (ctx) => {
+        if (ctx.data.turn === 1) ctx.data.context.done = true;
+      },
+    });
+
+    const runner = new LoopRunner(hooks);
+    const result = await runner.run({
+      loop: { name: "build", stopWhen: { expression: "done == true" } },
+      maxTurns: 3,
+      model: async () => ({ text: "tick" }),
+      executeTool: async () => "unused",
+    });
+
+    expect(result.text).toBe("ticktick");
+    expect(result.turns).toBe(2);
+    expect(result.reason).toBe("completed");
+    expect(result.context.done).toBe(true);
+  });
 });
