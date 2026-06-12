@@ -165,6 +165,49 @@ describe("POST /v1/chat/completions", () => {
       // Zod validation: min(1) on messages
       expect(res.status).toBe(400);
     });
+
+    test("selects a configured agent loop when loop is provided", async () => {
+      await app.request("/api/v1/agents", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: "loop-agent",
+          role: "Loop test agent",
+          loops: {
+            plan: {
+              systemPrompt: "Plan only.",
+              tools: ["read"],
+              model: "mock/loop-model",
+            },
+          },
+        }),
+      });
+      setMockModel(mockTextModel("Loop selected."));
+
+      const res = await postCompletions({
+        agent: "loop-agent",
+        loop: "plan",
+        messages: [{ role: "user", content: "Use plan loop" }],
+        stream: false,
+      });
+
+      expect(res.status).toBe(200);
+      expect(res.headers.get("x-loop")).toBe("plan");
+      const body = await parseJson(res);
+      expect((body.choices as any[])[0].message.content).toBe("Loop selected.");
+    });
+
+    test("returns 400 when requested loop is missing", async () => {
+      const res = await postCompletions({
+        loop: "missing",
+        messages: [{ role: "user", content: "Use missing loop" }],
+        stream: false,
+      });
+
+      expect(res.status).toBe(400);
+      const body = await parseJson(res);
+      expect((body.error as any).code).toBe("loop_not_found");
+    });
   });
 
   describe("streaming", () => {

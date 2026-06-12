@@ -255,6 +255,7 @@ const LoopConfigSchema = z.object({
   tools: z.array(z.string().min(1)).optional(),
   model: z.string().optional(),
   reasoning: z.string().optional(),
+  temperature: z.number().min(0).max(2).optional(),
   maxTurns: z.number().int().positive().optional(),
   stopWhen: LoopConditionSchema.optional(),
   output: LoopOutputSchema.optional(),

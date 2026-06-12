@@ -182,7 +182,19 @@ Agents can declare a named loop collection plus an optional deterministic pipeli
 ]
 ```
 
-Loop conditions use Polpo's safe expression evaluator instead of JavaScript `eval` or `new Function`. The current OSS surface validates and round-trips the contract through core types, API schemas, SDK types, `polpo deploy`, and `polpo pull`; execution scheduling is being built in the next phases.
+Loop conditions use Polpo's safe expression evaluator instead of JavaScript `eval` or `new Function`. The OSS surface validates and round-trips the contract through core types, API schemas, SDK types, `polpo deploy`, and `polpo pull`.
+
+Agent-direct chat can target a loop explicitly:
+
+```json
+{
+  "agent": "router",
+  "loop": "classify",
+  "messages": [{ "role": "user", "content": "Route this request" }]
+}
+```
+
+At runtime, the selected loop narrows the effective prompt, tools, model, reasoning, and max turns for that request. Core also ships a pure `PipelineExecutor` for sequential, switch, parallel, and human pipeline nodes; hosts wire `runLoop` and `handleHuman` callbacks to their concrete runtime.
 
 ## SDK
 

@@ -175,3 +175,13 @@ export type {
 } from "./loop/hooks.js";
 export { LoopRunner } from "./loop/runner.js";
 export type { LoopModelInput, LoopModelResult, LoopRunnerOptions, LoopRunResult } from "./loop/runner.js";
+export { resolveLoopSelection, resolveActiveLoopTools } from "./loop/selector.js";
+export type { LoopSelection } from "./loop/selector.js";
+export { PipelineExecutor } from "./loop/pipeline.js";
+export type {
+  PipelineExecutionResult,
+  PipelineExecutorOptions,
+  PipelineHumanResult,
+  PipelineLoopResult,
+  PipelineTraceEvent,
+} from "./loop/pipeline.js";

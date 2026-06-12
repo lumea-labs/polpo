@@ -1,4 +1,5 @@
 import type { AgentConfig } from "../types.js";
+import { SafeExpressionEvaluator } from "./expression.js";
 import type { ContextBag, LoopConfig } from "./types.js";
 import {
   LoopHookRegistry,
@@ -53,14 +54,28 @@ function normalizeLoop(loop: LoopConfig & { name?: string }): LoopRuntimeConfig 
   };
 }
 
-function shouldStopAfterTurn(result: LoopModelResult, turn: number, maxTurns: number): { reason: LoopStopReason; shouldStop: boolean } {
+function shouldStopAfterTurn(
+  loop: LoopRuntimeConfig,
+  context: ContextBag,
+  result: LoopModelResult,
+  turn: number,
+  maxTurns: number,
+  evaluator: SafeExpressionEvaluator,
+): { reason: LoopStopReason; shouldStop: boolean } {
+  const reachedMaxTurns = turn + 1 >= maxTurns;
+  if (loop.stopWhen) {
+    const matched = evaluator.evaluate(loop.stopWhen.expression, context);
+    if (matched) return { reason: "completed", shouldStop: true };
+    return reachedMaxTurns ? { reason: "max_turns", shouldStop: true } : { reason: "completed", shouldStop: false };
+  }
   if ((result.toolCalls ?? []).length === 0) return { reason: "completed", shouldStop: true };
-  if (turn + 1 >= maxTurns) return { reason: "max_turns", shouldStop: true };
+  if (reachedMaxTurns) return { reason: "max_turns", shouldStop: true };
   return { reason: "completed", shouldStop: false };
 }
 
 export class LoopRunner {
   private readonly hooks: LoopHookRegistry;
+  private readonly evaluator = new SafeExpressionEvaluator();
 
   constructor(hooks?: LoopHookRegistry) {
     this.hooks = hooks ?? new LoopHookRegistry();
@@ -196,7 +211,7 @@ export class LoopRunner {
         usage: modelResult.usage,
       });
 
-      const stop = shouldStopAfterTurn(modelResult, turn, maxTurns);
+      const stop = shouldStopAfterTurn(loop, context, modelResult, turn, maxTurns, this.evaluator);
       const stopResult = await hooks.runBefore("loop:stop", {
         agent: options.agent,
         loop,
