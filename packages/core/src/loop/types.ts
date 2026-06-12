@@ -13,6 +13,8 @@ export interface Condition {
   expression: string;
 }
 
+export type ContextBag = Record<string, unknown>;
+
 export interface LoopConfig {
   /** Optional — the loops-map key is the canonical name. */
   name?: string;
