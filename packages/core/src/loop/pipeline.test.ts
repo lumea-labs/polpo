@@ -389,4 +389,83 @@ describe("PipelineExecutor", () => {
       runLoop: async () => ({ output: {} }),
     })).rejects.toBeInstanceOf(LoopPermissionApprovalRequiredError);
   });
+
+  it("resumes from an approval checkpoint without rerunning completed steps", async () => {
+    const executor = new PipelineExecutor();
+    let planRuns = 0;
+    let deployRuns = 0;
+    let verifyRuns = 0;
+
+    let approval: LoopApprovalRequiredError | undefined;
+    try {
+      await executor.execute({
+        name: "deploy-flow",
+        loops: { plan: {}, verify: {} },
+        pipeline: {
+          steps: [
+            { loop: "plan" },
+            { tool: "deploy", saveAs: "deploy" },
+            { loop: "verify" },
+          ],
+        },
+        projectPolicies: [
+          { id: "approve-deploy", hook: "tool:before", effect: "approval", when: "tool.name == 'deploy'" },
+        ],
+        runLoop: async (name) => {
+          if (name === "plan") planRuns += 1;
+          if (name === "verify") verifyRuns += 1;
+          return { output: { name } };
+        },
+        runTool: async () => {
+          deployRuns += 1;
+          return { output: { ok: true } };
+        },
+      });
+    } catch (err) {
+      approval = err as LoopApprovalRequiredError;
+    }
+
+    expect(approval).toBeInstanceOf(LoopApprovalRequiredError);
+    expect(approval?.resume?.context).toMatchObject({ plan: { name: "plan" } });
+    expect(approval?.resume?.steps).toEqual([
+      { tool: "deploy", saveAs: "deploy" },
+      { loop: "verify" },
+    ]);
+    expect(planRuns).toBe(1);
+    expect(deployRuns).toBe(0);
+    expect(verifyRuns).toBe(0);
+
+    const resumed = await executor.execute({
+      name: "deploy-flow",
+      loops: { plan: {}, verify: {} },
+      pipeline: { steps: approval!.resume!.steps },
+      context: approval!.resume!.context,
+      resume: {
+        previousNode: approval!.resume!.previousNode,
+        approvedGates: [{ type: "policy", id: "approve-deploy", hook: "tool:before" }],
+      },
+      projectPolicies: [
+        { id: "approve-deploy", hook: "tool:before", effect: "approval", when: "tool.name == 'deploy'" },
+      ],
+      runLoop: async (name) => {
+        if (name === "plan") planRuns += 1;
+        if (name === "verify") verifyRuns += 1;
+        return { output: { name } };
+      },
+      runTool: async () => {
+        deployRuns += 1;
+        return { output: { ok: true } };
+      },
+    });
+
+    expect(planRuns).toBe(1);
+    expect(deployRuns).toBe(1);
+    expect(verifyRuns).toBe(1);
+    expect(resumed.context).toMatchObject({
+      plan: { name: "plan" },
+      deploy: { ok: true },
+      verify: { name: "verify" },
+    });
+    expect(resumed.events.map((event) => event.type)).toContain("loop.resume");
+  });
 });

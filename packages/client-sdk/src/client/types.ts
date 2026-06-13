@@ -282,6 +282,7 @@ export interface ProjectLoopPermission {
 
 export type LoopTraceEventType =
   | "loop.start"
+  | "loop.resume"
   | "loop.end"
   | "loop.error"
   | "permission.result"
@@ -314,7 +315,27 @@ export interface LoopTraceEvent {
   data?: Record<string, unknown>;
 }
 
-export type ProjectLoopRunStatus = "running" | "completed" | "failed" | "awaiting_approval" | "approval_approved" | "approval_rejected" | "cancelled";
+export type ProjectLoopRunStatus = "running" | "completed" | "failed" | "awaiting_approval" | "approval_approved" | "approval_rejected" | "resuming" | "cancelled";
+
+export interface LoopApprovedGate {
+  type: "policy" | "permission";
+  id: string;
+  hook: LoopLifecycleHook;
+  approvalRequestId?: string;
+  resolvedAt?: string;
+  resolvedBy?: string;
+}
+
+export interface LoopResumeState {
+  context: Record<string, unknown>;
+  steps: Step[];
+  previousNode?: string;
+  approvedGates?: LoopApprovedGate[];
+  runtime?: Record<string, unknown>;
+  attempts?: number;
+  createdAt: string;
+  updatedAt?: string;
+}
 
 export interface LoopApprovalSnapshot {
   type?: "policy" | "permission";
@@ -342,6 +363,7 @@ export interface LoopRunRecord {
   error?: string;
   approvalRequestId?: string;
   approval?: LoopApprovalSnapshot;
+  resume?: LoopResumeState;
   metadata?: Record<string, unknown>;
   startedAt: string;
   updatedAt: string;

@@ -57,7 +57,14 @@ import { MemoryLoopRunStore } from "@polpo-ai/core/loop-run-store";
 const loopRunStore = new MemoryLoopRunStore();
 ```
 
-`PipelineExecutor` emits typed `LoopPermissionDeniedError`, `LoopPermissionApprovalRequiredError`, `LoopPolicyDeniedError`, and `LoopApprovalRequiredError`, plus structured trace events such as `permission.result`, `policy.result`, and `approval.required`. Hosts can map those records to audit logs, approval queues, compliance dashboards, or their own GRC surface.
+`PipelineExecutor` emits typed `LoopPermissionDeniedError`, `LoopPermissionApprovalRequiredError`, `LoopPolicyDeniedError`, and `LoopApprovalRequiredError`, plus structured trace events such as `permission.result`, `policy.result`, and `approval.required`. Approval errors include a resume continuation: the context bag, remaining steps, and previous node. Hosts can persist that on `LoopRunRecord.resume`, approve the gate, then resume from the checkpoint without rerunning completed steps.
+
+Loop run states distinguish the gate lifecycle from execution:
+
+- `awaiting_approval`: execution is paused at a policy/permission gate.
+- `approval_approved`: the gate was approved and the run can be resumed.
+- `resuming`: the runtime is executing from the saved checkpoint.
+- `completed`: the resumed or original run finished.
 
 ## License
 

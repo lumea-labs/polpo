@@ -35,6 +35,9 @@ import {
   type CompactionEvent,
   type ContextBag,
   type LoopConfig,
+  type LoopApprovedGate,
+  type LoopRunRecord,
+  type LoopResumeState,
   type LoopTraceEvent,
   type LoopRunStore,
   type ProjectLoopConfig,
@@ -932,15 +935,33 @@ async function runProjectLoopCompletion(options: {
   user?: string;
   onToolCall?: (toolCall: LoopRuntimeToolCall) => Promise<void>;
   onTrace?: (event: LoopTraceEvent) => Promise<void>;
+  resumeRun?: LoopRunRecord;
 }): Promise<ProjectLoopRunResult> {
-  const { deps, agentConfig, projectLoop, aiMessages, extraSystemParts, sessionId, user, onToolCall, onTrace } = options;
+  const { deps, agentConfig, projectLoop, aiMessages, extraSystemParts, sessionId, user, onToolCall, onTrace, resumeRun } = options;
   const normalized = normalizeProjectLoop(projectLoop);
   if (!normalized.pipeline) throw new Error(`Loop "${projectLoop.name}" does not define a pipeline`);
 
   const rootTools = await deps.resolveAgentTools(agentConfig);
   const loopRunStore = deps.getLoopRunStore?.();
-  const loopRunId = loopRunStore ? `looprun-${nanoid(16)}` : undefined;
-  if (loopRunStore && loopRunId) {
+  const resumeState = resumeRun?.resume;
+  const loopRunId = resumeRun?.id ?? (loopRunStore ? `looprun-${nanoid(16)}` : undefined);
+  if (loopRunStore && loopRunId && resumeRun) {
+    await loopRunStore.updateRun(loopRunId, {
+      status: "resuming",
+      error: undefined,
+      completedAt: undefined,
+      metadata: {
+        ...resumeRun.metadata,
+        resumedAt: new Date().toISOString(),
+        resumeAttempts: (resumeState?.attempts ?? 0) + 1,
+      },
+      resume: resumeState ? {
+        ...resumeState,
+        attempts: (resumeState.attempts ?? 0) + 1,
+        updatedAt: new Date().toISOString(),
+      } : undefined,
+    });
+  } else if (loopRunStore && loopRunId) {
     await loopRunStore.createRun({
       id: loopRunId,
       loop: projectLoop,
@@ -964,12 +985,16 @@ async function runProjectLoopCompletion(options: {
   try {
     const result = await executor.execute({
       name: projectLoop.name,
-      pipeline: normalized.pipeline,
+      pipeline: resumeState ? { ...normalized.pipeline, steps: resumeState.steps } : normalized.pipeline,
       loops: normalized.loops,
-      context: {},
+      context: resumeState?.context ?? {},
       projectHooks: projectLoop.hooks,
       projectPermissions: projectLoop.permissions,
       projectPolicies: projectLoop.policies,
+      resume: resumeState ? {
+        previousNode: resumeState.previousNode,
+        approvedGates: resumeState.approvedGates,
+      } : undefined,
       onTrace: async (event) => {
         events.push(event);
         if (loopRunStore && loopRunId) await loopRunStore.appendTrace(loopRunId, event);
@@ -1043,7 +1068,9 @@ async function runProjectLoopCompletion(options: {
       await loopRunStore.updateRun(loopRunId, {
         status: "completed",
         context: result.context,
-        trace: result.events,
+        trace: resumeRun ? [...resumeRun.trace, ...result.events] : result.events,
+        resume: undefined,
+        approval: resumeRun?.approval ? { ...resumeRun.approval, status: "approved" } : undefined,
         completedAt: new Date().toISOString(),
       });
     }
@@ -1096,7 +1123,7 @@ async function runProjectLoopCompletion(options: {
         await loopRunStore.updateRun(loopRunId, {
           status: "awaiting_approval",
           context: err.context,
-          trace: events,
+          trace: resumeRun ? [...resumeRun.trace, ...events] : events,
           approvalRequestId,
           approval: {
             type: approvalType,
@@ -1108,12 +1135,13 @@ async function runProjectLoopCompletion(options: {
             context: err.context,
             status: "pending",
           },
+          resume: buildLoopResumeState(err.resume, aiMessages, extraSystemParts, resumeRun?.resume?.approvedGates),
           error: err.message,
         });
       } else {
         await loopRunStore.updateRun(loopRunId, {
           status: "failed",
-          trace: events,
+          trace: resumeRun ? [...resumeRun.trace, ...events] : events,
           error: err instanceof Error ? err.message : String(err),
           completedAt: new Date().toISOString(),
         });
@@ -1125,6 +1153,72 @@ async function runProjectLoopCompletion(options: {
       rootTools.cleanup().catch(() => {});
     }
   }
+}
+
+function buildLoopResumeState(
+  continuation: { context: ContextBag; steps: any[]; previousNode?: string } | undefined,
+  aiMessages: any[],
+  extraSystemParts: string[],
+  approvedGates: LoopApprovedGate[] | undefined,
+): LoopResumeState | undefined {
+  if (!continuation) return undefined;
+  return {
+    context: continuation.context,
+    steps: continuation.steps,
+    previousNode: continuation.previousNode,
+    approvedGates: approvedGates ?? [],
+    runtime: {
+      aiMessages,
+      extraSystemParts,
+    },
+    attempts: 0,
+    createdAt: new Date().toISOString(),
+  };
+}
+
+export async function resumeProjectLoopRun(options: {
+  deps: CompletionRouteDeps;
+  runId: string;
+  resolvedBy?: string;
+}): Promise<LoopRunRecord> {
+  const loopRunStore = options.deps.getLoopRunStore?.();
+  if (!loopRunStore) throw new Error("Loop run store is not configured");
+
+  const run = await loopRunStore.getRun(options.runId);
+  if (!run) throw new Error(`Loop run "${options.runId}" not found`);
+  if (run.status !== "approval_approved") {
+    throw new Error(`Loop run "${options.runId}" is ${run.status}, not approval_approved`);
+  }
+  if (!run.resume || run.resume.steps.length === 0) {
+    throw new Error(`Loop run "${options.runId}" has no resume checkpoint`);
+  }
+
+  const agents = await options.deps.getAgents();
+  const agentConfig = agents.find((agent: any) => agent.name === run.agentName);
+  if (!agentConfig) throw new Error(`Agent "${run.agentName ?? "unknown"}" not found for loop run "${run.id}"`);
+  if (!options.deps.getProjectLoop) throw new Error("Project loop resolver is not configured");
+  const projectLoop = await options.deps.getProjectLoop(run.loopName);
+  if (!projectLoop) throw new Error(`Project loop "${run.loopName}" not found`);
+
+  const aiMessages = Array.isArray(run.resume.runtime?.aiMessages) ? run.resume.runtime.aiMessages : [];
+  const extraSystemParts = Array.isArray(run.resume.runtime?.extraSystemParts)
+    ? run.resume.runtime.extraSystemParts as string[]
+    : [];
+
+  await runProjectLoopCompletion({
+    deps: options.deps,
+    agentConfig,
+    projectLoop,
+    aiMessages,
+    extraSystemParts,
+    sessionId: run.sessionId,
+    user: run.user,
+    resumeRun: run,
+  });
+
+  const updated = await loopRunStore.getRun(run.id);
+  if (!updated) throw new Error(`Loop run "${run.id}" disappeared after resume`);
+  return updated;
 }
 
 export function completionRoutes(getDeps: () => CompletionRouteDeps, apiKeys?: string[]): OpenAPIHono {

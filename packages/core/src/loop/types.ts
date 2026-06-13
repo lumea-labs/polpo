@@ -82,6 +82,7 @@ export interface ProjectLoopPermission {
 
 export type LoopTraceEventType =
   | "loop.start"
+  | "loop.resume"
   | "loop.end"
   | "loop.error"
   | "permission.result"

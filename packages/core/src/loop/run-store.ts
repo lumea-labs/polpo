@@ -1,4 +1,4 @@
-import type { ContextBag, LoopLifecycleHook, LoopTraceEvent, ProjectLoopConfig, ProjectLoopPermission, ProjectLoopPolicy } from "./types.js";
+import type { ContextBag, LoopLifecycleHook, LoopTraceEvent, ProjectLoopConfig, ProjectLoopPermission, ProjectLoopPolicy, Step } from "./types.js";
 
 export type ProjectLoopRunStatus =
   | "running"
@@ -7,7 +7,28 @@ export type ProjectLoopRunStatus =
   | "awaiting_approval"
   | "approval_approved"
   | "approval_rejected"
+  | "resuming"
   | "cancelled";
+
+export interface LoopApprovedGate {
+  type: "policy" | "permission";
+  id: string;
+  hook: LoopLifecycleHook;
+  approvalRequestId?: string;
+  resolvedAt?: string;
+  resolvedBy?: string;
+}
+
+export interface LoopResumeState {
+  context: ContextBag;
+  steps: Step[];
+  previousNode?: string;
+  approvedGates?: LoopApprovedGate[];
+  runtime?: Record<string, unknown>;
+  attempts?: number;
+  createdAt: string;
+  updatedAt?: string;
+}
 
 export interface LoopApprovalSnapshot {
   type?: "policy" | "permission";
@@ -35,6 +56,7 @@ export interface LoopRunRecord {
   error?: string;
   approvalRequestId?: string;
   approval?: LoopApprovalSnapshot;
+  resume?: LoopResumeState;
   metadata?: Record<string, unknown>;
   startedAt: string;
   updatedAt: string;
@@ -148,8 +170,15 @@ export class LoopPolicyDeniedError extends Error {
   }
 }
 
+export interface LoopApprovalContinuation {
+  context: ContextBag;
+  steps: Step[];
+  previousNode?: string;
+}
+
 export class LoopApprovalRequiredError extends Error {
   readonly code = "loop_approval_required";
+  resume?: LoopApprovalContinuation;
   constructor(
     public readonly policy: ProjectLoopPolicy,
     public readonly hook: LoopLifecycleHook,
@@ -179,6 +208,7 @@ export class LoopPermissionDeniedError extends Error {
 
 export class LoopPermissionApprovalRequiredError extends Error {
   readonly code = "loop_permission_approval_required";
+  resume?: LoopApprovalContinuation;
   constructor(
     public readonly permission: ProjectLoopPermission,
     public readonly hook: LoopLifecycleHook,

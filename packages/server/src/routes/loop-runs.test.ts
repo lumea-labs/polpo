@@ -37,7 +37,16 @@ describe("loopRunRoutes", () => {
   it("resolves approval gates and updates the loop run audit record", async () => {
     const loopRunStore = new MemoryLoopRunStore();
     const approvalStore = new MemoryApprovalStore();
-    const app = loopRunRoutes(() => ({ loopRunStore, approvalStore }));
+    const resumed: string[] = [];
+    const app = loopRunRoutes(() => ({
+      loopRunStore,
+      approvalStore,
+      resumeLoopRun: async (id) => {
+        resumed.push(id);
+        const run = await loopRunStore.updateRun(id, { status: "completed", resume: undefined });
+        return run;
+      },
+    }));
 
     const run = await loopRunStore.createRun({
       id: "run-1",
@@ -63,6 +72,11 @@ describe("loopRunRoutes", () => {
         context: {},
         status: "pending",
       },
+      resume: {
+        context: {},
+        steps: [{ tool: "deploy" }],
+        createdAt: new Date().toISOString(),
+      },
     });
 
     const response = await app.request("/run-1/approve", {
@@ -75,8 +89,21 @@ describe("loopRunRoutes", () => {
     const body = await response.json();
     expect(body.data.status).toBe("approval_approved");
     expect(body.data.approval.status).toBe("approved");
+    expect(body.data.resume.approvedGates).toMatchObject([
+      { type: "permission", id: "deploy-approval", hook: "tool:before" },
+    ]);
     expect(body.data.metadata.approvalResolvedBy).toBe("security");
     expect((await approvalStore.get("approval-1"))?.status).toBe("approved");
     expect((await loopRunStore.getRun("run-1"))?.trace.at(-1)?.data?.decision).toBe("approved");
+
+    const resumeResponse = await app.request("/run-1/resume", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ resolvedBy: "security" }),
+    });
+
+    expect(resumeResponse.status).toBe(200);
+    expect(resumed).toEqual(["run-1"]);
+    expect((await resumeResponse.json()).data.status).toBe("completed");
   });
 });

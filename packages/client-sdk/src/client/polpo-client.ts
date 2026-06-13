@@ -680,6 +680,10 @@ export class PolpoClient {
     return this.post<LoopRunRecord>(`/loop-runs/${encodeURIComponent(id)}/reject`, opts ?? {});
   }
 
+  resumeLoopRun(id: string, opts?: { resolvedBy?: string }): Promise<LoopRunRecord> {
+    return this.post<LoopRunRecord>(`/loop-runs/${encodeURIComponent(id)}/resume`, opts ?? {});
+  }
+
   getTeams(): Promise<Team[]> {
     return this.get<Team[]>("/agents/teams");
   }

@@ -129,6 +129,7 @@ export async function ensurePgSchema(db: any): Promise<void> {
     error               TEXT,
     approval_request_id TEXT,
     approval            JSONB,
+    resume              JSONB,
     metadata            JSONB,
     started_at          TEXT NOT NULL,
     updated_at          TEXT NOT NULL,
@@ -136,6 +137,7 @@ export async function ensurePgSchema(db: any): Promise<void> {
   )`);
 
   await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_pg_loop_runs_status ON loop_runs(status)`);
+  await db.execute(sql`ALTER TABLE loop_runs ADD COLUMN IF NOT EXISTS resume JSONB`);
   await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_pg_loop_runs_loop_name ON loop_runs(loop_name)`);
   await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_pg_loop_runs_agent_name ON loop_runs(agent_name)`);
   await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_pg_loop_runs_session_id ON loop_runs(session_id)`);
