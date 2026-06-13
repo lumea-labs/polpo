@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { MemoryLoopRunStore, type LoopTraceEvent } from "@polpo-ai/core";
 import { completionRoutes, type CompletionRouteDeps } from "./completions.js";
 
 describe("completionRoutes project loop runtime", () => {
@@ -88,6 +89,51 @@ describe("completionRoutes project loop runtime", () => {
       "loop.end",
     ]);
     expect(json.loop_trace[0]).toMatchObject({ loop: "time-tracker", status: "started" });
+  });
+
+  it("continues project loop execution when trace persistence fails", async () => {
+    class FailingTraceStore extends MemoryLoopRunStore {
+      async appendTrace(_runId: string, _event: LoopTraceEvent): Promise<void> {
+        throw new Error("trace db unavailable");
+      }
+    }
+
+    const diagnostics: { event: string; data: any }[] = [];
+    const deps = makeDeps();
+    deps.getLoopRunStore = () => new FailingTraceStore();
+    deps.emit = (event, data) => diagnostics.push({ event, data });
+
+    const app = completionRoutes(() => deps);
+    const res = await app.request("/", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        agent: "timer",
+        messages: [{ role: "user", content: "track it" }],
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    const json = await res.json() as any;
+    expect(JSON.parse(json.choices[0].message.content)).toEqual({
+      timing: {
+        start: "100",
+        end: "105",
+      },
+    });
+    expect(json.loop_run_id).toMatch(/^looprun-/);
+    expect(json.loop_trace.map((event: any) => event.type)).toContain("loop.end");
+    expect(diagnostics).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          event: "loop_run:trace_persist_failed",
+          data: expect.objectContaining({
+            loop: "time-tracker",
+            error: "trace db unavailable",
+          }),
+        }),
+      ]),
+    );
   });
 
   it("streams project loop step tool call events", async () => {
