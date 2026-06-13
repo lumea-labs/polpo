@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { completionRoutes, type CompletionRouteDeps } from "./completions.js";
 
 describe("completionRoutes project loop runtime", () => {
-  function makeDeps(): CompletionRouteDeps {
+  function makeDeps(projectLoop?: any): CompletionRouteDeps {
     let now = 100;
     return {
       getAgents: async () => [{
@@ -25,14 +25,15 @@ describe("completionRoutes project loop runtime", () => {
       },
       resolveAgentTools: async () => ({
         tools: [],
-        executor: async (name) => {
+        executor: async (name, args) => {
+          if (name === "audit_step") return JSON.stringify({ ok: true, args });
           if (name !== "unix_time") return `Error: Unknown tool "${name}"`;
           const value = now;
           now += 5;
           return String(value);
         },
       }),
-      getProjectLoop: async (name) => ({
+      getProjectLoop: async (name) => projectLoop ?? ({
         name,
         context: "shared",
         start: "capture_start",
@@ -127,5 +128,82 @@ describe("completionRoutes project loop runtime", () => {
     );
     expect(traceEvents.map((event: any) => event.type)).toContain("tool.call");
     expect(traceEvents.map((event: any) => event.type)).toContain("loop.end");
+  });
+
+  it("executes project loop hook tool actions through the completion runtime", async () => {
+    const app = completionRoutes(() => makeDeps({
+      name: "time-tracker",
+      context: "shared",
+      start: "capture_start",
+      hooks: {
+        "tool:after": [{ tool: "audit_step", input: { source: "hook" }, saveAs: "audit.last" }],
+      },
+      steps: {
+        capture_start: {
+          type: "tool",
+          tool: "unix_time",
+          saveAs: "timing.start",
+          next: "end",
+        },
+      },
+    }));
+
+    const res = await app.request("/", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        agent: "timer",
+        messages: [{ role: "user", content: "track it" }],
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    const json = await res.json() as any;
+    expect(JSON.parse(json.choices[0].message.content)).toMatchObject({
+      timing: { start: "100" },
+      audit: { last: { ok: true, args: { source: "hook" } } },
+    });
+    expect(json.loop_trace).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ type: "tool.call", tool: "audit_step", data: expect.objectContaining({ hook: "tool:after" }) }),
+        expect.objectContaining({ type: "tool.result", tool: "audit_step", data: expect.objectContaining({ hook: "tool:after" }) }),
+      ]),
+    );
+  });
+
+  it("blocks project loop execution when a runtime policy denies a lifecycle point", async () => {
+    const app = completionRoutes(() => makeDeps({
+      name: "time-tracker",
+      context: "shared",
+      start: "capture_start",
+      policies: [
+        { id: "block-time", effect: "deny", hook: "tool:before", when: "tool.name == 'unix_time'", message: "time capture disabled" },
+      ],
+      steps: {
+        capture_start: {
+          type: "tool",
+          tool: "unix_time",
+          saveAs: "timing.start",
+          next: "end",
+        },
+      },
+    }));
+
+    const res = await app.request("/", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        agent: "timer",
+        messages: [{ role: "user", content: "track it" }],
+      }),
+    });
+
+    expect(res.status).toBe(403);
+    const json = await res.json() as any;
+    expect(json.error).toMatchObject({
+      type: "loop_runtime_error",
+      code: "loop_policy_blocked",
+      message: 'Loop policy "block-time" denied tool:before: time capture disabled',
+    });
   });
 });
