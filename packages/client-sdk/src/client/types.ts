@@ -249,6 +249,8 @@ export interface LoopHookAction {
 
 export type ProjectLoopHooks = Partial<Record<LoopLifecycleHook, LoopHookAction[]>>;
 export type LoopPolicyEffect = "allow" | "deny" | "approval";
+export type LoopPermissionEffect = "allow" | "deny" | "approval";
+export type LoopPermissionResource = "loop" | "step" | "model" | "tool" | "human";
 
 export interface ProjectLoopPolicy {
   id?: string;
@@ -259,10 +261,32 @@ export interface ProjectLoopPolicy {
   message?: string;
 }
 
+export interface LoopPermissionMatch {
+  loop?: string | string[];
+  step?: string | string[];
+  tool?: string | string[];
+  human?: string | string[];
+  hook?: LoopLifecycleHook | LoopLifecycleHook[];
+}
+
+export interface ProjectLoopPermission {
+  id?: string;
+  description?: string;
+  resource: LoopPermissionResource;
+  action?: string;
+  effect: LoopPermissionEffect;
+  match?: LoopPermissionMatch;
+  when?: string;
+  message?: string;
+}
+
 export type LoopTraceEventType =
   | "loop.start"
   | "loop.end"
   | "loop.error"
+  | "permission.result"
+  | "policy.result"
+  | "approval.required"
   | "step.start"
   | "step.end"
   | "step.skip"
@@ -290,14 +314,20 @@ export interface LoopTraceEvent {
   data?: Record<string, unknown>;
 }
 
-export type ProjectLoopRunStatus = "running" | "completed" | "failed" | "awaiting_approval" | "cancelled";
+export type ProjectLoopRunStatus = "running" | "completed" | "failed" | "awaiting_approval" | "approval_approved" | "approval_rejected" | "cancelled";
 
 export interface LoopApprovalSnapshot {
+  type?: "policy" | "permission";
   policyId: string;
+  permissionId?: string;
   hook: LoopLifecycleHook;
   message?: string;
   payload: Record<string, unknown>;
   context: Record<string, unknown>;
+  status?: "pending" | "approved" | "rejected";
+  resolvedAt?: string;
+  resolvedBy?: string;
+  note?: string;
 }
 
 export interface LoopRunRecord {
@@ -341,6 +371,7 @@ export interface ProjectLoopConfig {
   metadata?: Record<string, unknown>;
   context?: "shared";
   hooks?: ProjectLoopHooks;
+  permissions?: ProjectLoopPermission[];
   policies?: ProjectLoopPolicy[];
   start: string;
   steps: Record<string, LoopStepConfig>;

@@ -163,6 +163,9 @@ export type {
   LoopHookAction,
   LoopLifecycleHook,
   LoopNext,
+  LoopPermissionEffect,
+  LoopPermissionMatch,
+  LoopPermissionResource,
   LoopPolicyEffect,
   LoopStepConfig,
   LoopTraceEvent,
@@ -172,6 +175,7 @@ export type {
   ProjectLoopConfig,
   ProjectLoopHooks,
   ProjectLoopKind,
+  ProjectLoopPermission,
   ProjectLoopPolicy,
   ProjectLoopVersion,
   Step,
@@ -210,7 +214,13 @@ export type {
   PipelineToolResult,
   PipelineTraceEvent,
 } from "./loop/pipeline.js";
-export { LoopApprovalRequiredError, LoopPolicyDeniedError, MemoryLoopRunStore } from "./loop/run-store.js";
+export {
+  LoopApprovalRequiredError,
+  LoopPermissionApprovalRequiredError,
+  LoopPermissionDeniedError,
+  LoopPolicyDeniedError,
+  MemoryLoopRunStore,
+} from "./loop/run-store.js";
 export type {
   CreateLoopRunInput,
   LoopApprovalSnapshot,

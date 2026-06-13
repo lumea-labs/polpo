@@ -2,6 +2,8 @@ import { SafeExpressionEvaluator } from "./expression.js";
 import type { LoopHookRegistry } from "./hooks.js";
 import {
   LoopApprovalRequiredError,
+  LoopPermissionApprovalRequiredError,
+  LoopPermissionDeniedError,
   LoopPolicyDeniedError,
 } from "./run-store.js";
 import {
@@ -18,6 +20,7 @@ import {
   type ProjectLoopPolicy,
   type LoopTraceEvent,
   type Pipeline,
+  type ProjectLoopPermission,
   type Step,
 } from "./types.js";
 
@@ -56,6 +59,7 @@ export interface PipelineExecutorOptions {
   context?: ContextBag;
   hooks?: LoopHookRegistry;
   projectHooks?: ProjectLoopHooks;
+  projectPermissions?: ProjectLoopPermission[];
   projectPolicies?: ProjectLoopPolicy[];
   onTrace?: (event: LoopTraceEvent) => void | Promise<void>;
   runLoop: (name: string, loop: LoopConfig, context: Readonly<ContextBag>) => Promise<PipelineLoopResult>;
@@ -246,7 +250,8 @@ export class PipelineExecutor {
     state: PipelineExecutionState,
     payload: Record<string, unknown> = {},
   ): Promise<void> {
-    this.enforcePolicies(hook, context, options.projectPolicies ?? [], payload);
+    await this.enforcePermissions(hook, context, options.projectPermissions ?? [], payload, state);
+    await this.enforcePolicies(hook, context, options.projectPolicies ?? [], payload, state);
 
     const actions = options.projectHooks?.[hook] ?? [];
     for (const action of actions) {
@@ -309,12 +314,71 @@ export class PipelineExecutor {
     }
   }
 
-  private enforcePolicies(
+  private async enforcePermissions(
+    hook: LoopLifecycleHook,
+    context: ContextBag,
+    permissions: ProjectLoopPermission[],
+    payload: Record<string, unknown>,
+    state: PipelineExecutionState,
+  ): Promise<void> {
+    const relevant = permissions.filter((permission) => this.permissionAppliesToHook(permission, hook, payload));
+    if (relevant.length === 0) return;
+
+    const policyContext = this.policyContext(context, hook, payload);
+    const allowPermissions = relevant.filter((permission) => permission.effect === "allow");
+    let allowMatched = false;
+
+    for (const permission of relevant) {
+      const matched = this.matchesPermission(permission, hook, policyContext, payload);
+      await state.emit({
+        type: "permission.result",
+        status: matched ? "completed" : "skipped",
+        data: {
+          permissionId: permission.id,
+          effect: permission.effect,
+          resource: permission.resource,
+          action: permission.action,
+          hook,
+          matched,
+        },
+      });
+      if (!matched) continue;
+
+      if (permission.effect === "allow") {
+        allowMatched = true;
+        continue;
+      }
+
+      const id = permission.id ?? "anonymous";
+      const suffix = permission.message ? `: ${permission.message}` : "";
+      if (permission.effect === "deny") {
+        throw new LoopPermissionDeniedError(permission, hook, payload, `Loop permission "${id}" denied ${hook}${suffix}`);
+      }
+      await state.emit({
+        type: "approval.required",
+        status: "started",
+        data: { type: "permission", permissionId: id, hook, payload },
+      });
+      throw new LoopPermissionApprovalRequiredError(permission, hook, { ...context }, payload, `Loop permission "${id}" requires approval at ${hook}${suffix}`);
+    }
+
+    if (allowPermissions.length > 0 && !allowMatched) {
+      throw new LoopPermissionDeniedError(
+        allowPermissions[0]!,
+        hook,
+        payload,
+        `Loop permission allow-list blocked ${hook}: no allow permission matched`,
+      );
+    }
+  }
+
+  private async enforcePolicies(
     hook: LoopLifecycleHook,
     context: ContextBag,
     policies: ProjectLoopPolicy[],
     payload: Record<string, unknown>,
-  ): void {
+    state: PipelineExecutionState,
+  ): Promise<void> {
     const relevant = policies.filter((policy) => (policy.hook ?? "tool:before") === hook);
     if (relevant.length === 0) return;
 
@@ -324,6 +388,16 @@ export class PipelineExecutor {
 
     for (const policy of relevant) {
       const matched = this.matchesWhen(policy.when, policyContext);
+      await state.emit({
+        type: "policy.result",
+        status: matched ? "completed" : "skipped",
+        data: {
+          policyId: policy.id,
+          effect: policy.effect,
+          hook,
+          matched,
+        },
+      });
       if (!matched) continue;
 
       if (policy.effect === "allow") {
@@ -336,6 +410,11 @@ export class PipelineExecutor {
       if (policy.effect === "deny") {
         throw new LoopPolicyDeniedError(policy, hook, payload, `Loop policy "${id}" denied ${hook}${suffix}`);
       }
+      await state.emit({
+        type: "approval.required",
+        status: "started",
+        data: { type: "policy", policyId: id, hook, payload },
+      });
       throw new LoopApprovalRequiredError(policy, hook, { ...context }, payload, `Loop policy "${id}" requires approval at ${hook}${suffix}`);
     }
 
@@ -351,6 +430,47 @@ export class PipelineExecutor {
       ...payload,
     };
   }
+
+  private permissionAppliesToHook(permission: ProjectLoopPermission, hook: LoopLifecycleHook, payload: Record<string, unknown>): boolean {
+    if ((permission.match?.hook && !matchesName(permission.match.hook, hook)) || defaultHookForResource(permission.resource) !== hook) {
+      return false;
+    }
+    if (permission.resource === "tool" && !payload.tool) return false;
+    if (permission.resource === "step" && !payload.step) return false;
+    if (permission.resource === "model" && !payload.step) return false;
+    if (permission.resource === "human" && !(payload.step as any)?.type?.includes?.("human") && !payload.human) return false;
+    return true;
+  }
+
+  private matchesPermission(
+    permission: ProjectLoopPermission,
+    hook: LoopLifecycleHook,
+    policyContext: ContextBag,
+    payload: Record<string, unknown>,
+  ): boolean {
+    const match = permission.match;
+    if (match?.hook && !matchesName(match.hook, hook)) return false;
+    if (match?.loop && !matchesName(match.loop, String(payload.loop && typeof payload.loop === "object" ? (payload.loop as any).name : policyContext.loop ?? ""))) return false;
+    if (match?.step && !matchesName(match.step, String((payload.step as any)?.name ?? ""))) return false;
+    if (match?.tool && !matchesName(match.tool, String((payload.tool as any)?.name ?? ""))) return false;
+    if (match?.human && !matchesName(match.human, String((payload.human as any)?.name ?? (payload.step as any)?.name ?? ""))) return false;
+    return permission.when ? this.matchesWhen(permission.when, policyContext) : true;
+  }
+}
+
+function defaultHookForResource(resource: ProjectLoopPermission["resource"]): LoopLifecycleHook {
+  switch (resource) {
+    case "loop": return "loop:start";
+    case "step": return "step:before";
+    case "model": return "model:before";
+    case "tool": return "tool:before";
+    case "human": return "step:before";
+  }
+}
+
+function matchesName(pattern: string | string[], value: string): boolean {
+  const patterns = Array.isArray(pattern) ? pattern : [pattern];
+  return patterns.some((item) => item === "*" || item === value);
 }
 
 function freezeContext(context: ContextBag): Readonly<ContextBag> {

@@ -319,6 +319,25 @@ export const projectLoopPolicySchema = z.object({
   message: z.string().optional(),
 });
 
+const stringOrStringArraySchema = z.union([z.string().min(1), z.array(z.string().min(1)).min(1)]);
+
+export const projectLoopPermissionSchema = z.object({
+  id: z.string().min(1).optional(),
+  description: z.string().optional(),
+  resource: z.enum(["loop", "step", "model", "tool", "human"]),
+  action: z.string().min(1).optional(),
+  effect: z.enum(["allow", "deny", "approval"]),
+  match: z.object({
+    loop: stringOrStringArraySchema.optional(),
+    step: stringOrStringArraySchema.optional(),
+    tool: stringOrStringArraySchema.optional(),
+    human: stringOrStringArraySchema.optional(),
+    hook: z.union([z.enum(LOOP_LIFECYCLE_HOOKS), z.array(z.enum(LOOP_LIFECYCLE_HOOKS)).min(1)]).optional(),
+  }).optional(),
+  when: z.string().min(1).optional(),
+  message: z.string().optional(),
+});
+
 export const projectLoopConfigSchema = z.object({
   version: z.literal("1").optional(),
   kind: z.literal("graph").optional(),
@@ -327,6 +346,7 @@ export const projectLoopConfigSchema = z.object({
   metadata: z.record(z.string(), z.unknown()).optional(),
   context: z.literal("shared").optional(),
   hooks: projectLoopHooksSchema.optional(),
+  permissions: z.array(projectLoopPermissionSchema).optional(),
   policies: z.array(projectLoopPolicySchema).optional(),
   start: z.string().min(1),
   steps: z.record(z.string().min(1), z.union([

@@ -137,6 +137,23 @@ describe("agentLoopConfigSchema", () => {
           },
         ],
       },
+      permissions: [
+        {
+          id: "tools-allowlist",
+          resource: "tool",
+          action: "call",
+          effect: "allow",
+          match: { tool: ["read", "policy_check", "audit_log"] },
+        },
+        {
+          id: "approval-for-write",
+          resource: "tool",
+          action: "call",
+          effect: "approval",
+          match: { tool: "write" },
+          message: "Writing requires human approval.",
+        },
+      ],
       policies: [
         {
           id: "deny-dangerous-bash",
@@ -159,6 +176,8 @@ describe("agentLoopConfigSchema", () => {
     expect(loop.version).toBe("1");
     expect(loop.kind).toBe("graph");
     expect(loop.hooks?.["tool:before"]?.[0]?.tool).toBe("policy_check");
+    expect(loop.permissions?.[0]?.resource).toBe("tool");
+    expect(loop.permissions?.[1]?.effect).toBe("approval");
     expect(loop.policies?.[0]?.effect).toBe("deny");
     expect(normalizeProjectLoop(loop as ProjectLoopConfig).pipeline?.steps).toEqual([{ loop: "work" }]);
   });
