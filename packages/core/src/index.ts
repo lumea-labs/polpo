@@ -223,9 +223,11 @@ export {
 } from "./loop/run-store.js";
 export type {
   CreateLoopRunInput,
+  LoopApprovedGate,
   LoopApprovalSnapshot,
   LoopRunListFilter,
   LoopRunRecord,
+  LoopResumeState,
   ProjectLoopRunStatus,
   LoopRunStore,
 } from "./loop/run-store.js";

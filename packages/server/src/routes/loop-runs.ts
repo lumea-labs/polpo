@@ -1,13 +1,14 @@
 import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
 import type { ApprovalStore } from "@polpo-ai/core/approval-store";
-import type { ProjectLoopRunStatus, LoopRunStore } from "@polpo-ai/core/loop-run-store";
+import type { LoopApprovalSnapshot, LoopApprovedGate, ProjectLoopRunStatus, LoopRunStore } from "@polpo-ai/core/loop-run-store";
 
 export interface LoopRunRouteDeps {
   loopRunStore?: LoopRunStore;
   approvalStore?: ApprovalStore;
+  resumeLoopRun?: (id: string, opts?: { resolvedBy?: string }) => Promise<unknown>;
 }
 
-const statusSchema = z.enum(["running", "completed", "failed", "awaiting_approval", "approval_approved", "approval_rejected", "cancelled"]);
+const statusSchema = z.enum(["running", "completed", "failed", "awaiting_approval", "approval_approved", "approval_rejected", "resuming", "cancelled"]);
 const resolveApprovalBodySchema = z.object({
   resolvedBy: z.string().optional(),
   note: z.string().optional(),
@@ -118,6 +119,42 @@ export function loopRunRoutes(getDeps: () => LoopRunRouteDeps): OpenAPIHono {
     async (c: any) => resolveLoopApproval(c, getDeps(), "rejected"),
   );
 
+  app.openapi(
+    createRoute({
+      method: "post",
+      path: "/:id/resume",
+      tags: ["Loop Runs"],
+      summary: "Resume an approved loop run from its approval checkpoint",
+      request: {
+        params: z.object({ id: z.string().min(1) }),
+        body: { content: { "application/json": { schema: resolveApprovalBodySchema } }, required: false },
+      },
+      responses: {
+        200: { content: { "application/json": { schema: z.object({ ok: z.boolean(), data: z.any() }) } }, description: "Loop run resumed" },
+        400: { content: { "application/json": { schema: z.object({ ok: z.literal(false), error: z.string(), code: z.string() }) } }, description: "Loop run cannot be resumed" },
+        404: { content: { "application/json": { schema: z.object({ ok: z.literal(false), error: z.string(), code: z.string() }) } }, description: "Loop run not found" },
+        501: { content: { "application/json": { schema: z.object({ ok: z.literal(false), error: z.string(), code: z.string() }) } }, description: "Resume handler unavailable" },
+      },
+    }),
+    async (c: any) => {
+      const deps = getDeps();
+      if (!deps.loopRunStore) return c.json({ ok: false as const, error: "Loop run store is not configured", code: "LOOP_RUN_STORE_UNAVAILABLE" }, 501);
+      if (!deps.resumeLoopRun) return c.json({ ok: false as const, error: "Loop resume handler is not configured", code: "LOOP_RESUME_UNAVAILABLE" }, 501);
+      const run = await deps.loopRunStore.getRun(c.req.param("id"));
+      if (!run) return c.json({ ok: false as const, error: "Loop run not found", code: "NOT_FOUND" }, 404);
+      if (run.status !== "approval_approved") {
+        return c.json({ ok: false as const, error: `Loop run is ${run.status}, not approval_approved`, code: "NOT_APPROVED" }, 400);
+      }
+      const body = await c.req.json().catch(() => ({}));
+      try {
+        const data = await deps.resumeLoopRun(run.id, { resolvedBy: body.resolvedBy });
+        return c.json({ ok: true, data }, 200);
+      } catch (err) {
+        return c.json({ ok: false as const, error: err instanceof Error ? err.message : String(err), code: "RESUME_FAILED" }, 400);
+      }
+    },
+  );
+
   return app;
 }
 
@@ -162,6 +199,18 @@ async function resolveLoopApproval(c: any, deps: LoopRunRouteDeps, decision: "ap
     },
   });
 
+  const approvedGate = decision === "approved" ? approvalSnapshotToGate(run.approval, run.approvalRequestId, now, body.resolvedBy) : undefined;
+  const resume = run.resume && approvedGate
+    ? {
+        ...run.resume,
+        approvedGates: [
+          ...(run.resume.approvedGates ?? []).filter((gate) => !(gate.type === approvedGate.type && gate.id === approvedGate.id && gate.hook === approvedGate.hook)),
+          approvedGate,
+        ],
+        updatedAt: now,
+      }
+    : run.resume;
+
   const updated = await store.updateRun(run.id, {
     status: decision === "approved" ? "approval_approved" : "approval_rejected",
     approval: run.approval ? {
@@ -171,6 +220,7 @@ async function resolveLoopApproval(c: any, deps: LoopRunRouteDeps, decision: "ap
       resolvedBy: body.resolvedBy,
       note,
     } : undefined,
+    resume,
     metadata: {
       ...run.metadata,
       approvalDecision: decision,
@@ -181,4 +231,21 @@ async function resolveLoopApproval(c: any, deps: LoopRunRouteDeps, decision: "ap
   });
 
   return c.json({ ok: true, data: updated }, 200);
+}
+
+function approvalSnapshotToGate(
+  approval: LoopApprovalSnapshot | undefined,
+  approvalRequestId: string | undefined,
+  resolvedAt: string,
+  resolvedBy: string | undefined,
+): LoopApprovedGate | undefined {
+  if (!approval) return undefined;
+  return {
+    type: approval.type ?? "policy",
+    id: approval.type === "permission" ? approval.permissionId ?? "anonymous" : approval.policyId,
+    hook: approval.hook,
+    approvalRequestId,
+    resolvedAt,
+    resolvedBy,
+  };
 }
