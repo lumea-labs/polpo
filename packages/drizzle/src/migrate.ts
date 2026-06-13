@@ -117,6 +117,30 @@ export async function ensurePgSchema(db: any): Promise<void> {
   await db.execute(sql`ALTER TABLE runs ADD COLUMN IF NOT EXISTS "user" TEXT`);
   await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_pg_runs_user ON runs("user")`);
 
+  await db.execute(sql`CREATE TABLE IF NOT EXISTS loop_runs (
+    id                  TEXT PRIMARY KEY,
+    loop_name           TEXT NOT NULL,
+    agent_name          TEXT,
+    session_id          TEXT,
+    "user"              TEXT,
+    status              VARCHAR(32) NOT NULL DEFAULT 'running',
+    context             JSONB NOT NULL DEFAULT '{}',
+    trace               JSONB NOT NULL DEFAULT '[]',
+    error               TEXT,
+    approval_request_id TEXT,
+    approval            JSONB,
+    metadata            JSONB,
+    started_at          TEXT NOT NULL,
+    updated_at          TEXT NOT NULL,
+    completed_at        TEXT
+  )`);
+
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_pg_loop_runs_status ON loop_runs(status)`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_pg_loop_runs_loop_name ON loop_runs(loop_name)`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_pg_loop_runs_agent_name ON loop_runs(agent_name)`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_pg_loop_runs_session_id ON loop_runs(session_id)`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_pg_loop_runs_user ON loop_runs("user")`);
+
   await db.execute(sql`CREATE TABLE IF NOT EXISTS sessions (
     id         TEXT PRIMARY KEY,
     title      TEXT,

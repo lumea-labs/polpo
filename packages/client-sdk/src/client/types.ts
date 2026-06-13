@@ -290,6 +290,43 @@ export interface LoopTraceEvent {
   data?: Record<string, unknown>;
 }
 
+export type ProjectLoopRunStatus = "running" | "completed" | "failed" | "awaiting_approval" | "cancelled";
+
+export interface LoopApprovalSnapshot {
+  policyId: string;
+  hook: LoopLifecycleHook;
+  message?: string;
+  payload: Record<string, unknown>;
+  context: Record<string, unknown>;
+}
+
+export interface LoopRunRecord {
+  id: string;
+  loopName: string;
+  agentName?: string;
+  sessionId?: string;
+  user?: string;
+  status: ProjectLoopRunStatus;
+  context: Record<string, unknown>;
+  trace: LoopTraceEvent[];
+  error?: string;
+  approvalRequestId?: string;
+  approval?: LoopApprovalSnapshot;
+  metadata?: Record<string, unknown>;
+  startedAt: string;
+  updatedAt: string;
+  completedAt?: string;
+}
+
+export interface LoopRunFilters {
+  loopName?: string;
+  agentName?: string;
+  sessionId?: string;
+  user?: string;
+  status?: ProjectLoopRunStatus;
+  limit?: number;
+}
+
 export type LoopStepConfig =
   | (LoopConfig & { type?: "agent"; when?: string; next?: LoopNext })
   | { type: "human"; when?: string; output?: { schema?: unknown }; notify?: string[]; next?: LoopNext }
@@ -1500,6 +1537,8 @@ export interface ChatCompletionResponse {
   };
   /** Polpo extension: structured runtime trace for project loop executions. */
   loop_trace?: LoopTraceEvent[];
+  /** Polpo extension: durable loop run id, when loop run persistence is configured. */
+  loop_run_id?: string;
 }
 
 export interface ChatCompletionChunkDelta {

@@ -215,6 +215,43 @@ Use `type: "tool"` for deterministic sandbox/tool actions without an LLM turn, a
 
 Loop guards use Polpo's safe expression evaluator instead of JavaScript `eval` or `new Function`. Step outputs are available in the shared context bag by step id or `saveAs` path, e.g. `classify.route`, `review.approved`, or `timing.start`. `saveAs` writes context data; it does not create shell variables inside later `bash` commands. The OSS surface validates and round-trips the contract through core types, API schemas, SDK types, `polpo deploy`, and `polpo pull`.
 
+You can also keep loops as code and compile them to the same canonical contract:
+
+```ts
+// .polpo/loops/router-flow.ts
+import { defineProjectLoop } from "@polpo-ai/core/loop-code";
+
+export default defineProjectLoop({
+  version: "1",
+  kind: "graph",
+  name: "router-flow",
+  context: "shared",
+  start: "classify",
+  steps: {
+    classify: {
+      type: "agent",
+      systemPrompt: "Classify the incoming request.",
+      tools: ["read"],
+      next: "answer",
+    },
+    answer: {
+      type: "agent",
+      systemPrompt: "Answer using the selected route.",
+      tools: ["write"],
+      next: "end",
+    },
+  },
+});
+```
+
+CLI support:
+
+```bash
+polpo loops validate
+polpo loops compile .polpo/loops/router-flow.ts --out .polpo/loops/router-flow.json
+polpo deploy
+```
+
 Agent-direct chat can target a loop explicitly:
 
 ```json
@@ -281,7 +318,9 @@ Project loops also support governance fields:
 
 Lifecycle hooks are deterministic tool actions run by the host runtime at `loop:start`, `step:before`, `model:before`, `tool:before`, `tool:after`, `step:after`, `loop:transition`, and `loop:end`. Hook `when` guards are evaluated against the shared context plus lifecycle payload such as `step.name`, `step.type`, `tool.name`, `tool.input`, and `transition.from/to`. Hook outputs are saved into the context bag with `saveAs`; `onError: "continue"` turns a failed hook into trace-only telemetry, while the default is fail-closed.
 
-Policies are evaluated before hook actions at the same lifecycle point. `deny` fails the loop, `approval` fails with an explicit approval-required error until an approval queue is wired by the host, and `allow` policies form an allow-list for that lifecycle point when at least one exists. If an allow-list is present and no allow rule matches, the loop is blocked. Chat completions return `loop_trace` events for loop, step, transition, tool, hook, and human activity; streaming completions emit each trace incrementally.
+Policies are evaluated before hook actions at the same lifecycle point. `deny` fails the loop with `LoopPolicyDeniedError`, `approval` raises `LoopApprovalRequiredError`, and `allow` policies form an allow-list for that lifecycle point when at least one exists. If an allow-list is present and no allow rule matches, the loop is blocked.
+
+When the host wires `LoopRunStore`, chat completions create durable loop runs, append every `loop_trace` event, and return `loop_run_id`. When the host also wires `ApprovalStore`, approval policies create a pending approval request and mark the loop run as `awaiting_approval` with `approvalRequestId`. The SDK exposes `getLoopRuns()` and `getLoopRun(id)` for audit/history surfaces. Streaming completions still emit each trace incrementally.
 
 ## SDK
 

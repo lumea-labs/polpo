@@ -8,6 +8,7 @@
 
 import type { TaskStore } from "@polpo-ai/core/task-store";
 import type { RunStore } from "@polpo-ai/core/run-store";
+import type { LoopRunStore } from "@polpo-ai/core/loop-run-store";
 import type { LogStore } from "@polpo-ai/core/log-store";
 import type { VaultStore } from "@polpo-ai/core/vault-store";
 import type { PlaybookStore } from "@polpo-ai/core/playbook-store";
@@ -21,6 +22,10 @@ export interface VaultRouteDeps {
 
 export interface ChatRouteDeps {
   sessionStore?: SessionStore;
+}
+
+export interface LoopRunRouteDeps {
+  loopRunStore?: LoopRunStore;
 }
 
 // ── Task deps ────────────────────────────────────────────────────────

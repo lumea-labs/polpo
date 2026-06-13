@@ -29,6 +29,7 @@ import { resolveOrCreateProject } from "../../util/project.js";
 import { requireAuth } from "../../util/auth.js";
 import { isTTY } from "./prompt.js";
 import { resolveDeployConflict, type ConflictOptions } from "../../util/conflicts.js";
+import { listLoopSourceFiles, loadLoopSource } from "../../util/loops.js";
 
 // ── Deploy result tracking ──────────────────────────────
 
@@ -239,9 +240,9 @@ async function deployAgents(client: ApiClient, polpoDir: string, opts: ConflictO
 
 async function deployLoops(client: ApiClient, polpoDir: string): Promise<DeployResult> {
   const result = emptyResult();
-  const files = listJsonFiles(path.join(polpoDir, "loops"));
+  const files = listLoopSourceFiles(polpoDir);
   for (const file of files) {
-    const loop = loadJson(file);
+    const loop = await loadLoopSource(file);
     if (!loop?.name) {
       result.errors.push(`loop "${path.basename(file)}": missing name`);
       result.failed++;
@@ -800,8 +801,8 @@ export async function runDeploy(opts: DeployOptions): Promise<DeployReport> {
       // ── Step 3: Scan & show resources ────────────────────
       const hasTeams = fs.existsSync(path.join(polpoDir, "teams.json"));
       const hasAgents = fs.existsSync(path.join(polpoDir, "agents.json"));
-      const hasLoops = fs.existsSync(path.join(polpoDir, "loops")) &&
-        fs.readdirSync(path.join(polpoDir, "loops")).some((f) => f.endsWith(".json"));
+      const loopSources = listLoopSourceFiles(polpoDir);
+      const hasLoops = loopSources.length > 0;
       const hasMemory = fs.existsSync(path.join(polpoDir, "memory.md")) ||
         fs.existsSync(path.join(polpoDir, "memory"));
       const hasMissions = fs.existsSync(path.join(polpoDir, "missions")) &&
@@ -842,8 +843,7 @@ export async function runDeploy(opts: DeployOptions): Promise<DeployReport> {
         }
       }
       if (hasLoops) {
-        const n = fs.readdirSync(path.join(polpoDir, "loops")).filter((f) => f.endsWith(".json")).length;
-        resourceLines.push(`  ${pc.bold("Loops")}        ${n} ${pc.dim("(beta)")}`);
+        resourceLines.push(`  ${pc.bold("Loops")}        ${loopSources.length} ${pc.dim("(beta)")}`);
       }
       if (hasMemory) resourceLines.push(`  ${pc.bold("Memory")}       ${pc.dim("shared + agent")}`);
       if (hasMissions) {

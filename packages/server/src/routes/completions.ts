@@ -24,6 +24,8 @@ import { streamSSE } from "hono/streaming";
 import { nanoid } from "nanoid";
 import {
   PipelineExecutor,
+  LoopApprovalRequiredError,
+  LoopPolicyDeniedError,
   agentMemoryScope,
   compactIfNeeded,
   normalizeProjectLoop,
@@ -32,9 +34,11 @@ import {
   type ContextBag,
   type LoopConfig,
   type LoopTraceEvent,
+  type LoopRunStore,
   type ProjectLoopConfig,
   type SummarizeFn,
 } from "@polpo-ai/core";
+import type { ApprovalStore } from "@polpo-ai/core/approval-store";
 import { streamText, generateText, jsonSchema, type LanguageModel, type LanguageModelUsage } from "ai";
 
 const MAX_TURNS = 20;
@@ -436,8 +440,20 @@ function modelNotFoundEnvelope(
 
 function loopRuntimeErrorEnvelope(
   err: unknown,
-): { message: string; type: "loop_runtime_error"; code: "loop_policy_blocked" | "loop_hook_failed" } | null {
+): { message: string; type: "loop_runtime_error"; code: "loop_policy_blocked" | "loop_approval_required" | "loop_hook_failed"; approvalRequestId?: string; loopRunId?: string } | null {
   const message = err instanceof Error ? err.message : String(err);
+  if (err instanceof LoopApprovalRequiredError) {
+    return {
+      message,
+      type: "loop_runtime_error",
+      code: "loop_approval_required",
+      approvalRequestId: (err as any).approvalRequestId,
+      loopRunId: (err as any).loopRunId,
+    };
+  }
+  if (err instanceof LoopPolicyDeniedError) {
+    return { message, type: "loop_runtime_error", code: "loop_policy_blocked", loopRunId: (err as any).loopRunId };
+  }
   if (message.startsWith("Loop policy ")) {
     return { message, type: "loop_runtime_error", code: "loop_policy_blocked" };
   }
@@ -609,6 +625,10 @@ export interface CompletionRouteDeps {
   }>;
   /** Optional project-level loop loader. When provided, assigned/default agent loops can run as deterministic graphs. */
   getProjectLoop?: (name: string) => Promise<ProjectLoopConfig | null>;
+  /** Optional durable store for agentic loop runtime traces. */
+  getLoopRunStore?: () => LoopRunStore | undefined;
+  /** Optional approval store used when loop policies require human approval. */
+  getApprovalStore?: () => ApprovalStore | undefined;
   /** Called after each completion finishes (streaming or non-streaming). Receives usage, model info, and provider metadata. Fire-and-forget — errors are silently ignored. */
   onCompletionFinished?: (info: {
     usage: { inputTokens?: number; outputTokens?: number; totalTokens?: number };
@@ -648,6 +668,7 @@ interface ProjectLoopRunResult {
   toolCalls: any[];
   context: ContextBag;
   trace: LoopTraceEvent[];
+  loopRunId?: string;
 }
 
 type LoopRuntimeToolCall = {
@@ -902,20 +923,38 @@ async function runProjectLoopCompletion(options: {
   projectLoop: ProjectLoopConfig;
   aiMessages: any[];
   extraSystemParts: string[];
+  sessionId?: string | null;
+  user?: string;
   onToolCall?: (toolCall: LoopRuntimeToolCall) => Promise<void>;
   onTrace?: (event: LoopTraceEvent) => Promise<void>;
 }): Promise<ProjectLoopRunResult> {
-  const { deps, agentConfig, projectLoop, aiMessages, extraSystemParts, onToolCall, onTrace } = options;
+  const { deps, agentConfig, projectLoop, aiMessages, extraSystemParts, sessionId, user, onToolCall, onTrace } = options;
   const normalized = normalizeProjectLoop(projectLoop);
   if (!normalized.pipeline) throw new Error(`Loop "${projectLoop.name}" does not define a pipeline`);
 
   const rootTools = await deps.resolveAgentTools(agentConfig);
+  const loopRunStore = deps.getLoopRunStore?.();
+  const loopRunId = loopRunStore ? `looprun-${nanoid(16)}` : undefined;
+  if (loopRunStore && loopRunId) {
+    await loopRunStore.createRun({
+      id: loopRunId,
+      loop: projectLoop,
+      agentName: agentConfig.name,
+      sessionId: sessionId ?? undefined,
+      user,
+      metadata: {
+        runtime: "chat.completions",
+        loopVersion: projectLoop.version ?? "1",
+      },
+    });
+  }
   const executor = new PipelineExecutor();
   let finalText = "";
   let totalUsage: LanguageModelUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 } as LanguageModelUsage;
   let lastModel = agentConfig.model ?? "polpo";
   let lastProviderMetadata: Record<string, unknown> | undefined;
   const toolCallsAccum: any[] = [];
+  const events: LoopTraceEvent[] = [];
 
   try {
     const result = await executor.execute({
@@ -925,7 +964,11 @@ async function runProjectLoopCompletion(options: {
       context: {},
       projectHooks: projectLoop.hooks,
       projectPolicies: projectLoop.policies,
-      onTrace,
+      onTrace: async (event) => {
+        events.push(event);
+        if (loopRunStore && loopRunId) await loopRunStore.appendTrace(loopRunId, event);
+        await onTrace?.(event);
+      },
       runTool: async (name, input) => {
         const args = normalizeToolInput(input);
         const id = `loop-tool-${nanoid(12)}`;
@@ -990,6 +1033,14 @@ async function runProjectLoopCompletion(options: {
     });
 
     if (!finalText) finalText = JSON.stringify(result.context, null, 2);
+    if (loopRunStore && loopRunId) {
+      await loopRunStore.updateRun(loopRunId, {
+        status: "completed",
+        context: result.context,
+        trace: result.events,
+        completedAt: new Date().toISOString(),
+      });
+    }
     return {
       text: finalText,
       usage: totalUsage,
@@ -998,7 +1049,60 @@ async function runProjectLoopCompletion(options: {
       toolCalls: toolCallsAccum,
       context: result.context,
       trace: result.events,
+      loopRunId,
     };
+  } catch (err) {
+    if (loopRunStore && loopRunId) {
+      (err as any).loopRunId = loopRunId;
+      if (err instanceof LoopApprovalRequiredError) {
+        const approvalStore = deps.getApprovalStore?.();
+        let approvalRequestId: string | undefined;
+        if (approvalStore) {
+          approvalRequestId = `approval-${nanoid(16)}`;
+          await approvalStore.upsert({
+            id: approvalRequestId,
+            gateId: err.policy.id ?? `loop-policy-${nanoid(8)}`,
+            gateName: err.policy.description ?? err.policy.id ?? "Loop policy approval",
+            status: "pending",
+            payload: {
+              type: "loop_approval",
+              loopRunId,
+              loopName: projectLoop.name,
+              agentName: agentConfig.name,
+              hook: err.hook,
+              policy: err.policy,
+              payload: err.payload,
+              context: err.context,
+              trace: events,
+            },
+            requestedAt: new Date().toISOString(),
+          });
+          (err as any).approvalRequestId = approvalRequestId;
+        }
+        await loopRunStore.updateRun(loopRunId, {
+          status: "awaiting_approval",
+          context: err.context,
+          trace: events,
+          approvalRequestId,
+          approval: {
+            policyId: err.policy.id ?? "anonymous",
+            hook: err.hook,
+            message: err.policy.message,
+            payload: err.payload,
+            context: err.context,
+          },
+          error: err.message,
+        });
+      } else {
+        await loopRunStore.updateRun(loopRunId, {
+          status: "failed",
+          trace: events,
+          error: err instanceof Error ? err.message : String(err),
+          completedAt: new Date().toISOString(),
+        });
+      }
+    }
+    throw err;
   } finally {
     if (rootTools.cleanup) {
       rootTools.cleanup().catch(() => {});
@@ -1210,6 +1314,8 @@ export function completionRoutes(getDeps: () => CompletionRouteDeps, apiKeys?: s
               projectLoop: projectLoopRuntime.projectLoop,
               aiMessages,
               extraSystemParts,
+              sessionId,
+              user: body.user,
               onToolCall: async (toolCall) => {
                 if (abortController.signal.aborted) return;
                 await stream.writeSSE({
@@ -1233,7 +1339,7 @@ export function completionRoutes(getDeps: () => CompletionRouteDeps, apiKeys?: s
               await stream.writeSSE({ data: sseChunk(completionId, { content: finalText }) });
             }
             if (!abortController.signal.aborted) {
-              await stream.writeSSE({ data: sseChunk(completionId, {}, "stop") });
+              await stream.writeSSE({ data: sseChunk(completionId, {}, "stop", { loop_run_id: run.loopRunId }) });
               await stream.writeSSE({ data: "[DONE]" });
             }
           } catch (err) {
@@ -1290,13 +1396,15 @@ export function completionRoutes(getDeps: () => CompletionRouteDeps, apiKeys?: s
           projectLoop: projectLoopRuntime.projectLoop,
           aiMessages,
           extraSystemParts,
+          sessionId,
+          user: body.user,
         });
         finalText = run.text;
         runUsage = run.usage;
         runModel = run.model;
         providerMetadata = run.providerMetadata;
         toolCalls = run.toolCalls;
-        return c.json(completionResponse(completionId, finalText, runUsage, { loop_trace: run.trace }));
+        return c.json(completionResponse(completionId, finalText, runUsage, { loop_trace: run.trace, loop_run_id: run.loopRunId }));
       } catch (err) {
         const notFound = modelNotFoundEnvelope(err, runModel, body.agent);
         if (notFound) {
