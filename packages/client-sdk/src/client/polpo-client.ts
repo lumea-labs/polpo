@@ -6,6 +6,8 @@ import type {
   Mission,
   AgentConfig,
   ProjectLoopConfig,
+  LoopRunFilters,
+  LoopRunRecord,
   AgentProcess,
   Team,
   PolpoState,
@@ -655,6 +657,19 @@ export class PolpoClient {
 
   deleteLoop(name: string): Promise<{ removed: boolean; name: string }> {
     return this.del<{ removed: boolean; name: string }>(`/loops/${encodeURIComponent(name)}`);
+  }
+
+  getLoopRuns(filters: LoopRunFilters = {}): Promise<LoopRunRecord[]> {
+    const qs = new URLSearchParams();
+    for (const [key, value] of Object.entries(filters)) {
+      if (value !== undefined && value !== null) qs.set(key, String(value));
+    }
+    const suffix = qs.toString() ? `?${qs.toString()}` : "";
+    return this.get<LoopRunRecord[]>(`/loop-runs${suffix}`);
+  }
+
+  getLoopRun(id: string): Promise<LoopRunRecord> {
+    return this.get<LoopRunRecord>(`/loop-runs/${encodeURIComponent(id)}`);
   }
 
   getTeams(): Promise<Team[]> {

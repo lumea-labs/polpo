@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { LoopHookRegistry } from "./hooks.js";
 import { PipelineExecutor } from "./pipeline.js";
+import { LoopApprovalRequiredError, LoopPolicyDeniedError } from "./run-store.js";
 
 describe("PipelineExecutor", () => {
   it("runs sequential loop steps and accumulates context by loop name", async () => {
@@ -79,6 +80,26 @@ describe("PipelineExecutor", () => {
     });
 
     expect(result.context.underwriter).toEqual({ decision: "approve" });
+  });
+
+  it("throws typed errors for deny and approval policies", async () => {
+    const executor = new PipelineExecutor();
+
+    await expect(executor.execute({
+      loops: {},
+      pipeline: { steps: [{ tool: "deploy" }] },
+      projectPolicies: [{ id: "no-deploy", hook: "tool:before", effect: "deny", when: "tool.name == 'deploy'" }],
+      runLoop: async () => ({ output: {} }),
+      runTool: async () => ({ output: "deployed" }),
+    })).rejects.toBeInstanceOf(LoopPolicyDeniedError);
+
+    await expect(executor.execute({
+      loops: {},
+      pipeline: { steps: [{ tool: "send_email" }] },
+      projectPolicies: [{ id: "approve-send", hook: "tool:before", effect: "approval", when: "tool.name == 'send_email'" }],
+      runLoop: async () => ({ output: {} }),
+      runTool: async () => ({ output: "sent" }),
+    })).rejects.toBeInstanceOf(LoopApprovalRequiredError);
   });
 
   it("runs deterministic tool steps and stores output at saveAs path", async () => {

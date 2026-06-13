@@ -38,6 +38,14 @@
       "types": "./dist/run-store.d.ts",
       "import": "./dist/run-store.js"
     },
+    "./loop-code": {
+      "types": "./dist/loop/code.d.ts",
+      "import": "./dist/loop/code.js"
+    },
+    "./loop-run-store": {
+      "types": "./dist/loop/run-store.d.ts",
+      "import": "./dist/loop/run-store.js"
+    },
     "./memory-store": {
       "types": "./dist/memory-store.d.ts",
       "import": "./dist/memory-store.js"

@@ -23,6 +23,7 @@
   },
   "dependencies": {
     "@clack/prompts": "^0.9.1",
+    "@polpo-ai/core": "workspace:*",
     "@polpo-ai/server": "workspace:*",
     "@polpo-ai/vault-crypto": "workspace:*",
     "commander": "^13.1.0",

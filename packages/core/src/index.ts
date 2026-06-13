@@ -181,6 +181,7 @@ export type {
 } from "./loop/types.js";
 export { LOOP_LIFECYCLE_HOOKS, isLoopStep, isToolStep, isParallelStep, isSwitchStep, isHumanStep } from "./loop/types.js";
 export { normalizeProjectLoop } from "./loop/normalize.js";
+export { defineLoop, defineProjectLoop } from "./loop/code.js";
 export { LoopHookRegistry } from "./loop/hooks.js";
 export type {
   LoopBeforeHookResult,
@@ -209,3 +210,12 @@ export type {
   PipelineToolResult,
   PipelineTraceEvent,
 } from "./loop/pipeline.js";
+export { LoopApprovalRequiredError, LoopPolicyDeniedError, MemoryLoopRunStore } from "./loop/run-store.js";
+export type {
+  CreateLoopRunInput,
+  LoopApprovalSnapshot,
+  LoopRunListFilter,
+  LoopRunRecord,
+  ProjectLoopRunStatus,
+  LoopRunStore,
+} from "./loop/run-store.js";

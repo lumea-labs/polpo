@@ -1,6 +1,10 @@
 import { SafeExpressionEvaluator } from "./expression.js";
 import type { LoopHookRegistry } from "./hooks.js";
 import {
+  LoopApprovalRequiredError,
+  LoopPolicyDeniedError,
+} from "./run-store.js";
+import {
   isHumanStep,
   isLoopStep,
   isParallelStep,
@@ -330,9 +334,9 @@ export class PipelineExecutor {
       const id = policy.id ?? "anonymous";
       const suffix = policy.message ? `: ${policy.message}` : "";
       if (policy.effect === "deny") {
-        throw new Error(`Loop policy "${id}" denied ${hook}${suffix}`);
+        throw new LoopPolicyDeniedError(policy, hook, payload, `Loop policy "${id}" denied ${hook}${suffix}`);
       }
-      throw new Error(`Loop policy "${id}" requires approval at ${hook}${suffix}`);
+      throw new LoopApprovalRequiredError(policy, hook, { ...context }, payload, `Loop policy "${id}" requires approval at ${hook}${suffix}`);
     }
 
     if (allowPolicies.length > 0 && !allowMatched) {
