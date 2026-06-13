@@ -5,6 +5,7 @@
 
 import { z } from "zod";
 import type { TaskExpectation, MissionCheckpoint, MissionQualityGate } from "./types.js";
+import { LOOP_LIFECYCLE_HOOKS } from "./loop/types.js";
 
 // ── Expectation Schemas (discriminated union on `type`) ──────────────
 
@@ -284,10 +285,49 @@ export const loopStepConfigSchema = z.discriminatedUnion("type", [
   }),
 ]);
 
+const loopLifecycleHookNames = new Set<string>(LOOP_LIFECYCLE_HOOKS);
+
+export const loopHookActionSchema = z.object({
+  tool: z.string().min(1),
+  input: z.unknown().optional(),
+  saveAs: z.string().min(1).optional(),
+  when: z.string().min(1).optional(),
+  onError: z.enum(["fail", "continue"]).optional(),
+});
+
+export const projectLoopHooksSchema = z.record(
+  z.string().min(1),
+  z.array(loopHookActionSchema).min(1),
+).superRefine((hooks, ctx) => {
+  for (const hook of Object.keys(hooks)) {
+    if (!loopLifecycleHookNames.has(hook)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `unknown loop hook "${hook}"`,
+        path: [hook],
+      });
+    }
+  }
+});
+
+export const projectLoopPolicySchema = z.object({
+  id: z.string().min(1).optional(),
+  description: z.string().optional(),
+  hook: z.enum(LOOP_LIFECYCLE_HOOKS).optional(),
+  effect: z.enum(["allow", "deny", "approval"]),
+  when: z.string().min(1),
+  message: z.string().optional(),
+});
+
 export const projectLoopConfigSchema = z.object({
+  version: z.literal("1").optional(),
+  kind: z.literal("graph").optional(),
   name: z.string().min(1),
   description: z.string().optional(),
+  metadata: z.record(z.string(), z.unknown()).optional(),
   context: z.literal("shared").optional(),
+  hooks: projectLoopHooksSchema.optional(),
+  policies: z.array(projectLoopPolicySchema).optional(),
   start: z.string().min(1),
   steps: z.record(z.string().min(1), z.union([
     loopConfigSchema.extend({

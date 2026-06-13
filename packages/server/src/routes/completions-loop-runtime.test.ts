@@ -77,6 +77,16 @@ describe("completionRoutes project loop runtime", () => {
         end: "105",
       },
     });
+    expect(json.loop_trace.map((event: any) => event.type)).toEqual([
+      "loop.start",
+      "tool.call",
+      "tool.result",
+      "transition",
+      "tool.call",
+      "tool.result",
+      "loop.end",
+    ]);
+    expect(json.loop_trace[0]).toMatchObject({ loop: "time-tracker", status: "started" });
   });
 
   it("streams project loop step tool call events", async () => {
@@ -104,6 +114,9 @@ describe("completionRoutes project loop runtime", () => {
     const toolEvents = chunks
       .map((chunk) => chunk.choices?.[0]?.tool_call)
       .filter(Boolean);
+    const traceEvents = chunks
+      .map((chunk) => chunk.choices?.[0]?.loop_trace)
+      .filter(Boolean);
 
     expect(toolEvents.map((event: any) => event.state)).toContain("calling");
     expect(toolEvents).toEqual(
@@ -112,5 +125,7 @@ describe("completionRoutes project loop runtime", () => {
         expect.objectContaining({ name: "unix_time", result: "105", state: "completed" }),
       ]),
     );
+    expect(traceEvents.map((event: any) => event.type)).toContain("tool.call");
+    expect(traceEvents.map((event: any) => event.type)).toContain("loop.end");
   });
 });

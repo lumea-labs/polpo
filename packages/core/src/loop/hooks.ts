@@ -1,16 +1,7 @@
 import type { AgentConfig } from "../types.js";
-import type { ContextBag, LoopConfig } from "./types.js";
+import type { ContextBag, LoopConfig, LoopLifecycleHook } from "./types.js";
 
-export type LoopHook =
-  | "loop:start"
-  | "step:before"
-  | "model:before"
-  | "tool:before"
-  | "tool:after"
-  | "step:after"
-  | "loop:stop"
-  | "loop:transition"
-  | "loop:end";
+export type LoopHook = LoopLifecycleHook;
 
 export type LoopHookPhase = "before" | "after";
 

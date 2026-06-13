@@ -23,6 +23,7 @@ export {
 } from "./store/selectors.js";
 
 // ── Types ─────────────────────────────────────────────────────
+export { LOOP_LIFECYCLE_HOOKS } from "./client/types.js";
 export type {
   Task,
   TaskStatus,
@@ -102,6 +103,15 @@ export type {
   ChatCompletionChoice,
   ChatCompletionChunk,
   ChatCompletionChunkDelta,
+  LoopHookAction,
+  LoopLifecycleHook,
+  LoopPolicyEffect,
+  LoopTraceEvent,
+  LoopTraceEventType,
+  ProjectLoopHooks,
+  ProjectLoopKind,
+  ProjectLoopPolicy,
+  ProjectLoopVersion,
   ToolCallState,
   ToolCallEvent,
   AskUserOption,

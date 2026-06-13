@@ -223,6 +223,73 @@ export interface LoopConfig {
 export type LoopNext = string | Array<{ when?: string; to: string }>;
 export type LoopToolChoice = "auto" | "none" | "required" | { mode: "auto" | "none" | "required"; tool?: string };
 
+export const LOOP_LIFECYCLE_HOOKS = [
+  "loop:start",
+  "step:before",
+  "model:before",
+  "tool:before",
+  "tool:after",
+  "step:after",
+  "loop:stop",
+  "loop:transition",
+  "loop:end",
+] as const;
+
+export type LoopLifecycleHook = typeof LOOP_LIFECYCLE_HOOKS[number];
+export type ProjectLoopVersion = "1";
+export type ProjectLoopKind = "graph";
+
+export interface LoopHookAction {
+  tool: string;
+  input?: unknown;
+  saveAs?: string;
+  when?: string;
+  onError?: "fail" | "continue";
+}
+
+export type ProjectLoopHooks = Partial<Record<LoopLifecycleHook, LoopHookAction[]>>;
+export type LoopPolicyEffect = "allow" | "deny" | "approval";
+
+export interface ProjectLoopPolicy {
+  id?: string;
+  description?: string;
+  hook?: LoopLifecycleHook;
+  effect: LoopPolicyEffect;
+  when: string;
+  message?: string;
+}
+
+export type LoopTraceEventType =
+  | "loop.start"
+  | "loop.end"
+  | "loop.error"
+  | "step.start"
+  | "step.end"
+  | "step.skip"
+  | "tool.call"
+  | "tool.result"
+  | "human.request"
+  | "human.result"
+  | "transition";
+
+export interface LoopTraceEvent {
+  id: string;
+  type: LoopTraceEventType;
+  ts: string;
+  loop?: string;
+  step?: string;
+  tool?: string;
+  human?: string;
+  from?: string;
+  to?: string;
+  status?: "started" | "completed" | "skipped" | "failed";
+  when?: string;
+  input?: unknown;
+  output?: unknown;
+  error?: string;
+  data?: Record<string, unknown>;
+}
+
 export type LoopStepConfig =
   | (LoopConfig & { type?: "agent"; when?: string; next?: LoopNext })
   | { type: "human"; when?: string; output?: { schema?: unknown }; notify?: string[]; next?: LoopNext }
@@ -230,9 +297,14 @@ export type LoopStepConfig =
   | { type: "tool"; when?: string; tool: string; input?: unknown; saveAs?: string; next?: LoopNext };
 
 export interface ProjectLoopConfig {
+  version?: ProjectLoopVersion;
+  kind?: ProjectLoopKind;
   name: string;
   description?: string;
+  metadata?: Record<string, unknown>;
   context?: "shared";
+  hooks?: ProjectLoopHooks;
+  policies?: ProjectLoopPolicy[];
   start: string;
   steps: Record<string, LoopStepConfig>;
 }
@@ -1426,6 +1498,8 @@ export interface ChatCompletionResponse {
     completion_tokens: number;
     total_tokens: number;
   };
+  /** Polpo extension: structured runtime trace for project loop executions. */
+  loop_trace?: LoopTraceEvent[];
 }
 
 export interface ChatCompletionChunkDelta {
@@ -1480,6 +1554,8 @@ export interface ChatCompletionChunk {
     open_tab?: OpenTabPayload;
     /** Present when the server is executing a tool call. */
     tool_call?: ToolCallEvent;
+    /** Present when a project loop runtime trace event is emitted. */
+    loop_trace?: LoopTraceEvent;
     /** Present when the model is emitting thinking/reasoning tokens. */
     thinking?: string;
   }>;
