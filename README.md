@@ -227,6 +227,62 @@ Agent-direct chat can target a loop explicitly:
 
 At runtime, the selected project loop can narrow the effective prompt, tools, skills, model, reasoning, tool choice, and max turns per agent step. If a step omits `skills`, it inherits the agent-level `skills`. Project loop execution in chat completions uses the shared context graph: deterministic tool steps run first, store outputs in the context bag, and later agent steps receive that context as runtime data in their system prompt. Core keeps a compatibility normalizer for legacy inline `loops` + `pipeline` configs and ships a pure `PipelineExecutor` for sequential, tool, switch, parallel, and human nodes; hosts wire `runLoop`, `runTool`, and `handleHuman` callbacks to their concrete runtime.
 
+Project loops also support governance fields:
+
+```jsonc
+{
+  "version": "1",
+  "kind": "graph",
+  "name": "governed-build",
+  "context": "shared",
+  "hooks": {
+    "loop:start": [
+      { "tool": "unix_time", "saveAs": "timing.start" }
+    ],
+    "tool:after": [
+      { "tool": "audit_step", "input": { "level": "info" }, "saveAs": "audit.last", "onError": "continue" }
+    ],
+    "loop:end": [
+      { "tool": "unix_time", "saveAs": "timing.end" }
+    ]
+  },
+  "policies": [
+    {
+      "id": "only-safe-tools",
+      "hook": "tool:before",
+      "effect": "allow",
+      "when": "tool.name == 'read' || tool.name == 'grep' || tool.name == 'unix_time'"
+    },
+    {
+      "id": "deny-shell",
+      "hook": "tool:before",
+      "effect": "deny",
+      "when": "tool.name == 'bash'",
+      "message": "bash requires an explicit build loop"
+    }
+  ],
+  "start": "capture_start",
+  "steps": {
+    "capture_start": {
+      "type": "tool",
+      "tool": "unix_time",
+      "saveAs": "timing.start",
+      "next": "plan"
+    },
+    "plan": {
+      "type": "agent",
+      "systemPrompt": "Plan the work. Do not edit files.",
+      "tools": ["read", "grep"],
+      "next": "end"
+    }
+  }
+}
+```
+
+Lifecycle hooks are deterministic tool actions run by the host runtime at `loop:start`, `step:before`, `model:before`, `tool:before`, `tool:after`, `step:after`, `loop:transition`, and `loop:end`. Hook `when` guards are evaluated against the shared context plus lifecycle payload such as `step.name`, `step.type`, `tool.name`, `tool.input`, and `transition.from/to`. Hook outputs are saved into the context bag with `saveAs`; `onError: "continue"` turns a failed hook into trace-only telemetry, while the default is fail-closed.
+
+Policies are evaluated before hook actions at the same lifecycle point. `deny` fails the loop, `approval` fails with an explicit approval-required error until an approval queue is wired by the host, and `allow` policies form an allow-list for that lifecycle point when at least one exists. If an allow-list is present and no allow rule matches, the loop is blocked. Chat completions return `loop_trace` events for loop, step, transition, tool, hook, and human activity; streaming completions emit each trace incrementally.
+
 ## SDK
 
 ### Client SDK

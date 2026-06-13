@@ -434,6 +434,19 @@ function modelNotFoundEnvelope(
   };
 }
 
+function loopRuntimeErrorEnvelope(
+  err: unknown,
+): { message: string; type: "loop_runtime_error"; code: "loop_policy_blocked" | "loop_hook_failed" } | null {
+  const message = err instanceof Error ? err.message : String(err);
+  if (message.startsWith("Loop policy ")) {
+    return { message, type: "loop_runtime_error", code: "loop_policy_blocked" };
+  }
+  if (message.startsWith("Loop hook ")) {
+    return { message, type: "loop_runtime_error", code: "loop_hook_failed" };
+  }
+  return null;
+}
+
 function completionResponse(id: string, content: string, usage: LanguageModelUsage, extra?: Record<string, unknown>) {
   return {
     id,
@@ -910,6 +923,8 @@ async function runProjectLoopCompletion(options: {
       pipeline: normalized.pipeline,
       loops: normalized.loops,
       context: {},
+      projectHooks: projectLoop.hooks,
+      projectPolicies: projectLoop.policies,
       onTrace,
       runTool: async (name, input) => {
         const args = normalizeToolInput(input);
@@ -1231,6 +1246,12 @@ export function completionRoutes(getDeps: () => CompletionRouteDeps, apiKeys?: s
               await stream.writeSSE({ data: "[DONE]" });
               return;
             }
+            const loopError = loopRuntimeErrorEnvelope(err);
+            if (loopError) {
+              await stream.writeSSE({ data: sseChunk(completionId, {}, "stop", { error: loopError }) });
+              await stream.writeSSE({ data: "[DONE]" });
+              return;
+            }
             throw err;
           } finally {
             clearInterval(heartbeatInterval);
@@ -1280,6 +1301,10 @@ export function completionRoutes(getDeps: () => CompletionRouteDeps, apiKeys?: s
         const notFound = modelNotFoundEnvelope(err, runModel, body.agent);
         if (notFound) {
           return c.json({ error: notFound }, 400 as any);
+        }
+        const loopError = loopRuntimeErrorEnvelope(err);
+        if (loopError) {
+          return c.json({ error: loopError }, 403 as any);
         }
         throw err;
       } finally {

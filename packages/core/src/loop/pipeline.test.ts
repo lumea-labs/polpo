@@ -171,4 +171,150 @@ describe("PipelineExecutor", () => {
       runLoop: async (name) => ({ output: { name } }),
     })).rejects.toThrow('Loop transition from "plan" to "build" cancelled: approval required');
   });
+
+  it("runs project hook tool actions and saves their output into context", async () => {
+    const executor = new PipelineExecutor();
+    const calls: Array<{ name: string; input: unknown }> = [];
+
+    const result = await executor.execute({
+      name: "audited-flow",
+      loops: { plan: {} },
+      pipeline: { steps: [{ loop: "plan" }] },
+      projectHooks: {
+        "loop:start": [{ tool: "unix_time", saveAs: "timing.start" }],
+        "step:after": [{ tool: "audit_step", input: { level: "info" }, saveAs: "audit.lastStep" }],
+        "loop:end": [{ tool: "unix_time", saveAs: "timing.end" }],
+      },
+      runTool: async (name, input) => {
+        calls.push({ name, input });
+        return { output: name === "unix_time" ? 123 : { ok: true } };
+      },
+      runLoop: async (name) => ({ output: { name } }),
+    });
+
+    expect(calls).toEqual([
+      { name: "unix_time", input: undefined },
+      { name: "audit_step", input: { level: "info" } },
+      { name: "unix_time", input: undefined },
+    ]);
+    expect(result.context).toMatchObject({
+      timing: { start: 123, end: 123 },
+      audit: { lastStep: { ok: true } },
+    });
+    expect(result.events.filter((event) => event.data?.hook).map((event) => event.type)).toEqual([
+      "tool.call",
+      "tool.result",
+      "tool.call",
+      "tool.result",
+      "tool.call",
+      "tool.result",
+    ]);
+  });
+
+  it("skips project hook actions when their guard does not match", async () => {
+    const executor = new PipelineExecutor();
+    const calls: string[] = [];
+
+    const result = await executor.execute({
+      loops: { plan: {} },
+      pipeline: { steps: [{ loop: "plan" }] },
+      context: { enabled: false },
+      projectHooks: {
+        "loop:start": [{ tool: "should_not_run", when: "enabled == true", saveAs: "hook" }],
+      },
+      runTool: async (name) => {
+        calls.push(name);
+        return { output: { ok: true } };
+      },
+      runLoop: async (name) => ({ output: { name } }),
+    });
+
+    expect(calls).toEqual([]);
+    expect(result.context.hook).toBeUndefined();
+  });
+
+  it("continues project hook execution when onError is continue", async () => {
+    const executor = new PipelineExecutor();
+
+    const result = await executor.execute({
+      loops: {},
+      pipeline: { steps: [{ tool: "work", saveAs: "work" }] },
+      projectHooks: {
+        "tool:before": [{ tool: "flaky_audit", onError: "continue", saveAs: "audit" }],
+      },
+      runTool: async (name) => {
+        if (name === "flaky_audit") throw new Error("audit unavailable");
+        return { output: { ok: true } };
+      },
+      runLoop: async () => ({ output: {} }),
+    });
+
+    expect(result.context).toMatchObject({ work: { ok: true } });
+    expect(result.events.some((event) => event.type === "tool.result" && event.status === "failed" && event.tool === "flaky_audit")).toBe(true);
+  });
+
+  it("fails project hook execution by default when a hook tool fails", async () => {
+    const executor = new PipelineExecutor();
+
+    await expect(executor.execute({
+      loops: {},
+      pipeline: { steps: [{ tool: "work" }] },
+      projectHooks: {
+        "tool:before": [{ tool: "policy_check" }],
+      },
+      runTool: async (name) => {
+        if (name === "policy_check") throw new Error("blocked");
+        return { output: { ok: true } };
+      },
+      runLoop: async () => ({ output: {} }),
+    })).rejects.toThrow('Loop hook "tool:before" action "policy_check" failed: blocked');
+  });
+
+  it("enforces deny and approval project policies at lifecycle points", async () => {
+    const executor = new PipelineExecutor();
+
+    await expect(executor.execute({
+      loops: {},
+      pipeline: { steps: [{ tool: "bash", input: { command: "rm -rf /" } }] },
+      projectPolicies: [
+        { id: "dangerous-bash", effect: "deny", hook: "tool:before", when: "tool.name == 'bash'", message: "bash is restricted" },
+      ],
+      runTool: async () => ({ output: { ok: true } }),
+      runLoop: async () => ({ output: {} }),
+    })).rejects.toThrow('Loop policy "dangerous-bash" denied tool:before: bash is restricted');
+
+    await expect(executor.execute({
+      loops: { deploy: {} },
+      pipeline: { steps: [{ loop: "deploy" }] },
+      projectPolicies: [
+        { id: "deploy-approval", effect: "approval", hook: "step:before", when: "step.name == 'deploy'", message: "deployment requires approval" },
+      ],
+      runLoop: async () => ({ output: {} }),
+    })).rejects.toThrow('Loop policy "deploy-approval" requires approval at step:before: deployment requires approval');
+  });
+
+  it("treats allow policies as an allow-list when present for a lifecycle point", async () => {
+    const executor = new PipelineExecutor();
+
+    const result = await executor.execute({
+      loops: {},
+      pipeline: { steps: [{ tool: "unix_time", saveAs: "time" }] },
+      projectPolicies: [
+        { id: "only-unix-time", effect: "allow", hook: "tool:before", when: "tool.name == 'unix_time'" },
+      ],
+      runTool: async () => ({ output: 123 }),
+      runLoop: async () => ({ output: {} }),
+    });
+    expect(result.context.time).toBe(123);
+
+    await expect(executor.execute({
+      loops: {},
+      pipeline: { steps: [{ tool: "bash" }] },
+      projectPolicies: [
+        { id: "only-unix-time", effect: "allow", hook: "tool:before", when: "tool.name == 'unix_time'" },
+      ],
+      runTool: async () => ({ output: "nope" }),
+      runLoop: async () => ({ output: {} }),
+    })).rejects.toThrow('Loop policy allow-list blocked tool:before: no allow policy matched');
+  });
 });
