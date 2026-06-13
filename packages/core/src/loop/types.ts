@@ -13,6 +13,81 @@ export interface Condition {
 
 export type ContextBag = Record<string, unknown>;
 
+export const LOOP_LIFECYCLE_HOOKS = [
+  "loop:start",
+  "step:before",
+  "model:before",
+  "tool:before",
+  "tool:after",
+  "step:after",
+  "loop:stop",
+  "loop:transition",
+  "loop:end",
+] as const;
+
+export type LoopLifecycleHook = typeof LOOP_LIFECYCLE_HOOKS[number];
+export type ProjectLoopVersion = "1";
+export type ProjectLoopKind = "graph";
+
+export interface LoopHookAction {
+  /** Built-in or custom tool invoked by the hook. */
+  tool: string;
+  /** Static JSON input. Host runtimes may add templating later. */
+  input?: unknown;
+  /** Context path where the hook output should be stored. */
+  saveAs?: string;
+  /** Optional expression over the context bag. */
+  when?: string;
+  /** Whether a hook tool failure should fail the loop or be observed only. */
+  onError?: "fail" | "continue";
+}
+
+export type ProjectLoopHooks = Partial<Record<LoopLifecycleHook, LoopHookAction[]>>;
+
+export type LoopPolicyEffect = "allow" | "deny" | "approval";
+
+export interface ProjectLoopPolicy {
+  id?: string;
+  description?: string;
+  /** Lifecycle point where this policy is evaluated. Defaults to tool:before. */
+  hook?: LoopLifecycleHook;
+  effect: LoopPolicyEffect;
+  /** Expression evaluated against the hook payload/context. */
+  when: string;
+  message?: string;
+}
+
+export type LoopTraceEventType =
+  | "loop.start"
+  | "loop.end"
+  | "loop.error"
+  | "step.start"
+  | "step.end"
+  | "step.skip"
+  | "tool.call"
+  | "tool.result"
+  | "human.request"
+  | "human.result"
+  | "transition";
+
+export interface LoopTraceEvent {
+  id: string;
+  type: LoopTraceEventType;
+  ts: string;
+  loop?: string;
+  step?: string;
+  tool?: string;
+  human?: string;
+  from?: string;
+  to?: string;
+  status?: "started" | "completed" | "skipped" | "failed";
+  when?: string;
+  input?: unknown;
+  output?: unknown;
+  error?: string;
+  data?: Record<string, unknown>;
+}
+
 export type LoopNext =
   | string
   | Array<{
@@ -90,9 +165,14 @@ export type LoopStepConfig = AgentLoopStep | HumanLoopStep | ParallelLoopStep | 
 
 /** Project-level reusable loop graph. Agents assign these by name/id. */
 export interface ProjectLoopConfig {
+  version?: ProjectLoopVersion;
+  kind?: ProjectLoopKind;
   name: string;
   description?: string;
+  metadata?: Record<string, unknown>;
   context?: "shared";
+  hooks?: ProjectLoopHooks;
+  policies?: ProjectLoopPolicy[];
   start: string;
   steps: Record<string, LoopStepConfig>;
 }

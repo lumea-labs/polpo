@@ -109,4 +109,73 @@ describe("agentLoopConfigSchema", () => {
     ]);
     expect(JSON.stringify(normalized.pipeline?.steps)).toContain("clone_repository");
   });
+
+  it("accepts the v1 governance contract fields without changing graph normalization", () => {
+    const loop = projectLoopConfigSchema.parse({
+      version: "1",
+      kind: "graph",
+      name: "governed-flow",
+      description: "A loop with future governance metadata.",
+      metadata: {
+        owner: "platform",
+        source: "dsl",
+      },
+      context: "shared",
+      hooks: {
+        "tool:before": [
+          {
+            tool: "policy_check",
+            input: { mode: "strict" },
+            saveAs: "policy.tool",
+            onError: "fail",
+          },
+        ],
+        "loop:end": [
+          {
+            tool: "audit_log",
+            onError: "continue",
+          },
+        ],
+      },
+      policies: [
+        {
+          id: "deny-dangerous-bash",
+          hook: "tool:before",
+          effect: "deny",
+          when: "tool.name == 'bash' && args.command.includes('rm -rf')",
+          message: "Dangerous shell command blocked.",
+        },
+      ],
+      start: "work",
+      steps: {
+        work: {
+          type: "agent",
+          tools: ["read"],
+          next: "end",
+        },
+      },
+    });
+
+    expect(loop.version).toBe("1");
+    expect(loop.kind).toBe("graph");
+    expect(loop.hooks?.["tool:before"]?.[0]?.tool).toBe("policy_check");
+    expect(loop.policies?.[0]?.effect).toBe("deny");
+    expect(normalizeProjectLoop(loop as ProjectLoopConfig).pipeline?.steps).toEqual([{ loop: "work" }]);
+  });
+
+  it("rejects unknown loop hook names", () => {
+    const parsed = projectLoopConfigSchema.safeParse({
+      name: "bad-hooks",
+      start: "work",
+      hooks: {
+        "before:anything": [{ tool: "policy_check" }],
+      },
+      steps: {
+        work: { type: "agent", next: "end" },
+      },
+    });
+
+    expect(parsed.success).toBe(false);
+    expect(parsed.error?.issues[0]?.message).toContain('unknown loop hook "before:anything"');
+  });
 });

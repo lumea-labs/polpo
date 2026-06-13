@@ -31,6 +31,7 @@ import {
   type CompactionEvent,
   type ContextBag,
   type LoopConfig,
+  type LoopTraceEvent,
   type ProjectLoopConfig,
   type SummarizeFn,
 } from "@polpo-ai/core";
@@ -176,6 +177,7 @@ const completionResponseSchema = z.object({
     completion_tokens: z.number().int(),
     total_tokens: z.number().int(),
   }),
+  loop_trace: z.array(z.unknown()).optional(),
 });
 
 const errorResponseSchema = z.object({
@@ -432,7 +434,7 @@ function modelNotFoundEnvelope(
   };
 }
 
-function completionResponse(id: string, content: string, usage: LanguageModelUsage) {
+function completionResponse(id: string, content: string, usage: LanguageModelUsage, extra?: Record<string, unknown>) {
   return {
     id,
     object: "chat.completion" as const,
@@ -448,6 +450,7 @@ function completionResponse(id: string, content: string, usage: LanguageModelUsa
       completion_tokens: usage.outputTokens ?? 0,
       total_tokens: usage.totalTokens ?? 0,
     },
+    ...extra,
   };
 }
 
@@ -631,6 +634,7 @@ interface ProjectLoopRunResult {
   providerMetadata?: Record<string, unknown>;
   toolCalls: any[];
   context: ContextBag;
+  trace: LoopTraceEvent[];
 }
 
 type LoopRuntimeToolCall = {
@@ -886,8 +890,9 @@ async function runProjectLoopCompletion(options: {
   aiMessages: any[];
   extraSystemParts: string[];
   onToolCall?: (toolCall: LoopRuntimeToolCall) => Promise<void>;
+  onTrace?: (event: LoopTraceEvent) => Promise<void>;
 }): Promise<ProjectLoopRunResult> {
-  const { deps, agentConfig, projectLoop, aiMessages, extraSystemParts, onToolCall } = options;
+  const { deps, agentConfig, projectLoop, aiMessages, extraSystemParts, onToolCall, onTrace } = options;
   const normalized = normalizeProjectLoop(projectLoop);
   if (!normalized.pipeline) throw new Error(`Loop "${projectLoop.name}" does not define a pipeline`);
 
@@ -901,9 +906,11 @@ async function runProjectLoopCompletion(options: {
 
   try {
     const result = await executor.execute({
+      name: projectLoop.name,
       pipeline: normalized.pipeline,
       loops: normalized.loops,
       context: {},
+      onTrace,
       runTool: async (name, input) => {
         const args = normalizeToolInput(input);
         const id = `loop-tool-${nanoid(12)}`;
@@ -975,6 +982,7 @@ async function runProjectLoopCompletion(options: {
       providerMetadata: lastProviderMetadata,
       toolCalls: toolCallsAccum,
       context: result.context,
+      trace: result.events,
     };
   } finally {
     if (rootTools.cleanup) {
@@ -1193,6 +1201,12 @@ export function completionRoutes(getDeps: () => CompletionRouteDeps, apiKeys?: s
                   data: sseChunk(completionId, {}, null, { tool_call: toolCall }),
                 });
               },
+              onTrace: async (event) => {
+                if (abortController.signal.aborted) return;
+                await stream.writeSSE({
+                  data: sseChunk(completionId, {}, null, { loop_trace: event }),
+                });
+              },
             });
             finalText = run.text;
             runUsage = run.usage;
@@ -1261,7 +1275,7 @@ export function completionRoutes(getDeps: () => CompletionRouteDeps, apiKeys?: s
         runModel = run.model;
         providerMetadata = run.providerMetadata;
         toolCalls = run.toolCalls;
-        return c.json(completionResponse(completionId, finalText, runUsage));
+        return c.json(completionResponse(completionId, finalText, runUsage, { loop_trace: run.trace }));
       } catch (err) {
         const notFound = modelNotFoundEnvelope(err, runModel, body.agent);
         if (notFound) {

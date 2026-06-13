@@ -16,6 +16,16 @@ describe("PipelineExecutor", () => {
       build: { ready: true, name: "build" },
     });
     expect(result.trace.map(e => e.type)).toEqual(["loop", "loop"]);
+    expect(result.events.map(e => e.type)).toEqual([
+      "loop.start",
+      "step.start",
+      "step.end",
+      "transition",
+      "step.start",
+      "step.end",
+      "loop.end",
+    ]);
+    expect(result.events.every(e => typeof e.ts === "string" && e.id.startsWith("trace-"))).toBe(true);
   });
 
   it("routes switch branches deterministically from context", async () => {
@@ -95,6 +105,30 @@ describe("PipelineExecutor", () => {
       plan: { planned: "plan" },
     });
     expect(result.trace.map(e => e.type)).toEqual(["tool", "loop"]);
+    expect(result.events.map(e => e.type)).toContain("tool.call");
+    expect(result.events.map(e => e.type)).toContain("tool.result");
+  });
+
+  it("streams structured trace events through onTrace", async () => {
+    const executor = new PipelineExecutor();
+    const events: string[] = [];
+    const result = await executor.execute({
+      name: "observed-flow",
+      loops: { plan: {} },
+      pipeline: { steps: [{ loop: "plan" }] },
+      onTrace: async (event) => {
+        events.push(`${event.loop}:${event.type}`);
+      },
+      runLoop: async (name) => ({ output: { name } }),
+    });
+
+    expect(events).toEqual([
+      "observed-flow:loop.start",
+      "observed-flow:step.start",
+      "observed-flow:step.end",
+      "observed-flow:loop.end",
+    ]);
+    expect(result.events[0]).toMatchObject({ loop: "observed-flow", type: "loop.start" });
   });
 
   it("fires loop:transition hooks between sequential loop nodes", async () => {

@@ -160,17 +160,26 @@ export type {
   AgentLoopConfig,
   ContextBag,
   LoopConfig,
+  LoopHookAction,
+  LoopLifecycleHook,
   LoopNext,
+  LoopPolicyEffect,
   LoopStepConfig,
+  LoopTraceEvent,
+  LoopTraceEventType,
   LoopToolChoice,
   Pipeline,
   ProjectLoopConfig,
+  ProjectLoopHooks,
+  ProjectLoopKind,
+  ProjectLoopPolicy,
+  ProjectLoopVersion,
   Step,
   SwitchCase,
   Condition,
   ToolLoopStep,
 } from "./loop/types.js";
-export { isLoopStep, isToolStep, isParallelStep, isSwitchStep, isHumanStep } from "./loop/types.js";
+export { LOOP_LIFECYCLE_HOOKS, isLoopStep, isToolStep, isParallelStep, isSwitchStep, isHumanStep } from "./loop/types.js";
 export { normalizeProjectLoop } from "./loop/normalize.js";
 export { LoopHookRegistry } from "./loop/hooks.js";
 export type {
