@@ -25,6 +25,8 @@ import { nanoid } from "nanoid";
 import {
   PipelineExecutor,
   LoopApprovalRequiredError,
+  LoopPermissionApprovalRequiredError,
+  LoopPermissionDeniedError,
   LoopPolicyDeniedError,
   agentMemoryScope,
   compactIfNeeded,
@@ -440,9 +442,9 @@ function modelNotFoundEnvelope(
 
 function loopRuntimeErrorEnvelope(
   err: unknown,
-): { message: string; type: "loop_runtime_error"; code: "loop_policy_blocked" | "loop_approval_required" | "loop_hook_failed"; approvalRequestId?: string; loopRunId?: string } | null {
+): { message: string; type: "loop_runtime_error"; code: "loop_policy_blocked" | "loop_permission_blocked" | "loop_approval_required" | "loop_hook_failed"; approvalRequestId?: string; loopRunId?: string } | null {
   const message = err instanceof Error ? err.message : String(err);
-  if (err instanceof LoopApprovalRequiredError) {
+  if (err instanceof LoopApprovalRequiredError || err instanceof LoopPermissionApprovalRequiredError) {
     return {
       message,
       type: "loop_runtime_error",
@@ -450,6 +452,9 @@ function loopRuntimeErrorEnvelope(
       approvalRequestId: (err as any).approvalRequestId,
       loopRunId: (err as any).loopRunId,
     };
+  }
+  if (err instanceof LoopPermissionDeniedError) {
+    return { message, type: "loop_runtime_error", code: "loop_permission_blocked", loopRunId: (err as any).loopRunId };
   }
   if (err instanceof LoopPolicyDeniedError) {
     return { message, type: "loop_runtime_error", code: "loop_policy_blocked", loopRunId: (err as any).loopRunId };
@@ -963,6 +968,7 @@ async function runProjectLoopCompletion(options: {
       loops: normalized.loops,
       context: {},
       projectHooks: projectLoop.hooks,
+      projectPermissions: projectLoop.permissions,
       projectPolicies: projectLoop.policies,
       onTrace: async (event) => {
         events.push(event);
@@ -1054,23 +1060,31 @@ async function runProjectLoopCompletion(options: {
   } catch (err) {
     if (loopRunStore && loopRunId) {
       (err as any).loopRunId = loopRunId;
-      if (err instanceof LoopApprovalRequiredError) {
+      if (err instanceof LoopApprovalRequiredError || err instanceof LoopPermissionApprovalRequiredError) {
         const approvalStore = deps.getApprovalStore?.();
         let approvalRequestId: string | undefined;
+        const gateId = err instanceof LoopPermissionApprovalRequiredError
+          ? err.permission.id ?? `loop-permission-${nanoid(8)}`
+          : err.policy.id ?? `loop-policy-${nanoid(8)}`;
+        const gateName = err instanceof LoopPermissionApprovalRequiredError
+          ? err.permission.description ?? err.permission.id ?? "Loop permission approval"
+          : err.policy.description ?? err.policy.id ?? "Loop policy approval";
+        const approvalType = err instanceof LoopPermissionApprovalRequiredError ? "permission" : "policy";
         if (approvalStore) {
           approvalRequestId = `approval-${nanoid(16)}`;
           await approvalStore.upsert({
             id: approvalRequestId,
-            gateId: err.policy.id ?? `loop-policy-${nanoid(8)}`,
-            gateName: err.policy.description ?? err.policy.id ?? "Loop policy approval",
+            gateId,
+            gateName,
             status: "pending",
             payload: {
               type: "loop_approval",
+              approvalType,
               loopRunId,
               loopName: projectLoop.name,
               agentName: agentConfig.name,
               hook: err.hook,
-              policy: err.policy,
+              ...(err instanceof LoopPermissionApprovalRequiredError ? { permission: err.permission } : { policy: err.policy }),
               payload: err.payload,
               context: err.context,
               trace: events,
@@ -1085,11 +1099,14 @@ async function runProjectLoopCompletion(options: {
           trace: events,
           approvalRequestId,
           approval: {
-            policyId: err.policy.id ?? "anonymous",
+            type: approvalType,
+            policyId: err instanceof LoopPermissionApprovalRequiredError ? "permission" : err.policy.id ?? "anonymous",
+            permissionId: err instanceof LoopPermissionApprovalRequiredError ? err.permission.id ?? "anonymous" : undefined,
             hook: err.hook,
-            message: err.policy.message,
+            message: err instanceof LoopPermissionApprovalRequiredError ? err.permission.message : err.policy.message,
             payload: err.payload,
             context: err.context,
+            status: "pending",
           },
           error: err.message,
         });

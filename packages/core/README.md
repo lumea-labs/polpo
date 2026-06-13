@@ -20,6 +20,23 @@ export default defineProjectLoop({
   kind: "graph",
   name: "support-flow",
   context: "shared",
+  permissions: [
+    {
+      id: "support-tools",
+      resource: "tool",
+      action: "call",
+      effect: "allow",
+      match: { tool: ["read", "search_docs"] },
+    },
+    {
+      id: "refund-approval",
+      resource: "tool",
+      action: "call",
+      effect: "approval",
+      match: { tool: "issue_refund" },
+      message: "Refunds require human approval.",
+    },
+  ],
   start: "triage",
   steps: {
     triage: {
@@ -40,7 +57,7 @@ import { MemoryLoopRunStore } from "@polpo-ai/core/loop-run-store";
 const loopRunStore = new MemoryLoopRunStore();
 ```
 
-`PipelineExecutor` emits typed `LoopPolicyDeniedError` and `LoopApprovalRequiredError` for policy decisions, so hosts can map denies, approvals, and durable trace history to their own GRC surface.
+`PipelineExecutor` emits typed `LoopPermissionDeniedError`, `LoopPermissionApprovalRequiredError`, `LoopPolicyDeniedError`, and `LoopApprovalRequiredError`, plus structured trace events such as `permission.result`, `policy.result`, and `approval.required`. Hosts can map those records to audit logs, approval queues, compliance dashboards, or their own GRC surface.
 
 ## License
 

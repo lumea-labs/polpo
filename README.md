@@ -215,6 +215,13 @@ Use `type: "tool"` for deterministic sandbox/tool actions without an LLM turn, a
 
 Loop guards use Polpo's safe expression evaluator instead of JavaScript `eval` or `new Function`. Step outputs are available in the shared context bag by step id or `saveAs` path, e.g. `classify.route`, `review.approved`, or `timing.start`. `saveAs` writes context data; it does not create shell variables inside later `bash` commands. The OSS surface validates and round-trips the contract through core types, API schemas, SDK types, `polpo deploy`, and `polpo pull`.
 
+Loops also have first-class governance fields:
+
+- `permissions`: readable allow/deny/approval rules for resources such as `tool`, `step`, `model`, `human`, and `loop`. Use this for least-privilege runtime constraints beyond an agent's broad tool assignment.
+- `policies`: expression-based gates for advanced compliance rules.
+- `hooks`: deterministic tool actions at lifecycle points such as `loop:start`, `tool:before`, `tool:after`, and `loop:end`.
+- `loop_trace`: durable runtime events including `permission.result`, `policy.result`, `approval.required`, tool calls, transitions, and step outcomes.
+
 You can also keep loops as code and compile them to the same canonical contract:
 
 ```ts
@@ -226,6 +233,15 @@ export default defineProjectLoop({
   kind: "graph",
   name: "router-flow",
   context: "shared",
+  permissions: [
+    {
+      id: "router-tool-allowlist",
+      resource: "tool",
+      action: "call",
+      effect: "allow",
+      match: { tool: ["read", "write"] }
+    }
+  ],
   start: "classify",
   steps: {
     classify: {

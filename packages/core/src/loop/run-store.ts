@@ -1,18 +1,26 @@
-import type { ContextBag, LoopLifecycleHook, LoopTraceEvent, ProjectLoopConfig, ProjectLoopPolicy } from "./types.js";
+import type { ContextBag, LoopLifecycleHook, LoopTraceEvent, ProjectLoopConfig, ProjectLoopPermission, ProjectLoopPolicy } from "./types.js";
 
 export type ProjectLoopRunStatus =
   | "running"
   | "completed"
   | "failed"
   | "awaiting_approval"
+  | "approval_approved"
+  | "approval_rejected"
   | "cancelled";
 
 export interface LoopApprovalSnapshot {
+  type?: "policy" | "permission";
   policyId: string;
+  permissionId?: string;
   hook: LoopLifecycleHook;
   message?: string;
   payload: Record<string, unknown>;
   context: ContextBag;
+  status?: "pending" | "approved" | "rejected";
+  resolvedAt?: string;
+  resolvedBy?: string;
+  note?: string;
 }
 
 export interface LoopRunRecord {
@@ -152,5 +160,34 @@ export class LoopApprovalRequiredError extends Error {
     const id = policy.id ?? "anonymous";
     super(message ?? `Loop policy "${id}" requires approval at ${hook}${policy.message ? `: ${policy.message}` : ""}`);
     this.name = "LoopApprovalRequiredError";
+  }
+}
+
+export class LoopPermissionDeniedError extends Error {
+  readonly code = "loop_permission_denied";
+  constructor(
+    public readonly permission: ProjectLoopPermission,
+    public readonly hook: LoopLifecycleHook,
+    public readonly payload: Record<string, unknown>,
+    message?: string,
+  ) {
+    const id = permission.id ?? "anonymous";
+    super(message ?? `Loop permission "${id}" denied ${hook}${permission.message ? `: ${permission.message}` : ""}`);
+    this.name = "LoopPermissionDeniedError";
+  }
+}
+
+export class LoopPermissionApprovalRequiredError extends Error {
+  readonly code = "loop_permission_approval_required";
+  constructor(
+    public readonly permission: ProjectLoopPermission,
+    public readonly hook: LoopLifecycleHook,
+    public readonly context: ContextBag,
+    public readonly payload: Record<string, unknown>,
+    message?: string,
+  ) {
+    const id = permission.id ?? "anonymous";
+    super(message ?? `Loop permission "${id}" requires approval at ${hook}${permission.message ? `: ${permission.message}` : ""}`);
+    this.name = "LoopPermissionApprovalRequiredError";
   }
 }

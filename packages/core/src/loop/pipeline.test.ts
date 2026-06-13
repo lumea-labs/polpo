@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { LoopHookRegistry } from "./hooks.js";
 import { PipelineExecutor } from "./pipeline.js";
-import { LoopApprovalRequiredError, LoopPolicyDeniedError } from "./run-store.js";
+import {
+  LoopApprovalRequiredError,
+  LoopPermissionApprovalRequiredError,
+  LoopPermissionDeniedError,
+  LoopPolicyDeniedError,
+} from "./run-store.js";
 
 describe("PipelineExecutor", () => {
   it("runs sequential loop steps and accumulates context by loop name", async () => {
@@ -337,5 +342,51 @@ describe("PipelineExecutor", () => {
       runTool: async () => ({ output: "nope" }),
       runLoop: async () => ({ output: {} }),
     })).rejects.toThrow('Loop policy allow-list blocked tool:before: no allow policy matched');
+  });
+
+  it("enforces project permissions before tool execution", async () => {
+    const executor = new PipelineExecutor();
+    const calls: string[] = [];
+
+    const allowed = await executor.execute({
+      loops: {},
+      pipeline: { steps: [{ tool: "unix_time", saveAs: "time" }] },
+      projectPermissions: [
+        { id: "tool-allowlist", resource: "tool", action: "call", effect: "allow", match: { tool: ["unix_time"] } },
+      ],
+      runTool: async (name) => {
+        calls.push(name);
+        return { output: 123 };
+      },
+      runLoop: async () => ({ output: {} }),
+    });
+
+    expect(allowed.context.time).toBe(123);
+    expect(calls).toEqual(["unix_time"]);
+    expect(allowed.events.some((event) => event.type === "permission.result" && event.data?.permissionId === "tool-allowlist")).toBe(true);
+
+    await expect(executor.execute({
+      loops: {},
+      pipeline: { steps: [{ tool: "bash" }] },
+      projectPermissions: [
+        { id: "tool-allowlist", resource: "tool", action: "call", effect: "allow", match: { tool: ["unix_time"] } },
+      ],
+      runTool: async () => ({ output: "nope" }),
+      runLoop: async () => ({ output: {} }),
+    })).rejects.toBeInstanceOf(LoopPermissionDeniedError);
+  });
+
+  it("distinguishes permission approval gates from policy approval gates", async () => {
+    const executor = new PipelineExecutor();
+
+    await expect(executor.execute({
+      loops: {},
+      pipeline: { steps: [{ tool: "send_email" }] },
+      projectPermissions: [
+        { id: "approve-email", resource: "tool", action: "call", effect: "approval", match: { tool: "send_email" } },
+      ],
+      runTool: async () => ({ output: "sent" }),
+      runLoop: async () => ({ output: {} }),
+    })).rejects.toBeInstanceOf(LoopPermissionApprovalRequiredError);
   });
 });
