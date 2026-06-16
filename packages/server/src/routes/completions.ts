@@ -982,6 +982,32 @@ async function runProjectLoopCompletion(options: {
   const toolCallsAccum: any[] = [];
   const events: LoopTraceEvent[] = [];
 
+  const emitTrace = async (event: LoopTraceEvent) => {
+    events.push(event);
+    if (loopRunStore && loopRunId) {
+      try {
+        await loopRunStore.appendTrace(loopRunId, event);
+      } catch (err) {
+        deps.emit("loop_run:trace_persist_failed", {
+          loopRunId,
+          loop: projectLoop.name,
+          eventType: event.type,
+          error: (err as Error).message,
+        });
+      }
+    }
+    try {
+      await onTrace?.(event);
+    } catch (err) {
+      deps.emit("loop_run:trace_delivery_failed", {
+        loopRunId,
+        loop: projectLoop.name,
+        eventType: event.type,
+        error: (err as Error).message,
+      });
+    }
+  };
+
   try {
     const result = await executor.execute({
       name: projectLoop.name,
@@ -996,9 +1022,7 @@ async function runProjectLoopCompletion(options: {
         approvedGates: resumeState.approvedGates,
       } : undefined,
       onTrace: async (event) => {
-        events.push(event);
-        if (loopRunStore && loopRunId) await loopRunStore.appendTrace(loopRunId, event);
-        await onTrace?.(event);
+        await emitTrace(event);
       },
       runTool: async (name, input) => {
         const args = normalizeToolInput(input);
