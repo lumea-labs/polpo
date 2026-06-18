@@ -10,41 +10,61 @@ npm install @polpo-ai/core
 
 ## Agentic loops
 
-Use `defineProjectLoop` for code-first loop definitions that compile to the same JSON-compatible contract used by the API, CLI, dashboard, and runtime:
+Use `defineProjectLoop` for code-first loop definitions that compile to the same JSON-compatible contract used by the API, CLI, dashboard, and runtime. Project files can live in `.polpo/loops/*.ts`; `polpo deploy` sends the source to the server, which compiles it statically and persists canonical JSON.
 
 ```ts
-import { defineProjectLoop } from "@polpo-ai/core/loop-code";
+import {
+  agentStep,
+  bash,
+  defineProjectLoop,
+  permission,
+  requireTool,
+  toolStep,
+  when,
+  otherwise,
+} from "@polpo-ai/core/loop-code";
 
 export default defineProjectLoop({
-  version: "1",
-  kind: "graph",
   name: "support-flow",
-  context: "shared",
+  hooks: {
+    "loop:start": [bash("echo support loop started", { saveAs: "audit.start" })],
+  },
   permissions: [
-    {
+    permission({
       id: "support-tools",
       resource: "tool",
       action: "call",
       effect: "allow",
       match: { tool: ["read", "search_docs"] },
-    },
-    {
+    }),
+    permission({
       id: "refund-approval",
       resource: "tool",
       action: "call",
       effect: "approval",
       match: { tool: "issue_refund" },
       message: "Refunds require human approval.",
-    },
+    }),
   ],
   start: "triage",
   steps: {
-    triage: {
-      type: "agent",
+    triage: agentStep({
+      label: "Triage",
       systemPrompt: "Classify the support request.",
       tools: ["read"],
+      next: [when("triage.needsRefund == true", "refund"), otherwise("answer")],
+    }),
+    answer: agentStep({
+      label: "Answer",
+      tools: ["read", "search_docs"],
+      toolChoice: requireTool("search_docs"),
       next: "end",
-    },
+    }),
+    refund: toolStep({
+      label: "Issue refund",
+      tool: "issue_refund",
+      next: "end",
+    }),
   },
 });
 ```

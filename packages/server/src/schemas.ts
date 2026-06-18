@@ -483,8 +483,6 @@ const AgentLoopFieldsSchema = z.object({
   runtime: z.string().optional(),
   assignedLoops: z.array(z.string().min(1)).optional(),
   defaultLoop: z.string().min(1).optional(),
-  loops: z.record(z.string().min(1), LoopConfigSchema).optional(),
-  pipeline: PipelineSchema.optional(),
 }).superRefine((config, ctx) => {
   if (config.defaultLoop && config.assignedLoops && !config.assignedLoops.includes(config.defaultLoop)) {
     ctx.addIssue({
@@ -492,19 +490,6 @@ const AgentLoopFieldsSchema = z.object({
       message: `defaultLoop "${config.defaultLoop}" is not in assignedLoops`,
       path: ["defaultLoop"],
     });
-  }
-  if (!config.loops || !config.pipeline) return;
-  const knownLoops = new Set(Object.keys(config.loops));
-  const refs: string[] = [];
-  for (const step of config.pipeline.steps) collectLoopRefs(step, refs);
-  for (const ref of refs) {
-    if (!knownLoops.has(ref)) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: `pipeline references unknown loop "${ref}"`,
-        path: ["pipeline"],
-      });
-    }
   }
 });
 

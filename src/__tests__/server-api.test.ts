@@ -482,18 +482,15 @@ describe("Agents API", () => {
     expect(agent2.role).toBe("helper");
   });
 
-  test("POST /agents preserves loop contract fields", async () => {
+  test("POST /agents preserves project loop assignment fields", async () => {
     const res = await app.request(
       api("/agents"),
       jsonReq("POST", {
         name: "agent-loop-create",
         role: "loop router",
         runtime: "polpo-runner",
-        loops: {
-          classify: { systemPrompt: "Classify.", tools: ["read"] },
-          answer: { systemPrompt: "Answer." },
-        },
-        pipeline: { steps: [{ loop: "classify" }, { loop: "answer" }] },
+        assignedLoops: ["router-flow"],
+        defaultLoop: "router-flow",
       }),
     );
     expect(res.status).toBe(201);
@@ -502,8 +499,10 @@ describe("Agents API", () => {
     const listBody = await listRes.json();
     const agent = listBody.data.find((a: any) => a.name === "agent-loop-create");
     expect(agent.runtime).toBe("polpo-runner");
-    expect(agent.loops.classify.tools).toEqual(["read"]);
-    expect(agent.pipeline.steps).toEqual([{ loop: "classify" }, { loop: "answer" }]);
+    expect(agent.assignedLoops).toEqual(["router-flow"]);
+    expect(agent.defaultLoop).toBe("router-flow");
+    expect(agent.loops).toBeUndefined();
+    expect(agent.pipeline).toBeUndefined();
   });
 
   test("DELETE /agents/:name removes an agent", async () => {
@@ -1159,25 +1158,25 @@ describe("Update Agent API", () => {
     await app.request(api("/agents/agent-update-test"), { method: "DELETE" });
   });
 
-  test("PATCH /agents/:name updates loop contract fields", async () => {
+  test("PATCH /agents/:name updates project loop assignment fields", async () => {
     await app.request(api("/agents"), jsonReq("POST", { name: "agent-loop-update", role: "original" }));
 
     const res = await app.request(
       api("/agents/agent-loop-update"),
       jsonReq("PATCH", {
         runtime: "polpo-runner",
-        loops: {
-          classify: { systemPrompt: "Classify.", tools: ["read"] },
-        },
-        pipeline: { steps: [{ loop: "classify" }] },
+        assignedLoops: ["classify-flow"],
+        defaultLoop: "classify-flow",
       }),
     );
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.ok).toBe(true);
     expect(body.data.runtime).toBe("polpo-runner");
-    expect(body.data.loops.classify.tools).toEqual(["read"]);
-    expect(body.data.pipeline.steps).toEqual([{ loop: "classify" }]);
+    expect(body.data.assignedLoops).toEqual(["classify-flow"]);
+    expect(body.data.defaultLoop).toBe("classify-flow");
+    expect(body.data.loops).toBeUndefined();
+    expect(body.data.pipeline).toBeUndefined();
 
     await app.request(api("/agents/agent-loop-update"), { method: "DELETE" });
   });

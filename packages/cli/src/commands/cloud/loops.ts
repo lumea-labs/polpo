@@ -1,5 +1,5 @@
 /**
- * polpo loops — validate and compile agentic loop definitions.
+ * polpo loops — validate and compile project-level agentic loop sources.
  */
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -19,12 +19,19 @@ export function registerLoopsCommand(program: Command): void {
 
   loops
     .command("validate")
-    .description("Validate .polpo/loops definitions")
+    .description("Validate .polpo/loops JSON or TypeScript definitions")
     .option("--dir <path>", "Project directory", process.cwd())
     .action(async (opts: { dir?: string }) => {
       clack.intro(pc.bold("polpo loops validate"));
       const polpoDir = resolvePolpoDir(opts.dir);
-      const files = listLoopSourceFiles(polpoDir);
+      let files: string[];
+      try {
+        files = listLoopSourceFiles(polpoDir);
+      } catch (err) {
+        clack.log.error(err instanceof Error ? err.message : String(err));
+        process.exitCode = 1;
+        return;
+      }
       if (files.length === 0) {
         clack.log.info("No loop definitions found in .polpo/loops.");
         clack.outro("Done.");
@@ -52,13 +59,20 @@ export function registerLoopsCommand(program: Command): void {
 
   loops
     .command("compile [file]")
-    .description("Compile a loop module or JSON file to canonical JSON")
+    .description("Compile a loop source or JSON file to canonical JSON")
     .option("--dir <path>", "Project directory", process.cwd())
     .option("-o, --out <file>", "Write compiled JSON to a file")
     .action(async (file: string | undefined, opts: { dir?: string; out?: string }) => {
       clack.intro(pc.bold("polpo loops compile"));
       const polpoDir = resolvePolpoDir(opts.dir);
-      const files = file ? [path.resolve(file)] : listLoopSourceFiles(polpoDir);
+      let files: string[];
+      try {
+        files = file ? [path.resolve(file)] : listLoopSourceFiles(polpoDir);
+      } catch (err) {
+        clack.log.error(err instanceof Error ? err.message : String(err));
+        process.exitCode = 1;
+        return;
+      }
       if (files.length === 0) {
         clack.log.info("No loop definitions found in .polpo/loops.");
         clack.outro("Done.");

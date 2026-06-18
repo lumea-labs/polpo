@@ -135,6 +135,10 @@ export type LoopToolChoice =
 export interface LoopConfig {
   /** Optional — the loops-map key is the canonical name. */
   name?: string;
+  /** Human-readable label for visualizers and editors. */
+  label?: string;
+  /** Human-readable description for visualizers, docs, and audit UI. */
+  description?: string;
   systemPrompt?: string;
   /** Tool subset active in this loop (restriction = determinism/safety). */
   tools?: string[];
@@ -162,6 +166,8 @@ export interface AgentLoopStep extends LoopConfig {
 
 export interface HumanLoopStep {
   type: "human";
+  label?: string;
+  description?: string;
   when?: string;
   output?: { schema?: unknown };
   notify?: string[];
@@ -170,6 +176,8 @@ export interface HumanLoopStep {
 
 export interface ParallelLoopStep {
   type: "parallel";
+  label?: string;
+  description?: string;
   when?: string;
   branches: string[];
   join?: "all" | "any" | number;
@@ -178,6 +186,8 @@ export interface ParallelLoopStep {
 
 export interface ToolLoopStep {
   type: "tool";
+  label?: string;
+  description?: string;
   when?: string;
   /** Built-in or custom tool name to execute directly, without an LLM turn. */
   tool: string;

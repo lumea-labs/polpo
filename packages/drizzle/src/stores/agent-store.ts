@@ -5,6 +5,11 @@ import { type Dialect, serializeJson, deserializeJson, isUniqueViolation } from 
 
 type AnyTable = any;
 
+function stripInlineLoopFields(agent: AgentConfig): AgentConfig {
+  const { loops: _loops, pipeline: _pipeline, ...clean } = agent;
+  return clean as AgentConfig;
+}
+
 export class DrizzleAgentStore implements AgentStore {
   constructor(
     private db: any,
@@ -37,7 +42,8 @@ export class DrizzleAgentStore implements AgentStore {
     const now = new Date().toISOString();
     if (!agent.createdAt) agent.createdAt = now;
 
-    const { name, ...rest } = agent;
+    const cleanAgent = stripInlineLoopFields(agent);
+    const { name, ...rest } = cleanAgent;
     try {
       await this.db.insert(this.agentsTable).values({
         name,
@@ -52,14 +58,14 @@ export class DrizzleAgentStore implements AgentStore {
       }
       throw err;
     }
-    return agent;
+    return cleanAgent;
   }
 
   async updateAgent(name: string, updates: Partial<Omit<AgentConfig, "name">>): Promise<AgentConfig> {
     const existing = await this.getAgent(name);
     if (!existing) throw new Error(`Agent "${name}" not found`);
 
-    const merged = { ...existing, ...updates, name };
+    const merged = stripInlineLoopFields({ ...existing, ...updates, name } as AgentConfig);
     const { name: _n, ...rest } = merged;
     const now = new Date().toISOString();
 
@@ -122,6 +128,6 @@ export class DrizzleAgentStore implements AgentStore {
     const cfg = deserializeJson<Record<string, unknown>>(row.config, {}, this.dialect);
     const agent = { name: row.name, ...cfg } as AgentConfig & { teamName?: string };
     if (row.teamName) agent.teamName = row.teamName;
-    return agent;
+    return stripInlineLoopFields(agent);
   }
 }

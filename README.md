@@ -132,7 +132,7 @@ Agents get access to tools based on their configuration. Built-in tool groups:
 
 ## Loops Beta
 
-Loops are project-level deterministic graphs stored in `.polpo/loops/*.json` and assigned to agents from `.polpo/agents.json`. This avoids duplicating loop definitions across agents: a loop has `name`, `context`, `start`, and `steps`; an agent has `assignedLoops` and `defaultLoop`.
+Loops are project-level deterministic graphs stored in `.polpo/loops/*.json` or authored as static `.polpo/loops/*.ts` DSL files, then assigned to agents from `.polpo/agents.json`. This avoids duplicating loop definitions across agents: a loop has `name`, `context`, `start`, and `steps`; an agent has `assignedLoops` and `defaultLoop`.
 
 Use `type: "tool"` for deterministic sandbox/tool actions without an LLM turn, and `toolChoice` on `type: "agent"` when the model should still reason but must use a tool. Secrets stay in Vault; loop JSON should only contain non-secret input, while custom tools resolve credentials with `ctx.vault`.
 
@@ -224,17 +224,14 @@ Loops also have first-class governance fields:
 
 When a permission or policy requires approval, the runtime stores a checkpoint on the loop run. Approving the gate moves the run to `approval_approved`; `POST /loop-runs/:id/resume` continues from the saved context and remaining steps without replaying completed steps.
 
-You can also keep loops as code and compile them to the same canonical contract:
+You can also keep loops as static TypeScript source. The CLI validates the file locally, deploys the source to `/v1/loops`, and the server compiles it to the same canonical JSON contract without executing arbitrary code:
 
 ```ts
 // .polpo/loops/router-flow.ts
-import { defineProjectLoop } from "@polpo-ai/core/loop-code";
+import { agentStep, defineProjectLoop, requireTool, toolStep, when, otherwise } from "@polpo-ai/core/loop-code";
 
 export default defineProjectLoop({
-  version: "1",
-  kind: "graph",
   name: "router-flow",
-  context: "shared",
   permissions: [
     {
       id: "router-tool-allowlist",
@@ -246,18 +243,25 @@ export default defineProjectLoop({
   ],
   start: "classify",
   steps: {
-    classify: {
-      type: "agent",
+    classify: agentStep({
+      label: "Classify",
       systemPrompt: "Classify the incoming request.",
       tools: ["read"],
-      next: "answer",
-    },
-    answer: {
-      type: "agent",
+      next: [when("classify.route == 'answer'", "answer"), otherwise("end")],
+    }),
+    answer: agentStep({
+      label: "Answer",
       systemPrompt: "Answer using the selected route.",
       tools: ["write"],
+      toolChoice: requireTool("write"),
+      next: "audit",
+    }),
+    audit: toolStep({
+      label: "Audit",
+      tool: "audit_log",
+      input: { flow: "router" },
       next: "end",
-    },
+    }),
   },
 });
 ```
@@ -266,8 +270,8 @@ CLI support:
 
 ```bash
 polpo loops validate
-polpo loops compile .polpo/loops/router-flow.ts --out .polpo/loops/router-flow.json
-polpo deploy
+polpo loops compile .polpo/loops/router-flow.ts
+polpo deploy   # deploys .json as JSON and .ts/.js/.mjs as source
 ```
 
 Agent-direct chat can target a loop explicitly:
