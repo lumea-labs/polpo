@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { agentLoopConfigSchema, projectLoopConfigSchema } from "../schemas.js";
+import { agentStep, bash, defineProjectLoop, otherwise, requireTool, toolStep, when } from "./code.js";
 import { normalizeProjectLoop } from "./normalize.js";
 import type { ProjectLoopConfig } from "./types.js";
 
@@ -196,5 +197,55 @@ describe("agentLoopConfigSchema", () => {
 
     expect(parsed.success).toBe(false);
     expect(parsed.error?.issues[0]?.message).toContain('unknown loop hook "before:anything"');
+  });
+
+  it("builds code-first loop definitions without losing readable step metadata", () => {
+    const loop = defineProjectLoop({
+      name: "coding-flow",
+      hooks: {
+        "loop:start": [bash("echo start", { saveAs: "audit.start" })],
+      },
+      start: "plan",
+      steps: {
+        plan: agentStep({
+          label: "Plan",
+          description: "Inspect the request and prepare the implementation.",
+          tools: ["read", "grep"],
+          toolChoice: requireTool("grep"),
+          next: "build",
+        }),
+        build: toolStep({
+          label: "Build check",
+          description: "Run the deterministic build command.",
+          tool: "bash",
+          input: { command: "pnpm build" },
+          saveAs: "build",
+          next: [when("build.exitCode != 0", "plan"), otherwise("end")],
+        }),
+      },
+    });
+
+    expect(loop).toMatchObject({
+      version: "1",
+      kind: "graph",
+      context: "shared",
+      hooks: {
+        "loop:start": [{ tool: "bash", input: { command: "echo start" }, saveAs: "audit.start" }],
+      },
+      steps: {
+        plan: {
+          type: "agent",
+          label: "Plan",
+          description: "Inspect the request and prepare the implementation.",
+          toolChoice: { mode: "required", tool: "grep" },
+        },
+        build: {
+          type: "tool",
+          label: "Build check",
+          description: "Run the deterministic build command.",
+          next: [{ when: "build.exitCode != 0", to: "plan" }, { to: "end" }],
+        },
+      },
+    });
   });
 });

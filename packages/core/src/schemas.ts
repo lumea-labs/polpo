@@ -231,6 +231,8 @@ export const loopToolChoiceSchema = z.union([
 
 export const loopConfigSchema = z.object({
   name: z.string().min(1).optional(),
+  label: z.string().min(1).optional(),
+  description: z.string().min(1).optional(),
   systemPrompt: z.string().optional(),
   tools: z.array(z.string().min(1)).optional(),
   skills: z.array(z.string().min(1)).optional(),
@@ -261,6 +263,8 @@ export const loopStepConfigSchema = z.discriminatedUnion("type", [
   }),
   z.object({
     type: z.literal("human"),
+    label: z.string().min(1).optional(),
+    description: z.string().min(1).optional(),
     when: z.string().min(1).optional(),
     output: z.object({
       schema: z.unknown().optional(),
@@ -270,6 +274,8 @@ export const loopStepConfigSchema = z.discriminatedUnion("type", [
   }),
   z.object({
     type: z.literal("parallel"),
+    label: z.string().min(1).optional(),
+    description: z.string().min(1).optional(),
     when: z.string().min(1).optional(),
     branches: z.array(z.string().min(1)).min(1),
     join: z.union([z.literal("all"), z.literal("any"), z.number().int().positive()]).optional(),
@@ -277,6 +283,8 @@ export const loopStepConfigSchema = z.discriminatedUnion("type", [
   }),
   z.object({
     type: z.literal("tool"),
+    label: z.string().min(1).optional(),
+    description: z.string().min(1).optional(),
     when: z.string().min(1).optional(),
     tool: z.string().min(1),
     input: z.unknown().optional(),
@@ -357,6 +365,8 @@ export const projectLoopConfigSchema = z.object({
     }),
     z.object({
       type: z.literal("human"),
+      label: z.string().min(1).optional(),
+      description: z.string().min(1).optional(),
       when: z.string().min(1).optional(),
       output: z.object({ schema: z.unknown().optional() }).optional(),
       notify: z.array(z.string().min(1)).optional(),
@@ -364,6 +374,8 @@ export const projectLoopConfigSchema = z.object({
     }),
     z.object({
       type: z.literal("parallel"),
+      label: z.string().min(1).optional(),
+      description: z.string().min(1).optional(),
       when: z.string().min(1).optional(),
       branches: z.array(z.string().min(1)).min(1),
       join: z.union([z.literal("all"), z.literal("any"), z.number().int().positive()]).optional(),
@@ -371,6 +383,8 @@ export const projectLoopConfigSchema = z.object({
     }),
     z.object({
       type: z.literal("tool"),
+      label: z.string().min(1).optional(),
+      description: z.string().min(1).optional(),
       when: z.string().min(1).optional(),
       tool: z.string().min(1),
       input: z.unknown().optional(),

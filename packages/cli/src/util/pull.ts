@@ -71,8 +71,6 @@ export async function pullProject(
             runtime: a.runtime,
             assignedLoops: a.assignedLoops,
             defaultLoop: a.defaultLoop,
-            loops: a.loops,
-            pipeline: a.pipeline,
             reportsTo: a.reportsTo,
             identity: a.identity,
             browserProfile: a.browserProfile,

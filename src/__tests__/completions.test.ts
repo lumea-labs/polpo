@@ -167,19 +167,31 @@ describe("POST /v1/chat/completions", () => {
     });
 
     test("selects a configured agent loop when loop is provided", async () => {
+      await app.request("/api/v1/loops", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: "plan",
+          start: "plan",
+          steps: {
+            plan: {
+              type: "agent",
+              systemPrompt: "Plan only.",
+              tools: ["read"],
+              model: "mock/loop-model",
+              next: "end",
+            },
+          },
+        }),
+      });
       await app.request("/api/v1/agents", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           name: "loop-agent",
           role: "Loop test agent",
-          loops: {
-            plan: {
-              systemPrompt: "Plan only.",
-              tools: ["read"],
-              model: "mock/loop-model",
-            },
-          },
+          assignedLoops: ["plan"],
+          defaultLoop: "plan",
         }),
       });
       setMockModel(mockTextModel("Loop selected."));

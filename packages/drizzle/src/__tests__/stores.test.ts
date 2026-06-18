@@ -1183,6 +1183,31 @@ describe("DrizzleAgentStore", () => {
     expect(updated.name).toBe("claude");
   });
 
+  it("does not persist legacy inline loop definitions on agents", async () => {
+    await stores.agentStore.createAgent({
+      name: "claude",
+      assignedLoops: ["Coding Loop"],
+      defaultLoop: "Coding Loop",
+      loops: { plan: { systemPrompt: "Plan" } },
+      pipeline: { steps: [{ loop: "plan" }] },
+    } as any, "alpha");
+
+    const created = await stores.agentStore.getAgent("claude") as any;
+    expect(created.assignedLoops).toEqual(["Coding Loop"]);
+    expect(created.defaultLoop).toBe("Coding Loop");
+    expect(created.loops).toBeUndefined();
+    expect(created.pipeline).toBeUndefined();
+
+    const updated = await stores.agentStore.updateAgent("claude", {
+      role: "coder",
+      loops: { implement: { systemPrompt: "Build" } },
+      pipeline: { steps: [{ loop: "implement" }] },
+    } as any) as any;
+    expect(updated.role).toBe("coder");
+    expect(updated.loops).toBeUndefined();
+    expect(updated.pipeline).toBeUndefined();
+  });
+
   it("moveAgent changes team", async () => {
     await stores.teamStore.createTeam({ name: "beta", agents: [] });
     await stores.agentStore.createAgent({ name: "claude" } as any, "alpha");

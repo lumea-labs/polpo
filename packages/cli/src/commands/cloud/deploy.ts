@@ -29,7 +29,7 @@ import { resolveOrCreateProject } from "../../util/project.js";
 import { requireAuth } from "../../util/auth.js";
 import { isTTY } from "./prompt.js";
 import { resolveDeployConflict, type ConflictOptions } from "../../util/conflicts.js";
-import { listLoopSourceFiles, loadLoopSource } from "../../util/loops.js";
+import { listLoopSourceFiles, loadLoopDeployPayload } from "../../util/loops.js";
 
 // ── Deploy result tracking ──────────────────────────────
 
@@ -242,13 +242,20 @@ async function deployLoops(client: ApiClient, polpoDir: string): Promise<DeployR
   const result = emptyResult();
   const files = listLoopSourceFiles(polpoDir);
   for (const file of files) {
-    const loop = await loadLoopSource(file);
-    if (!loop?.name) {
+    let loop: Awaited<ReturnType<typeof loadLoopDeployPayload>>;
+    try {
+      loop = await loadLoopDeployPayload(file);
+    } catch (err) {
+      result.errors.push(`loop "${path.basename(file)}": validation failed — ${friendlyError(err)}`);
+      result.failed++;
+      continue;
+    }
+    if (!loop.name) {
       result.errors.push(`loop "${path.basename(file)}": missing name`);
       result.failed++;
       continue;
     }
-    const res = await client.post("/v1/loops", loop);
+    const res = await client.post("/v1/loops", loop.body);
     if (res.status >= 200 && res.status < 300) result.updated++;
     else {
       const msg = readErrorBody(res.data, res.status);

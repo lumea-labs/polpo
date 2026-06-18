@@ -97,8 +97,6 @@ export function agentRoutes(getDeps: () => {
       runtime: body.runtime,
       assignedLoops: body.assignedLoops,
       defaultLoop: body.defaultLoop,
-      loops: body.loops,
-      pipeline: body.pipeline,
       browserProfile: body.browserProfile,
       mcpServers: body.mcpServers,
     }, teamName);
@@ -401,8 +399,6 @@ export function agentRoutes(getDeps: () => {
       ...(body.runtime !== undefined && { runtime: body.runtime }),
       ...(body.assignedLoops !== undefined && { assignedLoops: body.assignedLoops }),
       ...(body.defaultLoop !== undefined && { defaultLoop: body.defaultLoop }),
-      ...(body.loops !== undefined && { loops: body.loops }),
-      ...(body.pipeline !== undefined && { pipeline: body.pipeline }),
       ...(body.maxTurns !== undefined && { maxTurns: body.maxTurns }),
       ...(body.maxConcurrency !== undefined && { maxConcurrency: body.maxConcurrency }),
       ...(body.browserProfile !== undefined && { browserProfile: body.browserProfile }),

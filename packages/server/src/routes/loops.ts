@@ -2,6 +2,7 @@ import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
 import { join } from "node:path";
 import type { FileSystem, ProjectLoopConfig } from "@polpo-ai/core";
 import { projectLoopConfigSchema } from "@polpo-ai/core/schemas";
+import { compileLoopSource, LoopDslCompileError } from "../loop-dsl-compiler.js";
 
 export interface LoopRouteDeps {
   polpoDir: string;
@@ -17,6 +18,28 @@ async function readLoop(fs: FileSystem, polpoDir: string, name: string): Promise
   if (!(await fs.exists(path))) return null;
   const raw = await fs.readFile(path);
   return projectLoopConfigSchema.parse(JSON.parse(raw)) as ProjectLoopConfig;
+}
+
+function parseLoopPayload(payload: unknown): ProjectLoopConfig {
+  if (
+    payload &&
+    typeof payload === "object" &&
+    typeof (payload as { source?: unknown }).source === "string"
+  ) {
+    const { source, fileName } = payload as { source: string; fileName?: unknown };
+    return compileLoopSource(source, typeof fileName === "string" ? fileName : "loop.ts");
+  }
+  return projectLoopConfigSchema.parse(payload) as ProjectLoopConfig;
+}
+
+function validationMessage(error: unknown): string {
+  if (error instanceof LoopDslCompileError) return error.message;
+  if (error && typeof error === "object" && "issues" in error && Array.isArray((error as { issues?: unknown }).issues)) {
+    return (error as { issues: Array<{ path: Array<string | number>; message: string }> }).issues
+      .map((issue) => `${issue.path.join(".") || "loop"}: ${issue.message}`)
+      .join("; ");
+  }
+  return error instanceof Error ? error.message : String(error);
 }
 
 export function loopRoutes(getDeps: () => LoopRouteDeps): OpenAPIHono {
@@ -67,7 +90,16 @@ export function loopRoutes(getDeps: () => LoopRouteDeps): OpenAPIHono {
 
   const upsert = async (c: any) => {
     const { fs, polpoDir } = getDeps();
-    const parsed = projectLoopConfigSchema.parse(await c.req.json());
+    let parsed: ProjectLoopConfig;
+    try {
+      parsed = parseLoopPayload(await c.req.json());
+    } catch (error) {
+      return c.json({
+        ok: false,
+        error: validationMessage(error),
+        code: error instanceof LoopDslCompileError ? "LOOP_DSL_COMPILE_ERROR" : "INVALID_LOOP",
+      }, 400);
+    }
     await fs.mkdir(join(polpoDir, "loops")).catch(() => {});
     await fs.writeFile(loopPath(polpoDir, parsed.name), JSON.stringify(parsed, null, 2) + "\n");
     return c.json({ ok: true, data: parsed });
