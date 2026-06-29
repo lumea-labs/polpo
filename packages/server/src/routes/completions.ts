@@ -90,6 +90,61 @@ function redactVaultToolCalls(toolCalls: any[]): any[] {
   });
 }
 
+async function appendModelResponseMessages(
+  messages: any[],
+  result: any,
+  turnText: string,
+  toolCalls: any[],
+): Promise<void> {
+  try {
+    const responseMessages = await result.responseMessages;
+    if (Array.isArray(responseMessages) && responseMessages.length > 0) {
+      messages.push(...responseMessages);
+      return;
+    }
+  } catch {
+    // Older/partial AI SDK results can still be represented manually below.
+  }
+
+  const assistantContent: any[] = [];
+  if (turnText) assistantContent.push({ type: "text", text: turnText });
+  for (const tc of toolCalls) {
+    assistantContent.push({
+      type: "tool-call",
+      toolCallId: tc.toolCallId,
+      toolName: tc.toolName,
+      input: tc.input,
+    });
+  }
+  messages.push({
+    role: "assistant",
+    content: assistantContent.length === 1 && assistantContent[0].type === "text"
+      ? turnText
+      : assistantContent,
+  });
+}
+
+function indexToolResultsByCallId(toolResults: any[] | undefined): Map<string, any> {
+  const indexed = new Map<string, any>();
+  for (const result of toolResults ?? []) {
+    if (result?.toolCallId) indexed.set(result.toolCallId, result);
+  }
+  return indexed;
+}
+
+function recordProviderToolCall(toolCallsAccum: any[], call: any, toolResults: Map<string, any>): void {
+  const toolResult = toolResults.get(call.toolCallId);
+  const output = toolResult?.output ?? toolResult?.result ?? toolResult?.error;
+  toolCallsAccum.push({
+    id: call.toolCallId,
+    name: call.toolName,
+    arguments: call.input as Record<string, unknown>,
+    result: output === undefined ? undefined : typeof output === "string" ? output : JSON.stringify(output),
+    state: toolResult?.type === "tool-error" || toolResult?.error ? "error" : "completed",
+    providerExecuted: true,
+  });
+}
+
 // ── Zod Schemas ────────────────────────────────────────────────────────
 
 /** OpenAI-compatible content part (text, image_url, or file reference). */
@@ -844,45 +899,17 @@ async function runAgentStepCompletion(options: {
       totalUsage = addUsage(totalUsage, genResult.usage);
       try { lastProviderMetadata = genResult.providerMetadata as Record<string, unknown>; } catch { /* best effort */ }
 
-      const assistantContent: any[] = [];
-      if (turnText) assistantContent.push({ type: "text", text: turnText });
-      for (const tc of genResult.toolCalls) {
-        assistantContent.push({
-          type: "tool-call",
-          toolCallId: tc.toolCallId,
-          toolName: tc.toolName,
-          input: tc.input,
-        });
-      }
-      messages.push({
-        role: "assistant",
-        content: assistantContent.length === 1 && assistantContent[0].type === "text"
-          ? turnText
-          : assistantContent,
-      });
+      await appendModelResponseMessages(messages, genResult, turnText, genResult.toolCalls);
       finalText += turnText;
 
       if (genResult.toolCalls.length === 0) break;
 
-      const providerToolResults = new Map<string, any>();
-      for (const tr of (genResult.toolResults as any[] | undefined) ?? []) {
-        providerToolResults.set(tr.toolCallId, tr);
-      }
+      const providerToolResults = indexToolResultsByCallId(genResult.toolResults as any[] | undefined);
 
       for (const call of genResult.toolCalls) {
         const callArgs = call.input as Record<string, unknown>;
         if (providerToolNames.has(call.toolName)) {
-          const tr = providerToolResults.get(call.toolCallId);
-          const value = tr?.output ?? tr?.result ?? null;
-          messages.push({
-            role: "tool",
-            content: [{
-              type: "tool-result",
-              toolCallId: call.toolCallId,
-              toolName: call.toolName,
-              output: { type: "json" as const, value },
-            }],
-          });
+          recordProviderToolCall(toolCallsAccum, call, providerToolResults);
           continue;
         }
 
@@ -1712,26 +1739,7 @@ export function completionRoutes(getDeps: () => CompletionRouteDeps, apiKeys?: s
             } as LanguageModelUsage;
             try { lastProviderMetadata = (await result.providerMetadata) as Record<string, unknown>; } catch { /* best effort */ }
 
-            // Push assistant response message into conversation history
-            // AI SDK format: assistant message with text + tool calls
-            const assistantContent: any[] = [];
-            if (turnText) {
-              assistantContent.push({ type: "text", text: turnText });
-            }
-            for (const tc of toolCalls) {
-              assistantContent.push({
-                type: "tool-call",
-                toolCallId: tc.toolCallId,
-                toolName: tc.toolName,
-                input: tc.input,
-              });
-            }
-            messages.push({
-              role: "assistant",
-              content: assistantContent.length === 1 && assistantContent[0].type === "text"
-                ? turnText
-                : assistantContent,
-            });
+            await appendModelResponseMessages(messages, result, turnText, toolCalls);
 
             finalText += turnText;
 
@@ -1853,15 +1861,14 @@ export function completionRoutes(getDeps: () => CompletionRouteDeps, apiKeys?: s
               return; // finally block will persist whatever finalText we have
             }
 
-            // Provider tools (extraAiTools) are executed by the SDK / gateway
-            // inside generateText itself — their results are already on
-            // `result.toolResults`. Skip them in our manual dispatcher; just
-            // forward the result message into history for the next turn.
+            // Provider tools (extraAiTools) are executed by the SDK / gateway.
+            // Their tool results are already preserved in responseMessages,
+            // so only record them for observability and skip local dispatch.
             const providerToolNames = new Set(Object.keys(extraAiTools ?? {}));
-            const providerToolResults = new Map<string, any>();
+            let providerToolResults = new Map<string, any>();
             try {
               const settled = (await (result as any).toolResults) as any[] | undefined;
-              for (const tr of settled ?? []) providerToolResults.set(tr.toolCallId, tr);
+              providerToolResults = indexToolResultsByCallId(settled);
             } catch { /* best effort */ }
 
             for (const call of toolCalls) {
@@ -1871,17 +1878,7 @@ export function completionRoutes(getDeps: () => CompletionRouteDeps, apiKeys?: s
               const callArgs = call.input as Record<string, unknown>;
 
               if (providerToolNames.has(call.toolName)) {
-                const tr = providerToolResults.get(call.toolCallId);
-                const value = tr?.output ?? tr?.result ?? null;
-                messages.push({
-                  role: "tool",
-                  content: [{
-                    type: "tool-result",
-                    toolCallId: call.toolCallId,
-                    toolName: call.toolName,
-                    output: { type: "json" as const, value },
-                  }],
-                });
+                recordProviderToolCall(toolCallsAccum, call, providerToolResults);
                 continue;
               }
 
@@ -2037,25 +2034,7 @@ export function completionRoutes(getDeps: () => CompletionRouteDeps, apiKeys?: s
           } as LanguageModelUsage;
           try { lastProviderMetadata = genResult.providerMetadata as Record<string, unknown>; } catch { /* best effort */ }
 
-          // Push assistant response message into conversation history
-          const assistantContent: any[] = [];
-          if (turnText) {
-            assistantContent.push({ type: "text", text: turnText });
-          }
-          for (const tc of genResult.toolCalls) {
-            assistantContent.push({
-              type: "tool-call",
-              toolCallId: tc.toolCallId,
-              toolName: tc.toolName,
-              input: tc.input,
-            });
-          }
-          messages.push({
-            role: "assistant",
-            content: assistantContent.length === 1 && assistantContent[0].type === "text"
-              ? turnText
-              : assistantContent,
-          });
+          await appendModelResponseMessages(messages, genResult, turnText, genResult.toolCalls);
 
           finalText += turnText;
 
@@ -2233,30 +2212,17 @@ export function completionRoutes(getDeps: () => CompletionRouteDeps, apiKeys?: s
             // Note: finally block persists finalText + toolCallsAccum
           }
 
-          // Provider tools (extraAiTools) are executed by the SDK / gateway
-          // inside generateText itself — their results are already on
-          // `genResult.toolResults`. Skip them in the manual dispatcher.
+          // Provider tools (extraAiTools) are executed by the SDK / gateway.
+          // Their tool results are already preserved in responseMessages,
+          // so only record them for observability and skip local dispatch.
           const providerToolNames = new Set(Object.keys(extraAiTools ?? {}));
-          const providerToolResults = new Map<string, any>();
-          for (const tr of (genResult.toolResults as any[] | undefined) ?? []) {
-            providerToolResults.set(tr.toolCallId, tr);
-          }
+          const providerToolResults = indexToolResultsByCallId(genResult.toolResults as any[] | undefined);
 
           for (const call of toolCalls) {
             const callArgs = call.input as Record<string, unknown>;
 
             if (providerToolNames.has(call.toolName)) {
-              const tr = providerToolResults.get(call.toolCallId);
-              const value = tr?.output ?? tr?.result ?? null;
-              messages.push({
-                role: "tool",
-                content: [{
-                  type: "tool-result",
-                  toolCallId: call.toolCallId,
-                  toolName: call.toolName,
-                  output: { type: "json" as const, value },
-                }],
-              });
+              recordProviderToolCall(toolCallsAccum, call, providerToolResults);
               continue;
             }
 
