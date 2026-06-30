@@ -223,7 +223,7 @@ export interface SwitchCase {
 export type Step =
   | { loop: string; when?: string }
   | { tool: string; input?: unknown; saveAs?: string; when?: string }
-  | { parallel: Step[]; join?: "all" | "any" | number; when?: string }
+  | { parallel: Step[][]; join?: "all" | "any" | number; when?: string }
   | { switch: { cases: SwitchCase[]; default?: { steps: Step[] } }; when?: string }
   | { human: string; output?: { schema?: unknown }; notify?: string[]; when?: string };
 
@@ -246,7 +246,7 @@ export interface AgentLoopConfig {
 export const isLoopStep = (s: Step): s is { loop: string; when?: string } => "loop" in s;
 export const isToolStep = (s: Step): s is { tool: string; input?: unknown; saveAs?: string; when?: string } =>
   "tool" in s;
-export const isParallelStep = (s: Step): s is { parallel: Step[]; join?: "all" | "any" | number; when?: string } =>
+export const isParallelStep = (s: Step): s is { parallel: Step[][]; join?: "all" | "any" | number; when?: string } =>
   "parallel" in s;
 export const isSwitchStep = (
   s: Step,

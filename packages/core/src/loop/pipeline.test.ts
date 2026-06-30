@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { LoopHookRegistry } from "./hooks.js";
+import { normalizeProjectLoop } from "./normalize.js";
 import { PipelineExecutor } from "./pipeline.js";
 import {
   LoopApprovalRequiredError,
@@ -7,6 +8,7 @@ import {
   LoopPermissionDeniedError,
   LoopPolicyDeniedError,
 } from "./run-store.js";
+import type { ProjectLoopConfig } from "./types.js";
 
 describe("PipelineExecutor", () => {
   it("runs sequential loop steps and accumulates context by loop name", async () => {
@@ -61,7 +63,7 @@ describe("PipelineExecutor", () => {
     const result = await executor.execute({
       loops: { test: {}, typecheck: {} },
       context: { build: { done: true } },
-      pipeline: { steps: [{ parallel: [{ loop: "test" }, { loop: "typecheck" }], join: "all" }] },
+      pipeline: { steps: [{ parallel: [[{ loop: "test" }], [{ loop: "typecheck" }]], join: "all" }] },
       runLoop: async (name, _loop, context) => {
         expect(() => ((context as any).mutated = true)).toThrow();
         return { output: { passed: name === "test" || name === "typecheck" } };
@@ -73,6 +75,91 @@ describe("PipelineExecutor", () => {
       typecheck: { passed: true },
     });
     expect((result.context as any).mutated).toBeUndefined();
+    expect(result.events).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: "step.start", step: "parallel", status: "started" }),
+      expect.objectContaining({ type: "step.end", step: "parallel", status: "completed" }),
+      expect.objectContaining({ type: "step.end", step: "test", status: "completed" }),
+      expect.objectContaining({ type: "step.end", step: "typecheck", status: "completed" }),
+    ]));
+  });
+
+  it("keeps and completes every step in project-level parallel branch sequences", async () => {
+    const projectLoop: ProjectLoopConfig = {
+      name: "Simple Coding Loop",
+      start: "clone_repo",
+      steps: {
+        clone_repo: {
+          type: "tool",
+          tool: "bash",
+          input: { command: "git clone https://github.com/acme/app.git /tmp/app" },
+          saveAs: "cloneResult",
+          next: "parallel_work",
+        },
+        parallel_work: {
+          type: "parallel",
+          branches: ["implement", "install"],
+          join: "all",
+          next: "end",
+        },
+        implement: {
+          type: "agent",
+          systemPrompt: "Apply the requested changes.",
+          next: "end",
+        },
+        install: {
+          type: "tool",
+          tool: "bash",
+          input: { command: "cd /tmp/app && bun install" },
+          saveAs: "installResult",
+          next: "start_dev",
+        },
+        start_dev: {
+          type: "tool",
+          tool: "bash",
+          input: { command: "cd /tmp/app && bun run dev" },
+          saveAs: "devServer",
+          next: "end",
+        },
+      },
+    };
+    const normalized = normalizeProjectLoop(projectLoop);
+    const executor = new PipelineExecutor();
+    const toolCalls: string[] = [];
+
+    const result = await executor.execute({
+      loops: normalized.loops,
+      pipeline: normalized.pipeline!,
+      runLoop: async (name) => ({ output: { changed: name === "implement" } }),
+      runTool: async (_name, _input, _context, step) => {
+        toolCalls.push(step.saveAs ?? _name);
+        return { output: { ok: true, step: step.saveAs ?? _name } };
+      },
+    });
+
+    expect(normalized.pipeline?.steps).toMatchObject([
+      { tool: "bash", saveAs: "cloneResult" },
+      {
+        parallel: [
+          [{ loop: "implement" }],
+          [
+            { tool: "bash", saveAs: "installResult" },
+            { tool: "bash", saveAs: "devServer" },
+          ],
+        ],
+      },
+    ]);
+    expect(toolCalls).toEqual(["cloneResult", "installResult", "devServer"]);
+    expect(result.context).toMatchObject({
+      cloneResult: { ok: true, step: "cloneResult" },
+      implement: { changed: true },
+      installResult: { ok: true, step: "installResult" },
+      devServer: { ok: true, step: "devServer" },
+    });
+    expect(result.events).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: "step.end", step: "parallel", status: "completed" }),
+      expect.objectContaining({ type: "tool.result", step: "devServer", status: "completed" }),
+      expect.objectContaining({ type: "step.end", step: "implement", status: "completed" }),
+    ]));
   });
 
   it("supports human nodes through an injected handler", async () => {

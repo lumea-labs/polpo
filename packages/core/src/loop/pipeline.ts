@@ -193,11 +193,13 @@ export class PipelineExecutor {
 
         if (isParallelStep(step)) {
           await this.runLifecyclePoint("step:before", context, options, state, { step: { name: "parallel", type: "parallel" } });
+          await state.emit({ type: "step.start", step: "parallel", status: "started", when: step.when });
           const snapshot = freezeContext(context);
-          const branchResults = await Promise.all(step.parallel.map(async (child) => {
+          const branches = normalizeParallelBranches(step.parallel);
+          const branchResults = await Promise.all(branches.map(async (branchSteps) => {
             const branchContext = { ...snapshot };
             const branchTrace: PipelineTraceEvent[] = [];
-            await this.executeSteps([child], branchContext, branchTrace, options, state);
+            await this.executeSteps(branchSteps, branchContext, branchTrace, options, state, lastNode);
             return { branchContext, branchTrace };
           }));
           for (const result of branchResults) {
@@ -206,6 +208,8 @@ export class PipelineExecutor {
           }
           trace.push({ type: "parallel", matched: true });
           await this.runLifecyclePoint("step:after", context, options, state, { step: { name: "parallel", type: "parallel" } });
+          await state.emit({ type: "step.end", step: "parallel", status: "completed" });
+          lastNode = "parallel";
           continue;
         }
 
@@ -530,6 +534,10 @@ function defaultHookForResource(resource: ProjectLoopPermission["resource"]): Lo
 function matchesName(pattern: string | string[], value: string): boolean {
   const patterns = Array.isArray(pattern) ? pattern : [pattern];
   return patterns.some((item) => item === "*" || item === value);
+}
+
+function normalizeParallelBranches(parallel: Step[][]): Step[][] {
+  return parallel.map((branch) => Array.isArray(branch) ? branch : [branch]);
 }
 
 function freezeContext(context: ContextBag): Readonly<ContextBag> {
