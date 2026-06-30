@@ -132,17 +132,21 @@ function indexToolResultsByCallId(toolResults: any[] | undefined): Map<string, a
   return indexed;
 }
 
-function recordProviderToolCall(toolCallsAccum: any[], call: any, toolResults: Map<string, any>): void {
+function providerToolCallEvent(call: any, toolResults: Map<string, any>): LoopRuntimeToolCall & { providerExecuted: true } {
   const toolResult = toolResults.get(call.toolCallId);
   const output = toolResult?.output ?? toolResult?.result ?? toolResult?.error;
-  toolCallsAccum.push({
+  return {
     id: call.toolCallId,
     name: call.toolName,
     arguments: call.input as Record<string, unknown>,
     result: output === undefined ? undefined : typeof output === "string" ? output : JSON.stringify(output),
     state: toolResult?.type === "tool-error" || toolResult?.error ? "error" : "completed",
     providerExecuted: true,
-  });
+  };
+}
+
+function recordProviderToolCall(toolCallsAccum: any[], call: any, toolResults: Map<string, any>): void {
+  toolCallsAccum.push(providerToolCallEvent(call, toolResults));
 }
 
 // ── Zod Schemas ────────────────────────────────────────────────────────
@@ -842,8 +846,9 @@ async function runAgentStepCompletion(options: {
   extraSystemParts: string[];
   context: Readonly<ContextBag>;
   stepName: string;
+  onToolCall?: (toolCall: LoopRuntimeToolCall) => Promise<void>;
 }): Promise<AgentStepRunResult> {
-  const { deps, agentConfig, aiMessages, extraSystemParts, context, stepName } = options;
+  const { deps, agentConfig, aiMessages, extraSystemParts, context, stepName, onToolCall } = options;
   const reasoning = agentConfig.reasoning ?? deps.getConfig()?.settings?.reasoning;
   const resolved = await deps.resolveAgentModel(agentConfig, reasoning);
   const m = resolved.model;
@@ -909,20 +914,30 @@ async function runAgentStepCompletion(options: {
       for (const call of genResult.toolCalls) {
         const callArgs = call.input as Record<string, unknown>;
         if (providerToolNames.has(call.toolName)) {
-          recordProviderToolCall(toolCallsAccum, call, providerToolResults);
+          const event = providerToolCallEvent(call, providerToolResults);
+          toolCallsAccum.push(event);
+          await onToolCall?.(event);
           continue;
         }
 
+        await onToolCall?.({
+          id: call.toolCallId,
+          name: call.toolName,
+          arguments: callArgs,
+          state: "calling",
+        });
         const result = await resolvedTools.executor(call.toolName, callArgs);
         const isError = result.startsWith("Error:");
         emitFileChanged(call.toolName, callArgs, result, deps.emit);
-        toolCallsAccum.push({
+        const event = {
           id: call.toolCallId,
           name: call.toolName,
           arguments: callArgs,
           result,
           state: isError ? "error" : "completed",
-        });
+        } satisfies LoopRuntimeToolCall;
+        toolCallsAccum.push(event);
+        await onToolCall?.(event);
         messages.push({
           role: "tool",
           content: [{
@@ -1091,6 +1106,7 @@ async function runProjectLoopCompletion(options: {
           extraSystemParts,
           context,
           stepName: name,
+          onToolCall,
         });
         finalText = stepResult.text || finalText;
         totalUsage = addUsage(totalUsage, stepResult.usage);
