@@ -184,6 +184,22 @@ export interface ParallelLoopStep {
   next?: LoopNext;
 }
 
+export interface WhileLoopStep {
+  type: "while";
+  label?: string;
+  description?: string;
+  when?: string;
+  /** Run the body while this expression evaluates true. Mutually optional with `until`. */
+  condition?: string;
+  /** Run the body until this expression evaluates true. Mutually optional with `condition`. */
+  until?: string;
+  /** First body step id, or multiple independent entry step ids executed sequentially per iteration. */
+  body: string | string[];
+  /** Safety guard. Defaults to 5 in the executor when omitted. */
+  maxIterations?: number;
+  next?: LoopNext;
+}
+
 export interface ToolLoopStep {
   type: "tool";
   label?: string;
@@ -198,7 +214,7 @@ export interface ToolLoopStep {
   next?: LoopNext;
 }
 
-export type LoopStepConfig = AgentLoopStep | HumanLoopStep | ParallelLoopStep | ToolLoopStep;
+export type LoopStepConfig = AgentLoopStep | HumanLoopStep | ParallelLoopStep | WhileLoopStep | ToolLoopStep;
 
 /** Project-level reusable loop graph. Agents assign these by name/id. */
 export interface ProjectLoopConfig {
@@ -220,11 +236,19 @@ export interface SwitchCase {
   steps: Step[];
 }
 
+export interface WhileBlock {
+  condition?: string;
+  until?: string;
+  maxIterations?: number;
+  steps: Step[];
+}
+
 export type Step =
   | { loop: string; when?: string }
   | { tool: string; input?: unknown; saveAs?: string; when?: string }
   | { parallel: Step[][]; join?: "all" | "any" | number; when?: string }
   | { switch: { cases: SwitchCase[]; default?: { steps: Step[] } }; when?: string }
+  | { while: WhileBlock; when?: string }
   | { human: string; output?: { schema?: unknown }; notify?: string[]; when?: string };
 
 export interface Pipeline {
@@ -251,6 +275,7 @@ export const isParallelStep = (s: Step): s is { parallel: Step[][]; join?: "all"
 export const isSwitchStep = (
   s: Step,
 ): s is { switch: { cases: SwitchCase[]; default?: { steps: Step[] } }; when?: string } => "switch" in s;
+export const isWhileStep = (s: Step): s is { while: WhileBlock; when?: string } => "while" in s;
 export const isHumanStep = (
   s: Step,
 ): s is { human: string; output?: { schema?: unknown }; notify?: string[]; when?: string } => "human" in s;

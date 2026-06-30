@@ -295,11 +295,11 @@ function validateLoopStep(step: unknown, ctx: ValidationContext, path: (string |
     return;
   }
 
-  const kinds = ["loop", "tool", "parallel", "switch", "human"].filter((kind) => kind in step);
+  const kinds = ["loop", "tool", "parallel", "switch", "while", "human"].filter((kind) => kind in step);
   if (kinds.length !== 1) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
-      message: "step requires exactly one of loop, tool, parallel, switch, or human",
+      message: "step requires exactly one of loop, tool, parallel, switch, while, or human",
       path,
     });
     return;
@@ -367,6 +367,30 @@ function validateLoopStep(step: unknown, ctx: ValidationContext, path: (string |
     return;
   }
 
+  if ("while" in step) {
+    if (!isPlainObject(step.while)) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: "while must be an object", path: [...path, "while"] });
+      return;
+    }
+    if (step.while.condition !== undefined) validateNonEmptyString(step.while.condition, ctx, [...path, "while", "condition"], "condition");
+    if (step.while.until !== undefined) validateNonEmptyString(step.while.until, ctx, [...path, "while", "until"], "until");
+    if (step.while.condition === undefined && step.while.until === undefined) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: "while requires condition or until", path: [...path, "while"] });
+    }
+    if (
+      step.while.maxIterations !== undefined
+      && !(typeof step.while.maxIterations === "number" && Number.isInteger(step.while.maxIterations) && step.while.maxIterations > 0)
+    ) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: "maxIterations must be a positive integer", path: [...path, "while", "maxIterations"] });
+    }
+    if (!Array.isArray(step.while.steps) || step.while.steps.length === 0) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: "while.steps must contain at least one step", path: [...path, "while", "steps"] });
+    } else {
+      step.while.steps.forEach((child, index) => validateLoopStep(child, ctx, [...path, "while", "steps", index]));
+    }
+    return;
+  }
+
   validateNonEmptyString(step.human, ctx, [...path, "human"], "human");
   if (step.notify !== undefined && (!Array.isArray(step.notify) || step.notify.some((item) => typeof item !== "string" || item.trim() === ""))) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: "notify must be an array of non-empty strings", path: [...path, "notify"] });
@@ -401,6 +425,11 @@ function collectLoopRefs(step: unknown, refs: string[]): void {
       for (const child of branch.steps ?? []) collectLoopRefs(child, refs);
     }
     for (const child of switchStep.default?.steps ?? []) collectLoopRefs(child, refs);
+    return;
+  }
+  if (node.while && typeof node.while === "object") {
+    const whileStep = node.while as { steps?: unknown[] };
+    for (const child of whileStep.steps ?? []) collectLoopRefs(child, refs);
   }
 }
 

@@ -174,6 +174,54 @@ describe("PipelineExecutor", () => {
     expect(result.context.underwriter).toEqual({ decision: "approve" });
   });
 
+  it("runs while blocks until the exit condition is satisfied", async () => {
+    const executor = new PipelineExecutor();
+    let attempts = 0;
+    const result = await executor.execute({
+      loops: {},
+      pipeline: {
+        steps: [
+          {
+            while: {
+              until: "build.passed == true",
+              maxIterations: 3,
+              steps: [{ tool: "build_check", saveAs: "build" }],
+            },
+          },
+        ],
+      },
+      runLoop: async () => ({ output: {} }),
+      runTool: async () => {
+        attempts += 1;
+        return { output: { passed: attempts >= 2 } };
+      },
+    });
+
+    expect(attempts).toBe(2);
+    expect(result.context.build).toEqual({ passed: true });
+    expect(result.trace.filter((event) => event.type === "while" && event.matched)).toHaveLength(2);
+  });
+
+  it("fails while blocks when maxIterations is exhausted", async () => {
+    const executor = new PipelineExecutor();
+    await expect(executor.execute({
+      loops: {},
+      pipeline: {
+        steps: [
+          {
+            while: {
+              until: "build.passed == true",
+              maxIterations: 2,
+              steps: [{ tool: "build_check", saveAs: "build" }],
+            },
+          },
+        ],
+      },
+      runLoop: async () => ({ output: {} }),
+      runTool: async () => ({ output: { passed: false } }),
+    })).rejects.toThrow("maxIterations");
+  });
+
   it("throws typed errors for deny and approval policies", async () => {
     const executor = new PipelineExecutor();
 

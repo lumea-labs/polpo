@@ -9,6 +9,7 @@ import type {
   ProjectLoopPermission,
   ProjectLoopPolicy,
   ToolLoopStep,
+  WhileLoopStep,
 } from "./types.js";
 
 /**
@@ -45,6 +46,10 @@ export function humanStep(step: Omit<HumanLoopStep, "type">): HumanLoopStep {
 
 export function parallelStep(step: Omit<ParallelLoopStep, "type">): ParallelLoopStep {
   return { type: "parallel", ...step };
+}
+
+export function whileStep(step: Omit<WhileLoopStep, "type">): WhileLoopStep {
+  return { type: "while", ...step };
 }
 
 export function when(expression: string, to: string): Exclude<LoopNext, string>[number] {

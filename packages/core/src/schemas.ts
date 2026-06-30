@@ -382,6 +382,19 @@ export const projectLoopConfigSchema = z.object({
       next: loopNextSchema.optional(),
     }),
     z.object({
+      type: z.literal("while"),
+      label: z.string().min(1).optional(),
+      description: z.string().min(1).optional(),
+      when: z.string().min(1).optional(),
+      condition: z.string().min(1).optional(),
+      until: z.string().min(1).optional(),
+      body: z.union([z.string().min(1), z.array(z.string().min(1)).min(1)]),
+      maxIterations: z.number().int().positive().optional(),
+      next: loopNextSchema.optional(),
+    }).refine((step) => !!step.condition || !!step.until, {
+      message: "while step requires condition or until",
+    }),
+    z.object({
       type: z.literal("tool"),
       label: z.string().min(1).optional(),
       description: z.string().min(1).optional(),
@@ -405,6 +418,10 @@ export const projectLoopConfigSchema = z.object({
   for (const [name, step] of Object.entries(loop.steps)) {
     if (step.type === "parallel") {
       step.branches.forEach((branch, i) => checkTarget(branch, ["steps", name, "branches", i]));
+    }
+    if (step.type === "while") {
+      const body = Array.isArray(step.body) ? step.body : [step.body];
+      body.forEach((entry, i) => checkTarget(entry, ["steps", name, "body", i]));
     }
     const toolChoice = (step as { toolChoice?: unknown }).toolChoice;
     if (toolChoice && typeof toolChoice === "object" && "tool" in toolChoice) {
@@ -440,6 +457,17 @@ export const loopStepSchema: z.ZodType<unknown> = z.lazy(() => z.union([
   z.object({
     parallel: z.array(loopStepSchema).min(1),
     join: z.union([z.literal("all"), z.literal("any"), z.number().int().positive()]).optional(),
+    when: z.string().min(1).optional(),
+  }),
+  z.object({
+    while: z.object({
+      condition: z.string().min(1).optional(),
+      until: z.string().min(1).optional(),
+      maxIterations: z.number().int().positive().optional(),
+      steps: z.array(loopStepSchema).min(1),
+    }).refine((value) => !!value.condition || !!value.until, {
+      message: "while requires condition or until",
+    }),
     when: z.string().min(1).optional(),
   }),
   z.object({
@@ -490,6 +518,11 @@ function collectLoopStepRefs(step: unknown, refs: string[]): void {
       for (const child of branch.steps ?? []) collectLoopStepRefs(child, refs);
     }
     for (const child of switchStep.default?.steps ?? []) collectLoopStepRefs(child, refs);
+    return;
+  }
+  if (node.while && typeof node.while === "object") {
+    const whileStep = node.while as { steps?: unknown[] };
+    for (const child of whileStep.steps ?? []) collectLoopStepRefs(child, refs);
   }
 }
 

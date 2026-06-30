@@ -182,8 +182,9 @@ export type {
   SwitchCase,
   Condition,
   ToolLoopStep,
+  WhileLoopStep,
 } from "./loop/types.js";
-export { LOOP_LIFECYCLE_HOOKS, isLoopStep, isToolStep, isParallelStep, isSwitchStep, isHumanStep } from "./loop/types.js";
+export { LOOP_LIFECYCLE_HOOKS, isLoopStep, isToolStep, isParallelStep, isSwitchStep, isWhileStep, isHumanStep } from "./loop/types.js";
 export { normalizeProjectLoop } from "./loop/normalize.js";
 export {
   agentStep,
@@ -198,6 +199,7 @@ export {
   requireTool,
   toolAction,
   toolStep,
+  whileStep,
   when,
 } from "./loop/code.js";
 export { LoopHookRegistry } from "./loop/hooks.js";
