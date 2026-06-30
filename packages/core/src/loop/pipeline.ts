@@ -12,6 +12,7 @@ import {
   isLoopStep,
   isParallelStep,
   isSwitchStep,
+  isWhileStep,
   isToolStep,
   type ContextBag,
   type LoopConfig,
@@ -41,10 +42,11 @@ export interface PipelineToolResult {
 }
 
 export interface PipelineTraceEvent {
-  type: "loop" | "tool" | "human" | "switch" | "parallel" | "skip";
+  type: "loop" | "tool" | "human" | "switch" | "while" | "parallel" | "skip";
   name?: string;
   when?: string;
   matched?: boolean;
+  iteration?: number;
 }
 
 export interface PipelineExecutionResult {
@@ -191,6 +193,44 @@ export class PipelineExecutor {
           continue;
         }
 
+        if (isWhileStep(step)) {
+          await this.runLifecyclePoint("step:before", context, options, state, { step: { name: "while", type: "while" } });
+          await state.emit({
+            type: "step.start",
+            step: "while",
+            status: "started",
+            when: step.when,
+            data: { condition: step.while.condition, until: step.while.until, maxIterations: step.while.maxIterations },
+          });
+          const maxIterations = step.while.maxIterations ?? 5;
+          let iterations = 0;
+          while (this.shouldRunWhile(step.while.condition, step.while.until, context)) {
+            if (iterations >= maxIterations) {
+              throw new Error(`Loop while step exceeded maxIterations (${maxIterations}) before its exit condition was satisfied`);
+            }
+            iterations += 1;
+            trace.push({ type: "while", when: step.while.condition ?? step.while.until, matched: true, iteration: iterations });
+            await state.emit({
+              type: "step.start",
+              step: "while",
+              status: "started",
+              data: { iteration: iterations, condition: step.while.condition, until: step.while.until },
+            });
+            lastNode = await this.executeSteps(step.while.steps, context, trace, options, state, lastNode);
+            await state.emit({
+              type: "step.end",
+              step: "while",
+              status: "completed",
+              data: { iteration: iterations },
+            });
+          }
+          trace.push({ type: "while", when: step.while.condition ?? step.while.until, matched: false, iteration: iterations });
+          await this.runLifecyclePoint("step:after", context, options, state, { step: { name: "while", type: "while" }, output: { iterations } });
+          await state.emit({ type: "step.end", step: "while", status: "completed", output: { iterations } });
+          lastNode = "while";
+          continue;
+        }
+
         if (isParallelStep(step)) {
           await this.runLifecyclePoint("step:before", context, options, state, { step: { name: "parallel", type: "parallel" } });
           await state.emit({ type: "step.start", step: "parallel", status: "started", when: step.when });
@@ -236,6 +276,12 @@ export class PipelineExecutor {
   private matchesWhen(expression: string | undefined, context: ContextBag): boolean {
     if (!expression) return true;
     return this.evaluator.evaluate(expression, context);
+  }
+
+  private shouldRunWhile(condition: string | undefined, until: string | undefined, context: ContextBag): boolean {
+    if (until && this.matchesWhen(until, context)) return false;
+    if (condition) return this.matchesWhen(condition, context);
+    return !!until;
   }
 
   private async runTransitionHook(

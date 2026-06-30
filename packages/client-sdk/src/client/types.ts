@@ -383,6 +383,7 @@ export type LoopStepConfig =
   | (LoopConfig & { type?: "agent"; when?: string; next?: LoopNext })
   | { type: "human"; when?: string; output?: { schema?: unknown }; notify?: string[]; next?: LoopNext }
   | { type: "parallel"; when?: string; branches: string[]; join?: "all" | "any" | number; next?: LoopNext }
+  | { type: "while"; when?: string; condition?: string; until?: string; body: string | string[]; maxIterations?: number; next?: LoopNext }
   | { type: "tool"; when?: string; tool: string; input?: unknown; saveAs?: string; next?: LoopNext };
 
 export interface ProjectLoopConfig {
@@ -404,11 +405,19 @@ export interface SwitchCase {
   steps: Step[];
 }
 
+export interface WhileBlock {
+  condition?: string;
+  until?: string;
+  maxIterations?: number;
+  steps: Step[];
+}
+
 export type Step =
   | { loop: string; when?: string }
   | { tool: string; input?: unknown; saveAs?: string; when?: string }
   | { parallel: Step[]; join?: "all" | "any" | number; when?: string }
   | { switch: { cases: SwitchCase[]; default?: { steps: Step[] } }; when?: string }
+  | { while: WhileBlock; when?: string }
   | { human: string; output?: { schema?: unknown }; notify?: string[]; when?: string };
 
 export interface Pipeline {

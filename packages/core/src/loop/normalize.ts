@@ -56,6 +56,23 @@ function stepFor(id: string, loop: ProjectLoopConfig, seen = new Set<string>()):
     ];
   }
 
+  if (node.type === "while") {
+    const body = (Array.isArray(node.body) ? node.body : [node.body])
+      .flatMap((entry) => stepFor(entry, loop, new Set(seen)));
+    return [
+      {
+        while: {
+          condition: node.condition,
+          until: node.until,
+          maxIterations: node.maxIterations,
+          steps: body,
+        },
+        when: node.when,
+      },
+      ...transitionSteps(node.next, loop, seen),
+    ];
+  }
+
   if (node.type === "tool") {
     return [
       {
@@ -78,7 +95,7 @@ function stepFor(id: string, loop: ProjectLoopConfig, seen = new Set<string>()):
 export function normalizeProjectLoop(loop: ProjectLoopConfig): AgentLoopConfig {
   const loops: AgentLoopConfig["loops"] = {};
   for (const [id, step] of Object.entries(loop.steps)) {
-    if (step.type === "human" || step.type === "parallel" || step.type === "tool") continue;
+    if (step.type === "human" || step.type === "parallel" || step.type === "while" || step.type === "tool") continue;
     const { type: _type, when: _when, next: _next, ...config } = step;
     loops[id] = config;
   }

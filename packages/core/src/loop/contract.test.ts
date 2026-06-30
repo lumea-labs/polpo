@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { agentLoopConfigSchema, projectLoopConfigSchema } from "../schemas.js";
-import { agentStep, bash, defineProjectLoop, otherwise, requireTool, toolStep, when } from "./code.js";
+import { agentStep, bash, defineProjectLoop, otherwise, requireTool, toolStep, when, whileStep } from "./code.js";
 import { normalizeProjectLoop } from "./normalize.js";
 import type { ProjectLoopConfig } from "./types.js";
 
@@ -247,5 +247,46 @@ describe("agentLoopConfigSchema", () => {
         },
       },
     });
+  });
+
+  it("accepts explicit project-level while steps and normalizes their body", () => {
+    const loop = defineProjectLoop({
+      name: "retry-build",
+      start: "retry_until_green",
+      steps: {
+        retry_until_green: whileStep({
+          label: "Retry until green",
+          description: "Repeat fix and build until the build passes.",
+          until: "build.passed == true",
+          maxIterations: 3,
+          body: "fix",
+          next: "finalize",
+        }),
+        fix: agentStep({
+          systemPrompt: "Fix the failure.",
+          next: "build_check",
+        }),
+        build_check: toolStep({
+          tool: "build_check",
+          saveAs: "build",
+          next: "end",
+        }),
+        finalize: agentStep({
+          systemPrompt: "Summarize.",
+          next: "end",
+        }),
+      },
+    });
+
+    expect(normalizeProjectLoop(loop).pipeline?.steps).toMatchObject([
+      {
+        while: {
+          until: "build.passed == true",
+          maxIterations: 3,
+          steps: [{ loop: "fix" }, { tool: "build_check", saveAs: "build" }],
+        },
+      },
+      { loop: "finalize" },
+    ]);
   });
 });
