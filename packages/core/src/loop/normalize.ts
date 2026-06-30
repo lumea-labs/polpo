@@ -47,7 +47,7 @@ function stepFor(id: string, loop: ProjectLoopConfig, seen = new Set<string>()):
       {
         parallel: node.branches.map((branch) => {
           const nested = stepFor(branch, loop, new Set(seen));
-          return nested[0] ?? { loop: branch };
+          return nested.length ? nested : [{ loop: branch }];
         }),
         join: node.join,
         when: node.when,
