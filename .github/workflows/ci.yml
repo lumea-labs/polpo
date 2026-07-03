@@ -81,6 +81,7 @@ jobs:
       - name: Pack all workspace packages
         run: |
           pnpm --filter @polpo-ai/core pack --pack-destination /tmp/tarballs
+          pnpm --filter @polpo-ai/file-stores pack --pack-destination /tmp/tarballs
           pnpm --filter @polpo-ai/vault-crypto pack --pack-destination /tmp/tarballs
           pnpm --filter @polpo-ai/drizzle pack --pack-destination /tmp/tarballs
           pnpm --filter @polpo-ai/llm pack --pack-destination /tmp/tarballs
