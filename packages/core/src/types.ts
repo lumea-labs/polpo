@@ -630,6 +630,13 @@ export interface RunnerConfig {
   whatsappDbPath?: string;
   /** WhatsApp Baileys profile path (for whatsapp_send — creates a temporary connection). */
   whatsappProfilePath?: string;
+  /**
+   * Provider overrides from polpo.json (custom baseUrl endpoints: Ollama,
+   * vLLM, proxies). The runner subprocess never reads polpo.json, so the
+   * overrides must travel with the config or custom-provider agents break
+   * inside the runner.
+   */
+  providers?: Record<string, ProviderConfig>;
 }
 
 // === Polpo File Config (.polpo/polpo.json — persistent project configuration) ===

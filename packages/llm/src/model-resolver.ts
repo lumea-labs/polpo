@@ -476,6 +476,10 @@ export function validateProviderKeys(
     if (seen.has(provider)) continue;
     seen.add(provider);
 
+    // Custom providers with a baseUrl override (Ollama, vLLM, proxies)
+    // don't require an env API key — the factory falls back to a dummy key.
+    if (getProviderOverrides()[provider]?.baseUrl) continue;
+
     if (!resolveApiKey(provider) && !hasOAuthProfiles(provider)) {
       missing.push({ provider, modelSpec: spec });
     }
@@ -497,10 +501,13 @@ export function validateProviderKeysDetailed(
     if (seen.has(provider)) continue;
     seen.add(provider);
 
+    const hasBaseUrlOverride = !!getProviderOverrides()[provider]?.baseUrl;
     results.push({
       provider,
       modelSpec: spec,
-      hasKey: !!resolveApiKey(provider),
+      // A baseUrl override satisfies the requirement: custom endpoints
+      // work without an env API key.
+      hasKey: hasBaseUrlOverride || !!resolveApiKey(provider),
       envVar: PROVIDER_ENV_MAP[provider],
     });
   }
