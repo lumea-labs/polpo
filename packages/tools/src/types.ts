@@ -1,13 +1,9 @@
 /**
- * Types used by tools — local definitions to avoid importing from polpo-ai root.
+ * Types used by tools.
  */
 
-/** Resolved vault credentials for an agent. */
-export interface ResolvedVault {
-  get(service: string): Record<string, string> | undefined;
-  getSmtp(): Record<string, any> | undefined;
-  getImap(): Record<string, any> | undefined;
-  getKey(service: string, key: string): string | undefined;
-  has(service: string): boolean;
-  list(): Array<{ service: string; type: string; keys: string[] }>;
-}
+/**
+ * Resolved vault credentials for an agent — canonical definition lives in
+ * @polpo-ai/core (vault-resolver). Re-exported here for compatibility.
+ */
+export type { ResolvedVault } from "@polpo-ai/core";
