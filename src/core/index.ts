@@ -45,13 +45,28 @@ export { parseCron, matchesCron, nextCronOccurrence, isCronExpression } from "..
 export { TaskWatcherManager } from "@polpo-ai/core/task-watcher";
 
 // Playbooks
-export { discoverPlaybooks, loadPlaybook, validateParams, instantiatePlaybook, validatePlaybookDefinition, savePlaybook, deletePlaybook } from "./playbook.js";
-export type { PlaybookParameter, PlaybookDefinition, PlaybookInfo, ValidationResult } from "./playbook.js";
+export { validateParams, instantiatePlaybook, validatePlaybookDefinition } from "@polpo-ai/core";
+export { discoverPlaybooks, loadPlaybook, savePlaybook, deletePlaybook } from "@polpo-ai/file-stores";
+export type { PlaybookParameter, PlaybookDefinition, PlaybookInfo } from "@polpo-ai/core/playbook-store";
+export type { ValidationResult } from "@polpo-ai/core";
 export type { PlaybookStore } from "@polpo-ai/core/playbook-store";
 
 // Backward-compat aliases (deprecated)
-export { discoverTemplates, loadTemplate, instantiateTemplate, validateTemplateDefinition, saveTemplate, deleteTemplate } from "./playbook.js";
-export type { TemplateParameter, TemplateDefinition, TemplateInfo } from "./playbook.js";
+export {
+  discoverPlaybooks as discoverTemplates,
+  loadPlaybook as loadTemplate,
+  savePlaybook as saveTemplate,
+  deletePlaybook as deleteTemplate,
+} from "@polpo-ai/file-stores";
+export {
+  instantiatePlaybook as instantiateTemplate,
+  validatePlaybookDefinition as validateTemplateDefinition,
+} from "@polpo-ai/core";
+export type {
+  PlaybookParameter as TemplateParameter,
+  PlaybookDefinition as TemplateDefinition,
+  PlaybookInfo as TemplateInfo,
+} from "@polpo-ai/core/playbook-store";
 
 // Ink Registry
 export {

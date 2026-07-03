@@ -10,8 +10,8 @@ import { TypedEmitter } from "../core/events.js";
 import { InMemoryTaskStore, InMemoryRunStore, createTestTask, createMockStores } from "./fixtures.js";
 import type { OrchestratorContext } from "@polpo-ai/core/orchestrator-context";
 import type { PolpoConfig, Task, Mission, MissionCheckpoint } from "@polpo-ai/core/types";
-import { FileCheckpointStore } from "../stores/file-checkpoint-store.js";
-import { FileDelayStore } from "../stores/file-delay-store.js";
+import { FileCheckpointStore } from "@polpo-ai/file-stores";
+import { FileDelayStore } from "@polpo-ai/file-stores";
 
 // ── Helpers ──────────────────────────────────────────
 

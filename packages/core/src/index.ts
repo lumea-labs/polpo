@@ -112,6 +112,10 @@ export { TickWaiter } from "./tick-waiter.js";
 
 // ── Mission store (canonical mission persistence contract) ──────────────
 export { taskStoreMissionAdapter, resolveMissionStore, resolveMissionForTask } from "./mission-store.js";
+
+// ── Playbook pure logic (validation + instantiation; file IO lives in @polpo-ai/file-stores) ──
+export { validateParams, instantiatePlaybook, validatePlaybookDefinition } from "./playbook-logic.js";
+export type { ValidationResult } from "./playbook-logic.js";
 export type { MissionStore } from "./mission-store.js";
 
 // ── Vault resolver (shared by shell, tools, and the cloud data plane) ────

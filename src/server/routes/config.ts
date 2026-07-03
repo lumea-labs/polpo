@@ -451,8 +451,8 @@ export function publicConfigRoutes(
         savePolpoConfig(targetPolpoDir, config);
 
         // Populate agent and team stores
-        const { FileTeamStore } = await import("../../stores/file-team-store.js");
-        const { FileAgentStore } = await import("../../stores/file-agent-store.js");
+        const { FileTeamStore } = await import("@polpo-ai/file-stores");
+        const { FileAgentStore } = await import("@polpo-ai/file-stores");
         const teamStore = new FileTeamStore(targetPolpoDir);
         const agentStore = new FileAgentStore(targetPolpoDir);
 

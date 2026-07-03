@@ -10,3 +10,12 @@ export { FileCheckpointStore } from "./file-checkpoint-store.js";
 export { FileDelayStore } from "./file-delay-store.js";
 export { FileTeamStore } from "./file-team-store.js";
 export { FileAgentStore } from "./file-agent-store.js";
+
+// .polpo directory layout helpers (canonical home)
+export { POLPO_DIR_NAME, getPolpoDir, getGlobalPolpoDir } from "./paths.js";
+
+// Playbook file persistence (discovery + CRUD)
+export { discoverPlaybooks, loadPlaybook, savePlaybook, deletePlaybook } from "./playbook-files.js";
+
+export { FilePlaybookStore } from "./file-playbook-store.js";
+export { FileSkillStore } from "./file-skill-store.js";

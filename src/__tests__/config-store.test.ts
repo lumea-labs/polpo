@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdirSync, rmSync, existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { JsonConfigStore } from "../stores/json-config-store.js";
+import { JsonConfigStore } from "@polpo-ai/file-stores";
 import type { ProjectConfig } from "@polpo-ai/core/types";
 
 const TEST_DIR = join(process.cwd(), ".test-orchestra-config");

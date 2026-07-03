@@ -73,6 +73,9 @@ jobs:
 
       - name: Publish @polpo-ai/core
         run: pnpm --filter @polpo-ai/core publish --no-git-checks --provenance --access public
+
+      - name: Publish @polpo-ai/file-stores
+        run: pnpm --filter @polpo-ai/file-stores publish --no-git-checks --provenance --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
