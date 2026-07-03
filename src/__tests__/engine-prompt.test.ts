@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { buildSystemPrompt } from "../adapters/engine.js";
 import { createTestAgent } from "./fixtures.js";
-import type { AgentConfig } from "../core/types.js";
+import type { AgentConfig } from "@polpo-ai/core/types";
 
 const CWD = "/tmp/test-project";
 

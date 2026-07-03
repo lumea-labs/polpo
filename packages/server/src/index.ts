@@ -44,7 +44,7 @@ export type {
 } from "./deps.js";
 
 // Validation schemas (Zod — reusable by CLI for pre-flight validation)
-export { AddAgentSchema, UpdateAgentSchema, RenameTeamSchema } from "./schemas.js";
+export { AddAgentSchema, UpdateAgentSchema, RenameTeamSchema, UpdateSettingsSchema, NotificationChannelConfigSchema } from "./schemas.js";
 export { compileLoopSource, LoopDslCompileError } from "./loop-dsl-compiler.js";
 
 // Playbook utilities (pure logic, edge-compatible)

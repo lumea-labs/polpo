@@ -1,10 +1,10 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { QualityController } from "../quality/quality-controller.js";
-import { HookRegistry } from "../core/hooks.js";
+import { HookRegistry } from "@polpo-ai/core/hooks";
 import { TypedEmitter } from "../core/events.js";
 import { InMemoryTaskStore, InMemoryRunStore, createTestTask } from "./fixtures.js";
-import type { OrchestratorContext } from "../core/orchestrator-context.js";
-import type { PolpoConfig, Task, MissionQualityGate, Mission, AssessmentResult } from "../core/types.js";
+import type { OrchestratorContext } from "@polpo-ai/core/orchestrator-context";
+import type { PolpoConfig, Task, MissionQualityGate, Mission, AssessmentResult } from "@polpo-ai/core/types";
 
 // ── Helpers ──────────────────────────────────────────
 

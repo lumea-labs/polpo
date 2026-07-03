@@ -6,7 +6,7 @@ import { drizzle } from "drizzle-orm/better-sqlite3";
 import { createSqliteStores } from "@polpo-ai/drizzle";
 import { ensureSqliteSchema } from "../core/drizzle-sqlite-schema.js";
 import { Orchestrator } from "../core/orchestrator.js";
-import type { TaskStore } from "../core/task-store.js";
+import type { TaskStore } from "@polpo-ai/core/task-store";
 import { InMemoryRunStore, createTestAgent } from "./fixtures.js";
 
 const TEST_DIR = join(process.cwd(), ".test-polpo-mission-resume");

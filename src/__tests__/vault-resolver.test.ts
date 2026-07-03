@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { resolveEnvVar, resolveVaultCredentials, resolveAgentVault } from "../vault/resolver.js";
-import type { VaultEntry } from "../core/types.js";
+import type { VaultEntry } from "@polpo-ai/core/types";
 
 // ─── Environment helpers ─────────────────────────────
 

@@ -1,14 +1,14 @@
-export * from "./types.js";
+export * from "@polpo-ai/core/types";
 export * from "./events.js";
-export { VALID_TRANSITIONS, isValidTransition, assertValidTransition } from "./state-machine.js";
-export type { TaskStore } from "./task-store.js";
+export { VALID_TRANSITIONS, isValidTransition, assertValidTransition } from "@polpo-ai/core/state-machine";
+export type { TaskStore } from "@polpo-ai/core/task-store";
 export type { AgentHandle } from "./adapter.js";
-export type { RunStore, RunRecord, RunStatus } from "./run-store.js";
-export type { ConfigStore } from "./config-store.js";
-export type { MemoryStore } from "./memory-store.js";
-export type { LogStore, LogEntry, SessionInfo } from "./log-store.js";
-export type { SessionStore, Session, Message, MessageRole, ToolCallInfo, ToolCallState, SessionContentPart } from "./session-store.js";
-export type { ApprovalStore } from "./approval-store.js";
+export type { RunStore, RunRecord, RunStatus } from "@polpo-ai/core/run-store";
+export type { ConfigStore } from "@polpo-ai/core/config-store";
+export type { MemoryStore } from "@polpo-ai/core/memory-store";
+export type { LogStore, LogEntry, SessionInfo } from "@polpo-ai/core/log-store";
+export type { SessionStore, Session, Message, MessageRole, ToolCallInfo, ToolCallState, SessionContentPart } from "@polpo-ai/core/session-store";
+export type { ApprovalStore } from "@polpo-ai/core/approval-store";
 export { Orchestrator, buildRetryPrompt } from "./orchestrator.js";
 export type { OrchestratorOptions, AssessFn } from "./orchestrator.js";
 export { parseConfig, loadPolpoConfig, savePolpoConfig, generatePolpoConfigDefault, validateAgents } from "./config.js";
@@ -16,7 +16,7 @@ export { readSessionSummary, readSessionSummaryFromPath, getRecentMessages, find
 export { looksLikeQuestion, classifyAsQuestion } from "./question-detector.js";
 export { analyzeBlockedTasks, resolveDeadlock, isResolving } from "./deadlock-resolver.js";
 // Hooks
-export { HookRegistry } from "./hooks.js";
+export { HookRegistry } from "@polpo-ai/core/hooks";
 export type {
   LifecycleHook,
   HookPhase,
@@ -25,13 +25,13 @@ export type {
   HookRegistration,
   HookPayloads,
   BeforeHookResult,
-} from "./hooks.js";
+} from "@polpo-ai/core/hooks";
 
 // Approval
-export { ApprovalManager } from "./approval-manager.js";
+export { ApprovalManager } from "@polpo-ai/core/approval-manager";
 
 // Escalation
-export { EscalationManager } from "./escalation-manager.js";
+export { EscalationManager } from "@polpo-ai/core/escalation-manager";
 
 // Quality Layer
 export { SLAMonitor } from "../quality/sla-monitor.js";
@@ -42,12 +42,12 @@ export { Scheduler } from "../scheduling/scheduler.js";
 export { parseCron, matchesCron, nextCronOccurrence, isCronExpression } from "../scheduling/cron.js";
 
 // Task Watchers
-export { TaskWatcherManager } from "./task-watcher.js";
+export { TaskWatcherManager } from "@polpo-ai/core/task-watcher";
 
 // Playbooks
 export { discoverPlaybooks, loadPlaybook, validateParams, instantiatePlaybook, validatePlaybookDefinition, savePlaybook, deletePlaybook } from "./playbook.js";
 export type { PlaybookParameter, PlaybookDefinition, PlaybookInfo, ValidationResult } from "./playbook.js";
-export type { PlaybookStore } from "./playbook-store.js";
+export type { PlaybookStore } from "@polpo-ai/core/playbook-store";
 
 // Backward-compat aliases (deprecated)
 export { discoverTemplates, loadTemplate, instantiateTemplate, validateTemplateDefinition, saveTemplate, deleteTemplate } from "./playbook.js";

@@ -6,7 +6,7 @@ import {
   type AssessmentDeps,
 } from "@polpo-ai/core/assessor";
 import { createTestTask } from "./fixtures.js";
-import type { TaskExpectation, TaskMetric, CheckResult } from "../core/types.js";
+import type { TaskExpectation, TaskMetric, CheckResult } from "@polpo-ai/core/types";
 
 // ── Mock Shell & FileSystem ──────────────────────────────────────────────
 

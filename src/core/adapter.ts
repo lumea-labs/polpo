@@ -1,6 +1,6 @@
-import type { AgentConfig, AgentActivity, Task, TaskResult, TaskOutcome, ReasoningLevel } from "./types.js";
-import type { VaultStore } from "./vault-store.js";
-import type { MemoryStore } from "./memory-store.js";
+import type { AgentConfig, AgentActivity, Task, TaskResult, TaskOutcome, ReasoningLevel } from "@polpo-ai/core/types";
+import type { VaultStore } from "@polpo-ai/core/vault-store";
+import type { MemoryStore } from "@polpo-ai/core/memory-store";
 import type { FileSystem } from "@polpo-ai/core/filesystem";
 import type { Shell } from "@polpo-ai/core/shell";
 

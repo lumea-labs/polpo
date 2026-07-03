@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { analyzeBlockedTasks } from "../core/deadlock-resolver.js";
 import { createTestTask } from "./fixtures.js";
-import type { Task } from "../core/types.js";
+import type { Task } from "@polpo-ai/core/types";
 
 describe("analyzeBlockedTasks", () => {
   it("follows cascade chains to find root failure", () => {

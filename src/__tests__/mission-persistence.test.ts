@@ -3,7 +3,7 @@ import Database from "better-sqlite3";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import { createSqliteStores } from "@polpo-ai/drizzle";
 import { ensureSqliteSchema } from "../core/drizzle-sqlite-schema.js";
-import type { TaskStore } from "../core/task-store.js";
+import type { TaskStore } from "@polpo-ai/core/task-store";
 
 let sqlite: InstanceType<typeof Database>;
 

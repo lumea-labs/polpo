@@ -10,8 +10,8 @@ import { join, dirname } from "node:path";
 import { mkdirSync, existsSync, writeFileSync } from "node:fs";
 import { spawn as cpSpawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import type { Spawner, SpawnResult } from "../core/spawner.js";
-import type { RunnerConfig } from "../core/types.js";
+import type { Spawner, SpawnResult } from "@polpo-ai/core/spawner";
+import type { RunnerConfig } from "@polpo-ai/core/types";
 
 export class NodeSpawner implements Spawner {
   private polpoDir: string;

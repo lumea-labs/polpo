@@ -8,16 +8,16 @@ import { FileRunStore } from "../stores/file-run-store.js";
 import { FileMemoryStore } from "../stores/file-memory-store.js";
 import { FileLogStore } from "../stores/file-log-store.js";
 import { FileSessionStore } from "../stores/file-session-store.js";
-import type { SessionStore } from "./session-store.js";
-import type { MemoryStore } from "./memory-store.js";
-import type { LogStore } from "./log-store.js";
+import type { SessionStore } from "@polpo-ai/core/session-store";
+import type { MemoryStore } from "@polpo-ai/core/memory-store";
+import type { LogStore } from "@polpo-ai/core/log-store";
 import { assessTask } from "../assessment/assessor.js";
 import { analyzeBlockedTasks, resolveDeadlock, isResolving } from "./deadlock-resolver.js";
 import { OrchestratorEngine, resolveMissionStore } from "@polpo-ai/core";
 import type { DeadlockResolverPort, DeadlockFacade } from "@polpo-ai/core";
 import { TypedEmitter } from "./events.js";
-import type { TaskStore } from "./task-store.js";
-import type { RunStore } from "./run-store.js";
+import type { TaskStore } from "@polpo-ai/core/task-store";
+import type { RunStore } from "@polpo-ai/core/run-store";
 import type {
   PolpoConfig,
   AgentConfig,
@@ -30,40 +30,40 @@ import type {
   MissionStatus,
   RetryPolicy,
   ScopedNotificationRules,
-} from "./types.js";
-import { AgentManager } from "./agent-manager.js";
-import { TaskManager } from "./task-manager.js";
-import { MissionExecutor } from "./mission-executor.js";
-import { TaskRunner } from "./task-runner.js";
+} from "@polpo-ai/core/types";
+import { AgentManager } from "@polpo-ai/core/agent-manager";
+import { TaskManager } from "@polpo-ai/core/task-manager";
+import { MissionExecutor } from "@polpo-ai/core/mission-executor";
+import { TaskRunner } from "@polpo-ai/core";
 import { AssessmentOrchestrator } from "./assessment-orchestrator.js";
-import type { OrchestratorContext } from "./orchestrator-context.js";
+import type { OrchestratorContext } from "@polpo-ai/core/orchestrator-context";
 import {
   buildFixPrompt,
   buildRetryPrompt,
   sleep,
-} from "./assessment-prompts.js";
-import type { AssessFn } from "./orchestrator-context.js";
+} from "@polpo-ai/core/assessment-prompts";
+import type { AssessFn } from "@polpo-ai/core/orchestrator-context";
 import { setProviderOverrides, validateProviderKeys, setModelAllowlist } from "../llm/pi-client.js";
 import type { GatewayConfig } from "@polpo-ai/llm";
-import { HookRegistry } from "./hooks.js";
-import { ApprovalManager } from "./approval-manager.js";
+import { HookRegistry } from "@polpo-ai/core/hooks";
+import { ApprovalManager } from "@polpo-ai/core/approval-manager";
 import { FileApprovalStore } from "../stores/file-approval-store.js";
 import { FileTeamStore } from "../stores/file-team-store.js";
 import { FileAgentStore } from "../stores/file-agent-store.js";
-import type { TeamStore } from "./team-store.js";
-import type { AgentStore } from "./agent-store.js";
-import { EscalationManager } from "./escalation-manager.js";
+import type { TeamStore } from "@polpo-ai/core/team-store";
+import type { AgentStore } from "@polpo-ai/core/agent-store";
+import { EscalationManager } from "@polpo-ai/core/escalation-manager";
 import { SLAMonitor } from "../quality/sla-monitor.js";
 import { QualityController } from "../quality/quality-controller.js";
 import { Scheduler } from "../scheduling/scheduler.js";
-import { TaskWatcherManager } from "./task-watcher.js";
-import type { ApprovalRequest, ApprovalStatus, NotificationAction } from "./types.js";
+import { TaskWatcherManager } from "@polpo-ai/core/task-watcher";
+import type { ApprovalRequest, ApprovalStatus, NotificationAction } from "@polpo-ai/core/types";
 import { EncryptedVaultStore } from "../vault/encrypted-store.js";
-import type { VaultStore } from "./vault-store.js";
-import type { PlaybookStore } from "./playbook-store.js";
+import type { VaultStore } from "@polpo-ai/core/vault-store";
+import type { PlaybookStore } from "@polpo-ai/core/playbook-store";
 import { FilePlaybookStore } from "../stores/file-playbook-store.js";
 import { NodeSpawner } from "../adapters/node-spawner.js";
-import type { Spawner } from "./spawner.js";
+import type { Spawner } from "@polpo-ai/core/spawner";
 import { NodeFileSystem } from "../adapters/node-filesystem.js";
 import { NodeShell } from "../adapters/node-shell.js";
 import type { FileSystem } from "@polpo-ai/core/filesystem";

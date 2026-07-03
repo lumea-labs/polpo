@@ -23,7 +23,7 @@ import type {
   MetricResult,
   ReviewContext,
   ReasoningLevel,
-} from "../core/types.js";
+} from "@polpo-ai/core/types";
 import { runLLMReview } from "./llm-review.js";
 
 // Re-export CheckProgressEvent from core for backward compatibility

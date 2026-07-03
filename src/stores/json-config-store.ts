@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { join, dirname } from "node:path";
-import type { PolpoConfig, ProjectConfig } from "../core/types.js";
-import type { ConfigStore } from "../core/config-store.js";
+import type { PolpoConfig, ProjectConfig } from "@polpo-ai/core/types";
+import type { ConfigStore } from "@polpo-ai/core/config-store";
 
 /**
  * JSON-file backed ConfigStore.

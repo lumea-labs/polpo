@@ -11,7 +11,7 @@
  * functions are kept as pass-throughs for API compatibility.
  */
 
-import type { AgentConfig, Team, PolpoState, PolpoConfig, PolpoFileConfig } from "../core/types.js";
+import type { AgentConfig, Team, PolpoState, PolpoConfig, PolpoFileConfig } from "@polpo-ai/core/types";
 
 // ── Constants ──
 

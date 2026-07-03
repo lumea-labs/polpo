@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdirSync, rmSync, existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { JsonTaskStore } from "../stores/json-task-store.js";
-import type { Task } from "../core/types.js";
+import type { Task } from "@polpo-ai/core/types";
 
 const TEST_DIR = join(process.cwd(), ".test-orchestra-store");
 

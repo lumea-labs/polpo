@@ -36,7 +36,7 @@ vi.mock("../llm/pi-client.js", async (importOriginal) => {
 });
 
 import { spawnLoopEngine } from "../adapters/loop-engine.js";
-import type { AgentConfig, Task } from "../core/types.js";
+import type { AgentConfig, Task } from "@polpo-ai/core/types";
 
 // ── Setup ───────────────────────────────────────────────
 

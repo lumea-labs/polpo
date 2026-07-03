@@ -21,10 +21,10 @@ import { readdirSync, readFileSync, existsSync, writeFileSync, mkdirSync, statSy
 import { join, basename, resolve } from "node:path";
 import { createHash } from "node:crypto";
 
-import type { AgentConfig, PolpoFileConfig } from "./types.js";
+import type { AgentConfig, PolpoFileConfig } from "@polpo-ai/core/types";
 import type { PlaybookDefinition } from "./playbook.js";
-import type { AgentStore } from "./agent-store.js";
-import type { PlaybookStore } from "./playbook-store.js";
+import type { AgentStore } from "@polpo-ai/core/agent-store";
+import type { PlaybookStore } from "@polpo-ai/core/playbook-store";
 
 // ── Helpers ────────────────────────────────────────────────────────────
 

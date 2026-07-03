@@ -8,7 +8,7 @@
  * reached behavioral parity (see engine-behavior.test.ts).
  */
 
-import type { AgentConfig, AgentActivity, Task, TaskOutcome, OutcomeType } from "../core/types.js";
+import type { AgentConfig, AgentActivity, Task, TaskOutcome, OutcomeType } from "@polpo-ai/core/types";
 import type { SpawnContext } from "../core/adapter.js";
 import { resolveAgentVault } from "../vault/index.js";
 import { buildAgentSystemPrompt } from "@polpo-ai/core";

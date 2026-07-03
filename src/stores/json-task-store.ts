@@ -1,9 +1,9 @@
 import { readFileSync, writeFileSync, renameSync, mkdirSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { nanoid } from "nanoid";
-import type { Task, TaskStatus, PolpoState } from "../core/types.js";
-import type { TaskStore } from "../core/task-store.js";
-import { assertValidTransition } from "../core/state-machine.js";
+import type { Task, TaskStatus, PolpoState } from "@polpo-ai/core/types";
+import type { TaskStore } from "@polpo-ai/core/task-store";
+import { assertValidTransition } from "@polpo-ai/core/state-machine";
 
 export class JsonTaskStore implements TaskStore {
   private statePath: string;

@@ -10,9 +10,9 @@
 import { join, basename } from "node:path";
 import { existsSync, readdirSync } from "node:fs";
 import { AssessmentOrchestrator as CoreAssessmentOrchestrator, type AssessmentPorts } from "@polpo-ai/core/assessment-orchestrator";
-import type { OrchestratorContext } from "./orchestrator-context.js";
+import type { OrchestratorContext } from "@polpo-ai/core/orchestrator-context";
 import { classifyAsQuestion } from "./question-detector.js";
-import type { Task, ModelConfig } from "./types.js";
+import type { Task, ModelConfig } from "@polpo-ai/core/types";
 import { queryText, resolveModelSpec } from "../llm/pi-client.js";
 import { withRetry } from "../llm/retry.js";
 

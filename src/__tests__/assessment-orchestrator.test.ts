@@ -1,11 +1,11 @@
 import { describe, it, expect, beforeEach, vi, type Mock } from "vitest";
 import { AssessmentOrchestrator } from "../core/assessment-orchestrator.js";
-import type { OrchestratorContext, AssessFn } from "../core/orchestrator-context.js";
-import { HookRegistry } from "../core/hooks.js";
-import type { Task, TaskResult, AssessmentResult, PolpoConfig } from "../core/types.js";
+import type { OrchestratorContext, AssessFn } from "@polpo-ai/core/orchestrator-context";
+import { HookRegistry } from "@polpo-ai/core/hooks";
+import type { Task, TaskResult, AssessmentResult, PolpoConfig } from "@polpo-ai/core/types";
 import { TypedEmitter } from "../core/events.js";
 import { InMemoryTaskStore, InMemoryRunStore, createTestActivity, createMockStores } from "./fixtures.js";
-import type { RunRecord } from "../core/run-store.js";
+import type { RunRecord } from "@polpo-ai/core/run-store";
 
 // Mock LLM modules — pi-client.queryText is the underlying function used by
 // the inlined queryLLM helpers in assessment-orchestrator.ts and friends.

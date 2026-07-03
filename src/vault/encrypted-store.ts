@@ -13,8 +13,8 @@
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync, chmodSync } from "node:fs";
 import { join } from "node:path";
-import type { VaultEntry } from "../core/types.js";
-import type { VaultStore } from "../core/vault-store.js";
+import type { VaultEntry } from "@polpo-ai/core/types";
+import type { VaultStore } from "@polpo-ai/core/vault-store";
 import { resolveKey, encrypt, decrypt } from "@polpo-ai/vault-crypto";
 
 // ── Constants ──

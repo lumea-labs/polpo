@@ -3,7 +3,7 @@ import { rmSync, existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { FileTeamStore } from "../stores/file-team-store.js";
 import { FileAgentStore } from "../stores/file-agent-store.js";
-import type { Team, AgentConfig } from "../core/types.js";
+import type { Team, AgentConfig } from "@polpo-ai/core/types";
 
 const TEST_DIR = join(process.cwd(), ".test-team-agent-store");
 

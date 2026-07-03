@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { Orchestrator } from "../../core/orchestrator.js";
 import { InMemoryTaskStore, InMemoryRunStore, createTestAgent } from "../fixtures.js";
-import type { TaskResult } from "../../core/types.js";
+import type { TaskResult } from "@polpo-ai/core/types";
 
 // Mock child_process.spawn and writeFileSync since spawnForTask spawns a real subprocess
 vi.mock("node:child_process", async (importOriginal) => {

@@ -70,6 +70,7 @@
     "@polpo-ai/core": "workspace:*",
     "@polpo-ai/llm": "workspace:*",
     "@polpo-ai/server": "workspace:*",
+    "@polpo-ai/tools": "workspace:*",
     "@polpo-ai/vault-crypto": "workspace:*",
     "@sinclair/typebox": "^0.34.48",
     "ai": "^6.0.141",
