@@ -284,18 +284,13 @@ describe.each(ENGINES)("%s — characterization", (_label, spawn) => {
   });
 
   test("compaction: fires once multi-turn history exists over the window", async () => {
-    // Characterization of the CURRENT trigger, with two known quirks pinned
-    // on purpose (they are findings, not features — the loop-engine must
-    // change them deliberately, not silently):
-    // 1. A single over-threshold user message never emits an event
-    //    (splitIndex <= 0 short-circuit in compactIfNeeded).
-    // 2. estimateMessageTokens only counts "text" and legacy "toolCall"
-    //    blocks — AI SDK v6 "tool-call"/"tool-result" parts are NOT counted,
-    //    so tool outputs never contribute to the estimate and compaction on
-    //    tool-heavy tasks effectively never triggers. The only reliably
-    //    counted mass is the system prompt + string user messages.
-    // Therefore: an over-threshold task DESCRIPTION + one tool turn makes
-    // the summarize phase observable at turn 1.
+    // Characterization of the trigger, with one known quirk pinned on
+    // purpose: a single over-threshold user message never emits an event
+    // (splitIndex <= 0 short-circuit in compactIfNeeded). Estimation of
+    // AI SDK v6 tool-call/tool-result parts was historically broken (tool
+    // outputs were never counted) — fixed in context-compactor and covered
+    // by its own tests; here an over-threshold task DESCRIPTION + one tool
+    // turn makes the summarize phase observable at turn 1.
     const { result, transcript } = await runEngine(
       makeAgent(),
       [

@@ -399,3 +399,117 @@ describe("constants", () => {
     expect(TARGET_AFTER).toBe(0.50);
   });
 });
+
+// ── AI SDK v6 message shapes ────────────────────────────────────────────
+//
+// The runtime (loop-engine tasks, completions) speaks AI SDK v6
+// ModelMessages: assistant tool calls are `{type:"tool-call", toolCallId,
+// toolName, input}` parts, tool results are `role:"tool"` messages with
+// `{type:"tool-result", toolCallId, toolName, output:{type,value}}` parts.
+// Estimation and pruning must see them, or compaction never fires on
+// tool-heavy tasks (the historical bug pinned in engine-behavior.test.ts).
+
+function v6ToolMsg(id: string, toolName: string, value: string) {
+  return {
+    role: "tool",
+    content: [{
+      type: "tool-result",
+      toolCallId: id,
+      toolName,
+      output: { type: "text" as const, value },
+    }],
+  };
+}
+
+describe("AI SDK v6 shapes — estimation", () => {
+  it("counts assistant tool-call input tokens", () => {
+    const tokens = estimateMessagesTokens([
+      {
+        role: "assistant",
+        content: [{ type: "tool-call", toolCallId: "c1", toolName: "bash", input: { command: "x".repeat(4000) } }],
+      },
+    ]);
+    expect(tokens).toBeGreaterThan(900);
+  });
+
+  it("counts tool-result output tokens", () => {
+    const tokens = estimateMessagesTokens([v6ToolMsg("c1", "bash", "y".repeat(8000))]);
+    expect(tokens).toBeGreaterThan(1900);
+  });
+
+  it("counts non-text tool-result outputs by stringification", () => {
+    const tokens = estimateMessagesTokens([
+      {
+        role: "tool",
+        content: [{ type: "tool-result", toolCallId: "c1", toolName: "bash", output: { type: "json", value: { rows: "z".repeat(2000) } } }],
+      },
+    ]);
+    expect(tokens).toBeGreaterThan(400);
+  });
+});
+
+describe("AI SDK v6 shapes — pruning", () => {
+  const config: CompactionConfig = {
+    contextWindow: 200_000,
+    maxOutputTokens: 4_000,
+    pruneProtect: 500,
+    pruneMinimum: 500,
+  };
+
+  it("prunes old v6 tool results and preserves the message envelope", () => {
+    const messages = [
+      v6ToolMsg("c1", "oldTool", "x".repeat(8000)),    // ~2000 tokens, prunable
+      // ~600 tokens: fills the 500-token protect window on its own, so the
+      // older entry above falls outside it (the walk protects entries until
+      // the cumulative total reaches pruneProtect).
+      v6ToolMsg("c2", "recentTool", "y".repeat(2400)),
+    ];
+    const result = pruneToolOutputs(messages, config);
+
+    const pruned = result[0].content[0];
+    expect(result[0].role).toBe("tool");
+    expect(pruned.type).toBe("tool-result");
+    expect(pruned.toolCallId).toBe("c1"); // envelope intact for the provider
+    expect(pruned.output.type).toBe("text");
+    expect(pruned.output.value).toContain("[Output pruned");
+    expect(pruned.output.value).toContain("Tool: oldTool");
+
+    // Recent output protected
+    expect(result[1].content[0].output.value).toBe("y".repeat(2400));
+    // Original untouched
+    expect(messages[0].content[0].output.value).toBe("x".repeat(8000));
+  });
+
+  it("compactIfNeeded resolves tool-heavy v6 history with the prune phase", async () => {
+    const summarize = vi.fn(async () => "SUMMARY");
+    const events: Array<{ phase: string; toolOutputsPruned: number }> = [];
+
+    const result = await compactIfNeeded({
+      systemPrompt: "",
+      messages: [
+        { role: "user", content: "run the pipeline" },
+        v6ToolMsg("c1", "bash", "a".repeat(8000)), // ~2000 tokens
+        v6ToolMsg("c2", "bash", "b".repeat(8000)), // ~2000 tokens
+        v6ToolMsg("c3", "bash", "c".repeat(4000)), // ~1000 tokens, protected
+      ],
+      tools: [],
+      config: {
+        contextWindow: 4000,
+        maxOutputTokens: 500,
+        pruneProtect: 500,
+        pruneMinimum: 500,
+      },
+      summarize,
+      mode: "task",
+      onCompaction: (e) => events.push({ phase: e.phase, toolOutputsPruned: e.toolOutputsPruned ?? 0 }),
+    });
+
+    expect(result.compacted).toBe(true);
+    expect(result.tokensAfter).toBeLessThan(result.tokensBefore);
+    // Prune alone reclaims enough — no LLM summarization needed
+    expect(summarize).not.toHaveBeenCalled();
+    expect(events).toHaveLength(1);
+    expect(events[0].phase).toBe("prune");
+    expect(events[0].toolOutputsPruned).toBe(2);
+  });
+});
