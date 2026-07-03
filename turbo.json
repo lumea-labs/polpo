@@ -1,0 +1,22 @@
+{
+  "$schema": "https://turborepo.com/schema.json",
+  "tasks": {
+    "build": {
+      "dependsOn": ["^build"],
+      "outputs": ["dist/**"]
+    },
+    "//#build:root": {
+      "dependsOn": [
+        "@polpo-ai/core#build",
+        "@polpo-ai/file-stores#build",
+        "@polpo-ai/vault-crypto#build",
+        "@polpo-ai/drizzle#build",
+        "@polpo-ai/llm#build",
+        "@polpo-ai/tools#build",
+        "@polpo-ai/server#build"
+      ],
+      "inputs": ["src/**", "tsconfig.json"],
+      "outputs": ["dist/**"]
+    }
+  }
+}
