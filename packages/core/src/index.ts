@@ -108,6 +108,7 @@ export { TaskRunner } from "./task-runner.js";
 
 // ── OrchestratorEngine ──────────────────────────────────────────────────
 export { OrchestratorEngine } from "./orchestrator-engine.js";
+export { TickWaiter } from "./tick-waiter.js";
 export type {
   OrchestratorEngineDeps,
   TaskRunnerPort,

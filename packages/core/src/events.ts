@@ -34,6 +34,10 @@ export interface PolpoEventMap {
   "orchestrator:deadlock": { taskIds: string[] };
   "orchestrator:shutdown": Record<string, never>;
 
+  // Runner process lifecycle (local spawners only — sandbox spawners
+  // don't track process exit and rely on poll-based collection)
+  "run:exited": { taskId: string; runId: string; pid: number };
+
   // Retry & Fix
   "task:retry": { taskId: string; attempt: number; maxRetries: number };
   "task:retry:blocked": { taskId: string; reason: string };

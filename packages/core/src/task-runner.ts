@@ -506,6 +506,13 @@ export class TaskRunner {
       };
       await this.ctx.runStore.upsertRun(runRecord);
 
+      // Wake the supervisor as soon as the runner process exits so results
+      // are collected immediately (poll interval remains the safety net for
+      // spawners that don't track process lifecycle).
+      spawnResult.onExit?.(() => {
+        this.ctx.emitter.emit("run:exited", { taskId: task.id, runId, pid: spawnResult.pid });
+      });
+
       this.ctx.emitter.emit("agent:spawned", {
         taskId: task.id,
         agentName: agent.name,
