@@ -1,13 +1,15 @@
 /**
- * Polpo Engine — the built-in agentic runtime.
+ * Task-spawn shared helpers — prompt building, spawn preparation, tool
+ * building, and outcome collection for the task runtime.
  *
- * Uses Vercel AI SDK streamText in a manual loop for the agentic loop,
- * with AI Gateway for multi-provider LLM abstraction.
- * Works with any LLM provider (Anthropic, OpenAI, Google, Groq, etc.)
+ * The agentic loop itself lives in loop-engine.ts (spawnLoopEngine, driven
+ * by @polpo-ai/core's LoopRunner/PipelineExecutor). The legacy manual
+ * streamText loop that used to live here was removed once spawnLoopEngine
+ * reached behavioral parity (see engine-behavior.test.ts).
  */
 
-import type { AgentConfig, AgentActivity, Task, TaskResult, TaskOutcome, OutcomeType } from "../core/types.js";
-import type { AgentHandle, SpawnContext } from "../core/adapter.js";
+import type { AgentConfig, AgentActivity, Task, TaskOutcome, OutcomeType } from "../core/types.js";
+import type { SpawnContext } from "../core/adapter.js";
 import { resolveAgentVault } from "../vault/index.js";
 import { buildAgentSystemPrompt } from "@polpo-ai/core";
 
@@ -22,24 +24,15 @@ export function createActivity(): AgentActivity {
   };
 }
 import { join, resolve, sep } from "node:path";
-import {
-  streamText,
-  generateText,
-  jsonSchema,
-  tool as aiTool,
-  type ModelMessage,
-  type ToolSet,
-} from "ai";
 import { resolveModel, enforceModelAllowlist, mapReasoningToProviderOptions } from "../llm/pi-client.js";
-import { createSystemTools, createAllTools, cleanupAgentBrowserSession } from "@polpo-ai/tools";
+import { createSystemTools, createAllTools } from "@polpo-ai/tools";
 import { NodeFileSystem } from "./node-filesystem.js";
 import { NodeShell } from "./node-shell.js";
 import type { FileSystem } from "@polpo-ai/core/filesystem";
 import type { Shell } from "@polpo-ai/core/shell";
 import { loadAgentSkills } from "../llm/skills.js";
 import { nanoid } from "nanoid";
-import { compactIfNeeded, type SummarizeFn, type CompactionEvent } from "@polpo-ai/core";
-import type { PolpoTool, ToolResult } from "@polpo-ai/core";
+import type { PolpoTool } from "@polpo-ai/core";
 
 function resolvePromptAllowedPaths(cwd: string, allowedPaths?: string[]): string[] {
   const configured = Array.isArray(allowedPaths)
@@ -324,55 +317,6 @@ export function buildPrompt(task: Task): string {
   return parts.join("\n");
 }
 
-// ─── Tool Conversion ───────────────────────────────────
-//
-// Convert PolpoTool[] (TypeBox schema + execute) to AI SDK ToolSet
-// (Record<string, Tool> with jsonSchema() + execute wrapper).
-
-/**
- * Convert an array of PolpoTool to an AI SDK ToolSet (Record<string, Tool>).
- *
- * Each PolpoTool uses TypeBox for its parameter schema (which produces JSON Schema).
- * AI SDK tools use `jsonSchema()` to wrap raw JSON Schema objects.
- * The execute function is wrapped to adapt the PolpoTool signature to AI SDK's.
- */
-function convertToolsToToolSet(
-  polpoTools: PolpoTool[],
-  abortSignal: AbortSignal,
-  onToolResult?: (toolName: string, toolCallId: string, result: ToolResult, isError: boolean) => void,
-): ToolSet {
-  const toolSet: ToolSet = {};
-
-  for (const pt of polpoTools) {
-    toolSet[pt.name] = aiTool({
-      description: pt.description,
-      inputSchema: jsonSchema(pt.parameters as any),
-      execute: async (args: any, { toolCallId }) => {
-        let result: ToolResult;
-        let isError = false;
-        try {
-          result = await pt.execute(toolCallId, args, abortSignal);
-        } catch (err) {
-          isError = true;
-          result = {
-            content: [{ type: "text", text: err instanceof Error ? err.message : String(err) }],
-            details: {},
-          };
-        }
-
-        // Notify caller for activity tracking
-        onToolResult?.(pt.name, toolCallId, result, isError);
-
-        // Return text content for the LLM — AI SDK serializes the return value
-        return result.content
-          .map(c => c.type === "text" ? c.text : `[image: ${c.mimeType}]`)
-          .join("\n");
-      },
-    });
-  }
-
-  return toolSet;
-}
 
 // ─── Shared spawn preparation ──────────────────────────
 //
@@ -522,267 +466,6 @@ export async function buildAgentTools(
   }
 
   return allPolpoTools;
-}
-
-/**
- * Spawn an agent using Polpo's built-in engine (AI SDK streamText loop).
- *
- * This is the default execution path — used when no adapter is specified
- * on an agent config.
- */
-export function spawnEngine(agentConfig: AgentConfig, task: Task, cwd: string, ctx?: SpawnContext): AgentHandle {
-  const activity = createActivity();
-  const start = Date.now();
-  let alive = true;
-
-  const prep = prepareSpawn(agentConfig, cwd, ctx);
-  const { model, systemPrompt, providerOptions, hasExtendedTools, maxTurns } = prep;
-
-  // AbortController for the agent — used to cancel the loop
-  const abortController = new AbortController();
-
-  const handle: AgentHandle = {
-    agentName: agentConfig.name,
-    taskId: task.id,
-    startedAt: new Date().toISOString(),
-    pid: 0, // No OS process — runs in-process
-    activity,
-    done: null as any, // set below
-    isAlive: () => alive,
-    kill: () => {
-      abortController.abort();
-      alive = false;
-    },
-  };
-
-  // Run the agent and capture result
-  handle.done = (async (): Promise<TaskResult> => {
-    try {
-      // Resolve vault credentials (async) and build the full tool set
-      const allPolpoTools = await buildAgentTools(agentConfig, cwd, prep, ctx);
-
-      // Convert PolpoTool[] to AI SDK ToolSet with activity tracking
-      const toolSet = convertToolsToToolSet(
-        allPolpoTools,
-        abortController.signal,
-        (toolName, toolCallId, result, isError) => {
-          activity.lastUpdate = new Date().toISOString();
-
-          // Track file operations from tool details
-          const details = result.details;
-          if (details?.path) {
-            const filePath = details.path as string;
-            activity.lastFile = filePath;
-            if (toolName === "write" && !activity.filesCreated.includes(filePath)) {
-              activity.filesCreated.push(filePath);
-            }
-            if (toolName === "edit" && !activity.filesEdited.includes(filePath)) {
-              activity.filesEdited.push(filePath);
-            }
-          }
-
-          // Collect outcomes from explicit register_outcome calls
-          if (!isError && details) {
-            const outcome = collectOutcome(toolName, details);
-            if (outcome) {
-              if (!handle.outcomes) handle.outcomes = [];
-              handle.outcomes.push(outcome);
-            }
-          }
-
-          // Harvest billable per-tool inference cost (managed image/video via
-          // the gateway). Rides back in `details.usage`; the cloud data plane
-          // reads activity.toolUsage after the run → Autumn + usage_logs.
-          if (!isError && details?.usage && typeof details.usage === "object") {
-            const u = details.usage as Record<string, unknown>;
-            if (u.generationId || typeof u.marketCostUsd === "number") {
-              (activity.toolUsage ??= []).push({
-                toolName,
-                generationId: u.generationId as string | undefined,
-                marketCostUsd: u.marketCostUsd as number | undefined,
-                actualCostUsd: u.actualCostUsd as number | undefined,
-                resolvedModel: u.resolvedModel as string | undefined,
-                finalProvider: u.finalProvider as string | undefined,
-                credentialType: u.credentialType as string | undefined,
-              });
-            }
-          }
-
-          // Emit tool result transcript
-          const resultText = result.content
-            .map((c: any) => c.text ?? "")
-            .join("");
-          handle.onTranscript?.({
-            type: "tool_result",
-            toolId: toolCallId,
-            tool: toolName,
-            content: resultText.slice(0, 2000),
-            isError,
-          });
-        },
-      );
-
-      // Build the user prompt
-      const prompt = buildPrompt(task);
-
-      // Build the summarize function for context compaction (uses AI SDK generateText)
-      const summarize: SummarizeFn = async (msgs, compactionPrompt) => {
-        const response = await generateText({
-          model: model.aiModel,
-          system: compactionPrompt,
-          messages: msgs as ModelMessage[],
-          maxOutputTokens: model.maxTokens,
-          abortSignal: abortController.signal,
-          providerOptions,
-        });
-        return response.text;
-      };
-
-      // ─── Manual Agent Loop ───────────────────────────────
-      //
-      // Each iteration: context compaction → streamText (1 step) → process stream → append messages.
-      // The loop continues until the model finishes without tool calls (finishReason !== "tool-calls")
-      // or maxTurns is reached.
-
-      let messages: ModelMessage[] = [{ role: "user", content: prompt }];
-      let resultText = "";
-
-      for (let turn = 0; turn < maxTurns; turn++) {
-        if (abortController.signal.aborted) break;
-
-        // Context compaction — prune old tool outputs, then LLM-summarize if still over threshold.
-        // Under threshold → zero overhead (just token estimation).
-        const compactionResult = await compactIfNeeded({
-          systemPrompt,
-          messages,
-          tools: Object.values(toolSet).map(t => ({ description: (t as any).description ?? "" })),
-          config: {
-            contextWindow: model.contextWindow ?? 200_000,
-            maxOutputTokens: model.maxTokens ?? 8192,
-          },
-          summarize,
-          mode: "task",
-          onCompaction: (event: CompactionEvent) => {
-            handle.onTranscript?.({
-              type: "compaction",
-              phase: event.phase,
-              tokensBefore: event.tokensBefore,
-              tokensAfter: event.tokensAfter,
-              tokensReclaimed: event.tokensReclaimed,
-              messagesBefore: event.messagesBefore,
-              messagesAfter: event.messagesAfter,
-              toolOutputsPruned: event.toolOutputsPruned,
-              summary: event.summary,
-            });
-          },
-        });
-
-        if (compactionResult.compacted) {
-          messages = compactionResult.messages as ModelMessage[];
-        }
-
-        // Single LLM call (streamText default: stopWhen = stepCountIs(1))
-        // This does one step: LLM generates text/tool-calls → tools are executed automatically
-        const stream = streamText({
-          model: model.aiModel,
-          system: systemPrompt,
-          messages,
-          tools: toolSet,
-          maxOutputTokens: model.maxTokens,
-          abortSignal: abortController.signal,
-          providerOptions,
-          onStepFinish: async ({ usage }) => {
-            // Accumulate token usage
-            if (usage) {
-              activity.totalTokens += (usage.totalTokens ?? 0);
-            }
-            activity.lastUpdate = new Date().toISOString();
-          },
-        });
-
-        // Process the full stream for transcript events
-        let stepAssistantText = "";
-        for await (const part of stream.fullStream) {
-          switch (part.type) {
-            case "text-delta": {
-              stepAssistantText += part.text;
-              break;
-            }
-            case "tool-call": {
-              // Track tool call in activity
-              activity.toolCalls++;
-              activity.lastTool = part.toolName;
-              activity.lastUpdate = new Date().toISOString();
-              handle.onTranscript?.({
-                type: "tool_use",
-                tool: part.toolName,
-                toolId: part.toolCallId,
-                input: part.input,
-              });
-              break;
-            }
-            // tool-result and tool-error are handled in the convertToolsToToolSet callback
-            case "error": {
-              handle.onTranscript?.({
-                type: "error",
-                message: part.error instanceof Error ? part.error.message : String(part.error),
-              });
-              break;
-            }
-          }
-        }
-
-        // Emit assistant text transcript
-        if (stepAssistantText) {
-          activity.summary = stepAssistantText.slice(0, 200);
-          handle.onTranscript?.({ type: "assistant", text: stepAssistantText });
-        }
-
-        // Get the finish reason and response messages
-        const finishReason = await stream.finishReason;
-        const responseMessages = (await stream.response).messages;
-
-        // Append the response messages to history (assistant message + tool results if any)
-        messages.push(...responseMessages);
-
-        // If the model finished without requesting tool calls, we're done
-        if (finishReason !== "tool-calls") {
-          resultText = await stream.text;
-          break;
-        }
-
-        // If we completed the last allowed turn with tool calls still pending, grab what text we have
-        if (turn === maxTurns - 1) {
-          resultText = await stream.text;
-        }
-      }
-
-      alive = false;
-      return {
-        exitCode: 0,
-        stdout: resultText,
-        stderr: "",
-        duration: Date.now() - start,
-      };
-    } catch (err) {
-      alive = false;
-      const msg = err instanceof Error ? err.message : String(err);
-      handle.onTranscript?.({ type: "error", message: msg });
-      return {
-        exitCode: 1,
-        stdout: "",
-        stderr: msg,
-        duration: Date.now() - start,
-      };
-    } finally {
-      // Close agent-browser session (profile data auto-persisted by --profile)
-      if (hasExtendedTools) {
-        await cleanupAgentBrowserSession(agentConfig.name).catch(() => {});
-      }
-    }
-  })();
-
-  return handle;
 }
 
 // ─── Outcome Collection ────���────────────────────────

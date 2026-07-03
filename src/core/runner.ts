@@ -15,7 +15,6 @@
 import { readFileSync, unlinkSync, appendFileSync, mkdirSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { FileRunStore } from "../stores/file-run-store.js";
-import { spawnEngine } from "../adapters/engine.js";
 import { spawnLoopEngine } from "../adapters/loop-engine.js";
 import type { RunStore, RunRecord } from "./run-store.js";
 import type { LogStore } from "./log-store.js";
@@ -218,11 +217,7 @@ async function main(): Promise<void> {
       fs: new NodeFileSystem(),
       shell: new NodeShell(),
     };
-    // Task loop runs on the core loop runtime (LoopRunner). The legacy
-    // manual loop stays available behind POLPO_ENGINE=legacy as a rollback
-    // hatch until it is removed at the end of the migration.
-    const spawn = process.env.POLPO_ENGINE === "legacy" ? spawnEngine : spawnLoopEngine;
-    handle = spawn(config.agent, config.task, config.cwd, spawnCtx);
+    handle = spawnLoopEngine(config.agent, config.task, config.cwd, spawnCtx);
     // Propagate the LogStore sessionId onto the agent's activity blob so
     // the poll loop's updateActivity() persists it on every tick. Without
     // this the run record has activity.sessionId = undefined forever, and

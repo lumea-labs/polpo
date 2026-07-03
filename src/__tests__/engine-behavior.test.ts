@@ -46,16 +46,16 @@ vi.mock("../llm/pi-client.js", async (importOriginal) => {
   };
 });
 
-import { spawnEngine } from "../adapters/engine.js";
 import { spawnLoopEngine } from "../adapters/loop-engine.js";
+import { spawnEngine } from "../adapters/index.js";
 import type { AgentConfig, Task } from "../core/types.js";
 
-// Both engines must satisfy the same observable contract: the legacy
-// manual loop and its loop-runtime replacement. This IS the parity gate
-// for the migration.
+// This suite was the parity gate while both engines coexisted; the legacy
+// manual loop is gone, but the contract it pinned still holds for the loop
+// runtime — and the spawnEngine compatibility alias must keep satisfying it.
 const ENGINES = [
-  ["spawnEngine (legacy)", spawnEngine],
   ["spawnLoopEngine (loop runtime)", spawnLoopEngine],
+  ["spawnEngine (compat alias)", spawnEngine],
 ] as const;
 
 // ── Helpers ─────────────────────────────────────────────

@@ -5,9 +5,9 @@ export * from "./core/index.js";
 // Stores
 export { FileTaskStore, FileRunStore, JsonTaskStore } from "./stores/index.js";
 
-// Engine
-export { spawnEngine } from "./adapters/engine.js";
-export { spawnLoopEngine } from "./adapters/loop-engine.js";
+// Engine — spawnEngine is a compatibility alias for spawnLoopEngine (the
+// legacy manual loop was removed after the loop runtime reached parity).
+export { spawnLoopEngine, spawnLoopEngine as spawnEngine } from "./adapters/loop-engine.js";
 
 // Assessment
 export { assessTask, runCheck, runMetric } from "./assessment/assessor.js";
