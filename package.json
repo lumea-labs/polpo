@@ -31,13 +31,15 @@
     "LICENSE"
   ],
   "scripts": {
-    "build": "pnpm --filter @polpo-ai/core build && pnpm --filter @polpo-ai/file-stores build && pnpm --filter @polpo-ai/vault-crypto build && pnpm --filter @polpo-ai/drizzle build && pnpm --filter @polpo-ai/llm build && pnpm --filter @polpo-ai/tools build && pnpm --filter @polpo-ai/server build && tsc && pnpm --filter @polpo-ai/sdk build && pnpm --filter @polpo-ai/react build && pnpm --filter @polpo-ai/cli build",
+    "build": "turbo run build build:root",
     "dev": "tsc --watch",
     "start": "node packages/cli/dist/index.js",
     "test": "vitest",
     "test:coverage": "vitest run --coverage",
-    "typecheck": "pnpm --filter @polpo-ai/core build && pnpm --filter @polpo-ai/vault-crypto build && pnpm --filter @polpo-ai/drizzle build && pnpm --filter @polpo-ai/llm build && pnpm --filter @polpo-ai/tools build && pnpm --filter @polpo-ai/server build && ./node_modules/.bin/tsc --noEmit",
-    "clean": "rm -rf dist"
+    "typecheck": "turbo run build && tsc --noEmit",
+    "clean": "rm -rf dist",
+    "build:root": "tsc",
+    "build:sequential": "pnpm --filter @polpo-ai/core build && pnpm --filter @polpo-ai/file-stores build && pnpm --filter @polpo-ai/vault-crypto build && pnpm --filter @polpo-ai/drizzle build && pnpm --filter @polpo-ai/llm build && pnpm --filter @polpo-ai/tools build && pnpm --filter @polpo-ai/server build && tsc && pnpm --filter @polpo-ai/sdk build && pnpm --filter @polpo-ai/react build && pnpm --filter @polpo-ai/cli build"
   },
   "keywords": [
     "ai",
@@ -97,6 +99,7 @@
     "@types/nodemailer": "^7.0.10",
     "@vitest/coverage-v8": "^3.2.4",
     "tsx": "^4.21.0",
+    "turbo": "^2.10.2",
     "typescript": "^5.7.3",
     "vitest": "^3.0.4"
   },
