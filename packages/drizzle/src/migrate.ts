@@ -8,7 +8,7 @@ import { sql } from "drizzle-orm";
  *
  * @param db A Drizzle PostgreSQL database instance
  */
-export async function ensurePgSchema(db: any): Promise<void> {
+export async function ensurePgTables(db: any): Promise<void> {
   await db.execute(sql`CREATE TABLE IF NOT EXISTS metadata (
     key   TEXT PRIMARY KEY,
     value JSONB NOT NULL DEFAULT '{}'
@@ -58,13 +58,8 @@ export async function ensurePgSchema(db: any): Promise<void> {
     updated_at            TEXT NOT NULL
   )`);
 
-  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_pg_tasks_status ON tasks(status)`);
-  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_pg_tasks_group ON tasks("group")`);
-  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_pg_tasks_assign_to ON tasks(assign_to)`);
-  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_pg_tasks_mission_id ON tasks(mission_id)`);
   // OpenAI-compat user column — additive, idempotent
   await db.execute(sql`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS "user" TEXT`);
-  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_pg_tasks_user ON tasks("user")`);
 
   await db.execute(sql`CREATE TABLE IF NOT EXISTS missions (
     id               TEXT PRIMARY KEY,
@@ -82,9 +77,7 @@ export async function ensurePgSchema(db: any): Promise<void> {
     updated_at       TEXT NOT NULL
   )`);
 
-  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_pg_missions_status ON missions(status)`);
   await db.execute(sql`ALTER TABLE missions ADD COLUMN IF NOT EXISTS "user" TEXT`);
-  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_pg_missions_user ON missions("user")`);
 
   await db.execute(sql`CREATE TABLE IF NOT EXISTS processes (
     agent_name TEXT NOT NULL,
@@ -112,10 +105,7 @@ export async function ensurePgSchema(db: any): Promise<void> {
     config_path  TEXT NOT NULL
   )`);
 
-  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_pg_runs_status ON runs(status)`);
-  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_pg_runs_task_id ON runs(task_id)`);
   await db.execute(sql`ALTER TABLE runs ADD COLUMN IF NOT EXISTS "user" TEXT`);
-  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_pg_runs_user ON runs("user")`);
 
   await db.execute(sql`CREATE TABLE IF NOT EXISTS loop_runs (
     id                  TEXT PRIMARY KEY,
@@ -136,12 +126,7 @@ export async function ensurePgSchema(db: any): Promise<void> {
     completed_at        TEXT
   )`);
 
-  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_pg_loop_runs_status ON loop_runs(status)`);
   await db.execute(sql`ALTER TABLE loop_runs ADD COLUMN IF NOT EXISTS resume JSONB`);
-  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_pg_loop_runs_loop_name ON loop_runs(loop_name)`);
-  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_pg_loop_runs_agent_name ON loop_runs(agent_name)`);
-  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_pg_loop_runs_session_id ON loop_runs(session_id)`);
-  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_pg_loop_runs_user ON loop_runs("user")`);
 
   await db.execute(sql`CREATE TABLE IF NOT EXISTS sessions (
     id         TEXT PRIMARY KEY,
@@ -154,7 +139,6 @@ export async function ensurePgSchema(db: any): Promise<void> {
   )`);
   await db.execute(sql`ALTER TABLE sessions ADD COLUMN IF NOT EXISTS "user" TEXT`);
   await db.execute(sql`ALTER TABLE sessions ADD COLUMN IF NOT EXISTS metadata JSONB`);
-  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_pg_sessions_user ON sessions("user")`);
 
   await db.execute(sql`CREATE TABLE IF NOT EXISTS messages (
     id         TEXT PRIMARY KEY,
@@ -165,7 +149,6 @@ export async function ensurePgSchema(db: any): Promise<void> {
     tool_calls TEXT
   )`);
 
-  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_pg_messages_session ON messages(session_id, ts)`);
 
   await db.execute(sql`CREATE TABLE IF NOT EXISTS log_sessions (
     id         TEXT PRIMARY KEY,
@@ -180,8 +163,6 @@ export async function ensurePgSchema(db: any): Promise<void> {
     data       JSONB
   )`);
 
-  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_pg_log_entries_session ON log_entries(session_id)`);
-  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_pg_log_entries_ts ON log_entries(ts)`);
 
   await db.execute(sql`CREATE TABLE IF NOT EXISTS approvals (
     id           TEXT PRIMARY KEY,
@@ -197,8 +178,6 @@ export async function ensurePgSchema(db: any): Promise<void> {
     note         TEXT
   )`);
 
-  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_pg_approvals_status ON approvals(status)`);
-  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_pg_approvals_task_id ON approvals(task_id)`);
 
   await db.execute(sql`CREATE TABLE IF NOT EXISTS memory (
     key     TEXT PRIMARY KEY,
@@ -254,7 +233,6 @@ export async function ensurePgSchema(db: any): Promise<void> {
     created_at  TEXT NOT NULL
   )`);
 
-  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_pg_attachments_session_id ON attachments(session_id)`);
 
   // Migration: add message_id column if missing (added in v0.2.16)
   await db.execute(sql`
@@ -277,4 +255,45 @@ export async function ensurePgSchema(db: any): Promise<void> {
     tags          JSONB,
     category      TEXT
   )`);
+}
+
+/**
+ * Ensure all PostgreSQL indexes exist. Kept separate from table creation so
+ * the migrator can add missing COLUMNS first — creating an index on a
+ * column that predates the column's introduction would fail on databases
+ * provisioned by older versions.
+ */
+export async function ensurePgIndexes(db: any): Promise<void> {
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_pg_tasks_status ON tasks(status)`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_pg_tasks_group ON tasks("group")`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_pg_tasks_assign_to ON tasks(assign_to)`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_pg_tasks_mission_id ON tasks(mission_id)`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_pg_tasks_user ON tasks("user")`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_pg_missions_status ON missions(status)`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_pg_missions_user ON missions("user")`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_pg_runs_status ON runs(status)`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_pg_runs_task_id ON runs(task_id)`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_pg_runs_user ON runs("user")`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_pg_loop_runs_status ON loop_runs(status)`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_pg_loop_runs_loop_name ON loop_runs(loop_name)`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_pg_loop_runs_agent_name ON loop_runs(agent_name)`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_pg_loop_runs_session_id ON loop_runs(session_id)`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_pg_loop_runs_user ON loop_runs("user")`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_pg_sessions_user ON sessions("user")`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_pg_messages_session ON messages(session_id, ts)`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_pg_log_entries_session ON log_entries(session_id)`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_pg_log_entries_ts ON log_entries(ts)`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_pg_approvals_status ON approvals(status)`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_pg_approvals_task_id ON approvals(task_id)`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_pg_attachments_session_id ON attachments(session_id)`);
+}
+
+/**
+ * Ensure all PostgreSQL tables and indexes exist. Runs CREATE TABLE/INDEX
+ * IF NOT EXISTS — does NOT evolve existing tables (see migratePgSchema in
+ * migrator.ts for the idempotent column migrator).
+ */
+export async function ensurePgSchema(db: any): Promise<void> {
+  await ensurePgTables(db);
+  await ensurePgIndexes(db);
 }

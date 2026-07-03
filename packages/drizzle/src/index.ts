@@ -18,6 +18,7 @@
 export * from "./stores/index.js";
 export * from "./schema/index.js";
 export { ensurePgSchema } from "./migrate.js";
+export { migratePgSchema } from "./migrator.js";
 export type { Dialect } from "./utils.js";
 
 // ── Schema sets ───────────────────────────────────────────────────────
