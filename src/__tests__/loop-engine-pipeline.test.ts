@@ -1,0 +1,238 @@
+/**
+ * Loop-engine pipeline tests — the Phase 3 feature surface.
+ *
+ * What tasks gain from the loop runtime once the agent HAS loop config:
+ * - project loop graphs (.polpo/loops/<name>.json) driven by the
+ *   PipelineExecutor: agent steps as independent LLM sessions over a
+ *   shared context bag, deterministic tool steps without LLM turns
+ * - single-loop overlays (inline loops / defaultLoop): tools subset,
+ *   maxTurns, systemPrompt merge — same semantics as chat completions
+ *
+ * Agents WITHOUT loop config are covered by the parity suite in
+ * engine-behavior.test.ts (identical behavior to the legacy engine).
+ */
+
+import { describe, test, expect, beforeAll, afterAll, vi } from "vitest";
+import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { ResolvedModel } from "../llm/pi-client.js";
+import {
+  mockTurnSequenceModel,
+  mockResolvedModel,
+  type MockResponse,
+} from "./helpers/mock-llm.js";
+
+let activeResolvedModel: ResolvedModel = mockResolvedModel(mockTurnSequenceModel([{ type: "text", text: "default" }]));
+
+vi.mock("../llm/pi-client.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../llm/pi-client.js")>();
+  return {
+    ...actual,
+    resolveModel: () => activeResolvedModel,
+    enforceModelAllowlist: () => {},
+    mapReasoningToProviderOptions: () => undefined,
+  };
+});
+
+import { spawnLoopEngine } from "../adapters/loop-engine.js";
+import type { AgentConfig, Task } from "../core/types.js";
+
+// ── Setup ───────────────────────────────────────────────
+
+let tmpRoot: string;
+let cwd: string;
+let polpoDir: string;
+let outputDir: string;
+
+function makeTask(overrides: Partial<Task> = {}): Task {
+  return {
+    id: "task-loop-1",
+    title: "Pipeline task",
+    description: "Run the configured flow.",
+    state: "in_progress",
+    expectations: [],
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    assignedTo: "loop-agent",
+    ...overrides,
+  } as Task;
+}
+
+interface TranscriptEntry {
+  type: string;
+  [key: string]: unknown;
+}
+
+async function runAgent(agent: AgentConfig, responses: MockResponse[]) {
+  activeResolvedModel = mockResolvedModel(mockTurnSequenceModel(responses));
+  const transcript: TranscriptEntry[] = [];
+  const handle = spawnLoopEngine(agent, makeTask(), cwd, { polpoDir, outputDir });
+  handle.onTranscript = (entry) => transcript.push(entry as TranscriptEntry);
+  const result = await handle.done;
+  return { handle, result, transcript };
+}
+
+async function writeProjectLoop(name: string, loop: Record<string, unknown>) {
+  await writeFile(join(polpoDir, "loops", `${name}.json`), JSON.stringify(loop, null, 2));
+}
+
+beforeAll(async () => {
+  tmpRoot = await mkdtemp(join(tmpdir(), "polpo-loop-pipeline-"));
+  cwd = join(tmpRoot, "work");
+  polpoDir = join(tmpRoot, ".polpo");
+  outputDir = join(tmpRoot, "output");
+  await mkdir(cwd, { recursive: true });
+  await mkdir(join(polpoDir, "loops"), { recursive: true });
+  await mkdir(outputDir, { recursive: true });
+});
+
+afterAll(async () => {
+  if (tmpRoot) await rm(tmpRoot, { recursive: true, force: true });
+});
+
+// ── Tests ───────────────────────────────────────────────
+
+describe("spawnLoopEngine — project loop graphs", () => {
+  test("runs a two-step agent graph: independent sessions, shared trace, last step wins stdout", async () => {
+    await writeProjectLoop("ship-flow", {
+      name: "ship-flow",
+      start: "plan",
+      steps: {
+        plan: { systemPrompt: "Produce a plan.", next: "build" },
+        build: { next: "end" },
+      },
+    });
+
+    const { result, transcript } = await runAgent(
+      {
+        name: "loop-agent",
+        role: "developer",
+        assignedLoops: ["ship-flow"],
+        defaultLoop: "ship-flow",
+      },
+      [
+        { type: "text", text: "PLAN: do the thing" },
+        { type: "text", text: "BUILT" },
+      ],
+    );
+
+    expect(result.exitCode).toBe(0);
+    // stdout is the last agent step's final text
+    expect(result.stdout).toBe("BUILT");
+
+    // Both steps produced assistant turns (independent sessions)
+    const assistant = transcript.filter((t) => t.type === "assistant");
+    expect(assistant.map((a) => a.text)).toEqual(["PLAN: do the thing", "BUILT"]);
+
+    // The pipeline emitted trace events for both steps
+    const traces = transcript.filter((t) => t.type === "loop_trace");
+    expect(traces.length).toBeGreaterThan(0);
+    const traceTypes = traces.map((t) => (t.trace as { type: string }).type);
+    expect(traceTypes).toContain("step.start");
+    expect(traceTypes).toContain("step.end");
+  });
+
+  test("tool steps execute deterministically without an LLM turn", async () => {
+    await writeProjectLoop("fetch-flow", {
+      name: "fetch-flow",
+      start: "greet",
+      steps: {
+        greet: {
+          type: "tool",
+          tool: "bash",
+          input: { command: "echo pipeline-hi" },
+          saveAs: "greeting",
+          next: "summarize",
+        },
+        summarize: { next: "end" },
+      },
+    });
+
+    const { handle, result, transcript } = await runAgent(
+      {
+        name: "loop-agent",
+        role: "developer",
+        assignedLoops: ["fetch-flow"],
+        defaultLoop: "fetch-flow",
+      },
+      [
+        // Only ONE model response: the summarize step. The greet tool step
+        // must not consume a model turn.
+        { type: "text", text: "SUMMARY" },
+      ],
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toBe("SUMMARY");
+
+    // The tool step really ran bash
+    expect(handle.activity.toolCalls).toBe(1);
+    const bashResult = transcript.find((t) => t.type === "tool_result" && t.tool === "bash");
+    expect(bashResult).toBeDefined();
+    expect(String(bashResult?.content)).toContain("pipeline-hi");
+  });
+
+  test("missing assigned loop file fails the task loudly", async () => {
+    const { result } = await runAgent(
+      {
+        name: "loop-agent",
+        role: "developer",
+        assignedLoops: ["ghost-flow"],
+        defaultLoop: "ghost-flow",
+      },
+      [{ type: "text", text: "never used" }],
+    );
+
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain('ghost-flow');
+    expect(result.stderr).toContain("not found");
+  });
+
+  test("human steps are rejected in task runs (v1)", async () => {
+    await writeProjectLoop("human-flow", {
+      name: "human-flow",
+      start: "review",
+      steps: {
+        review: { type: "human", next: "end" },
+      },
+    });
+
+    const { result } = await runAgent(
+      {
+        name: "loop-agent",
+        role: "developer",
+        assignedLoops: ["human-flow"],
+        defaultLoop: "human-flow",
+      },
+      [{ type: "text", text: "never used" }],
+    );
+
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain("human");
+  });
+});
+
+describe("spawnLoopEngine — single-loop overlays", () => {
+  test("inline loops.default applies maxTurns overlay", async () => {
+    // Model never stops calling tools — the LOOP's maxTurns (2) must cap
+    // it, not the agent default (150).
+    const alwaysToolCall: MockResponse[] = Array.from({ length: 5 }, () => ({
+      type: "tool-call" as const,
+      toolName: "bash",
+      args: { command: "true" },
+    }));
+
+    const { handle, result } = await runAgent(
+      {
+        name: "loop-agent",
+        role: "developer",
+        loops: { default: { maxTurns: 2 } },
+      },
+      alwaysToolCall,
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(handle.activity.toolCalls).toBe(2);
+  });
+});
