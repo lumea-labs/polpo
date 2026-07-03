@@ -19,6 +19,66 @@ export interface AgentPromptOptions {
   skills?: LoadedSkill[];
 }
 
+export interface FilesystemWorkspacePromptOptions {
+  /** Agent working directory used as cwd for runtime tools. */
+  cwd: string;
+  /** Agent filesystem sandbox paths. Relative entries are resolved against cwd. */
+  allowedPaths?: string[];
+}
+
+function normalizePosixPath(path: string): string {
+  const absolute = path.startsWith("/");
+  const parts: string[] = [];
+  for (const part of path.split("/")) {
+    if (!part || part === ".") continue;
+    if (part === "..") {
+      if (parts.length > 0 && parts[parts.length - 1] !== "..") {
+        parts.pop();
+      } else if (!absolute) {
+        parts.push(part);
+      }
+      continue;
+    }
+    parts.push(part);
+  }
+  const normalized = parts.join("/");
+  if (absolute) return `/${normalized}`.replace(/\/+$/, "") || "/";
+  return normalized || ".";
+}
+
+function resolveWorkspacePath(cwd: string, path: string): string {
+  return normalizePosixPath(path.startsWith("/") ? path : `${cwd}/${path}`);
+}
+
+export function resolveAgentAllowedPaths(cwd: string, allowedPaths?: string[]): string[] {
+  const configured = Array.isArray(allowedPaths)
+    ? allowedPaths.filter((path) => typeof path === "string" && path.trim().length > 0)
+    : [];
+  const paths = configured.length > 0 ? configured : [cwd];
+  return [...new Set(paths.map((path) => resolveWorkspacePath(cwd, path)))];
+}
+
+/**
+ * Build the runtime filesystem contract that callers should append to the
+ * final system prompt whenever filesystem/shell tools are available.
+ */
+export function buildFilesystemWorkspacePrompt(options: FilesystemWorkspacePromptOptions): string {
+  const cwd = resolveWorkspacePath("/", options.cwd);
+  const allowedPaths = resolveAgentAllowedPaths(cwd, options.allowedPaths);
+  return [
+    "## Filesystem Workspace",
+    "",
+    `Your working directory is \`${cwd}\`.`,
+    "",
+    "File tools (`read`, `write`, `edit`, `ls`, `glob`, `grep`) can only access these directories:",
+    ...allowedPaths.map((path) => `- \`${path}\``),
+    "",
+    "Use relative paths or paths inside the directories above. Do not create project files under `/tmp`, `/home`, or other locations unless that exact directory is listed above.",
+    "Bash commands start in the working directory, but files created outside the allowed directories may not be readable or editable by later file tools.",
+    "If a requested path is outside the allowed directories, adapt it to the working directory or explain that `allowedPaths` must be changed first.",
+  ].join("\n");
+}
+
 /**
  * Build the system prompt for an agent.
  *

@@ -31,6 +31,31 @@ describe("buildSystemPrompt — base", () => {
   });
 });
 
+// ─── Filesystem Workspace ───────────────────────────
+
+describe("buildSystemPrompt — filesystem workspace", () => {
+  it("tells the agent the default cwd and allowed directory", () => {
+    const agent = createTestAgent({ name: "dev" });
+    const prompt = buildSystemPrompt(agent, CWD);
+    expect(prompt).toContain("## Filesystem Workspace");
+    expect(prompt).toContain(`Your working directory is \`${CWD}\`.`);
+    expect(prompt).toContain(`- \`${CWD}\``);
+    expect(prompt).toContain("Do not create project files under `/tmp`");
+  });
+
+  it("resolves relative allowed paths against cwd", () => {
+    const prompt = buildSystemPrompt(createTestAgent({ name: "dev" }), CWD, undefined, undefined, ["src", "packages/api"]);
+    expect(prompt).toContain("- `/tmp/test-project/src`");
+    expect(prompt).toContain("- `/tmp/test-project/packages/api`");
+  });
+
+  it("preserves absolute allowed paths and removes duplicates", () => {
+    const prompt = buildSystemPrompt(createTestAgent({ name: "dev" }), CWD, undefined, undefined, ["/var/shared", "src", "src"]);
+    expect(prompt.match(/`\/tmp\/test-project\/src`/g)).toHaveLength(1);
+    expect(prompt).toContain("- `/var/shared`");
+  });
+});
+
 // ─── Identity ────────────────────────────────────────
 
 describe("buildSystemPrompt — identity", () => {

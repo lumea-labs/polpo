@@ -60,8 +60,12 @@ export type { Shell, ShellOptions, ShellResult } from "./shell.js";
 export type { Spawner, SpawnResult } from "./spawner.js";
 
 // ── Agent Prompt Builder ────────────────────────────────────────────────
-export { buildAgentSystemPrompt } from "./agent-prompt.js";
-export type { AgentPromptOptions } from "./agent-prompt.js";
+export {
+  buildAgentSystemPrompt,
+  buildFilesystemWorkspacePrompt,
+  resolveAgentAllowedPaths,
+} from "./agent-prompt.js";
+export type { AgentPromptOptions, FilesystemWorkspacePromptOptions } from "./agent-prompt.js";
 
 // ── Skills Reader (async, FileSystem-based) ────────────────────────────
 export {

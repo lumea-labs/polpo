@@ -1,6 +1,6 @@
 {
   "name": "@polpo-ai/cli",
-  "version": "0.10.11",
+  "version": "0.10.13",
   "description": "Command-line client for Polpo — create/link/deploy cloud projects from your terminal.",
   "license": "Apache-2.0",
   "type": "module",

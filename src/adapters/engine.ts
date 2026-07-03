@@ -21,7 +21,7 @@ export function createActivity(): AgentActivity {
     lastUpdate: new Date().toISOString(),
   };
 }
-import { join, sep } from "node:path";
+import { join, resolve, sep } from "node:path";
 import {
   streamText,
   generateText,
@@ -40,6 +40,31 @@ import { loadAgentSkills } from "../llm/skills.js";
 import { nanoid } from "nanoid";
 import { compactIfNeeded, type SummarizeFn, type CompactionEvent } from "@polpo-ai/core";
 import type { PolpoTool, ToolResult } from "@polpo-ai/core";
+
+function resolvePromptAllowedPaths(cwd: string, allowedPaths?: string[]): string[] {
+  const configured = Array.isArray(allowedPaths)
+    ? allowedPaths.filter((path) => typeof path === "string" && path.trim().length > 0)
+    : [];
+  const paths = configured.length > 0 ? configured : [cwd];
+  return [...new Set(paths.map((path) => resolve(cwd, path)))];
+}
+
+function buildFilesystemWorkspaceSection(cwd: string, allowedPaths?: string[]): string {
+  const resolvedCwd = resolve(cwd);
+  const resolvedAllowedPaths = resolvePromptAllowedPaths(resolvedCwd, allowedPaths);
+  return [
+    "## Filesystem Workspace",
+    "",
+    `Your working directory is \`${resolvedCwd}\`.`,
+    "",
+    "File tools (`read`, `write`, `edit`, `ls`, `glob`, `grep`) can only access these directories:",
+    ...resolvedAllowedPaths.map((path) => `- \`${path}\``),
+    "",
+    "Use relative paths or paths inside the directories above. Do not create project files under `/tmp`, `/home`, or other locations unless that exact directory is listed above.",
+    "Bash commands start in the working directory, but files created outside the allowed directories may not be readable or editable by later file tools.",
+    "If a requested path is outside the allowed directories, adapt it to the working directory or explain that `allowedPaths` must be changed first.",
+  ].join("\n");
+}
 
 /**
  * Build an "## Available Tools" section for the agent's system prompt.
@@ -225,15 +250,8 @@ export function buildSystemPrompt(agent: AgentConfig, cwd: string, polpoDir?: st
   const toolSection = describeToolsForAgent(agent);
   if (toolSection) parts.push("", toolSection);
 
-  // Working directory — tell the agent where it is so it uses correct relative paths
-  parts.push(
-    "",
-    "## Working Directory",
-    `Your working directory is: ${cwd}`,
-    "All file tools (read, write, edit, glob, grep, ls) and bash resolve paths relative to this directory.",
-    "Use relative paths from here — do NOT prepend the workspace directory name to your paths.",
-    "For example, if your cwd is /data/project/workspace, use `brand/file.html` NOT `workspace/brand/file.html`.",
-  );
+  // Working directory and sandbox boundaries — tell the agent exactly where it can operate.
+  parts.push("", buildFilesystemWorkspaceSection(cwd, allowedPaths));
 
   // Output directory for task deliverables
   if (outputDir) {
@@ -246,18 +264,6 @@ export function buildSystemPrompt(agent: AgentConfig, cwd: string, polpoDir?: st
       "This directory is pre-created and writable. Other tasks have separate output directories.",
     );
   }
-
-  // Sandbox boundaries — tell the agent exactly where it can read/write.
-  // Without this, agents waste tokens trying /tmp, /home, etc. and hitting sandbox errors.
-  const sandboxDirs = allowedPaths ?? [cwd];
-  parts.push(
-    "",
-    "## File Access Sandbox",
-    `You can ONLY read and write files within these directories:`,
-    ...sandboxDirs.map(p => `- ${p}`),
-    "Any file operation outside these paths will be REJECTED.",
-    "Do NOT use /tmp, /home, or any other directory. Use your working directory or output directory for temporary files.",
-  );
 
   return parts.join("\n");
 }
