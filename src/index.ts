@@ -3,7 +3,7 @@
 export * from "./core/index.js";
 
 // Stores
-export { FileTaskStore, FileRunStore, JsonTaskStore } from "./stores/index.js";
+export { FileTaskStore, FileRunStore, JsonTaskStore } from "@polpo-ai/file-stores";
 
 // Engine — spawnEngine is a compatibility alias for spawnLoopEngine (the
 // legacy manual loop was removed after the loop runtime reached parity).

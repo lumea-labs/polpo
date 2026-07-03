@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { rmSync, existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { FileSkillStore } from "../stores/file-skill-store.js";
+import { FileSkillStore } from "@polpo-ai/file-stores";
 import type { SkillRecord } from "@polpo-ai/core";
 
 const TEST_DIR = join(process.cwd(), ".test-skill-store");

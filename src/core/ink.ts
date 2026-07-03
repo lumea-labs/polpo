@@ -22,7 +22,7 @@ import { join, basename, resolve } from "node:path";
 import { createHash } from "node:crypto";
 
 import type { AgentConfig, PolpoFileConfig } from "@polpo-ai/core/types";
-import type { PlaybookDefinition } from "./playbook.js";
+import type { PlaybookDefinition } from "@polpo-ai/core/playbook-store";
 import type { AgentStore } from "@polpo-ai/core/agent-store";
 import type { PlaybookStore } from "@polpo-ai/core/playbook-store";
 

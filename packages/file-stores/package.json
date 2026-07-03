@@ -1,0 +1,37 @@
+{
+  "name": "@polpo-ai/file-stores",
+  "version": "0.10.13",
+  "description": "File-based store implementations for Polpo — the default zero-dependency persistence backend (JSON/Markdown files)",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "test": "vitest run",
+    "prepublishOnly": "tsc"
+  },
+  "dependencies": {
+    "@polpo-ai/core": "workspace:*",
+    "nanoid": "^5.0.9"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lumea-labs/polpo.git",
+    "directory": "packages/file-stores"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

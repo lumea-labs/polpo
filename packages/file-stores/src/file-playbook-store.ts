@@ -13,13 +13,13 @@
  */
 
 import type { PlaybookStore } from "@polpo-ai/core/playbook-store";
-import type { PlaybookDefinition, PlaybookInfo } from "../core/playbook.js";
+import type { PlaybookDefinition, PlaybookInfo } from "@polpo-ai/core/playbook-store";
 import {
   discoverPlaybooks,
   loadPlaybook,
   savePlaybook,
   deletePlaybook,
-} from "../core/playbook.js";
+} from "./playbook-files.js";
 
 export class FilePlaybookStore implements PlaybookStore {
   constructor(

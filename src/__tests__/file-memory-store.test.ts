@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { rmSync, existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { FileMemoryStore } from "../stores/file-memory-store.js";
+import { FileMemoryStore } from "@polpo-ai/file-stores";
 
 const TEST_DIR = join(process.cwd(), ".test-orchestra-memory");
 

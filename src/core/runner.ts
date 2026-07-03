@@ -14,7 +14,7 @@
 
 import { readFileSync, unlinkSync, appendFileSync, mkdirSync, existsSync } from "node:fs";
 import { join } from "node:path";
-import { FileRunStore } from "../stores/file-run-store.js";
+import { FileRunStore } from "@polpo-ai/file-stores";
 import { spawnLoopEngine } from "../adapters/loop-engine.js";
 import type { RunStore, RunRecord } from "@polpo-ai/core/run-store";
 import type { LogStore } from "@polpo-ai/core/log-store";
@@ -23,7 +23,7 @@ import { sanitizeTranscriptEntry } from "../server/security.js";
 import { EncryptedVaultStore } from "../vault/encrypted-store.js";
 import type { VaultStore } from "@polpo-ai/core/vault-store";
 import type { MemoryStore } from "@polpo-ai/core/memory-store";
-import { FileMemoryStore } from "../stores/file-memory-store.js";
+import { FileMemoryStore } from "@polpo-ai/file-stores";
 import { NodeFileSystem } from "../adapters/node-filesystem.js";
 import { NodeShell } from "../adapters/node-shell.js";
 

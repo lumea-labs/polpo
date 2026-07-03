@@ -3,11 +3,11 @@ import { mkdirSync, existsSync, readFileSync, watch, type FSWatcher } from "node
 import { getPolpoDir } from "./constants.js";
 import { parseConfig, loadPolpoConfig, savePolpoConfig, loadEnvFile } from "./config.js";
 import { findLogForTask, buildExecutionSummary } from "../assessment/transcript-parser.js";
-import { FileTaskStore } from "../stores/file-task-store.js";
-import { FileRunStore } from "../stores/file-run-store.js";
-import { FileMemoryStore } from "../stores/file-memory-store.js";
-import { FileLogStore } from "../stores/file-log-store.js";
-import { FileSessionStore } from "../stores/file-session-store.js";
+import { FileTaskStore } from "@polpo-ai/file-stores";
+import { FileRunStore } from "@polpo-ai/file-stores";
+import { FileMemoryStore } from "@polpo-ai/file-stores";
+import { FileLogStore } from "@polpo-ai/file-stores";
+import { FileSessionStore } from "@polpo-ai/file-stores";
 import type { SessionStore } from "@polpo-ai/core/session-store";
 import type { MemoryStore } from "@polpo-ai/core/memory-store";
 import type { LogStore } from "@polpo-ai/core/log-store";
@@ -47,9 +47,9 @@ import { setProviderOverrides, validateProviderKeys, setModelAllowlist } from ".
 import type { GatewayConfig } from "@polpo-ai/llm";
 import { HookRegistry } from "@polpo-ai/core/hooks";
 import { ApprovalManager } from "@polpo-ai/core/approval-manager";
-import { FileApprovalStore } from "../stores/file-approval-store.js";
-import { FileTeamStore } from "../stores/file-team-store.js";
-import { FileAgentStore } from "../stores/file-agent-store.js";
+import { FileApprovalStore } from "@polpo-ai/file-stores";
+import { FileTeamStore } from "@polpo-ai/file-stores";
+import { FileAgentStore } from "@polpo-ai/file-stores";
 import type { TeamStore } from "@polpo-ai/core/team-store";
 import type { AgentStore } from "@polpo-ai/core/agent-store";
 import { EscalationManager } from "@polpo-ai/core/escalation-manager";
@@ -61,7 +61,7 @@ import type { ApprovalRequest, ApprovalStatus, NotificationAction } from "@polpo
 import { EncryptedVaultStore } from "../vault/encrypted-store.js";
 import type { VaultStore } from "@polpo-ai/core/vault-store";
 import type { PlaybookStore } from "@polpo-ai/core/playbook-store";
-import { FilePlaybookStore } from "../stores/file-playbook-store.js";
+import { FilePlaybookStore } from "@polpo-ai/file-stores";
 import { NodeSpawner } from "../adapters/node-spawner.js";
 import type { Spawner } from "@polpo-ai/core/spawner";
 import { NodeFileSystem } from "../adapters/node-filesystem.js";

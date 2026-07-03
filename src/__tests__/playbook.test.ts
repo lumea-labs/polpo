@@ -1,14 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import {
-  discoverPlaybooks,
-  loadPlaybook,
-  validateParams,
-  instantiatePlaybook,
-  validatePlaybookDefinition,
-} from "../core/playbook.js";
-import type { PlaybookDefinition } from "../core/playbook.js";
+import { discoverPlaybooks, loadPlaybook } from "@polpo-ai/file-stores";
+import { validateParams, instantiatePlaybook, validatePlaybookDefinition } from "@polpo-ai/core";
+import type { PlaybookDefinition } from "@polpo-ai/core/playbook-store";
 
 const TMP = "/tmp/polpo-playbook-test";
 const POLPO_DIR = join(TMP, ".polpo");
