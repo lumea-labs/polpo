@@ -385,8 +385,10 @@ describe("vault_get / vault_list", () => {
   function makeVault(entries: Record<string, { type: string; values: Record<string, string> }>): ResolvedVault {
     return {
       get: (service) => entries[service]?.values,
-      getSmtp: () => entries["smtp"]?.values,
-      getImap: () => entries["imap"]?.values,
+      // These tests never exercise smtp/imap typed accessors — the fake
+      // only needs the raw entries (cast to the canonical typed shape).
+      getSmtp: () => entries["smtp"]?.values as never,
+      getImap: () => entries["imap"]?.values as never,
       getKey: (service, key) => entries[service]?.values[key],
       has: (service) => service in entries,
       list: () => Object.entries(entries).map(([service, v]) => ({

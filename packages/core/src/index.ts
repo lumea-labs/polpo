@@ -109,6 +109,14 @@ export { TaskRunner } from "./task-runner.js";
 // ── OrchestratorEngine ──────────────────────────────────────────────────
 export { OrchestratorEngine } from "./orchestrator-engine.js";
 export { TickWaiter } from "./tick-waiter.js";
+
+// ── Vault resolver (shared by shell, tools, and the cloud data plane) ────
+export {
+  resolveEnvVar,
+  resolveVaultCredentials,
+  resolveAgentVault,
+} from "./vault-resolver.js";
+export type { ResolvedVault, SmtpCredentials, ImapCredentials } from "./vault-resolver.js";
 export type {
   OrchestratorEngineDeps,
   TaskRunnerPort,
