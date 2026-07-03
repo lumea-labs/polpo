@@ -7,6 +7,7 @@ export { FileTaskStore, FileRunStore, JsonTaskStore } from "./stores/index.js";
 
 // Engine
 export { spawnEngine } from "./adapters/engine.js";
+export { spawnLoopEngine } from "./adapters/loop-engine.js";
 
 // Assessment
 export { assessTask, runCheck, runMetric } from "./assessment/assessor.js";
