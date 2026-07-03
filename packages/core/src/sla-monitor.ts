@@ -1,4 +1,5 @@
 import type { OrchestratorContext } from "./orchestrator-context.js";
+import { resolveMissionStore } from "./mission-store.js";
 import type { SLAConfig } from "./types.js";
 
 /**
@@ -68,7 +69,7 @@ export class SLAMonitor {
       await this.checkEntity(task.id, "task", task.deadline, task.createdAt, now);
     }
 
-    const missions = await this.ctx.registry.getAllMissions?.() ?? [];
+    const missions = await resolveMissionStore(this.ctx).getAllMissions();
     for (const mission of missions) {
       if (!mission.deadline) continue;
       if (mission.status === "completed" || mission.status === "failed" || mission.status === "cancelled" ||

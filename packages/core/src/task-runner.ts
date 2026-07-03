@@ -1,5 +1,6 @@
 import { nanoid } from "nanoid";
 import type { OrchestratorContext } from "./orchestrator-context.js";
+import { resolveMissionStore, resolveMissionForTask } from "./mission-store.js";
 import type { Task, TaskResult, RunnerConfig } from "./types.js";
 import { agentMemoryScope } from "./memory-store.js";
 import type { RunRecord } from "./run-store.js";
@@ -418,9 +419,7 @@ export class TaskRunner {
     if (task.group) {
       try {
         // Resolve mission via direct ID (preferred) or group name (legacy fallback)
-        const mission = task.missionId
-          ? await this.ctx.registry.getMission?.(task.missionId)
-          : await this.ctx.registry.getMissionByName?.(task.group);
+        const mission = await resolveMissionForTask(resolveMissionStore(this.ctx), task);
         const missionParts: string[] = [];
 
         // Original user prompt that generated this mission (the "why")

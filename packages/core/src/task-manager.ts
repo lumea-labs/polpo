@@ -1,4 +1,5 @@
 import type { OrchestratorContext } from "./orchestrator-context.js";
+import { resolveMissionStore, resolveMissionForTask } from "./mission-store.js";
 import type { Task, TaskExpectation, ExpectedOutcome, RetryPolicy, ReviewContext, ScopedNotificationRules } from "./types.js";
 import { setAssessment } from "./types.js";
 import { sanitizeExpectations } from "./schemas.js";
@@ -246,11 +247,10 @@ export class TaskManager {
     }
     // Resolve mission via task.missionId (direct FK) first, fallback to group name
     const mid = groupTasks.find(t => t.missionId)?.missionId;
-    const mission = mid
-      ? await this.ctx.registry.getMission?.(mid)
-      : await this.ctx.registry.getMissionByName?.(group);
+    const missions = resolveMissionStore(this.ctx);
+    const mission = await resolveMissionForTask(missions, { missionId: mid, group });
     if (mission && mission.status === "active") {
-      await this.ctx.registry.updateMission?.(mission.id, { status: "cancelled" });
+      await missions.updateMission(mission.id, { status: "cancelled" });
     }
     return count;
   }

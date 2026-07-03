@@ -1,4 +1,5 @@
 import type { OrchestratorContext } from "./orchestrator-context.js";
+import { resolveMissionStore } from "./mission-store.js";
 import type { ScheduleEntry, Mission } from "./types.js";
 import { isCronExpression, nextCronOccurrence } from "./cron.js";
 
@@ -27,7 +28,7 @@ export class Scheduler {
   }
 
   async init(): Promise<void> {
-    const missions = await this.ctx.registry.getAllMissions?.() ?? [];
+    const missions = await resolveMissionStore(this.ctx).getAllMissions();
     const terminalStates = new Set(["completed", "cancelled", "draft"]);
     for (const mission of missions) {
       if (!mission.schedule) continue;
@@ -36,7 +37,7 @@ export class Scheduler {
     }
 
     this.missionCompletedHandler = async ({ missionId }) => {
-      const mission = await this.ctx.registry.getMission?.(missionId);
+      const mission = await resolveMissionStore(this.ctx).getMission(missionId);
       if (!mission?.schedule) return;
       if (mission.status === "recurring" || mission.status === "scheduled") {
         this.registerMission(mission);
@@ -113,7 +114,7 @@ export class Scheduler {
   }
 
   private async triggerSchedule(schedId: string, entry: ScheduleEntry): Promise<void> {
-    const mission = await this.ctx.registry.getMission?.(entry.missionId);
+    const mission = await resolveMissionStore(this.ctx).getMission(entry.missionId);
     if (!mission) {
       entry.enabled = false;
       return;
@@ -128,7 +129,7 @@ export class Scheduler {
       if (Date.now() >= endTime) {
         entry.enabled = false;
         entry.nextRunAt = undefined;
-        await this.ctx.registry.updateMission?.(entry.missionId, { status: "completed" });
+        await resolveMissionStore(this.ctx).updateMission(entry.missionId, { status: "completed" });
         this.ctx.emitter.emit("schedule:expired", {
           scheduleId: schedId,
           missionId: entry.missionId,

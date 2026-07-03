@@ -8,6 +8,7 @@
  */
 
 import type { OrchestratorContext } from "./orchestrator-context.js";
+import { resolveMissionStore, resolveMissionForTask } from "./mission-store.js";
 import type { Task, TaskResult, AssessmentResult, TaskExpectation, ReviewContext, ModelConfig } from "./types.js";
 import { setAssessment } from "./types.js";
 import { buildFixPrompt, buildRetryPrompt, buildSideEffectFixPrompt, buildSideEffectRetryPrompt, buildJudgePrompt, type JudgeVerdict, type JudgeCorrection } from "./assessment-prompts.js";
@@ -802,9 +803,7 @@ export class AssessmentOrchestrator {
 
     // Don't retry tasks from cancelled missions — resolve via missionId (direct FK) first
     if (current.group) {
-      const mission = current.missionId
-        ? await this.ctx.registry.getMission?.(current.missionId)
-        : await this.ctx.registry.getMissionByName?.(current.group);
+      const mission = await resolveMissionForTask(resolveMissionStore(this.ctx), current);
       if (mission && mission.status === "cancelled") {
         this.ctx.emitter.emit("log", { level: "debug", message: `[${taskId}] Skipping retry — mission cancelled` });
         await this.ctx.registry.transition(taskId, "failed");

@@ -110,6 +110,10 @@ export { TaskRunner } from "./task-runner.js";
 export { OrchestratorEngine } from "./orchestrator-engine.js";
 export { TickWaiter } from "./tick-waiter.js";
 
+// ── Mission store (canonical mission persistence contract) ──────────────
+export { taskStoreMissionAdapter, resolveMissionStore, resolveMissionForTask } from "./mission-store.js";
+export type { MissionStore } from "./mission-store.js";
+
 // ── Vault resolver (shared by shell, tools, and the cloud data plane) ────
 export {
   resolveEnvVar,

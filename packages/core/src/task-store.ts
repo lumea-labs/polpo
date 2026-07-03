@@ -30,12 +30,21 @@ export interface TaskStore {
   // Lifecycle
   close?(): Promise<void> | void;
 
-  // Mission persistence (optional)
+  // Mission persistence (legacy layout). The canonical contract is the
+  // MissionStore interface (mission-store.ts) — consumers should go through
+  // resolveMissionStore(ctx) rather than calling these optionals directly.
+  /** @deprecated Implement/consume MissionStore (mission-store.ts) instead. */
   saveMission?(mission: Omit<Mission, "id" | "createdAt" | "updatedAt">): Promise<Mission>;
+  /** @deprecated Implement/consume MissionStore (mission-store.ts) instead. */
   getMission?(missionId: string): Promise<Mission | undefined>;
+  /** @deprecated Implement/consume MissionStore (mission-store.ts) instead. */
   getMissionByName?(name: string): Promise<Mission | undefined>;
+  /** @deprecated Implement/consume MissionStore (mission-store.ts) instead. */
   getAllMissions?(): Promise<Mission[]>;
+  /** @deprecated Implement/consume MissionStore (mission-store.ts) instead. */
   updateMission?(missionId: string, updates: Partial<Omit<Mission, "id">>): Promise<Mission>;
+  /** @deprecated Implement/consume MissionStore (mission-store.ts) instead. */
   deleteMission?(missionId: string): Promise<boolean>;
+  /** @deprecated Implement/consume MissionStore (mission-store.ts) instead. */
   nextMissionName?(): Promise<string>;
 }
