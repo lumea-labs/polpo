@@ -3,7 +3,7 @@ import { resolve, basename, join } from "node:path";
 import { getPolpoDir } from "../../core/constants.js";
 import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
 import { redactPolpoConfig } from "../security.js";
-import { UpdateSettingsSchema, NotificationChannelConfigSchema } from "../schemas.js";
+import { UpdateSettingsSchema, NotificationChannelConfigSchema } from "@polpo-ai/server";
 import { loadPolpoConfig, savePolpoConfig, generatePolpoConfigDefault } from "../../core/config.js";
 import { detectProviders } from "../../setup/index.js";
 import type { Orchestrator } from "../../core/orchestrator.js";

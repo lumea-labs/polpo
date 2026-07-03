@@ -19,8 +19,8 @@ import type {
   SessionContentPart,
   SessionCreateOptions,
   SessionListFilter,
-} from "../core/session-store.js";
-import { normalizeSessionCreateArgs } from "../core/session-store.js";
+} from "@polpo-ai/core/session-store";
+import { normalizeSessionCreateArgs } from "@polpo-ai/core/session-store";
 
 /**
  * File-backed SessionStore.

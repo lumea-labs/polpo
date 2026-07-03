@@ -16,9 +16,9 @@ import type {
   AgentProcess,
   Team,
   Mission,
-} from "../core/types.js";
-import type { TaskStore } from "../core/task-store.js";
-import { assertValidTransition } from "../core/state-machine.js";
+} from "@polpo-ai/core/types";
+import type { TaskStore } from "@polpo-ai/core/task-store";
+import { assertValidTransition } from "@polpo-ai/core/state-machine";
 
 interface MetaState {
   project: string;

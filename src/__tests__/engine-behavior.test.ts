@@ -48,7 +48,7 @@ vi.mock("../llm/pi-client.js", async (importOriginal) => {
 
 import { spawnLoopEngine } from "../adapters/loop-engine.js";
 import { spawnEngine } from "../adapters/index.js";
-import type { AgentConfig, Task } from "../core/types.js";
+import type { AgentConfig, Task } from "@polpo-ai/core/types";
 
 // This suite was the parity gate while both engines coexisted; the legacy
 // manual loop is gone, but the contract it pinned still holds for the loop

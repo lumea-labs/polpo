@@ -3,8 +3,8 @@ import { rmSync, existsSync } from "node:fs";
 import { Orchestrator, buildRetryPrompt } from "../core/orchestrator.js";
 import { analyzeBlockedTasks } from "../core/deadlock-resolver.js";
 import { InMemoryTaskStore, InMemoryRunStore, createTestTask, createTestAgent, createTestActivity } from "./fixtures.js";
-import type { TaskResult } from "../core/types.js";
-import type { RunRecord } from "../core/run-store.js";
+import type { TaskResult } from "@polpo-ai/core/types";
+import type { RunRecord } from "@polpo-ai/core/run-store";
 
 const TEST_WORK_DIR = "/tmp/polpo-test";
 

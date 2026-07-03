@@ -7,7 +7,7 @@
  * chain should be failed.
  */
 
-import type { Task, ModelConfig } from "./types.js";
+import type { Task, ModelConfig } from "@polpo-ai/core/types";
 import type { Orchestrator } from "./orchestrator.js";
 import { queryText, resolveModelSpec } from "../llm/pi-client.js";
 import { withRetry } from "../llm/retry.js";

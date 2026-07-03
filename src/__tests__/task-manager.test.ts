@@ -1,14 +1,14 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { nanoid } from "nanoid";
-import { TaskManager } from "../core/task-manager.js";
-import { MissionExecutor } from "../core/mission-executor.js";
-import { AgentManager } from "../core/agent-manager.js";
+import { TaskManager } from "@polpo-ai/core/task-manager";
+import { MissionExecutor } from "@polpo-ai/core/mission-executor";
+import { AgentManager } from "@polpo-ai/core/agent-manager";
 import { TypedEmitter } from "../core/events.js";
 import { InMemoryTaskStore, InMemoryRunStore, createTestAgent, createMockStores } from "./fixtures.js";
-import type { OrchestratorContext } from "../core/orchestrator-context.js";
-import { HookRegistry } from "../core/hooks.js";
-import type { PolpoConfig, Mission } from "../core/types.js";
-import type { TaskStore } from "../core/task-store.js";
+import type { OrchestratorContext } from "@polpo-ai/core/orchestrator-context";
+import { HookRegistry } from "@polpo-ai/core/hooks";
+import type { PolpoConfig, Mission } from "@polpo-ai/core/types";
+import type { TaskStore } from "@polpo-ai/core/task-store";
 
 // ── Extended InMemoryTaskStore with mission support ────────────────────
 

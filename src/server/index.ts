@@ -6,7 +6,7 @@ import { createApp } from "./app.js";
 
 import { Orchestrator } from "../core/orchestrator.js";
 import { SSEBridge } from "./sse-bridge.js";
-import type { Team } from "../core/types.js";
+import type { Team } from "@polpo-ai/core/types";
 import type { ServerConfig } from "./types.js";
 
 /**

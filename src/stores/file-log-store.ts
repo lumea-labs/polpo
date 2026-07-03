@@ -9,7 +9,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { nanoid } from "nanoid";
-import type { LogStore, LogEntry, SessionInfo } from "../core/log-store.js";
+import type { LogStore, LogEntry, SessionInfo } from "@polpo-ai/core/log-store";
 
 /**
  * File-backed LogStore.

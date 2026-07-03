@@ -26,7 +26,7 @@
  */
 
 import { join } from "node:path";
-import type { AgentConfig, Task, TaskResult } from "../core/types.js";
+import type { AgentConfig, Task, TaskResult } from "@polpo-ai/core/types";
 import type { AgentHandle, SpawnContext } from "../core/adapter.js";
 import {
   streamText,

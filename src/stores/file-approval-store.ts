@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
-import type { ApprovalStore } from "../core/approval-store.js";
-import type { ApprovalRequest, ApprovalStatus } from "../core/types.js";
+import type { ApprovalStore } from "@polpo-ai/core/approval-store";
+import type { ApprovalRequest, ApprovalStatus } from "@polpo-ai/core/types";
 
 /**
  * Filesystem-based approval store.

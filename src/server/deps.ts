@@ -6,12 +6,12 @@
  * the Orchestrator god-object so consumers can wire stores directly.
  */
 
-import type { TaskStore } from "../core/task-store.js";
-import type { RunStore } from "../core/run-store.js";
-import type { LogStore } from "../core/log-store.js";
-import type { VaultStore } from "../core/vault-store.js";
-import type { PlaybookStore } from "../core/playbook-store.js";
-import type { SessionStore } from "../core/session-store.js";
+import type { TaskStore } from "@polpo-ai/core/task-store";
+import type { RunStore } from "@polpo-ai/core/run-store";
+import type { LogStore } from "@polpo-ai/core/log-store";
+import type { VaultStore } from "@polpo-ai/core/vault-store";
+import type { PlaybookStore } from "@polpo-ai/core/playbook-store";
+import type { SessionStore } from "@polpo-ai/core/session-store";
 
 // ── Store-centric deps ───────────────────────────────────────────────
 

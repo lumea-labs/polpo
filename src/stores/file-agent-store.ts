@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { join, dirname } from "node:path";
-import type { AgentConfig } from "../core/types.js";
-import type { AgentStore } from "../core/agent-store.js";
+import type { AgentConfig } from "@polpo-ai/core/types";
+import type { AgentStore } from "@polpo-ai/core/agent-store";
 
 /** Persisted agent entry — includes the teamName foreign key. */
 interface AgentEntry {

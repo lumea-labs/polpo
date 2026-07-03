@@ -3,8 +3,8 @@ import {
   VALID_TRANSITIONS,
   isValidTransition,
   assertValidTransition,
-} from "../core/state-machine.js";
-import type { TaskStatus } from "../core/types.js";
+} from "@polpo-ai/core/state-machine";
+import type { TaskStatus } from "@polpo-ai/core/types";
 
 const ALL_STATUSES: TaskStatus[] = ["pending", "awaiting_approval", "assigned", "in_progress", "review", "done", "failed"];
 

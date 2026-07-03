@@ -1,11 +1,11 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from "vitest";
 import { Scheduler } from "../scheduling/scheduler.js";
 import { parseCron, matchesCron, nextCronOccurrence, isCronExpression } from "../scheduling/cron.js";
-import { HookRegistry } from "../core/hooks.js";
+import { HookRegistry } from "@polpo-ai/core/hooks";
 import { TypedEmitter } from "../core/events.js";
 import { InMemoryTaskStore, InMemoryRunStore } from "./fixtures.js";
-import type { OrchestratorContext } from "../core/orchestrator-context.js";
-import type { PolpoConfig, Mission } from "../core/types.js";
+import type { OrchestratorContext } from "@polpo-ai/core/orchestrator-context";
+import type { PolpoConfig, Mission } from "@polpo-ai/core/types";
 
 // ── Helpers ──────────────────────────────────────────
 

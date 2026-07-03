@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Orchestrator } from "../core/orchestrator.js";
 import { parseConfig, savePolpoConfig } from "../core/config.js";
-import type { Team } from "../core/types.js";
+import type { Team } from "@polpo-ai/core/types";
 
 
 const VALID_TEAM: Team = {

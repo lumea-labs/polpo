@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { TaskWatcherManager } from "../core/task-watcher.js";
+import { TaskWatcherManager } from "@polpo-ai/core/task-watcher";
 import { TypedEmitter } from "../core/events.js";
-import type { NotificationAction, TaskStatus } from "../core/types.js";
+import type { NotificationAction, TaskStatus } from "@polpo-ai/core/types";
 
 describe("TaskWatcherManager", () => {
   let emitter: TypedEmitter;

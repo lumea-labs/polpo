@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { join, dirname } from "node:path";
-import type { Team } from "../core/types.js";
-import type { TeamStore } from "../core/team-store.js";
+import type { Team } from "@polpo-ai/core/types";
+import type { TeamStore } from "@polpo-ai/core/team-store";
 
 /**
  * File-based TeamStore.

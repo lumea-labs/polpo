@@ -12,7 +12,7 @@
  * Also scans legacy templates/ directories for backward compatibility.
  */
 
-import type { PlaybookStore } from "../core/playbook-store.js";
+import type { PlaybookStore } from "@polpo-ai/core/playbook-store";
 import type { PlaybookDefinition, PlaybookInfo } from "../core/playbook.js";
 import {
   discoverPlaybooks,

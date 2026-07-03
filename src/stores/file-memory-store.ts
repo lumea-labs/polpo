@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, writeFileSync, appendFileSync, mkdirSync, renameSync, readdirSync } from "node:fs";
 import { join, dirname, basename } from "node:path";
-import type { MemoryStore } from "../core/memory-store.js";
+import type { MemoryStore } from "@polpo-ai/core/memory-store";
 
 /**
  * File-backed MemoryStore.

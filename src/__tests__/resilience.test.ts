@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from "vitest";
 import { Orchestrator } from "../core/orchestrator.js";
 import { InMemoryTaskStore, InMemoryRunStore, createTestAgent, createTestActivity } from "./fixtures.js";
-import type { RunRecord } from "../core/run-store.js";
+import type { RunRecord } from "@polpo-ai/core/run-store";
 
 function createTestRunRecord(overrides: Partial<RunRecord> = {}): RunRecord {
   const now = new Date().toISOString();

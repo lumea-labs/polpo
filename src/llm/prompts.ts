@@ -3,7 +3,7 @@
  */
 
 import type { Orchestrator } from "../core/orchestrator.js";
-import type { AgentConfig, PolpoState } from "../core/types.js";
+import type { AgentConfig, PolpoState } from "@polpo-ai/core/types";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { discoverSkills, loadOrchestratorSkills, buildSkillPrompt, type SkillInfo } from "./skills.js";

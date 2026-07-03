@@ -9,7 +9,7 @@
 
 import { queryText, resolveModelSpec } from "../llm/pi-client.js";
 import { withRetry } from "../llm/retry.js";
-import type { TaskResult, AgentActivity, ModelConfig } from "./types.js";
+import type { TaskResult, AgentActivity, ModelConfig } from "@polpo-ai/core/types";
 
 // Re-export looksLikeQuestion unchanged (same signature in core)
 export { looksLikeQuestion } from "@polpo-ai/core/question-detector";

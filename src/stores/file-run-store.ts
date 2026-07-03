@@ -8,8 +8,8 @@ import {
   readdirSync,
   unlinkSync,
 } from "node:fs";
-import type { AgentActivity, TaskResult, TaskOutcome } from "../core/types.js";
-import type { RunStore, RunRecord, RunStatus } from "../core/run-store.js";
+import type { AgentActivity, TaskResult, TaskOutcome } from "@polpo-ai/core/types";
+import type { RunStore, RunRecord, RunStatus } from "@polpo-ai/core/run-store";
 
 function safeJsonParse<T>(raw: string, fallback: T): T {
   try {

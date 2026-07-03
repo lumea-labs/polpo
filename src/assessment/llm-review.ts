@@ -29,14 +29,14 @@ import {
   tool,
   stepCountIs,
 } from "ai";
-import type { TaskExpectation, EvalDimension, DimensionScore, CheckResult, ReviewContext, ReviewerMessage } from "../core/types.js";
+import type { TaskExpectation, EvalDimension, DimensionScore, CheckResult, ReviewContext, ReviewerMessage } from "@polpo-ai/core/types";
 import { DEFAULT_DIMENSIONS, buildRubricSection, computeWeightedScore, computeMedianScores } from "./scoring.js";
 import { validateReviewPayload, type ValidatedReviewPayload } from "./schemas.js";
 import { ReviewPayloadSchema } from "@polpo-ai/core/assessment-schemas";
 import { withRetry } from "../llm/retry.js";
 import { resolveModel, mapReasoningToProviderOptions } from "../llm/pi-client.js";
 import type { ResolvedModel } from "../llm/pi-client.js";
-import type { ReasoningLevel } from "../core/types.js";
+import type { ReasoningLevel } from "@polpo-ai/core/types";
 
 export type LLMQueryFn = (prompt: string, cwd: string) => Promise<string>;
 
@@ -607,7 +607,7 @@ function buildCheckResult(
     : `Score ${globalScore.toFixed(1)}/5 (below ${threshold}) \u2014 ${parsed.summary.slice(0, 100)}`;
 
   // Build individual reviewer results for transparency
-  const reviewers: import("../core/types.js").ReviewerResult[] | undefined = individualReviews?.map((review, i) => {
+  const reviewers: import("@polpo-ai/core/types").ReviewerResult[] | undefined = individualReviews?.map((review, i) => {
     const reviewDimScores: DimensionScore[] = review.scores.map(s => {
       const dim = dimensions.find(d => d.name === s.dimension);
       return {

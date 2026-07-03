@@ -1,8 +1,8 @@
 import { nanoid } from "nanoid";
 import type { Task, TaskStatus, TaskOutcome, PolpoState, AgentConfig, AgentActivity, TaskResult, AgentHandle, TaskStore, RunStore, RunRecord, RunStatus, Team } from "../core/index.js";
-import type { TeamStore } from "../core/team-store.js";
-import type { AgentStore } from "../core/agent-store.js";
-import { assertValidTransition } from "../core/state-machine.js";
+import type { TeamStore } from "@polpo-ai/core/team-store";
+import type { AgentStore } from "@polpo-ai/core/agent-store";
+import { assertValidTransition } from "@polpo-ai/core/state-machine";
 
 // === InMemoryTaskStore ===
 

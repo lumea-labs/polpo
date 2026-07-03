@@ -9,7 +9,7 @@ import { mkdtempSync, rmSync, readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { EncryptedVaultStore } from "../vault/encrypted-store.js";
-import type { VaultEntry } from "../core/types.js";
+import type { VaultEntry } from "@polpo-ai/core/types";
 
 // Provide a deterministic vault key for tests (32 bytes hex-encoded)
 const TEST_KEY = randomBytes(32).toString("hex");

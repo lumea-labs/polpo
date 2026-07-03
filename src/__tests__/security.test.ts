@@ -7,7 +7,7 @@ import {
   sanitizeTranscriptEntry,
   SENSITIVE_PARAM_RE,
 } from "../server/security.js";
-import type { AgentConfig, Team, PolpoState, PolpoConfig } from "../core/types.js";
+import type { AgentConfig, Team, PolpoState, PolpoConfig } from "@polpo-ai/core/types";
 
 // ── redactAgentConfig ──
 // NOTE: Vault credentials are no longer stored on AgentConfig — they live

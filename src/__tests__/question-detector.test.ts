@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { looksLikeQuestion } from "../core/question-detector.js";
-import type { TaskResult, AgentActivity } from "../core/types.js";
+import type { TaskResult, AgentActivity } from "@polpo-ai/core/types";
 
 function makeResult(stdout: string): TaskResult {
   return { exitCode: 0, stdout, stderr: "", duration: 100 };

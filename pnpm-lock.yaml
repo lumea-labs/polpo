@@ -29,6 +29,9 @@ importers:
       '@polpo-ai/server':
         specifier: workspace:*
         version: link:packages/server
+      '@polpo-ai/tools':
+        specifier: workspace:*
+        version: link:packages/tools
       '@polpo-ai/vault-crypto':
         specifier: workspace:*
         version: link:packages/vault-crypto

@@ -4,7 +4,7 @@ import {
   buildRubricSection,
   computeWeightedScore,
 } from "../assessment/scoring.js";
-import type { DimensionScore, EvalDimension } from "../core/types.js";
+import type { DimensionScore, EvalDimension } from "@polpo-ai/core/types";
 
 describe("scoring", () => {
   describe("DEFAULT_DIMENSIONS", () => {

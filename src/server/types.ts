@@ -3,7 +3,7 @@ import type {
   ExpectedOutcome,
   RetryPolicy,
   MissionStatus,
-} from "../core/types.js";
+} from "@polpo-ai/core/types";
 import type { PolpoEvent } from "../core/events.js";
 
 // === API Response Envelope ===
@@ -79,7 +79,7 @@ export interface AddAgentRequest {
   skills?: string[];
   maxTurns?: number;
   // Identity & hierarchy (vault credentials managed via encrypted store)
-  identity?: import("../core/types.js").AgentIdentity;
+  identity?: import("@polpo-ai/core/types").AgentIdentity;
   reportsTo?: string;
   // Extended tool categories (browser, email, vault, image, video, audio, excel, pdf, docx, search — HTTP is always-on core)
   browserProfile?: string;
