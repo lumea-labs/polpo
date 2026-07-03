@@ -158,6 +158,14 @@ async function createStores(config: RunnerConfig): Promise<RunnerStores> {
 async function main(): Promise<void> {
   const isDbMode = process.argv.includes("--run-id");
   const config = isDbMode ? await readConfigFromDb() : readConfigFromFile();
+
+  // Apply provider overrides from the config (custom baseUrl endpoints).
+  // The runner never reads polpo.json, so without this custom-provider
+  // agents resolve against the static provider map and fail.
+  if (config.providers && Object.keys(config.providers).length > 0) {
+    const { setProviderOverrides } = await import("../llm/pi-client.js");
+    setProviderOverrides(config.providers);
+  }
   const { runStore, logStore, vaultStore: drizzleVaultStore, memoryStore: drizzleMemoryStore } = await createStores(config);
   const actLog = new RunActivityLog(config.polpoDir, config.runId, config.taskId, config.agent.name);
 

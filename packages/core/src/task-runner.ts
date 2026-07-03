@@ -483,6 +483,7 @@ export class TaskRunner {
       reasoning: this.ctx.config.settings.reasoning,
       whatsappDbPath,
       whatsappProfilePath,
+      providers: this.ctx.config.providers,
     };
 
     try {
