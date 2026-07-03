@@ -1,0 +1,552 @@
+{
+  "meta": {
+    "ts": "2026-07-03T19:54:00.950Z",
+    "sha": "bc0bf37",
+    "label": "polpo-node-facade",
+    "node": "v20.20.0",
+    "hostname": "aHp0",
+    "target": "local",
+    "mode": "local"
+  },
+  "scenarios": [
+    {
+      "name": "smoke",
+      "description": "1 assistant turn, no tools — pure spawn + single LLM round-trip",
+      "params": {
+        "turns": 0,
+        "toolsPerTurn": 0,
+        "latencyMs": 50,
+        "finalBytes": 200
+      },
+      "sid": "smr5cpphqcaibpv",
+      "pass": true,
+      "terminal": "done",
+      "metrics": {
+        "wall_ms": 535,
+        "spawn_ms": 18,
+        "llm_ms": 50,
+        "overhead_ms": 485,
+        "loop_ms": 0,
+        "loop_overhead_ms": 0,
+        "turns": 1,
+        "llm_requests": 1,
+        "tool_calls": 0,
+        "outcome_calls": 0,
+        "summarize_calls": 0,
+        "post_ms": 15
+      },
+      "timeline": [
+        {
+          "status": "in_progress",
+          "tMs": 18
+        },
+        {
+          "status": "done",
+          "tMs": 535
+        }
+      ],
+      "checks": [
+        {
+          "name": "terminal_reached",
+          "pass": true,
+          "detail": "done"
+        },
+        {
+          "name": "terminal_status",
+          "pass": true,
+          "detail": "expected one of [done], got \"done\""
+        },
+        {
+          "name": "turns_served",
+          "pass": true,
+          "detail": "expected 1, mock served 1"
+        },
+        {
+          "name": "tool_calls",
+          "pass": true,
+          "detail": "expected 0, mock emitted 0"
+        }
+      ],
+      "elapsed_ms": 537
+    },
+    {
+      "name": "tool_loop_50",
+      "description": "50 tool turns x 1 bash — sequential loop throughput",
+      "params": {
+        "turns": 50,
+        "toolsPerTurn": 1,
+        "latencyMs": 50,
+        "toolOutputBytes": 256
+      },
+      "sid": "smr5cppwng5fros",
+      "pass": true,
+      "terminal": "done",
+      "metrics": {
+        "wall_ms": 3480,
+        "spawn_ms": 9,
+        "llm_ms": 2550,
+        "overhead_ms": 930,
+        "loop_ms": 3112,
+        "loop_overhead_ms": 562,
+        "turns": 51,
+        "llm_requests": 51,
+        "tool_calls": 50,
+        "outcome_calls": 0,
+        "summarize_calls": 0,
+        "post_ms": 7
+      },
+      "timeline": [
+        {
+          "status": "in_progress",
+          "tMs": 9
+        },
+        {
+          "status": "done",
+          "tMs": 3480
+        }
+      ],
+      "checks": [
+        {
+          "name": "terminal_reached",
+          "pass": true,
+          "detail": "done"
+        },
+        {
+          "name": "terminal_status",
+          "pass": true,
+          "detail": "expected one of [done], got \"done\""
+        },
+        {
+          "name": "turns_served",
+          "pass": true,
+          "detail": "expected 51, mock served 51"
+        },
+        {
+          "name": "tool_calls",
+          "pass": true,
+          "detail": "expected 50, mock emitted 50"
+        }
+      ],
+      "elapsed_ms": 3481
+    },
+    {
+      "name": "tool_burst",
+      "description": "10 tool turns x 5 bash/turn — parallel tool dispatch within a turn",
+      "params": {
+        "turns": 10,
+        "toolsPerTurn": 5,
+        "latencyMs": 50,
+        "toolOutputBytes": 256
+      },
+      "sid": "smr5cpslc7v10qt",
+      "pass": true,
+      "terminal": "done",
+      "metrics": {
+        "wall_ms": 1230,
+        "spawn_ms": 10,
+        "llm_ms": 550,
+        "overhead_ms": 680,
+        "loop_ms": 791,
+        "loop_overhead_ms": 241,
+        "turns": 11,
+        "llm_requests": 11,
+        "tool_calls": 50,
+        "outcome_calls": 0,
+        "summarize_calls": 0,
+        "post_ms": 9
+      },
+      "timeline": [
+        {
+          "status": "in_progress",
+          "tMs": 10
+        },
+        {
+          "status": "done",
+          "tMs": 1230
+        }
+      ],
+      "checks": [
+        {
+          "name": "terminal_reached",
+          "pass": true,
+          "detail": "done"
+        },
+        {
+          "name": "terminal_status",
+          "pass": true,
+          "detail": "expected one of [done], got \"done\""
+        },
+        {
+          "name": "turns_served",
+          "pass": true,
+          "detail": "expected 11, mock served 11"
+        },
+        {
+          "name": "tool_calls",
+          "pass": true,
+          "detail": "expected 50, mock emitted 50"
+        }
+      ],
+      "elapsed_ms": 1231
+    },
+    {
+      "name": "big_output",
+      "description": "30 tool turns x 1 bash with 64KB output — context growth / compaction stress",
+      "params": {
+        "turns": 30,
+        "toolsPerTurn": 1,
+        "latencyMs": 50,
+        "toolOutputBytes": 65536,
+        "finalBytes": 500
+      },
+      "sid": "smr5cptjjw5ho2i",
+      "pass": true,
+      "terminal": "done",
+      "metrics": {
+        "wall_ms": 2344,
+        "spawn_ms": 8,
+        "llm_ms": 1550,
+        "overhead_ms": 794,
+        "loop_ms": 1942,
+        "loop_overhead_ms": 392,
+        "turns": 31,
+        "llm_requests": 31,
+        "tool_calls": 30,
+        "outcome_calls": 0,
+        "summarize_calls": 0,
+        "post_ms": 7
+      },
+      "timeline": [
+        {
+          "status": "in_progress",
+          "tMs": 8
+        },
+        {
+          "status": "done",
+          "tMs": 2344
+        }
+      ],
+      "checks": [
+        {
+          "name": "terminal_reached",
+          "pass": true,
+          "detail": "done"
+        },
+        {
+          "name": "terminal_status",
+          "pass": true,
+          "detail": "expected one of [done], got \"done\""
+        },
+        {
+          "name": "turns_served",
+          "pass": true,
+          "detail": "expected 31, mock served 31"
+        },
+        {
+          "name": "tool_calls",
+          "pass": true,
+          "detail": "expected 30, mock emitted 30"
+        }
+      ],
+      "elapsed_ms": 2345
+    },
+    {
+      "name": "max_turns_cap",
+      "description": "cap=never on agent with maxTurns=15 — runtime must stop the loop at the ceiling",
+      "params": {
+        "turns": 9999,
+        "toolsPerTurn": 1,
+        "latencyMs": 50,
+        "cap": "never"
+      },
+      "sid": "smr5cpvcoecycn9",
+      "pass": true,
+      "terminal": "done",
+      "metrics": {
+        "wall_ms": 1330,
+        "spawn_ms": 7,
+        "llm_ms": 750,
+        "overhead_ms": 580,
+        "loop_ms": 900,
+        "loop_overhead_ms": 150,
+        "turns": 15,
+        "llm_requests": 15,
+        "tool_calls": 15,
+        "outcome_calls": 0,
+        "summarize_calls": 0,
+        "post_ms": 6
+      },
+      "timeline": [
+        {
+          "status": "in_progress",
+          "tMs": 7
+        },
+        {
+          "status": "done",
+          "tMs": 1330
+        }
+      ],
+      "checks": [
+        {
+          "name": "terminal_reached",
+          "pass": true,
+          "detail": "done"
+        },
+        {
+          "name": "terminal_status",
+          "pass": true,
+          "detail": "expected one of [done, failed], got \"done\""
+        },
+        {
+          "name": "turns_served",
+          "pass": true,
+          "detail": "expected 15, mock served 15"
+        },
+        {
+          "name": "tool_calls",
+          "pass": true,
+          "detail": "expected 15, mock emitted 15"
+        }
+      ],
+      "elapsed_ms": 1331
+    },
+    {
+      "name": "outcomes_3",
+      "description": "5 tool turns + 3 register_outcome on the last turn — outcome pipeline",
+      "params": {
+        "turns": 5,
+        "toolsPerTurn": 1,
+        "latencyMs": 50,
+        "outcomes": 3
+      },
+      "sid": "smr5cpwdne1qg5w",
+      "pass": true,
+      "terminal": "done",
+      "metrics": {
+        "wall_ms": 823,
+        "spawn_ms": 8,
+        "llm_ms": 300,
+        "overhead_ms": 523,
+        "loop_ms": 350,
+        "loop_overhead_ms": 50,
+        "turns": 6,
+        "llm_requests": 6,
+        "tool_calls": 5,
+        "outcome_calls": 3,
+        "summarize_calls": 0,
+        "post_ms": 7
+      },
+      "timeline": [
+        {
+          "status": "in_progress",
+          "tMs": 8
+        },
+        {
+          "status": "done",
+          "tMs": 823
+        }
+      ],
+      "checks": [
+        {
+          "name": "terminal_reached",
+          "pass": true,
+          "detail": "done"
+        },
+        {
+          "name": "terminal_status",
+          "pass": true,
+          "detail": "expected one of [done], got \"done\""
+        },
+        {
+          "name": "turns_served",
+          "pass": true,
+          "detail": "expected 6, mock served 6"
+        },
+        {
+          "name": "tool_calls",
+          "pass": true,
+          "detail": "expected 5, mock emitted 5"
+        },
+        {
+          "name": "outcomes",
+          "pass": true,
+          "detail": "expected 3, task record has 3"
+        }
+      ],
+      "elapsed_ms": 825
+    },
+    {
+      "name": "timeout_kill",
+      "description": "cap=never + task maxDuration=8s — watchdog must kill and fail the task",
+      "params": {
+        "turns": 9999,
+        "toolsPerTurn": 1,
+        "latencyMs": 300,
+        "cap": "never"
+      },
+      "sid": "smr5cpx0kmgzwi7",
+      "pass": true,
+      "terminal": "failed",
+      "metrics": {
+        "wall_ms": 10060,
+        "spawn_ms": 7,
+        "llm_ms": 9300,
+        "overhead_ms": 760,
+        "loop_ms": 9674,
+        "loop_overhead_ms": 374,
+        "turns": 31,
+        "llm_requests": 32,
+        "tool_calls": 31,
+        "outcome_calls": 0,
+        "summarize_calls": 0,
+        "post_ms": 7
+      },
+      "timeline": [
+        {
+          "status": "in_progress",
+          "tMs": 7
+        },
+        {
+          "status": "failed",
+          "tMs": 10060
+        }
+      ],
+      "checks": [
+        {
+          "name": "terminal_reached",
+          "pass": true,
+          "detail": "failed"
+        },
+        {
+          "name": "terminal_status",
+          "pass": true,
+          "detail": "expected one of [failed], got \"failed\""
+        }
+      ],
+      "elapsed_ms": 10062
+    },
+    {
+      "name": "concurrency_10",
+      "description": "10 concurrent tasks x 5 tool turns — scheduler fan-out + makespan",
+      "params": {
+        "turns": 5,
+        "toolsPerTurn": 1,
+        "latencyMs": 50,
+        "toolOutputBytes": 256
+      },
+      "concurrency": 10,
+      "pass": true,
+      "terminal": [
+        "done",
+        "done",
+        "done",
+        "done",
+        "done",
+        "done",
+        "done",
+        "done",
+        "done",
+        "done"
+      ],
+      "metrics": {
+        "makespan_ms": 2029,
+        "wall_ms_min": 1627,
+        "wall_ms_median": 1828,
+        "wall_ms_max": 2029,
+        "llm_ms_total": 3000,
+        "spawn_ms_min": 170,
+        "spawn_ms_max": 171
+      },
+      "checks": [
+        {
+          "name": "all_tasks_pass",
+          "pass": true,
+          "detail": "10/10 tasks green"
+        }
+      ],
+      "tasks": [
+        {
+          "sid": "smr5cq4s2ibzrsv",
+          "wall_ms": 1627,
+          "spawn_ms": 171,
+          "terminal": "done",
+          "llm_ms": 300,
+          "turns": 6
+        },
+        {
+          "sid": "smr5cq4s2fhrsve",
+          "wall_ms": 1829,
+          "spawn_ms": 171,
+          "terminal": "done",
+          "llm_ms": 300,
+          "turns": 6
+        },
+        {
+          "sid": "smr5cq4s2knc7gi",
+          "wall_ms": 1627,
+          "spawn_ms": 171,
+          "terminal": "done",
+          "llm_ms": 300,
+          "turns": 6
+        },
+        {
+          "sid": "smr5cq4s2k4cbhc",
+          "wall_ms": 1829,
+          "spawn_ms": 171,
+          "terminal": "done",
+          "llm_ms": 300,
+          "turns": 6
+        },
+        {
+          "sid": "smr5cq4s37u66w4",
+          "wall_ms": 1828,
+          "spawn_ms": 170,
+          "terminal": "done",
+          "llm_ms": 300,
+          "turns": 6
+        },
+        {
+          "sid": "smr5cq4s3pg7fnk",
+          "wall_ms": 1828,
+          "spawn_ms": 170,
+          "terminal": "done",
+          "llm_ms": 300,
+          "turns": 6
+        },
+        {
+          "sid": "smr5cq4s3bqt8ed",
+          "wall_ms": 1828,
+          "spawn_ms": 170,
+          "terminal": "done",
+          "llm_ms": 300,
+          "turns": 6
+        },
+        {
+          "sid": "smr5cq4s3if16ni",
+          "wall_ms": 1828,
+          "spawn_ms": 170,
+          "terminal": "done",
+          "llm_ms": 300,
+          "turns": 6
+        },
+        {
+          "sid": "smr5cq4s32ocaz6",
+          "wall_ms": 2029,
+          "spawn_ms": 170,
+          "terminal": "done",
+          "llm_ms": 300,
+          "turns": 6
+        },
+        {
+          "sid": "smr5cq4s3crcqeq",
+          "wall_ms": 1828,
+          "spawn_ms": 170,
+          "terminal": "done",
+          "llm_ms": 300,
+          "turns": 6
+        }
+      ],
+      "elapsed_ms": 2244
+    }
+  ]
+}
