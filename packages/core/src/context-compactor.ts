@@ -135,6 +135,19 @@ export function estimateMessagesTokens(messages: any[]): number {
   return total;
 }
 
+/** Render an AI SDK v6 tool-result `output` to text for token estimation
+ *  and pruning ({type:"text"|"error-text", value} | {type:"json", value} | …). */
+function toolResultOutputText(output: any): string {
+  if (output == null) return "";
+  if (typeof output === "string") return output;
+  if (typeof output.value === "string") return output.value;
+  try {
+    return JSON.stringify(output.value ?? output) ?? "";
+  } catch {
+    return "";
+  }
+}
+
 function estimateMessageTokens(msg: any): number {
   if (!msg) return 0;
 
@@ -149,7 +162,7 @@ function estimateMessageTokens(msg: any): number {
       if (block.type === "text" && typeof block.text === "string") {
         tokens += estimateTokens(block.text);
       } else if (block.type === "toolCall") {
-        // Tool call: name + stringified arguments
+        // Legacy (pi-ai) tool call: name + stringified arguments
         if (block.name) tokens += estimateTokens(block.name);
         if (block.arguments !== undefined) {
           const args =
@@ -158,6 +171,19 @@ function estimateMessageTokens(msg: any): number {
               : JSON.stringify(block.arguments);
           tokens += estimateTokens(args);
         }
+      } else if (block.type === "tool-call") {
+        // AI SDK v6 assistant tool-call part: toolName + input
+        if (block.toolName) tokens += estimateTokens(block.toolName);
+        if (block.input !== undefined) {
+          const input =
+            typeof block.input === "string"
+              ? block.input
+              : JSON.stringify(block.input) ?? "";
+          tokens += estimateTokens(input);
+        }
+      } else if (block.type === "tool-result") {
+        // AI SDK v6 tool-result part (role:"tool" messages)
+        tokens += estimateTokens(toolResultOutputText(block.output));
       }
     }
   }
@@ -195,6 +221,9 @@ export function pruneToolOutputs(
     blockIndex?: number; // for array content within toolResult messages
     tokens: number;
     toolName: string;
+    /** Message shape: legacy pi-ai "toolResult" text blocks vs AI SDK v6
+     *  role:"tool" tool-result parts. Determines how pruning is applied. */
+    shape: "legacy" | "v6";
   }
 
   const entries: ToolResultEntry[] = [];
@@ -213,6 +242,24 @@ export function pruneToolOutputs(
             blockIndex: j,
             tokens,
             toolName,
+            shape: "legacy",
+          });
+        }
+      }
+    } else if (msg.role === "tool" && Array.isArray(msg.content)) {
+      // AI SDK v6 tool message: prune the output value inside the
+      // tool-result part while keeping the envelope (toolCallId/toolName)
+      // intact so the conversation stays valid for providers.
+      for (let j = msg.content.length - 1; j >= 0; j--) {
+        const block = msg.content[j];
+        if (block.type === "tool-result") {
+          const tokens = estimateTokens(toolResultOutputText(block.output));
+          entries.push({
+            messageIndex: i,
+            blockIndex: j,
+            tokens,
+            toolName: block.toolName || "unknown",
+            shape: "v6",
           });
         }
       }
@@ -245,11 +292,15 @@ export function pruneToolOutputs(
   // Apply pruning
   for (const entry of prunableEntries) {
     const msg = result[entry.messageIndex];
-    if (entry.blockIndex !== undefined && Array.isArray(msg.content)) {
+    if (entry.blockIndex === undefined || !Array.isArray(msg.content)) continue;
+    const placeholder = `[Output pruned — was ${entry.tokens} tokens. Tool: ${entry.toolName}]`;
+    if (entry.shape === "v6") {
       msg.content[entry.blockIndex] = {
-        type: "text",
-        text: `[Output pruned — was ${entry.tokens} tokens. Tool: ${entry.toolName}]`,
+        ...msg.content[entry.blockIndex],
+        output: { type: "text", value: placeholder },
       };
+    } else {
+      msg.content[entry.blockIndex] = { type: "text", text: placeholder };
     }
   }
 
@@ -390,6 +441,16 @@ function countPrunedOutputs(messages: any[]): number {
     if (msg.role === "toolResult" && Array.isArray(msg.content)) {
       for (const block of msg.content) {
         if (block.type === "text" && typeof block.text === "string" && block.text.startsWith("[Output pruned")) {
+          count++;
+        }
+      }
+    } else if (msg.role === "tool" && Array.isArray(msg.content)) {
+      for (const block of msg.content) {
+        if (
+          block.type === "tool-result" &&
+          typeof block.output?.value === "string" &&
+          block.output.value.startsWith("[Output pruned")
+        ) {
           count++;
         }
       }
