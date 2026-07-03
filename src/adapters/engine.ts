@@ -271,7 +271,7 @@ export function buildSystemPrompt(agent: AgentConfig, cwd: string, polpoDir?: st
 /**
  * Build the user prompt from task data.
  */
-function buildPrompt(task: Task): string {
+export function buildPrompt(task: Task): string {
   const parts = [`Task: ${task.title}`, ``, task.description];
   if (task.expectations.length > 0) {
     parts.push(``, `Acceptance criteria:`);
@@ -374,17 +374,28 @@ function convertToolsToToolSet(
   return toolSet;
 }
 
-/**
- * Spawn an agent using Polpo's built-in engine (AI SDK streamText loop).
- *
- * This is the default execution path — used when no adapter is specified
- * on an agent config.
- */
-export function spawnEngine(agentConfig: AgentConfig, task: Task, cwd: string, ctx?: SpawnContext): AgentHandle {
-  const activity = createActivity();
-  const start = Date.now();
-  let alive = true;
+// ─── Shared spawn preparation ──────────────────────────
+//
+// Used by both the legacy manual-loop engine (spawnEngine) and the
+// loop-runtime engine (spawnLoopEngine in loop-engine.ts) so that model
+// resolution, sandbox paths, system prompt, and tool building stay
+// byte-identical during the migration.
 
+export interface SpawnPrep {
+  model: ReturnType<typeof resolveModel>;
+  polpoDir: string;
+  fs: FileSystem;
+  shell: Shell;
+  outputDir?: string;
+  effectiveAllowedPaths?: string[];
+  systemPrompt: string;
+  providerOptions?: Record<string, Record<string, any>>;
+  hasExtendedTools: boolean;
+  browserProfileDir: string;
+  maxTurns: number;
+}
+
+export function prepareSpawn(agentConfig: AgentConfig, cwd: string, ctx?: SpawnContext): SpawnPrep {
   // Enforce model allowlist (throws if model not allowed)
   if (agentConfig.model) {
     enforceModelAllowlist(agentConfig.model);
@@ -393,9 +404,6 @@ export function spawnEngine(agentConfig: AgentConfig, task: Task, cwd: string, c
   // Resolve model
   const model = resolveModel(agentConfig.model, { gateway: ctx?.gatewayConfig as any });
 
-  // Create all tools scoped to working directory with path sandboxing
-  // Core tools (always available): read, write, edit, bash, glob, grep, ls, http_fetch, http_download, register_outcome, vault_get, vault_list
-  // Extended tools are auto-loaded when their names appear in allowedTools (e.g. "browser_*", "email_*", "image_*", "video_*", "audio_*", "excel_*", "pdf_*", "docx_*", "search_*")
   // polpoDir must always be provided via SpawnContext.
   // Fallback to join(cwd, ".polpo") is WRONG when settings.workDir points to a
   // subdirectory — cwd would be e.g. /project/packages/app while .polpo/ lives
@@ -451,16 +459,84 @@ export function spawnEngine(agentConfig: AgentConfig, task: Task, cwd: string, c
     effectiveAllowedPaths = undefined;
   }
 
-  // Vault resolution is async — will be resolved in handle.done before tools are used.
-  // Start with core coding tools WITHOUT vault; vault tools are added in the async phase.
-  const codingTools = createSystemTools(cwd, agentConfig.allowedTools, effectiveAllowedPaths, outputDir, undefined, fs, shell);
-
-
   // Resolve reasoning level: agent config > global settings (via SpawnContext) > "off"
   const thinkingLevel = agentConfig.reasoning ?? ctx?.reasoning ?? "off";
 
   // Build the system prompt once for reuse in both the agent loop and context compaction
   const systemPrompt = buildSystemPrompt(agentConfig, cwd, ctx?.polpoDir, outputDir, effectiveAllowedPaths);
+
+  // Track turns for maxTurns enforcement
+  const maxTurns = agentConfig.maxTurns ?? 150;
+
+  // Provider options for reasoning/thinking
+  // Cast needed: mapReasoningToProviderOptions returns Record<string, Record<string, unknown>>
+  // but AI SDK expects Record<string, JSONObject> (JSONValue values). The values are always
+  // JSON-serializable (numbers, strings, objects), so this cast is safe.
+  const providerOptions = mapReasoningToProviderOptions(model.provider, thinkingLevel, model.maxTokens) as
+    Record<string, Record<string, any>> | undefined;
+
+  return {
+    model, polpoDir, fs, shell, outputDir, effectiveAllowedPaths,
+    systemPrompt, providerOptions, hasExtendedTools, browserProfileDir, maxTurns,
+  };
+}
+
+/**
+ * Resolve the agent vault and build the full PolpoTool set (core tools plus
+ * extended categories when requested via allowedTools). Async because vault
+ * resolution hits the store.
+ */
+export async function buildAgentTools(
+  agentConfig: AgentConfig,
+  cwd: string,
+  prep: SpawnPrep,
+  ctx?: SpawnContext,
+): Promise<PolpoTool[]> {
+  const vaultEntries = await ctx?.vaultStore?.getAllForAgent(agentConfig.name);
+  const vault = resolveAgentVault(vaultEntries);
+
+  let allPolpoTools = createSystemTools(cwd, agentConfig.allowedTools, prep.effectiveAllowedPaths, prep.outputDir, vault, prep.fs, prep.shell);
+
+  if (prep.hasExtendedTools) {
+    allPolpoTools = await createAllTools({
+      cwd,
+      allowedTools: agentConfig.allowedTools,
+      allowedPaths: prep.effectiveAllowedPaths,
+      browserSession: agentConfig.name,
+      browserProfileDir: prep.browserProfileDir,
+      vault,
+      emailAllowedDomains: agentConfig.emailAllowedDomains ?? ctx?.emailAllowedDomains,
+      outputDir: prep.outputDir,
+      fs: prep.fs,
+      shell: prep.shell,
+      memoryStore: ctx?.memoryStore,
+      agentName: agentConfig.name,
+      // Per-modality models from agent config. When undefined, the
+      // tool layer applies its own DEFAULT_*_MODEL.
+      imageModel:      agentConfig.image_model,
+      videoModel:      agentConfig.video_model,
+      visionModel:     agentConfig.vision_model,
+      transcribeModel: agentConfig.transcribe_model,
+      ttsModel:        agentConfig.tts_model,
+    });
+  }
+
+  return allPolpoTools;
+}
+
+/**
+ * Spawn an agent using Polpo's built-in engine (AI SDK streamText loop).
+ *
+ * This is the default execution path — used when no adapter is specified
+ * on an agent config.
+ */
+export function spawnEngine(agentConfig: AgentConfig, task: Task, cwd: string, ctx?: SpawnContext): AgentHandle {
+  const activity = createActivity();
+  const start = Date.now();
+  let alive = true;
+
+  const prep = prepareSpawn(agentConfig, cwd, ctx);
+  const { model, systemPrompt, providerOptions, hasExtendedTools, maxTurns } = prep;
 
   // AbortController for the agent — used to cancel the loop
   const abortController = new AbortController();
@@ -479,49 +555,11 @@ export function spawnEngine(agentConfig: AgentConfig, task: Task, cwd: string, c
     },
   };
 
-  // Track turns for maxTurns enforcement
-  const maxTurns = agentConfig.maxTurns ?? 150;
-
-  // Provider options for reasoning/thinking
-  // Cast needed: mapReasoningToProviderOptions returns Record<string, Record<string, unknown>>
-  // but AI SDK expects Record<string, JSONObject> (JSONValue values). The values are always
-  // JSON-serializable (numbers, strings, objects), so this cast is safe.
-  const providerOptions = mapReasoningToProviderOptions(model.provider, thinkingLevel, model.maxTokens) as
-    Record<string, Record<string, any>> | undefined;
-
   // Run the agent and capture result
   handle.done = (async (): Promise<TaskResult> => {
     try {
-      // Resolve vault credentials (async) — then rebuild tools with vault included
-      const vaultEntries = await ctx?.vaultStore?.getAllForAgent(agentConfig.name);
-      const vault = resolveAgentVault(vaultEntries);
-
-      // Rebuild tools with vault resolved
-      let allPolpoTools = createSystemTools(cwd, agentConfig.allowedTools, effectiveAllowedPaths, outputDir, vault, fs, shell);
-
-      if (hasExtendedTools) {
-        allPolpoTools = await createAllTools({
-          cwd,
-          allowedTools: agentConfig.allowedTools,
-          allowedPaths: effectiveAllowedPaths,
-          browserSession: agentConfig.name,
-          browserProfileDir,
-          vault,
-          emailAllowedDomains: agentConfig.emailAllowedDomains ?? ctx?.emailAllowedDomains,
-          outputDir,
-          fs,
-          shell,
-          memoryStore: ctx?.memoryStore,
-          agentName: agentConfig.name,
-          // Per-modality models from agent config. When undefined, the
-          // tool layer applies its own DEFAULT_*_MODEL.
-          imageModel:      agentConfig.image_model,
-          videoModel:      agentConfig.video_model,
-          visionModel:     agentConfig.vision_model,
-          transcribeModel: agentConfig.transcribe_model,
-          ttsModel:        agentConfig.tts_model,
-        });
-      }
+      // Resolve vault credentials (async) and build the full tool set
+      const allPolpoTools = await buildAgentTools(agentConfig, cwd, prep, ctx);
 
       // Convert PolpoTool[] to AI SDK ToolSet with activity tracking
       const toolSet = convertToolsToToolSet(
@@ -778,7 +816,7 @@ function guessMime(filePath: string): string | undefined {
  * Create a TaskOutcome from a `register_outcome` tool call.
  * Returns undefined for any other tool — outcome registration is explicit only.
  */
-function collectOutcome(toolName: string, details: Record<string, unknown>): TaskOutcome | undefined {
+export function collectOutcome(toolName: string, details: Record<string, unknown>): TaskOutcome | undefined {
   if (toolName !== "register_outcome" || !details.outcomeType || !details.outcomeLabel) {
     return undefined;
   }

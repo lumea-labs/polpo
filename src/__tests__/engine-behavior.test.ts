@@ -47,7 +47,16 @@ vi.mock("../llm/pi-client.js", async (importOriginal) => {
 });
 
 import { spawnEngine } from "../adapters/engine.js";
+import { spawnLoopEngine } from "../adapters/loop-engine.js";
 import type { AgentConfig, Task } from "../core/types.js";
+
+// Both engines must satisfy the same observable contract: the legacy
+// manual loop and its loop-runtime replacement. This IS the parity gate
+// for the migration.
+const ENGINES = [
+  ["spawnEngine (legacy)", spawnEngine],
+  ["spawnLoopEngine (loop runtime)", spawnLoopEngine],
+] as const;
 
 // ── Helpers ─────────────────────────────────────────────
 
@@ -83,25 +92,6 @@ let cwd: string;
 let polpoDir: string;
 let outputDir: string;
 
-/** Spawn the engine and collect every transcript entry until done. */
-async function runEngine(
-  agent: AgentConfig,
-  responses: MockResponse[] | MockLanguageModelV3,
-  modelOverrides: Partial<ResolvedModel> = {},
-  taskOverrides: Partial<Task> = {},
-) {
-  const model = Array.isArray(responses) ? mockTurnSequenceModel(responses) : responses;
-  setMockModel(model, modelOverrides);
-  const transcript: TranscriptEntry[] = [];
-  // outputDir is required for register_outcome to exist: the tool is
-  // task-only by design — createSystemTools injects it only when the
-  // caller provides an output directory (chat completions never do).
-  const handle = spawnEngine(agent, makeTask(taskOverrides), cwd, { polpoDir, outputDir });
-  handle.onTranscript = (entry) => transcript.push(entry as TranscriptEntry);
-  const result = await handle.done;
-  return { handle, result, transcript };
-}
-
 beforeAll(async () => {
   tmpRoot = await mkdtemp(join(tmpdir(), "polpo-engine-char-"));
   cwd = join(tmpRoot, "work");
@@ -118,7 +108,25 @@ afterAll(async () => {
 
 // ── Tests ───────────────────────────────────────────────
 
-describe("spawnEngine — characterization", () => {
+describe.each(ENGINES)("%s — characterization", (_label, spawn) => {
+  /** Spawn the engine and collect every transcript entry until done. */
+  async function runEngine(
+    agent: AgentConfig,
+    responses: MockResponse[] | MockLanguageModelV3,
+    modelOverrides: Partial<ResolvedModel> = {},
+    taskOverrides: Partial<Task> = {},
+  ) {
+    const model = Array.isArray(responses) ? mockTurnSequenceModel(responses) : responses;
+    setMockModel(model, modelOverrides);
+    const transcript: TranscriptEntry[] = [];
+    // outputDir is required for register_outcome to exist: the tool is
+    // task-only by design — createSystemTools injects it only when the
+    // caller provides an output directory (chat completions never do).
+    const handle = spawn(agent, makeTask(taskOverrides), cwd, { polpoDir, outputDir });
+    handle.onTranscript = (entry) => transcript.push(entry as TranscriptEntry);
+    const result = await handle.done;
+    return { handle, result, transcript };
+  }
   test("text-only run: TaskResult shape, transcript, handle lifecycle", async () => {
     const { handle, result, transcript } = await runEngine(makeAgent(), [
       { type: "text", text: "All done here." },
@@ -244,7 +252,7 @@ describe("spawnEngine — characterization", () => {
 
   test("kill(): run terminates, no model turns are consumed after abort", async () => {
     setMockModel(mockTextModel("should not matter"));
-    const handle = spawnEngine(makeAgent(), makeTask(), cwd, { polpoDir });
+    const handle = spawn(makeAgent(), makeTask(), cwd, { polpoDir });
     handle.kill();
     const result = await handle.done;
 
