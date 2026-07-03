@@ -13,7 +13,7 @@ import type { MemoryStore } from "./memory-store.js";
 import type { LogStore } from "./log-store.js";
 import { assessTask } from "../assessment/assessor.js";
 import { analyzeBlockedTasks, resolveDeadlock, isResolving } from "./deadlock-resolver.js";
-import { OrchestratorEngine } from "@polpo-ai/core";
+import { OrchestratorEngine, resolveMissionStore } from "@polpo-ai/core";
 import type { DeadlockResolverPort, DeadlockFacade } from "@polpo-ai/core";
 import { TypedEmitter } from "./events.js";
 import type { TaskStore } from "./task-store.js";
@@ -508,7 +508,7 @@ export class Orchestrator extends TypedEmitter {
           return `Task created: [${task.id}] "${task.title}" → ${task.assignTo}`;
         }
         case "execute_mission": {
-          const mission = await this.registry.getMission?.(action.missionId);
+          const mission = await resolveMissionStore({ registry: this.registry }).getMission(action.missionId);
           if (!mission) throw new Error(`Mission "${action.missionId}" not found`);
           const result = await this.missionExec.executeMission(action.missionId);
           return `Mission "${mission.name}" executed: ${result.tasks.length} tasks created`;

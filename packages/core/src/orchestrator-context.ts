@@ -14,6 +14,7 @@ import type { ApprovalStore } from "./approval-store.js";
 import type { CheckpointStore } from "./checkpoint-store.js";
 import type { DelayStore } from "./delay-store.js";
 import type { ConfigStore } from "./config-store.js";
+import type { MissionStore } from "./mission-store.js";
 import type { TeamStore } from "./team-store.js";
 import type { AgentStore } from "./agent-store.js";
 import type { PolpoConfig, PolpoFileConfig, Task, AssessmentResult, ReviewContext, ReasoningLevel, ModelConfig } from "./types.js";
@@ -103,4 +104,9 @@ export interface OrchestratorContext {
   readonly delayStore?: DelayStore;
   /** Config persistence store (when storage is "postgres", injected by shell). */
   readonly configStore?: ConfigStore;
+  /**
+   * Mission persistence store. When omitted, consumers fall back to the
+   * task store's legacy mission block via resolveMissionStore(ctx).
+   */
+  readonly missionStore?: MissionStore;
 }

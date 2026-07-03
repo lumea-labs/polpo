@@ -13,6 +13,7 @@
 
 import type { OrchestratorContext } from "./orchestrator-context.js";
 import { TickWaiter } from "./tick-waiter.js";
+import { resolveMissionStore, resolveMissionForTask } from "./mission-store.js";
 import type { TaskManager } from "./task-manager.js";
 import type { AgentManager } from "./agent-manager.js";
 import type { ApprovalManager } from "./approval-manager.js";
@@ -342,9 +343,7 @@ export class OrchestratorEngine {
       let isReady = true;
       if (task.group) {
         // Resolve mission via direct ID (preferred) or group name (legacy fallback)
-        const mission = task.missionId
-          ? await this.ctx.registry.getMission?.(task.missionId)
-          : await this.ctx.registry.getMissionByName?.(task.group);
+        const mission = await resolveMissionForTask(resolveMissionStore(this.ctx), task);
         if (mission && (mission.status === "cancelled" || mission.status === "completed" || mission.status === "paused")) { isReady = false; }
 
         // Check quality gates — task may be blocked by a gate even if deps are done
@@ -539,7 +538,7 @@ export class OrchestratorEngine {
     // Clean up any schedule tied to this mission group — resolve via task.missionId first
     const groupTasks = (await this.ctx.registry.getAllTasks()).filter(t => t.group === group);
     const mid = groupTasks.find(t => t.missionId)?.missionId;
-    const mission = mid ? await this.ctx.registry.getMission?.(mid) : await this.ctx.registry.getMissionByName?.(group);
+    const mission = await resolveMissionForTask(resolveMissionStore(this.ctx), { missionId: mid, group });
     if (mission) this.scheduler?.unregisterMission(mission.id);
     return count;
   }

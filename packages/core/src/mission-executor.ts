@@ -5,6 +5,7 @@ import type { Mission, MissionStatus, MissionReport, Task, TaskExpectation, Expe
 import type { QualityController } from "./quality-controller.js";
 import { sanitizeExpectations, parseMissionDocument, type MissionDocumentParsed } from "./schemas.js";
 import type { CheckpointStore, CheckpointState } from "./checkpoint-store.js";
+import { resolveMissionStore, type MissionStore } from "./mission-store.js";
 import type { DelayStore, DelayState } from "./delay-store.js";
 // ── In-memory fallback stores (no Node.js deps) ─────────────────────────
 
@@ -52,6 +53,7 @@ export class MissionExecutor {
   /** Quality gates parsed from mission documents, keyed by mission group name */
   private gatesByGroup = new Map<string, MissionQualityGate[]>();
   /** Persistent checkpoint store — survives server restarts */
+  private missions: MissionStore;
   private cpStore: CheckpointStore;
   /** In-memory mirror of persisted checkpoint state (synced on every mutation) */
   private cpState!: CheckpointState;
@@ -70,6 +72,7 @@ export class MissionExecutor {
     private taskMgr: TaskManager,
     private agentMgr: AgentManager,
   ) {
+    this.missions = resolveMissionStore(ctx);
     this.cpStore = ctx.checkpointStore ?? new InMemoryCheckpointStore();
     this.delayStore = ctx.delayStore ?? new InMemoryDelayStore();
 
@@ -164,10 +167,10 @@ export class MissionExecutor {
         // Pause the mission — use task.missionId when available
         const taskMissionId = tasks.find(t => t.group === group && t.missionId)?.missionId;
         const mission = taskMissionId
-          ? await this.ctx.registry.getMission?.(taskMissionId)
-          : await this.ctx.registry.getMissionByName?.(group);
+          ? await this.missions.getMission(taskMissionId)
+          : await this.missions.getMissionByName(group);
         if (mission && mission.status === "active") {
-          await this.ctx.registry.updateMission?.(mission.id, { status: "paused" });
+          await this.missions.updateMission(mission.id, { status: "paused" });
         }
 
         // Register notification rules for this checkpoint's channels
@@ -209,7 +212,7 @@ export class MissionExecutor {
     const groupTasks = (await this.ctx.registry.getAllTasks()).filter(t => t.group === group);
     const mission = await this.resolveMissionForGroup(groupTasks, group);
     if (mission && mission.status === "paused") {
-      await this.ctx.registry.updateMission?.(mission.id, { status: "active" });
+      await this.missions.updateMission(mission.id, { status: "active" });
     }
 
     this.ctx.emitter.emit("checkpoint:resumed", {
@@ -370,9 +373,8 @@ export class MissionExecutor {
     /** Opaque end-user identifier (OpenAI-compat). */
     user?: string;
   }): Promise<Mission> {
-    if (!this.ctx.registry.saveMission) throw new Error("Store does not support missions");
-    const name = opts.name ?? (await this.ctx.registry.nextMissionName?.()) ?? `mission-${Date.now()}`;
-    const mission = await this.ctx.registry.saveMission({
+    const name = opts.name ?? await this.missions.nextMissionName();
+    const mission = await this.missions.saveMission({
       name,
       data: opts.data,
       prompt: opts.prompt,
@@ -388,24 +390,22 @@ export class MissionExecutor {
   }
 
   async getMission(missionId: string): Promise<Mission | undefined> {
-    return this.ctx.registry.getMission?.(missionId);
+    return this.missions.getMission(missionId);
   }
 
   async getMissionByName(name: string): Promise<Mission | undefined> {
-    return this.ctx.registry.getMissionByName?.(name);
+    return this.missions.getMissionByName(name);
   }
 
   async getAllMissions(): Promise<Mission[]> {
-    return (await this.ctx.registry.getAllMissions?.()) ?? [];
+    return await this.missions.getAllMissions();
   }
 
   async updateMission(missionId: string, updates: Partial<Omit<Mission, "id">>): Promise<Mission> {
-    if (!this.ctx.registry.updateMission) throw new Error("Store does not support missions");
-    return this.ctx.registry.updateMission(missionId, updates);
+    return this.missions.updateMission(missionId, updates);
   }
 
   async deleteMission(missionId: string): Promise<boolean> {
-    if (!this.ctx.registry.deleteMission) throw new Error("Store does not support missions");
     const mission = await this.getMission(missionId);
     if (!mission) return false;
 
@@ -456,7 +456,7 @@ export class MissionExecutor {
     }
 
     // ── Delete the mission record ────────────────────────
-    const result = await this.ctx.registry.deleteMission(missionId);
+    const result = await this.missions.deleteMission(missionId);
     if (result) {
       this.ctx.emitter.emit("mission:deleted", { missionId, deletedTasks });
     }
@@ -524,7 +524,7 @@ export class MissionExecutor {
   }
 
   async executeMission(missionId: string): Promise<{ tasks: Task[]; group: string }> {
-    const mission = await this.ctx.registry.getMission?.(missionId);
+    const mission = await this.missions.getMission(missionId);
     if (!mission) throw new Error("Mission not found");
     const executableStates = ["draft", "scheduled", "recurring", "failed", "cancelled"];
     if (!executableStates.includes(mission.status)) {
@@ -535,7 +535,7 @@ export class MissionExecutor {
 
     // Increment execution count (tracks how many times this mission has run — useful for recurring)
     const runNumber = (mission.executionCount ?? 0) + 1;
-    await this.ctx.registry.updateMission?.(missionId, { executionCount: runNumber });
+    await this.missions.updateMission(missionId, { executionCount: runNumber });
 
     // Validate mission document through Zod schema — throws with clear error on invalid shape
     const raw = JSON.parse(mission.data);
@@ -648,10 +648,10 @@ export class MissionExecutor {
 
     // Persist mission-level notifications from document onto the Mission record
     if (doc.notifications) {
-      await this.ctx.registry.updateMission?.(missionId, { status: "active", notifications: doc.notifications });
+      await this.missions.updateMission(missionId, { status: "active", notifications: doc.notifications });
     } else {
       // Mark mission as active
-      await this.ctx.registry.updateMission?.(missionId, { status: "active" });
+      await this.missions.updateMission(missionId, { status: "active" });
     }
     this.ctx.emitter.emit("mission:executed", { missionId, group, taskCount: tasks.length });
 
@@ -666,9 +666,9 @@ export class MissionExecutor {
   private async resolveMissionForGroup(groupTasks: Task[], group: string): Promise<Mission | undefined> {
     // Prefer the direct ID reference from any task in the group
     const mid = groupTasks.find(t => t.missionId)?.missionId;
-    if (mid) return this.ctx.registry.getMission?.(mid);
+    if (mid) return this.missions.getMission(mid);
     // Fallback: strip run-number suffix (e.g. "Mission #3" → "Mission") for legacy compat
-    return this.ctx.registry.getMissionByName?.(group.replace(/ #\d+$/, ""));
+    return this.missions.getMissionByName(group.replace(/ #\d+$/, ""));
   }
 
   /** Check if any mission groups have all tasks terminal, and clean up their volatile agents */
@@ -731,7 +731,7 @@ export class MissionExecutor {
           // Normal missions or successful one-shot scheduled missions
           finalStatus = allDone ? "completed" : "failed";
         }
-        await this.ctx.registry.updateMission?.(mission.id, { status: finalStatus });
+        await this.missions.updateMission(mission.id, { status: finalStatus });
         const report = await this.buildMissionReport(mission.id, group, groupTasks, allDone);
         this.ctx.emitter.emit("mission:completed", { missionId: mission.id, group, allPassed: allDone, report });
 
