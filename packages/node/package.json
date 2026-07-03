@@ -1,0 +1,77 @@
+{
+  "name": "@polpo-ai/node",
+  "version": "0.11.0",
+  "description": "Polpo Node.js runtime — orchestrator wiring, adapters, server assembly, runner entry. The composition root behind the polpo-ai package.",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./core": {
+      "types": "./dist/core/index.d.ts",
+      "import": "./dist/core/index.js"
+    },
+    "./server": {
+      "types": "./dist/server/index.d.ts",
+      "import": "./dist/server/index.js"
+    },
+    "./assessment": {
+      "types": "./dist/assessment/index.d.ts",
+      "import": "./dist/assessment/index.js"
+    },
+    "./runner": {
+      "import": "./dist/core/runner.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "test": "vitest run",
+    "prepublishOnly": "tsc"
+  },
+  "dependencies": {
+    "@ai-sdk/gateway": "^3.0.83",
+    "@ai-sdk/openai": "^3.0.48",
+    "@hono/node-server": "^1.19.9",
+    "@hono/zod-openapi": "^1.2.2",
+    "@polpo-ai/core": "workspace:*",
+    "@polpo-ai/file-stores": "workspace:*",
+    "@polpo-ai/llm": "workspace:*",
+    "@polpo-ai/server": "workspace:*",
+    "@polpo-ai/tools": "workspace:*",
+    "@polpo-ai/vault-crypto": "workspace:*",
+    "@sinclair/typebox": "^0.34.48",
+    "ai": "^6.0.141",
+    "chalk": "^5.4.1",
+    "commander": "^13.1.0",
+    "execa": "^9.6.1",
+    "hono": "^4.11.9",
+    "nanoid": "^5.1.2",
+    "yaml": "^2.7.0",
+    "zod": "^4.3.6"
+  },
+  "optionalDependencies": {
+    "@polpo-ai/drizzle": "workspace:*",
+    "better-sqlite3": "^12.6.2",
+    "drizzle-orm": "^0.44.0",
+    "nodemailer": "^8.0.1",
+    "playwright-core": "^1.52.0",
+    "postgres": "^3.4.0"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lumea-labs/polpo.git",
+    "directory": "packages/node"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
