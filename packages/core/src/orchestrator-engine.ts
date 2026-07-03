@@ -12,6 +12,7 @@
  */
 
 import type { OrchestratorContext } from "./orchestrator-context.js";
+import { TickWaiter } from "./tick-waiter.js";
 import type { TaskManager } from "./task-manager.js";
 import type { AgentManager } from "./agent-manager.js";
 import type { ApprovalManager } from "./approval-manager.js";
@@ -180,11 +181,21 @@ export interface OrchestratorEngineDeps {
 
 // ── Utility ──────────────────────────────────────────────────────────────
 
-function sleep(ms: number): Promise<void> {
-  return new Promise(resolve => setTimeout(resolve, ms));
-}
+const POLL_INTERVAL = 5000; // 5s safety net — event wakes are the primary trigger
 
-const POLL_INTERVAL = 5000; // 5s safety net (push notification is primary)
+/**
+ * Events that wake the supervisor loop immediately instead of waiting out
+ * the poll interval: new/changed work (task lifecycle), answered questions,
+ * resolved approvals, and runner process exits.
+ */
+const WAKE_EVENTS = [
+  "task:created",
+  "task:updated",
+  "task:transition",
+  "task:answered",
+  "approval:resolved",
+  "run:exited",
+] as const;
 
 // ── OrchestratorEngine ──────────────────────────────────────────────────
 
@@ -209,6 +220,7 @@ export class OrchestratorEngine {
   private escalationMgr?: EscalationManager;
   private deadlockResolver?: DeadlockResolverPort;
   private stopped = false;
+  private readonly waiter = new TickWaiter();
 
   constructor(deps: OrchestratorEngineDeps) {
     this.ctx = deps.ctx;
@@ -253,19 +265,37 @@ export class OrchestratorEngine {
     this.stopped = false;
     onBeforeLoop?.();
 
-    // Supervisor loop
-    while (!this.stopped) {
-      try {
-        const allDone = await this.tick();
-        if (allDone && !interactive) break;
-      } catch (err: unknown) {
-        const message = err instanceof Error ? err.message : String(err);
-        this.ctx.emitter.emit("log", { level: "error", message: `[supervisor] Error in tick: ${message}` });
-      }
-      await sleep(POLL_INTERVAL);
+    // Event-driven wakes: react to new work immediately; the poll interval
+    // below is only the safety net. A wake landing while a tick is in
+    // flight is remembered by the waiter and consumes the next wait.
+    const onWake = (): void => this.waiter.wake();
+    for (const event of WAKE_EVENTS) {
+      this.ctx.emitter.on(event, onWake);
     }
 
-    onAfterLoop?.();
+    try {
+      // Supervisor loop
+      while (!this.stopped) {
+        try {
+          const allDone = await this.tick();
+          if (allDone && !interactive) break;
+        } catch (err: unknown) {
+          const message = err instanceof Error ? err.message : String(err);
+          this.ctx.emitter.emit("log", { level: "error", message: `[supervisor] Error in tick: ${message}` });
+        }
+        await this.waiter.wait(POLL_INTERVAL);
+      }
+    } finally {
+      for (const event of WAKE_EVENTS) {
+        this.ctx.emitter.off(event, onWake);
+      }
+      onAfterLoop?.();
+    }
+  }
+
+  /** Wake the supervisor loop immediately (event-driven tick). */
+  wake(): void {
+    this.waiter.wake();
   }
 
   /**
@@ -480,7 +510,11 @@ export class OrchestratorEngine {
 
   // ── Stop control ────────────────────────────────────────────────────
 
-  stop(): void { this.stopped = true; }
+  stop(): void {
+    this.stopped = true;
+    // Interrupt the current wait so shutdown is immediate
+    this.waiter.wake();
+  }
   isStopped(): boolean { return this.stopped; }
 
   // ── Task Management (delegates to TaskManager) ──────────────────────

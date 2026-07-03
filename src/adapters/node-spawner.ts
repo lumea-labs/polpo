@@ -61,11 +61,25 @@ export class NodeSpawner implements Spawner {
       stdio: "ignore",
       cwd: this.cwd,
     });
+
+    // Track process exit so the orchestrator can collect results
+    // immediately instead of waiting out the poll interval. The listener
+    // works on detached+unref'd children as long as this process lives.
+    let exited = false;
+    const exitCallbacks: Array<() => void> = [];
+    child.on("exit", () => {
+      exited = true;
+      for (const cb of exitCallbacks.splice(0)) cb();
+    });
     child.unref();
 
     return {
       pid: child.pid ?? 0,
       configPath,
+      onExit: (cb: () => void) => {
+        if (exited) cb();
+        else exitCallbacks.push(cb);
+      },
     };
   }
 

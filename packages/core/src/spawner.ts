@@ -17,6 +17,13 @@ export interface SpawnResult {
   pid: number;
   /** Where the config was persisted ("file:///path" or "db://runId"). */
   configPath: string;
+  /**
+   * Register a callback fired when the runner process exits (optional —
+   * spawners that don't track process lifecycle, e.g. sandbox-based ones,
+   * simply omit it and callers fall back to poll-based collection).
+   * If the process already exited, the callback fires immediately.
+   */
+  onExit?(cb: () => void): void;
 }
 
 /**

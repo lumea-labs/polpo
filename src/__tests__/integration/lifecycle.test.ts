@@ -9,7 +9,12 @@ vi.mock("node:child_process", async (importOriginal) => {
   return {
     ...original,
     spawn: (_cmd: string, _args: string[], _opts: any) => {
-      const child = { pid: Math.floor(Math.random() * 90000) + 10000, unref: () => {} };
+      const child = {
+        pid: Math.floor(Math.random() * 90000) + 10000,
+        unref: () => {},
+        // NodeSpawner registers an exit listener for event-driven collection
+        on: (_event: string, _cb: () => void) => child,
+      };
       return child;
     },
   };
