@@ -1,0 +1,24 @@
+{
+  "$comment": "Declarative sandbox pricing layer — separate from measurements on purpose. Rates from official pricing pages, July 2026. Reference assumption: one 2 vCPU / 4 GiB sandbox per task. Update the numbers here without touching any benchmark code.",
+  "referenceSandbox": { "vcpu": 2, "ramGib": 4 },
+  "providers": {
+    "daytona": {
+      "vcpuHour": 0.0504,
+      "ramGibHour": 0.0162,
+      "granularity": "second"
+    },
+    "e2b": {
+      "vcpuHour": 0.0504,
+      "ramGibHour": 0.0162,
+      "granularity": "second",
+      "monthlyFloor": 150,
+      "note": "same per-unit rates as Daytona; Pro plan floor $150/mo"
+    },
+    "vercel": {
+      "activeCpuHour": 0.128,
+      "memGbHour": 0.0212,
+      "minBillMs": 60000,
+      "note": "active CPU only — I/O wait (LLM think time) is not billed; 60s minimum bill per sandbox"
+    }
+  }
+}
