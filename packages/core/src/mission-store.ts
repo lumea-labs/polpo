@@ -72,3 +72,20 @@ export async function resolveMissionForTask(
   if (task.missionId) return missions.getMission(task.missionId);
   return undefined;
 }
+
+/**
+ * Resolve the Mission for a group of tasks.
+ * Uses task.missionId (direct FK) when available, falls back to getMissionByName
+ * for legacy tasks that pre-date the missionId field.
+ */
+export async function resolveMissionForGroup(
+  missions: MissionStore,
+  groupTasks: Array<{ missionId?: string }>,
+  group: string,
+): Promise<Mission | undefined> {
+  // Prefer the direct ID reference from any task in the group
+  const mid = groupTasks.find(t => t.missionId)?.missionId;
+  if (mid) return missions.getMission(mid);
+  // Fallback: strip run-number suffix (e.g. "Mission #3" → "Mission") for legacy compat
+  return missions.getMissionByName(group.replace(/ #\d+$/, ""));
+}
