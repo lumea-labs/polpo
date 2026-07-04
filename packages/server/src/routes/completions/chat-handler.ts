@@ -1,0 +1,777 @@
+/**
+ * Standard chat-mode execution for the completions endpoint.
+ *
+ * Owns the multi-turn tool loop over streamText/generateText in both
+ * streaming (SSE) and non-streaming variants: client-side tools,
+ * interactive orchestrator tools, provider-executed tools, context
+ * compaction, session persistence, and metering callbacks.
+ */
+
+import { streamSSE } from "hono/streaming";
+import { compactIfNeeded, type CompactionEvent } from "@polpo-ai/core";
+import { streamText, generateText, type LanguageModelUsage } from "ai";
+import type { CompletionRouteDeps } from "../completions.js";
+import { buildSummarizeFn, MAX_TURNS, type ResolvedModelInfo } from "./agent-step-runner.js";
+import { appendModelResponseMessages } from "./message-mapping.js";
+import { completionResponse, modelNotFoundEnvelope, sseChunk } from "./sse.js";
+import {
+  CLIENT_SIDE_TOOLS,
+  CLIENT_SIDE_TOOL_NAMES,
+  emitFileChanged,
+  indexToolResultsByCallId,
+  recordProviderToolCall,
+  redactVaultToolCalls,
+  toAITools,
+} from "./tool-mapping.js";
+
+/** Resolved execution context for a standard (non-loop) chat completion. */
+export interface ChatCompletionExecution {
+  deps: CompletionRouteDeps;
+  body: { stream?: boolean; agent?: string; user?: string };
+  completionId: string;
+  agentMode: boolean;
+  fullSystemPrompt: string;
+  m: ResolvedModelInfo;
+  providerOpts?: Record<string, any>;
+  modelToolChoice?: unknown;
+  effectiveTools: any[];
+  effectiveToolExecutor: (name: string, args: Record<string, unknown>) => Promise<string>;
+  /**
+   * Provider-executed tools the host wants merged into the AI SDK tool
+   * palette as-is. Polpo never invokes these — they're handled inside
+   * `generateText` by the SDK / model provider (Vercel Gateway today).
+   * Keys here MUST be skipped by the manual tool-call dispatcher.
+   */
+  extraAiTools?: Record<string, any>;
+  isInteractiveFn?: (name: string) => boolean;
+  aiMessages: any[];
+  sessionStore: any;
+  sessionId: string | null;
+  /**
+   * Resource cleanup hook — set when an agent's tool resolver opens
+   * long-lived connections (today: MCP transports). Invoked exactly
+   * once after the response finishes, regardless of streaming/non-
+   * streaming/error path. Wrapped in try/catch by the caller so a
+   * misbehaving cleanup can't leak the request itself.
+   */
+  onResponseFinished?: () => Promise<void>;
+}
+
+/**
+ * Merge the effective tool palette for the LLM.
+ *
+ * Convert Polpo tools to AI SDK format (no execute — manual execution).
+ * Client-side tools (ask_user_question, etc.) stop the server loop and
+ * return to the client as standard tool_calls.
+ * `extraAiTools` are provider-executed (e.g. Vercel Gateway native
+ * tools) — already in AI SDK shape, must NOT be Polpo-converted.
+ */
+function mergeAiTools(exec: ChatCompletionExecution): Record<string, any> {
+  return {
+    ...toAITools(exec.effectiveTools),
+    ...(exec.extraAiTools ?? {}),
+    ...CLIENT_SIDE_TOOLS,
+  };
+}
+
+/** Streaming chat mode — SSE stream of OpenAI-format chunks. */
+export function streamChatCompletion(c: any, exec: ChatCompletionExecution): any {
+  const {
+    deps, body, completionId, agentMode, fullSystemPrompt, m, providerOpts,
+    modelToolChoice, effectiveTools, effectiveToolExecutor, extraAiTools,
+    isInteractiveFn, aiMessages, sessionStore, sessionId, onResponseFinished,
+  } = exec;
+  const aiTools = mergeAiTools(exec);
+
+  return streamSSE(c, async (stream) => {
+    // Abort controller: cancelled when the client disconnects (closes SSE)
+    const abortController = new AbortController();
+    stream.onAbort(() => { abortController.abort(); });
+
+    // SSE heartbeat: write a comment (`: ping`) every 20s to prevent
+    // proxy idle timeouts (nginx 60s, Cloudflare 100s) during long tool
+    // execution pauses. SSE comments are invisible to compliant clients.
+    // WritableStream serializes writes, so heartbeats cannot interleave
+    // mid-payload with writeSSE calls.
+    const heartbeatInterval = setInterval(() => {
+      if (abortController.signal.aborted) {
+        clearInterval(heartbeatInterval);
+        return;
+      }
+      stream.write(": ping\n\n").catch(() => {
+        clearInterval(heartbeatInterval);
+      });
+    }, 20_000);
+
+    await stream.writeSSE({ data: sseChunk(completionId, { role: "assistant" }) });
+
+    // Reserve a placeholder message in the store BEFORE streaming.
+    // This guarantees the assistant message exists even if the client disconnects.
+    let assistantMsgId: string | null = null;
+    if (sessionStore && sessionId) {
+      const placeholder = await sessionStore.addMessage(sessionId, "assistant", "");
+      assistantMsgId = placeholder.id;
+    }
+
+    const messages: any[] = [...aiMessages];
+    let finalText = "";
+    let totalUsage: LanguageModelUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 } as LanguageModelUsage;
+    const toolCallsAccum: any[] = [];
+    let lastProviderMetadata: Record<string, unknown> | undefined;
+
+    try {
+      for (let turn = 0; turn < MAX_TURNS; turn++) {
+        // Bail out early if the client already disconnected
+        if (abortController.signal.aborted) break;
+
+        // Compact context if approaching the model's context window limit.
+        // Under threshold this is just a cheap token estimation — zero LLM calls.
+        const compactionResult = await compactIfNeeded({
+          systemPrompt: fullSystemPrompt,
+          messages,
+          tools: effectiveTools,
+          config: {
+            contextWindow: m.contextWindow ?? 200_000,
+            maxOutputTokens: m.maxTokens ?? 8192,
+          },
+          summarize: buildSummarizeFn(m, providerOpts),
+          mode: "chat",
+          onCompaction: async (event: CompactionEvent) => {
+            await stream.writeSSE({
+              data: sseChunk(completionId, {}, null, {
+                compaction: {
+                  phase: event.phase,
+                  tokensBefore: event.tokensBefore,
+                  tokensAfter: event.tokensAfter,
+                  tokensReclaimed: event.tokensReclaimed,
+                  messagesBefore: event.messagesBefore,
+                  messagesAfter: event.messagesAfter,
+                },
+              }),
+            });
+          },
+        });
+        if (compactionResult.compacted) {
+          messages.splice(0, messages.length, ...compactionResult.messages);
+        }
+
+        const result = streamText({
+          model: m.aiModel,
+          system: fullSystemPrompt,
+          messages,
+          tools: aiTools,
+          ...(modelToolChoice ? { toolChoice: modelToolChoice as any } : {}),
+          maxOutputTokens: m.maxTokens,
+          providerOptions: providerOpts,
+          abortSignal: abortController.signal,
+        });
+
+        let turnText = "";
+        let streamError: string | undefined;
+
+        for await (const part of result.fullStream) {
+          if (abortController.signal.aborted) break;
+          if (part.type === "reasoning-delta") {
+            await stream.writeSSE({ data: sseChunk(completionId, {}, null, { thinking: part.text }) });
+          } else if (part.type === "text-delta") {
+            turnText += part.text;
+            await stream.writeSSE({ data: sseChunk(completionId, { content: part.text }) });
+          } else if (part.type === "tool-input-start") {
+            // Emit early "preparing" signal — the LLM has started generating a tool call
+            // but arguments are not yet complete. Lets the UI show immediate feedback.
+            await stream.writeSSE({
+              data: sseChunk(completionId, {}, null, {
+                tool_call: { id: part.id, name: part.toolName, state: "preparing" },
+              }),
+            });
+          } else if (part.type === "finish") {
+            // Capture error from finish reason if applicable
+            if (part.finishReason === "error") {
+              streamError = "Model returned an error";
+            }
+          }
+        }
+
+        // If aborted, stop the loop — skip error/tool processing
+        if (abortController.signal.aborted) {
+          finalText += turnText;
+          break;
+        }
+
+        if (streamError) {
+          finalText += `\n\nError: ${streamError}`;
+          await stream.writeSSE({ data: sseChunk(completionId, { content: `\n\nError: ${streamError}` }) });
+          break;
+        }
+
+        // Get tool calls and usage after stream completes
+        const toolCalls = await result.toolCalls;
+        const usage = await result.usage;
+        totalUsage = {
+          inputTokens: (totalUsage.inputTokens ?? 0) + (usage.inputTokens ?? 0),
+          outputTokens: (totalUsage.outputTokens ?? 0) + (usage.outputTokens ?? 0),
+          totalTokens: (totalUsage.totalTokens ?? 0) + (usage.totalTokens ?? 0),
+        } as LanguageModelUsage;
+        try { lastProviderMetadata = (await result.providerMetadata) as Record<string, unknown>; } catch { /* best effort */ }
+
+        await appendModelResponseMessages(messages, result, turnText, toolCalls);
+
+        finalText += turnText;
+
+        if (toolCalls.length === 0) break;
+
+        // ── Client-side tools — return to client as standard tool_calls ──
+        const clientSideCall = toolCalls.find((tc: any) => CLIENT_SIDE_TOOL_NAMES.has(tc.toolName));
+        if (clientSideCall) {
+          // Persist for session history
+          toolCallsAccum.push({
+            id: clientSideCall.toolCallId,
+            name: clientSideCall.toolName,
+            arguments: clientSideCall.input,
+            state: "interrupted",
+          });
+          // Send as standard OpenAI tool_calls finish reason
+          await stream.writeSSE({
+            data: JSON.stringify({
+              id: completionId,
+              object: "chat.completion.chunk",
+              choices: [{
+                index: 0,
+                delta: {
+                  role: "assistant",
+                  tool_calls: [{
+                    index: 0,
+                    id: clientSideCall.toolCallId,
+                    type: "function",
+                    function: {
+                      name: clientSideCall.toolName,
+                      arguments: JSON.stringify(clientSideCall.input),
+                    },
+                  }],
+                },
+                finish_reason: "tool_calls",
+              }],
+            }),
+          });
+          await stream.writeSSE({ data: "[DONE]" });
+          return;
+        }
+
+        // Check for interactive tools — only in orchestrator mode (agents don't have interactive tools)
+        const interactiveCall = agentMode ? undefined : toolCalls.find((tc: any) => isInteractiveFn?.(tc.toolName));
+        if (interactiveCall) {
+          // Persist the interactive tool call so it survives session reload
+          toolCallsAccum.push({
+            id: interactiveCall.toolCallId,
+            name: interactiveCall.toolName,
+            arguments: interactiveCall.input,
+            state: "interrupted",
+          });
+
+          if (interactiveCall.toolName === "ask_user") {
+            const questions = (interactiveCall.input as any)?.questions as any[] ?? [];
+            await stream.writeSSE({
+              data: sseChunk(completionId, {}, "ask_user", { ask_user: { questions } }),
+            });
+          } else if (interactiveCall.toolName === "create_mission") {
+            const args = interactiveCall.input as Record<string, unknown>;
+            let missionData: unknown;
+            try { missionData = JSON.parse(args.data as string); } catch { missionData = args.data; }
+            await stream.writeSSE({
+              data: sseChunk(completionId, {}, "mission_preview", {
+                mission_preview: {
+                  name: args.name as string,
+                  data: missionData,
+                  prompt: args.prompt as string | undefined,
+                },
+              }),
+            });
+          } else if (interactiveCall.toolName === "set_vault_entry") {
+            const args = interactiveCall.input as Record<string, unknown>;
+            await stream.writeSSE({
+              data: sseChunk(completionId, {}, "vault_preview", {
+                vault_preview: {
+                  agent: args.agent as string,
+                  service: args.service as string,
+                  type: args.type as string,
+                  label: args.label as string | undefined,
+                  credentials: args.credentials as Record<string, string>,
+                },
+              }),
+            });
+          } else if (interactiveCall.toolName === "open_file") {
+            const args = interactiveCall.input as Record<string, unknown>;
+            await stream.writeSSE({
+              data: sseChunk(completionId, {}, "open_file", {
+                open_file: {
+                  path: args.path as string,
+                },
+              }),
+            });
+          } else if (interactiveCall.toolName === "navigate_to") {
+            const args = interactiveCall.input as Record<string, unknown>;
+            await stream.writeSSE({
+              data: sseChunk(completionId, {}, "navigate_to", {
+                navigate_to: {
+                  target: args.target as string,
+                  id: args.id as string | undefined,
+                  name: args.name as string | undefined,
+                  path: args.path as string | undefined,
+                  highlight: args.highlight as string | undefined,
+                },
+              }),
+            });
+          } else if (interactiveCall.toolName === "open_tab") {
+            const args = interactiveCall.input as Record<string, unknown>;
+            await stream.writeSSE({
+              data: sseChunk(completionId, {}, "open_tab", {
+                open_tab: {
+                  url: args.url as string,
+                  label: args.label as string | undefined,
+                },
+              }),
+            });
+          }
+          await stream.writeSSE({ data: "[DONE]" });
+          return; // finally block will persist whatever finalText we have
+        }
+
+        // Provider tools (extraAiTools) are executed by the SDK / gateway.
+        // Their tool results are already preserved in responseMessages,
+        // so only record them for observability and skip local dispatch.
+        const providerToolNames = new Set(Object.keys(extraAiTools ?? {}));
+        let providerToolResults = new Map<string, any>();
+        try {
+          const settled = (await (result as any).toolResults) as any[] | undefined;
+          providerToolResults = indexToolResultsByCallId(settled);
+        } catch { /* best effort */ }
+
+        for (const call of toolCalls) {
+          // Stop executing tools if client disconnected
+          if (abortController.signal.aborted) break;
+
+          const callArgs = call.input as Record<string, unknown>;
+
+          if (providerToolNames.has(call.toolName)) {
+            recordProviderToolCall(toolCallsAccum, call, providerToolResults);
+            continue;
+          }
+
+          // Notify client that a tool is being called
+          await stream.writeSSE({
+            data: sseChunk(completionId, {}, null, {
+              tool_call: { id: call.toolCallId, name: call.toolName, arguments: callArgs, state: "calling" },
+            }),
+          });
+
+          const result = await effectiveToolExecutor(call.toolName, callArgs);
+          const isError = result.startsWith("Error:");
+          emitFileChanged(call.toolName, callArgs, result, deps.emit);
+
+          // Accumulate for persistence
+          toolCallsAccum.push({
+            id: call.toolCallId,
+            name: call.toolName,
+            arguments: callArgs,
+            result,
+            state: isError ? "error" : "completed",
+          });
+
+          // Notify client with tool result (skip if aborted mid-tool)
+          if (!abortController.signal.aborted) {
+            await stream.writeSSE({
+              data: sseChunk(completionId, {}, null, {
+                tool_call: { id: call.toolCallId, name: call.toolName, result, state: isError ? "error" : "completed" },
+              }),
+            });
+          }
+
+          // Push tool result message in AI SDK format
+          messages.push({
+            role: "tool",
+            content: [{
+              type: "tool-result",
+              toolCallId: call.toolCallId,
+              toolName: call.toolName,
+              output: isError
+                ? { type: "error-text" as const, value: result }
+                : { type: "text" as const, value: result },
+            }],
+          });
+        }
+      }
+
+      if (!abortController.signal.aborted) {
+        await stream.writeSSE({ data: sseChunk(completionId, {}, "stop") });
+        await stream.writeSSE({ data: "[DONE]" });
+      }
+    } catch (err) {
+      // Suppress AbortError — expected when client disconnects
+      if ((err instanceof DOMException && err.name === "AbortError") || abortController.signal.aborted) {
+        // fall through to finally — no SSE error event needed
+      } else {
+        // Friendly model_not_found surface — gateway returns 404 for
+        // renamed/deprecated SKUs (e.g. xai/grok-4-fast after the 4.1
+        // rename). Without this catch the error propagates as a 500.
+        const notFound = modelNotFoundEnvelope(err, m?.id, body.agent);
+        if (notFound) {
+          await stream.writeSSE({
+            data: sseChunk(completionId, {}, "stop", { error: notFound }),
+          });
+          await stream.writeSSE({ data: "[DONE]" });
+        } else {
+          throw err;
+        }
+      }
+    } finally {
+      clearInterval(heartbeatInterval);
+      // Always persist the assistant response — even on disconnect.
+      // SECURITY: Redact vault credentials before persisting to SQLite
+      const safeToolCalls = redactVaultToolCalls(toolCallsAccum);
+      if (sessionStore && sessionId && assistantMsgId) {
+        if (finalText.trim()) {
+          await sessionStore.updateMessage(sessionId, assistantMsgId, finalText.trim(), safeToolCalls);
+        }
+        else {
+          await sessionStore.updateMessage(sessionId, assistantMsgId, "", safeToolCalls);
+        }
+      }
+      // Notify consumer (e.g. metering) — fire-and-forget
+      try {
+        deps.onCompletionFinished?.({
+          usage: totalUsage,
+          model: m.id ?? m.provider,
+          agent: body.agent,
+          sessionId: sessionId ?? undefined,
+          user: body.user,
+          providerMetadata: lastProviderMetadata,
+        });
+      } catch { /* never fail on callback */ }
+      // Close per-request resources (MCP transports, etc.). Errors
+      // are intentionally swallowed — a stuck cleanup must not block
+      // the response from finishing.
+      if (onResponseFinished) {
+        onResponseFinished().catch(() => {});
+      }
+    }
+  }) as any;
+}
+
+/** Non-streaming chat mode — single OpenAI-format JSON response. */
+export async function runNonStreamingChatCompletion(c: any, exec: ChatCompletionExecution): Promise<any> {
+  const {
+    deps, body, completionId, agentMode, fullSystemPrompt, m, providerOpts,
+    modelToolChoice, effectiveTools, effectiveToolExecutor, extraAiTools,
+    isInteractiveFn, aiMessages, sessionStore, sessionId, onResponseFinished,
+  } = exec;
+  const aiTools = mergeAiTools(exec);
+
+  // Reserve placeholder so the message is visible even if the request is interrupted
+  let assistantMsgId: string | null = null;
+  if (sessionStore && sessionId) {
+    const placeholder = await sessionStore.addMessage(sessionId, "assistant", "");
+    assistantMsgId = placeholder.id;
+  }
+
+  const messages: any[] = [...aiMessages];
+  let finalText = "";
+  let totalUsage: LanguageModelUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 } as LanguageModelUsage;
+  const toolCallsAccum: any[] = [];
+  let lastProviderMetadata: Record<string, unknown> | undefined;
+
+  try {
+    for (let turn = 0; turn < MAX_TURNS; turn++) {
+      // Compact context if approaching the model's context window limit.
+      // Under threshold this is just a cheap token estimation — zero LLM calls.
+      const compactionResult = await compactIfNeeded({
+        systemPrompt: fullSystemPrompt,
+        messages,
+        tools: effectiveTools,
+        config: {
+          contextWindow: m.contextWindow ?? 200_000,
+          maxOutputTokens: m.maxTokens ?? 8192,
+        },
+        summarize: buildSummarizeFn(m, providerOpts),
+        mode: "chat",
+        // Non-streaming: no SSE to write to, compaction is silent
+      });
+      if (compactionResult.compacted) {
+        messages.splice(0, messages.length, ...compactionResult.messages);
+      }
+
+      const genResult = await generateText({
+        model: m.aiModel,
+        system: fullSystemPrompt,
+        messages,
+        tools: aiTools,
+        ...(modelToolChoice ? { toolChoice: modelToolChoice as any } : {}),
+        maxOutputTokens: m.maxTokens,
+        providerOptions: providerOpts,
+      });
+
+      const turnText = genResult.text;
+      const usage = genResult.usage;
+      totalUsage = {
+        inputTokens: (totalUsage.inputTokens ?? 0) + (usage.inputTokens ?? 0),
+        outputTokens: (totalUsage.outputTokens ?? 0) + (usage.outputTokens ?? 0),
+        totalTokens: (totalUsage.totalTokens ?? 0) + (usage.totalTokens ?? 0),
+      } as LanguageModelUsage;
+      try { lastProviderMetadata = genResult.providerMetadata as Record<string, unknown>; } catch { /* best effort */ }
+
+      await appendModelResponseMessages(messages, genResult, turnText, genResult.toolCalls);
+
+      finalText += turnText;
+
+      const toolCalls = genResult.toolCalls;
+      if (toolCalls.length === 0) break;
+
+      // ── Client-side tools — return to client as standard tool_calls ──
+      const clientSideCall = toolCalls.find((tc: any) => CLIENT_SIDE_TOOL_NAMES.has(tc.toolName));
+      if (clientSideCall) {
+        toolCallsAccum.push({
+          id: clientSideCall.toolCallId,
+          name: clientSideCall.toolName,
+          arguments: clientSideCall.input,
+          state: "interrupted",
+        });
+        // Persist before returning
+        if (sessionStore && sessionId) {
+          const assistantMsg = finalText + (turnText ? "" : "");
+          if (assistantMsg) {
+            await sessionStore.addMessage(sessionId, "assistant", assistantMsg, toolCallsAccum);
+          }
+        }
+        return c.json({
+          id: completionId,
+          object: "chat.completion",
+          created: Math.floor(Date.now() / 1000),
+          model: "polpo",
+          choices: [{
+            index: 0,
+            message: {
+              role: "assistant",
+              content: finalText || null,
+              tool_calls: [{
+                id: clientSideCall.toolCallId,
+                type: "function",
+                function: {
+                  name: clientSideCall.toolName,
+                  arguments: JSON.stringify(clientSideCall.input),
+                },
+              }],
+            },
+            finish_reason: "tool_calls",
+          }],
+          usage: {
+            prompt_tokens: totalUsage.inputTokens ?? 0,
+            completion_tokens: totalUsage.outputTokens ?? 0,
+            total_tokens: totalUsage.totalTokens ?? 0,
+          },
+        });
+      }
+
+      // Check for interactive tools — only in orchestrator mode (agents don't have interactive tools)
+      const interactiveCall = agentMode ? undefined : toolCalls.find((tc: any) => isInteractiveFn?.(tc.toolName));
+      if (interactiveCall) {
+        // Persist the interactive tool call so it survives session reload
+        toolCallsAccum.push({
+          id: interactiveCall.toolCallId,
+          name: interactiveCall.toolName,
+          arguments: interactiveCall.input,
+          state: "interrupted",
+        });
+
+        const baseResponse = {
+          id: completionId,
+          object: "chat.completion" as const,
+          created: Math.floor(Date.now() / 1000),
+          model: "polpo" as const,
+          usage: {
+            prompt_tokens: totalUsage.inputTokens ?? 0,
+            completion_tokens: totalUsage.outputTokens ?? 0,
+            total_tokens: totalUsage.totalTokens ?? 0,
+          },
+        };
+
+        if (interactiveCall.toolName === "ask_user") {
+          const questions = (interactiveCall.input as any)?.questions as any[] ?? [];
+          return c.json({
+            ...baseResponse,
+            choices: [{
+              index: 0,
+              message: { role: "assistant" as const, content: finalText },
+              finish_reason: "ask_user" as const,
+              ask_user: { questions },
+            }],
+          });
+        }
+
+        if (interactiveCall.toolName === "create_mission") {
+          const args = interactiveCall.input as Record<string, unknown>;
+          let missionData: unknown;
+          try { missionData = JSON.parse(args.data as string); } catch { missionData = args.data; }
+          return c.json({
+            ...baseResponse,
+            choices: [{
+              index: 0,
+              message: { role: "assistant" as const, content: finalText },
+              finish_reason: "mission_preview" as const,
+              mission_preview: {
+                name: args.name as string,
+                data: missionData,
+                prompt: args.prompt as string | undefined,
+              },
+            }],
+          });
+        }
+
+        if (interactiveCall.toolName === "set_vault_entry") {
+          const args = interactiveCall.input as Record<string, unknown>;
+          return c.json({
+            ...baseResponse,
+            choices: [{
+              index: 0,
+              message: { role: "assistant" as const, content: finalText },
+              finish_reason: "vault_preview" as const,
+              vault_preview: {
+                agent: args.agent as string,
+                service: args.service as string,
+                type: args.type as string,
+                label: args.label as string | undefined,
+                credentials: args.credentials as Record<string, string>,
+              },
+            }],
+          });
+        }
+
+        if (interactiveCall.toolName === "open_file") {
+          const args = interactiveCall.input as Record<string, unknown>;
+          return c.json({
+            ...baseResponse,
+            choices: [{
+              index: 0,
+              message: { role: "assistant" as const, content: finalText },
+              finish_reason: "open_file" as const,
+              open_file: {
+                path: args.path as string,
+              },
+            }],
+          });
+        }
+
+        if (interactiveCall.toolName === "navigate_to") {
+          const args = interactiveCall.input as Record<string, unknown>;
+          return c.json({
+            ...baseResponse,
+            choices: [{
+              index: 0,
+              message: { role: "assistant" as const, content: finalText },
+              finish_reason: "navigate_to" as const,
+              navigate_to: {
+                target: args.target as string,
+                id: args.id as string | undefined,
+                name: args.name as string | undefined,
+                path: args.path as string | undefined,
+                highlight: args.highlight as string | undefined,
+              },
+            }],
+          });
+        }
+
+        if (interactiveCall.toolName === "open_tab") {
+          const args = interactiveCall.input as Record<string, unknown>;
+          return c.json({
+            ...baseResponse,
+            choices: [{
+              index: 0,
+              message: { role: "assistant" as const, content: finalText },
+              finish_reason: "open_tab" as const,
+              open_tab: {
+                url: args.url as string,
+                label: args.label as string | undefined,
+              },
+            }],
+          });
+        }
+        // Note: finally block persists finalText + toolCallsAccum
+      }
+
+      // Provider tools (extraAiTools) are executed by the SDK / gateway.
+      // Their tool results are already preserved in responseMessages,
+      // so only record them for observability and skip local dispatch.
+      const providerToolNames = new Set(Object.keys(extraAiTools ?? {}));
+      const providerToolResults = indexToolResultsByCallId(genResult.toolResults as any[] | undefined);
+
+      for (const call of toolCalls) {
+        const callArgs = call.input as Record<string, unknown>;
+
+        if (providerToolNames.has(call.toolName)) {
+          recordProviderToolCall(toolCallsAccum, call, providerToolResults);
+          continue;
+        }
+
+        const result = await effectiveToolExecutor(call.toolName, callArgs);
+        const isError = result.startsWith("Error:");
+        emitFileChanged(call.toolName, callArgs, result, deps.emit);
+
+        // Accumulate for persistence
+        toolCallsAccum.push({
+          id: call.toolCallId,
+          name: call.toolName,
+          arguments: callArgs,
+          result,
+          state: isError ? "error" : "completed",
+        });
+
+        // Push tool result message in AI SDK format
+        messages.push({
+          role: "tool",
+          content: [{
+            type: "tool-result",
+            toolCallId: call.toolCallId,
+            toolName: call.toolName,
+            output: isError
+              ? { type: "error-text" as const, value: result }
+              : { type: "text" as const, value: result },
+          }],
+        });
+      }
+    }
+
+    return c.json(completionResponse(completionId, finalText, totalUsage));
+  } catch (err) {
+    // Friendly model_not_found surface — gateway returns 404 for
+    // renamed/deprecated SKUs (e.g. xai/grok-4-fast after the 4.1
+    // rename). Without this catch the error propagates as a 500.
+    const notFound = modelNotFoundEnvelope(err, m?.id, body.agent);
+    if (notFound) {
+      return c.json({ error: notFound }, 400 as any);
+    }
+    throw err;
+  } finally {
+    // Always persist the final text + tool calls — even on early return (ask_user) or error
+    // SECURITY: Redact vault credentials before persisting to SQLite
+    const safeToolCalls = redactVaultToolCalls(toolCallsAccum);
+    if (sessionStore && sessionId && assistantMsgId) {
+      if (finalText.trim()) {
+        await sessionStore.updateMessage(sessionId, assistantMsgId, finalText.trim(), safeToolCalls);
+      } else {
+        await sessionStore.updateMessage(sessionId, assistantMsgId, "[Response interrupted]", safeToolCalls);
+      }
+    }
+    // Notify consumer (e.g. metering) — fire-and-forget
+    try {
+      deps.onCompletionFinished?.({
+        usage: totalUsage,
+        model: m.id ?? m.provider,
+        agent: body.agent,
+        sessionId: sessionId ?? undefined,
+        user: body.user,
+        providerMetadata: lastProviderMetadata,
+      });
+    } catch { /* never fail on callback */ }
+    if (onResponseFinished) {
+      onResponseFinished().catch(() => {});
+    }
+  }
+}

@@ -207,6 +207,13 @@ export type {
 export { LOOP_LIFECYCLE_HOOKS, isLoopStep, isToolStep, isParallelStep, isSwitchStep, isWhileStep, isHumanStep } from "./loop/types.js";
 export { normalizeProjectLoop } from "./loop/normalize.js";
 export {
+  buildLoopStepAgent,
+  loopContextPrompt,
+  maybeParseJson,
+  normalizeToolInput,
+  stringifyLoopContext,
+} from "./loop/step-helpers.js";
+export {
   agentStep,
   bash,
   defineLoop,
