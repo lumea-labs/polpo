@@ -1,0 +1,708 @@
+{
+  "meta": {
+    "ts": "2026-07-04T23:03:42.991Z",
+    "sha": "84875ff",
+    "label": "durable-inprocess",
+    "node": "v20.20.0",
+    "hostname": "aHp0",
+    "target": "local",
+    "mode": "local",
+    "executionMode": "in-process"
+  },
+  "scenarios": [
+    {
+      "name": "smoke",
+      "description": "1 assistant turn, no tools — pure spawn + single LLM round-trip",
+      "params": {
+        "turns": 0,
+        "toolsPerTurn": 0,
+        "latencyMs": 50,
+        "finalBytes": 200
+      },
+      "sid": "smr6yxboq4idn0k",
+      "pass": true,
+      "terminal": "done",
+      "metrics": {
+        "wall_ms": 155,
+        "spawn_ms": 30,
+        "llm_ms": 50,
+        "overhead_ms": 105,
+        "loop_ms": 0,
+        "loop_overhead_ms": 0,
+        "turns": 1,
+        "llm_requests": 1,
+        "tool_calls": 0,
+        "outcome_calls": 0,
+        "summarize_calls": 0,
+        "post_ms": 26,
+        "execution_mode": "in-process"
+      },
+      "timeline": [
+        {
+          "status": "in_progress",
+          "tMs": 30
+        },
+        {
+          "status": "done",
+          "tMs": 155
+        }
+      ],
+      "checks": [
+        {
+          "name": "terminal_reached",
+          "pass": true,
+          "detail": "done"
+        },
+        {
+          "name": "terminal_status",
+          "pass": true,
+          "detail": "expected one of [done], got \"done\""
+        },
+        {
+          "name": "turns_served",
+          "pass": true,
+          "detail": "expected 1, mock served 1"
+        },
+        {
+          "name": "tool_calls",
+          "pass": true,
+          "detail": "expected 0, mock emitted 0"
+        },
+        {
+          "name": "execution_mode",
+          "pass": true,
+          "detail": "run record: executionMode=in-process, pid=-1 (expected in-process)"
+        }
+      ],
+      "elapsed_ms": 158
+    },
+    {
+      "name": "tool_loop_50",
+      "description": "50 tool turns x 1 bash — sequential loop throughput",
+      "params": {
+        "turns": 50,
+        "toolsPerTurn": 1,
+        "latencyMs": 50,
+        "toolOutputBytes": 256
+      },
+      "sid": "smr6yxbt4lqboce",
+      "pass": true,
+      "terminal": "done",
+      "metrics": {
+        "wall_ms": 3520,
+        "spawn_ms": 7,
+        "llm_ms": 2550,
+        "overhead_ms": 970,
+        "loop_ms": 3439,
+        "loop_overhead_ms": 889,
+        "turns": 51,
+        "llm_requests": 51,
+        "tool_calls": 50,
+        "outcome_calls": 0,
+        "summarize_calls": 0,
+        "post_ms": 5,
+        "execution_mode": "in-process"
+      },
+      "timeline": [
+        {
+          "status": "in_progress",
+          "tMs": 7
+        },
+        {
+          "status": "done",
+          "tMs": 3520
+        }
+      ],
+      "checks": [
+        {
+          "name": "terminal_reached",
+          "pass": true,
+          "detail": "done"
+        },
+        {
+          "name": "terminal_status",
+          "pass": true,
+          "detail": "expected one of [done], got \"done\""
+        },
+        {
+          "name": "turns_served",
+          "pass": true,
+          "detail": "expected 51, mock served 51"
+        },
+        {
+          "name": "tool_calls",
+          "pass": true,
+          "detail": "expected 50, mock emitted 50"
+        },
+        {
+          "name": "execution_mode",
+          "pass": true,
+          "detail": "run record: executionMode=in-process, pid=-2 (expected in-process)"
+        }
+      ],
+      "elapsed_ms": 3522
+    },
+    {
+      "name": "tool_burst",
+      "description": "10 tool turns x 5 bash/turn — parallel tool dispatch within a turn",
+      "params": {
+        "turns": 10,
+        "toolsPerTurn": 5,
+        "latencyMs": 50,
+        "toolOutputBytes": 256
+      },
+      "sid": "smr6yxeiyhv99k4",
+      "pass": true,
+      "terminal": "done",
+      "metrics": {
+        "wall_ms": 1226,
+        "spawn_ms": 6,
+        "llm_ms": 550,
+        "overhead_ms": 676,
+        "loop_ms": 1110,
+        "loop_overhead_ms": 560,
+        "turns": 11,
+        "llm_requests": 11,
+        "tool_calls": 50,
+        "outcome_calls": 0,
+        "summarize_calls": 0,
+        "post_ms": 5,
+        "execution_mode": "in-process"
+      },
+      "timeline": [
+        {
+          "status": "in_progress",
+          "tMs": 6
+        },
+        {
+          "status": "done",
+          "tMs": 1226
+        }
+      ],
+      "checks": [
+        {
+          "name": "terminal_reached",
+          "pass": true,
+          "detail": "done"
+        },
+        {
+          "name": "terminal_status",
+          "pass": true,
+          "detail": "expected one of [done], got \"done\""
+        },
+        {
+          "name": "turns_served",
+          "pass": true,
+          "detail": "expected 11, mock served 11"
+        },
+        {
+          "name": "tool_calls",
+          "pass": true,
+          "detail": "expected 50, mock emitted 50"
+        },
+        {
+          "name": "execution_mode",
+          "pass": true,
+          "detail": "run record: executionMode=in-process, pid=-3 (expected in-process)"
+        }
+      ],
+      "elapsed_ms": 1229
+    },
+    {
+      "name": "big_output",
+      "description": "30 tool turns x 1 bash with 64KB output — context growth / compaction stress",
+      "params": {
+        "turns": 30,
+        "toolsPerTurn": 1,
+        "latencyMs": 50,
+        "toolOutputBytes": 65536,
+        "finalBytes": 500
+      },
+      "sid": "smr6yxfh3s01k98",
+      "pass": true,
+      "terminal": "done",
+      "metrics": {
+        "wall_ms": 2411,
+        "spawn_ms": 7,
+        "llm_ms": 1550,
+        "overhead_ms": 861,
+        "loop_ms": 2262,
+        "loop_overhead_ms": 712,
+        "turns": 31,
+        "llm_requests": 31,
+        "tool_calls": 30,
+        "outcome_calls": 0,
+        "summarize_calls": 0,
+        "post_ms": 6,
+        "execution_mode": "in-process"
+      },
+      "timeline": [
+        {
+          "status": "in_progress",
+          "tMs": 7
+        },
+        {
+          "status": "done",
+          "tMs": 2411
+        }
+      ],
+      "checks": [
+        {
+          "name": "terminal_reached",
+          "pass": true,
+          "detail": "done"
+        },
+        {
+          "name": "terminal_status",
+          "pass": true,
+          "detail": "expected one of [done], got \"done\""
+        },
+        {
+          "name": "turns_served",
+          "pass": true,
+          "detail": "expected 31, mock served 31"
+        },
+        {
+          "name": "tool_calls",
+          "pass": true,
+          "detail": "expected 30, mock emitted 30"
+        },
+        {
+          "name": "execution_mode",
+          "pass": true,
+          "detail": "run record: executionMode=in-process, pid=-4 (expected in-process)"
+        }
+      ],
+      "elapsed_ms": 2412
+    },
+    {
+      "name": "max_turns_cap",
+      "description": "cap=never on agent with maxTurns=15 — runtime must stop the loop at the ceiling",
+      "params": {
+        "turns": 9999,
+        "toolsPerTurn": 1,
+        "latencyMs": 50,
+        "cap": "never"
+      },
+      "sid": "smr6yxhc3watqhz",
+      "pass": true,
+      "terminal": "done",
+      "metrics": {
+        "wall_ms": 1043,
+        "spawn_ms": 9,
+        "llm_ms": 750,
+        "overhead_ms": 293,
+        "loop_ms": 924,
+        "loop_overhead_ms": 174,
+        "turns": 15,
+        "llm_requests": 15,
+        "tool_calls": 15,
+        "outcome_calls": 0,
+        "summarize_calls": 0,
+        "post_ms": 7,
+        "execution_mode": "in-process"
+      },
+      "timeline": [
+        {
+          "status": "in_progress",
+          "tMs": 9
+        },
+        {
+          "status": "done",
+          "tMs": 1043
+        }
+      ],
+      "checks": [
+        {
+          "name": "terminal_reached",
+          "pass": true,
+          "detail": "done"
+        },
+        {
+          "name": "terminal_status",
+          "pass": true,
+          "detail": "expected one of [done, failed], got \"done\""
+        },
+        {
+          "name": "turns_served",
+          "pass": true,
+          "detail": "expected 15, mock served 15"
+        },
+        {
+          "name": "tool_calls",
+          "pass": true,
+          "detail": "expected 15, mock emitted 15"
+        },
+        {
+          "name": "execution_mode",
+          "pass": true,
+          "detail": "run record: executionMode=in-process, pid=-5 (expected in-process)"
+        }
+      ],
+      "elapsed_ms": 1044
+    },
+    {
+      "name": "outcomes_3",
+      "description": "5 tool turns + 3 register_outcome on the last turn — outcome pipeline",
+      "params": {
+        "turns": 5,
+        "toolsPerTurn": 1,
+        "latencyMs": 50,
+        "outcomes": 3
+      },
+      "sid": "smr6yxi53g6aill",
+      "pass": true,
+      "terminal": "done",
+      "metrics": {
+        "wall_ms": 425,
+        "spawn_ms": 5,
+        "llm_ms": 300,
+        "overhead_ms": 125,
+        "loop_ms": 352,
+        "loop_overhead_ms": 52,
+        "turns": 6,
+        "llm_requests": 6,
+        "tool_calls": 5,
+        "outcome_calls": 3,
+        "summarize_calls": 0,
+        "post_ms": 4,
+        "execution_mode": "in-process"
+      },
+      "timeline": [
+        {
+          "status": "in_progress",
+          "tMs": 5
+        },
+        {
+          "status": "done",
+          "tMs": 425
+        }
+      ],
+      "checks": [
+        {
+          "name": "terminal_reached",
+          "pass": true,
+          "detail": "done"
+        },
+        {
+          "name": "terminal_status",
+          "pass": true,
+          "detail": "expected one of [done], got \"done\""
+        },
+        {
+          "name": "turns_served",
+          "pass": true,
+          "detail": "expected 6, mock served 6"
+        },
+        {
+          "name": "tool_calls",
+          "pass": true,
+          "detail": "expected 5, mock emitted 5"
+        },
+        {
+          "name": "outcomes",
+          "pass": true,
+          "detail": "expected 3, task record has 3"
+        },
+        {
+          "name": "execution_mode",
+          "pass": true,
+          "detail": "run record: executionMode=in-process, pid=-6 (expected in-process)"
+        }
+      ],
+      "elapsed_ms": 428
+    },
+    {
+      "name": "timeout_kill",
+      "description": "cap=never + task maxDuration=8s — watchdog must kill and fail the task",
+      "params": {
+        "turns": 9999,
+        "toolsPerTurn": 1,
+        "latencyMs": 300,
+        "cap": "never"
+      },
+      "sid": "smr6yxigz6ac2h5",
+      "pass": true,
+      "terminal": "failed",
+      "metrics": {
+        "wall_ms": 10051,
+        "spawn_ms": 6,
+        "llm_ms": 9300,
+        "overhead_ms": 751,
+        "loop_ms": 9891,
+        "loop_overhead_ms": 591,
+        "turns": 31,
+        "llm_requests": 32,
+        "tool_calls": 31,
+        "outcome_calls": 0,
+        "summarize_calls": 0,
+        "post_ms": 5,
+        "execution_mode": "in-process"
+      },
+      "timeline": [
+        {
+          "status": "in_progress",
+          "tMs": 6
+        },
+        {
+          "status": "failed",
+          "tMs": 10051
+        }
+      ],
+      "checks": [
+        {
+          "name": "terminal_reached",
+          "pass": true,
+          "detail": "failed"
+        },
+        {
+          "name": "terminal_status",
+          "pass": true,
+          "detail": "expected one of [failed], got \"failed\""
+        },
+        {
+          "name": "execution_mode",
+          "pass": true,
+          "detail": "run record: executionMode=in-process, pid=-7 (expected in-process)"
+        }
+      ],
+      "elapsed_ms": 10053
+    },
+    {
+      "name": "concurrency_10",
+      "description": "10 concurrent tasks x 5 tool turns — scheduler fan-out + makespan",
+      "params": {
+        "turns": 5,
+        "toolsPerTurn": 1,
+        "latencyMs": 50,
+        "toolOutputBytes": 256
+      },
+      "concurrency": 10,
+      "pass": true,
+      "terminal": [
+        "done",
+        "done",
+        "done",
+        "done",
+        "done",
+        "done",
+        "done",
+        "done",
+        "done",
+        "done"
+      ],
+      "metrics": {
+        "makespan_ms": 1230,
+        "wall_ms_min": 1229,
+        "wall_ms_median": 1230,
+        "wall_ms_max": 1230,
+        "llm_ms_total": 3000,
+        "spawn_ms_min": 167,
+        "spawn_ms_max": 168
+      },
+      "checks": [
+        {
+          "name": "all_tasks_pass",
+          "pass": true,
+          "detail": "10/10 tasks green"
+        }
+      ],
+      "tasks": [
+        {
+          "sid": "smr6yxq881cgtrq",
+          "wall_ms": 1230,
+          "spawn_ms": 168,
+          "terminal": "done",
+          "llm_ms": 300,
+          "turns": 6,
+          "execution_mode": "in-process"
+        },
+        {
+          "sid": "smr6yxq89y1kpdc",
+          "wall_ms": 1230,
+          "spawn_ms": 168,
+          "terminal": "done",
+          "llm_ms": 300,
+          "turns": 6,
+          "execution_mode": "in-process"
+        },
+        {
+          "sid": "smr6yxq89e828f3",
+          "wall_ms": 1230,
+          "spawn_ms": 168,
+          "terminal": "done",
+          "llm_ms": 300,
+          "turns": 6,
+          "execution_mode": "in-process"
+        },
+        {
+          "sid": "smr6yxq89mm7ztc",
+          "wall_ms": 1230,
+          "spawn_ms": 168,
+          "terminal": "done",
+          "llm_ms": 300,
+          "turns": 6,
+          "execution_mode": "in-process"
+        },
+        {
+          "sid": "smr6yxq89rhbtxn",
+          "wall_ms": 1230,
+          "spawn_ms": 168,
+          "terminal": "done",
+          "llm_ms": 300,
+          "turns": 6,
+          "execution_mode": "in-process"
+        },
+        {
+          "sid": "smr6yxq8a4k5wte",
+          "wall_ms": 1229,
+          "spawn_ms": 167,
+          "terminal": "done",
+          "llm_ms": 300,
+          "turns": 6,
+          "execution_mode": "in-process"
+        },
+        {
+          "sid": "smr6yxq8af7xb12",
+          "wall_ms": 1229,
+          "spawn_ms": 167,
+          "terminal": "done",
+          "llm_ms": 300,
+          "turns": 6,
+          "execution_mode": "in-process"
+        },
+        {
+          "sid": "smr6yxq8az5v3ah",
+          "wall_ms": 1229,
+          "spawn_ms": 167,
+          "terminal": "done",
+          "llm_ms": 300,
+          "turns": 6,
+          "execution_mode": "in-process"
+        },
+        {
+          "sid": "smr6yxq8aqiq1za",
+          "wall_ms": 1229,
+          "spawn_ms": 167,
+          "terminal": "done",
+          "llm_ms": 300,
+          "turns": 6,
+          "execution_mode": "in-process"
+        },
+        {
+          "sid": "smr6yxq8ay3v8y7",
+          "wall_ms": 1229,
+          "spawn_ms": 167,
+          "terminal": "done",
+          "llm_ms": 300,
+          "turns": 6,
+          "execution_mode": "in-process"
+        }
+      ],
+      "elapsed_ms": 1452
+    },
+    {
+      "name": "crash_resume",
+      "description": "8 tool turns; SIGKILL server+runner after the turn-4 checkpoint; restart → startup recovery must RESUME from the checkpoint (turns ≤4 never re-executed) and finish with a result identical to a no-crash control run",
+      "params": {
+        "turns": 8,
+        "toolsPerTurn": 1,
+        "latencyMs": 400,
+        "toolOutputBytes": 256,
+        "finalBytes": 300
+      },
+      "killAfterTurn": 4,
+      "executionMode": "in-process",
+      "pass": true,
+      "terminal": "done",
+      "metrics": {
+        "control_wall_ms": 3886,
+        "kill_at_turn": 5,
+        "downtime_ms": 1575,
+        "wall_ms": 5541,
+        "resumed_from_turn": 5,
+        "turns_saved": 4,
+        "duplicated_turns": 1,
+        "llm_ms": 4000,
+        "turns": 9,
+        "llm_requests": 10,
+        "requests_pre_crash": 5,
+        "requests_post_crash": 5,
+        "tool_calls": 9
+      },
+      "timeline": [
+        {
+          "status": "in_progress",
+          "tMs": 3672
+        },
+        {
+          "status": "done",
+          "tMs": 5541
+        }
+      ],
+      "checks": [
+        {
+          "name": "control_terminal",
+          "pass": true,
+          "detail": "control run: done"
+        },
+        {
+          "name": "kill_window",
+          "pass": true,
+          "detail": "killed at mock turn 5 (threshold 5)"
+        },
+        {
+          "name": "terminal_reached",
+          "pass": true,
+          "detail": "done"
+        },
+        {
+          "name": "terminal_status",
+          "pass": true,
+          "detail": "expected one of [done], got \"done\""
+        },
+        {
+          "name": "resume_no_reexecution",
+          "pass": true,
+          "detail": "turns 1..4 requested exactly once — resumed from turn 5 (4 turns saved)"
+        },
+        {
+          "name": "resume_duplicates_bounded",
+          "pass": true,
+          "detail": "duplicated turns: 5(x2) (allowed: ≤2 turns, ≤2 requests each)"
+        },
+        {
+          "name": "history_seeded",
+          "pass": true,
+          "detail": "max bench call-id turn seen in an incoming request: 8 (need ≥ 4)"
+        },
+        {
+          "name": "turns_served",
+          "pass": true,
+          "detail": "expected 9 (=8 tool turns + final), mock served 9"
+        },
+        {
+          "name": "finals",
+          "pass": true,
+          "detail": "expected exactly 1 final response, got 1"
+        },
+        {
+          "name": "final_result_identical",
+          "pass": true,
+          "detail": "result text identical to control (300 bytes)"
+        },
+        {
+          "name": "execution_mode_pre_crash",
+          "pass": true,
+          "detail": "pre-crash run: executionMode=in-process, pid=-2 (expected in-process)"
+        },
+        {
+          "name": "execution_mode_post_resume",
+          "pass": true,
+          "detail": "post-resume run: executionMode=in-process, pid=-1 (expected in-process)"
+        }
+      ],
+      "elapsed_ms": 10711
+    }
+  ]
+}
