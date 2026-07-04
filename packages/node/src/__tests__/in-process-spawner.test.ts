@@ -29,7 +29,7 @@
  */
 
 import { describe, test, expect, beforeAll, afterAll, vi } from "vitest";
-import { mkdtemp, mkdir, rm, readFile } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, readFile, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -56,6 +56,7 @@ vi.mock("@polpo-ai/llm", async (importOriginal) => {
 });
 
 import { InProcessSpawner } from "../adapters/in-process-spawner.js";
+import { NodeSpawner } from "../adapters/node-spawner.js";
 import { executeRun } from "../core/run-lifecycle.js";
 import { Orchestrator } from "../core/orchestrator.js";
 import { InMemoryRunStore, InMemoryTaskStore, createTestAgent } from "./fixtures.js";
@@ -444,5 +445,77 @@ describe("orchestrator + InProcessSpawner (reactive tick)", () => {
       expect(spawner.isAlive(run.pid)).toBe(false);
     });
     expect((await runStore.getRun(run.id))?.status).toBe("killed");
+  });
+});
+
+// ── settings.taskExecution selection ────────────────────
+
+describe("settings.taskExecution selection", () => {
+  /** Prepare an isolated project dir, optionally with a polpo.json. */
+  async function makeProject(name: string, settings?: Record<string, unknown>): Promise<string> {
+    const dir = join(tmpRoot, name);
+    await mkdir(join(dir, ".polpo"), { recursive: true });
+    if (settings) {
+      await writeFile(
+        join(dir, ".polpo", "polpo.json"),
+        JSON.stringify({ project: name, settings: { maxRetries: 2, workDir: ".", logLevel: "normal", ...settings } }),
+      );
+    }
+    return dir;
+  }
+
+  function spawnerOf(orchestrator: Orchestrator): unknown {
+    return (orchestrator as unknown as { spawner: unknown }).spawner;
+  }
+
+  test("default: no opt-in → subprocess NodeSpawner (zero behavior change)", async () => {
+    const dir = await makeProject("sel-default", {});
+    const orchestrator = new Orchestrator({ workDir: dir });
+    await orchestrator.initInteractive("sel-default", {
+      name: "team", agents: [createTestAgent({ name: "worker" })],
+    });
+    expect(spawnerOf(orchestrator)).toBeInstanceOf(NodeSpawner);
+  });
+
+  test("in-process opt-in: task completes end-to-end without a fork", async () => {
+    setMockModel(mockTurnSequenceModel([{ type: "text", text: "selected in-process" }]));
+    const dir = await makeProject("sel-inproc", { taskExecution: "in-process" });
+    const orchestrator = new Orchestrator({
+      workDir: dir,
+      assessFn: async () => ({
+        passed: true, checks: [], metrics: [], timestamp: new Date().toISOString(),
+      }),
+    });
+    await orchestrator.initInteractive("sel-inproc", {
+      name: "team", agents: [createTestAgent({ name: "worker" })],
+    });
+    expect(spawnerOf(orchestrator)).toBeInstanceOf(InProcessSpawner);
+
+    // End-to-end through the orchestrator's OWN (file) stores — proving the
+    // lazy deps wiring, not just the instance swap. A forked subprocess
+    // could never complete here: the LLM mock only exists in this process.
+    const exited = new Promise<void>((resolve) => orchestrator.on("run:exited", () => resolve()));
+    await orchestrator.engine.createTask({
+      title: "Selected task", description: "Say it", assignTo: "worker",
+    });
+    await orchestrator.tick();
+    await exited;
+    await orchestrator.tick();
+
+    const store = orchestrator.getStore();
+    await vi.waitFor(async () => {
+      expect((await store.listTasks())[0].status).toBe("done");
+    });
+    expect((await store.listTasks())[0].result?.stdout).toBe("selected in-process");
+  });
+
+  test("an injected spawner always wins over the setting", async () => {
+    const dir = await makeProject("sel-injected", { taskExecution: "in-process" });
+    const injected = new InProcessSpawner(() => ({ runStore: new InMemoryRunStore() }));
+    const orchestrator = new Orchestrator({ workDir: dir, spawner: injected });
+    await orchestrator.initInteractive("sel-injected", {
+      name: "team", agents: [createTestAgent({ name: "worker" })],
+    });
+    expect(spawnerOf(orchestrator)).toBe(injected);
   });
 });

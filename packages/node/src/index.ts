@@ -8,6 +8,13 @@ export { FileTaskStore, FileRunStore, JsonTaskStore } from "@polpo-ai/file-store
 // Engine
 export { spawnLoopEngine } from "./adapters/loop-engine.js";
 
+// Spawners — subprocess (default) and in-process (settings.taskExecution: "in-process")
+export { NodeSpawner } from "./adapters/node-spawner.js";
+export { InProcessSpawner } from "./adapters/in-process-spawner.js";
+export type { InProcessSpawnerDeps } from "./adapters/in-process-spawner.js";
+export { executeRun } from "./core/run-lifecycle.js";
+export type { ExecuteRunDeps, ExecuteRunOutcome, TranscriptSession } from "./core/run-lifecycle.js";
+
 // Assessment
 export { assessTask, runCheck, runMetric } from "./assessment/assessor.js";
 export { runLLMReview, computeWeightedScore, buildRubricSection, DEFAULT_DIMENSIONS, validateReviewPayload, ReviewPayloadSchema, findLogForTask, buildExecutionSummary } from "./assessment/index.js";

@@ -649,6 +649,27 @@ describe("DrizzleLogStore", () => {
     expect(pruned).toBe(1);
     expect(await stores.logStore.listSessions()).toHaveLength(1);
   });
+
+  it("createLogStore returns independent instances over the same db (no session hijack)", async () => {
+    // One dedicated instance per consumer (e.g. per in-process task run):
+    // each keeps its OWN current session…
+    const a = stores.createLogStore!();
+    const b = stores.createLogStore!();
+    const sessA = await a.startSession();
+    const sessB = await b.startSession();
+    expect(sessA).not.toBe(sessB);
+
+    await a.append({ ts: "2025-01-01T00:00:00Z", event: "from-a", data: null });
+    await b.append({ ts: "2025-01-01T00:00:01Z", event: "from-b", data: null });
+
+    expect((await a.getSessionEntries()).map(e => e.event)).toEqual(["from-a"]);
+    expect((await b.getSessionEntries()).map(e => e.event)).toEqual(["from-b"]);
+
+    // …while the shared bundle logStore's current session is untouched,
+    // and all sessions live in the same database (cross-readable by id).
+    expect(await stores.logStore.getSessionId()).toBeUndefined();
+    expect((await stores.logStore.getSessionEntries(sessB)).map(e => e.event)).toEqual(["from-b"]);
+  });
 });
 
 // ═══════════════════════════════════════════════════════════════════════
