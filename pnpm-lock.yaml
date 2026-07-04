@@ -66,6 +66,10 @@ importers:
         version: 5.9.3
 
   packages/client-sdk:
+    dependencies:
+      '@polpo-ai/core':
+        specifier: workspace:*
+        version: link:../core
     devDependencies:
       typescript:
         specifier: ^5.7.0

@@ -2,23 +2,23 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import Database from "better-sqlite3";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import { createSqliteStores } from "@polpo-ai/drizzle";
-import { ensureSqliteSchema } from "../core/drizzle-sqlite-schema.js";
+import { migrateSqliteSchema } from "@polpo-ai/drizzle";
 import type { TaskStore } from "@polpo-ai/core/task-store";
 
 let sqlite: InstanceType<typeof Database>;
 
-function makeStore(): TaskStore {
+async function makeStore(): Promise<TaskStore> {
   sqlite = new Database(":memory:");
-  ensureSqliteSchema(sqlite);
   const db = drizzle(sqlite);
+  await migrateSqliteSchema(db);
   return createSqliteStores(db).taskStore;
 }
 
 describe("Mission Persistence (Drizzle SQLite)", () => {
   let store: TaskStore;
 
-  beforeEach(() => {
-    store = makeStore();
+  beforeEach(async () => {
+    store = await makeStore();
   });
 
   afterEach(() => {

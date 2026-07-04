@@ -145,10 +145,10 @@ async function createStores(config: RunnerConfig): Promise<RunnerStores> {
     sqlite.exec("PRAGMA journal_mode = WAL");
     sqlite.exec("PRAGMA synchronous = NORMAL");
     sqlite.exec("PRAGMA foreign_keys = ON");
-    const { ensureSqliteSchema } = await import("./drizzle-sqlite-schema.js");
-    ensureSqliteSchema(sqlite);
     const { drizzle } = await import("drizzle-orm/better-sqlite3");
     const db = drizzle(sqlite);
+    const { migrateSqliteSchema } = await import("@polpo-ai/drizzle");
+    await migrateSqliteSchema(db);
     const stores = createSqliteStores(db);
     return { runStore: stores.runStore, logStore: stores.logStore, vaultStore: stores.vaultStore, memoryStore: stores.memoryStore };
   }

@@ -4,7 +4,7 @@ import { join } from "node:path";
 import Database from "better-sqlite3";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import { createSqliteStores } from "@polpo-ai/drizzle";
-import { ensureSqliteSchema } from "../core/drizzle-sqlite-schema.js";
+import { migrateSqliteSchema } from "@polpo-ai/drizzle";
 import { Orchestrator } from "../core/orchestrator.js";
 import type { TaskStore } from "@polpo-ai/core/task-store";
 import { InMemoryRunStore, createTestAgent } from "./fixtures.js";
@@ -24,8 +24,8 @@ describe("Mission resume (Orchestrator)", () => {
     sqlite = new Database(join(TEST_DIR, "state.db"));
     sqlite.exec("PRAGMA journal_mode = WAL");
     sqlite.exec("PRAGMA foreign_keys = ON");
-    ensureSqliteSchema(sqlite);
     const db = drizzle(sqlite);
+    await migrateSqliteSchema(db);
     store = createSqliteStores(db).taskStore;
     runStore = new InMemoryRunStore();
 
