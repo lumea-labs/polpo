@@ -6,22 +6,198 @@
 
 // === Task ===
 
-export type TaskStatus =
-  | "draft"
-  | "pending"
-  | "awaiting_approval"
-  | "assigned"
-  | "in_progress"
-  | "review"
-  | "done"
-  | "failed";
 
-export interface EvalDimension {
-  name: string;
-  description: string;
-  weight: number;
-  rubric?: Record<number, string>;
-}
+
+// ── Domain types: canonical definitions live in @polpo-ai/core ──────────
+// Type-only re-exports: zero runtime cost, no bundle impact. The hand-kept
+// copies that used to live here had already drifted from core.
+import type {
+  AgentActivity,
+  AgentConfig,
+  AgentIdentity,
+  AgentProcess,
+  AgentResponsibility,
+  ApprovalGateHandler,
+  ApprovalRequest,
+  ApprovalStatus,
+  AskUserAnswer,
+  AskUserOption,
+  AskUserQuestion,
+  AssessmentResult,
+  AssessmentTrigger,
+  Attachment,
+  ChannelGatewayConfig,
+  CheckResult,
+  Condition,
+  CustomModelDef,
+  DimensionScore,
+  DmPolicy,
+  EvalDimension,
+  ExpectedOutcome,
+  FileEntry,
+  LoadedSkill,
+  LogEntry,
+  LoopApprovalSnapshot,
+  LoopApprovedGate,
+  LoopConfig,
+  LoopHookAction,
+  LoopLifecycleHook,
+  LoopNext,
+  LoopPermissionEffect,
+  LoopPermissionMatch,
+  LoopPermissionResource,
+  LoopPolicyEffect,
+  LoopResumeState,
+  LoopRunRecord,
+  LoopStepConfig,
+  LoopToolChoice,
+  LoopTraceEvent,
+  LoopTraceEventType,
+  MetricResult,
+  Mission,
+  MissionCheckpoint,
+  MissionDelay,
+  MissionQualityGate,
+  MissionReport,
+  MissionStatus,
+  ModelAllowlistEntry,
+  ModelConfig,
+  NotificationChannelConfig,
+  NotificationChannelType,
+  NotificationRule,
+  NotificationSeverity,
+  OutcomeType,
+  Pipeline,
+  PolpoConfig,
+  PolpoSettings,
+  PolpoState,
+  ProjectLoopConfig,
+  ProjectLoopHooks,
+  ProjectLoopKind,
+  ProjectLoopPermission,
+  ProjectLoopPolicy,
+  ProjectLoopRunStatus,
+  ProjectLoopVersion,
+  ProviderConfig,
+  QualityMetrics,
+  ReasoningLevel,
+  RetryPolicy,
+  ReviewerExploration,
+  ReviewerMessage,
+  ReviewerResult,
+  ScheduleEntry,
+  ScopedNotificationRules,
+  SkillIndex,
+  SkillIndexEntry,
+  SkillInfo,
+  SkillWithAssignment,
+  Step,
+  SwitchCase,
+  Task,
+  TaskExpectation,
+  TaskMetric,
+  TaskOutcome,
+  TaskPhase,
+  TaskResult,
+  TaskStatus,
+  Team,
+  ToolCallState,
+  WhileBlock,
+} from "@polpo-ai/core";
+
+export type {
+  AgentActivity,
+  AgentConfig,
+  AgentIdentity,
+  AgentProcess,
+  AgentResponsibility,
+  ApprovalGateHandler,
+  ApprovalRequest,
+  ApprovalStatus,
+  AskUserAnswer,
+  AskUserOption,
+  AskUserQuestion,
+  AssessmentResult,
+  AssessmentTrigger,
+  Attachment,
+  ChannelGatewayConfig,
+  CheckResult,
+  Condition,
+  CustomModelDef,
+  DimensionScore,
+  DmPolicy,
+  EvalDimension,
+  ExpectedOutcome,
+  FileEntry,
+  LoadedSkill,
+  LogEntry,
+  LoopApprovalSnapshot,
+  LoopApprovedGate,
+  LoopConfig,
+  LoopHookAction,
+  LoopLifecycleHook,
+  LoopNext,
+  LoopPermissionEffect,
+  LoopPermissionMatch,
+  LoopPermissionResource,
+  LoopPolicyEffect,
+  LoopResumeState,
+  LoopRunRecord,
+  LoopStepConfig,
+  LoopToolChoice,
+  LoopTraceEvent,
+  LoopTraceEventType,
+  MetricResult,
+  Mission,
+  MissionCheckpoint,
+  MissionDelay,
+  MissionQualityGate,
+  MissionReport,
+  MissionStatus,
+  ModelAllowlistEntry,
+  ModelConfig,
+  NotificationChannelConfig,
+  NotificationChannelType,
+  NotificationRule,
+  NotificationSeverity,
+  OutcomeType,
+  Pipeline,
+  PolpoConfig,
+  PolpoSettings,
+  PolpoState,
+  ProjectLoopConfig,
+  ProjectLoopHooks,
+  ProjectLoopKind,
+  ProjectLoopPermission,
+  ProjectLoopPolicy,
+  ProjectLoopRunStatus,
+  ProjectLoopVersion,
+  ProviderConfig,
+  QualityMetrics,
+  ReasoningLevel,
+  RetryPolicy,
+  ReviewerExploration,
+  ReviewerMessage,
+  ReviewerResult,
+  ScheduleEntry,
+  ScopedNotificationRules,
+  SkillIndex,
+  SkillIndexEntry,
+  SkillInfo,
+  SkillWithAssignment,
+  Step,
+  SwitchCase,
+  Task,
+  TaskExpectation,
+  TaskMetric,
+  TaskOutcome,
+  TaskPhase,
+  TaskResult,
+  TaskStatus,
+  Team,
+  ToolCallState,
+  WhileBlock,
+};
 
 export interface DimensionScoreEvidence {
   file: string;
@@ -29,115 +205,17 @@ export interface DimensionScoreEvidence {
   note: string;
 }
 
-export interface DimensionScore {
-  dimension: string;
-  score: number;
-  reasoning: string;
-  weight: number;
-  evidence?: DimensionScoreEvidence[];
-}
 
-export interface TaskExpectation {
-  type: "test" | "file_exists" | "script" | "llm_review";
-  command?: string;
-  paths?: string[];
-  criteria?: string;
-  dimensions?: EvalDimension[];
-  threshold?: number;
-  confidence?: "firm" | "estimated";
-}
 
-export interface TaskMetric {
-  name: string;
-  command: string;
-  threshold: number;
-}
 
-export interface RetryPolicy {
-  escalateAfter?: number;
-  fallbackAgent?: string;
-  escalateModel?: string;
-}
 
-export type TaskPhase = "execution" | "review" | "fix" | "clarification";
 
 // === Outcomes ===
 
-export type OutcomeType = "file" | "text" | "url" | "json" | "media";
 
-export interface TaskOutcome {
-  id: string;
-  type: OutcomeType;
-  label: string;
-  path?: string;
-  mimeType?: string;
-  size?: number;
-  text?: string;
-  url?: string;
-  data?: unknown;
-  producedBy?: string;
-  producedAt: string;
-  tags?: string[];
-}
 
-export interface ExpectedOutcome {
-  type: OutcomeType;
-  label: string;
-  description?: string;
-  path?: string;
-  mimeType?: string;
-  required?: boolean;
-  tags?: string[];
-}
 
-export interface Task {
-  id: string;
-  title: string;
-  description: string;
-  assignTo: string;
-  group?: string;
-  dependsOn: string[];
-  status: TaskStatus;
-  expectations: TaskExpectation[];
-  metrics: TaskMetric[];
-  retries: number;
-  maxRetries: number;
-  maxDuration?: number;
-  retryPolicy?: RetryPolicy;
-  result?: TaskResult;
-  phase?: TaskPhase;
-  fixAttempts?: number;
-  questionRounds?: number;
-  resolutionAttempts?: number;
-  originalDescription?: string;
-  sessionId?: string;
-  /** Absolute deadline (ISO timestamp). */
-  deadline?: string;
-  /** Priority weight for quality scoring. Default: 1.0 */
-  priority?: number;
-  expectedOutcomes?: ExpectedOutcome[];
-  outcomes?: TaskOutcome[];
-  /** Number of approval revision rounds. */
-  revisionCount?: number;
-  /** Scoped notification rules for this task. */
-  notifications?: ScopedNotificationRules;
-  /** Whether this task produces irreversible side effects. Blocks automatic retry/fix. */
-  sideEffects?: boolean;
-  /** Opaque end-user identifier (OpenAI-compat). Set at create time, propagates to runs. */
-  user?: string;
-  createdAt: string;
-  updatedAt: string;
-}
 
-export interface TaskResult {
-  exitCode: number;
-  stdout: string;
-  stderr: string;
-  duration: number;
-  assessment?: AssessmentResult;
-  /** All previous assessments (oldest first). Current assessment is always in `assessment`. */
-  assessmentHistory?: AssessmentResult[];
-}
 
 // === Agent ===
 
@@ -173,55 +251,10 @@ export type McpServerConfig =
 
 // === Agent Identity & Vault ===
 
-/** Agent identity — who this agent is and how it behaves */
-/** A structured responsibility area */
-export interface AgentResponsibility {
-  area: string;
-  description: string;
-  priority?: "critical" | "high" | "medium" | "low";
-}
 
-export interface AgentIdentity {
-  displayName?: string;
-  title?: string;
-  company?: string;
-  email?: string;
-  bio?: string;
-  timezone?: string;
-  /** Avatar image path relative to project root, served via /api/v1/files/read?path=<avatar> */
-  avatar?: string;
-  /** Ready-to-use relative URL for fetching the avatar image. Read-only, set by server. */
-  avatarUrl?: string;
-  /** Responsibilities — simple strings or structured objects with area/description/priority */
-  responsibilities?: (string | AgentResponsibility)[];
-  /** Communication tone — HOW the agent communicates */
-  tone?: string;
-  /** Personality traits — WHO the agent IS as a persona */
-  personality?: string;
-  /** Social & web accounts — keys are platform names, values are handles/URLs */
-  socials?: Record<string, string>;
-}
 
-export interface Condition {
-  expression: string;
-}
 
-export interface LoopConfig {
-  name?: string;
-  systemPrompt?: string;
-  tools?: string[];
-  skills?: string[];
-  toolChoice?: LoopToolChoice;
-  model?: string;
-  reasoning?: string;
-  temperature?: number;
-  maxTurns?: number;
-  stopWhen?: Condition;
-  output?: { schema?: unknown };
-}
 
-export type LoopNext = string | Array<{ when?: string; to: string }>;
-export type LoopToolChoice = "auto" | "none" | "required" | { mode: "auto" | "none" | "required"; tool?: string };
 
 export const LOOP_LIFECYCLE_HOOKS = [
   "loop:start",
@@ -235,140 +268,18 @@ export const LOOP_LIFECYCLE_HOOKS = [
   "loop:end",
 ] as const;
 
-export type LoopLifecycleHook = typeof LOOP_LIFECYCLE_HOOKS[number];
-export type ProjectLoopVersion = "1";
-export type ProjectLoopKind = "graph";
 
-export interface LoopHookAction {
-  tool: string;
-  input?: unknown;
-  saveAs?: string;
-  when?: string;
-  onError?: "fail" | "continue";
-}
 
-export type ProjectLoopHooks = Partial<Record<LoopLifecycleHook, LoopHookAction[]>>;
-export type LoopPolicyEffect = "allow" | "deny" | "approval";
-export type LoopPermissionEffect = "allow" | "deny" | "approval";
-export type LoopPermissionResource = "loop" | "step" | "model" | "tool" | "human";
 
-export interface ProjectLoopPolicy {
-  id?: string;
-  description?: string;
-  hook?: LoopLifecycleHook;
-  effect: LoopPolicyEffect;
-  when: string;
-  message?: string;
-}
 
-export interface LoopPermissionMatch {
-  loop?: string | string[];
-  step?: string | string[];
-  tool?: string | string[];
-  human?: string | string[];
-  hook?: LoopLifecycleHook | LoopLifecycleHook[];
-}
 
-export interface ProjectLoopPermission {
-  id?: string;
-  description?: string;
-  resource: LoopPermissionResource;
-  action?: string;
-  effect: LoopPermissionEffect;
-  match?: LoopPermissionMatch;
-  when?: string;
-  message?: string;
-}
 
-export type LoopTraceEventType =
-  | "loop.start"
-  | "loop.resume"
-  | "loop.end"
-  | "loop.error"
-  | "permission.result"
-  | "policy.result"
-  | "approval.required"
-  | "step.start"
-  | "step.end"
-  | "step.skip"
-  | "tool.call"
-  | "tool.result"
-  | "human.request"
-  | "human.result"
-  | "transition";
 
-export interface LoopTraceEvent {
-  id: string;
-  type: LoopTraceEventType;
-  ts: string;
-  loop?: string;
-  step?: string;
-  tool?: string;
-  human?: string;
-  from?: string;
-  to?: string;
-  status?: "started" | "completed" | "skipped" | "failed";
-  when?: string;
-  input?: unknown;
-  output?: unknown;
-  error?: string;
-  data?: Record<string, unknown>;
-}
 
-export type ProjectLoopRunStatus = "running" | "completed" | "failed" | "awaiting_approval" | "approval_approved" | "approval_rejected" | "resuming" | "cancelled";
 
-export interface LoopApprovedGate {
-  type: "policy" | "permission";
-  id: string;
-  hook: LoopLifecycleHook;
-  approvalRequestId?: string;
-  resolvedAt?: string;
-  resolvedBy?: string;
-}
 
-export interface LoopResumeState {
-  context: Record<string, unknown>;
-  steps: Step[];
-  previousNode?: string;
-  approvedGates?: LoopApprovedGate[];
-  runtime?: Record<string, unknown>;
-  attempts?: number;
-  createdAt: string;
-  updatedAt?: string;
-}
 
-export interface LoopApprovalSnapshot {
-  type?: "policy" | "permission";
-  policyId: string;
-  permissionId?: string;
-  hook: LoopLifecycleHook;
-  message?: string;
-  payload: Record<string, unknown>;
-  context: Record<string, unknown>;
-  status?: "pending" | "approved" | "rejected";
-  resolvedAt?: string;
-  resolvedBy?: string;
-  note?: string;
-}
 
-export interface LoopRunRecord {
-  id: string;
-  loopName: string;
-  agentName?: string;
-  sessionId?: string;
-  user?: string;
-  status: ProjectLoopRunStatus;
-  context: Record<string, unknown>;
-  trace: LoopTraceEvent[];
-  error?: string;
-  approvalRequestId?: string;
-  approval?: LoopApprovalSnapshot;
-  resume?: LoopResumeState;
-  metadata?: Record<string, unknown>;
-  startedAt: string;
-  updatedAt: string;
-  completedAt?: string;
-}
 
 export interface LoopRunFilters {
   loopName?: string;
@@ -379,259 +290,34 @@ export interface LoopRunFilters {
   limit?: number;
 }
 
-export type LoopStepConfig =
-  | (LoopConfig & { type?: "agent"; when?: string; next?: LoopNext })
-  | { type: "human"; when?: string; output?: { schema?: unknown }; notify?: string[]; next?: LoopNext }
-  | { type: "parallel"; when?: string; branches: string[]; join?: "all" | "any" | number; next?: LoopNext }
-  | { type: "while"; when?: string; condition?: string; until?: string; body: string | string[]; maxIterations?: number; next?: LoopNext }
-  | { type: "tool"; when?: string; tool: string; input?: unknown; saveAs?: string; next?: LoopNext };
 
-export interface ProjectLoopConfig {
-  version?: ProjectLoopVersion;
-  kind?: ProjectLoopKind;
-  name: string;
-  description?: string;
-  metadata?: Record<string, unknown>;
-  context?: "shared";
-  hooks?: ProjectLoopHooks;
-  permissions?: ProjectLoopPermission[];
-  policies?: ProjectLoopPolicy[];
-  start: string;
-  steps: Record<string, LoopStepConfig>;
-}
 
-export interface SwitchCase {
-  when: string;
-  steps: Step[];
-}
 
-export interface WhileBlock {
-  condition?: string;
-  until?: string;
-  maxIterations?: number;
-  steps: Step[];
-}
 
-export type Step =
-  | { loop: string; when?: string }
-  | { tool: string; input?: unknown; saveAs?: string; when?: string }
-  | { parallel: Step[]; join?: "all" | "any" | number; when?: string }
-  | { switch: { cases: SwitchCase[]; default?: { steps: Step[] } }; when?: string }
-  | { while: WhileBlock; when?: string }
-  | { human: string; output?: { schema?: unknown }; notify?: string[]; when?: string };
 
-export interface Pipeline {
-  mode?: "sequential" | "parallel";
-  context?: "shared";
-  steps: Step[];
-}
 
-export interface AgentConfig {
-  name: string;
-  /** ISO timestamp of when this agent was created / added to the team. */
-  createdAt?: string;
-  role?: string;
-  model?: string;
-  allowedTools?: string[];
-  /** MCP servers to connect to. */
-  mcpServers?: Record<string, McpServerConfig>;
-  /** Filesystem sandbox — directories the agent is allowed to access.
-   *  When omitted, defaults to the project workDir. */
-  allowedPaths?: string[];
-  /** Agent's identity — persona, responsibilities, communication style */
-  identity?: AgentIdentity;
-  // NOTE: Vault credentials are stored in encrypted .polpo/vault.enc — not on AgentConfig.
-  /** Agent this one reports to — org chart hierarchy for escalation */
-  reportsTo?: string;
-  systemPrompt?: string;
-  skills?: string[];
-  maxTurns?: number;
-  /** Max concurrent tasks for this agent. Default: unlimited. */
-  maxConcurrency?: number;
-  /** Reasoning / deep thinking level for this agent's LLM calls. */
-  reasoning?: ReasoningLevel;
-  /** Runtime/environment ref for configurable loop execution. */
-  runtime?: string;
-  /** Runtime-only model tool-choice policy materialized from an active loop step. */
-  toolChoice?: LoopToolChoice;
-  /** Project-level loop names this agent can use. */
-  assignedLoops?: string[];
-  /** Default project-level loop name for this agent. */
-  defaultLoop?: string;
-  /** Legacy inline loop collection. Prefer project-level loops + assignedLoops. */
-  loops?: Record<string, LoopConfig>;
-  /** Legacy deterministic loop pipeline. */
-  pipeline?: Pipeline;
-  volatile?: boolean;
-  missionGroup?: string;
 
-  // Tool categories are activated via allowedTools (e.g. ["browser_*", "email_*", "image_*", "video_*", "audio_*", "excel_*", "pdf_*", "docx_*", "search_*"])
-  // Note: HTTP tools (http_fetch, http_download) and vault tools (vault_get, vault_list) are always available as core tools.
-  /** Browser profile name for persistent context (cookies, auth). Used with agent-browser --profile. */
-  browserProfile?: string;
-  /** Allowed recipient email domains for email_send. Overrides global setting. */
-  emailAllowedDomains?: string[];
-}
 
-export interface AgentActivity {
-  lastTool?: string;
-  lastFile?: string;
-  filesCreated: string[];
-  filesEdited: string[];
-  toolCalls: number;
-  totalTokens: number;
-  lastUpdate: string;
-  summary?: string;
-  sessionId?: string;
-}
-
-export interface AgentProcess {
-  agentName: string;
-  pid: number;
-  taskId: string;
-  startedAt: string;
-  alive: boolean;
-  activity: AgentActivity;
-}
 
 // === Team ===
 
-export interface Team {
-  name: string;
-  description?: string;
-  agents: AgentConfig[];
-}
 
 // === Assessment ===
 
-/** Serializable representation of a single message in the reviewer's conversation */
-export interface ReviewerMessage {
-  role: "user" | "assistant" | "toolResult";
-  /** For user/assistant: text content. For toolResult: the tool output text. */
-  content: string;
-  /** Tool calls made by the assistant (if role === "assistant") */
-  toolCalls?: { id: string; name: string; arguments: Record<string, unknown> }[];
-  /** For toolResult messages */
-  toolCallId?: string;
-  toolName?: string;
-  isError?: boolean;
-  timestamp: number;
-}
 
-/** Phase 1 exploration trace from a single reviewer */
-export interface ReviewerExploration {
-  /** Full analysis text produced by the reviewer during exploration */
-  analysis: string;
-  /** Files read by the reviewer during exploration */
-  filesRead: string[];
-  /** Complete conversation (user prompts, assistant responses, tool calls & results) */
-  messages: ReviewerMessage[];
-}
 
-/** Individual reviewer result from llm_review multi-evaluator consensus */
-export interface ReviewerResult {
-  index: number;
-  scores: { dimension: string; score: number; reasoning: string; evidence?: { file: string; line: number; note: string }[] }[];
-  summary: string;
-  globalScore: number;
-  /** Phase 1 exploration trace (analysis, files read, full conversation) */
-  exploration?: ReviewerExploration;
-  /** Errors from scoring strategy attempts (Phase 2 fallback chain) */
-  scoringAttemptErrors?: string[];
-}
 
-export interface CheckResult {
-  type: TaskExpectation["type"];
-  passed: boolean;
-  message: string;
-  details?: string;
-  scores?: DimensionScore[];
-  globalScore?: number;
-  /** Individual reviewer results (llm_review only) — shows how each reviewer voted */
-  reviewers?: ReviewerResult[];
-}
 
-export interface MetricResult {
-  name: string;
-  value: number;
-  threshold: number;
-  passed: boolean;
-}
 
-export type AssessmentTrigger = "initial" | "reassess" | "fix" | "retry" | "auto-correct" | "judge";
 
-export interface AssessmentResult {
-  passed: boolean;
-  checks: CheckResult[];
-  metrics: MetricResult[];
-  llmReview?: string;
-  scores?: DimensionScore[];
-  globalScore?: number;
-  timestamp: string;
-  /** What triggered this assessment. */
-  trigger?: AssessmentTrigger;
-}
 
 // === Mission ===
 
-export type MissionStatus = "draft" | "scheduled" | "recurring" | "active" | "paused" | "completed" | "failed" | "cancelled";
 
-export interface Mission {
-  id: string;
-  name: string;
-  data: string;
-  prompt?: string;
-  status: MissionStatus;
-  /** Absolute deadline (ISO timestamp). */
-  deadline?: string;
-  /** Cron expression or ISO timestamp for scheduled execution. */
-  schedule?: string;
-  /** End date for recurring schedules (ISO timestamp). After this date the schedule stops. */
-  endDate?: string;
-  /** Minimum average score for the mission to pass. */
-  qualityThreshold?: number;
-  /** Mission-level scoped notification rules. */
-  notifications?: ScopedNotificationRules;
-  /** How many times this mission has been executed. */
-  executionCount?: number;
-  createdAt: string;
-  updatedAt: string;
-}
 
 // === Mission Document Types (parsed from Mission.data JSON) ===
 
-/** Checkpoint defined within a mission — planned stopping point for human review.
- *  Pauses the mission when afterTasks complete; blocked tasks wait until resumed. */
-export interface MissionCheckpoint {
-  /** Checkpoint name (unique within the mission, used in events and resume calls). */
-  name: string;
-  /** Task titles that must all complete before this checkpoint triggers. */
-  afterTasks: string[];
-  /** Task titles that are blocked until the checkpoint is resumed. */
-  blocksTasks: string[];
-  /** Optional message shown when the checkpoint activates. */
-  message?: string;
-  /** Notification channels to alert when the checkpoint is reached. */
-  notifyChannels?: string[];
-}
 
-/** Delay defined within a mission — timed wait between task groups.
- * Unlike checkpoints (which pause until a human resumes), delays automatically
- * resume after a specified duration elapses. */
-export interface MissionDelay {
-  /** Delay name (unique within the mission). */
-  name: string;
-  /** Task titles that must all complete before the delay timer starts. */
-  afterTasks: string[];
-  /** Task titles that are blocked until the delay timer expires. */
-  blocksTasks: string[];
-  /** ISO 8601 duration (e.g. "PT2H" = 2 hours, "PT30M" = 30 minutes, "P1D" = 1 day). */
-  duration: string;
-  /** Optional message shown when the delay starts. */
-  message?: string;
-  /** Notification channels to alert when the delay starts / expires. */
-  notifyChannels?: string[];
-}
 
 /** Runtime state of an active delay (timer started, waiting to expire). */
 export interface ActiveDelay {
@@ -647,95 +333,16 @@ export interface ActiveDelay {
   expiresAt: string;
 }
 
-/** Quality gate defined within a mission — automatic score-based blocking between task phases. */
-export interface MissionQualityGate {
-  /** Gate name (unique within the mission). */
-  name: string;
-  /** Task titles whose assessment scores are evaluated. */
-  afterTasks: string[];
-  /** Task titles blocked until the gate passes. */
-  blocksTasks: string[];
-  /** Minimum average score (1-5) of afterTasks required to pass. */
-  minScore?: number;
-  /** If true, all afterTasks must be "done" (not "failed") to pass. */
-  requireAllPassed?: boolean;
-  /** Custom condition expression. */
-  condition?: string;
-  /** Notification channels for pass/fail events. */
-  notifyChannels?: string[];
-}
 
-export interface MissionReport {
-  missionId: string;
-  group: string;
-  allPassed: boolean;
-  totalDuration: number;
-  tasks: {
-    title: string;
-    status: "done" | "failed";
-    duration: number;
-    score?: number;
-    filesCreated: string[];
-    filesEdited: string[];
-    outcomes?: TaskOutcome[];
-  }[];
-  filesCreated: string[];
-  filesEdited: string[];
-  outcomes?: TaskOutcome[];
-  avgScore?: number;
-}
 
 // === Notifications ===
 
-export type NotificationSeverity = "info" | "warning" | "critical";
-export type NotificationChannelType = "slack" | "email" | "telegram" | "whatsapp" | "webhook";
 export type NotificationStatus = "sent" | "failed";
 
-export type DmPolicy = "pairing" | "allowlist" | "open" | "disabled";
 
-export interface ChannelGatewayConfig {
-  dmPolicy?: DmPolicy;
-  allowFrom?: string[];
-  enableInbound?: boolean;
-  sessionIdleMinutes?: number;
-}
 
-export interface NotificationChannelConfig {
-  type: NotificationChannelType;
-  webhookUrl?: string;
-  to?: string[];
-  provider?: string;
-  apiKey?: string;
-  botToken?: string;
-  chatId?: string;
-  profileDir?: string;
-  url?: string;
-  headers?: Record<string, string>;
-  host?: string;
-  port?: number;
-  from?: string;
-  gateway?: ChannelGatewayConfig;
-}
 
-export interface NotificationRule {
-  id: string;
-  name: string;
-  events: string[];
-  condition?: unknown;
-  channels: string[];
-  severity?: NotificationSeverity;
-  template?: string;
-  cooldownMs?: number;
-  includeOutcomes?: boolean;
-  outcomeFilter?: OutcomeType[];
-  maxAttachmentSize?: number;
-}
 
-export interface ScopedNotificationRules {
-  rules: NotificationRule[];
-  /** If true, rules are added on top of parent scope. If false (default), they replace. */
-  inherit?: boolean;
-}
 
 export interface NotificationRecord {
   id: string;
@@ -776,54 +383,13 @@ export interface SendNotificationResult {
 
 // === Approval Gates ===
 
-export type ApprovalGateHandler = "auto" | "human";
-export type ApprovalStatus = "pending" | "approved" | "rejected" | "timeout";
 
-export interface ApprovalRequest {
-  id: string;
-  gateId: string;
-  gateName: string;
-  taskId?: string;
-  missionId?: string;
-  status: ApprovalStatus;
-  payload: unknown;
-  requestedAt: string;
-  resolvedAt?: string;
-  resolvedBy?: string;
-  note?: string;
-}
 
 // === Scheduling ===
 
-export interface ScheduleEntry {
-  id: string;
-  missionId: string;
-  expression: string;
-  recurring: boolean;
-  enabled: boolean;
-  lastRunAt?: string;
-  nextRunAt?: string;
-  deadlineOffsetMs?: number;
-  createdAt: string;
-}
 
 // === Quality & SLA ===
 
-export interface QualityMetrics {
-  entityId: string;
-  entityType: "task" | "agent" | "mission";
-  totalAssessments: number;
-  passedAssessments: number;
-  avgScore?: number;
-  minScore?: number;
-  maxScore?: number;
-  dimensionScores: Record<string, number>;
-  totalRetries: number;
-  totalFixes: number;
-  deadlinesMet: number;
-  deadlinesMissed: number;
-  updatedAt: string;
-}
 
 // === Playbooks ===
 
@@ -880,102 +446,13 @@ export type TemplateRunResult = PlaybookRunResult;
 
 // === Config ===
 
-/** Reasoning level for LLM calls. */
-export type ReasoningLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
 
-/** Primary model with ordered fallbacks. */
-export interface ModelConfig {
-  /** Primary model spec (e.g. "anthropic/claude-opus-4-6"). */
-  primary?: string;
-  /** Ordered fallback models — tried when primary fails. */
-  fallbacks?: string[];
-}
 
-/** Model allowlist entry with optional alias and parameter overrides. */
-export interface ModelAllowlistEntry {
-  /** Display alias for this model (e.g. "Sonnet", "GPT"). */
-  alias?: string;
-  /** Per-model parameter overrides. */
-  params?: Record<string, unknown>;
-}
 
-/** Custom model definition for non-catalog providers (Ollama, vLLM, LM Studio, etc.) */
-export interface CustomModelDef {
-  /** Model ID used in API calls. */
-  id: string;
-  /** Human-readable name. */
-  name: string;
-  /** Whether the model supports extended thinking / reasoning. */
-  reasoning?: boolean;
-  /** Supported input types. Default: ["text"] */
-  input?: ("text" | "image")[];
-  /** Cost per million tokens. Default: all zeros (free/local). */
-  cost?: { input: number; output: number; cacheRead: number; cacheWrite: number };
-  /** Context window size in tokens. Default: 200000 */
-  contextWindow?: number;
-  /** Max output tokens. Default: 8192 */
-  maxTokens?: number;
-}
 
-export interface PolpoSettings {
-  maxRetries: number;
-  workDir: string;
-  logLevel: "quiet" | "normal" | "verbose";
-  taskTimeout?: number;
-  staleThreshold?: number;
-  defaultRetryPolicy?: RetryPolicy;
-  enableVolatileTeams?: boolean;
-  volatileCleanup?: "on_complete" | "manual";
-  maxFixAttempts?: number;
-  maxQuestionRounds?: number;
-  maxResolutionAttempts?: number;
-  autoCorrectExpectations?: boolean;
-  /** Skills to load into the orchestrator's system prompt. Resolved against the orchestrator skill pool. */
-  orchestratorSkills?: string[];
-  /** Model for orchestrator LLM calls. Can be a string or a ModelConfig with fallbacks. */
-  orchestratorModel?: string | ModelConfig;
-  imageModel?: string;
-  modelAllowlist?: Record<string, ModelAllowlistEntry>;
-  /** Global reasoning / deep thinking level. */
-  reasoning?: ReasoningLevel;
-  storage?: "file" | "sqlite";
-  maxAssessmentRetries?: number;
-  maxConcurrency?: number;
-  approvalGates?: Array<Record<string, unknown>>;
-  notifications?: Record<string, unknown>;
-  escalationPolicy?: Record<string, unknown>;
-  sla?: Record<string, unknown>;
-  enableScheduler?: boolean;
-  defaultQualityThreshold?: number;
-  emailAllowedDomains?: string[];
-  mcpToolAllowlist?: Record<string, string[]>;
-}
 
-export interface ProviderConfig {
-  baseUrl?: string;
-  /** API compatibility mode for custom endpoints. */
-  api?: "openai-completions" | "openai-responses" | "anthropic-messages";
-  /** Custom model definitions for this provider. */
-  models?: CustomModelDef[];
-}
 
-export interface PolpoConfig {
-  version: string;
-  project: string;
-  teams: Team[];
-  tasks: Omit<Task, "status" | "retries" | "result" | "createdAt" | "updatedAt">[];
-  settings: PolpoSettings;
-  providers?: Record<string, ProviderConfig>;
-}
 
-export interface PolpoState {
-  project: string;
-  teams: Team[];
-  tasks: Task[];
-  processes: AgentProcess[];
-  startedAt?: string;
-  completedAt?: string;
-}
 
 export interface AddTeamRequest {
   name: string;
@@ -1263,16 +740,6 @@ export interface ResumeMissionResult {
 
 // === Attachment types ===
 
-export interface Attachment {
-  id: string;
-  sessionId?: string;
-  messageId?: string;
-  filename: string;
-  mimeType: string;
-  size: number;
-  path: string;
-  createdAt: string;
-}
 
 // === File Browser types ===
 
@@ -1287,13 +754,6 @@ export interface FileRoot {
   totalSize: number;
 }
 
-export interface FileEntry {
-  name: string;
-  type: "file" | "directory";
-  size?: number;
-  mimeType?: string;
-  modifiedAt?: string;
-}
 
 export interface FilePreview {
   path: string;
@@ -1315,11 +775,6 @@ export interface LogSession {
   entries: number;
 }
 
-export interface LogEntry {
-  ts: string;
-  event: string;
-  data: unknown;
-}
 
 // === Run Activity types ===
 
@@ -1384,43 +839,10 @@ export interface TaskActivityPayload {
 
 // === Skill types ===
 
-/** A discovered skill from the project skill pool. */
-export interface SkillInfo {
-  name: string;
-  description: string;
-  allowedTools?: string[];
-  /** Where this skill was discovered from. */
-  source: "project" | "global" | "polpo" | "claude" | "home";
-  /** Absolute path to the skill directory. */
-  path: string;
-  /** Freeform tags for search and filtering (from skills-index.json). */
-  tags?: string[];
-  /** Macro-category for grouping (from skills-index.json). */
-  category?: string;
-}
 
-/** Skill with full content loaded (returned by GET /skills/:name/content). */
-export interface LoadedSkill extends SkillInfo {
-  /** Full SKILL.md content (markdown body without frontmatter). */
-  content: string;
-}
 
-/** Skill with agent assignment info (returned by GET /skills). */
-export interface SkillWithAssignment extends SkillInfo {
-  /** Agent names that have this skill assigned. */
-  assignedTo: string[];
-}
 
-/** A single entry in the skills index file (.polpo/skills-index.json). */
-export interface SkillIndexEntry {
-  /** Freeform tags for search and filtering. */
-  tags?: string[];
-  /** Macro-category for grouping. */
-  category?: string;
-}
 
-/** The full skills index: maps skill names to their index metadata. */
-export type SkillIndex = Record<string, SkillIndexEntry>;
 
 /** Request body for creating a new skill. */
 export interface CreateSkillRequest {
@@ -1617,7 +1039,6 @@ export interface ChatCompletionChunkDelta {
 
 // === Tool Call streaming ===
 
-export type ToolCallState = "preparing" | "calling" | "completed" | "error" | "interrupted";
 
 export interface ToolCallEvent {
   /** Tool call ID from the LLM */
@@ -1664,37 +1085,12 @@ export interface ChatCompletionChunk {
 
 // === Ask User (structured clarification questions) ===
 
-export interface AskUserOption {
-  label: string;
-  description?: string;
-}
 
-export interface AskUserQuestion {
-  /** Unique question key for matching answers */
-  id: string;
-  /** The full question text */
-  question: string;
-  /** Short label for compact display (max 30 chars) */
-  header?: string;
-  /** Pre-populated selectable options */
-  options: AskUserOption[];
-  /** Allow selecting multiple options (default: false) */
-  multiple?: boolean;
-  /** Show custom text input (default: true) */
-  custom?: boolean;
-}
 
 export interface AskUserPayload {
   questions: AskUserQuestion[];
 }
 
-export interface AskUserAnswer {
-  questionId: string;
-  /** Labels of selected options */
-  selected: string[];
-  /** Custom text typed by user */
-  customText?: string;
-}
 
 // === Mission Preview (interactive review before creation) ===
 

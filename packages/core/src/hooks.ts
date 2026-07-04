@@ -124,9 +124,9 @@ export interface HookPayloads {
 
 export type HookPhase = "before" | "after";
 
-export interface HookContext<T = unknown> {
+export interface HookContext<T = unknown, H extends string = LifecycleHook> {
   /** Which hook point fired. */
-  readonly hook: LifecycleHook;
+  readonly hook: H;
   /** "before" hooks can cancel/modify; "after" hooks are observe-only. */
   readonly phase: HookPhase;
   /** The payload — mutable reference for "before" hooks. */
@@ -143,7 +143,7 @@ export interface HookContext<T = unknown> {
 
 // ─── Handler Types ───────────────────────────────────
 
-export type HookHandler<T = unknown> = (ctx: HookContext<T>) => void | Promise<void>;
+export type HookHandler<T = unknown, H extends string = LifecycleHook> = (ctx: HookContext<T, H>) => void | Promise<void>;
 
 export interface HookRegistration<K extends LifecycleHook = LifecycleHook> {
   /** Which lifecycle hook to listen to. */
@@ -172,9 +172,9 @@ export interface BeforeHookResult<T> {
 // ─── HookRegistry ────────────────────────────────────
 
 interface StoredRegistration {
-  hook: LifecycleHook;
+  hook: string;
   phase: HookPhase;
-  handler: HookHandler<any>;
+  handler: HookHandler<any, any>;
   priority: number;
   name?: string;
 }
@@ -188,14 +188,20 @@ interface StoredRegistration {
  * Handlers are sorted by priority (ascending) and run sequentially.
  * Async handlers are awaited — a slow hook delays the operation.
  */
-export class HookRegistry {
+export class HookRegistry<HookMap = HookPayloads> {
   private registrations: StoredRegistration[] = [];
 
   /**
    * Register a lifecycle hook handler.
    * Returns an unsubscribe function.
    */
-  register<K extends LifecycleHook>(reg: HookRegistration<K>): () => void {
+  register<K extends keyof HookMap & string>(reg: {
+    hook: K;
+    phase: HookPhase;
+    handler: HookHandler<HookMap[K], K>;
+    priority?: number;
+    name?: string;
+  }): () => void {
     const stored: StoredRegistration = {
       hook: reg.hook,
       phase: reg.phase,
@@ -221,17 +227,17 @@ export class HookRegistry {
    * Handlers run sequentially in priority order.
    * If a handler calls `cancel()`, remaining handlers still run but the operation is blocked.
    */
-  async runBefore<K extends LifecycleHook>(
+  async runBefore<K extends keyof HookMap & string>(
     hook: K,
-    data: HookPayloads[K],
-  ): Promise<BeforeHookResult<HookPayloads[K]>> {
+    data: HookMap[K],
+  ): Promise<BeforeHookResult<HookMap[K]>> {
     const handlers = this.registrations.filter(r => r.hook === hook && r.phase === "before");
     if (handlers.length === 0) return { cancelled: false, data };
 
     let cancelled = false;
     let cancelReason: string | undefined;
 
-    const ctx: HookContext<HookPayloads[K]> = {
+    const ctx: HookContext<HookMap[K], K> = {
       hook,
       phase: "before",
       data,
@@ -263,14 +269,14 @@ export class HookRegistry {
    * Fire-and-forget: errors are logged but never propagate.
    * "after" hooks cannot cancel or modify anything.
    */
-  async runAfter<K extends LifecycleHook>(
+  async runAfter<K extends keyof HookMap & string>(
     hook: K,
-    data: HookPayloads[K],
+    data: HookMap[K],
   ): Promise<void> {
     const handlers = this.registrations.filter(r => r.hook === hook && r.phase === "after");
     if (handlers.length === 0) return;
 
-    const ctx: HookContext<HookPayloads[K]> = {
+    const ctx: HookContext<HookMap[K], K> = {
       hook,
       phase: "after",
       data,
@@ -293,17 +299,17 @@ export class HookRegistry {
    * Synchronous variant of runBefore — for hot paths where async is not feasible.
    * Only runs synchronous handlers; async handlers are skipped with a warning.
    */
-  runBeforeSync<K extends LifecycleHook>(
+  runBeforeSync<K extends keyof HookMap & string>(
     hook: K,
-    data: HookPayloads[K],
-  ): BeforeHookResult<HookPayloads[K]> {
+    data: HookMap[K],
+  ): BeforeHookResult<HookMap[K]> {
     const handlers = this.registrations.filter(r => r.hook === hook && r.phase === "before");
     if (handlers.length === 0) return { cancelled: false, data };
 
     let cancelled = false;
     let cancelReason: string | undefined;
 
-    const ctx: HookContext<HookPayloads[K]> = {
+    const ctx: HookContext<HookMap[K], K> = {
       hook,
       phase: "before",
       data,
@@ -337,9 +343,9 @@ export class HookRegistry {
   }
 
   /** List all registered hooks (for diagnostics). */
-  list(): Array<{ hook: LifecycleHook; phase: HookPhase; priority: number; name?: string }> {
+  list(): Array<{ hook: keyof HookMap & string; phase: HookPhase; priority: number; name?: string }> {
     return this.registrations.map(r => ({
-      hook: r.hook,
+      hook: r.hook as keyof HookMap & string,
       phase: r.phase,
       priority: r.priority,
       name: r.name,

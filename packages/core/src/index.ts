@@ -200,6 +200,7 @@ export type {
   ProjectLoopVersion,
   Step,
   SwitchCase,
+  WhileBlock,
   Condition,
   ToolLoopStep,
   WhileLoopStep,
