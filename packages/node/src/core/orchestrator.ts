@@ -738,10 +738,13 @@ export class Orchestrator extends TypedEmitter {
     if (activeRuns.length > 0) {
       this.emit("log", { level: "warn", message: `Shutting down ${activeRuns.length} running agent(s)...` });
 
-      // Send SIGTERM to all runner subprocesses
+      // Send SIGTERM to all runner subprocesses; in-process runs (negative
+      // synthetic pids) are aborted through the spawner instead.
       for (const run of activeRuns) {
         if (run.pid > 0) {
           try { process.kill(run.pid, "SIGTERM"); } catch { /* already dead */ }
+        } else if (run.pid < 0) {
+          try { this.spawner.kill(run.pid); } catch { /* already gone */ }
         }
       }
 
