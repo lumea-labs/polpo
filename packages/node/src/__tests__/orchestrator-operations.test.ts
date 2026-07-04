@@ -51,7 +51,7 @@ describe("CLI: task operations", () => {
   });
 
   test("task add — creates task with title and agent", async () => {
-    const task = await o.createTask({
+    const task = await o.engine.createTask({
       title: "first-task",
       description: "Do something useful",
       assignTo: "agent-1",
@@ -64,7 +64,7 @@ describe("CLI: task operations", () => {
   });
 
   test("task show — finds task by full ID", async () => {
-    const task = await o.createTask({
+    const task = await o.engine.createTask({
       title: "findable",
       description: "Find me",
       assignTo: "agent-1",
@@ -75,7 +75,7 @@ describe("CLI: task operations", () => {
   });
 
   test("task show — finds task by partial ID (prefix)", async () => {
-    const task = await o.createTask({
+    const task = await o.engine.createTask({
       title: "partial-find",
       description: "Find by prefix",
       assignTo: "agent-1",
@@ -93,7 +93,7 @@ describe("CLI: task operations", () => {
   });
 
   test("task delete — removes task", async () => {
-    const task = await o.createTask({
+    const task = await o.engine.createTask({
       title: "delete-me",
       description: "To be removed",
       assignTo: "agent-1",
@@ -104,7 +104,7 @@ describe("CLI: task operations", () => {
   });
 
   test("task retry — resets failed task to pending", async () => {
-    const task = await o.createTask({
+    const task = await o.engine.createTask({
       title: "fail-me",
       description: "test retry",
       assignTo: "agent-1",
@@ -114,18 +114,18 @@ describe("CLI: task operations", () => {
     await o.getStore().transition(task.id, "failed");
     expect((await o.getStore().getTask(task.id))!.status).toBe("failed");
 
-    await o.retryTask(task.id);
+    await o.engine.retryTask(task.id);
     expect((await o.getStore().getTask(task.id))!.status).toBe("pending");
   });
 
   test("task kill — kills running task (marks as failed)", async () => {
-    const task = await o.createTask({
+    const task = await o.engine.createTask({
       title: "kill-me",
       description: "test kill",
       assignTo: "agent-1",
     });
     // Task starts as pending — killTask transitions it through to failed
-    await o.killTask(task.id);
+    await o.engine.killTask(task.id);
     expect((await o.getStore().getTask(task.id))!.status).toBe("failed");
   });
 });
@@ -148,12 +148,12 @@ describe("CLI: mission operations", () => {
   });
 
   test("mission list — empty initially", async () => {
-    const missions = await o.listMissions();
+    const missions = await o.engine.listMissions();
     expect(missions).toHaveLength(0);
   });
 
   test("mission save — creates draft mission", async () => {
-    const mission = await o.createMission({
+    const mission = await o.engine.createMission({
       data: JSON.stringify({ tasks: [{ title: "Test", description: "Do something", assignTo: "agent-1" }] }),
     });
     expect(mission.status).toBe("draft");
@@ -163,48 +163,48 @@ describe("CLI: mission operations", () => {
   });
 
   test("mission show — finds by ID", async () => {
-    const mission = await o.createMission({
+    const mission = await o.engine.createMission({
       data: JSON.stringify({ tasks: [{ title: "FindById", description: "Test", assignTo: "agent-1" }] }),
       name: "find-by-id",
     });
-    const found = await o.getMission(mission.id);
+    const found = await o.engine.getMission(mission.id);
     expect(found).toBeDefined();
     expect(found!.id).toBe(mission.id);
     expect(found!.name).toBe("find-by-id");
   });
 
   test("mission show — finds by name", async () => {
-    const mission = await o.createMission({
+    const mission = await o.engine.createMission({
       data: JSON.stringify({ tasks: [{ title: "FindByName", description: "Test", assignTo: "agent-1" }] }),
       name: "named-mission",
     });
-    const found = await o.getMissionByName("named-mission");
+    const found = await o.engine.getMissionByName("named-mission");
     expect(found).toBeDefined();
     expect(found!.id).toBe(mission.id);
   });
 
   test("mission delete — removes mission", async () => {
-    const mission = await o.createMission({
+    const mission = await o.engine.createMission({
       data: JSON.stringify({ tasks: [{ title: "DeleteMe", description: "Test", assignTo: "agent-1" }] }),
       name: "to-delete",
     });
-    const result = await o.deleteMission(mission.id);
+    const result = await o.engine.deleteMission(mission.id);
     expect(result).toBe(true);
-    expect(await o.getMission(mission.id)).toBeUndefined();
+    expect(await o.engine.getMission(mission.id)).toBeUndefined();
   });
 
   test("mission execute — creates tasks from mission", async () => {
-    const mission = await o.createMission({
+    const mission = await o.engine.createMission({
       data: JSON.stringify({ tasks: [{ title: "Mission task", description: "Do work", assignTo: "agent-1" }] }),
       name: "exec-mission",
     });
-    const result = await o.executeMission(mission.id);
+    const result = await o.engine.executeMission(mission.id);
     expect(result.tasks.length).toBe(1);
     expect(result.tasks[0].title).toBe("Mission task");
     expect(result.group).toBe("exec-mission");
 
     // Mission should now be active
-    const updated = await o.getMission(mission.id);
+    const updated = await o.engine.getMission(mission.id);
     expect(updated!.status).toBe("active");
   });
 });
@@ -227,37 +227,37 @@ describe("CLI: team operations", () => {
   });
 
   test("team list — shows agents from config", async () => {
-    const agents = await o.getAgents();
+    const agents = await o.engine.getAgents();
     expect(agents.length).toBeGreaterThanOrEqual(1);
     expect(agents.find((a) => a.name === "agent-1")).toBeDefined();
   });
 
   test("team add — adds agent to runtime", async () => {
-    await o.addAgent({
+    await o.engine.addAgent({
       name: "agent-2",
       role: "Helper",
     });
-    const agents = await o.getAgents();
+    const agents = await o.engine.getAgents();
     expect(agents.find((a) => a.name === "agent-2")).toBeDefined();
   });
 
   test("team remove — removes agent", async () => {
-    await o.addAgent({
+    await o.engine.addAgent({
       name: "agent-temp",
     });
-    const result = await o.removeAgent("agent-temp");
+    const result = await o.engine.removeAgent("agent-temp");
     expect(result).toBe(true);
-    expect((await o.getAgents()).find((a) => a.name === "agent-temp")).toBeUndefined();
+    expect((await o.engine.getAgents()).find((a) => a.name === "agent-temp")).toBeUndefined();
   });
 
   test("team rename — changes team name", async () => {
-    await o.renameTeam("test-team", "new-team-name");
-    const team = (await o.getTeam())!;
+    await o.engine.renameTeam("test-team", "new-team-name");
+    const team = (await o.engine.getTeam())!;
     expect(team.name).toBe("new-team-name");
   });
 
   test("team getTeam — returns team info", async () => {
-    const team = (await o.getTeam())!;
+    const team = (await o.engine.getTeam())!;
     expect(team).toBeDefined();
     expect(team.name).toBe("new-team-name"); // renamed in previous test
     expect(Array.isArray(team.agents)).toBe(true);
@@ -283,24 +283,24 @@ describe("CLI: memory operations", () => {
   });
 
   test("memory — no memory initially", async () => {
-    expect(await o.hasMemory()).toBe(false);
-    expect(await o.getMemory()).toBe("");
+    expect(await o.engine.hasMemory()).toBe(false);
+    expect(await o.engine.getMemory()).toBe("");
   });
 
   test("memory save — persists content", async () => {
-    await o.saveMemory("# Project Memory\nKey architecture decisions.");
-    expect(await o.hasMemory()).toBe(true);
+    await o.engine.saveMemory("# Project Memory\nKey architecture decisions.");
+    expect(await o.engine.hasMemory()).toBe(true);
   });
 
   test("memory append — adds line with timestamp", async () => {
-    await o.appendMemory("New discovery about the codebase");
-    const content = await o.getMemory();
+    await o.engine.appendMemory("New discovery about the codebase");
+    const content = await o.engine.getMemory();
     expect(content).toContain("# Project Memory");
     expect(content).toContain("New discovery about the codebase");
   });
 
   test("memory get — reads saved content", async () => {
-    const content = await o.getMemory();
+    const content = await o.engine.getMemory();
     expect(content).toContain("# Project Memory");
     expect(content).toContain("Key architecture decisions.");
     expect(content).toContain("New discovery about the codebase");
@@ -395,7 +395,7 @@ describe("CLI: log operations", () => {
     expect(sessionId).toBeDefined();
 
     // Add a task to generate a log event (task:created is emitted via the log sink)
-    await o.createTask({ title: "log-test", description: "Generate log entry", assignTo: "agent-1" });
+    await o.engine.createTask({ title: "log-test", description: "Generate log entry", assignTo: "agent-1" });
 
     const entries = await logStore.getSessionEntries(sessionId);
     // The logStore receives events wired by setLogSink — entries may be present
