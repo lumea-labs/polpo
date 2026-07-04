@@ -16,7 +16,7 @@ function storeWithMissions(): TaskStore {
   return {
     getMission: async (id: string) => byId.get(id),
     getMissionByName: async (name: string) => [...byId.values()].find((m) => m.name === name),
-    getAllMissions: async () => [...byId.values()],
+    listMissions: async () => [...byId.values()],
   } as unknown as TaskStore;
 }
 
@@ -29,16 +29,16 @@ describe("taskStoreMissionAdapter", () => {
     const withMissions = taskStoreMissionAdapter(storeWithMissions());
     expect((await withMissions.getMission("m1"))?.name).toBe("Launch");
     expect((await withMissions.getMissionByName("Launch"))?.id).toBe("m1");
-    expect(await withMissions.getAllMissions()).toHaveLength(1);
+    expect(await withMissions.listMissions()).toHaveLength(1);
 
     const without = taskStoreMissionAdapter(storeWithoutMissions());
     expect(await without.getMission("m1")).toBeUndefined();
-    expect(await without.getAllMissions()).toEqual([]);
+    expect(await without.listMissions()).toEqual([]);
   });
 
   it("throws descriptive errors for writes on stores without mission support", async () => {
     const adapter = taskStoreMissionAdapter(storeWithoutMissions());
-    await expect(adapter.saveMission({} as never)).rejects.toThrow("Store does not support missions");
+    await expect(adapter.createMission({} as never)).rejects.toThrow("Store does not support missions");
     await expect(adapter.updateMission("m1", {})).rejects.toThrow("Store does not support missions");
     await expect(adapter.deleteMission("m1")).rejects.toThrow("Store does not support missions");
   });
@@ -52,26 +52,21 @@ describe("taskStoreMissionAdapter", () => {
 describe("resolveMissionStore", () => {
   it("prefers the explicit missionStore port", async () => {
     const explicit = { getMission: async () => mission("mx", "Explicit") } as unknown as MissionStore;
-    const resolved = resolveMissionStore({ missionStore: explicit, registry: storeWithMissions() });
+    const resolved = resolveMissionStore({ missionStore: explicit, taskStore: storeWithMissions() });
     expect((await resolved.getMission("whatever"))?.name).toBe("Explicit");
   });
 
   it("falls back to the task-store adapter", async () => {
-    const resolved = resolveMissionStore({ registry: storeWithMissions() });
+    const resolved = resolveMissionStore({ taskStore: storeWithMissions() });
     expect((await resolved.getMission("m1"))?.name).toBe("Launch");
   });
 });
 
-describe("resolveMissionForTask — legacy fallback in one place", () => {
+describe("resolveMissionForTask", () => {
   const missions = taskStoreMissionAdapter(storeWithMissions());
 
-  it("prefers the missionId FK", async () => {
-    const m = await resolveMissionForTask(missions, { missionId: "m1", group: "ignored" });
-    expect(m?.id).toBe("m1");
-  });
-
-  it("falls back to group-name lookup for legacy tasks", async () => {
-    const m = await resolveMissionForTask(missions, { group: "Launch" });
+  it("resolves via the missionId FK", async () => {
+    const m = await resolveMissionForTask(missions, { missionId: "m1" });
     expect(m?.id).toBe("m1");
   });
 

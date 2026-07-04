@@ -90,7 +90,7 @@ describe.skipIf(!canConnect)("migratePgSchema", () => {
   it("stores work against the migrated legacy table", async () => {
     const stores = createPgStores(db);
     const now = new Date().toISOString();
-    const created = await stores.taskStore.addTask({
+    const created = await stores.taskStore.createTask({
       title: "post-migration task",
       description: "written through the store after column backfill",
       assignTo: "agent-1",

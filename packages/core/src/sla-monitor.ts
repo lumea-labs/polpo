@@ -62,14 +62,14 @@ export class SLAMonitor {
     if (now - this.lastCheckMs < this.config.checkIntervalMs) return;
     this.lastCheckMs = now;
 
-    const tasks = await this.ctx.registry.getAllTasks();
+    const tasks = await this.ctx.taskStore.listTasks();
     for (const task of tasks) {
       if (!task.deadline) continue;
       if (task.status === "done" || task.status === "failed") continue;
       await this.checkEntity(task.id, "task", task.deadline, task.createdAt, now);
     }
 
-    const missions = await resolveMissionStore(this.ctx).getAllMissions();
+    const missions = await resolveMissionStore(this.ctx).listMissions();
     for (const mission of missions) {
       if (!mission.deadline) continue;
       if (mission.status === "completed" || mission.status === "failed" || mission.status === "cancelled" ||
@@ -107,7 +107,7 @@ export class SLAMonitor {
 
       if (this.config.violationAction === "fail" && entityType === "task") {
         try {
-          await this.ctx.registry.unsafeSetStatus(entityId, "failed", "SLA violated — deadline exceeded");
+          await this.ctx.taskStore.unsafeSetStatus(entityId, "failed", "SLA violated — deadline exceeded");
         } catch { /* task may not exist or be in terminal state */ }
       }
       return;

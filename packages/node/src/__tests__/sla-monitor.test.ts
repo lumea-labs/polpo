@@ -21,7 +21,7 @@ function createMinimalConfig(): PolpoConfig {
 function createMockCtx(store?: InMemoryTaskStore): OrchestratorContext {
   return {
     emitter: new TypedEmitter(),
-    registry: store ?? new InMemoryTaskStore(),
+    taskStore: store ?? new InMemoryTaskStore(),
     runStore: new InMemoryRunStore(),
     memoryStore: { exists: async () => false, get: async () => "", save: async () => {}, append: async () => {}, update: async () => true as true | string },
     logStore: { startSession: async () => "s", getSessionId: async () => "s", append: async () => {}, getSessionEntries: async () => [], listSessions: async () => [], prune: async () => 0, close: () => {} },
@@ -62,7 +62,7 @@ describe("SLAMonitor", () => {
     const createdAt = new Date(Date.now() - 100_000).toISOString();
     const deadline = new Date(Date.now() + 10_000).toISOString();
 
-    await store.addTask({
+    await store.createTask({
       title: "Urgent task",
       description: "Test",
       assignTo: "test-agent",
@@ -73,7 +73,7 @@ describe("SLAMonitor", () => {
       deadline,
     });
     // Override createdAt
-    const task = (await store.getAllTasks())[0];
+    const task = (await store.listTasks())[0];
     (task as any).createdAt = createdAt;
 
     await monitor.check();
@@ -90,7 +90,7 @@ describe("SLAMonitor", () => {
     const createdAt = new Date(Date.now() - 100_000).toISOString();
     const deadline = new Date(Date.now() - 1_000).toISOString(); // already past
 
-    await store.addTask({
+    await store.createTask({
       title: "Overdue task",
       description: "Test",
       assignTo: "test-agent",
@@ -100,7 +100,7 @@ describe("SLAMonitor", () => {
       maxRetries: 2,
       deadline,
     });
-    const task = (await store.getAllTasks())[0];
+    const task = (await store.listTasks())[0];
     (task as any).createdAt = createdAt;
 
     await monitor.check();
@@ -115,7 +115,7 @@ describe("SLAMonitor", () => {
     const emitSpy = vi.spyOn(ctx.emitter, "emit");
 
     const deadline = new Date(Date.now() - 1_000).toISOString();
-    await store.addTask({
+    await store.createTask({
       title: "Overdue task",
       description: "Test",
       assignTo: "test-agent",
@@ -125,7 +125,7 @@ describe("SLAMonitor", () => {
       maxRetries: 2,
       deadline,
     });
-    const task = (await store.getAllTasks())[0];
+    const task = (await store.listTasks())[0];
     (task as any).createdAt = new Date(Date.now() - 100_000).toISOString();
 
     await monitor.check();
@@ -139,7 +139,7 @@ describe("SLAMonitor", () => {
     const emitSpy = vi.spyOn(ctx.emitter, "emit");
 
     const deadline = new Date(Date.now() - 1_000).toISOString();
-    await store.addTask({
+    await store.createTask({
       title: "Done task",
       description: "Test",
       assignTo: "test-agent",
@@ -149,7 +149,7 @@ describe("SLAMonitor", () => {
       maxRetries: 2,
       deadline,
     });
-    const task = (await store.getAllTasks())[0];
+    const task = (await store.listTasks())[0];
     (task as any).createdAt = new Date(Date.now() - 100_000).toISOString();
 
     // Transition to done
@@ -190,7 +190,7 @@ describe("SLAMonitor", () => {
     failMonitor.init();
 
     const deadline = new Date(Date.now() - 1_000).toISOString();
-    await store.addTask({
+    await store.createTask({
       title: "Overdue task",
       description: "Test",
       assignTo: "test-agent",
@@ -200,7 +200,7 @@ describe("SLAMonitor", () => {
       maxRetries: 2,
       deadline,
     });
-    const task = (await store.getAllTasks())[0];
+    const task = (await store.listTasks())[0];
     (task as any).createdAt = new Date(Date.now() - 100_000).toISOString();
     // Move task to in_progress (so unsafeSetStatus to failed works meaningfully)
     await store.transition(task.id, "assigned");
@@ -216,7 +216,7 @@ describe("SLAMonitor", () => {
     const emitSpy = vi.spyOn(ctx.emitter, "emit");
 
     const deadline = new Date(Date.now() - 1_000).toISOString();
-    await store.addTask({
+    await store.createTask({
       title: "Overdue task",
       description: "Test",
       assignTo: "test-agent",
@@ -226,7 +226,7 @@ describe("SLAMonitor", () => {
       maxRetries: 2,
       deadline,
     });
-    const task = (await store.getAllTasks())[0];
+    const task = (await store.listTasks())[0];
     (task as any).createdAt = new Date(Date.now() - 100_000).toISOString();
 
     await monitor.check();

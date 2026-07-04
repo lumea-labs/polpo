@@ -31,8 +31,8 @@ function createMockCtx(overrides: Partial<OrchestratorContext> = {}): Orchestrat
   let missionCounter = 0;
 
   // Extend the InMemoryTaskStore with mission methods by assigning onto the instance
-  const registry = Object.assign(store, {
-    saveMission: async (opts: { name: string; data: string; prompt?: string; status?: string; notifications?: unknown }) => {
+  const taskStore = Object.assign(store, {
+    createMission: async (opts: { name: string; data: string; prompt?: string; status?: string; notifications?: unknown }) => {
       const id = `mission-${++missionCounter}`;
       const mission: Mission = {
         id,
@@ -48,7 +48,7 @@ function createMockCtx(overrides: Partial<OrchestratorContext> = {}): Orchestrat
     },
     getMission: async (id: string) => missions.get(id),
     getMissionByName: async (name: string) => [...missions.values()].find(p => p.name === name),
-    getAllMissions: async () => [...missions.values()],
+    listMissions: async () => [...missions.values()],
     updateMission: async (id: string, updates: Partial<Mission>) => {
       const mission = missions.get(id);
       if (!mission) throw new Error(`Mission not found: ${id}`);
@@ -64,7 +64,7 @@ function createMockCtx(overrides: Partial<OrchestratorContext> = {}): Orchestrat
 
   return {
     emitter: new TypedEmitter(),
-    registry,
+    taskStore,
     runStore: new InMemoryRunStore(),
     memoryStore: { exists: async () => false, get: async () => "", save: async () => {}, append: async () => {}, update: async () => true as true | string },
     logStore: { startSession: async () => "s", getSessionId: async () => "s", append: async () => {}, getSessionEntries: async () => [], listSessions: async () => [], prune: async () => 0, close: () => {} },
@@ -136,7 +136,7 @@ describe("Checkpoints", () => {
         ],
       });
 
-      const mission = await missionExec.saveMission({ data: missionData, name: "my-mission" });
+      const mission = await missionExec.createMission({ data: missionData, name: "my-mission" });
       await missionExec.executeMission(mission.id);
 
       const checkpoints = missionExec.getCheckpoints("my-mission");
@@ -162,7 +162,7 @@ describe("Checkpoints", () => {
           { name: "review-a", afterTasks: ["Task A"], blocksTasks: ["Task B"] },
         ],
       });
-      const mission = await missionExec.saveMission({ data: missionData, name: "my-mission" });
+      const mission = await missionExec.createMission({ data: missionData, name: "my-mission" });
       await missionExec.executeMission(mission.id);
 
       // Task A is still pending — checkpoint not reached
@@ -181,7 +181,7 @@ describe("Checkpoints", () => {
           { name: "review-a", afterTasks: ["Task A"], blocksTasks: ["Task B"] },
         ],
       });
-      const mission = await missionExec.saveMission({ data: missionData, name: "my-mission" });
+      const mission = await missionExec.createMission({ data: missionData, name: "my-mission" });
       await missionExec.executeMission(mission.id);
 
       // Task A is done — checkpoint triggers
@@ -203,7 +203,7 @@ describe("Checkpoints", () => {
           { name: "review-a", afterTasks: ["Task A"], blocksTasks: ["Task B"] },
         ],
       });
-      const mission = await missionExec.saveMission({ data: missionData, name: "my-mission" });
+      const mission = await missionExec.createMission({ data: missionData, name: "my-mission" });
       await missionExec.executeMission(mission.id);
 
       const tasks = [createDoneTask("Task A"), createPendingTask("Task B"), createPendingTask("Task C")];
@@ -225,7 +225,7 @@ describe("Checkpoints", () => {
           { name: "review-a", afterTasks: ["Task A"], blocksTasks: ["Task B"], message: "Review Task A output" },
         ],
       });
-      const mission = await missionExec.saveMission({ data: missionData, name: "my-mission" });
+      const mission = await missionExec.createMission({ data: missionData, name: "my-mission" });
       await missionExec.executeMission(mission.id);
 
       const tasks = [createDoneTask("Task A"), createPendingTask("Task B")];
@@ -252,7 +252,7 @@ describe("Checkpoints", () => {
           { name: "review-a", afterTasks: ["Task A"], blocksTasks: ["Task B"] },
         ],
       });
-      const mission = await missionExec.saveMission({ data: missionData, name: "my-mission" });
+      const mission = await missionExec.createMission({ data: missionData, name: "my-mission" });
       await missionExec.executeMission(mission.id);
 
       const tasks = [createDoneTask("Task A"), createPendingTask("Task B")];
@@ -276,7 +276,7 @@ describe("Checkpoints", () => {
           { name: "review-a", afterTasks: ["Task A"], blocksTasks: ["Task B"] },
         ],
       });
-      const mission = await missionExec.saveMission({ data: missionData, name: "my-mission" });
+      const mission = await missionExec.createMission({ data: missionData, name: "my-mission" });
       await missionExec.executeMission(mission.id);
 
       // Mission should be active
@@ -305,7 +305,7 @@ describe("Checkpoints", () => {
           { name: "review-a", afterTasks: ["Task A"], blocksTasks: ["Task B"] },
         ],
       });
-      const mission = await missionExec.saveMission({ data: missionData, name: "my-mission" });
+      const mission = await missionExec.createMission({ data: missionData, name: "my-mission" });
       await missionExec.executeMission(mission.id);
 
       const tasks = [createDoneTask("Task A"), createPendingTask("Task B")];
@@ -333,7 +333,7 @@ describe("Checkpoints", () => {
           { name: "review-a", afterTasks: ["Task A"], blocksTasks: ["Task B"] },
         ],
       });
-      const mission = await missionExec.saveMission({ data: missionData, name: "my-mission" });
+      const mission = await missionExec.createMission({ data: missionData, name: "my-mission" });
       await missionExec.executeMission(mission.id);
 
       const tasks = [createDoneTask("Task A"), createPendingTask("Task B")];
@@ -357,7 +357,7 @@ describe("Checkpoints", () => {
           { name: "review-a", afterTasks: ["Task A"], blocksTasks: ["Task B"] },
         ],
       });
-      const mission = await missionExec.saveMission({ data: missionData, name: "my-mission" });
+      const mission = await missionExec.createMission({ data: missionData, name: "my-mission" });
       await missionExec.executeMission(mission.id);
 
       const tasks = [createDoneTask("Task A"), createPendingTask("Task B")];
@@ -384,7 +384,7 @@ describe("Checkpoints", () => {
           { name: "review-a", afterTasks: ["Task A"], blocksTasks: ["Task B"] },
         ],
       });
-      const mission = await missionExec.saveMission({ data: missionData, name: "my-mission" });
+      const mission = await missionExec.createMission({ data: missionData, name: "my-mission" });
       await missionExec.executeMission(mission.id);
 
       const tasks = [createDoneTask("Task A"), createPendingTask("Task B")];
@@ -413,7 +413,7 @@ describe("Checkpoints", () => {
           { name: "review-a", afterTasks: ["Task A"], blocksTasks: ["Task B"] },
         ],
       });
-      const mission = await missionExec.saveMission({ data: missionData, name: "my-mission" });
+      const mission = await missionExec.createMission({ data: missionData, name: "my-mission" });
       await missionExec.executeMission(mission.id);
 
       const tasks = [createDoneTask("Task A"), createPendingTask("Task B")];
@@ -435,7 +435,7 @@ describe("Checkpoints", () => {
           { name: "review-a", afterTasks: ["Task A"], blocksTasks: ["Task B"] },
         ],
       });
-      const mission = await missionExec.saveMission({ data: missionData, name: "my-mission" });
+      const mission = await missionExec.createMission({ data: missionData, name: "my-mission" });
       await missionExec.executeMission(mission.id);
 
       const tasks = [createDoneTask("Task A"), createPendingTask("Task B")];
@@ -460,7 +460,7 @@ describe("Checkpoints", () => {
           { name: "cp-2", afterTasks: ["Task B"], blocksTasks: ["Task C"] },
         ],
       });
-      const mission = await missionExec.saveMission({ data: missionData, name: "my-mission" });
+      const mission = await missionExec.createMission({ data: missionData, name: "my-mission" });
       await missionExec.executeMission(mission.id);
 
       // Checkpoint 1: Task A done, blocks Task B
@@ -502,7 +502,7 @@ describe("Checkpoints", () => {
           { name: "review-a", afterTasks: ["Task A"], blocksTasks: ["Task B"] },
         ],
       });
-      const mission = await missionExec.saveMission({ data: missionData, name: "my-mission" });
+      const mission = await missionExec.createMission({ data: missionData, name: "my-mission" });
       await missionExec.executeMission(mission.id);
 
       // Verify checkpoint was registered
@@ -526,7 +526,7 @@ describe("Checkpoints", () => {
           { name: "review-a", afterTasks: ["Task A"], blocksTasks: ["Task B"] },
         ],
       });
-      const mission = await missionExec.saveMission({ data: missionData, name: "my-mission" });
+      const mission = await missionExec.createMission({ data: missionData, name: "my-mission" });
       await missionExec.executeMission(mission.id);
 
       // Activate checkpoint
@@ -555,7 +555,7 @@ describe("Checkpoints", () => {
           { name: "review-a", afterTasks: ["Task A"], blocksTasks: ["Task B"] },
         ],
       });
-      const mission = await missionExec.saveMission({ data: missionData, name: "my-mission" });
+      const mission = await missionExec.createMission({ data: missionData, name: "my-mission" });
       await missionExec.executeMission(mission.id);
 
       const tasks = [createDoneTask("Task A"), createPendingTask("Task B")];
@@ -580,7 +580,7 @@ describe("Checkpoints", () => {
           { name: "review-a", afterTasks: ["Task A"], blocksTasks: ["Task B"] },
         ],
       });
-      const mission = await missionExec.saveMission({ data: missionData, name: "my-mission" });
+      const mission = await missionExec.createMission({ data: missionData, name: "my-mission" });
       await missionExec.executeMission(mission.id);
 
       // Activate and resume checkpoint

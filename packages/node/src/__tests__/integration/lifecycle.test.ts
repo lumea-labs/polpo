@@ -81,7 +81,7 @@ describe("integration: lifecycle", () => {
     orchestrator.on("agent:spawned", () => transitions.push("spawned"));
     orchestrator.on("task:transition", ({ to }) => transitions.push(to));
 
-    await orchestrator.addTask({
+    await orchestrator.createTask({
       title: "Simple task",
       description: "Do something",
       assignTo: "worker",
@@ -92,7 +92,7 @@ describe("integration: lifecycle", () => {
     expect(transitions).toContain("spawned");
 
     // Simulate the runner completing the task
-    const task = (await store.getAllTasks())[0];
+    const task = (await store.listTasks())[0];
     await simulateRunnerResult(runStore, task.id, {
       exitCode: 0, stdout: "done", stderr: "", duration: 100,
     });
@@ -108,13 +108,13 @@ describe("integration: lifecycle", () => {
     const spawnOrder: string[] = [];
     orchestrator.on("agent:spawned", ({ taskTitle }) => spawnOrder.push(taskTitle));
 
-    const taskA = await orchestrator.addTask({
+    const taskA = await orchestrator.createTask({
       title: "Task A",
       description: "First",
       assignTo: "worker",
     });
 
-    await orchestrator.addTask({
+    await orchestrator.createTask({
       title: "Task B",
       description: "After A",
       assignTo: "worker",
@@ -145,7 +145,7 @@ describe("integration: lifecycle", () => {
     const retryEvents: any[] = [];
     orchestrator.on("task:retry", (e) => retryEvents.push(e));
 
-    await orchestrator.addTask({
+    await orchestrator.createTask({
       title: "Flaky task",
       description: "Fails first, succeeds second",
       assignTo: "worker",
@@ -153,7 +153,7 @@ describe("integration: lifecycle", () => {
 
     // Tick 1: spawn
     await orchestrator.tick();
-    const task = (await store.getAllTasks())[0];
+    const task = (await store.listTasks())[0];
 
     // Simulate failure
     await simulateRunnerResult(runStore, task.id, {
@@ -186,7 +186,7 @@ describe("integration: lifecycle", () => {
     const deadlockEvents: any[] = [];
     orchestrator.on("orchestrator:deadlock", (e) => deadlockEvents.push(e));
 
-    await orchestrator.addTask({
+    await orchestrator.createTask({
       title: "Blocked task",
       description: "Depends on nonexistent",
       assignTo: "worker",
@@ -196,7 +196,7 @@ describe("integration: lifecycle", () => {
     await orchestrator.tick();
 
     expect(deadlockEvents).toHaveLength(1);
-    const task = (await store.getAllTasks())[0];
+    const task = (await store.listTasks())[0];
     expect(task.status).toBe("failed");
   });
 });

@@ -49,7 +49,7 @@ export type AssessFn = (
  */
 export interface OrchestratorContext {
   readonly emitter: EventBus;
-  readonly registry: TaskStore;
+  readonly taskStore: TaskStore;
   readonly runStore: RunStore;
   readonly memoryStore: MemoryStore;
   readonly logStore: LogStore;

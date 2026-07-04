@@ -277,7 +277,7 @@ export function taskRoutes(getDeps: () => {
   runStore?: any;
   /** Optional — required for log-session entries on GET /:id/activity. */
   logStore?: any;
-  addTask: (opts: any) => Promise<any>;
+  createTask: (opts: any) => Promise<any>;
   deleteTask: (taskId: string) => Promise<any>;
   retryTask: (taskId: string) => Promise<any>;
   killTask: (taskId: string) => Promise<any>;
@@ -292,7 +292,7 @@ export function taskRoutes(getDeps: () => {
   // GET /tasks — list all tasks, optional filters
   app.openapi(listTasksRoute, async (c) => {
     const deps = getDeps();
-    let tasks = await deps.taskStore.getAllTasks();
+    let tasks = await deps.taskStore.listTasks();
 
     // Optional filters
     const { status, group, assignTo } = c.req.valid("query");
@@ -320,7 +320,7 @@ export function taskRoutes(getDeps: () => {
     const deps = getDeps();
     const body = c.req.valid("json");
 
-    const task = await deps.addTask({
+    const task = await deps.createTask({
       title: body.title,
       description: body.description,
       assignTo: body.assignTo,
@@ -538,7 +538,7 @@ export function taskRoutes(getDeps: () => {
       filter = (t: any) => t.group === query.group;
     }
 
-    const deleted = await deps.taskStore.removeTasks(filter);
+    const deleted = await deps.taskStore.deleteTasks(filter);
     return c.json({ ok: true, data: { deleted } }, 200);
   });
 

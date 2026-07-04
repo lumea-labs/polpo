@@ -20,10 +20,10 @@ import type { Mission } from "./types.js";
 import type { TaskStore } from "./task-store.js";
 
 export interface MissionStore {
-  saveMission(mission: Omit<Mission, "id" | "createdAt" | "updatedAt">): Promise<Mission>;
+  createMission(mission: Omit<Mission, "id" | "createdAt" | "updatedAt">): Promise<Mission>;
   getMission(missionId: string): Promise<Mission | undefined>;
   getMissionByName(name: string): Promise<Mission | undefined>;
-  getAllMissions(): Promise<Mission[]>;
+  listMissions(): Promise<Mission[]>;
   updateMission(missionId: string, updates: Partial<Omit<Mission, "id">>): Promise<Mission>;
   deleteMission(missionId: string): Promise<boolean>;
   nextMissionName(): Promise<string>;
@@ -39,10 +39,10 @@ export function taskStoreMissionAdapter(store: TaskStore & Partial<MissionStore>
     throw new Error("Store does not support missions");
   };
   return {
-    saveMission: async (mission) => store.saveMission ? store.saveMission(mission) : unsupported(),
+    createMission: async (mission) => store.createMission ? store.createMission(mission) : unsupported(),
     getMission: async (missionId) => store.getMission?.(missionId),
     getMissionByName: async (name) => store.getMissionByName?.(name),
-    getAllMissions: async () => (await store.getAllMissions?.()) ?? [],
+    listMissions: async () => (await store.listMissions?.()) ?? [],
     updateMission: async (missionId, updates) =>
       store.updateMission ? store.updateMission(missionId, updates) : unsupported(),
     deleteMission: async (missionId) => store.deleteMission ? store.deleteMission(missionId) : unsupported(),
@@ -56,21 +56,19 @@ export function taskStoreMissionAdapter(store: TaskStore & Partial<MissionStore>
  * task-store adapter (legacy layout — file and Drizzle task stores both
  * implement the mission block).
  */
-export function resolveMissionStore(ctx: { missionStore?: MissionStore; registry: TaskStore }): MissionStore {
+export function resolveMissionStore(ctx: { missionStore?: MissionStore; taskStore: TaskStore }): MissionStore {
   // The legacy file/drizzle task stores still carry the mission methods on the class.
-  return ctx.missionStore ?? taskStoreMissionAdapter(ctx.registry as TaskStore & Partial<MissionStore>);
+  return ctx.missionStore ?? taskStoreMissionAdapter(ctx.taskStore as TaskStore & Partial<MissionStore>);
 }
 
 /**
- * Resolve the mission a task belongs to — the single home of the legacy
- * fallback: `missionId` (direct FK) is preferred; tasks created before the
- * missionId field resolve by `group` name.
+ * Resolve the mission a task belongs to via the missionId FK.
+ * (The legacy group-name fallback was removed in 0.12.)
  */
 export async function resolveMissionForTask(
   missions: MissionStore,
-  task: { missionId?: string; group?: string },
+  task: { missionId?: string },
 ): Promise<Mission | undefined> {
   if (task.missionId) return missions.getMission(task.missionId);
-  if (task.group) return missions.getMissionByName(task.group);
   return undefined;
 }

@@ -59,19 +59,19 @@ describe("Mission resume (Orchestrator)", () => {
     });
 
     it("returns empty array for draft missions", async () => {
-      await orchestrator.saveMission({ data: JSON.stringify({ tasks: [{ title: "T1", assignTo: "dev" }] }), status: "draft" });
+      await orchestrator.createMission({ data: JSON.stringify({ tasks: [{ title: "T1", assignTo: "dev" }] }), status: "draft" });
       expect(await orchestrator.getResumableMissions()).toEqual([]);
     });
 
     it("returns empty array for completed missions", async () => {
-      const mission = await orchestrator.saveMission({ data: JSON.stringify({ tasks: [{ title: "T1", assignTo: "dev" }] }), status: "draft" });
+      const mission = await orchestrator.createMission({ data: JSON.stringify({ tasks: [{ title: "T1", assignTo: "dev" }] }), status: "draft" });
       await orchestrator.updateMission(mission.id, { status: "completed" });
       expect(await orchestrator.getResumableMissions()).toEqual([]);
     });
 
     it("returns active mission with pending tasks", async () => {
       const data = JSON.stringify({ tasks: [{ title: "Task1", description: "Do something", assignTo: "dev" }] });
-      const mission = await orchestrator.saveMission({ data });
+      const mission = await orchestrator.createMission({ data });
       await orchestrator.executeMission(mission.id);
 
       const resumable = await orchestrator.getResumableMissions();
@@ -82,7 +82,7 @@ describe("Mission resume (Orchestrator)", () => {
 
     it("returns failed mission with failed tasks", async () => {
       const data = JSON.stringify({ tasks: [{ title: "FailTask", description: "Will fail", assignTo: "dev" }] });
-      const mission = await orchestrator.saveMission({ data });
+      const mission = await orchestrator.createMission({ data });
       await orchestrator.executeMission(mission.id);
 
       // Manually fail the task
@@ -102,7 +102,7 @@ describe("Mission resume (Orchestrator)", () => {
 
     it("excludes cancelled missions", async () => {
       const data = JSON.stringify({ tasks: [{ title: "T", description: "d", assignTo: "dev" }] });
-      const mission = await orchestrator.saveMission({ data });
+      const mission = await orchestrator.createMission({ data });
       await orchestrator.executeMission(mission.id);
       await orchestrator.updateMission(mission.id, { status: "cancelled" });
 
@@ -117,7 +117,7 @@ describe("Mission resume (Orchestrator)", () => {
 
     it("resumes a failed mission and retries failed tasks", async () => {
       const data = JSON.stringify({ tasks: [{ title: "ResumableTask", description: "Will be resumed", assignTo: "dev" }] });
-      const mission = await orchestrator.saveMission({ data });
+      const mission = await orchestrator.createMission({ data });
       await orchestrator.executeMission(mission.id);
 
       // Fail the task
@@ -143,7 +143,7 @@ describe("Mission resume (Orchestrator)", () => {
 
     it("resumes without retrying when retryFailed is false", async () => {
       const data = JSON.stringify({ tasks: [{ title: "NoRetryTask", description: "d", assignTo: "dev" }] });
-      const mission = await orchestrator.saveMission({ data });
+      const mission = await orchestrator.createMission({ data });
       await orchestrator.executeMission(mission.id);
 
       const state = await store.getState();
@@ -164,7 +164,7 @@ describe("Mission resume (Orchestrator)", () => {
 
     it("emits mission:resumed event", async () => {
       const data = JSON.stringify({ tasks: [{ title: "EventTask", description: "d", assignTo: "dev" }] });
-      const mission = await orchestrator.saveMission({ data });
+      const mission = await orchestrator.createMission({ data });
       await orchestrator.executeMission(mission.id);
       await orchestrator.updateMission(mission.id, { status: "failed" });
 

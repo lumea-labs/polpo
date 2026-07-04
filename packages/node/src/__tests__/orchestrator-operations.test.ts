@@ -46,12 +46,12 @@ describe("CLI: task operations", () => {
   });
 
   test("task list — empty initially (no seed tasks in interactive mode)", async () => {
-    const tasks = await o.getStore().getAllTasks();
+    const tasks = await o.getStore().listTasks();
     expect(tasks).toHaveLength(0);
   });
 
   test("task add — creates task with title and agent", async () => {
-    const task = await o.addTask({
+    const task = await o.createTask({
       title: "first-task",
       description: "Do something useful",
       assignTo: "agent-1",
@@ -64,7 +64,7 @@ describe("CLI: task operations", () => {
   });
 
   test("task show — finds task by full ID", async () => {
-    const task = await o.addTask({
+    const task = await o.createTask({
       title: "findable",
       description: "Find me",
       assignTo: "agent-1",
@@ -75,13 +75,13 @@ describe("CLI: task operations", () => {
   });
 
   test("task show — finds task by partial ID (prefix)", async () => {
-    const task = await o.addTask({
+    const task = await o.createTask({
       title: "partial-find",
       description: "Find by prefix",
       assignTo: "agent-1",
     });
     const prefix = task.id.slice(0, 6);
-    const allTasks = await o.getStore().getAllTasks();
+    const allTasks = await o.getStore().listTasks();
     const match = allTasks.find((t) => t.id.startsWith(prefix));
     expect(match).toBeDefined();
     expect(match!.id).toBe(task.id);
@@ -93,18 +93,18 @@ describe("CLI: task operations", () => {
   });
 
   test("task delete — removes task", async () => {
-    const task = await o.addTask({
+    const task = await o.createTask({
       title: "delete-me",
       description: "To be removed",
       assignTo: "agent-1",
     });
-    const removed = await o.getStore().removeTask(task.id);
+    const removed = await o.getStore().deleteTask(task.id);
     expect(removed).toBe(true);
     expect(await o.getStore().getTask(task.id)).toBeUndefined();
   });
 
   test("task retry — resets failed task to pending", async () => {
-    const task = await o.addTask({
+    const task = await o.createTask({
       title: "fail-me",
       description: "test retry",
       assignTo: "agent-1",
@@ -119,7 +119,7 @@ describe("CLI: task operations", () => {
   });
 
   test("task kill — kills running task (marks as failed)", async () => {
-    const task = await o.addTask({
+    const task = await o.createTask({
       title: "kill-me",
       description: "test kill",
       assignTo: "agent-1",
@@ -148,12 +148,12 @@ describe("CLI: mission operations", () => {
   });
 
   test("mission list — empty initially", async () => {
-    const missions = await o.getAllMissions();
+    const missions = await o.listMissions();
     expect(missions).toHaveLength(0);
   });
 
   test("mission save — creates draft mission", async () => {
-    const mission = await o.saveMission({
+    const mission = await o.createMission({
       data: JSON.stringify({ tasks: [{ title: "Test", description: "Do something", assignTo: "agent-1" }] }),
     });
     expect(mission.status).toBe("draft");
@@ -163,7 +163,7 @@ describe("CLI: mission operations", () => {
   });
 
   test("mission show — finds by ID", async () => {
-    const mission = await o.saveMission({
+    const mission = await o.createMission({
       data: JSON.stringify({ tasks: [{ title: "FindById", description: "Test", assignTo: "agent-1" }] }),
       name: "find-by-id",
     });
@@ -174,7 +174,7 @@ describe("CLI: mission operations", () => {
   });
 
   test("mission show — finds by name", async () => {
-    const mission = await o.saveMission({
+    const mission = await o.createMission({
       data: JSON.stringify({ tasks: [{ title: "FindByName", description: "Test", assignTo: "agent-1" }] }),
       name: "named-mission",
     });
@@ -184,7 +184,7 @@ describe("CLI: mission operations", () => {
   });
 
   test("mission delete — removes mission", async () => {
-    const mission = await o.saveMission({
+    const mission = await o.createMission({
       data: JSON.stringify({ tasks: [{ title: "DeleteMe", description: "Test", assignTo: "agent-1" }] }),
       name: "to-delete",
     });
@@ -194,7 +194,7 @@ describe("CLI: mission operations", () => {
   });
 
   test("mission execute — creates tasks from mission", async () => {
-    const mission = await o.saveMission({
+    const mission = await o.createMission({
       data: JSON.stringify({ tasks: [{ title: "Mission task", description: "Do work", assignTo: "agent-1" }] }),
       name: "exec-mission",
     });
@@ -395,7 +395,7 @@ describe("CLI: log operations", () => {
     expect(sessionId).toBeDefined();
 
     // Add a task to generate a log event (task:created is emitted via the log sink)
-    await o.addTask({ title: "log-test", description: "Generate log entry", assignTo: "agent-1" });
+    await o.createTask({ title: "log-test", description: "Generate log entry", assignTo: "agent-1" });
 
     const entries = await logStore.getSessionEntries(sessionId);
     // The logStore receives events wired by setLogSink — entries may be present

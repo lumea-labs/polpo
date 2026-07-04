@@ -25,9 +25,9 @@ describe("Mission Persistence (Drizzle SQLite)", () => {
     sqlite.close();
   });
 
-  describe("saveMission", () => {
+  describe("createMission", () => {
     it("creates a mission with generated ID and timestamps", async () => {
-      const mission = await store.saveMission!({
+      const mission = await store.createMission!({
         name: "mission-1",
         data: JSON.stringify({ tasks: [{ title: "Test" }] }),
         prompt: "Build a test",
@@ -44,7 +44,7 @@ describe("Mission Persistence (Drizzle SQLite)", () => {
     });
 
     it("saves without prompt", async () => {
-      const mission = await store.saveMission!({
+      const mission = await store.createMission!({
         name: "mission-1",
         data: JSON.stringify({ tasks: [{ title: "Test" }] }),
         status: "draft",
@@ -53,15 +53,15 @@ describe("Mission Persistence (Drizzle SQLite)", () => {
     });
 
     it("enforces unique name", async () => {
-      await store.saveMission!({ name: "mission-1", data: "a", status: "draft" });
-      await expect(store.saveMission!({ name: "mission-1", data: "b", status: "draft" }))
+      await store.createMission!({ name: "mission-1", data: "a", status: "draft" });
+      await expect(store.createMission!({ name: "mission-1", data: "b", status: "draft" }))
         .rejects.toThrow();
     });
   });
 
   describe("getMission", () => {
     it("returns mission by ID", async () => {
-      const created = await store.saveMission!({ name: "p1", data: "d", status: "draft" });
+      const created = await store.createMission!({ name: "p1", data: "d", status: "draft" });
       const found = await store.getMission!(created.id);
       expect(found).toBeDefined();
       expect(found!.id).toBe(created.id);
@@ -75,7 +75,7 @@ describe("Mission Persistence (Drizzle SQLite)", () => {
 
   describe("getMissionByName", () => {
     it("returns mission by name", async () => {
-      const created = await store.saveMission!({ name: "my-mission", data: "d", status: "draft" });
+      const created = await store.createMission!({ name: "my-mission", data: "d", status: "draft" });
       const found = await store.getMissionByName!("my-mission");
       expect(found).toBeDefined();
       expect(found!.id).toBe(created.id);
@@ -86,12 +86,12 @@ describe("Mission Persistence (Drizzle SQLite)", () => {
     });
   });
 
-  describe("getAllMissions", () => {
+  describe("listMissions", () => {
     it("returns all missions", async () => {
-      await store.saveMission!({ name: "p1", data: "a", status: "draft" });
-      await store.saveMission!({ name: "p2", data: "b", status: "active" });
-      await store.saveMission!({ name: "p3", data: "c", status: "completed" });
-      const missions = await store.getAllMissions!();
+      await store.createMission!({ name: "p1", data: "a", status: "draft" });
+      await store.createMission!({ name: "p2", data: "b", status: "active" });
+      await store.createMission!({ name: "p3", data: "c", status: "completed" });
+      const missions = await store.listMissions!();
       expect(missions).toHaveLength(3);
       const names = missions.map(p => p.name).sort();
       expect(names).toEqual(["p1", "p2", "p3"]);
@@ -100,20 +100,20 @@ describe("Mission Persistence (Drizzle SQLite)", () => {
 
   describe("updateMission", () => {
     it("updates data", async () => {
-      const mission = await store.saveMission!({ name: "p1", data: "old", status: "draft" });
+      const mission = await store.createMission!({ name: "p1", data: "old", status: "draft" });
       const updated = await store.updateMission!(mission.id, { data: "new data" });
       expect(updated.data).toBe("new data");
       expect(updated.name).toBe("p1");
     });
 
     it("updates status", async () => {
-      const mission = await store.saveMission!({ name: "p1", data: "d", status: "draft" });
+      const mission = await store.createMission!({ name: "p1", data: "d", status: "draft" });
       const updated = await store.updateMission!(mission.id, { status: "active" });
       expect(updated.status).toBe("active");
     });
 
     it("updates name", async () => {
-      const mission = await store.saveMission!({ name: "old-name", data: "d", status: "draft" });
+      const mission = await store.createMission!({ name: "old-name", data: "d", status: "draft" });
       const updated = await store.updateMission!(mission.id, { name: "new-name" });
       expect(updated.name).toBe("new-name");
     });
@@ -125,9 +125,9 @@ describe("Mission Persistence (Drizzle SQLite)", () => {
 
   describe("deleteMission", () => {
     it("deletes and returns true", async () => {
-      const mission = await store.saveMission!({ name: "p1", data: "d", status: "draft" });
+      const mission = await store.createMission!({ name: "p1", data: "d", status: "draft" });
       expect(await store.deleteMission!(mission.id)).toBe(true);
-      expect(await store.getAllMissions!()).toHaveLength(0);
+      expect(await store.listMissions!()).toHaveLength(0);
     });
 
     it("returns false for missing mission", async () => {
@@ -141,16 +141,16 @@ describe("Mission Persistence (Drizzle SQLite)", () => {
     });
 
     it("increments based on count", async () => {
-      await store.saveMission!({ name: "mission-1", data: "a", status: "draft" });
+      await store.createMission!({ name: "mission-1", data: "a", status: "draft" });
       expect(await store.nextMissionName!()).toBe("mission-2");
-      await store.saveMission!({ name: "mission-2", data: "b", status: "active" });
+      await store.createMission!({ name: "mission-2", data: "b", status: "active" });
       expect(await store.nextMissionName!()).toBe("mission-3");
     });
   });
 
   describe("mission status lifecycle", () => {
     it("supports draft → active → completed", async () => {
-      const mission = await store.saveMission!({ name: "p1", data: "d", status: "draft" });
+      const mission = await store.createMission!({ name: "p1", data: "d", status: "draft" });
       expect(mission.status).toBe("draft");
 
       const active = await store.updateMission!(mission.id, { status: "active" });
@@ -161,14 +161,14 @@ describe("Mission Persistence (Drizzle SQLite)", () => {
     });
 
     it("supports draft → active → failed", async () => {
-      const mission = await store.saveMission!({ name: "p1", data: "d", status: "draft" });
+      const mission = await store.createMission!({ name: "p1", data: "d", status: "draft" });
       await store.updateMission!(mission.id, { status: "active" });
       const failed = await store.updateMission!(mission.id, { status: "failed" });
       expect(failed.status).toBe("failed");
     });
 
     it("supports active → cancelled", async () => {
-      const mission = await store.saveMission!({ name: "p1", data: "d", status: "active" });
+      const mission = await store.createMission!({ name: "p1", data: "d", status: "active" });
       const cancelled = await store.updateMission!(mission.id, { status: "cancelled" });
       expect(cancelled.status).toBe("cancelled");
     });

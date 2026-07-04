@@ -13,7 +13,7 @@ import {
  */
 export function playbookRoutes(getDeps: () => {
   playbookStore: any;
-  saveMission: (opts: any) => Promise<any>;
+  createMission: (opts: any) => Promise<any>;
   executeMission: (id: string) => Promise<any>;
 }): OpenAPIHono {
   const app = new OpenAPIHono();
@@ -140,7 +140,7 @@ export function playbookRoutes(getDeps: () => {
     const instance = instantiatePlaybook(playbook, validation.resolved);
 
     // Save as mission and execute
-    const mission = await deps.saveMission({
+    const mission = await deps.createMission({
       data: instance.data,
       prompt: instance.prompt,
       name: instance.name,

@@ -360,7 +360,7 @@ export class Orchestrator extends TypedEmitter {
   private buildContext(): OrchestratorContext {
     return {
       emitter: this,
-      registry: this.registry,
+      taskStore: this.registry,
       runStore: this.runStore,
       memoryStore: this.memoryStore,
       logStore: this.logStore,
@@ -499,7 +499,7 @@ export class Orchestrator extends TypedEmitter {
     return async (action: NotificationAction): Promise<string> => {
       switch (action.type) {
         case "create_task": {
-          const task = await this.addTask({
+          const task = await this.createTask({
             title: action.title,
             description: action.description,
             assignTo: action.assignTo,
@@ -508,7 +508,7 @@ export class Orchestrator extends TypedEmitter {
           return `Task created: [${task.id}] "${task.title}" → ${task.assignTo}`;
         }
         case "execute_mission": {
-          const mission = await resolveMissionStore({ registry: this.registry }).getMission(action.missionId);
+          const mission = await resolveMissionStore({ taskStore: this.registry }).getMission(action.missionId);
           if (!mission) throw new Error(`Mission "${action.missionId}" not found`);
           const result = await this.missionExec.executeMission(action.missionId);
           return `Mission "${mission.name}" executed: ${result.tasks.length} tasks created`;
@@ -658,12 +658,12 @@ export class Orchestrator extends TypedEmitter {
 
   // ── Task Management (delegates to OrchestratorEngine → TaskManager) ──
 
-  async addTask(opts: {
+  async createTask(opts: {
     title: string; description: string; assignTo: string;
     expectations?: TaskExpectation[]; expectedOutcomes?: ExpectedOutcome[];
     dependsOn?: string[]; group?: string; maxDuration?: number; retryPolicy?: RetryPolicy;
     notifications?: ScopedNotificationRules; sideEffects?: boolean; draft?: boolean;
-  }): Promise<Task> { return this.engine.addTask(opts); }
+  }): Promise<Task> { return this.engine.createTask(opts); }
   async updateTaskDescription(taskId: string, description: string): Promise<void> { return this.engine.updateTaskDescription(taskId, description); }
   async updateTaskAssignment(taskId: string, agentName: string): Promise<void> { return this.engine.updateTaskAssignment(taskId, agentName); }
   async updateTaskExpectations(taskId: string, expectations: TaskExpectation[]): Promise<void> { return this.engine.updateTaskExpectations(taskId, expectations); }
@@ -745,10 +745,10 @@ export class Orchestrator extends TypedEmitter {
 
   // ─── Mission Management (delegates to OrchestratorEngine → MissionExecutor) ──
 
-  async saveMission(opts: { data: string; prompt?: string; name?: string; status?: MissionStatus; notifications?: ScopedNotificationRules }): Promise<Mission> { return this.engine.saveMission(opts); }
+  async createMission(opts: { data: string; prompt?: string; name?: string; status?: MissionStatus; notifications?: ScopedNotificationRules }): Promise<Mission> { return this.engine.createMission(opts); }
   async getMission(missionId: string): Promise<Mission | undefined> { return this.engine.getMission(missionId); }
   async getMissionByName(name: string): Promise<Mission | undefined> { return this.engine.getMissionByName(name); }
-  async getAllMissions(): Promise<Mission[]> { return this.engine.getAllMissions(); }
+  async listMissions(): Promise<Mission[]> { return this.engine.listMissions(); }
   async updateMission(missionId: string, updates: Partial<Omit<Mission, "id">>): Promise<Mission> { return this.engine.updateMission(missionId, updates); }
   async deleteMission(missionId: string): Promise<boolean> { return this.engine.deleteMission(missionId); }
 
@@ -1139,7 +1139,7 @@ export class Orchestrator extends TypedEmitter {
   async status(): Promise<void> {
     await this.init();
     // Emit log for CLI to consume
-    const tasks = await this.registry.getAllTasks();
+    const tasks = await this.registry.listTasks();
     const done = tasks.filter(t => t.status === "done");
     const failed = tasks.filter(t => t.status === "failed");
     this.emit("log", { level: "info", message: `Total: ${tasks.length} | Done: ${done.length} | Failed: ${failed.length}` });

@@ -57,12 +57,12 @@ describe("Orchestrator", () => {
     await orchestrator.initInteractive("test-project", team);
   });
 
-  describe("addTask", () => {
+  describe("createTask", () => {
     it("creates a task and emits task:created", async () => {
       const events: any[] = [];
       orchestrator.on("task:created", (e) => events.push(e));
 
-      const task = await orchestrator.addTask({
+      const task = await orchestrator.createTask({
         title: "Test",
         description: "Test task",
         assignTo: "agent-1",
@@ -77,7 +77,7 @@ describe("Orchestrator", () => {
 
   describe("tick", () => {
     it("returns true when all tasks are terminal", async () => {
-      const task = await orchestrator.addTask({
+      const task = await orchestrator.createTask({
         title: "Test",
         description: "Done",
         assignTo: "agent-1",
@@ -95,7 +95,7 @@ describe("Orchestrator", () => {
       const events: any[] = [];
       orchestrator.on("orchestrator:deadlock", (e) => events.push(e));
 
-      const taskA = await orchestrator.addTask({
+      const taskA = await orchestrator.createTask({
         title: "Task A",
         description: "Depends on B",
         assignTo: "agent-1",
@@ -113,7 +113,7 @@ describe("Orchestrator", () => {
       orchestrator.on("deadlock:detected", (e) => detected.push(e));
 
       // Create Task A (no deps) and force it to failed
-      const taskA = await orchestrator.addTask({
+      const taskA = await orchestrator.createTask({
         title: "Task A",
         description: "Do something",
         assignTo: "agent-1",
@@ -123,7 +123,7 @@ describe("Orchestrator", () => {
       await store.transition(taskA.id, "failed");
 
       // Create Task B that depends on (now-failed) Task A
-      await orchestrator.addTask({
+      await orchestrator.createTask({
         title: "Task B",
         description: "Depends on A",
         assignTo: "agent-1",
@@ -142,7 +142,7 @@ describe("Orchestrator", () => {
       const events: any[] = [];
       orchestrator.on("orchestrator:tick", (e) => events.push(e));
 
-      await orchestrator.addTask({
+      await orchestrator.createTask({
         title: "Test",
         description: "Task",
         assignTo: "agent-1",
@@ -161,7 +161,7 @@ describe("Orchestrator", () => {
 
   describe("collectResults via RunStore", () => {
     it("processes terminal runs and transitions tasks", async () => {
-      const task = await orchestrator.addTask({
+      const task = await orchestrator.createTask({
         title: "Collect me",
         description: "Test",
         assignTo: "agent-1",
@@ -195,7 +195,7 @@ describe("Orchestrator", () => {
     });
 
     it("handles failed runs", async () => {
-      const task = await orchestrator.addTask({
+      const task = await orchestrator.createTask({
         title: "Fail me",
         description: "Test",
         assignTo: "agent-1",
@@ -258,7 +258,7 @@ describe("Orchestrator", () => {
 
   describe("killTask", () => {
     it("marks task as failed", async () => {
-      const task = await orchestrator.addTask({
+      const task = await orchestrator.createTask({
         title: "Kill me",
         description: "Test",
         assignTo: "agent-1",
@@ -270,7 +270,7 @@ describe("Orchestrator", () => {
 
   describe("retryTask", () => {
     it("transitions failed task to pending", async () => {
-      const task = await orchestrator.addTask({
+      const task = await orchestrator.createTask({
         title: "Retry me",
         description: "Test",
         assignTo: "agent-1",
@@ -284,7 +284,7 @@ describe("Orchestrator", () => {
     });
 
     it("throws for non-failed task", async () => {
-      const task = await orchestrator.addTask({
+      const task = await orchestrator.createTask({
         title: "Not failed",
         description: "Test",
         assignTo: "agent-1",
@@ -304,7 +304,7 @@ describe("Orchestrator", () => {
 
   describe("recoverOrphanedTasks", () => {
     it("resets stuck tasks to pending", async () => {
-      const task = await store.addTask({
+      const task = await store.createTask({
         title: "Stuck",
         description: "Was in_progress",
         assignTo: "agent-1",
@@ -322,7 +322,7 @@ describe("Orchestrator", () => {
     });
 
     it("requeues orphaned in_progress tasks to pending (shutdown is not a real failure)", async () => {
-      const task = await store.addTask({
+      const task = await store.createTask({
         title: "Exhausted",
         description: "No retries left",
         assignTo: "agent-1",
@@ -343,7 +343,7 @@ describe("Orchestrator", () => {
 
   describe("syncProcessesFromRunStore", () => {
     it("syncs active runs to processes state", async () => {
-      const task = await orchestrator.addTask({
+      const task = await orchestrator.createTask({
         title: "Running",
         description: "Test",
         assignTo: "agent-1",

@@ -11,7 +11,7 @@ function makeStore(): JsonTaskStore {
 }
 
 async function addSampleTask(store: JsonTaskStore, overrides: Partial<Omit<Task, "id" | "status" | "retries" | "createdAt" | "updatedAt">> = {}): Promise<Task> {
-  return store.addTask({
+  return store.createTask({
     title: "Sample task",
     description: "Description",
     assignTo: "agent-1",
@@ -33,7 +33,7 @@ describe("JsonTaskStore", () => {
     if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
   });
 
-  describe("addTask", () => {
+  describe("createTask", () => {
     it("generates an ID and sets defaults", async () => {
       const store = makeStore();
       const task = await addSampleTask(store);
@@ -71,12 +71,12 @@ describe("JsonTaskStore", () => {
     });
   });
 
-  describe("getAllTasks", () => {
+  describe("listTasks", () => {
     it("returns all tasks", async () => {
       const store = makeStore();
       await addSampleTask(store, { title: "Task 1" });
       await addSampleTask(store, { title: "Task 2" });
-      expect(await store.getAllTasks()).toHaveLength(2);
+      expect(await store.listTasks()).toHaveLength(2);
     });
   });
 
@@ -96,30 +96,30 @@ describe("JsonTaskStore", () => {
     });
   });
 
-  describe("removeTask", () => {
+  describe("deleteTask", () => {
     it("removes by ID and returns true", async () => {
       const store = makeStore();
       const task = await addSampleTask(store);
-      expect(await store.removeTask(task.id)).toBe(true);
-      expect(await store.getAllTasks()).toHaveLength(0);
+      expect(await store.deleteTask(task.id)).toBe(true);
+      expect(await store.listTasks()).toHaveLength(0);
     });
 
     it("returns false for missing ID", async () => {
       const store = makeStore();
-      expect(await store.removeTask("nope")).toBe(false);
+      expect(await store.deleteTask("nope")).toBe(false);
     });
   });
 
-  describe("removeTasks", () => {
+  describe("deleteTasks", () => {
     it("removes tasks matching filter", async () => {
       const store = makeStore();
       await addSampleTask(store, { title: "Keep" });
       await addSampleTask(store, { title: "Remove" });
       await addSampleTask(store, { title: "Remove too" });
-      const removed = await store.removeTasks(t => t.title.startsWith("Remove"));
+      const removed = await store.deleteTasks(t => t.title.startsWith("Remove"));
       expect(removed).toBe(2);
-      expect(await store.getAllTasks()).toHaveLength(1);
-      expect((await store.getAllTasks())[0].title).toBe("Keep");
+      expect(await store.listTasks()).toHaveLength(1);
+      expect((await store.listTasks())[0].title).toBe("Keep");
     });
   });
 
@@ -172,15 +172,15 @@ describe("JsonTaskStore", () => {
 
       // Create a new store instance reading the same directory
       const store2 = makeStore();
-      expect(await store2.getAllTasks()).toHaveLength(1);
-      expect((await store2.getAllTasks())[0].title).toBe("Persisted");
+      expect(await store2.listTasks()).toHaveLength(1);
+      expect((await store2.listTasks())[0].title).toBe("Persisted");
     });
 
     it("returns empty state when file is missing", async () => {
       rmSync(TEST_DIR, { recursive: true });
       mkdirSync(TEST_DIR, { recursive: true });
       const store = makeStore();
-      expect(await store.getAllTasks()).toHaveLength(0);
+      expect(await store.listTasks()).toHaveLength(0);
     });
   });
 });

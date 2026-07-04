@@ -82,7 +82,7 @@ export class ApprovalManager {
         const taskId = this.extractTaskId(ctx.data);
         if (taskId) {
           // Fire-and-forget async transition
-          this.ctx.registry.transition(taskId, "awaiting_approval").catch(() => {
+          this.ctx.taskStore.transition(taskId, "awaiting_approval").catch(() => {
             /* Task may already be in a state that doesn't allow this transition */
           });
         }
@@ -129,7 +129,7 @@ export class ApprovalManager {
 
     const gate = this.ctx.config.settings.approvalGates?.find(g => g.id === request.gateId);
     const maxRevisions = gate?.maxRevisions ?? 3;
-    const task = await this.ctx.registry.getTask(request.taskId);
+    const task = await this.ctx.taskStore.getTask(request.taskId);
     if (!task) return null;
 
     const currentCount = task.revisionCount ?? 0;
@@ -144,12 +144,12 @@ export class ApprovalManager {
     this.clearTimer(requestId);
 
     const newCount = currentCount + 1;
-    await this.ctx.registry.updateTask(request.taskId, { revisionCount: newCount });
+    await this.ctx.taskStore.updateTask(request.taskId, { revisionCount: newCount });
 
     const separator = "\n\n---\n";
     const feedbackBlock = `**Rejection #${newCount} feedback:** ${feedback}`;
     const updatedDescription = task.description + separator + feedbackBlock;
-    await this.ctx.registry.updateTask(request.taskId, { description: updatedDescription });
+    await this.ctx.taskStore.updateTask(request.taskId, { description: updatedDescription });
 
     this.ctx.emitter.emit("approval:rejected", {
       requestId,
@@ -159,10 +159,10 @@ export class ApprovalManager {
       resolvedBy: request.resolvedBy,
     });
 
-    await this.ctx.registry.updateTask(request.taskId, { outcomes: [] });
+    await this.ctx.taskStore.updateTask(request.taskId, { outcomes: [] });
 
     try {
-      await this.ctx.registry.transition(request.taskId, "pending");
+      await this.ctx.taskStore.transition(request.taskId, "pending");
     } catch { /* Task may have been modified externally */ }
 
     return request;
@@ -176,7 +176,7 @@ export class ApprovalManager {
 
     const gate = this.ctx.config.settings.approvalGates?.find(g => g.id === request.gateId);
     const maxRejections = gate?.maxRevisions ?? 3;
-    const task = await this.ctx.registry.getTask(request.taskId);
+    const task = await this.ctx.taskStore.getTask(request.taskId);
     const currentCount = task?.revisionCount ?? 0;
 
     return { allowed: currentCount < maxRejections, rejectionCount: currentCount, maxRejections };
@@ -210,9 +210,9 @@ export class ApprovalManager {
         if (status === "approved") {
           const gate = this.ctx.config.settings.approvalGates?.find(g => g.id === request.gateId);
           const targetStatus = gate?.hook === "task:complete" ? "done" : "assigned";
-          await this.ctx.registry.transition(request.taskId, targetStatus as any);
+          await this.ctx.taskStore.transition(request.taskId, targetStatus as any);
         } else {
-          await this.ctx.registry.transition(request.taskId, "failed");
+          await this.ctx.taskStore.transition(request.taskId, "failed");
         }
       } catch { /* Task may have been modified externally */ }
     }
@@ -237,9 +237,9 @@ export class ApprovalManager {
     if (request.taskId) {
       try {
         if (action === "approve") {
-          await this.ctx.registry.transition(request.taskId, "assigned");
+          await this.ctx.taskStore.transition(request.taskId, "assigned");
         } else {
-          await this.ctx.registry.transition(request.taskId, "failed");
+          await this.ctx.taskStore.transition(request.taskId, "failed");
         }
       } catch { /* Task may have been modified externally */ }
     }

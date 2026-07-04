@@ -13,12 +13,12 @@ export interface TaskStore {
   setState(partial: Partial<PolpoState>): Promise<void>;
 
   // Task CRUD
-  addTask(task: Omit<Task, "id" | "status" | "retries" | "createdAt" | "updatedAt"> & { status?: TaskStatus }): Promise<Task>;
+  createTask(task: Omit<Task, "id" | "status" | "retries" | "createdAt" | "updatedAt"> & { status?: TaskStatus }): Promise<Task>;
   getTask(taskId: string): Promise<Task | undefined>;
-  getAllTasks(): Promise<Task[]>;
+  listTasks(): Promise<Task[]>;
   updateTask(taskId: string, updates: Partial<Omit<Task, "id" | "status">>): Promise<Task>;
-  removeTask(taskId: string): Promise<boolean>;
-  removeTasks(filter: (task: Task) => boolean): Promise<number>;
+  deleteTask(taskId: string): Promise<boolean>;
+  deleteTasks(filter: (task: Task) => boolean): Promise<number>;
 
   // State machine
   transition(taskId: string, newStatus: TaskStatus): Promise<Task>;

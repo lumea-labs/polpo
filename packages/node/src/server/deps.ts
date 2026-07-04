@@ -27,7 +27,7 @@ export interface ChatRouteDeps {
 
 export interface TaskRouteDeps {
   taskStore: TaskStore;
-  addTask: (...args: any[]) => Promise<any>;
+  createTask: (...args: any[]) => Promise<any>;
   deleteTask: (...args: any[]) => Promise<any>;
   retryTask: (...args: any[]) => Promise<any>;
   killTask: (...args: any[]) => Promise<any>;
@@ -58,10 +58,10 @@ export interface AgentRouteDeps {
 // ── Mission deps ─────────────────────────────────────────────────────
 
 export interface MissionRouteDeps {
-  getAllMissions: () => Promise<any[]>;
+  listMissions: () => Promise<any[]>;
   getResumableMissions: () => Promise<any[]>;
   getMission: (missionId: string) => Promise<any>;
-  saveMission: (...args: any[]) => Promise<any>;
+  createMission: (...args: any[]) => Promise<any>;
   updateMission: (missionId: string, updates: any) => Promise<any>;
   deleteMission: (missionId: string) => Promise<any>;
   executeMission: (missionId: string) => Promise<any>;
@@ -93,7 +93,7 @@ export interface MissionRouteDeps {
 
 export interface PlaybookRouteDeps {
   playbookStore: PlaybookStore;
-  saveMission: (...args: any[]) => Promise<any>;
+  createMission: (...args: any[]) => Promise<any>;
   executeMission: (missionId: string) => Promise<any>;
 }
 
