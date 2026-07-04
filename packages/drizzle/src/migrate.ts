@@ -224,18 +224,6 @@ export async function ensurePgTables(db: any): Promise<void> {
 
 
 
-  // Migration: add message_id column if missing (added in v0.2.16)
-  await db.execute(sql`
-    DO $$ BEGIN
-      IF NOT EXISTS (
-        SELECT 1 FROM information_schema.columns
-        WHERE table_name = 'attachments' AND column_name = 'message_id'
-      ) THEN
-        ALTER TABLE attachments ADD COLUMN message_id TEXT;
-      END IF;
-    END $$
-  `);
-
   await db.execute(sql`CREATE TABLE IF NOT EXISTS skills (
     name          TEXT PRIMARY KEY,
     description   TEXT NOT NULL DEFAULT '',
