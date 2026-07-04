@@ -3,6 +3,7 @@ import type { OrchestratorContext } from "./orchestrator-context.js";
 import { resolveMissionStore, resolveMissionForTask } from "./mission-store.js";
 import type { Task, TaskResult, RunnerConfig } from "./types.js";
 import { agentMemoryScope } from "./memory-store.js";
+import { resolveExecutionMode } from "./execution-mode.js";
 import type { RunRecord } from "./run-store.js";
 import type { LoopResumeState } from "./loop/run-store.js";
 
@@ -515,9 +516,13 @@ export class TaskRunner {
       });
     }
 
+    // Adaptive isolation: resolve WHERE this run executes (task > agent > settings)
+    const executionMode = resolveExecutionMode(task, agent, this.ctx.config.settings);
+
     const runnerConfig: RunnerConfig = {
       runId,
       taskId: task.id,
+      executionMode,
       agent,
       task: taskWithContext,
       polpoDir: this.ctx.polpoDir,
@@ -543,6 +548,7 @@ export class TaskRunner {
         agentName: agent.name,
         status: "running",
         startedAt: now,
+        executionMode,
         updatedAt: now,
         activity: { filesCreated: [], filesEdited: [], toolCalls: 0, totalTokens: 0, lastUpdate: now },
         config: runnerConfig,

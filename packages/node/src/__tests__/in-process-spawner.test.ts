@@ -55,6 +55,7 @@ vi.mock("@polpo-ai/llm", async (importOriginal) => {
   };
 });
 
+import { CompositeSpawner } from "../adapters/composite-spawner.js";
 import { InProcessSpawner } from "../adapters/in-process-spawner.js";
 import { NodeSpawner } from "../adapters/node-spawner.js";
 import { executeRun } from "../core/run-lifecycle.js";
@@ -468,13 +469,18 @@ describe("settings.taskExecution selection", () => {
     return (orchestrator as unknown as { spawner: unknown }).spawner;
   }
 
-  test("default: no opt-in → subprocess NodeSpawner (zero behavior change)", async () => {
+  test("default: no opt-in → composite routing a default config to the subprocess backend", async () => {
     const dir = await makeProject("sel-default", {});
     const orchestrator = new Orchestrator({ workDir: dir });
     await orchestrator.initInteractive("sel-default", {
       name: "team", agents: [createTestAgent({ name: "worker" })],
     });
-    expect(spawnerOf(orchestrator)).toBeInstanceOf(NodeSpawner);
+    // Adaptive isolation: the orchestrator now always wires the composite;
+    // zero-behavior-change lives in the routing default, pinned here.
+    const composite = spawnerOf(orchestrator) as CompositeSpawner;
+    expect(composite).toBeInstanceOf(CompositeSpawner);
+    expect((composite as unknown as { subprocess: unknown }).subprocess).toBeInstanceOf(NodeSpawner);
+    expect((composite as unknown as { inProcess: unknown }).inProcess).toBeInstanceOf(InProcessSpawner);
   });
 
   test("in-process opt-in: task completes end-to-end without a fork", async () => {
@@ -489,7 +495,7 @@ describe("settings.taskExecution selection", () => {
     await orchestrator.initInteractive("sel-inproc", {
       name: "team", agents: [createTestAgent({ name: "worker" })],
     });
-    expect(spawnerOf(orchestrator)).toBeInstanceOf(InProcessSpawner);
+    expect(spawnerOf(orchestrator)).toBeInstanceOf(CompositeSpawner);
 
     // End-to-end through the orchestrator's OWN (file) stores — proving the
     // lazy deps wiring, not just the instance swap. A forked subprocess

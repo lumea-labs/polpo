@@ -63,6 +63,7 @@ const ScopedNotificationRulesSchema = z.object({
 // ── Task schemas ──────────────────────────────────────────────────────
 
 export const CreateTaskSchema = z.object({
+  executionMode: z.enum(["subprocess", "in-process"]).optional(),
   title: z.string().min(1),
   description: z.string().min(1),
   assignTo: z.string().min(1),
@@ -523,6 +524,7 @@ const AgentLoopFieldsSchema = z.object({
 });
 
 export const AddAgentSchema = z.object({
+  executionMode: z.enum(["subprocess", "in-process"]).optional(),
   name: z.string().min(1),
   role: z.string().optional(),
   model: z.string().optional(),
