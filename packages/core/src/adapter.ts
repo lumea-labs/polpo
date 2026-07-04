@@ -3,6 +3,7 @@ import type { VaultStore } from "@polpo-ai/core/vault-store";
 import type { MemoryStore } from "@polpo-ai/core/memory-store";
 import type { FileSystem } from "@polpo-ai/core/filesystem";
 import type { Shell } from "@polpo-ai/core/shell";
+import type { LoopResumeState } from "@polpo-ai/core/loop-run-store";
 
 /**
  * Handle returned by the engine after spawning an agent.
@@ -60,4 +61,19 @@ export interface SpawnContext {
   shell?: Shell;
   /** LLM gateway configuration — passed per-request for multi-tenant support. */
   gatewayConfig?: unknown;
+  /**
+   * Durable-turns checkpoint from a previous interrupted run. The engine
+   * seeds its conversation history from it and continues at turn + 1 —
+   * tools that already ran are replayed from their recorded results in the
+   * history, never re-executed. Only single-session loops resume; pipeline
+   * (project-loop graph) task runs ignore it and start fresh.
+   */
+  resumeState?: LoopResumeState;
+  /**
+   * Durable-turns checkpoint sink: called at most once per completed turn
+   * with the serialized post-compaction history. The runner wires it to
+   * RunStore.updateResumeState. Best-effort — implementations should not
+   * throw (the engine swallows errors anyway).
+   */
+  onTurnCheckpoint?: (state: LoopResumeState) => void | Promise<void>;
 }

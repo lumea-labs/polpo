@@ -1,6 +1,7 @@
 import { eq, desc, inArray } from "drizzle-orm";
 import type { RunStore, RunRecord, RunStatus } from "@polpo-ai/core/run-store";
 import type { AgentActivity, TaskResult, TaskOutcome, RunnerConfig } from "@polpo-ai/core/types";
+import type { LoopResumeState } from "@polpo-ai/core/loop-run-store";
 import { type Dialect, serializeJson, deserializeJson } from "../utils.js";
 
 type AnyTable = any;
@@ -35,6 +36,7 @@ export class DrizzleRunStore implements RunStore {
       config: deserializeJson<RunnerConfig | undefined>(row.config, undefined, d),
       configPath: row.configPath,
       user: row.user ?? undefined,
+      resumeState: deserializeJson<LoopResumeState | undefined>(row.resumeState, undefined, d),
     };
   }
 
@@ -56,6 +58,7 @@ export class DrizzleRunStore implements RunStore {
       config: serializeJson(run.config, d),
       configPath: run.configPath,
       user: run.user ?? null,
+      resumeState: serializeJson(run.resumeState, d),
     };
     await this.db.insert(this.runs).values(values)
       .onConflictDoUpdate({
@@ -69,8 +72,18 @@ export class DrizzleRunStore implements RunStore {
           result: values.result,
           outcomes: values.outcomes,
           config: values.config,
+          // resumeState deliberately NOT in the conflict set: an upsert
+          // without a checkpoint (runner re-registering its PID) must not
+          // clobber a checkpoint written by updateResumeState in between.
         },
       });
+  }
+
+  async updateResumeState(runId: string, state: LoopResumeState): Promise<void> {
+    await this.db.update(this.runs).set({
+      resumeState: serializeJson(state, this.dialect),
+      updatedAt: new Date().toISOString(),
+    }).where(eq(this.runs.id, runId));
   }
 
   async updateActivity(runId: string, activity: AgentActivity): Promise<void> {
