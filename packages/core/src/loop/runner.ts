@@ -34,6 +34,30 @@ export interface LoopRunResult {
   toolResults: LoopToolResult[];
 }
 
+/**
+ * Snapshot emitted after every completed turn (durable turns).
+ *
+ * The runner does not own conversation history — the host does (loop-engine's
+ * `messages`, the completions runtime's message array). This checkpoint
+ * carries the loop-level position; the host closure enriches it with the
+ * serialized history before persisting. Temporal semantics: a resumed run
+ * replays completed side-effects from recorded results (they live in the
+ * history as tool-call/tool-result pairs), it never re-executes them.
+ */
+export interface LoopTurnCheckpoint {
+  loop: LoopRuntimeConfig;
+  /** 0-based index of the turn that just completed. */
+  turn: number;
+  /** Turns completed so far in the logical run (== turn + 1, cumulative across resumes). */
+  turns: number;
+  context: ContextBag;
+  /** Text produced by this turn. */
+  text: string;
+  toolCalls: LoopToolCall[];
+  /** Tool results of this turn — already executed, part of history. */
+  toolResults: LoopToolResult[];
+}
+
 export interface LoopRunnerOptions {
   agent?: AgentConfig;
   loop: LoopConfig & { name?: string };
@@ -41,8 +65,24 @@ export interface LoopRunnerOptions {
   input?: unknown;
   hooks?: LoopHookRegistry;
   maxTurns?: number;
+  /**
+   * Resume support (durable turns): first turn index to execute. Turns
+   * before it already ran in a previous process — their side-effects are
+   * recorded in the host's history and must not be replayed. The maxTurns
+   * budget still counts them (indices are absolute, not relative).
+   */
+  startTurn?: number;
   model: (input: LoopModelInput) => Promise<LoopModelResult>;
   executeTool: (toolCall: LoopToolCall, input: LoopModelInput) => Promise<string>;
+  /**
+   * Durable-turns port: invoked once per completed turn, AFTER the turn's
+   * tools have executed and the step:after hooks ran — i.e. when the host's
+   * history is consistent (and post-compaction, since compaction happens at
+   * the start of a model step). Persistence is best-effort by contract:
+   * errors are swallowed so a flaky store can never fail a healthy run.
+   * Core stays pure — wiring to a store lives in the host (loop-engine/runner).
+   */
+  onTurnCheckpoint?: (checkpoint: LoopTurnCheckpoint) => void | Promise<void>;
 }
 
 const DEFAULT_MAX_TURNS = 20;
@@ -86,8 +126,9 @@ export class LoopRunner {
     const loop = normalizeLoop(options.loop);
     const context = options.context ?? {};
     const maxTurns = options.maxTurns ?? loop.maxTurns ?? DEFAULT_MAX_TURNS;
+    const startTurn = options.startTurn ?? 0;
     let finalText = "";
-    let turns = 0;
+    let turns = startTurn;
     const allToolResults: LoopToolResult[] = [];
 
     const start = await hooks.runBefore("loop:start", {
@@ -109,7 +150,7 @@ export class LoopRunner {
       });
     }
 
-    for (let turn = 0; turn < maxTurns; turn++) {
+    for (let turn = startTurn; turn < maxTurns; turn++) {
       turns = turn + 1;
       const step = await hooks.runBefore("step:before", {
         agent: options.agent,
@@ -210,6 +251,23 @@ export class LoopRunner {
         toolResults,
         usage: modelResult.usage,
       });
+
+      // Durable turns: the turn is complete (tools executed, hooks ran) —
+      // hand the host a checkpoint. Best-effort: a failing sink must never
+      // take down a healthy run.
+      if (options.onTurnCheckpoint) {
+        try {
+          await options.onTurnCheckpoint({
+            loop,
+            turn,
+            turns,
+            context,
+            text: modelResult.text,
+            toolCalls: modelResult.toolCalls ?? [],
+            toolResults,
+          });
+        } catch { /* checkpoint persistence is best-effort */ }
+      }
 
       const stop = shouldStopAfterTurn(loop, context, modelResult, turn, maxTurns, this.evaluator);
       const stopResult = await hooks.runBefore("loop:stop", {
