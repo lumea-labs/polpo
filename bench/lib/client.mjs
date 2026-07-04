@@ -98,19 +98,53 @@ export class PolpoClient {
   }
 
   /**
+   * GET /tasks/:id/activity — composite task + live run record + transcript.
+   * The run record is the only public surface that exposes the RESOLVED
+   * executionMode and the runner pid (positive = subprocess, negative =
+   * in-process synthetic). It only exists while the run is active (deleted
+   * at collection), so callers sample it DURING polling.
+   */
+  getTaskActivity(taskId) {
+    return this.request("GET", `/tasks/${taskId}/activity`);
+  }
+
+  /** Extract the fields the bench asserts on from a live run record. */
+  static pickRunInfo(run) {
+    if (!run) return null;
+    return { id: run.id, pid: run.pid, executionMode: run.executionMode ?? null };
+  }
+
+  /**
    * Poll a task to a terminal state.
-   * Returns { task, wallMs, spawnMs, timeline, timedOut }.
+   * Returns { task, wallMs, spawnMs, timeline, timedOut, run }.
    *   wallMs  — createdAtMs → terminal state observed
    *   spawnMs — createdAtMs → first observed state past "pending"
+   *   run     — live run record snapshot ({ id, pid, executionMode }) when
+   *             captureRun is set, else null. Sampled while the run is
+   *             active; retried every poll until observed.
+   * tolerateErrors — swallow transient request failures (server restarting
+   *   mid-poll, as in crash_resume) instead of throwing; the deadline still
+   *   bounds the loop.
    */
-  async pollTask(taskId, createdAtMs, { timeoutMs = 120_000, intervalMs = 100 } = {}) {
+  async pollTask(taskId, createdAtMs, { timeoutMs = 120_000, intervalMs = 100, captureRun = false, tolerateErrors = false } = {}) {
     const timeline = [];
     let lastStatus = null;
     let spawnMs = null;
+    let run = null;
     const deadline = createdAtMs + timeoutMs;
 
     for (;;) {
-      const task = await this.getTask(taskId);
+      let task;
+      try {
+        task = await this.getTask(taskId);
+      } catch (err) {
+        if (!tolerateErrors) throw err;
+        if (Date.now() > deadline) {
+          return { task: { id: taskId, status: "unknown" }, wallMs: Date.now() - createdAtMs, spawnMs, timeline, timedOut: true, run };
+        }
+        await new Promise((r) => setTimeout(r, intervalMs * 2));
+        continue;
+      }
       const now = Date.now();
       if (task.status !== lastStatus) {
         timeline.push({ status: task.status, tMs: now - createdAtMs });
@@ -119,11 +153,17 @@ export class PolpoClient {
       if (spawnMs === null && !ACTIVE_PRE_SPAWN.has(task.status)) {
         spawnMs = now - createdAtMs;
       }
+      if (captureRun && run === null && !ACTIVE_PRE_SPAWN.has(task.status)) {
+        try {
+          const activity = await this.getTaskActivity(taskId);
+          run = PolpoClient.pickRunInfo(activity?.run);
+        } catch { /* run record not up yet — retry next poll */ }
+      }
       if (TERMINAL_STATUSES.has(task.status)) {
-        return { task, wallMs: now - createdAtMs, spawnMs, timeline, timedOut: false };
+        return { task, wallMs: now - createdAtMs, spawnMs, timeline, timedOut: false, run };
       }
       if (now > deadline) {
-        return { task, wallMs: now - createdAtMs, spawnMs, timeline, timedOut: true };
+        return { task, wallMs: now - createdAtMs, spawnMs, timeline, timedOut: true, run };
       }
       await new Promise((r) => setTimeout(r, intervalMs));
     }
@@ -134,11 +174,11 @@ export class PolpoClient {
    * interval regardless of task count — keeps concurrency scenarios inside
    * the server's rate limit). Same result shape as pollTask, per task.
    */
-  async pollMany(entries, { timeoutMs = 300_000, intervalMs = 200 } = {}) {
+  async pollMany(entries, { timeoutMs = 300_000, intervalMs = 200, captureRun = false } = {}) {
     const state = new Map(
       entries.map((e) => [
         e.taskId,
-        { createdAtMs: e.createdAtMs, timeline: [], lastStatus: null, spawnMs: null, result: null },
+        { createdAtMs: e.createdAtMs, timeline: [], lastStatus: null, spawnMs: null, run: null, result: null },
       ]),
     );
     const startMs = Math.min(...entries.map((e) => e.createdAtMs));
@@ -159,15 +199,21 @@ export class PolpoClient {
         if (s.spawnMs === null && !ACTIVE_PRE_SPAWN.has(task.status)) {
           s.spawnMs = now - s.createdAtMs;
         }
+        if (captureRun && s.run === null && !ACTIVE_PRE_SPAWN.has(task.status) && !TERMINAL_STATUSES.has(task.status)) {
+          try {
+            const activity = await this.getTaskActivity(taskId);
+            s.run = PolpoClient.pickRunInfo(activity?.run);
+          } catch { /* run record not up yet — retry next poll */ }
+        }
         if (TERMINAL_STATUSES.has(task.status)) {
-          s.result = { task, wallMs: now - s.createdAtMs, spawnMs: s.spawnMs, timeline: s.timeline, timedOut: false };
+          s.result = { task, wallMs: now - s.createdAtMs, spawnMs: s.spawnMs, timeline: s.timeline, timedOut: false, run: s.run };
         }
       }
       if (Date.now() > deadline) {
         for (const [taskId, s] of state) {
           if (s.result) continue;
           const task = byId.get(taskId) ?? { id: taskId, status: "unknown" };
-          s.result = { task, wallMs: Date.now() - s.createdAtMs, spawnMs: s.spawnMs, timeline: s.timeline, timedOut: true };
+          s.result = { task, wallMs: Date.now() - s.createdAtMs, spawnMs: s.spawnMs, timeline: s.timeline, timedOut: true, run: s.run };
         }
         break;
       }

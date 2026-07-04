@@ -1,0 +1,708 @@
+{
+  "meta": {
+    "ts": "2026-07-04T23:03:01.154Z",
+    "sha": "84875ff",
+    "label": "durable-subprocess",
+    "node": "v20.20.0",
+    "hostname": "aHp0",
+    "target": "local",
+    "mode": "local",
+    "executionMode": "subprocess"
+  },
+  "scenarios": [
+    {
+      "name": "smoke",
+      "description": "1 assistant turn, no tools — pure spawn + single LLM round-trip",
+      "params": {
+        "turns": 0,
+        "toolsPerTurn": 0,
+        "latencyMs": 50,
+        "finalBytes": 200
+      },
+      "sid": "smr6ywcnyzqr71x",
+      "pass": true,
+      "terminal": "done",
+      "metrics": {
+        "wall_ms": 538,
+        "spawn_ms": 22,
+        "llm_ms": 50,
+        "overhead_ms": 488,
+        "loop_ms": 0,
+        "loop_overhead_ms": 0,
+        "turns": 1,
+        "llm_requests": 1,
+        "tool_calls": 0,
+        "outcome_calls": 0,
+        "summarize_calls": 0,
+        "post_ms": 19,
+        "execution_mode": "subprocess"
+      },
+      "timeline": [
+        {
+          "status": "in_progress",
+          "tMs": 22
+        },
+        {
+          "status": "done",
+          "tMs": 538
+        }
+      ],
+      "checks": [
+        {
+          "name": "terminal_reached",
+          "pass": true,
+          "detail": "done"
+        },
+        {
+          "name": "terminal_status",
+          "pass": true,
+          "detail": "expected one of [done], got \"done\""
+        },
+        {
+          "name": "turns_served",
+          "pass": true,
+          "detail": "expected 1, mock served 1"
+        },
+        {
+          "name": "tool_calls",
+          "pass": true,
+          "detail": "expected 0, mock emitted 0"
+        },
+        {
+          "name": "execution_mode",
+          "pass": true,
+          "detail": "run record: executionMode=subprocess, pid=480388 (expected subprocess)"
+        }
+      ],
+      "elapsed_ms": 545
+    },
+    {
+      "name": "tool_loop_50",
+      "description": "50 tool turns x 1 bash — sequential loop throughput",
+      "params": {
+        "turns": 50,
+        "toolsPerTurn": 1,
+        "latencyMs": 50,
+        "toolOutputBytes": 256
+      },
+      "sid": "smr6ywd33aq5wao",
+      "pass": true,
+      "terminal": "done",
+      "metrics": {
+        "wall_ms": 3786,
+        "spawn_ms": 10,
+        "llm_ms": 2550,
+        "overhead_ms": 1236,
+        "loop_ms": 3268,
+        "loop_overhead_ms": 718,
+        "turns": 51,
+        "llm_requests": 51,
+        "tool_calls": 50,
+        "outcome_calls": 0,
+        "summarize_calls": 0,
+        "post_ms": 8,
+        "execution_mode": "subprocess"
+      },
+      "timeline": [
+        {
+          "status": "in_progress",
+          "tMs": 10
+        },
+        {
+          "status": "done",
+          "tMs": 3786
+        }
+      ],
+      "checks": [
+        {
+          "name": "terminal_reached",
+          "pass": true,
+          "detail": "done"
+        },
+        {
+          "name": "terminal_status",
+          "pass": true,
+          "detail": "expected one of [done], got \"done\""
+        },
+        {
+          "name": "turns_served",
+          "pass": true,
+          "detail": "expected 51, mock served 51"
+        },
+        {
+          "name": "tool_calls",
+          "pass": true,
+          "detail": "expected 50, mock emitted 50"
+        },
+        {
+          "name": "execution_mode",
+          "pass": true,
+          "detail": "run record: executionMode=subprocess, pid=480404 (expected subprocess)"
+        }
+      ],
+      "elapsed_ms": 3788
+    },
+    {
+      "name": "tool_burst",
+      "description": "10 tool turns x 5 bash/turn — parallel tool dispatch within a turn",
+      "params": {
+        "turns": 10,
+        "toolsPerTurn": 5,
+        "latencyMs": 50,
+        "toolOutputBytes": 256
+      },
+      "sid": "smr6ywg0byxgcgq",
+      "pass": true,
+      "terminal": "done",
+      "metrics": {
+        "wall_ms": 1345,
+        "spawn_ms": 18,
+        "llm_ms": 550,
+        "overhead_ms": 795,
+        "loop_ms": 892,
+        "loop_overhead_ms": 342,
+        "turns": 11,
+        "llm_requests": 11,
+        "tool_calls": 50,
+        "outcome_calls": 0,
+        "summarize_calls": 0,
+        "post_ms": 17,
+        "execution_mode": "subprocess"
+      },
+      "timeline": [
+        {
+          "status": "in_progress",
+          "tMs": 18
+        },
+        {
+          "status": "done",
+          "tMs": 1345
+        }
+      ],
+      "checks": [
+        {
+          "name": "terminal_reached",
+          "pass": true,
+          "detail": "done"
+        },
+        {
+          "name": "terminal_status",
+          "pass": true,
+          "detail": "expected one of [done], got \"done\""
+        },
+        {
+          "name": "turns_served",
+          "pass": true,
+          "detail": "expected 11, mock served 11"
+        },
+        {
+          "name": "tool_calls",
+          "pass": true,
+          "detail": "expected 50, mock emitted 50"
+        },
+        {
+          "name": "execution_mode",
+          "pass": true,
+          "detail": "run record: executionMode=subprocess, pid=480646 (expected subprocess)"
+        }
+      ],
+      "elapsed_ms": 1346
+    },
+    {
+      "name": "big_output",
+      "description": "30 tool turns x 1 bash with 64KB output — context growth / compaction stress",
+      "params": {
+        "turns": 30,
+        "toolsPerTurn": 1,
+        "latencyMs": 50,
+        "toolOutputBytes": 65536,
+        "finalBytes": 500
+      },
+      "sid": "smr6ywh1p728nsi",
+      "pass": true,
+      "terminal": "done",
+      "metrics": {
+        "wall_ms": 2658,
+        "spawn_ms": 8,
+        "llm_ms": 1550,
+        "overhead_ms": 1108,
+        "loop_ms": 2160,
+        "loop_overhead_ms": 610,
+        "turns": 31,
+        "llm_requests": 31,
+        "tool_calls": 30,
+        "outcome_calls": 0,
+        "summarize_calls": 0,
+        "post_ms": 7,
+        "execution_mode": "subprocess"
+      },
+      "timeline": [
+        {
+          "status": "in_progress",
+          "tMs": 8
+        },
+        {
+          "status": "done",
+          "tMs": 2658
+        }
+      ],
+      "checks": [
+        {
+          "name": "terminal_reached",
+          "pass": true,
+          "detail": "done"
+        },
+        {
+          "name": "terminal_status",
+          "pass": true,
+          "detail": "expected one of [done], got \"done\""
+        },
+        {
+          "name": "turns_served",
+          "pass": true,
+          "detail": "expected 31, mock served 31"
+        },
+        {
+          "name": "tool_calls",
+          "pass": true,
+          "detail": "expected 30, mock emitted 30"
+        },
+        {
+          "name": "execution_mode",
+          "pass": true,
+          "detail": "run record: executionMode=subprocess, pid=480822 (expected subprocess)"
+        }
+      ],
+      "elapsed_ms": 2660
+    },
+    {
+      "name": "max_turns_cap",
+      "description": "cap=never on agent with maxTurns=15 — runtime must stop the loop at the ceiling",
+      "params": {
+        "turns": 9999,
+        "toolsPerTurn": 1,
+        "latencyMs": 50,
+        "cap": "never"
+      },
+      "sid": "smr6ywj3lejtacx",
+      "pass": true,
+      "terminal": "done",
+      "metrics": {
+        "wall_ms": 1440,
+        "spawn_ms": 11,
+        "llm_ms": 750,
+        "overhead_ms": 690,
+        "loop_ms": 939,
+        "loop_overhead_ms": 189,
+        "turns": 15,
+        "llm_requests": 15,
+        "tool_calls": 15,
+        "outcome_calls": 0,
+        "summarize_calls": 0,
+        "post_ms": 9,
+        "execution_mode": "subprocess"
+      },
+      "timeline": [
+        {
+          "status": "in_progress",
+          "tMs": 11
+        },
+        {
+          "status": "done",
+          "tMs": 1440
+        }
+      ],
+      "checks": [
+        {
+          "name": "terminal_reached",
+          "pass": true,
+          "detail": "done"
+        },
+        {
+          "name": "terminal_status",
+          "pass": true,
+          "detail": "expected one of [done, failed], got \"done\""
+        },
+        {
+          "name": "turns_served",
+          "pass": true,
+          "detail": "expected 15, mock served 15"
+        },
+        {
+          "name": "tool_calls",
+          "pass": true,
+          "detail": "expected 15, mock emitted 15"
+        },
+        {
+          "name": "execution_mode",
+          "pass": true,
+          "detail": "run record: executionMode=subprocess, pid=480966 (expected subprocess)"
+        }
+      ],
+      "elapsed_ms": 1442
+    },
+    {
+      "name": "outcomes_3",
+      "description": "5 tool turns + 3 register_outcome on the last turn — outcome pipeline",
+      "params": {
+        "turns": 5,
+        "toolsPerTurn": 1,
+        "latencyMs": 50,
+        "outcomes": 3
+      },
+      "sid": "smr6ywk7nummrnl",
+      "pass": true,
+      "terminal": "done",
+      "metrics": {
+        "wall_ms": 826,
+        "spawn_ms": 9,
+        "llm_ms": 300,
+        "overhead_ms": 526,
+        "loop_ms": 373,
+        "loop_overhead_ms": 73,
+        "turns": 6,
+        "llm_requests": 6,
+        "tool_calls": 5,
+        "outcome_calls": 3,
+        "summarize_calls": 0,
+        "post_ms": 8,
+        "execution_mode": "subprocess"
+      },
+      "timeline": [
+        {
+          "status": "in_progress",
+          "tMs": 9
+        },
+        {
+          "status": "done",
+          "tMs": 826
+        }
+      ],
+      "checks": [
+        {
+          "name": "terminal_reached",
+          "pass": true,
+          "detail": "done"
+        },
+        {
+          "name": "terminal_status",
+          "pass": true,
+          "detail": "expected one of [done], got \"done\""
+        },
+        {
+          "name": "turns_served",
+          "pass": true,
+          "detail": "expected 6, mock served 6"
+        },
+        {
+          "name": "tool_calls",
+          "pass": true,
+          "detail": "expected 5, mock emitted 5"
+        },
+        {
+          "name": "outcomes",
+          "pass": true,
+          "detail": "expected 3, task record has 3"
+        },
+        {
+          "name": "execution_mode",
+          "pass": true,
+          "detail": "run record: executionMode=subprocess, pid=481064 (expected subprocess)"
+        }
+      ],
+      "elapsed_ms": 827
+    },
+    {
+      "name": "timeout_kill",
+      "description": "cap=never + task maxDuration=8s — watchdog must kill and fail the task",
+      "params": {
+        "turns": 9999,
+        "toolsPerTurn": 1,
+        "latencyMs": 300,
+        "cap": "never"
+      },
+      "sid": "smr6ywkumw0d8kp",
+      "pass": true,
+      "terminal": "failed",
+      "metrics": {
+        "wall_ms": 10089,
+        "spawn_ms": 13,
+        "llm_ms": 9000,
+        "overhead_ms": 1089,
+        "loop_ms": 9447,
+        "loop_overhead_ms": 447,
+        "turns": 30,
+        "llm_requests": 31,
+        "tool_calls": 30,
+        "outcome_calls": 0,
+        "summarize_calls": 0,
+        "post_ms": 12,
+        "execution_mode": "subprocess"
+      },
+      "timeline": [
+        {
+          "status": "in_progress",
+          "tMs": 13
+        },
+        {
+          "status": "failed",
+          "tMs": 10089
+        }
+      ],
+      "checks": [
+        {
+          "name": "terminal_reached",
+          "pass": true,
+          "detail": "failed"
+        },
+        {
+          "name": "terminal_status",
+          "pass": true,
+          "detail": "expected one of [failed], got \"failed\""
+        },
+        {
+          "name": "execution_mode",
+          "pass": true,
+          "detail": "run record: executionMode=subprocess, pid=481098 (expected subprocess)"
+        }
+      ],
+      "elapsed_ms": 10091
+    },
+    {
+      "name": "concurrency_10",
+      "description": "10 concurrent tasks x 5 tool turns — scheduler fan-out + makespan",
+      "params": {
+        "turns": 5,
+        "toolsPerTurn": 1,
+        "latencyMs": 50,
+        "toolOutputBytes": 256
+      },
+      "concurrency": 10,
+      "pass": true,
+      "terminal": [
+        "done",
+        "done",
+        "done",
+        "done",
+        "done",
+        "done",
+        "done",
+        "done",
+        "done",
+        "done"
+      ],
+      "metrics": {
+        "makespan_ms": 2524,
+        "wall_ms_min": 2119,
+        "wall_ms_median": 2321,
+        "wall_ms_max": 2524,
+        "llm_ms_total": 3000,
+        "spawn_ms_min": 173,
+        "spawn_ms_max": 175
+      },
+      "checks": [
+        {
+          "name": "all_tasks_pass",
+          "pass": true,
+          "detail": "10/10 tasks green"
+        }
+      ],
+      "tasks": [
+        {
+          "sid": "smr6ywsmxxeos9v",
+          "wall_ms": 2322,
+          "spawn_ms": 175,
+          "terminal": "done",
+          "llm_ms": 300,
+          "turns": 6,
+          "execution_mode": "subprocess"
+        },
+        {
+          "sid": "smr6ywsmxqvygmt",
+          "wall_ms": 2120,
+          "spawn_ms": 175,
+          "terminal": "done",
+          "llm_ms": 300,
+          "turns": 6,
+          "execution_mode": "subprocess"
+        },
+        {
+          "sid": "smr6ywsmy5g128d",
+          "wall_ms": 2321,
+          "spawn_ms": 174,
+          "terminal": "done",
+          "llm_ms": 300,
+          "turns": 6,
+          "execution_mode": "subprocess"
+        },
+        {
+          "sid": "smr6ywsmy4qze2o",
+          "wall_ms": 2321,
+          "spawn_ms": 174,
+          "terminal": "done",
+          "llm_ms": 300,
+          "turns": 6,
+          "execution_mode": "subprocess"
+        },
+        {
+          "sid": "smr6ywsmysqjzea",
+          "wall_ms": 2321,
+          "spawn_ms": 174,
+          "terminal": "done",
+          "llm_ms": 300,
+          "turns": 6,
+          "execution_mode": "subprocess"
+        },
+        {
+          "sid": "smr6ywsmy7s6rxh",
+          "wall_ms": 2321,
+          "spawn_ms": 174,
+          "terminal": "done",
+          "llm_ms": 300,
+          "turns": 6,
+          "execution_mode": "subprocess"
+        },
+        {
+          "sid": "smr6ywsmyn8jd9j",
+          "wall_ms": 2524,
+          "spawn_ms": 174,
+          "terminal": "done",
+          "llm_ms": 300,
+          "turns": 6,
+          "execution_mode": "subprocess"
+        },
+        {
+          "sid": "smr6ywsmy1gv4e4",
+          "wall_ms": 2119,
+          "spawn_ms": 174,
+          "terminal": "done",
+          "llm_ms": 300,
+          "turns": 6,
+          "execution_mode": "subprocess"
+        },
+        {
+          "sid": "smr6ywsmz93zl7t",
+          "wall_ms": 2320,
+          "spawn_ms": 173,
+          "terminal": "done",
+          "llm_ms": 300,
+          "turns": 6,
+          "execution_mode": "subprocess"
+        },
+        {
+          "sid": "smr6ywsmzin8xqr",
+          "wall_ms": 2320,
+          "spawn_ms": 173,
+          "terminal": "done",
+          "llm_ms": 300,
+          "turns": 6,
+          "execution_mode": "subprocess"
+        }
+      ],
+      "elapsed_ms": 2738
+    },
+    {
+      "name": "crash_resume",
+      "description": "8 tool turns; SIGKILL server+runner after the turn-4 checkpoint; restart → startup recovery must RESUME from the checkpoint (turns ≤4 never re-executed) and finish with a result identical to a no-crash control run",
+      "params": {
+        "turns": 8,
+        "toolsPerTurn": 1,
+        "latencyMs": 400,
+        "toolOutputBytes": 256,
+        "finalBytes": 300
+      },
+      "killAfterTurn": 4,
+      "executionMode": "subprocess",
+      "pass": true,
+      "terminal": "done",
+      "metrics": {
+        "control_wall_ms": 4216,
+        "kill_at_turn": 5,
+        "downtime_ms": 1326,
+        "wall_ms": 5883,
+        "resumed_from_turn": 6,
+        "turns_saved": 5,
+        "duplicated_turns": 1,
+        "llm_ms": 4000,
+        "turns": 9,
+        "llm_requests": 10,
+        "requests_pre_crash": 6,
+        "requests_post_crash": 4,
+        "tool_calls": 9
+      },
+      "timeline": [
+        {
+          "status": "in_progress",
+          "tMs": 3832
+        },
+        {
+          "status": "done",
+          "tMs": 5883
+        }
+      ],
+      "checks": [
+        {
+          "name": "control_terminal",
+          "pass": true,
+          "detail": "control run: done"
+        },
+        {
+          "name": "kill_window",
+          "pass": true,
+          "detail": "killed at mock turn 5 (threshold 5)"
+        },
+        {
+          "name": "terminal_reached",
+          "pass": true,
+          "detail": "done"
+        },
+        {
+          "name": "terminal_status",
+          "pass": true,
+          "detail": "expected one of [done], got \"done\""
+        },
+        {
+          "name": "resume_no_reexecution",
+          "pass": true,
+          "detail": "turns 1..4 requested exactly once — resumed from turn 6 (5 turns saved)"
+        },
+        {
+          "name": "resume_duplicates_bounded",
+          "pass": true,
+          "detail": "duplicated turns: 6(x2) (allowed: ≤2 turns, ≤2 requests each)"
+        },
+        {
+          "name": "history_seeded",
+          "pass": true,
+          "detail": "max bench call-id turn seen in an incoming request: 8 (need ≥ 4)"
+        },
+        {
+          "name": "turns_served",
+          "pass": true,
+          "detail": "expected 9 (=8 tool turns + final), mock served 9"
+        },
+        {
+          "name": "finals",
+          "pass": true,
+          "detail": "expected exactly 1 final response, got 1"
+        },
+        {
+          "name": "final_result_identical",
+          "pass": true,
+          "detail": "result text identical to control (300 bytes)"
+        },
+        {
+          "name": "execution_mode_pre_crash",
+          "pass": true,
+          "detail": "pre-crash run: executionMode=subprocess, pid=481856 (expected subprocess)"
+        },
+        {
+          "name": "execution_mode_post_resume",
+          "pass": true,
+          "detail": "post-resume run: executionMode=subprocess, pid=481928 (expected subprocess)"
+        }
+      ],
+      "elapsed_ms": 11124
+    }
+  ]
+}

@@ -94,6 +94,26 @@ export const scenarios = [
     timeoutMs: 300_000,
     invariants: { terminal: ["done"], turnsServed: 6, toolCalls: 5 },
   },
+  {
+    name: "crash_resume",
+    description:
+      "8 tool turns; SIGKILL server+runner after the turn-4 checkpoint; restart → startup recovery must RESUME from the checkpoint (turns ≤4 never re-executed) and finish with a result identical to a no-crash control run",
+    agent: "bench-agent",
+    // Driven by lib/crash-resume.mjs, NOT the generic single-task runner: it
+    // needs its own child-hosted server it can SIGKILL and restart (recovery
+    // is a startup-only path; graceful stop deletes the checkpoint). Local
+    // mode only — a --target server's lifecycle can't be controlled.
+    special: "crash_resume",
+    // 400ms think-time per turn ⇒ a ~3.5s loop: a wide, race-free window to
+    // observe the run record and land the kill between turn checkpoints.
+    directive: { turns: 8, toolsPerTurn: 1, latencyMs: 400, toolOutputBytes: 256, finalBytes: 300 },
+    // Kill fires once the mock has served turn killAfterTurn+1 — the engine
+    // awaits the turn-K checkpoint write before requesting turn K+1, so the
+    // checkpoint for this turn is guaranteed durable at kill time.
+    killAfterTurn: 4,
+    timeoutMs: 240_000,
+    invariants: { terminal: ["done"] },
+  },
 ];
 
 export function selectScenarios(only) {
