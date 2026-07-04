@@ -20,7 +20,7 @@ export class InMemoryTaskStore implements TaskStore {
     Object.assign(this.state, partial);
   }
 
-  async addTask(task: Omit<Task, "id" | "status" | "retries" | "createdAt" | "updatedAt">): Promise<Task> {
+  async createTask(task: Omit<Task, "id" | "status" | "retries" | "createdAt" | "updatedAt">): Promise<Task> {
     const now = new Date().toISOString();
     const newTask: Task = {
       ...task,
@@ -38,7 +38,7 @@ export class InMemoryTaskStore implements TaskStore {
     return this.state.tasks.find(t => t.id === taskId);
   }
 
-  async getAllTasks(): Promise<Task[]> {
+  async listTasks(): Promise<Task[]> {
     return this.state.tasks;
   }
 
@@ -59,14 +59,14 @@ export class InMemoryTaskStore implements TaskStore {
     return task;
   }
 
-  async removeTask(taskId: string): Promise<boolean> {
+  async deleteTask(taskId: string): Promise<boolean> {
     const idx = this.state.tasks.findIndex(t => t.id === taskId);
     if (idx < 0) return false;
     this.state.tasks.splice(idx, 1);
     return true;
   }
 
-  async removeTasks(filter: (task: Task) => boolean): Promise<number> {
+  async deleteTasks(filter: (task: Task) => boolean): Promise<number> {
     const before = this.state.tasks.length;
     this.state.tasks = this.state.tasks.filter(t => !filter(t));
     return before - this.state.tasks.length;

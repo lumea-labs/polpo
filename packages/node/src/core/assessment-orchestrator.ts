@@ -41,7 +41,7 @@ function buildNodePorts(ctx: OrchestratorContext): AssessmentPorts {
     baseName: (path: string) => basename(path),
     generateAnswer: async (task: Task, question: string, model?: string | ModelConfig) => {
       const memory = (await ctx.memoryStore?.get()) ?? "";
-      const state = await ctx.registry.getState();
+      const state = await ctx.taskStore.getState();
       const siblings = task.group
         ? state.tasks.filter(t => t.group === task.group && t.id !== task.id)
         : [];

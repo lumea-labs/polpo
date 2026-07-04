@@ -658,8 +658,6 @@ export interface PolpoFileConfig {
 /** Shape that parseConfig() accepts from disk — supports both old `team` and new `teams`. */
 export interface PolpoFileConfigRaw {
   project?: string;
-  /** @deprecated Use `teams` instead. Kept for backward-compatible migration. */
-  team?: Team;
   teams?: Team[];
   settings?: Partial<PolpoSettings>;
   providers?: Record<string, ProviderConfig>;
@@ -827,13 +825,6 @@ export function findAgentTeam(teams: Team[], agentName: string): Team | undefine
 
 // === Project Config (legacy JSON format) ===
 
-/** @deprecated Legacy project config stored in config.json */
-export interface ProjectConfig {
-  project: string;
-  judge?: string;
-  agent?: string;
-  model?: string;
-}
 
 // === Approval Gates ===
 
@@ -898,100 +889,9 @@ export interface ApprovalRequest {
   note?: string;
 }
 
-// === Channel Gateway & Peer Identity ===
-
-/** Supported messaging channel types for inbound message routing. */
-export type ChannelType = "telegram" | "whatsapp" | "slack" | "discord" | "webchat";
-
-/**
- * Peer identity — represents a person talking to the bot from a messaging channel.
- * Inspired by OpenClaw's session key model but adapted for orchestrator use-cases.
- *
- * A peer is identified by their channel-specific ID (e.g., Telegram chatId, WhatsApp phone).
- * Identity links allow the same person on multiple channels to share a session.
- */
-export interface PeerIdentity {
-  /** Canonical peer ID (format: "channel:externalId", e.g. "telegram:123456789"). */
-  id: string;
-  /** Channel type. */
-  channel: ChannelType;
-  /** Channel-specific external ID (chatId, phone number, user ID, etc.). */
-  externalId: string;
-  /** Display name (from channel profile, if available). */
-  displayName?: string;
-  /** When this peer was first seen. */
-  firstSeenAt: string;
-  /** When this peer last sent a message. */
-  lastSeenAt: string;
-  /** Linked canonical identity — allows cross-channel session sharing.
-   *  If set, this peer shares sessions with the peer identified by this ID. */
-  linkedTo?: string;
-}
-
-/**
- * DM access policy — controls who can message the bot.
- * Modeled after OpenClaw's 4-tier DM security model.
- */
-export type DmPolicy = "pairing" | "allowlist" | "open" | "disabled";
-
-/** Pairing request — pending approval for a new peer to talk to the bot. */
-export interface PairingRequest {
-  /** Unique request ID. */
-  id: string;
-  /** Peer requesting access. */
-  peerId: string;
-  /** Channel type. */
-  channel: ChannelType;
-  /** Channel-specific external ID. */
-  externalId: string;
-  /** Display name of the requester. */
-  displayName?: string;
-  /** Short pairing code sent to the user. */
-  code: string;
-  /** When the request was created. */
-  createdAt: string;
-  /** When the request expires (1 hour from creation). */
-  expiresAt: string;
-  /** Whether the request has been resolved. */
-  resolved: boolean;
-}
-
-/**
- * Channel gateway configuration — extends notification channel config
- * with inbound message handling settings.
- */
-export interface ChannelGatewayConfig {
-  /** DM access policy. Default: "allowlist". */
-  dmPolicy?: DmPolicy;
-  /** Allowlist of external IDs that can message the bot.
-   *  Use "*" to allow all (only with dmPolicy="open"). */
-  allowFrom?: string[];
-  /** Enable inbound message routing (chat with orchestrator). Default: false. */
-  enableInbound?: boolean;
-  /** Session idle timeout in minutes before creating a new session. Default: 60. */
-  sessionIdleMinutes?: number;
-}
-
-/**
- * Presence entry — lightweight, ephemeral tracking of connected peers.
- * Inspired by OpenClaw's in-memory presence with TTL.
- */
-export interface PresenceEntry {
-  /** Peer ID (format: "channel:externalId"). */
-  peerId: string;
-  /** Display name. */
-  displayName?: string;
-  /** Channel type. */
-  channel: ChannelType;
-  /** Last activity timestamp (ISO). */
-  lastActivityAt: string;
-  /** What the peer is doing ("idle" | "chatting" | "approving"). */
-  activity: "idle" | "chatting" | "approving";
-}
-
 // === Notification System ===
 
-export type NotificationChannelType = "slack" | "email" | "telegram" | "whatsapp" | "webhook";
+export type NotificationChannelType = "slack" | "email" | "telegram" | "webhook";
 
 export interface NotificationChannelConfig {
   type: NotificationChannelType;
@@ -1007,8 +907,6 @@ export interface NotificationChannelConfig {
   botToken?: string;
   /** Telegram: chat ID. */
   chatId?: string;
-  /** WhatsApp: credentials directory path (relative to .polpo/). Defaults to "whatsapp-profiles/default". */
-  profileDir?: string;
   /** Webhook: target URL. */
   url?: string;
   /** Webhook: custom headers. */
@@ -1019,8 +917,6 @@ export interface NotificationChannelConfig {
   port?: number;
   /** SMTP from address. */
   from?: string;
-  /** Channel gateway config — enables inbound message routing for this channel. */
-  gateway?: ChannelGatewayConfig;
 }
 
 export type NotificationSeverity = "info" | "warning" | "critical";

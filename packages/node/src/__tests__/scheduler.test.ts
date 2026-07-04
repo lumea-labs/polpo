@@ -24,7 +24,7 @@ class MissionAwareStore extends InMemoryTaskStore {
   private missions = new Map<string, Mission>();
   private missionCounter = 0;
 
-  async saveMission(opts: { name: string; data: string; prompt?: string; status: string }): Promise<Mission> {
+  async createMission(opts: { name: string; data: string; prompt?: string; status: string }): Promise<Mission> {
     const mission: Mission = {
       id: `mission-${++this.missionCounter}`,
       name: opts.name,
@@ -46,7 +46,7 @@ class MissionAwareStore extends InMemoryTaskStore {
     return [...this.missions.values()].find(p => p.name === name);
   }
 
-  async getAllMissions(): Promise<Mission[]> {
+  async listMissions(): Promise<Mission[]> {
     return [...this.missions.values()];
   }
 
@@ -65,7 +65,7 @@ class MissionAwareStore extends InMemoryTaskStore {
 function createMockCtx(store?: MissionAwareStore): OrchestratorContext {
   return {
     emitter: new TypedEmitter(),
-    registry: store ?? new MissionAwareStore(),
+    taskStore: store ?? new MissionAwareStore(),
     runStore: new InMemoryRunStore(),
     memoryStore: { exists: async () => false, get: async () => "", save: async () => {}, append: async () => {}, update: async () => true as const },
     logStore: { startSession: async () => "s", getSessionId: async () => "s", append: async () => {}, getSessionEntries: async () => [], listSessions: async () => [], prune: async () => 0, close: () => {} },
@@ -212,7 +212,7 @@ describe("Scheduler", () => {
   });
 
   it("registers a scheduled mission with a cron schedule", async () => {
-    const mission = await store.saveMission({
+    const mission = await store.createMission({
       name: "cron-mission",
       data: JSON.stringify({ tasks: [{ title: "A", description: "A" }] }),
       status: "scheduled",
@@ -226,7 +226,7 @@ describe("Scheduler", () => {
   });
 
   it("registers a recurring mission with a cron schedule", async () => {
-    const mission = await store.saveMission({
+    const mission = await store.createMission({
       name: "recurring-mission",
       data: JSON.stringify({ tasks: [{ title: "A", description: "A" }] }),
       status: "recurring",
@@ -241,7 +241,7 @@ describe("Scheduler", () => {
 
   it("registers a mission with an ISO timestamp schedule", async () => {
     const futureDate = new Date(Date.now() + 60_000).toISOString();
-    const mission = await store.saveMission({
+    const mission = await store.createMission({
       name: "oneshot-mission",
       data: JSON.stringify({ tasks: [{ title: "A", description: "A" }] }),
       status: "scheduled",
@@ -255,7 +255,7 @@ describe("Scheduler", () => {
 
   it("skips past ISO timestamps for non-recurring missions", async () => {
     const pastDate = new Date(Date.now() - 60_000).toISOString();
-    const mission = await store.saveMission({
+    const mission = await store.createMission({
       name: "past-mission",
       data: JSON.stringify({ tasks: [{ title: "A", description: "A" }] }),
       status: "scheduled",
@@ -267,7 +267,7 @@ describe("Scheduler", () => {
   });
 
   it("triggers mission execution when schedule is due", async () => {
-    const mission = await store.saveMission({
+    const mission = await store.createMission({
       name: "due-mission",
       data: JSON.stringify({ tasks: [{ title: "A", description: "A" }] }),
       status: "scheduled",
@@ -288,7 +288,7 @@ describe("Scheduler", () => {
   });
 
   it("disables one-shot schedules after execution", async () => {
-    const mission = await store.saveMission({
+    const mission = await store.createMission({
       name: "oneshot",
       data: JSON.stringify({ tasks: [{ title: "A", description: "A" }] }),
       status: "scheduled",
@@ -309,7 +309,7 @@ describe("Scheduler", () => {
   });
 
   it("keeps recurring schedules active after execution", async () => {
-    const mission = await store.saveMission({
+    const mission = await store.createMission({
       name: "recurring",
       data: JSON.stringify({ tasks: [{ title: "A", description: "A" }] }),
       status: "recurring",
@@ -333,7 +333,7 @@ describe("Scheduler", () => {
   it("emits schedule:triggered and schedule:completed events", async () => {
     const emitSpy = vi.spyOn(ctx.emitter, "emit");
 
-    const mission = await store.saveMission({
+    const mission = await store.createMission({
       name: "event-mission",
       data: JSON.stringify({ tasks: [{ title: "A", description: "A" }] }),
       status: "scheduled",
@@ -356,7 +356,7 @@ describe("Scheduler", () => {
   });
 
   it("skips missions that are not in scheduled/recurring state", async () => {
-    const mission = await store.saveMission({
+    const mission = await store.createMission({
       name: "active-mission",
       data: JSON.stringify({ tasks: [{ title: "A", description: "A" }] }),
       status: "active",
@@ -382,7 +382,7 @@ describe("Scheduler", () => {
       },
     });
 
-    const mission = await store.saveMission({
+    const mission = await store.createMission({
       name: "blocked-mission",
       data: JSON.stringify({ tasks: [{ title: "A", description: "A" }] }),
       status: "scheduled",
@@ -400,7 +400,7 @@ describe("Scheduler", () => {
   });
 
   it("unregisterMission removes the schedule", async () => {
-    const mission = await store.saveMission({
+    const mission = await store.createMission({
       name: "remove-mission",
       data: JSON.stringify({ tasks: [{ title: "A", description: "A" }] }),
       status: "scheduled",
@@ -414,8 +414,8 @@ describe("Scheduler", () => {
   });
 
   it("getActiveSchedules only returns enabled schedules", async () => {
-    const mission1 = await store.saveMission({ name: "m1", data: "{}", status: "scheduled" });
-    const mission2 = await store.saveMission({ name: "m2", data: "{}", status: "scheduled" });
+    const mission1 = await store.createMission({ name: "m1", data: "{}", status: "scheduled" });
+    const mission2 = await store.createMission({ name: "m2", data: "{}", status: "scheduled" });
 
     scheduler.registerMission({ ...mission1, schedule: "0 0 * * *" } as Mission);
     const entry2 = scheduler.registerMission({ ...mission2, schedule: "0 0 * * *" } as Mission);
@@ -425,7 +425,7 @@ describe("Scheduler", () => {
   });
 
   it("init scans existing missions with scheduled/recurring status", async () => {
-    const mission = await store.saveMission({
+    const mission = await store.createMission({
       name: "pre-scheduled",
       data: JSON.stringify({ tasks: [{ title: "A", description: "A" }] }),
       status: "scheduled",
@@ -438,7 +438,7 @@ describe("Scheduler", () => {
   });
 
   it("init skips draft missions even with schedule field", async () => {
-    const mission = await store.saveMission({
+    const mission = await store.createMission({
       name: "draft-with-schedule",
       data: JSON.stringify({ tasks: [{ title: "A", description: "A" }] }),
       status: "draft",
@@ -451,7 +451,7 @@ describe("Scheduler", () => {
   });
 
   it("init registers recurring missions", async () => {
-    const mission = await store.saveMission({
+    const mission = await store.createMission({
       name: "recurring-init",
       data: JSON.stringify({ tasks: [{ title: "A", description: "A" }] }),
       status: "recurring",
@@ -466,7 +466,7 @@ describe("Scheduler", () => {
   });
 
   it("respects endDate — expires schedule when endDate is in the past", async () => {
-    const mission = await store.saveMission({
+    const mission = await store.createMission({
       name: "expiring-mission",
       data: JSON.stringify({ tasks: [{ title: "A", description: "A" }] }),
       status: "recurring",

@@ -47,15 +47,12 @@ vi.mock("@polpo-ai/llm", async (importOriginal) => {
 });
 
 import { spawnLoopEngine } from "../adapters/loop-engine.js";
-import { spawnEngine } from "../adapters/index.js";
 import type { AgentConfig, Task } from "@polpo-ai/core/types";
 
-// This suite was the parity gate while both engines coexisted; the legacy
-// manual loop is gone, but the contract it pinned still holds for the loop
-// runtime — and the spawnEngine compatibility alias must keep satisfying it.
+// This suite was the parity gate while the legacy engine existed; it now
+// pins the loop runtime's observable contract.
 const ENGINES = [
   ["spawnLoopEngine (loop runtime)", spawnLoopEngine],
-  ["spawnEngine (compat alias)", spawnEngine],
 ] as const;
 
 // ── Helpers ─────────────────────────────────────────────

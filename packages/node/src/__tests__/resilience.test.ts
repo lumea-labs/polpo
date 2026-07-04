@@ -58,7 +58,7 @@ describe("Orchestrator Resilience", () => {
 
   describe("Task timeout", () => {
     it("kills agent when task exceeds maxDuration", async () => {
-      const task = await orchestrator.addTask({
+      const task = await orchestrator.createTask({
         title: "Slow task",
         description: "Should timeout",
         assignTo: "agent-1",
@@ -97,7 +97,7 @@ describe("Orchestrator Resilience", () => {
     });
 
     it("does not kill agent before maxDuration", async () => {
-      const task = await orchestrator.addTask({
+      const task = await orchestrator.createTask({
         title: "Quick task",
         description: "Not timeout",
         assignTo: "agent-1",
@@ -131,7 +131,7 @@ describe("Orchestrator Resilience", () => {
     it("uses default taskTimeout from settings", async () => {
       (orchestrator as any).config.settings.taskTimeout = 50;
 
-      const task = await orchestrator.addTask({
+      const task = await orchestrator.createTask({
         title: "Default timeout",
         description: "Uses settings",
         assignTo: "agent-1",
@@ -161,7 +161,7 @@ describe("Orchestrator Resilience", () => {
     });
 
     it("skips timeout when maxDuration is 0", async () => {
-      const task = await orchestrator.addTask({
+      const task = await orchestrator.createTask({
         title: "No timeout",
         description: "Disabled",
         assignTo: "agent-1",
@@ -202,7 +202,7 @@ describe("Orchestrator Resilience", () => {
       (orchestrator as any).config.settings.staleThreshold = 100;
       (orchestrator as any).config.settings.taskTimeout = 0; // disable timeout
 
-      const task = await orchestrator.addTask({
+      const task = await orchestrator.createTask({
         title: "Stale task",
         description: "Agent idle",
         assignTo: "agent-1",
@@ -240,7 +240,7 @@ describe("Orchestrator Resilience", () => {
       (orchestrator as any).config.settings.staleThreshold = 100;
       (orchestrator as any).config.settings.taskTimeout = 0;
 
-      const task = await orchestrator.addTask({
+      const task = await orchestrator.createTask({
         title: "Very stale",
         description: "Stuck agent",
         assignTo: "agent-1",
@@ -282,7 +282,7 @@ describe("Orchestrator Resilience", () => {
       (orchestrator as any).config.settings.staleThreshold = 100;
       (orchestrator as any).config.settings.taskTimeout = 0;
 
-      const task = await orchestrator.addTask({
+      const task = await orchestrator.createTask({
         title: "Warn once",
         description: "Only one warning",
         assignTo: "agent-1",
@@ -320,7 +320,7 @@ describe("Orchestrator Resilience", () => {
 
   describe("Smart retry", () => {
     it("escalates to fallback agent after escalateAfter failures", async () => {
-      const task = await orchestrator.addTask({
+      const task = await orchestrator.createTask({
         title: "Escalating",
         description: "Will escalate",
         assignTo: "agent-1",
@@ -349,7 +349,7 @@ describe("Orchestrator Resilience", () => {
     });
 
     it("keeps same agent before escalateAfter threshold", async () => {
-      const task = await orchestrator.addTask({
+      const task = await orchestrator.createTask({
         title: "No escalation yet",
         description: "First failure",
         assignTo: "agent-1",
@@ -378,7 +378,7 @@ describe("Orchestrator Resilience", () => {
         fallbackAgent: "agent-senior",
       };
 
-      const task = await orchestrator.addTask({
+      const task = await orchestrator.createTask({
         title: "Default policy",
         description: "Uses settings",
         assignTo: "agent-1",
@@ -396,7 +396,7 @@ describe("Orchestrator Resilience", () => {
     });
 
     it("ignores fallback if agent not in team", async () => {
-      const task = await orchestrator.addTask({
+      const task = await orchestrator.createTask({
         title: "Missing fallback",
         description: "Fallback not found",
         assignTo: "agent-1",
@@ -448,7 +448,7 @@ describe("Orchestrator Resilience", () => {
         return true;
       }) as any);
 
-      const task = await store.addTask({
+      const task = await store.createTask({
         title: "Still running",
         description: "Runner alive",
         assignTo: "agent-1",
@@ -500,7 +500,7 @@ describe("Orchestrator Resilience", () => {
       });
 
       // Add an orphaned task
-      const task = await store.addTask({
+      const task = await store.createTask({
         title: "Orphan",
         description: "Left behind",
         assignTo: "agent-1",

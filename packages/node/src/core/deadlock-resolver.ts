@@ -136,7 +136,7 @@ export async function resolveDeadlock(
     const maxAttempts = settings?.maxResolutionAttempts ?? 2;
     const model = settings?.orchestratorModel;
     const memory = await orchestrator.getMemory();
-    const allTasks = await orchestrator.getStore().getAllTasks();
+    const allTasks = await orchestrator.getStore().listTasks();
 
     // Deduplicate: if multiple blocked tasks share the same failed dep,
     // process each blocked task independently but track retried deps

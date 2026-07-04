@@ -120,8 +120,8 @@ export class EscalationManager {
       return;
     }
 
-    await this.ctx.registry.updateTask(taskId, { assignTo: targetAgent });
-    await this.ctx.registry.unsafeSetStatus(taskId, "pending", `escalation level ${level.level}: reassign to ${targetAgent}`);
+    await this.ctx.taskStore.updateTask(taskId, { assignTo: targetAgent });
+    await this.ctx.taskStore.unsafeSetStatus(taskId, "pending", `escalation level ${level.level}: reassign to ${targetAgent}`);
 
     this.ctx.emitter.emit("escalation:resolved", {
       taskId,
@@ -174,12 +174,12 @@ export class EscalationManager {
       )).text;
 
       if (newDescription && newDescription.length > 20) {
-        await this.ctx.registry.updateTask(taskId, {
+        await this.ctx.taskStore.updateTask(taskId, {
           description: `[Escalation: Reformulated by orchestrator]\n\n${newDescription}`,
           phase: "execution",
           fixAttempts: 0,
         });
-        await this.ctx.registry.unsafeSetStatus(taskId, "pending", `escalation level ${level.level}: orchestrator reformulation`);
+        await this.ctx.taskStore.unsafeSetStatus(taskId, "pending", `escalation level ${level.level}: orchestrator reformulation`);
 
         this.ctx.emitter.emit("escalation:resolved", {
           taskId,
@@ -211,7 +211,7 @@ export class EscalationManager {
   ): Promise<void> {
     const failureContext = this.buildFailureContext(task);
 
-    await this.ctx.registry.unsafeSetStatus(taskId, "awaiting_approval", `escalation level ${level.level}: human intervention`);
+    await this.ctx.taskStore.unsafeSetStatus(taskId, "awaiting_approval", `escalation level ${level.level}: human intervention`);
 
     this.ctx.emitter.emit("escalation:human", {
       taskId,
@@ -270,11 +270,11 @@ export class EscalationManager {
     this.taskLevels.delete(taskId);
     this.clearTimer(taskId);
 
-    const task = await this.ctx.registry.getTask(taskId);
+    const task = await this.ctx.taskStore.getTask(taskId);
     if (!task) return;
 
     if (task.status !== "done" && task.status !== "failed" && task.status !== "awaiting_approval") {
-      await this.ctx.registry.unsafeSetStatus(taskId, "failed", "escalation exhausted");
+      await this.ctx.taskStore.unsafeSetStatus(taskId, "failed", "escalation exhausted");
     }
   }
 
@@ -314,7 +314,7 @@ export class EscalationManager {
     this.clearTimer(taskId);
     const timer = setTimeout(async () => {
       this.timers.delete(taskId);
-      const currentTask = await this.ctx.registry.getTask(taskId);
+      const currentTask = await this.ctx.taskStore.getTask(taskId);
       if (currentTask && (currentTask.status === "pending" || currentTask.status === "in_progress" || currentTask.status === "failed")) {
         this.ctx.emitter.emit("log", {
           level: "warn",

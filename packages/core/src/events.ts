@@ -6,7 +6,7 @@
  * shell layer (src/core/events.ts), not here.
  */
 
-import type { Task, TaskStatus, DimensionScore, MissionStatus, MissionReport, ChannelType, PeerIdentity } from "./types.js";
+import type { Task, TaskStatus, DimensionScore, MissionStatus, MissionReport } from "./types.js";
 
 export interface PolpoEventMap {
   // Task lifecycle
@@ -114,13 +114,6 @@ export interface PolpoEventMap {
   // Config
   "config:reloaded": { timestamp: string };
 
-  // Channel gateway & peers
-  "gateway:started": { channels: ChannelType[] };
-  "gateway:stopped": Record<string, never>;
-  "peer:paired": { peer: PeerIdentity; channel: ChannelType };
-  "peer:message": { peerId: string; channel: ChannelType; text: string; sessionId: string };
-  "peer:blocked": { peerId: string; channel: ChannelType; reason: string };
-  "peer:presence": { peerId: string; channel: ChannelType; status: "online" | "offline" };
 
   // Task watchers
   "watcher:created": { watcherId: string; taskId: string; targetStatus: TaskStatus };

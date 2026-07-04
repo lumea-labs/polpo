@@ -96,7 +96,7 @@ export function validateParams(
  * 1. Serializes the mission to JSON string
  * 2. Replaces all {{placeholder}} with parameter values
  * 3. Re-parses the JSON to validate structural integrity
- * 4. Returns the mission data string ready for missionExecutor.saveMission()
+ * 4. Returns the mission data string ready for missionExecutor.createMission()
  */
 export function instantiatePlaybook(
   playbook: PlaybookDefinition,

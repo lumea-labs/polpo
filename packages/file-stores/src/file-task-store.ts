@@ -149,7 +149,7 @@ export class FileTaskStore implements TaskStore {
 
   async getState(): Promise<PolpoState> {
     const meta = this.readMeta();
-    const tasks = await this.getAllTasks();
+    const tasks = await this.listTasks();
     return {
       project: meta.project,
       teams: meta.teams,
@@ -182,7 +182,7 @@ export class FileTaskStore implements TaskStore {
     this.writeMeta(meta);
   }
 
-  async addTask(
+  async createTask(
     task: Omit<Task, "id" | "status" | "retries" | "createdAt" | "updatedAt"> & { status?: TaskStatus },
   ): Promise<Task> {
     const now = new Date().toISOString();
@@ -202,7 +202,7 @@ export class FileTaskStore implements TaskStore {
     return this.readTask(taskId);
   }
 
-  async getAllTasks(): Promise<Task[]> {
+  async listTasks(): Promise<Task[]> {
     const ids = this.listTaskIds();
     const tasks: Task[] = [];
     for (const id of ids) {
@@ -237,7 +237,7 @@ export class FileTaskStore implements TaskStore {
     return updated;
   }
 
-  async removeTask(taskId: string): Promise<boolean> {
+  async deleteTask(taskId: string): Promise<boolean> {
     const path = this.taskPath(taskId);
     if (!existsSync(path)) return false;
     try {
@@ -248,11 +248,11 @@ export class FileTaskStore implements TaskStore {
     }
   }
 
-  async removeTasks(filter: (task: Task) => boolean): Promise<number> {
-    const all = await this.getAllTasks();
+  async deleteTasks(filter: (task: Task) => boolean): Promise<number> {
+    const all = await this.listTasks();
     const toRemove = all.filter(filter);
     for (const task of toRemove) {
-      this.removeTask(task.id);
+      this.deleteTask(task.id);
     }
     return toRemove.length;
   }
@@ -280,7 +280,7 @@ export class FileTaskStore implements TaskStore {
 
   // ── Mission persistence ──
 
-  async saveMission(mission: Omit<Mission, "id" | "createdAt" | "updatedAt">): Promise<Mission> {
+  async createMission(mission: Omit<Mission, "id" | "createdAt" | "updatedAt">): Promise<Mission> {
     const now = new Date().toISOString();
     const newMission: Mission = {
       ...mission,
@@ -304,7 +304,7 @@ export class FileTaskStore implements TaskStore {
     return undefined;
   }
 
-  async getAllMissions(): Promise<Mission[]> {
+  async listMissions(): Promise<Mission[]> {
     const missions: Mission[] = [];
     for (const id of this.listMissionIds()) {
       const mission = this.readMission(id);

@@ -15,7 +15,7 @@ import type { TaskStore } from "@polpo-ai/core/task-store";
 class InMemoryTaskStoreWithMissions extends InMemoryTaskStore implements TaskStore {
   private missions = new Map<string, Mission>();
 
-  async saveMission(mission: Omit<Mission, "id" | "createdAt" | "updatedAt">): Promise<Mission> {
+  async createMission(mission: Omit<Mission, "id" | "createdAt" | "updatedAt">): Promise<Mission> {
     const existing = [...this.missions.values()].find(p => p.name === mission.name);
     if (existing) throw new Error(`Mission name "${mission.name}" already exists`);
     const now = new Date().toISOString();
@@ -37,7 +37,7 @@ class InMemoryTaskStoreWithMissions extends InMemoryTaskStore implements TaskSto
     return [...this.missions.values()].find(p => p.name === name);
   }
 
-  async getAllMissions(): Promise<Mission[]> {
+  async listMissions(): Promise<Mission[]> {
     return [...this.missions.values()];
   }
 
@@ -120,13 +120,13 @@ function createDefaultConfig(overrides?: Partial<PolpoConfig>): PolpoConfig {
 
 function createContext(overrides?: {
   config?: PolpoConfig;
-  registry?: TaskStore;
+  taskStore?: TaskStore;
 }): OrchestratorContext {
   const config = overrides?.config ?? createDefaultConfig();
   const { teamStore, agentStore } = createMockStores(config.teams);
   return {
     emitter: new TypedEmitter(),
-    registry: overrides?.registry ?? new InMemoryTaskStoreWithMissions(),
+    taskStore: overrides?.taskStore ?? new InMemoryTaskStoreWithMissions(),
     runStore: new InMemoryRunStore(),
     memoryStore: createNoopMemoryStore(),
     logStore: createNoopLogStore(),
@@ -160,11 +160,11 @@ describe("TaskManager", () => {
     mgr = new TaskManager(ctx);
   });
 
-  // ── addTask ──────────────────────────────────────────────────────────
+  // ── createTask ──────────────────────────────────────────────────────────
 
-  describe("addTask", () => {
+  describe("createTask", () => {
     it("creates a task with pending status", async () => {
-      const task = await mgr.addTask({
+      const task = await mgr.createTask({
         title: "Implement feature",
         description: "Build the login page",
         assignTo: "dev",
@@ -180,13 +180,13 @@ describe("TaskManager", () => {
       expect(task.dependsOn).toEqual([]);
     });
 
-    it("throws if registry is not initialized (null)", async () => {
+    it("throws if taskStore is not initialized (null)", async () => {
       const ctxNoRegistry = createContext();
-      (ctxNoRegistry as any).registry = undefined;
+      (ctxNoRegistry as any).taskStore = undefined;
       const mgrBad = new TaskManager(ctxNoRegistry);
 
       await expect(
-        mgrBad.addTask({ title: "X", description: "Y", assignTo: "dev" }),
+        mgrBad.createTask({ title: "X", description: "Y", assignTo: "dev" }),
       ).rejects.toThrow("Orchestrator not initialized");
     });
 
@@ -194,7 +194,7 @@ describe("TaskManager", () => {
       const events: any[] = [];
       ctx.emitter.on("task:created", (e) => events.push(e));
 
-      const task = await mgr.addTask({
+      const task = await mgr.createTask({
         title: "My task",
         description: "desc",
         assignTo: "dev",
@@ -205,21 +205,21 @@ describe("TaskManager", () => {
       expect(events[0].task.title).toBe("My task");
     });
 
-    it("stores task in registry", async () => {
-      const task = await mgr.addTask({
+    it("stores task in taskStore", async () => {
+      const task = await mgr.createTask({
         title: "Stored task",
         description: "desc",
         assignTo: "dev",
       });
 
-      const found = await ctx.registry.getTask(task.id);
+      const found = await ctx.taskStore.getTask(task.id);
       expect(found).toBeDefined();
       expect(found!.title).toBe("Stored task");
     });
 
     it("sets maxRetries from config settings", async () => {
       ctx.config.settings.maxRetries = 5;
-      const task = await mgr.addTask({
+      const task = await mgr.createTask({
         title: "Retryable",
         description: "desc",
         assignTo: "dev",
@@ -229,13 +229,13 @@ describe("TaskManager", () => {
     });
 
     it("assigns group and dependencies when provided", async () => {
-      const dep = await mgr.addTask({
+      const dep = await mgr.createTask({
         title: "Dep task",
         description: "dependency",
         assignTo: "dev",
       });
 
-      const task = await mgr.addTask({
+      const task = await mgr.createTask({
         title: "Main task",
         description: "depends on dep",
         assignTo: "dev",
@@ -253,7 +253,7 @@ describe("TaskManager", () => {
         if (e.level === "warn") warnings.push(e.message);
       });
 
-      const task = await mgr.addTask({
+      const task = await mgr.createTask({
         title: "With expectations",
         description: "desc",
         assignTo: "dev",
@@ -273,28 +273,28 @@ describe("TaskManager", () => {
 
   describe("retryTask", () => {
     it("transitions failed task to pending", async () => {
-      const task = await mgr.addTask({
+      const task = await mgr.createTask({
         title: "Failing task",
         description: "will fail",
         assignTo: "dev",
       });
 
       // Move to failed: pending → assigned → in_progress → failed
-      await ctx.registry.transition(task.id, "assigned");
-      await ctx.registry.transition(task.id, "in_progress");
-      await ctx.registry.transition(task.id, "failed");
+      await ctx.taskStore.transition(task.id, "assigned");
+      await ctx.taskStore.transition(task.id, "in_progress");
+      await ctx.taskStore.transition(task.id, "failed");
 
-      expect((await ctx.registry.getTask(task.id))!.status).toBe("failed");
+      expect((await ctx.taskStore.getTask(task.id))!.status).toBe("failed");
 
       await mgr.retryTask(task.id);
 
-      const updated = (await ctx.registry.getTask(task.id))!;
+      const updated = (await ctx.taskStore.getTask(task.id))!;
       expect(updated.status).toBe("pending");
       expect(updated.retries).toBe(1);
     });
 
     it("throws for non-failed task (pending)", async () => {
-      const task = await mgr.addTask({
+      const task = await mgr.createTask({
         title: "Pending task",
         description: "still pending",
         assignTo: "dev",
@@ -306,13 +306,13 @@ describe("TaskManager", () => {
     });
 
     it("throws for non-failed task (in_progress)", async () => {
-      const task = await mgr.addTask({
+      const task = await mgr.createTask({
         title: "Running task",
         description: "running",
         assignTo: "dev",
       });
-      await ctx.registry.transition(task.id, "assigned");
-      await ctx.registry.transition(task.id, "in_progress");
+      await ctx.taskStore.transition(task.id, "assigned");
+      await ctx.taskStore.transition(task.id, "in_progress");
 
       await expect(mgr.retryTask(task.id)).rejects.toThrow(
         'Cannot retry task in "in_progress" state',
@@ -320,15 +320,15 @@ describe("TaskManager", () => {
     });
 
     it("throws for non-failed task (done)", async () => {
-      const task = await mgr.addTask({
+      const task = await mgr.createTask({
         title: "Done task",
         description: "done",
         assignTo: "dev",
       });
-      await ctx.registry.transition(task.id, "assigned");
-      await ctx.registry.transition(task.id, "in_progress");
-      await ctx.registry.transition(task.id, "review");
-      await ctx.registry.transition(task.id, "done");
+      await ctx.taskStore.transition(task.id, "assigned");
+      await ctx.taskStore.transition(task.id, "in_progress");
+      await ctx.taskStore.transition(task.id, "review");
+      await ctx.taskStore.transition(task.id, "done");
 
       await expect(mgr.retryTask(task.id)).rejects.toThrow(
         'Cannot retry task in "done" state',
@@ -344,7 +344,7 @@ describe("TaskManager", () => {
 
   describe("forceFailTask", () => {
     it("force-fails a pending task", async () => {
-      const task = await mgr.addTask({
+      const task = await mgr.createTask({
         title: "Will be force-failed",
         description: "desc",
         assignTo: "dev",
@@ -352,64 +352,64 @@ describe("TaskManager", () => {
 
       await mgr.forceFailTask(task.id);
 
-      expect((await ctx.registry.getTask(task.id))!.status).toBe("failed");
+      expect((await ctx.taskStore.getTask(task.id))!.status).toBe("failed");
     });
 
     it("force-fails an in_progress task", async () => {
-      const task = await mgr.addTask({
+      const task = await mgr.createTask({
         title: "Running",
         description: "desc",
         assignTo: "dev",
       });
-      await ctx.registry.transition(task.id, "assigned");
-      await ctx.registry.transition(task.id, "in_progress");
+      await ctx.taskStore.transition(task.id, "assigned");
+      await ctx.taskStore.transition(task.id, "in_progress");
 
       await mgr.forceFailTask(task.id);
 
-      expect((await ctx.registry.getTask(task.id))!.status).toBe("failed");
+      expect((await ctx.taskStore.getTask(task.id))!.status).toBe("failed");
     });
 
     it("force-fails an assigned task", async () => {
-      const task = await mgr.addTask({
+      const task = await mgr.createTask({
         title: "Assigned",
         description: "desc",
         assignTo: "dev",
       });
-      await ctx.registry.transition(task.id, "assigned");
+      await ctx.taskStore.transition(task.id, "assigned");
 
       await mgr.forceFailTask(task.id);
 
-      expect((await ctx.registry.getTask(task.id))!.status).toBe("failed");
+      expect((await ctx.taskStore.getTask(task.id))!.status).toBe("failed");
     });
 
     it("is a no-op for already-failed task", async () => {
-      const task = await mgr.addTask({
+      const task = await mgr.createTask({
         title: "Already failed",
         description: "desc",
         assignTo: "dev",
       });
-      await ctx.registry.transition(task.id, "assigned");
-      await ctx.registry.transition(task.id, "in_progress");
-      await ctx.registry.transition(task.id, "failed");
+      await ctx.taskStore.transition(task.id, "assigned");
+      await ctx.taskStore.transition(task.id, "in_progress");
+      await ctx.taskStore.transition(task.id, "failed");
 
       // Should not throw
       await mgr.forceFailTask(task.id);
-      expect((await ctx.registry.getTask(task.id))!.status).toBe("failed");
+      expect((await ctx.taskStore.getTask(task.id))!.status).toBe("failed");
     });
 
     it("is a no-op for done task", async () => {
-      const task = await mgr.addTask({
+      const task = await mgr.createTask({
         title: "Done",
         description: "desc",
         assignTo: "dev",
       });
-      await ctx.registry.transition(task.id, "assigned");
-      await ctx.registry.transition(task.id, "in_progress");
-      await ctx.registry.transition(task.id, "review");
-      await ctx.registry.transition(task.id, "done");
+      await ctx.taskStore.transition(task.id, "assigned");
+      await ctx.taskStore.transition(task.id, "in_progress");
+      await ctx.taskStore.transition(task.id, "review");
+      await ctx.taskStore.transition(task.id, "done");
 
       await mgr.forceFailTask(task.id);
-      expect((await ctx.registry.getTask(task.id))!.status).toBe("done");
+      expect((await ctx.taskStore.getTask(task.id))!.status).toBe("done");
     });
 
     it("is a no-op for non-existent task", async () => {
@@ -422,7 +422,7 @@ describe("TaskManager", () => {
 
   describe("updateTaskDescription", () => {
     it("updates the task description", async () => {
-      const task = await mgr.addTask({
+      const task = await mgr.createTask({
         title: "Editable",
         description: "original",
         assignTo: "dev",
@@ -430,7 +430,7 @@ describe("TaskManager", () => {
 
       await mgr.updateTaskDescription(task.id, "updated description");
 
-      const updated = (await ctx.registry.getTask(task.id))!;
+      const updated = (await ctx.taskStore.getTask(task.id))!;
       expect(updated.description).toBe("updated description");
     });
   });
@@ -439,7 +439,7 @@ describe("TaskManager", () => {
 
   describe("updateTaskAssignment", () => {
     it("updates the task assignTo field", async () => {
-      const task = await mgr.addTask({
+      const task = await mgr.createTask({
         title: "Reassignable",
         description: "desc",
         assignTo: "dev",
@@ -447,7 +447,7 @@ describe("TaskManager", () => {
 
       await mgr.updateTaskAssignment(task.id, "other-agent");
 
-      const updated = (await ctx.registry.getTask(task.id))!;
+      const updated = (await ctx.taskStore.getTask(task.id))!;
       expect(updated.assignTo).toBe("other-agent");
     });
   });
@@ -456,7 +456,7 @@ describe("TaskManager", () => {
 
   describe("updateTaskExpectations", () => {
     it("updates expectations on a pending task", async () => {
-      const task = await mgr.addTask({
+      const task = await mgr.createTask({
         title: "With expectations",
         description: "desc",
         assignTo: "dev",
@@ -466,19 +466,19 @@ describe("TaskManager", () => {
         { type: "test", command: "npm test" },
       ]);
 
-      const updated = (await ctx.registry.getTask(task.id))!;
+      const updated = (await ctx.taskStore.getTask(task.id))!;
       expect(updated.expectations).toHaveLength(1);
       expect(updated.expectations[0].type).toBe("test");
     });
 
     it("throws for in_progress task", async () => {
-      const task = await mgr.addTask({
+      const task = await mgr.createTask({
         title: "Running",
         description: "desc",
         assignTo: "dev",
       });
-      await ctx.registry.transition(task.id, "assigned");
-      await ctx.registry.transition(task.id, "in_progress");
+      await ctx.taskStore.transition(task.id, "assigned");
+      await ctx.taskStore.transition(task.id, "in_progress");
 
       await expect(
         mgr.updateTaskExpectations(task.id, [{ type: "test", command: "npm test" }]),
@@ -489,7 +489,7 @@ describe("TaskManager", () => {
       const events: any[] = [];
       ctx.emitter.on("task:updated", (e) => events.push(e));
 
-      const task = await mgr.addTask({
+      const task = await mgr.createTask({
         title: "Observable",
         description: "desc",
         assignTo: "dev",
@@ -539,7 +539,7 @@ describe("TaskManager", () => {
 
       await mgr.seedTasks();
 
-      const tasks = await ctx.registry.getAllTasks();
+      const tasks = await ctx.taskStore.listTasks();
       expect(tasks).toHaveLength(2);
       expect(tasks[0].title).toBe("Config Task 1");
       expect(tasks[1].title).toBe("Config Task 2");
@@ -594,7 +594,7 @@ describe("TaskManager", () => {
 
       await mgr.seedTasks();
 
-      const tasks = await ctx.registry.getAllTasks();
+      const tasks = await ctx.taskStore.listTasks();
       const setupTask = tasks.find((t) => t.title === "Setup DB")!;
       const apiTask = tasks.find((t) => t.title === "Write API")!;
 
@@ -604,7 +604,7 @@ describe("TaskManager", () => {
     it("does nothing when config has no tasks", async () => {
       ctx.config.tasks = [];
       await mgr.seedTasks();
-      expect(await ctx.registry.getAllTasks()).toHaveLength(0);
+      expect(await ctx.taskStore.listTasks()).toHaveLength(0);
     });
 
     it("ignores unresolvable dependencies", async () => {
@@ -623,7 +623,7 @@ describe("TaskManager", () => {
 
       await mgr.seedTasks();
 
-      const tasks = await ctx.registry.getAllTasks();
+      const tasks = await ctx.taskStore.listTasks();
       expect(tasks).toHaveLength(1);
       // Unresolvable dependency should be filtered out
       expect(tasks[0].dependsOn).toEqual([]);
@@ -634,26 +634,26 @@ describe("TaskManager", () => {
 
   describe("abortGroup", () => {
     it("kills non-terminal tasks in a group", async () => {
-      const t1 = await mgr.addTask({
+      const t1 = await mgr.createTask({
         title: "Group task 1",
         description: "pending",
         assignTo: "dev",
         group: "my-group",
       });
-      const t2 = await mgr.addTask({
+      const t2 = await mgr.createTask({
         title: "Group task 2",
         description: "in progress",
         assignTo: "dev",
         group: "my-group",
       });
-      await ctx.registry.transition(t2.id, "assigned");
-      await ctx.registry.transition(t2.id, "in_progress");
+      await ctx.taskStore.transition(t2.id, "assigned");
+      await ctx.taskStore.transition(t2.id, "in_progress");
 
       const count = await mgr.abortGroup("my-group");
 
       expect(count).toBe(2);
-      expect((await ctx.registry.getTask(t1.id))!.status).toBe("failed");
-      expect((await ctx.registry.getTask(t2.id))!.status).toBe("failed");
+      expect((await ctx.taskStore.getTask(t1.id))!.status).toBe("failed");
+      expect((await ctx.taskStore.getTask(t2.id))!.status).toBe("failed");
     });
 
     it("returns 0 for empty/nonexistent group", async () => {
@@ -661,28 +661,28 @@ describe("TaskManager", () => {
     });
 
     it("skips already-terminal tasks", async () => {
-      const t1 = await mgr.addTask({
+      const t1 = await mgr.createTask({
         title: "Done task",
         description: "already done",
         assignTo: "dev",
         group: "g1",
       });
-      await ctx.registry.transition(t1.id, "assigned");
-      await ctx.registry.transition(t1.id, "in_progress");
-      await ctx.registry.transition(t1.id, "review");
-      await ctx.registry.transition(t1.id, "done");
+      await ctx.taskStore.transition(t1.id, "assigned");
+      await ctx.taskStore.transition(t1.id, "in_progress");
+      await ctx.taskStore.transition(t1.id, "review");
+      await ctx.taskStore.transition(t1.id, "done");
 
-      const t2 = await mgr.addTask({
+      const t2 = await mgr.createTask({
         title: "Failed task",
         description: "already failed",
         assignTo: "dev",
         group: "g1",
       });
-      await ctx.registry.transition(t2.id, "assigned");
-      await ctx.registry.transition(t2.id, "in_progress");
-      await ctx.registry.transition(t2.id, "failed");
+      await ctx.taskStore.transition(t2.id, "assigned");
+      await ctx.taskStore.transition(t2.id, "in_progress");
+      await ctx.taskStore.transition(t2.id, "failed");
 
-      const t3 = await mgr.addTask({
+      const t3 = await mgr.createTask({
         title: "Pending task",
         description: "still pending",
         assignTo: "dev",
@@ -692,24 +692,25 @@ describe("TaskManager", () => {
       const count = await mgr.abortGroup("g1");
 
       expect(count).toBe(1); // Only t3 was killed
-      expect((await ctx.registry.getTask(t1.id))!.status).toBe("done");
-      expect((await ctx.registry.getTask(t2.id))!.status).toBe("failed");
-      expect((await ctx.registry.getTask(t3.id))!.status).toBe("failed");
+      expect((await ctx.taskStore.getTask(t1.id))!.status).toBe("done");
+      expect((await ctx.taskStore.getTask(t2.id))!.status).toBe("failed");
+      expect((await ctx.taskStore.getTask(t3.id))!.status).toBe("failed");
     });
 
     it("cancels the associated mission if active", async () => {
-      const store = ctx.registry as InMemoryTaskStoreWithMissions;
-      const mission = await store.saveMission({
+      const store = ctx.taskStore as InMemoryTaskStoreWithMissions;
+      const mission = await store.createMission({
         name: "g2",
         data: JSON.stringify({ tasks: [{ title: "T1" }] }),
         status: "active",
       });
 
-      await mgr.addTask({
+      await mgr.createTask({
         title: "Mission task",
         description: "in mission",
         assignTo: "dev",
         group: "g2",
+        missionId: mission.id,
       });
 
       await mgr.abortGroup("g2");
@@ -723,7 +724,7 @@ describe("TaskManager", () => {
 
   describe("killTask", () => {
     it("fails a pending task", async () => {
-      const task = await mgr.addTask({
+      const task = await mgr.createTask({
         title: "Kill pending",
         description: "desc",
         assignTo: "dev",
@@ -732,22 +733,22 @@ describe("TaskManager", () => {
       const result = await mgr.killTask(task.id);
 
       expect(result).toBe(true);
-      expect((await ctx.registry.getTask(task.id))!.status).toBe("failed");
+      expect((await ctx.taskStore.getTask(task.id))!.status).toBe("failed");
     });
 
     it("fails an in_progress task", async () => {
-      const task = await mgr.addTask({
+      const task = await mgr.createTask({
         title: "Kill running",
         description: "desc",
         assignTo: "dev",
       });
-      await ctx.registry.transition(task.id, "assigned");
-      await ctx.registry.transition(task.id, "in_progress");
+      await ctx.taskStore.transition(task.id, "assigned");
+      await ctx.taskStore.transition(task.id, "in_progress");
 
       const result = await mgr.killTask(task.id);
 
       expect(result).toBe(true);
-      expect((await ctx.registry.getTask(task.id))!.status).toBe("failed");
+      expect((await ctx.taskStore.getTask(task.id))!.status).toBe("failed");
     });
 
     it("returns false for non-existent task", async () => {
@@ -755,20 +756,20 @@ describe("TaskManager", () => {
     });
 
     it("leaves already-done task unchanged", async () => {
-      const task = await mgr.addTask({
+      const task = await mgr.createTask({
         title: "Already done",
         description: "desc",
         assignTo: "dev",
       });
-      await ctx.registry.transition(task.id, "assigned");
-      await ctx.registry.transition(task.id, "in_progress");
-      await ctx.registry.transition(task.id, "review");
-      await ctx.registry.transition(task.id, "done");
+      await ctx.taskStore.transition(task.id, "assigned");
+      await ctx.taskStore.transition(task.id, "in_progress");
+      await ctx.taskStore.transition(task.id, "review");
+      await ctx.taskStore.transition(task.id, "done");
 
       const result = await mgr.killTask(task.id);
 
       expect(result).toBe(true);
-      expect((await ctx.registry.getTask(task.id))!.status).toBe("done");
+      expect((await ctx.taskStore.getTask(task.id))!.status).toBe("done");
     });
   });
 });
@@ -791,11 +792,11 @@ describe("MissionExecutor", () => {
     await missionExec.ready;
   });
 
-  // ── saveMission ──────────────────────────────────────────────────────
+  // ── createMission ──────────────────────────────────────────────────────
 
-  describe("saveMission", () => {
+  describe("createMission", () => {
     it("persists a mission with draft status by default", async () => {
-      const mission = await missionExec.saveMission({
+      const mission = await missionExec.createMission({
         data: JSON.stringify({ tasks: [{ title: "T1", assignTo: "dev" }] }),
       });
 
@@ -814,7 +815,7 @@ describe("MissionExecutor", () => {
       const events: any[] = [];
       ctx.emitter.on("mission:saved", (e) => events.push(e));
 
-      const mission = await missionExec.saveMission({
+      const mission = await missionExec.createMission({
         data: JSON.stringify({ tasks: [{ title: "T1" }] }),
       });
 
@@ -824,7 +825,7 @@ describe("MissionExecutor", () => {
     });
 
     it("assigns auto-generated name when none provided", async () => {
-      const mission = await missionExec.saveMission({
+      const mission = await missionExec.createMission({
         data: JSON.stringify({ tasks: [{ title: "T1" }] }),
       });
 
@@ -834,7 +835,7 @@ describe("MissionExecutor", () => {
     });
 
     it("uses provided name", async () => {
-      const mission = await missionExec.saveMission({
+      const mission = await missionExec.createMission({
         data: JSON.stringify({ tasks: [{ title: "T1" }] }),
         name: "my-custom-mission",
       });
@@ -843,7 +844,7 @@ describe("MissionExecutor", () => {
     });
 
     it("stores optional prompt", async () => {
-      const mission = await missionExec.saveMission({
+      const mission = await missionExec.createMission({
         data: JSON.stringify({ tasks: [{ title: "T1" }] }),
         prompt: "Build a login page",
       });
@@ -861,7 +862,7 @@ describe("MissionExecutor", () => {
           { title: "Write tests", description: "Add unit tests", assignTo: "dev" },
         ] });
 
-      const mission = await missionExec.saveMission({ data });
+      const mission = await missionExec.createMission({ data });
       const result = await missionExec.executeMission(mission.id);
 
       expect(result.tasks).toHaveLength(2);
@@ -869,8 +870,8 @@ describe("MissionExecutor", () => {
       expect(result.tasks[0].title).toBe("Setup project");
       expect(result.tasks[1].title).toBe("Write tests");
 
-      // Tasks should be in the registry
-      const allTasks = await ctx.registry.getAllTasks();
+      // Tasks should be in the taskStore
+      const allTasks = await ctx.taskStore.listTasks();
       expect(allTasks).toHaveLength(2);
       expect(allTasks.every((t) => t.group === mission.name)).toBe(true);
     });
@@ -881,7 +882,7 @@ describe("MissionExecutor", () => {
           { title: "Build API", description: "Implement REST API", assignTo: "dev", dependsOn: ["Create DB"] },
         ] });
 
-      const mission = await missionExec.saveMission({ data });
+      const mission = await missionExec.createMission({ data });
       const result = await missionExec.executeMission(mission.id);
 
       const dbTask = result.tasks.find((t) => t.title === "Create DB")!;
@@ -898,7 +899,7 @@ describe("MissionExecutor", () => {
 
     it("throws for already-active mission", async () => {
       const data = JSON.stringify({ tasks: [{ title: "T1", description: "d", assignTo: "dev" }] });
-      const mission = await missionExec.saveMission({ data });
+      const mission = await missionExec.createMission({ data });
       await missionExec.executeMission(mission.id);
 
       // Mission is now active — second execution should throw
@@ -908,14 +909,14 @@ describe("MissionExecutor", () => {
     });
 
     it("throws for mission with no tasks in mission data", async () => {
-      const mission = await missionExec.saveMission({ data: JSON.stringify({ team: [{ name: "dev" }] }) });
+      const mission = await missionExec.createMission({ data: JSON.stringify({ team: [{ name: "dev" }] }) });
 
       await expect(missionExec.executeMission(mission.id)).rejects.toThrow("Invalid mission document");
     });
 
     it("marks mission as active after execution", async () => {
       const data = JSON.stringify({ tasks: [{ title: "T1", description: "d", assignTo: "dev" }] });
-      const mission = await missionExec.saveMission({ data });
+      const mission = await missionExec.createMission({ data });
       await missionExec.executeMission(mission.id);
 
       const updated = (await missionExec.getMission(mission.id))!;
@@ -927,7 +928,7 @@ describe("MissionExecutor", () => {
       ctx.emitter.on("mission:executed", (e) => events.push(e));
 
       const data = JSON.stringify({ tasks: [{ title: "T1", description: "d", assignTo: "dev" }] });
-      const mission = await missionExec.saveMission({ data });
+      const mission = await missionExec.createMission({ data });
       await missionExec.executeMission(mission.id);
 
       expect(events).toHaveLength(1);
@@ -937,7 +938,7 @@ describe("MissionExecutor", () => {
 
     it("uses first agent from config when assignTo is missing in mission data", async () => {
       const data = JSON.stringify({ tasks: [{ title: "No Agent", description: "has no assignTo" }] });
-      const mission = await missionExec.saveMission({ data });
+      const mission = await missionExec.createMission({ data });
       const result = await missionExec.executeMission(mission.id);
 
       expect(result.tasks[0].assignTo).toBe("dev");
@@ -958,15 +959,15 @@ describe("MissionExecutor", () => {
           { title: "Failing task", description: "This will fail", assignTo: "dev" },
         ] });
 
-      const mission = await missionExec.saveMission({ data });
+      const mission = await missionExec.createMission({ data });
       await missionExec.executeMission(mission.id);
 
       // Fail the task manually through state machine
-      const task = (await ctx.registry.getAllTasks()).find((t) => t.group === mission.name)!;
-      await ctx.registry.transition(task.id, "assigned");
-      await ctx.registry.transition(task.id, "in_progress");
-      await ctx.registry.transition(task.id, "review");
-      await ctx.registry.transition(task.id, "failed");
+      const task = (await ctx.taskStore.listTasks()).find((t) => t.group === mission.name)!;
+      await ctx.taskStore.transition(task.id, "assigned");
+      await ctx.taskStore.transition(task.id, "in_progress");
+      await ctx.taskStore.transition(task.id, "review");
+      await ctx.taskStore.transition(task.id, "failed");
       await missionExec.updateMission(mission.id, { status: "failed" });
 
       const result = await missionExec.resumeMission(mission.id, { retryFailed: true });
@@ -974,7 +975,7 @@ describe("MissionExecutor", () => {
       expect(result.retried).toBe(1);
 
       // Task should be back to pending
-      const taskAfter = (await ctx.registry.getTask(task.id))!;
+      const taskAfter = (await ctx.taskStore.getTask(task.id))!;
       expect(taskAfter.status).toBe("pending");
 
       // Mission should be active again
@@ -984,20 +985,20 @@ describe("MissionExecutor", () => {
 
     it("does not retry when retryFailed is false", async () => {
       const data = JSON.stringify({ tasks: [{ title: "T", description: "d", assignTo: "dev" }] });
-      const mission = await missionExec.saveMission({ data });
+      const mission = await missionExec.createMission({ data });
       await missionExec.executeMission(mission.id);
 
-      const task = (await ctx.registry.getAllTasks()).find((t) => t.group === mission.name)!;
-      await ctx.registry.transition(task.id, "assigned");
-      await ctx.registry.transition(task.id, "in_progress");
-      await ctx.registry.transition(task.id, "review");
-      await ctx.registry.transition(task.id, "failed");
+      const task = (await ctx.taskStore.listTasks()).find((t) => t.group === mission.name)!;
+      await ctx.taskStore.transition(task.id, "assigned");
+      await ctx.taskStore.transition(task.id, "in_progress");
+      await ctx.taskStore.transition(task.id, "review");
+      await ctx.taskStore.transition(task.id, "failed");
       await missionExec.updateMission(mission.id, { status: "failed" });
 
       const result = await missionExec.resumeMission(mission.id, { retryFailed: false });
 
       expect(result.retried).toBe(0);
-      expect((await ctx.registry.getTask(task.id))!.status).toBe("failed");
+      expect((await ctx.taskStore.getTask(task.id))!.status).toBe("failed");
     });
 
     it("emits mission:resumed event", async () => {
@@ -1005,7 +1006,7 @@ describe("MissionExecutor", () => {
       ctx.emitter.on("mission:resumed", (e) => events.push(e));
 
       const data = JSON.stringify({ tasks: [{ title: "T", description: "d", assignTo: "dev" }] });
-      const mission = await missionExec.saveMission({ data });
+      const mission = await missionExec.createMission({ data });
       await missionExec.executeMission(mission.id);
       await missionExec.updateMission(mission.id, { status: "failed" });
 
@@ -1022,7 +1023,7 @@ describe("MissionExecutor", () => {
           { title: "T2", description: "d2", assignTo: "dev" },
         ] });
 
-      const mission = await missionExec.saveMission({ data });
+      const mission = await missionExec.createMission({ data });
       await missionExec.executeMission(mission.id);
 
       // Both tasks are pending
@@ -1038,17 +1039,17 @@ describe("MissionExecutor", () => {
   describe("cleanupCompletedGroups", () => {
     it("marks mission as completed when all tasks are done", async () => {
       const data = JSON.stringify({ tasks: [{ title: "T1", description: "d", assignTo: "dev" }] });
-      const mission = await missionExec.saveMission({ data });
+      const mission = await missionExec.createMission({ data });
       await missionExec.executeMission(mission.id);
 
       // Complete the task
-      const task = (await ctx.registry.getAllTasks()).find((t) => t.group === mission.name)!;
-      await ctx.registry.transition(task.id, "assigned");
-      await ctx.registry.transition(task.id, "in_progress");
-      await ctx.registry.transition(task.id, "review");
-      await ctx.registry.transition(task.id, "done");
+      const task = (await ctx.taskStore.listTasks()).find((t) => t.group === mission.name)!;
+      await ctx.taskStore.transition(task.id, "assigned");
+      await ctx.taskStore.transition(task.id, "in_progress");
+      await ctx.taskStore.transition(task.id, "review");
+      await ctx.taskStore.transition(task.id, "done");
 
-      await missionExec.cleanupCompletedGroups(await ctx.registry.getAllTasks());
+      await missionExec.cleanupCompletedGroups(await ctx.taskStore.listTasks());
 
       const updatedMission = (await missionExec.getMission(mission.id))!;
       expect(updatedMission.status).toBe("completed");
@@ -1060,22 +1061,22 @@ describe("MissionExecutor", () => {
           { title: "T2", description: "d2", assignTo: "dev" },
         ] });
 
-      const mission = await missionExec.saveMission({ data });
+      const mission = await missionExec.createMission({ data });
       await missionExec.executeMission(mission.id);
 
-      const tasks = (await ctx.registry.getAllTasks()).filter((t) => t.group === mission.name);
+      const tasks = (await ctx.taskStore.listTasks()).filter((t) => t.group === mission.name);
 
       // One done, one failed
-      await ctx.registry.transition(tasks[0].id, "assigned");
-      await ctx.registry.transition(tasks[0].id, "in_progress");
-      await ctx.registry.transition(tasks[0].id, "review");
-      await ctx.registry.transition(tasks[0].id, "done");
+      await ctx.taskStore.transition(tasks[0].id, "assigned");
+      await ctx.taskStore.transition(tasks[0].id, "in_progress");
+      await ctx.taskStore.transition(tasks[0].id, "review");
+      await ctx.taskStore.transition(tasks[0].id, "done");
 
-      await ctx.registry.transition(tasks[1].id, "assigned");
-      await ctx.registry.transition(tasks[1].id, "in_progress");
-      await ctx.registry.transition(tasks[1].id, "failed");
+      await ctx.taskStore.transition(tasks[1].id, "assigned");
+      await ctx.taskStore.transition(tasks[1].id, "in_progress");
+      await ctx.taskStore.transition(tasks[1].id, "failed");
 
-      await missionExec.cleanupCompletedGroups(await ctx.registry.getAllTasks());
+      await missionExec.cleanupCompletedGroups(await ctx.taskStore.listTasks());
 
       const updatedMission = (await missionExec.getMission(mission.id))!;
       expect(updatedMission.status).toBe("failed");
@@ -1086,16 +1087,16 @@ describe("MissionExecutor", () => {
       ctx.emitter.on("mission:completed", (e) => events.push(e));
 
       const data = JSON.stringify({ tasks: [{ title: "T1", description: "d", assignTo: "dev" }] });
-      const mission = await missionExec.saveMission({ data });
+      const mission = await missionExec.createMission({ data });
       await missionExec.executeMission(mission.id);
 
-      const task = (await ctx.registry.getAllTasks()).find((t) => t.group === mission.name)!;
-      await ctx.registry.transition(task.id, "assigned");
-      await ctx.registry.transition(task.id, "in_progress");
-      await ctx.registry.transition(task.id, "review");
-      await ctx.registry.transition(task.id, "done");
+      const task = (await ctx.taskStore.listTasks()).find((t) => t.group === mission.name)!;
+      await ctx.taskStore.transition(task.id, "assigned");
+      await ctx.taskStore.transition(task.id, "in_progress");
+      await ctx.taskStore.transition(task.id, "review");
+      await ctx.taskStore.transition(task.id, "done");
 
-      await missionExec.cleanupCompletedGroups(await ctx.registry.getAllTasks());
+      await missionExec.cleanupCompletedGroups(await ctx.taskStore.listTasks());
 
       expect(events).toHaveLength(1);
       expect(events[0].missionId).toBe(mission.id);
@@ -1104,20 +1105,20 @@ describe("MissionExecutor", () => {
 
     it("only cleans up each group once", async () => {
       const data = JSON.stringify({ tasks: [{ title: "T1", description: "d", assignTo: "dev" }] });
-      const mission = await missionExec.saveMission({ data });
+      const mission = await missionExec.createMission({ data });
       await missionExec.executeMission(mission.id);
 
-      const task = (await ctx.registry.getAllTasks()).find((t) => t.group === mission.name)!;
-      await ctx.registry.transition(task.id, "assigned");
-      await ctx.registry.transition(task.id, "in_progress");
-      await ctx.registry.transition(task.id, "review");
-      await ctx.registry.transition(task.id, "done");
+      const task = (await ctx.taskStore.listTasks()).find((t) => t.group === mission.name)!;
+      await ctx.taskStore.transition(task.id, "assigned");
+      await ctx.taskStore.transition(task.id, "in_progress");
+      await ctx.taskStore.transition(task.id, "review");
+      await ctx.taskStore.transition(task.id, "done");
 
       const events: any[] = [];
       ctx.emitter.on("mission:completed", (e) => events.push(e));
 
-      await missionExec.cleanupCompletedGroups(await ctx.registry.getAllTasks());
-      await missionExec.cleanupCompletedGroups(await ctx.registry.getAllTasks());
+      await missionExec.cleanupCompletedGroups(await ctx.taskStore.listTasks());
+      await missionExec.cleanupCompletedGroups(await ctx.taskStore.listTasks());
 
       // Should only emit once
       expect(events).toHaveLength(1);

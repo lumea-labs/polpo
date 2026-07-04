@@ -25,13 +25,10 @@ import type {
   AskUserQuestion,
   AssessmentResult,
   AssessmentTrigger,
-  Attachment,
-  ChannelGatewayConfig,
   CheckResult,
   Condition,
   CustomModelDef,
   DimensionScore,
-  DmPolicy,
   EvalDimension,
   ExpectedOutcome,
   FileEntry,
@@ -119,13 +116,10 @@ export type {
   AskUserQuestion,
   AssessmentResult,
   AssessmentTrigger,
-  Attachment,
-  ChannelGatewayConfig,
   CheckResult,
   Condition,
   CustomModelDef,
   DimensionScore,
-  DmPolicy,
   EvalDimension,
   ExpectedOutcome,
   FileEntry,
@@ -737,9 +731,6 @@ export interface ResumeMissionResult {
   retried: number;
   pending: number;
 }
-
-// === Attachment types ===
-
 
 // === File Browser types ===
 

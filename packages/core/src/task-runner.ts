@@ -44,14 +44,14 @@ export class TaskRunner {
       // Persist sessionId on the task before deleting the run
       const sid = run.sessionId ?? run.activity.sessionId;
       if (sid) {
-        try { await this.ctx.registry.updateTask(run.taskId, { sessionId: sid }); } catch { /* task may already be gone */ }
+        try { await this.ctx.taskStore.updateTask(run.taskId, { sessionId: sid }); } catch { /* task may already be gone */ }
       }
       // Persist auto-collected outcomes on the task.
       // REPLACE (not append) — each execution produces its own definitive outcomes.
       // Appending caused "exponential outcome" accumulation across retries/fix cycles.
       if (run.outcomes && run.outcomes.length > 0) {
         try {
-          await this.ctx.registry.updateTask(run.taskId, { outcomes: run.outcomes });
+          await this.ctx.taskStore.updateTask(run.taskId, { outcomes: run.outcomes });
         } catch { /* task may already be gone */ }
       }
       if (run.result) {
@@ -183,7 +183,7 @@ export class TaskRunner {
     const activeRuns = await this.ctx.runStore.getActiveRuns();
     for (const run of activeRuns) {
       // 1. Task timeout (hard kill)
-      const task = await this.ctx.registry.getTask(run.taskId);
+      const task = await this.ctx.taskStore.getTask(run.taskId);
       const timeout = task?.maxDuration ?? defaultTimeout;
       if (timeout > 0) {
         const elapsed = Date.now() - new Date(run.startedAt).getTime();
@@ -273,7 +273,7 @@ export class TaskRunner {
       }
     }
 
-    await this.ctx.registry.setState({
+    await this.ctx.taskStore.setState({
       processes: active.map(r => ({
         agentName: r.agentName,
         pid: r.pid,
@@ -306,14 +306,14 @@ export class TaskRunner {
     }
 
     // Backward compat: kill orphan OS processes from old processes table
-    const state = await this.ctx.registry.getState();
+    const state = await this.ctx.taskStore.getState();
     for (const proc of state.processes) {
       if (proc.pid > 0 && proc.alive) {
         this.killOrphanProcess(proc.pid, proc.agentName);
       }
     }
 
-    const tasks = await this.ctx.registry.getAllTasks();
+    const tasks = await this.ctx.taskStore.listTasks();
     const orphanStates: Set<string> = new Set(["assigned", "in_progress", "review"]);
     let recovered = 0;
 
@@ -331,13 +331,13 @@ export class TaskRunner {
       // Shutdown interrupts are not real failures — unsafeSetStatus bypasses
       // transition(failed → pending) which would burn a retry.
       this.ctx.emitter.emit("task:recovered", { taskId: task.id, title: task.title, previousStatus: task.status });
-      await this.ctx.registry.unsafeSetStatus(task.id, "pending", "orphan recovery — shutdown interrupt");
+      await this.ctx.taskStore.unsafeSetStatus(task.id, "pending", "orphan recovery — shutdown interrupt");
       recovered++;
     }
 
     // Clear stale process list
     if (recovered > 0 || tasks.some(t => orphanStates.has(t.status))) {
-      await this.ctx.registry.setState({ processes: [] });
+      await this.ctx.taskStore.setState({ processes: [] });
     }
 
     return recovered;
@@ -351,9 +351,9 @@ export class TaskRunner {
     const agent = await this.ctx.agentStore.getAgent(task.assignTo);
     if (!agent) {
       this.ctx.emitter.emit("log", { level: "error", message: `No agent "${task.assignTo}" for task "${task.title}"` });
-      await this.ctx.registry.transition(task.id, "assigned");
-      await this.ctx.registry.transition(task.id, "in_progress");
-      await this.ctx.registry.transition(task.id, "failed");
+      await this.ctx.taskStore.transition(task.id, "assigned");
+      await this.ctx.taskStore.transition(task.id, "in_progress");
+      await this.ctx.taskStore.transition(task.id, "failed");
       return;
     }
 
@@ -366,9 +366,9 @@ export class TaskRunner {
           level: "error",
           message: `[${task.id}] Missing API key for ${detail} — cannot spawn agent "${agent.name}"`,
         });
-        await this.ctx.registry.transition(task.id, "assigned");
-        await this.ctx.registry.transition(task.id, "in_progress");
-        await this.ctx.registry.transition(task.id, "failed");
+        await this.ctx.taskStore.transition(task.id, "assigned");
+        await this.ctx.taskStore.transition(task.id, "in_progress");
+        await this.ctx.taskStore.transition(task.id, "failed");
         return;
       }
     }
@@ -383,12 +383,12 @@ export class TaskRunner {
       return;  // task stays pending — will be re-evaluated next tick
     }
 
-    await this.ctx.registry.transition(task.id, "assigned");
-    await this.ctx.registry.transition(task.id, "in_progress");
+    await this.ctx.taskStore.transition(task.id, "assigned");
+    await this.ctx.taskStore.transition(task.id, "in_progress");
 
     // Set phase if not already set (new tasks start in execution phase)
     if (!task.phase) {
-      await this.ctx.registry.updateTask(task.id, { phase: "execution" });
+      await this.ctx.taskStore.updateTask(task.id, { phase: "execution" });
     }
 
     const runId = nanoid();
@@ -428,7 +428,7 @@ export class TaskRunner {
         }
 
         // Sibling tasks — just titles and statuses for awareness, not full descriptions
-        const allTasks = await this.ctx.registry.getAllTasks();
+        const allTasks = await this.ctx.taskStore.listTasks();
         const siblings = allTasks.filter(t => t.group === task.group && t.id !== task.id);
         if (siblings.length > 0) {
           missionParts.push(`Other tasks in this mission:`);
@@ -504,7 +504,7 @@ export class TaskRunner {
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
       this.ctx.emitter.emit("log", { level: "error", message: `[${task.id}] Failed to spawn runner: ${message}` });
-      await this.ctx.registry.transition(task.id, "failed");
+      await this.ctx.taskStore.transition(task.id, "failed");
     }
   }
 

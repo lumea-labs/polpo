@@ -22,9 +22,9 @@ export interface UseMissionReturn {
   abortMission: () => Promise<{ aborted: number }>;
   deleteMission: () => Promise<void>;
   // ── Atomic mission data operations ──
-  addTask: (req: AddMissionTaskRequest) => Promise<Mission>;
+  createTask: (req: AddMissionTaskRequest) => Promise<Mission>;
   updateTask: (taskTitle: string, req: UpdateMissionTaskRequest) => Promise<Mission>;
-  removeTask: (taskTitle: string) => Promise<Mission>;
+  deleteTask: (taskTitle: string) => Promise<Mission>;
   reorderTasks: (req: ReorderMissionTasksRequest) => Promise<Mission>;
   addCheckpoint: (req: AddMissionCheckpointRequest) => Promise<Mission>;
   updateCheckpoint: (name: string, req: UpdateMissionCheckpointRequest) => Promise<Mission>;
@@ -119,7 +119,7 @@ export function useMission(missionId: string): UseMissionReturn {
 
   // ── Atomic mission data callbacks ──
 
-  const addTask = useCallback(
+  const createTask = useCallback(
     (req: AddMissionTaskRequest) => client.addMissionTask(missionId, req),
     [client, missionId],
   );
@@ -127,7 +127,7 @@ export function useMission(missionId: string): UseMissionReturn {
     (taskTitle: string, req: UpdateMissionTaskRequest) => client.updateMissionTask(missionId, taskTitle, req),
     [client, missionId],
   );
-  const removeTask = useCallback(
+  const deleteTask = useCallback(
     (taskTitle: string) => client.removeMissionTask(missionId, taskTitle),
     [client, missionId],
   );
@@ -179,7 +179,7 @@ export function useMission(missionId: string): UseMissionReturn {
   return {
     mission, report, isLoading, error,
     updateMission, executeMission, resumeMission, abortMission, deleteMission,
-    addTask, updateTask, removeTask, reorderTasks,
+    createTask, updateTask, deleteTask, reorderTasks,
     addCheckpoint, updateCheckpoint, removeCheckpoint,
     addQualityGate, updateQualityGate, removeQualityGate,
     addTeamMember, updateTeamMember, removeTeamMember,

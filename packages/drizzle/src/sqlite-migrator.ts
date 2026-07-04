@@ -22,8 +22,7 @@ import {
   logSessionsSqlite, logEntriesSqlite,
   approvalsSqlite, memorySqlite,
   teamsSqlite, agentsSqlite,
-  vaultSqlite, playbooksSqlite,
-  attachmentsSqlite, skillsSqlite,
+  vaultSqlite, playbooksSqlite, skillsSqlite,
 } from "./schema/index.js";
 
 const SQLITE_TABLES = [
@@ -33,8 +32,7 @@ const SQLITE_TABLES = [
   logSessionsSqlite, logEntriesSqlite,
   approvalsSqlite, memorySqlite,
   teamsSqlite, agentsSqlite,
-  vaultSqlite, playbooksSqlite,
-  attachmentsSqlite, skillsSqlite,
+  vaultSqlite, playbooksSqlite, skillsSqlite,
 ];
 
 /** Render a Drizzle column default as SQL, or undefined when it can't be

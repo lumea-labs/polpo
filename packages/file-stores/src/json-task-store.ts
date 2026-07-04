@@ -47,7 +47,7 @@ export class JsonTaskStore implements TaskStore {
     this.persist();
   }
 
-  async addTask(
+  async createTask(
     task: Omit<Task, "id" | "status" | "retries" | "createdAt" | "updatedAt"> & { status?: TaskStatus },
   ): Promise<Task> {
     const now = new Date().toISOString();
@@ -68,7 +68,7 @@ export class JsonTaskStore implements TaskStore {
     return this.state.tasks.find((t) => t.id === taskId);
   }
 
-  async getAllTasks(): Promise<Task[]> {
+  async listTasks(): Promise<Task[]> {
     return this.state.tasks;
   }
 
@@ -93,7 +93,7 @@ export class JsonTaskStore implements TaskStore {
     return task;
   }
 
-  async removeTask(taskId: string): Promise<boolean> {
+  async deleteTask(taskId: string): Promise<boolean> {
     const idx = this.state.tasks.findIndex((t) => t.id === taskId);
     if (idx < 0) return false;
     this.state.tasks.splice(idx, 1);
@@ -101,7 +101,7 @@ export class JsonTaskStore implements TaskStore {
     return true;
   }
 
-  async removeTasks(filter: (task: Task) => boolean): Promise<number> {
+  async deleteTasks(filter: (task: Task) => boolean): Promise<number> {
     const before = this.state.tasks.length;
     this.state.tasks = this.state.tasks.filter((t) => !filter(t));
     const removed = before - this.state.tasks.length;

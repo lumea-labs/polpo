@@ -80,8 +80,6 @@ export interface SessionStore {
    * positional form `(title, agent)` — internally normalised.
    */
   create(opts?: SessionCreateOptions): Promise<string>;
-  /** @deprecated Use `create({ title, agent })` — kept for callers still on the positional form. */
-  create(title: string | undefined, agent?: string): Promise<string>;
   addMessage(sessionId: string, role: MessageRole, content: string | SessionContentPart[]): Promise<Message>;
   /** Update the content of an existing message (e.g. finalize a streaming response). */
   updateMessage(sessionId: string, messageId: string, content: string | SessionContentPart[], toolCalls?: ToolCallInfo[]): Promise<boolean>;

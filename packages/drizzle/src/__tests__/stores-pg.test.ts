@@ -23,7 +23,6 @@ const DATABASE_URL = process.env.TEST_DATABASE_URL ?? "postgresql://postgres:pos
 const ALL_TABLES = [
   "log_entries",
   "messages",
-  "attachments",
   "approvals",
   "runs",
   "tasks",
@@ -85,8 +84,8 @@ describe.skipIf(!canConnect)("PostgreSQL Drizzle stores", () => {
   // ═══════════════════════════════════════════════════════════════════════
 
   describe("DrizzleTaskStore", () => {
-    it("addTask + getTask round-trip", async () => {
-      const task = await stores.taskStore.addTask({
+    it("createTask + getTask round-trip", async () => {
+      const task = await stores.taskStore.createTask({
         title: "Fix bug",
         description: "Fix the login bug",
         assignTo: "claude",
@@ -107,22 +106,22 @@ describe.skipIf(!canConnect)("PostgreSQL Drizzle stores", () => {
       expect(fetched!.expectations).toEqual([{ type: "llm_review", criteria: "Login works" }]);
     });
 
-    it("getAllTasks returns ordered by createdAt", async () => {
-      await stores.taskStore.addTask({
+    it("listTasks returns ordered by createdAt", async () => {
+      await stores.taskStore.createTask({
         title: "A", description: "first", assignTo: "claude", dependsOn: [], maxRetries: 2, expectations: [], metrics: [],
       });
-      await stores.taskStore.addTask({
+      await stores.taskStore.createTask({
         title: "B", description: "second", assignTo: "claude", dependsOn: [], maxRetries: 2, expectations: [], metrics: [],
       });
 
-      const all = await stores.taskStore.getAllTasks();
+      const all = await stores.taskStore.listTasks();
       expect(all).toHaveLength(2);
       expect(all[0].title).toBe("A");
       expect(all[1].title).toBe("B");
     });
 
     it("updateTask merges fields", async () => {
-      const task = await stores.taskStore.addTask({
+      const task = await stores.taskStore.createTask({
         title: "Original", description: "desc", assignTo: "claude", dependsOn: [], maxRetries: 2, expectations: [], metrics: [],
       });
 
@@ -134,36 +133,36 @@ describe.skipIf(!canConnect)("PostgreSQL Drizzle stores", () => {
       expect(fetched!.title).toBe("Updated");
     });
 
-    it("removeTask deletes by ID", async () => {
-      const task = await stores.taskStore.addTask({
+    it("deleteTask deletes by ID", async () => {
+      const task = await stores.taskStore.createTask({
         title: "Delete me", description: "d", assignTo: "claude", dependsOn: [], maxRetries: 2, expectations: [], metrics: [],
       });
 
-      const removed = await stores.taskStore.removeTask(task.id);
+      const removed = await stores.taskStore.deleteTask(task.id);
       expect(removed).toBe(true);
 
       const fetched = await stores.taskStore.getTask(task.id);
       expect(fetched).toBeUndefined();
     });
 
-    it("removeTasks with filter", async () => {
-      await stores.taskStore.addTask({
+    it("deleteTasks with filter", async () => {
+      await stores.taskStore.createTask({
         title: "Keep", description: "d", assignTo: "claude", dependsOn: [], maxRetries: 2, expectations: [], metrics: [],
       });
-      await stores.taskStore.addTask({
+      await stores.taskStore.createTask({
         title: "Remove", description: "d", assignTo: "claude", dependsOn: [], maxRetries: 2, expectations: [], metrics: [], group: "old",
       });
 
-      const count = await stores.taskStore.removeTasks((t) => t.group === "old");
+      const count = await stores.taskStore.deleteTasks((t) => t.group === "old");
       expect(count).toBe(1);
 
-      const all = await stores.taskStore.getAllTasks();
+      const all = await stores.taskStore.listTasks();
       expect(all).toHaveLength(1);
       expect(all[0].title).toBe("Keep");
     });
 
     it("transition validates state machine", async () => {
-      const task = await stores.taskStore.addTask({
+      const task = await stores.taskStore.createTask({
         title: "T", description: "d", assignTo: "claude", dependsOn: [], maxRetries: 2, expectations: [], metrics: [],
       });
 
@@ -176,7 +175,7 @@ describe.skipIf(!canConnect)("PostgreSQL Drizzle stores", () => {
     });
 
     it("transition increments retries on failed->pending", async () => {
-      const task = await stores.taskStore.addTask({
+      const task = await stores.taskStore.createTask({
         title: "T", description: "d", assignTo: "claude", dependsOn: [], maxRetries: 3, expectations: [], metrics: [],
       });
 
@@ -189,7 +188,7 @@ describe.skipIf(!canConnect)("PostgreSQL Drizzle stores", () => {
     });
 
     it("unsafeSetStatus bypasses state machine", async () => {
-      const task = await stores.taskStore.addTask({
+      const task = await stores.taskStore.createTask({
         title: "T", description: "d", assignTo: "claude", dependsOn: [], maxRetries: 2, expectations: [], metrics: [],
       });
 
@@ -200,8 +199,8 @@ describe.skipIf(!canConnect)("PostgreSQL Drizzle stores", () => {
 
     // ── Missions ────────────────────────────────────────────────────────
 
-    it("saveMission + getMission round-trip", async () => {
-      const mission = await stores.taskStore.saveMission!({
+    it("createMission + getMission round-trip", async () => {
+      const mission = await stores.missionStore.createMission!({
         name: "mission-1",
         data: '{"tasks":[]}',
         status: "draft",
@@ -210,39 +209,39 @@ describe.skipIf(!canConnect)("PostgreSQL Drizzle stores", () => {
       expect(mission.id).toBeDefined();
       expect(mission.name).toBe("mission-1");
 
-      const fetched = await stores.taskStore.getMission!(mission.id);
+      const fetched = await stores.missionStore.getMission!(mission.id);
       expect(fetched).toBeDefined();
       expect(fetched!.name).toBe("mission-1");
     });
 
     it("getMissionByName finds by name", async () => {
-      await stores.taskStore.saveMission!({ name: "deploy-v2", data: "{}", status: "draft" });
-      const found = await stores.taskStore.getMissionByName!("deploy-v2");
+      await stores.missionStore.createMission!({ name: "deploy-v2", data: "{}", status: "draft" });
+      const found = await stores.missionStore.getMissionByName!("deploy-v2");
       expect(found).toBeDefined();
       expect(found!.name).toBe("deploy-v2");
     });
 
     it("updateMission merges fields", async () => {
-      const m = await stores.taskStore.saveMission!({ name: "m-1", data: "{}", status: "draft" });
-      const updated = await stores.taskStore.updateMission!(m.id, { status: "active" });
+      const m = await stores.missionStore.createMission!({ name: "m-1", data: "{}", status: "draft" });
+      const updated = await stores.missionStore.updateMission!(m.id, { status: "active" });
       expect(updated.status).toBe("active");
       expect(updated.name).toBe("m-1");
     });
 
     it("deleteMission removes", async () => {
-      const m = await stores.taskStore.saveMission!({ name: "m-del", data: "{}", status: "draft" });
-      const ok = await stores.taskStore.deleteMission!(m.id);
+      const m = await stores.missionStore.createMission!({ name: "m-del", data: "{}", status: "draft" });
+      const ok = await stores.missionStore.deleteMission!(m.id);
       expect(ok).toBe(true);
-      const fetched = await stores.taskStore.getMission!(m.id);
+      const fetched = await stores.missionStore.getMission!(m.id);
       expect(fetched).toBeUndefined();
     });
 
     it("nextMissionName increments", async () => {
-      expect(await stores.taskStore.nextMissionName!()).toBe("mission-1");
-      await stores.taskStore.saveMission!({ name: "mission-1", data: "{}", status: "draft" });
-      expect(await stores.taskStore.nextMissionName!()).toBe("mission-2");
-      await stores.taskStore.saveMission!({ name: "mission-5", data: "{}", status: "draft" });
-      expect(await stores.taskStore.nextMissionName!()).toBe("mission-6");
+      expect(await stores.missionStore.nextMissionName!()).toBe("mission-1");
+      await stores.missionStore.createMission!({ name: "mission-1", data: "{}", status: "draft" });
+      expect(await stores.missionStore.nextMissionName!()).toBe("mission-2");
+      await stores.missionStore.createMission!({ name: "mission-5", data: "{}", status: "draft" });
+      expect(await stores.missionStore.nextMissionName!()).toBe("mission-6");
     });
 
     // ── State ────────────────────────────────────────────────────────────
@@ -382,7 +381,7 @@ describe.skipIf(!canConnect)("PostgreSQL Drizzle stores", () => {
 
   describe("DrizzleSessionStore", () => {
     it("create + getSession", async () => {
-      const id = await stores.sessionStore.create("My Session");
+      const id = await stores.sessionStore.create({ title: "My Session" });
       const session = await stores.sessionStore.getSession(id);
       expect(session).toBeDefined();
       expect(session!.title).toBe("My Session");
@@ -415,10 +414,10 @@ describe.skipIf(!canConnect)("PostgreSQL Drizzle stores", () => {
     });
 
     it("listSessions includes messageCount", async () => {
-      const s1 = await stores.sessionStore.create("S1");
+      const s1 = await stores.sessionStore.create({ title: "S1" });
       await stores.sessionStore.addMessage(s1, "user", "msg1");
       await stores.sessionStore.addMessage(s1, "assistant", "msg2");
-      await stores.sessionStore.create("S2");
+      await stores.sessionStore.create({ title: "S2" });
 
       const list = await stores.sessionStore.listSessions();
       expect(list).toHaveLength(2);
@@ -427,7 +426,7 @@ describe.skipIf(!canConnect)("PostgreSQL Drizzle stores", () => {
     });
 
     it("renameSession updates title", async () => {
-      const id = await stores.sessionStore.create("Old");
+      const id = await stores.sessionStore.create({ title: "Old" });
       const ok = await stores.sessionStore.renameSession(id, "New");
       expect(ok).toBe(true);
 
@@ -436,7 +435,7 @@ describe.skipIf(!canConnect)("PostgreSQL Drizzle stores", () => {
     });
 
     it("deleteSession cascade-deletes messages", async () => {
-      const id = await stores.sessionStore.create("Del");
+      const id = await stores.sessionStore.create({ title: "Del" });
       await stores.sessionStore.addMessage(id, "user", "msg");
       const ok = await stores.sessionStore.deleteSession(id);
       expect(ok).toBe(true);
@@ -446,8 +445,8 @@ describe.skipIf(!canConnect)("PostgreSQL Drizzle stores", () => {
     });
 
     it("prune keeps the N most recent sessions", async () => {
-      await stores.sessionStore.create("Old");
-      await stores.sessionStore.create("New");
+      await stores.sessionStore.create({ title: "Old" });
+      await stores.sessionStore.create({ title: "New" });
 
       const pruned = await stores.sessionStore.prune(1);
       expect(pruned).toBe(1);
@@ -457,9 +456,9 @@ describe.skipIf(!canConnect)("PostgreSQL Drizzle stores", () => {
     });
 
     it("getLatestSession returns most recently updated", async () => {
-      await stores.sessionStore.create("First");
+      await stores.sessionStore.create({ title: "First" });
       await new Promise((r) => setTimeout(r, 5));
-      const id2 = await stores.sessionStore.create("Second");
+      const id2 = await stores.sessionStore.create({ title: "Second" });
 
       const latest = await stores.sessionStore.getLatestSession();
       expect(latest).toBeDefined();
@@ -1090,80 +1089,6 @@ describe.skipIf(!canConnect)("PostgreSQL Drizzle stores", () => {
   // AttachmentStore
   // ═══════════════════════════════════════════════════════════════════════
 
-  describe("DrizzleAttachmentStore", () => {
-    it("save + get round-trip", async () => {
-      const attachment = {
-        id: "att-1",
-        sessionId: "s1",
-        filename: "screenshot.png",
-        mimeType: "image/png",
-        size: 1024,
-        path: "/tmp/screenshot.png",
-        createdAt: new Date().toISOString(),
-      };
-      await stores.attachmentStore.save(attachment);
-
-      const fetched = await stores.attachmentStore.get("att-1");
-      expect(fetched).toBeDefined();
-      expect(fetched!.filename).toBe("screenshot.png");
-      expect(fetched!.mimeType).toBe("image/png");
-      expect(fetched!.size).toBe(1024);
-    });
-
-    it("save with messageId", async () => {
-      const attachment = {
-        id: "att-2",
-        sessionId: "s1",
-        messageId: "msg-1",
-        filename: "doc.pdf",
-        mimeType: "application/pdf",
-        size: 2048,
-        path: "/tmp/doc.pdf",
-        createdAt: new Date().toISOString(),
-      };
-      await stores.attachmentStore.save(attachment);
-
-      const fetched = await stores.attachmentStore.get("att-2");
-      expect(fetched).toBeDefined();
-      expect(fetched!.messageId).toBe("msg-1");
-    });
-
-    it("getBySession returns all attachments for session", async () => {
-      const base = { sessionId: "s1", mimeType: "text/plain", size: 100, createdAt: new Date().toISOString() };
-      await stores.attachmentStore.save({ ...base, id: "att-1", filename: "a.txt", path: "/tmp/a.txt" });
-      await stores.attachmentStore.save({ ...base, id: "att-2", filename: "b.txt", path: "/tmp/b.txt" });
-      await stores.attachmentStore.save({ ...base, id: "att-3", filename: "c.txt", path: "/tmp/c.txt", sessionId: "s2" });
-
-      const s1Attachments = await stores.attachmentStore.getBySession("s1");
-      expect(s1Attachments).toHaveLength(2);
-    });
-
-    it("delete removes attachment", async () => {
-      await stores.attachmentStore.save({
-        id: "att-del",
-        sessionId: "s1",
-        filename: "temp.txt",
-        mimeType: "text/plain",
-        size: 10,
-        path: "/tmp/temp.txt",
-        createdAt: new Date().toISOString(),
-      });
-
-      const ok = await stores.attachmentStore.delete("att-del");
-      expect(ok).toBe(true);
-      expect(await stores.attachmentStore.get("att-del")).toBeUndefined();
-    });
-
-    it("deleteBySession removes all for session", async () => {
-      const base = { sessionId: "s-del", mimeType: "text/plain", size: 10, createdAt: new Date().toISOString() };
-      await stores.attachmentStore.save({ ...base, id: "att-1", filename: "a.txt", path: "/tmp/a.txt" });
-      await stores.attachmentStore.save({ ...base, id: "att-2", filename: "b.txt", path: "/tmp/b.txt" });
-
-      const count = await stores.attachmentStore.deleteBySession("s-del");
-      expect(count).toBe(2);
-      expect(await stores.attachmentStore.getBySession("s-del")).toEqual([]);
-    });
-  });
 
   // ═══════════════════════════════════════════════════════════════════════
   // Factory function
@@ -1245,7 +1170,7 @@ describe.skipIf(!canConnect)("PostgreSQL Drizzle stores", () => {
       expect(stores.agentStore).toBeDefined();
       expect(stores.vaultStore).toBeDefined();
       expect(stores.playbookStore).toBeDefined();
-      expect(stores.attachmentStore).toBeDefined();
+      expect(stores.missionStore).toBeDefined();
       expect(stores.skillStore).toBeDefined();
     });
   });

@@ -213,7 +213,7 @@ export class DrizzleTaskStore implements TaskStore {
 
   // ── Task CRUD ────────────────────────────────────────────────────────
 
-  async addTask(input: Omit<Task, "id" | "status" | "retries" | "createdAt" | "updatedAt"> & { status?: TaskStatus }): Promise<Task> {
+  async createTask(input: Omit<Task, "id" | "status" | "retries" | "createdAt" | "updatedAt"> & { status?: TaskStatus }): Promise<Task> {
     const now = new Date().toISOString();
     const task: Task = {
       ...input,
@@ -233,7 +233,7 @@ export class DrizzleTaskStore implements TaskStore {
     return rows.length > 0 ? this.rowToTask(rows[0]) : undefined;
   }
 
-  async getAllTasks(): Promise<Task[]> {
+  async listTasks(): Promise<Task[]> {
     const rows: any[] = await this.db.select().from(this.schema.tasks)
       .orderBy(asc(this.schema.tasks.createdAt));
     return rows.map((r) => this.rowToTask(r));
@@ -252,14 +252,14 @@ export class DrizzleTaskStore implements TaskStore {
     return merged;
   }
 
-  async removeTask(taskId: string): Promise<boolean> {
+  async deleteTask(taskId: string): Promise<boolean> {
     const result = await this.db.delete(this.schema.tasks)
       .where(eq(this.schema.tasks.id, taskId));
     return extractAffectedRows(result) > 0;
   }
 
-  async removeTasks(filter: (task: Task) => boolean): Promise<number> {
-    const all = await this.getAllTasks();
+  async deleteTasks(filter: (task: Task) => boolean): Promise<number> {
+    const all = await this.listTasks();
     const toRemove = all.filter(filter);
     if (toRemove.length === 0) return 0;
     for (const t of toRemove) {
@@ -305,7 +305,7 @@ export class DrizzleTaskStore implements TaskStore {
 
   // ── Missions ─────────────────────────────────────────────────────────
 
-  async saveMission(input: Omit<Mission, "id" | "createdAt" | "updatedAt">): Promise<Mission> {
+  async createMission(input: Omit<Mission, "id" | "createdAt" | "updatedAt">): Promise<Mission> {
     const now = new Date().toISOString();
     const mission: Mission = {
       ...input,
@@ -345,7 +345,7 @@ export class DrizzleTaskStore implements TaskStore {
     return rows.length > 0 ? this.rowToMission(rows[0]) : undefined;
   }
 
-  async getAllMissions(): Promise<Mission[]> {
+  async listMissions(): Promise<Mission[]> {
     const rows: any[] = await this.db.select().from(this.schema.missions)
       .orderBy(desc(this.schema.missions.createdAt));
     return rows.map((r) => this.rowToMission(r));

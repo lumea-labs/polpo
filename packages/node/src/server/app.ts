@@ -188,7 +188,7 @@ export function createApp(orchestrator: Orchestrator, sseBridge: SSEBridge, opts
     taskStore: o.getStore(),
     runStore: o.getRunStore(),
     logStore: o.getLogStore(),
-    addTask: (opts: any) => o.addTask(opts),
+    createTask: (opts: any) => o.createTask(opts),
     deleteTask: (id: string) => o.deleteTask(id),
     retryTask: (id: string) => o.retryTask(id),
     killTask: (id: string) => o.killTask(id),
@@ -200,10 +200,10 @@ export function createApp(orchestrator: Orchestrator, sseBridge: SSEBridge, opts
   })));
 
   authed.route("/missions", missionRoutes(() => ({
-    getAllMissions: () => o.getAllMissions(),
+    listMissions: () => o.listMissions(),
     getResumableMissions: () => o.getResumableMissions(),
     getMission: (id: string) => o.getMission(id),
-    saveMission: (opts: any) => o.saveMission(opts),
+    createMission: (opts: any) => o.createMission(opts),
     updateMission: (id: string, updates: any) => o.updateMission(id, updates),
     deleteMission: (id: string) => o.deleteMission(id),
     executeMission: (id: string) => o.executeMission(id),
@@ -274,13 +274,13 @@ export function createApp(orchestrator: Orchestrator, sseBridge: SSEBridge, opts
 
   authed.route("/playbooks", playbookRoutes(() => ({
     playbookStore: o.getPlaybookStore(),
-    saveMission: (opts: any) => o.saveMission(opts),
+    createMission: (opts: any) => o.createMission(opts),
     executeMission: (id: string) => o.executeMission(id),
   })));
   // Backward-compat: keep /templates as alias
   authed.route("/templates", playbookRoutes(() => ({
     playbookStore: o.getPlaybookStore(),
-    saveMission: (opts: any) => o.saveMission(opts),
+    createMission: (opts: any) => o.createMission(opts),
     executeMission: (id: string) => o.executeMission(id),
   })));
 

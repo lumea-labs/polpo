@@ -38,8 +38,8 @@ afterEach(() => {
 // ═══════════════════════════════════════════════════════════════════════
 
 describe("DrizzleTaskStore", () => {
-  it("addTask + getTask round-trip", async () => {
-    const task = await stores.taskStore.addTask({
+  it("createTask + getTask round-trip", async () => {
+    const task = await stores.taskStore.createTask({
       title: "Fix bug",
       description: "Fix the login bug",
       assignTo: "claude",
@@ -60,8 +60,8 @@ describe("DrizzleTaskStore", () => {
     expect(fetched!.expectations).toEqual([{ type: "llm_review", criteria: "Login works" }]);
   });
 
-  it("addTask persists OpenAI-compat user identifier", async () => {
-    const task = await stores.taskStore.addTask({
+  it("createTask persists OpenAI-compat user identifier", async () => {
+    const task = await stores.taskStore.createTask({
       title: "Per-user task",
       description: "Scoped to end-user",
       assignTo: "claude",
@@ -77,22 +77,22 @@ describe("DrizzleTaskStore", () => {
     expect(fetched!.user).toBe("u-42");
   });
 
-  it("getAllTasks returns ordered by createdAt", async () => {
-    await stores.taskStore.addTask({
+  it("listTasks returns ordered by createdAt", async () => {
+    await stores.taskStore.createTask({
       title: "A", description: "first", assignTo: "claude", dependsOn: [], maxRetries: 2, expectations: [], metrics: [],
     });
-    await stores.taskStore.addTask({
+    await stores.taskStore.createTask({
       title: "B", description: "second", assignTo: "claude", dependsOn: [], maxRetries: 2, expectations: [], metrics: [],
     });
 
-    const all = await stores.taskStore.getAllTasks();
+    const all = await stores.taskStore.listTasks();
     expect(all).toHaveLength(2);
     expect(all[0].title).toBe("A");
     expect(all[1].title).toBe("B");
   });
 
   it("updateTask merges fields", async () => {
-    const task = await stores.taskStore.addTask({
+    const task = await stores.taskStore.createTask({
       title: "Original", description: "desc", assignTo: "claude", dependsOn: [], maxRetries: 2, expectations: [], metrics: [],
     });
 
@@ -104,36 +104,36 @@ describe("DrizzleTaskStore", () => {
     expect(fetched!.title).toBe("Updated");
   });
 
-  it("removeTask deletes by ID", async () => {
-    const task = await stores.taskStore.addTask({
+  it("deleteTask deletes by ID", async () => {
+    const task = await stores.taskStore.createTask({
       title: "Delete me", description: "d", assignTo: "claude", dependsOn: [], maxRetries: 2, expectations: [], metrics: [],
     });
 
-    const removed = await stores.taskStore.removeTask(task.id);
+    const removed = await stores.taskStore.deleteTask(task.id);
     expect(removed).toBe(true);
 
     const fetched = await stores.taskStore.getTask(task.id);
     expect(fetched).toBeUndefined();
   });
 
-  it("removeTasks with filter", async () => {
-    await stores.taskStore.addTask({
+  it("deleteTasks with filter", async () => {
+    await stores.taskStore.createTask({
       title: "Keep", description: "d", assignTo: "claude", dependsOn: [], maxRetries: 2, expectations: [], metrics: [],
     });
-    await stores.taskStore.addTask({
+    await stores.taskStore.createTask({
       title: "Remove", description: "d", assignTo: "claude", dependsOn: [], maxRetries: 2, expectations: [], metrics: [], group: "old",
     });
 
-    const count = await stores.taskStore.removeTasks((t) => t.group === "old");
+    const count = await stores.taskStore.deleteTasks((t) => t.group === "old");
     expect(count).toBe(1);
 
-    const all = await stores.taskStore.getAllTasks();
+    const all = await stores.taskStore.listTasks();
     expect(all).toHaveLength(1);
     expect(all[0].title).toBe("Keep");
   });
 
   it("transition validates state machine", async () => {
-    const task = await stores.taskStore.addTask({
+    const task = await stores.taskStore.createTask({
       title: "T", description: "d", assignTo: "claude", dependsOn: [], maxRetries: 2, expectations: [], metrics: [],
     });
 
@@ -146,7 +146,7 @@ describe("DrizzleTaskStore", () => {
   });
 
   it("transition increments retries on failed→pending", async () => {
-    const task = await stores.taskStore.addTask({
+    const task = await stores.taskStore.createTask({
       title: "T", description: "d", assignTo: "claude", dependsOn: [], maxRetries: 3, expectations: [], metrics: [],
     });
 
@@ -159,7 +159,7 @@ describe("DrizzleTaskStore", () => {
   });
 
   it("unsafeSetStatus bypasses state machine", async () => {
-    const task = await stores.taskStore.addTask({
+    const task = await stores.taskStore.createTask({
       title: "T", description: "d", assignTo: "claude", dependsOn: [], maxRetries: 2, expectations: [], metrics: [],
     });
 
@@ -170,8 +170,8 @@ describe("DrizzleTaskStore", () => {
 
   // ── Missions ────────────────────────────────────────────────────────
 
-  it("saveMission + getMission round-trip", async () => {
-    const mission = await stores.taskStore.saveMission!({
+  it("createMission + getMission round-trip", async () => {
+    const mission = await stores.missionStore.createMission!({
       name: "mission-1",
       data: '{"tasks":[]}',
       status: "draft",
@@ -180,39 +180,39 @@ describe("DrizzleTaskStore", () => {
     expect(mission.id).toBeDefined();
     expect(mission.name).toBe("mission-1");
 
-    const fetched = await stores.taskStore.getMission!(mission.id);
+    const fetched = await stores.missionStore.getMission!(mission.id);
     expect(fetched).toBeDefined();
     expect(fetched!.name).toBe("mission-1");
   });
 
   it("getMissionByName finds by name", async () => {
-    await stores.taskStore.saveMission!({ name: "deploy-v2", data: "{}", status: "draft" });
-    const found = await stores.taskStore.getMissionByName!("deploy-v2");
+    await stores.missionStore.createMission!({ name: "deploy-v2", data: "{}", status: "draft" });
+    const found = await stores.missionStore.getMissionByName!("deploy-v2");
     expect(found).toBeDefined();
     expect(found!.name).toBe("deploy-v2");
   });
 
   it("updateMission merges fields", async () => {
-    const m = await stores.taskStore.saveMission!({ name: "m-1", data: "{}", status: "draft" });
-    const updated = await stores.taskStore.updateMission!(m.id, { status: "active" });
+    const m = await stores.missionStore.createMission!({ name: "m-1", data: "{}", status: "draft" });
+    const updated = await stores.missionStore.updateMission!(m.id, { status: "active" });
     expect(updated.status).toBe("active");
     expect(updated.name).toBe("m-1");
   });
 
   it("deleteMission removes", async () => {
-    const m = await stores.taskStore.saveMission!({ name: "m-del", data: "{}", status: "draft" });
-    const ok = await stores.taskStore.deleteMission!(m.id);
+    const m = await stores.missionStore.createMission!({ name: "m-del", data: "{}", status: "draft" });
+    const ok = await stores.missionStore.deleteMission!(m.id);
     expect(ok).toBe(true);
-    const fetched = await stores.taskStore.getMission!(m.id);
+    const fetched = await stores.missionStore.getMission!(m.id);
     expect(fetched).toBeUndefined();
   });
 
   it("nextMissionName increments", async () => {
-    expect(await stores.taskStore.nextMissionName!()).toBe("mission-1");
-    await stores.taskStore.saveMission!({ name: "mission-1", data: "{}", status: "draft" });
-    expect(await stores.taskStore.nextMissionName!()).toBe("mission-2");
-    await stores.taskStore.saveMission!({ name: "mission-5", data: "{}", status: "draft" });
-    expect(await stores.taskStore.nextMissionName!()).toBe("mission-6");
+    expect(await stores.missionStore.nextMissionName!()).toBe("mission-1");
+    await stores.missionStore.createMission!({ name: "mission-1", data: "{}", status: "draft" });
+    expect(await stores.missionStore.nextMissionName!()).toBe("mission-2");
+    await stores.missionStore.createMission!({ name: "mission-5", data: "{}", status: "draft" });
+    expect(await stores.missionStore.nextMissionName!()).toBe("mission-6");
   });
 
   // ── State ────────────────────────────────────────────────────────────
@@ -362,7 +362,7 @@ describe("DrizzleRunStore", () => {
 
 describe("DrizzleSessionStore", () => {
   it("create + getSession", async () => {
-    const id = await stores.sessionStore.create("My Session");
+    const id = await stores.sessionStore.create({ title: "My Session" });
     const session = await stores.sessionStore.getSession(id);
     expect(session).toBeDefined();
     expect(session!.title).toBe("My Session");
@@ -395,10 +395,10 @@ describe("DrizzleSessionStore", () => {
   });
 
   it("listSessions includes messageCount", async () => {
-    const s1 = await stores.sessionStore.create("S1");
+    const s1 = await stores.sessionStore.create({ title: "S1" });
     await stores.sessionStore.addMessage(s1, "user", "msg1");
     await stores.sessionStore.addMessage(s1, "assistant", "msg2");
-    await stores.sessionStore.create("S2");
+    await stores.sessionStore.create({ title: "S2" });
 
     const list = await stores.sessionStore.listSessions();
     expect(list).toHaveLength(2);
@@ -460,7 +460,7 @@ describe("DrizzleSessionStore", () => {
   });
 
   it("renameSession updates title", async () => {
-    const id = await stores.sessionStore.create("Old");
+    const id = await stores.sessionStore.create({ title: "Old" });
     const ok = await stores.sessionStore.renameSession(id, "New");
     expect(ok).toBe(true);
 
@@ -469,7 +469,7 @@ describe("DrizzleSessionStore", () => {
   });
 
   it("deleteSession cascade-deletes messages", async () => {
-    const id = await stores.sessionStore.create("Del");
+    const id = await stores.sessionStore.create({ title: "Del" });
     await stores.sessionStore.addMessage(id, "user", "msg");
     const ok = await stores.sessionStore.deleteSession(id);
     expect(ok).toBe(true);
@@ -479,8 +479,8 @@ describe("DrizzleSessionStore", () => {
   });
 
   it("prune keeps the N most recent sessions", async () => {
-    await stores.sessionStore.create("Old");
-    await stores.sessionStore.create("New");
+    await stores.sessionStore.create({ title: "Old" });
+    await stores.sessionStore.create({ title: "New" });
 
     const pruned = await stores.sessionStore.prune(1);
     expect(pruned).toBe(1);
@@ -490,9 +490,9 @@ describe("DrizzleSessionStore", () => {
   });
 
   it("getLatestSession returns most recently updated", async () => {
-    await stores.sessionStore.create("First");
+    await stores.sessionStore.create({ title: "First" });
     await new Promise((r) => setTimeout(r, 5));
-    const id2 = await stores.sessionStore.create("Second");
+    const id2 = await stores.sessionStore.create({ title: "Second" });
 
     const latest = await stores.sessionStore.getLatestSession();
     expect(latest).toBeDefined();

@@ -353,10 +353,10 @@ const updateMissionNotificationsRoute = createRoute({
  * Mission CRUD + execute/resume/abort routes.
  */
 export function missionRoutes(getDeps: () => {
-  getAllMissions: () => Promise<any[]>;
+  listMissions: () => Promise<any[]>;
   getResumableMissions: () => Promise<any[]>;
   getMission: (id: string) => Promise<any>;
-  saveMission: (opts: any) => Promise<any>;
+  createMission: (opts: any) => Promise<any>;
   updateMission: (id: string, updates: any) => Promise<any>;
   deleteMission: (id: string) => Promise<boolean>;
   executeMission: (id: string) => Promise<any>;
@@ -388,7 +388,7 @@ export function missionRoutes(getDeps: () => {
   // GET /missions — list all missions
   app.openapi(listMissionsRoute, async (c) => {
     const deps = getDeps();
-    return c.json({ ok: true, data: await deps.getAllMissions() });
+    return c.json({ ok: true, data: await deps.listMissions() });
   });
 
   // GET /missions/resumable — list resumable missions
@@ -413,7 +413,7 @@ export function missionRoutes(getDeps: () => {
     const deps = getDeps();
     const body = c.req.valid("json");
 
-    const mission = await deps.saveMission({
+    const mission = await deps.createMission({
       data: body.data,
       prompt: body.prompt,
       name: body.name,

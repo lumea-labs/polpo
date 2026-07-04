@@ -75,7 +75,6 @@ import type {
   CreateSkillRequest,
   InstallSkillsResult,
   InstallSkillsOptions,
-  Attachment,
   FileRoot,
   FileEntry,
   FilePreview,
@@ -986,82 +985,6 @@ export class PolpoClient {
     return this.del<void>(`/playbooks/${encodeURIComponent(name)}`);
   }
 
-  // ── Attachments ─────────────────────────────────────────
-
-  /**
-   * Upload a file attachment. sessionId is optional — files can be uploaded
-   * before a session exists and referenced later via { type: "file", file_id } content parts.
-   * Uses multipart/form-data — does NOT go through the JSON `request()` helper.
-   */
-  async uploadAttachment(sessionIdOrFile: string | File | Blob, fileOrFilename?: File | Blob | string, maybeFilename?: string): Promise<Attachment> {
-    // Support both signatures: (sessionId, file, filename) and (file, filename)
-    let sessionId: string | undefined;
-    let file: File | Blob;
-    let filename: string;
-    if (typeof sessionIdOrFile === "string" && fileOrFilename instanceof Blob) {
-      sessionId = sessionIdOrFile;
-      file = fileOrFilename;
-      filename = maybeFilename ?? "upload";
-    } else if (sessionIdOrFile instanceof Blob) {
-      file = sessionIdOrFile;
-      filename = (typeof fileOrFilename === "string" ? fileOrFilename : undefined) ?? "upload";
-    } else {
-      throw new Error("Invalid arguments: expected (file, filename) or (sessionId, file, filename)");
-    }
-    const form = new FormData();
-    if (sessionId) form.append("sessionId", sessionId);
-    form.append("file", file, filename);
-
-    const headers: Record<string, string> = {};
-    if (this.headers["Authorization"]) {
-      headers["Authorization"] = this.headers["Authorization"];
-    }
-
-    const res = await this.fetchFn(this.apiUrl("/attachments"), {
-      method: "POST",
-      headers,
-      body: form,
-    });
-    const json = (await res.json()) as ApiResult<Attachment>;
-    if (!json.ok) {
-      throw new PolpoApiError(json.error, json.code, res.status, json.details);
-    }
-    return json.data;
-  }
-
-  listAttachments(sessionId: string): Promise<Attachment[]> {
-    return this.get<Attachment[]>(`/attachments?sessionId=${encodeURIComponent(sessionId)}`);
-  }
-
-  getAttachment(id: string): Promise<Attachment> {
-    return this.get<Attachment>(`/attachments/${id}`);
-  }
-
-  /**
-   * Download attachment file content as a Blob.
-   * Uses a raw fetch — the server returns binary data, not JSON.
-   */
-  async downloadAttachment(id: string): Promise<Blob> {
-    const url = this.apiUrl(`/attachments/${id}/download`);
-    const res = await this.fetchFn(url, {
-      method: "GET",
-      headers: this.headers,
-    });
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({ error: "Download failed" }));
-      throw new PolpoApiError(
-        (err as any).error ?? "Download failed",
-        res.status === 404 ? "NOT_FOUND" : "INTERNAL_ERROR",
-        res.status,
-      );
-    }
-    return res.blob();
-  }
-
-  async deleteAttachment(id: string): Promise<boolean> {
-    await this.del<void>(`/attachments/${id}`);
-    return true;
-  }
 
   // ── Files ──────────────────────────────────────────────
 

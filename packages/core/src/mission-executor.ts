@@ -94,7 +94,7 @@ export class MissionExecutor {
 
   /** Async init: rebuild cleanedGroups from persisted task state. */
   private async rebuildCleanedGroups(): Promise<void> {
-    const allTasks = await this.ctx.registry.getAllTasks();
+    const allTasks = await this.ctx.taskStore.listTasks();
     const groups = new Set<string>();
     for (const t of allTasks) {
       if (t.group) groups.add(t.group);
@@ -209,7 +209,7 @@ export class MissionExecutor {
     await this.cpStore.save(this.cpState);
 
     // Un-pause the mission (back to active) — resolve via missionId from tasks
-    const groupTasks = (await this.ctx.registry.getAllTasks()).filter(t => t.group === group);
+    const groupTasks = (await this.ctx.taskStore.listTasks()).filter(t => t.group === group);
     const mission = await this.resolveMissionForGroup(groupTasks, group);
     if (mission && mission.status === "paused") {
       await this.missions.updateMission(mission.id, { status: "active" });
@@ -354,11 +354,11 @@ export class MissionExecutor {
 
   /** Resolve a mission by group name (helper for delay/checkpoint events). */
   private async resolveMissionForGroupByName(group: string): Promise<Mission | undefined> {
-    const groupTasks = (await this.ctx.registry.getAllTasks()).filter(t => t.group === group);
+    const groupTasks = (await this.ctx.taskStore.listTasks()).filter(t => t.group === group);
     return this.resolveMissionForGroup(groupTasks, group);
   }
 
-  async saveMission(opts: {
+  async createMission(opts: {
     data: string;
     prompt?: string;
     name?: string;
@@ -374,7 +374,7 @@ export class MissionExecutor {
     user?: string;
   }): Promise<Mission> {
     const name = opts.name ?? await this.missions.nextMissionName();
-    const mission = await this.missions.saveMission({
+    const mission = await this.missions.createMission({
       name,
       data: opts.data,
       prompt: opts.prompt,
@@ -397,8 +397,8 @@ export class MissionExecutor {
     return this.missions.getMissionByName(name);
   }
 
-  async getAllMissions(): Promise<Mission[]> {
-    return await this.missions.getAllMissions();
+  async listMissions(): Promise<Mission[]> {
+    return await this.missions.listMissions();
   }
 
   async updateMission(missionId: string, updates: Partial<Omit<Mission, "id">>): Promise<Mission> {
@@ -464,8 +464,8 @@ export class MissionExecutor {
   }
 
   async getResumableMissions(): Promise<Mission[]> {
-    const missions = await this.getAllMissions();
-    const state = await this.ctx.registry.getState();
+    const missions = await this.listMissions();
+    const state = await this.ctx.taskStore.getState();
     return missions.filter(m => {
       // Non-resumable statuses: draft (never executed), scheduled/recurring (scheduler handles),
       // completed (done), cancelled (aborted)
@@ -499,7 +499,7 @@ export class MissionExecutor {
       }
     }
 
-    const state = await this.ctx.registry.getState();
+    const state = await this.ctx.taskStore.getState();
     const tasks = state.tasks.filter(t => t.group === mission.name);
     const failedTasks = tasks.filter(t => t.status === "failed");
     const pendingTasks = tasks.filter(t => t.status === "pending");
@@ -610,7 +610,7 @@ export class MissionExecutor {
         }
       }
 
-      const task = await this.taskMgr.addTask({
+      const task = await this.taskMgr.createTask({
         title: t.title,
         description: t.description || t.title,
         assignTo: t.assignTo || (await this.agentMgr.getAgents())[0]?.name || "default",
@@ -1098,7 +1098,7 @@ export class MissionExecutor {
   }
 
   async buildMissionReport(missionId: string, group: string, groupTasks: Task[], allPassed: boolean): Promise<MissionReport> {
-    const state = await this.ctx.registry.getState();
+    const state = await this.ctx.taskStore.getState();
     const processes = state?.processes ?? [];
 
     const allFilesCreated = new Set<string>();

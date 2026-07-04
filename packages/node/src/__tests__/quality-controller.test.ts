@@ -21,7 +21,7 @@ function createMinimalConfig(): PolpoConfig {
 function createMockCtx(overrides: Partial<OrchestratorContext> = {}): OrchestratorContext {
   return {
     emitter: new TypedEmitter(),
-    registry: new InMemoryTaskStore(),
+    taskStore: new InMemoryTaskStore(),
     runStore: new InMemoryRunStore(),
     memoryStore: { exists: () => false, get: () => "", save: () => {}, append: () => {} },
     logStore: { startSession: () => "s", getSessionId: () => "s", append: () => {}, getSessionEntries: () => [], listSessions: () => [], prune: () => 0, close: () => {} },

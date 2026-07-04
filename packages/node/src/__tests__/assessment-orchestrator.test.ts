@@ -173,7 +173,7 @@ function createHarness(configOverrides: Partial<PolpoConfig["settings"]> = {}): 
 
   const ctx: OrchestratorContext = {
     emitter,
-    registry: store,
+    taskStore: store,
     runStore,
     memoryStore: createMemoryStore(),
     logStore: createLogStore(),
@@ -195,7 +195,7 @@ function createHarness(configOverrides: Partial<PolpoConfig["settings"]> = {}): 
 
 /** Add a task to the store and transition it to review (ready for assessment). */
 async function addReviewTask(h: TestHarness, taskOverrides: Partial<Task> = {}): Promise<Task> {
-  const task = await h.store.addTask({
+  const task = await h.store.createTask({
     title: "Test task",
     description: "A test task",
     assignTo: "test-agent",
@@ -653,9 +653,9 @@ describe("AssessmentOrchestrator", () => {
 
     it("skips retry for tasks from cancelled missions", async () => {
       const h = createHarness();
-      // Add getMissionByName to the store to simulate cancelled mission
-      (h.store as any).getMissionByName = (name: string) => {
-        if (name === "cancelled-mission") {
+      // Simulate a cancelled mission resolved via the missionId FK
+      (h.store as any).getMission = (id: string) => {
+        if (id === "p1") {
           return { id: "p1", name: "cancelled-mission", status: "cancelled", data: "", createdAt: "", updatedAt: "" };
         }
         return undefined;
@@ -663,6 +663,7 @@ describe("AssessmentOrchestrator", () => {
 
       const task = await addReviewTask(h, {
         group: "cancelled-mission",
+        missionId: "p1",
         maxRetries: 3,
       });
 

@@ -222,16 +222,6 @@ export async function ensurePgTables(db: any): Promise<void> {
     updated_at  TEXT NOT NULL
   )`);
 
-  await db.execute(sql`CREATE TABLE IF NOT EXISTS attachments (
-    id          TEXT PRIMARY KEY,
-    session_id  TEXT NOT NULL,
-    message_id  TEXT,
-    filename    TEXT NOT NULL,
-    mime_type   TEXT NOT NULL,
-    size        INTEGER NOT NULL,
-    path        TEXT NOT NULL,
-    created_at  TEXT NOT NULL
-  )`);
 
 
   // Migration: add message_id column if missing (added in v0.2.16)
@@ -285,7 +275,6 @@ export async function ensurePgIndexes(db: any): Promise<void> {
   await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_pg_log_entries_ts ON log_entries(ts)`);
   await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_pg_approvals_status ON approvals(status)`);
   await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_pg_approvals_task_id ON approvals(task_id)`);
-  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_pg_attachments_session_id ON attachments(session_id)`);
 }
 
 /**

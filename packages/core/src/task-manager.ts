@@ -12,7 +12,7 @@ export class TaskManager {
 
   constructor(private ctx: OrchestratorContext) {}
 
-  async addTask(opts: {
+  async createTask(opts: {
     title: string;
     description: string;
     assignTo: string;
@@ -27,9 +27,9 @@ export class TaskManager {
     sideEffects?: boolean;
     draft?: boolean;
   }): Promise<Task> {
-    if (!this.ctx.registry) throw new Error("Orchestrator not initialized");
+    if (!this.ctx.taskStore) throw new Error("Orchestrator not initialized");
 
-    // Run before:task:create hook (sync — addTask is synchronous)
+    // Run before:task:create hook (sync — createTask is synchronous)
     const hookResult = this.ctx.hooks.runBeforeSync("task:create", {
       title: opts.title,
       description: opts.description,
@@ -52,7 +52,7 @@ export class TaskManager {
     const hookData = hookResult.data;
 
     // Enforce unique title among active (non-terminal) tasks
-    const existingTasks = await this.ctx.registry.getAllTasks();
+    const existingTasks = await this.ctx.taskStore.listTasks();
     const duplicate = existingTasks.find(
       t => t.title === hookData.title && t.status !== "done" && t.status !== "failed",
     );
@@ -65,8 +65,8 @@ export class TaskManager {
 
     const rawExps = hookData.expectations ?? [];
     const { valid: expectations, warnings } = sanitizeExpectations(rawExps);
-    for (const w of warnings) this.ctx.emitter.emit("log", { level: "warn", message: `[addTask "${hookData.title}"] ${w}` });
-    const task = await this.ctx.registry.addTask({
+    for (const w of warnings) this.ctx.emitter.emit("log", { level: "warn", message: `[createTask "${hookData.title}"] ${w}` });
+    const task = await this.ctx.taskStore.createTask({
       title: hookData.title,
       description: hookData.description,
       assignTo: hookData.assignTo,
@@ -99,15 +99,15 @@ export class TaskManager {
   }
 
   async updateTaskDescription(taskId: string, description: string): Promise<void> {
-    await this.ctx.registry.updateTask(taskId, { description });
+    await this.ctx.taskStore.updateTask(taskId, { description });
   }
 
   async updateTaskAssignment(taskId: string, agentName: string): Promise<void> {
-    await this.ctx.registry.updateTask(taskId, { assignTo: agentName });
+    await this.ctx.taskStore.updateTask(taskId, { assignTo: agentName });
   }
 
   async updateTaskExpectations(taskId: string, expectations: TaskExpectation[]): Promise<void> {
-    const task = await this.ctx.registry.getTask(taskId);
+    const task = await this.ctx.taskStore.getTask(taskId);
     if (!task) throw new Error("Task not found");
     const editable = ["pending", "failed", "done"];
     if (!editable.includes(task.status)) {
@@ -115,19 +115,19 @@ export class TaskManager {
     }
     const { valid, warnings } = sanitizeExpectations(expectations);
     for (const w of warnings) this.ctx.emitter.emit("log", { level: "warn", message: `[updateExpectations "${taskId}"] ${w}` });
-    await this.ctx.registry.updateTask(taskId, { expectations: valid });
-    this.ctx.emitter.emit("task:updated", { task: (await this.ctx.registry.getTask(taskId))! });
+    await this.ctx.taskStore.updateTask(taskId, { expectations: valid });
+    this.ctx.emitter.emit("task:updated", { task: (await this.ctx.taskStore.getTask(taskId))! });
   }
 
   async retryTask(taskId: string): Promise<void> {
-    const task = await this.ctx.registry.getTask(taskId);
+    const task = await this.ctx.taskStore.getTask(taskId);
     if (!task) throw new Error("Task not found");
     if (task.status !== "failed") throw new Error(`Cannot retry task in "${task.status}" state`);
-    await this.ctx.registry.transition(taskId, "pending");
+    await this.ctx.taskStore.transition(taskId, "pending");
   }
 
   async reassessTask(taskId: string): Promise<void> {
-    const task = await this.ctx.registry.getTask(taskId);
+    const task = await this.ctx.taskStore.getTask(taskId);
     if (!task) throw new Error("Task not found");
     if (task.status !== "done" && task.status !== "failed") {
       throw new Error(`Cannot reassess task in "${task.status}" state`);
@@ -176,7 +176,7 @@ export class TaskManager {
     try {
       const assessment = await this.ctx.assessFn(task, this.ctx.agentWorkDir, onProgress, reviewContext, this.ctx.config.settings.reasoning);
       setAssessment(result, assessment, "reassess");
-      await this.ctx.registry.updateTask(taskId, { result });
+      await this.ctx.taskStore.updateTask(taskId, { result });
 
       if (assessment.passed) {
         this.ctx.emitter.emit("assessment:complete", {
@@ -187,11 +187,11 @@ export class TaskManager {
           message: `Reassessment PASSED`,
         });
         if (task.status === "failed") {
-          await this.ctx.registry.transition(taskId, "pending");
-          await this.ctx.registry.transition(taskId, "assigned");
-          await this.ctx.registry.transition(taskId, "in_progress");
-          await this.ctx.registry.transition(taskId, "review");
-          await this.ctx.registry.transition(taskId, "done");
+          await this.ctx.taskStore.transition(taskId, "pending");
+          await this.ctx.taskStore.transition(taskId, "assigned");
+          await this.ctx.taskStore.transition(taskId, "in_progress");
+          await this.ctx.taskStore.transition(taskId, "review");
+          await this.ctx.taskStore.transition(taskId, "done");
         }
       } else {
         const reasons = [
@@ -206,7 +206,7 @@ export class TaskManager {
           message: `Reassessment FAILED — ${reasons.join(", ")}`,
         });
         if (task.status === "done") {
-          await this.ctx.registry.unsafeSetStatus(taskId, "failed", "reassessment invalidated done task");
+          await this.ctx.taskStore.unsafeSetStatus(taskId, "failed", "reassessment invalidated done task");
         }
       }
     } catch (err: unknown) {
@@ -222,22 +222,22 @@ export class TaskManager {
         try { this.ctx.killProcess(run.pid, "SIGTERM"); } catch { /* already dead */ }
       }
     }
-    const task = await this.ctx.registry.getTask(taskId);
+    const task = await this.ctx.taskStore.getTask(taskId);
     if (!task) return false;
     if (task.status !== "done" && task.status !== "failed") {
       try {
-        if (task.status === "pending") await this.ctx.registry.transition(taskId, "assigned");
-        if (task.status === "assigned") await this.ctx.registry.transition(taskId, "in_progress");
-        await this.ctx.registry.transition(taskId, "failed");
+        if (task.status === "pending") await this.ctx.taskStore.transition(taskId, "assigned");
+        if (task.status === "assigned") await this.ctx.taskStore.transition(taskId, "in_progress");
+        await this.ctx.taskStore.transition(taskId, "failed");
       } catch { /* transition race — force status */
-        await this.ctx.registry.unsafeSetStatus(taskId, "failed", "killTask transition race fallback");
+        await this.ctx.taskStore.unsafeSetStatus(taskId, "failed", "killTask transition race fallback");
       }
     }
     return true;
   }
 
   async abortGroup(group: string): Promise<number> {
-    const tasks = await this.ctx.registry.getAllTasks();
+    const tasks = await this.ctx.taskStore.listTasks();
     const groupTasks = tasks.filter(t => t.group === group);
     let count = 0;
     for (const task of groupTasks) {
@@ -248,7 +248,7 @@ export class TaskManager {
     // Resolve mission via task.missionId (direct FK) first, fallback to group name
     const mid = groupTasks.find(t => t.missionId)?.missionId;
     const missions = resolveMissionStore(this.ctx);
-    const mission = await resolveMissionForTask(missions, { missionId: mid, group });
+    const mission = await resolveMissionForTask(missions, { missionId: mid });
     if (mission && mission.status === "active") {
       await missions.updateMission(mission.id, { status: "cancelled" });
     }
@@ -256,7 +256,7 @@ export class TaskManager {
   }
 
   async clearTasks(filter: (task: Task) => boolean): Promise<number> {
-    const tasks = (await this.ctx.registry.getAllTasks()).filter(filter);
+    const tasks = (await this.ctx.taskStore.listTasks()).filter(filter);
     for (const task of tasks) {
       const run = await this.ctx.runStore.getRunByTaskId(task.id);
       if (run && run.status === "running" && run.pid > 0) {
@@ -265,7 +265,7 @@ export class TaskManager {
         }
       }
     }
-    return await this.ctx.registry.removeTasks(filter);
+    return await this.ctx.taskStore.deleteTasks(filter);
   }
 
   /** Load initial tasks from config (non-interactive mode). */
@@ -277,7 +277,7 @@ export class TaskManager {
       const { valid: expectations, warnings } = sanitizeExpectations(rawExps);
       for (const w of warnings) this.ctx.emitter.emit("log", { level: "warn", message: `[seed "${ct.title}"] ${w}` });
 
-      const task = await this.ctx.registry.addTask({
+      const task = await this.ctx.taskStore.createTask({
         title: ct.title,
         description: ct.description,
         assignTo: ct.assignTo,
@@ -303,21 +303,21 @@ export class TaskManager {
         .map(dep => this.idMap.get(dep))
         .filter((id): id is string => !!id);
       if (resolved.length > 0) {
-        await this.ctx.registry.updateTask(taskId, { dependsOn: resolved });
+        await this.ctx.taskStore.updateTask(taskId, { dependsOn: resolved });
       }
     }
   }
 
   /** Force a task through the state machine to failed (used by deadlock resolver). */
   async forceFailTask(taskId: string): Promise<void> {
-    const task = await this.ctx.registry.getTask(taskId);
+    const task = await this.ctx.taskStore.getTask(taskId);
     if (!task || task.status === "done" || task.status === "failed") return;
     try {
-      if (task.status === "pending") await this.ctx.registry.transition(taskId, "assigned");
-      if (task.status === "assigned") await this.ctx.registry.transition(taskId, "in_progress");
-      await this.ctx.registry.transition(taskId, "failed");
+      if (task.status === "pending") await this.ctx.taskStore.transition(taskId, "assigned");
+      if (task.status === "assigned") await this.ctx.taskStore.transition(taskId, "in_progress");
+      await this.ctx.taskStore.transition(taskId, "failed");
     } catch { /* transition race — force status */
-      await this.ctx.registry.unsafeSetStatus(taskId, "failed", "forceFailTask transition race fallback");
+      await this.ctx.taskStore.unsafeSetStatus(taskId, "failed", "forceFailTask transition race fallback");
     }
   }
 }

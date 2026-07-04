@@ -28,7 +28,7 @@ export class Scheduler {
   }
 
   async init(): Promise<void> {
-    const missions = await resolveMissionStore(this.ctx).getAllMissions();
+    const missions = await resolveMissionStore(this.ctx).listMissions();
     const terminalStates = new Set(["completed", "cancelled", "draft"]);
     for (const mission of missions) {
       if (!mission.schedule) continue;

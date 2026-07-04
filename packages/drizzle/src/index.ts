@@ -40,7 +40,6 @@ import {
 } from "./schema/teams.js";
 import { vaultPg, vaultSqlite } from "./schema/vault.js";
 import { playbooksPg, playbooksSqlite } from "./schema/playbooks.js";
-import { attachmentsPg, attachmentsSqlite } from "./schema/attachments.js";
 import { skillsPg, skillsSqlite } from "./schema/skills.js";
 
 // ── Store classes ─────────────────────────────────────────────────────
@@ -59,11 +58,11 @@ import { DrizzleTeamStore } from "./stores/team-store.js";
 import { DrizzleAgentStore } from "./stores/agent-store.js";
 import { DrizzleVaultStore } from "./stores/vault-store.js";
 import { DrizzlePlaybookStore } from "./stores/playbook-store.js";
-import { DrizzleAttachmentStore } from "./stores/attachment-store.js";
 import { DrizzleSkillStore } from "./stores/skill-store.js";
 
 // ── Store bundle type ─────────────────────────────────────────────────
 
+import type { MissionStore } from "@polpo-ai/core";
 import type { TaskStore } from "@polpo-ai/core/task-store";
 import type { RunStore } from "@polpo-ai/core/run-store";
 import type { LoopRunStore } from "@polpo-ai/core/loop-run-store";
@@ -78,10 +77,11 @@ import type { TeamStore } from "@polpo-ai/core/team-store";
 import type { AgentStore } from "@polpo-ai/core/agent-store";
 import type { VaultStore } from "@polpo-ai/core/vault-store";
 import type { PlaybookStore } from "@polpo-ai/core/playbook-store";
-import type { AttachmentStore } from "@polpo-ai/core/attachment-store";
 import type { SkillStore } from "@polpo-ai/core/skill-store";
 
 export interface DrizzleStores {
+  /** Mission persistence — same instance as taskStore (implements both). */
+  missionStore: MissionStore;
   taskStore: TaskStore;
   runStore: RunStore;
   loopRunStore: LoopRunStore;
@@ -96,7 +96,6 @@ export interface DrizzleStores {
   agentStore: AgentStore;
   vaultStore: VaultStore;
   playbookStore: PlaybookStore;
-  attachmentStore: AttachmentStore;
   skillStore: SkillStore;
 }
 
@@ -108,10 +107,13 @@ export interface DrizzleStores {
  * @param db A Drizzle database instance (e.g. from `drizzle(postgres(...))`)
  */
 export function createPgStores(db: any): DrizzleStores {
+  const taskStore = new DrizzleTaskStore(db, {
+    tasks: tasksPg, missions: missionsPg, metadata: metadataPg, processes: processesPg,
+  }, "pg");
   return {
-    taskStore: new DrizzleTaskStore(db, {
-      tasks: tasksPg, missions: missionsPg, metadata: metadataPg, processes: processesPg,
-    }, "pg"),
+    taskStore,
+    // Same instance: the Drizzle task store also implements the mission block.
+    missionStore: taskStore as unknown as MissionStore,
     runStore: new DrizzleRunStore(db, runsPg, "pg"),
     loopRunStore: new DrizzleLoopRunStore(db, loopRunsPg, "pg"),
     sessionStore: new DrizzleSessionStore(db, sessionsPg, messagesPg, "pg"),
@@ -125,7 +127,6 @@ export function createPgStores(db: any): DrizzleStores {
     agentStore: new DrizzleAgentStore(db, agentsPg, "pg"),
     vaultStore: new DrizzleVaultStore(db, vaultPg),
     playbookStore: new DrizzlePlaybookStore(db, playbooksPg, "pg"),
-    attachmentStore: new DrizzleAttachmentStore(db, attachmentsPg, "pg"),
     skillStore: new DrizzleSkillStore(db, skillsPg, "pg"),
   };
 }
@@ -138,10 +139,13 @@ export function createPgStores(db: any): DrizzleStores {
  * @param db A Drizzle database instance (e.g. from `drizzle(new Database(...))`)
  */
 export function createSqliteStores(db: any): DrizzleStores {
+  const taskStore = new DrizzleTaskStore(db, {
+    tasks: tasksSqlite, missions: missionsSqlite, metadata: metadataSqlite, processes: processesSqlite,
+  }, "sqlite");
   return {
-    taskStore: new DrizzleTaskStore(db, {
-      tasks: tasksSqlite, missions: missionsSqlite, metadata: metadataSqlite, processes: processesSqlite,
-    }, "sqlite"),
+    taskStore,
+    // Same instance: the Drizzle task store also implements the mission block.
+    missionStore: taskStore as unknown as MissionStore,
     runStore: new DrizzleRunStore(db, runsSqlite, "sqlite"),
     loopRunStore: new DrizzleLoopRunStore(db, loopRunsSqlite, "sqlite"),
     sessionStore: new DrizzleSessionStore(db, sessionsSqlite, messagesSqlite, "sqlite"),
@@ -155,7 +159,6 @@ export function createSqliteStores(db: any): DrizzleStores {
     agentStore: new DrizzleAgentStore(db, agentsSqlite, "sqlite"),
     vaultStore: new DrizzleVaultStore(db, vaultSqlite),
     playbookStore: new DrizzlePlaybookStore(db, playbooksSqlite, "sqlite"),
-    attachmentStore: new DrizzleAttachmentStore(db, attachmentsSqlite, "sqlite"),
     skillStore: new DrizzleSkillStore(db, skillsSqlite, "sqlite"),
   };
 }
@@ -179,7 +182,6 @@ export const pgSchema = {
   agents: agentsPg,
   vault: vaultPg,
   playbooks: playbooksPg,
-  attachments: attachmentsPg,
   skills: skillsPg,
 };
 
@@ -200,6 +202,5 @@ export const sqliteSchema = {
   agents: agentsSqlite,
   vault: vaultSqlite,
   playbooks: playbooksSqlite,
-  attachments: attachmentsSqlite,
   skills: skillsSqlite,
 };

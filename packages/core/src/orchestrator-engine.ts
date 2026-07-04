@@ -79,7 +79,7 @@ export interface AssessmentOrchestratorPort {
  */
 export interface MissionExecutorPort {
   readonly ready: Promise<void>;
-  saveMission(opts: {
+  createMission(opts: {
     data: string;
     prompt?: string;
     name?: string;
@@ -92,7 +92,7 @@ export interface MissionExecutorPort {
   }): Promise<Mission>;
   getMission(missionId: string): Promise<Mission | undefined>;
   getMissionByName(name: string): Promise<Mission | undefined>;
-  getAllMissions(): Promise<Mission[]>;
+  listMissions(): Promise<Mission[]>;
   updateMission(missionId: string, updates: Partial<Omit<Mission, "id">>): Promise<Mission>;
   deleteMission(missionId: string): Promise<boolean>;
   executeMission(missionId: string): Promise<{ tasks: Task[]; group: string }>;
@@ -148,7 +148,7 @@ export interface DeadlockFacade {
   getStore(): TaskStore;
   emit(event: string, payload: unknown): boolean;
   forceFailTask(taskId: string): Promise<void>;
-  addTask(opts: {
+  createTask(opts: {
     title: string; description: string; assignTo: string;
     expectations?: TaskExpectation[]; expectedOutcomes?: ExpectedOutcome[];
     dependsOn?: string[]; group?: string;
@@ -308,7 +308,7 @@ export class OrchestratorEngine {
     // scheduler is what creates them via executeMission.
     this.scheduler?.check();
 
-    const tasks = await this.ctx.registry.getAllTasks();
+    const tasks = await this.ctx.taskStore.listTasks();
     if (tasks.length === 0) return !this.isStopped();
 
     const pending = tasks.filter(t => t.status === "pending");
@@ -487,7 +487,7 @@ export class OrchestratorEngine {
     // Clean up volatile agents for completed mission groups.
     // Re-read tasks fresh — assessment callbacks (async) may have transitioned
     // tasks to done/failed since the snapshot at the top of tick().
-    await this.missionExec.cleanupCompletedGroups(await this.ctx.registry.getAllTasks());
+    await this.missionExec.cleanupCompletedGroups(await this.ctx.taskStore.listTasks());
 
     // Sync process list from RunStore for backward compat
     await this.runner.syncProcessesFromRunStore();
@@ -503,7 +503,7 @@ export class OrchestratorEngine {
       getStore: () => this.getStore(),
       emit: (event: string, payload: unknown) => this.ctx.emitter.emit(event, payload),
       forceFailTask: (taskId: string) => this.forceFailTask(taskId),
-      addTask: (opts) => this.addTask(opts),
+      createTask: (opts) => this.createTask(opts),
     };
   }
 
@@ -518,12 +518,12 @@ export class OrchestratorEngine {
 
   // ── Task Management (delegates to TaskManager) ──────────────────────
 
-  async addTask(opts: {
+  async createTask(opts: {
     title: string; description: string; assignTo: string;
     expectations?: TaskExpectation[]; expectedOutcomes?: ExpectedOutcome[];
     dependsOn?: string[]; group?: string; maxDuration?: number; retryPolicy?: RetryPolicy;
     notifications?: ScopedNotificationRules; sideEffects?: boolean; draft?: boolean;
-  }): Promise<Task> { return this.taskMgr.addTask(opts); }
+  }): Promise<Task> { return this.taskMgr.createTask(opts); }
 
   async updateTaskDescription(taskId: string, description: string): Promise<void> { return this.taskMgr.updateTaskDescription(taskId, description); }
   async updateTaskAssignment(taskId: string, agentName: string): Promise<void> { return this.taskMgr.updateTaskAssignment(taskId, agentName); }
@@ -531,14 +531,14 @@ export class OrchestratorEngine {
   async retryTask(taskId: string): Promise<void> { return this.taskMgr.retryTask(taskId); }
   reassessTask(taskId: string): Promise<void> { return this.taskMgr.reassessTask(taskId); }
   async killTask(taskId: string): Promise<boolean> { return this.taskMgr.killTask(taskId); }
-  async deleteTask(taskId: string): Promise<boolean> { return this.ctx.registry.removeTask(taskId); }
+  async deleteTask(taskId: string): Promise<boolean> { return this.ctx.taskStore.deleteTask(taskId); }
 
   async abortGroup(group: string): Promise<number> {
     const count = await this.taskMgr.abortGroup(group);
     // Clean up any schedule tied to this mission group — resolve via task.missionId first
-    const groupTasks = (await this.ctx.registry.getAllTasks()).filter(t => t.group === group);
+    const groupTasks = (await this.ctx.taskStore.listTasks()).filter(t => t.group === group);
     const mid = groupTasks.find(t => t.missionId)?.missionId;
-    const mission = await resolveMissionForTask(resolveMissionStore(this.ctx), { missionId: mid, group });
+    const mission = await resolveMissionForTask(resolveMissionStore(this.ctx), { missionId: mid });
     if (mission) this.scheduler?.unregisterMission(mission.id);
     return count;
   }
@@ -569,7 +569,7 @@ export class OrchestratorEngine {
 
   // ── Store Accessors ─────────────────────────────────────────────────
 
-  getStore(): TaskStore { return this.ctx.registry; }
+  getStore(): TaskStore { return this.ctx.taskStore; }
   getRunStore(): RunStore { return this.ctx.runStore; }
   getMemoryStore(): MemoryStore { return this.ctx.memoryStore; }
   getConfig(): PolpoConfig | null { return this.ctx.config; }
@@ -595,7 +595,7 @@ export class OrchestratorEngine {
 
   // ── Mission Management (delegates to MissionExecutor) ───────────────
 
-  async saveMission(opts: {
+  async createMission(opts: {
     data: string;
     prompt?: string;
     name?: string;
@@ -605,10 +605,10 @@ export class OrchestratorEngine {
     endDate?: string;
     notifications?: ScopedNotificationRules;
     user?: string;
-  }): Promise<Mission> { return this.missionExec.saveMission(opts); }
+  }): Promise<Mission> { return this.missionExec.createMission(opts); }
   async getMission(missionId: string): Promise<Mission | undefined> { return this.missionExec.getMission(missionId); }
   async getMissionByName(name: string): Promise<Mission | undefined> { return this.missionExec.getMissionByName(name); }
-  async getAllMissions(): Promise<Mission[]> { return this.missionExec.getAllMissions(); }
+  async listMissions(): Promise<Mission[]> { return this.missionExec.listMissions(); }
   async updateMission(missionId: string, updates: Partial<Omit<Mission, "id">>): Promise<Mission> { return this.missionExec.updateMission(missionId, updates); }
   async deleteMission(missionId: string): Promise<boolean> {
     const result = await this.missionExec.deleteMission(missionId);
