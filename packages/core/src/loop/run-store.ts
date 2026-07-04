@@ -28,6 +28,27 @@ export interface LoopResumeState {
   attempts?: number;
   createdAt: string;
   updatedAt?: string;
+
+  // ── Durable turns (task path) — per-turn conversation checkpoint ──
+  // The pipeline fields above describe WHERE a project-loop pipeline
+  // stopped; these additive fields describe WHERE a turn-based LLM session
+  // stopped. Both live in the same state so the task runner and the
+  // completions resume path share one format instead of inventing two.
+
+  /** Name of the loop session this checkpoint belongs to (e.g. "default"). */
+  loopName?: string;
+  /** Index of the last COMPLETED turn (0-based). Resume starts at turn + 1. */
+  turn?: number;
+  /**
+   * Serialized conversation history (AI SDK ModelMessage[]) including
+   * tool-call and tool-result parts — always post-compaction, since the
+   * checkpoint is taken at end-of-turn and compaction rewrites the history
+   * at the start of a model step. A resumed run replays completed
+   * side-effects from these recorded results; it never re-executes them.
+   */
+  history?: unknown[];
+  /** Assistant text accumulated across completed turns. */
+  accumText?: string;
 }
 
 export interface LoopApprovalSnapshot {

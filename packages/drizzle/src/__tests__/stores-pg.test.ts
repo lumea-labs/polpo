@@ -373,6 +373,43 @@ describe.skipIf(!canConnect)("PostgreSQL Drizzle stores", () => {
       await stores.runStore.deleteRun("r1");
       expect(await stores.runStore.getRun("r1")).toBeUndefined();
     });
+
+    it("updateResumeState round-trips the durable-turns checkpoint (jsonb)", async () => {
+      await stores.runStore.upsertRun(makeRun("r-resume", "t-resume") as any);
+
+      await stores.runStore.updateResumeState!("r-resume", {
+        context: {}, steps: [], loopName: "default", turn: 2,
+        history: [
+          { role: "user", content: "do the thing" },
+          { role: "assistant", content: [{ type: "tool-call", toolCallId: "c1", toolName: "bash", input: {} }] },
+        ],
+        accumText: "working",
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      } as any);
+
+      const fetched = await stores.runStore.getRun("r-resume");
+      expect(fetched!.resumeState).toMatchObject({ loopName: "default", turn: 2, accumText: "working" });
+      expect(fetched!.resumeState!.history).toHaveLength(2);
+
+      const active = await stores.runStore.getActiveRuns();
+      expect(active.find((r) => r.id === "r-resume")!.resumeState!.turn).toBe(2);
+    });
+
+    it("upsertRun on conflict preserves an existing resume checkpoint", async () => {
+      await stores.runStore.upsertRun(makeRun("r-keep", "t-keep") as any);
+      await stores.runStore.updateResumeState!("r-keep", {
+        context: {}, steps: [], loopName: "default", turn: 1,
+        history: [{ role: "user", content: "hi" }],
+        createdAt: new Date().toISOString(),
+      } as any);
+
+      await stores.runStore.upsertRun({ ...makeRun("r-keep", "t-keep"), pid: 4242 } as any);
+
+      const fetched = await stores.runStore.getRun("r-keep");
+      expect(fetched!.pid).toBe(4242);
+      expect(fetched!.resumeState!.turn).toBe(1);
+    });
   });
 
   // ═══════════════════════════════════════════════════════════════════════

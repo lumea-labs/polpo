@@ -1,5 +1,6 @@
 import { nanoid } from "nanoid";
 import type { Task, TaskStatus, TaskOutcome, PolpoState, AgentConfig, AgentActivity, TaskResult, AgentHandle, TaskStore, RunStore, RunRecord, RunStatus, Team } from "../core/index.js";
+import type { LoopResumeState } from "@polpo-ai/core/loop-run-store";
 import type { TeamStore } from "@polpo-ai/core/team-store";
 import type { AgentStore } from "@polpo-ai/core/agent-store";
 import { assertValidTransition } from "@polpo-ai/core/state-machine";
@@ -166,6 +167,14 @@ export class InMemoryRunStore implements RunStore {
     const run = this.runs.get(runId);
     if (run) {
       run.outcomes = outcomes;
+      run.updatedAt = new Date().toISOString();
+    }
+  }
+
+  async updateResumeState(runId: string, state: LoopResumeState): Promise<void> {
+    const run = this.runs.get(runId);
+    if (run) {
+      run.resumeState = state;
       run.updatedAt = new Date().toISOString();
     }
   }

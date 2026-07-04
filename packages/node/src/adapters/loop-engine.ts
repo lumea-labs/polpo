@@ -53,7 +53,7 @@ import {
   type PolpoTool,
   type ToolResult,
 } from "@polpo-ai/core";
-import type { LoopToolCall, LoopConfig, ProjectLoopConfig } from "@polpo-ai/core";
+import type { LoopToolCall, LoopConfig, LoopResumeState, ProjectLoopConfig } from "@polpo-ai/core";
 import { projectLoopConfigSchema } from "@polpo-ai/core/schemas";
 import type { FileSystem } from "@polpo-ai/core/filesystem";
 import { NodeFileSystem } from "./node-filesystem.js";
@@ -96,6 +96,30 @@ async function loadProjectLoop(fs: FileSystem, polpoDir: string, name: string): 
  *  in the system prompt). */
 function isImplicitDefault(agent: AgentConfig, selectionName: string): boolean {
   return selectionName === "default" && !agent.defaultLoop && !agent.loops?.default;
+}
+
+// ─── Durable turns ─────────────────────────────────────
+
+/**
+ * Serialized-history cap for a single checkpoint write. Post-compaction
+ * histories sit well under this; anything larger (e.g. multi-MB tool-call
+ * args) is skipped and the previous checkpoint stays the resume point —
+ * losing one turn of resumability is better than multi-MB writes per turn.
+ */
+export const MAX_CHECKPOINT_BYTES = 4 * 1024 * 1024;
+
+/**
+ * Validate a resume checkpoint against the session about to start. A
+ * checkpoint only applies to the same loop session and must carry actual
+ * history and a completed-turn index; anything else falls back to a fresh
+ * start (never fails the run).
+ */
+function usableResumeState(resume: LoopResumeState | undefined, loopName: string): LoopResumeState | undefined {
+  if (!resume) return undefined;
+  if (resume.loopName !== loopName) return undefined;
+  if (typeof resume.turn !== "number" || resume.turn < 0) return undefined;
+  if (!Array.isArray(resume.history) || resume.history.length === 0) return undefined;
+  return resume;
 }
 
 // ─── Engine ────────────────────────────────────────────
@@ -230,8 +254,13 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
     loopName: string;
     loop: LoopConfig;
     contextPrompt?: string;
+    /** Durable-turns checkpoint to resume from (single-session paths only). */
+    resume?: LoopResumeState;
+    /** Durable-turns checkpoint sink — wired to RunStore.updateResumeState by the runner. */
+    onCheckpoint?: (state: LoopResumeState) => void | Promise<void>;
   }): Promise<{ lastText: string; accumText: string }> {
     const { sessionAgent, loopName, loop, contextPrompt } = options;
+    const resume = usableResumeState(options.resume, loopName);
 
     const prep = prepareSpawn(sessionAgent, cwd, ctx);
     const { model, providerOptions } = prep;
@@ -246,9 +275,14 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
     const toolDescriptions = allPolpoTools.map((t) => ({ description: t.description ?? "" }));
 
     // Conversation state owned by the host, exactly like the legacy loop.
-    let messages: ModelMessage[] = [{ role: "user", content: buildPrompt(task) }];
+    // On resume the recorded history (already containing tool-call and
+    // tool-result pairs from completed turns) replaces the fresh prompt —
+    // side-effects replay from recorded results, they never re-execute.
+    let messages: ModelMessage[] = resume
+      ? [...(resume.history as ModelMessage[])]
+      : [{ role: "user", content: buildPrompt(task) }];
     let lastStepText = "";
-    let accumText = "";
+    let accumText = resume?.accumText ?? "";
 
     const summarize: SummarizeFn = async (msgs, compactionPrompt) => {
       const response = await generateText({
@@ -395,13 +429,38 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
       return llmText;
     };
 
+    // ── Durable turns: one checkpoint write per completed turn ──
+    // Emitted at end-of-turn, so `messages` is post-tool-execution and
+    // post-compaction by construction (compaction rewrites `messages` at
+    // the START of a model step). The JSON round-trip here pins store
+    // fidelity: what a resumed run sees is exactly what survives JSON.
+    const checkpointCreatedAt = resume?.createdAt ?? new Date().toISOString();
+    const onTurnCheckpoint = options.onCheckpoint
+      ? async ({ turn }: { turn: number }) => {
+          const serialized = JSON.stringify(messages);
+          if (serialized.length > MAX_CHECKPOINT_BYTES) return; // keep the previous checkpoint
+          await options.onCheckpoint!({
+            context: {},
+            steps: [],
+            loopName,
+            turn,
+            history: JSON.parse(serialized) as unknown[],
+            accumText,
+            createdAt: checkpointCreatedAt,
+            updatedAt: new Date().toISOString(),
+          });
+        }
+      : undefined;
+
     const runner = new LoopRunner();
     await runner.run({
       agent: sessionAgent,
       loop: { ...loop, name: loopName },
       maxTurns,
+      startTurn: resume ? resume.turn! + 1 : 0,
       model: modelStep,
       executeTool,
+      onTurnCheckpoint,
     });
 
     return { lastText: lastStepText, accumText };
@@ -411,6 +470,12 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
    * Run a project loop graph (.polpo/loops/<name>.json) through the
    * PipelineExecutor: agent steps are independent LLM sessions that share
    * the context bag; tool steps execute deterministically with no LLM turn.
+   *
+   * Durable turns (Phase A) does NOT checkpoint pipeline task runs: a
+   * pipeline checkpoint needs pipeline position + per-step session history
+   * (the LoopResumeState pipeline fields cover position, per-step history
+   * does not exist yet) — Phase B. Pipeline runs ignore ctx.resumeState
+   * and start fresh, which is the pre-existing behavior.
    */
   async function runPipeline(projectLoop: ProjectLoopConfig): Promise<string> {
     const normalized = normalizeProjectLoop(projectLoop);
@@ -507,6 +572,8 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
           sessionAgent: agentConfig,
           loopName: "default",
           loop: { maxTurns: agentConfig.maxTurns },
+          resume: ctx?.resumeState,
+          onCheckpoint: ctx?.onTurnCheckpoint,
         });
         stdout = session.lastText;
       } else {
@@ -517,6 +584,8 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
           sessionAgent: stepAgent,
           loopName: selection.name,
           loop: selection.loop,
+          resume: ctx?.resumeState,
+          onCheckpoint: ctx?.onTurnCheckpoint,
         });
         stdout = session.lastText;
       }

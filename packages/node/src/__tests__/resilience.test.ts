@@ -2,6 +2,9 @@ import { describe, it, expect, beforeEach, vi, afterEach } from "vitest";
 import { Orchestrator } from "../core/orchestrator.js";
 import { InMemoryTaskStore, InMemoryRunStore, createTestAgent, createTestActivity } from "./fixtures.js";
 import type { RunRecord } from "@polpo-ai/core/run-store";
+import type { RunnerConfig } from "@polpo-ai/core/types";
+import type { Spawner } from "@polpo-ai/core/spawner";
+import type { LoopResumeState } from "@polpo-ai/core/loop-run-store";
 
 function createTestRunRecord(overrides: Partial<RunRecord> = {}): RunRecord {
   const now = new Date().toISOString();
@@ -594,5 +597,184 @@ describe("Orchestrator Resilience", () => {
 
       expect(killCalls).toHaveLength(0);
     });
+  });
+});
+
+// ─── Durable Turns: orphan recovery resumes from checkpoint ──────────
+
+describe("Durable turns recovery", () => {
+  let store: InMemoryTaskStore;
+  let runStore: InMemoryRunStore;
+  let orchestrator: Orchestrator;
+  let spawnedConfigs: RunnerConfig[];
+
+  /** Spawner double: records configs, reports every PID as dead. */
+  function fakeSpawner(): Spawner {
+    return {
+      spawn: async (config) => {
+        spawnedConfigs.push(config);
+        return { pid: 4242, configPath: "/tmp/fake-runner.json" };
+      },
+      isAlive: () => false,
+      kill: () => {},
+    };
+  }
+
+  function makeCheckpoint(overrides: Partial<LoopResumeState> = {}): LoopResumeState {
+    const now = new Date().toISOString();
+    return {
+      context: {},
+      steps: [],
+      loopName: "default",
+      turn: 1,
+      history: [
+        { role: "user", content: "original task prompt" },
+        { role: "assistant", content: [{ type: "tool-call", toolCallId: "c1", toolName: "bash", input: { command: "true" } }] },
+        { role: "tool", content: [{ type: "tool-result", toolCallId: "c1", toolName: "bash", output: { type: "text", value: "ok" } }] },
+      ],
+      accumText: "",
+      createdAt: now,
+      updatedAt: now,
+      ...overrides,
+    };
+  }
+
+  function runRecord(taskId: string, overrides: Partial<RunRecord> = {}): RunRecord {
+    const now = new Date().toISOString();
+    return {
+      id: `run-${taskId}`,
+      taskId,
+      pid: 99999,
+      agentName: "agent-1",
+      status: "running",
+      startedAt: now,
+      updatedAt: now,
+      activity: createTestActivity(),
+      configPath: "/tmp/run.json",
+      ...overrides,
+    };
+  }
+
+  async function createOrphanTask(title: string) {
+    const task = await orchestrator.engine.createTask({
+      title,
+      description: "interrupted work",
+      assignTo: "agent-1",
+    });
+    await store.transition(task.id, "assigned");
+    await store.transition(task.id, "in_progress");
+    return task;
+  }
+
+  /** Recovery reset the task to pending — now let the runner spawn it. */
+  async function respawn(taskId: string) {
+    const task = await store.getTask(taskId);
+    expect(task!.status).toBe("pending");
+    await (orchestrator.engine as any).runner.spawnForTask(task);
+  }
+
+  beforeEach(async () => {
+    store = new InMemoryTaskStore();
+    runStore = new InMemoryRunStore();
+    spawnedConfigs = [];
+
+    orchestrator = new Orchestrator({
+      workDir: "/tmp/orchestra-durable-turns-test",
+      store,
+      runStore,
+      spawner: fakeSpawner(),
+      assessFn: async () => ({
+        passed: true,
+        checks: [],
+        metrics: [],
+        timestamp: new Date().toISOString(),
+      }),
+    });
+    await orchestrator.initInteractive("test-project", {
+      name: "test-team",
+      agents: [createTestAgent({ name: "agent-1" })],
+    });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("dead runner with a fresh checkpoint: respawn carries resumeState (one-shot)", async () => {
+    const task = await createOrphanTask("Resumable task");
+    await runStore.upsertRun(runRecord(task.id, { resumeState: makeCheckpoint() }));
+
+    const recovered = await orchestrator.engine.recoverOrphanedTasks();
+    expect(recovered).toBe(1);
+    // Run record is cleaned up exactly like before.
+    expect(await runStore.getRun(`run-${task.id}`)).toBeUndefined();
+
+    await respawn(task.id);
+    expect(spawnedConfigs).toHaveLength(1);
+    expect(spawnedConfigs[0].resumeState).toBeDefined();
+    expect(spawnedConfigs[0].resumeState!.turn).toBe(1);
+    expect(spawnedConfigs[0].resumeState!.loopName).toBe("default");
+    expect(spawnedConfigs[0].resumeState!.history).toHaveLength(3);
+
+    // The handoff is one-shot: a later spawn of the same task (e.g. a real
+    // retry after a genuine failure) starts from zero again.
+    await store.unsafeSetStatus(task.id, "pending", "test reset");
+    await (orchestrator.engine as any).runner.spawnForTask(await store.getTask(task.id));
+    expect(spawnedConfigs).toHaveLength(2);
+    expect(spawnedConfigs[1].resumeState).toBeUndefined();
+  });
+
+  it("dead runner without checkpoint: unchanged fallback, retry from zero", async () => {
+    const task = await createOrphanTask("No checkpoint");
+    await runStore.upsertRun(runRecord(task.id));
+
+    const recovered = await orchestrator.engine.recoverOrphanedTasks();
+    expect(recovered).toBe(1);
+
+    await respawn(task.id);
+    expect(spawnedConfigs).toHaveLength(1);
+    expect(spawnedConfigs[0].resumeState).toBeUndefined();
+  });
+
+  it("stale checkpoint (older than the max age) is ignored", async () => {
+    const task = await createOrphanTask("Stale checkpoint");
+    const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
+    await runStore.upsertRun(runRecord(task.id, {
+      resumeState: makeCheckpoint({ createdAt: twoHoursAgo, updatedAt: twoHoursAgo }),
+    }));
+
+    await orchestrator.engine.recoverOrphanedTasks();
+    await respawn(task.id);
+
+    expect(spawnedConfigs).toHaveLength(1);
+    expect(spawnedConfigs[0].resumeState).toBeUndefined();
+  });
+
+  it("empty-history checkpoint is ignored (no turn ever completed)", async () => {
+    const task = await createOrphanTask("Empty checkpoint");
+    await runStore.upsertRun(runRecord(task.id, {
+      resumeState: makeCheckpoint({ history: [] }),
+    }));
+
+    await orchestrator.engine.recoverOrphanedTasks();
+    await respawn(task.id);
+
+    expect(spawnedConfigs).toHaveLength(1);
+    expect(spawnedConfigs[0].resumeState).toBeUndefined();
+  });
+
+  it("checkpoint of a task no longer pending after recovery is dropped", async () => {
+    // Dead run with a checkpoint, but its task is already done — nothing
+    // to resume, and the entry must not leak into a future spawn.
+    const task = await createOrphanTask("Already done");
+    await store.unsafeSetStatus(task.id, "done", "finished elsewhere");
+    await runStore.upsertRun(runRecord(task.id, { resumeState: makeCheckpoint() }));
+
+    await orchestrator.engine.recoverOrphanedTasks();
+
+    await store.unsafeSetStatus(task.id, "pending", "test reset");
+    await (orchestrator.engine as any).runner.spawnForTask(await store.getTask(task.id));
+    expect(spawnedConfigs).toHaveLength(1);
+    expect(spawnedConfigs[0].resumeState).toBeUndefined();
   });
 });

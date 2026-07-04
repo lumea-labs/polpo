@@ -10,6 +10,7 @@ import {
 } from "node:fs";
 import type { AgentActivity, TaskResult, TaskOutcome } from "@polpo-ai/core/types";
 import type { RunStore, RunRecord, RunStatus } from "@polpo-ai/core/run-store";
+import type { LoopResumeState } from "@polpo-ai/core/loop-run-store";
 
 function safeJsonParse<T>(raw: string, fallback: T): T {
   try {
@@ -95,6 +96,14 @@ export class FileRunStore implements RunStore {
     const run = this.readRun(runId);
     if (!run) return;
     run.outcomes = outcomes;
+    run.updatedAt = new Date().toISOString();
+    this.writeRun(run);
+  }
+
+  async updateResumeState(runId: string, state: LoopResumeState): Promise<void> {
+    const run = this.readRun(runId);
+    if (!run) return;
+    run.resumeState = state;
     run.updatedAt = new Date().toISOString();
     this.writeRun(run);
   }

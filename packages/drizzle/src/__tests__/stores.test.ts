@@ -354,6 +354,53 @@ describe("DrizzleRunStore", () => {
     await stores.runStore.deleteRun("r1");
     expect(await stores.runStore.getRun("r1")).toBeUndefined();
   });
+
+  it("updateResumeState round-trips the durable-turns checkpoint", async () => {
+    await stores.runStore.upsertRun(makeRun("r-resume", "t-resume") as any);
+
+    const checkpoint = {
+      context: {},
+      steps: [],
+      loopName: "default",
+      turn: 2,
+      history: [
+        { role: "user", content: "do the thing" },
+        { role: "assistant", content: [{ type: "tool-call", toolCallId: "c1", toolName: "bash", input: {} }] },
+        { role: "tool", content: [{ type: "tool-result", toolCallId: "c1", toolName: "bash", output: { type: "text", value: "ok" } }] },
+      ],
+      accumText: "working",
+      createdAt: now,
+      updatedAt: now,
+    };
+    await stores.runStore.updateResumeState!("r-resume", checkpoint as any);
+
+    const fetched = await stores.runStore.getRun("r-resume");
+    expect(fetched!.resumeState).toBeDefined();
+    expect(fetched!.resumeState).toMatchObject({ loopName: "default", turn: 2, accumText: "working" });
+    expect(fetched!.resumeState!.history).toHaveLength(3);
+
+    // Recovery reads active runs — the checkpoint must ride along.
+    const active = await stores.runStore.getActiveRuns();
+    expect(active.find((r) => r.id === "r-resume")!.resumeState!.turn).toBe(2);
+  });
+
+  it("upsertRun on conflict preserves an existing resume checkpoint", async () => {
+    await stores.runStore.upsertRun(makeRun("r-keep", "t-keep") as any);
+    await stores.runStore.updateResumeState!("r-keep", {
+      context: {}, steps: [], loopName: "default", turn: 1,
+      history: [{ role: "user", content: "hi" }],
+      createdAt: now, updatedAt: now,
+    } as any);
+
+    // A later upsert without resumeState (e.g. runner re-registering its
+    // PID) must not clobber a checkpoint written in between.
+    await stores.runStore.upsertRun({ ...makeRun("r-keep", "t-keep"), pid: 4242 } as any);
+
+    const fetched = await stores.runStore.getRun("r-keep");
+    expect(fetched!.pid).toBe(4242);
+    expect(fetched!.resumeState).toBeDefined();
+    expect(fetched!.resumeState!.turn).toBe(1);
+  });
 });
 
 // ═══════════════════════════════════════════════════════════════════════

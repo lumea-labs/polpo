@@ -133,3 +133,115 @@ describe("LoopRunner", () => {
     expect(result.context.done).toBe(true);
   });
 });
+
+describe("LoopRunner durable turns", () => {
+  it("emits a checkpoint after every completed turn, after tool execution", async () => {
+    const events: string[] = [];
+    const checkpoints: Array<{ turn: number; turns: number; text: string; toolResults: unknown[] }> = [];
+
+    const runner = new LoopRunner();
+    const result = await runner.run({
+      loop: { name: "default" },
+      maxTurns: 5,
+      model: async ({ turn }) => {
+        if (turn === 0) {
+          return {
+            text: "working",
+            toolCalls: [{ id: "call-1", name: "bash", args: { command: "true" } }],
+          };
+        }
+        return { text: "done" };
+      },
+      executeTool: async (toolCall) => {
+        events.push(`tool:${toolCall.name}`);
+        return "ok";
+      },
+      onTurnCheckpoint: async (cp) => {
+        events.push(`checkpoint:${cp.turn}`);
+        checkpoints.push({
+          turn: cp.turn,
+          turns: cp.turns,
+          text: cp.text,
+          toolResults: cp.toolResults,
+        });
+      },
+    });
+
+    expect(result.status).toBe("completed");
+    // One checkpoint per turn; the turn-0 checkpoint fires AFTER its tools ran.
+    expect(events).toEqual(["tool:bash", "checkpoint:0", "checkpoint:1"]);
+    expect(checkpoints).toHaveLength(2);
+    expect(checkpoints[0]).toMatchObject({ turn: 0, turns: 1, text: "working" });
+    expect(checkpoints[0].toolResults).toHaveLength(1);
+    expect(checkpoints[0].toolResults[0]).toMatchObject({ result: "ok", isError: false });
+    expect(checkpoints[1]).toMatchObject({ turn: 1, turns: 2, text: "done" });
+    expect(checkpoints[1].toolResults).toHaveLength(0);
+  });
+
+  it("resumes from startTurn: earlier turns are never re-executed", async () => {
+    const modelTurns: number[] = [];
+    let toolCalls = 0;
+
+    const runner = new LoopRunner();
+    const result = await runner.run({
+      loop: { name: "default" },
+      maxTurns: 4,
+      startTurn: 2,
+      model: async ({ turn }) => {
+        modelTurns.push(turn);
+        return { text: `t${turn}` };
+      },
+      executeTool: async () => {
+        toolCalls++;
+        return "unused";
+      },
+    });
+
+    // The model is first invoked at the resumed turn — turns 0 and 1 are
+    // history, never replayed; no tool from a completed turn re-executes.
+    expect(modelTurns).toEqual([2]);
+    expect(toolCalls).toBe(0);
+    expect(result.status).toBe("completed");
+    // Turn accounting stays cumulative across the logical run.
+    expect(result.turns).toBe(3);
+  });
+
+  it("startTurn preserves the maxTurns budget", async () => {
+    const modelTurns: number[] = [];
+    const runner = new LoopRunner();
+    const result = await runner.run({
+      loop: { name: "default" },
+      maxTurns: 4,
+      startTurn: 2,
+      model: async ({ turn }) => {
+        modelTurns.push(turn);
+        return {
+          text: "loop",
+          toolCalls: [{ id: `c${turn}`, name: "bash", args: {} }],
+        };
+      },
+      executeTool: async () => "ok",
+    });
+
+    // Only turns 2 and 3 run — the budget counts completed history too.
+    expect(modelTurns).toEqual([2, 3]);
+    expect(result.reason).toBe("max_turns");
+    expect(result.turns).toBe(4);
+  });
+
+  it("a throwing checkpoint sink never fails the run", async () => {
+    const runner = new LoopRunner();
+    const result = await runner.run({
+      loop: { name: "default" },
+      maxTurns: 2,
+      model: async () => ({ text: "fine" }),
+      executeTool: async () => "unused",
+      onTurnCheckpoint: async () => {
+        throw new Error("store unavailable");
+      },
+    });
+
+    expect(result.status).toBe("completed");
+    expect(result.text).toBe("fine");
+  });
+});

@@ -7,6 +7,7 @@ import type { Task, RetryPolicy } from "./task.js";
 import type { AgentConfig, AgentProcess, Team, ReasoningLevel } from "./agent.js";
 import type { ApprovalGate, SLAConfig } from "./mission.js";
 import type { NotificationsConfig, EscalationPolicy } from "./notifications.js";
+import type { LoopResumeState } from "../loop/run-store.js";
 
 // === Runner Config ===
 
@@ -35,6 +36,13 @@ export interface RunnerConfig {
    * inside the runner.
    */
   providers?: Record<string, ProviderConfig>;
+  /**
+   * Durable-turns resume checkpoint from a previous interrupted run
+   * (orphan recovery). When present, the engine seeds its conversation
+   * from the recorded history and continues at turn + 1 instead of
+   * starting the task over.
+   */
+  resumeState?: LoopResumeState;
 }
 
 // === Polpo File Config (.polpo/polpo.json — persistent project configuration) ===

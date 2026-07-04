@@ -4,6 +4,27 @@ import { resolveMissionStore, resolveMissionForTask } from "./mission-store.js";
 import type { Task, TaskResult, RunnerConfig } from "./types.js";
 import { agentMemoryScope } from "./memory-store.js";
 import type { RunRecord } from "./run-store.js";
+import type { LoopResumeState } from "./loop/run-store.js";
+
+/**
+ * Durable turns: max age of a resume checkpoint before orphan recovery
+ * ignores it and falls back to retry-from-zero. Crash/deploy restarts are
+ * a matter of minutes; beyond this window the sandbox/workdir state the
+ * conversation refers to can no longer be trusted.
+ */
+export const RESUME_CHECKPOINT_MAX_AGE_MS = 60 * 60 * 1000;
+
+/** A checkpoint is resumable if it has at least one completed turn of
+ *  history and is fresh enough to trust. */
+function usableCheckpoint(state: LoopResumeState | undefined): LoopResumeState | undefined {
+  if (!state) return undefined;
+  if (typeof state.turn !== "number" || state.turn < 0) return undefined;
+  if (!Array.isArray(state.history) || state.history.length === 0) return undefined;
+  const stamp = state.updatedAt ?? state.createdAt;
+  const age = Date.now() - new Date(stamp).getTime();
+  if (!Number.isFinite(age) || age > RESUME_CHECKPOINT_MAX_AGE_MS) return undefined;
+  return state;
+}
 
 // ── Pure path helpers (no node:path dependency) ─────────────────────────
 
@@ -31,6 +52,14 @@ export class TaskRunner {
   private lastActivity = new Map<string, string>();
   /** Tracks files already seen per task to emit incremental file:changed events */
   private knownFiles = new Map<string, Set<string>>();
+  /**
+   * Durable turns: checkpoints harvested from dead runs during orphan
+   * recovery, consumed (one-shot) by the next spawn of the same task so it
+   * resumes at turn + 1 instead of retrying from zero. Recovery and the
+   * respawning tick happen in the same orchestrator process, so in-memory
+   * handoff is sufficient — the durable copy lives on the run record.
+   */
+  private pendingResume = new Map<string, LoopResumeState>();
 
   constructor(private ctx: OrchestratorContext) {}
 
@@ -297,7 +326,17 @@ export class TaskRunner {
         // Runner still alive — leave it running, work is NOT lost!
         this.ctx.emitter.emit("log", { level: "info", message: `Runner PID ${run.pid} still alive for task ${run.taskId} — reconnecting` });
       } else {
-        // Runner died — clean up the run record
+        // Runner died — harvest its durable-turns checkpoint (if fresh)
+        // so the respawn resumes at turn + 1 instead of starting over.
+        const checkpoint = usableCheckpoint(run.resumeState);
+        if (checkpoint) {
+          this.pendingResume.set(run.taskId, checkpoint);
+          this.ctx.emitter.emit("log", {
+            level: "info",
+            message: `[${run.taskId}] Runner died mid-run — checkpoint at turn ${checkpoint.turn! + 1} saved for resume`,
+          });
+        }
+        // Clean up the run record (unchanged fallback path)
         await this.ctx.runStore.completeRun(run.id, "failed", {
           exitCode: 1, stdout: "", stderr: "Runner process died", duration: 0,
         });
@@ -338,6 +377,14 @@ export class TaskRunner {
     // Clear stale process list
     if (recovered > 0 || tasks.some(t => orphanStates.has(t.status))) {
       await this.ctx.taskStore.setState({ processes: [] });
+    }
+
+    // Drop harvested checkpoints whose task did NOT end up pending (task
+    // already done/failed, or still owned by a live runner) — a leaked
+    // entry would wrongly resume a future, unrelated execution.
+    for (const taskId of [...this.pendingResume.keys()]) {
+      const task = await this.ctx.taskStore.getTask(taskId);
+      if (!task || task.status !== "pending") this.pendingResume.delete(taskId);
     }
 
     return recovered;
@@ -452,6 +499,18 @@ export class TaskRunner {
     }
 
 
+    // Durable turns: consume (one-shot) a checkpoint harvested by orphan
+    // recovery — the runner resumes the conversation at turn + 1 instead
+    // of redoing completed work. Absent checkpoint = spawn from zero.
+    const resumeState = this.pendingResume.get(task.id);
+    if (resumeState) {
+      this.pendingResume.delete(task.id);
+      this.ctx.emitter.emit("log", {
+        level: "info",
+        message: `[${task.id}] Resuming from checkpoint (turn ${resumeState.turn! + 1}) instead of retrying from zero`,
+      });
+    }
+
     const runnerConfig: RunnerConfig = {
       runId,
       taskId: task.id,
@@ -466,6 +525,7 @@ export class TaskRunner {
       emailAllowedDomains: agent.emailAllowedDomains ?? this.ctx.config.settings.emailAllowedDomains,
       reasoning: this.ctx.config.settings.reasoning,
       providers: this.ctx.config.providers,
+      resumeState,
     };
 
     try {
