@@ -11,6 +11,7 @@ export { spawnLoopEngine } from "./adapters/loop-engine.js";
 // Spawners — subprocess (default) and in-process (settings.taskExecution: "in-process")
 export { NodeSpawner } from "./adapters/node-spawner.js";
 export { InProcessSpawner } from "./adapters/in-process-spawner.js";
+export { CompositeSpawner } from "./adapters/composite-spawner.js";
 export type { InProcessSpawnerDeps } from "./adapters/in-process-spawner.js";
 export { executeRun } from "./core/run-lifecycle.js";
 export type { ExecuteRunDeps, ExecuteRunOutcome, TranscriptSession } from "./core/run-lifecycle.js";

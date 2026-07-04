@@ -159,6 +159,8 @@ export interface Task {
    * Propagates from Task → Run for per-user attribution and metering.
    */
   user?: string;
+  /** Execution mode override for this task (wins over agent and settings). */
+  executionMode?: import("./config.js").ExecutionMode;
   createdAt: string;
   updatedAt: string;
 }

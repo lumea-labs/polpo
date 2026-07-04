@@ -56,6 +56,7 @@ export type { Shell, ShellOptions, ShellResult } from "./shell.js";
 
 // ── Spawner Abstraction ─────────────────────────────────────────────────
 export type { Spawner, SpawnResult } from "./spawner.js";
+export { resolveExecutionMode } from "./execution-mode.js";
 
 // ── Agent Prompt Builder ────────────────────────────────────────────────
 export {

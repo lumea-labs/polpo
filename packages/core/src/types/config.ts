@@ -12,6 +12,8 @@ import type { LoopResumeState } from "../loop/run-store.js";
 // === Runner Config ===
 
 export interface RunnerConfig {
+  /** Resolved execution mode for this run (stamped by the task runner). */
+  executionMode?: ExecutionMode;
   runId: string;
   taskId: string;
   agent: AgentConfig;
@@ -131,6 +133,9 @@ export interface PolpoConfig {
   providers?: Record<string, ProviderConfig>;
 }
 
+/** Where a task run executes: OS subprocess (default) or inside the host process (proxy model). */
+export type ExecutionMode = "subprocess" | "in-process";
+
 export interface PolpoSettings {
   maxRetries: number;
   workDir: string;
@@ -175,7 +180,7 @@ export interface PolpoSettings {
    *  block of the proxy execution model (LLM loop in the server, tools
    *  proxied to the sandbox in later phases). Per-task/per-agent policy
    *  is future work; this is a global opt-in. */
-  taskExecution?: "subprocess" | "in-process";
+  taskExecution?: ExecutionMode;
   /** PostgreSQL connection URL (required when storage is "postgres").
    *  Example: "postgres://user:pass@localhost:5432/polpo" */
   databaseUrl?: string;

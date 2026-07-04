@@ -58,6 +58,7 @@ import type { PlaybookStore } from "@polpo-ai/core/playbook-store";
 import { FilePlaybookStore } from "@polpo-ai/file-stores";
 import { NodeSpawner } from "../adapters/node-spawner.js";
 import { InProcessSpawner } from "../adapters/in-process-spawner.js";
+import { CompositeSpawner } from "../adapters/composite-spawner.js";
 import type { Spawner } from "@polpo-ai/core/spawner";
 import type { LogEntry } from "@polpo-ai/core/log-store";
 import { NodeFileSystem } from "../adapters/node-filesystem.js";
@@ -187,10 +188,12 @@ export class Orchestrator extends TypedEmitter {
    */
   private applyTaskExecutionMode(): void {
     if (this.spawnerInjected) return;
-    if (this.config.settings.taskExecution !== "in-process") return;
-    // Deps resolve lazily at spawn() time: the vault store is initialized
-    // after the managers, and hot-reload may swap store instances.
-    this.spawner = new InProcessSpawner(() => {
+    // Adaptive isolation: both backends are always available; each run is
+    // routed by the mode the task runner resolved into RunnerConfig
+    // (task > agent > settings > "subprocess"). Deps resolve lazily at
+    // spawn() time: the vault store is initialized after the managers,
+    // and hot-reload may swap store instances.
+    const inProcess = new InProcessSpawner(() => {
       // A DEDICATED LogStore instance per run over the same DB handle —
       // sharing the orchestrator's log sink would hijack its current
       // session (LogStore keeps the session as instance state). File mode
@@ -211,6 +214,7 @@ export class Orchestrator extends TypedEmitter {
         shell: this.shell,
       };
     });
+    this.spawner = new CompositeSpawner(this.spawner, inProcess);
   }
 
   /** Drizzle store bundle — populated when storage is "sqlite" or "postgres". */

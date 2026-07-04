@@ -151,6 +151,8 @@ export interface AgentConfig {
    *  Defaults to agent name. Used with agent-browser's --profile flag.
    *  Profiles stored in .polpo/browser-profiles/<name>/. */
   browserProfile?: string;
+  /** Where this agent's task runs execute. Precedence: task > agent > settings. */
+  executionMode?: import("./config.js").ExecutionMode;
   /** Allowed recipient email domains for email_send (e.g. ["acme.com", "partner.io"]).
    *  When set, emails can only be sent to addresses in these domains.
    *  When omitted, all domains are allowed (backwards compatible). */

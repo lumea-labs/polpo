@@ -37,6 +37,7 @@ export class DrizzleRunStore implements RunStore {
       configPath: row.configPath,
       user: row.user ?? undefined,
       resumeState: deserializeJson<LoopResumeState | undefined>(row.resumeState, undefined, d),
+      executionMode: row.executionMode ?? undefined,
     };
   }
 
@@ -59,6 +60,7 @@ export class DrizzleRunStore implements RunStore {
       configPath: run.configPath,
       user: run.user ?? null,
       resumeState: serializeJson(run.resumeState, d),
+      executionMode: run.executionMode ?? null,
     };
     await this.db.insert(this.runs).values(values)
       .onConflictDoUpdate({

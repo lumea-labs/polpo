@@ -332,6 +332,7 @@ export function taskRoutes(getDeps: () => {
       retryPolicy: body.retryPolicy,
       notifications: body.notifications,
       sideEffects: body.sideEffects,
+      executionMode: body.executionMode,
       draft: body.draft,
       user: body.user,
     });

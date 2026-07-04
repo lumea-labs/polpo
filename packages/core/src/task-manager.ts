@@ -25,6 +25,7 @@ export class TaskManager {
     retryPolicy?: RetryPolicy;
     notifications?: ScopedNotificationRules;
     sideEffects?: boolean;
+    executionMode?: import("./types/config.js").ExecutionMode;
     draft?: boolean;
   }): Promise<Task> {
     if (!this.ctx.taskStore) throw new Error("Orchestrator not initialized");
@@ -43,6 +44,7 @@ export class TaskManager {
       retryPolicy: opts.retryPolicy,
       notifications: opts.notifications,
       sideEffects: opts.sideEffects,
+      executionMode: opts.executionMode,
       draft: opts.draft,
     });
     if (hookResult.cancelled) {
@@ -81,6 +83,7 @@ export class TaskManager {
       retryPolicy: hookData.retryPolicy,
       notifications: hookData.notifications,
       sideEffects: hookData.sideEffects,
+      executionMode: hookData.executionMode ?? opts.executionMode,
       status: hookData.draft ? "draft" : undefined,
     });
     this.ctx.emitter.emit("task:created", { task });

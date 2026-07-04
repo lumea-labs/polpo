@@ -41,6 +41,7 @@ export interface HookPayloads {
     retryPolicy?: RetryPolicy;
     notifications?: ScopedNotificationRules;
     sideEffects?: boolean;
+    executionMode?: import("./types/config.js").ExecutionMode;
     draft?: boolean;
   };
   "task:spawn": {

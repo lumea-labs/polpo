@@ -22,6 +22,7 @@ export const runsSqlite = sqliteTable("runs", {
   user: text("user"),
   /** Durable-turns checkpoint (LoopResumeState JSON) — written once per completed turn. */
   resumeState: text("resume_state"),
+  executionMode: text("execution_mode"),
 }, (table) => [
   index("idx_runs_status").on(table.status),
   index("idx_runs_task_id").on(table.taskId),
@@ -49,6 +50,7 @@ export const runsPg = pgTable("runs", {
   user: pgText("user"),
   /** Durable-turns checkpoint (LoopResumeState JSON) — written once per completed turn. */
   resumeState: jsonb("resume_state"),
+  executionMode: pgText("execution_mode"),
 }, (table) => [
   pgIndex("idx_pg_runs_status").on(table.status),
   pgIndex("idx_pg_runs_task_id").on(table.taskId),

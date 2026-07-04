@@ -30,6 +30,8 @@ export interface RunRecord {
    * the task with a resume instead of retrying from zero.
    */
   resumeState?: LoopResumeState;
+  /** Execution mode this run was spawned with ("subprocess" | "in-process"). */
+  executionMode?: string;
 }
 
 export interface RunStore {
