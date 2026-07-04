@@ -4,31 +4,30 @@
  * Detached subprocess runner.
  * Spawned by the orchestrator for each agent task.
  * Lifecycle:
- *   1. Read --config <path> from args
+ *   1. Read --config <path> from args (or --run-id <id> --db <url> in DB mode)
  *   2. Open own RunStore connection (Drizzle SQLite or PG)
- *   3. Spawn agent via built-in engine
- *   4. Poll activity, write to RunStore
- *   5. Await handle.done, write result
- *   6. Cleanup & exit
+ *   3. Delegate the run lifecycle to executeRun() (shared with the
+ *      InProcessSpawner — see run-lifecycle.ts)
+ *   4. Cleanup & exit
+ *
+ * Exit code contract (unchanged — this file is the cloud sandbox entry,
+ * `polpo-ai/dist/core/runner.js`):
+ *   - exit 1: bad CLI args, unreadable config, engine spawn failure, fatal error
+ *   - exit 0: everything else — task-level failures are persisted on the
+ *     run record (status failed/killed), not surfaced as a process error
  */
 
-import { readFileSync, unlinkSync, appendFileSync, mkdirSync, existsSync } from "node:fs";
+import { readFileSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { FileRunStore } from "@polpo-ai/file-stores";
-import { spawnLoopEngine } from "../adapters/loop-engine.js";
-import type { RunStore, RunRecord } from "@polpo-ai/core/run-store";
-import type { LoopResumeState } from "@polpo-ai/core/loop-run-store";
+import type { RunStore } from "@polpo-ai/core/run-store";
 import type { LogStore } from "@polpo-ai/core/log-store";
-import type { RunnerConfig, TaskResult } from "@polpo-ai/core/types";
-import { sanitizeTranscriptEntry } from "../server/security.js";
-import { EncryptedVaultStore } from "../vault/encrypted-store.js";
+import type { RunnerConfig } from "@polpo-ai/core/types";
 import type { VaultStore } from "@polpo-ai/core/vault-store";
 import type { MemoryStore } from "@polpo-ai/core/memory-store";
-import { FileMemoryStore } from "@polpo-ai/file-stores";
 import { NodeFileSystem } from "../adapters/node-filesystem.js";
 import { NodeShell } from "../adapters/node-shell.js";
-
-const ACTIVITY_POLL_MS = 1500;
+import { executeRun } from "./run-lifecycle.js";
 
 function readConfigFromFile(): RunnerConfig {
   const idx = process.argv.indexOf("--config");
@@ -76,47 +75,6 @@ async function readConfigFromDb(): Promise<RunnerConfig> {
 
   await sql.end();
   return run.config;
-}
-
-function errorResult(err: unknown): TaskResult {
-  const msg = err instanceof Error ? err.message : String(err);
-  return { exitCode: 1, stdout: "", stderr: `Runner error: ${msg}`, duration: 0 };
-}
-
-/** Persistent per-run activity log (JSONL file in .polpo/logs/) */
-class RunActivityLog {
-  private logPath: string;
-  private lastSnapshot = "";
-
-  constructor(polpoDir: string, runId: string, taskId: string, agentName: string) {
-    const logsDir = join(polpoDir, "logs");
-    if (!existsSync(logsDir)) mkdirSync(logsDir, { recursive: true });
-    this.logPath = join(logsDir, `run-${runId}.jsonl`);
-    // Write header
-    this.write({ _run: true, runId, taskId, agentName, startedAt: new Date().toISOString(), pid: process.pid });
-  }
-
-  /** Log activity diff — only writes if something changed */
-  logActivity(activity: Record<string, unknown>): void {
-    const snapshot = JSON.stringify(activity);
-    if (snapshot === this.lastSnapshot) return;
-    this.lastSnapshot = snapshot;
-    this.write({ ts: new Date().toISOString(), event: "activity", data: activity });
-  }
-
-  /** Log a transcript entry from the engine (assistant text, tool_use, tool_result, etc.) */
-  logTranscript(entry: Record<string, unknown>): void {
-    this.write({ ts: new Date().toISOString(), ...sanitizeTranscriptEntry(entry) });
-  }
-
-  /** Log a lifecycle event */
-  logEvent(event: string, data?: Record<string, unknown>): void {
-    this.write({ ts: new Date().toISOString(), event, ...(data ? { data } : {}) });
-  }
-
-  private write(obj: Record<string, unknown>): void {
-    try { appendFileSync(this.logPath, JSON.stringify(obj) + "\n", "utf-8"); } catch { /* best effort */ }
-  }
 }
 
 interface RunnerStores {
@@ -167,160 +125,46 @@ async function main(): Promise<void> {
     const { setProviderOverrides } = await import("@polpo-ai/llm");
     setProviderOverrides(config.providers);
   }
-  const { runStore, logStore, vaultStore: drizzleVaultStore, memoryStore: drizzleMemoryStore } = await createStores(config);
-  const actLog = new RunActivityLog(config.polpoDir, config.runId, config.taskId, config.agent.name);
+  const { runStore, logStore, vaultStore, memoryStore } = await createStores(config);
 
-  // When LogStore is available (postgres/sqlite), persist transcript to DB.
-  // This ensures transcript survives sandbox destruction.
-  let logSessionId: string | undefined;
-  if (logStore) {
-    logSessionId = await logStore.startSession();
-  }
+  // SIGTERM handler: graceful kill (executeRun marks the run "killed")
+  const abort = new AbortController();
+  process.on("SIGTERM", () => abort.abort());
 
-  const now = new Date().toISOString();
-  const initialRecord: RunRecord = {
-    id: config.runId,
-    taskId: config.taskId,
+  const configPath = isDbMode
+    ? `db://${config.runId}`
+    : join(process.argv[process.argv.indexOf("--config") + 1]);
+
+  const outcome = await executeRun(config, {
+    runStore,
+    // The runner owns a private LogStore instance, so a per-run session is
+    // simply startSession() on it (postgres/sqlite only — file mode keeps
+    // the JSONL activity log as the sole transcript side-channel).
+    createLogSession: logStore
+      ? async () => {
+          const sessionId = await logStore.startSession();
+          return { sessionId, append: (entry) => logStore.append(entry) };
+        }
+      : undefined,
+    vaultStore,
+    memoryStore,
+    // Runner is a subprocess — creates its own fs/shell instances
+    fs: new NodeFileSystem(),
+    shell: new NodeShell(),
     pid: process.pid,
-    agentName: config.agent.name,
-    status: "running",
-    startedAt: now,
-    updatedAt: now,
-    // sessionId starts at the LogStore session we just opened, so the
-    // run record is linked to its transcript from the very first poll.
-    // Without this, downstream readers (the cloud task-activity endpoint,
-    // a future dashboard, anything that joins runs to log sessions) have
-    // to guess by time-proximity — fragile on cold sandboxes where the
-    // log session is created hundreds of ms before the first stream
-    // chunk lands. In file mode this is mostly cosmetic because
-    // RunActivityLog writes a parallel JSONL side-channel; in DB mode
-    // (cloud) it's the only link that ever gets persisted.
-    activity: {
-      filesCreated: [], filesEdited: [], toolCalls: 0, totalTokens: 0, lastUpdate: now,
-      ...(logSessionId ? { sessionId: logSessionId } : {}),
-    },
-    configPath: isDbMode ? `db://${config.runId}` : join(process.argv[process.argv.indexOf("--config") + 1]),
-  };
-  // In DB mode, run record already exists (created by spawner) — update it with PID
-  await runStore.upsertRun(initialRecord);
-  actLog.logEvent("spawning", { task: config.task.title });
+    configPath,
+    signal: abort.signal,
+  });
 
-  let handle;
-  try {
-    // Use Drizzle vault store when available (postgres/sqlite), fall back to file-based
-    let vaultStore: VaultStore | undefined = drizzleVaultStore;
-    if (!vaultStore) {
-      try { vaultStore = new EncryptedVaultStore(config.polpoDir); } catch { /* vault unavailable */ }
-    }
-
-    const memoryStore: MemoryStore = drizzleMemoryStore ?? new FileMemoryStore(config.polpoDir);
-
-    const spawnCtx = {
-      polpoDir: config.polpoDir,
-      outputDir: config.outputDir,
-      emailAllowedDomains: config.emailAllowedDomains,
-      reasoning: config.reasoning,
-      vaultStore,
-      memoryStore,
-      // Runner is a subprocess — creates its own fs/shell instances
-      fs: new NodeFileSystem(),
-      shell: new NodeShell(),
-      // Durable turns: resume checkpoint handed over by orphan recovery,
-      // and the per-turn checkpoint sink (one RunStore write per turn,
-      // best-effort — a flaky store must never fail a healthy run).
-      resumeState: config.resumeState,
-      onTurnCheckpoint: async (state: LoopResumeState) => {
-        try {
-          await runStore.updateResumeState?.(config.runId, state);
-        } catch { /* best effort */ }
-      },
-    };
-    handle = spawnLoopEngine(config.agent, config.task, config.cwd, spawnCtx);
-    if (config.resumeState) {
-      actLog.logEvent("resuming", {
-        loopName: config.resumeState.loopName,
-        fromTurn: (config.resumeState.turn ?? -1) + 1,
-      });
-    }
-    // Propagate the LogStore sessionId onto the agent's activity blob so
-    // the poll loop's updateActivity() persists it on every tick. Without
-    // this the run record has activity.sessionId = undefined forever, and
-    // downstream readers (cloud task-activity endpoint, dashboards) can't
-    // resolve the transcript except via fragile time-proximity fallback.
-    if (logSessionId) {
-      handle.activity.sessionId = logSessionId;
-    }
-    // Wire transcript persistence — every agent message gets written to the run log
-    handle.onTranscript = (entry) => {
-      actLog.logTranscript(entry);
-      // Persist transcript to DB when LogStore is available
-      if (logStore && logSessionId) {
-        const event = entry.type === "assistant" ? "transcript:assistant"
-          : entry.type === "tool_result" ? "transcript:tool_result"
-          : entry.type === "tool_use" ? "transcript:tool_use"
-          : `transcript:${entry.type ?? "unknown"}`;
-        logStore.append({ ts: new Date().toISOString(), event, data: sanitizeTranscriptEntry(entry) })
-          .catch(() => {}); // best-effort, don't block engine
-      }
-    };
-    actLog.logEvent("spawned");
-  } catch (err) {
-    const result = errorResult(err);
-    actLog.logEvent("error", { message: result.stderr });
-    await runStore.completeRun(config.runId, "failed", result);
+  // Engine spawn failure is the one lifecycle path that exits non-zero.
+  if (outcome.spawnError) {
     await runStore.close();
     process.exit(1);
   }
 
-  // Activity polling + persistent logging
-  const poll = setInterval(async () => {
-    try {
-      await runStore.updateActivity(config.runId, handle.activity);
-      actLog.logActivity({ ...handle.activity });
-    } catch { /* DB temporarily locked */
-    }
-  }, ACTIVITY_POLL_MS);
-
-  // SIGTERM handler: graceful kill
-  let sigterm = false;
-  process.on("SIGTERM", () => {
-    sigterm = true;
-    actLog.logEvent("sigterm");
-    handle.kill();
-  });
-
-  try {
-    const result = await handle.done;
-    clearInterval(poll);
-    // Final activity + sessionId flush before marking terminal
-    try { await runStore.updateActivity(config.runId, handle.activity); } catch { /* best effort */ }
-    actLog.logActivity({ ...handle.activity });
-
-    // Store auto-collected outcomes on the run record
-    if (handle.outcomes && handle.outcomes.length > 0) {
-      try { await runStore.updateOutcomes(config.runId, handle.outcomes); } catch { /* best effort */ }
-      actLog.logEvent("outcomes", { count: handle.outcomes.length, types: handle.outcomes.map((o: any) => o.type) });
-    }
-
-    // If we received SIGTERM (timeout/shutdown), force exitCode=1 regardless of
-    // what the engine returned — an aborted task is not a successful task.
-    if (sigterm) {
-      result.exitCode = 1;
-      result.stderr = (result.stderr ? result.stderr + "\n" : "") + "Killed by SIGTERM (timeout or shutdown)";
-    }
-    const status = sigterm ? "killed" : (result.exitCode === 0 ? "completed" : "failed");
-    actLog.logEvent("done", { status, exitCode: result.exitCode, duration: result.duration });
-    await runStore.completeRun(config.runId, status, result);
-  } catch (err) {
-    clearInterval(poll);
-    try { await runStore.updateActivity(config.runId, handle.activity); } catch { /* best effort */ }
-    actLog.logEvent("error", { message: err instanceof Error ? err.message : String(err) });
-    await runStore.completeRun(config.runId, "failed", errorResult(err));
-  }
-
   // Cleanup config file (only in file mode, not DB mode)
   if (!isDbMode) {
-    try { unlinkSync(join(process.argv[process.argv.indexOf("--config") + 1])); } catch { /* already gone */ }
+    try { unlinkSync(configPath); } catch { /* already gone */ }
   }
 
   await runStore.close();

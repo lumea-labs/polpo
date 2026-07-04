@@ -1,0 +1,294 @@
+/**
+ * Shared run lifecycle — executeRun().
+ *
+ * The complete lifecycle of ONE agent run (initial run record, engine spawn,
+ * transcript + activity persistence, durable-turns checkpoint sink, terminal
+ * completeRun) extracted from the subprocess runner so two hosts can execute
+ * the exact same code path:
+ *
+ *   - the detached subprocess entry (core/runner.ts, spawned by NodeSpawner):
+ *     builds its own store connections, pid = process.pid, SIGTERM → abort;
+ *   - the InProcessSpawner (adapters/in-process-spawner.ts): reuses the
+ *     orchestrator's stores, synthetic negative pid, kill() → abort.
+ *
+ * Contract:
+ *   - executeRun NEVER exits the process and NEVER closes the injected
+ *     stores — both lifetimes belong to the host.
+ *   - Every failure path is persisted on the run record via completeRun
+ *     (the in-process host must never crash because a run failed).
+ *   - Abort (deps.signal) carries the subprocess SIGTERM semantics: kill
+ *     the engine, force exitCode 1, mark the run "killed".
+ */
+
+import { appendFileSync, mkdirSync, existsSync } from "node:fs";
+import { join } from "node:path";
+import { FileMemoryStore } from "@polpo-ai/file-stores";
+import { spawnLoopEngine } from "../adapters/loop-engine.js";
+import type { RunStore, RunRecord, RunStatus } from "@polpo-ai/core/run-store";
+import type { LoopResumeState } from "@polpo-ai/core/loop-run-store";
+import type { LogEntry } from "@polpo-ai/core/log-store";
+import type { RunnerConfig, TaskResult } from "@polpo-ai/core/types";
+import type { AgentHandle } from "@polpo-ai/core/adapter";
+import type { FileSystem } from "@polpo-ai/core/filesystem";
+import type { Shell } from "@polpo-ai/core/shell";
+import { sanitizeTranscriptEntry } from "../server/security.js";
+import { EncryptedVaultStore } from "../vault/encrypted-store.js";
+import type { VaultStore } from "@polpo-ai/core/vault-store";
+import type { MemoryStore } from "@polpo-ai/core/memory-store";
+import { NodeFileSystem } from "../adapters/node-filesystem.js";
+import { NodeShell } from "../adapters/node-shell.js";
+
+const ACTIVITY_POLL_MS = 1500;
+
+export function errorResult(err: unknown): TaskResult {
+  const msg = err instanceof Error ? err.message : String(err);
+  return { exitCode: 1, stdout: "", stderr: `Runner error: ${msg}`, duration: 0 };
+}
+
+/** Persistent per-run activity log (JSONL file in .polpo/logs/) */
+export class RunActivityLog {
+  private logPath: string;
+  private lastSnapshot = "";
+
+  constructor(polpoDir: string, runId: string, taskId: string, agentName: string, pid: number) {
+    const logsDir = join(polpoDir, "logs");
+    if (!existsSync(logsDir)) mkdirSync(logsDir, { recursive: true });
+    this.logPath = join(logsDir, `run-${runId}.jsonl`);
+    // Write header
+    this.write({ _run: true, runId, taskId, agentName, startedAt: new Date().toISOString(), pid });
+  }
+
+  /** Log activity diff — only writes if something changed */
+  logActivity(activity: Record<string, unknown>): void {
+    const snapshot = JSON.stringify(activity);
+    if (snapshot === this.lastSnapshot) return;
+    this.lastSnapshot = snapshot;
+    this.write({ ts: new Date().toISOString(), event: "activity", data: activity });
+  }
+
+  /** Log a transcript entry from the engine (assistant text, tool_use, tool_result, etc.) */
+  logTranscript(entry: Record<string, unknown>): void {
+    this.write({ ts: new Date().toISOString(), ...sanitizeTranscriptEntry(entry) });
+  }
+
+  /** Log a lifecycle event */
+  logEvent(event: string, data?: Record<string, unknown>): void {
+    this.write({ ts: new Date().toISOString(), event, ...(data ? { data } : {}) });
+  }
+
+  private write(obj: Record<string, unknown>): void {
+    try { appendFileSync(this.logPath, JSON.stringify(obj) + "\n", "utf-8"); } catch { /* best effort */ }
+  }
+}
+
+/**
+ * One transcript persistence session (a LogStore session scoped to this run).
+ *
+ * Injected as a factory instead of a LogStore because LogStore keeps its
+ * "current session" as instance state: the subprocess owns a private
+ * instance (startSession is safe), while the in-process host must open a
+ * dedicated instance/session per run or concurrent runs would hijack each
+ * other's (and the orchestrator's) session.
+ */
+export interface TranscriptSession {
+  sessionId: string;
+  append(entry: LogEntry): Promise<void>;
+}
+
+export interface ExecuteRunDeps {
+  /** Run persistence. NOT closed by executeRun — the host owns it. */
+  runStore: RunStore;
+  /**
+   * Per-run transcript session factory (DB storage modes). Undefined = file
+   * mode: the JSONL activity log is the only transcript side-channel,
+   * matching the historical subprocess behavior.
+   */
+  createLogSession?: () => Promise<TranscriptSession>;
+  /** Vault store. Default: EncryptedVaultStore(polpoDir), best-effort. */
+  vaultStore?: VaultStore;
+  /** Memory store. Default: FileMemoryStore(polpoDir). */
+  memoryStore?: MemoryStore;
+  /** FileSystem for tools. Default: a fresh NodeFileSystem. */
+  fs?: FileSystem;
+  /** Shell for tools. Default: a fresh NodeShell. */
+  shell?: Shell;
+  /** Pid recorded on the run record: process.pid (subprocess) or a synthetic negative id (in-process). */
+  pid: number;
+  /** Where the config was persisted ("file:///path", "db://runId", "memory://…"). */
+  configPath: string;
+  /** Abort = graceful kill (subprocess SIGTERM / in-process spawner.kill). */
+  signal?: AbortSignal;
+}
+
+export interface ExecuteRunOutcome {
+  status: RunStatus;
+  result: TaskResult;
+  /** True when the engine could not even be spawned (the subprocess entry exits 1 on this). */
+  spawnError?: boolean;
+}
+
+/**
+ * Execute one agent run end-to-end against the injected stores.
+ * See module header for the host contract.
+ */
+export async function executeRun(config: RunnerConfig, deps: ExecuteRunDeps): Promise<ExecuteRunOutcome> {
+  const { runStore, pid, configPath } = deps;
+  const actLog = new RunActivityLog(config.polpoDir, config.runId, config.taskId, config.agent.name, pid);
+
+  // When a transcript session is available (postgres/sqlite), persist the
+  // transcript to the DB. This ensures it survives sandbox destruction.
+  let logSession: TranscriptSession | undefined;
+  if (deps.createLogSession) {
+    logSession = await deps.createLogSession();
+  }
+
+  const now = new Date().toISOString();
+  const initialRecord: RunRecord = {
+    id: config.runId,
+    taskId: config.taskId,
+    pid,
+    agentName: config.agent.name,
+    status: "running",
+    startedAt: now,
+    updatedAt: now,
+    // sessionId starts at the LogStore session we just opened, so the
+    // run record is linked to its transcript from the very first poll.
+    // Without this, downstream readers (the cloud task-activity endpoint,
+    // a future dashboard, anything that joins runs to log sessions) have
+    // to guess by time-proximity — fragile on cold sandboxes where the
+    // log session is created hundreds of ms before the first stream
+    // chunk lands. In file mode this is mostly cosmetic because
+    // RunActivityLog writes a parallel JSONL side-channel; in DB mode
+    // (cloud) it's the only link that ever gets persisted.
+    activity: {
+      filesCreated: [], filesEdited: [], toolCalls: 0, totalTokens: 0, lastUpdate: now,
+      ...(logSession ? { sessionId: logSession.sessionId } : {}),
+    },
+    configPath,
+  };
+  // In DB mode, run record already exists (created by spawner) — update it with PID
+  await runStore.upsertRun(initialRecord);
+  actLog.logEvent("spawning", { task: config.task.title });
+
+  let handle: AgentHandle;
+  try {
+    // Use the injected vault store when available (postgres/sqlite or
+    // orchestrator-owned), fall back to file-based
+    let vaultStore: VaultStore | undefined = deps.vaultStore;
+    if (!vaultStore) {
+      try { vaultStore = new EncryptedVaultStore(config.polpoDir); } catch { /* vault unavailable */ }
+    }
+
+    const memoryStore: MemoryStore = deps.memoryStore ?? new FileMemoryStore(config.polpoDir);
+
+    const spawnCtx = {
+      polpoDir: config.polpoDir,
+      outputDir: config.outputDir,
+      emailAllowedDomains: config.emailAllowedDomains,
+      reasoning: config.reasoning,
+      vaultStore,
+      memoryStore,
+      // Subprocess hosts create their own fs/shell; the in-process host
+      // injects the orchestrator's instances.
+      fs: deps.fs ?? new NodeFileSystem(),
+      shell: deps.shell ?? new NodeShell(),
+      // Durable turns: resume checkpoint handed over by orphan recovery,
+      // and the per-turn checkpoint sink (one RunStore write per turn,
+      // best-effort — a flaky store must never fail a healthy run).
+      resumeState: config.resumeState,
+      onTurnCheckpoint: async (state: LoopResumeState) => {
+        try {
+          await runStore.updateResumeState?.(config.runId, state);
+        } catch { /* best effort */ }
+      },
+    };
+    handle = spawnLoopEngine(config.agent, config.task, config.cwd, spawnCtx);
+    if (config.resumeState) {
+      actLog.logEvent("resuming", {
+        loopName: config.resumeState.loopName,
+        fromTurn: (config.resumeState.turn ?? -1) + 1,
+      });
+    }
+    // Propagate the LogStore sessionId onto the agent's activity blob so
+    // the poll loop's updateActivity() persists it on every tick. Without
+    // this the run record has activity.sessionId = undefined forever, and
+    // downstream readers (cloud task-activity endpoint, dashboards) can't
+    // resolve the transcript except via fragile time-proximity fallback.
+    if (logSession) {
+      handle.activity.sessionId = logSession.sessionId;
+    }
+    // Wire transcript persistence — every agent message gets written to the run log
+    handle.onTranscript = (entry) => {
+      actLog.logTranscript(entry);
+      // Persist transcript to DB when a log session is available
+      if (logSession) {
+        const event = entry.type === "assistant" ? "transcript:assistant"
+          : entry.type === "tool_result" ? "transcript:tool_result"
+          : entry.type === "tool_use" ? "transcript:tool_use"
+          : `transcript:${entry.type ?? "unknown"}`;
+        logSession.append({ ts: new Date().toISOString(), event, data: sanitizeTranscriptEntry(entry) })
+          .catch(() => {}); // best-effort, don't block engine
+      }
+    };
+    actLog.logEvent("spawned");
+  } catch (err) {
+    const result = errorResult(err);
+    actLog.logEvent("error", { message: result.stderr });
+    await runStore.completeRun(config.runId, "failed", result);
+    return { status: "failed", result, spawnError: true };
+  }
+
+  // Activity polling + persistent logging
+  const poll = setInterval(async () => {
+    try {
+      await runStore.updateActivity(config.runId, handle.activity);
+      actLog.logActivity({ ...handle.activity });
+    } catch { /* DB temporarily locked */
+    }
+  }, ACTIVITY_POLL_MS);
+
+  // Abort handler: graceful kill (SIGTERM in the subprocess host,
+  // spawner.kill()/timeout in the in-process host)
+  let aborted = false;
+  const onAbort = () => {
+    aborted = true;
+    actLog.logEvent("sigterm");
+    handle.kill();
+  };
+  if (deps.signal?.aborted) onAbort();
+  else deps.signal?.addEventListener("abort", onAbort, { once: true });
+
+  try {
+    const result = await handle.done;
+    clearInterval(poll);
+    // Final activity + sessionId flush before marking terminal
+    try { await runStore.updateActivity(config.runId, handle.activity); } catch { /* best effort */ }
+    actLog.logActivity({ ...handle.activity });
+
+    // Store auto-collected outcomes on the run record
+    if (handle.outcomes && handle.outcomes.length > 0) {
+      try { await runStore.updateOutcomes(config.runId, handle.outcomes); } catch { /* best effort */ }
+      actLog.logEvent("outcomes", { count: handle.outcomes.length, types: handle.outcomes.map((o: any) => o.type) });
+    }
+
+    // If we were aborted (timeout/shutdown/kill), force exitCode=1 regardless
+    // of what the engine returned — an aborted task is not a successful task.
+    if (aborted) {
+      result.exitCode = 1;
+      result.stderr = (result.stderr ? result.stderr + "\n" : "") + "Killed by SIGTERM (timeout or shutdown)";
+    }
+    const status: RunStatus = aborted ? "killed" : (result.exitCode === 0 ? "completed" : "failed");
+    actLog.logEvent("done", { status, exitCode: result.exitCode, duration: result.duration });
+    await runStore.completeRun(config.runId, status, result);
+    return { status, result };
+  } catch (err) {
+    clearInterval(poll);
+    try { await runStore.updateActivity(config.runId, handle.activity); } catch { /* best effort */ }
+    actLog.logEvent("error", { message: err instanceof Error ? err.message : String(err) });
+    const result = errorResult(err);
+    await runStore.completeRun(config.runId, "failed", result);
+    return { status: "failed", result };
+  } finally {
+    deps.signal?.removeEventListener("abort", onAbort);
+  }
+}
