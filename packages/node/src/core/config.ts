@@ -163,6 +163,10 @@ function parseSettings(raw: any): PolpoSettings {
   if (raw?.storage && ["file", "sqlite", "postgres"].includes(raw.storage)) {
     settings.storage = raw.storage;
   }
+  // Task execution mode (opt-in; default = subprocess)
+  if (raw?.taskExecution && ["subprocess", "in-process"].includes(raw.taskExecution)) {
+    settings.taskExecution = raw.taskExecution;
+  }
   if (raw?.databaseUrl && typeof raw.databaseUrl === "string") {
     settings.databaseUrl = raw.databaseUrl;
   }

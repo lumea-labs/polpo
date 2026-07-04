@@ -219,7 +219,10 @@ export class TaskRunner {
         if (elapsed > timeout) {
           this.ctx.emitter.emit("log", { level: "warn", message: `[${run.taskId}] Timed out (${Math.round(elapsed / 1000)}s)` });
           this.ctx.emitter.emit("task:timeout", { taskId: run.taskId, elapsed, timeout });
-          if (run.pid > 0) {
+          // pid 0 = untracked (sandbox spawners); positive = OS subprocess;
+          // negative = in-process synthetic pid — both of the latter are
+          // killable through the spawner that issued them.
+          if (run.pid !== 0) {
             try { this.ctx.spawner.kill(run.pid); } catch { /* already dead */ }
           }
           // Mark run as killed so we don't retry every tick
@@ -238,7 +241,8 @@ export class TaskRunner {
         if (idle > staleThreshold * 2) {
           this.ctx.emitter.emit("log", { level: "error", message: `[${run.taskId}] Agent unresponsive for ${Math.round(idle / 1000)}s — killing` });
           this.ctx.emitter.emit("agent:stale", { taskId: run.taskId, agentName: run.agentName, idleMs: idle, action: "killed" });
-          if (run.pid > 0) {
+          // Same pid convention as the timeout branch above (0 = untracked).
+          if (run.pid !== 0) {
             try { this.ctx.spawner.kill(run.pid); } catch { /* already dead */ }
           }
           // Mark run as killed so we don't retry every tick

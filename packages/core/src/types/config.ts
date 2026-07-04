@@ -169,6 +169,13 @@ export interface PolpoSettings {
   /** Storage backend for tasks, missions, and runs. Default: "file" (filesystem JSON).
    *  "postgres" requires @polpo-ai/drizzle and a databaseUrl. */
   storage?: "file" | "sqlite" | "postgres";
+  /** How task runs execute. Default: "subprocess" (a detached runner is
+   *  forked per task). "in-process" runs the same lifecycle inside the
+   *  orchestrator process against its own stores — the first building
+   *  block of the proxy execution model (LLM loop in the server, tools
+   *  proxied to the sandbox in later phases). Per-task/per-agent policy
+   *  is future work; this is a global opt-in. */
+  taskExecution?: "subprocess" | "in-process";
   /** PostgreSQL connection URL (required when storage is "postgres").
    *  Example: "postgres://user:pass@localhost:5432/polpo" */
   databaseUrl?: string;

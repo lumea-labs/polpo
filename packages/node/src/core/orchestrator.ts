@@ -57,7 +57,9 @@ import type { VaultStore } from "@polpo-ai/core/vault-store";
 import type { PlaybookStore } from "@polpo-ai/core/playbook-store";
 import { FilePlaybookStore } from "@polpo-ai/file-stores";
 import { NodeSpawner } from "../adapters/node-spawner.js";
+import { InProcessSpawner } from "../adapters/in-process-spawner.js";
 import type { Spawner } from "@polpo-ai/core/spawner";
+import type { LogEntry } from "@polpo-ai/core/log-store";
 import { NodeFileSystem } from "../adapters/node-filesystem.js";
 import { NodeShell } from "../adapters/node-shell.js";
 import type { FileSystem } from "@polpo-ai/core/filesystem";
@@ -87,6 +89,8 @@ export class Orchestrator extends TypedEmitter {
   private stopped = false;
   private assessFn: AssessFn;
   private spawner: Spawner;
+  /** True when the caller injected a spawner — settings never override it. */
+  private spawnerInjected = false;
   private injectedStore?: TaskStore;
   private injectedRunStore?: RunStore;
   private memoryStore!: MemoryStore;
@@ -165,8 +169,48 @@ export class Orchestrator extends TypedEmitter {
       this.assessFn = opts.assessFn ?? assessTask;
       this.injectedStore = opts.store;
       this.injectedRunStore = opts.runStore;
+      this.spawnerInjected = !!opts.spawner;
       this.spawner = opts.spawner ?? new NodeSpawner({ polpoDir: this.polpoDir, cwd: this.workDir });
     }
+  }
+
+  /**
+   * Select the task-execution spawner from settings (opt-in, additive).
+   * Default stays the subprocess NodeSpawner; `settings.taskExecution:
+   * "in-process"` switches to the InProcessSpawner, which runs the exact
+   * same lifecycle (executeRun) inside this process against the
+   * orchestrator's own stores. An explicitly injected spawner always wins.
+   * Per-task/per-agent policy is deliberately out of scope (Phase C).
+   *
+   * Must run after stores are created and before initManagers() — the
+   * managers' OrchestratorContext captures ctx.spawner once.
+   */
+  private applyTaskExecutionMode(): void {
+    if (this.spawnerInjected) return;
+    if (this.config.settings.taskExecution !== "in-process") return;
+    // Deps resolve lazily at spawn() time: the vault store is initialized
+    // after the managers, and hot-reload may swap store instances.
+    this.spawner = new InProcessSpawner(() => {
+      // A DEDICATED LogStore instance per run over the same DB handle —
+      // sharing the orchestrator's log sink would hijack its current
+      // session (LogStore keeps the session as instance state). File mode
+      // has no per-run log sessions, same as the subprocess runner.
+      const makeLogStore = this.drizzleStores?.createLogStore?.bind(this.drizzleStores);
+      return {
+        runStore: this.runStore,
+        createLogSession: makeLogStore
+          ? async () => {
+              const logStore = makeLogStore();
+              const sessionId = await logStore.startSession();
+              return { sessionId, append: (entry: LogEntry) => logStore.append(entry) };
+            }
+          : undefined,
+        vaultStore: this.vaultStore,
+        memoryStore: this.memoryStore,
+        fs: this.fs,
+        shell: this.shell,
+      };
+    });
   }
 
   /** Drizzle store bundle — populated when storage is "sqlite" or "postgres". */
@@ -277,6 +321,7 @@ export class Orchestrator extends TypedEmitter {
     // Validate API keys (after stores are available so we can read per-agent models)
     await this.validateProviders();
 
+    this.applyTaskExecutionMode();
     await this.initManagers();
 
     // Sync config.teams from stores (authoritative source — agents.json / teams.json)
@@ -608,6 +653,7 @@ export class Orchestrator extends TypedEmitter {
       };
     }
 
+    this.applyTaskExecutionMode();
     await this.initManagers();
 
     // Sync config.teams from stores (authoritative source — agents.json / teams.json)
@@ -738,10 +784,13 @@ export class Orchestrator extends TypedEmitter {
     if (activeRuns.length > 0) {
       this.emit("log", { level: "warn", message: `Shutting down ${activeRuns.length} running agent(s)...` });
 
-      // Send SIGTERM to all runner subprocesses
+      // Send SIGTERM to all runner subprocesses; in-process runs (negative
+      // synthetic pids) are aborted through the spawner instead.
       for (const run of activeRuns) {
         if (run.pid > 0) {
           try { process.kill(run.pid, "SIGTERM"); } catch { /* already dead */ }
+        } else if (run.pid < 0) {
+          try { this.spawner.kill(run.pid); } catch { /* already gone */ }
         }
       }
 

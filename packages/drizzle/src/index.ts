@@ -97,6 +97,15 @@ export interface DrizzleStores {
   vaultStore: VaultStore;
   playbookStore: PlaybookStore;
   skillStore: SkillStore;
+  /**
+   * Fresh LogStore over the SAME db handle (no second connection).
+   * LogStore keeps its current session as instance state, so anything
+   * that needs a private transcript session per consumer (e.g. one per
+   * in-process task run) must get a dedicated instance instead of
+   * sharing `logStore` — sharing would hijack its current session.
+   * Optional for backward compatibility with external bundles.
+   */
+  createLogStore?(): LogStore;
 }
 
 // ── PostgreSQL factory ────────────────────────────────────────────────
@@ -118,6 +127,7 @@ export function createPgStores(db: any): DrizzleStores {
     loopRunStore: new DrizzleLoopRunStore(db, loopRunsPg, "pg"),
     sessionStore: new DrizzleSessionStore(db, sessionsPg, messagesPg, "pg"),
     logStore: new DrizzleLogStore(db, logSessionsPg, logEntriesPg, "pg"),
+    createLogStore: () => new DrizzleLogStore(db, logSessionsPg, logEntriesPg, "pg"),
     approvalStore: new DrizzleApprovalStore(db, approvalsPg, "pg"),
     memoryStore: new DrizzleMemoryStore(db, memoryPg),
     checkpointStore: new DrizzleCheckpointStore(db, metadataPg, "pg"),
@@ -150,6 +160,7 @@ export function createSqliteStores(db: any): DrizzleStores {
     loopRunStore: new DrizzleLoopRunStore(db, loopRunsSqlite, "sqlite"),
     sessionStore: new DrizzleSessionStore(db, sessionsSqlite, messagesSqlite, "sqlite"),
     logStore: new DrizzleLogStore(db, logSessionsSqlite, logEntriesSqlite, "sqlite"),
+    createLogStore: () => new DrizzleLogStore(db, logSessionsSqlite, logEntriesSqlite, "sqlite"),
     approvalStore: new DrizzleApprovalStore(db, approvalsSqlite, "sqlite"),
     memoryStore: new DrizzleMemoryStore(db, memorySqlite),
     checkpointStore: new DrizzleCheckpointStore(db, metadataSqlite, "sqlite"),
