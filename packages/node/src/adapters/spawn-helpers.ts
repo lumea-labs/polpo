@@ -362,8 +362,13 @@ export function prepareSpawn(agentConfig: AgentConfig, cwd: string, ctx?: SpawnC
   const fs: FileSystem = ctx?.fs ?? new NodeFileSystem();
   const shell: Shell = ctx?.shell ?? new NodeShell();
 
-  // Browser profile directory for agent-browser persistent state (cookies, auth, localStorage)
-  const browserProfileDir = join(polpoDir, "browser-profiles", agentConfig.browserProfile || agentConfig.name);
+  // Browser profile directory for agent-browser persistent state (cookies, auth, localStorage).
+  // POLPO_BROWSER_PROFILES_ROOT relocates the root: Chrome's ProcessSingleton needs
+  // symlink support, which network/volume mounts (e.g. the cloud sandbox project dir)
+  // may not provide — the cloud points this at sandbox-local disk and hydrates/persists
+  // the profile around the run.
+  const browserProfilesRoot = process.env.POLPO_BROWSER_PROFILES_ROOT || join(polpoDir, "browser-profiles");
+  const browserProfileDir = join(browserProfilesRoot, agentConfig.browserProfile || agentConfig.name);
 
   // Check if extended tools (browser, email, image, video, audio, excel, pdf, docx) are requested via allowedTools
   // Note: vault tools are now core — always available, no need to check here.
