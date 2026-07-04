@@ -3,6 +3,9 @@ import { join } from "node:path";
 import { prepareSpawn } from "../adapters/spawn-helpers.js";
 import type { AgentConfig } from "@polpo-ai/core";
 
+// resolveModel needs a provider key; CI has no secrets by design.
+process.env.ANTHROPIC_API_KEY ||= "test-key-not-real";
+
 const agent = { name: "navigator", description: "", model: "anthropic/claude-sonnet-4-5", allowedTools: ["browser_navigate"] } as unknown as AgentConfig;
 const ctx = { polpoDir: "/proj/.polpo" } as any;
 
