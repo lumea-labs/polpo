@@ -2,7 +2,7 @@ export * from "@polpo-ai/core/types";
 export * from "./events.js";
 export { VALID_TRANSITIONS, isValidTransition, assertValidTransition } from "@polpo-ai/core/state-machine";
 export type { TaskStore } from "@polpo-ai/core/task-store";
-export type { AgentHandle } from "./adapter.js";
+export type { AgentHandle } from "@polpo-ai/core/adapter";
 export type { RunStore, RunRecord, RunStatus } from "@polpo-ai/core/run-store";
 export type { ConfigStore } from "@polpo-ai/core/config-store";
 export type { MemoryStore } from "@polpo-ai/core/memory-store";

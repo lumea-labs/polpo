@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { buildSystemPrompt } from "../adapters/engine.js";
+import { buildSystemPrompt } from "../adapters/spawn-helpers.js";
 import { createTestAgent } from "./fixtures.js";
 import type { AgentConfig } from "@polpo-ai/core/types";
 

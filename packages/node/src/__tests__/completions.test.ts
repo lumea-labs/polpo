@@ -34,8 +34,8 @@ import {
 // The active mock model — tests swap this via setMockModel().
 let activeMockModel: MockLanguageModelV3 = mockTextModel("Default mock response.");
 
-vi.mock("../llm/pi-client.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../llm/pi-client.js")>();
+vi.mock("@polpo-ai/llm", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@polpo-ai/llm")>();
   return {
     ...actual,
     resolveModel: () => mockResolvedModel(activeMockModel),

@@ -72,7 +72,8 @@ export type OnCompactionFn = (event: CompactionEvent) => void;
 
 export interface CompactionInput {
   systemPrompt: string;
-  messages: any[]; // AgentMessage[] from pi-agent-core
+  /** Conversation history (AI SDK ModelMessage[] shape). */
+  messages: any[];
   tools?: any[];
   config: CompactionConfig;
   summarize: SummarizeFn;

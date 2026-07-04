@@ -7,7 +7,7 @@
  */
 
 import { Type } from "@sinclair/typebox";
-import type { PolpoTool as AgentTool } from "@polpo-ai/core";
+import type { PolpoTool } from "@polpo-ai/core";
 import type { MemoryStore } from "@polpo-ai/core";
 import { agentMemoryScope } from "@polpo-ai/core";
 
@@ -50,10 +50,10 @@ const MemoryUpdateSchema = Type.Object({
 export function createMemoryTools(
   store: MemoryStore,
   agent: string,
-): AgentTool<any>[] {
+): PolpoTool<any>[] {
   const scope = agentMemoryScope(agent);
 
-  const memoryGet: AgentTool<typeof MemoryGetSchema> = {
+  const memoryGet: PolpoTool<typeof MemoryGetSchema> = {
     name: "memory_get",
     label: "Read Memory",
     description:
@@ -70,7 +70,7 @@ export function createMemoryTools(
     },
   };
 
-  const memorySave: AgentTool<typeof MemorySaveSchema> = {
+  const memorySave: PolpoTool<typeof MemorySaveSchema> = {
     name: "memory_save",
     label: "Save Memory",
     description:
@@ -87,7 +87,7 @@ export function createMemoryTools(
     },
   };
 
-  const memoryAppend: AgentTool<typeof MemoryAppendSchema> = {
+  const memoryAppend: PolpoTool<typeof MemoryAppendSchema> = {
     name: "memory_append",
     label: "Append to Memory",
     description:
@@ -103,7 +103,7 @@ export function createMemoryTools(
     },
   };
 
-  const memoryUpdate: AgentTool<typeof MemoryUpdateSchema> = {
+  const memoryUpdate: PolpoTool<typeof MemoryUpdateSchema> = {
     name: "memory_update",
     label: "Update Memory",
     description:

@@ -9,7 +9,7 @@
  */
 
 import type { AgentConfig, AgentActivity, Task, TaskOutcome, OutcomeType } from "@polpo-ai/core/types";
-import type { SpawnContext } from "../core/adapter.js";
+import type { SpawnContext } from "@polpo-ai/core/adapter";
 import { resolveAgentVault } from "../vault/index.js";
 import { buildAgentSystemPrompt } from "@polpo-ai/core";
 
@@ -24,7 +24,7 @@ export function createActivity(): AgentActivity {
   };
 }
 import { join, resolve, sep } from "node:path";
-import { resolveModel, enforceModelAllowlist, mapReasoningToProviderOptions } from "../llm/pi-client.js";
+import { resolveModel, enforceModelAllowlist, mapReasoningToProviderOptions } from "@polpo-ai/llm";
 import { createSystemTools, createAllTools } from "@polpo-ai/tools";
 import { NodeFileSystem } from "./node-filesystem.js";
 import { NodeShell } from "./node-shell.js";

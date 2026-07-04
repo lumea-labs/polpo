@@ -18,7 +18,7 @@
 
 import { resolve, dirname, extname } from "node:path";
 import { Type } from "@sinclair/typebox";
-import type { PolpoTool as AgentTool, ToolResult as AgentToolResult } from "@polpo-ai/core";
+import type { PolpoTool as PolpoTool, ToolResult as AgentToolResult } from "@polpo-ai/core";
 import type { FileSystem } from "@polpo-ai/core/filesystem";
 import {
   parseModelString,
@@ -164,7 +164,7 @@ function createGenerateTool(
   fs: FileSystem,
   configuredModel: string | undefined,
   vault?: ResolvedVault,
-): AgentTool<typeof ImageGenerateSchema> {
+): PolpoTool<typeof ImageGenerateSchema> {
   return {
     name: "image_generate",
     label: "Generate Image",
@@ -302,7 +302,7 @@ function createVideoGenerateTool(
   fs: FileSystem,
   configuredModel: string | undefined,
   vault?: ResolvedVault,
-): AgentTool<typeof VideoGenerateSchema> {
+): PolpoTool<typeof VideoGenerateSchema> {
   return {
     name: "video_generate",
     label: "Generate Video",
@@ -422,7 +422,7 @@ function createAnalyzeTool(
   fs: FileSystem,
   configuredModel: string | undefined,
   vault?: ResolvedVault,
-): AgentTool<typeof ImageAnalyzeSchema> {
+): PolpoTool<typeof ImageAnalyzeSchema> {
   return {
     name: "image_analyze",
     label: "Analyze Image",
@@ -548,7 +548,7 @@ export function createImageTools(
   allowedTools?: string[],
   vault?: ResolvedVault,
   fs?: FileSystem,
-): AgentTool<any>[] {
+): PolpoTool<any>[] {
   const opts: CreateImageToolsOptions = typeof cwd === "string"
     ? { cwd, allowedPaths, allowedTools, vault, fs }
     : cwd;
@@ -556,7 +556,7 @@ export function createImageTools(
   const sandbox = resolveAllowedPaths(opts.cwd, opts.allowedPaths);
   const _fs = opts.fs ?? new NodeFileSystem();
 
-  const factories: Record<ImageToolName, () => AgentTool<any>> = {
+  const factories: Record<ImageToolName, () => PolpoTool<any>> = {
     image_generate: () => createGenerateTool(opts.cwd, sandbox, _fs, opts.imageModel, opts.vault),
     image_analyze:  () => createAnalyzeTool(opts.cwd, sandbox, _fs, opts.visionModel, opts.vault),
     video_generate: () => createVideoGenerateTool(opts.cwd, sandbox, _fs, opts.videoModel, opts.vault),

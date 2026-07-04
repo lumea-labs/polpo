@@ -11,7 +11,7 @@
 
 import { resolve, dirname } from "node:path";
 import { Type } from "@sinclair/typebox";
-import type { PolpoTool as AgentTool, ToolResult as AgentToolResult } from "@polpo-ai/core";
+import type { PolpoTool as PolpoTool, ToolResult as AgentToolResult } from "@polpo-ai/core";
 import type { FileSystem } from "@polpo-ai/core/filesystem";
 import { NodeFileSystem } from "./adapters/node-filesystem.js";
 import { resolveAllowedPaths, assertPathAllowed } from "./path-sandbox.js";
@@ -59,7 +59,7 @@ const DocxReadSchema = Type.Object({
   ], { description: "Output format: 'text' (plain), 'markdown', or 'html'. Default: 'text'" })),
 });
 
-function createDocxReadTool(cwd: string, sandbox: string[], fs: FileSystem): AgentTool<typeof DocxReadSchema> {
+function createDocxReadTool(cwd: string, sandbox: string[], fs: FileSystem): PolpoTool<typeof DocxReadSchema> {
   return {
     name: "docx_read",
     label: "Read DOCX",
@@ -145,7 +145,7 @@ const DocxCreateSchema = Type.Object({
   ),
 });
 
-function createDocxCreateTool(cwd: string, sandbox: string[], fs: FileSystem): AgentTool<typeof DocxCreateSchema> {
+function createDocxCreateTool(cwd: string, sandbox: string[], fs: FileSystem): PolpoTool<typeof DocxCreateSchema> {
   return {
     name: "docx_create",
     label: "Create DOCX",
@@ -274,11 +274,11 @@ export const ALL_DOCX_TOOL_NAMES: DocxToolName[] = ["docx_read", "docx_create"];
  * @param allowedPaths - Sandbox paths
  * @param allowedTools - Optional filter
  */
-export function createDocxTools(cwd: string, allowedPaths?: string[], allowedTools?: string[], fs?: FileSystem): AgentTool<any>[] {
+export function createDocxTools(cwd: string, allowedPaths?: string[], allowedTools?: string[], fs?: FileSystem): PolpoTool<any>[] {
   const sandbox = resolveAllowedPaths(cwd, allowedPaths);
   const _fs = fs ?? new NodeFileSystem();
 
-  const factories: Record<DocxToolName, () => AgentTool<any>> = {
+  const factories: Record<DocxToolName, () => PolpoTool<any>> = {
     docx_read: () => createDocxReadTool(cwd, sandbox, _fs),
     docx_create: () => createDocxCreateTool(cwd, sandbox, _fs),
   };

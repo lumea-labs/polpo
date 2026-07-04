@@ -626,10 +626,6 @@ export interface RunnerConfig {
   emailAllowedDomains?: string[];
   /** Global reasoning level from settings — used as fallback for agents that don't specify one. */
   reasoning?: ReasoningLevel;
-  /** WhatsApp message DB path (for whatsapp_* agent tools). */
-  whatsappDbPath?: string;
-  /** WhatsApp Baileys profile path (for whatsapp_send — creates a temporary connection). */
-  whatsappProfilePath?: string;
   /**
    * Provider overrides from polpo.json (custom baseUrl endpoints: Ollama,
    * vLLM, proxies). The runner subprocess never reads polpo.json, so the

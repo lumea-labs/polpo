@@ -3,7 +3,7 @@ import { OpenAPIHono } from "@hono/zod-openapi";
 import { cors } from "hono/cors";
 import { join } from "node:path";
 import { projectLoopConfigSchema } from "@polpo-ai/core/schemas";
-import { buildSystemPrompt } from "../adapters/engine.js";
+import { buildSystemPrompt } from "../adapters/spawn-helpers.js";
 // NodeFileSystem no longer instantiated here — use orchestrator's getFs() instead
 import type { Orchestrator } from "../core/orchestrator.js";
 import type { SSEBridge } from "./sse-bridge.js";
@@ -104,7 +104,7 @@ export function createApp(orchestrator: Orchestrator, sseBridge: SSEBridge, opts
     getStore: () => o.getStore(),
     emit: (event: string, data: any) => o.emit(event as any, data),
     resolveAgentModel: async (agentConfig: any, reasoning?: string) => {
-      const { resolveModel, mapReasoningToProviderOptions } = await import("../llm/pi-client.js");
+      const { resolveModel, mapReasoningToProviderOptions } = await import("@polpo-ai/llm");
       const m = resolveModel(agentConfig.model, { gateway: o.getGatewayConfig() });
       const r = agentConfig.reasoning ?? reasoning;
       const providerOptions = mapReasoningToProviderOptions(m.provider, r, m.maxTokens);

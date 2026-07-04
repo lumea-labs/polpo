@@ -8,7 +8,7 @@
  */
 
 import { Type } from "@sinclair/typebox";
-import type { PolpoTool as AgentTool, SearchProvider, SearchResult } from "@polpo-ai/core";
+import type { PolpoTool as PolpoTool, SearchProvider, SearchResult } from "@polpo-ai/core";
 
 const DEFAULT_NUM_RESULTS = 5;
 
@@ -47,7 +47,7 @@ const SearchWebSchema = Type.Object({
   endPublishedDate: Type.Optional(Type.String({ description: "Only results published before this date (ISO format)" })),
 });
 
-function createSearchWebTool(provider: SearchProvider): AgentTool<typeof SearchWebSchema> {
+function createSearchWebTool(provider: SearchProvider): PolpoTool<typeof SearchWebSchema> {
   return {
     name: "search_web",
     label: "Web Search",
@@ -88,7 +88,7 @@ const FindSimilarSchema = Type.Object({
   excludeDomains: Type.Optional(Type.Array(Type.String(), { description: "Exclude results from these domains" })),
 });
 
-function createFindSimilarTool(provider: SearchProvider): AgentTool<typeof FindSimilarSchema> {
+function createFindSimilarTool(provider: SearchProvider): PolpoTool<typeof FindSimilarSchema> {
   return {
     name: "search_find_similar",
     label: "Find Similar Pages",
@@ -135,8 +135,8 @@ export const ALL_SEARCH_TOOL_NAMES: readonly SearchToolName[] = ["search_web", "
 export function createSearchTools(
   provider: SearchProvider,
   allowedTools?: string[],
-): AgentTool<any>[] {
-  const tools: AgentTool<any>[] = [createSearchWebTool(provider)];
+): PolpoTool<any>[] {
+  const tools: PolpoTool<any>[] = [createSearchWebTool(provider)];
   if (provider.findSimilar) {
     tools.push(createFindSimilarTool(provider));
   }

@@ -9,7 +9,7 @@
 
 import type { Task, ModelConfig } from "@polpo-ai/core/types";
 import type { Orchestrator } from "./orchestrator.js";
-import { queryText, resolveModelSpec } from "../llm/pi-client.js";
+import { queryText, resolveModelSpec } from "@polpo-ai/llm";
 import { withRetry } from "../llm/retry.js";
 
 /** Inline query helper (replaces deleted query.ts) */

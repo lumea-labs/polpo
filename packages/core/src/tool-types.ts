@@ -1,6 +1,4 @@
 /**
- * Polpo-owned tool interface — decouples tools from pi-agent-core.
- * Structurally identical to pi-agent-core's AgentTool so migration
  * is a pure import swap with zero runtime changes.
  */
 import type { TSchema, Static } from "@sinclair/typebox";

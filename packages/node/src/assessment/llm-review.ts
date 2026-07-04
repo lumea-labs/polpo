@@ -34,8 +34,8 @@ import { DEFAULT_DIMENSIONS, buildRubricSection, computeWeightedScore, computeMe
 import { validateReviewPayload, type ValidatedReviewPayload } from "./schemas.js";
 import { ReviewPayloadSchema } from "@polpo-ai/core/assessment-schemas";
 import { withRetry } from "../llm/retry.js";
-import { resolveModel, mapReasoningToProviderOptions } from "../llm/pi-client.js";
-import type { ResolvedModel } from "../llm/pi-client.js";
+import { resolveModel, mapReasoningToProviderOptions } from "@polpo-ai/llm";
+import type { ResolvedModel } from "@polpo-ai/llm";
 import type { ReasoningLevel } from "@polpo-ai/core/types";
 
 export type LLMQueryFn = (prompt: string, cwd: string) => Promise<string>;

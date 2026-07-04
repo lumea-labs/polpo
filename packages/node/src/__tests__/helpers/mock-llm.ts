@@ -22,7 +22,7 @@ import type {
   LanguageModelV3Usage,
   LanguageModelV3FinishReason,
 } from "@ai-sdk/provider";
-import type { ResolvedModel } from "../../llm/pi-client.js";
+import type { ResolvedModel } from "@polpo-ai/llm";
 
 // Re-export AI SDK test utilities for convenience
 export { MockLanguageModelV3, simulateReadableStream, mockValues };

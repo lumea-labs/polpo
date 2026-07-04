@@ -17,7 +17,7 @@
 
 import { resolve, dirname, extname } from "node:path";
 import { Type } from "@sinclair/typebox";
-import type { PolpoTool as AgentTool, ToolResult as AgentToolResult } from "@polpo-ai/core";
+import type { PolpoTool as PolpoTool, ToolResult as AgentToolResult } from "@polpo-ai/core";
 import type { FileSystem } from "@polpo-ai/core/filesystem";
 import type { Shell } from "@polpo-ai/core";
 import {
@@ -85,7 +85,7 @@ function createTranscribeTool(
   fs: FileSystem,
   configuredModel: string | undefined,
   vault?: ResolvedVault,
-): AgentTool<typeof AudioTranscribeSchema> {
+): PolpoTool<typeof AudioTranscribeSchema> {
   return {
     name: "audio_transcribe",
     label: "Transcribe Audio",
@@ -227,7 +227,7 @@ function createSpeakTool(
   shell: Shell,
   configuredModel: string | undefined,
   vault?: ResolvedVault,
-): AgentTool<typeof AudioSpeakSchema> {
+): PolpoTool<typeof AudioSpeakSchema> {
   return {
     name: "audio_speak",
     label: "Text to Speech",
@@ -374,7 +374,7 @@ export function createAudioTools(
   vault?: ResolvedVault,
   fs?: FileSystem,
   shell?: Shell,
-): AgentTool<any>[] {
+): PolpoTool<any>[] {
   const opts: CreateAudioToolsOptions = typeof cwd === "string"
     ? { cwd, allowedPaths, allowedTools, vault, fs, shell }
     : cwd;
@@ -383,7 +383,7 @@ export function createAudioTools(
   const _fs = opts.fs ?? new NodeFileSystem();
   const _shell = opts.shell ?? new NodeShell();
 
-  const factories: Record<AudioToolName, () => AgentTool<any>> = {
+  const factories: Record<AudioToolName, () => PolpoTool<any>> = {
     audio_transcribe: () => createTranscribeTool(opts.cwd, sandbox, _fs, opts.transcribeModel, opts.vault),
     audio_speak: () => createSpeakTool(opts.cwd, sandbox, _fs, _shell, opts.ttsModel, opts.vault),
   };

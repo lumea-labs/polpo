@@ -28,11 +28,11 @@ import { createExcelTools } from "../excel-tools.js";
 import { createPdfTools } from "../pdf-tools.js";
 import { createDocxTools } from "../docx-tools.js";
 import type { ResolvedVault } from "../types.js";
-import type { PolpoTool as AgentTool } from "@polpo-ai/core";
+import type { PolpoTool } from "@polpo-ai/core";
 
 let cwd: string;
 
-function pick(tools: AgentTool<any>[], name: string): AgentTool<any> {
+function pick(tools: PolpoTool<any>[], name: string): PolpoTool<any> {
   const t = tools.find((x) => x.name === name);
   if (!t) throw new Error(`Tool '${name}' not registered. Got: ${tools.map((x) => x.name).join(", ")}`);
   return t;
@@ -55,7 +55,7 @@ afterEach(() => {
 // register_outcome
 // ────────────────────────────────────────────────────────────
 describe("register_outcome", () => {
-  function build(): AgentTool<any> {
+  function build(): PolpoTool<any> {
     const tools = createOutcomeTools(cwd, [cwd], ["register_outcome"], cwd);
     return pick(tools, "register_outcome");
   }

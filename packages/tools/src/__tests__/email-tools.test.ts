@@ -25,7 +25,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { PolpoTool as AgentTool } from "@polpo-ai/core";
+import type { PolpoTool } from "@polpo-ai/core";
 import type { ResolvedVault } from "../types.js";
 
 // ─── Fakes ──────────────────────────────────────────────────
@@ -182,7 +182,7 @@ const { createEmailTools } = await import("../email-tools.js");
 // ─── Helpers ────────────────────────────────────────────────
 let cwd: string;
 
-function pick(tools: AgentTool<any>[], name: string): AgentTool<any> {
+function pick(tools: PolpoTool<any>[], name: string): PolpoTool<any> {
   const t = tools.find((x) => x.name === name);
   if (!t) throw new Error(`Tool '${name}' not registered: ${tools.map(x => x.name).join(", ")}`);
   return t;
