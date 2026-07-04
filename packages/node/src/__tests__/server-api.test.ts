@@ -1073,7 +1073,7 @@ describe("Chat Sessions API", () => {
   test("session lifecycle: create, list, get messages, delete", async () => {
     // Seed a session via orchestrator (avoids LLM dependency)
     const sessionStore = orchestrator.getSessionStore()!;
-    const sessionId = await sessionStore.create("Test session");
+    const sessionId = await sessionStore.create({ title: "Test session" });
     await sessionStore.addMessage(sessionId, "user", "Hello from test");
     await sessionStore.addMessage(sessionId, "assistant", "Hi! How can I help?");
 

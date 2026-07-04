@@ -586,15 +586,9 @@ export const AddTeamSchema = z.object({
 
 // ── Notification channel config schema ─────────────────────────────────
 
-const ChannelGatewaySchema = z.object({
-  dmPolicy: z.enum(["pairing", "allowlist", "open", "disabled"]).optional(),
-  allowFrom: z.array(z.string()).optional(),
-  enableInbound: z.boolean().optional(),
-  sessionIdleMinutes: z.number().int().min(1).optional(),
-}).strict();
 
 export const NotificationChannelConfigSchema = z.object({
-  type: z.enum(["slack", "email", "telegram", "whatsapp", "webhook"]),
+  type: z.enum(["slack", "email", "telegram", "webhook"]),
   // Slack
   webhookUrl: z.string().url().optional(),
   // Email
@@ -608,13 +602,9 @@ export const NotificationChannelConfigSchema = z.object({
   // Telegram
   botToken: z.string().optional(),
   chatId: z.string().optional(),
-  // WhatsApp
-  profileDir: z.string().optional(),
   // Webhook
   url: z.string().url().optional(),
   headers: z.record(z.string(), z.string()).optional(),
-  // Gateway
-  gateway: ChannelGatewaySchema.optional(),
 });
 
 // ── Direct notification schema ─────────────────────────────────────────

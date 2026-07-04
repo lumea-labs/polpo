@@ -34,7 +34,7 @@ export interface MissionStore {
  * MissionStore contract. Reads degrade gracefully (undefined / empty);
  * writes on a store without mission support throw a descriptive error.
  */
-export function taskStoreMissionAdapter(store: TaskStore): MissionStore {
+export function taskStoreMissionAdapter(store: TaskStore & Partial<MissionStore>): MissionStore {
   const unsupported = (): never => {
     throw new Error("Store does not support missions");
   };
@@ -57,7 +57,8 @@ export function taskStoreMissionAdapter(store: TaskStore): MissionStore {
  * implement the mission block).
  */
 export function resolveMissionStore(ctx: { missionStore?: MissionStore; registry: TaskStore }): MissionStore {
-  return ctx.missionStore ?? taskStoreMissionAdapter(ctx.registry);
+  // The legacy file/drizzle task stores still carry the mission methods on the class.
+  return ctx.missionStore ?? taskStoreMissionAdapter(ctx.registry as TaskStore & Partial<MissionStore>);
 }
 
 /**

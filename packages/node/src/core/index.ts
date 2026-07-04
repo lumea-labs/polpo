@@ -52,21 +52,6 @@ export type { ValidationResult } from "@polpo-ai/core";
 export type { PlaybookStore } from "@polpo-ai/core/playbook-store";
 
 // Backward-compat aliases (deprecated)
-export {
-  discoverPlaybooks as discoverTemplates,
-  loadPlaybook as loadTemplate,
-  savePlaybook as saveTemplate,
-  deletePlaybook as deleteTemplate,
-} from "@polpo-ai/file-stores";
-export {
-  instantiatePlaybook as instantiateTemplate,
-  validatePlaybookDefinition as validateTemplateDefinition,
-} from "@polpo-ai/core";
-export type {
-  PlaybookParameter as TemplateParameter,
-  PlaybookDefinition as TemplateDefinition,
-  PlaybookInfo as TemplateInfo,
-} from "@polpo-ai/core/playbook-store";
 
 // Ink Registry
 export {
