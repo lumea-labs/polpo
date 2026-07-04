@@ -51,6 +51,14 @@ function newStats() {
     llmBusyMs: 0, // sum of artificial latency applied
     firstRequestAt: null,
     lastRequestAt: null,
+    // Durable-execution observability (crash_resume): how many times each
+    // turn was requested. A resumed session must NOT re-request completed
+    // turns — turnRequests[t] > 1 for t ≤ checkpoint means re-execution.
+    turnRequests: {},
+    // Highest bench call-id turn seen INSIDE an incoming request (i.e. in
+    // the conversation history the runtime sent us). After a crash+resume,
+    // this proves the seeded checkpoint history actually reached the model.
+    maxHistoryTurn: 0,
   };
 }
 
@@ -409,6 +417,13 @@ export function createMockLlm({ port = 8377, host = "127.0.0.1", quiet = true } 
       stats.llmBusyMs += params.latencyMs;
     }
 
+    // History observability: highest bench call-id turn present in the
+    // INCOMING request (echoed/seeded conversation history).
+    const scannedHistory = scanCallIds(rawJson);
+    if (scannedHistory && scannedHistory.maxTurn > stats.maxHistoryTurn) {
+      stats.maxHistoryTurn = scannedHistory.maxTurn;
+    }
+
     let decision;
     if (!hasTools(body)) {
       // Tool-less request ⇒ summarize/utility call (e.g. context compaction).
@@ -417,6 +432,7 @@ export function createMockLlm({ port = 8377, host = "127.0.0.1", quiet = true } 
       decision = { kind: "text", text: summarizeText(rawText.match(/\[BENCH[^\]]+\]/)?.[0]) };
     } else {
       const turn = computeTurn(body, rawJson);
+      stats.turnRequests[turn] = (stats.turnRequests[turn] ?? 0) + 1;
       decision = decide(sid, params, turn);
       if (decision.kind === "tools") {
         stats.turnsServed = Math.max(stats.turnsServed, turn);

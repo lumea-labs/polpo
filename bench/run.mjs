@@ -6,6 +6,7 @@
  *   node bench/run.mjs [--label <label>] [--only <names,csv>]
  *                      [--mock-port 8377] [--port 8378]
  *                      [--target <url>] [--mock-url <url>]
+ *                      [--execution-mode subprocess|in-process]
  *                      [--keep]
  *
  * Local mode (default, no --target):
@@ -21,6 +22,17 @@
  *   http://127.0.0.1:8377). This is how the same suite runs against a sandbox
  *   or a different runtime branch.
  *
+ * Execution mode (--execution-mode, adaptive isolation — Phase C):
+ *   Runs the SAME scenarios under a chosen task-execution backend so every
+ *   release measures BOTH. Local mode writes `settings.taskExecution` into
+ *   the throwaway project (settings tier); target mode sends the per-task
+ *   `executionMode` field on POST /tasks (task tier — remote settings can't
+ *   be rewritten). Either way the RESOLVED mode is verified against the live
+ *   run record (GET /tasks/:id/activity → run.executionMode + pid sign:
+ *   negative = in-process synthetic pid) — an invariant, not just a label.
+ *   Without the flag nothing is sent or asserted (older runtimes stay
+ *   benchmarkable); the observed mode is still reported when available.
+ *
  * Only talks to public contracts: the task REST API + the mock's /bench/stats.
  */
 
@@ -34,6 +46,8 @@ import { createMockLlm } from "./mock-llm.mjs";
 import { scenarios as allScenarios, selectScenarios } from "./scenarios.mjs";
 import { buildDirective, genSid } from "./lib/directive.mjs";
 import { PolpoClient, MockClient } from "./lib/client.mjs";
+import { writeProject } from "./lib/project.mjs";
+import { runCrashResume } from "./lib/crash-resume.mjs";
 
 const BENCH_DIR = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(BENCH_DIR, "..");
@@ -41,7 +55,7 @@ const REPO_ROOT = resolve(BENCH_DIR, "..");
 // ─── Args ─────────────────────────────────────────────────────────────────────
 
 function parseArgs(argv) {
-  const args = { label: "run", mockPort: 8377, port: 8378, target: null, mockUrl: null, only: null, keep: false };
+  const args = { label: "run", mockPort: 8377, port: 8378, target: null, mockUrl: null, only: null, keep: false, executionMode: null };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--label") args.label = argv[++i];
@@ -51,61 +65,20 @@ function parseArgs(argv) {
     else if (a === "--mock-url") args.mockUrl = argv[++i];
     else if (a === "--only") args.only = argv[++i];
     else if (a === "--keep") args.keep = true;
-    else if (a === "--help" || a === "-h") {
-      console.log("Usage: node bench/run.mjs [--label <label>] [--target <url>] [--mock-port 8377] [--port 8378] [--only <names,csv>] [--keep]");
+    else if (a === "--execution-mode") {
+      args.executionMode = argv[++i];
+      if (!["subprocess", "in-process"].includes(args.executionMode)) {
+        console.error(`--execution-mode must be "subprocess" or "in-process", got "${args.executionMode}"`);
+        process.exit(1);
+      }
+    } else if (a === "--help" || a === "-h") {
+      console.log(
+        "Usage: node bench/run.mjs [--label <label>] [--target <url>] [--mock-port 8377] [--port 8378] [--only <names,csv>] [--execution-mode subprocess|in-process] [--keep]",
+      );
       process.exit(0);
     }
   }
   return args;
-}
-
-// ─── Local environment setup ──────────────────────────────────────────────────
-
-function writeProject(dir, mockPort) {
-  const polpoDir = join(dir, ".polpo");
-  mkdirSync(polpoDir, { recursive: true });
-  writeFileSync(
-    join(polpoDir, "polpo.json"),
-    JSON.stringify(
-      {
-        project: "polpo-bench",
-        settings: {
-          storage: "file",
-          maxRetries: 0, // failures must be terminal — no silent retries mid-benchmark
-          workDir: ".",
-          logLevel: "quiet",
-        },
-        // NOTE: the provider is named "openai" (with a baseUrl override) instead
-        // of a dedicated "bench" provider because the runtime's pre-spawn
-        // validation (validateProviderKeys) only accepts providers present in
-        // the static PROVIDER_ENV_MAP — unknown custom providers can never
-        // spawn task agents. See bench/README.md, "Runtime findings".
-        providers: {
-          openai: { baseUrl: `http://127.0.0.1:${mockPort}/v1` },
-        },
-      },
-      null,
-      2,
-    ),
-  );
-  // FileAgentStore format: [{ agent: AgentConfig, teamName }]
-  writeFileSync(
-    join(polpoDir, "agents.json"),
-    JSON.stringify(
-      [
-        {
-          agent: { name: "bench-agent", role: "developer", model: "openai/mock-1", maxTurns: 250 },
-          teamName: "bench",
-        },
-        {
-          agent: { name: "bench-capped", role: "developer", model: "openai/mock-1", maxTurns: 15 },
-          teamName: "bench",
-        },
-      ],
-      null,
-      2,
-    ),
-  );
 }
 
 /**
@@ -164,21 +137,36 @@ function checkInvariants(scenario, outcome) {
   if (inv.maxWallMs !== undefined) {
     push("max_wall", outcome.wallMs <= inv.maxWallMs, `wall ${outcome.wallMs}ms vs max ${inv.maxWallMs}ms`);
   }
+  // Adaptive isolation: the RESOLVED mode on the live run record must match
+  // the requested one — pid sign is the independent corroboration (negative
+  // = in-process synthetic pid, positive = OS subprocess).
+  if (inv.executionMode !== undefined) {
+    const run = outcome.run;
+    const pidOk = run ? (inv.executionMode === "in-process" ? run.pid < 0 : run.pid > 0) : false;
+    push(
+      "execution_mode",
+      run?.executionMode === inv.executionMode && pidOk,
+      run
+        ? `run record: executionMode=${run.executionMode}, pid=${run.pid} (expected ${inv.executionMode})`
+        : "live run record never observed (cannot verify execution mode)",
+    );
+  }
   return checks;
 }
 
-async function runSingleTask(polpo, mock, scenario, sid, pollIntervalMs) {
-  const created = await createScenarioTask(polpo, scenario, sid);
+async function runSingleTask(polpo, mock, scenario, sid, pollIntervalMs, runOpts) {
+  const created = await createScenarioTask(polpo, scenario, sid, 0, runOpts);
   const polled = await polpo.pollTask(created.taskId, created.createdAtMs, {
     timeoutMs: scenario.timeoutMs,
     intervalMs: pollIntervalMs,
+    captureRun: true,
   });
   if (polled.timedOut) await polpo.killTask(created.taskId);
   const mockStats = await mock.stats(sid);
   return { ...created, mockStats, ...polled };
 }
 
-async function createScenarioTask(polpo, scenario, sid, taskIndex = 0) {
+async function createScenarioTask(polpo, scenario, sid, taskIndex = 0, runOpts = {}) {
   const directive = buildDirective(sid, scenario.directive);
   const description =
     `${directive}\n\n` +
@@ -190,21 +178,23 @@ async function createScenarioTask(polpo, scenario, sid, taskIndex = 0) {
     description,
     assignTo: scenario.agent,
     expectations: [],
+    // Target mode: per-task executionMode override (task > agent > settings).
+    ...(runOpts.taskExecutionMode ? { executionMode: runOpts.taskExecutionMode } : {}),
     ...(scenario.taskOpts ?? {}),
   });
   return { sid, taskId: task.id, createdAtMs, postMs: Date.now() - createdAtMs };
 }
 
-async function runScenario(polpo, mock, scenario, pollIntervalMs) {
+async function runScenario(polpo, mock, scenario, pollIntervalMs, runOpts = {}) {
   const startedAt = Date.now();
 
   if (scenario.concurrency && scenario.concurrency > 1) {
     // Fire all creations together, then poll them all with ONE shared
     // GET /tasks loop (rate-limit friendly, identical precision).
     const created = await Promise.all(
-      Array.from({ length: scenario.concurrency }, (_, i) => createScenarioTask(polpo, scenario, genSid(), i)),
+      Array.from({ length: scenario.concurrency }, (_, i) => createScenarioTask(polpo, scenario, genSid(), i, runOpts)),
     );
-    const polled = await polpo.pollMany(created, { timeoutMs: scenario.timeoutMs, intervalMs: pollIntervalMs * 2 });
+    const polled = await polpo.pollMany(created, { timeoutMs: scenario.timeoutMs, intervalMs: pollIntervalMs * 2, captureRun: true });
     const runs = [];
     for (let i = 0; i < created.length; i++) {
       const c = created[i];
@@ -246,12 +236,13 @@ async function runScenario(polpo, mock, scenario, pollIntervalMs) {
         terminal: r.task?.status,
         llm_ms: r.mockStats?.stats?.llmBusyMs ?? null,
         turns: r.mockStats?.stats?.turnsServed ?? null,
+        execution_mode: r.run?.executionMode ?? null,
       })),
       elapsed_ms: Date.now() - startedAt,
     };
   }
 
-  const run = await runSingleTask(polpo, mock, scenario, genSid(), pollIntervalMs);
+  const run = await runSingleTask(polpo, mock, scenario, genSid(), pollIntervalMs, runOpts);
   const checks = checkInvariants(scenario, run);
   const stats = run.mockStats?.stats;
   const llmMs = stats?.llmBusyMs ?? null;
@@ -284,6 +275,7 @@ async function runScenario(polpo, mock, scenario, pollIntervalMs) {
       outcome_calls: stats?.outcomeCallsEmitted ?? null,
       summarize_calls: stats?.summarizeCalls ?? null,
       post_ms: run.postMs,
+      execution_mode: run.run?.executionMode ?? null,
     },
     timeline: run.timeline,
     checks,
@@ -336,7 +328,24 @@ function printTable(results) {
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
-  const selected = selectScenarios(args.only);
+  let selected = selectScenarios(args.only);
+
+  // crash_resume drives its own server lifecycle (SIGKILL + restart) — it
+  // cannot run against a --target server the harness doesn't own.
+  if (args.target && selected.some((s) => s.special === "crash_resume")) {
+    if (args.only && args.only.split(",").map((s) => s.trim()).includes("crash_resume")) {
+      console.error("[bench] crash_resume requires local mode (it SIGKILLs and restarts its own server) — remove --target or drop it from --only");
+      process.exit(1);
+    }
+    console.log("[bench] crash_resume skipped in target mode (needs local server lifecycle control)");
+    selected = selected.filter((s) => s.special !== "crash_resume");
+  }
+
+  // Adaptive isolation: when a mode is requested, verifying it on the live
+  // run record becomes an invariant of EVERY scenario, not a label.
+  if (args.executionMode) {
+    selected = selected.map((s) => ({ ...s, invariants: { ...s.invariants, executionMode: args.executionMode } }));
+  }
 
   let mockHandle = null;
   let polpoServer = null;
@@ -367,7 +376,9 @@ async function main() {
         throw new Error(`dist not built: ${serverEntry} missing. Run pnpm build first.`);
       }
       projectDir = mkdtempSync(join(tmpdir(), "polpo-bench-"));
-      writeProject(projectDir, args.mockPort);
+      // Local mode carries the requested execution mode through the settings
+      // tier (settings.taskExecution) — the same scenarios, different backend.
+      writeProject(projectDir, args.mockPort, { executionMode: args.executionMode });
       injectRunnerEnv(args.mockPort);
 
       mockHandle = createMockLlm({ port: args.mockPort, quiet: true });
@@ -397,11 +408,28 @@ async function main() {
     const prefix = await polpo.probe();
     console.log(`[bench] api:     ${targetUrl}${prefix}`);
 
+    // Target mode: settings can't be rewritten remotely — request the mode
+    // per task instead (task tier of the same resolver). Local mode already
+    // carries it via settings; sending it per task too would only re-test
+    // precedence, which is unit-tested in the runtime.
+    const runOpts = { taskExecutionMode: args.target ? args.executionMode : null };
+
     const results = [];
     for (const scenario of selected) {
       process.stdout.write(`[bench] ${scenario.name} ... `);
       try {
-        const result = await runScenario(polpo, mock, scenario, pollIntervalMs);
+        const result =
+          scenario.special === "crash_resume"
+            ? await runCrashResume(scenario, {
+                serverEntry: join(REPO_ROOT, "dist", "server", "index.js"),
+                mock,
+                mockPort: args.mockPort,
+                port: args.port + 1, // own child-hosted server, own port
+                executionMode: args.executionMode,
+                enforceExecutionMode: !!args.executionMode,
+                keep: args.keep,
+              })
+            : await runScenario(polpo, mock, scenario, pollIntervalMs, runOpts);
         results.push(result);
         console.log(`${result.pass ? "PASS" : "FAIL"} (${Math.round(result.elapsed_ms / 1000)}s)`);
       } catch (err) {
@@ -428,6 +456,9 @@ async function main() {
       hostname: hostname(),
       target: args.target ?? "local",
       mode: args.target ? "target" : "local",
+      // Task-execution backend requested for this run (null = runtime default,
+      // i.e. subprocess, with no invariant enforced).
+      executionMode: args.executionMode,
     };
     const resultsDir = join(BENCH_DIR, "results");
     mkdirSync(resultsDir, { recursive: true });
