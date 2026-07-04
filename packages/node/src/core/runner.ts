@@ -17,6 +17,7 @@ import { join } from "node:path";
 import { FileRunStore } from "@polpo-ai/file-stores";
 import { spawnLoopEngine } from "../adapters/loop-engine.js";
 import type { RunStore, RunRecord } from "@polpo-ai/core/run-store";
+import type { LoopResumeState } from "@polpo-ai/core/loop-run-store";
 import type { LogStore } from "@polpo-ai/core/log-store";
 import type { RunnerConfig, TaskResult } from "@polpo-ai/core/types";
 import { sanitizeTranscriptEntry } from "../server/security.js";
@@ -224,8 +225,23 @@ async function main(): Promise<void> {
       // Runner is a subprocess — creates its own fs/shell instances
       fs: new NodeFileSystem(),
       shell: new NodeShell(),
+      // Durable turns: resume checkpoint handed over by orphan recovery,
+      // and the per-turn checkpoint sink (one RunStore write per turn,
+      // best-effort — a flaky store must never fail a healthy run).
+      resumeState: config.resumeState,
+      onTurnCheckpoint: async (state: LoopResumeState) => {
+        try {
+          await runStore.updateResumeState?.(config.runId, state);
+        } catch { /* best effort */ }
+      },
     };
     handle = spawnLoopEngine(config.agent, config.task, config.cwd, spawnCtx);
+    if (config.resumeState) {
+      actLog.logEvent("resuming", {
+        loopName: config.resumeState.loopName,
+        fromTurn: (config.resumeState.turn ?? -1) + 1,
+      });
+    }
     // Propagate the LogStore sessionId onto the agent's activity blob so
     // the poll loop's updateActivity() persists it on every tick. Without
     // this the run record has activity.sessionId = undefined forever, and
