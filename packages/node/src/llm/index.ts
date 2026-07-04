@@ -1,6 +1,5 @@
 export { withRetry, isTransientError } from "./retry.js";
 export type { RetryOptions } from "./retry.js";
-export { buildChatSystemPrompt, buildMissionSystemPrompt, buildTaskPrepPrompt, buildTeamGenPrompt } from "./prompts.js";
 export {
   discoverSkills, parseSkillFrontmatter, loadAgentSkills, assignSkillToAgent, unassignSkillFromAgent, buildSkillPrompt,
   installSkills, removeSkill, createAgentSkill, parseSkillSource, listSkillsWithAssignments,
@@ -24,5 +23,5 @@ export {
   classifyProviderError,
   // Model allowlist
   setModelAllowlist, getModelAllowlist, isModelAllowed, enforceModelAllowlist,
-} from "./pi-client.js";
-export type { ParsedModelSpec, ModelInfo, CostEstimate, ProviderValidationResult } from "./pi-client.js";
+} from "@polpo-ai/llm";
+export type { ParsedModelSpec, ModelInfo, CostEstimate, ProviderValidationResult } from "@polpo-ai/llm";

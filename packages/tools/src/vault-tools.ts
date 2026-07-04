@@ -10,7 +10,7 @@
  */
 
 import { Type } from "@sinclair/typebox";
-import type { PolpoTool as AgentTool } from "@polpo-ai/core";
+import type { PolpoTool } from "@polpo-ai/core";
 import type { ResolvedVault } from "./types.js";
 
 // ─── Tool names ───
@@ -24,7 +24,7 @@ const VaultGetSchema = Type.Object({
   service: Type.String({ description: "Service name to retrieve credentials for (e.g. 'smtp', 'openai', 'stripe')" }),
 });
 
-function createVaultGetTool(vault: ResolvedVault): AgentTool<typeof VaultGetSchema> {
+function createVaultGetTool(vault: ResolvedVault): PolpoTool<typeof VaultGetSchema> {
   return {
     name: "vault_get",
     label: "Get Vault Credentials",
@@ -51,7 +51,7 @@ function createVaultGetTool(vault: ResolvedVault): AgentTool<typeof VaultGetSche
 
 const VaultListSchema = Type.Object({});
 
-function createVaultListTool(vault: ResolvedVault): AgentTool<typeof VaultListSchema> {
+function createVaultListTool(vault: ResolvedVault): PolpoTool<typeof VaultListSchema> {
   return {
     name: "vault_list",
     label: "List Vault Services",
@@ -81,7 +81,7 @@ function createVaultListTool(vault: ResolvedVault): AgentTool<typeof VaultListSc
  * Vault tools are core tools: they are always available to every agent
  * that has a resolved vault, regardless of allowedTools configuration.
  */
-export function createVaultToolsCore(vault: ResolvedVault): AgentTool<any>[] {
+export function createVaultToolsCore(vault: ResolvedVault): PolpoTool<any>[] {
   return [createVaultGetTool(vault), createVaultListTool(vault)];
 }
 
@@ -89,8 +89,8 @@ export function createVaultToolsCore(vault: ResolvedVault): AgentTool<any>[] {
  * Create vault tools for an agent, filtered by allowedTools.
  * @deprecated Use createVaultToolsCore() — vault tools are now core tools (always available).
  */
-export function createVaultTools(vault: ResolvedVault, allowedTools?: string[]): AgentTool<any>[] {
-  const tools: AgentTool<any>[] = [];
+export function createVaultTools(vault: ResolvedVault, allowedTools?: string[]): PolpoTool<any>[] {
+  const tools: PolpoTool<any>[] = [];
   const allowed = (name: string) => !allowedTools || allowedTools.includes(name);
 
   if (allowed("vault_get")) tools.push(createVaultGetTool(vault));

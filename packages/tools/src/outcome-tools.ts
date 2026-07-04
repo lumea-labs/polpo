@@ -13,7 +13,7 @@
 
 import { resolve } from "node:path";
 import { Type } from "@sinclair/typebox";
-import type { PolpoTool as AgentTool } from "@polpo-ai/core";
+import type { PolpoTool } from "@polpo-ai/core";
 import type { FileSystem } from "@polpo-ai/core/filesystem";
 import { resolveAllowedPaths, assertPathAllowed } from "./path-sandbox.js";
 import { NodeFileSystem } from "./adapters/node-filesystem.js";
@@ -62,7 +62,7 @@ function guessMime(filePath: string): string | undefined {
   return EXT_MIME[filePath.slice(dot).toLowerCase()];
 }
 
-function createRegisterOutcomeTool(cwd: string, sandbox: string[], fs: FileSystem, outputDir?: string): AgentTool<typeof RegisterOutcomeSchema> {
+function createRegisterOutcomeTool(cwd: string, sandbox: string[], fs: FileSystem, outputDir?: string): PolpoTool<typeof RegisterOutcomeSchema> {
   // Use outputDir in examples when available so the agent naturally writes there
   const exampleDir = outputDir ? outputDir.replace(/\/$/, "") : "output";
   return {
@@ -189,11 +189,11 @@ export const ALL_OUTCOME_TOOL_NAMES: OutcomeToolName[] = ["register_outcome"];
  * @param outputDir - Per-task output directory for deliverables
  * @param fs - FileSystem implementation (default: NodeFileSystem)
  */
-export function createOutcomeTools(cwd: string, allowedPaths?: string[], allowedTools?: string[], outputDir?: string, fs?: FileSystem): AgentTool<any>[] {
+export function createOutcomeTools(cwd: string, allowedPaths?: string[], allowedTools?: string[], outputDir?: string, fs?: FileSystem): PolpoTool<any>[] {
   const sandbox = resolveAllowedPaths(cwd, allowedPaths);
   const _fs = fs ?? new NodeFileSystem();
 
-  const factories: Record<OutcomeToolName, () => AgentTool<any>> = {
+  const factories: Record<OutcomeToolName, () => PolpoTool<any>> = {
     register_outcome: () => createRegisterOutcomeTool(cwd, sandbox, _fs, outputDir),
   };
 

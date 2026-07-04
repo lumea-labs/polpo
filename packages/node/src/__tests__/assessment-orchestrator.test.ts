@@ -11,8 +11,8 @@ import type { RunRecord } from "@polpo-ai/core/run-store";
 // the inlined queryLLM helpers in assessment-orchestrator.ts and friends.
 const mockQueryText = vi.fn().mockResolvedValue({ text: "{}", usage: undefined, model: undefined });
 
-vi.mock("../llm/pi-client.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../llm/pi-client.js")>();
+vi.mock("@polpo-ai/llm", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@polpo-ai/llm")>();
   return {
     ...actual,
     queryText: (...args: any[]) => mockQueryText(...args),

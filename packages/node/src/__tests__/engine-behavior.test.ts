@@ -23,7 +23,7 @@ import { describe, test, expect, beforeAll, afterAll, vi } from "vitest";
 import { mkdtemp, mkdir, rm, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { ResolvedModel } from "../llm/pi-client.js";
+import type { ResolvedModel } from "@polpo-ai/llm";
 import {
   type MockLanguageModelV3,
   mockTextModel,
@@ -36,8 +36,8 @@ import {
 
 let activeResolvedModel: ResolvedModel = mockResolvedModel(mockTextModel("default"));
 
-vi.mock("../llm/pi-client.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../llm/pi-client.js")>();
+vi.mock("@polpo-ai/llm", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@polpo-ai/llm")>();
   return {
     ...actual,
     resolveModel: () => activeResolvedModel,

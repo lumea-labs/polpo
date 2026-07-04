@@ -1,7 +1,7 @@
 import { resolve } from "node:path";
 import { getPolpoDir } from "../../core/constants.js";
 import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
-import { PROVIDER_ENV_MAP, listModels } from "../../llm/pi-client.js";
+import { PROVIDER_ENV_MAP, listModels } from "@polpo-ai/llm";
 import {
   detectProviders,
   persistToEnvFile,

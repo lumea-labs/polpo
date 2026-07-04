@@ -1,5 +1,5 @@
-import { listModels as piListModels } from "../llm/pi-client.js";
-import type { ModelInfo } from "../llm/pi-client.js";
+import { listModels as piListModels } from "@polpo-ai/llm";
+import type { ModelInfo } from "@polpo-ai/llm";
 
 export type { ModelInfo };
 

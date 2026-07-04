@@ -451,21 +451,6 @@ export class TaskRunner {
       taskWithContext.description = contextParts.join("\n\n") + "\n\n" + task.description;
     }
 
-    // WhatsApp tools: if agent has whatsapp_* in allowedTools and a WhatsApp channel is configured,
-    // pass the DB path and profile path so the runner can create its own store + connection
-    let whatsappDbPath: string | undefined;
-    let whatsappProfilePath: string | undefined;
-    if (agent.allowedTools?.some(t => t.toLowerCase().startsWith("whatsapp_"))) {
-      const channels = this.ctx.config.settings.notifications?.channels;
-      if (channels) {
-        const waKey = Object.keys(channels).find(k => channels[k]?.type === "whatsapp");
-        if (waKey) {
-          whatsappDbPath = pathJoin(this.ctx.polpoDir, "whatsapp.db");
-          const profileName = channels[waKey].profileDir ?? "default";
-          whatsappProfilePath = pathJoin(this.ctx.polpoDir, "whatsapp-profiles", profileName);
-        }
-      }
-    }
 
     const runnerConfig: RunnerConfig = {
       runId,
@@ -480,8 +465,6 @@ export class TaskRunner {
       notifySocket: this.ctx.notifySocketPath,
       emailAllowedDomains: agent.emailAllowedDomains ?? this.ctx.config.settings.emailAllowedDomains,
       reasoning: this.ctx.config.settings.reasoning,
-      whatsappDbPath,
-      whatsappProfilePath,
       providers: this.ctx.config.providers,
     };
 

@@ -1,14 +1,8 @@
-/**
- * Agent adapter type definitions.
- * Pure interfaces — no runtime dependencies.
- *
- * SpawnContext uses generic types for vault/whatsapp to avoid
- * coupling @polpo-ai/core to specific runtime implementations.
- */
-
-import type { AgentActivity, TaskResult, TaskOutcome, ReasoningLevel } from "./types.js";
-import type { FileSystem } from "./filesystem.js";
-import type { Shell } from "./shell.js";
+import type { AgentConfig, AgentActivity, Task, TaskResult, TaskOutcome, ReasoningLevel } from "@polpo-ai/core/types";
+import type { VaultStore } from "@polpo-ai/core/vault-store";
+import type { MemoryStore } from "@polpo-ai/core/memory-store";
+import type { FileSystem } from "@polpo-ai/core/filesystem";
+import type { Shell } from "@polpo-ai/core/shell";
 
 /**
  * Handle returned by the engine after spawning an agent.
@@ -56,18 +50,14 @@ export interface SpawnContext {
   emailAllowedDomains?: string[];
   /** Global reasoning level from settings — used as fallback when agent doesn't specify one. */
   reasoning?: ReasoningLevel;
-  /** Encrypted vault store — runtime-specific, provided by the shell layer. */
-  vaultStore?: unknown;
-  /** WhatsApp message store — runtime-specific, provided by the shell layer. */
-  whatsappStore?: unknown;
-  /** WhatsApp send function — runtime-specific, provided by the shell layer. */
-  whatsappSendMessage?: (jid: string, text: string) => Promise<string | undefined>;
+  /** Vault store — for resolving agent credentials at runtime. */
+  vaultStore?: VaultStore;
+  /** Memory store — for agent-scoped memory_* tools. */
+  memoryStore?: MemoryStore;
   /** FileSystem implementation — created by the orchestrator, passed down to tools. */
   fs?: FileSystem;
   /** Shell implementation — created by the orchestrator, passed down to tools. */
   shell?: Shell;
-  /** LLM gateway configuration — passed per-request for gateway routing. */
+  /** LLM gateway configuration — passed per-request for multi-tenant support. */
   gatewayConfig?: unknown;
-  /** MemoryStore — passed down so memory_* tools can scope to the agent. */
-  memoryStore?: unknown;
 }

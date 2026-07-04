@@ -43,7 +43,7 @@ import {
   sleep,
 } from "@polpo-ai/core/assessment-prompts";
 import type { AssessFn } from "@polpo-ai/core/orchestrator-context";
-import { setProviderOverrides, validateProviderKeys, setModelAllowlist } from "../llm/pi-client.js";
+import { setProviderOverrides, validateProviderKeys, setModelAllowlist } from "@polpo-ai/llm";
 import type { GatewayConfig } from "@polpo-ai/llm";
 import { HookRegistry } from "@polpo-ai/core/hooks";
 import { ApprovalManager } from "@polpo-ai/core/approval-manager";
@@ -380,7 +380,7 @@ export class Orchestrator extends TypedEmitter {
       loadConfig: () => loadPolpoConfig(this.polpoDir),
       saveConfig: (config) => savePolpoConfig(this.polpoDir, config),
       queryLLM: async (prompt, model) => {
-        const { queryText, queryTextWithFallback, resolveModelSpec, estimateCost } = await import("../llm/pi-client.js");
+        const { queryText, queryTextWithFallback, resolveModelSpec, estimateCost } = await import("@polpo-ai/llm");
         const { withRetry } = await import("../llm/retry.js");
         // If ModelConfig with fallbacks, use fallback-aware query
         if (model && typeof model === "object" && (model as any).fallbacks?.length > 0) {

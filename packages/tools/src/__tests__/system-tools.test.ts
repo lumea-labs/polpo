@@ -31,12 +31,12 @@ import { join } from "node:path";
 import { createSystemTools } from "../system-tools.js";
 import { NodeFileSystem } from "../adapters/node-filesystem.js";
 import { NodeShell } from "../adapters/node-shell.js";
-import type { PolpoTool as AgentTool } from "@polpo-ai/core";
+import type { PolpoTool } from "@polpo-ai/core";
 
 let cwd: string;
-let tools: AgentTool<any>[];
+let tools: PolpoTool<any>[];
 
-function tool(name: string): AgentTool<any> {
+function tool(name: string): PolpoTool<any> {
   const t = tools.find((x) => x.name === name);
   if (!t) throw new Error(`Tool '${name}' not registered. Got: ${tools.map((x) => x.name).join(", ")}`);
   return t;

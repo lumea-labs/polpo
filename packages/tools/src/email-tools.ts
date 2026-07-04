@@ -19,7 +19,7 @@
 
 import { resolve, basename, join, dirname } from "node:path";
 import { Type } from "@sinclair/typebox";
-import type { PolpoTool as AgentTool } from "@polpo-ai/core";
+import type { PolpoTool } from "@polpo-ai/core";
 import type { FileSystem } from "@polpo-ai/core/filesystem";
 import { resolveAllowedPaths, assertPathAllowed } from "./path-sandbox.js";
 import { NodeFileSystem } from "./adapters/node-filesystem.js";
@@ -106,7 +106,7 @@ function validateRecipientDomains(addresses: string | string[], allowedDomains: 
   }
 }
 
-function createEmailSendTool(cwd: string, sandbox: string[], fs: FileSystem, vault?: ResolvedVault, emailAllowedDomains?: string[]): AgentTool<typeof EmailSendSchema> {
+function createEmailSendTool(cwd: string, sandbox: string[], fs: FileSystem, vault?: ResolvedVault, emailAllowedDomains?: string[]): PolpoTool<typeof EmailSendSchema> {
   return {
     name: "email_send",
     label: "Send Email",
@@ -199,7 +199,7 @@ function createEmailSendTool(cwd: string, sandbox: string[], fs: FileSystem, vau
   };
 }
 
-function createEmailDraftTool(cwd: string, sandbox: string[], fs: FileSystem, vault?: ResolvedVault, emailAllowedDomains?: string[]): AgentTool<typeof EmailDraftSchema> {
+function createEmailDraftTool(cwd: string, sandbox: string[], fs: FileSystem, vault?: ResolvedVault, emailAllowedDomains?: string[]): PolpoTool<typeof EmailDraftSchema> {
   return {
     name: "email_draft",
     label: "Save Draft Email",
@@ -299,7 +299,7 @@ const EmailVerifySchema = Type.Object({
   smtp_pass: Type.Optional(Type.String({ description: "SMTP password" })),
 });
 
-function createEmailVerifyTool(vault?: ResolvedVault): AgentTool<typeof EmailVerifySchema> {
+function createEmailVerifyTool(vault?: ResolvedVault): PolpoTool<typeof EmailVerifySchema> {
   return {
     name: "email_verify",
     label: "Verify SMTP",
@@ -395,7 +395,7 @@ const EmailListSchema = Type.Object({
   unseen_only: Type.Optional(Type.Boolean({ description: "Only show unread emails (default: false)" })),
 });
 
-function createEmailListTool(vault?: ResolvedVault): AgentTool<typeof EmailListSchema> {
+function createEmailListTool(vault?: ResolvedVault): PolpoTool<typeof EmailListSchema> {
   return {
     name: "email_list",
     label: "List Emails",
@@ -506,7 +506,7 @@ const EmailReadSchema = Type.Object({
   download_attachments: Type.Optional(Type.Boolean({ description: "Download all attachments to the output directory (default: false). Use email_download_attachment for selective download." })),
 });
 
-function createEmailReadTool(fs: FileSystem, vault?: ResolvedVault, outputDir?: string, sandbox?: string[]): AgentTool<typeof EmailReadSchema> {
+function createEmailReadTool(fs: FileSystem, vault?: ResolvedVault, outputDir?: string, sandbox?: string[]): PolpoTool<typeof EmailReadSchema> {
   return {
     name: "email_read",
     label: "Read Email",
@@ -628,7 +628,7 @@ const EmailDownloadAttachmentSchema = Type.Object({
   output_path: Type.Optional(Type.String({ description: "Custom output path relative to working directory (default: output directory)" })),
 });
 
-function createEmailDownloadAttachmentTool(fs: FileSystem, vault?: ResolvedVault, cwd?: string, outputDir?: string, sandbox?: string[]): AgentTool<typeof EmailDownloadAttachmentSchema> {
+function createEmailDownloadAttachmentTool(fs: FileSystem, vault?: ResolvedVault, cwd?: string, outputDir?: string, sandbox?: string[]): PolpoTool<typeof EmailDownloadAttachmentSchema> {
   return {
     name: "email_download_attachment",
     label: "Download Email Attachment",
@@ -719,7 +719,7 @@ const EmailSearchSchema = Type.Object({
   limit: Type.Optional(Type.Number({ description: "Max results (default: 20)" })),
 });
 
-function createEmailSearchTool(vault?: ResolvedVault): AgentTool<typeof EmailSearchSchema> {
+function createEmailSearchTool(vault?: ResolvedVault): PolpoTool<typeof EmailSearchSchema> {
   return {
     name: "email_search",
     label: "Search Emails",
@@ -790,7 +790,7 @@ const EmailCountSchema = Type.Object({
   folder: Type.Optional(Type.String({ description: "Mail folder (default: INBOX)" })),
 });
 
-function createEmailCountTool(vault?: ResolvedVault): AgentTool<typeof EmailCountSchema> {
+function createEmailCountTool(vault?: ResolvedVault): PolpoTool<typeof EmailCountSchema> {
   return {
     name: "email_count",
     label: "Count Emails",
@@ -865,11 +865,11 @@ export const ALL_EMAIL_TOOL_NAMES: EmailToolName[] = ["email_send", "email_draft
  * @param outputDir - Per-task output directory for downloaded attachments
  * @param fs - FileSystem implementation (default: NodeFileSystem)
  */
-export function createEmailTools(cwd: string, allowedPaths?: string[], allowedTools?: string[], vault?: ResolvedVault, emailAllowedDomains?: string[], outputDir?: string, fs?: FileSystem): AgentTool<any>[] {
+export function createEmailTools(cwd: string, allowedPaths?: string[], allowedTools?: string[], vault?: ResolvedVault, emailAllowedDomains?: string[], outputDir?: string, fs?: FileSystem): PolpoTool<any>[] {
   const sandbox = resolveAllowedPaths(cwd, allowedPaths);
   const _fs = fs ?? new NodeFileSystem();
 
-  const factories: Record<EmailToolName, () => AgentTool<any>> = {
+  const factories: Record<EmailToolName, () => PolpoTool<any>> = {
     email_send: () => createEmailSendTool(cwd, sandbox, _fs, vault, emailAllowedDomains),
     email_draft: () => createEmailDraftTool(cwd, sandbox, _fs, vault, emailAllowedDomains),
     email_verify: () => createEmailVerifyTool(vault),

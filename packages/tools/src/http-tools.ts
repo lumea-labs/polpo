@@ -12,7 +12,7 @@
 
 import { resolve, dirname } from "node:path";
 import { Type } from "@sinclair/typebox";
-import type { PolpoTool as AgentTool, ToolResult as AgentToolResult } from "@polpo-ai/core";
+import type { PolpoTool as PolpoTool, ToolResult as AgentToolResult } from "@polpo-ai/core";
 import type { FileSystem } from "@polpo-ai/core/filesystem";
 import { resolveAllowedPaths, assertPathAllowed } from "./path-sandbox.js";
 import { assertUrlAllowed } from "./ssrf-guard.js";
@@ -39,7 +39,7 @@ const HttpFetchSchema = Type.Object({
   timeout: Type.Optional(Type.Number({ description: "Timeout in milliseconds (default: 30000)" })),
 });
 
-function createHttpFetchTool(): AgentTool<typeof HttpFetchSchema> {
+function createHttpFetchTool(): PolpoTool<typeof HttpFetchSchema> {
   return {
     name: "http_fetch",
     label: "HTTP Fetch",
@@ -149,7 +149,7 @@ const HttpDownloadSchema = Type.Object({
   headers: Type.Optional(Type.Record(Type.String(), Type.String(), { description: "Optional request headers" })),
 });
 
-function createHttpDownloadTool(cwd: string, sandbox: string[], fs: FileSystem): AgentTool<typeof HttpDownloadSchema> {
+function createHttpDownloadTool(cwd: string, sandbox: string[], fs: FileSystem): PolpoTool<typeof HttpDownloadSchema> {
   return {
     name: "http_download",
     label: "HTTP Download",
@@ -243,11 +243,11 @@ export function createHttpTools(
   allowedPaths?: string[],
   allowedTools?: string[],
   fs?: FileSystem,
-): AgentTool<any>[] {
+): PolpoTool<any>[] {
   const sandbox = resolveAllowedPaths(cwd, allowedPaths);
   const _fs = fs ?? new NodeFileSystem();
 
-  const factories: Record<HttpToolName, () => AgentTool<any>> = {
+  const factories: Record<HttpToolName, () => PolpoTool<any>> = {
     http_fetch: () => createHttpFetchTool(),
     http_download: () => createHttpDownloadTool(cwd, sandbox, _fs),
   };

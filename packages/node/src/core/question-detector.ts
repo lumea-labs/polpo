@@ -7,7 +7,7 @@
  * with root-level code and tests.
  */
 
-import { queryText, resolveModelSpec } from "../llm/pi-client.js";
+import { queryText, resolveModelSpec } from "@polpo-ai/llm";
 import { withRetry } from "../llm/retry.js";
 import type { TaskResult, AgentActivity, ModelConfig } from "@polpo-ai/core/types";
 

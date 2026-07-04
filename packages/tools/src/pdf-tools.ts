@@ -16,7 +16,7 @@ import { resolve, dirname } from "node:path";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { Type } from "@sinclair/typebox";
-import type { PolpoTool as AgentTool, ToolResult as AgentToolResult } from "@polpo-ai/core";
+import type { PolpoTool as PolpoTool, ToolResult as AgentToolResult } from "@polpo-ai/core";
 import type { FileSystem } from "@polpo-ai/core/filesystem";
 import type { Shell } from "@polpo-ai/core";
 import { NodeFileSystem } from "./adapters/node-filesystem.js";
@@ -55,7 +55,7 @@ const PdfReadSchema = Type.Object({
   max_chars: Type.Optional(Type.Number({ description: "Max characters to return (default: 50000)" })),
 });
 
-function createPdfReadTool(cwd: string, sandbox: string[], fs: FileSystem): AgentTool<typeof PdfReadSchema> {
+function createPdfReadTool(cwd: string, sandbox: string[], fs: FileSystem): PolpoTool<typeof PdfReadSchema> {
   return {
     name: "pdf_read",
     label: "Read PDF",
@@ -146,7 +146,7 @@ const PdfCreateSchema = Type.Object({
   wait_for_network: Type.Optional(Type.Boolean({ description: "Wait for network idle before rendering (default: true). Disable for offline HTML with no external resources." })),
 });
 
-function createPdfCreateTool(cwd: string, sandbox: string[], fs: FileSystem, shell: Shell): AgentTool<typeof PdfCreateSchema> {
+function createPdfCreateTool(cwd: string, sandbox: string[], fs: FileSystem, shell: Shell): PolpoTool<typeof PdfCreateSchema> {
   // Stage the driver lazily on first invocation. Subsequent calls reuse it.
   // Path lives under cwd so it's in whichever filesystem the Shell will
   // run `node` against (sandbox in cloud, local in OSS standalone).
@@ -281,7 +281,7 @@ const PdfMergeSchema = Type.Object({
   output: Type.String({ description: "Output merged PDF path" }),
 });
 
-function createPdfMergeTool(cwd: string, sandbox: string[], fs: FileSystem): AgentTool<typeof PdfMergeSchema> {
+function createPdfMergeTool(cwd: string, sandbox: string[], fs: FileSystem): PolpoTool<typeof PdfMergeSchema> {
   return {
     name: "pdf_merge",
     label: "Merge PDFs",
@@ -337,7 +337,7 @@ const PdfInfoSchema = Type.Object({
   path: Type.String({ description: "Path to PDF file" }),
 });
 
-function createPdfInfoTool(cwd: string, sandbox: string[], fs: FileSystem): AgentTool<typeof PdfInfoSchema> {
+function createPdfInfoTool(cwd: string, sandbox: string[], fs: FileSystem): PolpoTool<typeof PdfInfoSchema> {
   return {
     name: "pdf_info",
     label: "PDF Info",
@@ -415,12 +415,12 @@ export const ALL_PDF_TOOL_NAMES: PdfToolName[] = ["pdf_read", "pdf_create", "pdf
  * @param allowedPaths - Sandbox paths
  * @param allowedTools - Optional filter
  */
-export function createPdfTools(cwd: string, allowedPaths?: string[], allowedTools?: string[], fs?: FileSystem, shell?: Shell): AgentTool<any>[] {
+export function createPdfTools(cwd: string, allowedPaths?: string[], allowedTools?: string[], fs?: FileSystem, shell?: Shell): PolpoTool<any>[] {
   const sandbox = resolveAllowedPaths(cwd, allowedPaths);
   const _fs = fs ?? new NodeFileSystem();
   const _shell = shell ?? new NodeShell();
 
-  const factories: Record<PdfToolName, () => AgentTool<any>> = {
+  const factories: Record<PdfToolName, () => PolpoTool<any>> = {
     pdf_read: () => createPdfReadTool(cwd, sandbox, _fs),
     pdf_create: () => createPdfCreateTool(cwd, sandbox, _fs, _shell),
     pdf_merge: () => createPdfMergeTool(cwd, sandbox, _fs),

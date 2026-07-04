@@ -1,4 +1,4 @@
-import { PROVIDER_ENV_MAP, listProviders } from "../llm/pi-client.js";
+import { PROVIDER_ENV_MAP, listProviders } from "@polpo-ai/llm";
 
 export interface DetectedProvider {
   /** Provider name exactly as it appears in the AI Gateway catalog (e.g. "openai", "openai-codex", "google") */

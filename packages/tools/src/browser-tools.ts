@@ -20,7 +20,7 @@
 
 import { resolve } from "node:path";
 import { Type } from "@sinclair/typebox";
-import type { PolpoTool as AgentTool, ToolResult as AgentToolResult } from "@polpo-ai/core";
+import type { PolpoTool as PolpoTool, ToolResult as AgentToolResult } from "@polpo-ai/core";
 import type { Shell } from "@polpo-ai/core";
 import { NodeShell } from "./adapters/node-shell.js";
 
@@ -115,7 +115,7 @@ const BrowserNavigateSchema = Type.Object({
   url: Type.String({ description: "URL to navigate to (e.g. 'https://example.com')" }),
 });
 
-function createBrowserNavigateTool(shell: Shell, session: string, profileDir?: string): AgentTool<typeof BrowserNavigateSchema> {
+function createBrowserNavigateTool(shell: Shell, session: string, profileDir?: string): PolpoTool<typeof BrowserNavigateSchema> {
   return {
     name: "browser_navigate",
     label: "Browser Navigate",
@@ -137,7 +137,7 @@ const BrowserSnapshotSchema = Type.Object({
   selector: Type.Optional(Type.String({ description: "Scope snapshot to a CSS selector" })),
 });
 
-function createBrowserSnapshotTool(shell: Shell, session: string, profileDir?: string): AgentTool<typeof BrowserSnapshotSchema> {
+function createBrowserSnapshotTool(shell: Shell, session: string, profileDir?: string): PolpoTool<typeof BrowserSnapshotSchema> {
   return {
     name: "browser_snapshot",
     label: "Browser Snapshot",
@@ -162,7 +162,7 @@ const BrowserClickSchema = Type.Object({
   selector: Type.String({ description: "Element ref from snapshot (e.g. '@e2') or CSS selector" }),
 });
 
-function createBrowserClickTool(shell: Shell, session: string, profileDir?: string): AgentTool<typeof BrowserClickSchema> {
+function createBrowserClickTool(shell: Shell, session: string, profileDir?: string): PolpoTool<typeof BrowserClickSchema> {
   return {
     name: "browser_click",
     label: "Browser Click",
@@ -182,7 +182,7 @@ const BrowserFillSchema = Type.Object({
   text: Type.String({ description: "Text to fill into the input" }),
 });
 
-function createBrowserFillTool(shell: Shell, session: string, profileDir?: string): AgentTool<typeof BrowserFillSchema> {
+function createBrowserFillTool(shell: Shell, session: string, profileDir?: string): PolpoTool<typeof BrowserFillSchema> {
   return {
     name: "browser_fill",
     label: "Browser Fill",
@@ -202,7 +202,7 @@ const BrowserTypeSchema = Type.Object({
   text: Type.String({ description: "Text to type (appends to existing content)" }),
 });
 
-function createBrowserTypeTool(shell: Shell, session: string, profileDir?: string): AgentTool<typeof BrowserTypeSchema> {
+function createBrowserTypeTool(shell: Shell, session: string, profileDir?: string): PolpoTool<typeof BrowserTypeSchema> {
   return {
     name: "browser_type",
     label: "Browser Type",
@@ -221,7 +221,7 @@ const BrowserPressSchema = Type.Object({
   key: Type.String({ description: "Key to press (e.g. 'Enter', 'Tab', 'Control+a', 'Escape')" }),
 });
 
-function createBrowserPressTool(shell: Shell, session: string, profileDir?: string): AgentTool<typeof BrowserPressSchema> {
+function createBrowserPressTool(shell: Shell, session: string, profileDir?: string): PolpoTool<typeof BrowserPressSchema> {
   return {
     name: "browser_press",
     label: "Browser Press Key",
@@ -241,7 +241,7 @@ const BrowserScreenshotSchema = Type.Object({
   full_page: Type.Optional(Type.Boolean({ description: "Capture full page, not just viewport" })),
 });
 
-function createBrowserScreenshotTool(shell: Shell, session: string, cwd: string, profileDir?: string): AgentTool<typeof BrowserScreenshotSchema> {
+function createBrowserScreenshotTool(shell: Shell, session: string, cwd: string, profileDir?: string): PolpoTool<typeof BrowserScreenshotSchema> {
   return {
     name: "browser_screenshot",
     label: "Browser Screenshot",
@@ -270,7 +270,7 @@ const BrowserGetSchema = Type.Object({
   selector: Type.Optional(Type.String({ description: "Element ref or CSS selector (required for text/html/value)" })),
 });
 
-function createBrowserGetTool(shell: Shell, session: string, profileDir?: string): AgentTool<typeof BrowserGetSchema> {
+function createBrowserGetTool(shell: Shell, session: string, profileDir?: string): PolpoTool<typeof BrowserGetSchema> {
   return {
     name: "browser_get",
     label: "Browser Get Info",
@@ -292,7 +292,7 @@ const BrowserSelectSchema = Type.Object({
   value: Type.String({ description: "Option value to select" }),
 });
 
-function createBrowserSelectTool(shell: Shell, session: string, profileDir?: string): AgentTool<typeof BrowserSelectSchema> {
+function createBrowserSelectTool(shell: Shell, session: string, profileDir?: string): PolpoTool<typeof BrowserSelectSchema> {
   return {
     name: "browser_select",
     label: "Browser Select",
@@ -311,7 +311,7 @@ const BrowserHoverSchema = Type.Object({
   selector: Type.String({ description: "Element ref or CSS selector to hover" }),
 });
 
-function createBrowserHoverTool(shell: Shell, session: string, profileDir?: string): AgentTool<typeof BrowserHoverSchema> {
+function createBrowserHoverTool(shell: Shell, session: string, profileDir?: string): PolpoTool<typeof BrowserHoverSchema> {
   return {
     name: "browser_hover",
     label: "Browser Hover",
@@ -336,7 +336,7 @@ const BrowserScrollSchema = Type.Object({
   pixels: Type.Optional(Type.Number({ description: "Number of pixels to scroll (default: varies)" })),
 });
 
-function createBrowserScrollTool(shell: Shell, session: string, profileDir?: string): AgentTool<typeof BrowserScrollSchema> {
+function createBrowserScrollTool(shell: Shell, session: string, profileDir?: string): PolpoTool<typeof BrowserScrollSchema> {
   return {
     name: "browser_scroll",
     label: "Browser Scroll",
@@ -365,7 +365,7 @@ const BrowserWaitSchema = Type.Object({
   ], { description: "Wait for load state" })),
 });
 
-function createBrowserWaitTool(shell: Shell, session: string, profileDir?: string): AgentTool<typeof BrowserWaitSchema> {
+function createBrowserWaitTool(shell: Shell, session: string, profileDir?: string): PolpoTool<typeof BrowserWaitSchema> {
   return {
     name: "browser_wait",
     label: "Browser Wait",
@@ -390,7 +390,7 @@ const BrowserEvalSchema = Type.Object({
   javascript: Type.String({ description: "JavaScript code to execute in the browser page context" }),
 });
 
-function createBrowserEvalTool(shell: Shell, session: string, profileDir?: string): AgentTool<typeof BrowserEvalSchema> {
+function createBrowserEvalTool(shell: Shell, session: string, profileDir?: string): PolpoTool<typeof BrowserEvalSchema> {
   return {
     name: "browser_eval",
     label: "Browser Evaluate JS",
@@ -414,7 +414,7 @@ function createBrowserEvalTool(shell: Shell, session: string, profileDir?: strin
 
 const BrowserCloseSchema = Type.Object({});
 
-function createBrowserCloseTool(shell: Shell, session: string): AgentTool<typeof BrowserCloseSchema> {
+function createBrowserCloseTool(shell: Shell, session: string): PolpoTool<typeof BrowserCloseSchema> {
   return {
     name: "browser_close",
     label: "Browser Close",
@@ -431,7 +431,7 @@ function createBrowserCloseTool(shell: Shell, session: string): AgentTool<typeof
 
 const BrowserNavActionSchema = Type.Object({});
 
-function createBrowserBackTool(shell: Shell, session: string, profileDir?: string): AgentTool<typeof BrowserNavActionSchema> {
+function createBrowserBackTool(shell: Shell, session: string, profileDir?: string): PolpoTool<typeof BrowserNavActionSchema> {
   return {
     name: "browser_back",
     label: "Browser Back",
@@ -443,7 +443,7 @@ function createBrowserBackTool(shell: Shell, session: string, profileDir?: strin
   };
 }
 
-function createBrowserForwardTool(shell: Shell, session: string, profileDir?: string): AgentTool<typeof BrowserNavActionSchema> {
+function createBrowserForwardTool(shell: Shell, session: string, profileDir?: string): PolpoTool<typeof BrowserNavActionSchema> {
   return {
     name: "browser_forward",
     label: "Browser Forward",
@@ -455,7 +455,7 @@ function createBrowserForwardTool(shell: Shell, session: string, profileDir?: st
   };
 }
 
-function createBrowserReloadTool(shell: Shell, session: string, profileDir?: string): AgentTool<typeof BrowserNavActionSchema> {
+function createBrowserReloadTool(shell: Shell, session: string, profileDir?: string): PolpoTool<typeof BrowserNavActionSchema> {
   return {
     name: "browser_reload",
     label: "Browser Reload",
@@ -480,7 +480,7 @@ const BrowserTabsSchema = Type.Object({
   url: Type.Optional(Type.String({ description: "URL to open in new tab" })),
 });
 
-function createBrowserTabsTool(shell: Shell, session: string, profileDir?: string): AgentTool<typeof BrowserTabsSchema> {
+function createBrowserTabsTool(shell: Shell, session: string, profileDir?: string): PolpoTool<typeof BrowserTabsSchema> {
   return {
     name: "browser_tabs",
     label: "Browser Tabs",
@@ -542,9 +542,9 @@ export function createBrowserTools(
   allowedTools?: string[],
   profileDir?: string,
   shell?: Shell,
-): AgentTool<any>[] {
+): PolpoTool<any>[] {
   const _shell = shell ?? new NodeShell();
-  const factories: Record<BrowserToolName, () => AgentTool<any>> = {
+  const factories: Record<BrowserToolName, () => PolpoTool<any>> = {
     browser_navigate: () => createBrowserNavigateTool(_shell, session, profileDir),
     browser_snapshot: () => createBrowserSnapshotTool(_shell, session, profileDir),
     browser_click: () => createBrowserClickTool(_shell, session, profileDir),

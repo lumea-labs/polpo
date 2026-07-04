@@ -25,7 +25,7 @@ import { createImageTools } from "../image-tools.js";
 import { createAudioTools } from "../audio-tools.js";
 import { createSearchTools } from "../search-tools.js";
 import { ExaSearchProvider } from "../lib/exa-search-provider.js";
-import type { PolpoTool as AgentTool } from "@polpo-ai/core";
+import type { PolpoTool } from "@polpo-ai/core";
 import type { ResolvedVault } from "../types.js";
 
 // ── AI SDK mocks (image_generate goes through `generateImage`) ──
@@ -87,7 +87,7 @@ let cwd: string;
 let originalFetch: typeof globalThis.fetch;
 let lastRequests: Array<{ url: string; init?: RequestInit }> = [];
 
-function pick(tools: AgentTool<any>[], name: string): AgentTool<any> {
+function pick(tools: PolpoTool<any>[], name: string): PolpoTool<any> {
   const t = tools.find((x) => x.name === name);
   if (!t) throw new Error(`Tool '${name}' not registered: ${tools.map(x => x.name).join(", ")}`);
   return t;

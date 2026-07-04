@@ -1,6 +1,5 @@
 /**
  * Standard coding tools for the native pi adapter.
- * Each tool implements pi-agent-core's AgentTool interface with TypeBox schemas.
  *
  * All file-based tools enforce path sandboxing when allowedPaths is provided.
  * The bash tool runs with cwd set to the agent's primary working directory.
@@ -12,7 +11,7 @@ import type { Shell } from "@polpo-ai/core/shell";
 // NodeFileSystem and NodeShell are loaded lazily to avoid pulling in
 // node:fs and execa when the consumer provides their own implementations.
 import { Type } from "@sinclair/typebox";
-import type { PolpoTool as AgentTool, SearchProvider } from "@polpo-ai/core";
+import type { PolpoTool as PolpoTool, SearchProvider } from "@polpo-ai/core";
 import { resolveAllowedPaths, assertPathAllowed } from "./path-sandbox.js";
 import { createOutcomeTools as createOutcomeToolsCore } from "./outcome-tools.js";
 import { createHttpTools as createHttpToolsCore, ALL_HTTP_TOOL_NAMES as CORE_HTTP_TOOL_NAMES } from "./http-tools.js";
@@ -32,7 +31,7 @@ const ReadSchema = Type.Object({
   limit: Type.Optional(Type.Number({ description: "Max number of lines to read" })),
 });
 
-function createReadTool(cwd: string, sandbox: string[], fs: FileSystem): AgentTool<typeof ReadSchema> {
+function createReadTool(cwd: string, sandbox: string[], fs: FileSystem): PolpoTool<typeof ReadSchema> {
   return {
     name: "read",
     label: "Read File",
@@ -64,7 +63,7 @@ const WriteSchema = Type.Object({
   content: Type.String({ description: "File content to write" }),
 });
 
-function createWriteTool(cwd: string, sandbox: string[], fs: FileSystem): AgentTool<typeof WriteSchema> {
+function createWriteTool(cwd: string, sandbox: string[], fs: FileSystem): PolpoTool<typeof WriteSchema> {
   return {
     name: "write",
     label: "Write File",
@@ -91,7 +90,7 @@ const EditSchema = Type.Object({
   new_text: Type.String({ description: "Replacement text" }),
 });
 
-function createEditTool(cwd: string, sandbox: string[], fs: FileSystem): AgentTool<typeof EditSchema> {
+function createEditTool(cwd: string, sandbox: string[], fs: FileSystem): PolpoTool<typeof EditSchema> {
   return {
     name: "edit",
     label: "Edit File",
@@ -131,7 +130,7 @@ const BashSchema = Type.Object({
   timeout: Type.Optional(Type.Number({ description: "Timeout in milliseconds (default: 120000)" })),
 });
 
-function createBashTool(cwd: string, shell: Shell): AgentTool<typeof BashSchema> {
+function createBashTool(cwd: string, shell: Shell): PolpoTool<typeof BashSchema> {
   return {
     name: "bash",
     label: "Execute Shell",
@@ -166,7 +165,7 @@ const GlobSchema = Type.Object({
   path: Type.Optional(Type.String({ description: "Directory to search in (default: cwd)" })),
 });
 
-function createGlobTool(cwd: string, sandbox: string[], _shell: Shell): AgentTool<typeof GlobSchema> {
+function createGlobTool(cwd: string, sandbox: string[], _shell: Shell): PolpoTool<typeof GlobSchema> {
   return {
     name: "glob",
     label: "Find Files",
@@ -212,7 +211,7 @@ const GrepSchema = Type.Object({
   include: Type.Optional(Type.String({ description: "File glob filter (e.g. '*.ts')" })),
 });
 
-function createGrepTool(cwd: string, sandbox: string[], shell: Shell): AgentTool<typeof GrepSchema> {
+function createGrepTool(cwd: string, sandbox: string[], shell: Shell): PolpoTool<typeof GrepSchema> {
   return {
     name: "grep",
     label: "Search Code",
@@ -264,7 +263,7 @@ const LsSchema = Type.Object({
   path: Type.Optional(Type.String({ description: "Directory to list (default: cwd)" })),
 });
 
-function createLsTool(cwd: string, sandbox: string[], fs: FileSystem): AgentTool<typeof LsSchema> {
+function createLsTool(cwd: string, sandbox: string[], fs: FileSystem): PolpoTool<typeof LsSchema> {
   return {
     name: "ls",
     label: "List Directory",
@@ -342,7 +341,7 @@ const CORE_TOOL_NAMES: SystemToolName[] = ["read", "write", "edit", "bash", "glo
  * - http_fetch, http_download
  * - vault_get, vault_list (when vault is provided)
  */
-export function createSystemTools(cwd: string, allowedTools?: string[], allowedPaths?: string[], outputDir?: string, vault?: ResolvedVault, fs?: FileSystem, shell?: Shell): AgentTool<any>[] {
+export function createSystemTools(cwd: string, allowedTools?: string[], allowedPaths?: string[], outputDir?: string, vault?: ResolvedVault, fs?: FileSystem, shell?: Shell): PolpoTool<any>[] {
   if (!fs || !shell) {
     throw new Error("createSystemTools requires fs and shell arguments. Use NodeFileSystem/NodeShell for Node.js or SandboxProxyFS/SandboxProxyShell for remote execution.");
   }
@@ -350,7 +349,7 @@ export function createSystemTools(cwd: string, allowedTools?: string[], allowedP
   const _shell = shell;
   const sandbox = resolveAllowedPaths(cwd, allowedPaths);
 
-  const factories: Record<SystemToolName, () => AgentTool<any>> = {
+  const factories: Record<SystemToolName, () => PolpoTool<any>> = {
     read: () => createReadTool(cwd, sandbox, _fs),
     write: () => createWriteTool(cwd, sandbox, _fs),
     edit: () => createEditTool(cwd, sandbox, _fs),
@@ -514,9 +513,9 @@ export interface CreateAllToolsOptions {
  * When allowedTools is provided, it acts as a filter across ALL categories — any tool whose name
  * appears in allowedTools will be included (and its category auto-enabled).
  */
-export async function createAllTools(options: CreateAllToolsOptions): Promise<AgentTool<any>[]> {
+export async function createAllTools(options: CreateAllToolsOptions): Promise<PolpoTool<any>[]> {
   const { cwd, allowedPaths, browserSession } = options;
-  const tools: AgentTool<any>[] = [];
+  const tools: PolpoTool<any>[] = [];
 
   // Expand wildcards in allowedTools once — e.g. "browser_*" → all 18 browser tool names.
   // This way individual factory functions don't need wildcard awareness.

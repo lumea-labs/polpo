@@ -13,7 +13,7 @@ import { AssessmentOrchestrator as CoreAssessmentOrchestrator, type AssessmentPo
 import type { OrchestratorContext } from "@polpo-ai/core/orchestrator-context";
 import { classifyAsQuestion } from "./question-detector.js";
 import type { Task, ModelConfig } from "@polpo-ai/core/types";
-import { queryText, resolveModelSpec } from "../llm/pi-client.js";
+import { queryText, resolveModelSpec } from "@polpo-ai/llm";
 import { withRetry } from "../llm/retry.js";
 
 /** Inline query helper (replaces deleted query.ts) */

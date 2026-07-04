@@ -14,7 +14,7 @@
 
 import { resolve, dirname, extname } from "node:path";
 import { Type } from "@sinclair/typebox";
-import type { PolpoTool as AgentTool, ToolResult as AgentToolResult } from "@polpo-ai/core";
+import type { PolpoTool as PolpoTool, ToolResult as AgentToolResult } from "@polpo-ai/core";
 import type { FileSystem } from "@polpo-ai/core/filesystem";
 import { NodeFileSystem } from "./adapters/node-filesystem.js";
 import { resolveAllowedPaths, assertPathAllowed } from "./path-sandbox.js";
@@ -35,7 +35,7 @@ const ExcelReadSchema = Type.Object({
   max_rows: Type.Optional(Type.Number({ description: "Max rows to return (default: 200)" })),
 });
 
-function createExcelReadTool(cwd: string, sandbox: string[], fs: FileSystem): AgentTool<typeof ExcelReadSchema> {
+function createExcelReadTool(cwd: string, sandbox: string[], fs: FileSystem): PolpoTool<typeof ExcelReadSchema> {
   return {
     name: "excel_read",
     label: "Read Spreadsheet",
@@ -197,7 +197,7 @@ const ExcelWriteSchema = Type.Object({
   sheet_name: Type.Optional(Type.String({ description: "Sheet name (default: 'Sheet1')" })),
 });
 
-function createExcelWriteTool(cwd: string, sandbox: string[], fs: FileSystem): AgentTool<typeof ExcelWriteSchema> {
+function createExcelWriteTool(cwd: string, sandbox: string[], fs: FileSystem): PolpoTool<typeof ExcelWriteSchema> {
   return {
     name: "excel_write",
     label: "Write Spreadsheet",
@@ -289,7 +289,7 @@ const ExcelQuerySchema = Type.Object({
   limit: Type.Optional(Type.Number({ description: "Max rows to return" })),
 });
 
-function createExcelQueryTool(cwd: string, sandbox: string[], fs: FileSystem): AgentTool<typeof ExcelQuerySchema> {
+function createExcelQueryTool(cwd: string, sandbox: string[], fs: FileSystem): PolpoTool<typeof ExcelQuerySchema> {
   return {
     name: "excel_query",
     label: "Query Spreadsheet",
@@ -412,7 +412,7 @@ const ExcelInfoSchema = Type.Object({
   path: Type.String({ description: "Path to .xlsx file" }),
 });
 
-function createExcelInfoTool(cwd: string, sandbox: string[], fs: FileSystem): AgentTool<typeof ExcelInfoSchema> {
+function createExcelInfoTool(cwd: string, sandbox: string[], fs: FileSystem): PolpoTool<typeof ExcelInfoSchema> {
   return {
     name: "excel_info",
     label: "Spreadsheet Info",
@@ -472,11 +472,11 @@ export const ALL_EXCEL_TOOL_NAMES: ExcelToolName[] = ["excel_read", "excel_write
  * @param allowedPaths - Sandbox paths
  * @param allowedTools - Optional filter
  */
-export function createExcelTools(cwd: string, allowedPaths?: string[], allowedTools?: string[], fs?: FileSystem): AgentTool<any>[] {
+export function createExcelTools(cwd: string, allowedPaths?: string[], allowedTools?: string[], fs?: FileSystem): PolpoTool<any>[] {
   const sandbox = resolveAllowedPaths(cwd, allowedPaths);
   const _fs = fs ?? new NodeFileSystem();
 
-  const factories: Record<ExcelToolName, () => AgentTool<any>> = {
+  const factories: Record<ExcelToolName, () => PolpoTool<any>> = {
     excel_read: () => createExcelReadTool(cwd, sandbox, _fs),
     excel_write: () => createExcelWriteTool(cwd, sandbox, _fs),
     excel_query: () => createExcelQueryTool(cwd, sandbox, _fs),

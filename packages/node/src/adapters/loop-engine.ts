@@ -27,7 +27,7 @@
 
 import { join } from "node:path";
 import type { AgentConfig, Task, TaskResult } from "@polpo-ai/core/types";
-import type { AgentHandle, SpawnContext } from "../core/adapter.js";
+import type { AgentHandle, SpawnContext } from "@polpo-ai/core/adapter";
 import {
   streamText,
   generateText,
@@ -59,7 +59,7 @@ import {
   buildAgentTools,
   buildPrompt,
   collectOutcome,
-} from "./engine.js";
+} from "./spawn-helpers.js";
 
 // ─── Helpers (task-flavored ports of the completions loop runtime) ─────
 
