@@ -18,7 +18,7 @@
  * --session, preventing cross-agent interference.
  */
 
-import { resolve } from "node:path";
+import { resolve, dirname } from "node:path";
 import { Type } from "@sinclair/typebox";
 import type { PolpoTool as PolpoTool, ToolResult as AgentToolResult } from "@polpo-ai/core";
 import type { Shell } from "@polpo-ai/core";
@@ -249,7 +249,14 @@ function createBrowserScreenshotTool(shell: Shell, session: string, cwd: string,
     parameters: BrowserScreenshotSchema,
     async execute(_id, params, signal) {
       const args = ["screenshot"];
-      if (params.path) args.push(resolve(cwd, params.path));
+      if (params.path) {
+        const target = resolve(cwd, params.path);
+        // agent-browser writes the file itself and does not create parent
+        // directories — ensure they exist in the same world the CLI runs in
+        // (e.g. the task output dir, which exists only once something writes to it).
+        await shell.execute(`mkdir -p ${quote(dirname(target))}`, { timeout: 10_000 }).catch(() => {});
+        args.push(target);
+      }
       if (params.full_page) args.push("--full");
       const result = await execBrowserAsync(shell, args, { session, profileDir });
       return browserResult(result);
