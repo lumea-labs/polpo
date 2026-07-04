@@ -55,26 +55,26 @@ describe("Mission resume (Orchestrator)", () => {
 
   describe("getResumableMissions", () => {
     it("returns empty array when no missions exist", async () => {
-      expect(await orchestrator.getResumableMissions()).toEqual([]);
+      expect(await orchestrator.engine.getResumableMissions()).toEqual([]);
     });
 
     it("returns empty array for draft missions", async () => {
-      await orchestrator.createMission({ data: JSON.stringify({ tasks: [{ title: "T1", assignTo: "dev" }] }), status: "draft" });
-      expect(await orchestrator.getResumableMissions()).toEqual([]);
+      await orchestrator.engine.createMission({ data: JSON.stringify({ tasks: [{ title: "T1", assignTo: "dev" }] }), status: "draft" });
+      expect(await orchestrator.engine.getResumableMissions()).toEqual([]);
     });
 
     it("returns empty array for completed missions", async () => {
-      const mission = await orchestrator.createMission({ data: JSON.stringify({ tasks: [{ title: "T1", assignTo: "dev" }] }), status: "draft" });
-      await orchestrator.updateMission(mission.id, { status: "completed" });
-      expect(await orchestrator.getResumableMissions()).toEqual([]);
+      const mission = await orchestrator.engine.createMission({ data: JSON.stringify({ tasks: [{ title: "T1", assignTo: "dev" }] }), status: "draft" });
+      await orchestrator.engine.updateMission(mission.id, { status: "completed" });
+      expect(await orchestrator.engine.getResumableMissions()).toEqual([]);
     });
 
     it("returns active mission with pending tasks", async () => {
       const data = JSON.stringify({ tasks: [{ title: "Task1", description: "Do something", assignTo: "dev" }] });
-      const mission = await orchestrator.createMission({ data });
-      await orchestrator.executeMission(mission.id);
+      const mission = await orchestrator.engine.createMission({ data });
+      await orchestrator.engine.executeMission(mission.id);
 
-      const resumable = await orchestrator.getResumableMissions();
+      const resumable = await orchestrator.engine.getResumableMissions();
       // After execution, tasks start as pending — mission is resumable
       expect(resumable.length).toBe(1);
       expect(resumable[0].id).toBe(mission.id);
@@ -82,8 +82,8 @@ describe("Mission resume (Orchestrator)", () => {
 
     it("returns failed mission with failed tasks", async () => {
       const data = JSON.stringify({ tasks: [{ title: "FailTask", description: "Will fail", assignTo: "dev" }] });
-      const mission = await orchestrator.createMission({ data });
-      await orchestrator.executeMission(mission.id);
+      const mission = await orchestrator.engine.createMission({ data });
+      await orchestrator.engine.executeMission(mission.id);
 
       // Manually fail the task
       const state = await store.getState();
@@ -93,32 +93,32 @@ describe("Mission resume (Orchestrator)", () => {
       await store.transition(task!.id, "in_progress");
       await store.transition(task!.id, "review");
       await store.transition(task!.id, "failed");
-      await orchestrator.updateMission(mission.id, { status: "failed" });
+      await orchestrator.engine.updateMission(mission.id, { status: "failed" });
 
-      const resumable = await orchestrator.getResumableMissions();
+      const resumable = await orchestrator.engine.getResumableMissions();
       expect(resumable.length).toBe(1);
       expect(resumable[0].name).toBe(mission.name);
     });
 
     it("excludes cancelled missions", async () => {
       const data = JSON.stringify({ tasks: [{ title: "T", description: "d", assignTo: "dev" }] });
-      const mission = await orchestrator.createMission({ data });
-      await orchestrator.executeMission(mission.id);
-      await orchestrator.updateMission(mission.id, { status: "cancelled" });
+      const mission = await orchestrator.engine.createMission({ data });
+      await orchestrator.engine.executeMission(mission.id);
+      await orchestrator.engine.updateMission(mission.id, { status: "cancelled" });
 
-      expect(await orchestrator.getResumableMissions()).toEqual([]);
+      expect(await orchestrator.engine.getResumableMissions()).toEqual([]);
     });
   });
 
   describe("resumeMission", () => {
     it("throws for non-existent mission", async () => {
-      await expect(orchestrator.resumeMission("nonexistent")).rejects.toThrow("Mission not found");
+      await expect(orchestrator.engine.resumeMission("nonexistent")).rejects.toThrow("Mission not found");
     });
 
     it("resumes a failed mission and retries failed tasks", async () => {
       const data = JSON.stringify({ tasks: [{ title: "ResumableTask", description: "Will be resumed", assignTo: "dev" }] });
-      const mission = await orchestrator.createMission({ data });
-      await orchestrator.executeMission(mission.id);
+      const mission = await orchestrator.engine.createMission({ data });
+      await orchestrator.engine.executeMission(mission.id);
 
       // Fail the task
       const state = await store.getState();
@@ -127,13 +127,13 @@ describe("Mission resume (Orchestrator)", () => {
       await store.transition(task.id, "in_progress");
       await store.transition(task.id, "review");
       await store.transition(task.id, "failed");
-      await orchestrator.updateMission(mission.id, { status: "failed" });
+      await orchestrator.engine.updateMission(mission.id, { status: "failed" });
 
-      const result = await orchestrator.resumeMission(mission.id, { retryFailed: true });
+      const result = await orchestrator.engine.resumeMission(mission.id, { retryFailed: true });
       expect(result.retried).toBe(1);
 
       // Mission should be back to active
-      const updated = await orchestrator.getMission(mission.id);
+      const updated = await orchestrator.engine.getMission(mission.id);
       expect(updated?.status).toBe("active");
 
       // Task should be back to pending
@@ -143,8 +143,8 @@ describe("Mission resume (Orchestrator)", () => {
 
     it("resumes without retrying when retryFailed is false", async () => {
       const data = JSON.stringify({ tasks: [{ title: "NoRetryTask", description: "d", assignTo: "dev" }] });
-      const mission = await orchestrator.createMission({ data });
-      await orchestrator.executeMission(mission.id);
+      const mission = await orchestrator.engine.createMission({ data });
+      await orchestrator.engine.executeMission(mission.id);
 
       const state = await store.getState();
       const task = state.tasks.find(t => t.group === mission.name)!;
@@ -152,9 +152,9 @@ describe("Mission resume (Orchestrator)", () => {
       await store.transition(task.id, "in_progress");
       await store.transition(task.id, "review");
       await store.transition(task.id, "failed");
-      await orchestrator.updateMission(mission.id, { status: "failed" });
+      await orchestrator.engine.updateMission(mission.id, { status: "failed" });
 
-      const result = await orchestrator.resumeMission(mission.id, { retryFailed: false });
+      const result = await orchestrator.engine.resumeMission(mission.id, { retryFailed: false });
       expect(result.retried).toBe(0);
 
       // Task stays failed
@@ -164,9 +164,9 @@ describe("Mission resume (Orchestrator)", () => {
 
     it("emits mission:resumed event", async () => {
       const data = JSON.stringify({ tasks: [{ title: "EventTask", description: "d", assignTo: "dev" }] });
-      const mission = await orchestrator.createMission({ data });
-      await orchestrator.executeMission(mission.id);
-      await orchestrator.updateMission(mission.id, { status: "failed" });
+      const mission = await orchestrator.engine.createMission({ data });
+      await orchestrator.engine.executeMission(mission.id);
+      await orchestrator.engine.updateMission(mission.id, { status: "failed" });
 
       // Fail the task
       const task = (await store.getState()).tasks.find(t => t.group === mission.name)!;
@@ -178,7 +178,7 @@ describe("Mission resume (Orchestrator)", () => {
       let event: any;
       orchestrator.on("mission:resumed", (e) => { event = e; });
 
-      await orchestrator.resumeMission(mission.id, { retryFailed: true });
+      await orchestrator.engine.resumeMission(mission.id, { retryFailed: true });
       expect(event).toBeDefined();
       expect(event.missionId).toBe(mission.id);
       expect(event.retried).toBe(1);

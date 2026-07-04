@@ -58,7 +58,7 @@ describe("Orchestrator Resilience", () => {
 
   describe("Task timeout", () => {
     it("kills agent when task exceeds maxDuration", async () => {
-      const task = await orchestrator.createTask({
+      const task = await orchestrator.engine.createTask({
         title: "Slow task",
         description: "Should timeout",
         assignTo: "agent-1",
@@ -97,7 +97,7 @@ describe("Orchestrator Resilience", () => {
     });
 
     it("does not kill agent before maxDuration", async () => {
-      const task = await orchestrator.createTask({
+      const task = await orchestrator.engine.createTask({
         title: "Quick task",
         description: "Not timeout",
         assignTo: "agent-1",
@@ -131,7 +131,7 @@ describe("Orchestrator Resilience", () => {
     it("uses default taskTimeout from settings", async () => {
       (orchestrator as any).config.settings.taskTimeout = 50;
 
-      const task = await orchestrator.createTask({
+      const task = await orchestrator.engine.createTask({
         title: "Default timeout",
         description: "Uses settings",
         assignTo: "agent-1",
@@ -161,7 +161,7 @@ describe("Orchestrator Resilience", () => {
     });
 
     it("skips timeout when maxDuration is 0", async () => {
-      const task = await orchestrator.createTask({
+      const task = await orchestrator.engine.createTask({
         title: "No timeout",
         description: "Disabled",
         assignTo: "agent-1",
@@ -202,7 +202,7 @@ describe("Orchestrator Resilience", () => {
       (orchestrator as any).config.settings.staleThreshold = 100;
       (orchestrator as any).config.settings.taskTimeout = 0; // disable timeout
 
-      const task = await orchestrator.createTask({
+      const task = await orchestrator.engine.createTask({
         title: "Stale task",
         description: "Agent idle",
         assignTo: "agent-1",
@@ -240,7 +240,7 @@ describe("Orchestrator Resilience", () => {
       (orchestrator as any).config.settings.staleThreshold = 100;
       (orchestrator as any).config.settings.taskTimeout = 0;
 
-      const task = await orchestrator.createTask({
+      const task = await orchestrator.engine.createTask({
         title: "Very stale",
         description: "Stuck agent",
         assignTo: "agent-1",
@@ -282,7 +282,7 @@ describe("Orchestrator Resilience", () => {
       (orchestrator as any).config.settings.staleThreshold = 100;
       (orchestrator as any).config.settings.taskTimeout = 0;
 
-      const task = await orchestrator.createTask({
+      const task = await orchestrator.engine.createTask({
         title: "Warn once",
         description: "Only one warning",
         assignTo: "agent-1",
@@ -320,7 +320,7 @@ describe("Orchestrator Resilience", () => {
 
   describe("Smart retry", () => {
     it("escalates to fallback agent after escalateAfter failures", async () => {
-      const task = await orchestrator.createTask({
+      const task = await orchestrator.engine.createTask({
         title: "Escalating",
         description: "Will escalate",
         assignTo: "agent-1",
@@ -349,7 +349,7 @@ describe("Orchestrator Resilience", () => {
     });
 
     it("keeps same agent before escalateAfter threshold", async () => {
-      const task = await orchestrator.createTask({
+      const task = await orchestrator.engine.createTask({
         title: "No escalation yet",
         description: "First failure",
         assignTo: "agent-1",
@@ -378,7 +378,7 @@ describe("Orchestrator Resilience", () => {
         fallbackAgent: "agent-senior",
       };
 
-      const task = await orchestrator.createTask({
+      const task = await orchestrator.engine.createTask({
         title: "Default policy",
         description: "Uses settings",
         assignTo: "agent-1",
@@ -396,7 +396,7 @@ describe("Orchestrator Resilience", () => {
     });
 
     it("ignores fallback if agent not in team", async () => {
-      const task = await orchestrator.createTask({
+      const task = await orchestrator.engine.createTask({
         title: "Missing fallback",
         description: "Fallback not found",
         assignTo: "agent-1",
@@ -435,7 +435,7 @@ describe("Orchestrator Resilience", () => {
         status: "running",
       }));
 
-      await orchestrator.recoverOrphanedTasks();
+      await orchestrator.engine.recoverOrphanedTasks();
 
       // Dead run gets completed as failed then deleted
       const run = await runStore.getRun("run-dead");
@@ -467,7 +467,7 @@ describe("Orchestrator Resilience", () => {
         status: "running",
       }));
 
-      const recovered = await orchestrator.recoverOrphanedTasks();
+      const recovered = await orchestrator.engine.recoverOrphanedTasks();
 
       // Task should NOT be recovered — runner is still alive
       expect(recovered).toBe(0);
@@ -512,7 +512,7 @@ describe("Orchestrator Resilience", () => {
       await store.transition(task.id, "assigned");
       await store.transition(task.id, "in_progress");
 
-      await orchestrator.recoverOrphanedTasks();
+      await orchestrator.engine.recoverOrphanedTasks();
 
       // Should have called kill(99999, 0) for existence check
       // then kill(99999, "SIGTERM")
@@ -541,7 +541,7 @@ describe("Orchestrator Resilience", () => {
         ],
       });
 
-      await expect(orchestrator.recoverOrphanedTasks()).resolves.not.toThrow();
+      await expect(orchestrator.engine.recoverOrphanedTasks()).resolves.not.toThrow();
     });
 
     it("skips processes with pid 0 (in-process agent)", async () => {
@@ -564,7 +564,7 @@ describe("Orchestrator Resilience", () => {
         ],
       });
 
-      await orchestrator.recoverOrphanedTasks();
+      await orchestrator.engine.recoverOrphanedTasks();
 
       // pid 0 should be skipped (condition: proc.pid > 0)
       expect(killCalls).toHaveLength(0);
@@ -590,7 +590,7 @@ describe("Orchestrator Resilience", () => {
         ],
       });
 
-      await orchestrator.recoverOrphanedTasks();
+      await orchestrator.engine.recoverOrphanedTasks();
 
       expect(killCalls).toHaveLength(0);
     });

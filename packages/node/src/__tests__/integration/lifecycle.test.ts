@@ -81,7 +81,7 @@ describe("integration: lifecycle", () => {
     orchestrator.on("agent:spawned", () => transitions.push("spawned"));
     orchestrator.on("task:transition", ({ to }) => transitions.push(to));
 
-    await orchestrator.createTask({
+    await orchestrator.engine.createTask({
       title: "Simple task",
       description: "Do something",
       assignTo: "worker",
@@ -108,13 +108,13 @@ describe("integration: lifecycle", () => {
     const spawnOrder: string[] = [];
     orchestrator.on("agent:spawned", ({ taskTitle }) => spawnOrder.push(taskTitle));
 
-    const taskA = await orchestrator.createTask({
+    const taskA = await orchestrator.engine.createTask({
       title: "Task A",
       description: "First",
       assignTo: "worker",
     });
 
-    await orchestrator.createTask({
+    await orchestrator.engine.createTask({
       title: "Task B",
       description: "After A",
       assignTo: "worker",
@@ -145,7 +145,7 @@ describe("integration: lifecycle", () => {
     const retryEvents: any[] = [];
     orchestrator.on("task:retry", (e) => retryEvents.push(e));
 
-    await orchestrator.createTask({
+    await orchestrator.engine.createTask({
       title: "Flaky task",
       description: "Fails first, succeeds second",
       assignTo: "worker",
@@ -186,7 +186,7 @@ describe("integration: lifecycle", () => {
     const deadlockEvents: any[] = [];
     orchestrator.on("orchestrator:deadlock", (e) => deadlockEvents.push(e));
 
-    await orchestrator.createTask({
+    await orchestrator.engine.createTask({
       title: "Blocked task",
       description: "Depends on nonexistent",
       assignTo: "worker",

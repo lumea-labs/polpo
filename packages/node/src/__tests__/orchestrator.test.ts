@@ -62,7 +62,7 @@ describe("Orchestrator", () => {
       const events: any[] = [];
       orchestrator.on("task:created", (e) => events.push(e));
 
-      const task = await orchestrator.createTask({
+      const task = await orchestrator.engine.createTask({
         title: "Test",
         description: "Test task",
         assignTo: "agent-1",
@@ -77,7 +77,7 @@ describe("Orchestrator", () => {
 
   describe("tick", () => {
     it("returns true when all tasks are terminal", async () => {
-      const task = await orchestrator.createTask({
+      const task = await orchestrator.engine.createTask({
         title: "Test",
         description: "Done",
         assignTo: "agent-1",
@@ -95,7 +95,7 @@ describe("Orchestrator", () => {
       const events: any[] = [];
       orchestrator.on("orchestrator:deadlock", (e) => events.push(e));
 
-      const taskA = await orchestrator.createTask({
+      const taskA = await orchestrator.engine.createTask({
         title: "Task A",
         description: "Depends on B",
         assignTo: "agent-1",
@@ -113,7 +113,7 @@ describe("Orchestrator", () => {
       orchestrator.on("deadlock:detected", (e) => detected.push(e));
 
       // Create Task A (no deps) and force it to failed
-      const taskA = await orchestrator.createTask({
+      const taskA = await orchestrator.engine.createTask({
         title: "Task A",
         description: "Do something",
         assignTo: "agent-1",
@@ -123,7 +123,7 @@ describe("Orchestrator", () => {
       await store.transition(taskA.id, "failed");
 
       // Create Task B that depends on (now-failed) Task A
-      await orchestrator.createTask({
+      await orchestrator.engine.createTask({
         title: "Task B",
         description: "Depends on A",
         assignTo: "agent-1",
@@ -142,7 +142,7 @@ describe("Orchestrator", () => {
       const events: any[] = [];
       orchestrator.on("orchestrator:tick", (e) => events.push(e));
 
-      await orchestrator.createTask({
+      await orchestrator.engine.createTask({
         title: "Test",
         description: "Task",
         assignTo: "agent-1",
@@ -161,7 +161,7 @@ describe("Orchestrator", () => {
 
   describe("collectResults via RunStore", () => {
     it("processes terminal runs and transitions tasks", async () => {
-      const task = await orchestrator.createTask({
+      const task = await orchestrator.engine.createTask({
         title: "Collect me",
         description: "Test",
         assignTo: "agent-1",
@@ -195,7 +195,7 @@ describe("Orchestrator", () => {
     });
 
     it("handles failed runs", async () => {
-      const task = await orchestrator.createTask({
+      const task = await orchestrator.engine.createTask({
         title: "Fail me",
         description: "Test",
         assignTo: "agent-1",
@@ -219,58 +219,58 @@ describe("Orchestrator", () => {
 
   describe("agent management", () => {
     it("addAgent adds to team", async () => {
-      await orchestrator.addAgent(createTestAgent({ name: "new-agent" }));
-      expect((await orchestrator.getAgents()).find(a => a.name === "new-agent")).toBeDefined();
+      await orchestrator.engine.addAgent(createTestAgent({ name: "new-agent" }));
+      expect((await orchestrator.engine.getAgents()).find(a => a.name === "new-agent")).toBeDefined();
     });
 
     it("addAgent throws for duplicate", async () => {
-      await expect(orchestrator.addAgent(createTestAgent({ name: "agent-1" })))
+      await expect(orchestrator.engine.addAgent(createTestAgent({ name: "agent-1" })))
         .rejects.toThrow("already exists");
     });
 
     it("removeAgent removes from team", async () => {
-      await orchestrator.addAgent(createTestAgent({ name: "to-remove" }));
-      expect(await orchestrator.removeAgent("to-remove")).toBe(true);
-      expect((await orchestrator.getAgents()).find(a => a.name === "to-remove")).toBeUndefined();
+      await orchestrator.engine.addAgent(createTestAgent({ name: "to-remove" }));
+      expect(await orchestrator.engine.removeAgent("to-remove")).toBe(true);
+      expect((await orchestrator.engine.getAgents()).find(a => a.name === "to-remove")).toBeUndefined();
     });
 
     it("removeAgent returns false for nonexistent", async () => {
-      expect(await orchestrator.removeAgent("nope")).toBe(false);
+      expect(await orchestrator.engine.removeAgent("nope")).toBe(false);
     });
   });
 
   describe("volatile agents", () => {
     it("addVolatileAgent marks agent as volatile", async () => {
-      await orchestrator.addVolatileAgent(createTestAgent({ name: "vol-1" }), "mission-1");
-      const agent = (await orchestrator.getAgents()).find(a => a.name === "vol-1");
+      await orchestrator.engine.addVolatileAgent(createTestAgent({ name: "vol-1" }), "mission-1");
+      const agent = (await orchestrator.engine.getAgents()).find(a => a.name === "vol-1");
       expect(agent?.volatile).toBe(true);
       expect(agent?.missionGroup).toBe("mission-1");
     });
 
     it("cleanupVolatileAgents removes agents for group", async () => {
-      await orchestrator.addVolatileAgent(createTestAgent({ name: "vol-1" }), "mission-1");
-      await orchestrator.addVolatileAgent(createTestAgent({ name: "vol-2" }), "mission-1");
-      const removed = await orchestrator.cleanupVolatileAgents("mission-1");
+      await orchestrator.engine.addVolatileAgent(createTestAgent({ name: "vol-1" }), "mission-1");
+      await orchestrator.engine.addVolatileAgent(createTestAgent({ name: "vol-2" }), "mission-1");
+      const removed = await orchestrator.engine.cleanupVolatileAgents("mission-1");
       expect(removed).toBe(2);
-      expect((await orchestrator.getAgents()).find(a => a.name === "vol-1")).toBeUndefined();
+      expect((await orchestrator.engine.getAgents()).find(a => a.name === "vol-1")).toBeUndefined();
     });
   });
 
   describe("killTask", () => {
     it("marks task as failed", async () => {
-      const task = await orchestrator.createTask({
+      const task = await orchestrator.engine.createTask({
         title: "Kill me",
         description: "Test",
         assignTo: "agent-1",
       });
-      await orchestrator.killTask(task.id);
+      await orchestrator.engine.killTask(task.id);
       expect((await store.getTask(task.id))!.status).toBe("failed");
     });
   });
 
   describe("retryTask", () => {
     it("transitions failed task to pending", async () => {
-      const task = await orchestrator.createTask({
+      const task = await orchestrator.engine.createTask({
         title: "Retry me",
         description: "Test",
         assignTo: "agent-1",
@@ -279,17 +279,17 @@ describe("Orchestrator", () => {
       await store.transition(task.id, "in_progress");
       await store.transition(task.id, "failed");
 
-      await orchestrator.retryTask(task.id);
+      await orchestrator.engine.retryTask(task.id);
       expect((await store.getTask(task.id))!.status).toBe("pending");
     });
 
     it("throws for non-failed task", async () => {
-      const task = await orchestrator.createTask({
+      const task = await orchestrator.engine.createTask({
         title: "Not failed",
         description: "Test",
         assignTo: "agent-1",
       });
-      await expect(orchestrator.retryTask(task.id)).rejects.toThrow('Cannot retry task in "pending" state');
+      await expect(orchestrator.engine.retryTask(task.id)).rejects.toThrow('Cannot retry task in "pending" state');
     });
   });
 
@@ -316,7 +316,7 @@ describe("Orchestrator", () => {
       await store.transition(task.id, "assigned");
       await store.transition(task.id, "in_progress");
 
-      const recovered = await orchestrator.recoverOrphanedTasks();
+      const recovered = await orchestrator.engine.recoverOrphanedTasks();
       expect(recovered).toBe(1);
       expect((await store.getTask(task.id))!.status).toBe("pending");
     });
@@ -334,7 +334,7 @@ describe("Orchestrator", () => {
       await store.transition(task.id, "assigned");
       await store.transition(task.id, "in_progress");
 
-      await orchestrator.recoverOrphanedTasks();
+      await orchestrator.engine.recoverOrphanedTasks();
       // Recovery doesn't burn retries — task goes back to pending
       expect((await store.getTask(task.id))!.status).toBe("pending");
       expect((await store.getTask(task.id))!.retries).toBe(0);
@@ -343,7 +343,7 @@ describe("Orchestrator", () => {
 
   describe("syncProcessesFromRunStore", () => {
     it("syncs active runs to processes state", async () => {
-      const task = await orchestrator.createTask({
+      const task = await orchestrator.engine.createTask({
         title: "Running",
         description: "Test",
         assignTo: "agent-1",
@@ -377,23 +377,23 @@ describe("Orchestrator", () => {
 
   describe("shared memory", () => {
     it("hasMemory returns false when no memory saved", async () => {
-      expect(await orchestrator.hasMemory()).toBe(false);
+      expect(await orchestrator.engine.hasMemory()).toBe(false);
     });
 
     it("getMemory returns empty string when no memory", async () => {
-      expect(await orchestrator.getMemory()).toBe("");
+      expect(await orchestrator.engine.getMemory()).toBe("");
     });
 
     it("saveMemory + getMemory round-trips", async () => {
-      await orchestrator.saveMemory("# Architecture\nTypeScript project");
-      expect(await orchestrator.hasMemory()).toBe(true);
-      expect(await orchestrator.getMemory()).toBe("# Architecture\nTypeScript project");
+      await orchestrator.engine.saveMemory("# Architecture\nTypeScript project");
+      expect(await orchestrator.engine.hasMemory()).toBe(true);
+      expect(await orchestrator.engine.getMemory()).toBe("# Architecture\nTypeScript project");
     });
 
     it("appendMemory adds timestamped entry", async () => {
-      await orchestrator.saveMemory("# Memory");
-      await orchestrator.appendMemory("New insight");
-      const content = await orchestrator.getMemory();
+      await orchestrator.engine.saveMemory("# Memory");
+      await orchestrator.engine.appendMemory("New insight");
+      const content = await orchestrator.engine.getMemory();
       expect(content).toContain("# Memory");
       expect(content).toContain("New insight");
     });
@@ -401,37 +401,37 @@ describe("Orchestrator", () => {
 
   describe("agent memory", () => {
     it("hasAgentMemory returns false for unknown agent", async () => {
-      expect(await orchestrator.hasAgentMemory("alice")).toBe(false);
+      expect(await orchestrator.engine.hasAgentMemory("alice")).toBe(false);
     });
 
     it("getAgentMemory returns empty string for unknown agent", async () => {
-      expect(await orchestrator.getAgentMemory("alice")).toBe("");
+      expect(await orchestrator.engine.getAgentMemory("alice")).toBe("");
     });
 
     it("saveAgentMemory + getAgentMemory round-trips", async () => {
-      await orchestrator.saveAgentMemory("alice", "Alice prefers functional style");
-      expect(await orchestrator.hasAgentMemory("alice")).toBe(true);
-      expect(await orchestrator.getAgentMemory("alice")).toBe("Alice prefers functional style");
+      await orchestrator.engine.saveAgentMemory("alice", "Alice prefers functional style");
+      expect(await orchestrator.engine.hasAgentMemory("alice")).toBe(true);
+      expect(await orchestrator.engine.getAgentMemory("alice")).toBe("Alice prefers functional style");
     });
 
     it("agent memory is isolated from shared memory", async () => {
-      await orchestrator.saveMemory("shared context");
-      await orchestrator.saveAgentMemory("alice", "agent context");
-      expect(await orchestrator.getMemory()).toBe("shared context");
-      expect(await orchestrator.getAgentMemory("alice")).toBe("agent context");
+      await orchestrator.engine.saveMemory("shared context");
+      await orchestrator.engine.saveAgentMemory("alice", "agent context");
+      expect(await orchestrator.engine.getMemory()).toBe("shared context");
+      expect(await orchestrator.engine.getAgentMemory("alice")).toBe("agent context");
     });
 
     it("different agents have separate memories", async () => {
-      await orchestrator.saveAgentMemory("alice", "alice notes");
-      await orchestrator.saveAgentMemory("bob", "bob notes");
-      expect(await orchestrator.getAgentMemory("alice")).toBe("alice notes");
-      expect(await orchestrator.getAgentMemory("bob")).toBe("bob notes");
+      await orchestrator.engine.saveAgentMemory("alice", "alice notes");
+      await orchestrator.engine.saveAgentMemory("bob", "bob notes");
+      expect(await orchestrator.engine.getAgentMemory("alice")).toBe("alice notes");
+      expect(await orchestrator.engine.getAgentMemory("bob")).toBe("bob notes");
     });
 
     it("appendAgentMemory appends to agent memory", async () => {
-      await orchestrator.saveAgentMemory("alice", "# Notes");
-      await orchestrator.appendAgentMemory("alice", "learned React patterns");
-      const content = await orchestrator.getAgentMemory("alice");
+      await orchestrator.engine.saveAgentMemory("alice", "# Notes");
+      await orchestrator.engine.appendAgentMemory("alice", "learned React patterns");
+      const content = await orchestrator.engine.getAgentMemory("alice");
       expect(content).toContain("# Notes");
       expect(content).toContain("learned React patterns");
     });

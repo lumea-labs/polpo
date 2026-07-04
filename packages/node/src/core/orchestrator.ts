@@ -23,13 +23,7 @@ import type {
   AgentConfig,
   Task,
   TaskResult,
-  TaskExpectation,
-  ExpectedOutcome,
   Team,
-  Mission,
-  MissionStatus,
-  RetryPolicy,
-  ScopedNotificationRules,
 } from "@polpo-ai/core/types";
 import { AgentManager } from "@polpo-ai/core/agent-manager";
 import { TaskManager } from "@polpo-ai/core/task-manager";
@@ -57,7 +51,7 @@ import { SLAMonitor } from "../quality/sla-monitor.js";
 import { QualityController } from "../quality/quality-controller.js";
 import { Scheduler } from "../scheduling/scheduler.js";
 import { TaskWatcherManager } from "@polpo-ai/core/task-watcher";
-import type { ApprovalRequest, ApprovalStatus, NotificationAction } from "@polpo-ai/core/types";
+import type { NotificationAction } from "@polpo-ai/core/types";
 import { EncryptedVaultStore } from "../vault/encrypted-store.js";
 import type { VaultStore } from "@polpo-ai/core/vault-store";
 import type { PlaybookStore } from "@polpo-ai/core/playbook-store";
@@ -122,8 +116,15 @@ export class Orchestrator extends TypedEmitter {
   private runner!: TaskRunner;
   private assessor!: AssessmentOrchestrator;
 
-  // Pure orchestration engine (delegates tick, run, and all pure-logic methods)
-  private engine!: OrchestratorEngine;
+  // Pure orchestration engine (owns tick, run, and all pure-logic methods)
+  private _engine!: OrchestratorEngine;
+
+  /**
+   * The pure orchestration engine — task/mission/agent/approval/memory
+   * operations live here. Exposed read-only (0.12 API): callers invoke
+   * `orchestrator.engine.<method>()` directly instead of façade pass-throughs.
+   */
+  get engine(): OrchestratorEngine { return this._engine; }
 
   getWorkDir(): string { return this.workDir; }
   getAgentWorkDir(): string {
@@ -475,7 +476,7 @@ export class Orchestrator extends TypedEmitter {
     };
 
     // Create the pure orchestration engine
-    this.engine = new OrchestratorEngine({
+    this._engine = new OrchestratorEngine({
       ctx,
       taskManager: this.taskMgr,
       agentManager: this.agentMgr,
@@ -499,7 +500,7 @@ export class Orchestrator extends TypedEmitter {
     return async (action: NotificationAction): Promise<string> => {
       switch (action.type) {
         case "create_task": {
-          const task = await this.createTask({
+          const task = await this.engine.createTask({
             title: action.title,
             description: action.description,
             assignTo: action.assignTo,
@@ -656,45 +657,9 @@ export class Orchestrator extends TypedEmitter {
     }
   }
 
-  // ── Task Management (delegates to OrchestratorEngine → TaskManager) ──
-
-  async createTask(opts: {
-    title: string; description: string; assignTo: string;
-    expectations?: TaskExpectation[]; expectedOutcomes?: ExpectedOutcome[];
-    dependsOn?: string[]; group?: string; maxDuration?: number; retryPolicy?: RetryPolicy;
-    notifications?: ScopedNotificationRules; sideEffects?: boolean; draft?: boolean;
-  }): Promise<Task> { return this.engine.createTask(opts); }
-  async updateTaskDescription(taskId: string, description: string): Promise<void> { return this.engine.updateTaskDescription(taskId, description); }
-  async updateTaskAssignment(taskId: string, agentName: string): Promise<void> { return this.engine.updateTaskAssignment(taskId, agentName); }
-  async updateTaskExpectations(taskId: string, expectations: TaskExpectation[]): Promise<void> { return this.engine.updateTaskExpectations(taskId, expectations); }
-  async retryTask(taskId: string): Promise<void> { return this.engine.retryTask(taskId); }
-  reassessTask(taskId: string): Promise<void> { return this.engine.reassessTask(taskId); }
-  async killTask(taskId: string): Promise<boolean> { return this.engine.killTask(taskId); }
-  async deleteTask(taskId: string): Promise<boolean> { return this.engine.deleteTask(taskId); }
-  async abortGroup(group: string): Promise<number> { return this.engine.abortGroup(group); }
-  async clearTasks(filter: (task: Task) => boolean): Promise<number> { return this.engine.clearTasks(filter); }
-  async forceFailTask(taskId: string): Promise<void> { return this.engine.forceFailTask(taskId); }
-
-  // ── Approval Management (delegates to OrchestratorEngine) ──
-
-  async approveRequest(requestId: string, resolvedBy?: string, note?: string): Promise<ApprovalRequest | null> {
-    return this.engine.approveRequest(requestId, resolvedBy, note);
-  }
-  async rejectRequest(requestId: string, feedback: string, resolvedBy?: string): Promise<ApprovalRequest | null> {
-    return this.engine.rejectRequest(requestId, feedback, resolvedBy);
-  }
-  async canRejectRequest(requestId: string): Promise<{ allowed: boolean; rejectionCount: number; maxRejections: number }> {
-    return this.engine.canRejectRequest(requestId);
-  }
-  async getPendingApprovals(): Promise<ApprovalRequest[]> {
-    return this.engine.getPendingApprovals();
-  }
-  async getAllApprovals(status?: ApprovalStatus): Promise<ApprovalRequest[]> {
-    return this.engine.getAllApprovals(status);
-  }
-  async getApprovalRequest(id: string): Promise<ApprovalRequest | undefined> {
-    return this.engine.getApprovalRequest(id);
-  }
+  // NOTE (0.12): task, approval, agent, mission, and memory operations are no
+  // longer mirrored here — call them on the exposed engine directly
+  // (`orchestrator.engine.createTask(...)`, `orchestrator.engine.getAgents()`, ...).
 
   // ── Store Accessors ──
 
@@ -725,120 +690,10 @@ export class Orchestrator extends TypedEmitter {
     }
   }
 
-  // ── Agent Management (delegates to OrchestratorEngine → AgentManager) ──
+  // ── Config Accessors ──
 
-  async getAgents(): Promise<AgentConfig[]> { return this.engine.getAgents(); }
-  async getTeams(): Promise<Team[]> { return this.engine.getTeams(); }
-  async getTeam(name?: string): Promise<Team | undefined> { return this.engine.getTeam(name); }
   getConfig(): PolpoConfig | null { return this.config; }
   get isInitialized(): boolean { return this.interactive; }
-  async addTeam(team: Team): Promise<void> { return this.engine.addTeam(team); }
-  async removeTeam(name: string): Promise<boolean> { return this.engine.removeTeam(name); }
-  async renameTeam(oldName: string, newName: string): Promise<void> { return this.engine.renameTeam(oldName, newName); }
-  async addAgent(agent: AgentConfig, teamName?: string): Promise<void> { return this.engine.addAgent(agent, teamName); }
-  async removeAgent(name: string): Promise<boolean> { return this.engine.removeAgent(name); }
-  async updateAgent(name: string, updates: Partial<Omit<AgentConfig, "name">>): Promise<AgentConfig> { return this.engine.updateAgent(name, updates); }
-  async findAgentTeam(name: string): Promise<Team | undefined> { return this.engine.findAgentTeam(name); }
-  async addVolatileAgent(agent: AgentConfig, group: string): Promise<void> { return this.engine.addVolatileAgent(agent, group); }
-  async cleanupVolatileAgents(group: string): Promise<number> { return this.engine.cleanupVolatileAgents(group); }
-
-
-  // ─── Mission Management (delegates to OrchestratorEngine → MissionExecutor) ──
-
-  async createMission(opts: { data: string; prompt?: string; name?: string; status?: MissionStatus; notifications?: ScopedNotificationRules }): Promise<Mission> { return this.engine.createMission(opts); }
-  async getMission(missionId: string): Promise<Mission | undefined> { return this.engine.getMission(missionId); }
-  async getMissionByName(name: string): Promise<Mission | undefined> { return this.engine.getMissionByName(name); }
-  async listMissions(): Promise<Mission[]> { return this.engine.listMissions(); }
-  async updateMission(missionId: string, updates: Partial<Omit<Mission, "id">>): Promise<Mission> { return this.engine.updateMission(missionId, updates); }
-  async deleteMission(missionId: string): Promise<boolean> { return this.engine.deleteMission(missionId); }
-
-  // ─── Atomic Mission Data Operations (delegates to OrchestratorEngine → MissionExecutor) ──
-
-  async addMissionTask(missionId: string, task: { title: string; description: string; assignTo?: string; dependsOn?: string[]; expectations?: unknown[]; expectedOutcomes?: unknown[]; maxDuration?: number; retryPolicy?: { escalateAfter?: number; fallbackAgent?: string }; notifications?: unknown }): Promise<Mission> {
-    return this.engine.addMissionTask(missionId, task);
-  }
-  async updateMissionTask(missionId: string, taskTitle: string, updates: { title?: string; description?: string; assignTo?: string; dependsOn?: string[]; expectations?: unknown[]; expectedOutcomes?: unknown[]; maxDuration?: number; retryPolicy?: { escalateAfter?: number; fallbackAgent?: string }; notifications?: unknown }): Promise<Mission> {
-    return this.engine.updateMissionTask(missionId, taskTitle, updates);
-  }
-  async removeMissionTask(missionId: string, taskTitle: string): Promise<Mission> {
-    return this.engine.removeMissionTask(missionId, taskTitle);
-  }
-  async reorderMissionTasks(missionId: string, titles: string[]): Promise<Mission> {
-    return this.engine.reorderMissionTasks(missionId, titles);
-  }
-  async addMissionCheckpoint(missionId: string, cp: { name: string; afterTasks: string[]; blocksTasks: string[]; notifyChannels?: string[]; message?: string }): Promise<Mission> {
-    return this.engine.addMissionCheckpoint(missionId, cp);
-  }
-  async updateMissionCheckpoint(missionId: string, name: string, updates: { name?: string; afterTasks?: string[]; blocksTasks?: string[]; notifyChannels?: string[]; message?: string }): Promise<Mission> {
-    return this.engine.updateMissionCheckpoint(missionId, name, updates);
-  }
-  async removeMissionCheckpoint(missionId: string, name: string): Promise<Mission> {
-    return this.engine.removeMissionCheckpoint(missionId, name);
-  }
-  async addMissionQualityGate(missionId: string, gate: { name: string; afterTasks: string[]; blocksTasks: string[]; minScore?: number; requireAllPassed?: boolean; condition?: string; notifyChannels?: string[] }): Promise<Mission> {
-    return this.engine.addMissionQualityGate(missionId, gate);
-  }
-  async updateMissionQualityGate(missionId: string, name: string, updates: { name?: string; afterTasks?: string[]; blocksTasks?: string[]; minScore?: number; requireAllPassed?: boolean; condition?: string; notifyChannels?: string[] }): Promise<Mission> {
-    return this.engine.updateMissionQualityGate(missionId, name, updates);
-  }
-  async removeMissionQualityGate(missionId: string, name: string): Promise<Mission> {
-    return this.engine.removeMissionQualityGate(missionId, name);
-  }
-  async addMissionDelay(missionId: string, delay: { name: string; afterTasks: string[]; blocksTasks: string[]; duration: string; notifyChannels?: string[]; message?: string }): Promise<Mission> {
-    return this.engine.addMissionDelay(missionId, delay);
-  }
-  async updateMissionDelay(missionId: string, name: string, updates: { name?: string; afterTasks?: string[]; blocksTasks?: string[]; duration?: string; notifyChannels?: string[]; message?: string }): Promise<Mission> {
-    return this.engine.updateMissionDelay(missionId, name, updates);
-  }
-  async removeMissionDelay(missionId: string, name: string): Promise<Mission> {
-    return this.engine.removeMissionDelay(missionId, name);
-  }
-  async addMissionTeamMember(missionId: string, member: { name: string; role?: string; model?: string; [key: string]: unknown }): Promise<Mission> {
-    return this.engine.addMissionTeamMember(missionId, member);
-  }
-  async updateMissionTeamMember(missionId: string, memberName: string, updates: { name?: string; role?: string; model?: string; [key: string]: unknown }): Promise<Mission> {
-    return this.engine.updateMissionTeamMember(missionId, memberName, updates);
-  }
-  async removeMissionTeamMember(missionId: string, memberName: string): Promise<Mission> {
-    return this.engine.removeMissionTeamMember(missionId, memberName);
-  }
-  async updateMissionNotifications(missionId: string, notifications: ScopedNotificationRules | null): Promise<Mission> {
-    return this.engine.updateMissionNotifications(missionId, notifications);
-  }
-
-  // ─── Shared Memory (delegates to OrchestratorEngine) ───
-
-  /** Check if shared memory exists. */
-  async hasMemory(): Promise<boolean> { return this.engine.hasMemory(); }
-
-  /** Get the full shared memory content. */
-  async getMemory(): Promise<string> { return this.engine.getMemory(); }
-
-  /** Overwrite the shared memory. */
-  async saveMemory(content: string): Promise<void> { return this.engine.saveMemory(content); }
-
-  /** Append a line to the shared memory. */
-  async appendMemory(line: string): Promise<void> { return this.engine.appendMemory(line); }
-
-  /** Replace a unique substring in the shared memory. */
-  async updateMemory(oldText: string, newText: string): Promise<true | string> { return this.engine.updateMemory(oldText, newText); }
-
-  // ─── Agent Memory (delegates to OrchestratorEngine) ───
-
-  /** Check if memory exists for a specific agent. */
-  async hasAgentMemory(agentName: string): Promise<boolean> { return this.engine.hasAgentMemory(agentName); }
-
-  /** Get the memory content for a specific agent. */
-  async getAgentMemory(agentName: string): Promise<string> { return this.engine.getAgentMemory(agentName); }
-
-  /** Overwrite the memory for a specific agent. */
-  async saveAgentMemory(agentName: string, content: string): Promise<void> { return this.engine.saveAgentMemory(agentName, content); }
-
-  /** Append a line to a specific agent's memory. */
-  async appendAgentMemory(agentName: string, line: string): Promise<void> { return this.engine.appendAgentMemory(agentName, line); }
-
-  /** Replace a unique substring in a specific agent's memory. */
-  async updateAgentMemory(agentName: string, oldText: string, newText: string): Promise<true | string> { return this.engine.updateAgentMemory(agentName, oldText, newText); }
 
   /** Get the persistent log store. */
   getLogStore(): LogStore | undefined {
@@ -864,32 +719,6 @@ export class Orchestrator extends TypedEmitter {
     this.sessionStore = new FileSessionStore(this.polpoDir);
     try { await this.sessionStore.prune(20); } catch { /* best-effort: non-critical */ }
   }
-
-  // ─── Mission Resume / Execute (delegates to OrchestratorEngine → MissionExecutor) ──
-
-  async getResumableMissions(): Promise<Mission[]> { return this.engine.getResumableMissions(); }
-  async resumeMission(missionId: string, opts?: { retryFailed?: boolean }): Promise<{ retried: number; pending: number }> { return this.engine.resumeMission(missionId, opts); }
-  async executeMission(missionId: string): Promise<{ tasks: Task[]; group: string }> { return this.engine.executeMission(missionId); }
-
-  // ─── Checkpoints (delegates to OrchestratorEngine) ──
-
-  /** Get all active (unresumed) checkpoints across all mission groups. */
-  getActiveCheckpoints() { return this.engine.getActiveCheckpoints(); }
-
-  /** Resume a checkpoint by mission group name and checkpoint name. Returns true if resumed. */
-  async resumeCheckpoint(group: string, checkpointName: string): Promise<boolean> {
-    return this.engine.resumeCheckpoint(group, checkpointName);
-  }
-
-  /** Resume a checkpoint by mission ID and checkpoint name. Returns true if resumed. */
-  async resumeCheckpointByMissionId(missionId: string, checkpointName: string): Promise<boolean> {
-    return this.engine.resumeCheckpointByMissionId(missionId, checkpointName);
-  }
-
-  // ─── Delays (delegates to OrchestratorEngine) ─────
-
-  /** Get all active (unexpired) delays across all mission groups. */
-  getActiveDelays() { return this.engine.getActiveDelays(); }
 
   /** Stop the supervisor loop (non-graceful — use gracefulStop for clean shutdown) */
   stop(): void {
@@ -1077,15 +906,6 @@ export class Orchestrator extends TypedEmitter {
     return true;
   }
 
-  /**
-   * Recover orphaned tasks on startup.
-   * Checks RunStore for active runs — if the runner PID is still alive,
-   * let it keep running (zero work lost). If PID is dead, clean up the run.
-   * Then requeue orphaned tasks to "pending" WITHOUT burning retry count
-   * (shutdown interrupts are not real failures).
-   */
-  async recoverOrphanedTasks(): Promise<number> { return this.engine.recoverOrphanedTasks(); }
-
   private async seedTasks(): Promise<void> {
     await this.taskMgr.seedTasks();
     // Sync config cache from stores so state reflects authoritative data
@@ -1144,8 +964,5 @@ export class Orchestrator extends TypedEmitter {
     const failed = tasks.filter(t => t.status === "failed");
     this.emit("log", { level: "info", message: `Total: ${tasks.length} | Done: ${done.length} | Failed: ${failed.length}` });
   }
-
-  /** Access the pure orchestration engine (for advanced use / testing). */
-  getEngine(): OrchestratorEngine { return this.engine; }
 }
 
