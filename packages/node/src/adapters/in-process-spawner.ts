@@ -49,6 +49,9 @@ export interface InProcessSpawnerDeps {
   memoryStore?: MemoryStore;
   fs?: FileSystem;
   shell?: Shell;
+  /** Per-tenant LLM gateway config — the in-process loop runs in a shared
+   *  process with no per-tenant env, so the host must inject it here. */
+  gatewayConfig?: unknown;
 }
 
 export class InProcessSpawner implements Spawner {

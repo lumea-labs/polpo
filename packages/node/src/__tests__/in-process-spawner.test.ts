@@ -44,12 +44,13 @@ import {
 // ── Mock the LLM module BEFORE any imports that pull it in ──
 
 let activeResolvedModel: ResolvedModel = mockResolvedModel(mockTextModel("default"));
+let capturedResolveOpts: unknown;
 
 vi.mock("@polpo-ai/llm", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@polpo-ai/llm")>();
   return {
     ...actual,
-    resolveModel: () => activeResolvedModel,
+    resolveModel: (_model: unknown, opts?: unknown) => { capturedResolveOpts = opts; return activeResolvedModel; },
     enforceModelAllowlist: () => {},
     mapReasoningToProviderOptions: () => undefined,
   };
@@ -167,6 +168,22 @@ describe("InProcessSpawner", () => {
     expect(shape).toContain("assistant");
     // Output dir was created (NodeSpawner parity).
     expect(existsSync(config.outputDir)).toBe(true);
+  });
+
+  test("per-tenant gatewayConfig from deps reaches the loop's model resolution", async () => {
+    setMockModel(mockTurnSequenceModel([{ type: "text", text: "gw ok" }]));
+    capturedResolveOpts = undefined;
+    const gatewayConfig = { url: "https://tenant-gw.example/v1", apiKey: "tenant-key" };
+    const store = new InMemoryRunStore();
+    const spawner = new InProcessSpawner(() => ({ runStore: store, gatewayConfig }));
+
+    const spawnResult = await spawner.spawn(makeConfig());
+    await onExitPromise(spawnResult);
+
+    // resolveModel(model, { gateway }) — the in-process host must thread the
+    // per-tenant gateway through, since the shared server process has no
+    // per-tenant env (unlike the sandbox).
+    expect((capturedResolveOpts as { gateway?: unknown })?.gateway).toEqual(gatewayConfig);
   });
 
   test("lifecycle: isAlive during the run, false after; kill() → run killed", async () => {
