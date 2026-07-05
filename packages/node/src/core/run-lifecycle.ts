@@ -112,6 +112,13 @@ export interface ExecuteRunDeps {
   fs?: FileSystem;
   /** Shell for tools. Default: a fresh NodeShell. */
   shell?: Shell;
+  /**
+   * LLM gateway configuration for the loop's model resolution. The subprocess
+   * host leaves this undefined and relies on gateway/provider env vars inside
+   * the sandbox; an in-process host (proxy execution) must pass the per-tenant
+   * gateway here — the loop runs in a shared process with no per-tenant env.
+   */
+  gatewayConfig?: unknown;
   /** Pid recorded on the run record: process.pid (subprocess) or a synthetic negative id (in-process). */
   pid: number;
   /** Where the config was persisted ("file:///path", "db://runId", "memory://…"). */
@@ -188,6 +195,9 @@ export async function executeRun(config: RunnerConfig, deps: ExecuteRunDeps): Pr
       reasoning: config.reasoning,
       vaultStore,
       memoryStore,
+      // Per-tenant gateway for the in-process host (undefined for subprocess,
+      // which resolves the gateway from sandbox env).
+      gatewayConfig: deps.gatewayConfig,
       // Subprocess hosts create their own fs/shell; the in-process host
       // injects the orchestrator's instances.
       fs: deps.fs ?? new NodeFileSystem(),
