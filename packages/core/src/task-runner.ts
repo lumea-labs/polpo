@@ -15,12 +15,19 @@ import type { LoopResumeState } from "./loop/run-store.js";
  */
 export const RESUME_CHECKPOINT_MAX_AGE_MS = 60 * 60 * 1000;
 
-/** A checkpoint is resumable if it has at least one completed turn of
- *  history and is fresh enough to trust. */
+/** A checkpoint is resumable, and fresh enough to trust, when it is either:
+ *   - a session checkpoint: a completed turn (`turn`) with non-empty history, or
+ *   - a pipeline checkpoint: a named pipeline (`pipelineName`) recording the
+ *     step position — an in-flight agent step additionally carries turn/history.
+ *  The completions human-gate format (no `pipelineName`, no `turn`) is neither
+ *  and is deliberately not harvested. */
 function usableCheckpoint(state: LoopResumeState | undefined): LoopResumeState | undefined {
   if (!state) return undefined;
-  if (typeof state.turn !== "number" || state.turn < 0) return undefined;
-  if (!Array.isArray(state.history) || state.history.length === 0) return undefined;
+  const hasSession =
+    typeof state.turn === "number" && state.turn >= 0 &&
+    Array.isArray(state.history) && state.history.length > 0;
+  const hasPipeline = typeof state.pipelineName === "string" && state.pipelineName.length > 0;
+  if (!hasSession && !hasPipeline) return undefined;
   const stamp = state.updatedAt ?? state.createdAt;
   const age = Date.now() - new Date(stamp).getTime();
   if (!Number.isFinite(age) || age > RESUME_CHECKPOINT_MAX_AGE_MS) return undefined;
@@ -510,9 +517,12 @@ export class TaskRunner {
     const resumeState = this.pendingResume.get(task.id);
     if (resumeState) {
       this.pendingResume.delete(task.id);
+      const from = resumeState.pipelineName
+        ? `pipeline "${resumeState.pipelineName}" (${resumeState.steps?.length ?? 0} steps left)`
+        : `turn ${(resumeState.turn ?? -1) + 1}`;
       this.ctx.emitter.emit("log", {
         level: "info",
-        message: `[${task.id}] Resuming from checkpoint (turn ${resumeState.turn! + 1}) instead of retrying from zero`,
+        message: `[${task.id}] Resuming from checkpoint (${from}) instead of retrying from zero`,
       });
     }
 
