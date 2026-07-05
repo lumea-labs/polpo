@@ -240,6 +240,14 @@ export interface WhileBlock {
   condition?: string;
   until?: string;
   maxIterations?: number;
+  /**
+   * Durable-resume marker: iterations already completed by a previous
+   * process. Set only on checkpoint continuation steps emitted by the
+   * PipelineExecutor (never in config files), so a resumed `while`
+   * re-enters at the saved iteration and `maxIterations` stays an
+   * absolute budget across crashes.
+   */
+  completedIterations?: number;
   steps: Step[];
 }
 
