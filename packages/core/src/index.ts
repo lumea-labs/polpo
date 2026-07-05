@@ -251,10 +251,12 @@ export { resolveLoopSelection, resolveActiveLoopTools, resolveActiveLoopSkills }
 export type { LoopSelection } from "./loop/selector.js";
 export { PipelineExecutor } from "./loop/pipeline.js";
 export type {
+  PipelineCheckpoint,
   PipelineExecutionResult,
   PipelineExecutorOptions,
   PipelineHumanResult,
   PipelineLoopResult,
+  PipelineStepPosition,
   PipelineToolResult,
   PipelineTraceEvent,
 } from "./loop/pipeline.js";

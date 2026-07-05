@@ -37,6 +37,16 @@ export interface LoopResumeState {
 
   /** Name of the loop session this checkpoint belongs to (e.g. "default"). */
   loopName?: string;
+  /**
+   * Durable pipelines (task path): name of the project-loop pipeline this
+   * checkpoint belongs to. When set, `steps`/`context`/`previousNode` above
+   * carry the pipeline position — the SAME remaining-steps semantics the
+   * human-gate resume already replays — and the turn fields below, when
+   * present, describe the agent step that was in flight (its loop name in
+   * `loopName`, its session history in `history`). Absent on single-session
+   * checkpoints and on pre-existing gate resume states (compat).
+   */
+  pipelineName?: string;
   /** Index of the last COMPLETED turn (0-based). Resume starts at turn + 1. */
   turn?: number;
   /**

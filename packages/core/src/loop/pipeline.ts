@@ -55,6 +55,40 @@ export interface PipelineExecutionResult {
   events: LoopTraceEvent[];
 }
 
+/**
+ * Durable pipeline checkpoint — everything a resumed execution needs.
+ *
+ * Deliberately the SAME shape the human-gate resume format already replays
+ * (LoopResumeState.steps/context/previousNode): resume = execute exactly
+ * `steps` against `context`. Completed steps are never in the list — their
+ * outputs replay from the context bag, they are never re-executed
+ * (Temporal semantics).
+ */
+export interface PipelineCheckpoint {
+  /**
+   * Steps still to execute, composed across nested frames: switch branches
+   * are inlined at selection time (the choice is a historical fact, never
+   * re-evaluated), while iterations re-enter through a continuation step
+   * carrying `completedIterations`.
+   */
+  steps: Step[];
+  /** Live context bag at emit time. */
+  context: ContextBag;
+  /** Last completed node — drives the loop:transition hook on resume. */
+  previousNode?: string;
+}
+
+/**
+ * Pipeline position handed to `runLoop` while checkpointing is active, so
+ * the host can compose per-turn agent-session checkpoints with the pipeline
+ * position. `steps[0]` is the in-flight step itself. Undefined when
+ * checkpointing is off or suppressed (inside parallel branches).
+ */
+export interface PipelineStepPosition {
+  steps: Step[];
+  previousNode?: string;
+}
+
 export interface PipelineExecutorOptions {
   name?: string;
   pipeline: Pipeline;
@@ -69,7 +103,19 @@ export interface PipelineExecutorOptions {
     approvedGates?: LoopApprovedGate[];
   };
   onTrace?: (event: LoopTraceEvent) => void | Promise<void>;
-  runLoop: (name: string, loop: LoopConfig, context: Readonly<ContextBag>) => Promise<PipelineLoopResult>;
+  /**
+   * Durable checkpoint sink — invoked after every completed step, at
+   * switch-branch selection, and at while-iteration boundaries with the
+   * composed remaining-steps continuation. Best-effort by contract: errors
+   * are swallowed so a flaky store can never fail a healthy pipeline.
+   *
+   * v1 cut, deliberate: SUPPRESSED inside parallel branches. One resume
+   * slot cannot honestly represent N concurrent branch positions, so a
+   * crash mid-parallel resumes from the checkpoint BEFORE the block and
+   * re-executes every branch (see the parallel handler below).
+   */
+  onCheckpoint?: (checkpoint: PipelineCheckpoint) => void | Promise<void>;
+  runLoop: (name: string, loop: LoopConfig, context: Readonly<ContextBag>, position?: PipelineStepPosition) => Promise<PipelineLoopResult>;
   runTool?: (name: string, input: unknown, context: Readonly<ContextBag>, step: Extract<Step, { tool: string }>) => Promise<PipelineToolResult>;
   handleHuman?: (name: string, step: Extract<Step, { human: string }>, context: Readonly<ContextBag>) => Promise<PipelineHumanResult>;
 }
@@ -111,7 +157,7 @@ export class PipelineExecutor {
       if (!options.resume) {
         await this.runLifecyclePoint("loop:start", context, options, state, { loop: { name: options.name } });
       }
-      await this.executeSteps(options.pipeline.steps, context, trace, options, state, options.resume?.previousNode);
+      await this.executeSteps(options.pipeline.steps, context, trace, options, state, options.resume?.previousNode, [], !!options.onCheckpoint);
       await this.runLifecyclePoint("loop:end", context, options, state, { loop: { name: options.name }, status: "completed" });
       await state.emit({ type: "loop.end", status: "completed" });
       return { context, trace, events: state.events };
@@ -132,10 +178,26 @@ export class PipelineExecutor {
     options: PipelineExecutorOptions,
     state: PipelineExecutionState,
     previousNode?: string,
+    /** Steps the OUTER frames still have to execute after this frame — the
+     *  durable continuation composed across switch branches and while bodies. */
+    tail: Step[] = [],
+    /** Checkpointing active for this frame (false inside parallel branches). */
+    checkpoints = false,
   ): Promise<string | undefined> {
     let lastNode = previousNode;
+
+    // Best-effort durable checkpoint: remaining steps + live bag + position.
+    const emitCheckpoint = async (remaining: Step[], node: string | undefined): Promise<void> => {
+      if (!checkpoints || !options.onCheckpoint) return;
+      try {
+        await options.onCheckpoint({ steps: remaining, context: { ...context }, previousNode: node });
+      } catch { /* checkpoint persistence is best-effort */ }
+    };
+
     for (let i = 0; i < steps.length; i++) {
       const step = steps[i]!;
+      /** Continuation after the current step completes: this frame's rest + outer tail. */
+      const remainingAfter = (): Step[] => [...steps.slice(i + 1), ...tail];
       try {
         if (!this.matchesWhen(step.when, context)) {
           trace.push({ type: "skip", when: step.when, matched: false });
@@ -150,12 +212,18 @@ export class PipelineExecutor {
           await this.runLifecyclePoint("step:before", context, options, state, { step: { name: step.loop, type: "agent" } });
           await this.runLifecyclePoint("model:before", context, options, state, { step: { name: step.loop, type: "agent" } });
           await state.emit({ type: "step.start", step: step.loop, status: "started", when: step.when });
-          const result = await options.runLoop(step.loop, loop, freezeContext(context));
+          // Position lets the host compose per-turn session checkpoints with
+          // the pipeline position while this agent step is in flight.
+          const position = checkpoints && options.onCheckpoint
+            ? { steps: [step, ...remainingAfter()], previousNode: lastNode }
+            : undefined;
+          const result = await options.runLoop(step.loop, loop, freezeContext(context), position);
           mergeLoopResult(context, step.loop, result);
           trace.push({ type: "loop", name: step.loop, when: step.when, matched: true });
           await this.runLifecyclePoint("step:after", context, options, state, { step: { name: step.loop, type: "agent" }, output: result.output });
           await state.emit({ type: "step.end", step: step.loop, status: "completed", output: result.output });
           lastNode = step.loop;
+          await emitCheckpoint(remainingAfter(), lastNode);
           continue;
         }
 
@@ -173,6 +241,7 @@ export class PipelineExecutor {
           await this.runLifecyclePoint("step:after", context, options, state, { step: { name: stepName, type: "tool" }, tool: { name: step.tool, input: step.input }, output: result.output });
           await state.emit({ type: "tool.result", tool: step.tool, step: step.saveAs ?? step.tool, status: "completed", output: result.output });
           lastNode = step.tool;
+          await emitCheckpoint(remainingAfter(), lastNode);
           continue;
         }
 
@@ -181,15 +250,21 @@ export class PipelineExecutor {
           for (const branch of step.switch.cases) {
             if (this.matchesWhen(branch.when, context)) {
               trace.push({ type: "switch", when: branch.when, matched: true });
-              lastNode = await this.executeSteps(branch.steps, context, trace, options, state, lastNode);
+              // Pin the choice as a historical fact: the selection checkpoint
+              // inlines the chosen branch ahead of the rest — a resume replays
+              // the branch without ever re-evaluating the condition.
+              await emitCheckpoint([...branch.steps, ...remainingAfter()], lastNode);
+              lastNode = await this.executeSteps(branch.steps, context, trace, options, state, lastNode, remainingAfter(), checkpoints);
               matched = true;
               break;
             }
           }
           if (!matched && step.switch.default) {
             trace.push({ type: "switch", matched: false });
-            lastNode = await this.executeSteps(step.switch.default.steps, context, trace, options, state, lastNode);
+            await emitCheckpoint([...step.switch.default.steps, ...remainingAfter()], lastNode);
+            lastNode = await this.executeSteps(step.switch.default.steps, context, trace, options, state, lastNode, remainingAfter(), checkpoints);
           }
+          await emitCheckpoint(remainingAfter(), lastNode);
           continue;
         }
 
@@ -203,7 +278,9 @@ export class PipelineExecutor {
             data: { condition: step.while.condition, until: step.while.until, maxIterations: step.while.maxIterations },
           });
           const maxIterations = step.while.maxIterations ?? 5;
-          let iterations = 0;
+          // Durable resume: continuation steps carry the iterations already
+          // completed by a previous process — the budget stays absolute.
+          let iterations = step.while.completedIterations ?? 0;
           while (this.shouldRunWhile(step.while.condition, step.while.until, context)) {
             if (iterations >= maxIterations) {
               throw new Error(`Loop while step exceeded maxIterations (${maxIterations}) before its exit condition was satisfied`);
@@ -216,18 +293,26 @@ export class PipelineExecutor {
               status: "started",
               data: { iteration: iterations, condition: step.while.condition, until: step.while.until },
             });
-            lastNode = await this.executeSteps(step.while.steps, context, trace, options, state, lastNode);
+            // A crash inside this iteration's body resumes by completing the
+            // body's remaining steps, then re-entering the while with this
+            // iteration already accounted for. The continuation drops the
+            // step's `when` guard — entry already happened, it is history.
+            const continuation: Step = { while: { ...step.while, completedIterations: iterations } };
+            lastNode = await this.executeSteps(step.while.steps, context, trace, options, state, lastNode, [continuation, ...remainingAfter()], checkpoints);
             await state.emit({
               type: "step.end",
               step: "while",
               status: "completed",
               data: { iteration: iterations },
             });
+            // Iteration boundary — even when the body emitted no checkpoint.
+            await emitCheckpoint([continuation, ...remainingAfter()], lastNode);
           }
           trace.push({ type: "while", when: step.while.condition ?? step.while.until, matched: false, iteration: iterations });
           await this.runLifecyclePoint("step:after", context, options, state, { step: { name: "while", type: "while" }, output: { iterations } });
           await state.emit({ type: "step.end", step: "while", status: "completed", output: { iterations } });
           lastNode = "while";
+          await emitCheckpoint(remainingAfter(), lastNode);
           continue;
         }
 
@@ -236,10 +321,17 @@ export class PipelineExecutor {
           await state.emit({ type: "step.start", step: "parallel", status: "started", when: step.when });
           const snapshot = freezeContext(context);
           const branches = normalizeParallelBranches(step.parallel);
+          // Durable v1 cut (deliberate): checkpointing is DISABLED inside the
+          // branches — a single resume slot cannot honestly represent N
+          // concurrent branch positions. A crash mid-parallel resumes from
+          // the checkpoint BEFORE this block and re-executes every branch,
+          // including branches that had already completed. Per-branch
+          // checkpoints (resume only the incomplete branches) are a known
+          // follow-up, not faked here.
           const branchResults = await Promise.all(branches.map(async (branchSteps) => {
             const branchContext = { ...snapshot };
             const branchTrace: PipelineTraceEvent[] = [];
-            await this.executeSteps(branchSteps, branchContext, branchTrace, options, state, lastNode);
+            await this.executeSteps(branchSteps, branchContext, branchTrace, options, state, lastNode, [], false);
             return { branchContext, branchTrace };
           }));
           for (const result of branchResults) {
@@ -250,6 +342,7 @@ export class PipelineExecutor {
           await this.runLifecyclePoint("step:after", context, options, state, { step: { name: "parallel", type: "parallel" } });
           await state.emit({ type: "step.end", step: "parallel", status: "completed" });
           lastNode = "parallel";
+          await emitCheckpoint(remainingAfter(), lastNode);
           continue;
         }
 
@@ -264,6 +357,7 @@ export class PipelineExecutor {
           await this.runLifecyclePoint("step:after", context, options, state, { step: { name: step.human, type: "human" }, output: result.output });
           await state.emit({ type: "human.result", human: step.human, step: step.human, status: "completed", output: result.output });
           lastNode = step.human;
+          await emitCheckpoint(remainingAfter(), lastNode);
         }
       } catch (err) {
         this.attachApprovalResume(err, context, (err as any).resume ? steps.slice(i + 1) : steps.slice(i), lastNode);

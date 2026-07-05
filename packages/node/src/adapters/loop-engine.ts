@@ -112,13 +112,28 @@ export const MAX_CHECKPOINT_BYTES = 4 * 1024 * 1024;
  * Validate a resume checkpoint against the session about to start. A
  * checkpoint only applies to the same loop session and must carry actual
  * history and a completed-turn index; anything else falls back to a fresh
- * start (never fails the run).
+ * start (never fails the run). Pipeline checkpoints (pipelineName set)
+ * never seed a single-session run — their loopName is a pipeline STEP.
  */
 function usableResumeState(resume: LoopResumeState | undefined, loopName: string): LoopResumeState | undefined {
   if (!resume) return undefined;
+  if (resume.pipelineName) return undefined;
   if (resume.loopName !== loopName) return undefined;
   if (typeof resume.turn !== "number" || resume.turn < 0) return undefined;
   if (!Array.isArray(resume.history) || resume.history.length === 0) return undefined;
+  return resume;
+}
+
+/**
+ * Validate a resume checkpoint against the pipeline about to start: it must
+ * belong to the SAME project loop and carry a remaining-steps continuation.
+ * Single-session checkpoints (no pipelineName) and human-gate resume states
+ * from the completions path are ignored — fresh start, never a failure.
+ */
+function usablePipelineResumeState(resume: LoopResumeState | undefined, pipelineName: string): LoopResumeState | undefined {
+  if (!resume) return undefined;
+  if (resume.pipelineName !== pipelineName) return undefined;
+  if (!Array.isArray(resume.steps)) return undefined;
   return resume;
 }
 
@@ -471,11 +486,18 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
    * PipelineExecutor: agent steps are independent LLM sessions that share
    * the context bag; tool steps execute deterministically with no LLM turn.
    *
-   * Durable turns (Phase A) does NOT checkpoint pipeline task runs: a
-   * pipeline checkpoint needs pipeline position + per-step session history
-   * (the LoopResumeState pipeline fields cover position, per-step history
-   * does not exist yet) — Phase B. Pipeline runs ignore ctx.resumeState
-   * and start fresh, which is the pre-existing behavior.
+   * Durable pipelines (Phase B): checkpoints at two granularities, one
+   * resume slot, one unified format (LoopResumeState, additive):
+   * (a) at every completed step boundary the executor emits the composed
+   *     remaining-steps continuation + context bag (steps already done are
+   *     NOT in it — their outputs replay from the bag, Temporal semantics);
+   * (b) inside an in-flight agent step, the Phase A per-turn checkpoints
+   *     are wrapped with the pipeline position (steps[0] = the step itself)
+   *     so a crash at turn K resumes the SAME step at turn K+1.
+   * switch choices are pinned at selection (never re-evaluated on resume),
+   * while continuations carry completedIterations (absolute budget).
+   * Deliberate v1 cut: no checkpoints inside parallel branches — a crash
+   * mid-parallel resumes from before the block and re-executes every branch.
    */
   async function runPipeline(projectLoop: ProjectLoopConfig): Promise<string> {
     const normalized = normalizeProjectLoop(projectLoop);
@@ -494,28 +516,93 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
       return baseToolsPromise;
     };
 
+    // A usable checkpoint replaces the pipeline's step list with the
+    // recorded continuation; anything else (absent, other pipeline, old
+    // gate/session formats) starts fresh.
+    const resume = usablePipelineResumeState(ctx?.resumeState, projectLoop.name);
+    // One-shot in-flight session resume: only the FIRST agent step the
+    // resumed pipeline reaches may consume the turn-level fields (it is
+    // steps[0] of the recorded continuation); runLoopSession re-validates
+    // the loop name before seeding history.
+    let pendingSessionResume: LoopResumeState | undefined =
+      resume && typeof resume.turn === "number" && Array.isArray(resume.history) && resume.history.length > 0
+        ? { ...resume, pipelineName: undefined }
+        : undefined;
+
+    // Composed checkpoint sink → ctx.onTurnCheckpoint (the runner wires it
+    // to RunStore.updateResumeState). Same cap and JSON round-trip rules as
+    // the single-session path: an oversized state keeps the previous
+    // checkpoint, a JSON pass pins store fidelity.
+    const checkpointCreatedAt = resume?.createdAt ?? new Date().toISOString();
+    const sink = ctx?.onTurnCheckpoint;
+    const writeCheckpoint = sink
+      ? async (state: LoopResumeState): Promise<void> => {
+          const serialized = JSON.stringify(state);
+          if (serialized.length > MAX_CHECKPOINT_BYTES) return; // keep the previous checkpoint
+          await sink(JSON.parse(serialized) as LoopResumeState);
+        }
+      : undefined;
+    /** Fields every composed checkpoint carries, boundary or in-flight. */
+    const composedBase = () => ({
+      pipelineName: projectLoop.name,
+      approvedGates: resume?.approvedGates,
+      createdAt: checkpointCreatedAt,
+      updatedAt: new Date().toISOString(),
+    });
+
     let finalText = "";
     let toolStepSeq = 0;
     const executor = new PipelineExecutor();
 
     const result = await executor.execute({
       name: projectLoop.name,
-      pipeline: normalized.pipeline,
+      pipeline: resume ? { ...normalized.pipeline, steps: resume.steps } : normalized.pipeline,
       loops: normalized.loops,
-      context: {},
+      context: resume ? { ...resume.context } : {},
       projectHooks: projectLoop.hooks,
       projectPermissions: projectLoop.permissions,
       projectPolicies: projectLoop.policies,
+      resume: resume
+        ? { previousNode: resume.previousNode, approvedGates: resume.approvedGates }
+        : undefined,
+      // (a) Step-boundary checkpoint: pure pipeline position, no session.
+      onCheckpoint: writeCheckpoint
+        ? async (checkpoint) => {
+            await writeCheckpoint({
+              context: checkpoint.context,
+              steps: checkpoint.steps,
+              previousNode: checkpoint.previousNode,
+              ...composedBase(),
+            });
+          }
+        : undefined,
       onTrace: async (event) => {
         handle.onTranscript?.({ type: "loop_trace", trace: event });
       },
-      runLoop: async (name, loop, context) => {
+      runLoop: async (name, loop, context, position) => {
+        const sessionResume = pendingSessionResume;
+        pendingSessionResume = undefined;
         const stepAgent = buildLoopStepAgent(agentConfig, name, loop);
         const session = await runLoopSession({
           sessionAgent: stepAgent,
           loopName: name,
           loop,
           contextPrompt: loopContextPrompt(name, context),
+          resume: sessionResume,
+          // (b) Per-turn checkpoint INSIDE this agent step: the session
+          // state wrapped with the pipeline position. No position = the
+          // step runs inside a parallel branch, checkpointing suppressed.
+          onCheckpoint: writeCheckpoint && position
+            ? async (state) => {
+                await writeCheckpoint({
+                  ...state,
+                  context: { ...context },
+                  steps: position.steps,
+                  previousNode: position.previousNode,
+                  ...composedBase(),
+                });
+              }
+            : undefined,
         });
         if (session.lastText) finalText = session.lastText;
         return { output: maybeParseJson(session.accumText || session.lastText) };

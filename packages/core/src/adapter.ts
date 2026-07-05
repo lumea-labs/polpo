@@ -1,4 +1,4 @@
-import type { AgentConfig, AgentActivity, Task, TaskResult, TaskOutcome, ReasoningLevel } from "@polpo-ai/core/types";
+import type { AgentActivity, TaskResult, TaskOutcome, ReasoningLevel } from "@polpo-ai/core/types";
 import type { VaultStore } from "@polpo-ai/core/vault-store";
 import type { MemoryStore } from "@polpo-ai/core/memory-store";
 import type { FileSystem } from "@polpo-ai/core/filesystem";
@@ -62,18 +62,22 @@ export interface SpawnContext {
   /** LLM gateway configuration — passed per-request for multi-tenant support. */
   gatewayConfig?: unknown;
   /**
-   * Durable-turns checkpoint from a previous interrupted run. The engine
-   * seeds its conversation history from it and continues at turn + 1 —
-   * tools that already ran are replayed from their recorded results in the
-   * history, never re-executed. Only single-session loops resume; pipeline
-   * (project-loop graph) task runs ignore it and start fresh.
+   * Durable-turns checkpoint from a previous interrupted run. Single-session
+   * loops seed their conversation history from it and continue at turn + 1;
+   * pipeline (project-loop graph) runs additionally restore the pipeline
+   * position — completed steps are never re-executed (their outputs replay
+   * from the recorded context bag), an in-flight agent step resumes at its
+   * saved turn. Tools that already ran are replayed from their recorded
+   * results, never re-executed.
    */
   resumeState?: LoopResumeState;
   /**
-   * Durable-turns checkpoint sink: called at most once per completed turn
-   * with the serialized post-compaction history. The runner wires it to
-   * RunStore.updateResumeState. Best-effort — implementations should not
-   * throw (the engine swallows errors anyway).
+   * Durable-turns checkpoint sink: called after every completed turn and —
+   * on pipeline runs — after every completed pipeline step, with ONE
+   * composed LoopResumeState (pipeline position + step-local session
+   * history). The runner wires it to RunStore.updateResumeState.
+   * Best-effort — implementations should not throw (the engine swallows
+   * errors anyway).
    */
   onTurnCheckpoint?: (state: LoopResumeState) => void | Promise<void>;
 }

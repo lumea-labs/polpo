@@ -777,4 +777,64 @@ describe("Durable turns recovery", () => {
     expect(spawnedConfigs).toHaveLength(1);
     expect(spawnedConfigs[0].resumeState).toBeUndefined();
   });
+
+  // ── Phase B: pipeline checkpoints (position, no per-turn history) ──
+
+  /** A step-boundary pipeline checkpoint: position only, no session. */
+  function makePipelineCheckpoint(overrides: Partial<LoopResumeState> = {}): LoopResumeState {
+    const now = new Date().toISOString();
+    return {
+      context: { plan: { planned: true } },
+      steps: [{ loop: "build" }],
+      previousNode: "plan",
+      pipelineName: "ship-flow",
+      createdAt: now,
+      updatedAt: now,
+      ...overrides,
+    };
+  }
+
+  it("dead runner with a pipeline boundary checkpoint: respawn carries it (no turn fields required)", async () => {
+    const task = await createOrphanTask("Resumable pipeline task");
+    await runStore.upsertRun(runRecord(task.id, { resumeState: makePipelineCheckpoint() }));
+
+    const recovered = await orchestrator.engine.recoverOrphanedTasks();
+    expect(recovered).toBe(1);
+
+    await respawn(task.id);
+    expect(spawnedConfigs).toHaveLength(1);
+    expect(spawnedConfigs[0].resumeState).toBeDefined();
+    expect(spawnedConfigs[0].resumeState!.pipelineName).toBe("ship-flow");
+    expect(spawnedConfigs[0].resumeState!.steps).toEqual([{ loop: "build" }]);
+    expect(spawnedConfigs[0].resumeState!.turn).toBeUndefined();
+  });
+
+  it("stale pipeline checkpoint is ignored like a stale session checkpoint", async () => {
+    const task = await createOrphanTask("Stale pipeline checkpoint");
+    const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
+    await runStore.upsertRun(runRecord(task.id, {
+      resumeState: makePipelineCheckpoint({ createdAt: twoHoursAgo, updatedAt: twoHoursAgo }),
+    }));
+
+    await orchestrator.engine.recoverOrphanedTasks();
+    await respawn(task.id);
+
+    expect(spawnedConfigs).toHaveLength(1);
+    expect(spawnedConfigs[0].resumeState).toBeUndefined();
+  });
+
+  it("a gate-format resume state (no pipelineName, no turn) is not harvested", async () => {
+    // The completions human-gate format must never be mistaken for a
+    // task-path crash checkpoint.
+    const task = await createOrphanTask("Gate-format state");
+    await runStore.upsertRun(runRecord(task.id, {
+      resumeState: makePipelineCheckpoint({ pipelineName: undefined }),
+    }));
+
+    await orchestrator.engine.recoverOrphanedTasks();
+    await respawn(task.id);
+
+    expect(spawnedConfigs).toHaveLength(1);
+    expect(spawnedConfigs[0].resumeState).toBeUndefined();
+  });
 });

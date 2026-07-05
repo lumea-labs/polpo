@@ -1,14 +1,14 @@
 import { describe, expect, it } from "vitest";
 import { LoopHookRegistry } from "./hooks.js";
 import { normalizeProjectLoop } from "./normalize.js";
-import { PipelineExecutor } from "./pipeline.js";
+import { PipelineExecutor, type PipelineCheckpoint, type PipelineStepPosition } from "./pipeline.js";
 import {
   LoopApprovalRequiredError,
   LoopPermissionApprovalRequiredError,
   LoopPermissionDeniedError,
   LoopPolicyDeniedError,
 } from "./run-store.js";
-import type { ProjectLoopConfig } from "./types.js";
+import type { ProjectLoopConfig, Step } from "./types.js";
 
 describe("PipelineExecutor", () => {
   it("runs sequential loop steps and accumulates context by loop name", async () => {
@@ -602,5 +602,324 @@ describe("PipelineExecutor", () => {
       verify: { name: "verify" },
     });
     expect(resumed.events.map((event) => event.type)).toContain("loop.resume");
+  });
+});
+
+// ─── Durable pipeline checkpoints (Phase B) ──────────────────────────────
+//
+// The executor emits a PipelineCheckpoint after every completed step: the
+// composed remaining-steps list (same shape the human-gate resume format
+// already replays), the live context bag, and the last completed node.
+// Resume = re-execute with `pipeline.steps = checkpoint.steps` and
+// `context = checkpoint.context` — completed steps are never in the list,
+// their outputs replay from the bag (Temporal semantics).
+
+describe("PipelineExecutor — durable checkpoints", () => {
+  /** Checkpoints always cross a store boundary — pin JSON fidelity. */
+  function collectInto(checkpoints: PipelineCheckpoint[]) {
+    return async (checkpoint: PipelineCheckpoint) => {
+      checkpoints.push(JSON.parse(JSON.stringify(checkpoint)) as PipelineCheckpoint);
+    };
+  }
+
+  it("emits a checkpoint after every completed step: remaining steps, context, previousNode", async () => {
+    const executor = new PipelineExecutor();
+    const checkpoints: PipelineCheckpoint[] = [];
+
+    await executor.execute({
+      loops: { a: {}, b: {} },
+      pipeline: {
+        steps: [
+          { loop: "a" },
+          { tool: "probe", saveAs: "probe" },
+          { loop: "b" },
+        ],
+      },
+      onCheckpoint: collectInto(checkpoints),
+      runLoop: async (name) => ({ output: { ran: name } }),
+      runTool: async () => ({ output: { ok: true } }),
+    });
+
+    expect(checkpoints).toHaveLength(3);
+
+    // After "a": the tool and "b" are still pending, a's output is in the bag.
+    expect(checkpoints[0].steps).toEqual([
+      { tool: "probe", saveAs: "probe" },
+      { loop: "b" },
+    ]);
+    expect(checkpoints[0].previousNode).toBe("a");
+    expect(checkpoints[0].context).toMatchObject({ a: { ran: "a" } });
+
+    // After the tool step.
+    expect(checkpoints[1].steps).toEqual([{ loop: "b" }]);
+    expect(checkpoints[1].previousNode).toBe("probe");
+    expect(checkpoints[1].context).toMatchObject({ a: { ran: "a" }, probe: { ok: true } });
+
+    // After "b": nothing left to execute.
+    expect(checkpoints[2].steps).toEqual([]);
+    expect(checkpoints[2].previousNode).toBe("b");
+  });
+
+  it("resuming from a boundary checkpoint re-executes only the remaining steps", async () => {
+    const runs: string[] = [];
+    const runLoop = async (name: string) => {
+      runs.push(name);
+      return { output: { ran: name } };
+    };
+
+    const executor = new PipelineExecutor();
+    const checkpoints: PipelineCheckpoint[] = [];
+    await executor.execute({
+      loops: { a: {}, b: {}, c: {} },
+      pipeline: { steps: [{ loop: "a" }, { loop: "b" }, { loop: "c" }] },
+      onCheckpoint: collectInto(checkpoints),
+      runLoop,
+    });
+    expect(runs).toEqual(["a", "b", "c"]);
+
+    // "Crash" between b and c: replay the after-b checkpoint.
+    const afterB = checkpoints[1];
+    runs.length = 0;
+    const resumed = await executor.execute({
+      loops: { a: {}, b: {}, c: {} },
+      pipeline: { steps: afterB.steps },
+      context: afterB.context,
+      resume: { previousNode: afterB.previousNode },
+      onCheckpoint: collectInto(checkpoints),
+      runLoop,
+    });
+
+    expect(runs).toEqual(["c"]);
+    expect(resumed.context).toMatchObject({
+      a: { ran: "a" },
+      b: { ran: "b" },
+      c: { ran: "c" },
+    });
+    expect(resumed.events.map((event) => event.type)).toContain("loop.resume");
+  });
+
+  it("pins the switch choice at selection time: the chosen branch is inlined, the switch step is gone", async () => {
+    const executor = new PipelineExecutor();
+    const checkpoints: PipelineCheckpoint[] = [];
+
+    await executor.execute({
+      loops: { pre: {}, x1: {}, x2: {}, y: {}, post: {} },
+      context: { route: { x: true } },
+      pipeline: {
+        steps: [
+          { loop: "pre" },
+          {
+            switch: {
+              cases: [{ when: "route.x == true", steps: [{ loop: "x1" }, { loop: "x2" }] }],
+              default: { steps: [{ loop: "y" }] },
+            },
+          },
+          { loop: "post" },
+        ],
+      },
+      onCheckpoint: collectInto(checkpoints),
+      runLoop: async (name) => ({ output: { ran: name } }),
+    });
+
+    // The selection checkpoint records the choice as a historical fact:
+    // branch steps inlined ahead of the rest, no switch step to re-evaluate.
+    const selection = checkpoints.find((cp) => (cp.steps[0] as any)?.loop === "x1");
+    expect(selection).toBeDefined();
+    expect(selection!.steps).toEqual([{ loop: "x1" }, { loop: "x2" }, { loop: "post" }]);
+    expect(selection!.previousNode).toBe("pre");
+
+    // From the selection onward no checkpoint ever contains a switch step.
+    const fromSelection = checkpoints.slice(checkpoints.indexOf(selection!));
+    for (const cp of fromSelection) {
+      expect(cp.steps.some((step) => "switch" in step)).toBe(false);
+    }
+
+    // Mid-branch boundary: x2 then post remain.
+    expect(checkpoints.some((cp) => JSON.stringify(cp.steps) === JSON.stringify([{ loop: "x2" }, { loop: "post" }]))).toBe(true);
+  });
+
+  it("while: body checkpoints carry a continuation step with completedIterations", async () => {
+    const executor = new PipelineExecutor();
+    const checkpoints: PipelineCheckpoint[] = [];
+    let attempts = 0;
+
+    await executor.execute({
+      loops: { after: {} },
+      pipeline: {
+        steps: [
+          {
+            while: {
+              until: "build.passed == true",
+              maxIterations: 5,
+              steps: [{ tool: "build_check", saveAs: "build" }],
+            },
+          },
+          { loop: "after" },
+        ],
+      },
+      onCheckpoint: collectInto(checkpoints),
+      runLoop: async (name) => ({ output: { ran: name } }),
+      runTool: async () => {
+        attempts += 1;
+        return { output: { passed: attempts >= 2 } };
+      },
+    });
+
+    // The iteration-1 boundary points at a continuation that has already
+    // done 1 iteration — never back at iteration 0.
+    const iteration1 = checkpoints.find((cp) => (cp.steps[0] as any)?.while?.completedIterations === 1);
+    expect(iteration1).toBeDefined();
+    expect((iteration1!.steps[0] as any).while).toMatchObject({
+      until: "build.passed == true",
+      maxIterations: 5,
+      completedIterations: 1,
+    });
+    expect(iteration1!.steps[1]).toEqual({ loop: "after" });
+    expect(iteration1!.context).toMatchObject({ build: { passed: false } });
+
+    // Iteration-2 boundary exists too (the loop exited after it).
+    expect(checkpoints.some((cp) => (cp.steps[0] as any)?.while?.completedIterations === 2)).toBe(true);
+  });
+
+  it("while: resuming from a continuation restarts at the saved iteration, absolute maxIterations accounting", async () => {
+    const executor = new PipelineExecutor();
+    let attempts = 0;
+
+    // Resume from "2 iterations already done" with maxIterations 4:
+    // only iterations 3 and 4 may run before the guard trips.
+    const continuation: Step = {
+      while: {
+        until: "build.passed == true",
+        maxIterations: 4,
+        completedIterations: 2,
+        steps: [{ tool: "build_check", saveAs: "build" }],
+      },
+    };
+
+    const resumed = await executor.execute({
+      loops: {},
+      pipeline: { steps: [continuation] },
+      context: { build: { passed: false } },
+      resume: { previousNode: "build_check" },
+      runLoop: async () => ({ output: {} }),
+      runTool: async () => {
+        attempts += 1;
+        return { output: { passed: attempts >= 2 } };
+      },
+    });
+
+    // Two more iterations ran (3 and 4), not four.
+    expect(attempts).toBe(2);
+    expect(resumed.trace.filter((event) => event.type === "while" && event.matched).map((event) => event.iteration)).toEqual([3, 4]);
+
+    // Same continuation but the exit condition never satisfies: the
+    // absolute budget (4) trips after 2 more iterations, not after 4.
+    let failedAttempts = 0;
+    await expect(executor.execute({
+      loops: {},
+      pipeline: { steps: [JSON.parse(JSON.stringify(continuation)) as Step] },
+      context: { build: { passed: false } },
+      resume: { previousNode: "build_check" },
+      runLoop: async () => ({ output: {} }),
+      runTool: async () => {
+        failedAttempts += 1;
+        return { output: { passed: false } };
+      },
+    })).rejects.toThrow("maxIterations");
+    expect(failedAttempts).toBe(2);
+  });
+
+  it("parallel: no checkpoints inside the block — one boundary after the whole block (v1 cut)", async () => {
+    const executor = new PipelineExecutor();
+    const checkpoints: PipelineCheckpoint[] = [];
+    const positions: Array<PipelineStepPosition | undefined> = [];
+
+    await executor.execute({
+      loops: { pre: {}, p1: {}, p2: {}, post: {} },
+      pipeline: {
+        steps: [
+          { loop: "pre" },
+          { parallel: [[{ loop: "p1" }, { loop: "p2" }], [{ tool: "t", saveAs: "t" }]] },
+          { loop: "post" },
+        ],
+      },
+      onCheckpoint: collectInto(checkpoints),
+      runLoop: async (name, _loop, _context, position) => {
+        positions.push(position);
+        return { output: { ran: name } };
+      },
+      runTool: async () => ({ output: { ok: true } }),
+    });
+
+    // Exactly three checkpoints: after pre, after the parallel block, after
+    // post. Nothing from inside the branches — a crash mid-parallel resumes
+    // from BEFORE the block and re-executes every branch.
+    expect(checkpoints.map((cp) => cp.steps.length)).toEqual([2, 1, 0]);
+    expect(checkpoints[0].steps[0]).toHaveProperty("parallel");
+    expect(checkpoints[1].steps).toEqual([{ loop: "post" }]);
+    expect(checkpoints[1].previousNode).toBe("parallel");
+    expect(checkpoints[1].context).toMatchObject({
+      p1: { ran: "p1" },
+      p2: { ran: "p2" },
+      t: { ok: true },
+    });
+
+    // Agent steps inside parallel get NO position (turn-level checkpoint
+    // composition is suppressed there too); pre/post do.
+    const byIndex = Object.fromEntries(positions.map((p, i) => [i, p]));
+    expect(positions).toHaveLength(4); // pre, p1, p2, post
+    expect(byIndex[0]).toBeDefined();
+    expect(byIndex[3]).toBeDefined();
+    expect(positions.filter((p) => p === undefined)).toHaveLength(2);
+  });
+
+  it("hands runLoop its position: the in-flight step first, then the composed tail", async () => {
+    const executor = new PipelineExecutor();
+    const positions: Array<PipelineStepPosition | undefined> = [];
+
+    await executor.execute({
+      loops: { a: {}, b: {} },
+      pipeline: { steps: [{ loop: "a" }, { loop: "b" }] },
+      onCheckpoint: async () => {},
+      runLoop: async (_name, _loop, _context, position) => {
+        positions.push(position);
+        return { output: {} };
+      },
+    });
+
+    expect(positions[0]?.steps).toEqual([{ loop: "a" }, { loop: "b" }]);
+    expect(positions[0]?.previousNode).toBeUndefined();
+    expect(positions[1]?.steps).toEqual([{ loop: "b" }]);
+    expect(positions[1]?.previousNode).toBe("a");
+  });
+
+  it("without onCheckpoint nothing changes: no position, no checkpoint machinery", async () => {
+    const executor = new PipelineExecutor();
+    const positions: Array<PipelineStepPosition | undefined> = [];
+
+    await executor.execute({
+      loops: { a: {} },
+      pipeline: { steps: [{ loop: "a" }] },
+      runLoop: async (_name, _loop, _context, position) => {
+        positions.push(position);
+        return { output: {} };
+      },
+    });
+
+    expect(positions).toEqual([undefined]);
+  });
+
+  it("a throwing checkpoint sink never fails the pipeline", async () => {
+    const executor = new PipelineExecutor();
+    const result = await executor.execute({
+      loops: { a: {}, b: {} },
+      pipeline: { steps: [{ loop: "a" }, { loop: "b" }] },
+      onCheckpoint: async () => {
+        throw new Error("store went away");
+      },
+      runLoop: async (name) => ({ output: { ran: name } }),
+    });
+
+    expect(result.context).toMatchObject({ a: { ran: "a" }, b: { ran: "b" } });
   });
 });
