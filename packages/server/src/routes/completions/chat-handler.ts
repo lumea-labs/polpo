@@ -19,8 +19,8 @@ import {
   CLIENT_SIDE_TOOL_NAMES,
   emitFileChanged,
   indexToolResultsByCallId,
+  persistAssistantMessage,
   recordProviderToolCall,
-  redactVaultToolCalls,
   toAITools,
 } from "./tool-mapping.js";
 
@@ -426,16 +426,8 @@ export function streamChatCompletion(c: any, exec: ChatCompletionExecution): any
     } finally {
       clearInterval(heartbeatInterval);
       // Always persist the assistant response — even on disconnect.
-      // SECURITY: Redact vault credentials before persisting to SQLite
-      const safeToolCalls = redactVaultToolCalls(toolCallsAccum);
-      if (sessionStore && sessionId && assistantMsgId) {
-        if (finalText.trim()) {
-          await sessionStore.updateMessage(sessionId, assistantMsgId, finalText.trim(), safeToolCalls);
-        }
-        else {
-          await sessionStore.updateMessage(sessionId, assistantMsgId, "", safeToolCalls);
-        }
-      }
+      // (Vault credentials are redacted inside persistAssistantMessage.)
+      await persistAssistantMessage(sessionStore, sessionId, assistantMsgId, finalText, toolCallsAccum);
       // Notify consumer (e.g. metering) — fire-and-forget
       try {
         deps.onCompletionFinished?.({
@@ -749,16 +741,11 @@ export async function runNonStreamingChatCompletion(c: any, exec: ChatCompletion
     }
     throw err;
   } finally {
-    // Always persist the final text + tool calls — even on early return (ask_user) or error
-    // SECURITY: Redact vault credentials before persisting to SQLite
-    const safeToolCalls = redactVaultToolCalls(toolCallsAccum);
-    if (sessionStore && sessionId && assistantMsgId) {
-      if (finalText.trim()) {
-        await sessionStore.updateMessage(sessionId, assistantMsgId, finalText.trim(), safeToolCalls);
-      } else {
-        await sessionStore.updateMessage(sessionId, assistantMsgId, "[Response interrupted]", safeToolCalls);
-      }
-    }
+    // Always persist the final text + tool calls — even on early return (ask_user) or error.
+    // (Vault credentials are redacted inside persistAssistantMessage.)
+    await persistAssistantMessage(sessionStore, sessionId, assistantMsgId, finalText, toolCallsAccum, {
+      emptyFallback: "[Response interrupted]",
+    });
     // Notify consumer (e.g. metering) — fire-and-forget
     try {
       deps.onCompletionFinished?.({
