@@ -62,9 +62,17 @@ export interface SandboxLifecycle {
 export interface SandboxUsage {
   runId: string;
   projectId?: string;
-  /** When the session was first acquired (epoch ms). */
-  acquired: number;
-  /** Total milliseconds the sandbox was actually running (not suspended). */
+  /**
+   * True when the run actually acquired a sandbox (touched fs/shell). A run
+   * whose loop only reasons/talks never opens a session, so this is false and
+   * `sandboxMs` is 0 — the resource saving the proxy model is built on.
+   */
+  acquired: boolean;
+  /**
+   * Total milliseconds the sandbox was actually RUNNING (not suspended). With
+   * a {@link SandboxLifecycle}, idle gaps (the model thinking) are subtracted;
+   * without one it equals the acquire→release hold. 0 when never acquired.
+   */
   sandboxMs: number;
   /** Backend sandbox identifier, when applicable. */
   sandboxId?: string;
