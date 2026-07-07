@@ -73,8 +73,8 @@ export { createEmailTools, ALL_EMAIL_TOOL_NAMES } from "@polpo-ai/tools";
 export { createVaultTools, ALL_VAULT_TOOL_NAMES } from "@polpo-ai/tools";
 export { createAudioTools, ALL_AUDIO_TOOL_NAMES } from "@polpo-ai/tools";
 export { createImageTools, ALL_IMAGE_TOOL_NAMES } from "@polpo-ai/tools";
-
 // ── SandboxProvider (F1: lease + local provider) ─────────────────────────
 export { SandboxLease, DEFAULT_IDLE_SUSPEND_MS } from "./sandbox/lease.js";
 export type { SandboxLeaseOptions } from "./sandbox/lease.js";
 export { LocalSandboxProvider } from "./sandbox/local-provider.js";
+export { ShellBackedFileSystem } from "./sandbox/shell-backed-fs.js";
