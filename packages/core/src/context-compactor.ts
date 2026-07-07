@@ -163,7 +163,7 @@ function estimateMessageTokens(msg: any): number {
       if (block.type === "text" && typeof block.text === "string") {
         tokens += estimateTokens(block.text);
       } else if (block.type === "toolCall") {
-        // Legacy (pi-ai) tool call: name + stringified arguments
+        // Legacy tool call: name + stringified arguments
         if (block.name) tokens += estimateTokens(block.name);
         if (block.arguments !== undefined) {
           const args =
@@ -222,7 +222,7 @@ export function pruneToolOutputs(
     blockIndex?: number; // for array content within toolResult messages
     tokens: number;
     toolName: string;
-    /** Message shape: legacy pi-ai "toolResult" text blocks vs AI SDK v6
+    /** Message shape: legacy "toolResult" text blocks vs AI SDK v6
      *  role:"tool" tool-result parts. Determines how pruning is applied. */
     shape: "legacy" | "v6";
   }

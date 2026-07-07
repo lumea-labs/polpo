@@ -1,7 +1,7 @@
 /**
  * Build the system prompt for an agent.
  *
- * Pure logic — no runtime dependencies (Node.js, pi-ai, filesystem).
+ * Pure logic — no runtime dependencies (Node.js, filesystem).
  * Used by any runtime (self-hosted or managed).
  *
  * Includes: preamble, identity, responsibilities, tone, personality, hierarchy,

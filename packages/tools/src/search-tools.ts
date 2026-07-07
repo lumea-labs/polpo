@@ -8,7 +8,7 @@
  */
 
 import { Type } from "@sinclair/typebox";
-import type { PolpoTool as PolpoTool, SearchProvider, SearchResult } from "@polpo-ai/core";
+import type { PolpoTool, SearchProvider, SearchResult } from "@polpo-ai/core";
 
 const DEFAULT_NUM_RESULTS = 5;
 

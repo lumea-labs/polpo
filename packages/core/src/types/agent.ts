@@ -7,7 +7,7 @@ import type { LoopConfig, LoopToolChoice, Pipeline } from "../loop/types.js";
 
 // === Reasoning / Thinking ===
 
-/** Reasoning level for LLM calls (maps to pi-ai ThinkingLevel). */
+/** Reasoning level for LLM calls (maps to the provider's thinking/reasoning level). */
 export type ReasoningLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
 
 // === Agent Identity & Vault ===

@@ -20,7 +20,7 @@
 
 import { resolve, dirname } from "node:path";
 import { Type } from "@sinclair/typebox";
-import type { PolpoTool as PolpoTool, ToolResult as AgentToolResult } from "@polpo-ai/core";
+import type { PolpoTool, ToolResult } from "@polpo-ai/core";
 import type { Shell } from "@polpo-ai/core";
 import { NodeShell } from "./adapters/node-shell.js";
 
@@ -95,7 +95,7 @@ async function execBrowserAsync(
   }
 }
 
-function browserResult(result: { success: boolean; data?: any; error?: string; raw: string }): AgentToolResult<any> {
+function browserResult(result: { success: boolean; data?: any; error?: string; raw: string }): ToolResult<any> {
   if (!result.success) {
     return {
       content: [{ type: "text", text: `Browser error: ${result.error ?? result.raw}` }],

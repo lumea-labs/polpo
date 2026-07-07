@@ -206,7 +206,7 @@ export function mockResolvedModel(aiModel?: MockLanguageModelV3): ResolvedModel 
 
 // ── Legacy API compatibility ──────────────────────────
 // Keep the same exported function names used by the old tests where possible,
-// but return AI SDK types instead of pi-ai types.
+// but return AI SDK types instead of the legacy types.
 
 /** Create a text response — returns a MockLanguageModelV3. */
 export function mockTextResponse(text: string): MockLanguageModelV3 {

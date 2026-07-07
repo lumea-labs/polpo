@@ -18,7 +18,7 @@
 
 import { resolve, dirname, extname } from "node:path";
 import { Type } from "@sinclair/typebox";
-import type { PolpoTool as PolpoTool, ToolResult as AgentToolResult } from "@polpo-ai/core";
+import type { PolpoTool, ToolResult as CoreToolResult } from "@polpo-ai/core";
 import type { FileSystem } from "@polpo-ai/core/filesystem";
 import {
   parseModelString,
@@ -41,7 +41,7 @@ import {
   type VisionProviderName,
 } from "./lib/provider-resolver.js";
 
-type ToolResult = AgentToolResult<any>;
+type ToolResult = CoreToolResult<any>;
 
 const MAX_IMAGE_SIZE = 20 * 1024 * 1024; // 20 MB
 

@@ -11,7 +11,7 @@ import type { Shell } from "@polpo-ai/core/shell";
 // NodeFileSystem and NodeShell are loaded lazily to avoid pulling in
 // node:fs and execa when the consumer provides their own implementations.
 import { Type } from "@sinclair/typebox";
-import type { PolpoTool as PolpoTool, SearchProvider } from "@polpo-ai/core";
+import type { PolpoTool, SearchProvider } from "@polpo-ai/core";
 import { resolveAllowedPaths, assertPathAllowed } from "./path-sandbox.js";
 import { createOutcomeTools as createOutcomeToolsCore } from "./outcome-tools.js";
 import { createHttpTools as createHttpToolsCore, ALL_HTTP_TOOL_NAMES as CORE_HTTP_TOOL_NAMES } from "./http-tools.js";
