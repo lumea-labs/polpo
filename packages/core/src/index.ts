@@ -58,6 +58,14 @@ export type { Shell, ShellOptions, ShellResult } from "./shell.js";
 export type { Spawner, SpawnResult } from "./spawner.js";
 export { resolveExecutionMode } from "./execution-mode.js";
 
+// ── SandboxProvider Abstraction ──────────────────────────────────────────
+export type {
+  SandboxProvider,
+  SandboxSession,
+  SandboxLifecycle,
+  SandboxUsage,
+} from "./sandbox-provider.js";
+
 // ── Agent Prompt Builder ────────────────────────────────────────────────
 export {
   buildAgentSystemPrompt,
