@@ -189,7 +189,15 @@ export function fileRoutes(getDeps: () => FileRouteDeps): OpenAPIHono {
             bytes += sub.bytes;
           } else if (e.isFile) {
             files++;
-            try { bytes += (await fs.stat(full)).size; } catch { /* skip */ }
+            // Prefer the size the directory listing already carries
+            // (readdirWithTypes populates it for S3/R2). Only fall back to a
+            // per-file stat/HeadObject when the listing didn't provide one —
+            // this removes an N+1 HeadObject storm across the whole tree.
+            if (typeof e.size === "number") {
+              bytes += e.size;
+            } else {
+              try { bytes += (await fs.stat(full)).size; } catch { /* skip */ }
+            }
           }
         }
       } catch { /* unreadable dir */ }
