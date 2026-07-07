@@ -28,7 +28,7 @@ function fakeProvider(): { provider: SandboxProvider; disposed: () => boolean } 
         shell,
         lifecycle,
         usage(): SandboxUsage {
-          return { runId, projectId: "p1", acquired: 1000, sandboxMs: (ms += 5), sandboxId: "sb-1" };
+          return { runId, projectId: "p1", acquired: true, sandboxMs: (ms += 5), sandboxId: "sb-1" };
         },
         async dispose() {
           live = false;
@@ -62,7 +62,7 @@ describe("SandboxProvider port", () => {
     const u = session.usage!();
     expect(u).toMatchObject({ runId: "run-42", projectId: "p1", sandboxId: "sb-1" });
     expect(typeof u.sandboxMs).toBe("number");
-    expect(typeof u.acquired).toBe("number");
+    expect(u.acquired).toBe(true);
   });
 
   it("disposes the session", async () => {
