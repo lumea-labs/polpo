@@ -16,7 +16,7 @@ import { resolve, dirname } from "node:path";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { Type } from "@sinclair/typebox";
-import type { PolpoTool as PolpoTool, ToolResult as AgentToolResult } from "@polpo-ai/core";
+import type { PolpoTool, ToolResult } from "@polpo-ai/core";
 import type { FileSystem } from "@polpo-ai/core/filesystem";
 import type { Shell } from "@polpo-ai/core";
 import { NodeFileSystem } from "./adapters/node-filesystem.js";

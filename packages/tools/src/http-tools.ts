@@ -12,7 +12,7 @@
 
 import { resolve, dirname } from "node:path";
 import { Type } from "@sinclair/typebox";
-import type { PolpoTool as PolpoTool, ToolResult as AgentToolResult } from "@polpo-ai/core";
+import type { PolpoTool, ToolResult } from "@polpo-ai/core";
 import type { FileSystem } from "@polpo-ai/core/filesystem";
 import { resolveAllowedPaths, assertPathAllowed } from "./path-sandbox.js";
 import { assertUrlAllowed } from "./ssrf-guard.js";

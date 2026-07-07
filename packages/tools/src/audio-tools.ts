@@ -17,7 +17,7 @@
 
 import { resolve, dirname, extname } from "node:path";
 import { Type } from "@sinclair/typebox";
-import type { PolpoTool as PolpoTool, ToolResult as AgentToolResult } from "@polpo-ai/core";
+import type { PolpoTool, ToolResult as CoreToolResult } from "@polpo-ai/core";
 import type { FileSystem } from "@polpo-ai/core/filesystem";
 import type { Shell } from "@polpo-ai/core";
 import {
@@ -29,7 +29,7 @@ import {
 import { NodeFileSystem } from "./adapters/node-filesystem.js";
 import { NodeShell } from "./adapters/node-shell.js";
 
-type ToolResult = AgentToolResult<any>;
+type ToolResult = CoreToolResult<any>;
 import { resolveAllowedPaths, assertPathAllowed } from "./path-sandbox.js";
 import type { ResolvedVault } from "./types.js";
 import {
