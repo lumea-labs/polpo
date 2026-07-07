@@ -58,6 +58,30 @@ export function redactVaultToolCalls(toolCalls: any[]): any[] {
   });
 }
 
+/**
+ * Persist a completed assistant turn to the chat session — the single
+ * projection of a finished LLM turn onto `Session.Message`, shared by the
+ * chat handler (streaming + non-streaming) and the project-loop runner
+ * instead of being copy-pasted at each finally block.
+ *
+ * Redacts vault credentials from the tool calls before writing, and falls
+ * back to `emptyFallback` (default "") when the model produced no text.
+ * No-op when the session isn't tracked (no store / sessionId / messageId).
+ */
+export async function persistAssistantMessage(
+  sessionStore: any,
+  sessionId: string | null | undefined,
+  messageId: string | null | undefined,
+  finalText: string,
+  toolCalls: any[],
+  opts?: { emptyFallback?: string },
+): Promise<void> {
+  if (!sessionStore || !sessionId || !messageId) return;
+  const safeToolCalls = redactVaultToolCalls(toolCalls);
+  const content = finalText.trim() || (opts?.emptyFallback ?? "");
+  await sessionStore.updateMessage(sessionId, messageId, content, safeToolCalls);
+}
+
 export function indexToolResultsByCallId(toolResults: any[] | undefined): Map<string, any> {
   const indexed = new Map<string, any>();
   for (const result of toolResults ?? []) {

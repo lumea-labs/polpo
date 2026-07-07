@@ -29,7 +29,7 @@ import type { LanguageModelUsage } from "ai";
 import type { CompletionRouteDeps } from "../completions.js";
 import { addUsage, runAgentStepCompletion } from "./agent-step-runner.js";
 import { completionResponse, loopRuntimeErrorEnvelope, modelNotFoundEnvelope, sseChunk } from "./sse.js";
-import { emitFileChanged, redactVaultToolCalls, type LoopRuntimeToolCall } from "./tool-mapping.js";
+import { emitFileChanged, persistAssistantMessage, type LoopRuntimeToolCall } from "./tool-mapping.js";
 
 export interface ProjectLoopRunResult {
   text: string;
@@ -462,10 +462,7 @@ export async function handleProjectLoopCompletion(c: any, options: {
         throw err;
       } finally {
         clearInterval(heartbeatInterval);
-        const safeToolCalls = redactVaultToolCalls(toolCalls);
-        if (sessionStore && sessionId && assistantMsgId) {
-          await sessionStore.updateMessage(sessionId, assistantMsgId, finalText.trim(), safeToolCalls);
-        }
+        await persistAssistantMessage(sessionStore, sessionId, assistantMsgId, finalText, toolCalls);
         try {
           deps.onCompletionFinished?.({
             usage: runUsage,
@@ -517,10 +514,7 @@ export async function handleProjectLoopCompletion(c: any, options: {
     }
     throw err;
   } finally {
-    const safeToolCalls = redactVaultToolCalls(toolCalls);
-    if (sessionStore && sessionId && assistantMsgId) {
-      await sessionStore.updateMessage(sessionId, assistantMsgId, finalText.trim(), safeToolCalls);
-    }
+    await persistAssistantMessage(sessionStore, sessionId, assistantMsgId, finalText, toolCalls);
     try {
       deps.onCompletionFinished?.({
         usage: runUsage,
