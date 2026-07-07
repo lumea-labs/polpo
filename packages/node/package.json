@@ -1,6 +1,6 @@
 {
   "name": "@polpo-ai/node",
-  "version": "0.13.1",
+  "version": "0.14.0",
   "description": "Polpo Node.js runtime — orchestrator wiring, adapters, server assembly, runner entry. The composition root behind the polpo-ai package.",
   "type": "module",
   "main": "dist/index.js",
