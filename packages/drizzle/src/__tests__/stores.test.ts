@@ -424,6 +424,61 @@ describe("DrizzleRunStore", () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════
+// LoopRunStore — F2 dual-write + runs-backed shadow
+// ═══════════════════════════════════════════════════════════════════════
+
+describe("DrizzleLoopRunStore — dual-write + runs-backed (F2)", () => {
+  const loopInput = (id: string) => ({ id, loop: { name: "review" }, agentName: "chat", sessionId: "s1" });
+
+  it("dual-write: createRun round-trips (reads legacy) and shadows into runs with engine='graph'", async () => {
+    const created = await stores.loopRunStore.createRun(loopInput("looprun-a") as any);
+    expect(created.loopName).toBe("review");
+    expect((await stores.loopRunStore.getRun("looprun-a"))?.id).toBe("looprun-a");
+
+    // Shadow: the runs table has the same record, tagged engine="graph".
+    const { runsSqlite } = await import("../schema/runs.js");
+    const { eq } = await import("drizzle-orm");
+    const shadow: any[] = await db.select().from(runsSqlite).where(eq(runsSqlite.id, "looprun-a"));
+    expect(shadow).toHaveLength(1);
+    expect(shadow[0].engine).toBe("graph");
+    expect(shadow[0].loopName).toBe("review");
+    expect(shadow[0].adapterType).toBe("loop");
+
+    // Invisible to task-run queries.
+    expect((await stores.runStore.getActiveRuns()).map((r) => r.id)).not.toContain("looprun-a");
+  });
+
+  it("runs-backed store: resume round-trips via resume_state; listRuns excludes task rows", async () => {
+    const { DrizzleLoopRunStore } = await import("../stores/loop-run-store.js");
+    const { runsSqlite } = await import("../schema/runs.js");
+    const runsBacked = new DrizzleLoopRunStore(db, runsSqlite, "sqlite", true);
+
+    await runsBacked.createRun(loopInput("looprun-b") as any);
+    await runsBacked.updateRun("looprun-b", { resume: { context: {}, steps: [], createdAt: "2026-01-01T00:00:00Z", accumText: "hi" } as any });
+    expect(((await runsBacked.getRun("looprun-b"))?.resume as any)?.accumText).toBe("hi");
+
+    await stores.runStore.upsertRun({
+      id: "task-x", taskId: "tx", pid: 0, agentName: "a", status: "running",
+      startedAt: "2026-01-01T00:00:00Z", updatedAt: "2026-01-01T00:00:00Z",
+      activity: { filesCreated: [], filesEdited: [], toolCalls: 0, totalTokens: 0, lastUpdate: "" },
+      configPath: "/tmp/c.json",
+    } as any);
+    const list = await runsBacked.listRuns();
+    expect(list.map((r) => r.id)).toContain("looprun-b");
+    expect(list.map((r) => r.id)).not.toContain("task-x");
+  });
+
+  it("dual-write appendTrace + updateRun sync the read side", async () => {
+    await stores.loopRunStore.createRun(loopInput("looprun-c") as any);
+    await stores.loopRunStore.appendTrace("looprun-c", { type: "loop:start" } as any);
+    await stores.loopRunStore.updateRun("looprun-c", { status: "completed" as any });
+    const fetched = await stores.loopRunStore.getRun("looprun-c");
+    expect(fetched?.status).toBe("completed");
+    expect(fetched?.trace).toHaveLength(1);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════
 // SessionStore
 // ═══════════════════════════════════════════════════════════════════════
 

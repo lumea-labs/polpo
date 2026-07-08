@@ -16,6 +16,11 @@ export class DrizzleLoopRunStore implements LoopRunStore {
     private db: any,
     private loopRuns: AnyTable,
     private dialect: Dialect,
+    /** When true, `loopRuns` is actually the unified `runs` table (F2 fold):
+     *  records are written with engine="graph" + task-column sentinels, `resume`
+     *  maps to the `resume_state` column, and reads/lists scope to engine="graph"
+     *  so task rows in the same table are never returned. */
+    private targetsRuns: boolean = false,
   ) {}
 
   private rowToRecord(row: any): LoopRunRecord {
@@ -31,7 +36,7 @@ export class DrizzleLoopRunStore implements LoopRunStore {
       error: row.error ?? undefined,
       approvalRequestId: row.approvalRequestId ?? undefined,
       approval: deserializeJson(row.approval, undefined, this.dialect),
-      resume: deserializeJson(row.resume, undefined, this.dialect),
+      resume: deserializeJson(this.targetsRuns ? row.resumeState : row.resume, undefined, this.dialect),
       metadata: deserializeJson(row.metadata, undefined, this.dialect),
       startedAt: row.startedAt,
       updatedAt: row.updatedAt,
@@ -66,12 +71,16 @@ export class DrizzleLoopRunStore implements LoopRunStore {
   }
 
   async getRun(id: string): Promise<LoopRunRecord | undefined> {
-    const rows: any[] = await this.db.select().from(this.loopRuns).where(eq(this.loopRuns.id, id)).limit(1);
+    const where = this.targetsRuns
+      ? and(eq(this.loopRuns.id, id), eq(this.loopRuns.engine, "graph"))
+      : eq(this.loopRuns.id, id);
+    const rows: any[] = await this.db.select().from(this.loopRuns).where(where).limit(1);
     return rows[0] ? this.rowToRecord(rows[0]) : undefined;
   }
 
   async listRuns(filter: LoopRunListFilter = {}): Promise<LoopRunRecord[]> {
     const clauses = [];
+    if (this.targetsRuns) clauses.push(eq(this.loopRuns.engine, "graph"));
     if (filter.loopName) clauses.push(eq(this.loopRuns.loopName, filter.loopName));
     if (filter.agentName) clauses.push(eq(this.loopRuns.agentName, filter.agentName));
     if (filter.sessionId) clauses.push(eq(this.loopRuns.sessionId, filter.sessionId));
@@ -111,10 +120,9 @@ export class DrizzleLoopRunStore implements LoopRunStore {
   }
 
   private recordToValues(run: LoopRunRecord): Record<string, unknown> {
-    return {
+    const base: Record<string, unknown> = {
       id: run.id,
       loopName: run.loopName,
-      agentName: run.agentName ?? null,
       sessionId: run.sessionId ?? null,
       user: run.user ?? null,
       status: run.status,
@@ -123,11 +131,79 @@ export class DrizzleLoopRunStore implements LoopRunStore {
       error: run.error ?? null,
       approvalRequestId: run.approvalRequestId ?? null,
       approval: serializeJson(run.approval, this.dialect),
-      resume: serializeJson(run.resume, this.dialect),
       metadata: serializeJson(run.metadata, this.dialect),
       startedAt: run.startedAt,
       updatedAt: run.updatedAt,
       completedAt: run.completedAt ?? null,
     };
+    if (this.targetsRuns) {
+      // Writing a loop record into the unified `runs` table: fill the NOT-NULL
+      // task columns with sentinels, tag engine="graph", and map resume →
+      // resume_state (the column `runs` already has).
+      return {
+        ...base,
+        agentName: run.agentName ?? "", // runs.agent_name is NOT NULL
+        taskId: run.id,
+        adapterType: "loop",
+        configPath: "",
+        engine: "graph",
+        resumeState: serializeJson(run.resume, this.dialect),
+      };
+    }
+    return {
+      ...base,
+      agentName: run.agentName ?? null,
+      resume: serializeJson(run.resume, this.dialect),
+    };
+  }
+}
+
+/**
+ * Dual-write LoopRunStore for the F2 transition. Writes go to BOTH the legacy
+ * `loop_runs` store and the shadow `runs`-backed store; the shadow write is
+ * best-effort (a shadow failure never fails the request). Reads come from
+ * `readFrom` — "legacy" during dual-write, flipped to "shadow" once loop_runs
+ * is backfilled into `runs`. When the shadow is the sole source, this wrapper
+ * is dropped and the plain runs-backed store is used directly (PR5).
+ */
+export class DualWriteLoopRunStore implements LoopRunStore {
+  constructor(
+    private legacy: LoopRunStore,
+    private shadow: LoopRunStore,
+    private readFrom: "legacy" | "shadow" = "legacy",
+  ) {}
+
+  private async shadowBestEffort(op: () => Promise<unknown>): Promise<void> {
+    try { await op(); } catch { /* shadow write must never fail the request */ }
+  }
+
+  async createRun(input: CreateLoopRunInput): Promise<LoopRunRecord> {
+    const run = await this.legacy.createRun(input);
+    await this.shadowBestEffort(() => this.shadow.createRun(input));
+    return run;
+  }
+
+  async appendTrace(runId: string, event: LoopTraceEvent): Promise<void> {
+    await this.legacy.appendTrace(runId, event);
+    await this.shadowBestEffort(() => this.shadow.appendTrace(runId, event));
+  }
+
+  async updateRun(runId: string, patch: Partial<Omit<LoopRunRecord, "id" | "startedAt">>): Promise<LoopRunRecord | undefined> {
+    const updated = await this.legacy.updateRun(runId, patch);
+    await this.shadowBestEffort(() => this.shadow.updateRun(runId, patch));
+    return updated;
+  }
+
+  getRun(id: string): Promise<LoopRunRecord | undefined> {
+    return (this.readFrom === "shadow" ? this.shadow : this.legacy).getRun(id);
+  }
+
+  listRuns(filter?: LoopRunListFilter): Promise<LoopRunRecord[]> {
+    return (this.readFrom === "shadow" ? this.shadow : this.legacy).listRuns(filter);
+  }
+
+  async close(): Promise<void> {
+    await this.legacy.close?.();
+    await this.shadow.close?.();
   }
 }
