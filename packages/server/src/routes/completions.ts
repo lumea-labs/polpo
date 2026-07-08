@@ -38,6 +38,7 @@ import {
   type ProjectLoopConfig,
 } from "@polpo-ai/core";
 import type { ApprovalStore } from "@polpo-ai/core/approval-store";
+import type { ChatSessionInjection } from "@polpo-ai/core";
 import { chatCompletionsRoute } from "./completions/schemas.js";
 import { convertMessages, extractText } from "./completions/message-mapping.js";
 import { toAIToolChoice } from "./completions/tool-mapping.js";
@@ -48,6 +49,7 @@ import {
   streamChatCompletion,
   type ChatCompletionExecution,
 } from "./completions/chat-handler.js";
+import { streamChatViaRun, runNonStreamingChatViaRun } from "./completions/chat-via-run-handler.js";
 
 export { resumeProjectLoopRun } from "./completions/project-loop-runner.js";
 
@@ -108,6 +110,14 @@ export interface CompletionRouteDeps {
     user?: string;
     providerMetadata?: Record<string, unknown>;
   }) => void;
+  /** F1c: run a chat completion through the shared executeRun lifecycle +
+   *  loop-engine (node-provided). Present ⇒ settings.chatExecution:"run" can
+   *  route chat off the inline handler. `onEvent` receives the run's live event
+   *  stream (text-delta / reasoning-delta / tool_use / tool_result / usage / …). */
+  runChatViaRun?: (
+    inject: ChatSessionInjection,
+    hooks: { onEvent: (e: Record<string, unknown>) => void; signal?: AbortSignal },
+  ) => Promise<{ status: string; result: { exitCode: number; stdout: string; stderr: string } }>;
   /** Orchestrator mode support (optional — returns 501 if not provided). */
   resolveOrchestratorContext?: () => Promise<{
     systemPrompt: string;
@@ -162,6 +172,9 @@ export function completionRoutes(getDeps: () => CompletionRouteDeps, apiKeys?: s
      * misbehaving cleanup can't leak the request itself.
      */
     let onResponseFinished: (() => Promise<void>) | undefined;
+    // Resolved agent config captured for the execution object (F1c needs it to
+    // build the RunnerConfig for chat-via-executeRun). Undefined in orchestrator mode.
+    let resolvedAgentConfig: any;
 
     const { aiMessages, extraSystemParts } = convertMessages(body.messages);
 
@@ -175,6 +188,7 @@ export function completionRoutes(getDeps: () => CompletionRouteDeps, apiKeys?: s
       try {
         const selection = resolveLoopSelection(agentConfig, body.loop);
         agentConfig = selection.agent;
+        resolvedAgentConfig = agentConfig;
         modelToolChoice = toAIToolChoice(agentConfig.toolChoice);
         c.header("x-loop", selection.name);
         const assignedLoops = Array.isArray(agentConfig.assignedLoops) ? agentConfig.assignedLoops : [];
@@ -306,6 +320,7 @@ export function completionRoutes(getDeps: () => CompletionRouteDeps, apiKeys?: s
       deps,
       body,
       completionId,
+      agentConfig: resolvedAgentConfig,
       agentMode,
       fullSystemPrompt,
       m,
@@ -320,6 +335,19 @@ export function completionRoutes(getDeps: () => CompletionRouteDeps, apiKeys?: s
       sessionId,
       onResponseFinished,
     };
+
+    // F1c: route chat through the shared executeRun lifecycle + loop-engine when
+    // opted in (settings.chatExecution:"run") and the node host provides the
+    // driver. Agent-direct only; project-loop runs already returned above.
+    const viaRun =
+      deps.getConfig()?.settings?.chatExecution === "run" &&
+      !!deps.runChatViaRun &&
+      !projectLoopRuntime;
+    if (viaRun) {
+      return (body.stream
+        ? await streamChatViaRun(c, execution)
+        : await runNonStreamingChatViaRun(c, execution)) as any;
+    }
 
     if (body.stream) {
       // ── Streaming mode ──
