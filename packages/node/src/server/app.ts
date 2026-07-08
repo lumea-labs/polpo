@@ -158,6 +158,42 @@ export function createApp(orchestrator: Orchestrator, sseBridge: SSEBridge, opts
       const raw = await fs.readFile(path);
       return projectLoopConfigSchema.parse(JSON.parse(raw)) as any;
     },
+    // F1c: run a chat completion through the shared executeRun lifecycle +
+    // loop-engine (behind settings.chatExecution:"run"). Injects the route's
+    // already-resolved model/prompt/tools/messages so the engine runs a chat
+    // turn-loop at parity with the inline handler; keeps the run ephemeral.
+    runChatViaRun: async (inject: any, hooks: { onEvent: (e: Record<string, unknown>) => void; signal?: AbortSignal }) => {
+      const { executeRun } = await import("../core/run-lifecycle.js");
+      const { EphemeralRunStore } = await import("./ephemeral-run-store.js");
+      const { nanoid } = await import("nanoid");
+      const runId = `chat-${nanoid()}`;
+      const task: any = {
+        id: runId, title: inject.title ?? "chat", description: "",
+        assignTo: inject.agent?.name ?? "agent", dependsOn: [], status: "pending",
+        expectations: [], metrics: [], retries: 0, maxRetries: 0,
+      };
+      const outcome = await executeRun(
+        {
+          runId, taskId: runId, agent: inject.agent, task,
+          polpoDir: o.getPolpoDir(), cwd: o.getAgentWorkDir(),
+          outputDir: join(o.getPolpoDir(), "output", runId),
+        } as any,
+        {
+          runStore: new EphemeralRunStore(),
+          pid: -1,
+          configPath: `memory://${runId}`,
+          fs: o.getFs(),
+          shell: o.getShell(),
+          memoryStore: o.getMemoryStore(),
+          vaultStore: o.getVaultStore(),
+          gatewayConfig: o.getGatewayConfig(),
+          signal: hooks.signal,
+          inject,
+          onEvent: hooks.onEvent,
+        },
+      );
+      return { status: outcome.status, result: outcome.result };
+    },
   }), opts?.apiKeys));
 
   // ── Authenticated routes (require initialized orchestrator) ───────────

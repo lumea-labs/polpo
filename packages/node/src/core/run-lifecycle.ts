@@ -28,7 +28,7 @@ import type { RunStore, RunRecord, RunStatus } from "@polpo-ai/core/run-store";
 import type { LoopResumeState } from "@polpo-ai/core/loop-run-store";
 import type { LogEntry } from "@polpo-ai/core/log-store";
 import type { RunnerConfig, TaskResult } from "@polpo-ai/core/types";
-import type { AgentHandle } from "@polpo-ai/core/adapter";
+import type { AgentHandle, ChatSessionInjection } from "@polpo-ai/core/adapter";
 import type { FileSystem } from "@polpo-ai/core/filesystem";
 import type { Shell } from "@polpo-ai/core/shell";
 import { sanitizeTranscriptEntry } from "../server/security.js";
@@ -137,6 +137,12 @@ export interface ExecuteRunDeps {
    * entry); token-by-token deltas are a follow-up (F1b, in loop-engine).
    */
   onEvent?: (entry: Record<string, unknown>) => void;
+  /**
+   * Chat-session injection (F1c). When set, the run executes a chat turn-loop
+   * over the injected model/prompt/tools/messages instead of the task's own
+   * resolution — forwarded to SpawnContext.inject. Undefined for task runs.
+   */
+  inject?: ChatSessionInjection;
 }
 
 export interface ExecuteRunOutcome {
@@ -228,10 +234,15 @@ export async function executeRun(config: RunnerConfig, deps: ExecuteRunDeps): Pr
       // NOT onTranscript, so persistence stays turn-granularity. No-op when no
       // subscriber is attached (background hosts).
       onDelta: deps.onEvent
-        ? (delta: { text: string }) => {
-            try { deps.onEvent?.({ type: "text-delta", text: delta.text }); } catch { /* can't sink the run */ }
+        ? (delta: { text: string; kind?: "text" | "reasoning" }) => {
+            try {
+              deps.onEvent?.({ type: delta.kind === "reasoning" ? "reasoning-delta" : "text-delta", text: delta.text });
+            } catch { /* can't sink the run */ }
           }
         : undefined,
+      // F1c: chat-session injection — makes the engine run a chat turn-loop
+      // over pre-resolved inputs. Undefined for task runs (unchanged path).
+      inject: deps.inject,
     };
     handle = spawnLoopEngine(config.agent, config.task, config.cwd, spawnCtx);
     if (config.resumeState) {

@@ -151,7 +151,7 @@ export { buildFixPrompt, buildRetryPrompt, buildSideEffectFixPrompt, buildSideEf
 export { looksLikeQuestion, classifyAsQuestion } from "./question-detector.js";
 
 // ── Adapter Types ────────────────────────────────────────────────────────
-export type { AgentHandle, SpawnContext } from "./adapter.js";
+export type { AgentHandle, SpawnContext, ChatSessionInjection } from "./adapter.js";
 
 // ── Assessment (pure — no Node.js deps) ─────────────────────────────────
 export { assessTask, runCheck, runMetric, type AssessmentDeps, type CheckProgressEvent as AssessorCheckProgressEvent } from "./assessor.js";

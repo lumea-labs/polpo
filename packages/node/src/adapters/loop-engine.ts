@@ -63,6 +63,7 @@ import {
   buildAgentTools,
   buildPrompt,
   collectOutcome,
+  type SpawnPrep,
 } from "./spawn-helpers.js";
 
 // ─── Helpers (task-flavored ports of the completions loop runtime) ─────
@@ -276,26 +277,52 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
   }): Promise<{ lastText: string; accumText: string }> {
     const { sessionAgent, loopName, loop, contextPrompt } = options;
     const resume = usableResumeState(options.resume, loopName);
+    const inject = ctx?.inject;
 
-    const prep = prepareSpawn(sessionAgent, cwd, ctx);
-    const { model, providerOptions } = prep;
-    const systemPrompt = contextPrompt
-      ? `${prep.systemPrompt}\n\n${contextPrompt}`
-      : prep.systemPrompt;
-    const maxTurns = loop.maxTurns ?? prep.maxTurns;
-
-    const allPolpoTools = await buildAgentTools(sessionAgent, cwd, prep, ctx);
-    const toolByName = new Map(allPolpoTools.map((t) => [t.name, t]));
-    const toolSet = toToolDeclarations(allPolpoTools);
-    const toolDescriptions = allPolpoTools.map((t) => ({ description: t.description ?? "" }));
+    // Inject path (chat-via-executeRun, F1c): use the completions route's
+    // already-resolved model/prompt/tools/messages instead of re-resolving from
+    // the AgentConfig — parity by construction. Every branch below is
+    // inject-gated so the task path stays byte-identical.
+    let model: SpawnPrep["model"];
+    let providerOptions: SpawnPrep["providerOptions"];
+    let systemPrompt: string;
+    let maxTurns: number;
+    let toolSet: ToolSet;
+    let toolByName = new Map<string, PolpoTool>();
+    // Tools value handed to compaction's token estimator (JSON.stringify'd); MUST
+    // match the chat path's shape so the compaction trigger point is identical.
+    let compactionTools: unknown[];
+    const compactionMode: "chat" | "task" = inject?.compactionMode ?? "task";
+    if (inject) {
+      model = inject.model as unknown as SpawnPrep["model"];
+      providerOptions = inject.providerOptions as SpawnPrep["providerOptions"];
+      systemPrompt = inject.systemPrompt;
+      maxTurns = inject.maxTurns;
+      toolSet = inject.toolSet as ToolSet;
+      compactionTools = inject.compactionTools;
+    } else {
+      const prep = prepareSpawn(sessionAgent, cwd, ctx);
+      model = prep.model;
+      providerOptions = prep.providerOptions;
+      systemPrompt = contextPrompt
+        ? `${prep.systemPrompt}\n\n${contextPrompt}`
+        : prep.systemPrompt;
+      maxTurns = loop.maxTurns ?? prep.maxTurns;
+      const allPolpoTools = await buildAgentTools(sessionAgent, cwd, prep, ctx);
+      toolByName = new Map(allPolpoTools.map((t) => [t.name, t]));
+      toolSet = toToolDeclarations(allPolpoTools);
+      compactionTools = allPolpoTools.map((t) => ({ description: t.description ?? "" }));
+    }
 
     // Conversation state owned by the host, exactly like the legacy loop.
     // On resume the recorded history (already containing tool-call and
     // tool-result pairs from completed turns) replaces the fresh prompt —
     // side-effects replay from recorded results, they never re-execute.
-    let messages: ModelMessage[] = resume
-      ? [...(resume.history as ModelMessage[])]
-      : [{ role: "user", content: buildPrompt(task) }];
+    let messages: ModelMessage[] = inject
+      ? [...(inject.seedMessages as ModelMessage[])]
+      : resume
+        ? [...(resume.history as ModelMessage[])]
+        : [{ role: "user", content: buildPrompt(task) }];
     let lastStepText = "";
     let accumText = resume?.accumText ?? "";
 
@@ -324,13 +351,13 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
       const compactionResult = await compactIfNeeded({
         systemPrompt,
         messages,
-        tools: toolDescriptions,
+        tools: compactionTools as { description: string }[],
         config: {
           contextWindow: model.contextWindow ?? 200_000,
           maxOutputTokens: model.maxTokens ?? 8192,
         },
         summarize,
-        mode: "task",
+        mode: compactionMode,
         onCompaction: (event: CompactionEvent) => {
           handle.onTranscript?.({
             type: "compaction",
@@ -355,6 +382,7 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
         system: systemPrompt,
         messages,
         tools: toolSet,
+        ...(inject?.toolChoice ? { toolChoice: inject.toolChoice as any } : {}),
         maxOutputTokens: model.maxTokens,
         abortSignal: abortController.signal,
         providerOptions,
@@ -371,11 +399,21 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
       const toolCalls: LoopToolCall[] = [];
       for await (const part of stream.fullStream) {
         switch (part.type) {
+          case "reasoning-delta": {
+            // Chat parity (F1c): surface model reasoning as a thinking delta.
+            if (inject) { try { ctx?.onDelta?.({ text: part.text, kind: "reasoning" }); } catch { /* subscriber can't sink the run */ } }
+            break;
+          }
           case "text-delta": {
             stepText += part.text;
             // F1b: token-level streaming sink (separate from onTranscript, which
             // stays turn-granularity for persistence). Best-effort.
             try { ctx?.onDelta?.({ text: part.text }); } catch { /* a delta subscriber can't sink the run */ }
+            break;
+          }
+          case "tool-input-start": {
+            // Chat parity (F1c): "preparing" tool state before args stream in.
+            if (inject) handle.onTranscript?.({ type: "tool_input_start", toolId: part.id, tool: part.toolName });
             break;
           }
           case "tool-call": {
@@ -388,6 +426,18 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
               toolId: part.toolCallId,
               input: part.input,
             });
+            // Chat parity (F1c): a client-side tool ends the server loop and is
+            // returned to the caller to execute — never dispatched here. Not
+            // pushing it to toolCalls ⇒ the turn ends with no executable tools.
+            if (inject && inject.clientSideToolNames.has(part.toolName)) {
+              handle.onTranscript?.({
+                type: "client_tool_call",
+                toolId: part.toolCallId,
+                tool: part.toolName,
+                input: part.input,
+              });
+              break;
+            }
             toolCalls.push({
               id: part.toolCallId,
               name: part.toolName,
@@ -423,12 +473,35 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
       const responseMessages = (await stream.response).messages;
       messages.push(...responseMessages);
 
+      // Chat parity (F1c): surface per-turn usage + provider metadata so the
+      // driver can accumulate them for onCompletionFinished, matching chat.
+      if (inject) {
+        handle.onTranscript?.({
+          type: "usage",
+          usage: stepUsage,
+          providerMetadata: await Promise.resolve(stream.providerMetadata).catch(() => undefined),
+        });
+      }
+
       return { text: stepText, toolCalls, usage: stepUsage };
     };
 
     // ── LoopRunner tool executor: dispatch + history append ──
     const executeTool = async (toolCall: LoopToolCall): Promise<string> => {
-      const { llmText, isError } = await performToolCall(toolByName.get(toolCall.name), toolCall);
+      let llmText: string;
+      let isError: boolean;
+      if (inject) {
+        // Chat parity (F1c): dispatch via the route's own executor and emit the
+        // FULL result (no 2000-char task truncation). Provider-executed tools
+        // are recorded upstream (tool_use) and skipped here — their result is
+        // already in the stream's response messages.
+        if (inject.providerToolNames.has(toolCall.name)) return "";
+        llmText = await inject.executor(toolCall.name, toolCall.args);
+        isError = llmText.startsWith("Error:");
+        handle.onTranscript?.({ type: "tool_result", toolId: toolCall.id, tool: toolCall.name, content: llmText, isError });
+      } else {
+        ({ llmText, isError } = await performToolCall(toolByName.get(toolCall.name), toolCall));
+      }
 
       // Append the tool result to conversation history so the next model
       // step sees it (the model stream no longer auto-executes tools).
@@ -642,6 +715,18 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
     }) ?? false;
 
     try {
+      // Chat-via-executeRun (F1c): a chat run has no loop selection/graph — it
+      // is a single default turn-loop over the injected conversation. Short-
+      // circuit the loop-selection machinery entirely.
+      if (ctx?.inject) {
+        const session = await runLoopSession({
+          sessionAgent: agentConfig,
+          loopName: "default",
+          loop: { maxTurns: ctx.inject.maxTurns },
+        });
+        alive = false;
+        return { exitCode: 0, stdout: session.lastText, stderr: "", duration: Date.now() - start };
+      }
       const selection = resolveLoopSelection(agentConfig);
       const assigned = agentConfig.assignedLoops ?? [];
 
@@ -698,8 +783,10 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
         duration: Date.now() - start,
       };
     } finally {
-      // Close agent-browser session (profile data auto-persisted by --profile)
-      if (hasExtendedTools) {
+      // Close agent-browser session (profile data auto-persisted by --profile).
+      // Chat (inject) keeps its session — the server driver owns cleanup via
+      // onResponseFinished, matching the inline chat handler.
+      if (hasExtendedTools && !ctx?.inject) {
         await cleanupAgentBrowserSession(agentConfig.name).catch(() => {});
       }
     }

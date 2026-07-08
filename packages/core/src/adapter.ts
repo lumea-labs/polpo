@@ -1,4 +1,4 @@
-import type { AgentActivity, TaskResult, TaskOutcome, ReasoningLevel } from "@polpo-ai/core/types";
+import type { AgentActivity, TaskResult, TaskOutcome, ReasoningLevel, AgentConfig } from "@polpo-ai/core/types";
 import type { VaultStore } from "@polpo-ai/core/vault-store";
 import type { MemoryStore } from "@polpo-ai/core/memory-store";
 import type { FileSystem } from "@polpo-ai/core/filesystem";
@@ -88,5 +88,50 @@ export interface SpawnContext {
    * additive — background hosts leave it undefined ⇒ no per-delta emission, the
    * historical whole-turn behaviour. Best-effort; must not throw.
    */
-  onDelta?: (delta: { text: string }) => void;
+  onDelta?: (delta: { text: string; kind?: "text" | "reasoning" }) => void;
+  /**
+   * Chat-session injection (migration F1c). When set, the engine runs a CHAT
+   * turn loop using these pre-resolved inputs (model/prompt/tools/messages from
+   * the completions route) INSTEAD of resolving from the AgentConfig — so
+   * chat-via-executeRun is at parity with the inline chat handler by
+   * construction. Absent for task/background runs ⇒ the historical path is
+   * byte-identical.
+   */
+  inject?: ChatSessionInjection;
+}
+
+/**
+ * Pre-resolved inputs for running a chat completion through the shared run
+ * lifecycle (F1c). Built server-side from the completions route's already
+ * resolved model/prompt/tools/messages and threaded down through
+ * ExecuteRunDeps → SpawnContext. AI-SDK types are kept opaque (unknown) so core
+ * takes no dependency on `ai`.
+ */
+export interface ChatSessionInjection {
+  /** Resolved agent config (for the RunnerConfig the driver builds). */
+  agent: AgentConfig;
+  /** Optional session title (first user text). */
+  title?: string;
+  /** Resolved model (the same ResolvedModel the engine's prepareSpawn would build). */
+  model: { aiModel: unknown; contextWindow?: number; maxTokens?: number };
+  /** Full system prompt (conversational preamble + agent prompt + memory). */
+  systemPrompt: string;
+  providerOptions?: Record<string, Record<string, unknown>>;
+  maxTurns: number;
+  /** streamText toolChoice, if the route set one. */
+  toolChoice?: unknown;
+  /** Seed conversation (AI-SDK ModelMessage[]). */
+  seedMessages: unknown[];
+  /** AI-SDK ToolSet (declaration-only) fed to streamText. */
+  toolSet: Record<string, unknown>;
+  /** Executes a tool call, returning the string result ("Error:" prefix on failure). */
+  executor: (name: string, args: Record<string, unknown>) => Promise<string>;
+  /** Client-side tool names that interrupt the loop (returned to the caller). */
+  clientSideToolNames: ReadonlySet<string>;
+  /** Provider-executed tool names to record but not dispatch. */
+  providerToolNames: ReadonlySet<string>;
+  /** Tools value used for compaction token estimation — MUST match the chat path. */
+  compactionTools: unknown[];
+  /** Compaction mode ("chat" mirrors the inline handler). */
+  compactionMode: "chat" | "task";
 }
