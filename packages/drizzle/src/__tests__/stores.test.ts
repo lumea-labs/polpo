@@ -476,6 +476,35 @@ describe("DrizzleLoopRunStore — dual-write + runs-backed (F2)", () => {
     expect(fetched?.status).toBe("completed");
     expect(fetched?.trace).toHaveLength(1);
   });
+
+  it("backfillLoopRunsIntoRuns copies historical loop_runs into runs, idempotently (F2 PR3)", async () => {
+    const { DrizzleLoopRunStore } = await import("../stores/loop-run-store.js");
+    const { backfillLoopRunsIntoRuns } = await import("../backfill.js");
+    const { loopRunsSqlite } = await import("../schema/loop-runs.js");
+    const { runsSqlite } = await import("../schema/runs.js");
+    const { eq } = await import("drizzle-orm");
+
+    // A legacy-only loop run (write straight to loop_runs, bypassing the shadow).
+    const legacy = new DrizzleLoopRunStore(db, loopRunsSqlite, "sqlite");
+    await legacy.createRun({ id: "hist-1", loop: { name: "old" }, agentName: "chat" } as any);
+    await legacy.updateRun("hist-1", { status: "awaiting_approval" as any, resume: { context: {}, steps: [], createdAt: "t", accumText: "x" } as any });
+    expect(await db.select().from(runsSqlite).where(eq(runsSqlite.id, "hist-1"))).toHaveLength(0);
+
+    await backfillLoopRunsIntoRuns(db, "sqlite");
+
+    const rows: any[] = await db.select().from(runsSqlite).where(eq(runsSqlite.id, "hist-1"));
+    expect(rows).toHaveLength(1);
+    expect(rows[0].engine).toBe("graph");
+    expect(rows[0].status).toBe("awaiting_approval");
+    expect(rows[0].loopName).toBe("old");
+    // resume folded into resume_state.
+    const runsBacked = new DrizzleLoopRunStore(db, runsSqlite, "sqlite", true);
+    expect(((await runsBacked.getRun("hist-1"))?.resume as any)?.accumText).toBe("x");
+
+    // Idempotent — re-run inserts nothing new.
+    await backfillLoopRunsIntoRuns(db, "sqlite");
+    expect(await db.select().from(runsSqlite).where(eq(runsSqlite.id, "hist-1"))).toHaveLength(1);
+  });
 });
 
 // ═══════════════════════════════════════════════════════════════════════
