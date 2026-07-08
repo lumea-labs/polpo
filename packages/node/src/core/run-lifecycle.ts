@@ -223,6 +223,15 @@ export async function executeRun(config: RunnerConfig, deps: ExecuteRunDeps): Pr
           await runStore.updateResumeState?.(config.runId, state);
         } catch { /* best effort */ }
       },
+      // F1b: route token deltas to the streaming subscriber as {type:"text-delta"}
+      // events on the SAME onEvent hook as turn events (F1a) — but via ctx.onDelta,
+      // NOT onTranscript, so persistence stays turn-granularity. No-op when no
+      // subscriber is attached (background hosts).
+      onDelta: deps.onEvent
+        ? (delta: { text: string }) => {
+            try { deps.onEvent?.({ type: "text-delta", text: delta.text }); } catch { /* can't sink the run */ }
+          }
+        : undefined,
     };
     handle = spawnLoopEngine(config.agent, config.task, config.cwd, spawnCtx);
     if (config.resumeState) {

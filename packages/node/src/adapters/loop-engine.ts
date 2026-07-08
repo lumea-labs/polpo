@@ -373,6 +373,9 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
         switch (part.type) {
           case "text-delta": {
             stepText += part.text;
+            // F1b: token-level streaming sink (separate from onTranscript, which
+            // stays turn-granularity for persistence). Best-effort.
+            try { ctx?.onDelta?.({ text: part.text }); } catch { /* a delta subscriber can't sink the run */ }
             break;
           }
           case "tool-call": {

@@ -219,6 +219,34 @@ describe("executeRun — shared run lifecycle", () => {
     expect(outcome.result.stdout).toBe("resilient");
   });
 
+  test("onDelta (F1b): token deltas reach onEvent as text-delta events, separate from turn transcript & persistence", async () => {
+    setMockModel(mockTurnSequenceModel([{ type: "text", text: "hello world" }]));
+    const store = new InMemoryRunStore();
+    const config = makeConfig();
+    const events: Record<string, unknown>[] = [];
+
+    await executeRun(config, {
+      runStore: store,
+      pid: 9,
+      configPath: `memory://${config.runId}`,
+      onEvent: (entry) => events.push(entry),
+    });
+
+    // Token deltas arrived on the same onEvent hook, tagged text-delta.
+    const deltas = events.filter((e) => e.type === "text-delta");
+    expect(deltas.length).toBeGreaterThan(1); // the mock splits text into chunks
+    expect(deltas.map((d) => d.text).join("")).toBe("hello world");
+
+    // The turn-granularity assistant entry is STILL emitted (unchanged path).
+    expect(events.find((e) => e.type === "assistant")?.text).toBe("hello world");
+
+    // Deltas did NOT pollute the persisted activity log — persistence stays
+    // turn-granularity (deltas route via ctx.onDelta, not onTranscript).
+    const log = await readActivityLog(config.runId);
+    expect(log.filter((e) => (e.event ?? e.type) === "text-delta")).toHaveLength(0);
+    expect(log.map((e) => e.event ?? e.type)).toContain("assistant");
+  });
+
   test("engine failure: run marked failed, executeRun resolves (never throws)", async () => {
     setMockModel(new MockLanguageModelV3({
       doStream: () => { throw new Error("model exploded"); },
