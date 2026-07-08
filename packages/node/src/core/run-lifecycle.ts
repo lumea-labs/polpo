@@ -125,6 +125,18 @@ export interface ExecuteRunDeps {
   configPath: string;
   /** Abort = graceful kill (subprocess SIGTERM / in-process spawner.kill). */
   signal?: AbortSignal;
+  /**
+   * Live event subscription. Optional and additive: a STREAMING host
+   * (chat-via-executeRun, migration F1) passes this to receive each transcript
+   * entry — assistant text, tool_use, tool_result, loop_trace, error — as the
+   * engine emits it, and map it to SSE. Background hosts (task/subprocess) leave
+   * it undefined, so behaviour is unchanged: it is teed alongside the existing
+   * activity-log / DB-transcript persistence, never in place of it.
+   *
+   * Granularity note: entries arrive per TURN today (whole assistant text in one
+   * entry); token-by-token deltas are a follow-up (F1b, in loop-engine).
+   */
+  onEvent?: (entry: Record<string, unknown>) => void;
 }
 
 export interface ExecuteRunOutcome {
@@ -229,6 +241,9 @@ export async function executeRun(config: RunnerConfig, deps: ExecuteRunDeps): Pr
     }
     // Wire transcript persistence — every agent message gets written to the run log
     handle.onTranscript = (entry) => {
+      // F1a: live subscription for streaming hosts (chat-via-executeRun). Teed
+      // first, best-effort — it must never break persistence below.
+      try { deps.onEvent?.(entry); } catch { /* a subscriber error can't sink the run */ }
       actLog.logTranscript(entry);
       // Persist transcript to DB when a log session is available
       if (logSession) {
