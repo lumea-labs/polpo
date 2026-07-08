@@ -175,6 +175,50 @@ describe("executeRun — shared run lifecycle", () => {
     expect(log[0].pid).toBe(4242);
   });
 
+  test("onEvent (F1a): a streaming host receives each transcript entry live, teed alongside persistence", async () => {
+    setMockModel(mockTurnSequenceModel([
+      { type: "tool-call", toolName: "write", args: { path: "ev-a.txt", content: "hi" } },
+      { type: "text", text: "streamed" },
+    ]));
+    const store = new InMemoryRunStore();
+    const config = makeConfig();
+    const events: Record<string, unknown>[] = [];
+
+    const outcome = await executeRun(config, {
+      runStore: store,
+      pid: 7,
+      configPath: `memory://${config.runId}`,
+      onEvent: (entry) => events.push(entry),
+    });
+
+    expect(outcome.status).toBe("completed");
+    // onEvent saw the same entry types the activity log persisted — teed, not replaced.
+    const types = events.map((e) => e.type);
+    expect(types).toContain("tool_use");
+    expect(types).toContain("tool_result");
+    expect(types).toContain("assistant");
+    expect(events.find((e) => e.type === "assistant")?.text).toBe("streamed");
+    // Persistence still happened (tee, not replace).
+    const log = await readActivityLog(config.runId);
+    expect(log.map((e) => e.event ?? e.type)).toContain("assistant");
+  });
+
+  test("onEvent (F1a): a throwing subscriber never sinks the run", async () => {
+    setMockModel(mockTurnSequenceModel([{ type: "text", text: "resilient" }]));
+    const store = new InMemoryRunStore();
+    const config = makeConfig();
+
+    const outcome = await executeRun(config, {
+      runStore: store,
+      pid: 8,
+      configPath: `memory://${config.runId}`,
+      onEvent: () => { throw new Error("subscriber boom"); },
+    });
+
+    expect(outcome.status).toBe("completed");
+    expect(outcome.result.stdout).toBe("resilient");
+  });
+
   test("engine failure: run marked failed, executeRun resolves (never throws)", async () => {
     setMockModel(new MockLanguageModelV3({
       doStream: () => { throw new Error("model exploded"); },
