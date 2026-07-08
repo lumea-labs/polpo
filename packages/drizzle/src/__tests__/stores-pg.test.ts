@@ -79,6 +79,22 @@ describe.skipIf(!canConnect)("PostgreSQL Drizzle stores", () => {
     stores = createPgStores(db);
   });
 
+  it("ensurePgSchema creates every runs column (F2 migrate.ts drift guard)", async () => {
+    // migrate.ts (ensurePgSchema) is hand-maintained ALTER TABLE lines — a
+    // forgotten column here breaks only the cloud/release PG path (SQLite
+    // auto-derives, so PR CI on SQLite stays green). This asserts parity with
+    // the canonical runsPg schema.
+    const { getTableConfig } = await import("drizzle-orm/pg-core");
+    const { runsPg } = await import("../schema/index.js");
+    const list: any[] = await db.execute(sql.raw(
+      `SELECT column_name FROM information_schema.columns WHERE table_name = 'runs'`,
+    ));
+    const present = new Set(list.map((r: any) => r.column_name));
+    for (const col of getTableConfig(runsPg).columns.map((c) => c.name)) {
+      expect(present.has(col), `migrate.ts missing runs column: ${col}`).toBe(true);
+    }
+  });
+
   // ═══════════════════════════════════════════════════════════════════════
   // TaskStore
   // ═══════════════════════════════════════════════════════════════════════

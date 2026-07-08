@@ -329,6 +329,26 @@ describe("DrizzleRunStore", () => {
     expect(terminal).toHaveLength(2);
   });
 
+  it("engine-scoped queries exclude project-loop (graph) rows folded into runs (F2)", async () => {
+    // Simulate loop_runs folded into the runs table: rows with engine="graph".
+    // The reaper iterates getActiveRuns/getTerminalRuns and would delete/re-spawn
+    // these if not excluded — the discriminator prevents that.
+    const { runsSqlite } = await import("../schema/runs.js");
+    const graphRow = (id: string, status: string) => ({
+      id, taskId: id, agentName: "chat", adapterType: "loop", configPath: "",
+      status, startedAt: "2026-01-01T00:00:00Z", updatedAt: "2026-01-01T00:00:00Z", engine: "graph",
+    });
+    await db.insert(runsSqlite).values(graphRow("looprun-running", "running") as any);
+    await db.insert(runsSqlite).values(graphRow("looprun-done", "completed") as any);
+    // Normal task runs — engine defaults to "agent".
+    await stores.runStore.upsertRun(makeRun("r1", "t1") as any);
+    await stores.runStore.upsertRun({ ...makeRun("r2", "t2"), status: "completed" as any } as any);
+
+    expect((await stores.runStore.getActiveRuns()).map((r) => r.id)).toEqual(["r1"]);
+    expect((await stores.runStore.getTerminalRuns()).map((r) => r.id)).toEqual(["r2"]);
+    expect(await stores.runStore.getRunByTaskId("looprun-running")).toBeUndefined();
+  });
+
   it("completeRun guards against overwriting terminal status", async () => {
     await stores.runStore.upsertRun({ ...makeRun("r1", "t1"), status: "completed" as any } as any);
 

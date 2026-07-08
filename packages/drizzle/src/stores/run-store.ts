@@ -1,4 +1,4 @@
-import { eq, desc, inArray } from "drizzle-orm";
+import { eq, desc, inArray, and, ne } from "drizzle-orm";
 import type { RunStore, RunRecord, RunStatus } from "@polpo-ai/core/run-store";
 import type { AgentActivity, TaskResult, TaskOutcome, RunnerConfig } from "@polpo-ai/core/types";
 import type { LoopResumeState } from "@polpo-ai/core/loop-run-store";
@@ -126,22 +126,26 @@ export class DrizzleRunStore implements RunStore {
   }
 
   async getRunByTaskId(taskId: string): Promise<RunRecord | undefined> {
+    // Scope to task rows (engine != "graph"): once loop_runs folds into this
+    // table (F2), loop rows share it but are never task-run results.
     const rows: any[] = await this.db.select().from(this.runs)
-      .where(eq(this.runs.taskId, taskId))
+      .where(and(eq(this.runs.taskId, taskId), ne(this.runs.engine, "graph")))
       .orderBy(desc(this.runs.startedAt))
       .limit(1);
     return rows.length > 0 ? this.rowToRecord(rows[0]) : undefined;
   }
 
   async getActiveRuns(): Promise<RunRecord[]> {
+    // engine-scoped: the orchestrator reaper iterates these — it must never see
+    // (and re-spawn / delete) project-loop rows folded into `runs` (F2).
     const rows: any[] = await this.db.select().from(this.runs)
-      .where(eq(this.runs.status, "running"));
+      .where(and(eq(this.runs.status, "running"), ne(this.runs.engine, "graph")));
     return rows.map((r) => this.rowToRecord(r));
   }
 
   async getTerminalRuns(): Promise<RunRecord[]> {
     const rows: any[] = await this.db.select().from(this.runs)
-      .where(inArray(this.runs.status, TERMINAL_STATUSES));
+      .where(and(inArray(this.runs.status, TERMINAL_STATUSES), ne(this.runs.engine, "graph")));
     return rows.map((r) => this.rowToRecord(r));
   }
 
