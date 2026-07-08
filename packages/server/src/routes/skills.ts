@@ -33,6 +33,33 @@ interface LoadedSkill extends SkillInfo {
   content: string;
 }
 
+/**
+ * Recursively copy a skill bundle from one FileSystem to another using ONLY the
+ * FileSystem abstraction — so install works on any backend (local, sandbox
+ * proxy, cloud object store), never assuming a POSIX shell. Copies every file
+ * and subdirectory (SKILL.md, references/, scripts/, assets/, …), not just
+ * SKILL.md. Binary-safe via readFileBuffer/writeFileBuffer when available.
+ */
+async function copySkillBundle(srcFs: FileSystem, src: string, dstFs: FileSystem, dst: string): Promise<void> {
+  await dstFs.mkdir(dst);
+  const entries = (srcFs as any).readdirWithTypes
+    ? await (srcFs as any).readdirWithTypes(src)
+    : (await srcFs.readdir(src)).map((name: string) => ({ name, isFile: true, isDirectory: false }));
+  for (const entry of entries) {
+    const s = join(src, entry.name);
+    const d = join(dst, entry.name);
+    if (entry.isDirectory) {
+      await copySkillBundle(srcFs, s, dstFs, d);
+    } else {
+      const data = (srcFs as any).readFileBuffer
+        ? await (srcFs as any).readFileBuffer(s)
+        : new TextEncoder().encode(await srcFs.readFile(s));
+      if ((dstFs as any).writeFileBuffer) await (dstFs as any).writeFileBuffer(d, data);
+      else await dstFs.writeFile(d, new TextDecoder().decode(data));
+    }
+  }
+}
+
 type SkillIndex = Record<string, { tags?: string[]; category?: string }>;
 
 // ── Dependencies ──
@@ -488,21 +515,26 @@ export function skillRoutes(getDeps: () => SkillRouteDeps): OpenAPIHono {
           if (!force) { skipped.push(skill.name); continue; }
           await fs.remove(targetDir);
         }
-        // Copy via shell (recursive cp)
-        const cpResult = await shell.execute(`cp -r "${skill.path}" "${targetDir}"`);
-        if (cpResult.exitCode === 0) {
-          installed.push(skill.name);
-          // Mirror to skillStore for fast-path list reads.
-          await skillStore?.upsert({
-            name: skill.name,
-            description: skill.description,
-            source,
-            installedAt: new Date().toISOString(),
-            allowedTools: (skill as any).allowedTools,
-          }).catch(() => { /* best-effort — fs write already succeeded */ });
-        } else {
-          errors.push(`${skill.name}: ${cpResult.stderr}`);
+        // Copy the FULL skill bundle via the FileSystem abstraction — SKILL.md
+        // plus references/ scripts/ assets/ and any nested files. Portable:
+        // works with any FileSystem (cloud object stores included), unlike the
+        // old `shell cp -r` which needed a POSIX shell and both paths on one
+        // real filesystem (and silently no-op'd on a mocked/abstract shell).
+        try {
+          await copySkillBundle(scanFs, skill.path, fs, targetDir);
+        } catch (err) {
+          errors.push(`${skill.name}: ${err instanceof Error ? err.message : String(err)}`);
+          continue;
         }
+        installed.push(skill.name);
+        // Mirror to skillStore for fast-path list reads.
+        await skillStore?.upsert({
+          name: skill.name,
+          description: skill.description,
+          source,
+          installedAt: new Date().toISOString(),
+          allowedTools: (skill as any).allowedTools,
+        }).catch(() => { /* best-effort — fs write already succeeded */ });
       }
 
       // Cleanup cloned repo
