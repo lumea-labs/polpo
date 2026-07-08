@@ -80,4 +80,13 @@ export interface SpawnContext {
    * errors anyway).
    */
   onTurnCheckpoint?: (state: LoopResumeState) => void | Promise<void>;
+  /**
+   * Token-level streaming sink: called for each model text-delta as it arrives,
+   * for hosts that stream token-by-token (chat-via-executeRun, migration F1b).
+   * Kept SEPARATE from onTranscript so per-token deltas reach the live consumer
+   * WITHOUT polluting the turn-granularity transcript persistence. Optional and
+   * additive — background hosts leave it undefined ⇒ no per-delta emission, the
+   * historical whole-turn behaviour. Best-effort; must not throw.
+   */
+  onDelta?: (delta: { text: string }) => void;
 }
