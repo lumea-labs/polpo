@@ -108,6 +108,18 @@ export async function ensurePgTables(db: any): Promise<void> {
   await db.execute(sql`ALTER TABLE runs ADD COLUMN IF NOT EXISTS "user" TEXT`);
   await db.execute(sql`ALTER TABLE runs ADD COLUMN IF NOT EXISTS resume_state JSONB`);
   await db.execute(sql`ALTER TABLE runs ADD COLUMN IF NOT EXISTS execution_mode TEXT`);
+  // F2: unified Run — columns folded from loop_runs (additive; hand-maintained
+  // here because cloud/node PG uses ensurePgSchema, not the auto-migrator).
+  await db.execute(sql`ALTER TABLE runs ADD COLUMN IF NOT EXISTS loop_name TEXT`);
+  await db.execute(sql`ALTER TABLE runs ADD COLUMN IF NOT EXISTS context JSONB`);
+  await db.execute(sql`ALTER TABLE runs ADD COLUMN IF NOT EXISTS trace JSONB`);
+  await db.execute(sql`ALTER TABLE runs ADD COLUMN IF NOT EXISTS error TEXT`);
+  await db.execute(sql`ALTER TABLE runs ADD COLUMN IF NOT EXISTS approval_request_id TEXT`);
+  await db.execute(sql`ALTER TABLE runs ADD COLUMN IF NOT EXISTS approval JSONB`);
+  await db.execute(sql`ALTER TABLE runs ADD COLUMN IF NOT EXISTS metadata JSONB`);
+  await db.execute(sql`ALTER TABLE runs ADD COLUMN IF NOT EXISTS completed_at TEXT`);
+  await db.execute(sql`ALTER TABLE runs ADD COLUMN IF NOT EXISTS engine TEXT DEFAULT 'agent'`);
+  await db.execute(sql`ALTER TABLE runs ADD COLUMN IF NOT EXISTS delivery TEXT`);
 
   await db.execute(sql`CREATE TABLE IF NOT EXISTS loop_runs (
     id                  TEXT PRIMARY KEY,

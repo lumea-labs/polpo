@@ -23,10 +23,27 @@ export const runsSqlite = sqliteTable("runs", {
   /** Durable-turns checkpoint (LoopResumeState JSON) — written once per completed turn. */
   resumeState: text("resume_state"),
   executionMode: text("execution_mode"),
+  // ── F2: unified Run — columns folded from loop_runs (all nullable/additive) ──
+  loopName: text("loop_name"),
+  context: text("context"),
+  trace: text("trace"),
+  error: text("error"),
+  approvalRequestId: text("approval_request_id"),
+  approval: text("approval"),
+  metadata: text("metadata"),
+  completedAt: text("completed_at"),
+  /** Execution-engine discriminator: "agent" (chat/task turn-loop) | "graph"
+   *  (project-loop). Defaults to "agent" so existing task rows backfill; loop
+   *  rows are written "graph" so task queries (getActiveRuns/getTerminalRuns)
+   *  can exclude them once the tables merge. */
+  engine: text("engine").default("agent"),
+  /** Consumption axis (F3, forward-compat only): "stream" | "background". */
+  delivery: text("delivery"),
 }, (table) => [
   index("idx_runs_status").on(table.status),
   index("idx_runs_task_id").on(table.taskId),
   index("idx_runs_user").on(table.user),
+  index("idx_runs_engine").on(table.engine),
 ]);
 
 // ── PostgreSQL schema ──────────────────────────────────────────────────
@@ -51,8 +68,23 @@ export const runsPg = pgTable("runs", {
   /** Durable-turns checkpoint (LoopResumeState JSON) — written once per completed turn. */
   resumeState: jsonb("resume_state"),
   executionMode: pgText("execution_mode"),
+  // ── F2: unified Run — columns folded from loop_runs (all nullable/additive) ──
+  loopName: pgText("loop_name"),
+  context: jsonb("context"),
+  trace: jsonb("trace"),
+  error: pgText("error"),
+  approvalRequestId: pgText("approval_request_id"),
+  approval: jsonb("approval"),
+  metadata: jsonb("metadata"),
+  completedAt: pgText("completed_at"),
+  /** Execution-engine discriminator: "agent" (chat/task) | "graph" (project-loop).
+   *  Defaults "agent"; loop rows are "graph" so task queries can exclude them. */
+  engine: pgText("engine").default("agent"),
+  /** Consumption axis (F3, forward-compat only): "stream" | "background". */
+  delivery: pgText("delivery"),
 }, (table) => [
   pgIndex("idx_pg_runs_status").on(table.status),
   pgIndex("idx_pg_runs_task_id").on(table.taskId),
   pgIndex("idx_pg_runs_user").on(table.user),
+  pgIndex("idx_pg_runs_engine").on(table.engine),
 ]);
