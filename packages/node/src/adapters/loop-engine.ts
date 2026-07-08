@@ -92,13 +92,6 @@ async function loadProjectLoop(fs: FileSystem, polpoDir: string, name: string): 
   return projectLoopConfigSchema.parse(JSON.parse(raw)) as ProjectLoopConfig;
 }
 
-/** An agent with no loop configuration at all runs the implicit default
- *  loop — byte-identical to the legacy engine (no overlay, no step header
- *  in the system prompt). */
-function isImplicitDefault(agent: AgentConfig, selectionName: string): boolean {
-  return selectionName === "default" && !agent.defaultLoop && !agent.loops?.default;
-}
-
 // ─── Durable turns ─────────────────────────────────────
 
 /**
@@ -728,21 +721,13 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
         return { exitCode: 0, stdout: session.lastText, stderr: "", duration: Date.now() - start };
       }
       const selection = resolveLoopSelection(agentConfig);
-      const assigned = agentConfig.assignedLoops ?? [];
 
       let stdout: string;
-      if (assigned.includes(selection.name)) {
-        // Project loop graph mode — polpoDir/fs come straight from ctx
-        // (the base agent's model may never be used; steps resolve their own).
-        if (!ctx?.polpoDir) {
-          throw new Error("spawnEngine: ctx.polpoDir is required (cannot derive .polpo from cwd when settings.workDir is set)");
-        }
-        const fs = ctx.fs ?? new NodeFileSystem();
-        const projectLoop = await loadProjectLoop(fs, ctx.polpoDir, selection.name);
-        stdout = await runPipeline(projectLoop);
-      } else if (isImplicitDefault(agentConfig, selection.name)) {
-        // Parity path: agents without loop config behave exactly like the
-        // legacy engine (no overlay, no step header).
+      if (!selection) {
+        // No loop requested or configured: plain agent turn-loop, no overlay or
+        // step header (parity with the legacy engine). The durable-resume
+        // checkpoint keeps a stable internal "default" key — nothing here is a
+        // user-facing loop.
         const session = await runLoopSession({
           sessionAgent: agentConfig,
           loopName: "default",
@@ -751,6 +736,15 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
           onCheckpoint: ctx?.onTurnCheckpoint,
         });
         stdout = session.lastText;
+      } else if ((agentConfig.assignedLoops ?? []).includes(selection.name)) {
+        // Project loop graph mode — polpoDir/fs come straight from ctx
+        // (the base agent's model may never be used; steps resolve their own).
+        if (!ctx?.polpoDir) {
+          throw new Error("spawnEngine: ctx.polpoDir is required (cannot derive .polpo from cwd when settings.workDir is set)");
+        }
+        const fs = ctx.fs ?? new NodeFileSystem();
+        const projectLoop = await loadProjectLoop(fs, ctx.polpoDir, selection.name);
+        stdout = await runPipeline(projectLoop);
       } else {
         // Selected single loop (defaultLoop or inline loops.default):
         // apply the loop's overlays, same semantics as completions.

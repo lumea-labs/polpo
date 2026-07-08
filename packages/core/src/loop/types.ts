@@ -221,6 +221,8 @@ export interface ProjectLoopConfig {
   version?: ProjectLoopVersion;
   kind?: ProjectLoopKind;
   name: string;
+  /** Human-readable label for UI (e.g. "Plan", "Build"). Falls back to `name`. */
+  label?: string;
   description?: string;
   metadata?: Record<string, unknown>;
   context?: "shared";

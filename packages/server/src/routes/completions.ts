@@ -187,16 +187,19 @@ export function completionRoutes(getDeps: () => CompletionRouteDeps, apiKeys?: s
       }
       try {
         const selection = resolveLoopSelection(agentConfig, body.loop);
-        agentConfig = selection.agent;
+        if (selection) {
+          agentConfig = selection.agent;
+          c.header("x-loop", selection.name);
+          const assignedLoops = Array.isArray(agentConfig.assignedLoops) ? agentConfig.assignedLoops : [];
+          if (assignedLoops.includes(selection.name) && deps.getProjectLoop) {
+            const projectLoop = await deps.getProjectLoop(selection.name);
+            if (!projectLoop) throw new Error(`Assigned project loop "${selection.name}" was not found`);
+            projectLoopRuntime = { agentConfig, projectLoop };
+          }
+        }
+        // No loop selected → agent runs as-is (no overlay, no x-loop header).
         resolvedAgentConfig = agentConfig;
         modelToolChoice = toAIToolChoice(agentConfig.toolChoice);
-        c.header("x-loop", selection.name);
-        const assignedLoops = Array.isArray(agentConfig.assignedLoops) ? agentConfig.assignedLoops : [];
-        if (assignedLoops.includes(selection.name) && deps.getProjectLoop) {
-          const projectLoop = await deps.getProjectLoop(selection.name);
-          if (!projectLoop) throw new Error(`Assigned project loop "${selection.name}" was not found`);
-          projectLoopRuntime = { agentConfig, projectLoop };
-        }
       } catch (loopErr) {
         const msg = loopErr instanceof Error ? loopErr.message : String(loopErr);
         return c.json({ error: { message: msg, type: "invalid_request_error", code: "loop_not_found" } }, 400 as any);

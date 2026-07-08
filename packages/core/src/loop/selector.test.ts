@@ -2,12 +2,9 @@ import { describe, expect, it } from "vitest";
 import { resolveLoopSelection } from "./selector.js";
 
 describe("resolveLoopSelection", () => {
-  it("keeps current agent behavior when no loop is requested", () => {
+  it("returns undefined when no loop is requested or configured (agent runs as-is, no synthesized default)", () => {
     const agent = { name: "agent", model: "base", allowedTools: ["read"], systemPrompt: "base" };
-    const selected = resolveLoopSelection(agent);
-
-    expect(selected.name).toBe("default");
-    expect(selected.agent).toBe(agent);
+    expect(resolveLoopSelection(agent)).toBeUndefined();
   });
 
   it("applies requested loop overrides to the effective agent", () => {
@@ -28,7 +25,7 @@ describe("resolveLoopSelection", () => {
           maxTurns: 3,
         },
       },
-    }, "plan");
+    }, "plan")!;
 
     expect(selected.loop.name).toBe("plan");
     expect(selected.agent).toMatchObject({
@@ -52,7 +49,7 @@ describe("resolveLoopSelection", () => {
           tools: ["read", "bash"],
         },
       },
-    }, "verify");
+    }, "verify")!;
 
     expect(selected.agent.skills).toEqual(["general", "testing"]);
   });
@@ -65,8 +62,8 @@ describe("resolveLoopSelection", () => {
       defaultLoop: "coding-flow",
     };
 
-    expect(resolveLoopSelection(agent).name).toBe("coding-flow");
-    expect(resolveLoopSelection(agent, "coding-flow").agent).toBe(agent);
+    expect(resolveLoopSelection(agent)!.name).toBe("coding-flow");
+    expect(resolveLoopSelection(agent, "coding-flow")!.agent).toBe(agent);
   });
 
   it("throws a clear error for unknown requested loops", () => {
