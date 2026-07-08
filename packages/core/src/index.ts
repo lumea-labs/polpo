@@ -27,6 +27,9 @@ export type {
 // ── Store Interfaces ─────────────────────────────────────────────────────
 export type { TaskStore } from "./task-store.js";
 export type { RunStore, RunRecord, RunStatus } from "./run-store.js";
+// Unified Run — convergence target for chat/task/mission (migration plan F0, additive/unused).
+export type { UnifiedRunStatus, UnifiedRunRecord, RunEngine, RunDelivery } from "./unified-run.js";
+export { isTerminalRunStatus, UNIFIED_RUN_TERMINAL_STATUSES } from "./unified-run.js";
 export type { ConfigStore } from "./config-store.js";
 export type { MemoryStore } from "./memory-store.js";
 export { agentMemoryScope } from "./memory-store.js";
