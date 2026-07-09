@@ -505,6 +505,24 @@ describe("DrizzleLoopRunStore — dual-write + runs-backed (F2)", () => {
     await backfillLoopRunsIntoRuns(db, "sqlite");
     expect(await db.select().from(runsSqlite).where(eq(runsSqlite.id, "hist-1"))).toHaveLength(1);
   });
+
+  it("after the PR4 flip, reads come from the shadow (runs), not legacy", async () => {
+    const { DrizzleLoopRunStore, DualWriteLoopRunStore } = await import("../stores/loop-run-store.js");
+    const { loopRunsSqlite } = await import("../schema/loop-runs.js");
+    const { runsSqlite } = await import("../schema/runs.js");
+    const legacy = new DrizzleLoopRunStore(db, loopRunsSqlite, "sqlite");
+    const shadow = new DrizzleLoopRunStore(db, runsSqlite, "sqlite", true);
+    const store = new DualWriteLoopRunStore(legacy, shadow, "shadow");
+
+    await store.createRun({ id: "lr-flip", loop: { name: "review" }, agentName: "chat" } as any);
+    // Diverge the two tables: legacy stays running, shadow completes.
+    await legacy.updateRun("lr-flip", { status: "running" as any });
+    await shadow.updateRun("lr-flip", { status: "completed" as any });
+
+    // readFrom="shadow" → the dual-write store returns the shadow's value.
+    expect((await store.getRun("lr-flip"))?.status).toBe("completed");
+    expect((await store.listRuns()).find((r) => r.id === "lr-flip")?.status).toBe("completed");
+  });
 });
 
 // ═══════════════════════════════════════════════════════════════════════
