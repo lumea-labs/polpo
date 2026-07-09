@@ -33,7 +33,6 @@ describe("completionRoutes provider-executed tools", () => {
         name: "researcher",
         model: "test",
         assignedLoops: ["research-loop"],
-        defaultLoop: "research-loop",
         allowedTools: ["search_web"],
       }],
       getConfig: () => ({}),
@@ -144,6 +143,7 @@ describe("completionRoutes provider-executed tools", () => {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         agent: "researcher",
+        loop: "research-loop",
         messages: [{ role: "user", content: "Research Polpo" }],
       }),
     });
@@ -186,7 +186,6 @@ describe("completionRoutes loop agent-step tool streaming", () => {
         name: "coder",
         model: "test",
         assignedLoops: ["coding-loop"],
-        defaultLoop: "coding-loop",
         allowedTools: ["bash"],
       }],
       getConfig: () => ({}),
@@ -269,6 +268,7 @@ describe("completionRoutes loop agent-step tool streaming", () => {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         agent: "coder",
+        loop: "coding-loop",
         stream: true,
         messages: [{ role: "user", content: "change the app" }],
       }),

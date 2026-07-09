@@ -129,8 +129,6 @@ export interface AgentConfig {
   toolChoice?: LoopToolChoice;
   /** Project-level loop names this agent is allowed to use. */
   assignedLoops?: string[];
-  /** Default project-level loop name for this agent. */
-  defaultLoop?: string;
   /** Legacy inline loop steps. Prefer project-level loops + assignedLoops. */
   loops?: Record<string, LoopConfig>;
   /** Legacy inline pipeline wiring loop, switch, parallel, and human steps. */

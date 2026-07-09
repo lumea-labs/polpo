@@ -191,7 +191,6 @@ describe("POST /v1/chat/completions", () => {
           name: "loop-agent",
           role: "Loop test agent",
           assignedLoops: ["plan"],
-          defaultLoop: "plan",
         }),
       });
       setMockModel(mockTextModel("Loop selected."));

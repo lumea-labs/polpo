@@ -18,21 +18,11 @@ export function resolveActiveLoopSkills(agent: AgentConfig, loop?: LoopConfig): 
 
 export function resolveLoopSelection(agent: AgentConfig, requestedLoop?: string): LoopSelection | undefined {
   if (!requestedLoop) {
-    if (agent.defaultLoop) {
-      return {
-        name: agent.defaultLoop,
-        loop: { name: agent.defaultLoop, tools: agent.allowedTools, model: agent.model, reasoning: agent.reasoning, maxTurns: agent.maxTurns },
-        agent,
-      };
-    }
-    const defaultLoop = agent.loops?.default;
-    if (!defaultLoop) {
-      // No loop requested and none configured: run the agent as-is, with no
-      // loop overlay. We deliberately do NOT synthesize a "default" loop — the
-      // caller treats `undefined` as "no loop".
-      return undefined;
-    }
-    return materializeLoopSelection(agent, "default", defaultLoop);
+    // No loop requested: the agent runs as-is, with no loop overlay. There is
+    // deliberately no agent-level "default loop" concept — a loop only ever
+    // runs when explicitly requested (per call, or via a task's assigned loop).
+    // The caller treats `undefined` as "no loop".
+    return undefined;
   }
 
   const loop = agent.loops?.[requestedLoop];

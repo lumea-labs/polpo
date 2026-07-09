@@ -10,7 +10,6 @@ describe("completionRoutes project loop runtime", () => {
         name: "timer",
         model: "test",
         assignedLoops: ["time-tracker"],
-        defaultLoop: "time-tracker",
         allowedTools: ["unix_time"],
       }],
       getConfig: () => ({}),
@@ -65,6 +64,7 @@ describe("completionRoutes project loop runtime", () => {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         agent: "timer",
+        loop: "time-tracker",
         messages: [{ role: "user", content: "track it" }],
       }),
     });
@@ -109,6 +109,7 @@ describe("completionRoutes project loop runtime", () => {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         agent: "timer",
+        loop: "time-tracker",
         messages: [{ role: "user", content: "track it" }],
       }),
     });
@@ -143,6 +144,7 @@ describe("completionRoutes project loop runtime", () => {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         agent: "timer",
+        loop: "time-tracker",
         stream: true,
         messages: [{ role: "user", content: "track it" }],
       }),
@@ -199,6 +201,7 @@ describe("completionRoutes project loop runtime", () => {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         agent: "timer",
+        loop: "time-tracker",
         messages: [{ role: "user", content: "track it" }],
       }),
     });
@@ -240,6 +243,7 @@ describe("completionRoutes project loop runtime", () => {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         agent: "timer",
+        loop: "time-tracker",
         messages: [{ role: "user", content: "track it" }],
       }),
     });

@@ -5,12 +5,12 @@
  * but the agentic loop is @polpo-ai/core's LoopRunner instead of a manual
  * for-loop, and agents with configured loops get the full graph runtime:
  *
- * - No loop config on the agent  → one implicit "default" loop, behavior
+ * - No loop requested (task.loop unset) → plain agent turn-loop, behavior
  *   identical to the legacy engine (proven by the parity suite).
- * - defaultLoop/loops on the agent → the selected loop's overlays apply
+ * - task.loop names an inline loop → the selected loop's overlays apply
  *   (tools subset, systemPrompt, model, maxTurns), same merge semantics
  *   as chat completions (buildLoopStepAgent).
- * - assignedLoops + project loop graph (.polpo/loops/<name>.json) → the
+ * - task.loop names an assignedLoops project loop graph (.polpo/loops/<name>.json) → the
  *   PipelineExecutor drives the step graph: agent steps are independent
  *   LLM sessions communicating through the context bag, tool steps run
  *   deterministically without an LLM turn.
@@ -720,7 +720,7 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
         alive = false;
         return { exitCode: 0, stdout: session.lastText, stderr: "", duration: Date.now() - start };
       }
-      const selection = resolveLoopSelection(agentConfig);
+      const selection = resolveLoopSelection(agentConfig, task.loop);
 
       let stdout: string;
       if (!selection) {
@@ -746,7 +746,7 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
         const projectLoop = await loadProjectLoop(fs, ctx.polpoDir, selection.name);
         stdout = await runPipeline(projectLoop);
       } else {
-        // Selected single loop (defaultLoop or inline loops.default):
+        // Selected single loop (task.loop names an inline loop):
         // apply the loop's overlays, same semantics as completions.
         const stepAgent = buildLoopStepAgent(agentConfig, selection.name, selection.loop);
         const session = await runLoopSession({

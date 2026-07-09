@@ -1143,14 +1143,12 @@ describe("DrizzleAgentStore", () => {
     await stores.agentStore.createAgent({
       name: "claude",
       assignedLoops: ["Coding Loop"],
-      defaultLoop: "Coding Loop",
       loops: { plan: { systemPrompt: "Plan" } },
       pipeline: { steps: [{ loop: "plan" }] },
     } as any, "alpha");
 
     const created = await stores.agentStore.getAgent("claude") as any;
     expect(created.assignedLoops).toEqual(["Coding Loop"]);
-    expect(created.defaultLoop).toBe("Coding Loop");
     expect(created.loops).toBeUndefined();
     expect(created.pipeline).toBeUndefined();
 

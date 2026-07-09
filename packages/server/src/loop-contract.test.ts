@@ -6,24 +6,11 @@ describe("agent loop API contract", () => {
     expect(AddAgentSchema.parse({
       name: "loop-agent",
       assignedLoops: ["coding-flow"],
-      defaultLoop: "coding-flow",
-    })).toMatchObject({ assignedLoops: ["coding-flow"], defaultLoop: "coding-flow" });
+    })).toMatchObject({ assignedLoops: ["coding-flow"] });
 
     expect(UpdateAgentSchema.parse({
       assignedLoops: ["coding-flow", "support-flow"],
-      defaultLoop: "support-flow",
-    })).toMatchObject({ defaultLoop: "support-flow" });
-  });
-
-  it("rejects defaultLoop when it is not assigned", () => {
-    const parsed = AddAgentSchema.safeParse({
-      name: "loop-agent",
-      assignedLoops: ["coding-flow"],
-      defaultLoop: "missing-flow",
-    });
-
-    expect(parsed.success).toBe(false);
-    expect(parsed.error?.issues[0]?.message).toContain("is not in assignedLoops");
+    })).toMatchObject({ assignedLoops: ["coding-flow", "support-flow"] });
   });
 
   it("strips legacy inline loops from agent create/update payloads", () => {

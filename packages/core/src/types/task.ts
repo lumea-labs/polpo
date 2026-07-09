@@ -116,6 +116,9 @@ export interface Task {
   title: string;
   description: string;
   assignTo: string;
+  /** Project loop this task runs (a name in the agent's assignedLoops, or an
+   *  inline loop). Explicit — omitted means the agent runs as-is, no loop. */
+  loop?: string;
   group?: string;
   /** ID of the mission this task belongs to (set when created via executeMission). */
   missionId?: string;
