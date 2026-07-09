@@ -324,6 +324,7 @@ export function taskRoutes(getDeps: () => {
       title: body.title,
       description: body.description,
       assignTo: body.assignTo,
+      loop: body.loop,
       expectations: body.expectations,
       expectedOutcomes: body.expectedOutcomes,
       dependsOn: body.dependsOn,
@@ -359,6 +360,9 @@ export function taskRoutes(getDeps: () => {
     }
     if (body.assignTo !== undefined) {
       await deps.updateTaskAssignment(taskId, body.assignTo);
+    }
+    if (body.loop !== undefined) {
+      await deps.taskStore.updateTask(taskId, { loop: body.loop });
     }
     if (body.expectations !== undefined) {
       await deps.updateTaskExpectations(taskId, body.expectations);

@@ -646,7 +646,6 @@ export interface AddAgentRequest {
   maxTurns?: number;
   runtime?: string;
   assignedLoops?: string[];
-  defaultLoop?: string;
   loops?: Record<string, LoopConfig>;
   pipeline?: Pipeline;
   /** Max concurrent tasks for this agent. */
@@ -676,7 +675,6 @@ export interface UpdateAgentRequest {
   maxConcurrency?: number;
   runtime?: string;
   assignedLoops?: string[];
-  defaultLoop?: string;
   loops?: Record<string, LoopConfig>;
   pipeline?: Pipeline;
   identity?: AgentIdentity;

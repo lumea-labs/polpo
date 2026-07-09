@@ -490,7 +490,6 @@ describe("Agents API", () => {
         role: "loop router",
         runtime: "polpo-runner",
         assignedLoops: ["router-flow"],
-        defaultLoop: "router-flow",
       }),
     );
     expect(res.status).toBe(201);
@@ -500,7 +499,6 @@ describe("Agents API", () => {
     const agent = listBody.data.find((a: any) => a.name === "agent-loop-create");
     expect(agent.runtime).toBe("polpo-runner");
     expect(agent.assignedLoops).toEqual(["router-flow"]);
-    expect(agent.defaultLoop).toBe("router-flow");
     expect(agent.loops).toBeUndefined();
     expect(agent.pipeline).toBeUndefined();
   });
@@ -1166,7 +1164,6 @@ describe("Update Agent API", () => {
       jsonReq("PATCH", {
         runtime: "polpo-runner",
         assignedLoops: ["classify-flow"],
-        defaultLoop: "classify-flow",
       }),
     );
     expect(res.status).toBe(200);
@@ -1174,7 +1171,6 @@ describe("Update Agent API", () => {
     expect(body.ok).toBe(true);
     expect(body.data.runtime).toBe("polpo-runner");
     expect(body.data.assignedLoops).toEqual(["classify-flow"]);
-    expect(body.data.defaultLoop).toBe("classify-flow");
     expect(body.data.loops).toBeUndefined();
     expect(body.data.pipeline).toBeUndefined();
 

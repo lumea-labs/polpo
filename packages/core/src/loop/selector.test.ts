@@ -54,16 +54,19 @@ describe("resolveLoopSelection", () => {
     expect(selected.agent.skills).toEqual(["general", "testing"]);
   });
 
-  it("selects an assigned project-level loop without requiring inline definitions", () => {
+  it("selects an assigned project-level loop only when requested explicitly (no default)", () => {
     const agent = {
       name: "agent",
       model: "base",
       assignedLoops: ["coding-flow"],
-      defaultLoop: "coding-flow",
     };
 
-    expect(resolveLoopSelection(agent)!.name).toBe("coding-flow");
-    expect(resolveLoopSelection(agent, "coding-flow")!.agent).toBe(agent);
+    // No implicit default: nothing runs unless the loop is requested.
+    expect(resolveLoopSelection(agent)).toBeUndefined();
+    // Explicit request resolves the assigned loop without inline definitions.
+    const selected = resolveLoopSelection(agent, "coding-flow")!;
+    expect(selected.name).toBe("coding-flow");
+    expect(selected.agent).toBe(agent);
   });
 
   it("throws a clear error for unknown requested loops", () => {

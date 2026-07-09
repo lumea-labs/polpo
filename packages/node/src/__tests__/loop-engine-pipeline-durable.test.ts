@@ -67,7 +67,6 @@ function makeAgent(loopName: string): AgentConfig {
     name: "pipeline-agent",
     role: "developer",
     assignedLoops: [loopName],
-    defaultLoop: loopName,
   };
 }
 
@@ -145,7 +144,7 @@ async function runEngine(model: MockLanguageModelV3, options: RunOptions) {
   activeResolvedModel = mockResolvedModel(model);
   const checkpoints: LoopResumeState[] = [];
   const transcript: Array<Record<string, unknown>> = [];
-  const handle = spawnLoopEngine(options.agent, makeTask(), cwd, {
+  const handle = spawnLoopEngine(options.agent, makeTask({ loop: options.agent.assignedLoops?.[0] }), cwd, {
     polpoDir,
     resumeState: options.resumeState,
     onTurnCheckpoint: (state) => {

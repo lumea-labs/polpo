@@ -67,6 +67,8 @@ export const CreateTaskSchema = z.object({
   title: z.string().min(1),
   description: z.string().min(1),
   assignTo: z.string().min(1),
+  /** Explicit project loop this task runs (a name in the agent's assignedLoops). */
+  loop: z.string().min(1).optional(),
   /** Create task as draft (won't be picked up by orchestrator until moved to pending). Default: false. */
   draft: z.boolean().optional(),
   expectations: z.array(z.any()).optional(),
@@ -95,6 +97,7 @@ export const CreateTaskSchema = z.object({
 export const UpdateTaskSchema = z.object({
   description: z.string().min(1).optional(),
   assignTo: z.string().min(1).optional(),
+  loop: z.string().min(1).optional(),
   status: z.enum(["draft", "pending", "awaiting_approval", "assigned", "in_progress", "review", "done", "failed"]).optional(),
   expectations: z.array(z.any()).optional(),
   retries: z.number().int().min(0).optional(),
@@ -512,15 +515,6 @@ function collectLoopRefs(step: unknown, refs: string[]): void {
 const AgentLoopFieldsSchema = z.object({
   runtime: z.string().optional(),
   assignedLoops: z.array(z.string().min(1)).optional(),
-  defaultLoop: z.string().min(1).optional(),
-}).superRefine((config, ctx) => {
-  if (config.defaultLoop && config.assignedLoops && !config.assignedLoops.includes(config.defaultLoop)) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: `defaultLoop "${config.defaultLoop}" is not in assignedLoops`,
-      path: ["defaultLoop"],
-    });
-  }
 });
 
 export const AddAgentSchema = z.object({

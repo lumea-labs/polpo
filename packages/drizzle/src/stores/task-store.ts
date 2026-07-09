@@ -33,6 +33,7 @@ export class DrizzleTaskStore implements TaskStore {
       title: row.title,
       description: row.description,
       assignTo: row.assignTo,
+      loop: row.loop ?? undefined,
       group: row.group ?? undefined,
       missionId: row.missionId ?? undefined,
       dependsOn: deserializeJson<string[]>(row.dependsOn, [], d),
@@ -69,6 +70,7 @@ export class DrizzleTaskStore implements TaskStore {
     if (task.title !== undefined) v.title = task.title;
     if (task.description !== undefined) v.description = task.description;
     if (task.assignTo !== undefined) v.assignTo = task.assignTo;
+    if (task.loop !== undefined) v.loop = task.loop;
     if (task.group !== undefined) v.group = task.group;
     if (task.missionId !== undefined) v.missionId = task.missionId;
     if (task.dependsOn !== undefined) v.dependsOn = serializeJson(task.dependsOn, d);

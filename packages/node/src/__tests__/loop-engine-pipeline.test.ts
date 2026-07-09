@@ -5,7 +5,7 @@
  * - project loop graphs (.polpo/loops/<name>.json) driven by the
  *   PipelineExecutor: agent steps as independent LLM sessions over a
  *   shared context bag, deterministic tool steps without LLM turns
- * - single-loop overlays (inline loops / defaultLoop): tools subset,
+ * - single-loop overlays (task.loop names an inline loop): tools subset,
  *   maxTurns, systemPrompt merge — same semantics as chat completions
  *
  * Agents WITHOUT loop config are covered by the parity suite in
@@ -67,7 +67,10 @@ interface TranscriptEntry {
 async function runAgent(agent: AgentConfig, responses: MockResponse[]) {
   activeResolvedModel = mockResolvedModel(mockTurnSequenceModel(responses));
   const transcript: TranscriptEntry[] = [];
-  const handle = spawnLoopEngine(agent, makeTask(), cwd, { polpoDir, outputDir });
+  // Loops now run only when the task explicitly requests one. Request the
+  // agent's assigned project loop, or its inline loop, by name.
+  const loop = agent.assignedLoops?.[0] ?? Object.keys(agent.loops ?? {})[0];
+  const handle = spawnLoopEngine(agent, makeTask({ loop }), cwd, { polpoDir, outputDir });
   handle.onTranscript = (entry) => transcript.push(entry as TranscriptEntry);
   const result = await handle.done;
   return { handle, result, transcript };
@@ -109,7 +112,6 @@ describe("spawnLoopEngine — project loop graphs", () => {
         name: "loop-agent",
         role: "developer",
         assignedLoops: ["ship-flow"],
-        defaultLoop: "ship-flow",
       },
       [
         { type: "text", text: "PLAN: do the thing" },
@@ -154,7 +156,6 @@ describe("spawnLoopEngine — project loop graphs", () => {
         name: "loop-agent",
         role: "developer",
         assignedLoops: ["fetch-flow"],
-        defaultLoop: "fetch-flow",
       },
       [
         // Only ONE model response: the summarize step. The greet tool step
@@ -179,7 +180,6 @@ describe("spawnLoopEngine — project loop graphs", () => {
         name: "loop-agent",
         role: "developer",
         assignedLoops: ["ghost-flow"],
-        defaultLoop: "ghost-flow",
       },
       [{ type: "text", text: "never used" }],
     );
@@ -203,7 +203,6 @@ describe("spawnLoopEngine — project loop graphs", () => {
         name: "loop-agent",
         role: "developer",
         assignedLoops: ["human-flow"],
-        defaultLoop: "human-flow",
       },
       [{ type: "text", text: "never used" }],
     );

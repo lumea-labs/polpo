@@ -19,7 +19,6 @@ describe("pullProject", () => {
                 role: "router",
                 runtime: "polpo-runner",
                 assignedLoops: ["router-flow"],
-                defaultLoop: "router-flow",
                 teamName: "platform",
               }],
             },
@@ -50,7 +49,6 @@ describe("pullProject", () => {
       const agents = JSON.parse(await readFile(join(polpoDir, "agents.json"), "utf-8"));
       expect(agents[0].agent.runtime).toBe("polpo-runner");
       expect(agents[0].agent.assignedLoops).toEqual(["router-flow"]);
-      expect(agents[0].agent.defaultLoop).toBe("router-flow");
       expect(agents[0].agent.loops).toBeUndefined();
       expect(agents[0].agent.pipeline).toBeUndefined();
       expect(agents[0].teamName).toBe("platform");
