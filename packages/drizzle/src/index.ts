@@ -126,12 +126,12 @@ export function createPgStores(db: any): DrizzleStores {
     missionStore: taskStore as unknown as MissionStore,
     runStore: new DrizzleRunStore(db, runsPg, "pg"),
     // F2: dual-write loop runs to both loop_runs (legacy) and runs (shadow,
-    // engine="graph"); read from legacy until backfill+flip. Drops to the plain
-    // runs-backed store at PR5.
+    // engine="graph"). Reads now come from runs (shadow) — flipped in PR4 after
+    // the backfill. loop_runs is still written for rollback until PR5 drops it.
     loopRunStore: new DualWriteLoopRunStore(
       new DrizzleLoopRunStore(db, loopRunsPg, "pg"),
       new DrizzleLoopRunStore(db, runsPg, "pg", true),
-      "legacy",
+      "shadow",
     ),
     sessionStore: new DrizzleSessionStore(db, sessionsPg, messagesPg, "pg"),
     logStore: new DrizzleLogStore(db, logSessionsPg, logEntriesPg, "pg"),
@@ -165,11 +165,11 @@ export function createSqliteStores(db: any): DrizzleStores {
     // Same instance: the Drizzle task store also implements the mission block.
     missionStore: taskStore as unknown as MissionStore,
     runStore: new DrizzleRunStore(db, runsSqlite, "sqlite"),
-    // F2: dual-write (see pg factory above).
+    // F2: dual-write, reads from shadow (see pg factory above).
     loopRunStore: new DualWriteLoopRunStore(
       new DrizzleLoopRunStore(db, loopRunsSqlite, "sqlite"),
       new DrizzleLoopRunStore(db, runsSqlite, "sqlite", true),
-      "legacy",
+      "shadow",
     ),
     sessionStore: new DrizzleSessionStore(db, sessionsSqlite, messagesSqlite, "sqlite"),
     logStore: new DrizzleLogStore(db, logSessionsSqlite, logEntriesSqlite, "sqlite"),
