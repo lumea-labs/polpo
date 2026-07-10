@@ -86,6 +86,9 @@ jobs:
           pnpm --filter @polpo-ai/vault-crypto pack --pack-destination /tmp/tarballs
           pnpm --filter @polpo-ai/drizzle pack --pack-destination /tmp/tarballs
           pnpm --filter @polpo-ai/llm pack --pack-destination /tmp/tarballs
+          pnpm --filter @polpo-ai/connect pack --pack-destination /tmp/tarballs
+          pnpm --filter @polpo-ai/connect-server pack --pack-destination /tmp/tarballs
+          pnpm --filter @polpo-ai/connectors pack --pack-destination /tmp/tarballs
           pnpm --filter @polpo-ai/server pack --pack-destination /tmp/tarballs
           pnpm --filter @polpo-ai/tools pack --pack-destination /tmp/tarballs
           pnpm --filter @polpo-ai/cli pack --pack-destination /tmp/tarballs

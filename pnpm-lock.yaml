@@ -75,6 +75,41 @@ importers:
         specifier: ^5.7.0
         version: 5.9.3
 
+  packages/connect:
+    devDependencies:
+      typescript:
+        specifier: ^5.7.3
+        version: 5.9.3
+      vitest:
+        specifier: ^3.0.4
+        version: 3.2.4(@types/debug@4.1.12)(@types/node@25.2.3)(jiti@2.6.1)(jsdom@29.0.1(@noble/hashes@1.8.0))(lightningcss@1.30.2)(msw@2.12.10(@types/node@25.2.3)(typescript@5.9.3))(terser@5.46.0)(tsx@4.21.0)(yaml@2.8.2)
+
+  packages/connect-server:
+    dependencies:
+      '@polpo-ai/connect':
+        specifier: workspace:*
+        version: link:../connect
+    devDependencies:
+      typescript:
+        specifier: ^5.7.3
+        version: 5.9.3
+      vitest:
+        specifier: ^3.0.4
+        version: 3.2.4(@types/debug@4.1.12)(@types/node@25.2.3)(jiti@2.6.1)(jsdom@29.0.1(@noble/hashes@1.8.0))(lightningcss@1.30.2)(msw@2.12.10(@types/node@25.2.3)(typescript@5.9.3))(terser@5.46.0)(tsx@4.21.0)(yaml@2.8.2)
+
+  packages/connectors:
+    dependencies:
+      '@polpo-ai/connect':
+        specifier: workspace:*
+        version: link:../connect
+    devDependencies:
+      typescript:
+        specifier: ^5.7.3
+        version: 5.9.3
+      vitest:
+        specifier: ^3.0.4
+        version: 3.2.4(@types/debug@4.1.12)(@types/node@25.2.3)(jiti@2.6.1)(jsdom@29.0.1(@noble/hashes@1.8.0))(lightningcss@1.30.2)(msw@2.12.10(@types/node@25.2.3)(typescript@5.9.3))(terser@5.46.0)(tsx@4.21.0)(yaml@2.8.2)
+
   packages/core:
     dependencies:
       '@sinclair/typebox':
@@ -267,6 +302,12 @@ importers:
       '@hono/zod-openapi':
         specifier: '>=1.0.0'
         version: 1.2.2(hono@4.11.9)(zod@4.3.6)
+      '@polpo-ai/connect':
+        specifier: workspace:*
+        version: link:../connect
+      '@polpo-ai/connect-server':
+        specifier: workspace:*
+        version: link:../connect-server
       '@polpo-ai/core':
         specifier: workspace:*
         version: link:../core

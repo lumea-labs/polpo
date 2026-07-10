@@ -13,6 +13,7 @@ import type { LogStore } from "@polpo-ai/core/log-store";
 import type { VaultStore } from "@polpo-ai/core/vault-store";
 import type { PlaybookStore } from "@polpo-ai/core/playbook-store";
 import type { SessionStore } from "@polpo-ai/core/session-store";
+import type { ConnectService } from "@polpo-ai/connect-server";
 
 // ── Store-centric deps ───────────────────────────────────────────────
 
@@ -26,6 +27,10 @@ export interface ChatRouteDeps {
 
 export interface LoopRunRouteDeps {
   loopRunStore?: LoopRunStore;
+}
+
+export interface ConnectRouteDeps {
+  connectService?: ConnectService;
 }
 
 // ── Task deps ────────────────────────────────────────────────────────

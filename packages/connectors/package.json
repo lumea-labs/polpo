@@ -1,0 +1,58 @@
+{
+  "name": "@polpo-ai/connectors",
+  "version": "0.15.3",
+  "description": "Curated connector provider definitions for Polpo Connect",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "sideEffects": false,
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "test": "vitest run",
+    "prepublishOnly": "tsc"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "dependencies": {
+    "@polpo-ai/connect": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.3",
+    "vitest": "^3.0.4"
+  },
+  "license": "Apache-2.0",
+  "keywords": [
+    "polpo",
+    "connectors",
+    "oauth",
+    "github",
+    "slack",
+    "google-drive",
+    "mcp"
+  ],
+  "author": "OpenPolpo Contributors",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/lumea-labs/polpo.git",
+    "directory": "packages/connectors"
+  },
+  "homepage": "https://github.com/lumea-labs/polpo/tree/main/packages/connectors",
+  "bugs": {
+    "url": "https://github.com/lumea-labs/polpo/issues"
+  }
+}
