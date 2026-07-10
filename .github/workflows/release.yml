@@ -96,6 +96,21 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
+      - name: Publish @polpo-ai/connect
+        run: pnpm --filter @polpo-ai/connect publish --no-git-checks --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Publish @polpo-ai/connect-server
+        run: pnpm --filter @polpo-ai/connect-server publish --no-git-checks --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Publish @polpo-ai/connectors
+        run: pnpm --filter @polpo-ai/connectors publish --no-git-checks --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
       - name: Publish @polpo-ai/tools
         run: pnpm --filter @polpo-ai/tools publish --no-git-checks --provenance --access public
         env:
