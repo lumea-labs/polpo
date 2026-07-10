@@ -27,6 +27,7 @@ export { eventRoutes, type EventBridge, type EventClient } from "./routes/events
 export { configRoutes } from "./routes/config.js";
 export { fileRoutes, type FileRouteDeps } from "./routes/files.js";
 export { skillRoutes, type SkillRouteDeps } from "./routes/skills.js";
+export { connectRoutes } from "./routes/connect.js";
 // Dependency types
 export type {
   TaskRouteDeps,
@@ -41,6 +42,7 @@ export type {
   ConfigRouteDeps,
   AuthRouteDeps,
   AgentRouteDeps,
+  ConnectRouteDeps,
 } from "./deps.js";
 
 // Validation schemas (Zod — reusable by CLI for pre-flight validation)

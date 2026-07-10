@@ -21,6 +21,8 @@
   ],
   "dependencies": {
     "@hono/zod-openapi": ">=1.0.0",
+    "@polpo-ai/connect": "workspace:*",
+    "@polpo-ai/connect-server": "workspace:*",
     "@polpo-ai/core": "workspace:*",
     "@polpo-ai/tools": "workspace:*",
     "hono": ">=4.0.0",

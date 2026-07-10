@@ -1,0 +1,58 @@
+{
+  "name": "@polpo-ai/connect",
+  "version": "0.15.3",
+  "description": "Polpo Connect contracts and client SDK for OAuth, API-key, and MCP connections",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./client": {
+      "types": "./dist/client/index.d.ts",
+      "import": "./dist/client/index.js"
+    }
+  },
+  "sideEffects": false,
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "test": "vitest run",
+    "prepublishOnly": "tsc"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "license": "Apache-2.0",
+  "keywords": [
+    "polpo",
+    "agents",
+    "oauth",
+    "connections",
+    "connectors",
+    "mcp"
+  ],
+  "author": "OpenPolpo Contributors",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/lumea-labs/polpo.git",
+    "directory": "packages/connect"
+  },
+  "homepage": "https://github.com/lumea-labs/polpo/tree/main/packages/connect",
+  "bugs": {
+    "url": "https://github.com/lumea-labs/polpo/issues"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.3",
+    "vitest": "^3.0.4"
+  }
+}

@@ -1,0 +1,56 @@
+{
+  "name": "@polpo-ai/connect-server",
+  "version": "0.15.3",
+  "description": "Server-side Polpo Connect primitives for OAuth, API-key connections, token refresh, and policy checks",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "sideEffects": false,
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "test": "vitest run",
+    "prepublishOnly": "tsc"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "dependencies": {
+    "@polpo-ai/connect": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.3",
+    "vitest": "^3.0.4"
+  },
+  "license": "Apache-2.0",
+  "keywords": [
+    "polpo",
+    "oauth",
+    "connectors",
+    "agents",
+    "permissions"
+  ],
+  "author": "OpenPolpo Contributors",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/lumea-labs/polpo.git",
+    "directory": "packages/connect-server"
+  },
+  "homepage": "https://github.com/lumea-labs/polpo/tree/main/packages/connect-server",
+  "bugs": {
+    "url": "https://github.com/lumea-labs/polpo/issues"
+  }
+}
