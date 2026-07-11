@@ -23,6 +23,36 @@ function parseSseJsonChunks(body: string): any[] {
     .map((data) => JSON.parse(data));
 }
 
+function mockStreamResult(options: {
+  parts?: any[];
+  text?: string;
+  toolCalls?: any[];
+  toolResults?: any[];
+  usage?: any;
+  responseMessages?: any[];
+  providerMetadata?: Record<string, unknown>;
+}) {
+  const usage = options.usage ?? { inputTokens: 1, outputTokens: 1, totalTokens: 2 };
+  async function* fullStream() {
+    for (const part of options.parts ?? []) yield part;
+    if (options.text) {
+      yield { type: "text-delta", id: "text_1", text: options.text };
+    }
+    yield { type: "finish", finishReason: options.toolCalls?.length ? "tool-calls" : "stop", totalUsage: usage };
+  }
+  return {
+    fullStream: fullStream(),
+    toolCalls: Promise.resolve(options.toolCalls ?? []),
+    toolResults: Promise.resolve(options.toolResults ?? []),
+    usage: Promise.resolve(usage),
+    totalUsage: Promise.resolve(usage),
+    finishReason: Promise.resolve(options.toolCalls?.length ? "tool-calls" : "stop"),
+    rawFinishReason: Promise.resolve(undefined),
+    providerMetadata: Promise.resolve(options.providerMetadata),
+    response: Promise.resolve({ messages: options.responseMessages ?? [] }),
+  };
+}
+
 describe("completionRoutes provider-executed tools", () => {
   beforeEach(() => {
     generateTextMock.mockReset();
@@ -86,9 +116,8 @@ describe("completionRoutes provider-executed tools", () => {
       id: "search_1",
     };
 
-    generateTextMock
-      .mockResolvedValueOnce({
-        text: "",
+    streamTextMock
+      .mockReturnValueOnce(mockStreamResult({
         usage: { inputTokens: 10, outputTokens: 2, totalTokens: 12 },
         providerMetadata: undefined,
         toolCalls: [{
@@ -123,10 +152,10 @@ describe("completionRoutes provider-executed tools", () => {
             },
           ],
         }],
-      })
-      .mockImplementationOnce(async (args: any) => {
+      }))
+      .mockImplementationOnce((args: any) => {
         secondTurnMessages = args.messages;
-        return {
+        return mockStreamResult({
           text: "Polpo is an agent backend.",
           usage: { inputTokens: 20, outputTokens: 5, totalTokens: 25 },
           providerMetadata: undefined,
@@ -136,7 +165,7 @@ describe("completionRoutes provider-executed tools", () => {
             role: "assistant",
             content: "Polpo is an agent backend.",
           }],
-        };
+        });
       });
 
     const app = completionRoutes(() => makeDeps());
@@ -153,7 +182,7 @@ describe("completionRoutes provider-executed tools", () => {
     expect(res.status).toBe(200);
     const json = await res.json() as any;
     expect(json.choices[0].message.content).toBe("Polpo is an agent backend.");
-    expect(generateTextMock).toHaveBeenCalledTimes(2);
+    expect(streamTextMock).toHaveBeenCalledTimes(2);
 
     expect(secondTurnMessages).toEqual(
       expect.arrayContaining([
@@ -283,9 +312,15 @@ describe("completionRoutes loop agent-step tool streaming", () => {
   }
 
   it("streams tool calls made inside an agent loop step before the macro step completes", async () => {
-    generateTextMock
-      .mockResolvedValueOnce({
-        text: "",
+    streamTextMock
+      .mockReturnValueOnce(mockStreamResult({
+        parts: [
+          { type: "tool-input-start", id: "call_bash", toolName: "bash" },
+          { type: "tool-input-delta", id: "call_bash", delta: "{\"command\":" },
+          { type: "tool-input-delta", id: "call_bash", delta: "\"echo hello\"}" },
+          { type: "tool-input-end", id: "call_bash" },
+          { type: "tool-call", toolCallId: "call_bash", toolName: "bash", input: { command: "echo hello" } },
+        ],
         usage: { inputTokens: 10, outputTokens: 2, totalTokens: 12 },
         providerMetadata: undefined,
         toolCalls: [{
@@ -303,8 +338,8 @@ describe("completionRoutes loop agent-step tool streaming", () => {
             input: { command: "echo hello" },
           }],
         }],
-      })
-      .mockResolvedValueOnce({
+      }))
+      .mockReturnValueOnce(mockStreamResult({
         text: "done",
         usage: { inputTokens: 12, outputTokens: 4, totalTokens: 16 },
         providerMetadata: undefined,
@@ -314,7 +349,7 @@ describe("completionRoutes loop agent-step tool streaming", () => {
           role: "assistant",
           content: "done",
         }],
-      });
+      }));
 
     const app = completionRoutes(() => makeDeps());
     const res = await app.request("/", {
@@ -336,6 +371,9 @@ describe("completionRoutes loop agent-step tool streaming", () => {
 
     expect(toolEvents).toEqual([
       expect.objectContaining({ name: "loop:implement", state: "calling" }),
+      expect.objectContaining({ id: "call_bash", name: "bash", state: "preparing" }),
+      expect.objectContaining({ id: "call_bash", name: "bash", state: "preparing", argumentsText: "{\"command\":" }),
+      expect.objectContaining({ id: "call_bash", name: "bash", state: "preparing", argumentsText: "{\"command\":\"echo hello\"}" }),
       expect.objectContaining({ id: "call_bash", name: "bash", arguments: { command: "echo hello" }, state: "calling" }),
       expect.objectContaining({ id: "call_bash", name: "bash", result: "ran echo hello", state: "completed" }),
       expect.objectContaining({ name: "loop:implement", state: "completed" }),

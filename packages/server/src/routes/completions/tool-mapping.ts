@@ -12,6 +12,7 @@ export type LoopRuntimeToolCall = {
   id: string;
   name: string;
   arguments?: Record<string, unknown>;
+  argumentsText?: string;
   result?: string;
   state: "preparing" | "calling" | "completed" | "error" | "interrupted";
 };
