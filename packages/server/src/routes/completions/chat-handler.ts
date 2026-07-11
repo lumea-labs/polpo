@@ -1,7 +1,7 @@
 /**
  * Standard chat-mode execution for the completions endpoint.
  *
- * Owns the multi-turn tool loop over streamText/generateText in both
+ * Owns the multi-turn tool loop over the shared model-turn primitive in both
  * streaming (SSE) and non-streaming variants: client-side tools,
  * interactive orchestrator tools, provider-executed tools, context
  * compaction, session persistence, and metering callbacks.
@@ -10,7 +10,7 @@
 import { streamSSE } from "hono/streaming";
 import { compactIfNeeded, type CompactionEvent } from "@polpo-ai/core";
 import { streamModelTurn } from "@polpo-ai/llm";
-import { generateText, type LanguageModelUsage } from "ai";
+import type { LanguageModelUsage } from "ai";
 import type { CompletionRouteDeps } from "../completions.js";
 import { buildSummarizeFn, MAX_TURNS, type ResolvedModelInfo } from "./agent-step-runner.js";
 import { appendModelResponseMessages } from "./message-mapping.js";
@@ -42,8 +42,8 @@ export interface ChatCompletionExecution {
   effectiveToolExecutor: (name: string, args: Record<string, unknown>) => Promise<string>;
   /**
    * Provider-executed tools the host wants merged into the AI SDK tool
-   * palette as-is. Polpo never invokes these — they're handled inside
-   * `generateText` by the SDK / model provider (Vercel Gateway today).
+   * palette as-is. Polpo never invokes these locally — the SDK / model
+   * provider handles them (Vercel Gateway today).
    * Keys here MUST be skipped by the manual tool-call dispatcher.
    */
   extraAiTools?: Record<string, any>;
@@ -509,7 +509,7 @@ export async function runNonStreamingChatCompletion(c: any, exec: ChatCompletion
         messages.splice(0, messages.length, ...compactionResult.messages);
       }
 
-      const genResult = await generateText({
+      const turnResult = await streamModelTurn({
         model: m.aiModel,
         system: fullSystemPrompt,
         messages,
@@ -519,20 +519,20 @@ export async function runNonStreamingChatCompletion(c: any, exec: ChatCompletion
         providerOptions: providerOpts,
       });
 
-      const turnText = genResult.text;
-      const usage = genResult.usage;
+      const turnText = turnResult.text;
+      const usage = turnResult.usage;
       totalUsage = {
         inputTokens: (totalUsage.inputTokens ?? 0) + (usage.inputTokens ?? 0),
         outputTokens: (totalUsage.outputTokens ?? 0) + (usage.outputTokens ?? 0),
         totalTokens: (totalUsage.totalTokens ?? 0) + (usage.totalTokens ?? 0),
       } as LanguageModelUsage;
-      try { lastProviderMetadata = genResult.providerMetadata as Record<string, unknown>; } catch { /* best effort */ }
+      lastProviderMetadata = turnResult.providerMetadata as Record<string, unknown> | undefined;
 
-      await appendModelResponseMessages(messages, genResult, turnText, genResult.toolCalls);
+      await appendModelResponseMessages(messages, turnResult, turnText, turnResult.toolCalls);
 
       finalText += turnText;
 
-      const toolCalls = genResult.toolCalls;
+      const toolCalls = turnResult.toolCalls;
       if (toolCalls.length === 0) break;
 
       // ── Client-side tools — return to client as standard tool_calls ──
@@ -710,7 +710,7 @@ export async function runNonStreamingChatCompletion(c: any, exec: ChatCompletion
       // Their tool results are already preserved in responseMessages,
       // so only record them for observability and skip local dispatch.
       const providerToolNames = new Set(Object.keys(extraAiTools ?? {}));
-      const providerToolResults = indexToolResultsByCallId(genResult.toolResults as any[] | undefined);
+      const providerToolResults = indexToolResultsByCallId(turnResult.toolResults as any[] | undefined);
 
       for (const call of toolCalls) {
         const callArgs = call.input as Record<string, unknown>;
