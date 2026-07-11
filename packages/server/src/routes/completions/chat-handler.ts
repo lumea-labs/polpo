@@ -171,6 +171,12 @@ export function streamChatCompletion(c: any, exec: ChatCompletionExecution): any
 
         let turnText = "";
         let streamError: string | undefined;
+        // Per-tool-call streaming state for this turn: the tool name (learned
+        // at tool-input-start) and the raw args JSON accumulated from the
+        // token-by-token input deltas, so the UI can render the call as it
+        // builds up instead of waiting for the whole turn to finish.
+        const toolCallNames = new Map<string, string>();
+        const toolCallArgsText = new Map<string, string>();
 
         for await (const part of result.fullStream) {
           if (abortController.signal.aborted) break;
@@ -182,9 +188,30 @@ export function streamChatCompletion(c: any, exec: ChatCompletionExecution): any
           } else if (part.type === "tool-input-start") {
             // Emit early "preparing" signal — the LLM has started generating a tool call
             // but arguments are not yet complete. Lets the UI show immediate feedback.
+            toolCallNames.set(part.id, part.toolName);
             await stream.writeSSE({
               data: sseChunk(completionId, {}, null, {
                 tool_call: { id: part.id, name: part.toolName, state: "preparing" },
+              }),
+            });
+          } else if (part.type === "tool-input-delta") {
+            // Stream the argument tokens as they arrive. Accumulate the raw
+            // JSON and forward it so the client can show the tool input
+            // building up live. Still "preparing": args aren't final yet.
+            const delta =
+              (part as { delta?: string; inputTextDelta?: string }).delta ??
+              (part as { delta?: string; inputTextDelta?: string }).inputTextDelta ??
+              "";
+            const acc = (toolCallArgsText.get(part.id) ?? "") + delta;
+            toolCallArgsText.set(part.id, acc);
+            await stream.writeSSE({
+              data: sseChunk(completionId, {}, null, {
+                tool_call: {
+                  id: part.id,
+                  name: toolCallNames.get(part.id) ?? "",
+                  state: "preparing",
+                  argumentsText: acc,
+                },
               }),
             });
           } else if (part.type === "finish") {

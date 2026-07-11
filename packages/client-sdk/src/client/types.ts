@@ -1036,6 +1036,13 @@ export interface ToolCallEvent {
   name: string;
   /** Tool input arguments (present when state is "calling") */
   arguments?: Record<string, unknown>;
+  /**
+   * Raw arguments JSON accumulated so far, streamed token-by-token while the
+   * model is still generating the call (state "preparing"). Partial and may
+   * not parse as JSON until complete; superseded by `arguments` once "calling".
+   * Lets the UI show the tool input live instead of waiting for the full call.
+   */
+  argumentsText?: string;
   /** Tool execution result (present when state is "completed" or "error") */
   result?: string;
   /** Current state of the tool call */

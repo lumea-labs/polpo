@@ -230,20 +230,30 @@ export function useChat(options: UseChatOptions = {}): UseChatReturn {
           updated = true;
         }
 
-        // Tool call events (server-side tool execution)
+        // Tool call events (server-side tool execution). Merge across the
+        // lifecycle (preparing → calling → completed) instead of replacing:
+        // each event carries only the fields relevant to its state
+        // (argumentsText while streaming, arguments at "calling", result at
+        // "completed"), so a plain overwrite would drop the input once the
+        // result arrives. Merging keeps the full picture as the call evolves.
         if (choice.tool_call) {
-          toolCalls.set(choice.tool_call.id, choice.tool_call);
+          const incoming = choice.tool_call;
+          const prev = toolCalls.get(incoming.id);
+          const merged: ToolCallEvent = prev
+            ? { ...prev, ...incoming, state: incoming.state }
+            : incoming;
+          toolCalls.set(merged.id, merged);
           // Update existing segment or add new one
           const existing = segments.find(
-            (s) => s.type === "tool_call" && s.toolCall.id === choice.tool_call!.id,
+            (s) => s.type === "tool_call" && s.toolCall.id === merged.id,
           );
           if (existing && existing.type === "tool_call") {
-            existing.toolCall = choice.tool_call;
+            existing.toolCall = merged;
           } else {
-            segments.push({ type: "tool_call", toolCall: choice.tool_call });
+            segments.push({ type: "tool_call", toolCall: merged });
           }
           updated = true;
-          optionsRef.current.onToolCall?.(choice.tool_call);
+          optionsRef.current.onToolCall?.(merged);
         }
 
         // Update assistant message in-place

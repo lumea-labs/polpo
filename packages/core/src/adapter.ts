@@ -90,6 +90,13 @@ export interface SpawnContext {
    */
   onDelta?: (delta: { text: string; kind?: "text" | "reasoning" }) => void;
   /**
+   * Initial transcript sink available at spawn time. Runners also set
+   * AgentHandle.onTranscript after spawn, but in-process engines can emit very
+   * early events before the handle is returned; this fallback prevents losing
+   * live events in that small window.
+   */
+  onTranscript?: (entry: Record<string, unknown>) => void;
+  /**
    * Chat-session injection (migration F1c). When set, the engine runs a CHAT
    * turn loop using these pre-resolved inputs (model/prompt/tools/messages from
    * the completions route) INSTEAD of resolving from the AgentConfig — so

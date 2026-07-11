@@ -1,12 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const { generateTextMock } = vi.hoisted(() => ({
+const { generateTextMock, streamTextMock } = vi.hoisted(() => ({
   generateTextMock: vi.fn(),
+  streamTextMock: vi.fn(),
 }));
 
 vi.mock("ai", () => ({
   generateText: generateTextMock,
-  streamText: vi.fn(),
+  streamText: streamTextMock,
   jsonSchema: (schema: unknown) => schema,
 }));
 
@@ -25,6 +26,7 @@ function parseSseJsonChunks(body: string): any[] {
 describe("completionRoutes provider-executed tools", () => {
   beforeEach(() => {
     generateTextMock.mockReset();
+    streamTextMock.mockReset();
   });
 
   function makeDeps(): CompletionRouteDeps {
@@ -173,11 +175,63 @@ describe("completionRoutes provider-executed tools", () => {
       ),
     ).toEqual([]);
   });
+
+  it("streams raw tool argument text while the model is preparing a tool call", async () => {
+    async function* fullStream() {
+      yield { type: "tool-input-start", id: "call_search", toolName: "search_web" };
+      yield { type: "tool-input-delta", id: "call_search", delta: "{\"query\":\"Polpo" };
+      yield { type: "tool-input-delta", id: "call_search", delta: " pricing\"}" };
+      yield { type: "finish", finishReason: "stop" };
+    }
+
+    streamTextMock.mockReturnValue({
+      fullStream: fullStream(),
+      toolCalls: Promise.resolve([]),
+      toolResults: Promise.resolve([]),
+      usage: Promise.resolve({ inputTokens: 10, outputTokens: 2, totalTokens: 12 }),
+      providerMetadata: Promise.resolve(undefined),
+      responseMessages: Promise.resolve([]),
+    });
+
+    const app = completionRoutes(() => makeDeps());
+    const res = await app.request("/", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        agent: "researcher",
+        stream: true,
+        messages: [{ role: "user", content: "search pricing" }],
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    const chunks = parseSseJsonChunks(await res.text());
+    const preparingEvents = chunks
+      .map((chunk) => chunk.choices?.[0]?.tool_call)
+      .filter((event) => event?.state === "preparing");
+
+    expect(preparingEvents).toEqual([
+      expect.objectContaining({ id: "call_search", name: "search_web", state: "preparing" }),
+      expect.objectContaining({
+        id: "call_search",
+        name: "search_web",
+        state: "preparing",
+        argumentsText: "{\"query\":\"Polpo",
+      }),
+      expect.objectContaining({
+        id: "call_search",
+        name: "search_web",
+        state: "preparing",
+        argumentsText: "{\"query\":\"Polpo pricing\"}",
+      }),
+    ]);
+  });
 });
 
 describe("completionRoutes loop agent-step tool streaming", () => {
   beforeEach(() => {
     generateTextMock.mockReset();
+    streamTextMock.mockReset();
   });
 
   function makeDeps(): CompletionRouteDeps {

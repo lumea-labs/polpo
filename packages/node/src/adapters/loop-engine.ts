@@ -160,6 +160,11 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
     },
   };
 
+  const emitTranscript = (entry: Record<string, unknown>) => {
+    const sink = handle.onTranscript ?? ctx?.onTranscript;
+    sink?.(entry);
+  };
+
   /**
    * Execute one tool call: dispatch, activity tracking, outcome collection,
    * toolUsage harvesting, transcript. Shared by LLM-session tool execution
@@ -236,7 +241,7 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
     const resultText = result.content
       .map((c: any) => c.text ?? "")
       .join("");
-    handle.onTranscript?.({
+    emitTranscript({
       type: "tool_result",
       toolId: toolCall.id,
       tool: toolCall.name,
@@ -352,7 +357,7 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
         summarize,
         mode: compactionMode,
         onCompaction: (event: CompactionEvent) => {
-          handle.onTranscript?.({
+          emitTranscript({
             type: "compaction",
             phase: event.phase,
             tokensBefore: event.tokensBefore,
@@ -406,14 +411,24 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
           }
           case "tool-input-start": {
             // Chat parity (F1c): "preparing" tool state before args stream in.
-            if (inject) handle.onTranscript?.({ type: "tool_input_start", toolId: part.id, tool: part.toolName });
+            if (inject) emitTranscript({ type: "tool_input_start", toolId: part.id, tool: part.toolName });
+            break;
+          }
+          case "tool-input-delta": {
+            // Chat parity (F1c): forward raw argument text while it streams so
+            // the run path exposes the same live tool-call details as inline.
+            const delta =
+              (part as { delta?: string; inputTextDelta?: string }).delta ??
+              (part as { delta?: string; inputTextDelta?: string }).inputTextDelta ??
+              "";
+            if (inject) emitTranscript({ type: "tool_input_delta", toolId: part.id, delta });
             break;
           }
           case "tool-call": {
             activity.toolCalls++;
             activity.lastTool = part.toolName;
             activity.lastUpdate = new Date().toISOString();
-            handle.onTranscript?.({
+            emitTranscript({
               type: "tool_use",
               tool: part.toolName,
               toolId: part.toolCallId,
@@ -423,7 +438,7 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
             // returned to the caller to execute — never dispatched here. Not
             // pushing it to toolCalls ⇒ the turn ends with no executable tools.
             if (inject && inject.clientSideToolNames.has(part.toolName)) {
-              handle.onTranscript?.({
+              emitTranscript({
                 type: "client_tool_call",
                 toolId: part.toolCallId,
                 tool: part.toolName,
@@ -439,7 +454,7 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
             break;
           }
           case "error": {
-            handle.onTranscript?.({
+            emitTranscript({
               type: "error",
               message: part.error instanceof Error ? part.error.message : String(part.error),
             });
@@ -450,7 +465,7 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
 
       if (stepText) {
         activity.summary = stepText.slice(0, 200);
-        handle.onTranscript?.({ type: "assistant", text: stepText });
+        emitTranscript({ type: "assistant", text: stepText });
         accumText += stepText;
       }
       lastStepText = stepText;
@@ -469,7 +484,7 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
       // Chat parity (F1c): surface per-turn usage + provider metadata so the
       // driver can accumulate them for onCompletionFinished, matching chat.
       if (inject) {
-        handle.onTranscript?.({
+        emitTranscript({
           type: "usage",
           usage: stepUsage,
           providerMetadata: await Promise.resolve(stream.providerMetadata).catch(() => undefined),
@@ -491,7 +506,7 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
         if (inject.providerToolNames.has(toolCall.name)) return "";
         llmText = await inject.executor(toolCall.name, toolCall.args);
         isError = llmText.startsWith("Error:");
-        handle.onTranscript?.({ type: "tool_result", toolId: toolCall.id, tool: toolCall.name, content: llmText, isError });
+        emitTranscript({ type: "tool_result", toolId: toolCall.id, tool: toolCall.name, content: llmText, isError });
       } else {
         ({ llmText, isError } = await performToolCall(toolByName.get(toolCall.name), toolCall));
       }
@@ -646,7 +661,7 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
           }
         : undefined,
       onTrace: async (event) => {
-        handle.onTranscript?.({ type: "loop_trace", trace: event });
+        emitTranscript({ type: "loop_trace", trace: event });
       },
       runLoop: async (name, loop, context, position) => {
         const sessionResume = pendingSessionResume;
@@ -680,7 +695,7 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
         const tools = await getBaseTools();
         const args = normalizeToolInput(input);
         const toolCall: LoopToolCall = { id: `loop-tool-${task.id}-${toolStepSeq++}`, name, args };
-        handle.onTranscript?.({ type: "tool_use", tool: name, toolId: toolCall.id, input: args });
+        emitTranscript({ type: "tool_use", tool: name, toolId: toolCall.id, input: args });
         activity.toolCalls++;
         activity.lastTool = name;
         const { llmText, isError } = await performToolCall(tools.get(name), toolCall);
@@ -769,7 +784,7 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
     } catch (err) {
       alive = false;
       const msg = err instanceof Error ? err.message : String(err);
-      handle.onTranscript?.({ type: "error", message: msg });
+      emitTranscript({ type: "error", message: msg });
       return {
         exitCode: 1,
         stdout: "",

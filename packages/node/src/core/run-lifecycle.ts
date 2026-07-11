@@ -205,6 +205,21 @@ export async function executeRun(config: RunnerConfig, deps: ExecuteRunDeps): Pr
     }
 
     const memoryStore: MemoryStore = deps.memoryStore ?? new FileMemoryStore(config.polpoDir);
+    const handleTranscript = (entry: Record<string, unknown>) => {
+      // F1a: live subscription for streaming hosts (chat-via-executeRun). Teed
+      // first, best-effort — it must never break persistence below.
+      try { deps.onEvent?.(entry); } catch { /* a subscriber error can't sink the run */ }
+      actLog.logTranscript(entry);
+      // Persist transcript to DB when a log session is available
+      if (logSession) {
+        const event = entry.type === "assistant" ? "transcript:assistant"
+          : entry.type === "tool_result" ? "transcript:tool_result"
+          : entry.type === "tool_use" ? "transcript:tool_use"
+          : `transcript:${entry.type ?? "unknown"}`;
+        logSession.append({ ts: new Date().toISOString(), event, data: sanitizeTranscriptEntry(entry) })
+          .catch(() => {}); // best-effort, don't block engine
+      }
+    };
 
     const spawnCtx = {
       polpoDir: config.polpoDir,
@@ -243,6 +258,7 @@ export async function executeRun(config: RunnerConfig, deps: ExecuteRunDeps): Pr
       // F1c: chat-session injection — makes the engine run a chat turn-loop
       // over pre-resolved inputs. Undefined for task runs (unchanged path).
       inject: deps.inject,
+      onTranscript: handleTranscript,
     };
     handle = spawnLoopEngine(config.agent, config.task, config.cwd, spawnCtx);
     if (config.resumeState) {
@@ -259,22 +275,10 @@ export async function executeRun(config: RunnerConfig, deps: ExecuteRunDeps): Pr
     if (logSession) {
       handle.activity.sessionId = logSession.sessionId;
     }
-    // Wire transcript persistence — every agent message gets written to the run log
-    handle.onTranscript = (entry) => {
-      // F1a: live subscription for streaming hosts (chat-via-executeRun). Teed
-      // first, best-effort — it must never break persistence below.
-      try { deps.onEvent?.(entry); } catch { /* a subscriber error can't sink the run */ }
-      actLog.logTranscript(entry);
-      // Persist transcript to DB when a log session is available
-      if (logSession) {
-        const event = entry.type === "assistant" ? "transcript:assistant"
-          : entry.type === "tool_result" ? "transcript:tool_result"
-          : entry.type === "tool_use" ? "transcript:tool_use"
-          : `transcript:${entry.type ?? "unknown"}`;
-        logSession.append({ ts: new Date().toISOString(), event, data: sanitizeTranscriptEntry(entry) })
-          .catch(() => {}); // best-effort, don't block engine
-      }
-    };
+    // Wire transcript persistence — every agent message gets written to the run log.
+    // The same callback is also passed in SpawnContext so early in-process
+    // events emitted before the handle is returned are not lost.
+    handle.onTranscript = handleTranscript;
     actLog.logEvent("spawned");
   } catch (err) {
     const result = errorResult(err);
