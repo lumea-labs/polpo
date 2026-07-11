@@ -78,3 +78,13 @@ export {
   queryStream,
   queryTextWithFallback,
 } from "./query.js";
+
+// ─── Model Turn Primitive ───────────────────────────
+export {
+  streamModelTurn,
+} from "./stream-turn.js";
+export type {
+  ModelTurnEvent,
+  ModelTurnResult,
+  StreamModelTurnInput,
+} from "./stream-turn.js";
