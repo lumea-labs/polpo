@@ -311,6 +311,9 @@ importers:
       '@polpo-ai/core':
         specifier: workspace:*
         version: link:../core
+      '@polpo-ai/llm':
+        specifier: workspace:*
+        version: link:../llm
       '@polpo-ai/tools':
         specifier: workspace:*
         version: link:../tools

@@ -24,6 +24,7 @@
     "@polpo-ai/connect": "workspace:*",
     "@polpo-ai/connect-server": "workspace:*",
     "@polpo-ai/core": "workspace:*",
+    "@polpo-ai/llm": "workspace:*",
     "@polpo-ai/tools": "workspace:*",
     "hono": ">=4.0.0",
     "nanoid": ">=5.0.0",

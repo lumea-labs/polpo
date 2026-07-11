@@ -35,7 +35,7 @@ export type ModelTurnResult<TOOLS extends ToolSet = ToolSet> = {
   rawFinishReason?: string;
   providerMetadata?: ProviderMetadata;
   responseMessages: unknown[];
-  response: Awaited<StreamTextResult<TOOLS, any>["response"]>;
+  response?: Awaited<StreamTextResult<TOOLS, any>["response"]>;
 };
 
 export type StreamModelTurnInput<TOOLS extends ToolSet = ToolSet> = {
@@ -131,16 +131,26 @@ export async function streamModelTurn<TOOLS extends ToolSet = ToolSet>(
     }
   }
 
+  const responsePromise = Promise.resolve()
+    .then(() => result.response)
+    .catch(() => undefined);
+  const providerMetadataPromise = Promise.resolve()
+    .then(() => result.providerMetadata)
+    .catch(() => undefined);
+  const toolResultsPromise = Promise.resolve()
+    .then(() => result.toolResults)
+    .catch(() => [] as TypedToolResult<TOOLS>[]);
+
   const [toolCalls, toolResults, usage, totalUsage, finishReason, rawFinishReason, response, providerMetadata] =
     await Promise.all([
       result.toolCalls,
-      result.toolResults,
+      toolResultsPromise,
       result.usage,
       result.totalUsage,
       result.finishReason,
       result.rawFinishReason,
-      result.response,
-      result.providerMetadata,
+      responsePromise,
+      providerMetadataPromise,
     ]);
 
   return {
@@ -152,7 +162,7 @@ export async function streamModelTurn<TOOLS extends ToolSet = ToolSet>(
     finishReason,
     rawFinishReason,
     providerMetadata,
-    responseMessages: response.messages,
+    responseMessages: response?.messages ?? [],
     response,
   };
 }
