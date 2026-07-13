@@ -68,8 +68,14 @@ export class InProcessSpawner implements Spawner {
   constructor(private getDeps: () => InProcessSpawnerDeps) {}
 
   async spawn(config: RunnerConfig): Promise<SpawnResult> {
-    // Parity with NodeSpawner: the output dir exists before the engine starts.
-    if (!existsSync(config.outputDir)) {
+    const deps = this.getDeps();
+
+    // Parity with NodeSpawner for local execution. When a host injects a
+    // remote filesystem (for example a sandbox proxy), config.outputDir is a
+    // path in that filesystem and must never be touched through node:fs. The
+    // file-producing tools create parent directories through the injected FS
+    // on first use, preserving lazy sandbox acquisition for tool-free runs.
+    if (!deps.fs && !existsSync(config.outputDir)) {
       mkdirSync(config.outputDir, { recursive: true });
     }
 
@@ -80,8 +86,6 @@ export class InProcessSpawner implements Spawner {
     // Nothing is written to disk — the config only lives on the run record
     // (TaskRunner persists it right after spawn, as with every spawner).
     const configPath = `memory://run-${config.runId}`;
-    const deps = this.getDeps();
-
     let exited = false;
     const exitCallbacks: Array<() => void> = [];
 
