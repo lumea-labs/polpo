@@ -234,7 +234,7 @@ function createSpeakTool(
     description: "Generate speech audio from text using text-to-speech AI. " +
       "Output format inferred from file extension (mp3, wav, flac, opus, aac, pcm). " +
       "Model is configured at agent level (tts_model) — pass `model` here only to override per-call. " +
-      "Default: openai/tts-1. Supported providers: openai, deepgram, elevenlabs, edge (free, local Microsoft Edge TTS — no API key needed).",
+      "Default: edge/edge-tts. Supported providers: openai, deepgram, elevenlabs, edge (free, local Microsoft Edge TTS — no API key needed).",
     parameters: AudioSpeakSchema,
     async execute(_id, params, signal) {
       const filePath = resolve(cwd, params.path);
