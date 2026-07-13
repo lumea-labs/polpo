@@ -14,7 +14,7 @@ import type { LanguageModelUsage } from "ai";
 import type { CompletionRouteDeps } from "../completions.js";
 import { buildSummarizeFn, MAX_TURNS, type ResolvedModelInfo } from "./agent-step-runner.js";
 import { appendModelResponseMessages } from "./message-mapping.js";
-import { completionResponse, modelNotFoundEnvelope, sseChunk } from "./sse.js";
+import { completionResponse, modelErrorEnvelope, modelNotFoundEnvelope, sseChunk } from "./sse.js";
 import {
   CLIENT_SIDE_TOOLS,
   CLIENT_SIDE_TOOL_NAMES,
@@ -438,7 +438,12 @@ export function streamChatCompletion(c: any, exec: ChatCompletionExecution): any
           });
           await stream.writeSSE({ data: "[DONE]" });
         } else {
-          throw err;
+          const error = modelErrorEnvelope(err);
+          const text = `Model request failed: ${error.message}`;
+          finalText += text;
+          await stream.writeSSE({ data: sseChunk(completionId, { content: text }) });
+          await stream.writeSSE({ data: sseChunk(completionId, {}, "stop", { error }) });
+          await stream.writeSSE({ data: "[DONE]" });
         }
       }
     } finally {
@@ -544,13 +549,6 @@ export async function runNonStreamingChatCompletion(c: any, exec: ChatCompletion
           arguments: clientSideCall.input,
           state: "interrupted",
         });
-        // Persist before returning
-        if (sessionStore && sessionId) {
-          const assistantMsg = finalText + (turnText ? "" : "");
-          if (assistantMsg) {
-            await sessionStore.addMessage(sessionId, "assistant", assistantMsg, toolCallsAccum);
-          }
-        }
         return c.json({
           id: completionId,
           object: "chat.completion",
@@ -757,7 +755,9 @@ export async function runNonStreamingChatCompletion(c: any, exec: ChatCompletion
     if (notFound) {
       return c.json({ error: notFound }, 400 as any);
     }
-    throw err;
+    const error = modelErrorEnvelope(err);
+    finalText = finalText || `Model request failed: ${error.message}`;
+    return c.json({ error }, 400 as any);
   } finally {
     // Always persist the final text + tool calls — even on early return (ask_user) or error.
     // (Vault credentials are redacted inside persistAssistantMessage.)

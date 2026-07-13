@@ -440,9 +440,12 @@ describe("Orchestrator Resilience", () => {
 
       await orchestrator.engine.recoverOrphanedTasks();
 
-      // Dead run gets completed as failed then deleted
+      // Dead run is retained for diagnostics and acknowledged so it does not
+      // count as a real failed attempt after recovery.
       const run = await runStore.getRun("run-dead");
-      expect(run).toBeUndefined();
+      expect(run?.status).toBe("failed");
+      expect(run?.result?.stderr).toBe("Runner process died");
+      expect(run?.collectedAt).toBeTruthy();
     });
 
     it("keeps run alive when runner PID is still running", async () => {
@@ -706,8 +709,9 @@ describe("Durable turns recovery", () => {
 
     const recovered = await orchestrator.engine.recoverOrphanedTasks();
     expect(recovered).toBe(1);
-    // Run record is cleaned up exactly like before.
-    expect(await runStore.getRun(`run-${task.id}`)).toBeUndefined();
+    // Interrupted Run remains inspectable but cannot be collected as a real
+    // failed attempt after the task is recovered.
+    expect((await runStore.getRun(`run-${task.id}`))?.collectedAt).toBeTruthy();
 
     await respawn(task.id);
     expect(spawnedConfigs).toHaveLength(1);

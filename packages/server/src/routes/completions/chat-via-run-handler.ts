@@ -11,17 +11,16 @@
  *      reusing this package's `sse.ts` / `tool-mapping.ts` helpers so framing,
  *      persistence, and metering are literally the same code.
  *
- * Parity notes (see migration plan): multi-tool-turn tool_call order differs
- * from the inline handler by construction; `model_not_found` enrichment and
- * provider-executed (extraAiTools) recording are follow-ups. Dark until the
- * flag is set.
+ * The loop engine defers interactive tool-use events until dispatch, preserving
+ * the inline handler's per-call lifecycle order. Provider-executed tools are
+ * recorded for session observability but never surfaced as local execution.
  */
 import type { Context } from "hono";
 import { streamSSE } from "hono/streaming";
 import type { ChatSessionInjection } from "@polpo-ai/core";
 import type { ChatCompletionExecution } from "./chat-handler.js";
 import { MAX_TURNS } from "./agent-step-runner.js";
-import { completionResponse, modelNotFoundEnvelope, sseChunk } from "./sse.js";
+import { completionResponse, modelErrorEnvelope, modelNotFoundEnvelope, sseChunk } from "./sse.js";
 import {
   persistAssistantMessage,
   emitFileChanged,
@@ -130,7 +129,19 @@ function makeOnEvent(
         const name = String(e.tool);
         const result = String(e.content ?? "");
         const isError = !!e.isError;
-        const args = toolArgsById.get(String(e.toolId)) ?? {};
+        const args = (e.input as Record<string, unknown> | undefined) ?? toolArgsById.get(String(e.toolId)) ?? {};
+        const providerExecuted = e.providerExecuted === true || providerToolNames.has(name);
+        if (providerExecuted) {
+          state.toolCallsAccum.push({
+            id: e.toolId,
+            name,
+            arguments: args,
+            result: result || undefined,
+            state: isError ? "error" : "completed",
+            providerExecuted: true,
+          });
+          break;
+        }
         emitFileChanged(name, args, result, deps.emit);
         state.toolCallsAccum.push({ id: e.toolId, name, arguments: args, result, state: isError ? "error" : "completed" });
         write(sseChunk(completionId, {}, null, { tool_call: { id: e.toolId, name, result, state: isError ? "error" : "completed" } }));
@@ -149,7 +160,7 @@ function makeOnEvent(
         break;
       }
       case "error": {
-        state.errorEvent = e;
+        state.errorEvent = (e.error as Record<string, unknown> | undefined) ?? e;
         break;
       }
     }
@@ -176,9 +187,24 @@ function newState(): DriverState {
   return { finalText: "", toolCallsAccum: [], totalUsage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 }, lastProviderMetadata: undefined, clientReturn: undefined, errorEvent: undefined };
 }
 
-async function finishCommon(execution: ChatCompletionExecution, state: DriverState, assistantMsgId: string | null) {
+function captureRunFailure(
+  state: DriverState,
+  outcome: { status: string; result: { stderr?: string } },
+): void {
+  if (outcome.status === "completed" || state.errorEvent) return;
+  state.errorEvent = {
+    message: outcome.result?.stderr || `Run ended with status ${outcome.status}`,
+  };
+}
+
+async function finishCommon(
+  execution: ChatCompletionExecution,
+  state: DriverState,
+  assistantMsgId: string | null,
+  options?: { emptyFallback?: string },
+) {
   const { deps, body, m, sessionStore, sessionId, onResponseFinished } = execution;
-  await persistAssistantMessage(sessionStore, sessionId, assistantMsgId, state.finalText, state.toolCallsAccum);
+  await persistAssistantMessage(sessionStore, sessionId, assistantMsgId, state.finalText, state.toolCallsAccum, options);
   try {
     deps.onCompletionFinished?.({
       usage: state.totalUsage,
@@ -219,16 +245,26 @@ export function streamChatViaRun(c: Context, execution: ChatCompletionExecution)
     const onEvent = makeOnEvent(execution, state, write);
 
     try {
-      await deps.runChatViaRun!(inject, { onEvent, signal: abortController.signal });
+      const outcome = await deps.runChatViaRun!(inject, { onEvent, signal: abortController.signal });
+      captureRunFailure(state, outcome);
       await writeChain;
 
-      if (state.clientReturn) {
+      if (state.errorEvent && !abortController.signal.aborted) {
+        const notFound = modelNotFoundEnvelope(state.errorEvent, m?.id, body.agent);
+        const error = notFound ?? modelErrorEnvelope(state.errorEvent);
+        const text = notFound ? "" : `Model request failed: ${error.message}`;
+        if (text) {
+          state.finalText += text;
+          await stream.writeSSE({ data: sseChunk(completionId, { content: text }) });
+        }
+        await stream.writeSSE({ data: sseChunk(completionId, {}, "stop", { error }) });
+        await stream.writeSSE({ data: "[DONE]" });
+      } else if (state.clientReturn) {
         state.toolCallsAccum.push({ id: state.clientReturn.id, name: state.clientReturn.name, arguments: state.clientReturn.arguments, state: "interrupted" });
         await stream.writeSSE({ data: clientToolFinishChunk(completionId, state.clientReturn) });
         await stream.writeSSE({ data: "[DONE]" });
       } else if (!abortController.signal.aborted) {
-        const notFound = state.errorEvent ? modelNotFoundEnvelope(state.errorEvent, m?.id, body.agent) : null;
-        await stream.writeSSE({ data: sseChunk(completionId, {}, "stop", notFound ? { error: notFound } : undefined) });
+        await stream.writeSSE({ data: sseChunk(completionId, {}, "stop") });
         await stream.writeSSE({ data: "[DONE]" });
       }
     } catch (err) {
@@ -238,7 +274,12 @@ export function streamChatViaRun(c: Context, execution: ChatCompletionExecution)
           await stream.writeSSE({ data: sseChunk(completionId, {}, "stop", { error: notFound }) });
           await stream.writeSSE({ data: "[DONE]" });
         } else {
-          throw err;
+          const error = modelErrorEnvelope(err);
+          const text = `Model request failed: ${error.message}`;
+          state.finalText += text;
+          await stream.writeSSE({ data: sseChunk(completionId, { content: text }) });
+          await stream.writeSSE({ data: sseChunk(completionId, {}, "stop", { error }) });
+          await stream.writeSSE({ data: "[DONE]" });
         }
       }
     } finally {
@@ -263,7 +304,8 @@ export async function runNonStreamingChatViaRun(c: Context, execution: ChatCompl
   const onEvent = makeOnEvent(execution, state, () => { /* no SSE in non-streaming mode */ });
 
   try {
-    await deps.runChatViaRun!(inject, { onEvent, signal: undefined });
+    const outcome = await deps.runChatViaRun!(inject, { onEvent, signal: undefined });
+    captureRunFailure(state, outcome);
 
     if (state.clientReturn) {
       return c.json({
@@ -281,9 +323,18 @@ export async function runNonStreamingChatViaRun(c: Context, execution: ChatCompl
     if (state.errorEvent) {
       const notFound = modelNotFoundEnvelope(state.errorEvent, m?.id, body.agent);
       if (notFound) return c.json({ error: notFound }, 400 as any);
+      const error = modelErrorEnvelope(state.errorEvent);
+      state.finalText = state.finalText || `Model request failed: ${error.message}`;
+      return c.json({ error }, 400 as any);
     }
     return c.json(completionResponse(completionId, state.finalText, state.totalUsage as any));
+  } catch (err) {
+    const notFound = modelNotFoundEnvelope(err, m?.id, body.agent);
+    if (notFound) return c.json({ error: notFound }, 400 as any);
+    const error = modelErrorEnvelope(err);
+    state.finalText = state.finalText || `Model request failed: ${error.message}`;
+    return c.json({ error }, 400 as any);
   } finally {
-    await finishCommon(execution, state, assistantMsgId);
+    await finishCommon(execution, state, assistantMsgId, { emptyFallback: "[Response interrupted]" });
   }
 }

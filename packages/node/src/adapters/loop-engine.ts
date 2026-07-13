@@ -323,6 +323,13 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
         : [{ role: "user", content: buildPrompt(task) }];
     let lastStepText = "";
     let accumText = resume?.accumText ?? "";
+    const providerToolResults = new Map<string, { content: string; isError: boolean }>();
+
+    const renderProviderResult = (value: unknown): string => {
+      if (typeof value === "string") return value;
+      if (value === undefined) return "";
+      try { return JSON.stringify(value); } catch { return String(value); }
+    };
 
     const summarize: SummarizeFn = async (msgs, compactionPrompt) => {
       const response = await generateText({
@@ -414,12 +421,6 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
             activity.toolCalls++;
             activity.lastTool = event.name;
             activity.lastUpdate = new Date().toISOString();
-            emitTranscript({
-              type: "tool_use",
-              tool: event.name,
-              toolId: event.id,
-              input: event.args,
-            });
             // Chat parity (F1c): a client-side tool ends the server loop and is
             // returned to the caller to execute — never dispatched here. Not
             // pushing it to toolCalls ⇒ the turn ends with no executable tools.
@@ -432,6 +433,19 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
               });
               break;
             }
+            // Background task transcripts keep their historical use,use,result
+            // ordering. Interactive chat defers tool_use until executeTool so
+            // local calls are emitted calling,result one at a time, exactly like
+            // the inline completions handler. Provider tools never emit a local
+            // calling event because the model provider executes them.
+            if (!inject) {
+              emitTranscript({
+                type: "tool_use",
+                tool: event.name,
+                toolId: event.id,
+                input: event.args,
+              });
+            }
             toolCalls.push({
               id: event.id,
               name: event.name,
@@ -439,10 +453,49 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
             });
             break;
           }
+          case "tool-result": {
+            if (inject?.providerToolNames.has(event.name)) {
+              providerToolResults.set(event.id, {
+                content: renderProviderResult(event.output),
+                isError: false,
+              });
+            }
+            break;
+          }
+          case "tool-error": {
+            if (inject?.providerToolNames.has(event.name)) {
+              providerToolResults.set(event.id, {
+                content: renderProviderResult(event.error),
+                isError: true,
+              });
+            }
+            break;
+          }
+          case "finish": {
+            if (inject && event.finishReason === "error") {
+              emitTranscript({
+                type: "error",
+                message: "Model returned an error",
+                error: { message: "Model returned an error", type: "model_error" },
+              });
+            }
+            break;
+          }
           case "error": {
+            const raw = event.error as any;
             emitTranscript({
               type: "error",
               message: event.error instanceof Error ? event.error.message : String(event.error),
+              error: {
+                name: raw?.name ?? raw?.constructor?.name,
+                message: raw?.message ?? String(event.error),
+                statusCode: raw?.statusCode ?? raw?.cause?.statusCode,
+                responseBody: raw?.responseBody ?? raw?.cause?.responseBody,
+                modelId: raw?.modelId ?? raw?.cause?.modelId,
+                code: raw?.code ?? raw?.cause?.code,
+                type: raw?.type ?? raw?.cause?.type,
+                data: raw?.data ?? raw?.cause?.data,
+              },
             });
             break;
           }
@@ -489,9 +542,27 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
       if (inject) {
         // Chat parity (F1c): dispatch via the route's own executor and emit the
         // FULL result (no 2000-char task truncation). Provider-executed tools
-        // are recorded upstream (tool_use) and skipped here — their result is
-        // already in the stream's response messages.
-        if (inject.providerToolNames.has(toolCall.name)) return "";
+        // are already resolved by the model provider: record their result for
+        // observability, but never dispatch them through the local executor.
+        if (inject.providerToolNames.has(toolCall.name)) {
+          const providerResult = providerToolResults.get(toolCall.id) ?? { content: "", isError: false };
+          emitTranscript({
+            type: "tool_result",
+            toolId: toolCall.id,
+            tool: toolCall.name,
+            input: toolCall.args,
+            content: providerResult.content,
+            isError: providerResult.isError,
+            providerExecuted: true,
+          });
+          return "";
+        }
+        emitTranscript({
+          type: "tool_use",
+          tool: toolCall.name,
+          toolId: toolCall.id,
+          input: toolCall.args,
+        });
         llmText = await inject.executor(toolCall.name, toolCall.args);
         isError = llmText.startsWith("Error:");
         emitTranscript({ type: "tool_result", toolId: toolCall.id, tool: toolCall.name, content: llmText, isError });

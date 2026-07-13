@@ -84,6 +84,15 @@ export async function buildRuntimeAgentPrompt(
   extraSystemParts: string[],
   loopContextPart?: string,
 ): Promise<string> {
+  if (deps.buildRuntimePrompt) {
+    return deps.buildRuntimePrompt(agentConfig, {
+      mode: "loop-step",
+      extraSystemParts,
+      loopContextPart,
+      includeAgentMemory: true,
+    });
+  }
+
   const agentSystemPrompt = await deps.buildAgentPrompt(agentConfig);
   const conversationalPreamble = [
     "You are now in interactive conversation mode with the user.",

@@ -37,6 +37,7 @@ import {
   mockResolvedModel,
   type MockResponse,
 } from "./helpers/mock-llm.js";
+import { convertArrayToReadableStream } from "ai/test";
 
 // ── Mock the LLM module BEFORE any imports that pull it in ──
 
@@ -245,6 +246,95 @@ describe("executeRun — shared run lifecycle", () => {
     const log = await readActivityLog(config.runId);
     expect(log.filter((e) => (e.event ?? e.type) === "text-delta")).toHaveLength(0);
     expect(log.map((e) => e.event ?? e.type)).toContain("assistant");
+  });
+
+  test("chat injection records provider tools without dispatching them locally", async () => {
+    let turn = 0;
+    const usage = {
+      inputTokens: { total: 10, noCache: undefined, cacheRead: undefined, cacheWrite: undefined },
+      outputTokens: { total: 5, text: undefined, reasoning: undefined },
+    };
+    const providerModel = new MockLanguageModelV3({
+      doStream: async () => {
+        if (turn++ === 0) {
+          return {
+            stream: convertArrayToReadableStream([
+              { type: "stream-start", warnings: [] },
+              { type: "tool-input-start", id: "provider_1", toolName: "search_web", providerExecuted: true },
+              { type: "tool-input-delta", id: "provider_1", delta: "{\"query\":\"Polpo\"}" },
+              { type: "tool-input-end", id: "provider_1" },
+              {
+                type: "tool-call",
+                toolCallId: "provider_1",
+                toolName: "search_web",
+                input: "{\"query\":\"Polpo\"}",
+                providerExecuted: true,
+              },
+              {
+                type: "tool-result",
+                toolCallId: "provider_1",
+                toolName: "search_web",
+                output: { type: "json", value: { results: [] } },
+                providerExecuted: true,
+              },
+              {
+                type: "finish",
+                finishReason: { unified: "tool-calls", raw: undefined },
+                usage,
+              },
+            ] as any[]),
+          };
+        }
+        return {
+          stream: convertArrayToReadableStream([
+            { type: "stream-start", warnings: [] },
+            { type: "text-start", id: "text_1" },
+            { type: "text-delta", id: "text_1", delta: "provider done" },
+            { type: "text-end", id: "text_1" },
+            { type: "finish", finishReason: { unified: "stop", raw: undefined }, usage },
+          ] as any[]),
+        };
+      },
+    });
+    const executor = vi.fn(async () => "must not execute");
+    const events: Record<string, unknown>[] = [];
+    const store = new InMemoryRunStore();
+    const config = makeConfig();
+
+    const outcome = await executeRun(config, {
+      runStore: store,
+      pid: 10,
+      configPath: `memory://${config.runId}`,
+      onEvent: (event) => events.push(event),
+      inject: {
+        agent: config.agent,
+        model: { aiModel: providerModel, contextWindow: 200_000, maxTokens: 8192 },
+        systemPrompt: "You are a test agent.",
+        maxTurns: 3,
+        seedMessages: [{ role: "user", content: "search" }],
+        toolSet: {
+          search_web: { type: "provider", id: "test.search", args: {} },
+        },
+        executor,
+        clientSideToolNames: new Set(),
+        providerToolNames: new Set(["search_web"]),
+        compactionTools: [],
+        compactionMode: "chat",
+      },
+    });
+
+    expect(outcome.status).toBe("completed");
+    expect(outcome.result.stdout).toBe("provider done");
+    expect(executor).not.toHaveBeenCalled();
+    expect(events.filter((event) => event.type === "tool_use")).toHaveLength(0);
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "tool_result",
+      toolId: "provider_1",
+      tool: "search_web",
+      input: { query: "Polpo" },
+      providerExecuted: true,
+      isError: false,
+    }));
   });
 
   test("engine failure: run marked failed, executeRun resolves (never throws)", async () => {

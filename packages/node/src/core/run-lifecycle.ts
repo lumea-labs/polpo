@@ -190,6 +190,8 @@ export async function executeRun(config: RunnerConfig, deps: ExecuteRunDeps): Pr
       ...(logSession ? { sessionId: logSession.sessionId } : {}),
     },
     configPath,
+    engine: "agent",
+    delivery: deps.inject ? "stream" : "background",
   };
   // In DB mode, run record already exists (created by spawner) — update it with PID
   await runStore.upsertRun(initialRecord);

@@ -90,4 +90,32 @@ describe("FileRunStore durable turns", () => {
     expect(fetched!.activity.toolCalls).toBe(5);
     expect(fetched!.resumeState!.turn).toBe(1);
   });
+
+  it("acknowledges terminal runs without deleting their history", async () => {
+    await store.upsertRun(makeRun({ delivery: "background" }));
+    await store.completeRun("run-1", "failed", {
+      exitCode: 1, stdout: "", stderr: "spawn failed", duration: 2,
+    });
+    expect(await store.getTerminalRuns()).toHaveLength(1);
+
+    await store.markRunCollected!("run-1");
+
+    expect(await store.getTerminalRuns()).toEqual([]);
+    expect((await store.getRun("run-1"))?.result?.stderr).toBe("spawn failed");
+    expect((await store.getRun("run-1"))?.collectedAt).toBeTruthy();
+  });
+
+  it("spawn metadata updates cannot resurrect a completed run", async () => {
+    await store.upsertRun(makeRun());
+    await store.completeRun("run-1", "completed", {
+      exitCode: 0, stdout: "done", stderr: "", duration: 1,
+    });
+
+    await store.updateSpawnInfo!("run-1", 9876, "memory://run-1");
+
+    const fetched = await store.getRun("run-1");
+    expect(fetched?.status).toBe("completed");
+    expect(fetched?.pid).toBe(9876);
+    expect(fetched?.result?.stdout).toBe("done");
+  });
 });

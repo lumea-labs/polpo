@@ -14,7 +14,18 @@ export class EphemeralRunStore implements RunStore {
   private readonly runs = new Map<string, RunRecord>();
 
   async upsertRun(run: RunRecord): Promise<void> {
-    this.runs.set(run.id, { ...run });
+    const existing = this.runs.get(run.id);
+    this.runs.set(run.id, existing ? {
+      ...existing,
+      ...run,
+      config: run.config ?? existing.config,
+      executionMode: run.executionMode ?? existing.executionMode,
+      engine: run.engine ?? existing.engine,
+      delivery: run.delivery ?? existing.delivery,
+      resumeState: run.resumeState ?? existing.resumeState,
+      completedAt: run.completedAt ?? existing.completedAt,
+      collectedAt: run.collectedAt ?? existing.collectedAt,
+    } : { ...run });
   }
 
   async updateActivity(runId: string, activity: AgentActivity): Promise<void> {
@@ -32,13 +43,29 @@ export class EphemeralRunStore implements RunStore {
     if (run) run.resumeState = state;
   }
 
+  async updateSpawnInfo(runId: string, pid: number, configPath: string): Promise<void> {
+    const run = this.runs.get(runId);
+    if (!run) return;
+    run.pid = pid;
+    run.configPath = configPath;
+    run.updatedAt = new Date().toISOString();
+  }
+
   async completeRun(runId: string, status: RunStatus, result: TaskResult): Promise<void> {
     const run = this.runs.get(runId);
     if (run) {
       run.status = status;
       run.result = result;
       run.updatedAt = new Date().toISOString();
+      run.completedAt = run.updatedAt;
     }
+  }
+
+  async markRunCollected(runId: string): Promise<void> {
+    const run = this.runs.get(runId);
+    if (!run) return;
+    run.collectedAt = new Date().toISOString();
+    run.updatedAt = run.collectedAt;
   }
 
   async getRun(runId: string): Promise<RunRecord | undefined> {
@@ -46,16 +73,25 @@ export class EphemeralRunStore implements RunStore {
   }
 
   async getRunByTaskId(taskId: string): Promise<RunRecord | undefined> {
-    for (const run of this.runs.values()) if (run.taskId === taskId) return run;
-    return undefined;
+    return [...this.runs.values()]
+      .filter((run) => run.taskId === taskId)
+      .sort((a, b) =>
+        Number(Boolean(a.collectedAt)) - Number(Boolean(b.collectedAt)) ||
+        b.startedAt.localeCompare(a.startedAt) ||
+        b.updatedAt.localeCompare(a.updatedAt)
+      )[0];
   }
 
   async getActiveRuns(): Promise<RunRecord[]> {
-    return [...this.runs.values()].filter((r) => r.status === "running");
+    return [...this.runs.values()].filter((r) =>
+      r.status === "running" && r.engine !== "graph" && r.delivery !== "stream"
+    );
   }
 
   async getTerminalRuns(): Promise<RunRecord[]> {
-    return [...this.runs.values()].filter((r) => r.status !== "running");
+    return [...this.runs.values()].filter((r) =>
+      r.status !== "running" && !r.collectedAt && r.engine !== "graph" && r.delivery !== "stream"
+    );
   }
 
   async deleteRun(runId: string): Promise<void> {

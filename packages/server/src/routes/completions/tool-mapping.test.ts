@@ -33,6 +33,13 @@ describe("persistAssistantMessage", () => {
     expect(store.updateMessage).toHaveBeenCalledWith("s1", "m1", "[Response interrupted]", []);
   });
 
+  it("keeps a valid textless tool turn empty instead of marking it interrupted", async () => {
+    const store = fakeStore();
+    const toolCalls = [{ id: "t1", name: "ask_user_question", arguments: {}, state: "interrupted" }];
+    await persistAssistantMessage(store, "s1", "m1", "", toolCalls, { emptyFallback: "[Response interrupted]" });
+    expect(store.updateMessage).toHaveBeenCalledWith("s1", "m1", "", toolCalls);
+  });
+
   it("redacts vault credentials before persisting", async () => {
     const store = fakeStore();
     const toolCalls = [

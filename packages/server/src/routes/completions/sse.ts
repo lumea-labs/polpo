@@ -31,6 +31,60 @@ export function sseChunk(
   });
 }
 
+function errorObjects(err: unknown): Record<string, any>[] {
+  const queue: unknown[] = [err];
+  const seen = new Set<unknown>();
+  const objects: Record<string, any>[] = [];
+
+  while (queue.length > 0 && objects.length < 16) {
+    const current = queue.shift();
+    if (!current || (typeof current !== "object" && typeof current !== "function") || seen.has(current)) continue;
+    seen.add(current);
+    const record = current as Record<string, any>;
+    objects.push(record);
+    for (const key of ["error", "cause", "data", "param", "sourceError"]) {
+      if (record[key] !== undefined) queue.push(record[key]);
+    }
+  }
+
+  return objects;
+}
+
+function responseBodyMessage(value: unknown): string | undefined {
+  if (typeof value !== "string" || !value.trim()) return undefined;
+  try {
+    const parsed = JSON.parse(value) as any;
+    const message = parsed?.error?.message ?? parsed?.message;
+    return typeof message === "string" && message.trim() ? message.trim() : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Extract a stable, user-visible provider error without exposing request internals. */
+export function visibleModelError(err: unknown): string {
+  for (const candidate of errorObjects(err)) {
+    for (const value of [candidate.message, candidate.error_description]) {
+      if (typeof value === "string" && value.trim()) return value.trim();
+    }
+    const fromBody = responseBodyMessage(candidate.responseBody);
+    if (fromBody) return fromBody;
+  }
+  return "The model provider rejected the request before generating a response.";
+}
+
+export function modelErrorEnvelope(err: unknown): {
+  message: string;
+  type: "model_error";
+  code: "model_request_failed";
+} {
+  return {
+    message: visibleModelError(err),
+    type: "model_error",
+    code: "model_request_failed",
+  };
+}
+
 /**
  * Detect Vercel AI Gateway "model not found" errors so callers see a
  * clean 400 (with the offending model id + agent name) instead of a
@@ -49,16 +103,18 @@ export function modelNotFoundEnvelope(
   fallbackModelId: string | undefined,
   agent: string | undefined,
 ): { message: string; type: "model_not_found"; param: { modelId: string; agent?: string } } | null {
-  if (!err || typeof err !== "object") return null;
-  const e = err as any;
-  const isGatewayNotFound =
+  const candidates = errorObjects(err);
+  const match = candidates.find((e) =>
     e.name === "GatewayModelNotFoundError" ||
     e.constructor?.name === "GatewayModelNotFoundError" ||
+    e.type === "model_not_found" ||
+    e.code === "model_not_found" ||
     (e.statusCode === 404 &&
       typeof e.responseBody === "string" &&
-      e.responseBody.includes("model_not_found"));
-  if (!isGatewayNotFound) return null;
-  const modelId: string = e.modelId ?? fallbackModelId ?? "unknown";
+      e.responseBody.includes("model_not_found")),
+  );
+  if (!match) return null;
+  const modelId: string = match.modelId ?? match.param?.modelId ?? fallbackModelId ?? "unknown";
   return {
     message:
       `Model "${modelId}" is not available on the gateway. ` +

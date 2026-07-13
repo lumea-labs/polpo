@@ -5,6 +5,7 @@ import { analyzeBlockedTasks } from "../core/deadlock-resolver.js";
 import { InMemoryTaskStore, InMemoryRunStore, createTestTask, createTestAgent, createTestActivity } from "./fixtures.js";
 import type { TaskResult } from "@polpo-ai/core/types";
 import type { RunRecord } from "@polpo-ai/core/run-store";
+import type { Spawner } from "@polpo-ai/core/spawner";
 
 const TEST_WORK_DIR = "/tmp/polpo-test";
 
@@ -188,8 +189,9 @@ describe("Orchestrator", () => {
       // transitionToDone is async (runs hooks) — wait for microtasks to settle
       await new Promise(r => setTimeout(r, 50));
 
-      // Run should be consumed (deleted)
-      expect(await runStore.getRun("run-collect")).toBeUndefined();
+      // Run history is retained but acknowledged exactly once.
+      expect((await runStore.getRun("run-collect"))?.collectedAt).toBeTruthy();
+      expect(await runStore.getTerminalRuns()).toEqual([]);
       // Task should be done
       expect((await store.getTask(task.id))!.status).toBe("done");
     });
@@ -214,6 +216,63 @@ describe("Orchestrator", () => {
 
       // Task should be retried (back to pending since retries < maxRetries)
       expect((await store.getTask(task.id))!.status).toBe("pending");
+    });
+
+    it("persists a diagnostic Run when agent preflight fails", async () => {
+      const task = await orchestrator.engine.createTask({
+        title: "Missing agent",
+        description: "Must fail visibly",
+        assignTo: "does-not-exist",
+        maxRetries: 0,
+      });
+
+      await orchestrator.tick();
+      const run = await runStore.getRunByTaskId(task.id);
+      expect(run?.status).toBe("failed");
+      expect(run?.delivery).toBe("background");
+      expect(run?.result?.stderr).toContain('No agent "does-not-exist"');
+
+      await orchestrator.tick();
+      // The normal retry policy consumes the durable failure instead of a
+      // special preflight-only terminal transition.
+      expect((await store.getTask(task.id))?.status).toBe("pending");
+      expect((await runStore.getRun(run!.id))?.collectedAt).toBeTruthy();
+    });
+
+    it("persists host acquisition failures instead of failing the task invisibly", async () => {
+      const taskStore = new InMemoryTaskStore();
+      const taskRuns = new InMemoryRunStore();
+      const failingSpawner: Spawner = {
+        spawn: async () => { throw new Error("sandbox capacity unavailable"); },
+        isAlive: () => false,
+        kill: () => {},
+      };
+      const failingOrchestrator = new Orchestrator({
+        workDir: TEST_WORK_DIR,
+        store: taskStore,
+        runStore: taskRuns,
+        spawner: failingSpawner,
+        assessFn: async () => ({
+          passed: true, checks: [], metrics: [], timestamp: new Date().toISOString(),
+        }),
+      });
+      await failingOrchestrator.initInteractive("spawn-failure", {
+        name: "team",
+        agents: [createTestAgent({ name: "agent-1" })],
+      });
+      const task = await failingOrchestrator.engine.createTask({
+        title: "Acquire sandbox",
+        description: "Must leave diagnostics",
+        assignTo: "agent-1",
+      });
+
+      await failingOrchestrator.tick();
+
+      const run = await taskRuns.getRunByTaskId(task.id);
+      expect(run?.status).toBe("failed");
+      expect(run?.config).toBeDefined();
+      expect(run?.result?.stderr).toContain("sandbox capacity unavailable");
+      expect((await taskStore.getTask(task.id))?.status).toBe("in_progress");
     });
   });
 

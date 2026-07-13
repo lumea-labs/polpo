@@ -79,7 +79,10 @@ export async function persistAssistantMessage(
 ): Promise<void> {
   if (!sessionStore || !sessionId || !messageId) return;
   const safeToolCalls = redactVaultToolCalls(toolCalls);
-  const content = finalText.trim() || (opts?.emptyFallback ?? "");
+  // A textless client/provider tool turn is valid and must not be rewritten as
+  // an interrupted response. Use the fallback only when the turn contains
+  // neither assistant text nor a persisted tool call.
+  const content = finalText.trim() || (safeToolCalls.length > 0 ? "" : (opts?.emptyFallback ?? ""));
   await sessionStore.updateMessage(sessionId, messageId, content, safeToolCalls);
 }
 
