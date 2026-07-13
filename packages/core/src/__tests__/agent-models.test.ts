@@ -21,6 +21,9 @@ import {
   DEFAULT_TRANSCRIBE_MODEL,
   DEFAULT_TTS_MODEL,
   DEFAULT_SEARCH_PROVIDER,
+  AUDIO_MODEL_CATALOG,
+  getAudioModel,
+  listAudioModels,
 } from "../agent-models.js";
 
 describe("parseModelString — happy path", () => {
@@ -158,5 +161,38 @@ describe("DEFAULT_*_MODEL constants — wire format", () => {
       const reconstructed = `${parsed.provider}/${parsed.model}`;
       expect(reconstructed).toBe(value);
     }
+  });
+});
+
+describe("AUDIO_MODEL_CATALOG", () => {
+  it("contains unique, parseable provider/model ids", () => {
+    const ids = AUDIO_MODEL_CATALOG.map((model) => model.id);
+    expect(new Set(ids).size).toBe(ids.length);
+    for (const model of AUDIO_MODEL_CATALOG) {
+      expect(parseModelString(model.id).provider).toBe(model.provider);
+    }
+  });
+
+  it("describes direct credentials and keeps local models credential-free", () => {
+    for (const model of AUDIO_MODEL_CATALOG) {
+      if (model.routing === "direct") expect(model.credentialService).toBe(model.provider);
+      else expect(model.credentialService).toBeUndefined();
+    }
+  });
+
+  it("discovers Deepgram for both transcription and speech", () => {
+    expect(listAudioModels("transcription")).toEqual(
+      expect.arrayContaining([expect.objectContaining({ id: "deepgram/nova-3" })]),
+    );
+    expect(listAudioModels("speech")).toEqual(
+      expect.arrayContaining([expect.objectContaining({ id: "deepgram/aura-2-livia-it" })]),
+    );
+  });
+
+  it("returns defensive copies from lookup helpers", () => {
+    const model = getAudioModel("deepgram/nova-3");
+    expect(model).toMatchObject({ provider: "deepgram", capability: "transcription" });
+    if (model) model.name = "changed";
+    expect(getAudioModel("deepgram/nova-3")?.name).toBe("Nova 3");
   });
 });

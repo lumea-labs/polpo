@@ -543,12 +543,30 @@ export async function createAllTools(options: CreateAllToolsOptions): Promise<Po
 
   // Image & video tools — activated when any image_* or video_* tool is in allowedTools
   if (categoryRequested(ALL_IMAGE_TOOL_NAMES)) {
-    tools.push(...createImageTools(cwd, allowedPaths, allowedTools, options.vault, options.fs));
+    tools.push(...createImageTools({
+      cwd,
+      allowedPaths,
+      allowedTools,
+      vault: options.vault,
+      fs: options.fs,
+      imageModel: options.imageModel,
+      videoModel: options.videoModel,
+      visionModel: options.visionModel,
+    }));
   }
 
   // Audio tools — activated when any audio_* tool is in allowedTools
   if (categoryRequested(ALL_AUDIO_TOOL_NAMES)) {
-    tools.push(...createAudioTools(cwd, allowedPaths, allowedTools, options.vault, options.fs, options.shell));
+    tools.push(...createAudioTools({
+      cwd,
+      allowedPaths,
+      allowedTools,
+      vault: options.vault,
+      fs: options.fs,
+      shell: options.shell,
+      transcribeModel: options.transcribeModel,
+      ttsModel: options.ttsModel,
+    }));
   }
 
   // Excel tools — activated when any excel_* tool is in allowedTools
