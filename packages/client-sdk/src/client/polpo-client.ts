@@ -945,7 +945,7 @@ export class PolpoClient {
 
   /** Get pending approval requests. */
   getPendingApprovals(): Promise<ApprovalRequest[]> {
-    return this.get<ApprovalRequest[]>("/approvals/pending");
+    return this.get<ApprovalRequest[]>("/approvals?status=pending");
   }
 
   /** Approve a request. */

@@ -10,7 +10,8 @@
  *   PORT              HTTP port             (default: 3890)
  *   HOST              Bind address          (default: 0.0.0.0)
  *   WORK_DIR          Project directory     (default: /app/workspace)
- *   POLPO_API_KEYS    Comma-separated keys  (optional — no auth if unset)
+ *   POLPO_API_KEY     Single API key         (optional — no auth if unset)
+ *   POLPO_API_KEYS    Comma-separated keys   (optional, for key rotation)
  *   CORS_ORIGINS      Comma-separated list  (optional)
  */
 import { PolpoServer } from "../dist/server/index.js";
@@ -18,8 +19,11 @@ import { PolpoServer } from "../dist/server/index.js";
 const port = Number(process.env.PORT ?? 3890);
 const host = process.env.HOST ?? "0.0.0.0";
 const workDir = process.env.WORK_DIR ?? "/app/workspace";
-const apiKeys = process.env.POLPO_API_KEYS
-  ? process.env.POLPO_API_KEYS.split(",").map((k) => k.trim()).filter(Boolean)
+const configuredKeys = [process.env.POLPO_API_KEY, process.env.POLPO_API_KEYS]
+  .filter(Boolean)
+  .join(",");
+const apiKeys = configuredKeys
+  ? configuredKeys.split(",").map((k) => k.trim()).filter(Boolean)
   : undefined;
 const corsOrigins = process.env.CORS_ORIGINS
   ? process.env.CORS_ORIGINS.split(",").map((o) => o.trim()).filter(Boolean)

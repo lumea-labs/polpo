@@ -1,0 +1,3 @@
+{
+  "/v1/chat/completions/route": "app/v1/chat/completions/route.js"
+}

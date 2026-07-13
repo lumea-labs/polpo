@@ -1,0 +1,16 @@
+{
+  "/(dashboard)/agents/[name]/page": "/agents/[name]",
+  "/(dashboard)/agents/page": "/agents",
+  "/(dashboard)/files/page": "/files",
+  "/(dashboard)/memory/page": "/memory",
+  "/(dashboard)/page": "/",
+  "/(dashboard)/playground/page": "/playground",
+  "/(dashboard)/sessions/[id]/page": "/sessions/[id]",
+  "/(dashboard)/sessions/page": "/sessions",
+  "/(dashboard)/skills/page": "/skills",
+  "/_global-error/page": "/_global-error",
+  "/_not-found/page": "/_not-found",
+  "/api/health/route": "/api/health",
+  "/api/polpo/[...path]/route": "/api/polpo/[...path]",
+  "/v1/chat/completions/route": "/v1/chat/completions"
+}

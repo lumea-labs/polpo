@@ -1,0 +1,16 @@
+{
+  "/(dashboard)/agents/[name]/page": "app/(dashboard)/agents/[name]/page.js",
+  "/(dashboard)/agents/page": "app/(dashboard)/agents/page.js",
+  "/(dashboard)/files/page": "app/(dashboard)/files/page.js",
+  "/(dashboard)/memory/page": "app/(dashboard)/memory/page.js",
+  "/(dashboard)/page": "app/(dashboard)/page.js",
+  "/(dashboard)/playground/page": "app/(dashboard)/playground/page.js",
+  "/(dashboard)/sessions/[id]/page": "app/(dashboard)/sessions/[id]/page.js",
+  "/(dashboard)/sessions/page": "app/(dashboard)/sessions/page.js",
+  "/(dashboard)/skills/page": "app/(dashboard)/skills/page.js",
+  "/_global-error/page": "app/_global-error/page.js",
+  "/_not-found/page": "app/_not-found/page.js",
+  "/api/health/route": "app/api/health/route.js",
+  "/api/polpo/[...path]/route": "app/api/polpo/[...path]/route.js",
+  "/v1/chat/completions/route": "app/v1/chat/completions/route.js"
+}

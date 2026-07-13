@@ -1,0 +1,30 @@
+:root {
+  --shell-sidebar: #ebe8e1;
+  --shell-sidebar-active: #dedad1;
+  --shell-border: #d9d5cc;
+  --shell-muted: #77736a;
+}
+
+html, body { min-height: 100%; }
+.oss-shell { min-height: 100vh; }
+.oss-sidebar { position: fixed; z-index: 20; inset: 0 auto 0 0; display: flex; width: 224px; flex-direction: column; border-right: 1px solid var(--shell-border); background: var(--shell-sidebar); }
+.oss-brand { display: flex; height: 62px; align-items: center; gap: 10px; padding: 0 17px; border-bottom: 1px solid var(--shell-border); font-size: 14px; font-weight: 650; }
+.oss-brand-mark { display: grid; width: 27px; height: 27px; place-items: center; border-radius: 6px; background: #292823; color: #fff; font-size: 11px; font-weight: 750; }
+.oss-brand small { margin-left: auto; color: var(--shell-muted); font-size: 9px; font-weight: 650; text-transform: uppercase; }
+.oss-nav { display: flex; flex: 1; flex-direction: column; gap: 3px; padding: 14px 10px; }
+.oss-nav a { display: flex; height: 37px; align-items: center; gap: 10px; padding: 0 10px; border-radius: 6px; color: #625e55; font-size: 13px; text-decoration: none; transition: background-color 140ms ease, color 140ms ease; }
+.oss-nav a:hover { background: rgba(255,255,255,.48); color: #292823; }
+.oss-nav a[data-active="true"] { background: var(--shell-sidebar-active); color: #292823; font-weight: 580; }
+.oss-nav a svg { flex: none; }
+.oss-sidebar-footer { display: flex; align-items: center; gap: 9px; margin: 0 10px 12px; padding: 10px; border-top: 1px solid var(--shell-border); color: var(--shell-muted); font-size: 11px; }
+.oss-status { width: 7px; height: 7px; border-radius: 50%; background: #27875a; box-shadow: 0 0 0 3px rgba(39,135,90,.1); }
+.oss-main { min-height: 100vh; margin-left: 224px; }
+.oss-mobile-header { display: none; }
+
+@media (max-width: 820px) {
+  .oss-sidebar { display: none; }
+  .oss-main { margin-left: 0; padding-top: 56px; }
+  .oss-mobile-header { position: fixed; z-index: 30; inset: 0 0 auto; display: flex; height: 56px; align-items: center; justify-content: space-between; padding: 0 15px; border-bottom: 1px solid var(--shell-border); background: rgba(245,243,238,.94); backdrop-filter: blur(12px); }
+  .oss-mobile-header strong { font-size: 13px; }
+  .oss-mobile-header select { max-width: 170px; height: 32px; border: 1px solid var(--shell-border); border-radius: 5px; background: #fbfaf7; padding: 0 8px; color: #292823; font-size: 12px; }
+}

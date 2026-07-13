@@ -1,0 +1,3 @@
+{
+  "/(dashboard)/memory/page": "app/(dashboard)/memory/page.js"
+}

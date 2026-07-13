@@ -1,0 +1,8 @@
+{
+  "project": "self-hosted",
+  "settings": {
+    "storage": "postgres",
+    "workDir": ".",
+    "logLevel": "normal"
+  }
+}

@@ -11,7 +11,8 @@ function safeCompare(a: string, b: string): boolean {
 
 /**
  * API key authentication middleware.
- * Checks X-API-Key header against configured keys.
+ * Checks the SDK-standard `Authorization: Bearer` header or the legacy
+ * `X-API-Key` header against configured keys.
  * If no keys configured, skips auth (local dev mode) with a one-time warning.
  *
  * NOTE: API key via query string (?apiKey=) has been removed to prevent
@@ -29,7 +30,9 @@ export function authMiddleware(apiKeys: string[]): MiddlewareHandler {
       return next();
     }
 
-    const key = c.req.header("x-api-key");
+    const authorization = c.req.header("authorization");
+    const bearer = authorization?.match(/^Bearer\s+(.+)$/i)?.[1]?.trim();
+    const key = bearer || c.req.header("x-api-key")?.trim();
     if (!key || !apiKeys.some(k => safeCompare(k, key))) {
       return c.json(
         { ok: false, error: "API key required", code: "AUTH_REQUIRED" },

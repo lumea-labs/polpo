@@ -39,6 +39,7 @@ Polpo is an open-source runtime for building, running, and managing AI agents. I
 - **Storage** -- file (default), SQLite, or PostgreSQL via Drizzle
 - **Assessment** -- built-in quality scoring with LLM review
 - **Skills** -- reusable agent capabilities loaded from YAML playbooks
+- **Dashboard** -- reusable v2 React views and a single-tenant self-host app
 - **CLI** -- `polpo create`, `polpo dev`, `polpo deploy`
 
 ## Quick start
@@ -81,6 +82,7 @@ await orchestrator.run();
 | [`@polpo-ai/server`](packages/server) | Hono route factories (shared between OSS and cloud) | [![npm](https://img.shields.io/npm/v/@polpo-ai/server.svg)](https://www.npmjs.com/package/@polpo-ai/server) |
 | [`@polpo-ai/sdk`](packages/client-sdk) | TypeScript client SDK | [![npm](https://img.shields.io/npm/v/@polpo-ai/sdk.svg)](https://www.npmjs.com/package/@polpo-ai/sdk) |
 | [`@polpo-ai/react`](packages/react-sdk) | React hooks (TanStack Query + SSE) | [![npm](https://img.shields.io/npm/v/@polpo-ai/react.svg)](https://www.npmjs.com/package/@polpo-ai/react) |
+| [`@polpo-ai/dashboard`](packages/dashboard) | Runtime dashboard views for OSS and managed hosts | [![npm](https://img.shields.io/npm/v/@polpo-ai/dashboard.svg)](https://www.npmjs.com/package/@polpo-ai/dashboard) |
 | [`@polpo-ai/tools`](packages/tools) | Extended tool definitions | [![npm](https://img.shields.io/npm/v/@polpo-ai/tools.svg)](https://www.npmjs.com/package/@polpo-ai/tools) |
 | [`@polpo-ai/vault-crypto`](packages/vault-crypto) | Encryption for vault secrets | [![npm](https://img.shields.io/npm/v/@polpo-ai/vault-crypto.svg)](https://www.npmjs.com/package/@polpo-ai/vault-crypto) |
 
@@ -96,9 +98,33 @@ polpo-ai                Node.js shell: orchestrator, CLI, Hono server, tools
 @polpo-ai/server        Shared Hono route factories
 @polpo-ai/sdk           Client SDK (fetch + SSE)
 @polpo-ai/react         React hooks wrapping the SDK
+@polpo-ai/dashboard     Reusable v2 runtime views
 ```
 
 Core contains zero Node.js dependencies. The shell (`polpo-ai`) wires concrete adapters: file stores, Drizzle stores, the LLM engine, and the HTTP server.
+
+## Self-host with the dashboard
+
+The repository includes a single-tenant dashboard host that keeps the runtime API key on the server. Start the production-oriented example with PostgreSQL:
+
+```bash
+cp docker/self-host/.env.example docker/self-host/.env
+# Replace both secrets and provide AI_GATEWAY_API_KEY in docker/self-host/.env.
+docker compose \
+  --env-file docker/self-host/.env \
+  -f docker/self-host/compose.example.yml \
+  up --build --detach --wait
+```
+
+Open `http://localhost:3000`. The runtime is only exposed to the private Compose network; the dashboard proxies API and completion requests with `POLPO_API_KEY` server-side.
+
+Use the deterministic, isolated verification stack before deploying changes:
+
+```bash
+pnpm test:self-host
+```
+
+That test creates disposable PostgreSQL storage, exercises authenticated REST and chat completion paths, renders the dashboard, and removes its containers and volumes when complete.
 
 ## Storage
 
@@ -406,10 +432,14 @@ packages/
   server/               @polpo-ai/server -- shared Hono route factories
   client-sdk/           @polpo-ai/sdk -- TypeScript client
   react-sdk/            @polpo-ai/react -- React hooks
+  dashboard/            @polpo-ai/dashboard -- reusable v2 views
   tools/                @polpo-ai/tools -- tool definitions
   vault-crypto/         @polpo-ai/vault-crypto -- encryption
 examples/
   chat-app/             React chat app example
+apps/
+  dashboard/            Single-tenant Next.js dashboard host
+docker/self-host/       Compose example and isolated E2E fixture
 ```
 
 ## Cloud
