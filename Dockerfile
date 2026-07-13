@@ -1,59 +1,50 @@
+# syntax=docker/dockerfile:1.7
+
 FROM node:22-slim AS base
 RUN corepack enable && corepack prepare pnpm@10.29.3 --activate
 WORKDIR /app
 
-# Install dependencies
-FROM base AS deps
+FROM base AS build
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
-COPY packages/core/package.json packages/core/
-COPY packages/vault-crypto/package.json packages/vault-crypto/
-COPY packages/drizzle/package.json packages/drizzle/
-COPY packages/llm/package.json packages/llm/
-COPY packages/server/package.json packages/server/
-COPY packages/tools/package.json packages/tools/
-COPY packages/client-sdk/package.json packages/client-sdk/
-COPY packages/react-sdk/package.json packages/react-sdk/
-COPY packages/cli/package.json packages/cli/
-COPY .npmrc* ./
-RUN pnpm install --frozen-lockfile
-
-# Build
-FROM deps AS build
+COPY apps/dashboard/package.json ./apps/dashboard/package.json
+COPY packages/cli/package.json ./packages/cli/package.json
+COPY packages/client-sdk/package.json ./packages/client-sdk/package.json
+COPY packages/connect/package.json ./packages/connect/package.json
+COPY packages/connect-server/package.json ./packages/connect-server/package.json
+COPY packages/connectors/package.json ./packages/connectors/package.json
+COPY packages/core/package.json ./packages/core/package.json
+COPY packages/dashboard/package.json ./packages/dashboard/package.json
+COPY packages/drizzle/package.json ./packages/drizzle/package.json
+COPY packages/file-stores/package.json ./packages/file-stores/package.json
+COPY packages/llm/package.json ./packages/llm/package.json
+COPY packages/node/package.json ./packages/node/package.json
+COPY packages/react-sdk/package.json ./packages/react-sdk/package.json
+COPY packages/server/package.json ./packages/server/package.json
+COPY packages/tools/package.json ./packages/tools/package.json
+COPY packages/vault-crypto/package.json ./packages/vault-crypto/package.json
+RUN --mount=type=cache,id=pnpm,target=/root/.local/share/pnpm/store \
+    pnpm install --frozen-lockfile
 COPY . .
-RUN pnpm build
+RUN pnpm turbo run build --filter=@polpo-ai/node...
+RUN pnpm run build:root
+RUN --mount=type=cache,id=pnpm,target=/root/.local/share/pnpm/store \
+    pnpm --filter polpo-ai deploy --prod --legacy /opt/polpo \
+    && mkdir -p /opt/polpo/bin \
+    && cp /app/bin/polpo-server.mjs /opt/polpo/bin/polpo-server.mjs
 
-# Production
 FROM node:22-slim AS production
-RUN corepack enable && corepack prepare pnpm@10.29.3 --activate
 WORKDIR /app
-
-COPY --from=deps /app/node_modules ./node_modules
-COPY --from=deps /app/packages/core/node_modules ./packages/core/node_modules
-COPY --from=deps /app/packages/drizzle/node_modules ./packages/drizzle/node_modules
-COPY --from=deps /app/packages/llm/node_modules ./packages/llm/node_modules
-COPY --from=deps /app/packages/server/node_modules ./packages/server/node_modules
-COPY --from=deps /app/packages/tools/node_modules ./packages/tools/node_modules
-COPY --from=deps /app/packages/vault-crypto/node_modules ./packages/vault-crypto/node_modules
-COPY --from=build /app/dist ./dist
-COPY --from=build /app/bin ./bin
-COPY --from=build /app/packages/core/dist ./packages/core/dist
-COPY --from=build /app/packages/vault-crypto/dist ./packages/vault-crypto/dist
-COPY --from=build /app/packages/drizzle/dist ./packages/drizzle/dist
-COPY --from=build /app/packages/llm/dist ./packages/llm/dist
-COPY --from=build /app/packages/server/dist ./packages/server/dist
-COPY --from=build /app/packages/tools/dist ./packages/tools/dist
-COPY --from=build /app/package.json ./
-COPY --from=build /app/packages/core/package.json ./packages/core/
-COPY --from=build /app/packages/vault-crypto/package.json ./packages/vault-crypto/
-COPY --from=build /app/packages/drizzle/package.json ./packages/drizzle/
-COPY --from=build /app/packages/llm/package.json ./packages/llm/
-COPY --from=build /app/packages/server/package.json ./packages/server/
-COPY --from=build /app/packages/tools/package.json ./packages/tools/
+COPY --from=build --chown=node:node /opt/polpo/ ./
+RUN mkdir -p /app/workspace/.polpo && chown -R node:node /app/workspace
 
 ENV NODE_ENV=production
 ENV PORT=3890
+ENV HOST=0.0.0.0
+ENV WORK_DIR=/app/workspace
 
 EXPOSE 3890
+USER node
+HEALTHCHECK --interval=10s --timeout=3s --start-period=20s --retries=6 \
+  CMD node -e "fetch('http://127.0.0.1:3890/api/v1/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"
 
-# Backend-only image. The CLI lives in `@polpo-ai/cli` (npm) and is not shipped here.
 ENTRYPOINT ["node", "bin/polpo-server.mjs"]

@@ -1,0 +1,12 @@
+export { DashboardProvider, useDashboardHost, useDashboardHref } from "./host.js";
+export type { DashboardCapabilities, DashboardHost } from "./host.js";
+export { PageBody, PageHeader, Button, IconButton, DataTable, LoadingRows } from "./components.js";
+export type { ColumnMeta } from "./components.js";
+export { AgentsView } from "./views/agents.js";
+export { AgentDetailView } from "./views/agent-detail.js";
+export { PlaygroundView } from "./views/playground.js";
+export { SessionsView } from "./views/sessions.js";
+export { SessionDetailView } from "./views/session-detail.js";
+export { MemoryView } from "./views/memory.js";
+export { SkillsView } from "./views/skills.js";
+export { FilesView } from "./views/files.js";

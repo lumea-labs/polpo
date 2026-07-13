@@ -1,5 +1,6 @@
 import { getPolpoDir } from "../core/constants.js";
 import { OpenAPIHono } from "@hono/zod-openapi";
+import { readFileSync } from "node:fs";
 import { cors } from "hono/cors";
 import { join } from "node:path";
 import { projectLoopConfigSchema } from "@polpo-ai/core/schemas";
@@ -34,6 +35,19 @@ import { filesystemRoutes } from "./routes/filesystem.js";
 import { providerRoutes } from "./routes/providers.js";
 import { skillRoutes } from "./routes/skills.js";
 import { fileRoutes } from "./routes/files.js";
+
+function readRuntimeVersion(): string {
+  try {
+    const packageJson = JSON.parse(
+      readFileSync(new URL("../../package.json", import.meta.url), "utf8"),
+    ) as { version?: string };
+    return packageJson.version ?? "unknown";
+  } catch {
+    return "unknown";
+  }
+}
+
+const runtimeVersion = readRuntimeVersion();
 
 export interface AppOptions {
   apiKeys?: string[];
@@ -79,7 +93,7 @@ export function createApp(orchestrator: Orchestrator, sseBridge: SSEBridge, opts
 
   // ── Public routes (no auth) ───────────────────────────────────────────
 
-  app.route("/api/v1/health", healthRoutes());
+  app.route("/api/v1/health", healthRoutes(runtimeVersion));
 
   // Config status + initialize — always available so setup wizard works
   if (opts?.workDir) {

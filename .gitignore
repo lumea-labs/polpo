@@ -6,6 +6,7 @@ package-lock.json
 dist/
 ui/dev-dist/
 coverage/
+.next/
 
 # Polpo runtime data
 .polpo/

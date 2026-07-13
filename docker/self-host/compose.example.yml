@@ -1,0 +1,61 @@
+name: polpo-self-hosted
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-polpo}
+      POSTGRES_USER: ${POSTGRES_USER:-polpo}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-polpo} -d ${POSTGRES_DB:-polpo}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks: [polpo]
+
+  runtime:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-polpo}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-polpo}
+      POLPO_API_KEY: ${POLPO_API_KEY:?Set POLPO_API_KEY in .env}
+      POLPO_MODEL: ${POLPO_MODEL:?Set POLPO_MODEL in .env}
+      AI_GATEWAY_API_KEY: ${AI_GATEWAY_API_KEY:-}
+    volumes:
+      - ./project.example/polpo.json:/app/workspace/.polpo/polpo.json:ro
+      - workspace-data:/app/workspace
+    depends_on:
+      postgres:
+        condition: service_healthy
+    expose:
+      - "3890"
+    networks: [polpo]
+
+  dashboard:
+    build:
+      context: ../..
+      dockerfile: apps/dashboard/Dockerfile
+    restart: unless-stopped
+    environment:
+      POLPO_API_URL: http://runtime:3890
+      POLPO_API_KEY: ${POLPO_API_KEY:?Set POLPO_API_KEY in .env}
+    depends_on:
+      runtime:
+        condition: service_healthy
+    ports:
+      - "${POLPO_DASHBOARD_PORT:-3000}:3000"
+    networks: [polpo]
+
+volumes:
+  postgres-data:
+  workspace-data:
+
+networks:
+  polpo:
+    driver: bridge

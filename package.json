@@ -1,6 +1,6 @@
 {
   "name": "polpo-ai",
-  "version": "0.15.7",
+  "version": "0.15.8",
   "description": "The open backend for AI agents",
   "type": "module",
   "main": "dist/index.js",
@@ -28,6 +28,7 @@
     "start": "node packages/cli/dist/index.js",
     "test": "vitest",
     "test:coverage": "vitest run --coverage",
+    "test:self-host": "node docker/self-host/e2e.mjs",
     "typecheck": "turbo run build && tsc --noEmit",
     "clean": "rm -rf dist",
     "build:root": "tsc"
