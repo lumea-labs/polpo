@@ -29,13 +29,13 @@ import { join } from "node:path";
 import type { AgentConfig, Task, TaskResult } from "@polpo-ai/core/types";
 import type { AgentHandle, SpawnContext } from "@polpo-ai/core/adapter";
 import {
-  streamText,
   generateText,
   jsonSchema,
   tool as aiTool,
   type ModelMessage,
   type ToolSet,
 } from "ai";
+import { streamModelTurn } from "@polpo-ai/llm";
 import { cleanupAgentBrowserSession } from "@polpo-ai/tools";
 import {
   LoopRunner,
@@ -323,6 +323,13 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
         : [{ role: "user", content: buildPrompt(task) }];
     let lastStepText = "";
     let accumText = resume?.accumText ?? "";
+    const providerToolResults = new Map<string, { content: string; isError: boolean }>();
+
+    const renderProviderResult = (value: unknown): string => {
+      if (typeof value === "string") return value;
+      if (value === undefined) return "";
+      try { return JSON.stringify(value); } catch { return String(value); }
+    };
 
     const summarize: SummarizeFn = async (msgs, compactionPrompt) => {
       const response = await generateText({
@@ -336,7 +343,7 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
       return response.text;
     };
 
-    // ── LoopRunner model callback: one streamText step per turn ──
+    // ── LoopRunner model callback: one model turn per runner step ──
     const modelStep = async (): Promise<LoopModelResult> => {
       // Abort between turns mirrors the legacy `if (aborted) break`:
       // report no tool calls so the runner stops cleanly (exit 0).
@@ -374,8 +381,9 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
         messages = compactionResult.messages as ModelMessage[];
       }
 
-      let stepUsage: unknown;
-      const stream = streamText({
+      let stepText = "";
+      const toolCalls: LoopToolCall[] = [];
+      const turn = await streamModelTurn({
         model: model.aiModel,
         system: systemPrompt,
         messages,
@@ -384,84 +392,121 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
         maxOutputTokens: model.maxTokens,
         abortSignal: abortController.signal,
         providerOptions,
-        onStepFinish: async ({ usage }) => {
-          if (usage) {
-            activity.totalTokens += (usage.totalTokens ?? 0);
-            stepUsage = usage;
-          }
-          activity.lastUpdate = new Date().toISOString();
-        },
-      });
-
-      let stepText = "";
-      const toolCalls: LoopToolCall[] = [];
-      for await (const part of stream.fullStream) {
-        switch (part.type) {
+      }, (event) => {
+        switch (event.type) {
           case "reasoning-delta": {
             // Chat parity (F1c): surface model reasoning as a thinking delta.
-            if (inject) { try { ctx?.onDelta?.({ text: part.text, kind: "reasoning" }); } catch { /* subscriber can't sink the run */ } }
+            if (inject) { try { ctx?.onDelta?.({ text: event.text, kind: "reasoning" }); } catch { /* subscriber can't sink the run */ } }
             break;
           }
           case "text-delta": {
-            stepText += part.text;
+            stepText += event.text;
             // F1b: token-level streaming sink (separate from onTranscript, which
             // stays turn-granularity for persistence). Best-effort.
-            try { ctx?.onDelta?.({ text: part.text }); } catch { /* a delta subscriber can't sink the run */ }
+            try { ctx?.onDelta?.({ text: event.text }); } catch { /* a delta subscriber can't sink the run */ }
             break;
           }
           case "tool-input-start": {
             // Chat parity (F1c): "preparing" tool state before args stream in.
-            if (inject) emitTranscript({ type: "tool_input_start", toolId: part.id, tool: part.toolName });
+            if (inject) emitTranscript({ type: "tool_input_start", toolId: event.id, tool: event.name });
             break;
           }
           case "tool-input-delta": {
             // Chat parity (F1c): forward raw argument text while it streams so
             // the run path exposes the same live tool-call details as inline.
-            const delta =
-              (part as { delta?: string; inputTextDelta?: string }).delta ??
-              (part as { delta?: string; inputTextDelta?: string }).inputTextDelta ??
-              "";
-            if (inject) emitTranscript({ type: "tool_input_delta", toolId: part.id, delta });
+            if (inject) emitTranscript({ type: "tool_input_delta", toolId: event.id, delta: event.delta });
             break;
           }
           case "tool-call": {
             activity.toolCalls++;
-            activity.lastTool = part.toolName;
+            activity.lastTool = event.name;
             activity.lastUpdate = new Date().toISOString();
-            emitTranscript({
-              type: "tool_use",
-              tool: part.toolName,
-              toolId: part.toolCallId,
-              input: part.input,
-            });
             // Chat parity (F1c): a client-side tool ends the server loop and is
             // returned to the caller to execute — never dispatched here. Not
             // pushing it to toolCalls ⇒ the turn ends with no executable tools.
-            if (inject && inject.clientSideToolNames.has(part.toolName)) {
+            if (inject && inject.clientSideToolNames.has(event.name)) {
               emitTranscript({
                 type: "client_tool_call",
-                toolId: part.toolCallId,
-                tool: part.toolName,
-                input: part.input,
+                toolId: event.id,
+                tool: event.name,
+                input: event.args,
               });
               break;
             }
+            // Background task transcripts keep their historical use,use,result
+            // ordering. Interactive chat defers tool_use until executeTool so
+            // local calls are emitted calling,result one at a time, exactly like
+            // the inline completions handler. Provider tools never emit a local
+            // calling event because the model provider executes them.
+            if (!inject) {
+              emitTranscript({
+                type: "tool_use",
+                tool: event.name,
+                toolId: event.id,
+                input: event.args,
+              });
+            }
             toolCalls.push({
-              id: part.toolCallId,
-              name: part.toolName,
-              args: (part.input ?? {}) as Record<string, unknown>,
+              id: event.id,
+              name: event.name,
+              args: (event.args ?? {}) as Record<string, unknown>,
             });
             break;
           }
+          case "tool-result": {
+            if (inject?.providerToolNames.has(event.name)) {
+              providerToolResults.set(event.id, {
+                content: renderProviderResult(event.output),
+                isError: false,
+              });
+            }
+            break;
+          }
+          case "tool-error": {
+            if (inject?.providerToolNames.has(event.name)) {
+              providerToolResults.set(event.id, {
+                content: renderProviderResult(event.error),
+                isError: true,
+              });
+            }
+            break;
+          }
+          case "finish": {
+            if (inject && event.finishReason === "error") {
+              emitTranscript({
+                type: "error",
+                message: "Model returned an error",
+                error: { message: "Model returned an error", type: "model_error" },
+              });
+            }
+            break;
+          }
           case "error": {
+            const raw = event.error as any;
             emitTranscript({
               type: "error",
-              message: part.error instanceof Error ? part.error.message : String(part.error),
+              message: event.error instanceof Error ? event.error.message : String(event.error),
+              error: {
+                name: raw?.name ?? raw?.constructor?.name,
+                message: raw?.message ?? String(event.error),
+                statusCode: raw?.statusCode ?? raw?.cause?.statusCode,
+                responseBody: raw?.responseBody ?? raw?.cause?.responseBody,
+                modelId: raw?.modelId ?? raw?.cause?.modelId,
+                code: raw?.code ?? raw?.cause?.code,
+                type: raw?.type ?? raw?.cause?.type,
+                data: raw?.data ?? raw?.cause?.data,
+              },
             });
             break;
           }
         }
+      });
+
+      const stepUsage = turn.usage;
+      if (stepUsage) {
+        activity.totalTokens += (stepUsage.totalTokens ?? 0);
       }
+      activity.lastUpdate = new Date().toISOString();
 
       if (stepText) {
         activity.summary = stepText.slice(0, 200);
@@ -470,16 +515,12 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
       }
       lastStepText = stepText;
 
-      // On stream errors, `stream.text` throws the AI SDK "No output
-      // generated" error — awaiting it here preserves the legacy error
-      // path (exitCode 1 + that message in stderr).
       if (toolCalls.length === 0) {
-        lastStepText = await stream.text;
+        lastStepText = turn.text;
       }
 
       // Append the assistant message (with its tool-call parts) to history.
-      const responseMessages = (await stream.response).messages;
-      messages.push(...responseMessages);
+      messages.push(...(turn.responseMessages as ModelMessage[]));
 
       // Chat parity (F1c): surface per-turn usage + provider metadata so the
       // driver can accumulate them for onCompletionFinished, matching chat.
@@ -487,7 +528,7 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
         emitTranscript({
           type: "usage",
           usage: stepUsage,
-          providerMetadata: await Promise.resolve(stream.providerMetadata).catch(() => undefined),
+          providerMetadata: turn.providerMetadata,
         });
       }
 
@@ -501,9 +542,27 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
       if (inject) {
         // Chat parity (F1c): dispatch via the route's own executor and emit the
         // FULL result (no 2000-char task truncation). Provider-executed tools
-        // are recorded upstream (tool_use) and skipped here — their result is
-        // already in the stream's response messages.
-        if (inject.providerToolNames.has(toolCall.name)) return "";
+        // are already resolved by the model provider: record their result for
+        // observability, but never dispatch them through the local executor.
+        if (inject.providerToolNames.has(toolCall.name)) {
+          const providerResult = providerToolResults.get(toolCall.id) ?? { content: "", isError: false };
+          emitTranscript({
+            type: "tool_result",
+            toolId: toolCall.id,
+            tool: toolCall.name,
+            input: toolCall.args,
+            content: providerResult.content,
+            isError: providerResult.isError,
+            providerExecuted: true,
+          });
+          return "";
+        }
+        emitTranscript({
+          type: "tool_use",
+          tool: toolCall.name,
+          toolId: toolCall.id,
+          input: toolCall.args,
+        });
         llmText = await inject.executor(toolCall.name, toolCall.args);
         isError = llmText.startsWith("Error:");
         emitTranscript({ type: "tool_result", toolId: toolCall.id, tool: toolCall.name, content: llmText, isError });

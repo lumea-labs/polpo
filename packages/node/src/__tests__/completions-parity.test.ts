@@ -72,6 +72,11 @@ function toolStates(chunks: Record<string, unknown>[]): string[] {
     .map((ch) => (ch.choices as any)?.[0]?.tool_call?.state)
     .filter((s): s is string => typeof s === "string");
 }
+function toolEvents(chunks: Record<string, unknown>[]): any[] {
+  return chunks
+    .map((ch) => (ch.choices as any)?.[0]?.tool_call)
+    .filter(Boolean);
+}
 /** The finish_reason of the terminal chunk, if any. */
 function finishReason(chunks: Record<string, unknown>[]): string | undefined {
   for (let i = chunks.length - 1; i >= 0; i--) {
@@ -143,5 +148,59 @@ describe("F1c parity: inline vs run", () => {
     expect(toolStates(viaRun)).toEqual(toolStates(inline));
     expect(toolStates(viaRun)).toContain("calling");
     expect(finishReason(viaRun)).toBe(finishReason(inline));
+  });
+
+  it("multiple local tool calls preserve inline calling/result order", async () => {
+    const messages = [{ role: "user", content: "Use two tools" }];
+    const seq = () => mockTurnSequenceModel([
+      {
+        type: "tool-calls",
+        calls: [
+          { toolCallId: "call_1", toolName: "missing_one", args: { value: 1 } },
+          { toolCallId: "call_2", toolName: "missing_two", args: { value: 2 } },
+        ],
+      },
+      { type: "text", text: "finished" },
+    ]);
+
+    setChatExecution("inline");
+    setMockModel(seq());
+    const inline = await postStream({ messages });
+
+    setChatExecution("run");
+    setMockModel(seq());
+    const viaRun = await postStream({ messages });
+
+    const lifecycle = (chunks: Record<string, unknown>[]) => toolEvents(chunks)
+      .filter((event) => event.state !== "preparing")
+      .map((event) => `${event.id}:${event.state}`);
+    expect(lifecycle(viaRun)).toEqual([
+      "call_1:calling",
+      "call_1:error",
+      "call_2:calling",
+      "call_2:error",
+    ]);
+    expect(lifecycle(viaRun)).toEqual(lifecycle(inline));
+  });
+
+  it("client-side tools interrupt without a fake server-side calling event", async () => {
+    const messages = [{ role: "user", content: "Ask me" }];
+    const model = () => mockTurnSequenceModel([{
+      type: "tool-call",
+      toolName: "ask_user_question",
+      args: { questions: [{ question: "Continue?", options: ["Yes", "No"] }] },
+    }]);
+
+    setChatExecution("inline");
+    setMockModel(model());
+    const inline = await postStream({ messages });
+
+    setChatExecution("run");
+    setMockModel(model());
+    const viaRun = await postStream({ messages });
+
+    expect(toolStates(viaRun)).toEqual(toolStates(inline));
+    expect(toolStates(viaRun)).not.toContain("calling");
+    expect(finishReason(viaRun)).toBe("tool_calls");
   });
 });

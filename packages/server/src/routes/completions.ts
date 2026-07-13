@@ -77,6 +77,21 @@ export interface CompletionRouteDeps {
   }>;
   /** Build agent system prompt for conversational mode. */
   buildAgentPrompt: (agentConfig: any) => string | Promise<string>;
+  /**
+   * Optionally assemble the complete host-specific runtime prompt. Hosts use
+   * this to inject shared memory, agent memory, skills, workspace policy, and
+   * tagged caller/loop context consistently across chat and loop execution.
+   * When omitted, the server preserves the legacy buildAgentPrompt fallback.
+   */
+  buildRuntimePrompt?: (
+    agentConfig: any,
+    options: {
+      mode: "chat" | "loop-step";
+      extraSystemParts: string[];
+      loopContextPart?: string;
+      includeAgentMemory: boolean;
+    },
+  ) => string | Promise<string>;
   /** Create tools + executor for the agent. Return empty arrays for chat-only.
    *  Optional `cleanup` is invoked once the response finishes — used to close
    *  long-lived resources like MCP transports.
@@ -212,25 +227,32 @@ export function completionRoutes(getDeps: () => CompletionRouteDeps, apiKeys?: s
         effectiveTools = [];
         effectiveToolExecutor = async () => "Error: Project loop runtime has not resolved tools";
       } else {
-      // Build system prompt via dep
-      const agentSystemPrompt = await deps.buildAgentPrompt(agentConfig);
-      const conversationalPreamble = [
-        "You are now in interactive conversation mode with the user.",
-        "Unlike task execution, you should engage in dialogue: ask clarifying questions,",
-        "explain your reasoning, and wait for user input when needed.",
-        "You still have access to all your coding tools to help the user.",
-      ].join("\n");
+      if (deps.buildRuntimePrompt) {
+        fullSystemPrompt = await deps.buildRuntimePrompt(agentConfig, {
+          mode: "chat",
+          extraSystemParts,
+          includeAgentMemory: true,
+        });
+      } else {
+        // Build system prompt via the backwards-compatible generic fallback.
+        const agentSystemPrompt = await deps.buildAgentPrompt(agentConfig);
+        const conversationalPreamble = [
+          "You are now in interactive conversation mode with the user.",
+          "Unlike task execution, you should engage in dialogue: ask clarifying questions,",
+          "explain your reasoning, and wait for user input when needed.",
+          "You still have access to all your coding tools to help the user.",
+        ].join("\n");
 
-      const basePrompt = `${conversationalPreamble}\n\n${agentSystemPrompt}`;
-      fullSystemPrompt = extraSystemParts.length > 0
-        ? `${basePrompt}\n\n## Additional context from caller\n\n${extraSystemParts.join("\n\n")}`
-        : basePrompt;
+        const basePrompt = `${conversationalPreamble}\n\n${agentSystemPrompt}`;
+        fullSystemPrompt = extraSystemParts.length > 0
+          ? `${basePrompt}\n\n## Additional context from caller\n\n${extraSystemParts.join("\n\n")}`
+          : basePrompt;
 
-      // Inject agent memory
-      const memoryStore = deps.getMemoryStore();
-      const agentMemory = await memoryStore?.get(agentMemoryScope(agentConfig.name));
-      if (agentMemory) {
-        fullSystemPrompt += `\n\n## Your persistent memory\n\n${agentMemory}`;
+        const memoryStore = deps.getMemoryStore();
+        const agentMemory = await memoryStore?.get(agentMemoryScope(agentConfig.name));
+        if (agentMemory) {
+          fullSystemPrompt += `\n\n## Your persistent memory\n\n${agentMemory}`;
+        }
       }
 
       // Resolve model via dep
@@ -345,6 +367,7 @@ export function completionRoutes(getDeps: () => CompletionRouteDeps, apiKeys?: s
     const viaRun =
       deps.getConfig()?.settings?.chatExecution === "run" &&
       !!deps.runChatViaRun &&
+      agentMode &&
       !projectLoopRuntime;
     if (viaRun) {
       return (body.stream

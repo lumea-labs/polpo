@@ -71,6 +71,22 @@ export function mockToolCallGenerateResult(
   };
 }
 
+function mockToolCallsGenerateResult(
+  calls: Array<{ toolName: string; args: Record<string, unknown>; toolCallId?: string }>,
+): LanguageModelV3GenerateResult {
+  return {
+    content: calls.map((call, index) => ({
+      type: "tool-call" as const,
+      toolCallId: call.toolCallId ?? `call_${index + 1}`,
+      toolName: call.toolName,
+      input: JSON.stringify(call.args),
+    })),
+    finishReason: toolCallsFinishReason,
+    usage: mockUsage(),
+    warnings: [],
+  };
+}
+
 // ── doStream result factories ─────────────────────────
 
 /**
@@ -124,6 +140,24 @@ function toolCallStreamParts(
   ];
 }
 
+function toolCallsStreamParts(
+  calls: Array<{ toolName: string; args: Record<string, unknown>; toolCallId?: string }>,
+): LanguageModelV3StreamPart[] {
+  const parts: LanguageModelV3StreamPart[] = [{ type: "stream-start", warnings: [] }];
+  for (const [index, call] of calls.entries()) {
+    const id = call.toolCallId ?? `call_${index + 1}`;
+    const argsJson = JSON.stringify(call.args);
+    parts.push(
+      { type: "tool-input-start", id, toolName: call.toolName },
+      { type: "tool-input-delta", id, delta: argsJson },
+      { type: "tool-input-end", id },
+      { type: "tool-call", toolCallId: id, toolName: call.toolName, input: argsJson },
+    );
+  }
+  parts.push({ type: "finish", finishReason: toolCallsFinishReason, usage: mockUsage() });
+  return parts;
+}
+
 /** Create a doStream result from an array of stream parts. */
 function streamResult(parts: LanguageModelV3StreamPart[]): LanguageModelV3StreamResult {
   return {
@@ -164,7 +198,8 @@ export function mockToolCallModel(
  */
 export type MockResponse =
   | { type: "text"; text: string }
-  | { type: "tool-call"; toolName: string; args: Record<string, unknown> };
+  | { type: "tool-call"; toolName: string; args: Record<string, unknown> }
+  | { type: "tool-calls"; calls: Array<{ toolName: string; args: Record<string, unknown>; toolCallId?: string }> };
 
 export function mockTurnSequenceModel(responses: MockResponse[]): MockLanguageModelV3 {
   let generateIndex = 0;
@@ -175,13 +210,15 @@ export function mockTurnSequenceModel(responses: MockResponse[]): MockLanguageMo
       const idx = Math.min(generateIndex++, responses.length - 1);
       const r = responses[idx];
       if (r.type === "text") return mockTextGenerateResult(r.text);
-      return mockToolCallGenerateResult(r.toolName, r.args);
+      if (r.type === "tool-call") return mockToolCallGenerateResult(r.toolName, r.args);
+      return mockToolCallsGenerateResult(r.calls);
     },
     doStream: async () => {
       const idx = Math.min(streamIndex++, responses.length - 1);
       const r = responses[idx];
       if (r.type === "text") return streamResult(textStreamParts(r.text));
-      return streamResult(toolCallStreamParts(r.toolName, r.args));
+      if (r.type === "tool-call") return streamResult(toolCallStreamParts(r.toolName, r.args));
+      return streamResult(toolCallsStreamParts(r.calls));
     },
   });
 }

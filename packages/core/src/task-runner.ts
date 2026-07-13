@@ -75,10 +75,12 @@ export class TaskRunner {
    * Collect results from terminal runs and pass them to the callback.
    * The callback is typically the assessment pipeline (handleResult).
    */
-  async collectResults(onResult: (taskId: string, result: TaskResult) => void): Promise<void> {
+  async collectResults(
+    onResult: (taskId: string, result: TaskResult) => Promise<void> | void,
+  ): Promise<void> {
     const terminalRuns = await this.ctx.runStore.getTerminalRuns();
     for (const run of terminalRuns) {
-      // Persist sessionId on the task before deleting the run
+      // Persist sessionId on the task before acknowledging the run.
       const sid = run.sessionId ?? run.activity.sessionId;
       if (sid) {
         try { await this.ctx.taskStore.updateTask(run.taskId, { sessionId: sid }); } catch { /* task may already be gone */ }
@@ -91,12 +93,18 @@ export class TaskRunner {
           await this.ctx.taskStore.updateTask(run.taskId, { outcomes: run.outcomes });
         } catch { /* task may already be gone */ }
       }
-      if (run.result) {
+      const result = run.result ?? {
+        exitCode: 1,
+        stdout: "",
+        stderr: `Run ${run.id} ended with status ${run.status} without a result`,
+        duration: Math.max(0, Date.now() - new Date(run.startedAt).getTime()),
+      };
+      {
         // A killed run must never be treated as successful — force exitCode=1
         // even if the adapter resolved cleanly before the kill took effect.
-        if (run.status === "killed" && run.result.exitCode === 0) {
-          run.result.exitCode = 1;
-          run.result.stderr = (run.result.stderr ? run.result.stderr + "\n" : "") + "Run was killed (timeout or shutdown)";
+        if (run.status === "killed" && result.exitCode === 0) {
+          result.exitCode = 1;
+          result.stderr = (result.stderr ? result.stderr + "\n" : "") + "Run was killed (timeout or shutdown)";
         }
         // For killed runs, build a diagnosis from the activity log so the retry
         // prompt tells the agent exactly what went wrong (e.g. "you got stuck
@@ -104,12 +112,18 @@ export class TaskRunner {
         if (run.status === "killed") {
           const diagnosis = this.buildTimeoutDiagnosis(run);
           if (diagnosis) {
-            run.result.stderr = (run.result.stderr ? run.result.stderr + "\n" : "") + diagnosis;
+            result.stderr = (result.stderr ? result.stderr + "\n" : "") + diagnosis;
           }
         }
-        onResult(run.taskId, run.result);
+        await onResult(run.taskId, result);
       }
-      await this.ctx.runStore.deleteRun(run.id);
+      // Keep terminal Runs as durable history. Older/custom stores can keep
+      // their previous consume-and-delete behavior until they implement ack.
+      if (this.ctx.runStore.markRunCollected) {
+        await this.ctx.runStore.markRunCollected(run.id);
+      } else {
+        await this.ctx.runStore.deleteRun(run.id);
+      }
       this.staleWarned.delete(run.taskId);
     }
   }
@@ -348,11 +362,17 @@ export class TaskRunner {
             message: `[${run.taskId}] Runner died mid-run — checkpoint at turn ${checkpoint.turn! + 1} saved for resume`,
           });
         }
-        // Clean up the run record (unchanged fallback path)
+        // A crash/deploy interruption is not a task failure. Keep the Run for
+        // diagnostics but acknowledge it so restart recovery does not burn a
+        // retry by collecting it as a normal execution result.
         await this.ctx.runStore.completeRun(run.id, "failed", {
           exitCode: 1, stdout: "", stderr: "Runner process died", duration: 0,
         });
-        await this.ctx.runStore.deleteRun(run.id);
+        if (this.ctx.runStore.markRunCollected) {
+          await this.ctx.runStore.markRunCollected(run.id);
+        } else {
+          await this.ctx.runStore.deleteRun(run.id);
+        }
       }
     }
 
@@ -406,13 +426,44 @@ export class TaskRunner {
     return this.ctx.spawner.isAlive(pid);
   }
 
+  /** Persist failures that happen before a host process/sandbox can start. */
+  private async failBeforeSpawn(task: Task, message: string): Promise<void> {
+    await this.ctx.taskStore.transition(task.id, "assigned");
+    await this.ctx.taskStore.transition(task.id, "in_progress");
+    await this.ctx.taskStore.updateTask(task.id, { phase: "execution" });
+
+    const runId = nanoid();
+    const now = new Date().toISOString();
+    await this.ctx.runStore.upsertRun({
+      id: runId,
+      taskId: task.id,
+      pid: 0,
+      agentName: task.assignTo,
+      status: "running",
+      startedAt: now,
+      updatedAt: now,
+      activity: {
+        filesCreated: [], filesEdited: [], toolCalls: 0, totalTokens: 0, lastUpdate: now,
+      },
+      configPath: `preflight://${runId}`,
+      user: task.user,
+      engine: "agent",
+      delivery: "background",
+    });
+    await this.ctx.runStore.completeRun(runId, "failed", {
+      exitCode: 1,
+      stdout: "",
+      stderr: message,
+      duration: 0,
+    });
+  }
+
   async spawnForTask(task: Task): Promise<void> {
     const agent = await this.ctx.agentStore.getAgent(task.assignTo);
     if (!agent) {
-      this.ctx.emitter.emit("log", { level: "error", message: `No agent "${task.assignTo}" for task "${task.title}"` });
-      await this.ctx.taskStore.transition(task.id, "assigned");
-      await this.ctx.taskStore.transition(task.id, "in_progress");
-      await this.ctx.taskStore.transition(task.id, "failed");
+      const message = `No agent "${task.assignTo}" for task "${task.title}"`;
+      this.ctx.emitter.emit("log", { level: "error", message });
+      await this.failBeforeSpawn(task, message);
       return;
     }
 
@@ -425,9 +476,7 @@ export class TaskRunner {
           level: "error",
           message: `[${task.id}] Missing API key for ${detail} — cannot spawn agent "${agent.name}"`,
         });
-        await this.ctx.taskStore.transition(task.id, "assigned");
-        await this.ctx.taskStore.transition(task.id, "in_progress");
-        await this.ctx.taskStore.transition(task.id, "failed");
+        await this.failBeforeSpawn(task, `Missing API key for ${detail}`);
         return;
       }
     }
@@ -454,6 +503,29 @@ export class TaskRunner {
 
     // Create per-task output directory for deliverables
     const outputDir = pathJoin(this.ctx.polpoDir, "output", task.id);
+
+    // Establish the durable Run before memory, mission context, storage or
+    // sandbox preparation. Any subsequent failure is therefore inspectable.
+    const startedAt = new Date().toISOString();
+    const initialRun: RunRecord = {
+      id: runId,
+      taskId: task.id,
+      pid: 0,
+      agentName: agent.name,
+      status: "running",
+      startedAt,
+      updatedAt: startedAt,
+      activity: {
+        filesCreated: [], filesEdited: [], toolCalls: 0, totalTokens: 0, lastUpdate: startedAt,
+      },
+      configPath: `pending://${runId}`,
+      user: task.user,
+      engine: "agent",
+      delivery: "background",
+    };
+    await this.ctx.runStore.upsertRun(initialRun);
+
+    try {
 
     // Inject context into task description for agent awareness.
     // Context is prepended using XML-like tags that the agent prompt can reference.
@@ -547,27 +619,33 @@ export class TaskRunner {
       resumeState,
     };
 
-    try {
+      // Persist the complete input before handing control to the host. This is
+      // also the recovery/debug snapshot when host acquisition fails.
+      await this.ctx.runStore.upsertRun({
+        ...initialRun,
+        executionMode,
+        config: runnerConfig,
+        updatedAt: new Date().toISOString(),
+      });
+
       const spawnResult = await this.ctx.spawner.spawn(runnerConfig);
 
-      const now = new Date().toISOString();
-      const runRecord: RunRecord = {
-        id: runId,
-        taskId: task.id,
-        pid: spawnResult.pid,
-        agentName: agent.name,
-        status: "running",
-        startedAt: now,
-        executionMode,
-        updatedAt: now,
-        activity: { filesCreated: [], filesEdited: [], toolCalls: 0, totalTokens: 0, lastUpdate: now },
-        config: runnerConfig,
-        configPath: spawnResult.configPath,
-        // Propagate the OpenAI-compat end-user id from Task → Run so per-user
-        // analytics / billing pass-through can attribute the run correctly.
-        user: task.user,
-      };
-      await this.ctx.runStore.upsertRun(runRecord);
+      // Never upsert the whole record here: an in-process runner can complete
+      // before spawn() returns. Updating only spawn metadata cannot resurrect
+      // that terminal Run back to "running".
+      if (this.ctx.runStore.updateSpawnInfo) {
+        await this.ctx.runStore.updateSpawnInfo(runId, spawnResult.pid, spawnResult.configPath);
+      } else {
+        const current = await this.ctx.runStore.getRun(runId);
+        if (current?.status === "running") {
+          await this.ctx.runStore.upsertRun({
+            ...current,
+            pid: spawnResult.pid,
+            configPath: spawnResult.configPath,
+            updatedAt: new Date().toISOString(),
+          });
+        }
+      }
 
       // Wake the supervisor as soon as the runner process exits so results
       // are collected immediately (poll interval remains the safety net for
@@ -584,7 +662,12 @@ export class TaskRunner {
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
       this.ctx.emitter.emit("log", { level: "error", message: `[${task.id}] Failed to spawn runner: ${message}` });
-      await this.ctx.taskStore.transition(task.id, "failed");
+      await this.ctx.runStore.completeRun(runId, "failed", {
+        exitCode: 1,
+        stdout: "",
+        stderr: `Failed to prepare or spawn runner: ${message}`,
+        duration: Math.max(0, Date.now() - new Date(startedAt).getTime()),
+      });
     }
   }
 

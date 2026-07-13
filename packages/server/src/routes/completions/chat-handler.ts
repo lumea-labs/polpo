@@ -1,7 +1,7 @@
 /**
  * Standard chat-mode execution for the completions endpoint.
  *
- * Owns the multi-turn tool loop over streamText/generateText in both
+ * Owns the multi-turn tool loop over the shared model-turn primitive in both
  * streaming (SSE) and non-streaming variants: client-side tools,
  * interactive orchestrator tools, provider-executed tools, context
  * compaction, session persistence, and metering callbacks.
@@ -9,11 +9,12 @@
 
 import { streamSSE } from "hono/streaming";
 import { compactIfNeeded, type CompactionEvent } from "@polpo-ai/core";
-import { streamText, generateText, type LanguageModelUsage } from "ai";
+import { streamModelTurn } from "@polpo-ai/llm";
+import type { LanguageModelUsage } from "ai";
 import type { CompletionRouteDeps } from "../completions.js";
 import { buildSummarizeFn, MAX_TURNS, type ResolvedModelInfo } from "./agent-step-runner.js";
 import { appendModelResponseMessages } from "./message-mapping.js";
-import { completionResponse, modelNotFoundEnvelope, sseChunk } from "./sse.js";
+import { completionResponse, modelErrorEnvelope, modelNotFoundEnvelope, sseChunk } from "./sse.js";
 import {
   CLIENT_SIDE_TOOLS,
   CLIENT_SIDE_TOOL_NAMES,
@@ -41,8 +42,8 @@ export interface ChatCompletionExecution {
   effectiveToolExecutor: (name: string, args: Record<string, unknown>) => Promise<string>;
   /**
    * Provider-executed tools the host wants merged into the AI SDK tool
-   * palette as-is. Polpo never invokes these — they're handled inside
-   * `generateText` by the SDK / model provider (Vercel Gateway today).
+   * palette as-is. Polpo never invokes these locally — the SDK / model
+   * provider handles them (Vercel Gateway today).
    * Keys here MUST be skipped by the manual tool-call dispatcher.
    */
   extraAiTools?: Record<string, any>;
@@ -158,17 +159,6 @@ export function streamChatCompletion(c: any, exec: ChatCompletionExecution): any
           messages.splice(0, messages.length, ...compactionResult.messages);
         }
 
-        const result = streamText({
-          model: m.aiModel,
-          system: fullSystemPrompt,
-          messages,
-          tools: aiTools,
-          ...(modelToolChoice ? { toolChoice: modelToolChoice as any } : {}),
-          maxOutputTokens: m.maxTokens,
-          providerOptions: providerOpts,
-          abortSignal: abortController.signal,
-        });
-
         let turnText = "";
         let streamError: string | undefined;
         // Per-tool-call streaming state for this turn: the tool name (learned
@@ -178,53 +168,58 @@ export function streamChatCompletion(c: any, exec: ChatCompletionExecution): any
         const toolCallNames = new Map<string, string>();
         const toolCallArgsText = new Map<string, string>();
 
-        for await (const part of result.fullStream) {
-          if (abortController.signal.aborted) break;
-          if (part.type === "reasoning-delta") {
-            await stream.writeSSE({ data: sseChunk(completionId, {}, null, { thinking: part.text }) });
-          } else if (part.type === "text-delta") {
-            turnText += part.text;
-            await stream.writeSSE({ data: sseChunk(completionId, { content: part.text }) });
-          } else if (part.type === "tool-input-start") {
+        const result = await streamModelTurn({
+          model: m.aiModel,
+          system: fullSystemPrompt,
+          messages,
+          tools: aiTools,
+          ...(modelToolChoice ? { toolChoice: modelToolChoice as any } : {}),
+          maxOutputTokens: m.maxTokens,
+          providerOptions: providerOpts,
+          abortSignal: abortController.signal,
+        }, async (event) => {
+          if (abortController.signal.aborted) return;
+          if (event.type === "reasoning-delta") {
+            await stream.writeSSE({ data: sseChunk(completionId, {}, null, { thinking: event.text }) });
+          } else if (event.type === "text-delta") {
+            turnText += event.text;
+            finalText += event.text;
+            await stream.writeSSE({ data: sseChunk(completionId, { content: event.text }) });
+          } else if (event.type === "tool-input-start") {
             // Emit early "preparing" signal — the LLM has started generating a tool call
             // but arguments are not yet complete. Lets the UI show immediate feedback.
-            toolCallNames.set(part.id, part.toolName);
+            toolCallNames.set(event.id, event.name);
             await stream.writeSSE({
               data: sseChunk(completionId, {}, null, {
-                tool_call: { id: part.id, name: part.toolName, state: "preparing" },
+                tool_call: { id: event.id, name: event.name, state: "preparing" },
               }),
             });
-          } else if (part.type === "tool-input-delta") {
+          } else if (event.type === "tool-input-delta") {
             // Stream the argument tokens as they arrive. Accumulate the raw
             // JSON and forward it so the client can show the tool input
             // building up live. Still "preparing": args aren't final yet.
-            const delta =
-              (part as { delta?: string; inputTextDelta?: string }).delta ??
-              (part as { delta?: string; inputTextDelta?: string }).inputTextDelta ??
-              "";
-            const acc = (toolCallArgsText.get(part.id) ?? "") + delta;
-            toolCallArgsText.set(part.id, acc);
+            const acc = (toolCallArgsText.get(event.id) ?? "") + event.delta;
+            toolCallArgsText.set(event.id, acc);
             await stream.writeSSE({
               data: sseChunk(completionId, {}, null, {
                 tool_call: {
-                  id: part.id,
-                  name: toolCallNames.get(part.id) ?? "",
+                  id: event.id,
+                  name: toolCallNames.get(event.id) ?? "",
                   state: "preparing",
                   argumentsText: acc,
                 },
               }),
             });
-          } else if (part.type === "finish") {
+          } else if (event.type === "finish") {
             // Capture error from finish reason if applicable
-            if (part.finishReason === "error") {
+            if (event.finishReason === "error") {
               streamError = "Model returned an error";
             }
           }
-        }
+        });
 
         // If aborted, stop the loop — skip error/tool processing
         if (abortController.signal.aborted) {
-          finalText += turnText;
           break;
         }
 
@@ -234,19 +229,16 @@ export function streamChatCompletion(c: any, exec: ChatCompletionExecution): any
           break;
         }
 
-        // Get tool calls and usage after stream completes
-        const toolCalls = await result.toolCalls;
-        const usage = await result.usage;
+        const toolCalls = result.toolCalls;
+        const usage = result.usage;
         totalUsage = {
           inputTokens: (totalUsage.inputTokens ?? 0) + (usage.inputTokens ?? 0),
           outputTokens: (totalUsage.outputTokens ?? 0) + (usage.outputTokens ?? 0),
           totalTokens: (totalUsage.totalTokens ?? 0) + (usage.totalTokens ?? 0),
         } as LanguageModelUsage;
-        try { lastProviderMetadata = (await result.providerMetadata) as Record<string, unknown>; } catch { /* best effort */ }
+        lastProviderMetadata = result.providerMetadata as Record<string, unknown> | undefined;
 
         await appendModelResponseMessages(messages, result, turnText, toolCalls);
-
-        finalText += turnText;
 
         if (toolCalls.length === 0) break;
 
@@ -370,11 +362,7 @@ export function streamChatCompletion(c: any, exec: ChatCompletionExecution): any
         // Their tool results are already preserved in responseMessages,
         // so only record them for observability and skip local dispatch.
         const providerToolNames = new Set(Object.keys(extraAiTools ?? {}));
-        let providerToolResults = new Map<string, any>();
-        try {
-          const settled = (await (result as any).toolResults) as any[] | undefined;
-          providerToolResults = indexToolResultsByCallId(settled);
-        } catch { /* best effort */ }
+        const providerToolResults = indexToolResultsByCallId(result.toolResults as any[] | undefined);
 
         for (const call of toolCalls) {
           // Stop executing tools if client disconnected
@@ -450,7 +438,12 @@ export function streamChatCompletion(c: any, exec: ChatCompletionExecution): any
           });
           await stream.writeSSE({ data: "[DONE]" });
         } else {
-          throw err;
+          const error = modelErrorEnvelope(err);
+          const text = `Model request failed: ${error.message}`;
+          finalText += text;
+          await stream.writeSSE({ data: sseChunk(completionId, { content: text }) });
+          await stream.writeSSE({ data: sseChunk(completionId, {}, "stop", { error }) });
+          await stream.writeSSE({ data: "[DONE]" });
         }
       }
     } finally {
@@ -521,7 +514,7 @@ export async function runNonStreamingChatCompletion(c: any, exec: ChatCompletion
         messages.splice(0, messages.length, ...compactionResult.messages);
       }
 
-      const genResult = await generateText({
+      const turnResult = await streamModelTurn({
         model: m.aiModel,
         system: fullSystemPrompt,
         messages,
@@ -531,20 +524,20 @@ export async function runNonStreamingChatCompletion(c: any, exec: ChatCompletion
         providerOptions: providerOpts,
       });
 
-      const turnText = genResult.text;
-      const usage = genResult.usage;
+      const turnText = turnResult.text;
+      const usage = turnResult.usage;
       totalUsage = {
         inputTokens: (totalUsage.inputTokens ?? 0) + (usage.inputTokens ?? 0),
         outputTokens: (totalUsage.outputTokens ?? 0) + (usage.outputTokens ?? 0),
         totalTokens: (totalUsage.totalTokens ?? 0) + (usage.totalTokens ?? 0),
       } as LanguageModelUsage;
-      try { lastProviderMetadata = genResult.providerMetadata as Record<string, unknown>; } catch { /* best effort */ }
+      lastProviderMetadata = turnResult.providerMetadata as Record<string, unknown> | undefined;
 
-      await appendModelResponseMessages(messages, genResult, turnText, genResult.toolCalls);
+      await appendModelResponseMessages(messages, turnResult, turnText, turnResult.toolCalls);
 
       finalText += turnText;
 
-      const toolCalls = genResult.toolCalls;
+      const toolCalls = turnResult.toolCalls;
       if (toolCalls.length === 0) break;
 
       // ── Client-side tools — return to client as standard tool_calls ──
@@ -556,13 +549,6 @@ export async function runNonStreamingChatCompletion(c: any, exec: ChatCompletion
           arguments: clientSideCall.input,
           state: "interrupted",
         });
-        // Persist before returning
-        if (sessionStore && sessionId) {
-          const assistantMsg = finalText + (turnText ? "" : "");
-          if (assistantMsg) {
-            await sessionStore.addMessage(sessionId, "assistant", assistantMsg, toolCallsAccum);
-          }
-        }
         return c.json({
           id: completionId,
           object: "chat.completion",
@@ -722,7 +708,7 @@ export async function runNonStreamingChatCompletion(c: any, exec: ChatCompletion
       // Their tool results are already preserved in responseMessages,
       // so only record them for observability and skip local dispatch.
       const providerToolNames = new Set(Object.keys(extraAiTools ?? {}));
-      const providerToolResults = indexToolResultsByCallId(genResult.toolResults as any[] | undefined);
+      const providerToolResults = indexToolResultsByCallId(turnResult.toolResults as any[] | undefined);
 
       for (const call of toolCalls) {
         const callArgs = call.input as Record<string, unknown>;
@@ -769,7 +755,9 @@ export async function runNonStreamingChatCompletion(c: any, exec: ChatCompletion
     if (notFound) {
       return c.json({ error: notFound }, 400 as any);
     }
-    throw err;
+    const error = modelErrorEnvelope(err);
+    finalText = finalText || `Model request failed: ${error.message}`;
+    return c.json({ error }, 400 as any);
   } finally {
     // Always persist the final text + tool calls — even on early return (ask_user) or error.
     // (Vault credentials are redacted inside persistAssistantMessage.)

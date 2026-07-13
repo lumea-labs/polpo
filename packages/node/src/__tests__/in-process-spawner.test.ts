@@ -405,6 +405,10 @@ describe("orchestrator + InProcessSpawner (reactive tick)", () => {
       expect((await store.getTask(task.id))!.status).toBe("done");
     });
     expect((await store.getTask(task.id))!.result?.stdout).toBe("orchestrated");
+    const retainedRun = await runStore.getRunByTaskId(task.id);
+    expect(retainedRun?.status).toBe("completed");
+    expect(retainedRun?.collectedAt).toBeTruthy();
+    expect(retainedRun?.pid).toBeLessThan(0);
   });
 
   test("timeout health check reaches the in-process engine (negative pid kill)", async () => {

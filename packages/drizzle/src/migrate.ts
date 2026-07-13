@@ -120,6 +120,7 @@ export async function ensurePgTables(db: any): Promise<void> {
   await db.execute(sql`ALTER TABLE runs ADD COLUMN IF NOT EXISTS approval JSONB`);
   await db.execute(sql`ALTER TABLE runs ADD COLUMN IF NOT EXISTS metadata JSONB`);
   await db.execute(sql`ALTER TABLE runs ADD COLUMN IF NOT EXISTS completed_at TEXT`);
+  await db.execute(sql`ALTER TABLE runs ADD COLUMN IF NOT EXISTS collected_at TEXT`);
   await db.execute(sql`ALTER TABLE runs ADD COLUMN IF NOT EXISTS engine TEXT DEFAULT 'agent'`);
   await db.execute(sql`ALTER TABLE runs ADD COLUMN IF NOT EXISTS delivery TEXT`);
 

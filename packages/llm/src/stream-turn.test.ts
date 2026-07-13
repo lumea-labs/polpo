@@ -1,0 +1,98 @@
+import { describe, expect, it } from "vitest";
+import { jsonSchema } from "ai";
+import { MockLanguageModelV3, convertArrayToReadableStream } from "ai/test";
+import { streamModelTurn, type ModelTurnEvent } from "./stream-turn.js";
+
+function usage() {
+  return {
+    inputTokens: { total: 10, noCache: undefined, cacheRead: undefined, cacheWrite: undefined },
+    outputTokens: { total: 5, text: undefined, reasoning: undefined },
+  };
+}
+
+function mockModel(parts: unknown[]) {
+  return new MockLanguageModelV3({
+    doGenerate: {
+      content: [{ type: "text", text: "unused" }],
+      finishReason: { unified: "stop", raw: undefined },
+      usage: usage(),
+      warnings: [],
+    },
+    doStream: {
+      stream: convertArrayToReadableStream(parts as any[]),
+    },
+  });
+}
+
+describe("streamModelTurn", () => {
+  it("streams text events and returns response messages", async () => {
+    const events: ModelTurnEvent[] = [];
+    const model = mockModel([
+      { type: "stream-start", warnings: [] },
+      { type: "text-start", id: "txt_1" },
+      { type: "text-delta", id: "txt_1", delta: "Hello" },
+      { type: "text-delta", id: "txt_1", delta: " world" },
+      { type: "text-end", id: "txt_1" },
+      { type: "finish", finishReason: { unified: "stop", raw: undefined }, usage: usage() },
+    ]);
+
+    const result = await streamModelTurn({
+      model,
+      messages: [{ role: "user", content: "Say hello" }],
+    }, (event) => {
+      events.push(event);
+    });
+
+    expect(result.text).toBe("Hello world");
+    expect(events).toEqual([
+      { type: "text-delta", id: "txt_1", text: "Hello" },
+      { type: "text-delta", id: "txt_1", text: " world" },
+      expect.objectContaining({ type: "finish", finishReason: "stop" }),
+    ]);
+    expect(result.toolCalls).toEqual([]);
+    expect(result.responseMessages.length).toBeGreaterThan(0);
+  });
+
+  it("streams tool input deltas before the completed tool call", async () => {
+    const events: ModelTurnEvent[] = [];
+    const model = mockModel([
+      { type: "stream-start", warnings: [] },
+      { type: "tool-input-start", id: "call_1", toolName: "bash" },
+      { type: "tool-input-delta", id: "call_1", delta: "{\"command\":" },
+      { type: "tool-input-delta", id: "call_1", delta: "\"pwd\"}" },
+      { type: "tool-input-end", id: "call_1" },
+      { type: "tool-call", toolCallId: "call_1", toolName: "bash", input: "{\"command\":\"pwd\"}" },
+      { type: "finish", finishReason: { unified: "tool-calls", raw: undefined }, usage: usage() },
+    ]);
+
+    const result = await streamModelTurn({
+      model,
+      messages: [{ role: "user", content: "Run pwd" }],
+      tools: {
+        bash: {
+          description: "Run a shell command",
+          inputSchema: jsonSchema({
+            type: "object",
+            properties: { command: { type: "string" } },
+            required: ["command"],
+          }),
+        },
+      },
+    }, (event) => {
+      events.push(event);
+    });
+
+    expect(events).toEqual([
+      { type: "tool-input-start", id: "call_1", name: "bash", providerExecuted: undefined, dynamic: false, title: undefined },
+      { type: "tool-input-delta", id: "call_1", delta: "{\"command\":" },
+      { type: "tool-input-delta", id: "call_1", delta: "\"pwd\"}" },
+      { type: "tool-input-end", id: "call_1" },
+      { type: "tool-call", id: "call_1", name: "bash", args: { command: "pwd" }, providerExecuted: undefined, dynamic: undefined },
+      expect.objectContaining({ type: "finish", finishReason: "tool-calls" }),
+    ]);
+    expect(result.toolCalls).toHaveLength(1);
+    expect(result.toolCalls[0]?.toolName).toBe("bash");
+    expect(result.toolCalls[0]?.input).toEqual({ command: "pwd" });
+    expect(result.responseMessages.length).toBeGreaterThan(0);
+  });
+});

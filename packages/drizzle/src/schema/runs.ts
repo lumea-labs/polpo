@@ -32,6 +32,7 @@ export const runsSqlite = sqliteTable("runs", {
   approval: text("approval"),
   metadata: text("metadata"),
   completedAt: text("completed_at"),
+  collectedAt: text("collected_at"),
   /** Execution-engine discriminator: "agent" (chat/task turn-loop) | "graph"
    *  (project-loop). Defaults to "agent" so existing task rows backfill; loop
    *  rows are written "graph" so task queries (getActiveRuns/getTerminalRuns)
@@ -77,6 +78,7 @@ export const runsPg = pgTable("runs", {
   approval: jsonb("approval"),
   metadata: jsonb("metadata"),
   completedAt: pgText("completed_at"),
+  collectedAt: pgText("collected_at"),
   /** Execution-engine discriminator: "agent" (chat/task) | "graph" (project-loop).
    *  Defaults "agent"; loop rows are "graph" so task queries can exclude them. */
   engine: pgText("engine").default("agent"),

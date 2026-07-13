@@ -1,6 +1,6 @@
 {
   "name": "@polpo-ai/server",
-  "version": "0.15.5",
+  "version": "0.15.6",
   "description": "Polpo API route factories — edge-compatible Hono routes for tasks, agents, missions, vault, and more",
   "type": "module",
   "main": "dist/index.js",
@@ -24,6 +24,7 @@
     "@polpo-ai/connect": "workspace:*",
     "@polpo-ai/connect-server": "workspace:*",
     "@polpo-ai/core": "workspace:*",
+    "@polpo-ai/llm": "workspace:*",
     "@polpo-ai/tools": "workspace:*",
     "hono": ">=4.0.0",
     "nanoid": ">=5.0.0",

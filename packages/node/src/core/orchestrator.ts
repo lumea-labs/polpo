@@ -827,9 +827,13 @@ export class Orchestrator extends TypedEmitter {
           await this.registry.transition(run.taskId, "done");
         } catch { /* leave for recovery on restart */ }
       }
-      // For killed/failed runs: task stays in current state (in_progress, assigned, etc.)
-      // recoverOrphanedTasks() on restart will handle retry without burning retry count
-      await this.runStore.deleteRun(run.id);
+      // Keep shutdown-interrupted Runs for diagnostics, but acknowledge them:
+      // recoverOrphanedTasks() resets their task without burning a retry.
+      if (this.runStore.markRunCollected) {
+        await this.runStore.markRunCollected(run.id);
+      } else {
+        await this.runStore.deleteRun(run.id);
+      }
     }
 
     // Clear process list in state and close stores
@@ -1018,4 +1022,3 @@ export class Orchestrator extends TypedEmitter {
     this.emit("log", { level: "info", message: `Total: ${tasks.length} | Done: ${done.length} | Failed: ${failed.length}` });
   }
 }
-

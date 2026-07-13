@@ -57,7 +57,7 @@ import type {
  * Implemented by TaskRunner in the shell layer.
  */
 export interface TaskRunnerPort {
-  collectResults(onResult: (taskId: string, result: TaskResult) => void): Promise<void>;
+  collectResults(onResult: (taskId: string, result: TaskResult) => Promise<void> | void): Promise<void>;
   enforceHealthChecks(): Promise<void>;
   spawnForTask(task: Task): Promise<void>;
   syncProcessesFromRunStore(): Promise<void>;
@@ -69,7 +69,7 @@ export interface TaskRunnerPort {
  * Implemented by AssessmentOrchestrator in the shell layer.
  */
 export interface AssessmentOrchestratorPort {
-  handleResult(taskId: string, result: TaskResult): void;
+  handleResult(taskId: string, result: TaskResult): Promise<void>;
   retryOrFail(taskId: string, task: Task, result: TaskResult): Promise<void>;
 }
 

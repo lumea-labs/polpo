@@ -32,6 +32,14 @@ export interface RunRecord {
   resumeState?: LoopResumeState;
   /** Execution mode this run was spawned with ("subprocess" | "in-process"). */
   executionMode?: string;
+  /** Execution engine discriminator used by the unified Run model. */
+  engine?: "agent" | "graph";
+  /** Interactive streams are excluded from background task collection. */
+  delivery?: "stream" | "background";
+  /** Timestamp set when execution entered a terminal state. */
+  completedAt?: string;
+  /** Timestamp set after the task supervisor durably consumed the result. */
+  collectedAt?: string;
 }
 
 export interface RunStore {
@@ -46,7 +54,11 @@ export interface RunStore {
    * retry-from-zero.
    */
   updateResumeState?(runId: string, state: LoopResumeState): Promise<void>;
+  /** Update host-assigned spawn metadata without overwriting status or result. */
+  updateSpawnInfo?(runId: string, pid: number, configPath: string): Promise<void>;
   completeRun(runId: string, status: RunStatus, result: TaskResult): Promise<void>;
+  /** Acknowledge a terminal result while retaining its Run history. */
+  markRunCollected?(runId: string): Promise<void>;
   getRun(runId: string): Promise<RunRecord | undefined>;
   getRunByTaskId(taskId: string): Promise<RunRecord | undefined>;
   getActiveRuns(): Promise<RunRecord[]>;

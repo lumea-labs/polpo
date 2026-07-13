@@ -12,9 +12,24 @@ import type { contentPartSchema, messageSchema } from "./schemas.js";
 export function extractText(content: z.infer<typeof messageSchema>["content"]): string {
   if (typeof content === "string") return content;
   return content
-    .filter((p): p is { type: "text"; text: string } => p.type === "text")
+    .filter((p): p is { type: "text"; text: string } =>
+      p.type === "text" && typeof p.text === "string" && p.text.trim() !== "",
+    )
     .map((p) => p.text)
     .join("\n");
+}
+
+function hasText(value: unknown): value is string {
+  return typeof value === "string" && value.trim() !== "";
+}
+
+function hasModelContent(content: unknown): boolean {
+  if (hasText(content)) return true;
+  if (!Array.isArray(content)) return false;
+  return content.some((part) => {
+    if (part?.type === "text") return hasText(part.text);
+    return part?.type === "image" || part?.type === "image_url" || part?.type === "file" || part?.type === "tool-call";
+  });
 }
 
 /** Resolve file content parts → text references the agent can act on with its tools. */
@@ -48,15 +63,22 @@ function resolveFileContentParts(
 function toAIContent(content: z.infer<typeof messageSchema>["content"]): string | ({ type: "text"; text: string } | { type: "image"; image: string; mediaType?: string })[] {
   if (typeof content === "string") return content;
 
+  const nonEmpty = content.filter((part) =>
+    part.type !== "text" || (typeof part.text === "string" && part.text.trim() !== ""),
+  );
+
   // Check if there are any image parts
-  const hasImages = content.some((p) => p.type === "image_url");
+  const hasImages = nonEmpty.some((p) => p.type === "image_url");
   if (!hasImages) {
     // Text-only array → flatten to plain string
-    return content.map((p) => (p as { type: "text"; text: string }).text).join("\n");
+    return nonEmpty
+      .filter((p): p is { type: "text"; text: string } => p.type === "text")
+      .map((p) => p.text)
+      .join("\n");
   }
 
   // Mixed content → convert to AI SDK TextPart | ImagePart array
-  return content.map((p) => {
+  return nonEmpty.map((p) => {
     if (p.type === "text") {
       return { type: "text" as const, text: p.text };
     }
@@ -88,11 +110,13 @@ export function convertMessages(
 
   for (const msg of messages) {
     if (msg.role === "system") {
-      extraSystemParts.push(extractText(msg.content));
+      const text = extractText(msg.content);
+      if (hasText(text)) extraSystemParts.push(text);
     } else if (msg.role === "user") {
       // Resolve file content parts → text references (only in the AI SDK message, not persisted)
       const resolvedContent = resolveFileContentParts(msg.content);
-      aiMessages.push({ role: "user", content: toAIContent(resolvedContent) });
+      const content = toAIContent(resolvedContent);
+      if (hasModelContent(content)) aiMessages.push({ role: "user", content });
     } else if (msg.role === "assistant") {
       // If the assistant message includes tool_calls (client-side tool), reconstruct as AI SDK format
       const tc = (msg as any).tool_calls as Array<{ id: string; type: string; function: { name: string; arguments: string } }> | undefined;
@@ -110,11 +134,13 @@ export function convertMessages(
             input,
           });
         }
-        aiMessages.push({ role: "assistant", content: parts });
+        if (parts.length > 0) aiMessages.push({ role: "assistant", content: parts });
       } else {
-        aiMessages.push({ role: "assistant", content: extractText(msg.content) });
+        const text = extractText(msg.content);
+        if (hasText(text)) aiMessages.push({ role: "assistant", content: text });
       }
     } else if (msg.role === "tool" && msg.tool_call_id) {
+      const text = extractText(msg.content);
       // Client-side tool result — convert to AI SDK tool-result format
       aiMessages.push({
         role: "tool",
@@ -122,7 +148,7 @@ export function convertMessages(
           type: "tool-result",
           toolCallId: msg.tool_call_id,
           toolName: msg.name ?? "unknown",
-          output: { type: "text" as const, value: extractText(msg.content) },
+          output: { type: "text" as const, value: hasText(text) ? text : "(empty tool result)" },
         }],
       });
     }

@@ -1,7 +1,7 @@
 /**
  * Single agent-step execution for the loop runtimes.
  *
- * Runs one agent step (multi-turn generateText tool loop) with the
+ * Runs one agent step (multi-turn streamed model tool loop) with the
  * step's overlay-merged agent config — used by the project loop runtime
  * to execute `loop:` steps inside a deterministic pipeline.
  */
@@ -15,6 +15,7 @@ import {
   type SummarizeFn,
 } from "@polpo-ai/core";
 import { generateText, type LanguageModel, type LanguageModelUsage } from "ai";
+import { streamModelTurn } from "@polpo-ai/llm";
 import type { CompletionRouteDeps } from "../completions.js";
 import { appendModelResponseMessages } from "./message-mapping.js";
 import {
@@ -83,6 +84,15 @@ export async function buildRuntimeAgentPrompt(
   extraSystemParts: string[],
   loopContextPart?: string,
 ): Promise<string> {
+  if (deps.buildRuntimePrompt) {
+    return deps.buildRuntimePrompt(agentConfig, {
+      mode: "loop-step",
+      extraSystemParts,
+      loopContextPart,
+      includeAgentMemory: true,
+    });
+  }
+
   const agentSystemPrompt = await deps.buildAgentPrompt(agentConfig);
   const conversationalPreamble = [
     "You are now in interactive conversation mode with the user.",
@@ -158,7 +168,9 @@ export async function runAgentStepCompletion(options: {
         messages.splice(0, messages.length, ...compactionResult.messages);
       }
 
-      const genResult = await generateText({
+      const toolCallNames = new Map<string, string>();
+      const toolCallArgsText = new Map<string, string>();
+      const turnResult = await streamModelTurn({
         model: m.aiModel,
         system: fullSystemPrompt,
         messages,
@@ -166,20 +178,38 @@ export async function runAgentStepCompletion(options: {
         ...(modelToolChoice ? { toolChoice: modelToolChoice as any } : {}),
         maxOutputTokens: m.maxTokens,
         providerOptions: providerOpts,
+      }, async (event) => {
+        if (event.type === "tool-input-start") {
+          toolCallNames.set(event.id, event.name);
+          await onToolCall?.({
+            id: event.id,
+            name: event.name,
+            state: "preparing",
+          });
+        } else if (event.type === "tool-input-delta") {
+          const acc = (toolCallArgsText.get(event.id) ?? "") + event.delta;
+          toolCallArgsText.set(event.id, acc);
+          await onToolCall?.({
+            id: event.id,
+            name: toolCallNames.get(event.id) ?? "",
+            state: "preparing",
+            argumentsText: acc,
+          });
+        }
       });
 
-      const turnText = genResult.text;
-      totalUsage = addUsage(totalUsage, genResult.usage);
-      try { lastProviderMetadata = genResult.providerMetadata as Record<string, unknown>; } catch { /* best effort */ }
+      const turnText = turnResult.text;
+      totalUsage = addUsage(totalUsage, turnResult.usage);
+      lastProviderMetadata = turnResult.providerMetadata as Record<string, unknown> | undefined;
 
-      await appendModelResponseMessages(messages, genResult, turnText, genResult.toolCalls);
+      await appendModelResponseMessages(messages, turnResult, turnText, turnResult.toolCalls);
       finalText += turnText;
 
-      if (genResult.toolCalls.length === 0) break;
+      if (turnResult.toolCalls.length === 0) break;
 
-      const providerToolResults = indexToolResultsByCallId(genResult.toolResults as any[] | undefined);
+      const providerToolResults = indexToolResultsByCallId(turnResult.toolResults as any[] | undefined);
 
-      for (const call of genResult.toolCalls) {
+      for (const call of turnResult.toolCalls) {
         const callArgs = call.input as Record<string, unknown>;
         if (providerToolNames.has(call.toolName)) {
           const event = providerToolCallEvent(call, providerToolResults);
