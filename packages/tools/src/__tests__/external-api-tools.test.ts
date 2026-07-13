@@ -23,8 +23,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createImageTools } from "../image-tools.js";
 import { createAudioTools } from "../audio-tools.js";
+import { createAllTools } from "../system-tools.js";
 import { createSearchTools } from "../search-tools.js";
 import { ExaSearchProvider } from "../lib/exa-search-provider.js";
+import { NodeFileSystem } from "../adapters/node-filesystem.js";
+import { NodeShell } from "../adapters/node-shell.js";
 import type { PolpoTool } from "@polpo-ai/core";
 import type { ResolvedVault } from "../types.js";
 
@@ -1918,6 +1921,53 @@ describe("agent-config model precedence — audio_speak", () => {
     const result = await t.execute("c", { text: "x", path: "out.mp3" });
     expect(JSON.stringify(result)).toMatch(/invalid|provider|model|non-empty/i);
     expect(sdkMocks.experimental_generateSpeech).not.toHaveBeenCalled();
+  });
+});
+
+describe("createAllTools — agent media model wiring", () => {
+  it("forwards configured image, video, and vision models", async () => {
+    writeFileSync(join(cwd, "i.png"), TINY_PNG);
+    const tools = await createAllTools({
+      cwd,
+      allowedPaths: [cwd],
+      allowedTools: ["image_generate", "video_generate", "image_analyze"],
+      vault: makeVault(),
+      fs: new NodeFileSystem(),
+      shell: new NodeShell(),
+      imageModel: "fal/fal-ai/flux-pro/v1.1",
+      videoModel: "fal/fal-ai/wan/v2.2-1.3b/text-to-video",
+      visionModel: "anthropic/claude-sonnet-4-20250514",
+    });
+
+    await pick(tools, "image_generate").execute("image", { prompt: "x", path: "out.png" });
+    await pick(tools, "video_generate").execute("video", { prompt: "x", path: "out.mp4" });
+    await pick(tools, "image_analyze").execute("vision", { path: "i.png" });
+
+    expect(sdkMocks.generateImage.mock.calls[0][0].model.modelId).toBe("fal-ai/flux-pro/v1.1");
+    expect(sdkMocks.experimental_generateVideo.mock.calls[0][0].model.modelId).toBe("fal-ai/wan/v2.2-1.3b/text-to-video");
+    expect(sdkMocks.generateText.mock.calls[0][0].model.modelId).toBe("claude-sonnet-4-20250514");
+  });
+
+  it("forwards configured Deepgram transcription and speech models", async () => {
+    writeFileSync(join(cwd, "r.mp3"), Buffer.from("data"));
+    const tools = await createAllTools({
+      cwd,
+      allowedPaths: [cwd],
+      allowedTools: ["audio_transcribe", "audio_speak"],
+      vault: makeVault(),
+      fs: new NodeFileSystem(),
+      shell: new NodeShell(),
+      transcribeModel: "deepgram/nova-3",
+      ttsModel: "deepgram/aura-2-livia-it",
+    });
+
+    await pick(tools, "audio_transcribe").execute("stt", { path: "r.mp3" });
+    await pick(tools, "audio_speak").execute("tts", { text: "ciao", path: "out.mp3" });
+
+    expect(sdkMocks.resolveTranscribeProvider).toHaveBeenCalledWith("deepgram", "fake-deepgram-key");
+    expect(sdkMocks.experimental_transcribe.mock.calls[0][0].model.modelId).toBe("nova-3");
+    expect(sdkMocks.resolveSpeakProvider.mock.calls[0][0]).toBe("deepgram");
+    expect(sdkMocks.experimental_generateSpeech.mock.calls[0][0].model.modelId).toBe("aura-2-livia-it");
   });
 });
 

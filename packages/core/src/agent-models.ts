@@ -28,6 +28,164 @@ export const DEFAULT_TRANSCRIBE_MODEL = "openai/whisper-1";
 export const DEFAULT_TTS_MODEL        = "edge/edge-tts";
 export const DEFAULT_SEARCH_PROVIDER  = "exa";
 
+// ── Audio model catalog ──
+
+export type AudioModelCapability = "transcription" | "speech";
+export type AudioModelRouting = "direct" | "local";
+
+export interface AudioModelDefinition {
+  /** Stable provider/model value stored on AgentConfig. */
+  id: string;
+  /** Human-readable model or voice name. */
+  name: string;
+  provider: "openai" | "deepgram" | "elevenlabs" | "edge";
+  capability: AudioModelCapability;
+  /** Direct providers use the agent vault; local models run in the sandbox. */
+  routing: AudioModelRouting;
+  /** Vault service required by direct providers. */
+  credentialService?: "openai" | "deepgram" | "elevenlabs";
+  language?: string;
+  description?: string;
+}
+
+/**
+ * Models explicitly supported by Polpo's audio tool adapters.
+ *
+ * This is the shared discovery catalog for dashboards and builders. The tool
+ * runtime still accepts any valid provider/model override so provider catalog
+ * additions do not require a Polpo release before advanced users can use them.
+ */
+export const AUDIO_MODEL_CATALOG: readonly AudioModelDefinition[] = [
+  {
+    id: "openai/whisper-1",
+    name: "Whisper 1",
+    provider: "openai",
+    capability: "transcription",
+    routing: "direct",
+    credentialService: "openai",
+  },
+  {
+    id: "openai/gpt-4o-transcribe",
+    name: "GPT-4o Transcribe",
+    provider: "openai",
+    capability: "transcription",
+    routing: "direct",
+    credentialService: "openai",
+  },
+  {
+    id: "openai/gpt-4o-mini-transcribe",
+    name: "GPT-4o mini Transcribe",
+    provider: "openai",
+    capability: "transcription",
+    routing: "direct",
+    credentialService: "openai",
+  },
+  {
+    id: "deepgram/nova-3",
+    name: "Nova 3",
+    provider: "deepgram",
+    capability: "transcription",
+    routing: "direct",
+    credentialService: "deepgram",
+    description: "Deepgram's general-purpose multilingual transcription model.",
+  },
+  {
+    id: "deepgram/nova-2",
+    name: "Nova 2",
+    provider: "deepgram",
+    capability: "transcription",
+    routing: "direct",
+    credentialService: "deepgram",
+  },
+  {
+    id: "edge/edge-tts",
+    name: "Edge TTS",
+    provider: "edge",
+    capability: "speech",
+    routing: "local",
+    description: "Free local speech synthesis in the agent sandbox.",
+  },
+  {
+    id: "openai/tts-1",
+    name: "TTS 1",
+    provider: "openai",
+    capability: "speech",
+    routing: "direct",
+    credentialService: "openai",
+  },
+  {
+    id: "openai/tts-1-hd",
+    name: "TTS 1 HD",
+    provider: "openai",
+    capability: "speech",
+    routing: "direct",
+    credentialService: "openai",
+  },
+  {
+    id: "openai/gpt-4o-mini-tts",
+    name: "GPT-4o mini TTS",
+    provider: "openai",
+    capability: "speech",
+    routing: "direct",
+    credentialService: "openai",
+  },
+  {
+    id: "deepgram/aura-2-livia-it",
+    name: "Aura 2 Livia",
+    provider: "deepgram",
+    capability: "speech",
+    routing: "direct",
+    credentialService: "deepgram",
+    language: "it",
+  },
+  {
+    id: "deepgram/aura-2-dionisio-it",
+    name: "Aura 2 Dionisio",
+    provider: "deepgram",
+    capability: "speech",
+    routing: "direct",
+    credentialService: "deepgram",
+    language: "it",
+  },
+  {
+    id: "deepgram/aura-2-helena-en",
+    name: "Aura 2 Helena",
+    provider: "deepgram",
+    capability: "speech",
+    routing: "direct",
+    credentialService: "deepgram",
+    language: "en",
+  },
+  {
+    id: "deepgram/aura-2-thalia-en",
+    name: "Aura 2 Thalia",
+    provider: "deepgram",
+    capability: "speech",
+    routing: "direct",
+    credentialService: "deepgram",
+    language: "en",
+  },
+  {
+    id: "elevenlabs/eleven_multilingual_v2",
+    name: "Eleven Multilingual v2",
+    provider: "elevenlabs",
+    capability: "speech",
+    routing: "direct",
+    credentialService: "elevenlabs",
+  },
+] as const;
+
+export function listAudioModels(capability?: AudioModelCapability): AudioModelDefinition[] {
+  return AUDIO_MODEL_CATALOG
+    .filter((model) => capability === undefined || model.capability === capability)
+    .map((model) => ({ ...model }));
+}
+
+export function getAudioModel(id: string): AudioModelDefinition | undefined {
+  const model = AUDIO_MODEL_CATALOG.find((candidate) => candidate.id === id);
+  return model ? { ...model } : undefined;
+}
+
 // ── Parse helper ──
 
 export interface ParsedModel {
