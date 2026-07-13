@@ -186,6 +186,23 @@ describe("InProcessSpawner", () => {
     expect((capturedResolveOpts as { gateway?: unknown })?.gateway).toEqual(gatewayConfig);
   });
 
+  test("does not touch a remote outputDir through node:fs", async () => {
+    setMockModel(mockTurnSequenceModel([{ type: "text", text: "remote fs ok" }]));
+    const store = new InMemoryRunStore();
+    const remoteFs = {
+      readFile: vi.fn(), writeFile: vi.fn(), exists: vi.fn(), readdir: vi.fn(),
+      mkdir: vi.fn(), remove: vi.fn(), stat: vi.fn(), rename: vi.fn(),
+    };
+    const spawner = new InProcessSpawner(() => ({ runStore: store, fs: remoteFs as any }));
+    const config = makeConfig({ outputDir: "/home/remote/project/.polpo/output/task" });
+
+    const spawnResult = await spawner.spawn(config);
+    await onExitPromise(spawnResult);
+
+    expect((await store.getRun(config.runId))?.status).toBe("completed");
+    expect(remoteFs.mkdir).not.toHaveBeenCalled();
+  });
+
   test("lifecycle: isAlive during the run, false after; kill() → run killed", async () => {
     // Model blocks until aborted.
     setMockModel(new MockLanguageModelV3({

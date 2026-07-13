@@ -47,15 +47,21 @@ export function errorResult(err: unknown): TaskResult {
 
 /** Persistent per-run activity log (JSONL file in .polpo/logs/) */
 export class RunActivityLog {
-  private logPath: string;
+  private logPath?: string;
   private lastSnapshot = "";
 
   constructor(polpoDir: string, runId: string, taskId: string, agentName: string, pid: number) {
-    const logsDir = join(polpoDir, "logs");
-    if (!existsSync(logsDir)) mkdirSync(logsDir, { recursive: true });
-    this.logPath = join(logsDir, `run-${runId}.jsonl`);
-    // Write header
-    this.write({ _run: true, runId, taskId, agentName, startedAt: new Date().toISOString(), pid });
+    try {
+      const logsDir = join(polpoDir, "logs");
+      if (!existsSync(logsDir)) mkdirSync(logsDir, { recursive: true });
+      this.logPath = join(logsDir, `run-${runId}.jsonl`);
+      this.write({ _run: true, runId, taskId, agentName, startedAt: new Date().toISOString(), pid });
+    } catch {
+      // A remote/sandbox polpoDir is not necessarily writable by the host.
+      // DB-backed hosts persist the same transcript through createLogSession;
+      // the local JSONL side-channel is intentionally best-effort.
+      this.logPath = undefined;
+    }
   }
 
   /** Log activity diff — only writes if something changed */
@@ -77,6 +83,7 @@ export class RunActivityLog {
   }
 
   private write(obj: Record<string, unknown>): void {
+    if (!this.logPath) return;
     try { appendFileSync(this.logPath, JSON.stringify(obj) + "\n", "utf-8"); } catch { /* best effort */ }
   }
 }

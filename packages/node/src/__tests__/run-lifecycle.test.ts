@@ -66,7 +66,7 @@ vi.mock("../adapters/loop-engine.js", async (importOriginal) => {
   };
 });
 
-import { executeRun } from "../core/run-lifecycle.js";
+import { executeRun, RunActivityLog } from "../core/run-lifecycle.js";
 import { InMemoryRunStore } from "./fixtures.js";
 import type { AgentConfig, Task, RunnerConfig } from "@polpo-ai/core/types";
 import type { LoopResumeState } from "@polpo-ai/core/loop-run-store";
@@ -135,6 +135,13 @@ afterAll(async () => {
 // ── Tests ───────────────────────────────────────────────
 
 describe("executeRun — shared run lifecycle", () => {
+  test("local activity logging is best-effort for a non-writable remote polpoDir", async () => {
+    const notADirectory = join(tmpRoot, "not-a-directory");
+    await import("node:fs/promises").then(({ writeFile }) => writeFile(notADirectory, "file"));
+
+    expect(() => new RunActivityLog(notADirectory, "remote-run", "task", "agent", -1)).not.toThrow();
+  });
+
   test("happy path: running → completed, result + transcript persisted", async () => {
     setMockModel(mockTurnSequenceModel([
       { type: "tool-call", toolName: "write", args: { path: "lc-a.txt", content: "hello" } },
