@@ -189,6 +189,17 @@ describe("AUDIO_MODEL_CATALOG", () => {
     );
   });
 
+  it("prioritizes US English Deepgram voices for speech discovery", () => {
+    const deepgramVoices = listAudioModels("speech").filter((model) => model.provider === "deepgram");
+
+    expect(deepgramVoices.slice(0, 3).map((model) => model.id)).toEqual([
+      "deepgram/aura-2-thalia-en",
+      "deepgram/aura-2-helena-en",
+      "deepgram/aura-2-apollo-en",
+    ]);
+    expect(deepgramVoices.slice(0, 3).every((model) => model.language === "en-US")).toBe(true);
+  });
+
   it("returns defensive copies from lookup helpers", () => {
     const model = getAudioModel("deepgram/nova-3");
     expect(model).toMatchObject({ provider: "deepgram", capability: "transcription" });
