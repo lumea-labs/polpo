@@ -28,6 +28,14 @@ export { configRoutes } from "./routes/config.js";
 export { fileRoutes, type FileRouteDeps } from "./routes/files.js";
 export { skillRoutes, type SkillRouteDeps } from "./routes/skills.js";
 export { connectRoutes } from "./routes/connect.js";
+export {
+  customToolRoutes,
+  type CustomToolDeployer,
+  type CustomToolDeployProgress,
+  type CustomToolDeployResult,
+  type CustomToolRouteDeps,
+  type CustomToolRunner,
+} from "./routes/custom-tools.js";
 // Dependency types
 export type {
   TaskRouteDeps,

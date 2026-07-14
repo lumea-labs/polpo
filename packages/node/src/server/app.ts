@@ -28,6 +28,7 @@ import {
   loopRoutes,
   eventRoutes,
   configRoutes,
+  customToolRoutes,
 } from "@polpo-ai/server";
 // Node.js-only routes (stay in src/server/routes/)
 import { publicConfigRoutes } from "./routes/config.js";
@@ -35,6 +36,7 @@ import { filesystemRoutes } from "./routes/filesystem.js";
 import { providerRoutes } from "./routes/providers.js";
 import { skillRoutes } from "./routes/skills.js";
 import { fileRoutes } from "./routes/files.js";
+import { createLocalCustomToolRuntime } from "../custom-tools/runtime.js";
 
 function readRuntimeVersion(): string {
   try {
@@ -66,6 +68,13 @@ export interface AppOptions {
  */
 export function createApp(orchestrator: Orchestrator, sseBridge: SSEBridge, opts?: AppOptions): OpenAPIHono {
   const app = new OpenAPIHono();
+  const o = orchestrator;
+  const customTools = () => createLocalCustomToolRuntime({
+    polpoDir: o.getPolpoDir(),
+    workDir: o.getAgentWorkDir(),
+    fs: o.getFs(),
+    shell: o.getShell(),
+  });
 
   // Global middleware
   app.use("*", errorMiddleware());
@@ -134,6 +143,7 @@ export function createApp(orchestrator: Orchestrator, sseBridge: SSEBridge, opts
       const vaultEntries = await o.getVaultStore()?.getAllForAgent(agentConfig.name);
       const vault = resolveAgentVault(vaultEntries);
       const tools: any[] = createSystemTools(o.getAgentWorkDir(), agentConfig.allowedTools, agentConfig.allowedPaths, undefined, vault, o.getFs(), o.getShell());
+      tools.push(...await customTools().loadAssigned(agentConfig.allowedTools, vault));
       const memoryStore = o.getMemoryStore();
       if (memoryStore) {
         const memoryTools = createMemoryTools(memoryStore, agentConfig.name);
@@ -232,8 +242,6 @@ export function createApp(orchestrator: Orchestrator, sseBridge: SSEBridge, opts
   // Orchestrator instance.  Consumers can supply different thunks that read
   // from database stores directly.
 
-  const o = orchestrator; // short alias
-
   authed.route("/tasks", taskRoutes(() => ({
     taskStore: o.getStore(),
     runStore: o.getRunStore(),
@@ -313,6 +321,16 @@ export function createApp(orchestrator: Orchestrator, sseBridge: SSEBridge, opts
     workDir: o.getWorkDir(),
     getAgents: () => o.engine.getAgents(),
   })));
+
+  authed.route("/tools", customToolRoutes(() => {
+    const runtime = customTools();
+    return {
+      store: runtime.store,
+      deployer: runtime,
+      runner: runtime,
+      generateExample: (name: string) => runtime.generateExample(name),
+    };
+  }));
 
   authed.route("/approvals", approvalRoutes(() => ({
     getAllApprovals: (status?: string) => o.engine.getAllApprovals(status as any),

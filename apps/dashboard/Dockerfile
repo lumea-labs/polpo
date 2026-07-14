@@ -29,6 +29,7 @@ FROM node:22-slim AS production
 WORKDIR /app
 COPY --from=build --chown=node:node /app/apps/dashboard/.next/standalone/ ./
 COPY --from=build --chown=node:node /app/apps/dashboard/.next/static/ ./apps/dashboard/.next/static/
+COPY --from=build --chown=node:node /app/apps/dashboard/public/ ./apps/dashboard/public/
 
 ENV NODE_ENV=production
 ENV PORT=3000

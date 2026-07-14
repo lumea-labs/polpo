@@ -33,6 +33,7 @@ import type { Shell } from "@polpo-ai/core/shell";
 import { loadAgentSkills } from "../llm/skills.js";
 import { nanoid } from "nanoid";
 import type { PolpoTool } from "@polpo-ai/core";
+import { createLocalCustomToolRuntime } from "../custom-tools/runtime.js";
 
 function resolvePromptAllowedPaths(cwd: string, allowedPaths?: string[]): string[] {
   const configured = Array.isArray(allowedPaths)
@@ -469,6 +470,14 @@ export async function buildAgentTools(
       ttsModel:        agentConfig.tts_model,
     });
   }
+
+  const customTools = createLocalCustomToolRuntime({
+    polpoDir: prep.polpoDir,
+    workDir: cwd,
+    fs: prep.fs,
+    shell: prep.shell,
+  });
+  allPolpoTools.push(...await customTools.loadAssigned(agentConfig.allowedTools, vault));
 
   return allPolpoTools;
 }
