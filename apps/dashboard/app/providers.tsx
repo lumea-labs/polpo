@@ -4,7 +4,10 @@ import { useMemo, useState, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
 import { ThemeProvider } from "next-themes";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { DashboardProvider } from "@polpo-ai/dashboard";
+import {
+  createSelfHostedDashboardApi,
+  DashboardProvider,
+} from "@polpo-ai/dashboard";
 import { PolpoProvider } from "@polpo-ai/react";
 
 export function Providers({ children }: { children: ReactNode }) {
@@ -12,6 +15,7 @@ export function Providers({ children }: { children: ReactNode }) {
   const [queryClient] = useState(() => new QueryClient());
   const host = useMemo(() => ({
     project: { id: "local", name: "Local runtime" },
+    api: createSelfHostedDashboardApi(),
     capabilities: {
       multiProject: false,
       billing: false,

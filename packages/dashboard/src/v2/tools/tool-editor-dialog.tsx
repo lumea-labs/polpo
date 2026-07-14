@@ -12,7 +12,7 @@ import {
   CaretRight,
   Info,
 } from "@phosphor-icons/react/dist/ssr";
-import { mutateControlPlane, runtimeUrl } from "../host.js";
+import { useDashboardApi } from "../../host.js";
 import { Button } from "../ui/button.js";
 import {
   Dialog,
@@ -241,6 +241,7 @@ export function ToolEditorDialog({
   onOpenChange: (open: boolean) => void;
   onDeployed: () => void;
 }) {
+  const api = useDashboardApi();
   const { resolvedTheme } = useTheme();
   const [source, setSource] = useState(mode === "create" ? TEMPLATE : "");
   const [loading, setLoading] = useState(false);
@@ -262,7 +263,7 @@ export function ToolEditorDialog({
     if (mode === "edit" && initialName) {
       setLoading(true);
       fetch(
-        runtimeUrl(`/v1/tools/${encodeURIComponent(initialName)}`),
+        api.runtimeUrl(projectId, `/v1/tools/${encodeURIComponent(initialName)}`),
         { credentials: "include" },
       )
         .then((r) => r.json())
@@ -303,7 +304,7 @@ export function ToolEditorDialog({
     let ok = false;
     try {
       await streamDeploy(
-        runtimeUrl(`/v1/tools/${encodeURIComponent(n)}/deploy`),
+        api.runtimeUrl(projectId, `/v1/tools/${encodeURIComponent(n)}/deploy`),
         { source },
         (event, data) => {
           if (event === "progress") {
@@ -329,7 +330,7 @@ export function ToolEditorDialog({
       );
       if (ok) {
         if (renamedFrom) {
-          await mutateControlPlane(
+          await api.mutateControlPlane(
             `/v1/projects/${projectId}/tools/${encodeURIComponent(renamedFrom)}`,
             { method: "DELETE" },
           ).catch(() => {});

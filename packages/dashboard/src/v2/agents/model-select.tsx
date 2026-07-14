@@ -8,7 +8,8 @@ import {
   CaretDown,
   CircleNotch,
 } from "@phosphor-icons/react/dist/ssr";
-import { mutateDataPlane, ProviderIcon } from "../host";
+import { ProviderIcon } from "../host";
+import { useDashboardApi } from "../../host";
 
 export type GatewayModel = {
   id: string;
@@ -127,6 +128,7 @@ export function ModelSelect({
   /** Static catalog. When provided, the gateway is not queried. */
   options?: GatewayModel[];
 }) {
+  const api = useDashboardApi();
   const router = useRouter();
   const queryClient = useQueryClient();
   const [open, setOpen] = useState(false);
@@ -163,7 +165,7 @@ export function ModelSelect({
 
   const save = useMutation({
     mutationFn: (model: string) =>
-      mutateDataPlane(projectId, `/v1/agents/${encodeURIComponent(agentName)}`, {
+      api.mutateDataPlane(projectId, `/v1/agents/${encodeURIComponent(agentName)}`, {
         method: "PATCH",
         body: { [field]: model },
       }),

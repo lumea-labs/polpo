@@ -32,11 +32,7 @@ import { usePolpoClient } from "../host";
 import { announceNavigationStart } from "../host";
 import { countEnabledTools } from "../host";
 import { V2_FLAGS } from "../host";
-import {
-  fetchControlPlane,
-  fetchDataPlane,
-  mutateDataPlane,
-} from "../host";
+import { useDashboardApi } from "../../host";
 import { normalizeAll } from "../sessions/trace-normalize";
 import { traceColumns } from "../sessions/trace-columns";
 import { DataTable } from "../ui/data-table";
@@ -455,18 +451,19 @@ function OverviewPanel({
   projectId: string;
   agent: AgentDetailData;
 }) {
+  const api = useDashboardApi();
   const { data: rows = [], isLoading } = useQuery({
     queryKey: ["agent-activity", projectId, agent.name],
     queryFn: async () => {
       const [s, t, l] = await Promise.all([
-        fetchDataPlane<{ data?: { sessions?: unknown[] } }>(
+        api.fetchDataPlane<{ data?: { sessions?: unknown[] } }>(
           projectId,
           "/v1/chat/sessions",
         ).catch(() => ({ data: { sessions: [] } })),
-        fetchDataPlane<{ data?: unknown[] }>(projectId, "/v1/tasks").catch(
+        api.fetchDataPlane<{ data?: unknown[] }>(projectId, "/v1/tasks").catch(
           () => ({ data: [] }),
         ),
-        fetchDataPlane<{ data?: unknown[] }>(
+        api.fetchDataPlane<{ data?: unknown[] }>(
           projectId,
           "/v1/loop-runs?limit=100",
         ).catch(() => ({ data: [] })),
@@ -488,7 +485,7 @@ function OverviewPanel({
   const { data: spend } = useQuery({
     queryKey: ["agent-spend", projectId, agent.name],
     queryFn: () =>
-      fetchControlPlane<{
+      api.fetchControlPlane<{
         ok: boolean;
         data: {
           byAgent?: Array<{
@@ -608,6 +605,7 @@ function AgentDangerZone({
   projectId: string;
   agentName: string;
 }) {
+  const api = useDashboardApi();
   const router = useRouter();
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -617,7 +615,7 @@ function AgentDangerZone({
     setDeleting(true);
     setDelError(null);
     try {
-      await mutateDataPlane(
+      await api.mutateDataPlane(
         projectId,
         `/v1/agents/${encodeURIComponent(agentName)}`,
         { method: "DELETE" },
@@ -990,6 +988,7 @@ function SecurityPanel({
   projectId: string;
   agent: AgentDetailData;
 }) {
+  const api = useDashboardApi();
   const router = useRouter();
   const initial = agent.allowedPaths ?? [];
   const [paths, setPaths] = useState<string[]>(initial);
@@ -1011,7 +1010,7 @@ function SecurityPanel({
     setSaving(true);
     setError(null);
     try {
-      await mutateDataPlane(
+      await api.mutateDataPlane(
         projectId,
         `/v1/agents/${encodeURIComponent(agent.name)}`,
         { method: "PATCH", body: { allowedPaths: paths } },
@@ -1198,6 +1197,7 @@ function InstructionsPanel({
   model?: string;
   initial: string;
 }) {
+  const api = useDashboardApi();
   const router = useRouter();
   const [value, setValue] = useState(initial);
   const [mode, setMode] = useState<"read" | "edit">(initial ? "read" : "edit");
@@ -1210,7 +1210,7 @@ function InstructionsPanel({
     setSaving(true);
     setError(null);
     try {
-      await mutateDataPlane(
+      await api.mutateDataPlane(
         projectId,
         `/v1/agents/${encodeURIComponent(agentName)}`,
         { method: "PATCH", body: { systemPrompt: value } },

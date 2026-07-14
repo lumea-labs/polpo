@@ -8,7 +8,8 @@ import {
   Trash,
   WarningCircle,
 } from "@phosphor-icons/react/dist/ssr";
-import { fetchControlPlane, Link, mutateControlPlane, useMutation, useQuery, useQueryClient } from "../host.js";
+import { Link, useMutation, useQuery, useQueryClient } from "../host.js";
+import { useDashboardApi } from "../../host.js";
 import { Button } from "../ui/button.js";
 import { PageHeader } from "../ui/page-header.js";
 import { DataTable, type ColumnMeta } from "../ui/data-table.js";
@@ -45,13 +46,14 @@ export function ToolsView({
   projectId: string;
   initialTools: ToolRow[];
 }) {
+  const api = useDashboardApi();
   const queryClient = useQueryClient();
   const queryKey = ["custom-tools", projectId];
 
   const { data: tools = initialTools, refetch, isFetching } = useQuery({
     queryKey,
     queryFn: () =>
-      fetchControlPlane<{ ok: boolean; data: ToolRow[] }>(
+      api.fetchControlPlane<{ ok: boolean; data: ToolRow[] }>(
         `/v1/projects/${projectId}/tools`,
       ).then((r) => r.data ?? []),
     initialData: initialTools,
@@ -64,7 +66,7 @@ export function ToolsView({
 
   const del = useMutation({
     mutationFn: (name: string) =>
-      mutateControlPlane(
+      api.mutateControlPlane(
         `/v1/projects/${projectId}/tools/${encodeURIComponent(name)}`,
         { method: "DELETE" },
       ),

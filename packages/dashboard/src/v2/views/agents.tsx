@@ -1,6 +1,12 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import { useQuery } from "../host";
 import type { ColumnDef } from "@tanstack/react-table";
 import {
@@ -47,10 +53,15 @@ export function AgentsTable({
   projectId,
   initialAgents,
   initialTeams,
+  renderCreateDialog,
 }: {
   projectId: string;
   initialAgents: AgentRow[];
   initialTeams: TeamRow[];
+  renderCreateDialog?: (props: {
+    open: boolean;
+    onOpenChange: (open: boolean) => void;
+  }) => ReactNode;
 }) {
   const polpo = usePolpoClient(projectId);
   const [selectedTeams, setSelectedTeams] = useState<string[]>([]);
@@ -233,11 +244,15 @@ export function AgentsTable({
         }
       />
 
-      <SelfHostCreateAgentDialog
-        projectId={projectId}
-        open={createOpen}
-        onOpenChange={setCreateOpen}
-      />
+      {renderCreateDialog ? (
+        renderCreateDialog({ open: createOpen, onOpenChange: setCreateOpen })
+      ) : (
+        <SelfHostCreateAgentDialog
+          projectId={projectId}
+          open={createOpen}
+          onOpenChange={setCreateOpen}
+        />
+      )}
     </div>
   );
 }

@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { useQuery } from "../host";
 import { CircleNotch, Wrench } from "@phosphor-icons/react/dist/ssr";
-import { fetchDataPlane } from "../host";
+import { useDashboardApi } from "../../host";
 import { CopyButton } from "../ui/copy-button";
 import { Markdown } from "../host";
 import { Button } from "../ui/button";
@@ -168,11 +168,12 @@ export function PromptPreviewDialog({
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }) {
+  const api = useDashboardApi();
   const { openChat } = useCopilot();
   const { data, isLoading, isError, error } = useQuery({
     queryKey: ["agent-prompt", projectId, agentName, "chat"],
     queryFn: () =>
-      fetchDataPlane<{
+      api.fetchDataPlane<{
         ok: boolean;
         data: { prompt: string; blocks?: Block[]; mode?: string };
       }>(projectId, `/v1/agents/${encodeURIComponent(agentName)}/prompt?mode=chat`),
