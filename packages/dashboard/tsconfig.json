@@ -17,5 +17,14 @@
     "verbatimModuleSyntax": true
   },
   "include": ["src"],
-  "exclude": ["node_modules", "dist", "src/**/*.test.ts", "src/**/*.test.tsx"]
+  "exclude": [
+    "node_modules",
+    "dist",
+    "src/**/*.test.ts",
+    "src/**/*.test.tsx",
+    "src/v2/agents/agent-quickstart.tsx",
+    "src/v2/agents/create-agent-dialog.tsx",
+    "src/v2/skills/create-skill-dialog.tsx",
+    "src/v2/playground/chat-canvas.tsx"
+  ]
 }

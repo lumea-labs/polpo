@@ -1,30 +1,135 @@
-:root {
-  --shell-sidebar: #ebe8e1;
-  --shell-sidebar-active: #dedad1;
-  --shell-border: #d9d5cc;
-  --shell-muted: #77736a;
+@import "tailwindcss";
+@import "tw-animate-css";
+
+@source "../../../packages/dashboard/src/**/*.{js,ts,jsx,tsx}";
+@source "../../../packages/react-sdk/src/**/*.{js,ts,jsx,tsx}";
+@source "../node_modules/@lumea-labs/chat/dist/**/*.{js,mjs}";
+@source "../node_modules/@lumea-labs/chat-polpo/dist/**/*.{js,mjs}";
+@source "../node_modules/@lumea-labs/tool-calls/dist/**/*.{js,mjs}";
+
+@plugin "@tailwindcss/typography";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: "Geist", "Geist Fallback", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "Geist Mono", "Geist Mono Fallback", ui-monospace, monospace;
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-border: var(--border);
+  --color-destructive: var(--destructive);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent: var(--accent);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-muted: var(--muted);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+  --color-brand: var(--brand);
+  --color-brand-foreground: var(--brand-foreground);
+  --color-p-bg: var(--background);
+  --color-p-surface: var(--card);
+  --color-p-warm: var(--secondary);
+  --color-p-line: var(--border);
+  --color-p-ink: var(--foreground);
+  --color-p-ink-2: var(--foreground);
+  --color-p-ink-3: var(--muted-foreground);
+  --color-p-accent: var(--brand);
+  --color-p-accent-light: var(--accent);
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+  --radius-2xl: calc(var(--radius) * 1.8);
+  --radius-3xl: calc(var(--radius) * 2.2);
+  --radius-4xl: calc(var(--radius) * 2.6);
 }
 
-html, body { min-height: 100%; }
-.oss-shell { min-height: 100vh; }
-.oss-sidebar { position: fixed; z-index: 20; inset: 0 auto 0 0; display: flex; width: 224px; flex-direction: column; border-right: 1px solid var(--shell-border); background: var(--shell-sidebar); }
-.oss-brand { display: flex; height: 62px; align-items: center; gap: 10px; padding: 0 17px; border-bottom: 1px solid var(--shell-border); font-size: 14px; font-weight: 650; }
-.oss-brand-mark { display: grid; width: 27px; height: 27px; place-items: center; border-radius: 6px; background: #292823; color: #fff; font-size: 11px; font-weight: 750; }
-.oss-brand small { margin-left: auto; color: var(--shell-muted); font-size: 9px; font-weight: 650; text-transform: uppercase; }
-.oss-nav { display: flex; flex: 1; flex-direction: column; gap: 3px; padding: 14px 10px; }
-.oss-nav a { display: flex; height: 37px; align-items: center; gap: 10px; padding: 0 10px; border-radius: 6px; color: #625e55; font-size: 13px; text-decoration: none; transition: background-color 140ms ease, color 140ms ease; }
-.oss-nav a:hover { background: rgba(255,255,255,.48); color: #292823; }
-.oss-nav a[data-active="true"] { background: var(--shell-sidebar-active); color: #292823; font-weight: 580; }
-.oss-nav a svg { flex: none; }
-.oss-sidebar-footer { display: flex; align-items: center; gap: 9px; margin: 0 10px 12px; padding: 10px; border-top: 1px solid var(--shell-border); color: var(--shell-muted); font-size: 11px; }
-.oss-status { width: 7px; height: 7px; border-radius: 50%; background: #27875a; box-shadow: 0 0 0 3px rgba(39,135,90,.1); }
-.oss-main { min-height: 100vh; margin-left: 224px; }
-.oss-mobile-header { display: none; }
+:root {
+  --background: #ffffff;
+  --foreground: #171717;
+  --card: #ffffff;
+  --card-foreground: #171717;
+  --popover: #ffffff;
+  --popover-foreground: #171717;
+  --primary: #171717;
+  --primary-foreground: #fafafa;
+  --secondary: #f5f5f5;
+  --secondary-foreground: #171717;
+  --muted: #f5f5f5;
+  --muted-foreground: #737373;
+  --accent: #f5f5f5;
+  --accent-foreground: #171717;
+  --destructive: #dc2626;
+  --border: #e5e5e5;
+  --input: #e5e5e5;
+  --ring: #171717;
+  --radius: 0.5rem;
+  --brand: #3ecf8e;
+  --brand-foreground: #0d1117;
 
-@media (max-width: 820px) {
-  .oss-sidebar { display: none; }
-  .oss-main { margin-left: 0; padding-top: 56px; }
-  .oss-mobile-header { position: fixed; z-index: 30; inset: 0 0 auto; display: flex; height: 56px; align-items: center; justify-content: space-between; padding: 0 15px; border-bottom: 1px solid var(--shell-border); background: rgba(245,243,238,.94); backdrop-filter: blur(12px); }
-  .oss-mobile-header strong { font-size: 13px; }
-  .oss-mobile-header select { max-width: 170px; height: 32px; border: 1px solid var(--shell-border); border-radius: 5px; background: #fbfaf7; padding: 0 8px; color: #292823; font-size: 12px; }
+  --loop-agent: #4f46e5;
+  --loop-tool: #0284c7;
+  --loop-decision: #d97706;
+  --loop-repeat: #0d9488;
+  --loop-parallel: #0891b2;
+  --loop-human: #9333ea;
+  --loop-neutral: #64748b;
+  --loop-edge: #94a3b8;
+  --loop-active: #16a34a;
+  --loop-running: #2563eb;
+  --loop-done: #16a34a;
+  --loop-failed: #dc2626;
+  --loop-skipped: #d97706;
+}
+
+.dark {
+  --background: #111111;
+  --foreground: #ededed;
+  --card: #1a1a1a;
+  --card-foreground: #ededed;
+  --popover: #1a1a1a;
+  --popover-foreground: #ededed;
+  --primary: #ededed;
+  --primary-foreground: #111111;
+  --secondary: #262626;
+  --secondary-foreground: #ededed;
+  --muted: #1f1f1f;
+  --muted-foreground: #a3a3a3;
+  --accent: #262626;
+  --accent-foreground: #ededed;
+  --destructive: #f85149;
+  --border: #2e2e2e;
+  --input: #2e2e2e;
+  --ring: #ededed;
+  --brand: #3ecf8e;
+  --brand-foreground: #1a1a1a;
+
+  --loop-agent: #818cf8;
+  --loop-tool: #38bdf8;
+  --loop-decision: #fbbf24;
+  --loop-repeat: #2dd4bf;
+  --loop-parallel: #22d3ee;
+  --loop-human: #c084fc;
+  --loop-neutral: #94a3b8;
+  --loop-edge: #52525b;
+  --loop-active: #4ade80;
+  --loop-running: #60a5fa;
+  --loop-done: #4ade80;
+  --loop-failed: #f87171;
+  --loop-skipped: #fbbf24;
+}
+
+@layer base {
+  * { @apply border-border outline-ring/50; }
+  html, body { min-height: 100%; }
+  body { @apply m-0 bg-background text-foreground; }
+  button, input, textarea, select { font: inherit; }
 }

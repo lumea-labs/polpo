@@ -1,3 +1,3 @@
-import { MemoryView, PageBody } from "@polpo-ai/dashboard";
+import { V2MemoryView } from "@polpo-ai/dashboard";
 
-export default function MemoryPage() { return <PageBody><MemoryView /></PageBody>; }
+export default function MemoryPage() { return <V2MemoryView />; }

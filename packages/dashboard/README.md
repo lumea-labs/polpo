@@ -1,17 +1,51 @@
 # @polpo-ai/dashboard
 
-Reusable v2 dashboard views for a Polpo runtime. The package contains only
-project-scoped runtime UI; authentication, organizations, provisioning and
-billing belong to the host application.
+Reusable Polpo v2 dashboard views. The package is the shared visual source for
+the managed Cloud dashboard and the single-tenant self-hosted dashboard.
+
+The package owns project-scoped runtime surfaces: agents, playground, sessions,
+files, memory, skills, and custom tools. The host application owns deployment
+boundaries such as authentication, organizations, project provisioning,
+billing, managed connections, and the managed model gateway.
 
 ```tsx
-<PolpoProvider baseUrl={origin} apiPrefix="/api/polpo">
-  <DashboardProvider host={{ navigate, capabilities }}>
-    <AgentsView />
+import {
+  DashboardProvider,
+  V2AgentsView,
+  V2PageBody,
+} from "@polpo-ai/dashboard";
+import "@polpo-ai/dashboard/v2.css";
+
+<PolpoProvider baseUrl="" apiPrefix="/api/polpo">
+  <DashboardProvider
+    host={{
+      project: { id: "local", name: "Local runtime" },
+      capabilities: {
+        multiProject: false,
+        billing: false,
+        managedConnections: false,
+        managedGateway: false,
+        provisioning: false,
+      },
+      navigate,
+      href,
+    }}
+  >
+    <V2PageBody>
+      <V2AgentsView projectId="local" initialAgents={[]} initialTeams={[]} />
+    </V2PageBody>
   </DashboardProvider>
 </PolpoProvider>
 ```
 
-Self-hosted installations should keep `POLPO_API_KEY` server-side and proxy
-dashboard requests to the runtime. Never expose privileged keys through a
-`NEXT_PUBLIC_*` variable.
+`apps/dashboard` is the reference self-hosted host. It proxies browser requests
+to the runtime and keeps `POLPO_API_KEY` server-side. Never expose privileged
+keys through a `NEXT_PUBLIC_*` variable.
+
+## Parity
+
+Run `pnpm check:dashboard-parity` from the repository root while a Polpo Cloud
+checkout is available. Set `POLPO_CLOUD_DASHBOARD_ROOT` when the Cloud dashboard
+is not at the default sibling path. The check compares the shared CSS and the
+JSX structure of mapped Cloud v2 components while allowing explicit host
+adapters.

@@ -5,6 +5,7 @@ import { createContext, useContext, type ReactNode } from "react";
 export interface DashboardCapabilities {
   multiProject?: boolean;
   billing?: boolean;
+  settings?: boolean;
   managedConnections?: boolean;
   managedGateway?: boolean;
   provisioning?: boolean;

@@ -29,6 +29,7 @@
     "test": "vitest",
     "test:coverage": "vitest run --coverage",
     "test:self-host": "node docker/self-host/e2e.mjs",
+    "check:dashboard-parity": "node scripts/check-dashboard-v2-parity.mjs",
     "typecheck": "turbo run build && tsc --noEmit",
     "clean": "rm -rf dist",
     "build:root": "tsc"
