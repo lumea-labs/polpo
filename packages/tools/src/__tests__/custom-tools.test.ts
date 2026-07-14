@@ -24,6 +24,7 @@ import {
   bindCustomTool,
   extractCustomTool,
   loadCustomToolBundle,
+  createJsonSchemaExample,
   type CustomTool,
   type CustomToolContext,
 } from "../custom-tools.js";
@@ -42,6 +43,25 @@ function fakeCtx(overrides: Partial<CustomToolContext> = {}): Omit<CustomToolCon
 }
 
 const EchoSchema = Type.Object({ msg: Type.String() });
+
+describe("createJsonSchemaExample", () => {
+  it("creates deterministic nested arguments from TypeBox schemas", () => {
+    const schema = Type.Object({
+      email: Type.String({ format: "email" }),
+      amount: Type.Number(),
+      enabled: Type.Boolean(),
+      tags: Type.Array(Type.String()),
+      mode: Type.Union([Type.Literal("fast"), Type.Literal("safe")]),
+    });
+    expect(createJsonSchemaExample(schema)).toEqual({
+      email: "user@example.com",
+      amount: 99.99,
+      enabled: true,
+      tags: ["text"],
+      mode: "fast",
+    });
+  });
+});
 
 describe("defineTool", () => {
   it("returns the spec with the __custom marker", () => {

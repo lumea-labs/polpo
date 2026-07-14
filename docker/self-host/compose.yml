@@ -45,7 +45,7 @@ services:
       mock-llm:
         condition: service_healthy
     ports:
-      - "13890:3890"
+      - "${SELF_HOST_RUNTIME_PORT:-13890}:3890"
     networks: [polpo]
 
   dashboard:
@@ -59,7 +59,7 @@ services:
       runtime:
         condition: service_healthy
     ports:
-      - "13000:3000"
+      - "${SELF_HOST_DASHBOARD_PORT:-13000}:3000"
     networks: [polpo]
 
 volumes:
