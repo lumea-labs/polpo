@@ -5,6 +5,7 @@ export {
   useDashboardHref,
 } from "./host.js";
 export type {
+  AgentRunChatProps,
   DashboardApi,
   DashboardCapabilities,
   DashboardHost,

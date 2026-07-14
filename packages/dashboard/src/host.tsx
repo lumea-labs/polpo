@@ -1,6 +1,11 @@
 "use client";
 
-import { createContext, useContext, type ReactNode } from "react";
+import {
+  createContext,
+  useContext,
+  type ComponentType,
+  type ReactNode,
+} from "react";
 
 export interface DashboardCapabilities {
   multiProject?: boolean;
@@ -33,9 +38,22 @@ export interface DashboardApi {
   runtimeUrl(projectId: string, path: string): string;
 }
 
+export interface AgentRunChatProps {
+  baseUrl: string;
+  agent: string | undefined;
+  initialMessage?: string;
+  seedKey?: string;
+  onRawChunk?: (chunk: string) => void;
+  onRawDone?: () => void;
+  onRawError?: () => void;
+}
+
 export interface DashboardHost {
   project: { id: string; name?: string };
   api: DashboardApi;
+  components?: {
+    AgentRunChat?: ComponentType<AgentRunChatProps>;
+  };
   capabilities?: DashboardCapabilities;
   navigate: (path: string) => void;
   href?: (path: string) => string;
