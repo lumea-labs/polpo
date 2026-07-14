@@ -151,6 +151,67 @@ export function normalizeToolResult(result: CustomToolExecuteResult): ToolResult
   return { content: [{ type: "text", text: JSON.stringify(result) }], details: result ?? null };
 }
 
+function exampleString(name: string, format?: string): string {
+  const key = `${name} ${format ?? ""}`.toLowerCase();
+  if (/email/.test(key)) return "user@example.com";
+  if (/uri|url|link|website|endpoint/.test(key)) return "https://example.com";
+  if (/date-time|datetime|timestamp/.test(key)) return "2026-01-15T09:30:00Z";
+  if (/date|day/.test(key)) return "2026-01-15";
+  if (/time/.test(key)) return "09:30:00";
+  if (/uuid/.test(key)) return "550e8400-e29b-41d4-a716-446655440000";
+  if (/path|file/.test(key)) return "output/result.txt";
+  if (/query|search|prompt/.test(key)) return "quarterly report";
+  if (/message|text|body|content/.test(key)) return "Hello world";
+  if (/name|title|company/.test(key)) return "Acme Inc";
+  if (/(^|\s)id($|\s)/.test(key)) return "item_123";
+  return "text";
+}
+
+function exampleNumber(name: string): number {
+  const key = name.toLowerCase();
+  if (/amount|price|cost|total|fee|balance/.test(key)) return 99.99;
+  if (/count|qty|quantity|limit|page|size|max|min/.test(key)) return 10;
+  return 42;
+}
+
+/** Build deterministic example arguments from a TypeBox/JSON Schema. */
+export function createJsonSchemaExample(schema: unknown, name = ""): unknown {
+  if (!schema || typeof schema !== "object") return "value";
+  const node = schema as Record<string, unknown>;
+
+  if (node.default !== undefined) return node.default;
+  if (Array.isArray(node.examples) && node.examples.length > 0) return node.examples[0];
+  if (node.const !== undefined) return node.const;
+  if (Array.isArray(node.enum) && node.enum.length > 0) return node.enum[0];
+
+  const alternatives = Array.isArray(node.anyOf)
+    ? node.anyOf
+    : Array.isArray(node.oneOf)
+      ? node.oneOf
+      : null;
+  if (alternatives?.length) return createJsonSchemaExample(alternatives[0], name);
+
+  const type = Array.isArray(node.type)
+    ? node.type.find((candidate) => candidate !== "null")
+    : node.type;
+  if (type === "object" || (type === undefined && node.properties)) {
+    const properties = node.properties && typeof node.properties === "object"
+      ? node.properties as Record<string, unknown>
+      : {};
+    return Object.fromEntries(
+      Object.entries(properties)
+        .slice(0, 20)
+        .map(([key, value]) => [key, createJsonSchemaExample(value, key)]),
+    );
+  }
+  if (type === "array") return [createJsonSchemaExample(node.items, name)];
+  if (type === "boolean") return true;
+  if (type === "integer") return Math.trunc(exampleNumber(name));
+  if (type === "number") return exampleNumber(name);
+  if (type === "null") return null;
+  return exampleString(name, typeof node.format === "string" ? node.format : undefined);
+}
+
 /** ctx without the per-call fields, which {@link bindCustomTool} supplies itself. */
 export type CustomToolBindContext = Omit<CustomToolContext, "signal" | "onUpdate">;
 

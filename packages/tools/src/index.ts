@@ -53,6 +53,7 @@ export {
   bindCustomTool,
   extractCustomTool,
   loadCustomToolBundle,
+  createJsonSchemaExample,
 } from "./custom-tools.js";
 export type {
   CustomTool,
@@ -61,6 +62,14 @@ export type {
   CustomToolBindContext,
   CustomToolExecuteResult,
 } from "./custom-tools.js";
+export {
+  CUSTOM_TOOL_NAME_RE,
+  createCustomToolsStore,
+} from "./custom-tool-store.js";
+export type {
+  CustomToolMeta,
+  CustomToolsStore,
+} from "./custom-tool-store.js";
 
 // Types
 export type { ResolvedVault } from "./types.js";
