@@ -1729,8 +1729,8 @@ describe("audio_speak — paranoid", () => {
 // Agent-config model precedence — adversarial pinning
 //
 // Each tool resolves its effective model in priority:
-//   1. per-call `model` input override
-//   2. agent-config default (passed to factory as imageModel/videoModel/...)
+//   1. agent-config policy (passed to factory as imageModel/videoModel/...)
+//   2. per-call `model` selection when the capability is not configured
 //   3. DEFAULT_*_MODEL constant from @polpo-ai/core
 // These tests pin every transition in that chain so a regression
 // in one layer doesn't get masked by a fallback in another.
@@ -1747,14 +1747,14 @@ describe("agent-config model precedence — image_generate", () => {
     expect(sdkMocks.generateImage.mock.calls[0][0].model.modelId).toBe("fal-ai/flux-pro/v1.1");
   });
 
-  it("per-call override beats the agent-configured imageModel", async () => {
+  it("agent-configured imageModel cannot be overridden by a tool call", async () => {
     const tools = createImageTools({
       cwd, allowedPaths: [cwd], allowedTools: ["image_generate"], vault: makeVault(),
       imageModel: "fal/fal-ai/flux-pro/v1.1",
     });
     const t = pick(tools, "image_generate");
     await t.execute("c", { prompt: "x", path: "out.png", model: "fal/fal-ai/flux/schnell" });
-    expect(sdkMocks.generateImage.mock.calls[0][0].model.modelId).toBe("fal-ai/flux/schnell");
+    expect(sdkMocks.generateImage.mock.calls[0][0].model.modelId).toBe("fal-ai/flux-pro/v1.1");
   });
 
   it("falls through to DEFAULT_IMAGE_MODEL when neither override nor config is set", async () => {
@@ -1812,6 +1812,16 @@ describe("agent-config model precedence — video_generate", () => {
     expect(sdkMocks.experimental_generateVideo.mock.calls[0][0].model.modelId).toBe("luma-ray-2");
   });
 
+  it("agent-configured videoModel cannot be overridden by a tool call", async () => {
+    const tools = createImageTools({
+      cwd, allowedPaths: [cwd], allowedTools: ["video_generate"], vault: makeVault(),
+      videoModel: "fal/luma-ray-2",
+    });
+    const t = pick(tools, "video_generate");
+    await t.execute("c", { prompt: "x", path: "out.mp4", model: "fal/hunyuan-video" });
+    expect(sdkMocks.experimental_generateVideo.mock.calls[0][0].model.modelId).toBe("luma-ray-2");
+  });
+
   it("falls through to DEFAULT_VIDEO_MODEL when nothing is configured", async () => {
     const tools = createImageTools({
       cwd, allowedPaths: [cwd], allowedTools: ["video_generate"], vault: makeVault(),
@@ -1831,6 +1841,18 @@ describe("agent-config model precedence — image_analyze", () => {
     });
     const t = pick(tools, "image_analyze");
     await t.execute("c", { path: "i.png" });
+    expect(sdkMocks.resolveVisionProvider).toHaveBeenCalledWith("anthropic", expect.any(String));
+    expect(sdkMocks.generateText.mock.calls[0][0].model.modelId).toBe("claude-sonnet-4-20250514");
+  });
+
+  it("agent-configured visionModel cannot be overridden by a tool call", async () => {
+    writeFileSync(join(cwd, "i.png"), TINY_PNG);
+    const tools = createImageTools({
+      cwd, allowedPaths: [cwd], allowedTools: ["image_analyze"], vault: makeVault(),
+      visionModel: "anthropic/claude-sonnet-4-20250514",
+    });
+    const t = pick(tools, "image_analyze");
+    await t.execute("c", { path: "i.png", model: "openai/gpt-4o-mini" });
     expect(sdkMocks.resolveVisionProvider).toHaveBeenCalledWith("anthropic", expect.any(String));
     expect(sdkMocks.generateText.mock.calls[0][0].model.modelId).toBe("claude-sonnet-4-20250514");
   });
@@ -1859,7 +1881,7 @@ describe("agent-config model precedence — audio_transcribe", () => {
     expect(sdkMocks.experimental_transcribe.mock.calls[0][0].model.modelId).toBe("nova-3");
   });
 
-  it("per-call override beats the configured transcribeModel", async () => {
+  it("configured transcribeModel cannot be overridden by a tool call", async () => {
     writeFileSync(join(cwd, "r.mp3"), Buffer.from("data"));
     const tools = createAudioTools({
       cwd, allowedPaths: [cwd], allowedTools: ["audio_transcribe"], vault: makeVault(),
@@ -1867,7 +1889,8 @@ describe("agent-config model precedence — audio_transcribe", () => {
     });
     const t = pick(tools, "audio_transcribe");
     await t.execute("c", { path: "r.mp3", model: "openai/whisper-1" });
-    expect(sdkMocks.experimental_transcribe.mock.calls[0][0].model.modelId).toBe("whisper-1");
+    expect(sdkMocks.resolveTranscribeProvider).toHaveBeenCalledWith("deepgram", expect.any(String));
+    expect(sdkMocks.experimental_transcribe.mock.calls[0][0].model.modelId).toBe("nova-3");
   });
 });
 
@@ -1879,6 +1902,17 @@ describe("agent-config model precedence — audio_speak", () => {
     });
     const t = pick(tools, "audio_speak");
     await t.execute("c", { text: "hi", path: "out.mp3" });
+    expect(sdkMocks.resolveSpeakProvider.mock.calls[0][0]).toBe("elevenlabs");
+    expect(sdkMocks.experimental_generateSpeech.mock.calls[0][0].model.modelId).toBe("eleven_multilingual_v2");
+  });
+
+  it("configured ttsModel cannot be overridden by a tool call", async () => {
+    const tools = createAudioTools({
+      cwd, allowedPaths: [cwd], allowedTools: ["audio_speak"], vault: makeVault(),
+      ttsModel: "elevenlabs/eleven_multilingual_v2",
+    });
+    const t = pick(tools, "audio_speak");
+    await t.execute("c", { text: "hi", path: "out.mp3", model: "openai/tts-1" });
     expect(sdkMocks.resolveSpeakProvider.mock.calls[0][0]).toBe("elevenlabs");
     expect(sdkMocks.experimental_generateSpeech.mock.calls[0][0].model.modelId).toBe("eleven_multilingual_v2");
   });

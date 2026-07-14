@@ -51,13 +51,13 @@ function requireEnv(key: string): string {
   return val;
 }
 
-/** Resolve which model to actually use, in priority order. */
+/** Resolve the configured model as policy, then an unconfigured per-call selection. */
 function resolveEffectiveModel(
   override: string | undefined,
   configured: string | undefined,
   fallback: string,
 ): ParsedModel {
-  return parseModelString(override ?? configured ?? fallback);
+  return parseModelString(configured ?? override ?? fallback);
 }
 
 /** Vault-key resolution per provider. Throws with a clear message
@@ -141,8 +141,8 @@ const ImageGenerateSchema = Type.Object({
   prompt: Type.String({ description: "Text prompt describing the image to generate" }),
   path: Type.String({ description: "Output file path (e.g. 'output.png'). Format inferred from extension." }),
   model: Type.Optional(Type.String({
-    description: "Override the agent's image_model for this call. Format: '<provider>/<model>' " +
-      "(e.g. 'fal/fal-ai/flux/dev', 'fal/fal-ai/flux-pro/v1.1'). When omitted, uses the agent's configured image_model.",
+    description: "Select an image model only when the agent has no image_model configured. Format: '<provider>/<model>' " +
+      "(e.g. 'fal/fal-ai/flux/dev', 'fal/fal-ai/flux-pro/v1.1'). Agent configuration always takes precedence.",
   })),
   size: Type.Optional(Type.String({
     description: "Image size as 'WIDTHxHEIGHT' (e.g. '1024x1024', '1024x768', '768x1024'). Default: '1024x1024'.",
@@ -170,7 +170,7 @@ function createGenerateTool(
     label: "Generate Image",
     description: "Generate an image from a text prompt. " +
       "Output format inferred from file extension (png, jpg, webp). " +
-      "Model is configured at agent level (image_model) — pass `model` here only to override per-call. " +
+      "Model is fixed by the agent's image_model when configured. " +
       "Default: fal/fal-ai/flux/dev. Currently supports fal as image provider.",
     parameters: ImageGenerateSchema,
     async execute(_id, params, signal) {
@@ -276,8 +276,8 @@ const VideoGenerateSchema = Type.Object({
   prompt: Type.String({ description: "Text prompt describing the video to generate" }),
   path: Type.String({ description: "Output file path (e.g. 'output.mp4')." }),
   model: Type.Optional(Type.String({
-    description: "Override the agent's video_model for this call. Format: '<provider>/<model>' " +
-      "(e.g. 'fal/luma-ray-2-flash', 'fal/luma-ray-2', 'fal/hunyuan-video'). When omitted, uses the agent's configured video_model.",
+    description: "Select a video model only when the agent has no video_model configured. Format: '<provider>/<model>' " +
+      "(e.g. 'fal/luma-ray-2-flash', 'fal/luma-ray-2', 'fal/hunyuan-video'). Agent configuration always takes precedence.",
   })),
   aspect_ratio: Type.Optional(Type.String({
     description: "Aspect ratio as 'WIDTH:HEIGHT' (e.g. '16:9', '9:16', '1:1').",
@@ -307,8 +307,8 @@ function createVideoGenerateTool(
     name: "video_generate",
     label: "Generate Video",
     description: "Generate a video from a text prompt. " +
-      "Output saved as MP4. Model is configured at agent level (video_model) — pass `model` here only to override " +
-      "per-call. Default: fal/luma-ray-2-flash. Currently supports fal as video provider.",
+      "Output saved as MP4. Model is fixed by the agent's video_model when configured. " +
+      "Default: fal/luma-ray-2-flash. Currently supports fal as video provider.",
     parameters: VideoGenerateSchema,
     async execute(_id, params, signal) {
       const filePath = resolve(cwd, params.path);
@@ -410,8 +410,8 @@ const ImageAnalyzeSchema = Type.Object({
   path: Type.String({ description: "Path to the image file to analyze" }),
   prompt: Type.Optional(Type.String({ description: "Question or instruction for the vision model (default: 'Describe this image in detail')" })),
   model: Type.Optional(Type.String({
-    description: "Override the agent's vision_model for this call. Format: '<provider>/<model>' " +
-      "(e.g. 'openai/gpt-4o-mini', 'anthropic/claude-sonnet-4-20250514'). When omitted, uses the agent's configured vision_model.",
+    description: "Select a vision model only when the agent has no vision_model configured. Format: '<provider>/<model>' " +
+      "(e.g. 'openai/gpt-4o-mini', 'anthropic/claude-sonnet-4-20250514'). Agent configuration always takes precedence.",
   })),
   max_tokens: Type.Optional(Type.Number({ description: "Max tokens in response (default: 1024)" })),
 });
@@ -428,7 +428,7 @@ function createAnalyzeTool(
     label: "Analyze Image",
     description: "Analyze an image using AI vision models. Can describe contents, extract text (OCR), " +
       "answer questions about the image, identify objects, read charts, etc. " +
-      "Model is configured at agent level (vision_model) — pass `model` here only to override per-call. " +
+      "Model is fixed by the agent's vision_model when configured. " +
       "Default: openai/gpt-4o-mini. Supported providers: openai, anthropic.",
     parameters: ImageAnalyzeSchema,
     async execute(_id, params, signal) {
