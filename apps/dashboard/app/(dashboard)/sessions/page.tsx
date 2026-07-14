@@ -1,3 +1,3 @@
-import { PageBody, SessionsView } from "@polpo-ai/dashboard";
+import { V2SessionsView } from "@polpo-ai/dashboard";
 
-export default function SessionsPage() { return <PageBody><SessionsView /></PageBody>; }
+export default function SessionsPage() { return <V2SessionsView />; }

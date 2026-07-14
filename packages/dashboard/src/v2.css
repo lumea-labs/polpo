@@ -1,0 +1,212 @@
+/*
+ * Polpo Dashboard v2 — scoped design system.
+ *
+ * The whole v2 dashboard renders inside a `.v2` wrapper. We re-declare the
+ * same token *names* the app already uses (`--background`, `--foreground`,
+ * `--radius`, …) but with v2 values, so every Tailwind utility
+ * (`bg-background`, `rounded-lg`, `border-border`, …) automatically adopts
+ * the v2 look inside this subtree — WITHOUT touching the v1 dashboard.
+ *
+ * Direction: "brand-native evolved" — single brand-green accent, Geist +
+ * Geist Mono (loaded for real via `geist/font/*`), one 6px radius, one card,
+ * one table. Light + dark, driven by next-themes (`.dark` on <html>).
+ * No emoji, no sparkle icons.
+ */
+
+.v2 {
+  /* ── Light — Anthropic/Claude warm palette ─────────────────────────────
+     Warm cream canvas, warm-white chrome + cards that lift off it, warm
+     near-black ink, warm borders. Intentionally different from the cool
+     dark theme. Azure brand accent kept for brand consistency. */
+  --background: #fffdf8; /* warm canvas */
+  --foreground: #2b2a26; /* warm near-black ink, ~13:1 */
+  --card: #fffffe; /* brighter chrome (sidebar, header, panels, dialogs) */
+  --card-foreground: #2b2a26;
+  --popover: #fffffe;
+  --popover-foreground: #2b2a26;
+  --primary: #2b2a26;
+  --primary-foreground: #fffffe;
+  --secondary: #f7f4ee; /* warm hover / active row */
+  --secondary-foreground: #2b2a26;
+  --muted: #f8f5ef;
+  --muted-foreground: #736e63; /* warm secondary text, ~4.8:1 */
+  --accent: #f7f4ee;
+  --accent-foreground: #2b2a26;
+  --destructive: #c0392b; /* warm red to fit the palette */
+  --border: #f0ebe2; /* warm divider */
+  --input: #f0ebe2;
+  --ring: #b0522e;
+  --brand: #b0522e; /* clay — Anthropic-native, warm on the cream */
+  --brand-foreground: #ffffff;
+
+  /* ── Shape: one radius, 6px ────────────────────────────────────────── */
+  --radius: 0.375rem;
+
+  /* ── Type ──────────────────────────────────────────────────────────── */
+  background-color: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-geist-sans), ui-sans-serif, system-ui, -apple-system,
+    sans-serif;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  font-feature-settings: "cv01", "cv03", "cv04"; /* subtle Geist alternates */
+}
+
+/* ── Dark — warm charcoal, coordinated with the light cream ────────────
+   Same warm hue family as light (not cold grey), so switching themes feels
+   like one product. Terracotta accent = the light clay, lifted for dark. */
+.dark .v2 {
+  --background: #1a1917; /* warm near-black canvas */
+  --foreground: #edeae2; /* warm off-white, ~14:1 */
+  --card: #24221e; /* warm raised — chrome + panels */
+  --card-foreground: #edeae2;
+  --popover: #24221e;
+  --popover-foreground: #edeae2;
+  --primary: #edeae2;
+  --primary-foreground: #1a1917;
+  --secondary: #302d27; /* warm hover / active row */
+  --secondary-foreground: #edeae2;
+  --muted: #201e1b;
+  --muted-foreground: #a19c8d; /* warm secondary text, ~6:1 */
+  --accent: #302d27;
+  --accent-foreground: #edeae2;
+  --destructive: #e5645a;
+  --border: #35322c; /* warm divider */
+  --input: #35322c;
+  --ring: #de7b5c;
+  --brand: #de7b5c; /* terracotta — the light clay, lifted for dark */
+  --brand-foreground: #1a0f0a;
+}
+
+/* Make sure explicit font utilities inside v2 use the real, loaded fonts —
+   overrides the (globally broken) inlined "Geist"/"Geist Mono" utilities. */
+.v2 .font-sans {
+  font-family: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+}
+.v2 :is(.font-mono, code, kbd, samp, [data-mono]) {
+  font-family: var(--font-geist-mono), ui-monospace, "SF Mono", SFMono-Regular,
+    monospace;
+  font-feature-settings: normal;
+}
+
+/* Tabular figures for data cells (durations, counts, timestamps). */
+.v2 [data-tabular] {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Selection uses the brand at low intensity. */
+.v2 ::selection {
+  background: color-mix(in oklab, var(--brand) 28%, transparent);
+  color: var(--foreground);
+}
+
+/* One focus treatment across the whole v2 surface. */
+.v2 :focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--background),
+    0 0 0 3.5px color-mix(in oklab, var(--ring) 70%, transparent);
+  border-radius: calc(var(--radius) - 2px);
+}
+
+/* Form fields opt out of the big halo — a soft border tint reads as focus
+   without the loud double-ring. */
+.v2 input:focus-visible,
+.v2 textarea:focus-visible,
+.v2 select:focus-visible {
+  box-shadow: none;
+  border-color: color-mix(in oklab, var(--ring) 60%, var(--border));
+}
+
+/* The @lumea-labs/chat builder (copilot dock + agent quickstart) is a
+   third-party component whose markup we don't control — force its composer to
+   use its own focus style (no inner v2 ring) and tighten the kit's big lateral
+   gutters. Wrap any BuilderChat usage in `.builder-scope`. */
+.v2 .builder-scope textarea:focus-visible,
+.v2 .builder-scope input:focus-visible {
+  box-shadow: none !important;
+}
+.v2 .builder-scope .px-6 {
+  padding-left: 0.875rem;
+  padding-right: 0.875rem;
+}
+.v2 .builder-scope .px-5 {
+  padding-left: 0.875rem;
+  padding-right: 0.875rem;
+}
+
+/* Dialogs ship `bg-background` (the flat canvas), so they blend into the page.
+   v2 dialogs carry the `v2` class — lift them onto `--card` (like the sidebar
+   and panels) so modals read as elevated, not part of the canvas. */
+.v2[data-slot="dialog-content"] {
+  background-color: var(--card);
+}
+
+/* The shared shadcn <Button> base ships `rounded-lg`; v2 uses one 6px radius,
+   so pin every button inside the v2 shell to it — keeps buttons coherent with
+   inputs/cards and with each other. */
+.v2 [data-slot="button"] {
+  border-radius: var(--radius);
+}
+
+/* Shiki dual-theme (github-light / github-dark, emitted with defaultColor:false):
+   inline styles carry the light color + a `--shiki-dark` var; under .dark we
+   swap to it. Backgrounds are dropped so code sits on the v2 card. */
+.v2 .shiki,
+.v2 .shiki span {
+  background-color: transparent !important;
+}
+.dark .v2 .shiki,
+.dark .v2 .shiki span {
+  color: var(--shiki-dark) !important;
+}
+
+
+/* Copilot FAB — a neutral white bubble made noticeable by a brand radar pulse
+   and a soft brand glow, without tinting the button itself. */
+.v2 .copilot-fab {
+  box-shadow: 0 8px 26px -8px color-mix(in oklab, var(--brand) 45%, transparent);
+}
+.v2 .copilot-fab::after {
+  content: "";
+  position: absolute;
+  inset: -2px;
+  border-radius: inherit;
+  border: 1px solid color-mix(in oklab, var(--brand) 45%, transparent);
+  opacity: 0;
+  animation: copilot-halo 3.2s ease-in-out infinite;
+  pointer-events: none;
+}
+@keyframes copilot-halo {
+  0%, 100% { opacity: 0; }
+  50% { opacity: 1; }
+}
+.v2 .copilot-ping {
+  animation: copilot-ping 2.6s ease-out infinite;
+}
+@keyframes copilot-ping {
+  0% { transform: scale(1); opacity: 0.45; }
+  70%, 100% { transform: scale(1.9); opacity: 0; }
+}
+@keyframes v2-route-progress {
+  0% { transform: translateX(-110%); opacity: 0.35; }
+  18% { opacity: 1; }
+  72% { opacity: 1; }
+  100% { transform: translateX(220%); opacity: 0.2; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .v2 .copilot-ping,
+  .v2 .copilot-fab::after {
+    animation: none;
+    opacity: 0;
+  }
+}
+
+/* Row-reveal: action affordances appear on hover of their row/card. */
+.v2 [data-reveal] {
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+.v2 [data-row]:hover [data-reveal],
+.v2 [data-row]:focus-within [data-reveal] {
+  opacity: 1;
+}
