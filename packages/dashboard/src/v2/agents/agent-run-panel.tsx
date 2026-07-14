@@ -23,20 +23,13 @@ import { CopyButton } from "../ui/copy-button";
 import { PolpoChat } from "../host";
 import { chatToItems } from "../sessions/trace-detail";
 import { Trace } from "../sessions/trace-detail-view";
-import {
-  fetchControlPlane,
-  fetchDataPlane,
-  mutateControlPlane,
-} from "../host";
+import { useDashboardApi } from "../../host";
 import {
   CALL_LANGS,
   buildCallSnippets,
   tenantBase,
   type CallLang,
 } from "../host";
-import { DASHBOARD_API_URL } from "../host";
-
-const API_URL = DASHBOARD_API_URL;
 
 type Mode = "chat" | "task";
 
@@ -47,6 +40,7 @@ export function AgentRunPanel({
   projectId: string;
   agentName: string;
 }) {
+  const api = useDashboardApi();
   const [mode, setMode] = useState<Mode>("chat");
   const [message, setMessage] = useState("Hello! What can you do?");
   const [taskTitle, setTaskTitle] = useState("Summarize this week's issues");
@@ -79,7 +73,7 @@ export function AgentRunPanel({
   const { data: project } = useQuery({
     queryKey: ["project", projectId],
     queryFn: () =>
-      fetchControlPlane<{ slug?: string; orgId: string }>(
+      api.fetchControlPlane<{ slug?: string; orgId: string }>(
         `/v1/projects/${projectId}`,
       ),
     staleTime: 60_000,
@@ -97,7 +91,7 @@ export function AgentRunPanel({
 
   const createKey = useMutation({
     mutationFn: () =>
-      mutateControlPlane<{ rawKey: string }>("/v1/api-keys", {
+      api.mutateControlPlane<{ rawKey: string }>("/v1/api-keys", {
         method: "POST",
         body: {
           orgId: project?.orgId,
@@ -113,7 +107,7 @@ export function AgentRunPanel({
   const { data: taskData } = useQuery({
     queryKey: ["run-task", projectId, taskId],
     queryFn: () =>
-      fetchDataPlane<{
+      api.fetchDataPlane<{
         data?: {
           task?: { status?: string; sessionId?: string };
           run?: {
@@ -139,7 +133,7 @@ export function AgentRunPanel({
   const { data: traceData, isFetching: traceFetching } = useQuery({
     queryKey: ["run-task-trace", projectId, taskSessionId],
     queryFn: () =>
-      fetchDataPlane<{ data?: { messages?: unknown[] } }>(
+      api.fetchDataPlane<{ data?: { messages?: unknown[] } }>(
         projectId,
         `/v1/chat/sessions/${encodeURIComponent(taskSessionId!)}/messages`,
       ),
@@ -149,10 +143,10 @@ export function AgentRunPanel({
   const traceItems = chatToItems((traceData?.data?.messages ?? []) as never);
 
   const createTask = useMutation({
-    // Raw proxy POST (fetchDataPlane is GET-only) — same session path.
+    // Raw fetch preserves the streamed response shape used by this panel.
     mutationFn: async () => {
       const r = await fetch(
-        `${API_URL}/v1/projects/${projectId}/data/v1/tasks`,
+        api.runtimeUrl(projectId, "/v1/tasks"),
         {
           method: "POST",
           credentials: "include",
@@ -384,7 +378,7 @@ export function AgentRunPanel({
                   >
                     <PolpoChat
                       key={chatRunKey}
-                      baseUrl={`${API_URL}/v1/projects/${projectId}/data`}
+                      baseUrl={api.dataPlaneBaseUrl(projectId)}
                       agent={agentName}
                       initialMessage={message}
                       seedKey={`run:${projectId}:${agentName}:${chatRunKey}`}

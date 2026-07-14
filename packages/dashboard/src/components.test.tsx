@@ -9,6 +9,16 @@ import { DashboardProvider } from "./host.js";
 
 type Row = { id: string; name: string; detail: string };
 
+const api = {
+  fetchDataPlane: async <T,>() => ({}) as T,
+  mutateDataPlane: async <T,>() => ({}) as T,
+  fetchControlPlane: async <T,>() => ({}) as T,
+  mutateControlPlane: async <T,>() => ({}) as T,
+  controlPlaneBaseUrl: () => "",
+  dataPlaneBaseUrl: () => "/api/polpo",
+  runtimeUrl: (_projectId: string, path: string) => path,
+};
+
 afterEach(cleanup);
 
 const columns: ColumnDef<Row, unknown>[] = [
@@ -23,7 +33,7 @@ const columns: ColumnDef<Row, unknown>[] = [
 
 function renderTable(navigate = vi.fn()) {
   render(
-    <DashboardProvider host={{ project: { id: "local" }, navigate }}>
+    <DashboardProvider host={{ project: { id: "local" }, api, navigate }}>
       <DataTable
         columns={columns}
         data={[

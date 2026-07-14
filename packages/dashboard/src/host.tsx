@@ -11,8 +11,31 @@ export interface DashboardCapabilities {
   provisioning?: boolean;
 }
 
+export interface DashboardMutationOptions {
+  method: string;
+  body?: unknown;
+}
+
+export interface DashboardApi {
+  fetchDataPlane<T>(projectId: string, path: string): Promise<T>;
+  mutateDataPlane<T>(
+    projectId: string,
+    path: string,
+    options: DashboardMutationOptions,
+  ): Promise<T>;
+  fetchControlPlane<T>(path: string): Promise<T>;
+  mutateControlPlane<T>(
+    path: string,
+    options: DashboardMutationOptions,
+  ): Promise<T>;
+  controlPlaneBaseUrl(): string;
+  dataPlaneBaseUrl(projectId: string): string;
+  runtimeUrl(projectId: string, path: string): string;
+}
+
 export interface DashboardHost {
   project: { id: string; name?: string };
+  api: DashboardApi;
   capabilities?: DashboardCapabilities;
   navigate: (path: string) => void;
   href?: (path: string) => string;
@@ -43,4 +66,8 @@ export function useDashboardHost(): DashboardHost {
 export function useDashboardHref(path: string): string {
   const host = useDashboardHost();
   return host.href?.(path) ?? path;
+}
+
+export function useDashboardApi(): DashboardApi {
+  return useDashboardHost().api;
 }

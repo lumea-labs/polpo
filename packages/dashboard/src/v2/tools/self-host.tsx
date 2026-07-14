@@ -1,6 +1,7 @@
 "use client";
 
-import { fetchControlPlane, useQuery } from "../host.js";
+import { useQuery } from "../host.js";
+import { useDashboardApi } from "../../host.js";
 import { PageBody } from "../ui/page-header.js";
 import { Skeleton } from "../ui/skeleton.js";
 import { ToolDetail } from "./tool-detail.js";
@@ -15,10 +16,11 @@ export function SelfHostToolsView() {
 }
 
 export function SelfHostToolDetailView({ name }: { name: string }) {
+  const api = useDashboardApi();
   const { data, isLoading, error } = useQuery({
     queryKey: ["custom-tool", "local", name],
     queryFn: () =>
-      fetchControlPlane<{
+      api.fetchControlPlane<{
         ok: boolean;
         data: { name: string; source: string; meta?: { parameters?: unknown } | null };
       }>(`/v1/projects/local/tools/${encodeURIComponent(name)}`).then((response) => response.data),

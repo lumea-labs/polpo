@@ -19,7 +19,7 @@ import {
   CaretRight,
 } from "@phosphor-icons/react/dist/ssr";
 import { usePolpoClient } from "../host";
-import { mutateDataPlane } from "../host";
+import { useDashboardApi } from "../../host";
 import { Button } from "../ui/button";
 import {
   Dialog,
@@ -60,6 +60,7 @@ export function LoopsTab({
   agentName: string;
   assignedLoops: string[];
 }) {
+  const api = useDashboardApi();
   const polpo = usePolpoClient(projectId);
   const router = useRouter();
   const queryClient = useQueryClient();
@@ -79,7 +80,7 @@ export function LoopsTab({
     setBusy(true);
     setError(null);
     try {
-      await mutateDataPlane(
+      await api.mutateDataPlane(
         projectId,
         `/v1/agents/${encodeURIComponent(agentName)}`,
         { method: "PATCH", body },

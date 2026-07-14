@@ -39,7 +39,7 @@ import { announceNavigationStart } from "../host";
 import { Button } from "../ui/button";
 import { Textarea } from "../ui/textarea";
 import { CodeEditor } from "../ui/code-editor";
-import { mutateControlPlane } from "../host";
+import { useDashboardApi } from "../../host";
 import { AGENT_TEMPLATES, type AgentTemplate } from "../host";
 import { useCopilot } from "../host";
 
@@ -177,6 +177,7 @@ export function CreateAgentContent({
   /** Close the surrounding dialog — used by "Open agent". */
   onClose?: () => void;
 }) {
+  const api = useDashboardApi();
   const router = useRouter();
   const [tab, setTab] = useState<"describe" | "template">("describe");
   const [text, setText] = useState("");
@@ -223,7 +224,7 @@ export function CreateAgentContent({
     setBuilding(true);
     setBuildError(null);
     try {
-      const res = await mutateControlPlane<{
+      const res = await api.mutateControlPlane<{
         ok: boolean;
         agentName: string;
         config: unknown;

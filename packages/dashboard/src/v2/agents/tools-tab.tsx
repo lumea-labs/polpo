@@ -9,7 +9,7 @@ import {
   type CatalogGroup,
   type CatalogTool,
 } from "../host";
-import { mutateDataPlane } from "../host";
+import { useDashboardApi } from "../../host";
 import { Toggle } from "../ui/bits";
 
 /** When allowedTools is empty the runtime grants this baseline set. */
@@ -49,6 +49,7 @@ export function ToolsTab({
   agentName: string;
   allowedTools: string[];
 }) {
+  const api = useDashboardApi();
   const router = useRouter();
   const [allowed, setAllowed] = useState<string[]>(allowedTools);
   const [query, setQuery] = useState("");
@@ -71,7 +72,7 @@ export function ToolsTab({
     setSaving(true);
     setError(null);
     try {
-      await mutateDataPlane(
+      await api.mutateDataPlane(
         projectId,
         `/v1/agents/${encodeURIComponent(agentName)}`,
         { method: "PATCH", body: { allowedTools: next } },

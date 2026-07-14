@@ -9,7 +9,8 @@ import {
   Play,
   CircleNotch,
 } from "@phosphor-icons/react/dist/ssr";
-import { announceNavigationStart, Link, mutateControlPlane, runtimeUrl, useRouter } from "../host.js";
+import { announceNavigationStart, Link, useRouter } from "../host.js";
+import { useDashboardApi } from "../../host.js";
 import { Button } from "../ui/button.js";
 import {
   Dialog,
@@ -68,6 +69,7 @@ export function ToolDetail({
   initialSource: string;
   parameters: unknown;
 }) {
+  const api = useDashboardApi();
   const router = useRouter();
   const [tab, setTab] = useState<"source" | "try">("source");
   const [editing, setEditing] = useState(false);
@@ -81,7 +83,7 @@ export function ToolDetail({
     setDeleting(true);
     setDelError(null);
     try {
-      await mutateControlPlane(
+      await api.mutateControlPlane(
         `/v1/projects/${projectId}/tools/${encodeURIComponent(name)}`,
         { method: "DELETE" },
       );
@@ -230,6 +232,7 @@ function TryIt({
   name: string;
   parameters: unknown;
 }) {
+  const api = useDashboardApi();
   const fields = useMemo(() => schemaToFields(parameters), [parameters]);
   const [mode, setMode] = useState<"form" | "json">(fields ? "form" : "json");
   const [formValues, setFormValues] = useState<Record<string, string>>(() =>
@@ -243,7 +246,7 @@ function TryIt({
     null,
   );
 
-  const base = runtimeUrl(`/v1/tools/${encodeURIComponent(name)}`);
+  const base = api.runtimeUrl(projectId, `/v1/tools/${encodeURIComponent(name)}`);
 
   function assembleArgs(): Record<string, unknown> {
     if (mode === "form" && fields) return buildArgsFromForm(fields, formValues);

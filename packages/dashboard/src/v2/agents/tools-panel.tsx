@@ -11,7 +11,7 @@ import {
   ArrowSquareOut,
   PlugsConnected,
 } from "@phosphor-icons/react/dist/ssr";
-import { fetchControlPlane, mutateDataPlane } from "../host";
+import { useDashboardApi } from "../../host";
 import {
   BASELINE_TOOLS,
   CATALOG_TOOL_NAMES,
@@ -198,6 +198,7 @@ export function CustomToolsPanel({
   agentName: string;
   allowedTools: string[];
 }) {
+  const api = useDashboardApi();
   const router = useRouter();
   const [allowed, setAllowed] = useState<string[]>(allowedTools);
   const [query, setQuery] = useState("");
@@ -208,7 +209,7 @@ export function CustomToolsPanel({
   const { data: tools = [], isLoading } = useQuery({
     queryKey: ["custom-tools", projectId],
     queryFn: () =>
-      fetchControlPlane<{ ok: boolean; data: CustomTool[] }>(
+      api.fetchControlPlane<{ ok: boolean; data: CustomTool[] }>(
         `/v1/projects/${projectId}/tools`,
       ).then((r) => r.data ?? []),
     staleTime: 30_000,
@@ -222,7 +223,7 @@ export function CustomToolsPanel({
     setSaving(true);
     setError(null);
     try {
-      await mutateDataPlane(
+      await api.mutateDataPlane(
         projectId,
         `/v1/agents/${encodeURIComponent(agentName)}`,
         { method: "PATCH", body: { allowedTools: next } },

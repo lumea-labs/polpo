@@ -31,10 +31,7 @@ import { toast } from "../host";
 import { announceNavigationStart } from "../host";
 import { BuilderChat } from "../host";
 import { navigateHref } from "../host";
-import { fetchControlPlane, mutateControlPlane } from "../host";
-import { DASHBOARD_API_URL } from "../host";
-
-const API_URL = DASHBOARD_API_URL;
+import { useDashboardApi } from "../../host";
 
 type Template = {
   id: string;
@@ -210,6 +207,7 @@ function BuilderPane({
   projectId: string;
   queryClient: ReturnType<typeof useQueryClient>;
 }) {
+  const api = useDashboardApi();
   const router = useRouter();
   const persistKey = `polpo:quickstart:${projectId}`;
   const started = useConversationStarted(persistKey);
@@ -238,7 +236,7 @@ function BuilderPane({
       <div className="builder-scope flex min-h-0 flex-1 flex-col overflow-hidden">
         <BuilderChat
           projectId={projectId}
-          apiUrl={API_URL}
+          apiUrl={api.controlPlaneBaseUrl()}
           persistKey={persistKey}
           onMutation={() => queryClient.invalidateQueries()}
           onNavigate={(target) => {
@@ -255,6 +253,7 @@ function BuilderPane({
 /* ── Right: browse templates ──────────────────────────────────────────── */
 
 function TemplatesPane({ projectId }: { projectId: string }) {
+  const api = useDashboardApi();
   const router = useRouter();
   const queryClient = useQueryClient();
   const [query, setQuery] = useState("");
@@ -262,7 +261,7 @@ function TemplatesPane({ projectId }: { projectId: string }) {
   const { data: templates = [], isLoading } = useQuery({
     queryKey: ["official-templates", projectId],
     queryFn: async () => {
-      const res = await fetchControlPlane<{ ok: boolean; data: Template[] }>(
+      const res = await api.fetchControlPlane<{ ok: boolean; data: Template[] }>(
         `/v1/projects/${projectId}/official-templates`,
       );
       return res.data ?? [];
@@ -271,7 +270,7 @@ function TemplatesPane({ projectId }: { projectId: string }) {
 
   const install = useMutation({
     mutationFn: (template: Template) =>
-      mutateControlPlane<InstallResponse>(
+      api.mutateControlPlane<InstallResponse>(
         `/v1/projects/${projectId}/official-templates/${template.id}/install`,
         { method: "POST" },
       ),

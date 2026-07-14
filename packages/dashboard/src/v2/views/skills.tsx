@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import { useQuery } from "../host";
 import type { ColumnDef } from "@tanstack/react-table";
 import { GraduationCap, Plus } from "@phosphor-icons/react/dist/ssr";
@@ -23,9 +23,14 @@ export type Skill = {
 export function SkillsCatalog({
   projectId,
   initial,
+  renderCreateDialog,
 }: {
   projectId: string;
   initial: Skill[];
+  renderCreateDialog?: (props: {
+    open: boolean;
+    onOpenChange: (open: boolean) => void;
+  }) => ReactNode;
 }) {
   const polpo = usePolpoClient(projectId);
   const { data: skills = initial, refetch, isFetching } = useQuery({
@@ -93,11 +98,15 @@ export function SkillsCatalog({
         }
       />
 
-      <SelfHostCreateSkillDialog
-        projectId={projectId}
-        open={addOpen}
-        onOpenChange={setAddOpen}
-      />
+      {renderCreateDialog ? (
+        renderCreateDialog({ open: addOpen, onOpenChange: setAddOpen })
+      ) : (
+        <SelfHostCreateSkillDialog
+          projectId={projectId}
+          open={addOpen}
+          onOpenChange={setAddOpen}
+        />
+      )}
 
       <DataTable
         columns={columns}
