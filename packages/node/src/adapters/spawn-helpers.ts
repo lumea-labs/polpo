@@ -86,7 +86,7 @@ function describeToolsForAgent(agent: AgentConfig): string {
     "- `http_fetch` — make HTTP requests (GET, POST, PUT, DELETE)",
     "- `http_download` — download files from URLs",
     "- `register_outcome` — declare task deliverables (files, URLs, text, data)",
-    "- `vault_get` — retrieve stored credentials/secrets",
+    "- `vault_get` — verify stored credentials and inspect available key names (values stay redacted)",
     "- `vault_list` — list available vault entries",
   );
 
