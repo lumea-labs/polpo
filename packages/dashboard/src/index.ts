@@ -37,7 +37,23 @@ export { SelfHostSessionsView as V2SessionsView, SelfHostSessionDetailView as V2
 export {
   SessionsHostProvider as V2SessionsHostProvider,
 } from "./v2/sessions/host.js";
-export type { SessionsHostAdapter as V2SessionsHostAdapter } from "./v2/sessions/host.js";
+export type {
+  AsyncResource as V2AsyncResource,
+  ChatRun as V2ChatRun,
+  LoopRun as V2LoopRun,
+  SessionsHostAdapter as V2SessionsHostAdapter,
+  Task as V2Task,
+  TaskActivity as V2TaskActivity,
+  TaskRun as V2TaskRun,
+} from "./v2/sessions/host.js";
+export {
+  normalizeAll as normalizeV2Runs,
+} from "./v2/sessions/trace-normalize.js";
+export type {
+  RunKind as V2RunKind,
+  RunRow as V2RunRow,
+  Tone as V2RunTone,
+} from "./v2/sessions/trace-normalize.js";
 export {
   SessionsView as V2SessionsTable,
 } from "./v2/views/sessions.js";
@@ -46,7 +62,11 @@ export { SelfHostPlaygroundView as V2PlaygroundView } from "./v2/playground/self
 export {
   PlaygroundHostProvider as V2PlaygroundHostProvider,
 } from "./v2/playground/host.js";
-export type { PlaygroundHostAdapter as V2PlaygroundHostAdapter } from "./v2/playground/host.js";
+export type {
+  PlaygroundAgent as V2PlaygroundAgent,
+  PlaygroundHostAdapter as V2PlaygroundHostAdapter,
+  PlaygroundTraceResource as V2PlaygroundTraceResource,
+} from "./v2/playground/host.js";
 export { PlaygroundView as V2Playground } from "./v2/views/playground.js";
 export { SelfHostToolsView as V2ToolsView, SelfHostToolDetailView as V2ToolDetailView } from "./v2/tools/self-host.js";
 export { ToolsView as V2ToolsTable } from "./v2/tools/tools-view.js";
