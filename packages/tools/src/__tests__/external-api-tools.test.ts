@@ -528,7 +528,7 @@ describe("audio_transcribe", () => {
     expect(args.audio).toBeInstanceOf(Uint8Array);
   });
 
-  it("routes to deepgram with smart_format / punctuate when provider=deepgram", async () => {
+  it("routes to deepgram with smart formatting, punctuation, and language detection", async () => {
     writeFileSync(join(cwd, "rec.mp3"), Buffer.from("data"));
     const t = pick(build(), "audio_transcribe");
     await t.execute("c", { path: "rec.mp3", model: "deepgram/nova-3" });
@@ -537,7 +537,7 @@ describe("audio_transcribe", () => {
     const args = sdkMocks.experimental_transcribe.mock.calls[0][0];
     expect(args.model.modelId).toBe("nova-3");
     expect(args.providerOptions).toEqual({
-      deepgram: { smart_format: true, punctuate: true },
+      deepgram: { smartFormat: true, punctuate: true, detectLanguage: true },
     });
   });
 
@@ -560,7 +560,7 @@ describe("audio_transcribe", () => {
     const t = pick(build(), "audio_transcribe");
     await t.execute("c", { path: "rec.mp3", model: "deepgram/nova-3", language: "es" });
     expect(sdkMocks.experimental_transcribe.mock.calls[0][0].providerOptions).toEqual({
-      deepgram: { smart_format: true, punctuate: true, language: "es" },
+      deepgram: { smartFormat: true, punctuate: true, language: "es" },
     });
   });
 

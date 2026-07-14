@@ -75,7 +75,9 @@ const AudioTranscribeSchema = Type.Object({
     description: "Override the agent's transcribe_model for this call. Format: '<provider>/<model>' " +
       "(e.g. 'openai/whisper-1', 'deepgram/nova-3'). When omitted, uses the agent's configured transcribe_model.",
   })),
-  language: Type.Optional(Type.String({ description: "ISO 639-1 language code (e.g. 'en', 'it', 'es'). Helps accuracy." })),
+  language: Type.Optional(Type.String({
+    description: "ISO 639-1 language code (e.g. 'en', 'it', 'es'). Always set it when the language is known; otherwise Deepgram auto-detects it.",
+  })),
   prompt: Type.Optional(Type.String({ description: "Optional context/prompt to guide transcription (OpenAI Whisper only)" })),
 });
 
@@ -161,8 +163,12 @@ async function transcribeWithSdk(
     if (params.prompt) opts.prompt = params.prompt;
     if (Object.keys(opts).length) providerOptions.openai = opts;
   } else {
-    const opts: Record<string, unknown> = { smart_format: true, punctuate: true };
-    if (params.language) opts.language = params.language;
+    const opts: Record<string, unknown> = { smartFormat: true, punctuate: true };
+    if (params.language) {
+      opts.language = params.language;
+    } else {
+      opts.detectLanguage = true;
+    }
     providerOptions.deepgram = opts;
   }
 

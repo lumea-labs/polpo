@@ -412,14 +412,16 @@ describe("vault_get / vault_list", () => {
     expect(out).not.toContain("smtp.x");
   });
 
-  it("vault_get returns the credential values for a known service", async () => {
+  it("vault_get confirms configured keys without leaking credential values", async () => {
     const vault = makeVault({
       stripe: { type: "api_key", values: { key: "sk_test_abcdefg" } },
     });
     const t = pick(createVaultToolsCore(vault), "vault_get");
     const result = await t.execute("c1", { service: "stripe" });
-    expect(text(result)).toContain("sk_test_abcdefg");
-    expect(result.details).toMatchObject({ found: true });
+    expect(text(result)).toContain("key: [REDACTED]");
+    expect(text(result)).not.toContain("sk_test_abcdefg");
+    expect(JSON.stringify(result)).not.toContain("sk_test_abcdefg");
+    expect(result.details).toMatchObject({ found: true, keys: ["key"] });
   });
 
   it("vault_get returns a clear not-found result for an unknown service", async () => {
@@ -439,13 +441,14 @@ describe("vault_get / vault_list", () => {
     expect(text(result).length).toBeGreaterThan(0);
   });
 
-  it("vault_get on a service with multibyte-named keys still works", async () => {
+  it("vault_get redacts a service with multibyte-named keys", async () => {
     const vault = makeVault({
       "服务-α": { type: "custom", values: { "ключ": "valore-€42" } },
     });
     const t = pick(createVaultToolsCore(vault), "vault_get");
     const result = await t.execute("c1", { service: "服务-α" });
-    expect(text(result)).toContain("valore-€42");
+    expect(text(result)).toContain("ключ: [REDACTED]");
+    expect(JSON.stringify(result)).not.toContain("valore-€42");
   });
 
   it("vault_get with empty-string service name doesn't crash", async () => {
