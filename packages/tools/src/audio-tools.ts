@@ -56,7 +56,7 @@ function resolveEffectiveModel(
   configured: string | undefined,
   fallback: string,
 ): ParsedModel {
-  return parseModelString(override ?? configured ?? fallback);
+  return parseModelString(configured ?? override ?? fallback);
 }
 
 /** Default voices per TTS provider. Used when the input doesn't pass an explicit voice. */
@@ -72,8 +72,8 @@ const SPEAK_DEFAULT_VOICES: Record<string, string | undefined> = {
 const AudioTranscribeSchema = Type.Object({
   path: Type.String({ description: "Path to the audio file to transcribe (mp3, wav, flac, ogg, m4a, webm)" }),
   model: Type.Optional(Type.String({
-    description: "Override the agent's transcribe_model for this call. Format: '<provider>/<model>' " +
-      "(e.g. 'openai/whisper-1', 'deepgram/nova-3'). When omitted, uses the agent's configured transcribe_model.",
+    description: "Select a transcription model only when the agent has no transcribe_model configured. " +
+      "Format: '<provider>/<model>' (e.g. 'openai/whisper-1', 'deepgram/nova-3'). Agent configuration always takes precedence.",
   })),
   language: Type.Optional(Type.String({
     description: "ISO 639-1 language code (e.g. 'en', 'it', 'es'). Always set it when the language is known; otherwise Deepgram auto-detects it.",
@@ -93,7 +93,7 @@ function createTranscribeTool(
     label: "Transcribe Audio",
     description: "Transcribe an audio file to text using speech-to-text AI. " +
       "Supports mp3, wav, flac, ogg, m4a, webm formats. Max file size: 25 MB. " +
-      "Model is configured at agent level (transcribe_model) — pass `model` here only to override per-call. " +
+      "Model is fixed by the agent's transcribe_model when configured. " +
       "Default: openai/whisper-1. Supported providers: openai, deepgram.",
     parameters: AudioTranscribeSchema,
     async execute(_id, params, signal) {
@@ -203,9 +203,9 @@ const AudioSpeakSchema = Type.Object({
   text: Type.String({ description: "Text to convert to speech" }),
   path: Type.String({ description: "Output file path (e.g. 'output.mp3'). Format inferred from extension." }),
   model: Type.Optional(Type.String({
-    description: "Override the agent's tts_model for this call. Format: '<provider>/<model>' " +
+    description: "Select a speech model only when the agent has no tts_model configured. Format: '<provider>/<model>' " +
       "(e.g. 'openai/tts-1', 'openai/tts-1-hd', 'openai/gpt-4o-mini-tts', 'deepgram/aura-2-asteria-en', " +
-      "'elevenlabs/eleven_multilingual_v2', 'edge/edge-tts'). When omitted, uses the agent's configured tts_model.",
+      "'elevenlabs/eleven_multilingual_v2', 'edge/edge-tts'). Agent configuration always takes precedence.",
   })),
   voice: Type.Optional(Type.String({ description: "Voice name/ID. OpenAI: alloy/echo/fable/onyx/nova/shimmer (default: alloy). ElevenLabs: voice ID (default: Rachel). Edge: full voice name like 'it-IT-DiegoNeural' (auto-selected from language+gender if omitted)." })),
   language: Type.Optional(Type.String({ description: "ISO 639-1 language code (e.g. 'it', 'en', 'es'). Used by edge provider to select the right voice. Also useful for other providers with multilingual models." })),
@@ -239,7 +239,7 @@ function createSpeakTool(
     label: "Text to Speech",
     description: "Generate speech audio from text using text-to-speech AI. " +
       "Output format inferred from file extension (mp3, wav, flac, opus, aac, pcm). " +
-      "Model is configured at agent level (tts_model) — pass `model` here only to override per-call. " +
+      "Model is fixed by the agent's tts_model when configured. " +
       "Default: edge/edge-tts. Supported providers: openai, deepgram, elevenlabs, edge (free, local Microsoft Edge TTS — no API key needed).",
     parameters: AudioSpeakSchema,
     async execute(_id, params, signal) {
