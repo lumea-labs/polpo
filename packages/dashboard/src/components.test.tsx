@@ -5,7 +5,7 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import type { ColumnDef } from "@tanstack/react-table";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { DataTable, type ColumnMeta } from "./components.js";
-import { DashboardProvider } from "./host.js";
+import { DashboardProvider, useDashboardHost } from "./host.js";
 
 type Row = { id: string; name: string; detail: string };
 
@@ -76,5 +76,33 @@ describe("DataTable", () => {
       "data-mobile-hidden",
       "true",
     );
+  });
+});
+
+describe("DashboardProvider", () => {
+  it("exposes managed component slots to shared views", () => {
+    function ManagedChat() {
+      return <div>Managed chat</div>;
+    }
+
+    function SlotProbe() {
+      const Chat = useDashboardHost().components?.AgentRunChat;
+      return Chat ? <Chat baseUrl="/runtime" agent="support" /> : null;
+    }
+
+    render(
+      <DashboardProvider
+        host={{
+          project: { id: "cloud" },
+          api,
+          navigate: vi.fn(),
+          components: { AgentRunChat: ManagedChat },
+        }}
+      >
+        <SlotProbe />
+      </DashboardProvider>,
+    );
+
+    expect(screen.getByText("Managed chat")).toBeInTheDocument();
   });
 });

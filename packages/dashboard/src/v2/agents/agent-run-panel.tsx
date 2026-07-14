@@ -23,7 +23,7 @@ import { CopyButton } from "../ui/copy-button";
 import { PolpoChat } from "../host";
 import { chatToItems } from "../sessions/trace-detail";
 import { Trace } from "../sessions/trace-detail-view";
-import { useDashboardApi } from "../../host";
+import { useDashboardApi, useDashboardHost } from "../../host";
 import {
   CALL_LANGS,
   buildCallSnippets,
@@ -41,6 +41,7 @@ export function AgentRunPanel({
   agentName: string;
 }) {
   const api = useDashboardApi();
+  const RunChat = useDashboardHost().components?.AgentRunChat ?? PolpoChat;
   const [mode, setMode] = useState<Mode>("chat");
   const [message, setMessage] = useState("Hello! What can you do?");
   const [taskTitle, setTaskTitle] = useState("Summarize this week's issues");
@@ -376,7 +377,7 @@ export function AgentRunPanel({
                         : "hidden"
                     }
                   >
-                    <PolpoChat
+                    <RunChat
                       key={chatRunKey}
                       baseUrl={api.dataPlaneBaseUrl(projectId)}
                       agent={agentName}
