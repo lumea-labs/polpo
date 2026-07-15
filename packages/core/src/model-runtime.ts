@@ -86,6 +86,19 @@ export interface ModelInvocationUsage {
   billingOwner: BillingOwner;
 }
 
+export interface ModelInvocationDetails {
+  resolvedProvider?: string;
+  resolvedModel?: string;
+  finalProvider?: string;
+  generationId?: string;
+  credentialType?: CredentialType;
+  reportedCostUsd?: number;
+  actualCostUsd?: number;
+  inputInferenceCostUsd?: number;
+  outputInferenceCostUsd?: number;
+  rawMetadata?: unknown;
+}
+
 export interface ModelInvocationRecord extends ModelInvocationUsage {
   id?: string;
   projectId?: string;

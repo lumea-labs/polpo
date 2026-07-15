@@ -1,6 +1,7 @@
 import type { LanguageModel } from "ai";
 import type {
   ModelInvocationContext,
+  ModelInvocationDetails,
   ModelInvocationUsage,
   ModelRef,
   ModelRuntimeMode,
@@ -16,6 +17,7 @@ export type {
   CostSource,
   CredentialType,
   ModelInvocationContext,
+  ModelInvocationDetails,
   ModelInvocationRecord,
   ModelInvocationStatus,
   ModelInvocationUsage,
@@ -58,5 +60,6 @@ export interface ModelRuntimeAdapter {
   createSpeechModel?(input: CreateModelInput): Promise<unknown> | unknown;
   buildProviderOptions?(input: ProviderOptionInput): Promise<Record<string, unknown> | undefined> | Record<string, unknown> | undefined;
   extractUsage(input: UsageExtractionInput): Promise<ModelInvocationUsage> | ModelInvocationUsage;
+  extractInvocationDetails?(input: UsageExtractionInput): Promise<ModelInvocationDetails | undefined> | ModelInvocationDetails | undefined;
   classifyError(error: unknown): NormalizedModelError;
 }

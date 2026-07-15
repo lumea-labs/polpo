@@ -2,6 +2,7 @@ import { createOpenAI } from "@ai-sdk/openai";
 import type {
   BillingOwner,
   CreateModelInput,
+  ModelInvocationDetails,
   ModelInvocationUsage,
   ModelRef,
   ModelRuntimeAdapter,
@@ -47,6 +48,9 @@ export function createProviderRuntimeAdapter(options: ProviderRuntimeAdapterOpti
     extractUsage(input: UsageExtractionInput): ModelInvocationUsage {
       return extractProviderInvocationUsage(input, billingOwner);
     },
+    extractInvocationDetails(input: UsageExtractionInput): ModelInvocationDetails | undefined {
+      return extractProviderInvocationDetails(input);
+    },
     classifyError(error: unknown): NormalizedModelError {
       return classifyProviderRuntimeError(error);
     },
@@ -80,4 +84,22 @@ export function extractProviderInvocationUsage(
 
 export function classifyProviderRuntimeError(error: unknown): NormalizedModelError {
   return classifyRuntimeError(error);
+}
+
+export function extractProviderInvocationDetails(input: UsageExtractionInput): ModelInvocationDetails | undefined {
+  const result = asRecord(input.result);
+  const providerMetadata = asRecord(result?.providerMetadata);
+  const response = asRecord(result?.response);
+  if (!providerMetadata && !response) return undefined;
+
+  return {
+    ...(providerMetadata ? { rawMetadata: { providerMetadata } } : {}),
+    ...(typeof response?.id === "string" && response.id.trim() ? { generationId: response.id } : {}),
+  };
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
 }

@@ -20,7 +20,7 @@ import { resolve, dirname, extname } from "node:path";
 import { Type } from "@sinclair/typebox";
 import type { PolpoTool, ToolResult as CoreToolResult } from "@polpo-ai/core";
 import type { FileSystem } from "@polpo-ai/core/filesystem";
-import { extractGatewayMetadataDetails } from "@polpo-ai/llm";
+import { extractGatewayInvocationDetails } from "@polpo-ai/llm";
 import {
   parseModelString,
   DEFAULT_IMAGE_MODEL,
@@ -124,7 +124,7 @@ function extractGatewayUsage(
   requestedModel: string,
   operation: "image.generate" | "image.analyze" | "video.generate",
 ): Record<string, unknown> | undefined {
-  const facts = extractGatewayMetadataDetails({
+  const facts = extractGatewayInvocationDetails({
     mode: "gateway",
     operation,
     requested: modelRefFromGatewayId(requestedModel),
