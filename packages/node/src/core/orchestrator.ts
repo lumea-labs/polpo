@@ -427,13 +427,14 @@ export class Orchestrator extends TypedEmitter {
       queryLLM: async (prompt, model) => {
         const { queryText, queryTextWithFallback, resolveModelSpec, estimateCost } = await import("@polpo-ai/llm");
         const { withRetry } = await import("../llm/retry.js");
-        // If ModelConfig with fallbacks, use fallback-aware query
-        if (model && typeof model === "object" && (model as any).fallbacks?.length > 0) {
+        const modelConfig = model && typeof model === "object" ? model : undefined;
+        const modelPolicy = modelConfig ? normalizeModelPolicy(modelConfig) : undefined;
+        if (modelConfig && modelPolicy && modelPolicy.fallbacks.length > 0) {
           return withRetry(async () => {
             const result = await queryTextWithFallback(
               prompt,
-              model as any,
-              resolveNodeModelOptions(model as any, this.gatewayConfig),
+              modelConfig,
+              resolveNodeModelOptions(modelConfig, this.gatewayConfig),
             );
             let costUsd: number | undefined;
             if (result.usage) { try { costUsd = estimateCost(result.model, result.usage).totalCost; } catch {} }
