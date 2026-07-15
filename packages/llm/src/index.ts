@@ -43,6 +43,29 @@ export type { ResolvedModel, ParsedModelSpec, ProviderValidationResult } from ".
 export type { GatewayConfig } from "./gateway-config.js";
 export type { ResolveModelOptions } from "./model-resolver.js";
 
+// ─── Model Runtime Contracts ─────────────────────────
+export {
+  MODEL_RUNTIME_MODES,
+  isModelRuntimeMode,
+} from "./model-runtime.js";
+export type {
+  BillingOwner,
+  CostSource,
+  CreateModelInput,
+  CredentialType,
+  InvocationContext,
+  ModelInvocationRecord,
+  ModelInvocationStatus,
+  ModelInvocationUsage,
+  ModelOperation,
+  ModelRef,
+  ModelRuntimeAdapter,
+  ModelRuntimeMode,
+  NormalizedModelError,
+  ProviderOptionInput,
+  UsageExtractionInput,
+} from "./model-runtime.js";
+
 // ─── Provider Factory ─────────────────────────────────
 export {
   createCustomProviderModel,
