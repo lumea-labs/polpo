@@ -1,6 +1,6 @@
 {
   "name": "@polpo-ai/connect",
-  "version": "0.15.15",
+  "version": "0.15.16",
   "description": "Polpo Connect contracts and client SDK for OAuth, API-key, and MCP connections",
   "type": "module",
   "main": "dist/index.js",
