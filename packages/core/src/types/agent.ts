@@ -4,6 +4,14 @@
  */
 
 import type { LoopConfig, LoopToolChoice, Pipeline } from "../loop/types.js";
+import type {
+  BillingOwner,
+  CostSource,
+  CredentialType,
+  ModelInvocationStatus,
+  ModelOperation,
+  ModelRuntimeMode,
+} from "../model-runtime.js";
 
 // === Reasoning / Thinking ===
 
@@ -177,24 +185,42 @@ export interface AgentActivity {
   summary?: string;         // agent's last text output / message
   sessionId?: string;       // SDK session ID for transcript access
   /**
-   * Billable per-tool inference cost captured from a tool's gateway
-   * response (e.g. managed image/video generation). Each entry mirrors the
-   * fields the completions billing path meters. Absent for tools that don't
-   * go through the gateway (BYOK / direct provider). Consumed by the cloud
-   * data plane after a run completes → Autumn + usage_logs.
+   * Model-using tool facts captured from tool results. Gateway-backed tools
+   * may include billable cost metadata; direct provider/local tools report
+   * factual usage with non-platform billing semantics. Hosts decide how to
+   * persist or bill these records.
    */
   toolUsage?: ToolUsageRecord[];
 }
 
-/** One billable tool inference, harvested from `result.details.usage`. */
+/** One model-using tool invocation fact harvested from a tool result. */
 export interface ToolUsageRecord {
   toolName: string;
-  generationId?: string;
-  marketCostUsd?: number;
-  actualCostUsd?: number;
+  mode?: ModelRuntimeMode;
+  operation?: ModelOperation;
+  requestedProvider?: string;
+  requestedModel?: string;
+  resolvedProvider?: string;
   resolvedModel?: string;
   finalProvider?: string;
-  credentialType?: string;
+  generationId?: string;
+  credentialType?: CredentialType;
+  status?: ModelInvocationStatus;
+  inputTokens?: number;
+  outputTokens?: number;
+  reasoningTokens?: number;
+  cachedTokens?: number;
+  audioInputSeconds?: number;
+  audioOutputSeconds?: number;
+  imageCount?: number;
+  videoSeconds?: number;
+  estimatedCostUsd?: number;
+  billableCostUsd?: number;
+  marketCostUsd?: number;
+  actualCostUsd?: number;
+  costSource?: CostSource;
+  billingOwner?: BillingOwner;
+  rawMetadata?: Record<string, unknown>;
 }
 
 export interface AgentProcess {

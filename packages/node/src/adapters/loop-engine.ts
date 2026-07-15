@@ -52,6 +52,7 @@ import {
   type LoopModelResult,
   type PolpoTool,
   type ToolResult,
+  extractToolUsageRecord,
 } from "@polpo-ai/core";
 import type { LoopToolCall, LoopConfig, LoopResumeState, ProjectLoopConfig } from "@polpo-ai/core";
 import { projectLoopConfigSchema } from "@polpo-ai/core/schemas";
@@ -219,22 +220,11 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
       }
     }
 
-    // Harvest billable per-tool inference cost (managed image/video via
-    // the gateway). Rides back in `details.usage`; the cloud data plane
-    // reads activity.toolUsage after the run → Autumn + usage_logs.
-    if (!isError && details?.usage && typeof details.usage === "object") {
-      const u = details.usage as Record<string, unknown>;
-      if (u.generationId || typeof u.marketCostUsd === "number") {
-        (activity.toolUsage ??= []).push({
-          toolName: toolCall.name,
-          generationId: u.generationId as string | undefined,
-          marketCostUsd: u.marketCostUsd as number | undefined,
-          actualCostUsd: u.actualCostUsd as number | undefined,
-          resolvedModel: u.resolvedModel as string | undefined,
-          finalProvider: u.finalProvider as string | undefined,
-          credentialType: u.credentialType as string | undefined,
-        });
-      }
+    // Harvest model-using tool facts. Existing gateway media tools emit
+    // `details.usage`; direct provider/local tools emit `details.modelUsage`.
+    const toolUsage = !isError ? extractToolUsageRecord(toolCall.name, details) : undefined;
+    if (toolUsage) {
+      (activity.toolUsage ??= []).push(toolUsage);
     }
 
     // Emit tool result transcript

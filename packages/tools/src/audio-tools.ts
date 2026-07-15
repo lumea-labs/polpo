@@ -51,12 +51,50 @@ function requireEnv(key: string): string {
   return val;
 }
 
+function resolveProviderKey(
+  vault: ResolvedVault | undefined,
+  service: string,
+  envKey: string,
+): { apiKey: string; credentialType: "project" | "external" } {
+  const vaultKey = vault?.getKey(service, "key");
+  if (vaultKey) return { apiKey: vaultKey, credentialType: "project" };
+  return { apiKey: requireEnv(envKey), credentialType: "external" };
+}
+
 function resolveEffectiveModel(
   override: string | undefined,
   configured: string | undefined,
   fallback: string,
 ): ParsedModel {
   return parseModelString(configured ?? override ?? fallback);
+}
+
+function audioModelUsage(input: {
+  operation: "audio.transcribe" | "audio.speak";
+  parsed: ParsedModel;
+  credentialType: "project" | "external" | "none";
+  audioInputSeconds?: number;
+  audioOutputSeconds?: number;
+  rawMetadata?: Record<string, unknown>;
+}) {
+  const modelRef = `${input.parsed.provider}/${input.parsed.model}`;
+  const isLocal = input.credentialType === "none";
+  return {
+    mode: "provider",
+    operation: input.operation,
+    requestedProvider: input.parsed.provider,
+    requestedModel: modelRef,
+    resolvedProvider: input.parsed.provider,
+    resolvedModel: modelRef,
+    finalProvider: input.parsed.provider,
+    credentialType: input.credentialType,
+    status: "succeeded",
+    audioInputSeconds: input.audioInputSeconds,
+    audioOutputSeconds: input.audioOutputSeconds,
+    costSource: isLocal ? "none" : "unknown",
+    billingOwner: isLocal ? "none" : "external",
+    rawMetadata: input.rawMetadata,
+  };
 }
 
 /** Default voices per TTS provider. Used when the input doesn't pass an explicit voice. */
@@ -148,13 +186,13 @@ async function transcribeWithSdk(
 ): Promise<ToolResult> {
   const { experimental_transcribe } = await import("ai");
 
-  const apiKey = parsed.provider === "openai"
-    ? vault?.getKey("openai", "key") ?? requireEnv("OPENAI_API_KEY")
+  const credentials = parsed.provider === "openai"
+    ? resolveProviderKey(vault, "openai", "OPENAI_API_KEY")
     : parsed.provider === "deepgram"
-      ? vault?.getKey("deepgram", "key") ?? requireEnv("DEEPGRAM_API_KEY")
+      ? resolveProviderKey(vault, "deepgram", "DEEPGRAM_API_KEY")
       : (() => { throw new Error(`Unsupported transcribe provider: ${parsed.provider}`); })();
 
-  const provider = await resolveTranscribeProvider(parsed.provider as TranscribeProviderName, apiKey);
+  const provider = await resolveTranscribeProvider(parsed.provider as TranscribeProviderName, credentials.apiKey);
 
   const providerOptions: Record<string, Record<string, unknown>> = {};
   if (parsed.provider === "openai") {
@@ -193,6 +231,16 @@ async function transcribeWithSdk(
       language: result.language,
       duration: result.durationInSeconds,
       textLength: result.text.length,
+      modelUsage: audioModelUsage({
+        operation: "audio.transcribe",
+        parsed,
+        credentialType: credentials.credentialType,
+        audioInputSeconds: result.durationInSeconds,
+        rawMetadata: {
+          language: result.language,
+          textLength: result.text.length,
+        },
+      }),
     },
   };
 }
@@ -282,12 +330,19 @@ async function speakWithSdk(
 
   // Cloud providers need an apiKey. The edge provider needs shell+fs.
   let apiKey: string | undefined;
+  let credentialType: "project" | "external" | "none" = "none";
   if (providerName === "openai") {
-    apiKey = vault?.getKey("openai", "key") ?? requireEnv("OPENAI_API_KEY");
+    const credentials = resolveProviderKey(vault, "openai", "OPENAI_API_KEY");
+    apiKey = credentials.apiKey;
+    credentialType = credentials.credentialType;
   } else if (providerName === "deepgram") {
-    apiKey = vault?.getKey("deepgram", "key") ?? requireEnv("DEEPGRAM_API_KEY");
+    const credentials = resolveProviderKey(vault, "deepgram", "DEEPGRAM_API_KEY");
+    apiKey = credentials.apiKey;
+    credentialType = credentials.credentialType;
   } else if (providerName === "elevenlabs") {
-    apiKey = vault?.getKey("elevenlabs", "key") ?? requireEnv("ELEVENLABS_API_KEY");
+    const credentials = resolveProviderKey(vault, "elevenlabs", "ELEVENLABS_API_KEY");
+    apiKey = credentials.apiKey;
+    credentialType = credentials.credentialType;
   } else if (providerName !== "edge") {
     throw new Error(`Unsupported tts provider: ${providerName}`);
   }
@@ -344,6 +399,18 @@ async function speakWithSdk(
       path: filePath,
       bytes: bytes.byteLength,
       textLength: params.text.length,
+      modelUsage: audioModelUsage({
+        operation: "audio.speak",
+        parsed,
+        credentialType,
+        rawMetadata: {
+          voice: voiceLabel,
+          format: outputFormat,
+          path: filePath,
+          bytes: bytes.byteLength,
+          textLength: params.text.length,
+        },
+      }),
     },
   };
 }
