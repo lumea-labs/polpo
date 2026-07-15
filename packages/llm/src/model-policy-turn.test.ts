@@ -149,6 +149,20 @@ describe("runModelPolicyTurn", () => {
     expect(attempted).toEqual(["anthropic/claude-sonnet-5"]);
   });
 
+  it("can preserve the original error for single-attempt compatibility", async () => {
+    const originalError = new Error("provider exploded");
+
+    await expect(runModelPolicyTurn({
+      selection: "openai/gpt-4o",
+      messages,
+      resolveAttempt: (attempt) => ({ model: fakeModel(attempt.model) }),
+      preserveSingleAttemptError: true,
+      runAttempt: async () => {
+        throw originalError;
+      },
+    })).rejects.toBe(originalError);
+  });
+
   it("normalizes candidate order before running attempts", async () => {
     const attempted: string[] = [];
 

@@ -15,7 +15,7 @@ import {
   type SummarizeFn,
 } from "@polpo-ai/core";
 import { generateText, type LanguageModel, type LanguageModelUsage } from "ai";
-import { streamModelTurn } from "@polpo-ai/llm";
+import { runModelPolicyTurn } from "@polpo-ai/llm";
 import type { CompletionRouteDeps } from "../completions.js";
 import { appendModelResponseMessages } from "./message-mapping.js";
 import {
@@ -70,6 +70,11 @@ export function completionResolvedModelInfo(model: ResolvedModelInfo): Completio
     provider: model.provider,
     ...(model.runtimeMode ? { runtimeMode: model.runtimeMode } : {}),
   };
+}
+
+export function modelSelectionForResolvedModel(model: ResolvedModelInfo): string {
+  const modelId = model.id ?? model.name;
+  return modelId ? `${model.provider}/${modelId}` : model.provider;
 }
 
 export function addUsage(a: LanguageModelUsage, b: LanguageModelUsage): LanguageModelUsage {
@@ -191,14 +196,18 @@ export async function runAgentStepCompletion(options: {
 
       const toolCallNames = new Map<string, string>();
       const toolCallArgsText = new Map<string, string>();
-      const turnResult = await streamModelTurn({
-        model: m.aiModel,
+      const turnResult = await runModelPolicyTurn({
+        selection: modelSelectionForResolvedModel(m),
+        resolveAttempt: () => ({
+          model: m.aiModel,
+          maxOutputTokens: m.maxTokens,
+          providerOptions: providerOpts,
+        }),
+        preserveSingleAttemptError: true,
         system: fullSystemPrompt,
         messages,
         tools: aiTools,
         ...(modelToolChoice ? { toolChoice: modelToolChoice as any } : {}),
-        maxOutputTokens: m.maxTokens,
-        providerOptions: providerOpts,
       }, async (event) => {
         if (event.type === "tool-input-start") {
           toolCallNames.set(event.id, event.name);
