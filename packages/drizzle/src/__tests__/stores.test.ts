@@ -719,6 +719,109 @@ describe("DrizzleSessionStore", () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════
+// ModelInvocationStore
+// ═══════════════════════════════════════════════════════════════════════
+
+describe("DrizzleModelInvocationStore", () => {
+  it("append + get round-trips a normalized model invocation", async () => {
+    const createdAt = new Date("2026-07-15T10:00:00.000Z");
+
+    const saved = await stores.modelInvocationStore.append({
+      id: "inv-1",
+      projectId: "project-1",
+      orgId: "org-1",
+      runId: "run-1",
+      sessionId: "session-1",
+      turnId: "turn-1",
+      agentName: "assistant",
+      externalUser: "user-1",
+      mode: "gateway",
+      operation: "chat",
+      requestedProvider: "anthropic",
+      requestedModel: "claude-sonnet-5",
+      resolvedProvider: "anthropic",
+      resolvedModel: "claude-sonnet-5",
+      finalProvider: "anthropic",
+      attemptIndex: 0,
+      attemptCount: 1,
+      generationId: "gen-1",
+      credentialType: "platform",
+      status: "succeeded",
+      inputTokens: 100,
+      outputTokens: 20,
+      reasoningTokens: 5,
+      cachedTokens: 10,
+      estimatedCostUsd: 0.03,
+      billableCostUsd: 0.03,
+      costSource: "gateway-metadata",
+      billingOwner: "platform",
+      rawMetadata: { gateway: { generationId: "gen-1" } },
+      createdAt,
+    });
+
+    expect(saved.id).toBe("inv-1");
+    expect(saved.createdAt?.toISOString()).toBe(createdAt.toISOString());
+
+    const fetched = await stores.modelInvocationStore.get("inv-1");
+    expect(fetched).toMatchObject({
+      projectId: "project-1",
+      runId: "run-1",
+      mode: "gateway",
+      operation: "chat",
+      requestedModel: "claude-sonnet-5",
+      billingOwner: "platform",
+      rawMetadata: { gateway: { generationId: "gen-1" } },
+    });
+  });
+
+  it("lists filtered invocations newest first", async () => {
+    await stores.modelInvocationStore.append({
+      id: "inv-old",
+      projectId: "project-1",
+      runId: "run-1",
+      mode: "provider",
+      operation: "audio.transcribe",
+      requestedModel: "nova-2",
+      status: "succeeded",
+      costSource: "none",
+      billingOwner: "external",
+      createdAt: new Date("2026-07-15T09:00:00.000Z"),
+    });
+    await stores.modelInvocationStore.append({
+      id: "inv-new",
+      projectId: "project-1",
+      runId: "run-1",
+      mode: "gateway",
+      operation: "chat",
+      requestedModel: "gpt-4o",
+      status: "succeeded",
+      costSource: "gateway-metadata",
+      billingOwner: "platform",
+      createdAt: new Date("2026-07-15T10:00:00.000Z"),
+    });
+    await stores.modelInvocationStore.append({
+      id: "inv-other",
+      projectId: "project-2",
+      runId: "run-2",
+      mode: "gateway",
+      operation: "chat",
+      requestedModel: "gpt-4o",
+      status: "failed",
+      errorClass: "auth",
+      costSource: "none",
+      billingOwner: "external",
+      createdAt: new Date("2026-07-15T11:00:00.000Z"),
+    });
+
+    const runItems = await stores.modelInvocationStore.list({ projectId: "project-1", runId: "run-1" });
+    expect(runItems.map((item) => item.id)).toEqual(["inv-new", "inv-old"]);
+
+    const limitedGateway = await stores.modelInvocationStore.list({ mode: "gateway", limit: 1 });
+    expect(limitedGateway.map((item) => item.id)).toEqual(["inv-other"]);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════
 // LogStore
 // ═══════════════════════════════════════════════════════════════════════
 

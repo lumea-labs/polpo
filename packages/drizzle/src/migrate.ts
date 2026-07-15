@@ -180,6 +180,45 @@ export async function ensurePgTables(db: any): Promise<void> {
     data       JSONB
   )`);
 
+  await db.execute(sql`CREATE TABLE IF NOT EXISTS model_invocation_logs (
+    id                   TEXT PRIMARY KEY,
+    project_id           TEXT,
+    org_id               TEXT,
+    run_id               TEXT,
+    session_id           TEXT,
+    turn_id              TEXT,
+    agent_name           TEXT,
+    external_user        TEXT,
+    mode                 TEXT NOT NULL,
+    operation            TEXT NOT NULL,
+    requested_provider   TEXT,
+    requested_model      TEXT NOT NULL,
+    resolved_provider    TEXT,
+    resolved_model       TEXT,
+    final_provider       TEXT,
+    attempt_index        INTEGER,
+    attempt_count        INTEGER,
+    generation_id        TEXT,
+    credential_type      TEXT,
+    status               VARCHAR(32) NOT NULL,
+    error_class          TEXT,
+    error_message        TEXT,
+    input_tokens         INTEGER,
+    output_tokens        INTEGER,
+    reasoning_tokens     INTEGER,
+    cached_tokens        INTEGER,
+    audio_input_seconds  DOUBLE PRECISION,
+    audio_output_seconds DOUBLE PRECISION,
+    image_count          INTEGER,
+    video_seconds        DOUBLE PRECISION,
+    estimated_cost_usd   DOUBLE PRECISION,
+    billable_cost_usd    DOUBLE PRECISION,
+    cost_source          TEXT NOT NULL DEFAULT 'unknown',
+    billing_owner        TEXT NOT NULL DEFAULT 'external',
+    raw_metadata         JSONB,
+    created_at           TEXT NOT NULL
+  )`);
+
 
   await db.execute(sql`CREATE TABLE IF NOT EXISTS approvals (
     id           TEXT PRIMARY KEY,
@@ -278,6 +317,11 @@ export async function ensurePgIndexes(db: any): Promise<void> {
   await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_pg_messages_session ON messages(session_id, ts)`);
   await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_pg_log_entries_session ON log_entries(session_id)`);
   await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_pg_log_entries_ts ON log_entries(ts)`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_pg_model_invocations_project_created ON model_invocation_logs(project_id, created_at)`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_pg_model_invocations_org_created ON model_invocation_logs(org_id, created_at)`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_pg_model_invocations_run ON model_invocation_logs(run_id)`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_pg_model_invocations_session ON model_invocation_logs(session_id)`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_pg_model_invocations_agent ON model_invocation_logs(agent_name)`);
   await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_pg_approvals_status ON approvals(status)`);
   await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_pg_approvals_task_id ON approvals(task_id)`);
 }

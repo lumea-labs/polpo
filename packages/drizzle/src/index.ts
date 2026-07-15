@@ -33,6 +33,7 @@ import { runsPg, runsSqlite } from "./schema/runs.js";
 import { loopRunsPg, loopRunsSqlite } from "./schema/loop-runs.js";
 import { sessionsPg, messagesPg, sessionsSqlite, messagesSqlite } from "./schema/sessions.js";
 import { logSessionsPg, logEntriesPg, logSessionsSqlite, logEntriesSqlite } from "./schema/logs.js";
+import { modelInvocationLogsPg, modelInvocationLogsSqlite } from "./schema/model-invocations.js";
 import { approvalsPg, approvalsSqlite } from "./schema/approvals.js";
 import { memoryPg, memorySqlite } from "./schema/memory.js";
 import {
@@ -50,6 +51,7 @@ import { DrizzleRunStore } from "./stores/run-store.js";
 import { DrizzleLoopRunStore, DualWriteLoopRunStore } from "./stores/loop-run-store.js";
 import { DrizzleSessionStore } from "./stores/session-store.js";
 import { DrizzleLogStore } from "./stores/log-store.js";
+import { DrizzleModelInvocationStore } from "./stores/model-invocation-store.js";
 import { DrizzleApprovalStore } from "./stores/approval-store.js";
 import { DrizzleMemoryStore } from "./stores/memory-store.js";
 import { DrizzleCheckpointStore } from "./stores/checkpoint-store.js";
@@ -69,6 +71,7 @@ import type { RunStore } from "@polpo-ai/core/run-store";
 import type { LoopRunStore } from "@polpo-ai/core/loop-run-store";
 import type { SessionStore } from "@polpo-ai/core/session-store";
 import type { LogStore } from "@polpo-ai/core/log-store";
+import type { ModelInvocationStore } from "@polpo-ai/core/model-invocation-store";
 import type { ApprovalStore } from "@polpo-ai/core/approval-store";
 import type { MemoryStore } from "@polpo-ai/core/memory-store";
 import type { CheckpointStore } from "@polpo-ai/core/checkpoint-store";
@@ -88,6 +91,7 @@ export interface DrizzleStores {
   loopRunStore: LoopRunStore;
   sessionStore: SessionStore;
   logStore: LogStore;
+  modelInvocationStore: ModelInvocationStore;
   approvalStore: ApprovalStore;
   memoryStore: MemoryStore;
   checkpointStore: CheckpointStore;
@@ -135,6 +139,7 @@ export function createPgStores(db: any): DrizzleStores {
     ),
     sessionStore: new DrizzleSessionStore(db, sessionsPg, messagesPg, "pg"),
     logStore: new DrizzleLogStore(db, logSessionsPg, logEntriesPg, "pg"),
+    modelInvocationStore: new DrizzleModelInvocationStore(db, modelInvocationLogsPg, "pg"),
     createLogStore: () => new DrizzleLogStore(db, logSessionsPg, logEntriesPg, "pg"),
     approvalStore: new DrizzleApprovalStore(db, approvalsPg, "pg"),
     memoryStore: new DrizzleMemoryStore(db, memoryPg),
@@ -173,6 +178,7 @@ export function createSqliteStores(db: any): DrizzleStores {
     ),
     sessionStore: new DrizzleSessionStore(db, sessionsSqlite, messagesSqlite, "sqlite"),
     logStore: new DrizzleLogStore(db, logSessionsSqlite, logEntriesSqlite, "sqlite"),
+    modelInvocationStore: new DrizzleModelInvocationStore(db, modelInvocationLogsSqlite, "sqlite"),
     createLogStore: () => new DrizzleLogStore(db, logSessionsSqlite, logEntriesSqlite, "sqlite"),
     approvalStore: new DrizzleApprovalStore(db, approvalsSqlite, "sqlite"),
     memoryStore: new DrizzleMemoryStore(db, memorySqlite),
@@ -200,6 +206,7 @@ export const pgSchema = {
   messages: messagesPg,
   logSessions: logSessionsPg,
   logEntries: logEntriesPg,
+  modelInvocationLogs: modelInvocationLogsPg,
   approvals: approvalsPg,
   memory: memoryPg,
   teams: teamsPg,
@@ -220,6 +227,7 @@ export const sqliteSchema = {
   messages: messagesSqlite,
   logSessions: logSessionsSqlite,
   logEntries: logEntriesSqlite,
+  modelInvocationLogs: modelInvocationLogsSqlite,
   approvals: approvalsSqlite,
   memory: memorySqlite,
   teams: teamsSqlite,
