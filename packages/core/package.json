@@ -30,6 +30,10 @@
       "types": "./dist/model-runtime.d.ts",
       "import": "./dist/model-runtime.js"
     },
+    "./model-catalog": {
+      "types": "./dist/model-catalog.d.ts",
+      "import": "./dist/model-catalog.js"
+    },
     "./model-invocation-store": {
       "types": "./dist/model-invocation-store.d.ts",
       "import": "./dist/model-invocation-store.js"

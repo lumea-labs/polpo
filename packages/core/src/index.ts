@@ -27,6 +27,28 @@ export type {
   ModelInvocationListFilter,
   ModelInvocationStore,
 } from "./model-invocation-store.js";
+export {
+  MODEL_CATALOG_CAPABILITIES,
+  MODEL_CATALOG_LEGACY_TYPES,
+  MODEL_CATALOG_MODALITIES,
+  MODEL_CATALOG_OUTPUT_MODALITIES,
+  isModelCatalogCapability,
+  isModelCatalogLegacyType,
+  isModelCatalogModality,
+  normalizeModelCatalogSearchFilters,
+} from "./model-catalog.js";
+export type {
+  ModelCatalogAgentField,
+  ModelCatalogCapability,
+  ModelCatalogEntry,
+  ModelCatalogLegacyType,
+  ModelCatalogModality,
+  ModelCatalogOutputModality,
+  ModelCatalogPricing,
+  ModelCatalogSearchInput,
+  ModelCatalogSource,
+  NormalizedModelCatalogSearchFilters,
+} from "./model-catalog.js";
 
 // ── Events (pure type definitions only, TypedEmitter lives in shell) ─────
 export * from "./events.js";
