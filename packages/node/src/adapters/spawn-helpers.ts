@@ -24,7 +24,7 @@ export function createActivity(): AgentActivity {
   };
 }
 import { join, resolve, sep } from "node:path";
-import { resolveModel, enforceModelAllowlist, mapReasoningToProviderOptions } from "@polpo-ai/llm";
+import { buildResolvedModelProviderOptions, resolveModel, enforceModelAllowlist } from "@polpo-ai/llm";
 import { createSystemTools, createAllTools } from "@polpo-ai/tools";
 import { NodeFileSystem } from "./node-filesystem.js";
 import { NodeShell } from "./node-shell.js";
@@ -34,6 +34,7 @@ import { loadAgentSkills } from "../llm/skills.js";
 import { nanoid } from "nanoid";
 import type { PolpoTool } from "@polpo-ai/core";
 import { createLocalCustomToolRuntime } from "../custom-tools/runtime.js";
+import { resolveNodeModelOptions } from "../llm/model-runtime-options.js";
 
 function resolvePromptAllowedPaths(cwd: string, allowedPaths?: string[]): string[] {
   const configured = Array.isArray(allowedPaths)
@@ -347,7 +348,10 @@ export function prepareSpawn(agentConfig: AgentConfig, cwd: string, ctx?: SpawnC
   }
 
   // Resolve model
-  const model = resolveModel(agentConfig.model, { gateway: ctx?.gatewayConfig as any });
+  const model = resolveModel(
+    agentConfig.model,
+    resolveNodeModelOptions(agentConfig.model, ctx?.gatewayConfig as any),
+  );
 
   // polpoDir must always be provided via SpawnContext.
   // Fallback to join(cwd, ".polpo") is WRONG when settings.workDir points to a
@@ -418,11 +422,9 @@ export function prepareSpawn(agentConfig: AgentConfig, cwd: string, ctx?: SpawnC
   // Track turns for maxTurns enforcement
   const maxTurns = agentConfig.maxTurns ?? 150;
 
-  // Provider options for reasoning/thinking
-  // Cast needed: mapReasoningToProviderOptions returns Record<string, Record<string, unknown>>
-  // but AI SDK expects Record<string, JSONObject> (JSONValue values). The values are always
-  // JSON-serializable (numbers, strings, objects), so this cast is safe.
-  const providerOptions = mapReasoningToProviderOptions(model.provider, thinkingLevel, model.maxTokens) as
+  // Provider options for reasoning/thinking. The values are JSON-serializable,
+  // so this cast keeps the AI SDK call-site narrow without leaking adapter internals.
+  const providerOptions = buildResolvedModelProviderOptions(model, thinkingLevel) as
     Record<string, Record<string, any>> | undefined;
 
   return {

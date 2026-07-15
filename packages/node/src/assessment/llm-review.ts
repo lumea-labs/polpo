@@ -34,9 +34,10 @@ import { DEFAULT_DIMENSIONS, buildRubricSection, computeWeightedScore, computeMe
 import { validateReviewPayload, type ValidatedReviewPayload } from "./schemas.js";
 import { ReviewPayloadSchema } from "@polpo-ai/core/assessment-schemas";
 import { withRetry } from "../llm/retry.js";
-import { resolveModel, mapReasoningToProviderOptions } from "@polpo-ai/llm";
+import { buildResolvedModelProviderOptions, resolveModel } from "@polpo-ai/llm";
 import type { ResolvedModel } from "@polpo-ai/llm";
 import type { ReasoningLevel } from "@polpo-ai/core/types";
+import { resolveNodeModelOptions } from "../llm/model-runtime-options.js";
 
 export type LLMQueryFn = (prompt: string, cwd: string) => Promise<string>;
 
@@ -182,8 +183,8 @@ async function runExploration(
   onProgress?: (msg: string) => void,
   reasoning?: ReasoningLevel,
 ): Promise<{ analysis: string; filesRead: string[]; messages: ReviewerMessage[] }> {
-  const m = resolveModel(model);
-  const providerOptions = mapReasoningToProviderOptions(m.provider, reasoning, m.maxTokens);
+  const m = resolveModel(model, resolveNodeModelOptions(model));
+  const providerOptions = buildResolvedModelProviderOptions(m, reasoning);
 
   const filesRead: string[] = [];
   const explorationTools = buildExplorationTools(cwd, filesRead, onProgress);
@@ -234,8 +235,8 @@ async function runScoring(
   onProgress?: (msg: string) => void,
   reasoning?: ReasoningLevel,
 ): Promise<{ payload: ReviewPayload | null; attemptErrors: string[] }> {
-  const m = resolveModel(model);
-  const providerOptions = mapReasoningToProviderOptions(m.provider, reasoning, m.maxTokens);
+  const m = resolveModel(model, resolveNodeModelOptions(model));
+  const providerOptions = buildResolvedModelProviderOptions(m, reasoning);
 
   const scoringPrompt = `Based on the following code analysis, produce structured scores for each dimension.
 
@@ -373,8 +374,8 @@ async function runSingleReview(
     // Output-based review: the prompt already contains all the evidence.
     // Run a single LLM call to produce the analysis from the provided context.
     onProgress?.("Analyzing execution evidence (no file exploration needed)...");
-    const m = resolveModel(model);
-    const providerOptions = mapReasoningToProviderOptions(m.provider, reasoning, m.maxTokens);
+    const m = resolveModel(model, resolveNodeModelOptions(model));
+    const providerOptions = buildResolvedModelProviderOptions(m, reasoning);
 
     const result = await generateText({
       model: m.aiModel,

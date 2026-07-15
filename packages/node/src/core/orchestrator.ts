@@ -65,6 +65,7 @@ import { NodeFileSystem } from "../adapters/node-filesystem.js";
 import { NodeShell } from "../adapters/node-shell.js";
 import type { FileSystem } from "@polpo-ai/core/filesystem";
 import type { Shell } from "@polpo-ai/core/shell";
+import { resolveNodeModelOptions } from "../llm/model-runtime-options.js";
 
 // Re-export for backward compatibility (consumed by core/index.ts and external modules)
 export { buildFixPrompt, buildRetryPrompt };
@@ -435,7 +436,11 @@ export class Orchestrator extends TypedEmitter {
         // If ModelConfig with fallbacks, use fallback-aware query
         if (model && typeof model === "object" && (model as any).fallbacks?.length > 0) {
           return withRetry(async () => {
-            const result = await queryTextWithFallback(prompt, model as any, { gateway: this.gatewayConfig });
+            const result = await queryTextWithFallback(
+              prompt,
+              model as any,
+              resolveNodeModelOptions(model as any, this.gatewayConfig),
+            );
             let costUsd: number | undefined;
             if (result.usage) { try { costUsd = estimateCost(result.model, result.usage).totalCost; } catch {} }
             return { text: result.text, usage: result.usage, model: result.model, usedSpec: result.usedSpec, costUsd };
@@ -443,7 +448,7 @@ export class Orchestrator extends TypedEmitter {
         }
         const spec = resolveModelSpec(model);
         return withRetry(async () => {
-          const result = await queryText(prompt, spec, undefined, { gateway: this.gatewayConfig });
+          const result = await queryText(prompt, spec, undefined, resolveNodeModelOptions(spec, this.gatewayConfig));
           let costUsd: number | undefined;
           if (result.usage) { try { costUsd = estimateCost(result.model, result.usage).totalCost; } catch {} }
           return { text: result.text, usage: result.usage, model: result.model, costUsd };

@@ -1,3 +1,4 @@
+import { createAnthropic } from "@ai-sdk/anthropic";
 import { createOpenAI } from "@ai-sdk/openai";
 import type {
   BillingOwner,
@@ -37,6 +38,11 @@ export function createProviderRuntimeAdapter(options: ProviderRuntimeAdapterOpti
       if (provider === "openai") {
         const openai = createOpenAI({ apiKey });
         return openai(modelId);
+      }
+
+      if (provider === "anthropic") {
+        const anthropic = createAnthropic({ apiKey });
+        return anthropic(modelId);
       }
 
       throw new Error(`Direct provider execution is not implemented for provider "${provider}"`);

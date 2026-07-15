@@ -37,6 +37,7 @@ import { providerRoutes } from "./routes/providers.js";
 import { skillRoutes } from "./routes/skills.js";
 import { fileRoutes } from "./routes/files.js";
 import { createLocalCustomToolRuntime } from "../custom-tools/runtime.js";
+import { resolveNodeModelOptions } from "../llm/model-runtime-options.js";
 
 function readRuntimeVersion(): string {
   try {
@@ -120,10 +121,10 @@ export function createApp(orchestrator: Orchestrator, sseBridge: SSEBridge, opts
     getStore: () => o.getStore(),
     emit: (event: string, data: any) => o.emit(event as any, data),
     resolveAgentModel: async (agentConfig: any, reasoning?: string) => {
-      const { resolveModel, mapReasoningToProviderOptions } = await import("@polpo-ai/llm");
-      const m = resolveModel(agentConfig.model, { gateway: o.getGatewayConfig() });
+      const { buildResolvedModelProviderOptions, resolveModel } = await import("@polpo-ai/llm");
+      const m = resolveModel(agentConfig.model, resolveNodeModelOptions(agentConfig.model, o.getGatewayConfig()));
       const r = agentConfig.reasoning ?? reasoning;
-      const providerOptions = mapReasoningToProviderOptions(m.provider, r, m.maxTokens);
+      const providerOptions = buildResolvedModelProviderOptions(m, r);
       return { model: m, providerOptions };
     },
     buildAgentPrompt: (agentConfig: any) => {
@@ -231,9 +232,9 @@ export function createApp(orchestrator: Orchestrator, sseBridge: SSEBridge, opts
   // ── Dependency thunks ─────────────────────────────────────────────────
   //
   // Each route factory receives a thunk that returns its deps at request
-  // time.  In the self-hosted case every thunk delegates to the same
-  // Orchestrator instance.  Consumers can supply different thunks that read
-  // from database stores directly.
+  // time. In the single-orchestrator Node host every thunk delegates to the
+  // same Orchestrator instance. Other hosts can supply different thunks that
+  // read from database stores directly.
 
   const o = orchestrator; // short alias
   const customTools = () => createLocalCustomToolRuntime({
