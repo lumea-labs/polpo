@@ -27,7 +27,11 @@ import {
 } from "@polpo-ai/core";
 import type { LanguageModelUsage } from "ai";
 import type { CompletionRouteDeps } from "../completions.js";
-import { addUsage, runAgentStepCompletion } from "./agent-step-runner.js";
+import {
+  addUsage,
+  runAgentStepCompletion,
+  type CompletionResolvedModelInfo,
+} from "./agent-step-runner.js";
 import { completionResponse, loopRuntimeErrorEnvelope, modelNotFoundEnvelope, sseChunk } from "./sse.js";
 import { emitFileChanged, persistAssistantMessage, type LoopRuntimeToolCall } from "./tool-mapping.js";
 
@@ -35,6 +39,7 @@ export interface ProjectLoopRunResult {
   text: string;
   usage: LanguageModelUsage;
   model: string;
+  resolvedModel?: CompletionResolvedModelInfo;
   providerMetadata?: Record<string, unknown>;
   toolCalls: any[];
   context: ContextBag;
@@ -95,6 +100,7 @@ export async function runProjectLoopCompletion(options: {
   let finalText = "";
   let totalUsage: LanguageModelUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 } as LanguageModelUsage;
   let lastModel = agentConfig.model ?? "polpo";
+  let lastResolvedModel: CompletionResolvedModelInfo | undefined;
   let lastProviderMetadata: Record<string, unknown> | undefined;
   const toolCallsAccum: any[] = [];
   const events: LoopTraceEvent[] = [];
@@ -186,6 +192,7 @@ export async function runProjectLoopCompletion(options: {
         finalText = stepResult.text || finalText;
         totalUsage = addUsage(totalUsage, stepResult.usage);
         lastModel = stepResult.model;
+        lastResolvedModel = stepResult.resolvedModel;
         lastProviderMetadata = stepResult.providerMetadata;
         toolCallsAccum.push(...stepResult.toolCalls);
         const output = stringifyLoopContext({ [name]: stepResult.output });
@@ -220,6 +227,7 @@ export async function runProjectLoopCompletion(options: {
       text: finalText,
       usage: totalUsage,
       model: lastModel,
+      resolvedModel: lastResolvedModel,
       providerMetadata: lastProviderMetadata,
       toolCalls: toolCallsAccum,
       context: result.context,
@@ -399,6 +407,7 @@ export async function handleProjectLoopCompletion(c: any, options: {
       let finalText = "";
       let runUsage: LanguageModelUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 } as LanguageModelUsage;
       let runModel = agentConfig.model ?? "polpo";
+      let resolvedModel: CompletionResolvedModelInfo | undefined;
       let providerMetadata: Record<string, unknown> | undefined;
       let toolCalls: any[] = [];
 
@@ -433,6 +442,7 @@ export async function handleProjectLoopCompletion(c: any, options: {
         finalText = run.text;
         runUsage = run.usage;
         runModel = run.model;
+        resolvedModel = run.resolvedModel;
         providerMetadata = run.providerMetadata;
         toolCalls = run.toolCalls;
 
@@ -467,6 +477,7 @@ export async function handleProjectLoopCompletion(c: any, options: {
           deps.onCompletionFinished?.({
             usage: runUsage,
             model: runModel,
+            resolvedModel,
             agent: body.agent,
             sessionId: sessionId ?? undefined,
             user: body.user,
@@ -480,6 +491,7 @@ export async function handleProjectLoopCompletion(c: any, options: {
   let assistantMsgId: string | null = null;
   let runUsage: LanguageModelUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 } as LanguageModelUsage;
   let runModel = agentConfig.model ?? "polpo";
+  let resolvedModel: CompletionResolvedModelInfo | undefined;
   let providerMetadata: Record<string, unknown> | undefined;
   let toolCalls: any[] = [];
   let finalText = "";
@@ -500,6 +512,7 @@ export async function handleProjectLoopCompletion(c: any, options: {
     finalText = run.text;
     runUsage = run.usage;
     runModel = run.model;
+    resolvedModel = run.resolvedModel;
     providerMetadata = run.providerMetadata;
     toolCalls = run.toolCalls;
     return c.json(completionResponse(completionId, finalText, runUsage, { loop_trace: run.trace, loop_run_id: run.loopRunId }));
@@ -519,6 +532,7 @@ export async function handleProjectLoopCompletion(c: any, options: {
       deps.onCompletionFinished?.({
         usage: runUsage,
         model: runModel,
+        resolvedModel,
         agent: body.agent,
         sessionId: sessionId ?? undefined,
         user: body.user,

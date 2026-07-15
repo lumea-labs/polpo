@@ -19,7 +19,7 @@ import type { Context } from "hono";
 import { streamSSE } from "hono/streaming";
 import type { ChatSessionInjection } from "@polpo-ai/core";
 import type { ChatCompletionExecution } from "./chat-handler.js";
-import { MAX_TURNS } from "./agent-step-runner.js";
+import { completionResolvedModelInfo, MAX_TURNS } from "./agent-step-runner.js";
 import { completionResponse, modelErrorEnvelope, modelNotFoundEnvelope, sseChunk } from "./sse.js";
 import {
   persistAssistantMessage,
@@ -209,6 +209,7 @@ async function finishCommon(
     deps.onCompletionFinished?.({
       usage: state.totalUsage,
       model: m.id ?? m.provider,
+      resolvedModel: completionResolvedModelInfo(m),
       agent: body.agent,
       sessionId: sessionId ?? undefined,
       user: body.user,

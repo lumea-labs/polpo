@@ -42,7 +42,10 @@ import type { ChatSessionInjection } from "@polpo-ai/core";
 import { chatCompletionsRoute } from "./completions/schemas.js";
 import { convertMessages, extractText } from "./completions/message-mapping.js";
 import { toAIToolChoice } from "./completions/tool-mapping.js";
-import type { ResolvedModelInfo } from "./completions/agent-step-runner.js";
+import type {
+  CompletionResolvedModelInfo,
+  ResolvedModelInfo,
+} from "./completions/agent-step-runner.js";
 import { handleProjectLoopCompletion } from "./completions/project-loop-runner.js";
 import {
   runNonStreamingChatCompletion,
@@ -118,6 +121,7 @@ export interface CompletionRouteDeps {
   onCompletionFinished?: (info: {
     usage: { inputTokens?: number; outputTokens?: number; totalTokens?: number };
     model: string;
+    resolvedModel?: CompletionResolvedModelInfo;
     agent?: string;
     sessionId?: string;
     /** OpenAI-compat opaque end-user id from the request, when set. Lets the

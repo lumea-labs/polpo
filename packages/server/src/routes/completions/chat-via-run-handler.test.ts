@@ -21,7 +21,9 @@ function baseDeps(overrides: Partial<CompletionRouteDeps> = {}): CompletionRoute
     resolveAgentModel: async () => ({
       model: {
         id: "mock-model",
+        name: "Mock Model",
         provider: "mock",
+        runtimeMode: "provider",
         aiModel: {} as any,
         contextWindow: 200_000,
         maxTokens: 8192,
@@ -151,6 +153,13 @@ describe("chat via Run driver", () => {
     expect(onCompletionFinished).toHaveBeenCalledWith(expect.objectContaining({
       usage: { inputTokens: 9, outputTokens: 3, totalTokens: 12 },
       providerMetadata: { gateway: { generationId: "gen_provider" } },
+      model: "mock-model",
+      resolvedModel: {
+        id: "mock-model",
+        name: "Mock Model",
+        provider: "mock",
+        runtimeMode: "provider",
+      },
       agent: "agent-1",
       sessionId: "session-1",
     }));
@@ -188,7 +197,9 @@ describe("chat via Run driver", () => {
         systemPrompt: "orchestrate",
         model: {
           id: "mock-model",
+          name: "Mock Model",
           provider: "mock",
+          runtimeMode: "provider",
           aiModel: {} as any,
           contextWindow: 200_000,
           maxTokens: 8192,

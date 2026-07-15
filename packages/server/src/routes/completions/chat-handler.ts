@@ -12,7 +12,12 @@ import { compactIfNeeded, type CompactionEvent } from "@polpo-ai/core";
 import { streamModelTurn } from "@polpo-ai/llm";
 import type { LanguageModelUsage } from "ai";
 import type { CompletionRouteDeps } from "../completions.js";
-import { buildSummarizeFn, MAX_TURNS, type ResolvedModelInfo } from "./agent-step-runner.js";
+import {
+  buildSummarizeFn,
+  completionResolvedModelInfo,
+  MAX_TURNS,
+  type ResolvedModelInfo,
+} from "./agent-step-runner.js";
 import { appendModelResponseMessages } from "./message-mapping.js";
 import { completionResponse, modelErrorEnvelope, modelNotFoundEnvelope, sseChunk } from "./sse.js";
 import {
@@ -456,6 +461,7 @@ export function streamChatCompletion(c: any, exec: ChatCompletionExecution): any
         deps.onCompletionFinished?.({
           usage: totalUsage,
           model: m.id ?? m.provider,
+          resolvedModel: completionResolvedModelInfo(m),
           agent: body.agent,
           sessionId: sessionId ?? undefined,
           user: body.user,
@@ -769,6 +775,7 @@ export async function runNonStreamingChatCompletion(c: any, exec: ChatCompletion
       deps.onCompletionFinished?.({
         usage: totalUsage,
         model: m.id ?? m.provider,
+        resolvedModel: completionResolvedModelInfo(m),
         agent: body.agent,
         sessionId: sessionId ?? undefined,
         user: body.user,

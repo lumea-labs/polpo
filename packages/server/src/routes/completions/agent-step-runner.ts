@@ -36,10 +36,21 @@ export const MAX_TURNS = 20;
 export interface ResolvedModelInfo {
   /** Model identifier (e.g. "claude-sonnet-4.5") — optional for backwards compat. */
   id?: string;
+  /** Human-facing model name/slug when distinct from id. */
+  name?: string;
   aiModel: LanguageModel;
   provider: string;
+  /** Runtime used to construct the AI SDK model. */
+  runtimeMode?: "provider" | "gateway";
   contextWindow: number;
   maxTokens: number;
+}
+
+export interface CompletionResolvedModelInfo {
+  id?: string;
+  name?: string;
+  provider: string;
+  runtimeMode?: "provider" | "gateway";
 }
 
 export interface AgentStepRunResult {
@@ -47,8 +58,18 @@ export interface AgentStepRunResult {
   output: unknown;
   usage: LanguageModelUsage;
   model: string;
+  resolvedModel?: CompletionResolvedModelInfo;
   providerMetadata?: Record<string, unknown>;
   toolCalls: any[];
+}
+
+export function completionResolvedModelInfo(model: ResolvedModelInfo): CompletionResolvedModelInfo {
+  return {
+    ...(model.id ? { id: model.id } : {}),
+    ...(model.name ? { name: model.name } : {}),
+    provider: model.provider,
+    ...(model.runtimeMode ? { runtimeMode: model.runtimeMode } : {}),
+  };
 }
 
 export function addUsage(a: LanguageModelUsage, b: LanguageModelUsage): LanguageModelUsage {
@@ -255,6 +276,7 @@ export async function runAgentStepCompletion(options: {
       output: maybeParseJson(finalText),
       usage: totalUsage,
       model: m.id ?? m.provider,
+      resolvedModel: completionResolvedModelInfo(m),
       providerMetadata: lastProviderMetadata,
       toolCalls: toolCallsAccum,
     };
