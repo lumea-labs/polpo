@@ -5,6 +5,7 @@ import {
   extractProviderInvocationDetails,
   extractProviderInvocationUsage,
   splitProviderModelRef,
+  SUPPORTED_DIRECT_LANGUAGE_PROVIDERS,
 } from "./provider-runtime-adapter.js";
 
 describe("provider runtime adapter", () => {
@@ -56,13 +57,42 @@ describe("provider runtime adapter", () => {
     expect(model).toBeTruthy();
   });
 
+  it.each([
+    ["google", "gemini-2.5-pro"],
+    ["xai", "grok-4.1-fast-non-reasoning"],
+    ["groq", "llama-3.3-70b-versatile"],
+    ["mistral", "mistral-large-latest"],
+  ])("creates %s language models through the provider adapter", (provider, modelId) => {
+    const adapter = createProviderRuntimeAdapter({
+      apiKeyResolver: () => "test-key",
+    });
+
+    const model = adapter.createLanguageModel({
+      ref: { provider, model: modelId },
+      context: {},
+    });
+
+    expect(model).toBeTruthy();
+  });
+
+  it("lists every direct language provider implemented by the adapter", () => {
+    expect(SUPPORTED_DIRECT_LANGUAGE_PROVIDERS).toEqual([
+      "openai",
+      "anthropic",
+      "google",
+      "xai",
+      "groq",
+      "mistral",
+    ]);
+  });
+
   it("fails explicitly for unsupported direct providers", () => {
     const adapter = createProviderRuntimeAdapter({
       apiKeyResolver: () => "test-key",
     });
 
     expect(() => adapter.createLanguageModel({
-      ref: { provider: "google", model: "gemini-2.5-pro" },
+      ref: { provider: "cohere", model: "command-a" },
       context: {},
     })).toThrow(/not implemented/);
   });

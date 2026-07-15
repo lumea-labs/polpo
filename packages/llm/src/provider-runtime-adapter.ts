@@ -1,5 +1,10 @@
 import { createAnthropic } from "@ai-sdk/anthropic";
+import { createGoogleGenerativeAI } from "@ai-sdk/google";
+import { createGroq } from "@ai-sdk/groq";
+import { createMistral } from "@ai-sdk/mistral";
 import { createOpenAI } from "@ai-sdk/openai";
+import { createXai } from "@ai-sdk/xai";
+import type { LanguageModel } from "ai";
 import type {
   BillingOwner,
   CreateModelInput,
@@ -22,6 +27,15 @@ export interface ProviderRuntimeAdapterOptions {
   billingOwner?: BillingOwner;
 }
 
+export const SUPPORTED_DIRECT_LANGUAGE_PROVIDERS = [
+  "openai",
+  "anthropic",
+  "google",
+  "xai",
+  "groq",
+  "mistral",
+] as const;
+
 export function createProviderRuntimeAdapter(options: ProviderRuntimeAdapterOptions = {}): ModelRuntimeAdapter {
   const billingOwner = options.billingOwner ?? "external";
 
@@ -37,12 +51,32 @@ export function createProviderRuntimeAdapter(options: ProviderRuntimeAdapterOpti
 
       if (provider === "openai") {
         const openai = createOpenAI({ apiKey });
-        return openai(modelId);
+        return openai(modelId) as unknown as LanguageModel;
       }
 
       if (provider === "anthropic") {
         const anthropic = createAnthropic({ apiKey });
-        return anthropic(modelId);
+        return anthropic(modelId) as unknown as LanguageModel;
+      }
+
+      if (provider === "google") {
+        const google = createGoogleGenerativeAI({ apiKey });
+        return google(modelId) as unknown as LanguageModel;
+      }
+
+      if (provider === "xai") {
+        const xai = createXai({ apiKey });
+        return xai(modelId) as unknown as LanguageModel;
+      }
+
+      if (provider === "groq") {
+        const groq = createGroq({ apiKey });
+        return groq(modelId) as unknown as LanguageModel;
+      }
+
+      if (provider === "mistral") {
+        const mistral = createMistral({ apiKey });
+        return mistral(modelId) as unknown as LanguageModel;
       }
 
       throw new Error(`Direct provider execution is not implemented for provider "${provider}"`);
