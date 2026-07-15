@@ -7,6 +7,7 @@ const DEFAULT_SETTINGS: PolpoSettings = {
   maxRetries: 3,
   workDir: ".",
   logLevel: "normal",
+  chatExecution: "run",
 };
 
 // --- .polpo/polpo.json (persistent project config) ---
@@ -167,6 +168,11 @@ function parseSettings(raw: any): PolpoSettings {
   if (raw?.taskExecution && ["subprocess", "in-process"].includes(raw.taskExecution)) {
     settings.taskExecution = raw.taskExecution;
   }
+  // Chat completions use the shared run lifecycle by default. Keep "inline"
+  // as an explicit compatibility escape hatch while the legacy path exists.
+  settings.chatExecution = ["inline", "run"].includes(raw?.chatExecution)
+    ? raw.chatExecution
+    : DEFAULT_SETTINGS.chatExecution;
   if (raw?.databaseUrl && typeof raw.databaseUrl === "string") {
     settings.databaseUrl = raw.databaseUrl;
   }
