@@ -22,6 +22,7 @@ const DATABASE_URL = process.env.TEST_DATABASE_URL ?? "postgresql://postgres:pos
 // All tables managed by ensurePgSchema, in safe truncation order (children before parents)
 const ALL_TABLES = [
   "log_entries",
+  "model_invocation_logs",
   "messages",
   "approvals",
   "runs",

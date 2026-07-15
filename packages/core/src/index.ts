@@ -22,6 +22,10 @@ export type {
   NormalizedModelError,
   UsageExtractionInput,
 } from "./model-runtime.js";
+export type {
+  ModelInvocationListFilter,
+  ModelInvocationStore,
+} from "./model-invocation-store.js";
 
 // ── Events (pure type definitions only, TypedEmitter lives in shell) ─────
 export * from "./events.js";
