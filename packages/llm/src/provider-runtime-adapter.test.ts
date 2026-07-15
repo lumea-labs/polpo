@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   classifyProviderRuntimeError,
   createProviderRuntimeAdapter,
+  extractProviderInvocationDetails,
   extractProviderInvocationUsage,
   splitProviderModelRef,
 } from "./provider-runtime-adapter.js";
@@ -94,6 +95,37 @@ describe("provider runtime adapter", () => {
       costSource: "unknown",
       billingOwner: "external",
     });
+  });
+
+  it("extracts provider invocation details without gateway assumptions", () => {
+    const details = extractProviderInvocationDetails({
+      mode: "provider",
+      operation: "chat",
+      requested: { provider: "openai", model: "gpt-4o" },
+      context: {},
+      result: {
+        response: { id: "resp_123" },
+        providerMetadata: { openai: { systemFingerprint: "fp_1" } },
+      },
+    });
+
+    expect(details).toEqual({
+      generationId: "resp_123",
+      rawMetadata: {
+        providerMetadata: { openai: { systemFingerprint: "fp_1" } },
+      },
+    });
+
+    const adapter = createProviderRuntimeAdapter({
+      apiKeyResolver: () => "test-key",
+    });
+    expect(adapter.extractInvocationDetails?.({
+      mode: "provider",
+      operation: "chat",
+      requested: { provider: "openai", model: "gpt-4o" },
+      context: {},
+      result: { response: { id: "resp_123" } },
+    })).toEqual({ generationId: "resp_123" });
   });
 
   it("classifies common provider failures", () => {

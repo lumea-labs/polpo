@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   classifyGatewayError,
   createGatewayRuntimeAdapter,
+  extractGatewayInvocationDetails,
   extractGatewayInvocationUsage,
   splitGatewayModelRef,
 } from "./gateway-runtime-adapter.js";
@@ -90,6 +91,55 @@ describe("gateway runtime adapter", () => {
     expect(usage.estimatedCostUsd).toBe(0.01);
     expect(usage.billableCostUsd).toBe(0.01);
     expect(usage.billingOwner).toBe("platform");
+  });
+
+  it("extracts normalized gateway invocation details through the adapter boundary", () => {
+    const input = {
+      mode: "gateway" as const,
+      operation: "chat" as const,
+      requested: { model: "anthropic/claude-sonnet-5" },
+      context: {},
+      result: {
+        providerMetadata: {
+          gateway: {
+            generationId: "gen_123",
+            marketCost: "0.0042",
+            actualCost: "0.0039",
+            inputInferenceCost: "0.001",
+            outputInferenceCost: "0.0029",
+            routing: {
+              canonicalSlug: "anthropic/claude-sonnet-5",
+              finalProvider: "anthropic",
+              modelAttempts: [
+                {
+                  providerAttempts: [{ credentialType: "system" }],
+                },
+              ],
+            },
+          },
+        },
+      },
+    };
+
+    expect(extractGatewayInvocationDetails(input)).toEqual({
+      generationId: "gen_123",
+      credentialType: "platform",
+      resolvedModel: "anthropic/claude-sonnet-5",
+      finalProvider: "anthropic",
+      reportedCostUsd: 0.0042,
+      actualCostUsd: 0.0039,
+      inputInferenceCostUsd: 0.001,
+      outputInferenceCostUsd: 0.0029,
+      rawMetadata: {
+        gateway: input.result.providerMetadata.gateway,
+      },
+    });
+
+    const adapter = createGatewayRuntimeAdapter();
+    expect(adapter.extractInvocationDetails?.(input)).toMatchObject({
+      generationId: "gen_123",
+      credentialType: "platform",
+    });
   });
 
   it("classifies common retryable gateway failures without changing runtime mode", () => {
