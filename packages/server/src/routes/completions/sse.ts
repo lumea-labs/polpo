@@ -9,6 +9,7 @@ import {
   LoopPermissionDeniedError,
   LoopPolicyDeniedError,
 } from "@polpo-ai/core";
+import { classifyGatewayError, extractGatewayModelNotFoundDetails } from "@polpo-ai/llm";
 import type { LanguageModelUsage } from "ai";
 
 export function sseChunk(
@@ -85,36 +86,15 @@ export function modelErrorEnvelope(err: unknown): {
   };
 }
 
-/**
- * Detect Vercel AI Gateway "model not found" errors so callers see a
- * clean 400 (with the offending model id + agent name) instead of a
- * generic 500 surfaced by Hono's default error handler.
- *
- * Triggers on:
- *   - `GatewayModelNotFoundError` constructor name from `@ai-sdk/gateway`
- *   - any 404 response whose body mentions `model_not_found` (covers
- *     custom gateways that don't ship the typed error class)
- *
- * Returns the error envelope to send back, or null if the error isn't a
- * model-not-found and should propagate untouched.
- */
 export function modelNotFoundEnvelope(
   err: unknown,
   fallbackModelId: string | undefined,
   agent: string | undefined,
 ): { message: string; type: "model_not_found"; param: { modelId: string; agent?: string } } | null {
-  const candidates = errorObjects(err);
-  const match = candidates.find((e) =>
-    e.name === "GatewayModelNotFoundError" ||
-    e.constructor?.name === "GatewayModelNotFoundError" ||
-    e.type === "model_not_found" ||
-    e.code === "model_not_found" ||
-    (e.statusCode === 404 &&
-      typeof e.responseBody === "string" &&
-      e.responseBody.includes("model_not_found")),
-  );
-  if (!match) return null;
-  const modelId: string = match.modelId ?? match.param?.modelId ?? fallbackModelId ?? "unknown";
+  const normalized = classifyGatewayError(err);
+  if (normalized.class !== "model-not-found") return null;
+  const details = extractGatewayModelNotFoundDetails(err);
+  const modelId = details?.modelId ?? fallbackModelId ?? "unknown";
   return {
     message:
       `Model "${modelId}" is not available on the gateway. ` +

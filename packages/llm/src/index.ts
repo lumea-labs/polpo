@@ -72,10 +72,11 @@ export {
   classifyGatewayError,
   createGatewayRuntimeAdapter,
   extractGatewayInvocationDetails,
+  extractGatewayModelNotFoundDetails,
   extractGatewayInvocationUsage,
   splitGatewayModelRef,
 } from "./gateway-runtime-adapter.js";
-export type { GatewayRuntimeAdapterOptions } from "./gateway-runtime-adapter.js";
+export type { GatewayModelNotFoundDetails, GatewayRuntimeAdapterOptions } from "./gateway-runtime-adapter.js";
 
 // ─── Provider Runtime Adapter ────────────────────────
 export {

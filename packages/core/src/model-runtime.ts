@@ -61,6 +61,7 @@ export interface NormalizedModelError {
     | "overloaded"
     | "timeout"
     | "unavailable"
+    | "model-not-found"
     | "invalid-request"
     | "context-length"
     | "cancelled"
