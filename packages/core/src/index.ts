@@ -2,6 +2,7 @@
 export * from "./types.js";
 
 export type { PolpoTool, ToolResult, ToolUpdateCallback } from "./tool-types.js";
+export { extractToolUsageRecord } from "./tool-usage.js";
 
 // ── Model runtime facts (neutral, no provider SDK imports) ───────────────
 export {
