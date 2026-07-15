@@ -21,6 +21,7 @@
     "LICENSE"
   ],
   "dependencies": {
+    "@ai-sdk/anthropic": "^2.0.79",
     "@ai-sdk/openai": "^3.0.48",
     "@ai-sdk/openai-compatible": "^2.0.37",
     "@polpo-ai/core": "workspace:*"

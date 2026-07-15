@@ -43,13 +43,26 @@ describe("provider runtime adapter", () => {
     expect(model).toBeTruthy();
   });
 
+  it("creates Anthropic language models through the provider adapter", () => {
+    const adapter = createProviderRuntimeAdapter({
+      apiKeyResolver: () => "test-key",
+    });
+
+    const model = adapter.createLanguageModel({
+      ref: { provider: "anthropic", model: "claude-sonnet-4-5" },
+      context: {},
+    });
+
+    expect(model).toBeTruthy();
+  });
+
   it("fails explicitly for unsupported direct providers", () => {
     const adapter = createProviderRuntimeAdapter({
       apiKeyResolver: () => "test-key",
     });
 
     expect(() => adapter.createLanguageModel({
-      ref: { provider: "anthropic", model: "claude-sonnet-5" },
+      ref: { provider: "google", model: "gemini-2.5-pro" },
       context: {},
     })).toThrow(/not implemented/);
   });
