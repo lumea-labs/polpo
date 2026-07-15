@@ -66,6 +66,15 @@ export type {
   UsageExtractionInput,
 } from "./model-runtime.js";
 
+// ─── Gateway Runtime Adapter ─────────────────────────
+export {
+  classifyGatewayError,
+  createGatewayRuntimeAdapter,
+  extractGatewayInvocationUsage,
+  splitGatewayModelRef,
+} from "./gateway-runtime-adapter.js";
+export type { GatewayRuntimeAdapterOptions } from "./gateway-runtime-adapter.js";
+
 // ─── Provider Factory ─────────────────────────────────
 export {
   createCustomProviderModel,
