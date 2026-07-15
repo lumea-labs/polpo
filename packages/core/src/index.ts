@@ -49,6 +49,16 @@ export type {
   ModelCatalogSource,
   NormalizedModelCatalogSearchFilters,
 } from "./model-catalog.js";
+export {
+  MAX_MODEL_FALLBACKS,
+  isModelConfig,
+  normalizeModelPolicy,
+} from "./model-policy.js";
+export type {
+  ModelSelection,
+  NormalizedModelPolicy,
+  NormalizeModelPolicyOptions,
+} from "./model-policy.js";
 
 // ── Events (pure type definitions only, TypedEmitter lives in shell) ─────
 export * from "./events.js";
