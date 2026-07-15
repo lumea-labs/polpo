@@ -125,10 +125,11 @@ export interface CompletionRouteDeps {
     user?: string;
     providerMetadata?: Record<string, unknown>;
   }) => void;
-  /** F1c: run a chat completion through the shared executeRun lifecycle +
-   *  loop-engine (node-provided). Present ⇒ settings.chatExecution:"run" can
-   *  route chat off the inline handler. `onEvent` receives the run's live event
-   *  stream (text-delta / reasoning-delta / tool_use / tool_result / usage / …). */
+  /** Run a chat completion through the shared executeRun lifecycle +
+   *  loop-engine (node-provided). With settings.chatExecution:"run", this
+   *  routes chat through the same runtime used by tasks. `onEvent` receives the
+   *  run's live event stream (text-delta / reasoning-delta / tool_use /
+   *  tool_result / usage / …). */
   runChatViaRun?: (
     inject: ChatSessionInjection,
     hooks: { onEvent: (e: Record<string, unknown>) => void; signal?: AbortSignal },
@@ -361,9 +362,9 @@ export function completionRoutes(getDeps: () => CompletionRouteDeps, apiKeys?: s
       onResponseFinished,
     };
 
-    // F1c: route chat through the shared executeRun lifecycle + loop-engine when
-    // opted in (settings.chatExecution:"run") and the node host provides the
-    // driver. Agent-direct only; project-loop runs already returned above.
+    // Route agent chat through the shared executeRun lifecycle + loop-engine
+    // when enabled and the host provides the driver. Project-loop runs already
+    // returned above because they use their own deterministic loop runtime.
     const viaRun =
       deps.getConfig()?.settings?.chatExecution === "run" &&
       !!deps.runChatViaRun &&

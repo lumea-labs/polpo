@@ -112,6 +112,22 @@ describe("parseConfig (.polpo/polpo.json)", () => {
       expect(config.settings.workDir).toBe(".");
     });
 
+    it("defaults chat completions to the shared run lifecycle", async () => {
+      const workDir = writeConfig(minimalConfig());
+      const config = await parseConfig(workDir);
+      expect(config.settings.chatExecution).toBe("run");
+    });
+
+    it("keeps inline chat execution only when explicitly requested", async () => {
+      const cfg = {
+        ...minimalConfig(),
+        settings: { ...minimalConfig().settings, chatExecution: "inline" },
+      };
+      const workDir = writeConfig(cfg);
+      const config = await parseConfig(workDir);
+      expect(config.settings.chatExecution).toBe("inline");
+    });
+
     it("accepts logLevel 'quiet'", async () => {
       const cfg = {
         ...minimalConfig(),
@@ -213,6 +229,7 @@ describe("generatePolpoConfigDefault", () => {
     expect(config.teams).toEqual([]); // agents/teams live in separate store files
     expect(config.settings.maxRetries).toBe(3);
     expect(config.settings.logLevel).toBe("normal");
+    expect(config.settings.chatExecution).toBe("run");
   });
 
   it("round-trips through savePolpoConfig and parseConfig", async () => {
@@ -224,5 +241,6 @@ describe("generatePolpoConfigDefault", () => {
     expect(parsed.project).toBe("round-trip");
     expect(parsed.teams).toEqual([]); // teams come from stores, not polpo.json
     expect(parsed.settings.maxRetries).toBe(3);
+    expect(parsed.settings.chatExecution).toBe("run");
   });
 });

@@ -175,8 +175,8 @@ export function createApp(orchestrator: Orchestrator, sseBridge: SSEBridge, opts
       const raw = await fs.readFile(path);
       return projectLoopConfigSchema.parse(JSON.parse(raw)) as any;
     },
-    // F1c: run a chat completion through the shared executeRun lifecycle +
-    // loop-engine (behind settings.chatExecution:"run"). Injects the route's
+    // Run chat completions through the shared executeRun lifecycle +
+    // loop-engine. Injects the route's
     // already-resolved model/prompt/tools/messages so the engine runs a chat
     // turn-loop at parity with the inline handler; keeps the run ephemeral.
     runChatViaRun: async (inject: any, hooks: { onEvent: (e: Record<string, unknown>) => void; signal?: AbortSignal }) => {

@@ -181,11 +181,10 @@ export interface PolpoSettings {
    *  proxied to the sandbox in later phases). Per-task/per-agent policy
    *  is future work; this is a global opt-in. */
   taskExecution?: ExecutionMode;
-  /** How chat completions execute. Default: "inline" (the hand-rolled turn
-   *  loop in the completions route). "run" routes chat through the shared
-   *  `executeRun` lifecycle + loop-engine (migration F1c) so chat and task
-   *  share one durable engine — behind this flag until parity is validated.
-   *  A global opt-in; the inline path stays the default. */
+  /** How chat completions execute. Default: "run" through the shared
+   *  `executeRun` lifecycle + loop-engine so chat and task share the same
+   *  durable runtime. "inline" keeps the older completions-route loop as an
+   *  explicit compatibility escape hatch while that legacy path exists. */
   chatExecution?: "inline" | "run";
   /** PostgreSQL connection URL (required when storage is "postgres").
    *  Example: "postgres://user:pass@localhost:5432/polpo" */
