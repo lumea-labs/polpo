@@ -142,3 +142,19 @@ export type {
   ModelTurnResult,
   StreamModelTurnInput,
 } from "./stream-turn.js";
+
+// ─── Model Policy Turn Primitive ────────────────────
+export {
+  ModelPolicyTurnError,
+  isCommittingModelTurnEvent,
+  runModelPolicyTurn,
+} from "./model-policy-turn.js";
+export type {
+  ModelPolicyAttempt,
+  ModelPolicyAttemptFailure,
+  ModelPolicyAttemptResolution,
+  ModelPolicyAttemptRunner,
+  ModelPolicyEvent,
+  ModelPolicyTurnResult,
+  RunModelPolicyTurnInput,
+} from "./model-policy-turn.js";
