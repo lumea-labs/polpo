@@ -85,6 +85,14 @@ export {
 } from "./provider-runtime-adapter.js";
 export type { ProviderRuntimeAdapterOptions } from "./provider-runtime-adapter.js";
 
+// ─── Runtime Normalization ───────────────────────────
+export {
+  classifyRuntimeError,
+  extractGatewayReportedCost,
+  extractLanguageModelUsage,
+} from "./runtime-normalization.js";
+export type { LanguageModelUsageExtractionOptions } from "./runtime-normalization.js";
+
 // ─── Provider Factory ─────────────────────────────────
 export {
   createCustomProviderModel,
