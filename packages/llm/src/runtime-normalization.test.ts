@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  extractGatewayMetadataDetails,
   classifyRuntimeError,
   extractGatewayReportedCost,
   extractLanguageModelUsage,
@@ -63,6 +64,56 @@ describe("runtime normalization", () => {
         },
       },
     })).toBe(0.0042);
+  });
+
+  it("extracts gateway metadata details for host and tool ledgers", () => {
+    expect(extractGatewayMetadataDetails({
+      mode: "gateway",
+      operation: "image.generate",
+      requested: { provider: "bfl", model: "flux-pro-1.1" },
+      context: {},
+      result: {
+        providerMetadata: {
+          gateway: {
+            generationId: "gen_img_1",
+            marketCost: { total: "0.03" },
+            cost: "0.01",
+            inputInferenceCost: "0.004",
+            outputInferenceCost: "0.006",
+            routing: {
+              canonicalSlug: "bfl/flux-pro-1.1",
+              finalProvider: "bfl",
+              modelAttempts: [
+                {
+                  providerAttempts: [{ credentialType: "system" }],
+                },
+              ],
+            },
+          },
+        },
+      },
+    })).toMatchObject({
+      generationId: "gen_img_1",
+      reportedCostUsd: 0.03,
+      actualCostUsd: 0.01,
+      inputInferenceCostUsd: 0.004,
+      outputInferenceCostUsd: 0.006,
+      resolvedModel: "bfl/flux-pro-1.1",
+      finalProvider: "bfl",
+      credentialType: "system",
+    });
+  });
+
+  it("does not return gateway metadata details for non-gateway results", () => {
+    expect(extractGatewayMetadataDetails({
+      mode: "provider",
+      operation: "chat",
+      requested: { provider: "openai", model: "gpt-4o" },
+      context: {},
+      result: {
+        providerMetadata: { openai: { responseId: "resp_123" } },
+      },
+    })).toBeUndefined();
   });
 
   it("classifies common runtime errors once for provider and gateway adapters", () => {

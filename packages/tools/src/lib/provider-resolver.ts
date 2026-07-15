@@ -89,8 +89,8 @@ export async function resolveVideoProvider(
 // ── Managed (Vercel AI Gateway) resolvers ──
 //
 // Used when the runtime has an AI_GATEWAY_API_KEY and the agent has NO
-// provider key of its own (the cloud "managed" case). The gateway pays via
-// the platform key and returns cost in `providerMetadata.gateway`
+// provider key of its own. The gateway pays via the configured runtime key
+// and returns cost in `providerMetadata.gateway`
 // (generationId/marketCost/cost) — the same shape completions already meter.
 // BYOK stays on the direct-SDK path above; this is purely additive.
 
