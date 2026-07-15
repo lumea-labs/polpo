@@ -26,6 +26,10 @@
       "types": "./dist/state-machine.d.ts",
       "import": "./dist/state-machine.js"
     },
+    "./model-runtime": {
+      "types": "./dist/model-runtime.d.ts",
+      "import": "./dist/model-runtime.js"
+    },
     "./hooks": {
       "types": "./dist/hooks.d.ts",
       "import": "./dist/hooks.js"
