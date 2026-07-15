@@ -1,4 +1,5 @@
 import { createGatewayModel } from "./provider-factory.js";
+import { mapReasoningToProviderOptions } from "./provider-factory.js";
 import type { GatewayConfig } from "./gateway-config.js";
 import type {
   BillingOwner,
@@ -23,6 +24,10 @@ export function createGatewayRuntimeAdapter(options: GatewayRuntimeAdapterOption
     createLanguageModel(input: CreateModelInput) {
       const { provider, modelId } = splitGatewayModelRef(input.ref);
       return createGatewayModel(provider, modelId, options.config);
+    },
+    buildProviderOptions(input) {
+      const { provider } = splitGatewayModelRef(input.ref);
+      return mapReasoningToProviderOptions(provider, input.reasoning as any, input.maxOutputTokens ?? 8192);
     },
     extractUsage(input: UsageExtractionInput): ModelInvocationUsage {
       return extractGatewayInvocationUsage(input, billingOwner);
