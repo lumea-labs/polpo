@@ -56,6 +56,7 @@ export interface RunModelPolicyTurnInput<TOOLS extends ToolSet = ToolSet>
   runAttempt?: ModelPolicyAttemptRunner<TOOLS>;
   classifyError?: (error: unknown, attempt: ModelPolicyAttempt) => NormalizedModelError;
   onPolicyEvent?: (event: ModelPolicyEvent) => void | Promise<void>;
+  preserveSingleAttemptError?: boolean;
 }
 
 export type ModelPolicyTurnResult<TOOLS extends ToolSet = ToolSet> = ModelTurnResult<TOOLS> & {
@@ -151,6 +152,9 @@ export async function runModelPolicyTurn<TOOLS extends ToolSet = ToolSet>(
       }
 
       await input.onPolicyEvent?.({ type: "model-turn-failed", failures });
+      if (input.preserveSingleAttemptError && attempts.length === 1) {
+        throw error;
+      }
       throw new ModelPolicyTurnError(classification.message ?? "Model policy turn failed", failures);
     }
   }

@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 import type { CompletionRouteDeps } from "../completions.js";
-import { buildRuntimeAgentPrompt } from "./agent-step-runner.js";
+import {
+  buildRuntimeAgentPrompt,
+  modelSelectionForResolvedModel,
+} from "./agent-step-runner.js";
 
 describe("buildRuntimeAgentPrompt", () => {
   it("delegates loop prompt assembly to the host when available", async () => {
@@ -28,5 +31,17 @@ describe("buildRuntimeAgentPrompt", () => {
       },
     );
     expect(deps.buildAgentPrompt).not.toHaveBeenCalled();
+  });
+});
+
+describe("modelSelectionForResolvedModel", () => {
+  it("keeps the provider prefix on model policy selections", () => {
+    expect(modelSelectionForResolvedModel({
+      id: "claude-sonnet-5",
+      aiModel: {} as any,
+      provider: "anthropic",
+      contextWindow: 200_000,
+      maxTokens: 8192,
+    })).toBe("anthropic/claude-sonnet-5");
   });
 });
