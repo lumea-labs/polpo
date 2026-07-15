@@ -6,7 +6,7 @@
 
 import type { LanguageModel } from "ai";
 import type { ProviderConfig, ModelConfig, ModelAllowlistEntry, ReasoningLevel } from "@polpo-ai/core";
-import { parseModelSpec as _parseModelSpec } from "@polpo-ai/core";
+import { normalizeModelPolicy, parseModelSpec as _parseModelSpec } from "@polpo-ai/core";
 export type { ParsedModelSpec } from "@polpo-ai/core";
 
 import { getCatalogSync, type GatewayLanguageModelEntry, type ModelInfo } from "./gateway-catalog.js";
@@ -478,10 +478,8 @@ export function resolveModelSpec(spec: string | ModelConfig | undefined): string
  * Returns the first model that has a valid API key.
  */
 export function resolveModelWithFallback(config: ModelConfig, opts?: ResolveModelOptions): { model: ResolvedModel; spec: string } {
-  const primary = config.primary;
-  if (!primary) {
-    throw new Error("No primary model configured. Set `settings.orchestratorModel` in .polpo/polpo.json or the POLPO_MODEL env var.");
-  }
+  const policy = normalizeModelPolicy(config);
+  const primary = policy.primary;
   const { provider: primaryProvider } = parseModelSpec(primary);
   if (resolveApiKey(primaryProvider)) {
     try {
@@ -491,15 +489,13 @@ export function resolveModelWithFallback(config: ModelConfig, opts?: ResolveMode
     }
   }
 
-  if (config.fallbacks) {
-    for (const fallback of config.fallbacks) {
-      const { provider: fbProvider } = parseModelSpec(fallback);
-      if (resolveApiKey(fbProvider)) {
-        try {
-          return { model: resolveModel(fallback, opts), spec: fallback };
-        } catch {
-          // Model not found — try next
-        }
+  for (const fallback of policy.fallbacks) {
+    const { provider: fbProvider } = parseModelSpec(fallback);
+    if (resolveApiKey(fbProvider)) {
+      try {
+        return { model: resolveModel(fallback, opts), spec: fallback };
+      } catch {
+        // Model not found — try next
       }
     }
   }
@@ -514,10 +510,8 @@ export function resolveModelWithFallback(config: ModelConfig, opts?: ResolveMode
  * Checks the FULL API key resolution chain including OAuth profiles with auto-refresh.
  */
 export async function resolveModelWithFallbackAsync(config: ModelConfig, opts?: ResolveModelOptions): Promise<{ model: ResolvedModel; spec: string }> {
-  const primary = config.primary;
-  if (!primary) {
-    throw new Error("No primary model configured. Set `settings.orchestratorModel` in .polpo/polpo.json or the POLPO_MODEL env var.");
-  }
+  const policy = normalizeModelPolicy(config);
+  const primary = policy.primary;
   const { provider: primaryProvider } = parseModelSpec(primary);
   if (await resolveApiKeyAsync(primaryProvider)) {
     try {
@@ -527,15 +521,13 @@ export async function resolveModelWithFallbackAsync(config: ModelConfig, opts?: 
     }
   }
 
-  if (config.fallbacks) {
-    for (const fallback of config.fallbacks) {
-      const { provider: fbProvider } = parseModelSpec(fallback);
-      if (await resolveApiKeyAsync(fbProvider)) {
-        try {
-          return { model: resolveModel(fallback, opts), spec: fallback };
-        } catch {
-          // Model not found — try next
-        }
+  for (const fallback of policy.fallbacks) {
+    const { provider: fbProvider } = parseModelSpec(fallback);
+    if (await resolveApiKeyAsync(fbProvider)) {
+      try {
+        return { model: resolveModel(fallback, opts), spec: fallback };
+      } catch {
+        // Model not found — try next
       }
     }
   }

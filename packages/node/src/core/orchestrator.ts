@@ -13,7 +13,7 @@ import type { MemoryStore } from "@polpo-ai/core/memory-store";
 import type { LogStore } from "@polpo-ai/core/log-store";
 import { assessTask } from "../assessment/assessor.js";
 import { analyzeBlockedTasks, resolveDeadlock, isResolving } from "./deadlock-resolver.js";
-import { OrchestratorEngine, resolveMissionStore } from "@polpo-ai/core";
+import { OrchestratorEngine, normalizeModelPolicy, resolveMissionStore } from "@polpo-ai/core";
 import type { DeadlockResolverPort, DeadlockFacade } from "@polpo-ai/core";
 import { TypedEmitter } from "./events.js";
 import type { TaskStore } from "@polpo-ai/core/task-store";
@@ -362,13 +362,7 @@ export class Orchestrator extends TypedEmitter {
     if (process.env.POLPO_MODEL) modelSpecs.push(process.env.POLPO_MODEL);
     // Orchestrator model
     if (this.config.settings.orchestratorModel) {
-      const om = this.config.settings.orchestratorModel;
-      if (typeof om === "string") {
-        modelSpecs.push(om);
-      } else {
-        if (om.primary) modelSpecs.push(om.primary);
-        if (om.fallbacks) modelSpecs.push(...om.fallbacks);
-      }
+      modelSpecs.push(...normalizeModelPolicy(this.config.settings.orchestratorModel).candidates);
     }
     // Judge model
     if (process.env.POLPO_JUDGE_MODEL) modelSpecs.push(process.env.POLPO_JUDGE_MODEL);

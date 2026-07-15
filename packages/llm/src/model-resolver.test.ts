@@ -2,6 +2,7 @@ import { describe, it, expect, afterEach } from "vitest";
 import {
   buildResolvedModelProviderOptions,
   resolveModel,
+  resolveModelWithFallback,
   validateProviderKeys,
   validateProviderKeysDetailed,
   setProviderOverrides,
@@ -150,5 +151,20 @@ describe("resolveModel — runtime mode selection", () => {
     };
 
     expect(() => resolveModel("openai/gpt-4o", { mode: "provider", adapter })).toThrow(/does not match requested mode/);
+  });
+});
+
+describe("resolveModelWithFallback", () => {
+  it("uses normalized fallback candidates", () => {
+    process.env.OPENAI_API_KEY = "test-openai-key";
+    delete process.env.AI_GATEWAY_API_KEY;
+
+    const result = resolveModelWithFallback({
+      primary: "missing-provider/no-key",
+      fallbacks: [" openai/gpt-4o ", "openai/gpt-4o"],
+    });
+
+    expect(result.spec).toBe("openai/gpt-4o");
+    expect(result.model.provider).toBe("openai");
   });
 });
