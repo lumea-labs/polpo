@@ -3,6 +3,7 @@ import {
   classifyGatewayError,
   createGatewayRuntimeAdapter,
   extractGatewayInvocationDetails,
+  extractGatewayModelNotFoundDetails,
   extractGatewayInvocationUsage,
   splitGatewayModelRef,
 } from "./gateway-runtime-adapter.js";
@@ -150,6 +151,32 @@ describe("gateway runtime adapter", () => {
     expect(classifyGatewayError(new Error("messages: text content blocks must be non-empty"))).toMatchObject({
       class: "invalid-request",
       retryable: false,
+    });
+  });
+
+  it("normalizes gateway model-not-found errors behind the adapter boundary", () => {
+    const error = {
+      cause: {
+        responseBody: JSON.stringify({
+          error: {
+            type: "model_not_found",
+            message: "Model is unavailable",
+            param: { modelId: "provider/removed-model" },
+          },
+        }),
+        statusCode: 404,
+      },
+    };
+
+    expect(extractGatewayModelNotFoundDetails(error)).toEqual({
+      modelId: "provider/removed-model",
+      message: "Model is unavailable",
+    });
+    expect(classifyGatewayError(error)).toMatchObject({
+      class: "model-not-found",
+      retryable: false,
+      providerCode: "model_not_found",
+      message: "Model is unavailable",
     });
   });
 });
