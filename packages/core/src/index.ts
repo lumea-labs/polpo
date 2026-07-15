@@ -3,6 +3,26 @@ export * from "./types.js";
 
 export type { PolpoTool, ToolResult, ToolUpdateCallback } from "./tool-types.js";
 
+// ── Model runtime facts (neutral, no provider SDK imports) ───────────────
+export {
+  MODEL_RUNTIME_MODES,
+  isModelRuntimeMode,
+} from "./model-runtime.js";
+export type {
+  BillingOwner,
+  CostSource,
+  CredentialType,
+  ModelInvocationContext,
+  ModelInvocationRecord,
+  ModelInvocationStatus,
+  ModelInvocationUsage,
+  ModelOperation,
+  ModelRef,
+  ModelRuntimeMode,
+  NormalizedModelError,
+  UsageExtractionInput,
+} from "./model-runtime.js";
+
 // ── Events (pure type definitions only, TypedEmitter lives in shell) ─────
 export * from "./events.js";
 
