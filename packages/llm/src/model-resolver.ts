@@ -11,8 +11,10 @@ export type { ParsedModelSpec } from "@polpo-ai/core";
 
 import { getCatalogSync, type GatewayLanguageModelEntry, type ModelInfo } from "./gateway-catalog.js";
 import { createCustomProviderModel, createGatewayModel } from "./provider-factory.js";
+import { createProviderRuntimeAdapter } from "./provider-runtime-adapter.js";
 import { resolveApiKey, resolveApiKeyAsync, hasOAuthProfiles, PROVIDER_ENV_MAP } from "./api-keys.js";
 import type { GatewayConfig } from "./gateway-config.js";
+import type { ModelRuntimeMode } from "./model-runtime.js";
 
 // ─── ResolvedModel ───────────────────────────────────
 
@@ -37,6 +39,8 @@ export interface ResolvedModel {
   maxTokens: number;
   /** Cost per token (in USD). */
   cost: { input: number; output: number; cacheRead: number; cacheWrite: number };
+  /** Runtime family used to create the AI SDK model. */
+  runtimeMode?: ModelRuntimeMode;
   /** The AI SDK model instance to pass to generateText/streamText. */
   aiModel: LanguageModel;
 }
@@ -115,11 +119,19 @@ export function parseModelSpec(spec?: string): { provider: string; modelId: stri
 export interface ResolveModelOptions {
   /** Gateway configuration — passed per-request for multi-tenant support. */
   gateway?: GatewayConfig;
+  /**
+   * Runtime family for model creation.
+   *
+   * Defaults to `gateway` to preserve existing behavior. Use `provider` only
+   * when the host explicitly wants direct provider SDK execution.
+   */
+  mode?: ModelRuntimeMode;
 }
 
 export function resolveModel(spec?: string, opts?: ResolveModelOptions): ResolvedModel {
   const { provider, modelId } = parseModelSpec(spec);
   const override = providerOverrides[provider];
+  const runtimeMode = opts?.mode ?? "gateway";
 
   // Custom provider with baseUrl override -> use @ai-sdk/openai with custom endpoint
   if (override?.baseUrl) {
@@ -136,6 +148,7 @@ export function resolveModel(spec?: string, opts?: ResolveModelOptions): Resolve
         cost: customDef.cost ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
         contextWindow: customDef.contextWindow ?? 200_000,
         maxTokens: customDef.maxTokens ?? 8192,
+        runtimeMode: "provider",
         aiModel,
       };
     }
@@ -150,6 +163,7 @@ export function resolveModel(spec?: string, opts?: ResolveModelOptions): Resolve
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
       contextWindow: 200_000,
       maxTokens: 8192,
+      runtimeMode: "provider",
       aiModel,
     };
   }
@@ -167,6 +181,27 @@ export function resolveModel(spec?: string, opts?: ResolveModelOptions): Resolve
       `or set ${PROVIDER_ENV_MAP[provider] ?? `the API key env var for "${provider}"`} for direct provider access. ` +
       `See: https://docs.polpo.sh/docs/quickstart`,
     );
+  }
+
+  if (runtimeMode === "provider") {
+    const providerAdapter = createProviderRuntimeAdapter();
+    const aiModel = providerAdapter.createLanguageModel({
+      ref: { provider, model: modelId },
+      context: {},
+    }) as LanguageModel;
+
+    return {
+      id: modelId,
+      name: modelId,
+      provider,
+      reasoning: false,
+      input: ["text"],
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      contextWindow: 200_000,
+      maxTokens: 8192,
+      runtimeMode: "provider",
+      aiModel,
+    };
   }
 
   // Standard provider -> route through gateway (explicit config > env var fallback)
@@ -193,6 +228,7 @@ export function resolveModel(spec?: string, opts?: ResolveModelOptions): Resolve
         cacheRead: pricing?.cachedInputTokens ? parseFloat(pricing.cachedInputTokens) : 0,
         cacheWrite: pricing?.cacheCreationInputTokens ? parseFloat(pricing.cacheCreationInputTokens) : 0,
       },
+      runtimeMode: "gateway",
       aiModel,
     };
   }
@@ -207,6 +243,7 @@ export function resolveModel(spec?: string, opts?: ResolveModelOptions): Resolve
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     contextWindow: 200_000,
     maxTokens: 8192,
+    runtimeMode: "gateway",
     aiModel,
   };
 }
