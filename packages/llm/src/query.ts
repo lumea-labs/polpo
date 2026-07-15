@@ -5,6 +5,7 @@
 
 import { generateText, streamText, type LanguageModelUsage } from "ai";
 import type { ReasoningLevel, ModelConfig } from "@polpo-ai/core";
+import { normalizeModelPolicy } from "@polpo-ai/core";
 
 import { buildResolvedModelProviderOptions, resolveModel, parseModelSpec } from "./model-resolver.js";
 import type { ResolvedModel, ResolveModelOptions } from "./model-resolver.js";
@@ -134,14 +135,11 @@ export async function queryTextWithFallback(
   modelConfig: ModelConfig,
   resolveOpts?: ResolveModelOptions,
 ): Promise<{ text: string; usage?: LanguageModelUsage; model: ResolvedModel; usedSpec: string }> {
-  if (!modelConfig.primary) {
-    throw new Error("No primary model configured. Set `settings.orchestratorModel` in .polpo/polpo.json or the POLPO_MODEL env var.");
-  }
-  const specs = [modelConfig.primary, ...(modelConfig.fallbacks || [])];
+  const policy = normalizeModelPolicy(modelConfig);
 
   let lastError: unknown;
 
-  for (const spec of specs) {
+  for (const spec of policy.candidates) {
     const { provider } = parseModelSpec(spec);
 
     // Skip providers in cooldown
