@@ -20,6 +20,7 @@ export {
   resolveModelSpec,
   resolveModelWithFallback,
   resolveModelWithFallbackAsync,
+  buildResolvedModelProviderOptions,
   getModelInfo,
   // Catalog listing (uses resolver state)
   listProviders,

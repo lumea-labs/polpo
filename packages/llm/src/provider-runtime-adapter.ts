@@ -9,6 +9,7 @@ import type {
   UsageExtractionInput,
 } from "./model-runtime.js";
 import { resolveApiKey } from "./api-keys.js";
+import { mapReasoningToProviderOptions } from "./provider-factory.js";
 
 export interface ProviderRuntimeAdapterOptions {
   apiKeyResolver?: (provider: string) => string | undefined;
@@ -34,6 +35,10 @@ export function createProviderRuntimeAdapter(options: ProviderRuntimeAdapterOpti
       }
 
       throw new Error(`Direct provider execution is not implemented for provider "${provider}"`);
+    },
+    buildProviderOptions(input) {
+      const { provider } = splitProviderModelRef(input.ref);
+      return mapReasoningToProviderOptions(provider, input.reasoning as any, input.maxOutputTokens ?? 8192);
     },
     extractUsage(input: UsageExtractionInput): ModelInvocationUsage {
       return extractProviderInvocationUsage(input, billingOwner);
@@ -137,4 +142,3 @@ function getErrorMessage(error: unknown): string {
   if (typeof record?.message === "string") return record.message;
   return "";
 }
-

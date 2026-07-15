@@ -27,6 +27,23 @@ describe("gateway runtime adapter", () => {
     expect(() => splitGatewayModelRef({ model: "gpt-4o" })).toThrow(/provider prefix/);
   });
 
+  it("builds provider options through the gateway adapter boundary", () => {
+    const adapter = createGatewayRuntimeAdapter();
+
+    const options = adapter.buildProviderOptions?.({
+      ref: { provider: "openai", model: "gpt-4o" },
+      context: {},
+      reasoning: "medium",
+      maxOutputTokens: 1000,
+    });
+
+    expect(options).toEqual({
+      openai: {
+        reasoningEffort: "medium",
+      },
+    });
+  });
+
   it("extracts gateway usage as external by default", () => {
     const usage = extractGatewayInvocationUsage({
       mode: "gateway",

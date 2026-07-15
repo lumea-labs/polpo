@@ -6,9 +6,8 @@
 import { generateText, streamText, type LanguageModelUsage } from "ai";
 import type { ReasoningLevel, ModelConfig } from "@polpo-ai/core";
 
-import { resolveModel, parseModelSpec } from "./model-resolver.js";
+import { buildResolvedModelProviderOptions, resolveModel, parseModelSpec } from "./model-resolver.js";
 import type { ResolvedModel, ResolveModelOptions } from "./model-resolver.js";
-import { mapReasoningToProviderOptions } from "./provider-factory.js";
 import {
   isProviderInCooldown,
   markProviderCooldown,
@@ -41,7 +40,7 @@ export async function queryText(
   const provider = m.provider;
 
   try {
-    const providerOptions = mapReasoningToProviderOptions(provider, reasoning, m.maxTokens);
+    const providerOptions = buildResolvedModelProviderOptions(m, reasoning);
 
     const opts: any = {
       model: m.aiModel,
@@ -87,7 +86,7 @@ export async function queryStream(
   const provider = m.provider;
 
   try {
-    const providerOptions = mapReasoningToProviderOptions(provider, reasoning, m.maxTokens);
+    const providerOptions = buildResolvedModelProviderOptions(m, reasoning);
 
     const streamOpts: any = {
       model: m.aiModel,

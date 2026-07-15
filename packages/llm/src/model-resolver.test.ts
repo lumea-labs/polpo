@@ -1,10 +1,12 @@
 import { describe, it, expect, afterEach } from "vitest";
 import {
+  buildResolvedModelProviderOptions,
   resolveModel,
   validateProviderKeys,
   validateProviderKeysDetailed,
   setProviderOverrides,
 } from "./model-resolver.js";
+import type { ModelRuntimeAdapter } from "./model-runtime.js";
 
 // A provider name that certainly has no env key, no OAuth profile, and no
 // entry in the static PROVIDER_ENV_MAP.
@@ -85,5 +87,68 @@ describe("resolveModel — runtime mode selection", () => {
     delete process.env.AI_GATEWAY_API_KEY;
 
     expect(() => resolveModel("openai/gpt-4o", { mode: "provider" })).toThrow(/Missing API key|No LLM gateway/);
+  });
+
+  it("allows hosts to satisfy gateway execution through a supplied runtime adapter", () => {
+    delete process.env.OPENAI_API_KEY;
+    delete process.env.AI_GATEWAY_API_KEY;
+    const aiModel = { modelId: "host-gateway-model" } as any;
+    const adapter: ModelRuntimeAdapter = {
+      mode: "gateway",
+      createLanguageModel: () => aiModel,
+      extractUsage: () => ({ costSource: "unknown", billingOwner: "external" }),
+      classifyError: error => ({ class: "unknown", retryable: false, message: error instanceof Error ? error.message : "" }),
+    };
+
+    const model = resolveModel("openai/gpt-4o", { adapter });
+
+    expect(model.runtimeMode).toBe("gateway");
+    expect(model.aiModel).toBe(aiModel);
+  });
+
+  it("uses the resolved runtime adapter for provider options when available", () => {
+    delete process.env.OPENAI_API_KEY;
+    delete process.env.AI_GATEWAY_API_KEY;
+    const adapter: ModelRuntimeAdapter = {
+      mode: "gateway",
+      createLanguageModel: () => ({ modelId: "host-gateway-model" }) as any,
+      buildProviderOptions: () => ({ host: { routed: true } }),
+      extractUsage: () => ({ costSource: "unknown", billingOwner: "external" }),
+      classifyError: error => ({ class: "unknown", retryable: false, message: error instanceof Error ? error.message : "" }),
+    };
+
+    const model = resolveModel("openai/gpt-4o", { adapter });
+
+    expect(buildResolvedModelProviderOptions(model, "medium")).toEqual({
+      host: { routed: true },
+    });
+  });
+
+  it("allows hosts to satisfy provider execution through a supplied runtime adapter", () => {
+    delete process.env.OPENAI_API_KEY;
+    delete process.env.AI_GATEWAY_API_KEY;
+    const aiModel = { modelId: "host-provider-model" } as any;
+    const adapter: ModelRuntimeAdapter = {
+      mode: "provider",
+      createLanguageModel: () => aiModel,
+      extractUsage: () => ({ costSource: "unknown", billingOwner: "external" }),
+      classifyError: error => ({ class: "unknown", retryable: false, message: error instanceof Error ? error.message : "" }),
+    };
+
+    const model = resolveModel("openai/gpt-4o", { adapter });
+
+    expect(model.runtimeMode).toBe("provider");
+    expect(model.aiModel).toBe(aiModel);
+  });
+
+  it("rejects inconsistent explicit mode and runtime adapter mode", () => {
+    const adapter: ModelRuntimeAdapter = {
+      mode: "gateway",
+      createLanguageModel: () => ({ modelId: "host-gateway-model" }) as any,
+      extractUsage: () => ({ costSource: "unknown", billingOwner: "external" }),
+      classifyError: error => ({ class: "unknown", retryable: false, message: error instanceof Error ? error.message : "" }),
+    };
+
+    expect(() => resolveModel("openai/gpt-4o", { mode: "provider", adapter })).toThrow(/does not match requested mode/);
   });
 });

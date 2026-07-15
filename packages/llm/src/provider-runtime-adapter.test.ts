@@ -53,6 +53,25 @@ describe("provider runtime adapter", () => {
     })).toThrow(/not implemented/);
   });
 
+  it("builds provider options through the provider adapter boundary", () => {
+    const adapter = createProviderRuntimeAdapter({
+      apiKeyResolver: () => "test-key",
+    });
+
+    const options = adapter.buildProviderOptions?.({
+      ref: { provider: "openai", model: "gpt-4o" },
+      context: {},
+      reasoning: "high",
+      maxOutputTokens: 1000,
+    });
+
+    expect(options).toEqual({
+      openai: {
+        reasoningEffort: "high",
+      },
+    });
+  });
+
   it("extracts provider usage without claiming platform spend", () => {
     const usage = extractProviderInvocationUsage({
       mode: "provider",

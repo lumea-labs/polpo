@@ -5,16 +5,17 @@
  */
 
 import type { LanguageModel } from "ai";
-import type { ProviderConfig, ModelConfig, ModelAllowlistEntry } from "@polpo-ai/core";
+import type { ProviderConfig, ModelConfig, ModelAllowlistEntry, ReasoningLevel } from "@polpo-ai/core";
 import { parseModelSpec as _parseModelSpec } from "@polpo-ai/core";
 export type { ParsedModelSpec } from "@polpo-ai/core";
 
 import { getCatalogSync, type GatewayLanguageModelEntry, type ModelInfo } from "./gateway-catalog.js";
-import { createCustomProviderModel, createGatewayModel } from "./provider-factory.js";
+import { createCustomProviderModel, mapReasoningToProviderOptions } from "./provider-factory.js";
+import { createGatewayRuntimeAdapter } from "./gateway-runtime-adapter.js";
 import { createProviderRuntimeAdapter } from "./provider-runtime-adapter.js";
 import { resolveApiKey, resolveApiKeyAsync, hasOAuthProfiles, PROVIDER_ENV_MAP } from "./api-keys.js";
 import type { GatewayConfig } from "./gateway-config.js";
-import type { ModelRuntimeMode } from "./model-runtime.js";
+import type { ModelRuntimeAdapter, ModelRuntimeMode } from "./model-runtime.js";
 
 // ─── ResolvedModel ───────────────────────────────────
 
@@ -41,6 +42,8 @@ export interface ResolvedModel {
   cost: { input: number; output: number; cacheRead: number; cacheWrite: number };
   /** Runtime family used to create the AI SDK model. */
   runtimeMode?: ModelRuntimeMode;
+  /** Runtime adapter used to create the model, when resolution went through the adapter boundary. */
+  runtimeAdapter?: ModelRuntimeAdapter;
   /** The AI SDK model instance to pass to generateText/streamText. */
   aiModel: LanguageModel;
 }
@@ -120,6 +123,13 @@ export interface ResolveModelOptions {
   /** Gateway configuration — passed per-request for multi-tenant support. */
   gateway?: GatewayConfig;
   /**
+   * Runtime adapter supplied by the host.
+   *
+   * Hosts can hide their private gateway/provider wiring behind this generic
+   * adapter. The shared resolver still exposes only `provider` or `gateway`.
+   */
+  adapter?: ModelRuntimeAdapter;
+  /**
    * Runtime family for model creation.
    *
    * Defaults to `gateway` to preserve existing behavior. Use `provider` only
@@ -131,7 +141,11 @@ export interface ResolveModelOptions {
 export function resolveModel(spec?: string, opts?: ResolveModelOptions): ResolvedModel {
   const { provider, modelId } = parseModelSpec(spec);
   const override = providerOverrides[provider];
-  const runtimeMode = opts?.mode ?? "gateway";
+  const runtimeMode = opts?.adapter?.mode ?? opts?.mode ?? "gateway";
+
+  if (opts?.adapter && opts.mode && opts.adapter.mode !== opts.mode) {
+    throw new Error(`Model runtime adapter mode "${opts.adapter.mode}" does not match requested mode "${opts.mode}".`);
+  }
 
   // Custom provider with baseUrl override -> use @ai-sdk/openai with custom endpoint
   if (override?.baseUrl) {
@@ -169,7 +183,7 @@ export function resolveModel(spec?: string, opts?: ResolveModelOptions): Resolve
   }
 
   // Validate that some gateway or provider key is available
-  const hasGateway = !!opts?.gateway;
+  const hasGateway = !!opts?.adapter || !!opts?.gateway;
   const hasVercelGatewayKey = !!process.env.AI_GATEWAY_API_KEY;
   const hasProviderKey = !!resolveApiKey(provider) || hasOAuthProfiles(provider);
 
@@ -184,11 +198,11 @@ export function resolveModel(spec?: string, opts?: ResolveModelOptions): Resolve
   }
 
   if (runtimeMode === "provider") {
-    const providerAdapter = createProviderRuntimeAdapter();
-    const aiModel = providerAdapter.createLanguageModel({
+    const providerAdapter = opts?.adapter ?? createProviderRuntimeAdapter();
+    const aiModel = createSyncLanguageModel(providerAdapter, {
       ref: { provider, model: modelId },
       context: {},
-    }) as LanguageModel;
+    });
 
     return {
       id: modelId,
@@ -200,12 +214,17 @@ export function resolveModel(spec?: string, opts?: ResolveModelOptions): Resolve
       contextWindow: 200_000,
       maxTokens: 8192,
       runtimeMode: "provider",
+      runtimeAdapter: providerAdapter,
       aiModel,
     };
   }
 
   // Standard provider -> route through gateway (explicit config > env var fallback)
-  const aiModel = createGatewayModel(provider, modelId, opts?.gateway);
+  const gatewayAdapter = opts?.adapter ?? createGatewayRuntimeAdapter({ config: opts?.gateway });
+  const aiModel = createSyncLanguageModel(gatewayAdapter, {
+    ref: { provider, model: modelId },
+    context: {},
+  });
 
   // Try to get metadata from cached catalog
   const catalog = getCatalogSync();
@@ -229,6 +248,7 @@ export function resolveModel(spec?: string, opts?: ResolveModelOptions): Resolve
         cacheWrite: pricing?.cacheCreationInputTokens ? parseFloat(pricing.cacheCreationInputTokens) : 0,
       },
       runtimeMode: "gateway",
+      runtimeAdapter: gatewayAdapter,
       aiModel,
     };
   }
@@ -244,8 +264,42 @@ export function resolveModel(spec?: string, opts?: ResolveModelOptions): Resolve
     contextWindow: 200_000,
     maxTokens: 8192,
     runtimeMode: "gateway",
+    runtimeAdapter: gatewayAdapter,
     aiModel,
   };
+}
+
+export function buildResolvedModelProviderOptions(
+  model: Pick<ResolvedModel, "id" | "provider" | "maxTokens" | "runtimeAdapter">,
+  reasoning?: ReasoningLevel,
+): Record<string, Record<string, unknown>> | undefined {
+  const options = model.runtimeAdapter?.buildProviderOptions?.({
+    ref: { provider: model.provider, model: model.id },
+    context: {},
+    reasoning,
+    maxOutputTokens: model.maxTokens,
+  });
+
+  if (options !== undefined) {
+    if (isPromiseLike(options)) {
+      throw new Error("buildResolvedModelProviderOptions requires a synchronous ModelRuntimeAdapter. Use an async runtime path for async adapters.");
+    }
+    return options as Record<string, Record<string, unknown>>;
+  }
+
+  return mapReasoningToProviderOptions(model.provider, reasoning, model.maxTokens);
+}
+
+function createSyncLanguageModel(adapter: ModelRuntimeAdapter, input: Parameters<ModelRuntimeAdapter["createLanguageModel"]>[0]): LanguageModel {
+  const model = adapter.createLanguageModel(input);
+  if (isPromiseLike(model)) {
+    throw new Error("resolveModel requires a synchronous ModelRuntimeAdapter. Use an async runtime path for async adapters.");
+  }
+  return model;
+}
+
+function isPromiseLike(value: unknown): value is Promise<unknown> {
+  return !!value && typeof value === "object" && typeof (value as { then?: unknown }).then === "function";
 }
 
 // ─── Model Catalog Queries ───────────────────────────
