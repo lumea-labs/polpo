@@ -88,10 +88,11 @@ export type { ProviderRuntimeAdapterOptions } from "./provider-runtime-adapter.j
 // ─── Runtime Normalization ───────────────────────────
 export {
   classifyRuntimeError,
+  extractGatewayMetadataDetails,
   extractGatewayReportedCost,
   extractLanguageModelUsage,
 } from "./runtime-normalization.js";
-export type { LanguageModelUsageExtractionOptions } from "./runtime-normalization.js";
+export type { GatewayMetadataDetails, LanguageModelUsageExtractionOptions } from "./runtime-normalization.js";
 
 // ─── Provider Factory ─────────────────────────────────
 export {

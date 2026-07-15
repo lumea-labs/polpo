@@ -13,6 +13,18 @@ export interface LanguageModelUsageExtractionOptions {
   defaultCostSource?: CostSource;
 }
 
+export interface GatewayMetadataDetails {
+  gatewayMetadata: Record<string, unknown>;
+  generationId?: string;
+  reportedCostUsd?: number;
+  actualCostUsd?: number;
+  inputInferenceCostUsd?: number;
+  outputInferenceCostUsd?: number;
+  resolvedModel?: string;
+  finalProvider?: string;
+  credentialType?: string;
+}
+
 export function extractLanguageModelUsage(
   input: UsageExtractionInput,
   options: LanguageModelUsageExtractionOptions = {},
@@ -42,14 +54,36 @@ export function extractLanguageModelUsage(
 }
 
 export function extractGatewayReportedCost(input: UsageExtractionInput): number | undefined {
+  return extractGatewayMetadataDetails(input)?.reportedCostUsd;
+}
+
+export function extractGatewayMetadataDetails(input: UsageExtractionInput): GatewayMetadataDetails | undefined {
   const result = asRecord(input.result);
   const providerMetadata = asRecord(result?.providerMetadata);
   const gatewayMetadata = asRecord(providerMetadata?.gateway);
-  return numberFrom(
-    gatewayMetadata?.marketCost,
-    gatewayMetadata?.cost,
-    gatewayMetadata?.actualCost,
-  );
+  if (!gatewayMetadata) return undefined;
+
+  const routing = asRecord(gatewayMetadata.routing);
+  const details: GatewayMetadataDetails = { gatewayMetadata };
+  const generationId = stringFrom(gatewayMetadata.generationId);
+  const reportedCostUsd = numberFrom(gatewayMetadata.marketCost, gatewayMetadata.cost, gatewayMetadata.actualCost);
+  const actualCostUsd = numberFrom(gatewayMetadata.cost, gatewayMetadata.actualCost);
+  const inputInferenceCostUsd = numberFrom(gatewayMetadata.inputInferenceCost);
+  const outputInferenceCostUsd = numberFrom(gatewayMetadata.outputInferenceCost);
+  const resolvedModel = stringFrom(routing?.canonicalSlug, routing?.originalModelId);
+  const finalProvider = stringFrom(routing?.finalProvider);
+  const credentialType = firstAttemptCredentialType(routing);
+
+  if (generationId) details.generationId = generationId;
+  if (reportedCostUsd !== undefined) details.reportedCostUsd = reportedCostUsd;
+  if (actualCostUsd !== undefined) details.actualCostUsd = actualCostUsd;
+  if (inputInferenceCostUsd !== undefined) details.inputInferenceCostUsd = inputInferenceCostUsd;
+  if (outputInferenceCostUsd !== undefined) details.outputInferenceCostUsd = outputInferenceCostUsd;
+  if (resolvedModel) details.resolvedModel = resolvedModel;
+  if (finalProvider) details.finalProvider = finalProvider;
+  if (credentialType) details.credentialType = credentialType;
+
+  return details;
 }
 
 export function classifyRuntimeError(error: unknown): NormalizedModelError {
@@ -83,6 +117,22 @@ export function classifyRuntimeError(error: unknown): NormalizedModelError {
 
 export function asRecord(value: unknown): Record<string, unknown> | undefined {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
+}
+
+function firstAttemptCredentialType(routing: Record<string, unknown> | undefined): string | undefined {
+  const modelAttempts = Array.isArray(routing?.modelAttempts) ? routing.modelAttempts : [];
+  const firstModelAttempt = asRecord(modelAttempts[0]);
+  const providerAttempts = Array.isArray(firstModelAttempt?.providerAttempts)
+    ? firstModelAttempt.providerAttempts
+    : [];
+  return stringFrom(asRecord(providerAttempts[0])?.credentialType);
+}
+
+function stringFrom(...values: unknown[]): string | undefined {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim()) return value;
+  }
+  return undefined;
 }
 
 export function numberFrom(...values: unknown[]): number | undefined {

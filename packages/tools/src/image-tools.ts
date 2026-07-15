@@ -20,6 +20,7 @@ import { resolve, dirname, extname } from "node:path";
 import { Type } from "@sinclair/typebox";
 import type { PolpoTool, ToolResult as CoreToolResult } from "@polpo-ai/core";
 import type { FileSystem } from "@polpo-ai/core/filesystem";
+import { extractGatewayMetadataDetails } from "@polpo-ai/llm";
 import {
   parseModelString,
   DEFAULT_IMAGE_MODEL,
@@ -85,9 +86,9 @@ function tryResolveProviderKey(provider: string, vault?: ResolvedVault): string 
   }
 }
 
-/** Managed = route through the Vercel AI Gateway. True only when the agent
- *  has NO provider key of its own AND an AI_GATEWAY_API_KEY is present (the
- *  cloud case). BYOK / self-host with a provider key stays on direct-SDK. */
+/** Managed = route through the configured AI Gateway. True only when the agent
+ *  has NO provider key of its own AND an AI_GATEWAY_API_KEY is present.
+ *  Agent/provider credentials stay on the direct-SDK path. */
 function shouldUseGateway(provider: string, vault?: ResolvedVault): boolean {
   return !tryResolveProviderKey(provider, vault) && !!process.env.AI_GATEWAY_API_KEY;
 }
@@ -104,20 +105,41 @@ function gatewayModelId(parsed: ParsedModel, managedDefault: string): string {
   return `${parsed.provider}/${parsed.model}`;
 }
 
-/** Extract the billable gateway usage from an AI SDK result's
- *  providerMetadata (same shape completions meter). Undefined when the call
- *  didn't go through the gateway (BYOK / direct provider) — then no cost
- *  rides back and nothing is billed. */
-function extractGatewayUsage(result: any): Record<string, unknown> | undefined {
-  const gw = result?.providerMetadata?.gateway;
-  if (!gw?.generationId) return undefined;
+function modelRefFromGatewayId(modelId: string): { provider?: string; model: string } {
+  const slash = modelId.indexOf("/");
+  if (slash > 0 && slash < modelId.length - 1) {
+    return { provider: modelId.slice(0, slash), model: modelId.slice(slash + 1) };
+  }
+  return { model: modelId };
+}
+
+function nonZeroNumber(value: number | undefined): number | undefined {
+  return value && Number.isFinite(value) ? value : undefined;
+}
+
+/** Extract the gateway usage fact emitted by the AI SDK. Direct/BYOK calls have
+ *  no gateway metadata, so no usage record is returned. */
+function extractGatewayUsage(
+  result: unknown,
+  requestedModel: string,
+  operation: "image.generate" | "image.analyze" | "video.generate",
+): Record<string, unknown> | undefined {
+  const facts = extractGatewayMetadataDetails({
+    mode: "gateway",
+    operation,
+    requested: modelRefFromGatewayId(requestedModel),
+    result,
+    context: {},
+  });
+  if (!facts?.generationId) return undefined;
+
   return {
-    generationId: gw.generationId,
-    marketCostUsd: parseFloat(gw.marketCost ?? gw.cost ?? "0") || undefined,
-    actualCostUsd: parseFloat(gw.cost ?? "0") || undefined,
-    resolvedModel: gw.routing?.canonicalSlug ?? gw.routing?.originalModelId,
-    finalProvider: gw.routing?.finalProvider,
-    credentialType: gw.routing?.modelAttempts?.[0]?.providerAttempts?.[0]?.credentialType,
+    generationId: facts.generationId,
+    marketCostUsd: nonZeroNumber(facts.reportedCostUsd),
+    actualCostUsd: nonZeroNumber(facts.actualCostUsd),
+    resolvedModel: facts.resolvedModel,
+    finalProvider: facts.finalProvider,
+    credentialType: facts.credentialType,
   };
 }
 
@@ -215,7 +237,7 @@ async function generateImageWithSdk(
     const provider = await resolveManagedImageProvider();
     model = provider.image(gatewayModelId(parsed, DEFAULT_MANAGED_IMAGE_MODEL));
   } else {
-    // BYOK / self-host: direct provider SDK with the agent's own key.
+    // Agent/provider credential path: direct provider SDK with the agent's own key.
     const apiKey = resolveProviderKey(parsed.provider, vault);
     const provider = await resolveImageProvider(parsed.provider as ImageProviderName, apiKey);
     model = provider.image(parsed.model);
@@ -265,7 +287,11 @@ async function generateImageWithSdk(
       path: filePath,
       bytes: bytes.byteLength,
       // Billable cost (managed/gateway only) — harvested by the runner.
-      usage: extractGatewayUsage(result),
+      usage: extractGatewayUsage(
+        result,
+        gatewayModelId(parsed, DEFAULT_MANAGED_IMAGE_MODEL),
+        "image.generate",
+      ),
     },
   };
 }
@@ -399,7 +425,11 @@ async function generateVideoWithSdk(
       path: filePath,
       bytes: bytes.byteLength,
       // Billable cost (managed/gateway only) — harvested by the runner.
-      usage: extractGatewayUsage(result),
+      usage: extractGatewayUsage(
+        result,
+        gatewayModelId(parsed, DEFAULT_MANAGED_VIDEO_MODEL),
+        "video.generate",
+      ),
     },
   };
 }
