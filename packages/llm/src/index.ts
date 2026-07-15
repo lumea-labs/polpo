@@ -75,6 +75,15 @@ export {
 } from "./gateway-runtime-adapter.js";
 export type { GatewayRuntimeAdapterOptions } from "./gateway-runtime-adapter.js";
 
+// ─── Provider Runtime Adapter ────────────────────────
+export {
+  classifyProviderRuntimeError,
+  createProviderRuntimeAdapter,
+  extractProviderInvocationUsage,
+  splitProviderModelRef,
+} from "./provider-runtime-adapter.js";
+export type { ProviderRuntimeAdapterOptions } from "./provider-runtime-adapter.js";
+
 // ─── Provider Factory ─────────────────────────────────
 export {
   createCustomProviderModel,
