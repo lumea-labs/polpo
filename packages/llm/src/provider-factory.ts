@@ -77,6 +77,7 @@ export function mapReasoningToProviderOptions(
   provider: string,
   level: ReasoningLevel | undefined,
   maxTokens: number,
+  modelId?: string,
 ): Record<string, Record<string, unknown>> | undefined {
   if (!level || level === "off") return undefined;
 
@@ -101,6 +102,15 @@ export function mapReasoningToProviderOptions(
   };
 
   if (provider === "anthropic") {
+    if (usesAdaptiveAnthropicThinking(modelId)) {
+      return {
+        anthropic: {
+          thinking: { type: "adaptive" },
+          effort: effortMap[level] ?? "medium",
+        },
+      };
+    }
+
     return {
       anthropic: {
         thinking: { type: "enabled", budgetTokens },
@@ -128,6 +138,15 @@ export function mapReasoningToProviderOptions(
 
   // Unknown provider — return undefined as best effort
   return undefined;
+}
+
+function usesAdaptiveAnthropicThinking(modelId: unknown): boolean {
+  if (typeof modelId !== "string") return false;
+  const normalized = modelId.toLowerCase().replace(/[_.]/g, "-");
+  if (normalized.includes("claude-sonnet-5") || normalized.includes("claude-opus-5")) {
+    return true;
+  }
+  return /claude-(sonnet|opus)-4-[6-9](?:\b|-|$)/.test(normalized);
 }
 
 /**

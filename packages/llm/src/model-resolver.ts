@@ -287,7 +287,7 @@ export function buildResolvedModelProviderOptions(
     return options as Record<string, Record<string, unknown>>;
   }
 
-  return mapReasoningToProviderOptions(model.provider, reasoning, model.maxTokens);
+  return mapReasoningToProviderOptions(model.provider, reasoning, model.maxTokens, model.id);
 }
 
 function createSyncLanguageModel(adapter: ModelRuntimeAdapter, input: Parameters<ModelRuntimeAdapter["createLanguageModel"]>[0]): LanguageModel {

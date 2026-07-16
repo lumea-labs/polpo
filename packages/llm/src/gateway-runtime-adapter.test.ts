@@ -46,6 +46,24 @@ describe("gateway runtime adapter", () => {
     });
   });
 
+  it("uses adaptive Anthropic thinking options for newer Claude models", () => {
+    const adapter = createGatewayRuntimeAdapter();
+
+    const options = adapter.buildProviderOptions?.({
+      ref: { provider: "anthropic", model: "claude-sonnet-5" },
+      context: {},
+      reasoning: "high",
+      maxOutputTokens: 8192,
+    });
+
+    expect(options).toEqual({
+      anthropic: {
+        thinking: { type: "adaptive" },
+        effort: "high",
+      },
+    });
+  });
+
   it("extracts gateway usage as external by default", () => {
     const usage = extractGatewayInvocationUsage({
       mode: "gateway",
