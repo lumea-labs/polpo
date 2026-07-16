@@ -153,6 +153,11 @@ export async function runModelPolicyTurn<TOOLS extends ToolSet = ToolSet>(
 
       await input.onPolicyEvent?.({ type: "model-turn-failed", failures });
       if (input.preserveSingleAttemptError && attempts.length === 1) {
+        if (!committed) {
+          for (const buffered of bufferedEvents) {
+            await onEvent?.(buffered);
+          }
+        }
         throw error;
       }
       throw new ModelPolicyTurnError(classification.message ?? "Model policy turn failed", failures);

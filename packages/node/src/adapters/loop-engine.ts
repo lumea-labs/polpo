@@ -35,7 +35,7 @@ import {
   type ModelMessage,
   type ToolSet,
 } from "ai";
-import { streamModelTurn } from "@polpo-ai/llm";
+import { runModelPolicyTurn } from "@polpo-ai/llm";
 import { cleanupAgentBrowserSession } from "@polpo-ai/tools";
 import {
   LoopRunner,
@@ -91,6 +91,10 @@ async function loadProjectLoop(fs: FileSystem, polpoDir: string, name: string): 
     throw new Error(`Assigned project loop "${name}" was not found at ${path}`);
   }
   return projectLoopConfigSchema.parse(JSON.parse(raw)) as ProjectLoopConfig;
+}
+
+function modelSelectionForResolvedModel(model: SpawnPrep["model"]): string {
+  return `${model.provider}/${model.id}`;
 }
 
 // ─── Durable turns ─────────────────────────────────────
@@ -373,15 +377,19 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
 
       let stepText = "";
       const toolCalls: LoopToolCall[] = [];
-      const turn = await streamModelTurn({
-        model: model.aiModel,
+      const turn = await runModelPolicyTurn({
+        selection: modelSelectionForResolvedModel(model),
+        resolveAttempt: () => ({
+          model: model.aiModel,
+          maxOutputTokens: model.maxTokens,
+          providerOptions,
+        }),
+        preserveSingleAttemptError: true,
         system: systemPrompt,
         messages,
         tools: toolSet,
         ...(inject?.toolChoice ? { toolChoice: inject.toolChoice as any } : {}),
-        maxOutputTokens: model.maxTokens,
         abortSignal: abortController.signal,
-        providerOptions,
       }, (event) => {
         switch (event.type) {
           case "reasoning-delta": {

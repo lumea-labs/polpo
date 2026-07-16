@@ -151,16 +151,22 @@ describe("runModelPolicyTurn", () => {
 
   it("can preserve the original error for single-attempt compatibility", async () => {
     const originalError = new Error("provider exploded");
+    const events: ModelTurnEvent[] = [];
 
     await expect(runModelPolicyTurn({
       selection: "openai/gpt-4o",
       messages,
       resolveAttempt: (attempt) => ({ model: fakeModel(attempt.model) }),
       preserveSingleAttemptError: true,
-      runAttempt: async () => {
+      runAttempt: async (_input, onEvent) => {
+        await onEvent?.({ type: "error", error: originalError });
         throw originalError;
       },
+    }, event => {
+      events.push(event);
     })).rejects.toBe(originalError);
+
+    expect(events).toEqual([{ type: "error", error: originalError }]);
   });
 
   it("normalizes candidate order before running attempts", async () => {
