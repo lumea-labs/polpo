@@ -35,7 +35,11 @@ RUN --mount=type=cache,id=pnpm,target=/root/.local/share/pnpm/store \
 FROM node:22-slim AS production
 WORKDIR /app
 COPY --from=build --chown=node:node /opt/polpo/ ./
-RUN mkdir -p /app/workspace/.polpo && chown -R node:node /app/workspace
+COPY --chown=node:node docker/self-host/project.example/polpo.json /app/default-polpo.json
+COPY docker/railway/runtime-entrypoint.sh /usr/local/bin/polpo-runtime-entrypoint
+RUN chmod +x /usr/local/bin/polpo-runtime-entrypoint \
+    && mkdir -p /app/workspace/.polpo \
+    && chown -R node:node /app/workspace /app/default-polpo.json
 
 ENV NODE_ENV=production
 ENV PORT=3890
@@ -47,4 +51,5 @@ USER node
 HEALTHCHECK --interval=10s --timeout=3s --start-period=20s --retries=6 \
   CMD node -e "fetch('http://127.0.0.1:3890/api/v1/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"
 
-ENTRYPOINT ["node", "bin/polpo-server.mjs"]
+ENTRYPOINT ["polpo-runtime-entrypoint"]
+CMD ["node", "bin/polpo-server.mjs"]

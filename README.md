@@ -126,6 +126,8 @@ pnpm test:self-host
 
 That test creates disposable PostgreSQL storage, exercises authenticated REST and chat completion paths, renders the dashboard, and removes its containers and volumes when complete.
 
+For Railway, deploy the runtime and dashboard as separate services and mount a runtime volume at `/app/workspace`; see [docker/railway/README.md](docker/railway/README.md).
+
 ## Storage
 
 Polpo supports three storage backends:
