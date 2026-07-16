@@ -341,19 +341,29 @@ export interface SpawnPrep {
   maxTurns: number;
 }
 
-export function prepareSpawn(agentConfig: AgentConfig, cwd: string, ctx?: SpawnContext): SpawnPrep {
-  const primaryModel = agentConfig.model ? normalizeModelPolicy(agentConfig.model).primary : undefined;
-
-  // Enforce model allowlist (throws if model not allowed)
-  if (primaryModel) {
-    enforceModelAllowlist(primaryModel);
+export function resolveSpawnModelAttempt(
+  agentConfig: AgentConfig,
+  modelSpec: string | undefined,
+  ctx?: SpawnContext,
+): Pick<SpawnPrep, "model" | "providerOptions"> {
+  if (modelSpec) {
+    enforceModelAllowlist(modelSpec);
   }
 
-  // Resolve model
   const model = resolveModel(
-    primaryModel,
-    resolveNodeModelOptions(primaryModel, ctx?.gatewayConfig as any),
+    modelSpec,
+    resolveNodeModelOptions(modelSpec, ctx?.gatewayConfig as any),
   );
+  const thinkingLevel = agentConfig.reasoning ?? ctx?.reasoning ?? "off";
+  const providerOptions = buildResolvedModelProviderOptions(model, thinkingLevel) as
+    Record<string, Record<string, any>> | undefined;
+
+  return { model, providerOptions };
+}
+
+export function prepareSpawn(agentConfig: AgentConfig, cwd: string, ctx?: SpawnContext): SpawnPrep {
+  const primaryModel = agentConfig.model ? normalizeModelPolicy(agentConfig.model).primary : undefined;
+  const resolvedModel = resolveSpawnModelAttempt(agentConfig, primaryModel, ctx);
 
   // polpoDir must always be provided via SpawnContext.
   // Fallback to join(cwd, ".polpo") is WRONG when settings.workDir points to a
@@ -415,23 +425,15 @@ export function prepareSpawn(agentConfig: AgentConfig, cwd: string, ctx?: SpawnC
     effectiveAllowedPaths = undefined;
   }
 
-  // Resolve reasoning level: agent config > global settings (via SpawnContext) > "off"
-  const thinkingLevel = agentConfig.reasoning ?? ctx?.reasoning ?? "off";
-
   // Build the system prompt once for reuse in both the agent loop and context compaction
   const systemPrompt = buildSystemPrompt(agentConfig, cwd, ctx?.polpoDir, outputDir, effectiveAllowedPaths);
 
   // Track turns for maxTurns enforcement
   const maxTurns = agentConfig.maxTurns ?? 150;
 
-  // Provider options for reasoning/thinking. The values are JSON-serializable,
-  // so this cast keeps the AI SDK call-site narrow without leaking adapter internals.
-  const providerOptions = buildResolvedModelProviderOptions(model, thinkingLevel) as
-    Record<string, Record<string, any>> | undefined;
-
   return {
-    model, polpoDir, fs, shell, outputDir, effectiveAllowedPaths,
-    systemPrompt, providerOptions, hasExtendedTools, browserProfileDir, maxTurns,
+    model: resolvedModel.model, polpoDir, fs, shell, outputDir, effectiveAllowedPaths,
+    systemPrompt, providerOptions: resolvedModel.providerOptions, hasExtendedTools, browserProfileDir, maxTurns,
   };
 }
 

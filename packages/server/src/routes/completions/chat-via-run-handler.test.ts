@@ -80,6 +80,61 @@ describe("chat via Run driver", () => {
     expect(runChatViaRun).toHaveBeenCalledTimes(1);
   });
 
+  it("passes model policy and fallback resolver into chat Run injection", async () => {
+    const resolvedModels: string[] = [];
+    const runChatViaRun = vi.fn(async (inject: any, hooks: any) => {
+      expect(inject.modelSelection).toEqual({
+        primary: "mock/primary",
+        fallbacks: ["mock/fallback"],
+      });
+      const fallback = await inject.resolveModelAttempt("mock/fallback");
+      expect(fallback.model.id).toBe("fallback");
+      hooks.onEvent({ type: "text-delta", text: "hello" });
+      return { status: "completed", result: { exitCode: 0, stdout: "hello", stderr: "" } };
+    });
+    const deps = baseDeps({
+      getAgents: async () => [{
+        name: "agent-1",
+        role: "Test agent",
+        model: {
+          primary: "mock/primary",
+          fallbacks: ["mock/fallback"],
+        },
+      }],
+      resolveAgentModel: async (agentConfig: any) => {
+        resolvedModels.push(agentConfig.model);
+        const id = String(agentConfig.model).slice(String(agentConfig.model).indexOf("/") + 1);
+        return {
+          model: {
+            id,
+            name: id,
+            provider: "mock",
+            runtimeMode: "provider",
+            aiModel: {} as any,
+            contextWindow: 200_000,
+            maxTokens: 8192,
+          },
+        };
+      },
+      runChatViaRun,
+    });
+
+    const response = await completionRoutes(() => deps).request("/", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        agent: "agent-1",
+        stream: true,
+        messages: [{ role: "user", content: "hello" }],
+      }),
+    });
+
+    expect(response.status).toBe(200);
+    await response.text();
+    expect(resolvedModels).toEqual(["mock/primary", "mock/fallback"]);
+    expect(runChatViaRun).toHaveBeenCalledTimes(1);
+  });
+
   it("preserves provider-tool observability, usage callback, session persistence, and cleanup", async () => {
     const onCompletionFinished = vi.fn();
     const cleanup = vi.fn(async () => {});

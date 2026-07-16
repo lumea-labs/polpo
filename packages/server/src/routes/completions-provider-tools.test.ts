@@ -255,6 +255,73 @@ describe("completionRoutes provider-executed tools", () => {
       }),
     ]);
   });
+
+  it("falls back to the next agent model candidate before committing output", async () => {
+    const resolvedModels: string[] = [];
+    const onCompletionFinished = vi.fn();
+    streamTextMock
+      .mockImplementationOnce(() => {
+        throw new Error("503 overloaded");
+      })
+      .mockReturnValueOnce(mockStreamResult({
+        text: "fallback response",
+        usage: { inputTokens: 12, outputTokens: 3, totalTokens: 15 },
+        responseMessages: [{
+          role: "assistant",
+          content: "fallback response",
+        }],
+      }));
+
+    const deps = makeDeps();
+    const app = completionRoutes(() => ({
+      ...deps,
+      onCompletionFinished,
+      getAgents: async () => [{
+        name: "researcher",
+        model: {
+          primary: "test/primary",
+          fallbacks: ["test/fallback"],
+        },
+        allowedTools: [],
+      }],
+      resolveAgentModel: async (agentConfig: any) => {
+        resolvedModels.push(agentConfig.model);
+        const id = String(agentConfig.model).slice(String(agentConfig.model).indexOf("/") + 1);
+        return {
+          model: {
+            id,
+            provider: "test",
+            aiModel: `${id}-ai-model`,
+            contextWindow: 100_000,
+            maxTokens: 1024,
+          },
+          providerOptions: undefined,
+        };
+      },
+      resolveAgentTools: async () => ({
+        tools: [],
+        executor: async () => "ok",
+      }),
+    }));
+
+    const res = await app.request("/", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        agent: "researcher",
+        messages: [{ role: "user", content: "hello" }],
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    const json = await res.json() as any;
+    expect(json.choices[0].message.content).toBe("fallback response");
+    expect(resolvedModels).toEqual(["test/primary", "test/fallback"]);
+    expect(onCompletionFinished).toHaveBeenCalledWith(expect.objectContaining({
+      model: "fallback",
+      resolvedModel: expect.objectContaining({ id: "fallback", provider: "test" }),
+    }));
+  });
 });
 
 describe("completionRoutes loop agent-step tool streaming", () => {
