@@ -11,7 +11,7 @@
 import type { AgentConfig, AgentActivity, Task, TaskOutcome, OutcomeType } from "@polpo-ai/core/types";
 import type { SpawnContext } from "@polpo-ai/core/adapter";
 import { resolveAgentVault } from "../vault/index.js";
-import { buildAgentSystemPrompt } from "@polpo-ai/core";
+import { buildAgentSystemPrompt, normalizeModelPolicy } from "@polpo-ai/core";
 
 /** Create a fresh AgentActivity object */
 export function createActivity(): AgentActivity {
@@ -342,15 +342,17 @@ export interface SpawnPrep {
 }
 
 export function prepareSpawn(agentConfig: AgentConfig, cwd: string, ctx?: SpawnContext): SpawnPrep {
+  const primaryModel = agentConfig.model ? normalizeModelPolicy(agentConfig.model).primary : undefined;
+
   // Enforce model allowlist (throws if model not allowed)
-  if (agentConfig.model) {
-    enforceModelAllowlist(agentConfig.model);
+  if (primaryModel) {
+    enforceModelAllowlist(primaryModel);
   }
 
   // Resolve model
   const model = resolveModel(
-    agentConfig.model,
-    resolveNodeModelOptions(agentConfig.model, ctx?.gatewayConfig as any),
+    primaryModel,
+    resolveNodeModelOptions(primaryModel, ctx?.gatewayConfig as any),
   );
 
   // polpoDir must always be provided via SpawnContext.

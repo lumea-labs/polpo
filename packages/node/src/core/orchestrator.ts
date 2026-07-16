@@ -369,7 +369,7 @@ export class Orchestrator extends TypedEmitter {
     // Per-agent models (from AgentStore, not config)
     const agents = await this.agentStore.getAgents();
     for (const agent of agents) {
-      if (agent.model) modelSpecs.push(agent.model);
+      if (agent.model) modelSpecs.push(...normalizeModelPolicy(agent.model).candidates);
     }
 
     if (modelSpecs.length === 0) {

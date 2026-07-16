@@ -47,6 +47,27 @@ describe("agentLoopConfigSchema", () => {
     expect(parsed.pipeline?.steps).toHaveLength(2);
   });
 
+  it("accepts structured model policies on loop model overrides", () => {
+    const model = {
+      primary: "anthropic/claude-sonnet-4",
+      fallbacks: ["openai/gpt-4o-mini"],
+    };
+
+    const parsed = agentLoopConfigSchema.parse({
+      name: "router-agent",
+      model,
+      loops: {
+        classify: {
+          model,
+          systemPrompt: "Classify the request.",
+        },
+      },
+    });
+
+    expect(parsed.model).toEqual(model);
+    expect(parsed.loops.classify.model).toEqual(model);
+  });
+
   it("rejects pipelines that reference unknown loops", () => {
     const parsed = agentLoopConfigSchema.safeParse({
       loops: {

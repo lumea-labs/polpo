@@ -58,6 +58,7 @@ export type {
   PolpoSettings,
   ReasoningLevel,
   ModelConfig,
+  ModelSelection,
   ModelAllowlistEntry,
   CustomModelDef,
   ProviderConfig,

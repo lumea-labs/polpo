@@ -13,6 +13,40 @@ describe("agent loop API contract", () => {
     })).toMatchObject({ assignedLoops: ["coding-flow", "support-flow"] });
   });
 
+  it("accepts structured model policies on agent create/update payloads", () => {
+    const model = {
+      primary: "anthropic/claude-sonnet-4",
+      fallbacks: ["openai/gpt-4o-mini", "xai/grok-4.1-fast-reasoning"],
+    };
+
+    expect(AddAgentSchema.parse({
+      name: "fallback-agent",
+      model,
+    })).toMatchObject({ model });
+
+    expect(UpdateAgentSchema.parse({
+      model,
+    })).toMatchObject({ model });
+  });
+
+  it("rejects malformed structured model policies", () => {
+    expect(UpdateAgentSchema.safeParse({
+      model: { primary: "", fallbacks: ["openai/gpt-4o-mini"] },
+    }).success).toBe(false);
+
+    expect(UpdateAgentSchema.safeParse({
+      model: {
+        primary: "anthropic/claude-sonnet-4",
+        fallbacks: [
+          "openai/gpt-4o-mini",
+          "xai/grok-4.1-fast-reasoning",
+          "google/gemini-2.5-pro",
+          "groq/llama-3.3-70b-versatile",
+        ],
+      },
+    }).success).toBe(false);
+  });
+
   it("strips legacy inline loops from agent create/update payloads", () => {
     const loops = {
       classify: {

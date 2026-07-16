@@ -6,6 +6,7 @@ import ReactMarkdown from "react-markdown";
 import { useAgents, useChat } from "@polpo-ai/react";
 import type { ChatMessage, ContentPart } from "@polpo-ai/sdk";
 import { Button, IconButton, PageHeader } from "../components.js";
+import { modelSelectionLabel } from "../model-selection.js";
 
 function messageText(content: string | ContentPart[]) {
   if (typeof content === "string") return content;
@@ -38,7 +39,7 @@ export function PlaygroundView({ initialAgent }: { initialAgent?: string }) {
       <PageHeader title="Playground" description="Call an agent through the same API your application uses." actions={<Button variant="secondary" onClick={chat.newSession}><Plus size={15} />New chat</Button>} />
       <div className="pd-playground-toolbar">
         <label><span>Agent</span><select value={agent} disabled={isLoading} onChange={(event) => { setAgent(event.target.value); chat.newSession(); }}>{agents.map((item) => <option key={item.name} value={item.name}>{item.name}</option>)}</select></label>
-        {selected?.model ? <code>{selected.model}</code> : null}
+        {selected?.model ? <code>{modelSelectionLabel(selected.model)}</code> : null}
       </div>
       <div className="pd-chat-frame">
         <div className="pd-messages">

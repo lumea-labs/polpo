@@ -6,6 +6,7 @@
 import { z } from "zod";
 import type { TaskExpectation, MissionCheckpoint, MissionQualityGate } from "./types.js";
 import { LOOP_LIFECYCLE_HOOKS } from "./loop/types.js";
+import { MAX_MODEL_FALLBACKS } from "./model-policy.js";
 
 // ── Expectation Schemas (discriminated union on `type`) ──────────────
 
@@ -94,6 +95,16 @@ export const missionCheckpointSchema = z.object({
   message: z.string().optional(),
   notifyChannels: z.array(z.string().min(1)).optional(),
 });
+
+export const modelConfigSchema = z.object({
+  primary: z.string().min(1),
+  fallbacks: z.array(z.string().min(1)).max(MAX_MODEL_FALLBACKS).optional(),
+});
+
+export const modelSelectionSchema = z.union([
+  z.string().min(1),
+  modelConfigSchema,
+]);
 
 // ── Mission Delay Schema ────────────────────────────────────────────
 
@@ -237,7 +248,7 @@ export const loopConfigSchema = z.object({
   tools: z.array(z.string().min(1)).optional(),
   skills: z.array(z.string().min(1)).optional(),
   toolChoice: loopToolChoiceSchema.optional(),
-  model: z.string().optional(),
+  model: modelSelectionSchema.optional(),
   reasoning: z.string().optional(),
   temperature: z.number().min(0).max(2).optional(),
   maxTurns: z.number().int().positive().optional(),
@@ -528,7 +539,7 @@ function collectLoopStepRefs(step: unknown, refs: string[]): void {
 
 export const agentLoopConfigSchema = z.object({
   name: z.string().min(1).optional(),
-  model: z.string().optional(),
+  model: modelSelectionSchema.optional(),
   runtime: z.string().optional(),
   loops: z.record(z.string().min(1), loopConfigSchema),
   pipeline: pipelineSchema.optional(),
