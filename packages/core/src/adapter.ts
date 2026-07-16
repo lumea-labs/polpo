@@ -4,6 +4,7 @@ import type { MemoryStore } from "@polpo-ai/core/memory-store";
 import type { FileSystem } from "@polpo-ai/core/filesystem";
 import type { Shell } from "@polpo-ai/core/shell";
 import type { LoopResumeState } from "@polpo-ai/core/loop-run-store";
+import type { ModelSelection } from "./model-policy.js";
 
 /**
  * Handle returned by the engine after spawning an agent.
@@ -119,8 +120,15 @@ export interface ChatSessionInjection {
   agent: AgentConfig;
   /** Optional session title (first user text). */
   title?: string;
+  /** Original model policy. When present, the engine can execute fallback attempts. */
+  modelSelection?: ModelSelection;
   /** Resolved model (the same ResolvedModel the engine's prepareSpawn would build). */
   model: { aiModel: unknown; contextWindow?: number; maxTokens?: number };
+  /** Host resolver for model policy attempts beyond the pre-resolved primary model. */
+  resolveModelAttempt?: (model: string) => Promise<{
+    model: { aiModel: unknown; contextWindow?: number; maxTokens?: number };
+    providerOptions?: Record<string, Record<string, unknown>>;
+  }>;
   /** Full system prompt (conversational preamble + agent prompt + memory). */
   systemPrompt: string;
   providerOptions?: Record<string, Record<string, unknown>>;

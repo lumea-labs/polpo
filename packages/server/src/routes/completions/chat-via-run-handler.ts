@@ -19,7 +19,7 @@ import type { Context } from "hono";
 import { streamSSE } from "hono/streaming";
 import type { ChatSessionInjection } from "@polpo-ai/core";
 import type { ChatCompletionExecution } from "./chat-handler.js";
-import { completionResolvedModelInfo, MAX_TURNS } from "./agent-step-runner.js";
+import { agentConfigForModelAttempt, completionResolvedModelInfo, MAX_TURNS } from "./agent-step-runner.js";
 import { completionResponse, modelErrorEnvelope, modelNotFoundEnvelope, sseChunk } from "./sse.js";
 import {
   persistAssistantMessage,
@@ -43,11 +43,32 @@ function firstUserText(aiMessages: any[]): string {
 
 /** Pack the resolved chat inputs into the engine injection. */
 function buildInjection(execution: ChatCompletionExecution): ChatSessionInjection {
-  const { agentConfig, m, fullSystemPrompt, providerOpts, modelToolChoice, effectiveTools, effectiveToolExecutor, extraAiTools, aiMessages } = execution;
+  const {
+    deps,
+    agentConfig,
+    m,
+    fullSystemPrompt,
+    providerOpts,
+    modelSelection,
+    modelToolChoice,
+    effectiveTools,
+    effectiveToolExecutor,
+    extraAiTools,
+    aiMessages,
+  } = execution;
+  const reasoning = agentConfig?.reasoning ?? deps.getConfig()?.settings?.reasoning;
   return {
     agent: agentConfig,
     title: firstUserText(aiMessages),
+    modelSelection,
     model: m as unknown as ChatSessionInjection["model"],
+    resolveModelAttempt: async (model) => {
+      const resolved = await deps.resolveAgentModel(agentConfigForModelAttempt(agentConfig, model), reasoning);
+      return {
+        model: resolved.model as unknown as ChatSessionInjection["model"],
+        providerOptions: resolved.providerOptions as ChatSessionInjection["providerOptions"],
+      };
+    },
     systemPrompt: fullSystemPrompt,
     providerOptions: providerOpts as ChatSessionInjection["providerOptions"],
     maxTurns: MAX_TURNS,

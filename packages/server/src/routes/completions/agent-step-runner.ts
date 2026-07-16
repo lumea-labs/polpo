@@ -11,7 +11,9 @@ import {
   compactIfNeeded,
   loopContextPrompt,
   maybeParseJson,
+  normalizeModelPolicy,
   type ContextBag,
+  type ModelSelection,
   type SummarizeFn,
 } from "@polpo-ai/core";
 import { generateText, type LanguageModel, type LanguageModelUsage } from "ai";
@@ -75,6 +77,25 @@ export function completionResolvedModelInfo(model: ResolvedModelInfo): Completio
 export function modelSelectionForResolvedModel(model: ResolvedModelInfo): string {
   const modelId = model.id ?? model.name;
   return modelId ? `${model.provider}/${modelId}` : model.provider;
+}
+
+export function modelSelectionForAgent(agentConfig: any, fallback: string): ModelSelection {
+  return agentConfig?.model ?? fallback;
+}
+
+export function agentConfigForModelPrimary(agentConfig: any): any {
+  if (!agentConfig?.model) return agentConfig;
+  return {
+    ...agentConfig,
+    model: normalizeModelPolicy(agentConfig.model).primary,
+  };
+}
+
+export function agentConfigForModelAttempt(agentConfig: any, model: string): any {
+  return {
+    ...agentConfig,
+    model,
+  };
 }
 
 export function addUsage(a: LanguageModelUsage, b: LanguageModelUsage): LanguageModelUsage {
@@ -154,9 +175,10 @@ export async function runAgentStepCompletion(options: {
 }): Promise<AgentStepRunResult> {
   const { deps, agentConfig, aiMessages, extraSystemParts, context, stepName, onToolCall } = options;
   const reasoning = agentConfig.reasoning ?? deps.getConfig()?.settings?.reasoning;
-  const resolved = await deps.resolveAgentModel(agentConfig, reasoning);
-  const m = resolved.model;
-  const providerOpts = resolved.providerOptions;
+  const initialResolved = await deps.resolveAgentModel(agentConfigForModelPrimary(agentConfig), reasoning);
+  let m = initialResolved.model;
+  let providerOpts = initialResolved.providerOptions;
+  const modelSelection = modelSelectionForAgent(agentConfig, modelSelectionForResolvedModel(m));
   const resolvedTools = await deps.resolveAgentTools(agentConfig);
   const aiTools = {
     ...toAITools(resolvedTools.tools),
@@ -196,13 +218,20 @@ export async function runAgentStepCompletion(options: {
 
       const toolCallNames = new Map<string, string>();
       const toolCallArgsText = new Map<string, string>();
+      const resolvedAttempts = new Map<number, typeof initialResolved>();
       const turnResult = await runModelPolicyTurn({
-        selection: modelSelectionForResolvedModel(m),
-        resolveAttempt: () => ({
-          model: m.aiModel,
-          maxOutputTokens: m.maxTokens,
-          providerOptions: providerOpts,
-        }),
+        selection: modelSelection,
+        resolveAttempt: async (attempt) => {
+          const resolvedAttempt = attempt.index === 0
+            ? initialResolved
+            : await deps.resolveAgentModel(agentConfigForModelAttempt(agentConfig, attempt.model), reasoning);
+          resolvedAttempts.set(attempt.index, resolvedAttempt);
+          return {
+            model: resolvedAttempt.model.aiModel,
+            maxOutputTokens: resolvedAttempt.model.maxTokens,
+            providerOptions: resolvedAttempt.providerOptions,
+          };
+        },
         preserveSingleAttemptError: true,
         system: fullSystemPrompt,
         messages,
@@ -229,6 +258,11 @@ export async function runAgentStepCompletion(options: {
       });
 
       const turnText = turnResult.text;
+      const selectedResolved = resolvedAttempts.get(turnResult.selectedAttempt.index);
+      if (selectedResolved) {
+        m = selectedResolved.model;
+        providerOpts = selectedResolved.providerOptions;
+      }
       totalUsage = addUsage(totalUsage, turnResult.usage);
       lastProviderMetadata = turnResult.providerMetadata as Record<string, unknown> | undefined;
 

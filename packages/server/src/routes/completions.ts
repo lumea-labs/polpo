@@ -35,6 +35,7 @@ import {
   agentMemoryScope,
   resolveLoopSelection,
   type LoopRunStore,
+  type ModelSelection,
   type ProjectLoopConfig,
 } from "@polpo-ai/core";
 import type { ApprovalStore } from "@polpo-ai/core/approval-store";
@@ -45,6 +46,11 @@ import { toAIToolChoice } from "./completions/tool-mapping.js";
 import type {
   CompletionResolvedModelInfo,
   ResolvedModelInfo,
+} from "./completions/agent-step-runner.js";
+import {
+  agentConfigForModelPrimary,
+  modelSelectionForAgent,
+  modelSelectionForResolvedModel,
 } from "./completions/agent-step-runner.js";
 import { handleProjectLoopCompletion } from "./completions/project-loop-runner.js";
 import {
@@ -172,6 +178,7 @@ export function completionRoutes(getDeps: () => CompletionRouteDeps, apiKeys?: s
     let fullSystemPrompt: string;
     let m: ResolvedModelInfo;
     let providerOpts: Record<string, any> | undefined;
+    let modelSelection: ModelSelection | undefined;
     let modelToolChoice: unknown | undefined;
     let effectiveTools: any[];
     let effectiveToolExecutor: (name: string, args: Record<string, unknown>) => Promise<string>;
@@ -264,13 +271,14 @@ export function completionRoutes(getDeps: () => CompletionRouteDeps, apiKeys?: s
       const reasoning = agentConfig.reasoning ?? deps.getConfig()?.settings?.reasoning;
       let resolved;
       try {
-        resolved = await deps.resolveAgentModel(agentConfig, reasoning);
+        resolved = await deps.resolveAgentModel(agentConfigForModelPrimary(agentConfig), reasoning);
       } catch (modelErr) {
         const msg = modelErr instanceof Error ? modelErr.message : String(modelErr);
         return c.json({ error: { message: msg, type: "invalid_request_error" } }, 400 as any);
       }
       m = resolved.model;
       providerOpts = resolved.providerOptions;
+      modelSelection = modelSelectionForAgent(agentConfig, modelSelectionForResolvedModel(m));
 
       // Resolve tools via dep
       const resolvedTools = await deps.resolveAgentTools(agentConfig);
@@ -293,6 +301,7 @@ export function completionRoutes(getDeps: () => CompletionRouteDeps, apiKeys?: s
         : ctx.systemPrompt;
       m = ctx.model;
       providerOpts = ctx.providerOptions;
+      modelSelection = modelSelectionForResolvedModel(m);
       effectiveTools = ctx.tools;
       effectiveToolExecutor = ctx.executor;
       isInteractiveFn = ctx.isInteractive;
@@ -355,6 +364,7 @@ export function completionRoutes(getDeps: () => CompletionRouteDeps, apiKeys?: s
       fullSystemPrompt,
       m,
       providerOpts,
+      modelSelection,
       modelToolChoice,
       effectiveTools,
       effectiveToolExecutor,

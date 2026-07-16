@@ -61,6 +61,7 @@ import { NodeFileSystem } from "./node-filesystem.js";
 import {
   createActivity,
   prepareSpawn,
+  resolveSpawnModelAttempt,
   buildAgentTools,
   buildPrompt,
   collectOutcome,
@@ -305,6 +306,8 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
       toolSet = toToolDeclarations(allPolpoTools);
       compactionTools = allPolpoTools.map((t) => ({ description: t.description ?? "" }));
     }
+    const primaryResolved = { model, providerOptions };
+    const modelSelection = inject?.modelSelection ?? sessionAgent.model ?? modelSelectionForResolvedModel(model);
 
     // Conversation state owned by the host, exactly like the legacy loop.
     // On resume the recorded history (already containing tool-call and
@@ -377,13 +380,25 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
 
       let stepText = "";
       const toolCalls: LoopToolCall[] = [];
+      const resolvedAttempts = new Map<number, Pick<SpawnPrep, "model" | "providerOptions">>();
       const turn = await runModelPolicyTurn({
-        selection: modelSelectionForResolvedModel(model),
-        resolveAttempt: () => ({
-          model: model.aiModel,
-          maxOutputTokens: model.maxTokens,
-          providerOptions,
-        }),
+        selection: modelSelection,
+        resolveAttempt: async (attempt) => {
+          const resolvedAttempt = attempt.index === 0
+            ? primaryResolved
+            : inject
+              ? await inject.resolveModelAttempt?.(attempt.model) as Pick<SpawnPrep, "model" | "providerOptions"> | undefined
+              : resolveSpawnModelAttempt(sessionAgent, attempt.model, ctx);
+          if (!resolvedAttempt) {
+            throw new Error(`No model resolver is available for fallback "${attempt.model}"`);
+          }
+          resolvedAttempts.set(attempt.index, resolvedAttempt);
+          return {
+            model: resolvedAttempt.model.aiModel,
+            maxOutputTokens: resolvedAttempt.model.maxTokens,
+            providerOptions: resolvedAttempt.providerOptions,
+          };
+        },
         preserveSingleAttemptError: true,
         system: systemPrompt,
         messages,
@@ -501,6 +516,11 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
       });
 
       const stepUsage = turn.usage;
+      const selectedResolved = resolvedAttempts.get(turn.selectedAttempt.index);
+      if (selectedResolved) {
+        model = selectedResolved.model;
+        providerOptions = selectedResolved.providerOptions;
+      }
       if (stepUsage) {
         activity.totalTokens += (stepUsage.totalTokens ?? 0);
       }

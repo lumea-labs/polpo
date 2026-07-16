@@ -8,11 +8,12 @@
  */
 
 import { streamSSE } from "hono/streaming";
-import { compactIfNeeded, type CompactionEvent } from "@polpo-ai/core";
+import { compactIfNeeded, type CompactionEvent, type ModelSelection } from "@polpo-ai/core";
 import { runModelPolicyTurn } from "@polpo-ai/llm";
 import type { LanguageModelUsage } from "ai";
 import type { CompletionRouteDeps } from "../completions.js";
 import {
+  agentConfigForModelAttempt,
   buildSummarizeFn,
   completionResolvedModelInfo,
   MAX_TURNS,
@@ -43,6 +44,7 @@ export interface ChatCompletionExecution {
   fullSystemPrompt: string;
   m: ResolvedModelInfo;
   providerOpts?: Record<string, any>;
+  modelSelection?: ModelSelection;
   modelToolChoice?: unknown;
   effectiveTools: any[];
   effectiveToolExecutor: (name: string, args: Record<string, unknown>) => Promise<string>;
@@ -87,11 +89,16 @@ function mergeAiTools(exec: ChatCompletionExecution): Record<string, any> {
 /** Streaming chat mode — SSE stream of OpenAI-format chunks. */
 export function streamChatCompletion(c: any, exec: ChatCompletionExecution): any {
   const {
-    deps, body, completionId, agentMode, fullSystemPrompt, m, providerOpts,
+    deps, body, completionId, agentMode, fullSystemPrompt,
+    m: primaryModel, providerOpts: primaryProviderOpts,
     modelToolChoice, effectiveTools, effectiveToolExecutor, extraAiTools,
     isInteractiveFn, aiMessages, sessionStore, sessionId, onResponseFinished,
   } = exec;
   const aiTools = mergeAiTools(exec);
+  let m = primaryModel;
+  let providerOpts = primaryProviderOpts;
+  const modelSelection = exec.modelSelection ?? modelSelectionForResolvedModel(primaryModel);
+  const reasoning = exec.agentConfig?.reasoning ?? deps.getConfig()?.settings?.reasoning;
 
   return streamSSE(c, async (stream) => {
     // Abort controller: cancelled when the client disconnects (closes SSE)
@@ -173,14 +180,21 @@ export function streamChatCompletion(c: any, exec: ChatCompletionExecution): any
         // builds up instead of waiting for the whole turn to finish.
         const toolCallNames = new Map<string, string>();
         const toolCallArgsText = new Map<string, string>();
+        const resolvedAttempts = new Map<number, { model: ResolvedModelInfo; providerOptions?: Record<string, any> }>();
 
         const result = await runModelPolicyTurn({
-          selection: modelSelectionForResolvedModel(m),
-          resolveAttempt: () => ({
-            model: m.aiModel,
-            maxOutputTokens: m.maxTokens,
-            providerOptions: providerOpts,
-          }),
+          selection: modelSelection,
+          resolveAttempt: async (attempt) => {
+            const resolvedAttempt = attempt.index === 0 || !agentMode || !exec.agentConfig
+              ? { model: primaryModel, providerOptions: primaryProviderOpts }
+              : await deps.resolveAgentModel(agentConfigForModelAttempt(exec.agentConfig, attempt.model), reasoning);
+            resolvedAttempts.set(attempt.index, resolvedAttempt);
+            return {
+              model: resolvedAttempt.model.aiModel,
+              maxOutputTokens: resolvedAttempt.model.maxTokens,
+              providerOptions: resolvedAttempt.providerOptions,
+            };
+          },
           preserveSingleAttemptError: true,
           system: fullSystemPrompt,
           messages,
@@ -241,6 +255,11 @@ export function streamChatCompletion(c: any, exec: ChatCompletionExecution): any
 
         const toolCalls = result.toolCalls;
         const usage = result.usage;
+        const selectedResolved = resolvedAttempts.get(result.selectedAttempt.index);
+        if (selectedResolved) {
+          m = selectedResolved.model;
+          providerOpts = selectedResolved.providerOptions;
+        }
         totalUsage = {
           inputTokens: (totalUsage.inputTokens ?? 0) + (usage.inputTokens ?? 0),
           outputTokens: (totalUsage.outputTokens ?? 0) + (usage.outputTokens ?? 0),
@@ -486,11 +505,16 @@ export function streamChatCompletion(c: any, exec: ChatCompletionExecution): any
 /** Non-streaming chat mode — single OpenAI-format JSON response. */
 export async function runNonStreamingChatCompletion(c: any, exec: ChatCompletionExecution): Promise<any> {
   const {
-    deps, body, completionId, agentMode, fullSystemPrompt, m, providerOpts,
+    deps, body, completionId, agentMode, fullSystemPrompt,
+    m: primaryModel, providerOpts: primaryProviderOpts,
     modelToolChoice, effectiveTools, effectiveToolExecutor, extraAiTools,
     isInteractiveFn, aiMessages, sessionStore, sessionId, onResponseFinished,
   } = exec;
   const aiTools = mergeAiTools(exec);
+  let m = primaryModel;
+  let providerOpts = primaryProviderOpts;
+  const modelSelection = exec.modelSelection ?? modelSelectionForResolvedModel(primaryModel);
+  const reasoning = exec.agentConfig?.reasoning ?? deps.getConfig()?.settings?.reasoning;
 
   // Reserve placeholder so the message is visible even if the request is interrupted
   let assistantMsgId: string | null = null;
@@ -525,13 +549,20 @@ export async function runNonStreamingChatCompletion(c: any, exec: ChatCompletion
         messages.splice(0, messages.length, ...compactionResult.messages);
       }
 
+      const resolvedAttempts = new Map<number, { model: ResolvedModelInfo; providerOptions?: Record<string, any> }>();
       const turnResult = await runModelPolicyTurn({
-        selection: modelSelectionForResolvedModel(m),
-        resolveAttempt: () => ({
-          model: m.aiModel,
-          maxOutputTokens: m.maxTokens,
-          providerOptions: providerOpts,
-        }),
+        selection: modelSelection,
+        resolveAttempt: async (attempt) => {
+          const resolvedAttempt = attempt.index === 0 || !agentMode || !exec.agentConfig
+            ? { model: primaryModel, providerOptions: primaryProviderOpts }
+            : await deps.resolveAgentModel(agentConfigForModelAttempt(exec.agentConfig, attempt.model), reasoning);
+          resolvedAttempts.set(attempt.index, resolvedAttempt);
+          return {
+            model: resolvedAttempt.model.aiModel,
+            maxOutputTokens: resolvedAttempt.model.maxTokens,
+            providerOptions: resolvedAttempt.providerOptions,
+          };
+        },
         preserveSingleAttemptError: true,
         system: fullSystemPrompt,
         messages,
@@ -540,6 +571,11 @@ export async function runNonStreamingChatCompletion(c: any, exec: ChatCompletion
       });
 
       const turnText = turnResult.text;
+      const selectedResolved = resolvedAttempts.get(turnResult.selectedAttempt.index);
+      if (selectedResolved) {
+        m = selectedResolved.model;
+        providerOpts = selectedResolved.providerOptions;
+      }
       const usage = turnResult.usage;
       totalUsage = {
         inputTokens: (totalUsage.inputTokens ?? 0) + (usage.inputTokens ?? 0),
