@@ -20,8 +20,7 @@ COPY packages/react-sdk/package.json ./packages/react-sdk/package.json
 COPY packages/server/package.json ./packages/server/package.json
 COPY packages/tools/package.json ./packages/tools/package.json
 COPY packages/vault-crypto/package.json ./packages/vault-crypto/package.json
-RUN --mount=type=cache,id=pnpm-dashboard,target=/root/.local/share/pnpm/store \
-    pnpm install --frozen-lockfile
+RUN pnpm install --frozen-lockfile
 COPY . .
 RUN pnpm turbo run build --filter=@polpo-ai/dashboard-app...
 
