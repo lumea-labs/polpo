@@ -9,13 +9,14 @@
 
 import { streamSSE } from "hono/streaming";
 import { compactIfNeeded, type CompactionEvent } from "@polpo-ai/core";
-import { streamModelTurn } from "@polpo-ai/llm";
+import { runModelPolicyTurn } from "@polpo-ai/llm";
 import type { LanguageModelUsage } from "ai";
 import type { CompletionRouteDeps } from "../completions.js";
 import {
   buildSummarizeFn,
   completionResolvedModelInfo,
   MAX_TURNS,
+  modelSelectionForResolvedModel,
   type ResolvedModelInfo,
 } from "./agent-step-runner.js";
 import { appendModelResponseMessages } from "./message-mapping.js";
@@ -173,14 +174,18 @@ export function streamChatCompletion(c: any, exec: ChatCompletionExecution): any
         const toolCallNames = new Map<string, string>();
         const toolCallArgsText = new Map<string, string>();
 
-        const result = await streamModelTurn({
-          model: m.aiModel,
+        const result = await runModelPolicyTurn({
+          selection: modelSelectionForResolvedModel(m),
+          resolveAttempt: () => ({
+            model: m.aiModel,
+            maxOutputTokens: m.maxTokens,
+            providerOptions: providerOpts,
+          }),
+          preserveSingleAttemptError: true,
           system: fullSystemPrompt,
           messages,
           tools: aiTools,
           ...(modelToolChoice ? { toolChoice: modelToolChoice as any } : {}),
-          maxOutputTokens: m.maxTokens,
-          providerOptions: providerOpts,
           abortSignal: abortController.signal,
         }, async (event) => {
           if (abortController.signal.aborted) return;
@@ -520,14 +525,18 @@ export async function runNonStreamingChatCompletion(c: any, exec: ChatCompletion
         messages.splice(0, messages.length, ...compactionResult.messages);
       }
 
-      const turnResult = await streamModelTurn({
-        model: m.aiModel,
+      const turnResult = await runModelPolicyTurn({
+        selection: modelSelectionForResolvedModel(m),
+        resolveAttempt: () => ({
+          model: m.aiModel,
+          maxOutputTokens: m.maxTokens,
+          providerOptions: providerOpts,
+        }),
+        preserveSingleAttemptError: true,
         system: fullSystemPrompt,
         messages,
         tools: aiTools,
         ...(modelToolChoice ? { toolChoice: modelToolChoice as any } : {}),
-        maxOutputTokens: m.maxTokens,
-        providerOptions: providerOpts,
       });
 
       const turnText = turnResult.text;
