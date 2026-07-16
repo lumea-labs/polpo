@@ -116,6 +116,26 @@ describe("provider runtime adapter", () => {
     });
   });
 
+  it("uses adaptive Anthropic thinking options for newer Claude models", () => {
+    const adapter = createProviderRuntimeAdapter({
+      apiKeyResolver: () => "test-key",
+    });
+
+    const options = adapter.buildProviderOptions?.({
+      ref: { provider: "anthropic", model: "claude-sonnet-5" },
+      context: {},
+      reasoning: "medium",
+      maxOutputTokens: 8192,
+    });
+
+    expect(options).toEqual({
+      anthropic: {
+        thinking: { type: "adaptive" },
+        effort: "medium",
+      },
+    });
+  });
+
   it("extracts provider usage without claiming platform spend", () => {
     const usage = extractProviderInvocationUsage({
       mode: "provider",

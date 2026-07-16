@@ -82,8 +82,8 @@ export function createProviderRuntimeAdapter(options: ProviderRuntimeAdapterOpti
       throw new Error(`Direct provider execution is not implemented for provider "${provider}"`);
     },
     buildProviderOptions(input) {
-      const { provider } = splitProviderModelRef(input.ref);
-      return mapReasoningToProviderOptions(provider, input.reasoning as any, input.maxOutputTokens ?? 8192);
+      const { provider, modelId } = splitProviderModelRef(input.ref);
+      return mapReasoningToProviderOptions(provider, input.reasoning as any, input.maxOutputTokens ?? 8192, modelId);
     },
     extractUsage(input: UsageExtractionInput): ModelInvocationUsage {
       return extractProviderInvocationUsage(input, billingOwner);

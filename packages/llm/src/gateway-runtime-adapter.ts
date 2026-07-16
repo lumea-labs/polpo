@@ -39,8 +39,8 @@ export function createGatewayRuntimeAdapter(options: GatewayRuntimeAdapterOption
       return createGatewayModel(provider, modelId, options.config);
     },
     buildProviderOptions(input) {
-      const { provider } = splitGatewayModelRef(input.ref);
-      return mapReasoningToProviderOptions(provider, input.reasoning as any, input.maxOutputTokens ?? 8192);
+      const { provider, modelId } = splitGatewayModelRef(input.ref);
+      return mapReasoningToProviderOptions(provider, input.reasoning as any, input.maxOutputTokens ?? 8192, modelId);
     },
     extractUsage(input: UsageExtractionInput): ModelInvocationUsage {
       return extractGatewayInvocationUsage(input, billingOwner);
