@@ -4,6 +4,7 @@
  */
 
 import type { LoopConfig, LoopToolChoice, Pipeline } from "../loop/types.js";
+import type { ModelConfig } from "./config.js";
 import type {
   BillingOwner,
   CostSource,
@@ -78,8 +79,8 @@ export interface AgentConfig {
   /** ISO timestamp of when this agent was created / added to the team. Auto-set by addAgent(). */
   createdAt?: string;
   role?: string;
-  /** Model to use. Format: "provider/model" (e.g. "anthropic/claude-sonnet-4-5-20250929") or bare model ID (auto-inferred). */
-  model?: string;
+  /** Model to use. A string keeps legacy behavior; an object defines an ordered language-model policy. */
+  model?: string | ModelConfig;
   /** Image generation model. Format: "provider/model".
    *  Default: "fal/fal-ai/flux/dev". Drives the image_generate tool.
    *  Provider must be in the supported set: fal. */

@@ -5,6 +5,7 @@ import { ArrowLeft, ChatCircleText, Trash } from "@phosphor-icons/react";
 import { useAgents } from "@polpo-ai/react";
 import { Button, Field, LoadingRows, PageHeader } from "../components.js";
 import { useDashboardHost } from "../host.js";
+import { modelSelectionPrimary } from "../model-selection.js";
 
 export function AgentDetailView({ name }: { name: string }) {
   const host = useDashboardHost();
@@ -38,7 +39,7 @@ export function AgentDetailView({ name }: { name: string }) {
         <div className="pd-editor-section">
           <h2>Configuration</h2>
           <Field label="Role"><input name="role" defaultValue={agent.role ?? ""} /></Field>
-          <Field label="Model"><input name="model" defaultValue={agent.model ?? ""} placeholder="provider/model" /></Field>
+          <Field label="Model"><input name="model" defaultValue={modelSelectionPrimary(agent.model)} placeholder="provider/model" /></Field>
           <Field label="Instructions"><textarea name="systemPrompt" defaultValue={agent.systemPrompt ?? ""} rows={16} /></Field>
         </div>
         <div className="pd-editor-footer">

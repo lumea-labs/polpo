@@ -1,4 +1,5 @@
 import { z } from "@hono/zod-openapi";
+import { MAX_MODEL_FALLBACKS } from "@polpo-ai/core";
 import { TOOL_CATALOG, matchToolPattern } from "@polpo-ai/tools";
 import { ApiHttpError } from "./errors.js";
 
@@ -235,10 +236,20 @@ export const UpdateMissionQualityGateSchema = z.object({
   notifyChannels: z.array(z.string().min(1)).optional(),
 });
 
+const ModelConfigSchema = z.object({
+  primary: z.string().min(1),
+  fallbacks: z.array(z.string().min(1)).max(MAX_MODEL_FALLBACKS).optional(),
+});
+
+const ModelSelectionSchema = z.union([
+  z.string().min(1),
+  ModelConfigSchema,
+]);
+
 export const AddMissionTeamMemberSchema = z.object({
   name: z.string().min(1),
   role: z.string().optional(),
-  model: z.string().optional(),
+  model: ModelSelectionSchema.optional(),
   systemPrompt: z.string().optional(),
   allowedTools: z.array(ToolNameSchema).optional(),
 });
@@ -246,7 +257,7 @@ export const AddMissionTeamMemberSchema = z.object({
 export const UpdateMissionTeamMemberSchema = z.object({
   name: z.string().min(1).optional(),
   role: z.string().optional(),
-  model: z.string().optional(),
+  model: ModelSelectionSchema.optional(),
   systemPrompt: z.string().optional(),
   allowedTools: z.array(ToolNameSchema).optional(),
 });
@@ -256,11 +267,6 @@ export const UpdateMissionNotificationsSchema = z.object({
 });
 
 // ── Settings schema ───────────────────────────────────────────────────
-
-const ModelConfigSchema = z.object({
-  primary: z.string().optional(),
-  fallbacks: z.array(z.string()).optional(),
-});
 
 export const UpdateSettingsSchema = z.object({
   orchestratorModel: z.union([z.string(), ModelConfigSchema]).optional(),
@@ -342,7 +348,7 @@ const LoopConfigSchema = z.object({
   tools: z.array(z.string().min(1)).optional(),
   skills: z.array(z.string().min(1)).optional(),
   toolChoice: LoopToolChoiceSchema.optional(),
-  model: z.string().optional(),
+  model: ModelSelectionSchema.optional(),
   reasoning: z.string().optional(),
   temperature: z.number().min(0).max(2).optional(),
   maxTurns: z.number().int().positive().optional(),
@@ -521,7 +527,7 @@ export const AddAgentSchema = z.object({
   executionMode: z.enum(["subprocess", "in-process"]).optional(),
   name: z.string().min(1),
   role: z.string().optional(),
-  model: z.string().optional(),
+  model: ModelSelectionSchema.optional(),
   // Per-modality media models (provider/model strings; format checked
   // by parseModelString at tool-call time). Undefined → DEFAULT_*_MODEL.
   image_model:      z.string().optional(),
@@ -546,7 +552,7 @@ export const AddAgentSchema = z.object({
 
 export const UpdateAgentSchema = z.object({
   role: z.string().optional(),
-  model: z.string().optional(),
+  model: ModelSelectionSchema.optional(),
   // Per-modality media models (optional, mirror AddAgentSchema).
   image_model:      z.string().optional(),
   video_model:      z.string().optional(),

@@ -7,6 +7,7 @@ import { sanitizeExpectations, parseMissionDocument, type MissionDocumentParsed 
 import { resolveMissionStore, resolveMissionForGroup, type MissionStore } from "./mission-store.js";
 import { InMemoryCheckpointStore, InMemoryDelayStore } from "./in-memory-stores.js";
 import { MissionGating, parseISO8601Duration } from "./mission-gating.js";
+import { normalizeModelPolicy } from "./model-policy.js";
 
 /** Mission document keys holding list collections editable via the atomic data operations. */
 type MissionCollectionKey = "tasks" | "checkpoints" | "delays" | "qualityGates" | "team";
@@ -342,7 +343,7 @@ export class MissionExecutor {
       const agentName = t.assignTo || allAgents[0]?.name;
       const agent = allAgents.find(a => a.name === agentName);
       if (agent?.model) {
-        referencedModels.push(agent.model);
+        referencedModels.push(...normalizeModelPolicy(agent.model).candidates);
       } else if (!agent) {
         throw new Error(
           `Mission references agent "${agentName}" (task "${t.title}") but no such agent exists. ` +

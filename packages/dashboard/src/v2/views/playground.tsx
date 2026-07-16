@@ -22,6 +22,7 @@ import {
   type PlaygroundHostAdapter,
 } from "../playground/host.js";
 import { ChatCanvas, type CanvasTabId } from "../playground/chat-canvas.js";
+import { modelSelectionLabel } from "../../model-selection.js";
 
 const DEFAULT_LOOP_VALUE = "__polpo_default_loop__";
 
@@ -126,7 +127,7 @@ export function PlaygroundView({
       <TopBar
         projectName={projectName}
         agent={selectedAgent}
-        model={selectedAgentConfig?.model}
+        model={selectedAgentConfig?.model ? modelSelectionLabel(selectedAgentConfig.model) : undefined}
         projectId={projectId}
         missingModel={Boolean(selectedAgentConfig && !selectedAgentConfig.model)}
         onNewChat={newChat}

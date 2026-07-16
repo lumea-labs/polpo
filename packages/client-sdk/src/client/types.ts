@@ -59,6 +59,7 @@ import type {
   MissionStatus,
   ModelAllowlistEntry,
   ModelConfig,
+  ModelSelection,
   NotificationChannelConfig,
   NotificationChannelType,
   NotificationRule,
@@ -150,6 +151,7 @@ export type {
   MissionStatus,
   ModelAllowlistEntry,
   ModelConfig,
+  ModelSelection,
   NotificationChannelConfig,
   NotificationChannelType,
   NotificationRule,
@@ -639,7 +641,7 @@ export interface UpdateMissionNotificationsRequest {
 export interface AddAgentRequest {
   name: string;
   role?: string;
-  model?: string;
+  model?: ModelSelection;
   allowedTools?: string[];
   systemPrompt?: string;
   skills?: string[];
@@ -666,7 +668,7 @@ export interface AddAgentRequest {
 
 export interface UpdateAgentRequest {
   role?: string;
-  model?: string;
+  model?: ModelSelection;
   allowedTools?: string[];
   allowedPaths?: string[];
   systemPrompt?: string;

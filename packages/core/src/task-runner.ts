@@ -6,6 +6,7 @@ import { agentMemoryScope } from "./memory-store.js";
 import { resolveExecutionMode } from "./execution-mode.js";
 import type { RunRecord } from "./run-store.js";
 import type { LoopResumeState } from "./loop/run-store.js";
+import { normalizeModelPolicy } from "./model-policy.js";
 
 /**
  * Durable turns: max age of a resume checkpoint before orphan recovery
@@ -469,7 +470,7 @@ export class TaskRunner {
 
     // Fail fast if the agent's model provider has no API key
     if (agent.model && this.ctx.validateProviderKeys) {
-      const missing = this.ctx.validateProviderKeys([agent.model]);
+      const missing = this.ctx.validateProviderKeys(normalizeModelPolicy(agent.model).candidates);
       if (missing.length > 0) {
         const detail = missing.map(m => `${m.provider} (${m.modelSpec})`).join(", ");
         this.ctx.emitter.emit("log", {

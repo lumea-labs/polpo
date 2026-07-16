@@ -15,10 +15,7 @@ import {
   PageHeader,
   type ColumnMeta,
 } from "../components.js";
-
-function modelLabel(model?: string) {
-  return model?.trim() || "Not assigned";
-}
+import { modelSelectionLabel } from "../model-selection.js";
 
 export function AgentsView() {
   const { agents, isLoading, error, addAgent, isAddingAgent, refetch } = useAgents();
@@ -40,7 +37,7 @@ export function AgentsView() {
     {
       id: "model",
       header: "Model",
-      accessorFn: (agent) => modelLabel(agent.model),
+      accessorFn: (agent) => modelSelectionLabel(agent.model),
       cell: ({ getValue }) => <code>{String(getValue())}</code>,
       meta: { width: 260, hideOnMobile: true } satisfies ColumnMeta,
     },
@@ -85,7 +82,7 @@ export function AgentsView() {
           getRowId={(agent) => agent.name}
           rowHref={(agent) => `/agents/${encodeURIComponent(agent.name)}`}
           searchPlaceholder="Search agents..."
-          searchFn={(agent, query) => [agent.name, agent.role, agent.model].some((value) => value?.toLowerCase().includes(query))}
+          searchFn={(agent, query) => [agent.name, agent.role ?? "", modelSelectionLabel(agent.model)].some((value) => value.toLowerCase().includes(query))}
           rightSlot={<IconButton label="Refresh agents" onClick={() => void refresh()} disabled={refreshing}><ArrowClockwise className={refreshing ? "pd-spin" : ""} size={15} /></IconButton>}
           empty={<div className="pd-empty"><Atom size={24} /><strong>No agents yet</strong><span>Create the first agent for this runtime.</span><Button onClick={() => setCreateOpen(true)}>New agent</Button></div>}
         />
