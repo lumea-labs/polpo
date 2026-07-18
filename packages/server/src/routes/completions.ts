@@ -30,37 +30,37 @@
  */
 
 import { OpenAPIHono } from "@hono/zod-openapi";
-import { nanoid } from "nanoid";
 import {
-  agentMemoryScope,
-  resolveLoopSelection,
   type LoopRunStore,
-  type ModelSelection,
   type ProjectLoopConfig,
 } from "@polpo-ai/core";
 import type { ApprovalStore } from "@polpo-ai/core/approval-store";
 import type { ChatSessionInjection } from "@polpo-ai/core";
 import { chatCompletionsRoute } from "./completions/schemas.js";
-import { convertMessages, extractText } from "./completions/message-mapping.js";
-import { toAIToolChoice } from "./completions/tool-mapping.js";
 import type {
   CompletionResolvedModelInfo,
   ResolvedModelInfo,
-} from "./completions/agent-step-runner.js";
-import {
-  agentConfigForModelPrimary,
-  modelSelectionForAgent,
-  modelSelectionForResolvedModel,
 } from "./completions/agent-step-runner.js";
 import { handleProjectLoopCompletion } from "./completions/project-loop-runner.js";
 import {
   runNonStreamingChatCompletion,
   streamChatCompletion,
-  type ChatCompletionExecution,
 } from "./completions/chat-handler.js";
 import { streamChatViaRun, runNonStreamingChatViaRun } from "./completions/chat-via-run-handler.js";
+import { prepareChatCompletionExecution } from "./completions/conversation-turn.js";
 
 export { resumeProjectLoopRun } from "./completions/project-loop-runner.js";
+export {
+  buildChatRunInjection,
+  runChatTurnViaRun,
+  type ChatViaRunTurnResult,
+} from "./completions/chat-via-run-handler.js";
+export {
+  prepareChatCompletionExecution,
+  runConversationTurn,
+  type ConversationTurnResult,
+  type PreparedConversationTurn,
+} from "./completions/conversation-turn.js";
 
 // ── Route factory ──────────────────────────────────────────────────────
 
@@ -172,218 +172,39 @@ export function completionRoutes(getDeps: () => CompletionRouteDeps, apiKeys?: s
 
     // ── Parse body ──
     const body = c.req.valid("json");
-    const agentMode = !!body.agent;
-
-    // ── Resolve effective context (orchestrator vs agent-direct) ──
-    let fullSystemPrompt: string;
-    let m: ResolvedModelInfo;
-    let providerOpts: Record<string, any> | undefined;
-    let modelSelection: ModelSelection | undefined;
-    let modelToolChoice: unknown | undefined;
-    let effectiveTools: any[];
-    let effectiveToolExecutor: (name: string, args: Record<string, unknown>) => Promise<string>;
-    /**
-     * Provider-executed tools the host wants merged into the AI SDK tool
-     * palette as-is. Polpo never invokes these — they're handled inside
-     * `generateText` by the SDK / model provider (Vercel Gateway today).
-     * Keys here MUST be skipped by the manual tool-call dispatcher.
-     */
-    let extraAiTools: Record<string, any> | undefined;
-    let isInteractiveFn: ((name: string) => boolean) | undefined;
-    let projectLoopRuntime: { agentConfig: any; projectLoop: ProjectLoopConfig } | undefined;
-    /**
-     * Resource cleanup hook — set when an agent's tool resolver opens
-     * long-lived connections (today: MCP transports). Invoked exactly
-     * once after the response finishes, regardless of streaming/non-
-     * streaming/error path. Wrapped in try/catch by the caller so a
-     * misbehaving cleanup can't leak the request itself.
-     */
-    let onResponseFinished: (() => Promise<void>) | undefined;
-    // Resolved agent config captured for the execution object (F1c needs it to
-    // build the RunnerConfig for chat-via-executeRun). Undefined in orchestrator mode.
-    let resolvedAgentConfig: any;
-
-    const { aiMessages, extraSystemParts } = convertMessages(body.messages);
-
-    if (agentMode) {
-      // ── Agent-direct mode ──
-      const agents = await deps.getAgents();
-      let agentConfig = agents.find((a: any) => a.name === body.agent);
-      if (!agentConfig) {
-        return c.json({ error: { message: `Agent "${body.agent}" not found`, type: "invalid_request_error", code: "agent_not_found" } }, 404);
-      }
-      try {
-        const selection = resolveLoopSelection(agentConfig, body.loop);
-        if (selection) {
-          agentConfig = selection.agent;
-          c.header("x-loop", selection.name);
-          const assignedLoops = Array.isArray(agentConfig.assignedLoops) ? agentConfig.assignedLoops : [];
-          if (assignedLoops.includes(selection.name) && deps.getProjectLoop) {
-            const projectLoop = await deps.getProjectLoop(selection.name);
-            if (!projectLoop) throw new Error(`Assigned project loop "${selection.name}" was not found`);
-            projectLoopRuntime = { agentConfig, projectLoop };
-          }
-        }
-        // No loop selected → agent runs as-is (no overlay, no x-loop header).
-        resolvedAgentConfig = agentConfig;
-        modelToolChoice = toAIToolChoice(agentConfig.toolChoice);
-      } catch (loopErr) {
-        const msg = loopErr instanceof Error ? loopErr.message : String(loopErr);
-        return c.json({ error: { message: msg, type: "invalid_request_error", code: "loop_not_found" } }, 400 as any);
-      }
-
-      if (projectLoopRuntime) {
-        // The project loop runtime resolves model/tools per step after session setup.
-        fullSystemPrompt = "";
-        m = { provider: "polpo", contextWindow: 200_000, maxTokens: 8192, aiModel: undefined as any };
-        effectiveTools = [];
-        effectiveToolExecutor = async () => "Error: Project loop runtime has not resolved tools";
-      } else {
-      if (deps.buildRuntimePrompt) {
-        fullSystemPrompt = await deps.buildRuntimePrompt(agentConfig, {
-          mode: "chat",
-          extraSystemParts,
-          includeAgentMemory: true,
-        });
-      } else {
-        // Build system prompt via the backwards-compatible generic fallback.
-        const agentSystemPrompt = await deps.buildAgentPrompt(agentConfig);
-        const conversationalPreamble = [
-          "You are now in interactive conversation mode with the user.",
-          "Unlike task execution, you should engage in dialogue: ask clarifying questions,",
-          "explain your reasoning, and wait for user input when needed.",
-          "You still have access to all your coding tools to help the user.",
-        ].join("\n");
-
-        const basePrompt = `${conversationalPreamble}\n\n${agentSystemPrompt}`;
-        fullSystemPrompt = extraSystemParts.length > 0
-          ? `${basePrompt}\n\n## Additional context from caller\n\n${extraSystemParts.join("\n\n")}`
-          : basePrompt;
-
-        const memoryStore = deps.getMemoryStore();
-        const agentMemory = await memoryStore?.get(agentMemoryScope(agentConfig.name));
-        if (agentMemory) {
-          fullSystemPrompt += `\n\n## Your persistent memory\n\n${agentMemory}`;
-        }
-      }
-
-      // Resolve model via dep
-      const reasoning = agentConfig.reasoning ?? deps.getConfig()?.settings?.reasoning;
-      let resolved;
-      try {
-        resolved = await deps.resolveAgentModel(agentConfigForModelPrimary(agentConfig), reasoning);
-      } catch (modelErr) {
-        const msg = modelErr instanceof Error ? modelErr.message : String(modelErr);
-        return c.json({ error: { message: msg, type: "invalid_request_error" } }, 400 as any);
-      }
-      m = resolved.model;
-      providerOpts = resolved.providerOptions;
-      modelSelection = modelSelectionForAgent(agentConfig, modelSelectionForResolvedModel(m));
-
-      // Resolve tools via dep
-      const resolvedTools = await deps.resolveAgentTools(agentConfig);
-      effectiveTools = resolvedTools.tools;
-      effectiveToolExecutor = resolvedTools.executor;
-      onResponseFinished = resolvedTools.cleanup;
-      extraAiTools = resolvedTools.extraAiTools;
-      }
-    } else {
-      // ── Orchestrator mode (default) ──
-      if (!deps.resolveOrchestratorContext) {
-        return c.json({
-          error: { message: "Orchestrator mode is not available. Use agent-direct mode by specifying the 'agent' field.", type: "invalid_request_error", code: "orchestrator_unavailable" },
-        }, 501 as any);
-      }
-
-      const ctx = await deps.resolveOrchestratorContext();
-      fullSystemPrompt = extraSystemParts.length > 0
-        ? `${ctx.systemPrompt}\n\n## Additional context from caller\n\n${extraSystemParts.join("\n\n")}`
-        : ctx.systemPrompt;
-      m = ctx.model;
-      providerOpts = ctx.providerOptions;
-      modelSelection = modelSelectionForResolvedModel(m);
-      effectiveTools = ctx.tools;
-      effectiveToolExecutor = ctx.executor;
-      isInteractiveFn = ctx.isInteractive;
-    }
-
-    const completionId = `chatcmpl-${nanoid(24)}`;
-
-    // ── Session persistence ──
-    const sessionStore = deps.getSessionStore();
     const rawSessionHeader = c.req.header("x-session-id") ?? null;
-    let sessionId: string | null = rawSessionHeader === "new" ? null : rawSessionHeader;
-    if (sessionStore) {
-      if (!sessionId) {
-        const firstUserMsg = body.messages.find(m => m.role === "user");
-        const sessionTitle = firstUserMsg ? extractText(firstUserMsg.content).slice(0, 60) : undefined;
-        // Agent scope: orchestrator sessions use null, agent sessions use the agent name
-        const agentScope = agentMode ? body.agent! : null;
+    const prepared = await prepareChatCompletionExecution(deps, body, {
+      sessionId: rawSessionHeader === "new" ? null : rawSessionHeader,
+      setHeader: (name, value) => c.header(name, value),
+    });
 
-        // No session ID provided — always create a new session.
-        // Clients that want to continue a conversation must pass x-session-id explicitly.
-        sessionId = await sessionStore.create({
-          title: sessionTitle,
-          agent: agentScope ?? undefined,
-          user: body.user,
-          metadata: body.metadata,
-        });
-      }
-      // Persist user message (only the last one — earlier messages are already persisted)
-      const lastUserMsg = [...body.messages].reverse().find(m => m.role === "user");
-      if (lastUserMsg && sessionId) {
-        await sessionStore.addMessage(sessionId, "user", lastUserMsg.content);
-      }
+    if (prepared.kind === "error") {
+      return c.json(prepared.body, prepared.status as any);
     }
 
     // Expose session ID to the client so it can track which session is active
+    const sessionId = prepared.kind === "project-loop"
+      ? prepared.sessionId
+      : prepared.execution.sessionId;
     if (sessionId) {
       c.header("x-session-id", sessionId);
     }
 
-    if (projectLoopRuntime) {
+    if (prepared.kind === "project-loop") {
       return await handleProjectLoopCompletion(c, {
-        deps,
-        body,
-        completionId,
-        agentConfig: projectLoopRuntime.agentConfig,
-        projectLoop: projectLoopRuntime.projectLoop,
-        aiMessages,
-        extraSystemParts,
-        sessionStore,
-        sessionId,
+        deps: prepared.deps,
+        body: prepared.body,
+        completionId: prepared.completionId,
+        agentConfig: prepared.agentConfig,
+        projectLoop: prepared.projectLoop,
+        aiMessages: prepared.aiMessages,
+        extraSystemParts: prepared.extraSystemParts,
+        sessionStore: prepared.sessionStore,
+        sessionId: prepared.sessionId,
       }) as any;
     }
 
-    const execution: ChatCompletionExecution = {
-      deps,
-      body,
-      completionId,
-      agentConfig: resolvedAgentConfig,
-      agentMode,
-      fullSystemPrompt,
-      m,
-      providerOpts,
-      modelSelection,
-      modelToolChoice,
-      effectiveTools,
-      effectiveToolExecutor,
-      extraAiTools,
-      isInteractiveFn,
-      aiMessages,
-      sessionStore,
-      sessionId,
-      onResponseFinished,
-    };
-
-    // Route agent chat through the shared executeRun lifecycle + loop-engine
-    // when enabled and the host provides the driver. Project-loop runs already
-    // returned above because they use their own deterministic loop runtime.
-    const viaRun =
-      deps.getConfig()?.settings?.chatExecution === "run" &&
-      !!deps.runChatViaRun &&
-      agentMode &&
-      !projectLoopRuntime;
+    const { execution, viaRun } = prepared;
     if (viaRun) {
       return (body.stream
         ? await streamChatViaRun(c, execution)

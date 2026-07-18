@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import { completionRoutes, type CompletionRouteDeps } from "../completions.js";
+import { completionRoutes, runConversationTurn, type CompletionRouteDeps } from "../completions.js";
+import { runChatTurnViaRun } from "./chat-via-run-handler.js";
 
 function parseSse(body: string): any[] {
   return body
@@ -45,6 +46,166 @@ function baseDeps(overrides: Partial<CompletionRouteDeps> = {}): CompletionRoute
 }
 
 describe("chat via Run driver", () => {
+  it("prepares a non-HTTP conversation turn from completion route deps", async () => {
+    const onCompletionFinished = vi.fn();
+    const buildRuntimePrompt = vi.fn(async () => "channel-runtime-prompt");
+    const updateMessage = vi.fn(async () => true);
+    let messageIndex = 0;
+    const sessionStore = {
+      create: vi.fn(async () => "channel-session-1"),
+      addMessage: vi.fn(async (_sessionId: string, role: string, content: unknown) => ({
+        id: `message-${++messageIndex}`,
+        role,
+        content,
+      })),
+      updateMessage,
+    };
+    const runChatViaRun = vi.fn(async (inject: any, hooks: any) => {
+      expect(inject.systemPrompt).toBe("channel-runtime-prompt");
+      expect(inject.seedMessages).toEqual([{ role: "user", content: "hello from slack" }]);
+      hooks.onEvent({ type: "text-delta", text: "reply to slack" });
+      hooks.onEvent({
+        type: "usage",
+        usage: { inputTokens: 6, outputTokens: 3, totalTokens: 9 },
+      });
+      return { status: "completed", result: { exitCode: 0, stdout: "reply to slack", stderr: "" } };
+    });
+    const deps = baseDeps({
+      buildRuntimePrompt,
+      getSessionStore: () => sessionStore,
+      onCompletionFinished,
+      runChatViaRun,
+    });
+
+    const result = await runConversationTurn(deps, {
+      body: {
+        agent: "agent-1",
+        stream: false,
+        user: "slack:T1:U1",
+        metadata: {
+          source: "channel",
+          provider: "slack",
+          channelId: "channel-1",
+        },
+        messages: [{ role: "user", content: "hello from slack" }],
+      },
+    });
+
+    expect(result).toMatchObject({
+      text: "reply to slack",
+      sessionId: "channel-session-1",
+      runStatus: "completed",
+      usage: { inputTokens: 6, outputTokens: 3, totalTokens: 9 },
+    });
+    expect(sessionStore.create).toHaveBeenCalledWith({
+      title: "hello from slack",
+      agent: "agent-1",
+      user: "slack:T1:U1",
+      metadata: {
+        source: "channel",
+        provider: "slack",
+        channelId: "channel-1",
+      },
+    });
+    expect(sessionStore.addMessage).toHaveBeenNthCalledWith(
+      1,
+      "channel-session-1",
+      "user",
+      "hello from slack",
+    );
+    expect(updateMessage).toHaveBeenCalledWith(
+      "channel-session-1",
+      "message-2",
+      "reply to slack",
+      [],
+    );
+    expect(buildRuntimePrompt).toHaveBeenCalledWith(
+      expect.objectContaining({ name: "agent-1" }),
+      {
+        mode: "chat",
+        extraSystemParts: [],
+        includeAgentMemory: true,
+      },
+    );
+    expect(onCompletionFinished).toHaveBeenCalledWith(expect.objectContaining({
+      agent: "agent-1",
+      sessionId: "channel-session-1",
+      user: "slack:T1:U1",
+    }));
+  });
+
+  it("runs a non-HTTP chat turn through the same Run lifecycle", async () => {
+    const onCompletionFinished = vi.fn();
+    const updateMessage = vi.fn(async () => true);
+    const sessionStore = {
+      addMessage: vi.fn(async (_sessionId: string, role: string, content: unknown) => ({
+        id: role === "assistant" ? "assistant-message" : "user-message",
+        role,
+        content,
+      })),
+      updateMessage,
+    };
+    const deps = baseDeps({
+      getSessionStore: () => sessionStore,
+      onCompletionFinished,
+      runChatViaRun: async (_inject, hooks) => {
+        hooks.onEvent({ type: "text-delta", text: "hello from channel" });
+        hooks.onEvent({
+          type: "usage",
+          usage: { inputTokens: 11, outputTokens: 5, totalTokens: 16 },
+          providerMetadata: { gateway: { generationId: "gen_channel" } },
+        });
+        return {
+          status: "completed",
+          result: { exitCode: 0, stdout: "hello from channel", stderr: "" },
+        };
+      },
+    });
+
+    const result = await runChatTurnViaRun({
+      deps,
+      body: { agent: "agent-1", user: "slack:U123" },
+      completionId: "chatcmpl-channel",
+      agentConfig: { name: "agent-1", role: "Test agent", model: "mock" },
+      agentMode: true,
+      fullSystemPrompt: "You are a test agent.",
+      m: {
+        id: "mock-model",
+        name: "Mock Model",
+        provider: "mock",
+        runtimeMode: "provider",
+        aiModel: {} as any,
+        contextWindow: 200_000,
+        maxTokens: 8192,
+      },
+      modelSelection: { primary: "mock-model", fallbacks: [] },
+      effectiveTools: [],
+      effectiveToolExecutor: async () => "ok",
+      aiMessages: [{ role: "user", content: "hello" }],
+      sessionStore,
+      sessionId: "channel-session-1",
+    });
+
+    expect(result).toMatchObject({
+      text: "hello from channel",
+      usage: { inputTokens: 11, outputTokens: 5, totalTokens: 16 },
+      providerMetadata: { gateway: { generationId: "gen_channel" } },
+      runStatus: "completed",
+    });
+    expect(updateMessage).toHaveBeenCalledWith(
+      "channel-session-1",
+      "assistant-message",
+      "hello from channel",
+      [],
+    );
+    expect(onCompletionFinished).toHaveBeenCalledWith(expect.objectContaining({
+      usage: { inputTokens: 11, outputTokens: 5, totalTokens: 16 },
+      agent: "agent-1",
+      sessionId: "channel-session-1",
+      user: "slack:U123",
+    }));
+  });
+
   it("uses the host runtime prompt assembler for chat Run injection", async () => {
     const buildRuntimePrompt = vi.fn(async () => "host-composed-runtime-prompt");
     const runChatViaRun = vi.fn(async (inject: any, hooks: any) => {
