@@ -61,6 +61,11 @@ import {
 import { streamChatViaRun, runNonStreamingChatViaRun } from "./completions/chat-via-run-handler.js";
 
 export { resumeProjectLoopRun } from "./completions/project-loop-runner.js";
+export {
+  buildChatRunInjection,
+  runChatTurnViaRun,
+  type ChatViaRunTurnResult,
+} from "./completions/chat-via-run-handler.js";
 
 // ── Route factory ──────────────────────────────────────────────────────
 

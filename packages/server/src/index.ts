@@ -19,7 +19,14 @@ export { scheduleRoutes } from "./routes/schedules.js";
 export { watcherRoutes } from "./routes/watchers.js";
 export { stateRoutes } from "./routes/state.js";
 export { healthRoutes } from "./routes/health.js";
-export { completionRoutes, resumeProjectLoopRun, type CompletionRouteDeps } from "./routes/completions.js";
+export {
+  completionRoutes,
+  resumeProjectLoopRun,
+  buildChatRunInjection,
+  runChatTurnViaRun,
+  type ChatViaRunTurnResult,
+  type CompletionRouteDeps,
+} from "./routes/completions.js";
 export { agentRoutes } from "./routes/agents.js";
 export { loopRoutes, type LoopRouteDeps } from "./routes/loops.js";
 export { loopRunRoutes, type LoopRunRouteDeps } from "./routes/loop-runs.js";

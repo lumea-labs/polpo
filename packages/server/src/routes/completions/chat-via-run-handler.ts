@@ -42,7 +42,7 @@ function firstUserText(aiMessages: any[]): string {
 }
 
 /** Pack the resolved chat inputs into the engine injection. */
-function buildInjection(execution: ChatCompletionExecution): ChatSessionInjection {
+export function buildChatRunInjection(execution: ChatCompletionExecution): ChatSessionInjection {
   const {
     deps,
     agentConfig,
@@ -95,6 +95,17 @@ interface DriverState {
   lastProviderMetadata: Record<string, unknown> | undefined;
   clientReturn: { id: string; name: string; arguments: unknown } | undefined;
   errorEvent: Record<string, unknown> | undefined;
+}
+
+export interface ChatViaRunTurnResult {
+  text: string;
+  toolCalls: any[];
+  usage: { inputTokens: number; outputTokens: number; totalTokens: number };
+  providerMetadata?: Record<string, unknown>;
+  clientToolCall?: { id: string; name: string; arguments: unknown };
+  error?: { message: string; type: string; code?: string; param?: unknown };
+  runStatus: string;
+  runResult: { exitCode: number; stdout: string; stderr: string };
 }
 
 function makeOnEvent(
@@ -243,7 +254,7 @@ async function finishCommon(
 /** Streaming chat completion via executeRun. */
 export function streamChatViaRun(c: Context, execution: ChatCompletionExecution) {
   const { deps, body, completionId, m, sessionStore, sessionId } = execution;
-  const inject = buildInjection(execution);
+  const inject = buildChatRunInjection(execution);
 
   return streamSSE(c, async (stream) => {
     const abortController = new AbortController();
@@ -314,7 +325,7 @@ export function streamChatViaRun(c: Context, execution: ChatCompletionExecution)
 /** Non-streaming chat completion via executeRun. */
 export async function runNonStreamingChatViaRun(c: Context, execution: ChatCompletionExecution) {
   const { deps, body, completionId, m, sessionStore, sessionId } = execution;
-  const inject = buildInjection(execution);
+  const inject = buildChatRunInjection(execution);
 
   let assistantMsgId: string | null = null;
   if (sessionStore && sessionId) {
@@ -359,4 +370,72 @@ export async function runNonStreamingChatViaRun(c: Context, execution: ChatCompl
   } finally {
     await finishCommon(execution, state, assistantMsgId, { emptyFallback: "[Response interrupted]" });
   }
+}
+
+/**
+ * Non-HTTP chat turn via executeRun.
+ *
+ * This is the channel/adapter entrypoint: hosts can route Slack, email, or
+ * other inbound messages through the same chat-via-run lifecycle without
+ * going through Hono/SSE and without duplicating model/tool execution.
+ */
+export async function runChatTurnViaRun(
+  execution: ChatCompletionExecution,
+  hooks: { onRunEvent?: (e: Record<string, unknown>) => void; signal?: AbortSignal } = {},
+): Promise<ChatViaRunTurnResult> {
+  const { deps, body, m, sessionStore, sessionId } = execution;
+  if (!deps.runChatViaRun) {
+    throw new Error("runChatViaRun dependency is required");
+  }
+
+  const inject = buildChatRunInjection(execution);
+  let assistantMsgId: string | null = null;
+  if (sessionStore && sessionId) {
+    const placeholder = await sessionStore.addMessage(sessionId, "assistant", "");
+    assistantMsgId = placeholder.id;
+  }
+
+  const state = newState();
+  const reduceEvent = makeOnEvent(execution, state, () => { /* no SSE in adapter mode */ });
+  let runStatus = "failed";
+  let runResult = { exitCode: 1, stdout: "", stderr: "" };
+
+  try {
+    const outcome = await deps.runChatViaRun(inject, {
+      signal: hooks.signal,
+      onEvent: (event) => {
+        hooks.onRunEvent?.(event);
+        reduceEvent(event);
+      },
+    });
+    runStatus = outcome.status;
+    runResult = outcome.result;
+    captureRunFailure(state, outcome);
+  } catch (err) {
+    state.errorEvent = (err as Record<string, unknown> | undefined) ?? { message: String(err) };
+    const message = err instanceof Error ? err.message : String(err);
+    runResult = { exitCode: 1, stdout: "", stderr: message };
+  } finally {
+    await finishCommon(execution, state, assistantMsgId, { emptyFallback: "[Response interrupted]" });
+  }
+
+  let error: ChatViaRunTurnResult["error"] | undefined;
+  if (state.errorEvent) {
+    const notFound = modelNotFoundEnvelope(state.errorEvent, m?.id, body.agent);
+    error = notFound ?? modelErrorEnvelope(state.errorEvent);
+    if (!notFound && !state.finalText) {
+      state.finalText = `Model request failed: ${error.message}`;
+    }
+  }
+
+  return {
+    text: state.finalText,
+    toolCalls: state.toolCallsAccum,
+    usage: state.totalUsage,
+    providerMetadata: state.lastProviderMetadata,
+    clientToolCall: state.clientReturn,
+    error,
+    runStatus,
+    runResult,
+  };
 }
