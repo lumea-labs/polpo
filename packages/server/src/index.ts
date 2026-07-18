@@ -23,8 +23,12 @@ export {
   completionRoutes,
   resumeProjectLoopRun,
   buildChatRunInjection,
+  prepareChatCompletionExecution,
+  runConversationTurn,
   runChatTurnViaRun,
+  type ConversationTurnResult,
   type ChatViaRunTurnResult,
+  type PreparedConversationTurn,
   type CompletionRouteDeps,
 } from "./routes/completions.js";
 export { agentRoutes } from "./routes/agents.js";
