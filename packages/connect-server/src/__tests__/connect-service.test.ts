@@ -30,6 +30,20 @@ const apiKeyProvider: ConnectorProviderDefinition = {
   scopes: [{ id: "use" }],
 };
 
+const mcpProvider: ConnectorProviderDefinition = {
+  id: "mcp_url",
+  name: "MCP URL",
+  auth: {
+    type: "mcp",
+    auth: "bearer",
+    defaultScopes: ["tools:read", "tools:call"],
+  },
+  scopes: [
+    { id: "tools:read" },
+    { id: "tools:call", dangerous: true },
+  ],
+};
+
 describe("connect service", () => {
   it("creates API-key connections and returns runtime tokens without leaking metadata", async () => {
     const { service, secrets } = createHarness();
@@ -60,6 +74,97 @@ describe("connect service", () => {
     await expect(service.createApiKeyConnection({ providerId: "custom_api", apiKey: "sk", scopes: ["admin"] })).rejects.toMatchObject({
       code: "invalid_scope",
     });
+  });
+
+  it("creates bearer MCP connections and resolves MCP credentials without leaking the token", async () => {
+    const { service, secrets } = createHarness();
+    const connection = await service.createMcpConnection({
+      name: "Linear MCP",
+      url: "https://mcp.linear.example/mcp",
+      auth: "bearer",
+      bearerToken: "  lin_secret  ",
+      scopes: ["tools:read", "tools:call"],
+      metadata: { serverName: "linear" },
+    });
+
+    expect(connection).toMatchObject({
+      providerId: "mcp_url",
+      authType: "mcp",
+      status: "active",
+      grantedScopes: ["tools:call", "tools:read"],
+      metadata: {
+        url: "https://mcp.linear.example/mcp",
+        transport: "http",
+        auth: "bearer",
+        serverName: "linear",
+      },
+    });
+    expect(connection).not.toHaveProperty("bearerToken");
+    expect(await secrets.getSecret(connection.secretRef!)).toEqual({
+      kind: "mcp",
+      apiKey: "lin_secret",
+      metadata: { tokenType: "Bearer" },
+    });
+    await expect(
+      service.resolveCredential({
+        connectionId: connection.id,
+        scopes: ["tools:call"],
+        subject: { type: "agent", id: "support" },
+      }),
+    ).resolves.toMatchObject({
+      kind: "mcp",
+      accessToken: "lin_secret",
+      tokenType: "Bearer",
+      providerId: "mcp_url",
+    });
+    await expect(service.getToken({ connectionId: connection.id, scopes: ["tools:call"] })).resolves.toMatchObject({
+      accessToken: "lin_secret",
+      tokenType: "Bearer",
+    });
+  });
+
+  it("creates no-auth MCP connections without storing a fake token", async () => {
+    const { service } = createHarness();
+    const connection = await service.createMcpConnection({
+      name: "Public MCP",
+      url: "https://mcp.public.example/mcp",
+      auth: "none",
+      scopes: ["tools:read"],
+    });
+
+    expect(connection.secretRef).toBeUndefined();
+    await expect(service.resolveCredential({ connectionId: connection.id, scopes: ["tools:read"] })).resolves.toMatchObject({
+      kind: "none",
+      providerId: "mcp_url",
+      scopes: ["tools:read"],
+    });
+    await expect(service.getToken({ connectionId: connection.id, scopes: ["tools:read"] })).rejects.toMatchObject({
+      code: "token_not_available",
+    });
+  });
+
+  it("validates MCP inputs and provider type", async () => {
+    const { service } = createHarness();
+    await expect(
+      service.createMcpConnection({
+        url: "https://mcp.example/mcp",
+        auth: "bearer",
+        bearerToken: " ",
+      }),
+    ).rejects.toMatchObject({ code: "invalid_request" });
+    await expect(
+      service.createMcpConnection({
+        providerId: "custom_api",
+        url: "https://mcp.example/mcp",
+        auth: "none",
+      }),
+    ).rejects.toMatchObject({ code: "unsupported_auth" });
+    await expect(
+      service.createMcpConnection({
+        url: "http://mcp.example/mcp",
+        auth: "none",
+      }),
+    ).rejects.toMatchObject({ code: "invalid_request" });
   });
 
   it("builds OAuth authorization URLs with state, PKCE, normalized scopes, and extra params", async () => {
@@ -267,7 +372,7 @@ function createHarness(input: {
   const store = new MemoryConnectStore();
   const secrets = new MemoryConnectionSecretStore();
   const service = createConnectService({
-    providers: input.providers ?? [oauthProvider, apiKeyProvider],
+    providers: input.providers ?? [oauthProvider, apiKeyProvider, mcpProvider],
     store,
     secrets,
     fetch: input.fetchImpl ?? queueFetch([]),
