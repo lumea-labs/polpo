@@ -483,7 +483,7 @@ export async function buildAgentTools(
     fs: prep.fs,
     shell: prep.shell,
   });
-  allPolpoTools.push(...await customTools.loadAssigned(agentConfig.allowedTools, vault));
+  allPolpoTools.push(...await customTools.loadAssigned(agentConfig.allowedTools));
 
   return allPolpoTools;
 }

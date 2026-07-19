@@ -3,7 +3,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { resolveAgentVault } from "../vault/index.js";
 import { NodeFileSystem } from "../adapters/node-filesystem.js";
 import { NodeShell } from "../adapters/node-shell.js";
 import { createLocalCustomToolRuntime } from "../custom-tools/runtime.js";
@@ -44,9 +43,9 @@ describe("LocalCustomToolRuntime", () => {
     const result = await runtime.run("echo_value", { value: "hello" }) as any;
     expect(result.content[0].text).toBe('{"echoed":"hello"}');
     expect(await runtime.generateExample("echo_value")).toEqual({ value: "text" });
-    expect(await runtime.loadAssigned(["read"], resolveAgentVault())).toEqual([]);
-    expect((await runtime.loadAssigned(["echo_value"], resolveAgentVault())).map((tool) => tool.name)).toEqual(["echo_value"]);
-    expect((await runtime.loadAssigned(["*"], resolveAgentVault())).map((tool) => tool.name)).toEqual(["echo_value"]);
+    expect(await runtime.loadAssigned(["read"])).toEqual([]);
+    expect((await runtime.loadAssigned(["echo_value"])).map((tool) => tool.name)).toEqual(["echo_value"]);
+    expect((await runtime.loadAssigned(["*"])).map((tool) => tool.name)).toEqual(["echo_value"]);
   });
 
   it("rejects built-in collisions and mismatched exported names", async () => {

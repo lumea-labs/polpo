@@ -1,6 +1,6 @@
 {
   "name": "@polpo-ai/connectors",
-  "version": "0.15.30",
+  "version": "0.15.31",
   "description": "Curated connector provider definitions for Polpo Connect",
   "type": "module",
   "main": "dist/index.js",

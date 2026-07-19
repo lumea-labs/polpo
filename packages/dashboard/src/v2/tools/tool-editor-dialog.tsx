@@ -51,7 +51,7 @@ export default defineTool({
     input: Type.String({ description: "The input to process" }),
   }),
   async execute(ctx, params) {
-    // ctx: { fs, shell, vault, env, workDir, polpo }
+    // ctx: { fs, shell, connections, env, workDir, polpo }
     return \`processed: \${params.input}\`;
   },
 });
@@ -80,7 +80,7 @@ export default defineTool({
 \`ctx\` injects all capabilities (no other globals):
 - ctx.fs      sandbox filesystem: readFile/writeFile/exists/readdir/mkdir/remove
 - ctx.shell   run commands: await ctx.shell.execute("ls", { cwd })
-- ctx.vault   secrets: ctx.vault.getKey("service","apiKey") — NEVER hardcode secrets
+- ctx.connections project Connections granted to this tool: ctx.connections.getToken("github") or ctx.connections.getHeaders("github")
 - ctx.env     safe environment variables
 - ctx.workDir absolute working directory in the sandbox
 - ctx.polpo   the project's Polpo SDK client
@@ -107,7 +107,14 @@ declare module "@polpo-ai/tools" {
   export interface CustomToolContext {
     fs: { readFile(p: string): Promise<string>; writeFile(p: string, c: string): Promise<void>; exists(p: string): Promise<boolean>; readdir(p: string): Promise<string[]>; mkdir(p: string): Promise<void>; remove(p: string): Promise<void> };
     shell: { execute(cmd: string, opts?: { cwd?: string; timeout?: number }): Promise<{ stdout: string; stderr: string; exitCode: number }> };
-    vault: { getKey(service: string, key: string): string | undefined; has(service: string): boolean };
+    connections: {
+      get(ref: string): { id: string; providerId: string; name?: string; authType?: string; kind?: string; scopes?: string[]; grantedScopes?: string[]; tokenType?: string; expiresAt?: string; metadata?: Record<string, unknown> } | undefined;
+      getToken(ref: string): string | undefined;
+      getKey(ref: string): string | undefined;
+      getHeaders(ref: string): Record<string, string> | undefined;
+      has(ref: string): boolean;
+      list(): Array<{ id: string; providerId: string; name?: string; authType?: string; kind?: string; scopes?: string[]; grantedScopes?: string[]; tokenType?: string; expiresAt?: string; metadata?: Record<string, unknown> }>;
+    };
     env: Record<string, string | undefined>;
     workDir: string;
     polpo: any;

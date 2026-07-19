@@ -54,9 +54,12 @@ export {
   extractCustomTool,
   loadCustomToolBundle,
   createJsonSchemaExample,
+  emptyCustomToolConnections,
 } from "./custom-tools.js";
 export type {
   CustomTool,
+  CustomToolConnection,
+  CustomToolConnections,
   CustomToolSpec,
   CustomToolContext,
   CustomToolBindContext,

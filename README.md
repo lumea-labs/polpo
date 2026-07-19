@@ -162,7 +162,7 @@ Agents get access to tools based on their configuration. Built-in tool groups:
 
 Loops are project-level deterministic graphs stored in `.polpo/loops/*.json` or authored as static `.polpo/loops/*.ts` DSL files, then assigned to agents from `.polpo/agents.json`. This avoids duplicating loop definitions across agents: a loop has `name`, `context`, `start`, and `steps`; an agent has `assignedLoops` and `defaultLoop`.
 
-Use `type: "tool"` for deterministic sandbox/tool actions without an LLM turn, and `toolChoice` on `type: "agent"` when the model should still reason but must use a tool. Secrets stay in Vault; loop JSON should only contain non-secret input, while custom tools resolve credentials with `ctx.vault`.
+Use `type: "tool"` for deterministic sandbox/tool actions without an LLM turn, and `toolChoice` on `type: "agent"` when the model should still reason but must use a tool. Secrets stay in Connections; loop JSON should only contain non-secret input, while custom tools resolve credentials with `ctx.connections`.
 
 `.polpo/loops/router-flow.json`:
 

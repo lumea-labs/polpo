@@ -24,7 +24,43 @@ import { pathToFileURL } from "node:url";
 import type { FileSystem } from "@polpo-ai/core/filesystem";
 import type { Shell } from "@polpo-ai/core/shell";
 import type { PolpoTool, ToolResult, ToolUpdateCallback } from "@polpo-ai/core";
-import type { ResolvedVault } from "./types.js";
+
+export interface CustomToolConnection {
+  id: string;
+  providerId: string;
+  name?: string;
+  authType?: string;
+  kind?: string;
+  scopes?: string[];
+  grantedScopes?: string[];
+  tokenType?: string;
+  expiresAt?: string;
+  metadata?: Record<string, unknown>;
+}
+
+export interface CustomToolConnections {
+  /** Non-secret metadata for a configured connection. */
+  get(ref: string): CustomToolConnection | undefined;
+  /** Secret access token or API key for a configured connection. */
+  getToken(ref: string): string | undefined;
+  /** Alias for API-key integrations. */
+  getKey(ref: string): string | undefined;
+  /** Ready-to-use auth headers for HTTP calls, when the credential supports them. */
+  getHeaders(ref: string): Record<string, string> | undefined;
+  has(ref: string): boolean;
+  list(): CustomToolConnection[];
+}
+
+export function emptyCustomToolConnections(): CustomToolConnections {
+  return {
+    get: () => undefined,
+    getToken: () => undefined,
+    getKey: () => undefined,
+    getHeaders: () => undefined,
+    has: () => false,
+    list: () => [],
+  };
+}
 
 /**
  * Capabilities injected into a custom tool's `execute`. Everything a tool can
@@ -35,8 +71,8 @@ export interface CustomToolContext {
   fs: FileSystem;
   /** Shell for running commands in the workspace. */
   shell: Shell;
-  /** Agent vault — resolved credentials (API keys, SMTP, …). */
-  vault: ResolvedVault;
+  /** Project Connections granted to this tool. */
+  connections: CustomToolConnections;
   /** Safe environment variables (platform secrets stripped). */
   env: Record<string, string | undefined>;
   /** Absolute working directory inside the workspace. */
