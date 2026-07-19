@@ -3,6 +3,8 @@ import type {
   ConnectSubject,
   ConnectionRecord,
   ConnectorProviderDefinition,
+  McpConnectionAuth,
+  McpConnectionTransport,
   RuntimeToken,
 } from "../types.js";
 
@@ -18,6 +20,21 @@ export interface CreateApiKeyConnectionRequest {
   scopes?: string[];
   subject?: ConnectSubject;
   name?: string;
+  projectId?: string;
+  orgId?: string;
+  metadata?: Record<string, unknown>;
+}
+
+export interface CreateMcpConnectionRequest {
+  providerId?: string;
+  name?: string;
+  url: string;
+  transport?: McpConnectionTransport;
+  auth?: McpConnectionAuth;
+  apiKey?: string;
+  bearerToken?: string;
+  scopes?: string[];
+  subject?: ConnectSubject;
   projectId?: string;
   orgId?: string;
   metadata?: Record<string, unknown>;
@@ -75,6 +92,10 @@ export class PolpoConnectClient {
 
   createApiKeyConnection(input: CreateApiKeyConnectionRequest): Promise<ConnectionRecord> {
     return this.request("POST", "/v1/connect/connections/api-key", input);
+  }
+
+  createMcpConnection(input: CreateMcpConnectionRequest): Promise<ConnectionRecord> {
+    return this.request("POST", "/v1/connect/connections/mcp", input);
   }
 
   startOAuth(input: StartOAuthRequest): Promise<StartOAuthResponse> {

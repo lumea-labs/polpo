@@ -131,6 +131,53 @@ export interface RuntimeToken {
   providerId: string;
 }
 
+export type McpConnectionTransport = "http" | "sse";
+
+export type McpConnectionAuth = "none" | "bearer";
+
+export interface McpConnectionMetadata extends Record<string, unknown> {
+  url: string;
+  transport: McpConnectionTransport;
+  auth: McpConnectionAuth;
+  serverName?: string;
+}
+
+export type ResolvedConnectionCredential =
+  | {
+      kind: "none";
+      scopes: string[];
+      connectionId: string;
+      providerId: string;
+      metadata?: Record<string, unknown>;
+    }
+  | {
+      kind: "api_key";
+      value: string;
+      scopes: string[];
+      connectionId: string;
+      providerId: string;
+      metadata?: Record<string, unknown>;
+    }
+  | {
+      kind: "oauth2";
+      accessToken: string;
+      tokenType: string;
+      expiresAt?: string;
+      scopes: string[];
+      connectionId: string;
+      providerId: string;
+      metadata?: Record<string, unknown>;
+    }
+  | {
+      kind: "mcp";
+      accessToken?: string;
+      tokenType?: string;
+      scopes: string[];
+      connectionId: string;
+      providerId: string;
+      metadata?: McpConnectionMetadata;
+    };
+
 export interface StoredConnectionSecret {
   kind: "api_key" | "oauth2" | "mcp";
   apiKey?: string;

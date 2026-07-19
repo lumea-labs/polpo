@@ -9,7 +9,11 @@ import {
   type ConnectSubject,
   type ConnectionRecord,
   type ConnectorProviderDefinition,
+  type McpConnectionAuth,
+  type McpConnectionMetadata,
+  type McpConnectionTransport,
   type OAuth2AuthConfig,
+  type ResolvedConnectionCredential,
   type RuntimeToken,
   type StoredConnectionSecret,
   type TokenSet,
@@ -26,6 +30,7 @@ export interface CreateConnectServiceOptions {
   now?: () => Date;
   tokenRefreshSkewMs?: number;
   oauthStateTtlMs?: number;
+  allowInsecureLocalMcpUrls?: boolean;
 }
 
 export interface CreateApiKeyConnectionInput {
@@ -34,6 +39,21 @@ export interface CreateApiKeyConnectionInput {
   scopes?: string[];
   subject?: ConnectSubject;
   name?: string;
+  projectId?: string;
+  orgId?: string;
+  metadata?: Record<string, unknown>;
+}
+
+export interface CreateMcpConnectionInput {
+  providerId?: string;
+  name?: string;
+  url: string;
+  transport?: McpConnectionTransport;
+  auth?: McpConnectionAuth;
+  apiKey?: string;
+  bearerToken?: string;
+  scopes?: string[];
+  subject?: ConnectSubject;
   projectId?: string;
   orgId?: string;
   metadata?: Record<string, unknown>;
@@ -71,6 +91,8 @@ export interface GetTokenInput {
   forceRefresh?: boolean;
 }
 
+export type ResolveConnectionCredentialInput = GetTokenInput;
+
 export interface RevokeConnectionInput {
   connectionId: string;
 }
@@ -79,8 +101,10 @@ export interface ConnectService {
   listProviders(): ConnectorProviderDefinition[];
   listConnections(filter?: Parameters<ConnectStore["listConnections"]>[0]): Promise<ConnectionRecord[]>;
   createApiKeyConnection(input: CreateApiKeyConnectionInput): Promise<ConnectionRecord>;
+  createMcpConnection(input: CreateMcpConnectionInput): Promise<ConnectionRecord>;
   startOAuth(input: StartOAuthInput): Promise<StartOAuthResult>;
   completeOAuth(input: CompleteOAuthInput): Promise<ConnectionRecord>;
+  resolveCredential(input: ResolveConnectionCredentialInput): Promise<ResolvedConnectionCredential>;
   getToken(input: GetTokenInput): Promise<RuntimeToken>;
   revokeConnection(input: RevokeConnectionInput): Promise<ConnectionRecord>;
 }
@@ -128,6 +152,63 @@ export function createConnectService(options: CreateConnectServiceOptions): Conn
         createdAt: now().toISOString(),
         updatedAt: now().toISOString(),
         metadata: input.metadata,
+      });
+    },
+
+    async createMcpConnection(input) {
+      const provider = registry.require(input.providerId ?? "mcp_url");
+      if (provider.auth.type !== "mcp") {
+        throw new ConnectError("unsupported_auth", `Provider "${provider.id}" does not use MCP auth`);
+      }
+
+      const transport = input.transport ?? "http";
+      if (transport !== "http" && transport !== "sse") {
+        throw new ConnectError("invalid_request", "MCP transport must be http or sse");
+      }
+
+      const auth = input.auth ?? (provider.auth.auth === "none" ? "none" : "bearer");
+      if (auth !== "none" && auth !== "bearer") {
+        throw new ConnectError("invalid_request", "MCP auth must be none or bearer");
+      }
+
+      const url = normalizeMcpUrl(input.url, options.allowInsecureLocalMcpUrls === true);
+      const apiKey = (input.bearerToken ?? input.apiKey ?? "").trim();
+      if (auth === "bearer" && !apiKey) {
+        throw new ConnectError("invalid_request", "MCP bearer auth requires a token");
+      }
+
+      const grantedScopes = assertAllowedScopes(provider, input.scopes ?? provider.auth.defaultScopes);
+      const id = createId("conn");
+      const secretRef = auth === "bearer" ? createId("connsec") : undefined;
+      const metadata: McpConnectionMetadata = {
+        ...(input.metadata ?? {}),
+        url,
+        transport,
+        auth,
+      };
+
+      if (secretRef) {
+        await options.secrets.setSecret(secretRef, {
+          kind: "mcp",
+          apiKey,
+          metadata: { tokenType: "Bearer" },
+        });
+      }
+
+      return options.store.upsertConnection({
+        id,
+        providerId: provider.id,
+        name: input.name,
+        projectId: input.projectId,
+        orgId: input.orgId,
+        owner: input.subject,
+        authType: "mcp",
+        status: "active",
+        grantedScopes,
+        secretRef,
+        createdAt: now().toISOString(),
+        updatedAt: now().toISOString(),
+        metadata,
       });
     },
 
@@ -222,7 +303,7 @@ export function createConnectService(options: CreateConnectServiceOptions): Conn
       });
     },
 
-    async getToken(input) {
+    async resolveCredential(input) {
       const connection = await options.store.getConnection(input.connectionId);
       if (!connection) {
         throw new ConnectError("connection_not_found", `Connection not found: ${input.connectionId}`);
@@ -242,6 +323,15 @@ export function createConnectService(options: CreateConnectServiceOptions): Conn
         throw new ConnectError("policy_denied", `Connection use denied by policy: ${connection.id}`);
       }
       if (!connection.secretRef) {
+        if (connection.authType === "mcp" && readMcpAuthMode(connection.metadata) === "none") {
+          return {
+            kind: "none",
+            scopes,
+            connectionId: connection.id,
+            providerId: connection.providerId,
+            metadata: connection.metadata,
+          };
+        }
         throw new ConnectError("secret_not_found", `Connection has no secret reference: ${connection.id}`);
       }
 
@@ -253,11 +343,25 @@ export function createConnectService(options: CreateConnectServiceOptions): Conn
       if (secret.kind === "api_key") {
         if (!secret.apiKey) throw new ConnectError("token_not_available", "API-key connection secret is empty");
         return {
-          accessToken: secret.apiKey,
-          tokenType: "ApiKey",
-          scopes: connection.grantedScopes,
+          kind: "api_key",
+          value: secret.apiKey,
+          scopes,
           connectionId: connection.id,
           providerId: connection.providerId,
+          metadata: connection.metadata,
+        };
+      }
+
+      if (secret.kind === "mcp") {
+        if (!secret.apiKey) throw new ConnectError("token_not_available", "MCP connection secret is empty");
+        return {
+          kind: "mcp",
+          accessToken: secret.apiKey,
+          tokenType: readTokenType(secret),
+          scopes,
+          connectionId: connection.id,
+          providerId: connection.providerId,
+          metadata: connection.metadata as McpConnectionMetadata | undefined,
         };
       }
 
@@ -283,12 +387,50 @@ export function createConnectService(options: CreateConnectServiceOptions): Conn
       }
 
       return {
+        kind: "oauth2",
         accessToken: tokens.accessToken,
         tokenType: tokens.tokenType ?? "Bearer",
         expiresAt: tokens.expiresAt,
-        scopes: tokens.scopes ?? connection.grantedScopes,
+        scopes: tokens.scopes ?? scopes,
         connectionId: connection.id,
         providerId: connection.providerId,
+        metadata: connection.metadata,
+      };
+    },
+
+    async getToken(input) {
+      const credential = await this.resolveCredential(input);
+      if (credential.kind === "none") {
+        throw new ConnectError("token_not_available", "Connection does not require a runtime token");
+      }
+      if (credential.kind === "api_key") {
+        return {
+          accessToken: credential.value,
+          tokenType: "ApiKey",
+          scopes: credential.scopes,
+          connectionId: credential.connectionId,
+          providerId: credential.providerId,
+        };
+      }
+      if (credential.kind === "mcp") {
+        if (!credential.accessToken) {
+          throw new ConnectError("token_not_available", "MCP connection does not contain a bearer token");
+        }
+        return {
+          accessToken: credential.accessToken,
+          tokenType: credential.tokenType ?? "Bearer",
+          scopes: credential.scopes,
+          connectionId: credential.connectionId,
+          providerId: credential.providerId,
+        };
+      }
+      return {
+        accessToken: credential.accessToken,
+        tokenType: credential.tokenType,
+        expiresAt: credential.expiresAt,
+        scopes: credential.scopes,
+        connectionId: credential.connectionId,
+        providerId: credential.providerId,
       };
     },
 
@@ -366,6 +508,40 @@ function normalizeTokenSet(payload: ProviderTokenResponse, scopes: string[], now
 function shouldRefresh(tokens: TokenSet, now: Date, skewMs: number): boolean {
   if (!tokens.expiresAt) return false;
   return new Date(tokens.expiresAt).getTime() - skewMs <= now.getTime();
+}
+
+function normalizeMcpUrl(input: string, allowInsecureLocal: boolean): string {
+  const value = input.trim();
+  if (!value) {
+    throw new ConnectError("invalid_request", "MCP server URL is required");
+  }
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new ConnectError("invalid_request", "MCP server URL must be absolute");
+  }
+  if (url.username || url.password) {
+    throw new ConnectError("invalid_request", "MCP server URL cannot contain inline credentials");
+  }
+  if (url.protocol === "https:") return url.toString();
+  if (allowInsecureLocal && url.protocol === "http:" && isLocalHost(url.hostname)) {
+    return url.toString();
+  }
+  throw new ConnectError("invalid_request", "MCP server URL must use HTTPS");
+}
+
+function isLocalHost(hostname: string): boolean {
+  return hostname === "localhost" || hostname === "127.0.0.1" || hostname.endsWith(".localhost");
+}
+
+function readMcpAuthMode(metadata: Record<string, unknown> | undefined): McpConnectionAuth {
+  return metadata?.auth === "none" ? "none" : "bearer";
+}
+
+function readTokenType(secret: StoredConnectionSecret): string {
+  const tokenType = secret.metadata?.tokenType;
+  return typeof tokenType === "string" && tokenType.trim() ? tokenType.trim() : "Bearer";
 }
 
 function createId(prefix: string): string {
