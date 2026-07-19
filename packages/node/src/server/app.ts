@@ -137,7 +137,7 @@ export function createApp(orchestrator: Orchestrator, sseBridge: SSEBridge, opts
       const vaultEntries = await o.getVaultStore()?.getAllForAgent(agentConfig.name);
       const vault = resolveAgentVault(vaultEntries);
       const tools: any[] = createSystemTools(o.getAgentWorkDir(), agentConfig.allowedTools, agentConfig.allowedPaths, undefined, vault, o.getFs(), o.getShell());
-      tools.push(...await customTools().loadAssigned(agentConfig.allowedTools, vault));
+      tools.push(...await customTools().loadAssigned(agentConfig.allowedTools));
       const memoryStore = o.getMemoryStore();
       if (memoryStore) {
         const memoryTools = createMemoryTools(memoryStore, agentConfig.name);

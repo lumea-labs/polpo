@@ -8,12 +8,13 @@ import {
   bindCustomTool,
   createJsonSchemaExample,
   createCustomToolsStore,
+  emptyCustomToolConnections,
   extractCustomTool,
   safeEnv,
   TOOL_CATALOG,
   type CustomToolMeta,
+  type CustomToolConnections,
   type CustomToolsStore,
-  type ResolvedVault,
 } from "@polpo-ai/tools";
 import type { PolpoTool } from "@polpo-ai/core";
 import type { FileSystem } from "@polpo-ai/core/filesystem";
@@ -33,6 +34,7 @@ type RuntimeOptions = {
   workDir: string;
   fs: FileSystem;
   shell: Shell;
+  connections?: CustomToolConnections;
 };
 
 function sourceHash(source: string): string {
@@ -161,30 +163,29 @@ export class LocalCustomToolRuntime implements CustomToolDeployer, CustomToolRun
     return deployed.bundle;
   }
 
-  async load(name: string, vault: ResolvedVault): Promise<PolpoTool> {
+  async load(name: string, connections: CustomToolConnections = this.options.connections ?? emptyCustomToolConnections()): Promise<PolpoTool> {
     const bundle = await this.ensureDeployed(name);
     const tool = extractCustomTool(await this.importBundle(name, bundle, false));
     return bindCustomTool(tool, {
       fs: this.options.fs,
       shell: this.options.shell,
-      vault,
+      connections,
       env: safeEnv(),
       workDir: this.options.workDir,
     });
   }
 
-  async loadAssigned(allowedTools: string[] | undefined, vault: ResolvedVault): Promise<PolpoTool[]> {
+  async loadAssigned(allowedTools: string[] | undefined, connections?: CustomToolConnections): Promise<PolpoTool[]> {
     if (!allowedTools?.length) return [];
     const available = await this.store.list();
     const selected = allowedTools.includes("*")
       ? available
       : available.filter((name) => allowedTools.includes(name));
-    return Promise.all(selected.map((name) => this.load(name, vault)));
+    return Promise.all(selected.map((name) => this.load(name, connections)));
   }
 
   async run(name: string, args: Record<string, unknown>): Promise<unknown> {
-    const { resolveAgentVault } = await import("../vault/index.js");
-    const tool = await this.load(name, resolveAgentVault());
+    const tool = await this.load(name);
     return tool.execute(`tool-test-${Date.now()}`, args);
   }
 

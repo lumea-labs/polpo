@@ -25,6 +25,7 @@ import {
   extractCustomTool,
   loadCustomToolBundle,
   createJsonSchemaExample,
+  emptyCustomToolConnections,
   type CustomTool,
   type CustomToolContext,
 } from "../custom-tools.js";
@@ -34,7 +35,7 @@ function fakeCtx(overrides: Partial<CustomToolContext> = {}): Omit<CustomToolCon
   return {
     fs: { marker: "fs" } as any,
     shell: { marker: "shell" } as any,
-    vault: { marker: "vault" } as any,
+    connections: emptyCustomToolConnections(),
     env: { FOO: "bar" },
     workDir: "/work",
     polpo: { marker: "polpo" },
@@ -192,7 +193,7 @@ describe("bindCustomTool", () => {
     expect(res).toEqual({ content: [{ type: "text", text: "echo: hi" }], details: null });
   });
 
-  it("injects the full ctx (fs/shell/vault/env/workDir/polpo) plus signal & onUpdate", async () => {
+  it("injects the full ctx (fs/shell/connections/env/workDir/polpo) plus signal & onUpdate", async () => {
     let received: any;
     const t = defineTool({
       name: "spy",
@@ -209,7 +210,8 @@ describe("bindCustomTool", () => {
     await pt.execute("c", { msg: "x" }, ctrl.signal, onUpdate);
     expect(received.fs).toEqual({ marker: "fs" });
     expect(received.shell).toEqual({ marker: "shell" });
-    expect(received.vault).toEqual({ marker: "vault" });
+    expect(received.connections.has("github")).toBe(false);
+    expect(received.connections.getToken("github")).toBeUndefined();
     expect(received.env).toEqual({ FOO: "bar" });
     expect(received.workDir).toBe("/work");
     expect(received.polpo).toEqual({ marker: "polpo" });
