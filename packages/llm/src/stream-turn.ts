@@ -76,6 +76,11 @@ export function normalizeResponseMessagesForHistory(responseMessages: unknown): 
   });
 }
 
+function normalizeToolCallInput<TOOLS extends ToolSet>(toolCall: TypedToolCall<TOOLS>): TypedToolCall<TOOLS> {
+  if ("input" in toolCall && toolCall.input != null) return toolCall;
+  return { ...toolCall, input: {} } as TypedToolCall<TOOLS>;
+}
+
 export async function streamModelTurn<TOOLS extends ToolSet = ToolSet>(
   input: StreamModelTurnInput<TOOLS>,
   onEvent?: (event: ModelTurnEvent<TOOLS>) => void | Promise<void>,
@@ -182,7 +187,7 @@ export async function streamModelTurn<TOOLS extends ToolSet = ToolSet>(
 
   return {
     text,
-    toolCalls,
+    toolCalls: toolCalls.map(normalizeToolCallInput),
     toolResults,
     usage,
     totalUsage,

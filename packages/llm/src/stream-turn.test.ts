@@ -123,4 +123,31 @@ describe("streamModelTurn", () => {
     expect(result.toolCalls[0]?.input).toEqual({ command: "pwd" });
     expect(result.responseMessages.length).toBeGreaterThan(0);
   });
+
+  it("normalizes no-argument tool calls returned by the stream result", async () => {
+    const model = mockModel([
+      { type: "stream-start", warnings: [] },
+      { type: "tool-call", toolCallId: "call_1", toolName: "tool_list", input: undefined },
+      { type: "finish", finishReason: { unified: "tool-calls", raw: undefined }, usage: usage() },
+    ]);
+
+    const result = await streamModelTurn({
+      model,
+      messages: [{ role: "user", content: "List tools" }],
+      tools: {
+        tool_list: {
+          description: "List available tools",
+          inputSchema: jsonSchema({
+            type: "object",
+            properties: {},
+            additionalProperties: false,
+          }),
+        },
+      },
+    });
+
+    expect(result.toolCalls).toHaveLength(1);
+    expect(result.toolCalls[0]?.toolName).toBe("tool_list");
+    expect(result.toolCalls[0]?.input).toEqual({});
+  });
 });
