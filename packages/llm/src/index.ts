@@ -136,6 +136,7 @@ export {
 // ─── Model Turn Primitive ───────────────────────────
 export {
   streamModelTurn,
+  normalizeResponseMessagesForHistory,
 } from "./stream-turn.js";
 export type {
   ModelTurnEvent,

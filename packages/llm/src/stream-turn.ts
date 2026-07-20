@@ -49,6 +49,33 @@ export type StreamModelTurnInput<TOOLS extends ToolSet = ToolSet> = {
   abortSignal?: AbortSignal;
 };
 
+export function normalizeResponseMessagesForHistory(responseMessages: unknown): ModelMessage[] {
+  if (!Array.isArray(responseMessages)) return [];
+
+  return responseMessages.map((message) => {
+    if (!message || typeof message !== "object") return message as ModelMessage;
+
+    const record = message as { content?: unknown };
+    if (!Array.isArray(record.content)) return message as ModelMessage;
+
+    let changed = false;
+    const normalizedContent = record.content.map((part) => {
+      if (!part || typeof part !== "object") return part;
+
+      const partRecord = part as { type?: unknown; input?: unknown };
+      if (partRecord.type !== "tool-call") return part;
+      if ("input" in partRecord && partRecord.input != null) return part;
+
+      changed = true;
+      return { ...(part as Record<string, unknown>), input: {} };
+    });
+
+    return changed
+      ? ({ ...(message as Record<string, unknown>), content: normalizedContent } as ModelMessage)
+      : (message as ModelMessage);
+  });
+}
+
 export async function streamModelTurn<TOOLS extends ToolSet = ToolSet>(
   input: StreamModelTurnInput<TOOLS>,
   onEvent?: (event: ModelTurnEvent<TOOLS>) => void | Promise<void>,
@@ -162,7 +189,7 @@ export async function streamModelTurn<TOOLS extends ToolSet = ToolSet>(
     finishReason,
     rawFinishReason,
     providerMetadata,
-    responseMessages: response?.messages ?? [],
+    responseMessages: normalizeResponseMessagesForHistory(response?.messages ?? []),
     response,
   };
 }

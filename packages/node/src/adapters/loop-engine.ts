@@ -35,7 +35,7 @@ import {
   type ModelMessage,
   type ToolSet,
 } from "ai";
-import { runModelPolicyTurn } from "@polpo-ai/llm";
+import { normalizeResponseMessagesForHistory, runModelPolicyTurn } from "@polpo-ai/llm";
 import { cleanupAgentBrowserSession } from "@polpo-ai/tools";
 import {
   LoopRunner,
@@ -313,11 +313,11 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
     // On resume the recorded history (already containing tool-call and
     // tool-result pairs from completed turns) replaces the fresh prompt —
     // side-effects replay from recorded results, they never re-execute.
-    let messages: ModelMessage[] = inject
+    let messages: ModelMessage[] = normalizeResponseMessagesForHistory(inject
       ? [...(inject.seedMessages as ModelMessage[])]
       : resume
         ? [...(resume.history as ModelMessage[])]
-        : [{ role: "user", content: buildPrompt(task) }];
+        : [{ role: "user", content: buildPrompt(task) }]);
     let lastStepText = "";
     let accumText = resume?.accumText ?? "";
     const providerToolResults = new Map<string, { content: string; isError: boolean }>();
@@ -375,8 +375,9 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
         },
       });
       if (compactionResult.compacted) {
-        messages = compactionResult.messages as ModelMessage[];
+        messages = normalizeResponseMessagesForHistory(compactionResult.messages);
       }
+      messages = normalizeResponseMessagesForHistory(messages);
 
       let stepText = "";
       const toolCalls: LoopToolCall[] = [];
@@ -538,7 +539,7 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
       }
 
       // Append the assistant message (with its tool-call parts) to history.
-      messages.push(...(turn.responseMessages as ModelMessage[]));
+      messages.push(...normalizeResponseMessagesForHistory(turn.responseMessages));
 
       // Chat parity (F1c): surface per-turn usage + provider metadata so the
       // driver can accumulate them for onCompletionFinished, matching chat.

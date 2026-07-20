@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { jsonSchema } from "ai";
 import { MockLanguageModelV3, convertArrayToReadableStream } from "ai/test";
-import { streamModelTurn, type ModelTurnEvent } from "./stream-turn.js";
+import {
+  normalizeResponseMessagesForHistory,
+  streamModelTurn,
+  type ModelTurnEvent,
+} from "./stream-turn.js";
 
 function usage() {
   return {
@@ -25,6 +29,30 @@ function mockModel(parts: unknown[]) {
 }
 
 describe("streamModelTurn", () => {
+  it("normalizes no-argument tool calls before they are stored in history", () => {
+    const messages = normalizeResponseMessagesForHistory([
+      {
+        role: "assistant",
+        content: [
+          { type: "text", text: "I will inspect tools." },
+          { type: "tool-call", toolCallId: "call_1", toolName: "skill_list" },
+          { type: "tool-call", toolCallId: "call_2", toolName: "tool_list", input: null },
+          { type: "tool-call", toolCallId: "call_3", toolName: "search", input: { query: "x" } },
+        ],
+      },
+    ]);
+
+    expect(messages[0]).toEqual({
+      role: "assistant",
+      content: [
+        { type: "text", text: "I will inspect tools." },
+        { type: "tool-call", toolCallId: "call_1", toolName: "skill_list", input: {} },
+        { type: "tool-call", toolCallId: "call_2", toolName: "tool_list", input: {} },
+        { type: "tool-call", toolCallId: "call_3", toolName: "search", input: { query: "x" } },
+      ],
+    });
+  });
+
   it("streams text events and returns response messages", async () => {
     const events: ModelTurnEvent[] = [];
     const model = mockModel([
