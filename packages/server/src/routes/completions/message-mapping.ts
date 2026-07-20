@@ -32,6 +32,34 @@ function hasModelContent(content: unknown): boolean {
   });
 }
 
+function objectInputOrEmpty(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+}
+
+function normalizeToolCallHistory(messages: unknown[]): unknown[] {
+  return messages.map((message) => {
+    if (!message || typeof message !== "object") return message;
+
+    const record = message as { content?: unknown };
+    if (!Array.isArray(record.content)) return message;
+
+    let changed = false;
+    const content = record.content.map((part) => {
+      if (!part || typeof part !== "object") return part;
+      const partRecord = part as { type?: unknown; input?: unknown };
+      if (partRecord.type !== "tool-call") return part;
+      if (partRecord.input && typeof partRecord.input === "object" && !Array.isArray(partRecord.input)) return part;
+
+      changed = true;
+      return { ...(part as Record<string, unknown>), input: {} };
+    });
+
+    return changed ? { ...(message as Record<string, unknown>), content } : message;
+  });
+}
+
 /** Resolve file content parts → text references the agent can act on with its tools. */
 function resolveFileContentParts(
   content: z.infer<typeof messageSchema>["content"],
@@ -131,7 +159,7 @@ export function convertMessages(
             type: "tool-call",
             toolCallId: call.id,
             toolName: call.function.name,
-            input,
+            input: objectInputOrEmpty(input),
           });
         }
         if (parts.length > 0) aiMessages.push({ role: "assistant", content: parts });
@@ -166,7 +194,7 @@ export async function appendModelResponseMessages(
   try {
     const responseMessages = await result.responseMessages;
     if (Array.isArray(responseMessages) && responseMessages.length > 0) {
-      messages.push(...responseMessages);
+      messages.push(...normalizeToolCallHistory(responseMessages));
       return;
     }
   } catch {
@@ -180,7 +208,7 @@ export async function appendModelResponseMessages(
       type: "tool-call",
       toolCallId: tc.toolCallId,
       toolName: tc.toolName,
-      input: tc.input,
+      input: objectInputOrEmpty(tc.input),
     });
   }
   messages.push({
