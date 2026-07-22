@@ -84,6 +84,7 @@ import type {
   ReviewerMessage,
   ReviewerResult,
   RuntimeSandboxOptions,
+  SandboxIsolation,
   ScheduleEntry,
   ScopedNotificationRules,
   SkillIndex,
@@ -176,6 +177,8 @@ export type {
   ReviewerExploration,
   ReviewerMessage,
   ReviewerResult,
+  RuntimeSandboxOptions,
+  SandboxIsolation,
   ScheduleEntry,
   ScopedNotificationRules,
   SkillIndex,
@@ -967,8 +970,10 @@ export interface ChatCompletionRequest {
   stream?: boolean;
   /** Polpo extension: target a specific project by ID. If omitted, uses the first registered project. */
   project?: string;
-  /** Ignored — Polpo uses its configured orchestrator model. */
+  /** Optional per-request model override for the selected agent. */
   model?: string;
+  /** Optional runtime sandbox policy for this chat request. */
+  sandbox?: RuntimeSandboxOptions;
   /** Session ID for conversation persistence. If omitted, server auto-selects or creates one. */
   sessionId?: string;
   /** Target a specific agent by name for direct conversation. Uses the agent's own model, system prompt, and coding tools. Omit to talk to the orchestrator (default). */

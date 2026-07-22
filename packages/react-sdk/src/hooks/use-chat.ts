@@ -13,6 +13,7 @@ import type {
   OpenTabPayload,
   ToolCallEvent,
   MessageSegment,
+  RuntimeSandboxOptions,
 } from "@polpo-ai/sdk";
 import { ChatCompletionStream } from "@polpo-ai/sdk";
 
@@ -23,6 +24,10 @@ export interface UseChatOptions {
   agent?: string;
   /** Target a project-level loop assigned to the selected agent. */
   loop?: string;
+  /** Optional per-request model override for the selected agent. */
+  model?: string;
+  /** Optional runtime sandbox policy for chat requests. */
+  sandbox?: RuntimeSandboxOptions;
   /** Resume an existing session by ID. If omitted, the server auto-creates or reuses one (30-min window). */
   sessionId?: string;
   /** Called on each streaming text chunk. */
@@ -176,6 +181,8 @@ export function useChat(options: UseChatOptions = {}): UseChatReturn {
         sessionId: sessionIdRef.current ?? undefined,
         agent: optionsRef.current.agent,
         loop: optionsRef.current.loop,
+        model: optionsRef.current.model,
+        sandbox: optionsRef.current.sandbox,
       });
       streamRef.current = stream;
 

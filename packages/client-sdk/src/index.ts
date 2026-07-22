@@ -59,6 +59,8 @@ export type {
   ReasoningLevel,
   ModelConfig,
   ModelSelection,
+  RuntimeSandboxOptions,
+  SandboxIsolation,
   ModelAllowlistEntry,
   CustomModelDef,
   ProviderConfig,

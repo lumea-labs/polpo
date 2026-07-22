@@ -101,6 +101,8 @@ export type {
   PolpoSettings,
   ReasoningLevel,
   ModelConfig,
+  RuntimeSandboxOptions,
+  SandboxIsolation,
   ModelAllowlistEntry,
   CustomModelDef,
   ProviderConfig,
