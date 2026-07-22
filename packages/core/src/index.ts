@@ -125,6 +125,8 @@ export type { Shell, ShellOptions, ShellResult } from "./shell.js";
 // ── Spawner Abstraction ─────────────────────────────────────────────────
 export type { Spawner, SpawnResult } from "./spawner.js";
 export { resolveExecutionMode } from "./execution-mode.js";
+export { resolveRuntimeSandboxOptions } from "./runtime-sandbox.js";
+export type { RuntimeSandboxOptions, SandboxIsolation } from "./runtime-sandbox.js";
 
 // ── SandboxProvider Abstraction ──────────────────────────────────────────
 export type {

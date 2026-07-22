@@ -54,12 +54,14 @@ export async function ensurePgTables(db: any): Promise<void> {
     priority              TEXT,
     side_effects          INTEGER,
     revision_count        INTEGER,
+    sandbox               JSONB,
     created_at            TEXT NOT NULL,
     updated_at            TEXT NOT NULL
   )`);
 
   // OpenAI-compat user column — additive, idempotent
   await db.execute(sql`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS "user" TEXT`);
+  await db.execute(sql`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS sandbox JSONB`);
   // Explicit per-task project loop — additive, idempotent
   await db.execute(sql`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS loop TEXT`);
 

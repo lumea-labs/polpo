@@ -5,6 +5,7 @@
 
 import type { LoopConfig, LoopToolChoice, Pipeline } from "../loop/types.js";
 import type { ModelConfig } from "./config.js";
+import type { RuntimeSandboxOptions } from "../runtime-sandbox.js";
 import type {
   BillingOwner,
   CostSource,
@@ -160,6 +161,8 @@ export interface AgentConfig {
   browserProfile?: string;
   /** Where this agent's task runs execute. Precedence: task > agent > settings. */
   executionMode?: import("./config.js").ExecutionMode;
+  /** Default runtime sandbox policy for this agent. Request/task overrides beat this. */
+  sandbox?: RuntimeSandboxOptions;
   /** Allowed recipient email domains for email_send (e.g. ["acme.com", "partner.io"]).
    *  When set, emails can only be sent to addresses in these domains.
    *  When omitted, all domains are allowed (backwards compatible). */

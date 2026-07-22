@@ -83,6 +83,7 @@ import type {
   ReviewerExploration,
   ReviewerMessage,
   ReviewerResult,
+  RuntimeSandboxOptions,
   ScheduleEntry,
   ScopedNotificationRules,
   SkillIndex,
@@ -486,6 +487,8 @@ export interface CreateTaskRequest {
   title: string;
   description: string;
   assignTo: string;
+  /** Runtime sandbox policy for this task. */
+  sandbox?: RuntimeSandboxOptions;
   /** Create task as draft (won't be picked up until queued). Default: false. */
   draft?: boolean;
   expectations?: TaskExpectation[];
@@ -502,6 +505,7 @@ export interface CreateTaskRequest {
 export interface UpdateTaskRequest {
   description?: string;
   assignTo?: string;
+  sandbox?: RuntimeSandboxOptions;
   status?: TaskStatus;
   expectations?: TaskExpectation[];
 }
@@ -642,6 +646,8 @@ export interface AddAgentRequest {
   name: string;
   role?: string;
   model?: ModelSelection;
+  /** Default runtime sandbox policy for this agent. */
+  sandbox?: RuntimeSandboxOptions;
   allowedTools?: string[];
   systemPrompt?: string;
   skills?: string[];
@@ -669,6 +675,7 @@ export interface AddAgentRequest {
 export interface UpdateAgentRequest {
   role?: string;
   model?: ModelSelection;
+  sandbox?: RuntimeSandboxOptions;
   allowedTools?: string[];
   allowedPaths?: string[];
   systemPrompt?: string;

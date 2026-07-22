@@ -334,6 +334,7 @@ export function taskRoutes(getDeps: () => {
       notifications: body.notifications,
       sideEffects: body.sideEffects,
       executionMode: body.executionMode,
+      sandbox: body.sandbox,
       draft: body.draft,
       user: body.user,
     });
@@ -375,6 +376,9 @@ export function taskRoutes(getDeps: () => {
     }
     if (body.sideEffects !== undefined) {
       await deps.taskStore.updateTask(taskId, { sideEffects: body.sideEffects });
+    }
+    if (body.sandbox !== undefined) {
+      await deps.taskStore.updateTask(taskId, { sandbox: body.sandbox });
     }
 
     const updated = await deps.taskStore.getTask(taskId);

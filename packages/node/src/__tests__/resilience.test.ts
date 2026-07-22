@@ -728,6 +728,20 @@ describe("Durable turns recovery", () => {
     expect(spawnedConfigs[1].resumeState).toBeUndefined();
   });
 
+  it("spawned runner config carries task sandbox policy", async () => {
+    const task = await orchestrator.engine.createTask({
+      title: "Fresh sandbox",
+      description: "Run this task in a clean sandbox",
+      assignTo: "agent-1",
+      sandbox: { isolation: "fresh" },
+    });
+
+    await (orchestrator.engine as any).runner.spawnForTask(task);
+
+    expect(spawnedConfigs).toHaveLength(1);
+    expect(spawnedConfigs[0].sandbox).toEqual({ isolation: "fresh" });
+  });
+
   it("dead runner without checkpoint: unchanged fallback, retry from zero", async () => {
     const task = await createOrphanTask("No checkpoint");
     await runStore.upsertRun(runRecord(task.id));

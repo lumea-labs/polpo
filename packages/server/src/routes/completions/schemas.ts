@@ -4,6 +4,7 @@
  */
 
 import { createRoute, z } from "@hono/zod-openapi";
+import { RuntimeSandboxSchema } from "../../schemas.js";
 
 // ── Zod Schemas ────────────────────────────────────────────────────────
 
@@ -60,6 +61,9 @@ export const completionRequestSchema = z.object({
   }),
   loop: z.string().optional().openapi({
     description: "Optional configurable loop name for agent-direct mode. Applies that loop's prompt, tools, model, reasoning, and maxTurns overrides.",
+  }),
+  sandbox: RuntimeSandboxSchema.optional().openapi({
+    description: "Optional runtime sandbox policy for this chat request. Applies when chat executes through the shared Run lifecycle.",
   }),
   project: z.string().optional().openapi({
     description: "Deprecated. Ignored.",

@@ -8,12 +8,15 @@ import type { AgentConfig, AgentProcess, Team, ReasoningLevel } from "./agent.js
 import type { ApprovalGate, SLAConfig } from "./mission.js";
 import type { NotificationsConfig, EscalationPolicy } from "./notifications.js";
 import type { LoopResumeState } from "../loop/run-store.js";
+import type { RuntimeSandboxOptions } from "../runtime-sandbox.js";
 
 // === Runner Config ===
 
 export interface RunnerConfig {
   /** Resolved execution mode for this run (stamped by the task runner). */
   executionMode?: ExecutionMode;
+  /** Resolved runtime sandbox policy for the host sandbox provider. */
+  sandbox?: RuntimeSandboxOptions;
   runId: string;
   taskId: string;
   agent: AgentConfig;
@@ -181,6 +184,8 @@ export interface PolpoSettings {
    *  proxied to the sandbox in later phases). Per-task/per-agent policy
    *  is future work; this is a global opt-in. */
   taskExecution?: ExecutionMode;
+  /** Default runtime sandbox policy. Request/task overrides beat agent, which beats settings. */
+  sandbox?: RuntimeSandboxOptions;
   /** How chat completions execute. Default: "run" through the shared
    *  `executeRun` lifecycle + loop-engine so chat and task share the same
    *  durable runtime. "inline" keeps the older completions-route loop as an

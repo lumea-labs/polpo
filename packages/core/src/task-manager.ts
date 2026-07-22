@@ -1,6 +1,6 @@
 import type { OrchestratorContext } from "./orchestrator-context.js";
 import { resolveMissionStore, resolveMissionForTask } from "./mission-store.js";
-import type { Task, TaskExpectation, ExpectedOutcome, RetryPolicy, ReviewContext, ScopedNotificationRules } from "./types.js";
+import type { Task, TaskExpectation, ExpectedOutcome, RetryPolicy, ReviewContext, ScopedNotificationRules, RuntimeSandboxOptions } from "./types.js";
 import { setAssessment } from "./types.js";
 import { sanitizeExpectations } from "./schemas.js";
 
@@ -26,6 +26,8 @@ export class TaskManager {
     notifications?: ScopedNotificationRules;
     sideEffects?: boolean;
     executionMode?: import("./types/config.js").ExecutionMode;
+    sandbox?: RuntimeSandboxOptions;
+    user?: string;
     draft?: boolean;
   }): Promise<Task> {
     if (!this.ctx.taskStore) throw new Error("Orchestrator not initialized");
@@ -45,6 +47,8 @@ export class TaskManager {
       notifications: opts.notifications,
       sideEffects: opts.sideEffects,
       executionMode: opts.executionMode,
+      sandbox: opts.sandbox,
+      user: opts.user,
       draft: opts.draft,
     });
     if (hookResult.cancelled) {
@@ -84,6 +88,8 @@ export class TaskManager {
       notifications: hookData.notifications,
       sideEffects: hookData.sideEffects,
       executionMode: hookData.executionMode ?? opts.executionMode,
+      sandbox: hookData.sandbox ?? opts.sandbox,
+      user: hookData.user ?? opts.user,
       status: hookData.draft ? "draft" : undefined,
     });
     this.ctx.emitter.emit("task:created", { task });

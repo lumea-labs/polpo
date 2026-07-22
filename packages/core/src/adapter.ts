@@ -5,6 +5,7 @@ import type { FileSystem } from "@polpo-ai/core/filesystem";
 import type { Shell } from "@polpo-ai/core/shell";
 import type { LoopResumeState } from "@polpo-ai/core/loop-run-store";
 import type { ModelSelection } from "./model-policy.js";
+import type { RuntimeSandboxOptions } from "./runtime-sandbox.js";
 
 /**
  * Handle returned by the engine after spawning an agent.
@@ -145,6 +146,8 @@ export interface ChatSessionInjection {
   clientSideToolNames: ReadonlySet<string>;
   /** Provider-executed tool names to record but not dispatch. */
   providerToolNames: ReadonlySet<string>;
+  /** Runtime sandbox policy requested by this chat turn. */
+  sandbox?: RuntimeSandboxOptions;
   /** Tools value used for compaction token estimation — MUST match the chat path. */
   compactionTools: unknown[];
   /** Compaction mode ("chat" mirrors the inline handler). */

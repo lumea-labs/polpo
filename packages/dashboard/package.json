@@ -1,6 +1,6 @@
 {
   "name": "@polpo-ai/dashboard",
-  "version": "0.15.33",
+  "version": "0.15.34",
   "description": "Polpo v2 runtime dashboard views for self-hosted and managed hosts",
   "type": "module",
   "main": "dist/index.js",

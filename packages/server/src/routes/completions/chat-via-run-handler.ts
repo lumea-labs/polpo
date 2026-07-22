@@ -78,6 +78,7 @@ export function buildChatRunInjection(execution: ChatCompletionExecution): ChatS
     executor: effectiveToolExecutor,
     clientSideToolNames: CLIENT_SIDE_TOOL_NAMES,
     providerToolNames: new Set(Object.keys(extraAiTools ?? {})),
+    sandbox: execution.body.sandbox,
     compactionTools: effectiveTools,
     compactionMode: "chat",
   };

@@ -77,6 +77,22 @@ describe("DrizzleTaskStore", () => {
     expect(fetched!.user).toBe("u-42");
   });
 
+  it("createTask persists runtime sandbox policy", async () => {
+    const task = await stores.taskStore.createTask({
+      title: "Fresh sandbox task",
+      description: "Run in a clean sandbox",
+      assignTo: "claude",
+      dependsOn: [],
+      maxRetries: 2,
+      expectations: [],
+      metrics: [],
+      sandbox: { isolation: "fresh" },
+    });
+
+    const fetched = await stores.taskStore.getTask(task.id);
+    expect(fetched!.sandbox).toEqual({ isolation: "fresh" });
+  });
+
   it("listTasks returns ordered by createdAt", async () => {
     await stores.taskStore.createTask({
       title: "A", description: "first", assignTo: "claude", dependsOn: [], maxRetries: 2, expectations: [], metrics: [],

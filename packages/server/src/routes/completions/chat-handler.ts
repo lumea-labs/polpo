@@ -11,6 +11,7 @@ import { streamSSE } from "hono/streaming";
 import { compactIfNeeded, type CompactionEvent, type ModelSelection } from "@polpo-ai/core";
 import { runModelPolicyTurn } from "@polpo-ai/llm";
 import type { LanguageModelUsage } from "ai";
+import type { RuntimeSandboxOptions } from "@polpo-ai/core";
 import type { CompletionRouteDeps } from "../completions.js";
 import {
   agentConfigForModelAttempt,
@@ -35,7 +36,7 @@ import {
 /** Resolved execution context for a standard (non-loop) chat completion. */
 export interface ChatCompletionExecution {
   deps: CompletionRouteDeps;
-  body: { stream?: boolean; agent?: string; user?: string };
+  body: { stream?: boolean; agent?: string; user?: string; sandbox?: RuntimeSandboxOptions };
   completionId: string;
   /** Resolved agent config (agent-direct mode). Used by chat-via-executeRun
    *  (F1c) to build the RunnerConfig. Undefined in orchestrator mode. */

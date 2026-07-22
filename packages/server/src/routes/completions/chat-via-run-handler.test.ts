@@ -296,6 +296,30 @@ describe("chat via Run driver", () => {
     expect(runChatViaRun).toHaveBeenCalledTimes(1);
   });
 
+  it("passes request sandbox policy into chat Run injection", async () => {
+    const runChatViaRun = vi.fn(async (inject: any, hooks: any) => {
+      expect(inject.sandbox).toEqual({ isolation: "fresh" });
+      hooks.onEvent({ type: "text-delta", text: "hello" });
+      return { status: "completed", result: { exitCode: 0, stdout: "hello", stderr: "" } };
+    });
+    const deps = baseDeps({ runChatViaRun });
+
+    const response = await completionRoutes(() => deps).request("/", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        agent: "agent-1",
+        stream: true,
+        sandbox: { isolation: "fresh" },
+        messages: [{ role: "user", content: "hello" }],
+      }),
+    });
+
+    expect(response.status).toBe(200);
+    await response.text();
+    expect(runChatViaRun).toHaveBeenCalledTimes(1);
+  });
+
   it("preserves provider-tool observability, usage callback, session persistence, and cleanup", async () => {
     const onCompletionFinished = vi.fn();
     const cleanup = vi.fn(async () => {});

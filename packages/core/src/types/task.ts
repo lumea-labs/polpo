@@ -4,6 +4,7 @@
 
 import type { EvalDimension, AssessmentResult } from "./assessment.js";
 import type { ScopedNotificationRules, NotificationAction } from "./notifications.js";
+import type { RuntimeSandboxOptions } from "../runtime-sandbox.js";
 
 // === Task ===
 
@@ -164,6 +165,8 @@ export interface Task {
   user?: string;
   /** Execution mode override for this task (wins over agent and settings). */
   executionMode?: import("./config.js").ExecutionMode;
+  /** Runtime sandbox policy override for this task (wins over agent and settings). */
+  sandbox?: RuntimeSandboxOptions;
   createdAt: string;
   updatedAt: string;
 }

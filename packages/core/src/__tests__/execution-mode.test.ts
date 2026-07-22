@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { resolveExecutionMode } from "../execution-mode.js";
+import { resolveRuntimeSandboxOptions } from "../runtime-sandbox.js";
 
 describe("resolveExecutionMode — adaptive isolation precedence", () => {
   it("defaults to subprocess with nothing set", () => {
@@ -37,5 +38,41 @@ describe("resolveExecutionMode — adaptive isolation precedence", () => {
     expect(resolveExecutionMode({ executionMode: "warp-drive" }, { executionMode: "in-process" })).toBe("in-process");
     expect(resolveExecutionMode({ executionMode: "" }, {}, { taskExecution: "in-process" })).toBe("in-process");
     expect(resolveExecutionMode({ executionMode: "warp" }, { executionMode: "nope" }, { taskExecution: "bad" })).toBe("subprocess");
+  });
+});
+
+describe("resolveRuntimeSandboxOptions — runtime sandbox precedence", () => {
+  it("returns undefined when no valid policy is set", () => {
+    expect(resolveRuntimeSandboxOptions()).toBeUndefined();
+    expect(resolveRuntimeSandboxOptions({}, {}, {})).toBeUndefined();
+    expect(resolveRuntimeSandboxOptions({}, {}, { sandbox: { isolation: "bad" as any } })).toBeUndefined();
+  });
+
+  it("settings, agent, and request merge with request winning", () => {
+    expect(resolveRuntimeSandboxOptions(
+      { sandbox: { isolation: "reuse" } },
+      undefined,
+      undefined,
+    )).toEqual({ isolation: "reuse" });
+
+    expect(resolveRuntimeSandboxOptions(
+      { sandbox: { isolation: "reuse" } },
+      { sandbox: { isolation: "fresh" } },
+      undefined,
+    )).toEqual({ isolation: "fresh" });
+
+    expect(resolveRuntimeSandboxOptions(
+      { sandbox: { isolation: "fresh" } },
+      { sandbox: { isolation: "fresh" } },
+      { sandbox: { isolation: "reuse" } },
+    )).toEqual({ isolation: "reuse" });
+  });
+
+  it("invalid upper tiers fall through to lower valid policy", () => {
+    expect(resolveRuntimeSandboxOptions(
+      { sandbox: { isolation: "reuse" } },
+      { sandbox: { isolation: "invalid" as any } },
+      undefined,
+    )).toEqual({ isolation: "reuse" });
   });
 });

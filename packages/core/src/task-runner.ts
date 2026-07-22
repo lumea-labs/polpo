@@ -4,6 +4,7 @@ import { resolveMissionStore, resolveMissionForTask } from "./mission-store.js";
 import type { Task, TaskResult, RunnerConfig } from "./types.js";
 import { agentMemoryScope } from "./memory-store.js";
 import { resolveExecutionMode } from "./execution-mode.js";
+import { resolveRuntimeSandboxOptions } from "./runtime-sandbox.js";
 import type { RunRecord } from "./run-store.js";
 import type { LoopResumeState } from "./loop/run-store.js";
 import { normalizeModelPolicy } from "./model-policy.js";
@@ -601,11 +602,13 @@ export class TaskRunner {
 
     // Adaptive isolation: resolve WHERE this run executes (task > agent > settings)
     const executionMode = resolveExecutionMode(task, agent, this.ctx.config.settings);
+    const sandbox = resolveRuntimeSandboxOptions(this.ctx.config.settings, agent, task);
 
     const runnerConfig: RunnerConfig = {
       runId,
       taskId: task.id,
       executionMode,
+      sandbox,
       agent,
       task: taskWithContext,
       polpoDir: this.ctx.polpoDir,

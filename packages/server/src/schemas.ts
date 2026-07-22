@@ -61,10 +61,19 @@ const ScopedNotificationRulesSchema = z.object({
   inherit: z.boolean().optional(),
 });
 
+export const RuntimeSandboxSchema = z.object({
+  isolation: z.enum(["reuse", "fresh"]).optional().openapi({
+    description: "Sandbox isolation policy. `reuse` keeps warm state when available; `fresh` requests a clean sandbox for this run.",
+  }),
+}).openapi({
+  description: "Provider-neutral runtime sandbox policy.",
+});
+
 // ── Task schemas ──────────────────────────────────────────────────────
 
 export const CreateTaskSchema = z.object({
   executionMode: z.enum(["subprocess", "in-process"]).optional(),
+  sandbox: RuntimeSandboxSchema.optional(),
   title: z.string().min(1),
   description: z.string().min(1),
   assignTo: z.string().min(1),
@@ -99,6 +108,7 @@ export const UpdateTaskSchema = z.object({
   description: z.string().min(1).optional(),
   assignTo: z.string().min(1).optional(),
   loop: z.string().min(1).optional(),
+  sandbox: RuntimeSandboxSchema.optional(),
   status: z.enum(["draft", "pending", "awaiting_approval", "assigned", "in_progress", "review", "done", "failed"]).optional(),
   expectations: z.array(z.any()).optional(),
   retries: z.number().int().min(0).optional(),
@@ -525,6 +535,7 @@ const AgentLoopFieldsSchema = z.object({
 
 export const AddAgentSchema = z.object({
   executionMode: z.enum(["subprocess", "in-process"]).optional(),
+  sandbox: RuntimeSandboxSchema.optional(),
   name: z.string().min(1),
   role: z.string().optional(),
   model: ModelSelectionSchema.optional(),
@@ -551,6 +562,8 @@ export const AddAgentSchema = z.object({
 }).and(AgentLoopFieldsSchema);
 
 export const UpdateAgentSchema = z.object({
+  executionMode: z.enum(["subprocess", "in-process"]).optional(),
+  sandbox: RuntimeSandboxSchema.optional(),
   role: z.string().optional(),
   model: ModelSelectionSchema.optional(),
   // Per-modality media models (optional, mirror AddAgentSchema).
