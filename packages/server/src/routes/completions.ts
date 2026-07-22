@@ -114,6 +114,12 @@ export interface CompletionRouteDeps {
   resolveAgentTools: (agentConfig: any) => Promise<{
     tools: any[];
     executor: (name: string, args: Record<string, unknown>) => Promise<string>;
+    /**
+     * Optional direct runtime executor for deterministic loop `type:"tool"`
+     * steps. Hosts that hide tools behind a model-facing router should provide
+     * this so loop steps still call the real tool by name.
+     */
+    runtimeExecutor?: (name: string, args: Record<string, unknown>) => Promise<string>;
     cleanup?: () => Promise<void>;
     extraAiTools?: Record<string, any>;
   }>;

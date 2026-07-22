@@ -64,6 +64,7 @@ export async function runProjectLoopCompletion(options: {
   if (!normalized.pipeline) throw new Error(`Loop "${projectLoop.name}" does not define a pipeline`);
 
   const rootTools = await deps.resolveAgentTools(agentConfig);
+  const executeLoopTool = rootTools.runtimeExecutor ?? rootTools.executor;
   const loopRunStore = deps.getLoopRunStore?.();
   const resumeState = resumeRun?.resume;
   const loopRunId = resumeRun?.id ?? (loopRunStore ? `looprun-${nanoid(16)}` : undefined);
@@ -156,7 +157,7 @@ export async function runProjectLoopCompletion(options: {
           arguments: args,
           state: "calling",
         });
-        const output = await rootTools.executor(name, args);
+        const output = await executeLoopTool(name, args);
         const isError = output.startsWith("Error:");
         emitFileChanged(name, args, output, deps.emit);
         const event = {

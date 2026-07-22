@@ -91,6 +91,83 @@ describe("completionRoutes project loop runtime", () => {
     expect(json.loop_trace[0]).toMatchObject({ loop: "time-tracker", status: "started" });
   });
 
+  it("executes deterministic loop tools through the direct runtime executor when model tools are routerized", async () => {
+    let runtimeCalls = 0;
+    const deps = makeDeps({
+      name: "shell-loop",
+      context: "shared",
+      start: "run_shell",
+      steps: {
+        run_shell: {
+          type: "tool",
+          tool: "bash",
+          input: { command: "echo ok" },
+          saveAs: "shell.output",
+          next: "end",
+        },
+      },
+    });
+    deps.getAgents = async () => [{
+      name: "timer",
+      model: "test",
+      assignedLoops: ["shell-loop"],
+      allowedTools: ["bash"],
+    }];
+    deps.resolveAgentTools = async () => ({
+      tools: [
+        {
+          name: "tool_call",
+          label: "Call Tool",
+          parameters: {
+            type: "object",
+            properties: {
+              name: { type: "string" },
+              args: { type: "object", additionalProperties: true },
+            },
+            required: ["name", "args"],
+            additionalProperties: false,
+          },
+        },
+      ],
+      executor: async (name) =>
+        `Error: Tool "${name}" is behind the tool router. Use tool_call with {"name":"${name}","args":{...}}.`,
+      runtimeExecutor: async (name, args) => {
+        runtimeCalls += 1;
+        if (name !== "bash") return `Error: Unknown tool "${name}"`;
+        return JSON.stringify({ ok: true, command: args.command });
+      },
+    });
+
+    const app = completionRoutes(() => deps);
+    const res = await app.request("/", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        agent: "timer",
+        loop: "shell-loop",
+        messages: [{ role: "user", content: "run shell" }],
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    const json = await res.json() as any;
+    expect(runtimeCalls).toBe(1);
+    expect(JSON.parse(json.choices[0].message.content)).toEqual({
+      shell: {
+        output: {
+          ok: true,
+          command: "echo ok",
+        },
+      },
+    });
+    expect(json.loop_trace).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ type: "tool.call", tool: "bash" }),
+        expect.objectContaining({ type: "tool.result", tool: "bash" }),
+      ]),
+    );
+  });
+
   it("continues project loop execution when trace persistence fails", async () => {
     class FailingTraceStore extends MemoryLoopRunStore {
       async appendTrace(_runId: string, _event: LoopTraceEvent): Promise<void> {
