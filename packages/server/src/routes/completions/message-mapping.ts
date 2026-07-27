@@ -60,52 +60,42 @@ function normalizeToolCallHistory(messages: unknown[]): unknown[] {
   });
 }
 
-/** Resolve file content parts → text references the agent can act on with its tools. */
-function resolveFileContentParts(
-  content: z.infer<typeof messageSchema>["content"],
-): z.infer<typeof messageSchema>["content"] {
-  if (typeof content === "string" || !content.some((p) => p.type === "file")) return content;
-
-  const resolved: z.infer<typeof contentPartSchema>[] = [];
-  for (const part of content) {
-    if (part.type !== "file") {
-      resolved.push(part);
-      continue;
-    }
-    // file_id is a workspace-relative path — just pass it as a text reference.
-    // The agent has read_file / list_files tools to access the actual content.
-    resolved.push({
-      type: "text",
-      text: `[Attached file: ${part.file_id}]`,
-    });
-  }
-  return resolved;
-}
-
 /**
  * Convert OpenAI-format content to AI SDK UserContent.
  *
  * AI SDK ImagePart: { type: "image", image: DataContent | URL, mediaType?: string }
+ * AI SDK FilePart:  { type: "file", data: DataContent | URL, mediaType: string, filename?: string }
  * AI SDK TextPart:  { type: "text", text: string }
  */
-function toAIContent(content: z.infer<typeof messageSchema>["content"]): string | ({ type: "text"; text: string } | { type: "image"; image: string; mediaType?: string })[] {
+function toAIContent(content: z.infer<typeof messageSchema>["content"]): string | (
+  | { type: "text"; text: string }
+  | { type: "image"; image: string; mediaType?: string }
+  | { type: "file"; data: string; mediaType: string; filename?: string }
+)[] {
   if (typeof content === "string") return content;
 
   const nonEmpty = content.filter((part) =>
     part.type !== "text" || (typeof part.text === "string" && part.text.trim() !== ""),
   );
 
-  // Check if there are any image parts
-  const hasImages = nonEmpty.some((p) => p.type === "image_url");
-  if (!hasImages) {
-    // Text-only array → flatten to plain string
+  const hasModelFile = nonEmpty.some((p) =>
+    p.type === "file" && typeof (p as any).data === "string" && typeof (p as any).mediaType === "string",
+  );
+  const hasStructuredParts = nonEmpty.some((p) => p.type === "image_url") || hasModelFile;
+  if (!hasStructuredParts) {
+    // Text and file_id references → flatten to plain string.
     return nonEmpty
-      .filter((p): p is { type: "text"; text: string } => p.type === "text")
-      .map((p) => p.text)
+      .map((p) => {
+        if (p.type === "text") return p.text;
+        if (p.type === "file" && typeof (p as any).file_id === "string") return `[Attached file: ${(p as any).file_id}]`;
+        if (p.type === "file") return "[Attached file: unavailable]";
+        return "";
+      })
+      .filter((text) => text.trim() !== "")
       .join("\n");
   }
 
-  // Mixed content → convert to AI SDK TextPart | ImagePart array
+  // Mixed content → convert to AI SDK TextPart | ImagePart | FilePart array.
   return nonEmpty.map((p) => {
     if (p.type === "text") {
       return { type: "text" as const, text: p.text };
@@ -118,7 +108,17 @@ function toAIContent(content: z.infer<typeof messageSchema>["content"]): string 
       }
       return { type: "image" as const, image: url, mediaType: "image/png" };
     }
-    // file parts should have been resolved by resolveFileContentParts already
+    if (p.type === "file" && typeof (p as any).data === "string" && typeof (p as any).mediaType === "string") {
+      return {
+        type: "file" as const,
+        data: (p as any).data,
+        mediaType: (p as any).mediaType,
+        ...((p as any).filename ? { filename: (p as any).filename } : {}),
+      };
+    }
+    if (p.type === "file" && typeof (p as any).file_id === "string") {
+      return { type: "text" as const, text: `[Attached file: ${(p as any).file_id}]` };
+    }
     return { type: "text" as const, text: "" };
   }).filter((p) => p.type !== "text" || p.text !== "");
 }
@@ -141,9 +141,7 @@ export function convertMessages(
       const text = extractText(msg.content);
       if (hasText(text)) extraSystemParts.push(text);
     } else if (msg.role === "user") {
-      // Resolve file content parts → text references (only in the AI SDK message, not persisted)
-      const resolvedContent = resolveFileContentParts(msg.content);
-      const content = toAIContent(resolvedContent);
+      const content = toAIContent(msg.content);
       if (hasModelContent(content)) aiMessages.push({ role: "user", content });
     } else if (msg.role === "assistant") {
       // If the assistant message includes tool_calls (client-side tool), reconstruct as AI SDK format

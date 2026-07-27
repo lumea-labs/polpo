@@ -105,4 +105,48 @@ describe("convertMessages", () => {
       ],
     }]);
   });
+
+  it("preserves inline file data as AI SDK file parts", () => {
+    const { aiMessages } = convertMessages([{
+      role: "user",
+      content: [
+        { type: "text", text: "Please inspect this file." },
+        {
+          type: "file",
+          data: Buffer.from("hello").toString("base64"),
+          mediaType: "text/plain",
+          filename: "brief.txt",
+        },
+      ],
+    }] as any);
+
+    expect(aiMessages).toEqual([{
+      role: "user",
+      content: [
+        { type: "text", text: "Please inspect this file." },
+        {
+          type: "file",
+          data: "aGVsbG8=",
+          mediaType: "text/plain",
+          filename: "brief.txt",
+        },
+      ],
+    }]);
+  });
+
+  it("keeps file_id references readable without producing undefined attachment labels", () => {
+    const { aiMessages } = convertMessages([{
+      role: "user",
+      content: [
+        { type: "text", text: "Use the saved attachment." },
+        { type: "file", file_id: "/workspace/report.pdf" },
+      ],
+    }] as any);
+
+    expect(aiMessages).toEqual([{
+      role: "user",
+      content: "Use the saved attachment.\n[Attached file: /workspace/report.pdf]",
+    }]);
+    expect(JSON.stringify(aiMessages)).not.toContain("undefined");
+  });
 });
