@@ -3,6 +3,7 @@ import {
   MemoryLoopRunStore,
   RuntimeGuardrailEngine,
   createRunToolMiddleware,
+  createRunOutputPolicy,
   type LoopTraceEvent,
 } from "@polpo-ai/core";
 import { completionRoutes, type CompletionRouteDeps } from "./completions.js";
@@ -94,6 +95,35 @@ describe("completionRoutes project loop runtime", () => {
       "loop.end",
     ]);
     expect(json.loop_trace[0]).toMatchObject({ loop: "time-tracker", status: "started" });
+  });
+
+  it("enforces output policy before returning and persisting project-loop output", async () => {
+    const deps = makeDeps();
+    deps.runOutputPolicy = createRunOutputPolicy(new RuntimeGuardrailEngine([{
+      id: "redact-loop-output",
+      phases: ["output"],
+      evaluate: () => ({
+        action: "redact",
+        risk: "high",
+        reason: "sensitive loop result",
+        value: "safe loop result",
+      }),
+    }]));
+
+    const app = completionRoutes(() => deps);
+    const res = await app.request("/", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        agent: "timer",
+        loop: "time-tracker",
+        messages: [{ role: "user", content: "track it" }],
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    const json = await res.json() as any;
+    expect(json.choices[0].message.content).toBe("safe loop result");
   });
 
   it("executes deterministic loop tools through the direct runtime executor when model tools are routerized", async () => {

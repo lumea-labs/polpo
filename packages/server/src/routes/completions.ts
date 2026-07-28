@@ -56,6 +56,7 @@ import {
 } from "./completions/chat-handler.js";
 import { streamChatViaRun, runNonStreamingChatViaRun } from "./completions/chat-via-run-handler.js";
 import { prepareChatCompletionExecution } from "./completions/conversation-turn.js";
+import type { RunOutputPolicy } from "@polpo-ai/core/guardrails";
 import type { CompletionToolExecutor } from "./completions/tool-guardrails.js";
 
 export { resumeProjectLoopRun } from "./completions/project-loop-runner.js";
@@ -102,6 +103,11 @@ export interface CompletionRouteDeps {
    * executor path is used by reference.
    */
   runToolMiddleware?: RunToolMiddleware;
+  /**
+   * Optional final-output policy. Non-stream and detached responses enforce it
+   * before delivery; streaming follows the policy's explicit audit/buffer mode.
+   */
+  runOutputPolicy?: RunOutputPolicy;
   /** Resolve agent model. Must return an object with aiModel (LanguageModel), provider, contextWindow, maxTokens, and providerOptions. */
   resolveAgentModel: (agentConfig: any, settingsReasoning?: string) => Promise<{
     model: ResolvedModelInfo;

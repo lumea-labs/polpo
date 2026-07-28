@@ -21,6 +21,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Orchestrator } from "../core/orchestrator.js";
 import {
+  RuntimeGuardrailEngine,
+  createRunOutputPolicy,
+} from "@polpo-ai/core/guardrails";
+import {
   MockLanguageModelV3,
   mockTextModel,
   mockToolCallModel,
@@ -62,6 +66,7 @@ const POLPO_CONFIG = JSON.stringify({
 let tmpDir: string;
 let app: any; // OpenAPIHono — `any` to avoid Hono<> vs OpenAPIHono<> generic mismatch
 let orchestrator: Orchestrator;
+let sseBridge: any;
 
 /** Override the mock model for the next call(s). */
 function setMockModel(model: MockLanguageModelV3) {
@@ -115,7 +120,7 @@ beforeAll(async () => {
     agents: [{ name: "agent-1", role: "Test agent" }],
   });
 
-  const sseBridge = new SSEBridge(orchestrator);
+  sseBridge = new SSEBridge(orchestrator);
   sseBridge.start();
 
   // No API keys -> no auth required
@@ -155,6 +160,37 @@ describe("POST /v1/chat/completions", () => {
 
       const usage = body.usage as Record<string, number>;
       expect(usage.total_tokens).toBeGreaterThan(0);
+    });
+
+    test("uses the host output-policy override before returning a completion", async () => {
+      const { createApp } = await import("../server/app.js");
+      const guardedApp = createApp(orchestrator, sseBridge, {
+        runOutputPolicy: createRunOutputPolicy(new RuntimeGuardrailEngine([{
+          id: "redact-host-output",
+          phases: ["output"],
+          evaluate: () => ({
+            action: "redact",
+            risk: "high",
+            reason: "host policy",
+            value: "safe host output",
+          }),
+        }])),
+      });
+      setMockModel(mockTextModel("unsafe host output"));
+
+      const res = await guardedApp.request("/v1/chat/completions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          agent: "agent-1",
+          messages: [{ role: "user", content: "Hi" }],
+          stream: false,
+        }),
+      });
+
+      expect(res.status).toBe(200);
+      const body = await parseJson(res);
+      expect((body.choices as any[])[0].message.content).toBe("safe host output");
     });
 
     test("returns 400 when messages array is empty", async () => {

@@ -1,7 +1,12 @@
-import { createDefaultToolGuardrailPolicies } from "./detectors.js";
+import {
+  createDefaultOutputGuardrailPolicies,
+  createDefaultToolGuardrailPolicies,
+} from "./detectors.js";
 import { RuntimeGuardrailEngine } from "./engine.js";
+import { createRunOutputPolicy } from "./output-policy.js";
 import { createRunToolMiddleware } from "./tool-middleware.js";
 import type {
+  RunOutputPolicy,
   RunToolMiddleware,
   RuntimeGuardrailHostAdapters,
   RuntimeGuardrailSettings,
@@ -16,11 +21,40 @@ export function normalizeRuntimeGuardrailSettings(
   }
 
   const raw = value as Record<string, unknown>;
-  if (raw.toolPolicyPack === undefined && Object.keys(raw).length === 0) {
+  if (
+    raw.toolPolicyPack === undefined
+    && raw.outputPolicyPack === undefined
+    && Object.keys(raw).length === 0
+  ) {
     return undefined;
   }
-  if (raw.toolPolicyPack !== "default") {
+  if (raw.toolPolicyPack !== undefined && raw.toolPolicyPack !== "default") {
     throw new TypeError('guardrails.toolPolicyPack must be "default"');
+  }
+  if (raw.outputPolicyPack !== undefined && raw.outputPolicyPack !== "default") {
+    throw new TypeError('guardrails.outputPolicyPack must be "default"');
+  }
+  if (raw.toolPolicyPack === undefined && (
+    raw.maxToolOutputCharacters !== undefined
+    || raw.readOnlyPolicyFailure !== undefined
+  )) {
+    throw new TypeError(
+      "guardrails tool settings require guardrails.toolPolicyPack",
+    );
+  }
+  if (raw.outputPolicyPack === undefined && (
+    raw.maxFinalOutputCharacters !== undefined
+    || raw.streamingOutputMode !== undefined
+  )) {
+    const field = raw.streamingOutputMode !== undefined
+      ? "streamingOutputMode"
+      : "maxFinalOutputCharacters";
+    throw new TypeError(
+      `guardrails.${field} requires guardrails.outputPolicyPack`,
+    );
+  }
+  if (raw.toolPolicyPack === undefined && raw.outputPolicyPack === undefined) {
+    return undefined;
   }
 
   let maxToolOutputCharacters: number | undefined;
@@ -44,10 +78,38 @@ export function normalizeRuntimeGuardrailSettings(
     }
     readOnlyPolicyFailure = raw.readOnlyPolicyFailure;
   }
+  let maxFinalOutputCharacters: number | undefined;
+  if (raw.maxFinalOutputCharacters !== undefined) {
+    if (
+      !Number.isSafeInteger(raw.maxFinalOutputCharacters)
+      || (raw.maxFinalOutputCharacters as number) < 1
+    ) {
+      throw new TypeError(
+        "guardrails.maxFinalOutputCharacters must be a positive safe integer",
+      );
+    }
+    maxFinalOutputCharacters = raw.maxFinalOutputCharacters as number;
+  }
+  let streamingOutputMode: "audit" | "buffer" | undefined;
+  if (raw.outputPolicyPack !== undefined) {
+    if (
+      raw.streamingOutputMode !== undefined
+      && raw.streamingOutputMode !== "audit"
+      && raw.streamingOutputMode !== "buffer"
+    ) {
+      throw new TypeError(
+        'guardrails.streamingOutputMode must be "audit" or "buffer"',
+      );
+    }
+    streamingOutputMode = (raw.streamingOutputMode ?? "audit") as "audit" | "buffer";
+  }
   return Object.freeze({
-    toolPolicyPack: "default",
+    ...(raw.toolPolicyPack === "default" ? { toolPolicyPack: "default" as const } : {}),
+    ...(raw.outputPolicyPack === "default" ? { outputPolicyPack: "default" as const } : {}),
     ...(maxToolOutputCharacters !== undefined ? { maxToolOutputCharacters } : {}),
+    ...(maxFinalOutputCharacters !== undefined ? { maxFinalOutputCharacters } : {}),
     ...(readOnlyPolicyFailure !== undefined ? { readOnlyPolicyFailure } : {}),
+    ...(streamingOutputMode !== undefined ? { streamingOutputMode } : {}),
   });
 }
 
@@ -63,7 +125,7 @@ export function createConfiguredRunToolMiddleware(
   adapters: RuntimeGuardrailHostAdapters = {},
 ): RunToolMiddleware | undefined {
   const settings = normalizeRuntimeGuardrailSettings(value);
-  if (!settings) return undefined;
+  if (!settings?.toolPolicyPack) return undefined;
 
   const engine = new RuntimeGuardrailEngine(
     createDefaultToolGuardrailPolicies(),
@@ -75,5 +137,22 @@ export function createConfiguredRunToolMiddleware(
   return createRunToolMiddleware(engine, {
     approval: adapters.approval,
     maxOutputCharacters: settings.maxToolOutputCharacters,
+  });
+}
+
+export function createConfiguredRunOutputPolicy(
+  value: RuntimeGuardrailSettings | undefined,
+  adapters: RuntimeGuardrailHostAdapters = {},
+): RunOutputPolicy | undefined {
+  const settings = normalizeRuntimeGuardrailSettings(value);
+  if (!settings?.outputPolicyPack) return undefined;
+
+  const engine = new RuntimeGuardrailEngine(
+    createDefaultOutputGuardrailPolicies(settings.maxFinalOutputCharacters),
+    { onDecision: adapters.onDecision },
+  );
+  return createRunOutputPolicy(engine, {
+    approval: adapters.outputApproval,
+    streamingMode: settings.streamingOutputMode,
   });
 }
