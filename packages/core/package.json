@@ -50,6 +50,10 @@
       "types": "./dist/runtime-plan/index.d.ts",
       "import": "./dist/runtime-plan/index.js"
     },
+    "./runtime-inspection": {
+      "types": "./dist/runtime-inspection/index.d.ts",
+      "import": "./dist/runtime-inspection/index.js"
+    },
     "./hooks": {
       "types": "./dist/hooks.d.ts",
       "import": "./dist/hooks.js"

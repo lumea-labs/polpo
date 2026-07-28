@@ -22,6 +22,7 @@ function createInitialState(): StoreState {
     stats: null,
     connectionStatus: "disconnected",
     recentEvents: [],
+    runtimePlans: new Map(),
     missionsStale: false,
     memory: null,
     agentMemory: new Map(),

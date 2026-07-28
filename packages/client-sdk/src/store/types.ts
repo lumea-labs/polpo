@@ -8,6 +8,7 @@ import type {
   ChatSession,
   SSEEvent,
 } from "../client/types.js";
+import type { RuntimePlan } from "../client/runtime-events.js";
 import type { ConnectionStatus } from "../client/event-source.js";
 
 export interface PolpoStats {
@@ -44,6 +45,10 @@ export interface StoreState {
   stats: PolpoStats | null;
   connectionStatus: ConnectionStatus;
   recentEvents: SSEEvent[];
+  /** Secret-free runtime decisions keyed by immutable plan id. */
+  runtimePlans?: ReadonlyMap<string, RuntimePlan>;
+  /** Most recently observed runtime plan, if any. */
+  latestRuntimePlanId?: string;
   missionsStale: boolean;
   memory: { exists: boolean; content: string } | null;
   /** Agent-specific memory keyed by agent name. */

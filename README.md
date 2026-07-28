@@ -413,6 +413,10 @@ const tasks = await client.getTasks();
 const agents = await client.getAgents();
 ```
 
+The SDK also exposes typed `runtime:plan` SSE events, runtime-plan selectors,
+and the shared secret-free context accounting contract used by runtime
+inspectors.
+
 ### React SDK
 
 ```tsx
