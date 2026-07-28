@@ -16,6 +16,13 @@ export { approvalRoutes } from "./routes/approvals.js";
 export { chatRoutes } from "./routes/chat.js";
 export { vaultRoutes } from "./routes/vault.js";
 export { scheduleRoutes } from "./routes/schedules.js";
+export {
+  ScheduleService,
+  ScheduleServiceError,
+  type ManualScheduleTriggerInput,
+  type ScheduleServiceErrorCode,
+  type ScheduleServiceOptions,
+} from "./services/schedules.js";
 export { watcherRoutes } from "./routes/watchers.js";
 export { stateRoutes } from "./routes/state.js";
 export { healthRoutes } from "./routes/health.js";

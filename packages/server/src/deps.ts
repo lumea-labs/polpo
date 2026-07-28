@@ -14,6 +14,7 @@ import type { VaultStore } from "@polpo-ai/core/vault-store";
 import type { PlaybookStore } from "@polpo-ai/core/playbook-store";
 import type { SessionStore } from "@polpo-ai/core/session-store";
 import type { ConnectService } from "@polpo-ai/connect-server";
+import type { ScheduleService } from "./services/schedules.js";
 
 // ── Store-centric deps ───────────────────────────────────────────────
 
@@ -140,9 +141,10 @@ export interface SchedulerLike {
 }
 
 export interface ScheduleRouteDeps {
-  getScheduler: () => SchedulerLike | undefined;
-  getMission: (missionId: string) => Promise<any>;
-  updateMission: (missionId: string, updates: any) => Promise<any>;
+  scheduleService?: ScheduleService;
+  getScheduler?: () => SchedulerLike | undefined;
+  getMission?: (missionId: string) => Promise<any>;
+  updateMission?: (missionId: string, updates: any) => Promise<any>;
 }
 
 // ── Watcher deps ─────────────────────────────────────────────────────
