@@ -5,6 +5,7 @@ export {
   LocalScheduleDriver,
   LocalScheduleWorker,
 } from "./local-schedule-driver.js";
+export { createLocalScheduleRunHandler } from "./schedule-dispatcher.js";
 export type {
   LocalScheduleDriverOptions,
   LocalScheduleRunContext,
