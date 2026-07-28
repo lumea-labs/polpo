@@ -108,6 +108,12 @@ Core also exposes additive typed Memory contracts through
 hosts adopt scoped items and policy-backed stores. The default local typed
 store persists independently in `.polpo/memory-items.json`.
 
+Typed Memory remains opt-in at the composition root. Hosts can mount
+`memoryItemRoutes` from `@polpo-ai/server`, expose only explicitly granted
+actions with `createTypedMemoryTools` from `@polpo-ai/tools`, and use the typed
+CRUD/search methods on `PolpoClient`. Merely creating a store does not mount
+routes, add tools to a model, or inject Memory into a prompt.
+
 ## Self-host with the dashboard
 
 The repository includes a single-tenant dashboard host that keeps the runtime API key on the server. Start the production-oriented example with PostgreSQL:

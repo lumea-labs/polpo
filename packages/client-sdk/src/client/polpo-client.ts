@@ -78,6 +78,12 @@ import type {
   FileRoot,
   FileEntry,
   FilePreview,
+  CreateMemoryItemInput,
+  MemoryItem,
+  MemoryItemPatch,
+  MemorySearchResult,
+  ListMemoryItemsQuery,
+  SearchMemoryRequest,
 } from "./types.js";
 
 export interface PolpoClientConfig {
@@ -754,6 +760,69 @@ export class PolpoClient {
 
   saveAgentMemory(agentName: string, content: string): Promise<{ saved: boolean; agent: string }> {
     return this.request<{ saved: boolean; agent: string }>("PUT", this.apiUrl(`/memory/agent/${encodeURIComponent(agentName)}`), { content });
+  }
+
+  listMemoryItems(
+    agentName: string,
+    query: ListMemoryItemsQuery = {},
+  ): Promise<MemoryItem[]> {
+    const params = new URLSearchParams();
+    if (query.kinds?.length) params.set("kinds", query.kinds.join(","));
+    if (query.statuses?.length) params.set("statuses", query.statuses.join(","));
+    if (query.scope) {
+      params.set("scopeKind", query.scope.kind);
+      if (query.scope.subjectId) {
+        params.set("scopeSubjectId", query.scope.subjectId);
+      }
+      if (query.scope.agentName) {
+        params.set("scopeAgentName", query.scope.agentName);
+      }
+    }
+    if (query.includeExpired !== undefined) {
+      params.set("includeExpired", String(query.includeExpired));
+    }
+    if (query.limit !== undefined) params.set("limit", String(query.limit));
+    const suffix = params.size > 0 ? `?${params.toString()}` : "";
+    return this.get<{ items: MemoryItem[] }>(
+      `/agents/${encodeURIComponent(agentName)}/memory/items${suffix}`,
+    ).then((data) => data.items);
+  }
+
+  createMemoryItem(
+    agentName: string,
+    input: CreateMemoryItemInput,
+  ): Promise<MemoryItem> {
+    return this.post<{ item: MemoryItem }>(
+      `/agents/${encodeURIComponent(agentName)}/memory/items`,
+      input,
+    ).then((data) => data.item);
+  }
+
+  searchMemory(
+    agentName: string,
+    query: SearchMemoryRequest,
+  ): Promise<MemorySearchResult[]> {
+    return this.post<{ results: MemorySearchResult[] }>(
+      `/agents/${encodeURIComponent(agentName)}/memory/search`,
+      query,
+    ).then((data) => data.results);
+  }
+
+  updateMemoryItem(
+    agentName: string,
+    itemId: string,
+    patch: MemoryItemPatch,
+  ): Promise<MemoryItem> {
+    return this.patch<{ item: MemoryItem }>(
+      `/agents/${encodeURIComponent(agentName)}/memory/items/${encodeURIComponent(itemId)}`,
+      patch,
+    ).then((data) => data.item);
+  }
+
+  forgetMemoryItem(agentName: string, itemId: string): Promise<boolean> {
+    return this.del<{ forgotten: boolean; itemId: string }>(
+      `/agents/${encodeURIComponent(agentName)}/memory/items/${encodeURIComponent(itemId)}`,
+    ).then((data) => data.forgotten);
   }
 
   getLogs(): Promise<LogSession[]> {

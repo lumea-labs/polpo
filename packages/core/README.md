@@ -145,6 +145,20 @@ user identifiers are never shared across project boundaries.
 reference adapter. It writes `memory-items.json` atomically and leaves the
 existing markdown store untouched during migration.
 
+The typed HTTP and model-tool surfaces are separate opt-ins:
+
+- `memoryItemRoutes` in `@polpo-ai/server` receives a host-resolved
+  `MemoryStoreContext`, so authentication, namespace, and external-user
+  identity stay at the composition root.
+- `createTypedMemoryTools` in `@polpo-ai/tools` returns only explicitly granted
+  search, remember, update, or forget actions. Write scope and provenance are
+  fixed by the host rather than supplied by the model.
+- `PolpoClient` in `@polpo-ai/sdk` exposes typed list, create, search, update,
+  and forget methods.
+
+No typed Memory route or tool is mounted automatically, and this layer does not
+inject retrieved items into prompts. Runtime retrieval is a separate opt-in.
+
 ## License
 
 Apache 2.0
