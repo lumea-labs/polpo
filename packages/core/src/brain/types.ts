@@ -182,6 +182,7 @@ export interface CreateBrainRetrievalResultInput {
 
 export interface BrainIngestionJob {
   readonly id: string;
+  readonly scope: BrainScope;
   readonly sourceId: string;
   readonly version: string;
   readonly operation: BrainIngestionOperation;
@@ -201,6 +202,7 @@ export interface BrainIngestionJob {
 
 export interface CreateBrainIngestionJobInput {
   readonly id?: string;
+  readonly scope: BrainScope;
   readonly sourceId: string;
   readonly version: string;
   readonly operation: BrainIngestionOperation;
@@ -301,12 +303,14 @@ export interface BrainEnqueueResult {
 }
 
 export interface BrainJobClaimInput {
+  readonly scope: BrainScope;
   readonly workerId: string;
   readonly now: string;
   readonly leaseMs: number;
 }
 
 export interface BrainJobMutationInput {
+  readonly scope: BrainScope;
   readonly jobId: string;
   readonly claimToken: string;
   readonly now: string;

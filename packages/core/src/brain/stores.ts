@@ -14,6 +14,7 @@ import type {
   BrainSourceListResult,
   BrainSourceRef,
   BrainSourceVersion,
+  BrainScope,
   BrainVersionRef,
 } from "./types.js";
 
@@ -61,7 +62,10 @@ export interface BrainChunkStore {
 export interface BrainIngestionJobStore {
   /** Enqueues by dedupeKey and reports whether a new job was created. */
   enqueue(job: BrainIngestionJob): Promise<BrainEnqueueResult>;
-  get(jobId: string): Promise<BrainIngestionJob | null>;
+  get(ref: {
+    readonly scope: BrainScope;
+    readonly jobId: string;
+  }): Promise<BrainIngestionJob | null>;
   claimNext(input: BrainJobClaimInput): Promise<BrainIngestionJob | null>;
   complete(input: BrainJobMutationInput): Promise<BrainIngestionJob>;
   fail(input: BrainJobFailureInput): Promise<BrainIngestionJob>;

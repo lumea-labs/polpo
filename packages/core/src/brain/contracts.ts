@@ -694,6 +694,7 @@ function normalizeIngestionJobRecord(
   }
   return Object.freeze({
     id: requiredText(input.id, "id", 512, "invalid_ingestion_job"),
+    scope: normalizeBrainScope(input.scope),
     sourceId: requiredText(
       input.sourceId,
       "sourceId",

@@ -333,6 +333,7 @@ describe("Brain contracts", () => {
   it("creates idempotent ingestion jobs and requires claim identity in processing", () => {
     const pending = createBrainIngestionJob({
       id: "job-1",
+      scope: { kind: "project", subjectId: "project-1" },
       sourceId: "source-1",
       version: "v1",
       operation: "ingest",
@@ -341,6 +342,10 @@ describe("Brain contracts", () => {
     }, { now: () => now });
     expect(pending.status).toBe("pending");
     expect(pending.attempt).toBe(0);
+    expect(pending.scope).toEqual({
+      kind: "project",
+      subjectId: "project-1",
+    });
 
     const processing = createBrainIngestionJob({
       ...pending,
@@ -360,6 +365,10 @@ describe("Brain contracts", () => {
     expect(() => createBrainIngestionJob({
       ...pending,
       attempt: 4,
+    })).toThrow(BrainContractError);
+    expect(() => createBrainIngestionJob({
+      ...pending,
+      scope: { kind: "project", subjectId: "" },
     })).toThrow(BrainContractError);
   });
 
