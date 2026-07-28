@@ -308,6 +308,39 @@ describe("InMemoryScheduleStore run conformance", () => {
     expect((await fixture.store.getRun(run.id))?.attempts).toBe(1);
   });
 
+  it("enforces max concurrency atomically across different runs", async () => {
+    const fixture = createFixture();
+    const schedule = await fixture.store.create(scheduleInput({
+      policy: { maxConcurrency: 1 },
+    }));
+    const firstRun = await fixture.store.createRun({
+      scheduleId: schedule.id,
+      occurrenceAt: "2026-07-28T11:00:00.000Z",
+      triggerId: "delivery-1",
+      idempotencyKey: "key-1",
+    });
+    const secondRun = await fixture.store.createRun({
+      scheduleId: schedule.id,
+      occurrenceAt: "2026-07-28T12:00:00.000Z",
+      triggerId: "delivery-2",
+      idempotencyKey: "key-2",
+    });
+
+    const [first, second] = await Promise.all([
+      fixture.store.claimRun(
+        firstRun.id,
+        lease(fixture, "worker-1", "token-1"),
+      ),
+      fixture.store.claimRun(
+        secondRun.id,
+        lease(fixture, "worker-2", "token-2"),
+      ),
+    ]);
+
+    expect([first, second].filter(Boolean)).toHaveLength(1);
+    expect(await fixture.store.countActiveRuns(schedule.id)).toBe(1);
+  });
+
   it("reclaims an expired lease and rejects the stale worker completion", async () => {
     const fixture = createFixture();
     const schedule = await fixture.store.create(scheduleInput());
@@ -453,7 +486,9 @@ describe("InMemoryScheduleStore run conformance", () => {
 
   it("counts only active unexpired runs for concurrency", async () => {
     const fixture = createFixture();
-    const schedule = await fixture.store.create(scheduleInput());
+    const schedule = await fixture.store.create(scheduleInput({
+      policy: { maxConcurrency: 2 },
+    }));
     const first = await fixture.store.createRun({
       scheduleId: schedule.id,
       occurrenceAt: "2026-07-28T11:00:00.000Z",
