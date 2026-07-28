@@ -570,6 +570,7 @@ export async function handleProjectLoopCompletion(c: any, options: {
       sessionId,
       user: body.user,
       runtimePlan,
+      signal: c.req.raw.signal,
     });
     finalText = run.text;
     runUsage = run.usage;

@@ -20,7 +20,13 @@ import { streamSSE } from "hono/streaming";
 import type { ChatSessionInjection } from "@polpo-ai/core";
 import type { ChatCompletionExecution } from "./chat-handler.js";
 import { agentConfigForModelAttempt, completionResolvedModelInfo, MAX_TURNS } from "./agent-step-runner.js";
-import { completionResponse, modelErrorEnvelope, modelNotFoundEnvelope, sseChunk } from "./sse.js";
+import {
+  completionResponse,
+  guardrailErrorEnvelope,
+  modelErrorEnvelope,
+  modelNotFoundEnvelope,
+  sseChunk,
+} from "./sse.js";
 import {
   persistAssistantMessage,
   emitFileChanged,
@@ -285,9 +291,10 @@ export function streamChatViaRun(c: Context, execution: ChatCompletionExecution)
       await writeChain;
 
       if (state.errorEvent && !abortController.signal.aborted) {
+        const guardrail = guardrailErrorEnvelope(state.errorEvent);
         const notFound = modelNotFoundEnvelope(state.errorEvent, m?.id, body.agent);
-        const error = notFound ?? modelErrorEnvelope(state.errorEvent);
-        const text = notFound ? "" : `Model request failed: ${error.message}`;
+        const error = guardrail ?? notFound ?? modelErrorEnvelope(state.errorEvent);
+        const text = guardrail || notFound ? "" : `Model request failed: ${error.message}`;
         if (text) {
           state.finalText += text;
           await stream.writeSSE({ data: sseChunk(completionId, { content: text }) });
@@ -304,9 +311,12 @@ export function streamChatViaRun(c: Context, execution: ChatCompletionExecution)
       }
     } catch (err) {
       if (!((err instanceof DOMException && err.name === "AbortError") || abortController.signal.aborted)) {
+        const guardrail = guardrailErrorEnvelope(err);
         const notFound = modelNotFoundEnvelope(err, m?.id, body.agent);
-        if (notFound) {
-          await stream.writeSSE({ data: sseChunk(completionId, {}, "stop", { error: notFound }) });
+        if (guardrail || notFound) {
+          await stream.writeSSE({
+            data: sseChunk(completionId, {}, "stop", { error: guardrail ?? notFound }),
+          });
           await stream.writeSSE({ data: "[DONE]" });
         } else {
           const error = modelErrorEnvelope(err);
@@ -339,7 +349,10 @@ export async function runNonStreamingChatViaRun(c: Context, execution: ChatCompl
   const onEvent = makeOnEvent(execution, state, () => { /* no SSE in non-streaming mode */ });
 
   try {
-    const outcome = await deps.runChatViaRun!(inject, { onEvent, signal: undefined });
+    const outcome = await deps.runChatViaRun!(inject, {
+      onEvent,
+      signal: c.req.raw.signal,
+    });
     captureRunFailure(state, outcome);
 
     if (state.clientReturn) {
@@ -356,6 +369,13 @@ export async function runNonStreamingChatViaRun(c: Context, execution: ChatCompl
       });
     }
     if (state.errorEvent) {
+      const guardrail = guardrailErrorEnvelope(state.errorEvent);
+      if (guardrail) {
+        return c.json(
+          { error: guardrail },
+          (guardrail.code === "guardrail_approval_required" ? 409 : 403) as any,
+        );
+      }
       const notFound = modelNotFoundEnvelope(state.errorEvent, m?.id, body.agent);
       if (notFound) return c.json({ error: notFound }, 400 as any);
       const error = modelErrorEnvelope(state.errorEvent);
@@ -364,6 +384,13 @@ export async function runNonStreamingChatViaRun(c: Context, execution: ChatCompl
     }
     return c.json(completionResponse(completionId, state.finalText, state.totalUsage as any));
   } catch (err) {
+    const guardrail = guardrailErrorEnvelope(err);
+    if (guardrail) {
+      return c.json(
+        { error: guardrail },
+        (guardrail.code === "guardrail_approval_required" ? 409 : 403) as any,
+      );
+    }
     const notFound = modelNotFoundEnvelope(err, m?.id, body.agent);
     if (notFound) return c.json({ error: notFound }, 400 as any);
     const error = modelErrorEnvelope(err);
@@ -423,9 +450,10 @@ export async function runChatTurnViaRun(
 
   let error: ChatViaRunTurnResult["error"] | undefined;
   if (state.errorEvent) {
+    const guardrail = guardrailErrorEnvelope(state.errorEvent);
     const notFound = modelNotFoundEnvelope(state.errorEvent, m?.id, body.agent);
-    error = notFound ?? modelErrorEnvelope(state.errorEvent);
-    if (!notFound && !state.finalText) {
+    error = guardrail ?? notFound ?? modelErrorEnvelope(state.errorEvent);
+    if (!guardrail && !notFound && !state.finalText) {
       state.finalText = `Model request failed: ${error.message}`;
     }
   }

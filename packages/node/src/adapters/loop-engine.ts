@@ -99,6 +99,20 @@ function modelSelectionForResolvedModel(model: SpawnPrep["model"]): string {
   return `${model.provider}/${model.id}`;
 }
 
+function runtimeErrorMetadata(error: unknown): Record<string, unknown> {
+  const raw = error as any;
+  return {
+    name: raw?.name ?? raw?.constructor?.name,
+    message: raw?.message ?? String(error),
+    statusCode: raw?.statusCode ?? raw?.cause?.statusCode,
+    responseBody: raw?.responseBody ?? raw?.cause?.responseBody,
+    modelId: raw?.modelId ?? raw?.cause?.modelId,
+    code: raw?.code ?? raw?.cause?.code,
+    type: raw?.type ?? raw?.cause?.type,
+    data: raw?.data ?? raw?.cause?.data,
+  };
+}
+
 // ─── Durable turns ─────────────────────────────────────
 
 /**
@@ -529,20 +543,10 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
             break;
           }
           case "error": {
-            const raw = event.error as any;
             emitTranscript({
               type: "error",
               message: event.error instanceof Error ? event.error.message : String(event.error),
-              error: {
-                name: raw?.name ?? raw?.constructor?.name,
-                message: raw?.message ?? String(event.error),
-                statusCode: raw?.statusCode ?? raw?.cause?.statusCode,
-                responseBody: raw?.responseBody ?? raw?.cause?.responseBody,
-                modelId: raw?.modelId ?? raw?.cause?.modelId,
-                code: raw?.code ?? raw?.cause?.code,
-                type: raw?.type ?? raw?.cause?.type,
-                data: raw?.data ?? raw?.cause?.data,
-              },
+              error: runtimeErrorMetadata(event.error),
             });
             break;
           }
@@ -898,7 +902,11 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
     } catch (err) {
       alive = false;
       const msg = err instanceof Error ? err.message : String(err);
-      emitTranscript({ type: "error", message: msg });
+      emitTranscript({
+        type: "error",
+        message: msg,
+        error: runtimeErrorMetadata(err),
+      });
       return {
         exitCode: 1,
         stdout: "",

@@ -382,7 +382,7 @@ describe("completionRoutes loop agent-step tool streaming", () => {
     };
   }
 
-  it("enforces middleware on ordinary agent-direct model tool calls", async () => {
+  it("preserves model profile resolution while enforcing middleware on direct tool calls", async () => {
     streamTextMock
       .mockReturnValueOnce(mockStreamResult({
         toolCalls: [{
@@ -406,6 +406,31 @@ describe("completionRoutes loop agent-step tool streaming", () => {
       }));
 
     const deps = makeDeps();
+    deps.getAgents = async () => [{
+      name: "coder",
+      model: { profile: "balanced" },
+      allowedModelProfiles: ["balanced"],
+      assignedLoops: ["coding-loop"],
+      allowedTools: ["bash"],
+    }];
+    deps.getConfig = () => ({
+      settings: {
+        modelProfiles: {
+          balanced: "test/profile-model",
+        },
+      },
+    } as any);
+    const resolveAgentModel = vi.fn(async () => ({
+      model: {
+        id: "profile-model",
+        provider: "test",
+        aiModel: "test-model",
+        contextWindow: 100_000,
+        maxTokens: 1024,
+      },
+      providerOptions: undefined,
+    }));
+    deps.resolveAgentModel = resolveAgentModel;
     const executor = vi.fn(async (_name: string, args: Record<string, unknown>) =>
       `ran ${args.command}`
     );
@@ -432,11 +457,15 @@ describe("completionRoutes loop agent-step tool streaming", () => {
     });
 
     expect(res.status).toBe(200);
+    expect(resolveAgentModel).toHaveBeenCalledWith(
+      expect.objectContaining({ model: "test/profile-model" }),
+      undefined,
+    );
     expect(executor).toHaveBeenCalledOnce();
     expect(executor).toHaveBeenCalledWith(
       "bash",
       { command: "echo guarded" },
-      { callId: "call_bash", signal: undefined },
+      { callId: "call_bash", signal: expect.any(AbortSignal) },
     );
     const json = await res.json() as any;
     expect(json.choices[0].message.content).toBe("done");

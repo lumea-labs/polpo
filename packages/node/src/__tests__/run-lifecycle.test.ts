@@ -224,6 +224,7 @@ describe("executeRun — shared run lifecycle", () => {
     ]));
     const store = new InMemoryRunStore();
     const config = makeConfig();
+    const events: Record<string, unknown>[] = [];
     const evaluated = vi.fn(() => ({
       action: "block" as const,
       risk: "critical" as const,
@@ -240,12 +241,21 @@ describe("executeRun — shared run lifecycle", () => {
       pid: 4244,
       configPath: `memory://${config.runId}`,
       runToolMiddleware: createRunToolMiddleware(engine),
+      onEvent: (event) => events.push(event),
     });
 
     expect(outcome.status).toBe("failed");
     expect(outcome.result.stderr).toContain("blocked by policy");
     expect(evaluated).toHaveBeenCalledOnce();
     expect(existsSync(join(cwd, "blocked.txt"))).toBe(false);
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "error",
+      error: expect.objectContaining({
+        name: "GuardrailBlockedError",
+        code: "guardrail_blocked",
+        message: "blocked by policy",
+      }),
+    }));
   });
 
   test("a serialized policy pack protects task tools without an injected function", async () => {

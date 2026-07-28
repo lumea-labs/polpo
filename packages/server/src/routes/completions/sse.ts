@@ -155,6 +155,24 @@ export function guardrailErrorEnvelope(
       code: "guardrail_blocked",
     };
   }
+  if (err && typeof err === "object") {
+    const raw = err as Record<string, unknown>;
+    const nested = raw.error && typeof raw.error === "object"
+      ? raw.error as Record<string, unknown>
+      : undefined;
+    const code = raw.code ?? nested?.code;
+    const message = raw.message ?? nested?.message;
+    if (
+      (code === "guardrail_blocked" || code === "guardrail_approval_required") &&
+      typeof message === "string"
+    ) {
+      return {
+        message,
+        type: "guardrail_error",
+        code,
+      };
+    }
+  }
   return null;
 }
 

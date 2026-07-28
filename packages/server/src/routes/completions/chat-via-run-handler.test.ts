@@ -429,6 +429,75 @@ describe("chat via Run driver", () => {
     });
   });
 
+  it("preserves typed guardrail failures across Run-backed HTTP and channel surfaces", async () => {
+    const blockedRun = async (_inject: unknown, hooks: any) => {
+      hooks.onEvent({
+        type: "error",
+        message: "blocked by policy",
+        error: {
+          name: "GuardrailBlockedError",
+          code: "guardrail_blocked",
+          message: "blocked by policy",
+        },
+      });
+      return {
+        status: "failed",
+        result: { exitCode: 1, stdout: "", stderr: "blocked by policy" },
+      };
+    };
+    const deps = baseDeps({ runChatViaRun: blockedRun });
+    const app = completionRoutes(() => deps);
+    const requestBody = {
+      agent: "agent-1",
+      messages: [{ role: "user", content: "run a blocked tool" }],
+    };
+
+    const streamed = await app.request("/", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ ...requestBody, stream: true }),
+    });
+    expect(streamed.status).toBe(200);
+    const chunks = parseSse(await streamed.text());
+    expect(chunks.map((chunk) => chunk.choices?.[0]?.delta?.content).filter(Boolean))
+      .not.toContain(expect.stringContaining("Model request failed"));
+    expect(chunks.find((chunk) => chunk.choices?.[0]?.error)?.choices[0].error)
+      .toEqual({
+        message: "blocked by policy",
+        type: "guardrail_error",
+        code: "guardrail_blocked",
+      });
+
+    const nonStreaming = await app.request("/", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ ...requestBody, stream: false }),
+    });
+    expect(nonStreaming.status).toBe(403);
+    await expect(nonStreaming.json()).resolves.toEqual({
+      error: {
+        message: "blocked by policy",
+        type: "guardrail_error",
+        code: "guardrail_blocked",
+      },
+    });
+
+    const channel = await runConversationTurn(deps, {
+      body: {
+        ...requestBody,
+        stream: false,
+        user: "telegram:123",
+      },
+      runtime: { surface: "channel", source: "channel" },
+    });
+    expect(channel.error).toEqual({
+      message: "blocked by policy",
+      type: "guardrail_error",
+      code: "guardrail_blocked",
+    });
+    expect(channel.text).toBe("");
+  });
+
   it("does not route orchestrator mode through an agent-only Run injection", async () => {
     const runChatViaRun = vi.fn();
     const deps = baseDeps({

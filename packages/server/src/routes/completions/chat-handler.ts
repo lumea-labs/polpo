@@ -795,6 +795,7 @@ export async function runNonStreamingChatCompletion(c: any, exec: ChatCompletion
 
         const result = await effectiveToolExecutor(call.toolName, callArgs, {
           callId: call.toolCallId,
+          signal: c.req.raw.signal,
         });
         const isError = result.startsWith("Error:");
         emitFileChanged(call.toolName, callArgs, result, deps.emit);
