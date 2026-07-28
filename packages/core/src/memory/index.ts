@@ -44,6 +44,44 @@ export {
 } from "./ranking.js";
 export { InMemoryMemoryItemStore } from "./in-memory-store.js";
 export {
+  MEMORY_EXTRACTION_AUDIT_TYPES,
+  MEMORY_EXTRACTION_PROPOSAL_ACTIONS,
+  MEMORY_EXTRACTION_STATUSES,
+  createMemoryExtractionCandidate,
+  createMemoryExtractionDecision,
+  memoryExtractionCandidateIdentity,
+  normalizeMemoryExtractionAuditEvent,
+  normalizeMemoryExtractionCandidate,
+} from "./extraction.js";
+export type {
+  CreateMemoryExtractionCandidateInput,
+  MemoryExtractionApplyInput,
+  MemoryExtractionAuditEvent,
+  MemoryExtractionAuditType,
+  MemoryExtractionCandidate,
+  MemoryExtractionCandidateFactoryOptions,
+  MemoryExtractionCandidateStore,
+  MemoryExtractionDecision,
+  MemoryExtractionDecisionInput,
+  MemoryExtractionListQuery,
+  MemoryExtractionMetadataValue,
+  MemoryExtractionProposal,
+  MemoryExtractionProposalAction,
+  MemoryExtractionProposeResult,
+  MemoryExtractionReviewer,
+  MemoryExtractionSnapshotNamespace,
+  MemoryExtractionSource,
+  MemoryExtractionStatus,
+  MemoryExtractionStoreContext,
+  MemoryExtractionStoreSnapshot,
+} from "./extraction.js";
+export {
+  InMemoryMemoryExtractionStore,
+} from "./in-memory-extraction-store.js";
+export type {
+  InMemoryMemoryExtractionStoreOptions,
+} from "./in-memory-extraction-store.js";
+export {
   MEMORY_KINDS,
   MEMORY_PROVENANCE_SOURCES,
   MEMORY_SCOPE_KINDS,
