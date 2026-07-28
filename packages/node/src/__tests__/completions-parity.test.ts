@@ -37,6 +37,7 @@ const POLPO_CONFIG = JSON.stringify({
 let tmpDir: string;
 let app: any;
 let orchestrator: Orchestrator;
+let sseBridge: { dispose(): void };
 
 function setMockModel(m: MockLanguageModelV3) { activeMockModel = m; }
 function setChatExecution(mode: "inline" | "run") {
@@ -99,12 +100,14 @@ beforeAll(async () => {
     name: "test-team",
     agents: [{ name: "agent-1", role: "Test agent" }],
   });
-  const sseBridge = new SSEBridge(orchestrator);
+  sseBridge = new SSEBridge(orchestrator);
   sseBridge.start();
   app = createApp(orchestrator, sseBridge);
 });
 
 afterAll(async () => {
+  sseBridge?.dispose();
+  await orchestrator?.gracefulStop();
   if (tmpDir) await rm(tmpDir, { recursive: true, force: true });
 });
 
