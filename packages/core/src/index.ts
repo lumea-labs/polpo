@@ -63,6 +63,9 @@ export type {
 // ── Runtime planning (host-neutral, serializable execution decisions) ───
 export * from "./runtime-plan/index.js";
 
+// ── Scheduling v2 (host-neutral contracts and validation) ───────────────
+export * from "./scheduling/index.js";
+
 // ── Events (pure type definitions only, TypedEmitter lives in shell) ─────
 export * from "./events.js";
 

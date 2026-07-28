@@ -42,6 +42,10 @@
       "types": "./dist/runtime-plan/index.d.ts",
       "import": "./dist/runtime-plan/index.js"
     },
+    "./scheduling": {
+      "types": "./dist/scheduling/index.d.ts",
+      "import": "./dist/scheduling/index.js"
+    },
     "./hooks": {
       "types": "./dist/hooks.d.ts",
       "import": "./dist/hooks.js"
