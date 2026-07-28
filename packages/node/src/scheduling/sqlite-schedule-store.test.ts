@@ -188,6 +188,33 @@ describe("SQLiteScheduleStore", () => {
     second.close();
   });
 
+  it("atomically rejects starting a claimed run after pause", async () => {
+    const path = await tempDatabase();
+    const now = new Date("2026-07-28T10:00:00.000Z");
+    const first = await SQLiteScheduleStore.open(path, { now: () => now });
+    const second = await SQLiteScheduleStore.open(path, { now: () => now });
+    const schedule = await first.create(input({ id: "schedule-1" }));
+    const run = await first.createRun({
+      scheduleId: schedule.id,
+      occurrenceAt: "2026-07-28T11:00:00.000Z",
+      triggerId: "delivery-1",
+      idempotencyKey: "key-1",
+    });
+    const currentLease = lease(now);
+    await first.claimRun(run.id, currentLease);
+    await second.update(schedule.id, { status: "paused" });
+
+    await expect(
+      first.startRun(run.id, currentLease),
+    ).rejects.toBeInstanceOf(ScheduleInvalidStateError);
+    expect(await second.getRun(run.id)).toMatchObject({
+      status: "claimed",
+      lease: currentLease,
+    });
+    first.close();
+    second.close();
+  });
+
   it("persists lease renewal, start, release, and terminal completion", async () => {
     const path = await tempDatabase();
     const now = new Date("2026-07-28T10:00:00.000Z");

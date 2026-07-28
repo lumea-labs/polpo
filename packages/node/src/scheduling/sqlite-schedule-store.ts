@@ -465,6 +465,12 @@ export class SQLiteScheduleStore implements ScheduleStore {
       const now = this.now();
       const normalizedLease = normalizeScheduleLease(lease, now);
       const run = this.requireOwnedRun(id, normalizedLease, now);
+      const schedule = this.requireSchedule(run.scheduleId);
+      if (schedule.status !== "active") {
+        throw new ScheduleInvalidStateError(
+          `Schedule "${schedule.id}" is not active`,
+        );
+      }
       if (run.status !== "claimed") {
         throw new ScheduleInvalidStateError(
           `Schedule run "${id}" must be claimed before it can start`,

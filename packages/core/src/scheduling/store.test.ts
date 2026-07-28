@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   InMemoryScheduleStore,
   ScheduleConflictError,
+  ScheduleInvalidStateError,
   ScheduleNotFoundError,
   type CreateScheduleInput,
   type ScheduleLease,
@@ -357,6 +358,28 @@ describe("InMemoryScheduleStore run conformance", () => {
     expect(await fixture.store.startRun(run.id, renewed)).toMatchObject({
       status: "running",
       startedAt: "2026-07-28T10:00:00.000Z",
+    });
+  });
+
+  it("does not start claimed work after the schedule is paused", async () => {
+    const fixture = createFixture();
+    const schedule = await fixture.store.create(scheduleInput());
+    const run = await fixture.store.createRun({
+      scheduleId: schedule.id,
+      occurrenceAt: "2026-07-28T11:00:00.000Z",
+      triggerId: "delivery-1",
+      idempotencyKey: "key-1",
+    });
+    const currentLease = lease(fixture);
+    await fixture.store.claimRun(run.id, currentLease);
+    await fixture.store.update(schedule.id, { status: "paused" });
+
+    await expect(
+      fixture.store.startRun(run.id, currentLease),
+    ).rejects.toBeInstanceOf(ScheduleInvalidStateError);
+    expect(await fixture.store.getRun(run.id)).toMatchObject({
+      status: "claimed",
+      lease: currentLease,
     });
   });
 
