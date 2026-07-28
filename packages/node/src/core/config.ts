@@ -13,6 +13,7 @@ import {
   modelProfileRegistrySchema,
   modelSelectionSchema,
 } from "@polpo-ai/core/schemas";
+import { normalizeRuntimeGuardrailSettings } from "@polpo-ai/core/guardrails";
 import { getPolpoDir } from "./constants.js";
 
 const DEFAULT_SETTINGS: PolpoSettings = {
@@ -186,6 +187,7 @@ function parseSettings(raw: any): PolpoSettings {
   if (raw?.taskExecution && ["subprocess", "in-process"].includes(raw.taskExecution)) {
     settings.taskExecution = raw.taskExecution;
   }
+  settings.guardrails = normalizeRuntimeGuardrailSettings(raw?.guardrails);
   // Chat completions use the shared run lifecycle by default. Keep "inline"
   // as an explicit compatibility escape hatch while the legacy path exists.
   settings.chatExecution = ["inline", "run"].includes(raw?.chatExecution)

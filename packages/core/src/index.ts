@@ -103,6 +103,9 @@ export type {
 // ── Runtime planning (host-neutral, serializable execution decisions) ───
 export * from "./runtime-plan/index.js";
 
+// ── Guardrails (host-neutral policy engine + tool middleware) ───────────
+export * from "./guardrails/index.js";
+
 // ── Events (pure type definitions only, TypedEmitter lives in shell) ─────
 export * from "./events.js";
 

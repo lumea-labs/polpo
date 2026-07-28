@@ -39,6 +39,10 @@ import { skillRoutes } from "./routes/skills.js";
 import { fileRoutes } from "./routes/files.js";
 import { createLocalCustomToolRuntime } from "../custom-tools/runtime.js";
 import { resolveNodeModelOptions } from "../llm/model-runtime-options.js";
+import {
+  createConfiguredRunToolMiddleware,
+  type RunToolMiddleware,
+} from "@polpo-ai/core/guardrails";
 
 function readRuntimeVersion(): string {
   try {
@@ -58,6 +62,8 @@ export interface AppOptions {
   corsOrigins?: string[];
   workDir?: string;
   onInitialize?: (workDir: string) => Promise<void>;
+  /** Optional process-local override for completion tool guardrails. */
+  runToolMiddleware?: RunToolMiddleware;
 }
 
 /**
@@ -120,6 +126,8 @@ export function createApp(orchestrator: Orchestrator, sseBridge: SSEBridge, opts
     getMemoryStore: () => o.getMemoryStore(),
     getSessionStore: () => o.getSessionStore(),
     getStore: () => o.getStore(),
+    runToolMiddleware: opts?.runToolMiddleware
+      ?? createConfiguredRunToolMiddleware(o.getConfig()?.settings?.guardrails),
     emit: (event: string, data: any) => o.emit(event as any, data),
     resolveAgentModel: async (agentConfig: any, reasoning?: string) => {
       const { buildResolvedModelProviderOptions, resolveModel } = await import("@polpo-ai/llm");

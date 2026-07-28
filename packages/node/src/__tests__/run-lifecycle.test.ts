@@ -70,6 +70,10 @@ import { executeRun, RunActivityLog } from "../core/run-lifecycle.js";
 import { InMemoryRunStore } from "./fixtures.js";
 import type { AgentConfig, Task, RunnerConfig } from "@polpo-ai/core/types";
 import type { LoopResumeState } from "@polpo-ai/core/loop-run-store";
+import {
+  RuntimeGuardrailEngine,
+  createRunToolMiddleware,
+} from "@polpo-ai/core/guardrails";
 
 // ── Helpers ─────────────────────────────────────────────
 
@@ -181,6 +185,94 @@ describe("executeRun — shared run lifecycle", () => {
     expect(events).toContain("tool_result");
     expect(events).toContain("assistant");
     expect(log[0].pid).toBe(4242);
+  });
+
+  test("task tools execute through the shared guardrail middleware with rewritten arguments", async () => {
+    setMockModel(mockTurnSequenceModel([
+      { type: "tool-call", toolName: "write", args: { path: "raw.txt", content: "hello" } },
+      { type: "text", text: "guarded" },
+    ]));
+    const store = new InMemoryRunStore();
+    const config = makeConfig();
+    const engine = new RuntimeGuardrailEngine([{
+      id: "rewrite-path",
+      phases: ["tool.before"],
+      evaluate: (input) => ({
+        action: "rewrite",
+        risk: "low",
+        reason: "canonical output",
+        value: { ...(input.value as Record<string, unknown>), path: "guarded.txt" },
+      }),
+    }]);
+
+    const outcome = await executeRun(config, {
+      runStore: store,
+      pid: 4243,
+      configPath: `memory://${config.runId}`,
+      runToolMiddleware: createRunToolMiddleware(engine),
+    });
+
+    expect(outcome.status).toBe("completed");
+    expect(existsSync(join(cwd, "raw.txt"))).toBe(false);
+    expect(await readFile(join(cwd, "guarded.txt"), "utf-8")).toBe("hello");
+  });
+
+  test("a blocked task tool never executes and fails the run without retrying", async () => {
+    setMockModel(mockTurnSequenceModel([
+      { type: "tool-call", toolName: "write", args: { path: "blocked.txt", content: "no" } },
+      { type: "text", text: "must not continue" },
+    ]));
+    const store = new InMemoryRunStore();
+    const config = makeConfig();
+    const evaluated = vi.fn(() => ({
+      action: "block" as const,
+      risk: "critical" as const,
+      reason: "blocked by policy",
+    }));
+    const engine = new RuntimeGuardrailEngine([{
+      id: "block-write",
+      phases: ["tool.before"],
+      evaluate: evaluated,
+    }]);
+
+    const outcome = await executeRun(config, {
+      runStore: store,
+      pid: 4244,
+      configPath: `memory://${config.runId}`,
+      runToolMiddleware: createRunToolMiddleware(engine),
+    });
+
+    expect(outcome.status).toBe("failed");
+    expect(outcome.result.stderr).toContain("blocked by policy");
+    expect(evaluated).toHaveBeenCalledOnce();
+    expect(existsSync(join(cwd, "blocked.txt"))).toBe(false);
+  });
+
+  test("a serialized policy pack protects task tools without an injected function", async () => {
+    setMockModel(mockTurnSequenceModel([
+      { type: "tool-call", toolName: "bash", args: { command: "rm -rf /" } },
+      { type: "text", text: "must not continue" },
+    ]));
+    const store = new InMemoryRunStore();
+    const config = makeConfig({
+      guardrails: { toolPolicyPack: "default" },
+    });
+    const execute = vi.fn(async () => ({
+      stdout: "must not execute",
+      stderr: "",
+      exitCode: 0,
+    }));
+
+    const outcome = await executeRun(config, {
+      runStore: store,
+      pid: 4245,
+      configPath: `memory://${config.runId}`,
+      shell: { execute },
+    });
+
+    expect(outcome.status).toBe("failed");
+    expect(outcome.result.stderr).toContain("Potentially destructive");
+    expect(execute).not.toHaveBeenCalled();
   });
 
   test("onEvent (F1a): a streaming host receives each transcript entry live, teed alongside persistence", async () => {

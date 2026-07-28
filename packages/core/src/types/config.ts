@@ -9,6 +9,7 @@ import type { ApprovalGate, SLAConfig } from "./mission.js";
 import type { NotificationsConfig, EscalationPolicy } from "./notifications.js";
 import type { LoopResumeState } from "../loop/run-store.js";
 import type { RuntimeSandboxOptions } from "../runtime-sandbox.js";
+import type { RuntimeGuardrailSettings } from "../guardrails/types.js";
 
 // === Runner Config ===
 
@@ -17,6 +18,8 @@ export interface RunnerConfig {
   executionMode?: ExecutionMode;
   /** Resolved runtime sandbox policy for the host sandbox provider. */
   sandbox?: RuntimeSandboxOptions;
+  /** Resolved serializable OSS guardrail pack. Absent means disabled. */
+  guardrails?: RuntimeGuardrailSettings;
   runId: string;
   taskId: string;
   agent: AgentConfig;
@@ -212,6 +215,8 @@ export interface PolpoSettings {
   taskExecution?: ExecutionMode;
   /** Default runtime sandbox policy. Request/task overrides beat agent, which beats settings. */
   sandbox?: RuntimeSandboxOptions;
+  /** Runtime tool guardrails. Absent means disabled. */
+  guardrails?: RuntimeGuardrailSettings;
   /** How chat completions execute. Default: "run" through the shared
    *  `executeRun` lifecycle + loop-engine so chat and task share the same
    *  durable runtime. "inline" keeps the older completions-route loop as an

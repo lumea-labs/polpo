@@ -18,6 +18,10 @@ import type {
 import type { CompletionRequestBody } from "./schemas.js";
 import { convertMessages, extractText } from "./message-mapping.js";
 import { toAIToolChoice } from "./tool-mapping.js";
+import {
+  createGuardedCompletionToolExecutor,
+  type CompletionToolExecutor,
+} from "./tool-guardrails.js";
 import type { ChatCompletionExecution } from "./chat-handler.js";
 import {
   agentConfigForModelPrimary,
@@ -178,7 +182,7 @@ export async function prepareChatCompletionExecution(
   let modelSelection: ModelSelection | undefined;
   let modelToolChoice: unknown | undefined;
   let effectiveTools: any[];
-  let effectiveToolExecutor: (name: string, args: Record<string, unknown>) => Promise<string>;
+  let effectiveToolExecutor: CompletionToolExecutor;
   let extraAiTools: Record<string, any> | undefined;
   let isInteractiveFn: ((name: string) => boolean) | undefined;
   let projectLoopRuntime: { agentConfig: any; projectLoop: ProjectLoopConfig } | undefined;
@@ -349,6 +353,21 @@ export async function prepareChatCompletionExecution(
     if (lastUserMsg && sessionId) {
       await sessionStore.addMessage(sessionId, "user", lastUserMsg.content);
     }
+  }
+
+  if (!projectLoopRuntime) {
+    effectiveToolExecutor = createGuardedCompletionToolExecutor({
+      executor: effectiveToolExecutor,
+      tools: effectiveTools,
+      middleware: deps.runToolMiddleware,
+      context: {
+        planId: runtimePlan?.id,
+        surface: runtimePlan?.surface,
+        source: runtimePlan?.source,
+        agent: resolvedAgentConfig?.name,
+        sessionId: sessionId ?? undefined,
+      },
+    });
   }
 
   if (projectLoopRuntime) {

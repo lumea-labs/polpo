@@ -12,6 +12,10 @@ vi.mock("ai", () => ({
 }));
 
 import { completionRoutes, type CompletionRouteDeps } from "./completions.js";
+import {
+  RuntimeGuardrailEngine,
+  createRunToolMiddleware,
+} from "@polpo-ai/core";
 
 function parseSseJsonChunks(body: string): any[] {
   return body
@@ -377,6 +381,66 @@ describe("completionRoutes loop agent-step tool streaming", () => {
       }),
     };
   }
+
+  it("enforces middleware on ordinary agent-direct model tool calls", async () => {
+    streamTextMock
+      .mockReturnValueOnce(mockStreamResult({
+        toolCalls: [{
+          toolCallId: "call_bash",
+          toolName: "bash",
+          input: { command: "echo raw" },
+        }],
+        responseMessages: [{
+          role: "assistant",
+          content: [{
+            type: "tool-call",
+            toolCallId: "call_bash",
+            toolName: "bash",
+            input: { command: "echo raw" },
+          }],
+        }],
+      }))
+      .mockReturnValueOnce(mockStreamResult({
+        text: "done",
+        responseMessages: [{ role: "assistant", content: [{ type: "text", text: "done" }] }],
+      }));
+
+    const deps = makeDeps();
+    const executor = vi.fn(async (_name: string, args: Record<string, unknown>) =>
+      `ran ${args.command}`
+    );
+    deps.resolveAgentTools = async () => ({ tools: [], executor });
+    deps.runToolMiddleware = createRunToolMiddleware(new RuntimeGuardrailEngine([{
+      id: "rewrite-command",
+      phases: ["tool.before"],
+      evaluate: () => ({
+        action: "rewrite",
+        risk: "low",
+        reason: "canonical command",
+        value: { command: "echo guarded" },
+      }),
+    }]));
+
+    const app = completionRoutes(() => deps);
+    const res = await app.request("/", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        agent: "coder",
+        messages: [{ role: "user", content: "run it" }],
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(executor).toHaveBeenCalledOnce();
+    expect(executor).toHaveBeenCalledWith(
+      "bash",
+      { command: "echo guarded" },
+      { callId: "call_bash", signal: undefined },
+    );
+    const json = await res.json() as any;
+    expect(json.choices[0].message.content).toBe("done");
+  });
 
   it("streams tool calls made inside an agent loop step before the macro step completes", async () => {
     streamTextMock

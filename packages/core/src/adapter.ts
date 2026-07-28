@@ -15,6 +15,7 @@ import type { LoopResumeState } from "@polpo-ai/core/loop-run-store";
 import type { ModelSelection } from "./model-policy.js";
 import type { RuntimePlan } from "./runtime-plan/index.js";
 import type { RuntimeSandboxOptions } from "./runtime-sandbox.js";
+import type { RunToolMiddleware } from "./guardrails/index.js";
 
 /**
  * Handle returned by the engine after spawning an agent.
@@ -56,6 +57,8 @@ export interface AgentHandle {
 export interface SpawnContext {
   /** Absolute path to the .polpo directory. Used for skill loading, logs, etc. */
   polpoDir: string;
+  /** Current logical run id, when the host has allocated one. */
+  runId?: string;
   /** Per-task output directory (.polpo/output/<taskId>/). Agents write deliverables here. */
   outputDir?: string;
   /** Email domain allowlist — restricts email_send tool to these domains. */
@@ -76,6 +79,12 @@ export interface SpawnContext {
   shell?: Shell;
   /** LLM gateway configuration — passed per-request for multi-tenant support. */
   gatewayConfig?: unknown;
+  /**
+   * Optional host-resolved guardrail middleware for locally executed tools.
+   * Hosts own policy configuration and rollout. Undefined preserves the
+   * historical direct execution path.
+   */
+  runToolMiddleware?: RunToolMiddleware;
   /**
    * Durable-turns checkpoint from a previous interrupted run. Single-session
    * loops seed their conversation history from it and continue at turn + 1;
@@ -156,7 +165,11 @@ export interface ChatSessionInjection {
   /** AI-SDK ToolSet (declaration-only) fed to streamText. */
   toolSet: Record<string, unknown>;
   /** Executes a tool call, returning the string result ("Error:" prefix on failure). */
-  executor: (name: string, args: Record<string, unknown>) => Promise<string>;
+  executor: (
+    name: string,
+    args: Record<string, unknown>,
+    options?: { callId?: string; signal?: AbortSignal },
+  ) => Promise<string>;
   /** Client-side tool names that interrupt the loop (returned to the caller). */
   clientSideToolNames: ReadonlySet<string>;
   /** Provider-executed tool names to record but not dispatch. */

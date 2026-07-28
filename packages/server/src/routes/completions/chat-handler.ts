@@ -27,7 +27,13 @@ import {
   type ResolvedModelInfo,
 } from "./agent-step-runner.js";
 import { appendModelResponseMessages } from "./message-mapping.js";
-import { completionResponse, modelErrorEnvelope, modelNotFoundEnvelope, sseChunk } from "./sse.js";
+import {
+  completionResponse,
+  guardrailErrorEnvelope,
+  modelErrorEnvelope,
+  modelNotFoundEnvelope,
+  sseChunk,
+} from "./sse.js";
 import {
   CLIENT_SIDE_TOOLS,
   CLIENT_SIDE_TOOL_NAMES,
@@ -37,6 +43,7 @@ import {
   recordProviderToolCall,
   toAITools,
 } from "./tool-mapping.js";
+import type { CompletionToolExecutor } from "./tool-guardrails.js";
 
 /** Resolved execution context for a standard (non-loop) chat completion. */
 export interface ChatCompletionExecution {
@@ -53,7 +60,7 @@ export interface ChatCompletionExecution {
   modelSelection?: ModelSelection;
   modelToolChoice?: unknown;
   effectiveTools: any[];
-  effectiveToolExecutor: (name: string, args: Record<string, unknown>) => Promise<string>;
+  effectiveToolExecutor: CompletionToolExecutor;
   /**
    * Provider-executed tools the host wants merged into the AI SDK tool
    * palette as-is. Polpo never invokes these locally — the SDK / model
@@ -419,7 +426,10 @@ export function streamChatCompletion(c: any, exec: ChatCompletionExecution): any
             }),
           });
 
-          const result = await effectiveToolExecutor(call.toolName, callArgs);
+          const result = await effectiveToolExecutor(call.toolName, callArgs, {
+            callId: call.toolCallId,
+            signal: abortController.signal,
+          });
           const isError = result.startsWith("Error:");
           emitFileChanged(call.toolName, callArgs, result, deps.emit);
 
@@ -468,8 +478,14 @@ export function streamChatCompletion(c: any, exec: ChatCompletionExecution): any
         // Friendly model_not_found surface — gateway returns 404 for
         // renamed/deprecated SKUs (e.g. xai/grok-4-fast after the 4.1
         // rename). Without this catch the error propagates as a 500.
+        const guardrailError = guardrailErrorEnvelope(err);
         const notFound = modelNotFoundEnvelope(err, m?.id, body.agent);
-        if (notFound) {
+        if (guardrailError) {
+          await stream.writeSSE({
+            data: sseChunk(completionId, {}, "stop", { error: guardrailError }),
+          });
+          await stream.writeSSE({ data: "[DONE]" });
+        } else if (notFound) {
           await stream.writeSSE({
             data: sseChunk(completionId, {}, "stop", { error: notFound }),
           });
@@ -777,7 +793,9 @@ export async function runNonStreamingChatCompletion(c: any, exec: ChatCompletion
           continue;
         }
 
-        const result = await effectiveToolExecutor(call.toolName, callArgs);
+        const result = await effectiveToolExecutor(call.toolName, callArgs, {
+          callId: call.toolCallId,
+        });
         const isError = result.startsWith("Error:");
         emitFileChanged(call.toolName, callArgs, result, deps.emit);
 
@@ -810,6 +828,14 @@ export async function runNonStreamingChatCompletion(c: any, exec: ChatCompletion
     // Friendly model_not_found surface — gateway returns 404 for
     // renamed/deprecated SKUs (e.g. xai/grok-4-fast after the 4.1
     // rename). Without this catch the error propagates as a 500.
+    const guardrailError = guardrailErrorEnvelope(err);
+    if (guardrailError) {
+      finalText = finalText || guardrailError.message;
+      return c.json(
+        { error: guardrailError },
+        (guardrailError.code === "guardrail_approval_required" ? 409 : 403) as any,
+      );
+    }
     const notFound = modelNotFoundEnvelope(err, m?.id, body.agent);
     if (notFound) {
       return c.json({ error: notFound }, 400 as any);

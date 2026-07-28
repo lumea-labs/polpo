@@ -188,6 +188,65 @@ deterministically. Timeout, provider failure, malformed output, unknown
 profiles, and low confidence use the configured fallback; caller cancellation
 stops planning instead of starting execution with a fallback.
 
+## Guardrails
+
+Runtime hosts can opt into the shared ordered policy engine and wrap every
+locally executed tool with the same middleware:
+
+```ts
+import {
+  RuntimeGuardrailEngine,
+  createDefaultToolGuardrailPolicies,
+  createRunToolMiddleware,
+} from "@polpo-ai/core/guardrails";
+
+const middleware = createRunToolMiddleware(
+  new RuntimeGuardrailEngine(createDefaultToolGuardrailPolicies(), {
+    onDecision: async (event) => auditStore.append(event),
+  }),
+  {
+    approval: async (request, decision) =>
+      approvalStore.isApproved(request.callId, decision.policyId)
+        ? "approved"
+        : "denied",
+  },
+);
+```
+
+The middleware evaluates the actual arguments before dispatch, executes the
+tool at most once, bounds its textual result, and evaluates that result before
+it returns to model context. Policy failures fail closed for side-effecting or
+unknown tools; read-only tools can use the explicit audit fallback.
+
+Hosts provide policies, approvals, audit persistence, and rollout. No policies
+are enabled automatically. Provider-executed tools and client-side tools are
+declared to the model but execute outside the local runtime, so they require
+provider/client enforcement rather than this middleware.
+
+The Node host can explicitly enable the deterministic OSS pack for both
+in-process and subprocess task runs:
+
+```json
+{
+  "settings": {
+    "guardrails": {
+      "toolPolicyPack": "default",
+      "maxToolOutputCharacters": 256000,
+      "readOnlyPolicyFailure": "audit"
+    }
+  }
+}
+```
+
+The setting is absent by default. `RunnerConfig` carries only this serializable
+selection across process boundaries; approval and audit callbacks stay local
+to the active host and are never persisted.
+
+The deterministic private-network policy rejects literal private, loopback,
+link-local, metadata, and reserved destinations. Hosts must still enforce
+network egress after DNS resolution to prevent DNS rebinding and hostname
+resolution from bypassing process-level policy.
+
 ## License
 
 Apache 2.0

@@ -50,6 +50,10 @@
       "types": "./dist/runtime-plan/index.d.ts",
       "import": "./dist/runtime-plan/index.js"
     },
+    "./guardrails": {
+      "types": "./dist/guardrails/index.d.ts",
+      "import": "./dist/guardrails/index.js"
+    },
     "./hooks": {
       "types": "./dist/hooks.d.ts",
       "import": "./dist/hooks.js"
@@ -243,6 +247,7 @@
   },
   "dependencies": {
     "@sinclair/typebox": "^0.34.0",
+    "ajv": "^8.20.0",
     "nanoid": "^5.1.2",
     "zod": "^4.3.6"
   },

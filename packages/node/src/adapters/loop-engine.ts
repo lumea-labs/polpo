@@ -181,26 +181,58 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
     pt: PolpoTool | undefined,
     toolCall: LoopToolCall,
   ): Promise<{ llmText: string; isError: boolean }> {
-    let result: ToolResult;
+    let result: ToolResult = {
+      content: [{ type: "text", text: `Unknown tool: ${toolCall.name}` }],
+      details: {},
+    };
     let isError = false;
 
-    if (!pt) {
-      isError = true;
-      result = {
-        content: [{ type: "text", text: `Unknown tool: ${toolCall.name}` }],
-        details: {},
-      };
-    } else {
-      try {
-        result = await pt.execute(toolCall.id, toolCall.args, abortController.signal);
-      } catch (err) {
+    const dispatch = async (args: Readonly<Record<string, unknown>>): Promise<string> => {
+      if (!pt) {
         isError = true;
         result = {
-          content: [{ type: "text", text: err instanceof Error ? err.message : String(err) }],
+          content: [{ type: "text", text: `Unknown tool: ${toolCall.name}` }],
           details: {},
         };
+      } else {
+        try {
+          result = await pt.execute(
+            toolCall.id,
+            args as Record<string, unknown>,
+            abortController.signal,
+          );
+        } catch (err) {
+          isError = true;
+          result = {
+            content: [{ type: "text", text: err instanceof Error ? err.message : String(err) }],
+            details: {},
+          };
+        }
       }
-    }
+      return result.content
+        .map((content) => content.type === "text" ? content.text : `[image: ${content.mimeType}]`)
+        .join("\n");
+    };
+
+    const llmText = ctx?.runToolMiddleware
+      ? (await ctx.runToolMiddleware.execute(
+          {
+            callId: toolCall.id,
+            name: toolCall.name,
+            args: toolCall.args,
+            schema: pt?.parameters,
+            context: {
+              agent: agentConfig.name,
+              runId: ctx.runId,
+              source: ctx.inject ? "request" : "task",
+              surface: ctx.inject?.runtimePlan?.surface ?? "task",
+              planId: ctx.inject?.runtimePlan?.id,
+            },
+            signal: abortController.signal,
+          },
+          (request) => dispatch(request.args),
+        )).output
+      : await dispatch(toolCall.args);
 
     activity.lastUpdate = new Date().toISOString();
 
@@ -244,11 +276,6 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
       content: resultText.slice(0, 2000),
       isError,
     });
-
-    // Text returned to the LLM — same rendering as the legacy engine.
-    const llmText = result.content
-      .map((c) => c.type === "text" ? c.text : `[image: ${c.mimeType}]`)
-      .join("\n");
 
     return { llmText, isError };
   }
@@ -588,7 +615,10 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
           toolId: toolCall.id,
           input: toolCall.args,
         });
-        llmText = await inject.executor(toolCall.name, toolCall.args);
+        llmText = await inject.executor(toolCall.name, toolCall.args, {
+          callId: toolCall.id,
+          signal: abortController.signal,
+        });
         isError = llmText.startsWith("Error:");
         emitTranscript({ type: "tool_result", toolId: toolCall.id, tool: toolCall.name, content: llmText, isError });
       } else {
