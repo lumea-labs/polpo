@@ -60,6 +60,9 @@ export type {
   NormalizeModelPolicyOptions,
 } from "./model-policy.js";
 
+// ── Runtime planning (host-neutral, serializable execution decisions) ───
+export * from "./runtime-plan/index.js";
+
 // ── Events (pure type definitions only, TypedEmitter lives in shell) ─────
 export * from "./events.js";
 

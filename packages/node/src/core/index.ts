@@ -1,4 +1,5 @@
 export * from "@polpo-ai/core/types";
+export * from "@polpo-ai/core/runtime-plan";
 export * from "./events.js";
 export { VALID_TRANSITIONS, isValidTransition, assertValidTransition } from "@polpo-ai/core/state-machine";
 export type { TaskStore } from "@polpo-ai/core/task-store";

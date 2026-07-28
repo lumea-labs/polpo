@@ -30,6 +30,8 @@ export {
   type ChatViaRunTurnResult,
   type PreparedConversationTurn,
   type CompletionRouteDeps,
+  type CompletionRuntimeInvocation,
+  type CompletionRuntimePlanInput,
 } from "./routes/completions.js";
 export { agentRoutes } from "./routes/agents.js";
 export { loopRoutes, type LoopRouteDeps } from "./routes/loops.js";

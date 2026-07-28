@@ -7,6 +7,7 @@
  */
 
 import type { Task, TaskStatus, DimensionScore, MissionStatus, MissionReport } from "./types.js";
+import type { RuntimePlanResolvedEvent } from "./runtime-plan/index.js";
 
 export interface PolpoEventMap {
   // Task lifecycle
@@ -71,6 +72,9 @@ export interface PolpoEventMap {
   // Chat sessions
   "session:created": { sessionId: string; title?: string };
   "message:added": { sessionId: string; messageId: string; role: "user" | "assistant" };
+
+  // Runtime planning
+  "runtime:plan": RuntimePlanResolvedEvent;
 
   // Approval gates
   "approval:requested": { requestId: string; gateId: string; gateName: string; taskId?: string; missionId?: string };

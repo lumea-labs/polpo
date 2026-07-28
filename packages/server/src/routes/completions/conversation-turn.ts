@@ -1,11 +1,18 @@
 import { nanoid } from "nanoid";
 import {
   agentMemoryScope,
+  createRuntimePlanResolvedEvent,
+  normalizeRuntimePlan,
   resolveLoopSelection,
   type ModelSelection,
   type ProjectLoopConfig,
+  type RuntimePlan,
 } from "@polpo-ai/core";
-import type { CompletionRouteDeps } from "../completions.js";
+import type {
+  CompletionRouteDeps,
+  CompletionRuntimeInvocation,
+  CompletionRuntimePlanInput,
+} from "../completions.js";
 import type { CompletionRequestBody } from "./schemas.js";
 import { convertMessages, extractText } from "./message-mapping.js";
 import { toAIToolChoice } from "./tool-mapping.js";
@@ -38,6 +45,7 @@ type PreparedProjectLoop = {
   extraSystemParts: string[];
   sessionStore: any;
   sessionId: string | null;
+  runtimePlan?: RuntimePlan;
 };
 
 type PreparedChat = {
@@ -52,6 +60,8 @@ export interface PrepareConversationTurnOptions {
   sessionId?: string | null;
   completionId?: string;
   setHeader?: (name: string, value: string) => void;
+  /** Trusted surface identity. Omit for ordinary HTTP/API agent calls. */
+  runtime?: CompletionRuntimeInvocation;
 }
 
 export interface RunConversationTurnInput extends PrepareConversationTurnOptions {
@@ -65,18 +75,86 @@ export type ConversationTurnResult = ChatViaRunTurnResult & {
   completionId: string;
 };
 
-function completionError(message: string, status: number, code?: string): PreparedError {
+function completionError(
+  message: string,
+  status: number,
+  code?: string,
+  type = "invalid_request_error",
+): PreparedError {
   return {
     kind: "error",
     status,
     body: {
       error: {
         message,
-        type: "invalid_request_error",
+        type,
         ...(code ? { code } : {}),
       },
     },
   };
+}
+
+function freezePlanningInput<T>(value: T): T {
+  if (!value || typeof value !== "object" || Object.isFrozen(value)) return value;
+  for (const nested of Object.values(value as Record<string, unknown>)) {
+    freezePlanningInput(nested);
+  }
+  return Object.freeze(value);
+}
+
+function cloneModelSelection(selection: ModelSelection | undefined): ModelSelection | undefined {
+  if (!selection || typeof selection === "string") return selection;
+  return {
+    ...(selection.primary !== undefined ? { primary: selection.primary } : {}),
+    ...(selection.fallbacks !== undefined ? { fallbacks: [...selection.fallbacks] } : {}),
+  };
+}
+
+async function resolveCompletionRuntimePlan(
+  deps: CompletionRouteDeps,
+  body: CompletionRequestBody,
+  invocation: CompletionRuntimeInvocation | undefined,
+  agentConfig: any | undefined,
+  loopName?: string,
+): Promise<RuntimePlan | undefined> {
+  if (!deps.resolveRuntimePlan) return undefined;
+
+  const { surface, source } = invocation ?? {
+    surface: "agent",
+    source: "request",
+  } as const;
+  const input: CompletionRuntimePlanInput = freezePlanningInput({
+    surface,
+    source,
+    execution: {
+      mode: loopName ? "loop" : "direct",
+      ...(loopName ? { loop: loopName } : {}),
+      source: loopName ? "request" : "default",
+    },
+    request: {
+      ...(body.agent ? { agent: body.agent } : {}),
+      ...(body.loop ? { loop: body.loop } : {}),
+      sandbox: body.sandbox,
+    },
+    ...(agentConfig
+      ? {
+          agent: {
+            name: agentConfig.name,
+            model: cloneModelSelection(agentConfig.model),
+            sandbox: agentConfig.sandbox
+              ? { isolation: agentConfig.sandbox.isolation }
+              : undefined,
+            allowedTools: Array.isArray(agentConfig.allowedTools)
+              ? [...agentConfig.allowedTools]
+              : undefined,
+          },
+        }
+      : {}),
+  });
+
+  const plan = normalizeRuntimePlan(await deps.resolveRuntimePlan(input));
+  deps.emit("runtime:plan", createRuntimePlanResolvedEvent(plan));
+  return plan;
 }
 
 export async function prepareChatCompletionExecution(
@@ -97,6 +175,7 @@ export async function prepareChatCompletionExecution(
   let projectLoopRuntime: { agentConfig: any; projectLoop: ProjectLoopConfig } | undefined;
   let onResponseFinished: (() => Promise<void>) | undefined;
   let resolvedAgentConfig: any;
+  let runtimePlan: RuntimePlan | undefined;
 
   const { aiMessages, extraSystemParts } = convertMessages(body.messages);
 
@@ -124,6 +203,23 @@ export async function prepareChatCompletionExecution(
     } catch (loopErr) {
       const msg = loopErr instanceof Error ? loopErr.message : String(loopErr);
       return completionError(msg, 400, "loop_not_found");
+    }
+
+    try {
+      runtimePlan = await resolveCompletionRuntimePlan(
+        deps,
+        body,
+        options.runtime,
+        resolvedAgentConfig,
+        body.loop,
+      );
+    } catch {
+      return completionError(
+        "Runtime planning failed",
+        500,
+        "runtime_planning_failed",
+        "server_error",
+      );
     }
 
     if (projectLoopRuntime) {
@@ -186,6 +282,22 @@ export async function prepareChatCompletionExecution(
       );
     }
 
+    try {
+      runtimePlan = await resolveCompletionRuntimePlan(
+        deps,
+        body,
+        options.runtime,
+        undefined,
+      );
+    } catch {
+      return completionError(
+        "Runtime planning failed",
+        500,
+        "runtime_planning_failed",
+        "server_error",
+      );
+    }
+
     const ctx = await deps.resolveOrchestratorContext();
     fullSystemPrompt = extraSystemParts.length > 0
       ? `${ctx.systemPrompt}\n\n## Additional context from caller\n\n${extraSystemParts.join("\n\n")}`
@@ -234,6 +346,7 @@ export async function prepareChatCompletionExecution(
       extraSystemParts,
       sessionStore,
       sessionId,
+      runtimePlan,
     };
   }
 
@@ -256,6 +369,7 @@ export async function prepareChatCompletionExecution(
     sessionStore,
     sessionId,
     onResponseFinished,
+    runtimePlan,
   };
 
   const viaRun =
@@ -275,6 +389,7 @@ export async function runConversationTurn(
     sessionId: input.sessionId,
     completionId: input.completionId,
     setHeader: input.setHeader,
+    runtime: input.runtime,
   });
 
   if (prepared.kind === "error") {

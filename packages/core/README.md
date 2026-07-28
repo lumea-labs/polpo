@@ -86,6 +86,32 @@ Loop run states distinguish the gate lifecycle from execution:
 - `resuming`: the runtime is executing from the saved checkpoint.
 - `completed`: the resumed or original run finished.
 
+## Runtime plans
+
+Runtime hosts can resolve a serializable, immutable execution decision before
+provider or tool setup:
+
+```ts
+import { createRuntimePlan } from "@polpo-ai/core/runtime-plan";
+
+const plan = createRuntimePlan({
+  surface: "channel",
+  source: "channel",
+  model: {
+    selection: "openai/gpt-5",
+    source: "agent",
+  },
+  tools: {
+    exposure: "direct",
+    allowed: ["search_docs"],
+  },
+});
+```
+
+Runtime plans contain policy decisions and references only. Prompts, messages,
+provider headers, credentials, and retrieved private content do not belong in
+the plan or its `runtime:plan` event.
+
 ## License
 
 Apache 2.0
