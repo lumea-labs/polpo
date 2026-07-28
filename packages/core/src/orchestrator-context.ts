@@ -20,6 +20,7 @@ import type { AgentStore } from "./agent-store.js";
 import type { PolpoConfig, PolpoFileConfig, Task, AssessmentResult, ReviewContext, ReasoningLevel, ModelConfig } from "./types.js";
 import type { HookRegistry } from "./hooks.js";
 import type { Spawner } from "./spawner.js";
+import type { RuntimeContextProvider } from "./runtime-context/index.js";
 
 /** Progress event for individual assessment checks. */
 export interface CheckProgressEvent {
@@ -64,6 +65,11 @@ export interface OrchestratorContext {
   readonly polpoDir: string;
   readonly assessFn: AssessFn;
   readonly spawner: Spawner;
+  /**
+   * Optional host-provided retrieval policy. Absence or a zero token budget
+   * keeps task prompts byte-identical and performs no retrieval.
+   */
+  readonly runtimeContext?: RuntimeContextProvider;
 
   // ── Optional ports (injected by shell) ──────────────────────────
 

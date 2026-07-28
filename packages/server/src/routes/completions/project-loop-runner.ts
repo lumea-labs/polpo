@@ -17,6 +17,7 @@ import {
   maybeParseJson,
   normalizeProjectLoop,
   normalizeToolInput,
+  resolveRuntimeContext,
   stringifyLoopContext,
   type ContextBag,
   type LoopApprovedGate,
@@ -24,9 +25,13 @@ import {
   type LoopResumeState,
   type LoopTraceEvent,
   type ProjectLoopConfig,
+  type RuntimeContextResolution,
 } from "@polpo-ai/core";
 import type { LanguageModelUsage } from "ai";
-import type { CompletionRouteDeps } from "../completions.js";
+import type {
+  CompletionRouteDeps,
+  CompletionRuntimeInvocation,
+} from "../completions.js";
 import {
   addUsage,
   runAgentStepCompletion,
@@ -47,19 +52,123 @@ export interface ProjectLoopRunResult {
   loopRunId?: string;
 }
 
+const runtimeSurfaces = new Set(["agent", "task", "channel", "webhook"]);
+const runtimeSources = new Set([
+  "request",
+  "channel",
+  "task",
+  "schedule",
+  "loop-step",
+  "internal",
+]);
+
+function runtimeInvocationMetadata(
+  value: unknown,
+): CompletionRuntimeInvocation | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+  const candidate = value as Record<string, unknown>;
+  if (
+    typeof candidate.surface !== "string"
+    || !runtimeSurfaces.has(candidate.surface)
+    || typeof candidate.source !== "string"
+    || !runtimeSources.has(candidate.source)
+  ) {
+    return undefined;
+  }
+  return {
+    surface: candidate.surface as CompletionRuntimeInvocation["surface"],
+    source: candidate.source as CompletionRuntimeInvocation["source"],
+    ...(typeof candidate.channelId === "string" && candidate.channelId.trim()
+      ? { channelId: candidate.channelId }
+      : {}),
+  };
+}
+
+function latestUserText(messages: readonly unknown[]): string {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (!message || typeof message !== "object") continue;
+    const candidate = message as { role?: unknown; content?: unknown };
+    if (candidate.role !== "user") continue;
+    if (typeof candidate.content === "string") return candidate.content.trim();
+    if (!Array.isArray(candidate.content)) return "";
+    return candidate.content
+      .filter((part): part is { type: "text"; text: string } =>
+        !!part
+        && typeof part === "object"
+        && (part as { type?: unknown }).type === "text"
+        && typeof (part as { text?: unknown }).text === "string",
+      )
+      .map((part) => part.text)
+      .join("\n")
+      .trim();
+  }
+  return "";
+}
+
+/**
+ * Approval resumes resolve a new snapshot. Persisting retrieved content would
+ * retain forgotten or newly unauthorized data across the approval boundary.
+ */
+export async function resolveProjectLoopResumeRuntimeContext(
+  deps: CompletionRouteDeps,
+  run: LoopRunRecord,
+  aiMessages = Array.isArray(run.resume?.runtime?.aiMessages)
+    ? run.resume.runtime.aiMessages
+    : [],
+): Promise<RuntimeContextResolution | undefined> {
+  if (!deps.runtimeContext || !run.agentName) return undefined;
+  const query = latestUserText(aiMessages);
+  if (!query) return undefined;
+  const invocation = runtimeInvocationMetadata(
+    run.metadata?.runtimeInvocation,
+  ) ?? { surface: "agent", source: "loop-step" };
+  try {
+    return await resolveRuntimeContext(deps.runtimeContext, {
+      agentName: run.agentName,
+      query,
+      surface: invocation.surface,
+      source: invocation.source,
+      ...(run.user ? { externalUserId: run.user } : {}),
+      ...(run.sessionId ? { sessionId: run.sessionId } : {}),
+      ...(invocation.channelId ? { channelId: invocation.channelId } : {}),
+      runId: run.id,
+    });
+  } catch {
+    throw new Error("Runtime context retrieval failed");
+  }
+}
+
 export async function runProjectLoopCompletion(options: {
   deps: CompletionRouteDeps;
   agentConfig: any;
   projectLoop: ProjectLoopConfig;
   aiMessages: any[];
   extraSystemParts: string[];
+  runtimeContext?: RuntimeContextResolution;
+  runtimeInvocation?: CompletionRuntimeInvocation;
   sessionId?: string | null;
   user?: string;
   onToolCall?: (toolCall: LoopRuntimeToolCall) => Promise<void>;
   onTrace?: (event: LoopTraceEvent) => Promise<void>;
   resumeRun?: LoopRunRecord;
 }): Promise<ProjectLoopRunResult> {
-  const { deps, agentConfig, projectLoop, aiMessages, extraSystemParts, sessionId, user, onToolCall, onTrace, resumeRun } = options;
+  const {
+    deps,
+    agentConfig,
+    projectLoop,
+    aiMessages,
+    extraSystemParts,
+    runtimeContext,
+    runtimeInvocation,
+    sessionId,
+    user,
+    onToolCall,
+    onTrace,
+    resumeRun,
+  } = options;
   const normalized = normalizeProjectLoop(projectLoop);
   if (!normalized.pipeline) throw new Error(`Loop "${projectLoop.name}" does not define a pipeline`);
 
@@ -94,6 +203,17 @@ export async function runProjectLoopCompletion(options: {
       metadata: {
         runtime: "chat.completions",
         loopVersion: projectLoop.version ?? "1",
+        ...(runtimeInvocation
+          ? {
+              runtimeInvocation: {
+                surface: runtimeInvocation.surface,
+                source: runtimeInvocation.source,
+                ...(runtimeInvocation.channelId
+                  ? { channelId: runtimeInvocation.channelId }
+                  : {}),
+              },
+            }
+          : {}),
       },
     });
   }
@@ -188,6 +308,7 @@ export async function runProjectLoopCompletion(options: {
           extraSystemParts,
           context,
           stepName: name,
+          runtimeContext,
           onToolCall,
         });
         finalText = stepResult.text || finalText;
@@ -355,6 +476,11 @@ export async function resumeProjectLoopRun(options: {
   const extraSystemParts = Array.isArray(run.resume.runtime?.extraSystemParts)
     ? run.resume.runtime.extraSystemParts as string[]
     : [];
+  const runtimeContext = await resolveProjectLoopResumeRuntimeContext(
+    options.deps,
+    run,
+    aiMessages,
+  );
 
   await runProjectLoopCompletion({
     deps: options.deps,
@@ -362,6 +488,7 @@ export async function resumeProjectLoopRun(options: {
     projectLoop,
     aiMessages,
     extraSystemParts,
+    runtimeContext,
     sessionId: run.sessionId,
     user: run.user,
     resumeRun: run,
@@ -385,10 +512,24 @@ export async function handleProjectLoopCompletion(c: any, options: {
   projectLoop: ProjectLoopConfig;
   aiMessages: any[];
   extraSystemParts: string[];
+  runtimeContext?: RuntimeContextResolution;
+  runtimeInvocation?: CompletionRuntimeInvocation;
   sessionStore: any;
   sessionId: string | null;
 }): Promise<any> {
-  const { deps, body, completionId, agentConfig, projectLoop, aiMessages, extraSystemParts, sessionStore, sessionId } = options;
+  const {
+    deps,
+    body,
+    completionId,
+    agentConfig,
+    projectLoop,
+    aiMessages,
+    extraSystemParts,
+    runtimeContext,
+    runtimeInvocation,
+    sessionStore,
+    sessionId,
+  } = options;
 
   if (body.stream) {
     return streamSSE(c, async (stream) => {
@@ -425,6 +566,8 @@ export async function handleProjectLoopCompletion(c: any, options: {
           projectLoop,
           aiMessages,
           extraSystemParts,
+          runtimeContext,
+          runtimeInvocation,
           sessionId,
           user: body.user,
           onToolCall: async (toolCall) => {
@@ -507,6 +650,8 @@ export async function handleProjectLoopCompletion(c: any, options: {
       projectLoop,
       aiMessages,
       extraSystemParts,
+      runtimeContext,
+      runtimeInvocation,
       sessionId,
       user: body.user,
     });

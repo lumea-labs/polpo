@@ -9,6 +9,7 @@ import type { ApprovalGate, SLAConfig } from "./mission.js";
 import type { NotificationsConfig, EscalationPolicy } from "./notifications.js";
 import type { LoopResumeState } from "../loop/run-store.js";
 import type { RuntimeSandboxOptions } from "../runtime-sandbox.js";
+import type { RuntimeContextResolution } from "../runtime-context/index.js";
 
 // === Runner Config ===
 
@@ -17,6 +18,11 @@ export interface RunnerConfig {
   executionMode?: ExecutionMode;
   /** Resolved runtime sandbox policy for the host sandbox provider. */
   sandbox?: RuntimeSandboxOptions;
+  /**
+   * Host-resolved, immutable retrieval snapshot for this run. It is data,
+   * not a provider callback, so subprocess runners can consume it safely.
+   */
+  runtimeContext?: RuntimeContextResolution;
   runId: string;
   taskId: string;
   agent: AgentConfig;

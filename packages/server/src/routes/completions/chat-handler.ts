@@ -13,6 +13,7 @@ import {
   type CompactionEvent,
   type ModelSelection,
   type RuntimePlan,
+  type RuntimeContextResolution,
 } from "@polpo-ai/core";
 import { runModelPolicyTurn } from "@polpo-ai/llm";
 import type { LanguageModelUsage } from "ai";
@@ -67,6 +68,8 @@ export interface ChatCompletionExecution {
   sessionId: string | null;
   /** Frozen, secret-free runtime decision emitted before provider/tool resolution. */
   runtimePlan?: RuntimePlan;
+  /** Structured snapshot used to assemble fullSystemPrompt for this turn. */
+  runtimeContext?: RuntimeContextResolution;
   /**
    * Resource cleanup hook — set when an agent's tool resolver opens
    * long-lived connections (today: MCP transports). Invoked exactly

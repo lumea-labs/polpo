@@ -66,6 +66,7 @@ import { NodeShell } from "../adapters/node-shell.js";
 import type { FileSystem } from "@polpo-ai/core/filesystem";
 import type { Shell } from "@polpo-ai/core/shell";
 import { resolveNodeModelOptions } from "../llm/model-runtime-options.js";
+import type { RuntimeContextProvider } from "@polpo-ai/core/runtime-context";
 
 // Re-export for backward compatibility (consumed by core/index.ts and external modules)
 export { buildFixPrompt, buildRetryPrompt };
@@ -77,6 +78,7 @@ export interface OrchestratorOptions {
   runStore?: RunStore;
   assessFn?: AssessFn;
   spawner?: Spawner;
+  runtimeContext?: RuntimeContextProvider;
 }
 
 export class Orchestrator extends TypedEmitter {
@@ -114,6 +116,7 @@ export class Orchestrator extends TypedEmitter {
   private fs: FileSystem;
   private shell: Shell;
   private gatewayConfig: GatewayConfig | undefined;
+  private runtimeContext?: RuntimeContextProvider;
 
   // Managers
   private agentMgr!: AgentManager;
@@ -171,6 +174,7 @@ export class Orchestrator extends TypedEmitter {
       this.assessFn = opts.assessFn ?? assessTask;
       this.injectedStore = opts.store;
       this.injectedRunStore = opts.runStore;
+      this.runtimeContext = opts.runtimeContext;
       this.spawnerInjected = !!opts.spawner;
       this.spawner = opts.spawner ?? new NodeSpawner({ polpoDir: this.polpoDir, cwd: this.workDir });
     }
@@ -419,6 +423,7 @@ export class Orchestrator extends TypedEmitter {
       polpoDir: this.polpoDir,
       assessFn: this.assessFn,
       spawner: this.spawner,
+      runtimeContext: this.runtimeContext,
 
       // Shell-specific ports (Node.js implementations)
       killProcess: (pid, signal) => { try { process.kill(pid, (signal ?? "SIGTERM") as NodeJS.Signals); } catch { /* already dead */ } },
