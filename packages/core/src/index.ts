@@ -73,6 +73,32 @@ export type {
   ResolveModelProfileSelectionOptions,
   ResolvedModelProfileSelection,
 } from "./model-profiles.js";
+export {
+  DEFAULT_MODEL_ROUTE_MAX_INPUT_CHARS,
+  DEFAULT_MODEL_ROUTE_MIN_CONFIDENCE,
+  DEFAULT_MODEL_ROUTE_TIMEOUT_MS,
+  MAX_MODEL_ROUTE_INPUT_CHARS,
+  MAX_MODEL_ROUTE_LABELS,
+  MAX_MODEL_ROUTE_LABEL_CHARS,
+  MAX_MODEL_ROUTE_REASON_CHARS,
+  MODEL_ROUTER_MODES,
+  ModelRouteCancelledError,
+  modelRouteRuntimePlanFields,
+  resolveModelRoute,
+} from "./model-router.js";
+export type {
+  ModelRouteClassifier,
+  ModelRouteClassifierInput,
+  ModelRouteClassifierOptions,
+  ModelRouteDecision,
+  ModelRouteRuntimePlanFields,
+  ModelRouterConfig,
+  ModelRouterMode,
+  ModelRouteStatus,
+  ResolvedModelRoute,
+  ResolveModelRouteInput,
+  ResolveModelRouteOptions,
+} from "./model-router.js";
 
 // ── Runtime planning (host-neutral, serializable execution decisions) ───
 export * from "./runtime-plan/index.js";

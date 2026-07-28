@@ -159,3 +159,11 @@ export type {
   ModelPolicyTurnResult,
   RunModelPolicyTurnInput,
 } from "./model-policy-turn.js";
+
+// ─── Model Route Classifier ─────────────────────────
+export { createStructuredModelRouteClassifier } from "./model-route-classifier.js";
+export type {
+  StructuredModelRouteClassifierOptions,
+  StructuredModelRouteGenerate,
+  StructuredModelRouteGenerationResult,
+} from "./model-route-classifier.js";

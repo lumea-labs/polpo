@@ -66,6 +66,43 @@ function uniqueStrings(value: unknown, label: string): string[] {
   return output;
 }
 
+function normalizeLatencyMap(
+  value: unknown,
+): Readonly<Record<string, number>> | undefined {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("Runtime plan audit latencyMs must be an object");
+  }
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) {
+    throw new Error("Runtime plan audit latencyMs must be a plain object");
+  }
+
+  const output: Record<string, number> = {};
+  for (const [rawKey, rawLatency] of Object.entries(value)) {
+    const key = requiredString(rawKey, "Runtime plan audit latencyMs key");
+    if (
+      key === "__proto__" ||
+      key === "constructor" ||
+      key === "prototype" ||
+      key.length > 64
+    ) {
+      throw new Error("Runtime plan audit latencyMs contains an invalid key");
+    }
+    if (
+      typeof rawLatency !== "number" ||
+      !Number.isFinite(rawLatency) ||
+      rawLatency < 0
+    ) {
+      throw new Error(
+        "Runtime plan audit latencyMs values must be non-negative finite numbers",
+      );
+    }
+    output[key] = rawLatency;
+  }
+  return output;
+}
+
 function normalizedModelSelection(selection: ModelSelection): ModelSelection {
   const policy = normalizeModelPolicy(selection);
   if (policy.fallbacks.length === 0) return policy.primary;
@@ -248,6 +285,7 @@ export function createRuntimePlan(
   ) {
     throw new Error("Runtime plan fallbackUsed must be a boolean");
   }
+  const auditLatencyMs = normalizeLatencyMap(input.audit?.latencyMs);
 
   const context = input.context === undefined
     ? {}
@@ -285,6 +323,7 @@ export function createRuntimePlan(
       warnings: uniqueStrings(input.audit?.warnings, "Runtime plan audit warnings"),
       policyIds: uniqueStrings(input.audit?.policyIds, "Runtime plan audit policy ids"),
       ...(confidence !== undefined ? { confidence } : {}),
+      ...(auditLatencyMs !== undefined ? { latencyMs: auditLatencyMs } : {}),
       fallbackUsed: input.audit?.fallbackUsed ?? false,
     },
   };
@@ -366,6 +405,7 @@ export function normalizeRuntimePlan(value: unknown): RuntimePlan {
         warnings: audit.warnings,
         policyIds: audit.policyIds,
         ...(audit.confidence !== undefined ? { confidence: audit.confidence } : {}),
+        ...(audit.latencyMs !== undefined ? { latencyMs: audit.latencyMs } : {}),
         fallbackUsed: requiredValue(
           audit.fallbackUsed,
           "Runtime plan fallbackUsed",

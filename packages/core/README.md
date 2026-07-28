@@ -150,6 +150,44 @@ preserving order, and fails closed for unknown profiles, cycles, invalid
 allowlists, excessive depth, or too many fallbacks. The runtime resolves the
 profile before provider setup; providers receive only concrete model IDs.
 
+## Model routing
+
+Model routing is optional automation over model profiles. The OSS router never
+selects raw model IDs and never receives profile definitions, prompts,
+conversation history, tool schemas, or credentials. Hosts inject a classifier
+and keep the feature off until their own rollout policy enables it.
+
+```ts
+import {
+  modelRouteRuntimePlanFields,
+  resolveModelRoute,
+} from "@polpo-ai/core/model-router";
+import { createStructuredModelRouteClassifier } from "@polpo-ai/llm";
+
+const route = await resolveModelRoute({
+  surface: "agent",
+  source: "request",
+  input: "Summarize this short update.",
+  profiles: settings.modelProfiles,
+  config: {
+    mode: "auto",
+    fallbackProfile: "balanced",
+    allowedProfiles: ["fast", "balanced"],
+  },
+}, {
+  classifier: createStructuredModelRouteClassifier({ model: routerModel }),
+  signal: request.signal,
+});
+
+const { model, audit } = modelRouteRuntimePlanFields(route);
+```
+
+Explicit authorized profiles skip classification. Disabled routing,
+single-profile allowlists, missing input, and missing classifiers resolve
+deterministically. Timeout, provider failure, malformed output, unknown
+profiles, and low confidence use the configured fallback; caller cancellation
+stops planning instead of starting execution with a fallback.
+
 ## License
 
 Apache 2.0
