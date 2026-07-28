@@ -392,9 +392,10 @@ export class SQLiteScheduleStore implements ScheduleStore {
   async listRuns(filter: ScheduleRunFilter = {}): Promise<ScheduleRun[]> {
     const statuses = runStatusSet(filter.status);
     const limit = normalizeLimit(filter.limit);
+    const order = normalizeRunOrder(filter.order);
     return this.db.prepare(`
       SELECT * FROM polpo_schedule_runs_v2
-      ORDER BY occurrence_at DESC, created_at DESC
+      ORDER BY occurrence_at ${order}, created_at ${order}, id ${order}
     `).all()
       .map((row) => decodeRun(row as RunRow))
       .filter((run) =>
@@ -835,6 +836,14 @@ function normalizeLimit(limit: number | undefined): number {
     throw new Error("Schedule run list limit must be an integer between 1 and 1000");
   }
   return limit;
+}
+
+function normalizeRunOrder(
+  order: ScheduleRunFilter["order"],
+): "ASC" | "DESC" {
+  if (order === undefined || order === "desc") return "DESC";
+  if (order === "asc") return "ASC";
+  throw new Error('Schedule run order must be "asc" or "desc"');
 }
 
 function activeRun(run: ScheduleRun): boolean {

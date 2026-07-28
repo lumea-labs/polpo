@@ -267,6 +267,33 @@ describe("InMemoryScheduleStore run conformance", () => {
     })).rejects.toBeInstanceOf(ScheduleConflictError);
   });
 
+  it("lists run history newest-first by default or oldest-first explicitly", async () => {
+    const fixture = createFixture();
+    const schedule = await fixture.store.create(scheduleInput());
+    for (const hour of [11, 12, 13]) {
+      await fixture.store.createRun({
+        scheduleId: schedule.id,
+        occurrenceAt: `2026-07-28T${hour}:00:00.000Z`,
+        triggerId: `delivery-${hour}`,
+        idempotencyKey: `key-${hour}`,
+      });
+    }
+
+    expect((await fixture.store.listRuns({ limit: 2 }))
+      .map((run) => run.occurrenceAt)).toEqual([
+      "2026-07-28T13:00:00.000Z",
+      "2026-07-28T12:00:00.000Z",
+    ]);
+    expect((await fixture.store.listRuns({ order: "asc", limit: 2 }))
+      .map((run) => run.occurrenceAt)).toEqual([
+      "2026-07-28T11:00:00.000Z",
+      "2026-07-28T12:00:00.000Z",
+    ]);
+    await expect(
+      fixture.store.listRuns({ order: "sideways" as any }),
+    ).rejects.toThrow(/order/i);
+  });
+
   it("does not accept new runs for paused, completed, or deleted schedules", async () => {
     const states = ["paused", "completed", "deleted"] as const;
     for (const status of states) {
