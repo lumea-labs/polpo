@@ -126,11 +126,11 @@ export const CreateMissionSchema = z.object({
   status: z
     .enum(["draft", "scheduled", "recurring", "active", "paused", "completed", "failed", "cancelled"])
     .optional(),
-  /** Cron expression or ISO timestamp for scheduled execution. */
+  /** @deprecated Use the v2 Schedules API. */
   schedule: z.string().optional(),
   /** Absolute deadline for the entire mission (ISO timestamp). */
   deadline: z.string().datetime().optional(),
-  /** End date for recurring schedules (ISO timestamp). */
+  /** @deprecated Use the v2 Schedules API. */
   endDate: z.string().datetime().optional(),
   notifications: ScopedNotificationRulesSchema.optional(),
   /**
@@ -146,11 +146,11 @@ export const UpdateMissionSchema = z.object({
     .enum(["draft", "scheduled", "recurring", "active", "paused", "completed", "failed", "cancelled"])
     .optional(),
   name: z.string().optional(),
-  /** Cron expression or ISO timestamp for scheduled execution. Null clears. */
+  /** @deprecated Use the v2 Schedules API. */
   schedule: z.string().nullable().optional(),
   /** Absolute deadline for the entire mission (ISO timestamp). Null clears. */
   deadline: z.string().datetime().nullable().optional(),
-  /** End date for recurring schedules (ISO timestamp). Null clears. */
+  /** @deprecated Use the v2 Schedules API. */
   endDate: z.string().datetime().nullable().optional(),
 });
 

@@ -18,9 +18,16 @@ export interface Mission {
   status: MissionStatus;
   /** Absolute deadline for the entire mission (ISO timestamp). */
   deadline?: string;
-  /** Cron expression or ISO timestamp for scheduled execution. */
+  /**
+   * Cron expression or ISO timestamp for scheduled execution.
+   * @deprecated Use a v2 Schedule with a `legacy_mission` invocation.
+   */
   schedule?: string;
-  /** End date for recurring schedules (ISO timestamp). After this date the schedule stops firing and the mission transitions to completed. */
+  /**
+   * End date for recurring schedules (ISO timestamp).
+   * @deprecated Use Schedule compatibility metadata during the migration
+   * window. New scheduling state must not be persisted on Mission.
+   */
   endDate?: string;
   /** Minimum average score for the mission to be considered successful. */
   qualityThreshold?: number;
@@ -223,7 +230,10 @@ export interface QualityMetrics {
   updatedAt: string;
 }
 
-/** Scheduled mission entry — runtime artifact derived from Mission fields. */
+/**
+ * Scheduled mission entry — runtime artifact derived from Mission fields.
+ * @deprecated Use `Schedule` and `ScheduleRun` from `@polpo-ai/core/scheduling`.
+ */
 export interface ScheduleEntry {
   /** Unique schedule ID. */
   id: string;

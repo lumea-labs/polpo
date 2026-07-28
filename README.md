@@ -349,6 +349,25 @@ await polpo.triggerSchedule(schedule.id, {
 });
 ```
 
+When a host enables `ScheduleService`, mission-shaped route requests are
+translated into v2 schedules and no longer mutate `Mission` scheduling fields.
+Hosts can import existing Mission-backed definitions idempotently before
+cutover:
+
+```ts
+import { migrateLegacyMissionSchedules } from "@polpo-ai/server";
+
+const report = await migrateLegacyMissionSchedules({
+  service: scheduleService,
+  missions: await missionStore.listMissions(),
+  dryRun: true,
+});
+```
+
+Run the same migration without `dryRun` after reviewing collisions and
+ambiguous legacy states. Hosts that have not enabled `ScheduleService` retain
+the old Mission scheduler during the announced compatibility window.
+
 Agent-direct chat can target a loop explicitly:
 
 ```json

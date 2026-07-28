@@ -23,6 +23,16 @@ export {
   type ScheduleServiceErrorCode,
   type ScheduleServiceOptions,
 } from "./services/schedules.js";
+export {
+  legacyMissionScheduleId,
+  migrateLegacyMissionSchedules,
+  type LegacyMissionMigrationCode,
+  type LegacyMissionMigrationItem,
+  type LegacyMissionMigrationOptions,
+  type LegacyMissionMigrationResult,
+  type LegacyMissionMigrationStatus,
+  type LegacyMissionScheduleRecord,
+} from "./services/schedules-migration.js";
 export { watcherRoutes } from "./routes/watchers.js";
 export { stateRoutes } from "./routes/state.js";
 export { healthRoutes } from "./routes/health.js";

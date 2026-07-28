@@ -16,6 +16,7 @@ import {
   ScheduleServiceError,
   type ScheduleService,
 } from "../services/schedules.js";
+import { legacyMissionScheduleId } from "../services/schedules-migration.js";
 
 const MetadataSchema = z.record(z.string(), z.unknown());
 const TimingSchema = z.discriminatedUnion("kind", [
@@ -337,12 +338,7 @@ export function scheduleRoutes(
         const translated = translateLegacyRequest(body);
         const created = await deps.scheduleService.create({
           ...translated,
-          id: legacyScheduleId(body.missionId),
-        });
-        await deps.updateMission?.(body.missionId, {
-          schedule: body.expression,
-          status: body.recurring ? "recurring" : "scheduled",
-          ...(body.endDate === undefined ? {} : { endDate: body.endDate }),
+          id: legacyMissionScheduleId(body.missionId),
         });
         return c.json({
           ok: true,
@@ -401,14 +397,12 @@ export function scheduleRoutes(
             false,
           );
         }
-        const missionId = existing.invocation.missionId;
         const patch = legacyUpdatePatch(existing, body);
         const updated = await deps.scheduleService.update(
           existing.id,
           patch,
           expectedRevision === undefined ? {} : { expectedRevision },
         );
-        await deps.updateMission?.(missionId, legacyMissionPatch(existing, body));
         return c.json({
           ok: true,
           data: withLegacyCompatibility(updated),
@@ -438,10 +432,6 @@ export function scheduleRoutes(
         expectedRevision === undefined ? {} : { expectedRevision },
       );
       if (existing.invocation.surface === "legacy_mission") {
-        await deps.updateMission?.(existing.invocation.missionId, {
-          schedule: undefined,
-          status: "draft",
-        });
         return c.json({
           ok: true,
           data: { deleted: true, schedule: withLegacyCompatibility(deleted) },
@@ -613,24 +603,6 @@ function legacyUpdatePatch(
   };
 }
 
-function legacyMissionPatch(
-  existing: Schedule,
-  body: z.infer<typeof LegacyUpdateScheduleSchema>,
-): Record<string, unknown> {
-  const currentCompatibility = compatibilityMetadata(existing);
-  const recurring = body.recurring
-    ?? (currentCompatibility.recurring === true);
-  return {
-    ...(body.expression === undefined ? {} : { schedule: body.expression }),
-    ...(body.expression === undefined && body.recurring === undefined
-      ? {}
-      : { status: recurring ? "recurring" : "scheduled" }),
-    ...(body.endDate === undefined
-      ? {}
-      : { endDate: body.endDate ?? undefined }),
-  };
-}
-
 function compatibilityMetadata(
   schedule: Schedule,
 ): Record<string, unknown> {
@@ -647,10 +619,6 @@ function timingExpression(schedule: Schedule): string {
 
 function stringValue(value: unknown): string | undefined {
   return typeof value === "string" ? value : undefined;
-}
-
-function legacyScheduleId(missionId: string): string {
-  return `legacy-mission:${missionId}`;
 }
 
 function parseRevision(value: string | undefined): number | undefined {

@@ -326,10 +326,7 @@ describe("scheduleRoutes legacy compatibility", () => {
         status: "deleted",
       },
     });
-    expect(state.updateMission).toHaveBeenLastCalledWith("mission-1", {
-      schedule: undefined,
-      status: "draft",
-    });
+    expect(state.updateMission).not.toHaveBeenCalled();
   });
 
   it("rejects a legacy schedule when its mission does not exist", async () => {
@@ -347,6 +344,78 @@ describe("scheduleRoutes legacy compatibility", () => {
     expect(await response.json()).toMatchObject({
       ok: false,
       code: "NOT_FOUND",
+    });
+  });
+
+  it("keeps mission writes only in the legacy scheduler fallback", async () => {
+    const schedules = new Map<string, {
+      id: string;
+      missionId: string;
+      expression: string;
+      recurring: boolean;
+      enabled: boolean;
+      createdAt: string;
+    }>();
+    const updateMission = vi.fn(async (missionId: string, patch: any) => ({
+      id: missionId,
+      name: "Legacy mission",
+      status: "draft",
+      ...patch,
+    }));
+    const app = scheduleRoutes(() => ({
+      getMission: async (missionId: string) =>
+        missionId === "mission-1"
+          ? { id: missionId, name: "Legacy mission", status: "draft" }
+          : null,
+      updateMission,
+      getScheduler: () => ({
+        getAllSchedules: () => [...schedules.values()],
+        getScheduleByMissionId: (missionId: string) =>
+          schedules.get(`sched-${missionId}`),
+        registerMission: (mission: any) => {
+          const entry = {
+            id: `sched-${mission.id}`,
+            missionId: mission.id,
+            expression: mission.schedule,
+            recurring: mission.status === "recurring",
+            enabled: true,
+            createdAt: "2026-07-28T08:00:00.000Z",
+          };
+          schedules.set(entry.id, entry);
+          return entry;
+        },
+        unregisterMission: (missionId: string) =>
+          schedules.delete(`sched-${missionId}`),
+      }),
+    }));
+
+    expect((await app.request("/", json("POST", {
+      missionId: "mission-1",
+      expression: "0 9 * * *",
+      recurring: true,
+    }))).status).toBe(201);
+    expect((await app.request("/mission-1", json("PATCH", {
+      expression: "30 10 * * *",
+      recurring: true,
+      endDate: "2026-08-30T00:00:00.000Z",
+    }))).status).toBe(200);
+    expect((await app.request("/mission-1", { method: "DELETE" })).status)
+      .toBe(200);
+
+    expect(updateMission).toHaveBeenCalledWith("mission-1", {
+      schedule: "0 9 * * *",
+      status: "recurring",
+    });
+    expect(updateMission).toHaveBeenCalledWith("mission-1", {
+      schedule: "30 10 * * *",
+      status: "recurring",
+    });
+    expect(updateMission).toHaveBeenCalledWith("mission-1", {
+      endDate: "2026-08-30T00:00:00.000Z",
+    });
+    expect(updateMission).toHaveBeenCalledWith("mission-1", {
+      schedule: undefined,
+      status: "draft",
     });
   });
 });
