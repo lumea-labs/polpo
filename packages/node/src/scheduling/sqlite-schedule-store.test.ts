@@ -188,6 +188,39 @@ describe("SQLiteScheduleStore", () => {
     second.close();
   });
 
+  it("enforces max concurrency atomically across store instances", async () => {
+    const path = await tempDatabase();
+    const now = new Date("2026-07-28T10:00:00.000Z");
+    const first = await SQLiteScheduleStore.open(path, { now: () => now });
+    const second = await SQLiteScheduleStore.open(path, { now: () => now });
+    const schedule = await first.create(input({
+      id: "schedule-1",
+      policy: { maxConcurrency: 1 },
+    }));
+    const firstRun = await first.createRun({
+      scheduleId: schedule.id,
+      occurrenceAt: "2026-07-28T11:00:00.000Z",
+      triggerId: "delivery-1",
+      idempotencyKey: "key-1",
+    });
+    const secondRun = await first.createRun({
+      scheduleId: schedule.id,
+      occurrenceAt: "2026-07-28T12:00:00.000Z",
+      triggerId: "delivery-2",
+      idempotencyKey: "key-2",
+    });
+
+    const [a, b] = await Promise.all([
+      first.claimRun(firstRun.id, lease(now, "worker-1", "token-1")),
+      second.claimRun(secondRun.id, lease(now, "worker-2", "token-2")),
+    ]);
+
+    expect([a, b].filter(Boolean)).toHaveLength(1);
+    expect(await first.countActiveRuns(schedule.id)).toBe(1);
+    first.close();
+    second.close();
+  });
+
   it("atomically rejects starting a claimed run after pause", async () => {
     const path = await tempDatabase();
     const now = new Date("2026-07-28T10:00:00.000Z");

@@ -411,7 +411,8 @@ export class SQLiteScheduleStore implements ScheduleStore {
       const normalizedLease = normalizeScheduleLease(lease, now);
       const run = this.requireRun(id);
       if (isTerminalScheduleRunStatus(run.status)) return null;
-      if (this.requireSchedule(run.scheduleId).status !== "active") return null;
+      const schedule = this.requireSchedule(run.scheduleId);
+      if (schedule.status !== "active") return null;
       if (
         (run.status === "claimed" || run.status === "running")
         && run.lease
@@ -432,7 +433,12 @@ export class SQLiteScheduleStore implements ScheduleStore {
         lease: normalizedLease,
         updatedAt: now.toISOString(),
       };
-      if (!this.casRun(run, claimed)) return null;
+      if (!this.casClaimRun(
+        run,
+        claimed,
+        schedule.policy.maxConcurrency,
+        now,
+      )) return null;
       return clone(claimed);
     })();
   }
@@ -619,6 +625,51 @@ export class SQLiteScheduleStore implements ScheduleStore {
       previous.lease?.owner ?? "",
       previous.lease?.token ?? "",
       previous.lease?.expiresAt ?? "",
+    ).changes;
+    return changes === 1;
+  }
+
+  private casClaimRun(
+    previous: ScheduleRun,
+    next: ScheduleRun,
+    maxConcurrency: number,
+    now: Date,
+  ): boolean {
+    const changes = this.db.prepare(`
+      UPDATE polpo_schedule_runs_v2
+      SET status = ?, attempts = ?, lease_owner = ?, lease_token = ?,
+          lease_expires_at = ?, updated_at = ?, data = ?
+      WHERE id = ? AND status = ? AND attempts = ? AND updated_at = ?
+        AND COALESCE(lease_owner, '') = ?
+        AND COALESCE(lease_token, '') = ?
+        AND COALESCE(lease_expires_at, '') = ?
+        AND (
+          SELECT COUNT(*)
+          FROM polpo_schedule_runs_v2 AS active
+          WHERE active.schedule_id = ?
+            AND active.id <> ?
+            AND active.status IN ('claimed', 'running')
+            AND active.lease_expires_at > ?
+        ) < ?
+    `).run(
+      next.status,
+      next.attempts,
+      next.lease?.owner ?? null,
+      next.lease?.token ?? null,
+      next.lease?.expiresAt ?? null,
+      next.updatedAt,
+      JSON.stringify(next),
+      previous.id,
+      previous.status,
+      previous.attempts,
+      previous.updatedAt,
+      previous.lease?.owner ?? "",
+      previous.lease?.token ?? "",
+      previous.lease?.expiresAt ?? "",
+      previous.scheduleId,
+      previous.id,
+      now.toISOString(),
+      maxConcurrency,
     ).changes;
     return changes === 1;
   }

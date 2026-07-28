@@ -334,7 +334,8 @@ export class InMemoryScheduleStore implements ScheduleStore {
     const normalizedLease = normalizeScheduleLease(lease, now);
     const run = this.requireRun(id);
     if (isTerminalScheduleRunStatus(run.status)) return null;
-    if (this.requireSchedule(run.scheduleId).status !== "active") return null;
+    const schedule = this.requireSchedule(run.scheduleId);
+    if (schedule.status !== "active") return null;
 
     if (
       (run.status === "claimed" || run.status === "running")
@@ -350,6 +351,14 @@ export class InMemoryScheduleStore implements ScheduleStore {
     ) {
       return null;
     }
+    const activeRuns = [...this.runs.values()].filter((candidate) =>
+      candidate.id !== run.id
+      && candidate.scheduleId === run.scheduleId
+      && isActiveRun(candidate)
+      && Boolean(candidate.lease)
+      && Date.parse(candidate.lease!.expiresAt) > now.getTime()
+    ).length;
+    if (activeRuns >= schedule.policy.maxConcurrency) return null;
 
     try {
       assertScheduleRunStatusTransition(run.status, "claimed");
