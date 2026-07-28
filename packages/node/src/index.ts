@@ -1,6 +1,7 @@
 // Core abstractions (includes orchestrator, config, session-reader, state-machine,
 // types, events, hooks, playbooks, templates, ink, quality, scheduling, etc.)
 export * from "./core/index.js";
+export { SQLiteScheduleStore } from "./scheduling/sqlite-schedule-store.js";
 
 // Stores
 export { FileTaskStore, FileRunStore, JsonTaskStore } from "@polpo-ai/file-stores";

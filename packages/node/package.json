@@ -22,6 +22,10 @@
       "types": "./dist/assessment/index.d.ts",
       "import": "./dist/assessment/index.js"
     },
+    "./scheduling": {
+      "types": "./dist/scheduling/index.d.ts",
+      "import": "./dist/scheduling/index.js"
+    },
     "./runner": {
       "import": "./dist/core/runner.js"
     }

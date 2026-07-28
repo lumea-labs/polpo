@@ -729,6 +729,13 @@ function normalizeMetadata(value: unknown, label: string): ScheduleMetadata {
   return cloned;
 }
 
+export function normalizeScheduleMetadata(
+  value: unknown,
+  label = "Schedule metadata",
+): ScheduleMetadata {
+  return normalizeMetadata(value, label);
+}
+
 function cloneJson(
   value: unknown,
   label: string,
