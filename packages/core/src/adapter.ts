@@ -5,6 +5,7 @@ import type { FileSystem } from "@polpo-ai/core/filesystem";
 import type { Shell } from "@polpo-ai/core/shell";
 import type { LoopResumeState } from "@polpo-ai/core/loop-run-store";
 import type { ModelSelection } from "./model-policy.js";
+import type { RuntimePlan } from "./runtime-plan/index.js";
 import type { RuntimeSandboxOptions } from "./runtime-sandbox.js";
 
 /**
@@ -117,6 +118,8 @@ export interface SpawnContext {
  * takes no dependency on `ai`.
  */
 export interface ChatSessionInjection {
+  /** Frozen, secret-free planning decision for this invocation. */
+  runtimePlan?: RuntimePlan;
   /** Resolved agent config (for the RunnerConfig the driver builds). */
   agent: AgentConfig;
   /** Optional session title (first user text). */

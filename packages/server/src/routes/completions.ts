@@ -32,7 +32,13 @@
 import { OpenAPIHono } from "@hono/zod-openapi";
 import {
   type LoopRunStore,
+  type ModelSelection,
   type ProjectLoopConfig,
+  type RuntimeDecisionSource,
+  type RuntimeInvocationSource,
+  type RuntimePlan,
+  type RuntimeSurface,
+  type RuntimeSandboxOptions,
 } from "@polpo-ai/core";
 import type { ApprovalStore } from "@polpo-ai/core/approval-store";
 import type { ChatSessionInjection } from "@polpo-ai/core";
@@ -79,6 +85,14 @@ export interface CompletionRouteDeps {
   getSessionStore: () => any;
   getStore: () => any;
   emit: (event: string, data: any) => void;
+  /**
+   * Optional pre-execution planner. The input is already authorized and omits
+   * messages, prompts, credentials, headers, and provider secrets. When absent,
+   * completion execution remains byte-for-byte compatible with the legacy path.
+   */
+  resolveRuntimePlan?: (
+    input: CompletionRuntimePlanInput,
+  ) => RuntimePlan | Promise<RuntimePlan>;
   /** Resolve agent model. Must return an object with aiModel (LanguageModel), provider, contextWindow, maxTokens, and providerOptions. */
   resolveAgentModel: (agentConfig: any, settingsReasoning?: string) => Promise<{
     model: ResolvedModelInfo;
@@ -159,6 +173,36 @@ export interface CompletionRouteDeps {
     executor: (name: string, args: Record<string, unknown>) => Promise<string>;
     isInteractive: (name: string) => boolean;
   }>;
+}
+
+export interface CompletionRuntimePlanInput {
+  readonly surface: RuntimeSurface;
+  readonly source: RuntimeInvocationSource;
+  readonly execution: Readonly<{
+    mode: "direct" | "loop";
+    loop?: string;
+    source: RuntimeDecisionSource;
+  }>;
+  readonly request: Readonly<{
+    agent?: string;
+    loop?: string;
+    sandbox?: RuntimeSandboxOptions;
+  }>;
+  readonly agent?: Readonly<{
+    name: string;
+    model?: ModelSelection;
+    sandbox?: RuntimeSandboxOptions;
+    allowedTools?: readonly string[];
+  }>;
+}
+
+/**
+ * Trusted invocation identity supplied by an internal surface adapter.
+ * Request metadata is intentionally not used for this decision.
+ */
+export interface CompletionRuntimeInvocation {
+  readonly surface: RuntimeSurface;
+  readonly source: RuntimeInvocationSource;
 }
 
 export function completionRoutes(getDeps: () => CompletionRouteDeps, apiKeys?: string[]): OpenAPIHono {

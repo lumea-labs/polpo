@@ -8,7 +8,12 @@
  */
 
 import { streamSSE } from "hono/streaming";
-import { compactIfNeeded, type CompactionEvent, type ModelSelection } from "@polpo-ai/core";
+import {
+  compactIfNeeded,
+  type CompactionEvent,
+  type ModelSelection,
+  type RuntimePlan,
+} from "@polpo-ai/core";
 import { runModelPolicyTurn } from "@polpo-ai/llm";
 import type { LanguageModelUsage } from "ai";
 import type { RuntimeSandboxOptions } from "@polpo-ai/core";
@@ -60,6 +65,8 @@ export interface ChatCompletionExecution {
   aiMessages: any[];
   sessionStore: any;
   sessionId: string | null;
+  /** Frozen, secret-free runtime decision emitted before provider/tool resolution. */
+  runtimePlan?: RuntimePlan;
   /**
    * Resource cleanup hook — set when an agent's tool resolver opens
    * long-lived connections (today: MCP transports). Invoked exactly
