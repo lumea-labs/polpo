@@ -24,6 +24,8 @@ import {
   type LoopResumeState,
   type LoopTraceEvent,
   type ProjectLoopConfig,
+  type ResolvedExecutionRoute,
+  type RuntimePlan,
 } from "@polpo-ai/core";
 import type { LanguageModelUsage } from "ai";
 import type { CompletionRouteDeps } from "../completions.js";
@@ -59,8 +61,23 @@ export async function runProjectLoopCompletion(options: {
   onToolCall?: (toolCall: LoopRuntimeToolCall) => Promise<void>;
   onTrace?: (event: LoopTraceEvent) => Promise<void>;
   resumeRun?: LoopRunRecord;
+  runtimePlan?: RuntimePlan;
+  executionRoute?: ResolvedExecutionRoute;
 }): Promise<ProjectLoopRunResult> {
-  const { deps, agentConfig, projectLoop, aiMessages, extraSystemParts, sessionId, user, onToolCall, onTrace, resumeRun } = options;
+  const {
+    deps,
+    agentConfig,
+    projectLoop,
+    aiMessages,
+    extraSystemParts,
+    sessionId,
+    user,
+    onToolCall,
+    onTrace,
+    resumeRun,
+    runtimePlan,
+    executionRoute,
+  } = options;
   const normalized = normalizeProjectLoop(projectLoop);
   if (!normalized.pipeline) throw new Error(`Loop "${projectLoop.name}" does not define a pipeline`);
 
@@ -98,6 +115,32 @@ export async function runProjectLoopCompletion(options: {
       user,
       metadata: {
         runtime: "chat.completions",
+        surface: runtimePlan?.surface ?? executionRoute?.surface ?? "agent",
+        source:
+          runtimePlan?.source
+          ?? executionRoute?.invocationSource
+          ?? "request",
+        execution: {
+          mode: "loop",
+          loop: projectLoop.name,
+          source:
+            runtimePlan?.execution.source
+            ?? executionRoute?.decisionSource
+            ?? "request",
+        },
+        ...(runtimePlan ? { runtimePlanId: runtimePlan.id } : {}),
+        ...(executionRoute
+          ? {
+              executionRoute: {
+                status: executionRoute.status,
+                decisionSource: executionRoute.decisionSource,
+                confidence: executionRoute.confidence,
+                reason: executionRoute.reason,
+                latencyMs: executionRoute.latencyMs,
+                fallbackUsed: executionRoute.fallbackUsed,
+              },
+            }
+          : {}),
         loopVersion: projectLoop.version ?? "1",
       },
     });
@@ -392,8 +435,22 @@ export async function handleProjectLoopCompletion(c: any, options: {
   extraSystemParts: string[];
   sessionStore: any;
   sessionId: string | null;
+  runtimePlan?: RuntimePlan;
+  executionRoute?: ResolvedExecutionRoute;
 }): Promise<any> {
-  const { deps, body, completionId, agentConfig, projectLoop, aiMessages, extraSystemParts, sessionStore, sessionId } = options;
+  const {
+    deps,
+    body,
+    completionId,
+    agentConfig,
+    projectLoop,
+    aiMessages,
+    extraSystemParts,
+    sessionStore,
+    sessionId,
+    runtimePlan,
+    executionRoute,
+  } = options;
 
   if (body.stream) {
     return streamSSE(c, async (stream) => {
@@ -435,6 +492,8 @@ export async function handleProjectLoopCompletion(c: any, options: {
           extraSystemParts,
           sessionId,
           user: body.user,
+          runtimePlan,
+          executionRoute,
           onToolCall: async (toolCall) => {
             if (abortController.signal.aborted) return;
             await stream.writeSSE({
@@ -520,6 +579,8 @@ export async function handleProjectLoopCompletion(c: any, options: {
       extraSystemParts,
       sessionId,
       user: body.user,
+      runtimePlan,
+      executionRoute,
     });
     finalText = run.text;
     runUsage = run.usage;

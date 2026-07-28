@@ -12,6 +12,7 @@ import {
   compactIfNeeded,
   type CompactionEvent,
   type ModelSelection,
+  type ResolvedExecutionRoute,
   type RuntimePlan,
 } from "@polpo-ai/core";
 import { runModelPolicyTurn } from "@polpo-ai/llm";
@@ -69,6 +70,8 @@ export interface ChatCompletionExecution {
   sessionId: string | null;
   /** Frozen, secret-free runtime decision emitted before provider/tool resolution. */
   runtimePlan?: RuntimePlan;
+  /** Validated direct-or-loop decision for audit and downstream propagation. */
+  executionRoute?: ResolvedExecutionRoute;
   /**
    * Resource cleanup hook — set when an agent's tool resolver opens
    * long-lived connections (today: MCP transports). Invoked exactly

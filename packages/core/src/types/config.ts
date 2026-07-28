@@ -9,6 +9,7 @@ import type { ApprovalGate, SLAConfig } from "./mission.js";
 import type { NotificationsConfig, EscalationPolicy } from "./notifications.js";
 import type { LoopResumeState } from "../loop/run-store.js";
 import type { RuntimeSandboxOptions } from "../runtime-sandbox.js";
+import type { ResolvedExecutionRoute } from "../execution-router.js";
 
 // === Runner Config ===
 
@@ -17,6 +18,8 @@ export interface RunnerConfig {
   executionMode?: ExecutionMode;
   /** Resolved runtime sandbox policy for the host sandbox provider. */
   sandbox?: RuntimeSandboxOptions;
+  /** Validated direct-or-loop decision resolved before host dispatch. */
+  executionRoute?: ResolvedExecutionRoute;
   runId: string;
   taskId: string;
   agent: AgentConfig;

@@ -382,6 +382,7 @@ export const projectLoopConfigSchema = z.object({
   version: z.literal("1").optional(),
   kind: z.literal("graph").optional(),
   name: z.string().min(1),
+  label: z.string().min(1).optional(),
   description: z.string().optional(),
   metadata: z.record(z.string(), z.unknown()).optional(),
   context: z.literal("shared").optional(),
