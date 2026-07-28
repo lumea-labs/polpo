@@ -103,6 +103,28 @@ describe("SQLiteScheduleStore", () => {
     second.close();
   });
 
+  it("lists oldest runs first when requested before applying the limit", async () => {
+    const path = await tempDatabase();
+    const now = new Date("2026-07-28T10:00:00.000Z");
+    const store = await SQLiteScheduleStore.open(path, { now: () => now });
+    const schedule = await store.create(input({ id: "schedule-1" }));
+    for (const hour of [11, 12, 13]) {
+      await store.createRun({
+        scheduleId: schedule.id,
+        occurrenceAt: `2026-07-28T${hour}:00:00.000Z`,
+        triggerId: `delivery-${hour}`,
+        idempotencyKey: `key-${hour}`,
+      });
+    }
+
+    expect((await store.listRuns({ order: "asc", limit: 2 }))
+      .map((run) => run.occurrenceAt)).toEqual([
+      "2026-07-28T11:00:00.000Z",
+      "2026-07-28T12:00:00.000Z",
+    ]);
+    store.close();
+  });
+
   it("uses revision CAS across independent store instances", async () => {
     const path = await tempDatabase();
     const now = new Date("2026-07-28T10:00:00.000Z");

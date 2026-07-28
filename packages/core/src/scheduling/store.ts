@@ -34,6 +34,7 @@ export interface ScheduleRunFilter {
   scheduleId?: string;
   status?: ScheduleRunStatus | ScheduleRunStatus[];
   limit?: number;
+  order?: "asc" | "desc";
 }
 
 export interface ScheduleMutationOptions {
@@ -316,15 +317,17 @@ export class InMemoryScheduleStore implements ScheduleStore {
   async listRuns(filter: ScheduleRunFilter = {}): Promise<ScheduleRun[]> {
     const statuses = normalizeRunStatusFilter(filter.status);
     const limit = normalizeLimit(filter.limit);
+    const direction = normalizeRunOrder(filter.order);
     return [...this.runs.values()]
       .filter((run) =>
         (!filter.scheduleId || run.scheduleId === filter.scheduleId)
         && (!statuses || statuses.has(run.status))
       )
-      .sort((a, b) =>
-        b.occurrenceAt.localeCompare(a.occurrenceAt)
-        || b.createdAt.localeCompare(a.createdAt)
-      )
+      .sort((a, b) => direction * (
+        a.occurrenceAt.localeCompare(b.occurrenceAt)
+        || a.createdAt.localeCompare(b.createdAt)
+        || a.id.localeCompare(b.id)
+      ))
       .slice(0, limit)
       .map(clone);
   }
@@ -835,6 +838,12 @@ function normalizeLimit(limit: number | undefined): number {
     throw new Error("Schedule run list limit must be an integer between 1 and 1000");
   }
   return limit;
+}
+
+function normalizeRunOrder(order: ScheduleRunFilter["order"]): 1 | -1 {
+  if (order === undefined || order === "desc") return -1;
+  if (order === "asc") return 1;
+  throw new Error('Schedule run order must be "asc" or "desc"');
 }
 
 function isActiveRun(run: ScheduleRun): boolean {
