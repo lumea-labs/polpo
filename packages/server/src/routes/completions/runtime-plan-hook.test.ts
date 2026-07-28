@@ -64,6 +64,62 @@ function makeDeps(overrides: Partial<CompletionRouteDeps> = {}): CompletionRoute
 }
 
 describe("completion runtime plan hook", () => {
+  it("plans with the semantic profile, then resolves a concrete model before provider adaptation", async () => {
+    const planningInputs: unknown[] = [];
+    const resolvedAgentConfigs: any[] = [];
+    const deps = makeDeps({
+      getAgents: async () => [{
+        name: "agent-1",
+        model: { profile: "balanced" },
+        allowedModelProfiles: ["balanced", "fast"],
+      }],
+      getConfig: () => ({
+        settings: {
+          chatExecution: "run",
+          modelProfiles: {
+            fast: "openai/gpt-4o-mini",
+            balanced: {
+              primary: "anthropic/claude-sonnet-4",
+              fallbacks: [{ profile: "fast" }],
+            },
+          },
+        },
+      }),
+      resolveRuntimePlan: async (input) => {
+        planningInputs.push(input);
+        return makePlan();
+      },
+      resolveAgentModel: async (agentConfig) => {
+        resolvedAgentConfigs.push(agentConfig);
+        return {
+          model: {
+            id: "claude-sonnet-4",
+            name: "Claude Sonnet 4",
+            provider: "anthropic",
+            aiModel: {} as any,
+            contextWindow: 200_000,
+            maxTokens: 8_192,
+          },
+        };
+      },
+    });
+
+    const prepared = await prepareChatCompletionExecution(deps, {
+      agent: "agent-1",
+      stream: false,
+      messages: [{ role: "user", content: "hello" }],
+    });
+
+    expect(prepared.kind).toBe("chat");
+    if (prepared.kind !== "chat") throw new Error("Expected chat preparation");
+    expect((planningInputs[0] as any).agent.model).toEqual({ profile: "balanced" });
+    expect(resolvedAgentConfigs[0].model).toBe("anthropic/claude-sonnet-4");
+    expect(prepared.execution.modelSelection).toEqual({
+      primary: "anthropic/claude-sonnet-4",
+      fallbacks: ["openai/gpt-4o-mini"],
+    });
+  });
+
   it("runs after agent/loop authorization and before prompt, model, and tool resolution", async () => {
     const calls: string[] = [];
     const plan = makePlan();

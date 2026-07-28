@@ -678,6 +678,37 @@ describe("AssessmentOrchestrator", () => {
   // ── Question detection ───────────────────────────
 
   describe("question detection", () => {
+    it("passes a concrete orchestrator policy after expanding its profile", async () => {
+      const h = createHarness({
+        orchestratorModel: { profile: "balanced" },
+        modelProfiles: {
+          balanced: {
+            primary: "anthropic/claude-sonnet-4",
+            fallbacks: ["openai/gpt-4o-mini"],
+          },
+        },
+      });
+      (classifyAsQuestion as Mock).mockResolvedValue({ isQuestion: false, question: "" });
+      const task = await addReviewTask(h);
+      await h.runStore.upsertRun(createTestRunRecord({
+        taskId: task.id,
+        activity: createTestActivity({ toolCalls: 1 }),
+      }));
+
+      h.ao.handleResult(task.id, createOkResult({ stdout: "Is this complete?" }));
+
+      await vi.waitFor(async () => {
+        expect((await h.store.getTask(task.id))!.status).toBe("done");
+      });
+      expect(classifyAsQuestion).toHaveBeenCalledWith(
+        "Is this complete?",
+        {
+          primary: "anthropic/claude-sonnet-4",
+          fallbacks: ["openai/gpt-4o-mini"],
+        },
+      );
+    });
+
     it("detects and resolves a question, re-running the task", async () => {
       const h = createHarness();
       (classifyAsQuestion as Mock).mockResolvedValue({

@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import { cors } from "hono/cors";
 import { join } from "node:path";
 import { projectLoopConfigSchema } from "@polpo-ai/core/schemas";
+import { resolveConfiguredModelSelection } from "@polpo-ai/core";
 import { buildSystemPrompt } from "../adapters/spawn-helpers.js";
 // NodeFileSystem no longer instantiated here — use orchestrator's getFs() instead
 import type { Orchestrator } from "../core/orchestrator.js";
@@ -122,7 +123,15 @@ export function createApp(orchestrator: Orchestrator, sseBridge: SSEBridge, opts
     emit: (event: string, data: any) => o.emit(event as any, data),
     resolveAgentModel: async (agentConfig: any, reasoning?: string) => {
       const { buildResolvedModelProviderOptions, resolveModel } = await import("@polpo-ai/llm");
-      const m = resolveModel(agentConfig.model, resolveNodeModelOptions(agentConfig.model, o.getGatewayConfig()));
+      const settings = o.getConfig()?.settings;
+      const modelSpec = agentConfig.model
+        ? resolveConfiguredModelSelection(
+            agentConfig.model,
+            settings ?? {},
+            agentConfig.allowedModelProfiles,
+          ).policy.primary
+        : undefined;
+      const m = resolveModel(modelSpec, resolveNodeModelOptions(modelSpec, o.getGatewayConfig()));
       const r = agentConfig.reasoning ?? reasoning;
       const providerOptions = buildResolvedModelProviderOptions(m, r);
       return { model: m, providerOptions };

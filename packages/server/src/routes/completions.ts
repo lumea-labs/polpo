@@ -33,6 +33,7 @@ import { OpenAPIHono } from "@hono/zod-openapi";
 import {
   type LoopRunStore,
   type ModelSelection,
+  type ProfiledModelSelection,
   type ProjectLoopConfig,
   type RuntimeDecisionSource,
   type RuntimeInvocationSource,
@@ -190,7 +191,7 @@ export interface CompletionRuntimePlanInput {
   }>;
   readonly agent?: Readonly<{
     name: string;
-    model?: ModelSelection;
+    model?: ProfiledModelSelection;
     sandbox?: RuntimeSandboxOptions;
     allowedTools?: readonly string[];
   }>;

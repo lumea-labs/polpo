@@ -2,6 +2,42 @@ import { describe, expect, it } from "vitest";
 import { AddAgentSchema, UpdateAgentSchema } from "./schemas.js";
 
 describe("agent loop API contract", () => {
+  it("accepts explicit model profiles without reinterpreting legacy strings", () => {
+    expect(AddAgentSchema.parse({
+      name: "profiled",
+      model: { profile: "balanced" },
+      allowedModelProfiles: ["balanced", "fast"],
+    })).toMatchObject({
+      model: { profile: "balanced" },
+      allowedModelProfiles: ["balanced", "fast"],
+    });
+
+    expect(UpdateAgentSchema.parse({
+      model: "openai",
+      allowedModelProfiles: [],
+    })).toEqual({
+      model: "openai",
+      allowedModelProfiles: [],
+    });
+  });
+
+  it("rejects ambiguous profile references and model policies instead of stripping fields", () => {
+    expect(AddAgentSchema.safeParse({
+      name: "ambiguous-profile",
+      model: {
+        profile: "fast",
+        primary: "openai/gpt-4o-mini",
+      },
+    }).success).toBe(false);
+
+    expect(UpdateAgentSchema.safeParse({
+      model: {
+        primary: "openai/gpt-4o-mini",
+        providerOptions: { temperature: 0 },
+      },
+    }).success).toBe(false);
+  });
+
   it("accepts project-level loop assignments on agents", () => {
     expect(AddAgentSchema.parse({
       name: "loop-agent",

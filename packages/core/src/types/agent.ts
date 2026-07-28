@@ -4,7 +4,7 @@
  */
 
 import type { LoopConfig, LoopToolChoice, Pipeline } from "../loop/types.js";
-import type { ModelConfig } from "./config.js";
+import type { ProfiledModelSelection } from "./config.js";
 import type { RuntimeSandboxOptions } from "../runtime-sandbox.js";
 import type {
   BillingOwner,
@@ -80,8 +80,10 @@ export interface AgentConfig {
   /** ISO timestamp of when this agent was created / added to the team. Auto-set by addAgent(). */
   createdAt?: string;
   role?: string;
-  /** Model to use. A string keeps legacy behavior; an object defines an ordered language-model policy. */
-  model?: string | ModelConfig;
+  /** Model to use. Strings remain concrete ids; profile references are explicit objects. */
+  model?: ProfiledModelSelection;
+  /** Optional narrowing allowlist for profile references used by this agent. */
+  allowedModelProfiles?: string[];
   /** Image generation model. Format: "provider/model".
    *  Default: "fal/fal-ai/flux/dev". Drives the image_generate tool.
    *  Provider must be in the supported set: fal. */

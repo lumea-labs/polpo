@@ -13,7 +13,12 @@ import type { MemoryStore } from "@polpo-ai/core/memory-store";
 import type { LogStore } from "@polpo-ai/core/log-store";
 import { assessTask } from "../assessment/assessor.js";
 import { analyzeBlockedTasks, resolveDeadlock, isResolving } from "./deadlock-resolver.js";
-import { OrchestratorEngine, normalizeModelPolicy, resolveMissionStore } from "@polpo-ai/core";
+import {
+  OrchestratorEngine,
+  normalizeModelPolicy,
+  resolveConfiguredModelSelection,
+  resolveMissionStore,
+} from "@polpo-ai/core";
 import type { DeadlockResolverPort, DeadlockFacade } from "@polpo-ai/core";
 import { TypedEmitter } from "./events.js";
 import type { TaskStore } from "@polpo-ai/core/task-store";
@@ -362,14 +367,23 @@ export class Orchestrator extends TypedEmitter {
     if (process.env.POLPO_MODEL) modelSpecs.push(process.env.POLPO_MODEL);
     // Orchestrator model
     if (this.config.settings.orchestratorModel) {
-      modelSpecs.push(...normalizeModelPolicy(this.config.settings.orchestratorModel).candidates);
+      modelSpecs.push(...resolveConfiguredModelSelection(
+        this.config.settings.orchestratorModel,
+        this.config.settings,
+      ).policy.candidates);
     }
     // Judge model
     if (process.env.POLPO_JUDGE_MODEL) modelSpecs.push(process.env.POLPO_JUDGE_MODEL);
     // Per-agent models (from AgentStore, not config)
     const agents = await this.agentStore.getAgents();
     for (const agent of agents) {
-      if (agent.model) modelSpecs.push(...normalizeModelPolicy(agent.model).candidates);
+      if (agent.model) {
+        modelSpecs.push(...resolveConfiguredModelSelection(
+          agent.model,
+          this.config.settings,
+          agent.allowedModelProfiles,
+        ).policy.candidates);
+      }
     }
 
     if (modelSpecs.length === 0) {

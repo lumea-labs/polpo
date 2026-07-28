@@ -7,7 +7,7 @@ import { resolveExecutionMode } from "./execution-mode.js";
 import { resolveRuntimeSandboxOptions } from "./runtime-sandbox.js";
 import type { RunRecord } from "./run-store.js";
 import type { LoopResumeState } from "./loop/run-store.js";
-import { normalizeModelPolicy } from "./model-policy.js";
+import { resolveConfiguredModelSelection } from "./model-profiles.js";
 
 /**
  * Durable turns: max age of a resume checkpoint before orphan recovery
@@ -471,7 +471,12 @@ export class TaskRunner {
 
     // Fail fast if the agent's model provider has no API key
     if (agent.model && this.ctx.validateProviderKeys) {
-      const missing = this.ctx.validateProviderKeys(normalizeModelPolicy(agent.model).candidates);
+      const resolved = resolveConfiguredModelSelection(
+        agent.model,
+        this.ctx.config.settings,
+        agent.allowedModelProfiles,
+      );
+      const missing = this.ctx.validateProviderKeys([...resolved.policy.candidates]);
       if (missing.length > 0) {
         const detail = missing.map(m => `${m.provider} (${m.modelSpec})`).join(", ");
         this.ctx.emitter.emit("log", {
@@ -619,6 +624,8 @@ export class TaskRunner {
       notifySocket: this.ctx.notifySocketPath,
       emailAllowedDomains: agent.emailAllowedDomains ?? this.ctx.config.settings.emailAllowedDomains,
       reasoning: this.ctx.config.settings.reasoning,
+      modelProfiles: this.ctx.config.settings.modelProfiles,
+      modelAllowlist: this.ctx.config.settings.modelAllowlist,
       providers: this.ctx.config.providers,
       resumeState,
     };

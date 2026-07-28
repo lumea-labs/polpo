@@ -47,6 +47,7 @@ import {
   normalizeToolInput,
   resolveLoopSelection,
   compactIfNeeded,
+  type ModelSelection,
   type SummarizeFn,
   type CompactionEvent,
   type LoopModelResult,
@@ -285,6 +286,7 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
     // Tools value handed to compaction's token estimator (JSON.stringify'd); MUST
     // match the chat path's shape so the compaction trigger point is identical.
     let compactionTools: unknown[];
+    let resolvedModelSelection: ModelSelection | undefined;
     const compactionMode: "chat" | "task" = inject?.compactionMode ?? "task";
     if (inject) {
       model = inject.model as unknown as SpawnPrep["model"];
@@ -296,6 +298,7 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
     } else {
       const prep = prepareSpawn(sessionAgent, cwd, ctx);
       model = prep.model;
+      resolvedModelSelection = prep.modelSelection;
       providerOptions = prep.providerOptions;
       systemPrompt = contextPrompt
         ? `${prep.systemPrompt}\n\n${contextPrompt}`
@@ -307,7 +310,10 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
       compactionTools = allPolpoTools.map((t) => ({ description: t.description ?? "" }));
     }
     const primaryResolved = { model, providerOptions };
-    const modelSelection = inject?.modelSelection ?? sessionAgent.model ?? modelSelectionForResolvedModel(model);
+    const modelSelection =
+      inject?.modelSelection ??
+      resolvedModelSelection ??
+      modelSelectionForResolvedModel(model);
 
     // Conversation state owned by the host, exactly like the legacy loop.
     // On resume the recorded history (already containing tool-call and

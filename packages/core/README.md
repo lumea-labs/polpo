@@ -112,6 +112,44 @@ Runtime plans contain policy decisions and references only. Prompts, messages,
 provider headers, credentials, and retrieved private content do not belong in
 the plan or its `runtime:plan` event.
 
+## Model profiles
+
+Model profiles give project configuration stable semantic names while keeping
+provider model IDs out of agent definitions. Existing string values always
+remain concrete model IDs. A profile is selected only with the explicit
+`{ profile: "name" }` form.
+
+```jsonc
+{
+  "settings": {
+    "modelProfiles": {
+      "fast": "openai/gpt-4o-mini",
+      "balanced": {
+        "primary": "anthropic/claude-sonnet-4",
+        "fallbacks": [{ "profile": "fast" }]
+      }
+    },
+    "orchestratorModel": { "profile": "balanced" }
+  }
+}
+```
+
+Agents can select a profile and optionally narrow which profiles, including
+nested references, they may use:
+
+```jsonc
+{
+  "name": "support",
+  "model": { "profile": "balanced" },
+  "allowedModelProfiles": ["balanced", "fast"]
+}
+```
+
+Resolution is recursive, deterministic, deduplicates concrete models while
+preserving order, and fails closed for unknown profiles, cycles, invalid
+allowlists, excessive depth, or too many fallbacks. The runtime resolves the
+profile before provider setup; providers receive only concrete model IDs.
+
 ## License
 
 Apache 2.0
