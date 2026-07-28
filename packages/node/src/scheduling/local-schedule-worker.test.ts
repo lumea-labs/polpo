@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   InMemoryScheduleStore,
   ScheduleConflictError,
@@ -81,6 +81,10 @@ function worker(
     ...overrides,
   });
 }
+
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 describe("LocalScheduleDriver", () => {
   it("returns deterministic local registration without external side effects", async () => {
@@ -250,6 +254,33 @@ describe("LocalScheduleWorker", () => {
     expect(runHandler).toHaveBeenCalledTimes(1);
   });
 
+  it("jumps directly to the latest occurrence when backlog exceeds the batch", async () => {
+    const state = fixture();
+    const created = await state.store.create(input({
+      policy: {
+        catchUp: "latest",
+        misfireGraceSeconds: 600,
+        maxConcurrency: 1,
+      },
+    }));
+    await state.store.updateOperationalState(created.id, {
+      nextOccurrenceAt: "2026-07-28T09:55:00.000Z",
+    });
+    const runHandler = handler();
+
+    await worker(state, runHandler, {
+      maxOccurrencesPerSchedulePerTick: 2,
+    }).tick();
+
+    expect(await state.store.listRuns()).toMatchObject([
+      {
+        occurrenceAt: "2026-07-28T10:00:00.000Z",
+        status: "succeeded",
+      },
+    ]);
+    expect(runHandler).toHaveBeenCalledTimes(1);
+  });
+
   it("defers pending work when max concurrency is already reached", async () => {
     const state = fixture();
     const created = await state.store.create(input());
@@ -299,6 +330,32 @@ describe("LocalScheduleWorker", () => {
     });
   });
 
+  it("does not dispatch if a schedule is deleted after claim", async () => {
+    const state = fixture();
+    const created = await state.store.create(input());
+    await state.store.updateOperationalState(created.id, {
+      nextOccurrenceAt: "2026-07-28T10:00:00.000Z",
+    });
+    const originalClaim = state.store.claimRun.bind(state.store);
+    state.store.claimRun = async (id: string, currentLease: ScheduleLease) => {
+      const claimed = await originalClaim(id, currentLease);
+      if (claimed) await state.store.markDeleted(created.id);
+      return claimed;
+    };
+    const runHandler = handler();
+
+    const result = await worker(state, runHandler).tick();
+
+    expect(result.deferred).toBe(1);
+    expect(runHandler).not.toHaveBeenCalled();
+    expect((await state.store.listRuns())[0]).toMatchObject({
+      status: "pending",
+    });
+    expect(await state.store.get(created.id)).toMatchObject({
+      status: "deleted",
+    });
+  });
+
   it("releases a run when the injected handler throws", async () => {
     const state = fixture();
     const created = await state.store.create(input());
@@ -341,6 +398,107 @@ describe("LocalScheduleWorker", () => {
       status: "succeeded",
       attempts: 2,
     });
+  });
+
+  it("renews the lease while a long handler is still running", async () => {
+    vi.useFakeTimers();
+    const state = fixture();
+    const created = await state.store.create(input());
+    await state.store.updateOperationalState(created.id, {
+      nextOccurrenceAt: "2026-07-28T10:00:00.000Z",
+    });
+    let finish: (() => void) | undefined;
+    const runHandler = handler(() =>
+      new Promise((resolve) => {
+        finish = () => resolve({
+          status: "succeeded",
+          references: {},
+        });
+      })
+    );
+    const localWorker = worker(state, runHandler, {
+      leaseDurationMs: 1_000,
+    });
+
+    const pendingTick = localWorker.tick();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(runHandler).toHaveBeenCalledTimes(1);
+    state.advance(400);
+    await vi.advanceTimersByTimeAsync(400);
+
+    expect((await state.store.listRuns())[0].lease?.expiresAt)
+      .toBe("2026-07-28T10:00:01.400Z");
+    finish?.();
+    await pendingTick;
+  });
+
+  it("does not duplicate work when the wall clock moves backward", async () => {
+    const state = fixture();
+    await state.store.create(input());
+    const runHandler = handler();
+    const localWorker = worker(state, runHandler);
+    await localWorker.tick();
+    state.setNow("2026-07-28T09:59:00.000Z");
+
+    await localWorker.tick();
+
+    expect(await state.store.listRuns()).toEqual([]);
+    expect(await state.store.get("schedule-1")).toMatchObject({
+      nextOccurrenceAt: "2026-07-28T10:01:00.000Z",
+    });
+    state.setNow("2026-07-28T10:01:00.000Z");
+    await localWorker.tick();
+    expect(runHandler).toHaveBeenCalledTimes(1);
+  });
+
+  it("processes the oldest pending run first when a tick is bounded", async () => {
+    const state = fixture();
+    const created = await state.store.create(input({
+      policy: {
+        catchUp: "skip",
+        misfireGraceSeconds: 600,
+        maxConcurrency: 1,
+      },
+    }));
+    for (const minute of [58, 59]) {
+      await state.store.createRun({
+        scheduleId: created.id,
+        occurrenceAt: `2026-07-28T09:${minute}:00.000Z`,
+        triggerId: `delivery-${minute}`,
+        idempotencyKey: `key-${minute}`,
+      });
+    }
+    const runHandler = handler();
+
+    await worker(state, runHandler, { maxRunsPerTick: 1 }).tick();
+
+    expect(runHandler).toHaveBeenCalledTimes(1);
+    expect(runHandler).toHaveBeenCalledWith(expect.objectContaining({
+      run: expect.objectContaining({
+        occurrenceAt: "2026-07-28T09:58:00.000Z",
+      }),
+    }));
+  });
+
+  it("fails closed when persisted next occurrence no longer matches timing", async () => {
+    const state = fixture();
+    const created = await state.store.create(input());
+    await state.store.updateOperationalState(created.id, {
+      nextOccurrenceAt: "2026-07-28T10:00:30.000Z",
+    });
+    state.setNow("2026-07-28T10:01:00.000Z");
+    const onError = vi.fn();
+
+    const result = await worker(state, handler(), { onError }).tick();
+
+    expect(result).toMatchObject({ failed: 1, dispatched: 0 });
+    expect(onError).toHaveBeenCalledWith(
+      expect.objectContaining({ message: expect.stringMatching(/does not match/i) }),
+      expect.objectContaining({
+        phase: "materialize",
+        scheduleId: created.id,
+      }),
+    );
   });
 
   it("completes a one-time schedule only after its run is terminal", async () => {

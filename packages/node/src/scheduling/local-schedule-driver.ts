@@ -300,7 +300,8 @@ export class LocalScheduleWorker {
     const candidates = (await this.store.listRuns({
       status: ["pending", "claimed", "running"],
       limit: this.maxRunsPerTick,
-    })).sort(compareRunsAscending);
+      order: "asc",
+    }));
     const latestBySchedule = new Map<string, string>();
     for (const run of candidates) {
       latestBySchedule.set(run.scheduleId, run.id);
@@ -411,7 +412,10 @@ export class LocalScheduleWorker {
   ): Promise<void> {
     const lease = this.createLease(now);
     const claimed = await this.store.claimRun(candidate.id, lease);
-    if (!claimed) return;
+    if (!claimed) {
+      result.deferred += 1;
+      return;
+    }
     await this.store.completeRun(candidate.id, {
       lease,
       status: "skipped",
@@ -542,12 +546,6 @@ function incrementTerminalResult(
   else if (status === "skipped") result.skipped += 1;
   else if (status === "cancelled") result.cancelled += 1;
   else if (status === "failed") result.failed += 1;
-}
-
-function compareRunsAscending(a: ScheduleRun, b: ScheduleRun): number {
-  return a.occurrenceAt.localeCompare(b.occurrenceAt)
-    || a.createdAt.localeCompare(b.createdAt)
-    || a.id.localeCompare(b.id);
 }
 
 function validClock(value: Date | string, label: string): Date {
