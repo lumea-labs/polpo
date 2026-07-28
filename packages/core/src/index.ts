@@ -59,6 +59,20 @@ export type {
   NormalizedModelPolicy,
   NormalizeModelPolicyOptions,
 } from "./model-policy.js";
+export {
+  DEFAULT_MODEL_PROFILE_MAX_DEPTH,
+  MODEL_PROFILE_NAME_PATTERN,
+  ModelProfileResolutionError,
+  isModelProfileReference,
+  resolveConfiguredModelSelection,
+  resolveModelProfileSelection,
+} from "./model-profiles.js";
+export type {
+  ConfiguredModelProfiles,
+  ModelProfileResolutionErrorCode,
+  ResolveModelProfileSelectionOptions,
+  ResolvedModelProfileSelection,
+} from "./model-profiles.js";
 
 // ── Runtime planning (host-neutral, serializable execution decisions) ───
 export * from "./runtime-plan/index.js";

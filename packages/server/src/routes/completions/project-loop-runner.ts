@@ -28,6 +28,7 @@ import {
 import type { LanguageModelUsage } from "ai";
 import type { CompletionRouteDeps } from "../completions.js";
 import {
+  agentConfigForModelPrimary,
   addUsage,
   runAgentStepCompletion,
   type CompletionResolvedModelInfo,
@@ -65,6 +66,10 @@ export async function runProjectLoopCompletion(options: {
 
   const rootTools = await deps.resolveAgentTools(agentConfig);
   const executeLoopTool = rootTools.runtimeExecutor ?? rootTools.executor;
+  const initialModel = agentConfigForModelPrimary(
+    agentConfig,
+    deps.getConfig()?.settings,
+  ).model ?? "polpo";
   const loopRunStore = deps.getLoopRunStore?.();
   const resumeState = resumeRun?.resume;
   const loopRunId = resumeRun?.id ?? (loopRunStore ? `looprun-${nanoid(16)}` : undefined);
@@ -100,7 +105,7 @@ export async function runProjectLoopCompletion(options: {
   const executor = new PipelineExecutor();
   let finalText = "";
   let totalUsage: LanguageModelUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 } as LanguageModelUsage;
-  let lastModel = agentConfig.model ?? "polpo";
+  let lastModel = initialModel;
   let lastResolvedModel: CompletionResolvedModelInfo | undefined;
   let lastProviderMetadata: Record<string, unknown> | undefined;
   const toolCallsAccum: any[] = [];
@@ -407,7 +412,10 @@ export async function handleProjectLoopCompletion(c: any, options: {
       let assistantMsgId: string | null = null;
       let finalText = "";
       let runUsage: LanguageModelUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 } as LanguageModelUsage;
-      let runModel = agentConfig.model ?? "polpo";
+      let runModel = agentConfigForModelPrimary(
+        agentConfig,
+        deps.getConfig()?.settings,
+      ).model ?? "polpo";
       let resolvedModel: CompletionResolvedModelInfo | undefined;
       let providerMetadata: Record<string, unknown> | undefined;
       let toolCalls: any[] = [];
@@ -491,7 +499,10 @@ export async function handleProjectLoopCompletion(c: any, options: {
 
   let assistantMsgId: string | null = null;
   let runUsage: LanguageModelUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 } as LanguageModelUsage;
-  let runModel = agentConfig.model ?? "polpo";
+  let runModel = agentConfigForModelPrimary(
+    agentConfig,
+    deps.getConfig()?.settings,
+  ).model ?? "polpo";
   let resolvedModel: CompletionResolvedModelInfo | undefined;
   let providerMetadata: Record<string, unknown> | undefined;
   let toolCalls: any[] = [];

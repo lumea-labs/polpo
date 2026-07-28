@@ -41,6 +41,10 @@ export interface RunnerConfig {
    * inside the runner.
    */
   providers?: Record<string, ProviderConfig>;
+  /** Model profiles copied into detached/in-process runtime hosts. */
+  modelProfiles?: ModelProfileRegistry;
+  /** Global model allowlist copied into detached/in-process runtime hosts. */
+  modelAllowlist?: Record<string, ModelAllowlistEntry>;
   /**
    * Durable-turns resume checkpoint from a previous interrupted run
    * (orphan recovery). When present, the engine seeds its conversation
@@ -116,6 +120,26 @@ export interface ModelConfig {
   fallbacks?: string[];
 }
 
+/** Explicit reference to a project-defined model profile. */
+export interface ModelProfileReference {
+  profile: string;
+}
+
+/** A concrete model id or an explicit profile reference. */
+export type ModelTarget = string | ModelProfileReference;
+
+/** A model policy whose primary and fallbacks may reference profiles. */
+export interface ProfiledModelConfig {
+  primary: ModelTarget;
+  fallbacks?: ModelTarget[];
+}
+
+/** Additive model selection accepted by agents and project model profiles. */
+export type ProfiledModelSelection = ModelTarget | ProfiledModelConfig;
+
+/** Project-defined semantic model policies, keyed by profile name. */
+export type ModelProfileRegistry = Record<string, ProfiledModelSelection>;
+
 /** Model allowlist entry with optional alias. */
 export interface ModelAllowlistEntry {
   /** Display alias for this model (e.g. "Sonnet", "GPT"). */
@@ -162,9 +186,11 @@ export interface PolpoSettings {
   /** Skills to load into the orchestrator's system prompt.
    *  Skill names are resolved against the pool (project + global). */
   orchestratorSkills?: string[];
-  /** Model for orchestrator LLM calls (question detection, deadlock, missions).
-   *  Can be a simple string ("anthropic/claude-opus-4-6") or a ModelConfig with fallbacks. */
-  orchestratorModel?: string | ModelConfig;
+  /** Model for orchestrator LLM calls. Strings are concrete ids; objects may
+   *  define concrete fallbacks or explicitly reference a semantic profile. */
+  orchestratorModel?: ProfiledModelSelection;
+  /** Semantic model policies available to orchestrator and agent execution. */
+  modelProfiles?: ModelProfileRegistry;
   /** Image-capable model for tasks that need vision (falls back to orchestratorModel). */
   imageModel?: string;
   /** Model allowlist — when set, only these models can be used.

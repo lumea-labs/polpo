@@ -7,6 +7,7 @@ import { z } from "zod";
 import type { TaskExpectation, MissionCheckpoint, MissionQualityGate } from "./types.js";
 import { LOOP_LIFECYCLE_HOOKS } from "./loop/types.js";
 import { MAX_MODEL_FALLBACKS } from "./model-policy.js";
+import { MODEL_PROFILE_NAME_PATTERN } from "./model-profiles.js";
 
 // ── Expectation Schemas (discriminated union on `type`) ──────────────
 
@@ -99,12 +100,32 @@ export const missionCheckpointSchema = z.object({
 export const modelConfigSchema = z.object({
   primary: z.string().min(1),
   fallbacks: z.array(z.string().min(1)).max(MAX_MODEL_FALLBACKS).optional(),
-});
+}).strict();
+
+export const modelProfileReferenceSchema = z.object({
+  profile: z.string().regex(MODEL_PROFILE_NAME_PATTERN),
+}).strict();
+
+export const modelTargetSchema = z.union([
+  z.string().min(1),
+  modelProfileReferenceSchema,
+]);
+
+export const profiledModelConfigSchema = z.object({
+  primary: modelTargetSchema,
+  fallbacks: z.array(modelTargetSchema).max(MAX_MODEL_FALLBACKS).optional(),
+}).strict();
 
 export const modelSelectionSchema = z.union([
   z.string().min(1),
-  modelConfigSchema,
+  modelProfileReferenceSchema,
+  profiledModelConfigSchema,
 ]);
+
+export const modelProfileRegistrySchema = z.record(
+  z.string().regex(MODEL_PROFILE_NAME_PATTERN),
+  modelSelectionSchema,
+);
 
 // ── Mission Delay Schema ────────────────────────────────────────────
 

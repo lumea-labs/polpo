@@ -1,4 +1,12 @@
-import type { AgentActivity, TaskResult, TaskOutcome, ReasoningLevel, AgentConfig } from "@polpo-ai/core/types";
+import type {
+  AgentActivity,
+  AgentConfig,
+  ModelAllowlistEntry,
+  ModelProfileRegistry,
+  ReasoningLevel,
+  TaskOutcome,
+  TaskResult,
+} from "@polpo-ai/core/types";
 import type { VaultStore } from "@polpo-ai/core/vault-store";
 import type { MemoryStore } from "@polpo-ai/core/memory-store";
 import type { FileSystem } from "@polpo-ai/core/filesystem";
@@ -54,6 +62,10 @@ export interface SpawnContext {
   emailAllowedDomains?: string[];
   /** Global reasoning level from settings — used as fallback when agent doesn't specify one. */
   reasoning?: ReasoningLevel;
+  /** Project model profiles available to this runtime host. */
+  modelProfiles?: ModelProfileRegistry;
+  /** Project model allowlist enforced after profile expansion. */
+  modelAllowlist?: Record<string, ModelAllowlistEntry>;
   /** Vault store — for resolving agent credentials at runtime. */
   vaultStore?: VaultStore;
   /** Memory store — for agent-scoped memory_* tools. */

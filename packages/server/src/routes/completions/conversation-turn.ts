@@ -5,6 +5,8 @@ import {
   normalizeRuntimePlan,
   resolveLoopSelection,
   type ModelSelection,
+  type ModelTarget,
+  type ProfiledModelSelection,
   type ProjectLoopConfig,
   type RuntimePlan,
 } from "@polpo-ai/core";
@@ -102,11 +104,18 @@ function freezePlanningInput<T>(value: T): T {
   return Object.freeze(value);
 }
 
-function cloneModelSelection(selection: ModelSelection | undefined): ModelSelection | undefined {
+function cloneModelSelection(
+  selection: ProfiledModelSelection | undefined,
+): ProfiledModelSelection | undefined {
   if (!selection || typeof selection === "string") return selection;
+  if ("profile" in selection) return { profile: selection.profile };
+  const cloneTarget = (target: ModelTarget): ModelTarget =>
+    typeof target === "string" ? target : { profile: target.profile };
   return {
-    ...(selection.primary !== undefined ? { primary: selection.primary } : {}),
-    ...(selection.fallbacks !== undefined ? { fallbacks: [...selection.fallbacks] } : {}),
+    primary: cloneTarget(selection.primary),
+    ...(selection.fallbacks !== undefined
+      ? { fallbacks: selection.fallbacks.map(cloneTarget) }
+      : {}),
   };
 }
 
@@ -256,16 +265,24 @@ export async function prepareChatCompletionExecution(
       }
 
       const reasoning = agentConfig.reasoning ?? deps.getConfig()?.settings?.reasoning;
+      const settings = deps.getConfig()?.settings;
       let resolved;
       try {
-        resolved = await deps.resolveAgentModel(agentConfigForModelPrimary(agentConfig), reasoning);
+        resolved = await deps.resolveAgentModel(
+          agentConfigForModelPrimary(agentConfig, settings),
+          reasoning,
+        );
       } catch (modelErr) {
         const msg = modelErr instanceof Error ? modelErr.message : String(modelErr);
         return completionError(msg, 400);
       }
       m = resolved.model;
       providerOpts = resolved.providerOptions;
-      modelSelection = modelSelectionForAgent(agentConfig, modelSelectionForResolvedModel(m));
+      modelSelection = modelSelectionForAgent(
+        agentConfig,
+        modelSelectionForResolvedModel(m),
+        settings,
+      );
 
       const resolvedTools = await deps.resolveAgentTools(agentConfig);
       effectiveTools = resolvedTools.tools;

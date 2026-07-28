@@ -82,6 +82,7 @@ export function agentRoutes(getDeps: () => {
       name: body.name,
       role: body.role,
       model: body.model,
+      allowedModelProfiles: body.allowedModelProfiles,
       executionMode: body.executionMode,
       sandbox: body.sandbox,
       image_model:      body.image_model,
@@ -385,6 +386,9 @@ export function agentRoutes(getDeps: () => {
     const updates: Record<string, unknown> = {
       ...(body.role !== undefined && { role: body.role }),
       ...(body.model !== undefined && { model: body.model }),
+      ...(body.allowedModelProfiles !== undefined && {
+        allowedModelProfiles: body.allowedModelProfiles,
+      }),
       ...(body.executionMode !== undefined && { executionMode: body.executionMode }),
       ...(body.sandbox !== undefined && { sandbox: body.sandbox }),
       ...(body.image_model      !== undefined && { image_model:      body.image_model }),

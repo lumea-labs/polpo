@@ -34,6 +34,10 @@
       "types": "./dist/model-catalog.d.ts",
       "import": "./dist/model-catalog.js"
     },
+    "./model-profiles": {
+      "types": "./dist/model-profiles.d.ts",
+      "import": "./dist/model-profiles.js"
+    },
     "./model-invocation-store": {
       "types": "./dist/model-invocation-store.d.ts",
       "import": "./dist/model-invocation-store.js"

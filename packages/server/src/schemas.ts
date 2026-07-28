@@ -1,5 +1,8 @@
 import { z } from "@hono/zod-openapi";
-import { MAX_MODEL_FALLBACKS } from "@polpo-ai/core";
+import {
+  MAX_MODEL_FALLBACKS,
+  MODEL_PROFILE_NAME_PATTERN,
+} from "@polpo-ai/core";
 import { TOOL_CATALOG, matchToolPattern } from "@polpo-ai/tools";
 import { ApiHttpError } from "./errors.js";
 
@@ -249,12 +252,32 @@ export const UpdateMissionQualityGateSchema = z.object({
 const ModelConfigSchema = z.object({
   primary: z.string().min(1),
   fallbacks: z.array(z.string().min(1)).max(MAX_MODEL_FALLBACKS).optional(),
-});
+}).strict();
+
+const ModelProfileReferenceSchema = z.object({
+  profile: z.string().regex(MODEL_PROFILE_NAME_PATTERN),
+}).strict();
+
+const ModelTargetSchema = z.union([
+  z.string().min(1),
+  ModelProfileReferenceSchema,
+]);
+
+const ProfiledModelConfigSchema = z.object({
+  primary: ModelTargetSchema,
+  fallbacks: z.array(ModelTargetSchema).max(MAX_MODEL_FALLBACKS).optional(),
+}).strict();
 
 const ModelSelectionSchema = z.union([
   z.string().min(1),
-  ModelConfigSchema,
+  ModelProfileReferenceSchema,
+  ProfiledModelConfigSchema,
 ]);
+
+const ModelProfileRegistrySchema = z.record(
+  z.string().regex(MODEL_PROFILE_NAME_PATTERN),
+  ModelSelectionSchema,
+);
 
 export const AddMissionTeamMemberSchema = z.object({
   name: z.string().min(1),
@@ -279,7 +302,8 @@ export const UpdateMissionNotificationsSchema = z.object({
 // ── Settings schema ───────────────────────────────────────────────────
 
 export const UpdateSettingsSchema = z.object({
-  orchestratorModel: z.union([z.string(), ModelConfigSchema]).optional(),
+  orchestratorModel: ModelSelectionSchema.optional(),
+  modelProfiles: ModelProfileRegistrySchema.optional(),
   imageModel: z.string().nullable().optional(),
   reasoning: z.enum(["off", "minimal", "low", "medium", "high", "xhigh"]).optional(),
 });
@@ -539,6 +563,7 @@ export const AddAgentSchema = z.object({
   name: z.string().min(1),
   role: z.string().optional(),
   model: ModelSelectionSchema.optional(),
+  allowedModelProfiles: z.array(z.string().regex(MODEL_PROFILE_NAME_PATTERN)).optional(),
   // Per-modality media models (provider/model strings; format checked
   // by parseModelString at tool-call time). Undefined → DEFAULT_*_MODEL.
   image_model:      z.string().optional(),
@@ -566,6 +591,7 @@ export const UpdateAgentSchema = z.object({
   sandbox: RuntimeSandboxSchema.optional(),
   role: z.string().optional(),
   model: ModelSelectionSchema.optional(),
+  allowedModelProfiles: z.array(z.string().regex(MODEL_PROFILE_NAME_PATTERN)).optional(),
   // Per-modality media models (optional, mirror AddAgentSchema).
   image_model:      z.string().optional(),
   video_model:      z.string().optional(),

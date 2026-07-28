@@ -503,6 +503,25 @@ describe("Agents API", () => {
     expect(agent.pipeline).toBeUndefined();
   });
 
+  test("POST /agents persists explicit model profile grants", async () => {
+    const res = await app.request(
+      api("/agents"),
+      jsonReq("POST", {
+        name: "agent-profile-create",
+        model: { profile: "balanced" },
+        allowedModelProfiles: ["balanced", "fast"],
+      }),
+    );
+    expect(res.status).toBe(201);
+
+    const detailRes = await app.request(api("/agents/agent-profile-create"));
+    const detail = await detailRes.json();
+    expect(detail.data.model).toEqual({ profile: "balanced" });
+    expect(detail.data.allowedModelProfiles).toEqual(["balanced", "fast"]);
+
+    await app.request(api("/agents/agent-profile-create"), { method: "DELETE" });
+  });
+
   test("DELETE /agents/:name removes an agent", async () => {
     // First add a disposable agent
     await app.request(
@@ -1175,6 +1194,38 @@ describe("Update Agent API", () => {
     expect(body.data.pipeline).toBeUndefined();
 
     await app.request(api("/agents/agent-loop-update"), { method: "DELETE" });
+  });
+
+  test("PATCH /agents/:name replaces model profile grants", async () => {
+    await app.request(
+      api("/agents"),
+      jsonReq("POST", {
+        name: "agent-profile-update",
+        model: { profile: "balanced" },
+        allowedModelProfiles: ["balanced"],
+      }),
+    );
+
+    const res = await app.request(
+      api("/agents/agent-profile-update"),
+      jsonReq("PATCH", {
+        allowedModelProfiles: ["balanced", "fast"],
+      }),
+    );
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data.allowedModelProfiles).toEqual(["balanced", "fast"]);
+
+    const clearRes = await app.request(
+      api("/agents/agent-profile-update"),
+      jsonReq("PATCH", {
+        allowedModelProfiles: [],
+      }),
+    );
+    expect(clearRes.status).toBe(200);
+    expect((await clearRes.json()).data.allowedModelProfiles).toEqual([]);
+
+    await app.request(api("/agents/agent-profile-update"), { method: "DELETE" });
   });
 });
 
