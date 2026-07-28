@@ -47,8 +47,17 @@ import {
   type RunToolMiddleware,
   type RuntimeGuardrailAuditEvent,
 } from "@polpo-ai/core/guardrails";
+import type {
+  BrainReadService,
+  BrainServiceContext,
+} from "@polpo-ai/core/brain";
 import { NodeFileSystem } from "../adapters/node-filesystem.js";
 import { NodeShell } from "../adapters/node-shell.js";
+import { createLocalBrainRuntime } from "../brain/local-runtime.js";
+import {
+  ALL_BRAIN_TOOL_NAMES,
+  matchToolPattern,
+} from "@polpo-ai/tools";
 
 const ACTIVITY_POLL_MS = 1500;
 const MAX_ACTIVITY_GUARDRAIL_DECISIONS = 100;
@@ -128,6 +137,10 @@ export interface ExecuteRunDeps {
   vaultStore?: VaultStore;
   /** Memory store. Default: FileMemoryStore(polpoDir). */
   memoryStore?: MemoryStore;
+  /** Scoped Brain reader. Must be supplied together with brainContext. */
+  brainService?: BrainReadService;
+  /** Host-resolved Brain actor and scopes. Must accompany brainService. */
+  brainContext?: BrainServiceContext;
   /** FileSystem for tools. Default: a fresh NodeFileSystem. */
   fs?: FileSystem;
   /** Shell for tools. Default: a fresh NodeShell. */
@@ -174,6 +187,15 @@ export interface ExecuteRunOutcome {
   result: TaskResult;
   /** True when the engine could not even be spawned (the subprocess entry exits 1 on this). */
   spawnError?: boolean;
+}
+
+function requestsBrainTools(allowedTools: readonly string[] | undefined): boolean {
+  if (!allowedTools?.length) return false;
+  return allowedTools.some((pattern) =>
+    ALL_BRAIN_TOOL_NAMES.some((toolName) =>
+      matchToolPattern(pattern, toolName),
+    ),
+  );
 }
 
 /**
@@ -239,6 +261,26 @@ export async function executeRun(config: RunnerConfig, deps: ExecuteRunDeps): Pr
     const promptContextSegments = contextTrust === "enforce"
       ? normalizeRuntimePromptContextSegments(config.promptContextSegments)
       : [];
+    if ((deps.brainService === undefined) !== (deps.brainContext === undefined)) {
+      throw new Error(
+        "brainService and brainContext must be provided together",
+      );
+    }
+    const localBrain = deps.brainService || !requestsBrainTools(config.agent.allowedTools)
+      ? undefined
+      : createLocalBrainRuntime({
+          workDir: config.cwd,
+          polpoDir: config.polpoDir,
+        });
+    const brainService = deps.brainService ?? localBrain?.service;
+    const brainContext = deps.brainContext ?? localBrain?.context({
+        actor: "agent",
+        actorId: config.agent.name,
+        agentName: config.agent.name,
+        ...(config.task.user
+          ? { externalUserId: config.task.user }
+          : {}),
+      });
     const handleTranscript = (entry: Record<string, unknown>) => {
       // F1a: live subscription for streaming hosts (chat-via-executeRun). Teed
       // first, best-effort — it must never break persistence below.
@@ -289,6 +331,8 @@ export async function executeRun(config: RunnerConfig, deps: ExecuteRunDeps): Pr
       modelAllowlist: config.modelAllowlist,
       vaultStore,
       memoryStore,
+      brainService,
+      brainContext,
       // Per-tenant gateway for the in-process host (undefined for subprocess,
       // which resolves the gateway from sandbox env).
       gatewayConfig: deps.gatewayConfig,

@@ -424,7 +424,8 @@ export function prepareSpawn(agentConfig: AgentConfig, cwd: string, ctx?: SpawnC
     return lc.startsWith("browser_") || lc.startsWith("email_")
       || lc.startsWith("image_") || lc.startsWith("video_") || lc.startsWith("audio_")
       || lc.startsWith("excel_") || lc.startsWith("pdf_") || lc.startsWith("docx_")
-      || lc.startsWith("search_");
+      || lc.startsWith("search_") || lc.startsWith("memory_")
+      || lc === "brain_search" || lc === "source_read";
   }) ?? false;
 
   // Derive output directory from context (per-task output dir for deliverables)
@@ -509,6 +510,8 @@ export async function buildAgentTools(
       shell: prep.shell,
       memoryStore: ctx?.memoryStore,
       agentName: agentConfig.name,
+      brainService: ctx?.brainService,
+      brainContext: ctx?.brainContext,
       // Per-modality models from agent config. When undefined, the
       // tool layer applies its own DEFAULT_*_MODEL.
       imageModel:      agentConfig.image_model,

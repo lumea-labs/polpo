@@ -25,6 +25,10 @@ import type {
   RuntimeContextTrustMode,
   RuntimePromptContextSegment,
 } from "./runtime-context/index.js";
+import type {
+  BrainReadService,
+  BrainServiceContext,
+} from "./brain/index.js";
 
 /**
  * Handle returned by the engine after spawning an agent.
@@ -84,6 +88,10 @@ export interface SpawnContext {
   vaultStore?: VaultStore;
   /** Memory store — for agent-scoped memory_* tools. */
   memoryStore?: MemoryStore;
+  /** Scoped Brain reader — omitted when Brain is unavailable in this host. */
+  brainService?: BrainReadService;
+  /** Host-resolved Brain actor and scopes. Never supplied by the model. */
+  brainContext?: BrainServiceContext;
   /** FileSystem implementation — created by the orchestrator, passed down to tools. */
   fs?: FileSystem;
   /** Shell implementation — created by the orchestrator, passed down to tools. */

@@ -30,6 +30,7 @@ import {
   eventRoutes,
   configRoutes,
   customToolRoutes,
+  brainRoutes,
 } from "@polpo-ai/server";
 // Node.js-only routes (stay in src/server/routes/)
 import { publicConfigRoutes } from "./routes/config.js";
@@ -45,6 +46,11 @@ import {
   type RunOutputPolicy,
   type RunToolMiddleware,
 } from "@polpo-ai/core/guardrails";
+import { createLocalBrainRuntime } from "../brain/local-runtime.js";
+import type {
+  BrainManagementService,
+  BrainServiceContext,
+} from "@polpo-ai/core/brain";
 
 function readRuntimeVersion(): string {
   try {
@@ -68,6 +74,12 @@ export interface AppOptions {
   runToolMiddleware?: RunToolMiddleware;
   /** Optional process-local override for final-output guardrails. */
   runOutputPolicy?: RunOutputPolicy;
+  brain?: {
+    service: BrainManagementService;
+    resolveContext: (input?: {
+      agentName?: string;
+    }) => BrainServiceContext | Promise<BrainServiceContext>;
+  };
 }
 
 /**
@@ -80,6 +92,32 @@ export interface AppOptions {
  */
 export function createApp(orchestrator: Orchestrator, sseBridge: SSEBridge, opts?: AppOptions): OpenAPIHono {
   const app = new OpenAPIHono();
+  const localBrain = !opts?.brain && opts?.workDir
+    ? createLocalBrainRuntime({
+        workDir: opts.workDir,
+        polpoDir: getPolpoDir(opts.workDir),
+      })
+    : undefined;
+  const brain = opts?.brain ?? (
+    localBrain
+      ? {
+          service: localBrain.service,
+          resolveContext: (input?: { agentName?: string }) =>
+            localBrain.context({
+              ...(input?.agentName
+                ? {
+                    actor: "agent" as const,
+                    actorId: input.agentName,
+                    agentName: input.agentName,
+                  }
+                : {
+                    actor: "user" as const,
+                    actorId: "local-user",
+                  }),
+            }),
+        }
+      : undefined
+  );
 
   // Global middleware
   app.use("*", errorMiddleware());
@@ -156,7 +194,7 @@ export function createApp(orchestrator: Orchestrator, sseBridge: SSEBridge, opts
       return buildSystemPrompt(agentConfig, o.getAgentWorkDir(), o.getPolpoDir(), undefined, agentConfig.allowedPaths);
     },
     resolveAgentTools: async (agentConfig: any) => {
-      const { createSystemTools, createMemoryTools, resolveAgentMcpTools, expandToolWildcards, TOOL_CATALOG } = await import("@polpo-ai/tools");
+      const { createSystemTools, createMemoryTools, createBrainTools, resolveAgentMcpTools, expandToolWildcards, TOOL_CATALOG } = await import("@polpo-ai/tools");
       const { resolveAgentVault } = await import("../vault/index.js");
       const { nanoid } = await import("nanoid");
       const vaultEntries = await o.getVaultStore()?.getAllForAgent(agentConfig.name);
@@ -174,6 +212,22 @@ export function createApp(orchestrator: Orchestrator, sseBridge: SSEBridge, opts
           ? memoryTools.filter((t: any) => allowed.includes(t.name))
           : memoryTools;
         tools.push(...filtered);
+      }
+      if (brain && agentConfig.allowedTools) {
+        const allowed = expandToolWildcards(
+          agentConfig.allowedTools,
+          TOOL_CATALOG,
+        );
+        if (
+          allowed.includes("brain_search")
+          || allowed.includes("source_read")
+        ) {
+          tools.push(...createBrainTools(
+            brain.service,
+            await brain.resolveContext({ agentName: agentConfig.name }),
+            allowed,
+          ));
+        }
       }
       // External MCP-server tools (stdio / SSE / HTTP) declared on the agent.
       // The connections are opened once per request; `dispose` is wired into
@@ -222,6 +276,14 @@ export function createApp(orchestrator: Orchestrator, sseBridge: SSEBridge, opts
           fs: o.getFs(),
           shell: o.getShell(),
           memoryStore: o.getMemoryStore(),
+          ...(brain
+            ? {
+                brainService: brain.service,
+                brainContext: await brain.resolveContext({
+                  agentName: inject.agent?.name,
+                }),
+              }
+            : {}),
           vaultStore: o.getVaultStore(),
           gatewayConfig: o.getGatewayConfig(),
           signal: hooks.signal,
@@ -382,6 +444,13 @@ export function createApp(orchestrator: Orchestrator, sseBridge: SSEBridge, opts
       generateExample: (name: string) => runtime.generateExample(name),
     };
   }));
+
+  if (brain) {
+    authed.route("/brain", brainRoutes(async () => ({
+      service: brain.service,
+      context: await brain.resolveContext(),
+    })));
+  }
 
   authed.route("/schedules", scheduleRoutes(() => ({
     getScheduler: () => o.getScheduler(),

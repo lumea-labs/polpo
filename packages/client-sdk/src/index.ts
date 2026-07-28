@@ -226,6 +226,19 @@ export type {
   FileRoot,
   FileEntry,
   FilePreview,
+  BrainScope,
+  BrainSource,
+  BrainSourceContentInput,
+  BrainSourceListResult,
+  BrainSourceStatus,
+  BrainSourceType,
+  BrainTrustLevel,
+  BrainRetrievalResult,
+  BrainSourceFilters,
+  CreateBrainSourceRequest,
+  BrainUpdateSourceRequest,
+  BrainReindexSourceRequest,
+  SearchBrainRequest,
 } from "./client/types.js";
 
 export type { StoreState, PolpoStats, AssessmentProgressEntry, AssessmentCheckStatus } from "./store/types.js";
