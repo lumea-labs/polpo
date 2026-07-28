@@ -1,6 +1,8 @@
 export * from "./types.js";
 export * from "./store.js";
 export * from "./state-machine.js";
+export * from "./driver.js";
+export * from "./occurrence.js";
 export {
   SCHEDULE_LIMITS,
   normalizeCreateScheduleInput,
