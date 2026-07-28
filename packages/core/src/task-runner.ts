@@ -8,6 +8,10 @@ import { resolveRuntimeSandboxOptions } from "./runtime-sandbox.js";
 import type { RunRecord } from "./run-store.js";
 import type { LoopResumeState } from "./loop/run-store.js";
 import { resolveConfiguredModelSelection } from "./model-profiles.js";
+import {
+  createRuntimeContextSegment,
+  type RuntimeContextSegment,
+} from "./runtime-context/index.js";
 
 /**
  * Durable turns: max age of a resume checkpoint before orphan recovery
@@ -534,22 +538,41 @@ export class TaskRunner {
 
     try {
 
-    // Inject context into task description for agent awareness.
-    // Context is prepended using XML-like tags that the agent prompt can reference.
-    const taskWithContext = { ...task };
-    const contextParts: string[] = [];
+    const contextTrust = this.ctx.config.settings.contextTrust === "enforce"
+      ? "enforce"
+      : "off";
+    // Build both representations during the opt-in window. Enforced runs keep
+    // metadata structural; disabled runs preserve the historical task prompt.
+    const runtimeContext: RuntimeContextSegment[] = [];
+    const legacyContextParts: string[] = [];
 
     // 1. Shared memory (persistent cross-session knowledge, visible to all agents)
     const sharedMemory = (await this.ctx.memoryStore?.get()) ?? "";
     if (sharedMemory) {
-      contextParts.push(`<shared-memory>\n${sharedMemory}\n</shared-memory>`);
+      legacyContextParts.push(`<shared-memory>\n${sharedMemory}\n</shared-memory>`);
+      if (contextTrust === "enforce") {
+        runtimeContext.push(createRuntimeContextSegment({
+          kind: "memory.shared",
+          sourceId: "project",
+          trust: "untrusted",
+          content: sharedMemory,
+        }));
+      }
     }
 
     // 1b. Agent-specific memory (private knowledge for the assigned agent)
     if (task.assignTo) {
       const agentMem = (await this.ctx.memoryStore?.get(agentMemoryScope(task.assignTo))) ?? "";
       if (agentMem) {
-        contextParts.push(`<agent-memory agent="${task.assignTo}">\n${agentMem}\n</agent-memory>`);
+        legacyContextParts.push(`<agent-memory agent="${task.assignTo}">\n${agentMem}\n</agent-memory>`);
+        if (contextTrust === "enforce") {
+          runtimeContext.push(createRuntimeContextSegment({
+            kind: "memory.agent",
+            sourceId: task.assignTo,
+            trust: "untrusted",
+            content: agentMem,
+          }));
+        }
       }
     }
 
@@ -558,18 +581,25 @@ export class TaskRunner {
       try {
         // Resolve mission via direct ID (preferred) or group name (legacy fallback)
         const mission = await resolveMissionForTask(resolveMissionStore(this.ctx), task);
-        const missionParts: string[] = [];
-
+        const legacyMissionParts: string[] = [];
         // Original user prompt that generated this mission (the "why")
         if (mission?.prompt) {
-          missionParts.push(`Mission goal: ${mission.prompt}`);
+          legacyMissionParts.push(`Mission goal: ${mission.prompt}`);
+          if (contextTrust === "enforce") {
+            runtimeContext.push(createRuntimeContextSegment({
+              kind: "mission.goal",
+              sourceId: mission.id,
+              trust: "user",
+              content: mission.prompt,
+            }));
+          }
         }
 
         // Sibling tasks — just titles and statuses for awareness, not full descriptions
         const allTasks = await this.ctx.taskStore.listTasks();
         const siblings = allTasks.filter(t => t.group === task.group && t.id !== task.id);
         if (siblings.length > 0) {
-          missionParts.push(`Other tasks in this mission:`);
+          const missionParts = [`Other tasks in this mission:`];
           for (const s of siblings) {
             const marker = s.status === "done" ? "[done]"
               : s.status === "in_progress" ? "[in progress]"
@@ -577,18 +607,28 @@ export class TaskRunner {
               : "[pending]";
             missionParts.push(`  ${marker} "${s.title}" → ${s.assignTo}`);
           }
+          legacyMissionParts.push(...missionParts);
+          if (contextTrust === "enforce") {
+            runtimeContext.push(createRuntimeContextSegment({
+              kind: "mission.status",
+              sourceId: mission?.id ?? task.group,
+              trust: "untrusted",
+              content: missionParts.join("\n"),
+            }));
+          }
         }
-
-        if (missionParts.length > 0) {
-          contextParts.push(`<mission-context>\n${missionParts.join("\n")}\n</mission-context>`);
+        if (legacyMissionParts.length > 0) {
+          legacyContextParts.push(`<mission-context>\n${legacyMissionParts.join("\n")}\n</mission-context>`);
         }
       } catch { /* best effort — mission may have been deleted */ }
     }
 
-    if (contextParts.length > 0) {
-      taskWithContext.description = contextParts.join("\n\n") + "\n\n" + task.description;
-    }
-
+    const taskForRun = contextTrust === "enforce" || legacyContextParts.length === 0
+      ? task
+      : {
+          ...task,
+          description: `${legacyContextParts.join("\n\n")}\n\n${task.description}`,
+        };
 
     // Durable turns: consume (one-shot) a checkpoint harvested by orphan
     // recovery — the runner resumes the conversation at turn + 1 instead
@@ -614,8 +654,11 @@ export class TaskRunner {
       taskId: task.id,
       executionMode,
       sandbox,
+      ...(contextTrust === "enforce"
+        ? { contextTrust, runtimeContext }
+        : {}),
       agent,
-      task: taskWithContext,
+      task: taskForRun,
       polpoDir: this.ctx.polpoDir,
       cwd: this.ctx.agentWorkDir,
       outputDir,

@@ -59,6 +59,7 @@ export function buildChatRunInjection(execution: ChatCompletionExecution): ChatS
   const reasoning = agentConfig?.reasoning ?? deps.getConfig()?.settings?.reasoning;
   return {
     runtimePlan: execution.runtimePlan,
+    contextTrust: execution.contextTrust,
     agent: agentConfig,
     title: firstUserText(aiMessages),
     modelSelection,

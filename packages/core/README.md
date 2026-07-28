@@ -188,6 +188,47 @@ deterministically. Timeout, provider failure, malformed output, unknown
 profiles, and low confidence use the configured fallback; caller cancellation
 stops planning instead of starting execution with a fallback.
 
+## Runtime context trust
+
+Runtime context keeps source and trust metadata attached to retrieved data
+until the final model prompt boundary:
+
+```ts
+import {
+  createRuntimeContextSegment,
+  renderRuntimeContextSegments,
+} from "@polpo-ai/core/runtime-context";
+
+const context = createRuntimeContextSegment({
+  kind: "mcp.result",
+  sourceId: "docs:search",
+  trust: "external",
+  content: remoteResult,
+});
+
+const promptContext = renderRuntimeContextSegments([context]);
+```
+
+The renderer bounds content, escapes nested delimiters, and instructs the
+model to treat external or untrusted content as data. Use
+`protectRuntimeToolResultMessages` before provider, MCP, browser, or custom
+tool output re-enters model history. Persist the protected history in durable
+checkpoints; keep the original result separately for UI and audit events.
+
+The integrated runtime behavior is opt-in:
+
+```json
+{
+  "settings": {
+    "contextTrust": "enforce"
+  }
+}
+```
+
+Absent, invalid, and `"off"` values preserve the legacy runtime path. Runtime
+hosts should resolve rollout policy server-side and must not let request
+metadata enable enforcement.
+
 ## License
 
 Apache 2.0

@@ -9,13 +9,19 @@
 import {
   agentMemoryScope,
   compactIfNeeded,
+  createRuntimeContextSegment,
   loopContextPrompt,
   maybeParseJson,
   resolveConfiguredModelSelection,
+  normalizeRuntimeContextTrustMode,
+  protectRuntimeToolResultMessages,
+  renderRuntimeContextSegment,
+  renderRuntimeToolResult,
   type ContextBag,
   type ModelSelection,
   type PolpoSettings,
   type SummarizeFn,
+  type RuntimeContextTrustMode,
 } from "@polpo-ai/core";
 import { generateText, type LanguageModel, type LanguageModelUsage } from "ai";
 import { runModelPolicyTurn } from "@polpo-ai/llm";
@@ -151,6 +157,7 @@ export async function buildRuntimeAgentPrompt(
   agentConfig: any,
   extraSystemParts: string[],
   loopContextPart?: string,
+  contextTrust: RuntimeContextTrustMode = "off",
 ): Promise<string> {
   if (deps.buildRuntimePrompt) {
     return deps.buildRuntimePrompt(agentConfig, {
@@ -180,7 +187,14 @@ export async function buildRuntimeAgentPrompt(
   const memoryStore = deps.getMemoryStore();
   const agentMemory = await memoryStore?.get(agentMemoryScope(agentConfig.name));
   if (agentMemory) {
-    fullSystemPrompt += `\n\n## Your persistent memory\n\n${agentMemory}`;
+    fullSystemPrompt += contextTrust === "enforce"
+      ? `\n\n${renderRuntimeContextSegment(createRuntimeContextSegment({
+          kind: "memory.agent",
+          sourceId: agentConfig.name,
+          trust: "untrusted",
+          content: agentMemory,
+        }))}`
+      : `\n\n## Your persistent memory\n\n${agentMemory}`;
   }
   return fullSystemPrompt;
 }
@@ -192,10 +206,14 @@ export async function runAgentStepCompletion(options: {
   extraSystemParts: string[];
   context: Readonly<ContextBag>;
   stepName: string;
+  contextTrust?: RuntimeContextTrustMode;
   onToolCall?: (toolCall: LoopRuntimeToolCall) => Promise<void>;
 }): Promise<AgentStepRunResult> {
   const { deps, agentConfig, aiMessages, extraSystemParts, context, stepName, onToolCall } = options;
   const settings = deps.getConfig()?.settings;
+  const contextTrust = normalizeRuntimeContextTrustMode(
+    options.contextTrust ?? settings?.contextTrust,
+  );
   const reasoning = agentConfig.reasoning ?? settings?.reasoning;
   const initialResolved = await deps.resolveAgentModel(
     agentConfigForModelPrimary(agentConfig, settings),
@@ -219,10 +237,13 @@ export async function runAgentStepCompletion(options: {
     deps,
     agentConfig,
     extraSystemParts,
-    loopContextPrompt(stepName, context),
+    loopContextPrompt(stepName, context, contextTrust),
+    contextTrust,
   );
 
-  const messages: any[] = [...aiMessages];
+  const messages: any[] = contextTrust === "enforce"
+    ? protectRuntimeToolResultMessages(aiMessages)
+    : [...aiMessages];
   let finalText = "";
   let totalUsage: LanguageModelUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 } as LanguageModelUsage;
   let lastProviderMetadata: Record<string, unknown> | undefined;
@@ -242,7 +263,10 @@ export async function runAgentStepCompletion(options: {
         mode: "chat",
       });
       if (compactionResult.compacted) {
-        messages.splice(0, messages.length, ...compactionResult.messages);
+        const compacted = contextTrust === "enforce"
+          ? protectRuntimeToolResultMessages(compactionResult.messages)
+          : compactionResult.messages;
+        messages.splice(0, messages.length, ...compacted);
       }
 
       const toolCallNames = new Map<string, string>();
@@ -295,7 +319,13 @@ export async function runAgentStepCompletion(options: {
       totalUsage = addUsage(totalUsage, turnResult.usage);
       lastProviderMetadata = turnResult.providerMetadata as Record<string, unknown> | undefined;
 
-      await appendModelResponseMessages(messages, turnResult, turnText, turnResult.toolCalls);
+      await appendModelResponseMessages(
+        messages,
+        turnResult,
+        turnText,
+        turnResult.toolCalls,
+        contextTrust,
+      );
       finalText += turnText;
 
       if (turnResult.toolCalls.length === 0) break;
@@ -336,8 +366,18 @@ export async function runAgentStepCompletion(options: {
             toolCallId: call.toolCallId,
             toolName: call.toolName,
             output: isError
-              ? { type: "error-text" as const, value: result }
-              : { type: "text" as const, value: result },
+              ? {
+                  type: "error-text" as const,
+                  value: contextTrust === "enforce"
+                    ? renderRuntimeToolResult(call.toolName, call.toolCallId, result)
+                    : result,
+                }
+              : {
+                  type: "text" as const,
+                  value: contextTrust === "enforce"
+                    ? renderRuntimeToolResult(call.toolName, call.toolCallId, result)
+                    : result,
+                },
           }],
         });
       }

@@ -15,6 +15,9 @@ import {
   buildAgentSystemPrompt,
   resolveModelProfileSelection,
   type ModelSelection,
+  renderRuntimeContextSegments,
+  type RuntimeContextSegment,
+  type RuntimeContextTrustMode,
 } from "@polpo-ai/core";
 
 /** Create a fresh AgentActivity object */
@@ -270,8 +273,19 @@ export function buildSystemPrompt(agent: AgentConfig, cwd: string, polpoDir?: st
 /**
  * Build the user prompt from task data.
  */
-export function buildPrompt(task: Task): string {
+export function buildPrompt(
+  task: Task,
+  runtimeContext: readonly RuntimeContextSegment[] = [],
+  contextTrust: RuntimeContextTrustMode = "off",
+): string {
   const parts = [`Task: ${task.title}`, ``, task.description];
+  if (contextTrust === "enforce" && runtimeContext.length > 0) {
+    parts.push(
+      "",
+      "Runtime context:",
+      renderRuntimeContextSegments(runtimeContext),
+    );
+  }
   if (task.expectations.length > 0) {
     parts.push(``, `Acceptance criteria:`);
     for (const exp of task.expectations) {

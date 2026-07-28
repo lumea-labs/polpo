@@ -35,6 +35,10 @@ import { sanitizeTranscriptEntry } from "../server/security.js";
 import { EncryptedVaultStore } from "../vault/encrypted-store.js";
 import type { VaultStore } from "@polpo-ai/core/vault-store";
 import type { MemoryStore } from "@polpo-ai/core/memory-store";
+import {
+  normalizeRuntimeContextSegments,
+  normalizeRuntimeContextTrustMode,
+} from "@polpo-ai/core";
 import { NodeFileSystem } from "../adapters/node-filesystem.js";
 import { NodeShell } from "../adapters/node-shell.js";
 
@@ -214,6 +218,12 @@ export async function executeRun(config: RunnerConfig, deps: ExecuteRunDeps): Pr
     }
 
     const memoryStore: MemoryStore = deps.memoryStore ?? new FileMemoryStore(config.polpoDir);
+    const contextTrust = normalizeRuntimeContextTrustMode(
+      config.contextTrust ?? deps.inject?.contextTrust,
+    );
+    const runtimeContext = contextTrust === "enforce"
+      ? normalizeRuntimeContextSegments(config.runtimeContext)
+      : [];
     const handleTranscript = (entry: Record<string, unknown>) => {
       // F1a: live subscription for streaming hosts (chat-via-executeRun). Teed
       // first, best-effort — it must never break persistence below.
@@ -242,6 +252,8 @@ export async function executeRun(config: RunnerConfig, deps: ExecuteRunDeps): Pr
       // Per-tenant gateway for the in-process host (undefined for subprocess,
       // which resolves the gateway from sandbox env).
       gatewayConfig: deps.gatewayConfig,
+      contextTrust,
+      runtimeContext,
       // Subprocess hosts create their own fs/shell; the in-process host
       // injects the orchestrator's instances.
       fs: deps.fs ?? new NodeFileSystem(),

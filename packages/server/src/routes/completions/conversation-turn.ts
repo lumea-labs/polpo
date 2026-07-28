@@ -1,14 +1,19 @@
 import { nanoid } from "nanoid";
 import {
   agentMemoryScope,
+  createRuntimeContextSegment,
   createRuntimePlanResolvedEvent,
+  normalizeRuntimeContextTrustMode,
   normalizeRuntimePlan,
+  renderRuntimeContextSegment,
+  renderRuntimeContextSegments,
   resolveLoopSelection,
   type ModelSelection,
   type ModelTarget,
   type ProfiledModelSelection,
   type ProjectLoopConfig,
   type RuntimePlan,
+  type RuntimeContextTrustMode,
 } from "@polpo-ai/core";
 import type {
   CompletionRouteDeps,
@@ -45,6 +50,7 @@ type PreparedProjectLoop = {
   projectLoop: ProjectLoopConfig;
   aiMessages: any[];
   extraSystemParts: string[];
+  contextTrust: RuntimeContextTrustMode;
   sessionStore: any;
   sessionId: string | null;
   runtimePlan?: RuntimePlan;
@@ -186,7 +192,17 @@ export async function prepareChatCompletionExecution(
   let resolvedAgentConfig: any;
   let runtimePlan: RuntimePlan | undefined;
 
-  const { aiMessages, extraSystemParts } = convertMessages(body.messages);
+  const contextTrust = normalizeRuntimeContextTrustMode(
+    deps.getConfig()?.settings?.contextTrust,
+  );
+  const {
+    aiMessages,
+    extraSystemParts,
+    runtimeContext,
+  } = convertMessages(body.messages, contextTrust);
+  const callerSystemParts = contextTrust === "enforce" && runtimeContext.length > 0
+    ? [renderRuntimeContextSegments(runtimeContext)]
+    : extraSystemParts;
 
   if (agentMode) {
     const agents = await deps.getAgents();
@@ -240,7 +256,7 @@ export async function prepareChatCompletionExecution(
       if (deps.buildRuntimePrompt) {
         fullSystemPrompt = await deps.buildRuntimePrompt(agentConfig, {
           mode: "chat",
-          extraSystemParts,
+          extraSystemParts: callerSystemParts,
           includeAgentMemory: true,
         });
       } else {
@@ -253,14 +269,21 @@ export async function prepareChatCompletionExecution(
         ].join("\n");
 
         const basePrompt = `${conversationalPreamble}\n\n${agentSystemPrompt}`;
-        fullSystemPrompt = extraSystemParts.length > 0
-          ? `${basePrompt}\n\n## Additional context from caller\n\n${extraSystemParts.join("\n\n")}`
+        fullSystemPrompt = callerSystemParts.length > 0
+          ? `${basePrompt}\n\n## Additional context from caller\n\n${callerSystemParts.join("\n\n")}`
           : basePrompt;
 
         const memoryStore = deps.getMemoryStore();
         const agentMemory = await memoryStore?.get(agentMemoryScope(agentConfig.name));
         if (agentMemory) {
-          fullSystemPrompt += `\n\n## Your persistent memory\n\n${agentMemory}`;
+          fullSystemPrompt += contextTrust === "enforce"
+            ? `\n\n${renderRuntimeContextSegment(createRuntimeContextSegment({
+                kind: "memory.agent",
+                sourceId: agentConfig.name,
+                trust: "untrusted",
+                content: agentMemory,
+              }))}`
+            : `\n\n## Your persistent memory\n\n${agentMemory}`;
         }
       }
 
@@ -316,8 +339,8 @@ export async function prepareChatCompletionExecution(
     }
 
     const ctx = await deps.resolveOrchestratorContext();
-    fullSystemPrompt = extraSystemParts.length > 0
-      ? `${ctx.systemPrompt}\n\n## Additional context from caller\n\n${extraSystemParts.join("\n\n")}`
+    fullSystemPrompt = callerSystemParts.length > 0
+      ? `${ctx.systemPrompt}\n\n## Additional context from caller\n\n${callerSystemParts.join("\n\n")}`
       : ctx.systemPrompt;
     m = ctx.model;
     providerOpts = ctx.providerOptions;
@@ -360,7 +383,8 @@ export async function prepareChatCompletionExecution(
       agentConfig: projectLoopRuntime.agentConfig,
       projectLoop: projectLoopRuntime.projectLoop,
       aiMessages,
-      extraSystemParts,
+      extraSystemParts: callerSystemParts,
+      contextTrust,
       sessionStore,
       sessionId,
       runtimePlan,
@@ -387,6 +411,7 @@ export async function prepareChatCompletionExecution(
     sessionId,
     onResponseFinished,
     runtimePlan,
+    contextTrust,
   };
 
   const viaRun =

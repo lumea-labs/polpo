@@ -9,6 +9,10 @@ import type { ApprovalGate, SLAConfig } from "./mission.js";
 import type { NotificationsConfig, EscalationPolicy } from "./notifications.js";
 import type { LoopResumeState } from "../loop/run-store.js";
 import type { RuntimeSandboxOptions } from "../runtime-sandbox.js";
+import type {
+  RuntimeContextSegment,
+  RuntimeContextTrustMode,
+} from "../runtime-context/types.js";
 
 // === Runner Config ===
 
@@ -17,6 +21,10 @@ export interface RunnerConfig {
   executionMode?: ExecutionMode;
   /** Resolved runtime sandbox policy for the host sandbox provider. */
   sandbox?: RuntimeSandboxOptions;
+  /** Structured context rendered only at the final model prompt boundary. */
+  runtimeContext?: readonly RuntimeContextSegment[];
+  /** Explicit context-trust rollout mode. Absent and "off" preserve legacy behavior. */
+  contextTrust?: RuntimeContextTrustMode;
   runId: string;
   taskId: string;
   agent: AgentConfig;
@@ -217,6 +225,8 @@ export interface PolpoSettings {
    *  durable runtime. "inline" keeps the older completions-route loop as an
    *  explicit compatibility escape hatch while that legacy path exists. */
   chatExecution?: "inline" | "run";
+  /** Injection-safe runtime context handling. Default: "off". */
+  contextTrust?: RuntimeContextTrustMode;
   /** PostgreSQL connection URL (required when storage is "postgres").
    *  Example: "postgres://user:pass@localhost:5432/polpo" */
   databaseUrl?: string;

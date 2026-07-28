@@ -469,6 +469,40 @@ describe("executeRun — shared run lifecycle", () => {
     }
   });
 
+  test("malformed persisted context fails closed only when enforcement is active", async () => {
+    const store = new InMemoryRunStore();
+    const enforced = makeConfig({
+      contextTrust: "enforce",
+      runtimeContext: [{
+        kind: "memory.agent",
+        trust: "trusted",
+        content: "ambiguous",
+      } as any],
+    });
+    const failed = await executeRun(enforced, {
+      runStore: store,
+      pid: 1,
+      configPath: "memory://invalid-context",
+    });
+
+    expect(failed.status).toBe("failed");
+    expect(failed.spawnError).toBe(true);
+    expect(failed.result.stderr).toContain("runtime context trust is invalid");
+
+    setMockModel(mockTextModel("legacy still runs"));
+    const disabled = makeConfig({
+      contextTrust: "off",
+      runtimeContext: enforced.runtimeContext,
+    });
+    const legacy = await executeRun(disabled, {
+      runStore: store,
+      pid: 2,
+      configPath: "memory://disabled-context",
+    });
+    expect(legacy.status).toBe("completed");
+    expect(legacy.result.stdout).toBe("legacy still runs");
+  });
+
   test("transcript goes through the injected log session (DB-mode parity)", async () => {
     setMockModel(mockTurnSequenceModel([{ type: "text", text: "with session" }]));
     const store = new InMemoryRunStore();

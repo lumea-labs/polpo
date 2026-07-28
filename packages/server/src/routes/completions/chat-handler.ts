@@ -10,8 +10,10 @@
 import { streamSSE } from "hono/streaming";
 import {
   compactIfNeeded,
+  renderRuntimeToolResult,
   type CompactionEvent,
   type ModelSelection,
+  type RuntimeContextTrustMode,
   type RuntimePlan,
 } from "@polpo-ai/core";
 import { runModelPolicyTurn } from "@polpo-ai/llm";
@@ -67,6 +69,8 @@ export interface ChatCompletionExecution {
   sessionId: string | null;
   /** Frozen, secret-free runtime decision emitted before provider/tool resolution. */
   runtimePlan?: RuntimePlan;
+  /** Explicit, host-resolved context-trust mode for this conversation turn. */
+  contextTrust?: RuntimeContextTrustMode;
   /**
    * Resource cleanup hook — set when an agent's tool resolver opens
    * long-lived connections (today: MCP transports). Invoked exactly
@@ -275,7 +279,13 @@ export function streamChatCompletion(c: any, exec: ChatCompletionExecution): any
         } as LanguageModelUsage;
         lastProviderMetadata = result.providerMetadata as Record<string, unknown> | undefined;
 
-        await appendModelResponseMessages(messages, result, turnText, toolCalls);
+        await appendModelResponseMessages(
+          messages,
+          result,
+          turnText,
+          toolCalls,
+          exec.contextTrust ?? "off",
+        );
 
         if (toolCalls.length === 0) break;
 
@@ -449,8 +459,18 @@ export function streamChatCompletion(c: any, exec: ChatCompletionExecution): any
               toolCallId: call.toolCallId,
               toolName: call.toolName,
               output: isError
-                ? { type: "error-text" as const, value: result }
-                : { type: "text" as const, value: result },
+                ? {
+                    type: "error-text" as const,
+                    value: exec.contextTrust === "enforce"
+                      ? renderRuntimeToolResult(call.toolName, call.toolCallId, result)
+                      : result,
+                  }
+                : {
+                    type: "text" as const,
+                    value: exec.contextTrust === "enforce"
+                      ? renderRuntimeToolResult(call.toolName, call.toolCallId, result)
+                      : result,
+                  },
             }],
           });
         }
@@ -592,7 +612,13 @@ export async function runNonStreamingChatCompletion(c: any, exec: ChatCompletion
       } as LanguageModelUsage;
       lastProviderMetadata = turnResult.providerMetadata as Record<string, unknown> | undefined;
 
-      await appendModelResponseMessages(messages, turnResult, turnText, turnResult.toolCalls);
+      await appendModelResponseMessages(
+        messages,
+        turnResult,
+        turnText,
+        turnResult.toolCalls,
+        exec.contextTrust ?? "off",
+      );
 
       finalText += turnText;
 
@@ -798,8 +824,18 @@ export async function runNonStreamingChatCompletion(c: any, exec: ChatCompletion
             toolCallId: call.toolCallId,
             toolName: call.toolName,
             output: isError
-              ? { type: "error-text" as const, value: result }
-              : { type: "text" as const, value: result },
+              ? {
+                  type: "error-text" as const,
+                  value: exec.contextTrust === "enforce"
+                    ? renderRuntimeToolResult(call.toolName, call.toolCallId, result)
+                    : result,
+                }
+              : {
+                  type: "text" as const,
+                  value: exec.contextTrust === "enforce"
+                    ? renderRuntimeToolResult(call.toolName, call.toolCallId, result)
+                    : result,
+                },
           }],
         });
       }

@@ -4,6 +4,14 @@
  */
 
 import type { z } from "@hono/zod-openapi";
+import {
+  createRuntimeContextSegment,
+  protectRuntimeToolResultMessages,
+  renderRuntimeContextSegment,
+  renderRuntimeToolResult,
+  type RuntimeContextSegment,
+  type RuntimeContextTrustMode,
+} from "@polpo-ai/core";
 import type { contentPartSchema, messageSchema } from "./schemas.js";
 
 // ── Helpers ────────────────────────────────────────────────────────────
@@ -63,6 +71,7 @@ function normalizeToolCallHistory(messages: unknown[]): unknown[] {
 /** Resolve file content parts → text references the agent can act on with its tools. */
 function resolveFileContentParts(
   content: z.infer<typeof messageSchema>["content"],
+  contextTrust: RuntimeContextTrustMode,
 ): z.infer<typeof messageSchema>["content"] {
   if (typeof content === "string" || !content.some((p) => p.type === "file")) return content;
 
@@ -76,7 +85,14 @@ function resolveFileContentParts(
     // The agent has read_file / list_files tools to access the actual content.
     resolved.push({
       type: "text",
-      text: `[Attached file: ${part.file_id}]`,
+      text: contextTrust === "enforce"
+        ? renderRuntimeContextSegment(createRuntimeContextSegment({
+            kind: "attachment.reference",
+            sourceId: part.file_id,
+            trust: "user",
+            content: `Attached workspace file: ${part.file_id}`,
+          }))
+        : `[Attached file: ${part.file_id}]`,
     });
   }
   return resolved;
@@ -132,17 +148,31 @@ function toAIContent(content: z.infer<typeof messageSchema>["content"]): string 
  */
 export function convertMessages(
   messages: z.infer<typeof messageSchema>[],
-): { aiMessages: any[]; extraSystemParts: string[] } {
+  contextTrust: RuntimeContextTrustMode = "off",
+): {
+  aiMessages: any[];
+  extraSystemParts: string[];
+  runtimeContext: RuntimeContextSegment[];
+} {
   const aiMessages: any[] = [];
   const extraSystemParts: string[] = [];
+  const runtimeContext: RuntimeContextSegment[] = [];
 
-  for (const msg of messages) {
+  for (const [index, msg] of messages.entries()) {
     if (msg.role === "system") {
       const text = extractText(msg.content);
-      if (hasText(text)) extraSystemParts.push(text);
+      if (hasText(text)) {
+        extraSystemParts.push(text);
+        runtimeContext.push(createRuntimeContextSegment({
+          kind: "caller.system",
+          sourceId: `message-${index}`,
+          trust: "developer",
+          content: text,
+        }));
+      }
     } else if (msg.role === "user") {
       // Resolve file content parts → text references (only in the AI SDK message, not persisted)
-      const resolvedContent = resolveFileContentParts(msg.content);
+      const resolvedContent = resolveFileContentParts(msg.content, contextTrust);
       const content = toAIContent(resolvedContent);
       if (hasModelContent(content)) aiMessages.push({ role: "user", content });
     } else if (msg.role === "assistant") {
@@ -176,13 +206,22 @@ export function convertMessages(
           type: "tool-result",
           toolCallId: msg.tool_call_id,
           toolName: msg.name ?? "unknown",
-          output: { type: "text" as const, value: hasText(text) ? text : "(empty tool result)" },
+          output: {
+            type: "text" as const,
+            value: contextTrust === "enforce"
+              ? renderRuntimeToolResult(
+                  msg.name ?? "unknown",
+                  msg.tool_call_id,
+                  hasText(text) ? text : "(empty tool result)",
+                )
+              : hasText(text) ? text : "(empty tool result)",
+          },
         }],
       });
     }
   }
 
-  return { aiMessages, extraSystemParts };
+  return { aiMessages, extraSystemParts, runtimeContext };
 }
 
 export async function appendModelResponseMessages(
@@ -190,11 +229,15 @@ export async function appendModelResponseMessages(
   result: any,
   turnText: string,
   toolCalls: any[],
+  contextTrust: RuntimeContextTrustMode = "off",
 ): Promise<void> {
   try {
     const responseMessages = await result.responseMessages;
     if (Array.isArray(responseMessages) && responseMessages.length > 0) {
-      messages.push(...normalizeToolCallHistory(responseMessages));
+      const normalized = normalizeToolCallHistory(responseMessages);
+      messages.push(...(contextTrust === "enforce"
+        ? protectRuntimeToolResultMessages(normalized)
+        : normalized));
       return;
     }
   } catch {

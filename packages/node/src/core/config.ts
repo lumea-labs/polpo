@@ -20,6 +20,7 @@ const DEFAULT_SETTINGS: PolpoSettings = {
   workDir: ".",
   logLevel: "normal",
   chatExecution: "run",
+  contextTrust: "off",
 };
 
 // --- .polpo/polpo.json (persistent project config) ---
@@ -191,6 +192,9 @@ function parseSettings(raw: any): PolpoSettings {
   settings.chatExecution = ["inline", "run"].includes(raw?.chatExecution)
     ? raw.chatExecution
     : DEFAULT_SETTINGS.chatExecution;
+  settings.contextTrust = raw?.contextTrust === "enforce"
+    ? "enforce"
+    : DEFAULT_SETTINGS.contextTrust;
   if (raw?.databaseUrl && typeof raw.databaseUrl === "string") {
     settings.databaseUrl = raw.databaseUrl;
   }

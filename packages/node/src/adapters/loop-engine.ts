@@ -45,6 +45,8 @@ import {
   maybeParseJson,
   normalizeProjectLoop,
   normalizeToolInput,
+  protectRuntimeToolResultMessages,
+  renderRuntimeToolResult,
   resolveLoopSelection,
   compactIfNeeded,
   type ModelSelection,
@@ -314,6 +316,7 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
       inject?.modelSelection ??
       resolvedModelSelection ??
       modelSelectionForResolvedModel(model);
+    const contextTrust = inject?.contextTrust ?? ctx?.contextTrust ?? "off";
 
     // Conversation state owned by the host, exactly like the legacy loop.
     // On resume the recorded history (already containing tool-call and
@@ -323,7 +326,13 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
       ? [...(inject.seedMessages as ModelMessage[])]
       : resume
         ? [...(resume.history as ModelMessage[])]
-        : [{ role: "user", content: buildPrompt(task) }]);
+        : [{
+            role: "user",
+            content: buildPrompt(task, ctx?.runtimeContext, ctx?.contextTrust),
+          }]);
+    if (contextTrust === "enforce") {
+      messages = protectRuntimeToolResultMessages(messages);
+    }
     let lastStepText = "";
     let accumText = resume?.accumText ?? "";
     const providerToolResults = new Map<string, { content: string; isError: boolean }>();
@@ -384,6 +393,9 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
         messages = normalizeResponseMessagesForHistory(compactionResult.messages);
       }
       messages = normalizeResponseMessagesForHistory(messages);
+      if (contextTrust === "enforce") {
+        messages = protectRuntimeToolResultMessages(messages);
+      }
 
       let stepText = "";
       const toolCalls: LoopToolCall[] = [];
@@ -545,7 +557,10 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
       }
 
       // Append the assistant message (with its tool-call parts) to history.
-      messages.push(...normalizeResponseMessagesForHistory(turn.responseMessages));
+      const responseMessages = normalizeResponseMessagesForHistory(turn.responseMessages);
+      messages.push(...(contextTrust === "enforce"
+        ? protectRuntimeToolResultMessages(responseMessages)
+        : responseMessages));
 
       // Chat parity (F1c): surface per-turn usage + provider metadata so the
       // driver can accumulate them for onCompletionFinished, matching chat.
@@ -597,6 +612,9 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
 
       // Append the tool result to conversation history so the next model
       // step sees it (the model stream no longer auto-executes tools).
+      const modelResult = contextTrust === "enforce"
+        ? renderRuntimeToolResult(toolCall.name, toolCall.id, llmText)
+        : llmText;
       messages.push({
         role: "tool",
         content: [{
@@ -604,8 +622,8 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
           toolCallId: toolCall.id,
           toolName: toolCall.name,
           output: isError
-            ? { type: "error-text" as const, value: llmText }
-            : { type: "text" as const, value: llmText },
+            ? { type: "error-text" as const, value: modelResult }
+            : { type: "text" as const, value: modelResult },
         }],
       });
 
@@ -755,7 +773,11 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
           sessionAgent: stepAgent,
           loopName: name,
           loop,
-          contextPrompt: loopContextPrompt(name, context),
+          contextPrompt: loopContextPrompt(
+            name,
+            context,
+            ctx?.contextTrust ?? "off",
+          ),
           resume: sessionResume,
           // (b) Per-turn checkpoint INSIDE this agent step: the session
           // state wrapped with the pipeline position. No position = the
