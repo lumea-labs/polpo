@@ -302,6 +302,53 @@ polpo loops compile .polpo/loops/router-flow.ts
 polpo deploy   # deploys .json as JSON and .ts/.js/.mjs as source
 ```
 
+### Schedules
+
+Schedules are first-class, durable invocations stored in
+`.polpo/schedules/*.json`. A schedule targets an existing agent, task,
+channel, webhook, or a legacy mission:
+
+```json
+{
+  "id": "daily-report",
+  "name": "Daily report",
+  "timing": {
+    "kind": "cron",
+    "expression": "0 9 * * *",
+    "timezone": "Europe/Rome"
+  },
+  "invocation": {
+    "surface": "agent",
+    "agentName": "reporter",
+    "input": { "prompt": "Prepare today's report." }
+  },
+  "policy": {
+    "catchUp": "skip",
+    "misfireGraceSeconds": 300,
+    "maxConcurrency": 1
+  }
+}
+```
+
+`polpo deploy` validates every schedule before sending any of them, checks
+locally-known agent, loop, and mission references, and previews the next
+occurrence in the configured timezone. Mission-shaped schedule files remain
+supported for the compatibility window and produce a migration warning.
+
+The typed SDK exposes additive v2 methods without removing the legacy mission
+helpers:
+
+```ts
+const schedule = await polpo.createScheduleV2(definition);
+await polpo.pauseSchedule(schedule.id, {
+  expectedRevision: schedule.revision,
+});
+const runs = await polpo.listScheduleRuns(schedule.id, { limit: 25 });
+await polpo.triggerSchedule(schedule.id, {
+  idempotencyKey: "manual-check-2026-07-28",
+});
+```
+
 Agent-direct chat can target a loop explicitly:
 
 ```json

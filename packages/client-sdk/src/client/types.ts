@@ -85,7 +85,21 @@ import type {
   ReviewerResult,
   RuntimeSandboxOptions,
   SandboxIsolation,
+  Schedule,
+  ScheduleDriverRegistration,
   ScheduleEntry,
+  ScheduleFilter,
+  ScheduleInvocation,
+  ScheduleMetadata,
+  ScheduleMutationOptions,
+  SchedulePolicy,
+  ScheduleRun,
+  ScheduleRunFilter,
+  ScheduleRunStatus,
+  ScheduleStatus,
+  ScheduleTiming,
+  CreateScheduleInput,
+  UpdateScheduleInput,
   ScopedNotificationRules,
   SkillIndex,
   SkillIndexEntry,
@@ -179,7 +193,21 @@ export type {
   ReviewerResult,
   RuntimeSandboxOptions,
   SandboxIsolation,
+  Schedule,
+  ScheduleDriverRegistration,
   ScheduleEntry,
+  ScheduleFilter,
+  ScheduleInvocation,
+  ScheduleMetadata,
+  ScheduleMutationOptions,
+  SchedulePolicy,
+  ScheduleRun,
+  ScheduleRunFilter,
+  ScheduleRunStatus,
+  ScheduleStatus,
+  ScheduleTiming,
+  CreateScheduleInput,
+  UpdateScheduleInput,
   ScopedNotificationRules,
   SkillIndex,
   SkillIndexEntry,
@@ -882,6 +910,16 @@ export interface UpdateScheduleRequest {
   enabled?: boolean;
   endDate?: string | null;
 }
+
+/** Manual trigger input. Reusing a key returns the same durable Schedule Run. */
+export interface TriggerScheduleRequest {
+  idempotencyKey: string;
+}
+
+/** V2 schedules return the deleted record; legacy adapters wrap compatibility. */
+export type DeleteScheduleResult =
+  | Schedule
+  | { deleted: true; schedule: Schedule };
 
 /** Request body for creating/updating a playbook. */
 export interface CreatePlaybookRequest {
