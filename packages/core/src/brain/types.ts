@@ -167,6 +167,7 @@ export interface BrainRetrievalScores {
 }
 
 export interface BrainRetrievalResult {
+  readonly scope: BrainScope;
   readonly chunk: BrainChunk;
   readonly score: number;
   readonly scores: BrainRetrievalScores;
@@ -174,6 +175,7 @@ export interface BrainRetrievalResult {
 }
 
 export interface CreateBrainRetrievalResultInput {
+  readonly scope: BrainScope;
   readonly chunk: BrainChunk;
   readonly score: number;
   readonly scores?: BrainRetrievalScores;
@@ -282,7 +284,11 @@ export interface BrainSourceListResult {
 }
 
 export interface BrainPublishVersionInput extends BrainVersionRef {
-  readonly expectedCurrentVersion?: string;
+  /**
+   * Compare-and-swap guard. `null` explicitly requires an unpublished source;
+   * omitting the field disables the guard for administrative adapters.
+   */
+  readonly expectedCurrentVersion?: string | null;
 }
 
 export interface BrainReplaceVersionChunksInput extends BrainVersionRef {
@@ -290,9 +296,8 @@ export interface BrainReplaceVersionChunksInput extends BrainVersionRef {
 }
 
 export interface BrainCandidateSearchQuery {
-  readonly scopes: readonly BrainScope[];
-  /** Must already be filtered by the caller's ACL policy. */
-  readonly sourceIds: readonly string[];
+  /** Exact source references already filtered by the caller's ACL policy. */
+  readonly sources: readonly BrainSourceRef[];
   readonly query: string;
   readonly limit: number;
 }
@@ -358,4 +363,18 @@ export interface BrainRerankRequest {
   readonly query: string;
   readonly results: readonly BrainRetrievalResult[];
   readonly limit: number;
+}
+
+export interface BrainStoreSnapshot {
+  readonly version: 1;
+  readonly sources: readonly BrainSource[];
+  readonly sourceVersions: readonly {
+    readonly scope: BrainScope;
+    readonly value: BrainSourceVersion;
+  }[];
+  readonly chunks: readonly {
+    readonly scope: BrainScope;
+    readonly value: BrainChunk;
+  }[];
+  readonly jobs: readonly BrainIngestionJob[];
 }
