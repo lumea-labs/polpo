@@ -1,6 +1,6 @@
 {
   "name": "@polpo-ai/connect-server",
-  "version": "0.15.36",
+  "version": "0.15.37",
   "description": "Server-side Polpo Connect primitives for OAuth, API-key connections, token refresh, and policy checks",
   "type": "module",
   "main": "dist/index.js",
