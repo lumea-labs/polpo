@@ -147,9 +147,10 @@ describe("F1c parity: inline vs run", () => {
     // Same final text.
     expect(content(viaRun)).toBe("done after the tool");
     expect(content(viaRun)).toBe(content(inline));
-    // Same tool_call lifecycle (calling → completed/error), same order.
+    // Unknown/invalid tool calls are rejected before local dispatch.
     expect(toolStates(viaRun)).toEqual(toolStates(inline));
-    expect(toolStates(viaRun)).toContain("calling");
+    expect(toolStates(viaRun)).not.toContain("calling");
+    expect(toolStates(viaRun)).toContain("error");
     expect(finishReason(viaRun)).toBe(finishReason(inline));
   });
 
@@ -178,12 +179,48 @@ describe("F1c parity: inline vs run", () => {
       .filter((event) => event.state !== "preparing")
       .map((event) => `${event.id}:${event.state}`);
     expect(lifecycle(viaRun)).toEqual([
-      "call_1:calling",
       "call_1:error",
-      "call_2:calling",
       "call_2:error",
     ]);
     expect(lifecycle(viaRun)).toEqual(lifecycle(inline));
+  });
+
+  it("duplicate invalid call ids cannot fall through to chat execution", async () => {
+    const messages = [{ role: "user", content: "Use invalid tools" }];
+    const seq = () => mockTurnSequenceModel([
+      {
+        type: "tool-calls",
+        calls: [
+          {
+            toolCallId: "duplicate",
+            toolName: "missing_one",
+            args: { value: 1 },
+          },
+          {
+            toolCallId: "duplicate",
+            toolName: "missing_two",
+            args: { value: 2 },
+          },
+        ],
+      },
+      { type: "text", text: "recovered" },
+    ]);
+
+    setChatExecution("inline");
+    setMockModel(seq());
+    const inline = await postStream({ messages });
+
+    setChatExecution("run");
+    setMockModel(seq());
+    const viaRun = await postStream({ messages });
+
+    const terminalStates = (chunks: Record<string, unknown>[]) =>
+      toolEvents(chunks)
+        .filter((event) => event.state !== "preparing")
+        .map((event) => event.state);
+    expect(terminalStates(viaRun)).toEqual(["error", "error"]);
+    expect(terminalStates(viaRun)).toEqual(terminalStates(inline));
+    expect(content(viaRun)).toBe("recovered");
   });
 
   it("client-side tools interrupt without a fake server-side calling event", async () => {

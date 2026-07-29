@@ -24,6 +24,8 @@ import { appendModelResponseMessages } from "./message-mapping.js";
 import {
   emitFileChanged,
   indexToolResultsByCallId,
+  invalidModelToolCallEvent,
+  isInvalidModelToolCall,
   providerToolCallEvent,
   toAITools,
   toAIToolChoice,
@@ -300,9 +302,19 @@ export async function runAgentStepCompletion(options: {
 
       if (turnResult.toolCalls.length === 0) break;
 
+      const dispatchableToolCalls = turnResult.toolCalls.filter(
+        (call) => !isInvalidModelToolCall(call),
+      );
+      for (const call of turnResult.toolCalls.filter(isInvalidModelToolCall)) {
+        const event = invalidModelToolCallEvent(call);
+        toolCallsAccum.push(event);
+        await onToolCall?.(event);
+      }
+      if (dispatchableToolCalls.length === 0) continue;
+
       const providerToolResults = indexToolResultsByCallId(turnResult.toolResults as any[] | undefined);
 
-      for (const call of turnResult.toolCalls) {
+      for (const call of dispatchableToolCalls) {
         const callArgs = call.input as Record<string, unknown>;
         if (providerToolNames.has(call.toolName)) {
           const event = providerToolCallEvent(call, providerToolResults);

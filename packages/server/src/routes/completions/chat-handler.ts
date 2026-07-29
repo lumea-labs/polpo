@@ -33,6 +33,8 @@ import {
   CLIENT_SIDE_TOOL_NAMES,
   emitFileChanged,
   indexToolResultsByCallId,
+  invalidModelToolCallEvent,
+  isInvalidModelToolCall,
   persistAssistantMessage,
   recordProviderToolCall,
   toAITools,
@@ -279,8 +281,22 @@ export function streamChatCompletion(c: any, exec: ChatCompletionExecution): any
 
         if (toolCalls.length === 0) break;
 
+        const dispatchableToolCalls = toolCalls.filter(
+          (call) => !isInvalidModelToolCall(call),
+        );
+        for (const call of toolCalls.filter(isInvalidModelToolCall)) {
+          const event = invalidModelToolCallEvent(call);
+          toolCallsAccum.push(event);
+          await stream.writeSSE({
+            data: sseChunk(completionId, {}, null, {
+              tool_call: event,
+            }),
+          });
+        }
+        if (dispatchableToolCalls.length === 0) continue;
+
         // ── Client-side tools — return to client as standard tool_calls ──
-        const clientSideCall = toolCalls.find((tc: any) => CLIENT_SIDE_TOOL_NAMES.has(tc.toolName));
+        const clientSideCall = dispatchableToolCalls.find((tc: any) => CLIENT_SIDE_TOOL_NAMES.has(tc.toolName));
         if (clientSideCall) {
           // Persist for session history
           toolCallsAccum.push({
@@ -317,7 +333,7 @@ export function streamChatCompletion(c: any, exec: ChatCompletionExecution): any
         }
 
         // Check for interactive tools — only in orchestrator mode (agents don't have interactive tools)
-        const interactiveCall = agentMode ? undefined : toolCalls.find((tc: any) => isInteractiveFn?.(tc.toolName));
+        const interactiveCall = agentMode ? undefined : dispatchableToolCalls.find((tc: any) => isInteractiveFn?.(tc.toolName));
         if (interactiveCall) {
           // Persist the interactive tool call so it survives session reload
           toolCallsAccum.push({
@@ -401,7 +417,7 @@ export function streamChatCompletion(c: any, exec: ChatCompletionExecution): any
         const providerToolNames = new Set(Object.keys(extraAiTools ?? {}));
         const providerToolResults = indexToolResultsByCallId(result.toolResults as any[] | undefined);
 
-        for (const call of toolCalls) {
+        for (const call of dispatchableToolCalls) {
           // Stop executing tools if client disconnected
           if (abortController.signal.aborted) break;
 
@@ -599,8 +615,16 @@ export async function runNonStreamingChatCompletion(c: any, exec: ChatCompletion
       const toolCalls = turnResult.toolCalls;
       if (toolCalls.length === 0) break;
 
+      const dispatchableToolCalls = toolCalls.filter(
+        (call) => !isInvalidModelToolCall(call),
+      );
+      for (const call of toolCalls.filter(isInvalidModelToolCall)) {
+        toolCallsAccum.push(invalidModelToolCallEvent(call));
+      }
+      if (dispatchableToolCalls.length === 0) continue;
+
       // ── Client-side tools — return to client as standard tool_calls ──
-      const clientSideCall = toolCalls.find((tc: any) => CLIENT_SIDE_TOOL_NAMES.has(tc.toolName));
+      const clientSideCall = dispatchableToolCalls.find((tc: any) => CLIENT_SIDE_TOOL_NAMES.has(tc.toolName));
       if (clientSideCall) {
         toolCallsAccum.push({
           id: clientSideCall.toolCallId,
@@ -638,7 +662,7 @@ export async function runNonStreamingChatCompletion(c: any, exec: ChatCompletion
       }
 
       // Check for interactive tools — only in orchestrator mode (agents don't have interactive tools)
-      const interactiveCall = agentMode ? undefined : toolCalls.find((tc: any) => isInteractiveFn?.(tc.toolName));
+      const interactiveCall = agentMode ? undefined : dispatchableToolCalls.find((tc: any) => isInteractiveFn?.(tc.toolName));
       if (interactiveCall) {
         // Persist the interactive tool call so it survives session reload
         toolCallsAccum.push({
@@ -769,7 +793,7 @@ export async function runNonStreamingChatCompletion(c: any, exec: ChatCompletion
       const providerToolNames = new Set(Object.keys(extraAiTools ?? {}));
       const providerToolResults = indexToolResultsByCallId(turnResult.toolResults as any[] | undefined);
 
-      for (const call of toolCalls) {
+      for (const call of dispatchableToolCalls) {
         const callArgs = call.input as Record<string, unknown>;
 
         if (providerToolNames.has(call.toolName)) {
