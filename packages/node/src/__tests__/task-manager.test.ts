@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 import { nanoid } from "nanoid";
 import { TaskManager } from "@polpo-ai/core/task-manager";
 import { MissionExecutor } from "@polpo-ai/core/mission-executor";
@@ -856,6 +856,89 @@ describe("MissionExecutor", () => {
   // ── executeMission ───────────────────────────────────────────────────
 
   describe("executeMission", () => {
+    it("validates every concrete model expanded from an agent profile", async () => {
+      const config = createDefaultConfig({
+        teams: [{
+          name: "test-team",
+          agents: [{
+            ...createTestAgent({ name: "dev" }),
+            model: { profile: "balanced" },
+            allowedModelProfiles: ["balanced", "fast"],
+          }],
+        }],
+        settings: {
+          maxRetries: 2,
+          workDir: "/tmp/test",
+          logLevel: "quiet",
+          modelProfiles: {
+            balanced: {
+              primary: "anthropic/claude-sonnet-4",
+              fallbacks: [{ profile: "fast" }],
+            },
+            fast: "openai/gpt-4o-mini",
+          },
+        },
+      });
+      ctx = createContext({ config });
+      const validateProviderKeys = vi.fn().mockReturnValue([]);
+      Object.assign(ctx, { validateProviderKeys });
+      taskMgr = new TaskManager(ctx);
+      agentMgr = new AgentManager(ctx);
+      missionExec = new MissionExecutor(ctx, taskMgr, agentMgr);
+      await missionExec.ready;
+
+      const mission = await missionExec.createMission({
+        data: JSON.stringify({
+          tasks: [{ title: "Profiled", description: "Use the profile", assignTo: "dev" }],
+        }),
+      });
+
+      await missionExec.executeMission(mission.id);
+
+      expect(validateProviderKeys).toHaveBeenCalledWith([
+        "anthropic/claude-sonnet-4",
+        "openai/gpt-4o-mini",
+      ]);
+    });
+
+    it("fails closed when a mission agent references a disallowed profile", async () => {
+      const config = createDefaultConfig({
+        teams: [{
+          name: "test-team",
+          agents: [{
+            ...createTestAgent({ name: "dev" }),
+            model: { profile: "balanced" },
+            allowedModelProfiles: ["fast"],
+          }],
+        }],
+        settings: {
+          maxRetries: 2,
+          workDir: "/tmp/test",
+          logLevel: "quiet",
+          modelProfiles: {
+            balanced: "anthropic/claude-sonnet-4",
+            fast: "openai/gpt-4o-mini",
+          },
+        },
+      });
+      ctx = createContext({ config });
+      taskMgr = new TaskManager(ctx);
+      agentMgr = new AgentManager(ctx);
+      missionExec = new MissionExecutor(ctx, taskMgr, agentMgr);
+      await missionExec.ready;
+      const mission = await missionExec.createMission({
+        data: JSON.stringify({
+          tasks: [{ title: "Blocked", description: "Do not run", assignTo: "dev" }],
+        }),
+      });
+
+      await expect(missionExec.executeMission(mission.id)).rejects.toMatchObject({
+        code: "DISALLOWED_PROFILE",
+        profile: "balanced",
+      });
+      expect(await ctx.taskStore.listTasks()).toHaveLength(0);
+    });
+
     it("creates tasks from JSON mission", async () => {
       const data = JSON.stringify({ tasks: [
           { title: "Setup project", description: "Initialize the project structure", assignTo: "dev" },

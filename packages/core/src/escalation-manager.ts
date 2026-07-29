@@ -2,6 +2,7 @@ import type { OrchestratorContext } from "./orchestrator-context.js";
 import type { Task, EscalationPolicy, EscalationLevel } from "./types.js";
 
 import type { ApprovalManager } from "./approval-manager.js";
+import { resolveConfiguredModelSelection } from "./model-profiles.js";
 
 /**
  * Manages the escalation chain when tasks fail repeatedly.
@@ -168,9 +169,16 @@ export class EscalationManager {
         "Return ONLY the new description text, no explanation.",
       ].join("\n");
 
+      const orchestratorSelection = this.ctx.config.settings.orchestratorModel;
+      const orchestratorModel = orchestratorSelection
+        ? resolveConfiguredModelSelection(
+            orchestratorSelection,
+            this.ctx.config.settings,
+          ).selection
+        : undefined;
       const newDescription = (await this.ctx.queryLLM(
         prompt,
-        this.ctx.config.settings.orchestratorModel,
+        orchestratorModel,
       )).text;
 
       if (newDescription && newDescription.length > 20) {
