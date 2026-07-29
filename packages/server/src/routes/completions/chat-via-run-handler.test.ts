@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { completionRoutes, runConversationTurn, type CompletionRouteDeps } from "../completions.js";
 import { runChatTurnViaRun } from "./chat-via-run-handler.js";
+import type { CompletionRequestBody } from "./schemas.js";
 
 function parseSse(body: string): any[] {
   return body
@@ -447,8 +448,9 @@ describe("chat via Run driver", () => {
     };
     const deps = baseDeps({ runChatViaRun: blockedRun });
     const app = completionRoutes(() => deps);
-    const requestBody = {
+    const requestBody: CompletionRequestBody = {
       agent: "agent-1",
+      stream: false,
       messages: [{ role: "user", content: "run a blocked tool" }],
     };
 
