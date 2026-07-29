@@ -21,7 +21,10 @@ import type { PolpoConfig, PolpoFileConfig, Task, AssessmentResult, ReviewContex
 import type { HookRegistry } from "./hooks.js";
 import type { Spawner } from "./spawner.js";
 import type { ProjectLoopConfig } from "./loop/types.js";
-import type { ExecutionRouteClassifier } from "./execution-router.js";
+import type {
+  ExecutionRouteClassifier,
+  ExecutionRouteClassifierResolverContext,
+} from "./execution-router.js";
 
 /** Progress event for individual assessment checks. */
 export interface CheckProgressEvent {
@@ -103,7 +106,9 @@ export interface OrchestratorContext {
    * Lazily resolve an execution-route classifier. The host owns model and
    * provider selection; core never hardcodes one.
    */
-  readonly resolveExecutionRouteClassifier?: () =>
+  readonly resolveExecutionRouteClassifier?: (
+    context: ExecutionRouteClassifierResolverContext,
+  ) =>
     | ExecutionRouteClassifier
     | undefined
     | Promise<ExecutionRouteClassifier | undefined>;

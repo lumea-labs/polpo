@@ -137,7 +137,14 @@ export class TaskRunner {
       }),
       config: agent.executionRouter,
     }, {
-      resolveClassifier: this.ctx.resolveExecutionRouteClassifier,
+      resolveClassifier: this.ctx.resolveExecutionRouteClassifier
+        ? () => this.ctx.resolveExecutionRouteClassifier!({
+            surface: "task",
+            source: "task",
+            agentName: agent.name,
+            ...(task.user ? { userId: task.user } : {}),
+          })
+        : undefined,
     });
     this.ctx.emitter.emit(
       "runtime:execution-route",

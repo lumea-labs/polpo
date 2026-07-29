@@ -89,6 +89,17 @@ export interface ExecutionRouteClassifier {
   ): Promise<unknown>;
 }
 
+/**
+ * Host-private identity supplied when resolving a classifier. It is never
+ * included in the compact classifier input or sent to the model.
+ */
+export interface ExecutionRouteClassifierResolverContext {
+  readonly surface: RuntimeSurface;
+  readonly source: RuntimeInvocationSource;
+  readonly agentName: string;
+  readonly userId?: string;
+}
+
 export interface ResolveExecutionRouteInput {
   readonly surface: RuntimeSurface;
   readonly source: RuntimeInvocationSource;

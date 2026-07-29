@@ -121,7 +121,8 @@ export function createApp(orchestrator: Orchestrator, sseBridge: SSEBridge, opts
     getSessionStore: () => o.getSessionStore(),
     getStore: () => o.getStore(),
     emit: (event: string, data: any) => o.emit(event as any, data),
-    resolveExecutionRouteClassifier: () => o.resolveExecutionRouteClassifier(),
+    resolveExecutionRouteClassifier: (context) =>
+      o.resolveExecutionRouteClassifier(context),
     resolveAgentModel: async (agentConfig: any, reasoning?: string) => {
       const { buildResolvedModelProviderOptions, resolveModel } = await import("@polpo-ai/llm");
       const settings = o.getConfig()?.settings;

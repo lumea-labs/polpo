@@ -150,7 +150,7 @@ describe("TaskRunner execution routing", () => {
   it("routes before context and spawn, then stamps an immutable loop decision", async () => {
     const h = harness();
     let classifierInput: any;
-    h.ctx.resolveExecutionRouteClassifier = vi.fn(async () => ({
+    const resolveExecutionRouteClassifier = vi.fn(async () => ({
       classify: async (input: unknown) => {
         h.calls.push("classify");
         classifierInput = input;
@@ -162,7 +162,8 @@ describe("TaskRunner execution routing", () => {
         };
       },
     }));
-    const original = task();
+    h.ctx.resolveExecutionRouteClassifier = resolveExecutionRouteClassifier;
+    const original = task({ user: "external-user-1" });
 
     await new TaskRunner(h.ctx).spawnForTask(original);
 
@@ -195,6 +196,12 @@ describe("TaskRunner execution routing", () => {
     });
     expect(JSON.stringify(classifierInput)).not.toContain("PRIVATE");
     expect(JSON.stringify(classifierInput)).not.toContain("search_web");
+    expect(resolveExecutionRouteClassifier).toHaveBeenCalledWith({
+      surface: "task",
+      source: "task",
+      agentName: "agent-1",
+      userId: "external-user-1",
+    });
     expect(h.spawned).toHaveLength(1);
     expect(h.spawned[0].task.loop).toBe("research");
     expect(h.spawned[0].executionRoute).toMatchObject({

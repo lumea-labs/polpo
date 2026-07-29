@@ -2,7 +2,10 @@ import { afterEach, describe, expect, it } from "vitest";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { ExecutionRouteClassifier } from "@polpo-ai/core/execution-router";
+import type {
+  ExecutionRouteClassifier,
+  ExecutionRouteClassifierResolverContext,
+} from "@polpo-ai/core/execution-router";
 import { Orchestrator } from "../core/orchestrator.js";
 
 const dirs: string[] = [];
@@ -29,14 +32,24 @@ describe("Node execution router host ports", () => {
       }),
     };
     const dir = await workDir();
+    const contexts: ExecutionRouteClassifierResolverContext[] = [];
     const configured = new Orchestrator({
       workDir: dir,
-      resolveExecutionRouteClassifier: () => classifier,
+      resolveExecutionRouteClassifier: (context) => {
+        contexts.push(context);
+        return classifier;
+      },
     });
     const unconfigured = new Orchestrator(dir);
+    const context = {
+      surface: "agent",
+      source: "request",
+      agentName: "agent-1",
+    } as const;
 
-    expect(await configured.resolveExecutionRouteClassifier()).toBe(classifier);
-    expect(unconfigured.resolveExecutionRouteClassifier()).toBeUndefined();
+    expect(await configured.resolveExecutionRouteClassifier(context)).toBe(classifier);
+    expect(unconfigured.resolveExecutionRouteClassifier(context)).toBeUndefined();
+    expect(contexts).toEqual([context]);
   });
 
   it("loads and validates a matching project loop manifest", async () => {

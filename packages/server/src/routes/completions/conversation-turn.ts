@@ -247,7 +247,14 @@ async function resolveAutomaticExecutionRoute(
     }),
     config: agentConfig.executionRouter,
   }, {
-    resolveClassifier: deps.resolveExecutionRouteClassifier,
+    resolveClassifier: deps.resolveExecutionRouteClassifier
+      ? () => deps.resolveExecutionRouteClassifier!({
+          surface: invocation.surface,
+          source: invocation.source,
+          agentName: agentConfig.name,
+          ...(body.user ? { userId: body.user } : {}),
+        })
+      : undefined,
     signal: options.signal,
   });
   return { route, projectLoops };
