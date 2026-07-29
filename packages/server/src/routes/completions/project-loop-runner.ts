@@ -26,6 +26,8 @@ import {
   type LoopTraceEvent,
   type ProjectLoopConfig,
   type RuntimeContextResolution,
+  type ResolvedExecutionRoute,
+  type RuntimePlan,
 } from "@polpo-ai/core";
 import type { LanguageModelUsage } from "ai";
 import type {
@@ -33,6 +35,7 @@ import type {
   CompletionRuntimeInvocation,
 } from "../completions.js";
 import {
+  agentConfigForModelPrimary,
   addUsage,
   runAgentStepCompletion,
   type CompletionResolvedModelInfo,
@@ -154,6 +157,8 @@ export async function runProjectLoopCompletion(options: {
   onToolCall?: (toolCall: LoopRuntimeToolCall) => Promise<void>;
   onTrace?: (event: LoopTraceEvent) => Promise<void>;
   resumeRun?: LoopRunRecord;
+  runtimePlan?: RuntimePlan;
+  executionRoute?: ResolvedExecutionRoute;
 }): Promise<ProjectLoopRunResult> {
   const {
     deps,
@@ -168,12 +173,18 @@ export async function runProjectLoopCompletion(options: {
     onToolCall,
     onTrace,
     resumeRun,
+    runtimePlan,
+    executionRoute,
   } = options;
   const normalized = normalizeProjectLoop(projectLoop);
   if (!normalized.pipeline) throw new Error(`Loop "${projectLoop.name}" does not define a pipeline`);
 
   const rootTools = await deps.resolveAgentTools(agentConfig);
   const executeLoopTool = rootTools.runtimeExecutor ?? rootTools.executor;
+  const initialModel = agentConfigForModelPrimary(
+    agentConfig,
+    deps.getConfig()?.settings,
+  ).model ?? "polpo";
   const loopRunStore = deps.getLoopRunStore?.();
   const resumeState = resumeRun?.resume;
   const loopRunId = resumeRun?.id ?? (loopRunStore ? `looprun-${nanoid(16)}` : undefined);
@@ -202,6 +213,32 @@ export async function runProjectLoopCompletion(options: {
       user,
       metadata: {
         runtime: "chat.completions",
+        surface: runtimePlan?.surface ?? executionRoute?.surface ?? "agent",
+        source:
+          runtimePlan?.source
+          ?? executionRoute?.invocationSource
+          ?? "request",
+        execution: {
+          mode: "loop",
+          loop: projectLoop.name,
+          source:
+            runtimePlan?.execution.source
+            ?? executionRoute?.decisionSource
+            ?? "request",
+        },
+        ...(runtimePlan ? { runtimePlanId: runtimePlan.id } : {}),
+        ...(executionRoute
+          ? {
+              executionRoute: {
+                status: executionRoute.status,
+                decisionSource: executionRoute.decisionSource,
+                confidence: executionRoute.confidence,
+                reason: executionRoute.reason,
+                latencyMs: executionRoute.latencyMs,
+                fallbackUsed: executionRoute.fallbackUsed,
+              },
+            }
+          : {}),
         loopVersion: projectLoop.version ?? "1",
         ...(runtimeInvocation
           ? {
@@ -220,7 +257,7 @@ export async function runProjectLoopCompletion(options: {
   const executor = new PipelineExecutor();
   let finalText = "";
   let totalUsage: LanguageModelUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 } as LanguageModelUsage;
-  let lastModel = agentConfig.model ?? "polpo";
+  let lastModel = initialModel;
   let lastResolvedModel: CompletionResolvedModelInfo | undefined;
   let lastProviderMetadata: Record<string, unknown> | undefined;
   const toolCallsAccum: any[] = [];
@@ -516,6 +553,8 @@ export async function handleProjectLoopCompletion(c: any, options: {
   runtimeInvocation?: CompletionRuntimeInvocation;
   sessionStore: any;
   sessionId: string | null;
+  runtimePlan?: RuntimePlan;
+  executionRoute?: ResolvedExecutionRoute;
 }): Promise<any> {
   const {
     deps,
@@ -529,6 +568,8 @@ export async function handleProjectLoopCompletion(c: any, options: {
     runtimeInvocation,
     sessionStore,
     sessionId,
+    runtimePlan,
+    executionRoute,
   } = options;
 
   if (body.stream) {
@@ -548,7 +589,10 @@ export async function handleProjectLoopCompletion(c: any, options: {
       let assistantMsgId: string | null = null;
       let finalText = "";
       let runUsage: LanguageModelUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 } as LanguageModelUsage;
-      let runModel = agentConfig.model ?? "polpo";
+      let runModel = agentConfigForModelPrimary(
+        agentConfig,
+        deps.getConfig()?.settings,
+      ).model ?? "polpo";
       let resolvedModel: CompletionResolvedModelInfo | undefined;
       let providerMetadata: Record<string, unknown> | undefined;
       let toolCalls: any[] = [];
@@ -570,6 +614,8 @@ export async function handleProjectLoopCompletion(c: any, options: {
           runtimeInvocation,
           sessionId,
           user: body.user,
+          runtimePlan,
+          executionRoute,
           onToolCall: async (toolCall) => {
             if (abortController.signal.aborted) return;
             await stream.writeSSE({
@@ -634,7 +680,10 @@ export async function handleProjectLoopCompletion(c: any, options: {
 
   let assistantMsgId: string | null = null;
   let runUsage: LanguageModelUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 } as LanguageModelUsage;
-  let runModel = agentConfig.model ?? "polpo";
+  let runModel = agentConfigForModelPrimary(
+    agentConfig,
+    deps.getConfig()?.settings,
+  ).model ?? "polpo";
   let resolvedModel: CompletionResolvedModelInfo | undefined;
   let providerMetadata: Record<string, unknown> | undefined;
   let toolCalls: any[] = [];
@@ -654,6 +703,8 @@ export async function handleProjectLoopCompletion(c: any, options: {
       runtimeInvocation,
       sessionId,
       user: body.user,
+      runtimePlan,
+      executionRoute,
     });
     finalText = run.text;
     runUsage = run.usage;

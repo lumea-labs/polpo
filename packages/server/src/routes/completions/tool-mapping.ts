@@ -5,7 +5,12 @@
  * provider-executed tool-call bookkeeping.
  */
 
+import {
+  toValidatedToolInputSchema,
+} from "@polpo-ai/llm";
 import { jsonSchema } from "ai";
+
+export { toPortableToolInputSchema } from "@polpo-ai/llm";
 
 /** A tool call event surfaced by the loop runtimes (SSE + persistence). */
 export type LoopRuntimeToolCall = {
@@ -111,6 +116,29 @@ export function recordProviderToolCall(toolCallsAccum: any[], call: any, toolRes
   toolCallsAccum.push(providerToolCallEvent(call, toolResults));
 }
 
+function isJsonObject(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+export function isInvalidModelToolCall(call: unknown): boolean {
+  return isJsonObject(call) && call.invalid === true;
+}
+
+export function invalidModelToolCallEvent(call: any): LoopRuntimeToolCall {
+  const message = call?.error instanceof Error
+    ? call.error.message
+    : typeof call?.error === "string"
+      ? call.error
+      : "Tool arguments do not match the declared input schema.";
+  return {
+    id: call?.toolCallId ?? "",
+    name: call?.toolName ?? "",
+    arguments: isJsonObject(call?.input) ? call.input : {},
+    result: `Error: Invalid tool arguments: ${message}`,
+    state: "error",
+  };
+}
+
 /**
  * Convert Polpo tools to AI SDK tool format (without execute functions).
  *
@@ -122,7 +150,7 @@ export function toAITools(tools: any[]): Record<string, { description?: string; 
   return Object.fromEntries(
     tools.map(t => [t.name, {
       description: t.description,
-      inputSchema: jsonSchema(t.parameters),
+      inputSchema: toValidatedToolInputSchema(t.parameters),
     }]),
   );
 }

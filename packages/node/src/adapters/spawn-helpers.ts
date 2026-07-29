@@ -11,7 +11,11 @@
 import type { AgentConfig, AgentActivity, Task, TaskOutcome, OutcomeType } from "@polpo-ai/core/types";
 import type { SpawnContext } from "@polpo-ai/core/adapter";
 import { resolveAgentVault } from "../vault/index.js";
-import { buildAgentSystemPrompt, normalizeModelPolicy } from "@polpo-ai/core";
+import {
+  buildAgentSystemPrompt,
+  resolveModelProfileSelection,
+  type ModelSelection,
+} from "@polpo-ai/core";
 import { renderRuntimeContextPrompt } from "@polpo-ai/core/runtime-context";
 
 /** Create a fresh AgentActivity object */
@@ -330,6 +334,8 @@ export function buildPrompt(task: Task): string {
 
 export interface SpawnPrep {
   model: ReturnType<typeof resolveModel>;
+  /** Concrete model policy after semantic profile expansion. */
+  modelSelection?: ModelSelection;
   polpoDir: string;
   fs: FileSystem;
   shell: Shell;
@@ -363,7 +369,16 @@ export function resolveSpawnModelAttempt(
 }
 
 export function prepareSpawn(agentConfig: AgentConfig, cwd: string, ctx?: SpawnContext): SpawnPrep {
-  const primaryModel = agentConfig.model ? normalizeModelPolicy(agentConfig.model).primary : undefined;
+  const resolvedSelection = agentConfig.model
+      ? resolveModelProfileSelection(agentConfig.model, {
+          profiles: ctx?.modelProfiles,
+          allowedProfiles: agentConfig.allowedModelProfiles,
+          allowedModels: ctx?.modelAllowlist
+            ? Object.keys(ctx.modelAllowlist)
+            : undefined,
+        })
+    : undefined;
+  const primaryModel = resolvedSelection?.policy.primary;
   const resolvedModel = resolveSpawnModelAttempt(agentConfig, primaryModel, ctx);
 
   // polpoDir must always be provided via SpawnContext.
@@ -443,7 +458,9 @@ export function prepareSpawn(agentConfig: AgentConfig, cwd: string, ctx?: SpawnC
   const maxTurns = agentConfig.maxTurns ?? 150;
 
   return {
-    model: resolvedModel.model, polpoDir, fs, shell, outputDir, effectiveAllowedPaths,
+    model: resolvedModel.model,
+    modelSelection: resolvedSelection?.selection,
+    polpoDir, fs, shell, outputDir, effectiveAllowedPaths,
     systemPrompt, providerOptions: resolvedModel.providerOptions, hasExtendedTools, browserProfileDir, maxTurns,
   };
 }

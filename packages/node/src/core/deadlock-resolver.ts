@@ -8,6 +8,7 @@
  */
 
 import type { Task, ModelConfig } from "@polpo-ai/core/types";
+import { resolveConfiguredModelSelection } from "@polpo-ai/core";
 import type { Orchestrator } from "./orchestrator.js";
 import { queryText, resolveModelSpec } from "@polpo-ai/llm";
 import { withRetry } from "../llm/retry.js";
@@ -134,7 +135,12 @@ export async function resolveDeadlock(
   try {
     const settings = orchestrator.getConfig()?.settings;
     const maxAttempts = settings?.maxResolutionAttempts ?? 2;
-    const model = settings?.orchestratorModel;
+    const model = settings?.orchestratorModel
+      ? resolveConfiguredModelSelection(
+          settings.orchestratorModel,
+          settings,
+        ).selection
+      : undefined;
     const memory = await orchestrator.engine.getMemory();
     const allTasks = await orchestrator.getStore().listTasks();
 

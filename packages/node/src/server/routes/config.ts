@@ -133,7 +133,7 @@ const updateSettingsRoute = createRoute({
   path: "/settings",
   tags: ["Config"],
   summary: "Update orchestrator settings",
-  description: "Partially update orchestrator settings (orchestratorModel, imageModel, reasoning). Persists to polpo.json and triggers a runtime config reload.",
+  description: "Partially update orchestrator settings (orchestratorModel, modelProfiles, imageModel, reasoning). Persists to polpo.json and triggers a runtime config reload.",
   request: {
     body: { content: { "application/json": { schema: UpdateSettingsSchema } } },
   },
@@ -306,6 +306,7 @@ export function configRoutes(getDeps: () => {
     const result = await mutateConfig(deps, (fileConfig) => {
       const settings = fileConfig.settings ?? {} as any;
       if (body.orchestratorModel !== undefined) settings.orchestratorModel = body.orchestratorModel;
+      if (body.modelProfiles !== undefined) settings.modelProfiles = body.modelProfiles;
       if (body.imageModel !== undefined) settings.imageModel = body.imageModel === null ? undefined : body.imageModel;
       if (body.reasoning !== undefined) settings.reasoning = body.reasoning;
       fileConfig.settings = settings;

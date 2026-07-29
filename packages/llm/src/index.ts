@@ -144,6 +144,12 @@ export type {
   StreamModelTurnInput,
 } from "./stream-turn.js";
 
+// ─── Portable Tool Schemas ──────────────────────────
+export {
+  toPortableToolInputSchema,
+  toValidatedToolInputSchema,
+} from "./tool-schema.js";
+
 // ─── Model Policy Turn Primitive ────────────────────
 export {
   ModelPolicyTurnError,
@@ -159,3 +165,21 @@ export type {
   ModelPolicyTurnResult,
   RunModelPolicyTurnInput,
 } from "./model-policy-turn.js";
+
+// ─── Model Route Classifier ─────────────────────────
+export { createStructuredModelRouteClassifier } from "./model-route-classifier.js";
+export type {
+  StructuredModelRouteClassifierOptions,
+  StructuredModelRouteGenerate,
+  StructuredModelRouteGenerationResult,
+} from "./model-route-classifier.js";
+
+// ─── Execution Route Classifier ─────────────────────
+export {
+  createStructuredExecutionRouteClassifier,
+} from "./execution-route-classifier.js";
+export type {
+  StructuredExecutionRouteClassifierOptions,
+  StructuredExecutionRouteGenerate,
+  StructuredExecutionRouteGenerationResult,
+} from "./execution-route-classifier.js";

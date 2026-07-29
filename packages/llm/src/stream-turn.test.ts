@@ -150,4 +150,63 @@ describe("streamModelTurn", () => {
     expect(result.toolCalls[0]?.toolName).toBe("tool_list");
     expect(result.toolCalls[0]?.input).toEqual({});
   });
+
+  it("preserves invalid tool-call metadata in events and results", async () => {
+    const events: ModelTurnEvent[] = [];
+    const model = mockModel([
+      { type: "stream-start", warnings: [] },
+      {
+        type: "tool-call",
+        toolCallId: "call_invalid",
+        toolName: "calculate",
+        input: JSON.stringify({ target: 999 }),
+      },
+      {
+        type: "finish",
+        finishReason: { unified: "tool-calls", raw: undefined },
+        usage: usage(),
+      },
+    ]);
+
+    const result = await streamModelTurn({
+      model,
+      messages: [{ role: "user", content: "Calculate." }],
+      tools: {
+        calculate: {
+          description: "Calculate a target",
+          inputSchema: jsonSchema(
+            {
+              type: "object",
+              properties: { target: { type: "number" } },
+              required: ["target"],
+            },
+            {
+              validate: (value) => ({
+                success: false,
+                error: new Error(`Rejected ${JSON.stringify(value)}`),
+              }),
+            },
+          ),
+        },
+      },
+    }, (event) => {
+      events.push(event);
+    });
+
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: "tool-call",
+        id: "call_invalid",
+        invalid: true,
+        error: expect.any(Error),
+      }),
+    );
+    expect(result.toolCalls).toEqual([
+      expect.objectContaining({
+        toolCallId: "call_invalid",
+        invalid: true,
+        error: expect.any(Error),
+      }),
+    ]);
+  });
 });
