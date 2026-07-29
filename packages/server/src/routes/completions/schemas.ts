@@ -8,8 +8,8 @@ import { RuntimeSandboxSchema } from "../../schemas.js";
 
 // ── Zod Schemas ────────────────────────────────────────────────────────
 
-/** OpenAI-compatible content part (text, image_url, or file reference). */
-export const contentPartSchema = z.discriminatedUnion("type", [
+/** OpenAI-compatible content part (text, image_url, file reference, or inline file data). */
+export const contentPartSchema = z.union([
   z.object({ type: z.literal("text"), text: z.string() }),
   z.object({
     type: z.literal("image_url"),
@@ -21,6 +21,12 @@ export const contentPartSchema = z.discriminatedUnion("type", [
   z.object({
     type: z.literal("file"),
     file_id: z.string().openapi({ description: "Attachment ID from a previous upload" }),
+  }),
+  z.object({
+    type: z.literal("file"),
+    data: z.string().openapi({ description: "Base64-encoded file content" }),
+    mediaType: z.string().openapi({ description: "File media type, for example application/pdf or text/plain" }),
+    filename: z.string().optional(),
   }),
 ]);
 
