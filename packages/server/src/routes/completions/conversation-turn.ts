@@ -7,6 +7,8 @@ import {
   createRuntimePlanResolvedEvent,
   executionRouteRuntimePlanFields,
   normalizeRuntimePlan,
+  renderRuntimeContextPrompt,
+  resolveRuntimeContext,
   resolveExecutionRoute,
   resolveLoopSelection,
   validateExecutionRouterConfig,
@@ -14,6 +16,7 @@ import {
   type ModelTarget,
   type ProfiledModelSelection,
   type ProjectLoopConfig,
+  type RuntimeContextResolution,
   type ResolvedExecutionRoute,
   type RuntimePlan,
 } from "@polpo-ai/core";
@@ -55,6 +58,8 @@ type PreparedProjectLoop = {
   sessionStore: any;
   sessionId: string | null;
   runtimePlan?: RuntimePlan;
+  runtimeContext?: RuntimeContextResolution;
+  runtimeInvocation?: CompletionRuntimeInvocation;
   executionRoute?: ResolvedExecutionRoute;
 };
 
@@ -279,6 +284,7 @@ export async function prepareChatCompletionExecution(
   let onResponseFinished: (() => Promise<void>) | undefined;
   let resolvedAgentConfig: any;
   let runtimePlan: RuntimePlan | undefined;
+  let runtimeContext: RuntimeContextResolution | undefined;
   let executionRoute: ResolvedExecutionRoute | undefined;
 
   const { aiMessages, extraSystemParts } = convertMessages(body.messages);
@@ -387,6 +393,46 @@ export async function prepareChatCompletionExecution(
       );
     }
 
+    const lastUserMessage = [...body.messages]
+      .reverse()
+      .find((message) => message.role === "user");
+    const retrievalQuery = lastUserMessage
+      ? extractText(lastUserMessage.content).trim()
+      : "";
+    if (retrievalQuery && deps.runtimeContext) {
+      try {
+        runtimeContext = await resolveRuntimeContext(deps.runtimeContext, {
+          agentName: resolvedAgentConfig.name,
+          query: retrievalQuery,
+          surface: options.runtime?.surface ?? "agent",
+          source: options.runtime?.source ?? "request",
+          ...(body.user ? { externalUserId: body.user } : {}),
+          ...(options.sessionId ? { sessionId: options.sessionId } : {}),
+          ...(options.runtime?.channelId
+            ? { channelId: options.runtime.channelId }
+            : {}),
+          ...(options.runtime?.requestId
+            ? { requestId: options.runtime.requestId }
+            : {}),
+          ...(options.runtime?.runId ? { runId: options.runtime.runId } : {}),
+          ...(options.signal ? { signal: options.signal } : {}),
+        });
+      } catch (error) {
+        if (
+          (error instanceof DOMException && error.name === "AbortError")
+          || (error instanceof Error && error.name === "AbortError")
+        ) {
+          throw error;
+        }
+        return completionError(
+          "Runtime context retrieval failed",
+          500,
+          "runtime_context_failed",
+          "server_error",
+        );
+      }
+    }
+
     if (projectLoopRuntime) {
       fullSystemPrompt = "";
       m = { provider: "polpo", contextWindow: 200_000, maxTokens: 8192, aiModel: undefined as any };
@@ -418,6 +464,10 @@ export async function prepareChatCompletionExecution(
         if (agentMemory) {
           fullSystemPrompt += `\n\n## Your persistent memory\n\n${agentMemory}`;
         }
+      }
+      const runtimeContextPrompt = renderRuntimeContextPrompt(runtimeContext);
+      if (runtimeContextPrompt) {
+        fullSystemPrompt += `\n\n${runtimeContextPrompt}`;
       }
 
       const reasoning = agentConfig.reasoning ?? deps.getConfig()?.settings?.reasoning;
@@ -521,6 +571,8 @@ export async function prepareChatCompletionExecution(
       sessionStore,
       sessionId,
       runtimePlan,
+      runtimeContext,
+      runtimeInvocation: options.runtime,
       executionRoute,
     };
   }
@@ -545,6 +597,7 @@ export async function prepareChatCompletionExecution(
     sessionId,
     onResponseFinished,
     runtimePlan,
+    runtimeContext,
     executionRoute,
   };
 

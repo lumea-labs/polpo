@@ -11,9 +11,11 @@ import {
   compactIfNeeded,
   loopContextPrompt,
   maybeParseJson,
-  resolveConfiguredModelSelection,
+  renderRuntimeContextPrompt,
   type ContextBag,
   type ModelSelection,
+  type RuntimeContextResolution,
+  resolveConfiguredModelSelection,
   type PolpoSettings,
   type SummarizeFn,
 } from "@polpo-ai/core";
@@ -153,36 +155,42 @@ export async function buildRuntimeAgentPrompt(
   agentConfig: any,
   extraSystemParts: string[],
   loopContextPart?: string,
+  runtimeContext?: RuntimeContextResolution,
 ): Promise<string> {
+  let fullSystemPrompt: string;
   if (deps.buildRuntimePrompt) {
-    return deps.buildRuntimePrompt(agentConfig, {
+    fullSystemPrompt = await deps.buildRuntimePrompt(agentConfig, {
       mode: "loop-step",
       extraSystemParts,
       loopContextPart,
       includeAgentMemory: true,
     });
-  }
+  } else {
+    const agentSystemPrompt = await deps.buildAgentPrompt(agentConfig);
+    const conversationalPreamble = [
+      "You are now in interactive conversation mode with the user.",
+      "Unlike task execution, you should engage in dialogue: ask clarifying questions,",
+      "explain your reasoning, and wait for user input when needed.",
+      "You still have access to all your coding tools to help the user.",
+    ].join("\n");
 
-  const agentSystemPrompt = await deps.buildAgentPrompt(agentConfig);
-  const conversationalPreamble = [
-    "You are now in interactive conversation mode with the user.",
-    "Unlike task execution, you should engage in dialogue: ask clarifying questions,",
-    "explain your reasoning, and wait for user input when needed.",
-    "You still have access to all your coding tools to help the user.",
-  ].join("\n");
+    fullSystemPrompt = `${conversationalPreamble}\n\n${agentSystemPrompt}`;
+    if (extraSystemParts.length > 0) {
+      fullSystemPrompt += `\n\n## Additional context from caller\n\n${extraSystemParts.join("\n\n")}`;
+    }
+    if (loopContextPart) {
+      fullSystemPrompt += `\n\n${loopContextPart}`;
+    }
 
-  let fullSystemPrompt = `${conversationalPreamble}\n\n${agentSystemPrompt}`;
-  if (extraSystemParts.length > 0) {
-    fullSystemPrompt += `\n\n## Additional context from caller\n\n${extraSystemParts.join("\n\n")}`;
+    const memoryStore = deps.getMemoryStore();
+    const agentMemory = await memoryStore?.get(agentMemoryScope(agentConfig.name));
+    if (agentMemory) {
+      fullSystemPrompt += `\n\n## Your persistent memory\n\n${agentMemory}`;
+    }
   }
-  if (loopContextPart) {
-    fullSystemPrompt += `\n\n${loopContextPart}`;
-  }
-
-  const memoryStore = deps.getMemoryStore();
-  const agentMemory = await memoryStore?.get(agentMemoryScope(agentConfig.name));
-  if (agentMemory) {
-    fullSystemPrompt += `\n\n## Your persistent memory\n\n${agentMemory}`;
+  const runtimeContextPrompt = renderRuntimeContextPrompt(runtimeContext);
+  if (runtimeContextPrompt) {
+    fullSystemPrompt += `\n\n${runtimeContextPrompt}`;
   }
   return fullSystemPrompt;
 }
@@ -194,9 +202,19 @@ export async function runAgentStepCompletion(options: {
   extraSystemParts: string[];
   context: Readonly<ContextBag>;
   stepName: string;
+  runtimeContext?: RuntimeContextResolution;
   onToolCall?: (toolCall: LoopRuntimeToolCall) => Promise<void>;
 }): Promise<AgentStepRunResult> {
-  const { deps, agentConfig, aiMessages, extraSystemParts, context, stepName, onToolCall } = options;
+  const {
+    deps,
+    agentConfig,
+    aiMessages,
+    extraSystemParts,
+    context,
+    stepName,
+    runtimeContext,
+    onToolCall,
+  } = options;
   const settings = deps.getConfig()?.settings;
   const reasoning = agentConfig.reasoning ?? settings?.reasoning;
   const initialResolved = await deps.resolveAgentModel(
@@ -222,6 +240,7 @@ export async function runAgentStepCompletion(options: {
     agentConfig,
     extraSystemParts,
     loopContextPrompt(stepName, context),
+    runtimeContext,
   );
 
   const messages: any[] = [...aiMessages];

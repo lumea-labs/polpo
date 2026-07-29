@@ -10,6 +10,10 @@ import type { LoopResumeState } from "./loop/run-store.js";
 import { resolveConfiguredModelSelection } from "./model-profiles.js";
 import { normalizeModelPolicy } from "./model-policy.js";
 import {
+  resolveRuntimeContext,
+  type RuntimeContextResolution,
+} from "./runtime-context/index.js";
+import {
   createExecutionRouteResolvedEvent,
   resolveTaskExecutionRoute,
   type ResolvedExecutionRoute,
@@ -555,7 +559,20 @@ export class TaskRunner {
     await this.ctx.runStore.upsertRun(initialRun);
 
     try {
-    const executionRoute = await this.resolveTaskExecutionRoute(task, agent);
+      let runtimeContext: RuntimeContextResolution | undefined;
+      try {
+        runtimeContext = await resolveRuntimeContext(this.ctx.runtimeContext, {
+          agentName: agent.name,
+          query: `${task.title}\n\n${task.description}`,
+          surface: "task",
+          source: "task",
+          ...(task.user ? { externalUserId: task.user } : {}),
+          runId,
+        });
+      } catch {
+        throw new Error("Runtime context retrieval failed");
+      }
+      const executionRoute = await this.resolveTaskExecutionRoute(task, agent);
 
     // Inject context into task description for agent awareness.
     // Context is prepended using XML-like tags that the agent prompt can reference.
@@ -642,6 +659,7 @@ export class TaskRunner {
       taskId: task.id,
       executionMode,
       sandbox,
+      runtimeContext,
       executionRoute,
       agent,
       task: taskWithContext,

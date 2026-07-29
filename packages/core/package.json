@@ -50,6 +50,10 @@
       "types": "./dist/runtime-plan/index.d.ts",
       "import": "./dist/runtime-plan/index.js"
     },
+    "./runtime-context": {
+      "types": "./dist/runtime-context/index.d.ts",
+      "import": "./dist/runtime-context/index.js"
+    },
     "./execution-router": {
       "types": "./dist/execution-router.d.ts",
       "import": "./dist/execution-router.js"

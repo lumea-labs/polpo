@@ -206,6 +206,81 @@ describe("completion execution router", () => {
     ]);
   });
 
+  it("composes automatic loop routing with one scoped runtime-context snapshot", async () => {
+    const calls: string[] = [];
+    const retrieve = vi.fn(async (input) => {
+      calls.push("retrieve");
+      expect(input).toMatchObject({
+        agentName: "agent-1",
+        query: "Please research the customer's launch",
+        surface: "channel",
+        source: "channel",
+        externalUserId: "external-user-1",
+        channelId: "telegram-1",
+      });
+      return {
+        segments: [{
+          kind: "memory" as const,
+          entries: [{
+            id: "memory-1",
+            content: "The customer launches on Friday.",
+            source: { type: "memory" as const, id: "memory-1" },
+            timestamp: "2026-07-29T12:00:00.000Z",
+            trust: "user_provided" as const,
+          }],
+        }],
+      };
+    });
+    const prepared = await prepareChatCompletionExecution(makeDeps({
+      resolveExecutionRouteClassifier: async () => ({
+        classify: async () => {
+          calls.push("classify");
+          return {
+            mode: "loop",
+            loop: "research",
+            confidence: 0.95,
+            reason: "Research workflow requested",
+          };
+        },
+      }),
+      resolveRuntimePlan: async (input) => {
+        calls.push("plan");
+        return makePlan(input.execution, input.surface, input.source);
+      },
+      runtimeContext: { tokenBudget: 1_000, retrieve },
+    }), {
+      agent: "agent-1",
+      user: "external-user-1",
+      messages: [{
+        role: "user",
+        content: "Please research the customer's launch",
+      }],
+      stream: false,
+    }, {
+      runtime: {
+        surface: "channel",
+        source: "channel",
+        channelId: "telegram-1",
+      },
+    });
+
+    expect(prepared.kind).toBe("project-loop");
+    if (prepared.kind !== "project-loop") throw new Error("Expected project loop");
+    expect(prepared.executionRoute).toMatchObject({
+      mode: "loop",
+      loop: "research",
+      decisionSource: "router",
+    });
+    expect(prepared.runtimeContext?.segments[0]?.entries[0]?.id).toBe("memory-1");
+    expect(prepared.runtimeInvocation).toEqual({
+      surface: "channel",
+      source: "channel",
+      channelId: "telegram-1",
+    });
+    expect(retrieve).toHaveBeenCalledOnce();
+    expect(calls).toEqual(["classify", "plan", "retrieve"]);
+  });
+
   it("keeps a confident direct route on the normal chat path", async () => {
     const getProjectLoop = vi.fn(makeDeps().getProjectLoop);
     const deps = makeDeps({

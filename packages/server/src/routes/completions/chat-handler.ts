@@ -14,6 +14,7 @@ import {
   type ModelSelection,
   type ResolvedExecutionRoute,
   type RuntimePlan,
+  type RuntimeContextResolution,
 } from "@polpo-ai/core";
 import { runModelPolicyTurn } from "@polpo-ai/llm";
 import type { LanguageModelUsage } from "ai";
@@ -70,6 +71,8 @@ export interface ChatCompletionExecution {
   sessionId: string | null;
   /** Frozen, secret-free runtime decision emitted before provider/tool resolution. */
   runtimePlan?: RuntimePlan;
+  /** Structured snapshot used to assemble fullSystemPrompt for this turn. */
+  runtimeContext?: RuntimeContextResolution;
   /** Validated direct-or-loop decision for audit and downstream propagation. */
   executionRoute?: ResolvedExecutionRoute;
   /**

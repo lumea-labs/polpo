@@ -38,6 +38,7 @@ import {
   type ProfiledModelSelection,
   type ProjectLoopConfig,
   type RuntimeDecisionSource,
+  type RuntimeContextProvider,
   type RuntimeInvocationSource,
   type RuntimePlan,
   type RuntimeSurface,
@@ -97,15 +98,20 @@ export interface CompletionRouteDeps {
     input: CompletionRuntimePlanInput,
   ) => RuntimePlan | Promise<RuntimePlan>;
   /**
+   * Optional and disabled by default. When provided with a positive budget,
+   * resolves one structured Memory/Brain snapshot before prompt assembly.
+   */
+  runtimeContext?: RuntimeContextProvider;
+  /**
    * Lazily resolve the optional execution-route classifier. Hosts retain
    * ownership of its model, credentials, and rollout decision.
    */
   resolveExecutionRouteClassifier?: (
     context: ExecutionRouteClassifierResolverContext,
   ) =>
-    | ExecutionRouteClassifier
-    | undefined
-    | Promise<ExecutionRouteClassifier | undefined>;
+     | ExecutionRouteClassifier
+     | undefined
+     | Promise<ExecutionRouteClassifier | undefined>;
   /** Resolve agent model. Must return an object with aiModel (LanguageModel), provider, contextWindow, maxTokens, and providerOptions. */
   resolveAgentModel: (agentConfig: any, settingsReasoning?: string) => Promise<{
     model: ResolvedModelInfo;
@@ -216,6 +222,9 @@ export interface CompletionRuntimePlanInput {
 export interface CompletionRuntimeInvocation {
   readonly surface: RuntimeSurface;
   readonly source: RuntimeInvocationSource;
+  readonly channelId?: string;
+  readonly requestId?: string;
+  readonly runId?: string;
 }
 
 export function completionRoutes(getDeps: () => CompletionRouteDeps, apiKeys?: string[]): OpenAPIHono {
@@ -263,6 +272,8 @@ export function completionRoutes(getDeps: () => CompletionRouteDeps, apiKeys?: s
         projectLoop: prepared.projectLoop,
         aiMessages: prepared.aiMessages,
         extraSystemParts: prepared.extraSystemParts,
+        runtimeContext: prepared.runtimeContext,
+        runtimeInvocation: prepared.runtimeInvocation,
         sessionStore: prepared.sessionStore,
         sessionId: prepared.sessionId,
         runtimePlan: prepared.runtimePlan,

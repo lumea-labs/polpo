@@ -15,6 +15,7 @@ import type { LoopResumeState } from "@polpo-ai/core/loop-run-store";
 import type { ModelSelection } from "./model-policy.js";
 import type { RuntimePlan } from "./runtime-plan/index.js";
 import type { RuntimeSandboxOptions } from "./runtime-sandbox.js";
+import type { RuntimeContextResolution } from "./runtime-context/index.js";
 
 /**
  * Handle returned by the engine after spawning an agent.
@@ -56,6 +57,8 @@ export interface AgentHandle {
 export interface SpawnContext {
   /** Absolute path to the .polpo directory. Used for skill loading, logs, etc. */
   polpoDir: string;
+  /** Pre-resolved retrieval snapshot rendered into task system prompts. */
+  runtimeContext?: RuntimeContextResolution;
   /** Per-task output directory (.polpo/output/<taskId>/). Agents write deliverables here. */
   outputDir?: string;
   /** Email domain allowlist — restricts email_send tool to these domains. */
