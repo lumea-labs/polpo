@@ -212,8 +212,14 @@ project or organization boundary and passes only authorized dimensions to
 `canAccessMemoryScope`.
 
 The contract validates item lifecycle, provenance, expiry, and exact dedupe
-identity. Content-sensitive write policy and persistence remain separate
-adapters; the existing markdown store stays available during migration.
+identity. `InMemoryMemoryItemStore` adds authorized CRUD, deterministic lexical
+search, token-budget selection, soft deletion, usage events, and fail-closed
+write policy. Every operation requires a host-owned `namespace`, so external
+user identifiers are never shared across project boundaries.
+
+`FileMemoryItemStore` from `@polpo-ai/file-stores` is the local durable
+reference adapter. It writes `memory-items.json` atomically and leaves the
+existing markdown store untouched during migration.
 
 ## License
 

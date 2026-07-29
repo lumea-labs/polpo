@@ -105,7 +105,8 @@ Core contains zero Node.js dependencies. The shell (`polpo-ai`) wires concrete a
 
 Core also exposes additive typed Memory contracts through
 `@polpo-ai/core/memory`. Existing markdown Memory remains compatible while
-hosts adopt scoped items and policy-backed stores.
+hosts adopt scoped items and policy-backed stores. The default local typed
+store persists independently in `.polpo/memory-items.json`.
 
 ## Self-host with the dashboard
 
