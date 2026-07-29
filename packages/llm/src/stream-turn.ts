@@ -19,7 +19,16 @@ export type ModelTurnEvent<TOOLS extends ToolSet = ToolSet> =
   | { type: "tool-input-start"; id: string; name: string; providerExecuted?: boolean; dynamic?: boolean; title?: string }
   | { type: "tool-input-delta"; id: string; delta: string }
   | { type: "tool-input-end"; id: string }
-  | { type: "tool-call"; id: string; name: string; args: unknown; providerExecuted?: boolean; dynamic?: boolean }
+  | {
+      type: "tool-call";
+      id: string;
+      name: string;
+      args: unknown;
+      providerExecuted?: boolean;
+      dynamic?: boolean;
+      invalid?: boolean;
+      error?: unknown;
+    }
   | { type: "tool-result"; id: string; name: string; output: unknown }
   | { type: "tool-error"; id: string; name: string; error: unknown }
   | { type: "finish"; finishReason: FinishReason; rawFinishReason?: string; totalUsage?: LanguageModelUsage }
@@ -131,6 +140,8 @@ export async function streamModelTurn<TOOLS extends ToolSet = ToolSet>(
           args: part.input,
           providerExecuted: part.providerExecuted,
           dynamic: part.dynamic,
+          invalid: part.invalid,
+          error: part.error,
         });
         break;
       case "tool-result":

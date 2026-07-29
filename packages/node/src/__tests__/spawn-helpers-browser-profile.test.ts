@@ -23,3 +23,61 @@ describe("browser profile root override", () => {
     expect(prep.browserProfileDir).toBe(join("/home/daytona/.polpo/browser-profiles", "navigator"));
   });
 });
+
+describe("task runtime model profiles", () => {
+  it("expands a profile before provider adaptation and preserves fallback order", () => {
+    const profiledAgent = {
+      ...agent,
+      model: { profile: "balanced" },
+      allowedModelProfiles: ["balanced", "fast"],
+    } as unknown as AgentConfig;
+    const prep = prepareSpawn(profiledAgent, "/proj", {
+      ...ctx,
+      modelProfiles: {
+        fast: "openai/gpt-4o-mini",
+        balanced: {
+          primary: "anthropic/claude-sonnet-4-5",
+          fallbacks: [{ profile: "fast" }],
+        },
+      },
+    });
+
+    expect(prep.model.provider).toBe("anthropic");
+    expect(prep.modelSelection).toEqual({
+      primary: "anthropic/claude-sonnet-4-5",
+      fallbacks: ["openai/gpt-4o-mini"],
+    });
+  });
+
+  it("rejects an unknown profile before any runtime work begins", () => {
+    expect(() => prepareSpawn({
+      ...agent,
+      model: { profile: "missing" },
+    } as unknown as AgentConfig, "/proj", {
+      ...ctx,
+      modelProfiles: {},
+    })).toThrowError(expect.objectContaining({
+      code: "UNKNOWN_PROFILE",
+      profile: "missing",
+    }));
+  });
+
+  it("enforces the project model allowlist after profile expansion", () => {
+    expect(() => prepareSpawn({
+      ...agent,
+      model: { profile: "balanced" },
+      allowedModelProfiles: ["balanced"],
+    } as unknown as AgentConfig, "/proj", {
+      ...ctx,
+      modelProfiles: {
+        balanced: "anthropic/claude-sonnet-4-5",
+      },
+      modelAllowlist: {
+        "openai/gpt-4o-mini": {},
+      },
+    })).toThrowError(expect.objectContaining({
+      code: "DISALLOWED_MODEL",
+      model: "anthropic/claude-sonnet-4-5",
+    }));
+  });
+});

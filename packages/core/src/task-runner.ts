@@ -7,7 +7,13 @@ import { resolveExecutionMode } from "./execution-mode.js";
 import { resolveRuntimeSandboxOptions } from "./runtime-sandbox.js";
 import type { RunRecord } from "./run-store.js";
 import type { LoopResumeState } from "./loop/run-store.js";
+import { resolveConfiguredModelSelection } from "./model-profiles.js";
 import { normalizeModelPolicy } from "./model-policy.js";
+import {
+  createExecutionRouteResolvedEvent,
+  resolveTaskExecutionRoute,
+  type ResolvedExecutionRoute,
+} from "./execution-router.js";
 
 /**
  * Durable turns: max age of a resume checkpoint before orphan recovery
@@ -72,6 +78,22 @@ export class TaskRunner {
   private pendingResume = new Map<string, LoopResumeState>();
 
   constructor(private ctx: OrchestratorContext) {}
+
+  private async resolveTaskExecutionRoute(
+    task: Task,
+    agent: RunnerConfig["agent"],
+  ): Promise<ResolvedExecutionRoute | undefined> {
+    const route = await resolveTaskExecutionRoute({ task, agent }, {
+      getProjectLoop: this.ctx.getProjectLoop,
+      resolveClassifier: this.ctx.resolveExecutionRouteClassifier,
+    });
+    if (!route) return undefined;
+    this.ctx.emitter.emit(
+      "runtime:execution-route",
+      createExecutionRouteResolvedEvent(route),
+    );
+    return route;
+  }
 
   /**
    * Collect results from terminal runs and pass them to the callback.
@@ -471,7 +493,12 @@ export class TaskRunner {
 
     // Fail fast if the agent's model provider has no API key
     if (agent.model && this.ctx.validateProviderKeys) {
-      const missing = this.ctx.validateProviderKeys(normalizeModelPolicy(agent.model).candidates);
+      const resolved = resolveConfiguredModelSelection(
+        agent.model,
+        this.ctx.config.settings,
+        agent.allowedModelProfiles,
+      );
+      const missing = this.ctx.validateProviderKeys([...resolved.policy.candidates]);
       if (missing.length > 0) {
         const detail = missing.map(m => `${m.provider} (${m.modelSpec})`).join(", ");
         this.ctx.emitter.emit("log", {
@@ -528,10 +555,16 @@ export class TaskRunner {
     await this.ctx.runStore.upsertRun(initialRun);
 
     try {
+    const executionRoute = await this.resolveTaskExecutionRoute(task, agent);
 
     // Inject context into task description for agent awareness.
     // Context is prepended using XML-like tags that the agent prompt can reference.
-    const taskWithContext = { ...task };
+    const taskWithContext = {
+      ...task,
+      ...(executionRoute?.mode === "loop"
+        ? { loop: executionRoute.loop }
+        : {}),
+    };
     const contextParts: string[] = [];
 
     // 1. Shared memory (persistent cross-session knowledge, visible to all agents)
@@ -609,6 +642,7 @@ export class TaskRunner {
       taskId: task.id,
       executionMode,
       sandbox,
+      executionRoute,
       agent,
       task: taskWithContext,
       polpoDir: this.ctx.polpoDir,
@@ -619,6 +653,8 @@ export class TaskRunner {
       notifySocket: this.ctx.notifySocketPath,
       emailAllowedDomains: agent.emailAllowedDomains ?? this.ctx.config.settings.emailAllowedDomains,
       reasoning: this.ctx.config.settings.reasoning,
+      modelProfiles: this.ctx.config.settings.modelProfiles,
+      modelAllowlist: this.ctx.config.settings.modelAllowlist,
       providers: this.ctx.config.providers,
       resumeState,
     };

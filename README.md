@@ -383,6 +383,32 @@ Policies are evaluated before hook actions at the same lifecycle point. `deny` f
 
 When the host wires `LoopRunStore`, chat completions create durable loop runs, append every `loop_trace` event, and return `loop_run_id`. When the host also wires `ApprovalStore`, approval policies create a pending approval request and mark the loop run as `awaiting_approval` with `approvalRequestId`. The SDK exposes `getLoopRuns()` and `getLoopRun(id)` for audit/history surfaces. Streaming completions still emit each trace incrementally.
 
+### Model profiles
+
+Project-level model profiles let agents use stable semantic policies without
+making legacy model strings ambiguous:
+
+```jsonc
+{
+  "settings": {
+    "modelProfiles": {
+      "fast": "openai/gpt-4o-mini",
+      "balanced": {
+        "primary": "anthropic/claude-sonnet-4",
+        "fallbacks": [{ "profile": "fast" }]
+      }
+    },
+    "orchestratorModel": { "profile": "balanced" }
+  }
+}
+```
+
+Select profiles explicitly on an agent with `"model": { "profile": "balanced" }`.
+Use `allowedModelProfiles` to narrow the profiles that agent may expand. Plain
+strings such as `"openai"` or `"openai/gpt-4o-mini"` always remain direct model
+IDs. Unknown profiles, cycles, disallowed nested references, and invalid
+fallback policies fail before provider execution.
+
 ## SDK
 
 ### Client SDK

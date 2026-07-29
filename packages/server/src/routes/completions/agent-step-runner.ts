@@ -11,9 +11,10 @@ import {
   compactIfNeeded,
   loopContextPrompt,
   maybeParseJson,
-  normalizeModelPolicy,
+  resolveConfiguredModelSelection,
   type ContextBag,
   type ModelSelection,
+  type PolpoSettings,
   type SummarizeFn,
 } from "@polpo-ai/core";
 import { generateText, type LanguageModel, type LanguageModelUsage } from "ai";
@@ -23,6 +24,8 @@ import { appendModelResponseMessages } from "./message-mapping.js";
 import {
   emitFileChanged,
   indexToolResultsByCallId,
+  invalidModelToolCallEvent,
+  isInvalidModelToolCall,
   providerToolCallEvent,
   toAITools,
   toAIToolChoice,
@@ -79,15 +82,35 @@ export function modelSelectionForResolvedModel(model: ResolvedModelInfo): string
   return modelId ? `${model.provider}/${modelId}` : model.provider;
 }
 
-export function modelSelectionForAgent(agentConfig: any, fallback: string): ModelSelection {
-  return agentConfig?.model ?? fallback;
+export function resolveAgentModelSelection(
+  agentConfig: any,
+  settings: Partial<PolpoSettings> | undefined,
+): ModelSelection | undefined {
+  if (!agentConfig?.model) return undefined;
+  return resolveConfiguredModelSelection(
+    agentConfig.model,
+    settings ?? {},
+    agentConfig.allowedModelProfiles,
+  ).selection;
 }
 
-export function agentConfigForModelPrimary(agentConfig: any): any {
-  if (!agentConfig?.model) return agentConfig;
+export function modelSelectionForAgent(
+  agentConfig: any,
+  fallback: string,
+  settings?: Partial<PolpoSettings>,
+): ModelSelection {
+  return resolveAgentModelSelection(agentConfig, settings) ?? fallback;
+}
+
+export function agentConfigForModelPrimary(
+  agentConfig: any,
+  settings?: Partial<PolpoSettings>,
+): any {
+  const selection = resolveAgentModelSelection(agentConfig, settings);
+  if (!selection) return agentConfig;
   return {
     ...agentConfig,
-    model: normalizeModelPolicy(agentConfig.model).primary,
+    model: typeof selection === "string" ? selection : selection.primary,
   };
 }
 
@@ -174,11 +197,19 @@ export async function runAgentStepCompletion(options: {
   onToolCall?: (toolCall: LoopRuntimeToolCall) => Promise<void>;
 }): Promise<AgentStepRunResult> {
   const { deps, agentConfig, aiMessages, extraSystemParts, context, stepName, onToolCall } = options;
-  const reasoning = agentConfig.reasoning ?? deps.getConfig()?.settings?.reasoning;
-  const initialResolved = await deps.resolveAgentModel(agentConfigForModelPrimary(agentConfig), reasoning);
+  const settings = deps.getConfig()?.settings;
+  const reasoning = agentConfig.reasoning ?? settings?.reasoning;
+  const initialResolved = await deps.resolveAgentModel(
+    agentConfigForModelPrimary(agentConfig, settings),
+    reasoning,
+  );
   let m = initialResolved.model;
   let providerOpts = initialResolved.providerOptions;
-  const modelSelection = modelSelectionForAgent(agentConfig, modelSelectionForResolvedModel(m));
+  const modelSelection = modelSelectionForAgent(
+    agentConfig,
+    modelSelectionForResolvedModel(m),
+    settings,
+  );
   const resolvedTools = await deps.resolveAgentTools(agentConfig);
   const aiTools = {
     ...toAITools(resolvedTools.tools),
@@ -271,9 +302,19 @@ export async function runAgentStepCompletion(options: {
 
       if (turnResult.toolCalls.length === 0) break;
 
+      const dispatchableToolCalls = turnResult.toolCalls.filter(
+        (call) => !isInvalidModelToolCall(call),
+      );
+      for (const call of turnResult.toolCalls.filter(isInvalidModelToolCall)) {
+        const event = invalidModelToolCallEvent(call);
+        toolCallsAccum.push(event);
+        await onToolCall?.(event);
+      }
+      if (dispatchableToolCalls.length === 0) continue;
+
       const providerToolResults = indexToolResultsByCallId(turnResult.toolResults as any[] | undefined);
 
-      for (const call of turnResult.toolCalls) {
+      for (const call of dispatchableToolCalls) {
         const callArgs = call.input as Record<string, unknown>;
         if (providerToolNames.has(call.toolName)) {
           const event = providerToolCallEvent(call, providerToolResults);

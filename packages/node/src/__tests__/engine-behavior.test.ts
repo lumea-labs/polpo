@@ -192,6 +192,69 @@ describe.each(ENGINES)("%s — characterization", (_label, spawn) => {
     expect(handle.activity.totalTokens).toBeGreaterThan(0);
   });
 
+  test("duplicate invalid call ids never reach background tool execution", async () => {
+    const { result, transcript } = await runEngine(makeAgent(), [
+      {
+        type: "tool-calls",
+        calls: [
+          {
+            toolCallId: "duplicate",
+            toolName: "missing_one",
+            args: { value: 1 },
+          },
+          {
+            toolCallId: "duplicate",
+            toolName: "missing_two",
+            args: { value: 2 },
+          },
+        ],
+      },
+      { type: "text", text: "recovered" },
+    ]);
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toBe("recovered");
+    expect(transcript.filter((entry) => entry.type === "tool_use")).toHaveLength(0);
+    expect(
+      transcript.filter(
+        (entry) => entry.type === "tool_result" && entry.invalid === true,
+      ),
+    ).toHaveLength(2);
+  });
+
+  test("invalid arguments for a known tool never reach background execution", async () => {
+    const marker = join(cwd, "invalid-bash-must-not-run.txt");
+    const { result, transcript } = await runEngine(makeAgent(), [
+      {
+        type: "tool-call",
+        toolName: "bash",
+        args: { unexpected: `touch ${marker}` },
+      },
+      { type: "text", text: "recovered" },
+    ]);
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toBe("recovered");
+    await expect(readFile(marker, "utf-8")).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+    expect(
+      transcript.filter(
+        (entry) =>
+          entry.type === "tool_use"
+          && entry.tool === "bash",
+      ),
+    ).toHaveLength(0);
+    expect(
+      transcript.filter(
+        (entry) =>
+          entry.type === "tool_result"
+          && entry.tool === "bash"
+          && entry.invalid === true,
+      ),
+    ).toHaveLength(1);
+  });
+
   test("register_outcome: outcomes are collected on the handle with full shape", async () => {
     const { handle, result } = await runEngine(makeAgent(), [
       {
