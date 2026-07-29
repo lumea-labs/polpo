@@ -78,6 +78,62 @@ describe("parseConfig (.polpo/polpo.json)", () => {
       expect(config.settings.orchestratorModel).toBe("claude-sonnet-4-5-20250929");
     });
 
+    it("parses model profiles and an explicit orchestrator profile reference", async () => {
+      const cfg = {
+        ...minimalConfig(),
+        settings: {
+          ...minimalConfig().settings,
+          orchestratorModel: { profile: "balanced" },
+          modelProfiles: {
+            fast: "openai/gpt-4o-mini",
+            balanced: {
+              primary: "anthropic/claude-sonnet-4",
+              fallbacks: [{ profile: "fast" }],
+            },
+          },
+        },
+      };
+
+      const config = await parseConfig(writeConfig(cfg));
+
+      expect(config.settings.orchestratorModel).toEqual({ profile: "balanced" });
+      expect(config.settings.modelProfiles).toEqual(cfg.settings.modelProfiles);
+    });
+
+    it.each([
+      { modelProfiles: [] },
+      { modelProfiles: { "reasoning/high": "openai/gpt-4o-mini" } },
+      { modelProfiles: { fast: { profile: "" } } },
+      { modelProfiles: { fast: { primary: 42 } } },
+    ])("rejects malformed model profile settings: %j", async (invalid) => {
+      const cfg = {
+        ...minimalConfig(),
+        settings: {
+          ...minimalConfig().settings,
+          ...invalid,
+        },
+      };
+
+      await expect(parseConfig(writeConfig(cfg))).rejects.toThrow(/Invalid modelProfiles/);
+    });
+
+    it.each([
+      { orchestratorModel: "" },
+      { orchestratorModel: null },
+      { orchestratorModel: { profile: "fast", primary: "openai/gpt-4o-mini" } },
+      { orchestratorModel: { primary: "openai/gpt-4o-mini", arbitrary: true } },
+    ])("rejects malformed orchestrator model settings: %j", async (invalid) => {
+      const cfg = {
+        ...minimalConfig(),
+        settings: {
+          ...minimalConfig().settings,
+          ...invalid,
+        },
+      };
+
+      await expect(parseConfig(writeConfig(cfg))).rejects.toThrow(/Invalid orchestratorModel/);
+    });
+
     it("ignores teams in polpo.json — returns empty teams", async () => {
       const cfg = {
         ...minimalConfig(),

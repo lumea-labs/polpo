@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import { cors } from "hono/cors";
 import { join } from "node:path";
 import { projectLoopConfigSchema } from "@polpo-ai/core/schemas";
+import { resolveConfiguredModelSelection } from "@polpo-ai/core";
 import { buildSystemPrompt } from "../adapters/spawn-helpers.js";
 // NodeFileSystem no longer instantiated here — use orchestrator's getFs() instead
 import type { Orchestrator } from "../core/orchestrator.js";
@@ -120,9 +121,19 @@ export function createApp(orchestrator: Orchestrator, sseBridge: SSEBridge, opts
     getSessionStore: () => o.getSessionStore(),
     getStore: () => o.getStore(),
     emit: (event: string, data: any) => o.emit(event as any, data),
+    resolveExecutionRouteClassifier: (context) =>
+      o.resolveExecutionRouteClassifier(context),
     resolveAgentModel: async (agentConfig: any, reasoning?: string) => {
       const { buildResolvedModelProviderOptions, resolveModel } = await import("@polpo-ai/llm");
-      const m = resolveModel(agentConfig.model, resolveNodeModelOptions(agentConfig.model, o.getGatewayConfig()));
+      const settings = o.getConfig()?.settings;
+      const modelSpec = agentConfig.model
+        ? resolveConfiguredModelSelection(
+            agentConfig.model,
+            settings ?? {},
+            agentConfig.allowedModelProfiles,
+          ).policy.primary
+        : undefined;
+      const m = resolveModel(modelSpec, resolveNodeModelOptions(modelSpec, o.getGatewayConfig()));
       const r = agentConfig.reasoning ?? reasoning;
       const providerOptions = buildResolvedModelProviderOptions(m, r);
       return { model: m, providerOptions };
@@ -169,13 +180,7 @@ export function createApp(orchestrator: Orchestrator, sseBridge: SSEBridge, opts
       };
       return { tools, executor, cleanup: mcp.dispose };
     },
-    getProjectLoop: async (name: string) => {
-      const path = join(o.getPolpoDir(), "loops", `${name}.json`);
-      const fs = o.getFs();
-      if (!(await fs.exists(path))) return null;
-      const raw = await fs.readFile(path);
-      return projectLoopConfigSchema.parse(JSON.parse(raw)) as any;
-    },
+    getProjectLoop: (name: string) => o.getProjectLoop(name),
     // Run chat completions through the shared executeRun lifecycle +
     // loop-engine. Injects the route's
     // already-resolved model/prompt/tools/messages so the engine runs a chat

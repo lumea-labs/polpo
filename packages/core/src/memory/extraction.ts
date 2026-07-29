@@ -525,11 +525,21 @@ function normalizeMetadata(
         path,
       );
     }
-    const result: Record<string, MemoryExtractionMetadataValue> = {};
+    const result = Object.create(null) as Record<
+      string,
+      MemoryExtractionMetadataValue
+    >;
     for (const [key, item] of Object.entries(entry).sort(([left], [right]) =>
       left.localeCompare(right)
     )) {
       const normalizedKey = requiredText(key, `${path} key`, 256);
+      if (Object.hasOwn(result, normalizedKey)) {
+        throw new MemoryContractError(
+          `${path} contains duplicate normalized key "${normalizedKey}"`,
+          "invalid_item",
+          path,
+        );
+      }
       result[normalizedKey] = visit(
         item,
         `${path}.${normalizedKey}`,
@@ -629,6 +639,19 @@ function freezeCandidate(input: Record<string, unknown>): MemoryExtractionCandid
       `Unknown extraction status: ${String(status)}`,
       "invalid_item",
       "status",
+    );
+  }
+  const revision = positiveInteger(input.revision, "revision");
+  const expectedRevision = status === "pending"
+    ? 1
+    : status === "applied"
+      ? 3
+      : 2;
+  if (revision !== expectedRevision) {
+    throw new MemoryContractError(
+      `${status} candidates require revision ${expectedRevision}`,
+      "invalid_transition",
+      "revision",
     );
   }
   const createdAt = timestamp(input.createdAt, "createdAt");
@@ -768,7 +791,7 @@ function freezeCandidate(input: Record<string, unknown>): MemoryExtractionCandid
     sensitiveFindings: detectedFindings,
     metadata: normalizeMetadata(input.metadata),
     status: status as MemoryExtractionStatus,
-    revision: positiveInteger(input.revision, "revision"),
+    revision,
     ...(decision ? { decision } : {}),
     ...(appliedMemoryId ? { appliedMemoryId } : {}),
     ...(appliedAt ? { appliedAt } : {}),
@@ -887,6 +910,16 @@ export function normalizeMemoryExtractionAuditEvent(
       "audit.reviewer",
     );
   }
+  if (
+    (event.type === "approved" || event.type === "rejected")
+    && memoryId
+  ) {
+    throw new MemoryContractError(
+      `${event.type} audit events cannot contain memoryId`,
+      "invalid_item",
+      "audit.memoryId",
+    );
+  }
   if (event.type === "rejected" && !reason) {
     throw new MemoryContractError(
       "rejected audit events require a reason",
@@ -899,6 +932,13 @@ export function normalizeMemoryExtractionAuditEvent(
       "applied audit events require memoryId",
       "invalid_item",
       "audit.memoryId",
+    );
+  }
+  if (event.type === "applied" && (reviewer || reason)) {
+    throw new MemoryContractError(
+      "applied audit events cannot contain decision fields",
+      "invalid_item",
+      "audit",
     );
   }
   return Object.freeze({

@@ -1,4 +1,5 @@
 import type {
+  ProfiledModelSelection,
   TaskExpectation,
   ExpectedOutcome,
   RetryPolicy,
@@ -73,7 +74,8 @@ export interface UpdateMissionRequest {
 export interface AddAgentRequest {
   name: string;
   role?: string;
-  model?: string;
+  model?: ProfiledModelSelection;
+  allowedModelProfiles?: string[];
   allowedTools?: string[];
   systemPrompt?: string;
   skills?: string[];

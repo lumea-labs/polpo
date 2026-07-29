@@ -74,6 +74,8 @@ export interface RuntimeDecisionAudit {
   readonly warnings: readonly string[];
   readonly policyIds: readonly string[];
   readonly confidence?: number;
+  /** Named planning-stage latency measurements in milliseconds. */
+  readonly latencyMs?: Readonly<Record<string, number>>;
   readonly fallbackUsed: boolean;
 }
 
@@ -134,6 +136,7 @@ export interface CreateRuntimePlanInput {
     warnings?: readonly string[];
     policyIds?: readonly string[];
     confidence?: number;
+    latencyMs?: Readonly<Record<string, number>>;
     fallbackUsed?: boolean;
   }>;
 }

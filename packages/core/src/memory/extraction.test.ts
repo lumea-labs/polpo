@@ -5,6 +5,7 @@ import {
   MemoryConflictError,
   MemoryContractError,
   createMemoryExtractionCandidate,
+  normalizeMemoryExtractionAuditEvent,
   normalizeMemoryExtractionCandidate,
   type CreateMemoryExtractionCandidateInput,
   type MemoryExtractionStoreContext,
@@ -154,6 +155,64 @@ describe("Memory extraction candidate contract", () => {
     expect(() => normalizeMemoryExtractionCandidate({
       ...value,
       updatedAt: "not-a-date",
+    })).toThrow(MemoryContractError);
+  });
+
+  it.each([
+    ["pending", 2],
+    ["approved", 1],
+    ["rejected", 3],
+    ["applied", 2],
+  ] as const)("rejects a %s candidate with revision %s", (status, revision) => {
+    const value = candidate();
+    const decision = status === "pending"
+      ? undefined
+      : {
+          decision: status === "rejected" ? "reject" : "approve",
+          decidedBy: { actor: "user", actorId: "reviewer-a" },
+          decidedAt: now,
+          ...(status === "rejected" ? { reason: "Rejected." } : {}),
+        };
+    expect(() => normalizeMemoryExtractionCandidate({
+      ...value,
+      status,
+      revision,
+      ...(decision ? { decision } : {}),
+      ...(status === "applied"
+        ? { appliedMemoryId: "memory-a", appliedAt: now }
+        : {}),
+    })).toThrow(MemoryContractError);
+  });
+
+  it("rejects audit fields that do not belong to the event type", () => {
+    expect(() => normalizeMemoryExtractionAuditEvent({
+      id: "audit-a",
+      candidateId: "candidate-a",
+      type: "approved",
+      at: now,
+      reviewer: { actor: "user", actorId: "reviewer-a" },
+      memoryId: "memory-a",
+    })).toThrow(MemoryContractError);
+    expect(() => normalizeMemoryExtractionAuditEvent({
+      id: "audit-b",
+      candidateId: "candidate-a",
+      type: "applied",
+      at: now,
+      reviewer: { actor: "system", actorId: "worker-a" },
+      memoryId: "memory-a",
+    })).toThrow(MemoryContractError);
+  });
+
+  it("keeps metadata keys inert and rejects normalized duplicates", () => {
+    const polluted = JSON.parse('{"__proto__":{"polluted":true}}') as
+      Record<string, unknown>;
+    const value = candidate({ metadata: polluted });
+
+    expect(Object.prototype).not.toHaveProperty("polluted");
+    expect(Object.hasOwn(value.metadata, "__proto__")).toBe(true);
+    expect(value.metadata.__proto__).toEqual({ polluted: true });
+    expect(() => candidate({
+      metadata: { " key ": "first", key: "second" },
     })).toThrow(MemoryContractError);
   });
 });
