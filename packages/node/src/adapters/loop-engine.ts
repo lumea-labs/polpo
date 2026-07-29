@@ -30,12 +30,15 @@ import type { AgentConfig, Task, TaskResult } from "@polpo-ai/core/types";
 import type { AgentHandle, SpawnContext } from "@polpo-ai/core/adapter";
 import {
   generateText,
-  jsonSchema,
   tool as aiTool,
   type ModelMessage,
   type ToolSet,
 } from "ai";
-import { normalizeResponseMessagesForHistory, runModelPolicyTurn } from "@polpo-ai/llm";
+import {
+  normalizeResponseMessagesForHistory,
+  runModelPolicyTurn,
+  toValidatedToolInputSchema,
+} from "@polpo-ai/llm";
 import { cleanupAgentBrowserSession } from "@polpo-ai/tools";
 import {
   LoopRunner,
@@ -47,6 +50,7 @@ import {
   normalizeToolInput,
   resolveLoopSelection,
   compactIfNeeded,
+  type ModelSelection,
   type SummarizeFn,
   type CompactionEvent,
   type LoopModelResult,
@@ -77,7 +81,7 @@ function toToolDeclarations(polpoTools: PolpoTool[]): ToolSet {
   for (const pt of polpoTools) {
     toolSet[pt.name] = aiTool({
       description: pt.description,
-      inputSchema: jsonSchema(pt.parameters as any),
+      inputSchema: toValidatedToolInputSchema(pt.parameters),
     });
   }
   return toolSet;
@@ -285,6 +289,7 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
     // Tools value handed to compaction's token estimator (JSON.stringify'd); MUST
     // match the chat path's shape so the compaction trigger point is identical.
     let compactionTools: unknown[];
+    let resolvedModelSelection: ModelSelection | undefined;
     const compactionMode: "chat" | "task" = inject?.compactionMode ?? "task";
     if (inject) {
       model = inject.model as unknown as SpawnPrep["model"];
@@ -296,6 +301,7 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
     } else {
       const prep = prepareSpawn(sessionAgent, cwd, ctx);
       model = prep.model;
+      resolvedModelSelection = prep.modelSelection;
       providerOptions = prep.providerOptions;
       systemPrompt = contextPrompt
         ? `${prep.systemPrompt}\n\n${contextPrompt}`
@@ -307,7 +313,10 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
       compactionTools = allPolpoTools.map((t) => ({ description: t.description ?? "" }));
     }
     const primaryResolved = { model, providerOptions };
-    const modelSelection = inject?.modelSelection ?? sessionAgent.model ?? modelSelectionForResolvedModel(model);
+    const modelSelection =
+      inject?.modelSelection ??
+      resolvedModelSelection ??
+      modelSelectionForResolvedModel(model);
 
     // Conversation state owned by the host, exactly like the legacy loop.
     // On resume the recorded history (already containing tool-call and
@@ -435,6 +444,23 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
             activity.toolCalls++;
             activity.lastTool = event.name;
             activity.lastUpdate = new Date().toISOString();
+            if (event.invalid) {
+              const detail = event.error instanceof Error
+                ? event.error.message
+                : typeof event.error === "string"
+                  ? event.error
+                  : "Tool arguments do not match the declared input schema.";
+              // Keep the call in the loop so the SDK-provided tool error in
+              // responseMessages reaches the next model turn, but never emit a
+              // local calling event or dispatch it to an executor.
+              toolCalls.push({
+                id: event.id,
+                name: event.name,
+                args: (event.args ?? {}) as Record<string, unknown>,
+                inputValidationError: `Error: Invalid tool arguments: ${detail}`,
+              });
+              break;
+            }
             // Chat parity (F1c): a client-side tool ends the server loop and is
             // returned to the caller to execute — never dispatched here. Not
             // pushing it to toolCalls ⇒ the turn ends with no executable tools.
@@ -556,6 +582,20 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
 
     // ── LoopRunner tool executor: dispatch + history append ──
     const executeTool = async (toolCall: LoopToolCall): Promise<string> => {
+      if (toolCall.inputValidationError) {
+        emitTranscript({
+          type: "tool_result",
+          toolId: toolCall.id,
+          tool: toolCall.name,
+          content: toolCall.inputValidationError,
+          isError: true,
+          invalid: true,
+        });
+        // AI SDK already included the corresponding tool-error output in
+        // turn.responseMessages; do not append a duplicate history message.
+        return toolCall.inputValidationError;
+      }
+
       let llmText: string;
       let isError: boolean;
       if (inject) {

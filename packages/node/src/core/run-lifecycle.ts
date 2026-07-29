@@ -235,6 +235,8 @@ export async function executeRun(config: RunnerConfig, deps: ExecuteRunDeps): Pr
       outputDir: config.outputDir,
       emailAllowedDomains: config.emailAllowedDomains,
       reasoning: config.reasoning,
+      modelProfiles: config.modelProfiles,
+      modelAllowlist: config.modelAllowlist,
       vaultStore,
       memoryStore,
       // Per-tenant gateway for the in-process host (undefined for subprocess,

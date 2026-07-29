@@ -5,11 +5,11 @@ import type {
   ReactNode,
 } from "react";
 import type { SessionsHostAdapter } from "../sessions/host.js";
-import type { ModelSelection } from "@polpo-ai/sdk";
+import type { ProfiledModelSelection } from "@polpo-ai/sdk";
 
 export type PlaygroundAgent = {
   name: string;
-  model?: ModelSelection;
+  model?: ProfiledModelSelection;
   assignedLoops?: string[];
   role?: string;
 };

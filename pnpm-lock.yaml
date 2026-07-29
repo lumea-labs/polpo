@@ -338,12 +338,18 @@ importers:
       '@ai-sdk/xai':
         specifier: 3.0.108
         version: 3.0.108(zod@4.3.6)
+      '@hyperjump/json-schema':
+        specifier: 1.17.7
+        version: 1.17.7(@hyperjump/browser@1.4.0)
       '@polpo-ai/core':
         specifier: workspace:*
         version: link:../core
       ai:
         specifier: '>=6.0.0'
         version: 6.0.141(zod@4.3.6)
+      zod:
+        specifier: ^4.3.6
+        version: 4.3.6
 
   packages/node:
     dependencies:
@@ -504,7 +510,7 @@ importers:
         version: 1.0.36(zod@4.3.6)
       '@modelcontextprotocol/sdk':
         specifier: ^1.29.0
-        version: 1.29.0(zod@4.3.6)
+        version: 1.29.0(@cfworker/json-schema@4.1.1)(zod@4.3.6)
       '@polpo-ai/core':
         specifier: workspace:*
         version: link:../core
@@ -891,6 +897,9 @@ packages:
   '@bramus/specificity@2.4.2':
     resolution: {integrity: sha512-ctxtJ/eA+t+6q2++vj5j7FYX3nRu311q1wfYH3xjlLOsczhlhxAg2FWNUXhpGvAw3BWo1xBcvOV6/YLc2r5FJw==}
     hasBin: true
+
+  '@cfworker/json-schema@4.1.1':
+    resolution: {integrity: sha512-gAmrUZSGtKc3AiBL71iNWxDsyUC5uMaKKGdvzYsBoTW/xi42JQHl7eKV2OYzCUqvc+D2RCcf7EXY2iCyFIk6og==}
 
   '@chevrotain/types@11.1.2':
     resolution: {integrity: sha512-U+HFai5+zmJCkK86QsaJtoITlboZHBqrVketcO2ROv865xfCMSFpELQoz1GkX5GzME8pTa+3kbKrZHQtI0gdbw==}
@@ -1548,6 +1557,27 @@ packages:
     peerDependencies:
       hono: '>=3.9.0'
       zod: ^3.25.0 || ^4.0.0
+
+  '@hyperjump/browser@1.4.0':
+    resolution: {integrity: sha512-AbtynPyALR2wkN3ngYIiMEc21cZhP170zb5y3YIje4kTZ0J515GDgxeCK8D+PjyMhER7idU2Q3d0Zk0z/W1QLQ==}
+    engines: {node: '>=18.0.0'}
+
+  '@hyperjump/json-pointer@1.1.2':
+    resolution: {integrity: sha512-zPNgu1zdhtjQHFNLGzvEsLDsLOEvhRj6u6ktIQmlz7YPESv5uF8SnAe3Dq0oL6gZ6OGWSLq2n7pphRNF6Hpg6w==}
+
+  '@hyperjump/json-schema-formats@1.0.2':
+    resolution: {integrity: sha512-LwV7YMBst77SCvZJS/Fq5od/2dWvefU+a7RF9/MOo9mVXEcA7PJ0Ax6zgoL2x69f6PmEfFXTp3l1vGdtyziW6w==}
+
+  '@hyperjump/json-schema@1.17.7':
+    resolution: {integrity: sha512-CP4OTm4y5U200z3Ir6SAQk9aGM61m1LZpd4TMNXTZbOgHg02TvYFhtQLQcG2WPx6nmmM6DPS9ha+N7poY6e+uA==}
+    peerDependencies:
+      '@hyperjump/browser': ^1.1.0
+
+  '@hyperjump/pact@1.4.0':
+    resolution: {integrity: sha512-01Q7VY6BcAkp9W31Fv+ciiZycxZHGlR2N6ba9BifgyclHYHdbaZgITo0U6QMhYRlem4k8pf8J31/tApxvqAz8A==}
+
+  '@hyperjump/uri@1.3.4':
+    resolution: {integrity: sha512-aUVWwu2GtC/cU4DwdTM+b+5jjboM6wft6vNg1+7pUTk/nNRNaBYcYhaEnCir9eRLBbkcGPkiEO7XRUlcDkxj4Q==}
 
   '@iconify/types@2.0.0':
     resolution: {integrity: sha512-+wluvCrRhXrhyOmRDJ3q8mux9JkKy5SJ/v8ol2tu4FVjyYvtEzkc/3pK15ET6RKg4b4w4BmTk1+gsCUhf21Ykg==}
@@ -4278,6 +4308,9 @@ packages:
     resolution: {integrity: sha512-im9DjEDQ55s9fL4EYzOAv0yMqmMBSZp6G0VvFyTMPKWxiSBHUj9NW/qqLmXUwXrrM7AvqSlTCfvqRb0cM8yYqw==}
     engines: {node: '>=0.10.0'}
 
+  idn-hostname@15.1.10:
+    resolution: {integrity: sha512-/mSXWRhVasTJ7Z4z18523rTA6CmStYN29yDt+oXi9fe1/M0SO2Un1BgUr3v28aAZG5hWicyUtIamC/juXt3nZQ==}
+
   ieee754@1.2.1:
     resolution: {integrity: sha512-dcyqhDvX1C46lXZcVqCpK+FtMRQVdIMN6/Df5js2zouUsqG7I6sFxitIC+7KYK29KdXOLHdu9zL4sFnoVQnqaA==}
 
@@ -4470,11 +4503,18 @@ packages:
   json-schema@0.4.0:
     resolution: {integrity: sha512-es94M3nTIfsEPisRafak+HDLfHXnKBhV3vU5eqPcS3flIWqcxJWgXHXiey3YrpaNsanY5ei1VoYEbOzijuq9BA==}
 
+  json-stringify-deterministic@1.0.14:
+    resolution: {integrity: sha512-aP0bu09AgPQ0siVLg+64SVR9jXRCxwM+fW8pheDCoMKc3fipsVojQtsKyuUdoy1319v/Bgm978q2Il6brzPTFg==}
+    engines: {node: '>= 4'}
+
   json2mq@0.2.0:
     resolution: {integrity: sha512-SzoRg7ux5DWTII9J2qkrZrqV1gt+rTaoufMxEzXbS26Uid0NwaJd123HcoB80TgubEppxxIGdNxCx50fEoEWQA==}
 
   jszip@3.10.1:
     resolution: {integrity: sha512-xXDvecyTpGLrqFrvkrUSoxxfJI5AH7U8zxxtVclpsUtMCq4JQ290LY8AW5c7Ggnr/Y/oK+bQMbqK2qmtk3pN4g==}
+
+  just-curry-it@5.3.0:
+    resolution: {integrity: sha512-silMIRiFjUWlfaDhkgSzpuAyQ6EX/o09Eu8ZBfmFwQMbax7+LQzeIU2CBrICT6Ne4l86ITCGvUCBpCubWYy0Yw==}
 
   katex@0.16.47:
     resolution: {integrity: sha512-Eeo8Ys1doU1z+x8AZsPpQu+p/QcZBI5PeOo7QGQdy2x2m0MU/hYagBbGOmXwr5KVbEfVuWv9LpnQWeehogurjg==}
@@ -6724,6 +6764,9 @@ snapshots:
     dependencies:
       css-tree: 3.2.1
 
+  '@cfworker/json-schema@4.1.1':
+    optional: true
+
   '@chevrotain/types@11.1.2': {}
 
   '@clack/core@0.4.1':
@@ -7197,6 +7240,36 @@ snapshots:
       hono: 4.11.9
       zod: 4.3.6
 
+  '@hyperjump/browser@1.4.0':
+    dependencies:
+      '@hyperjump/json-pointer': 1.1.2
+      '@hyperjump/uri': 1.3.4
+      content-type: 1.0.5
+      just-curry-it: 5.3.0
+
+  '@hyperjump/json-pointer@1.1.2': {}
+
+  '@hyperjump/json-schema-formats@1.0.2':
+    dependencies:
+      '@hyperjump/uri': 1.3.4
+      idn-hostname: 15.1.10
+
+  '@hyperjump/json-schema@1.17.7(@hyperjump/browser@1.4.0)':
+    dependencies:
+      '@hyperjump/browser': 1.4.0
+      '@hyperjump/json-pointer': 1.1.2
+      '@hyperjump/json-schema-formats': 1.0.2
+      '@hyperjump/pact': 1.4.0
+      '@hyperjump/uri': 1.3.4
+      content-type: 1.0.5
+      json-stringify-deterministic: 1.0.14
+      just-curry-it: 5.3.0
+      uuid: 14.0.1
+
+  '@hyperjump/pact@1.4.0': {}
+
+  '@hyperjump/uri@1.3.4': {}
+
   '@iconify/types@2.0.0': {}
 
   '@iconify/utils@3.1.4':
@@ -7609,7 +7682,7 @@ snapshots:
     dependencies:
       '@chevrotain/types': 11.1.2
 
-  '@modelcontextprotocol/sdk@1.29.0(zod@4.3.6)':
+  '@modelcontextprotocol/sdk@1.29.0(@cfworker/json-schema@4.1.1)(zod@4.3.6)':
     dependencies:
       '@hono/node-server': 1.19.9(hono@4.11.9)
       ajv: 8.20.0
@@ -7628,6 +7701,8 @@ snapshots:
       raw-body: 3.0.2
       zod: 4.3.6
       zod-to-json-schema: 3.25.2(zod@4.3.6)
+    optionalDependencies:
+      '@cfworker/json-schema': 4.1.1
     transitivePeerDependencies:
       - supports-color
 
@@ -8826,14 +8901,14 @@ snapshots:
       msw: 2.12.10(@types/node@22.19.11)(typescript@5.9.3)
       vite: 7.3.1(@types/node@22.19.11)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.46.0)(tsx@4.21.0)(yaml@2.8.2)
 
-  '@vitest/mocker@3.2.4(msw@2.12.10(@types/node@25.2.3)(typescript@5.9.3))(vite@7.3.1(@types/node@25.2.3)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.46.0)(tsx@4.21.0)(yaml@2.8.2))':
+  '@vitest/mocker@3.2.4(msw@2.12.10(@types/node@25.2.3)(typescript@5.9.3))(vite@7.3.1(@types/node@22.19.11)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.46.0)(tsx@4.21.0)(yaml@2.8.2))':
     dependencies:
       '@vitest/spy': 3.2.4
       estree-walker: 3.0.3
       magic-string: 0.30.21
     optionalDependencies:
       msw: 2.12.10(@types/node@25.2.3)(typescript@5.9.3)
-      vite: 7.3.1(@types/node@25.2.3)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.46.0)(tsx@4.21.0)(yaml@2.8.2)
+      vite: 7.3.1(@types/node@22.19.11)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.46.0)(tsx@4.21.0)(yaml@2.8.2)
 
   '@vitest/pretty-format@3.2.4':
     dependencies:
@@ -10266,6 +10341,10 @@ snapshots:
     dependencies:
       safer-buffer: 2.1.2
 
+  idn-hostname@15.1.10:
+    dependencies:
+      punycode: 2.3.1
+
   ieee754@1.2.1: {}
 
   imapflow@1.2.10:
@@ -10447,6 +10526,8 @@ snapshots:
 
   json-schema@0.4.0: {}
 
+  json-stringify-deterministic@1.0.14: {}
+
   json2mq@0.2.0:
     dependencies:
       string-convert: 0.2.1
@@ -10458,6 +10539,8 @@ snapshots:
       readable-stream: 2.3.8
       setimmediate: 1.0.5
     optional: true
+
+  just-curry-it@5.3.0: {}
 
   katex@0.16.47:
     dependencies:
@@ -12843,7 +12926,7 @@ snapshots:
     dependencies:
       '@types/chai': 5.2.3
       '@vitest/expect': 3.2.4
-      '@vitest/mocker': 3.2.4(msw@2.12.10(@types/node@25.2.3)(typescript@5.9.3))(vite@7.3.1(@types/node@25.2.3)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.46.0)(tsx@4.21.0)(yaml@2.8.2))
+      '@vitest/mocker': 3.2.4(msw@2.12.10(@types/node@25.2.3)(typescript@5.9.3))(vite@7.3.1(@types/node@22.19.11)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.46.0)(tsx@4.21.0)(yaml@2.8.2))
       '@vitest/pretty-format': 3.2.4
       '@vitest/runner': 3.2.4
       '@vitest/snapshot': 3.2.4

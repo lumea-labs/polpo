@@ -112,6 +112,82 @@ Runtime plans contain policy decisions and references only. Prompts, messages,
 provider headers, credentials, and retrieved private content do not belong in
 the plan or its `runtime:plan` event.
 
+## Model profiles
+
+Model profiles give project configuration stable semantic names while keeping
+provider model IDs out of agent definitions. Existing string values always
+remain concrete model IDs. A profile is selected only with the explicit
+`{ profile: "name" }` form.
+
+```jsonc
+{
+  "settings": {
+    "modelProfiles": {
+      "fast": "openai/gpt-4o-mini",
+      "balanced": {
+        "primary": "anthropic/claude-sonnet-4",
+        "fallbacks": [{ "profile": "fast" }]
+      }
+    },
+    "orchestratorModel": { "profile": "balanced" }
+  }
+}
+```
+
+Agents can select a profile and optionally narrow which profiles, including
+nested references, they may use:
+
+```jsonc
+{
+  "name": "support",
+  "model": { "profile": "balanced" },
+  "allowedModelProfiles": ["balanced", "fast"]
+}
+```
+
+Resolution is recursive, deterministic, deduplicates concrete models while
+preserving order, and fails closed for unknown profiles, cycles, invalid
+allowlists, excessive depth, or too many fallbacks. The runtime resolves the
+profile before provider setup; providers receive only concrete model IDs.
+
+## Model routing
+
+Model routing is optional automation over model profiles. The OSS router never
+selects raw model IDs and never receives profile definitions, prompts,
+conversation history, tool schemas, or credentials. Hosts inject a classifier
+and keep the feature off until their own rollout policy enables it.
+
+```ts
+import {
+  modelRouteRuntimePlanFields,
+  resolveModelRoute,
+} from "@polpo-ai/core/model-router";
+import { createStructuredModelRouteClassifier } from "@polpo-ai/llm";
+
+const route = await resolveModelRoute({
+  surface: "agent",
+  source: "request",
+  input: "Summarize this short update.",
+  profiles: settings.modelProfiles,
+  config: {
+    mode: "auto",
+    fallbackProfile: "balanced",
+    allowedProfiles: ["fast", "balanced"],
+  },
+}, {
+  classifier: createStructuredModelRouteClassifier({ model: routerModel }),
+  signal: request.signal,
+});
+
+const { model, audit } = modelRouteRuntimePlanFields(route);
+```
+
+Explicit authorized profiles skip classification. Disabled routing,
+single-profile allowlists, missing input, and missing classifiers resolve
+deterministically. Timeout, provider failure, malformed output, unknown
+profiles, and low confidence use the configured fallback; caller cancellation
+stops planning instead of starting execution with a fallback.
+
 ## Typed Memory
 
 Typed Memory is additive to the legacy markdown `MemoryStore`:

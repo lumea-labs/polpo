@@ -59,7 +59,10 @@ import type {
   MissionStatus,
   ModelAllowlistEntry,
   ModelConfig,
+  ModelProfileReference,
+  ModelProfileRegistry,
   ModelSelection,
+  ModelTarget,
   NotificationChannelConfig,
   NotificationChannelType,
   NotificationRule,
@@ -77,6 +80,8 @@ import type {
   ProjectLoopRunStatus,
   ProjectLoopVersion,
   ProviderConfig,
+  ProfiledModelConfig,
+  ProfiledModelSelection,
   QualityMetrics,
   ReasoningLevel,
   RetryPolicy,
@@ -153,7 +158,10 @@ export type {
   MissionStatus,
   ModelAllowlistEntry,
   ModelConfig,
+  ModelProfileReference,
+  ModelProfileRegistry,
   ModelSelection,
+  ModelTarget,
   NotificationChannelConfig,
   NotificationChannelType,
   NotificationRule,
@@ -171,6 +179,8 @@ export type {
   ProjectLoopRunStatus,
   ProjectLoopVersion,
   ProviderConfig,
+  ProfiledModelConfig,
+  ProfiledModelSelection,
   QualityMetrics,
   ReasoningLevel,
   RetryPolicy,
@@ -628,7 +638,7 @@ export interface UpdateMissionQualityGateRequest {
 export interface AddMissionTeamMemberRequest {
   name: string;
   role?: string;
-  model?: string;
+  model?: ProfiledModelSelection;
   systemPrompt?: string;
   allowedTools?: string[];
 }
@@ -636,7 +646,7 @@ export interface AddMissionTeamMemberRequest {
 export interface UpdateMissionTeamMemberRequest {
   name?: string;
   role?: string;
-  model?: string;
+  model?: ProfiledModelSelection;
   systemPrompt?: string;
   allowedTools?: string[];
 }
@@ -648,7 +658,9 @@ export interface UpdateMissionNotificationsRequest {
 export interface AddAgentRequest {
   name: string;
   role?: string;
-  model?: ModelSelection;
+  model?: ProfiledModelSelection;
+  /** Optional narrowing allowlist for profile references used by this agent. */
+  allowedModelProfiles?: string[];
   /** Default runtime sandbox policy for this agent. */
   sandbox?: RuntimeSandboxOptions;
   allowedTools?: string[];
@@ -677,7 +689,8 @@ export interface AddAgentRequest {
 
 export interface UpdateAgentRequest {
   role?: string;
-  model?: ModelSelection;
+  model?: ProfiledModelSelection;
+  allowedModelProfiles?: string[];
   sandbox?: RuntimeSandboxOptions;
   allowedTools?: string[];
   allowedPaths?: string[];
@@ -699,7 +712,8 @@ export interface UpdateAgentRequest {
 }
 
 export interface UpdateSettingsRequest {
-  orchestratorModel?: string | ModelConfig;
+  orchestratorModel?: ProfiledModelSelection;
+  modelProfiles?: ModelProfileRegistry;
   imageModel?: string | null;
   reasoning?: ReasoningLevel;
 }

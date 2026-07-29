@@ -106,6 +106,10 @@ describe("createRuntimePlan", () => {
         warnings: ["classifier skipped"],
         policyIds: ["policy-1", "policy-1"],
         confidence: 0.98,
+        latencyMs: {
+          modelRouter: 12,
+          executionRouter: 0,
+        },
         fallbackUsed: true,
       },
     };
@@ -134,13 +138,19 @@ describe("createRuntimePlan", () => {
       warnings: ["classifier skipped"],
       policyIds: ["policy-1"],
       confidence: 0.98,
+      latencyMs: {
+        modelRouter: 12,
+        executionRouter: 0,
+      },
       fallbackUsed: true,
     });
 
     input.tools.allowed.push("write");
     input.context.sources.push("brain");
+    input.audit.latencyMs.modelRouter = 999;
     expect(plan.tools.allowed).toEqual(["bash", "read"]);
     expect(plan.context.sources).toEqual(["history", "memory"]);
+    expect(plan.audit.latencyMs?.modelRouter).toBe(12);
   });
 
   it("freezes the complete plan and its event envelope", () => {
@@ -279,6 +289,16 @@ describe("createRuntimePlan", () => {
         audit: { confidence: 2 },
       },
       error: "confidence",
+    },
+    {
+      name: "negative router latency",
+      input: {
+        surface: "agent",
+        source: "request",
+        model: { selection: "openai/gpt-5", source: "default" },
+        audit: { latencyMs: { modelRouter: -1 } },
+      },
+      error: "audit latencyMs",
     },
     {
       name: "non-serializable context",

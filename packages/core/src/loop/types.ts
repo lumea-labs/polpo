@@ -1,4 +1,4 @@
-import type { ModelConfig } from "../types/config.js";
+import type { ProfiledModelSelection } from "../types/config.js";
 
 /**
  * Configurable agentic loops — config model (declarative surface).
@@ -148,7 +148,7 @@ export interface LoopConfig {
   skills?: string[];
   /** Optional model tool-choice policy for this agent step. */
   toolChoice?: LoopToolChoice;
-  model?: string | ModelConfig;
+  model?: ProfiledModelSelection;
   reasoning?: string;
   temperature?: number;
   maxTurns?: number;
@@ -271,7 +271,7 @@ export interface Pipeline {
 
 export interface AgentLoopConfig {
   name?: string;
-  model?: string | ModelConfig;
+  model?: ProfiledModelSelection;
   /** Out-of-scope runtime/environment ref (default polpo-runner; custom image later). */
   runtime?: string;
   loops: Record<string, LoopConfig>;

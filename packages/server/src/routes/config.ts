@@ -207,6 +207,7 @@ export function configRoutes(getDeps: () => {
     const result = await mutateConfig(deps, (config) => {
       const settings = config.settings ?? {};
       if (body.orchestratorModel !== undefined) settings.orchestratorModel = body.orchestratorModel;
+      if (body.modelProfiles !== undefined) settings.modelProfiles = body.modelProfiles;
       if (body.imageModel !== undefined) settings.imageModel = body.imageModel === null ? undefined : body.imageModel;
       if (body.reasoning !== undefined) settings.reasoning = body.reasoning;
       config.settings = settings;
