@@ -32,6 +32,7 @@
 import { OpenAPIHono } from "@hono/zod-openapi";
 import {
   type ExecutionRouteClassifier,
+  type ExecutionRouteClassifierResolverContext,
   type LoopRunStore,
   type ModelSelection,
   type ProfiledModelSelection,
@@ -99,7 +100,9 @@ export interface CompletionRouteDeps {
    * Lazily resolve the optional execution-route classifier. Hosts retain
    * ownership of its model, credentials, and rollout decision.
    */
-  resolveExecutionRouteClassifier?: () =>
+  resolveExecutionRouteClassifier?: (
+    context: ExecutionRouteClassifierResolverContext,
+  ) =>
     | ExecutionRouteClassifier
     | undefined
     | Promise<ExecutionRouteClassifier | undefined>;

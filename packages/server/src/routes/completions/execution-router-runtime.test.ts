@@ -114,6 +114,38 @@ describe("completion execution router", () => {
       });
       return makePlan(input.execution, input.surface, input.source);
     });
+    const resolveExecutionRouteClassifier = vi.fn(async () => ({
+      classify: async (input: unknown) => {
+        calls.push("classify");
+        expect(input).toEqual({
+          version: 1,
+          surface: "channel",
+          source: "channel",
+          input: "Please research the market",
+          loops: [
+            {
+              name: "research",
+              label: "Research",
+              description: "Investigate sources.",
+            },
+            {
+              name: "build",
+              label: "Build",
+              description: "Create project files.",
+            },
+          ],
+          labels: [],
+        });
+        expect(JSON.stringify(input)).not.toContain("PRIVATE");
+        expect(JSON.stringify(input)).not.toContain("bash");
+        return {
+          mode: "loop",
+          loop: "research",
+          confidence: 0.95,
+          reason: "Research workflow requested",
+        };
+      },
+    }));
     const deps = makeDeps({
       emit,
       getSessionStore: () => sessionStore,
@@ -130,43 +162,13 @@ describe("completion execution router", () => {
         calls.push("tools");
         throw new Error("project loop must not resolve tools during preparation");
       },
-      resolveExecutionRouteClassifier: async () => ({
-        classify: async (input) => {
-          calls.push("classify");
-          expect(input).toEqual({
-            version: 1,
-            surface: "channel",
-            source: "channel",
-            input: "Please research the market",
-            loops: [
-              {
-                name: "research",
-                label: "Research",
-                description: "Investigate sources.",
-              },
-              {
-                name: "build",
-                label: "Build",
-                description: "Create project files.",
-              },
-            ],
-            labels: [],
-          });
-          expect(JSON.stringify(input)).not.toContain("PRIVATE");
-          expect(JSON.stringify(input)).not.toContain("bash");
-          return {
-            mode: "loop",
-            loop: "research",
-            confidence: 0.95,
-            reason: "Research workflow requested",
-          };
-        },
-      }),
+      resolveExecutionRouteClassifier,
     });
     const headers = new Map<string, string>();
 
     const prepared = await prepareChatCompletionExecution(deps, {
       agent: "agent-1",
+      user: "external-user-1",
       messages: [
         { role: "user", content: "Old request is not classifier history" },
         { role: "assistant", content: "Old answer" },
@@ -187,6 +189,12 @@ describe("completion execution router", () => {
       decisionSource: "router",
     });
     expect(headers.get("x-loop")).toBe("research");
+    expect(resolveExecutionRouteClassifier).toHaveBeenCalledWith({
+      surface: "channel",
+      source: "channel",
+      agentName: "agent-1",
+      userId: "external-user-1",
+    });
     expect(resolveRuntimePlan).toHaveBeenCalledOnce();
     expect(calls).toEqual([
       "classify",

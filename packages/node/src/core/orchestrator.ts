@@ -31,7 +31,10 @@ import type {
   Team,
 } from "@polpo-ai/core/types";
 import type { ProjectLoopConfig } from "@polpo-ai/core";
-import type { ExecutionRouteClassifier } from "@polpo-ai/core/execution-router";
+import type {
+  ExecutionRouteClassifier,
+  ExecutionRouteClassifierResolverContext,
+} from "@polpo-ai/core/execution-router";
 import { projectLoopConfigSchema } from "@polpo-ai/core/schemas";
 import { AgentManager } from "@polpo-ai/core/agent-manager";
 import { TaskManager } from "@polpo-ai/core/task-manager";
@@ -89,7 +92,9 @@ export interface OrchestratorOptions {
    * Host-owned classifier factory for opt-in automatic execution routing.
    * Neither core nor the Node host chooses a model implicitly.
    */
-  resolveExecutionRouteClassifier?: () =>
+  resolveExecutionRouteClassifier?: (
+    context: ExecutionRouteClassifierResolverContext,
+  ) =>
     | ExecutionRouteClassifier
     | undefined
     | Promise<ExecutionRouteClassifier | undefined>;
@@ -161,8 +166,10 @@ export class Orchestrator extends TypedEmitter {
   getQualityController(): QualityController | undefined { return this.qualityController; }
   getScheduler(): Scheduler | undefined { return this.scheduler; }
   getWatcherManager(): TaskWatcherManager | undefined { return this.watcherMgr; }
-  resolveExecutionRouteClassifier(): ReturnType<NonNullable<OrchestratorOptions["resolveExecutionRouteClassifier"]>> {
-    return this.executionRouteClassifierResolver?.();
+  resolveExecutionRouteClassifier(
+    context: ExecutionRouteClassifierResolverContext,
+  ): ReturnType<NonNullable<OrchestratorOptions["resolveExecutionRouteClassifier"]>> {
+    return this.executionRouteClassifierResolver?.(context);
   }
 
   async getProjectLoop(name: string): Promise<ProjectLoopConfig | null> {
