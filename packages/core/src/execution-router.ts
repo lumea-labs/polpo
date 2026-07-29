@@ -1,4 +1,6 @@
 import type { ProjectLoopConfig } from "./loop/types.js";
+import { resolveLoopSelection } from "./loop/selector.js";
+import type { AgentConfig, Task } from "./types.js";
 import {
   RUNTIME_INVOCATION_SOURCES,
   RUNTIME_SURFACES,
@@ -115,6 +117,24 @@ export interface ResolveExecutionRouteOptions {
   readonly classifier?: ExecutionRouteClassifier;
   /** Lazily creates a classifier only after every deterministic skip. */
   readonly resolveClassifier?: () =>
+    | ExecutionRouteClassifier
+    | undefined
+    | Promise<ExecutionRouteClassifier | undefined>;
+  readonly signal?: AbortSignal;
+}
+
+export interface ResolveTaskExecutionRouteInput {
+  readonly task: Pick<Task, "description" | "loop" | "title" | "user">;
+  readonly agent: AgentConfig;
+}
+
+export interface ResolveTaskExecutionRouteOptions {
+  readonly getProjectLoop?: (
+    name: string,
+  ) => ProjectLoopConfig | null | Promise<ProjectLoopConfig | null>;
+  readonly resolveClassifier?: (
+    context: ExecutionRouteClassifierResolverContext,
+  ) =>
     | ExecutionRouteClassifier
     | undefined
     | Promise<ExecutionRouteClassifier | undefined>;
@@ -394,6 +414,73 @@ export function validateExecutionRouterConfig(
   config: ExecutionRouterConfig,
 ): void {
   normalizeConfig(config);
+}
+
+/**
+ * Resolve routing for task execution independently of the host transport.
+ * Orchestrators and direct task APIs share this helper so task semantics cannot
+ * diverge between background and request-driven execution.
+ */
+export async function resolveTaskExecutionRoute(
+  input: ResolveTaskExecutionRouteInput,
+  options: ResolveTaskExecutionRouteOptions = {},
+): Promise<ResolvedExecutionRoute | undefined> {
+  const { task, agent } = input;
+  if (task.loop) {
+    resolveLoopSelection(agent, task.loop);
+    return createExplicitExecutionRoute({
+      surface: "task",
+      source: "task",
+      loop: task.loop,
+    });
+  }
+
+  if (agent.executionRouter?.mode !== "auto") return undefined;
+  validateExecutionRouterConfig(agent.executionRouter);
+
+  const assignedLoops = Array.isArray(agent.assignedLoops)
+    ? agent.assignedLoops
+    : [];
+  const configuredAllowedLoops = Array.isArray(
+    agent.executionRouter.allowedLoops,
+  )
+    ? agent.executionRouter.allowedLoops
+    : [];
+  const allowed = new Set(configuredAllowedLoops);
+  const candidateNames = [...new Set(
+    assignedLoops.filter((name) => allowed.has(name)),
+  )];
+  const projectLoops: ProjectLoopConfig[] = [];
+  if (options.getProjectLoop) {
+    const loaded = await Promise.all(
+      candidateNames.map((name) => options.getProjectLoop!(name)),
+    );
+    projectLoops.push(...loaded.filter(
+      (loop): loop is ProjectLoopConfig => loop !== null,
+    ));
+  }
+
+  return resolveExecutionRoute({
+    surface: "task",
+    source: "task",
+    input: [task.title, task.description].filter(Boolean).join("\n\n"),
+    labels: [],
+    manifest: compileExecutionRouteManifest({
+      assignedLoops: candidateNames,
+      projectLoops,
+    }),
+    config: agent.executionRouter,
+  }, {
+    resolveClassifier: options.resolveClassifier
+      ? () => options.resolveClassifier!({
+          surface: "task",
+          source: "task",
+          agentName: agent.name,
+          ...(task.user ? { userId: task.user } : {}),
+        })
+      : undefined,
+    ...(options.signal ? { signal: options.signal } : {}),
+  });
 }
 
 function normalizeManifest(
