@@ -14,6 +14,8 @@ export interface LoopToolCall {
   id: string;
   name: string;
   args: Record<string, unknown>;
+  /** Runtime-only rejection carried with this exact call occurrence. */
+  inputValidationError?: string;
 }
 
 export interface LoopHookPayloads {
