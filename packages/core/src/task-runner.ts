@@ -8,6 +8,17 @@ import { resolveRuntimeSandboxOptions } from "./runtime-sandbox.js";
 import type { RunRecord } from "./run-store.js";
 import type { LoopResumeState } from "./loop/run-store.js";
 import { resolveConfiguredModelSelection } from "./model-profiles.js";
+import type { ProjectLoopConfig } from "./loop/types.js";
+import { normalizeModelPolicy } from "./model-policy.js";
+import {
+  compileExecutionRouteManifest,
+  createExecutionRouteResolvedEvent,
+  createExplicitExecutionRoute,
+  resolveExecutionRoute,
+  validateExecutionRouterConfig,
+  type ResolvedExecutionRoute,
+} from "./execution-router.js";
+import { resolveLoopSelection } from "./loop/selector.js";
 
 /**
  * Durable turns: max age of a resume checkpoint before orphan recovery
@@ -72,6 +83,68 @@ export class TaskRunner {
   private pendingResume = new Map<string, LoopResumeState>();
 
   constructor(private ctx: OrchestratorContext) {}
+
+  private async resolveTaskExecutionRoute(
+    task: Task,
+    agent: RunnerConfig["agent"],
+  ): Promise<ResolvedExecutionRoute | undefined> {
+    if (task.loop) {
+      resolveLoopSelection(agent, task.loop);
+      const route = createExplicitExecutionRoute({
+        surface: "task",
+        source: "task",
+        loop: task.loop,
+      });
+      this.ctx.emitter.emit(
+        "runtime:execution-route",
+        createExecutionRouteResolvedEvent(route),
+      );
+      return route;
+    }
+
+    if (agent.executionRouter?.mode !== "auto") return undefined;
+    validateExecutionRouterConfig(agent.executionRouter);
+
+    const assignedLoops = Array.isArray(agent.assignedLoops)
+      ? agent.assignedLoops
+      : [];
+    const configuredAllowedLoops = Array.isArray(
+      agent.executionRouter.allowedLoops,
+    )
+      ? agent.executionRouter.allowedLoops
+      : [];
+    const allowed = new Set(configuredAllowedLoops);
+    const candidateNames = [...new Set(
+      assignedLoops.filter((name) => allowed.has(name)),
+    )];
+    const projectLoops: ProjectLoopConfig[] = [];
+    if (this.ctx.getProjectLoop) {
+      const loaded = await Promise.all(
+        candidateNames.map((name) => this.ctx.getProjectLoop!(name)),
+      );
+      projectLoops.push(...loaded.filter(
+        (loop): loop is ProjectLoopConfig => loop !== null,
+      ));
+    }
+    const route = await resolveExecutionRoute({
+      surface: "task",
+      source: "task",
+      input: [task.title, task.description].filter(Boolean).join("\n\n"),
+      labels: [],
+      manifest: compileExecutionRouteManifest({
+        assignedLoops: candidateNames,
+        projectLoops,
+      }),
+      config: agent.executionRouter,
+    }, {
+      resolveClassifier: this.ctx.resolveExecutionRouteClassifier,
+    });
+    this.ctx.emitter.emit(
+      "runtime:execution-route",
+      createExecutionRouteResolvedEvent(route),
+    );
+    return route;
+  }
 
   /**
    * Collect results from terminal runs and pass them to the callback.
@@ -533,10 +606,16 @@ export class TaskRunner {
     await this.ctx.runStore.upsertRun(initialRun);
 
     try {
+    const executionRoute = await this.resolveTaskExecutionRoute(task, agent);
 
     // Inject context into task description for agent awareness.
     // Context is prepended using XML-like tags that the agent prompt can reference.
-    const taskWithContext = { ...task };
+    const taskWithContext = {
+      ...task,
+      ...(executionRoute?.mode === "loop"
+        ? { loop: executionRoute.loop }
+        : {}),
+    };
     const contextParts: string[] = [];
 
     // 1. Shared memory (persistent cross-session knowledge, visible to all agents)
@@ -614,6 +693,7 @@ export class TaskRunner {
       taskId: task.id,
       executionMode,
       sandbox,
+      executionRoute,
       agent,
       task: taskWithContext,
       polpoDir: this.ctx.polpoDir,

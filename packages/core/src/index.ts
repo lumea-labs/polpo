@@ -102,6 +102,7 @@ export type {
 
 // ── Runtime planning (host-neutral, serializable execution decisions) ───
 export * from "./runtime-plan/index.js";
+export * from "./execution-router.js";
 
 // ── Events (pure type definitions only, TypedEmitter lives in shell) ─────
 export * from "./events.js";

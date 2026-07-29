@@ -173,3 +173,13 @@ export type {
   StructuredModelRouteGenerate,
   StructuredModelRouteGenerationResult,
 } from "./model-route-classifier.js";
+
+// ─── Execution Route Classifier ─────────────────────
+export {
+  createStructuredExecutionRouteClassifier,
+} from "./execution-route-classifier.js";
+export type {
+  StructuredExecutionRouteClassifierOptions,
+  StructuredExecutionRouteGenerate,
+  StructuredExecutionRouteGenerationResult,
+} from "./execution-route-classifier.js";

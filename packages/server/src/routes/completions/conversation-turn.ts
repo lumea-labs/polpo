@@ -1,13 +1,20 @@
 import { nanoid } from "nanoid";
 import {
   agentMemoryScope,
+  compileExecutionRouteManifest,
+  createExecutionRouteResolvedEvent,
+  createExplicitExecutionRoute,
   createRuntimePlanResolvedEvent,
+  executionRouteRuntimePlanFields,
   normalizeRuntimePlan,
+  resolveExecutionRoute,
   resolveLoopSelection,
+  validateExecutionRouterConfig,
   type ModelSelection,
   type ModelTarget,
   type ProfiledModelSelection,
   type ProjectLoopConfig,
+  type ResolvedExecutionRoute,
   type RuntimePlan,
 } from "@polpo-ai/core";
 import type {
@@ -48,6 +55,7 @@ type PreparedProjectLoop = {
   sessionStore: any;
   sessionId: string | null;
   runtimePlan?: RuntimePlan;
+  executionRoute?: ResolvedExecutionRoute;
 };
 
 type PreparedChat = {
@@ -64,12 +72,12 @@ export interface PrepareConversationTurnOptions {
   setHeader?: (name: string, value: string) => void;
   /** Trusted surface identity. Omit for ordinary HTTP/API agent calls. */
   runtime?: CompletionRuntimeInvocation;
+  signal?: AbortSignal;
 }
 
 export interface RunConversationTurnInput extends PrepareConversationTurnOptions {
   body: CompletionRequestBody;
   onRunEvent?: (event: Record<string, unknown>) => void;
-  signal?: AbortSignal;
 }
 
 export type ConversationTurnResult = ChatViaRunTurnResult & {
@@ -124,7 +132,7 @@ async function resolveCompletionRuntimePlan(
   body: CompletionRequestBody,
   invocation: CompletionRuntimeInvocation | undefined,
   agentConfig: any | undefined,
-  loopName?: string,
+  execution: CompletionRuntimePlanInput["execution"],
 ): Promise<RuntimePlan | undefined> {
   if (!deps.resolveRuntimePlan) return undefined;
 
@@ -135,11 +143,7 @@ async function resolveCompletionRuntimePlan(
   const input: CompletionRuntimePlanInput = freezePlanningInput({
     surface,
     source,
-    execution: {
-      mode: loopName ? "loop" : "direct",
-      ...(loopName ? { loop: loopName } : {}),
-      source: loopName ? "request" : "default",
-    },
+    execution,
     request: {
       ...(body.agent ? { agent: body.agent } : {}),
       ...(body.loop ? { loop: body.loop } : {}),
@@ -162,8 +166,91 @@ async function resolveCompletionRuntimePlan(
   });
 
   const plan = normalizeRuntimePlan(await deps.resolveRuntimePlan(input));
+  if (
+    plan.surface !== surface ||
+    plan.source !== source ||
+    plan.execution.mode !== execution.mode ||
+    plan.execution.loop !== execution.loop ||
+    plan.execution.source !== execution.source
+  ) {
+    throw new Error("Runtime plan contradicted validated execution routing");
+  }
   deps.emit("runtime:plan", createRuntimePlanResolvedEvent(plan));
   return plan;
+}
+
+function completionInvocation(
+  invocation: CompletionRuntimeInvocation | undefined,
+): CompletionRuntimeInvocation {
+  return invocation ?? { surface: "agent", source: "request" };
+}
+
+function defaultExecution(): CompletionRuntimePlanInput["execution"] {
+  return { mode: "direct", source: "default" };
+}
+
+function executionForRoute(
+  route: ResolvedExecutionRoute | undefined,
+): CompletionRuntimePlanInput["execution"] {
+  return route
+    ? executionRouteRuntimePlanFields(route).execution
+    : defaultExecution();
+}
+
+async function resolveAutomaticExecutionRoute(
+  deps: CompletionRouteDeps,
+  agentConfig: any,
+  body: CompletionRequestBody,
+  options: PrepareConversationTurnOptions,
+): Promise<{
+  route: ResolvedExecutionRoute;
+  projectLoops: Map<string, ProjectLoopConfig>;
+}> {
+  validateExecutionRouterConfig(agentConfig.executionRouter);
+  const assignedLoops = Array.isArray(agentConfig.assignedLoops)
+    ? agentConfig.assignedLoops
+    : [];
+  const configuredAllowedLoops = Array.isArray(
+    agentConfig.executionRouter?.allowedLoops,
+  )
+    ? agentConfig.executionRouter.allowedLoops
+    : [];
+  const allowed = new Set(configuredAllowedLoops);
+  const candidateNames = [...new Set(
+    assignedLoops.filter((name: unknown) =>
+      typeof name === "string" && allowed.has(name)),
+  )] as string[];
+  const projectLoops = new Map<string, ProjectLoopConfig>();
+  if (deps.getProjectLoop) {
+    const loaded = await Promise.all(
+      candidateNames.map(async (name) => ({
+        name,
+        loop: await deps.getProjectLoop!(name),
+      })),
+    );
+    for (const { name, loop } of loaded) {
+      if (loop) projectLoops.set(name, loop);
+    }
+  }
+  const lastUserMessage = [...body.messages]
+    .reverse()
+    .find((message) => message.role === "user");
+  const invocation = completionInvocation(options.runtime);
+  const route = await resolveExecutionRoute({
+    surface: invocation.surface,
+    source: invocation.source,
+    input: lastUserMessage ? extractText(lastUserMessage.content) : "",
+    labels: [],
+    manifest: compileExecutionRouteManifest({
+      assignedLoops: candidateNames,
+      projectLoops: [...projectLoops.values()],
+    }),
+    config: agentConfig.executionRouter,
+  }, {
+    resolveClassifier: deps.resolveExecutionRouteClassifier,
+    signal: options.signal,
+  });
+  return { route, projectLoops };
 }
 
 export async function prepareChatCompletionExecution(
@@ -185,6 +272,7 @@ export async function prepareChatCompletionExecution(
   let onResponseFinished: (() => Promise<void>) | undefined;
   let resolvedAgentConfig: any;
   let runtimePlan: RuntimePlan | undefined;
+  let executionRoute: ResolvedExecutionRoute | undefined;
 
   const { aiMessages, extraSystemParts } = convertMessages(body.messages);
 
@@ -195,24 +283,85 @@ export async function prepareChatCompletionExecution(
       return completionError(`Agent "${body.agent}" not found`, 404, "agent_not_found");
     }
 
-    try {
-      const selection = resolveLoopSelection(agentConfig, body.loop);
-      if (selection) {
+    if (body.loop) {
+      try {
+        const selection = resolveLoopSelection(agentConfig, body.loop);
+        if (!selection) throw new Error(`Loop "${body.loop}" was not resolved`);
         agentConfig = selection.agent;
         options.setHeader?.("x-loop", selection.name);
-        const assignedLoops = Array.isArray(agentConfig.assignedLoops) ? agentConfig.assignedLoops : [];
-        if (assignedLoops.includes(selection.name) && deps.getProjectLoop) {
+        const invocation = completionInvocation(options.runtime);
+        executionRoute = createExplicitExecutionRoute({
+          surface: invocation.surface,
+          source: invocation.source,
+          loop: selection.name,
+        });
+        deps.emit(
+          "runtime:execution-route",
+          createExecutionRouteResolvedEvent(executionRoute),
+        );
+        const assignedLoops = Array.isArray(agentConfig.assignedLoops)
+          ? agentConfig.assignedLoops
+          : [];
+        if (assignedLoops.includes(selection.name)) {
+          if (!deps.getProjectLoop) {
+            throw new Error("Project loop resolver is not configured");
+          }
           const projectLoop = await deps.getProjectLoop(selection.name);
-          if (!projectLoop) throw new Error(`Assigned project loop "${selection.name}" was not found`);
+          if (!projectLoop) {
+            throw new Error(
+              `Assigned project loop "${selection.name}" was not found`,
+            );
+          }
           projectLoopRuntime = { agentConfig, projectLoop };
         }
+      } catch (loopErr) {
+        const msg = loopErr instanceof Error ? loopErr.message : String(loopErr);
+        return completionError(msg, 400, "loop_not_found");
       }
-      resolvedAgentConfig = agentConfig;
-      modelToolChoice = toAIToolChoice(agentConfig.toolChoice);
-    } catch (loopErr) {
-      const msg = loopErr instanceof Error ? loopErr.message : String(loopErr);
-      return completionError(msg, 400, "loop_not_found");
+    } else if (agentConfig.executionRouter?.mode === "auto") {
+      try {
+        const routed = await resolveAutomaticExecutionRoute(
+          deps,
+          agentConfig,
+          body,
+          options,
+        );
+        executionRoute = routed.route;
+        deps.emit(
+          "runtime:execution-route",
+          createExecutionRouteResolvedEvent(executionRoute),
+        );
+        if (executionRoute.mode === "loop") {
+          const selection = resolveLoopSelection(
+            agentConfig,
+            executionRoute.loop,
+          );
+          if (!selection) {
+            throw new Error(
+              `Execution router loop "${executionRoute.loop}" was not resolved`,
+            );
+          }
+          const projectLoop = routed.projectLoops.get(selection.name);
+          if (!projectLoop) {
+            throw new Error(
+              `Execution router loop "${selection.name}" was not loaded`,
+            );
+          }
+          agentConfig = selection.agent;
+          projectLoopRuntime = { agentConfig, projectLoop };
+          options.setHeader?.("x-loop", selection.name);
+        }
+      } catch {
+        return completionError(
+          "Runtime execution routing failed",
+          500,
+          "runtime_execution_routing_failed",
+          "server_error",
+        );
+      }
     }
+    resolvedAgentConfig = agentConfig;
+    modelToolChoice = toAIToolChoice(agentConfig.toolChoice);
 
     try {
       runtimePlan = await resolveCompletionRuntimePlan(
@@ -220,7 +369,7 @@ export async function prepareChatCompletionExecution(
         body,
         options.runtime,
         resolvedAgentConfig,
-        body.loop,
+        executionForRoute(executionRoute),
       );
     } catch {
       return completionError(
@@ -305,6 +454,7 @@ export async function prepareChatCompletionExecution(
         body,
         options.runtime,
         undefined,
+        defaultExecution(),
       );
     } catch {
       return completionError(
@@ -364,6 +514,7 @@ export async function prepareChatCompletionExecution(
       sessionStore,
       sessionId,
       runtimePlan,
+      executionRoute,
     };
   }
 
@@ -387,6 +538,7 @@ export async function prepareChatCompletionExecution(
     sessionId,
     onResponseFinished,
     runtimePlan,
+    executionRoute,
   };
 
   const viaRun =
@@ -407,6 +559,7 @@ export async function runConversationTurn(
     completionId: input.completionId,
     setHeader: input.setHeader,
     runtime: input.runtime,
+    signal: input.signal,
   });
 
   if (prepared.kind === "error") {

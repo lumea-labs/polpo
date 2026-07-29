@@ -31,6 +31,7 @@
 
 import { OpenAPIHono } from "@hono/zod-openapi";
 import {
+  type ExecutionRouteClassifier,
   type LoopRunStore,
   type ModelSelection,
   type ProfiledModelSelection,
@@ -94,6 +95,14 @@ export interface CompletionRouteDeps {
   resolveRuntimePlan?: (
     input: CompletionRuntimePlanInput,
   ) => RuntimePlan | Promise<RuntimePlan>;
+  /**
+   * Lazily resolve the optional execution-route classifier. Hosts retain
+   * ownership of its model, credentials, and rollout decision.
+   */
+  resolveExecutionRouteClassifier?: () =>
+    | ExecutionRouteClassifier
+    | undefined
+    | Promise<ExecutionRouteClassifier | undefined>;
   /** Resolve agent model. Must return an object with aiModel (LanguageModel), provider, contextWindow, maxTokens, and providerOptions. */
   resolveAgentModel: (agentConfig: any, settingsReasoning?: string) => Promise<{
     model: ResolvedModelInfo;
@@ -227,6 +236,7 @@ export function completionRoutes(getDeps: () => CompletionRouteDeps, apiKeys?: s
     const prepared = await prepareChatCompletionExecution(deps, body, {
       sessionId: rawSessionHeader === "new" ? null : rawSessionHeader,
       setHeader: (name, value) => c.header(name, value),
+      signal: c.req.raw.signal,
     });
 
     if (prepared.kind === "error") {
@@ -252,6 +262,8 @@ export function completionRoutes(getDeps: () => CompletionRouteDeps, apiKeys?: s
         extraSystemParts: prepared.extraSystemParts,
         sessionStore: prepared.sessionStore,
         sessionId: prepared.sessionId,
+        runtimePlan: prepared.runtimePlan,
+        executionRoute: prepared.executionRoute,
       }) as any;
     }
 

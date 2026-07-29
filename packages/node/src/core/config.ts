@@ -13,6 +13,7 @@ import {
   modelProfileRegistrySchema,
   modelSelectionSchema,
 } from "@polpo-ai/core/schemas";
+import { validateExecutionRouterConfig } from "@polpo-ai/core/execution-router";
 import { getPolpoDir } from "./constants.js";
 
 const DEFAULT_SETTINGS: PolpoSettings = {
@@ -80,6 +81,13 @@ export function validateAgents(agents: any[]): void {
     // Validate reportsTo — self-reference
     if (agent.reportsTo === agent.name) {
       throw new Error(`Agent "${agent.name}": cannot report to itself`);
+    }
+    if (agent.executionRouter !== undefined) {
+      try {
+        validateExecutionRouterConfig(agent.executionRouter);
+      } catch (error) {
+        throw new Error(`Agent "${agent.name}": ${(error as Error).message}`);
+      }
     }
   }
 

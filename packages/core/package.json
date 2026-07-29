@@ -50,6 +50,10 @@
       "types": "./dist/runtime-plan/index.d.ts",
       "import": "./dist/runtime-plan/index.js"
     },
+    "./execution-router": {
+      "types": "./dist/execution-router.d.ts",
+      "import": "./dist/execution-router.js"
+    },
     "./hooks": {
       "types": "./dist/hooks.d.ts",
       "import": "./dist/hooks.js"
