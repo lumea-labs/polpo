@@ -103,6 +103,10 @@ polpo-ai                Node.js shell: orchestrator, CLI, Hono server, tools
 
 Core contains zero Node.js dependencies. The shell (`polpo-ai`) wires concrete adapters: file stores, Drizzle stores, the LLM engine, and the HTTP server.
 
+Core also exposes additive typed Memory contracts through
+`@polpo-ai/core/memory`. Existing markdown Memory remains compatible while
+hosts adopt scoped items and policy-backed stores.
+
 ## Self-host with the dashboard
 
 The repository includes a single-tenant dashboard host that keeps the runtime API key on the server. Start the production-oriented example with PostgreSQL:

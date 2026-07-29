@@ -134,6 +134,7 @@ export { isTerminalRunStatus, UNIFIED_RUN_TERMINAL_STATUSES } from "./unified-ru
 export type { ConfigStore } from "./config-store.js";
 export type { MemoryStore } from "./memory-store.js";
 export { agentMemoryScope } from "./memory-store.js";
+export * from "./memory/index.js";
 export type { SearchProvider, SearchResult, SearchOptions } from "./search-provider.js";
 export {
   parseModelString,

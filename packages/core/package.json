@@ -78,6 +78,10 @@
       "types": "./dist/memory-store.d.ts",
       "import": "./dist/memory-store.js"
     },
+    "./memory": {
+      "types": "./dist/memory/index.d.ts",
+      "import": "./dist/memory/index.js"
+    },
     "./approval-store": {
       "types": "./dist/approval-store.d.ts",
       "import": "./dist/approval-store.js"

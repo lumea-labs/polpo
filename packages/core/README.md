@@ -188,6 +188,33 @@ deterministically. Timeout, provider failure, malformed output, unknown
 profiles, and low confidence use the configured fallback; caller cancellation
 stops planning instead of starting execution with a fallback.
 
+## Typed Memory
+
+Typed Memory is additive to the legacy markdown `MemoryStore`:
+
+```ts
+import {
+  createMemoryItem,
+  canAccessMemoryScope,
+} from "@polpo-ai/core/memory";
+
+const item = createMemoryItem({
+  scope: { kind: "user", subjectId: "external-user-123" },
+  kind: "preference",
+  content: "Prefers concise answers.",
+  provenance: { source: "explicit", actor: "user" },
+});
+```
+
+Scopes never default to global access. User scopes refer to the host
+application's external user, not a Polpo account member. The host owns its
+project or organization boundary and passes only authorized dimensions to
+`canAccessMemoryScope`.
+
+The contract validates item lifecycle, provenance, expiry, and exact dedupe
+identity. Content-sensitive write policy and persistence remain separate
+adapters; the existing markdown store stays available during migration.
+
 ## License
 
 Apache 2.0
