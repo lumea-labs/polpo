@@ -103,6 +103,23 @@ polpo-ai                Node.js shell: orchestrator, CLI, Hono server, tools
 
 Core contains zero Node.js dependencies. The shell (`polpo-ai`) wires concrete adapters: file stores, Drizzle stores, the LLM engine, and the HTTP server.
 
+Core also exposes additive typed Memory contracts through
+`@polpo-ai/core/memory`. Existing markdown Memory remains compatible while
+hosts adopt scoped items and policy-backed stores. The default local typed
+store persists independently in `.polpo/memory-items.json`.
+
+Typed Memory remains opt-in at the composition root. Hosts can mount
+`memoryItemRoutes` from `@polpo-ai/server`, expose only explicitly granted
+actions with `createTypedMemoryTools` from `@polpo-ai/tools`, and use the typed
+CRUD/search methods on `PolpoClient`. Merely creating a store does not mount
+routes, add tools to a model, or inject Memory into a prompt.
+
+Typed Memory listing also supports additive cursor pagination. The original
+`MemoryItemStore.list()` and `PolpoClient.listMemoryItems()` return types remain
+unchanged. Stores can implement `listPage()` for stable `(createdAt, id)`
+keyset pagination, and clients can use `listMemoryItemsPage()` with the opaque
+cursor returned by the HTTP API.
+
 ## Self-host with the dashboard
 
 The repository includes a single-tenant dashboard host that keeps the runtime API key on the server. Start the production-oriented example with PostgreSQL:

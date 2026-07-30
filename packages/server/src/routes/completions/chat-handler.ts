@@ -10,9 +10,13 @@
 import { streamSSE } from "hono/streaming";
 import {
   compactIfNeeded,
+  renderRuntimeToolResult,
   type CompactionEvent,
   type ModelSelection,
+  type RuntimeContextTrustMode,
+  type ResolvedExecutionRoute,
   type RuntimePlan,
+  type RuntimeContextResolution,
 } from "@polpo-ai/core";
 import { runModelPolicyTurn } from "@polpo-ai/llm";
 import type { LanguageModelUsage } from "ai";
@@ -27,16 +31,29 @@ import {
   type ResolvedModelInfo,
 } from "./agent-step-runner.js";
 import { appendModelResponseMessages } from "./message-mapping.js";
-import { completionResponse, modelErrorEnvelope, modelNotFoundEnvelope, sseChunk } from "./sse.js";
+import {
+  completionResponse,
+  guardrailErrorEnvelope,
+  modelErrorEnvelope,
+  modelNotFoundEnvelope,
+  sseChunk,
+} from "./sse.js";
 import {
   CLIENT_SIDE_TOOLS,
   CLIENT_SIDE_TOOL_NAMES,
   emitFileChanged,
   indexToolResultsByCallId,
+  invalidModelToolCallEvent,
+  isInvalidModelToolCall,
   persistAssistantMessage,
   recordProviderToolCall,
   toAITools,
 } from "./tool-mapping.js";
+import type { CompletionToolExecutor } from "./tool-guardrails.js";
+import {
+  applyCompletionOutputPolicy,
+  streamingOutputPolicyMode,
+} from "./output-guardrails.js";
 
 /** Resolved execution context for a standard (non-loop) chat completion. */
 export interface ChatCompletionExecution {
@@ -53,7 +70,7 @@ export interface ChatCompletionExecution {
   modelSelection?: ModelSelection;
   modelToolChoice?: unknown;
   effectiveTools: any[];
-  effectiveToolExecutor: (name: string, args: Record<string, unknown>) => Promise<string>;
+  effectiveToolExecutor: CompletionToolExecutor;
   /**
    * Provider-executed tools the host wants merged into the AI SDK tool
    * palette as-is. Polpo never invokes these locally — the SDK / model
@@ -67,6 +84,12 @@ export interface ChatCompletionExecution {
   sessionId: string | null;
   /** Frozen, secret-free runtime decision emitted before provider/tool resolution. */
   runtimePlan?: RuntimePlan;
+  /** Explicit, host-resolved context-trust mode for this conversation turn. */
+  contextTrust?: RuntimeContextTrustMode;
+  /** Structured snapshot used to assemble fullSystemPrompt for this turn. */
+  runtimeContext?: RuntimeContextResolution;
+  /** Validated direct-or-loop decision for audit and downstream propagation. */
+  executionRoute?: ResolvedExecutionRoute;
   /**
    * Resource cleanup hook — set when an agent's tool resolver opens
    * long-lived connections (today: MCP transports). Invoked exactly
@@ -107,6 +130,7 @@ export function streamChatCompletion(c: any, exec: ChatCompletionExecution): any
   let providerOpts = primaryProviderOpts;
   const modelSelection = exec.modelSelection ?? modelSelectionForResolvedModel(primaryModel);
   const reasoning = exec.agentConfig?.reasoning ?? deps.getConfig()?.settings?.reasoning;
+  const outputMode = streamingOutputPolicyMode(deps.runOutputPolicy);
 
   return streamSSE(c, async (stream) => {
     // Abort controller: cancelled when the client disconnects (closes SSE)
@@ -143,6 +167,23 @@ export function streamChatCompletion(c: any, exec: ChatCompletionExecution): any
     let totalUsage: LanguageModelUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 } as LanguageModelUsage;
     const toolCallsAccum: any[] = [];
     let lastProviderMetadata: Record<string, unknown> | undefined;
+    let outputPolicyApplied = false;
+    const finalizeOutput = async () => {
+      if (outputPolicyApplied) return;
+      finalText = await applyCompletionOutputPolicy({
+        outputPolicy: deps.runOutputPolicy,
+        text: finalText,
+        mode: outputMode === "buffer" ? "enforce" : "audit",
+        runtimePlan: exec.runtimePlan,
+        agent: body.agent,
+        sessionId,
+        signal: abortController.signal,
+      });
+      outputPolicyApplied = true;
+      if (outputMode === "buffer" && finalText) {
+        await stream.writeSSE({ data: sseChunk(completionId, { content: finalText }) });
+      }
+    };
 
     try {
       for (let turn = 0; turn < MAX_TURNS; turn++) {
@@ -216,7 +257,9 @@ export function streamChatCompletion(c: any, exec: ChatCompletionExecution): any
           } else if (event.type === "text-delta") {
             turnText += event.text;
             finalText += event.text;
-            await stream.writeSSE({ data: sseChunk(completionId, { content: event.text }) });
+            if (outputMode !== "buffer") {
+              await stream.writeSSE({ data: sseChunk(completionId, { content: event.text }) });
+            }
           } else if (event.type === "tool-input-start") {
             // Emit early "preparing" signal — the LLM has started generating a tool call
             // but arguments are not yet complete. Lets the UI show immediate feedback.
@@ -257,7 +300,9 @@ export function streamChatCompletion(c: any, exec: ChatCompletionExecution): any
 
         if (streamError) {
           finalText += `\n\nError: ${streamError}`;
-          await stream.writeSSE({ data: sseChunk(completionId, { content: `\n\nError: ${streamError}` }) });
+          if (outputMode !== "buffer") {
+            await stream.writeSSE({ data: sseChunk(completionId, { content: `\n\nError: ${streamError}` }) });
+          }
           break;
         }
 
@@ -275,12 +320,32 @@ export function streamChatCompletion(c: any, exec: ChatCompletionExecution): any
         } as LanguageModelUsage;
         lastProviderMetadata = result.providerMetadata as Record<string, unknown> | undefined;
 
-        await appendModelResponseMessages(messages, result, turnText, toolCalls);
+        await appendModelResponseMessages(
+          messages,
+          result,
+          turnText,
+          toolCalls,
+          exec.contextTrust ?? "off",
+        );
 
         if (toolCalls.length === 0) break;
 
+        const dispatchableToolCalls = toolCalls.filter(
+          (call) => !isInvalidModelToolCall(call),
+        );
+        for (const call of toolCalls.filter(isInvalidModelToolCall)) {
+          const event = invalidModelToolCallEvent(call);
+          toolCallsAccum.push(event);
+          await stream.writeSSE({
+            data: sseChunk(completionId, {}, null, {
+              tool_call: event,
+            }),
+          });
+        }
+        if (dispatchableToolCalls.length === 0) continue;
+
         // ── Client-side tools — return to client as standard tool_calls ──
-        const clientSideCall = toolCalls.find((tc: any) => CLIENT_SIDE_TOOL_NAMES.has(tc.toolName));
+        const clientSideCall = dispatchableToolCalls.find((tc: any) => CLIENT_SIDE_TOOL_NAMES.has(tc.toolName));
         if (clientSideCall) {
           // Persist for session history
           toolCallsAccum.push({
@@ -289,6 +354,7 @@ export function streamChatCompletion(c: any, exec: ChatCompletionExecution): any
             arguments: clientSideCall.input,
             state: "interrupted",
           });
+          await finalizeOutput();
           // Send as standard OpenAI tool_calls finish reason
           await stream.writeSSE({
             data: JSON.stringify({
@@ -317,7 +383,7 @@ export function streamChatCompletion(c: any, exec: ChatCompletionExecution): any
         }
 
         // Check for interactive tools — only in orchestrator mode (agents don't have interactive tools)
-        const interactiveCall = agentMode ? undefined : toolCalls.find((tc: any) => isInteractiveFn?.(tc.toolName));
+        const interactiveCall = agentMode ? undefined : dispatchableToolCalls.find((tc: any) => isInteractiveFn?.(tc.toolName));
         if (interactiveCall) {
           // Persist the interactive tool call so it survives session reload
           toolCallsAccum.push({
@@ -326,6 +392,7 @@ export function streamChatCompletion(c: any, exec: ChatCompletionExecution): any
             arguments: interactiveCall.input,
             state: "interrupted",
           });
+          await finalizeOutput();
 
           if (interactiveCall.toolName === "ask_user") {
             const questions = (interactiveCall.input as any)?.questions as any[] ?? [];
@@ -401,7 +468,7 @@ export function streamChatCompletion(c: any, exec: ChatCompletionExecution): any
         const providerToolNames = new Set(Object.keys(extraAiTools ?? {}));
         const providerToolResults = indexToolResultsByCallId(result.toolResults as any[] | undefined);
 
-        for (const call of toolCalls) {
+        for (const call of dispatchableToolCalls) {
           // Stop executing tools if client disconnected
           if (abortController.signal.aborted) break;
 
@@ -419,7 +486,10 @@ export function streamChatCompletion(c: any, exec: ChatCompletionExecution): any
             }),
           });
 
-          const result = await effectiveToolExecutor(call.toolName, callArgs);
+          const result = await effectiveToolExecutor(call.toolName, callArgs, {
+            callId: call.toolCallId,
+            signal: abortController.signal,
+          });
           const isError = result.startsWith("Error:");
           emitFileChanged(call.toolName, callArgs, result, deps.emit);
 
@@ -449,14 +519,25 @@ export function streamChatCompletion(c: any, exec: ChatCompletionExecution): any
               toolCallId: call.toolCallId,
               toolName: call.toolName,
               output: isError
-                ? { type: "error-text" as const, value: result }
-                : { type: "text" as const, value: result },
+                ? {
+                    type: "error-text" as const,
+                    value: exec.contextTrust === "enforce"
+                      ? renderRuntimeToolResult(call.toolName, call.toolCallId, result)
+                      : result,
+                  }
+                : {
+                    type: "text" as const,
+                    value: exec.contextTrust === "enforce"
+                      ? renderRuntimeToolResult(call.toolName, call.toolCallId, result)
+                      : result,
+                  },
             }],
           });
         }
       }
 
       if (!abortController.signal.aborted) {
+        await finalizeOutput();
         await stream.writeSSE({ data: sseChunk(completionId, {}, "stop") });
         await stream.writeSSE({ data: "[DONE]" });
       }
@@ -468,8 +549,16 @@ export function streamChatCompletion(c: any, exec: ChatCompletionExecution): any
         // Friendly model_not_found surface — gateway returns 404 for
         // renamed/deprecated SKUs (e.g. xai/grok-4-fast after the 4.1
         // rename). Without this catch the error propagates as a 500.
+        const guardrailError = guardrailErrorEnvelope(err);
         const notFound = modelNotFoundEnvelope(err, m?.id, body.agent);
-        if (notFound) {
+        if (guardrailError) {
+          finalText = guardrailError.message;
+          outputPolicyApplied = true;
+          await stream.writeSSE({
+            data: sseChunk(completionId, {}, "stop", { error: guardrailError }),
+          });
+          await stream.writeSSE({ data: "[DONE]" });
+        } else if (notFound) {
           await stream.writeSSE({
             data: sseChunk(completionId, {}, "stop", { error: notFound }),
           });
@@ -477,7 +566,7 @@ export function streamChatCompletion(c: any, exec: ChatCompletionExecution): any
         } else {
           const error = modelErrorEnvelope(err);
           const text = `Model request failed: ${error.message}`;
-          finalText += text;
+          finalText = outputMode === "buffer" ? text : finalText + text;
           await stream.writeSSE({ data: sseChunk(completionId, { content: text }) });
           await stream.writeSSE({ data: sseChunk(completionId, {}, "stop", { error }) });
           await stream.writeSSE({ data: "[DONE]" });
@@ -536,6 +625,19 @@ export async function runNonStreamingChatCompletion(c: any, exec: ChatCompletion
   let totalUsage: LanguageModelUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 } as LanguageModelUsage;
   const toolCallsAccum: any[] = [];
   let lastProviderMetadata: Record<string, unknown> | undefined;
+  let outputPolicyApplied = false;
+  const finalizeOutput = async () => {
+    if (outputPolicyApplied) return;
+    finalText = await applyCompletionOutputPolicy({
+      outputPolicy: deps.runOutputPolicy,
+      text: finalText,
+      mode: "enforce",
+      runtimePlan: exec.runtimePlan,
+      agent: body.agent,
+      sessionId,
+    });
+    outputPolicyApplied = true;
+  };
 
   try {
     for (let turn = 0; turn < MAX_TURNS; turn++) {
@@ -592,15 +694,29 @@ export async function runNonStreamingChatCompletion(c: any, exec: ChatCompletion
       } as LanguageModelUsage;
       lastProviderMetadata = turnResult.providerMetadata as Record<string, unknown> | undefined;
 
-      await appendModelResponseMessages(messages, turnResult, turnText, turnResult.toolCalls);
+      await appendModelResponseMessages(
+        messages,
+        turnResult,
+        turnText,
+        turnResult.toolCalls,
+        exec.contextTrust ?? "off",
+      );
 
       finalText += turnText;
 
       const toolCalls = turnResult.toolCalls;
       if (toolCalls.length === 0) break;
 
+      const dispatchableToolCalls = toolCalls.filter(
+        (call) => !isInvalidModelToolCall(call),
+      );
+      for (const call of toolCalls.filter(isInvalidModelToolCall)) {
+        toolCallsAccum.push(invalidModelToolCallEvent(call));
+      }
+      if (dispatchableToolCalls.length === 0) continue;
+
       // ── Client-side tools — return to client as standard tool_calls ──
-      const clientSideCall = toolCalls.find((tc: any) => CLIENT_SIDE_TOOL_NAMES.has(tc.toolName));
+      const clientSideCall = dispatchableToolCalls.find((tc: any) => CLIENT_SIDE_TOOL_NAMES.has(tc.toolName));
       if (clientSideCall) {
         toolCallsAccum.push({
           id: clientSideCall.toolCallId,
@@ -608,6 +724,7 @@ export async function runNonStreamingChatCompletion(c: any, exec: ChatCompletion
           arguments: clientSideCall.input,
           state: "interrupted",
         });
+        await finalizeOutput();
         return c.json({
           id: completionId,
           object: "chat.completion",
@@ -638,7 +755,7 @@ export async function runNonStreamingChatCompletion(c: any, exec: ChatCompletion
       }
 
       // Check for interactive tools — only in orchestrator mode (agents don't have interactive tools)
-      const interactiveCall = agentMode ? undefined : toolCalls.find((tc: any) => isInteractiveFn?.(tc.toolName));
+      const interactiveCall = agentMode ? undefined : dispatchableToolCalls.find((tc: any) => isInteractiveFn?.(tc.toolName));
       if (interactiveCall) {
         // Persist the interactive tool call so it survives session reload
         toolCallsAccum.push({
@@ -647,6 +764,7 @@ export async function runNonStreamingChatCompletion(c: any, exec: ChatCompletion
           arguments: interactiveCall.input,
           state: "interrupted",
         });
+        await finalizeOutput();
 
         const baseResponse = {
           id: completionId,
@@ -769,7 +887,7 @@ export async function runNonStreamingChatCompletion(c: any, exec: ChatCompletion
       const providerToolNames = new Set(Object.keys(extraAiTools ?? {}));
       const providerToolResults = indexToolResultsByCallId(turnResult.toolResults as any[] | undefined);
 
-      for (const call of toolCalls) {
+      for (const call of dispatchableToolCalls) {
         const callArgs = call.input as Record<string, unknown>;
 
         if (providerToolNames.has(call.toolName)) {
@@ -777,7 +895,10 @@ export async function runNonStreamingChatCompletion(c: any, exec: ChatCompletion
           continue;
         }
 
-        const result = await effectiveToolExecutor(call.toolName, callArgs);
+        const result = await effectiveToolExecutor(call.toolName, callArgs, {
+          callId: call.toolCallId,
+          signal: c.req.raw.signal,
+        });
         const isError = result.startsWith("Error:");
         emitFileChanged(call.toolName, callArgs, result, deps.emit);
 
@@ -798,18 +919,38 @@ export async function runNonStreamingChatCompletion(c: any, exec: ChatCompletion
             toolCallId: call.toolCallId,
             toolName: call.toolName,
             output: isError
-              ? { type: "error-text" as const, value: result }
-              : { type: "text" as const, value: result },
+              ? {
+                  type: "error-text" as const,
+                  value: exec.contextTrust === "enforce"
+                    ? renderRuntimeToolResult(call.toolName, call.toolCallId, result)
+                    : result,
+                }
+              : {
+                  type: "text" as const,
+                  value: exec.contextTrust === "enforce"
+                    ? renderRuntimeToolResult(call.toolName, call.toolCallId, result)
+                    : result,
+                },
           }],
         });
       }
     }
 
+    await finalizeOutput();
     return c.json(completionResponse(completionId, finalText, totalUsage));
   } catch (err) {
     // Friendly model_not_found surface — gateway returns 404 for
     // renamed/deprecated SKUs (e.g. xai/grok-4-fast after the 4.1
     // rename). Without this catch the error propagates as a 500.
+    const guardrailError = guardrailErrorEnvelope(err);
+    if (guardrailError) {
+      finalText = guardrailError.message;
+      outputPolicyApplied = true;
+      return c.json(
+        { error: guardrailError },
+        (guardrailError.code === "guardrail_approval_required" ? 409 : 403) as any,
+      );
+    }
     const notFound = modelNotFoundEnvelope(err, m?.id, body.agent);
     if (notFound) {
       return c.json({ error: notFound }, 400 as any);

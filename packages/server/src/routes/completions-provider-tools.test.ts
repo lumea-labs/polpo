@@ -12,6 +12,11 @@ vi.mock("ai", () => ({
 }));
 
 import { completionRoutes, type CompletionRouteDeps } from "./completions.js";
+import {
+  RuntimeGuardrailEngine,
+  createRunOutputPolicy,
+  createRunToolMiddleware,
+} from "@polpo-ai/core";
 
 function parseSseJsonChunks(body: string): any[] {
   return body
@@ -108,6 +113,41 @@ describe("completionRoutes provider-executed tools", () => {
       }),
     };
   }
+
+  it("enforces output policy on inline non-streaming completions", async () => {
+    streamTextMock.mockReturnValue(mockStreamResult({
+      text: "unsafe inline output",
+      toolCalls: [],
+      responseMessages: [{
+        role: "assistant",
+        content: "unsafe inline output",
+      }],
+    }));
+    const deps = makeDeps();
+    deps.runOutputPolicy = createRunOutputPolicy(new RuntimeGuardrailEngine([{
+      id: "redact-inline-output",
+      phases: ["output"],
+      evaluate: () => ({
+        action: "redact",
+        risk: "high",
+        reason: "sensitive inline result",
+        value: "safe inline output",
+      }),
+    }]));
+
+    const res = await completionRoutes(() => deps).request("/", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        agent: "researcher",
+        messages: [{ role: "user", content: "answer" }],
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    const json = await res.json() as any;
+    expect(json.choices[0].message.content).toBe("safe inline output");
+  });
 
   it("feeds provider-executed tool results back through AI SDK responseMessages", async () => {
     let secondTurnMessages: any[] | undefined;
@@ -377,6 +417,95 @@ describe("completionRoutes loop agent-step tool streaming", () => {
       }),
     };
   }
+
+  it("preserves model profile resolution while enforcing middleware on direct tool calls", async () => {
+    streamTextMock
+      .mockReturnValueOnce(mockStreamResult({
+        toolCalls: [{
+          toolCallId: "call_bash",
+          toolName: "bash",
+          input: { command: "echo raw" },
+        }],
+        responseMessages: [{
+          role: "assistant",
+          content: [{
+            type: "tool-call",
+            toolCallId: "call_bash",
+            toolName: "bash",
+            input: { command: "echo raw" },
+          }],
+        }],
+      }))
+      .mockReturnValueOnce(mockStreamResult({
+        text: "done",
+        responseMessages: [{ role: "assistant", content: [{ type: "text", text: "done" }] }],
+      }));
+
+    const deps = makeDeps();
+    deps.getAgents = async () => [{
+      name: "coder",
+      model: { profile: "balanced" },
+      allowedModelProfiles: ["balanced"],
+      assignedLoops: ["coding-loop"],
+      allowedTools: ["bash"],
+    }];
+    deps.getConfig = () => ({
+      settings: {
+        modelProfiles: {
+          balanced: "test/profile-model",
+        },
+      },
+    } as any);
+    const resolveAgentModel = vi.fn(async () => ({
+      model: {
+        id: "profile-model",
+        provider: "test",
+        aiModel: "test-model",
+        contextWindow: 100_000,
+        maxTokens: 1024,
+      },
+      providerOptions: undefined,
+    }));
+    deps.resolveAgentModel = resolveAgentModel;
+    const executor = vi.fn(async (_name: string, args: Record<string, unknown>) =>
+      `ran ${args.command}`
+    );
+    deps.resolveAgentTools = async () => ({ tools: [], executor });
+    deps.runToolMiddleware = createRunToolMiddleware(new RuntimeGuardrailEngine([{
+      id: "rewrite-command",
+      phases: ["tool.before"],
+      evaluate: () => ({
+        action: "rewrite",
+        risk: "low",
+        reason: "canonical command",
+        value: { command: "echo guarded" },
+      }),
+    }]));
+
+    const app = completionRoutes(() => deps);
+    const res = await app.request("/", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        agent: "coder",
+        messages: [{ role: "user", content: "run it" }],
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(resolveAgentModel).toHaveBeenCalledWith(
+      expect.objectContaining({ model: "test/profile-model" }),
+      undefined,
+    );
+    expect(executor).toHaveBeenCalledOnce();
+    expect(executor).toHaveBeenCalledWith(
+      "bash",
+      { command: "echo guarded" },
+      { callId: "call_bash", signal: expect.any(AbortSignal) },
+    );
+    const json = await res.json() as any;
+    expect(json.choices[0].message.content).toBe("done");
+  });
 
   it("streams tool calls made inside an agent loop step before the macro step completes", async () => {
     streamTextMock

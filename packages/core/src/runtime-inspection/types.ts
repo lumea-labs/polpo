@@ -1,6 +1,6 @@
 export const RUNTIME_CONTEXT_ACCOUNTING_VERSION = 1 as const;
 
-export const RUNTIME_CONTEXT_SEGMENT_CATEGORIES = [
+export const RUNTIME_CONTEXT_ACCOUNTING_SEGMENT_CATEGORIES = [
   "instructions",
   "memory",
   "brain",
@@ -14,10 +14,10 @@ export const RUNTIME_CONTEXT_SEGMENT_CATEGORIES = [
   "other",
 ] as const;
 
-export type RuntimeContextSegmentCategory =
-  (typeof RUNTIME_CONTEXT_SEGMENT_CATEGORIES)[number];
+export type RuntimeContextAccountingSegmentCategory =
+  (typeof RUNTIME_CONTEXT_ACCOUNTING_SEGMENT_CATEGORIES)[number];
 
-export const RUNTIME_CONTEXT_SEGMENT_KINDS = [
+export const RUNTIME_CONTEXT_ACCOUNTING_SEGMENT_KINDS = [
   "prompt",
   "tool-schema",
   "message",
@@ -25,8 +25,8 @@ export const RUNTIME_CONTEXT_SEGMENT_KINDS = [
   "retrieval",
 ] as const;
 
-export type RuntimeContextSegmentKind =
-  (typeof RUNTIME_CONTEXT_SEGMENT_KINDS)[number];
+export type RuntimeContextAccountingSegmentKind =
+  (typeof RUNTIME_CONTEXT_ACCOUNTING_SEGMENT_KINDS)[number];
 
 /**
  * Secret-free accounting metadata for one model-context contribution.
@@ -36,8 +36,8 @@ export type RuntimeContextSegmentKind =
 export interface RuntimeContextAccountingSegment {
   readonly id: string;
   readonly label: string;
-  readonly category: RuntimeContextSegmentCategory;
-  readonly kind: RuntimeContextSegmentKind;
+  readonly category: RuntimeContextAccountingSegmentCategory;
+  readonly kind: RuntimeContextAccountingSegmentKind;
   readonly tokens: number;
   readonly characters?: number;
   readonly items?: number;
@@ -45,7 +45,7 @@ export interface RuntimeContextAccountingSegment {
 }
 
 export interface RuntimeContextCategoryAccounting {
-  readonly category: RuntimeContextSegmentCategory;
+  readonly category: RuntimeContextAccountingSegmentCategory;
   readonly tokens: number;
   readonly segments: number;
 }

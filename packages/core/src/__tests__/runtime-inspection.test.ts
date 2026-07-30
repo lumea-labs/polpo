@@ -1,8 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
   createRuntimeContextAccounting,
-  normalizeRuntimeContextSegmentCategory,
+  normalizeRuntimeContextAccountingSegmentCategory,
 } from "../runtime-inspection/index.js";
+import {
+  RUNTIME_CONTEXT_ACCOUNTING_SEGMENT_KINDS,
+  RUNTIME_CONTEXT_SEGMENT_KINDS,
+} from "../index.js";
 
 describe("runtime context accounting", () => {
   it("aggregates prompt, tool, conversation, attachment, and retrieval segments", () => {
@@ -99,9 +103,16 @@ describe("runtime context accounting", () => {
   });
 
   it("normalizes unknown future categories without crashing older inspectors", () => {
-    expect(normalizeRuntimeContextSegmentCategory("future-category")).toBe("other");
-    expect(normalizeRuntimeContextSegmentCategory(null)).toBe("other");
-    expect(normalizeRuntimeContextSegmentCategory("brain")).toBe("brain");
+    expect(normalizeRuntimeContextAccountingSegmentCategory("future-category"))
+      .toBe("other");
+    expect(normalizeRuntimeContextAccountingSegmentCategory(null)).toBe("other");
+    expect(normalizeRuntimeContextAccountingSegmentCategory("brain"))
+      .toBe("brain");
+  });
+
+  it("keeps accounting and retrieval segment kinds distinct in the root API", () => {
+    expect(RUNTIME_CONTEXT_ACCOUNTING_SEGMENT_KINDS).toContain("tool-schema");
+    expect(RUNTIME_CONTEXT_SEGMENT_KINDS).toEqual(["memory", "brain"]);
   });
 
   it.each([

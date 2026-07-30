@@ -34,6 +34,15 @@ export { createSearchTools, ALL_SEARCH_TOOL_NAMES } from "./search-tools.js";
 // Phone tools removed — VAPI integration moved out of the
 // first-class catalog. Future: MCP-based.
 export { createMemoryTools } from "./memory-tools.js";
+export {
+  ALL_TYPED_MEMORY_TOOL_NAMES,
+  createTypedMemoryTools,
+} from "./typed-memory-tools.js";
+export type {
+  CreateTypedMemoryToolsOptions,
+  TypedMemoryToolGrants,
+  TypedMemoryToolName,
+} from "./typed-memory-tools.js";
 
 // Adapters (FileSystem/Shell implementations)
 export { NodeFileSystem } from "./adapters/node-filesystem.js";

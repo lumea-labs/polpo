@@ -30,12 +30,15 @@ import type { AgentConfig, Task, TaskResult } from "@polpo-ai/core/types";
 import type { AgentHandle, SpawnContext } from "@polpo-ai/core/adapter";
 import {
   generateText,
-  jsonSchema,
   tool as aiTool,
   type ModelMessage,
   type ToolSet,
 } from "ai";
-import { normalizeResponseMessagesForHistory, runModelPolicyTurn } from "@polpo-ai/llm";
+import {
+  normalizeResponseMessagesForHistory,
+  runModelPolicyTurn,
+  toValidatedToolInputSchema,
+} from "@polpo-ai/llm";
 import { cleanupAgentBrowserSession } from "@polpo-ai/tools";
 import {
   LoopRunner,
@@ -45,6 +48,8 @@ import {
   maybeParseJson,
   normalizeProjectLoop,
   normalizeToolInput,
+  protectRuntimeToolResultMessages,
+  renderRuntimeToolResult,
   resolveLoopSelection,
   compactIfNeeded,
   type ModelSelection,
@@ -78,7 +83,7 @@ function toToolDeclarations(polpoTools: PolpoTool[]): ToolSet {
   for (const pt of polpoTools) {
     toolSet[pt.name] = aiTool({
       description: pt.description,
-      inputSchema: jsonSchema(pt.parameters as any),
+      inputSchema: toValidatedToolInputSchema(pt.parameters),
     });
   }
   return toolSet;
@@ -97,6 +102,20 @@ async function loadProjectLoop(fs: FileSystem, polpoDir: string, name: string): 
 
 function modelSelectionForResolvedModel(model: SpawnPrep["model"]): string {
   return `${model.provider}/${model.id}`;
+}
+
+function runtimeErrorMetadata(error: unknown): Record<string, unknown> {
+  const raw = error as any;
+  return {
+    name: raw?.name ?? raw?.constructor?.name,
+    message: raw?.message ?? String(error),
+    statusCode: raw?.statusCode ?? raw?.cause?.statusCode,
+    responseBody: raw?.responseBody ?? raw?.cause?.responseBody,
+    modelId: raw?.modelId ?? raw?.cause?.modelId,
+    code: raw?.code ?? raw?.cause?.code,
+    type: raw?.type ?? raw?.cause?.type,
+    data: raw?.data ?? raw?.cause?.data,
+  };
 }
 
 // ─── Durable turns ─────────────────────────────────────
@@ -181,26 +200,58 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
     pt: PolpoTool | undefined,
     toolCall: LoopToolCall,
   ): Promise<{ llmText: string; isError: boolean }> {
-    let result: ToolResult;
+    let result: ToolResult = {
+      content: [{ type: "text", text: `Unknown tool: ${toolCall.name}` }],
+      details: {},
+    };
     let isError = false;
 
-    if (!pt) {
-      isError = true;
-      result = {
-        content: [{ type: "text", text: `Unknown tool: ${toolCall.name}` }],
-        details: {},
-      };
-    } else {
-      try {
-        result = await pt.execute(toolCall.id, toolCall.args, abortController.signal);
-      } catch (err) {
+    const dispatch = async (args: Readonly<Record<string, unknown>>): Promise<string> => {
+      if (!pt) {
         isError = true;
         result = {
-          content: [{ type: "text", text: err instanceof Error ? err.message : String(err) }],
+          content: [{ type: "text", text: `Unknown tool: ${toolCall.name}` }],
           details: {},
         };
+      } else {
+        try {
+          result = await pt.execute(
+            toolCall.id,
+            args as Record<string, unknown>,
+            abortController.signal,
+          );
+        } catch (err) {
+          isError = true;
+          result = {
+            content: [{ type: "text", text: err instanceof Error ? err.message : String(err) }],
+            details: {},
+          };
+        }
       }
-    }
+      return result.content
+        .map((content) => content.type === "text" ? content.text : `[image: ${content.mimeType}]`)
+        .join("\n");
+    };
+
+    const llmText = ctx?.runToolMiddleware
+      ? (await ctx.runToolMiddleware.execute(
+          {
+            callId: toolCall.id,
+            name: toolCall.name,
+            args: toolCall.args,
+            schema: pt?.parameters,
+            context: {
+              agent: agentConfig.name,
+              runId: ctx.runId,
+              source: ctx.inject ? "request" : "task",
+              surface: ctx.inject?.runtimePlan?.surface ?? "task",
+              planId: ctx.inject?.runtimePlan?.id,
+            },
+            signal: abortController.signal,
+          },
+          (request) => dispatch(request.args),
+        )).output
+      : await dispatch(toolCall.args);
 
     activity.lastUpdate = new Date().toISOString();
 
@@ -244,11 +295,6 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
       content: resultText.slice(0, 2000),
       isError,
     });
-
-    // Text returned to the LLM — same rendering as the legacy engine.
-    const llmText = result.content
-      .map((c) => c.type === "text" ? c.text : `[image: ${c.mimeType}]`)
-      .join("\n");
 
     return { llmText, isError };
   }
@@ -314,6 +360,7 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
       inject?.modelSelection ??
       resolvedModelSelection ??
       modelSelectionForResolvedModel(model);
+    const contextTrust = inject?.contextTrust ?? ctx?.contextTrust ?? "off";
 
     // Conversation state owned by the host, exactly like the legacy loop.
     // On resume the recorded history (already containing tool-call and
@@ -323,7 +370,17 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
       ? [...(inject.seedMessages as ModelMessage[])]
       : resume
         ? [...(resume.history as ModelMessage[])]
-        : [{ role: "user", content: buildPrompt(task) }]);
+        : [{
+            role: "user",
+            content: buildPrompt(
+              task,
+              ctx?.promptContextSegments,
+              ctx?.contextTrust,
+            ),
+          }]);
+    if (contextTrust === "enforce") {
+      messages = protectRuntimeToolResultMessages(messages);
+    }
     let lastStepText = "";
     let accumText = resume?.accumText ?? "";
     const providerToolResults = new Map<string, { content: string; isError: boolean }>();
@@ -384,6 +441,9 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
         messages = normalizeResponseMessagesForHistory(compactionResult.messages);
       }
       messages = normalizeResponseMessagesForHistory(messages);
+      if (contextTrust === "enforce") {
+        messages = protectRuntimeToolResultMessages(messages);
+      }
 
       let stepText = "";
       const toolCalls: LoopToolCall[] = [];
@@ -441,6 +501,23 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
             activity.toolCalls++;
             activity.lastTool = event.name;
             activity.lastUpdate = new Date().toISOString();
+            if (event.invalid) {
+              const detail = event.error instanceof Error
+                ? event.error.message
+                : typeof event.error === "string"
+                  ? event.error
+                  : "Tool arguments do not match the declared input schema.";
+              // Keep the call in the loop so the SDK-provided tool error in
+              // responseMessages reaches the next model turn, but never emit a
+              // local calling event or dispatch it to an executor.
+              toolCalls.push({
+                id: event.id,
+                name: event.name,
+                args: (event.args ?? {}) as Record<string, unknown>,
+                inputValidationError: `Error: Invalid tool arguments: ${detail}`,
+              });
+              break;
+            }
             // Chat parity (F1c): a client-side tool ends the server loop and is
             // returned to the caller to execute — never dispatched here. Not
             // pushing it to toolCalls ⇒ the turn ends with no executable tools.
@@ -502,20 +579,10 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
             break;
           }
           case "error": {
-            const raw = event.error as any;
             emitTranscript({
               type: "error",
               message: event.error instanceof Error ? event.error.message : String(event.error),
-              error: {
-                name: raw?.name ?? raw?.constructor?.name,
-                message: raw?.message ?? String(event.error),
-                statusCode: raw?.statusCode ?? raw?.cause?.statusCode,
-                responseBody: raw?.responseBody ?? raw?.cause?.responseBody,
-                modelId: raw?.modelId ?? raw?.cause?.modelId,
-                code: raw?.code ?? raw?.cause?.code,
-                type: raw?.type ?? raw?.cause?.type,
-                data: raw?.data ?? raw?.cause?.data,
-              },
+              error: runtimeErrorMetadata(event.error),
             });
             break;
           }
@@ -545,7 +612,10 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
       }
 
       // Append the assistant message (with its tool-call parts) to history.
-      messages.push(...normalizeResponseMessagesForHistory(turn.responseMessages));
+      const responseMessages = normalizeResponseMessagesForHistory(turn.responseMessages);
+      messages.push(...(contextTrust === "enforce"
+        ? protectRuntimeToolResultMessages(responseMessages)
+        : responseMessages));
 
       // Chat parity (F1c): surface per-turn usage + provider metadata so the
       // driver can accumulate them for onCompletionFinished, matching chat.
@@ -562,6 +632,20 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
 
     // ── LoopRunner tool executor: dispatch + history append ──
     const executeTool = async (toolCall: LoopToolCall): Promise<string> => {
+      if (toolCall.inputValidationError) {
+        emitTranscript({
+          type: "tool_result",
+          toolId: toolCall.id,
+          tool: toolCall.name,
+          content: toolCall.inputValidationError,
+          isError: true,
+          invalid: true,
+        });
+        // AI SDK already included the corresponding tool-error output in
+        // turn.responseMessages; do not append a duplicate history message.
+        return toolCall.inputValidationError;
+      }
+
       let llmText: string;
       let isError: boolean;
       if (inject) {
@@ -588,7 +672,10 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
           toolId: toolCall.id,
           input: toolCall.args,
         });
-        llmText = await inject.executor(toolCall.name, toolCall.args);
+        llmText = await inject.executor(toolCall.name, toolCall.args, {
+          callId: toolCall.id,
+          signal: abortController.signal,
+        });
         isError = llmText.startsWith("Error:");
         emitTranscript({ type: "tool_result", toolId: toolCall.id, tool: toolCall.name, content: llmText, isError });
       } else {
@@ -597,6 +684,9 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
 
       // Append the tool result to conversation history so the next model
       // step sees it (the model stream no longer auto-executes tools).
+      const modelResult = contextTrust === "enforce"
+        ? renderRuntimeToolResult(toolCall.name, toolCall.id, llmText)
+        : llmText;
       messages.push({
         role: "tool",
         content: [{
@@ -604,8 +694,8 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
           toolCallId: toolCall.id,
           toolName: toolCall.name,
           output: isError
-            ? { type: "error-text" as const, value: llmText }
-            : { type: "text" as const, value: llmText },
+            ? { type: "error-text" as const, value: modelResult }
+            : { type: "text" as const, value: modelResult },
         }],
       });
 
@@ -755,7 +845,11 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
           sessionAgent: stepAgent,
           loopName: name,
           loop,
-          contextPrompt: loopContextPrompt(name, context),
+          contextPrompt: loopContextPrompt(
+            name,
+            context,
+            ctx?.contextTrust ?? "off",
+          ),
           resume: sessionResume,
           // (b) Per-turn checkpoint INSIDE this agent step: the session
           // state wrapped with the pipeline position. No position = the
@@ -868,7 +962,11 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
     } catch (err) {
       alive = false;
       const msg = err instanceof Error ? err.message : String(err);
-      emitTranscript({ type: "error", message: msg });
+      emitTranscript({
+        type: "error",
+        message: msg,
+        error: runtimeErrorMetadata(err),
+      });
       return {
         exitCode: 1,
         stdout: "",

@@ -4,6 +4,8 @@
  */
 
 import {
+  GuardrailApprovalRequiredError,
+  GuardrailBlockedError,
   LoopApprovalRequiredError,
   LoopPermissionApprovalRequiredError,
   LoopPermissionDeniedError,
@@ -128,6 +130,48 @@ export function loopRuntimeErrorEnvelope(
   }
   if (message.startsWith("Loop hook ")) {
     return { message, type: "loop_runtime_error", code: "loop_hook_failed" };
+  }
+  return null;
+}
+
+export function guardrailErrorEnvelope(
+  err: unknown,
+): {
+  message: string;
+  type: "guardrail_error";
+  code: "guardrail_blocked" | "guardrail_approval_required";
+} | null {
+  if (err instanceof GuardrailApprovalRequiredError) {
+    return {
+      message: err.message,
+      type: "guardrail_error",
+      code: "guardrail_approval_required",
+    };
+  }
+  if (err instanceof GuardrailBlockedError) {
+    return {
+      message: err.message,
+      type: "guardrail_error",
+      code: "guardrail_blocked",
+    };
+  }
+  if (err && typeof err === "object") {
+    const raw = err as Record<string, unknown>;
+    const nested = raw.error && typeof raw.error === "object"
+      ? raw.error as Record<string, unknown>
+      : undefined;
+    const code = raw.code ?? nested?.code;
+    const message = raw.message ?? nested?.message;
+    if (
+      (code === "guardrail_blocked" || code === "guardrail_approval_required") &&
+      typeof message === "string"
+    ) {
+      return {
+        message,
+        type: "guardrail_error",
+        code,
+      };
+    }
   }
   return null;
 }

@@ -1,23 +1,25 @@
 import {
   RUNTIME_CONTEXT_ACCOUNTING_VERSION,
-  RUNTIME_CONTEXT_SEGMENT_CATEGORIES,
-  RUNTIME_CONTEXT_SEGMENT_KINDS,
+  RUNTIME_CONTEXT_ACCOUNTING_SEGMENT_CATEGORIES,
+  RUNTIME_CONTEXT_ACCOUNTING_SEGMENT_KINDS,
   type RuntimeContextAccounting,
   type RuntimeContextAccountingSegment,
+  type RuntimeContextAccountingSegmentCategory,
+  type RuntimeContextAccountingSegmentKind,
   type RuntimeContextCategoryAccounting,
-  type RuntimeContextSegmentCategory,
-  type RuntimeContextSegmentKind,
 } from "./types.js";
 
 const MAX_ACCOUNTING_SEGMENTS = 10_000;
-const categorySet = new Set<string>(RUNTIME_CONTEXT_SEGMENT_CATEGORIES);
-const kindSet = new Set<string>(RUNTIME_CONTEXT_SEGMENT_KINDS);
+const categorySet = new Set<string>(
+  RUNTIME_CONTEXT_ACCOUNTING_SEGMENT_CATEGORIES,
+);
+const kindSet = new Set<string>(RUNTIME_CONTEXT_ACCOUNTING_SEGMENT_KINDS);
 
-export function normalizeRuntimeContextSegmentCategory(
+export function normalizeRuntimeContextAccountingSegmentCategory(
   value: unknown,
-): RuntimeContextSegmentCategory {
+): RuntimeContextAccountingSegmentCategory {
   return typeof value === "string" && categorySet.has(value)
-    ? value as RuntimeContextSegmentCategory
+    ? value as RuntimeContextAccountingSegmentCategory
     : "other";
 }
 
@@ -39,11 +41,11 @@ function assertCount(value: unknown, field: string): number {
   return value;
 }
 
-function assertKind(value: unknown): RuntimeContextSegmentKind {
+function assertKind(value: unknown): RuntimeContextAccountingSegmentKind {
   if (typeof value !== "string" || !kindSet.has(value)) {
     throw new TypeError(`Unknown runtime context segment kind: ${String(value)}`);
   }
-  return value as RuntimeContextSegmentKind;
+  return value as RuntimeContextAccountingSegmentKind;
 }
 
 function assertBoolean(value: unknown, field: string): boolean {
@@ -67,7 +69,7 @@ function copySegment(
   const segment: RuntimeContextAccountingSegment = {
     id: assertText(input.id, "segment.id"),
     label: assertText(input.label, "segment.label"),
-    category: normalizeRuntimeContextSegmentCategory(input.category),
+    category: normalizeRuntimeContextAccountingSegmentCategory(input.category),
     kind: assertKind(input.kind),
     tokens: assertCount(input.tokens, "segment.tokens"),
     ...(input.characters === undefined
@@ -109,7 +111,7 @@ export function createRuntimeContextAccounting(
   });
 
   const categoryTotals = new Map<
-    RuntimeContextSegmentCategory,
+    RuntimeContextAccountingSegmentCategory,
     { tokens: number; segments: number }
   >();
   let promptTokens = 0;
@@ -163,7 +165,7 @@ export function createRuntimeContextAccounting(
   }
 
   const categories: RuntimeContextCategoryAccounting[] = [];
-  for (const category of RUNTIME_CONTEXT_SEGMENT_CATEGORIES) {
+  for (const category of RUNTIME_CONTEXT_ACCOUNTING_SEGMENT_CATEGORIES) {
     const totals = categoryTotals.get(category);
     if (!totals) continue;
     categories.push(Object.freeze({

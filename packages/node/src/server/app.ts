@@ -39,6 +39,12 @@ import { skillRoutes } from "./routes/skills.js";
 import { fileRoutes } from "./routes/files.js";
 import { createLocalCustomToolRuntime } from "../custom-tools/runtime.js";
 import { resolveNodeModelOptions } from "../llm/model-runtime-options.js";
+import {
+  createConfiguredRunOutputPolicy,
+  createConfiguredRunToolMiddleware,
+  type RunOutputPolicy,
+  type RunToolMiddleware,
+} from "@polpo-ai/core/guardrails";
 
 function readRuntimeVersion(): string {
   try {
@@ -58,6 +64,10 @@ export interface AppOptions {
   corsOrigins?: string[];
   workDir?: string;
   onInitialize?: (workDir: string) => Promise<void>;
+  /** Optional process-local override for completion tool guardrails. */
+  runToolMiddleware?: RunToolMiddleware;
+  /** Optional process-local override for final-output guardrails. */
+  runOutputPolicy?: RunOutputPolicy;
 }
 
 /**
@@ -120,7 +130,13 @@ export function createApp(orchestrator: Orchestrator, sseBridge: SSEBridge, opts
     getMemoryStore: () => o.getMemoryStore(),
     getSessionStore: () => o.getSessionStore(),
     getStore: () => o.getStore(),
+    runToolMiddleware: opts?.runToolMiddleware
+      ?? createConfiguredRunToolMiddleware(o.getConfig()?.settings?.guardrails),
+    runOutputPolicy: opts?.runOutputPolicy
+      ?? createConfiguredRunOutputPolicy(o.getConfig()?.settings?.guardrails),
     emit: (event: string, data: any) => o.emit(event as any, data),
+    resolveExecutionRouteClassifier: (context) =>
+      o.resolveExecutionRouteClassifier(context),
     resolveAgentModel: async (agentConfig: any, reasoning?: string) => {
       const { buildResolvedModelProviderOptions, resolveModel } = await import("@polpo-ai/llm");
       const settings = o.getConfig()?.settings;
@@ -178,13 +194,7 @@ export function createApp(orchestrator: Orchestrator, sseBridge: SSEBridge, opts
       };
       return { tools, executor, cleanup: mcp.dispose };
     },
-    getProjectLoop: async (name: string) => {
-      const path = join(o.getPolpoDir(), "loops", `${name}.json`);
-      const fs = o.getFs();
-      if (!(await fs.exists(path))) return null;
-      const raw = await fs.readFile(path);
-      return projectLoopConfigSchema.parse(JSON.parse(raw)) as any;
-    },
+    getProjectLoop: (name: string) => o.getProjectLoop(name),
     // Run chat completions through the shared executeRun lifecycle +
     // loop-engine. Injects the route's
     // already-resolved model/prompt/tools/messages so the engine runs a chat

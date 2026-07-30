@@ -34,6 +34,16 @@ import type {
   FileEntry,
   LoadedSkill,
   LogEntry,
+  CreateMemoryItemInput,
+  MemoryItem,
+  MemoryItemPatch,
+  MemoryKind,
+  MemoryListQuery,
+  MemorySearchQuery,
+  MemorySearchResult,
+  MemoryScope,
+  MemoryScopeKind,
+  MemoryStatus,
   LoopApprovalSnapshot,
   LoopApprovedGate,
   LoopConfig,
@@ -133,6 +143,16 @@ export type {
   FileEntry,
   LoadedSkill,
   LogEntry,
+  CreateMemoryItemInput,
+  MemoryItem,
+  MemoryItemPatch,
+  MemoryKind,
+  MemoryListQuery,
+  MemorySearchQuery,
+  MemorySearchResult,
+  MemoryScope,
+  MemoryScopeKind,
+  MemoryStatus,
   LoopApprovalSnapshot,
   LoopApprovedGate,
   LoopConfig,
@@ -208,6 +228,16 @@ export type {
   ToolCallState,
   WhileBlock,
 };
+
+export type ListMemoryItemsQuery = Omit<MemoryListQuery, "now">;
+export type ListMemoryItemsPageQuery = ListMemoryItemsQuery & {
+  readonly cursor?: string;
+};
+export interface MemoryItemsPage {
+  readonly items: MemoryItem[];
+  readonly nextCursor: string | null;
+}
+export type SearchMemoryRequest = Omit<MemorySearchQuery, "now">;
 
 export interface DimensionScoreEvidence {
   file: string;

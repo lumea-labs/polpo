@@ -35,6 +35,14 @@ import { sanitizeTranscriptEntry } from "../server/security.js";
 import { EncryptedVaultStore } from "../vault/encrypted-store.js";
 import type { VaultStore } from "@polpo-ai/core/vault-store";
 import type { MemoryStore } from "@polpo-ai/core/memory-store";
+import {
+  normalizeRuntimePromptContextSegments,
+  normalizeRuntimeContextTrustMode,
+} from "@polpo-ai/core";
+import {
+  createConfiguredRunToolMiddleware,
+  type RunToolMiddleware,
+} from "@polpo-ai/core/guardrails";
 import { NodeFileSystem } from "../adapters/node-filesystem.js";
 import { NodeShell } from "../adapters/node-shell.js";
 
@@ -126,6 +134,8 @@ export interface ExecuteRunDeps {
    * gateway here — the loop runs in a shared process with no per-tenant env.
    */
   gatewayConfig?: unknown;
+  /** Optional host-resolved tool guardrail middleware. */
+  runToolMiddleware?: RunToolMiddleware;
   /** Pid recorded on the run record: process.pid (subprocess) or a synthetic negative id (in-process). */
   pid: number;
   /** Where the config was persisted ("file:///path", "db://runId", "memory://…"). */
@@ -214,6 +224,14 @@ export async function executeRun(config: RunnerConfig, deps: ExecuteRunDeps): Pr
     }
 
     const memoryStore: MemoryStore = deps.memoryStore ?? new FileMemoryStore(config.polpoDir);
+    const contextTrust = normalizeRuntimeContextTrustMode(
+      config.contextTrust ?? deps.inject?.contextTrust,
+    );
+    const promptContextSegments = contextTrust === "enforce"
+      ? normalizeRuntimePromptContextSegments(config.promptContextSegments)
+      : [];
+    const runToolMiddleware = deps.runToolMiddleware
+      ?? createConfiguredRunToolMiddleware(config.guardrails);
     const handleTranscript = (entry: Record<string, unknown>) => {
       // F1a: live subscription for streaming hosts (chat-via-executeRun). Teed
       // first, best-effort — it must never break persistence below.
@@ -232,6 +250,7 @@ export async function executeRun(config: RunnerConfig, deps: ExecuteRunDeps): Pr
 
     const spawnCtx = {
       polpoDir: config.polpoDir,
+      runId: config.runId,
       outputDir: config.outputDir,
       emailAllowedDomains: config.emailAllowedDomains,
       reasoning: config.reasoning,
@@ -242,6 +261,9 @@ export async function executeRun(config: RunnerConfig, deps: ExecuteRunDeps): Pr
       // Per-tenant gateway for the in-process host (undefined for subprocess,
       // which resolves the gateway from sandbox env).
       gatewayConfig: deps.gatewayConfig,
+      contextTrust,
+      promptContextSegments,
+      runToolMiddleware,
       // Subprocess hosts create their own fs/shell; the in-process host
       // injects the orchestrator's instances.
       fs: deps.fs ?? new NodeFileSystem(),
@@ -250,6 +272,9 @@ export async function executeRun(config: RunnerConfig, deps: ExecuteRunDeps): Pr
       // and the per-turn checkpoint sink (one RunStore write per turn,
       // best-effort — a flaky store must never fail a healthy run).
       resumeState: config.resumeState,
+      // Chat injection already carries its fully assembled system prompt.
+      // Task runs receive the immutable snapshot through prepareSpawn.
+      runtimeContext: deps.inject ? undefined : config.runtimeContext,
       onTurnCheckpoint: async (state: LoopResumeState) => {
         try {
           await runStore.updateResumeState?.(config.runId, state);
