@@ -750,10 +750,13 @@ export interface UpdateSettingsRequest {
 
 // === SSE ===
 
-export interface SSEEvent {
+export interface SSEEvent<
+  TEvent extends string = string,
+  TData = unknown,
+> {
   id: string;
-  event: string;
-  data: unknown;
+  event: TEvent;
+  data: TData;
   timestamp: string;
 }
 
@@ -1009,21 +1012,29 @@ export interface ChatCompletionMessage {
   name?: string;
 }
 
-export interface ChatCompletionRequest {
-  messages: ChatCompletionMessage[];
-  stream?: boolean;
-  /** Polpo extension: target a specific project by ID. If omitted, uses the first registered project. */
-  project?: string;
+/**
+ * Runtime choices already accepted by the OpenAI-compatible completion
+ * endpoint. Keeping them in one contract lets higher-level SDKs expose the
+ * same request controls without redefining their wire shape.
+ */
+export interface RuntimeCompletionRequestOptions {
   /** Optional per-request model override for the selected agent. */
   model?: string;
   /** Optional runtime sandbox policy for this chat request. */
   sandbox?: RuntimeSandboxOptions;
+  /** Target a project-level loop assigned to the selected agent. */
+  loop?: string;
+}
+
+export interface ChatCompletionRequest extends RuntimeCompletionRequestOptions {
+  messages: ChatCompletionMessage[];
+  stream?: boolean;
+  /** Polpo extension: target a specific project by ID. If omitted, uses the first registered project. */
+  project?: string;
   /** Session ID for conversation persistence. If omitted, server auto-selects or creates one. */
   sessionId?: string;
   /** Target a specific agent by name for direct conversation. Uses the agent's own model, system prompt, and coding tools. Omit to talk to the orchestrator (default). */
   agent?: string;
-  /** Polpo extension: target a project-level loop assigned to the selected agent. */
-  loop?: string;
   /**
    * Opaque end-user identifier (OpenAI-compat). Persisted on the session and
    * available for filtering, per-user analytics, and pass-through to billing

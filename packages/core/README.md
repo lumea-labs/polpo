@@ -188,6 +188,39 @@ deterministically. Timeout, provider failure, malformed output, unknown
 profiles, and low confidence use the configured fallback; caller cancellation
 stops planning instead of starting execution with a fallback.
 
+## Runtime inspection
+
+Hosts can report prompt and context size through the shared, secret-free
+accounting contract:
+
+```ts
+import {
+  createRuntimeContextAccounting,
+} from "@polpo-ai/core/runtime-inspection";
+
+const accounting = createRuntimeContextAccounting([
+  {
+    id: "instructions",
+    label: "Core instructions",
+    category: "instructions",
+    kind: "prompt",
+    tokens: 420,
+  },
+  {
+    id: "tools",
+    label: "Tool definitions",
+    category: "tools",
+    kind: "tool-schema",
+    tokens: 180,
+  },
+]);
+```
+
+Tokenization remains a host concern. The contract standardizes categories and
+totals so self-hosted and managed inspectors display the same breakdown.
+Segments contain counts and labels only, never their underlying content.
+Memory and Brain are separate categories.
+
 ## Runtime prompt context trust
 
 Prompt-bound context keeps source and trust metadata attached to retrieved

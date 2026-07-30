@@ -6,7 +6,7 @@ import type { SSEEvent } from "./types.js";
  * addEventListener() calls for each named event type; `onmessage` only
  * receives unnamed events.
  */
-const ALL_SSE_EVENTS = [
+export const POLPO_SSE_EVENT_NAMES = [
   // Task lifecycle
   "task:created", "task:transition", "task:updated", "task:removed",
   // Agent lifecycle
@@ -30,6 +30,8 @@ const ALL_SSE_EVENTS = [
   "mission:saved", "mission:executed", "mission:completed", "mission:resumed", "mission:deleted",
   // Chat sessions
   "session:created", "message:added",
+  // Runtime decisions
+  "runtime:plan",
   // Approval gates
   "approval:requested", "approval:resolved", "approval:rejected", "approval:timeout",
   // Escalation
@@ -116,7 +118,7 @@ export class EventSourceManager {
     // field in the SSE stream) to explicit addEventListener() calls — the
     // generic `onmessage` handler does NOT receive them. This list must stay
     // in sync with the server-side ALL_EVENTS in src/server/sse-bridge.ts.
-    for (const eventName of ALL_SSE_EVENTS) {
+    for (const eventName of POLPO_SSE_EVENT_NAMES) {
       es.addEventListener(eventName, (e) => this.handleMessage(e as MessageEvent));
     }
 

@@ -1,9 +1,19 @@
 // ── Client ────────────────────────────────────────────────────
 export { PolpoClient, ChatCompletionStream } from "./client/polpo-client.js";
 export type { PolpoClientConfig } from "./client/polpo-client.js";
-export { EventSourceManager } from "./client/event-source.js";
+export {
+  EventSourceManager,
+  POLPO_SSE_EVENT_NAMES,
+} from "./client/event-source.js";
 export type { ConnectionStatus, EventSourceConfig } from "./client/event-source.js";
 export { PolpoApiError } from "./client/errors.js";
+export { isRuntimePlanSSEEvent } from "./client/runtime-events.js";
+export type {
+  RuntimeContextAccounting,
+  RuntimePlan,
+  RuntimePlanResolvedEvent,
+  RuntimePlanSSEEvent,
+} from "./client/runtime-events.js";
 
 // ── Store ─────────────────────────────────────────────────────
 export { PolpoStore } from "./store/polpo-store.js";
@@ -20,6 +30,8 @@ export {
   selectAssessmentChecks,
   selectSessions,
   selectSession,
+  selectRuntimePlan,
+  selectLatestRuntimePlan,
 } from "./store/selectors.js";
 
 // ── Types ─────────────────────────────────────────────────────
@@ -121,6 +133,7 @@ export type {
   FileContentPart,
   ContentPart,
   ChatCompletionRequest,
+  RuntimeCompletionRequestOptions,
   ChatCompletionResponse,
   ChatCompletionChoice,
   ChatCompletionChunk,

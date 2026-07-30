@@ -9,6 +9,9 @@ import type {
   MissionDelay,
 } from "../client/types.js";
 import type { StoreState } from "./types.js";
+import { isRuntimePlanSSEEvent } from "../client/runtime-events.js";
+
+const MAX_INDEXED_RUNTIME_PLANS = 200;
 
 /**
  * Pure function: produces next state from current state + SSE event.
@@ -22,6 +25,25 @@ export function reduceEvent(state: StoreState, sseEvent: SSEEvent): StoreState {
   let next: StoreState = { ...state, recentEvents };
 
   switch (event) {
+    // ── Runtime decisions ─────────────────────────────────────
+
+    case "runtime:plan": {
+      if (!isRuntimePlanSSEEvent(sseEvent)) return next;
+      const runtimePlans = new Map(state.runtimePlans ?? []);
+      runtimePlans.delete(sseEvent.data.plan.id);
+      runtimePlans.set(sseEvent.data.plan.id, sseEvent.data.plan);
+      while (runtimePlans.size > MAX_INDEXED_RUNTIME_PLANS) {
+        const oldestPlanId = runtimePlans.keys().next().value;
+        if (oldestPlanId === undefined) break;
+        runtimePlans.delete(oldestPlanId);
+      }
+      return {
+        ...next,
+        runtimePlans,
+        latestRuntimePlanId: sseEvent.data.plan.id,
+      };
+    }
+
     // ── Task lifecycle ────────────────────────────────────────
 
     case "task:created": {

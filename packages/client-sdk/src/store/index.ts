@@ -13,5 +13,7 @@ export {
   selectAssessmentChecks,
   selectSessions,
   selectSession,
+  selectRuntimePlan,
+  selectLatestRuntimePlan,
 } from "./selectors.js";
 export type { TaskFilter } from "./selectors.js";
