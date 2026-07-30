@@ -272,4 +272,44 @@ describe("PolpoClient Brain", () => {
       expect.objectContaining({ method: "DELETE" }),
     );
   });
+
+  it("lists versions and reads bounded chunks using encoded source paths", async () => {
+    const { client, fetch } = setup();
+    const scope = { kind: "project", subjectId: "project/a" } as const;
+
+    await client.listBrainSourceVersions("source/1", scope);
+    await client.readBrainSource("source/1", {
+      scope,
+      version: "v 2",
+      offset: 3,
+      limit: 8,
+      tokenBudget: 1200,
+    });
+
+    expect(fetch).toHaveBeenNthCalledWith(
+      1,
+      "https://api.polpo.sh/v1/brain/sources/source%2F1/versions?scopeKind=project&scopeId=project%2Fa",
+      expect.objectContaining({ method: "GET" }),
+    );
+    expect(fetch).toHaveBeenNthCalledWith(
+      2,
+      "https://api.polpo.sh/v1/brain/sources/source%2F1/read?scopeKind=project&scopeId=project%2Fa&version=v+2&offset=3&limit=8&tokenBudget=1200",
+      expect.objectContaining({ method: "GET" }),
+    );
+  });
+
+  it("rejects invalid Brain read pagination without making a request", async () => {
+    const { client, fetch } = setup();
+
+    expect(() => client.readBrainSource("source-1", {
+      offset: -1,
+    })).toThrow(/offset/i);
+    expect(() => client.readBrainSource("source-1", {
+      limit: 101,
+    })).toThrow(/limit/i);
+    expect(() => client.readBrainSource("source-1", {
+      tokenBudget: 0,
+    })).toThrow(/tokenBudget/i);
+    expect(fetch).not.toHaveBeenCalled();
+  });
 });

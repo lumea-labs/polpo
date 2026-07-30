@@ -34,6 +34,19 @@ const source = {
   updatedAt: "2026-07-28T12:00:01.000Z",
 } as const;
 
+const version = {
+  sourceId: source.id,
+  version: "v1",
+  status: "indexed",
+  contentType: "text/plain",
+  byteSize: 15,
+  contentHash: "a".repeat(64),
+  metadata: {},
+  createdAt: "2026-07-28T12:00:00.000Z",
+  updatedAt: "2026-07-28T12:00:01.000Z",
+  indexedAt: "2026-07-28T12:00:01.000Z",
+} as const;
+
 function service(): BrainManagementService {
   return {
     listSources: vi.fn(async () => ({ sources: [source] })),
@@ -42,11 +55,26 @@ function service(): BrainManagementService {
     updateSource: vi.fn(async () => source),
     deleteSource: vi.fn(async () => undefined),
     reindexSource: vi.fn(async () => source),
-    listVersions: vi.fn(async () => []),
+    listVersions: vi.fn(async () => [version]),
     search: vi.fn(async () => []),
-    readSource: vi.fn(async () => {
-      throw new Error("not used");
-    }),
+    readSource: vi.fn(async () => ({
+      source,
+      version,
+      chunks: [{
+        id: "chunk-1",
+        sourceId: source.id,
+        version: version.version,
+        index: 0,
+        content: "Support policy.",
+        citation: {
+          sourceId: source.id,
+          version: version.version,
+          chunkId: "chunk-1",
+          label: source.label,
+        },
+        metadata: {},
+      }],
+    })),
   };
 }
 
@@ -184,6 +212,59 @@ describe("brainRoutes", () => {
       limit: 4,
       tokenBudget: 900,
     });
+  });
+
+  it("lists versions and reads bounded source chunks in an exact scope", async () => {
+    const runtime = app();
+
+    const versions = await runtime.app.request(
+      "/sources/source-1/versions",
+    );
+    const read = await runtime.app.request(
+      "/sources/source-1/read?offset=2&limit=4&tokenBudget=900",
+    );
+
+    expect(versions.status).toBe(200);
+    expect(await versions.json()).toMatchObject({
+      ok: true,
+      data: [{ version: "v1", status: "indexed" }],
+    });
+    expect(read.status).toBe(200);
+    expect(await read.json()).toMatchObject({
+      ok: true,
+      data: {
+        source: { id: "source-1" },
+        chunks: [{ id: "chunk-1" }],
+      },
+    });
+    const ref = { scope: projectA, sourceId: "source-1" };
+    expect(runtime.runtime.listVersions).toHaveBeenCalledWith(context, ref);
+    expect(runtime.runtime.readSource).toHaveBeenCalledWith(context, {
+      ref,
+      offset: 2,
+      limit: 4,
+      tokenBudget: 900,
+    });
+  });
+
+  it("validates source inspection bounds before calling the service", async () => {
+    const runtime = app();
+    const responses = await Promise.all([
+      runtime.app.request("/sources/source-1/read?offset=-1"),
+      runtime.app.request("/sources/source-1/read?limit=0"),
+      runtime.app.request("/sources/source-1/read?limit=101"),
+      runtime.app.request("/sources/source-1/read?tokenBudget=0"),
+      runtime.app.request("/sources/source-1/read?unexpected=true"),
+      runtime.app.request(
+        "/sources/source-1/versions?scopeKind=project",
+      ),
+    ]);
+
+    for (const response of responses) {
+      expect(response.status).toBe(400);
+    }
+    expect(runtime.runtime.readSource).not.toHaveBeenCalled();
+    expect(runtime.runtime.listVersions).not.toHaveBeenCalled();
   });
 
   it("returns 404 without leaking whether an inaccessible source exists", async () => {

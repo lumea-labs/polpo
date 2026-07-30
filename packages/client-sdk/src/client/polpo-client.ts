@@ -100,6 +100,9 @@ import type {
   BrainSourceFilters,
   BrainSourceListResult,
   BrainRetrievalResult,
+  BrainSourceVersion,
+  ReadBrainSourceRequest,
+  ReadBrainSourceResult,
   CreateBrainSourceRequest,
   BrainUpdateSourceRequest,
   BrainReindexSourceRequest,
@@ -989,6 +992,70 @@ export class PolpoClient {
     return this.post<BrainSource>(
       `/brain/sources/${encodeURIComponent(sourceId)}/reindex${this.brainScopeQuery(scope)}`,
       request,
+    );
+  }
+
+  listBrainSourceVersions(
+    sourceId: string,
+    scope?: BrainScope,
+  ): Promise<readonly BrainSourceVersion[]> {
+    return this.get<readonly BrainSourceVersion[]>(
+      `/brain/sources/${encodeURIComponent(sourceId)}/versions${this.brainScopeQuery(scope)}`,
+    );
+  }
+
+  readBrainSource(
+    sourceId: string,
+    request: ReadBrainSourceRequest = {},
+  ): Promise<ReadBrainSourceResult> {
+    if (
+      request.offset !== undefined
+      && (!Number.isSafeInteger(request.offset) || request.offset < 0)
+    ) {
+      throw new TypeError("Brain read offset must be a non-negative integer");
+    }
+    if (
+      request.limit !== undefined
+      && (
+        !Number.isSafeInteger(request.limit)
+        || request.limit < 1
+        || request.limit > 100
+      )
+    ) {
+      throw new TypeError("Brain read limit must be an integer from 1 to 100");
+    }
+    if (
+      request.tokenBudget !== undefined
+      && (
+        !Number.isSafeInteger(request.tokenBudget)
+        || request.tokenBudget < 1
+        || request.tokenBudget > 100_000
+      )
+    ) {
+      throw new TypeError(
+        "Brain read tokenBudget must be an integer from 1 to 100000",
+      );
+    }
+    const params = new URLSearchParams();
+    if (request.scope) {
+      params.set("scopeKind", request.scope.kind);
+      params.set("scopeId", request.scope.subjectId);
+    }
+    if (request.version !== undefined) {
+      params.set("version", request.version);
+    }
+    if (request.offset !== undefined) {
+      params.set("offset", String(request.offset));
+    }
+    if (request.limit !== undefined) {
+      params.set("limit", String(request.limit));
+    }
+    if (request.tokenBudget !== undefined) {
+      params.set("tokenBudget", String(request.tokenBudget));
+    }
+    const query = params.toString();
+    return this.get<ReadBrainSourceResult>(
+      `/brain/sources/${encodeURIComponent(sourceId)}/read${query ? `?${query}` : ""}`,
     );
   }
 

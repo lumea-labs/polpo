@@ -84,12 +84,18 @@ const SourceParamsSchema = z.object({
 const ScopeQuerySchema = z.object({
   scopeKind: z.enum(["org", "project"]).optional(),
   scopeId: z.string().trim().min(1).max(512).optional(),
-});
+}).strict();
 const ListQuerySchema = ScopeQuerySchema.extend({
   status: z.string().trim().min(1).optional(),
   type: z.string().trim().min(1).optional(),
   limit: z.coerce.number().int().min(1).max(1_000).optional(),
   cursor: z.string().trim().min(1).max(8_192).optional(),
+});
+const ReadSourceQuerySchema = ScopeQuerySchema.extend({
+  version: z.string().trim().min(1).max(512).optional(),
+  offset: z.coerce.number().int().min(0).max(1_000_000).optional(),
+  limit: z.coerce.number().int().min(1).max(100).optional(),
+  tokenBudget: z.coerce.number().int().min(1).max(100_000).optional(),
 });
 
 const SuccessSchema = z.object({
@@ -196,6 +202,28 @@ const reindexRoute = createRoute({
     },
   },
   responses: responses(202),
+});
+const listVersionsRoute = createRoute({
+  method: "get",
+  path: "/sources/{sourceId}/versions",
+  tags: ["Brain"],
+  summary: "List Brain source versions",
+  request: {
+    params: SourceParamsSchema,
+    query: ScopeQuerySchema,
+  },
+  responses: responses(200),
+});
+const readSourceRoute = createRoute({
+  method: "get",
+  path: "/sources/{sourceId}/read",
+  tags: ["Brain"],
+  summary: "Read bounded chunks from a Brain source",
+  request: {
+    params: SourceParamsSchema,
+    query: ReadSourceQuerySchema,
+  },
+  responses: responses(200),
 });
 const searchRoute = createRoute({
   method: "post",
@@ -466,6 +494,49 @@ export function brainRoutes(
         body,
       );
       return c.json({ ok: true as const, data }, 202);
+    } catch (error) {
+      return errorResponse(c, error) as never;
+    }
+  });
+
+  app.openapi(listVersionsRoute, async (c) => {
+    try {
+      const { service, context } = await resolveDeps(c);
+      const { sourceId } = c.req.valid("param");
+      const scope = inferredScope(
+        context,
+        "read",
+        explicitScope(c.req.valid("query")),
+      );
+      const data = await service.listVersions(context, { scope, sourceId });
+      return c.json({ ok: true as const, data }, 200);
+    } catch (error) {
+      return errorResponse(c, error) as never;
+    }
+  });
+
+  app.openapi(readSourceRoute, async (c) => {
+    try {
+      const { service, context } = await resolveDeps(c);
+      const { sourceId } = c.req.valid("param");
+      const query = c.req.valid("query");
+      const scope = inferredScope(
+        context,
+        "read",
+        explicitScope(query),
+      );
+      const data = await service.readSource(context, {
+        ref: { scope, sourceId },
+        ...(query.version === undefined
+          ? {}
+          : { version: query.version }),
+        ...(query.offset === undefined ? {} : { offset: query.offset }),
+        ...(query.limit === undefined ? {} : { limit: query.limit }),
+        ...(query.tokenBudget === undefined
+          ? {}
+          : { tokenBudget: query.tokenBudget }),
+      });
+      return c.json({ ok: true as const, data }, 200);
     } catch (error) {
       return errorResponse(c, error) as never;
     }
