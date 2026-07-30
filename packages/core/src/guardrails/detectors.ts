@@ -440,3 +440,24 @@ export function createDefaultToolGuardrailPolicies(): readonly RuntimeGuardrailP
     }),
   ]);
 }
+
+export function createDefaultOutputGuardrailPolicies(
+  maxCharacters?: number,
+): readonly RuntimeGuardrailPolicy[] {
+  return Object.freeze([
+    createCrossScopePolicy(),
+    ...(maxCharacters !== undefined
+      ? [createBoundedValuePolicy({
+          id: "output.bounded-value",
+          phases: ["output"],
+          maxCharacters,
+          action: "block",
+        })]
+      : []),
+    createSecretPatternPolicy({
+      id: "secrets.output",
+      phases: ["output"],
+      action: "redact",
+    }),
+  ]);
+}

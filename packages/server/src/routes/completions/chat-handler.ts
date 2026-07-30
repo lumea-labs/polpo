@@ -50,6 +50,10 @@ import {
   toAITools,
 } from "./tool-mapping.js";
 import type { CompletionToolExecutor } from "./tool-guardrails.js";
+import {
+  applyCompletionOutputPolicy,
+  streamingOutputPolicyMode,
+} from "./output-guardrails.js";
 
 /** Resolved execution context for a standard (non-loop) chat completion. */
 export interface ChatCompletionExecution {
@@ -126,6 +130,7 @@ export function streamChatCompletion(c: any, exec: ChatCompletionExecution): any
   let providerOpts = primaryProviderOpts;
   const modelSelection = exec.modelSelection ?? modelSelectionForResolvedModel(primaryModel);
   const reasoning = exec.agentConfig?.reasoning ?? deps.getConfig()?.settings?.reasoning;
+  const outputMode = streamingOutputPolicyMode(deps.runOutputPolicy);
 
   return streamSSE(c, async (stream) => {
     // Abort controller: cancelled when the client disconnects (closes SSE)
@@ -162,6 +167,23 @@ export function streamChatCompletion(c: any, exec: ChatCompletionExecution): any
     let totalUsage: LanguageModelUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 } as LanguageModelUsage;
     const toolCallsAccum: any[] = [];
     let lastProviderMetadata: Record<string, unknown> | undefined;
+    let outputPolicyApplied = false;
+    const finalizeOutput = async () => {
+      if (outputPolicyApplied) return;
+      finalText = await applyCompletionOutputPolicy({
+        outputPolicy: deps.runOutputPolicy,
+        text: finalText,
+        mode: outputMode === "buffer" ? "enforce" : "audit",
+        runtimePlan: exec.runtimePlan,
+        agent: body.agent,
+        sessionId,
+        signal: abortController.signal,
+      });
+      outputPolicyApplied = true;
+      if (outputMode === "buffer" && finalText) {
+        await stream.writeSSE({ data: sseChunk(completionId, { content: finalText }) });
+      }
+    };
 
     try {
       for (let turn = 0; turn < MAX_TURNS; turn++) {
@@ -235,7 +257,9 @@ export function streamChatCompletion(c: any, exec: ChatCompletionExecution): any
           } else if (event.type === "text-delta") {
             turnText += event.text;
             finalText += event.text;
-            await stream.writeSSE({ data: sseChunk(completionId, { content: event.text }) });
+            if (outputMode !== "buffer") {
+              await stream.writeSSE({ data: sseChunk(completionId, { content: event.text }) });
+            }
           } else if (event.type === "tool-input-start") {
             // Emit early "preparing" signal — the LLM has started generating a tool call
             // but arguments are not yet complete. Lets the UI show immediate feedback.
@@ -276,7 +300,9 @@ export function streamChatCompletion(c: any, exec: ChatCompletionExecution): any
 
         if (streamError) {
           finalText += `\n\nError: ${streamError}`;
-          await stream.writeSSE({ data: sseChunk(completionId, { content: `\n\nError: ${streamError}` }) });
+          if (outputMode !== "buffer") {
+            await stream.writeSSE({ data: sseChunk(completionId, { content: `\n\nError: ${streamError}` }) });
+          }
           break;
         }
 
@@ -328,6 +354,7 @@ export function streamChatCompletion(c: any, exec: ChatCompletionExecution): any
             arguments: clientSideCall.input,
             state: "interrupted",
           });
+          await finalizeOutput();
           // Send as standard OpenAI tool_calls finish reason
           await stream.writeSSE({
             data: JSON.stringify({
@@ -365,6 +392,7 @@ export function streamChatCompletion(c: any, exec: ChatCompletionExecution): any
             arguments: interactiveCall.input,
             state: "interrupted",
           });
+          await finalizeOutput();
 
           if (interactiveCall.toolName === "ask_user") {
             const questions = (interactiveCall.input as any)?.questions as any[] ?? [];
@@ -509,6 +537,7 @@ export function streamChatCompletion(c: any, exec: ChatCompletionExecution): any
       }
 
       if (!abortController.signal.aborted) {
+        await finalizeOutput();
         await stream.writeSSE({ data: sseChunk(completionId, {}, "stop") });
         await stream.writeSSE({ data: "[DONE]" });
       }
@@ -523,6 +552,8 @@ export function streamChatCompletion(c: any, exec: ChatCompletionExecution): any
         const guardrailError = guardrailErrorEnvelope(err);
         const notFound = modelNotFoundEnvelope(err, m?.id, body.agent);
         if (guardrailError) {
+          finalText = guardrailError.message;
+          outputPolicyApplied = true;
           await stream.writeSSE({
             data: sseChunk(completionId, {}, "stop", { error: guardrailError }),
           });
@@ -535,7 +566,7 @@ export function streamChatCompletion(c: any, exec: ChatCompletionExecution): any
         } else {
           const error = modelErrorEnvelope(err);
           const text = `Model request failed: ${error.message}`;
-          finalText += text;
+          finalText = outputMode === "buffer" ? text : finalText + text;
           await stream.writeSSE({ data: sseChunk(completionId, { content: text }) });
           await stream.writeSSE({ data: sseChunk(completionId, {}, "stop", { error }) });
           await stream.writeSSE({ data: "[DONE]" });
@@ -594,6 +625,19 @@ export async function runNonStreamingChatCompletion(c: any, exec: ChatCompletion
   let totalUsage: LanguageModelUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 } as LanguageModelUsage;
   const toolCallsAccum: any[] = [];
   let lastProviderMetadata: Record<string, unknown> | undefined;
+  let outputPolicyApplied = false;
+  const finalizeOutput = async () => {
+    if (outputPolicyApplied) return;
+    finalText = await applyCompletionOutputPolicy({
+      outputPolicy: deps.runOutputPolicy,
+      text: finalText,
+      mode: "enforce",
+      runtimePlan: exec.runtimePlan,
+      agent: body.agent,
+      sessionId,
+    });
+    outputPolicyApplied = true;
+  };
 
   try {
     for (let turn = 0; turn < MAX_TURNS; turn++) {
@@ -680,6 +724,7 @@ export async function runNonStreamingChatCompletion(c: any, exec: ChatCompletion
           arguments: clientSideCall.input,
           state: "interrupted",
         });
+        await finalizeOutput();
         return c.json({
           id: completionId,
           object: "chat.completion",
@@ -719,6 +764,7 @@ export async function runNonStreamingChatCompletion(c: any, exec: ChatCompletion
           arguments: interactiveCall.input,
           state: "interrupted",
         });
+        await finalizeOutput();
 
         const baseResponse = {
           id: completionId,
@@ -890,6 +936,7 @@ export async function runNonStreamingChatCompletion(c: any, exec: ChatCompletion
       }
     }
 
+    await finalizeOutput();
     return c.json(completionResponse(completionId, finalText, totalUsage));
   } catch (err) {
     // Friendly model_not_found surface — gateway returns 404 for
@@ -897,7 +944,8 @@ export async function runNonStreamingChatCompletion(c: any, exec: ChatCompletion
     // rename). Without this catch the error propagates as a 500.
     const guardrailError = guardrailErrorEnvelope(err);
     if (guardrailError) {
-      finalText = finalText || guardrailError.message;
+      finalText = guardrailError.message;
+      outputPolicyApplied = true;
       return c.json(
         { error: guardrailError },
         (guardrailError.code === "guardrail_approval_required" ? 409 : 403) as any,

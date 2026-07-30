@@ -14,6 +14,7 @@ vi.mock("ai", () => ({
 import { completionRoutes, type CompletionRouteDeps } from "./completions.js";
 import {
   RuntimeGuardrailEngine,
+  createRunOutputPolicy,
   createRunToolMiddleware,
 } from "@polpo-ai/core";
 
@@ -112,6 +113,41 @@ describe("completionRoutes provider-executed tools", () => {
       }),
     };
   }
+
+  it("enforces output policy on inline non-streaming completions", async () => {
+    streamTextMock.mockReturnValue(mockStreamResult({
+      text: "unsafe inline output",
+      toolCalls: [],
+      responseMessages: [{
+        role: "assistant",
+        content: "unsafe inline output",
+      }],
+    }));
+    const deps = makeDeps();
+    deps.runOutputPolicy = createRunOutputPolicy(new RuntimeGuardrailEngine([{
+      id: "redact-inline-output",
+      phases: ["output"],
+      evaluate: () => ({
+        action: "redact",
+        risk: "high",
+        reason: "sensitive inline result",
+        value: "safe inline output",
+      }),
+    }]));
+
+    const res = await completionRoutes(() => deps).request("/", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        agent: "researcher",
+        messages: [{ role: "user", content: "answer" }],
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    const json = await res.json() as any;
+    expect(json.choices[0].message.content).toBe("safe inline output");
+  });
 
   it("feeds provider-executed tool results back through AI SDK responseMessages", async () => {
     let secondTurnMessages: any[] | undefined;

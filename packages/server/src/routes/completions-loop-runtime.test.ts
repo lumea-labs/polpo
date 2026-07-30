@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   MemoryLoopRunStore,
   RuntimeGuardrailEngine,
+  createRunOutputPolicy,
   createRunToolMiddleware,
   type LoopTraceEvent,
 } from "@polpo-ai/core";
@@ -94,6 +95,35 @@ describe("completionRoutes project loop runtime", () => {
       "loop.end",
     ]);
     expect(json.loop_trace[0]).toMatchObject({ loop: "time-tracker", status: "started" });
+  });
+
+  it("enforces output policy before returning project-loop output", async () => {
+    const deps = makeDeps();
+    deps.runOutputPolicy = createRunOutputPolicy(new RuntimeGuardrailEngine([{
+      id: "redact-loop-output",
+      phases: ["output"],
+      evaluate: () => ({
+        action: "redact",
+        risk: "high",
+        reason: "sensitive loop result",
+        value: "safe loop result",
+      }),
+    }]));
+
+    const app = completionRoutes(() => deps);
+    const res = await app.request("/", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        agent: "timer",
+        loop: "time-tracker",
+        messages: [{ role: "user", content: "track it" }],
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    const json = await res.json() as any;
+    expect(json.choices[0].message.content).toBe("safe loop result");
   });
 
   it("persists bounded execution-route audit metadata for auto-routed runs", async () => {

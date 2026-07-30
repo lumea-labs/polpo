@@ -131,14 +131,49 @@ export interface RunToolMiddlewareOptions {
   readonly maxOutputCharacters?: number;
 }
 
+export type RuntimeOutputEnforcementMode = "enforce" | "audit";
+export type RuntimeStreamingOutputMode = "audit" | "buffer";
+
+export interface RunOutputPolicyRequest {
+  readonly output: string;
+  readonly mode: RuntimeOutputEnforcementMode;
+  readonly context: RuntimeGuardrailContext;
+  readonly signal?: AbortSignal;
+}
+
+export interface RunOutputPolicyResult {
+  readonly output: string;
+  readonly decisions: readonly RuntimeGuardrailDecision[];
+  /** False means the output was already delivered and decisions are observational. */
+  readonly enforced: boolean;
+}
+
+export type RuntimeGuardrailOutputApprovalHandler = (
+  request: RunOutputPolicyRequest,
+  decision: RuntimeGuardrailDecision,
+) => RuntimeGuardrailApprovalResult | Promise<RuntimeGuardrailApprovalResult>;
+
+export interface RunOutputPolicy {
+  readonly streamingMode: RuntimeStreamingOutputMode;
+  evaluate(request: RunOutputPolicyRequest): Promise<RunOutputPolicyResult>;
+}
+
+export interface RunOutputPolicyOptions {
+  readonly approval?: RuntimeGuardrailOutputApprovalHandler;
+  readonly streamingMode?: RuntimeStreamingOutputMode;
+}
+
 /**
  * Serializable, host-neutral settings that may cross a process boundary in a
  * RunnerConfig. The absent setting is deliberately the disabled state.
  */
 export interface RuntimeGuardrailSettings {
-  readonly toolPolicyPack: "default";
+  readonly toolPolicyPack?: "default";
+  readonly outputPolicyPack?: "default";
   readonly maxToolOutputCharacters?: number;
+  readonly maxFinalOutputCharacters?: number;
   readonly readOnlyPolicyFailure?: "audit" | "block";
+  readonly streamingOutputMode?: RuntimeStreamingOutputMode;
 }
 
 /**
@@ -147,5 +182,6 @@ export interface RuntimeGuardrailSettings {
  */
 export interface RuntimeGuardrailHostAdapters {
   readonly approval?: RuntimeGuardrailApprovalHandler;
+  readonly outputApproval?: RuntimeGuardrailOutputApprovalHandler;
   readonly onDecision?: RuntimeGuardrailEngineOptions["onDecision"];
 }

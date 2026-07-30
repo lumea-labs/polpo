@@ -230,6 +230,27 @@ describe("parseConfig (.polpo/polpo.json)", () => {
       });
     });
 
+    it("parses output guardrails independently and defaults streaming to audit", async () => {
+      const cfg = {
+        ...minimalConfig(),
+        settings: {
+          ...minimalConfig().settings,
+          guardrails: {
+            outputPolicyPack: "default",
+            maxFinalOutputCharacters: 8192,
+          },
+        },
+      };
+      const workDir = writeConfig(cfg);
+      const config = await parseConfig(workDir);
+
+      expect(config.settings.guardrails).toEqual({
+        outputPolicyPack: "default",
+        maxFinalOutputCharacters: 8192,
+        streamingOutputMode: "audit",
+      });
+    });
+
     it("accepts logLevel 'quiet'", async () => {
       const cfg = {
         ...minimalConfig(),
@@ -327,6 +348,10 @@ describe("parseConfig (.polpo/polpo.json)", () => {
       ["zero output limit", { toolPolicyPack: "default", maxToolOutputCharacters: 0 }],
       ["fractional output limit", { toolPolicyPack: "default", maxToolOutputCharacters: 1.5 }],
       ["invalid read fallback", { toolPolicyPack: "default", readOnlyPolicyFailure: "allow" }],
+      ["unknown output pack", { outputPolicyPack: "custom" }],
+      ["zero final output limit", { outputPolicyPack: "default", maxFinalOutputCharacters: 0 }],
+      ["invalid streaming mode", { outputPolicyPack: "default", streamingOutputMode: "enforce" }],
+      ["orphan streaming mode", { streamingOutputMode: "buffer" }],
     ])("rejects invalid guardrail settings: %s", async (_label, guardrails) => {
       const cfg = {
         ...minimalConfig(),

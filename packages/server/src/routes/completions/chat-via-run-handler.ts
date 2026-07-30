@@ -34,6 +34,10 @@ import {
   CLIENT_SIDE_TOOLS,
   CLIENT_SIDE_TOOL_NAMES,
 } from "./tool-mapping.js";
+import {
+  applyCompletionOutputPolicy,
+  streamingOutputPolicyMode,
+} from "./output-guardrails.js";
 
 /** Best-effort session title from the first user message. */
 function firstUserText(aiMessages: any[]): string {
@@ -104,6 +108,7 @@ interface DriverState {
   lastProviderMetadata: Record<string, unknown> | undefined;
   clientReturn: { id: string; name: string; arguments: unknown } | undefined;
   errorEvent: Record<string, unknown> | undefined;
+  outputPolicyApplied: boolean;
 }
 
 export interface ChatViaRunTurnResult {
@@ -121,6 +126,7 @@ function makeOnEvent(
   execution: ChatCompletionExecution,
   state: DriverState,
   write: (data: string) => void,
+  writeTextDeltas = true,
 ) {
   const { completionId, deps, extraAiTools } = execution;
   const providerToolNames = new Set(Object.keys(extraAiTools ?? {}));
@@ -132,7 +138,7 @@ function makeOnEvent(
       case "text-delta": {
         const text = String(e.text ?? "");
         state.finalText += text;
-        write(sseChunk(completionId, { content: text }));
+        if (writeTextDeltas) write(sseChunk(completionId, { content: text }));
         break;
       }
       case "reasoning-delta": {
@@ -225,7 +231,34 @@ function clientToolFinishChunk(completionId: string, ret: { id: string; name: st
 }
 
 function newState(): DriverState {
-  return { finalText: "", toolCallsAccum: [], totalUsage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 }, lastProviderMetadata: undefined, clientReturn: undefined, errorEvent: undefined };
+  return {
+    finalText: "",
+    toolCallsAccum: [],
+    totalUsage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
+    lastProviderMetadata: undefined,
+    clientReturn: undefined,
+    errorEvent: undefined,
+    outputPolicyApplied: false,
+  };
+}
+
+async function applyStateOutputPolicy(
+  execution: ChatCompletionExecution,
+  state: DriverState,
+  mode: "enforce" | "audit",
+  signal?: AbortSignal,
+): Promise<void> {
+  if (state.outputPolicyApplied) return;
+  state.finalText = await applyCompletionOutputPolicy({
+    outputPolicy: execution.deps.runOutputPolicy,
+    text: state.finalText,
+    mode,
+    runtimePlan: execution.runtimePlan,
+    agent: execution.body.agent,
+    sessionId: execution.sessionId,
+    signal,
+  });
+  state.outputPolicyApplied = true;
 }
 
 function captureRunFailure(
@@ -282,9 +315,10 @@ export function streamChatViaRun(c: Context, execution: ChatCompletionExecution)
     }
 
     const state = newState();
+    const outputMode = streamingOutputPolicyMode(deps.runOutputPolicy);
     let writeChain: Promise<void> = Promise.resolve();
     const write = (data: string) => { writeChain = writeChain.then(() => stream.writeSSE({ data })).catch(() => {}); };
-    const onEvent = makeOnEvent(execution, state, write);
+    const onEvent = makeOnEvent(execution, state, write, outputMode !== "buffer");
 
     try {
       const outcome = await deps.runChatViaRun!(inject, { onEvent, signal: abortController.signal });
@@ -303,10 +337,28 @@ export function streamChatViaRun(c: Context, execution: ChatCompletionExecution)
         await stream.writeSSE({ data: sseChunk(completionId, {}, "stop", { error }) });
         await stream.writeSSE({ data: "[DONE]" });
       } else if (state.clientReturn) {
+        await applyStateOutputPolicy(
+          execution,
+          state,
+          outputMode === "buffer" ? "enforce" : "audit",
+          abortController.signal,
+        );
+        if (outputMode === "buffer" && state.finalText) {
+          await stream.writeSSE({ data: sseChunk(completionId, { content: state.finalText }) });
+        }
         state.toolCallsAccum.push({ id: state.clientReturn.id, name: state.clientReturn.name, arguments: state.clientReturn.arguments, state: "interrupted" });
         await stream.writeSSE({ data: clientToolFinishChunk(completionId, state.clientReturn) });
         await stream.writeSSE({ data: "[DONE]" });
       } else if (!abortController.signal.aborted) {
+        await applyStateOutputPolicy(
+          execution,
+          state,
+          outputMode === "buffer" ? "enforce" : "audit",
+          abortController.signal,
+        );
+        if (outputMode === "buffer" && state.finalText) {
+          await stream.writeSSE({ data: sseChunk(completionId, { content: state.finalText }) });
+        }
         await stream.writeSSE({ data: sseChunk(completionId, {}, "stop") });
         await stream.writeSSE({ data: "[DONE]" });
       }
@@ -314,10 +366,13 @@ export function streamChatViaRun(c: Context, execution: ChatCompletionExecution)
       if (!((err instanceof DOMException && err.name === "AbortError") || abortController.signal.aborted)) {
         const guardrail = guardrailErrorEnvelope(err);
         const notFound = modelNotFoundEnvelope(err, m?.id, body.agent);
-        if (guardrail || notFound) {
-          await stream.writeSSE({
-            data: sseChunk(completionId, {}, "stop", { error: guardrail ?? notFound }),
-          });
+        if (guardrail) {
+          state.finalText = guardrail.message;
+          state.outputPolicyApplied = true;
+          await stream.writeSSE({ data: sseChunk(completionId, {}, "stop", { error: guardrail }) });
+          await stream.writeSSE({ data: "[DONE]" });
+        } else if (notFound) {
+          await stream.writeSSE({ data: sseChunk(completionId, {}, "stop", { error: notFound }) });
           await stream.writeSSE({ data: "[DONE]" });
         } else {
           const error = modelErrorEnvelope(err);
@@ -356,6 +411,9 @@ export async function runNonStreamingChatViaRun(c: Context, execution: ChatCompl
     });
     captureRunFailure(state, outcome);
 
+    if (!state.errorEvent) {
+      await applyStateOutputPolicy(execution, state, "enforce");
+    }
     if (state.clientReturn) {
       return c.json({
         id: completionId,
@@ -387,6 +445,8 @@ export async function runNonStreamingChatViaRun(c: Context, execution: ChatCompl
   } catch (err) {
     const guardrail = guardrailErrorEnvelope(err);
     if (guardrail) {
+      state.finalText = guardrail.message;
+      state.outputPolicyApplied = true;
       return c.json(
         { error: guardrail },
         (guardrail.code === "guardrail_approval_required" ? 409 : 403) as any,
@@ -441,7 +501,16 @@ export async function runChatTurnViaRun(
     runStatus = outcome.status;
     runResult = outcome.result;
     captureRunFailure(state, outcome);
+    if (!state.errorEvent) {
+      await applyStateOutputPolicy(execution, state, "enforce", hooks.signal);
+    }
   } catch (err) {
+    const guardrail = guardrailErrorEnvelope(err);
+    if (guardrail) {
+      state.finalText = guardrail.message;
+      state.outputPolicyApplied = true;
+      throw err;
+    }
     state.errorEvent = (err as Record<string, unknown> | undefined) ?? { message: String(err) };
     const message = err instanceof Error ? err.message : String(err);
     runResult = { exitCode: 1, stdout: "", stderr: message };

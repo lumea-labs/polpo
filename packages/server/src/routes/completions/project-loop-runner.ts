@@ -51,6 +51,10 @@ import {
 } from "./sse.js";
 import { emitFileChanged, persistAssistantMessage, type LoopRuntimeToolCall } from "./tool-mapping.js";
 import { createGuardedCompletionToolExecutor } from "./tool-guardrails.js";
+import {
+  applyCompletionOutputPolicy,
+  streamingOutputPolicyMode,
+} from "./output-guardrails.js";
 
 export interface ProjectLoopRunResult {
   text: string;
@@ -648,6 +652,7 @@ export async function handleProjectLoopCompletion(c: any, options: {
       let resolvedModel: CompletionResolvedModelInfo | undefined;
       let providerMetadata: Record<string, unknown> | undefined;
       let toolCalls: any[] = [];
+      const outputMode = streamingOutputPolicyMode(deps.runOutputPolicy);
 
       try {
         await stream.writeSSE({ data: sseChunk(completionId, { role: "assistant" }) });
@@ -689,6 +694,16 @@ export async function handleProjectLoopCompletion(c: any, options: {
         resolvedModel = run.resolvedModel;
         providerMetadata = run.providerMetadata;
         toolCalls = run.toolCalls;
+        finalText = await applyCompletionOutputPolicy({
+          outputPolicy: deps.runOutputPolicy,
+          text: finalText,
+          mode: outputMode === "buffer" ? "enforce" : "audit",
+          runtimePlan,
+          agent: body.agent,
+          runId: run.loopRunId,
+          sessionId,
+          signal: abortController.signal,
+        });
 
         if (!abortController.signal.aborted && finalText) {
           await stream.writeSSE({ data: sseChunk(completionId, { content: finalText }) });
@@ -704,6 +719,7 @@ export async function handleProjectLoopCompletion(c: any, options: {
         const guardrailError = guardrailErrorEnvelope(err);
         const notFound = modelNotFoundEnvelope(err, runModel, body.agent);
         if (guardrailError) {
+          finalText = guardrailError.message;
           await stream.writeSSE({ data: sseChunk(completionId, {}, "stop", { error: guardrailError }) });
           await stream.writeSSE({ data: "[DONE]" });
           return;
@@ -774,10 +790,20 @@ export async function handleProjectLoopCompletion(c: any, options: {
     resolvedModel = run.resolvedModel;
     providerMetadata = run.providerMetadata;
     toolCalls = run.toolCalls;
+    finalText = await applyCompletionOutputPolicy({
+      outputPolicy: deps.runOutputPolicy,
+      text: finalText,
+      mode: "enforce",
+      runtimePlan,
+      agent: body.agent,
+      runId: run.loopRunId,
+      sessionId,
+    });
     return c.json(completionResponse(completionId, finalText, runUsage, { loop_trace: run.trace, loop_run_id: run.loopRunId }));
   } catch (err) {
     const guardrailError = guardrailErrorEnvelope(err);
     if (guardrailError) {
+      finalText = guardrailError.message;
       return c.json(
         { error: guardrailError },
         (guardrailError.code === "guardrail_approval_required" ? 409 : 403) as any,

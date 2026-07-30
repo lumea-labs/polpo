@@ -255,6 +255,23 @@ const middleware = createRunToolMiddleware(
 );
 ```
 
+Final-output policy uses the same engine and runs before non-streaming or
+detached delivery. Streaming is audit-only by default; opt into buffering when
+redaction or blocking must happen before any text reaches the client:
+
+```ts
+import {
+  RuntimeGuardrailEngine,
+  createDefaultOutputGuardrailPolicies,
+  createRunOutputPolicy,
+} from "@polpo-ai/core/guardrails";
+
+const outputPolicy = createRunOutputPolicy(
+  new RuntimeGuardrailEngine(createDefaultOutputGuardrailPolicies()),
+  { streamingMode: "buffer" },
+);
+```
+
 The middleware evaluates the actual arguments before dispatch, executes the
 tool at most once, bounds its textual result, and evaluates that result before
 it returns to model context. Policy failures fail closed for side-effecting or
@@ -274,7 +291,10 @@ in-process and subprocess task runs:
     "guardrails": {
       "toolPolicyPack": "default",
       "maxToolOutputCharacters": 256000,
-      "readOnlyPolicyFailure": "audit"
+      "readOnlyPolicyFailure": "audit",
+      "outputPolicyPack": "default",
+      "maxFinalOutputCharacters": 65536,
+      "streamingOutputMode": "audit"
     }
   }
 }

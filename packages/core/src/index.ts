@@ -111,6 +111,9 @@ export * from "./guardrails/index.js";
 // ── Runtime context (source/trust metadata + injection-safe rendering) ──
 export * from "./runtime-context/index.js";
 
+// ── Guardrails (host-neutral policy engine + tool middleware) ───────────
+export * from "./guardrails/index.js";
+
 // ── Events (pure type definitions only, TypedEmitter lives in shell) ─────
 export * from "./events.js";
 

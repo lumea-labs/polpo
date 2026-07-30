@@ -226,6 +226,9 @@ describe("TaskRunner execution routing", () => {
     h.ctx.config.settings.guardrails = {
       toolPolicyPack: "default",
       maxToolOutputCharacters: 8_192,
+      outputPolicyPack: "default",
+      maxFinalOutputCharacters: 16_384,
+      streamingOutputMode: "buffer",
     };
     h.ctx.config.settings.contextTrust = "enforce";
     h.ctx.memoryStore.get
@@ -254,6 +257,9 @@ describe("TaskRunner execution routing", () => {
       guardrails: {
         toolPolicyPack: "default",
         maxToolOutputCharacters: 8_192,
+        outputPolicyPack: "default",
+        maxFinalOutputCharacters: 16_384,
+        streamingOutputMode: "buffer",
       },
       runtimeContext: {
         segments: [{
