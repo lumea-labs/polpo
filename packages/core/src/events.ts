@@ -9,6 +9,7 @@
 import type { Task, TaskStatus, DimensionScore, MissionStatus, MissionReport } from "./types.js";
 import type { RuntimePlanResolvedEvent } from "./runtime-plan/index.js";
 import type { ExecutionRouteResolvedEvent } from "./execution-router.js";
+import type { RuntimeGuardrailAuditEvent } from "./guardrails/index.js";
 
 export interface PolpoEventMap {
   // Task lifecycle
@@ -77,6 +78,12 @@ export interface PolpoEventMap {
   // Runtime planning
   "runtime:plan": RuntimePlanResolvedEvent;
   "runtime:execution-route": ExecutionRouteResolvedEvent;
+  "runtime:guardrail": {
+    runId: string;
+    taskId: string;
+    agentName: string;
+    event: RuntimeGuardrailAuditEvent;
+  };
 
   // Approval gates
   "approval:requested": { requestId: string; gateId: string; gateName: string; taskId?: string; missionId?: string };

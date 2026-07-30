@@ -20,6 +20,7 @@ import {
   resolveTaskExecutionRoute,
   type ResolvedExecutionRoute,
 } from "./execution-router.js";
+import type { RuntimeGuardrailAuditEvent } from "./guardrails/index.js";
 
 /**
  * Durable turns: max age of a resume checkpoint before orphan recovery
@@ -110,6 +111,7 @@ export class TaskRunner {
   ): Promise<void> {
     const terminalRuns = await this.ctx.runStore.getTerminalRuns();
     for (const run of terminalRuns) {
+      await this.emitGuardrailEvents(run);
       // Persist sessionId on the task before acknowledging the run.
       const sid = run.sessionId ?? run.activity.sessionId;
       if (sid) {
@@ -155,6 +157,43 @@ export class TaskRunner {
         await this.ctx.runStore.deleteRun(run.id);
       }
       this.staleWarned.delete(run.taskId);
+    }
+  }
+
+  private async emitGuardrailEvents(run: RunRecord): Promise<void> {
+    const byId = new Map<string, RuntimeGuardrailAuditEvent>();
+    const sid = run.sessionId ?? run.activity.sessionId;
+    if (sid) {
+      try {
+        const entries = await this.ctx.logStore.getSessionEntries(sid);
+        for (const entry of entries) {
+          if (entry.event !== "transcript:guardrail_decision") continue;
+          const data = entry.data as {
+            type?: unknown;
+            event?: RuntimeGuardrailAuditEvent;
+          } | undefined;
+          const event = data?.event;
+          if (!event) continue;
+          const id = event?.decision?.id;
+          if (data?.type === "guardrail_decision" && typeof id === "string") {
+            byId.set(id, event);
+          }
+        }
+      } catch {
+        // Activity is the bounded fallback when transcript storage is down.
+      }
+    }
+    for (const event of run.activity.guardrailDecisions ?? []) {
+      const id = event?.decision?.id;
+      if (typeof id === "string" && !byId.has(id)) byId.set(id, event);
+    }
+    for (const event of byId.values()) {
+      this.ctx.emitter.emit("runtime:guardrail", {
+        runId: run.id,
+        taskId: run.taskId,
+        agentName: run.agentName,
+        event,
+      });
     }
   }
 

@@ -160,7 +160,7 @@ describe("executeRun — shared run lifecycle", () => {
       configPath: `memory://${config.runId}`,
     });
 
-    expect(outcome.status).toBe("completed");
+    expect(outcome.status, outcome.result.stderr).toBe("completed");
     expect(outcome.spawnError).toBeUndefined();
     expect(outcome.result.exitCode).toBe(0);
     expect(outcome.result.stdout).toBe("lifecycle done");
@@ -283,6 +283,164 @@ describe("executeRun — shared run lifecycle", () => {
     expect(outcome.status).toBe("failed");
     expect(outcome.result.stderr).toContain("Potentially destructive");
     expect(execute).not.toHaveBeenCalled();
+  });
+
+  test("serialized task guardrails persist secret-free decisions in activity and transcript", async () => {
+    setMockModel(mockTurnSequenceModel([
+      {
+        type: "tool-call",
+        toolName: "bash",
+        args: {
+          command: "rm -rf /",
+          token: "sk-this-value-must-never-enter-the-audit-event",
+        },
+      },
+    ]));
+    const store = new InMemoryRunStore();
+    const config = makeConfig({
+      guardrails: { toolPolicyPack: "default" },
+    });
+    const appended: Array<{ event: string; data: unknown }> = [];
+
+    const outcome = await executeRun(config, {
+      runStore: store,
+      pid: 4246,
+      configPath: `memory://${config.runId}`,
+      createLogSession: async () => ({
+        sessionId: "guardrail-session",
+        append: async (entry) => {
+          appended.push(entry as { event: string; data: unknown });
+        },
+      }),
+    });
+
+    expect(outcome.status).toBe("failed");
+    const run = await store.getRun(config.runId);
+    expect(run?.activity.guardrailDecisions).toEqual([
+      expect.objectContaining({
+        decision: expect.objectContaining({
+          phase: "tool.before",
+          action: "approval",
+        }),
+        context: expect.objectContaining({
+          runId: config.runId,
+          agent: "lifecycle-agent",
+          surface: "task",
+          source: "task",
+        }),
+        tool: expect.objectContaining({ name: "bash" }),
+      }),
+    ]);
+    const persisted = appended.filter(
+      (entry) => entry.event === "transcript:guardrail_decision",
+    );
+    expect(persisted).toHaveLength(1);
+    expect(JSON.stringify(persisted)).not.toContain("rm -rf");
+    expect(JSON.stringify(persisted)).not.toContain("sk-this-value");
+  });
+
+  test("serialized output guardrails redact background output before transcript and result persistence", async () => {
+    const secret = "sk-abcdefghijklmnopqrstuvwxyzABCDEFGH123456";
+    setMockModel(mockTurnSequenceModel([
+      { type: "text", text: `token ${secret}` },
+    ]));
+    const store = new InMemoryRunStore();
+    const config = makeConfig({
+      guardrails: {
+        outputPolicyPack: "default",
+        streamingOutputMode: "buffer",
+      },
+    });
+    const events: Record<string, unknown>[] = [];
+
+    const outcome = await executeRun(config, {
+      runStore: store,
+      pid: 4247,
+      configPath: `memory://${config.runId}`,
+      onEvent: (event) => events.push(event),
+    });
+
+    expect(outcome.status).toBe("completed");
+    expect(outcome.result.stdout).toBe("token [REDACTED]");
+    expect(events).toContainEqual({
+      type: "assistant",
+      text: "token [REDACTED]",
+    });
+    expect(JSON.stringify(events)).not.toContain(secret);
+    const run = await store.getRun(config.runId);
+    expect(run?.activity.guardrailDecisions).toEqual([
+      expect.objectContaining({
+        decision: expect.objectContaining({
+          phase: "output",
+          action: "redact",
+        }),
+      }),
+    ]);
+    expect(JSON.stringify(run?.resumeState)).not.toContain(secret);
+    expect(JSON.stringify(await readActivityLog(config.runId))).not.toContain(secret);
+  });
+
+  test("audit-mode output guardrails preserve delivered text and still record decisions", async () => {
+    const secret = "sk-abcdefghijklmnopqrstuvwxyzABCDEFGH123456";
+    setMockModel(mockTurnSequenceModel([
+      { type: "text", text: `token ${secret}` },
+    ]));
+    const store = new InMemoryRunStore();
+    const config = makeConfig({
+      guardrailMode: "audit",
+      guardrails: { outputPolicyPack: "default" },
+    });
+
+    const outcome = await executeRun(config, {
+      runStore: store,
+      pid: 4249,
+      configPath: `memory://${config.runId}`,
+    });
+
+    expect(outcome.status, outcome.result.stderr).toBe("completed");
+    expect(outcome.result.stdout).toBe(`token ${secret}`);
+    expect((await store.getRun(config.runId))?.activity.guardrailDecisions)
+      .toEqual([
+        expect.objectContaining({
+          decision: expect.objectContaining({
+            action: "redact",
+            phase: "output",
+          }),
+        }),
+      ]);
+  });
+
+  test("audit-mode task guardrails report decisions without blocking tool execution", async () => {
+    setMockModel(mockTurnSequenceModel([
+      { type: "tool-call", toolName: "bash", args: { command: "rm -rf /" } },
+      { type: "text", text: "continued in audit mode" },
+    ]));
+    const store = new InMemoryRunStore();
+    const config = makeConfig({
+      guardrailMode: "audit",
+      guardrails: { toolPolicyPack: "default" },
+    });
+    const execute = vi.fn(async () => ({
+      stdout: "observed",
+      stderr: "",
+      exitCode: 0,
+    }));
+
+    const outcome = await executeRun(config, {
+      runStore: store,
+      pid: 4248,
+      configPath: `memory://${config.runId}`,
+      shell: { execute },
+    });
+
+    expect(outcome.status, outcome.result.stderr).toBe("completed");
+    expect(execute).toHaveBeenCalledOnce();
+    expect((await store.getRun(config.runId))?.activity.guardrailDecisions)
+      .toEqual([
+        expect.objectContaining({
+          decision: expect.objectContaining({ action: "approval" }),
+        }),
+      ]);
   });
 
   test("onEvent (F1a): a streaming host receives each transcript entry live, teed alongside persistence", async () => {

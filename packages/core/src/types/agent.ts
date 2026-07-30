@@ -15,6 +15,7 @@ import type {
   ModelOperation,
   ModelRuntimeMode,
 } from "../model-runtime.js";
+import type { RuntimeGuardrailAuditEvent } from "../guardrails/types.js";
 
 // === Reasoning / Thinking ===
 
@@ -200,6 +201,13 @@ export interface AgentActivity {
    * persist or bill these records.
    */
   toolUsage?: ToolUsageRecord[];
+  /**
+   * Bounded, secret-free guardrail decisions retained with a detached run so
+   * another process can forward them to its host audit plane.
+   */
+  guardrailDecisions?: RuntimeGuardrailAuditEvent[];
+  /** True when additional decisions were omitted from the bounded snapshot. */
+  guardrailDecisionsTruncated?: boolean;
 }
 
 /** One model-using tool invocation fact harvested from a tool result. */

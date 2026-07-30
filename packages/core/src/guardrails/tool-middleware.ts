@@ -1,5 +1,6 @@
 import type { RuntimeGuardrailDecision } from "../runtime-plan/types.js";
 import {
+  GuardrailError,
   GuardrailAbortedError,
   GuardrailApprovalRequiredError,
   GuardrailBlockedError,
@@ -167,6 +168,43 @@ export function createRunToolMiddleware(
       });
     },
   };
+}
+
+/**
+ * Evaluate an enforcing middleware after the real tool call and retain only
+ * its secret-free decisions. The original arguments and output always win.
+ *
+ * Hosts use this for shadow/audit rollout modes. Policy failures are
+ * deliberately best-effort: observation must never change a successful tool
+ * execution.
+ */
+export function createObservationalRunToolMiddleware(
+  configured: RunToolMiddleware,
+): RunToolMiddleware {
+  return Object.freeze({
+    async execute(
+      request: RunToolRequest,
+      next: RunToolNext,
+    ): Promise<RunToolExecutionResult> {
+      const output = await next(request);
+      let decisions: readonly RuntimeGuardrailDecision[] = [];
+      try {
+        const evaluation = await configured.execute(
+          request,
+          async () => output,
+        );
+        decisions = evaluation.decisions;
+      } catch (error) {
+        if (error instanceof GuardrailError) decisions = error.decisions;
+      }
+      return Object.freeze({
+        output,
+        args: request.args,
+        decisions: Object.freeze([...decisions]),
+        outputTruncated: false,
+      });
+    },
+  });
 }
 
 export function wrapRunToolExecutor(

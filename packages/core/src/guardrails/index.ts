@@ -17,6 +17,7 @@ export {
 } from "./detectors.js";
 export { createRunOutputPolicy } from "./output-policy.js";
 export {
+  createObservationalRunToolMiddleware,
   createRunToolMiddleware,
   inferToolSideEffect,
   wrapRunToolExecutor,

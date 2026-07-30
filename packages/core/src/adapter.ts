@@ -15,7 +15,11 @@ import type { LoopResumeState } from "@polpo-ai/core/loop-run-store";
 import type { ModelSelection } from "./model-policy.js";
 import type { RuntimePlan } from "./runtime-plan/index.js";
 import type { RuntimeSandboxOptions } from "./runtime-sandbox.js";
-import type { RunToolMiddleware } from "./guardrails/index.js";
+import type {
+  RunOutputPolicy,
+  RunToolMiddleware,
+  RuntimeOutputEnforcementMode,
+} from "./guardrails/index.js";
 import type {
   RuntimeContextResolution,
   RuntimeContextTrustMode,
@@ -96,6 +100,10 @@ export interface SpawnContext {
    * historical direct execution path.
    */
   runToolMiddleware?: RunToolMiddleware;
+  /** Optional final-output policy for background runtime turns. */
+  runOutputPolicy?: RunOutputPolicy;
+  /** Enforcement mode for runOutputPolicy. Defaults to enforce. */
+  runOutputPolicyMode?: RuntimeOutputEnforcementMode;
   /**
    * Durable-turns checkpoint from a previous interrupted run. Single-session
    * loops seed their conversation history from it and continue at turn + 1;

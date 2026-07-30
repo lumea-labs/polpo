@@ -89,6 +89,23 @@ function toToolDeclarations(polpoTools: PolpoTool[]): ToolSet {
   return toolSet;
 }
 
+function replaceAssistantText(
+  messages: ModelMessage[],
+  output: string,
+): ModelMessage[] {
+  return messages.map((message) => {
+    if (message.role !== "assistant" || !Array.isArray(message.content)) return message;
+    let wrote = false;
+    const content = message.content.map((part) => {
+      if (!part || typeof part !== "object" || part.type !== "text") return part;
+      if (wrote) return { ...part, text: "" };
+      wrote = true;
+      return { ...part, text: output };
+    });
+    return wrote ? ({ ...message, content } as ModelMessage) : message;
+  });
+}
+
 async function loadProjectLoop(fs: FileSystem, polpoDir: string, name: string): Promise<ProjectLoopConfig> {
   const path = join(polpoDir, "loops", `${name}.json`);
   let raw: string;
@@ -600,19 +617,34 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
       }
       activity.lastUpdate = new Date().toISOString();
 
-      if (stepText) {
-        activity.summary = stepText.slice(0, 200);
-        emitTranscript({ type: "assistant", text: stepText });
-        accumText += stepText;
-      }
-      lastStepText = stepText;
+      const rawText = stepText || (toolCalls.length === 0 ? turn.text : "");
+      const guardedText = rawText && ctx?.runOutputPolicy
+        ? (await ctx.runOutputPolicy.evaluate({
+            output: rawText,
+            mode: ctx.runOutputPolicyMode ?? "enforce",
+            context: {
+              agent: sessionAgent.name,
+              runId: ctx.runId,
+              source: "task",
+              surface: "task",
+            },
+            signal: abortController.signal,
+          })).output
+        : rawText;
 
-      if (toolCalls.length === 0) {
-        lastStepText = turn.text;
+      if (guardedText) {
+        activity.summary = guardedText.slice(0, 200);
+        emitTranscript({ type: "assistant", text: guardedText });
+        accumText += guardedText;
       }
+      lastStepText = guardedText;
 
       // Append the assistant message (with its tool-call parts) to history.
-      const responseMessages = normalizeResponseMessagesForHistory(turn.responseMessages);
+      const normalizedResponseMessages =
+        normalizeResponseMessagesForHistory(turn.responseMessages);
+      const responseMessages = guardedText !== rawText
+        ? replaceAssistantText(normalizedResponseMessages, guardedText)
+        : normalizedResponseMessages;
       messages.push(...(contextTrust === "enforce"
         ? protectRuntimeToolResultMessages(responseMessages)
         : responseMessages));
@@ -627,7 +659,7 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
         });
       }
 
-      return { text: stepText, toolCalls, usage: stepUsage };
+      return { text: guardedText, toolCalls, usage: stepUsage };
     };
 
     // ── LoopRunner tool executor: dispatch + history append ──
