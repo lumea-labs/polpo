@@ -1,6 +1,6 @@
 {
   "name": "@polpo-ai/core",
-  "version": "0.15.38",
+  "version": "0.15.43",
   "description": "Pure business logic, types, schemas, and store interfaces for the Polpo AI agent orchestration platform",
   "type": "module",
   "main": "dist/index.js",
@@ -54,6 +54,14 @@
       "types": "./dist/guardrails/index.d.ts",
       "import": "./dist/guardrails/index.js"
     },
+    "./runtime-context": {
+      "types": "./dist/runtime-context/index.d.ts",
+      "import": "./dist/runtime-context/index.js"
+    },
+    "./execution-router": {
+      "types": "./dist/execution-router.d.ts",
+      "import": "./dist/execution-router.js"
+    },
     "./hooks": {
       "types": "./dist/hooks.d.ts",
       "import": "./dist/hooks.js"
@@ -77,6 +85,10 @@
     "./memory-store": {
       "types": "./dist/memory-store.d.ts",
       "import": "./dist/memory-store.js"
+    },
+    "./memory": {
+      "types": "./dist/memory/index.d.ts",
+      "import": "./dist/memory/index.js"
     },
     "./approval-store": {
       "types": "./dist/approval-store.d.ts",

@@ -102,6 +102,14 @@ export type {
 
 // ── Runtime planning (host-neutral, serializable execution decisions) ───
 export * from "./runtime-plan/index.js";
+export * from "./runtime-context/index.js";
+export * from "./execution-router.js";
+
+// ── Guardrails (host-neutral policy engine + tool middleware) ───────────
+export * from "./guardrails/index.js";
+
+// ── Runtime context (source/trust metadata + injection-safe rendering) ──
+export * from "./runtime-context/index.js";
 
 // ── Guardrails (host-neutral policy engine + tool middleware) ───────────
 export * from "./guardrails/index.js";
@@ -136,6 +144,7 @@ export { isTerminalRunStatus, UNIFIED_RUN_TERMINAL_STATUSES } from "./unified-ru
 export type { ConfigStore } from "./config-store.js";
 export type { MemoryStore } from "./memory-store.js";
 export { agentMemoryScope } from "./memory-store.js";
+export * from "./memory/index.js";
 export type { SearchProvider, SearchResult, SearchOptions } from "./search-provider.js";
 export {
   parseModelString,

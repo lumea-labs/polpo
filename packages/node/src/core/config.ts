@@ -14,6 +14,7 @@ import {
   modelSelectionSchema,
 } from "@polpo-ai/core/schemas";
 import { normalizeRuntimeGuardrailSettings } from "@polpo-ai/core/guardrails";
+import { validateExecutionRouterConfig } from "@polpo-ai/core/execution-router";
 import { getPolpoDir } from "./constants.js";
 
 const DEFAULT_SETTINGS: PolpoSettings = {
@@ -21,6 +22,7 @@ const DEFAULT_SETTINGS: PolpoSettings = {
   workDir: ".",
   logLevel: "normal",
   chatExecution: "run",
+  contextTrust: "off",
 };
 
 // --- .polpo/polpo.json (persistent project config) ---
@@ -81,6 +83,13 @@ export function validateAgents(agents: any[]): void {
     // Validate reportsTo — self-reference
     if (agent.reportsTo === agent.name) {
       throw new Error(`Agent "${agent.name}": cannot report to itself`);
+    }
+    if (agent.executionRouter !== undefined) {
+      try {
+        validateExecutionRouterConfig(agent.executionRouter);
+      } catch (error) {
+        throw new Error(`Agent "${agent.name}": ${(error as Error).message}`);
+      }
     }
   }
 
@@ -193,6 +202,9 @@ function parseSettings(raw: any): PolpoSettings {
   settings.chatExecution = ["inline", "run"].includes(raw?.chatExecution)
     ? raw.chatExecution
     : DEFAULT_SETTINGS.chatExecution;
+  settings.contextTrust = raw?.contextTrust === "enforce"
+    ? "enforce"
+    : DEFAULT_SETTINGS.contextTrust;
   if (raw?.databaseUrl && typeof raw.databaseUrl === "string") {
     settings.databaseUrl = raw.databaseUrl;
   }

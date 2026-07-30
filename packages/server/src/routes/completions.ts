@@ -31,11 +31,14 @@
 
 import { OpenAPIHono } from "@hono/zod-openapi";
 import {
+  type ExecutionRouteClassifier,
+  type ExecutionRouteClassifierResolverContext,
   type LoopRunStore,
   type ModelSelection,
   type ProfiledModelSelection,
   type ProjectLoopConfig,
   type RuntimeDecisionSource,
+  type RuntimeContextProvider,
   type RuntimeInvocationSource,
   type RuntimePlan,
   type RunToolMiddleware,
@@ -108,6 +111,21 @@ export interface CompletionRouteDeps {
    * before delivery; streaming follows the policy's explicit audit/buffer mode.
    */
   runOutputPolicy?: RunOutputPolicy;
+  /**
+   * Optional and disabled by default. When provided with a positive budget,
+   * resolves one structured Memory/Brain snapshot before prompt assembly.
+   */
+  runtimeContext?: RuntimeContextProvider;
+  /**
+   * Lazily resolve the optional execution-route classifier. Hosts retain
+   * ownership of its model, credentials, and rollout decision.
+   */
+  resolveExecutionRouteClassifier?: (
+    context: ExecutionRouteClassifierResolverContext,
+  ) =>
+     | ExecutionRouteClassifier
+     | undefined
+     | Promise<ExecutionRouteClassifier | undefined>;
   /** Resolve agent model. Must return an object with aiModel (LanguageModel), provider, contextWindow, maxTokens, and providerOptions. */
   resolveAgentModel: (agentConfig: any, settingsReasoning?: string) => Promise<{
     model: ResolvedModelInfo;
@@ -218,6 +236,9 @@ export interface CompletionRuntimePlanInput {
 export interface CompletionRuntimeInvocation {
   readonly surface: RuntimeSurface;
   readonly source: RuntimeInvocationSource;
+  readonly channelId?: string;
+  readonly requestId?: string;
+  readonly runId?: string;
 }
 
 export function completionRoutes(getDeps: () => CompletionRouteDeps, apiKeys?: string[]): OpenAPIHono {
@@ -241,6 +262,7 @@ export function completionRoutes(getDeps: () => CompletionRouteDeps, apiKeys?: s
     const prepared = await prepareChatCompletionExecution(deps, body, {
       sessionId: rawSessionHeader === "new" ? null : rawSessionHeader,
       setHeader: (name, value) => c.header(name, value),
+      signal: c.req.raw.signal,
     });
 
     if (prepared.kind === "error") {
@@ -264,9 +286,13 @@ export function completionRoutes(getDeps: () => CompletionRouteDeps, apiKeys?: s
         projectLoop: prepared.projectLoop,
         aiMessages: prepared.aiMessages,
         extraSystemParts: prepared.extraSystemParts,
+        contextTrust: prepared.contextTrust,
+        runtimeContext: prepared.runtimeContext,
+        runtimeInvocation: prepared.runtimeInvocation,
         sessionStore: prepared.sessionStore,
         sessionId: prepared.sessionId,
         runtimePlan: prepared.runtimePlan,
+        executionRoute: prepared.executionRoute,
       }) as any;
     }
 

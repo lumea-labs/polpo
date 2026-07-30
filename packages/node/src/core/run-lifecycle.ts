@@ -36,6 +36,10 @@ import { EncryptedVaultStore } from "../vault/encrypted-store.js";
 import type { VaultStore } from "@polpo-ai/core/vault-store";
 import type { MemoryStore } from "@polpo-ai/core/memory-store";
 import {
+  normalizeRuntimePromptContextSegments,
+  normalizeRuntimeContextTrustMode,
+} from "@polpo-ai/core";
+import {
   createConfiguredRunToolMiddleware,
   type RunToolMiddleware,
 } from "@polpo-ai/core/guardrails";
@@ -220,6 +224,12 @@ export async function executeRun(config: RunnerConfig, deps: ExecuteRunDeps): Pr
     }
 
     const memoryStore: MemoryStore = deps.memoryStore ?? new FileMemoryStore(config.polpoDir);
+    const contextTrust = normalizeRuntimeContextTrustMode(
+      config.contextTrust ?? deps.inject?.contextTrust,
+    );
+    const promptContextSegments = contextTrust === "enforce"
+      ? normalizeRuntimePromptContextSegments(config.promptContextSegments)
+      : [];
     const runToolMiddleware = deps.runToolMiddleware
       ?? createConfiguredRunToolMiddleware(config.guardrails);
     const handleTranscript = (entry: Record<string, unknown>) => {
@@ -251,6 +261,8 @@ export async function executeRun(config: RunnerConfig, deps: ExecuteRunDeps): Pr
       // Per-tenant gateway for the in-process host (undefined for subprocess,
       // which resolves the gateway from sandbox env).
       gatewayConfig: deps.gatewayConfig,
+      contextTrust,
+      promptContextSegments,
       runToolMiddleware,
       // Subprocess hosts create their own fs/shell; the in-process host
       // injects the orchestrator's instances.
@@ -260,6 +272,9 @@ export async function executeRun(config: RunnerConfig, deps: ExecuteRunDeps): Pr
       // and the per-turn checkpoint sink (one RunStore write per turn,
       // best-effort — a flaky store must never fail a healthy run).
       resumeState: config.resumeState,
+      // Chat injection already carries its fully assembled system prompt.
+      // Task runs receive the immutable snapshot through prepareSpawn.
+      runtimeContext: deps.inject ? undefined : config.runtimeContext,
       onTurnCheckpoint: async (state: LoopResumeState) => {
         try {
           await runStore.updateResumeState?.(config.runId, state);

@@ -2,8 +2,8 @@ import { describe, expect, it, vi } from "vitest";
 import {
   MemoryLoopRunStore,
   RuntimeGuardrailEngine,
-  createRunToolMiddleware,
   createRunOutputPolicy,
+  createRunToolMiddleware,
   type LoopTraceEvent,
 } from "@polpo-ai/core";
 import { completionRoutes, type CompletionRouteDeps } from "./completions.js";
@@ -97,7 +97,7 @@ describe("completionRoutes project loop runtime", () => {
     expect(json.loop_trace[0]).toMatchObject({ loop: "time-tracker", status: "started" });
   });
 
-  it("enforces output policy before returning and persisting project-loop output", async () => {
+  it("enforces output policy before returning project-loop output", async () => {
     const deps = makeDeps();
     deps.runOutputPolicy = createRunOutputPolicy(new RuntimeGuardrailEngine([{
       id: "redact-loop-output",
@@ -124,6 +124,64 @@ describe("completionRoutes project loop runtime", () => {
     expect(res.status).toBe(200);
     const json = await res.json() as any;
     expect(json.choices[0].message.content).toBe("safe loop result");
+  });
+
+  it("persists bounded execution-route audit metadata for auto-routed runs", async () => {
+    const loopRunStore = new MemoryLoopRunStore();
+    const deps = makeDeps();
+    deps.getAgents = async () => [{
+      name: "timer",
+      model: "test",
+      assignedLoops: ["time-tracker"],
+      executionRouter: {
+        mode: "auto",
+        allowedLoops: ["time-tracker"],
+      },
+      allowedTools: ["unix_time"],
+    }];
+    deps.resolveExecutionRouteClassifier = async () => ({
+      classify: async () => ({
+        mode: "loop",
+        loop: "time-tracker",
+        confidence: 0.93,
+        reason: "Deterministic timing workflow",
+      }),
+    });
+    deps.getLoopRunStore = () => loopRunStore;
+
+    const app = completionRoutes(() => deps);
+    const res = await app.request("/", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        agent: "timer",
+        messages: [{ role: "user", content: "PRIVATE REQUEST BODY" }],
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    const runs = await loopRunStore.listRuns();
+    expect(runs).toHaveLength(1);
+    expect(runs[0].metadata).toMatchObject({
+      runtime: "chat.completions",
+      surface: "agent",
+      source: "request",
+      execution: {
+        mode: "loop",
+        loop: "time-tracker",
+        source: "router",
+      },
+      executionRoute: {
+        status: "routed",
+        decisionSource: "router",
+        confidence: 0.93,
+        fallbackUsed: false,
+      },
+    });
+    expect(runs[0].metadata?.executionRoute).not.toHaveProperty("input");
+    expect(JSON.stringify(runs[0].metadata)).not.toContain(
+      "PRIVATE REQUEST BODY",
+    );
   });
 
   it("executes deterministic loop tools through the direct runtime executor when model tools are routerized", async () => {

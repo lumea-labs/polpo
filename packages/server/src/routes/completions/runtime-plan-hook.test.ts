@@ -108,6 +108,8 @@ describe("completion runtime plan hook", () => {
       agent: "agent-1",
       stream: false,
       messages: [{ role: "user", content: "hello" }],
+    }, {
+      runtime: { surface: "channel", source: "channel" },
     });
 
     expect(prepared.kind).toBe("chat");

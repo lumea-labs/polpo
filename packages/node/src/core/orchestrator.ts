@@ -30,6 +30,12 @@ import type {
   TaskResult,
   Team,
 } from "@polpo-ai/core/types";
+import type { ProjectLoopConfig } from "@polpo-ai/core";
+import type {
+  ExecutionRouteClassifier,
+  ExecutionRouteClassifierResolverContext,
+} from "@polpo-ai/core/execution-router";
+import { projectLoopConfigSchema } from "@polpo-ai/core/schemas";
 import { AgentManager } from "@polpo-ai/core/agent-manager";
 import { TaskManager } from "@polpo-ai/core/task-manager";
 import { MissionExecutor } from "@polpo-ai/core/mission-executor";
@@ -71,6 +77,7 @@ import { NodeShell } from "../adapters/node-shell.js";
 import type { FileSystem } from "@polpo-ai/core/filesystem";
 import type { Shell } from "@polpo-ai/core/shell";
 import { resolveNodeModelOptions } from "../llm/model-runtime-options.js";
+import type { RuntimeContextProvider } from "@polpo-ai/core/runtime-context";
 
 // Re-export for backward compatibility (consumed by core/index.ts and external modules)
 export { buildFixPrompt, buildRetryPrompt };
@@ -82,6 +89,17 @@ export interface OrchestratorOptions {
   runStore?: RunStore;
   assessFn?: AssessFn;
   spawner?: Spawner;
+  runtimeContext?: RuntimeContextProvider;
+  /**
+   * Host-owned classifier factory for opt-in automatic execution routing.
+   * Neither core nor the Node host chooses a model implicitly.
+   */
+  resolveExecutionRouteClassifier?: (
+    context: ExecutionRouteClassifierResolverContext,
+  ) =>
+     | ExecutionRouteClassifier
+     | undefined
+     | Promise<ExecutionRouteClassifier | undefined>;
 }
 
 export class Orchestrator extends TypedEmitter {
@@ -119,6 +137,8 @@ export class Orchestrator extends TypedEmitter {
   private fs: FileSystem;
   private shell: Shell;
   private gatewayConfig: GatewayConfig | undefined;
+  private runtimeContext?: RuntimeContextProvider;
+  private executionRouteClassifierResolver?: OrchestratorOptions["resolveExecutionRouteClassifier"];
 
   // Managers
   private agentMgr!: AgentManager;
@@ -149,6 +169,35 @@ export class Orchestrator extends TypedEmitter {
   getQualityController(): QualityController | undefined { return this.qualityController; }
   getScheduler(): Scheduler | undefined { return this.scheduler; }
   getWatcherManager(): TaskWatcherManager | undefined { return this.watcherMgr; }
+  resolveExecutionRouteClassifier(
+    context: ExecutionRouteClassifierResolverContext,
+  ): ReturnType<NonNullable<OrchestratorOptions["resolveExecutionRouteClassifier"]>> {
+    return this.executionRouteClassifierResolver?.(context);
+  }
+
+  async getProjectLoop(name: string): Promise<ProjectLoopConfig | null> {
+    if (
+      typeof name !== "string" ||
+      !name ||
+      name.trim() !== name ||
+      name.includes("/") ||
+      name.includes("\\") ||
+      name.includes("\0")
+    ) {
+      throw new Error("Project loop name is invalid");
+    }
+    const path = join(this.polpoDir, "loops", `${name}.json`);
+    if (!(await this.fs.exists(path))) return null;
+    const parsed = projectLoopConfigSchema.parse(
+      JSON.parse(await this.fs.readFile(path)),
+    );
+    if (parsed.name !== name) {
+      throw new Error(
+        `Project loop file "${name}.json" declares a different name`,
+      );
+    }
+    return parsed as ProjectLoopConfig;
+  }
 
   /** Re-point the orchestrator at a different project directory (before init). */
   resetWorkDir(newWorkDir: string): void {
@@ -176,6 +225,8 @@ export class Orchestrator extends TypedEmitter {
       this.assessFn = opts.assessFn ?? assessTask;
       this.injectedStore = opts.store;
       this.injectedRunStore = opts.runStore;
+      this.runtimeContext = opts.runtimeContext;
+      this.executionRouteClassifierResolver = opts.resolveExecutionRouteClassifier;
       this.spawnerInjected = !!opts.spawner;
       this.spawner = opts.spawner ?? new NodeSpawner({ polpoDir: this.polpoDir, cwd: this.workDir });
     }
@@ -433,6 +484,7 @@ export class Orchestrator extends TypedEmitter {
       polpoDir: this.polpoDir,
       assessFn: this.assessFn,
       spawner: this.spawner,
+      runtimeContext: this.runtimeContext,
 
       // Shell-specific ports (Node.js implementations)
       killProcess: (pid, signal) => { try { process.kill(pid, (signal ?? "SIGTERM") as NodeJS.Signals); } catch { /* already dead */ } },
@@ -471,6 +523,8 @@ export class Orchestrator extends TypedEmitter {
         if (!existsSync(logPath)) return null;
         return readFileSync(logPath, "utf-8");
       },
+      getProjectLoop: (name) => this.getProjectLoop(name),
+      resolveExecutionRouteClassifier: this.executionRouteClassifierResolver,
       // Inject Drizzle stores when storage is "sqlite" or "postgres"
       ...(this.drizzleStores ? {
         approvalStore: this.drizzleStores.approvalStore,

@@ -16,6 +16,11 @@ import type { ModelSelection } from "./model-policy.js";
 import type { RuntimePlan } from "./runtime-plan/index.js";
 import type { RuntimeSandboxOptions } from "./runtime-sandbox.js";
 import type { RunToolMiddleware } from "./guardrails/index.js";
+import type {
+  RuntimeContextResolution,
+  RuntimeContextTrustMode,
+  RuntimePromptContextSegment,
+} from "./runtime-context/index.js";
 
 /**
  * Handle returned by the engine after spawning an agent.
@@ -59,6 +64,8 @@ export interface SpawnContext {
   polpoDir: string;
   /** Current logical run id, when the host has allocated one. */
   runId?: string;
+  /** Pre-resolved retrieval snapshot rendered into task system prompts. */
+  runtimeContext?: RuntimeContextResolution;
   /** Per-task output directory (.polpo/output/<taskId>/). Agents write deliverables here. */
   outputDir?: string;
   /** Email domain allowlist — restricts email_send tool to these domains. */
@@ -79,6 +86,10 @@ export interface SpawnContext {
   shell?: Shell;
   /** LLM gateway configuration — passed per-request for multi-tenant support. */
   gatewayConfig?: unknown;
+  /** Source- and trust-labelled prompt context for this run. */
+  promptContextSegments?: readonly RuntimePromptContextSegment[];
+  /** Explicit context-trust rollout mode. */
+  contextTrust?: RuntimeContextTrustMode;
   /**
    * Optional host-resolved guardrail middleware for locally executed tools.
    * Hosts own policy configuration and rollout. Undefined preserves the
@@ -141,6 +152,8 @@ export interface SpawnContext {
 export interface ChatSessionInjection {
   /** Frozen, secret-free planning decision for this invocation. */
   runtimePlan?: RuntimePlan;
+  /** Explicit context-trust rollout mode for model-bound history. */
+  contextTrust?: RuntimeContextTrustMode;
   /** Resolved agent config (for the RunnerConfig the driver builds). */
   agent: AgentConfig;
   /** Optional session title (first user text). */

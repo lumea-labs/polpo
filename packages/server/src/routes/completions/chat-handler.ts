@@ -10,9 +10,13 @@
 import { streamSSE } from "hono/streaming";
 import {
   compactIfNeeded,
+  renderRuntimeToolResult,
   type CompactionEvent,
   type ModelSelection,
+  type RuntimeContextTrustMode,
+  type ResolvedExecutionRoute,
   type RuntimePlan,
+  type RuntimeContextResolution,
 } from "@polpo-ai/core";
 import { runModelPolicyTurn } from "@polpo-ai/llm";
 import type { LanguageModelUsage } from "ai";
@@ -39,6 +43,8 @@ import {
   CLIENT_SIDE_TOOL_NAMES,
   emitFileChanged,
   indexToolResultsByCallId,
+  invalidModelToolCallEvent,
+  isInvalidModelToolCall,
   persistAssistantMessage,
   recordProviderToolCall,
   toAITools,
@@ -78,6 +84,12 @@ export interface ChatCompletionExecution {
   sessionId: string | null;
   /** Frozen, secret-free runtime decision emitted before provider/tool resolution. */
   runtimePlan?: RuntimePlan;
+  /** Explicit, host-resolved context-trust mode for this conversation turn. */
+  contextTrust?: RuntimeContextTrustMode;
+  /** Structured snapshot used to assemble fullSystemPrompt for this turn. */
+  runtimeContext?: RuntimeContextResolution;
+  /** Validated direct-or-loop decision for audit and downstream propagation. */
+  executionRoute?: ResolvedExecutionRoute;
   /**
    * Resource cleanup hook — set when an agent's tool resolver opens
    * long-lived connections (today: MCP transports). Invoked exactly
@@ -308,12 +320,32 @@ export function streamChatCompletion(c: any, exec: ChatCompletionExecution): any
         } as LanguageModelUsage;
         lastProviderMetadata = result.providerMetadata as Record<string, unknown> | undefined;
 
-        await appendModelResponseMessages(messages, result, turnText, toolCalls);
+        await appendModelResponseMessages(
+          messages,
+          result,
+          turnText,
+          toolCalls,
+          exec.contextTrust ?? "off",
+        );
 
         if (toolCalls.length === 0) break;
 
+        const dispatchableToolCalls = toolCalls.filter(
+          (call) => !isInvalidModelToolCall(call),
+        );
+        for (const call of toolCalls.filter(isInvalidModelToolCall)) {
+          const event = invalidModelToolCallEvent(call);
+          toolCallsAccum.push(event);
+          await stream.writeSSE({
+            data: sseChunk(completionId, {}, null, {
+              tool_call: event,
+            }),
+          });
+        }
+        if (dispatchableToolCalls.length === 0) continue;
+
         // ── Client-side tools — return to client as standard tool_calls ──
-        const clientSideCall = toolCalls.find((tc: any) => CLIENT_SIDE_TOOL_NAMES.has(tc.toolName));
+        const clientSideCall = dispatchableToolCalls.find((tc: any) => CLIENT_SIDE_TOOL_NAMES.has(tc.toolName));
         if (clientSideCall) {
           // Persist for session history
           toolCallsAccum.push({
@@ -351,7 +383,7 @@ export function streamChatCompletion(c: any, exec: ChatCompletionExecution): any
         }
 
         // Check for interactive tools — only in orchestrator mode (agents don't have interactive tools)
-        const interactiveCall = agentMode ? undefined : toolCalls.find((tc: any) => isInteractiveFn?.(tc.toolName));
+        const interactiveCall = agentMode ? undefined : dispatchableToolCalls.find((tc: any) => isInteractiveFn?.(tc.toolName));
         if (interactiveCall) {
           // Persist the interactive tool call so it survives session reload
           toolCallsAccum.push({
@@ -436,7 +468,7 @@ export function streamChatCompletion(c: any, exec: ChatCompletionExecution): any
         const providerToolNames = new Set(Object.keys(extraAiTools ?? {}));
         const providerToolResults = indexToolResultsByCallId(result.toolResults as any[] | undefined);
 
-        for (const call of toolCalls) {
+        for (const call of dispatchableToolCalls) {
           // Stop executing tools if client disconnected
           if (abortController.signal.aborted) break;
 
@@ -487,8 +519,18 @@ export function streamChatCompletion(c: any, exec: ChatCompletionExecution): any
               toolCallId: call.toolCallId,
               toolName: call.toolName,
               output: isError
-                ? { type: "error-text" as const, value: result }
-                : { type: "text" as const, value: result },
+                ? {
+                    type: "error-text" as const,
+                    value: exec.contextTrust === "enforce"
+                      ? renderRuntimeToolResult(call.toolName, call.toolCallId, result)
+                      : result,
+                  }
+                : {
+                    type: "text" as const,
+                    value: exec.contextTrust === "enforce"
+                      ? renderRuntimeToolResult(call.toolName, call.toolCallId, result)
+                      : result,
+                  },
             }],
           });
         }
@@ -652,15 +694,29 @@ export async function runNonStreamingChatCompletion(c: any, exec: ChatCompletion
       } as LanguageModelUsage;
       lastProviderMetadata = turnResult.providerMetadata as Record<string, unknown> | undefined;
 
-      await appendModelResponseMessages(messages, turnResult, turnText, turnResult.toolCalls);
+      await appendModelResponseMessages(
+        messages,
+        turnResult,
+        turnText,
+        turnResult.toolCalls,
+        exec.contextTrust ?? "off",
+      );
 
       finalText += turnText;
 
       const toolCalls = turnResult.toolCalls;
       if (toolCalls.length === 0) break;
 
+      const dispatchableToolCalls = toolCalls.filter(
+        (call) => !isInvalidModelToolCall(call),
+      );
+      for (const call of toolCalls.filter(isInvalidModelToolCall)) {
+        toolCallsAccum.push(invalidModelToolCallEvent(call));
+      }
+      if (dispatchableToolCalls.length === 0) continue;
+
       // ── Client-side tools — return to client as standard tool_calls ──
-      const clientSideCall = toolCalls.find((tc: any) => CLIENT_SIDE_TOOL_NAMES.has(tc.toolName));
+      const clientSideCall = dispatchableToolCalls.find((tc: any) => CLIENT_SIDE_TOOL_NAMES.has(tc.toolName));
       if (clientSideCall) {
         toolCallsAccum.push({
           id: clientSideCall.toolCallId,
@@ -699,7 +755,7 @@ export async function runNonStreamingChatCompletion(c: any, exec: ChatCompletion
       }
 
       // Check for interactive tools — only in orchestrator mode (agents don't have interactive tools)
-      const interactiveCall = agentMode ? undefined : toolCalls.find((tc: any) => isInteractiveFn?.(tc.toolName));
+      const interactiveCall = agentMode ? undefined : dispatchableToolCalls.find((tc: any) => isInteractiveFn?.(tc.toolName));
       if (interactiveCall) {
         // Persist the interactive tool call so it survives session reload
         toolCallsAccum.push({
@@ -831,7 +887,7 @@ export async function runNonStreamingChatCompletion(c: any, exec: ChatCompletion
       const providerToolNames = new Set(Object.keys(extraAiTools ?? {}));
       const providerToolResults = indexToolResultsByCallId(turnResult.toolResults as any[] | undefined);
 
-      for (const call of toolCalls) {
+      for (const call of dispatchableToolCalls) {
         const callArgs = call.input as Record<string, unknown>;
 
         if (providerToolNames.has(call.toolName)) {
@@ -863,8 +919,18 @@ export async function runNonStreamingChatCompletion(c: any, exec: ChatCompletion
             toolCallId: call.toolCallId,
             toolName: call.toolName,
             output: isError
-              ? { type: "error-text" as const, value: result }
-              : { type: "text" as const, value: result },
+              ? {
+                  type: "error-text" as const,
+                  value: exec.contextTrust === "enforce"
+                    ? renderRuntimeToolResult(call.toolName, call.toolCallId, result)
+                    : result,
+                }
+              : {
+                  type: "text" as const,
+                  value: exec.contextTrust === "enforce"
+                    ? renderRuntimeToolResult(call.toolName, call.toolCallId, result)
+                    : result,
+                },
           }],
         });
       }

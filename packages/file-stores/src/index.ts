@@ -2,6 +2,11 @@ export { FileTaskStore } from "./file-task-store.js";
 export { FileRunStore } from "./file-run-store.js";
 export { JsonTaskStore } from "./json-task-store.js";
 export { FileMemoryStore } from "./file-memory-store.js";
+export {
+  FileMemoryItemStore,
+  MemoryStoreCorruptionError,
+} from "./file-memory-item-store.js";
+export type { FileMemoryItemStoreOptions } from "./file-memory-item-store.js";
 export { FileLogStore } from "./file-log-store.js";
 export { FileSessionStore } from "./file-session-store.js";
 export { FileApprovalStore } from "./file-approval-store.js";

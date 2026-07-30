@@ -174,6 +174,23 @@ describe("parseConfig (.polpo/polpo.json)", () => {
       expect(config.settings.chatExecution).toBe("run");
     });
 
+    it("keeps context trust off unless enforcement is explicit", async () => {
+      const defaultConfig = await parseConfig(writeConfig(minimalConfig()));
+      expect(defaultConfig.settings.contextTrust).toBe("off");
+
+      const enforcedDir = writeConfig({
+        ...minimalConfig(),
+        settings: { ...minimalConfig().settings, contextTrust: "enforce" },
+      });
+      expect((await parseConfig(enforcedDir)).settings.contextTrust).toBe("enforce");
+
+      const unknownDir = writeConfig({
+        ...minimalConfig(),
+        settings: { ...minimalConfig().settings, contextTrust: "future" },
+      });
+      expect((await parseConfig(unknownDir)).settings.contextTrust).toBe("off");
+    });
+
     it("keeps inline chat execution only when explicitly requested", async () => {
       const cfg = {
         ...minimalConfig(),
@@ -355,6 +372,7 @@ describe("generatePolpoConfigDefault", () => {
     expect(config.settings.maxRetries).toBe(3);
     expect(config.settings.logLevel).toBe("normal");
     expect(config.settings.chatExecution).toBe("run");
+    expect(config.settings.contextTrust).toBe("off");
   });
 
   it("round-trips through savePolpoConfig and parseConfig", async () => {
