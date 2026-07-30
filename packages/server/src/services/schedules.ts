@@ -234,8 +234,8 @@ export class ScheduleService {
   ): Promise<Schedule> {
     let registration: ScheduleDriverRegistration;
     try {
-      await this.driver[operation](schedule);
-      registration = {
+      const lifecycleRegistration = await this.driver[operation](schedule);
+      registration = lifecycleRegistration ?? {
         kind: schedule.driver?.kind ?? "unknown",
         status: schedule.driver?.status === "not_required"
           ? "not_required"

@@ -170,6 +170,69 @@ describe("ScheduleService", () => {
     expect(state.driver.resume).toHaveBeenCalledTimes(1);
   });
 
+  it("persists provider registrations returned by lifecycle operations", async () => {
+    const state = harness({
+      register: vi.fn(async () => ({
+        kind: "test",
+        status: "not_required" as const,
+        metadata: { mode: "once", paused: true },
+        updatedAt: "2026-07-28T08:00:00.000Z",
+      })),
+      resume: vi.fn(async () => ({
+        kind: "test",
+        status: "registered" as const,
+        providerId: "message:resumed",
+        metadata: { mode: "once", paused: false },
+        updatedAt: "2026-07-28T08:00:00.000Z",
+      })),
+      pause: vi.fn(async () => ({
+        kind: "test",
+        status: "not_required" as const,
+        metadata: { mode: "once", paused: true },
+        updatedAt: "2026-07-28T08:00:00.000Z",
+      })),
+      delete: vi.fn(async () => ({
+        kind: "test",
+        status: "not_required" as const,
+        metadata: { mode: "once", deleted: true },
+        updatedAt: "2026-07-28T08:00:00.000Z",
+      })),
+    });
+
+    const created = await state.service.create(input({
+      status: "paused",
+      timing: {
+        kind: "once",
+        at: "2026-07-28T10:00:00.000Z",
+        timezone: "UTC",
+      },
+    }));
+    expect(created.driver).toMatchObject({
+      status: "not_required",
+      metadata: { mode: "once", paused: true },
+    });
+
+    const resumed = await state.service.resume(created.id);
+    expect(resumed.driver).toMatchObject({
+      status: "registered",
+      providerId: "message:resumed",
+      metadata: { mode: "once", paused: false },
+    });
+
+    const paused = await state.service.pause(created.id);
+    expect(paused.driver).toMatchObject({
+      status: "not_required",
+      metadata: { mode: "once", paused: true },
+    });
+    expect(paused.driver).not.toHaveProperty("providerId");
+
+    const deleted = await state.service.delete(created.id);
+    expect(deleted.driver).toMatchObject({
+      status: "not_required",
+      metadata: { mode: "once", deleted: true },
+    });
+  });
+
   it("classifies deep core validation failures as invalid requests", async () => {
     const state = harness();
 
