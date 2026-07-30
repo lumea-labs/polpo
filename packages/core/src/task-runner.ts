@@ -12,6 +12,7 @@ import { normalizeModelPolicy } from "./model-policy.js";
 import {
   createRuntimePromptContextSegment,
   resolveRuntimeContext,
+  replacesLegacyAgentMemory,
   type RuntimeContextResolution,
   type RuntimePromptContextSegment,
 } from "./runtime-context/index.js";
@@ -644,7 +645,7 @@ export class TaskRunner {
     }
 
     // 1b. Agent-specific memory (private knowledge for the assigned agent)
-    if (task.assignTo) {
+    if (task.assignTo && !replacesLegacyAgentMemory(runtimeContext)) {
       const agentMem = (await this.ctx.memoryStore?.get(agentMemoryScope(task.assignTo))) ?? "";
       if (agentMem) {
         legacyContextParts.push(`<agent-memory agent="${task.assignTo}">\n${agentMem}\n</agent-memory>`);

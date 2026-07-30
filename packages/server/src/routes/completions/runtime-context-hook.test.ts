@@ -125,6 +125,62 @@ describe("completion runtime context hook", () => {
     expect(prepared.execution.runtimeContext).toBeUndefined();
   });
 
+  it("replaces legacy agent Memory even when typed retrieval has no relevant items", async () => {
+    const buildRuntimePrompt = vi.fn(async () => "Base runtime prompt");
+    const prepared = await prepareChatCompletionExecution(deps({
+      buildRuntimePrompt,
+      runtimeContext: {
+        tokenBudget: 1_000,
+        retrieve: async () => ({
+          segments: [],
+          legacyMemory: { agent: "replace" },
+        }),
+      },
+    }), {
+      agent: "support",
+      stream: false,
+      messages: [{ role: "user", content: "Unknown preference" }],
+    });
+
+    expect(prepared.kind).toBe("chat");
+    if (prepared.kind !== "chat") throw new Error("Expected chat");
+    expect(prepared.execution.runtimeContext?.legacyMemory).toEqual({
+      agent: "replace",
+    });
+    expect(buildRuntimePrompt).toHaveBeenCalledWith(
+      expect.objectContaining({ name: "support" }),
+      expect.objectContaining({ includeAgentMemory: false }),
+    );
+    expect(prepared.execution.fullSystemPrompt).toBe("Base runtime prompt");
+  });
+
+  it("does not read legacy agent Memory in the fallback prompt path when it is replaced", async () => {
+    const get = vi.fn(async () => "LEGACY_MEMORY_MUST_NOT_BE_READ");
+    const prepared = await prepareChatCompletionExecution(deps({
+      buildRuntimePrompt: undefined,
+      buildAgentPrompt: async () => "Base prompt",
+      getMemoryStore: () => ({ get }),
+      runtimeContext: {
+        tokenBudget: 1_000,
+        retrieve: async () => ({
+          segments: [],
+          legacyMemory: { agent: "replace" },
+        }),
+      },
+    }), {
+      agent: "support",
+      stream: false,
+      messages: [{ role: "user", content: "Unknown preference" }],
+    });
+
+    expect(prepared.kind).toBe("chat");
+    if (prepared.kind !== "chat") throw new Error("Expected chat");
+    expect(get).not.toHaveBeenCalled();
+    expect(prepared.execution.fullSystemPrompt).not.toContain(
+      "LEGACY_MEMORY_MUST_NOT_BE_READ",
+    );
+  });
+
   it("fails closed with a generic error when retrieval fails", async () => {
     const prepared = await prepareChatCompletionExecution(deps({
       runtimeContext: {

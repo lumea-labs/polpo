@@ -17,6 +17,7 @@ import {
   renderRuntimePromptContextSegment,
   renderRuntimeToolResult,
   renderRuntimeContextPrompt,
+  replacesLegacyAgentMemory,
   type ContextBag,
   type ModelSelection,
   type RuntimeContextResolution,
@@ -172,7 +173,7 @@ export async function buildRuntimeAgentPrompt(
       mode: "loop-step",
       extraSystemParts,
       loopContextPart,
-      includeAgentMemory: true,
+      includeAgentMemory: !replacesLegacyAgentMemory(runtimeContext),
     });
   } else {
     const agentSystemPrompt = await deps.buildAgentPrompt(agentConfig);
@@ -191,17 +192,19 @@ export async function buildRuntimeAgentPrompt(
       fullSystemPrompt += `\n\n${loopContextPart}`;
     }
 
-    const memoryStore = deps.getMemoryStore();
-    const agentMemory = await memoryStore?.get(agentMemoryScope(agentConfig.name));
-    if (agentMemory) {
-      fullSystemPrompt += contextTrust === "enforce"
-        ? `\n\n${renderRuntimePromptContextSegment(createRuntimePromptContextSegment({
-            kind: "memory.agent",
-            sourceId: agentConfig.name,
-            trust: "untrusted",
-            content: agentMemory,
-          }))}`
-        : `\n\n## Your persistent memory\n\n${agentMemory}`;
+    if (!replacesLegacyAgentMemory(runtimeContext)) {
+      const memoryStore = deps.getMemoryStore();
+      const agentMemory = await memoryStore?.get(agentMemoryScope(agentConfig.name));
+      if (agentMemory) {
+        fullSystemPrompt += contextTrust === "enforce"
+          ? `\n\n${renderRuntimePromptContextSegment(createRuntimePromptContextSegment({
+              kind: "memory.agent",
+              sourceId: agentConfig.name,
+              trust: "untrusted",
+              content: agentMemory,
+            }))}`
+          : `\n\n## Your persistent memory\n\n${agentMemory}`;
+      }
     }
   }
   const runtimeContextPrompt = renderRuntimeContextPrompt(runtimeContext);

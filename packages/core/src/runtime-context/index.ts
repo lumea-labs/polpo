@@ -8,6 +8,7 @@ export type {
   RuntimeContextAudit,
   RuntimeContextCitation,
   RuntimeContextEntry,
+  RuntimeContextLegacyMemoryPolicy,
   RuntimeContextProvider,
   RuntimeContextResolution,
   RuntimeContextResult,
@@ -34,6 +35,8 @@ export {
   runtimePromptContextMarkers,
 } from "./context.js";
 export {
+  replacesLegacyAgentMemory,
+  replacesLegacySharedMemory,
   renderRuntimeContextPrompt,
   resolveRuntimeContext,
 } from "./runtime-context.js";

@@ -49,8 +49,18 @@ export interface RuntimeContextSegment {
   readonly entries: readonly RuntimeContextEntry[];
 }
 
+/**
+ * Explicit migration directive from a host-owned structured context provider.
+ * Absence preserves the corresponding legacy Markdown memory source.
+ */
+export interface RuntimeContextLegacyMemoryPolicy {
+  readonly agent?: "replace";
+  readonly shared?: "replace";
+}
+
 export interface RuntimeContextResult {
   readonly segments: readonly RuntimeContextSegment[];
+  readonly legacyMemory?: RuntimeContextLegacyMemoryPolicy;
 }
 
 export interface RuntimeContextAudit {
