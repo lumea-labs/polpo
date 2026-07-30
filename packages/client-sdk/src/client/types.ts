@@ -277,8 +277,10 @@ import type {
   BrainSourceListResult,
   BrainSourceStatus,
   BrainSourceType,
+  BrainSourceVersion,
   BrainTrustLevel,
   BrainUpdateSourceRequest,
+  ReadBrainSourceResult,
 } from "@polpo-ai/core/brain";
 
 export type {
@@ -290,8 +292,10 @@ export type {
   BrainSourceListResult,
   BrainSourceStatus,
   BrainSourceType,
+  BrainSourceVersion,
   BrainTrustLevel,
   BrainUpdateSourceRequest,
+  ReadBrainSourceResult,
 };
 
 export interface CreateBrainSourceRequest
@@ -310,6 +314,14 @@ export interface BrainSourceFilters {
 export interface SearchBrainRequest {
   readonly query: string;
   readonly scopes?: readonly BrainScope[];
+  readonly limit?: number;
+  readonly tokenBudget?: number;
+}
+
+export interface ReadBrainSourceRequest {
+  readonly scope?: BrainScope;
+  readonly version?: string;
+  readonly offset?: number;
   readonly limit?: number;
   readonly tokenBudget?: number;
 }
