@@ -12,6 +12,8 @@ import {
   type MemoryItemPatch,
   type MemoryItemStore,
   type MemoryKind,
+  type MemoryListCursor,
+  type MemoryListPageQuery,
   type MemoryListQuery,
   type MemorySearchQuery,
   type MemoryStatus,
@@ -59,6 +61,7 @@ const listQueryKeys = new Set([
   "scopeAgentName",
   "includeExpired",
   "limit",
+  "cursor",
 ]);
 const searchKeys = new Set([
   "query",
@@ -140,7 +143,35 @@ function optionalInteger(
   return parsed;
 }
 
-function parseListQuery(context: Context): MemoryListQuery {
+interface ParsedMemoryListQuery {
+  readonly query: MemoryListQuery;
+  readonly cursor?: string;
+  readonly filterSignature: string;
+}
+
+function listFilterSignature(
+  agent: string,
+  query: MemoryListQuery,
+): string {
+  return JSON.stringify({
+    agent,
+    kinds: query.kinds ? [...query.kinds].sort() : null,
+    statuses: query.statuses ? [...query.statuses].sort() : null,
+    scope: query.scope
+      ? {
+          kind: query.scope.kind,
+          subjectId: query.scope.subjectId ?? null,
+          agentName: query.scope.agentName ?? null,
+        }
+      : null,
+    includeExpired: query.includeExpired === true,
+  });
+}
+
+function parseListQuery(
+  context: Context,
+  agent: string,
+): ParsedMemoryListQuery {
   const url = new URL(context.req.url);
   for (const key of url.searchParams.keys()) {
     if (!listQueryKeys.has(key)) {
@@ -161,7 +192,7 @@ function parseListQuery(context: Context): MemoryListQuery {
       ...(scopeAgentName ? { agentName: scopeAgentName } : {}),
     })
     : undefined;
-  return {
+  const query: MemoryListQuery = {
     kinds: commaList(get("kinds"), memoryKinds, "kinds") as MemoryKind[] | undefined,
     statuses: commaList(
       get("statuses"),
@@ -172,6 +203,123 @@ function parseListQuery(context: Context): MemoryListQuery {
     includeExpired: optionalBoolean(get("includeExpired")),
     limit: optionalInteger(get("limit"), "limit"),
   };
+  const cursor = url.searchParams.has("cursor")
+    ? url.searchParams.get("cursor") ?? ""
+    : undefined;
+  if (cursor !== undefined && cursor.length === 0) {
+    throw new InvalidMemoryRequestError("Invalid Memory cursor");
+  }
+  return {
+    query,
+    ...(cursor === undefined ? {} : { cursor }),
+    filterSignature: listFilterSignature(agent, query),
+  };
+}
+
+const MEMORY_CURSOR_PREFIX = "m1.";
+const MAX_MEMORY_CURSOR_CHARACTERS = 4_096;
+
+interface EncodedMemoryCursor {
+  readonly v: 1;
+  readonly at: string;
+  readonly id: string;
+  readonly filter: string;
+}
+
+function base64UrlEncode(value: string): string {
+  const bytes = new TextEncoder().encode(value);
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary)
+    .replaceAll("+", "-")
+    .replaceAll("/", "_")
+    .replace(/=+$/u, "");
+}
+
+function base64UrlDecode(value: string): string {
+  if (!/^[A-Za-z0-9_-]+$/u.test(value)) {
+    throw new InvalidMemoryRequestError("Invalid Memory cursor");
+  }
+  const padded = value.replaceAll("-", "+").replaceAll("_", "/")
+    + "=".repeat((4 - (value.length % 4)) % 4);
+  try {
+    const binary = atob(padded);
+    const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
+    const decoded = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    if (base64UrlEncode(decoded) !== value) {
+      throw new InvalidMemoryRequestError("Invalid Memory cursor");
+    }
+    return decoded;
+  } catch (error) {
+    if (error instanceof InvalidMemoryRequestError) throw error;
+    throw new InvalidMemoryRequestError("Invalid Memory cursor");
+  }
+}
+
+function decodeMemoryCursor(
+  value: string,
+  filterSignature: string,
+): MemoryListCursor {
+  if (
+    value.length > MAX_MEMORY_CURSOR_CHARACTERS
+    || !value.startsWith(MEMORY_CURSOR_PREFIX)
+  ) {
+    throw new InvalidMemoryRequestError("Invalid Memory cursor");
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(base64UrlDecode(value.slice(MEMORY_CURSOR_PREFIX.length)));
+  } catch (error) {
+    if (error instanceof InvalidMemoryRequestError) throw error;
+    throw new InvalidMemoryRequestError("Invalid Memory cursor");
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new InvalidMemoryRequestError("Invalid Memory cursor");
+  }
+  const record = parsed as Record<string, unknown>;
+  const keys = Object.keys(record).sort();
+  if (
+    keys.join(",") !== "at,filter,id,v"
+    || record.v !== 1
+    || typeof record.at !== "string"
+    || typeof record.id !== "string"
+    || typeof record.filter !== "string"
+    || record.filter !== filterSignature
+    || record.id.length === 0
+    || record.id.length > 256
+    || record.id.trim() !== record.id
+  ) {
+    throw new InvalidMemoryRequestError("Invalid Memory cursor");
+  }
+  const at = new Date(record.at);
+  if (!Number.isFinite(at.getTime()) || at.toISOString() !== record.at) {
+    throw new InvalidMemoryRequestError("Invalid Memory cursor");
+  }
+  return Object.freeze({ createdAt: record.at, id: record.id });
+}
+
+function encodeMemoryCursor(
+  value: MemoryListCursor,
+  filterSignature: string,
+): string {
+  const at = new Date(value.createdAt);
+  if (
+    !Number.isFinite(at.getTime())
+    || at.toISOString() !== value.createdAt
+    || typeof value.id !== "string"
+    || value.id.length === 0
+    || value.id.length > 256
+    || value.id.trim() !== value.id
+  ) {
+    throw new Error("Memory store returned an invalid pagination cursor");
+  }
+  const payload: EncodedMemoryCursor = {
+    v: 1,
+    at: value.createdAt,
+    id: value.id,
+    filter: filterSignature,
+  };
+  return `${MEMORY_CURSOR_PREFIX}${base64UrlEncode(JSON.stringify(payload))}`;
 }
 
 function parseSearchQuery(value: unknown): MemorySearchQuery {
@@ -340,11 +488,46 @@ export function memoryItemRoutes(
     const resolved = await resolve(context, getDeps);
     if (resolved instanceof Response) return resolved;
     try {
-      const items = await resolved.store.list(
-        parseListQuery(context),
+      const parsed = parseListQuery(context, resolved.agent);
+      if (parsed.cursor !== undefined && !resolved.store.listPage) {
+        return context.json({
+          ok: false,
+          error: "Memory pagination is not available",
+          code: "MEMORY_PAGINATION_UNAVAILABLE",
+        }, 503);
+      }
+      if (!resolved.store.listPage) {
+        const items = await resolved.store.list(
+          parsed.query,
+          resolved.memoryContext,
+        );
+        return context.json({
+          ok: true,
+          data: { items, nextCursor: null },
+        }, 200);
+      }
+      const pageQuery: MemoryListPageQuery = {
+        ...parsed.query,
+        ...(parsed.cursor === undefined
+          ? {}
+          : {
+              after: decodeMemoryCursor(
+                parsed.cursor,
+                parsed.filterSignature,
+              ),
+            }),
+      };
+      const page = await resolved.store.listPage(
+        pageQuery,
         resolved.memoryContext,
       );
-      return context.json({ ok: true, data: { items } }, 200);
+      const nextCursor = page.nextCursor
+        ? encodeMemoryCursor(page.nextCursor, parsed.filterSignature)
+        : null;
+      return context.json({
+        ok: true,
+        data: { items: page.items, nextCursor },
+      }, 200);
     } catch (error) {
       return errorResponse(context, error);
     }

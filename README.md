@@ -114,6 +114,12 @@ actions with `createTypedMemoryTools` from `@polpo-ai/tools`, and use the typed
 CRUD/search methods on `PolpoClient`. Merely creating a store does not mount
 routes, add tools to a model, or inject Memory into a prompt.
 
+Typed Memory listing also supports additive cursor pagination. The original
+`MemoryItemStore.list()` and `PolpoClient.listMemoryItems()` return types remain
+unchanged. Stores can implement `listPage()` for stable `(createdAt, id)`
+keyset pagination, and clients can use `listMemoryItemsPage()` with the opaque
+cursor returned by the HTTP API.
+
 ## Self-host with the dashboard
 
 The repository includes a single-tenant dashboard host that keeps the runtime API key on the server. Start the production-oriented example with PostgreSQL:

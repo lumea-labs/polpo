@@ -82,6 +82,140 @@ async function createItem(
 }
 
 describe("memoryItemRoutes", () => {
+  it("returns opaque keyset cursors and traverses equal timestamps once", async () => {
+    const app = createApp();
+    for (const [id, content] of [
+      ["memory-c", "Third record."],
+      ["memory-a", "First record."],
+      ["memory-b", "Second record."],
+    ]) {
+      expect((await createItem(app, { id, content })).response.status).toBe(201);
+    }
+
+    const first = await app.request(
+      "/agents/support/memory/items?limit=2",
+    );
+    const firstBody = await first.json() as any;
+    expect(first.status).toBe(200);
+    expect(firstBody.data.items.map((item: any) => item.id)).toEqual([
+      "memory-a",
+      "memory-b",
+    ]);
+    expect(firstBody.data.nextCursor).toEqual(expect.any(String));
+    expect(firstBody.data.nextCursor).not.toContain("memory-b");
+
+    const second = await app.request(
+      `/agents/support/memory/items?limit=2&cursor=${
+        encodeURIComponent(firstBody.data.nextCursor)
+      }`,
+    );
+    const secondBody = await second.json() as any;
+    expect(second.status).toBe(200);
+    expect(secondBody.data.items.map((item: any) => item.id)).toEqual([
+      "memory-c",
+    ]);
+    expect(secondBody.data.nextCursor).toBeNull();
+  });
+
+  it("rejects malformed, oversized, or cross-filter cursors", async () => {
+    const app = createApp();
+    await createItem(app, { id: "memory-a", content: "First record." });
+    await createItem(app, {
+      id: "memory-b",
+      kind: "instruction",
+      content: "Second record.",
+    });
+    await createItem(app, {
+      id: "memory-c",
+      content: "Third record.",
+    });
+
+    const first = await app.request(
+      "/agents/support/memory/items?kinds=preference&limit=1",
+    );
+    const cursor = (await first.json() as any).data.nextCursor;
+    expect(cursor).toEqual(expect.any(String));
+
+    for (const value of [
+      "not-a-cursor",
+      "m1.eyJ2IjoyfQ",
+      "x".repeat(4_097),
+      cursor,
+    ]) {
+      const suffix = value === cursor ? "&kinds=instruction" : "";
+      const response = await app.request(
+        `/agents/support/memory/items?limit=1&cursor=${
+          encodeURIComponent(value)
+        }${suffix}`,
+      );
+      expect(response.status).toBe(400);
+      expect(await response.json()).toEqual({
+        ok: false,
+        error: "Invalid Memory request",
+        code: "INVALID_MEMORY_REQUEST",
+      });
+    }
+  });
+
+  it("preserves legacy stores and reports cursor capability explicitly", async () => {
+    const backing = new InMemoryMemoryItemStore();
+    const legacy = new Proxy(backing, {
+      get(target, property) {
+        if (property === "listPage") return undefined;
+        const value = Reflect.get(target, property, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    }) as MemoryItemStore;
+    const app = createApp(legacy);
+    await createItem(app, { id: "memory-a", content: "Legacy record." });
+
+    const first = await app.request("/agents/support/memory/items?limit=1");
+    expect(first.status).toBe(200);
+    expect(await first.json()).toMatchObject({
+      ok: true,
+      data: {
+        items: [{ id: "memory-a" }],
+        nextCursor: null,
+      },
+    });
+
+    const next = await app.request(
+      "/agents/support/memory/items?limit=1&cursor=m1.invalid",
+    );
+    expect(next.status).toBe(503);
+    expect(await next.json()).toEqual({
+      ok: false,
+      error: "Memory pagination is not available",
+      code: "MEMORY_PAGINATION_UNAVAILABLE",
+    });
+  });
+
+  it("redacts invalid cursors returned by a host store", async () => {
+    class InvalidCursorStore extends InMemoryMemoryItemStore {
+      override async listPage() {
+        return {
+          items: [],
+          nextCursor: {
+            createdAt: "invalid-provider-value",
+            id: "secret-provider-id",
+          },
+        };
+      }
+    }
+    const response = await createApp(new InvalidCursorStore()).request(
+      "/agents/support/memory/items?limit=1",
+    );
+    const raw = await response.text();
+
+    expect(response.status).toBe(500);
+    expect(raw).not.toContain("secret-provider-id");
+    expect(JSON.parse(raw)).toEqual({
+      ok: false,
+      error: "Memory operation failed",
+      code: "MEMORY_OPERATION_FAILED",
+    });
+  });
+
   it("is host-neutral and unavailable until a store is explicitly wired", async () => {
     const response = await createApp(null).request(
       "/agents/support/memory/items",
@@ -360,6 +494,10 @@ describe("memoryItemRoutes", () => {
     const secret = "database-password-super-secret";
     class FailingStore extends InMemoryMemoryItemStore {
       override async list(): Promise<never> {
+        throw new Error(`Provider failed with ${secret}`);
+      }
+
+      override async listPage(): Promise<never> {
         throw new Error(`Provider failed with ${secret}`);
       }
     }

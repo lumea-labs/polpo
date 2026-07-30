@@ -80,9 +80,11 @@ import type {
   FilePreview,
   CreateMemoryItemInput,
   MemoryItem,
+  MemoryItemsPage,
   MemoryItemPatch,
   MemorySearchResult,
   ListMemoryItemsQuery,
+  ListMemoryItemsPageQuery,
   SearchMemoryRequest,
 } from "./types.js";
 
@@ -766,6 +768,14 @@ export class PolpoClient {
     agentName: string,
     query: ListMemoryItemsQuery = {},
   ): Promise<MemoryItem[]> {
+    return this.listMemoryItemsPage(agentName, query)
+      .then((page) => page.items);
+  }
+
+  listMemoryItemsPage(
+    agentName: string,
+    query: ListMemoryItemsPageQuery = {},
+  ): Promise<MemoryItemsPage> {
     const params = new URLSearchParams();
     if (query.kinds?.length) params.set("kinds", query.kinds.join(","));
     if (query.statuses?.length) params.set("statuses", query.statuses.join(","));
@@ -782,10 +792,17 @@ export class PolpoClient {
       params.set("includeExpired", String(query.includeExpired));
     }
     if (query.limit !== undefined) params.set("limit", String(query.limit));
+    if (query.cursor !== undefined) params.set("cursor", query.cursor);
     const suffix = params.size > 0 ? `?${params.toString()}` : "";
-    return this.get<{ items: MemoryItem[] }>(
+    return this.get<{
+      items: MemoryItem[];
+      nextCursor?: string | null;
+    }>(
       `/agents/${encodeURIComponent(agentName)}/memory/items${suffix}`,
-    ).then((data) => data.items);
+    ).then((data) => ({
+      items: data.items,
+      nextCursor: data.nextCursor ?? null,
+    }));
   }
 
   createMemoryItem(
