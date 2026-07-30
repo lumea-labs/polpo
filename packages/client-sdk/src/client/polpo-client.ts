@@ -95,6 +95,15 @@ import type {
   ListMemoryItemsQuery,
   ListMemoryItemsPageQuery,
   SearchMemoryRequest,
+  BrainScope,
+  BrainSource,
+  BrainSourceFilters,
+  BrainSourceListResult,
+  BrainRetrievalResult,
+  CreateBrainSourceRequest,
+  BrainUpdateSourceRequest,
+  BrainReindexSourceRequest,
+  SearchBrainRequest,
 } from "./types.js";
 
 export interface PolpoClientConfig {
@@ -414,6 +423,15 @@ export class PolpoClient {
 
   private del<T>(path: string): Promise<T> {
     return this.request<T>("DELETE", this.apiUrl(path));
+  }
+
+  private brainScopeQuery(scope?: BrainScope): string {
+    if (!scope) return "";
+    const params = new URLSearchParams({
+      scopeKind: scope.kind,
+      scopeId: scope.subjectId,
+    });
+    return `?${params.toString()}`;
   }
 
   // ── Tasks ────────────────────────────────────────────────
@@ -905,6 +923,82 @@ export class PolpoClient {
   testChannel(name: string): Promise<{ success: boolean }> {
     return this.post<{ success: boolean }>(`/config/channels/${encodeURIComponent(name)}/test`);
   }
+
+  // ── Brain ────────────────────────────────────────────────
+
+  listBrainSources(
+    filters: BrainSourceFilters = {},
+  ): Promise<BrainSourceListResult> {
+    const params = new URLSearchParams();
+    if (filters.scope) {
+      params.set("scopeKind", filters.scope.kind);
+      params.set("scopeId", filters.scope.subjectId);
+    }
+    if (filters.statuses?.length) {
+      params.set("status", filters.statuses.join(","));
+    }
+    if (filters.types?.length) {
+      params.set("type", filters.types.join(","));
+    }
+    if (filters.limit !== undefined) params.set("limit", String(filters.limit));
+    if (filters.cursor) params.set("cursor", filters.cursor);
+    const query = params.toString();
+    return this.get<BrainSourceListResult>(
+      `/brain/sources${query ? `?${query}` : ""}`,
+    );
+  }
+
+  createBrainSource(request: CreateBrainSourceRequest): Promise<BrainSource> {
+    return this.post<BrainSource>("/brain/sources", request);
+  }
+
+  getBrainSource(
+    sourceId: string,
+    scope?: BrainScope,
+  ): Promise<BrainSource> {
+    return this.get<BrainSource>(
+      `/brain/sources/${encodeURIComponent(sourceId)}${this.brainScopeQuery(scope)}`,
+    );
+  }
+
+  updateBrainSource(
+    sourceId: string,
+    request: BrainUpdateSourceRequest,
+    scope?: BrainScope,
+  ): Promise<BrainSource> {
+    return this.patch<BrainSource>(
+      `/brain/sources/${encodeURIComponent(sourceId)}${this.brainScopeQuery(scope)}`,
+      request,
+    );
+  }
+
+  deleteBrainSource(
+    sourceId: string,
+    scope?: BrainScope,
+  ): Promise<{ deleted: boolean }> {
+    return this.del<{ deleted: boolean }>(
+      `/brain/sources/${encodeURIComponent(sourceId)}${this.brainScopeQuery(scope)}`,
+    );
+  }
+
+  reindexBrainSource(
+    sourceId: string,
+    request: BrainReindexSourceRequest,
+    scope?: BrainScope,
+  ): Promise<BrainSource> {
+    return this.post<BrainSource>(
+      `/brain/sources/${encodeURIComponent(sourceId)}/reindex${this.brainScopeQuery(scope)}`,
+      request,
+    );
+  }
+
+  searchBrain(
+    request: SearchBrainRequest,
+  ): Promise<readonly BrainRetrievalResult[]> {
+    return this.post<readonly BrainRetrievalResult[]>("/brain/search", request);
+  }
+
+  // ── Legacy memory ────────────────────────────────────────
 
   getMemory(): Promise<{ exists: boolean; content: string }> {
     return this.get<{ exists: boolean; content: string }>("/memory");

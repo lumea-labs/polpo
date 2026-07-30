@@ -154,6 +154,7 @@ export {
   taskRoutes, missionRoutes, chatRoutes, approvalRoutes,
   playbookRoutes, stateRoutes, completionRoutes, scheduleRoutes,
   watcherRoutes, vaultRoutes, healthRoutes, agentRoutes, eventRoutes, configRoutes,
+  brainRoutes,
 } from "@polpo-ai/server";
 // eventRoutes now in @polpo-ai/server (decoupled with EventBridge interface)
 export { skillRoutes } from "./routes/skills.js";

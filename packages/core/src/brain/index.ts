@@ -59,6 +59,23 @@ export type {
   RetrieveBrainDeps,
   RetrieveBrainInput,
 } from "./retrieval.js";
+export { readBrainSource } from "./reading.js";
+export type {
+  ReadBrainSourceDeps,
+  ReadBrainSourceInput,
+  ReadBrainSourceResult,
+} from "./reading.js";
+export type {
+  BrainCreateSourceRequest,
+  BrainManagementService,
+  BrainReadService,
+  BrainReadSourceRequest,
+  BrainReindexSourceRequest,
+  BrainSearchRequest,
+  BrainServiceContext,
+  BrainSourceContentInput,
+  BrainUpdateSourceRequest,
+} from "./service.js";
 export {
   BRAIN_ACCESS_ACTIONS,
   BRAIN_INGESTION_JOB_STATUSES,

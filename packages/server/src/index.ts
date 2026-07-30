@@ -35,6 +35,10 @@ export {
 } from "./services/schedules-migration.js";
 export { watcherRoutes } from "./routes/watchers.js";
 export { stateRoutes } from "./routes/state.js";
+export {
+  brainRoutes,
+  type BrainRouteDeps,
+} from "./routes/brain.js";
 export { healthRoutes } from "./routes/health.js";
 export {
   completionRoutes,

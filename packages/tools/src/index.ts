@@ -43,6 +43,11 @@ export type {
   TypedMemoryToolGrants,
   TypedMemoryToolName,
 } from "./typed-memory-tools.js";
+export {
+  ALL_BRAIN_TOOL_NAMES,
+  createBrainTools,
+} from "./brain-tools.js";
+export type { BrainToolName } from "./brain-tools.js";
 
 // Adapters (FileSystem/Shell implementations)
 export { NodeFileSystem } from "./adapters/node-filesystem.js";

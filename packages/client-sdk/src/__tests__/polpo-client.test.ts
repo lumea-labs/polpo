@@ -145,3 +145,131 @@ describe("PolpoClient schedules v2", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 });
+
+describe("PolpoClient Brain", () => {
+  function setup() {
+    const fetch = vi.fn<typeof globalThis.fetch>().mockImplementation(
+      async () => new Response(
+        JSON.stringify({ ok: true, data: {} }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      ),
+    );
+    const client = new PolpoClient({
+      baseUrl: "https://api.polpo.sh",
+      apiKey: "test-key",
+      fetch,
+    });
+    return { client, fetch };
+  }
+
+  it("encodes list filters and exact scopes", async () => {
+    const { client, fetch } = setup();
+
+    await client.listBrainSources({
+      scope: { kind: "project", subjectId: "project/a" },
+      statuses: ["indexed", "failed"],
+      types: ["paste", "url"],
+      limit: 25,
+      cursor: "next page",
+    });
+
+    expect(fetch).toHaveBeenCalledWith(
+      "https://api.polpo.sh/v1/brain/sources?scopeKind=project&scopeId=project%2Fa&status=indexed%2Cfailed&type=paste%2Curl&limit=25&cursor=next+page",
+      expect.objectContaining({ method: "GET" }),
+    );
+  });
+
+  it("uses typed request bodies for create, update, reindex, and search", async () => {
+    const { client, fetch } = setup();
+    const scope = { kind: "project", subjectId: "project-a" } as const;
+
+    await client.createBrainSource({
+      scope,
+      label: "Runbook",
+      trust: "user_provided",
+      content: { kind: "paste", text: "Support policy." },
+    });
+    await client.updateBrainSource(
+      "source/1",
+      { label: "Updated" },
+      scope,
+    );
+    await client.reindexBrainSource(
+      "source/1",
+      { content: { kind: "url", url: "https://example.com/runbook" } },
+      scope,
+    );
+    await client.searchBrain({
+      query: "refund",
+      scopes: [scope],
+      limit: 3,
+      tokenBudget: 500,
+    });
+
+    expect(fetch).toHaveBeenNthCalledWith(
+      1,
+      "https://api.polpo.sh/v1/brain/sources",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({
+          scope,
+          label: "Runbook",
+          trust: "user_provided",
+          content: { kind: "paste", text: "Support policy." },
+        }),
+      }),
+    );
+    expect(fetch).toHaveBeenNthCalledWith(
+      2,
+      "https://api.polpo.sh/v1/brain/sources/source%2F1?scopeKind=project&scopeId=project-a",
+      expect.objectContaining({
+        method: "PATCH",
+        body: JSON.stringify({ label: "Updated" }),
+      }),
+    );
+    expect(fetch).toHaveBeenNthCalledWith(
+      3,
+      "https://api.polpo.sh/v1/brain/sources/source%2F1/reindex?scopeKind=project&scopeId=project-a",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({
+          content: { kind: "url", url: "https://example.com/runbook" },
+        }),
+      }),
+    );
+    expect(fetch).toHaveBeenNthCalledWith(
+      4,
+      "https://api.polpo.sh/v1/brain/search",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({
+          query: "refund",
+          scopes: [scope],
+          limit: 3,
+          tokenBudget: 500,
+        }),
+      }),
+    );
+  });
+
+  it("uses exact source paths for get and delete", async () => {
+    const { client, fetch } = setup();
+
+    await client.getBrainSource("source 1");
+    await client.deleteBrainSource("source 1", {
+      kind: "org",
+      subjectId: "org-1",
+    });
+
+    expect(fetch).toHaveBeenNthCalledWith(
+      1,
+      "https://api.polpo.sh/v1/brain/sources/source%201",
+      expect.objectContaining({ method: "GET" }),
+    );
+    expect(fetch).toHaveBeenNthCalledWith(
+      2,
+      "https://api.polpo.sh/v1/brain/sources/source%201?scopeKind=org&scopeId=org-1",
+      expect.objectContaining({ method: "DELETE" }),
+    );
+  });
+});

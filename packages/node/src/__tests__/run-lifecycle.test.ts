@@ -25,7 +25,7 @@
  */
 
 import { describe, test, expect, beforeAll, afterAll, vi } from "vitest";
-import { mkdtemp, mkdir, rm, readFile, unlink } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, readFile, unlink, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -144,6 +144,41 @@ describe("executeRun — shared run lifecycle", () => {
     await import("node:fs/promises").then(({ writeFile }) => writeFile(notADirectory, "file"));
 
     expect(() => new RunActivityLog(notADirectory, "remote-run", "task", "agent", -1)).not.toThrow();
+  });
+
+  test("Brain persistence is loaded only when a Brain tool is explicitly allowed", async () => {
+    const brainPath = join(polpoDir, "brain.json");
+    await writeFile(brainPath, "{corrupt", "utf8");
+    setMockModel(mockTextModel("no Brain requested"));
+
+    try {
+      const normalStore = new InMemoryRunStore();
+      const normalConfig = makeConfig({
+        agent: makeAgent({ allowedTools: ["read"] }),
+      });
+      const normal = await executeRun(normalConfig, {
+        runStore: normalStore,
+        pid: 1,
+        configPath: "memory://without-brain",
+      });
+      expect(normal.status).toBe("completed");
+      expect(normal.spawnError).toBeUndefined();
+
+      const brainStore = new InMemoryRunStore();
+      const brainConfig = makeConfig({
+        agent: makeAgent({ allowedTools: ["brain_*"] }),
+      });
+      const withBrain = await executeRun(brainConfig, {
+        runStore: brainStore,
+        pid: 2,
+        configPath: "memory://with-brain",
+      });
+      expect(withBrain.status).toBe("failed");
+      expect(withBrain.spawnError).toBe(true);
+      expect(withBrain.result.stderr).toContain("Durable Brain state is corrupted");
+    } finally {
+      await rm(brainPath, { force: true });
+    }
   });
 
   test("happy path: running → completed, result + transcript persisted", async () => {

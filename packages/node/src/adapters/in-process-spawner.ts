@@ -34,6 +34,10 @@ import type { MemoryStore } from "@polpo-ai/core/memory-store";
 import type { FileSystem } from "@polpo-ai/core/filesystem";
 import type { Shell } from "@polpo-ai/core/shell";
 import type { RunToolMiddleware } from "@polpo-ai/core/guardrails";
+import type {
+  BrainReadService,
+  BrainServiceContext,
+} from "@polpo-ai/core/brain";
 import { executeRun, errorResult, type TranscriptSession } from "../core/run-lifecycle.js";
 
 /**
@@ -48,6 +52,8 @@ export interface InProcessSpawnerDeps {
   createLogSession?: () => Promise<TranscriptSession>;
   vaultStore?: VaultStore;
   memoryStore?: MemoryStore;
+  brainService?: BrainReadService;
+  brainContext?: BrainServiceContext;
   fs?: FileSystem;
   shell?: Shell;
   /** Optional host-resolved guardrail middleware. */

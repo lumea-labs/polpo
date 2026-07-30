@@ -267,6 +267,53 @@ export interface MemoryItemsPage {
 }
 export type SearchMemoryRequest = Omit<MemorySearchQuery, "now">;
 
+import type {
+  BrainCreateSourceRequest as CoreBrainCreateSourceRequest,
+  BrainReindexSourceRequest,
+  BrainRetrievalResult,
+  BrainScope,
+  BrainSource,
+  BrainSourceContentInput,
+  BrainSourceListResult,
+  BrainSourceStatus,
+  BrainSourceType,
+  BrainTrustLevel,
+  BrainUpdateSourceRequest,
+} from "@polpo-ai/core/brain";
+
+export type {
+  BrainReindexSourceRequest,
+  BrainRetrievalResult,
+  BrainScope,
+  BrainSource,
+  BrainSourceContentInput,
+  BrainSourceListResult,
+  BrainSourceStatus,
+  BrainSourceType,
+  BrainTrustLevel,
+  BrainUpdateSourceRequest,
+};
+
+export interface CreateBrainSourceRequest
+  extends Omit<CoreBrainCreateSourceRequest, "scope"> {
+  readonly scope?: BrainScope;
+}
+
+export interface BrainSourceFilters {
+  readonly scope?: BrainScope;
+  readonly statuses?: readonly BrainSourceStatus[];
+  readonly types?: readonly BrainSourceType[];
+  readonly limit?: number;
+  readonly cursor?: string;
+}
+
+export interface SearchBrainRequest {
+  readonly query: string;
+  readonly scopes?: readonly BrainScope[];
+  readonly limit?: number;
+  readonly tokenBudget?: number;
+}
+
 export interface DimensionScoreEvidence {
   file: string;
   line: number;
