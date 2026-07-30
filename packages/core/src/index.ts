@@ -114,6 +114,9 @@ export * from "./runtime-inspection/index.js";
 // ── Scheduling v2 (host-neutral contracts and validation) ───────────────
 export * from "./scheduling/index.js";
 
+// ── Company Brain (host-neutral source, ACL, and ingestion contracts) ────
+export * from "./brain/index.js";
+
 // ── Events (pure type definitions only, TypedEmitter lives in shell) ─────
 export * from "./events.js";
 
