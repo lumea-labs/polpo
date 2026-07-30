@@ -5,6 +5,7 @@ import {
   GuardrailBlockedError,
   RuntimeGuardrailEngine,
   createConfiguredRunToolMiddleware,
+  createObservationalRunToolMiddleware,
   createRunToolMiddleware,
   type RuntimeGuardrailPolicy,
 } from "../guardrails/index.js";
@@ -321,6 +322,56 @@ describe("RunToolMiddleware", () => {
       next,
     )).rejects.toBeInstanceOf(GuardrailBlockedError);
     expect(next).not.toHaveBeenCalled();
+  });
+
+  it("observes a blocking policy without changing a successful tool call", async () => {
+    const configured = createConfiguredRunToolMiddleware({
+      toolPolicyPack: "default",
+    });
+    const observational = createObservationalRunToolMiddleware(configured!);
+    const next = vi.fn(async () => "tool output");
+
+    await expect(observational.execute(
+      {
+        callId: "call-audit",
+        name: "bash",
+        args: { command: "rm -rf /" },
+        sideEffect: "write",
+        context: { runId: "run-audit" },
+      },
+      next,
+    )).resolves.toMatchObject({
+      output: "tool output",
+      args: { command: "rm -rf /" },
+      decisions: [expect.objectContaining({
+        action: "approval",
+        phase: "tool.before",
+      })],
+      outputTruncated: false,
+    });
+    expect(next).toHaveBeenCalledOnce();
+  });
+
+  it("keeps audit mode best-effort when the configured middleware fails unexpectedly", async () => {
+    const observational = createObservationalRunToolMiddleware({
+      execute: async () => {
+        throw new Error("broken policy adapter");
+      },
+    });
+
+    await expect(observational.execute(
+      {
+        name: "read",
+        args: { path: "README.md" },
+        context: {},
+      },
+      async () => "safe output",
+    )).resolves.toEqual({
+      output: "safe output",
+      args: { path: "README.md" },
+      decisions: [],
+      outputTruncated: false,
+    });
   });
 
   it("passes redacted arguments to the tool and redacts output before returning it", async () => {

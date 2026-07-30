@@ -334,8 +334,17 @@ in-process and subprocess task runs:
 ```
 
 The setting is absent by default. `RunnerConfig` carries only this serializable
-selection across process boundaries; approval and audit callbacks stay local
-to the active host and are never persisted.
+selection across process boundaries. A host may additionally stamp
+`guardrailMode: "audit"` on one resolved run; absent mode preserves enforcing
+behavior. This operational mode does not belong in persistent project
+configuration.
+
+Approval callbacks stay local to the active process and are never persisted.
+Detached runs retain a bounded, secret-free decision snapshot in
+`AgentActivity.guardrailDecisions`, append the same events to their transcript,
+and emit `runtime:guardrail` when the terminal run is collected. Hosts can use
+that event to write their own durable audit ledger without serializing prompts,
+tool arguments, schemas, tool output, or credentials into `RunnerConfig`.
 
 The deterministic private-network policy rejects literal private, loopback,
 link-local, metadata, and reserved destinations. Hosts must still enforce

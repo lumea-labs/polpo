@@ -27,6 +27,11 @@ export interface RunnerConfig {
   /** Resolved serializable OSS guardrail pack. Absent means disabled. */
   guardrails?: RuntimeGuardrailSettings;
   /**
+   * Host-resolved execution mode for the serialized guardrail pack.
+   * Undefined preserves the historical enforcing behavior.
+   */
+  guardrailMode?: "audit" | "enforce";
+  /**
    * Host-resolved, immutable retrieval snapshot for this run. It is data,
    * not a provider callback, so subprocess runners can consume it safely.
    */
