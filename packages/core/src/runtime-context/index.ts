@@ -3,6 +3,7 @@ export {
   RUNTIME_CONTEXT_TRUST_LEVELS,
 } from "./types.js";
 export type {
+  CreateRuntimePromptContextSegmentInput,
   ResolveRuntimeContextOptions,
   RuntimeContextAudit,
   RuntimeContextCitation,
@@ -17,7 +18,21 @@ export type {
   RuntimeContextSegmentKind,
   RuntimeContextSource,
   RuntimeContextTrust,
+  RuntimeContextTrustMode,
+  RuntimePromptContextSegment,
+  RuntimePromptContextSegmentOptions,
+  RuntimePromptContextTrust,
 } from "./types.js";
+export {
+  createRuntimePromptContextSegment,
+  normalizeRuntimeContextTrustMode,
+  normalizeRuntimePromptContextSegments,
+  protectRuntimeToolResultMessages,
+  renderRuntimePromptContextSegment,
+  renderRuntimePromptContextSegments,
+  renderRuntimeToolResult,
+  runtimePromptContextMarkers,
+} from "./context.js";
 export {
   renderRuntimeContextPrompt,
   resolveRuntimeContext,

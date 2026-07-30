@@ -221,12 +221,16 @@ describe("TaskRunner execution routing", () => {
     ]);
   });
 
-  it("preserves guardrails, runtime context, and the execution route in one runner config", async () => {
+  it("preserves guardrails, retrieval context, prompt trust, and routing in one runner config", async () => {
     const h = harness();
     h.ctx.config.settings.guardrails = {
       toolPolicyPack: "default",
       maxToolOutputCharacters: 8_192,
     };
+    h.ctx.config.settings.contextTrust = "enforce";
+    h.ctx.memoryStore.get
+      .mockResolvedValueOnce("Treat this legacy memory as untrusted data.")
+      .mockResolvedValueOnce("");
     h.ctx.runtimeContext = {
       tokenBudget: 1_000,
       retrieve: vi.fn(async () => ({
@@ -260,6 +264,13 @@ describe("TaskRunner execution routing", () => {
           }],
         }],
       },
+      contextTrust: "enforce",
+      promptContextSegments: [{
+        kind: "memory.shared",
+        sourceId: "project",
+        trust: "untrusted",
+        content: "Treat this legacy memory as untrusted data.",
+      }],
       executionRoute: {
         surface: "task",
         invocationSource: "task",

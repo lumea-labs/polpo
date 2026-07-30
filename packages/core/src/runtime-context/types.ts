@@ -2,6 +2,7 @@ import type {
   RuntimeInvocationSource,
   RuntimeSurface,
 } from "../runtime-plan/index.js";
+import type { RuntimeGuardrailDecision } from "../runtime-plan/types.js";
 
 export const RUNTIME_CONTEXT_SEGMENT_KINDS = ["memory", "brain"] as const;
 export type RuntimeContextSegmentKind =
@@ -100,4 +101,43 @@ export interface RuntimeContextProvider {
 
 export interface ResolveRuntimeContextOptions {
   readonly now?: () => Date | string;
+}
+
+/**
+ * Trust assigned to prompt-bound context. This is intentionally separate from
+ * retrieval-entry trust because it also covers system and developer content.
+ */
+export type RuntimePromptContextTrust =
+  | "system"
+  | "developer"
+  | "user"
+  | "external"
+  | "untrusted";
+
+/**
+ * Prompt-context protection is opt-in until a host explicitly enables it.
+ * The serializable value survives process and deployment boundaries.
+ */
+export type RuntimeContextTrustMode = "off" | "enforce";
+
+export interface RuntimePromptContextSegment {
+  readonly kind: string;
+  readonly sourceId?: string;
+  readonly trust: RuntimePromptContextTrust;
+  readonly content: string;
+  readonly truncated?: boolean;
+  readonly findings?: readonly RuntimeGuardrailDecision[];
+}
+
+export interface CreateRuntimePromptContextSegmentInput {
+  readonly kind: string;
+  readonly sourceId?: string;
+  readonly trust: RuntimePromptContextTrust;
+  readonly content: string;
+  readonly truncated?: boolean;
+  readonly findings?: readonly RuntimeGuardrailDecision[];
+}
+
+export interface RuntimePromptContextSegmentOptions {
+  readonly maxCharacters?: number;
 }

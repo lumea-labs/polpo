@@ -16,6 +16,7 @@ import {
   buildLoopStepAgent,
   maybeParseJson,
   normalizeProjectLoop,
+  normalizeRuntimeContextTrustMode,
   normalizeToolInput,
   resolveRuntimeContext,
   stringifyLoopContext,
@@ -25,6 +26,7 @@ import {
   type LoopResumeState,
   type LoopTraceEvent,
   type ProjectLoopConfig,
+  type RuntimeContextTrustMode,
   type RuntimeContextResolution,
   type ResolvedExecutionRoute,
   type RuntimePlan,
@@ -157,6 +159,7 @@ export async function runProjectLoopCompletion(options: {
   projectLoop: ProjectLoopConfig;
   aiMessages: any[];
   extraSystemParts: string[];
+  contextTrust?: RuntimeContextTrustMode;
   runtimeContext?: RuntimeContextResolution;
   runtimeInvocation?: CompletionRuntimeInvocation;
   sessionId?: string | null;
@@ -184,6 +187,11 @@ export async function runProjectLoopCompletion(options: {
     runtimePlan,
     executionRoute,
   } = options;
+  const contextTrust = normalizeRuntimeContextTrustMode(
+    options.contextTrust
+      ?? resumeRun?.resume?.runtime?.contextTrust
+      ?? deps.getConfig()?.settings?.contextTrust,
+  );
   const normalized = normalizeProjectLoop(projectLoop);
   if (!normalized.pipeline) throw new Error(`Loop "${projectLoop.name}" does not define a pipeline`);
 
@@ -368,6 +376,7 @@ export async function runProjectLoopCompletion(options: {
           extraSystemParts,
           context,
           stepName: name,
+          contextTrust,
           runtimePlan: options.runtimePlan,
           signal: options.signal,
           runId: loopRunId,
@@ -471,7 +480,13 @@ export async function runProjectLoopCompletion(options: {
             context: err.context,
             status: "pending",
           },
-          resume: buildLoopResumeState(err.resume, aiMessages, extraSystemParts, resumeRun?.resume?.approvedGates),
+          resume: buildLoopResumeState(
+            err.resume,
+            aiMessages,
+            extraSystemParts,
+            resumeRun?.resume?.approvedGates,
+            contextTrust,
+          ),
           error: err.message,
         });
       } else {
@@ -496,6 +511,7 @@ export function buildLoopResumeState(
   aiMessages: any[],
   extraSystemParts: string[],
   approvedGates: LoopApprovedGate[] | undefined,
+  contextTrust: RuntimeContextTrustMode = "off",
 ): LoopResumeState | undefined {
   if (!continuation) return undefined;
   return {
@@ -506,6 +522,7 @@ export function buildLoopResumeState(
     runtime: {
       aiMessages,
       extraSystemParts,
+      ...(contextTrust === "enforce" ? { contextTrust } : {}),
     },
     attempts: 0,
     createdAt: new Date().toISOString(),
@@ -540,6 +557,9 @@ export async function resumeProjectLoopRun(options: {
   const extraSystemParts = Array.isArray(run.resume.runtime?.extraSystemParts)
     ? run.resume.runtime.extraSystemParts as string[]
     : [];
+  const contextTrust = normalizeRuntimeContextTrustMode(
+    run.resume.runtime?.contextTrust,
+  );
   const runtimeContext = await resolveProjectLoopResumeRuntimeContext(
     options.deps,
     run,
@@ -552,6 +572,7 @@ export async function resumeProjectLoopRun(options: {
     projectLoop,
     aiMessages,
     extraSystemParts,
+    contextTrust,
     runtimeContext,
     sessionId: run.sessionId,
     user: run.user,
@@ -576,6 +597,7 @@ export async function handleProjectLoopCompletion(c: any, options: {
   projectLoop: ProjectLoopConfig;
   aiMessages: any[];
   extraSystemParts: string[];
+  contextTrust?: RuntimeContextTrustMode;
   runtimeContext?: RuntimeContextResolution;
   runtimeInvocation?: CompletionRuntimeInvocation;
   sessionStore: any;
@@ -598,6 +620,9 @@ export async function handleProjectLoopCompletion(c: any, options: {
     runtimePlan,
     executionRoute,
   } = options;
+  const contextTrust = normalizeRuntimeContextTrustMode(
+    options.contextTrust ?? deps.getConfig()?.settings?.contextTrust,
+  );
 
   if (body.stream) {
     return streamSSE(c, async (stream) => {
@@ -637,6 +662,7 @@ export async function handleProjectLoopCompletion(c: any, options: {
           projectLoop,
           aiMessages,
           extraSystemParts,
+          contextTrust,
           runtimeContext,
           runtimeInvocation,
           sessionId,
@@ -733,6 +759,7 @@ export async function handleProjectLoopCompletion(c: any, options: {
       projectLoop,
       aiMessages,
       extraSystemParts,
+      contextTrust,
       runtimeContext,
       runtimeInvocation,
       sessionId,

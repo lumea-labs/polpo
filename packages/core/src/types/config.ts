@@ -10,7 +10,11 @@ import type { NotificationsConfig, EscalationPolicy } from "./notifications.js";
 import type { LoopResumeState } from "../loop/run-store.js";
 import type { RuntimeSandboxOptions } from "../runtime-sandbox.js";
 import type { RuntimeGuardrailSettings } from "../guardrails/types.js";
-import type { RuntimeContextResolution } from "../runtime-context/index.js";
+import type {
+  RuntimeContextResolution,
+  RuntimeContextTrustMode,
+  RuntimePromptContextSegment,
+} from "../runtime-context/index.js";
 import type { ResolvedExecutionRoute } from "../execution-router.js";
 
 // === Runner Config ===
@@ -27,6 +31,10 @@ export interface RunnerConfig {
    * not a provider callback, so subprocess runners can consume it safely.
    */
   runtimeContext?: RuntimeContextResolution;
+  /** Structured prompt context rendered only at the final model boundary. */
+  promptContextSegments?: readonly RuntimePromptContextSegment[];
+  /** Explicit prompt-context trust mode. Absent and "off" preserve legacy behavior. */
+  contextTrust?: RuntimeContextTrustMode;
   /** Validated direct-or-loop decision resolved before host dispatch. */
   executionRoute?: ResolvedExecutionRoute;
   runId: string;
@@ -231,6 +239,8 @@ export interface PolpoSettings {
    *  durable runtime. "inline" keeps the older completions-route loop as an
    *  explicit compatibility escape hatch while that legacy path exists. */
   chatExecution?: "inline" | "run";
+  /** Injection-safe runtime context handling. Default: "off". */
+  contextTrust?: RuntimeContextTrustMode;
   /** PostgreSQL connection URL (required when storage is "postgres").
    *  Example: "postgres://user:pass@localhost:5432/polpo" */
   databaseUrl?: string;

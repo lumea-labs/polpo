@@ -280,6 +280,7 @@ export function completionRoutes(getDeps: () => CompletionRouteDeps, apiKeys?: s
         projectLoop: prepared.projectLoop,
         aiMessages: prepared.aiMessages,
         extraSystemParts: prepared.extraSystemParts,
+        contextTrust: prepared.contextTrust,
         runtimeContext: prepared.runtimeContext,
         runtimeInvocation: prepared.runtimeInvocation,
         sessionStore: prepared.sessionStore,
