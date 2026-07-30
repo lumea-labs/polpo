@@ -1,5 +1,6 @@
 import type { Task, Mission, MissionReport, AgentProcess, ChatSession, SSEEvent, TaskStatus } from "../client/types.js";
 import type { StoreState } from "./types.js";
+import type { RuntimePlan } from "../client/runtime-events.js";
 
 export interface TaskFilter {
   status?: TaskStatus | TaskStatus[];
@@ -138,6 +139,21 @@ export function selectEvents(state: StoreState, filter?: string[]): SSEEvent[] {
 
   eventCacheByFilter.set(filterKey, { eventsRef: state.recentEvents, result: events });
   return events;
+}
+
+export function selectRuntimePlan(
+  state: StoreState,
+  planId: string,
+): RuntimePlan | undefined {
+  return state.runtimePlans?.get(planId);
+}
+
+export function selectLatestRuntimePlan(
+  state: StoreState,
+): RuntimePlan | undefined {
+  return state.latestRuntimePlanId
+    ? state.runtimePlans?.get(state.latestRuntimePlanId)
+    : undefined;
 }
 
 function matchesEventFilter(eventName: string, patterns: string[]): boolean {

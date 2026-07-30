@@ -103,6 +103,23 @@ polpo-ai                Node.js shell: orchestrator, CLI, Hono server, tools
 
 Core contains zero Node.js dependencies. The shell (`polpo-ai`) wires concrete adapters: file stores, Drizzle stores, the LLM engine, and the HTTP server.
 
+Core also exposes additive typed Memory contracts through
+`@polpo-ai/core/memory`. Existing markdown Memory remains compatible while
+hosts adopt scoped items and policy-backed stores. The default local typed
+store persists independently in `.polpo/memory-items.json`.
+
+Typed Memory remains opt-in at the composition root. Hosts can mount
+`memoryItemRoutes` from `@polpo-ai/server`, expose only explicitly granted
+actions with `createTypedMemoryTools` from `@polpo-ai/tools`, and use the typed
+CRUD/search methods on `PolpoClient`. Merely creating a store does not mount
+routes, add tools to a model, or inject Memory into a prompt.
+
+Typed Memory listing also supports additive cursor pagination. The original
+`MemoryItemStore.list()` and `PolpoClient.listMemoryItems()` return types remain
+unchanged. Stores can implement `listPage()` for stable `(createdAt, id)`
+keyset pagination, and clients can use `listMemoryItemsPage()` with the opaque
+cursor returned by the HTTP API.
+
 ## Self-host with the dashboard
 
 The repository includes a single-tenant dashboard host that keeps the runtime API key on the server. Start the production-oriented example with PostgreSQL:
@@ -302,6 +319,72 @@ polpo loops compile .polpo/loops/router-flow.ts
 polpo deploy   # deploys .json as JSON and .ts/.js/.mjs as source
 ```
 
+### Schedules
+
+Schedules are first-class, durable invocations stored in
+`.polpo/schedules/*.json`. A schedule targets an existing agent, task,
+channel, webhook, or a legacy mission:
+
+```json
+{
+  "id": "daily-report",
+  "name": "Daily report",
+  "timing": {
+    "kind": "cron",
+    "expression": "0 9 * * *",
+    "timezone": "Europe/Rome"
+  },
+  "invocation": {
+    "surface": "agent",
+    "agentName": "reporter",
+    "input": { "prompt": "Prepare today's report." }
+  },
+  "policy": {
+    "catchUp": "skip",
+    "misfireGraceSeconds": 300,
+    "maxConcurrency": 1
+  }
+}
+```
+
+`polpo deploy` validates every schedule before sending any of them, checks
+locally-known agent, loop, and mission references, and previews the next
+occurrence in the configured timezone. Mission-shaped schedule files remain
+supported for the compatibility window and produce a migration warning.
+
+The typed SDK exposes additive v2 methods without removing the legacy mission
+helpers:
+
+```ts
+const schedule = await polpo.createScheduleV2(definition);
+await polpo.pauseSchedule(schedule.id, {
+  expectedRevision: schedule.revision,
+});
+const runs = await polpo.listScheduleRuns(schedule.id, { limit: 25 });
+await polpo.triggerSchedule(schedule.id, {
+  idempotencyKey: "manual-check-2026-07-28",
+});
+```
+
+When a host enables `ScheduleService`, mission-shaped route requests are
+translated into v2 schedules and no longer mutate `Mission` scheduling fields.
+Hosts can import existing Mission-backed definitions idempotently before
+cutover:
+
+```ts
+import { migrateLegacyMissionSchedules } from "@polpo-ai/server";
+
+const report = await migrateLegacyMissionSchedules({
+  service: scheduleService,
+  missions: await missionStore.listMissions(),
+  dryRun: true,
+});
+```
+
+Run the same migration without `dryRun` after reviewing collisions and
+ambiguous legacy states. Hosts that have not enabled `ScheduleService` retain
+the old Mission scheduler during the announced compatibility window.
+
 Agent-direct chat can target a loop explicitly:
 
 ```json
@@ -372,6 +455,32 @@ Policies are evaluated before hook actions at the same lifecycle point. `deny` f
 
 When the host wires `LoopRunStore`, chat completions create durable loop runs, append every `loop_trace` event, and return `loop_run_id`. When the host also wires `ApprovalStore`, approval policies create a pending approval request and mark the loop run as `awaiting_approval` with `approvalRequestId`. The SDK exposes `getLoopRuns()` and `getLoopRun(id)` for audit/history surfaces. Streaming completions still emit each trace incrementally.
 
+### Model profiles
+
+Project-level model profiles let agents use stable semantic policies without
+making legacy model strings ambiguous:
+
+```jsonc
+{
+  "settings": {
+    "modelProfiles": {
+      "fast": "openai/gpt-4o-mini",
+      "balanced": {
+        "primary": "anthropic/claude-sonnet-4",
+        "fallbacks": [{ "profile": "fast" }]
+      }
+    },
+    "orchestratorModel": { "profile": "balanced" }
+  }
+}
+```
+
+Select profiles explicitly on an agent with `"model": { "profile": "balanced" }`.
+Use `allowedModelProfiles` to narrow the profiles that agent may expand. Plain
+strings such as `"openai"` or `"openai/gpt-4o-mini"` always remain direct model
+IDs. Unknown profiles, cycles, disallowed nested references, and invalid
+fallback policies fail before provider execution.
+
 ## SDK
 
 ### Client SDK
@@ -386,6 +495,10 @@ const client = new PolpoClient({
 const tasks = await client.getTasks();
 const agents = await client.getAgents();
 ```
+
+The SDK also exposes typed `runtime:plan` SSE events, runtime-plan selectors,
+and the shared secret-free context accounting contract used by runtime
+inspectors.
 
 ### React SDK
 

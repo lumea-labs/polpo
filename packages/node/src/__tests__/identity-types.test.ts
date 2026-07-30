@@ -107,4 +107,31 @@ describe("Agent validation — identity, responsibilities, vault", () => {
     const agents = [{ name: "agent-1", reportsTo: "ghost" }];
     expect(() => validateAgents(agents)).toThrow('does not match any agent');
   });
+
+  it("accepts a bounded opt-in execution router", () => {
+    const agents = [{
+      name: "agent-1",
+      assignedLoops: ["research"],
+      executionRouter: {
+        mode: "auto",
+        allowedLoops: ["research"],
+        minConfidence: 0.8,
+        timeoutMs: 750,
+        maxInputChars: 2048,
+      },
+    }];
+    expect(() => validateAgents(agents)).not.toThrow();
+  });
+
+  it("rejects invalid execution router settings before runtime", () => {
+    const agents = [{
+      name: "agent-1",
+      executionRouter: {
+        mode: "auto",
+        allowedLoops: [],
+      },
+    }];
+    expect(() => validateAgents(agents))
+      .toThrow('Agent "agent-1": Execution router auto mode requires');
+  });
 });

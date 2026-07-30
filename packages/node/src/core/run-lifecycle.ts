@@ -35,10 +35,23 @@ import { sanitizeTranscriptEntry } from "../server/security.js";
 import { EncryptedVaultStore } from "../vault/encrypted-store.js";
 import type { VaultStore } from "@polpo-ai/core/vault-store";
 import type { MemoryStore } from "@polpo-ai/core/memory-store";
+import {
+  normalizeRuntimePromptContextSegments,
+  normalizeRuntimeContextTrustMode,
+} from "@polpo-ai/core";
+import {
+  createConfiguredRunOutputPolicy,
+  createConfiguredRunToolMiddleware,
+  createObservationalRunToolMiddleware,
+  type RunOutputPolicy,
+  type RunToolMiddleware,
+  type RuntimeGuardrailAuditEvent,
+} from "@polpo-ai/core/guardrails";
 import { NodeFileSystem } from "../adapters/node-filesystem.js";
 import { NodeShell } from "../adapters/node-shell.js";
 
 const ACTIVITY_POLL_MS = 1500;
+const MAX_ACTIVITY_GUARDRAIL_DECISIONS = 100;
 
 export function errorResult(err: unknown): TaskResult {
   const msg = err instanceof Error ? err.message : String(err);
@@ -126,6 +139,10 @@ export interface ExecuteRunDeps {
    * gateway here — the loop runs in a shared process with no per-tenant env.
    */
   gatewayConfig?: unknown;
+  /** Optional host-resolved tool guardrail middleware. */
+  runToolMiddleware?: RunToolMiddleware;
+  /** Optional host-resolved output guardrail policy. */
+  runOutputPolicy?: RunOutputPolicy;
   /** Pid recorded on the run record: process.pid (subprocess) or a synthetic negative id (in-process). */
   pid: number;
   /** Where the config was persisted ("file:///path", "db://runId", "memory://…"). */
@@ -205,6 +222,8 @@ export async function executeRun(config: RunnerConfig, deps: ExecuteRunDeps): Pr
   actLog.logEvent("spawning", { task: config.task.title });
 
   let handle: AgentHandle;
+  const guardrailDecisions: RuntimeGuardrailAuditEvent[] = [];
+  let guardrailDecisionsTruncated = false;
   try {
     // Use the injected vault store when available (postgres/sqlite or
     // orchestrator-owned), fall back to file-based
@@ -214,6 +233,12 @@ export async function executeRun(config: RunnerConfig, deps: ExecuteRunDeps): Pr
     }
 
     const memoryStore: MemoryStore = deps.memoryStore ?? new FileMemoryStore(config.polpoDir);
+    const contextTrust = normalizeRuntimeContextTrustMode(
+      config.contextTrust ?? deps.inject?.contextTrust,
+    );
+    const promptContextSegments = contextTrust === "enforce"
+      ? normalizeRuntimePromptContextSegments(config.promptContextSegments)
+      : [];
     const handleTranscript = (entry: Record<string, unknown>) => {
       // F1a: live subscription for streaming hosts (chat-via-executeRun). Teed
       // first, best-effort — it must never break persistence below.
@@ -229,17 +254,52 @@ export async function executeRun(config: RunnerConfig, deps: ExecuteRunDeps): Pr
           .catch(() => {}); // best-effort, don't block engine
       }
     };
+    const onGuardrailDecision = (event: RuntimeGuardrailAuditEvent) => {
+      if (guardrailDecisions.length < MAX_ACTIVITY_GUARDRAIL_DECISIONS) {
+        guardrailDecisions.push(event);
+      } else {
+        guardrailDecisionsTruncated = true;
+      }
+      handleTranscript({
+        type: "guardrail_decision",
+        event,
+      });
+    };
+    const configuredToolMiddleware = createConfiguredRunToolMiddleware(
+      config.guardrails,
+      { onDecision: onGuardrailDecision },
+    );
+    const runToolMiddleware = deps.runToolMiddleware
+      ?? (config.guardrailMode === "audit" && configuredToolMiddleware
+        ? createObservationalRunToolMiddleware(configuredToolMiddleware)
+        : configuredToolMiddleware);
+    const runOutputPolicy = deps.runOutputPolicy
+      ?? createConfiguredRunOutputPolicy(
+        config.guardrails,
+        { onDecision: onGuardrailDecision },
+      );
 
     const spawnCtx = {
       polpoDir: config.polpoDir,
+      runId: config.runId,
       outputDir: config.outputDir,
       emailAllowedDomains: config.emailAllowedDomains,
       reasoning: config.reasoning,
+      modelProfiles: config.modelProfiles,
+      modelAllowlist: config.modelAllowlist,
       vaultStore,
       memoryStore,
       // Per-tenant gateway for the in-process host (undefined for subprocess,
       // which resolves the gateway from sandbox env).
       gatewayConfig: deps.gatewayConfig,
+      contextTrust,
+      promptContextSegments,
+      runToolMiddleware,
+      // Chat output is owned by the completion route so it can respect stream
+      // buffering. Background tasks enforce here before transcript/result
+      // persistence.
+      runOutputPolicy: deps.inject ? undefined : runOutputPolicy,
+      runOutputPolicyMode: config.guardrailMode ?? "enforce",
       // Subprocess hosts create their own fs/shell; the in-process host
       // injects the orchestrator's instances.
       fs: deps.fs ?? new NodeFileSystem(),
@@ -248,6 +308,9 @@ export async function executeRun(config: RunnerConfig, deps: ExecuteRunDeps): Pr
       // and the per-turn checkpoint sink (one RunStore write per turn,
       // best-effort — a flaky store must never fail a healthy run).
       resumeState: config.resumeState,
+      // Chat injection already carries its fully assembled system prompt.
+      // Task runs receive the immutable snapshot through prepareSpawn.
+      runtimeContext: deps.inject ? undefined : config.runtimeContext,
       onTurnCheckpoint: async (state: LoopResumeState) => {
         try {
           await runStore.updateResumeState?.(config.runId, state);
@@ -284,6 +347,12 @@ export async function executeRun(config: RunnerConfig, deps: ExecuteRunDeps): Pr
     if (logSession) {
       handle.activity.sessionId = logSession.sessionId;
     }
+    if (runToolMiddleware || runOutputPolicy) {
+      handle.activity.guardrailDecisions = guardrailDecisions;
+    }
+    if (guardrailDecisionsTruncated) {
+      handle.activity.guardrailDecisionsTruncated = true;
+    }
     // Wire transcript persistence — every agent message gets written to the run log.
     // The same callback is also passed in SpawnContext so early in-process
     // events emitted before the handle is returned are not lost.
@@ -319,6 +388,9 @@ export async function executeRun(config: RunnerConfig, deps: ExecuteRunDeps): Pr
   try {
     const result = await handle.done;
     clearInterval(poll);
+    if (handle.activity.guardrailDecisions && guardrailDecisionsTruncated) {
+      handle.activity.guardrailDecisionsTruncated = true;
+    }
     // Final activity + sessionId flush before marking terminal
     try { await runStore.updateActivity(config.runId, handle.activity); } catch { /* best effort */ }
     actLog.logActivity({ ...handle.activity });

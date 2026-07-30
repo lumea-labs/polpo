@@ -1,6 +1,6 @@
 {
   "name": "@polpo-ai/node",
-  "version": "0.15.37",
+  "version": "0.15.47",
   "description": "Polpo Node.js runtime — orchestrator wiring, adapters, server assembly, runner entry. The composition root behind the polpo-ai package.",
   "type": "module",
   "main": "dist/index.js",
@@ -21,6 +21,10 @@
     "./assessment": {
       "types": "./dist/assessment/index.d.ts",
       "import": "./dist/assessment/index.js"
+    },
+    "./scheduling": {
+      "types": "./dist/scheduling/index.d.ts",
+      "import": "./dist/scheduling/index.js"
     },
     "./runner": {
       "import": "./dist/core/runner.js"

@@ -13,6 +13,7 @@ import type { Task, TaskResult, AssessmentResult, TaskExpectation, ReviewContext
 import { setAssessment } from "./types.js";
 import { buildFixPrompt, buildRetryPrompt, buildSideEffectFixPrompt, buildSideEffectRetryPrompt, buildJudgePrompt, type JudgeVerdict, type JudgeCorrection } from "./assessment-prompts.js";
 import { looksLikeQuestion, classifyAsQuestion } from "./question-detector.js";
+import { resolveConfiguredModelSelection } from "./model-profiles.js";
 
 // ── File System Ports ────────────────────────────────────────────────────
 // These optional ports allow the shell to inject Node.js file system operations
@@ -54,6 +55,13 @@ export class AssessmentOrchestrator {
 
   constructor(private ctx: OrchestratorContext, ports?: AssessmentPorts) {
     this.ports = ports ?? {};
+  }
+
+  private orchestratorModel(): string | ModelConfig | undefined {
+    const selection = this.ctx.config.settings.orchestratorModel;
+    return selection
+      ? resolveConfiguredModelSelection(selection, this.ctx.config.settings).selection
+      : undefined;
   }
 
   /**
@@ -194,7 +202,7 @@ export class AssessmentOrchestrator {
       ? (stdout: string, model?: string | ModelConfig) => this.ports.classifyAsQuestion!(stdout, model)
       : (stdout: string, model?: string | ModelConfig) => classifyAsQuestion(stdout, queryLLM, model);
     try {
-      const classification = await classify(result.stdout, this.ctx.config.settings.orchestratorModel);
+      const classification = await classify(result.stdout, this.orchestratorModel());
       if (classification.isQuestion) {
         await this.resolveAndRerun(taskId, task, result, classification.question);
       } else {
@@ -219,7 +227,7 @@ export class AssessmentOrchestrator {
 
     // Use the generateAnswer port if provided, otherwise build the answer inline via queryLLM
     const answerPromise = this.ports.generateAnswer
-      ? this.ports.generateAnswer(task, question, this.ctx.config.settings.orchestratorModel)
+      ? this.ports.generateAnswer(task, question, this.orchestratorModel())
       : this.generateAnswerInline(task, question);
 
     try {
@@ -301,7 +309,7 @@ export class AssessmentOrchestrator {
     );
 
     const prompt = parts.join("\n");
-    return (await this.ctx.queryLLM(prompt, this.ctx.config.settings.orchestratorModel)).text;
+    return (await this.ctx.queryLLM(prompt, this.orchestratorModel())).text;
   }
 
   /**
@@ -642,7 +650,7 @@ export class AssessmentOrchestrator {
 
     let response: string;
     try {
-      response = (await this.ctx.queryLLM(prompt, this.ctx.config.settings.orchestratorModel)).text;
+      response = (await this.ctx.queryLLM(prompt, this.orchestratorModel())).text;
     } catch { /* LLM query failed */
       return false;
     }

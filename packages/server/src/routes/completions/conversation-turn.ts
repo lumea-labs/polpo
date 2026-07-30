@@ -1,12 +1,29 @@
 import { nanoid } from "nanoid";
 import {
   agentMemoryScope,
+  createRuntimePromptContextSegment,
+  compileExecutionRouteManifest,
+  createExecutionRouteResolvedEvent,
+  createExplicitExecutionRoute,
   createRuntimePlanResolvedEvent,
+  executionRouteRuntimePlanFields,
+  normalizeRuntimeContextTrustMode,
   normalizeRuntimePlan,
+  renderRuntimePromptContextSegment,
+  renderRuntimePromptContextSegments,
+  renderRuntimeContextPrompt,
+  resolveRuntimeContext,
+  resolveExecutionRoute,
   resolveLoopSelection,
+  validateExecutionRouterConfig,
   type ModelSelection,
+  type ModelTarget,
+  type ProfiledModelSelection,
   type ProjectLoopConfig,
+  type RuntimeContextResolution,
+  type ResolvedExecutionRoute,
   type RuntimePlan,
+  type RuntimeContextTrustMode,
 } from "@polpo-ai/core";
 import type {
   CompletionRouteDeps,
@@ -16,6 +33,10 @@ import type {
 import type { CompletionRequestBody } from "./schemas.js";
 import { convertMessages, extractText } from "./message-mapping.js";
 import { toAIToolChoice } from "./tool-mapping.js";
+import {
+  createGuardedCompletionToolExecutor,
+  type CompletionToolExecutor,
+} from "./tool-guardrails.js";
 import type { ChatCompletionExecution } from "./chat-handler.js";
 import {
   agentConfigForModelPrimary,
@@ -43,9 +64,13 @@ type PreparedProjectLoop = {
   projectLoop: ProjectLoopConfig;
   aiMessages: any[];
   extraSystemParts: string[];
+  contextTrust: RuntimeContextTrustMode;
   sessionStore: any;
   sessionId: string | null;
   runtimePlan?: RuntimePlan;
+  runtimeContext?: RuntimeContextResolution;
+  runtimeInvocation?: CompletionRuntimeInvocation;
+  executionRoute?: ResolvedExecutionRoute;
 };
 
 type PreparedChat = {
@@ -62,12 +87,12 @@ export interface PrepareConversationTurnOptions {
   setHeader?: (name: string, value: string) => void;
   /** Trusted surface identity. Omit for ordinary HTTP/API agent calls. */
   runtime?: CompletionRuntimeInvocation;
+  signal?: AbortSignal;
 }
 
 export interface RunConversationTurnInput extends PrepareConversationTurnOptions {
   body: CompletionRequestBody;
   onRunEvent?: (event: Record<string, unknown>) => void;
-  signal?: AbortSignal;
 }
 
 export type ConversationTurnResult = ChatViaRunTurnResult & {
@@ -102,11 +127,18 @@ function freezePlanningInput<T>(value: T): T {
   return Object.freeze(value);
 }
 
-function cloneModelSelection(selection: ModelSelection | undefined): ModelSelection | undefined {
+function cloneModelSelection(
+  selection: ProfiledModelSelection | undefined,
+): ProfiledModelSelection | undefined {
   if (!selection || typeof selection === "string") return selection;
+  if ("profile" in selection) return { profile: selection.profile };
+  const cloneTarget = (target: ModelTarget): ModelTarget =>
+    typeof target === "string" ? target : { profile: target.profile };
   return {
-    ...(selection.primary !== undefined ? { primary: selection.primary } : {}),
-    ...(selection.fallbacks !== undefined ? { fallbacks: [...selection.fallbacks] } : {}),
+    primary: cloneTarget(selection.primary),
+    ...(selection.fallbacks !== undefined
+      ? { fallbacks: selection.fallbacks.map(cloneTarget) }
+      : {}),
   };
 }
 
@@ -115,7 +147,7 @@ async function resolveCompletionRuntimePlan(
   body: CompletionRequestBody,
   invocation: CompletionRuntimeInvocation | undefined,
   agentConfig: any | undefined,
-  loopName?: string,
+  execution: CompletionRuntimePlanInput["execution"],
 ): Promise<RuntimePlan | undefined> {
   if (!deps.resolveRuntimePlan) return undefined;
 
@@ -126,11 +158,7 @@ async function resolveCompletionRuntimePlan(
   const input: CompletionRuntimePlanInput = freezePlanningInput({
     surface,
     source,
-    execution: {
-      mode: loopName ? "loop" : "direct",
-      ...(loopName ? { loop: loopName } : {}),
-      source: loopName ? "request" : "default",
-    },
+    execution,
     request: {
       ...(body.agent ? { agent: body.agent } : {}),
       ...(body.loop ? { loop: body.loop } : {}),
@@ -153,8 +181,98 @@ async function resolveCompletionRuntimePlan(
   });
 
   const plan = normalizeRuntimePlan(await deps.resolveRuntimePlan(input));
+  if (
+    plan.surface !== surface ||
+    plan.source !== source ||
+    plan.execution.mode !== execution.mode ||
+    plan.execution.loop !== execution.loop ||
+    plan.execution.source !== execution.source
+  ) {
+    throw new Error("Runtime plan contradicted validated execution routing");
+  }
   deps.emit("runtime:plan", createRuntimePlanResolvedEvent(plan));
   return plan;
+}
+
+function completionInvocation(
+  invocation: CompletionRuntimeInvocation | undefined,
+): CompletionRuntimeInvocation {
+  return invocation ?? { surface: "agent", source: "request" };
+}
+
+function defaultExecution(): CompletionRuntimePlanInput["execution"] {
+  return { mode: "direct", source: "default" };
+}
+
+function executionForRoute(
+  route: ResolvedExecutionRoute | undefined,
+): CompletionRuntimePlanInput["execution"] {
+  return route
+    ? executionRouteRuntimePlanFields(route).execution
+    : defaultExecution();
+}
+
+async function resolveAutomaticExecutionRoute(
+  deps: CompletionRouteDeps,
+  agentConfig: any,
+  body: CompletionRequestBody,
+  options: PrepareConversationTurnOptions,
+): Promise<{
+  route: ResolvedExecutionRoute;
+  projectLoops: Map<string, ProjectLoopConfig>;
+}> {
+  validateExecutionRouterConfig(agentConfig.executionRouter);
+  const assignedLoops = Array.isArray(agentConfig.assignedLoops)
+    ? agentConfig.assignedLoops
+    : [];
+  const configuredAllowedLoops = Array.isArray(
+    agentConfig.executionRouter?.allowedLoops,
+  )
+    ? agentConfig.executionRouter.allowedLoops
+    : [];
+  const allowed = new Set(configuredAllowedLoops);
+  const candidateNames = [...new Set(
+    assignedLoops.filter((name: unknown) =>
+      typeof name === "string" && allowed.has(name)),
+  )] as string[];
+  const projectLoops = new Map<string, ProjectLoopConfig>();
+  if (deps.getProjectLoop) {
+    const loaded = await Promise.all(
+      candidateNames.map(async (name) => ({
+        name,
+        loop: await deps.getProjectLoop!(name),
+      })),
+    );
+    for (const { name, loop } of loaded) {
+      if (loop) projectLoops.set(name, loop);
+    }
+  }
+  const lastUserMessage = [...body.messages]
+    .reverse()
+    .find((message) => message.role === "user");
+  const invocation = completionInvocation(options.runtime);
+  const route = await resolveExecutionRoute({
+    surface: invocation.surface,
+    source: invocation.source,
+    input: lastUserMessage ? extractText(lastUserMessage.content) : "",
+    labels: [],
+    manifest: compileExecutionRouteManifest({
+      assignedLoops: candidateNames,
+      projectLoops: [...projectLoops.values()],
+    }),
+    config: agentConfig.executionRouter,
+  }, {
+    resolveClassifier: deps.resolveExecutionRouteClassifier
+      ? () => deps.resolveExecutionRouteClassifier!({
+          surface: invocation.surface,
+          source: invocation.source,
+          agentName: agentConfig.name,
+          ...(body.user ? { userId: body.user } : {}),
+        })
+      : undefined,
+    signal: options.signal,
+  });
+  return { route, projectLoops };
 }
 
 export async function prepareChatCompletionExecution(
@@ -169,15 +287,27 @@ export async function prepareChatCompletionExecution(
   let modelSelection: ModelSelection | undefined;
   let modelToolChoice: unknown | undefined;
   let effectiveTools: any[];
-  let effectiveToolExecutor: (name: string, args: Record<string, unknown>) => Promise<string>;
+  let effectiveToolExecutor: CompletionToolExecutor;
   let extraAiTools: Record<string, any> | undefined;
   let isInteractiveFn: ((name: string) => boolean) | undefined;
   let projectLoopRuntime: { agentConfig: any; projectLoop: ProjectLoopConfig } | undefined;
   let onResponseFinished: (() => Promise<void>) | undefined;
   let resolvedAgentConfig: any;
   let runtimePlan: RuntimePlan | undefined;
+  let runtimeContext: RuntimeContextResolution | undefined;
+  let executionRoute: ResolvedExecutionRoute | undefined;
 
-  const { aiMessages, extraSystemParts } = convertMessages(body.messages);
+  const contextTrust = normalizeRuntimeContextTrustMode(
+    deps.getConfig()?.settings?.contextTrust,
+  );
+  const {
+    aiMessages,
+    extraSystemParts,
+    promptContextSegments,
+  } = convertMessages(body.messages, contextTrust);
+  const callerSystemParts = contextTrust === "enforce" && promptContextSegments.length > 0
+    ? [renderRuntimePromptContextSegments(promptContextSegments)]
+    : extraSystemParts;
 
   if (agentMode) {
     const agents = await deps.getAgents();
@@ -186,24 +316,85 @@ export async function prepareChatCompletionExecution(
       return completionError(`Agent "${body.agent}" not found`, 404, "agent_not_found");
     }
 
-    try {
-      const selection = resolveLoopSelection(agentConfig, body.loop);
-      if (selection) {
+    if (body.loop) {
+      try {
+        const selection = resolveLoopSelection(agentConfig, body.loop);
+        if (!selection) throw new Error(`Loop "${body.loop}" was not resolved`);
         agentConfig = selection.agent;
         options.setHeader?.("x-loop", selection.name);
-        const assignedLoops = Array.isArray(agentConfig.assignedLoops) ? agentConfig.assignedLoops : [];
-        if (assignedLoops.includes(selection.name) && deps.getProjectLoop) {
+        const invocation = completionInvocation(options.runtime);
+        executionRoute = createExplicitExecutionRoute({
+          surface: invocation.surface,
+          source: invocation.source,
+          loop: selection.name,
+        });
+        deps.emit(
+          "runtime:execution-route",
+          createExecutionRouteResolvedEvent(executionRoute),
+        );
+        const assignedLoops = Array.isArray(agentConfig.assignedLoops)
+          ? agentConfig.assignedLoops
+          : [];
+        if (assignedLoops.includes(selection.name)) {
+          if (!deps.getProjectLoop) {
+            throw new Error("Project loop resolver is not configured");
+          }
           const projectLoop = await deps.getProjectLoop(selection.name);
-          if (!projectLoop) throw new Error(`Assigned project loop "${selection.name}" was not found`);
+          if (!projectLoop) {
+            throw new Error(
+              `Assigned project loop "${selection.name}" was not found`,
+            );
+          }
           projectLoopRuntime = { agentConfig, projectLoop };
         }
+      } catch (loopErr) {
+        const msg = loopErr instanceof Error ? loopErr.message : String(loopErr);
+        return completionError(msg, 400, "loop_not_found");
       }
-      resolvedAgentConfig = agentConfig;
-      modelToolChoice = toAIToolChoice(agentConfig.toolChoice);
-    } catch (loopErr) {
-      const msg = loopErr instanceof Error ? loopErr.message : String(loopErr);
-      return completionError(msg, 400, "loop_not_found");
+    } else if (agentConfig.executionRouter?.mode === "auto") {
+      try {
+        const routed = await resolveAutomaticExecutionRoute(
+          deps,
+          agentConfig,
+          body,
+          options,
+        );
+        executionRoute = routed.route;
+        deps.emit(
+          "runtime:execution-route",
+          createExecutionRouteResolvedEvent(executionRoute),
+        );
+        if (executionRoute.mode === "loop") {
+          const selection = resolveLoopSelection(
+            agentConfig,
+            executionRoute.loop,
+          );
+          if (!selection) {
+            throw new Error(
+              `Execution router loop "${executionRoute.loop}" was not resolved`,
+            );
+          }
+          const projectLoop = routed.projectLoops.get(selection.name);
+          if (!projectLoop) {
+            throw new Error(
+              `Execution router loop "${selection.name}" was not loaded`,
+            );
+          }
+          agentConfig = selection.agent;
+          projectLoopRuntime = { agentConfig, projectLoop };
+          options.setHeader?.("x-loop", selection.name);
+        }
+      } catch {
+        return completionError(
+          "Runtime execution routing failed",
+          500,
+          "runtime_execution_routing_failed",
+          "server_error",
+        );
+      }
     }
+    resolvedAgentConfig = agentConfig;
+    modelToolChoice = toAIToolChoice(agentConfig.toolChoice);
 
     try {
       runtimePlan = await resolveCompletionRuntimePlan(
@@ -211,7 +402,7 @@ export async function prepareChatCompletionExecution(
         body,
         options.runtime,
         resolvedAgentConfig,
-        body.loop,
+        executionForRoute(executionRoute),
       );
     } catch {
       return completionError(
@@ -220,6 +411,46 @@ export async function prepareChatCompletionExecution(
         "runtime_planning_failed",
         "server_error",
       );
+    }
+
+    const lastUserMessage = [...body.messages]
+      .reverse()
+      .find((message) => message.role === "user");
+    const retrievalQuery = lastUserMessage
+      ? extractText(lastUserMessage.content).trim()
+      : "";
+    if (retrievalQuery && deps.runtimeContext) {
+      try {
+        runtimeContext = await resolveRuntimeContext(deps.runtimeContext, {
+          agentName: resolvedAgentConfig.name,
+          query: retrievalQuery,
+          surface: options.runtime?.surface ?? "agent",
+          source: options.runtime?.source ?? "request",
+          ...(body.user ? { externalUserId: body.user } : {}),
+          ...(options.sessionId ? { sessionId: options.sessionId } : {}),
+          ...(options.runtime?.channelId
+            ? { channelId: options.runtime.channelId }
+            : {}),
+          ...(options.runtime?.requestId
+            ? { requestId: options.runtime.requestId }
+            : {}),
+          ...(options.runtime?.runId ? { runId: options.runtime.runId } : {}),
+          ...(options.signal ? { signal: options.signal } : {}),
+        });
+      } catch (error) {
+        if (
+          (error instanceof DOMException && error.name === "AbortError")
+          || (error instanceof Error && error.name === "AbortError")
+        ) {
+          throw error;
+        }
+        return completionError(
+          "Runtime context retrieval failed",
+          500,
+          "runtime_context_failed",
+          "server_error",
+        );
+      }
     }
 
     if (projectLoopRuntime) {
@@ -231,7 +462,7 @@ export async function prepareChatCompletionExecution(
       if (deps.buildRuntimePrompt) {
         fullSystemPrompt = await deps.buildRuntimePrompt(agentConfig, {
           mode: "chat",
-          extraSystemParts,
+          extraSystemParts: callerSystemParts,
           includeAgentMemory: true,
         });
       } else {
@@ -244,28 +475,47 @@ export async function prepareChatCompletionExecution(
         ].join("\n");
 
         const basePrompt = `${conversationalPreamble}\n\n${agentSystemPrompt}`;
-        fullSystemPrompt = extraSystemParts.length > 0
-          ? `${basePrompt}\n\n## Additional context from caller\n\n${extraSystemParts.join("\n\n")}`
+        fullSystemPrompt = callerSystemParts.length > 0
+          ? `${basePrompt}\n\n## Additional context from caller\n\n${callerSystemParts.join("\n\n")}`
           : basePrompt;
 
         const memoryStore = deps.getMemoryStore();
         const agentMemory = await memoryStore?.get(agentMemoryScope(agentConfig.name));
         if (agentMemory) {
-          fullSystemPrompt += `\n\n## Your persistent memory\n\n${agentMemory}`;
+          fullSystemPrompt += contextTrust === "enforce"
+            ? `\n\n${renderRuntimePromptContextSegment(createRuntimePromptContextSegment({
+                kind: "memory.agent",
+                sourceId: agentConfig.name,
+                trust: "untrusted",
+                content: agentMemory,
+              }))}`
+            : `\n\n## Your persistent memory\n\n${agentMemory}`;
         }
+      }
+      const runtimeContextPrompt = renderRuntimeContextPrompt(runtimeContext);
+      if (runtimeContextPrompt) {
+        fullSystemPrompt += `\n\n${runtimeContextPrompt}`;
       }
 
       const reasoning = agentConfig.reasoning ?? deps.getConfig()?.settings?.reasoning;
+      const settings = deps.getConfig()?.settings;
       let resolved;
       try {
-        resolved = await deps.resolveAgentModel(agentConfigForModelPrimary(agentConfig), reasoning);
+        resolved = await deps.resolveAgentModel(
+          agentConfigForModelPrimary(agentConfig, settings),
+          reasoning,
+        );
       } catch (modelErr) {
         const msg = modelErr instanceof Error ? modelErr.message : String(modelErr);
         return completionError(msg, 400);
       }
       m = resolved.model;
       providerOpts = resolved.providerOptions;
-      modelSelection = modelSelectionForAgent(agentConfig, modelSelectionForResolvedModel(m));
+      modelSelection = modelSelectionForAgent(
+        agentConfig,
+        modelSelectionForResolvedModel(m),
+        settings,
+      );
 
       const resolvedTools = await deps.resolveAgentTools(agentConfig);
       effectiveTools = resolvedTools.tools;
@@ -288,6 +538,7 @@ export async function prepareChatCompletionExecution(
         body,
         options.runtime,
         undefined,
+        defaultExecution(),
       );
     } catch {
       return completionError(
@@ -299,8 +550,8 @@ export async function prepareChatCompletionExecution(
     }
 
     const ctx = await deps.resolveOrchestratorContext();
-    fullSystemPrompt = extraSystemParts.length > 0
-      ? `${ctx.systemPrompt}\n\n## Additional context from caller\n\n${extraSystemParts.join("\n\n")}`
+    fullSystemPrompt = callerSystemParts.length > 0
+      ? `${ctx.systemPrompt}\n\n## Additional context from caller\n\n${callerSystemParts.join("\n\n")}`
       : ctx.systemPrompt;
     m = ctx.model;
     providerOpts = ctx.providerOptions;
@@ -334,6 +585,21 @@ export async function prepareChatCompletionExecution(
     }
   }
 
+  if (!projectLoopRuntime) {
+    effectiveToolExecutor = createGuardedCompletionToolExecutor({
+      executor: effectiveToolExecutor,
+      tools: effectiveTools,
+      middleware: deps.runToolMiddleware,
+      context: {
+        planId: runtimePlan?.id,
+        surface: runtimePlan?.surface,
+        source: runtimePlan?.source,
+        agent: resolvedAgentConfig?.name,
+        sessionId: sessionId ?? undefined,
+      },
+    });
+  }
+
   if (projectLoopRuntime) {
     return {
       kind: "project-loop",
@@ -343,10 +609,14 @@ export async function prepareChatCompletionExecution(
       agentConfig: projectLoopRuntime.agentConfig,
       projectLoop: projectLoopRuntime.projectLoop,
       aiMessages,
-      extraSystemParts,
+      extraSystemParts: callerSystemParts,
+      contextTrust,
       sessionStore,
       sessionId,
       runtimePlan,
+      runtimeContext,
+      runtimeInvocation: options.runtime,
+      executionRoute,
     };
   }
 
@@ -370,6 +640,9 @@ export async function prepareChatCompletionExecution(
     sessionId,
     onResponseFinished,
     runtimePlan,
+    contextTrust,
+    runtimeContext,
+    executionRoute,
   };
 
   const viaRun =
@@ -390,6 +663,7 @@ export async function runConversationTurn(
     completionId: input.completionId,
     setHeader: input.setHeader,
     runtime: input.runtime,
+    signal: input.signal,
   });
 
   if (prepared.kind === "error") {

@@ -1,6 +1,20 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { resolve, join } from "node:path";
-import type { PolpoFileConfig, PolpoFileConfigRaw, PolpoSettings, PolpoConfig, ProviderConfig, ModelConfig } from "@polpo-ai/core/types";
+import type {
+  ModelProfileRegistry,
+  PolpoFileConfig,
+  PolpoFileConfigRaw,
+  PolpoSettings,
+  PolpoConfig,
+  ProfiledModelSelection,
+  ProviderConfig,
+} from "@polpo-ai/core/types";
+import {
+  modelProfileRegistrySchema,
+  modelSelectionSchema,
+} from "@polpo-ai/core/schemas";
+import { normalizeRuntimeGuardrailSettings } from "@polpo-ai/core/guardrails";
+import { validateExecutionRouterConfig } from "@polpo-ai/core/execution-router";
 import { getPolpoDir } from "./constants.js";
 
 const DEFAULT_SETTINGS: PolpoSettings = {
@@ -8,6 +22,7 @@ const DEFAULT_SETTINGS: PolpoSettings = {
   workDir: ".",
   logLevel: "normal",
   chatExecution: "run",
+  contextTrust: "off",
 };
 
 // --- .polpo/polpo.json (persistent project config) ---
@@ -69,6 +84,13 @@ export function validateAgents(agents: any[]): void {
     if (agent.reportsTo === agent.name) {
       throw new Error(`Agent "${agent.name}": cannot report to itself`);
     }
+    if (agent.executionRouter !== undefined) {
+      try {
+        validateExecutionRouterConfig(agent.executionRouter);
+      } catch (error) {
+        throw new Error(`Agent "${agent.name}": ${(error as Error).message}`);
+      }
+    }
   }
 
   // Second pass: validate reportsTo references existing agents
@@ -112,20 +134,23 @@ export function parseProviders(raw: Record<string, unknown>): Record<string, Pro
   return providers;
 }
 
-/** Parse orchestratorModel which can be string or ModelConfig */
-function parseOrchestratorModel(raw: unknown): string | ModelConfig | undefined {
-  if (raw === undefined || raw === null) return undefined;
-  if (typeof raw === "string") return raw;
-  if (typeof raw === "object") {
-    const obj = raw as Record<string, unknown>;
-    const result: ModelConfig = {};
-    if (typeof obj.primary === "string") result.primary = obj.primary;
-    if (Array.isArray(obj.fallbacks)) {
-      result.fallbacks = obj.fallbacks.filter((f): f is string => typeof f === "string");
-    }
-    return result;
+/** Parse a concrete model policy or explicit semantic profile reference. */
+function parseOrchestratorModel(raw: unknown): ProfiledModelSelection | undefined {
+  if (raw === undefined) return undefined;
+  const parsed = modelSelectionSchema.safeParse(raw);
+  if (!parsed.success) {
+    throw new Error(`Invalid orchestratorModel: ${parsed.error.issues[0]?.message ?? "invalid model selection"}`);
   }
-  return undefined;
+  return parsed.data as ProfiledModelSelection;
+}
+
+function parseModelProfiles(raw: unknown): ModelProfileRegistry | undefined {
+  if (raw === undefined) return undefined;
+  const parsed = modelProfileRegistrySchema.safeParse(raw);
+  if (!parsed.success) {
+    throw new Error(`Invalid modelProfiles: ${parsed.error.issues[0]?.message ?? "invalid profile registry"}`);
+  }
+  return parsed.data as ModelProfileRegistry;
 }
 
 function parseSettings(raw: any): PolpoSettings {
@@ -136,7 +161,10 @@ function parseSettings(raw: any): PolpoSettings {
   };
   if (raw?.taskTimeout != null) settings.taskTimeout = raw.taskTimeout;
   if (raw?.staleThreshold != null) settings.staleThreshold = raw.staleThreshold;
-  if (raw?.orchestratorModel) settings.orchestratorModel = parseOrchestratorModel(raw.orchestratorModel);
+  if (raw?.orchestratorModel !== undefined) {
+    settings.orchestratorModel = parseOrchestratorModel(raw.orchestratorModel);
+  }
+  if (raw?.modelProfiles !== undefined) settings.modelProfiles = parseModelProfiles(raw.modelProfiles);
   if (raw?.imageModel && typeof raw.imageModel === "string") settings.imageModel = raw.imageModel;
   if (raw?.modelAllowlist && typeof raw.modelAllowlist === "object") settings.modelAllowlist = raw.modelAllowlist;
   if (raw?.enableVolatileTeams != null) settings.enableVolatileTeams = raw.enableVolatileTeams;
@@ -168,11 +196,15 @@ function parseSettings(raw: any): PolpoSettings {
   if (raw?.taskExecution && ["subprocess", "in-process"].includes(raw.taskExecution)) {
     settings.taskExecution = raw.taskExecution;
   }
+  settings.guardrails = normalizeRuntimeGuardrailSettings(raw?.guardrails);
   // Chat completions use the shared run lifecycle by default. Keep "inline"
   // as an explicit compatibility escape hatch while the legacy path exists.
   settings.chatExecution = ["inline", "run"].includes(raw?.chatExecution)
     ? raw.chatExecution
     : DEFAULT_SETTINGS.chatExecution;
+  settings.contextTrust = raw?.contextTrust === "enforce"
+    ? "enforce"
+    : DEFAULT_SETTINGS.contextTrust;
   if (raw?.databaseUrl && typeof raw.databaseUrl === "string") {
     settings.databaseUrl = raw.databaseUrl;
   }

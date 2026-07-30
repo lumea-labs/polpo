@@ -16,6 +16,23 @@ export { approvalRoutes } from "./routes/approvals.js";
 export { chatRoutes } from "./routes/chat.js";
 export { vaultRoutes } from "./routes/vault.js";
 export { scheduleRoutes } from "./routes/schedules.js";
+export {
+  ScheduleService,
+  ScheduleServiceError,
+  type ManualScheduleTriggerInput,
+  type ScheduleServiceErrorCode,
+  type ScheduleServiceOptions,
+} from "./services/schedules.js";
+export {
+  legacyMissionScheduleId,
+  migrateLegacyMissionSchedules,
+  type LegacyMissionMigrationCode,
+  type LegacyMissionMigrationItem,
+  type LegacyMissionMigrationOptions,
+  type LegacyMissionMigrationResult,
+  type LegacyMissionMigrationStatus,
+  type LegacyMissionScheduleRecord,
+} from "./services/schedules-migration.js";
 export { watcherRoutes } from "./routes/watchers.js";
 export { stateRoutes } from "./routes/state.js";
 export { healthRoutes } from "./routes/health.js";
@@ -41,6 +58,7 @@ export { configRoutes } from "./routes/config.js";
 export { fileRoutes, type FileRouteDeps } from "./routes/files.js";
 export { skillRoutes, type SkillRouteDeps } from "./routes/skills.js";
 export { connectRoutes } from "./routes/connect.js";
+export { memoryItemRoutes } from "./routes/memory-items.js";
 export {
   customToolRoutes,
   type CustomToolDeployer,
@@ -64,6 +82,7 @@ export type {
   AuthRouteDeps,
   AgentRouteDeps,
   ConnectRouteDeps,
+  MemoryRouteDeps,
 } from "./deps.js";
 
 // Validation schemas (Zod — reusable by CLI for pre-flight validation)

@@ -85,8 +85,10 @@ export interface MissionExecutorPort {
     prompt?: string;
     name?: string;
     status?: MissionStatus;
+    /** @deprecated Use a v2 Schedule with a `legacy_mission` invocation. */
     schedule?: string;
     deadline?: string;
+    /** @deprecated Use v2 Schedule compatibility metadata. */
     endDate?: string;
     notifications?: ScopedNotificationRules;
     user?: string;
@@ -605,8 +607,10 @@ export class OrchestratorEngine {
     prompt?: string;
     name?: string;
     status?: MissionStatus;
+    /** @deprecated Use a v2 Schedule with a `legacy_mission` invocation. */
     schedule?: string;
     deadline?: string;
+    /** @deprecated Use v2 Schedule compatibility metadata. */
     endDate?: string;
     notifications?: ScopedNotificationRules;
     user?: string;

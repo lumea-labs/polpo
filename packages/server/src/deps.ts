@@ -14,6 +14,12 @@ import type { VaultStore } from "@polpo-ai/core/vault-store";
 import type { PlaybookStore } from "@polpo-ai/core/playbook-store";
 import type { SessionStore } from "@polpo-ai/core/session-store";
 import type { ConnectService } from "@polpo-ai/connect-server";
+import type {
+  MemoryItemStore,
+  MemoryStoreContext,
+  MemoryUsageEvent,
+} from "@polpo-ai/core";
+import type { ScheduleService } from "./services/schedules.js";
 
 // ── Store-centric deps ───────────────────────────────────────────────
 
@@ -31,6 +37,24 @@ export interface LoopRunRouteDeps {
 
 export interface ConnectRouteDeps {
   connectService?: ConnectService;
+}
+
+export interface MemoryRouteDeps {
+  /** Omit the store to keep typed Memory unavailable. */
+  memoryItemStore?: MemoryItemStore;
+  /** Host-owned authentication, isolation namespace, and external-user scope. */
+  resolveMemoryContext: (
+    agentName: string,
+    requestContext: unknown,
+  ) => MemoryStoreContext | Promise<MemoryStoreContext>;
+  createId?: () => string;
+  createUsageId?: () => string;
+  now?: () => Date | string;
+  /** Usage telemetry is best-effort and must not change operation semantics. */
+  onUsageError?: (
+    error: unknown,
+    event: MemoryUsageEvent,
+  ) => void | Promise<void>;
 }
 
 // ── Task deps ────────────────────────────────────────────────────────
@@ -140,9 +164,10 @@ export interface SchedulerLike {
 }
 
 export interface ScheduleRouteDeps {
-  getScheduler: () => SchedulerLike | undefined;
-  getMission: (missionId: string) => Promise<any>;
-  updateMission: (missionId: string, updates: any) => Promise<any>;
+  scheduleService?: ScheduleService;
+  getScheduler?: () => SchedulerLike | undefined;
+  getMission?: (missionId: string) => Promise<any>;
+  updateMission?: (missionId: string, updates: any) => Promise<any>;
 }
 
 // ── Watcher deps ─────────────────────────────────────────────────────

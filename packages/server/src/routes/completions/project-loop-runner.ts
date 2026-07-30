@@ -16,7 +16,9 @@ import {
   buildLoopStepAgent,
   maybeParseJson,
   normalizeProjectLoop,
+  normalizeRuntimeContextTrustMode,
   normalizeToolInput,
+  resolveRuntimeContext,
   stringifyLoopContext,
   type ContextBag,
   type LoopApprovedGate,
@@ -24,16 +26,35 @@ import {
   type LoopResumeState,
   type LoopTraceEvent,
   type ProjectLoopConfig,
+  type RuntimeContextTrustMode,
+  type RuntimeContextResolution,
+  type ResolvedExecutionRoute,
+  type RuntimePlan,
 } from "@polpo-ai/core";
 import type { LanguageModelUsage } from "ai";
-import type { CompletionRouteDeps } from "../completions.js";
+import type {
+  CompletionRouteDeps,
+  CompletionRuntimeInvocation,
+} from "../completions.js";
 import {
+  agentConfigForModelPrimary,
   addUsage,
   runAgentStepCompletion,
   type CompletionResolvedModelInfo,
 } from "./agent-step-runner.js";
-import { completionResponse, loopRuntimeErrorEnvelope, modelNotFoundEnvelope, sseChunk } from "./sse.js";
+import {
+  completionResponse,
+  guardrailErrorEnvelope,
+  loopRuntimeErrorEnvelope,
+  modelNotFoundEnvelope,
+  sseChunk,
+} from "./sse.js";
 import { emitFileChanged, persistAssistantMessage, type LoopRuntimeToolCall } from "./tool-mapping.js";
+import { createGuardedCompletionToolExecutor } from "./tool-guardrails.js";
+import {
+  applyCompletionOutputPolicy,
+  streamingOutputPolicyMode,
+} from "./output-guardrails.js";
 
 export interface ProjectLoopRunResult {
   text: string;
@@ -47,27 +68,158 @@ export interface ProjectLoopRunResult {
   loopRunId?: string;
 }
 
+const runtimeSurfaces = new Set(["agent", "task", "channel", "webhook"]);
+const runtimeSources = new Set([
+  "request",
+  "channel",
+  "task",
+  "schedule",
+  "loop-step",
+  "internal",
+]);
+
+function runtimeInvocationMetadata(
+  value: unknown,
+): CompletionRuntimeInvocation | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+  const candidate = value as Record<string, unknown>;
+  if (
+    typeof candidate.surface !== "string"
+    || !runtimeSurfaces.has(candidate.surface)
+    || typeof candidate.source !== "string"
+    || !runtimeSources.has(candidate.source)
+  ) {
+    return undefined;
+  }
+  return {
+    surface: candidate.surface as CompletionRuntimeInvocation["surface"],
+    source: candidate.source as CompletionRuntimeInvocation["source"],
+    ...(typeof candidate.channelId === "string" && candidate.channelId.trim()
+      ? { channelId: candidate.channelId }
+      : {}),
+  };
+}
+
+function latestUserText(messages: readonly unknown[]): string {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (!message || typeof message !== "object") continue;
+    const candidate = message as { role?: unknown; content?: unknown };
+    if (candidate.role !== "user") continue;
+    if (typeof candidate.content === "string") return candidate.content.trim();
+    if (!Array.isArray(candidate.content)) return "";
+    return candidate.content
+      .filter((part): part is { type: "text"; text: string } =>
+        !!part
+        && typeof part === "object"
+        && (part as { type?: unknown }).type === "text"
+        && typeof (part as { text?: unknown }).text === "string",
+      )
+      .map((part) => part.text)
+      .join("\n")
+      .trim();
+  }
+  return "";
+}
+
+/**
+ * Approval resumes resolve a new snapshot. Persisting retrieved content would
+ * retain forgotten or newly unauthorized data across the approval boundary.
+ */
+export async function resolveProjectLoopResumeRuntimeContext(
+  deps: CompletionRouteDeps,
+  run: LoopRunRecord,
+  aiMessages = Array.isArray(run.resume?.runtime?.aiMessages)
+    ? run.resume.runtime.aiMessages
+    : [],
+): Promise<RuntimeContextResolution | undefined> {
+  if (!deps.runtimeContext || !run.agentName) return undefined;
+  const query = latestUserText(aiMessages);
+  if (!query) return undefined;
+  const invocation = runtimeInvocationMetadata(
+    run.metadata?.runtimeInvocation,
+  ) ?? { surface: "agent", source: "loop-step" };
+  try {
+    return await resolveRuntimeContext(deps.runtimeContext, {
+      agentName: run.agentName,
+      query,
+      surface: invocation.surface,
+      source: invocation.source,
+      ...(run.user ? { externalUserId: run.user } : {}),
+      ...(run.sessionId ? { sessionId: run.sessionId } : {}),
+      ...(invocation.channelId ? { channelId: invocation.channelId } : {}),
+      runId: run.id,
+    });
+  } catch {
+    throw new Error("Runtime context retrieval failed");
+  }
+}
+
 export async function runProjectLoopCompletion(options: {
   deps: CompletionRouteDeps;
   agentConfig: any;
   projectLoop: ProjectLoopConfig;
   aiMessages: any[];
   extraSystemParts: string[];
+  contextTrust?: RuntimeContextTrustMode;
+  runtimeContext?: RuntimeContextResolution;
+  runtimeInvocation?: CompletionRuntimeInvocation;
   sessionId?: string | null;
   user?: string;
+  runtimePlan?: RuntimePlan;
+  signal?: AbortSignal;
   onToolCall?: (toolCall: LoopRuntimeToolCall) => Promise<void>;
   onTrace?: (event: LoopTraceEvent) => Promise<void>;
   resumeRun?: LoopRunRecord;
+  executionRoute?: ResolvedExecutionRoute;
 }): Promise<ProjectLoopRunResult> {
-  const { deps, agentConfig, projectLoop, aiMessages, extraSystemParts, sessionId, user, onToolCall, onTrace, resumeRun } = options;
+  const {
+    deps,
+    agentConfig,
+    projectLoop,
+    aiMessages,
+    extraSystemParts,
+    runtimeContext,
+    runtimeInvocation,
+    sessionId,
+    user,
+    onToolCall,
+    onTrace,
+    resumeRun,
+    runtimePlan,
+    executionRoute,
+  } = options;
+  const contextTrust = normalizeRuntimeContextTrustMode(
+    options.contextTrust
+      ?? resumeRun?.resume?.runtime?.contextTrust
+      ?? deps.getConfig()?.settings?.contextTrust,
+  );
   const normalized = normalizeProjectLoop(projectLoop);
   if (!normalized.pipeline) throw new Error(`Loop "${projectLoop.name}" does not define a pipeline`);
 
-  const rootTools = await deps.resolveAgentTools(agentConfig);
-  const executeLoopTool = rootTools.runtimeExecutor ?? rootTools.executor;
   const loopRunStore = deps.getLoopRunStore?.();
   const resumeState = resumeRun?.resume;
   const loopRunId = resumeRun?.id ?? (loopRunStore ? `looprun-${nanoid(16)}` : undefined);
+  const rootTools = await deps.resolveAgentTools(agentConfig);
+  const executeLoopTool = createGuardedCompletionToolExecutor({
+    executor: rootTools.runtimeExecutor ?? rootTools.executor,
+    tools: rootTools.tools,
+    middleware: deps.runToolMiddleware,
+    context: {
+      planId: options.runtimePlan?.id,
+      surface: options.runtimePlan?.surface,
+      source: "loop-step",
+      agent: agentConfig.name,
+      runId: loopRunId,
+      sessionId: sessionId ?? undefined,
+    },
+  });
+  const initialModel = agentConfigForModelPrimary(
+    agentConfig,
+    deps.getConfig()?.settings,
+  ).model ?? "polpo";
   if (loopRunStore && loopRunId && resumeRun) {
     await loopRunStore.updateRun(loopRunId, {
       status: "resuming",
@@ -93,14 +245,51 @@ export async function runProjectLoopCompletion(options: {
       user,
       metadata: {
         runtime: "chat.completions",
+        surface: runtimePlan?.surface ?? executionRoute?.surface ?? "agent",
+        source:
+          runtimePlan?.source
+          ?? executionRoute?.invocationSource
+          ?? "request",
+        execution: {
+          mode: "loop",
+          loop: projectLoop.name,
+          source:
+            runtimePlan?.execution.source
+            ?? executionRoute?.decisionSource
+            ?? "request",
+        },
+        ...(runtimePlan ? { runtimePlanId: runtimePlan.id } : {}),
+        ...(executionRoute
+          ? {
+              executionRoute: {
+                status: executionRoute.status,
+                decisionSource: executionRoute.decisionSource,
+                confidence: executionRoute.confidence,
+                reason: executionRoute.reason,
+                latencyMs: executionRoute.latencyMs,
+                fallbackUsed: executionRoute.fallbackUsed,
+              },
+            }
+          : {}),
         loopVersion: projectLoop.version ?? "1",
+        ...(runtimeInvocation
+          ? {
+              runtimeInvocation: {
+                surface: runtimeInvocation.surface,
+                source: runtimeInvocation.source,
+                ...(runtimeInvocation.channelId
+                  ? { channelId: runtimeInvocation.channelId }
+                  : {}),
+              },
+            }
+          : {}),
       },
     });
   }
   const executor = new PipelineExecutor();
   let finalText = "";
   let totalUsage: LanguageModelUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 } as LanguageModelUsage;
-  let lastModel = agentConfig.model ?? "polpo";
+  let lastModel = initialModel;
   let lastResolvedModel: CompletionResolvedModelInfo | undefined;
   let lastProviderMetadata: Record<string, unknown> | undefined;
   const toolCallsAccum: any[] = [];
@@ -157,7 +346,10 @@ export async function runProjectLoopCompletion(options: {
           arguments: args,
           state: "calling",
         });
-        const output = await executeLoopTool(name, args);
+        const output = await executeLoopTool(name, args, {
+          callId: id,
+          signal: options.signal,
+        });
         const isError = output.startsWith("Error:");
         emitFileChanged(name, args, output, deps.emit);
         const event = {
@@ -188,6 +380,12 @@ export async function runProjectLoopCompletion(options: {
           extraSystemParts,
           context,
           stepName: name,
+          contextTrust,
+          runtimePlan: options.runtimePlan,
+          signal: options.signal,
+          runId: loopRunId,
+          sessionId: sessionId ?? undefined,
+          runtimeContext,
           onToolCall,
         });
         finalText = stepResult.text || finalText;
@@ -286,7 +484,13 @@ export async function runProjectLoopCompletion(options: {
             context: err.context,
             status: "pending",
           },
-          resume: buildLoopResumeState(err.resume, aiMessages, extraSystemParts, resumeRun?.resume?.approvedGates),
+          resume: buildLoopResumeState(
+            err.resume,
+            aiMessages,
+            extraSystemParts,
+            resumeRun?.resume?.approvedGates,
+            contextTrust,
+          ),
           error: err.message,
         });
       } else {
@@ -311,6 +515,7 @@ export function buildLoopResumeState(
   aiMessages: any[],
   extraSystemParts: string[],
   approvedGates: LoopApprovedGate[] | undefined,
+  contextTrust: RuntimeContextTrustMode = "off",
 ): LoopResumeState | undefined {
   if (!continuation) return undefined;
   return {
@@ -321,6 +526,7 @@ export function buildLoopResumeState(
     runtime: {
       aiMessages,
       extraSystemParts,
+      ...(contextTrust === "enforce" ? { contextTrust } : {}),
     },
     attempts: 0,
     createdAt: new Date().toISOString(),
@@ -355,6 +561,14 @@ export async function resumeProjectLoopRun(options: {
   const extraSystemParts = Array.isArray(run.resume.runtime?.extraSystemParts)
     ? run.resume.runtime.extraSystemParts as string[]
     : [];
+  const contextTrust = normalizeRuntimeContextTrustMode(
+    run.resume.runtime?.contextTrust,
+  );
+  const runtimeContext = await resolveProjectLoopResumeRuntimeContext(
+    options.deps,
+    run,
+    aiMessages,
+  );
 
   await runProjectLoopCompletion({
     deps: options.deps,
@@ -362,6 +576,8 @@ export async function resumeProjectLoopRun(options: {
     projectLoop,
     aiMessages,
     extraSystemParts,
+    contextTrust,
+    runtimeContext,
     sessionId: run.sessionId,
     user: run.user,
     resumeRun: run,
@@ -385,10 +601,32 @@ export async function handleProjectLoopCompletion(c: any, options: {
   projectLoop: ProjectLoopConfig;
   aiMessages: any[];
   extraSystemParts: string[];
+  contextTrust?: RuntimeContextTrustMode;
+  runtimeContext?: RuntimeContextResolution;
+  runtimeInvocation?: CompletionRuntimeInvocation;
   sessionStore: any;
   sessionId: string | null;
+  runtimePlan?: RuntimePlan;
+  executionRoute?: ResolvedExecutionRoute;
 }): Promise<any> {
-  const { deps, body, completionId, agentConfig, projectLoop, aiMessages, extraSystemParts, sessionStore, sessionId } = options;
+  const {
+    deps,
+    body,
+    completionId,
+    agentConfig,
+    projectLoop,
+    aiMessages,
+    extraSystemParts,
+    runtimeContext,
+    runtimeInvocation,
+    sessionStore,
+    sessionId,
+    runtimePlan,
+    executionRoute,
+  } = options;
+  const contextTrust = normalizeRuntimeContextTrustMode(
+    options.contextTrust ?? deps.getConfig()?.settings?.contextTrust,
+  );
 
   if (body.stream) {
     return streamSSE(c, async (stream) => {
@@ -407,10 +645,14 @@ export async function handleProjectLoopCompletion(c: any, options: {
       let assistantMsgId: string | null = null;
       let finalText = "";
       let runUsage: LanguageModelUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 } as LanguageModelUsage;
-      let runModel = agentConfig.model ?? "polpo";
+      let runModel = agentConfigForModelPrimary(
+        agentConfig,
+        deps.getConfig()?.settings,
+      ).model ?? "polpo";
       let resolvedModel: CompletionResolvedModelInfo | undefined;
       let providerMetadata: Record<string, unknown> | undefined;
       let toolCalls: any[] = [];
+      const outputMode = streamingOutputPolicyMode(deps.runOutputPolicy);
 
       try {
         await stream.writeSSE({ data: sseChunk(completionId, { role: "assistant" }) });
@@ -425,8 +667,14 @@ export async function handleProjectLoopCompletion(c: any, options: {
           projectLoop,
           aiMessages,
           extraSystemParts,
+          contextTrust,
+          runtimeContext,
+          runtimeInvocation,
           sessionId,
           user: body.user,
+          runtimePlan,
+          signal: abortController.signal,
+          executionRoute,
           onToolCall: async (toolCall) => {
             if (abortController.signal.aborted) return;
             await stream.writeSSE({
@@ -446,6 +694,16 @@ export async function handleProjectLoopCompletion(c: any, options: {
         resolvedModel = run.resolvedModel;
         providerMetadata = run.providerMetadata;
         toolCalls = run.toolCalls;
+        finalText = await applyCompletionOutputPolicy({
+          outputPolicy: deps.runOutputPolicy,
+          text: finalText,
+          mode: outputMode === "buffer" ? "enforce" : "audit",
+          runtimePlan,
+          agent: body.agent,
+          runId: run.loopRunId,
+          sessionId,
+          signal: abortController.signal,
+        });
 
         if (!abortController.signal.aborted && finalText) {
           await stream.writeSSE({ data: sseChunk(completionId, { content: finalText }) });
@@ -458,7 +716,14 @@ export async function handleProjectLoopCompletion(c: any, options: {
         if ((err instanceof DOMException && err.name === "AbortError") || abortController.signal.aborted) {
           return;
         }
+        const guardrailError = guardrailErrorEnvelope(err);
         const notFound = modelNotFoundEnvelope(err, runModel, body.agent);
+        if (guardrailError) {
+          finalText = guardrailError.message;
+          await stream.writeSSE({ data: sseChunk(completionId, {}, "stop", { error: guardrailError }) });
+          await stream.writeSSE({ data: "[DONE]" });
+          return;
+        }
         if (notFound) {
           await stream.writeSSE({ data: sseChunk(completionId, {}, "stop", { error: notFound }) });
           await stream.writeSSE({ data: "[DONE]" });
@@ -491,7 +756,10 @@ export async function handleProjectLoopCompletion(c: any, options: {
 
   let assistantMsgId: string | null = null;
   let runUsage: LanguageModelUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 } as LanguageModelUsage;
-  let runModel = agentConfig.model ?? "polpo";
+  let runModel = agentConfigForModelPrimary(
+    agentConfig,
+    deps.getConfig()?.settings,
+  ).model ?? "polpo";
   let resolvedModel: CompletionResolvedModelInfo | undefined;
   let providerMetadata: Record<string, unknown> | undefined;
   let toolCalls: any[] = [];
@@ -507,8 +775,14 @@ export async function handleProjectLoopCompletion(c: any, options: {
       projectLoop,
       aiMessages,
       extraSystemParts,
+      contextTrust,
+      runtimeContext,
+      runtimeInvocation,
       sessionId,
       user: body.user,
+      runtimePlan,
+      signal: c.req.raw.signal,
+      executionRoute,
     });
     finalText = run.text;
     runUsage = run.usage;
@@ -516,8 +790,25 @@ export async function handleProjectLoopCompletion(c: any, options: {
     resolvedModel = run.resolvedModel;
     providerMetadata = run.providerMetadata;
     toolCalls = run.toolCalls;
+    finalText = await applyCompletionOutputPolicy({
+      outputPolicy: deps.runOutputPolicy,
+      text: finalText,
+      mode: "enforce",
+      runtimePlan,
+      agent: body.agent,
+      runId: run.loopRunId,
+      sessionId,
+    });
     return c.json(completionResponse(completionId, finalText, runUsage, { loop_trace: run.trace, loop_run_id: run.loopRunId }));
   } catch (err) {
+    const guardrailError = guardrailErrorEnvelope(err);
+    if (guardrailError) {
+      finalText = guardrailError.message;
+      return c.json(
+        { error: guardrailError },
+        (guardrailError.code === "guardrail_approval_required" ? 409 : 403) as any,
+      );
+    }
     const notFound = modelNotFoundEnvelope(err, runModel, body.agent);
     if (notFound) {
       return c.json({ error: notFound }, 400 as any);

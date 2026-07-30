@@ -7,7 +7,7 @@ import { sanitizeExpectations, parseMissionDocument, type MissionDocumentParsed 
 import { resolveMissionStore, resolveMissionForGroup, type MissionStore } from "./mission-store.js";
 import { InMemoryCheckpointStore, InMemoryDelayStore } from "./in-memory-stores.js";
 import { MissionGating, parseISO8601Duration } from "./mission-gating.js";
-import { normalizeModelPolicy } from "./model-policy.js";
+import { resolveConfiguredModelSelection } from "./model-profiles.js";
 
 /** Mission document keys holding list collections editable via the atomic data operations. */
 type MissionCollectionKey = "tasks" | "checkpoints" | "delays" | "qualityGates" | "team";
@@ -148,11 +148,17 @@ export class MissionExecutor {
     prompt?: string;
     name?: string;
     status?: MissionStatus;
-    /** Cron expression or ISO timestamp for scheduled execution. */
+    /**
+     * Cron expression or ISO timestamp for scheduled execution.
+     * @deprecated Use a v2 Schedule with a `legacy_mission` invocation.
+     */
     schedule?: string;
     /** Absolute deadline for the entire mission (ISO timestamp). */
     deadline?: string;
-    /** End date for recurring schedules (ISO timestamp). */
+    /**
+     * End date for recurring schedules (ISO timestamp).
+     * @deprecated Use v2 Schedule compatibility metadata.
+     */
     endDate?: string;
     notifications?: ScopedNotificationRules;
     /** Opaque end-user identifier (OpenAI-compat). */
@@ -343,7 +349,11 @@ export class MissionExecutor {
       const agentName = t.assignTo || allAgents[0]?.name;
       const agent = allAgents.find(a => a.name === agentName);
       if (agent?.model) {
-        referencedModels.push(...normalizeModelPolicy(agent.model).candidates);
+        referencedModels.push(...resolveConfiguredModelSelection(
+          agent.model,
+          this.ctx.config.settings,
+          agent.allowedModelProfiles,
+        ).policy.candidates);
       } else if (!agent) {
         throw new Error(
           `Mission references agent "${agentName}" (task "${t.title}") but no such agent exists. ` +

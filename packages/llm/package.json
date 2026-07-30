@@ -1,6 +1,6 @@
 {
   "name": "@polpo-ai/llm",
-  "version": "0.15.37",
+  "version": "0.15.47",
   "description": "LLM abstraction for Polpo — multi-provider model resolution, streaming, cost tracking, and failover built on Vercel AI SDK + AI Gateway",
   "type": "module",
   "main": "dist/index.js",
@@ -28,7 +28,9 @@
     "@ai-sdk/openai": "^3.0.48",
     "@ai-sdk/openai-compatible": "^2.0.37",
     "@ai-sdk/xai": "3.0.108",
-    "@polpo-ai/core": "workspace:*"
+    "@hyperjump/json-schema": "1.17.7",
+    "@polpo-ai/core": "workspace:*",
+    "zod": "^4.3.6"
   },
   "peerDependencies": {
     "@ai-sdk/gateway": ">=3.0.0",

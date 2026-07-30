@@ -70,6 +70,10 @@ import { executeRun, RunActivityLog } from "../core/run-lifecycle.js";
 import { InMemoryRunStore } from "./fixtures.js";
 import type { AgentConfig, Task, RunnerConfig } from "@polpo-ai/core/types";
 import type { LoopResumeState } from "@polpo-ai/core/loop-run-store";
+import {
+  RuntimeGuardrailEngine,
+  createRunToolMiddleware,
+} from "@polpo-ai/core/guardrails";
 
 // ── Helpers ─────────────────────────────────────────────
 
@@ -156,7 +160,7 @@ describe("executeRun — shared run lifecycle", () => {
       configPath: `memory://${config.runId}`,
     });
 
-    expect(outcome.status).toBe("completed");
+    expect(outcome.status, outcome.result.stderr).toBe("completed");
     expect(outcome.spawnError).toBeUndefined();
     expect(outcome.result.exitCode).toBe(0);
     expect(outcome.result.stdout).toBe("lifecycle done");
@@ -181,6 +185,262 @@ describe("executeRun — shared run lifecycle", () => {
     expect(events).toContain("tool_result");
     expect(events).toContain("assistant");
     expect(log[0].pid).toBe(4242);
+  });
+
+  test("task tools execute through the shared guardrail middleware with rewritten arguments", async () => {
+    setMockModel(mockTurnSequenceModel([
+      { type: "tool-call", toolName: "write", args: { path: "raw.txt", content: "hello" } },
+      { type: "text", text: "guarded" },
+    ]));
+    const store = new InMemoryRunStore();
+    const config = makeConfig();
+    const engine = new RuntimeGuardrailEngine([{
+      id: "rewrite-path",
+      phases: ["tool.before"],
+      evaluate: (input) => ({
+        action: "rewrite",
+        risk: "low",
+        reason: "canonical output",
+        value: { ...(input.value as Record<string, unknown>), path: "guarded.txt" },
+      }),
+    }]);
+
+    const outcome = await executeRun(config, {
+      runStore: store,
+      pid: 4243,
+      configPath: `memory://${config.runId}`,
+      runToolMiddleware: createRunToolMiddleware(engine),
+    });
+
+    expect(outcome.status).toBe("completed");
+    expect(existsSync(join(cwd, "raw.txt"))).toBe(false);
+    expect(await readFile(join(cwd, "guarded.txt"), "utf-8")).toBe("hello");
+  });
+
+  test("a blocked task tool never executes and fails the run without retrying", async () => {
+    setMockModel(mockTurnSequenceModel([
+      { type: "tool-call", toolName: "write", args: { path: "blocked.txt", content: "no" } },
+      { type: "text", text: "must not continue" },
+    ]));
+    const store = new InMemoryRunStore();
+    const config = makeConfig();
+    const events: Record<string, unknown>[] = [];
+    const evaluated = vi.fn(() => ({
+      action: "block" as const,
+      risk: "critical" as const,
+      reason: "blocked by policy",
+    }));
+    const engine = new RuntimeGuardrailEngine([{
+      id: "block-write",
+      phases: ["tool.before"],
+      evaluate: evaluated,
+    }]);
+
+    const outcome = await executeRun(config, {
+      runStore: store,
+      pid: 4244,
+      configPath: `memory://${config.runId}`,
+      runToolMiddleware: createRunToolMiddleware(engine),
+      onEvent: (event) => events.push(event),
+    });
+
+    expect(outcome.status).toBe("failed");
+    expect(outcome.result.stderr).toContain("blocked by policy");
+    expect(evaluated).toHaveBeenCalledOnce();
+    expect(existsSync(join(cwd, "blocked.txt"))).toBe(false);
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "error",
+      error: expect.objectContaining({
+        name: "GuardrailBlockedError",
+        code: "guardrail_blocked",
+        message: "blocked by policy",
+      }),
+    }));
+  });
+
+  test("a serialized policy pack protects task tools without an injected function", async () => {
+    setMockModel(mockTurnSequenceModel([
+      { type: "tool-call", toolName: "bash", args: { command: "rm -rf /" } },
+      { type: "text", text: "must not continue" },
+    ]));
+    const store = new InMemoryRunStore();
+    const config = makeConfig({
+      guardrails: { toolPolicyPack: "default" },
+    });
+    const execute = vi.fn(async () => ({
+      stdout: "must not execute",
+      stderr: "",
+      exitCode: 0,
+    }));
+
+    const outcome = await executeRun(config, {
+      runStore: store,
+      pid: 4245,
+      configPath: `memory://${config.runId}`,
+      shell: { execute },
+    });
+
+    expect(outcome.status).toBe("failed");
+    expect(outcome.result.stderr).toContain("Potentially destructive");
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  test("serialized task guardrails persist secret-free decisions in activity and transcript", async () => {
+    setMockModel(mockTurnSequenceModel([
+      {
+        type: "tool-call",
+        toolName: "bash",
+        args: {
+          command: "rm -rf /",
+          token: "sk-this-value-must-never-enter-the-audit-event",
+        },
+      },
+    ]));
+    const store = new InMemoryRunStore();
+    const config = makeConfig({
+      guardrails: { toolPolicyPack: "default" },
+    });
+    const appended: Array<{ event: string; data: unknown }> = [];
+
+    const outcome = await executeRun(config, {
+      runStore: store,
+      pid: 4246,
+      configPath: `memory://${config.runId}`,
+      createLogSession: async () => ({
+        sessionId: "guardrail-session",
+        append: async (entry) => {
+          appended.push(entry as { event: string; data: unknown });
+        },
+      }),
+    });
+
+    expect(outcome.status).toBe("failed");
+    const run = await store.getRun(config.runId);
+    expect(run?.activity.guardrailDecisions).toEqual([
+      expect.objectContaining({
+        decision: expect.objectContaining({
+          phase: "tool.before",
+          action: "approval",
+        }),
+        context: expect.objectContaining({
+          runId: config.runId,
+          agent: "lifecycle-agent",
+          surface: "task",
+          source: "task",
+        }),
+        tool: expect.objectContaining({ name: "bash" }),
+      }),
+    ]);
+    const persisted = appended.filter(
+      (entry) => entry.event === "transcript:guardrail_decision",
+    );
+    expect(persisted).toHaveLength(1);
+    expect(JSON.stringify(persisted)).not.toContain("rm -rf");
+    expect(JSON.stringify(persisted)).not.toContain("sk-this-value");
+  });
+
+  test("serialized output guardrails redact background output before transcript and result persistence", async () => {
+    const secret = "sk-abcdefghijklmnopqrstuvwxyzABCDEFGH123456";
+    setMockModel(mockTurnSequenceModel([
+      { type: "text", text: `token ${secret}` },
+    ]));
+    const store = new InMemoryRunStore();
+    const config = makeConfig({
+      guardrails: {
+        outputPolicyPack: "default",
+        streamingOutputMode: "buffer",
+      },
+    });
+    const events: Record<string, unknown>[] = [];
+
+    const outcome = await executeRun(config, {
+      runStore: store,
+      pid: 4247,
+      configPath: `memory://${config.runId}`,
+      onEvent: (event) => events.push(event),
+    });
+
+    expect(outcome.status).toBe("completed");
+    expect(outcome.result.stdout).toBe("token [REDACTED]");
+    expect(events).toContainEqual({
+      type: "assistant",
+      text: "token [REDACTED]",
+    });
+    expect(JSON.stringify(events)).not.toContain(secret);
+    const run = await store.getRun(config.runId);
+    expect(run?.activity.guardrailDecisions).toEqual([
+      expect.objectContaining({
+        decision: expect.objectContaining({
+          phase: "output",
+          action: "redact",
+        }),
+      }),
+    ]);
+    expect(JSON.stringify(run?.resumeState)).not.toContain(secret);
+    expect(JSON.stringify(await readActivityLog(config.runId))).not.toContain(secret);
+  });
+
+  test("audit-mode output guardrails preserve delivered text and still record decisions", async () => {
+    const secret = "sk-abcdefghijklmnopqrstuvwxyzABCDEFGH123456";
+    setMockModel(mockTurnSequenceModel([
+      { type: "text", text: `token ${secret}` },
+    ]));
+    const store = new InMemoryRunStore();
+    const config = makeConfig({
+      guardrailMode: "audit",
+      guardrails: { outputPolicyPack: "default" },
+    });
+
+    const outcome = await executeRun(config, {
+      runStore: store,
+      pid: 4249,
+      configPath: `memory://${config.runId}`,
+    });
+
+    expect(outcome.status, outcome.result.stderr).toBe("completed");
+    expect(outcome.result.stdout).toBe(`token ${secret}`);
+    expect((await store.getRun(config.runId))?.activity.guardrailDecisions)
+      .toEqual([
+        expect.objectContaining({
+          decision: expect.objectContaining({
+            action: "redact",
+            phase: "output",
+          }),
+        }),
+      ]);
+  });
+
+  test("audit-mode task guardrails report decisions without blocking tool execution", async () => {
+    setMockModel(mockTurnSequenceModel([
+      { type: "tool-call", toolName: "bash", args: { command: "rm -rf /" } },
+      { type: "text", text: "continued in audit mode" },
+    ]));
+    const store = new InMemoryRunStore();
+    const config = makeConfig({
+      guardrailMode: "audit",
+      guardrails: { toolPolicyPack: "default" },
+    });
+    const execute = vi.fn(async () => ({
+      stdout: "observed",
+      stderr: "",
+      exitCode: 0,
+    }));
+
+    const outcome = await executeRun(config, {
+      runStore: store,
+      pid: 4248,
+      configPath: `memory://${config.runId}`,
+      shell: { execute },
+    });
+
+    expect(outcome.status, outcome.result.stderr).toBe("completed");
+    expect(execute).toHaveBeenCalledOnce();
+    expect((await store.getRun(config.runId))?.activity.guardrailDecisions)
+      .toEqual([
+        expect.objectContaining({
+          decision: expect.objectContaining({ action: "approval" }),
+        }),
+      ]);
   });
 
   test("onEvent (F1a): a streaming host receives each transcript entry live, teed alongside persistence", async () => {
@@ -467,6 +727,40 @@ describe("executeRun — shared run lifecycle", () => {
     } finally {
       throwOnSpawn = undefined;
     }
+  });
+
+  test("malformed persisted context fails closed only when enforcement is active", async () => {
+    const store = new InMemoryRunStore();
+    const enforced = makeConfig({
+      contextTrust: "enforce",
+      promptContextSegments: [{
+        kind: "memory.agent",
+        trust: "trusted",
+        content: "ambiguous",
+      } as any],
+    });
+    const failed = await executeRun(enforced, {
+      runStore: store,
+      pid: 1,
+      configPath: "memory://invalid-context",
+    });
+
+    expect(failed.status).toBe("failed");
+    expect(failed.spawnError).toBe(true);
+    expect(failed.result.stderr).toContain("runtime context trust is invalid");
+
+    setMockModel(mockTextModel("legacy still runs"));
+    const disabled = makeConfig({
+      contextTrust: "off",
+      promptContextSegments: enforced.promptContextSegments,
+    });
+    const legacy = await executeRun(disabled, {
+      runStore: store,
+      pid: 2,
+      configPath: "memory://disabled-context",
+    });
+    expect(legacy.status).toBe("completed");
+    expect(legacy.result.stdout).toBe("legacy still runs");
   });
 
   test("transcript goes through the injected log session (DB-mode parity)", async () => {

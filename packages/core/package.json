@@ -1,6 +1,6 @@
 {
   "name": "@polpo-ai/core",
-  "version": "0.15.37",
+  "version": "0.15.47",
   "description": "Pure business logic, types, schemas, and store interfaces for the Polpo AI agent orchestration platform",
   "type": "module",
   "main": "dist/index.js",
@@ -34,6 +34,14 @@
       "types": "./dist/model-catalog.d.ts",
       "import": "./dist/model-catalog.js"
     },
+    "./model-profiles": {
+      "types": "./dist/model-profiles.d.ts",
+      "import": "./dist/model-profiles.js"
+    },
+    "./model-router": {
+      "types": "./dist/model-router.d.ts",
+      "import": "./dist/model-router.js"
+    },
     "./model-invocation-store": {
       "types": "./dist/model-invocation-store.d.ts",
       "import": "./dist/model-invocation-store.js"
@@ -45,6 +53,26 @@
     "./brain": {
       "types": "./dist/brain/index.d.ts",
       "import": "./dist/brain/index.js"
+    },
+    "./runtime-inspection": {
+      "types": "./dist/runtime-inspection/index.d.ts",
+      "import": "./dist/runtime-inspection/index.js"
+    },
+    "./guardrails": {
+      "types": "./dist/guardrails/index.d.ts",
+      "import": "./dist/guardrails/index.js"
+    },
+    "./runtime-context": {
+      "types": "./dist/runtime-context/index.d.ts",
+      "import": "./dist/runtime-context/index.js"
+    },
+    "./execution-router": {
+      "types": "./dist/execution-router.d.ts",
+      "import": "./dist/execution-router.js"
+    },
+    "./scheduling": {
+      "types": "./dist/scheduling/index.d.ts",
+      "import": "./dist/scheduling/index.js"
     },
     "./hooks": {
       "types": "./dist/hooks.d.ts",
@@ -69,6 +97,10 @@
     "./memory-store": {
       "types": "./dist/memory-store.d.ts",
       "import": "./dist/memory-store.js"
+    },
+    "./memory": {
+      "types": "./dist/memory/index.d.ts",
+      "import": "./dist/memory/index.js"
     },
     "./approval-store": {
       "types": "./dist/approval-store.d.ts",
@@ -239,6 +271,8 @@
   },
   "dependencies": {
     "@sinclair/typebox": "^0.34.0",
+    "ajv": "^8.20.0",
+    "cron-parser": "^5.6.2",
     "nanoid": "^5.1.2",
     "zod": "^4.3.6"
   },

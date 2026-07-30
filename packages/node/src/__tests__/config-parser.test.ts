@@ -78,6 +78,62 @@ describe("parseConfig (.polpo/polpo.json)", () => {
       expect(config.settings.orchestratorModel).toBe("claude-sonnet-4-5-20250929");
     });
 
+    it("parses model profiles and an explicit orchestrator profile reference", async () => {
+      const cfg = {
+        ...minimalConfig(),
+        settings: {
+          ...minimalConfig().settings,
+          orchestratorModel: { profile: "balanced" },
+          modelProfiles: {
+            fast: "openai/gpt-4o-mini",
+            balanced: {
+              primary: "anthropic/claude-sonnet-4",
+              fallbacks: [{ profile: "fast" }],
+            },
+          },
+        },
+      };
+
+      const config = await parseConfig(writeConfig(cfg));
+
+      expect(config.settings.orchestratorModel).toEqual({ profile: "balanced" });
+      expect(config.settings.modelProfiles).toEqual(cfg.settings.modelProfiles);
+    });
+
+    it.each([
+      { modelProfiles: [] },
+      { modelProfiles: { "reasoning/high": "openai/gpt-4o-mini" } },
+      { modelProfiles: { fast: { profile: "" } } },
+      { modelProfiles: { fast: { primary: 42 } } },
+    ])("rejects malformed model profile settings: %j", async (invalid) => {
+      const cfg = {
+        ...minimalConfig(),
+        settings: {
+          ...minimalConfig().settings,
+          ...invalid,
+        },
+      };
+
+      await expect(parseConfig(writeConfig(cfg))).rejects.toThrow(/Invalid modelProfiles/);
+    });
+
+    it.each([
+      { orchestratorModel: "" },
+      { orchestratorModel: null },
+      { orchestratorModel: { profile: "fast", primary: "openai/gpt-4o-mini" } },
+      { orchestratorModel: { primary: "openai/gpt-4o-mini", arbitrary: true } },
+    ])("rejects malformed orchestrator model settings: %j", async (invalid) => {
+      const cfg = {
+        ...minimalConfig(),
+        settings: {
+          ...minimalConfig().settings,
+          ...invalid,
+        },
+      };
+
+      await expect(parseConfig(writeConfig(cfg))).rejects.toThrow(/Invalid orchestratorModel/);
+    });
+
     it("ignores teams in polpo.json — returns empty teams", async () => {
       const cfg = {
         ...minimalConfig(),
@@ -118,6 +174,23 @@ describe("parseConfig (.polpo/polpo.json)", () => {
       expect(config.settings.chatExecution).toBe("run");
     });
 
+    it("keeps context trust off unless enforcement is explicit", async () => {
+      const defaultConfig = await parseConfig(writeConfig(minimalConfig()));
+      expect(defaultConfig.settings.contextTrust).toBe("off");
+
+      const enforcedDir = writeConfig({
+        ...minimalConfig(),
+        settings: { ...minimalConfig().settings, contextTrust: "enforce" },
+      });
+      expect((await parseConfig(enforcedDir)).settings.contextTrust).toBe("enforce");
+
+      const unknownDir = writeConfig({
+        ...minimalConfig(),
+        settings: { ...minimalConfig().settings, contextTrust: "future" },
+      });
+      expect((await parseConfig(unknownDir)).settings.contextTrust).toBe("off");
+    });
+
     it("keeps inline chat execution only when explicitly requested", async () => {
       const cfg = {
         ...minimalConfig(),
@@ -126,6 +199,56 @@ describe("parseConfig (.polpo/polpo.json)", () => {
       const workDir = writeConfig(cfg);
       const config = await parseConfig(workDir);
       expect(config.settings.chatExecution).toBe("inline");
+    });
+
+    it("keeps runtime tool guardrails off unless a policy pack is explicit", async () => {
+      const workDir = writeConfig(minimalConfig());
+      const config = await parseConfig(workDir);
+
+      expect(config.settings.guardrails).toBeUndefined();
+    });
+
+    it("parses the explicit serializable runtime tool guardrail settings", async () => {
+      const cfg = {
+        ...minimalConfig(),
+        settings: {
+          ...minimalConfig().settings,
+          guardrails: {
+            toolPolicyPack: "default",
+            maxToolOutputCharacters: 4096,
+            readOnlyPolicyFailure: "block",
+          },
+        },
+      };
+      const workDir = writeConfig(cfg);
+      const config = await parseConfig(workDir);
+
+      expect(config.settings.guardrails).toEqual({
+        toolPolicyPack: "default",
+        maxToolOutputCharacters: 4096,
+        readOnlyPolicyFailure: "block",
+      });
+    });
+
+    it("parses output guardrails independently and defaults streaming to audit", async () => {
+      const cfg = {
+        ...minimalConfig(),
+        settings: {
+          ...minimalConfig().settings,
+          guardrails: {
+            outputPolicyPack: "default",
+            maxFinalOutputCharacters: 8192,
+          },
+        },
+      };
+      const workDir = writeConfig(cfg);
+      const config = await parseConfig(workDir);
+
+      expect(config.settings.guardrails).toEqual({
+        outputPolicyPack: "default",
+        maxFinalOutputCharacters: 8192,
+        streamingOutputMode: "audit",
+      });
     });
 
     it("accepts logLevel 'quiet'", async () => {
@@ -219,6 +342,25 @@ describe("parseConfig (.polpo/polpo.json)", () => {
         'Invalid logLevel "debug": must be quiet, normal, or verbose',
       );
     });
+
+    it.each([
+      ["unknown pack", { toolPolicyPack: "custom" }],
+      ["zero output limit", { toolPolicyPack: "default", maxToolOutputCharacters: 0 }],
+      ["fractional output limit", { toolPolicyPack: "default", maxToolOutputCharacters: 1.5 }],
+      ["invalid read fallback", { toolPolicyPack: "default", readOnlyPolicyFailure: "allow" }],
+      ["unknown output pack", { outputPolicyPack: "custom" }],
+      ["zero final output limit", { outputPolicyPack: "default", maxFinalOutputCharacters: 0 }],
+      ["invalid streaming mode", { outputPolicyPack: "default", streamingOutputMode: "enforce" }],
+      ["orphan streaming mode", { streamingOutputMode: "buffer" }],
+    ])("rejects invalid guardrail settings: %s", async (_label, guardrails) => {
+      const cfg = {
+        ...minimalConfig(),
+        settings: { ...minimalConfig().settings, guardrails },
+      };
+      const workDir = writeConfig(cfg);
+
+      await expect(parseConfig(workDir)).rejects.toThrow(/guardrails\./);
+    });
   });
 });
 
@@ -230,6 +372,7 @@ describe("generatePolpoConfigDefault", () => {
     expect(config.settings.maxRetries).toBe(3);
     expect(config.settings.logLevel).toBe("normal");
     expect(config.settings.chatExecution).toBe("run");
+    expect(config.settings.contextTrust).toBe("off");
   });
 
   it("round-trips through savePolpoConfig and parseConfig", async () => {

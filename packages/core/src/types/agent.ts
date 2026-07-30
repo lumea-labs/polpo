@@ -4,8 +4,9 @@
  */
 
 import type { LoopConfig, LoopToolChoice, Pipeline } from "../loop/types.js";
-import type { ModelConfig } from "./config.js";
+import type { ProfiledModelSelection } from "./config.js";
 import type { RuntimeSandboxOptions } from "../runtime-sandbox.js";
+import type { ExecutionRouterConfig } from "../execution-router.js";
 import type {
   BillingOwner,
   CostSource,
@@ -14,6 +15,7 @@ import type {
   ModelOperation,
   ModelRuntimeMode,
 } from "../model-runtime.js";
+import type { RuntimeGuardrailAuditEvent } from "../guardrails/types.js";
 
 // === Reasoning / Thinking ===
 
@@ -80,8 +82,10 @@ export interface AgentConfig {
   /** ISO timestamp of when this agent was created / added to the team. Auto-set by addAgent(). */
   createdAt?: string;
   role?: string;
-  /** Model to use. A string keeps legacy behavior; an object defines an ordered language-model policy. */
-  model?: string | ModelConfig;
+  /** Model to use. Strings remain concrete ids; profile references are explicit objects. */
+  model?: ProfiledModelSelection;
+  /** Optional narrowing allowlist for profile references used by this agent. */
+  allowedModelProfiles?: string[];
   /** Image generation model. Format: "provider/model".
    *  Default: "fal/fal-ai/flux/dev". Drives the image_generate tool.
    *  Provider must be in the supported set: fal. */
@@ -139,6 +143,8 @@ export interface AgentConfig {
   toolChoice?: LoopToolChoice;
   /** Project-level loop names this agent is allowed to use. */
   assignedLoops?: string[];
+  /** Optional direct-vs-loop router. Off by default. */
+  executionRouter?: ExecutionRouterConfig;
   /** Legacy inline loop steps. Prefer project-level loops + assignedLoops. */
   loops?: Record<string, LoopConfig>;
   /** Legacy inline pipeline wiring loop, switch, parallel, and human steps. */
@@ -195,6 +201,13 @@ export interface AgentActivity {
    * persist or bill these records.
    */
   toolUsage?: ToolUsageRecord[];
+  /**
+   * Bounded, secret-free guardrail decisions retained with a detached run so
+   * another process can forward them to its host audit plane.
+   */
+  guardrailDecisions?: RuntimeGuardrailAuditEvent[];
+  /** True when additional decisions were omitted from the bounded snapshot. */
+  guardrailDecisionsTruncated?: boolean;
 }
 
 /** One model-using tool invocation fact harvested from a tool result. */

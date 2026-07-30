@@ -7,7 +7,20 @@ import { resolveExecutionMode } from "./execution-mode.js";
 import { resolveRuntimeSandboxOptions } from "./runtime-sandbox.js";
 import type { RunRecord } from "./run-store.js";
 import type { LoopResumeState } from "./loop/run-store.js";
+import { resolveConfiguredModelSelection } from "./model-profiles.js";
 import { normalizeModelPolicy } from "./model-policy.js";
+import {
+  createRuntimePromptContextSegment,
+  resolveRuntimeContext,
+  type RuntimeContextResolution,
+  type RuntimePromptContextSegment,
+} from "./runtime-context/index.js";
+import {
+  createExecutionRouteResolvedEvent,
+  resolveTaskExecutionRoute,
+  type ResolvedExecutionRoute,
+} from "./execution-router.js";
+import type { RuntimeGuardrailAuditEvent } from "./guardrails/index.js";
 
 /**
  * Durable turns: max age of a resume checkpoint before orphan recovery
@@ -73,6 +86,22 @@ export class TaskRunner {
 
   constructor(private ctx: OrchestratorContext) {}
 
+  private async resolveTaskExecutionRoute(
+    task: Task,
+    agent: RunnerConfig["agent"],
+  ): Promise<ResolvedExecutionRoute | undefined> {
+    const route = await resolveTaskExecutionRoute({ task, agent }, {
+      getProjectLoop: this.ctx.getProjectLoop,
+      resolveClassifier: this.ctx.resolveExecutionRouteClassifier,
+    });
+    if (!route) return undefined;
+    this.ctx.emitter.emit(
+      "runtime:execution-route",
+      createExecutionRouteResolvedEvent(route),
+    );
+    return route;
+  }
+
   /**
    * Collect results from terminal runs and pass them to the callback.
    * The callback is typically the assessment pipeline (handleResult).
@@ -82,6 +111,7 @@ export class TaskRunner {
   ): Promise<void> {
     const terminalRuns = await this.ctx.runStore.getTerminalRuns();
     for (const run of terminalRuns) {
+      await this.emitGuardrailEvents(run);
       // Persist sessionId on the task before acknowledging the run.
       const sid = run.sessionId ?? run.activity.sessionId;
       if (sid) {
@@ -127,6 +157,43 @@ export class TaskRunner {
         await this.ctx.runStore.deleteRun(run.id);
       }
       this.staleWarned.delete(run.taskId);
+    }
+  }
+
+  private async emitGuardrailEvents(run: RunRecord): Promise<void> {
+    const byId = new Map<string, RuntimeGuardrailAuditEvent>();
+    const sid = run.sessionId ?? run.activity.sessionId;
+    if (sid) {
+      try {
+        const entries = await this.ctx.logStore.getSessionEntries(sid);
+        for (const entry of entries) {
+          if (entry.event !== "transcript:guardrail_decision") continue;
+          const data = entry.data as {
+            type?: unknown;
+            event?: RuntimeGuardrailAuditEvent;
+          } | undefined;
+          const event = data?.event;
+          if (!event) continue;
+          const id = event?.decision?.id;
+          if (data?.type === "guardrail_decision" && typeof id === "string") {
+            byId.set(id, event);
+          }
+        }
+      } catch {
+        // Activity is the bounded fallback when transcript storage is down.
+      }
+    }
+    for (const event of run.activity.guardrailDecisions ?? []) {
+      const id = event?.decision?.id;
+      if (typeof id === "string" && !byId.has(id)) byId.set(id, event);
+    }
+    for (const event of byId.values()) {
+      this.ctx.emitter.emit("runtime:guardrail", {
+        runId: run.id,
+        taskId: run.taskId,
+        agentName: run.agentName,
+        event,
+      });
     }
   }
 
@@ -471,7 +538,12 @@ export class TaskRunner {
 
     // Fail fast if the agent's model provider has no API key
     if (agent.model && this.ctx.validateProviderKeys) {
-      const missing = this.ctx.validateProviderKeys(normalizeModelPolicy(agent.model).candidates);
+      const resolved = resolveConfiguredModelSelection(
+        agent.model,
+        this.ctx.config.settings,
+        agent.allowedModelProfiles,
+      );
+      const missing = this.ctx.validateProviderKeys([...resolved.policy.candidates]);
       if (missing.length > 0) {
         const detail = missing.map(m => `${m.provider} (${m.modelSpec})`).join(", ");
         this.ctx.emitter.emit("log", {
@@ -528,23 +600,62 @@ export class TaskRunner {
     await this.ctx.runStore.upsertRun(initialRun);
 
     try {
+      let runtimeContext: RuntimeContextResolution | undefined;
+      try {
+        runtimeContext = await resolveRuntimeContext(this.ctx.runtimeContext, {
+          agentName: agent.name,
+          query: `${task.title}\n\n${task.description}`,
+          surface: "task",
+          source: "task",
+          ...(task.user ? { externalUserId: task.user } : {}),
+          runId,
+        });
+      } catch {
+        throw new Error("Runtime context retrieval failed");
+      }
+      const executionRoute = await this.resolveTaskExecutionRoute(task, agent);
 
-    // Inject context into task description for agent awareness.
-    // Context is prepended using XML-like tags that the agent prompt can reference.
-    const taskWithContext = { ...task };
-    const contextParts: string[] = [];
+      const contextTrust = this.ctx.config.settings.contextTrust === "enforce"
+        ? "enforce"
+        : "off";
+      // Build both representations during the opt-in window. Enforced runs keep
+      // metadata structural; disabled runs preserve the historical task prompt.
+      const promptContextSegments: RuntimePromptContextSegment[] = [];
+      const legacyContextParts: string[] = [];
+      const taskWithContext = {
+        ...task,
+        ...(executionRoute?.mode === "loop"
+          ? { loop: executionRoute.loop }
+          : {}),
+      };
 
     // 1. Shared memory (persistent cross-session knowledge, visible to all agents)
     const sharedMemory = (await this.ctx.memoryStore?.get()) ?? "";
     if (sharedMemory) {
-      contextParts.push(`<shared-memory>\n${sharedMemory}\n</shared-memory>`);
+      legacyContextParts.push(`<shared-memory>\n${sharedMemory}\n</shared-memory>`);
+      if (contextTrust === "enforce") {
+        promptContextSegments.push(createRuntimePromptContextSegment({
+          kind: "memory.shared",
+          sourceId: "project",
+          trust: "untrusted",
+          content: sharedMemory,
+        }));
+      }
     }
 
     // 1b. Agent-specific memory (private knowledge for the assigned agent)
     if (task.assignTo) {
       const agentMem = (await this.ctx.memoryStore?.get(agentMemoryScope(task.assignTo))) ?? "";
       if (agentMem) {
-        contextParts.push(`<agent-memory agent="${task.assignTo}">\n${agentMem}\n</agent-memory>`);
+        legacyContextParts.push(`<agent-memory agent="${task.assignTo}">\n${agentMem}\n</agent-memory>`);
+        if (contextTrust === "enforce") {
+          promptContextSegments.push(createRuntimePromptContextSegment({
+            kind: "memory.agent",
+            sourceId: task.assignTo,
+            trust: "untrusted",
+            content: agentMem,
+          }));
+        }
       }
     }
 
@@ -553,18 +664,25 @@ export class TaskRunner {
       try {
         // Resolve mission via direct ID (preferred) or group name (legacy fallback)
         const mission = await resolveMissionForTask(resolveMissionStore(this.ctx), task);
-        const missionParts: string[] = [];
-
+        const legacyMissionParts: string[] = [];
         // Original user prompt that generated this mission (the "why")
         if (mission?.prompt) {
-          missionParts.push(`Mission goal: ${mission.prompt}`);
+          legacyMissionParts.push(`Mission goal: ${mission.prompt}`);
+          if (contextTrust === "enforce") {
+            promptContextSegments.push(createRuntimePromptContextSegment({
+              kind: "mission.goal",
+              sourceId: mission.id,
+              trust: "user",
+              content: mission.prompt,
+            }));
+          }
         }
 
         // Sibling tasks — just titles and statuses for awareness, not full descriptions
         const allTasks = await this.ctx.taskStore.listTasks();
         const siblings = allTasks.filter(t => t.group === task.group && t.id !== task.id);
         if (siblings.length > 0) {
-          missionParts.push(`Other tasks in this mission:`);
+          const missionParts = [`Other tasks in this mission:`];
           for (const s of siblings) {
             const marker = s.status === "done" ? "[done]"
               : s.status === "in_progress" ? "[in progress]"
@@ -572,18 +690,28 @@ export class TaskRunner {
               : "[pending]";
             missionParts.push(`  ${marker} "${s.title}" → ${s.assignTo}`);
           }
+          legacyMissionParts.push(...missionParts);
+          if (contextTrust === "enforce") {
+            promptContextSegments.push(createRuntimePromptContextSegment({
+              kind: "mission.status",
+              sourceId: mission?.id ?? task.group,
+              trust: "untrusted",
+              content: missionParts.join("\n"),
+            }));
+          }
         }
-
-        if (missionParts.length > 0) {
-          contextParts.push(`<mission-context>\n${missionParts.join("\n")}\n</mission-context>`);
+        if (legacyMissionParts.length > 0) {
+          legacyContextParts.push(`<mission-context>\n${legacyMissionParts.join("\n")}\n</mission-context>`);
         }
       } catch { /* best effort — mission may have been deleted */ }
     }
 
-    if (contextParts.length > 0) {
-      taskWithContext.description = contextParts.join("\n\n") + "\n\n" + task.description;
-    }
-
+    const taskForRun = contextTrust === "enforce" || legacyContextParts.length === 0
+      ? taskWithContext
+      : {
+          ...taskWithContext,
+          description: `${legacyContextParts.join("\n\n")}\n\n${task.description}`,
+        };
 
     // Durable turns: consume (one-shot) a checkpoint harvested by orphan
     // recovery — the runner resumes the conversation at turn + 1 instead
@@ -609,8 +737,14 @@ export class TaskRunner {
       taskId: task.id,
       executionMode,
       sandbox,
+      ...(contextTrust === "enforce"
+        ? { contextTrust, promptContextSegments }
+        : {}),
+      guardrails: this.ctx.config.settings.guardrails,
+      runtimeContext,
+      executionRoute,
       agent,
-      task: taskWithContext,
+      task: taskForRun,
       polpoDir: this.ctx.polpoDir,
       cwd: this.ctx.agentWorkDir,
       outputDir,
@@ -619,6 +753,8 @@ export class TaskRunner {
       notifySocket: this.ctx.notifySocketPath,
       emailAllowedDomains: agent.emailAllowedDomains ?? this.ctx.config.settings.emailAllowedDomains,
       reasoning: this.ctx.config.settings.reasoning,
+      modelProfiles: this.ctx.config.settings.modelProfiles,
+      modelAllowlist: this.ctx.config.settings.modelAllowlist,
       providers: this.ctx.config.providers,
       resumeState,
     };

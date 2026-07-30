@@ -1,5 +1,8 @@
 import { z } from "@hono/zod-openapi";
-import { MAX_MODEL_FALLBACKS } from "@polpo-ai/core";
+import {
+  MAX_MODEL_FALLBACKS,
+  MODEL_PROFILE_NAME_PATTERN,
+} from "@polpo-ai/core";
 import { TOOL_CATALOG, matchToolPattern } from "@polpo-ai/tools";
 import { ApiHttpError } from "./errors.js";
 
@@ -126,11 +129,11 @@ export const CreateMissionSchema = z.object({
   status: z
     .enum(["draft", "scheduled", "recurring", "active", "paused", "completed", "failed", "cancelled"])
     .optional(),
-  /** Cron expression or ISO timestamp for scheduled execution. */
+  /** @deprecated Use the v2 Schedules API. */
   schedule: z.string().optional(),
   /** Absolute deadline for the entire mission (ISO timestamp). */
   deadline: z.string().datetime().optional(),
-  /** End date for recurring schedules (ISO timestamp). */
+  /** @deprecated Use the v2 Schedules API. */
   endDate: z.string().datetime().optional(),
   notifications: ScopedNotificationRulesSchema.optional(),
   /**
@@ -146,11 +149,11 @@ export const UpdateMissionSchema = z.object({
     .enum(["draft", "scheduled", "recurring", "active", "paused", "completed", "failed", "cancelled"])
     .optional(),
   name: z.string().optional(),
-  /** Cron expression or ISO timestamp for scheduled execution. Null clears. */
+  /** @deprecated Use the v2 Schedules API. */
   schedule: z.string().nullable().optional(),
   /** Absolute deadline for the entire mission (ISO timestamp). Null clears. */
   deadline: z.string().datetime().nullable().optional(),
-  /** End date for recurring schedules (ISO timestamp). Null clears. */
+  /** @deprecated Use the v2 Schedules API. */
   endDate: z.string().datetime().nullable().optional(),
 });
 
@@ -249,12 +252,32 @@ export const UpdateMissionQualityGateSchema = z.object({
 const ModelConfigSchema = z.object({
   primary: z.string().min(1),
   fallbacks: z.array(z.string().min(1)).max(MAX_MODEL_FALLBACKS).optional(),
-});
+}).strict();
+
+const ModelProfileReferenceSchema = z.object({
+  profile: z.string().regex(MODEL_PROFILE_NAME_PATTERN),
+}).strict();
+
+const ModelTargetSchema = z.union([
+  z.string().min(1),
+  ModelProfileReferenceSchema,
+]);
+
+const ProfiledModelConfigSchema = z.object({
+  primary: ModelTargetSchema,
+  fallbacks: z.array(ModelTargetSchema).max(MAX_MODEL_FALLBACKS).optional(),
+}).strict();
 
 const ModelSelectionSchema = z.union([
   z.string().min(1),
-  ModelConfigSchema,
+  ModelProfileReferenceSchema,
+  ProfiledModelConfigSchema,
 ]);
+
+const ModelProfileRegistrySchema = z.record(
+  z.string().regex(MODEL_PROFILE_NAME_PATTERN),
+  ModelSelectionSchema,
+);
 
 export const AddMissionTeamMemberSchema = z.object({
   name: z.string().min(1),
@@ -279,7 +302,8 @@ export const UpdateMissionNotificationsSchema = z.object({
 // ── Settings schema ───────────────────────────────────────────────────
 
 export const UpdateSettingsSchema = z.object({
-  orchestratorModel: z.union([z.string(), ModelConfigSchema]).optional(),
+  orchestratorModel: ModelSelectionSchema.optional(),
+  modelProfiles: ModelProfileRegistrySchema.optional(),
   imageModel: z.string().nullable().optional(),
   reasoning: z.enum(["off", "minimal", "low", "medium", "high", "xhigh"]).optional(),
 });
@@ -528,9 +552,53 @@ function collectLoopRefs(step: unknown, refs: string[]): void {
   }
 }
 
+const ExecutionRouterLoopNameSchema = z
+  .string()
+  .min(1)
+  .max(128)
+  .refine(
+    (value) =>
+      value.trim() === value &&
+      !/[\u0000-\u001f\u007f]/.test(value),
+    "Execution router loop names must be trimmed and contain no control characters",
+  );
+
+const AgentExecutionRouterSchema = z.object({
+  mode: z.enum(["off", "auto"]).optional(),
+  allowedLoops: z
+    .array(ExecutionRouterLoopNameSchema)
+    .max(32)
+    .optional(),
+  minConfidence: z.number().finite().min(0).max(1).optional(),
+  timeoutMs: z.number().int().positive().max(60_000).optional(),
+  maxInputChars: z.number().int().positive().max(16_384).optional(),
+}).passthrough().superRefine((value, ctx) => {
+  const supported = new Set([
+    "mode",
+    "allowedLoops",
+    "minConfidence",
+    "timeoutMs",
+    "maxInputChars",
+  ]);
+  if (Object.keys(value).some((key) => !supported.has(key))) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "Execution router contains unsupported fields",
+    });
+  }
+  if (value.mode === "auto" && (!value.allowedLoops || value.allowedLoops.length === 0)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["allowedLoops"],
+      message: "Auto execution routing requires at least one allowed loop",
+    });
+  }
+});
+
 const AgentLoopFieldsSchema = z.object({
   runtime: z.string().optional(),
   assignedLoops: z.array(z.string().min(1)).optional(),
+  executionRouter: AgentExecutionRouterSchema.optional(),
 });
 
 export const AddAgentSchema = z.object({
@@ -539,6 +607,7 @@ export const AddAgentSchema = z.object({
   name: z.string().min(1),
   role: z.string().optional(),
   model: ModelSelectionSchema.optional(),
+  allowedModelProfiles: z.array(z.string().regex(MODEL_PROFILE_NAME_PATTERN)).optional(),
   // Per-modality media models (provider/model strings; format checked
   // by parseModelString at tool-call time). Undefined → DEFAULT_*_MODEL.
   image_model:      z.string().optional(),
@@ -566,6 +635,7 @@ export const UpdateAgentSchema = z.object({
   sandbox: RuntimeSandboxSchema.optional(),
   role: z.string().optional(),
   model: ModelSelectionSchema.optional(),
+  allowedModelProfiles: z.array(z.string().regex(MODEL_PROFILE_NAME_PATTERN)).optional(),
   // Per-modality media models (optional, mirror AddAgentSchema).
   image_model:      z.string().optional(),
   video_model:      z.string().optional(),
