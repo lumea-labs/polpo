@@ -8,6 +8,7 @@
 
 import type { Task, TaskStatus, DimensionScore, MissionStatus, MissionReport } from "./types.js";
 import type { RuntimePlanResolvedEvent } from "./runtime-plan/index.js";
+import type { ExecutionRouteResolvedEvent } from "./execution-router.js";
 
 export interface PolpoEventMap {
   // Task lifecycle
@@ -75,6 +76,7 @@ export interface PolpoEventMap {
 
   // Runtime planning
   "runtime:plan": RuntimePlanResolvedEvent;
+  "runtime:execution-route": ExecutionRouteResolvedEvent;
 
   // Approval gates
   "approval:requested": { requestId: string; gateId: string; gateName: string; taskId?: string; missionId?: string };

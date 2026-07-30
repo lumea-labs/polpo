@@ -41,6 +41,7 @@ export { configRoutes } from "./routes/config.js";
 export { fileRoutes, type FileRouteDeps } from "./routes/files.js";
 export { skillRoutes, type SkillRouteDeps } from "./routes/skills.js";
 export { connectRoutes } from "./routes/connect.js";
+export { memoryItemRoutes } from "./routes/memory-items.js";
 export {
   customToolRoutes,
   type CustomToolDeployer,
@@ -64,6 +65,7 @@ export type {
   AuthRouteDeps,
   AgentRouteDeps,
   ConnectRouteDeps,
+  MemoryRouteDeps,
 } from "./deps.js";
 
 // Validation schemas (Zod — reusable by CLI for pre-flight validation)

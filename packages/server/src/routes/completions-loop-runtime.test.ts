@@ -96,6 +96,64 @@ describe("completionRoutes project loop runtime", () => {
     expect(json.loop_trace[0]).toMatchObject({ loop: "time-tracker", status: "started" });
   });
 
+  it("persists bounded execution-route audit metadata for auto-routed runs", async () => {
+    const loopRunStore = new MemoryLoopRunStore();
+    const deps = makeDeps();
+    deps.getAgents = async () => [{
+      name: "timer",
+      model: "test",
+      assignedLoops: ["time-tracker"],
+      executionRouter: {
+        mode: "auto",
+        allowedLoops: ["time-tracker"],
+      },
+      allowedTools: ["unix_time"],
+    }];
+    deps.resolveExecutionRouteClassifier = async () => ({
+      classify: async () => ({
+        mode: "loop",
+        loop: "time-tracker",
+        confidence: 0.93,
+        reason: "Deterministic timing workflow",
+      }),
+    });
+    deps.getLoopRunStore = () => loopRunStore;
+
+    const app = completionRoutes(() => deps);
+    const res = await app.request("/", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        agent: "timer",
+        messages: [{ role: "user", content: "PRIVATE REQUEST BODY" }],
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    const runs = await loopRunStore.listRuns();
+    expect(runs).toHaveLength(1);
+    expect(runs[0].metadata).toMatchObject({
+      runtime: "chat.completions",
+      surface: "agent",
+      source: "request",
+      execution: {
+        mode: "loop",
+        loop: "time-tracker",
+        source: "router",
+      },
+      executionRoute: {
+        status: "routed",
+        decisionSource: "router",
+        confidence: 0.93,
+        fallbackUsed: false,
+      },
+    });
+    expect(runs[0].metadata?.executionRoute).not.toHaveProperty("input");
+    expect(JSON.stringify(runs[0].metadata)).not.toContain(
+      "PRIVATE REQUEST BODY",
+    );
+  });
+
   it("executes deterministic loop tools through the direct runtime executor when model tools are routerized", async () => {
     let runtimeCalls = 0;
     const deps = makeDeps({

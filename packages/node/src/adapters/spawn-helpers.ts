@@ -16,6 +16,7 @@ import {
   resolveModelProfileSelection,
   type ModelSelection,
 } from "@polpo-ai/core";
+import { renderRuntimeContextPrompt } from "@polpo-ai/core/runtime-context";
 
 /** Create a fresh AgentActivity object */
 export function createActivity(): AgentActivity {
@@ -441,7 +442,17 @@ export function prepareSpawn(agentConfig: AgentConfig, cwd: string, ctx?: SpawnC
   }
 
   // Build the system prompt once for reuse in both the agent loop and context compaction
-  const systemPrompt = buildSystemPrompt(agentConfig, cwd, ctx?.polpoDir, outputDir, effectiveAllowedPaths);
+  const baseSystemPrompt = buildSystemPrompt(
+    agentConfig,
+    cwd,
+    ctx?.polpoDir,
+    outputDir,
+    effectiveAllowedPaths,
+  );
+  const runtimeContextPrompt = renderRuntimeContextPrompt(ctx?.runtimeContext);
+  const systemPrompt = runtimeContextPrompt
+    ? `${baseSystemPrompt}\n\n${runtimeContextPrompt}`
+    : baseSystemPrompt;
 
   // Track turns for maxTurns enforcement
   const maxTurns = agentConfig.maxTurns ?? 150;

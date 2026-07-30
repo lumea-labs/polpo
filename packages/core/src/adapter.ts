@@ -16,6 +16,7 @@ import type { ModelSelection } from "./model-policy.js";
 import type { RuntimePlan } from "./runtime-plan/index.js";
 import type { RuntimeSandboxOptions } from "./runtime-sandbox.js";
 import type { RunToolMiddleware } from "./guardrails/index.js";
+import type { RuntimeContextResolution } from "./runtime-context/index.js";
 
 /**
  * Handle returned by the engine after spawning an agent.
@@ -59,6 +60,8 @@ export interface SpawnContext {
   polpoDir: string;
   /** Current logical run id, when the host has allocated one. */
   runId?: string;
+  /** Pre-resolved retrieval snapshot rendered into task system prompts. */
+  runtimeContext?: RuntimeContextResolution;
   /** Per-task output directory (.polpo/output/<taskId>/). Agents write deliverables here. */
   outputDir?: string;
   /** Email domain allowlist — restricts email_send tool to these domains. */

@@ -260,6 +260,9 @@ export async function executeRun(config: RunnerConfig, deps: ExecuteRunDeps): Pr
       // and the per-turn checkpoint sink (one RunStore write per turn,
       // best-effort — a flaky store must never fail a healthy run).
       resumeState: config.resumeState,
+      // Chat injection already carries its fully assembled system prompt.
+      // Task runs receive the immutable snapshot through prepareSpawn.
+      runtimeContext: deps.inject ? undefined : config.runtimeContext,
       onTurnCheckpoint: async (state: LoopResumeState) => {
         try {
           await runStore.updateResumeState?.(config.runId, state);

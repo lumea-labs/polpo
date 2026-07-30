@@ -8,6 +8,16 @@ import { resolveRuntimeSandboxOptions } from "./runtime-sandbox.js";
 import type { RunRecord } from "./run-store.js";
 import type { LoopResumeState } from "./loop/run-store.js";
 import { resolveConfiguredModelSelection } from "./model-profiles.js";
+import { normalizeModelPolicy } from "./model-policy.js";
+import {
+  resolveRuntimeContext,
+  type RuntimeContextResolution,
+} from "./runtime-context/index.js";
+import {
+  createExecutionRouteResolvedEvent,
+  resolveTaskExecutionRoute,
+  type ResolvedExecutionRoute,
+} from "./execution-router.js";
 
 /**
  * Durable turns: max age of a resume checkpoint before orphan recovery
@@ -72,6 +82,22 @@ export class TaskRunner {
   private pendingResume = new Map<string, LoopResumeState>();
 
   constructor(private ctx: OrchestratorContext) {}
+
+  private async resolveTaskExecutionRoute(
+    task: Task,
+    agent: RunnerConfig["agent"],
+  ): Promise<ResolvedExecutionRoute | undefined> {
+    const route = await resolveTaskExecutionRoute({ task, agent }, {
+      getProjectLoop: this.ctx.getProjectLoop,
+      resolveClassifier: this.ctx.resolveExecutionRouteClassifier,
+    });
+    if (!route) return undefined;
+    this.ctx.emitter.emit(
+      "runtime:execution-route",
+      createExecutionRouteResolvedEvent(route),
+    );
+    return route;
+  }
 
   /**
    * Collect results from terminal runs and pass them to the callback.
@@ -533,10 +559,29 @@ export class TaskRunner {
     await this.ctx.runStore.upsertRun(initialRun);
 
     try {
+      let runtimeContext: RuntimeContextResolution | undefined;
+      try {
+        runtimeContext = await resolveRuntimeContext(this.ctx.runtimeContext, {
+          agentName: agent.name,
+          query: `${task.title}\n\n${task.description}`,
+          surface: "task",
+          source: "task",
+          ...(task.user ? { externalUserId: task.user } : {}),
+          runId,
+        });
+      } catch {
+        throw new Error("Runtime context retrieval failed");
+      }
+      const executionRoute = await this.resolveTaskExecutionRoute(task, agent);
 
     // Inject context into task description for agent awareness.
     // Context is prepended using XML-like tags that the agent prompt can reference.
-    const taskWithContext = { ...task };
+    const taskWithContext = {
+      ...task,
+      ...(executionRoute?.mode === "loop"
+        ? { loop: executionRoute.loop }
+        : {}),
+    };
     const contextParts: string[] = [];
 
     // 1. Shared memory (persistent cross-session knowledge, visible to all agents)
@@ -615,6 +660,8 @@ export class TaskRunner {
       executionMode,
       sandbox,
       guardrails: this.ctx.config.settings.guardrails,
+      runtimeContext,
+      executionRoute,
       agent,
       task: taskWithContext,
       polpoDir: this.ctx.polpoDir,

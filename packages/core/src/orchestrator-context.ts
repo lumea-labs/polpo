@@ -20,6 +20,12 @@ import type { AgentStore } from "./agent-store.js";
 import type { PolpoConfig, PolpoFileConfig, Task, AssessmentResult, ReviewContext, ReasoningLevel, ModelConfig } from "./types.js";
 import type { HookRegistry } from "./hooks.js";
 import type { Spawner } from "./spawner.js";
+import type { RuntimeContextProvider } from "./runtime-context/index.js";
+import type { ProjectLoopConfig } from "./loop/types.js";
+import type {
+  ExecutionRouteClassifier,
+  ExecutionRouteClassifierResolverContext,
+} from "./execution-router.js";
 
 /** Progress event for individual assessment checks. */
 export interface CheckProgressEvent {
@@ -64,6 +70,11 @@ export interface OrchestratorContext {
   readonly polpoDir: string;
   readonly assessFn: AssessFn;
   readonly spawner: Spawner;
+  /**
+   * Optional host-provided retrieval policy. Absence or a zero token budget
+   * keeps task prompts byte-identical and performs no retrieval.
+   */
+  readonly runtimeContext?: RuntimeContextProvider;
 
   // ── Optional ports (injected by shell) ──────────────────────────
 
@@ -93,6 +104,20 @@ export interface OrchestratorContext {
 
   /** UDS path for push-notifying the orchestrator on runner completion. */
   readonly notifySocketPath?: string;
+
+  /** Load an authorized project loop manifest/config by name. */
+  readonly getProjectLoop?: (name: string) => Promise<ProjectLoopConfig | null>;
+
+  /**
+   * Lazily resolve an execution-route classifier. The host owns model and
+   * provider selection; core never hardcodes one.
+   */
+  readonly resolveExecutionRouteClassifier?: (
+    context: ExecutionRouteClassifierResolverContext,
+  ) =>
+    | ExecutionRouteClassifier
+    | undefined
+    | Promise<ExecutionRouteClassifier | undefined>;
 
   // ── Optional store ports (injected by shell for non-file backends) ──
 

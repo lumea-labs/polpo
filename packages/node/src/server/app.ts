@@ -129,6 +129,8 @@ export function createApp(orchestrator: Orchestrator, sseBridge: SSEBridge, opts
     runToolMiddleware: opts?.runToolMiddleware
       ?? createConfiguredRunToolMiddleware(o.getConfig()?.settings?.guardrails),
     emit: (event: string, data: any) => o.emit(event as any, data),
+    resolveExecutionRouteClassifier: (context) =>
+      o.resolveExecutionRouteClassifier(context),
     resolveAgentModel: async (agentConfig: any, reasoning?: string) => {
       const { buildResolvedModelProviderOptions, resolveModel } = await import("@polpo-ai/llm");
       const settings = o.getConfig()?.settings;
@@ -186,13 +188,7 @@ export function createApp(orchestrator: Orchestrator, sseBridge: SSEBridge, opts
       };
       return { tools, executor, cleanup: mcp.dispose };
     },
-    getProjectLoop: async (name: string) => {
-      const path = join(o.getPolpoDir(), "loops", `${name}.json`);
-      const fs = o.getFs();
-      if (!(await fs.exists(path))) return null;
-      const raw = await fs.readFile(path);
-      return projectLoopConfigSchema.parse(JSON.parse(raw)) as any;
-    },
+    getProjectLoop: (name: string) => o.getProjectLoop(name),
     // Run chat completions through the shared executeRun lifecycle +
     // loop-engine. Injects the route's
     // already-resolved model/prompt/tools/messages so the engine runs a chat

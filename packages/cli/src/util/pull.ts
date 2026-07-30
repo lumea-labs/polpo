@@ -70,6 +70,7 @@ export async function pullProject(
             reasoning: a.reasoning,
             runtime: a.runtime,
             assignedLoops: a.assignedLoops,
+            executionRouter: a.executionRouter,
             reportsTo: a.reportsTo,
             identity: a.identity,
             browserProfile: a.browserProfile,
