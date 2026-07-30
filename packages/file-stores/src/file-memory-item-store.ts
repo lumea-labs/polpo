@@ -15,6 +15,8 @@ import {
   type MemoryItemPatch,
   type MemoryItemStore,
   type MemoryItemStoreSnapshot,
+  type MemoryListPage,
+  type MemoryListPageQuery,
   type MemoryListQuery,
   type MemorySearchQuery,
   type MemorySearchResult,
@@ -132,6 +134,13 @@ export class FileMemoryItemStore implements MemoryItemStore {
     context: MemoryStoreContext,
   ): Promise<MemoryItem[]> {
     return this.read(() => this.memory.list(query, context));
+  }
+
+  listPage(
+    query: MemoryListPageQuery,
+    context: MemoryStoreContext,
+  ): Promise<MemoryListPage> {
+    return this.read(() => this.memory.listPage(query, context));
   }
 
   update(

@@ -232,6 +232,13 @@ The typed HTTP and model-tool surfaces are separate opt-ins:
 - `PolpoClient` in `@polpo-ai/sdk` exposes typed list, create, search, update,
   and forget methods.
 
+The original `MemoryItemStore.list()` contract remains compatible. Built-in
+stores additionally implement `listPage()` with deterministic
+`(createdAt, id)` keyset ordering. The HTTP route converts the typed store
+position into an opaque, filter-bound cursor, and
+`PolpoClient.listMemoryItemsPage()` returns `{ items, nextCursor }`. Invalid,
+cross-filter, and cross-agent cursors fail without exposing store details.
+
 No typed Memory route or tool is mounted automatically, and this layer does not
 inject retrieved items into prompts. Runtime retrieval is a separate opt-in.
 

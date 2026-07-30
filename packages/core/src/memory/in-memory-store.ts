@@ -23,6 +23,9 @@ import type {
   MemoryItemPatch,
   MemoryItemStore,
   MemoryItemStoreSnapshot,
+  MemoryListCursor,
+  MemoryListPage,
+  MemoryListPageQuery,
   MemoryListQuery,
   MemorySearchQuery,
   MemorySearchResult,
@@ -115,6 +118,52 @@ function normalizeLimit(value: number | undefined): number {
     );
   }
   return value;
+}
+
+function normalizeListCursor(value: MemoryListCursor): MemoryListCursor {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new MemoryContractError(
+      "Memory list cursor must be an object",
+      "invalid_item",
+      "after",
+    );
+  }
+  const keys = Object.keys(value);
+  if (
+    keys.length !== 2
+    || !keys.includes("createdAt")
+    || !keys.includes("id")
+  ) {
+    throw new MemoryContractError(
+      "Memory list cursor is malformed",
+      "invalid_item",
+      "after",
+    );
+  }
+  return Object.freeze({
+    createdAt: timestamp(value.createdAt, "after.createdAt"),
+    id: text(value.id, "after.id", 256),
+  });
+}
+
+function compareUnicodeCodePoints(left: string, right: string): number {
+  const leftPoints = [...left];
+  const rightPoints = [...right];
+  const length = Math.min(leftPoints.length, rightPoints.length);
+  for (let index = 0; index < length; index += 1) {
+    const leftPoint = leftPoints[index]!.codePointAt(0)!;
+    const rightPoint = rightPoints[index]!.codePointAt(0)!;
+    if (leftPoint !== rightPoint) return leftPoint - rightPoint;
+  }
+  return leftPoints.length - rightPoints.length;
+}
+
+function compareListPositions(
+  left: MemoryListCursor,
+  right: MemoryListCursor,
+): number {
+  return left.createdAt.localeCompare(right.createdAt)
+    || compareUnicodeCodePoints(left.id, right.id);
 }
 
 function normalizeUsageEvent(value: MemoryUsageEvent): MemoryUsageEvent {
@@ -236,9 +285,17 @@ export class InMemoryMemoryItemStore implements MemoryItemStore {
     query: MemoryListQuery,
     context: MemoryStoreContext,
   ): Promise<MemoryItem[]> {
+    const page = await this.listPage(query, context);
+    return [...page.items];
+  }
+
+  async listPage(
+    query: MemoryListPageQuery,
+    context: MemoryStoreContext,
+  ): Promise<MemoryListPage> {
     const normalized = normalizeContext(context);
     const state = this.namespaces.get(normalized.namespace);
-    if (!state) return [];
+    if (!state) return { items: [] };
     const statuses = query.statuses ?? ["active"];
     for (const status of statuses) {
       if (!memoryStatuses.has(status)) {
@@ -258,19 +315,35 @@ export class InMemoryMemoryItemStore implements MemoryItemStore {
       : undefined;
     const now = query.now ?? normalized.now ?? new Date();
     const limit = normalizeLimit(query.limit);
+    const after = query.after
+      ? normalizeListCursor(query.after)
+      : undefined;
 
-    return [...state.items.values()]
+    const candidates = [...state.items.values()]
       .filter((item) => canAccessMemoryScope(item.scope, normalized.access))
       .filter((item) => statuses.includes(item.status))
       .filter((item) => !kinds || kinds.includes(item.kind))
       .filter((item) => !scopeKey || memoryScopeKey(item.scope) === scopeKey)
       .filter((item) => query.includeExpired || !isMemoryItemExpired(item, now))
-      .sort((left, right) => (
-        left.createdAt.localeCompare(right.createdAt)
-        || left.id.localeCompare(right.id)
-      ))
-      .slice(0, limit)
-      .map(cloneItem);
+      .sort(compareListPositions);
+    const positioned = after
+      ? candidates.filter((item) => compareListPositions(item, after) > 0)
+      : candidates;
+    if (limit === 0) return { items: [] };
+    const hasMore = positioned.length > limit;
+    const items = positioned.slice(0, limit).map(cloneItem);
+    const last = items.at(-1);
+    return {
+      items,
+      ...(hasMore && last
+        ? {
+            nextCursor: Object.freeze({
+              createdAt: last.createdAt,
+              id: last.id,
+            }),
+          }
+        : {}),
+    };
   }
 
   async update(

@@ -42,6 +42,31 @@ function clientWithResponses(...values: unknown[]) {
 }
 
 describe("PolpoClient typed Memory", () => {
+  it("lists one cursor page without changing the legacy list contract", async () => {
+    const { client, fetch } = clientWithResponses(
+      { items: [item], nextCursor: "cursor-next" },
+      { items: [item], nextCursor: null },
+    );
+
+    await expect((client as any).listMemoryItemsPage("support / eu", {
+      limit: 1,
+      cursor: "cursor/current",
+    })).resolves.toEqual({
+      items: [item],
+      nextCursor: "cursor-next",
+    });
+    await expect(client.listMemoryItems("support / eu", {
+      limit: 1,
+    })).resolves.toEqual([item]);
+
+    expect(fetch.mock.calls.map(([url]) => url)).toEqual([
+      "https://api.example.test/api/v1/agents/support%20%2F%20eu/memory/items"
+        + "?limit=1&cursor=cursor%2Fcurrent",
+      "https://api.example.test/api/v1/agents/support%20%2F%20eu/memory/items"
+        + "?limit=1",
+    ]);
+  });
+
   it("lists typed items with encoded filters and no lossy scope conversion", async () => {
     const { client, fetch } = clientWithResponses({ items: [item] });
 

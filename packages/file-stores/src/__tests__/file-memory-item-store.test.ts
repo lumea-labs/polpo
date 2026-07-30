@@ -96,6 +96,106 @@ function memoryItemStoreConformance(
   name: string,
   factory: MemoryItemStoreFactory,
 ): void {
+  it(`${name}: paginates with a stable created-at and id keyset`, async () => {
+    await withStore(factory, async (store) => {
+      for (const id of ["memory-d", "memory-a", "memory-c", "memory-b"]) {
+        await store.create(memory(id, `Record ${id}.`), context);
+      }
+
+      const listPage = (store as MemoryItemStore & {
+        listPage: (
+          query: Record<string, unknown>,
+          context: MemoryStoreContext,
+        ) => Promise<{
+          items: Array<{ id: string }>;
+          nextCursor?: { createdAt: string; id: string };
+        }>;
+      }).listPage;
+
+      expect(typeof listPage).toBe("function");
+      const first = await listPage.call(store, { limit: 2 }, context);
+      expect(first.items.map((item) => item.id)).toEqual([
+        "memory-a",
+        "memory-b",
+      ]);
+      expect(first.nextCursor).toEqual({
+        createdAt: "2026-07-28T10:00:00.000Z",
+        id: "memory-b",
+      });
+
+      await store.forget("memory-b", context);
+      await store.create(memory("memory-bb", "Inserted after page one."), context);
+
+      const second = await listPage.call(store, {
+        limit: 2,
+        after: first.nextCursor,
+      }, context);
+      expect(second.items.map((item) => item.id)).toEqual([
+        "memory-bb",
+        "memory-c",
+      ]);
+      expect(second.nextCursor).toEqual({
+        createdAt: "2026-07-28T10:00:00.000Z",
+        id: "memory-c",
+      });
+
+      const third = await listPage.call(store, {
+        limit: 2,
+        after: second.nextCursor,
+      }, context);
+      expect(third.items.map((item) => item.id)).toEqual(["memory-d"]);
+      expect(third.nextCursor).toBeUndefined();
+    });
+  });
+
+  it(`${name}: rejects malformed page positions without returning data`, async () => {
+    await withStore(factory, async (store) => {
+      await store.create(memory("memory-1", "Visible record."), context);
+      const listPage = (store as any).listPage;
+
+      await expect(listPage.call(store, {
+        limit: 10,
+        after: {
+          createdAt: "not-a-timestamp",
+          id: "memory-1",
+        },
+      }, context)).rejects.toBeInstanceOf(MemoryContractError);
+      await expect(listPage.call(store, {
+        limit: 10,
+        after: {
+          createdAt: "2026-07-28T10:00:00.000Z",
+          id: "",
+        },
+      }, context)).rejects.toBeInstanceOf(MemoryContractError);
+    });
+  });
+
+  it(`${name}: keeps zero-sized pages terminal and orders Unicode ids deterministically`, async () => {
+    await withStore(factory, async (store) => {
+      for (const id of ["memory-😀", "memory-é", "memory-z"]) {
+        await store.create(memory(id, `Record ${id}.`), context);
+      }
+      const listPage = (store as any).listPage;
+
+      await expect(listPage.call(store, { limit: 0 }, context)).resolves.toEqual({
+        items: [],
+      });
+
+      const first = await listPage.call(store, { limit: 2 }, context);
+      expect(first.items.map((item: { id: string }) => item.id)).toEqual([
+        "memory-z",
+        "memory-é",
+      ]);
+      const second = await listPage.call(store, {
+        limit: 2,
+        after: first.nextCursor,
+      }, context);
+      expect(second.items.map((item: { id: string }) => item.id)).toEqual([
+        "memory-😀",
+      ]);
+    });
+  });
+
   it(`${name}: creates, gets, lists, and updates authorized items`, async () => {
     await withStore(factory, async (store) => {
       const created = await store.create(

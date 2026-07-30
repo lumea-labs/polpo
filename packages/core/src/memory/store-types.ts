@@ -48,6 +48,20 @@ export interface MemoryListQuery {
   readonly limit?: number;
 }
 
+export interface MemoryListCursor {
+  readonly createdAt: string;
+  readonly id: string;
+}
+
+export interface MemoryListPageQuery extends MemoryListQuery {
+  readonly after?: MemoryListCursor;
+}
+
+export interface MemoryListPage {
+  readonly items: readonly MemoryItem[];
+  readonly nextCursor?: MemoryListCursor;
+}
+
 export interface MemorySearchQuery {
   readonly query: string;
   readonly kinds?: readonly MemoryKind[];
@@ -97,6 +111,14 @@ export interface MemoryItemStore {
     query: MemoryListQuery,
     context: MemoryStoreContext,
   ): Promise<MemoryItem[]>;
+  /**
+   * Optional additive keyset-pagination capability. Hosts that do not
+   * implement it retain the original `list()` contract.
+   */
+  listPage?(
+    query: MemoryListPageQuery,
+    context: MemoryStoreContext,
+  ): Promise<MemoryListPage>;
   update(
     id: string,
     patch: MemoryItemPatch,
