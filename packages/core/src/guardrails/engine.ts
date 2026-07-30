@@ -44,7 +44,12 @@ function cloneValue<T>(value: T, seen = new WeakMap<object, unknown>()): T {
   const clone: Record<string, unknown> = {};
   seen.set(value as object, clone);
   for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
-    clone[key] = cloneValue(entry, seen);
+    Object.defineProperty(clone, key, {
+      configurable: true,
+      enumerable: true,
+      value: cloneValue(entry, seen),
+      writable: true,
+    });
   }
   return clone as T;
 }

@@ -265,8 +265,56 @@ retrieved Memory and Brain runtime context, so both can coexist on one run.
 
 ## Guardrails
 
-Runtime hosts can opt into the shared ordered policy engine and wrap every
-locally executed tool with the same middleware:
+Runtime hosts can opt into the shared ordered policy engine across input,
+retrieved context, model preflight, tool input/output, and final output.
+Nothing is enabled when `settings.guardrails` is absent.
+
+New configurations use one product-level pack:
+
+```json
+{
+  "settings": {
+    "guardrails": {
+      "policyPack": "standard"
+    }
+  }
+}
+```
+
+- `standard` redacts common secret shapes, validates tool arguments, blocks
+  private-network targets, and requires approval for destructive operations.
+- `strict` additionally blocks destructive operations and policy failures,
+  and buffers streaming output so output rules can enforce before delivery.
+- `custom` keeps the standard baseline and adds bounded literal content rules.
+  User-authored regular expressions and private classifier prompts are not
+  accepted.
+
+For example:
+
+```json
+{
+  "settings": {
+    "guardrails": {
+      "policyPack": "custom",
+      "contentRules": [{
+        "id": "support.private-content",
+        "phases": ["input", "context", "model.preflight", "output"],
+        "action": "redact",
+        "risk": "high",
+        "containsAny": ["private marker"],
+        "replacement": "[PRIVATE]"
+      }]
+    }
+  }
+}
+```
+
+Runtime hosts may inject process-local policies, including bounded model
+classifiers, through `RuntimeGuardrailHostAdapters.policies`. Those functions,
+credentials, and private prompts never enter serializable settings or
+`RunnerConfig`.
+
+The same middleware wraps every locally executed tool:
 
 ```ts
 import {
@@ -315,17 +363,18 @@ are enabled automatically. Provider-executed tools and client-side tools are
 declared to the model but execute outside the local runtime, so they require
 provider/client enforcement rather than this middleware.
 
-The Node host can explicitly enable the deterministic OSS pack for both
-in-process and subprocess task runs:
+The legacy split `toolPolicyPack` / `outputPolicyPack` configuration remains
+accepted for backward compatibility but does not enable the new preflight
+phases. The Node host applies the product-level pack to both in-process and
+subprocess task runs:
 
 ```json
 {
   "settings": {
     "guardrails": {
-      "toolPolicyPack": "default",
+      "policyPack": "standard",
       "maxToolOutputCharacters": 256000,
       "readOnlyPolicyFailure": "audit",
-      "outputPolicyPack": "default",
       "maxFinalOutputCharacters": 65536,
       "streamingOutputMode": "audit"
     }

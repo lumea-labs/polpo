@@ -5,6 +5,7 @@ import type {
   RuntimeGuardrailRisk,
 } from "../runtime-plan/types.js";
 import type {
+  RuntimeGuardrailContentRule,
   RuntimeGuardrailPolicy,
   RuntimeGuardrailPolicyResult,
 } from "./types.js";
@@ -64,7 +65,12 @@ function mapStrings(
   let matches = 0;
   for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
     const mapped = mapStrings(item, mapper, seen);
-    output[key] = mapped.value;
+    Object.defineProperty(output, key, {
+      configurable: true,
+      enumerable: true,
+      value: mapped.value,
+      writable: true,
+    });
     matches += mapped.matches;
   }
   return { value: output, matches };
@@ -105,6 +111,55 @@ export function createSecretPatternPolicy(options: DetectorOptions & {
         reason: `Detected ${redacted.matches} common secret pattern${redacted.matches === 1 ? "" : "s"}`,
         ...(action === "redact" || action === "rewrite" ? { value: redacted.value } : {}),
       } as RuntimeGuardrailPolicyResult;
+    },
+  };
+}
+
+function redactTerms(
+  value: string,
+  terms: readonly string[],
+  caseSensitive: boolean,
+  replacement: string,
+): { value: string; matches: number } {
+  let output = value;
+  let matches = 0;
+  for (const term of terms) {
+    const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const pattern = new RegExp(escaped, caseSensitive ? "gu" : "giu");
+    output = output.replace(pattern, () => {
+      matches++;
+      return replacement;
+    });
+  }
+  return { value: output, matches };
+}
+
+export function createContentTermsPolicy(
+  rule: RuntimeGuardrailContentRule,
+): RuntimeGuardrailPolicy {
+  const replacement = rule.replacement ?? "[REDACTED]";
+  return {
+    id: rule.id,
+    version: "1",
+    priority: 400,
+    phases: rule.phases,
+    evaluate(input) {
+      const mapped = mapStrings(
+        input.value,
+        (value) => redactTerms(
+          value,
+          rule.containsAny,
+          rule.caseSensitive === true,
+          replacement,
+        ),
+      );
+      if (mapped.matches === 0) return null;
+      return {
+        action: rule.action,
+        risk: rule.risk,
+        reason: `Matched content policy "${rule.id}"`,
+        ...(rule.action === "redact" ? { value: mapped.value } : {}),
+      };
     },
   };
 }
@@ -422,11 +477,15 @@ export function createBoundedValuePolicy(options: DetectorOptions & {
   };
 }
 
-export function createDefaultToolGuardrailPolicies(): readonly RuntimeGuardrailPolicy[] {
+export function createDefaultToolGuardrailPolicies(
+  options: { readonly strict?: boolean } = {},
+): readonly RuntimeGuardrailPolicy[] {
   return Object.freeze([
     createCrossScopePolicy(),
     createToolArgumentsPolicy(),
-    createDestructiveOperationPolicy(),
+    createDestructiveOperationPolicy({
+      action: options.strict ? "block" : "approval",
+    }),
     createPrivateNetworkPolicy(),
     createSecretPatternPolicy({
       id: "secrets.tool-input",
@@ -443,6 +502,7 @@ export function createDefaultToolGuardrailPolicies(): readonly RuntimeGuardrailP
 
 export function createDefaultOutputGuardrailPolicies(
   maxCharacters?: number,
+  contentRules: readonly RuntimeGuardrailContentRule[] = [],
 ): readonly RuntimeGuardrailPolicy[] {
   return Object.freeze([
     createCrossScopePolicy(),
@@ -459,5 +519,50 @@ export function createDefaultOutputGuardrailPolicies(
       phases: ["output"],
       action: "redact",
     }),
+    ...contentRules
+      .filter((rule) => rule.phases.includes("output"))
+      .map(createContentTermsPolicy),
+  ]);
+}
+
+export function createDefaultPreflightGuardrailPolicies(
+  options: {
+    readonly contentRules?: readonly RuntimeGuardrailContentRule[];
+    readonly maxInputCharacters: number;
+    readonly maxContextCharacters: number;
+    readonly maxModelInputCharacters: number;
+  },
+): readonly RuntimeGuardrailPolicy[] {
+  const contentRules = options.contentRules ?? [];
+  return Object.freeze([
+    createCrossScopePolicy(),
+    createBoundedValuePolicy({
+      id: "input.bounded-value",
+      phases: ["input"],
+      maxCharacters: options.maxInputCharacters,
+      action: "block",
+    }),
+    createBoundedValuePolicy({
+      id: "context.bounded-value",
+      phases: ["context"],
+      maxCharacters: options.maxContextCharacters,
+      action: "block",
+    }),
+    createBoundedValuePolicy({
+      id: "model.bounded-input",
+      phases: ["model.preflight"],
+      maxCharacters: options.maxModelInputCharacters,
+      action: "block",
+    }),
+    createSecretPatternPolicy({
+      id: "secrets.preflight",
+      phases: ["input", "context", "model.preflight"],
+      action: "redact",
+    }),
+    ...contentRules
+      .filter((rule) =>
+        rule.phases.some((phase) =>
+          phase === "input" || phase === "context" || phase === "model.preflight"))
+      .map(createContentTermsPolicy),
   ]);
 }

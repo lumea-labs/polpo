@@ -7,7 +7,9 @@ export {
 export { RuntimeGuardrailEngine } from "./engine.js";
 export {
   createBoundedValuePolicy,
+  createContentTermsPolicy,
   createCrossScopePolicy,
+  createDefaultPreflightGuardrailPolicies,
   createDefaultOutputGuardrailPolicies,
   createDefaultToolGuardrailPolicies,
   createDestructiveOperationPolicy,
@@ -15,6 +17,7 @@ export {
   createSecretPatternPolicy,
   createToolArgumentsPolicy,
 } from "./detectors.js";
+export { createRunPreflightPolicy } from "./preflight-policy.js";
 export { createRunOutputPolicy } from "./output-policy.js";
 export {
   createObservationalRunToolMiddleware,
@@ -25,9 +28,13 @@ export {
 export {
   createConfiguredRunToolMiddleware,
   createConfiguredRunOutputPolicy,
+  createConfiguredRunPreflightPolicy,
   normalizeRuntimeGuardrailSettings,
 } from "./settings.js";
 export type {
+  RunPreflightPolicy,
+  RunPreflightPolicyRequest,
+  RunPreflightPolicyResult,
   RunToolExecutionResult,
   RunOutputPolicy,
   RunOutputPolicyOptions,
@@ -39,6 +46,8 @@ export type {
   RunToolRequest,
   RuntimeGuardrailApprovalHandler,
   RuntimeGuardrailApprovalResult,
+  RuntimeGuardrailContentAction,
+  RuntimeGuardrailContentRule,
   RuntimeGuardrailOutputApprovalHandler,
   RuntimeGuardrailAuditEvent,
   RuntimeGuardrailContext,
@@ -47,8 +56,10 @@ export type {
   RuntimeGuardrailEvaluationInput,
   RuntimeGuardrailHostAdapters,
   RuntimeGuardrailPolicy,
+  RuntimeGuardrailPolicyPack,
   RuntimeGuardrailPolicyResult,
   RuntimeGuardrailSettings,
+  RuntimeGuardrailPreflightPhase,
   RuntimeOutputEnforcementMode,
   RuntimeStreamingOutputMode,
   RuntimeGuardrailScope,

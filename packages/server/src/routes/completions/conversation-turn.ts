@@ -37,6 +37,11 @@ import {
   createGuardedCompletionToolExecutor,
   type CompletionToolExecutor,
 } from "./tool-guardrails.js";
+import {
+  assertCompletionMessageContent,
+  assertModelPreflightValue,
+  assertRuntimeContextResolution,
+} from "./preflight-validation.js";
 import type { ChatCompletionExecution } from "./chat-handler.js";
 import {
   agentConfigForModelPrimary,
@@ -48,6 +53,7 @@ import {
   runChatTurnViaRun,
   type ChatViaRunTurnResult,
 } from "./chat-via-run-handler.js";
+import { guardrailErrorEnvelope } from "./sse.js";
 
 type PreparedError = {
   kind: "error";
@@ -117,6 +123,111 @@ function completionError(
       },
     },
   };
+}
+
+function preflightError(error: unknown): PreparedError {
+  const guardrail = guardrailErrorEnvelope(error);
+  if (guardrail) {
+    return completionError(
+      guardrail.message,
+      guardrail.code === "guardrail_approval_required" ? 409 : 403,
+      guardrail.code,
+      guardrail.type,
+    );
+  }
+  return completionError(
+    "Runtime guardrail preflight failed",
+    500,
+    "guardrail_preflight_failed",
+    "server_error",
+  );
+}
+
+function guardrailContext(
+  options: PrepareConversationTurnOptions,
+  agent?: string,
+  user?: string,
+) {
+  return {
+    surface: options.runtime?.surface ?? "agent",
+    source: options.runtime?.source ?? "request",
+    ...(agent ? { agent } : {}),
+    ...(options.runtime?.runId ? { runId: options.runtime.runId } : {}),
+    ...(options.sessionId ? { sessionId: options.sessionId } : {}),
+    ...(user ? { metadata: { externalUserId: user } } : {}),
+  } as const;
+}
+
+async function guardLatestUserInput(
+  deps: CompletionRouteDeps,
+  body: CompletionRequestBody,
+  options: PrepareConversationTurnOptions,
+  agent?: string,
+): Promise<CompletionRequestBody> {
+  if (!deps.runPreflightPolicy) return body;
+  let index = -1;
+  for (let cursor = body.messages.length - 1; cursor >= 0; cursor--) {
+    if (body.messages[cursor]?.role === "user") {
+      index = cursor;
+      break;
+    }
+  }
+  if (index < 0) return body;
+  const message = body.messages[index]!;
+  const evaluated = await deps.runPreflightPolicy.evaluate({
+    phase: "input",
+    value: message.content,
+    mode: deps.runPreflightPolicyMode ?? "enforce",
+    context: guardrailContext(options, agent, body.user),
+    signal: options.signal,
+  });
+  assertCompletionMessageContent(evaluated.value, evaluated.decisions);
+  if (Object.is(evaluated.value, message.content)) return body;
+  const messages = [...body.messages];
+  messages[index] = { ...message, content: evaluated.value } as typeof message;
+  return { ...body, messages };
+}
+
+async function guardRuntimeContext(
+  deps: CompletionRouteDeps,
+  value: RuntimeContextResolution | undefined,
+  body: CompletionRequestBody,
+  options: PrepareConversationTurnOptions,
+  agent?: string,
+): Promise<RuntimeContextResolution | undefined> {
+  if (!deps.runPreflightPolicy || !value) return value;
+  const evaluated = await deps.runPreflightPolicy.evaluate({
+    phase: "context",
+    value,
+    mode: deps.runPreflightPolicyMode ?? "enforce",
+    context: guardrailContext(options, agent, body.user),
+    signal: options.signal,
+  });
+  assertRuntimeContextResolution(evaluated.value, evaluated.decisions);
+  return evaluated.value;
+}
+
+async function guardModelPreflight<T extends {
+  systemPrompt: string;
+  messages: any[];
+  runtimeContext?: RuntimeContextResolution;
+}>(
+  deps: CompletionRouteDeps,
+  value: T,
+  body: CompletionRequestBody,
+  options: PrepareConversationTurnOptions,
+  agent?: string,
+): Promise<T> {
+  if (!deps.runPreflightPolicy) return value;
+  const evaluated = await deps.runPreflightPolicy.evaluate({
+    phase: "model.preflight",
+    value,
+    mode: deps.runPreflightPolicyMode ?? "enforce",
+    context: guardrailContext(options, agent, body.user),
+    signal: options.signal,
+  });
+  assertModelPreflightValue(evaluated.value, evaluated.decisions);
+  return evaluated.value;
 }
 
 function freezePlanningInput<T>(value: T): T {
@@ -281,6 +392,26 @@ export async function prepareChatCompletionExecution(
   options: PrepareConversationTurnOptions = {},
 ): Promise<PreparedConversationTurn> {
   const agentMode = !!body.agent;
+  let effectiveBody = body;
+  let initialAgentConfig: any;
+  if (agentMode) {
+    const agents = await deps.getAgents();
+    initialAgentConfig = agents.find((agent: any) => agent.name === body.agent);
+    if (!initialAgentConfig) {
+      return completionError(`Agent "${body.agent}" not found`, 404, "agent_not_found");
+    }
+  }
+  try {
+    effectiveBody = await guardLatestUserInput(
+      deps,
+      body,
+      options,
+      initialAgentConfig?.name,
+    );
+  } catch (error) {
+    return preflightError(error);
+  }
+  body = effectiveBody;
   let fullSystemPrompt: string;
   let m: ResolvedModelInfo;
   let providerOpts: Record<string, any> | undefined;
@@ -300,21 +431,18 @@ export async function prepareChatCompletionExecution(
   const contextTrust = normalizeRuntimeContextTrustMode(
     deps.getConfig()?.settings?.contextTrust,
   );
-  const {
+  const converted = convertMessages(body.messages, contextTrust);
+  let {
     aiMessages,
     extraSystemParts,
     promptContextSegments,
-  } = convertMessages(body.messages, contextTrust);
+  } = converted;
   const callerSystemParts = contextTrust === "enforce" && promptContextSegments.length > 0
     ? [renderRuntimePromptContextSegments(promptContextSegments)]
     : extraSystemParts;
 
   if (agentMode) {
-    const agents = await deps.getAgents();
-    let agentConfig = agents.find((a: any) => a.name === body.agent);
-    if (!agentConfig) {
-      return completionError(`Agent "${body.agent}" not found`, 404, "agent_not_found");
-    }
+    let agentConfig = initialAgentConfig;
 
     if (body.loop) {
       try {
@@ -452,6 +580,17 @@ export async function prepareChatCompletionExecution(
         );
       }
     }
+    try {
+      runtimeContext = await guardRuntimeContext(
+        deps,
+        runtimeContext,
+        body,
+        options,
+        resolvedAgentConfig.name,
+      );
+    } catch (error) {
+      return preflightError(error);
+    }
 
     if (projectLoopRuntime) {
       fullSystemPrompt = "";
@@ -495,6 +634,25 @@ export async function prepareChatCompletionExecution(
       const runtimeContextPrompt = renderRuntimeContextPrompt(runtimeContext);
       if (runtimeContextPrompt) {
         fullSystemPrompt += `\n\n${runtimeContextPrompt}`;
+      }
+
+      try {
+        const guarded = await guardModelPreflight(
+          deps,
+          {
+            systemPrompt: fullSystemPrompt,
+            messages: aiMessages,
+            ...(runtimeContext ? { runtimeContext } : {}),
+          },
+          body,
+          options,
+          resolvedAgentConfig.name,
+        );
+        fullSystemPrompt = guarded.systemPrompt;
+        aiMessages = guarded.messages;
+        runtimeContext = guarded.runtimeContext;
+      } catch (error) {
+        return preflightError(error);
       }
 
       const reasoning = agentConfig.reasoning ?? deps.getConfig()?.settings?.reasoning;
@@ -553,6 +711,18 @@ export async function prepareChatCompletionExecution(
     fullSystemPrompt = callerSystemParts.length > 0
       ? `${ctx.systemPrompt}\n\n## Additional context from caller\n\n${callerSystemParts.join("\n\n")}`
       : ctx.systemPrompt;
+    try {
+      const guarded = await guardModelPreflight(
+        deps,
+        { systemPrompt: fullSystemPrompt, messages: aiMessages },
+        body,
+        options,
+      );
+      fullSystemPrompt = guarded.systemPrompt;
+      aiMessages = guarded.messages;
+    } catch (error) {
+      return preflightError(error);
+    }
     m = ctx.model;
     providerOpts = ctx.providerOptions;
     modelSelection = modelSelectionForResolvedModel(m);

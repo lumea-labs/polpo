@@ -40,10 +40,13 @@ import {
   normalizeRuntimeContextTrustMode,
 } from "@polpo-ai/core";
 import {
+  GuardrailBlockedError,
+  createConfiguredRunPreflightPolicy,
   createConfiguredRunOutputPolicy,
   createConfiguredRunToolMiddleware,
   createObservationalRunToolMiddleware,
   type RunOutputPolicy,
+  type RunPreflightPolicy,
   type RunToolMiddleware,
   type RuntimeGuardrailAuditEvent,
 } from "@polpo-ai/core/guardrails";
@@ -156,6 +159,8 @@ export interface ExecuteRunDeps {
   runToolMiddleware?: RunToolMiddleware;
   /** Optional host-resolved output guardrail policy. */
   runOutputPolicy?: RunOutputPolicy;
+  /** Optional host-resolved input/context/model guardrail policy. */
+  runPreflightPolicy?: RunPreflightPolicy;
   /** Pid recorded on the run record: process.pid (subprocess) or a synthetic negative id (in-process). */
   pid: number;
   /** Where the config was persisted ("file:///path", "db://runId", "memory://…"). */
@@ -258,9 +263,12 @@ export async function executeRun(config: RunnerConfig, deps: ExecuteRunDeps): Pr
     const contextTrust = normalizeRuntimeContextTrustMode(
       config.contextTrust ?? deps.inject?.contextTrust,
     );
-    const promptContextSegments = contextTrust === "enforce"
+    let promptContextSegments = contextTrust === "enforce"
       ? normalizeRuntimePromptContextSegments(config.promptContextSegments)
       : [];
+    let guardedAgent = config.agent;
+    let guardedTask = config.task;
+    let guardedRuntimeContext = config.runtimeContext;
     if ((deps.brainService === undefined) !== (deps.brainContext === undefined)) {
       throw new Error(
         "brainService and brainContext must be provided together",
@@ -307,6 +315,96 @@ export async function executeRun(config: RunnerConfig, deps: ExecuteRunDeps): Pr
         event,
       });
     };
+    const runPreflightPolicy = deps.runPreflightPolicy
+      ?? createConfiguredRunPreflightPolicy(
+        config.guardrails,
+        { onDecision: onGuardrailDecision },
+      );
+    if (runPreflightPolicy && !deps.inject) {
+      const mode = config.guardrailMode ?? "enforce";
+      const context = {
+        runId: config.runId,
+        agent: config.agent.name,
+        surface: "task" as const,
+        source: "task" as const,
+        ...(config.task.user
+          ? { metadata: { externalUserId: config.task.user } }
+          : {}),
+      };
+      const guardedInput = await runPreflightPolicy.evaluate({
+        phase: "input",
+        value: guardedTask,
+        mode,
+        context,
+        signal: deps.signal,
+      });
+      if (
+        !guardedInput.value
+        || typeof guardedInput.value !== "object"
+        || guardedInput.value.id !== config.task.id
+      ) {
+        throw new GuardrailBlockedError(
+          "Guardrail rewrote task identity during preflight",
+          guardedInput.decisions,
+        );
+      }
+      guardedTask = guardedInput.value;
+
+      const guardedContext = await runPreflightPolicy.evaluate({
+        phase: "context",
+        value: {
+          promptContextSegments,
+          runtimeContext: guardedRuntimeContext,
+        },
+        mode,
+        context,
+        signal: deps.signal,
+      });
+      if (!guardedContext.value || typeof guardedContext.value !== "object") {
+        throw new GuardrailBlockedError(
+          "Guardrail rewrote task context to an invalid value",
+          guardedContext.decisions,
+        );
+      }
+      promptContextSegments = normalizeRuntimePromptContextSegments(
+        guardedContext.value.promptContextSegments,
+      );
+      guardedRuntimeContext = guardedContext.value.runtimeContext;
+
+      const guardedModelInput = await runPreflightPolicy.evaluate({
+        phase: "model.preflight",
+        value: {
+          agent: guardedAgent,
+          task: guardedTask,
+          promptContextSegments,
+          runtimeContext: guardedRuntimeContext,
+        },
+        mode,
+        context,
+        signal: deps.signal,
+      });
+      if (
+        !guardedModelInput.value
+        || typeof guardedModelInput.value !== "object"
+        || !guardedModelInput.value.agent
+        || typeof guardedModelInput.value.agent !== "object"
+        || guardedModelInput.value.agent.name !== config.agent.name
+        || !guardedModelInput.value.task
+        || typeof guardedModelInput.value.task !== "object"
+        || guardedModelInput.value.task.id !== config.task.id
+      ) {
+        throw new GuardrailBlockedError(
+          "Guardrail rewrote run identity during model preflight",
+          guardedModelInput.decisions,
+        );
+      }
+      guardedAgent = guardedModelInput.value.agent;
+      guardedTask = guardedModelInput.value.task;
+      promptContextSegments = normalizeRuntimePromptContextSegments(
+        guardedModelInput.value.promptContextSegments,
+      );
+      guardedRuntimeContext = guardedModelInput.value.runtimeContext;
+    }
     const configuredToolMiddleware = createConfiguredRunToolMiddleware(
       config.guardrails,
       { onDecision: onGuardrailDecision },
@@ -354,7 +452,7 @@ export async function executeRun(config: RunnerConfig, deps: ExecuteRunDeps): Pr
       resumeState: config.resumeState,
       // Chat injection already carries its fully assembled system prompt.
       // Task runs receive the immutable snapshot through prepareSpawn.
-      runtimeContext: deps.inject ? undefined : config.runtimeContext,
+      runtimeContext: deps.inject ? undefined : guardedRuntimeContext,
       onTurnCheckpoint: async (state: LoopResumeState) => {
         try {
           await runStore.updateResumeState?.(config.runId, state);
@@ -376,7 +474,7 @@ export async function executeRun(config: RunnerConfig, deps: ExecuteRunDeps): Pr
       inject: deps.inject,
       onTranscript: handleTranscript,
     };
-    handle = spawnLoopEngine(config.agent, config.task, config.cwd, spawnCtx);
+    handle = spawnLoopEngine(guardedAgent, guardedTask, config.cwd, spawnCtx);
     if (config.resumeState) {
       actLog.logEvent("resuming", {
         loopName: config.resumeState.loopName,
@@ -391,7 +489,7 @@ export async function executeRun(config: RunnerConfig, deps: ExecuteRunDeps): Pr
     if (logSession) {
       handle.activity.sessionId = logSession.sessionId;
     }
-    if (runToolMiddleware || runOutputPolicy) {
+    if (runPreflightPolicy || runToolMiddleware || runOutputPolicy) {
       handle.activity.guardrailDecisions = guardrailDecisions;
     }
     if (guardrailDecisionsTruncated) {
@@ -405,6 +503,19 @@ export async function executeRun(config: RunnerConfig, deps: ExecuteRunDeps): Pr
   } catch (err) {
     const result = errorResult(err);
     actLog.logEvent("error", { message: result.stderr });
+    if (guardrailDecisions.length > 0) {
+      try {
+        await runStore.updateActivity(config.runId, {
+          ...initialRecord.activity,
+          guardrailDecisions,
+          ...(guardrailDecisionsTruncated
+            ? { guardrailDecisionsTruncated: true }
+            : {}),
+        });
+      } catch {
+        // The runtime failure remains authoritative when audit persistence fails.
+      }
+    }
     await runStore.completeRun(config.runId, "failed", result);
     return { status: "failed", result, spawnError: true };
   }

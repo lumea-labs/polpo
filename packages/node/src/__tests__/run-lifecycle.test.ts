@@ -320,6 +320,89 @@ describe("executeRun — shared run lifecycle", () => {
     expect(execute).not.toHaveBeenCalled();
   });
 
+  test("serialized preflight policy blocks task input before model or tool execution", async () => {
+    const doStream = vi.fn(async () => {
+      throw new Error("model must not run");
+    });
+    setMockModel(new MockLanguageModelV3({ doStream }));
+    const store = new InMemoryRunStore();
+    const config = makeConfig({
+      task: makeTask({
+        description: "Handle the BLOCKED TOPIC now",
+      }),
+      guardrails: {
+        policyPack: "custom",
+        contentRules: [{
+          id: "task.blocked-topic",
+          phases: ["input"],
+          action: "block",
+          risk: "high",
+          containsAny: ["blocked topic"],
+        }],
+      },
+    });
+
+    const outcome = await executeRun(config, {
+      runStore: store,
+      pid: 4250,
+      configPath: `memory://${config.runId}`,
+    });
+
+    expect(outcome.status).toBe("failed");
+    expect(outcome.spawnError).toBe(true);
+    expect(outcome.result.stderr).toContain('Matched content policy "task.blocked-topic"');
+    expect(doStream).not.toHaveBeenCalled();
+    expect((await store.getRun(config.runId))?.activity.guardrailDecisions)
+      .toEqual([
+        expect.objectContaining({
+          decision: expect.objectContaining({
+            phase: "input",
+            action: "block",
+          }),
+        }),
+      ]);
+  });
+
+  test("audit-mode preflight records a blocking decision but lets the task run", async () => {
+    setMockModel(mockTextModel("continued after audit"));
+    const store = new InMemoryRunStore();
+    const config = makeConfig({
+      task: makeTask({
+        description: "Handle the BLOCKED TOPIC now",
+      }),
+      guardrailMode: "audit",
+      guardrails: {
+        policyPack: "custom",
+        contentRules: [{
+          id: "task.audit-topic",
+          phases: ["input"],
+          action: "block",
+          risk: "high",
+          containsAny: ["blocked topic"],
+        }],
+      },
+    });
+
+    const outcome = await executeRun(config, {
+      runStore: store,
+      pid: 4251,
+      configPath: `memory://${config.runId}`,
+    });
+
+    expect(outcome.status, outcome.result.stderr).toBe("completed");
+    expect(outcome.result.stdout).toBe("continued after audit");
+    expect((await store.getRun(config.runId))?.activity.guardrailDecisions)
+      .toEqual([
+        expect.objectContaining({
+          decision: expect.objectContaining({
+            policyId: "task.audit-topic",
+            phase: "input",
+            action: "block",
+          }),
+        }),
+      ]);
+  });
+
   test("serialized task guardrails persist secret-free decisions in activity and transcript", async () => {
     setMockModel(mockTurnSequenceModel([
       {
