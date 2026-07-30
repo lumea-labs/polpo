@@ -49,6 +49,39 @@ describe("agent loop API contract", () => {
     })).toMatchObject({ assignedLoops: ["coding-flow", "support-flow"] });
   });
 
+  it("accepts a bounded, explicitly enabled execution router", () => {
+    const executionRouter = {
+      mode: "auto" as const,
+      allowedLoops: ["coding-flow", "support-flow"],
+      minConfidence: 0.82,
+      timeoutMs: 750,
+      maxInputChars: 2_048,
+    };
+
+    expect(AddAgentSchema.parse({
+      name: "router-agent",
+      assignedLoops: ["coding-flow", "support-flow"],
+      executionRouter,
+    })).toMatchObject({ executionRouter });
+    expect(UpdateAgentSchema.parse({
+      executionRouter: { mode: "off" },
+    })).toMatchObject({ executionRouter: { mode: "off" } });
+  });
+
+  it.each([
+    { mode: "auto" },
+    { mode: "auto", allowedLoops: [] },
+    { mode: "auto", allowedLoops: ["ok"], minConfidence: -0.1 },
+    { mode: "auto", allowedLoops: ["ok"], timeoutMs: 0 },
+    { mode: "auto", allowedLoops: ["ok"], timeoutMs: 60_001 },
+    { mode: "auto", allowedLoops: ["ok"], maxInputChars: 16_385 },
+    { mode: "auto", allowedLoops: ["ok"], unknown: true },
+    { mode: "auto", allowedLoops: [" whitespace "] },
+    { mode: "auto", allowedLoops: ["control\nname"] },
+  ])("rejects unsafe execution router config %#", (executionRouter) => {
+    expect(UpdateAgentSchema.safeParse({ executionRouter }).success).toBe(false);
+  });
+
   it("accepts structured model policies on agent create/update payloads", () => {
     const model = {
       primary: "anthropic/claude-sonnet-4",

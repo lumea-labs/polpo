@@ -47,8 +47,8 @@ vi.mock("@polpo-ai/llm", async (importOriginal) => {
 });
 
 import { spawnLoopEngine } from "../adapters/loop-engine.js";
+import type { SpawnContext } from "@polpo-ai/core/adapter";
 import type { AgentConfig, Task } from "@polpo-ai/core/types";
-import type { LoopResumeState, SpawnContext } from "@polpo-ai/core";
 
 // This suite was the parity gate while the legacy engine existed; it now
 // pins the loop runtime's observable contract.
@@ -113,7 +113,7 @@ describe.each(ENGINES)("%s — characterization", (_label, spawn) => {
     responses: MockResponse[] | MockLanguageModelV3,
     modelOverrides: Partial<ResolvedModel> = {},
     taskOverrides: Partial<Task> = {},
-    contextOverrides: Partial<SpawnContext> = {},
+    spawnContext: Partial<SpawnContext> = {},
   ) {
     const model = Array.isArray(responses) ? mockTurnSequenceModel(responses) : responses;
     setMockModel(model, modelOverrides);
@@ -124,7 +124,7 @@ describe.each(ENGINES)("%s — characterization", (_label, spawn) => {
     const handle = spawn(agent, makeTask(taskOverrides), cwd, {
       polpoDir,
       outputDir,
-      ...contextOverrides,
+      ...spawnContext,
     });
     handle.onTranscript = (entry) => transcript.push(entry as TranscriptEntry);
     const result = await handle.done;
@@ -235,6 +235,69 @@ describe.each(ENGINES)("%s — characterization", (_label, spawn) => {
     const persisted = JSON.stringify(checkpoints.at(-1)?.history);
     expect(persisted).toContain("tool.result");
     expect(persisted).toContain("\\\\u003c/polpo-runtime-context\\\\u003e");
+  });
+
+  test("duplicate invalid call ids never reach background tool execution", async () => {
+    const { result, transcript } = await runEngine(makeAgent(), [
+      {
+        type: "tool-calls",
+        calls: [
+          {
+            toolCallId: "duplicate",
+            toolName: "missing_one",
+            args: { value: 1 },
+          },
+          {
+            toolCallId: "duplicate",
+            toolName: "missing_two",
+            args: { value: 2 },
+          },
+        ],
+      },
+      { type: "text", text: "recovered" },
+    ]);
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toBe("recovered");
+    expect(transcript.filter((entry) => entry.type === "tool_use")).toHaveLength(0);
+    expect(
+      transcript.filter(
+        (entry) => entry.type === "tool_result" && entry.invalid === true,
+      ),
+    ).toHaveLength(2);
+  });
+
+  test("invalid arguments for a known tool never reach background execution", async () => {
+    const marker = join(cwd, "invalid-bash-must-not-run.txt");
+    const { result, transcript } = await runEngine(makeAgent(), [
+      {
+        type: "tool-call",
+        toolName: "bash",
+        args: { unexpected: `touch ${marker}` },
+      },
+      { type: "text", text: "recovered" },
+    ]);
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toBe("recovered");
+    await expect(readFile(marker, "utf-8")).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+    expect(
+      transcript.filter(
+        (entry) =>
+          entry.type === "tool_use"
+          && entry.tool === "bash",
+      ),
+    ).toHaveLength(0);
+    expect(
+      transcript.filter(
+        (entry) =>
+          entry.type === "tool_result"
+          && entry.tool === "bash"
+          && entry.invalid === true,
+      ),
+    ).toHaveLength(1);
   });
 
   test("register_outcome: outcomes are collected on the handle with full shape", async () => {

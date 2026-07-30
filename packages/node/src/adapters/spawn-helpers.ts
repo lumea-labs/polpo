@@ -15,10 +15,11 @@ import {
   buildAgentSystemPrompt,
   resolveModelProfileSelection,
   type ModelSelection,
-  renderRuntimeContextSegments,
-  type RuntimeContextSegment,
+  renderRuntimePromptContextSegments,
   type RuntimeContextTrustMode,
+  type RuntimePromptContextSegment,
 } from "@polpo-ai/core";
+import { renderRuntimeContextPrompt } from "@polpo-ai/core/runtime-context";
 
 /** Create a fresh AgentActivity object */
 export function createActivity(): AgentActivity {
@@ -275,15 +276,15 @@ export function buildSystemPrompt(agent: AgentConfig, cwd: string, polpoDir?: st
  */
 export function buildPrompt(
   task: Task,
-  runtimeContext: readonly RuntimeContextSegment[] = [],
+  promptContextSegments: readonly RuntimePromptContextSegment[] = [],
   contextTrust: RuntimeContextTrustMode = "off",
 ): string {
   const parts = [`Task: ${task.title}`, ``, task.description];
-  if (contextTrust === "enforce" && runtimeContext.length > 0) {
+  if (contextTrust === "enforce" && promptContextSegments.length > 0) {
     parts.push(
       "",
       "Runtime context:",
-      renderRuntimeContextSegments(runtimeContext),
+      renderRuntimePromptContextSegments(promptContextSegments),
     );
   }
   if (task.expectations.length > 0) {
@@ -455,7 +456,17 @@ export function prepareSpawn(agentConfig: AgentConfig, cwd: string, ctx?: SpawnC
   }
 
   // Build the system prompt once for reuse in both the agent loop and context compaction
-  const systemPrompt = buildSystemPrompt(agentConfig, cwd, ctx?.polpoDir, outputDir, effectiveAllowedPaths);
+  const baseSystemPrompt = buildSystemPrompt(
+    agentConfig,
+    cwd,
+    ctx?.polpoDir,
+    outputDir,
+    effectiveAllowedPaths,
+  );
+  const runtimeContextPrompt = renderRuntimeContextPrompt(ctx?.runtimeContext);
+  const systemPrompt = runtimeContextPrompt
+    ? `${baseSystemPrompt}\n\n${runtimeContextPrompt}`
+    : baseSystemPrompt;
 
   // Track turns for maxTurns enforcement
   const maxTurns = agentConfig.maxTurns ?? 150;

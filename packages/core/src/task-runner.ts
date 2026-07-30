@@ -8,10 +8,18 @@ import { resolveRuntimeSandboxOptions } from "./runtime-sandbox.js";
 import type { RunRecord } from "./run-store.js";
 import type { LoopResumeState } from "./loop/run-store.js";
 import { resolveConfiguredModelSelection } from "./model-profiles.js";
+import { normalizeModelPolicy } from "./model-policy.js";
 import {
-  createRuntimeContextSegment,
-  type RuntimeContextSegment,
+  createRuntimePromptContextSegment,
+  resolveRuntimeContext,
+  type RuntimeContextResolution,
+  type RuntimePromptContextSegment,
 } from "./runtime-context/index.js";
+import {
+  createExecutionRouteResolvedEvent,
+  resolveTaskExecutionRoute,
+  type ResolvedExecutionRoute,
+} from "./execution-router.js";
 
 /**
  * Durable turns: max age of a resume checkpoint before orphan recovery
@@ -76,6 +84,22 @@ export class TaskRunner {
   private pendingResume = new Map<string, LoopResumeState>();
 
   constructor(private ctx: OrchestratorContext) {}
+
+  private async resolveTaskExecutionRoute(
+    task: Task,
+    agent: RunnerConfig["agent"],
+  ): Promise<ResolvedExecutionRoute | undefined> {
+    const route = await resolveTaskExecutionRoute({ task, agent }, {
+      getProjectLoop: this.ctx.getProjectLoop,
+      resolveClassifier: this.ctx.resolveExecutionRouteClassifier,
+    });
+    if (!route) return undefined;
+    this.ctx.emitter.emit(
+      "runtime:execution-route",
+      createExecutionRouteResolvedEvent(route),
+    );
+    return route;
+  }
 
   /**
    * Collect results from terminal runs and pass them to the callback.
@@ -537,21 +561,41 @@ export class TaskRunner {
     await this.ctx.runStore.upsertRun(initialRun);
 
     try {
+      let runtimeContext: RuntimeContextResolution | undefined;
+      try {
+        runtimeContext = await resolveRuntimeContext(this.ctx.runtimeContext, {
+          agentName: agent.name,
+          query: `${task.title}\n\n${task.description}`,
+          surface: "task",
+          source: "task",
+          ...(task.user ? { externalUserId: task.user } : {}),
+          runId,
+        });
+      } catch {
+        throw new Error("Runtime context retrieval failed");
+      }
+      const executionRoute = await this.resolveTaskExecutionRoute(task, agent);
 
-    const contextTrust = this.ctx.config.settings.contextTrust === "enforce"
-      ? "enforce"
-      : "off";
-    // Build both representations during the opt-in window. Enforced runs keep
-    // metadata structural; disabled runs preserve the historical task prompt.
-    const runtimeContext: RuntimeContextSegment[] = [];
-    const legacyContextParts: string[] = [];
+      const contextTrust = this.ctx.config.settings.contextTrust === "enforce"
+        ? "enforce"
+        : "off";
+      // Build both representations during the opt-in window. Enforced runs keep
+      // metadata structural; disabled runs preserve the historical task prompt.
+      const promptContextSegments: RuntimePromptContextSegment[] = [];
+      const legacyContextParts: string[] = [];
+      const taskWithContext = {
+        ...task,
+        ...(executionRoute?.mode === "loop"
+          ? { loop: executionRoute.loop }
+          : {}),
+      };
 
     // 1. Shared memory (persistent cross-session knowledge, visible to all agents)
     const sharedMemory = (await this.ctx.memoryStore?.get()) ?? "";
     if (sharedMemory) {
       legacyContextParts.push(`<shared-memory>\n${sharedMemory}\n</shared-memory>`);
       if (contextTrust === "enforce") {
-        runtimeContext.push(createRuntimeContextSegment({
+        promptContextSegments.push(createRuntimePromptContextSegment({
           kind: "memory.shared",
           sourceId: "project",
           trust: "untrusted",
@@ -566,7 +610,7 @@ export class TaskRunner {
       if (agentMem) {
         legacyContextParts.push(`<agent-memory agent="${task.assignTo}">\n${agentMem}\n</agent-memory>`);
         if (contextTrust === "enforce") {
-          runtimeContext.push(createRuntimeContextSegment({
+          promptContextSegments.push(createRuntimePromptContextSegment({
             kind: "memory.agent",
             sourceId: task.assignTo,
             trust: "untrusted",
@@ -586,7 +630,7 @@ export class TaskRunner {
         if (mission?.prompt) {
           legacyMissionParts.push(`Mission goal: ${mission.prompt}`);
           if (contextTrust === "enforce") {
-            runtimeContext.push(createRuntimeContextSegment({
+            promptContextSegments.push(createRuntimePromptContextSegment({
               kind: "mission.goal",
               sourceId: mission.id,
               trust: "user",
@@ -609,7 +653,7 @@ export class TaskRunner {
           }
           legacyMissionParts.push(...missionParts);
           if (contextTrust === "enforce") {
-            runtimeContext.push(createRuntimeContextSegment({
+            promptContextSegments.push(createRuntimePromptContextSegment({
               kind: "mission.status",
               sourceId: mission?.id ?? task.group,
               trust: "untrusted",
@@ -624,9 +668,9 @@ export class TaskRunner {
     }
 
     const taskForRun = contextTrust === "enforce" || legacyContextParts.length === 0
-      ? task
+      ? taskWithContext
       : {
-          ...task,
+          ...taskWithContext,
           description: `${legacyContextParts.join("\n\n")}\n\n${task.description}`,
         };
 
@@ -655,8 +699,11 @@ export class TaskRunner {
       executionMode,
       sandbox,
       ...(contextTrust === "enforce"
-        ? { contextTrust, runtimeContext }
+        ? { contextTrust, promptContextSegments }
         : {}),
+      guardrails: this.ctx.config.settings.guardrails,
+      runtimeContext,
+      executionRoute,
       agent,
       task: taskForRun,
       polpoDir: this.ctx.polpoDir,

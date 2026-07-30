@@ -5,12 +5,12 @@
 
 import type { z } from "@hono/zod-openapi";
 import {
-  createRuntimeContextSegment,
+  createRuntimePromptContextSegment,
   protectRuntimeToolResultMessages,
-  renderRuntimeContextSegment,
+  renderRuntimePromptContextSegment,
   renderRuntimeToolResult,
-  type RuntimeContextSegment,
   type RuntimeContextTrustMode,
+  type RuntimePromptContextSegment,
 } from "@polpo-ai/core";
 import type { contentPartSchema, messageSchema } from "./schemas.js";
 
@@ -86,7 +86,7 @@ function resolveFileContentParts(
     resolved.push({
       type: "text",
       text: contextTrust === "enforce"
-        ? renderRuntimeContextSegment(createRuntimeContextSegment({
+        ? renderRuntimePromptContextSegment(createRuntimePromptContextSegment({
             kind: "attachment.reference",
             sourceId: part.file_id,
             trust: "user",
@@ -152,18 +152,18 @@ export function convertMessages(
 ): {
   aiMessages: any[];
   extraSystemParts: string[];
-  runtimeContext: RuntimeContextSegment[];
+  promptContextSegments: RuntimePromptContextSegment[];
 } {
   const aiMessages: any[] = [];
   const extraSystemParts: string[] = [];
-  const runtimeContext: RuntimeContextSegment[] = [];
+  const promptContextSegments: RuntimePromptContextSegment[] = [];
 
   for (const [index, msg] of messages.entries()) {
     if (msg.role === "system") {
       const text = extractText(msg.content);
       if (hasText(text)) {
         extraSystemParts.push(text);
-        runtimeContext.push(createRuntimeContextSegment({
+        promptContextSegments.push(createRuntimePromptContextSegment({
           kind: "caller.system",
           sourceId: `message-${index}`,
           trust: "developer",
@@ -221,7 +221,7 @@ export function convertMessages(
     }
   }
 
-  return { aiMessages, extraSystemParts, runtimeContext };
+  return { aiMessages, extraSystemParts, promptContextSegments };
 }
 
 export async function appendModelResponseMessages(

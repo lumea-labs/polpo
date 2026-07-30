@@ -14,7 +14,9 @@ import {
   type CompactionEvent,
   type ModelSelection,
   type RuntimeContextTrustMode,
+  type ResolvedExecutionRoute,
   type RuntimePlan,
+  type RuntimeContextResolution,
 } from "@polpo-ai/core";
 import { runModelPolicyTurn } from "@polpo-ai/llm";
 import type { LanguageModelUsage } from "ai";
@@ -29,16 +31,25 @@ import {
   type ResolvedModelInfo,
 } from "./agent-step-runner.js";
 import { appendModelResponseMessages } from "./message-mapping.js";
-import { completionResponse, modelErrorEnvelope, modelNotFoundEnvelope, sseChunk } from "./sse.js";
+import {
+  completionResponse,
+  guardrailErrorEnvelope,
+  modelErrorEnvelope,
+  modelNotFoundEnvelope,
+  sseChunk,
+} from "./sse.js";
 import {
   CLIENT_SIDE_TOOLS,
   CLIENT_SIDE_TOOL_NAMES,
   emitFileChanged,
   indexToolResultsByCallId,
+  invalidModelToolCallEvent,
+  isInvalidModelToolCall,
   persistAssistantMessage,
   recordProviderToolCall,
   toAITools,
 } from "./tool-mapping.js";
+import type { CompletionToolExecutor } from "./tool-guardrails.js";
 
 /** Resolved execution context for a standard (non-loop) chat completion. */
 export interface ChatCompletionExecution {
@@ -55,7 +66,7 @@ export interface ChatCompletionExecution {
   modelSelection?: ModelSelection;
   modelToolChoice?: unknown;
   effectiveTools: any[];
-  effectiveToolExecutor: (name: string, args: Record<string, unknown>) => Promise<string>;
+  effectiveToolExecutor: CompletionToolExecutor;
   /**
    * Provider-executed tools the host wants merged into the AI SDK tool
    * palette as-is. Polpo never invokes these locally — the SDK / model
@@ -71,6 +82,10 @@ export interface ChatCompletionExecution {
   runtimePlan?: RuntimePlan;
   /** Explicit, host-resolved context-trust mode for this conversation turn. */
   contextTrust?: RuntimeContextTrustMode;
+  /** Structured snapshot used to assemble fullSystemPrompt for this turn. */
+  runtimeContext?: RuntimeContextResolution;
+  /** Validated direct-or-loop decision for audit and downstream propagation. */
+  executionRoute?: ResolvedExecutionRoute;
   /**
    * Resource cleanup hook — set when an agent's tool resolver opens
    * long-lived connections (today: MCP transports). Invoked exactly
@@ -289,8 +304,22 @@ export function streamChatCompletion(c: any, exec: ChatCompletionExecution): any
 
         if (toolCalls.length === 0) break;
 
+        const dispatchableToolCalls = toolCalls.filter(
+          (call) => !isInvalidModelToolCall(call),
+        );
+        for (const call of toolCalls.filter(isInvalidModelToolCall)) {
+          const event = invalidModelToolCallEvent(call);
+          toolCallsAccum.push(event);
+          await stream.writeSSE({
+            data: sseChunk(completionId, {}, null, {
+              tool_call: event,
+            }),
+          });
+        }
+        if (dispatchableToolCalls.length === 0) continue;
+
         // ── Client-side tools — return to client as standard tool_calls ──
-        const clientSideCall = toolCalls.find((tc: any) => CLIENT_SIDE_TOOL_NAMES.has(tc.toolName));
+        const clientSideCall = dispatchableToolCalls.find((tc: any) => CLIENT_SIDE_TOOL_NAMES.has(tc.toolName));
         if (clientSideCall) {
           // Persist for session history
           toolCallsAccum.push({
@@ -327,7 +356,7 @@ export function streamChatCompletion(c: any, exec: ChatCompletionExecution): any
         }
 
         // Check for interactive tools — only in orchestrator mode (agents don't have interactive tools)
-        const interactiveCall = agentMode ? undefined : toolCalls.find((tc: any) => isInteractiveFn?.(tc.toolName));
+        const interactiveCall = agentMode ? undefined : dispatchableToolCalls.find((tc: any) => isInteractiveFn?.(tc.toolName));
         if (interactiveCall) {
           // Persist the interactive tool call so it survives session reload
           toolCallsAccum.push({
@@ -411,7 +440,7 @@ export function streamChatCompletion(c: any, exec: ChatCompletionExecution): any
         const providerToolNames = new Set(Object.keys(extraAiTools ?? {}));
         const providerToolResults = indexToolResultsByCallId(result.toolResults as any[] | undefined);
 
-        for (const call of toolCalls) {
+        for (const call of dispatchableToolCalls) {
           // Stop executing tools if client disconnected
           if (abortController.signal.aborted) break;
 
@@ -429,7 +458,10 @@ export function streamChatCompletion(c: any, exec: ChatCompletionExecution): any
             }),
           });
 
-          const result = await effectiveToolExecutor(call.toolName, callArgs);
+          const result = await effectiveToolExecutor(call.toolName, callArgs, {
+            callId: call.toolCallId,
+            signal: abortController.signal,
+          });
           const isError = result.startsWith("Error:");
           emitFileChanged(call.toolName, callArgs, result, deps.emit);
 
@@ -488,8 +520,14 @@ export function streamChatCompletion(c: any, exec: ChatCompletionExecution): any
         // Friendly model_not_found surface — gateway returns 404 for
         // renamed/deprecated SKUs (e.g. xai/grok-4-fast after the 4.1
         // rename). Without this catch the error propagates as a 500.
+        const guardrailError = guardrailErrorEnvelope(err);
         const notFound = modelNotFoundEnvelope(err, m?.id, body.agent);
-        if (notFound) {
+        if (guardrailError) {
+          await stream.writeSSE({
+            data: sseChunk(completionId, {}, "stop", { error: guardrailError }),
+          });
+          await stream.writeSSE({ data: "[DONE]" });
+        } else if (notFound) {
           await stream.writeSSE({
             data: sseChunk(completionId, {}, "stop", { error: notFound }),
           });
@@ -625,8 +663,16 @@ export async function runNonStreamingChatCompletion(c: any, exec: ChatCompletion
       const toolCalls = turnResult.toolCalls;
       if (toolCalls.length === 0) break;
 
+      const dispatchableToolCalls = toolCalls.filter(
+        (call) => !isInvalidModelToolCall(call),
+      );
+      for (const call of toolCalls.filter(isInvalidModelToolCall)) {
+        toolCallsAccum.push(invalidModelToolCallEvent(call));
+      }
+      if (dispatchableToolCalls.length === 0) continue;
+
       // ── Client-side tools — return to client as standard tool_calls ──
-      const clientSideCall = toolCalls.find((tc: any) => CLIENT_SIDE_TOOL_NAMES.has(tc.toolName));
+      const clientSideCall = dispatchableToolCalls.find((tc: any) => CLIENT_SIDE_TOOL_NAMES.has(tc.toolName));
       if (clientSideCall) {
         toolCallsAccum.push({
           id: clientSideCall.toolCallId,
@@ -664,7 +710,7 @@ export async function runNonStreamingChatCompletion(c: any, exec: ChatCompletion
       }
 
       // Check for interactive tools — only in orchestrator mode (agents don't have interactive tools)
-      const interactiveCall = agentMode ? undefined : toolCalls.find((tc: any) => isInteractiveFn?.(tc.toolName));
+      const interactiveCall = agentMode ? undefined : dispatchableToolCalls.find((tc: any) => isInteractiveFn?.(tc.toolName));
       if (interactiveCall) {
         // Persist the interactive tool call so it survives session reload
         toolCallsAccum.push({
@@ -795,7 +841,7 @@ export async function runNonStreamingChatCompletion(c: any, exec: ChatCompletion
       const providerToolNames = new Set(Object.keys(extraAiTools ?? {}));
       const providerToolResults = indexToolResultsByCallId(turnResult.toolResults as any[] | undefined);
 
-      for (const call of toolCalls) {
+      for (const call of dispatchableToolCalls) {
         const callArgs = call.input as Record<string, unknown>;
 
         if (providerToolNames.has(call.toolName)) {
@@ -803,7 +849,10 @@ export async function runNonStreamingChatCompletion(c: any, exec: ChatCompletion
           continue;
         }
 
-        const result = await effectiveToolExecutor(call.toolName, callArgs);
+        const result = await effectiveToolExecutor(call.toolName, callArgs, {
+          callId: call.toolCallId,
+          signal: c.req.raw.signal,
+        });
         const isError = result.startsWith("Error:");
         emitFileChanged(call.toolName, callArgs, result, deps.emit);
 
@@ -846,6 +895,14 @@ export async function runNonStreamingChatCompletion(c: any, exec: ChatCompletion
     // Friendly model_not_found surface — gateway returns 404 for
     // renamed/deprecated SKUs (e.g. xai/grok-4-fast after the 4.1
     // rename). Without this catch the error propagates as a 500.
+    const guardrailError = guardrailErrorEnvelope(err);
+    if (guardrailError) {
+      finalText = finalText || guardrailError.message;
+      return c.json(
+        { error: guardrailError },
+        (guardrailError.code === "guardrail_approval_required" ? 409 : 403) as any,
+      );
+    }
     const notFound = modelNotFoundEnvelope(err, m?.id, body.agent);
     if (notFound) {
       return c.json({ error: notFound }, 400 as any);

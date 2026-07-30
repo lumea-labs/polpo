@@ -201,6 +201,35 @@ describe("parseConfig (.polpo/polpo.json)", () => {
       expect(config.settings.chatExecution).toBe("inline");
     });
 
+    it("keeps runtime tool guardrails off unless a policy pack is explicit", async () => {
+      const workDir = writeConfig(minimalConfig());
+      const config = await parseConfig(workDir);
+
+      expect(config.settings.guardrails).toBeUndefined();
+    });
+
+    it("parses the explicit serializable runtime tool guardrail settings", async () => {
+      const cfg = {
+        ...minimalConfig(),
+        settings: {
+          ...minimalConfig().settings,
+          guardrails: {
+            toolPolicyPack: "default",
+            maxToolOutputCharacters: 4096,
+            readOnlyPolicyFailure: "block",
+          },
+        },
+      };
+      const workDir = writeConfig(cfg);
+      const config = await parseConfig(workDir);
+
+      expect(config.settings.guardrails).toEqual({
+        toolPolicyPack: "default",
+        maxToolOutputCharacters: 4096,
+        readOnlyPolicyFailure: "block",
+      });
+    });
+
     it("accepts logLevel 'quiet'", async () => {
       const cfg = {
         ...minimalConfig(),
@@ -291,6 +320,21 @@ describe("parseConfig (.polpo/polpo.json)", () => {
       await expect(parseConfig(workDir)).rejects.toThrow(
         'Invalid logLevel "debug": must be quiet, normal, or verbose',
       );
+    });
+
+    it.each([
+      ["unknown pack", { toolPolicyPack: "custom" }],
+      ["zero output limit", { toolPolicyPack: "default", maxToolOutputCharacters: 0 }],
+      ["fractional output limit", { toolPolicyPack: "default", maxToolOutputCharacters: 1.5 }],
+      ["invalid read fallback", { toolPolicyPack: "default", readOnlyPolicyFailure: "allow" }],
+    ])("rejects invalid guardrail settings: %s", async (_label, guardrails) => {
+      const cfg = {
+        ...minimalConfig(),
+        settings: { ...minimalConfig().settings, guardrails },
+      };
+      const workDir = writeConfig(cfg);
+
+      await expect(parseConfig(workDir)).rejects.toThrow(/guardrails\./);
     });
   });
 });

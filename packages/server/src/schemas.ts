@@ -552,9 +552,53 @@ function collectLoopRefs(step: unknown, refs: string[]): void {
   }
 }
 
+const ExecutionRouterLoopNameSchema = z
+  .string()
+  .min(1)
+  .max(128)
+  .refine(
+    (value) =>
+      value.trim() === value &&
+      !/[\u0000-\u001f\u007f]/.test(value),
+    "Execution router loop names must be trimmed and contain no control characters",
+  );
+
+const AgentExecutionRouterSchema = z.object({
+  mode: z.enum(["off", "auto"]).optional(),
+  allowedLoops: z
+    .array(ExecutionRouterLoopNameSchema)
+    .max(32)
+    .optional(),
+  minConfidence: z.number().finite().min(0).max(1).optional(),
+  timeoutMs: z.number().int().positive().max(60_000).optional(),
+  maxInputChars: z.number().int().positive().max(16_384).optional(),
+}).passthrough().superRefine((value, ctx) => {
+  const supported = new Set([
+    "mode",
+    "allowedLoops",
+    "minConfidence",
+    "timeoutMs",
+    "maxInputChars",
+  ]);
+  if (Object.keys(value).some((key) => !supported.has(key))) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "Execution router contains unsupported fields",
+    });
+  }
+  if (value.mode === "auto" && (!value.allowedLoops || value.allowedLoops.length === 0)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["allowedLoops"],
+      message: "Auto execution routing requires at least one allowed loop",
+    });
+  }
+});
+
 const AgentLoopFieldsSchema = z.object({
   runtime: z.string().optional(),
   assignedLoops: z.array(z.string().min(1)).optional(),
+  executionRouter: AgentExecutionRouterSchema.optional(),
 });
 
 export const AddAgentSchema = z.object({

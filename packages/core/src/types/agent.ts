@@ -6,6 +6,7 @@
 import type { LoopConfig, LoopToolChoice, Pipeline } from "../loop/types.js";
 import type { ProfiledModelSelection } from "./config.js";
 import type { RuntimeSandboxOptions } from "../runtime-sandbox.js";
+import type { ExecutionRouterConfig } from "../execution-router.js";
 import type {
   BillingOwner,
   CostSource,
@@ -141,6 +142,8 @@ export interface AgentConfig {
   toolChoice?: LoopToolChoice;
   /** Project-level loop names this agent is allowed to use. */
   assignedLoops?: string[];
+  /** Optional direct-vs-loop router. Off by default. */
+  executionRouter?: ExecutionRouterConfig;
   /** Legacy inline loop steps. Prefer project-level loops + assignedLoops. */
   loops?: Record<string, LoopConfig>;
   /** Legacy inline pipeline wiring loop, switch, parallel, and human steps. */

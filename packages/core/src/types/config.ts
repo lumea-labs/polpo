@@ -9,10 +9,13 @@ import type { ApprovalGate, SLAConfig } from "./mission.js";
 import type { NotificationsConfig, EscalationPolicy } from "./notifications.js";
 import type { LoopResumeState } from "../loop/run-store.js";
 import type { RuntimeSandboxOptions } from "../runtime-sandbox.js";
+import type { RuntimeGuardrailSettings } from "../guardrails/types.js";
 import type {
-  RuntimeContextSegment,
+  RuntimeContextResolution,
   RuntimeContextTrustMode,
-} from "../runtime-context/types.js";
+  RuntimePromptContextSegment,
+} from "../runtime-context/index.js";
+import type { ResolvedExecutionRoute } from "../execution-router.js";
 
 // === Runner Config ===
 
@@ -21,10 +24,19 @@ export interface RunnerConfig {
   executionMode?: ExecutionMode;
   /** Resolved runtime sandbox policy for the host sandbox provider. */
   sandbox?: RuntimeSandboxOptions;
-  /** Structured context rendered only at the final model prompt boundary. */
-  runtimeContext?: readonly RuntimeContextSegment[];
-  /** Explicit context-trust rollout mode. Absent and "off" preserve legacy behavior. */
+  /** Resolved serializable OSS guardrail pack. Absent means disabled. */
+  guardrails?: RuntimeGuardrailSettings;
+  /**
+   * Host-resolved, immutable retrieval snapshot for this run. It is data,
+   * not a provider callback, so subprocess runners can consume it safely.
+   */
+  runtimeContext?: RuntimeContextResolution;
+  /** Structured prompt context rendered only at the final model boundary. */
+  promptContextSegments?: readonly RuntimePromptContextSegment[];
+  /** Explicit prompt-context trust mode. Absent and "off" preserve legacy behavior. */
   contextTrust?: RuntimeContextTrustMode;
+  /** Validated direct-or-loop decision resolved before host dispatch. */
+  executionRoute?: ResolvedExecutionRoute;
   runId: string;
   taskId: string;
   agent: AgentConfig;
@@ -220,6 +232,8 @@ export interface PolpoSettings {
   taskExecution?: ExecutionMode;
   /** Default runtime sandbox policy. Request/task overrides beat agent, which beats settings. */
   sandbox?: RuntimeSandboxOptions;
+  /** Runtime tool guardrails. Absent means disabled. */
+  guardrails?: RuntimeGuardrailSettings;
   /** How chat completions execute. Default: "run" through the shared
    *  `executeRun` lifecycle + loop-engine so chat and task share the same
    *  durable runtime. "inline" keeps the older completions-route loop as an

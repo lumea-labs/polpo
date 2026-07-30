@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import { buildPrompt, buildSystemPrompt } from "../adapters/spawn-helpers.js";
 import { createTestAgent } from "./fixtures.js";
 import type { AgentConfig, Task } from "@polpo-ai/core/types";
-import { createRuntimeContextSegment } from "@polpo-ai/core";
+import { createRuntimePromptContextSegment } from "@polpo-ai/core";
 
 const CWD = "/tmp/test-project";
 
@@ -20,7 +20,7 @@ const TASK: Task = {
 };
 
 describe("buildPrompt — context trust", () => {
-  const malicious = createRuntimeContextSegment({
+  const malicious = createRuntimePromptContextSegment({
     kind: "attachment.reference",
     sourceId: "file-1",
     trust: "external",

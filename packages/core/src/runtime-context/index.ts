@@ -1,17 +1,43 @@
 export {
-  createRuntimeContextSegment,
-  normalizeRuntimeContextTrustMode,
-  normalizeRuntimeContextSegments,
-  protectRuntimeToolResultMessages,
-  renderRuntimeContextSegment,
-  renderRuntimeContextSegments,
-  renderRuntimeToolResult,
-  runtimeContextMarkers,
-} from "./context.js";
+  RUNTIME_CONTEXT_SEGMENT_KINDS,
+  RUNTIME_CONTEXT_TRUST_LEVELS,
+} from "./types.js";
 export type {
-  CreateRuntimeContextSegmentInput,
+  CreateRuntimePromptContextSegmentInput,
+  ResolveRuntimeContextOptions,
+  RuntimeContextAudit,
+  RuntimeContextCitation,
+  RuntimeContextEntry,
+  RuntimeContextProvider,
+  RuntimeContextResolution,
+  RuntimeContextResult,
+  RuntimeContextRetrievalInput,
+  RuntimeContextRetrievalRequest,
+  RuntimeContextRetriever,
   RuntimeContextSegment,
-  RuntimeContextSegmentOptions,
+  RuntimeContextSegmentKind,
+  RuntimeContextSource,
   RuntimeContextTrust,
   RuntimeContextTrustMode,
+  RuntimePromptContextSegment,
+  RuntimePromptContextSegmentOptions,
+  RuntimePromptContextTrust,
 } from "./types.js";
+export {
+  createRuntimePromptContextSegment,
+  normalizeRuntimeContextTrustMode,
+  normalizeRuntimePromptContextSegments,
+  protectRuntimeToolResultMessages,
+  renderRuntimePromptContextSegment,
+  renderRuntimePromptContextSegments,
+  renderRuntimeToolResult,
+  runtimePromptContextMarkers,
+} from "./context.js";
+export {
+  renderRuntimeContextPrompt,
+  resolveRuntimeContext,
+} from "./runtime-context.js";
+export {
+  createMemoryRuntimeContextRetriever,
+  type CreateMemoryRuntimeContextRetrieverOptions,
+} from "./memory-retriever.js";

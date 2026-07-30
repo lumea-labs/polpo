@@ -9,8 +9,8 @@
 
 import type { AgentConfig } from "../types.js";
 import {
-  createRuntimeContextSegment,
-  renderRuntimeContextSegment,
+  createRuntimePromptContextSegment,
+  renderRuntimePromptContextSegment,
   type RuntimeContextTrustMode,
 } from "../runtime-context/index.js";
 import type { ContextBag, LoopConfig } from "./types.js";
@@ -69,7 +69,7 @@ export function loopContextPrompt(
 ): string {
   const serialized = stringifyLoopContext(context);
   if (contextTrust === "enforce") {
-    return renderRuntimeContextSegment(createRuntimeContextSegment({
+    return renderRuntimePromptContextSegment(createRuntimePromptContextSegment({
       kind: "loop.context",
       sourceId: stepName,
       trust: "external",
