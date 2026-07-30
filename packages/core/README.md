@@ -134,14 +134,14 @@ remain concrete model IDs. A profile is selected only with the explicit
 }
 ```
 
-Agents can select a profile and optionally narrow which profiles, including
-nested references, they may use:
+Agents can select a profile and optionally narrow which root profiles they may
+use:
 
 ```jsonc
 {
   "name": "support",
   "model": { "profile": "balanced" },
-  "allowedModelProfiles": ["balanced", "fast"]
+  "allowedModelProfiles": ["balanced"]
 }
 ```
 
@@ -149,6 +149,9 @@ Resolution is recursive, deterministic, deduplicates concrete models while
 preserving order, and fails closed for unknown profiles, cycles, invalid
 allowlists, excessive depth, or too many fallbacks. The runtime resolves the
 profile before provider setup; providers receive only concrete model IDs.
+Nested aliases inherit the grant of the selected root alias, so changing
+`balanced` to reuse another project alias does not invalidate existing agent
+assignments. Selecting that nested alias directly still requires its own grant.
 
 ## Model routing
 

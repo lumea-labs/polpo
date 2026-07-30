@@ -65,7 +65,7 @@ describe("agent model profile resolution", () => {
     const agent = {
       name: "agent-1",
       model: { profile: "balanced" },
-      allowedModelProfiles: ["balanced", "fast"],
+      allowedModelProfiles: ["balanced"],
     };
 
     expect(agentConfigForModelPrimary(agent, settings).model).toBe(

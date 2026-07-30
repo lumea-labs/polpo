@@ -788,7 +788,7 @@ export interface AddAgentRequest {
   name: string;
   role?: string;
   model?: ProfiledModelSelection;
-  /** Optional narrowing allowlist for profile references used by this agent. */
+  /** Optional narrowing allowlist for root profiles selected by this agent. */
   allowedModelProfiles?: string[];
   /** Default runtime sandbox policy for this agent. */
   sandbox?: RuntimeSandboxOptions;
@@ -819,6 +819,7 @@ export interface AddAgentRequest {
 export interface UpdateAgentRequest {
   role?: string;
   model?: ProfiledModelSelection;
+  /** Optional narrowing allowlist for root profiles selected by this agent. */
   allowedModelProfiles?: string[];
   sandbox?: RuntimeSandboxOptions;
   allowedTools?: string[];

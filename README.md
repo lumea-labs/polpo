@@ -476,10 +476,12 @@ making legacy model strings ambiguous:
 ```
 
 Select profiles explicitly on an agent with `"model": { "profile": "balanced" }`.
-Use `allowedModelProfiles` to narrow the profiles that agent may expand. Plain
-strings such as `"openai"` or `"openai/gpt-4o-mini"` always remain direct model
-IDs. Unknown profiles, cycles, disallowed nested references, and invalid
-fallback policies fail before provider execution.
+Use `allowedModelProfiles` to narrow the root profiles that agent may select.
+Profiles referenced inside an allowed profile inherit that root grant, so
+project owners can evolve an alias without updating every assigned agent.
+Plain strings such as `"openai"` or `"openai/gpt-4o-mini"` always remain
+direct model IDs. Unknown profiles, cycles, disallowed root references, and
+invalid fallback policies fail before provider execution.
 
 ## SDK
 

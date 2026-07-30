@@ -84,7 +84,7 @@ export interface AgentConfig {
   role?: string;
   /** Model to use. Strings remain concrete ids; profile references are explicit objects. */
   model?: ProfiledModelSelection;
-  /** Optional narrowing allowlist for profile references used by this agent. */
+  /** Optional narrowing allowlist for root profiles selected by this agent. */
   allowedModelProfiles?: string[];
   /** Image generation model. Format: "provider/model".
    *  Default: "fal/fal-ai/flux/dev". Drives the image_generate tool.
