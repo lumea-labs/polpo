@@ -102,6 +102,20 @@ function modelSelectionForResolvedModel(model: SpawnPrep["model"]): string {
   return `${model.provider}/${model.id}`;
 }
 
+function runtimeErrorMetadata(error: unknown): Record<string, unknown> {
+  const raw = error as any;
+  return {
+    name: raw?.name ?? raw?.constructor?.name,
+    message: raw?.message ?? String(error),
+    statusCode: raw?.statusCode ?? raw?.cause?.statusCode,
+    responseBody: raw?.responseBody ?? raw?.cause?.responseBody,
+    modelId: raw?.modelId ?? raw?.cause?.modelId,
+    code: raw?.code ?? raw?.cause?.code,
+    type: raw?.type ?? raw?.cause?.type,
+    data: raw?.data ?? raw?.cause?.data,
+  };
+}
+
 // ─── Durable turns ─────────────────────────────────────
 
 /**
@@ -184,26 +198,58 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
     pt: PolpoTool | undefined,
     toolCall: LoopToolCall,
   ): Promise<{ llmText: string; isError: boolean }> {
-    let result: ToolResult;
+    let result: ToolResult = {
+      content: [{ type: "text", text: `Unknown tool: ${toolCall.name}` }],
+      details: {},
+    };
     let isError = false;
 
-    if (!pt) {
-      isError = true;
-      result = {
-        content: [{ type: "text", text: `Unknown tool: ${toolCall.name}` }],
-        details: {},
-      };
-    } else {
-      try {
-        result = await pt.execute(toolCall.id, toolCall.args, abortController.signal);
-      } catch (err) {
+    const dispatch = async (args: Readonly<Record<string, unknown>>): Promise<string> => {
+      if (!pt) {
         isError = true;
         result = {
-          content: [{ type: "text", text: err instanceof Error ? err.message : String(err) }],
+          content: [{ type: "text", text: `Unknown tool: ${toolCall.name}` }],
           details: {},
         };
+      } else {
+        try {
+          result = await pt.execute(
+            toolCall.id,
+            args as Record<string, unknown>,
+            abortController.signal,
+          );
+        } catch (err) {
+          isError = true;
+          result = {
+            content: [{ type: "text", text: err instanceof Error ? err.message : String(err) }],
+            details: {},
+          };
+        }
       }
-    }
+      return result.content
+        .map((content) => content.type === "text" ? content.text : `[image: ${content.mimeType}]`)
+        .join("\n");
+    };
+
+    const llmText = ctx?.runToolMiddleware
+      ? (await ctx.runToolMiddleware.execute(
+          {
+            callId: toolCall.id,
+            name: toolCall.name,
+            args: toolCall.args,
+            schema: pt?.parameters,
+            context: {
+              agent: agentConfig.name,
+              runId: ctx.runId,
+              source: ctx.inject ? "request" : "task",
+              surface: ctx.inject?.runtimePlan?.surface ?? "task",
+              planId: ctx.inject?.runtimePlan?.id,
+            },
+            signal: abortController.signal,
+          },
+          (request) => dispatch(request.args),
+        )).output
+      : await dispatch(toolCall.args);
 
     activity.lastUpdate = new Date().toISOString();
 
@@ -247,11 +293,6 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
       content: resultText.slice(0, 2000),
       isError,
     });
-
-    // Text returned to the LLM — same rendering as the legacy engine.
-    const llmText = result.content
-      .map((c) => c.type === "text" ? c.text : `[image: ${c.mimeType}]`)
-      .join("\n");
 
     return { llmText, isError };
   }
@@ -522,20 +563,10 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
             break;
           }
           case "error": {
-            const raw = event.error as any;
             emitTranscript({
               type: "error",
               message: event.error instanceof Error ? event.error.message : String(event.error),
-              error: {
-                name: raw?.name ?? raw?.constructor?.name,
-                message: raw?.message ?? String(event.error),
-                statusCode: raw?.statusCode ?? raw?.cause?.statusCode,
-                responseBody: raw?.responseBody ?? raw?.cause?.responseBody,
-                modelId: raw?.modelId ?? raw?.cause?.modelId,
-                code: raw?.code ?? raw?.cause?.code,
-                type: raw?.type ?? raw?.cause?.type,
-                data: raw?.data ?? raw?.cause?.data,
-              },
+              error: runtimeErrorMetadata(event.error),
             });
             break;
           }
@@ -622,7 +653,10 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
           toolId: toolCall.id,
           input: toolCall.args,
         });
-        llmText = await inject.executor(toolCall.name, toolCall.args);
+        llmText = await inject.executor(toolCall.name, toolCall.args, {
+          callId: toolCall.id,
+          signal: abortController.signal,
+        });
         isError = llmText.startsWith("Error:");
         emitTranscript({ type: "tool_result", toolId: toolCall.id, tool: toolCall.name, content: llmText, isError });
       } else {
@@ -902,7 +936,11 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
     } catch (err) {
       alive = false;
       const msg = err instanceof Error ? err.message : String(err);
-      emitTranscript({ type: "error", message: msg });
+      emitTranscript({
+        type: "error",
+        message: msg,
+        error: runtimeErrorMetadata(err),
+      });
       return {
         exitCode: 1,
         stdout: "",

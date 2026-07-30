@@ -41,6 +41,7 @@ import {
   type RuntimeContextProvider,
   type RuntimeInvocationSource,
   type RuntimePlan,
+  type RunToolMiddleware,
   type RuntimeSurface,
   type RuntimeSandboxOptions,
 } from "@polpo-ai/core";
@@ -58,6 +59,7 @@ import {
 } from "./completions/chat-handler.js";
 import { streamChatViaRun, runNonStreamingChatViaRun } from "./completions/chat-via-run-handler.js";
 import { prepareChatCompletionExecution } from "./completions/conversation-turn.js";
+import type { CompletionToolExecutor } from "./completions/tool-guardrails.js";
 
 export { resumeProjectLoopRun } from "./completions/project-loop-runner.js";
 export {
@@ -97,6 +99,12 @@ export interface CompletionRouteDeps {
   resolveRuntimePlan?: (
     input: CompletionRuntimePlanInput,
   ) => RuntimePlan | Promise<RuntimePlan>;
+  /**
+   * Optional host-resolved tool guardrail middleware. Hosts own rollout,
+   * policy packs, approvals, and audit sinks. Absent means the historical
+   * executor path is used by reference.
+   */
+  runToolMiddleware?: RunToolMiddleware;
   /**
    * Optional and disabled by default. When provided with a positive budget,
    * resolves one structured Memory/Brain snapshot before prompt assembly.
@@ -146,13 +154,13 @@ export interface CompletionRouteDeps {
    *  The keys here MUST NOT collide with names in `tools`. */
   resolveAgentTools: (agentConfig: any) => Promise<{
     tools: any[];
-    executor: (name: string, args: Record<string, unknown>) => Promise<string>;
+    executor: CompletionToolExecutor;
     /**
      * Optional direct runtime executor for deterministic loop `type:"tool"`
      * steps. Hosts that hide tools behind a model-facing router should provide
      * this so loop steps still call the real tool by name.
      */
-    runtimeExecutor?: (name: string, args: Record<string, unknown>) => Promise<string>;
+    runtimeExecutor?: CompletionToolExecutor;
     cleanup?: () => Promise<void>;
     extraAiTools?: Record<string, any>;
   }>;
@@ -189,7 +197,7 @@ export interface CompletionRouteDeps {
     model: ResolvedModelInfo;
     providerOptions?: Record<string, any>;
     tools: any[];
-    executor: (name: string, args: Record<string, unknown>) => Promise<string>;
+    executor: CompletionToolExecutor;
     isInteractive: (name: string) => boolean;
   }>;
 }

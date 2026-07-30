@@ -33,6 +33,7 @@ import type { VaultStore } from "@polpo-ai/core/vault-store";
 import type { MemoryStore } from "@polpo-ai/core/memory-store";
 import type { FileSystem } from "@polpo-ai/core/filesystem";
 import type { Shell } from "@polpo-ai/core/shell";
+import type { RunToolMiddleware } from "@polpo-ai/core/guardrails";
 import { executeRun, errorResult, type TranscriptSession } from "../core/run-lifecycle.js";
 
 /**
@@ -49,6 +50,8 @@ export interface InProcessSpawnerDeps {
   memoryStore?: MemoryStore;
   fs?: FileSystem;
   shell?: Shell;
+  /** Optional host-resolved guardrail middleware. */
+  runToolMiddleware?: RunToolMiddleware;
   /** Per-tenant LLM gateway config — the in-process loop runs in a shared
    *  process with no per-tenant env, so the host must inject it here. */
   gatewayConfig?: unknown;

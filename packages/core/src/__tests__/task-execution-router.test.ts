@@ -221,6 +221,54 @@ describe("TaskRunner execution routing", () => {
     ]);
   });
 
+  it("preserves guardrails, runtime context, and the execution route in one runner config", async () => {
+    const h = harness();
+    h.ctx.config.settings.guardrails = {
+      toolPolicyPack: "default",
+      maxToolOutputCharacters: 8_192,
+    };
+    h.ctx.runtimeContext = {
+      tokenBudget: 1_000,
+      retrieve: vi.fn(async () => ({
+        segments: [{
+          kind: "memory",
+          entries: [{
+            id: "memory-1",
+            content: "Use the approved customer terminology.",
+            source: { type: "memory", id: "memory-1" },
+            timestamp: "2026-07-28T10:00:00.000Z",
+            trust: "user_provided",
+          }],
+        }],
+      })),
+    };
+
+    await new TaskRunner(h.ctx).spawnForTask(task({ user: "external-user-1" }));
+
+    expect(h.spawned).toHaveLength(1);
+    expect(h.spawned[0]).toMatchObject({
+      guardrails: {
+        toolPolicyPack: "default",
+        maxToolOutputCharacters: 8_192,
+      },
+      runtimeContext: {
+        segments: [{
+          kind: "memory",
+          entries: [{
+            id: "memory-1",
+            content: "Use the approved customer terminology.",
+          }],
+        }],
+      },
+      executionRoute: {
+        surface: "task",
+        invocationSource: "task",
+        mode: "loop",
+        loop: "research",
+      },
+    });
+  });
+
   it("lets an explicit authorized loop win without classifier work", async () => {
     const h = harness();
 

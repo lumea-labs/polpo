@@ -742,6 +742,26 @@ describe("Durable turns recovery", () => {
     expect(spawnedConfigs[0].sandbox).toEqual({ isolation: "fresh" });
   });
 
+  it("spawned runner config carries the explicit serializable guardrail pack", async () => {
+    (orchestrator as any).config.settings.guardrails = {
+      toolPolicyPack: "default",
+      maxToolOutputCharacters: 8192,
+    };
+    const task = await orchestrator.engine.createTask({
+      title: "Guarded task",
+      description: "Run with deterministic tool guardrails",
+      assignTo: "agent-1",
+    });
+
+    await (orchestrator.engine as any).runner.spawnForTask(task);
+
+    expect(spawnedConfigs).toHaveLength(1);
+    expect(spawnedConfigs[0].guardrails).toEqual({
+      toolPolicyPack: "default",
+      maxToolOutputCharacters: 8192,
+    });
+  });
+
   it("dead runner without checkpoint: unchanged fallback, retry from zero", async () => {
     const task = await createOrphanTask("No checkpoint");
     await runStore.upsertRun(runRecord(task.id));

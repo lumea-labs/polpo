@@ -1,5 +1,10 @@
-import { describe, expect, it } from "vitest";
-import { MemoryLoopRunStore, type LoopTraceEvent } from "@polpo-ai/core";
+import { describe, expect, it, vi } from "vitest";
+import {
+  MemoryLoopRunStore,
+  RuntimeGuardrailEngine,
+  createRunToolMiddleware,
+  type LoopTraceEvent,
+} from "@polpo-ai/core";
 import { completionRoutes, type CompletionRouteDeps } from "./completions.js";
 
 describe("completionRoutes project loop runtime", () => {
@@ -224,6 +229,101 @@ describe("completionRoutes project loop runtime", () => {
         expect.objectContaining({ type: "tool.result", tool: "bash" }),
       ]),
     );
+  });
+
+  it("enforces the same middleware around deterministic pipeline tool steps", async () => {
+    const deps = makeDeps({
+      name: "guarded-loop",
+      context: "shared",
+      start: "audit",
+      steps: {
+        audit: {
+          type: "tool",
+          tool: "audit_step",
+          input: { source: "raw" },
+          saveAs: "audit",
+          next: "end",
+        },
+      },
+    });
+    deps.getAgents = async () => [{
+      name: "timer",
+      model: "test",
+      assignedLoops: ["guarded-loop"],
+      allowedTools: ["audit_step"],
+    }];
+    deps.runToolMiddleware = createRunToolMiddleware(new RuntimeGuardrailEngine([{
+      id: "canonicalize",
+      phases: ["tool.before"],
+      evaluate: (input) => ({
+        action: "rewrite",
+        risk: "low",
+        reason: "canonical input",
+        value: { ...(input.value as Record<string, unknown>), guarded: true },
+      }),
+    }]));
+
+    const app = completionRoutes(() => deps);
+    const res = await app.request("/", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        agent: "timer",
+        loop: "guarded-loop",
+        messages: [{ role: "user", content: "run it" }],
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    const json = await res.json() as any;
+    expect(JSON.parse(json.choices[0].message.content)).toEqual({
+      audit: {
+        ok: true,
+        args: { source: "raw", guarded: true },
+      },
+    });
+  });
+
+  it("returns a typed 403 and never dispatches a blocked deterministic tool", async () => {
+    const deps = makeDeps();
+    const originalResolve = deps.resolveAgentTools;
+    const dispatch = vi.fn(async (name: string, args: Record<string, unknown>) =>
+      (await originalResolve({})).executor(name, args)
+    );
+    deps.resolveAgentTools = async () => ({
+      tools: [],
+      executor: dispatch,
+    });
+    deps.runToolMiddleware = createRunToolMiddleware(new RuntimeGuardrailEngine([{
+      id: "deny",
+      phases: ["tool.before"],
+      evaluate: () => ({
+        action: "block",
+        risk: "critical",
+        reason: "blocked by policy",
+      }),
+    }]));
+
+    const app = completionRoutes(() => deps);
+    const res = await app.request("/", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        agent: "timer",
+        loop: "time-tracker",
+        messages: [{ role: "user", content: "track it" }],
+      }),
+    });
+
+    expect(res.status).toBe(403);
+    expect(dispatch).not.toHaveBeenCalled();
+    await expect(res.json()).resolves.toEqual({
+      error: {
+        message: "blocked by policy",
+        type: "guardrail_error",
+        code: "guardrail_blocked",
+      },
+    });
   });
 
   it("continues project loop execution when trace persistence fails", async () => {

@@ -17,6 +17,7 @@ import {
   type RuntimeContextResolution,
   resolveConfiguredModelSelection,
   type PolpoSettings,
+  type RuntimePlan,
   type SummarizeFn,
 } from "@polpo-ai/core";
 import { generateText, type LanguageModel, type LanguageModelUsage } from "ai";
@@ -33,6 +34,7 @@ import {
   toAIToolChoice,
   type LoopRuntimeToolCall,
 } from "./tool-mapping.js";
+import { createGuardedCompletionToolExecutor } from "./tool-guardrails.js";
 
 export const MAX_TURNS = 20;
 
@@ -202,6 +204,10 @@ export async function runAgentStepCompletion(options: {
   extraSystemParts: string[];
   context: Readonly<ContextBag>;
   stepName: string;
+  runtimePlan?: RuntimePlan;
+  signal?: AbortSignal;
+  runId?: string;
+  sessionId?: string;
   runtimeContext?: RuntimeContextResolution;
   onToolCall?: (toolCall: LoopRuntimeToolCall) => Promise<void>;
 }): Promise<AgentStepRunResult> {
@@ -229,6 +235,19 @@ export async function runAgentStepCompletion(options: {
     settings,
   );
   const resolvedTools = await deps.resolveAgentTools(agentConfig);
+  const executeTool = createGuardedCompletionToolExecutor({
+    executor: resolvedTools.executor,
+    tools: resolvedTools.tools,
+    middleware: deps.runToolMiddleware,
+    context: {
+      planId: options.runtimePlan?.id,
+      surface: options.runtimePlan?.surface,
+      source: "loop-step",
+      agent: agentConfig.name,
+      runId: options.runId,
+      sessionId: options.sessionId,
+    },
+  });
   const aiTools = {
     ...toAITools(resolvedTools.tools),
     ...(resolvedTools.extraAiTools ?? {}),
@@ -348,7 +367,10 @@ export async function runAgentStepCompletion(options: {
           arguments: callArgs,
           state: "calling",
         });
-        const result = await resolvedTools.executor(call.toolName, callArgs);
+        const result = await executeTool(call.toolName, callArgs, {
+          callId: call.toolCallId,
+          signal: options.signal,
+        });
         const isError = result.startsWith("Error:");
         emitFileChanged(call.toolName, callArgs, result, deps.emit);
         const event = {

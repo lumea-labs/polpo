@@ -40,8 +40,15 @@ import {
   runAgentStepCompletion,
   type CompletionResolvedModelInfo,
 } from "./agent-step-runner.js";
-import { completionResponse, loopRuntimeErrorEnvelope, modelNotFoundEnvelope, sseChunk } from "./sse.js";
+import {
+  completionResponse,
+  guardrailErrorEnvelope,
+  loopRuntimeErrorEnvelope,
+  modelNotFoundEnvelope,
+  sseChunk,
+} from "./sse.js";
 import { emitFileChanged, persistAssistantMessage, type LoopRuntimeToolCall } from "./tool-mapping.js";
+import { createGuardedCompletionToolExecutor } from "./tool-guardrails.js";
 
 export interface ProjectLoopRunResult {
   text: string;
@@ -154,10 +161,11 @@ export async function runProjectLoopCompletion(options: {
   runtimeInvocation?: CompletionRuntimeInvocation;
   sessionId?: string | null;
   user?: string;
+  runtimePlan?: RuntimePlan;
+  signal?: AbortSignal;
   onToolCall?: (toolCall: LoopRuntimeToolCall) => Promise<void>;
   onTrace?: (event: LoopTraceEvent) => Promise<void>;
   resumeRun?: LoopRunRecord;
-  runtimePlan?: RuntimePlan;
   executionRoute?: ResolvedExecutionRoute;
 }): Promise<ProjectLoopRunResult> {
   const {
@@ -179,15 +187,27 @@ export async function runProjectLoopCompletion(options: {
   const normalized = normalizeProjectLoop(projectLoop);
   if (!normalized.pipeline) throw new Error(`Loop "${projectLoop.name}" does not define a pipeline`);
 
+  const loopRunStore = deps.getLoopRunStore?.();
+  const resumeState = resumeRun?.resume;
+  const loopRunId = resumeRun?.id ?? (loopRunStore ? `looprun-${nanoid(16)}` : undefined);
   const rootTools = await deps.resolveAgentTools(agentConfig);
-  const executeLoopTool = rootTools.runtimeExecutor ?? rootTools.executor;
+  const executeLoopTool = createGuardedCompletionToolExecutor({
+    executor: rootTools.runtimeExecutor ?? rootTools.executor,
+    tools: rootTools.tools,
+    middleware: deps.runToolMiddleware,
+    context: {
+      planId: options.runtimePlan?.id,
+      surface: options.runtimePlan?.surface,
+      source: "loop-step",
+      agent: agentConfig.name,
+      runId: loopRunId,
+      sessionId: sessionId ?? undefined,
+    },
+  });
   const initialModel = agentConfigForModelPrimary(
     agentConfig,
     deps.getConfig()?.settings,
   ).model ?? "polpo";
-  const loopRunStore = deps.getLoopRunStore?.();
-  const resumeState = resumeRun?.resume;
-  const loopRunId = resumeRun?.id ?? (loopRunStore ? `looprun-${nanoid(16)}` : undefined);
   if (loopRunStore && loopRunId && resumeRun) {
     await loopRunStore.updateRun(loopRunId, {
       status: "resuming",
@@ -314,7 +334,10 @@ export async function runProjectLoopCompletion(options: {
           arguments: args,
           state: "calling",
         });
-        const output = await executeLoopTool(name, args);
+        const output = await executeLoopTool(name, args, {
+          callId: id,
+          signal: options.signal,
+        });
         const isError = output.startsWith("Error:");
         emitFileChanged(name, args, output, deps.emit);
         const event = {
@@ -345,6 +368,10 @@ export async function runProjectLoopCompletion(options: {
           extraSystemParts,
           context,
           stepName: name,
+          runtimePlan: options.runtimePlan,
+          signal: options.signal,
+          runId: loopRunId,
+          sessionId: sessionId ?? undefined,
           runtimeContext,
           onToolCall,
         });
@@ -615,6 +642,7 @@ export async function handleProjectLoopCompletion(c: any, options: {
           sessionId,
           user: body.user,
           runtimePlan,
+          signal: abortController.signal,
           executionRoute,
           onToolCall: async (toolCall) => {
             if (abortController.signal.aborted) return;
@@ -647,7 +675,13 @@ export async function handleProjectLoopCompletion(c: any, options: {
         if ((err instanceof DOMException && err.name === "AbortError") || abortController.signal.aborted) {
           return;
         }
+        const guardrailError = guardrailErrorEnvelope(err);
         const notFound = modelNotFoundEnvelope(err, runModel, body.agent);
+        if (guardrailError) {
+          await stream.writeSSE({ data: sseChunk(completionId, {}, "stop", { error: guardrailError }) });
+          await stream.writeSSE({ data: "[DONE]" });
+          return;
+        }
         if (notFound) {
           await stream.writeSSE({ data: sseChunk(completionId, {}, "stop", { error: notFound }) });
           await stream.writeSSE({ data: "[DONE]" });
@@ -704,6 +738,7 @@ export async function handleProjectLoopCompletion(c: any, options: {
       sessionId,
       user: body.user,
       runtimePlan,
+      signal: c.req.raw.signal,
       executionRoute,
     });
     finalText = run.text;
@@ -714,6 +749,13 @@ export async function handleProjectLoopCompletion(c: any, options: {
     toolCalls = run.toolCalls;
     return c.json(completionResponse(completionId, finalText, runUsage, { loop_trace: run.trace, loop_run_id: run.loopRunId }));
   } catch (err) {
+    const guardrailError = guardrailErrorEnvelope(err);
+    if (guardrailError) {
+      return c.json(
+        { error: guardrailError },
+        (guardrailError.code === "guardrail_approval_required" ? 409 : 403) as any,
+      );
+    }
     const notFound = modelNotFoundEnvelope(err, runModel, body.agent);
     if (notFound) {
       return c.json({ error: notFound }, 400 as any);

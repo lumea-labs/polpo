@@ -105,6 +105,9 @@ export * from "./runtime-plan/index.js";
 export * from "./runtime-context/index.js";
 export * from "./execution-router.js";
 
+// ── Guardrails (host-neutral policy engine + tool middleware) ───────────
+export * from "./guardrails/index.js";
+
 // ── Events (pure type definitions only, TypedEmitter lives in shell) ─────
 export * from "./events.js";
 

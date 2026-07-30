@@ -659,6 +659,7 @@ export class TaskRunner {
       taskId: task.id,
       executionMode,
       sandbox,
+      guardrails: this.ctx.config.settings.guardrails,
       runtimeContext,
       executionRoute,
       agent,
