@@ -123,6 +123,28 @@ describe("Agent validation — identity, responsibilities, vault", () => {
     expect(() => validateAgents(agents)).not.toThrow();
   });
 
+  it("accepts explicit automatic model routing and keeps omission pinned", () => {
+    expect(() => validateAgents([
+      { name: "pinned", model: { profile: "balanced" } },
+      {
+        name: "automatic",
+        allowedModelProfiles: ["fast", "balanced"],
+        modelRouting: { mode: "auto" },
+      },
+    ])).not.toThrow();
+  });
+
+  it.each([
+    {},
+    { mode: "future" },
+    { mode: "auto", hidden: true },
+  ])("rejects invalid model routing settings %#", (modelRouting) => {
+    expect(() => validateAgents([{
+      name: "agent-1",
+      modelRouting,
+    }])).toThrow('Agent "agent-1": Agent model routing');
+  });
+
   it("rejects invalid execution router settings before runtime", () => {
     const agents = [{
       name: "agent-1",

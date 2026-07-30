@@ -510,6 +510,7 @@ describe("Agents API", () => {
         name: "agent-profile-create",
         model: { profile: "balanced" },
         allowedModelProfiles: ["balanced", "fast"],
+        modelRouting: { mode: "auto" },
       }),
     );
     expect(res.status).toBe(201);
@@ -518,6 +519,7 @@ describe("Agents API", () => {
     const detail = await detailRes.json();
     expect(detail.data.model).toEqual({ profile: "balanced" });
     expect(detail.data.allowedModelProfiles).toEqual(["balanced", "fast"]);
+    expect(detail.data.modelRouting).toEqual({ mode: "auto" });
 
     await app.request(api("/agents/agent-profile-create"), { method: "DELETE" });
   });
@@ -1210,11 +1212,13 @@ describe("Update Agent API", () => {
       api("/agents/agent-profile-update"),
       jsonReq("PATCH", {
         allowedModelProfiles: ["balanced", "fast"],
+        modelRouting: { mode: "auto" },
       }),
     );
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.data.allowedModelProfiles).toEqual(["balanced", "fast"]);
+    expect(body.data.modelRouting).toEqual({ mode: "auto" });
 
     const clearRes = await app.request(
       api("/agents/agent-profile-update"),

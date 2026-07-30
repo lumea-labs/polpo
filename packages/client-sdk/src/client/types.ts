@@ -15,6 +15,7 @@ import type {
   AgentActivity,
   AgentConfig,
   AgentIdentity,
+  AgentModelRoutingConfig,
   AgentProcess,
   AgentResponsibility,
   ApprovalGateHandler,
@@ -138,6 +139,7 @@ export type {
   AgentActivity,
   AgentConfig,
   AgentIdentity,
+  AgentModelRoutingConfig,
   AgentProcess,
   AgentResponsibility,
   ApprovalGateHandler,
@@ -790,6 +792,8 @@ export interface AddAgentRequest {
   model?: ProfiledModelSelection;
   /** Optional narrowing allowlist for profile references used by this agent. */
   allowedModelProfiles?: string[];
+  /** Explicit opt-in to automatic model alias selection. */
+  modelRouting?: AgentModelRoutingConfig;
   /** Default runtime sandbox policy for this agent. */
   sandbox?: RuntimeSandboxOptions;
   allowedTools?: string[];
@@ -820,6 +824,7 @@ export interface UpdateAgentRequest {
   role?: string;
   model?: ProfiledModelSelection;
   allowedModelProfiles?: string[];
+  modelRouting?: AgentModelRoutingConfig;
   sandbox?: RuntimeSandboxOptions;
   allowedTools?: string[];
   allowedPaths?: string[];

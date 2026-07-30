@@ -150,6 +150,18 @@ preserving order, and fails closed for unknown profiles, cycles, invalid
 allowlists, excessive depth, or too many fallbacks. The runtime resolves the
 profile before provider setup; providers receive only concrete model IDs.
 
+An agent's configured direct model or profile stays pinned by default. Set
+`modelRouting.mode` to `auto` only when that agent should delegate selection to
+the project router:
+
+```jsonc
+{
+  "name": "support",
+  "allowedModelProfiles": ["fast", "balanced"],
+  "modelRouting": { "mode": "auto" }
+}
+```
+
 ## Model routing
 
 Model routing is optional automation over model profiles. The OSS router never
@@ -173,6 +185,15 @@ const route = await resolveModelRoute({
     mode: "auto",
     fallbackProfile: "balanced",
     allowedProfiles: ["fast", "balanced"],
+    rules: [{
+      id: "free-users",
+      profile: "fast",
+      when: { allLabels: ["tier:free"] },
+    }],
+    profileHints: {
+      fast: "Short, low-complexity requests.",
+      balanced: "Requests that need stronger reasoning.",
+    },
   },
 }, {
   classifier: createStructuredModelRouteClassifier({ model: routerModel }),
@@ -182,11 +203,14 @@ const route = await resolveModelRoute({
 const { model, audit } = modelRouteRuntimePlanFields(route);
 ```
 
-Explicit authorized profiles skip classification. Disabled routing,
-single-profile allowlists, missing input, and missing classifiers resolve
-deterministically. Timeout, provider failure, malformed output, unknown
-profiles, and low confidence use the configured fallback; caller cancellation
-stops planning instead of starting execution with a fallback.
+Explicit authorized profiles skip all automation. Ordered deterministic rules
+match trusted labels, runtime surface, and invocation source before any
+classifier is created. Disabled routing, single-profile allowlists, missing
+input, and missing classifiers resolve deterministically. Timeout, provider
+failure, malformed output, unknown profiles, and low confidence use the
+configured fallback; caller cancellation stops planning instead of starting
+execution with a fallback. Rules and classifiers can only narrow the configured
+profile allowlist and never select raw model IDs.
 
 ## Runtime inspection
 

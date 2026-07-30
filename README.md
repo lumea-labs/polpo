@@ -481,6 +481,12 @@ strings such as `"openai"` or `"openai/gpt-4o-mini"` always remain direct model
 IDs. Unknown profiles, cycles, disallowed nested references, and invalid
 fallback policies fail before provider execution.
 
+Direct models and explicit aliases stay pinned. An agent participates in
+project model routing only with the explicit opt-in
+`"modelRouting": { "mode": "auto" }`; deterministic project rules run before
+an optional bounded classifier, and neither path can select outside
+`allowedModelProfiles`.
+
 ## SDK
 
 ### Client SDK

@@ -12,6 +12,10 @@ import type {
   RuntimeInvocationSource,
   RuntimeSurface,
 } from "./runtime-plan/index.js";
+import {
+  RUNTIME_INVOCATION_SOURCES,
+  RUNTIME_SURFACES,
+} from "./runtime-plan/index.js";
 
 export const MODEL_ROUTER_MODES = ["off", "auto"] as const;
 export type ModelRouterMode = (typeof MODEL_ROUTER_MODES)[number];
@@ -23,6 +27,28 @@ export const MAX_MODEL_ROUTE_INPUT_CHARS = 16_384;
 export const MAX_MODEL_ROUTE_LABELS = 16;
 export const MAX_MODEL_ROUTE_LABEL_CHARS = 64;
 export const MAX_MODEL_ROUTE_REASON_CHARS = 512;
+export const MAX_MODEL_ROUTE_RULES = 32;
+export const MAX_MODEL_ROUTE_RULE_ID_CHARS = 64;
+export const MAX_MODEL_ROUTE_PROFILE_HINT_CHARS = 512;
+export const MAX_MODEL_ROUTE_GUIDANCE_CHARS = 2_000;
+
+export interface AgentModelRoutingConfig {
+  readonly mode: ModelRouterMode;
+}
+
+export interface ModelRouterRuleConditions {
+  readonly surfaces?: readonly RuntimeSurface[];
+  readonly sources?: readonly RuntimeInvocationSource[];
+  readonly allLabels?: readonly string[];
+  readonly anyLabels?: readonly string[];
+  readonly noneLabels?: readonly string[];
+}
+
+export interface ModelRouterRule {
+  readonly id: string;
+  readonly profile: string;
+  readonly when: ModelRouterRuleConditions;
+}
 
 export interface ModelRouteDecision {
   readonly profile: string;
@@ -43,6 +69,10 @@ export interface ModelRouteClassifierInput {
   readonly input: string;
   readonly profiles: readonly string[];
   readonly labels: readonly string[];
+  /** Bounded developer-authored semantics for eligible aliases. */
+  readonly profileHints?: Readonly<Record<string, string>>;
+  /** Bounded routing intent. It is not the host's private classifier prompt. */
+  readonly guidance?: string;
 }
 
 export interface ModelRouteClassifierOptions {
@@ -65,6 +95,12 @@ export interface ModelRouterConfig {
   readonly minConfidence?: number;
   readonly timeoutMs?: number;
   readonly maxInputChars?: number;
+  /** Ordered deterministic rules evaluated before any classifier call. */
+  readonly rules?: readonly ModelRouterRule[];
+  /** Optional semantic hints for classifier candidates. */
+  readonly profileHints?: Readonly<Record<string, string>>;
+  /** Optional bounded developer-authored routing intent. */
+  readonly guidance?: string;
 }
 
 export interface ResolveModelRouteInput {
@@ -159,12 +195,212 @@ interface NormalizedModelRouterConfig {
   minConfidence: number;
   timeoutMs: number;
   maxInputChars: number;
+  rules: readonly ModelRouterRule[];
+  profileHints: Readonly<Record<string, string>>;
+  guidance?: string;
 }
 
 type ClassifierOutcome =
   | { type: "decision"; value: unknown }
   | { type: "error" }
   | { type: "timeout" };
+
+function plainRecord(value: unknown, label: string): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`${label} must be an object`);
+  }
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) {
+    throw new Error(`${label} must be a plain object`);
+  }
+  return value as Record<string, unknown>;
+}
+
+function assertSupportedKeys(
+  value: Record<string, unknown>,
+  supported: readonly string[],
+  label: string,
+): void {
+  const allowed = new Set(supported);
+  const unknown = Object.keys(value).find((key) => !allowed.has(key));
+  if (unknown) {
+    throw new Error(`${label} contains unsupported field "${unknown}"`);
+  }
+}
+
+function normalizedDisplayText(
+  value: unknown,
+  label: string,
+  maximumChars: number,
+): string {
+  if (typeof value !== "string") {
+    throw new Error(`${label} must be a string`);
+  }
+  const normalized = value
+    .replace(/[\u0000-\u001f\u007f]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!normalized) {
+    throw new Error(`${label} must be a non-empty string`);
+  }
+  if (normalized.length > maximumChars) {
+    throw new Error(`${label} must not exceed ${maximumChars} characters`);
+  }
+  return normalized;
+}
+
+function normalizedMembers<T extends string>(
+  value: unknown,
+  allowed: readonly T[],
+  label: string,
+): T[] {
+  const members = normalizedUniqueStrings(value, label, {
+    maximumItems: allowed.length,
+  });
+  for (const member of members) {
+    if (!allowed.includes(member as T)) {
+      throw new Error(`${label} contains unsupported value "${member}"`);
+    }
+  }
+  return members as T[];
+}
+
+function normalizeRuleConditions(value: unknown): ModelRouterRuleConditions {
+  const record = plainRecord(value, "Model router rule when");
+  assertSupportedKeys(
+    record,
+    ["surfaces", "sources", "allLabels", "anyLabels", "noneLabels"],
+    "Model router rule when",
+  );
+
+  const surfaces = record.surfaces === undefined
+    ? []
+    : normalizedMembers(
+      record.surfaces,
+      RUNTIME_SURFACES,
+      "Model router rule surfaces",
+    );
+  const sources = record.sources === undefined
+    ? []
+    : normalizedMembers(
+      record.sources,
+      RUNTIME_INVOCATION_SOURCES,
+      "Model router rule sources",
+    );
+  const labelOptions = {
+    maximumItems: MAX_MODEL_ROUTE_LABELS,
+    maximumChars: MAX_MODEL_ROUTE_LABEL_CHARS,
+  };
+  const allLabels = record.allLabels === undefined
+    ? []
+    : normalizedUniqueStrings(
+      record.allLabels,
+      "Model router rule allLabels",
+      labelOptions,
+    );
+  const anyLabels = record.anyLabels === undefined
+    ? []
+    : normalizedUniqueStrings(
+      record.anyLabels,
+      "Model router rule anyLabels",
+      labelOptions,
+    );
+  const noneLabels = record.noneLabels === undefined
+    ? []
+    : normalizedUniqueStrings(
+      record.noneLabels,
+      "Model router rule noneLabels",
+      labelOptions,
+    );
+
+  if (
+    surfaces.length === 0
+    && sources.length === 0
+    && allLabels.length === 0
+    && anyLabels.length === 0
+    && noneLabels.length === 0
+  ) {
+    throw new Error("Model router rule must define at least one condition");
+  }
+
+  return Object.freeze({
+    ...(surfaces.length > 0 ? { surfaces: Object.freeze(surfaces) } : {}),
+    ...(sources.length > 0 ? { sources: Object.freeze(sources) } : {}),
+    ...(allLabels.length > 0 ? { allLabels: Object.freeze(allLabels) } : {}),
+    ...(anyLabels.length > 0 ? { anyLabels: Object.freeze(anyLabels) } : {}),
+    ...(noneLabels.length > 0 ? { noneLabels: Object.freeze(noneLabels) } : {}),
+  });
+}
+
+function normalizeRules(
+  value: unknown,
+  allowedProfiles: readonly string[],
+): ModelRouterRule[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) {
+    throw new Error("Model router rules must be an array");
+  }
+  if (value.length > MAX_MODEL_ROUTE_RULES) {
+    throw new Error(
+      `Model router rules must not contain more than ${MAX_MODEL_ROUTE_RULES} entries`,
+    );
+  }
+
+  const output: ModelRouterRule[] = [];
+  const seen = new Set<string>();
+  for (const rawRule of value) {
+    const rule = plainRecord(rawRule, "Model router rule");
+    assertSupportedKeys(rule, ["id", "profile", "when"], "Model router rule");
+    const id = normalizedDisplayText(
+      rule.id,
+      "Model router rule id",
+      MAX_MODEL_ROUTE_RULE_ID_CHARS,
+    );
+    if (seen.has(id)) {
+      throw new Error(`Duplicate model router rule id "${id}"`);
+    }
+    seen.add(id);
+    if (
+      typeof rule.profile !== "string"
+      || !MODEL_PROFILE_NAME_PATTERN.test(rule.profile)
+    ) {
+      throw new Error("Model router rule profile must be a valid profile name");
+    }
+    if (!allowedProfiles.includes(rule.profile)) {
+      throw new Error(
+        `Model router rule profile "${rule.profile}" must be included in allowedProfiles`,
+      );
+    }
+    output.push(Object.freeze({
+      id,
+      profile: rule.profile,
+      when: normalizeRuleConditions(rule.when),
+    }));
+  }
+  return output;
+}
+
+function normalizeProfileHints(
+  value: unknown,
+  allowedProfiles: readonly string[],
+): Readonly<Record<string, string>> {
+  if (value === undefined) return Object.freeze({});
+  const record = plainRecord(value, "Model router profileHints");
+  const output: Record<string, string> = {};
+  for (const [profile, hint] of Object.entries(record)) {
+    if (!allowedProfiles.includes(profile)) {
+      throw new Error(
+        `Model router profileHints key "${profile}" must be included in allowedProfiles`,
+      );
+    }
+    output[profile] = normalizedDisplayText(
+      hint,
+      `Model router profile hint "${profile}"`,
+      MAX_MODEL_ROUTE_PROFILE_HINT_CHARS,
+    );
+  }
+  return Object.freeze(output);
+}
 
 function finiteRange(
   value: unknown,
@@ -239,10 +475,40 @@ function normalizedUniqueStrings(
   return output;
 }
 
-function normalizeConfig(config: ModelRouterConfig): NormalizedModelRouterConfig {
-  if (!config || typeof config !== "object" || Array.isArray(config)) {
-    throw new Error("Model router config must be an object");
+export function validateAgentModelRoutingConfig(
+  value: unknown,
+): AgentModelRoutingConfig | undefined {
+  if (value === undefined) return undefined;
+  const config = plainRecord(value, "Agent model routing");
+  assertSupportedKeys(config, ["mode"], "Agent model routing");
+  if (
+    typeof config.mode !== "string"
+    || !MODEL_ROUTER_MODES.includes(config.mode as ModelRouterMode)
+  ) {
+    throw new Error(
+      `Agent model routing mode must be one of: ${MODEL_ROUTER_MODES.join(", ")}`,
+    );
   }
+  return Object.freeze({ mode: config.mode as ModelRouterMode });
+}
+
+function normalizeConfig(config: ModelRouterConfig): NormalizedModelRouterConfig {
+  const record = plainRecord(config, "Model router config");
+  assertSupportedKeys(
+    record,
+    [
+      "mode",
+      "fallbackProfile",
+      "allowedProfiles",
+      "minConfidence",
+      "timeoutMs",
+      "maxInputChars",
+      "rules",
+      "profileHints",
+      "guidance",
+    ],
+    "Model router config",
+  );
   const mode = config.mode ?? "off";
   if (!MODEL_ROUTER_MODES.includes(mode)) {
     throw new Error(`Model router mode must be one of: ${MODEL_ROUTER_MODES.join(", ")}`);
@@ -261,6 +527,18 @@ function normalizeConfig(config: ModelRouterConfig): NormalizedModelRouterConfig
   if (allowedProfiles.length === 0) {
     throw new Error("Model router allowedProfiles must contain at least one profile");
   }
+  const rules = normalizeRules(config.rules, allowedProfiles);
+  const profileHints = normalizeProfileHints(
+    config.profileHints,
+    allowedProfiles,
+  );
+  const guidance = config.guidance === undefined
+    ? undefined
+    : normalizedDisplayText(
+      config.guidance,
+      "Model router guidance",
+      MAX_MODEL_ROUTE_GUIDANCE_CHARS,
+    );
 
   return Object.freeze({
     mode,
@@ -285,6 +563,9 @@ function normalizeConfig(config: ModelRouterConfig): NormalizedModelRouterConfig
       "Model router maxInputChars",
       MAX_MODEL_ROUTE_INPUT_CHARS,
     ),
+    rules: Object.freeze(rules),
+    profileHints,
+    ...(guidance ? { guidance } : {}),
   });
 }
 
@@ -306,6 +587,26 @@ function resolveProfile(
     allowedProfiles: config.allowedProfiles,
     allowedModels: input.allowedModels,
   }).selection;
+}
+
+function ruleMatches(
+  rule: ModelRouterRule,
+  input: Pick<ResolveModelRouteInput, "surface" | "source">,
+  labels: readonly string[],
+): boolean {
+  const when = rule.when;
+  if (when.surfaces && !when.surfaces.includes(input.surface)) return false;
+  if (when.sources && !when.sources.includes(input.source)) return false;
+  if (when.allLabels && !when.allLabels.every((label) => labels.includes(label))) {
+    return false;
+  }
+  if (when.anyLabels && !when.anyLabels.some((label) => labels.includes(label))) {
+    return false;
+  }
+  if (when.noneLabels && when.noneLabels.some((label) => labels.includes(label))) {
+    return false;
+  }
+  return true;
 }
 
 function result(
@@ -501,6 +802,24 @@ export async function resolveModelRoute(
     });
   }
 
+  const labels = normalizeLabels(input.labels);
+  const matchedRule = config.rules.find((rule) =>
+    ruleMatches(rule, input, labels)
+  );
+  if (matchedRule) {
+    return result({
+      status: "routed",
+      source: "router",
+      profile: matchedRule.profile,
+      selection: resolveProfile(matchedRule.profile, input, config),
+      confidence: 1,
+      reason: `Matched model router rule "${matchedRule.id}"`,
+      labels,
+      latencyMs: 0,
+      fallbackUsed: false,
+    });
+  }
+
   const compactInput = (input.input ?? "").trim().slice(0, config.maxInputChars);
   if (!compactInput) {
     return fallbackResult(input, config, {
@@ -525,7 +844,11 @@ export async function resolveModelRoute(
     source: input.source,
     input: compactInput,
     profiles: Object.freeze([...config.allowedProfiles]),
-    labels: Object.freeze(normalizeLabels(input.labels)),
+    labels: Object.freeze(labels),
+    ...(Object.keys(config.profileHints).length > 0
+      ? { profileHints: config.profileHints }
+      : {}),
+    ...(config.guidance ? { guidance: config.guidance } : {}),
   });
   const startedAt = Date.now();
   const outcome = await classifyWithDeadline(

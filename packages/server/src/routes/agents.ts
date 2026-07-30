@@ -83,6 +83,7 @@ export function agentRoutes(getDeps: () => {
       role: body.role,
       model: body.model,
       allowedModelProfiles: body.allowedModelProfiles,
+      modelRouting: body.modelRouting,
       executionMode: body.executionMode,
       sandbox: body.sandbox,
       image_model:      body.image_model,
@@ -389,6 +390,9 @@ export function agentRoutes(getDeps: () => {
       ...(body.model !== undefined && { model: body.model }),
       ...(body.allowedModelProfiles !== undefined && {
         allowedModelProfiles: body.allowedModelProfiles,
+      }),
+      ...(body.modelRouting !== undefined && {
+        modelRouting: body.modelRouting,
       }),
       ...(body.executionMode !== undefined && { executionMode: body.executionMode }),
       ...(body.sandbox !== undefined && { sandbox: body.sandbox }),
