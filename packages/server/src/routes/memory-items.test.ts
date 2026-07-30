@@ -308,6 +308,88 @@ describe("memoryItemRoutes", () => {
     ]);
   });
 
+  it("exposes authorized usage with a retrieval-focused last-use summary", async () => {
+    const app = createApp();
+    await createItem(app);
+    await app.request(
+      "/agents/support/memory/search",
+      json("POST", { query: "weekly" }),
+    );
+
+    const response = await app.request(
+      "/agents/support/memory/items/memory-1/usage",
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      ok: true,
+      data: {
+        events: [
+          expect.objectContaining({
+            memoryId: "memory-1",
+            type: "written",
+            at: now,
+          }),
+          expect.objectContaining({
+            memoryId: "memory-1",
+            type: "retrieved",
+            at: now,
+          }),
+        ],
+        lastUsedAt: now,
+        retrievalCount: 1,
+      },
+    });
+  });
+
+  it("returns an empty last-use summary when telemetry was unavailable", async () => {
+    class UsageFailureStore extends InMemoryMemoryItemStore {
+      override async appendUsage(): Promise<void> {
+        throw new Error("usage backend unavailable");
+      }
+    }
+    const app = createApp(new UsageFailureStore());
+    await createItem(app);
+
+    const response = await app.request(
+      "/agents/support/memory/items/memory-1/usage",
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      ok: true,
+      data: {
+        events: [],
+        lastUsedAt: null,
+        retrievalCount: 0,
+      },
+    });
+  });
+
+  it("redacts usage-store failures instead of reflecting provider details", async () => {
+    const secret = "usage-provider-secret-value";
+    class UsageReadFailureStore extends InMemoryMemoryItemStore {
+      override async listUsage(): Promise<never> {
+        throw new Error(`Usage provider failed with ${secret}`);
+      }
+    }
+    const app = createApp(new UsageReadFailureStore());
+    await createItem(app);
+
+    const response = await app.request(
+      "/agents/support/memory/items/memory-1/usage",
+    );
+    const raw = await response.text();
+
+    expect(response.status).toBe(500);
+    expect(raw).not.toContain(secret);
+    expect(JSON.parse(raw)).toEqual({
+      ok: false,
+      error: "Memory operation failed",
+      code: "MEMORY_OPERATION_FAILED",
+    });
+  });
+
   it("returns 409 for a duplicate semantic memory instead of persisting it twice", async () => {
     const app = createApp();
     expect((await createItem(app)).response.status).toBe(201);
@@ -397,6 +479,15 @@ describe("memoryItemRoutes", () => {
         { method: "DELETE" },
       );
       expect(remove.status).toBe(404);
+      const usage = await app.request(
+        "/agents/support/memory/items/memory-1/usage",
+      );
+      expect(usage.status).toBe(404);
+      expect(await usage.json()).toEqual({
+        ok: false,
+        error: "Memory item not found",
+        code: "MEMORY_NOT_FOUND",
+      });
     }
   });
 

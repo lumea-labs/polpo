@@ -90,6 +90,7 @@ import type {
   CreateMemoryItemInput,
   MemoryItem,
   MemoryItemsPage,
+  MemoryItemUsage,
   MemoryItemPatch,
   MemorySearchResult,
   ListMemoryItemsQuery,
@@ -1142,6 +1143,17 @@ export class PolpoClient {
       `/agents/${encodeURIComponent(agentName)}/memory/search`,
       query,
     ).then((data) => data.results);
+  }
+
+  getMemoryItemUsage(
+    agentName: string,
+    itemId: string,
+  ): Promise<MemoryItemUsage> {
+    return this.get<MemoryItemUsage>(
+      `/agents/${encodeURIComponent(agentName)}/memory/items/${
+        encodeURIComponent(itemId)
+      }/usage`,
+    );
   }
 
   updateMemoryItem(

@@ -3,6 +3,7 @@ import type {
   CreateMemoryItemInput,
   MemoryItem,
   MemorySearchResult,
+  MemoryUsageEvent,
 } from "@polpo-ai/core";
 import { PolpoClient } from "../client/polpo-client.js";
 
@@ -153,5 +154,32 @@ describe("PolpoClient typed Memory", () => {
         undefined,
       ],
     ]);
+  });
+
+  it("reads an item's usage summary without exposing another path shape", async () => {
+    const events: MemoryUsageEvent[] = [{
+      id: "usage-1",
+      memoryId: "memory / 1",
+      type: "retrieved",
+      at: "2026-07-28T11:00:00.000Z",
+    }];
+    const { client, fetch } = clientWithResponses({
+      events,
+      lastUsedAt: "2026-07-28T11:00:00.000Z",
+      retrievalCount: 1,
+    });
+
+    await expect(
+      client.getMemoryItemUsage("support / eu", "memory / 1"),
+    ).resolves.toEqual({
+      events,
+      lastUsedAt: "2026-07-28T11:00:00.000Z",
+      retrievalCount: 1,
+    });
+    expect(fetch).toHaveBeenCalledWith(
+      "https://api.example.test/api/v1/agents/support%20%2F%20eu"
+        + "/memory/items/memory%20%2F%201/usage",
+      expect.objectContaining({ method: "GET" }),
+    );
   });
 });
