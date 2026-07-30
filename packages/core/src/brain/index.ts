@@ -30,6 +30,36 @@ export {
 } from "./contracts.js";
 export { normalizeBrainMetadata } from "./validation.js";
 export {
+  DEFAULT_BRAIN_CHUNK_CHARACTERS,
+  DEFAULT_BRAIN_CHUNK_OVERLAP_CHARACTERS,
+  chunkBrainSections,
+} from "./chunking.js";
+export type { ChunkBrainSectionsInput } from "./chunking.js";
+export { PlainTextBrainParser } from "./parsers.js";
+export {
+  BrainIngestionError,
+  BrainStoreAuthorizationError,
+  BrainStoreConflictError,
+  BrainStoreError,
+  BrainStoreValidationError,
+} from "./store-errors.js";
+export {
+  InMemoryBrainStore,
+} from "./in-memory-store.js";
+export type {
+  InMemoryBrainStoreOptions,
+} from "./in-memory-store.js";
+export { ingestBrainSource } from "./ingestion.js";
+export type {
+  IngestBrainSourceDeps,
+  IngestBrainSourceInput,
+} from "./ingestion.js";
+export { retrieveBrain } from "./retrieval.js";
+export type {
+  RetrieveBrainDeps,
+  RetrieveBrainInput,
+} from "./retrieval.js";
+export {
   BRAIN_ACCESS_ACTIONS,
   BRAIN_INGESTION_JOB_STATUSES,
   BRAIN_INGESTION_OPERATIONS,
@@ -80,6 +110,7 @@ export type {
   BrainSourceStatus,
   BrainSourceType,
   BrainSourceVersion,
+  BrainStoreSnapshot,
   BrainTrustDecision,
   BrainTrustLevel,
   BrainTrustRequest,

@@ -413,6 +413,9 @@ importers:
       nanoid:
         specifier: ^5.1.2
         version: 5.1.6
+      parse5:
+        specifier: ^7.3.0
+        version: 7.3.0
       yaml:
         specifier: ^2.7.0
         version: 2.8.2

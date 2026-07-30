@@ -309,6 +309,7 @@ describe("Brain contracts", () => {
       },
     });
     const result = createBrainRetrievalResult({
+      scope: { kind: "project", subjectId: "project-1" },
       chunk,
       score: 0.75,
       trust: "external",
@@ -318,11 +319,13 @@ describe("Brain contracts", () => {
     expect(result.chunk.citation).toEqual(chunk.citation);
     expect(result.trust).toBe("external");
     expect(() => createBrainRetrievalResult({
+      scope: { kind: "project", subjectId: "project-1" },
       chunk,
       score: Number.NaN,
       trust: "external",
     })).toThrow(BrainContractError);
     expect(() => createBrainRetrievalResult({
+      scope: { kind: "project", subjectId: "project-1" },
       chunk,
       score: 0.5,
       trust: "external",

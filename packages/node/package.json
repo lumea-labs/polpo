@@ -26,6 +26,10 @@
       "types": "./dist/scheduling/index.d.ts",
       "import": "./dist/scheduling/index.js"
     },
+    "./brain": {
+      "types": "./dist/brain/index.d.ts",
+      "import": "./dist/brain/index.js"
+    },
     "./runner": {
       "import": "./dist/core/runner.js"
     }
@@ -59,6 +63,7 @@
     "execa": "^9.6.1",
     "hono": "^4.11.9",
     "nanoid": "^5.1.2",
+    "parse5": "^7.3.0",
     "yaml": "^2.7.0",
     "zod": "^4.3.6"
   },

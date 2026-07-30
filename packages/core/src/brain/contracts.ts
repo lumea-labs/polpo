@@ -559,6 +559,7 @@ export function createBrainRetrievalResult(
     );
   }
   return Object.freeze({
+    scope: normalizeBrainScope(input.scope),
     chunk: normalizeBrainChunk(input.chunk),
     score: finiteNumber(
       input.score,
