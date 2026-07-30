@@ -19,6 +19,7 @@ import type {
   MemoryStoreContext,
   MemoryUsageEvent,
 } from "@polpo-ai/core";
+import type { ScheduleService } from "./services/schedules.js";
 
 // ── Store-centric deps ───────────────────────────────────────────────
 
@@ -163,9 +164,10 @@ export interface SchedulerLike {
 }
 
 export interface ScheduleRouteDeps {
-  getScheduler: () => SchedulerLike | undefined;
-  getMission: (missionId: string) => Promise<any>;
-  updateMission: (missionId: string, updates: any) => Promise<any>;
+  scheduleService?: ScheduleService;
+  getScheduler?: () => SchedulerLike | undefined;
+  getMission?: (missionId: string) => Promise<any>;
+  updateMission?: (missionId: string, updates: any) => Promise<any>;
 }
 
 // ── Watcher deps ─────────────────────────────────────────────────────

@@ -111,6 +111,9 @@ export * from "./guardrails/index.js";
 // ── Runtime inspection (secret-free context accounting) ─────────────────
 export * from "./runtime-inspection/index.js";
 
+// ── Scheduling v2 (host-neutral contracts and validation) ───────────────
+export * from "./scheduling/index.js";
+
 // ── Events (pure type definitions only, TypedEmitter lives in shell) ─────
 export * from "./events.js";
 

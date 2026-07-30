@@ -17,6 +17,7 @@ import {
   resolveFileConflict,
   type ConflictOptions,
 } from "./conflicts.js";
+import { scheduleDefinitionForPull } from "./schedules.js";
 
 export interface PullOptions extends ConflictOptions {}
 
@@ -301,9 +302,10 @@ export async function pullProject(
         for (const sc of schedules) {
           const filename = (sc.name ?? sc.missionId ?? "schedule").replace(/[^a-zA-Z0-9._-]/g, "-");
           const filePath = path.join(polpoDir, "schedules", `${filename}.json`);
-          const action = await resolveJsonConflict(filePath, sc, `schedule "${sc.name ?? filename}"`, opts);
+          const definition = scheduleDefinitionForPull(sc);
+          const action = await resolveJsonConflict(filePath, definition, `schedule "${sc.name ?? filename}"`, opts);
           if (action === "write") {
-            writeJson(filePath, sc);
+            writeJson(filePath, definition);
             result.pulled.push(`schedule (${sc.name ?? filename})`);
           } else {
             result.skipped.push(`schedule/${filename} (local kept)`);

@@ -30,19 +30,28 @@ import { requireAuth } from "../../util/auth.js";
 import { isTTY } from "./prompt.js";
 import { resolveDeployConflict, type ConflictOptions } from "../../util/conflicts.js";
 import { listLoopSourceFiles, loadLoopDeployPayload } from "../../util/loops.js";
+import { prepareScheduleDeployments } from "../../util/schedules.js";
 
 // ── Deploy result tracking ──────────────────────────────
 
-interface DeployResult {
+export interface DeployResult {
   created: number;
   updated: number;
   skipped: number;
   failed: number;
   errors: string[];
+  details: string[];
 }
 
 function emptyResult(): DeployResult {
-  return { created: 0, updated: 0, skipped: 0, failed: 0, errors: [] };
+  return {
+    created: 0,
+    updated: 0,
+    skipped: 0,
+    failed: 0,
+    errors: [],
+    details: [],
+  };
 }
 
 function mergeResult(target: DeployResult, source: DeployResult): void {
@@ -51,6 +60,7 @@ function mergeResult(target: DeployResult, source: DeployResult): void {
   target.skipped += source.skipped;
   target.failed += source.failed;
   target.errors.push(...source.errors);
+  target.details.push(...source.details);
 }
 
 // ── Helpers ──────────────────────────────────────────────
@@ -575,18 +585,31 @@ async function deployAvatars(client: ApiClient, polpoDir: string, baseUrl: strin
 
 // ── Opt-in deployers ──────────────────────────────────────
 
-async function deploySchedules(client: ApiClient, polpoDir: string): Promise<DeployResult> {
+export async function deploySchedules(
+  client: ApiClient,
+  polpoDir: string,
+): Promise<DeployResult> {
   const result = emptyResult();
-  const files = listJsonFiles(path.join(polpoDir, "schedules"));
-  for (const file of files) {
-    const schedule = loadJson(file);
-    if (!schedule) continue;
-    const res = await client.post("/v1/schedules", schedule);
+  const schedules = prepareScheduleDeployments(polpoDir);
+  for (const schedule of schedules) {
+    result.details.push(...schedule.warnings);
+    result.details.push(
+      `${schedule.name}: next ${schedule.nextOccurrenceAt ?? "none"} (${schedule.timezone})`,
+    );
+    const res = await client.post("/v1/schedules", schedule.payload);
     if (res.status >= 200 && res.status < 300) { result.created++; }
     else {
       const msg = readErrorBody(res.data, res.status);
-      result.errors.push(`schedule "${schedule.name ?? path.basename(file)}": ${friendlyError(msg)}`);
+      result.errors.push(`schedule "${schedule.name}": ${friendlyError(msg)}`);
       result.failed++;
+      continue;
+    }
+    const response = (res.data as { data?: unknown } | null)?.data ?? res.data;
+    const driver = response && typeof response === "object"
+      ? (response as { driver?: { status?: unknown } }).driver
+      : undefined;
+    if (typeof driver?.status === "string") {
+      result.details.push(`${schedule.name}: driver ${driver.status}`);
     }
   }
   return result;
@@ -980,6 +1003,9 @@ export async function runDeploy(opts: DeployOptions): Promise<DeployReport> {
         const r = await deploySchedules(client, polpoDir);
         mergeResult(total, r);
         s.stop(`Schedules: ${r.created} created${r.failed ? `, ${r.failed} failed` : ""}`);
+        if (!opts.silent && r.details.length > 0) {
+          clack.log.info(r.details.map((detail) => `  ${detail}`).join("\n"));
+        }
       }
 
       if (hasVault) {

@@ -66,8 +66,17 @@ import type {
   ApprovalRequest,
   ApprovalStatus,
   ScheduleEntry,
+  Schedule,
+  ScheduleMutationOptions,
+  ScheduleRun,
+  ScheduleRunStatus,
+  ScheduleStatus,
+  CreateScheduleInput,
+  UpdateScheduleInput,
   CreateScheduleRequest,
   UpdateScheduleRequest,
+  TriggerScheduleRequest,
+  DeleteScheduleResult,
   PlaybookInfo,
   PlaybookDefinition,
   PlaybookRunResult,
@@ -265,6 +274,26 @@ export class ChatCompletionStream implements AsyncIterable<ChatCompletionChunk> 
   }
 }
 
+function scheduleIdentifier(value: unknown, label = "Schedule id"): string {
+  if (typeof value !== "string" || !value.trim()) {
+    throw new TypeError(`${label} must be a non-empty string`);
+  }
+  return value.trim();
+}
+
+function revisionHeaders(
+  options: ScheduleMutationOptions,
+): Record<string, string> {
+  if (options.expectedRevision === undefined) return {};
+  if (
+    !Number.isSafeInteger(options.expectedRevision)
+    || options.expectedRevision < 1
+  ) {
+    throw new TypeError("Expected schedule revision must be a positive integer");
+  }
+  return { "If-Match": `"${options.expectedRevision}"` };
+}
+
 export class PolpoClient {
   private readonly baseUrl: string;
   private readonly apiPrefix: string;
@@ -329,10 +358,19 @@ export class PolpoClient {
     return `${this.baseUrl}${this.apiPrefix}${path}`;
   }
 
-  private async request<T>(method: string, url: string, body?: unknown): Promise<T> {
+  private async request<T>(
+    method: string,
+    url: string,
+    body?: unknown,
+    requestHeaders: Record<string, string> = {},
+  ): Promise<T> {
     const res = await this.fetchFn(url, {
       method,
-      headers: { ...this.headers, "Content-Type": "application/json" },
+      headers: {
+        ...this.headers,
+        "Content-Type": "application/json",
+        ...requestHeaders,
+      },
       body: body !== undefined ? JSON.stringify(body) : undefined,
     });
     const contentType = res.headers.get("content-type") ?? "";
@@ -619,6 +657,126 @@ export class PolpoClient {
   /** Delete a schedule by mission ID. */
   deleteSchedule(missionId: string): Promise<{ deleted: boolean }> {
     return this.del<{ deleted: boolean }>(`/schedules/${encodeURIComponent(missionId)}`);
+  }
+
+  /** List first-class schedules. Legacy mission methods remain additive above. */
+  listSchedules(filter: {
+    status?: ScheduleStatus;
+    surface?: Schedule["invocation"]["surface"];
+    includeDeleted?: boolean;
+  } = {}): Promise<Schedule[]> {
+    const params = new URLSearchParams();
+    if (filter.status) params.set("status", filter.status);
+    if (filter.surface) params.set("surface", filter.surface);
+    if (filter.includeDeleted) params.set("includeDeleted", "true");
+    const query = params.toString();
+    return this.get<Schedule[]>(`/schedules${query ? `?${query}` : ""}`);
+  }
+
+  getSchedule(scheduleId: string): Promise<Schedule> {
+    return this.get<Schedule>(
+      `/schedules/${encodeURIComponent(scheduleIdentifier(scheduleId))}`,
+    );
+  }
+
+  createScheduleV2(input: CreateScheduleInput): Promise<Schedule> {
+    return this.post<Schedule>("/schedules", input);
+  }
+
+  async updateScheduleV2(
+    scheduleId: string,
+    input: UpdateScheduleInput,
+    options: ScheduleMutationOptions = {},
+  ): Promise<Schedule> {
+    return await this.request<Schedule>(
+      "PATCH",
+      this.apiUrl(`/schedules/${encodeURIComponent(scheduleIdentifier(scheduleId))}`),
+      input,
+      revisionHeaders(options),
+    );
+  }
+
+  async deleteScheduleV2(
+    scheduleId: string,
+    options: ScheduleMutationOptions = {},
+  ): Promise<DeleteScheduleResult> {
+    return await this.request<DeleteScheduleResult>(
+      "DELETE",
+      this.apiUrl(`/schedules/${encodeURIComponent(scheduleIdentifier(scheduleId))}`),
+      undefined,
+      revisionHeaders(options),
+    );
+  }
+
+  async pauseSchedule(
+    scheduleId: string,
+    options: ScheduleMutationOptions = {},
+  ): Promise<Schedule> {
+    return await this.request<Schedule>(
+      "POST",
+      this.apiUrl(
+        `/schedules/${encodeURIComponent(scheduleIdentifier(scheduleId))}/pause`,
+      ),
+      {},
+      revisionHeaders(options),
+    );
+  }
+
+  async resumeSchedule(
+    scheduleId: string,
+    options: ScheduleMutationOptions = {},
+  ): Promise<Schedule> {
+    return await this.request<Schedule>(
+      "POST",
+      this.apiUrl(
+        `/schedules/${encodeURIComponent(scheduleIdentifier(scheduleId))}/resume`,
+      ),
+      {},
+      revisionHeaders(options),
+    );
+  }
+
+  listScheduleRuns(
+    scheduleId: string,
+    filter: {
+      status?: ScheduleRunStatus;
+      limit?: number;
+      order?: "asc" | "desc";
+    } = {},
+  ): Promise<ScheduleRun[]> {
+    const params = new URLSearchParams();
+    if (filter.status) params.set("status", filter.status);
+    if (filter.limit !== undefined) {
+      if (
+        !Number.isSafeInteger(filter.limit)
+        || filter.limit < 1
+        || filter.limit > 1_000
+      ) {
+        return Promise.reject(
+          new TypeError("Schedule run limit must be an integer from 1 to 1000"),
+        );
+      }
+      params.set("limit", String(filter.limit));
+    }
+    if (filter.order) params.set("order", filter.order);
+    const query = params.toString();
+    return this.get<ScheduleRun[]>(
+      `/schedules/${encodeURIComponent(scheduleIdentifier(scheduleId))}/runs${query ? `?${query}` : ""}`,
+    );
+  }
+
+  triggerSchedule(
+    scheduleId: string,
+    input: TriggerScheduleRequest,
+  ): Promise<ScheduleRun> {
+    const idempotencyKey = scheduleIdentifier(
+      input?.idempotencyKey,
+      "Schedule idempotency key",
+    );
+    return this.post<ScheduleRun>(
+      `/schedules/${encodeURIComponent(scheduleIdentifier(scheduleId))}/runs`,
+      { idempotencyKey },
+    );
   }
 
   // ── Agents ───────────────────────────────────────────────

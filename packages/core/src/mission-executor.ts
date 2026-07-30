@@ -148,11 +148,17 @@ export class MissionExecutor {
     prompt?: string;
     name?: string;
     status?: MissionStatus;
-    /** Cron expression or ISO timestamp for scheduled execution. */
+    /**
+     * Cron expression or ISO timestamp for scheduled execution.
+     * @deprecated Use a v2 Schedule with a `legacy_mission` invocation.
+     */
     schedule?: string;
     /** Absolute deadline for the entire mission (ISO timestamp). */
     deadline?: string;
-    /** End date for recurring schedules (ISO timestamp). */
+    /**
+     * End date for recurring schedules (ISO timestamp).
+     * @deprecated Use v2 Schedule compatibility metadata.
+     */
     endDate?: string;
     notifications?: ScopedNotificationRules;
     /** Opaque end-user identifier (OpenAI-compat). */
