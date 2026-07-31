@@ -18,6 +18,7 @@ import {
   renderRuntimeToolResult,
   renderRuntimeContextPrompt,
   replacesLegacyAgentMemory,
+  replacesLegacySharedMemory,
   type ContextBag,
   type ModelSelection,
   type RuntimeContextResolution,
@@ -175,6 +176,7 @@ export async function buildRuntimeAgentPrompt(
       extraSystemParts,
       loopContextPart,
       includeAgentMemory: !replacesLegacyAgentMemory(runtimeContext),
+      includeSharedMemory: !replacesLegacySharedMemory(runtimeContext),
     });
   } else {
     const agentSystemPrompt = await deps.buildAgentPrompt(agentConfig);

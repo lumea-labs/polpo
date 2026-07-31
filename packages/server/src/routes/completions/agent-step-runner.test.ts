@@ -36,6 +36,7 @@ describe("buildRuntimeAgentPrompt", () => {
         extraSystemParts: ["caller context"],
         loopContextPart: "loop context",
         includeAgentMemory: true,
+        includeSharedMemory: true,
       },
     );
     expect(deps.buildAgentPrompt).not.toHaveBeenCalled();
@@ -75,6 +76,46 @@ describe("buildRuntimeAgentPrompt", () => {
         extraSystemParts: [],
         loopContextPart: undefined,
         includeAgentMemory: false,
+        includeSharedMemory: true,
+      },
+    );
+  });
+
+  it("does not ask the host to inject shared Memory when Brain replaces it", async () => {
+    const buildRuntimePrompt = vi.fn(async () => "host loop prompt");
+    const deps = {
+      buildRuntimePrompt,
+      buildAgentPrompt: vi.fn(() => "legacy prompt"),
+    } as unknown as CompletionRouteDeps;
+
+    await buildRuntimeAgentPrompt(
+      deps,
+      { name: "agent-1" },
+      [],
+      undefined,
+      "off",
+      {
+        segments: [],
+        legacyMemory: { shared: "replace" },
+        audit: {
+          resolvedAt: "2026-07-31T10:00:00.000Z",
+          tokenBudget: 1_000,
+          estimatedTokens: 0,
+          candidateEntries: 0,
+          selectedEntries: 0,
+          droppedEntries: 0,
+        },
+      },
+    );
+
+    expect(buildRuntimePrompt).toHaveBeenCalledWith(
+      { name: "agent-1" },
+      {
+        mode: "loop-step",
+        extraSystemParts: [],
+        loopContextPart: undefined,
+        includeAgentMemory: true,
+        includeSharedMemory: false,
       },
     );
   });

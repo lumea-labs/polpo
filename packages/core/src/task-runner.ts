@@ -13,6 +13,7 @@ import {
   createRuntimePromptContextSegment,
   resolveRuntimeContext,
   replacesLegacyAgentMemory,
+  replacesLegacySharedMemory,
   type RuntimeContextResolution,
   type RuntimePromptContextSegment,
 } from "./runtime-context/index.js";
@@ -631,7 +632,9 @@ export class TaskRunner {
       };
 
     // 1. Shared memory (persistent cross-session knowledge, visible to all agents)
-    const sharedMemory = (await this.ctx.memoryStore?.get()) ?? "";
+    const sharedMemory = replacesLegacySharedMemory(runtimeContext)
+      ? ""
+      : (await this.ctx.memoryStore?.get()) ?? "";
     if (sharedMemory) {
       legacyContextParts.push(`<shared-memory>\n${sharedMemory}\n</shared-memory>`);
       if (contextTrust === "enforce") {

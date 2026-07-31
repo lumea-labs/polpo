@@ -359,6 +359,7 @@ describe("chat via Run driver", () => {
         mode: "chat",
         extraSystemParts: [],
         includeAgentMemory: true,
+        includeSharedMemory: true,
       },
     );
     expect(onCompletionFinished).toHaveBeenCalledWith(expect.objectContaining({
@@ -470,6 +471,7 @@ describe("chat via Run driver", () => {
         mode: "chat",
         extraSystemParts: ["caller context"],
         includeAgentMemory: true,
+        includeSharedMemory: true,
       },
     );
     expect(runChatViaRun).toHaveBeenCalledTimes(1);

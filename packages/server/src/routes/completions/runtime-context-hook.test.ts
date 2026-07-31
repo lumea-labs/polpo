@@ -154,6 +154,38 @@ describe("completion runtime context hook", () => {
     expect(prepared.execution.fullSystemPrompt).toBe("Base runtime prompt");
   });
 
+  it("asks the host to replace shared Memory even when Brain retrieval is empty", async () => {
+    const buildRuntimePrompt = vi.fn(async () => "Base runtime prompt");
+    const prepared = await prepareChatCompletionExecution(deps({
+      buildRuntimePrompt,
+      runtimeContext: {
+        tokenBudget: 1_000,
+        retrieve: async () => ({
+          segments: [],
+          legacyMemory: { shared: "replace" },
+        }),
+      },
+    }), {
+      agent: "support",
+      stream: false,
+      messages: [{ role: "user", content: "Unknown company policy" }],
+    });
+
+    expect(prepared.kind).toBe("chat");
+    if (prepared.kind !== "chat") throw new Error("Expected chat");
+    expect(prepared.execution.runtimeContext?.legacyMemory).toEqual({
+      shared: "replace",
+    });
+    expect(buildRuntimePrompt).toHaveBeenCalledWith(
+      expect.objectContaining({ name: "support" }),
+      expect.objectContaining({
+        includeAgentMemory: true,
+        includeSharedMemory: false,
+      }),
+    );
+    expect(prepared.execution.fullSystemPrompt).toBe("Base runtime prompt");
+  });
+
   it("does not read legacy agent Memory in the fallback prompt path when it is replaced", async () => {
     const get = vi.fn(async () => "LEGACY_MEMORY_MUST_NOT_BE_READ");
     const prepared = await prepareChatCompletionExecution(deps({
