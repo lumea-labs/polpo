@@ -62,6 +62,7 @@ import { prepareChatCompletionExecution } from "./completions/conversation-turn.
 import type {
   RunOutputPolicy,
   RunPreflightPolicy,
+  RuntimeGuardrailRequestPolicy,
   RuntimeOutputEnforcementMode,
 } from "@polpo-ai/core/guardrails";
 import type { CompletionToolExecutor } from "./completions/tool-guardrails.js";
@@ -122,6 +123,11 @@ export interface CompletionRouteDeps {
   runPreflightPolicy?: RunPreflightPolicy;
   /** Enforce by default; Cloud shadow/audit adapters opt into audit explicitly. */
   runPreflightPolicyMode?: RuntimeOutputEnforcementMode;
+  /**
+   * Resolve an explicitly stricter request policy against host-authorized
+   * settings. The resolver must never let request data enable or loosen policy.
+   */
+  resolveRuntimeGuardrails?: CompletionRuntimeGuardrailsResolver;
   /**
    * Optional and disabled by default. When provided with a positive budget,
    * resolves one structured Memory/Brain snapshot before prompt assembly.
@@ -218,6 +224,19 @@ export interface CompletionRouteDeps {
     isInteractive: (name: string) => boolean;
   }>;
 }
+
+export interface CompletionRuntimeGuardrails {
+  readonly runToolMiddleware: RunToolMiddleware;
+  readonly runOutputPolicy: RunOutputPolicy;
+  readonly runPreflightPolicy: RunPreflightPolicy;
+  readonly runPreflightPolicyMode?: RuntimeOutputEnforcementMode;
+}
+
+export type CompletionRuntimeGuardrailsResolver = (
+  request: RuntimeGuardrailRequestPolicy,
+) =>
+  | CompletionRuntimeGuardrails
+  | Promise<CompletionRuntimeGuardrails>;
 
 export interface CompletionRuntimePlanInput {
   readonly surface: RuntimeSurface;

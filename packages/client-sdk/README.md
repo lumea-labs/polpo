@@ -16,6 +16,7 @@ await client.chatCompletions({
   messages: [{ role: "user", content: "Check this order" }],
   model: "openai/gpt-5",
   sandbox: { isolation: "fresh" },
+  guardrails: { policyPack: "strict" },
 });
 
 const store = new PolpoStore();

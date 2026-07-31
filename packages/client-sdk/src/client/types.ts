@@ -1146,6 +1146,11 @@ export interface RuntimeCompletionRequestOptions {
   sandbox?: RuntimeSandboxOptions;
   /** Target a project-level loop assigned to the selected agent. */
   loop?: string;
+  /**
+   * Request stricter runtime enforcement. This cannot enable guardrails when
+   * the project has none or loosen the authorized project policy.
+   */
+  guardrails?: { policyPack: "strict" };
 }
 
 export interface ChatCompletionRequest extends RuntimeCompletionRequestOptions {

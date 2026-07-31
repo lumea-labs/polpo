@@ -192,6 +192,15 @@ export type RuntimeGuardrailPolicyPack = "standard" | "strict" | "custom";
 export type RuntimeGuardrailContentAction = "audit" | "redact" | "block";
 
 /**
+ * A caller may only request the strict built-in pack. The runtime combines it
+ * with an already-authorized project policy and rejects any request that would
+ * enable guardrails from nothing or replace a custom policy ambiguously.
+ */
+export interface RuntimeGuardrailRequestPolicy {
+  readonly policyPack: "strict";
+}
+
+/**
  * Serializable deterministic content rule. Matching deliberately uses bounded
  * literal terms rather than user-authored regular expressions.
  */

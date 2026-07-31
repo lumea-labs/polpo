@@ -14,6 +14,7 @@ import type {
   RuntimeGuardrailContentRule,
   RuntimeGuardrailHostAdapters,
   RuntimeGuardrailPolicyPack,
+  RuntimeGuardrailRequestPolicy,
   RuntimeGuardrailSettings,
 } from "./types.js";
 
@@ -39,6 +40,34 @@ const STRICT_PREFLIGHT_LIMITS = Object.freeze({
   maxContextCharacters: 1_000_000,
   maxModelInputCharacters: 2_000_000,
 });
+
+function normalizeRuntimeGuardrailRequestPolicy(
+  value: unknown,
+): RuntimeGuardrailRequestPolicy {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new TypeError("Request guardrails must be an object");
+  }
+  const raw = value as Record<string, unknown>;
+  const unknown = Object.keys(raw).find((key) => key !== "policyPack");
+  if (unknown) {
+    throw new TypeError(
+      `Request guardrails contains unknown field "${unknown}"`,
+    );
+  }
+  if (raw.policyPack !== "strict") {
+    throw new TypeError(
+      'Request guardrails policyPack must be "strict"',
+    );
+  }
+  return Object.freeze({ policyPack: "strict" });
+}
+
+function clampLimit(
+  value: number | undefined,
+  maximum: number,
+): number {
+  return value === undefined ? maximum : Math.min(value, maximum);
+}
 
 function optionalPositiveInteger(
   raw: Record<string, unknown>,
@@ -290,6 +319,53 @@ export function normalizeRuntimeGuardrailSettings(
     ...(readOnlyPolicyFailure !== undefined ? { readOnlyPolicyFailure } : {}),
     ...(streamingOutputMode !== undefined ? { streamingOutputMode } : {}),
   });
+}
+
+/**
+ * Resolve a caller-requested policy without allowing the caller to enable,
+ * loosen, or replace the host's authorized project policy.
+ */
+export function resolveRuntimeGuardrailRequestPolicy(
+  projectPolicy: unknown,
+  requestPolicy: unknown,
+): RuntimeGuardrailSettings {
+  normalizeRuntimeGuardrailRequestPolicy(requestPolicy);
+  const project = normalizeRuntimeGuardrailSettings(projectPolicy);
+  if (!project) {
+    throw new TypeError(
+      "Project guardrails are not configured; a request cannot enable them",
+    );
+  }
+  if (project.policyPack === "custom") {
+    throw new TypeError(
+      "A strict request cannot replace a custom project guardrail policy",
+    );
+  }
+  if (project.policyPack === "strict") return project;
+
+  return normalizeRuntimeGuardrailSettings({
+    policyPack: "strict",
+    maxInputCharacters: clampLimit(
+      project.maxInputCharacters,
+      STRICT_PREFLIGHT_LIMITS.maxInputCharacters,
+    ),
+    maxContextCharacters: clampLimit(
+      project.maxContextCharacters,
+      STRICT_PREFLIGHT_LIMITS.maxContextCharacters,
+    ),
+    maxModelInputCharacters: clampLimit(
+      project.maxModelInputCharacters,
+      STRICT_PREFLIGHT_LIMITS.maxModelInputCharacters,
+    ),
+    ...(project.maxToolOutputCharacters !== undefined
+      ? { maxToolOutputCharacters: project.maxToolOutputCharacters }
+      : {}),
+    ...(project.maxFinalOutputCharacters !== undefined
+      ? { maxFinalOutputCharacters: project.maxFinalOutputCharacters }
+      : {}),
+    readOnlyPolicyFailure: "block",
+    streamingOutputMode: "buffer",
+  })!;
 }
 
 function configuredPolicies(

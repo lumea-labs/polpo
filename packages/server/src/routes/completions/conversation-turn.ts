@@ -402,6 +402,40 @@ export async function prepareChatCompletionExecution(
       return completionError(`Agent "${body.agent}" not found`, 404, "agent_not_found");
     }
   }
+  if (body.guardrails) {
+    if (!deps.resolveRuntimeGuardrails) {
+      return completionError(
+        "Per-request guardrail policy is not available on this runtime",
+        400,
+        "invalid_guardrail_policy",
+      );
+    }
+    try {
+      const resolved = await deps.resolveRuntimeGuardrails(body.guardrails);
+      if (
+        !resolved.runPreflightPolicy
+        || !resolved.runToolMiddleware
+        || !resolved.runOutputPolicy
+      ) {
+        throw new Error("Guardrail resolver returned incomplete runtime hooks");
+      }
+      deps = { ...deps, ...resolved };
+    } catch (error) {
+      if (error instanceof TypeError) {
+        return completionError(
+          error.message,
+          400,
+          "invalid_guardrail_policy",
+        );
+      }
+      return completionError(
+        "Runtime guardrail policy resolution failed",
+        500,
+        "guardrail_resolution_failed",
+        "server_error",
+      );
+    }
+  }
   try {
     effectiveBody = await guardLatestUserInput(
       deps,
