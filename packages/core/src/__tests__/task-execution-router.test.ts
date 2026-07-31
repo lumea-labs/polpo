@@ -147,6 +147,40 @@ function harness(overrides: Record<string, unknown> = {}) {
 }
 
 describe("TaskRunner execution routing", () => {
+  it("routes tasks from persisted labels before resolving a classifier", async () => {
+    const h = harness({
+      agentStore: {
+        getAgent: vi.fn(async () => agent({
+          executionRouter: {
+            mode: "auto",
+            allowedLoops: ["research", "build"],
+            rules: [{
+              id: "paid-build",
+              mode: "loop",
+              loop: "build",
+              when: {
+                allLabels: ["plan:paid"],
+                anyLabels: ["request:export"],
+              },
+            }],
+          },
+        })),
+      },
+    });
+
+    await new TaskRunner(h.ctx).spawnForTask(task({
+      routing: { labels: ["plan:paid", "request:export"] },
+    }));
+
+    expect(h.resolveExecutionRouteClassifier).not.toHaveBeenCalled();
+    expect(h.spawned[0].executionRoute).toMatchObject({
+      status: "routed",
+      mode: "loop",
+      loop: "build",
+      reason: 'Matched execution router rule "paid-build"',
+    });
+  });
+
   it("routes before context and spawn, then stamps an immutable loop decision", async () => {
     const h = harness();
     let classifierInput: any;

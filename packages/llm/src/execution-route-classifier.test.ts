@@ -14,6 +14,10 @@ const input = Object.freeze({
     }),
   ]),
   labels: Object.freeze(["telegram"]),
+  loopHints: Object.freeze({
+    build: "Use for deterministic file-producing work.",
+  }),
+  guidance: "Prefer direct execution for simple questions.",
 });
 
 describe("createStructuredExecutionRouteClassifier", () => {
@@ -57,6 +61,12 @@ describe("createStructuredExecutionRouteClassifier", () => {
     expect(serialized).not.toContain("systemPrompt");
     expect(serialized).not.toContain("allowedTools");
     expect(serialized).not.toContain("modelId\":\"provider/");
+    expect(firstCall[0].prompt).toContain(
+      '"loopHints":{"build":"Use for deterministic file-producing work."}',
+    );
+    expect(firstCall[0].prompt).toContain(
+      '"guidance":"Prefer direct execution for simple questions."',
+    );
   });
 
   it("supports direct decisions and rejects missing structured output", async () => {

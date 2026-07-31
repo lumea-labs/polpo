@@ -1,4 +1,4 @@
-import type { Task, AgentConfig, Mission, MissionReport, TaskResult, AssessmentResult, TaskExpectation, ExpectedOutcome, RetryPolicy, ScopedNotificationRules, RuntimeSandboxOptions } from "./types.js";
+import type { Task, AgentConfig, Mission, MissionReport, TaskResult, AssessmentResult, TaskExpectation, ExpectedOutcome, RetryPolicy, ScopedNotificationRules, RuntimeRoutingOptions, RuntimeSandboxOptions } from "./types.js";
 
 // ─── Lifecycle Hook Points ───────────────────────────
 
@@ -32,6 +32,7 @@ export interface HookPayloads {
     title: string;
     description: string;
     assignTo: string;
+    loop?: string;
     expectations?: TaskExpectation[];
     expectedOutcomes?: ExpectedOutcome[];
     dependsOn?: string[];
@@ -43,6 +44,7 @@ export interface HookPayloads {
     sideEffects?: boolean;
     executionMode?: import("./types/config.js").ExecutionMode;
     sandbox?: RuntimeSandboxOptions;
+    routing?: RuntimeRoutingOptions;
     user?: string;
     draft?: boolean;
   };

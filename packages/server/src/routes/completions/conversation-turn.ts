@@ -367,7 +367,7 @@ async function resolveAutomaticExecutionRoute(
     surface: invocation.surface,
     source: invocation.source,
     input: lastUserMessage ? extractText(lastUserMessage.content) : "",
-    labels: [],
+    labels: body.routing?.labels,
     manifest: compileExecutionRouteManifest({
       assignedLoops: candidateNames,
       projectLoops: [...projectLoops.values()],

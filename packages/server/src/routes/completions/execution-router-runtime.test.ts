@@ -93,6 +93,47 @@ function makeDeps(overrides: Partial<CompletionRouteDeps> = {}): CompletionRoute
 }
 
 describe("completion execution router", () => {
+  it("routes chat requests from caller-supplied bounded labels without classifier work", async () => {
+    const resolveExecutionRouteClassifier = vi.fn();
+    const prepared = await prepareChatCompletionExecution(makeDeps({
+      getAgents: async () => [{
+        name: "agent-1",
+        model: "mock",
+        allowedTools: ["read"],
+        assignedLoops: ["research", "build"],
+        executionRouter: {
+          mode: "auto",
+          allowedLoops: ["research", "build"],
+          rules: [{
+            id: "paid-build",
+            mode: "loop",
+            loop: "build",
+            when: {
+              surfaces: ["agent"],
+              allLabels: ["plan:paid"],
+            },
+          }],
+        },
+      }],
+      resolveExecutionRouteClassifier,
+    }), {
+      agent: "agent-1",
+      messages: [{ role: "user", content: "Build an export" }],
+      routing: { labels: ["plan:paid"] },
+      stream: false,
+    });
+
+    expect(prepared.kind).toBe("project-loop");
+    if (prepared.kind !== "project-loop") throw new Error("Expected project loop");
+    expect(prepared.executionRoute).toMatchObject({
+      status: "routed",
+      mode: "loop",
+      loop: "build",
+      reason: 'Matched execution router rule "paid-build"',
+    });
+    expect(resolveExecutionRouteClassifier).not.toHaveBeenCalled();
+  });
+
   it("routes to an assigned project loop before prompt, model, tools, or session writes", async () => {
     const calls: string[] = [];
     const emit = vi.fn((event: string) => calls.push(`emit:${event}`));

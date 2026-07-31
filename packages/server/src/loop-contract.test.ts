@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { AddAgentSchema, UpdateAgentSchema } from "./schemas.js";
+import {
+  AddAgentSchema,
+  CreateTaskSchema,
+  UpdateAgentSchema,
+  UpdateTaskSchema,
+} from "./schemas.js";
 
 describe("agent loop API contract", () => {
   it("accepts explicit model profiles without reinterpreting legacy strings", () => {
@@ -85,6 +90,19 @@ describe("agent loop API contract", () => {
       minConfidence: 0.82,
       timeoutMs: 750,
       maxInputChars: 2_048,
+      rules: [{
+        id: "paid-coding",
+        mode: "loop" as const,
+        loop: "coding-flow",
+        when: {
+          surfaces: ["agent"],
+          allLabels: ["plan:paid"],
+        },
+      }],
+      loopHints: {
+        "coding-flow": "Use for deterministic coding workflows.",
+      },
+      guidance: "Prefer direct execution for simple questions.",
     };
 
     expect(AddAgentSchema.parse({
@@ -107,8 +125,74 @@ describe("agent loop API contract", () => {
     { mode: "auto", allowedLoops: ["ok"], unknown: true },
     { mode: "auto", allowedLoops: [" whitespace "] },
     { mode: "auto", allowedLoops: ["control\nname"] },
+    {
+      mode: "auto",
+      allowedLoops: ["ok"],
+      rules: [{ id: "empty", mode: "direct", when: {} }],
+    },
+    {
+      mode: "auto",
+      allowedLoops: ["ok"],
+      rules: [{
+        id: "widen",
+        mode: "loop",
+        loop: "other",
+        when: { sources: ["request"] },
+      }],
+    },
+    {
+      mode: "auto",
+      allowedLoops: ["ok"],
+      rules: [
+        { id: "duplicate", mode: "direct", when: { sources: ["request"] } },
+        { id: "duplicate", mode: "direct", when: { sources: ["task"] } },
+      ],
+    },
+    {
+      mode: "auto",
+      allowedLoops: ["ok"],
+      loopHints: { other: "Not allowed" },
+    },
+    {
+      mode: "auto",
+      allowedLoops: ["ok"],
+      guidance: "x".repeat(2_001),
+    },
   ])("rejects unsafe execution router config %#", (executionRouter) => {
     expect(UpdateAgentSchema.safeParse({ executionRouter }).success).toBe(false);
+  });
+
+  it("accepts bounded routing labels on task create and update payloads", () => {
+    expect(CreateTaskSchema.parse({
+      title: "Paid export",
+      description: "Build the export",
+      assignTo: "agent-1",
+      routing: { labels: ["plan:paid", "request:export"] },
+    })).toMatchObject({
+      routing: { labels: ["plan:paid", "request:export"] },
+    });
+    expect(UpdateTaskSchema.parse({
+      routing: { labels: ["plan:free"] },
+    })).toEqual({
+      routing: { labels: ["plan:free"] },
+    });
+  });
+
+  it("rejects unbounded or malformed task routing labels", () => {
+    expect(CreateTaskSchema.safeParse({
+      title: "Too many labels",
+      description: "Invalid",
+      assignTo: "agent-1",
+      routing: {
+        labels: Array.from({ length: 17 }, (_, index) => `label:${index}`),
+      },
+    }).success).toBe(false);
+    expect(UpdateTaskSchema.safeParse({
+      routing: { labels: ["x".repeat(65)] },
+    }).success).toBe(false);
+    expect(UpdateTaskSchema.safeParse({
+      routing: { labels: ["ok"], secret: "must-not-pass" },
+    }).success).toBe(false);
   });
 
   it("accepts structured model policies on agent create/update payloads", () => {
