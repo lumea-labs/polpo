@@ -1,6 +1,6 @@
 import type { OrchestratorContext } from "./orchestrator-context.js";
 import { resolveMissionStore, resolveMissionForTask } from "./mission-store.js";
-import type { Task, TaskExpectation, ExpectedOutcome, RetryPolicy, ReviewContext, ScopedNotificationRules, RuntimeSandboxOptions } from "./types.js";
+import type { Task, TaskExpectation, ExpectedOutcome, RetryPolicy, ReviewContext, ScopedNotificationRules, RuntimeRoutingOptions, RuntimeSandboxOptions } from "./types.js";
 import { setAssessment } from "./types.js";
 import { sanitizeExpectations } from "./schemas.js";
 
@@ -16,6 +16,7 @@ export class TaskManager {
     title: string;
     description: string;
     assignTo: string;
+    loop?: string;
     expectations?: TaskExpectation[];
     expectedOutcomes?: ExpectedOutcome[];
     dependsOn?: string[];
@@ -27,6 +28,7 @@ export class TaskManager {
     sideEffects?: boolean;
     executionMode?: import("./types/config.js").ExecutionMode;
     sandbox?: RuntimeSandboxOptions;
+    routing?: RuntimeRoutingOptions;
     user?: string;
     draft?: boolean;
   }): Promise<Task> {
@@ -37,6 +39,7 @@ export class TaskManager {
       title: opts.title,
       description: opts.description,
       assignTo: opts.assignTo,
+      loop: opts.loop,
       expectations: opts.expectations,
       expectedOutcomes: opts.expectedOutcomes,
       dependsOn: opts.dependsOn,
@@ -48,6 +51,7 @@ export class TaskManager {
       sideEffects: opts.sideEffects,
       executionMode: opts.executionMode,
       sandbox: opts.sandbox,
+      routing: opts.routing,
       user: opts.user,
       draft: opts.draft,
     });
@@ -76,6 +80,7 @@ export class TaskManager {
       title: hookData.title,
       description: hookData.description,
       assignTo: hookData.assignTo,
+      loop: hookData.loop ?? opts.loop,
       group: hookData.group,
       missionId: hookData.missionId ?? opts.missionId,
       dependsOn: hookData.dependsOn ?? [],
@@ -89,6 +94,7 @@ export class TaskManager {
       sideEffects: hookData.sideEffects,
       executionMode: hookData.executionMode ?? opts.executionMode,
       sandbox: hookData.sandbox ?? opts.sandbox,
+      routing: hookData.routing ?? opts.routing,
       user: hookData.user ?? opts.user,
       status: hookData.draft ? "draft" : undefined,
     });

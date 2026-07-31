@@ -23,6 +23,31 @@ export const MAX_EXECUTION_ROUTE_DESCRIPTION_CHARS = 512;
 export const MAX_EXECUTION_ROUTE_LABELS = 16;
 export const MAX_EXECUTION_ROUTE_CONTEXT_LABEL_CHARS = 64;
 export const MAX_EXECUTION_ROUTE_REASON_CHARS = 512;
+export const MAX_EXECUTION_ROUTE_RULES = 32;
+export const MAX_EXECUTION_ROUTE_RULE_ID_CHARS = 64;
+export const MAX_EXECUTION_ROUTE_LOOP_HINT_CHARS = 512;
+export const MAX_EXECUTION_ROUTE_GUIDANCE_CHARS = 2_000;
+
+export interface ExecutionRouterRuleConditions {
+  readonly surfaces?: readonly RuntimeSurface[];
+  readonly sources?: readonly RuntimeInvocationSource[];
+  readonly allLabels?: readonly string[];
+  readonly anyLabels?: readonly string[];
+  readonly noneLabels?: readonly string[];
+}
+
+export type ExecutionRouterRule =
+  | Readonly<{
+      readonly id: string;
+      readonly mode: "direct";
+      readonly when: ExecutionRouterRuleConditions;
+    }>
+  | Readonly<{
+      readonly id: string;
+      readonly mode: "loop";
+      readonly loop: string;
+      readonly when: ExecutionRouterRuleConditions;
+    }>;
 
 export interface ExecutionRouterConfig {
   readonly mode?: ExecutionRouterMode;
@@ -35,6 +60,12 @@ export interface ExecutionRouterConfig {
   readonly minConfidence?: number;
   readonly timeoutMs?: number;
   readonly maxInputChars?: number;
+  /** Ordered deterministic rules evaluated before classifier work. */
+  readonly rules?: readonly ExecutionRouterRule[];
+  /** Optional bounded semantics for eligible loops. */
+  readonly loopHints?: Readonly<Record<string, string>>;
+  /** Optional bounded developer-authored routing intent. */
+  readonly guidance?: string;
 }
 
 export interface ExecutionRouteLoopManifest {
@@ -78,6 +109,8 @@ export interface ExecutionRouteClassifierInput {
   readonly input: string;
   readonly loops: readonly ExecutionRouteLoopManifest[];
   readonly labels: readonly string[];
+  readonly loopHints?: Readonly<Record<string, string>>;
+  readonly guidance?: string;
 }
 
 export interface ExecutionRouteClassifierOptions {
@@ -124,7 +157,10 @@ export interface ResolveExecutionRouteOptions {
 }
 
 export interface ResolveTaskExecutionRouteInput {
-  readonly task: Pick<Task, "description" | "loop" | "title" | "user">;
+  readonly task: Pick<
+    Task,
+    "description" | "loop" | "routing" | "title" | "user"
+  >;
   readonly agent: AgentConfig;
 }
 
@@ -205,6 +241,9 @@ interface NormalizedExecutionRouterConfig {
   readonly minConfidence: number;
   readonly timeoutMs: number;
   readonly maxInputChars: number;
+  readonly rules: readonly ExecutionRouterRule[];
+  readonly loopHints: Readonly<Record<string, string>>;
+  readonly guidance?: string;
 }
 
 type ClassifierOutcome =
@@ -232,6 +271,18 @@ function plainRecord(value: unknown, label: string): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
+function assertSupportedKeys(
+  value: Record<string, unknown>,
+  supported: readonly string[],
+  label: string,
+): void {
+  const allowed = new Set(supported);
+  const unknown = Object.keys(value).find((key) => !allowed.has(key));
+  if (unknown) {
+    throw new Error(`${label} contains unsupported field "${unknown}"`);
+  }
+}
+
 function normalizedName(value: unknown, label: string): string {
   if (typeof value !== "string" || !value || value.trim() !== value) {
     throw new Error(`${label} must be a non-empty trimmed string`);
@@ -245,6 +296,27 @@ function normalizedName(value: unknown, label: string): string {
     throw new Error(`${label} must not contain control characters`);
   }
   return value;
+}
+
+function normalizedDisplayText(
+  value: unknown,
+  label: string,
+  maximumChars: number,
+): string {
+  if (typeof value !== "string") {
+    throw new Error(`${label} must be a string`);
+  }
+  const normalized = value
+    .replace(/[\u0000-\u001f\u007f]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!normalized) {
+    throw new Error(`${label} must be a non-empty string`);
+  }
+  if (normalized.length > maximumChars) {
+    throw new Error(`${label} must not exceed ${maximumChars} characters`);
+  }
+  return normalized;
 }
 
 function assertRuntimeMember<T extends string>(
@@ -292,6 +364,185 @@ function normalizedNames(
     }
   }
   return output;
+}
+
+function normalizedPolicyLabels(value: unknown, label: string): string[] {
+  if (!Array.isArray(value)) {
+    throw new Error(`${label} must be an array of strings`);
+  }
+  const output: string[] = [];
+  const seen = new Set<string>();
+  for (const item of value) {
+    if (typeof item !== "string") {
+      throw new Error(`${label} must contain only strings`);
+    }
+    const normalized = item.trim();
+    if (!normalized) continue;
+    if (normalized.length > MAX_EXECUTION_ROUTE_CONTEXT_LABEL_CHARS) {
+      throw new Error(
+        `${label} values must not exceed ${MAX_EXECUTION_ROUTE_CONTEXT_LABEL_CHARS} characters`,
+      );
+    }
+    if (/[\u0000-\u001f\u007f]/.test(normalized)) {
+      throw new Error(`${label} values must not contain control characters`);
+    }
+    if (seen.has(normalized)) continue;
+    seen.add(normalized);
+    output.push(normalized);
+    if (output.length > MAX_EXECUTION_ROUTE_LABELS) {
+      throw new Error(
+        `${label} must not contain more than ${MAX_EXECUTION_ROUTE_LABELS} values`,
+      );
+    }
+  }
+  return output;
+}
+
+function normalizedMembers<T extends string>(
+  value: unknown,
+  allowed: readonly T[],
+  label: string,
+): T[] {
+  const members = normalizedPolicyLabels(value, label);
+  for (const member of members) {
+    if (!allowed.includes(member as T)) {
+      throw new Error(`${label} contains unsupported value "${member}"`);
+    }
+  }
+  return members as T[];
+}
+
+function normalizeRuleConditions(
+  value: unknown,
+): ExecutionRouterRuleConditions {
+  const record = plainRecord(value, "Execution router rule when");
+  assertSupportedKeys(
+    record,
+    ["surfaces", "sources", "allLabels", "anyLabels", "noneLabels"],
+    "Execution router rule when",
+  );
+  const surfaces = record.surfaces === undefined
+    ? []
+    : normalizedMembers(
+      record.surfaces,
+      RUNTIME_SURFACES,
+      "Execution router rule surfaces",
+    );
+  const sources = record.sources === undefined
+    ? []
+    : normalizedMembers(
+      record.sources,
+      RUNTIME_INVOCATION_SOURCES,
+      "Execution router rule sources",
+    );
+  const allLabels = record.allLabels === undefined
+    ? []
+    : normalizedPolicyLabels(
+      record.allLabels,
+      "Execution router rule allLabels",
+    );
+  const anyLabels = record.anyLabels === undefined
+    ? []
+    : normalizedPolicyLabels(
+      record.anyLabels,
+      "Execution router rule anyLabels",
+    );
+  const noneLabels = record.noneLabels === undefined
+    ? []
+    : normalizedPolicyLabels(
+      record.noneLabels,
+      "Execution router rule noneLabels",
+    );
+  if (
+    surfaces.length === 0
+    && sources.length === 0
+    && allLabels.length === 0
+    && anyLabels.length === 0
+    && noneLabels.length === 0
+  ) {
+    throw new Error("Execution router rule must define at least one condition");
+  }
+  return freeze({
+    ...(surfaces.length > 0 ? { surfaces: freeze(surfaces) } : {}),
+    ...(sources.length > 0 ? { sources: freeze(sources) } : {}),
+    ...(allLabels.length > 0 ? { allLabels: freeze(allLabels) } : {}),
+    ...(anyLabels.length > 0 ? { anyLabels: freeze(anyLabels) } : {}),
+    ...(noneLabels.length > 0 ? { noneLabels: freeze(noneLabels) } : {}),
+  });
+}
+
+function normalizeRules(
+  value: unknown,
+  allowedLoops: readonly string[],
+): ExecutionRouterRule[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) {
+    throw new Error("Execution router rules must be an array");
+  }
+  if (value.length > MAX_EXECUTION_ROUTE_RULES) {
+    throw new Error(
+      `Execution router rules must not contain more than ${MAX_EXECUTION_ROUTE_RULES} entries`,
+    );
+  }
+  const output: ExecutionRouterRule[] = [];
+  const seen = new Set<string>();
+  for (const rawRule of value) {
+    const rule = plainRecord(rawRule, "Execution router rule");
+    if (rule.mode !== "direct" && rule.mode !== "loop") {
+      throw new Error("Execution router rule mode must be direct or loop");
+    }
+    assertSupportedKeys(
+      rule,
+      rule.mode === "loop"
+        ? ["id", "mode", "loop", "when"]
+        : ["id", "mode", "when"],
+      "Execution router rule",
+    );
+    const id = normalizedDisplayText(
+      rule.id,
+      "Execution router rule id",
+      MAX_EXECUTION_ROUTE_RULE_ID_CHARS,
+    );
+    if (seen.has(id)) {
+      throw new Error(`Duplicate execution router rule id "${id}"`);
+    }
+    seen.add(id);
+    const when = normalizeRuleConditions(rule.when);
+    if (rule.mode === "direct") {
+      output.push(freeze({ id, mode: "direct" as const, when }));
+      continue;
+    }
+    const loop = normalizedName(rule.loop, "Execution router rule loop");
+    if (!allowedLoops.includes(loop)) {
+      throw new Error(
+        `Execution router rule loop "${loop}" must be included in allowedLoops`,
+      );
+    }
+    output.push(freeze({ id, mode: "loop" as const, loop, when }));
+  }
+  return output;
+}
+
+function normalizeLoopHints(
+  value: unknown,
+  allowedLoops: readonly string[],
+): Readonly<Record<string, string>> {
+  if (value === undefined) return freeze({});
+  const record = plainRecord(value, "Execution router loopHints");
+  const output: Record<string, string> = {};
+  for (const [loop, hint] of Object.entries(record)) {
+    if (!allowedLoops.includes(loop)) {
+      throw new Error(
+        `Execution router loopHints key "${loop}" must be included in allowedLoops`,
+      );
+    }
+    output[loop] = normalizedDisplayText(
+      hint,
+      `Execution router loop hint "${loop}"`,
+      MAX_EXECUTION_ROUTE_LOOP_HINT_CHARS,
+    );
+  }
+  return freeze(output);
 }
 
 function optionalDisplayText(
@@ -354,16 +605,20 @@ function normalizeConfig(
   config: ExecutionRouterConfig,
 ): NormalizedExecutionRouterConfig {
   const record = plainRecord(config, "Execution router config");
-  const supported = new Set([
-    "mode",
-    "allowedLoops",
-    "minConfidence",
-    "timeoutMs",
-    "maxInputChars",
-  ]);
-  if (Object.keys(record).some((key) => !supported.has(key))) {
-    throw new Error("Execution router config contains unsupported fields");
-  }
+  assertSupportedKeys(
+    record,
+    [
+      "mode",
+      "allowedLoops",
+      "minConfidence",
+      "timeoutMs",
+      "maxInputChars",
+      "rules",
+      "loopHints",
+      "guidance",
+    ],
+    "Execution router config",
+  );
   const mode = config.mode ?? "off";
   if (!EXECUTION_ROUTER_MODES.includes(mode)) {
     throw new Error(
@@ -380,6 +635,15 @@ function normalizeConfig(
       "Execution router auto mode requires at least one allowed loop",
     );
   }
+  const rules = normalizeRules(config.rules, allowedLoops);
+  const loopHints = normalizeLoopHints(config.loopHints, allowedLoops);
+  const guidance = config.guidance === undefined
+    ? undefined
+    : normalizedDisplayText(
+      config.guidance,
+      "Execution router guidance",
+      MAX_EXECUTION_ROUTE_GUIDANCE_CHARS,
+    );
   return freeze({
     mode,
     allowedLoops,
@@ -402,6 +666,9 @@ function normalizeConfig(
       "Execution router maxInputChars",
       MAX_EXECUTION_ROUTE_INPUT_CHARS,
     ),
+    rules: freeze(rules),
+    loopHints,
+    ...(guidance ? { guidance } : {}),
   });
 }
 
@@ -464,7 +731,7 @@ export async function resolveTaskExecutionRoute(
     surface: "task",
     source: "task",
     input: [task.title, task.description].filter(Boolean).join("\n\n"),
-    labels: [],
+    labels: task.routing?.labels,
     manifest: compileExecutionRouteManifest({
       assignedLoops: candidateNames,
       projectLoops,
@@ -562,6 +829,26 @@ function normalizeContextLabels(value: readonly string[] | undefined): string[] 
     if (output.length === MAX_EXECUTION_ROUTE_LABELS) break;
   }
   return output;
+}
+
+function ruleMatches(
+  rule: ExecutionRouterRule,
+  input: Pick<ResolveExecutionRouteInput, "surface" | "source">,
+  labels: readonly string[],
+): boolean {
+  const when = rule.when;
+  if (when.surfaces && !when.surfaces.includes(input.surface)) return false;
+  if (when.sources && !when.sources.includes(input.source)) return false;
+  if (when.allLabels && !when.allLabels.every((label) => labels.includes(label))) {
+    return false;
+  }
+  if (when.anyLabels && !when.anyLabels.some((label) => labels.includes(label))) {
+    return false;
+  }
+  if (when.noneLabels && when.noneLabels.some((label) => labels.includes(label))) {
+    return false;
+  }
+  return true;
 }
 
 function routeResult(
@@ -808,6 +1095,27 @@ export async function resolveExecutionRoute(
     });
   }
 
+  const labels = normalizeContextLabels(input.labels);
+  const candidateNames = new Set(candidateLoops.map((loop) => loop.name));
+  const matchedRule = config.rules.find((rule) =>
+    ruleMatches(rule, input, labels)
+    && (rule.mode === "direct" || candidateNames.has(rule.loop))
+  );
+  if (matchedRule) {
+    return routeResult({
+      surface: input.surface,
+      invocationSource: input.source,
+      status: "routed",
+      decisionSource: "router",
+      mode: matchedRule.mode,
+      ...(matchedRule.mode === "loop" ? { loop: matchedRule.loop } : {}),
+      confidence: 1,
+      reason: `Matched execution router rule "${matchedRule.id}"`,
+      latencyMs: 0,
+      fallbackUsed: false,
+    });
+  }
+
   const compactInput = (input.input ?? "")
     .trim()
     .slice(0, config.maxInputChars);
@@ -820,13 +1128,22 @@ export async function resolveExecutionRoute(
     });
   }
 
+  const candidateLoopHints = freeze(Object.fromEntries(
+    candidateLoops
+      .filter((loop) => config.loopHints[loop.name] !== undefined)
+      .map((loop) => [loop.name, config.loopHints[loop.name]]),
+  ));
   const classifierInput = freeze({
     version: 1 as const,
     surface: input.surface,
     source: input.source,
     input: compactInput,
     loops: candidateLoops,
-    labels: normalizeContextLabels(input.labels),
+    labels,
+    ...(Object.keys(candidateLoopHints).length > 0
+      ? { loopHints: candidateLoopHints }
+      : {}),
+    ...(config.guidance ? { guidance: config.guidance } : {}),
   });
   const startedAt = Date.now();
   const outcome = await classifyWithDeadline(

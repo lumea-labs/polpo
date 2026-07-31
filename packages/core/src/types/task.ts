@@ -167,8 +167,14 @@ export interface Task {
   executionMode?: import("./config.js").ExecutionMode;
   /** Runtime sandbox policy override for this task (wins over agent and settings). */
   sandbox?: RuntimeSandboxOptions;
+  /** Bounded, caller-supplied routing context used by runtime policy rules. */
+  routing?: RuntimeRoutingOptions;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface RuntimeRoutingOptions {
+  readonly labels?: readonly string[];
 }
 
 export interface TaskResult {

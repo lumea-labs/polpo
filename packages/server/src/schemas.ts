@@ -2,6 +2,8 @@ import { z } from "@hono/zod-openapi";
 import {
   MAX_MODEL_FALLBACKS,
   MODEL_PROFILE_NAME_PATTERN,
+  RUNTIME_INVOCATION_SOURCES,
+  RUNTIME_SURFACES,
 } from "@polpo-ai/core";
 import { TOOL_CATALOG, matchToolPattern } from "@polpo-ai/tools";
 import { ApiHttpError } from "./errors.js";
@@ -72,11 +74,28 @@ export const RuntimeSandboxSchema = z.object({
   description: "Provider-neutral runtime sandbox policy.",
 });
 
+export const RuntimeRoutingSchema = z.object({
+  labels: z
+    .array(z.string().trim().min(1).max(64).refine(
+      (value) => !/[\u0000-\u001f\u007f]/.test(value),
+      "Runtime routing labels must contain no control characters",
+    ))
+    .max(16)
+    .optional()
+    .openapi({
+      description:
+        "Bounded trusted labels used by deterministic runtime routing policy.",
+    }),
+}).strict().openapi({
+  description: "Caller-supplied runtime routing context.",
+});
+
 // ── Task schemas ──────────────────────────────────────────────────────
 
 export const CreateTaskSchema = z.object({
   executionMode: z.enum(["subprocess", "in-process"]).optional(),
   sandbox: RuntimeSandboxSchema.optional(),
+  routing: RuntimeRoutingSchema.optional(),
   title: z.string().min(1),
   description: z.string().min(1),
   assignTo: z.string().min(1),
@@ -112,6 +131,7 @@ export const UpdateTaskSchema = z.object({
   assignTo: z.string().min(1).optional(),
   loop: z.string().min(1).optional(),
   sandbox: RuntimeSandboxSchema.optional(),
+  routing: RuntimeRoutingSchema.optional(),
   status: z.enum(["draft", "pending", "awaiting_approval", "assigned", "in_progress", "review", "done", "failed"]).optional(),
   expectations: z.array(z.any()).optional(),
   retries: z.number().int().min(0).optional(),
@@ -563,6 +583,64 @@ const ExecutionRouterLoopNameSchema = z
     "Execution router loop names must be trimmed and contain no control characters",
   );
 
+const ExecutionRouterPolicyLabelSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(64)
+  .refine(
+    (value) => !/[\u0000-\u001f\u007f]/.test(value),
+    "Execution router labels must contain no control characters",
+  );
+
+const ExecutionRouterRuleWhenSchema = z.object({
+  surfaces: z.array(z.enum(RUNTIME_SURFACES)).max(RUNTIME_SURFACES.length).optional(),
+  sources: z
+    .array(z.enum(RUNTIME_INVOCATION_SOURCES))
+    .max(RUNTIME_INVOCATION_SOURCES.length)
+    .optional(),
+  allLabels: z.array(ExecutionRouterPolicyLabelSchema).max(16).optional(),
+  anyLabels: z.array(ExecutionRouterPolicyLabelSchema).max(16).optional(),
+  noneLabels: z.array(ExecutionRouterPolicyLabelSchema).max(16).optional(),
+}).strict().superRefine((value, ctx) => {
+  if (
+    !value.surfaces?.length
+    && !value.sources?.length
+    && !value.allLabels?.length
+    && !value.anyLabels?.length
+    && !value.noneLabels?.length
+  ) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "Execution router rule must define at least one condition",
+    });
+  }
+});
+
+const ExecutionRouterRuleIdSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(64)
+  .refine(
+    (value) => !/[\u0000-\u001f\u007f]/.test(value),
+    "Execution router rule ids must contain no control characters",
+  );
+
+const ExecutionRouterRuleSchema = z.discriminatedUnion("mode", [
+  z.object({
+    id: ExecutionRouterRuleIdSchema,
+    mode: z.literal("direct"),
+    when: ExecutionRouterRuleWhenSchema,
+  }).strict(),
+  z.object({
+    id: ExecutionRouterRuleIdSchema,
+    mode: z.literal("loop"),
+    loop: ExecutionRouterLoopNameSchema,
+    when: ExecutionRouterRuleWhenSchema,
+  }).strict(),
+]);
+
 const AgentExecutionRouterSchema = z.object({
   mode: z.enum(["off", "auto"]).optional(),
   allowedLoops: z
@@ -572,6 +650,12 @@ const AgentExecutionRouterSchema = z.object({
   minConfidence: z.number().finite().min(0).max(1).optional(),
   timeoutMs: z.number().int().positive().max(60_000).optional(),
   maxInputChars: z.number().int().positive().max(16_384).optional(),
+  rules: z.array(ExecutionRouterRuleSchema).max(32).optional(),
+  loopHints: z.record(
+    ExecutionRouterLoopNameSchema,
+    z.string().trim().min(1).max(512),
+  ).optional(),
+  guidance: z.string().trim().min(1).max(2_000).optional(),
 }).passthrough().superRefine((value, ctx) => {
   const supported = new Set([
     "mode",
@@ -579,6 +663,9 @@ const AgentExecutionRouterSchema = z.object({
     "minConfidence",
     "timeoutMs",
     "maxInputChars",
+    "rules",
+    "loopHints",
+    "guidance",
   ]);
   if (Object.keys(value).some((key) => !supported.has(key))) {
     ctx.addIssue({
@@ -592,6 +679,34 @@ const AgentExecutionRouterSchema = z.object({
       path: ["allowedLoops"],
       message: "Auto execution routing requires at least one allowed loop",
     });
+  }
+  const allowedLoops = new Set(value.allowedLoops ?? []);
+  const seenRuleIds = new Set<string>();
+  for (const [index, rule] of (value.rules ?? []).entries()) {
+    if (seenRuleIds.has(rule.id)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["rules", index, "id"],
+        message: `Duplicate execution router rule id "${rule.id}"`,
+      });
+    }
+    seenRuleIds.add(rule.id);
+    if (rule.mode === "loop" && !allowedLoops.has(rule.loop)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["rules", index, "loop"],
+        message: "Execution router rule loop must be included in allowedLoops",
+      });
+    }
+  }
+  for (const loop of Object.keys(value.loopHints ?? {})) {
+    if (!allowedLoops.has(loop)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["loopHints", loop],
+        message: "Execution router loopHints keys must be included in allowedLoops",
+      });
+    }
   }
 });
 

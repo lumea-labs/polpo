@@ -217,6 +217,34 @@ describe("TaskManager", () => {
       expect(found!.title).toBe("Stored task");
     });
 
+    it("preserves explicit loop and routing labels through lifecycle hooks", async () => {
+      const before = vi.fn();
+      ctx.hooks.register({
+        hook: "task:create",
+        phase: "before",
+        handler: (hook) => {
+          before(hook.data);
+        },
+      });
+
+      const task = await mgr.createTask({
+        title: "Paid build",
+        description: "Build the export",
+        assignTo: "dev",
+        loop: "build",
+        routing: { labels: ["plan:paid", "request:export"] },
+      });
+
+      expect(before).toHaveBeenCalledWith(expect.objectContaining({
+        loop: "build",
+        routing: { labels: ["plan:paid", "request:export"] },
+      }));
+      expect(task.loop).toBe("build");
+      expect(task.routing).toEqual({
+        labels: ["plan:paid", "request:export"],
+      });
+    });
+
     it("sets maxRetries from config settings", async () => {
       ctx.config.settings.maxRetries = 5;
       const task = await mgr.createTask({

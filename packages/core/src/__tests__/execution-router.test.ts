@@ -73,6 +73,77 @@ describe("execution router configuration", () => {
       allowedLoops: [],
     })).toThrow("requires at least one allowed loop");
   });
+
+  it("validates deterministic rules, loop hints, and classifier guidance", () => {
+    expect(() => validateExecutionRouterConfig({
+      mode: "auto",
+      allowedLoops: ["research", "build"],
+      rules: [
+        {
+          id: "paid-build",
+          mode: "loop",
+          loop: "build",
+          when: {
+            surfaces: ["agent"],
+            allLabels: ["plan:paid"],
+            noneLabels: ["risk:blocked"],
+          },
+        },
+        {
+          id: "channels-direct",
+          mode: "direct",
+          when: { sources: ["channel"] },
+        },
+      ],
+      loopHints: {
+        research: "Use for evidence-backed investigations.",
+        build: "Use for deterministic file-producing work.",
+      },
+      guidance: "Prefer direct execution unless a loop materially improves reliability.",
+    })).not.toThrow();
+
+    expect(() => validateExecutionRouterConfig({
+      mode: "auto",
+      allowedLoops: ["research"],
+      rules: [{
+        id: "unknown-loop",
+        mode: "loop",
+        loop: "build",
+        when: { anyLabels: ["plan:paid"] },
+      }],
+    })).toThrow('must be included in allowedLoops');
+
+    expect(() => validateExecutionRouterConfig({
+      mode: "auto",
+      allowedLoops: ["research"],
+      rules: [
+        { id: "duplicate", mode: "direct", when: { sources: ["request"] } },
+        { id: "duplicate", mode: "direct", when: { sources: ["task"] } },
+      ],
+    })).toThrow('Duplicate execution router rule id "duplicate"');
+
+    expect(() => validateExecutionRouterConfig({
+      mode: "auto",
+      allowedLoops: ["research"],
+      rules: [{
+        id: "empty",
+        mode: "direct",
+        when: {},
+      }],
+    })).toThrow("must define at least one condition");
+
+    expect(() => validateExecutionRouterConfig({
+      mode: "auto",
+      allowedLoops: ["research"],
+      loopHints: { build: "Not authorized" },
+    })).toThrow('loopHints key "build" must be included in allowedLoops');
+
+    expect(() => validateExecutionRouterConfig({
+      mode: "auto",
+      allowedLoops: ["research"],
+      guidance: "x".repeat(2_001),
+    })).toThrow("must not exceed 2000 characters");
+  });
 });
 
 describe("compileExecutionRouteManifest", () => {
@@ -249,6 +320,131 @@ describe("resolveExecutionRoute", () => {
       labels: ["premium", "channel:telegram"],
     });
     expect(Object.isFrozen(inspect.mock.calls[0][0])).toBe(true);
+  });
+
+  it("uses the first matching deterministic rule before classifier work", async () => {
+    const resolveClassifier = vi.fn();
+    const route = await resolveExecutionRoute({
+      surface: "agent",
+      source: "request",
+      input: "Build the paid customer export",
+      labels: ["plan:paid", "request:export"],
+      manifest: manifest(),
+      config: {
+        mode: "auto",
+        allowedLoops: ["research", "build"],
+        rules: [
+          {
+            id: "free-users-direct",
+            mode: "direct",
+            when: { allLabels: ["plan:free"] },
+          },
+          {
+            id: "paid-build",
+            mode: "loop",
+            loop: "build",
+            when: {
+              surfaces: ["agent"],
+              sources: ["request"],
+              allLabels: ["plan:paid"],
+              anyLabels: ["request:export", "request:site"],
+              noneLabels: ["risk:blocked"],
+            },
+          },
+          {
+            id: "later-direct",
+            mode: "direct",
+            when: { anyLabels: ["plan:paid"] },
+          },
+        ],
+      },
+    }, { resolveClassifier });
+
+    expect(route).toMatchObject({
+      status: "routed",
+      decisionSource: "router",
+      mode: "loop",
+      loop: "build",
+      confidence: 1,
+      reason: 'Matched execution router rule "paid-build"',
+      fallbackUsed: false,
+    });
+    expect(resolveClassifier).not.toHaveBeenCalled();
+  });
+
+  it("supports deterministic direct rules without requiring input or a classifier", async () => {
+    const resolveClassifier = vi.fn();
+    const route = await resolveExecutionRoute({
+      surface: "channel",
+      source: "channel",
+      input: "",
+      labels: ["risk:blocked"],
+      manifest: manifest(),
+      config: {
+        mode: "auto",
+        allowedLoops: ["research"],
+        rules: [{
+          id: "blocked-direct",
+          mode: "direct",
+          when: { noneLabels: ["risk:clear"] },
+        }],
+      },
+    }, { resolveClassifier });
+
+    expect(route).toMatchObject({
+      status: "routed",
+      mode: "direct",
+      confidence: 1,
+      reason: 'Matched execution router rule "blocked-direct"',
+      fallbackUsed: false,
+    });
+    expect(resolveClassifier).not.toHaveBeenCalled();
+  });
+
+  it("sends only candidate loop hints and bounded guidance to the classifier", async () => {
+    const inspect = vi.fn();
+    await resolveExecutionRoute({
+      surface: "task",
+      source: "task",
+      input: "Investigate the market",
+      labels: ["plan:paid"],
+      manifest: manifest(),
+      config: {
+        mode: "auto",
+        allowedLoops: ["research", "not-assigned"],
+        loopHints: {
+          research: "Use when claims need evidence.",
+          "not-assigned": "PRIVATE UNAVAILABLE LOOP HINT",
+        },
+        guidance: "Prefer evidence-backed work for paid research requests.",
+      },
+    }, {
+      classifier: classifier({
+        mode: "direct",
+        confidence: 0.99,
+        reason: "Direct is sufficient",
+      }, (input) => inspect(input)),
+    });
+
+    expect(inspect).toHaveBeenCalledWith({
+      version: 1,
+      surface: "task",
+      source: "task",
+      input: "Investigate the market",
+      loops: [{
+        name: "research",
+        label: "Research",
+        description: "Investigate sources and produce a cited answer.",
+      }],
+      labels: ["plan:paid"],
+      loopHints: {
+        research: "Use when claims need evidence.",
+      },
+      guidance: "Prefer evidence-backed work for paid research requests.",
+    });
+    expect(JSON.stringify(inspect.mock.calls[0][0])).not.toContain(
+      "PRIVATE UNAVAILABLE LOOP HINT",
+    );
   });
 
   it("accepts a confident direct decision", async () => {

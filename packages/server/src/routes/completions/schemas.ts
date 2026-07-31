@@ -4,7 +4,7 @@
  */
 
 import { createRoute, z } from "@hono/zod-openapi";
-import { RuntimeSandboxSchema } from "../../schemas.js";
+import { RuntimeRoutingSchema, RuntimeSandboxSchema } from "../../schemas.js";
 
 // ── Zod Schemas ────────────────────────────────────────────────────────
 
@@ -64,6 +64,10 @@ export const completionRequestSchema = z.object({
   }),
   sandbox: RuntimeSandboxSchema.optional().openapi({
     description: "Optional runtime sandbox policy for this chat request. Applies when chat executes through the shared Run lifecycle.",
+  }),
+  routing: RuntimeRoutingSchema.optional().openapi({
+    description:
+      "Optional bounded labels used by deterministic model and execution routing policies.",
   }),
   project: z.string().optional().openapi({
     description: "Deprecated. Ignored.",

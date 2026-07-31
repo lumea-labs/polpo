@@ -93,6 +93,24 @@ describe("DrizzleTaskStore", () => {
     expect(fetched!.sandbox).toEqual({ isolation: "fresh" });
   });
 
+  it("createTask persists bounded runtime routing labels", async () => {
+    const task = await stores.taskStore.createTask({
+      title: "Paid export",
+      description: "Build the customer export",
+      assignTo: "claude",
+      dependsOn: [],
+      maxRetries: 2,
+      expectations: [],
+      metrics: [],
+      routing: { labels: ["plan:paid", "request:export"] },
+    });
+
+    const fetched = await stores.taskStore.getTask(task.id);
+    expect(fetched!.routing).toEqual({
+      labels: ["plan:paid", "request:export"],
+    });
+  });
+
   it("listTasks returns ordered by createdAt", async () => {
     await stores.taskStore.createTask({
       title: "A", description: "first", assignTo: "claude", dependsOn: [], maxRetries: 2, expectations: [], metrics: [],

@@ -96,6 +96,18 @@ describe.skipIf(!canConnect)("PostgreSQL Drizzle stores", () => {
     }
   });
 
+  it("ensurePgSchema creates every tasks column", async () => {
+    const { getTableConfig } = await import("drizzle-orm/pg-core");
+    const { tasksPg } = await import("../schema/index.js");
+    const list: any[] = await db.execute(sql.raw(
+      `SELECT column_name FROM information_schema.columns WHERE table_name = 'tasks'`,
+    ));
+    const present = new Set(list.map((r: any) => r.column_name));
+    for (const col of getTableConfig(tasksPg).columns.map((c) => c.name)) {
+      expect(present.has(col), `migrate.ts missing tasks column: ${col}`).toBe(true);
+    }
+  });
+
   // ═══════════════════════════════════════════════════════════════════════
   // TaskStore
   // ═══════════════════════════════════════════════════════════════════════
@@ -121,6 +133,24 @@ describe.skipIf(!canConnect)("PostgreSQL Drizzle stores", () => {
       expect(fetched).toBeDefined();
       expect(fetched!.title).toBe("Fix bug");
       expect(fetched!.expectations).toEqual([{ type: "llm_review", criteria: "Login works" }]);
+    });
+
+    it("persists runtime routing labels as JSONB", async () => {
+      const task = await stores.taskStore.createTask({
+        title: "Paid export",
+        description: "Build the customer export",
+        assignTo: "claude",
+        dependsOn: [],
+        maxRetries: 2,
+        expectations: [],
+        metrics: [],
+        routing: { labels: ["plan:paid", "request:export"] },
+      });
+
+      const fetched = await stores.taskStore.getTask(task.id);
+      expect(fetched!.routing).toEqual({
+        labels: ["plan:paid", "request:export"],
+      });
     });
 
     it("listTasks returns ordered by createdAt", async () => {

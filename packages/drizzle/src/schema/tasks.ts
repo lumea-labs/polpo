@@ -34,6 +34,8 @@ export const tasksSqlite = sqliteTable("tasks", {
   sideEffects: integer("side_effects"),
   revisionCount: integer("revision_count"),
   sandbox: text("sandbox"),
+  /** Bounded caller routing context, serialized as JSON. */
+  routing: text("routing"),
   /** OpenAI-compat opaque end-user id. Propagates to runs at spawn time. */
   user: text("user"),
   createdAt: text("created_at").notNull(),
@@ -114,6 +116,8 @@ export const tasksPg = pgTable("tasks", {
   sideEffects: pgInteger("side_effects"),
   revisionCount: pgInteger("revision_count"),
   sandbox: jsonb("sandbox"),
+  /** Bounded caller routing context. */
+  routing: jsonb("routing"),
   /** OpenAI-compat opaque end-user id. Propagates to runs at spawn time. */
   user: pgText("user"),
   createdAt: pgText("created_at").notNull(),

@@ -335,6 +335,7 @@ export function taskRoutes(getDeps: () => {
       sideEffects: body.sideEffects,
       executionMode: body.executionMode,
       sandbox: body.sandbox,
+      routing: body.routing,
       draft: body.draft,
       user: body.user,
     });
@@ -379,6 +380,9 @@ export function taskRoutes(getDeps: () => {
     }
     if (body.sandbox !== undefined) {
       await deps.taskStore.updateTask(taskId, { sandbox: body.sandbox });
+    }
+    if (body.routing !== undefined) {
+      await deps.taskStore.updateTask(taskId, { routing: body.routing });
     }
 
     const updated = await deps.taskStore.getTask(taskId);
