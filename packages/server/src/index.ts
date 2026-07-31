@@ -51,6 +51,8 @@ export {
   type ChatViaRunTurnResult,
   type PreparedConversationTurn,
   type CompletionRouteDeps,
+  type CompletionRuntimeGuardrails,
+  type CompletionRuntimeGuardrailsResolver,
   type CompletionRuntimeInvocation,
   type CompletionRuntimePlanInput,
 } from "./routes/completions.js";

@@ -65,6 +65,12 @@ export const completionRequestSchema = z.object({
   sandbox: RuntimeSandboxSchema.optional().openapi({
     description: "Optional runtime sandbox policy for this chat request. Applies when chat executes through the shared Run lifecycle.",
   }),
+  guardrails: z.object({
+    policyPack: z.literal("strict"),
+  }).strict().optional().openapi({
+    description:
+      "Optional stricter runtime policy. It can only upgrade an already-configured project policy to strict.",
+  }),
   routing: RuntimeRoutingSchema.optional().openapi({
     description:
       "Optional bounded labels used by deterministic model and execution routing policies.",

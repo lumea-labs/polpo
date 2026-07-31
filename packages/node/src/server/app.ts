@@ -31,6 +31,7 @@ import {
   configRoutes,
   customToolRoutes,
   brainRoutes,
+  type CompletionRuntimeGuardrailsResolver,
 } from "@polpo-ai/server";
 // Node.js-only routes (stay in src/server/routes/)
 import { publicConfigRoutes } from "./routes/config.js";
@@ -44,6 +45,7 @@ import {
   createConfiguredRunPreflightPolicy,
   createConfiguredRunOutputPolicy,
   createConfiguredRunToolMiddleware,
+  resolveRuntimeGuardrailRequestPolicy,
   type RunOutputPolicy,
   type RunPreflightPolicy,
   type RunToolMiddleware,
@@ -78,6 +80,11 @@ export interface AppOptions {
   runOutputPolicy?: RunOutputPolicy;
   /** Optional process-local override for input/context/model guardrails. */
   runPreflightPolicy?: RunPreflightPolicy;
+  /**
+   * Required with process-local guardrail hook overrides when callers should
+   * be allowed to request stricter per-run enforcement.
+   */
+  resolveRuntimeGuardrails?: CompletionRuntimeGuardrailsResolver;
   brain?: {
     service: BrainManagementService;
     resolveContext: (input?: {
@@ -121,6 +128,11 @@ export function createApp(orchestrator: Orchestrator, sseBridge: SSEBridge, opts
             }),
         }
       : undefined
+  );
+  const hasProcessGuardrailOverrides = Boolean(
+    opts?.runToolMiddleware
+    || opts?.runOutputPolicy
+    || opts?.runPreflightPolicy,
   );
 
   // Global middleware
@@ -178,6 +190,41 @@ export function createApp(orchestrator: Orchestrator, sseBridge: SSEBridge, opts
       ?? createConfiguredRunOutputPolicy(o.getConfig()?.settings?.guardrails),
     runPreflightPolicy: opts?.runPreflightPolicy
       ?? createConfiguredRunPreflightPolicy(o.getConfig()?.settings?.guardrails),
+    ...(
+      opts?.resolveRuntimeGuardrails
+      || !hasProcessGuardrailOverrides
+        ? {
+            resolveRuntimeGuardrails:
+              opts?.resolveRuntimeGuardrails
+              ?? ((request) => {
+                const settings = resolveRuntimeGuardrailRequestPolicy(
+                  o.getConfig()?.settings?.guardrails,
+                  request,
+                );
+                const runToolMiddleware =
+                  createConfiguredRunToolMiddleware(settings);
+                const runOutputPolicy =
+                  createConfiguredRunOutputPolicy(settings);
+                const runPreflightPolicy =
+                  createConfiguredRunPreflightPolicy(settings);
+                if (
+                  !runToolMiddleware
+                  || !runOutputPolicy
+                  || !runPreflightPolicy
+                ) {
+                  throw new Error(
+                    "Strict guardrail policy did not create all runtime hooks",
+                  );
+                }
+                return {
+                  runToolMiddleware,
+                  runOutputPolicy,
+                  runPreflightPolicy,
+                };
+              }),
+          }
+        : {}
+    ),
     emit: (event: string, data: any) => o.emit(event as any, data),
     resolveExecutionRouteClassifier: (context) =>
       o.resolveExecutionRouteClassifier(context),

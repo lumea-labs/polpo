@@ -415,6 +415,22 @@ selection across process boundaries. A host may additionally stamp
 behavior. This operational mode does not belong in persistent project
 configuration.
 
+An OpenAI-compatible completion may request stricter enforcement for one run:
+
+```json
+{
+  "agent": "support",
+  "messages": [{ "role": "user", "content": "Review this request" }],
+  "guardrails": { "policyPack": "strict" }
+}
+```
+
+The request cannot enable guardrails when the project has none, select a weaker
+pack, or replace a custom policy. A `standard` project policy is upgraded to
+`strict` with strict preflight bounds, fail-closed read-only policy failures,
+and buffered output. Hosts using process-local policy hooks must provide an
+explicit request-policy resolver so those hooks cannot be bypassed.
+
 Approval callbacks stay local to the active process and are never persisted.
 Detached runs retain a bounded, secret-free decision snapshot in
 `AgentActivity.guardrailDecisions`, append the same events to their transcript,

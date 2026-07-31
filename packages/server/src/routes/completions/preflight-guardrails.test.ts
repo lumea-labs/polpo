@@ -1,7 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   RuntimeGuardrailEngine,
+  createConfiguredRunOutputPolicy,
   createConfiguredRunPreflightPolicy,
+  createConfiguredRunToolMiddleware,
   createRunPreflightPolicy,
 } from "@polpo-ai/core/guardrails";
 import {
@@ -41,6 +43,110 @@ function deps(overrides: Partial<CompletionRouteDeps> = {}): CompletionRouteDeps
 }
 
 describe("completion preflight guardrails", () => {
+  it("resolves a strict request policy before input guardrails and session writes", async () => {
+    const addMessage = vi.fn();
+    const resolveRuntimeGuardrails = vi.fn((request) => {
+      expect(request).toEqual({ policyPack: "strict" });
+      const settings = { policyPack: "strict" as const };
+      const runPreflightPolicy = createConfiguredRunPreflightPolicy(settings);
+      const runToolMiddleware = createConfiguredRunToolMiddleware(settings);
+      const runOutputPolicy = createConfiguredRunOutputPolicy(settings);
+      if (!runPreflightPolicy || !runToolMiddleware || !runOutputPolicy) {
+        throw new Error("Expected strict guardrail hooks");
+      }
+      return {
+        runPreflightPolicy,
+        runToolMiddleware,
+        runOutputPolicy,
+      };
+    });
+    const prepared = await prepareChatCompletionExecution(deps({
+      resolveRuntimeGuardrails,
+      getSessionStore: () => ({
+        create: async () => "session-1",
+        addMessage,
+      }),
+    }), {
+      agent: "support",
+      stream: false,
+      guardrails: { policyPack: "strict" },
+      messages: [{
+        role: "user",
+        content: "token ghp_abcdefghijklmnopqrstuvwxyz1234567890",
+      }],
+    });
+
+    expect(resolveRuntimeGuardrails).toHaveBeenCalledOnce();
+    expect(prepared.kind).toBe("chat");
+    expect(addMessage).toHaveBeenCalledWith(
+      "session-1",
+      "user",
+      "token [REDACTED]",
+    );
+    if (prepared.kind !== "chat") throw new Error("Expected chat");
+    expect(prepared.execution.deps.runToolMiddleware).toBeDefined();
+    expect(prepared.execution.deps.runOutputPolicy).toBeDefined();
+  });
+
+  it("rejects request policy resolution failures before runtime side effects", async () => {
+    const resolveAgentModel = vi.fn();
+    const resolveAgentTools = vi.fn();
+    const create = vi.fn();
+    const addMessage = vi.fn();
+    const prepared = await prepareChatCompletionExecution(deps({
+      resolveRuntimeGuardrails: () => {
+        throw new TypeError("Project guardrails are not configured");
+      },
+      resolveAgentModel,
+      resolveAgentTools,
+      getSessionStore: () => ({ create, addMessage }),
+    }), {
+      agent: "support",
+      stream: false,
+      guardrails: { policyPack: "strict" },
+      messages: [{ role: "user", content: "hello" }],
+    });
+
+    expect(prepared).toEqual({
+      kind: "error",
+      status: 400,
+      body: {
+        error: {
+          message: "Project guardrails are not configured",
+          type: "invalid_request_error",
+          code: "invalid_guardrail_policy",
+        },
+      },
+    });
+    expect(resolveAgentModel).not.toHaveBeenCalled();
+    expect(resolveAgentTools).not.toHaveBeenCalled();
+    expect(create).not.toHaveBeenCalled();
+    expect(addMessage).not.toHaveBeenCalled();
+  });
+
+  it("rejects a request policy when the host has no resolver", async () => {
+    const resolveAgentModel = vi.fn();
+    const prepared = await prepareChatCompletionExecution(deps({
+      resolveAgentModel,
+    }), {
+      agent: "support",
+      stream: false,
+      guardrails: { policyPack: "strict" },
+      messages: [{ role: "user", content: "hello" }],
+    });
+
+    expect(prepared).toMatchObject({
+      kind: "error",
+      status: 400,
+      body: {
+        error: {
+          code: "invalid_guardrail_policy",
+        },
+      },
+    });
+    expect(resolveAgentModel).not.toHaveBeenCalled();
+  });
+
   it("blocks caller input before routing, context, model, tools, or session writes", async () => {
     const resolveAgentModel = vi.fn();
     const resolveAgentTools = vi.fn();

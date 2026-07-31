@@ -5,6 +5,7 @@ import {
   createConfiguredRunPreflightPolicy,
   createConfiguredRunToolMiddleware,
   normalizeRuntimeGuardrailSettings,
+  resolveRuntimeGuardrailRequestPolicy,
   type RuntimeGuardrailPolicy,
 } from "../guardrails/index.js";
 
@@ -29,6 +30,80 @@ describe("guardrail policy packs", () => {
       policyPack: "standard",
       streamingOutputMode: "audit",
     });
+  });
+
+  it("upgrades a standard project policy to a bounded strict request policy", () => {
+    expect(resolveRuntimeGuardrailRequestPolicy(
+      {
+        policyPack: "standard",
+        maxInputCharacters: 2_000_000,
+        maxContextCharacters: 500_000,
+        maxModelInputCharacters: 4_000_000,
+        maxToolOutputCharacters: 8_000,
+        maxFinalOutputCharacters: 4_000,
+        readOnlyPolicyFailure: "audit",
+        streamingOutputMode: "audit",
+      },
+      { policyPack: "strict" },
+    )).toEqual({
+      policyPack: "strict",
+      maxInputCharacters: 1_000_000,
+      maxContextCharacters: 500_000,
+      maxModelInputCharacters: 2_000_000,
+      maxToolOutputCharacters: 8_000,
+      maxFinalOutputCharacters: 4_000,
+      readOnlyPolicyFailure: "block",
+      streamingOutputMode: "buffer",
+    });
+  });
+
+  it("keeps an existing strict policy stable for a strict request", () => {
+    const strict = normalizeRuntimeGuardrailSettings({
+      policyPack: "strict",
+      maxInputCharacters: 250_000,
+    });
+
+    expect(resolveRuntimeGuardrailRequestPolicy(
+      strict,
+      { policyPack: "strict" },
+    )).toEqual(strict);
+  });
+
+  it.each([
+    [undefined, "not configured"],
+    [{}, "not configured"],
+    [
+      {
+        policyPack: "custom",
+        contentRules: [{
+          id: "custom.rule",
+          phases: ["input"],
+          action: "block",
+          risk: "high",
+          containsAny: ["private"],
+        }],
+      },
+      "custom",
+    ],
+  ] as const)(
+    "rejects a strict request that cannot monotonically narrow %#",
+    (projectPolicy, message) => {
+      expect(() => resolveRuntimeGuardrailRequestPolicy(
+        projectPolicy,
+        { policyPack: "strict" },
+      )).toThrow(message);
+    },
+  );
+
+  it("rejects unknown or weaker request policy fields", () => {
+    expect(() => resolveRuntimeGuardrailRequestPolicy(
+      { policyPack: "strict" },
+      { policyPack: "standard" } as never,
+    )).toThrow("strict");
+    expect(() => resolveRuntimeGuardrailRequestPolicy(
+      { policyPack: "strict" },
+      { policyPack: "strict", unknown: true } as never,
+    )).toThrow("unknown field");
   });
 
   it("makes strict policy failures and destructive operations fail closed", async () => {

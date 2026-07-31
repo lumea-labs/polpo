@@ -422,6 +422,44 @@ describe("POST /v1/chat/completions", () => {
     });
   });
 
+  describe("per-request guardrail policy", () => {
+    test("cannot enable strict guardrails when the project has no policy", async () => {
+      const res = await postCompletions({
+        messages: [{ role: "user", content: "Hi" }],
+        guardrails: { policyPack: "strict" },
+      });
+
+      expect(res.status).toBe(400);
+      await expect(parseJson(res)).resolves.toMatchObject({
+        error: {
+          code: "invalid_guardrail_policy",
+        },
+      });
+    });
+
+    test("upgrades an authorized standard project policy for one request", async () => {
+      const settings = orchestrator.getConfig().settings as any;
+      settings.guardrails = { policyPack: "standard" };
+      setMockModel(mockTextModel("Strict request accepted."));
+      try {
+        const res = await postCompletions({
+          messages: [{ role: "user", content: "Hi" }],
+          guardrails: { policyPack: "strict" },
+          stream: false,
+        });
+
+        expect(res.status).toBe(200);
+        await expect(parseJson(res)).resolves.toMatchObject({
+          choices: [{
+            message: { content: "Strict request accepted." },
+          }],
+        });
+      } finally {
+        delete settings.guardrails;
+      }
+    });
+  });
+
   // ── Message formatting ──────────────────────────────
 
   describe("message formatting", () => {

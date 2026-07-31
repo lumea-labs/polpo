@@ -30,6 +30,7 @@ export {
   createConfiguredRunOutputPolicy,
   createConfiguredRunPreflightPolicy,
   normalizeRuntimeGuardrailSettings,
+  resolveRuntimeGuardrailRequestPolicy,
 } from "./settings.js";
 export type {
   RunPreflightPolicy,
@@ -58,6 +59,7 @@ export type {
   RuntimeGuardrailPolicy,
   RuntimeGuardrailPolicyPack,
   RuntimeGuardrailPolicyResult,
+  RuntimeGuardrailRequestPolicy,
   RuntimeGuardrailSettings,
   RuntimeGuardrailPreflightPhase,
   RuntimeOutputEnforcementMode,
