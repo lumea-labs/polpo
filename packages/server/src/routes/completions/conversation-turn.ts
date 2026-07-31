@@ -13,6 +13,7 @@ import {
   renderRuntimePromptContextSegments,
   renderRuntimeContextPrompt,
   replacesLegacyAgentMemory,
+  replacesLegacySharedMemory,
   resolveRuntimeContext,
   resolveExecutionRoute,
   resolveLoopSelection,
@@ -638,6 +639,7 @@ export async function prepareChatCompletionExecution(
           mode: "chat",
           extraSystemParts: callerSystemParts,
           includeAgentMemory: !replacesLegacyAgentMemory(runtimeContext),
+          includeSharedMemory: !replacesLegacySharedMemory(runtimeContext),
         });
       } else {
         const agentSystemPrompt = await deps.buildAgentPrompt(agentConfig);

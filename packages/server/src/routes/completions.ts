@@ -163,6 +163,7 @@ export interface CompletionRouteDeps {
       extraSystemParts: string[];
       loopContextPart?: string;
       includeAgentMemory: boolean;
+      includeSharedMemory: boolean;
     },
   ) => string | Promise<string>;
   /** Create tools + executor for the agent. Return empty arrays for chat-only.

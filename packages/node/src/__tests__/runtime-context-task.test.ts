@@ -163,6 +163,41 @@ describe("task runtime context retrieval", () => {
       .toBe("Use the typed customer preference.");
   });
 
+  it("does not copy shared Memory into a task when Brain replaces it with no results", async () => {
+    const orchestrator = await setup({
+      tokenBudget: 1_000,
+      retrieve: async () => ({
+        segments: [],
+        legacyMemory: { shared: "replace" },
+      }),
+    });
+    await orchestrator.engine.saveAgentMemory(
+      "agent-1",
+      "AGENT_MEMORY_REMAINS_AVAILABLE",
+    );
+    await orchestrator.engine.saveMemory(
+      "LEGACY_SHARED_MEMORY_MUST_NOT_BE_INJECTED",
+    );
+    const task = await orchestrator.engine.createTask({
+      title: "Prepare report",
+      description: "Summarize the account",
+      assignTo: "agent-1",
+    });
+
+    await (orchestrator.engine as any).runner.spawnForTask(task);
+
+    expect(spawnedConfigs).toHaveLength(1);
+    expect(spawnedConfigs[0].task.description).not.toContain(
+      "LEGACY_SHARED_MEMORY_MUST_NOT_BE_INJECTED",
+    );
+    expect(spawnedConfigs[0].task.description).toContain(
+      "AGENT_MEMORY_REMAINS_AVAILABLE",
+    );
+    expect(spawnedConfigs[0].runtimeContext?.legacyMemory).toEqual({
+      shared: "replace",
+    });
+  });
+
   it("does not invoke a zero-budget provider or serialize empty context", async () => {
     const retrieve = vi.fn(async () => memoryResult());
     const orchestrator = await setup({ tokenBudget: 0, retrieve });
