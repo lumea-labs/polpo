@@ -41,6 +41,7 @@ import {
   type LoopRuntimeToolCall,
 } from "./tool-mapping.js";
 import { createGuardedCompletionToolExecutor } from "./tool-guardrails.js";
+import { assertModelPreflightValue } from "./preflight-validation.js";
 
 export const MAX_TURNS = 20;
 
@@ -241,6 +242,40 @@ export async function runAgentStepCompletion(options: {
     options.contextTrust ?? settings?.contextTrust,
   );
   const reasoning = agentConfig.reasoning ?? settings?.reasoning;
+  let fullSystemPrompt = await buildRuntimeAgentPrompt(
+    deps,
+    agentConfig,
+    extraSystemParts,
+    loopContextPrompt(stepName, context, contextTrust),
+    contextTrust,
+    runtimeContext,
+  );
+  let messages: any[] = contextTrust === "enforce"
+    ? protectRuntimeToolResultMessages(aiMessages)
+    : [...aiMessages];
+  if (deps.runPreflightPolicy) {
+    const guarded = await deps.runPreflightPolicy.evaluate({
+      phase: "model.preflight",
+      value: {
+        systemPrompt: fullSystemPrompt,
+        messages,
+        ...(runtimeContext ? { runtimeContext } : {}),
+      },
+      mode: deps.runPreflightPolicyMode ?? "enforce",
+      context: {
+        planId: options.runtimePlan?.id,
+        surface: options.runtimePlan?.surface ?? "agent",
+        source: "loop-step",
+        agent: agentConfig.name,
+        runId: options.runId,
+        sessionId: options.sessionId,
+      },
+      signal: options.signal,
+    });
+    assertModelPreflightValue(guarded.value, guarded.decisions);
+    fullSystemPrompt = guarded.value.systemPrompt;
+    messages = guarded.value.messages;
+  }
   const initialResolved = await deps.resolveAgentModel(
     agentConfigForModelPrimary(agentConfig, settings),
     reasoning,
@@ -272,18 +307,6 @@ export async function runAgentStepCompletion(options: {
   };
   const providerToolNames = new Set(Object.keys(resolvedTools.extraAiTools ?? {}));
   const modelToolChoice = toAIToolChoice(agentConfig.toolChoice);
-  const fullSystemPrompt = await buildRuntimeAgentPrompt(
-    deps,
-    agentConfig,
-    extraSystemParts,
-    loopContextPrompt(stepName, context, contextTrust),
-    contextTrust,
-    runtimeContext,
-  );
-
-  const messages: any[] = contextTrust === "enforce"
-    ? protectRuntimeToolResultMessages(aiMessages)
-    : [...aiMessages];
   let finalText = "";
   let totalUsage: LanguageModelUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 } as LanguageModelUsage;
   let lastProviderMetadata: Record<string, unknown> | undefined;

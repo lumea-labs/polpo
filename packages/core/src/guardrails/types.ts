@@ -163,12 +163,68 @@ export interface RunOutputPolicyOptions {
   readonly streamingMode?: RuntimeStreamingOutputMode;
 }
 
+export type RuntimeGuardrailPreflightPhase =
+  | "input"
+  | "context"
+  | "model.preflight";
+
+export interface RunPreflightPolicyRequest<T = unknown> {
+  readonly phase: RuntimeGuardrailPreflightPhase;
+  readonly value: T;
+  readonly mode: RuntimeOutputEnforcementMode;
+  readonly context: RuntimeGuardrailContext;
+  readonly signal?: AbortSignal;
+}
+
+export interface RunPreflightPolicyResult<T = unknown> {
+  readonly value: T;
+  readonly decisions: readonly RuntimeGuardrailDecision[];
+  readonly enforced: boolean;
+}
+
+export interface RunPreflightPolicy {
+  evaluate<T = unknown>(
+    request: RunPreflightPolicyRequest<T>,
+  ): Promise<RunPreflightPolicyResult<T>>;
+}
+
+export type RuntimeGuardrailPolicyPack = "standard" | "strict" | "custom";
+export type RuntimeGuardrailContentAction = "audit" | "redact" | "block";
+
+/**
+ * Serializable deterministic content rule. Matching deliberately uses bounded
+ * literal terms rather than user-authored regular expressions.
+ */
+export interface RuntimeGuardrailContentRule {
+  readonly id: string;
+  readonly phases: readonly (
+    | RuntimeGuardrailPreflightPhase
+    | "output"
+  )[];
+  readonly action: RuntimeGuardrailContentAction;
+  readonly risk: Exclude<RuntimeGuardrailRisk, "none">;
+  readonly containsAny: readonly string[];
+  readonly caseSensitive?: boolean;
+  readonly replacement?: string;
+}
+
 /**
  * Serializable, host-neutral settings that may cross a process boundary in a
  * RunnerConfig. The absent setting is deliberately the disabled state.
  */
 export interface RuntimeGuardrailSettings {
+  /**
+   * Product-level pack. New configurations should use this field. The legacy
+   * split pack fields below remain supported for existing deployments.
+   */
+  readonly policyPack?: RuntimeGuardrailPolicyPack;
+  readonly contentRules?: readonly RuntimeGuardrailContentRule[];
+  readonly maxInputCharacters?: number;
+  readonly maxContextCharacters?: number;
+  readonly maxModelInputCharacters?: number;
+  /** @deprecated Use policyPack. */
   readonly toolPolicyPack?: "default";
+  /** @deprecated Use policyPack. */
   readonly outputPolicyPack?: "default";
   readonly maxToolOutputCharacters?: number;
   readonly maxFinalOutputCharacters?: number;
@@ -184,4 +240,9 @@ export interface RuntimeGuardrailHostAdapters {
   readonly approval?: RuntimeGuardrailApprovalHandler;
   readonly outputApproval?: RuntimeGuardrailOutputApprovalHandler;
   readonly onDecision?: RuntimeGuardrailEngineOptions["onDecision"];
+  /**
+   * Process-local policies such as bounded model classifiers. Implementations
+   * and private prompts never enter serialized runtime settings.
+   */
+  readonly policies?: readonly RuntimeGuardrailPolicy[];
 }

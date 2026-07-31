@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 import { MockLanguageModelV3, convertArrayToReadableStream } from "ai/test";
+import {
+  RuntimeGuardrailEngine,
+  createRunPreflightPolicy,
+} from "@polpo-ai/core/guardrails";
 import type { CompletionRouteDeps } from "../completions.js";
 import {
   agentConfigForModelPrimary,
@@ -101,6 +105,43 @@ describe("agent model profile resolution", () => {
 });
 
 describe("runAgentStepCompletion tool validation", () => {
+  it("runs model preflight before resolving a loop-step model or tools", async () => {
+    const resolveAgentModel = vi.fn();
+    const resolveAgentTools = vi.fn();
+    const deps = {
+      getConfig: () => ({ settings: {} }),
+      getMemoryStore: () => undefined,
+      emit: vi.fn(),
+      resolveAgentModel,
+      resolveAgentTools,
+      buildRuntimePrompt: vi.fn(async () => "loop system prompt"),
+      runPreflightPolicy: createRunPreflightPolicy(
+        new RuntimeGuardrailEngine([{
+          id: "loop.preflight",
+          phases: ["model.preflight"],
+          evaluate: () => ({
+            action: "block",
+            risk: "high",
+            reason: "blocked loop model input",
+          }),
+        }]),
+      ),
+    } as unknown as CompletionRouteDeps;
+
+    await expect(runAgentStepCompletion({
+      deps,
+      agentConfig: { name: "test-agent", model: "mock" },
+      aiMessages: [{ role: "user", content: "unsafe" }],
+      extraSystemParts: [],
+      context: {},
+      stepName: "review",
+    })).rejects.toMatchObject({
+      code: "guardrail_blocked",
+    });
+    expect(resolveAgentModel).not.toHaveBeenCalled();
+    expect(resolveAgentTools).not.toHaveBeenCalled();
+  });
+
   it("never dispatches a tool call rejected by the original input schema", async () => {
     const usage = {
       inputTokens: { total: 10, noCache: undefined, cacheRead: undefined, cacheWrite: undefined },

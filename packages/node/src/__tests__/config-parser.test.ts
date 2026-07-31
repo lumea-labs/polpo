@@ -251,6 +251,61 @@ describe("parseConfig (.polpo/polpo.json)", () => {
       });
     });
 
+    it("parses product-level standard, strict, and custom guardrail packs", async () => {
+      const standardDir = writeConfig({
+        ...minimalConfig(),
+        settings: {
+          ...minimalConfig().settings,
+          guardrails: { policyPack: "standard" },
+        },
+      });
+      expect((await parseConfig(standardDir)).settings.guardrails).toEqual({
+        policyPack: "standard",
+        streamingOutputMode: "audit",
+      });
+
+      const strictDir = writeConfig({
+        ...minimalConfig(),
+        settings: {
+          ...minimalConfig().settings,
+          guardrails: { policyPack: "strict" },
+        },
+      });
+      expect((await parseConfig(strictDir)).settings.guardrails).toEqual({
+        policyPack: "strict",
+        readOnlyPolicyFailure: "block",
+        streamingOutputMode: "buffer",
+      });
+
+      const customDir = writeConfig({
+        ...minimalConfig(),
+        settings: {
+          ...minimalConfig().settings,
+          guardrails: {
+            policyPack: "custom",
+            contentRules: [{
+              id: "support.private-content",
+              phases: ["input", "output"],
+              action: "redact",
+              risk: "high",
+              containsAny: ["private marker"],
+            }],
+          },
+        },
+      });
+      expect((await parseConfig(customDir)).settings.guardrails).toEqual({
+        policyPack: "custom",
+        contentRules: [{
+          id: "support.private-content",
+          phases: ["input", "output"],
+          action: "redact",
+          risk: "high",
+          containsAny: ["private marker"],
+        }],
+        streamingOutputMode: "audit",
+      });
+    });
+
     it("accepts logLevel 'quiet'", async () => {
       const cfg = {
         ...minimalConfig(),

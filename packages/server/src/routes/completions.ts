@@ -59,7 +59,11 @@ import {
 } from "./completions/chat-handler.js";
 import { streamChatViaRun, runNonStreamingChatViaRun } from "./completions/chat-via-run-handler.js";
 import { prepareChatCompletionExecution } from "./completions/conversation-turn.js";
-import type { RunOutputPolicy } from "@polpo-ai/core/guardrails";
+import type {
+  RunOutputPolicy,
+  RunPreflightPolicy,
+  RuntimeOutputEnforcementMode,
+} from "@polpo-ai/core/guardrails";
 import type { CompletionToolExecutor } from "./completions/tool-guardrails.js";
 
 export { resumeProjectLoopRun } from "./completions/project-loop-runner.js";
@@ -111,6 +115,13 @@ export interface CompletionRouteDeps {
    * before delivery; streaming follows the policy's explicit audit/buffer mode.
    */
   runOutputPolicy?: RunOutputPolicy;
+  /**
+   * Optional input/context/model preflight policy. It runs before session
+   * writes and before agent model/tool resolution.
+   */
+  runPreflightPolicy?: RunPreflightPolicy;
+  /** Enforce by default; Cloud shadow/audit adapters opt into audit explicitly. */
+  runPreflightPolicyMode?: RuntimeOutputEnforcementMode;
   /**
    * Optional and disabled by default. When provided with a positive budget,
    * resolves one structured Memory/Brain snapshot before prompt assembly.
