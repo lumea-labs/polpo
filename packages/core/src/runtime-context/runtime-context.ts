@@ -2,6 +2,7 @@ import type {
   ResolveRuntimeContextOptions,
   RuntimeContextCitation,
   RuntimeContextEntry,
+  RuntimeContextLegacyMemoryPolicy,
   RuntimeContextProvider,
   RuntimeContextResolution,
   RuntimeContextResult,
@@ -25,6 +26,7 @@ const MAX_IDENTIFIER_CHARACTERS = 1_024;
 const MAX_SEGMENTS = 16;
 const MAX_ENTRIES = 1_000;
 const MAX_TOKEN_BUDGET = 128_000;
+const legacyMemoryKeys = new Set(["agent", "shared"]);
 
 function requiredText(
   value: unknown,
@@ -182,7 +184,8 @@ function normalizeResult(value: unknown): RuntimeContextResult {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new Error("Runtime context result must be an object");
   }
-  const rawSegments = (value as Record<string, unknown>).segments;
+  const candidateResult = value as Record<string, unknown>;
+  const rawSegments = candidateResult.segments;
   if (!Array.isArray(rawSegments) || rawSegments.length > MAX_SEGMENTS) {
     throw new Error(`Runtime context segments must contain at most ${MAX_SEGMENTS} items`);
   }
@@ -237,7 +240,36 @@ function normalizeResult(value: unknown): RuntimeContextResult {
         : undefined;
     })
     .filter((segment): segment is RuntimeContextSegment => !!segment);
-  return Object.freeze({ segments: Object.freeze(segments) });
+  const legacyMemory = normalizeLegacyMemoryPolicy(candidateResult.legacyMemory);
+  return Object.freeze({
+    segments: Object.freeze(segments),
+    ...(legacyMemory ? { legacyMemory } : {}),
+  });
+}
+
+function normalizeLegacyMemoryPolicy(
+  value: unknown,
+): RuntimeContextLegacyMemoryPolicy | undefined {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("Runtime context legacyMemory must be an object");
+  }
+  const candidate = value as Record<string, unknown>;
+  for (const key of Object.keys(candidate)) {
+    if (!legacyMemoryKeys.has(key)) {
+      throw new Error(`Runtime context legacyMemory.${key} is not supported`);
+    }
+    if (candidate[key] !== "replace") {
+      throw new Error(
+        `Runtime context legacyMemory.${key} must equal "replace"`,
+      );
+    }
+  }
+  if (Object.keys(candidate).length === 0) return undefined;
+  return Object.freeze({
+    ...(candidate.agent === "replace" ? { agent: "replace" as const } : {}),
+    ...(candidate.shared === "replace" ? { shared: "replace" as const } : {}),
+  });
 }
 
 function promptJson(value: unknown): string {
@@ -378,12 +410,13 @@ export async function resolveRuntimeContext(
     (sum, segment) => sum + segment.entries.length,
     0,
   );
-  if (candidateEntries === 0) return undefined;
+  if (candidateEntries === 0 && !result.legacyMemory) return undefined;
   const selected = selectWithinBudget(result, tokenBudget);
-  if (selected.selectedEntries === 0) return undefined;
+  if (selected.selectedEntries === 0 && !result.legacyMemory) return undefined;
 
   return Object.freeze({
     segments: selected.segments,
+    ...(result.legacyMemory ? { legacyMemory: result.legacyMemory } : {}),
     audit: Object.freeze({
       resolvedAt: operationTime(options),
       tokenBudget,
@@ -393,6 +426,18 @@ export async function resolveRuntimeContext(
       droppedEntries: candidateEntries - selected.selectedEntries,
     }),
   });
+}
+
+export function replacesLegacyAgentMemory(
+  resolution: RuntimeContextResolution | undefined,
+): boolean {
+  return resolution?.legacyMemory?.agent === "replace";
+}
+
+export function replacesLegacySharedMemory(
+  resolution: RuntimeContextResolution | undefined,
+): boolean {
+  return resolution?.legacyMemory?.shared === "replace";
 }
 
 export function renderRuntimeContextPrompt(

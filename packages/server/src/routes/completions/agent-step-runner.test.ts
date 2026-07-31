@@ -40,6 +40,44 @@ describe("buildRuntimeAgentPrompt", () => {
     );
     expect(deps.buildAgentPrompt).not.toHaveBeenCalled();
   });
+
+  it("does not ask the host to inject legacy agent Memory when typed Memory replaces it", async () => {
+    const buildRuntimePrompt = vi.fn(async () => "host loop prompt");
+    const deps = {
+      buildRuntimePrompt,
+      buildAgentPrompt: vi.fn(() => "legacy prompt"),
+    } as unknown as CompletionRouteDeps;
+
+    await buildRuntimeAgentPrompt(
+      deps,
+      { name: "agent-1" },
+      [],
+      undefined,
+      "off",
+      {
+        segments: [],
+        legacyMemory: { agent: "replace" },
+        audit: {
+          resolvedAt: "2026-07-31T10:00:00.000Z",
+          tokenBudget: 1_000,
+          estimatedTokens: 0,
+          candidateEntries: 0,
+          selectedEntries: 0,
+          droppedEntries: 0,
+        },
+      },
+    );
+
+    expect(buildRuntimePrompt).toHaveBeenCalledWith(
+      { name: "agent-1" },
+      {
+        mode: "loop-step",
+        extraSystemParts: [],
+        loopContextPart: undefined,
+        includeAgentMemory: false,
+      },
+    );
+  });
 });
 
 describe("modelSelectionForResolvedModel", () => {

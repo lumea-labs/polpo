@@ -74,6 +74,48 @@ describe("runtime context resolution", () => {
     expect(renderRuntimeContextPrompt(undefined)).toBe("");
   });
 
+  it("preserves an explicit legacy Memory replacement when retrieval is empty", async () => {
+    const resolved = await resolveRuntimeContext(provider({
+      segments: [],
+      legacyMemory: { agent: "replace" },
+    }), {
+      agentName: "support",
+      query: "Unknown preference",
+      surface: "agent",
+      source: "request",
+    }, { now: () => NOW });
+
+    expect(resolved).toMatchObject({
+      segments: [],
+      legacyMemory: { agent: "replace" },
+      audit: {
+        resolvedAt: NOW,
+        candidateEntries: 0,
+        selectedEntries: 0,
+        droppedEntries: 0,
+      },
+    });
+    expect(renderRuntimeContextPrompt(resolved)).toBe("");
+  });
+
+  it("rejects malformed or unknown legacy Memory replacement directives", async () => {
+    const request = {
+      agentName: "support",
+      query: "Preference",
+      surface: "agent" as const,
+      source: "request" as const,
+    };
+
+    await expect(resolveRuntimeContext(provider({
+      segments: [],
+      legacyMemory: { agent: "preserve" as "replace" },
+    }), request)).rejects.toThrow('legacyMemory.agent must equal "replace"');
+    await expect(resolveRuntimeContext(provider({
+      segments: [],
+      legacyMemory: { project: "replace" } as any,
+    }), request)).rejects.toThrow("legacyMemory.project is not supported");
+  });
+
   it("freezes the authorized request and preserves trusted scope identifiers", async () => {
     const retrieve = vi.fn(async (input) => {
       expect(Object.isFrozen(input)).toBe(true);

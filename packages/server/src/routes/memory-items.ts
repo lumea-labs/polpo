@@ -589,6 +589,53 @@ export function memoryItemRoutes(
     }
   });
 
+  app.get(
+    "/agents/:agentName/memory/items/:itemId/usage",
+    async (context) => {
+      const resolved = await resolve(context, getDeps);
+      if (resolved instanceof Response) return resolved;
+      try {
+        const itemId = context.req.param("itemId");
+        const item = await resolved.store.get(
+          itemId,
+          resolved.memoryContext,
+          {
+            includeInactive: true,
+            includeExpired: true,
+          },
+        );
+        if (!item) {
+          return context.json({
+            ok: false,
+            error: "Memory item not found",
+            code: "MEMORY_NOT_FOUND",
+          }, 404);
+        }
+
+        const events = await resolved.store.listUsage(
+          item.id,
+          resolved.memoryContext,
+        );
+        const retrieved = events.filter((event) => event.type === "retrieved");
+        const lastUsedAt = retrieved.reduce<string | null>(
+          (latest, event) =>
+            latest === null || event.at > latest ? event.at : latest,
+          null,
+        );
+        return context.json({
+          ok: true,
+          data: {
+            events,
+            lastUsedAt,
+            retrievalCount: retrieved.length,
+          },
+        }, 200);
+      } catch (error) {
+        return errorResponse(context, error);
+      }
+    },
+  );
+
   app.patch("/agents/:agentName/memory/items/:itemId", async (context) => {
     const resolved = await resolve(context, getDeps);
     if (resolved instanceof Response) return resolved;

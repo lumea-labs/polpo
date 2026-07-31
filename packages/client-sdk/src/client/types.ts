@@ -38,6 +38,7 @@ import type {
   CreateMemoryItemInput,
   MemoryItem,
   MemoryItemPatch,
+  MemoryUsageEvent,
   MemoryKind,
   MemoryListQuery,
   MemorySearchQuery,
@@ -162,6 +163,7 @@ export type {
   CreateMemoryItemInput,
   MemoryItem,
   MemoryItemPatch,
+  MemoryUsageEvent,
   MemoryKind,
   MemoryListQuery,
   MemorySearchQuery,
@@ -266,6 +268,11 @@ export type ListMemoryItemsPageQuery = ListMemoryItemsQuery & {
 export interface MemoryItemsPage {
   readonly items: MemoryItem[];
   readonly nextCursor: string | null;
+}
+export interface MemoryItemUsage {
+  readonly events: MemoryUsageEvent[];
+  readonly lastUsedAt: string | null;
+  readonly retrievalCount: number;
 }
 export type SearchMemoryRequest = Omit<MemorySearchQuery, "now">;
 

@@ -12,6 +12,7 @@ import {
   renderRuntimePromptContextSegment,
   renderRuntimePromptContextSegments,
   renderRuntimeContextPrompt,
+  replacesLegacyAgentMemory,
   resolveRuntimeContext,
   resolveExecutionRoute,
   resolveLoopSelection,
@@ -602,7 +603,7 @@ export async function prepareChatCompletionExecution(
         fullSystemPrompt = await deps.buildRuntimePrompt(agentConfig, {
           mode: "chat",
           extraSystemParts: callerSystemParts,
-          includeAgentMemory: true,
+          includeAgentMemory: !replacesLegacyAgentMemory(runtimeContext),
         });
       } else {
         const agentSystemPrompt = await deps.buildAgentPrompt(agentConfig);
@@ -618,17 +619,19 @@ export async function prepareChatCompletionExecution(
           ? `${basePrompt}\n\n## Additional context from caller\n\n${callerSystemParts.join("\n\n")}`
           : basePrompt;
 
-        const memoryStore = deps.getMemoryStore();
-        const agentMemory = await memoryStore?.get(agentMemoryScope(agentConfig.name));
-        if (agentMemory) {
-          fullSystemPrompt += contextTrust === "enforce"
-            ? `\n\n${renderRuntimePromptContextSegment(createRuntimePromptContextSegment({
-                kind: "memory.agent",
-                sourceId: agentConfig.name,
-                trust: "untrusted",
-                content: agentMemory,
-              }))}`
-            : `\n\n## Your persistent memory\n\n${agentMemory}`;
+        if (!replacesLegacyAgentMemory(runtimeContext)) {
+          const memoryStore = deps.getMemoryStore();
+          const agentMemory = await memoryStore?.get(agentMemoryScope(agentConfig.name));
+          if (agentMemory) {
+            fullSystemPrompt += contextTrust === "enforce"
+              ? `\n\n${renderRuntimePromptContextSegment(createRuntimePromptContextSegment({
+                  kind: "memory.agent",
+                  sourceId: agentConfig.name,
+                  trust: "untrusted",
+                  content: agentMemory,
+                }))}`
+              : `\n\n## Your persistent memory\n\n${agentMemory}`;
+          }
         }
       }
       const runtimeContextPrompt = renderRuntimeContextPrompt(runtimeContext);
