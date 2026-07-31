@@ -50,6 +50,10 @@ export class ModelProfileResolutionError extends Error {
 
 export interface ResolveModelProfileSelectionOptions {
   profiles?: ModelProfileRegistry;
+  /**
+   * Profile references the caller may select directly. Profiles referenced
+   * internally by an allowed profile inherit that root grant.
+   */
   allowedProfiles?: readonly string[];
   allowedModels?: readonly string[];
   maxDepth?: number;
@@ -106,7 +110,11 @@ export function resolveModelProfileSelection(
   const usedProfiles: string[] = [];
   const seenProfiles = new Set<string>();
 
-  const expandTarget = (target: unknown, path: string[]): string[] => {
+  const expandTarget = (
+    target: unknown,
+    path: string[],
+    enforceProfileGrant: boolean,
+  ): string[] => {
     if (typeof target === "string") {
       const model = target.trim();
       if (!model) {
@@ -127,7 +135,7 @@ export function resolveModelProfileSelection(
 
     const profile = target.profile;
     assertProfileName(profile);
-    if (allowedProfiles && !allowedProfiles.has(profile)) {
+    if (enforceProfileGrant && allowedProfiles && !allowedProfiles.has(profile)) {
       throw new ModelProfileResolutionError(
         "DISALLOWED_PROFILE",
         `Model profile "${profile}" is not allowed`,
@@ -159,12 +167,16 @@ export function resolveModelProfileSelection(
       seenProfiles.add(profile);
       usedProfiles.push(profile);
     }
-    return expandSelection(profiles[profile], [...path, profile]);
+    return expandSelection(profiles[profile], [...path, profile], false);
   };
 
-  const expandSelection = (value: unknown, path: string[]): string[] => {
+  const expandSelection = (
+    value: unknown,
+    path: string[],
+    enforceProfileGrant: boolean,
+  ): string[] => {
     if (typeof value === "string" || isModelProfileReference(value)) {
-      return expandTarget(value, path);
+      return expandTarget(value, path, enforceProfileGrant);
     }
     if (!isRecord(value) || Object.prototype.hasOwnProperty.call(value, "profile")) {
       throw new ModelProfileResolutionError(
@@ -200,12 +212,14 @@ export function resolveModelProfileSelection(
     }
 
     return [
-      ...expandTarget(config.primary, path),
-      ...(config.fallbacks ?? []).flatMap((fallback) => expandTarget(fallback, path)),
+      ...expandTarget(config.primary, path, enforceProfileGrant),
+      ...(config.fallbacks ?? []).flatMap((fallback) =>
+        expandTarget(fallback, path, enforceProfileGrant)
+      ),
     ];
   };
 
-  const candidates = deduplicate(expandSelection(selection, []));
+  const candidates = deduplicate(expandSelection(selection, [], true));
   if (candidates.length === 0) {
     throw new ModelProfileResolutionError(
       "INVALID_SELECTION",

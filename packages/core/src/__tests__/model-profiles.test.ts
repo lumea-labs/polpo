@@ -230,9 +230,28 @@ describe("model profile resolution", () => {
     }));
   });
 
-  it("validates nested profile references against the allowed profile set", () => {
-    expect(() => resolveModelProfileSelection(
+  it("keeps nested profile dependencies behind the granted root profile", () => {
+    expect(resolveModelProfileSelection(
       { profile: "balanced" },
+      {
+        profiles: {
+          balanced: { profile: "fast" },
+          fast: "openai/gpt-4o-mini",
+        },
+        allowedProfiles: ["balanced"],
+      },
+    )).toEqual({
+      selection: "openai/gpt-4o-mini",
+      policy: {
+        primary: "openai/gpt-4o-mini",
+        fallbacks: [],
+        candidates: ["openai/gpt-4o-mini"],
+      },
+      profiles: ["balanced", "fast"],
+    });
+
+    expect(() => resolveModelProfileSelection(
+      { profile: "fast" },
       {
         profiles: {
           balanced: { profile: "fast" },
@@ -243,6 +262,26 @@ describe("model profile resolution", () => {
     )).toThrowError(expect.objectContaining({
       code: "DISALLOWED_PROFILE",
       profile: "fast",
+    }));
+  });
+
+  it("validates every explicitly selected root profile in a model policy", () => {
+    expect(() => resolveModelProfileSelection(
+      {
+        primary: { profile: "balanced" },
+        fallbacks: [{ profile: "emergency" }],
+      },
+      {
+        profiles: {
+          balanced: { profile: "fast" },
+          fast: "openai/gpt-4o-mini",
+          emergency: "google/gemini-2.5-flash",
+        },
+        allowedProfiles: ["balanced"],
+      },
+    )).toThrowError(expect.objectContaining({
+      code: "DISALLOWED_PROFILE",
+      profile: "emergency",
     }));
   });
 

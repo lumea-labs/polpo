@@ -75,6 +75,7 @@ export interface AddAgentRequest {
   name: string;
   role?: string;
   model?: ProfiledModelSelection;
+  /** Optional narrowing allowlist for root profiles selected by this agent. */
   allowedModelProfiles?: string[];
   allowedTools?: string[];
   systemPrompt?: string;

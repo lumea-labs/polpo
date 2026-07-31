@@ -67,7 +67,7 @@ describe("task runtime model profiles", () => {
     const profiledAgent = {
       ...agent,
       model: { profile: "balanced" },
-      allowedModelProfiles: ["balanced", "fast"],
+      allowedModelProfiles: ["balanced"],
     } as unknown as AgentConfig;
     const prep = prepareSpawn(profiledAgent, "/proj", {
       ...ctx,
