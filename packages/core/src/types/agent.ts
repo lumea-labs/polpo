@@ -7,6 +7,7 @@ import type { LoopConfig, LoopToolChoice, Pipeline } from "../loop/types.js";
 import type { ProfiledModelSelection } from "./config.js";
 import type { RuntimeSandboxOptions } from "../runtime-sandbox.js";
 import type { ExecutionRouterConfig } from "../execution-router.js";
+import type { AgentModelRoutingConfig } from "../model-router.js";
 import type {
   BillingOwner,
   CostSource,
@@ -86,6 +87,11 @@ export interface AgentConfig {
   model?: ProfiledModelSelection;
   /** Optional narrowing allowlist for root profiles selected by this agent. */
   allowedModelProfiles?: string[];
+  /**
+   * Optional model-router participation. Omitted/off keeps the configured
+   * direct model or alias pinned; auto explicitly delegates selection.
+   */
+  modelRouting?: AgentModelRoutingConfig;
   /** Image generation model. Format: "provider/model".
    *  Default: "fal/fal-ai/flux/dev". Drives the image_generate tool.
    *  Provider must be in the supported set: fal. */

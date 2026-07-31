@@ -128,6 +128,81 @@ describe("resolveModelRoute", () => {
     expect(classify.classify).not.toHaveBeenCalled();
   });
 
+  it("applies the first matching deterministic rule before invoking the classifier", async () => {
+    const classify = classifier({
+      profile: "reasoning",
+      confidence: 1,
+      reason: "Should not run",
+      labels: [],
+    });
+
+    const result = await resolveModelRoute(input({
+      labels: ["plan:paid", "request:simple"],
+      config: {
+        mode: "auto",
+        fallbackProfile: "balanced",
+        allowedProfiles: ["fast", "balanced", "reasoning"],
+        rules: [
+          {
+            id: "paid-users",
+            profile: "reasoning",
+            when: { allLabels: ["plan:paid"] },
+          },
+          {
+            id: "simple-requests",
+            profile: "fast",
+            when: { allLabels: ["request:simple"] },
+          },
+        ],
+      },
+    }), { classifier: classify });
+
+    expect(result).toEqual({
+      status: "routed",
+      source: "router",
+      profile: "reasoning",
+      selection: "openai/gpt-5",
+      confidence: 1,
+      reason: 'Matched model router rule "paid-users"',
+      labels: ["plan:paid", "request:simple"],
+      latencyMs: 0,
+      fallbackUsed: false,
+    });
+    expect(classify.classify).not.toHaveBeenCalled();
+  });
+
+  it("matches deterministic rules against surface, source, and bounded labels", async () => {
+    const result = await resolveModelRoute(input({
+      surface: "channel",
+      source: "channel",
+      input: "",
+      labels: ["tier:free", "trusted"],
+      config: {
+        mode: "auto",
+        fallbackProfile: "balanced",
+        allowedProfiles: ["fast", "balanced"],
+        rules: [{
+          id: "free-channel",
+          profile: "fast",
+          when: {
+            surfaces: ["channel"],
+            sources: ["channel"],
+            allLabels: ["tier:free"],
+            noneLabels: ["risk:high"],
+          },
+        }],
+      },
+    }));
+
+    expect(result).toMatchObject({
+      status: "routed",
+      profile: "fast",
+      confidence: 1,
+      reason: 'Matched model router rule "free-channel"',
+      labels: ["tier:free", "trusted"],
+    });
+  });
+
   it("cannot use an explicit or classified profile outside the allowlist", async () => {
     await expect(resolveModelRoute(input({
       explicitProfile: "reasoning",
@@ -437,6 +512,11 @@ describe("resolveModelRoute", () => {
         fallbackProfile: "balanced",
         allowedProfiles: ["fast", "balanced", "reasoning"],
         maxInputChars: 128,
+        profileHints: {
+          fast: "Use for short, low-complexity requests.",
+          reasoning: "Use for careful multi-step analysis.",
+        },
+        guidance: "Prefer the least expensive profile that can complete the request.",
       },
     }), { classifier: classify });
 
@@ -444,6 +524,13 @@ describe("resolveModelRoute", () => {
     expect(classifierInput.input).toHaveLength(128);
     expect(classifierInput.profiles).toEqual(["fast", "balanced", "reasoning"]);
     expect(classifierInput.labels).toEqual(["channel", "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"]);
+    expect(classifierInput.profileHints).toEqual({
+      fast: "Use for short, low-complexity requests.",
+      reasoning: "Use for careful multi-step analysis.",
+    });
+    expect(classifierInput.guidance).toBe(
+      "Prefer the least expensive profile that can complete the request.",
+    );
     const serialized = JSON.stringify(classifierInput);
     expect(serialized).not.toContain(secret);
     expect(serialized).not.toContain(history);
@@ -501,6 +588,40 @@ describe("resolveModelRoute", () => {
         allowedProfiles: ["fast", "balanced"],
       },
     }), { classifier: classify })).rejects.toThrow("mode");
+    await expect(resolveModelRoute(input({
+      config: {
+        mode: "auto",
+        fallbackProfile: "balanced",
+        allowedProfiles: ["fast", "balanced"],
+        rules: [{
+          id: "empty",
+          profile: "fast",
+          when: {},
+        }],
+      },
+    }), { classifier: classify })).rejects.toThrow("at least one condition");
+    await expect(resolveModelRoute(input({
+      config: {
+        mode: "auto",
+        fallbackProfile: "balanced",
+        allowedProfiles: ["fast", "balanced"],
+        rules: [{
+          id: "widen",
+          profile: "reasoning",
+          when: { allLabels: ["tier:paid"] },
+        }],
+      },
+    }), { classifier: classify })).rejects.toThrow("allowedProfiles");
+    await expect(resolveModelRoute(input({
+      config: {
+        mode: "auto",
+        fallbackProfile: "balanced",
+        allowedProfiles: ["fast", "balanced"],
+        profileHints: {
+          reasoning: "Not an allowed candidate",
+        },
+      },
+    }), { classifier: classify })).rejects.toThrow("allowedProfiles");
     expect(classify.classify).not.toHaveBeenCalled();
   });
 });

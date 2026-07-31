@@ -21,6 +21,35 @@ describe("agent loop API contract", () => {
     });
   });
 
+  it("keeps direct and alias models pinned unless automatic routing is explicit", () => {
+    expect(AddAgentSchema.parse({
+      name: "pinned-direct",
+      model: "openai/gpt-4o-mini",
+    })).not.toHaveProperty("modelRouting");
+    expect(UpdateAgentSchema.parse({
+      model: { profile: "balanced" },
+      modelRouting: { mode: "off" },
+    })).toMatchObject({
+      model: { profile: "balanced" },
+      modelRouting: { mode: "off" },
+    });
+    expect(UpdateAgentSchema.parse({
+      allowedModelProfiles: ["fast", "balanced"],
+      modelRouting: { mode: "auto" },
+    })).toMatchObject({
+      allowedModelProfiles: ["fast", "balanced"],
+      modelRouting: { mode: "auto" },
+    });
+  });
+
+  it.each([
+    {},
+    { mode: "future" },
+    { mode: "auto", hidden: true },
+  ])("rejects unsafe agent model routing config %#", (modelRouting) => {
+    expect(UpdateAgentSchema.safeParse({ modelRouting }).success).toBe(false);
+  });
+
   it("rejects ambiguous profile references and model policies instead of stripping fields", () => {
     expect(AddAgentSchema.safeParse({
       name: "ambiguous-profile",

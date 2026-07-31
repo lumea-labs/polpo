@@ -15,6 +15,7 @@ import {
 } from "@polpo-ai/core/schemas";
 import { normalizeRuntimeGuardrailSettings } from "@polpo-ai/core/guardrails";
 import { validateExecutionRouterConfig } from "@polpo-ai/core/execution-router";
+import { validateAgentModelRoutingConfig } from "@polpo-ai/core";
 import { getPolpoDir } from "./constants.js";
 
 const DEFAULT_SETTINGS: PolpoSettings = {
@@ -87,6 +88,13 @@ export function validateAgents(agents: any[]): void {
     if (agent.executionRouter !== undefined) {
       try {
         validateExecutionRouterConfig(agent.executionRouter);
+      } catch (error) {
+        throw new Error(`Agent "${agent.name}": ${(error as Error).message}`);
+      }
+    }
+    if (agent.modelRouting !== undefined) {
+      try {
+        validateAgentModelRoutingConfig(agent.modelRouting);
       } catch (error) {
         throw new Error(`Agent "${agent.name}": ${(error as Error).message}`);
       }

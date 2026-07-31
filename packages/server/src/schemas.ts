@@ -595,6 +595,17 @@ const AgentExecutionRouterSchema = z.object({
   }
 });
 
+const AgentModelRoutingSchema = z.object({
+  mode: z.enum(["off", "auto"]),
+}).passthrough().superRefine((value, ctx) => {
+  if (Object.keys(value).some((key) => key !== "mode")) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "Agent model routing contains unsupported fields",
+    });
+  }
+});
+
 const AgentLoopFieldsSchema = z.object({
   runtime: z.string().optional(),
   assignedLoops: z.array(z.string().min(1)).optional(),
@@ -608,6 +619,7 @@ export const AddAgentSchema = z.object({
   role: z.string().optional(),
   model: ModelSelectionSchema.optional(),
   allowedModelProfiles: z.array(z.string().regex(MODEL_PROFILE_NAME_PATTERN)).optional(),
+  modelRouting: AgentModelRoutingSchema.optional(),
   // Per-modality media models (provider/model strings; format checked
   // by parseModelString at tool-call time). Undefined → DEFAULT_*_MODEL.
   image_model:      z.string().optional(),
@@ -636,6 +648,7 @@ export const UpdateAgentSchema = z.object({
   role: z.string().optional(),
   model: ModelSelectionSchema.optional(),
   allowedModelProfiles: z.array(z.string().regex(MODEL_PROFILE_NAME_PATTERN)).optional(),
+  modelRouting: AgentModelRoutingSchema.optional(),
   // Per-modality media models (optional, mirror AddAgentSchema).
   image_model:      z.string().optional(),
   video_model:      z.string().optional(),

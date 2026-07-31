@@ -77,6 +77,7 @@ export interface AddAgentRequest {
   model?: ProfiledModelSelection;
   /** Optional narrowing allowlist for root profiles selected by this agent. */
   allowedModelProfiles?: string[];
+  modelRouting?: import("@polpo-ai/core/model-router").AgentModelRoutingConfig;
   allowedTools?: string[];
   systemPrompt?: string;
   skills?: string[];
