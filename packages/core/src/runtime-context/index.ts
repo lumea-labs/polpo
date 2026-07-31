@@ -44,3 +44,11 @@ export {
   createMemoryRuntimeContextRetriever,
   type CreateMemoryRuntimeContextRetrieverOptions,
 } from "./memory-retriever.js";
+export {
+  createBrainRuntimeContextRetriever,
+  type CreateBrainRuntimeContextRetrieverOptions,
+} from "./brain-retriever.js";
+export {
+  createCompositeRuntimeContextProvider,
+  type CreateCompositeRuntimeContextProviderOptions,
+} from "./composite-provider.js";
