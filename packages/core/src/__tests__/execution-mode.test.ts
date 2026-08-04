@@ -65,9 +65,9 @@ describe("resolveRuntimeSandboxOptions — runtime sandbox precedence", () => {
 
     expect(resolveRuntimeSandboxOptions(
       { sandbox: { isolation: "reuse" } },
-      { sandbox: { isolation: "fresh" } },
+      { sandbox: { isolation: "shared" } },
       undefined,
-    )).toEqual({ isolation: "fresh" });
+    )).toEqual({ isolation: "shared" });
 
     expect(resolveRuntimeSandboxOptions(
       {

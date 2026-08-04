@@ -31,6 +31,7 @@ describe("completion request guardrail policy", () => {
 describe("completion request sandbox lifecycle", () => {
   it.each([
     { isolation: "reuse" },
+    { isolation: "shared", lifecycle: { onRelease: "pool" } },
     { isolation: "fresh", lifecycle: { onRelease: "pool" } },
     {
       isolation: "fresh",

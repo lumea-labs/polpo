@@ -26,6 +26,12 @@ describe("shared runtime sandbox schema", () => {
     expect(UpdateTaskSchema.parse({ sandbox: lifecycle }).sandbox).toEqual(lifecycle);
   });
 
+  it("accepts explicit project-scoped shared isolation", () => {
+    expect(RuntimeSandboxSchema.parse({ isolation: "shared" })).toEqual({
+      isolation: "shared",
+    });
+  });
+
   it.each([
     null,
     [],

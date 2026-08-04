@@ -255,8 +255,12 @@ export function createRuntimePlan(
 
   const sandboxIsolation =
     input.sandbox?.isolation ?? RUNTIME_PLAN_DEFAULTS.sandboxIsolation;
-  if (sandboxIsolation !== "reuse" && sandboxIsolation !== "fresh") {
-    throw new Error("Runtime plan sandbox isolation must be one of: reuse, fresh");
+  if (
+    sandboxIsolation !== "reuse"
+    && sandboxIsolation !== "fresh"
+    && sandboxIsolation !== "shared"
+  ) {
+    throw new Error("Runtime plan sandbox isolation must be one of: reuse, fresh, shared");
   }
   const sandboxSource = input.sandbox?.source ?? RUNTIME_PLAN_DEFAULTS.sandboxSource;
   if (

@@ -234,6 +234,27 @@ describe("schedule invocation validation", () => {
     });
   });
 
+  it("preserves shared sandbox isolation in schedule execution", () => {
+    expect(normalizeScheduleInvocation({
+      surface: "agent",
+      agentName: "collaborator",
+      input: { messages: [{ role: "user", content: "continue" }] },
+      execution: {
+        sandbox: {
+          isolation: "shared",
+          lifecycle: { onRelease: "pool", idleTtlMinutes: 45 },
+        },
+      },
+    })).toMatchObject({
+      execution: {
+        sandbox: {
+          isolation: "shared",
+          lifecycle: { onRelease: "pool", idleTtlMinutes: 45 },
+        },
+      },
+    });
+  });
+
   it("enforces distinct channel send and agent-reply contracts", () => {
     expect(normalizeScheduleInvocation({
       surface: "channel",

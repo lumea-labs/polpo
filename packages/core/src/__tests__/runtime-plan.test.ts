@@ -301,6 +301,25 @@ describe("createRuntimePlan", () => {
     }, fixedFactory)).toThrow(/idle TTL cannot be used with destroy/i);
   });
 
+  it("records explicit shared isolation in the runtime plan", () => {
+    const plan = createRuntimePlan({
+      surface: "agent",
+      source: "request",
+      model: { selection: "openai/gpt-5", source: "default" },
+      sandbox: {
+        isolation: "shared",
+        source: "request",
+        lifecycle: { onRelease: "pool", source: "agent" },
+      },
+    }, fixedFactory);
+
+    expect(plan.sandbox).toEqual({
+      isolation: "shared",
+      source: "request",
+      lifecycle: { onRelease: "pool", source: "agent" },
+    });
+  });
+
   it.each([
     {
       name: "unknown surface",

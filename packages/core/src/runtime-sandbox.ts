@@ -2,10 +2,11 @@
  * Provider-neutral runtime sandbox policy.
  *
  * Core carries the caller's isolation preference through RunnerConfig; the
- * host sandbox provider decides how to materialize reuse or fresh allocation.
+ * host sandbox provider decides how to materialize exclusive reuse, fresh
+ * allocation, or explicit project-scoped sharing.
  */
 
-export type SandboxIsolation = "reuse" | "fresh";
+export type SandboxIsolation = "reuse" | "fresh" | "shared";
 export type SandboxReleasePolicy = "pool" | "destroy";
 
 export const SANDBOX_IDLE_TTL_MINUTES_MAX = 7 * 24 * 60;
@@ -23,14 +24,15 @@ export interface RuntimeSandboxLifecycleOptions {
 export interface RuntimeSandboxOptions {
   /**
    * `reuse` lets the host reuse a warm project sandbox when available.
-   * `fresh` requests one clean sandbox for the outer run. Root tools and
-   * nested loop steps share it until that run finishes.
+   * `fresh` requests one clean sandbox for the outer run. `shared` opts into
+   * a host-managed project sandbox that concurrent outer runs may use. Root
+   * tools and nested loop steps always share one lease inside their outer run.
    */
   isolation?: SandboxIsolation;
   lifecycle?: RuntimeSandboxLifecycleOptions;
 }
 
-const VALID_ISOLATION: ReadonlySet<string> = new Set(["reuse", "fresh"]);
+const VALID_ISOLATION: ReadonlySet<string> = new Set(["reuse", "fresh", "shared"]);
 const VALID_RELEASE_POLICY: ReadonlySet<string> = new Set(["pool", "destroy"]);
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {

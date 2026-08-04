@@ -84,8 +84,8 @@ const RuntimeSandboxLifecycleSchema = z.object({
 });
 
 export const RuntimeSandboxSchema = z.object({
-  isolation: z.enum(["reuse", "fresh"]).optional().openapi({
-    description: "Sandbox isolation policy. `reuse` keeps warm state when available; `fresh` requests one clean sandbox shared by every step in the outer run.",
+  isolation: z.enum(["reuse", "fresh", "shared"]).optional().openapi({
+    description: "Sandbox isolation policy. `reuse` leases warm state exclusively, `fresh` requests one clean outer-run sandbox, and `shared` explicitly permits concurrent project-scoped use.",
   }),
   lifecycle: RuntimeSandboxLifecycleSchema.optional(),
 }).strict().openapi({

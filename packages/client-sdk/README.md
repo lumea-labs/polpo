@@ -34,6 +34,10 @@ independent: `lifecycle.onRelease` either returns the sandbox to the
 project-scoped pool or destroys it. `idleTtlMinutes` optionally bounds pooled
 inactivity before host cleanup.
 
+Use `sandbox.isolation: "shared"` only when concurrent outer runs are intended
+to collaborate in one project-scoped workspace. `reuse` remains exclusive and
+only makes the sandbox available to another run after release.
+
 `runtime:plan` SSE payloads can be narrowed with
 `isRuntimePlanSSEEvent`. The store indexes valid, secret-free plans by id and
 retains malformed raw events only in its bounded diagnostics history.

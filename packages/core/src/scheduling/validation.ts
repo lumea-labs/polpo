@@ -629,8 +629,9 @@ function normalizeExecution(value: unknown): ScheduleExecutionOptions {
       sandbox.isolation !== undefined
       && sandbox.isolation !== "reuse"
       && sandbox.isolation !== "fresh"
+      && sandbox.isolation !== "shared"
     ) {
-      throw new Error('Schedule sandbox isolation must be "reuse" or "fresh"');
+      throw new Error('Schedule sandbox isolation must be "reuse", "fresh", or "shared"');
     }
     let lifecycle: {
       onRelease?: "pool" | "destroy";
