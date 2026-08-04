@@ -581,7 +581,10 @@ describe("chat via Run driver", () => {
 
   it("passes request sandbox policy into chat Run injection", async () => {
     const runChatViaRun = vi.fn(async (inject: any, hooks: any) => {
-      expect(inject.sandbox).toEqual({ isolation: "fresh" });
+      expect(inject.sandbox).toEqual({
+        isolation: "fresh",
+        lifecycle: { onRelease: "pool", idleTtlMinutes: 30 },
+      });
       hooks.onEvent({ type: "text-delta", text: "hello" });
       return { status: "completed", result: { exitCode: 0, stdout: "hello", stderr: "" } };
     });
@@ -593,7 +596,10 @@ describe("chat via Run driver", () => {
       body: JSON.stringify({
         agent: "agent-1",
         stream: true,
-        sandbox: { isolation: "fresh" },
+        sandbox: {
+          isolation: "fresh",
+          lifecycle: { onRelease: "pool", idleTtlMinutes: 30 },
+        },
         messages: [{ role: "user", content: "hello" }],
       }),
     });

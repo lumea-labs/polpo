@@ -192,7 +192,13 @@ export type { Shell, ShellOptions, ShellResult } from "./shell.js";
 export type { Spawner, SpawnResult } from "./spawner.js";
 export { resolveExecutionMode } from "./execution-mode.js";
 export { resolveRuntimeSandboxOptions } from "./runtime-sandbox.js";
-export type { RuntimeSandboxOptions, SandboxIsolation } from "./runtime-sandbox.js";
+export { SANDBOX_IDLE_TTL_MINUTES_MAX } from "./runtime-sandbox.js";
+export type {
+  RuntimeSandboxLifecycleOptions,
+  RuntimeSandboxOptions,
+  SandboxIsolation,
+  SandboxReleasePolicy,
+} from "./runtime-sandbox.js";
 
 // ── SandboxProvider Abstraction ──────────────────────────────────────────
 export type {

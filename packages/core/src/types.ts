@@ -19,4 +19,9 @@ export * from "./types/agent.js";
 export * from "./types/config.js";
 export * from "./types/notifications.js";
 export * from "./types/assessment.js";
-export type { RuntimeSandboxOptions, SandboxIsolation } from "./runtime-sandbox.js";
+export type {
+  RuntimeSandboxLifecycleOptions,
+  RuntimeSandboxOptions,
+  SandboxIsolation,
+  SandboxReleasePolicy,
+} from "./runtime-sandbox.js";

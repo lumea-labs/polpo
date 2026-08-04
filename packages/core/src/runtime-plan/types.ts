@@ -1,5 +1,8 @@
 import type { ModelSelection } from "../model-policy.js";
-import type { SandboxIsolation } from "../runtime-sandbox.js";
+import type {
+  SandboxIsolation,
+  SandboxReleasePolicy,
+} from "../runtime-sandbox.js";
 
 export type RuntimeSurface = "agent" | "task" | "channel" | "webhook";
 
@@ -96,6 +99,11 @@ export interface RuntimePlan {
   readonly sandbox: Readonly<{
     isolation: SandboxIsolation;
     source: Extract<RuntimeDecisionSource, "request" | "agent" | "default">;
+    lifecycle: Readonly<{
+      onRelease: SandboxReleasePolicy;
+      idleTtlMinutes?: number;
+      source: Extract<RuntimeDecisionSource, "request" | "agent" | "default">;
+    }>;
   }>;
   readonly tools: Readonly<{
     exposure: RuntimeToolExposure;
@@ -123,6 +131,11 @@ export interface CreateRuntimePlanInput {
   readonly sandbox?: Readonly<{
     isolation?: SandboxIsolation;
     source?: Extract<RuntimeDecisionSource, "request" | "agent" | "default">;
+    lifecycle?: Readonly<{
+      onRelease?: SandboxReleasePolicy;
+      idleTtlMinutes?: number;
+      source?: Extract<RuntimeDecisionSource, "request" | "agent" | "default">;
+    }>;
   }>;
   readonly tools?: Readonly<{
     exposure?: RuntimeToolExposure;

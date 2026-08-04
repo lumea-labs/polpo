@@ -733,13 +733,19 @@ describe("Durable turns recovery", () => {
       title: "Fresh sandbox",
       description: "Run this task in a clean sandbox",
       assignTo: "agent-1",
-      sandbox: { isolation: "fresh" },
+      sandbox: {
+        isolation: "fresh",
+        lifecycle: { onRelease: "destroy" },
+      },
     });
 
     await (orchestrator.engine as any).runner.spawnForTask(task);
 
     expect(spawnedConfigs).toHaveLength(1);
-    expect(spawnedConfigs[0].sandbox).toEqual({ isolation: "fresh" });
+    expect(spawnedConfigs[0].sandbox).toEqual({
+      isolation: "fresh",
+      lifecycle: { onRelease: "destroy" },
+    });
   });
 
   it("context trust opt-in keeps prompt context structural across the runner boundary", async () => {

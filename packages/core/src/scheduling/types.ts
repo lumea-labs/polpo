@@ -32,9 +32,7 @@ export interface ScheduleMessage {
 export interface ScheduleExecutionOptions {
   loop?: string;
   model?: string;
-  sandbox?: {
-    isolation?: "reuse" | "fresh";
-  };
+  sandbox?: RuntimeSandboxOptions;
   guardrails?: {
     mode?: string;
   };
@@ -233,3 +231,4 @@ export interface ScheduleRun {
   startedAt?: string;
   completedAt?: string;
 }
+import type { RuntimeSandboxOptions } from "../runtime-sandbox.js";

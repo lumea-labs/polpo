@@ -283,7 +283,14 @@ async function resolveCompletionRuntimePlan(
             name: agentConfig.name,
             model: cloneModelSelection(agentConfig.model),
             sandbox: agentConfig.sandbox
-              ? { isolation: agentConfig.sandbox.isolation }
+              ? {
+                  ...(agentConfig.sandbox.isolation
+                    ? { isolation: agentConfig.sandbox.isolation }
+                    : {}),
+                  ...(agentConfig.sandbox.lifecycle
+                    ? { lifecycle: { ...agentConfig.sandbox.lifecycle } }
+                    : {}),
+                }
               : undefined,
             allowedTools: Array.isArray(agentConfig.allowedTools)
               ? [...agentConfig.allowedTools]

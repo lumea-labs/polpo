@@ -111,7 +111,10 @@ describe("schedule invocation validation", () => {
       execution: {
         loop: " review ",
         model: " openai/gpt-5 ",
-        sandbox: { isolation: "fresh" },
+        sandbox: {
+          isolation: "fresh",
+          lifecycle: { onRelease: "pool", idleTtlMinutes: 30 },
+        },
         guardrails: { mode: " strict " },
         metadata: { source: "nightly" },
       },
@@ -127,7 +130,10 @@ describe("schedule invocation validation", () => {
       execution: {
         loop: "review",
         model: "openai/gpt-5",
-        sandbox: { isolation: "fresh" },
+        sandbox: {
+          isolation: "fresh",
+          lifecycle: { onRelease: "pool", idleTtlMinutes: 30 },
+        },
         guardrails: { mode: "strict" },
         metadata: { source: "nightly" },
       },
@@ -225,6 +231,27 @@ describe("schedule invocation validation", () => {
       userId: "user-1",
       metadata: { team: "product" },
       execution: { sandbox: { isolation: "reuse" } },
+    });
+  });
+
+  it("preserves shared sandbox isolation in schedule execution", () => {
+    expect(normalizeScheduleInvocation({
+      surface: "agent",
+      agentName: "collaborator",
+      input: { messages: [{ role: "user", content: "continue" }] },
+      execution: {
+        sandbox: {
+          isolation: "shared",
+          lifecycle: { onRelease: "pool", idleTtlMinutes: 45 },
+        },
+      },
+    })).toMatchObject({
+      execution: {
+        sandbox: {
+          isolation: "shared",
+          lifecycle: { onRelease: "pool", idleTtlMinutes: 45 },
+        },
+      },
     });
   });
 

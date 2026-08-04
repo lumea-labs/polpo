@@ -255,8 +255,12 @@ export function createRuntimePlan(
 
   const sandboxIsolation =
     input.sandbox?.isolation ?? RUNTIME_PLAN_DEFAULTS.sandboxIsolation;
-  if (sandboxIsolation !== "reuse" && sandboxIsolation !== "fresh") {
-    throw new Error("Runtime plan sandbox isolation must be one of: reuse, fresh");
+  if (
+    sandboxIsolation !== "reuse"
+    && sandboxIsolation !== "fresh"
+    && sandboxIsolation !== "shared"
+  ) {
+    throw new Error("Runtime plan sandbox isolation must be one of: reuse, fresh, shared");
   }
   const sandboxSource = input.sandbox?.source ?? RUNTIME_PLAN_DEFAULTS.sandboxSource;
   if (
@@ -266,6 +270,40 @@ export function createRuntimePlan(
   ) {
     throw new Error(
       "Runtime plan sandbox source must be one of: request, agent, default",
+    );
+  }
+  const sandboxReleasePolicy =
+    input.sandbox?.lifecycle?.onRelease
+    ?? RUNTIME_PLAN_DEFAULTS.sandboxReleasePolicy;
+  if (sandboxReleasePolicy !== "pool" && sandboxReleasePolicy !== "destroy") {
+    throw new Error("Runtime plan sandbox release policy must be one of: pool, destroy");
+  }
+  const sandboxIdleTtlMinutes = input.sandbox?.lifecycle?.idleTtlMinutes;
+  if (
+    sandboxIdleTtlMinutes !== undefined
+    && (
+      !Number.isInteger(sandboxIdleTtlMinutes)
+      || sandboxIdleTtlMinutes < 1
+      || sandboxIdleTtlMinutes > 10_080
+    )
+  ) {
+    throw new Error(
+      "Runtime plan sandbox idle TTL must be an integer between 1 and 10080 minutes",
+    );
+  }
+  if (sandboxReleasePolicy === "destroy" && sandboxIdleTtlMinutes !== undefined) {
+    throw new Error("Runtime plan sandbox idle TTL cannot be used with destroy");
+  }
+  const sandboxLifecycleSource =
+    input.sandbox?.lifecycle?.source
+    ?? RUNTIME_PLAN_DEFAULTS.sandboxLifecycleSource;
+  if (
+    sandboxLifecycleSource !== "request"
+    && sandboxLifecycleSource !== "agent"
+    && sandboxLifecycleSource !== "default"
+  ) {
+    throw new Error(
+      "Runtime plan sandbox lifecycle source must be one of: request, agent, default",
     );
   }
 
@@ -308,6 +346,13 @@ export function createRuntimePlan(
     sandbox: {
       isolation: sandboxIsolation,
       source: sandboxSource,
+      lifecycle: {
+        onRelease: sandboxReleasePolicy,
+        ...(sandboxIdleTtlMinutes !== undefined
+          ? { idleTtlMinutes: sandboxIdleTtlMinutes }
+          : {}),
+        source: sandboxLifecycleSource,
+      },
     },
     tools: {
       exposure: toolExposure,
@@ -348,6 +393,9 @@ export function normalizeRuntimePlan(value: unknown): RuntimePlan {
   const execution = record(plan.execution, "Runtime plan execution");
   const model = record(plan.model, "Runtime plan model");
   const sandbox = record(plan.sandbox, "Runtime plan sandbox");
+  const sandboxLifecycle = plan.sandbox.lifecycle === undefined
+    ? undefined
+    : record(plan.sandbox.lifecycle, "Runtime plan sandbox lifecycle");
   const tools = record(plan.tools, "Runtime plan tools");
   const audit = record(plan.audit, "Runtime plan audit");
   if (!Array.isArray(plan.guardrails)) {
@@ -392,6 +440,23 @@ export function normalizeRuntimePlan(value: unknown): RuntimePlan {
           "Runtime plan sandbox isolation",
         ),
         source: requiredValue(sandbox.source, "Runtime plan sandbox source"),
+        ...(sandboxLifecycle
+          ? {
+              lifecycle: {
+                onRelease: requiredValue(
+                  sandboxLifecycle.onRelease,
+                  "Runtime plan sandbox release policy",
+                ),
+                ...(sandboxLifecycle.idleTtlMinutes !== undefined
+                  ? { idleTtlMinutes: sandboxLifecycle.idleTtlMinutes }
+                  : {}),
+                source: requiredValue(
+                  sandboxLifecycle.source,
+                  "Runtime plan sandbox lifecycle source",
+                ),
+              },
+            }
+          : {}),
       },
       tools: {
         exposure: requiredValue(tools.exposure, "Runtime plan tool exposure"),
