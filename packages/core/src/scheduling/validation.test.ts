@@ -111,7 +111,10 @@ describe("schedule invocation validation", () => {
       execution: {
         loop: " review ",
         model: " openai/gpt-5 ",
-        sandbox: { isolation: "fresh" },
+        sandbox: {
+          isolation: "fresh",
+          lifecycle: { onRelease: "pool", idleTtlMinutes: 30 },
+        },
         guardrails: { mode: " strict " },
         metadata: { source: "nightly" },
       },
@@ -127,7 +130,10 @@ describe("schedule invocation validation", () => {
       execution: {
         loop: "review",
         model: "openai/gpt-5",
-        sandbox: { isolation: "fresh" },
+        sandbox: {
+          isolation: "fresh",
+          lifecycle: { onRelease: "pool", idleTtlMinutes: 30 },
+        },
         guardrails: { mode: "strict" },
         metadata: { source: "nightly" },
       },

@@ -40,6 +40,10 @@ describe("createRuntimePlan", () => {
       sandbox: {
         isolation: "reuse",
         source: "default",
+        lifecycle: {
+          onRelease: "pool",
+          source: "default",
+        },
       },
       tools: {
         exposure: "direct",
@@ -89,6 +93,11 @@ describe("createRuntimePlan", () => {
       sandbox: {
         isolation: "fresh" as const,
         source: "request" as const,
+        lifecycle: {
+          onRelease: "pool" as const,
+          idleTtlMinutes: 20,
+          source: "agent" as const,
+        },
       },
       tools: {
         exposure: "router" as const,
@@ -128,6 +137,15 @@ describe("createRuntimePlan", () => {
       },
       profile: "balanced",
       source: "router",
+    });
+    expect(plan.sandbox).toEqual({
+      isolation: "fresh",
+      source: "request",
+      lifecycle: {
+        onRelease: "pool",
+        idleTtlMinutes: 20,
+        source: "agent",
+      },
     });
     expect(plan.tools.allowed).toEqual(["bash", "read"]);
     expect(plan.guardrails).toEqual([guardrail]);
@@ -248,6 +266,39 @@ describe("createRuntimePlan", () => {
         fallbackUsed: false,
       },
     })).toThrow("valid date");
+  });
+
+  it("normalizes legacy plans without lifecycle to the pooled default", () => {
+    const plan = createRuntimePlan({
+      surface: "agent",
+      source: "request",
+      model: { selection: "openai/gpt-5", source: "default" },
+    }, fixedFactory);
+    const legacyPlan = {
+      ...plan,
+      sandbox: { isolation: "reuse", source: "default" },
+    };
+
+    expect(normalizeRuntimePlan(legacyPlan).sandbox).toEqual({
+      isolation: "reuse",
+      source: "default",
+      lifecycle: { onRelease: "pool", source: "default" },
+    });
+  });
+
+  it("rejects contradictory sandbox lifecycle decisions", () => {
+    expect(() => createRuntimePlan({
+      surface: "agent",
+      source: "request",
+      model: { selection: "openai/gpt-5", source: "default" },
+      sandbox: {
+        lifecycle: {
+          onRelease: "destroy",
+          idleTtlMinutes: 5,
+          source: "request",
+        },
+      },
+    }, fixedFactory)).toThrow(/idle TTL cannot be used with destroy/i);
   });
 
   it.each([

@@ -66,11 +66,29 @@ const ScopedNotificationRulesSchema = z.object({
   inherit: z.boolean().optional(),
 });
 
+const RuntimeSandboxLifecycleSchema = z.object({
+  onRelease: z.enum(["pool", "destroy"]).optional().openapi({
+    description: "Sandbox release policy. `pool` allows later project-scoped reuse; `destroy` deletes after the outer run.",
+  }),
+  idleTtlMinutes: z.number().int().min(1).max(10_080).optional().openapi({
+    description: "Optional pooled inactivity TTL in minutes. Applies only when `onRelease` resolves to `pool`.",
+  }),
+}).strict().superRefine((lifecycle, ctx) => {
+  if (lifecycle.onRelease === "destroy" && lifecycle.idleTtlMinutes !== undefined) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["idleTtlMinutes"],
+      message: "Sandbox idleTtlMinutes cannot be used with onRelease=destroy",
+    });
+  }
+});
+
 export const RuntimeSandboxSchema = z.object({
   isolation: z.enum(["reuse", "fresh"]).optional().openapi({
     description: "Sandbox isolation policy. `reuse` keeps warm state when available; `fresh` requests one clean sandbox shared by every step in the outer run.",
   }),
-}).openapi({
+  lifecycle: RuntimeSandboxLifecycleSchema.optional(),
+}).strict().openapi({
   description: "Provider-neutral runtime sandbox policy.",
 });
 

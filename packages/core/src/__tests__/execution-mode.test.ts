@@ -46,6 +46,14 @@ describe("resolveRuntimeSandboxOptions — runtime sandbox precedence", () => {
     expect(resolveRuntimeSandboxOptions()).toBeUndefined();
     expect(resolveRuntimeSandboxOptions({}, {}, {})).toBeUndefined();
     expect(resolveRuntimeSandboxOptions({}, {}, { sandbox: { isolation: "bad" as any } })).toBeUndefined();
+    class SandboxPolicy {
+      isolation = "fresh" as const;
+    }
+    expect(resolveRuntimeSandboxOptions(
+      undefined,
+      undefined,
+      { sandbox: new SandboxPolicy() },
+    )).toBeUndefined();
   });
 
   it("settings, agent, and request merge with request winning", () => {
@@ -62,10 +70,18 @@ describe("resolveRuntimeSandboxOptions — runtime sandbox precedence", () => {
     )).toEqual({ isolation: "fresh" });
 
     expect(resolveRuntimeSandboxOptions(
-      { sandbox: { isolation: "fresh" } },
+      {
+        sandbox: {
+          isolation: "fresh",
+          lifecycle: { onRelease: "pool", idleTtlMinutes: 30 },
+        },
+      },
       { sandbox: { isolation: "fresh" } },
       { sandbox: { isolation: "reuse" } },
-    )).toEqual({ isolation: "reuse" });
+    )).toEqual({
+      isolation: "reuse",
+      lifecycle: { onRelease: "pool", idleTtlMinutes: 30 },
+    });
   });
 
   it("invalid upper tiers fall through to lower valid policy", () => {
@@ -74,5 +90,54 @@ describe("resolveRuntimeSandboxOptions — runtime sandbox precedence", () => {
       { sandbox: { isolation: "invalid" as any } },
       undefined,
     )).toEqual({ isolation: "reuse" });
+  });
+
+  it("merges lifecycle fields independently across precedence tiers", () => {
+    expect(resolveRuntimeSandboxOptions(
+      {
+        sandbox: {
+          isolation: "reuse",
+          lifecycle: { onRelease: "pool", idleTtlMinutes: 45 },
+        },
+      },
+      { sandbox: { isolation: "fresh" } },
+      { sandbox: { lifecycle: { onRelease: "pool" } } },
+    )).toEqual({
+      isolation: "fresh",
+      lifecycle: { onRelease: "pool", idleTtlMinutes: 45 },
+    });
+  });
+
+  it("clears an inherited pool TTL when a higher tier requests destroy", () => {
+    expect(resolveRuntimeSandboxOptions(
+      {
+        sandbox: {
+          lifecycle: { onRelease: "pool", idleTtlMinutes: 60 },
+        },
+      },
+      { sandbox: { lifecycle: { onRelease: "destroy" } } },
+    )).toEqual({ lifecycle: { onRelease: "destroy" } });
+  });
+
+  it("ignores malformed lifecycle fields without weakening valid lower tiers", () => {
+    expect(resolveRuntimeSandboxOptions(
+      {
+        sandbox: {
+          isolation: "reuse",
+          lifecycle: { onRelease: "pool", idleTtlMinutes: 15 },
+        },
+      },
+      {
+        sandbox: {
+          lifecycle: {
+            onRelease: "archive" as any,
+            idleTtlMinutes: 0,
+          },
+        },
+      },
+    )).toEqual({
+      isolation: "reuse",
+      lifecycle: { onRelease: "pool", idleTtlMinutes: 15 },
+    });
   });
 });

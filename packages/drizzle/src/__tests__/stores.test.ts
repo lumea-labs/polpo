@@ -86,11 +86,17 @@ describe("DrizzleTaskStore", () => {
       maxRetries: 2,
       expectations: [],
       metrics: [],
-      sandbox: { isolation: "fresh" },
+      sandbox: {
+        isolation: "fresh",
+        lifecycle: { onRelease: "pool", idleTtlMinutes: 30 },
+      },
     });
 
     const fetched = await stores.taskStore.getTask(task.id);
-    expect(fetched!.sandbox).toEqual({ isolation: "fresh" });
+    expect(fetched!.sandbox).toEqual({
+      isolation: "fresh",
+      lifecycle: { onRelease: "pool", idleTtlMinutes: 30 },
+    });
   });
 
   it("createTask persists bounded runtime routing labels", async () => {

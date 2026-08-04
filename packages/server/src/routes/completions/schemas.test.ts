@@ -27,3 +27,30 @@ describe("completion request guardrail policy", () => {
     }).success).toBe(false);
   });
 });
+
+describe("completion request sandbox lifecycle", () => {
+  it.each([
+    { isolation: "reuse" },
+    { isolation: "fresh", lifecycle: { onRelease: "pool" } },
+    {
+      isolation: "fresh",
+      lifecycle: { onRelease: "pool", idleTtlMinutes: 30 },
+    },
+    { isolation: "reuse", lifecycle: { onRelease: "destroy" } },
+  ])("accepts valid sandbox policy %#", (sandbox) => {
+    expect(completionRequestSchema.parse({ ...request, sandbox }).sandbox).toEqual(sandbox);
+  });
+
+  it.each([
+    { lifecycle: { onRelease: "archive" } },
+    { lifecycle: { onRelease: "pool", idleTtlMinutes: 0 } },
+    { lifecycle: { onRelease: "pool", idleTtlMinutes: 1.5 } },
+    { lifecycle: { onRelease: "pool", idleTtlMinutes: 10_081 } },
+    { lifecycle: { onRelease: "destroy", idleTtlMinutes: 10 } },
+    { lifecycle: { onRelease: "pool", unknown: true } },
+    { lifecycle: "pool" },
+    { isolation: "reuse", unknown: true },
+  ])("rejects malformed sandbox policy %#", (sandbox) => {
+    expect(completionRequestSchema.safeParse({ ...request, sandbox }).success).toBe(false);
+  });
+});

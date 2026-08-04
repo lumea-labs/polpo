@@ -624,7 +624,7 @@ function normalizeExecution(value: unknown): ScheduleExecutionOptions {
   }
   if (execution.sandbox !== undefined) {
     const sandbox = record(execution.sandbox, "Schedule execution sandbox");
-    assertKnownKeys(sandbox, ["isolation"], "Schedule execution sandbox");
+    assertKnownKeys(sandbox, ["isolation", "lifecycle"], "Schedule execution sandbox");
     if (
       sandbox.isolation !== undefined
       && sandbox.isolation !== "reuse"
@@ -632,8 +632,54 @@ function normalizeExecution(value: unknown): ScheduleExecutionOptions {
     ) {
       throw new Error('Schedule sandbox isolation must be "reuse" or "fresh"');
     }
+    let lifecycle: {
+      onRelease?: "pool" | "destroy";
+      idleTtlMinutes?: number;
+    } | undefined;
+    if (sandbox.lifecycle !== undefined) {
+      const rawLifecycle = record(
+        sandbox.lifecycle,
+        "Schedule execution sandbox lifecycle",
+      );
+      assertKnownKeys(
+        rawLifecycle,
+        ["onRelease", "idleTtlMinutes"],
+        "Schedule execution sandbox lifecycle",
+      );
+      if (
+        rawLifecycle.onRelease !== undefined
+        && rawLifecycle.onRelease !== "pool"
+        && rawLifecycle.onRelease !== "destroy"
+      ) {
+        throw new Error('Schedule sandbox lifecycle onRelease must be "pool" or "destroy"');
+      }
+      const idleTtlMinutes = rawLifecycle.idleTtlMinutes;
+      if (idleTtlMinutes !== undefined && (
+        typeof idleTtlMinutes !== "number"
+        || !Number.isInteger(idleTtlMinutes)
+        || idleTtlMinutes < 1
+        || idleTtlMinutes > 10_080
+      )) {
+        throw new Error("Schedule sandbox lifecycle idleTtlMinutes must be an integer between 1 and 10080");
+      }
+      if (
+        rawLifecycle.onRelease === "destroy"
+        && idleTtlMinutes !== undefined
+      ) {
+        throw new Error("Schedule sandbox lifecycle idleTtlMinutes cannot be used with onRelease=destroy");
+      }
+      lifecycle = {
+        ...(rawLifecycle.onRelease === undefined
+          ? {}
+          : { onRelease: rawLifecycle.onRelease }),
+        ...(idleTtlMinutes === undefined
+          ? {}
+          : { idleTtlMinutes }),
+      };
+    }
     normalized.sandbox = {
       ...(sandbox.isolation === undefined ? {} : { isolation: sandbox.isolation }),
+      ...(lifecycle === undefined ? {} : { lifecycle }),
     };
   }
   if (execution.guardrails !== undefined) {

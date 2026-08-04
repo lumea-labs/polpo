@@ -76,6 +76,8 @@ export const RUNTIME_PLAN_DEFAULTS = Object.freeze({
   modelSource: "default",
   sandboxIsolation: "reuse",
   sandboxSource: "default",
+  sandboxReleasePolicy: "pool",
+  sandboxLifecycleSource: "default",
   toolExposure: "direct",
   planner: "runtime-default",
 } as const);
