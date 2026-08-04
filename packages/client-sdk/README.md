@@ -24,6 +24,10 @@ const store = new PolpoStore();
 const latestPlan = store.getSnapshot().latestRuntimePlanId;
 ```
 
+With `sandbox.isolation: "fresh"`, Polpo acquires one clean sandbox for the
+outer completion. Deterministic tools and nested Agentic Loop steps share its
+filesystem until that completion finishes.
+
 `runtime:plan` SSE payloads can be narrowed with
 `isRuntimePlanSSEEvent`. The store indexes valid, secret-free plans by id and
 retains malformed raw events only in its bounded diagnostics history.

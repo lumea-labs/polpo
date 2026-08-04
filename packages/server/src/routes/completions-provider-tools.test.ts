@@ -245,6 +245,180 @@ describe("completionRoutes provider-executed tools", () => {
     ).toEqual([]);
   });
 
+  it("shares one tool run scope across root tools and every agent loop step", async () => {
+    streamTextMock
+      .mockReturnValueOnce(mockStreamResult({
+        text: "prepared",
+        responseMessages: [{ role: "assistant", content: "prepared" }],
+      }))
+      .mockReturnValueOnce(mockStreamResult({
+        text: "verified",
+        responseMessages: [{ role: "assistant", content: "verified" }],
+      }));
+
+    const deps = makeDeps();
+    deps.getProjectLoop = async (name) => ({
+      name,
+      context: "shared",
+      start: "prepare",
+      steps: {
+        prepare: { type: "agent", next: "verify" },
+        verify: { type: "agent", next: "end" },
+      },
+    });
+    const scopeCleanup = vi.fn(async () => undefined);
+    const runScope = { id: "tool-run-scope-1", cleanup: scopeCleanup };
+    deps.createToolRunScope = vi.fn(async () => runScope);
+    const resolutionCleanups: Array<ReturnType<typeof vi.fn>> = [];
+    const observedScopes: unknown[] = [];
+    deps.resolveAgentTools = vi.fn(async (_agentConfig, scope) => {
+      observedScopes.push(scope);
+      const cleanup = vi.fn(async () => undefined);
+      resolutionCleanups.push(cleanup);
+      return {
+        tools: [],
+        executor: async () => "ok",
+        cleanup,
+      };
+    });
+
+    const response = await completionRoutes(() => deps).request("/", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        agent: "researcher",
+        loop: "research-loop",
+        messages: [{ role: "user", content: "Prepare and verify" }],
+      }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(deps.createToolRunScope).toHaveBeenCalledOnce();
+    expect(observedScopes).toEqual([runScope, runScope, runScope]);
+    expect(resolutionCleanups).toHaveLength(3);
+    expect(resolutionCleanups.every((cleanup) => cleanup.mock.calls.length === 1)).toBe(true);
+    expect(scopeCleanup).toHaveBeenCalledOnce();
+  });
+
+  it("cleans the shared tool run scope when a nested agent tool resolution fails", async () => {
+    const deps = makeDeps();
+    const scopeCleanup = vi.fn(async () => undefined);
+    const rootCleanup = vi.fn(async () => undefined);
+    const runScope = { id: "tool-run-scope-failure", cleanup: scopeCleanup };
+    deps.createToolRunScope = vi.fn(async () => runScope);
+    deps.resolveAgentTools = vi.fn()
+      .mockResolvedValueOnce({
+        tools: [],
+        executor: async () => "ok",
+        cleanup: rootCleanup,
+      })
+      .mockRejectedValueOnce(new Error("nested tool resolution failed"));
+
+    const response = await completionRoutes(() => deps).request("/", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        agent: "researcher",
+        loop: "research-loop",
+        messages: [{ role: "user", content: "Research Polpo" }],
+      }),
+    });
+
+    expect(response.status).toBe(500);
+    expect(rootCleanup).toHaveBeenCalledOnce();
+    expect(scopeCleanup).toHaveBeenCalledOnce();
+  });
+
+  it("cleans the tool run scope when root tool resolution fails", async () => {
+    const deps = makeDeps();
+    const scopeCleanup = vi.fn(async () => undefined);
+    const runScope = { id: "tool-run-scope-root-failure", cleanup: scopeCleanup };
+    deps.createToolRunScope = vi.fn(async () => runScope);
+    deps.resolveAgentTools = vi.fn(async () => {
+      throw new Error("root tool resolution failed");
+    });
+
+    const response = await completionRoutes(() => deps).request("/", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        agent: "researcher",
+        loop: "research-loop",
+        messages: [{ role: "user", content: "Research Polpo" }],
+      }),
+    });
+
+    expect(response.status).toBe(500);
+    expect(scopeCleanup).toHaveBeenCalledOnce();
+  });
+
+  it("cleans root tools and the run scope when loop initialization fails", async () => {
+    const deps = makeDeps();
+    const scopeCleanup = vi.fn(async () => undefined);
+    const rootCleanup = vi.fn(async () => undefined);
+    deps.createToolRunScope = vi.fn(async () => ({
+      id: "tool-run-scope-init-failure",
+      cleanup: scopeCleanup,
+    }));
+    deps.resolveAgentTools = vi.fn(async () => ({
+      tools: [],
+      executor: async () => "ok",
+      cleanup: rootCleanup,
+    }));
+    deps.getLoopRunStore = () => ({
+      createRun: vi.fn(async () => {
+        throw new Error("loop store unavailable");
+      }),
+    } as any);
+
+    const response = await completionRoutes(() => deps).request("/", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        agent: "researcher",
+        loop: "research-loop",
+        messages: [{ role: "user", content: "Research Polpo" }],
+      }),
+    });
+
+    expect(response.status).toBe(500);
+    expect(rootCleanup).toHaveBeenCalledOnce();
+    expect(scopeCleanup).toHaveBeenCalledOnce();
+  });
+
+  it("does not replace a successful loop result when cleanup fails", async () => {
+    streamTextMock.mockReturnValue(mockStreamResult({
+      text: "completed",
+      responseMessages: [{ role: "assistant", content: "completed" }],
+    }));
+    const deps = makeDeps();
+    deps.createToolRunScope = vi.fn(async () => ({
+      id: "tool-run-scope-cleanup-failure",
+      cleanup: vi.fn(async () => {
+        throw new Error("scope cleanup failed");
+      }),
+    }));
+    deps.resolveAgentTools = vi.fn(async () => ({
+      tools: [],
+      executor: async () => "ok",
+      cleanup: vi.fn(async () => {
+        throw new Error("resolver cleanup failed");
+      }),
+    }));
+
+    const response = await completionRoutes(() => deps).request("/", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        agent: "researcher",
+        loop: "research-loop",
+        messages: [{ role: "user", content: "Research Polpo" }],
+      }),
+    });
+
+    expect(response.status).toBe(200);
+  });
+
   it("streams raw tool argument text while the model is preparing a tool call", async () => {
     async function* fullStream() {
       yield { type: "tool-input-start", id: "call_search", toolName: "search_web" };

@@ -30,7 +30,10 @@ import {
 } from "@polpo-ai/core";
 import { generateText, type LanguageModel, type LanguageModelUsage } from "ai";
 import { runModelPolicyTurn } from "@polpo-ai/llm";
-import type { CompletionRouteDeps } from "../completions.js";
+import type {
+  CompletionRouteDeps,
+  CompletionToolRunScope,
+} from "../completions.js";
 import { appendModelResponseMessages } from "./message-mapping.js";
 import {
   emitFileChanged,
@@ -230,6 +233,7 @@ export async function runAgentStepCompletion(options: {
   runId?: string;
   sessionId?: string;
   runtimeContext?: RuntimeContextResolution;
+  toolRunScope?: CompletionToolRunScope;
   onToolCall?: (toolCall: LoopRuntimeToolCall) => Promise<void>;
 }): Promise<AgentStepRunResult> {
   const {
@@ -292,7 +296,10 @@ export async function runAgentStepCompletion(options: {
     modelSelectionForResolvedModel(m),
     settings,
   );
-  const resolvedTools = await deps.resolveAgentTools(agentConfig);
+  const resolvedTools = await deps.resolveAgentTools(
+    agentConfig,
+    options.toolRunScope,
+  );
   const executeTool = createGuardedCompletionToolExecutor({
     executor: resolvedTools.executor,
     tools: resolvedTools.tools,
@@ -475,7 +482,7 @@ export async function runAgentStepCompletion(options: {
     };
   } finally {
     if (resolvedTools.cleanup) {
-      resolvedTools.cleanup().catch(() => {});
+      await resolvedTools.cleanup().catch(() => {});
     }
   }
 }

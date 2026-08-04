@@ -83,6 +83,25 @@ export {
 // ── Route factory ──────────────────────────────────────────────────────
 
 /**
+ * Host-owned resources shared by every tool resolver participating in one
+ * completion loop run. The server treats the scope as opaque and only owns its
+ * lifecycle; hosts can associate sandbox leases or other run-bound resources
+ * with the object identity.
+ */
+export interface CompletionToolRunScope {
+  id: string;
+  cleanup?: () => Promise<void>;
+}
+
+export interface CompletionToolRunScopeInput {
+  agentConfig: any;
+  runId?: string;
+  sessionId?: string;
+  runtimePlan?: RuntimePlan;
+  signal?: AbortSignal;
+}
+
+/**
  * Completion route dependencies.
  *
  * The consumer provides LLM resolution and tool creation — this allows
@@ -176,7 +195,10 @@ export interface CompletionRouteDeps {
    *  tools (e.g. `gateway.tools.perplexitySearch`) which are server-executed
    *  by the gateway during `generateText` — Polpo never sees the tool-call.
    *  The keys here MUST NOT collide with names in `tools`. */
-  resolveAgentTools: (agentConfig: any) => Promise<{
+  resolveAgentTools: (
+    agentConfig: any,
+    runScope?: CompletionToolRunScope,
+  ) => Promise<{
     tools: any[];
     executor: CompletionToolExecutor;
     /**
@@ -188,6 +210,14 @@ export interface CompletionRouteDeps {
     cleanup?: () => Promise<void>;
     extraAiTools?: Record<string, any>;
   }>;
+  /**
+   * Optionally create a host resource scope for one project-loop execution.
+   * The same scope is passed to root deterministic tools and every nested
+   * agent step, then cleaned exactly once after the outer loop finishes.
+   */
+  createToolRunScope?: (
+    input: CompletionToolRunScopeInput,
+  ) => CompletionToolRunScope | Promise<CompletionToolRunScope>;
   /** Optional project-level loop loader. When provided, assigned/default agent loops can run as deterministic graphs. */
   getProjectLoop?: (name: string) => Promise<ProjectLoopConfig | null>;
   /** Optional durable store for agentic loop runtime traces. */

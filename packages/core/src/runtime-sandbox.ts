@@ -10,7 +10,8 @@ export type SandboxIsolation = "reuse" | "fresh";
 export interface RuntimeSandboxOptions {
   /**
    * `reuse` lets the host reuse a warm project sandbox when available.
-   * `fresh` requests a clean sandbox for this run.
+   * `fresh` requests one clean sandbox for the outer run. Root tools and
+   * nested loop steps share it until that run finishes.
    */
   isolation?: SandboxIsolation;
 }

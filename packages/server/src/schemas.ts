@@ -68,7 +68,7 @@ const ScopedNotificationRulesSchema = z.object({
 
 export const RuntimeSandboxSchema = z.object({
   isolation: z.enum(["reuse", "fresh"]).optional().openapi({
-    description: "Sandbox isolation policy. `reuse` keeps warm state when available; `fresh` requests a clean sandbox for this run.",
+    description: "Sandbox isolation policy. `reuse` keeps warm state when available; `fresh` requests one clean sandbox shared by every step in the outer run.",
   }),
 }).openapi({
   description: "Provider-neutral runtime sandbox policy.",

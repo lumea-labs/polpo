@@ -202,7 +202,24 @@ export async function runProjectLoopCompletion(options: {
   const loopRunStore = deps.getLoopRunStore?.();
   const resumeState = resumeRun?.resume;
   const loopRunId = resumeRun?.id ?? (loopRunStore ? `looprun-${nanoid(16)}` : undefined);
-  const rootTools = await deps.resolveAgentTools(agentConfig);
+  const toolRunScope = await deps.createToolRunScope?.({
+    agentConfig,
+    runId: loopRunId,
+    sessionId: sessionId ?? undefined,
+    runtimePlan,
+    signal: options.signal,
+  });
+  let rootTools: Awaited<ReturnType<CompletionRouteDeps["resolveAgentTools"]>>;
+  try {
+    rootTools = await deps.resolveAgentTools(agentConfig, toolRunScope);
+  } catch (error) {
+    await toolRunScope?.cleanup?.().catch(() => {});
+    throw error;
+  }
+  const cleanupToolRun = async () => {
+    await rootTools.cleanup?.().catch(() => {});
+    await toolRunScope?.cleanup?.().catch(() => {});
+  };
   const executeLoopTool = createGuardedCompletionToolExecutor({
     executor: rootTools.runtimeExecutor ?? rootTools.executor,
     tools: rootTools.tools,
@@ -235,6 +252,9 @@ export async function runProjectLoopCompletion(options: {
         attempts: (resumeState.attempts ?? 0) + 1,
         updatedAt: new Date().toISOString(),
       } : undefined,
+    }).catch(async (error) => {
+      await cleanupToolRun();
+      throw error;
     });
   } else if (loopRunStore && loopRunId) {
     await loopRunStore.createRun({
@@ -284,6 +304,9 @@ export async function runProjectLoopCompletion(options: {
             }
           : {}),
       },
+    }).catch(async (error) => {
+      await cleanupToolRun();
+      throw error;
     });
   }
   const executor = new PipelineExecutor();
@@ -386,6 +409,7 @@ export async function runProjectLoopCompletion(options: {
           runId: loopRunId,
           sessionId: sessionId ?? undefined,
           runtimeContext,
+          toolRunScope,
           onToolCall,
         });
         finalText = stepResult.text || finalText;
@@ -504,9 +528,7 @@ export async function runProjectLoopCompletion(options: {
     }
     throw err;
   } finally {
-    if (rootTools.cleanup) {
-      rootTools.cleanup().catch(() => {});
-    }
+    await cleanupToolRun();
   }
 }
 

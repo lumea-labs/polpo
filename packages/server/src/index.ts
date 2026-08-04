@@ -55,6 +55,8 @@ export {
   type CompletionRuntimeGuardrailsResolver,
   type CompletionRuntimeInvocation,
   type CompletionRuntimePlanInput,
+  type CompletionToolRunScope,
+  type CompletionToolRunScopeInput,
 } from "./routes/completions.js";
 export { agentRoutes } from "./routes/agents.js";
 export { loopRoutes, type LoopRouteDeps } from "./routes/loops.js";
