@@ -1,4 +1,4 @@
-import type { ModelMessage } from "ai";
+import type { ModelMessage, ToolSet } from "ai";
 import { describe, expect, it } from "vitest";
 
 import type {
@@ -14,6 +14,37 @@ import {
 const messages: ModelMessage[] = [{ role: "user", content: "hello" }];
 
 describe("runModelPolicyTurn", () => {
+  it("preserves active tool selection across provider fallback attempts", async () => {
+    const activeToolsByAttempt: Array<readonly string[] | undefined> = [];
+    const tools = {
+      tool_search: {} as any,
+      hidden_tool: {} as any,
+    };
+
+    await runModelPolicyTurn({
+      selection: {
+        primary: "anthropic/claude-sonnet-5",
+        fallbacks: ["openai/gpt-4o"],
+      },
+      messages,
+      tools,
+      activeTools: ["tool_search"],
+      resolveAttempt: (attempt) => ({ model: fakeModel(attempt.model) }),
+      classifyError: error => ({
+        class: "overloaded",
+        retryable: true,
+        message: error instanceof Error ? error.message : "error",
+      }),
+      runAttempt: async (input) => {
+        activeToolsByAttempt.push(input.activeTools as readonly string[] | undefined);
+        if (activeToolsByAttempt.length === 1) throw new Error("retry");
+        return fakeResult<typeof tools>("ok");
+      },
+    });
+
+    expect(activeToolsByAttempt).toEqual([["tool_search"], ["tool_search"]]);
+  });
+
   it("runs a primary-only policy without touching fallback semantics", async () => {
     const attempted: string[] = [];
     const events: ModelTurnEvent[] = [];
@@ -197,7 +228,7 @@ function fakeModel(modelId: string): StreamModelTurnInput["model"] {
   return { modelId } as StreamModelTurnInput["model"];
 }
 
-function fakeResult(text: string): ModelTurnResult {
+function fakeResult<TOOLS extends ToolSet = ToolSet>(text: string): ModelTurnResult<TOOLS> {
   return {
     text,
     toolCalls: [],
@@ -206,5 +237,5 @@ function fakeResult(text: string): ModelTurnResult {
     totalUsage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
     finishReason: "stop",
     responseMessages: [],
-  } as unknown as ModelTurnResult;
+  } as unknown as ModelTurnResult<TOOLS>;
 }

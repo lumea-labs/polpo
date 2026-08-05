@@ -48,6 +48,11 @@ import {
 } from "./tool-mapping.js";
 import { createGuardedCompletionToolExecutor } from "./tool-guardrails.js";
 import { assertModelPreflightValue } from "./preflight-validation.js";
+import {
+  MODEL_CONTROLLED_TOOL_PROMPT,
+  createModelControlledToolPool,
+  forcedModelToolName,
+} from "./tool-disclosure.js";
 
 export const MAX_TURNS = 20;
 
@@ -305,7 +310,7 @@ export async function runAgentStepCompletion(options: {
     agentConfig,
     options.toolRunScope,
   );
-  const executeTool = createGuardedCompletionToolExecutor({
+  let executeTool = createGuardedCompletionToolExecutor({
     executor: resolvedTools.executor,
     tools: resolvedTools.tools,
     middleware: deps.runToolMiddleware,
@@ -318,12 +323,39 @@ export async function runAgentStepCompletion(options: {
       sessionId: options.sessionId,
     },
   });
+  const modelToolChoice = toAIToolChoice(agentConfig.toolChoice);
+  let modelTools = resolvedTools.tools;
+  let activeToolNames: (() => string[]) | undefined;
+  let activeCompactionTools: (() => any[]) | undefined;
+  if (resolvedTools.disclosure?.mode === "model-controlled") {
+    const configuredInitial = [...(resolvedTools.disclosure.initiallyLoaded ?? [])];
+    const forcedTool = forcedModelToolName(modelToolChoice);
+    if (forcedTool && modelTools.some((tool) => tool?.name === forcedTool)) {
+      configuredInitial.push(forcedTool);
+    }
+    const pool = createModelControlledToolPool({
+      tools: modelTools,
+      executor: executeTool,
+      initiallyLoaded: [...new Set(configuredInitial)],
+      maxLoadedTools: resolvedTools.disclosure.maxLoadedTools,
+      maxLoadBatch: resolvedTools.disclosure.maxLoadBatch,
+      maxSearchResults: resolvedTools.disclosure.maxSearchResults,
+    });
+    const providerToolNames = Object.keys(resolvedTools.extraAiTools ?? {});
+    modelTools = pool.tools;
+    executeTool = pool.executor;
+    activeToolNames = () => [...new Set([
+      ...pool.startModelTurn(),
+      ...providerToolNames,
+    ])];
+    activeCompactionTools = pool.activeTools;
+    fullSystemPrompt = `${fullSystemPrompt}\n\n${MODEL_CONTROLLED_TOOL_PROMPT}`;
+  }
   const aiTools = {
-    ...toAITools(resolvedTools.tools),
+    ...toAITools(modelTools),
     ...(resolvedTools.extraAiTools ?? {}),
   };
   const providerToolNames = new Set(Object.keys(resolvedTools.extraAiTools ?? {}));
-  const modelToolChoice = toAIToolChoice(agentConfig.toolChoice);
   let finalText = "";
   let totalUsage: LanguageModelUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 } as LanguageModelUsage;
   let lastProviderMetadata: Record<string, unknown> | undefined;
@@ -334,7 +366,7 @@ export async function runAgentStepCompletion(options: {
       const compactionResult = await compactIfNeeded({
         systemPrompt: fullSystemPrompt,
         messages,
-        tools: resolvedTools.tools,
+        tools: activeCompactionTools?.() ?? modelTools,
         config: {
           contextWindow: m.contextWindow ?? 200_000,
           maxOutputTokens: m.maxTokens ?? 8192,
@@ -369,6 +401,7 @@ export async function runAgentStepCompletion(options: {
         system: fullSystemPrompt,
         messages,
         tools: aiTools,
+        ...(activeToolNames ? { activeTools: activeToolNames() } : {}),
         ...(modelToolChoice ? { toolChoice: modelToolChoice as any } : {}),
       }, async (event) => {
         if (event.type === "tool-input-start") {

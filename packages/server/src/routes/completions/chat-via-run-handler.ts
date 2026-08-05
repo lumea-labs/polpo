@@ -87,11 +87,13 @@ export function buildChatRunInjection(execution: ChatCompletionExecution): ChatS
     toolChoice: modelToolChoice,
     seedMessages: aiMessages,
     toolSet: { ...toAITools(effectiveTools), ...(extraAiTools ?? {}), ...CLIENT_SIDE_TOOLS },
+    activeToolNames: execution.activeToolNames,
     executor: effectiveToolExecutor,
     clientSideToolNames: CLIENT_SIDE_TOOL_NAMES,
     providerToolNames: new Set(Object.keys(extraAiTools ?? {})),
     sandbox: execution.body.sandbox,
     compactionTools: effectiveTools,
+    activeCompactionTools: execution.activeCompactionTools,
     compactionMode: "chat",
   };
 }

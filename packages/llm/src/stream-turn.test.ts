@@ -29,6 +29,48 @@ function mockModel(parts: unknown[]) {
 }
 
 describe("streamModelTurn", () => {
+  it("only sends active tools to the model provider", async () => {
+    let providerTools: Array<{ name: string }> | undefined;
+    const model = new MockLanguageModelV3({
+      doGenerate: {
+        content: [{ type: "text", text: "unused" }],
+        finishReason: { unified: "stop", raw: undefined },
+        usage: usage(),
+        warnings: [],
+      },
+      doStream: async (options) => {
+        providerTools = options.tools;
+        return {
+          stream: convertArrayToReadableStream([
+            { type: "stream-start", warnings: [] },
+            { type: "text-start", id: "txt_1" },
+            { type: "text-delta", id: "txt_1", delta: "ok" },
+            { type: "text-end", id: "txt_1" },
+            { type: "finish", finishReason: { unified: "stop", raw: undefined }, usage: usage() },
+          ] as any[]),
+        };
+      },
+    });
+
+    await streamModelTurn({
+      model,
+      messages: [{ role: "user", content: "Use the loaded tool" }],
+      tools: {
+        tool_search: {
+          description: "Search tools",
+          inputSchema: jsonSchema({ type: "object", properties: {} }),
+        },
+        hidden_tool: {
+          description: "Must stay hidden",
+          inputSchema: jsonSchema({ type: "object", properties: {} }),
+        },
+      },
+      activeTools: ["tool_search"],
+    });
+
+    expect(providerTools?.map((tool) => tool.name)).toEqual(["tool_search"]);
+  });
+
   it("normalizes no-argument tool calls before they are stored in history", () => {
     const messages = normalizeResponseMessagesForHistory([
       {

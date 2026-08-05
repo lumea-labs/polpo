@@ -66,6 +66,7 @@ import type {
   RuntimeOutputEnforcementMode,
 } from "@polpo-ai/core/guardrails";
 import type { CompletionToolExecutor } from "./completions/tool-guardrails.js";
+import type { ModelControlledToolDisclosureConfig } from "./completions/tool-disclosure.js";
 
 export { resumeProjectLoopRun } from "./completions/project-loop-runner.js";
 export {
@@ -215,6 +216,11 @@ export interface CompletionRouteDeps {
     runtimeExecutor?: CompletionToolExecutor;
     cleanup?: () => Promise<void>;
     extraAiTools?: Record<string, any>;
+    /**
+     * Optional host-controlled progressive disclosure policy. Omitted keeps
+     * the historical behavior where every authorized tool is model-visible.
+     */
+    disclosure?: ModelControlledToolDisclosureConfig;
   }>;
   /**
    * Optionally create a host resource scope for one project-loop execution.

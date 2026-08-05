@@ -7,6 +7,12 @@ import {
 import { completionRoutes, runConversationTurn, type CompletionRouteDeps } from "../completions.js";
 import { runChatTurnViaRun } from "./chat-via-run-handler.js";
 import type { CompletionRequestBody } from "./schemas.js";
+import { MockLanguageModelV3, convertArrayToReadableStream } from "ai/test";
+
+const mockUsage = {
+  inputTokens: { total: 10, noCache: undefined, cacheRead: undefined, cacheWrite: undefined },
+  outputTokens: { total: 5, text: undefined, reasoning: undefined },
+};
 
 function parseSse(body: string): any[] {
   return body
@@ -52,6 +58,124 @@ function baseDeps(overrides: Partial<CompletionRouteDeps> = {}): CompletionRoute
 }
 
 describe("chat via Run driver", () => {
+  it("keeps the inline model tool pool hidden until the model explicitly loads a tool", async () => {
+    const visibleByTurn: string[][] = [];
+    let turn = 0;
+    const model = new MockLanguageModelV3({
+      doStream: async (options) => {
+        visibleByTurn.push((options.tools ?? []).map((tool) => tool.name));
+        turn += 1;
+        if (turn === 1) {
+          return { stream: convertArrayToReadableStream([
+            { type: "stream-start", warnings: [] },
+            { type: "tool-call", toolCallId: "load_1", toolName: "tool_load", input: JSON.stringify({ names: ["calculate"] }) },
+            { type: "finish", finishReason: { unified: "tool-calls", raw: undefined }, usage: mockUsage },
+          ] as any[]) };
+        }
+        if (turn === 2) {
+          return { stream: convertArrayToReadableStream([
+            { type: "stream-start", warnings: [] },
+            { type: "tool-call", toolCallId: "calc_1", toolName: "calculate", input: JSON.stringify({ value: 21 }) },
+            { type: "finish", finishReason: { unified: "tool-calls", raw: undefined }, usage: mockUsage },
+          ] as any[]) };
+        }
+        return { stream: convertArrayToReadableStream([
+          { type: "stream-start", warnings: [] },
+          { type: "text-start", id: "text_1" },
+          { type: "text-delta", id: "text_1", delta: "42" },
+          { type: "text-end", id: "text_1" },
+          { type: "finish", finishReason: { unified: "stop", raw: undefined }, usage: mockUsage },
+        ] as any[]) };
+      },
+    });
+    const execute = vi.fn(async (_name: string, args: Record<string, unknown>) => String(Number(args.value) * 2));
+    const deps = baseDeps({
+      getConfig: () => ({ settings: { chatExecution: "inline" } }),
+      resolveAgentModel: async () => ({
+        model: {
+          id: "mock-model",
+          provider: "mock",
+          aiModel: model,
+          contextWindow: 200_000,
+          maxTokens: 8192,
+        },
+      }),
+      resolveAgentTools: async () => ({
+        tools: [{
+          name: "calculate",
+          description: "Double a number",
+          parameters: {
+            type: "object",
+            properties: { value: { type: "number" } },
+            required: ["value"],
+            additionalProperties: false,
+          },
+        }],
+        executor: execute,
+        disclosure: { mode: "model-controlled" },
+      }),
+    });
+
+    const response = await completionRoutes(() => deps).request("/", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        agent: "agent-1",
+        stream: false,
+        messages: [{ role: "user", content: "Double 21" }],
+      }),
+    });
+
+    expect(response.status).toBe(200);
+    expect((await response.json() as any).choices[0].message.content).toBe("42");
+    expect(visibleByTurn[0]).toEqual(expect.arrayContaining(["tool_list", "tool_search", "tool_load"]));
+    expect(visibleByTurn[0]).not.toContain("calculate");
+    expect(visibleByTurn[1]).toContain("calculate");
+    expect(execute).toHaveBeenCalledOnce();
+    expect(execute).toHaveBeenCalledWith("calculate", { value: 21 }, expect.objectContaining({ callId: "calc_1" }));
+  });
+
+  it("passes one mutable disclosure pool into the run-backed chat injection", async () => {
+    const execute = vi.fn(async () => "done");
+    const runChatViaRun = vi.fn(async (inject: any) => {
+      expect(inject.activeToolNames()).toEqual(expect.arrayContaining([
+        "tool_list",
+        "tool_search",
+        "tool_load",
+        "ask_user_question",
+      ]));
+      expect(inject.activeToolNames()).not.toContain("calculate");
+      await expect(inject.executor("calculate", { value: 2 })).resolves.toContain("not active");
+      await inject.executor("tool_load", { names: ["calculate"] });
+      expect(inject.activeToolNames()).toContain("calculate");
+      await expect(inject.executor("calculate", { value: 2 })).resolves.toBe("done");
+      return { status: "completed", result: { exitCode: 0, stdout: "done", stderr: "" } };
+    });
+    const deps = baseDeps({
+      resolveAgentTools: async () => ({
+        tools: [{
+          name: "calculate",
+          description: "Calculate",
+          parameters: { type: "object", properties: { value: { type: "number" } } },
+        }],
+        executor: execute,
+        disclosure: { mode: "model-controlled" },
+      }),
+      runChatViaRun,
+    });
+
+    await runConversationTurn(deps, {
+      body: {
+        agent: "agent-1",
+        stream: false,
+        messages: [{ role: "user", content: "calculate" }],
+      },
+    });
+
+    expect(runChatViaRun).toHaveBeenCalledOnce();
+    expect(execute).toHaveBeenCalledOnce();
+  });
+
   it("enforces output policy before channel delivery and persistence", async () => {
     const updateMessage = vi.fn(async () => true);
     const outputPolicy = createRunOutputPolicy(new RuntimeGuardrailEngine([{

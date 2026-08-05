@@ -187,6 +187,7 @@ function buildAttemptInput<TOOLS extends ToolSet>(
     ...(input.system ? { system: input.system } : {}),
     messages: input.messages,
     ...(input.tools ? { tools: input.tools } : {}),
+    ...(input.activeTools ? { activeTools: input.activeTools } : {}),
     ...(input.toolChoice ? { toolChoice: input.toolChoice } : {}),
     ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
     model: resolution.model,
