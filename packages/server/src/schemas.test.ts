@@ -9,7 +9,11 @@ import {
 
 const lifecycle = {
   isolation: "fresh" as const,
-  lifecycle: { onRelease: "pool" as const, idleTtlMinutes: 30 },
+  lifecycle: {
+    onRelease: "pool" as const,
+    stopAfterIdleMinutes: 30,
+    deleteAfterStopMinutes: 45,
+  },
 };
 
 describe("shared runtime sandbox schema", () => {
@@ -41,6 +45,12 @@ describe("shared runtime sandbox schema", () => {
     { lifecycle: { idleTtlMinutes: Number.NaN } },
     { lifecycle: { idleTtlMinutes: Number.POSITIVE_INFINITY } },
     { lifecycle: { onRelease: "destroy", idleTtlMinutes: 1 } },
+    { lifecycle: { stopAfterIdleMinutes: 0 } },
+    { lifecycle: { deleteAfterStopMinutes: -1 } },
+    { lifecycle: { onRelease: "destroy", stopAfterIdleMinutes: 1 } },
+    { lifecycle: { onRelease: "destroy", deleteAfterStopMinutes: 0 } },
+    { lifecycle: { idleTtlMinutes: 30, stopAfterIdleMinutes: 30 } },
+    { lifecycle: { idleTtlMinutes: 30, deleteAfterStopMinutes: 0 } },
   ])("rejects malformed policy %#", (sandbox) => {
     expect(RuntimeSandboxSchema.safeParse(sandbox).success).toBe(false);
   });

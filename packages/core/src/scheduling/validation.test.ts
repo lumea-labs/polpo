@@ -255,6 +255,51 @@ describe("schedule invocation validation", () => {
     });
   });
 
+  it("preserves explicit sandbox stop and delete controls", () => {
+    expect(normalizeScheduleInvocation({
+      surface: "agent",
+      agentName: "builder",
+      input: { prompt: "build" },
+      execution: {
+        sandbox: {
+          isolation: "fresh",
+          lifecycle: {
+            onRelease: "pool",
+            stopAfterIdleMinutes: 30,
+            deleteAfterStopMinutes: 60,
+          },
+        },
+      },
+    })).toMatchObject({
+      execution: {
+        sandbox: {
+          lifecycle: {
+            onRelease: "pool",
+            stopAfterIdleMinutes: 30,
+            deleteAfterStopMinutes: 60,
+          },
+        },
+      },
+    });
+  });
+
+  it("rejects mixed legacy and explicit schedule lifecycle controls", () => {
+    expect(() => normalizeScheduleInvocation({
+      surface: "agent",
+      agentName: "builder",
+      input: { prompt: "build" },
+      execution: {
+        sandbox: {
+          lifecycle: {
+            onRelease: "pool",
+            idleTtlMinutes: 30,
+            deleteAfterStopMinutes: 30,
+          },
+        },
+      },
+    })).toThrow(/cannot be mixed/i);
+  });
+
   it("enforces distinct channel send and agent-reply contracts", () => {
     expect(normalizeScheduleInvocation({
       surface: "channel",

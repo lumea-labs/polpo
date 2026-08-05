@@ -301,6 +301,48 @@ describe("createRuntimePlan", () => {
     }, fixedFactory)).toThrow(/idle TTL cannot be used with destroy/i);
   });
 
+  it("preserves explicit stop and delete lifecycle controls", () => {
+    const plan = createRuntimePlan({
+      surface: "agent",
+      source: "request",
+      model: { selection: "openai/gpt-5", source: "default" },
+      sandbox: {
+        isolation: "fresh",
+        source: "request",
+        lifecycle: {
+          onRelease: "pool",
+          stopAfterIdleMinutes: 30,
+          deleteAfterStopMinutes: 60,
+          source: "request",
+        },
+      },
+    }, fixedFactory);
+
+    expect(plan.sandbox.lifecycle).toEqual({
+      onRelease: "pool",
+      stopAfterIdleMinutes: 30,
+      deleteAfterStopMinutes: 60,
+      source: "request",
+    });
+    expect(normalizeRuntimePlan(plan)).toEqual(plan);
+  });
+
+  it("rejects mixed legacy and explicit lifecycle controls", () => {
+    expect(() => createRuntimePlan({
+      surface: "agent",
+      source: "request",
+      model: { selection: "openai/gpt-5", source: "default" },
+      sandbox: {
+        lifecycle: {
+          onRelease: "pool",
+          idleTtlMinutes: 10,
+          stopAfterIdleMinutes: 10,
+          source: "request",
+        },
+      },
+    }, fixedFactory)).toThrow(/cannot be mixed/i);
+  });
+
   it("records explicit shared isolation in the runtime plan", () => {
     const plan = createRuntimePlan({
       surface: "agent",

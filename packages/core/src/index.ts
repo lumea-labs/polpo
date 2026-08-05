@@ -206,6 +206,12 @@ export type {
   SandboxSession,
   SandboxLifecycle,
   SandboxUsage,
+  SandboxRuntimeEvent,
+  SandboxRuntimeEventType,
+  SandboxRuntimeOperation,
+  SandboxAcquisitionSource,
+  SandboxReleaseOutcome,
+  SandboxLifecycleInfo,
 } from "./sandbox-provider.js";
 
 // ── Agent Prompt Builder ────────────────────────────────────────────────

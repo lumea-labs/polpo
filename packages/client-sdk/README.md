@@ -17,7 +17,11 @@ await client.chatCompletions({
   model: "openai/gpt-5",
   sandbox: {
     isolation: "fresh",
-    lifecycle: { onRelease: "pool", idleTtlMinutes: 30 },
+    lifecycle: {
+      onRelease: "pool",
+      stopAfterIdleMinutes: 30,
+      deleteAfterStopMinutes: 60,
+    },
   },
   guardrails: { policyPack: "strict" },
 });
@@ -31,8 +35,10 @@ With `sandbox.isolation: "fresh"`, Polpo acquires one clean sandbox for the
 outer completion. Deterministic tools and nested Agentic Loop steps share its
 filesystem until that completion finishes. Allocation and release are
 independent: `lifecycle.onRelease` either returns the sandbox to the
-project-scoped pool or destroys it. `idleTtlMinutes` optionally bounds pooled
-inactivity before host cleanup.
+project-scoped pool or destroys it. Pooled sandboxes can be stopped after
+`stopAfterIdleMinutes` and deleted after another `deleteAfterStopMinutes`.
+The deprecated `idleTtlMinutes` field remains accepted on its own for older
+clients, but cannot be mixed with the explicit controls.
 
 Use `sandbox.isolation: "shared"` only when concurrent outer runs are intended
 to collaborate in one project-scoped workspace. `reuse` remains exclusive and

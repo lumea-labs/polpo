@@ -70,15 +70,44 @@ const RuntimeSandboxLifecycleSchema = z.object({
   onRelease: z.enum(["pool", "destroy"]).optional().openapi({
     description: "Sandbox release policy. `pool` allows later project-scoped reuse; `destroy` deletes after the outer run.",
   }),
+  stopAfterIdleMinutes: z.number().int().min(1).max(10_080).optional().openapi({
+    description: "Stop a pooled sandbox after this many idle minutes.",
+  }),
+  deleteAfterStopMinutes: z.number().int().min(0).max(10_080).optional().openapi({
+    description: "Delete a stopped sandbox after this many minutes. Use `0` for immediate deletion after stop.",
+  }),
   idleTtlMinutes: z.number().int().min(1).max(10_080).optional().openapi({
-    description: "Optional pooled inactivity TTL in minutes. Applies only when `onRelease` resolves to `pool`.",
+    description: "Deprecated compressed pooled lifecycle TTL. Use the explicit stop/delete controls instead.",
+    deprecated: true,
   }),
 }).strict().superRefine((lifecycle, ctx) => {
-  if (lifecycle.onRelease === "destroy" && lifecycle.idleTtlMinutes !== undefined) {
+  const timerFields = [
+    "stopAfterIdleMinutes",
+    "deleteAfterStopMinutes",
+    "idleTtlMinutes",
+  ] as const;
+  if (lifecycle.onRelease === "destroy") {
+    for (const field of timerFields) {
+      if (lifecycle[field] !== undefined) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: [field],
+          message: `Sandbox ${field} cannot be used with onRelease=destroy`,
+        });
+      }
+    }
+  }
+  if (
+    lifecycle.idleTtlMinutes !== undefined
+    && (
+      lifecycle.stopAfterIdleMinutes !== undefined
+      || lifecycle.deleteAfterStopMinutes !== undefined
+    )
+  ) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
       path: ["idleTtlMinutes"],
-      message: "Sandbox idleTtlMinutes cannot be used with onRelease=destroy",
+      message: "Sandbox idleTtlMinutes cannot be mixed with explicit stop/delete controls",
     });
   }
 });

@@ -279,6 +279,10 @@ export function createRuntimePlan(
     throw new Error("Runtime plan sandbox release policy must be one of: pool, destroy");
   }
   const sandboxIdleTtlMinutes = input.sandbox?.lifecycle?.idleTtlMinutes;
+  const sandboxStopAfterIdleMinutes =
+    input.sandbox?.lifecycle?.stopAfterIdleMinutes;
+  const sandboxDeleteAfterStopMinutes =
+    input.sandbox?.lifecycle?.deleteAfterStopMinutes;
   if (
     sandboxIdleTtlMinutes !== undefined
     && (
@@ -293,6 +297,52 @@ export function createRuntimePlan(
   }
   if (sandboxReleasePolicy === "destroy" && sandboxIdleTtlMinutes !== undefined) {
     throw new Error("Runtime plan sandbox idle TTL cannot be used with destroy");
+  }
+  if (
+    sandboxStopAfterIdleMinutes !== undefined
+    && (
+      !Number.isInteger(sandboxStopAfterIdleMinutes)
+      || sandboxStopAfterIdleMinutes < 1
+      || sandboxStopAfterIdleMinutes > 10_080
+    )
+  ) {
+    throw new Error(
+      "Runtime plan sandbox stop-after-idle must be an integer between 1 and 10080 minutes",
+    );
+  }
+  if (
+    sandboxDeleteAfterStopMinutes !== undefined
+    && (
+      !Number.isInteger(sandboxDeleteAfterStopMinutes)
+      || sandboxDeleteAfterStopMinutes < 0
+      || sandboxDeleteAfterStopMinutes > 10_080
+    )
+  ) {
+    throw new Error(
+      "Runtime plan sandbox delete-after-stop must be an integer between 0 and 10080 minutes",
+    );
+  }
+  if (
+    sandboxIdleTtlMinutes !== undefined
+    && (
+      sandboxStopAfterIdleMinutes !== undefined
+      || sandboxDeleteAfterStopMinutes !== undefined
+    )
+  ) {
+    throw new Error(
+      "Runtime plan sandbox idle TTL cannot be mixed with explicit stop/delete controls",
+    );
+  }
+  if (
+    sandboxReleasePolicy === "destroy"
+    && (
+      sandboxStopAfterIdleMinutes !== undefined
+      || sandboxDeleteAfterStopMinutes !== undefined
+    )
+  ) {
+    throw new Error(
+      "Runtime plan sandbox stop/delete controls cannot be used with destroy",
+    );
   }
   const sandboxLifecycleSource =
     input.sandbox?.lifecycle?.source
@@ -350,6 +400,12 @@ export function createRuntimePlan(
         onRelease: sandboxReleasePolicy,
         ...(sandboxIdleTtlMinutes !== undefined
           ? { idleTtlMinutes: sandboxIdleTtlMinutes }
+          : {}),
+        ...(sandboxStopAfterIdleMinutes !== undefined
+          ? { stopAfterIdleMinutes: sandboxStopAfterIdleMinutes }
+          : {}),
+        ...(sandboxDeleteAfterStopMinutes !== undefined
+          ? { deleteAfterStopMinutes: sandboxDeleteAfterStopMinutes }
           : {}),
         source: sandboxLifecycleSource,
       },
@@ -449,6 +505,12 @@ export function normalizeRuntimePlan(value: unknown): RuntimePlan {
                 ),
                 ...(sandboxLifecycle.idleTtlMinutes !== undefined
                   ? { idleTtlMinutes: sandboxLifecycle.idleTtlMinutes }
+                  : {}),
+                ...(sandboxLifecycle.stopAfterIdleMinutes !== undefined
+                  ? { stopAfterIdleMinutes: sandboxLifecycle.stopAfterIdleMinutes }
+                  : {}),
+                ...(sandboxLifecycle.deleteAfterStopMinutes !== undefined
+                  ? { deleteAfterStopMinutes: sandboxLifecycle.deleteAfterStopMinutes }
                   : {}),
                 source: requiredValue(
                   sandboxLifecycle.source,

@@ -25,6 +25,14 @@ describe("MemoryLoopRunStore", () => {
       loop: "coding-flow",
       status: "started",
     });
+    await store.appendTrace("run-1", {
+      id: "trace-2",
+      type: "sandbox.acquired",
+      ts: "2026-06-13T00:00:00.100Z",
+      sandboxId: "sb-1",
+      operation: "acquire",
+      source: "pool",
+    });
     await store.updateRun("run-1", {
       status: "completed",
       context: { build: { passed: true } },
@@ -32,7 +40,12 @@ describe("MemoryLoopRunStore", () => {
     });
 
     const fetched = await store.getRun("run-1");
-    expect(fetched?.trace).toHaveLength(1);
+    expect(fetched?.trace).toHaveLength(2);
+    expect(fetched?.trace[1]).toMatchObject({
+      type: "sandbox.acquired",
+      sandboxId: "sb-1",
+      source: "pool",
+    });
     expect(fetched?.context).toEqual({ build: { passed: true } });
     expect(await store.listRuns({ status: "completed" })).toHaveLength(1);
   });

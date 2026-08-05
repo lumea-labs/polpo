@@ -3,13 +3,18 @@ import type { SandboxProvider, SandboxSession, SandboxUsage } from "@polpo-ai/co
 import { SandboxLease } from "./lease.js";
 import { LocalSandboxProvider } from "./local-provider.js";
 
-function fakeProvider(opts: { withLifecycle?: boolean; omitOptional?: boolean } = {}) {
+function fakeProvider(opts: {
+  withLifecycle?: boolean;
+  omitOptional?: boolean;
+  withLifecycleInfo?: boolean;
+} = {}) {
   const suspend = vi.fn(async () => {});
   const resume = vi.fn(async () => {});
   const dispose = vi.fn(async () => {});
   const readFile = vi.fn(async (p: string) => `content:${p}`);
   const readdir = vi.fn(async (_p: string) => ["a", "b"]);
   let opens = 0;
+  let released = false;
 
   const fs: any = {
     readFile,
@@ -34,7 +39,16 @@ function fakeProvider(opts: { withLifecycle?: boolean; omitOptional?: boolean } 
         fs,
         shell: { execute: vi.fn(async () => ({ stdout: "ok", stderr: "", exitCode: 0 })) },
         lifecycle: opts.withLifecycle ? { suspend, resume } : undefined,
-        dispose,
+        lifecycleInfo: opts.withLifecycleInfo
+          ? () => ({
+              acquisitionSource: "created",
+              ...(released ? { releaseOutcome: "pooled" as const } : {}),
+            })
+          : undefined,
+        dispose: async () => {
+          await dispose();
+          released = true;
+        },
       };
     },
   };
@@ -42,6 +56,81 @@ function fakeProvider(opts: { withLifecycle?: boolean; omitOptional?: boolean } 
 }
 
 describe("SandboxLease", () => {
+  it("emits one ordered lifecycle trace for acquire and release", async () => {
+    const onUsage = vi.fn();
+    const onEvent = vi.fn();
+    const { provider } = fakeProvider({ withLifecycleInfo: true });
+    const lease = new SandboxLease(provider, "r1", { onEvent, onUsage, projectId: "p1" });
+
+    await lease.fs.readFile("/a");
+    await lease.dispose();
+    await lease.dispose();
+
+    expect(onEvent.mock.calls.map(([event]) => event.type)).toEqual([
+      "sandbox.acquire.started",
+      "sandbox.acquired",
+      "sandbox.release.started",
+      "sandbox.released",
+    ]);
+    expect(onEvent.mock.calls[1]![0]).toMatchObject({
+      runId: "r1",
+      projectId: "p1",
+      source: "created",
+    });
+    expect(onEvent.mock.calls[3]![0]).toMatchObject({ outcome: "pooled" });
+    expect(onUsage.mock.calls[0]![0].events).toEqual(
+      onEvent.mock.calls.map(([event]) => event),
+    );
+  });
+
+  it("records acquisition failures and keeps telemetry best-effort", async () => {
+    const onEvent = vi.fn(() => { throw new Error("sink unavailable"); });
+    const onUsage = vi.fn(() => { throw new Error("usage sink unavailable"); });
+    const provider: SandboxProvider = {
+      open: vi.fn(async () => { throw new Error("capacity exhausted"); }),
+    };
+    const lease = new SandboxLease(provider, "r1", { onEvent, onUsage });
+
+    await expect(lease.fs.readFile("/a")).rejects.toThrow("capacity exhausted");
+    await expect(lease.dispose()).resolves.toBeUndefined();
+    expect(onEvent).toHaveBeenCalledTimes(2);
+    expect(onUsage).toHaveBeenCalledWith(expect.objectContaining({
+      acquired: false,
+      events: [
+        expect.objectContaining({ type: "sandbox.acquire.started" }),
+        expect.objectContaining({
+          type: "sandbox.error",
+          operation: "acquire",
+          error: "capacity exhausted",
+        }),
+      ],
+    }));
+  });
+
+  it("records release failures and still emits usage once", async () => {
+    const onEvent = vi.fn();
+    const onUsage = vi.fn();
+    const { provider, dispose } = fakeProvider();
+    dispose.mockRejectedValueOnce(new Error("delete failed"));
+    const lease = new SandboxLease(provider, "r1", { onEvent, onUsage });
+
+    await lease.fs.readFile("/a");
+    await lease.dispose();
+    await lease.dispose();
+
+    expect(onEvent.mock.calls.map(([event]) => event.type)).toEqual([
+      "sandbox.acquire.started",
+      "sandbox.acquired",
+      "sandbox.release.started",
+      "sandbox.error",
+    ]);
+    expect(onEvent.mock.calls[3]![0]).toMatchObject({
+      operation: "release",
+      error: "delete failed",
+    });
+    expect(onUsage).toHaveBeenCalledTimes(1);
+  });
+
   it("never opens a session when fs/shell are untouched (lazy acquire)", async () => {
     const onUsage = vi.fn();
     const { provider, opens } = fakeProvider();
@@ -118,9 +207,15 @@ describe("SandboxLease", () => {
 
     it("suspends after idle, resumes on next op, and excludes the idle gap from sandboxMs", async () => {
       const onUsage = vi.fn();
+      const onEvent = vi.fn();
       let t = 0;
       const { provider, suspend, resume } = fakeProvider({ withLifecycle: true });
-      const lease = new SandboxLease(provider, "r1", { now: () => t, onUsage, idleSuspendMs: 1000 });
+      const lease = new SandboxLease(provider, "r1", {
+        now: () => t,
+        onUsage,
+        onEvent,
+        idleSuspendMs: 1000,
+      });
 
       await lease.fs.readFile("/a"); // acquires + runs at t=0; op ends → idle armed
       t = 200; // it ran 200ms of active work
@@ -136,6 +231,64 @@ describe("SandboxLease", () => {
       const usage = onUsage.mock.calls[0]![0] as SandboxUsage;
       // 200ms (before suspend) + 100ms (after resume) = 300ms; the 4800ms gap excluded
       expect(usage.sandboxMs).toBe(300);
+      expect(onEvent.mock.calls.map(([event]) => event.type)).toEqual([
+        "sandbox.acquire.started",
+        "sandbox.acquired",
+        "sandbox.suspended",
+        "sandbox.resumed",
+        "sandbox.release.started",
+        "sandbox.released",
+      ]);
+    });
+
+    it("records lifecycle failures without reporting a transition that did not happen", async () => {
+      const onEvent = vi.fn();
+      const { provider, suspend } = fakeProvider({ withLifecycle: true });
+      suspend.mockRejectedValueOnce(new Error("provider unavailable"));
+      const lease = new SandboxLease(provider, "r1", { onEvent, idleSuspendMs: 1000 });
+
+      await lease.fs.readFile("/a");
+      await vi.advanceTimersByTimeAsync(1000);
+      await lease.dispose();
+
+      expect(onEvent.mock.calls.map(([event]) => event.type)).toEqual([
+        "sandbox.acquire.started",
+        "sandbox.acquired",
+        "sandbox.error",
+        "sandbox.release.started",
+        "sandbox.released",
+      ]);
+      expect(onEvent.mock.calls[2]![0]).toMatchObject({
+        operation: "suspend",
+        error: "provider unavailable",
+      });
+    });
+
+    it("retries resume after a transient failure without leaking in-flight activity", async () => {
+      const onEvent = vi.fn();
+      const { provider, resume, suspend } = fakeProvider({ withLifecycle: true });
+      resume.mockRejectedValueOnce(new Error("resume unavailable"));
+      const lease = new SandboxLease(provider, "r1", { onEvent, idleSuspendMs: 1000 });
+
+      await lease.fs.readFile("/a");
+      await vi.advanceTimersByTimeAsync(1000);
+      await expect(lease.fs.readFile("/b")).rejects.toThrow("resume unavailable");
+      await expect(lease.fs.readFile("/c")).resolves.toBe("content:/c");
+      await vi.advanceTimersByTimeAsync(1000);
+      await lease.dispose();
+
+      expect(resume).toHaveBeenCalledTimes(2);
+      expect(suspend).toHaveBeenCalledTimes(2);
+      expect(onEvent.mock.calls.map(([event]) => event.type)).toEqual([
+        "sandbox.acquire.started",
+        "sandbox.acquired",
+        "sandbox.suspended",
+        "sandbox.error",
+        "sandbox.resumed",
+        "sandbox.suspended",
+        "sandbox.release.started",
+        "sandbox.released",
+      ]);
     });
   });
 });

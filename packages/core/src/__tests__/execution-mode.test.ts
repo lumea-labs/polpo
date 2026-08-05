@@ -73,14 +73,22 @@ describe("resolveRuntimeSandboxOptions — runtime sandbox precedence", () => {
       {
         sandbox: {
           isolation: "fresh",
-          lifecycle: { onRelease: "pool", idleTtlMinutes: 30 },
+          lifecycle: {
+            onRelease: "pool",
+            stopAfterIdleMinutes: 30,
+            deleteAfterStopMinutes: 45,
+          },
         },
       },
       { sandbox: { isolation: "fresh" } },
       { sandbox: { isolation: "reuse" } },
     )).toEqual({
       isolation: "reuse",
-      lifecycle: { onRelease: "pool", idleTtlMinutes: 30 },
+      lifecycle: {
+        onRelease: "pool",
+        stopAfterIdleMinutes: 30,
+        deleteAfterStopMinutes: 45,
+      },
     });
   });
 
@@ -97,14 +105,22 @@ describe("resolveRuntimeSandboxOptions — runtime sandbox precedence", () => {
       {
         sandbox: {
           isolation: "reuse",
-          lifecycle: { onRelease: "pool", idleTtlMinutes: 45 },
+          lifecycle: {
+            onRelease: "pool",
+            stopAfterIdleMinutes: 45,
+            deleteAfterStopMinutes: 60,
+          },
         },
       },
       { sandbox: { isolation: "fresh" } },
-      { sandbox: { lifecycle: { onRelease: "pool" } } },
+      { sandbox: { lifecycle: { onRelease: "pool", deleteAfterStopMinutes: 90 } } },
     )).toEqual({
       isolation: "fresh",
-      lifecycle: { onRelease: "pool", idleTtlMinutes: 45 },
+      lifecycle: {
+        onRelease: "pool",
+        stopAfterIdleMinutes: 45,
+        deleteAfterStopMinutes: 90,
+      },
     });
   });
 
@@ -112,11 +128,35 @@ describe("resolveRuntimeSandboxOptions — runtime sandbox precedence", () => {
     expect(resolveRuntimeSandboxOptions(
       {
         sandbox: {
-          lifecycle: { onRelease: "pool", idleTtlMinutes: 60 },
+          lifecycle: {
+            onRelease: "pool",
+            stopAfterIdleMinutes: 60,
+            deleteAfterStopMinutes: 30,
+          },
         },
       },
       { sandbox: { lifecycle: { onRelease: "destroy" } } },
     )).toEqual({ lifecycle: { onRelease: "destroy" } });
+  });
+
+  it("keeps legacy idleTtlMinutes compatible without mixing it with explicit controls", () => {
+    expect(resolveRuntimeSandboxOptions(
+      { sandbox: { lifecycle: { onRelease: "pool", idleTtlMinutes: 30 } } },
+    )).toEqual({
+      lifecycle: { onRelease: "pool", idleTtlMinutes: 30 },
+    });
+
+    expect(resolveRuntimeSandboxOptions(
+      {
+        sandbox: {
+          lifecycle: {
+            onRelease: "pool",
+            idleTtlMinutes: 30,
+            stopAfterIdleMinutes: 10,
+          } as any,
+        },
+      },
+    )).toEqual({ lifecycle: { onRelease: "pool", idleTtlMinutes: 30 } });
   });
 
   it("ignores malformed lifecycle fields without weakening valid lower tiers", () => {

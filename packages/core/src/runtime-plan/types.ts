@@ -101,6 +101,9 @@ export interface RuntimePlan {
     source: Extract<RuntimeDecisionSource, "request" | "agent" | "default">;
     lifecycle: Readonly<{
       onRelease: SandboxReleasePolicy;
+      stopAfterIdleMinutes?: number;
+      deleteAfterStopMinutes?: number;
+      /** @deprecated Use explicit stop/delete controls. */
       idleTtlMinutes?: number;
       source: Extract<RuntimeDecisionSource, "request" | "agent" | "default">;
     }>;
@@ -133,6 +136,9 @@ export interface CreateRuntimePlanInput {
     source?: Extract<RuntimeDecisionSource, "request" | "agent" | "default">;
     lifecycle?: Readonly<{
       onRelease?: SandboxReleasePolicy;
+      stopAfterIdleMinutes?: number;
+      deleteAfterStopMinutes?: number;
+      /** @deprecated Use explicit stop/delete controls. */
       idleTtlMinutes?: number;
       source?: Extract<RuntimeDecisionSource, "request" | "agent" | "default">;
     }>;
