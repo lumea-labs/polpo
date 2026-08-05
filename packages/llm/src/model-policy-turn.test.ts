@@ -14,6 +14,36 @@ import {
 const messages: ModelMessage[] = [{ role: "user", content: "hello" }];
 
 describe("runModelPolicyTurn", () => {
+  it("preserves active tool selection across provider fallback attempts", async () => {
+    const activeToolsByAttempt: Array<readonly string[] | undefined> = [];
+
+    await runModelPolicyTurn({
+      selection: {
+        primary: "anthropic/claude-sonnet-5",
+        fallbacks: ["openai/gpt-4o"],
+      },
+      messages,
+      tools: {
+        tool_search: {} as any,
+        hidden_tool: {} as any,
+      },
+      activeTools: ["tool_search"],
+      resolveAttempt: (attempt) => ({ model: fakeModel(attempt.model) }),
+      classifyError: error => ({
+        class: "overloaded",
+        retryable: true,
+        message: error instanceof Error ? error.message : "error",
+      }),
+      runAttempt: async (input) => {
+        activeToolsByAttempt.push(input.activeTools as readonly string[] | undefined);
+        if (activeToolsByAttempt.length === 1) throw new Error("retry");
+        return fakeResult("ok");
+      },
+    });
+
+    expect(activeToolsByAttempt).toEqual([["tool_search"], ["tool_search"]]);
+  });
+
   it("runs a primary-only policy without touching fallback semantics", async () => {
     const attempted: string[] = [];
     const events: ModelTurnEvent[] = [];

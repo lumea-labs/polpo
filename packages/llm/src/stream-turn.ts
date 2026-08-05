@@ -52,6 +52,7 @@ export type StreamModelTurnInput<TOOLS extends ToolSet = ToolSet> = {
   system?: string;
   messages: ModelMessage[];
   tools?: TOOLS;
+  activeTools?: Array<keyof TOOLS>;
   toolChoice?: ToolChoice<TOOLS>;
   maxOutputTokens?: number;
   providerOptions?: Record<string, unknown>;
@@ -99,6 +100,7 @@ export async function streamModelTurn<TOOLS extends ToolSet = ToolSet>(
     ...(input.system ? { system: input.system } : {}),
     messages: input.messages,
     ...(input.tools ? { tools: input.tools } : {}),
+    ...(input.activeTools ? { activeTools: input.activeTools } : {}),
     ...(input.toolChoice ? { toolChoice: input.toolChoice } : {}),
     ...(input.maxOutputTokens ? { maxOutputTokens: input.maxOutputTokens } : {}),
     ...(input.providerOptions ? { providerOptions: input.providerOptions as any } : {}),
