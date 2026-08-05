@@ -69,7 +69,7 @@ export class DrizzleRunStore implements RunStore {
       executionMode: run.executionMode ?? null,
       engine: run.engine ?? "agent",
       delivery: run.delivery ?? null,
-      trace: serializeJson(run.trace, d),
+      trace: d === "pg" ? (run.trace ?? null) : serializeJson(run.trace, d),
       completedAt: run.completedAt ?? null,
       collectedAt: run.collectedAt ?? null,
     };
@@ -156,14 +156,23 @@ export class DrizzleRunStore implements RunStore {
 
   async appendTrace(runId: string, event: LoopTraceEvent): Promise<void> {
     const encodedEvent = JSON.stringify(event);
+    const pgTrace = sql`case
+      when ${this.runs.trace} is null then '[]'::jsonb
+      when jsonb_typeof(${this.runs.trace}) = 'array' then ${this.runs.trace}
+      when jsonb_typeof(${this.runs.trace}) = 'string'
+        and left(ltrim(${this.runs.trace} #>> '{}'), 1) = '['
+        and right(rtrim(${this.runs.trace} #>> '{}'), 1) = ']'
+        then (${this.runs.trace} #>> '{}')::jsonb
+      else '[]'::jsonb
+    end`;
     const trace = this.dialect === "pg"
       ? sql`case
           when exists (
             select 1
-            from jsonb_array_elements(coalesce(${this.runs.trace}, '[]'::jsonb)) as trace_event(value)
+            from jsonb_array_elements(${pgTrace}) as trace_event(value)
             where trace_event.value ->> 'id' = ${event.id}
-          ) then coalesce(${this.runs.trace}, '[]'::jsonb)
-          else coalesce(${this.runs.trace}, '[]'::jsonb) || jsonb_build_array(${encodedEvent}::jsonb)
+          ) then ${pgTrace}
+          else ${pgTrace} || jsonb_build_array(${encodedEvent}::jsonb)
         end`
       : sql`case
           when exists (
