@@ -15,7 +15,7 @@ import "@hyperjump/json-schema/formats";
 import { jsonSchema } from "ai";
 
 type JsonObject = Record<string, unknown>;
-type ToolInputValidationResult =
+export type ToolInputValidationResult =
   | { success: true; value: unknown }
   | { success: false; error: Error };
 type ToolInputValidator = (
@@ -468,4 +468,12 @@ export function toValidatedToolInputSchema(input: unknown) {
   return jsonSchema(modelFacingToolInputSchema(input), {
     validate: toolInputValidator(input),
   });
+}
+
+/** Validate a deterministic tool call through the same schema path as model calls. */
+export async function validateToolInput(
+  schema: unknown,
+  value: unknown,
+): Promise<ToolInputValidationResult> {
+  return await toolInputValidator(schema)(value);
 }

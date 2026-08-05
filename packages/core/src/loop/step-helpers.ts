@@ -36,6 +36,13 @@ export function normalizeToolInput(input: unknown): Record<string, unknown> {
   return { input };
 }
 
+/** Runtime-owned request data remains available to bindings and policies, not prompts or fallback output. */
+export function loopUserVisibleContext(context: Readonly<ContextBag>): ContextBag {
+  return Object.fromEntries(
+    Object.entries(context).filter(([key]) => key !== "request"),
+  );
+}
+
 export function stringifyLoopContext(context: Readonly<ContextBag>): string {
   const seen = new WeakSet<object>();
   let json: string;

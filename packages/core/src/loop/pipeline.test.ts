@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { LoopHookRegistry } from "./hooks.js";
 import { normalizeProjectLoop } from "./normalize.js";
 import { PipelineExecutor, type PipelineCheckpoint, type PipelineStepPosition } from "./pipeline.js";
+import { LoopContextBindingError } from "./bindings.js";
 import {
   LoopApprovalRequiredError,
   LoopPermissionApprovalRequiredError,
@@ -11,6 +12,209 @@ import {
 import type { ProjectLoopConfig, Step } from "./types.js";
 
 describe("PipelineExecutor", () => {
+  it("resolves deterministic tool input bindings before hooks and execution", async () => {
+    const executor = new PipelineExecutor();
+    const seen: unknown[] = [];
+    const result = await executor.execute({
+      loops: {},
+      context: {
+        request: { metadata: { projectRef: "project-123" } },
+      },
+      protectedContextRoots: ["request"],
+      pipeline: {
+        steps: [{
+          tool: "project_checkout",
+          input: {
+            projectRef: { $context: "request.metadata.projectRef" },
+            createIfMissing: true,
+          },
+          saveAs: "checkout",
+        }],
+      },
+      runLoop: async () => {
+        throw new Error("a deterministic tool pipeline must not call an LLM");
+      },
+      runTool: async (_name, input) => {
+        seen.push(input);
+        return { output: { ok: true } };
+      },
+    });
+
+    expect(seen).toEqual([{
+      projectRef: "project-123",
+      createIfMissing: true,
+    }]);
+    expect(result.events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: "tool.call",
+        input: { projectRef: "project-123", createIfMissing: true },
+      }),
+    ]));
+  });
+
+  it("does not call hooks or tools when a binding is missing", async () => {
+    const executor = new PipelineExecutor();
+    let toolCalls = 0;
+    await expect(executor.execute({
+      loops: {},
+      context: { request: { metadata: {} } },
+      pipeline: {
+        steps: [{
+          tool: "project_checkout",
+          input: { projectRef: { $context: "request.metadata.projectRef" } },
+        }],
+      },
+      runLoop: async () => ({ output: {} }),
+      runTool: async () => {
+        toolCalls += 1;
+        return { output: {} };
+      },
+    })).rejects.toThrowError(expect.objectContaining<Partial<LoopContextBindingError>>({
+      code: "loop_binding_missing",
+    }));
+    expect(toolCalls).toBe(0);
+  });
+
+  it("validates resolved input before transitions, hooks, traces, or tool side effects", async () => {
+    const executor = new PipelineExecutor();
+    let toolCalls = 0;
+
+    await expect(executor.execute({
+      loops: { prepare: {} },
+      context: { request: { metadata: { projectRef: "wrong-type" } } },
+      pipeline: {
+        steps: [
+          { loop: "prepare" },
+          {
+            tool: "project_checkout",
+            input: { projectRef: { $context: "request.metadata.projectRef" } },
+          },
+        ],
+      },
+      projectHooks: {
+        "step:before": [{ tool: "audit_step" }],
+      },
+      runLoop: async () => ({ output: { ready: true } }),
+      validateToolInput: async (name, input) => {
+        if (name === "project_checkout") throw new Error(`invalid: ${JSON.stringify(input)}`);
+        return input;
+      },
+      runTool: async () => {
+        toolCalls += 1;
+        return { output: {} };
+      },
+    })).rejects.toThrow("invalid");
+
+    // The prepare step's own step:before hook runs once. The invalid tool's
+    // hook and the tool itself never run.
+    expect(toolCalls).toBe(1);
+  });
+
+  it("keeps static tool input byte-for-byte compatible", async () => {
+    const executor = new PipelineExecutor();
+    const input = { command: "printf '$context is plain text'", nested: { value: 2 } };
+    let received: unknown;
+    await executor.execute({
+      loops: {},
+      pipeline: { steps: [{ tool: "bash", input }] },
+      runLoop: async () => ({ output: {} }),
+      runTool: async (_name, value) => {
+        received = value;
+        return { output: {} };
+      },
+    });
+    expect(received).toEqual(input);
+  });
+
+  it("prevents steps from overwriting a protected request context", async () => {
+    const executor = new PipelineExecutor();
+    await expect(executor.execute({
+      loops: {},
+      context: { request: { metadata: { projectRef: "project-123" } } },
+      protectedContextRoots: ["request"],
+      pipeline: { steps: [{ tool: "probe", saveAs: "request.metadata" }] },
+      runLoop: async () => ({ output: {} }),
+      runTool: async () => ({ output: { projectRef: "attacker" } }),
+    })).rejects.toThrowError(expect.objectContaining({
+      code: "loop_context_readonly",
+    }));
+  });
+
+  it("resolves context bindings in deterministic hook actions", async () => {
+    const executor = new PipelineExecutor();
+    const calls: unknown[] = [];
+
+    await executor.execute({
+      loops: { plan: {} },
+      context: { request: { metadata: { projectRef: "project-123" } } },
+      protectedContextRoots: ["request"],
+      pipeline: { steps: [{ loop: "plan" }] },
+      projectHooks: {
+        "loop:start": [{
+          tool: "audit_step",
+          input: { projectRef: { $context: "request.metadata.projectRef" } },
+        }],
+      },
+      runLoop: async () => ({ output: { ok: true } }),
+      runTool: async (_name, input) => {
+        calls.push(input);
+        return { output: { ok: true } };
+      },
+    });
+
+    expect(calls).toEqual([{ projectRef: "project-123" }]);
+  });
+
+  it("prevents returned context patches from overwriting protected roots", async () => {
+    const executor = new PipelineExecutor();
+    await expect(executor.execute({
+      loops: {},
+      context: { request: { metadata: { projectRef: "project-123" } } },
+      protectedContextRoots: ["request"],
+      pipeline: { steps: [{ tool: "probe" }] },
+      runLoop: async () => ({ output: {} }),
+      runTool: async () => ({
+        context: { request: { metadata: { projectRef: "attacker" } } },
+      }),
+    })).rejects.toThrowError(expect.objectContaining({
+      code: "loop_context_readonly",
+    }));
+  });
+
+  it.each(["__proto__.polluted", "constructor.prototype.polluted"])(
+    "rejects unsafe context write path %s without prototype pollution",
+    async (saveAs) => {
+      const executor = new PipelineExecutor();
+      await expect(executor.execute({
+        loops: {},
+        pipeline: { steps: [{ tool: "probe", saveAs }] },
+        runLoop: async () => ({ output: {} }),
+        runTool: async () => ({ output: true }),
+      })).rejects.toThrowError(expect.objectContaining({
+        code: "loop_binding_invalid",
+      }));
+      expect(Object.prototype).not.toHaveProperty("polluted");
+    },
+  );
+
+  it("rejects unsafe root keys returned in a context patch", async () => {
+    const patch = Object.create(null) as Record<string, unknown>;
+    Object.defineProperty(patch, "__proto__", {
+      enumerable: true,
+      value: { polluted: true },
+    });
+    const executor = new PipelineExecutor();
+
+    await expect(executor.execute({
+      loops: {},
+      pipeline: { steps: [{ tool: "probe" }] },
+      runLoop: async () => ({ output: {} }),
+      runTool: async () => ({ context: patch }),
+    })).rejects.toThrowError(expect.objectContaining({
+      code: "loop_binding_invalid",
+    }));
+    expect(Object.prototype).not.toHaveProperty("polluted");
+  });
   it("runs sequential loop steps and accumulates context by loop name", async () => {
     const executor = new PipelineExecutor();
     const result = await executor.execute({
@@ -621,6 +825,57 @@ describe("PipelineExecutor — durable checkpoints", () => {
       checkpoints.push(JSON.parse(JSON.stringify(checkpoint)) as PipelineCheckpoint);
     };
   }
+
+  it("keeps request bindings stable across checkpoint and resume", async () => {
+    const executor = new PipelineExecutor();
+    const checkpoints: PipelineCheckpoint[] = [];
+    const calls: unknown[] = [];
+
+    await executor.execute({
+      loops: {},
+      context: { request: { metadata: { projectRef: "project-123" } } },
+      protectedContextRoots: ["request"],
+      pipeline: {
+        steps: [
+          { tool: "prepare", saveAs: "prepared" },
+          {
+            tool: "project_checkout",
+            input: { projectRef: { $context: "request.metadata.projectRef" } },
+          },
+        ],
+      },
+      onCheckpoint: collectInto(checkpoints),
+      runLoop: async () => ({ output: {} }),
+      runTool: async (name, input) => {
+        calls.push({ name, input });
+        return { output: { ok: true } };
+      },
+    });
+
+    const afterPrepare = checkpoints[0]!;
+    expect(afterPrepare.context.request).toEqual({
+      metadata: { projectRef: "project-123" },
+    });
+
+    calls.length = 0;
+    await executor.execute({
+      loops: {},
+      pipeline: { steps: afterPrepare.steps },
+      context: afterPrepare.context,
+      protectedContextRoots: ["request"],
+      resume: { previousNode: afterPrepare.previousNode },
+      runLoop: async () => ({ output: {} }),
+      runTool: async (name, input) => {
+        calls.push({ name, input });
+        return { output: { ok: true } };
+      },
+    });
+
+    expect(calls).toEqual([{
+      name: "project_checkout",
+      input: { projectRef: "project-123" },
+    }]);
+  });
 
   it("emits a checkpoint after every completed step: remaining steps, context, previousNode", async () => {
     const executor = new PipelineExecutor();

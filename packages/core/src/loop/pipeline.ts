@@ -1,4 +1,9 @@
 import { SafeExpressionEvaluator } from "./expression.js";
+import {
+  cloneLoopJsonValue,
+  LoopContextBindingError,
+  resolveLoopInputBindings,
+} from "./bindings.js";
 import type { LoopHookRegistry } from "./hooks.js";
 import {
   type LoopApprovedGate,
@@ -94,6 +99,15 @@ export interface PipelineExecutorOptions {
   pipeline: Pipeline;
   loops: Record<string, LoopConfig>;
   context?: ContextBag;
+  /** Context roots owned by the host and unavailable to step outputs. */
+  protectedContextRoots?: readonly string[];
+  /** Validate and optionally normalize resolved input before any tool lifecycle hooks run. */
+  validateToolInput?: (
+    name: string,
+    input: unknown,
+    step: Extract<Step, { tool: string }>,
+    context: Readonly<ContextBag>,
+  ) => unknown | Promise<unknown>;
   hooks?: LoopHookRegistry;
   projectHooks?: ProjectLoopHooks;
   projectPermissions?: ProjectLoopPermission[];
@@ -131,6 +145,12 @@ export class PipelineExecutor {
 
   async execute(options: PipelineExecutorOptions): Promise<PipelineExecutionResult> {
     const context = { ...(options.context ?? {}) };
+    const protectedRoots = new Set(options.protectedContextRoots ?? []);
+    for (const root of protectedRoots) {
+      if (Object.prototype.hasOwnProperty.call(context, root)) {
+        context[root] = deepFreeze(cloneLoopJsonValue(context[root], `$.${root}`));
+      }
+    }
     const trace: PipelineTraceEvent[] = [];
     let nextId = 0;
     const state: PipelineExecutionState = {
@@ -185,6 +205,7 @@ export class PipelineExecutor {
     checkpoints = false,
   ): Promise<string | undefined> {
     let lastNode = previousNode;
+    const protectedRoots = new Set(options.protectedContextRoots ?? []);
 
     // Best-effort durable checkpoint: remaining steps + live bag + position.
     const emitCheckpoint = async (remaining: Step[], node: string | undefined): Promise<void> => {
@@ -218,7 +239,7 @@ export class PipelineExecutor {
             ? { steps: [step, ...remainingAfter()], previousNode: lastNode }
             : undefined;
           const result = await options.runLoop(step.loop, loop, freezeContext(context), position);
-          mergeLoopResult(context, step.loop, result);
+          mergeLoopResult(context, step.loop, result, protectedRoots);
           trace.push({ type: "loop", name: step.loop, when: step.when, matched: true });
           await this.runLifecyclePoint("step:after", context, options, state, { step: { name: step.loop, type: "agent" }, output: result.output });
           await state.emit({ type: "step.end", step: step.loop, status: "completed", output: result.output });
@@ -229,16 +250,27 @@ export class PipelineExecutor {
 
         if (isToolStep(step)) {
           if (!options.runTool) throw new Error(`Pipeline tool step "${step.tool}" requires a tool handler`);
+          const resolvedInput = resolveLoopInputBindings(step.input, context);
+          const resolvedStep = { ...step, input: resolvedInput };
+          const validatedInput = options.validateToolInput
+            ? await options.validateToolInput(
+                step.tool,
+                resolvedInput,
+                resolvedStep,
+                freezeContext(context),
+              )
+            : resolvedInput;
+          resolvedStep.input = validatedInput;
           await this.runTransitionHook(lastNode, step.tool, context, options, state);
           const stepName = step.saveAs ?? step.tool;
-          await this.runLifecyclePoint("step:before", context, options, state, { step: { name: stepName, type: "tool" }, tool: { name: step.tool, input: step.input } });
-          await this.runLifecyclePoint("tool:before", context, options, state, { step: { name: stepName, type: "tool" }, tool: { name: step.tool, input: step.input } });
-          await state.emit({ type: "tool.call", tool: step.tool, step: step.saveAs ?? step.tool, status: "started", input: step.input });
-          const result = await options.runTool(step.tool, step.input, freezeContext(context), step);
-          mergeStepResult(context, step.saveAs ?? step.tool, result);
+          await this.runLifecyclePoint("step:before", context, options, state, { step: { name: stepName, type: "tool" }, tool: { name: step.tool, input: validatedInput } });
+          await this.runLifecyclePoint("tool:before", context, options, state, { step: { name: stepName, type: "tool" }, tool: { name: step.tool, input: validatedInput } });
+          await state.emit({ type: "tool.call", tool: step.tool, step: step.saveAs ?? step.tool, status: "started", input: validatedInput });
+          const result = await options.runTool(step.tool, validatedInput, freezeContext(context), resolvedStep);
+          mergeStepResult(context, step.saveAs ?? step.tool, result, protectedRoots);
           trace.push({ type: "tool", name: step.tool, when: step.when, matched: true });
-          await this.runLifecyclePoint("tool:after", context, options, state, { step: { name: stepName, type: "tool" }, tool: { name: step.tool, input: step.input }, output: result.output });
-          await this.runLifecyclePoint("step:after", context, options, state, { step: { name: stepName, type: "tool" }, tool: { name: step.tool, input: step.input }, output: result.output });
+          await this.runLifecyclePoint("tool:after", context, options, state, { step: { name: stepName, type: "tool" }, tool: { name: step.tool, input: validatedInput }, output: result.output });
+          await this.runLifecyclePoint("step:after", context, options, state, { step: { name: stepName, type: "tool" }, tool: { name: step.tool, input: validatedInput }, output: result.output });
           await state.emit({ type: "tool.result", tool: step.tool, step: step.saveAs ?? step.tool, status: "completed", output: result.output });
           lastNode = step.tool;
           await emitCheckpoint(remainingAfter(), lastNode);
@@ -335,7 +367,7 @@ export class PipelineExecutor {
             return { branchContext, branchTrace };
           }));
           for (const result of branchResults) {
-            Object.assign(context, result.branchContext);
+            mergeContext(context, result.branchContext, protectedRoots, true);
             trace.push(...result.branchTrace);
           }
           trace.push({ type: "parallel", matched: true });
@@ -352,7 +384,7 @@ export class PipelineExecutor {
           await this.runLifecyclePoint("step:before", context, options, state, { step: { name: step.human, type: "human" } });
           await state.emit({ type: "human.request", human: step.human, step: step.human, status: "started", when: step.when });
           const result = await options.handleHuman(step.human, step, freezeContext(context));
-          mergeLoopResult(context, step.human, result);
+          mergeLoopResult(context, step.human, result, protectedRoots);
           trace.push({ type: "human", name: step.human, when: step.when, matched: true });
           await this.runLifecyclePoint("step:after", context, options, state, { step: { name: step.human, type: "human" }, output: result.output });
           await state.emit({ type: "human.result", human: step.human, step: step.human, status: "completed", output: result.output });
@@ -399,7 +431,7 @@ export class PipelineExecutor {
     if (result.cancelled) {
       throw new Error(`Loop transition from "${from}" to "${to}" cancelled${result.cancelReason ? `: ${result.cancelReason}` : ""}`);
     }
-    Object.assign(context, result.data.context);
+    mergeContext(context, result.data.context, new Set(options.protectedContextRoots ?? []));
     await options.hooks.runAfter("loop:transition", result.data);
     await state.emit({ type: "transition", from, to, status: "completed" });
   }
@@ -433,24 +465,33 @@ export class PipelineExecutor {
       throw new Error(`Loop hook "${hook}" action "${action.tool}" requires a tool handler`);
     }
 
-    const step: Extract<Step, { tool: string }> = {
+    const resolvedStep: Extract<Step, { tool: string }> = {
       tool: action.tool,
-      input: action.input,
+      input: resolveLoopInputBindings(action.input, context),
       saveAs: action.saveAs,
     };
+    const validatedInput = options.validateToolInput
+      ? await options.validateToolInput(
+          action.tool,
+          resolvedStep.input,
+          resolvedStep,
+          freezeContext(context),
+        )
+      : resolvedStep.input;
+    const step = { ...resolvedStep, input: validatedInput };
 
     await state.emit({
       type: "tool.call",
       tool: action.tool,
       step: action.saveAs ?? action.tool,
       status: "started",
-      input: action.input,
+      input: step.input,
       data: { hook, kind: "hook", payload },
     });
 
     try {
-      const result = await options.runTool(action.tool, action.input, freezeContext(context), step);
-      mergeStepResult(context, action.saveAs ?? action.tool, result);
+      const result = await options.runTool(action.tool, step.input, freezeContext(context), step);
+      mergeStepResult(context, action.saveAs ?? action.tool, result, new Set(options.protectedContextRoots ?? []));
       await state.emit({
         type: "tool.result",
         tool: action.tool,
@@ -684,7 +725,54 @@ function freezeContext(context: ContextBag): Readonly<ContextBag> {
   return Object.freeze({ ...context });
 }
 
-function setContextPath(context: ContextBag, path: string, value: unknown): void {
+function deepFreeze(value: unknown): unknown {
+  if (!value || typeof value !== "object" || Object.isFrozen(value)) return value;
+  Object.freeze(value);
+  for (const child of Object.values(value)) deepFreeze(child);
+  return value;
+}
+
+const UNSAFE_CONTEXT_PATH_SEGMENTS = new Set(["__proto__", "prototype", "constructor"]);
+
+function assertContextWriteAllowed(path: string, protectedRoots: ReadonlySet<string>): void {
+  const segments = path.split(".");
+  const unsafe = segments.find((segment) => UNSAFE_CONTEXT_PATH_SEGMENTS.has(segment));
+  if (unsafe) {
+    throw new LoopContextBindingError({
+      code: "loop_binding_invalid",
+      message: `Invalid loop context write path "${path}": unsafe segment "${unsafe}"`,
+      contextPath: path,
+    });
+  }
+  const root = segments[0];
+  if (!root || !protectedRoots.has(root)) return;
+  throw new LoopContextBindingError({
+    code: "loop_context_readonly",
+    message: `Loop context root "${root}" is read-only`,
+    contextPath: path,
+  });
+}
+
+function mergeContext(
+  context: ContextBag,
+  patch: Readonly<ContextBag>,
+  protectedRoots: ReadonlySet<string>,
+  skipProtected = false,
+): void {
+  for (const [key, value] of Object.entries(patch)) {
+    if (skipProtected && protectedRoots.has(key)) continue;
+    assertContextWriteAllowed(key, protectedRoots);
+    context[key] = value;
+  }
+}
+
+function setContextPath(
+  context: ContextBag,
+  path: string,
+  value: unknown,
+  protectedRoots: ReadonlySet<string>,
+): void {
+  assertContextWriteAllowed(path, protectedRoots);
   const parts = path.split(".").filter(Boolean);
   if (parts.length === 0) return;
   let cursor: Record<string, unknown> = context;
@@ -698,11 +786,21 @@ function setContextPath(context: ContextBag, path: string, value: unknown): void
   cursor[parts[parts.length - 1]!] = value;
 }
 
-function mergeStepResult(context: ContextBag, name: string, result: PipelineLoopResult | PipelineHumanResult | PipelineToolResult): void {
-  if (result.context) Object.assign(context, result.context);
-  if (result.output !== undefined) setContextPath(context, name, result.output);
+function mergeStepResult(
+  context: ContextBag,
+  name: string,
+  result: PipelineLoopResult | PipelineHumanResult | PipelineToolResult,
+  protectedRoots: ReadonlySet<string>,
+): void {
+  if (result.context) mergeContext(context, result.context, protectedRoots);
+  if (result.output !== undefined) setContextPath(context, name, result.output, protectedRoots);
 }
 
-function mergeLoopResult(context: ContextBag, name: string, result: PipelineLoopResult | PipelineHumanResult): void {
-  mergeStepResult(context, name, result);
+function mergeLoopResult(
+  context: ContextBag,
+  name: string,
+  result: PipelineLoopResult | PipelineHumanResult,
+  protectedRoots: ReadonlySet<string>,
+): void {
+  mergeStepResult(context, name, result, protectedRoots);
 }

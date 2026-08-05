@@ -200,6 +200,12 @@ export interface CompletionRouteDeps {
     runScope?: CompletionToolRunScope,
   ) => Promise<{
     tools: any[];
+    /**
+     * Complete runtime tool catalog when `tools` is narrowed for model-facing
+     * progressive disclosure. Deterministic loop steps use these schemas and
+     * still execute through `runtimeExecutor`.
+     */
+    runtimeTools?: any[];
     executor: CompletionToolExecutor;
     /**
      * Optional direct runtime executor for deterministic loop `type:"tool"`

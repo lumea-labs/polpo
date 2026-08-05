@@ -11,6 +11,7 @@ import {
   compactIfNeeded,
   createRuntimePromptContextSegment,
   loopContextPrompt,
+  loopUserVisibleContext,
   maybeParseJson,
   normalizeRuntimeContextTrustMode,
   protectRuntimeToolResultMessages,
@@ -255,7 +256,11 @@ export async function runAgentStepCompletion(options: {
     deps,
     agentConfig,
     extraSystemParts,
-    loopContextPrompt(stepName, context, contextTrust),
+    loopContextPrompt(
+      stepName,
+      loopUserVisibleContext(context),
+      contextTrust,
+    ),
     contextTrust,
     runtimeContext,
   );

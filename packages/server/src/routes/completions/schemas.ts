@@ -93,7 +93,7 @@ export const completionRequestSchema = z.object({
     .optional()
     .openapi({
       description:
-        "Arbitrary key/value tags (OpenAI-compat). Up to 16 keys, key ≤64 chars, value ≤512 chars. Persisted on the session for filtering and analytics. Use for tenant_id, plan, identity_provider, ab_variant, etc.",
+        "Arbitrary key/value tags (OpenAI-compat). Up to 16 keys, key ≤64 chars, value ≤512 chars. Persisted on the session for filtering and analytics. Deterministic loop tool inputs can bind them from request.metadata.<key>; they are not added to model prompts. Use for tenant_id, plan, identity_provider, ab_variant, etc.",
     }),
 });
 

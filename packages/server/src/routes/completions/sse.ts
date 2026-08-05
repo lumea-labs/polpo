@@ -10,6 +10,7 @@ import {
   LoopPermissionApprovalRequiredError,
   LoopPermissionDeniedError,
   LoopPolicyDeniedError,
+  LoopContextBindingError,
 } from "@polpo-ai/core";
 import { classifyGatewayError, extractGatewayModelNotFoundDetails } from "@polpo-ai/llm";
 import type { LanguageModelUsage } from "ai";
@@ -108,8 +109,16 @@ export function modelNotFoundEnvelope(
 
 export function loopRuntimeErrorEnvelope(
   err: unknown,
-): { message: string; type: "loop_runtime_error"; code: "loop_policy_blocked" | "loop_permission_blocked" | "loop_approval_required" | "loop_hook_failed"; approvalRequestId?: string; loopRunId?: string } | null {
+): { message: string; type: "loop_runtime_error"; code: "loop_policy_blocked" | "loop_permission_blocked" | "loop_approval_required" | "loop_hook_failed" | "loop_binding_invalid" | "loop_binding_missing" | "loop_context_readonly" | "loop_tool_input_invalid"; approvalRequestId?: string; loopRunId?: string } | null {
   const message = err instanceof Error ? err.message : String(err);
+  if (err instanceof LoopContextBindingError) {
+    return {
+      message,
+      type: "loop_runtime_error",
+      code: err.code,
+      loopRunId: (err as any).loopRunId,
+    };
+  }
   if (err instanceof LoopApprovalRequiredError || err instanceof LoopPermissionApprovalRequiredError) {
     return {
       message,

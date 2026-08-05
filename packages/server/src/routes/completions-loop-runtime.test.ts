@@ -97,6 +97,295 @@ describe("completionRoutes project loop runtime", () => {
     expect(json.loop_trace[0]).toMatchObject({ loop: "time-tracker", status: "started" });
   });
 
+  it("binds request metadata into the first deterministic tool step without an LLM call", async () => {
+    const execute = vi.fn(async (_name: string, args: Record<string, unknown>) =>
+      JSON.stringify({ checkedOut: args.projectRef }),
+    );
+    const deps = makeDeps({
+      name: "time-tracker",
+      start: "checkout",
+      steps: {
+        checkout: {
+          type: "tool",
+          tool: "project_checkout",
+          input: {
+            projectRef: { $context: "request.metadata.projectRef" },
+            createIfMissing: true,
+          },
+          saveAs: "checkout",
+          next: "end",
+        },
+      },
+    });
+    deps.getAgents = async () => [{
+      name: "timer",
+      model: "test",
+      assignedLoops: ["time-tracker"],
+      allowedTools: ["project_checkout"],
+    }];
+    deps.resolveAgentTools = async () => ({
+      tools: [{
+        name: "project_checkout",
+        description: "Checkout a project",
+        parameters: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            projectRef: { type: "string" },
+            createIfMissing: { type: "boolean" },
+          },
+          required: ["projectRef"],
+        },
+      }],
+      executor: execute,
+    });
+
+    const res = await completionRoutes(() => deps).request("/", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        agent: "timer",
+        loop: "time-tracker",
+        metadata: { projectRef: "project-123" },
+        messages: [{ role: "user", content: "checkout" }],
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(execute).toHaveBeenCalledOnce();
+    expect(execute).toHaveBeenCalledWith(
+      "project_checkout",
+      { projectRef: "project-123", createIfMissing: true },
+      expect.objectContaining({ callId: expect.any(String) }),
+    );
+    const json = await res.json() as any;
+    expect(JSON.parse(json.choices[0].message.content)).toEqual({
+      checkout: { checkedOut: "project-123" },
+    });
+    expect(json.loop_trace).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: "tool.call",
+        input: { projectRef: "project-123", createIfMissing: true },
+      }),
+    ]));
+  });
+
+  it("fails before tool execution when a request binding is missing", async () => {
+    const execute = vi.fn(async () => "must not run");
+    const deps = makeDeps({
+      name: "time-tracker",
+      start: "checkout",
+      steps: {
+        checkout: {
+          type: "tool",
+          tool: "project_checkout",
+          input: { projectRef: { $context: "request.metadata.projectRef" } },
+          next: "end",
+        },
+      },
+    });
+    deps.resolveAgentTools = async () => ({ tools: [], executor: execute });
+
+    const res = await completionRoutes(() => deps).request("/", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        agent: "timer",
+        loop: "time-tracker",
+        messages: [{ role: "user", content: "checkout" }],
+      }),
+    });
+
+    expect(res.status).toBe(400);
+    expect(execute).not.toHaveBeenCalled();
+    expect(await res.json()).toMatchObject({
+      error: {
+        type: "loop_runtime_error",
+        code: "loop_binding_missing",
+      },
+    });
+  });
+
+  it("validates resolved values against the tool schema before side effects", async () => {
+    const execute = vi.fn(async () => "must not run");
+    const deps = makeDeps({
+      name: "time-tracker",
+      start: "checkout",
+      steps: {
+        checkout: {
+          type: "tool",
+          tool: "project_checkout",
+          input: { projectRef: { $context: "request.metadata.projectRef" } },
+          next: "end",
+        },
+      },
+    });
+    deps.resolveAgentTools = async () => ({
+      tools: [{
+        name: "project_checkout",
+        description: "Checkout a project",
+        parameters: {
+          type: "object",
+          properties: { projectRef: { type: "number" } },
+          required: ["projectRef"],
+        },
+      }],
+      executor: execute,
+    });
+
+    const res = await completionRoutes(() => deps).request("/", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        agent: "timer",
+        loop: "time-tracker",
+        metadata: { projectRef: "not-a-number" },
+        messages: [{ role: "user", content: "checkout" }],
+      }),
+    });
+
+    expect(res.status).toBe(400);
+    expect(execute).not.toHaveBeenCalled();
+    expect(await res.json()).toMatchObject({
+      error: {
+        type: "loop_runtime_error",
+        code: "loop_tool_input_invalid",
+      },
+    });
+  });
+
+  it("uses the full runtime catalog to validate tools hidden behind the router", async () => {
+    const execute = vi.fn(async () => "must not run");
+    const deps = makeDeps({
+      name: "time-tracker",
+      start: "checkout",
+      steps: {
+        checkout: {
+          type: "tool",
+          tool: "project_checkout",
+          input: { projectRef: { $context: "request.metadata.projectRef" } },
+          next: "end",
+        },
+      },
+    });
+    deps.resolveAgentTools = async () => ({
+      tools: [{
+        name: "tool_call",
+        parameters: {
+          type: "object",
+          properties: { name: { type: "string" }, args: { type: "object" } },
+          required: ["name", "args"],
+        },
+      }],
+      runtimeTools: [{
+        name: "project_checkout",
+        parameters: {
+          type: "object",
+          properties: { projectRef: { type: "number" } },
+          required: ["projectRef"],
+        },
+      }],
+      executor: async () => "router only",
+      runtimeExecutor: execute,
+    });
+
+    const res = await completionRoutes(() => deps).request("/", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        agent: "timer",
+        loop: "time-tracker",
+        metadata: { projectRef: "not-a-number" },
+        messages: [{ role: "user", content: "checkout" }],
+      }),
+    });
+
+    expect(res.status).toBe(400);
+    expect(execute).not.toHaveBeenCalled();
+    expect(await res.json()).toMatchObject({
+      error: { code: "loop_tool_input_invalid" },
+    });
+  });
+
+  it("streams resolved request bindings without invoking a model", async () => {
+    const execute = vi.fn(async (_name: string, args: Record<string, unknown>) =>
+      JSON.stringify({ checkedOut: args.projectRef }),
+    );
+    const deps = makeDeps({
+      name: "time-tracker",
+      start: "checkout",
+      steps: {
+        checkout: {
+          type: "tool",
+          tool: "project_checkout",
+          input: { projectRef: { $context: "request.metadata.projectRef" } },
+          saveAs: "checkout",
+          next: "end",
+        },
+      },
+    });
+    deps.resolveAgentTools = async () => ({
+      tools: [],
+      executor: execute,
+    });
+
+    const res = await completionRoutes(() => deps).request("/", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        agent: "timer",
+        loop: "time-tracker",
+        stream: true,
+        metadata: { projectRef: "project-stream" },
+        messages: [{ role: "user", content: "checkout" }],
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.text();
+    expect(execute).toHaveBeenCalledWith(
+      "project_checkout",
+      { projectRef: "project-stream" },
+      expect.objectContaining({ callId: expect.any(String) }),
+    );
+    expect(body).toContain("project-stream");
+    expect(body).toContain("[DONE]");
+  });
+
+  it("streams a typed binding error and never executes the tool", async () => {
+    const execute = vi.fn(async () => "must not run");
+    const deps = makeDeps({
+      name: "time-tracker",
+      start: "checkout",
+      steps: {
+        checkout: {
+          type: "tool",
+          tool: "project_checkout",
+          input: { projectRef: { $context: "request.metadata.projectRef" } },
+          next: "end",
+        },
+      },
+    });
+    deps.resolveAgentTools = async () => ({ tools: [], executor: execute });
+
+    const res = await completionRoutes(() => deps).request("/", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        agent: "timer",
+        loop: "time-tracker",
+        stream: true,
+        messages: [{ role: "user", content: "checkout" }],
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(execute).not.toHaveBeenCalled();
+    const body = await res.text();
+    expect(body).toContain('"code":"loop_binding_missing"');
+    expect(body).toContain("[DONE]");
+  });
+
   it("enforces output policy before returning project-loop output", async () => {
     const deps = makeDeps();
     deps.runOutputPolicy = createRunOutputPolicy(new RuntimeGuardrailEngine([{

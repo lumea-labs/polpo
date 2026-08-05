@@ -148,7 +148,9 @@ export type {
 export {
   toPortableToolInputSchema,
   toValidatedToolInputSchema,
+  validateToolInput,
 } from "./tool-schema.js";
+export type { ToolInputValidationResult } from "./tool-schema.js";
 
 // ─── Model Policy Turn Primitive ────────────────────
 export {

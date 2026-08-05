@@ -159,6 +159,71 @@ async function runEngine(model: MockLanguageModelV3, options: RunOptions) {
 // ── Tests ───────────────────────────────────────────────
 
 describe("pipeline durable turns — step boundaries", () => {
+  test("resolves typed context bindings in a resumed deterministic task step", async () => {
+    await writeProjectLoop("request-binding", {
+      name: "request-binding",
+      start: "checkout",
+      steps: {
+        checkout: {
+          type: "tool",
+          tool: "bash",
+          input: { command: "printf unused" },
+          next: "end",
+        },
+      },
+    });
+    const agent = makeAgent("request-binding");
+    const timestamp = new Date().toISOString();
+    const resumeState: LoopResumeState = {
+      pipelineName: "request-binding",
+      context: {
+        request: { metadata: { command: "printf bound-from-context" } },
+      },
+      steps: [{
+        tool: "bash",
+        input: { command: { $context: "request.metadata.command" } },
+        saveAs: "result",
+      }],
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    };
+
+    const run = await runEngine(mockTurnSequenceModel([]), { agent, resumeState });
+
+    expect(run.result.exitCode).toBe(0);
+    expect(run.result.stdout).toContain("bound-from-context");
+    expect(run.handle.activity.toolCalls).toBe(1);
+  });
+
+  test("rejects a resolved task input with the wrong schema type before execution", async () => {
+    await writeProjectLoop("invalid-request-binding", {
+      name: "invalid-request-binding",
+      start: "run",
+      steps: {
+        run: { type: "tool", tool: "bash", input: { command: "printf unused" }, next: "end" },
+      },
+    });
+    const agent = makeAgent("invalid-request-binding");
+    const timestamp = new Date().toISOString();
+    const marker = join(cwd, "binding-must-not-run.txt");
+    const resumeState: LoopResumeState = {
+      pipelineName: "invalid-request-binding",
+      context: { request: { metadata: { command: { invalid: true } } } },
+      steps: [{
+        tool: "bash",
+        input: { command: { $context: "request.metadata.command" } },
+      }],
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    };
+
+    const run = await runEngine(mockTurnSequenceModel([]), { agent, resumeState });
+
+    expect(run.result.exitCode).toBe(1);
+    expect(run.result.stderr).toContain('Invalid input for loop tool "bash"');
+    expect(existsSync(marker)).toBe(false);
+  });
+
   test("kill between step N and N+1: steps <= N never re-execute, result identical to a no-crash control", async () => {
     await writeProjectLoop("two-step", {
       name: "two-step",
