@@ -11,6 +11,7 @@ import {
 import type { AgentActivity, TaskResult, TaskOutcome } from "@polpo-ai/core/types";
 import type { RunStore, RunRecord, RunStatus } from "@polpo-ai/core/run-store";
 import type { LoopResumeState } from "@polpo-ai/core/loop-run-store";
+import type { LoopTraceEvent } from "@polpo-ai/core";
 
 function safeJsonParse<T>(raw: string, fallback: T): T {
   try {
@@ -88,6 +89,7 @@ export class FileRunStore implements RunStore {
       executionMode: run.executionMode ?? existing.executionMode,
       engine: run.engine ?? existing.engine,
       delivery: run.delivery ?? existing.delivery,
+      trace: run.trace ?? existing.trace,
       resumeState: run.resumeState ?? existing.resumeState,
       completedAt: run.completedAt ?? existing.completedAt,
       collectedAt: run.collectedAt ?? existing.collectedAt,
@@ -151,6 +153,15 @@ export class FileRunStore implements RunStore {
     this.writeRun(run);
   }
 
+  async appendTrace(runId: string, event: LoopTraceEvent): Promise<void> {
+    const run = this.readRun(runId);
+    if (!run) return;
+    if (run.trace?.some((candidate) => candidate.id === event.id)) return;
+    run.trace = [...(run.trace ?? []), event];
+    run.updatedAt = new Date().toISOString();
+    this.writeRun(run);
+  }
+
   async getRun(runId: string): Promise<RunRecord | undefined> {
     return this.readRun(runId);
   }
@@ -163,6 +174,17 @@ export class FileRunStore implements RunStore {
         b.startedAt.localeCompare(a.startedAt) ||
         b.updatedAt.localeCompare(a.updatedAt)
       )[0];
+  }
+
+  async getRunsBySessionId(sessionId: string, limit = 100): Promise<RunRecord[]> {
+    const safeLimit = Math.max(1, Math.min(Math.trunc(limit) || 100, 500));
+    return this.allRuns()
+      .filter((run) => run.sessionId === sessionId)
+      .sort((a, b) =>
+        b.startedAt.localeCompare(a.startedAt) ||
+        b.updatedAt.localeCompare(a.updatedAt)
+      )
+      .slice(0, safeLimit);
   }
 
   async getActiveRuns(): Promise<RunRecord[]> {

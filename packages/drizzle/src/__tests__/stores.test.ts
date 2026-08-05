@@ -351,6 +351,79 @@ describe("DrizzleRunStore", () => {
     expect(latest!.id).toBe("r2");
   });
 
+  it("persists trace events atomically and lists runs by session", async () => {
+    await stores.runStore.upsertRun({
+      ...makeRun("r-trace-1", "chat-1"),
+      sessionId: "session-chat",
+      delivery: "stream",
+      trace: [],
+    } as any);
+    await stores.runStore.upsertRun({
+      ...makeRun("r-trace-2", "chat-2"),
+      sessionId: "session-chat",
+      delivery: "stream",
+      startedAt: "2099-01-02T00:00:00Z",
+      trace: [],
+    } as any);
+    await stores.runStore.upsertRun({
+      ...makeRun("r-other", "chat-3"),
+      sessionId: "other-session",
+      delivery: "stream",
+      trace: [],
+    } as any);
+
+    const appendTrace = (stores.runStore as any).appendTrace.bind(stores.runStore);
+    await Promise.all([
+      appendTrace("r-trace-1", {
+        id: "event-a",
+        type: "sandbox.acquire.started",
+        ts: "2025-01-01T00:00:01Z",
+        operation: "acquire",
+      }),
+      appendTrace("r-trace-1", {
+        id: "event-b",
+        type: "sandbox.acquired",
+        ts: "2025-01-01T00:00:02Z",
+        operation: "acquire",
+        sandboxId: "sandbox-1",
+      }),
+    ]);
+    await appendTrace("r-trace-1", {
+      id: "event-a",
+      type: "sandbox.acquire.started",
+      ts: "2025-01-01T00:00:01Z",
+      operation: "acquire",
+    });
+
+    const fetched = await stores.runStore.getRun("r-trace-1");
+    expect(fetched?.trace).toHaveLength(2);
+    expect(new Set(fetched?.trace?.map((event) => event.id))).toEqual(
+      new Set(["event-a", "event-b"]),
+    );
+
+    const sessionRuns = await (stores.runStore as any).getRunsBySessionId("session-chat");
+    expect(sessionRuns.map((run: any) => run.id)).toEqual(["r-trace-2", "r-trace-1"]);
+  });
+
+  it("upsertRun does not erase an existing trace", async () => {
+    await stores.runStore.upsertRun({ ...makeRun("r-trace-keep", "chat-keep"), trace: [] } as any);
+    await (stores.runStore as any).appendTrace("r-trace-keep", {
+      id: "event-keep",
+      type: "sandbox.released",
+      ts: "2025-01-01T00:00:03Z",
+      operation: "release",
+    });
+
+    await stores.runStore.upsertRun({
+      ...makeRun("r-trace-keep", "chat-keep"),
+      status: "completed",
+    } as any);
+
+    expect((await stores.runStore.getRun("r-trace-keep"))?.trace).toEqual([
+      expect.objectContaining({ id: "event-keep" }),
+    ]);
+  });
+
   it("getActiveRuns returns only running", async () => {
     await stores.runStore.upsertRun(makeRun("r1", "t1") as any);
     await stores.runStore.upsertRun({ ...makeRun("r2", "t2"), status: "completed" as any } as any);

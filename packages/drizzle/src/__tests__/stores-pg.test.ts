@@ -377,6 +377,97 @@ describe.skipIf(!canConnect)("PostgreSQL Drizzle stores", () => {
       expect(latest!.id).toBe("r2");
     });
 
+    it("atomically appends jsonb trace events and lists correlated session runs", async () => {
+      await stores.runStore.upsertRun({
+        ...makeRun("r-trace-1", "chat-1"),
+        sessionId: "session-chat",
+        delivery: "stream",
+        trace: [],
+      } as any);
+      await stores.runStore.upsertRun({
+        ...makeRun("r-trace-2", "chat-2"),
+        sessionId: "session-chat",
+        delivery: "stream",
+        startedAt: "2099-01-02T00:00:00Z",
+        trace: [],
+      } as any);
+
+      await Promise.all([
+        stores.runStore.appendTrace!("r-trace-1", {
+          id: "event-a",
+          type: "sandbox.acquire.started",
+          ts: "2025-01-01T00:00:01Z",
+          operation: "acquire",
+        }),
+        stores.runStore.appendTrace!("r-trace-1", {
+          id: "event-b",
+          type: "sandbox.acquired",
+          ts: "2025-01-01T00:00:02Z",
+          operation: "acquire",
+          sandboxId: "sandbox-1",
+        }),
+      ]);
+      await stores.runStore.appendTrace!("r-trace-1", {
+        id: "event-a",
+        type: "sandbox.acquire.started",
+        ts: "2025-01-01T00:00:01Z",
+        operation: "acquire",
+      });
+
+      const trace = (await stores.runStore.getRun("r-trace-1"))?.trace ?? [];
+      expect(trace).toHaveLength(2);
+      expect(new Set(trace.map((event) => event.id))).toEqual(new Set(["event-a", "event-b"]));
+      const traceTypes = await db.execute(sql`
+        select jsonb_typeof(trace) as type from runs where id = 'r-trace-1'
+      `) as unknown as Array<{ type: string }>;
+      expect(traceTypes[0]?.type).toBe("array");
+      expect((await stores.runStore.getRunsBySessionId!("session-chat")).map((run) => run.id)).toEqual([
+        "r-trace-2",
+        "r-trace-1",
+      ]);
+    });
+
+    it("normalizes legacy string traces and invalid scalars before appending", async () => {
+      await stores.runStore.upsertRun({
+        ...makeRun("r-trace-legacy", "chat-legacy"),
+        trace: [],
+      } as any);
+      const legacy = JSON.stringify([{
+        id: "event-legacy",
+        type: "sandbox.acquire.started",
+        ts: "2025-01-01T00:00:00Z",
+        operation: "acquire",
+      }]);
+      await db.execute(sql`
+        update runs set trace = to_jsonb(${legacy}::text) where id = 'r-trace-legacy'
+      `);
+
+      await stores.runStore.appendTrace!("r-trace-legacy", {
+        id: "event-new",
+        type: "sandbox.acquired",
+        ts: "2025-01-01T00:00:01Z",
+        operation: "acquire",
+        sandboxId: "sandbox-legacy",
+      });
+      expect((await stores.runStore.getRun("r-trace-legacy"))?.trace?.map((event) => event.id)).toEqual([
+        "event-legacy",
+        "event-new",
+      ]);
+
+      await db.execute(sql`
+        update runs set trace = to_jsonb('legacy-invalid'::text) where id = 'r-trace-legacy'
+      `);
+      await stores.runStore.appendTrace!("r-trace-legacy", {
+        id: "event-recovered",
+        type: "sandbox.released",
+        ts: "2025-01-01T00:00:02Z",
+        operation: "release",
+      });
+      expect((await stores.runStore.getRun("r-trace-legacy"))?.trace?.map((event) => event.id)).toEqual([
+        "event-recovered",
+      ]);
+    });
+
     it("getActiveRuns returns only running", async () => {
       await stores.runStore.upsertRun(makeRun("r1", "t1") as any);
       await stores.runStore.upsertRun({ ...makeRun("r2", "t2"), status: "completed" as any } as any);

@@ -1,4 +1,6 @@
 import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
+import type { RunRecord } from "@polpo-ai/core/run-store";
+import type { ChatRouteDeps } from "../deps.js";
 
 /* ── Route definitions ─────────────────────────────────────────────── */
 
@@ -38,6 +40,30 @@ const getSessionMessagesRoute = createRoute({
     200: {
       content: { "application/json": { schema: z.object({ ok: z.boolean(), data: z.any() }) } },
       description: "Session messages",
+    },
+    404: {
+      content: { "application/json": { schema: z.object({ ok: z.boolean(), error: z.string(), code: z.string() }) } },
+      description: "Session not found",
+    },
+    503: {
+      content: { "application/json": { schema: z.object({ ok: z.boolean(), error: z.string(), code: z.string() }) } },
+      description: "Session store not available",
+    },
+  },
+});
+
+const getSessionActivityRoute = createRoute({
+  method: "get",
+  path: "/sessions/{id}/activity",
+  tags: ["Chat Sessions"],
+  summary: "Get session messages and correlated runs",
+  request: {
+    params: z.object({ id: z.string() }),
+  },
+  responses: {
+    200: {
+      content: { "application/json": { schema: z.object({ ok: z.boolean(), data: z.any() }) } },
+      description: "Session transcript and technical run traces",
     },
     404: {
       content: { "application/json": { schema: z.object({ ok: z.boolean(), error: z.string(), code: z.string() }) } },
@@ -107,8 +133,54 @@ const deleteSessionRoute = createRoute({
  * Chat session management routes.
  * Conversational AI is handled by /v1/chat/completions (see completions.ts).
  */
-export function chatRoutes(getDeps: () => { sessionStore?: any }): OpenAPIHono {
+export function chatRoutes(getDeps: () => ChatRouteDeps): OpenAPIHono {
   const app = new OpenAPIHono();
+
+  const safeSessionMessages = (messages: any[]) => messages.map((m: any) => {
+    const toolCalls = Array.isArray(m.toolCalls) ? m.toolCalls : undefined;
+    if (!toolCalls || toolCalls.length === 0) return m;
+    const hasVault = toolCalls.some((tc: any) => tc.name === "set_vault_entry" || tc.name === "update_vault_credentials");
+    if (!hasVault) return m;
+    return {
+      ...m,
+      toolCalls: toolCalls.map((tc: any) => {
+        if ((tc.name !== "set_vault_entry" && tc.name !== "update_vault_credentials") || !tc.arguments) return tc;
+        const args = { ...tc.arguments };
+        if (args.credentials && typeof args.credentials === "object") {
+          const redacted: Record<string, string> = {};
+          for (const key of Object.keys(args.credentials as Record<string, string>)) {
+            redacted[key] = "[REDACTED]";
+          }
+          args.credentials = redacted;
+        }
+        return { ...tc, arguments: args };
+      }),
+    };
+  });
+
+  const safeSessionRuns = (runs: RunRecord[]) => runs.map((run) => ({
+    id: run.id,
+    taskId: run.taskId,
+    agentName: run.agentName,
+    sessionId: run.sessionId,
+    status: run.status,
+    startedAt: run.startedAt,
+    updatedAt: run.updatedAt,
+    completedAt: run.completedAt,
+    executionMode: run.executionMode,
+    engine: run.engine,
+    delivery: run.delivery,
+    trace: Array.isArray(run.trace) ? run.trace : [],
+    ...(run.result
+      ? {
+          result: {
+            exitCode: run.result.exitCode,
+            stderr: run.result.stderr,
+            duration: run.result.duration,
+          },
+        }
+      : {}),
+  }));
 
   // GET /chat/sessions — list chat sessions, optionally filtered.
   //
@@ -153,28 +225,28 @@ export function chatRoutes(getDeps: () => { sessionStore?: any }): OpenAPIHono {
     }
     const messages = await sessionStore.getMessages(id);
     // SECURITY: Redact vault credentials from persisted tool calls before serving to client
-    const safeMessages = messages.map((m: any) => {
-      const toolCalls = Array.isArray(m.toolCalls) ? m.toolCalls : undefined;
-      if (!toolCalls || toolCalls.length === 0) return m;
-      const hasVault = toolCalls.some((tc: any) => tc.name === "set_vault_entry" || tc.name === "update_vault_credentials");
-      if (!hasVault) return m;
-      return {
-        ...m,
-        toolCalls: toolCalls.map((tc: any) => {
-          if ((tc.name !== "set_vault_entry" && tc.name !== "update_vault_credentials") || !tc.arguments) return tc;
-          const args = { ...tc.arguments };
-          if (args.credentials && typeof args.credentials === "object") {
-            const redacted: Record<string, string> = {};
-            for (const key of Object.keys(args.credentials as Record<string, string>)) {
-              redacted[key] = "[REDACTED]";
-            }
-            args.credentials = redacted;
-          }
-          return { ...tc, arguments: args };
-        }),
-      };
-    });
+    const safeMessages = safeSessionMessages(messages);
     return c.json({ ok: true, data: { session, messages: safeMessages } }, 200);
+  });
+
+  app.openapi(getSessionActivityRoute, async (c) => {
+    const { sessionStore, runStore } = getDeps();
+    if (!sessionStore) {
+      return c.json({ ok: false, error: "Session store not available", code: "NOT_AVAILABLE" }, 503);
+    }
+    const { id } = c.req.valid("param");
+    const session = await sessionStore.getSession(id);
+    if (!session) {
+      return c.json({ ok: false, error: "Session not found", code: "NOT_FOUND" }, 404);
+    }
+    const [messages, runs] = await Promise.all([
+      sessionStore.getMessages(id),
+      runStore?.getRunsBySessionId?.(id) ?? Promise.resolve([]),
+    ]);
+    return c.json({
+      ok: true,
+      data: { session, messages: safeSessionMessages(messages), runs: safeSessionRuns(runs) },
+    }, 200);
   });
 
   // PATCH /chat/sessions/:id — rename a session
@@ -227,7 +299,10 @@ export function chatRoutes(getDeps: () => { sessionStore?: any }): OpenAPIHono {
       return c.json({ ok: false, error: "messages array required" }, 400);
     }
 
-    const sessionId = await sessionStore.create(body.title, body.agent);
+    const sessionId = await sessionStore.create({
+      ...(body.title ? { title: body.title } : {}),
+      ...(body.agent ? { agent: body.agent } : {}),
+    });
     let imported = 0;
 
     for (const msg of body.messages) {

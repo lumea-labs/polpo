@@ -1,7 +1,8 @@
-import { eq, desc, inArray, and, ne, isNull, or } from "drizzle-orm";
+import { eq, desc, inArray, and, ne, isNull, or, sql } from "drizzle-orm";
 import type { RunStore, RunRecord, RunStatus } from "@polpo-ai/core/run-store";
 import type { AgentActivity, TaskResult, TaskOutcome, RunnerConfig } from "@polpo-ai/core/types";
 import type { LoopResumeState } from "@polpo-ai/core/loop-run-store";
+import type { LoopTraceEvent } from "@polpo-ai/core";
 import { type Dialect, serializeJson, deserializeJson } from "../utils.js";
 
 type AnyTable = any;
@@ -40,6 +41,7 @@ export class DrizzleRunStore implements RunStore {
       executionMode: row.executionMode ?? undefined,
       engine: row.engine ?? undefined,
       delivery: row.delivery ?? undefined,
+      trace: deserializeJson<LoopTraceEvent[] | undefined>(row.trace, undefined, d),
       completedAt: row.completedAt ?? undefined,
       collectedAt: row.collectedAt ?? undefined,
     };
@@ -67,6 +69,7 @@ export class DrizzleRunStore implements RunStore {
       executionMode: run.executionMode ?? null,
       engine: run.engine ?? "agent",
       delivery: run.delivery ?? null,
+      trace: d === "pg" ? (run.trace ?? null) : serializeJson(run.trace, d),
       completedAt: run.completedAt ?? null,
       collectedAt: run.collectedAt ?? null,
     };
@@ -84,6 +87,7 @@ export class DrizzleRunStore implements RunStore {
     if (run.executionMode !== undefined) conflictSet.executionMode = values.executionMode;
     if (run.engine !== undefined) conflictSet.engine = values.engine;
     if (run.delivery !== undefined) conflictSet.delivery = values.delivery;
+    if (run.trace !== undefined) conflictSet.trace = values.trace;
 
     await this.db.insert(this.runs).values(values)
       .onConflictDoUpdate({
@@ -150,6 +154,40 @@ export class DrizzleRunStore implements RunStore {
     }).where(eq(this.runs.id, runId));
   }
 
+  async appendTrace(runId: string, event: LoopTraceEvent): Promise<void> {
+    const encodedEvent = JSON.stringify(event);
+    const pgTrace = sql`case
+      when ${this.runs.trace} is null then '[]'::jsonb
+      when jsonb_typeof(${this.runs.trace}) = 'array' then ${this.runs.trace}
+      when jsonb_typeof(${this.runs.trace}) = 'string'
+        and left(ltrim(${this.runs.trace} #>> '{}'), 1) = '['
+        and right(rtrim(${this.runs.trace} #>> '{}'), 1) = ']'
+        then (${this.runs.trace} #>> '{}')::jsonb
+      else '[]'::jsonb
+    end`;
+    const trace = this.dialect === "pg"
+      ? sql`case
+          when exists (
+            select 1
+            from jsonb_array_elements(${pgTrace}) as trace_event(value)
+            where trace_event.value ->> 'id' = ${event.id}
+          ) then ${pgTrace}
+          else ${pgTrace} || jsonb_build_array(${encodedEvent}::jsonb)
+        end`
+      : sql`case
+          when exists (
+            select 1
+            from json_each(coalesce(${this.runs.trace}, '[]'))
+            where json_extract(value, '$.id') = ${event.id}
+          ) then coalesce(${this.runs.trace}, '[]')
+          else json_insert(coalesce(${this.runs.trace}, '[]'), '$[#]', json(${encodedEvent}))
+        end`;
+    await this.db.update(this.runs).set({
+      trace,
+      updatedAt: new Date().toISOString(),
+    }).where(eq(this.runs.id, runId));
+  }
+
   async getRun(runId: string): Promise<RunRecord | undefined> {
     const rows: any[] = await this.db.select().from(this.runs)
       .where(eq(this.runs.id, runId));
@@ -167,6 +205,15 @@ export class DrizzleRunStore implements RunStore {
       .orderBy(desc(this.runs.startedAt), desc(this.runs.updatedAt))
       .limit(1);
     return rows.length > 0 ? this.rowToRecord(rows[0]) : undefined;
+  }
+
+  async getRunsBySessionId(sessionId: string, limit = 100): Promise<RunRecord[]> {
+    const safeLimit = Math.max(1, Math.min(Math.trunc(limit) || 100, 500));
+    const rows: any[] = await this.db.select().from(this.runs)
+      .where(eq(this.runs.sessionId, sessionId))
+      .orderBy(desc(this.runs.startedAt), desc(this.runs.updatedAt))
+      .limit(safeLimit);
+    return rows.map((row) => this.rowToRecord(row));
   }
 
   async getActiveRuns(): Promise<RunRecord[]> {

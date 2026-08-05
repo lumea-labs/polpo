@@ -166,6 +166,8 @@ export interface SpawnContext {
  * takes no dependency on `ai`.
  */
 export interface ChatSessionInjection {
+  /** Conversation session that groups this streaming run with its chat transcript. */
+  sessionId?: string;
   /** Frozen, secret-free planning decision for this invocation. */
   runtimePlan?: RuntimePlan;
   /** Explicit context-trust rollout mode for model-bound history. */

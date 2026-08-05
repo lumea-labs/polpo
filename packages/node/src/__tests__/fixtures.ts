@@ -1,5 +1,6 @@
 import { nanoid } from "nanoid";
 import type { Task, TaskStatus, TaskOutcome, PolpoState, AgentConfig, AgentActivity, TaskResult, AgentHandle, TaskStore, RunStore, RunRecord, RunStatus, Team } from "../core/index.js";
+import type { LoopTraceEvent } from "@polpo-ai/core";
 import type { LoopResumeState } from "@polpo-ai/core/loop-run-store";
 import type { TeamStore } from "@polpo-ai/core/team-store";
 import type { AgentStore } from "@polpo-ai/core/agent-store";
@@ -160,6 +161,7 @@ export class InMemoryRunStore implements RunStore {
       executionMode: run.executionMode ?? existing.executionMode,
       engine: run.engine ?? existing.engine,
       delivery: run.delivery ?? existing.delivery,
+      trace: run.trace ?? existing.trace,
       resumeState: run.resumeState ?? existing.resumeState,
       completedAt: run.completedAt ?? existing.completedAt,
       collectedAt: run.collectedAt ?? existing.collectedAt,
@@ -217,6 +219,14 @@ export class InMemoryRunStore implements RunStore {
     }
   }
 
+  async appendTrace(runId: string, event: LoopTraceEvent): Promise<void> {
+    const run = this.runs.get(runId);
+    if (!run) return;
+    if (run.trace?.some((candidate) => candidate.id === event.id)) return;
+    run.trace = [...(run.trace ?? []), event];
+    run.updatedAt = new Date().toISOString();
+  }
+
   async getRun(runId: string): Promise<RunRecord | undefined> {
     const run = this.runs.get(runId);
     return run ? { ...run } : undefined;
@@ -231,6 +241,18 @@ export class InMemoryRunStore implements RunStore {
         b.updatedAt.localeCompare(a.updatedAt)
       )[0];
     return run ? { ...run } : undefined;
+  }
+
+  async getRunsBySessionId(sessionId: string, limit = 100): Promise<RunRecord[]> {
+    const safeLimit = Math.max(1, Math.min(Math.trunc(limit) || 100, 500));
+    return [...this.runs.values()]
+      .filter((run) => run.sessionId === sessionId)
+      .sort((a, b) =>
+        b.startedAt.localeCompare(a.startedAt) ||
+        b.updatedAt.localeCompare(a.updatedAt)
+      )
+      .slice(0, safeLimit)
+      .map((run) => ({ ...run }));
   }
 
   async getActiveRuns(): Promise<RunRecord[]> {
