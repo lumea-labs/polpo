@@ -773,6 +773,7 @@ describe("executeRun — shared run lifecycle", () => {
       pid: 11,
       configPath: `memory://${config.runId}`,
       inject: {
+        sessionId: "conversation-session-1",
         agent: config.agent,
         model: { aiModel: model, contextWindow: 200_000, maxTokens: 8192 },
         systemPrompt: "Use tool_load before calculate.",
@@ -807,6 +808,8 @@ describe("executeRun — shared run lifecycle", () => {
 
     expect(outcome.status).toBe("completed");
     expect(outcome.result.stdout).toBe("10");
+    expect((await store.getRun(config.runId))?.sessionId).toBe("conversation-session-1");
+    expect((await store.getRun(config.runId))?.activity.sessionId).toBe("conversation-session-1");
     expect(visibleByTurn).toEqual([
       ["tool_load"],
       ["tool_load", "calculate"],

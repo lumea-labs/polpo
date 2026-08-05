@@ -219,16 +219,18 @@ export async function executeRun(config: RunnerConfig, deps: ExecuteRunDeps): Pr
   }
 
   const now = new Date().toISOString();
+  const correlatedSessionId = logSession?.sessionId ?? deps.inject?.sessionId;
   const initialRecord: RunRecord = {
     id: config.runId,
     taskId: config.taskId,
     pid,
     agentName: config.agent.name,
+    ...(correlatedSessionId ? { sessionId: correlatedSessionId } : {}),
     status: "running",
     startedAt: now,
     updatedAt: now,
-    // sessionId starts at the LogStore session we just opened, so the
-    // run record is linked to its transcript from the very first poll.
+    // sessionId starts at the transcript session or injected conversation, so
+    // the run record is linked to its activity from the very first poll.
     // Without this, downstream readers (the cloud task-activity endpoint,
     // a future dashboard, anything that joins runs to log sessions) have
     // to guess by time-proximity — fragile on cold sandboxes where the
@@ -238,7 +240,7 @@ export async function executeRun(config: RunnerConfig, deps: ExecuteRunDeps): Pr
     // (cloud) it's the only link that ever gets persisted.
     activity: {
       filesCreated: [], filesEdited: [], toolCalls: 0, totalTokens: 0, lastUpdate: now,
-      ...(logSession ? { sessionId: logSession.sessionId } : {}),
+      ...(correlatedSessionId ? { sessionId: correlatedSessionId } : {}),
     },
     configPath,
     engine: "agent",
@@ -486,8 +488,8 @@ export async function executeRun(config: RunnerConfig, deps: ExecuteRunDeps): Pr
     // this the run record has activity.sessionId = undefined forever, and
     // downstream readers (cloud task-activity endpoint, dashboards) can't
     // resolve the transcript except via fragile time-proximity fallback.
-    if (logSession) {
-      handle.activity.sessionId = logSession.sessionId;
+    if (correlatedSessionId) {
+      handle.activity.sessionId = correlatedSessionId;
     }
     if (runPreflightPolicy || runToolMiddleware || runOutputPolicy) {
       handle.activity.guardrailDecisions = guardrailDecisions;

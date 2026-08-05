@@ -29,6 +29,7 @@ export interface VaultRouteDeps {
 
 export interface ChatRouteDeps {
   sessionStore?: SessionStore;
+  runStore?: RunStore;
 }
 
 export interface LoopRunRouteDeps {

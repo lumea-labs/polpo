@@ -66,6 +66,54 @@ describe("FileRunStore durable turns", () => {
     expect(active[0].resumeState!.turn).toBe(3);
   });
 
+  it("persists concurrent trace events and correlates runs by session", async () => {
+    await store.upsertRun(makeRun({
+      id: "run-a",
+      taskId: "chat-a",
+      sessionId: "session-a",
+      delivery: "stream",
+      trace: [],
+    }));
+    await store.upsertRun(makeRun({
+      id: "run-b",
+      taskId: "chat-b",
+      sessionId: "session-a",
+      delivery: "stream",
+      startedAt: "2099-01-01T00:00:00Z",
+      trace: [],
+    }));
+
+    await Promise.all([
+      store.appendTrace!("run-a", {
+        id: "event-a",
+        type: "sandbox.acquire.started",
+        ts: "2025-01-01T00:00:01Z",
+        operation: "acquire",
+      }),
+      store.appendTrace!("run-a", {
+        id: "event-b",
+        type: "sandbox.acquired",
+        ts: "2025-01-01T00:00:02Z",
+        operation: "acquire",
+        sandboxId: "sandbox-a",
+      }),
+    ]);
+    await store.appendTrace!("run-a", {
+      id: "event-a",
+      type: "sandbox.acquire.started",
+      ts: "2025-01-01T00:00:01Z",
+      operation: "acquire",
+    });
+
+    const trace = (await store.getRun("run-a"))?.trace ?? [];
+    expect(trace).toHaveLength(2);
+    expect(new Set(trace.map((event) => event.id))).toEqual(new Set(["event-a", "event-b"]));
+    expect((await store.getRunsBySessionId!("session-a")).map((run) => run.id)).toEqual([
+      "run-b",
+      "run-a",
+    ]);
+  });
+
   it("updateResumeState on a missing run is a no-op", async () => {
     await expect(
       store.updateResumeState!("nope", {

@@ -305,10 +305,10 @@ export function createApp(orchestrator: Orchestrator, sseBridge: SSEBridge, opts
     // Run chat completions through the shared executeRun lifecycle +
     // loop-engine. Injects the route's
     // already-resolved model/prompt/tools/messages so the engine runs a chat
-    // turn-loop at parity with the inline handler; keeps the run ephemeral.
+    // turn-loop at parity with the inline handler. Stream runs are persisted
+    // for observability but excluded from background task collection.
     runChatViaRun: async (inject: any, hooks: { onEvent: (e: Record<string, unknown>) => void; signal?: AbortSignal }) => {
       const { executeRun } = await import("../core/run-lifecycle.js");
-      const { EphemeralRunStore } = await import("./ephemeral-run-store.js");
       const { nanoid } = await import("nanoid");
       const runId = `chat-${nanoid()}`;
       const task: any = {
@@ -323,7 +323,7 @@ export function createApp(orchestrator: Orchestrator, sseBridge: SSEBridge, opts
           outputDir: join(o.getPolpoDir(), "output", runId),
         } as any,
         {
-          runStore: new EphemeralRunStore(),
+          runStore: o.getRunStore(),
           pid: -1,
           configPath: `memory://${runId}`,
           fs: o.getFs(),
@@ -450,6 +450,7 @@ export function createApp(orchestrator: Orchestrator, sseBridge: SSEBridge, opts
 
   authed.route("/chat", chatRoutes(() => ({
     sessionStore: o.getSessionStore(),
+    runStore: o.getRunStore(),
   })));
 
   authed.route("/skills", skillRoutes(() => ({

@@ -1125,6 +1125,58 @@ describe("Chat Sessions API", () => {
     const verifyRes = await app.request(api(`/chat/sessions/${sessionId}/messages`));
     expect(verifyRes.status).toBe(404);
   });
+
+  test("GET /chat/sessions/:id/activity returns messages and correlated runs", async () => {
+    const sessionStore = orchestrator.getSessionStore()!;
+    const sessionId = await sessionStore.create({ title: "Observable chat" });
+    await sessionStore.addMessage(sessionId, "user", "Use the sandbox");
+    const now = new Date().toISOString();
+    await orchestrator.getRunStore().upsertRun({
+      id: "chat-run-observable",
+      taskId: "chat-run-observable",
+      pid: -1,
+      agentName: "agent-1",
+      sessionId,
+      status: "completed",
+      startedAt: now,
+      updatedAt: now,
+      completedAt: now,
+      activity: {
+        filesCreated: [],
+        filesEdited: [],
+        toolCalls: 1,
+        totalTokens: 10,
+        lastUpdate: now,
+      },
+      trace: [{
+        id: "sandbox-event-1",
+        type: "sandbox.acquired",
+        ts: now,
+        operation: "acquire",
+        sandboxId: "sandbox-1",
+      }],
+      configPath: "memory://chat-run-observable",
+      config: { secret: "must-not-leave-the-runtime" } as any,
+      resumeState: { context: { secret: "also-private" }, steps: [], turn: 1, history: [], createdAt: now },
+      engine: "agent",
+      delivery: "stream",
+    });
+
+    const res = await app.request(api(`/chat/sessions/${sessionId}/activity`));
+    expect(res.status, await res.clone().text()).toBe(200);
+    const body = await res.json();
+    expect(body.data.messages).toHaveLength(1);
+    expect(body.data.runs).toEqual([
+      expect.objectContaining({
+        id: "chat-run-observable",
+        sessionId,
+        trace: [expect.objectContaining({ id: "sandbox-event-1" })],
+      }),
+    ]);
+    expect(body.data.runs[0]).not.toHaveProperty("config");
+    expect(body.data.runs[0]).not.toHaveProperty("resumeState");
+    expect(body.data.runs[0]).not.toHaveProperty("activity");
+  });
 });
 
 // ── Update Agent API ─────────────────────────────────────────────────

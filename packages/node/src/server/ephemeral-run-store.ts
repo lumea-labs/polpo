@@ -9,6 +9,7 @@
 import type { RunStore, RunRecord, RunStatus } from "@polpo-ai/core/run-store";
 import type { AgentActivity, TaskResult, TaskOutcome } from "@polpo-ai/core/types";
 import type { LoopResumeState } from "@polpo-ai/core/loop-run-store";
+import type { LoopTraceEvent } from "@polpo-ai/core";
 
 export class EphemeralRunStore implements RunStore {
   private readonly runs = new Map<string, RunRecord>();
@@ -22,6 +23,7 @@ export class EphemeralRunStore implements RunStore {
       executionMode: run.executionMode ?? existing.executionMode,
       engine: run.engine ?? existing.engine,
       delivery: run.delivery ?? existing.delivery,
+      trace: run.trace ?? existing.trace,
       resumeState: run.resumeState ?? existing.resumeState,
       completedAt: run.completedAt ?? existing.completedAt,
       collectedAt: run.collectedAt ?? existing.collectedAt,
@@ -68,6 +70,14 @@ export class EphemeralRunStore implements RunStore {
     run.updatedAt = run.collectedAt;
   }
 
+  async appendTrace(runId: string, event: LoopTraceEvent): Promise<void> {
+    const run = this.runs.get(runId);
+    if (!run) return;
+    if (run.trace?.some((candidate) => candidate.id === event.id)) return;
+    run.trace = [...(run.trace ?? []), event];
+    run.updatedAt = new Date().toISOString();
+  }
+
   async getRun(runId: string): Promise<RunRecord | undefined> {
     return this.runs.get(runId);
   }
@@ -80,6 +90,17 @@ export class EphemeralRunStore implements RunStore {
         b.startedAt.localeCompare(a.startedAt) ||
         b.updatedAt.localeCompare(a.updatedAt)
       )[0];
+  }
+
+  async getRunsBySessionId(sessionId: string, limit = 100): Promise<RunRecord[]> {
+    const safeLimit = Math.max(1, Math.min(Math.trunc(limit) || 100, 500));
+    return [...this.runs.values()]
+      .filter((run) => run.sessionId === sessionId)
+      .sort((a, b) =>
+        b.startedAt.localeCompare(a.startedAt) ||
+        b.updatedAt.localeCompare(a.updatedAt)
+      )
+      .slice(0, safeLimit);
   }
 
   async getActiveRuns(): Promise<RunRecord[]> {

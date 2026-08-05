@@ -1,5 +1,6 @@
 import type { AgentActivity, TaskResult, TaskOutcome, RunnerConfig } from "./types.js";
 import type { LoopResumeState } from "./loop/run-store.js";
+import type { LoopTraceEvent } from "./loop/types.js";
 
 export type RunStatus = "running" | "completed" | "failed" | "killed";
 
@@ -36,6 +37,8 @@ export interface RunRecord {
   engine?: "agent" | "graph";
   /** Interactive streams are excluded from background task collection. */
   delivery?: "stream" | "background";
+  /** Ordered technical events emitted by this run, including sandbox lifecycle events. */
+  trace?: LoopTraceEvent[];
   /** Timestamp set when execution entered a terminal state. */
   completedAt?: string;
   /** Timestamp set after the task supervisor durably consumed the result. */
@@ -59,8 +62,18 @@ export interface RunStore {
   completeRun(runId: string, status: RunStatus, result: TaskResult): Promise<void>;
   /** Acknowledge a terminal result while retaining its Run history. */
   markRunCollected?(runId: string): Promise<void>;
+  /**
+   * Append one technical event without replacing events written concurrently.
+   * Optional for compatibility with third-party stores created before run traces.
+   */
+  appendTrace?(runId: string, event: LoopTraceEvent): Promise<void>;
   getRun(runId: string): Promise<RunRecord | undefined>;
   getRunByTaskId(taskId: string): Promise<RunRecord | undefined>;
+  /**
+   * Return the newest runs correlated to a conversation or transcript session.
+   * Optional for compatibility with third-party stores.
+   */
+  getRunsBySessionId?(sessionId: string, limit?: number): Promise<RunRecord[]>;
   getActiveRuns(): Promise<RunRecord[]>;
   getTerminalRuns(): Promise<RunRecord[]>;
   deleteRun(runId: string): Promise<void>;
