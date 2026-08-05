@@ -44,6 +44,8 @@ export interface SandboxSession {
   readonly lifecycle?: SandboxLifecycle;
   /** Running-time accounting for this session, when the backend meters it. */
   usage?(): SandboxUsage;
+  /** Optional host metadata used to enrich lifecycle trace events. */
+  lifecycleInfo?(): SandboxLifecycleInfo;
   /** Release the session's resources. Idempotent. */
   dispose(): Promise<void>;
 }
@@ -93,6 +95,11 @@ export type SandboxRuntimeEventType =
 export type SandboxRuntimeOperation = "acquire" | "suspend" | "resume" | "release";
 export type SandboxAcquisitionSource = "created" | "pool" | "shared";
 export type SandboxReleaseOutcome = "pooled" | "destroyed" | "evicted";
+
+export interface SandboxLifecycleInfo {
+  readonly acquisitionSource?: SandboxAcquisitionSource;
+  readonly releaseOutcome?: SandboxReleaseOutcome;
+}
 
 /** Provider-neutral sandbox event suitable for an existing run trace. */
 export interface SandboxRuntimeEvent {

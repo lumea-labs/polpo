@@ -3,13 +3,18 @@ import type { SandboxProvider, SandboxSession, SandboxUsage } from "@polpo-ai/co
 import { SandboxLease } from "./lease.js";
 import { LocalSandboxProvider } from "./local-provider.js";
 
-function fakeProvider(opts: { withLifecycle?: boolean; omitOptional?: boolean } = {}) {
+function fakeProvider(opts: {
+  withLifecycle?: boolean;
+  omitOptional?: boolean;
+  withLifecycleInfo?: boolean;
+} = {}) {
   const suspend = vi.fn(async () => {});
   const resume = vi.fn(async () => {});
   const dispose = vi.fn(async () => {});
   const readFile = vi.fn(async (p: string) => `content:${p}`);
   const readdir = vi.fn(async (_p: string) => ["a", "b"]);
   let opens = 0;
+  let released = false;
 
   const fs: any = {
     readFile,
@@ -34,7 +39,16 @@ function fakeProvider(opts: { withLifecycle?: boolean; omitOptional?: boolean } 
         fs,
         shell: { execute: vi.fn(async () => ({ stdout: "ok", stderr: "", exitCode: 0 })) },
         lifecycle: opts.withLifecycle ? { suspend, resume } : undefined,
-        dispose,
+        lifecycleInfo: opts.withLifecycleInfo
+          ? () => ({
+              acquisitionSource: "created",
+              ...(released ? { releaseOutcome: "pooled" as const } : {}),
+            })
+          : undefined,
+        dispose: async () => {
+          await dispose();
+          released = true;
+        },
       };
     },
   };
@@ -45,7 +59,7 @@ describe("SandboxLease", () => {
   it("emits one ordered lifecycle trace for acquire and release", async () => {
     const onUsage = vi.fn();
     const onEvent = vi.fn();
-    const { provider } = fakeProvider();
+    const { provider } = fakeProvider({ withLifecycleInfo: true });
     const lease = new SandboxLease(provider, "r1", { onEvent, onUsage, projectId: "p1" });
 
     await lease.fs.readFile("/a");
@@ -61,7 +75,9 @@ describe("SandboxLease", () => {
     expect(onEvent.mock.calls[1]![0]).toMatchObject({
       runId: "r1",
       projectId: "p1",
+      source: "created",
     });
+    expect(onEvent.mock.calls[3]![0]).toMatchObject({ outcome: "pooled" });
     expect(onUsage.mock.calls[0]![0].events).toEqual(
       onEvent.mock.calls.map(([event]) => event),
     );

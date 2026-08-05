@@ -211,6 +211,7 @@ export type {
   SandboxRuntimeOperation,
   SandboxAcquisitionSource,
   SandboxReleaseOutcome,
+  SandboxLifecycleInfo,
 } from "./sandbox-provider.js";
 
 // ── Agent Prompt Builder ────────────────────────────────────────────────

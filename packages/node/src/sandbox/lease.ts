@@ -106,6 +106,7 @@ export class SandboxLease {
           this.emit("sandbox.acquired", {
             operation: "acquire",
             sandboxId: this.readSandboxId(s),
+            source: this.readLifecycleInfo(s).acquisitionSource,
           });
           return s;
         })
@@ -138,6 +139,11 @@ export class SandboxLease {
         this.emit("sandbox.released", {
           operation: "release",
           ...(sandboxId ? { sandboxId } : {}),
+          ...(
+            this.readLifecycleInfo(this.session).releaseOutcome
+              ? { outcome: this.readLifecycleInfo(this.session).releaseOutcome }
+              : {}
+          ),
         });
       } catch (error: unknown) {
         this.emitError("release", error, sandboxId);
@@ -243,6 +249,14 @@ export class SandboxLease {
       return session.usage?.().sandboxId;
     } catch {
       return undefined;
+    }
+  }
+
+  private readLifecycleInfo(session: SandboxSession): ReturnType<NonNullable<SandboxSession["lifecycleInfo"]>> {
+    try {
+      return session.lifecycleInfo?.() ?? {};
+    } catch {
+      return {};
     }
   }
 
