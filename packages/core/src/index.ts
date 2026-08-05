@@ -332,6 +332,16 @@ export type { EventCatalogGroup, EventCatalogEntry } from "./events-catalog.js";
 // Configurable agentic loops (design: loop collection + pipeline + hooks). P0:
 // the safe expression evaluator (replaces the gates' `new Function`) + config types.
 export { evaluateExpression, SafeExpressionEvaluator } from "./loop/expression.js";
+export {
+  LOOP_CONTEXT_BINDING_KEY,
+  LoopContextBindingError,
+  LoopToolInputValidationError,
+  resolveLoopInputBindings,
+} from "./loop/bindings.js";
+export type {
+  LoopContextBinding,
+  LoopContextBindingErrorCode,
+} from "./loop/bindings.js";
 export type {
   AgentLoopConfig,
   ContextBag,
@@ -368,6 +378,7 @@ export {
   loopContextPrompt,
   maybeParseJson,
   normalizeToolInput,
+  loopUserVisibleContext,
   stringifyLoopContext,
 } from "./loop/step-helpers.js";
 export {

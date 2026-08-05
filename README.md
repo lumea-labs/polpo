@@ -391,11 +391,29 @@ Agent-direct chat can target a loop explicitly:
 {
   "agent": "router",
   "loop": "router-flow",
+  "metadata": { "projectRef": "project-123" },
   "messages": [{ "role": "user", "content": "Route this request" }]
 }
 ```
 
 At runtime, the selected project loop can narrow the effective prompt, tools, skills, model, reasoning, tool choice, and max turns per agent step. If a step omits `skills`, it inherits the agent-level `skills`. Project loop execution in chat completions uses the shared context graph: deterministic tool steps run first, store outputs in the context bag, and later agent steps receive that context as runtime data in their system prompt. Core keeps a compatibility normalizer for legacy inline `loops` + `pipeline` configs and ships a pure `PipelineExecutor` for sequential, tool, switch, parallel, and human nodes; hosts wire `runLoop`, `runTool`, and `handleHuman` callbacks to their concrete runtime.
+
+Deterministic tool inputs can read typed request metadata without an LLM step:
+
+```jsonc
+{
+  "type": "tool",
+  "tool": "project_checkout",
+  "input": {
+    "projectRef": { "$context": "request.metadata.projectRef" },
+    "createIfMissing": true
+  },
+  "saveAs": "checkout",
+  "next": "end"
+}
+```
+
+The runtime resolves exact `{ "$context": "path.to.value" }` markers recursively before validating the tool schema or executing the tool. Missing paths, malformed markers, and schema mismatches fail deterministically without running the tool. Static inputs remain unchanged, and strings are never interpolated, including Bash commands. Request context is read-only, stays out of model prompts and fallback output, and is retained by loop checkpoints and resumes.
 
 Project loops also support governance fields:
 

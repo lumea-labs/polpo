@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   loopContextPrompt,
+  loopUserVisibleContext,
   stringifyLoopContext,
 } from "../loop/step-helpers.js";
 
@@ -50,5 +51,17 @@ describe("loop context trust", () => {
     expect(loopContextPrompt("review", context, "enforce")).toContain(
       "Loop context could not be serialized safely",
     );
+  });
+
+  it("keeps runtime-owned request metadata out of model-visible context", () => {
+    const visible = loopUserVisibleContext({
+      request: { metadata: { projectRef: "private-ref" } },
+      checkout: { ok: true },
+    });
+    const prompt = loopContextPrompt("build", visible);
+
+    expect(prompt).toContain('"checkout"');
+    expect(prompt).not.toContain("private-ref");
+    expect(prompt).not.toContain('"request"');
   });
 });

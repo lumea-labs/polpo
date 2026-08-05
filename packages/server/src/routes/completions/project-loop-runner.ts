@@ -12,12 +12,14 @@ import { nanoid } from "nanoid";
 import {
   PipelineExecutor,
   LoopApprovalRequiredError,
+  LoopToolInputValidationError,
   LoopPermissionApprovalRequiredError,
   buildLoopStepAgent,
   maybeParseJson,
   normalizeProjectLoop,
   normalizeRuntimeContextTrustMode,
   normalizeToolInput,
+  loopUserVisibleContext,
   resolveRuntimeContext,
   stringifyLoopContext,
   type ContextBag,
@@ -31,6 +33,7 @@ import {
   type ResolvedExecutionRoute,
   type RuntimePlan,
 } from "@polpo-ai/core";
+import { validateToolInput } from "@polpo-ai/llm";
 import type { LanguageModelUsage } from "ai";
 import type {
   CompletionRouteDeps,
@@ -168,6 +171,7 @@ export async function runProjectLoopCompletion(options: {
   runtimeInvocation?: CompletionRuntimeInvocation;
   sessionId?: string | null;
   user?: string;
+  requestMetadata?: Readonly<Record<string, string>>;
   runtimePlan?: RuntimePlan;
   signal?: AbortSignal;
   onToolCall?: (toolCall: LoopRuntimeToolCall) => Promise<void>;
@@ -201,6 +205,11 @@ export async function runProjectLoopCompletion(options: {
 
   const loopRunStore = deps.getLoopRunStore?.();
   const resumeState = resumeRun?.resume;
+  const initialContext: ContextBag = resumeState?.context ?? {
+    request: {
+      metadata: { ...(options.requestMetadata ?? {}) },
+    },
+  };
   const loopRunId = resumeRun?.id ?? (loopRunStore ? `looprun-${nanoid(16)}` : undefined);
   const toolRunScope = await deps.createToolRunScope?.({
     agentConfig,
@@ -220,9 +229,10 @@ export async function runProjectLoopCompletion(options: {
     await rootTools.cleanup?.().catch(() => {});
     await toolRunScope?.cleanup?.().catch(() => {});
   };
+  const deterministicTools = rootTools.runtimeTools ?? rootTools.tools;
   const executeLoopTool = createGuardedCompletionToolExecutor({
     executor: rootTools.runtimeExecutor ?? rootTools.executor,
-    tools: rootTools.tools,
+    tools: deterministicTools,
     middleware: deps.runToolMiddleware,
     context: {
       planId: options.runtimePlan?.id,
@@ -233,6 +243,26 @@ export async function runProjectLoopCompletion(options: {
       sessionId: sessionId ?? undefined,
     },
   });
+  const rootToolSchemas = new Map<string, unknown>(
+    deterministicTools
+      .filter((tool: any) => tool
+        && typeof tool.name === "string"
+        && (tool.parameters !== undefined || tool.inputSchema !== undefined))
+      .map((tool: any) => [tool.name, tool.parameters ?? tool.inputSchema]),
+  );
+  const validateDeterministicToolInput = async (
+    name: string,
+    input: unknown,
+  ): Promise<Record<string, unknown>> => {
+    let args = normalizeToolInput(input);
+    if (!rootToolSchemas.has(name)) return args;
+    const validation = await validateToolInput(rootToolSchemas.get(name), args);
+    if (!validation.success) {
+      throw new LoopToolInputValidationError(name, validation.error.message);
+    }
+    args = normalizeToolInput(validation.value);
+    return args;
+  };
   const initialModel = agentConfigForModelPrimary(
     agentConfig,
     deps.getConfig()?.settings,
@@ -263,6 +293,7 @@ export async function runProjectLoopCompletion(options: {
       agentName: agentConfig.name,
       sessionId: sessionId ?? undefined,
       user,
+      context: initialContext,
       metadata: {
         runtime: "chat.completions",
         surface: runtimePlan?.surface ?? executionRoute?.surface ?? "agent",
@@ -349,7 +380,8 @@ export async function runProjectLoopCompletion(options: {
       name: projectLoop.name,
       pipeline: resumeState ? { ...normalized.pipeline, steps: resumeState.steps } : normalized.pipeline,
       loops: normalized.loops,
-      context: resumeState?.context ?? {},
+      context: initialContext,
+      protectedContextRoots: ["request"],
       projectHooks: projectLoop.hooks,
       projectPermissions: projectLoop.permissions,
       projectPolicies: projectLoop.policies,
@@ -360,6 +392,7 @@ export async function runProjectLoopCompletion(options: {
       onTrace: async (event) => {
         await emitTrace(event);
       },
+      validateToolInput: validateDeterministicToolInput,
       runTool: async (name, input) => {
         const args = normalizeToolInput(input);
         const id = `loop-tool-${nanoid(12)}`;
@@ -435,7 +468,7 @@ export async function runProjectLoopCompletion(options: {
       },
     });
 
-    if (!finalText) finalText = JSON.stringify(result.context, null, 2);
+    if (!finalText) finalText = JSON.stringify(loopUserVisibleContext(result.context), null, 2);
     if (loopRunStore && loopRunId) {
       await loopRunStore.updateRun(loopRunId, {
         status: "completed",
@@ -617,7 +650,12 @@ export async function resumeProjectLoopRun(options: {
  */
 export async function handleProjectLoopCompletion(c: any, options: {
   deps: CompletionRouteDeps;
-  body: { stream?: boolean; agent?: string; user?: string };
+  body: {
+    stream?: boolean;
+    agent?: string;
+    user?: string;
+    metadata?: Record<string, string>;
+  };
   completionId: string;
   agentConfig: any;
   projectLoop: ProjectLoopConfig;
@@ -694,6 +732,7 @@ export async function handleProjectLoopCompletion(c: any, options: {
           runtimeInvocation,
           sessionId,
           user: body.user,
+          requestMetadata: body.metadata,
           runtimePlan,
           signal: abortController.signal,
           executionRoute,
@@ -802,6 +841,7 @@ export async function handleProjectLoopCompletion(c: any, options: {
       runtimeInvocation,
       sessionId,
       user: body.user,
+      requestMetadata: body.metadata,
       runtimePlan,
       signal: c.req.raw.signal,
       executionRoute,
@@ -837,7 +877,11 @@ export async function handleProjectLoopCompletion(c: any, options: {
     }
     const loopError = loopRuntimeErrorEnvelope(err);
     if (loopError) {
-      return c.json({ error: loopError }, 403 as any);
+      const invalidInput = loopError.code === "loop_binding_invalid"
+        || loopError.code === "loop_binding_missing"
+        || loopError.code === "loop_context_readonly"
+        || loopError.code === "loop_tool_input_invalid";
+      return c.json({ error: loopError }, (invalidInput ? 400 : 403) as any);
     }
     throw err;
   } finally {

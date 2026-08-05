@@ -38,10 +38,12 @@ import {
   normalizeResponseMessagesForHistory,
   runModelPolicyTurn,
   toValidatedToolInputSchema,
+  validateToolInput,
 } from "@polpo-ai/llm";
 import { cleanupAgentBrowserSession } from "@polpo-ai/tools";
 import {
   LoopRunner,
+  LoopToolInputValidationError,
   PipelineExecutor,
   buildLoopStepAgent,
   loopContextPrompt,
@@ -216,12 +218,13 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
   async function performToolCall(
     pt: PolpoTool | undefined,
     toolCall: LoopToolCall,
-  ): Promise<{ llmText: string; isError: boolean }> {
+  ): Promise<{ llmText: string; isError: boolean; error?: Error }> {
     let result: ToolResult = {
       content: [{ type: "text", text: `Unknown tool: ${toolCall.name}` }],
       details: {},
     };
     let isError = false;
+    let executionError: Error | undefined;
 
     const dispatch = async (args: Readonly<Record<string, unknown>>): Promise<string> => {
       if (!pt) {
@@ -232,15 +235,20 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
         };
       } else {
         try {
+          const validation = await validateToolInput(pt.parameters, args);
+          if (!validation.success) {
+            throw new LoopToolInputValidationError(toolCall.name, validation.error.message);
+          }
           result = await pt.execute(
             toolCall.id,
-            args as Record<string, unknown>,
+            validation.value as Record<string, unknown>,
             abortController.signal,
           );
         } catch (err) {
           isError = true;
+          executionError = err instanceof Error ? err : new Error(String(err));
           result = {
-            content: [{ type: "text", text: err instanceof Error ? err.message : String(err) }],
+            content: [{ type: "text", text: executionError.message }],
             details: {},
           };
         }
@@ -313,7 +321,7 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
       isError,
     });
 
-    return { llmText, isError };
+    return { llmText, isError, error: executionError };
   }
 
   /**
@@ -869,6 +877,17 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
       onTrace: async (event) => {
         emitTranscript({ type: "loop_trace", trace: event });
       },
+      validateToolInput: async (name, input) => {
+        const tools = await getBaseTools();
+        const args = normalizeToolInput(input);
+        const schema = tools.get(name)?.parameters;
+        if (schema === undefined) return args;
+        const validation = await validateToolInput(schema, args);
+        if (!validation.success) {
+          throw new LoopToolInputValidationError(name, validation.error.message);
+        }
+        return normalizeToolInput(validation.value);
+      },
       runLoop: async (name, loop, context, position) => {
         const sessionResume = pendingSessionResume;
         pendingSessionResume = undefined;
@@ -908,8 +927,8 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
         emitTranscript({ type: "tool_use", tool: name, toolId: toolCall.id, input: args });
         activity.toolCalls++;
         activity.lastTool = name;
-        const { llmText, isError } = await performToolCall(tools.get(name), toolCall);
-        if (isError) throw new Error(llmText);
+        const { llmText, isError, error } = await performToolCall(tools.get(name), toolCall);
+        if (isError) throw error ?? new Error(llmText);
         return { output: maybeParseJson(llmText) };
       },
       handleHuman: async (name) => {

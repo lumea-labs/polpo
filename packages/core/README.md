@@ -79,6 +79,26 @@ const loopRunStore = new MemoryLoopRunStore();
 
 `PipelineExecutor` emits typed `LoopPermissionDeniedError`, `LoopPermissionApprovalRequiredError`, `LoopPolicyDeniedError`, and `LoopApprovalRequiredError`, plus structured trace events such as `permission.result`, `policy.result`, and `approval.required`. Approval errors include a resume continuation: the context bag, remaining steps, and previous node. Hosts can persist that on `LoopRunRecord.resume`, approve the gate, then resume from the checkpoint without rerunning completed steps.
 
+Tool steps and hook actions accept recursive, typed context bindings:
+
+```ts
+toolStep({
+  tool: "project_checkout",
+  input: {
+    projectRef: { $context: "request.metadata.projectRef" },
+    createIfMissing: true,
+  },
+  saveAs: "checkout",
+  next: "end",
+});
+```
+
+Only an exact `{ $context: "path" }` object is a binding. The executor does not
+interpolate strings or shell commands. Hosts should seed request-owned values
+in the context, mark their root with `protectedContextRoots`, validate the
+resolved input against the tool schema, and persist the complete context in
+checkpoints.
+
 Loop run states distinguish the gate lifecycle from execution:
 
 - `awaiting_approval`: execution is paused at a policy/permission gate.

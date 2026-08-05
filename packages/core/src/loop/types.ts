@@ -40,7 +40,7 @@ export type ProjectLoopKind = "graph";
 export interface LoopHookAction {
   /** Built-in or custom tool invoked by the hook. */
   tool: string;
-  /** Static JSON input. Host runtimes may add templating later. */
+  /** Static JSON input or exact `{ "$context": "path.to.value" }` bindings. */
   input?: unknown;
   /** Context path where the hook output should be stored. */
   saveAs?: string;
@@ -220,7 +220,7 @@ export interface ToolLoopStep {
   when?: string;
   /** Built-in or custom tool name to execute directly, without an LLM turn. */
   tool: string;
-  /** Static JSON input or host-templated input resolved by the runtime. */
+  /** Static JSON input or exact `{ "$context": "path.to.value" }` bindings. */
   input?: unknown;
   /** Context path where the tool output should be stored. Defaults to the tool name. */
   saveAs?: string;
