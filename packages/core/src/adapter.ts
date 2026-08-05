@@ -193,6 +193,8 @@ export interface ChatSessionInjection {
   seedMessages: unknown[];
   /** AI-SDK ToolSet (declaration-only) fed to streamText. */
   toolSet: Record<string, unknown>;
+  /** Dynamic tool names exposed to the model for the next turn. */
+  activeToolNames?: () => string[];
   /** Executes a tool call, returning the string result ("Error:" prefix on failure). */
   executor: (
     name: string,
@@ -207,6 +209,8 @@ export interface ChatSessionInjection {
   sandbox?: RuntimeSandboxOptions;
   /** Tools value used for compaction token estimation — MUST match the chat path. */
   compactionTools: unknown[];
+  /** Dynamic Polpo tool definitions used for compaction estimation. */
+  activeCompactionTools?: () => unknown[];
   /** Compaction mode ("chat" mirrors the inline handler). */
   compactionMode: "chat" | "task";
 }

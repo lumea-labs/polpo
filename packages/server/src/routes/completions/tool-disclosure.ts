@@ -8,6 +8,15 @@ export const MODEL_CONTROLLED_TOOL_NAMES = [
 
 const MODEL_CONTROLLED_TOOL_NAME_SET = new Set<string>(MODEL_CONTROLLED_TOOL_NAMES);
 
+/** Host-owned opt-in for model-controlled progressive tool disclosure. */
+export interface ModelControlledToolDisclosureConfig {
+  mode: "model-controlled";
+  initiallyLoaded?: readonly string[];
+  maxLoadedTools?: number;
+  maxLoadBatch?: number;
+  maxSearchResults?: number;
+}
+
 export interface ModelControlledToolPoolOptions {
   tools: readonly any[];
   executor: CompletionToolExecutor;
@@ -24,6 +33,10 @@ export interface ModelControlledToolPool {
   executor: CompletionToolExecutor;
   /** Names to pass to AI SDK `activeTools` for the next model turn. */
   activeToolNames: () => string[];
+  /** Freeze and return the model-visible pool for one model turn. */
+  startModelTurn: () => string[];
+  /** Polpo tool definitions active for compaction/token estimation. */
+  activeTools: () => any[];
   /** Real tools currently visible to the model, excluding meta-tools. */
   loadedToolNames: () => string[];
 }
@@ -47,7 +60,7 @@ function toolName(tool: any): string {
 function toolSource(tool: any): string {
   const name = toolName(tool);
   if (name === "skill_list" || name === "skill_read") return "skill";
-  if (typeof tool?.serverName === "string" || typeof tool?.mcpServer === "string") return "mcp";
+  if (name.startsWith("mcp__") || typeof tool?.serverName === "string" || typeof tool?.mcpServer === "string") return "mcp";
   if (typeof tool?.connectionId === "string" || typeof tool?.providerId === "string") return "connection";
   if (typeof tool?.clientSide === "boolean") return "custom";
   return "runtime";
@@ -242,11 +255,21 @@ export function createModelControlledToolPool(
   if (loaded.size > maxLoadedTools) {
     throw new Error(`Initial tool pool exceeds the ${maxLoadedTools}-tool limit.`);
   }
+  let executableThisTurn = new Set(loaded);
+  const metaTools = disclosureTools();
+  const metaToolsByName = new Map(metaTools.map((tool) => [tool.name, tool]));
 
   const activeToolNames = (): string[] => [
     ...catalogOrder.filter((name) => loaded.has(name)),
     ...MODEL_CONTROLLED_TOOL_NAMES,
   ];
+  const startModelTurn = (): string[] => {
+    executableThisTurn = new Set(loaded);
+    return activeToolNames();
+  };
+  const activeTools = (): any[] => activeToolNames()
+    .map((name) => catalog.get(name) ?? metaToolsByName.get(name))
+    .filter(Boolean);
   const loadedToolNames = (): string[] => catalogOrder.filter((name) => loaded.has(name));
 
   const executor: CompletionToolExecutor = async (name, args, execution) => {
@@ -314,18 +337,31 @@ export function createModelControlledToolPool(
     }
 
     if (!catalog.has(name)) return `Error: Unknown tool "${name}".`;
-    if (!loaded.has(name)) {
-      return `Error: Tool "${name}" is not loaded. Use tool_search and tool_load before calling it.`;
+    if (!executableThisTurn.has(name)) {
+      return `Error: Tool "${name}" is not active in this model turn. Use tool_search and tool_load, then call it on the next turn.`;
     }
     return options.executor(name, args, execution);
   };
 
   return {
-    tools: [...catalogOrder.map((name) => catalog.get(name)), ...disclosureTools()],
+    tools: [...catalogOrder.map((name) => catalog.get(name)), ...metaTools],
     executor,
     activeToolNames,
+    startModelTurn,
+    activeTools,
     loadedToolNames,
   };
+}
+
+/** Extract an exact forced AI SDK tool choice, if one is configured. */
+export function forcedModelToolName(toolChoice: unknown): string | undefined {
+  if (!toolChoice || typeof toolChoice !== "object" || Array.isArray(toolChoice)) return undefined;
+  const candidate = toolChoice as { type?: unknown; toolName?: unknown };
+  return candidate.type === "tool"
+    && typeof candidate.toolName === "string"
+    && candidate.toolName.trim()
+    ? candidate.toolName.trim()
+    : undefined;
 }
 
 export const MODEL_CONTROLLED_TOOL_PROMPT = [

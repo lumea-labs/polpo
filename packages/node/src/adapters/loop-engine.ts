@@ -441,7 +441,7 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
       const compactionResult = await compactIfNeeded({
         systemPrompt,
         messages,
-        tools: compactionTools as { description: string }[],
+        tools: (inject?.activeCompactionTools?.() ?? compactionTools) as { description: string }[],
         config: {
           contextWindow: model.contextWindow ?? 200_000,
           maxOutputTokens: model.maxTokens ?? 8192,
@@ -495,6 +495,7 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
         system: systemPrompt,
         messages,
         tools: toolSet,
+        ...(inject?.activeToolNames ? { activeTools: inject.activeToolNames() as Array<keyof typeof toolSet> } : {}),
         ...(inject?.toolChoice ? { toolChoice: inject.toolChoice as any } : {}),
         abortSignal: abortController.signal,
       }, (event) => {

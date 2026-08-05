@@ -101,6 +101,8 @@ describe("model-controlled tool disclosure", () => {
       "tool_load",
     ]);
 
+    pool.startModelTurn();
+
     const result = await pool.executor(
       "slack_send_message",
       { channelId: "C123", text: "hello" },
@@ -115,6 +117,24 @@ describe("model-controlled tool disclosure", () => {
     expect(execute).toHaveBeenCalledOnce();
   });
 
+  it("does not execute a tool loaded later in the same model turn", async () => {
+    const execute = vi.fn(async () => "executed");
+    const pool = createModelControlledToolPool({
+      tools: [runtimeTool("bash", "Run a shell command")],
+      executor: execute,
+    });
+
+    pool.startModelTurn();
+    await pool.executor("tool_load", { names: ["bash"] });
+
+    await expect(pool.executor("bash", { command: "pwd" })).resolves.toContain("not active");
+    expect(execute).not.toHaveBeenCalled();
+
+    pool.startModelTurn();
+    await expect(pool.executor("bash", { command: "pwd" })).resolves.toBe("executed");
+    expect(execute).toHaveBeenCalledOnce();
+  });
+
   it("denies execution before load and never forwards it", async () => {
     const execute = vi.fn(async () => "executed");
     const pool = createModelControlledToolPool({
@@ -123,7 +143,7 @@ describe("model-controlled tool disclosure", () => {
     });
 
     await expect(pool.executor("bash", { command: "pwd" })).resolves.toBe(
-      'Error: Tool "bash" is not loaded. Use tool_search and tool_load before calling it.',
+      'Error: Tool "bash" is not active in this model turn. Use tool_search and tool_load, then call it on the next turn.',
     );
     expect(execute).not.toHaveBeenCalled();
   });

@@ -38,6 +38,7 @@ import {
   type MockResponse,
 } from "./helpers/mock-llm.js";
 import { convertArrayToReadableStream } from "ai/test";
+import { jsonSchema } from "ai";
 
 // ── Mock the LLM module BEFORE any imports that pull it in ──
 
@@ -720,6 +721,109 @@ describe("executeRun — shared run lifecycle", () => {
       providerExecuted: true,
       isError: false,
     }));
+  });
+
+  test("chat injection refreshes active tools after an explicit model-controlled load", async () => {
+    let turn = 0;
+    const visibleByTurn: string[][] = [];
+    const usage = {
+      inputTokens: { total: 10, noCache: undefined, cacheRead: undefined, cacheWrite: undefined },
+      outputTokens: { total: 5, text: undefined, reasoning: undefined },
+    };
+    const model = new MockLanguageModelV3({
+      doStream: async (options) => {
+        visibleByTurn.push((options.tools ?? []).map((tool) => tool.name));
+        turn += 1;
+        if (turn === 1) {
+          return { stream: convertArrayToReadableStream([
+            { type: "stream-start", warnings: [] },
+            { type: "tool-call", toolCallId: "load_run", toolName: "tool_load", input: JSON.stringify({ names: ["calculate"] }) },
+            { type: "finish", finishReason: { unified: "tool-calls", raw: undefined }, usage },
+          ] as any[]) };
+        }
+        if (turn === 2) {
+          return { stream: convertArrayToReadableStream([
+            { type: "stream-start", warnings: [] },
+            { type: "tool-call", toolCallId: "calculate_run", toolName: "calculate", input: JSON.stringify({ value: 5 }) },
+            { type: "finish", finishReason: { unified: "tool-calls", raw: undefined }, usage },
+          ] as any[]) };
+        }
+        return { stream: convertArrayToReadableStream([
+          { type: "stream-start", warnings: [] },
+          { type: "text-start", id: "run_text" },
+          { type: "text-delta", id: "run_text", delta: "10" },
+          { type: "text-end", id: "run_text" },
+          { type: "finish", finishReason: { unified: "stop", raw: undefined }, usage },
+        ] as any[]) };
+      },
+    });
+    const active = new Set(["tool_load"]);
+    const executor = vi.fn(async (name: string, args: Record<string, unknown>) => {
+      if (name === "tool_load") {
+        active.add("calculate");
+        return JSON.stringify({ loaded: ["calculate"] });
+      }
+      return String(Number(args.value) * 2);
+    });
+    const store = new InMemoryRunStore();
+    const config = makeConfig();
+
+    const outcome = await executeRun(config, {
+      runStore: store,
+      pid: 11,
+      configPath: `memory://${config.runId}`,
+      inject: {
+        agent: config.agent,
+        model: { aiModel: model, contextWindow: 200_000, maxTokens: 8192 },
+        systemPrompt: "Use tool_load before calculate.",
+        maxTurns: 3,
+        seedMessages: [{ role: "user", content: "Double 5" }],
+        toolSet: {
+          tool_load: {
+            description: "Load a tool",
+            inputSchema: jsonSchema({
+              type: "object",
+              properties: { names: { type: "array", items: { type: "string" } } },
+              required: ["names"],
+            }),
+          },
+          calculate: {
+            description: "Double a number",
+            inputSchema: jsonSchema({
+              type: "object",
+              properties: { value: { type: "number" } },
+              required: ["value"],
+            }),
+          },
+        },
+        activeToolNames: () => [...active],
+        executor,
+        clientSideToolNames: new Set(),
+        providerToolNames: new Set(),
+        compactionTools: [],
+        compactionMode: "chat",
+      },
+    });
+
+    expect(outcome.status).toBe("completed");
+    expect(outcome.result.stdout).toBe("10");
+    expect(visibleByTurn).toEqual([
+      ["tool_load"],
+      ["tool_load", "calculate"],
+      ["tool_load", "calculate"],
+    ]);
+    expect(executor).toHaveBeenNthCalledWith(
+      1,
+      "tool_load",
+      { names: ["calculate"] },
+      expect.objectContaining({ callId: "load_run" }),
+    );
+    expect(executor).toHaveBeenNthCalledWith(
+      2,
+      "calculate",
+      { value: 5 },
+      expect.objectContaining({ callId: "calculate_run" }),
+    );
   });
 
   test("engine failure: run marked failed, executeRun resolves (never throws)", async () => {

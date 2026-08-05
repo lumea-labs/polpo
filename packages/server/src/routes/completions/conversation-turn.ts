@@ -34,7 +34,7 @@ import type {
 } from "../completions.js";
 import type { CompletionRequestBody } from "./schemas.js";
 import { convertMessages, extractText } from "./message-mapping.js";
-import { toAIToolChoice } from "./tool-mapping.js";
+import { CLIENT_SIDE_TOOL_NAMES, toAIToolChoice } from "./tool-mapping.js";
 import {
   createGuardedCompletionToolExecutor,
   type CompletionToolExecutor,
@@ -56,6 +56,12 @@ import {
   type ChatViaRunTurnResult,
 } from "./chat-via-run-handler.js";
 import { guardrailErrorEnvelope } from "./sse.js";
+import {
+  MODEL_CONTROLLED_TOOL_PROMPT,
+  createModelControlledToolPool,
+  forcedModelToolName,
+  type ModelControlledToolDisclosureConfig,
+} from "./tool-disclosure.js";
 
 type PreparedError = {
   kind: "error";
@@ -462,6 +468,9 @@ export async function prepareChatCompletionExecution(
   let modelToolChoice: unknown | undefined;
   let effectiveTools: any[];
   let effectiveToolExecutor: CompletionToolExecutor;
+  let toolDisclosure: ModelControlledToolDisclosureConfig | undefined;
+  let activeToolNames: (() => string[]) | undefined;
+  let activeCompactionTools: (() => any[]) | undefined;
   let extraAiTools: Record<string, any> | undefined;
   let isInteractiveFn: ((name: string) => boolean) | undefined;
   let projectLoopRuntime: { agentConfig: any; projectLoop: ProjectLoopConfig } | undefined;
@@ -724,6 +733,7 @@ export async function prepareChatCompletionExecution(
       const resolvedTools = await deps.resolveAgentTools(agentConfig);
       effectiveTools = resolvedTools.tools;
       effectiveToolExecutor = resolvedTools.executor;
+      toolDisclosure = resolvedTools.disclosure;
       onResponseFinished = resolvedTools.cleanup;
       extraAiTools = resolvedTools.extraAiTools;
     }
@@ -814,6 +824,34 @@ export async function prepareChatCompletionExecution(
         sessionId: sessionId ?? undefined,
       },
     });
+
+    if (toolDisclosure?.mode === "model-controlled") {
+      const configuredInitial = [...(toolDisclosure.initiallyLoaded ?? [])];
+      const forcedTool = forcedModelToolName(modelToolChoice);
+      if (forcedTool && effectiveTools.some((tool) => tool?.name === forcedTool)) {
+        configuredInitial.push(forcedTool);
+      }
+      const pool = createModelControlledToolPool({
+        tools: effectiveTools,
+        executor: effectiveToolExecutor,
+        initiallyLoaded: [...new Set(configuredInitial)],
+        maxLoadedTools: toolDisclosure.maxLoadedTools,
+        maxLoadBatch: toolDisclosure.maxLoadBatch,
+        maxSearchResults: toolDisclosure.maxSearchResults,
+      });
+      const alwaysActive = [
+        ...Object.keys(extraAiTools ?? {}),
+        ...CLIENT_SIDE_TOOL_NAMES,
+      ];
+      effectiveTools = pool.tools;
+      effectiveToolExecutor = pool.executor;
+      fullSystemPrompt = `${fullSystemPrompt}\n\n${MODEL_CONTROLLED_TOOL_PROMPT}`;
+      activeToolNames = () => [...new Set([
+        ...pool.startModelTurn(),
+        ...alwaysActive,
+      ])];
+      activeCompactionTools = pool.activeTools;
+    }
   }
 
   if (projectLoopRuntime) {
@@ -849,6 +887,8 @@ export async function prepareChatCompletionExecution(
     modelToolChoice,
     effectiveTools,
     effectiveToolExecutor,
+    activeToolNames,
+    activeCompactionTools,
     extraAiTools,
     isInteractiveFn,
     aiMessages,

@@ -71,6 +71,10 @@ export interface ChatCompletionExecution {
   modelToolChoice?: unknown;
   effectiveTools: any[];
   effectiveToolExecutor: CompletionToolExecutor;
+  /** Dynamic model-facing pool for progressive disclosure. */
+  activeToolNames?: () => string[];
+  /** Dynamic Polpo tool definitions used for compaction estimation. */
+  activeCompactionTools?: () => any[];
   /**
    * Provider-executed tools the host wants merged into the AI SDK tool
    * palette as-is. Polpo never invokes these locally — the SDK / model
@@ -195,7 +199,7 @@ export function streamChatCompletion(c: any, exec: ChatCompletionExecution): any
         const compactionResult = await compactIfNeeded({
           systemPrompt: fullSystemPrompt,
           messages,
-          tools: effectiveTools,
+          tools: exec.activeCompactionTools?.() ?? effectiveTools,
           config: {
             contextWindow: m.contextWindow ?? 200_000,
             maxOutputTokens: m.maxTokens ?? 8192,
@@ -248,6 +252,7 @@ export function streamChatCompletion(c: any, exec: ChatCompletionExecution): any
           system: fullSystemPrompt,
           messages,
           tools: aiTools,
+          ...(exec.activeToolNames ? { activeTools: exec.activeToolNames() } : {}),
           ...(modelToolChoice ? { toolChoice: modelToolChoice as any } : {}),
           abortSignal: abortController.signal,
         }, async (event) => {
@@ -646,7 +651,7 @@ export async function runNonStreamingChatCompletion(c: any, exec: ChatCompletion
       const compactionResult = await compactIfNeeded({
         systemPrompt: fullSystemPrompt,
         messages,
-        tools: effectiveTools,
+        tools: exec.activeCompactionTools?.() ?? effectiveTools,
         config: {
           contextWindow: m.contextWindow ?? 200_000,
           maxOutputTokens: m.maxTokens ?? 8192,
@@ -677,6 +682,7 @@ export async function runNonStreamingChatCompletion(c: any, exec: ChatCompletion
         system: fullSystemPrompt,
         messages,
         tools: aiTools,
+        ...(exec.activeToolNames ? { activeTools: exec.activeToolNames() } : {}),
         ...(modelToolChoice ? { toolChoice: modelToolChoice as any } : {}),
       });
 

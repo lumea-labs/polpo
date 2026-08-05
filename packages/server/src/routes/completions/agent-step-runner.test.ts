@@ -184,6 +184,90 @@ describe("agent model profile resolution", () => {
 });
 
 describe("runAgentStepCompletion tool validation", () => {
+  it("loads a tool explicitly before exposing and directly executing it in a nested agent step", async () => {
+    const usage = {
+      inputTokens: { total: 10, noCache: undefined, cacheRead: undefined, cacheWrite: undefined },
+      outputTokens: { total: 5, text: undefined, reasoning: undefined },
+    };
+    const visibleByTurn: string[][] = [];
+    let turn = 0;
+    const model = new MockLanguageModelV3({
+      doStream: async (options) => {
+        visibleByTurn.push((options.tools ?? []).map((tool) => tool.name));
+        turn += 1;
+        if (turn === 1) {
+          return { stream: convertArrayToReadableStream([
+            { type: "stream-start", warnings: [] },
+            { type: "tool-call", toolCallId: "load_nested", toolName: "tool_load", input: JSON.stringify({ names: ["calculate"] }) },
+            { type: "finish", finishReason: { unified: "tool-calls", raw: undefined }, usage },
+          ] as any[]) };
+        }
+        if (turn === 2) {
+          return { stream: convertArrayToReadableStream([
+            { type: "stream-start", warnings: [] },
+            { type: "tool-call", toolCallId: "calculate_nested", toolName: "calculate", input: JSON.stringify({ value: 4 }) },
+            { type: "finish", finishReason: { unified: "tool-calls", raw: undefined }, usage },
+          ] as any[]) };
+        }
+        return { stream: convertArrayToReadableStream([
+          { type: "stream-start", warnings: [] },
+          { type: "text-start", id: "nested_text" },
+          { type: "text-delta", id: "nested_text", delta: "8" },
+          { type: "text-end", id: "nested_text" },
+          { type: "finish", finishReason: { unified: "stop", raw: undefined }, usage },
+        ] as any[]) };
+      },
+    });
+    const executor = vi.fn(async (_name: string, args: Record<string, unknown>) => String(Number(args.value) * 2));
+    const deps = {
+      getConfig: () => ({ settings: {} }),
+      getMemoryStore: () => undefined,
+      emit: vi.fn(),
+      resolveAgentModel: vi.fn(async () => ({
+        model: {
+          id: "mock/model",
+          aiModel: model,
+          provider: "mock",
+          contextWindow: 128_000,
+          maxTokens: 8192,
+        },
+      })),
+      resolveAgentTools: vi.fn(async () => ({
+        tools: [{
+          name: "calculate",
+          description: "Double a number",
+          parameters: {
+            type: "object",
+            properties: { value: { type: "number" } },
+            required: ["value"],
+          },
+        }],
+        executor,
+        disclosure: { mode: "model-controlled" as const },
+      })),
+      buildRuntimePrompt: vi.fn(async () => "system"),
+    } as unknown as CompletionRouteDeps;
+
+    const result = await runAgentStepCompletion({
+      deps,
+      agentConfig: { name: "nested-agent", model: "mock/model", maxTurns: 3 },
+      aiMessages: [{ role: "user", content: "Double 4" }],
+      extraSystemParts: [],
+      context: {},
+      stepName: "nested",
+    });
+
+    expect(result.text).toBe("8");
+    expect(visibleByTurn[0]).not.toContain("calculate");
+    expect(visibleByTurn[1]).toContain("calculate");
+    expect(executor).toHaveBeenCalledOnce();
+    expect(executor).toHaveBeenCalledWith(
+      "calculate",
+      { value: 4 },
+      expect.objectContaining({ callId: "calculate_nested" }),
+    );
+  });
+
   it("runs model preflight before resolving a loop-step model or tools", async () => {
     const resolveAgentModel = vi.fn();
     const resolveAgentTools = vi.fn();
