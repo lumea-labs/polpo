@@ -1,4 +1,10 @@
 import type { ProfiledModelSelection } from "../types/config.js";
+import type {
+  SandboxAcquisitionSource,
+  SandboxReleaseOutcome,
+  SandboxRuntimeEventType,
+  SandboxRuntimeOperation,
+} from "../sandbox-provider.js";
 
 /**
  * Configurable agentic loops — config model (declarative surface).
@@ -97,7 +103,8 @@ export type LoopTraceEventType =
   | "tool.result"
   | "human.request"
   | "human.result"
-  | "transition";
+  | "transition"
+  | SandboxRuntimeEventType;
 
 export interface LoopTraceEvent {
   id: string;
@@ -114,6 +121,10 @@ export interface LoopTraceEvent {
   input?: unknown;
   output?: unknown;
   error?: string;
+  sandboxId?: string;
+  operation?: SandboxRuntimeOperation;
+  source?: SandboxAcquisitionSource;
+  outcome?: SandboxReleaseOutcome;
   data?: Record<string, unknown>;
 }
 
