@@ -635,6 +635,8 @@ function normalizeExecution(value: unknown): ScheduleExecutionOptions {
     }
     let lifecycle: {
       onRelease?: "pool" | "destroy";
+      stopAfterIdleMinutes?: number;
+      deleteAfterStopMinutes?: number;
       idleTtlMinutes?: number;
     } | undefined;
     if (sandbox.lifecycle !== undefined) {
@@ -644,7 +646,12 @@ function normalizeExecution(value: unknown): ScheduleExecutionOptions {
       );
       assertKnownKeys(
         rawLifecycle,
-        ["onRelease", "idleTtlMinutes"],
+        [
+          "onRelease",
+          "stopAfterIdleMinutes",
+          "deleteAfterStopMinutes",
+          "idleTtlMinutes",
+        ],
         "Schedule execution sandbox lifecycle",
       );
       if (
@@ -655,6 +662,8 @@ function normalizeExecution(value: unknown): ScheduleExecutionOptions {
         throw new Error('Schedule sandbox lifecycle onRelease must be "pool" or "destroy"');
       }
       const idleTtlMinutes = rawLifecycle.idleTtlMinutes;
+      const stopAfterIdleMinutes = rawLifecycle.stopAfterIdleMinutes;
+      const deleteAfterStopMinutes = rawLifecycle.deleteAfterStopMinutes;
       if (idleTtlMinutes !== undefined && (
         typeof idleTtlMinutes !== "number"
         || !Number.isInteger(idleTtlMinutes)
@@ -669,6 +678,34 @@ function normalizeExecution(value: unknown): ScheduleExecutionOptions {
       ) {
         throw new Error("Schedule sandbox lifecycle idleTtlMinutes cannot be used with onRelease=destroy");
       }
+      if (stopAfterIdleMinutes !== undefined && (
+        typeof stopAfterIdleMinutes !== "number"
+        || !Number.isInteger(stopAfterIdleMinutes)
+        || stopAfterIdleMinutes < 1
+        || stopAfterIdleMinutes > 10_080
+      )) {
+        throw new Error("Schedule sandbox lifecycle stopAfterIdleMinutes must be an integer between 1 and 10080");
+      }
+      if (deleteAfterStopMinutes !== undefined && (
+        typeof deleteAfterStopMinutes !== "number"
+        || !Number.isInteger(deleteAfterStopMinutes)
+        || deleteAfterStopMinutes < 0
+        || deleteAfterStopMinutes > 10_080
+      )) {
+        throw new Error("Schedule sandbox lifecycle deleteAfterStopMinutes must be an integer between 0 and 10080");
+      }
+      if (
+        idleTtlMinutes !== undefined
+        && (stopAfterIdleMinutes !== undefined || deleteAfterStopMinutes !== undefined)
+      ) {
+        throw new Error("Schedule sandbox lifecycle idleTtlMinutes cannot be mixed with explicit stop/delete controls");
+      }
+      if (
+        rawLifecycle.onRelease === "destroy"
+        && (stopAfterIdleMinutes !== undefined || deleteAfterStopMinutes !== undefined)
+      ) {
+        throw new Error("Schedule sandbox lifecycle stop/delete controls cannot be used with onRelease=destroy");
+      }
       lifecycle = {
         ...(rawLifecycle.onRelease === undefined
           ? {}
@@ -676,6 +713,12 @@ function normalizeExecution(value: unknown): ScheduleExecutionOptions {
         ...(idleTtlMinutes === undefined
           ? {}
           : { idleTtlMinutes }),
+        ...(stopAfterIdleMinutes === undefined
+          ? {}
+          : { stopAfterIdleMinutes }),
+        ...(deleteAfterStopMinutes === undefined
+          ? {}
+          : { deleteAfterStopMinutes }),
       };
     }
     normalized.sandbox = {

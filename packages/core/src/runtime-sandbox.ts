@@ -15,8 +15,20 @@ export interface RuntimeSandboxLifecycleOptions {
   /** What the host should do after the outer run releases the sandbox. */
   onRelease?: SandboxReleasePolicy;
   /**
-   * Destroy a pooled sandbox after this many minutes without activity.
+   * Stop a pooled sandbox after this many minutes without activity.
    * Hosts may enforce this at minute precision. Only applies to `pool`.
+   */
+  stopAfterIdleMinutes?: number;
+  /**
+   * Delete a stopped sandbox after this many minutes. `0` requests deletion
+   * immediately after stop. Only applies to `pool`.
+   */
+  deleteAfterStopMinutes?: number;
+  /**
+   * Legacy compressed lifecycle control. Hosts preserve its historical
+   * semantics when it is supplied on its own.
+   *
+   * @deprecated Use `stopAfterIdleMinutes` and `deleteAfterStopMinutes`.
    */
   idleTtlMinutes?: number;
 }
@@ -47,6 +59,12 @@ function validIdleTtlMinutes(value: unknown): value is number {
     && (value as number) <= SANDBOX_IDLE_TTL_MINUTES_MAX;
 }
 
+function validDeleteAfterStopMinutes(value: unknown): value is number {
+  return Number.isInteger(value)
+    && (value as number) >= 0
+    && (value as number) <= SANDBOX_IDLE_TTL_MINUTES_MAX;
+}
+
 function normalizeRuntimeSandboxOptions(value: unknown): RuntimeSandboxOptions | undefined {
   if (!isPlainRecord(value)) return undefined;
   const isolation = (value as { isolation?: unknown }).isolation;
@@ -60,6 +78,8 @@ function normalizeRuntimeSandboxOptions(value: unknown): RuntimeSandboxOptions |
   if (isPlainRecord(rawLifecycle)) {
     const lifecycle = rawLifecycle as {
       onRelease?: unknown;
+      stopAfterIdleMinutes?: unknown;
+      deleteAfterStopMinutes?: unknown;
       idleTtlMinutes?: unknown;
     };
     const normalizedLifecycle: RuntimeSandboxLifecycleOptions = {};
@@ -69,11 +89,20 @@ function normalizeRuntimeSandboxOptions(value: unknown): RuntimeSandboxOptions |
     ) {
       normalizedLifecycle.onRelease = lifecycle.onRelease as SandboxReleasePolicy;
     }
-    if (
-      normalizedLifecycle.onRelease !== "destroy"
-      && validIdleTtlMinutes(lifecycle.idleTtlMinutes)
-    ) {
-      normalizedLifecycle.idleTtlMinutes = lifecycle.idleTtlMinutes;
+    if (normalizedLifecycle.onRelease !== "destroy") {
+      // Preserve legacy payloads deterministically. Strict API schemas reject
+      // mixed legacy/new controls, but this lenient resolver may receive
+      // untyped persisted config from older hosts.
+      if (validIdleTtlMinutes(lifecycle.idleTtlMinutes)) {
+        normalizedLifecycle.idleTtlMinutes = lifecycle.idleTtlMinutes;
+      } else {
+        if (validIdleTtlMinutes(lifecycle.stopAfterIdleMinutes)) {
+          normalizedLifecycle.stopAfterIdleMinutes = lifecycle.stopAfterIdleMinutes;
+        }
+        if (validDeleteAfterStopMinutes(lifecycle.deleteAfterStopMinutes)) {
+          normalizedLifecycle.deleteAfterStopMinutes = lifecycle.deleteAfterStopMinutes;
+        }
+      }
     }
     if (Object.keys(normalizedLifecycle).length > 0) {
       normalized.lifecycle = normalizedLifecycle;
@@ -97,14 +126,26 @@ export function resolveRuntimeSandboxOptions(
       if (normalized.lifecycle.onRelease !== undefined) {
         lifecycle.onRelease = normalized.lifecycle.onRelease;
         if (lifecycle.onRelease === "destroy") {
+          delete lifecycle.stopAfterIdleMinutes;
+          delete lifecycle.deleteAfterStopMinutes;
           delete lifecycle.idleTtlMinutes;
         }
       }
-      if (
-        normalized.lifecycle.idleTtlMinutes !== undefined
-        && lifecycle.onRelease !== "destroy"
-      ) {
-        lifecycle.idleTtlMinutes = normalized.lifecycle.idleTtlMinutes;
+      if (lifecycle.onRelease !== "destroy") {
+        if (normalized.lifecycle.idleTtlMinutes !== undefined) {
+          delete lifecycle.stopAfterIdleMinutes;
+          delete lifecycle.deleteAfterStopMinutes;
+          lifecycle.idleTtlMinutes = normalized.lifecycle.idleTtlMinutes;
+        } else {
+          if (normalized.lifecycle.stopAfterIdleMinutes !== undefined) {
+            delete lifecycle.idleTtlMinutes;
+            lifecycle.stopAfterIdleMinutes = normalized.lifecycle.stopAfterIdleMinutes;
+          }
+          if (normalized.lifecycle.deleteAfterStopMinutes !== undefined) {
+            delete lifecycle.idleTtlMinutes;
+            lifecycle.deleteAfterStopMinutes = normalized.lifecycle.deleteAfterStopMinutes;
+          }
+        }
       }
       if (Object.keys(lifecycle).length > 0) merged.lifecycle = lifecycle;
     }

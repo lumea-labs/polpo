@@ -35,8 +35,14 @@ describe("completion request sandbox lifecycle", () => {
     { isolation: "fresh", lifecycle: { onRelease: "pool" } },
     {
       isolation: "fresh",
-      lifecycle: { onRelease: "pool", idleTtlMinutes: 30 },
+      lifecycle: {
+        onRelease: "pool",
+        stopAfterIdleMinutes: 30,
+        deleteAfterStopMinutes: 45,
+      },
     },
+    { lifecycle: { onRelease: "pool", deleteAfterStopMinutes: 0 } },
+    { lifecycle: { onRelease: "pool", idleTtlMinutes: 30 } },
     { isolation: "reuse", lifecycle: { onRelease: "destroy" } },
   ])("accepts valid sandbox policy %#", (sandbox) => {
     expect(completionRequestSchema.parse({ ...request, sandbox }).sandbox).toEqual(sandbox);
@@ -48,6 +54,11 @@ describe("completion request sandbox lifecycle", () => {
     { lifecycle: { onRelease: "pool", idleTtlMinutes: 1.5 } },
     { lifecycle: { onRelease: "pool", idleTtlMinutes: 10_081 } },
     { lifecycle: { onRelease: "destroy", idleTtlMinutes: 10 } },
+    { lifecycle: { onRelease: "destroy", stopAfterIdleMinutes: 10 } },
+    { lifecycle: { onRelease: "destroy", deleteAfterStopMinutes: 10 } },
+    { lifecycle: { onRelease: "pool", stopAfterIdleMinutes: 0 } },
+    { lifecycle: { onRelease: "pool", deleteAfterStopMinutes: -1 } },
+    { lifecycle: { onRelease: "pool", idleTtlMinutes: 10, stopAfterIdleMinutes: 10 } },
     { lifecycle: { onRelease: "pool", unknown: true } },
     { lifecycle: "pool" },
     { isolation: "reuse", unknown: true },

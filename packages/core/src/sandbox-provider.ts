@@ -76,4 +76,34 @@ export interface SandboxUsage {
   sandboxMs: number;
   /** Backend sandbox identifier, when applicable. */
   sandboxId?: string;
+  /** Ordered lifecycle transitions observed during this run-scoped lease. */
+  events?: readonly SandboxRuntimeEvent[];
+}
+
+export type SandboxRuntimeEventType =
+  | "sandbox.acquire.started"
+  | "sandbox.acquired"
+  | "sandbox.suspended"
+  | "sandbox.resumed"
+  | "sandbox.release.started"
+  | "sandbox.released"
+  | "sandbox.rejected"
+  | "sandbox.error";
+
+export type SandboxRuntimeOperation = "acquire" | "suspend" | "resume" | "release";
+export type SandboxAcquisitionSource = "created" | "pool" | "shared";
+export type SandboxReleaseOutcome = "pooled" | "destroyed" | "evicted";
+
+/** Provider-neutral sandbox event suitable for an existing run trace. */
+export interface SandboxRuntimeEvent {
+  readonly type: SandboxRuntimeEventType;
+  readonly runId: string;
+  readonly occurredAt: string;
+  readonly projectId?: string;
+  readonly sandboxId?: string;
+  readonly operation?: SandboxRuntimeOperation;
+  readonly source?: SandboxAcquisitionSource;
+  readonly outcome?: SandboxReleaseOutcome;
+  readonly error?: string;
+  readonly details?: Readonly<Record<string, string | number | boolean | null>>;
 }

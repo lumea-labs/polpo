@@ -24,6 +24,9 @@ import type {
   SandboxSession,
   SandboxLifecycle,
   SandboxUsage,
+  SandboxRuntimeEvent,
+  SandboxRuntimeEventType,
+  SandboxRuntimeOperation,
 } from "@polpo-ai/core";
 
 /** Default idle window before an unused sandbox's compute is suspended. */
@@ -34,6 +37,8 @@ export interface SandboxLeaseOptions {
   now?: () => number;
   /** Called once on dispose with the run's sandbox usage. */
   onUsage?: (usage: SandboxUsage) => void;
+  /** Best-effort sink for ordered run-scoped sandbox lifecycle events. */
+  onEvent?: (event: SandboxRuntimeEvent) => void;
   /** Idle window (ms) before suspending compute. Default 1500. */
   idleSuspendMs?: number;
   /** Project id propagated into the emitted usage. */
@@ -57,8 +62,10 @@ export class SandboxLease {
 
   private readonly now: () => number;
   private readonly onUsage?: (usage: SandboxUsage) => void;
+  private readonly onEvent?: (event: SandboxRuntimeEvent) => void;
   private readonly idleSuspendMs: number;
   private readonly projectId?: string;
+  private readonly events: SandboxRuntimeEvent[] = [];
 
   /** Activity-wrapped filesystem — hand this to the in-process tool ports. */
   readonly fs: FileSystem;
@@ -72,6 +79,7 @@ export class SandboxLease {
   ) {
     this.now = opts.now ?? (() => Date.now());
     this.onUsage = opts.onUsage;
+    this.onEvent = opts.onEvent;
     this.idleSuspendMs = opts.idleSuspendMs ?? DEFAULT_IDLE_SUSPEND_MS;
     this.projectId = opts.projectId;
     this.fs = this.makeFs();
@@ -87,14 +95,24 @@ export class SandboxLease {
 
   private ensureSession(): Promise<SandboxSession> {
     if (!this.sessionPromise) {
-      this.sessionPromise = Promise.resolve(this.provider.open(this.runId)).then((s) => {
-        this.session = s;
-        this.lifecycle = s.lifecycle;
-        this.acquired = true;
-        this.running = true;
-        this.runningSince = this.now();
-        return s;
-      });
+      this.emit("sandbox.acquire.started", { operation: "acquire" });
+      this.sessionPromise = Promise.resolve(this.provider.open(this.runId))
+        .then((s) => {
+          this.session = s;
+          this.lifecycle = s.lifecycle;
+          this.acquired = true;
+          this.running = true;
+          this.runningSince = this.now();
+          this.emit("sandbox.acquired", {
+            operation: "acquire",
+            sandboxId: this.readSandboxId(s),
+          });
+          return s;
+        })
+        .catch((error: unknown) => {
+          this.emitError("acquire", error);
+          throw error;
+        });
     }
     return this.sessionPromise;
   }
@@ -110,16 +128,33 @@ export class SandboxLease {
     }
     let sandboxId: string | undefined;
     if (this.session) {
-      try { sandboxId = this.session.usage?.().sandboxId; } catch { /* ignore */ }
-      try { await this.session.dispose(); } catch { /* best-effort */ }
+      sandboxId = this.readSandboxId(this.session);
+      this.emit("sandbox.release.started", {
+        operation: "release",
+        ...(sandboxId ? { sandboxId } : {}),
+      });
+      try {
+        await this.session.dispose();
+        this.emit("sandbox.released", {
+          operation: "release",
+          ...(sandboxId ? { sandboxId } : {}),
+        });
+      } catch (error: unknown) {
+        this.emitError("release", error, sandboxId);
+      }
     }
-    this.onUsage?.({
-      runId: this.runId,
-      projectId: this.projectId,
-      acquired: this.acquired,
-      sandboxMs: this.acquired ? Math.max(0, this.runningMs) : 0,
-      sandboxId,
-    });
+    try {
+      this.onUsage?.({
+        runId: this.runId,
+        ...(this.projectId ? { projectId: this.projectId } : {}),
+        acquired: this.acquired,
+        sandboxMs: this.acquired ? Math.max(0, this.runningMs) : 0,
+        ...(sandboxId ? { sandboxId } : {}),
+        ...(this.events.length > 0 ? { events: [...this.events] } : {}),
+      });
+    } catch {
+      // Usage persistence is telemetry and must not change run completion.
+    }
   }
 
   // ── activity tracking ──────────────────────────────────────────────────
@@ -127,7 +162,12 @@ export class SandboxLease {
   private async activityStart(): Promise<void> {
     this.clearIdle();
     this.inFlight++;
-    if (!this.running) await this.ensureRunning();
+    try {
+      if (!this.running) await this.ensureRunning();
+    } catch (error: unknown) {
+      this.inFlight = Math.max(0, this.inFlight - 1);
+      throw error;
+    }
   }
 
   private activityEnd(): void {
@@ -140,11 +180,22 @@ export class SandboxLease {
     if (this.running || !this.lifecycle) return;
     if (!this.resumeLock) {
       const lc = this.lifecycle;
-      this.resumeLock = lc.resume().then(() => {
-        this.running = true;
-        this.runningSince = this.now();
-        this.resumeLock = null;
-      });
+      this.resumeLock = lc.resume()
+        .then(() => {
+          this.running = true;
+          this.runningSince = this.now();
+          this.emit("sandbox.resumed", {
+            operation: "resume",
+            sandboxId: this.currentSandboxId(),
+          });
+        })
+        .catch((error: unknown) => {
+          this.emitError("resume", error, this.currentSandboxId());
+          throw error;
+        })
+        .finally(() => {
+          this.resumeLock = null;
+        });
     }
     await this.resumeLock;
   }
@@ -170,12 +221,60 @@ export class SandboxLease {
     this.runningMs += this.now() - this.runningSince;
     try {
       await this.lifecycle.suspend();
-    } catch {
+      this.emit("sandbox.suspended", {
+        operation: "suspend",
+        sandboxId: this.currentSandboxId(),
+      });
+    } catch (error: unknown) {
       // Suspend failed — treat as still running so metering stays honest and
       // the next op doesn't try to resume an already-running sandbox.
       this.running = true;
       this.runningSince = this.now();
+      this.emitError("suspend", error, this.currentSandboxId());
     }
+  }
+
+  private currentSandboxId(): string | undefined {
+    return this.session ? this.readSandboxId(this.session) : undefined;
+  }
+
+  private readSandboxId(session: SandboxSession): string | undefined {
+    try {
+      return session.usage?.().sandboxId;
+    } catch {
+      return undefined;
+    }
+  }
+
+  private emit(
+    type: SandboxRuntimeEventType,
+    data: Omit<Partial<SandboxRuntimeEvent>, "type" | "runId" | "occurredAt" | "projectId"> = {},
+  ): void {
+    const event: SandboxRuntimeEvent = {
+      type,
+      runId: this.runId,
+      occurredAt: new Date(this.now()).toISOString(),
+      ...(this.projectId ? { projectId: this.projectId } : {}),
+      ...data,
+    };
+    this.events.push(event);
+    try {
+      this.onEvent?.(event);
+    } catch {
+      // Telemetry must never change sandbox or run behavior.
+    }
+  }
+
+  private emitError(
+    operation: SandboxRuntimeOperation,
+    error: unknown,
+    sandboxId?: string,
+  ): void {
+    this.emit("sandbox.error", {
+      operation,
+      error: error instanceof Error ? error.message : String(error),
+      ...(sandboxId ? { sandboxId } : {}),
+    });
   }
 
   /** Open (lazily), bracket a fs/shell op with the refcount, and run it. */
