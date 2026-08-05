@@ -214,6 +214,10 @@ export interface AgentActivity {
   guardrailDecisions?: RuntimeGuardrailAuditEvent[];
   /** True when additional decisions were omitted from the bounded snapshot. */
   guardrailDecisionsTruncated?: boolean;
+  /** Ordered, secret-free sandbox lifecycle events observed by this run. */
+  sandboxEvents?: import("../sandbox-provider.js").SandboxRuntimeEvent[];
+  /** True when additional sandbox lifecycle events were omitted. */
+  sandboxEventsTruncated?: boolean;
 }
 
 /** One model-using tool invocation fact harvested from a tool result. */
