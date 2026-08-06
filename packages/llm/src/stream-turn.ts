@@ -76,31 +76,36 @@ function nonEmptyString(...values: unknown[]): string | undefined {
   )?.trim();
 }
 
-function parseObjectInput(value: unknown): Record<string, unknown> {
+function parseObjectInputCandidate(value: unknown): Record<string, unknown> | undefined {
   if (isRecord(value)) return value;
-  if (typeof value !== "string" || value.trim() === "") return {};
+  if (typeof value !== "string" || value.trim() === "") return undefined;
   try {
     const parsed = JSON.parse(value);
-    return isRecord(parsed) ? parsed : {};
+    return isRecord(parsed) ? parsed : undefined;
   } catch {
-    return {};
+    return undefined;
   }
+}
+
+function parseObjectInput(...values: unknown[]): Record<string, unknown> {
+  for (const value of values) {
+    const parsed = parseObjectInputCandidate(value);
+    if (parsed) return parsed;
+  }
+  return {};
 }
 
 function canonicalToolCallPart(part: Record<string, unknown>): Record<string, unknown> {
   const fn = isRecord(part.function) ? part.function : undefined;
   const toolCallId = nonEmptyString(part.toolCallId, part.id, part.tool_call_id);
   const toolName = nonEmptyString(part.toolName, part.name, fn?.name);
-  const inputSource = Object.prototype.hasOwnProperty.call(part, "input")
-    ? part.input
-    : part.args ?? part.arguments ?? fn?.arguments;
 
   return {
     ...part,
     type: "tool-call",
     ...(toolCallId ? { toolCallId } : {}),
     ...(toolName ? { toolName } : {}),
-    input: parseObjectInput(inputSource),
+    input: parseObjectInput(part.input, part.args, part.arguments, fn?.arguments),
   };
 }
 
@@ -221,6 +226,7 @@ export function prepareModelMessagesForProvider(messages: unknown): ModelMessage
   const output: ModelMessage[] = [];
   const pending = new Map<string, string>();
   const approvalCalls = new Map<string, string>();
+  const seenToolCallIds = new Set<string>();
 
   const flushMissingResults = () => {
     if (pending.size === 0) return;
@@ -255,7 +261,8 @@ export function prepareModelMessagesForProvider(messages: unknown): ModelMessage
           const part = canonicalToolCallPart(partRecord);
           const toolCallId = nonEmptyString(part.toolCallId);
           const toolName = nonEmptyString(part.toolName);
-          if (!toolCallId || !toolName) continue;
+          if (!toolCallId || !toolName || seenToolCallIds.has(toolCallId)) continue;
+          seenToolCallIds.add(toolCallId);
           content.push(part);
           if (part.providerExecuted !== true) pending.set(toolCallId, toolName);
           continue;

@@ -127,6 +127,33 @@ describe("streamModelTurn", () => {
     expect(input[0]?.content[0]).not.toHaveProperty("input");
   });
 
+  it("recovers valid legacy arguments when a higher-priority alias is empty or malformed", () => {
+    const normalized = normalizeResponseMessagesForHistory([{
+      role: "assistant",
+      content: [
+        {
+          type: "tool-call",
+          toolCallId: "call_1",
+          toolName: "bash",
+          input: null,
+          args: { command: "pwd" },
+        },
+        {
+          type: "tool-call",
+          toolCallId: "call_2",
+          toolName: "write",
+          input: "not-json",
+          function: { arguments: '{"path":"a.txt","content":"ok"}' },
+        },
+      ],
+    }]);
+
+    expect((normalized[0] as any).content).toEqual([
+      expect.objectContaining({ input: { command: "pwd" } }),
+      expect.objectContaining({ input: { path: "a.txt", content: "ok" } }),
+    ]);
+  });
+
   it("canonicalizes raw OpenAI tool-call history at the provider boundary", () => {
     const normalized = prepareModelMessagesForProvider([
       {
@@ -264,6 +291,48 @@ describe("streamModelTurn", () => {
         }),
       ],
     }]);
+  });
+
+  it("drops duplicate tool-call ids and keeps one unambiguous result pair", () => {
+    const messages = prepareModelMessagesForProvider([
+      {
+        role: "assistant",
+        content: [
+          { type: "tool-call", toolCallId: "call_1", toolName: "bash", input: { command: "pwd" } },
+          { type: "tool-call", toolCallId: "call_1", toolName: "write", input: { path: "x" } },
+        ],
+      },
+      {
+        role: "tool",
+        content: [{
+          type: "tool-result",
+          toolCallId: "call_1",
+          toolName: "bash",
+          output: { type: "text", value: "/workspace" },
+        }],
+      },
+    ] as any);
+
+    expect(messages).toEqual([
+      {
+        role: "assistant",
+        content: [{
+          type: "tool-call",
+          toolCallId: "call_1",
+          toolName: "bash",
+          input: { command: "pwd" },
+        }],
+      },
+      {
+        role: "tool",
+        content: [{
+          type: "tool-result",
+          toolCallId: "call_1",
+          toolName: "bash",
+          output: { type: "text", value: "/workspace" },
+        }],
+      },
+    ]);
   });
 
   it("is idempotent when provider history is already valid", () => {
