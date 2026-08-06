@@ -57,6 +57,11 @@ export { NodeShell } from "./adapters/node-shell.js";
 export { assertPathAllowed, resolveAllowedPaths, isPathAllowed } from "./path-sandbox.js";
 export { safeEnv, bashSafeEnv } from "./safe-env.js";
 export { assertUrlAllowed } from "./ssrf-guard.js";
+export {
+  builtInToolRequiresSandbox,
+  withBuiltInToolRuntimeRequirements,
+  withBuiltInToolsRuntimeRequirements,
+} from "./runtime-requirements.js";
 
 // Custom tools (defineTool)
 export {

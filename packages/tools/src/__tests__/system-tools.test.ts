@@ -60,6 +60,15 @@ afterEach(() => {
   rmSync(cwd, { recursive: true, force: true });
 });
 
+describe("runtime requirements", () => {
+  it("annotates the tools returned to the runtime", () => {
+    expect(tool("read").requiresSandbox).toBe(true);
+    expect(tool("bash").requiresSandbox).toBe(true);
+    expect(tool("http_fetch").requiresSandbox).toBe(false);
+    expect(tool("http_download").requiresSandbox).toBe(true);
+  });
+});
+
 // ────────────────────────────────────────────────────────────
 describe("read — happy path", () => {
   it("returns line-numbered content", async () => {

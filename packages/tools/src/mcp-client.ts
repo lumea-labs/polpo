@@ -131,6 +131,7 @@ function adaptMcpTool(
     name: `mcp__${serverName}__${toolName}`,
     label: toolName,
     description: aiTool.description ?? "",
+    requiresSandbox: false,
     // AI SDK wraps schemas in a Zod/JSON Schema container; Polpo passes
     // the raw schema through to `jsonSchema()` downstream which accepts
     // arbitrary JSON-Schema-shaped objects, so this works without a

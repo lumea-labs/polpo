@@ -14,6 +14,8 @@ export interface PolpoTool<TParameters extends TSchema = TSchema, TDetails = any
   name: string;
   label: string;
   description: string;
+  /** Whether every execution of this tool needs a runtime sandbox. */
+  requiresSandbox?: boolean;
   parameters: TParameters;
   execute: (
     toolCallId: string,
