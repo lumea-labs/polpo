@@ -97,7 +97,7 @@ export async function resolveOrCreateProject(
   if (projects.length > 1) {
     if (!interactive) {
       throw new Error(
-        "Multiple projects found. Set projectId in .polpo/polpo.json or run interactively.",
+        "Multiple projects found. Set projectId in .polpo/project.json or run interactively.",
       );
     }
     const choice = await clack.select<string>({

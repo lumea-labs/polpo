@@ -3,6 +3,8 @@ node_modules
 dist
 **/dist
 **/.next
+.turbo
+**/.turbo
 **/*.tsbuildinfo
 .polpo
 .git

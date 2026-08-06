@@ -33,11 +33,11 @@ RUN pnpm --filter polpo-ai deploy --prod --legacy /opt/polpo \
 FROM node:22-slim AS production
 WORKDIR /app
 COPY --from=build --chown=node:node /opt/polpo/ ./
-COPY --chown=node:node docker/self-host/project.example/polpo.json /app/default-polpo.json
+COPY --chown=node:node docker/self-host/project.example/project.json /app/default-project.json
 COPY docker/railway/runtime-entrypoint.sh /usr/local/bin/polpo-runtime-entrypoint
 RUN chmod +x /usr/local/bin/polpo-runtime-entrypoint \
     && mkdir -p /app/workspace/.polpo \
-    && chown -R node:node /app/workspace /app/default-polpo.json
+    && chown -R node:node /app/workspace /app/default-project.json
 
 ENV NODE_ENV=production
 ENV PORT=3890

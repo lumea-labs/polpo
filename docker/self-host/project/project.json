@@ -1,4 +1,5 @@
 {
+  "schemaVersion": 2,
   "project": "self-host-e2e",
   "settings": {
     "storage": "postgres",

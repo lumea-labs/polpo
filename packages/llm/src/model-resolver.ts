@@ -50,7 +50,7 @@ export interface ResolvedModel {
 
 // ─── Provider Override Management ────────────────────
 
-/** Provider overrides from polpo.json — set by the orchestrator at init time. */
+/** Provider overrides from project.json — set by the orchestrator at init time. */
 let providerOverrides: Record<string, ProviderConfig> = {};
 
 export function setProviderOverrides(overrides: Record<string, ProviderConfig>): void {
@@ -190,7 +190,7 @@ export function resolveModel(spec?: string, opts?: ResolveModelOptions): Resolve
   if (!hasGateway && !hasVercelGatewayKey && !hasProviderKey) {
     throw new Error(
       `No LLM gateway configured and no API key found for provider "${provider}". ` +
-      `Set settings.gateway in polpo.json, ` +
+      `Set settings.gateway in project.json, ` +
       `or set AI_GATEWAY_API_KEY env var for Vercel AI Gateway, ` +
       `or set ${PROVIDER_ENV_MAP[provider] ?? `the API key env var for "${provider}"`} for direct provider access. ` +
       `See: https://docs.polpo.sh/docs/quickstart`,
@@ -453,7 +453,7 @@ export function buildModelListingForPrompt(): string {
   const totalProviders = byProvider.size + Object.keys(providerOverrides).length;
   const totalModels = catalog.length;
   lines.push(`- ... and ${totalProviders} total providers with ${totalModels}+ models (use "provider/model" format)`);
-  lines.push(`Configure your default model in .polpo/polpo.json or via the POLPO_MODEL env var.`);
+  lines.push(`Configure your default model in .polpo/project.json or via the POLPO_MODEL env var.`);
 
   return lines.join("\n");
 }

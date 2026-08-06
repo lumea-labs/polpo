@@ -133,7 +133,7 @@ const updateSettingsRoute = createRoute({
   path: "/settings",
   tags: ["Config"],
   summary: "Update orchestrator settings",
-  description: "Partially update orchestrator settings (orchestratorModel, modelProfiles, imageModel, reasoning). Persists to polpo.json and triggers a runtime config reload.",
+  description: "Partially update orchestrator settings (orchestratorModel, modelProfiles, imageModel, reasoning). Persists to project.json and triggers a runtime config reload.",
   request: {
     body: { content: { "application/json": { schema: UpdateSettingsSchema } } },
   },
@@ -160,7 +160,7 @@ const upsertChannelRoute = createRoute({
   path: "/channels/{name}",
   tags: ["Config"],
   summary: "Create or update a notification channel",
-  description: "Upserts a notification channel in settings.notifications.channels. Persists to polpo.json and reloads the notification router.",
+  description: "Upserts a notification channel in settings.notifications.channels. Persists to project.json and reloads the notification router.",
   request: {
     params: z.object({ name: z.string().min(1).regex(/^[a-zA-Z0-9_-]+$/, "Channel name must be alphanumeric with dashes/underscores") }),
     body: { content: { "application/json": { schema: NotificationChannelConfigSchema } } },
@@ -287,7 +287,7 @@ export function configRoutes(getDeps: () => {
     if (success) {
       return c.json({ ok: true, data: { message: "Configuration reloaded successfully" } }, 200);
     }
-    return c.json({ ok: false, error: "Failed to reload configuration — check polpo.json" }, 500);
+    return c.json({ ok: false, error: "Failed to reload configuration — check project.json" }, 500);
   });
 
   app.openapi(getConfigRoute, (c) => {
@@ -407,7 +407,8 @@ export function publicConfigRoutes(
 
   // GET /config/status
   app.openapi(configStatusRoute, (c) => {
-    const hasConfig = existsSync(join(polpoDir, "polpo.json"));
+    const hasConfig = existsSync(join(polpoDir, "project.json"))
+      || existsSync(join(polpoDir, "polpo.json"));
     const providers = detectProviders();
     const hasProviders = providers.some((p) => p.hasKey);
 

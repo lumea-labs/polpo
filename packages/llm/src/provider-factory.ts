@@ -40,7 +40,7 @@ export function createCustomProviderModel(
  * Create an AI SDK LanguageModel via the configured gateway, or fall back to
  * the Vercel AI Gateway when no custom gateway is configured.
  *
- * When a gateway is configured in polpo.json (`settings.gateway`), uses
+ * When a gateway is configured in project.json (`settings.gateway`), uses
  * @ai-sdk/openai-compatible to route through any OpenAI-compatible endpoint
  * (OpenRouter, LiteLLM, Ollama, etc.).
  *

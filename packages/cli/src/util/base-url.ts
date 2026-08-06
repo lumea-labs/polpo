@@ -8,11 +8,11 @@
  *   2. `POLPO_URL` env var. Lets users redirect a single command run
  *      without touching files (e.g. `POLPO_URL=http://localhost:4000
  *      polpo deploy` for self-hosted dev).
- *   3. `apiUrl` field in `.polpo/polpo.json`. Per-project pin — used by
+ *   3. `apiUrl` field in `.polpo/project.json`. Per-project pin — used by
  *      teams that want their `.env.local` and CLI to point somewhere
  *      non-standard (custom domain, on-prem cluster).
  *   4. `https://{projectSlug}.polpo.cloud` — derived from the slug stored
- *      in `polpo.json`. The default for cloud users post-F4.
+ *      in `project.json`. The default for cloud users post-F4.
  *   5. Stored CLI credentials baseUrl (from `~/.polpo/credentials.json`,
  *      defaults to `https://api.polpo.sh`). Last-resort fallback for
  *      legacy clients that don't have a slug yet.
@@ -30,7 +30,7 @@ export interface BaseUrlInputs {
   flagOverride?: string;
   /** Pre-read `POLPO_URL` env value. */
   envOverride?: string;
-  /** Pre-loaded `polpo.json` (or null when missing). */
+  /** Pre-loaded project config (or null when missing). */
   polpoConfig?: { apiUrl?: string; projectSlug?: string } | null;
   /** Default cloud base URL fallback (typically `creds.baseUrl`). */
   fallback: string;

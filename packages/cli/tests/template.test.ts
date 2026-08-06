@@ -9,6 +9,7 @@ import {
 } from "../src/util/template.js";
 import { SCENARIOS, findScenario } from "../src/util/scenarios.js";
 import { parseMissionDocument, parseExpectation } from "@polpo-ai/core/schemas";
+import { readProjectAgents, readProjectTeams } from "@polpo-ai/file-stores";
 
 let tmpDir: string;
 
@@ -82,45 +83,39 @@ describe("findTemplate", () => {
 });
 
 describe("writeBlankScaffold", () => {
-  it("creates all 5 expected files", () => {
+  it("creates the canonical project and directory-based agent files", () => {
     writeBlankScaffold(tmpDir, "my-project");
-    expect(fs.existsSync(path.join(tmpDir, ".polpo", "polpo.json"))).toBe(true);
-    expect(fs.existsSync(path.join(tmpDir, ".polpo", "teams.json"))).toBe(true);
-    expect(fs.existsSync(path.join(tmpDir, ".polpo", "agents.json"))).toBe(true);
+    expect(fs.existsSync(path.join(tmpDir, ".polpo", "project.json"))).toBe(true);
+    expect(fs.existsSync(path.join(tmpDir, ".polpo", "teams", "default.json"))).toBe(true);
+    expect(fs.existsSync(path.join(tmpDir, ".polpo", "agents", "agent-1", "agent.json"))).toBe(true);
+    expect(fs.existsSync(path.join(tmpDir, ".polpo", "agents", "agent-1", "instructions.md"))).toBe(true);
     expect(fs.existsSync(path.join(tmpDir, ".env.local.example"))).toBe(true);
     expect(fs.existsSync(path.join(tmpDir, "README.md"))).toBe(true);
   });
 
-  it("writes polpo.json with the project name", () => {
+  it("writes project.json with the project name and layout version", () => {
     writeBlankScaffold(tmpDir, "my-project");
     const cfg = JSON.parse(
-      fs.readFileSync(path.join(tmpDir, ".polpo", "polpo.json"), "utf-8"),
+      fs.readFileSync(path.join(tmpDir, ".polpo", "project.json"), "utf-8"),
     );
-    expect(cfg).toEqual({ project: "my-project" });
+    expect(cfg).toEqual({ schemaVersion: 2, project: "my-project" });
   });
 
-  it("writes teams.json with a single default team", () => {
+  it("writes a single default team", () => {
     writeBlankScaffold(tmpDir, "x");
-    const teams = JSON.parse(
-      fs.readFileSync(path.join(tmpDir, ".polpo", "teams.json"), "utf-8"),
-    );
-    expect(Array.isArray(teams)).toBe(true);
+    const teams = readProjectTeams(path.join(tmpDir, ".polpo"));
     expect(teams).toHaveLength(1);
     expect(teams[0]).toEqual({
       name: "default",
       description: "Default team",
+      agents: [],
     });
   });
 
-  it("writes agents.json in canonical array-of-wrapped format [{agent, teamName}]", () => {
+  it("writes one materializable agent directory", () => {
     writeBlankScaffold(tmpDir, "x");
-    const agents = JSON.parse(
-      fs.readFileSync(path.join(tmpDir, ".polpo", "agents.json"), "utf-8"),
-    );
-    expect(Array.isArray(agents)).toBe(true);
+    const agents = readProjectAgents(path.join(tmpDir, ".polpo"));
     expect(agents).toHaveLength(1);
-    expect(agents[0]).toHaveProperty("agent");
-    expect(agents[0]).toHaveProperty("teamName");
     expect(agents[0].teamName).toBe("default");
     expect(agents[0].agent.name).toBe("agent-1");
     expect(agents[0].agent.role).toBe("helpful assistant");
@@ -155,7 +150,7 @@ describe("writeBlankScaffold", () => {
     writeBlankScaffold(tmpDir, "first");
     writeBlankScaffold(tmpDir, "second");
     const cfg = JSON.parse(
-      fs.readFileSync(path.join(tmpDir, ".polpo", "polpo.json"), "utf-8"),
+      fs.readFileSync(path.join(tmpDir, ".polpo", "project.json"), "utf-8"),
     );
     expect(cfg.project).toBe("second");
   });
@@ -168,7 +163,7 @@ describe("writeBlankScaffold", () => {
   it("works with a name containing spaces and special chars", () => {
     writeBlankScaffold(tmpDir, "My Cool Agent!");
     const cfg = JSON.parse(
-      fs.readFileSync(path.join(tmpDir, ".polpo", "polpo.json"), "utf-8"),
+      fs.readFileSync(path.join(tmpDir, ".polpo", "project.json"), "utf-8"),
     );
     expect(cfg.project).toBe("My Cool Agent!");
   });
@@ -188,17 +183,13 @@ describe("scenario seeding", () => {
       beforeEach(() => writeBlankScaffold(tmpDir, "demo", sc));
 
       it("renames the seed agent to the scenario's agent.name", () => {
-        const agents = JSON.parse(
-          fs.readFileSync(path.join(tmpDir, ".polpo", "agents.json"), "utf-8"),
-        );
+        const agents = readProjectAgents(path.join(tmpDir, ".polpo"));
         expect(agents[0].agent.name).toBe(sc.agent.name);
         expect(agents[0].agent.role).toBe(sc.agent.role);
       });
 
       it("keeps the full default tool palette including memory_*", () => {
-        const agents = JSON.parse(
-          fs.readFileSync(path.join(tmpDir, ".polpo", "agents.json"), "utf-8"),
-        );
+        const agents = readProjectAgents(path.join(tmpDir, ".polpo"));
         expect(agents[0].agent.allowedTools).toContain("memory_*");
         expect(agents[0].agent.allowedTools).toContain("pdf_*");
         expect(agents[0].agent.allowedTools).toContain("excel_*");
@@ -241,9 +232,7 @@ describe("scenario seeding", () => {
       });
 
       it("agent has a non-empty systemPrompt persona", () => {
-        const agents = JSON.parse(
-          fs.readFileSync(path.join(tmpDir, ".polpo", "agents.json"), "utf-8"),
-        );
+        const agents = readProjectAgents(path.join(tmpDir, ".polpo"));
         expect(typeof agents[0].agent.systemPrompt).toBe("string");
         expect(agents[0].agent.systemPrompt.length).toBeGreaterThan(50);
       });
@@ -266,7 +255,7 @@ describe("scenario seeding", () => {
       // to the agent. Result: the agent's prompt never included the skill
       // body, so the scenario looked broken on first run.
       it("assigns the scaffolded skill to the seeded agent", () => {
-        const agents = JSON.parse(fs.readFileSync(path.join(tmpDir, ".polpo", "agents.json"), "utf-8"));
+        const agents = readProjectAgents(path.join(tmpDir, ".polpo"));
         expect(agents[0].agent.skills).toEqual([sc.skill.name]);
       });
 
@@ -326,9 +315,7 @@ describe("scenario seeding", () => {
 
   it("without scenario, agent name + role stay legacy 'agent-1' / 'helpful assistant'", () => {
     writeBlankScaffold(tmpDir, "demo");
-    const agents = JSON.parse(
-      fs.readFileSync(path.join(tmpDir, ".polpo", "agents.json"), "utf-8"),
-    );
+    const agents = readProjectAgents(path.join(tmpDir, ".polpo"));
     expect(agents[0].agent.name).toBe("agent-1");
     expect(agents[0].agent.role).toBe("helpful assistant");
     // No systemPrompt on the blank agent — only scenarios scaffold one.

@@ -1,5 +1,5 @@
 /**
- * Read/write helpers for `.polpo/polpo.json` — the per-project config file
+ * Read/write helpers for `.polpo/project.json` — the per-project config file
  * that links a directory to a cloud project.
  *
  * Schema kept minimal on purpose — whatever fields exist already are
@@ -9,6 +9,8 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 
 export interface PolpoProjectConfig {
+  /** Filesystem layout version. New projects use version 2. */
+  schemaVersion?: number;
   /** Project name shown in dashboards/logs. */
   project?: string;
   /**
@@ -37,11 +39,23 @@ export function polpoDirPath(cwd: string): string {
 }
 
 export function polpoConfigPath(cwd: string): string {
+  return path.join(polpoDirPath(cwd), "project.json");
+}
+
+export function legacyPolpoConfigPath(cwd: string): string {
   return path.join(polpoDirPath(cwd), "polpo.json");
 }
 
+/** Existing config path, preferring v2; canonical v2 path for new projects. */
+export function activePolpoConfigPath(cwd: string): string {
+  const current = polpoConfigPath(cwd);
+  if (fs.existsSync(current)) return current;
+  const legacy = legacyPolpoConfigPath(cwd);
+  return fs.existsSync(legacy) ? legacy : current;
+}
+
 export function readPolpoConfig(cwd: string): PolpoProjectConfig | null {
-  const file = polpoConfigPath(cwd);
+  const file = activePolpoConfigPath(cwd);
   if (!fs.existsSync(file)) return null;
   try {
     return JSON.parse(fs.readFileSync(file, "utf-8")) as PolpoProjectConfig;
@@ -51,13 +65,16 @@ export function readPolpoConfig(cwd: string): PolpoProjectConfig | null {
 }
 
 /**
- * Merge `patch` into the existing `.polpo/polpo.json`, creating the file
+ * Merge `patch` into the active project config, creating `project.json`
  * (and the `.polpo/` dir) if it doesn't exist yet.
  */
 export function writePolpoConfig(cwd: string, patch: PolpoProjectConfig): void {
   const dir = polpoDirPath(cwd);
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
   const existing = readPolpoConfig(cwd) ?? {};
-  const merged = { ...existing, ...patch };
-  fs.writeFileSync(polpoConfigPath(cwd), JSON.stringify(merged, null, 2) + "\n", "utf-8");
+  const target = activePolpoConfigPath(cwd);
+  const merged = target === polpoConfigPath(cwd)
+    ? { schemaVersion: 2, ...existing, ...patch }
+    : { ...existing, ...patch };
+  fs.writeFileSync(target, JSON.stringify(merged, null, 2) + "\n", "utf-8");
 }

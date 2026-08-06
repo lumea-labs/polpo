@@ -76,6 +76,31 @@ export interface VaultEntry {
   credentials: Record<string, string>;
 }
 
+export interface McpStdioServerConfig {
+  type?: "stdio";
+  command: string;
+  args?: string[];
+  env?: Record<string, string>;
+}
+
+export interface McpSseServerConfig {
+  type: "sse";
+  url: string;
+  headers?: Record<string, string>;
+}
+
+export interface McpHttpServerConfig {
+  type: "http";
+  url: string;
+  headers?: Record<string, string>;
+}
+
+/** MCP transport configuration resolved when an agent is materialized. */
+export type McpServerConfig =
+  | McpStdioServerConfig
+  | McpSseServerConfig
+  | McpHttpServerConfig;
+
 // === Agent ===
 
 export interface AgentConfig {
@@ -135,6 +160,8 @@ export interface AgentConfig {
   systemPrompt?: string;
   /** Installed skill names (e.g. "find-skills", "frontend-design") */
   skills?: string[];
+  /** MCP servers available to this agent. */
+  mcpServers?: Record<string, McpServerConfig>;
   /** Max conversation turns before stopping. Default 150 */
   maxTurns?: number;
   /** Max concurrent tasks for this agent. Default: unlimited (undefined). */

@@ -28,7 +28,7 @@ services:
       POLPO_MODEL: ${POLPO_MODEL:?Set POLPO_MODEL in .env}
       AI_GATEWAY_API_KEY: ${AI_GATEWAY_API_KEY:-}
     volumes:
-      - ./project.example/polpo.json:/app/workspace/.polpo/polpo.json:ro
+      - ./project.example/project.json:/app/workspace/.polpo/project.json:ro
       - workspace-data:/app/workspace
     depends_on:
       postgres:

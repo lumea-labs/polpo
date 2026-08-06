@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pullProject } from "./pull.js";
+import { readProjectAgents } from "@polpo-ai/file-stores";
 
 const dirs: string[] = [];
 
@@ -12,7 +13,7 @@ afterEach(async () => {
 });
 
 describe("pullProject agent execution router", () => {
-  it("round-trips execution router settings into agents.json", async () => {
+  it("round-trips execution router settings into an agent definition", async () => {
     const dir = await mkdtemp(join(tmpdir(), "polpo-pull-router-"));
     dirs.push(dir);
     const agent = {
@@ -41,9 +42,7 @@ describe("pullProject agent execution router", () => {
       force: true,
       interactive: false,
     });
-    const entries = JSON.parse(
-      await readFile(join(dir, "agents.json"), "utf8"),
-    );
+    const entries = readProjectAgents(dir);
 
     expect(result.errors).toEqual([]);
     expect(entries[0].agent.executionRouter).toEqual(agent.executionRouter);

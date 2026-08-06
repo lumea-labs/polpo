@@ -25,7 +25,7 @@ export function resolveApiKey(provider: string): string | undefined {
 
 /**
  * Resolve API key for a provider (async, full resolution chain).
- * Priority: 1) polpo.json overrides (if they had apiKey), 2) env var lookup, 3) stored OAuth profiles.
+ * Priority: 1) project.json overrides (if they have apiKey), 2) env var lookup, 3) stored OAuth profiles.
  *
  * Returns the API key from env vars or provider config.
  */

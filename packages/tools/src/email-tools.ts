@@ -10,7 +10,7 @@
  *
  * Credential resolution order:
  *   1. Tool parameters (explicit overrides)
- *   2. Agent vault (per-agent credentials from polpo.json)
+ *   2. Agent vault (per-agent encrypted credentials)
  *   3. Environment variables (global fallback)
  *
  * SMTP env vars: SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, SMTP_FROM

@@ -26,6 +26,6 @@ export interface TeamStore {
   /** Delete a team by name. Returns true if it existed. */
   deleteTeam(name: string): Promise<boolean>;
 
-  /** Seed initial teams (e.g. from polpo.json migration). Skips teams that already exist. */
+  /** Seed initial teams from project configuration. Skips teams that already exist. */
   seed(teams: Team[]): Promise<void>;
 }

@@ -1,7 +1,7 @@
 import type { PolpoConfig } from "./types.js";
 
 /**
- * Persistent store for project-level configuration (.polpo/polpo.json).
+ * Persistent store for project-level configuration (.polpo/project.json).
  */
 export interface ConfigStore {
   /** Check if a config has been saved. */

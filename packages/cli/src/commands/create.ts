@@ -13,7 +13,7 @@
  *   6. Create cloud project  — POST /v1/projects + wait active
  *   7. Generate scoped API key
  *   8. Scaffold files        — inline (blank) or shell to create-polpo-app
- *   9. Write polpo.json + .env.local
+ *   9. Write project.json + .env.local
  *  10. Install coding-agent skills (optional wizard step)
  */
 import type { Command } from "commander";
@@ -323,9 +323,9 @@ export function registerCreateCommand(program: Command): void {
         }
       }
 
-      // Step 9: Write polpo.json + .env.local
+      // Step 9: Write project.json + .env.local
       // The data plane URL is derived from the slug — `{slug}.polpo.cloud`.
-      // For self-hosted or custom-domain users, set `apiUrl` in polpo.json
+      // For self-hosted or custom-domain users, set `apiUrl` in project.json
       // (or the POLPO_URL env var at runtime) to override.
       const tenantUrl = project.slug
         ? `https://${project.slug}.${POLPO_API_DOMAIN}`
@@ -519,7 +519,7 @@ export function registerCreateCommand(program: Command): void {
 
       // Section 2: Modify
       lines.push(pc.dim("  Modify your agents:"));
-      lines.push(`    ${pc.dim("Edit")} ${pc.bold(".polpo/agents.json")} ${pc.dim("and run")} ${pc.bold(`${polpoRun} deploy`)}`);
+      lines.push(`    ${pc.dim("Edit")} ${pc.bold(".polpo/agents/<agent>/")} ${pc.dim("and run")} ${pc.bold(`${polpoRun} deploy`)}`);
       if (skillsInstalled) {
         lines.push(`    ${pc.dim("Or ask your coding agent:")} ${pc.bold('"Modify my Polpo agents"')}`);
       }

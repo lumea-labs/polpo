@@ -55,3 +55,31 @@ describe("shared runtime sandbox schema", () => {
     expect(RuntimeSandboxSchema.safeParse(sandbox).success).toBe(false);
   });
 });
+
+describe("agent create/update schema parity", () => {
+  it("accepts authored fields on both mutation surfaces", () => {
+    const authored = {
+      role: "Builder",
+      model: "openai/gpt-5",
+      allowedPaths: ["/workspace"],
+      allowedTools: ["bash"],
+      maxTurns: 20,
+      maxConcurrency: 2,
+      reasoning: "high" as const,
+      emailAllowedDomains: ["example.com"],
+      mcpServers: {
+        docs: { type: "http" as const, url: "https://example.com/mcp" },
+      },
+    };
+    expect(AddAgentSchema.parse({ name: "builder", ...authored }))
+      .toMatchObject(authored);
+    expect(UpdateAgentSchema.parse(authored)).toMatchObject(authored);
+  });
+
+  it("rejects unsupported reasoning values consistently", () => {
+    expect(AddAgentSchema.safeParse({ name: "builder", reasoning: "extreme" }).success)
+      .toBe(false);
+    expect(UpdateAgentSchema.safeParse({ reasoning: "extreme" }).success)
+      .toBe(false);
+  });
+});

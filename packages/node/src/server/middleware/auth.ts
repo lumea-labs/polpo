@@ -25,7 +25,7 @@ export function authMiddleware(apiKeys: string[]): MiddlewareHandler {
     if (apiKeys.length === 0) {
       if (!warnedNoKeys) {
         warnedNoKeys = true;
-        console.warn("[polpo] WARNING: No API keys configured — all requests are unauthenticated. Set apiKeys in polpo.json or POLPO_API_KEY env var.");
+        console.warn("[polpo] WARNING: No API keys configured — all requests are unauthenticated. Set apiKeys in project.json or POLPO_API_KEY env var.");
       }
       return next();
     }

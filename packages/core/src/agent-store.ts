@@ -39,6 +39,6 @@ export interface AgentStore {
   /** Remove all volatile agents belonging to a mission group. Returns count removed. */
   cleanupVolatileAgents(missionGroup: string): Promise<number>;
 
-  /** Seed initial agents (e.g. from polpo.json migration). Skips agents that already exist. */
+  /** Seed initial agents from project configuration. Skips agents that already exist. */
   seed(agents: Array<AgentConfig & { teamName: string }>): Promise<void>;
 }

@@ -8,21 +8,20 @@
  *
  * The menu is state-aware:
  *   - "Log in" shows only when the user is NOT authenticated
- *   - "Deploy this project" shows only when the cwd has .polpo/polpo.json
+ *   - "Deploy this project" shows only when the cwd has project config
  *   - Other actions are always offered
  *
  * Selection dispatches to the real subcommand via `program.parseAsync`,
  * so the action lives in one place (its own command file), not duplicated.
  */
 import type { Command } from "commander";
-import { existsSync } from "node:fs";
-import { resolve } from "node:path";
 import * as clack from "@clack/prompts";
 import pc from "picocolors";
 import { loadCredentials } from "./commands/cloud/config.js";
+import { readPolpoConfig } from "./util/polpo-config.js";
 
 function hasLinkedProject(cwd: string = process.cwd()): boolean {
-  return existsSync(resolve(cwd, ".polpo", "polpo.json"));
+  return readPolpoConfig(cwd) !== null;
 }
 
 export function isBareInteractiveInvocation(): boolean {

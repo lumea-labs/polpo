@@ -108,7 +108,9 @@ export function filesystemRoutes(): OpenAPIHono {
         })
         .map((e) => {
           const fullPath = join(target, e.name);
-          const hasPolpoConfig = existsSync(join(getPolpoDir(fullPath), "polpo.json"));
+          const candidate = getPolpoDir(fullPath);
+          const hasPolpoConfig = existsSync(join(candidate, "project.json"))
+            || existsSync(join(candidate, "polpo.json"));
           return { name: e.name, path: fullPath, hasPolpoConfig };
         })
         .sort((a, b) => a.name.localeCompare(b.name));

@@ -582,7 +582,7 @@ export function createApp(orchestrator: Orchestrator, sseBridge: SSEBridge, opts
   app.openAPIRegistry.registerComponent("securitySchemes", "bearerAuth", {
     type: "http",
     scheme: "bearer",
-    description: "API key passed as a Bearer token. Configure via the apiKeys field in polpo.json or the POLPO_API_KEY environment variable.",
+    description: "API key passed as a Bearer token. Configure via the apiKeys field in project.json or the POLPO_API_KEY environment variable.",
   });
 
   return app;

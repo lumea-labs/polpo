@@ -1,5 +1,5 @@
 /**
- * Config domain — project configuration (polpo.json), settings, providers,
+ * Config domain — project configuration (project.json), settings, providers,
  * model config, runner config, and persisted state.
  */
 
@@ -60,8 +60,8 @@ export interface RunnerConfig {
   /** Global reasoning level from settings — used as fallback for agents that don't specify one. */
   reasoning?: ReasoningLevel;
   /**
-   * Provider overrides from polpo.json (custom baseUrl endpoints: Ollama,
-   * vLLM, proxies). The runner subprocess never reads polpo.json, so the
+   * Provider overrides from project.json (custom baseUrl endpoints: Ollama,
+   * vLLM, proxies). The runner subprocess never reads project.json, so the
    * overrides must travel with the config or custom-provider agents break
    * inside the runner.
    */
@@ -79,7 +79,7 @@ export interface RunnerConfig {
   resumeState?: LoopResumeState;
 }
 
-// === Polpo File Config (.polpo/polpo.json — persistent project configuration) ===
+// === Polpo File Config (.polpo/project.json — persistent project configuration) ===
 
 export interface PolpoFileConfig {
   project: string;
@@ -173,7 +173,7 @@ export interface ModelAllowlistEntry {
   params?: Record<string, unknown>;
 }
 
-// === Config (.polpo/polpo.json) ===
+// === Config (.polpo/project.json) ===
 
 export interface PolpoConfig {
   version: string;

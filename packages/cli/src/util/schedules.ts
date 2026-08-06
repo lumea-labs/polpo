@@ -9,6 +9,7 @@ import {
   type Schedule,
 } from "@polpo-ai/core";
 import { listLoopSourceFiles } from "./loops.js";
+import { readProjectAgents } from "@polpo-ai/file-stores";
 
 export interface PreparedScheduleDeployment {
   file: string;
@@ -178,7 +179,7 @@ function validateReferences(
 
 function readReferenceIndex(polpoDir: string): ReferenceIndex {
   return {
-    agents: readAgentNames(path.join(polpoDir, "agents.json")),
+    agents: readAgentNames(polpoDir),
     loops: readLoopNames(polpoDir),
     missions: readMissionNames(path.join(polpoDir, "missions")),
   };
@@ -205,21 +206,11 @@ function assertUniqueIdentities(
   }
 }
 
-function readAgentNames(file: string): Set<string> | null {
-  if (!fs.existsSync(file)) return null;
-  const value = JSON.parse(fs.readFileSync(file, "utf8")) as unknown;
-  if (!Array.isArray(value)) {
-    throw new Error("agents.json must contain an array");
-  }
-  const names = new Set<string>();
-  for (const entry of value) {
-    const record = plainRecord(entry);
-    const agent = plainRecord(record?.agent) ?? record;
-    if (typeof agent?.name === "string" && agent.name.trim()) {
-      names.add(agent.name.trim());
-    }
-  }
-  return names;
+function readAgentNames(polpoDir: string): Set<string> | null {
+  const legacy = path.join(polpoDir, "agents.json");
+  const current = path.join(polpoDir, "agents");
+  if (!fs.existsSync(legacy) && !fs.existsSync(current)) return null;
+  return new Set(readProjectAgents(polpoDir).map(({ agent }) => agent.name));
 }
 
 function readLoopNames(polpoDir: string): Set<string> | null {

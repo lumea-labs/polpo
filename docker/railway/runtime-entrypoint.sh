@@ -3,8 +3,8 @@ set -eu
 
 work_dir="${WORK_DIR:-/app/workspace}"
 config_dir="$work_dir/.polpo"
-config_file="$config_dir/polpo.json"
-default_config="/app/default-polpo.json"
+config_file="$config_dir/project.json"
+default_config="/app/default-project.json"
 
 mkdir -p "$config_dir"
 

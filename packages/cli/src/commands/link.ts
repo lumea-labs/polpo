@@ -7,7 +7,7 @@
  *   1. Update check (reuse cached registry probe)
  *   2. Auth (device-code login if needed)
  *   3. Verify the cloud project exists
- *   4. Write .polpo/polpo.json with project reference
+ *   4. Write .polpo/project.json with project reference
  *   5. Pull all resources from cloud → local .polpo/
  *   6. Generate a project-scoped API key + .env.local
  *   7. Install coding-agent skills (global/project/skip)
@@ -15,7 +15,7 @@
  *   9. Outro with next steps (modify, not deploy)
  *
  * The pull step (5) is the key difference from the old link: it
- * downloads agents.json, teams.json, memory, skills, missions, etc.
+ * downloads agent/team definitions, memory, skills, missions, etc.
  * from the cloud so the user can start modifying immediately.
  * Think of it as `drizzle-kit introspect` — cloud → local filesystem.
  */
@@ -26,7 +26,11 @@ import pc from "picocolors";
 import { requireAuth } from "../util/auth.js";
 import { createApiClient } from "./cloud/api.js";
 import { getProject } from "../util/project.js";
-import { writePolpoConfig, readPolpoConfig } from "../util/polpo-config.js";
+import {
+  activePolpoConfigPath,
+  readPolpoConfig,
+  writePolpoConfig,
+} from "../util/polpo-config.js";
 import { createProjectApiKey } from "../util/api-keys.js";
 import { pullProject } from "../util/pull.js";
 import { friendlyError } from "../util/errors.js";
@@ -110,13 +114,14 @@ export function registerLinkCommand(program: Command): void {
         }
       }
 
-      // Step 4: Write polpo.json
+      // Step 4: Write project.json
       writePolpoConfig(cwd, {
         project: project.name,
         projectSlug: project.slug,
         projectId: project.id,
       });
-      clack.log.success(`Wrote ${pc.bold(".polpo/polpo.json")}`);
+      const configPath = path.relative(cwd, activePolpoConfigPath(cwd));
+      clack.log.success(`Wrote ${pc.bold(configPath)}`);
 
       // Step 5: Pull resources from cloud
       const polpoDir = path.join(cwd, ".polpo");
@@ -253,7 +258,7 @@ export function registerLinkCommand(program: Command): void {
       lines.push("");
 
       lines.push(pc.dim("  Modify your agents:"));
-      lines.push(`    ${pc.dim("Edit")} ${pc.bold(".polpo/agents.json")} ${pc.dim("to change agents, tools, and system prompts")}`);
+      lines.push(`    ${pc.dim("Edit")} ${pc.bold(".polpo/agents/<agent>/")} ${pc.dim("to change agent configuration and instructions")}`);
       if (skillsInstalled) {
         lines.push(`    ${pc.dim("Or ask your coding agent:")} ${pc.bold('"Update the Polpo agents for this project"')}`);
       }
