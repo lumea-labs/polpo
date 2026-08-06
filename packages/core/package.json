@@ -66,6 +66,10 @@
       "types": "./dist/runtime-context/index.d.ts",
       "import": "./dist/runtime-context/index.js"
     },
+    "./steering": {
+      "types": "./dist/steering.d.ts",
+      "import": "./dist/steering.js"
+    },
     "./execution-router": {
       "types": "./dist/execution-router.d.ts",
       "import": "./dist/execution-router.js"

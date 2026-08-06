@@ -2,6 +2,12 @@ import type { AgentConfig } from "../types.js";
 import { SafeExpressionEvaluator } from "./expression.js";
 import type { ContextBag, LoopConfig } from "./types.js";
 import {
+  throwIfSteeringAborted,
+  type SteeringController,
+  type SteeringMessage,
+  type SteeringQueueSnapshot,
+} from "../steering.js";
+import {
   LoopHookRegistry,
   type LoopRuntimeConfig,
   type LoopRunStatus,
@@ -56,6 +62,8 @@ export interface LoopTurnCheckpoint {
   toolCalls: LoopToolCall[];
   /** Tool results of this turn — already executed, part of history. */
   toolResults: LoopToolResult[];
+  /** Undelivered steering/follow-up state for durable resume. */
+  steering?: SteeringQueueSnapshot;
 }
 
 export interface LoopRunnerOptions {
@@ -74,6 +82,14 @@ export interface LoopRunnerOptions {
   startTurn?: number;
   model: (input: LoopModelInput) => Promise<LoopModelResult>;
   executeTool: (toolCall: LoopToolCall, input: LoopModelInput) => Promise<string>;
+  /** Run-scoped steering queue. Hosts own ingress and persistence. */
+  steering?: SteeringController;
+  /**
+   * Host adapter invoked at a safe boundary, after the current model/tool
+   * batch and before another model turn. It normally appends the messages to
+   * provider history. Core deliberately stays provider-SDK neutral.
+   */
+  onSteering?: (messages: readonly SteeringMessage[]) => void | Promise<void>;
   /**
    * Durable-turns port: invoked once per completed turn, AFTER the turn's
    * tools have executed and the step:after hooks ran — i.e. when the host's
@@ -131,6 +147,24 @@ export class LoopRunner {
     let turns = startTurn;
     const allToolResults: LoopToolResult[] = [];
 
+    if (options.steering && !options.onSteering) {
+      throw new Error("LoopRunner steering requires an onSteering adapter");
+    }
+
+    const deliverSteering = async (includeFollowUps: boolean): Promise<SteeringMessage[]> => {
+      throwIfSteeringAborted(options.steering);
+      if (!options.steering) return [];
+      const messages = await options.steering.drain({ includeFollowUps });
+      if (messages.length > 0) {
+        await options.onSteering!(messages);
+      }
+      throwIfSteeringAborted(options.steering);
+      return messages;
+    };
+
+    // A message accepted before execution is part of the first user turn.
+    await deliverSteering(false);
+
     const start = await hooks.runBefore("loop:start", {
       agent: options.agent,
       loop,
@@ -151,6 +185,10 @@ export class LoopRunner {
     }
 
     for (let turn = startTurn; turn < maxTurns; turn++) {
+      throwIfSteeringAborted(options.steering);
+      // Catch messages accepted while start/stop hooks were running. Draining
+      // here keeps every accepted steer ahead of the next model invocation.
+      await deliverSteering(false);
       turns = turn + 1;
       const step = await hooks.runBefore("step:before", {
         agent: options.agent,
@@ -202,10 +240,12 @@ export class LoopRunner {
         toolChoice: modelBefore.data.toolChoice,
       };
       const modelResult = await options.model(modelInput);
+      throwIfSteeringAborted(options.steering);
       finalText += modelResult.text;
 
       const toolResults: LoopToolResult[] = [];
       for (const rawCall of modelResult.toolCalls ?? []) {
+        throwIfSteeringAborted(options.steering);
         const before = await hooks.runBefore("tool:before", {
           agent: options.agent,
           loop,
@@ -239,6 +279,7 @@ export class LoopRunner {
           isError: toolResult.isError,
           skipped,
         });
+        throwIfSteeringAborted(options.steering);
       }
 
       await hooks.runAfter("step:after", {
@@ -252,11 +293,25 @@ export class LoopRunner {
         usage: modelResult.usage,
       });
 
-      // Durable turns: the turn is complete (tools executed, hooks ran) —
+      let stop = shouldStopAfterTurn(loop, context, modelResult, turn, maxTurns, this.evaluator);
+      const hasAnotherTurn = turn + 1 < maxTurns;
+      if (hasAnotherTurn) {
+        const delivered = await deliverSteering(stop.shouldStop && stop.reason !== "max_turns");
+        if (delivered.length > 0) {
+          stop = { reason: "completed", shouldStop: false };
+        }
+      }
+
+      // Durable turns: the turn is complete (tools executed, hooks ran,
+      // steering accepted at the safe boundary) —
       // hand the host a checkpoint. Best-effort: a failing sink must never
       // take down a healthy run.
-      if (options.onTurnCheckpoint) {
+      const checkpointTurn = async (): Promise<void> => {
+        if (!options.onTurnCheckpoint) return;
         try {
+          const steering = options.steering
+            ? await options.steering.snapshot()
+            : undefined;
           await options.onTurnCheckpoint({
             loop,
             turn,
@@ -265,11 +320,12 @@ export class LoopRunner {
             text: modelResult.text,
             toolCalls: modelResult.toolCalls ?? [],
             toolResults,
+            steering,
           });
         } catch { /* checkpoint persistence is best-effort */ }
-      }
+      };
+      await checkpointTurn();
 
-      const stop = shouldStopAfterTurn(loop, context, modelResult, turn, maxTurns, this.evaluator);
       const stopResult = await hooks.runBefore("loop:stop", {
         agent: options.agent,
         loop,
@@ -291,6 +347,19 @@ export class LoopRunner {
         });
       }
       if (stopResult.data.shouldStop) {
+        if (hasAnotherTurn && options.steering) {
+          const sealed = await options.steering.sealIfIdle();
+          if (!sealed) {
+            const delivered = await deliverSteering(true);
+            if (delivered.length === 0) {
+              throw new Error("Steering controller reported pending work but drained no messages");
+            }
+            // The first checkpoint may have raced with ingress. Persist the
+            // post-drain queue before entering the extra turn.
+            await checkpointTurn();
+            continue;
+          }
+        }
         return this.finish(hooks, {
           agent: options.agent,
           loop,

@@ -25,6 +25,78 @@ describe("PolpoClient approvals", () => {
   });
 });
 
+describe("PolpoClient run steering", () => {
+  it("sends typed steering and abort commands to encoded active run paths", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>()
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        ok: true,
+        data: { runId: "chatcmpl/a", id: "msg-1", accepted: true, duplicate: false },
+      }), { status: 202, headers: { "content-type": "application/json" } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        ok: true,
+        data: { runId: "chatcmpl/a", aborted: true },
+      }), { status: 202, headers: { "content-type": "application/json" } }));
+    const client = new PolpoClient({
+      baseUrl: "https://api.polpo.sh",
+      apiKey: "test-key",
+      fetch,
+    });
+
+    await client.steerRun("chatcmpl/a", {
+      id: "msg-1",
+      mode: "follow_up",
+      content: { text: "Then summarize" },
+    });
+    await client.abortRun("chatcmpl/a", "user cancelled");
+
+    expect(fetch).toHaveBeenNthCalledWith(
+      1,
+      "https://api.polpo.sh/v1/runs/chatcmpl%2Fa/steering",
+      expect.objectContaining({
+        method: "POST",
+        headers: expect.objectContaining({ Authorization: "Bearer test-key" }),
+        body: JSON.stringify({
+          id: "msg-1",
+          mode: "follow_up",
+          content: { text: "Then summarize" },
+        }),
+      }),
+    );
+    expect(fetch).toHaveBeenNthCalledWith(
+      2,
+      "https://api.polpo.sh/v1/runs/chatcmpl%2Fa/abort",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ reason: "user cancelled" }),
+      }),
+    );
+  });
+
+  it("exposes the active run id when a chat stream starts", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(new Response(
+      "data: [DONE]\n\n",
+      {
+        status: 200,
+        headers: {
+          "content-type": "text/event-stream",
+          "x-session-id": "session-1",
+          "x-polpo-run-id": "chatcmpl-1",
+        },
+      },
+    ));
+    const client = new PolpoClient({ baseUrl: "https://api.polpo.sh", fetch });
+    const stream = client.chatCompletionsStream({
+      agent: "assistant",
+      messages: [{ role: "user", content: "start" }],
+    });
+
+    await stream.start();
+
+    expect(stream.sessionId).toBe("session-1");
+    expect(stream.runId).toBe("chatcmpl-1");
+  });
+});
+
 describe("PolpoClient schedules v2", () => {
   function clientWith(responseData: unknown = {}) {
     const fetch = vi.fn<typeof globalThis.fetch>().mockImplementation(

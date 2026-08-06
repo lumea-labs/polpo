@@ -62,6 +62,10 @@ export type { ModelControlledToolDisclosureConfig } from "./routes/completions/t
 export { agentRoutes } from "./routes/agents.js";
 export { loopRoutes, type LoopRouteDeps } from "./routes/loops.js";
 export { loopRunRoutes, type LoopRunRouteDeps } from "./routes/loop-runs.js";
+export {
+  runSteeringRoutes,
+  type RunSteeringRouteDeps,
+} from "./routes/run-steering.js";
 export { eventRoutes, type EventBridge, type EventClient } from "./routes/events.js";
 export { configRoutes } from "./routes/config.js";
 export { fileRoutes, type FileRouteDeps } from "./routes/files.js";

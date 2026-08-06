@@ -125,6 +125,11 @@ import type {
   SkillInfo,
   SkillWithAssignment,
   Step,
+  SteeringAttachment,
+  SteeringContent,
+  SteeringJsonValue,
+  SteeringMessageInput,
+  SteeringMode,
   SwitchCase,
   Task,
   TaskExpectation,
@@ -252,6 +257,11 @@ export type {
   SkillInfo,
   SkillWithAssignment,
   Step,
+  SteeringAttachment,
+  SteeringContent,
+  SteeringJsonValue,
+  SteeringMessageInput,
+  SteeringMode,
   SwitchCase,
   Task,
   TaskExpectation,
@@ -264,6 +274,18 @@ export type {
   ToolCallState,
   WhileBlock,
 };
+
+export interface SteerRunResult {
+  runId: string;
+  id: string;
+  accepted: boolean;
+  duplicate: boolean;
+}
+
+export interface AbortRunResult {
+  runId: string;
+  aborted: boolean;
+}
 
 export type ListMemoryItemsQuery = Omit<MemoryListQuery, "now">;
 export type ListMemoryItemsPageQuery = ListMemoryItemsQuery & {

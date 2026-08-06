@@ -51,3 +51,41 @@ retains malformed raw events only in its bounded diagnostics history.
 Runtime context accounting types are exported from the SDK and originate from
 `@polpo-ai/core/runtime-inspection`, so managed and self-hosted inspectors use
 the same categories.
+
+## Steer an active run
+
+Start a streaming chat request before iterating it to read the active run id
+from the response headers, then send steering through the authenticated API:
+
+```ts
+const stream = client.chatCompletionsStream({
+  agent: "builder",
+  messages: [{ role: "user", content: "Create the dashboard" }],
+});
+
+await stream.start();
+if (!stream.runId) throw new Error("This execution does not support steering");
+
+await client.steerRun(stream.runId, {
+  id: crypto.randomUUID(),
+  mode: "steer",
+  content: {
+    text: "Use the attached reference for the next revision.",
+    attachments: [{
+      type: "image",
+      url: "https://example.com/reference.png",
+      mediaType: "image/png",
+    }],
+  },
+});
+
+for await (const chunk of stream) {
+  // Consume the response normally.
+}
+```
+
+Use `mode: "follow_up"` to run the message only after the current work would
+otherwise stop. Use `client.abortRun(stream.runId, "Cancelled by user")` for a
+server-side cancellation; `stream.abort()` only closes the caller's HTTP
+stream. Steering is available on Run-backed execution and never interrupts an
+individual tool call in progress.

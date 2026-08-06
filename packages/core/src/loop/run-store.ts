@@ -1,4 +1,5 @@
 import type { ContextBag, LoopLifecycleHook, LoopTraceEvent, ProjectLoopConfig, ProjectLoopPermission, ProjectLoopPolicy, Step } from "./types.js";
+import type { SteeringQueueSnapshot } from "../steering.js";
 
 export type ProjectLoopRunStatus =
   | "running"
@@ -59,6 +60,8 @@ export interface LoopResumeState {
   history?: unknown[];
   /** Assistant text accumulated across completed turns. */
   accumText?: string;
+  /** Undelivered run-scoped steering messages and recent idempotency ids. */
+  steering?: SteeringQueueSnapshot;
 }
 
 export interface LoopApprovalSnapshot {

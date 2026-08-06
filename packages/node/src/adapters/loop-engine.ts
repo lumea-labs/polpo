@@ -33,6 +33,7 @@ import {
   tool as aiTool,
   type ModelMessage,
   type ToolSet,
+  type UserContent,
 } from "ai";
 import {
   normalizeResponseMessagesForHistory,
@@ -63,6 +64,11 @@ import {
   extractToolUsageRecord,
 } from "@polpo-ai/core";
 import type { LoopToolCall, LoopConfig, LoopResumeState, ProjectLoopConfig } from "@polpo-ai/core";
+import {
+  InMemorySteeringController,
+  type SteeringMessage,
+  type SteeringQueueSnapshot,
+} from "@polpo-ai/core/steering";
 import { projectLoopConfigSchema } from "@polpo-ai/core/schemas";
 import type { FileSystem } from "@polpo-ai/core/filesystem";
 import { NodeFileSystem } from "./node-filesystem.js";
@@ -106,6 +112,37 @@ function replaceAssistantText(
     });
     return wrote ? ({ ...message, content } as ModelMessage) : message;
   });
+}
+
+/**
+ * The only steering → AI SDK conversion boundary. Core and persisted
+ * checkpoints contain Polpo's provider-neutral JSON shape, so a future AI SDK
+ * migration only changes this adapter.
+ */
+export function toSteeringModelMessage(message: SteeringMessage): ModelMessage {
+  const content: UserContent = [];
+  if (message.content.text !== undefined) {
+    content.push({ type: "text", text: message.content.text });
+  }
+  for (const attachment of message.content.attachments ?? []) {
+    const url = new URL(attachment.url);
+    if (attachment.type === "image") {
+      content.push({
+        type: "image",
+        image: url,
+        ...(attachment.mediaType ? { mediaType: attachment.mediaType } : {}),
+      });
+    } else {
+      content.push({
+        type: "file",
+        data: url,
+        mediaType: attachment.mediaType
+          ?? (attachment.type === "audio" ? "audio/mpeg" : "application/octet-stream"),
+        ...(attachment.name ? { filename: attachment.name } : {}),
+      });
+    }
+  }
+  return { role: "user", content };
 }
 
 async function loadProjectLoop(fs: FileSystem, polpoDir: string, name: string): Promise<ProjectLoopConfig> {
@@ -190,6 +227,13 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
   let alive = true;
 
   const abortController = new AbortController();
+  const steering = ctx?.steering
+    ?? (ctx?.resumeState?.steering
+      ? InMemorySteeringController.fromSnapshot(ctx.resumeState.steering)
+      : new InMemorySteeringController());
+  const onSteeringAbort = () => abortController.abort(steering.signal.reason);
+  if (steering.signal.aborted) onSteeringAbort();
+  else steering.signal.addEventListener("abort", onSteeringAbort, { once: true });
 
   const handle: AgentHandle = {
     agentName: agentConfig.name,
@@ -197,10 +241,11 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
     startedAt: new Date().toISOString(),
     pid: 0, // No OS process — runs in-process
     activity,
+    steering,
     done: null as any, // set below
     isAlive: () => alive,
     kill: () => {
-      abortController.abort();
+      steering.abort("Run killed");
       alive = false;
     },
   };
@@ -750,16 +795,21 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
     // fidelity: what a resumed run sees is exactly what survives JSON.
     const checkpointCreatedAt = resume?.createdAt ?? new Date().toISOString();
     const onTurnCheckpoint = options.onCheckpoint
-      ? async ({ turn }: { turn: number }) => {
-          const serialized = JSON.stringify(messages);
+      ? async ({ turn, steering }: { turn: number; steering?: SteeringQueueSnapshot }) => {
+          const serialized = JSON.stringify({ messages, steering });
           if (serialized.length > MAX_CHECKPOINT_BYTES) return; // keep the previous checkpoint
+          const checkpoint = JSON.parse(serialized) as {
+            messages: unknown[];
+            steering?: SteeringQueueSnapshot;
+          };
           await options.onCheckpoint!({
             context: {},
             steps: [],
             loopName,
             turn,
-            history: JSON.parse(serialized) as unknown[],
+            history: checkpoint.messages,
             accumText,
+            steering: checkpoint.steering,
             createdAt: checkpointCreatedAt,
             updatedAt: new Date().toISOString(),
           });
@@ -774,6 +824,23 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
       startTurn: resume ? resume.turn! + 1 : 0,
       model: modelStep,
       executeTool,
+      steering,
+      onSteering: async (steeringMessages) => {
+        for (const message of steeringMessages) {
+          messages.push(toSteeringModelMessage(message));
+          emitTranscript({
+            type: "steering",
+            messageId: message.id,
+            mode: message.mode,
+            text: message.content.text,
+            attachments: (message.content.attachments ?? []).map((attachment) => ({
+              type: attachment.type,
+              mediaType: attachment.mediaType,
+              name: attachment.name,
+            })),
+          });
+        }
+      },
       onTurnCheckpoint,
     });
 
@@ -867,10 +934,12 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
       // (a) Step-boundary checkpoint: pure pipeline position, no session.
       onCheckpoint: writeCheckpoint
         ? async (checkpoint) => {
+            const steeringSnapshot = await steering.snapshot();
             await writeCheckpoint({
               context: checkpoint.context,
               steps: checkpoint.steps,
               previousNode: checkpoint.previousNode,
+              steering: steeringSnapshot,
               ...composedBase(),
             });
           }
@@ -961,6 +1030,8 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
           sessionAgent: agentConfig,
           loopName: "default",
           loop: { maxTurns: ctx.inject.maxTurns },
+          resume: ctx.resumeState,
+          onCheckpoint: ctx.onTurnCheckpoint,
         });
         alive = false;
         return { exitCode: 0, stdout: session.lastText, stderr: "", duration: Date.now() - start };
@@ -1013,6 +1084,14 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
       };
     } catch (err) {
       alive = false;
+      if (abortController.signal.aborted) {
+        return {
+          exitCode: 0,
+          stdout: "",
+          stderr: "",
+          duration: Date.now() - start,
+        };
+      }
       const msg = err instanceof Error ? err.message : String(err);
       emitTranscript({
         type: "error",
@@ -1026,6 +1105,8 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
         duration: Date.now() - start,
       };
     } finally {
+      steering.signal.removeEventListener("abort", onSteeringAbort);
+      steering.close();
       // Close agent-browser session (profile data auto-persisted by --profile).
       // Chat (inject) keeps its session — the server driver owns cleanup via
       // onResponseFinished, matching the inline chat handler.

@@ -47,6 +47,7 @@ import {
 } from "@polpo-ai/core";
 import type { ApprovalStore } from "@polpo-ai/core/approval-store";
 import type { ChatSessionInjection } from "@polpo-ai/core";
+import type { SteeringController } from "@polpo-ai/core/steering";
 import { chatCompletionsRoute } from "./completions/schemas.js";
 import type {
   CompletionResolvedModelInfo,
@@ -255,8 +256,26 @@ export interface CompletionRouteDeps {
    *  tool_result / usage / …). */
   runChatViaRun?: (
     inject: ChatSessionInjection,
-    hooks: { onEvent: (e: Record<string, unknown>) => void; signal?: AbortSignal },
+    hooks: {
+      onEvent: (e: Record<string, unknown>) => void;
+      signal?: AbortSignal;
+      /** Stable public run id used by steering and observability adapters. */
+      runId?: string;
+      /** Host-created controller already registered before response headers. */
+      steering?: SteeringController;
+    },
   ) => Promise<{ status: string; result: { exitCode: number; stdout: string; stderr: string } }>;
+  /**
+   * Register an active run before a streaming response becomes visible.
+   * Distributed hosts can back this with a durable command transport.
+   */
+  createRunSteeringScope?: (runId: string) => {
+    steering: SteeringController;
+    release: () => void | Promise<void>;
+  } | Promise<{
+    steering: SteeringController;
+    release: () => void | Promise<void>;
+  }>;
   /** Orchestrator mode support (optional — returns 501 if not provided). */
   resolveOrchestratorContext?: () => Promise<{
     systemPrompt: string;
@@ -371,6 +390,7 @@ export function completionRoutes(getDeps: () => CompletionRouteDeps, apiKeys?: s
 
     const { execution, viaRun } = prepared;
     if (viaRun) {
+      c.header("x-polpo-run-id", execution.completionId);
       return (body.stream
         ? await streamChatViaRun(c, execution)
         : await runNonStreamingChatViaRun(c, execution)) as any;

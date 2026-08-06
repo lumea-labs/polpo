@@ -108,6 +108,10 @@ import type {
   BrainUpdateSourceRequest,
   BrainReindexSourceRequest,
   SearchBrainRequest,
+  SteerRunResult,
+  AbortRunResult,
+  SteeringMessageInput,
+  SteeringJsonValue,
 } from "./types.js";
 
 export interface PolpoClientConfig {
@@ -137,6 +141,9 @@ export interface PolpoClientConfig {
 export class ChatCompletionStream implements AsyncIterable<ChatCompletionChunk> {
   /** Session ID assigned by the server. Available after the first `next()` call. */
   sessionId: string | null = null;
+
+  /** Active Run id used by steering APIs. Available after start() or first next(). */
+  runId: string | null = null;
 
   /** If the stream ended with finish_reason "ask_user", this contains the questions. */
   askUser: AskUserPayload | null = null;
@@ -191,6 +198,12 @@ export class ChatCompletionStream implements AsyncIterable<ChatCompletionChunk> 
     this.reader?.cancel().catch(() => { /* best effort */ });
   }
 
+  /** Start the HTTP stream and resolve response metadata without consuming a chunk. */
+  async start(): Promise<this> {
+    await this.ensureStarted();
+    return this;
+  }
+
   private async ensureStarted(): Promise<void> {
     if (this.started) return;
     this.started = true;
@@ -222,6 +235,7 @@ export class ChatCompletionStream implements AsyncIterable<ChatCompletionChunk> 
 
     // Capture session ID from response header
     this.sessionId = res.headers.get("x-session-id");
+    this.runId = res.headers.get("x-polpo-run-id");
 
     this.reader = res.body?.getReader() ?? null;
     if (!this.reader) throw new PolpoApiError("No response body", "INTERNAL_ERROR", 500);
@@ -1255,6 +1269,24 @@ export class PolpoClient {
    */
   getTaskActivityFull(taskId: string): Promise<TaskActivityPayload> {
     return this.get<TaskActivityPayload>(`/tasks/${taskId}/activity`);
+  }
+
+  // ── Active Run Steering ────────────────────────────────────
+
+  /** Queue a message for an active run's next safe model/tool boundary. */
+  steerRun(runId: string, input: SteeringMessageInput): Promise<SteerRunResult> {
+    return this.post<SteerRunResult>(
+      `/runs/${encodeURIComponent(runId)}/steering`,
+      input,
+    );
+  }
+
+  /** Abort an active run through the same run-scoped steering controller. */
+  abortRun(runId: string, reason?: SteeringJsonValue): Promise<AbortRunResult> {
+    return this.post<AbortRunResult>(
+      `/runs/${encodeURIComponent(runId)}/abort`,
+      reason === undefined ? {} : { reason },
+    );
   }
 
   // ── Chat Completions (OpenAI-compatible) ─────────────────

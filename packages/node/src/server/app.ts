@@ -31,6 +31,7 @@ import {
   configRoutes,
   customToolRoutes,
   brainRoutes,
+  runSteeringRoutes,
   type CompletionRuntimeGuardrailsResolver,
 } from "@polpo-ai/server";
 // Node.js-only routes (stay in src/server/routes/)
@@ -55,6 +56,11 @@ import type {
   BrainManagementService,
   BrainServiceContext,
 } from "@polpo-ai/core/brain";
+import {
+  InMemorySteeringController,
+  InMemorySteeringRunRegistry,
+  type SteeringController,
+} from "@polpo-ai/core/steering";
 
 function readRuntimeVersion(): string {
   try {
@@ -103,6 +109,7 @@ export interface AppOptions {
  */
 export function createApp(orchestrator: Orchestrator, sseBridge: SSEBridge, opts?: AppOptions): OpenAPIHono {
   const app = new OpenAPIHono();
+  const steeringRegistry = new InMemorySteeringRunRegistry();
   const localBrain = !opts?.brain && opts?.workDir
     ? createLocalBrainRuntime({
         workDir: opts.workDir,
@@ -141,7 +148,7 @@ export function createApp(orchestrator: Orchestrator, sseBridge: SSEBridge, opts
   app.use("/api/*", rateLimitMiddleware());
   app.use("/v1/*", rateLimitMiddleware());
 
-  const corsExposeHeaders = ["x-session-id"];
+  const corsExposeHeaders = ["x-session-id", "x-polpo-run-id"];
   if (opts?.corsOrigins && opts.corsOrigins.length > 0) {
     app.use("*", cors({ origin: opts.corsOrigins, exposeHeaders: corsExposeHeaders }));
   } else {
@@ -302,15 +309,26 @@ export function createApp(orchestrator: Orchestrator, sseBridge: SSEBridge, opts
       return { tools, executor, cleanup: mcp.dispose };
     },
     getProjectLoop: (name: string) => o.getProjectLoop(name),
+    createRunSteeringScope: (runId: string) => {
+      const steering = new InMemorySteeringController();
+      const release = steeringRegistry.register(runId, steering);
+      return { steering, release };
+    },
     // Run chat completions through the shared executeRun lifecycle +
     // loop-engine. Injects the route's
     // already-resolved model/prompt/tools/messages so the engine runs a chat
     // turn-loop at parity with the inline handler. Stream runs are persisted
     // for observability but excluded from background task collection.
-    runChatViaRun: async (inject: any, hooks: { onEvent: (e: Record<string, unknown>) => void; signal?: AbortSignal }) => {
+    runChatViaRun: async (inject: any, hooks: {
+      onEvent: (e: Record<string, unknown>) => void;
+      signal?: AbortSignal;
+      runId?: string;
+      steering?: SteeringController;
+    }) => {
       const { executeRun } = await import("../core/run-lifecycle.js");
       const { nanoid } = await import("nanoid");
-      const runId = `chat-${nanoid()}`;
+      const runId = hooks.runId ?? `chat-${nanoid()}`;
+      const steering = hooks.steering ?? new InMemorySteeringController();
       const task: any = {
         id: runId, title: inject.title ?? "chat", description: "",
         assignTo: inject.agent?.name ?? "agent", dependsOn: [], status: "pending",
@@ -340,6 +358,7 @@ export function createApp(orchestrator: Orchestrator, sseBridge: SSEBridge, opts
           vaultStore: o.getVaultStore(),
           gatewayConfig: o.getGatewayConfig(),
           signal: hooks.signal,
+          steering,
           inject,
           onEvent: hooks.onEvent,
         },
@@ -452,6 +471,8 @@ export function createApp(orchestrator: Orchestrator, sseBridge: SSEBridge, opts
     sessionStore: o.getSessionStore(),
     runStore: o.getRunStore(),
   })));
+
+  authed.route("/runs", runSteeringRoutes(() => ({ steeringRegistry })));
 
   authed.route("/skills", skillRoutes(() => ({
     polpoDir: o.getPolpoDir(),
