@@ -111,3 +111,55 @@ describe("completion request response format", () => {
     }).success).toBe(false);
   });
 });
+
+describe("completion request tool-call history", () => {
+  it("preserves OpenAI-compatible assistant tool calls and tool results", () => {
+    const parsed = completionRequestSchema.parse({
+      agent: "support",
+      messages: [
+        {
+          role: "assistant",
+          content: null,
+          tool_calls: [{
+            id: "call_1",
+            type: "function",
+            function: { name: "ask_user_question", arguments: "{\"questions\":[]}" },
+          }],
+        },
+        {
+          role: "tool",
+          content: "answered",
+          tool_call_id: "call_1",
+          name: "ask_user_question",
+        },
+      ],
+    });
+
+    expect(parsed.messages[0]).toEqual({
+      role: "assistant",
+      content: null,
+      tool_calls: [{
+        id: "call_1",
+        type: "function",
+        function: { name: "ask_user_question", arguments: "{\"questions\":[]}" },
+      }],
+    });
+  });
+
+  it("defaults omitted OpenAI tool arguments to an empty object string", () => {
+    const parsed = completionRequestSchema.parse({
+      agent: "support",
+      messages: [{
+        role: "assistant",
+        content: "",
+        tool_calls: [{
+          id: "call_1",
+          type: "function",
+          function: { name: "tool_list" },
+        }],
+      }],
+    });
+
+    expect((parsed.messages[0] as any).tool_calls[0].function.arguments).toBe("{}");
+  });
+});

@@ -24,6 +24,15 @@ export const contentPartSchema = z.discriminatedUnion("type", [
   }),
 ]);
 
+const assistantToolCallSchema = z.object({
+  id: z.string().min(1),
+  type: z.literal("function"),
+  function: z.object({
+    name: z.string().min(1),
+    arguments: z.string().default("{}"),
+  }),
+});
+
 export const messageSchema = z.object({
   role: z.enum(["system", "user", "assistant", "tool"]).openapi({
     description: "Message role. System messages are appended as additional context. Tool messages carry results of client-side tool calls.",
@@ -31,7 +40,11 @@ export const messageSchema = z.object({
   content: z.union([
     z.string(),
     z.array(contentPartSchema),
+    z.null(),
   ]).openapi({ description: "Message content — plain string or array of content parts (text / image_url)" }),
+  tool_calls: z.array(assistantToolCallSchema).optional().openapi({
+    description: "OpenAI-compatible assistant tool calls awaiting matching role=tool results.",
+  }),
   tool_call_id: z.string().optional().openapi({
     description: "ID of the tool call this message responds to (required for role=tool)",
   }),

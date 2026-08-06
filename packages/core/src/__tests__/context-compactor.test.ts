@@ -337,7 +337,7 @@ describe("compactIfNeeded", () => {
   });
 
   it("calls summarize when pruning is insufficient", async () => {
-    const summarize = vi.fn(async () => "Brief summary.");
+    const summarize = vi.fn(async (_messages: any[], _prompt: string) => "Brief summary.");
 
     // Very small context window forces summarization
     const config: CompactionConfig = {
@@ -367,6 +367,50 @@ describe("compactIfNeeded", () => {
     expect(result.messages[0].content).toContain("[Previous context summary]");
     expect(result.messages[0].content).toContain("Brief summary.");
     expect(result.messages[0].content).toContain("[End summary — continue from here]");
+  });
+
+  it("never splits a tool call from its result during summarization", async () => {
+    const summarize = vi.fn(async (_messages: any[], _prompt: string) => "Brief summary.");
+    const messages = [
+      { role: "user", content: "old ".repeat(120) },
+      { role: "assistant", content: "context ".repeat(120) },
+      { role: "user", content: "more ".repeat(120) },
+      {
+        role: "assistant",
+        content: [{
+          type: "tool-call",
+          toolCallId: "call_1",
+          toolName: "bash",
+          input: { command: "pwd" },
+        }],
+      },
+      {
+        role: "tool",
+        content: [{
+          type: "tool-result",
+          toolCallId: "call_1",
+          toolName: "bash",
+          output: { type: "text", value: "/workspace" },
+        }],
+      },
+      { role: "user", content: "continue ".repeat(40) },
+    ];
+
+    const result = await compactIfNeeded(makeInput({
+      messages,
+      config: {
+        contextWindow: 400,
+        maxOutputTokens: 10,
+        pruneProtect: 100_000,
+        pruneMinimum: 100_000,
+      },
+      summarize,
+    }));
+
+    expect(summarize).toHaveBeenCalledTimes(1);
+    const summarizedMessages = summarize.mock.calls[0]?.[0] ?? [];
+    expect(JSON.stringify(summarizedMessages)).not.toContain("call_1");
+    expect(result.messages.slice(1, 3)).toEqual(messages.slice(3, 5));
   });
 });
 
