@@ -1,4 +1,14 @@
-import type { Adapter, StateAdapter, WebhookOptions } from "chat";
+import type {
+  Adapter,
+  Lock,
+  QueueEntry,
+  StateAdapter,
+  WebhookOptions,
+} from "chat";
+
+export type ChannelStateAdapter = StateAdapter;
+export type ChannelStateLock = Lock;
+export type ChannelStateQueueEntry = QueueEntry;
 
 export const CHANNEL_PROVIDER_IDS = [
   "slack",
