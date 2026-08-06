@@ -8,6 +8,7 @@ import { completionRoutes, runConversationTurn, type CompletionRouteDeps } from 
 import { runChatTurnViaRun } from "./chat-via-run-handler.js";
 import type { CompletionRequestBody } from "./schemas.js";
 import { MockLanguageModelV3, convertArrayToReadableStream } from "ai/test";
+import { InMemorySteeringController } from "@polpo-ai/core/steering";
 
 const mockUsage = {
   inputTokens: { total: 10, noCache: undefined, cacheRead: undefined, cacheWrite: undefined },
@@ -58,6 +59,31 @@ function baseDeps(overrides: Partial<CompletionRouteDeps> = {}): CompletionRoute
 }
 
 describe("chat via Run driver", () => {
+  it("exposes one stable run id to the client and runtime steering host", async () => {
+    let runtimeRunId: string | undefined;
+    const deps = baseDeps({
+      runChatViaRun: async (_inject, hooks) => {
+        runtimeRunId = hooks.runId;
+        hooks.onEvent({ type: "text-delta", text: "done" });
+        return { status: "completed", result: { exitCode: 0, stdout: "done", stderr: "" } };
+      },
+    });
+
+    const response = await completionRoutes(() => deps).request("/", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        agent: "agent-1",
+        stream: false,
+        messages: [{ role: "user", content: "start" }],
+      }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("x-polpo-run-id")).toMatch(/^chatcmpl-/);
+    expect(runtimeRunId).toBe(response.headers.get("x-polpo-run-id"));
+  });
+
   it("keeps the inline model tool pool hidden until the model explicitly loads a tool", async () => {
     const visibleByTurn: string[][] = [];
     let turn = 0;
@@ -563,6 +589,47 @@ describe("chat via Run driver", () => {
       sessionId: "channel-session-1",
       user: "slack:U123",
     }));
+  });
+
+  it("releases the steering scope when final session persistence fails", async () => {
+    const release = vi.fn(async () => {});
+    const sessionStore = {
+      addMessage: vi.fn(async () => ({ id: "assistant-message" })),
+      updateMessage: vi.fn(async () => { throw new Error("session store unavailable"); }),
+    };
+    const deps = baseDeps({
+      createRunSteeringScope: async () => ({
+        steering: new InMemorySteeringController(),
+        release,
+      }),
+      runChatViaRun: async (_inject, hooks) => {
+        hooks.onEvent({ type: "text-delta", text: "done" });
+        return { status: "completed", result: { exitCode: 0, stdout: "done", stderr: "" } };
+      },
+    });
+
+    await expect(runChatTurnViaRun({
+      deps,
+      body: { agent: "agent-1" },
+      completionId: "chatcmpl-cleanup",
+      agentConfig: { name: "agent-1", role: "Test agent", model: "mock" },
+      agentMode: true,
+      fullSystemPrompt: "You are a test agent.",
+      m: {
+        id: "mock-model",
+        provider: "mock",
+        aiModel: {} as any,
+        contextWindow: 200_000,
+        maxTokens: 8192,
+      },
+      modelSelection: { primary: "mock-model", fallbacks: [] },
+      effectiveTools: [],
+      effectiveToolExecutor: async () => "ok",
+      aiMessages: [{ role: "user", content: "hello" }],
+      sessionStore: sessionStore as any,
+      sessionId: "session-1",
+    })).rejects.toThrow("session store unavailable");
+    expect(release).toHaveBeenCalledOnce();
   });
 
   it("uses the host runtime prompt assembler for chat Run injection", async () => {

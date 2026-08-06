@@ -18,6 +18,7 @@
 import type { Context } from "hono";
 import { streamSSE } from "hono/streaming";
 import type { ChatSessionInjection } from "@polpo-ai/core";
+import type { SteeringController } from "@polpo-ai/core/steering";
 import type { ChatCompletionExecution } from "./chat-handler.js";
 import { agentConfigForModelAttempt, completionResolvedModelInfo, MAX_TURNS } from "./agent-step-runner.js";
 import {
@@ -123,6 +124,25 @@ export interface ChatViaRunTurnResult {
   error?: { message: string; type: string; code?: string; param?: unknown };
   runStatus: string;
   runResult: { exitCode: number; stdout: string; stderr: string };
+}
+
+interface RunSteeringScope {
+  steering?: SteeringController;
+  release: () => void | Promise<void>;
+}
+
+async function createRunSteeringScope(execution: ChatCompletionExecution): Promise<RunSteeringScope> {
+  const scope: RunSteeringScope = await execution.deps.createRunSteeringScope?.(execution.completionId)
+    ?? { steering: undefined, release: () => {} };
+  let released = false;
+  return {
+    steering: scope.steering,
+    release: async () => {
+      if (released) return;
+      released = true;
+      await scope.release();
+    },
+  };
 }
 
 function makeOnEvent(
@@ -297,9 +317,10 @@ async function finishCommon(
 }
 
 /** Streaming chat completion via executeRun. */
-export function streamChatViaRun(c: Context, execution: ChatCompletionExecution) {
+export async function streamChatViaRun(c: Context, execution: ChatCompletionExecution) {
   const { deps, body, completionId, m, sessionStore, sessionId } = execution;
   const inject = buildChatRunInjection(execution);
+  const steeringScope = await createRunSteeringScope(execution);
 
   return streamSSE(c, async (stream) => {
     const abortController = new AbortController();
@@ -309,14 +330,7 @@ export function streamChatViaRun(c: Context, execution: ChatCompletionExecution)
       stream.write(": ping\n\n").catch(() => clearInterval(heartbeat));
     }, 20_000);
 
-    await stream.writeSSE({ data: sseChunk(completionId, { role: "assistant" }) });
-
     let assistantMsgId: string | null = null;
-    if (sessionStore && sessionId) {
-      const placeholder = await sessionStore.addMessage(sessionId, "assistant", "");
-      assistantMsgId = placeholder.id;
-    }
-
     const state = newState();
     const outputMode = streamingOutputPolicyMode(deps.runOutputPolicy);
     let writeChain: Promise<void> = Promise.resolve();
@@ -324,7 +338,18 @@ export function streamChatViaRun(c: Context, execution: ChatCompletionExecution)
     const onEvent = makeOnEvent(execution, state, write, outputMode !== "buffer");
 
     try {
-      const outcome = await deps.runChatViaRun!(inject, { onEvent, signal: abortController.signal });
+      await stream.writeSSE({ data: sseChunk(completionId, { role: "assistant" }) });
+      if (sessionStore && sessionId) {
+        const placeholder = await sessionStore.addMessage(sessionId, "assistant", "");
+        assistantMsgId = placeholder.id;
+      }
+
+      const outcome = await deps.runChatViaRun!(inject, {
+        onEvent,
+        signal: abortController.signal,
+        runId: completionId,
+        steering: steeringScope.steering,
+      });
       captureRunFailure(state, outcome);
       await writeChain;
 
@@ -388,7 +413,11 @@ export function streamChatViaRun(c: Context, execution: ChatCompletionExecution)
       }
     } finally {
       clearInterval(heartbeat);
-      await finishCommon(execution, state, assistantMsgId);
+      try {
+        await finishCommon(execution, state, assistantMsgId);
+      } finally {
+        await steeringScope.release();
+      }
     }
   });
 }
@@ -397,20 +426,23 @@ export function streamChatViaRun(c: Context, execution: ChatCompletionExecution)
 export async function runNonStreamingChatViaRun(c: Context, execution: ChatCompletionExecution) {
   const { deps, body, completionId, m, sessionStore, sessionId } = execution;
   const inject = buildChatRunInjection(execution);
+  const steeringScope = await createRunSteeringScope(execution);
 
   let assistantMsgId: string | null = null;
-  if (sessionStore && sessionId) {
-    const placeholder = await sessionStore.addMessage(sessionId, "assistant", "");
-    assistantMsgId = placeholder.id;
-  }
-
   const state = newState();
   const onEvent = makeOnEvent(execution, state, () => { /* no SSE in non-streaming mode */ });
 
   try {
+    if (sessionStore && sessionId) {
+      const placeholder = await sessionStore.addMessage(sessionId, "assistant", "");
+      assistantMsgId = placeholder.id;
+    }
+
     const outcome = await deps.runChatViaRun!(inject, {
       onEvent,
       signal: c.req.raw.signal,
+      runId: completionId,
+      steering: steeringScope.steering,
     });
     captureRunFailure(state, outcome);
 
@@ -461,7 +493,11 @@ export async function runNonStreamingChatViaRun(c: Context, execution: ChatCompl
     state.finalText = state.finalText || `Model request failed: ${error.message}`;
     return c.json({ error }, 400 as any);
   } finally {
-    await finishCommon(execution, state, assistantMsgId, { emptyFallback: "[Response interrupted]" });
+    try {
+      await finishCommon(execution, state, assistantMsgId, { emptyFallback: "[Response interrupted]" });
+    } finally {
+      await steeringScope.release();
+    }
   }
 }
 
@@ -482,20 +518,23 @@ export async function runChatTurnViaRun(
   }
 
   const inject = buildChatRunInjection(execution);
+  const steeringScope = await createRunSteeringScope(execution);
   let assistantMsgId: string | null = null;
-  if (sessionStore && sessionId) {
-    const placeholder = await sessionStore.addMessage(sessionId, "assistant", "");
-    assistantMsgId = placeholder.id;
-  }
-
   const state = newState();
   const reduceEvent = makeOnEvent(execution, state, () => { /* no SSE in adapter mode */ });
   let runStatus = "failed";
   let runResult = { exitCode: 1, stdout: "", stderr: "" };
 
   try {
+    if (sessionStore && sessionId) {
+      const placeholder = await sessionStore.addMessage(sessionId, "assistant", "");
+      assistantMsgId = placeholder.id;
+    }
+
     const outcome = await deps.runChatViaRun(inject, {
       signal: hooks.signal,
+      runId: execution.completionId,
+      steering: steeringScope.steering,
       onEvent: (event) => {
         hooks.onRunEvent?.(event);
         reduceEvent(event);
@@ -518,7 +557,11 @@ export async function runChatTurnViaRun(
     const message = err instanceof Error ? err.message : String(err);
     runResult = { exitCode: 1, stdout: "", stderr: message };
   } finally {
-    await finishCommon(execution, state, assistantMsgId, { emptyFallback: "[Response interrupted]" });
+    try {
+      await finishCommon(execution, state, assistantMsgId, { emptyFallback: "[Response interrupted]" });
+    } finally {
+      await steeringScope.release();
+    }
   }
 
   let error: ChatViaRunTurnResult["error"] | undefined;

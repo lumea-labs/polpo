@@ -113,6 +113,9 @@ export * from "./runtime-plan/index.js";
 export * from "./runtime-context/index.js";
 export * from "./execution-router.js";
 
+// ── Run steering (provider-neutral queue, checkpoints, and abort) ────────
+export * from "./steering.js";
+
 // ── Guardrails (host-neutral policy engine + tool middleware) ───────────
 export * from "./guardrails/index.js";
 

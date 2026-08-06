@@ -71,6 +71,7 @@ import { executeRun, RunActivityLog } from "../core/run-lifecycle.js";
 import { InMemoryRunStore } from "./fixtures.js";
 import type { AgentConfig, Task, RunnerConfig } from "@polpo-ai/core/types";
 import type { LoopResumeState } from "@polpo-ai/core/loop-run-store";
+import { InMemorySteeringController } from "@polpo-ai/core/steering";
 import {
   RuntimeGuardrailEngine,
   createRunToolMiddleware,
@@ -850,6 +851,40 @@ describe("executeRun — shared run lifecycle", () => {
     expect(run?.result?.stderr).toContain("No output generated");
   });
 
+  test("host steering reaches the run and closes when the lifecycle settles", async () => {
+    const controller = new InMemorySteeringController();
+    controller.enqueue({
+      id: "before-start",
+      mode: "steer",
+      content: { text: "Use the green version" },
+    });
+    let prompt = "";
+    const inner = mockTextModel("green version ready");
+    setMockModel(new MockLanguageModelV3({
+      doStream: (options) => {
+        prompt = JSON.stringify(options.prompt);
+        return inner.doStream(options);
+      },
+    }));
+    const store = new InMemoryRunStore();
+    const config = makeConfig();
+
+    const outcome = await executeRun(config, {
+      runStore: store,
+      pid: 1,
+      configPath: "memory://steering",
+      steering: controller,
+    });
+
+    expect(outcome.status).toBe("completed");
+    expect(prompt).toContain("Use the green version");
+    expect(() => controller.enqueue({
+      id: "after-finish",
+      mode: "steer",
+      content: { text: "too late" },
+    })).toThrow(/closed/i);
+  });
+
   test("abort: engine killed, run 'killed', exitCode forced to 1", async () => {
     // A model that never finishes its stream until aborted.
     let releaseStream: (() => void) | undefined;
@@ -891,6 +926,46 @@ describe("executeRun — shared run lifecycle", () => {
     expect((await store.getRun(config.runId))?.status).toBe("killed");
     const log = await readActivityLog(config.runId);
     expect(log.map((e) => e.event)).toContain("sigterm");
+    expect(log.filter((e) => e.event === "sigterm")).toHaveLength(1);
+  });
+
+  test("steering abort cancels an in-flight model and marks the run killed once", async () => {
+    let started!: () => void;
+    const modelStarted = new Promise<void>((resolve) => { started = resolve; });
+    setMockModel(new MockLanguageModelV3({
+      doStream: async (options) => {
+        started();
+        await new Promise<void>((_resolve, reject) => {
+          const signal = options.abortSignal;
+          if (signal?.aborted) {
+            reject(Object.assign(new Error("aborted"), { name: "AbortError" }));
+            return;
+          }
+          signal?.addEventListener("abort", () => {
+            reject(Object.assign(new Error("aborted"), { name: "AbortError" }));
+          }, { once: true });
+        });
+        return { stream: new ReadableStream() };
+      },
+    }));
+    const controller = new InMemorySteeringController();
+    const store = new InMemoryRunStore();
+    const config = makeConfig();
+
+    const running = executeRun(config, {
+      runStore: store,
+      pid: 8,
+      configPath: "memory://steering-abort",
+      steering: controller,
+    });
+    await modelStarted;
+    controller.abort("cancelled by caller");
+    const outcome = await running;
+
+    expect(outcome.status).toBe("killed");
+    expect(outcome.result.exitCode).toBe(1);
+    const log = await readActivityLog(config.runId);
+    expect(log.filter((entry) => entry.event === "sigterm")).toHaveLength(1);
   });
 
   test("durable turns: checkpoints land on the run record, resume skips recorded tools", async () => {

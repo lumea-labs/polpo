@@ -29,6 +29,10 @@ import type { LoopResumeState } from "@polpo-ai/core/loop-run-store";
 import type { LogEntry } from "@polpo-ai/core/log-store";
 import type { RunnerConfig, TaskResult } from "@polpo-ai/core/types";
 import type { AgentHandle, ChatSessionInjection } from "@polpo-ai/core/adapter";
+import {
+  InMemorySteeringController,
+  type SteeringController,
+} from "@polpo-ai/core/steering";
 import type { FileSystem } from "@polpo-ai/core/filesystem";
 import type { Shell } from "@polpo-ai/core/shell";
 import { sanitizeTranscriptEntry } from "../server/security.js";
@@ -168,6 +172,12 @@ export interface ExecuteRunDeps {
   /** Abort = graceful kill (subprocess SIGTERM / in-process spawner.kill). */
   signal?: AbortSignal;
   /**
+   * Run-scoped steering controller. Hosts expose ingress; executeRun consumes
+   * it at model/tool safe points. A local controller is restored from a
+   * durable checkpoint when the host does not provide one.
+   */
+  steering?: SteeringController;
+  /**
    * Live event subscription. Optional and additive: a STREAMING host
    * (chat-via-executeRun, migration F1) passes this to receive each transcript
    * entry — assistant text, tool_use, tool_result, loop_trace, error — as the
@@ -210,6 +220,13 @@ function requestsBrainTools(allowedTools: readonly string[] | undefined): boolea
 export async function executeRun(config: RunnerConfig, deps: ExecuteRunDeps): Promise<ExecuteRunOutcome> {
   const { runStore, pid, configPath } = deps;
   const actLog = new RunActivityLog(config.polpoDir, config.runId, config.taskId, config.agent.name, pid);
+  const steering = deps.steering
+    ?? (config.resumeState?.steering
+      ? InMemorySteeringController.fromSnapshot(config.resumeState.steering)
+      : new InMemorySteeringController());
+  if (steering && deps.steering && config.resumeState?.steering) {
+    await steering.restore(config.resumeState.steering);
+  }
 
   // When a transcript session is available (postgres/sqlite), persist the
   // transcript to the DB. This ensures it survives sandbox destruction.
@@ -452,6 +469,7 @@ export async function executeRun(config: RunnerConfig, deps: ExecuteRunDeps): Pr
       // and the per-turn checkpoint sink (one RunStore write per turn,
       // best-effort — a flaky store must never fail a healthy run).
       resumeState: config.resumeState,
+      steering,
       // Chat injection already carries its fully assembled system prompt.
       // Task runs receive the immutable snapshot through prepareSpawn.
       runtimeContext: deps.inject ? undefined : guardedRuntimeContext,
@@ -519,6 +537,7 @@ export async function executeRun(config: RunnerConfig, deps: ExecuteRunDeps): Pr
       }
     }
     await runStore.completeRun(config.runId, "failed", result);
+    steering.close();
     return { status: "failed", result, spawnError: true };
   }
 
@@ -535,12 +554,16 @@ export async function executeRun(config: RunnerConfig, deps: ExecuteRunDeps): Pr
   // spawner.kill()/timeout in the in-process host)
   let aborted = false;
   const onAbort = () => {
+    if (aborted) return;
     aborted = true;
     actLog.logEvent("sigterm");
     handle.kill();
   };
   if (deps.signal?.aborted) onAbort();
   else deps.signal?.addEventListener("abort", onAbort, { once: true });
+  const onSteeringAbort = () => onAbort();
+  if (steering?.signal.aborted) onSteeringAbort();
+  else steering?.signal.addEventListener("abort", onSteeringAbort, { once: true });
 
   try {
     const result = await handle.done;
@@ -577,5 +600,7 @@ export async function executeRun(config: RunnerConfig, deps: ExecuteRunDeps): Pr
     return { status: "failed", result };
   } finally {
     deps.signal?.removeEventListener("abort", onAbort);
+    steering?.signal.removeEventListener("abort", onSteeringAbort);
+    steering?.close();
   }
 }

@@ -304,6 +304,78 @@ describe("POST /v1/chat/completions", () => {
       const lastChunk = chunks[chunks.length - 1];
       expect((lastChunk.choices as any[])[0].finish_reason).toBe("stop");
     });
+
+    test("steers an active streamed run through the public run id", async () => {
+      const settings = orchestrator.getConfig().settings as any;
+      const previousExecution = settings.chatExecution;
+      settings.chatExecution = "run";
+      let releaseFirst!: () => void;
+      let markStarted!: () => void;
+      const firstStarted = new Promise<void>((resolve) => { markStarted = resolve; });
+      const firstGate = new Promise<void>((resolve) => { releaseFirst = resolve; });
+      const prompts: unknown[][] = [];
+      const turns = mockTurnSequenceModel([
+        { type: "text", text: "first answer" },
+        { type: "text", text: "revised in green" },
+      ]);
+      let calls = 0;
+      setMockModel(new MockLanguageModelV3({
+        doStream: async (options) => {
+          prompts.push(options.prompt as unknown[]);
+          if (calls++ === 0) {
+            markStarted();
+            await firstGate;
+          }
+          return turns.doStream(options);
+        },
+      }));
+
+      try {
+        const responsePromise = postCompletions({
+          messages: [{ role: "user", content: "Create a blue page" }],
+          stream: true,
+        });
+        await firstStarted;
+        const response = await responsePromise;
+        const runId = response.headers.get("x-polpo-run-id");
+        expect(runId).toMatch(/^chatcmpl-/);
+
+        const steered = await app.request(`/api/v1/runs/${encodeURIComponent(runId!)}/steering`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            id: "change-to-green",
+            mode: "steer",
+            content: { text: "Change the page to green" },
+          }),
+        });
+        expect(steered.status).toBe(202);
+        releaseFirst();
+
+        const chunks = await parseSSE(response);
+        const text = chunks
+          .map((chunk) => (chunk.choices as any[])?.[0]?.delta?.content ?? "")
+          .join("");
+        expect(text).toBe("first answerrevised in green");
+        expect(prompts).toHaveLength(2);
+        expect(JSON.stringify(prompts[0])).not.toContain("Change the page to green");
+        expect(JSON.stringify(prompts[1])).toContain("Change the page to green");
+
+        const late = await app.request(`/api/v1/runs/${encodeURIComponent(runId!)}/steering`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            id: "too-late",
+            mode: "steer",
+            content: { text: "This run is over" },
+          }),
+        });
+        expect(late.status).toBe(404);
+      } finally {
+        releaseFirst?.();
+        settings.chatExecution = previousExecution;
+      }
+    });
   });
 
   // ── Tool execution ──────────────────────────────────

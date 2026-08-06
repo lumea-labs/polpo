@@ -106,6 +106,47 @@ Loop run states distinguish the gate lifecycle from execution:
 - `resuming`: the runtime is executing from the saved checkpoint.
 - `completed`: the resumed or original run finished.
 
+## Run steering
+
+Steering is a provider-neutral, run-scoped command queue. Runtime hosts own its
+ingress; `LoopRunner` only drains accepted messages at safe model/tool
+boundaries:
+
+```ts
+import { LoopRunner } from "@polpo-ai/core";
+import { InMemorySteeringController } from "@polpo-ai/core/steering";
+
+const steering = new InMemorySteeringController();
+const run = new LoopRunner().run({
+  loop: { name: "default" },
+  steering,
+  onSteering: async (messages) => {
+    // Convert messages to the provider's user-message representation.
+  },
+  model: runModel,
+  executeTool: runTool,
+});
+
+await steering.enqueue({
+  id: "request-42-message-1",
+  mode: "steer",
+  content: { text: "Use the existing database schema." },
+});
+
+await run;
+```
+
+`steer` becomes eligible at the next safe boundary; `follow_up` is deferred
+until the run would otherwise stop. The controller provides FIFO delivery,
+idempotent message ids, bounded queues, cancellation, JSON snapshots, and an
+atomic final-boundary seal so an accepted message cannot disappear while a run
+is finishing. Hosts persist `SteeringQueueSnapshot` with their normal run
+checkpoint and restore it on resume.
+
+The built-in `InMemorySteeringRunRegistry` is intended for a single-process OSS
+host. Distributed deployments should implement `SteeringRunRegistry` with an
+atomic durable queue while keeping the same validation and delivery contract.
+
 ## Runtime plans
 
 Runtime hosts can resolve a serializable, immutable execution decision before

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { LoopHookRegistry } from "./hooks.js";
 import { LoopRunner } from "./runner.js";
+import { InMemorySteeringController, SteeringClosedError } from "../steering.js";
 
 describe("LoopRunner", () => {
   it("runs the implicit loop with ordered lifecycle hooks", async () => {
@@ -243,5 +244,174 @@ describe("LoopRunner durable turns", () => {
 
     expect(result.status).toBe("completed");
     expect(result.text).toBe("fine");
+  });
+});
+
+describe("LoopRunner steering", () => {
+  it("delivers steering queued before the run ahead of the first model turn", async () => {
+    const steering = new InMemorySteeringController();
+    steering.enqueue({ id: "s1", mode: "steer", content: { text: "start here" } });
+    const events: string[] = [];
+
+    const result = await new LoopRunner().run({
+      loop: { name: "default" },
+      steering,
+      onSteering: (messages) => { events.push(`steering:${messages.map((message) => message.id).join(",")}`); },
+      model: async () => {
+        events.push("model");
+        return { text: "done" };
+      },
+      executeTool: async () => "unused",
+    });
+
+    expect(result.status).toBe("completed");
+    expect(events).toEqual(["steering:s1", "model"]);
+  });
+
+  it("injects steering enqueued during a model turn at the next safe boundary", async () => {
+    const steering = new InMemorySteeringController();
+    const events: string[] = [];
+    let modelCalls = 0;
+
+    const result = await new LoopRunner().run({
+      loop: { name: "default" },
+      maxTurns: 3,
+      steering,
+      onSteering: (messages) => { events.push(`steering:${messages[0].id}`); },
+      model: async () => {
+        modelCalls++;
+        events.push(`model:${modelCalls}`);
+        if (modelCalls === 1) {
+          steering.enqueue({ id: "mid-turn", mode: "steer", content: { text: "continue with this" } });
+        }
+        return { text: modelCalls === 1 ? "first" : "second" };
+      },
+      executeTool: async () => "unused",
+    });
+
+    expect(result.text).toBe("firstsecond");
+    expect(events).toEqual(["model:1", "steering:mid-turn", "model:2"]);
+  });
+
+  it("waits to deliver follow-ups until the run would otherwise stop", async () => {
+    const steering = new InMemorySteeringController();
+    steering.enqueue({ id: "follow", mode: "follow_up", content: { text: "one more thing" } });
+    const deliveredAt: number[] = [];
+    let modelCalls = 0;
+
+    const result = await new LoopRunner().run({
+      loop: { name: "default" },
+      maxTurns: 4,
+      steering,
+      onSteering: () => { deliveredAt.push(modelCalls); },
+      model: async ({ turn }) => {
+        modelCalls++;
+        return turn === 0
+          ? { text: "working", toolCalls: [{ id: "c1", name: "read", args: {} }] }
+          : { text: turn === 1 ? "done" : "followed up" };
+      },
+      executeTool: async () => "ok",
+    });
+
+    expect(deliveredAt).toEqual([2]);
+    expect(result.turns).toBe(3);
+    expect(result.text).toBe("workingdonefollowed up");
+  });
+
+  it("does not consume messages when the max-turn budget cannot execute them", async () => {
+    const steering = new InMemorySteeringController();
+
+    await new LoopRunner().run({
+      loop: { name: "default" },
+      maxTurns: 1,
+      steering,
+      onSteering: () => undefined,
+      model: async () => {
+        steering.enqueue({ id: "late", mode: "steer", content: { text: "too late for this run" } });
+        return { text: "done" };
+      },
+      executeTool: async () => "unused",
+    });
+
+    expect(steering.snapshot().pending.map((message) => message.id)).toEqual(["late"]);
+  });
+
+  it("includes the steering snapshot in durable turn checkpoints", async () => {
+    const steering = new InMemorySteeringController();
+    steering.enqueue({ id: "later", mode: "follow_up", content: { text: "after completion" } });
+    const snapshots: unknown[] = [];
+
+    await new LoopRunner().run({
+      loop: { name: "default" },
+      maxTurns: 1,
+      steering,
+      onSteering: () => undefined,
+      model: async () => ({ text: "done" }),
+      executeTool: async () => "unused",
+      onTurnCheckpoint: (checkpoint) => { snapshots.push(checkpoint.steering); },
+    });
+
+    expect(snapshots).toHaveLength(1);
+    expect(snapshots[0]).toMatchObject({ pending: [{ id: "later", mode: "follow_up" }] });
+  });
+
+  it("stops before model or tool work when steering is aborted", async () => {
+    const steering = new InMemorySteeringController();
+    steering.abort("cancelled by caller");
+    let called = false;
+
+    await expect(new LoopRunner().run({
+      loop: { name: "default" },
+      steering,
+      onSteering: () => undefined,
+      model: async () => {
+        called = true;
+        return { text: "never" };
+      },
+      executeTool: async () => "unused",
+    })).rejects.toMatchObject({
+      name: "SteeringAbortError",
+      reason: "cancelled by caller",
+    });
+    expect(called).toBe(false);
+  });
+
+  it("delivers a message accepted by the final stop hook instead of losing it", async () => {
+    const steering = new InMemorySteeringController();
+    const hooks = new LoopHookRegistry();
+    const events: string[] = [];
+    let modelCalls = 0;
+
+    hooks.register({
+      hook: "loop:stop",
+      phase: "before",
+      handler: (context) => {
+        if (context.data.turn === 0) {
+          steering.enqueue({
+            id: "at-final-boundary",
+            mode: "steer",
+            content: { text: "include this before finishing" },
+          });
+        }
+      },
+    });
+
+    const result = await new LoopRunner(hooks).run({
+      loop: { name: "default" },
+      maxTurns: 3,
+      steering,
+      onSteering: (messages) => { events.push(`steering:${messages[0].id}`); },
+      model: async () => {
+        modelCalls++;
+        events.push(`model:${modelCalls}`);
+        return { text: modelCalls === 1 ? "first" : "second" };
+      },
+      executeTool: async () => "unused",
+    });
+
+    expect(result.text).toBe("firstsecond");
+    expect(events).toEqual(["model:1", "steering:at-final-boundary", "model:2"]);
+    expect(() => steering.enqueue({ id: "after", mode: "steer", content: { text: "late" } }))
+      .toThrow(SteeringClosedError);
   });
 });

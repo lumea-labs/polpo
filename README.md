@@ -319,6 +319,51 @@ polpo loops compile .polpo/loops/router-flow.ts
 polpo deploy   # deploys .json as JSON and .ts/.js/.mjs as source
 ```
 
+### Steer active runs
+
+Run-backed chat completions expose their active run id in the
+`x-polpo-run-id` response header. A caller can use that id to add information
+while the run is working or to queue a follow-up without interrupting a tool
+halfway through execution:
+
+```ts
+import { PolpoClient } from "@polpo-ai/sdk";
+
+const polpo = new PolpoClient({
+  baseUrl: "http://localhost:3890",
+  apiKey: process.env.POLPO_API_KEY,
+});
+const stream = polpo.chatCompletionsStream({
+  agent: "builder",
+  messages: [{ role: "user", content: "Build the application" }],
+});
+
+await stream.start();
+if (!stream.runId) throw new Error("Run steering is unavailable");
+
+await polpo.steerRun(stream.runId, {
+  id: crypto.randomUUID(),
+  mode: "steer",
+  content: { text: "Use PostgreSQL and keep the existing visual system." },
+});
+
+for await (const chunk of stream) {
+  // Render the normal OpenAI-compatible stream.
+}
+```
+
+`steer` is delivered before the next model invocation at a safe boundary.
+`follow_up` waits until the run would otherwise finish and then starts another
+turn. Messages may include HTTPS or data-URL image, audio, and file
+attachments. Message ids are idempotency keys; retries with the same id do not
+enqueue duplicate work. `abortRun(runId, reason)` cancels the same run-scoped
+model and tool lifecycle. Steering never interrupts a tool call in progress.
+
+Pending steering is included in durable turn checkpoints and survives resume.
+The built-in OSS host keeps the active-run index in process; distributed hosts
+should implement the same `SteeringRunRegistry` contract with a durable command
+transport. Inline chat execution does not expose an active steering scope.
+
 ### Schedules
 
 Schedules are first-class, durable invocations stored in
