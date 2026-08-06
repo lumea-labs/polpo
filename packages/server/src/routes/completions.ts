@@ -79,6 +79,7 @@ export {
   prepareChatCompletionExecution,
   runConversationTurn,
   type ConversationTurnResult,
+  type RunConversationTurnInput,
   type PreparedConversationTurn,
 } from "./completions/conversation-turn.js";
 
