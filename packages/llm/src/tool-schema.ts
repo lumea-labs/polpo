@@ -475,5 +475,13 @@ export async function validateToolInput(
   schema: unknown,
   value: unknown,
 ): Promise<ToolInputValidationResult> {
+  return await validateJsonSchema(schema, value);
+}
+
+/** Validate any JSON value against a caller-provided JSON Schema. */
+export async function validateJsonSchema(
+  schema: unknown,
+  value: unknown,
+): Promise<ToolInputValidationResult> {
   return await toolInputValidator(schema)(value);
 }

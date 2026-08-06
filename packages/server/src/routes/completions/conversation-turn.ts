@@ -62,6 +62,10 @@ import {
   forcedModelToolName,
   type ModelControlledToolDisclosureConfig,
 } from "./tool-disclosure.js";
+import {
+  isStructuredResponseFormat,
+  modelOutputForResponseFormat,
+} from "./structured-output.js";
 
 type PreparedError = {
   kind: "error";
@@ -787,6 +791,14 @@ export async function prepareChatCompletionExecution(
     isInteractiveFn = ctx.isInteractive;
   }
 
+  if (projectLoopRuntime && isStructuredResponseFormat(body.response_format)) {
+    return completionError(
+      "response_format is not supported with project loop execution",
+      400,
+      "unsupported_response_format",
+    );
+  }
+
   const completionId = options.completionId ?? `chatcmpl-${nanoid(24)}`;
   const sessionStore = deps.getSessionStore();
   let sessionId = options.sessionId ?? null;
@@ -885,6 +897,7 @@ export async function prepareChatCompletionExecution(
     providerOpts,
     modelSelection,
     modelToolChoice,
+    modelOutput: modelOutputForResponseFormat(body.response_format),
     effectiveTools,
     effectiveToolExecutor,
     activeToolNames,

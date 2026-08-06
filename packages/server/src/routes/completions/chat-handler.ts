@@ -19,9 +19,10 @@ import {
   type RuntimeContextResolution,
 } from "@polpo-ai/core";
 import { runModelPolicyTurn } from "@polpo-ai/llm";
-import type { LanguageModelUsage } from "ai";
+import { Output, type LanguageModelUsage } from "ai";
 import type { RuntimeSandboxOptions } from "@polpo-ai/core";
 import type { CompletionRouteDeps } from "../completions.js";
+import type { CompletionResponseFormat } from "./schemas.js";
 import {
   agentConfigForModelAttempt,
   buildSummarizeFn,
@@ -37,6 +38,7 @@ import {
   modelErrorEnvelope,
   modelNotFoundEnvelope,
   sseChunk,
+  structuredOutputErrorEnvelope,
 } from "./sse.js";
 import {
   CLIENT_SIDE_TOOLS,
@@ -54,11 +56,22 @@ import {
   applyCompletionOutputPolicy,
   streamingOutputPolicyMode,
 } from "./output-guardrails.js";
+import {
+  finalizeResponseFormatText,
+  isStructuredResponseFormat,
+  serializeModelOutput,
+} from "./structured-output.js";
 
 /** Resolved execution context for a standard (non-loop) chat completion. */
 export interface ChatCompletionExecution {
   deps: CompletionRouteDeps;
-  body: { stream?: boolean; agent?: string; user?: string; sandbox?: RuntimeSandboxOptions };
+  body: {
+    stream?: boolean;
+    agent?: string;
+    user?: string;
+    sandbox?: RuntimeSandboxOptions;
+    response_format?: CompletionResponseFormat;
+  };
   completionId: string;
   /** Resolved agent config (agent-direct mode). Used by chat-via-executeRun
    *  (F1c) to build the RunnerConfig. Undefined in orchestrator mode. */
@@ -69,6 +82,8 @@ export interface ChatCompletionExecution {
   providerOpts?: Record<string, any>;
   modelSelection?: ModelSelection;
   modelToolChoice?: unknown;
+  /** Parsed provider-neutral output contract derived from response_format. */
+  modelOutput?: Output.Output<unknown, unknown, unknown>;
   effectiveTools: any[];
   effectiveToolExecutor: CompletionToolExecutor;
   /** Dynamic model-facing pool for progressive disclosure. */
@@ -135,6 +150,7 @@ export function streamChatCompletion(c: any, exec: ChatCompletionExecution): any
   const modelSelection = exec.modelSelection ?? modelSelectionForResolvedModel(primaryModel);
   const reasoning = exec.agentConfig?.reasoning ?? deps.getConfig()?.settings?.reasoning;
   const outputMode = streamingOutputPolicyMode(deps.runOutputPolicy);
+  const structuredResponse = isStructuredResponseFormat(body.response_format);
 
   return streamSSE(c, async (stream) => {
     // Abort controller: cancelled when the client disconnects (closes SSE)
@@ -172,7 +188,7 @@ export function streamChatCompletion(c: any, exec: ChatCompletionExecution): any
     const toolCallsAccum: any[] = [];
     let lastProviderMetadata: Record<string, unknown> | undefined;
     let outputPolicyApplied = false;
-    const finalizeOutput = async () => {
+    const finalizeOutput = async (validateStructured = true) => {
       if (outputPolicyApplied) return;
       finalText = await applyCompletionOutputPolicy({
         outputPolicy: deps.runOutputPolicy,
@@ -183,8 +199,11 @@ export function streamChatCompletion(c: any, exec: ChatCompletionExecution): any
         sessionId,
         signal: abortController.signal,
       });
+      if (validateStructured) {
+        finalText = await finalizeResponseFormatText(body.response_format, finalText);
+      }
       outputPolicyApplied = true;
-      if (outputMode === "buffer" && finalText) {
+      if ((outputMode === "buffer" || structuredResponse) && finalText) {
         await stream.writeSSE({ data: sseChunk(completionId, { content: finalText }) });
       }
     };
@@ -254,6 +273,7 @@ export function streamChatCompletion(c: any, exec: ChatCompletionExecution): any
           tools: aiTools,
           ...(exec.activeToolNames ? { activeTools: exec.activeToolNames() } : {}),
           ...(modelToolChoice ? { toolChoice: modelToolChoice as any } : {}),
+          ...(exec.modelOutput ? { output: exec.modelOutput } : {}),
           abortSignal: abortController.signal,
         }, async (event) => {
           if (abortController.signal.aborted) return;
@@ -261,8 +281,8 @@ export function streamChatCompletion(c: any, exec: ChatCompletionExecution): any
             await stream.writeSSE({ data: sseChunk(completionId, {}, null, { thinking: event.text }) });
           } else if (event.type === "text-delta") {
             turnText += event.text;
-            finalText += event.text;
-            if (outputMode !== "buffer") {
+            if (!structuredResponse) finalText += event.text;
+            if (outputMode !== "buffer" && !structuredResponse) {
               await stream.writeSSE({ data: sseChunk(completionId, { content: event.text }) });
             }
           } else if (event.type === "tool-input-start") {
@@ -305,13 +325,21 @@ export function streamChatCompletion(c: any, exec: ChatCompletionExecution): any
 
         if (streamError) {
           finalText += `\n\nError: ${streamError}`;
-          if (outputMode !== "buffer") {
+          if (outputMode !== "buffer" && !structuredResponse) {
             await stream.writeSSE({ data: sseChunk(completionId, { content: `\n\nError: ${streamError}` }) });
           }
           break;
         }
 
         const toolCalls = result.toolCalls;
+        if (structuredResponse && toolCalls.length === 0) {
+          turnText = await serializeModelOutput(
+            body.response_format,
+            result.output,
+            turnText,
+          );
+          finalText += turnText;
+        }
         const usage = result.usage;
         const selectedResolved = resolvedAttempts.get(result.selectedAttempt.index);
         if (selectedResolved) {
@@ -359,7 +387,7 @@ export function streamChatCompletion(c: any, exec: ChatCompletionExecution): any
             arguments: clientSideCall.input,
             state: "interrupted",
           });
-          await finalizeOutput();
+          await finalizeOutput(false);
           // Send as standard OpenAI tool_calls finish reason
           await stream.writeSSE({
             data: JSON.stringify({
@@ -397,7 +425,7 @@ export function streamChatCompletion(c: any, exec: ChatCompletionExecution): any
             arguments: interactiveCall.input,
             state: "interrupted",
           });
-          await finalizeOutput();
+          await finalizeOutput(false);
 
           if (interactiveCall.toolName === "ask_user") {
             const questions = (interactiveCall.input as any)?.questions as any[] ?? [];
@@ -554,9 +582,15 @@ export function streamChatCompletion(c: any, exec: ChatCompletionExecution): any
         // Friendly model_not_found surface — gateway returns 404 for
         // renamed/deprecated SKUs (e.g. xai/grok-4-fast after the 4.1
         // rename). Without this catch the error propagates as a 500.
+        const structuredOutputError = structuredOutputErrorEnvelope(err, structuredResponse);
         const guardrailError = guardrailErrorEnvelope(err);
         const notFound = modelNotFoundEnvelope(err, m?.id, body.agent);
-        if (guardrailError) {
+        if (structuredOutputError) {
+          await stream.writeSSE({
+            data: sseChunk(completionId, {}, "stop", { error: structuredOutputError }),
+          });
+          await stream.writeSSE({ data: "[DONE]" });
+        } else if (guardrailError) {
           finalText = guardrailError.message;
           outputPolicyApplied = true;
           await stream.writeSSE({
@@ -617,6 +651,7 @@ export async function runNonStreamingChatCompletion(c: any, exec: ChatCompletion
   let providerOpts = primaryProviderOpts;
   const modelSelection = exec.modelSelection ?? modelSelectionForResolvedModel(primaryModel);
   const reasoning = exec.agentConfig?.reasoning ?? deps.getConfig()?.settings?.reasoning;
+  const structuredResponse = isStructuredResponseFormat(body.response_format);
 
   // Reserve placeholder so the message is visible even if the request is interrupted
   let assistantMsgId: string | null = null;
@@ -631,7 +666,7 @@ export async function runNonStreamingChatCompletion(c: any, exec: ChatCompletion
   const toolCallsAccum: any[] = [];
   let lastProviderMetadata: Record<string, unknown> | undefined;
   let outputPolicyApplied = false;
-  const finalizeOutput = async () => {
+  const finalizeOutput = async (validateStructured = true) => {
     if (outputPolicyApplied) return;
     finalText = await applyCompletionOutputPolicy({
       outputPolicy: deps.runOutputPolicy,
@@ -641,6 +676,9 @@ export async function runNonStreamingChatCompletion(c: any, exec: ChatCompletion
       agent: body.agent,
       sessionId,
     });
+    if (validateStructured) {
+      finalText = await finalizeResponseFormatText(body.response_format, finalText);
+    }
     outputPolicyApplied = true;
   };
 
@@ -684,9 +722,16 @@ export async function runNonStreamingChatCompletion(c: any, exec: ChatCompletion
         tools: aiTools,
         ...(exec.activeToolNames ? { activeTools: exec.activeToolNames() } : {}),
         ...(modelToolChoice ? { toolChoice: modelToolChoice as any } : {}),
+        ...(exec.modelOutput ? { output: exec.modelOutput } : {}),
       });
 
-      const turnText = turnResult.text;
+      const turnText = structuredResponse && turnResult.toolCalls.length === 0
+        ? await serializeModelOutput(
+            body.response_format,
+            turnResult.output,
+            turnResult.text,
+          )
+        : turnResult.text;
       const selectedResolved = resolvedAttempts.get(turnResult.selectedAttempt.index);
       if (selectedResolved) {
         m = selectedResolved.model;
@@ -730,7 +775,7 @@ export async function runNonStreamingChatCompletion(c: any, exec: ChatCompletion
           arguments: clientSideCall.input,
           state: "interrupted",
         });
-        await finalizeOutput();
+        await finalizeOutput(false);
         return c.json({
           id: completionId,
           object: "chat.completion",
@@ -770,7 +815,7 @@ export async function runNonStreamingChatCompletion(c: any, exec: ChatCompletion
           arguments: interactiveCall.input,
           state: "interrupted",
         });
-        await finalizeOutput();
+        await finalizeOutput(false);
 
         const baseResponse = {
           id: completionId,
@@ -948,6 +993,10 @@ export async function runNonStreamingChatCompletion(c: any, exec: ChatCompletion
     // Friendly model_not_found surface — gateway returns 404 for
     // renamed/deprecated SKUs (e.g. xai/grok-4-fast after the 4.1
     // rename). Without this catch the error propagates as a 500.
+    const structuredOutputError = structuredOutputErrorEnvelope(err, structuredResponse);
+    if (structuredOutputError) {
+      return c.json({ error: structuredOutputError }, 400 as any);
+    }
     const guardrailError = guardrailErrorEnvelope(err);
     if (guardrailError) {
       finalText = guardrailError.message;

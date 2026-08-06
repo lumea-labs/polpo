@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { jsonSchema } from "ai";
+import { jsonSchema, Output } from "ai";
 import { MockLanguageModelV3, convertArrayToReadableStream } from "ai/test";
 import {
   normalizeResponseMessagesForHistory,
@@ -250,5 +250,71 @@ describe("streamModelTurn", () => {
         error: expect.any(Error),
       }),
     ]);
+  });
+
+  it("returns a schema-validated structured output", async () => {
+    const model = mockModel([
+      { type: "stream-start", warnings: [] },
+      { type: "text-start", id: "txt_1" },
+      { type: "text-delta", id: "txt_1", delta: '{"name":"Ada","plan":"pro"}' },
+      { type: "text-end", id: "txt_1" },
+      { type: "finish", finishReason: { unified: "stop", raw: undefined }, usage: usage() },
+    ]);
+
+    const result = await streamModelTurn({
+      model,
+      messages: [{ role: "user", content: "Create a profile" }],
+      output: Output.object({
+        schema: jsonSchema(
+          {
+            type: "object",
+            properties: {
+              name: { type: "string" },
+              plan: { type: "string", enum: ["free", "pro"] },
+            },
+            required: ["name", "plan"],
+            additionalProperties: false,
+          },
+          {
+            validate: (value) => value && typeof value === "object" && (value as any).plan === "pro"
+              ? { success: true, value }
+              : { success: false, error: new Error("invalid profile") },
+          },
+        ),
+        name: "user_profile",
+      }),
+    });
+
+    expect(result.output).toEqual({ name: "Ada", plan: "pro" });
+    expect(result.text).toBe('{"name":"Ada","plan":"pro"}');
+  });
+
+  it("does not parse a structured output on an intermediate tool-call turn", async () => {
+    const model = mockModel([
+      { type: "stream-start", warnings: [] },
+      { type: "tool-call", toolCallId: "call_1", toolName: "lookup", input: "{}" },
+      { type: "finish", finishReason: { unified: "tool-calls", raw: undefined }, usage: usage() },
+    ]);
+
+    const result = await streamModelTurn({
+      model,
+      messages: [{ role: "user", content: "Look it up" }],
+      tools: {
+        lookup: {
+          description: "Lookup data",
+          inputSchema: jsonSchema({ type: "object", properties: {} }),
+        },
+      },
+      output: Output.object({
+        schema: jsonSchema({
+          type: "object",
+          properties: { answer: { type: "string" } },
+          required: ["answer"],
+        }),
+      }),
+    });
+
+    expect(result.toolCalls).toHaveLength(1);
+    expect(result.output).toBeUndefined();
   });
 });

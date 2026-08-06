@@ -517,6 +517,7 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
 
       let stepText = "";
       const toolCalls: LoopToolCall[] = [];
+      const hasStructuredOutput = inject?.output !== undefined;
       const resolvedAttempts = new Map<number, Pick<SpawnPrep, "model" | "providerOptions">>();
       const turn = await runModelPolicyTurn({
         selection: modelSelection,
@@ -542,6 +543,7 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
         tools: toolSet,
         ...(inject?.activeToolNames ? { activeTools: inject.activeToolNames() as Array<keyof typeof toolSet> } : {}),
         ...(inject?.toolChoice ? { toolChoice: inject.toolChoice as any } : {}),
+        ...(hasStructuredOutput ? { output: inject.output as any } : {}),
         abortSignal: abortController.signal,
       }, (event) => {
         switch (event.type) {
@@ -554,7 +556,9 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
             stepText += event.text;
             // F1b: token-level streaming sink (separate from onTranscript, which
             // stays turn-granularity for persistence). Best-effort.
-            try { ctx?.onDelta?.({ text: event.text }); } catch { /* a delta subscriber can't sink the run */ }
+            if (!hasStructuredOutput) {
+              try { ctx?.onDelta?.({ text: event.text }); } catch { /* a delta subscriber can't sink the run */ }
+            }
             break;
           }
           case "tool-input-start": {
@@ -671,7 +675,9 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
       }
       activity.lastUpdate = new Date().toISOString();
 
-      const rawText = stepText || (toolCalls.length === 0 ? turn.text : "");
+      const rawText = hasStructuredOutput && toolCalls.length === 0 && turn.output !== undefined
+        ? JSON.stringify(turn.output)
+        : stepText || (toolCalls.length === 0 ? turn.text : "");
       const guardedText = rawText && ctx?.runOutputPolicy
         ? (await ctx.runOutputPolicy.evaluate({
             output: rawText,
@@ -685,6 +691,10 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
             signal: abortController.signal,
           })).output
         : rawText;
+
+      if (hasStructuredOutput && toolCalls.length === 0 && guardedText) {
+        try { ctx?.onDelta?.({ text: guardedText }); } catch { /* a delta subscriber can't sink the run */ }
+      }
 
       if (guardedText) {
         activity.summary = guardedText.slice(0, 200);

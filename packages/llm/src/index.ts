@@ -148,6 +148,7 @@ export type {
 export {
   toPortableToolInputSchema,
   toValidatedToolInputSchema,
+  validateJsonSchema,
   validateToolInput,
 } from "./tool-schema.js";
 export type { ToolInputValidationResult } from "./tool-schema.js";

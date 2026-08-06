@@ -190,6 +190,7 @@ function buildAttemptInput<TOOLS extends ToolSet>(
     ...(input.activeTools ? { activeTools: input.activeTools } : {}),
     ...(input.toolChoice ? { toolChoice: input.toolChoice } : {}),
     ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
+    ...(input.output ? { output: input.output } : {}),
     model: resolution.model,
     ...(resolution.maxOutputTokens !== undefined ? { maxOutputTokens: resolution.maxOutputTokens } : {}),
     ...(resolution.providerOptions ? { providerOptions: resolution.providerOptions } : {}),

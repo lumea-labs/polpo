@@ -13,7 +13,8 @@ import {
   LoopContextBindingError,
 } from "@polpo-ai/core";
 import { classifyGatewayError, extractGatewayModelNotFoundDetails } from "@polpo-ai/llm";
-import type { LanguageModelUsage } from "ai";
+import { NoObjectGeneratedError, type LanguageModelUsage } from "ai";
+import { CompletionStructuredOutputError } from "./structured-output.js";
 
 export function sseChunk(
   id: string,
@@ -86,6 +87,31 @@ export function modelErrorEnvelope(err: unknown): {
     message: visibleModelError(err),
     type: "model_error",
     code: "model_request_failed",
+  };
+}
+
+export function structuredOutputErrorEnvelope(
+  err: unknown,
+  structuredOutputRequested = false,
+): {
+  message: string;
+  type: "invalid_request_error";
+  code: "invalid_response_format_output";
+  param: "response_format";
+} | null {
+  const directError = err instanceof CompletionStructuredOutputError ? err : null;
+  const noObject = structuredOutputRequested && (
+    NoObjectGeneratedError.isInstance(err)
+    || errorObjects(err).some((candidate) => candidate.name === "AI_NoObjectGeneratedError")
+  );
+  if (!directError && !noObject) return null;
+  return {
+    message: directError
+      ? directError.message
+      : "Model output did not satisfy the requested response_format.",
+    type: "invalid_request_error",
+    code: "invalid_response_format_output",
+    param: "response_format",
   };
 }
 

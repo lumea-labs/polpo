@@ -364,6 +364,43 @@ The built-in OSS host keeps the active-run index in process; distributed hosts
 should implement the same `SteeringRunRegistry` contract with a durable command
 transport. Inline chat execution does not expose an active steering scope.
 
+### Structured outputs
+
+The OpenAI-compatible `/v1/chat/completions` endpoint accepts
+`response_format` for both non-streaming and streaming requests:
+
+```bash
+curl http://localhost:3890/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "agent": "support",
+    "messages": [{ "role": "user", "content": "Return the customer tier as JSON." }],
+    "response_format": {
+      "type": "json_schema",
+      "json_schema": {
+        "name": "customer_tier",
+        "strict": true,
+        "schema": {
+          "type": "object",
+          "properties": {
+            "tier": { "type": "string", "enum": ["free", "paid"] }
+          },
+          "required": ["tier"],
+          "additionalProperties": false
+        }
+      }
+    }
+  }'
+```
+
+The validated object is returned as a canonical JSON string in
+`choices[0].message.content`, matching the OpenAI chat-completions wire shape.
+`{"type":"json_object"}` is also supported. Structured streaming is buffered
+until the complete value is parsed and validated, then emitted in one content
+chunk so clients never receive a partial invalid object. Tool calls may still
+run before the final structured response. Project loop execution currently
+rejects `response_format` explicitly instead of silently ignoring it.
+
 ### Schedules
 
 Schedules are first-class, durable invocations stored in

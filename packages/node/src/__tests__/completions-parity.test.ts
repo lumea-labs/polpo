@@ -63,6 +63,18 @@ async function postStream(body: Record<string, unknown>): Promise<Record<string,
   return chunks;
 }
 
+async function postNonStream(body: Record<string, unknown>) {
+  const response = await app.request("/v1/chat/completions", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ agent: "agent-1", stream: false, ...body }),
+  });
+  return {
+    status: response.status,
+    body: await response.json() as any,
+  };
+}
+
 /** Concatenate delta.content across chunks. */
 function content(chunks: Record<string, unknown>[]): string {
   return chunks.map((ch) => ((ch.choices as any)?.[0]?.delta?.content ?? "")).join("");
@@ -86,6 +98,23 @@ function finishReason(chunks: Record<string, unknown>[]): string | undefined {
   }
   return undefined;
 }
+
+const profileResponseFormat = {
+  type: "json_schema",
+  json_schema: {
+    name: "profile",
+    strict: true,
+    schema: {
+      type: "object",
+      properties: {
+        name: { type: "string" },
+        tier: { type: "string", enum: ["free", "paid"] },
+      },
+      required: ["name", "tier"],
+      additionalProperties: false,
+    },
+  },
+} as const;
 
 beforeAll(async () => {
   tmpDir = await mkdtemp(join(tmpdir(), "polpo-parity-test-"));
@@ -233,14 +262,108 @@ describe("F1c parity: inline vs run", () => {
 
     setChatExecution("inline");
     setMockModel(model());
-    const inline = await postStream({ messages });
+    const inline = await postStream({ messages, response_format: profileResponseFormat });
 
     setChatExecution("run");
     setMockModel(model());
-    const viaRun = await postStream({ messages });
+    const viaRun = await postStream({ messages, response_format: profileResponseFormat });
 
     expect(toolStates(viaRun)).toEqual(toolStates(inline));
     expect(toolStates(viaRun)).not.toContain("calling");
     expect(finishReason(viaRun)).toBe("tool_calls");
+  });
+
+  it("returns structured output in OpenAI message.content for non-streaming calls", async () => {
+    const request = {
+      messages: [{ role: "user", content: "Return a profile" }],
+      response_format: profileResponseFormat,
+    };
+    const response = '{ "name": "Ada", "tier": "paid" }';
+
+    setChatExecution("inline");
+    setMockModel(mockTurnSequenceModel([{ type: "text", text: response }]));
+    const inline = await postNonStream(request);
+
+    setChatExecution("run");
+    setMockModel(mockTurnSequenceModel([{ type: "text", text: response }]));
+    const viaRun = await postNonStream(request);
+
+    expect(inline.status).toBe(200);
+    expect(viaRun.status).toBe(200);
+    expect(inline.body.choices[0].message.content).toBe('{"name":"Ada","tier":"paid"}');
+    expect(viaRun.body.choices[0].message.content).toBe(
+      inline.body.choices[0].message.content,
+    );
+  });
+
+  it("buffers and canonicalizes json_schema output identically", async () => {
+    const messages = [{ role: "user", content: "Return a profile" }];
+    const response = '{\n  "name": "Ada",\n  "tier": "paid"\n}';
+
+    setChatExecution("inline");
+    setMockModel(mockTurnSequenceModel([{ type: "text", text: response }]));
+    const inline = await postStream({ messages, response_format: profileResponseFormat });
+
+    setChatExecution("run");
+    setMockModel(mockTurnSequenceModel([{ type: "text", text: response }]));
+    const viaRun = await postStream({ messages, response_format: profileResponseFormat });
+
+    expect(content(inline)).toBe('{"name":"Ada","tier":"paid"}');
+    expect(content(viaRun)).toBe(content(inline));
+    expect(inline.filter((chunk) => (chunk.choices as any)?.[0]?.delta?.content)).toHaveLength(1);
+    expect(viaRun.filter((chunk) => (chunk.choices as any)?.[0]?.delta?.content)).toHaveLength(1);
+    expect(finishReason(viaRun)).toBe("stop");
+  });
+
+  it("does not validate an intermediate tool-call turn as structured output", async () => {
+    const messages = [{ role: "user", content: "Use a tool, then return a profile" }];
+    const sequence = () => mockTurnSequenceModel([
+      { type: "tool-call", toolName: "definitely_not_a_real_tool", args: { value: 1 } },
+      { type: "text", text: '{"name":"Ada","tier":"free"}' },
+    ]);
+
+    setChatExecution("inline");
+    setMockModel(sequence());
+    const inline = await postStream({ messages, response_format: profileResponseFormat });
+
+    setChatExecution("run");
+    setMockModel(sequence());
+    const viaRun = await postStream({ messages, response_format: profileResponseFormat });
+
+    expect(content(inline)).toBe('{"name":"Ada","tier":"free"}');
+    expect(content(viaRun)).toBe(content(inline));
+    expect(toolStates(viaRun)).toEqual(toolStates(inline));
+    expect(toolStates(viaRun)).toContain("error");
+  });
+
+  it("returns an OpenAI error envelope when structured output violates the schema", async () => {
+    const messages = [{ role: "user", content: "Return a profile" }];
+    const invalid = '{"name":"Ada","tier":"enterprise"}';
+
+    setChatExecution("inline");
+    setMockModel(mockTurnSequenceModel([{ type: "text", text: invalid }]));
+    const inline = await postStream({ messages, response_format: profileResponseFormat });
+
+    setChatExecution("run");
+    setMockModel(mockTurnSequenceModel([{ type: "text", text: invalid }]));
+    const viaRun = await postStream({ messages, response_format: profileResponseFormat });
+
+    const errorOf = (chunks: Record<string, unknown>[]) => chunks
+      .map((chunk) => (chunk.choices as any)?.[0]?.error)
+      .find(Boolean);
+    const inlineError = errorOf(inline);
+    const runError = errorOf(viaRun);
+    expect(inlineError).toMatchObject({
+      type: "invalid_request_error",
+      code: "invalid_response_format_output",
+      param: "response_format",
+    });
+    expect(runError).toMatchObject({
+      type: "invalid_request_error",
+      code: "invalid_response_format_output",
+      param: "response_format",
+    });
+    expect(content(inline)).toBe("");
+    expect(content(viaRun)).toBe("");
   });
 });
