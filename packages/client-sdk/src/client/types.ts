@@ -1179,9 +1179,24 @@ export interface RuntimeCompletionRequestOptions {
   guardrails?: { policyPack: "strict" };
 }
 
+export type ChatCompletionResponseFormat =
+  | { type: "text" }
+  | { type: "json_object" }
+  | {
+      type: "json_schema";
+      json_schema: {
+        name: string;
+        description?: string;
+        schema: Record<string, unknown>;
+        strict?: boolean;
+      };
+    };
+
 export interface ChatCompletionRequest extends RuntimeCompletionRequestOptions {
   messages: ChatCompletionMessage[];
   stream?: boolean;
+  /** OpenAI-compatible structured response mode. */
+  response_format?: ChatCompletionResponseFormat;
   /** Polpo extension: target a specific project by ID. If omitted, uses the first registered project. */
   project?: string;
   /** Session ID for conversation persistence. If omitted, server auto-selects or creates one. */

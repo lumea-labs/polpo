@@ -97,6 +97,53 @@ describe("PolpoClient run steering", () => {
   });
 });
 
+describe("PolpoClient structured outputs", () => {
+  it("forwards response_format in non-streaming and streaming requests", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>()
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        id: "chatcmpl-1",
+        choices: [{ message: { role: "assistant", content: '{"ok":true}' } }],
+      }), { status: 200, headers: { "content-type": "application/json" } }))
+      .mockResolvedValueOnce(new Response("data: [DONE]\n\n", {
+        status: 200,
+        headers: { "content-type": "text/event-stream" },
+      }));
+    const client = new PolpoClient({ baseUrl: "https://api.polpo.sh", fetch });
+    const responseFormat = {
+      type: "json_schema" as const,
+      json_schema: {
+        name: "result",
+        strict: true,
+        schema: {
+          type: "object",
+          properties: { ok: { type: "boolean" } },
+          required: ["ok"],
+        },
+      },
+    };
+
+    await client.chatCompletions({
+      agent: "assistant",
+      messages: [{ role: "user", content: "Return JSON" }],
+      response_format: responseFormat,
+    });
+    await client.chatCompletionsStream({
+      agent: "assistant",
+      messages: [{ role: "user", content: "Return JSON" }],
+      response_format: responseFormat,
+    }).start();
+
+    expect(JSON.parse((fetch.mock.calls[0]?.[1] as RequestInit).body as string)).toMatchObject({
+      response_format: responseFormat,
+      stream: false,
+    });
+    expect(JSON.parse((fetch.mock.calls[1]?.[1] as RequestInit).body as string)).toMatchObject({
+      response_format: responseFormat,
+      stream: true,
+    });
+  });
+});
+
 describe("PolpoClient schedules v2", () => {
   function clientWith(responseData: unknown = {}) {
     const fetch = vi.fn<typeof globalThis.fetch>().mockImplementation(

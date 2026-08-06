@@ -386,6 +386,52 @@ describe("completion runtime plan hook", () => {
     expect(resolveAgentTools).not.toHaveBeenCalled();
   });
 
+  it("rejects response_format for project loops instead of silently ignoring it", async () => {
+    const sessionStore = {
+      create: vi.fn(),
+      addMessage: vi.fn(),
+    };
+    const deps = makeDeps({
+      getAgents: async () => [{
+        name: "agent-1",
+        model: "mock",
+        assignedLoops: ["pipeline"],
+      }],
+      getProjectLoop: async () => ({
+        name: "pipeline",
+        start: "done",
+        steps: { done: { type: "agent", next: "end" } },
+      }),
+      getSessionStore: () => sessionStore as any,
+    });
+
+    const prepared = await prepareChatCompletionExecution(deps, {
+      agent: "agent-1",
+      loop: "pipeline",
+      stream: false,
+      response_format: {
+        type: "json_schema",
+        json_schema: {
+          name: "result",
+          schema: {
+            type: "object",
+            properties: { ok: { type: "boolean" } },
+            required: ["ok"],
+          },
+        },
+      },
+      messages: [{ role: "user", content: "run" }],
+    });
+
+    expect(prepared).toMatchObject({
+      kind: "error",
+      status: 400,
+      body: { error: { code: "unsupported_response_format" } },
+    });
+    expect(sessionStore.create).not.toHaveBeenCalled();
+    expect(sessionStore.addMessage).not.toHaveBeenCalled();
+  });
+
   it("does not plan or emit anything when the optional hook is absent", async () => {
     const emit = vi.fn();
     const deps = makeDeps({ emit });

@@ -40,6 +40,32 @@ export const messageSchema = z.object({
   }),
 });
 
+const responseFormatNameSchema = z.string()
+  .min(1)
+  .max(64)
+  .regex(/^[A-Za-z0-9_-]+$/, {
+    message: "response_format.json_schema.name may contain only letters, numbers, underscores, and hyphens",
+  });
+
+const jsonSchemaObject = z.record(z.string(), z.unknown());
+
+/** OpenAI-compatible text, JSON object, and strict JSON Schema response modes. */
+export const responseFormatSchema = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("text") }).strict(),
+  z.object({ type: z.literal("json_object") }).strict(),
+  z.object({
+    type: z.literal("json_schema"),
+    json_schema: z.object({
+      name: responseFormatNameSchema,
+      description: z.string().optional(),
+      schema: jsonSchemaObject,
+      strict: z.boolean().optional(),
+    }).strict(),
+  }).strict(),
+]);
+
+export type CompletionResponseFormat = z.infer<typeof responseFormatSchema>;
+
 export const completionRequestSchema = z.object({
   messages: z.array(messageSchema).min(1).openapi({
     description: "Conversation messages in OpenAI format",
@@ -55,6 +81,10 @@ export const completionRequestSchema = z.object({
   }),
   max_tokens: z.number().int().optional().openapi({
     description: "Ignored. Reserved for future use.",
+  }),
+  response_format: responseFormatSchema.optional().openapi({
+    description:
+      "OpenAI-compatible response format. Use json_object for valid JSON or json_schema for schema-validated structured output.",
   }),
   agent: z.string().optional().openapi({
     description: "Target a specific agent by name for direct conversation. Uses the agent's own model, system prompt, and coding tools instead of the orchestrator. Omit to talk to the orchestrator (default).",

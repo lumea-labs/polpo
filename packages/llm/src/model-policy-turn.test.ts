@@ -1,4 +1,4 @@
-import type { ModelMessage, ToolSet } from "ai";
+import { Output, type ModelMessage, type ToolSet } from "ai";
 import { describe, expect, it } from "vitest";
 
 import type {
@@ -14,6 +14,33 @@ import {
 const messages: ModelMessage[] = [{ role: "user", content: "hello" }];
 
 describe("runModelPolicyTurn", () => {
+  it("preserves structured output across provider fallback attempts", async () => {
+    const outputs: unknown[] = [];
+    const output = Output.json();
+
+    await runModelPolicyTurn({
+      selection: {
+        primary: "anthropic/claude-sonnet-5",
+        fallbacks: ["openai/gpt-4o"],
+      },
+      messages,
+      output,
+      resolveAttempt: (attempt) => ({ model: fakeModel(attempt.model) }),
+      classifyError: error => ({
+        class: "overloaded",
+        retryable: true,
+        message: error instanceof Error ? error.message : "error",
+      }),
+      runAttempt: async (input) => {
+        outputs.push(input.output);
+        if (outputs.length === 1) throw new Error("retry");
+        return fakeResult("ok");
+      },
+    });
+
+    expect(outputs).toEqual([output, output]);
+  });
+
   it("preserves active tool selection across provider fallback attempts", async () => {
     const activeToolsByAttempt: Array<readonly string[] | undefined> = [];
     const tools = {

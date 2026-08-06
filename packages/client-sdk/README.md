@@ -52,6 +52,39 @@ Runtime context accounting types are exported from the SDK and originate from
 `@polpo-ai/core/runtime-inspection`, so managed and self-hosted inspectors use
 the same categories.
 
+## Structured outputs
+
+Use the OpenAI-compatible `response_format` field when the final assistant
+message must contain validated JSON:
+
+```ts
+const response = await client.chatCompletions({
+  agent: "support",
+  messages: [{ role: "user", content: "Classify this customer." }],
+  response_format: {
+    type: "json_schema",
+    json_schema: {
+      name: "customer_tier",
+      strict: true,
+      schema: {
+        type: "object",
+        properties: {
+          tier: { type: "string", enum: ["free", "paid"] },
+        },
+        required: ["tier"],
+        additionalProperties: false,
+      },
+    },
+  },
+});
+
+const result = JSON.parse(response.choices[0].message.content ?? "{}");
+```
+
+The same request works with `chatCompletionsStream`. Polpo buffers the
+structured value until it is complete and schema-valid, then emits one
+canonical JSON content chunk. Existing text requests are unchanged.
+
 ## Steer an active run
 
 Start a streaming chat request before iterating it to read the active run id

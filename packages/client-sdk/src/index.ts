@@ -134,6 +134,7 @@ export type {
   ImageUrlContentPart,
   FileContentPart,
   ContentPart,
+  ChatCompletionResponseFormat,
   ChatCompletionRequest,
   RuntimeCompletionRequestOptions,
   SteeringAttachment,

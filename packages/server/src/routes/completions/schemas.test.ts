@@ -66,3 +66,48 @@ describe("completion request sandbox lifecycle", () => {
     expect(completionRequestSchema.safeParse({ ...request, sandbox }).success).toBe(false);
   });
 });
+
+describe("completion request response format", () => {
+  it.each([
+    { type: "text" },
+    { type: "json_object" },
+    {
+      type: "json_schema",
+      json_schema: {
+        name: "user_profile",
+        description: "A normalized user profile",
+        strict: true,
+        schema: {
+          type: "object",
+          properties: {
+            name: { type: "string" },
+            plan: { type: "string", enum: ["free", "pro"] },
+          },
+          required: ["name", "plan"],
+          additionalProperties: false,
+        },
+      },
+    },
+  ])("accepts OpenAI-compatible response_format %#", (response_format) => {
+    expect(completionRequestSchema.parse({
+      ...request,
+      response_format,
+    }).response_format).toEqual(response_format);
+  });
+
+  it.each([
+    { type: "json" },
+    { type: "json_schema" },
+    { type: "json_schema", json_schema: {} },
+    { type: "json_schema", json_schema: { name: "has spaces", schema: {} } },
+    { type: "json_schema", json_schema: { name: "x", schema: [] } },
+    { type: "json_object", extra: true },
+    null,
+    "json_object",
+  ])("rejects malformed response_format %#", (response_format) => {
+    expect(completionRequestSchema.safeParse({
+      ...request,
+      response_format,
+    }).success).toBe(false);
+  });
+});

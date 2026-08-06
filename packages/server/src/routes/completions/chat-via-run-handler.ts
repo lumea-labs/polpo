@@ -27,6 +27,7 @@ import {
   modelErrorEnvelope,
   modelNotFoundEnvelope,
   sseChunk,
+  structuredOutputErrorEnvelope,
 } from "./sse.js";
 import {
   persistAssistantMessage,
@@ -39,6 +40,10 @@ import {
   applyCompletionOutputPolicy,
   streamingOutputPolicyMode,
 } from "./output-guardrails.js";
+import {
+  finalizeResponseFormatText,
+  isStructuredResponseFormat,
+} from "./structured-output.js";
 
 /** Best-effort session title from the first user message. */
 function firstUserText(aiMessages: any[]): string {
@@ -87,6 +92,7 @@ export function buildChatRunInjection(execution: ChatCompletionExecution): ChatS
     providerOptions: providerOpts as ChatSessionInjection["providerOptions"],
     maxTurns: MAX_TURNS,
     toolChoice: modelToolChoice,
+    output: execution.modelOutput,
     seedMessages: aiMessages,
     toolSet: { ...toAITools(effectiveTools), ...(extraAiTools ?? {}), ...CLIENT_SIDE_TOOLS },
     activeToolNames: execution.activeToolNames,
@@ -270,6 +276,7 @@ async function applyStateOutputPolicy(
   state: DriverState,
   mode: "enforce" | "audit",
   signal?: AbortSignal,
+  validateStructured = true,
 ): Promise<void> {
   if (state.outputPolicyApplied) return;
   state.finalText = await applyCompletionOutputPolicy({
@@ -281,6 +288,12 @@ async function applyStateOutputPolicy(
     sessionId: execution.sessionId,
     signal,
   });
+  if (validateStructured) {
+    state.finalText = await finalizeResponseFormatText(
+      execution.body.response_format,
+      state.finalText,
+    );
+  }
   state.outputPolicyApplied = true;
 }
 
@@ -333,9 +346,15 @@ export async function streamChatViaRun(c: Context, execution: ChatCompletionExec
     let assistantMsgId: string | null = null;
     const state = newState();
     const outputMode = streamingOutputPolicyMode(deps.runOutputPolicy);
+    const structuredResponse = isStructuredResponseFormat(body.response_format);
     let writeChain: Promise<void> = Promise.resolve();
     const write = (data: string) => { writeChain = writeChain.then(() => stream.writeSSE({ data })).catch(() => {}); };
-    const onEvent = makeOnEvent(execution, state, write, outputMode !== "buffer");
+    const onEvent = makeOnEvent(
+      execution,
+      state,
+      write,
+      outputMode !== "buffer" && !structuredResponse,
+    );
 
     try {
       await stream.writeSSE({ data: sseChunk(completionId, { role: "assistant" }) });
@@ -354,10 +373,13 @@ export async function streamChatViaRun(c: Context, execution: ChatCompletionExec
       await writeChain;
 
       if (state.errorEvent && !abortController.signal.aborted) {
+        const structuredOutput = structuredOutputErrorEnvelope(state.errorEvent, structuredResponse);
         const guardrail = guardrailErrorEnvelope(state.errorEvent);
         const notFound = modelNotFoundEnvelope(state.errorEvent, m?.id, body.agent);
-        const error = guardrail ?? notFound ?? modelErrorEnvelope(state.errorEvent);
-        const text = guardrail || notFound ? "" : `Model request failed: ${error.message}`;
+        const error = structuredOutput ?? guardrail ?? notFound ?? modelErrorEnvelope(state.errorEvent);
+        const text = structuredOutput || guardrail || notFound
+          ? ""
+          : `Model request failed: ${error.message}`;
         if (text) {
           state.finalText += text;
           await stream.writeSSE({ data: sseChunk(completionId, { content: text }) });
@@ -370,8 +392,9 @@ export async function streamChatViaRun(c: Context, execution: ChatCompletionExec
           state,
           outputMode === "buffer" ? "enforce" : "audit",
           abortController.signal,
+          false,
         );
-        if (outputMode === "buffer" && state.finalText) {
+        if ((outputMode === "buffer" || structuredResponse) && state.finalText) {
           await stream.writeSSE({ data: sseChunk(completionId, { content: state.finalText }) });
         }
         state.toolCallsAccum.push({ id: state.clientReturn.id, name: state.clientReturn.name, arguments: state.clientReturn.arguments, state: "interrupted" });
@@ -384,7 +407,7 @@ export async function streamChatViaRun(c: Context, execution: ChatCompletionExec
           outputMode === "buffer" ? "enforce" : "audit",
           abortController.signal,
         );
-        if (outputMode === "buffer" && state.finalText) {
+        if ((outputMode === "buffer" || structuredResponse) && state.finalText) {
           await stream.writeSSE({ data: sseChunk(completionId, { content: state.finalText }) });
         }
         await stream.writeSSE({ data: sseChunk(completionId, {}, "stop") });
@@ -392,9 +415,13 @@ export async function streamChatViaRun(c: Context, execution: ChatCompletionExec
       }
     } catch (err) {
       if (!((err instanceof DOMException && err.name === "AbortError") || abortController.signal.aborted)) {
+        const structuredOutput = structuredOutputErrorEnvelope(err, structuredResponse);
         const guardrail = guardrailErrorEnvelope(err);
         const notFound = modelNotFoundEnvelope(err, m?.id, body.agent);
-        if (guardrail) {
+        if (structuredOutput) {
+          await stream.writeSSE({ data: sseChunk(completionId, {}, "stop", { error: structuredOutput }) });
+          await stream.writeSSE({ data: "[DONE]" });
+        } else if (guardrail) {
           state.finalText = guardrail.message;
           state.outputPolicyApplied = true;
           await stream.writeSSE({ data: sseChunk(completionId, {}, "stop", { error: guardrail }) });
@@ -447,7 +474,13 @@ export async function runNonStreamingChatViaRun(c: Context, execution: ChatCompl
     captureRunFailure(state, outcome);
 
     if (!state.errorEvent) {
-      await applyStateOutputPolicy(execution, state, "enforce");
+      await applyStateOutputPolicy(
+        execution,
+        state,
+        "enforce",
+        undefined,
+        !state.clientReturn,
+      );
     }
     if (state.clientReturn) {
       return c.json({
@@ -463,6 +496,10 @@ export async function runNonStreamingChatViaRun(c: Context, execution: ChatCompl
       });
     }
     if (state.errorEvent) {
+      const structuredOutput = structuredOutputErrorEnvelope(
+        state.errorEvent,
+        isStructuredResponseFormat(body.response_format),
+      );
       const guardrail = guardrailErrorEnvelope(state.errorEvent);
       if (guardrail) {
         return c.json(
@@ -472,12 +509,21 @@ export async function runNonStreamingChatViaRun(c: Context, execution: ChatCompl
       }
       const notFound = modelNotFoundEnvelope(state.errorEvent, m?.id, body.agent);
       if (notFound) return c.json({ error: notFound }, 400 as any);
-      const error = modelErrorEnvelope(state.errorEvent);
-      state.finalText = state.finalText || `Model request failed: ${error.message}`;
+      const error = structuredOutput ?? modelErrorEnvelope(state.errorEvent);
+      if (!structuredOutput) {
+        state.finalText = state.finalText || `Model request failed: ${error.message}`;
+      }
       return c.json({ error }, 400 as any);
     }
     return c.json(completionResponse(completionId, state.finalText, state.totalUsage as any));
   } catch (err) {
+    const structuredOutput = structuredOutputErrorEnvelope(
+      err,
+      isStructuredResponseFormat(body.response_format),
+    );
+    if (structuredOutput) {
+      return c.json({ error: structuredOutput }, 400 as any);
+    }
     const guardrail = guardrailErrorEnvelope(err);
     if (guardrail) {
       state.finalText = guardrail.message;
@@ -566,10 +612,14 @@ export async function runChatTurnViaRun(
 
   let error: ChatViaRunTurnResult["error"] | undefined;
   if (state.errorEvent) {
+    const structuredOutput = structuredOutputErrorEnvelope(
+      state.errorEvent,
+      isStructuredResponseFormat(body.response_format),
+    );
     const guardrail = guardrailErrorEnvelope(state.errorEvent);
     const notFound = modelNotFoundEnvelope(state.errorEvent, m?.id, body.agent);
-    error = guardrail ?? notFound ?? modelErrorEnvelope(state.errorEvent);
-    if (!guardrail && !notFound && !state.finalText) {
+    error = structuredOutput ?? guardrail ?? notFound ?? modelErrorEnvelope(state.errorEvent);
+    if (!structuredOutput && !guardrail && !notFound && !state.finalText) {
       state.finalText = `Model request failed: ${error.message}`;
     }
   }

@@ -1,5 +1,6 @@
 import {
   streamText,
+  Output,
   type FinishReason,
   type LanguageModel,
   type LanguageModelUsage,
@@ -36,6 +37,8 @@ export type ModelTurnEvent<TOOLS extends ToolSet = ToolSet> =
 
 export type ModelTurnResult<TOOLS extends ToolSet = ToolSet> = {
   text: string;
+  /** Complete parsed output when a structured output specification was used. */
+  output?: unknown;
   toolCalls: TypedToolCall<TOOLS>[];
   toolResults: TypedToolResult<TOOLS>[];
   usage: LanguageModelUsage;
@@ -57,6 +60,7 @@ export type StreamModelTurnInput<TOOLS extends ToolSet = ToolSet> = {
   maxOutputTokens?: number;
   providerOptions?: Record<string, unknown>;
   abortSignal?: AbortSignal;
+  output?: Output.Output<unknown, unknown, unknown>;
 };
 
 export function normalizeResponseMessagesForHistory(responseMessages: unknown): ModelMessage[] {
@@ -105,6 +109,7 @@ export async function streamModelTurn<TOOLS extends ToolSet = ToolSet>(
     ...(input.maxOutputTokens ? { maxOutputTokens: input.maxOutputTokens } : {}),
     ...(input.providerOptions ? { providerOptions: input.providerOptions as any } : {}),
     ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
+    ...(input.output ? { output: input.output } : {}),
   });
 
   let text = "";
@@ -197,9 +202,13 @@ export async function streamModelTurn<TOOLS extends ToolSet = ToolSet>(
       responsePromise,
       providerMetadataPromise,
     ]);
+  const output = input.output && toolCalls.length === 0
+    ? await result.output
+    : undefined;
 
   return {
     text,
+    ...(output !== undefined ? { output } : {}),
     toolCalls: toolCalls.map(normalizeToolCallInput),
     toolResults,
     usage,
