@@ -63,31 +63,273 @@ export type StreamModelTurnInput<TOOLS extends ToolSet = ToolSet> = {
   output?: Output.Output<unknown, unknown, unknown>;
 };
 
+const MISSING_TOOL_RESULT_MESSAGE =
+  "Tool result unavailable: the prior execution did not return a result.";
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function nonEmptyString(...values: unknown[]): string | undefined {
+  return values.find((value): value is string =>
+    typeof value === "string" && value.trim().length > 0,
+  )?.trim();
+}
+
+function parseObjectInputCandidate(value: unknown): Record<string, unknown> | undefined {
+  if (isRecord(value)) return value;
+  if (typeof value !== "string" || value.trim() === "") return undefined;
+  try {
+    const parsed = JSON.parse(value);
+    return isRecord(parsed) ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function parseObjectInput(...values: unknown[]): Record<string, unknown> {
+  for (const value of values) {
+    const parsed = parseObjectInputCandidate(value);
+    if (parsed) return parsed;
+  }
+  return {};
+}
+
+function canonicalToolCallPart(part: Record<string, unknown>): Record<string, unknown> {
+  const fn = isRecord(part.function) ? part.function : undefined;
+  const toolCallId = nonEmptyString(part.toolCallId, part.id, part.tool_call_id);
+  const toolName = nonEmptyString(part.toolName, part.name, fn?.name);
+
+  return {
+    ...part,
+    type: "tool-call",
+    ...(toolCallId ? { toolCallId } : {}),
+    ...(toolName ? { toolName } : {}),
+    input: parseObjectInput(part.input, part.args, part.arguments, fn?.arguments),
+  };
+}
+
+function normalizeToolResultOutput(value: unknown): Record<string, unknown> {
+  if (isRecord(value)) {
+    if (
+      value.type === "text"
+      || value.type === "json"
+      || value.type === "error-text"
+      || value.type === "error-json"
+      || value.type === "content"
+      || value.type === "execution-denied"
+    ) {
+      return value;
+    }
+    return { type: "json", value };
+  }
+  if (typeof value === "string") return { type: "text", value };
+  if (value === undefined) return { type: "text", value: "(empty tool result)" };
+  return { type: "json", value };
+}
+
+function canonicalToolResultPart(
+  part: Record<string, unknown>,
+  fallbackName?: string,
+): Record<string, unknown> {
+  const toolCallId = nonEmptyString(part.toolCallId, part.id, part.tool_call_id);
+  // The matching call is authoritative. OpenAI-compatible tool result
+  // messages commonly omit the name, and legacy callers sometimes persisted
+  // a placeholder such as "unknown".
+  const toolName = nonEmptyString(fallbackName, part.toolName, part.name);
+  const outputSource = Object.prototype.hasOwnProperty.call(part, "output")
+    ? part.output
+    : part.result;
+  return {
+    ...part,
+    type: "tool-result",
+    ...(toolCallId ? { toolCallId } : {}),
+    ...(toolName ? { toolName } : {}),
+    output: normalizeToolResultOutput(outputSource),
+  };
+}
+
 export function normalizeResponseMessagesForHistory(responseMessages: unknown): ModelMessage[] {
   if (!Array.isArray(responseMessages)) return [];
 
   return responseMessages.map((message) => {
     if (!message || typeof message !== "object") return message as ModelMessage;
 
-    const record = message as { content?: unknown };
+    const record = message as Record<string, unknown>;
+    if (record.role === "assistant" && Array.isArray(record.tool_calls)) {
+      const content = Array.isArray(record.content)
+        ? [...record.content]
+        : typeof record.content === "string" && record.content.trim() !== ""
+          ? [{ type: "text", text: record.content }]
+          : [];
+      for (const toolCall of record.tool_calls) {
+        if (isRecord(toolCall)) content.push(canonicalToolCallPart(toolCall));
+      }
+      const { tool_calls: _toolCalls, ...rest } = record;
+      return { ...rest, content } as ModelMessage;
+    }
+    if (
+      record.role === "tool"
+      && !Array.isArray(record.content)
+      && nonEmptyString(record.tool_call_id, record.toolCallId)
+    ) {
+      const { tool_call_id: _toolCallId, name: _name, ...rest } = record;
+      return {
+        ...rest,
+        role: "tool",
+        content: [canonicalToolResultPart({
+          toolCallId: nonEmptyString(record.tool_call_id, record.toolCallId),
+          toolName: nonEmptyString(record.name),
+          output: record.content,
+        })],
+      } as ModelMessage;
+    }
     if (!Array.isArray(record.content)) return message as ModelMessage;
 
     let changed = false;
     const normalizedContent = record.content.map((part) => {
       if (!part || typeof part !== "object") return part;
 
-      const partRecord = part as { type?: unknown; input?: unknown };
-      if (partRecord.type !== "tool-call") return part;
-      if ("input" in partRecord && partRecord.input != null) return part;
+      const partRecord = part as Record<string, unknown>;
+      if (partRecord.type !== "tool-call" && partRecord.type !== "tool_call") return part;
 
-      changed = true;
-      return { ...(part as Record<string, unknown>), input: {} };
+      const normalized = canonicalToolCallPart(partRecord);
+      if (
+        partRecord.type !== "tool-call"
+        || !isRecord(partRecord.input)
+        || partRecord.toolCallId !== normalized.toolCallId
+        || partRecord.toolName !== normalized.toolName
+      ) {
+        changed = true;
+      }
+      return normalized;
     });
 
     return changed
       ? ({ ...(message as Record<string, unknown>), content: normalizedContent } as ModelMessage)
       : (message as ModelMessage);
   });
+}
+
+/**
+ * Canonicalize persisted/provider history before every model request.
+ *
+ * AI SDK and provider APIs require each non-provider tool call to have an
+ * object input and a matching result before another conversational message.
+ * Histories can violate that contract after partial streams, interrupted
+ * client-side tools, legacy persistence, or malformed provider output. This
+ * boundary repairs recoverable history and records an explicit failed result
+ * instead of forwarding an invalid prompt to the model gateway.
+ */
+export function prepareModelMessagesForProvider(messages: unknown): ModelMessage[] {
+  const normalized = normalizeResponseMessagesForHistory(messages);
+  const output: ModelMessage[] = [];
+  const pending = new Map<string, string>();
+  const approvalCalls = new Map<string, string>();
+  const seenToolCallIds = new Set<string>();
+
+  const flushMissingResults = () => {
+    if (pending.size === 0) return;
+    output.push({
+      role: "tool",
+      content: [...pending.entries()].map(([toolCallId, toolName]) => ({
+        type: "tool-result" as const,
+        toolCallId,
+        toolName,
+        output: {
+          type: "error-text" as const,
+          value: MISSING_TOOL_RESULT_MESSAGE,
+        },
+      })),
+    });
+    pending.clear();
+  };
+
+  for (const message of normalized) {
+    if (!isRecord(message)) continue;
+    const role = message.role;
+
+    if (role !== "tool") flushMissingResults();
+
+    if (role === "assistant" && Array.isArray(message.content)) {
+      const content: unknown[] = [];
+      for (const rawPart of message.content) {
+        if (!isRecord(rawPart)) continue;
+        const partRecord = rawPart as Record<string, unknown>;
+
+        if (partRecord.type === "tool-call" || partRecord.type === "tool_call") {
+          const part = canonicalToolCallPart(partRecord);
+          const toolCallId = nonEmptyString(part.toolCallId);
+          const toolName = nonEmptyString(part.toolName);
+          if (!toolCallId || !toolName || seenToolCallIds.has(toolCallId)) continue;
+          seenToolCallIds.add(toolCallId);
+          content.push(part);
+          if (part.providerExecuted !== true) pending.set(toolCallId, toolName);
+          continue;
+        }
+
+        if (partRecord.type === "tool-result") {
+          const toolCallId = nonEmptyString(partRecord.toolCallId, partRecord.id, partRecord.tool_call_id);
+          if (!toolCallId && partRecord.providerExecuted !== true) continue;
+          content.push(canonicalToolResultPart(partRecord));
+          if (toolCallId) pending.delete(toolCallId);
+          continue;
+        }
+
+        if (partRecord.type === "tool-approval-request") {
+          const approvalId = nonEmptyString(partRecord.approvalId);
+          const approvalToolCall = isRecord(partRecord.toolCall) ? partRecord.toolCall : undefined;
+          const toolCallId = nonEmptyString(partRecord.toolCallId, approvalToolCall?.toolCallId);
+          if (approvalId && toolCallId) approvalCalls.set(approvalId, toolCallId);
+        }
+
+        content.push(rawPart);
+      }
+      if (content.length > 0) {
+        output.push({ ...message, content } as ModelMessage);
+      }
+      continue;
+    }
+
+    if (role === "tool" && Array.isArray(message.content)) {
+      const content: unknown[] = [];
+      for (const rawPart of message.content) {
+        if (!isRecord(rawPart)) continue;
+        const partRecord = rawPart as Record<string, unknown>;
+        if (partRecord.type === "tool-approval-response") {
+          const approvalId = nonEmptyString(partRecord.approvalId);
+          const toolCallId = approvalId ? approvalCalls.get(approvalId) : undefined;
+          if (toolCallId) pending.delete(toolCallId);
+          content.push(rawPart);
+          continue;
+        }
+        if (partRecord.type !== "tool-result") {
+          content.push(rawPart);
+          continue;
+        }
+
+        const toolCallId = nonEmptyString(partRecord.toolCallId, partRecord.id, partRecord.tool_call_id);
+        if (!toolCallId) continue;
+        const toolName = pending.get(toolCallId);
+        if (!toolName) continue;
+        content.push(canonicalToolResultPart(partRecord, toolName));
+        pending.delete(toolCallId);
+      }
+      if (content.length > 0) {
+        output.push({ ...message, content } as ModelMessage);
+      }
+      continue;
+    }
+
+    if ((role === "assistant" || role === "user") && message.content == null) {
+      continue;
+    }
+
+    output.push(message);
+  }
+
+  flushMissingResults();
+  return output;
 }
 
 function normalizeToolCallInput<TOOLS extends ToolSet>(toolCall: TypedToolCall<TOOLS>): TypedToolCall<TOOLS> {
@@ -102,7 +344,7 @@ export async function streamModelTurn<TOOLS extends ToolSet = ToolSet>(
   const result = streamText({
     model: input.model,
     ...(input.system ? { system: input.system } : {}),
-    messages: input.messages,
+    messages: prepareModelMessagesForProvider(input.messages),
     ...(input.tools ? { tools: input.tools } : {}),
     ...(input.activeTools ? { activeTools: input.activeTools } : {}),
     ...(input.toolChoice ? { toolChoice: input.toolChoice } : {}),
