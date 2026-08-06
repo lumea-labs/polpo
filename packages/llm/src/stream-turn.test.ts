@@ -194,6 +194,43 @@ describe("streamModelTurn", () => {
     ]);
   });
 
+  it("repairs the exact OpenAI missing arguments wire shape", () => {
+    const normalized = prepareModelMessagesForProvider([
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [{
+          id: "call_missing_arguments",
+          type: "function",
+          function: { name: "tool_list" },
+        }],
+      },
+      { role: "user", content: "Continue" },
+    ]);
+
+    expect(normalized).toEqual([
+      {
+        role: "assistant",
+        content: [expect.objectContaining({
+          type: "tool-call",
+          toolCallId: "call_missing_arguments",
+          toolName: "tool_list",
+          input: {},
+        })],
+      },
+      {
+        role: "tool",
+        content: [expect.objectContaining({
+          type: "tool-result",
+          toolCallId: "call_missing_arguments",
+          toolName: "tool_list",
+          output: expect.objectContaining({ type: "error-text" }),
+        })],
+      },
+      { role: "user", content: "Continue" },
+    ]);
+  });
+
   it("repairs partial parallel tool results before the next provider turn", () => {
     const messages = prepareModelMessagesForProvider([
       {
