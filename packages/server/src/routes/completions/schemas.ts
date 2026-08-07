@@ -79,6 +79,12 @@ export const responseFormatSchema = z.discriminatedUnion("type", [
 
 export type CompletionResponseFormat = z.infer<typeof responseFormatSchema>;
 
+const chatSuggestionSchema = z.object({
+  id: z.string(),
+  label: z.string(),
+  prompt: z.string(),
+}).strict();
+
 export const completionRequestSchema = z.object({
   messages: z.array(messageSchema).min(1).openapi({
     description: "Conversation messages in OpenAI format",
@@ -117,6 +123,15 @@ export const completionRequestSchema = z.object({
   routing: RuntimeRoutingSchema.optional().openapi({
     description:
       "Optional bounded labels used by deterministic model and execution routing policies.",
+  }),
+  polpo: z.object({
+    capabilities: z.object({
+      ask_user_question: z.boolean().optional(),
+      suggestions: z.boolean().optional(),
+    }).strict().optional(),
+  }).strict().optional().openapi({
+    description:
+      "Polpo client capabilities. Suggestions require explicit support; ask_user_question may be explicitly disabled by clients that cannot render it.",
   }),
   project: z.string().optional().openapi({
     description: "Deprecated. Ignored.",
@@ -162,6 +177,9 @@ export const completionResponseSchema = z.object({
     total_tokens: z.number().int(),
   }),
   loop_trace: z.array(z.unknown()).optional(),
+  polpo: z.object({
+    suggestions: z.array(chatSuggestionSchema).optional(),
+  }).strict().optional(),
 });
 
 export const errorResponseSchema = z.object({

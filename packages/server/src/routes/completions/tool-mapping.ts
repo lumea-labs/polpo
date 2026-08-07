@@ -9,6 +9,8 @@ import {
   toValidatedToolInputSchema,
 } from "@polpo-ai/llm";
 import { jsonSchema } from "ai";
+import type { ChatSuggestion } from "@polpo-ai/core/chat-interactions";
+import type { ResolvedChatInteractionCapabilities } from "@polpo-ai/core/chat-interactions";
 
 export { toPortableToolInputSchema } from "@polpo-ai/llm";
 
@@ -80,7 +82,7 @@ export async function persistAssistantMessage(
   messageId: string | null | undefined,
   finalText: string,
   toolCalls: any[],
-  opts?: { emptyFallback?: string },
+  opts?: { emptyFallback?: string; suggestions?: ChatSuggestion[] },
 ): Promise<void> {
   if (!sessionStore || !sessionId || !messageId) return;
   const safeToolCalls = redactVaultToolCalls(toolCalls);
@@ -88,6 +90,16 @@ export async function persistAssistantMessage(
   // an interrupted response. Use the fallback only when the turn contains
   // neither assistant text nor a persisted tool call.
   const content = finalText.trim() || (safeToolCalls.length > 0 ? "" : (opts?.emptyFallback ?? ""));
+  if (opts?.suggestions) {
+    await sessionStore.updateMessage(
+      sessionId,
+      messageId,
+      content,
+      safeToolCalls,
+      opts.suggestions,
+    );
+    return;
+  }
   await sessionStore.updateMessage(sessionId, messageId, content, safeToolCalls);
 }
 
@@ -225,3 +237,12 @@ export const CLIENT_SIDE_TOOLS: Record<string, { description: string; inputSchem
 
 /** Set of tool names that are client-side (no server execute). */
 export const CLIENT_SIDE_TOOL_NAMES = new Set(Object.keys(CLIENT_SIDE_TOOLS));
+
+/** Select only client-side tools supported by both project policy and client. */
+export function clientSideToolsForCapabilities(
+  capabilities: ResolvedChatInteractionCapabilities,
+): Record<string, { description: string; inputSchema: any }> {
+  return capabilities.askUserQuestion
+    ? { ask_user_question: CLIENT_SIDE_TOOLS.ask_user_question! }
+    : {};
+}

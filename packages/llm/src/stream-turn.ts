@@ -63,6 +63,11 @@ export type StreamModelTurnInput<TOOLS extends ToolSet = ToolSet> = {
   output?: Output.Output<unknown, unknown, unknown>;
 };
 
+type ModelTransportIdentity = {
+  provider?: unknown;
+  modelId?: unknown;
+};
+
 const MISSING_TOOL_RESULT_MESSAGE =
   "Tool result unavailable: the prior execution did not return a result.";
 
@@ -332,6 +337,165 @@ export function prepareModelMessagesForProvider(messages: unknown): ModelMessage
   return output;
 }
 
+const OPENAI_RESERVED_FUNCTION_NAMES = new Set(["tool_search"]);
+
+function usesOpenAIResponsesTransport(model: ModelTransportIdentity | string): boolean {
+  if (!isRecord(model)) return false;
+  const provider = String(model.provider ?? "").toLowerCase();
+  const modelId = String(model.modelId ?? "").toLowerCase();
+  return provider === "openai"
+    || provider.endsWith(".responses")
+    || (provider === "gateway" && modelId.startsWith("openai/"));
+}
+
+function serializeToolTranscriptValue(value: unknown): string {
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return JSON.stringify("(unserializable value)");
+  }
+}
+
+function toolTranscriptText(
+  kind: "call" | "result",
+  entries: Array<Record<string, unknown>>,
+): string {
+  return [
+    `[Polpo tool ${kind}${entries.length === 1 ? "" : "s"}]`,
+    serializeToolTranscriptValue(entries),
+  ].join("\n");
+}
+
+/**
+ * Work around provider-defined tool name collisions in OpenAI Responses.
+ *
+ * OpenAI currently reserves `tool_search`. Its Responses history converter
+ * can replay an ordinary function with that name as a native tool-search item,
+ * dropping `arguments` and rejecting the next request. Keep every unrelated
+ * tool structurally typed, but render colliding historical call/result pairs
+ * as an explicit transcript so legacy sessions remain usable.
+ */
+function flattenReservedOpenAIToolHistory(messages: ModelMessage[]): ModelMessage[] {
+  const collidingCalls = new Map<string, { id: string; name: string; input: unknown }>();
+  const pendingTranscriptResults: Array<Record<string, unknown>> = [];
+  const output: ModelMessage[] = [];
+
+  const flushTranscriptResults = () => {
+    if (pendingTranscriptResults.length === 0) return;
+    output.push({
+      role: "user",
+      content: toolTranscriptText("result", pendingTranscriptResults.splice(0)),
+    });
+  };
+
+  for (const message of messages) {
+    if (!isRecord(message) || !Array.isArray(message.content)) {
+      flushTranscriptResults();
+      output.push(message);
+      continue;
+    }
+
+    // Keep all ordinary parallel tool results adjacent to their calls. The
+    // transcript for a colliding result is inserted only after the complete
+    // consecutive tool-result group has been processed.
+    if (message.role !== "tool") flushTranscriptResults();
+
+    if (message.role === "assistant") {
+      const content: unknown[] = [];
+      const calls: Array<Record<string, unknown>> = [];
+      let collided = false;
+
+      for (const rawPart of message.content) {
+        if (!isRecord(rawPart)) continue;
+        const part = rawPart as Record<string, unknown>;
+        if (part.type === "tool-call") {
+          const id = nonEmptyString(part.toolCallId);
+          const name = nonEmptyString(part.toolName);
+          if (
+            id
+            && name
+            && part.providerExecuted !== true
+            && OPENAI_RESERVED_FUNCTION_NAMES.has(name)
+          ) {
+            const call = { id, name, input: parseObjectInput(part.input) };
+            collidingCalls.set(id, call);
+            calls.push({ id, name, arguments: call.input });
+            collided = true;
+            continue;
+          }
+        }
+
+        // OpenAI reasoning item ids belong to the response item sequence that
+        // contained the colliding native-looking call. Do not replay them after
+        // replacing that call with transport-neutral text.
+        if (collided && part.type === "reasoning") continue;
+        content.push(part);
+      }
+
+      if (calls.length > 0) {
+        const withoutReasoning = content.filter((part) =>
+          !isRecord(part) || part.type !== "reasoning",
+        );
+        withoutReasoning.push({ type: "text", text: toolTranscriptText("call", calls) });
+        const { providerOptions: _providerOptions, ...rest } = message;
+        output.push({ ...rest, content: withoutReasoning } as ModelMessage);
+      } else {
+        output.push(message);
+      }
+      continue;
+    }
+
+    if (message.role === "tool") {
+      const structuralResults: unknown[] = [];
+      const transcriptResults: Array<Record<string, unknown>> = [];
+
+      for (const rawPart of message.content) {
+        const part = rawPart as unknown as Record<string, unknown>;
+        if (!isRecord(rawPart) || part.type !== "tool-result") {
+          structuralResults.push(rawPart);
+          continue;
+        }
+        const id = nonEmptyString(part.toolCallId);
+        const call = id ? collidingCalls.get(id) : undefined;
+        if (!id || !call) {
+          structuralResults.push(rawPart);
+          continue;
+        }
+        transcriptResults.push({
+          id,
+          name: call.name,
+          output: part.output,
+        });
+        collidingCalls.delete(id);
+      }
+
+      if (structuralResults.length > 0) {
+        output.push({ ...message, content: structuralResults } as ModelMessage);
+      }
+      if (transcriptResults.length > 0) {
+        pendingTranscriptResults.push(...transcriptResults);
+      }
+      continue;
+    }
+
+    output.push(message);
+  }
+
+  flushTranscriptResults();
+  return output;
+}
+
+/** Prepare valid history and apply transport-specific compatibility rules. */
+export function prepareModelMessagesForTransport(
+  messages: unknown,
+  model: ModelTransportIdentity | string,
+): ModelMessage[] {
+  const prepared = prepareModelMessagesForProvider(messages);
+  return usesOpenAIResponsesTransport(model)
+    ? flattenReservedOpenAIToolHistory(prepared)
+    : prepared;
+}
+
 function normalizeToolCallInput<TOOLS extends ToolSet>(toolCall: TypedToolCall<TOOLS>): TypedToolCall<TOOLS> {
   if ("input" in toolCall && toolCall.input != null) return toolCall;
   return { ...toolCall, input: {} } as TypedToolCall<TOOLS>;
@@ -344,7 +508,7 @@ export async function streamModelTurn<TOOLS extends ToolSet = ToolSet>(
   const result = streamText({
     model: input.model,
     ...(input.system ? { system: input.system } : {}),
-    messages: prepareModelMessagesForProvider(input.messages),
+    messages: prepareModelMessagesForTransport(input.messages, input.model),
     ...(input.tools ? { tools: input.tools } : {}),
     ...(input.activeTools ? { activeTools: input.activeTools } : {}),
     ...(input.toolChoice ? { toolChoice: input.toolChoice } : {}),

@@ -250,6 +250,17 @@ export interface CompletionRouteDeps {
     user?: string;
     providerMetadata?: Record<string, unknown>;
   }) => void;
+  /** Meter or audit an auxiliary model call without emitting a second user completion. */
+  onAuxiliaryModelFinished?: (info: {
+    operation: "chat_suggestions";
+    usage: { inputTokens?: number; outputTokens?: number; totalTokens?: number };
+    model: string;
+    resolvedModel?: CompletionResolvedModelInfo;
+    agent?: string;
+    sessionId?: string;
+    user?: string;
+    providerMetadata?: Record<string, unknown>;
+  }) => void;
   /** Run a chat completion through the shared executeRun lifecycle +
    *  loop-engine (node-provided). With settings.chatExecution:"run", this
    *  routes chat through the same runtime used by tasks. `onEvent` receives the

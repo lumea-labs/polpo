@@ -102,8 +102,17 @@ export type ChannelInboundMessage = {
   timestamp: Date;
 };
 
+export type ChannelTurnCoordination = {
+  grouped: boolean;
+  messageCount: number;
+  messageIds: string[];
+  primaryMessageId: string;
+  strategy: ChannelConcurrencyPolicy["strategy"];
+};
+
 export type ChannelInboundTurn = {
   channelId: string;
+  coordination: ChannelTurnCoordination;
   credentialRevision: string;
   installationId: string;
   isDirectMessage: boolean;

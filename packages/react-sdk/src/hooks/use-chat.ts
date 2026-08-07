@@ -13,6 +13,7 @@ import type {
   OpenTabPayload,
   ToolCallEvent,
   MessageSegment,
+  ChatSuggestion,
   RuntimeSandboxOptions,
 } from "@polpo-ai/sdk";
 import { ChatCompletionStream } from "@polpo-ai/sdk";
@@ -42,6 +43,8 @@ export interface UseChatOptions {
   onSessionCreated?: (sessionId: string) => void;
   /** Called when the agent asks clarifying questions (legacy orchestrator mode). */
   onAskUser?: (payload: AskUserPayload) => void;
+  /** Called when suggested next messages are available. */
+  onSuggestions?: (suggestions: ChatSuggestion[]) => void;
   /** Called when the agent proposes a mission for review. */
   onMissionPreview?: (payload: MissionPreviewPayload) => void;
   /** Called when the agent proposes a vault entry. */
@@ -93,6 +96,8 @@ export interface UseChatReturn {
   isStreaming: boolean;
   /** Client-side tool call awaiting a result (e.g. ask_user_question). null when none pending. */
   pendingToolCall: PendingToolCall | null;
+  /** Suggested next messages for the latest assistant response. */
+  suggestions: ChatSuggestion[];
   /** Abort the current streaming response. */
   abort: () => void;
 }
@@ -107,6 +112,7 @@ export function useChat(options: UseChatOptions = {}): UseChatReturn {
   const [status, setStatus] = useState<ChatStatus>(options.sessionId ? "loading" : "idle");
   const [error, setError] = useState<Error | null>(null);
   const [pendingToolCall, setPendingToolCall] = useState<PendingToolCall | null>(null);
+  const [suggestions, setSuggestions] = useState<ChatSuggestion[]>([]);
 
   const streamRef = useRef<ChatCompletionStream | null>(null);
   const isStreamingRef = useRef(false);
@@ -154,6 +160,7 @@ export function useChat(options: UseChatOptions = {}): UseChatReturn {
       }
       setError(null);
       setPendingToolCall(null);
+      setSuggestions([]);
     },
     [client],
   );
@@ -166,6 +173,7 @@ export function useChat(options: UseChatOptions = {}): UseChatReturn {
     setStatus("idle");
     setError(null);
     setPendingToolCall(null);
+    setSuggestions([]);
     isStreamingRef.current = false;
   }, []);
 
@@ -183,6 +191,12 @@ export function useChat(options: UseChatOptions = {}): UseChatReturn {
         loop: optionsRef.current.loop,
         model: optionsRef.current.model,
         sandbox: optionsRef.current.sandbox,
+        polpo: {
+          capabilities: {
+            ask_user_question: true,
+            suggestions: true,
+          },
+        },
       });
       streamRef.current = stream;
 
@@ -219,6 +233,21 @@ export function useChat(options: UseChatOptions = {}): UseChatReturn {
             });
           }
           optionsRef.current.onSessionCreated?.(stream.sessionId);
+        }
+
+        if (chunk.polpo?.suggestions) {
+          const nextSuggestions = chunk.polpo.suggestions;
+          setSuggestions(nextSuggestions);
+          setMessages((prev) => {
+            const last = prev[prev.length - 1];
+            if (!last || last.id !== assistantId) return prev;
+            return [
+              ...prev.slice(0, -1),
+              { ...last, suggestions: nextSuggestions },
+            ];
+          });
+          optionsRef.current.onSuggestions?.(nextSuggestions);
+          optionsRef.current.onUpdate?.();
         }
 
         const choice = chunk.choices[0];
@@ -326,6 +355,7 @@ export function useChat(options: UseChatOptions = {}): UseChatReturn {
       isStreamingRef.current = true;
       setError(null);
       setPendingToolCall(null);
+      setSuggestions([]);
 
       try {
         const historyMessages: ChatCompletionMessage[] = allMessages.map((m) => ({
@@ -356,6 +386,7 @@ export function useChat(options: UseChatOptions = {}): UseChatReturn {
   const sendToolResult = useCallback(
     async (toolCallId: string, toolName: string, result: string) => {
       setPendingToolCall(null);
+      setSuggestions([]);
       setStatus("streaming");
       isStreamingRef.current = true;
       setError(null);
@@ -421,6 +452,7 @@ export function useChat(options: UseChatOptions = {}): UseChatReturn {
     error,
     isStreaming: status === "streaming",
     pendingToolCall,
+    suggestions,
     abort,
   };
 }

@@ -27,6 +27,7 @@ import {
   type RuntimePlan,
   type RuntimeContextTrustMode,
 } from "@polpo-ai/core";
+import { resolveChatInteractionCapabilities } from "@polpo-ai/core/chat-interactions";
 import type {
   CompletionRouteDeps,
   CompletionRuntimeInvocation,
@@ -34,7 +35,10 @@ import type {
 } from "../completions.js";
 import type { CompletionRequestBody } from "./schemas.js";
 import { convertMessages, extractText } from "./message-mapping.js";
-import { CLIENT_SIDE_TOOL_NAMES, toAIToolChoice } from "./tool-mapping.js";
+import {
+  clientSideToolsForCapabilities,
+  toAIToolChoice,
+} from "./tool-mapping.js";
 import {
   createGuardedCompletionToolExecutor,
   type CompletionToolExecutor,
@@ -484,6 +488,15 @@ export async function prepareChatCompletionExecution(
   let runtimeContext: RuntimeContextResolution | undefined;
   let executionRoute: ResolvedExecutionRoute | undefined;
 
+  const invocation = completionInvocation(options.runtime);
+  const interactionCapabilities = resolveChatInteractionCapabilities({
+    surface: invocation.surface,
+    settings: deps.getConfig()?.settings?.chat,
+    client: body.polpo?.capabilities,
+  });
+  const clientSideTools = clientSideToolsForCapabilities(interactionCapabilities);
+  const clientSideToolNames = new Set(Object.keys(clientSideTools));
+
   const contextTrust = normalizeRuntimeContextTrustMode(
     deps.getConfig()?.settings?.contextTrust,
   );
@@ -853,7 +866,7 @@ export async function prepareChatCompletionExecution(
       });
       const alwaysActive = [
         ...Object.keys(extraAiTools ?? {}),
-        ...CLIENT_SIDE_TOOL_NAMES,
+        ...clientSideToolNames,
       ];
       effectiveTools = pool.tools;
       effectiveToolExecutor = pool.executor;
@@ -900,6 +913,9 @@ export async function prepareChatCompletionExecution(
     modelOutput: modelOutputForResponseFormat(body.response_format),
     effectiveTools,
     effectiveToolExecutor,
+    interactionCapabilities,
+    clientSideTools,
+    clientSideToolNames,
     activeToolNames,
     activeCompactionTools,
     extraAiTools,

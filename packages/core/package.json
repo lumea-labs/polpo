@@ -70,6 +70,10 @@
       "types": "./dist/steering.d.ts",
       "import": "./dist/steering.js"
     },
+    "./chat-interactions": {
+      "types": "./dist/chat-interactions.d.ts",
+      "import": "./dist/chat-interactions.js"
+    },
     "./execution-router": {
       "types": "./dist/execution-router.d.ts",
       "import": "./dist/execution-router.js"

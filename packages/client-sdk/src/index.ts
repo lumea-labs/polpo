@@ -148,6 +148,8 @@ export type {
   ChatCompletionChoice,
   ChatCompletionChunk,
   ChatCompletionChunkDelta,
+  ChatSuggestion,
+  ChatCompletionPolpoExtensions,
   LoopApprovedGate,
   LoopHookAction,
   LoopLifecycleHook,

@@ -198,7 +198,7 @@ describe("runAgentStepCompletion tool validation", () => {
         if (turn === 1) {
           return { stream: convertArrayToReadableStream([
             { type: "stream-start", warnings: [] },
-            { type: "tool-call", toolCallId: "load_nested", toolName: "tool_load", input: JSON.stringify({ names: ["calculate"] }) },
+            { type: "tool-call", toolCallId: "load_nested", toolName: "polpo_tool_load", input: JSON.stringify({ names: ["calculate"] }) },
             { type: "finish", finishReason: { unified: "tool-calls", raw: undefined }, usage },
           ] as any[]) };
         }

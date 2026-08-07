@@ -36,16 +36,16 @@ describe("model-controlled tool disclosure", () => {
 
     expect(pool.activeToolNames()).toEqual([
       "skill_list",
-      "tool_list",
-      "tool_search",
-      "tool_load",
+      "polpo_tool_list",
+      "polpo_tool_search",
+      "polpo_tool_load",
     ]);
     expect(pool.tools.map((tool) => tool.name)).toEqual([
       "skill_list",
       "slack_send_message",
-      "tool_list",
-      "tool_search",
-      "tool_load",
+      "polpo_tool_list",
+      "polpo_tool_search",
+      "polpo_tool_load",
     ]);
   });
 
@@ -62,7 +62,7 @@ describe("model-controlled tool disclosure", () => {
       executor: vi.fn(async () => "ok"),
     });
 
-    const result = parseResult(await pool.executor("tool_search", { query: "Slack message" }));
+    const result = parseResult(await pool.executor("polpo_tool_search", { query: "Slack message" }));
 
     expect(result.tools).toEqual([
       expect.objectContaining({
@@ -72,7 +72,7 @@ describe("model-controlled tool disclosure", () => {
     ]);
     expect(result.tools[0]).not.toHaveProperty("parameters");
     expect(result.tools[0]).not.toHaveProperty("inputSchema");
-    expect(pool.activeToolNames()).toEqual(["tool_list", "tool_search", "tool_load"]);
+    expect(pool.activeToolNames()).toEqual(["polpo_tool_list", "polpo_tool_search", "polpo_tool_load"]);
   });
 
   it("loads exact authorized tools atomically and executes them directly", async () => {
@@ -87,7 +87,7 @@ describe("model-controlled tool disclosure", () => {
       executor: execute,
     });
 
-    const loaded = parseResult(await pool.executor("tool_load", {
+    const loaded = parseResult(await pool.executor("polpo_tool_load", {
       names: ["slack_list_channels", "slack_send_message", "slack_list_channels"],
     }));
 
@@ -96,9 +96,9 @@ describe("model-controlled tool disclosure", () => {
     expect(pool.activeToolNames()).toEqual([
       "slack_list_channels",
       "slack_send_message",
-      "tool_list",
-      "tool_search",
-      "tool_load",
+      "polpo_tool_list",
+      "polpo_tool_search",
+      "polpo_tool_load",
     ]);
 
     pool.startModelTurn();
@@ -125,7 +125,7 @@ describe("model-controlled tool disclosure", () => {
     });
 
     pool.startModelTurn();
-    await pool.executor("tool_load", { names: ["bash"] });
+    await pool.executor("polpo_tool_load", { names: ["bash"] });
 
     await expect(pool.executor("bash", { command: "pwd" })).resolves.toContain("not active");
     expect(execute).not.toHaveBeenCalled();
@@ -143,7 +143,7 @@ describe("model-controlled tool disclosure", () => {
     });
 
     await expect(pool.executor("bash", { command: "pwd" })).resolves.toBe(
-      'Error: Tool "bash" is not active in this model turn. Use tool_search and tool_load, then call it on the next turn.',
+      'Error: Tool "bash" is not active in this model turn. Use polpo_tool_search and polpo_tool_load, then call it on the next turn.',
     );
     expect(execute).not.toHaveBeenCalled();
   });
@@ -154,12 +154,12 @@ describe("model-controlled tool disclosure", () => {
       executor: vi.fn(async () => "ok"),
     });
 
-    const result = await pool.executor("tool_load", {
+    const result = await pool.executor("polpo_tool_load", {
       names: ["read", "admin_delete_everything"],
     });
 
     expect(result).toBe('Error: Tool "admin_delete_everything" is not available to this agent.');
-    expect(pool.activeToolNames()).toEqual(["tool_list", "tool_search", "tool_load"]);
+    expect(pool.activeToolNames()).toEqual(["polpo_tool_list", "polpo_tool_search", "polpo_tool_load"]);
   });
 
   it("rejects wildcard loads and malformed batches", async () => {
@@ -168,14 +168,14 @@ describe("model-controlled tool disclosure", () => {
       executor: vi.fn(async () => "ok"),
     });
 
-    await expect(pool.executor("tool_load", { names: ["*"] })).resolves.toBe(
+    await expect(pool.executor("polpo_tool_load", { names: ["*"] })).resolves.toBe(
       'Error: Tool "*" is not available to this agent.',
     );
-    await expect(pool.executor("tool_load", { names: [] })).resolves.toBe(
-      "Error: tool_load requires at least one exact tool name.",
+    await expect(pool.executor("polpo_tool_load", { names: [] })).resolves.toBe(
+      "Error: polpo_tool_load requires at least one exact tool name.",
     );
-    await expect(pool.executor("tool_load", { names: "read" as any })).resolves.toBe(
-      "Error: tool_load requires an array of exact tool names.",
+    await expect(pool.executor("polpo_tool_load", { names: "read" as any })).resolves.toBe(
+      "Error: polpo_tool_load requires an array of exact tool names.",
     );
   });
 
@@ -191,29 +191,29 @@ describe("model-controlled tool disclosure", () => {
       maxLoadBatch: 2,
     });
 
-    await expect(pool.executor("tool_load", { names: ["one", "two", "three"] })).resolves.toBe(
-      "Error: tool_load accepts at most 2 names per call.",
+    await expect(pool.executor("polpo_tool_load", { names: ["one", "two", "three"] })).resolves.toBe(
+      "Error: polpo_tool_load accepts at most 2 names per call.",
     );
-    expect(pool.activeToolNames()).toEqual(["tool_list", "tool_search", "tool_load"]);
+    expect(pool.activeToolNames()).toEqual(["polpo_tool_list", "polpo_tool_search", "polpo_tool_load"]);
 
-    await pool.executor("tool_load", { names: ["one", "two"] });
-    await expect(pool.executor("tool_load", { names: ["three"] })).resolves.toBe(
+    await pool.executor("polpo_tool_load", { names: ["one", "two"] });
+    await expect(pool.executor("polpo_tool_load", { names: ["three"] })).resolves.toBe(
       "Error: Tool pool limit reached (2 loaded tools).",
     );
     expect(pool.activeToolNames()).toEqual([
       "one",
       "two",
-      "tool_list",
-      "tool_search",
-      "tool_load",
+      "polpo_tool_list",
+      "polpo_tool_search",
+      "polpo_tool_load",
     ]);
   });
 
   it("rejects catalog collisions with reserved discovery names", () => {
     expect(() => createModelControlledToolPool({
-      tools: [runtimeTool("tool_load", "Host-defined collision")],
+      tools: [runtimeTool("polpo_tool_load", "Host-defined collision")],
       executor: vi.fn(async () => "ok"),
-    })).toThrow('Tool catalog contains reserved disclosure name "tool_load".');
+    })).toThrow('Tool catalog contains reserved disclosure name "polpo_tool_load".');
   });
 
   it("keeps state isolated between concurrent run pools", async () => {
@@ -221,7 +221,7 @@ describe("model-controlled tool disclosure", () => {
     const first = createModelControlledToolPool({ tools, executor: vi.fn(async () => "ok") });
     const second = createModelControlledToolPool({ tools, executor: vi.fn(async () => "ok") });
 
-    await first.executor("tool_load", { names: ["read"] });
+    await first.executor("polpo_tool_load", { names: ["read"] });
 
     expect(first.activeToolNames()).toContain("read");
     expect(second.activeToolNames()).not.toContain("read");

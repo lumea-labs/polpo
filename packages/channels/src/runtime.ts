@@ -221,8 +221,19 @@ export class ChannelRuntime {
     const messages = await Promise.all(
       [...(context?.skipped ?? []), message].map(mapMessage),
     );
+    const messageIds = messages.map((item) => item.id);
+    const concurrency = installation.concurrency
+      ?? this.options.concurrency
+      ?? DEFAULT_CONCURRENCY;
     const turn: ChannelInboundTurn = {
       channelId: thread.channelId,
+      coordination: {
+        grouped: messages.length > 1,
+        messageCount: messages.length,
+        messageIds,
+        primaryMessageId: message.id,
+        strategy: concurrency.strategy,
+      },
       credentialRevision: installation.credentialRevision,
       installationId: installation.id,
       isDirectMessage: thread.isDM,
@@ -278,8 +289,18 @@ export class ChannelRuntime {
       return;
     }
     const text = [event.command, event.text].filter(Boolean).join(" ").trim();
+    const concurrency = installation.concurrency
+      ?? this.options.concurrency
+      ?? DEFAULT_CONCURRENCY;
     const turn: ChannelInboundTurn = {
       channelId: event.channel.id,
+      coordination: {
+        grouped: false,
+        messageCount: 1,
+        messageIds: [providerEventId],
+        primaryMessageId: providerEventId,
+        strategy: concurrency.strategy,
+      },
       credentialRevision: installation.credentialRevision,
       installationId: installation.id,
       isDirectMessage: event.channel.isDM,

@@ -21,6 +21,7 @@ import type {
   SessionListFilter,
 } from "@polpo-ai/core/session-store";
 import { normalizeSessionCreateArgs } from "@polpo-ai/core/session-store";
+import type { ChatSuggestion } from "@polpo-ai/core/chat-interactions";
 
 /**
  * File-backed SessionStore.
@@ -73,7 +74,13 @@ export class FileSessionStore implements SessionStore {
     return message;
   }
 
-  async updateMessage(sessionId: string, messageId: string, content: string | SessionContentPart[], toolCalls?: ToolCallInfo[]): Promise<boolean> {
+  async updateMessage(
+    sessionId: string,
+    messageId: string,
+    content: string | SessionContentPart[],
+    toolCalls?: ToolCallInfo[],
+    suggestions?: ChatSuggestion[],
+  ): Promise<boolean> {
     const file = this.sessionFile(sessionId);
     if (!existsSync(file)) return false;
     try {
@@ -87,6 +94,9 @@ export class FileSessionStore implements SessionStore {
           const patched: Record<string, unknown> = { ...obj, content };
           if (toolCalls && toolCalls.length > 0) {
             patched.toolCalls = toolCalls;
+          }
+          if (suggestions && suggestions.length > 0) {
+            patched.suggestions = suggestions;
           }
           return JSON.stringify(patched);
         }

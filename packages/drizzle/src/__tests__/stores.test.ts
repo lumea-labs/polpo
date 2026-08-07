@@ -791,6 +791,27 @@ describe("DrizzleSessionStore", () => {
     expect(msgs[0].content).toBe("final");
   });
 
+  it("updateMessage persists assistant suggestions", async () => {
+    const sid = await stores.sessionStore.create();
+    const msg = await stores.sessionStore.addMessage(sid, "assistant", "draft");
+    const suggestions = [{
+      id: "suggestion_tests",
+      label: "Add tests",
+      prompt: "Add tests for this change.",
+    }];
+    const ok = await stores.sessionStore.updateMessage(
+      sid,
+      msg.id,
+      "final",
+      undefined,
+      suggestions,
+    );
+    expect(ok).toBe(true);
+
+    const messages = await stores.sessionStore.getMessages(sid);
+    expect(messages[0]?.suggestions).toEqual(suggestions);
+  });
+
   it("addMessage with ContentPart[] round-trips correctly", async () => {
     const sid = await stores.sessionStore.create();
     const parts = [

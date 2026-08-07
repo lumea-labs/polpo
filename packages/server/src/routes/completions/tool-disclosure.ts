@@ -1,9 +1,9 @@
 import type { CompletionToolExecutor } from "./tool-guardrails.js";
 
 export const MODEL_CONTROLLED_TOOL_NAMES = [
-  "tool_list",
-  "tool_search",
-  "tool_load",
+  "polpo_tool_list",
+  "polpo_tool_search",
+  "polpo_tool_load",
 ] as const;
 
 const MODEL_CONTROLLED_TOOL_NAME_SET = new Set<string>(MODEL_CONTROLLED_TOOL_NAMES);
@@ -162,7 +162,7 @@ function searchScore(tool: any, rawQuery: string): number {
 function disclosureTools(): any[] {
   return [
     {
-      name: "tool_list",
+      name: "polpo_tool_list",
       label: "List Tools",
       description: "List compact metadata for tools available to this agent. This does not load or execute tools.",
       parameters: {
@@ -177,9 +177,9 @@ function disclosureTools(): any[] {
       },
     },
     {
-      name: "tool_search",
+      name: "polpo_tool_search",
       label: "Search Tools",
-      description: "Search compact metadata for tools available to this agent. Review the results, then explicitly load exact tool names with tool_load.",
+      description: "Search compact metadata for tools available to this agent. Review the results, then explicitly load exact tool names with polpo_tool_load.",
       parameters: {
         type: "object",
         properties: {
@@ -191,7 +191,7 @@ function disclosureTools(): any[] {
       },
     },
     {
-      name: "tool_load",
+      name: "polpo_tool_load",
       label: "Load Tools",
       description: "Load one or more exact authorized tool names into the model's active tool pool for this run. Loading does not execute a tool or grant new permissions.",
       parameters: {
@@ -201,7 +201,7 @@ function disclosureTools(): any[] {
             type: "array",
             items: { type: "string" },
             minItems: 1,
-            description: "Exact tool names returned by tool_search or tool_list.",
+            description: "Exact tool names returned by polpo_tool_search or polpo_tool_list.",
           },
         },
         required: ["names"],
@@ -273,7 +273,7 @@ export function createModelControlledToolPool(
   const loadedToolNames = (): string[] => catalogOrder.filter((name) => loaded.has(name));
 
   const executor: CompletionToolExecutor = async (name, args, execution) => {
-    if (name === "tool_list") {
+    if (name === "polpo_tool_list") {
       const category = typeof args.category === "string" ? args.category.trim() : "";
       const source = typeof args.source === "string" ? args.source.trim() : "";
       const loadedOnly = args.loaded === true;
@@ -290,9 +290,9 @@ export function createModelControlledToolPool(
       });
     }
 
-    if (name === "tool_search") {
+    if (name === "polpo_tool_search") {
       const query = typeof args.query === "string" ? args.query.trim() : "";
-      if (!query) return "Error: tool_search requires a non-empty query.";
+      if (!query) return "Error: polpo_tool_search requires a non-empty query.";
       const limit = boundedLimit(args.limit, maxSearchResults, 50);
       const matches = catalogOrder
         .map((toolNameValue) => catalog.get(toolNameValue))
@@ -308,16 +308,16 @@ export function createModelControlledToolPool(
       });
     }
 
-    if (name === "tool_load") {
+    if (name === "polpo_tool_load") {
       if (!Array.isArray(args.names)) {
-        return "Error: tool_load requires an array of exact tool names.";
+        return "Error: polpo_tool_load requires an array of exact tool names.";
       }
       const names = [...new Set(args.names.map((value) => typeof value === "string" ? value.trim() : ""))];
       if (names.length === 0 || names.some((value) => !value)) {
-        return "Error: tool_load requires at least one exact tool name.";
+        return "Error: polpo_tool_load requires at least one exact tool name.";
       }
       if (names.length > maxLoadBatch) {
-        return `Error: tool_load accepts at most ${maxLoadBatch} names per call.`;
+        return `Error: polpo_tool_load accepts at most ${maxLoadBatch} names per call.`;
       }
       for (const requested of names) {
         if (!catalog.has(requested)) {
@@ -338,7 +338,7 @@ export function createModelControlledToolPool(
 
     if (!catalog.has(name)) return `Error: Unknown tool "${name}".`;
     if (!executableThisTurn.has(name)) {
-      return `Error: Tool "${name}" is not active in this model turn. Use tool_search and tool_load, then call it on the next turn.`;
+      return `Error: Tool "${name}" is not active in this model turn. Use polpo_tool_search and polpo_tool_load, then call it on the next turn.`;
     }
     return options.executor(name, args, execution);
   };
@@ -368,8 +368,8 @@ export const MODEL_CONTROLLED_TOOL_PROMPT = [
   "## Tool discovery",
   "",
   "Only a compact discovery catalog is initially visible for most tools.",
-  "Use tool_search or tool_list to inspect available capabilities. Discovery is read-only.",
-  "After reviewing the returned names and descriptions, explicitly call tool_load with only the exact tools you need.",
+  "Use polpo_tool_search or polpo_tool_list to inspect available capabilities. Discovery is read-only.",
+  "After reviewing the returned names and descriptions, explicitly call polpo_tool_load with only the exact tools you need.",
   "Loaded tools become directly callable with their original schemas on the next turn.",
   "You may search and load additional tools later in the same run. Loading never grants permissions or executes a tool.",
 ].join("\n");

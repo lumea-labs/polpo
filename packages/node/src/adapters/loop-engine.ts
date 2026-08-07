@@ -37,7 +37,7 @@ import {
 } from "ai";
 import {
   normalizeResponseMessagesForHistory,
-  prepareModelMessagesForProvider,
+  prepareModelMessagesForTransport,
   runModelPolicyTurn,
   toValidatedToolInputSchema,
   validateToolInput,
@@ -466,7 +466,7 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
       const response = await generateText({
         model: model.aiModel,
         system: compactionPrompt,
-        messages: prepareModelMessagesForProvider(msgs),
+        messages: prepareModelMessagesForTransport(msgs, model.aiModel),
         maxOutputTokens: model.maxTokens,
         abortSignal: abortController.signal,
         providerOptions,

@@ -24,6 +24,7 @@ export const messagesSqlite = sqliteTable("messages", {
   content: text("content").notNull(),
   ts: text("ts").notNull(),
   toolCalls: text("tool_calls"),
+  suggestions: text("suggestions"),
 }, (table) => [
   index("idx_messages_session").on(table.sessionId, table.ts),
 ]);
@@ -51,6 +52,7 @@ export const messagesPg = pgTable("messages", {
   content: pgText("content").notNull(),
   ts: pgText("ts").notNull(),
   toolCalls: pgText("tool_calls"),
+  suggestions: pgText("suggestions"),
 }, (table) => [
   pgIndex("idx_pg_messages_session").on(table.sessionId, table.ts),
 ]);

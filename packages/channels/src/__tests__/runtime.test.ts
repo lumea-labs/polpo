@@ -286,6 +286,13 @@ describe("ChannelRuntime", () => {
     expect(handleTurn).toHaveBeenCalledOnce();
     expect(handleTurn).toHaveBeenCalledWith(expect.objectContaining({
       channelId: "telegram:chat-1",
+      coordination: {
+        grouped: false,
+        messageCount: 1,
+        messageIds: ["message-1"],
+        primaryMessageId: "message-1",
+        strategy: "concurrent",
+      },
       credentialRevision: "revision-1",
       installationId: "installation-1",
       isDirectMessage: true,
@@ -303,6 +310,49 @@ describe("ChannelRuntime", () => {
       "telegram:chat-1:thread-1",
       "Hello from Polpo",
     );
+  });
+
+  it("describes every message collapsed into a burst turn", async () => {
+    const handleTurn = vi.fn(async () => ({ text: "One reply" }));
+    const runtime = createRuntime({ handleTurn });
+    const burstInstallation = installation({
+      concurrency: {
+        debounceMs: 25,
+        maxQueueSize: 20,
+        onQueueFull: "drop-oldest",
+        queueEntryTtlMs: 120_000,
+        strategy: "burst",
+      },
+    });
+
+    const first = runtime.handleWebhook(
+      burstInstallation,
+      webhookRequest("message-1", "first"),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    const second = runtime.handleWebhook(
+      burstInstallation,
+      webhookRequest("message-2", "second"),
+    );
+    const third = runtime.handleWebhook(
+      burstInstallation,
+      webhookRequest("message-3", "third"),
+    );
+    await Promise.all([first, second, third]);
+
+    expect(handleTurn).toHaveBeenCalledOnce();
+    expect(handleTurn).toHaveBeenCalledWith(expect.objectContaining({
+      coordination: {
+        grouped: true,
+        messageCount: 3,
+        messageIds: ["message-1", "message-2", "message-3"],
+        primaryMessageId: "message-3",
+        strategy: "burst",
+      },
+      providerEventId: "message-3",
+    }));
+    expect(handleTurn.mock.calls[0]?.[0].messages.map((message) => message.text))
+      .toEqual(["first", "second", "third"]);
   });
 
   it("preserves lazy authenticated attachment access in normalized turns", async () => {

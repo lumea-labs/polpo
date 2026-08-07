@@ -116,6 +116,9 @@ export * from "./execution-router.js";
 // ── Run steering (provider-neutral queue, checkpoints, and abort) ────────
 export * from "./steering.js";
 
+// ── Chat interaction capabilities and suggestions ─────────────────────
+export * from "./chat-interactions.js";
+
 // ── Guardrails (host-neutral policy engine + tool middleware) ───────────
 export * from "./guardrails/index.js";
 

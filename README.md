@@ -401,6 +401,48 @@ chunk so clients never receive a partial invalid object. Tool calls may still
 run before the final structured response. Project loop execution currently
 rejects `response_format` explicitly instead of silently ignoring it.
 
+### Chat interactions
+
+Projects can allow the built-in `ask_user_question` client tool and opt into
+suggested next messages through `settings.chat`. A client declares the optional
+interactions it can render in the request:
+
+```json
+{
+  "agent": "support",
+  "messages": [{ "role": "user", "content": "Help me configure this" }],
+  "polpo": {
+    "capabilities": {
+      "ask_user_question": true,
+      "suggestions": true
+    }
+  }
+}
+```
+
+Suggestions are returned as a namespaced extension and never alter the normal
+OpenAI-compatible finish reason:
+
+```json
+{
+  "polpo": {
+    "suggestions": [
+      {
+        "id": "suggestion_...",
+        "label": "Show an example",
+        "prompt": "Show me a complete example."
+      }
+    ]
+  }
+}
+```
+
+Streaming requests receive the same root-level `polpo.suggestions` object in a
+chunk immediately before the final `stop` chunk. Suggestions require both
+project opt-in and `polpo.capabilities.suggestions: true`; generation is
+bounded, tool-free, and fail-open. Structured outputs, failed or aborted turns,
+pending client tools, empty responses, and channel turns do not generate them.
+
 ### Schedules
 
 Schedules are first-class, durable invocations stored in

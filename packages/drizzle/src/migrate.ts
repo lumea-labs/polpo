@@ -166,8 +166,10 @@ export async function ensurePgTables(db: any): Promise<void> {
     role       TEXT NOT NULL,
     content    TEXT NOT NULL,
     ts         TEXT NOT NULL,
-    tool_calls TEXT
+    tool_calls TEXT,
+    suggestions TEXT
   )`);
+  await db.execute(sql`ALTER TABLE messages ADD COLUMN IF NOT EXISTS suggestions TEXT`);
 
 
   await db.execute(sql`CREATE TABLE IF NOT EXISTS log_sessions (
