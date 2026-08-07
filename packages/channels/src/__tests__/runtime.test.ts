@@ -3,7 +3,7 @@ import {
   createMockState,
   createTestMessage,
 } from "@chat-adapter/tests";
-import type { Adapter, ChatInstance, MessageData } from "chat";
+import { emoji, type Adapter, type ChatInstance, type MessageData } from "chat";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ChannelRuntime } from "../runtime.js";
 import type {
@@ -69,6 +69,7 @@ function deferred<T>() {
 function testAdapter(options: {
   disconnect?: () => Promise<void>;
   startTyping?: () => Promise<void>;
+  stream?: Adapter["stream"];
 } = {}): Adapter {
   let chat: ChatInstance;
   let adapter: Adapter;
@@ -98,6 +99,79 @@ function testAdapter(options: {
     isDM: () => true,
     persistThreadHistory: true,
     ...(options.startTyping ? { startTyping: options.startTyping } : {}),
+    ...(options.stream ? { stream: options.stream } : {}),
+  });
+  return adapter;
+}
+
+function richEventAdapter(): Adapter {
+  let chat: ChatInstance;
+  let adapter: Adapter;
+  adapter = createMockAdapter("slack", {
+    handleWebhook: async (request, webhookOptions) => {
+      const payload = await request.json() as { kind: string };
+      const user = {
+        fullName: "Ada Lovelace",
+        isBot: false,
+        isMe: false,
+        userId: "user-1",
+        userName: "ada",
+      };
+      if (payload.kind === "action") {
+        await chat.processAction({
+          actionId: "approve",
+          adapter,
+          messageId: "message-1",
+          raw: { id: "action-1" },
+          threadId: "slack:channel-1:thread-1",
+          user,
+          value: "order-42",
+        }, webhookOptions);
+      } else if (payload.kind === "reaction") {
+        chat.processReaction({
+          added: true,
+          adapter,
+          emoji: emoji.thumbs_up,
+          messageId: "message-1",
+          raw: { id: "reaction-1" },
+          rawEmoji: "+1",
+          threadId: "slack:channel-1:thread-1",
+          user,
+        }, webhookOptions);
+      } else if (payload.kind === "modal") {
+        const result = await chat.processModalSubmit({
+          adapter,
+          callbackId: "feedback",
+          raw: { id: "modal-1" },
+          user,
+          values: { feedback: "Ship it" },
+          viewId: "view-1",
+        }, undefined, webhookOptions);
+        return Response.json(result ?? null);
+      } else if (payload.kind === "modal-close") {
+        chat.processModalClose({
+          adapter,
+          callbackId: "feedback",
+          raw: { id: "modal-close-1" },
+          user,
+          viewId: "view-1",
+        }, undefined, webhookOptions);
+      } else if (payload.kind === "options") {
+        const result = await chat.processOptionsLoad({
+          actionId: "assignee",
+          adapter,
+          query: "ada",
+          raw: { id: "options-1" },
+          user,
+        }, webhookOptions);
+        return Response.json(result ?? null);
+      }
+      return new Response("ok");
+    },
+    initialize: async (instance) => {
+      chat = instance;
+    },
+    isDM: () => false,
   });
   return adapter;
 }
@@ -176,6 +250,8 @@ function createRuntime(options: {
   adapter?: Adapter;
   adapterFactory?: (installation: ChannelInstallation) => Adapter;
   coordinateTurn?: ConstructorParameters<typeof ChannelRuntime>[0]["coordinateTurn"];
+  coordinateEvent?: ConstructorParameters<typeof ChannelRuntime>[0]["coordinateEvent"];
+  handleEvent?: ConstructorParameters<typeof ChannelRuntime>[0]["handleEvent"];
   handleTurn?: ConstructorParameters<typeof ChannelRuntime>[0]["handleTurn"];
   onEvent?: ConstructorParameters<typeof ChannelRuntime>[0]["onEvent"];
   shouldStartTyping?: ConstructorParameters<typeof ChannelRuntime>[0]["shouldStartTyping"];
@@ -184,6 +260,8 @@ function createRuntime(options: {
   const runtime = new ChannelRuntime({
     adapterFactory: options.adapterFactory ?? (() => adapter),
     coordinateTurn: options.coordinateTurn,
+    coordinateEvent: options.coordinateEvent,
+    handleEvent: options.handleEvent,
     handleTurn: options.handleTurn ?? (async () => ({ text: "reply" })),
     onEvent: options.onEvent,
     shouldStartTyping: options.shouldStartTyping,
@@ -253,6 +331,134 @@ describe("ChannelRuntime", () => {
     expect(fetchData).toHaveBeenCalledOnce();
   });
 
+  it("preserves formatted content, links, and edit metadata", async () => {
+    let chat: ChatInstance;
+    let adapter: Adapter;
+    adapter = createMockAdapter("telegram", {
+      handleWebhook: async (_request, webhookOptions) => {
+        await chat.processMessage(
+          adapter,
+          "telegram:chat-1:thread-1",
+          createTestMessage("formatted-message", "Read the docs", {
+            formatted: {
+              type: "root",
+              children: [{
+                type: "paragraph",
+                children: [{ type: "text", value: "Read the docs" }],
+              }],
+            },
+            links: [{ title: "Docs", url: "https://example.test/docs" }],
+            metadata: {
+              dateSent: new Date("2026-08-07T12:00:00Z"),
+              edited: true,
+              editedAt: new Date("2026-08-07T12:01:00Z"),
+            },
+          }),
+          webhookOptions,
+        );
+        return new Response("ok");
+      },
+      initialize: async (instance) => {
+        chat = instance;
+      },
+      isDM: () => true,
+    });
+    const handleTurn = vi.fn(async () => ({ text: "received" }));
+    const runtime = createRuntime({ adapter, handleTurn });
+
+    await runtime.handleWebhook(
+      installation(),
+      new Request("https://example.test/webhook", { method: "POST" }),
+    );
+
+    expect(handleTurn.mock.calls[0]?.[0].messages[0]).toMatchObject({
+      edited: true,
+      editedAt: new Date("2026-08-07T12:01:00Z"),
+      formatted: { type: "root" },
+      links: [{ title: "Docs", url: "https://example.test/docs" }],
+    });
+  });
+
+  it("dispatches typed action, reaction, and modal events", async () => {
+    const adapter = richEventAdapter();
+    const handleEvent = vi.fn(async (event) => {
+      if (event.type === "modal.submit") {
+        return { modalResponse: { action: "errors", errors: { feedback: "Too short" } } };
+      }
+      if (event.type === "options.load") return { options: [] };
+      return { text: `handled:${event.type}` };
+    });
+    const runtime = createRuntime({ adapter, handleEvent });
+
+    for (const kind of ["action", "reaction"] as const) {
+      const backgroundTasks: Promise<unknown>[] = [];
+      await runtime.handleWebhook(
+        { ...installation(), provider: "slack", credentials: { botToken: "token", signingSecret: "secret" } },
+        new Request("https://example.test/webhook", {
+          body: JSON.stringify({ kind }),
+          headers: { "content-type": "application/json" },
+          method: "POST",
+        }),
+        { waitUntil: (task) => backgroundTasks.push(task) },
+      );
+      await Promise.all(backgroundTasks);
+    }
+    const modalResponse = await runtime.handleWebhook(
+      { ...installation(), provider: "slack", credentials: { botToken: "token", signingSecret: "secret" } },
+      new Request("https://example.test/webhook", {
+        body: JSON.stringify({ kind: "modal" }),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      }),
+    );
+    const backgroundTasks: Promise<unknown>[] = [];
+    await runtime.handleWebhook(
+      { ...installation(), provider: "slack", credentials: { botToken: "token", signingSecret: "secret" } },
+      new Request("https://example.test/webhook", {
+        body: JSON.stringify({ kind: "modal-close" }),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      }),
+      { waitUntil: (task) => backgroundTasks.push(task) },
+    );
+    await Promise.all(backgroundTasks);
+    const optionsResponse = await runtime.handleWebhook(
+      { ...installation(), provider: "slack", credentials: { botToken: "token", signingSecret: "secret" } },
+      new Request("https://example.test/webhook", {
+        body: JSON.stringify({ kind: "options" }),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      }),
+    );
+
+    expect(handleEvent.mock.calls.map(([event]) => event.type)).toEqual([
+      "action",
+      "reaction",
+      "modal.submit",
+      "modal.close",
+      "options.load",
+    ]);
+    expect(handleEvent.mock.calls[0]?.[0]).toMatchObject({
+      actionId: "approve",
+      value: "order-42",
+      user: { userId: "user-1" },
+    });
+    expect(handleEvent.mock.calls[1]?.[0]).toMatchObject({
+      added: true,
+      emoji: "thumbs_up",
+      rawEmoji: "+1",
+    });
+    await expect(modalResponse.json()).resolves.toEqual({
+      action: "errors",
+      errors: { feedback: "Too short" },
+    });
+    await expect(optionsResponse.json()).resolves.toEqual([]);
+    expect(adapter.postMessage).toHaveBeenCalledWith(
+      "slack:channel-1:thread-1",
+      "handled:action",
+    );
+  });
+
   it("delivers typed media and generic files without duplicating either", async () => {
     const adapter = testAdapter();
     const runtime = createRuntime({
@@ -292,6 +498,43 @@ describe("ChannelRuntime", () => {
         markdown: "Artifacts ready",
       }),
     );
+  });
+
+  it("delivers native Chat SDK postables without flattening them", async () => {
+    const adapter = testAdapter();
+    const runtime = createRuntime({
+      adapter,
+      handleTurn: async () => ({
+        posts: [{ markdown: "**Approved**" }, { raw: "provider-native" }],
+      }),
+    });
+
+    await runtime.handleWebhook(installation(), webhookRequest("native-postables"));
+
+    expect(adapter.postMessage).toHaveBeenNthCalledWith(
+      1,
+      "telegram:chat-1:thread-1",
+      { markdown: "**Approved**" },
+    );
+    expect(adapter.postMessage).toHaveBeenNthCalledWith(
+      2,
+      "telegram:chat-1:thread-1",
+      { raw: "provider-native" },
+    );
+  });
+
+  it("rejects ambiguous native and convenience output before delivery", async () => {
+    const adapter = testAdapter();
+    const runtime = createRuntime({
+      adapter,
+    });
+
+    await expect(runtime.post(
+      installation(),
+      "telegram:chat-1:thread-1",
+      { posts: [{ markdown: "native" }], text: "duplicate" },
+    )).rejects.toThrow(/native posts cannot be combined/i);
+    expect(adapter.postMessage).not.toHaveBeenCalled();
   });
 
   it("normalizes a slash command into the same provider-neutral turn", async () => {
@@ -481,8 +724,15 @@ describe("ChannelRuntime", () => {
     }));
   });
 
-  it("buffers non-native streams and segments them without truncation", async () => {
-    const adapter = testAdapter();
+  it("delegates streams to Chat SDK for every provider", async () => {
+    const chunks: string[] = [];
+    const stream = vi.fn(async (_threadId: string, values: AsyncIterable<string | { type: string }>) => {
+      for await (const chunk of values) {
+        if (typeof chunk === "string") chunks.push(chunk);
+      }
+      return { id: "streamed-1", raw: {}, threadId: "telegram:chat-1:thread-1" };
+    });
+    const adapter = testAdapter({ stream });
     const runtime = createRuntime({
       adapter,
       handleTurn: async () => ({
@@ -495,12 +745,34 @@ describe("ChannelRuntime", () => {
 
     await runtime.handleWebhook(installation(), webhookRequest("message-1"));
 
-    const posts = vi.mocked(adapter.postMessage).mock.calls
-      .map(([, message]) => typeof message === "string" ? message : "")
-      .filter(Boolean);
-    expect(posts.length).toBeGreaterThan(1);
-    expect(posts.every((part) => part.length <= 4_096)).toBe(true);
-    expect(posts.join("")).toBe(`${"a".repeat(3_000)}${"b".repeat(3_000)}`);
+    expect(stream).toHaveBeenCalledOnce();
+    expect(chunks.join("")).toBe(`${"a".repeat(3_000)}${"b".repeat(3_000)}`);
+  });
+
+  it("passes structured stream events through to Chat SDK unchanged", async () => {
+    const chunks: unknown[] = [];
+    const stream = vi.fn(async (_threadId: string, values: AsyncIterable<unknown>) => {
+      for await (const chunk of values) chunks.push(chunk);
+      return { id: "streamed-1", raw: {}, threadId: "telegram:chat-1:thread-1" };
+    });
+    const adapter = testAdapter({ stream });
+    const structured = [
+      { text: "Working", type: "markdown_text" as const },
+      { label: "Build", status: "running", type: "task_update" as const },
+    ];
+    const runtime = createRuntime({
+      adapter,
+      handleTurn: async () => ({
+        stream: (async function* () {
+          yield structured[0];
+          yield structured[1];
+        })(),
+      }),
+    });
+
+    await runtime.handleWebhook(installation(), webhookRequest("message-structured"));
+
+    expect(chunks).toEqual(structured);
   });
 
   it("serializes overlapping turns for the same thread by default", async () => {
@@ -551,5 +823,65 @@ describe("ChannelRuntime", () => {
 
     expect(coordinateTurn).toHaveBeenCalledOnce();
     expect(order).toEqual(["before:message-1", "after:message-1"]);
+  });
+
+  it("reports explicit event coordinator dispositions without executing", async () => {
+    const events: string[] = [];
+    const handleEvent = vi.fn(async () => ({ text: "must not run" }));
+    const coordinateEvent = vi.fn(async () => "steered" as const);
+    const runtime = createRuntime({
+      coordinateEvent,
+      handleEvent,
+      onEvent: (event) => events.push(event.name),
+    });
+
+    await runtime.handleWebhook(installation(), webhookRequest("message-steered"));
+
+    expect(coordinateEvent).toHaveBeenCalledOnce();
+    expect(handleEvent).not.toHaveBeenCalled();
+    expect(events).toContain("event.steered");
+  });
+
+  it("rejects an executed disposition when the coordinator skipped execution", async () => {
+    const runtime = createRuntime({
+      coordinateEvent: async () => "executed",
+      handleEvent: async () => ({ text: "must not run" }),
+    });
+
+    await expect(runtime.handleWebhook(
+      installation(),
+      webhookRequest("message-not-executed"),
+    )).rejects.toThrow(/returned "executed" without executing/i);
+  });
+
+  it("rejects a non-executed disposition after the coordinator executed", async () => {
+    const runtime = createRuntime({
+      coordinateEvent: async (_event, execute) => {
+        await execute();
+        return "queued";
+      },
+      handleEvent: async () => ({ text: "ran" }),
+    });
+
+    await expect(runtime.handleWebhook(
+      installation(),
+      webhookRequest("message-conflicting-disposition"),
+    )).rejects.toThrow(/returned "queued" after executing/i);
+  });
+
+  it("prevents a coordinator from executing the same event twice", async () => {
+    const runtime = createRuntime({
+      coordinateEvent: async (_event, execute) => {
+        await execute();
+        await execute();
+        return "executed";
+      },
+      handleEvent: async () => ({ text: "once" }),
+    });
+
+    await expect(runtime.handleWebhook(
+      installation(),
+      webhookRequest("message-double-execution"),
+    )).rejects.toThrow(/more than once/i);
   });
 });

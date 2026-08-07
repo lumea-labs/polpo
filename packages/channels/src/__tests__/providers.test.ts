@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
-import { createOfficialChannelAdapter } from "../providers.js";
+import {
+  channelProviderCapabilities,
+  createOfficialChannelAdapter,
+} from "../providers.js";
 import type { ChannelInstallation } from "../types.js";
 
 const installations: ChannelInstallation[] = [
@@ -57,5 +60,40 @@ describe("createOfficialChannelAdapter", () => {
 
     expect(fetchSpy).not.toHaveBeenCalled();
     fetchSpy.mockRestore();
+  });
+});
+
+describe("channelProviderCapabilities", () => {
+  it("publishes explicit native, fallback, and unsupported behavior", () => {
+    expect(channelProviderCapabilities("slack")).toMatchObject({
+      actions: "native",
+      cards: "native",
+      modals: "native",
+      streaming: "native",
+      voiceReplies: "file-fallback",
+    });
+    expect(channelProviderCapabilities("telegram")).toMatchObject({
+      actions: "native",
+      cards: "partial",
+      modals: "unsupported",
+      streaming: "native",
+      voiceReplies: "native",
+    });
+    expect(channelProviderCapabilities("discord")).toMatchObject({
+      cards: "native",
+      modals: "unsupported",
+      streaming: "fallback",
+    });
+    expect(channelProviderCapabilities("whatsapp")).toMatchObject({
+      cards: "partial",
+      files: "native",
+      streaming: "buffered",
+      voiceReplies: "native",
+    });
+  });
+
+  it("returns immutable provider capability snapshots", () => {
+    const capabilities = channelProviderCapabilities("slack");
+    expect(Object.isFrozen(capabilities)).toBe(true);
   });
 });

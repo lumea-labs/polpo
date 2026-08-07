@@ -1,6 +1,13 @@
 export { ChannelRuntime } from "./runtime.js";
-export { createOfficialChannelAdapter } from "./providers.js";
-export { channelMessageHardLimit, segmentChannelText } from "./response.js";
+export {
+  channelProviderCapabilities,
+  createOfficialChannelAdapter,
+} from "./providers.js";
+export {
+  channelMessageHardLimit,
+  normalizeChannelResponseDeliveryPolicy,
+  segmentChannelText,
+} from "./response.js";
 export {
   dispatchChannelWebhook,
   isChannelProviderId,
@@ -8,16 +15,32 @@ export {
 } from "./webhook.js";
 export {
   CHANNEL_PROVIDER_IDS,
+  type ChannelActionEvent,
   type ChannelAdapterFactory,
   type ChannelAttachment,
+  type ChannelAuthor,
+  type ChannelCapabilitySupport,
   type ChannelConcurrencyPolicy,
+  type ChannelEventCoordinator,
+  type ChannelEventHandler,
+  type ChannelEventResult,
   type ChannelInboundMessage,
+  type ChannelInboundEvent,
   type ChannelInboundTurn,
   type ChannelInstallation,
   type ChannelInstallationResolver,
   type ChannelInstallationResolverInput,
+  type ChannelMessageEvent,
+  type ChannelModalCloseEvent,
+  type ChannelModalSubmitEvent,
+  type ChannelNativePost,
+  type ChannelOptionsLoadEvent,
   type ChannelOutputFile,
+  type ChannelOutputStream,
   type ChannelProviderId,
+  type ChannelProviderCapabilities,
+  type ChannelReactionEvent,
+  type ChannelResponseDeliveryPolicy,
   type ChannelRuntimeEvent,
   type ChannelRuntimeOptions,
   type ChannelStateFactory,
@@ -28,6 +51,7 @@ export {
   type ChannelTurnCoordinator,
   type ChannelTurnResult,
   type ChannelWebhookOptions,
+  type ChannelSlashCommandEvent,
   type DiscordChannelInstallation,
   type SlackChannelInstallation,
   type TelegramChannelInstallation,

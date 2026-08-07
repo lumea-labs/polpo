@@ -1,15 +1,25 @@
 import { MemoryStateAdapter } from "@chat-adapter/state-memory";
 import {
   Chat,
+  type ActionEvent,
   type Message,
   type MessageContext,
+  type ModalCloseEvent,
+  type ModalResponse,
+  type ModalSubmitEvent,
+  type OptionsLoadEvent,
+  type OptionsLoadResult,
   type Postable,
+  type ReactionEvent,
   type SlashCommandEvent,
   type Thread,
 } from "chat";
 import { createOfficialChannelAdapter } from "./providers.js";
 import { segmentChannelText } from "./response.js";
 import type {
+  ChannelAuthor,
+  ChannelEventResult,
+  ChannelInboundEvent,
   ChannelInboundMessage,
   ChannelInboundTurn,
   ChannelInstallation,
@@ -29,7 +39,7 @@ type RuntimeEntry = {
 
 type TurnTarget = {
   channelId: string;
-  postable: Postable;
+  postable: Postable<any, unknown>;
   threadId: string;
 };
 
@@ -51,6 +61,9 @@ export class ChannelRuntime {
   > & ChannelRuntimeOptions;
 
   constructor(options: ChannelRuntimeOptions) {
+    if (!options.handleEvent && !options.handleTurn) {
+      throw new Error("ChannelRuntime requires handleEvent or handleTurn");
+    }
     this.options = {
       ...options,
       idleTtlMs: options.idleTtlMs ?? 15 * 60_000,
@@ -118,7 +131,7 @@ export class ChannelRuntime {
     installation: ChannelInstallation,
   ): Promise<RuntimeEntry> {
     await this.prune();
-    const key = runtimeKey(installation);
+    const key = runtimeKey(installation, this.options.concurrency);
     const cached = this.entries.get(key);
     if (cached) return cached;
 
@@ -142,7 +155,7 @@ export class ChannelRuntime {
   private async createEntry(
     installation: ChannelInstallation,
   ): Promise<RuntimeEntry> {
-    const key = runtimeKey(installation);
+    const key = runtimeKey(installation, this.options.concurrency);
     await this.invalidate(installation.id);
     const adapter = (this.options.adapterFactory ?? createOfficialChannelAdapter)(
       installation,
@@ -175,6 +188,13 @@ export class ChannelRuntime {
     chat.onSubscribedMessage(handler);
     chat.onSlashCommand((event) =>
       this.handleSlashCommand(installation, state, event));
+    if (this.options.handleEvent) {
+      chat.onAction((event) => this.handleAction(installation, state, event));
+      chat.onReaction((event) => this.handleReaction(installation, state, event));
+      chat.onModalSubmit((event) => this.handleModalSubmit(installation, state, event));
+      chat.onModalClose((event) => this.handleModalClose(installation, state, event));
+      chat.onOptionsLoad((event) => this.handleOptionsLoad(installation, event));
+    }
 
     const entry: RuntimeEntry = {
       chat: chat as Chat<Record<string, never>>,
@@ -198,7 +218,9 @@ export class ChannelRuntime {
     context?: MessageContext,
   ): Promise<void> {
     await thread.subscribe();
-    const messages = [...(context?.skipped ?? []), message].map(mapMessage);
+    const messages = await Promise.all(
+      [...(context?.skipped ?? []), message].map(mapMessage),
+    );
     const turn: ChannelInboundTurn = {
       channelId: thread.channelId,
       credentialRevision: installation.credentialRevision,
@@ -221,13 +243,40 @@ export class ChannelRuntime {
     state: ChannelStateAdapter,
     event: SlashCommandEvent,
   ): Promise<void> {
-    const providerEventId = stableProviderEventId(event.raw);
+    const providerEventId = providerEventIdFor(event.raw, [
+      event.command,
+      event.text,
+      event.channel.id,
+      event.user.userId,
+    ]);
     const accepted = await state.setIfNotExists(
       `polpo:slash-command:${installation.provider}:${installation.id}:${providerEventId}`,
       true,
       this.options.dedupeTtlMs ?? DEFAULT_DEDUPE_TTL_MS,
     );
     if (!accepted) return;
+    if (this.options.handleEvent) {
+      const normalized: ChannelInboundEvent = {
+        channelId: event.channel.id,
+        command: event.command,
+        credentialRevision: installation.credentialRevision,
+        installationId: installation.id,
+        openModal: event.openModal,
+        provider: installation.provider,
+        providerEventId,
+        raw: event.raw,
+        text: event.text,
+        threadId: event.channel.id,
+        type: "slash_command",
+        user: mapAuthor(event.user),
+      };
+      await this.executeEvent(installation, {
+        channelId: event.channel.id,
+        postable: event.channel,
+        threadId: event.channel.id,
+      }, normalized);
+      return;
+    }
     const text = [event.command, event.text].filter(Boolean).join(" ").trim();
     const turn: ChannelInboundTurn = {
       channelId: event.channel.id,
@@ -236,15 +285,12 @@ export class ChannelRuntime {
       isDirectMessage: event.channel.isDM,
       messages: [{
         attachments: [],
-        author: {
-          email: event.user.email,
-          fullName: event.user.fullName,
-          isBot: event.user.isBot,
-          userId: event.user.userId,
-          userName: event.user.userName,
-        },
+        author: mapAuthor(event.user),
+        edited: false,
+        formatted: markdownAst(text),
         id: providerEventId,
         isMention: true,
+        links: [],
         raw: event.raw,
         text,
         timestamp: providerTimestamp(event.raw),
@@ -260,12 +306,190 @@ export class ChannelRuntime {
     }, turn);
   }
 
+  private async handleAction(
+    installation: ChannelInstallation,
+    state: ChannelStateAdapter,
+    event: ActionEvent,
+  ): Promise<void> {
+    const providerEventId = providerEventIdFor(event.raw, [
+      event.actionId,
+      event.messageId,
+      event.threadId,
+      event.user.userId,
+      event.value ?? "",
+    ]);
+    if (!await this.acceptEvent(state, installation, "action", providerEventId)) return;
+    await this.executeEvent(
+      installation,
+      event.thread
+        ? { channelId: event.thread.channelId, postable: event.thread, threadId: event.thread.id }
+        : undefined,
+      {
+        actionId: event.actionId,
+        channelId: event.thread?.channelId,
+        credentialRevision: installation.credentialRevision,
+        installationId: installation.id,
+        messageId: event.messageId,
+        openModal: event.openModal,
+        provider: installation.provider,
+        providerEventId,
+        raw: event.raw,
+        threadId: event.threadId,
+        triggerId: event.triggerId,
+        type: "action",
+        user: mapAuthor(event.user),
+        value: event.value,
+      },
+    );
+  }
+
+  private async handleReaction(
+    installation: ChannelInstallation,
+    state: ChannelStateAdapter,
+    event: ReactionEvent,
+  ): Promise<void> {
+    const providerEventId = providerEventIdFor(event.raw, [
+      event.messageId,
+      event.threadId,
+      event.user.userId,
+      event.emoji.name,
+      String(event.added),
+    ]);
+    if (!await this.acceptEvent(state, installation, "reaction", providerEventId)) return;
+    await this.executeEvent(installation, {
+      channelId: event.thread.channelId,
+      postable: event.thread,
+      threadId: event.thread.id,
+    }, {
+      added: event.added,
+      channelId: event.thread.channelId,
+      credentialRevision: installation.credentialRevision,
+      emoji: event.emoji.name,
+      installationId: installation.id,
+      messageId: event.messageId,
+      provider: installation.provider,
+      providerEventId,
+      raw: event.raw,
+      rawEmoji: event.rawEmoji,
+      threadId: event.threadId,
+      type: "reaction",
+      user: mapAuthor(event.user),
+    });
+  }
+
+  private async handleModalSubmit(
+    installation: ChannelInstallation,
+    state: ChannelStateAdapter,
+    event: ModalSubmitEvent,
+  ): Promise<ModalResponse | undefined> {
+    const providerEventId = providerEventIdFor(event.raw, [
+      event.callbackId,
+      event.viewId,
+      event.user.userId,
+      JSON.stringify(event.values),
+    ]);
+    if (!await this.acceptEvent(state, installation, "modal.submit", providerEventId)) {
+      return undefined;
+    }
+    const result = await this.executeEvent(
+      installation,
+      eventTarget(event.relatedThread, event.relatedChannel),
+      {
+        callbackId: event.callbackId,
+        channelId: event.relatedThread?.channelId ?? event.relatedChannel?.id,
+        credentialRevision: installation.credentialRevision,
+        installationId: installation.id,
+        messageId: event.relatedMessage?.id,
+        privateMetadata: event.privateMetadata,
+        provider: installation.provider,
+        providerEventId,
+        raw: event.raw,
+        threadId: event.relatedThread?.id,
+        type: "modal.submit",
+        user: mapAuthor(event.user),
+        values: event.values,
+        viewId: event.viewId,
+      },
+      false,
+    );
+    return result?.modalResponse;
+  }
+
+  private async handleModalClose(
+    installation: ChannelInstallation,
+    state: ChannelStateAdapter,
+    event: ModalCloseEvent,
+  ): Promise<void> {
+    const providerEventId = providerEventIdFor(event.raw, [
+      event.callbackId,
+      event.viewId,
+      event.user.userId,
+    ]);
+    if (!await this.acceptEvent(state, installation, "modal.close", providerEventId)) return;
+    await this.executeEvent(
+      installation,
+      eventTarget(event.relatedThread, event.relatedChannel),
+      {
+        callbackId: event.callbackId,
+        channelId: event.relatedThread?.channelId ?? event.relatedChannel?.id,
+        credentialRevision: installation.credentialRevision,
+        installationId: installation.id,
+        messageId: event.relatedMessage?.id,
+        privateMetadata: event.privateMetadata,
+        provider: installation.provider,
+        providerEventId,
+        raw: event.raw,
+        threadId: event.relatedThread?.id,
+        type: "modal.close",
+        user: mapAuthor(event.user),
+        viewId: event.viewId,
+      },
+      false,
+    );
+  }
+
+  private async handleOptionsLoad(
+    installation: ChannelInstallation,
+    event: OptionsLoadEvent,
+  ): Promise<OptionsLoadResult | undefined> {
+    const result = await this.options.handleEvent?.({
+      actionId: event.actionId,
+      credentialRevision: installation.credentialRevision,
+      installationId: installation.id,
+      provider: installation.provider,
+      providerEventId: providerEventIdFor(event.raw, [
+        event.actionId,
+        event.user.userId,
+        event.query,
+      ]),
+      query: event.query,
+      raw: event.raw,
+      type: "options.load",
+      user: mapAuthor(event.user),
+    });
+    return result?.options;
+  }
+
+  private async acceptEvent(
+    state: ChannelStateAdapter,
+    installation: ChannelInstallation,
+    type: string,
+    providerEventId: string,
+  ): Promise<boolean> {
+    return state.setIfNotExists(
+      `polpo:event:${installation.provider}:${installation.id}:${type}:${providerEventId}`,
+      true,
+      this.options.dedupeTtlMs ?? DEFAULT_DEDUPE_TTL_MS,
+    );
+  }
+
   private async executeTurn(
     installation: ChannelInstallation,
     target: TurnTarget,
     turn: ChannelInboundTurn,
   ): Promise<void> {
     const messageId = turn.providerEventId;
+    const event: ChannelInboundEvent = { ...turn, type: "message" };
     const execute = async () => {
       await this.emit({
         channelId: target.channelId,
@@ -295,7 +519,9 @@ export class ChannelRuntime {
             });
           }
         }
-        const result = await this.options.handleTurn(turn);
+        const result = this.options.handleEvent
+          ? await this.options.handleEvent(event)
+          : await this.options.handleTurn!(turn);
         if (result) await this.deliver(installation, target, result, messageId);
         await this.emit({
           channelId: target.channelId,
@@ -319,11 +545,123 @@ export class ChannelRuntime {
       }
     };
 
+    if (this.options.handleEvent && this.options.coordinateEvent) {
+      const disposition = await coordinateWithDisposition(
+        this.options.coordinateEvent,
+        event,
+        execute,
+      );
+      if (disposition && disposition !== "executed") {
+        await this.emit({
+          channelId: turn.channelId,
+          installationId: installation.id,
+          messageId,
+          name: `event.${disposition}`,
+          provider: installation.provider,
+          threadId: turn.threadId,
+        });
+      }
+      return;
+    }
     if (this.options.coordinateTurn) {
       await this.options.coordinateTurn(turn, execute);
       return;
     }
     await this.coordinateLocally(turn, execute);
+  }
+
+  private async executeEvent(
+    installation: ChannelInstallation,
+    target: TurnTarget | undefined,
+    event: ChannelInboundEvent,
+    coordinate = true,
+  ): Promise<ChannelEventResult | void> {
+    if (!this.options.handleEvent) {
+      await this.emit({
+        channelId: event.channelId,
+        installationId: installation.id,
+        messageId: event.providerEventId,
+        name: "event.unhandled",
+        provider: installation.provider,
+        threadId: event.threadId,
+      });
+      return;
+    }
+
+    let result: ChannelEventResult | void = undefined;
+    const execute = async () => {
+      await this.emit({
+        channelId: event.channelId,
+        installationId: installation.id,
+        messageId: event.providerEventId,
+        name: "turn.started",
+        provider: installation.provider,
+        threadId: event.threadId,
+      });
+      try {
+        result = await this.options.handleEvent!(event);
+        if (result && target && hasDeliverableOutput(result)) {
+          await this.deliver(installation, target, result, event.providerEventId);
+        }
+        await this.emit({
+          channelId: event.channelId,
+          installationId: installation.id,
+          messageId: event.providerEventId,
+          name: "turn.completed",
+          provider: installation.provider,
+          threadId: event.threadId,
+        });
+      } catch (error) {
+        await this.emit({
+          channelId: event.channelId,
+          error: errorMessage(error),
+          installationId: installation.id,
+          messageId: event.providerEventId,
+          name: "turn.failed",
+          provider: installation.provider,
+          threadId: event.threadId,
+        });
+        throw error;
+      }
+    };
+
+    if (coordinate && this.options.coordinateEvent) {
+      const disposition = await coordinateWithDisposition(
+        this.options.coordinateEvent,
+        event,
+        execute,
+      );
+      if (disposition && disposition !== "executed") {
+        await this.emit({
+          channelId: event.channelId,
+          installationId: installation.id,
+          messageId: event.providerEventId,
+          name: `event.${disposition}`,
+          provider: installation.provider,
+          threadId: event.threadId,
+        });
+      }
+    } else if (coordinate) {
+      await this.coordinateEventLocally(event, execute);
+    } else {
+      await execute();
+    }
+    return result;
+  }
+
+  private async coordinateEventLocally(
+    event: ChannelInboundEvent,
+    execute: () => Promise<void>,
+  ): Promise<void> {
+    const key = `${event.provider}:${event.installationId}:${event.threadId ?? event.providerEventId}`;
+    const previous = this.pendingTurns.get(key) ?? Promise.resolve();
+    const current = previous.catch(() => {}).then(execute);
+    this.pendingTurns.set(key, current);
+    try {
+      await current;
+    } finally {
+      if (this.pendingTurns.get(key) === current) this.pendingTurns.delete(key);
+    }
   }
 
   private async coordinateLocally(
@@ -350,11 +688,10 @@ export class ChannelRuntime {
     sourceMessageId?: string,
   ): Promise<void> {
     try {
-      if (
-        result.stream
-        && installation.provider === "slack"
-        && !result.files?.length
-      ) {
+      validateTurnResult(result);
+      if (result.posts?.length) {
+        for (const post of result.posts) await target.postable.post(post);
+      } else if (result.stream && !result.files?.length && !result.text) {
         await target.postable.post(result.stream);
       } else {
         const streamedText = result.stream
@@ -363,6 +700,7 @@ export class ChannelRuntime {
         const segments = segmentChannelText(
           installation.provider,
           [result.text, streamedText].filter(Boolean).join(""),
+          installation.responseDelivery,
         );
         const files = result.files?.map((file) => ({
           data: file.data,
@@ -455,12 +793,52 @@ export class ChannelRuntime {
   }
 }
 
-function runtimeKey(installation: ChannelInstallation): string {
+function runtimeKey(
+  installation: ChannelInstallation,
+  defaultConcurrency?: ChannelRuntimeOptions["concurrency"],
+): string {
   const typing = installation.typingEnabled === false ? "silent" : "typing";
-  return `${installation.provider}:${installation.id}:${installation.credentialRevision}:${typing}`;
+  const concurrency = JSON.stringify(
+    installation.concurrency ?? defaultConcurrency ?? DEFAULT_CONCURRENCY,
+  );
+  const responseDelivery = JSON.stringify(installation.responseDelivery ?? null);
+  return `${installation.provider}:${installation.id}:${installation.credentialRevision}:${typing}:${concurrency}:${responseDelivery}`;
 }
 
-function mapMessage(message: Message): ChannelInboundMessage {
+async function coordinateWithDisposition(
+  coordinator: NonNullable<ChannelRuntimeOptions["coordinateEvent"]>,
+  event: ChannelInboundEvent,
+  execute: () => Promise<void>,
+): Promise<"executed" | "queued" | "steered" | "rejected" | void> {
+  let executions = 0;
+  const executeOnce = async () => {
+    executions += 1;
+    if (executions > 1) {
+      throw new Error("Channel event coordinator attempted to execute an event more than once");
+    }
+    await execute();
+  };
+  const disposition = await coordinator(event, executeOnce);
+  if (disposition === "executed" && executions !== 1) {
+    throw new Error('Channel event coordinator returned "executed" without executing the event');
+  }
+  if (
+    disposition
+    && disposition !== "executed"
+    && executions !== 0
+  ) {
+    throw new Error(
+      `Channel event coordinator returned "${disposition}" after executing the event`,
+    );
+  }
+  if (!disposition && executions === 0) {
+    throw new Error("Channel event coordinator returned no disposition and did not execute the event");
+  }
+  return disposition;
+}
+
+async function mapMessage(message: Message): Promise<ChannelInboundMessage> {
+  const subject = await message.subject.catch(() => null);
   return {
     attachments: message.attachments.map((attachment) => ({
       data: attachment.data,
@@ -474,29 +852,28 @@ function mapMessage(message: Message): ChannelInboundMessage {
       url: attachment.url,
       width: attachment.width,
     })),
-    author: {
-      email: message.author.email,
-      fullName: message.author.fullName,
-      isBot: message.author.isBot,
-      userId: message.author.userId,
-      userName: message.author.userName,
-    },
+    author: mapAuthor(message.author),
+    edited: message.metadata.edited,
+    editedAt: message.metadata.editedAt,
+    formatted: message.formatted,
     id: message.id,
     isMention: message.isMention ?? false,
+    links: message.links,
     raw: message.raw,
+    subject: subject ?? undefined,
     text: message.text,
     timestamp: message.metadata.dateSent,
   };
 }
 
-function stableProviderEventId(raw: unknown): string {
+function providerEventIdFor(raw: unknown, fallback: string[]): string {
   const record = asRecord(raw);
   for (const key of ["id", "event_id", "trigger_id"] as const) {
     const value = record?.[key];
     if (typeof value === "string" && value.trim()) return value;
     if (typeof value === "number" && Number.isFinite(value)) return String(value);
   }
-  throw new Error("Slash command is missing a stable provider event id");
+  return `derived-${stableHash(`${stableSerialize(raw)}|${fallback.join("|")}`)}`;
 }
 
 function providerTimestamp(raw: unknown): Date {
@@ -529,8 +906,85 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-async function collectText(stream: AsyncIterable<string>): Promise<string> {
+async function collectText(
+  stream: NonNullable<ChannelTurnResult["stream"]>,
+): Promise<string> {
   let text = "";
-  for await (const chunk of stream) text += chunk;
+  for await (const chunk of stream) {
+    if (typeof chunk === "string") {
+      text += chunk;
+    } else if (chunk.type === "text-delta" && "textDelta" in chunk) {
+      text += chunk.textDelta;
+    } else if (chunk.type === "markdown_text" && "text" in chunk) {
+      text += chunk.text;
+    } else if (chunk.type === "finish-step") {
+      text += "\n\n";
+    }
+  }
   return text;
+}
+
+function mapAuthor(author: {
+  email?: string;
+  fullName: string;
+  isBot: boolean | "unknown";
+  userId: string;
+  userName: string;
+}): ChannelAuthor {
+  return {
+    email: author.email,
+    fullName: author.fullName,
+    isBot: author.isBot,
+    userId: author.userId,
+    userName: author.userName,
+  };
+}
+
+function markdownAst(text: string): NonNullable<ChannelInboundMessage["formatted"]> {
+  return {
+    type: "root",
+    children: [{
+      type: "paragraph",
+      children: [{ type: "text", value: text }],
+    }],
+  };
+}
+
+function eventTarget(
+  thread: Thread | undefined,
+  channel: Postable<any, unknown> | undefined,
+): TurnTarget | undefined {
+  const postable = thread ?? channel;
+  if (!postable) return undefined;
+  return {
+    channelId: thread?.channelId ?? postable.id,
+    postable,
+    threadId: thread?.id ?? postable.id,
+  };
+}
+
+function hasDeliverableOutput(result: ChannelEventResult): boolean {
+  return Boolean(result.posts?.length || result.stream || result.files?.length || result.text);
+}
+
+function validateTurnResult(result: ChannelTurnResult): void {
+  if (result.posts?.length && (result.text || result.stream || result.files?.length)) {
+    throw new Error("Native posts cannot be combined with text, stream, or files");
+  }
+}
+
+function stableSerialize(value: unknown): string {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(stableSerialize).join(",")}]`;
+  const record = value as Record<string, unknown>;
+  return `{${Object.keys(record).sort().map((key) => `${JSON.stringify(key)}:${stableSerialize(record[key])}`).join(",")}}`;
+}
+
+function stableHash(value: string): string {
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(36);
 }

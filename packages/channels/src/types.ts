@@ -1,8 +1,17 @@
 import type {
+  ActionEvent,
   Adapter,
+  FormattedContent,
+  LinkPreview,
   Lock,
+  MessageSubject,
+  ModalResponse,
+  OptionsLoadResult,
+  PostableMessage,
   QueueEntry,
   StateAdapter,
+  StreamChunk,
+  StreamEvent,
   WebhookOptions,
 } from "chat";
 
@@ -21,11 +30,41 @@ export type ChannelProviderId = (typeof CHANNEL_PROVIDER_IDS)[number];
 
 export type ChannelConcurrencyPolicy = {
   debounceMs?: number;
+  maxConcurrent?: number;
   maxQueueSize?: number;
   onQueueFull?: "drop-oldest" | "drop-newest";
   queueEntryTtlMs?: number;
   strategy: "drop" | "queue" | "debounce" | "burst" | "concurrent";
 };
+
+export type ChannelResponseDeliveryPolicy = {
+  maxMessages?: number;
+  style: "single" | "conversational";
+  targetCharacters?: number;
+};
+
+export type ChannelCapabilitySupport =
+  | "native"
+  | "partial"
+  | "fallback"
+  | "buffered"
+  | "file-fallback"
+  | "unsupported";
+
+export type ChannelProviderCapabilities = Readonly<{
+  actions: ChannelCapabilitySupport;
+  audioAttachments: ChannelCapabilitySupport;
+  cards: ChannelCapabilitySupport;
+  files: ChannelCapabilitySupport;
+  formattedText: ChannelCapabilitySupport;
+  modals: ChannelCapabilitySupport;
+  reactions: ChannelCapabilitySupport;
+  streaming: ChannelCapabilitySupport;
+  structuredStreaming: ChannelCapabilitySupport;
+  typing: ChannelCapabilitySupport;
+  videoAttachments: ChannelCapabilitySupport;
+  voiceReplies: ChannelCapabilitySupport;
+}>;
 
 export type ChannelAttachment = {
   data?: Blob | Buffer;
@@ -40,18 +79,25 @@ export type ChannelAttachment = {
   width?: number;
 };
 
+export type ChannelAuthor = {
+  email?: string;
+  fullName: string;
+  isBot: boolean | "unknown";
+  userId: string;
+  userName: string;
+};
+
 export type ChannelInboundMessage = {
   attachments: ChannelAttachment[];
-  author: {
-    email?: string;
-    fullName: string;
-    isBot: boolean | "unknown";
-    userId: string;
-    userName: string;
-  };
+  author: ChannelAuthor;
+  edited?: boolean;
+  editedAt?: Date;
+  formatted?: FormattedContent;
   id: string;
   isMention: boolean;
+  links?: LinkPreview[];
   raw: unknown;
+  subject?: MessageSubject;
   text: string;
   timestamp: Date;
 };
@@ -74,12 +120,96 @@ export type ChannelOutputFile = {
   type?: "image" | "file" | "video" | "audio";
 };
 
+export type ChannelNativePost = PostableMessage;
+export type ChannelOutputStream = AsyncIterable<string | StreamChunk | StreamEvent>;
+
 export type ChannelTurnResult = {
   files?: ChannelOutputFile[];
   metadata?: Record<string, unknown>;
-  stream?: AsyncIterable<string>;
+  posts?: ChannelNativePost[];
+  stream?: ChannelOutputStream;
   text?: string;
 };
+
+type ChannelEventBase = {
+  channelId?: string;
+  credentialRevision: string;
+  installationId: string;
+  provider: ChannelProviderId;
+  providerEventId: string;
+  raw: unknown;
+  threadId?: string;
+  user: ChannelAuthor;
+};
+
+export type ChannelMessageEvent = ChannelInboundTurn & {
+  type: "message";
+};
+
+export type ChannelSlashCommandEvent = ChannelEventBase & {
+  command: string;
+  openModal: ActionEvent["openModal"];
+  text: string;
+  type: "slash_command";
+};
+
+export type ChannelActionEvent = ChannelEventBase & {
+  actionId: string;
+  messageId: string;
+  openModal: ActionEvent["openModal"];
+  triggerId?: string;
+  type: "action";
+  value?: string;
+};
+
+export type ChannelReactionEvent = ChannelEventBase & {
+  added: boolean;
+  emoji: string;
+  messageId: string;
+  rawEmoji: string;
+  type: "reaction";
+};
+
+export type ChannelModalSubmitEvent = ChannelEventBase & {
+  callbackId: string;
+  messageId?: string;
+  privateMetadata?: string;
+  type: "modal.submit";
+  values: Record<string, string>;
+  viewId: string;
+};
+
+export type ChannelModalCloseEvent = ChannelEventBase & {
+  callbackId: string;
+  messageId?: string;
+  privateMetadata?: string;
+  type: "modal.close";
+  viewId: string;
+};
+
+export type ChannelOptionsLoadEvent = ChannelEventBase & {
+  actionId: string;
+  query: string;
+  type: "options.load";
+};
+
+export type ChannelInboundEvent =
+  | ChannelMessageEvent
+  | ChannelSlashCommandEvent
+  | ChannelActionEvent
+  | ChannelReactionEvent
+  | ChannelModalSubmitEvent
+  | ChannelModalCloseEvent
+  | ChannelOptionsLoadEvent;
+
+export type ChannelEventResult = ChannelTurnResult & {
+  modalResponse?: ModalResponse;
+  options?: OptionsLoadResult;
+};
+
+export type ChannelEventHandler = (
+  event: ChannelInboundEvent,
+) => Promise<ChannelEventResult | void>;
 
 export type ChannelTurnHandler = (
   turn: ChannelInboundTurn,
@@ -90,10 +220,16 @@ export type ChannelTurnCoordinator = (
   execute: () => Promise<void>,
 ) => Promise<void>;
 
+export type ChannelEventCoordinator = (
+  event: ChannelInboundEvent,
+  execute: () => Promise<void>,
+) => Promise<"executed" | "queued" | "steered" | "rejected" | void>;
+
 type ChannelInstallationBase = {
   concurrency?: ChannelConcurrencyPolicy;
   credentialRevision: string;
   id: string;
+  responseDelivery?: ChannelResponseDeliveryPolicy;
   typingEnabled?: boolean;
   userName?: string;
 };
@@ -150,6 +286,10 @@ export type ChannelRuntimeEvent = {
     | "runtime.evicted"
     | "webhook.received"
     | "typing.failed"
+    | "event.unhandled"
+    | "event.queued"
+    | "event.steered"
+    | "event.rejected"
     | "turn.started"
     | "turn.completed"
     | "turn.failed"
@@ -170,10 +310,12 @@ export type ChannelStateFactory = (
 export type ChannelRuntimeOptions = {
   adapterFactory?: ChannelAdapterFactory;
   concurrency?: ChannelConcurrencyPolicy;
+  coordinateEvent?: ChannelEventCoordinator;
   coordinateTurn?: ChannelTurnCoordinator;
   dedupeTtlMs?: number;
   fallbackStreamingPlaceholderText?: string | null;
-  handleTurn: ChannelTurnHandler;
+  handleEvent?: ChannelEventHandler;
+  handleTurn?: ChannelTurnHandler;
   idleTtlMs?: number;
   maxInstances?: number;
   onEvent?: (event: ChannelRuntimeEvent) => void | Promise<void>;
