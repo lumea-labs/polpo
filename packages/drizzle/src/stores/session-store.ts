@@ -11,6 +11,7 @@ import type {
   SessionListFilter,
 } from "@polpo-ai/core/session-store";
 import { normalizeSessionCreateArgs } from "@polpo-ai/core/session-store";
+import type { ChatSuggestion } from "@polpo-ai/core/chat-interactions";
 import { type Dialect, deserializeJson, extractAffectedRows } from "../utils.js";
 
 type AnyTable = any;
@@ -75,6 +76,7 @@ export class DrizzleSessionStore implements SessionStore {
       content: this.deserializeContent(row.content),
       ts: row.ts,
       toolCalls: deserializeJson<ToolCallInfo[] | undefined>(row.toolCalls, undefined, this.dialect),
+      suggestions: deserializeJson<ChatSuggestion[] | undefined>(row.suggestions, undefined, this.dialect),
     };
   }
 
@@ -105,6 +107,7 @@ export class DrizzleSessionStore implements SessionStore {
       content: serialized,
       ts,
       toolCalls: null,
+      suggestions: null,
     });
     await this.db.update(this.sessions)
       .set({ updatedAt: ts })
@@ -113,13 +116,23 @@ export class DrizzleSessionStore implements SessionStore {
     return { id, role, content, ts };
   }
 
-  async updateMessage(sessionId: string, messageId: string, content: string | SessionContentPart[], toolCalls?: ToolCallInfo[]): Promise<boolean> {
+  async updateMessage(
+    sessionId: string,
+    messageId: string,
+    content: string | SessionContentPart[],
+    toolCalls?: ToolCallInfo[],
+    suggestions?: ChatSuggestion[],
+  ): Promise<boolean> {
     const now = new Date().toISOString();
     const tcValue = toolCalls ? JSON.stringify(toolCalls) : null;
     const serialized = this.serializeContent(content);
 
     const result = await this.db.update(this.messages)
-      .set({ content: serialized, toolCalls: tcValue })
+      .set({
+        content: serialized,
+        toolCalls: tcValue,
+        suggestions: suggestions?.length ? JSON.stringify(suggestions) : null,
+      })
       .where(eq(this.messages.id, messageId));
 
     const changed = extractAffectedRows(result) > 0;

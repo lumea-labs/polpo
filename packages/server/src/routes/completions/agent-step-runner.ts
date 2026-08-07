@@ -30,7 +30,7 @@ import {
   type RuntimeContextTrustMode,
 } from "@polpo-ai/core";
 import { generateText, type LanguageModel, type LanguageModelUsage } from "ai";
-import { prepareModelMessagesForProvider, runModelPolicyTurn } from "@polpo-ai/llm";
+import { prepareModelMessagesForTransport, runModelPolicyTurn } from "@polpo-ai/llm";
 import type {
   CompletionRouteDeps,
   CompletionToolRunScope,
@@ -163,7 +163,7 @@ export function buildSummarizeFn(
     const result = await generateText({
       model: m.aiModel,
       system: prompt,
-      messages: prepareModelMessagesForProvider(msgs),
+      messages: prepareModelMessagesForTransport(msgs, m.aiModel),
       providerOptions,
     });
     return result.text.trim();

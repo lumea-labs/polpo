@@ -1,0 +1,65 @@
+{
+  "name": "@polpo-ai/channels",
+  "version": "0.15.62",
+  "description": "Provider-neutral messaging channels for the Polpo runtime, powered by Vercel Chat SDK",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "sideEffects": false,
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "test": "vitest run",
+    "prepublishOnly": "tsc"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "dependencies": {
+    "@chat-adapter/discord": "4.36.0",
+    "@chat-adapter/slack": "4.36.0",
+    "@chat-adapter/state-memory": "4.36.0",
+    "@chat-adapter/telegram": "4.36.0",
+    "@chat-adapter/whatsapp": "4.36.0",
+    "chat": "4.36.0"
+  },
+  "devDependencies": {
+    "@chat-adapter/tests": "4.36.0",
+    "@vitest/coverage-v8": "4.1.10",
+    "ai": "6.0.182",
+    "typescript": "^5.7.3",
+    "vitest": "4.1.10"
+  },
+  "peerDependencies": {
+    "ai": ">=6.0.182 <8"
+  },
+  "license": "Apache-2.0",
+  "keywords": [
+    "polpo",
+    "channels",
+    "chat-sdk",
+    "slack",
+    "telegram",
+    "discord",
+    "whatsapp"
+  ],
+  "author": "OpenPolpo Contributors",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/lumea-labs/polpo.git",
+    "directory": "packages/channels"
+  }
+}

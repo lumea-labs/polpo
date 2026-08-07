@@ -34,7 +34,7 @@
   },
   "peerDependencies": {
     "@ai-sdk/gateway": ">=3.0.0",
-    "ai": ">=6.0.0"
+    "ai": ">=6.0.182 <7"
   },
   "license": "Apache-2.0",
   "repository": {

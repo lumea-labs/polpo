@@ -79,6 +79,7 @@ export {
   prepareChatCompletionExecution,
   runConversationTurn,
   type ConversationTurnResult,
+  type RunConversationTurnInput,
   type PreparedConversationTurn,
 } from "./completions/conversation-turn.js";
 
@@ -246,6 +247,17 @@ export interface CompletionRouteDeps {
     sessionId?: string;
     /** OpenAI-compat opaque end-user id from the request, when set. Lets the
      *  cloud meter attribute the usage row to the dev's authenticated user. */
+    user?: string;
+    providerMetadata?: Record<string, unknown>;
+  }) => void;
+  /** Meter or audit an auxiliary model call without emitting a second user completion. */
+  onAuxiliaryModelFinished?: (info: {
+    operation: "chat_suggestions";
+    usage: { inputTokens?: number; outputTokens?: number; totalTokens?: number };
+    model: string;
+    resolvedModel?: CompletionResolvedModelInfo;
+    agent?: string;
+    sessionId?: string;
     user?: string;
     providerMetadata?: Record<string, unknown>;
   }) => void;

@@ -138,6 +138,7 @@ export type {
   RunActivityEntry,
   ChatSession,
   ChatMessage,
+  ChatSuggestion,
   ChatCompletionMessage,
   TextContentPart,
   ImageUrlContentPart,

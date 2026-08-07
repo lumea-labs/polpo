@@ -85,6 +85,33 @@ The same request works with `chatCompletionsStream`. Polpo buffers the
 structured value until it is complete and schema-valid, then emits one
 canonical JSON content chunk. Existing text requests are unchanged.
 
+## Chat interactions
+
+Enable only interactions your client can render:
+
+```ts
+const response = await client.chatCompletions({
+  agent: "support",
+  messages: [{ role: "user", content: "Help me configure this" }],
+  polpo: {
+    capabilities: {
+      ask_user_question: true,
+      suggestions: true,
+    },
+  },
+});
+
+for (const suggestion of response.polpo?.suggestions ?? []) {
+  console.log(suggestion.label, suggestion.prompt);
+}
+```
+
+For streaming requests, `ChatCompletionStream.suggestions` contains the latest
+validated suggestions after the stream completes. Each item has only `id`,
+`label`, and the exact `prompt` to send as the next user message. The React
+`useChat` hook requests both supported interactions, exposes `suggestions`, and
+stores them on the assistant message that produced them.
+
 ## Steer an active run
 
 Start a streaming chat request before iterating it to read the active run id

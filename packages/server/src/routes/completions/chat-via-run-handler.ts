@@ -18,6 +18,7 @@
 import type { Context } from "hono";
 import { streamSSE } from "hono/streaming";
 import type { ChatSessionInjection } from "@polpo-ai/core";
+import type { ChatSuggestion } from "@polpo-ai/core/chat-interactions";
 import type { SteeringController } from "@polpo-ai/core/steering";
 import type { ChatCompletionExecution } from "./chat-handler.js";
 import { agentConfigForModelAttempt, completionResolvedModelInfo, MAX_TURNS } from "./agent-step-runner.js";
@@ -27,6 +28,7 @@ import {
   modelErrorEnvelope,
   modelNotFoundEnvelope,
   sseChunk,
+  ssePolpoChunk,
   structuredOutputErrorEnvelope,
 } from "./sse.js";
 import {
@@ -36,6 +38,7 @@ import {
   CLIENT_SIDE_TOOLS,
   CLIENT_SIDE_TOOL_NAMES,
 } from "./tool-mapping.js";
+import { suggestionsForCompletion } from "./chat-interaction-runtime.js";
 import {
   applyCompletionOutputPolicy,
   streamingOutputPolicyMode,
@@ -94,10 +97,10 @@ export function buildChatRunInjection(execution: ChatCompletionExecution): ChatS
     toolChoice: modelToolChoice,
     output: execution.modelOutput,
     seedMessages: aiMessages,
-    toolSet: { ...toAITools(effectiveTools), ...(extraAiTools ?? {}), ...CLIENT_SIDE_TOOLS },
+    toolSet: { ...toAITools(effectiveTools), ...(extraAiTools ?? {}), ...(execution.clientSideTools ?? CLIENT_SIDE_TOOLS) },
     activeToolNames: execution.activeToolNames,
     executor: effectiveToolExecutor,
-    clientSideToolNames: CLIENT_SIDE_TOOL_NAMES,
+    clientSideToolNames: execution.clientSideToolNames ?? CLIENT_SIDE_TOOL_NAMES,
     providerToolNames: new Set(Object.keys(extraAiTools ?? {})),
     sandbox: execution.body.sandbox,
     compactionTools: effectiveTools,
@@ -311,7 +314,7 @@ async function finishCommon(
   execution: ChatCompletionExecution,
   state: DriverState,
   assistantMsgId: string | null,
-  options?: { emptyFallback?: string },
+  options?: { emptyFallback?: string; suggestions?: ChatSuggestion[] },
 ) {
   const { deps, body, m, sessionStore, sessionId, onResponseFinished } = execution;
   await persistAssistantMessage(sessionStore, sessionId, assistantMsgId, state.finalText, state.toolCallsAccum, options);
@@ -347,6 +350,7 @@ export async function streamChatViaRun(c: Context, execution: ChatCompletionExec
     const state = newState();
     const outputMode = streamingOutputPolicyMode(deps.runOutputPolicy);
     const structuredResponse = isStructuredResponseFormat(body.response_format);
+    let suggestions: ChatSuggestion[] = [];
     let writeChain: Promise<void> = Promise.resolve();
     const write = (data: string) => { writeChain = writeChain.then(() => stream.writeSSE({ data })).catch(() => {}); };
     const onEvent = makeOnEvent(
@@ -410,6 +414,16 @@ export async function streamChatViaRun(c: Context, execution: ChatCompletionExec
         if ((outputMode === "buffer" || structuredResponse) && state.finalText) {
           await stream.writeSSE({ data: sseChunk(completionId, { content: state.finalText }) });
         }
+        suggestions = await suggestionsForCompletion(
+          execution,
+          state.finalText,
+          abortController.signal,
+        );
+        if (suggestions.length > 0) {
+          await stream.writeSSE({
+            data: ssePolpoChunk(completionId, { suggestions }),
+          });
+        }
         await stream.writeSSE({ data: sseChunk(completionId, {}, "stop") });
         await stream.writeSSE({ data: "[DONE]" });
       }
@@ -441,7 +455,12 @@ export async function streamChatViaRun(c: Context, execution: ChatCompletionExec
     } finally {
       clearInterval(heartbeat);
       try {
-        await finishCommon(execution, state, assistantMsgId);
+        await finishCommon(
+          execution,
+          state,
+          assistantMsgId,
+          suggestions.length > 0 ? { suggestions } : undefined,
+        );
       } finally {
         await steeringScope.release();
       }
@@ -457,6 +476,7 @@ export async function runNonStreamingChatViaRun(c: Context, execution: ChatCompl
 
   let assistantMsgId: string | null = null;
   const state = newState();
+  let suggestions: ChatSuggestion[] = [];
   const onEvent = makeOnEvent(execution, state, () => { /* no SSE in non-streaming mode */ });
 
   try {
@@ -515,7 +535,17 @@ export async function runNonStreamingChatViaRun(c: Context, execution: ChatCompl
       }
       return c.json({ error }, 400 as any);
     }
-    return c.json(completionResponse(completionId, state.finalText, state.totalUsage as any));
+    suggestions = await suggestionsForCompletion(
+      execution,
+      state.finalText,
+      c.req.raw.signal,
+    );
+    return c.json(completionResponse(
+      completionId,
+      state.finalText,
+      state.totalUsage as any,
+      suggestions.length > 0 ? { polpo: { suggestions } } : undefined,
+    ));
   } catch (err) {
     const structuredOutput = structuredOutputErrorEnvelope(
       err,
@@ -540,7 +570,10 @@ export async function runNonStreamingChatViaRun(c: Context, execution: ChatCompl
     return c.json({ error }, 400 as any);
   } finally {
     try {
-      await finishCommon(execution, state, assistantMsgId, { emptyFallback: "[Response interrupted]" });
+      await finishCommon(execution, state, assistantMsgId, {
+        emptyFallback: "[Response interrupted]",
+        ...(suggestions.length > 0 ? { suggestions } : {}),
+      });
     } finally {
       await steeringScope.release();
     }

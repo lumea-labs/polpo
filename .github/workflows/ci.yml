@@ -89,6 +89,7 @@ jobs:
           pnpm --filter @polpo-ai/connect pack --pack-destination /tmp/tarballs
           pnpm --filter @polpo-ai/connect-server pack --pack-destination /tmp/tarballs
           pnpm --filter @polpo-ai/connectors pack --pack-destination /tmp/tarballs
+          pnpm --filter @polpo-ai/channels pack --pack-destination /tmp/tarballs
           pnpm --filter @polpo-ai/server pack --pack-destination /tmp/tarballs
           pnpm --filter @polpo-ai/tools pack --pack-destination /tmp/tarballs
           pnpm --filter @polpo-ai/sdk pack --pack-destination /tmp/tarballs

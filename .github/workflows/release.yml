@@ -73,82 +73,87 @@ jobs:
         run: pnpm run build
 
       - name: Publish @polpo-ai/core
-        run: pnpm --filter @polpo-ai/core publish --no-git-checks --provenance --access public
+        run: node scripts/publish-package-if-missing.mjs @polpo-ai/core
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Publish @polpo-ai/file-stores
-        run: pnpm --filter @polpo-ai/file-stores publish --no-git-checks --provenance --access public
+        run: node scripts/publish-package-if-missing.mjs @polpo-ai/file-stores
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Publish @polpo-ai/vault-crypto
-        run: pnpm --filter @polpo-ai/vault-crypto publish --no-git-checks --provenance --access public
+        run: node scripts/publish-package-if-missing.mjs @polpo-ai/vault-crypto
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Publish @polpo-ai/drizzle
-        run: pnpm --filter @polpo-ai/drizzle publish --no-git-checks --provenance --access public
+        run: node scripts/publish-package-if-missing.mjs @polpo-ai/drizzle
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Publish @polpo-ai/llm
-        run: pnpm --filter @polpo-ai/llm publish --no-git-checks --provenance --access public
+        run: node scripts/publish-package-if-missing.mjs @polpo-ai/llm
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Publish @polpo-ai/connect
-        run: pnpm --filter @polpo-ai/connect publish --no-git-checks --provenance --access public
+        run: node scripts/publish-package-if-missing.mjs @polpo-ai/connect
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Publish @polpo-ai/connect-server
-        run: pnpm --filter @polpo-ai/connect-server publish --no-git-checks --provenance --access public
+        run: node scripts/publish-package-if-missing.mjs @polpo-ai/connect-server
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Publish @polpo-ai/connectors
-        run: pnpm --filter @polpo-ai/connectors publish --no-git-checks --provenance --access public
+        run: node scripts/publish-package-if-missing.mjs @polpo-ai/connectors
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Publish @polpo-ai/channels
+        run: node scripts/publish-package-if-missing.mjs @polpo-ai/channels
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Publish @polpo-ai/tools
-        run: pnpm --filter @polpo-ai/tools publish --no-git-checks --provenance --access public
+        run: node scripts/publish-package-if-missing.mjs @polpo-ai/tools
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Publish @polpo-ai/server
-        run: pnpm --filter @polpo-ai/server publish --no-git-checks --provenance --access public
+        run: node scripts/publish-package-if-missing.mjs @polpo-ai/server
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Publish @polpo-ai/sdk
-        run: pnpm --filter @polpo-ai/sdk publish --no-git-checks --provenance --access public
+        run: node scripts/publish-package-if-missing.mjs @polpo-ai/sdk
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Publish @polpo-ai/react
-        run: pnpm --filter @polpo-ai/react publish --no-git-checks --provenance --access public
+        run: node scripts/publish-package-if-missing.mjs @polpo-ai/react
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Publish @polpo-ai/dashboard
-        run: pnpm --filter @polpo-ai/dashboard publish --no-git-checks --provenance --access public
+        run: node scripts/publish-package-if-missing.mjs @polpo-ai/dashboard
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Publish @polpo-ai/cli
-        run: pnpm --filter @polpo-ai/cli publish --no-git-checks --provenance --access public
+        run: node scripts/publish-package-if-missing.mjs @polpo-ai/cli
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Publish @polpo-ai/node
-        run: pnpm --filter @polpo-ai/node publish --no-git-checks --provenance --access public
+        run: node scripts/publish-package-if-missing.mjs @polpo-ai/node
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Publish polpo-ai
-        run: pnpm publish --no-git-checks --provenance --access public
+        run: node scripts/publish-package-if-missing.mjs polpo-ai
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
@@ -165,7 +170,14 @@ jobs:
 
       - name: Extract version
         id: version
-        run: echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+        shell: bash
+        run: |
+          PACKAGE_VERSION="$(node -p "require('./package.json').version")"
+          if [[ "${GITHUB_REF_TYPE}" == "tag" && "${GITHUB_REF_NAME}" != "v${PACKAGE_VERSION}" ]]; then
+            echo "Tag ${GITHUB_REF_NAME} does not match package version v${PACKAGE_VERSION}." >&2
+            exit 1
+          fi
+          echo "VERSION=${PACKAGE_VERSION}" >> "$GITHUB_OUTPUT"
 
       - uses: docker/login-action@v3
         with:
@@ -207,7 +219,7 @@ jobs:
     name: Release Notes
     runs-on: ubuntu-latest
     needs: [publish]
-    if: always() && needs.publish.result == 'success'
+    if: always() && needs.publish.result == 'success' && github.ref_type == 'tag'
     steps:
       - uses: actions/checkout@v6
       - uses: softprops/action-gh-release@v2

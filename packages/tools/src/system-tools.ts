@@ -378,7 +378,13 @@ export function createSystemTools(cwd: string, allowedTools?: string[], allowedP
   // are derived from the message log instead. Removed from the public
   // TOOL_CATALOG so it can't be configured via `allowedTools`.
   if (outputDir) {
-    tools.push(...createOutcomeToolsCore(cwd, allowedPaths, allowedTools, outputDir));
+    tools.push(...createOutcomeToolsCore(
+      cwd,
+      allowedPaths,
+      undefined,
+      outputDir,
+      _fs,
+    ));
   }
 
   // http_fetch + http_download are always included — core tools with SSRF protection

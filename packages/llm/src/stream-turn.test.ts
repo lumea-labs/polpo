@@ -3,10 +3,16 @@ import { jsonSchema, Output } from "ai";
 import { MockLanguageModelV3, convertArrayToReadableStream } from "ai/test";
 import {
   prepareModelMessagesForProvider,
+  prepareModelMessagesForTransport,
   normalizeResponseMessagesForHistory,
   streamModelTurn,
   type ModelTurnEvent,
 } from "./stream-turn.js";
+
+const openAIGatewayTransport = {
+  provider: "gateway",
+  modelId: "openai/gpt-5.6-terra",
+} as const;
 
 function usage() {
   return {
@@ -391,6 +397,253 @@ describe("streamModelTurn", () => {
 
     const once = prepareModelMessagesForProvider(history);
     expect(prepareModelMessagesForProvider(once)).toEqual(once);
+  });
+
+  it("flattens legacy tool_search history before OpenAI Responses replay", () => {
+    const history = [
+      {
+        role: "assistant",
+        content: [
+          { type: "reasoning", text: "find a tool" },
+          {
+            type: "tool-call",
+            toolCallId: "search_1",
+            toolName: "tool_search",
+            input: { query: "slack" },
+          },
+        ],
+      },
+      {
+        role: "tool",
+        content: [{
+          type: "tool-result",
+          toolCallId: "search_1",
+          toolName: "tool_search",
+          output: { type: "json", value: { tools: ["slack_send_message"] } },
+        }],
+      },
+      { role: "user", content: "Continue" },
+    ] as any;
+
+    const prepared = prepareModelMessagesForTransport(history, openAIGatewayTransport);
+    const serialized = JSON.stringify(prepared);
+    const callTranscript = (prepared[0] as any).content[0].text as string;
+    const resultTranscript = (prepared[1] as any).content as string;
+
+    expect(serialized).not.toContain('"toolName":"tool_search"');
+    expect(serialized).not.toContain('"type":"reasoning"');
+    expect(JSON.parse(callTranscript.split("\n")[1])).toEqual([{
+      id: "search_1",
+      name: "tool_search",
+      arguments: { query: "slack" },
+    }]);
+    expect(JSON.parse(resultTranscript.split("\n")[1])).toEqual([{
+      id: "search_1",
+      name: "tool_search",
+      output: { type: "json", value: { tools: ["slack_send_message"] } },
+    }]);
+    expect(history[0].content).toHaveLength(2);
+  });
+
+  it("preserves unrelated parallel tool calls and flushes their results before the legacy transcript", () => {
+    const prepared = prepareModelMessagesForTransport([
+      {
+        role: "assistant",
+        content: [
+          { type: "tool-call", toolCallId: "search_1", toolName: "tool_search", input: { query: "files" } },
+          { type: "tool-call", toolCallId: "bash_1", toolName: "bash", input: { command: "pwd" } },
+        ],
+      },
+      {
+        role: "tool",
+        content: [{
+          type: "tool-result",
+          toolCallId: "search_1",
+          toolName: "tool_search",
+          output: { type: "json", value: { tools: [] } },
+        }],
+      },
+      {
+        role: "tool",
+        content: [{
+          type: "tool-result",
+          toolCallId: "bash_1",
+          toolName: "bash",
+          output: { type: "text", value: "/workspace" },
+        }],
+      },
+      { role: "user", content: "Continue" },
+    ] as any, openAIGatewayTransport);
+
+    expect(prepared).toEqual([
+      {
+        role: "assistant",
+        content: [
+          { type: "tool-call", toolCallId: "bash_1", toolName: "bash", input: { command: "pwd" } },
+          expect.objectContaining({ type: "text", text: expect.stringContaining('"query":"files"') }),
+        ],
+      },
+      {
+        role: "tool",
+        content: [{
+          type: "tool-result",
+          toolCallId: "bash_1",
+          toolName: "bash",
+          output: { type: "text", value: "/workspace" },
+        }],
+      },
+      { role: "user", content: expect.stringContaining('"name":"tool_search"') },
+      { role: "user", content: "Continue" },
+    ]);
+  });
+
+  it("does not rewrite tool_search history for non-OpenAI transports", () => {
+    const history = [
+      {
+        role: "assistant",
+        content: [{ type: "tool-call", toolCallId: "search_1", toolName: "tool_search", input: { query: "slack" } }],
+      },
+      {
+        role: "tool",
+        content: [{
+          type: "tool-result",
+          toolCallId: "search_1",
+          toolName: "tool_search",
+          output: { type: "text", value: "ok" },
+        }],
+      },
+    ] as any;
+
+    expect(prepareModelMessagesForTransport(history, {
+      provider: "anthropic.messages",
+      modelId: "claude-opus-4-6",
+    })).toEqual(history);
+  });
+
+  it("does not rewrite tool_search history for OpenAI Chat Completions", () => {
+    const history = [
+      {
+        role: "assistant",
+        content: [{ type: "tool-call", toolCallId: "search_1", toolName: "tool_search", input: { query: "slack" } }],
+      },
+      {
+        role: "tool",
+        content: [{
+          type: "tool-result",
+          toolCallId: "search_1",
+          toolName: "tool_search",
+          output: { type: "text", value: "ok" },
+        }],
+      },
+    ] as any;
+
+    expect(prepareModelMessagesForTransport(history, {
+      provider: "openai.chat",
+      modelId: "gpt-4.1",
+    })).toEqual(history);
+  });
+
+  it("covers custom providers backed by the OpenAI Responses adapter", () => {
+    const prepared = prepareModelMessagesForTransport([
+      {
+        role: "assistant",
+        content: [{ type: "tool-call", toolCallId: "search_1", toolName: "tool_search", input: { query: "slack" } }],
+      },
+      {
+        role: "tool",
+        content: [{
+          type: "tool-result",
+          toolCallId: "search_1",
+          toolName: "tool_search",
+          output: { type: "text", value: "ok" },
+        }],
+      },
+    ] as any, {
+      provider: "private-gateway.responses",
+      modelId: "custom-model",
+    });
+
+    expect(JSON.stringify(prepared)).not.toContain('"toolName":"tool_search"');
+    expect(JSON.stringify(prepared)).toContain("Polpo tool call");
+  });
+
+  it("preserves the genuine provider-executed OpenAI tool_search", () => {
+    const history = [{
+      role: "assistant",
+      content: [
+        {
+          type: "tool-call",
+          toolCallId: "native_search_1",
+          toolName: "tool_search",
+          input: { arguments: { query: "slack" } },
+          providerExecuted: true,
+        },
+        {
+          type: "tool-result",
+          toolCallId: "native_search_1",
+          toolName: "tool_search",
+          output: { type: "json", value: { tools: [] } },
+          providerExecuted: true,
+        },
+      ],
+    }] as any;
+
+    expect(prepareModelMessagesForTransport(history, openAIGatewayTransport)).toEqual(history);
+  });
+
+  it("applies the OpenAI collision defense at the stream boundary", async () => {
+    let providerPrompt: unknown;
+    const model = new MockLanguageModelV3({
+      provider: "gateway",
+      modelId: "openai/gpt-5.6-terra",
+      doGenerate: {
+        content: [{ type: "text", text: "unused" }],
+        finishReason: { unified: "stop", raw: undefined },
+        usage: usage(),
+        warnings: [],
+      },
+      doStream: async (options) => {
+        providerPrompt = options.prompt;
+        return {
+          stream: convertArrayToReadableStream([
+            { type: "stream-start", warnings: [] },
+            { type: "text-start", id: "txt_1" },
+            { type: "text-delta", id: "txt_1", delta: "Recovered" },
+            { type: "text-end", id: "txt_1" },
+            { type: "finish", finishReason: { unified: "stop", raw: undefined }, usage: usage() },
+          ] as any[]),
+        };
+      },
+    });
+
+    await streamModelTurn({
+      model,
+      messages: [
+        {
+          role: "assistant",
+          content: [{
+            type: "tool-call",
+            toolCallId: "legacy_search_1",
+            toolName: "tool_search",
+            input: { query: "slack" },
+          }],
+        },
+        {
+          role: "tool",
+          content: [{
+            type: "tool-result",
+            toolCallId: "legacy_search_1",
+            toolName: "tool_search",
+            output: { type: "json", value: { tools: [] } },
+          }],
+        },
+        { role: "user", content: "Continue" },
+      ] as any,
+    });
+
+    expect(JSON.stringify(providerPrompt)).not.toContain('"toolName":"tool_search"');
+    expect(JSON.stringify(providerPrompt)).toContain("Polpo tool call");
+    expect(JSON.stringify(providerPrompt)).toContain("Polpo tool result");
   });
 
   it("treats an approval response as a resolved tool call", async () => {

@@ -244,6 +244,8 @@ export interface PolpoSettings {
    *  durable runtime. "inline" keeps the older completions-route loop as an
    *  explicit compatibility escape hatch while that legacy path exists. */
   chatExecution?: "inline" | "run";
+  /** Client-facing chat interaction policy. */
+  chat?: import("../chat-interactions.js").ChatInteractionSettings;
   /** Injection-safe runtime context handling. Default: "off". */
   contextTrust?: RuntimeContextTrustMode;
   /** PostgreSQL connection URL (required when storage is "postgres").

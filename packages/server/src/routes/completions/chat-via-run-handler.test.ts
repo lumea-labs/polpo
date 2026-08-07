@@ -59,6 +59,266 @@ function baseDeps(overrides: Partial<CompletionRouteDeps> = {}): CompletionRoute
 }
 
 describe("chat via Run driver", () => {
+  it("exposes ask-user only on compatible non-channel surfaces", async () => {
+    const visibleTools: string[][] = [];
+    const deps = baseDeps({
+      runChatViaRun: async (inject, hooks) => {
+        visibleTools.push([...Object.keys(inject.toolSet ?? {})]);
+        hooks.onEvent({ type: "text-delta", text: "done" });
+        return { status: "completed", result: { exitCode: 0, stdout: "done", stderr: "" } };
+      },
+    });
+    const body: CompletionRequestBody = {
+      agent: "agent-1",
+      stream: false,
+      messages: [{ role: "user", content: "start" }],
+    };
+
+    await runConversationTurn(deps, { body });
+    await runConversationTurn(deps, {
+      body: {
+        ...body,
+        polpo: { capabilities: { ask_user_question: true } },
+      },
+      runtime: { surface: "channel", source: "channel" },
+    });
+
+    expect(visibleTools[0]).toContain("ask_user_question");
+    expect(visibleTools[1]).not.toContain("ask_user_question");
+  });
+
+  it("streams kind-free suggestions before the final stop chunk", async () => {
+    const suggestionModel = new MockLanguageModelV3({
+      doGenerate: {
+        content: [{
+          type: "text",
+          text: JSON.stringify({
+            suggestions: [{
+              label: "Add tests",
+              prompt: "Add tests for this change.",
+            }],
+          }),
+        }],
+        finishReason: { unified: "stop", raw: undefined },
+        usage: {
+          inputTokens: { total: 5 },
+          outputTokens: { total: 3 },
+        },
+        warnings: [],
+      },
+    } as any);
+    const onAuxiliaryModelFinished = vi.fn();
+    const deps = baseDeps({
+      getConfig: () => ({
+        settings: {
+          chatExecution: "run",
+          chat: { suggestions: { enabled: true, maxItems: 3 } },
+        },
+      }),
+      resolveAgentModel: async () => ({
+        model: {
+          id: "mock-model",
+          name: "Mock Model",
+          provider: "mock",
+          runtimeMode: "provider",
+          aiModel: suggestionModel,
+          contextWindow: 200_000,
+          maxTokens: 8192,
+        },
+      }),
+      onAuxiliaryModelFinished,
+    });
+
+    const response = await completionRoutes(() => deps).request("/", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        agent: "agent-1",
+        stream: true,
+        messages: [{ role: "user", content: "implement it" }],
+        polpo: { capabilities: { suggestions: true } },
+      }),
+    });
+
+    expect(response.status).toBe(200);
+    const chunks = parseSse(await response.text());
+    const suggestionIndex = chunks.findIndex((chunk) => chunk.polpo?.suggestions);
+    const stopIndex = chunks.findIndex((chunk) => chunk.choices?.[0]?.finish_reason === "stop");
+    expect(suggestionIndex).toBeGreaterThanOrEqual(0);
+    expect(suggestionIndex).toBeLessThan(stopIndex);
+    expect(chunks[suggestionIndex].polpo.suggestions[0]).toEqual({
+      id: expect.stringMatching(/^suggestion_/),
+      label: "Add tests",
+      prompt: "Add tests for this change.",
+    });
+    expect(chunks[suggestionIndex].polpo.suggestions[0]).not.toHaveProperty("kind");
+    expect(onAuxiliaryModelFinished).toHaveBeenCalledWith(expect.objectContaining({
+      operation: "chat_suggestions",
+      model: "mock-model",
+    }));
+  });
+
+  it("returns kind-free suggestions on non-streaming completions", async () => {
+    const suggestionModel = new MockLanguageModelV3({
+      doGenerate: {
+        content: [{
+          type: "text",
+          text: JSON.stringify({
+            suggestions: [{
+              label: "Review the diff",
+              prompt: "Review the implementation diff.",
+            }],
+          }),
+        }],
+        finishReason: { unified: "stop", raw: undefined },
+        usage: {
+          inputTokens: { total: 5 },
+          outputTokens: { total: 3 },
+        },
+        warnings: [],
+      },
+    } as any);
+    const deps = baseDeps({
+      getConfig: () => ({
+        settings: {
+          chatExecution: "run",
+          chat: { suggestions: { enabled: true, maxItems: 3 } },
+        },
+      }),
+      resolveAgentModel: async () => ({
+        model: {
+          id: "mock-model",
+          provider: "mock",
+          aiModel: suggestionModel,
+          contextWindow: 200_000,
+          maxTokens: 8192,
+        },
+      }),
+    });
+
+    const response = await completionRoutes(() => deps).request("/", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        agent: "agent-1",
+        stream: false,
+        messages: [{ role: "user", content: "implement it" }],
+        polpo: { capabilities: { suggestions: true } },
+      }),
+    });
+
+    expect(response.status).toBe(200);
+    const body = await response.json() as any;
+    expect(body.choices[0].finish_reason).toBe("stop");
+    expect(body.polpo.suggestions[0]).toEqual({
+      id: expect.stringMatching(/^suggestion_/),
+      label: "Review the diff",
+      prompt: "Review the implementation diff.",
+    });
+    expect(body.polpo.suggestions[0]).not.toHaveProperty("kind");
+  });
+
+  it("supports suggestions on the inline streaming path", async () => {
+    const model = new MockLanguageModelV3({
+      doStream: {
+        stream: convertArrayToReadableStream([
+          { type: "stream-start", warnings: [] },
+          { type: "text-start", id: "text_1" },
+          { type: "text-delta", id: "text_1", delta: "Implementation complete." },
+          { type: "text-end", id: "text_1" },
+          { type: "finish", finishReason: { unified: "stop", raw: undefined }, usage: mockUsage },
+        ] as any[]),
+      },
+      doGenerate: {
+        content: [{
+          type: "text",
+          text: JSON.stringify({
+            suggestions: [{ label: "Run tests", prompt: "Run the full test suite." }],
+          }),
+        }],
+        finishReason: { unified: "stop", raw: undefined },
+        usage: {
+          inputTokens: { total: 4 },
+          outputTokens: { total: 2 },
+        },
+        warnings: [],
+      },
+    } as any);
+    const deps = baseDeps({
+      getConfig: () => ({
+        settings: {
+          chatExecution: "inline",
+          chat: { suggestions: { enabled: true, maxItems: 2 } },
+        },
+      }),
+      resolveAgentModel: async () => ({
+        model: {
+          id: "mock-model",
+          provider: "mock",
+          aiModel: model,
+          contextWindow: 200_000,
+          maxTokens: 8192,
+        },
+      }),
+    });
+
+    const response = await completionRoutes(() => deps).request("/", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        agent: "agent-1",
+        stream: true,
+        messages: [{ role: "user", content: "implement it" }],
+        polpo: { capabilities: { suggestions: true } },
+      }),
+    });
+
+    expect(response.status).toBe(200);
+    const chunks = parseSse(await response.text());
+    const suggestionIndex = chunks.findIndex((chunk) => chunk.polpo?.suggestions);
+    const stopIndex = chunks.findIndex((chunk) => chunk.choices?.[0]?.finish_reason === "stop");
+    expect(suggestionIndex).toBeGreaterThanOrEqual(0);
+    expect(suggestionIndex).toBeLessThan(stopIndex);
+    expect(chunks[suggestionIndex].polpo.suggestions[0]).toMatchObject({
+      label: "Run tests",
+      prompt: "Run the full test suite.",
+    });
+  });
+
+  it("never generates suggestions for channel turns", async () => {
+    const doGenerate = vi.fn();
+    const deps = baseDeps({
+      getConfig: () => ({
+        settings: {
+          chatExecution: "run",
+          chat: { suggestions: { enabled: true, maxItems: 3 } },
+        },
+      }),
+      resolveAgentModel: async () => ({
+        model: {
+          id: "mock-model",
+          provider: "mock",
+          aiModel: new MockLanguageModelV3({ doGenerate } as any),
+          contextWindow: 200_000,
+          maxTokens: 8192,
+        },
+      }),
+    });
+
+    const result = await runConversationTurn(deps, {
+      body: {
+        agent: "agent-1",
+        stream: false,
+        messages: [{ role: "user", content: "hello" }],
+        polpo: { capabilities: { suggestions: true } },
+      },
+      runtime: { surface: "channel", source: "channel" },
+    });
+
+    expect(result.text).toBe("hello");
+    expect(doGenerate).not.toHaveBeenCalled();
+  });
+
   it("exposes one stable run id to the client and runtime steering host", async () => {
     let runtimeRunId: string | undefined;
     const deps = baseDeps({
@@ -94,7 +354,7 @@ describe("chat via Run driver", () => {
         if (turn === 1) {
           return { stream: convertArrayToReadableStream([
             { type: "stream-start", warnings: [] },
-            { type: "tool-call", toolCallId: "load_1", toolName: "tool_load", input: JSON.stringify({ names: ["calculate"] }) },
+            { type: "tool-call", toolCallId: "load_1", toolName: "polpo_tool_load", input: JSON.stringify({ names: ["calculate"] }) },
             { type: "finish", finishReason: { unified: "tool-calls", raw: undefined }, usage: mockUsage },
           ] as any[]) };
         }
@@ -154,7 +414,7 @@ describe("chat via Run driver", () => {
 
     expect(response.status).toBe(200);
     expect((await response.json() as any).choices[0].message.content).toBe("42");
-    expect(visibleByTurn[0]).toEqual(expect.arrayContaining(["tool_list", "tool_search", "tool_load"]));
+    expect(visibleByTurn[0]).toEqual(expect.arrayContaining(["polpo_tool_list", "polpo_tool_search", "polpo_tool_load"]));
     expect(visibleByTurn[0]).not.toContain("calculate");
     expect(visibleByTurn[1]).toContain("calculate");
     expect(execute).toHaveBeenCalledOnce();
@@ -165,14 +425,14 @@ describe("chat via Run driver", () => {
     const execute = vi.fn(async () => "done");
     const runChatViaRun = vi.fn(async (inject: any) => {
       expect(inject.activeToolNames()).toEqual(expect.arrayContaining([
-        "tool_list",
-        "tool_search",
-        "tool_load",
+        "polpo_tool_list",
+        "polpo_tool_search",
+        "polpo_tool_load",
         "ask_user_question",
       ]));
       expect(inject.activeToolNames()).not.toContain("calculate");
       await expect(inject.executor("calculate", { value: 2 })).resolves.toContain("not active");
-      await inject.executor("tool_load", { names: ["calculate"] });
+      await inject.executor("polpo_tool_load", { names: ["calculate"] });
       expect(inject.activeToolNames()).toContain("calculate");
       await expect(inject.executor("calculate", { value: 2 })).resolves.toBe("done");
       return { status: "completed", result: { exitCode: 0, stdout: "done", stderr: "" } };

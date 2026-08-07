@@ -36,6 +36,21 @@ export function sseChunk(
   });
 }
 
+/** OpenAI-compatible empty delta carrying a namespaced Polpo extension. */
+export function ssePolpoChunk(
+  id: string,
+  polpo: Record<string, unknown>,
+): string {
+  return JSON.stringify({
+    id,
+    object: "chat.completion.chunk",
+    created: Math.floor(Date.now() / 1000),
+    model: "polpo",
+    choices: [{ index: 0, delta: {}, finish_reason: null }],
+    polpo,
+  });
+}
+
 function errorObjects(err: unknown): Record<string, any>[] {
   const queue: unknown[] = [err];
   const seen = new Set<unknown>();

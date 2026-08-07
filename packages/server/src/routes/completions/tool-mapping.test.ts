@@ -57,6 +57,25 @@ describe("persistAssistantMessage", () => {
     // original must not be mutated
     expect(toolCalls[0]!.arguments.credentials.password).toBe("s3cret");
   });
+
+  it("persists generated suggestions with the assistant message", async () => {
+    const store = fakeStore();
+    const suggestions = [{
+      id: "suggestion_tests",
+      label: "Add tests",
+      prompt: "Add tests for this change.",
+    }];
+
+    await persistAssistantMessage(store, "s1", "m1", "done", [], { suggestions });
+
+    expect(store.updateMessage).toHaveBeenCalledWith(
+      "s1",
+      "m1",
+      "done",
+      [],
+      suggestions,
+    );
+  });
 });
 
 describe("toPortableToolInputSchema", () => {

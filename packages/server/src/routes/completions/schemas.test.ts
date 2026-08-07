@@ -163,3 +163,32 @@ describe("completion request tool-call history", () => {
     expect((parsed.messages[0] as any).tool_calls[0].function.arguments).toBe("{}");
   });
 });
+
+describe("completion request Polpo chat capabilities", () => {
+  it("accepts explicit ask-user and suggestions support", () => {
+    expect(completionRequestSchema.parse({
+      ...request,
+      polpo: {
+        capabilities: {
+          ask_user_question: true,
+          suggestions: true,
+        },
+      },
+    }).polpo).toEqual({
+      capabilities: {
+        ask_user_question: true,
+        suggestions: true,
+      },
+    });
+  });
+
+  it.each([
+    { capabilities: { suggestions: "yes" } },
+    { capabilities: { unknown: true } },
+    { capabilities: true },
+    { capabilities: {}, extra: true },
+    "suggestions",
+  ])("rejects malformed Polpo capabilities %#", (polpo) => {
+    expect(completionRequestSchema.safeParse({ ...request, polpo }).success).toBe(false);
+  });
+});

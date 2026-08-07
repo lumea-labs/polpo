@@ -15,7 +15,10 @@ import {
 } from "@polpo-ai/core/schemas";
 import { normalizeRuntimeGuardrailSettings } from "@polpo-ai/core/guardrails";
 import { validateExecutionRouterConfig } from "@polpo-ai/core/execution-router";
-import { validateAgentModelRoutingConfig } from "@polpo-ai/core";
+import {
+  normalizeChatInteractionSettings,
+  validateAgentModelRoutingConfig,
+} from "@polpo-ai/core";
 import { getPolpoDir } from "./constants.js";
 
 const DEFAULT_SETTINGS: PolpoSettings = {
@@ -210,6 +213,7 @@ function parseSettings(raw: any): PolpoSettings {
   settings.chatExecution = ["inline", "run"].includes(raw?.chatExecution)
     ? raw.chatExecution
     : DEFAULT_SETTINGS.chatExecution;
+  settings.chat = normalizeChatInteractionSettings(raw?.chat);
   settings.contextTrust = raw?.contextTrust === "enforce"
     ? "enforce"
     : DEFAULT_SETTINGS.contextTrust;

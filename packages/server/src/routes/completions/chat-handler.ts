@@ -18,11 +18,14 @@ import {
   type RuntimePlan,
   type RuntimeContextResolution,
 } from "@polpo-ai/core";
+import type {
+  ChatSuggestion,
+  ResolvedChatInteractionCapabilities,
+} from "@polpo-ai/core/chat-interactions";
 import { runModelPolicyTurn } from "@polpo-ai/llm";
 import { Output, type LanguageModelUsage } from "ai";
-import type { RuntimeSandboxOptions } from "@polpo-ai/core";
 import type { CompletionRouteDeps } from "../completions.js";
-import type { CompletionResponseFormat } from "./schemas.js";
+import type { CompletionRequestBody } from "./schemas.js";
 import {
   agentConfigForModelAttempt,
   buildSummarizeFn,
@@ -38,6 +41,7 @@ import {
   modelErrorEnvelope,
   modelNotFoundEnvelope,
   sseChunk,
+  ssePolpoChunk,
   structuredOutputErrorEnvelope,
 } from "./sse.js";
 import {
@@ -51,6 +55,7 @@ import {
   recordProviderToolCall,
   toAITools,
 } from "./tool-mapping.js";
+import { suggestionsForCompletion } from "./chat-interaction-runtime.js";
 import type { CompletionToolExecutor } from "./tool-guardrails.js";
 import {
   applyCompletionOutputPolicy,
@@ -66,11 +71,13 @@ import {
 export interface ChatCompletionExecution {
   deps: CompletionRouteDeps;
   body: {
+    messages?: CompletionRequestBody["messages"];
     stream?: boolean;
     agent?: string;
     user?: string;
-    sandbox?: RuntimeSandboxOptions;
-    response_format?: CompletionResponseFormat;
+    sandbox?: CompletionRequestBody["sandbox"];
+    response_format?: CompletionRequestBody["response_format"];
+    polpo?: CompletionRequestBody["polpo"];
   };
   completionId: string;
   /** Resolved agent config (agent-direct mode). Used by chat-via-executeRun
@@ -86,6 +93,10 @@ export interface ChatCompletionExecution {
   modelOutput?: Output.Output<unknown, unknown, unknown>;
   effectiveTools: any[];
   effectiveToolExecutor: CompletionToolExecutor;
+  /** Effective client interaction support after project and surface policy. */
+  interactionCapabilities?: ResolvedChatInteractionCapabilities;
+  clientSideTools?: Record<string, any>;
+  clientSideToolNames?: Set<string>;
   /** Dynamic model-facing pool for progressive disclosure. */
   activeToolNames?: () => string[];
   /** Dynamic Polpo tool definitions used for compaction estimation. */
@@ -132,8 +143,12 @@ function mergeAiTools(exec: ChatCompletionExecution): Record<string, any> {
   return {
     ...toAITools(exec.effectiveTools),
     ...(exec.extraAiTools ?? {}),
-    ...CLIENT_SIDE_TOOLS,
+    ...(exec.clientSideTools ?? CLIENT_SIDE_TOOLS),
   };
+}
+
+function clientSideToolNames(exec: ChatCompletionExecution): Set<string> {
+  return exec.clientSideToolNames ?? CLIENT_SIDE_TOOL_NAMES;
 }
 
 /** Streaming chat mode — SSE stream of OpenAI-format chunks. */
@@ -188,6 +203,7 @@ export function streamChatCompletion(c: any, exec: ChatCompletionExecution): any
     const toolCallsAccum: any[] = [];
     let lastProviderMetadata: Record<string, unknown> | undefined;
     let outputPolicyApplied = false;
+    let suggestions: ChatSuggestion[] = [];
     const finalizeOutput = async (validateStructured = true) => {
       if (outputPolicyApplied) return;
       finalText = await applyCompletionOutputPolicy({
@@ -378,7 +394,7 @@ export function streamChatCompletion(c: any, exec: ChatCompletionExecution): any
         if (dispatchableToolCalls.length === 0) continue;
 
         // ── Client-side tools — return to client as standard tool_calls ──
-        const clientSideCall = dispatchableToolCalls.find((tc: any) => CLIENT_SIDE_TOOL_NAMES.has(tc.toolName));
+        const clientSideCall = dispatchableToolCalls.find((tc: any) => clientSideToolNames(exec).has(tc.toolName));
         if (clientSideCall) {
           // Persist for session history
           toolCallsAccum.push({
@@ -571,6 +587,12 @@ export function streamChatCompletion(c: any, exec: ChatCompletionExecution): any
 
       if (!abortController.signal.aborted) {
         await finalizeOutput();
+        suggestions = await suggestionsForCompletion(exec, finalText, abortController.signal);
+        if (suggestions.length > 0) {
+          await stream.writeSSE({
+            data: ssePolpoChunk(completionId, { suggestions }),
+          });
+        }
         await stream.writeSSE({ data: sseChunk(completionId, {}, "stop") });
         await stream.writeSSE({ data: "[DONE]" });
       }
@@ -615,7 +637,14 @@ export function streamChatCompletion(c: any, exec: ChatCompletionExecution): any
       clearInterval(heartbeatInterval);
       // Always persist the assistant response — even on disconnect.
       // (Vault credentials are redacted inside persistAssistantMessage.)
-      await persistAssistantMessage(sessionStore, sessionId, assistantMsgId, finalText, toolCallsAccum);
+      await persistAssistantMessage(
+        sessionStore,
+        sessionId,
+        assistantMsgId,
+        finalText,
+        toolCallsAccum,
+        suggestions.length > 0 ? { suggestions } : undefined,
+      );
       // Notify consumer (e.g. metering) — fire-and-forget
       try {
         deps.onCompletionFinished?.({
@@ -666,6 +695,7 @@ export async function runNonStreamingChatCompletion(c: any, exec: ChatCompletion
   const toolCallsAccum: any[] = [];
   let lastProviderMetadata: Record<string, unknown> | undefined;
   let outputPolicyApplied = false;
+  let suggestions: ChatSuggestion[] = [];
   const finalizeOutput = async (validateStructured = true) => {
     if (outputPolicyApplied) return;
     finalText = await applyCompletionOutputPolicy({
@@ -767,7 +797,7 @@ export async function runNonStreamingChatCompletion(c: any, exec: ChatCompletion
       if (dispatchableToolCalls.length === 0) continue;
 
       // ── Client-side tools — return to client as standard tool_calls ──
-      const clientSideCall = dispatchableToolCalls.find((tc: any) => CLIENT_SIDE_TOOL_NAMES.has(tc.toolName));
+      const clientSideCall = dispatchableToolCalls.find((tc: any) => clientSideToolNames(exec).has(tc.toolName));
       if (clientSideCall) {
         toolCallsAccum.push({
           id: clientSideCall.toolCallId,
@@ -988,7 +1018,13 @@ export async function runNonStreamingChatCompletion(c: any, exec: ChatCompletion
     }
 
     await finalizeOutput();
-    return c.json(completionResponse(completionId, finalText, totalUsage));
+    suggestions = await suggestionsForCompletion(exec, finalText, c.req.raw.signal);
+    return c.json(completionResponse(
+      completionId,
+      finalText,
+      totalUsage,
+      suggestions.length > 0 ? { polpo: { suggestions } } : undefined,
+    ));
   } catch (err) {
     // Friendly model_not_found surface — gateway returns 404 for
     // renamed/deprecated SKUs (e.g. xai/grok-4-fast after the 4.1
@@ -1018,6 +1054,7 @@ export async function runNonStreamingChatCompletion(c: any, exec: ChatCompletion
     // (Vault credentials are redacted inside persistAssistantMessage.)
     await persistAssistantMessage(sessionStore, sessionId, assistantMsgId, finalText, toolCallsAccum, {
       emptyFallback: "[Response interrupted]",
+      ...(suggestions.length > 0 ? { suggestions } : {}),
     });
     // Notify consumer (e.g. metering) — fire-and-forget
     try {
