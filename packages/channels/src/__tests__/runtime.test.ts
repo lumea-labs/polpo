@@ -90,6 +90,7 @@ function createRuntime(options: {
   coordinateTurn?: ConstructorParameters<typeof ChannelRuntime>[0]["coordinateTurn"];
   handleTurn?: ConstructorParameters<typeof ChannelRuntime>[0]["handleTurn"];
   onEvent?: ConstructorParameters<typeof ChannelRuntime>[0]["onEvent"];
+  shouldStartTyping?: ConstructorParameters<typeof ChannelRuntime>[0]["shouldStartTyping"];
 } = {}): ChannelRuntime {
   const adapter = options.adapter ?? testAdapter();
   const runtime = new ChannelRuntime({
@@ -97,6 +98,7 @@ function createRuntime(options: {
     coordinateTurn: options.coordinateTurn,
     handleTurn: options.handleTurn ?? (async () => ({ text: "reply" })),
     onEvent: options.onEvent,
+    shouldStartTyping: options.shouldStartTyping,
     stateFactory: () => createMockState(),
   });
   runtimes.push(runtime);
@@ -118,6 +120,7 @@ describe("ChannelRuntime", () => {
     expect(handleTurn).toHaveBeenCalledOnce();
     expect(handleTurn).toHaveBeenCalledWith(expect.objectContaining({
       channelId: "telegram:chat-1",
+      credentialRevision: "revision-1",
       installationId: "installation-1",
       isDirectMessage: true,
       provider: "telegram",
@@ -201,6 +204,37 @@ describe("ChannelRuntime", () => {
     expect(adapter.postMessage).toHaveBeenCalledOnce();
     expect(events).toContain("typing.failed");
     expect(events).toContain("turn.completed");
+  });
+
+  it("lets the host suppress typing without suppressing the turn", async () => {
+    const adapter = testAdapter();
+    const handleTurn = vi.fn(async () => ({ text: "shadow-safe" }));
+    const runtime = createRuntime({
+      adapter,
+      handleTurn,
+      shouldStartTyping: () => false,
+    });
+
+    await runtime.handleWebhook(installation(), webhookRequest("message-1"));
+
+    expect(adapter.startTyping).not.toHaveBeenCalled();
+    expect(handleTurn).toHaveBeenCalledOnce();
+    expect(adapter.postMessage).toHaveBeenCalledOnce();
+  });
+
+  it("correlates delivery events with the inbound message", async () => {
+    const events: Array<{ name: string; messageId?: string }> = [];
+    const runtime = createRuntime({
+      handleTurn: async () => ({ text: "reply" }),
+      onEvent: (event) => events.push(event),
+    });
+
+    await runtime.handleWebhook(installation(), webhookRequest("message-1"));
+
+    expect(events).toContainEqual(expect.objectContaining({
+      messageId: "message-1",
+      name: "delivery.completed",
+    }));
   });
 
   it("buffers non-native streams and segments them without truncation", async () => {

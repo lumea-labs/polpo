@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createOfficialChannelAdapter } from "../providers.js";
 import type { ChannelInstallation } from "../types.js";
 
@@ -41,5 +41,21 @@ const installations: ChannelInstallation[] = [
 describe("createOfficialChannelAdapter", () => {
   it.each(installations)("creates the official $provider adapter", (installation) => {
     expect(createOfficialChannelAdapter(installation).name).toBe(installation.provider);
+  });
+
+  it("suppresses provider-owned typing side effects when disabled", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    const adapter = createOfficialChannelAdapter({
+      credentials: { botToken: "123:test", secretToken: "secret" },
+      credentialRevision: "1",
+      id: "telegram-shadow",
+      provider: "telegram",
+      typingEnabled: false,
+    });
+
+    await adapter.startTyping?.("telegram:123");
+
+    expect(fetchSpy).not.toHaveBeenCalled();
+    fetchSpy.mockRestore();
   });
 });

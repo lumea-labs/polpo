@@ -58,6 +58,7 @@ export type ChannelInboundMessage = {
 
 export type ChannelInboundTurn = {
   channelId: string;
+  credentialRevision: string;
   installationId: string;
   isDirectMessage: boolean;
   messages: ChannelInboundMessage[];
@@ -93,6 +94,7 @@ type ChannelInstallationBase = {
   concurrency?: ChannelConcurrencyPolicy;
   credentialRevision: string;
   id: string;
+  typingEnabled?: boolean;
   userName?: string;
 };
 
@@ -175,6 +177,7 @@ export type ChannelRuntimeOptions = {
   idleTtlMs?: number;
   maxInstances?: number;
   onEvent?: (event: ChannelRuntimeEvent) => void | Promise<void>;
+  shouldStartTyping?: (turn: ChannelInboundTurn) => boolean | Promise<boolean>;
   stateFactory?: ChannelStateFactory;
   streamingUpdateIntervalMs?: number;
 };

@@ -181,6 +181,7 @@ export class ChannelRuntime {
     const messages = [...(context?.skipped ?? []), message].map(mapMessage);
     const turn: ChannelInboundTurn = {
       channelId: thread.channelId,
+      credentialRevision: installation.credentialRevision,
       installationId: installation.id,
       isDirectMessage: thread.isDM,
       messages,
@@ -199,21 +200,26 @@ export class ChannelRuntime {
       });
 
       try {
-        try {
-          await thread.startTyping();
-        } catch (error) {
-          await this.emit({
-            channelId: thread.channelId,
-            error: errorMessage(error),
-            installationId: installation.id,
-            messageId: message.id,
-            name: "typing.failed",
-            provider: installation.provider,
-            threadId: thread.id,
-          });
+        if (
+          installation.typingEnabled !== false
+          && await (this.options.shouldStartTyping?.(turn) ?? true)
+        ) {
+          try {
+            await thread.startTyping();
+          } catch (error) {
+            await this.emit({
+              channelId: thread.channelId,
+              error: errorMessage(error),
+              installationId: installation.id,
+              messageId: message.id,
+              name: "typing.failed",
+              provider: installation.provider,
+              threadId: thread.id,
+            });
+          }
         }
         const result = await this.options.handleTurn(turn);
-        if (result) await this.deliver(installation, thread, result);
+        if (result) await this.deliver(installation, thread, result, message.id);
         await this.emit({
           channelId: thread.channelId,
           installationId: installation.id,
@@ -264,6 +270,7 @@ export class ChannelRuntime {
     installation: ChannelInstallation,
     thread: Thread,
     result: ChannelTurnResult,
+    sourceMessageId?: string,
   ): Promise<void> {
     try {
       if (
@@ -317,6 +324,7 @@ export class ChannelRuntime {
       await this.emit({
         channelId: thread.channelId,
         installationId: installation.id,
+        messageId: sourceMessageId,
         name: "delivery.completed",
         provider: installation.provider,
         threadId: thread.id,
@@ -326,6 +334,7 @@ export class ChannelRuntime {
         channelId: thread.channelId,
         error: errorMessage(error),
         installationId: installation.id,
+        messageId: sourceMessageId,
         name: "delivery.failed",
         provider: installation.provider,
         threadId: thread.id,
@@ -366,7 +375,8 @@ export class ChannelRuntime {
 }
 
 function runtimeKey(installation: ChannelInstallation): string {
-  return `${installation.provider}:${installation.id}:${installation.credentialRevision}`;
+  const typing = installation.typingEnabled === false ? "silent" : "typing";
+  return `${installation.provider}:${installation.id}:${installation.credentialRevision}:${typing}`;
 }
 
 function mapMessage(message: Message): ChannelInboundMessage {

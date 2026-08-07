@@ -80,6 +80,7 @@ class TestSessionStore implements SessionStore {
 function turn(overrides: Partial<ChannelInboundTurn> = {}): ChannelInboundTurn {
   return {
     channelId: "telegram:chat-1",
+    credentialRevision: "revision-1",
     installationId: "installation-1",
     isDirectMessage: true,
     messages: [{

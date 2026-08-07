@@ -8,36 +8,45 @@ import type { ChannelInstallation } from "./types.js";
 export function createOfficialChannelAdapter(
   installation: ChannelInstallation,
 ): Adapter {
+  let adapter: Adapter;
   switch (installation.provider) {
     case "slack":
-      return createSlackAdapter({
+      adapter = createSlackAdapter({
         botToken: installation.credentials.botToken,
         botUserId: installation.credentials.botUserId,
         mode: "webhook",
         signingSecret: installation.credentials.signingSecret,
         userName: installation.userName,
       });
+      break;
     case "telegram":
-      return createTelegramAdapter({
+      adapter = createTelegramAdapter({
         botToken: installation.credentials.botToken,
         mode: "webhook",
         secretToken: installation.credentials.secretToken,
         userName: installation.userName,
       });
+      break;
     case "discord":
-      return createDiscordAdapter({
+      adapter = createDiscordAdapter({
         applicationId: installation.credentials.applicationId,
         botToken: installation.credentials.botToken,
         publicKey: installation.credentials.publicKey,
         userName: installation.userName,
       });
+      break;
     case "whatsapp":
-      return createWhatsAppAdapter({
+      adapter = createWhatsAppAdapter({
         accessToken: installation.credentials.accessToken,
         appSecret: installation.credentials.appSecret,
         phoneNumberId: installation.credentials.phoneNumberId,
         userName: installation.userName,
         verifyToken: installation.credentials.verifyToken,
       });
+      break;
   }
+  if (installation.typingEnabled === false) {
+    adapter.startTyping = async () => {};
+  }
+  return adapter;
 }

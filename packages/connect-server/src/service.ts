@@ -42,6 +42,7 @@ export interface CreateApiKeyConnectionInput {
   projectId?: string;
   orgId?: string;
   metadata?: Record<string, unknown>;
+  secretMetadata?: Record<string, unknown>;
 }
 
 export interface CreateMcpConnectionInput {
@@ -137,7 +138,11 @@ export function createConnectService(options: CreateConnectServiceOptions): Conn
       const grantedScopes = assertAllowedScopes(provider, input.scopes ?? provider.auth.defaultScopes);
       const id = createId("conn");
       const secretRef = createId("connsec");
-      await options.secrets.setSecret(secretRef, { kind: "api_key", apiKey });
+      await options.secrets.setSecret(secretRef, {
+        kind: "api_key",
+        apiKey,
+        ...(input.secretMetadata ? { metadata: input.secretMetadata } : {}),
+      });
       return options.store.upsertConnection({
         id,
         providerId: provider.id,
