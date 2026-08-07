@@ -3,6 +3,8 @@ import {
   Chat,
   type Message,
   type MessageContext,
+  type Postable,
+  type SlashCommandEvent,
   type Thread,
 } from "chat";
 import { createOfficialChannelAdapter } from "./providers.js";
@@ -13,6 +15,7 @@ import type {
   ChannelInstallation,
   ChannelRuntimeEvent,
   ChannelRuntimeOptions,
+  ChannelStateAdapter,
   ChannelTurnResult,
   ChannelWebhookOptions,
 } from "./types.js";
@@ -24,6 +27,12 @@ type RuntimeEntry = {
   lastUsedAt: number;
 };
 
+type TurnTarget = {
+  channelId: string;
+  postable: Postable;
+  threadId: string;
+};
+
 const DEFAULT_CONCURRENCY = {
   debounceMs: 1_000,
   maxQueueSize: 20,
@@ -31,6 +40,7 @@ const DEFAULT_CONCURRENCY = {
   queueEntryTtlMs: 120_000,
   strategy: "burst" as const,
 };
+const DEFAULT_DEDUPE_TTL_MS = 10 * 60_000;
 
 export class ChannelRuntime {
   private readonly entries = new Map<string, RuntimeEntry>();
@@ -76,8 +86,16 @@ export class ChannelRuntime {
   ): Promise<void> {
     const entry = await this.getOrCreate(installation);
     entry.lastUsedAt = Date.now();
-    await this.deliver(installation, entry.chat.thread(threadId),
-      typeof result === "string" ? { text: result } : result);
+    const thread = entry.chat.thread(threadId);
+    await this.deliver(
+      installation,
+      {
+        channelId: thread.channelId,
+        postable: thread,
+        threadId: thread.id,
+      },
+      typeof result === "string" ? { text: result } : result,
+    );
   }
 
   async invalidate(installationId: string): Promise<void> {
@@ -155,6 +173,8 @@ export class ChannelRuntime {
     chat.onNewMention(handler);
     chat.onNewMessage(/[\s\S]*/, handler);
     chat.onSubscribedMessage(handler);
+    chat.onSlashCommand((event) =>
+      this.handleSlashCommand(installation, state, event));
 
     const entry: RuntimeEntry = {
       chat: chat as Chat<Record<string, never>>,
@@ -189,14 +209,71 @@ export class ChannelRuntime {
       providerEventId: message.id,
       threadId: thread.id,
     };
+    await this.executeTurn(installation, {
+      channelId: thread.channelId,
+      postable: thread,
+      threadId: thread.id,
+    }, turn);
+  }
+
+  private async handleSlashCommand(
+    installation: ChannelInstallation,
+    state: ChannelStateAdapter,
+    event: SlashCommandEvent,
+  ): Promise<void> {
+    const providerEventId = stableProviderEventId(event.raw);
+    const accepted = await state.setIfNotExists(
+      `polpo:slash-command:${installation.provider}:${installation.id}:${providerEventId}`,
+      true,
+      this.options.dedupeTtlMs ?? DEFAULT_DEDUPE_TTL_MS,
+    );
+    if (!accepted) return;
+    const text = [event.command, event.text].filter(Boolean).join(" ").trim();
+    const turn: ChannelInboundTurn = {
+      channelId: event.channel.id,
+      credentialRevision: installation.credentialRevision,
+      installationId: installation.id,
+      isDirectMessage: event.channel.isDM,
+      messages: [{
+        attachments: [],
+        author: {
+          email: event.user.email,
+          fullName: event.user.fullName,
+          isBot: event.user.isBot,
+          userId: event.user.userId,
+          userName: event.user.userName,
+        },
+        id: providerEventId,
+        isMention: true,
+        raw: event.raw,
+        text,
+        timestamp: providerTimestamp(event.raw),
+      }],
+      provider: installation.provider,
+      providerEventId,
+      threadId: event.channel.id,
+    };
+    await this.executeTurn(installation, {
+      channelId: event.channel.id,
+      postable: event.channel,
+      threadId: event.channel.id,
+    }, turn);
+  }
+
+  private async executeTurn(
+    installation: ChannelInstallation,
+    target: TurnTarget,
+    turn: ChannelInboundTurn,
+  ): Promise<void> {
+    const messageId = turn.providerEventId;
     const execute = async () => {
       await this.emit({
-        channelId: thread.channelId,
+        channelId: target.channelId,
         installationId: installation.id,
-        messageId: message.id,
+        messageId,
         name: "turn.started",
         provider: installation.provider,
-        threadId: thread.id,
+        threadId: target.threadId,
       });
 
       try {
@@ -205,38 +282,38 @@ export class ChannelRuntime {
           && await (this.options.shouldStartTyping?.(turn) ?? true)
         ) {
           try {
-            await thread.startTyping();
+            await target.postable.startTyping();
           } catch (error) {
             await this.emit({
-              channelId: thread.channelId,
+              channelId: target.channelId,
               error: errorMessage(error),
               installationId: installation.id,
-              messageId: message.id,
+              messageId,
               name: "typing.failed",
               provider: installation.provider,
-              threadId: thread.id,
+              threadId: target.threadId,
             });
           }
         }
         const result = await this.options.handleTurn(turn);
-        if (result) await this.deliver(installation, thread, result, message.id);
+        if (result) await this.deliver(installation, target, result, messageId);
         await this.emit({
-          channelId: thread.channelId,
+          channelId: target.channelId,
           installationId: installation.id,
-          messageId: message.id,
+          messageId,
           name: "turn.completed",
           provider: installation.provider,
-          threadId: thread.id,
+          threadId: target.threadId,
         });
       } catch (error) {
         await this.emit({
-          channelId: thread.channelId,
+          channelId: target.channelId,
           error: errorMessage(error),
           installationId: installation.id,
-          messageId: message.id,
+          messageId,
           name: "turn.failed",
           provider: installation.provider,
-          threadId: thread.id,
+          threadId: target.threadId,
         });
         throw error;
       }
@@ -268,7 +345,7 @@ export class ChannelRuntime {
 
   private async deliver(
     installation: ChannelInstallation,
-    thread: Thread,
+    target: TurnTarget,
     result: ChannelTurnResult,
     sourceMessageId?: string,
   ): Promise<void> {
@@ -278,7 +355,7 @@ export class ChannelRuntime {
         && installation.provider === "slack"
         && !result.files?.length
       ) {
-        await thread.post(result.stream);
+        await target.postable.post(result.stream);
       } else {
         const streamedText = result.stream
           ? await collectText(result.stream)
@@ -306,38 +383,42 @@ export class ChannelRuntime {
           ? files?.filter((_file, index) => !result.files?.[index]?.type)
           : files;
         if (segments.length === 0 && files?.length) {
-          await thread.post({ attachments, files: genericFiles, markdown: "" });
+          await target.postable.post({
+            attachments,
+            files: genericFiles,
+            markdown: "",
+          });
         } else {
           for (const [index, text] of segments.entries()) {
             if (index === 0 && files?.length) {
-              await thread.post({
+              await target.postable.post({
                 attachments,
                 files: genericFiles,
                 markdown: text,
               });
             } else {
-              await thread.post(text);
+              await target.postable.post(text);
             }
           }
         }
       }
       await this.emit({
-        channelId: thread.channelId,
+        channelId: target.channelId,
         installationId: installation.id,
         messageId: sourceMessageId,
         name: "delivery.completed",
         provider: installation.provider,
-        threadId: thread.id,
+        threadId: target.threadId,
       });
     } catch (error) {
       await this.emit({
-        channelId: thread.channelId,
+        channelId: target.channelId,
         error: errorMessage(error),
         installationId: installation.id,
         messageId: sourceMessageId,
         name: "delivery.failed",
         provider: installation.provider,
-        threadId: thread.id,
+        threadId: target.threadId,
       });
       throw error;
     }
@@ -406,6 +487,42 @@ function mapMessage(message: Message): ChannelInboundMessage {
     text: message.text,
     timestamp: message.metadata.dateSent,
   };
+}
+
+function stableProviderEventId(raw: unknown): string {
+  const record = asRecord(raw);
+  for (const key of ["id", "event_id", "trigger_id"] as const) {
+    const value = record?.[key];
+    if (typeof value === "string" && value.trim()) return value;
+    if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  }
+  throw new Error("Slash command is missing a stable provider event id");
+}
+
+function providerTimestamp(raw: unknown): Date {
+  const record = asRecord(raw);
+  for (const key of ["timestamp", "event_ts", "event_time"] as const) {
+    const value = record?.[key];
+    if (typeof value === "number" && Number.isFinite(value)) {
+      const milliseconds = value < 10_000_000_000 ? value * 1_000 : value;
+      const date = new Date(milliseconds);
+      if (!Number.isNaN(date.getTime())) return date;
+    }
+    if (typeof value === "string" && value.trim()) {
+      const numeric = Number(value);
+      const date = Number.isFinite(numeric)
+        ? new Date(numeric < 10_000_000_000 ? numeric * 1_000 : numeric)
+        : new Date(value);
+      if (!Number.isNaN(date.getTime())) return date;
+    }
+  }
+  return new Date();
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === "object"
+    ? value as Record<string, unknown>
+    : null;
 }
 
 function errorMessage(error: unknown): string {
