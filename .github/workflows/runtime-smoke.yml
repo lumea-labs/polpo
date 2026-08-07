@@ -101,10 +101,9 @@ jobs:
           fi
 
       # PR-bump race guard: when a PR bumps the version (the standard
-      # release-prep flow), `@polpo-ai/core@<bumped>` is by definition not
-      # yet on npm — the publish only happens post-merge. The Dockerfile's
-      # `npm install @polpo-ai/core@${POLPO_VERSION}` would then fail with
-      # `ETARGET notarget`, blocking the PR.
+      # release-prep flow), one or more packages installed by the runner can
+      # still be unpublished. Checking only core is insufficient when a
+      # partial release exists: Docker would then fail on the next package.
       #
       # Symmetric to the tag-push race that #57 already fixed via
       # `workflow_run`. Here we detect "version not on npm yet" and skip
@@ -116,11 +115,18 @@ jobs:
         if: github.event_name == 'pull_request'
         run: |
           V="${{ steps.ver.outputs.polpo_version }}"
-          if npm view "@polpo-ai/core@$V" version >/dev/null 2>&1; then
+          MISSING=()
+          for PACKAGE in polpo-ai @polpo-ai/core @polpo-ai/drizzle @polpo-ai/tools; do
+            if ! npm view "$PACKAGE@$V" version >/dev/null 2>&1; then
+              MISSING+=("$PACKAGE@$V")
+            fi
+          done
+
+          if [[ ${#MISSING[@]} -eq 0 ]]; then
             echo "available=true" >> "$GITHUB_OUTPUT"
           else
             echo "available=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::@polpo-ai/core@$V is not on npm yet — skipping PR-time build (will run post-merge via Release → workflow_run)."
+            echo "::notice::Runner dependencies not on npm yet (${MISSING[*]}) — skipping PR-time build (will run post-merge via Release → workflow_run)."
           fi
 
       # Build the image but DON'T push yet — we want smoke to pass first.
