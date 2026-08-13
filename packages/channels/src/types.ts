@@ -142,6 +142,17 @@ export type ChannelTurnResult = {
   text?: string;
 };
 
+export type ChannelDeliveryMessage = {
+  id: string;
+  threadId: string;
+};
+
+export type ChannelDeliveryResult = {
+  channelId: string;
+  messages: ChannelDeliveryMessage[];
+  threadId?: string;
+};
+
 type ChannelEventBase = {
   channelId?: string;
   credentialRevision: string;

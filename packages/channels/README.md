@@ -102,6 +102,28 @@ limits. `maxMessages` is a conversational preference rather than permission to
 truncate; additional technical segments are emitted when a provider limit makes
 them unavoidable.
 
+### Proactive delivery
+
+Use the same official adapter outside a webhook to send scheduled work,
+notifications, or operator-triggered messages. `post` targets a thread and
+`postChannel` targets a channel. Both initialize the adapter, apply the same
+response policy, and return every provider message ID created by segmentation.
+
+```ts
+const delivery = await runtime.post(
+  installation,
+  "whatsapp:PHONE_NUMBER_ID:15551234567",
+  "Your report is ready.",
+);
+
+console.log(delivery.messages);
+// [{ id: "wamid...", threadId: "whatsapp:PHONE_NUMBER_ID:15551234567" }]
+```
+
+Treat the call as successful only when it resolves. A returned message ID means
+the provider accepted the send request; it does not by itself prove that the
+recipient received or read the message.
+
 ## Durable state
 
 The default state adapter is in-memory and is appropriate for local development
@@ -215,6 +237,50 @@ This exposes:
 
 The route without a key is useful only when the resolver has another trusted,
 host-controlled installation binding.
+
+## WhatsApp Cloud API
+
+Create a Meta app with the WhatsApp product and provision a Cloud API phone
+number. A WhatsApp installation requires four server-side values:
+
+```ts
+const installation = {
+  id: "channel_whatsapp_support",
+  provider: "whatsapp",
+  credentialRevision: "secret-version-1",
+  credentials: {
+    accessToken: process.env.WHATSAPP_ACCESS_TOKEN!,
+    appSecret: process.env.WHATSAPP_APP_SECRET!,
+    phoneNumberId: process.env.WHATSAPP_PHONE_NUMBER_ID!,
+    verifyToken: process.env.WHATSAPP_VERIFY_TOKEN!,
+  },
+} as const;
+```
+
+Register an opaque installation URL in Meta, for example
+`https://api.example.com/channels/whatsapp/<opaque-route-key>`. Route both the
+GET verification challenge and signed POST notifications to
+`dispatchChannelWebhook` without parsing or rewriting the body. Resolve the
+opaque key to exactly one installation before the official adapter verifies the
+request. Never route by a phone number or account ID taken from an unverified
+payload.
+
+The adapter normalizes inbound text, replies, images, audio, video, and files.
+Attachment bytes are fetched lazily through authenticated provider requests.
+The host decides size limits, transcription, model input support, durable
+Session routing, and retention. Duplicate webhook deliveries are suppressed by
+the configured state adapter; use shared durable state in a multi-replica host.
+
+WhatsApp's 24-hour customer service window and template approval rules still
+apply. `ChannelRuntime.post` sends normal conversation content; approved
+business-initiated templates are not part of the provider-neutral Polpo output
+contract yet.
+
+The Chat SDK WhatsApp adapter pinned by this release does not expose Meta
+`statuses` notifications as normalized delivered/read/failed events. Therefore
+`delivery.completed` means the provider accepted the send request, not that the
+recipient received or read it. Do not use it as an authoritative delivery
+receipt until the upstream adapter exposes that lifecycle.
 
 ## Provider behavior
 

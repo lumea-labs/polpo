@@ -20,6 +20,8 @@ import { createOfficialChannelAdapter } from "./providers.js";
 import { segmentChannelText } from "./response.js";
 import type {
   ChannelAuthor,
+  ChannelDeliveryMessage,
+  ChannelDeliveryResult,
   ChannelEventResult,
   ChannelInboundEvent,
   ChannelInboundMessage,
@@ -42,7 +44,7 @@ type RuntimeEntry = {
 type TurnTarget = {
   channelId: string;
   postable: Postable<any, unknown>;
-  threadId: string;
+  threadId?: string;
 };
 
 const DEFAULT_CONCURRENCY = {
@@ -116,16 +118,36 @@ export class ChannelRuntime {
     installation: ChannelInstallation,
     threadId: string,
     result: ChannelTurnResult | string,
-  ): Promise<void> {
+  ): Promise<ChannelDeliveryResult> {
     const entry = await this.getOrCreate(installation);
     entry.lastUsedAt = Date.now();
+    await entry.chat.initialize();
     const thread = entry.chat.thread(threadId);
-    await this.deliver(
+    return this.deliver(
       installation,
       {
         channelId: thread.channelId,
         postable: thread,
         threadId: thread.id,
+      },
+      typeof result === "string" ? { text: result } : result,
+    );
+  }
+
+  async postChannel(
+    installation: ChannelInstallation,
+    channelId: string,
+    result: ChannelTurnResult | string,
+  ): Promise<ChannelDeliveryResult> {
+    const entry = await this.getOrCreate(installation);
+    entry.lastUsedAt = Date.now();
+    await entry.chat.initialize();
+    const channel = entry.chat.channel(channelId);
+    return this.deliver(
+      installation,
+      {
+        channelId: channel.id,
+        postable: channel,
       },
       typeof result === "string" ? { text: result } : result,
     );
@@ -744,13 +766,19 @@ export class ChannelRuntime {
     target: TurnTarget,
     result: ChannelTurnResult,
     sourceMessageId?: string,
-  ): Promise<void> {
+  ): Promise<ChannelDeliveryResult> {
+    const messages: ChannelDeliveryMessage[] = [];
+    const post = async (message: unknown) => {
+      const sent = await target.postable.post(message as any);
+      const normalized = deliveryMessage(sent);
+      if (normalized) messages.push(normalized);
+    };
     try {
       validateTurnResult(result);
       if (result.posts?.length) {
-        for (const post of result.posts) await target.postable.post(post);
+        for (const nativePost of result.posts) await post(nativePost);
       } else if (result.stream && !result.files?.length && !result.text) {
-        await target.postable.post(result.stream);
+        await post(result.stream as any);
       } else {
         const streamedText = result.stream
           ? await collectText(result.stream)
@@ -779,7 +807,7 @@ export class ChannelRuntime {
           ? files?.filter((_file, index) => !result.files?.[index]?.type)
           : files;
         if (segments.length === 0 && files?.length) {
-          await target.postable.post({
+          await post({
             attachments,
             files: genericFiles,
             markdown: "",
@@ -787,13 +815,13 @@ export class ChannelRuntime {
         } else {
           for (const [index, text] of segments.entries()) {
             if (index === 0 && files?.length) {
-              await target.postable.post({
+              await post({
                 attachments,
                 files: genericFiles,
                 markdown: text,
               });
             } else {
-              await target.postable.post(text);
+              await post(text);
             }
           }
         }
@@ -806,6 +834,11 @@ export class ChannelRuntime {
         provider: installation.provider,
         threadId: target.threadId,
       });
+      return {
+        channelId: target.channelId,
+        messages,
+        ...(target.threadId ? { threadId: target.threadId } : {}),
+      };
     } catch (error) {
       await this.emit({
         channelId: target.channelId,
@@ -1088,6 +1121,14 @@ function asRecord(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === "object"
     ? value as Record<string, unknown>
     : null;
+}
+
+function deliveryMessage(value: unknown): ChannelDeliveryMessage | null {
+  const record = asRecord(value);
+  if (!record || typeof record.id !== "string" || typeof record.threadId !== "string") {
+    return null;
+  }
+  return { id: record.id, threadId: record.threadId };
 }
 
 function errorMessage(error: unknown): string {

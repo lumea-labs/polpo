@@ -841,6 +841,129 @@ describe("ChannelRuntime", () => {
     expect(adapter.postMessage).not.toHaveBeenCalled();
   });
 
+  it("initializes the adapter and returns normalized thread delivery ids", async () => {
+    const adapter = testAdapter();
+    const initialize = vi.spyOn(adapter, "initialize");
+    vi.mocked(adapter.postMessage).mockResolvedValue({
+      id: "provider-message-1",
+      raw: { ok: true },
+      threadId: "telegram:chat-1:thread-1",
+    });
+    const runtime = createRuntime({ adapter });
+
+    const delivery = await runtime.post(
+      installation(),
+      "telegram:chat-1:thread-1",
+      "Scheduled result",
+    );
+
+    expect(initialize).toHaveBeenCalledOnce();
+    expect(adapter.postMessage).toHaveBeenCalledWith(
+      "telegram:chat-1:thread-1",
+      "Scheduled result",
+    );
+    expect(delivery).toEqual({
+      channelId: "telegram:chat-1",
+      messages: [{
+        id: "provider-message-1",
+        threadId: "telegram:chat-1:thread-1",
+      }],
+      threadId: "telegram:chat-1:thread-1",
+    });
+  });
+
+  it("posts outside a webhook through the official channel adapter", async () => {
+    const adapter = testAdapter();
+    const initialize = vi.spyOn(adapter, "initialize");
+    vi.mocked(adapter.postChannelMessage!).mockResolvedValue({
+      id: "provider-message-2",
+      raw: { ok: true },
+      threadId: "telegram:chat-1",
+    });
+    const runtime = createRuntime({ adapter });
+
+    const delivery = await runtime.postChannel(
+      installation(),
+      "telegram:chat-1",
+      "Proactive update",
+    );
+
+    expect(initialize).toHaveBeenCalledOnce();
+    expect(adapter.postChannelMessage).toHaveBeenCalledWith(
+      "telegram:chat-1",
+      "Proactive update",
+    );
+    expect(delivery).toEqual({
+      channelId: "telegram:chat-1",
+      messages: [{
+        id: "provider-message-2",
+        threadId: "telegram:chat-1",
+      }],
+    });
+  });
+
+  it("returns every provider message id from segmented proactive delivery", async () => {
+    const adapter = testAdapter();
+    vi.mocked(adapter.postMessage)
+      .mockResolvedValueOnce({
+        id: "provider-segment-1",
+        raw: { ok: true },
+        threadId: "telegram:chat-1:thread-1",
+      })
+      .mockResolvedValueOnce({
+        id: "provider-segment-2",
+        raw: { ok: true },
+        threadId: "telegram:chat-1:thread-1",
+      });
+    const runtime = createRuntime({ adapter });
+
+    const delivery = await runtime.post(
+      installation({
+        responseDelivery: {
+          maxMessages: 2,
+          style: "conversational",
+          targetCharacters: 200,
+        },
+      }),
+      "telegram:chat-1:thread-1",
+      `${"A".repeat(210)}.\n\n${"B".repeat(210)}.`,
+    );
+
+    expect(adapter.postMessage).toHaveBeenCalledTimes(2);
+    expect(delivery.messages).toEqual([
+      {
+        id: "provider-segment-1",
+        threadId: "telegram:chat-1:thread-1",
+      },
+      {
+        id: "provider-segment-2",
+        threadId: "telegram:chat-1:thread-1",
+      },
+    ]);
+  });
+
+  it("emits a correlated failure when proactive delivery fails", async () => {
+    const adapter = testAdapter();
+    vi.mocked(adapter.postMessage).mockRejectedValue(
+      new Error("provider unavailable"),
+    );
+    const events: Array<{ error?: string; name: string }> = [];
+    const runtime = createRuntime({
+      adapter,
+      onEvent: (event) => events.push(event),
+    });
+
+    await expect(runtime.post(
+      installation(),
+      "telegram:chat-1:thread-1",
+      "Scheduled result",
+    )).rejects.toThrow("provider unavailable");
+    expect(events).toContainEqual(expect.objectContaining({
+      error: "provider unavailable",
+      name: "delivery.failed",
+    }));
+  });
+
   it("normalizes a slash command into the same provider-neutral turn", async () => {
     const adapter = slashCommandAdapter();
     const handleTurn = vi.fn(async () => ({ text: "Command completed" }));
