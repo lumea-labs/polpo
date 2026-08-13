@@ -1,6 +1,6 @@
 {
   "name": "@polpo-ai/react",
-  "version": "0.15.63",
+  "version": "0.15.64",
   "description": "React SDK for OpenPolpo — hooks with real-time SSE updates, built on @polpo-ai/sdk",
   "type": "module",
   "main": "dist/index.js",
