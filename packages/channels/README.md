@@ -289,6 +289,10 @@ receipt until the upstream adapter exposes that lifecycle.
   and WhatsApp buffers until completion.
 - Long non-streaming text is split at semantic boundaries without silently
   truncating output.
+- Convenience output containing text and files is serialized into observable
+  provider operations for Slack and WhatsApp. If a later upload fails after an
+  earlier send succeeds, an exact webhook retry does not replay the agent turn
+  and duplicate content that was already accepted.
 - Typing indicator failures are observable but do not fail an agent turn.
 - Inbound files remain lazy when the provider supports authenticated fetching.
 - Discord HTTP interactions are supported by the official webhook adapter;

@@ -821,8 +821,10 @@ export class ChannelRuntime {
     sourceMessageId?: string,
   ): Promise<ChannelDeliveryResult> {
     const messages: ChannelDeliveryMessage[] = [];
+    let deliveredPosts = 0;
     const post = async (message: unknown) => {
       const sent = await target.postable.post(message as any);
+      deliveredPosts += 1;
       const normalized = deliveryMessage(sent);
       if (normalized) messages.push(normalized);
     };
@@ -863,10 +865,12 @@ export class ChannelRuntime {
         const [firstText = "", ...remainingText] = textSegments;
 
         if (files?.length) {
-          if (
-            installation.provider === "slack"
-            || installation.provider === "discord"
-          ) {
+          if (installation.provider === "slack") {
+            if (firstText) await post({ markdown: firstText });
+            for (const file of files) {
+              await post({ files: [file], markdown: "" });
+            }
+          } else if (installation.provider === "discord") {
             await post({ files, markdown: firstText });
           } else if (installation.provider === "telegram") {
             if (attachments?.length) {
@@ -879,11 +883,25 @@ export class ChannelRuntime {
               });
             }
           } else {
-            await post({
-              ...(attachments?.length ? { attachments } : {}),
-              ...(genericFiles?.length ? { files: genericFiles } : {}),
-              markdown: firstText,
-            });
+            if (firstText) await post({ markdown: firstText });
+            for (const [index, outputFile] of (result.files ?? []).entries()) {
+              const file = files[index]!;
+              if (outputFile.type) {
+                await post({
+                  attachments: [{
+                    data: outputFile.data instanceof ArrayBuffer
+                      ? new Blob([outputFile.data])
+                      : outputFile.data,
+                    mimeType: outputFile.mimeType,
+                    name: outputFile.filename,
+                    type: outputFile.type,
+                  }],
+                  markdown: "",
+                });
+              } else {
+                await post({ files: [file], markdown: "" });
+              }
+            }
           }
         } else if (segments.length > 0) {
           await post({ markdown: firstText });
@@ -909,7 +927,7 @@ export class ChannelRuntime {
     } catch (error) {
       await this.emit({
         channelId: target.channelId,
-        details: { deliveredMessages: messages.length },
+        details: { deliveredMessages: deliveredPosts },
         error: errorMessage(error),
         installationId: installation.id,
         messageId: sourceMessageId,
@@ -917,7 +935,7 @@ export class ChannelRuntime {
         provider: installation.provider,
         threadId: target.threadId,
       });
-      throw new ChannelDeliveryFailure(error, messages.length);
+      throw new ChannelDeliveryFailure(error, deliveredPosts);
     }
   }
 

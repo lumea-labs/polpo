@@ -906,46 +906,85 @@ describe("ChannelRuntime", () => {
     );
   });
 
-  it.each(["slack", "discord"] as const)(
-    "delivers typed media as files through the %s adapter",
-    async (provider) => {
-      const adapter = testAdapter();
-      const runtime = createRuntime({ adapter });
+  it("separates Slack text from file uploads so partial delivery is observable", async () => {
+    const adapter = testAdapter();
+    const runtime = createRuntime({ adapter });
 
-      await runtime.post(
-        {
-          ...installation(),
-          credentials: provider === "slack"
-            ? { botToken: "token", signingSecret: "secret" }
-            : { applicationId: "app", botToken: "token", publicKey: "a".repeat(64) },
-          provider,
-        },
-        `${provider}:channel-1:thread-1`,
-        {
-          files: [{
-            data: Buffer.from("image"),
-            filename: "preview.png",
-            mimeType: "image/png",
-            type: "image",
-          }],
-          text: "Artifacts ready",
-        },
-      );
+    await runtime.post(
+      {
+        ...installation(),
+        credentials: { botToken: "token", signingSecret: "secret" },
+        provider: "slack",
+      },
+      "slack:channel-1:thread-1",
+      {
+        files: [{
+          data: Buffer.from("image"),
+          filename: "preview.png",
+          mimeType: "image/png",
+          type: "image",
+        }],
+        text: "Artifacts ready",
+      },
+    );
 
-      expect(adapter.postMessage).toHaveBeenCalledWith(
-        `${provider}:channel-1:thread-1`,
-        {
-          files: [expect.objectContaining({
-            filename: "preview.png",
-            mimeType: "image/png",
-          })],
-          markdown: "Artifacts ready",
-        },
-      );
-    },
-  );
+    expect(adapter.postMessage).toHaveBeenNthCalledWith(
+      1,
+      "slack:channel-1:thread-1",
+      { markdown: "Artifacts ready" },
+    );
+    expect(adapter.postMessage).toHaveBeenNthCalledWith(
+      2,
+      "slack:channel-1:thread-1",
+      {
+        files: [expect.objectContaining({
+          filename: "preview.png",
+          mimeType: "image/png",
+        })],
+        markdown: "",
+      },
+    );
+  });
 
-  it("delivers typed media and generic files together through WhatsApp", async () => {
+  it("delivers typed media in one atomic Discord message", async () => {
+    const adapter = testAdapter();
+    const runtime = createRuntime({ adapter });
+
+    await runtime.post(
+      {
+        ...installation(),
+        credentials: {
+          applicationId: "app",
+          botToken: "token",
+          publicKey: "a".repeat(64),
+        },
+        provider: "discord",
+      },
+      "discord:channel-1:thread-1",
+      {
+        files: [{
+          data: Buffer.from("image"),
+          filename: "preview.png",
+          mimeType: "image/png",
+          type: "image",
+        }],
+        text: "Artifacts ready",
+      },
+    );
+
+    expect(adapter.postMessage).toHaveBeenCalledWith(
+      "discord:channel-1:thread-1",
+      {
+        files: [expect.objectContaining({
+          filename: "preview.png",
+          mimeType: "image/png",
+        })],
+        markdown: "Artifacts ready",
+      },
+    );
+  });
+
+  it("delivers WhatsApp text and each media item as observable operations", async () => {
     const adapter = testAdapter();
     const runtime = createRuntime({ adapter });
 
@@ -979,7 +1018,13 @@ describe("ChannelRuntime", () => {
       },
     );
 
-    expect(adapter.postMessage).toHaveBeenCalledWith(
+    expect(adapter.postMessage).toHaveBeenNthCalledWith(
+      1,
+      "whatsapp:phone-1:user-1",
+      { markdown: "Artifacts ready" },
+    );
+    expect(adapter.postMessage).toHaveBeenNthCalledWith(
+      2,
       "whatsapp:phone-1:user-1",
       {
         attachments: [expect.objectContaining({
@@ -987,11 +1032,18 @@ describe("ChannelRuntime", () => {
           name: "reply.ogg",
           type: "audio",
         })],
+        markdown: "",
+      },
+    );
+    expect(adapter.postMessage).toHaveBeenNthCalledWith(
+      3,
+      "whatsapp:phone-1:user-1",
+      {
         files: [expect.objectContaining({
           filename: "report.pdf",
           mimeType: "application/pdf",
         })],
-        markdown: "Artifacts ready",
+        markdown: "",
       },
     );
   });
@@ -1219,6 +1271,108 @@ describe("ChannelRuntime", () => {
       configured,
       webhookRequest("partial-provider-retry"),
     )).resolves.toBeInstanceOf(Response);
+
+    expect(handleTurn).toHaveBeenCalledOnce();
+    expect(adapter.postMessage).toHaveBeenCalledTimes(2);
+    expect(events).toContainEqual(expect.objectContaining({
+      details: { deliveredMessages: 1 },
+      name: "delivery.failed",
+    }));
+  });
+
+  it("does not replay a WhatsApp turn after text succeeds and media fails", async () => {
+    const adapter = testAdapter();
+    vi.mocked(adapter.postMessage)
+      .mockResolvedValueOnce({
+        id: "text-1",
+        raw: { ok: true },
+        threadId: "whatsapp:phone-1:user-1",
+      })
+      .mockRejectedValueOnce(new Error("media upload failed"));
+    const handleTurn = vi.fn(async () => ({
+      files: [{
+        data: Buffer.from("audio"),
+        filename: "reply.ogg",
+        mimeType: "audio/ogg",
+        type: "audio" as const,
+      }],
+      text: "Voice reply",
+    }));
+    const events: Array<{ details?: Record<string, unknown>; name: string }> = [];
+    const runtime = new ChannelRuntime({
+      adapterFactory: () => adapter,
+      handleTurn,
+      onEvent: (event) => events.push(event),
+      stateFactory: () => createMockState(),
+    });
+    runtimes.push(runtime);
+    const configured = {
+      ...installation(),
+      credentials: {
+        accessToken: "token",
+        appSecret: "secret",
+        phoneNumberId: "phone-1",
+        verifyToken: "verify",
+      },
+      provider: "whatsapp" as const,
+    };
+    const request = () => webhookRequest("whatsapp-partial-provider-retry");
+
+    await expect(runtime.handleWebhook(configured, request()))
+      .rejects.toThrow("media upload failed");
+    await expect(runtime.handleWebhook(configured, request()))
+      .resolves.toBeInstanceOf(Response);
+
+    expect(handleTurn).toHaveBeenCalledOnce();
+    expect(adapter.postMessage).toHaveBeenCalledTimes(2);
+    expect(events).toContainEqual(expect.objectContaining({
+      details: { deliveredMessages: 1 },
+      name: "delivery.failed",
+    }));
+  });
+
+  it("does not replay a Slack turn after one file upload succeeds", async () => {
+    const adapter = testAdapter();
+    vi.mocked(adapter.postMessage)
+      .mockResolvedValueOnce({
+        id: "file-1",
+        raw: { ok: true },
+        threadId: "slack:channel-1:thread-1",
+      })
+      .mockRejectedValueOnce(new Error("second file upload failed"));
+    const handleTurn = vi.fn(async () => ({
+      files: [
+        {
+          data: Buffer.from("first"),
+          filename: "first.txt",
+          mimeType: "text/plain",
+        },
+        {
+          data: Buffer.from("second"),
+          filename: "second.txt",
+          mimeType: "text/plain",
+        },
+      ],
+    }));
+    const events: Array<{ details?: Record<string, unknown>; name: string }> = [];
+    const runtime = new ChannelRuntime({
+      adapterFactory: () => adapter,
+      handleTurn,
+      onEvent: (event) => events.push(event),
+      stateFactory: () => createMockState(),
+    });
+    runtimes.push(runtime);
+    const configured = {
+      ...installation(),
+      credentials: { botToken: "token", signingSecret: "secret" },
+      provider: "slack" as const,
+    };
+    const request = () => webhookRequest("slack-partial-file-retry");
+
+    await expect(runtime.handleWebhook(configured, request()))
+      .rejects.toThrow("second file upload failed");
+    await expect(runtime.handleWebhook(configured, request()))
+      .resolves.toBeInstanceOf(Response);
 
     expect(handleTurn).toHaveBeenCalledOnce();
     expect(adapter.postMessage).toHaveBeenCalledTimes(2);
