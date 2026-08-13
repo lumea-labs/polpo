@@ -116,6 +116,26 @@ const runtime = new ChannelRuntime({
 });
 ```
 
+## Transport observability
+
+Set `onEvent` to receive provider-neutral runtime, turn, delivery, and transport
+coordination events. Queue, burst, and debounce lifecycle events include only
+safe scalar details such as message ID, queue depth, skipped count, and reason;
+locks, credentials, provider payloads, and media bytes are never emitted.
+
+```ts
+const runtime = new ChannelRuntime({
+  handleTurn,
+  onEvent: async (event) => audit.write(event),
+});
+```
+
+Transport events use the `transport.message.*` namespace. Observability hooks are
+isolated from execution: a logging or audit-store failure cannot fail a webhook,
+agent turn, or provider delivery. Pass `logger` when Chat SDK diagnostic logging
+is also required; Polpo defaults those diagnostics to `warn` while still emitting
+typed transport events.
+
 ## Events and native output
 
 `handleEvent` receives a discriminated union for messages, slash commands,

@@ -1,7 +1,9 @@
 import { MemoryStateAdapter } from "@chat-adapter/state-memory";
 import {
   Chat,
+  ConsoleLogger,
   type ActionEvent,
+  type Logger,
   type Message,
   type MessageContext,
   type ModalCloseEvent,
@@ -54,6 +56,7 @@ const DEFAULT_DEDUPE_TTL_MS = 10 * 60_000;
 
 export class ChannelRuntime {
   private readonly entries = new Map<string, RuntimeEntry>();
+  private readonly pendingEvents = new Set<Promise<void>>();
   private readonly pendingInstallations = new Map<string, Promise<RuntimeEntry>>();
   private readonly pendingTurns = new Map<string, Promise<void>>();
   private readonly options: Required<
@@ -89,7 +92,21 @@ export class ChannelRuntime {
     if (!webhook) {
       throw new Error(`Missing Chat SDK webhook for ${installation.provider}`);
     }
-    return webhook(request, options);
+    const webhookOptions = options?.waitUntil
+      ? {
+          ...options,
+          waitUntil: (task: Promise<unknown>) => {
+            options.waitUntil?.(
+              Promise.resolve(task).finally(() => this.flushPendingEvents()),
+            );
+          },
+        }
+      : options;
+    try {
+      return await webhook(request, webhookOptions);
+    } finally {
+      await this.flushPendingEvents();
+    }
   }
 
   async post(
@@ -121,6 +138,7 @@ export class ChannelRuntime {
   async shutdown(): Promise<void> {
     const entries = [...this.entries.values()];
     await Promise.all(entries.map((entry) => this.evict(entry)));
+    await this.flushPendingEvents();
   }
 
   get size(): number {
@@ -170,6 +188,22 @@ export class ChannelRuntime {
       dedupeTtlMs: this.options.dedupeTtlMs,
       fallbackStreamingPlaceholderText:
         this.options.fallbackStreamingPlaceholderText ?? null,
+      logger: createRuntimeLogger(
+        installation,
+        this.options.logger,
+        (event) => this.emitDetached(event),
+      ),
+      onLockConflict: (threadId, message) => {
+        this.emitDetached({
+          details: { reason: "lock-busy" },
+          installationId: installation.id,
+          messageId: message.id,
+          name: "transport.message.dropped",
+          provider: installation.provider,
+          threadId,
+        });
+        return "drop";
+      },
       state,
       streamingUpdateIntervalMs: this.options.streamingUpdateIntervalMs,
       threadHistory: { maxMessages: 30, ttlMs: 24 * 60 * 60_000 },
@@ -810,8 +844,118 @@ export class ChannelRuntime {
   }
 
   private async emit(event: ChannelRuntimeEvent): Promise<void> {
-    await this.options.onEvent?.(event);
+    try {
+      await this.options.onEvent?.(event);
+    } catch {
+      // Observability must never alter webhook acknowledgement or turn execution.
+    }
   }
+
+  private emitDetached(event: ChannelRuntimeEvent): void {
+    let task: Promise<void>;
+    task = this.emit(event).finally(() => this.pendingEvents.delete(task));
+    this.pendingEvents.add(task);
+  }
+
+  private async flushPendingEvents(): Promise<void> {
+    while (this.pendingEvents.size > 0) {
+      await Promise.all([...this.pendingEvents]);
+    }
+  }
+}
+
+const TRANSPORT_LOG_EVENTS = {
+  "message-queued": "transport.message.queued",
+  "message-dequeued": "transport.message.dequeued",
+  "message-dropped": "transport.message.dropped",
+  "message-expired": "transport.message.expired",
+  "message-superseded": "transport.message.superseded",
+  "message-debouncing": "transport.message.debouncing",
+  "message-debounce-reset": "transport.message.debounce_reset",
+} as const satisfies Record<string, ChannelRuntimeEvent["name"]>;
+
+const TRANSPORT_DETAIL_KEYS = [
+  "debounceMs",
+  "droppedId",
+  "queueDepth",
+  "reason",
+  "skippedCount",
+  "totalSinceLastHandler",
+] as const;
+
+function createRuntimeLogger(
+  installation: ChannelInstallation,
+  configured: ChannelRuntimeOptions["logger"],
+  emit: (event: ChannelRuntimeEvent) => void,
+): Logger {
+  const base = typeof configured === "string"
+    ? new ConsoleLogger(configured)
+    : configured ?? new ConsoleLogger("warn");
+  return new RuntimeLogger(base, (message, args) => {
+    const name = TRANSPORT_LOG_EVENTS[message as keyof typeof TRANSPORT_LOG_EVENTS];
+    if (!name) return;
+    const data = recordValue(args[0]);
+    const threadId = stringValue(data.threadId);
+    const messageId = stringValue(data.messageId) ?? stringValue(data.droppedId);
+    const details: Record<string, string | number | boolean | null> = {};
+    for (const key of TRANSPORT_DETAIL_KEYS) {
+      const value = data[key];
+      if (
+        typeof value === "string"
+        || typeof value === "number"
+        || typeof value === "boolean"
+        || value === null
+      ) {
+        details[key] = value;
+      }
+    }
+    emit({
+      ...(Object.keys(details).length > 0 ? { details } : {}),
+      installationId: installation.id,
+      ...(messageId ? { messageId } : {}),
+      name,
+      provider: installation.provider,
+      ...(threadId ? { threadId } : {}),
+    });
+  });
+}
+
+class RuntimeLogger implements Logger {
+  constructor(
+    private readonly base: Logger,
+    private readonly observeInfo: (message: string, args: unknown[]) => void,
+  ) {}
+
+  child(prefix: string): Logger {
+    return new RuntimeLogger(this.base.child(prefix), this.observeInfo);
+  }
+
+  debug(message: string, ...args: unknown[]): void {
+    this.base.debug(message, ...args);
+  }
+
+  info(message: string, ...args: unknown[]): void {
+    this.observeInfo(message, args);
+    this.base.info(message, ...args);
+  }
+
+  warn(message: string, ...args: unknown[]): void {
+    this.base.warn(message, ...args);
+  }
+
+  error(message: string, ...args: unknown[]): void {
+    this.base.error(message, ...args);
+  }
+}
+
+function recordValue(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
 function runtimeKey(

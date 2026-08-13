@@ -314,7 +314,13 @@ describe("ChannelRuntime", () => {
 
   it("describes every message collapsed into a burst turn", async () => {
     const handleTurn = vi.fn(async () => ({ text: "One reply" }));
-    const runtime = createRuntime({ handleTurn });
+    const events: ConstructorParameters<NonNullable<
+      ConstructorParameters<typeof ChannelRuntime>[0]["onEvent"]
+    >>[0][] = [];
+    const runtime = createRuntime({
+      handleTurn,
+      onEvent: (event) => events.push(event),
+    });
     const burstInstallation = installation({
       concurrency: {
         debounceMs: 25,
@@ -353,6 +359,232 @@ describe("ChannelRuntime", () => {
     }));
     expect(handleTurn.mock.calls[0]?.[0].messages.map((message) => message.text))
       .toEqual(["first", "second", "third"]);
+    expect(events).toContainEqual(expect.objectContaining({
+      details: { debounceMs: 25 },
+      messageId: "message-1",
+      name: "transport.message.debouncing",
+      threadId: "telegram:chat-1:thread-1",
+    }));
+    expect(events).toContainEqual(expect.objectContaining({
+      details: { queueDepth: 2 },
+      messageId: "message-3",
+      name: "transport.message.queued",
+    }));
+    expect(events).toContainEqual(expect.objectContaining({
+      details: { skippedCount: 2, totalSinceLastHandler: 3 },
+      messageId: "message-3",
+      name: "transport.message.dequeued",
+    }));
+  });
+
+  it("records queue coordination while preserving every skipped message", async () => {
+    const activeTurn = deferred<void>();
+    const started = deferred<void>();
+    const turns: string[][] = [];
+    const events: ConstructorParameters<NonNullable<
+      ConstructorParameters<typeof ChannelRuntime>[0]["onEvent"]
+    >>[0][] = [];
+    const runtime = createRuntime({
+      handleTurn: async (turn) => {
+        turns.push(turn.messages.map((message) => message.text));
+        if (turn.providerEventId === "message-1") {
+          started.resolve();
+          await activeTurn.promise;
+        }
+        return { text: "done" };
+      },
+      onEvent: (event) => events.push(event),
+    });
+    const queuedInstallation = installation({
+      concurrency: {
+        maxQueueSize: 5,
+        onQueueFull: "drop-oldest",
+        queueEntryTtlMs: 120_000,
+        strategy: "queue",
+      },
+    });
+
+    const first = runtime.handleWebhook(
+      queuedInstallation,
+      webhookRequest("message-1", "first"),
+    );
+    await started.promise;
+    const second = runtime.handleWebhook(
+      queuedInstallation,
+      webhookRequest("message-2", "second"),
+    );
+    const third = runtime.handleWebhook(
+      queuedInstallation,
+      webhookRequest("message-3", "third"),
+    );
+    await Promise.all([second, third]);
+    activeTurn.resolve();
+    await first;
+
+    expect(turns).toEqual([["first"], ["second", "third"]]);
+    expect(events).toContainEqual(expect.objectContaining({
+      details: { queueDepth: 1 },
+      messageId: "message-3",
+      name: "transport.message.queued",
+    }));
+    expect(events).toContainEqual(expect.objectContaining({
+      details: { skippedCount: 1, totalSinceLastHandler: 2 },
+      messageId: "message-3",
+      name: "transport.message.dequeued",
+    }));
+    expect(JSON.stringify(events)).not.toContain("lockKey");
+    expect(JSON.stringify(events)).not.toContain("token");
+  });
+
+  it("records and rejects the newest message when a bounded queue is full", async () => {
+    const activeTurn = deferred<void>();
+    const started = deferred<void>();
+    const turns: string[] = [];
+    const events: ConstructorParameters<NonNullable<
+      ConstructorParameters<typeof ChannelRuntime>[0]["onEvent"]
+    >>[0][] = [];
+    const runtime = createRuntime({
+      handleTurn: async (turn) => {
+        turns.push(turn.providerEventId);
+        if (turn.providerEventId === "message-1") {
+          started.resolve();
+          await activeTurn.promise;
+        }
+        return { text: "done" };
+      },
+      onEvent: (event) => events.push(event),
+    });
+    const boundedInstallation = installation({
+      concurrency: {
+        maxQueueSize: 1,
+        onQueueFull: "drop-newest",
+        queueEntryTtlMs: 120_000,
+        strategy: "queue",
+      },
+    });
+
+    const first = runtime.handleWebhook(
+      boundedInstallation,
+      webhookRequest("message-1"),
+    );
+    await started.promise;
+    await runtime.handleWebhook(boundedInstallation, webhookRequest("message-2"));
+    await runtime.handleWebhook(boundedInstallation, webhookRequest("message-3"));
+    activeTurn.resolve();
+    await first;
+
+    expect(turns).toEqual(["message-1", "message-2"]);
+    expect(events).toContainEqual(expect.objectContaining({
+      details: { reason: "queue-full" },
+      messageId: "message-3",
+      name: "transport.message.dropped",
+    }));
+  });
+
+  it("records a lock-conflicting message dropped by the drop strategy", async () => {
+    const activeTurn = deferred<void>();
+    const started = deferred<void>();
+    const events: ConstructorParameters<NonNullable<
+      ConstructorParameters<typeof ChannelRuntime>[0]["onEvent"]
+    >>[0][] = [];
+    const runtime = createRuntime({
+      handleTurn: async (turn) => {
+        if (turn.providerEventId === "message-1") {
+          started.resolve();
+          await activeTurn.promise;
+        }
+        return { text: "done" };
+      },
+      onEvent: (event) => events.push(event),
+    });
+    const dropInstallation = installation({ concurrency: { strategy: "drop" } });
+
+    const first = runtime.handleWebhook(
+      dropInstallation,
+      webhookRequest("message-1"),
+    );
+    await started.promise;
+    await expect(runtime.handleWebhook(
+      dropInstallation,
+      webhookRequest("message-2"),
+    )).rejects.toThrow(/could not acquire lock/i);
+    activeTurn.resolve();
+    await first;
+
+    expect(events).toContainEqual(expect.objectContaining({
+      details: { reason: "lock-busy" },
+      messageId: "message-2",
+      name: "transport.message.dropped",
+      threadId: "telegram:chat-1:thread-1",
+    }));
+  });
+
+  it("records queued messages that expire before the active turn completes", async () => {
+    const activeTurn = deferred<void>();
+    const started = deferred<void>();
+    const turns: string[] = [];
+    const events: ConstructorParameters<NonNullable<
+      ConstructorParameters<typeof ChannelRuntime>[0]["onEvent"]
+    >>[0][] = [];
+    const runtime = createRuntime({
+      handleTurn: async (turn) => {
+        turns.push(turn.providerEventId);
+        if (turn.providerEventId === "message-1") {
+          started.resolve();
+          await activeTurn.promise;
+        }
+        return { text: "done" };
+      },
+      onEvent: (event) => events.push(event),
+    });
+    const expiringInstallation = installation({
+      concurrency: {
+        maxQueueSize: 5,
+        onQueueFull: "drop-oldest",
+        queueEntryTtlMs: 1,
+        strategy: "queue",
+      },
+    });
+
+    const first = runtime.handleWebhook(
+      expiringInstallation,
+      webhookRequest("message-1"),
+    );
+    await started.promise;
+    await runtime.handleWebhook(expiringInstallation, webhookRequest("message-2"));
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    activeTurn.resolve();
+    await first;
+
+    expect(turns).toEqual(["message-1"]);
+    expect(events).toContainEqual(expect.objectContaining({
+      messageId: "message-2",
+      name: "transport.message.expired",
+    }));
+  });
+
+  it("never lets a failing observability hook break channel processing", async () => {
+    const adapter = testAdapter();
+    const runtime = createRuntime({
+      adapter,
+      onEvent: async () => {
+        throw new Error("telemetry unavailable");
+      },
+    });
+
+    await expect(runtime.handleWebhook(
+      installation({
+        concurrency: {
+          debounceMs: 1,
+          maxQueueSize: 5,
+          onQueueFull: "drop-oldest",
+          queueEntryTtlMs: 120_000,
+          strategy: "burst",
+        },
+      }),
+      webhookRequest("message-1"),
+    )).resolves.toMatchObject({ status: 200 });
+    expect(adapter.postMessage).toHaveBeenCalledOnce();
   });
 
   it("preserves lazy authenticated attachment access in normalized turns", async () => {
