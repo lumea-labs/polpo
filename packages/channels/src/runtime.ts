@@ -59,6 +59,16 @@ const DEFAULT_DEDUPE_TTL_MS = 10 * 60_000;
 const DEFAULT_OBSERVABILITY_TIMEOUT_MS = 1_000;
 const OBSERVABILITY_TIMEOUT_BACKOFF_MS = 30_000;
 
+class ChannelDeliveryFailure extends Error {
+  constructor(
+    error: unknown,
+    readonly deliveredMessages: number,
+  ) {
+    super(errorMessage(error), { cause: error });
+    this.name = "ChannelDeliveryFailure";
+  }
+}
+
 export class ChannelRuntime {
   private readonly entries = new Map<string, RuntimeEntry>();
   private readonly pendingEvents = new Set<Promise<void>>();
@@ -240,9 +250,23 @@ export class ChannelRuntime {
       thread: Thread,
       message: Message,
       context?: MessageContext,
-    ) => this.handleMessage(installation, state, thread, message, context);
+    ) => this.handleMessage(
+      installation,
+      adapter.name,
+      state,
+      thread,
+      message,
+      context,
+    );
     chat.onDirectMessage((thread, message, _channel, context) =>
-      this.handleMessage(installation, state, thread, message, context));
+      this.handleMessage(
+        installation,
+        adapter.name,
+        state,
+        thread,
+        message,
+        context,
+      ));
     chat.onNewMention(handler);
     chat.onNewMessage(/[\s\S]*/, handler);
     chat.onSubscribedMessage(handler);
@@ -273,6 +297,7 @@ export class ChannelRuntime {
 
   private async handleMessage(
     installation: ChannelInstallation,
+    adapterName: string,
     state: ChannelStateAdapter,
     thread: Thread,
     message: Message,
@@ -283,42 +308,57 @@ export class ChannelRuntime {
       thread.id,
       message,
     );
+    const hasLogicalDedupe = providerEventId !== message.id;
     if (
-      providerEventId !== message.id
+      hasLogicalDedupe
       && !await this.acceptEvent(state, installation, "message", providerEventId)
     ) {
       return;
     }
-    await thread.subscribe();
-    const messages = await Promise.all(
-      [...(context?.skipped ?? []), message].map(mapMessage),
-    );
-    const messageIds = messages.map((item) => item.id);
-    const concurrency = installation.concurrency
-      ?? this.options.concurrency
-      ?? DEFAULT_CONCURRENCY;
-    const turn: ChannelInboundTurn = {
-      channelId: thread.channelId,
-      coordination: {
-        grouped: messages.length > 1,
-        messageCount: messages.length,
-        messageIds,
-        primaryMessageId: message.id,
-        strategy: concurrency.strategy,
-      },
-      credentialRevision: installation.credentialRevision,
-      installationId: installation.id,
-      isDirectMessage: thread.isDM,
-      messages,
-      provider: installation.provider,
-      providerEventId,
-      threadId: thread.id,
-    };
-    await this.executeTurn(installation, {
-      channelId: thread.channelId,
-      postable: thread,
-      threadId: thread.id,
-    }, turn);
+    try {
+      await thread.subscribe();
+      const messages = await Promise.all(
+        [...(context?.skipped ?? []), message].map(mapMessage),
+      );
+      const messageIds = messages.map((item) => item.id);
+      const concurrency = installation.concurrency
+        ?? this.options.concurrency
+        ?? DEFAULT_CONCURRENCY;
+      const turn: ChannelInboundTurn = {
+        channelId: thread.channelId,
+        coordination: {
+          grouped: messages.length > 1,
+          messageCount: messages.length,
+          messageIds,
+          primaryMessageId: message.id,
+          strategy: concurrency.strategy,
+        },
+        credentialRevision: installation.credentialRevision,
+        installationId: installation.id,
+        isDirectMessage: thread.isDM,
+        messages,
+        provider: installation.provider,
+        providerEventId,
+        threadId: thread.id,
+      };
+      await this.executeTurn(installation, {
+        channelId: thread.channelId,
+        postable: thread,
+        threadId: thread.id,
+      }, turn);
+    } catch (error) {
+      if (!(error instanceof ChannelDeliveryFailure && error.deliveredMessages > 0)) {
+        await Promise.all([
+          state.delete(`dedupe:${adapterName}:${message.id}`),
+          hasLogicalDedupe
+            ? state.delete(
+                `polpo:event:${installation.provider}:${installation.id}:message:${providerEventId}`,
+              )
+            : Promise.resolve(),
+        ]).catch(() => undefined);
+      }
+      throw error;
+    }
   }
 
   private async handleSlashCommand(
@@ -816,27 +856,41 @@ export class ChannelRuntime {
             name: file.filename,
             type: file.type!,
           }));
-        const genericFiles = result.files?.some((file) => file.type)
-          ? files?.filter((_file, index) => !result.files?.[index]?.type)
-          : files;
-        if (segments.length === 0 && files?.length) {
-          await post({
-            attachments,
-            files: genericFiles,
-            markdown: "",
-          });
-        } else {
-          for (const [index, text] of segments.entries()) {
-            if (index === 0 && files?.length) {
-              await post({
-                attachments,
-                files: genericFiles,
-                markdown: text,
-              });
-            } else {
-              await post(text);
+        const genericFiles = files?.filter(
+          (_file, index) => !result.files?.[index]?.type,
+        );
+        const textSegments = segments.length > 0 ? segments : [""];
+        const [firstText = "", ...remainingText] = textSegments;
+
+        if (files?.length) {
+          if (
+            installation.provider === "slack"
+            || installation.provider === "discord"
+          ) {
+            await post({ files, markdown: firstText });
+          } else if (installation.provider === "telegram") {
+            if (attachments?.length) {
+              await post({ attachments, markdown: firstText });
             }
+            if (genericFiles?.length) {
+              await post({
+                files: genericFiles,
+                markdown: attachments?.length ? "" : firstText,
+              });
+            }
+          } else {
+            await post({
+              ...(attachments?.length ? { attachments } : {}),
+              ...(genericFiles?.length ? { files: genericFiles } : {}),
+              markdown: firstText,
+            });
           }
+        } else if (segments.length > 0) {
+          await post({ markdown: firstText });
+        }
+
+        for (const text of remainingText) {
+          await post({ markdown: text });
         }
       }
       await this.emit({
@@ -855,6 +909,7 @@ export class ChannelRuntime {
     } catch (error) {
       await this.emit({
         channelId: target.channelId,
+        details: { deliveredMessages: messages.length },
         error: errorMessage(error),
         installationId: installation.id,
         messageId: sourceMessageId,
@@ -862,7 +917,7 @@ export class ChannelRuntime {
         provider: installation.provider,
         threadId: target.threadId,
       });
-      throw error;
+      throw new ChannelDeliveryFailure(error, messages.length);
     }
   }
 

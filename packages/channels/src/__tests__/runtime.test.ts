@@ -404,7 +404,7 @@ describe("ChannelRuntime", () => {
     expect(adapter.startTyping).toHaveBeenCalledOnce();
     expect(adapter.postMessage).toHaveBeenCalledWith(
       "telegram:chat-1:thread-1",
-      "Hello from Polpo",
+      { markdown: "Hello from Polpo" },
     );
   });
 
@@ -853,11 +853,11 @@ describe("ChannelRuntime", () => {
     await expect(optionsResponse.json()).resolves.toEqual([]);
     expect(adapter.postMessage).toHaveBeenCalledWith(
       "slack:channel-1:thread-1",
-      "handled:action",
+      { markdown: "handled:action" },
     );
   });
 
-  it("delivers typed media and generic files without duplicating either", async () => {
+  it("splits typed media and generic files for Telegram without duplicating either", async () => {
     const adapter = testAdapter();
     const runtime = createRuntime({
       adapter,
@@ -881,7 +881,8 @@ describe("ChannelRuntime", () => {
 
     await runtime.handleWebhook(installation(), webhookRequest("message-files"));
 
-    expect(adapter.postMessage).toHaveBeenCalledWith(
+    expect(adapter.postMessage).toHaveBeenNthCalledWith(
+      1,
       "telegram:chat-1:thread-1",
       expect.objectContaining({
         attachments: [expect.objectContaining({
@@ -889,12 +890,109 @@ describe("ChannelRuntime", () => {
           name: "preview.png",
           type: "image",
         })],
+        markdown: "Artifacts ready",
+      }),
+    );
+    expect(adapter.postMessage).toHaveBeenNthCalledWith(
+      2,
+      "telegram:chat-1:thread-1",
+      expect.objectContaining({
+        files: [expect.objectContaining({
+          filename: "report.pdf",
+          mimeType: "application/pdf",
+        })],
+        markdown: "",
+      }),
+    );
+  });
+
+  it.each(["slack", "discord"] as const)(
+    "delivers typed media as files through the %s adapter",
+    async (provider) => {
+      const adapter = testAdapter();
+      const runtime = createRuntime({ adapter });
+
+      await runtime.post(
+        {
+          ...installation(),
+          credentials: provider === "slack"
+            ? { botToken: "token", signingSecret: "secret" }
+            : { applicationId: "app", botToken: "token", publicKey: "a".repeat(64) },
+          provider,
+        },
+        `${provider}:channel-1:thread-1`,
+        {
+          files: [{
+            data: Buffer.from("image"),
+            filename: "preview.png",
+            mimeType: "image/png",
+            type: "image",
+          }],
+          text: "Artifacts ready",
+        },
+      );
+
+      expect(adapter.postMessage).toHaveBeenCalledWith(
+        `${provider}:channel-1:thread-1`,
+        {
+          files: [expect.objectContaining({
+            filename: "preview.png",
+            mimeType: "image/png",
+          })],
+          markdown: "Artifacts ready",
+        },
+      );
+    },
+  );
+
+  it("delivers typed media and generic files together through WhatsApp", async () => {
+    const adapter = testAdapter();
+    const runtime = createRuntime({ adapter });
+
+    await runtime.post(
+      {
+        ...installation(),
+        credentials: {
+          accessToken: "token",
+          appSecret: "secret",
+          phoneNumberId: "phone-1",
+          verifyToken: "verify",
+        },
+        provider: "whatsapp",
+      },
+      "whatsapp:phone-1:user-1",
+      {
+        files: [
+          {
+            data: Buffer.from("audio"),
+            filename: "reply.ogg",
+            mimeType: "audio/ogg",
+            type: "audio",
+          },
+          {
+            data: Buffer.from("document"),
+            filename: "report.pdf",
+            mimeType: "application/pdf",
+          },
+        ],
+        text: "Artifacts ready",
+      },
+    );
+
+    expect(adapter.postMessage).toHaveBeenCalledWith(
+      "whatsapp:phone-1:user-1",
+      {
+        attachments: [expect.objectContaining({
+          mimeType: "audio/ogg",
+          name: "reply.ogg",
+          type: "audio",
+        })],
         files: [expect.objectContaining({
           filename: "report.pdf",
           mimeType: "application/pdf",
         })],
         markdown: "Artifacts ready",
-      }),
+      },
     );
   });
 
@@ -954,7 +1052,7 @@ describe("ChannelRuntime", () => {
     expect(initialize).toHaveBeenCalledOnce();
     expect(adapter.postMessage).toHaveBeenCalledWith(
       "telegram:chat-1:thread-1",
-      "Scheduled result",
+      { markdown: "Scheduled result" },
     );
     expect(delivery).toEqual({
       channelId: "telegram:chat-1",
@@ -985,7 +1083,7 @@ describe("ChannelRuntime", () => {
     expect(initialize).toHaveBeenCalledOnce();
     expect(adapter.postChannelMessage).toHaveBeenCalledWith(
       "telegram:chat-1",
-      "Proactive update",
+      { markdown: "Proactive update" },
     );
     expect(delivery).toEqual({
       channelId: "telegram:chat-1",
@@ -1058,6 +1156,78 @@ describe("ChannelRuntime", () => {
     }));
   });
 
+  it("allows an exact provider retry after a transient turn failure", async () => {
+    const adapter = testAdapter();
+    const state = createMockState();
+    const handleTurn = vi.fn()
+      .mockRejectedValueOnce(new Error("temporary failure"))
+      .mockResolvedValueOnce({ text: "Recovered" });
+    const runtime = new ChannelRuntime({
+      adapterFactory: () => adapter,
+      handleTurn,
+      stateFactory: () => state,
+    });
+    runtimes.push(runtime);
+    const request = () => webhookRequest("provider-retry-1");
+
+    await expect(runtime.handleWebhook(installation(), request()))
+      .rejects.toThrow("temporary failure");
+    await expect(runtime.handleWebhook(installation(), request()))
+      .resolves.toBeInstanceOf(Response);
+
+    expect(handleTurn).toHaveBeenCalledTimes(2);
+    expect(adapter.postMessage).toHaveBeenCalledOnce();
+    expect(adapter.postMessage).toHaveBeenCalledWith(
+      "telegram:chat-1:thread-1",
+      { markdown: "Recovered" },
+    );
+  });
+
+  it("does not replay a turn after a partial segmented delivery", async () => {
+    const adapter = testAdapter();
+    vi.mocked(adapter.postMessage)
+      .mockResolvedValueOnce({
+        id: "segment-1",
+        raw: { ok: true },
+        threadId: "telegram:chat-1:thread-1",
+      })
+      .mockRejectedValueOnce(new Error("second segment failed"));
+    const handleTurn = vi.fn(async () => ({
+      text: `${"A".repeat(210)}.\n\n${"B".repeat(210)}.`,
+    }));
+    const events: Array<{ details?: Record<string, unknown>; name: string }> = [];
+    const runtime = new ChannelRuntime({
+      adapterFactory: () => adapter,
+      handleTurn,
+      onEvent: (event) => events.push(event),
+      stateFactory: () => createMockState(),
+    });
+    runtimes.push(runtime);
+    const configured = installation({
+      responseDelivery: {
+        maxMessages: 2,
+        style: "conversational",
+        targetCharacters: 200,
+      },
+    });
+
+    await expect(runtime.handleWebhook(
+      configured,
+      webhookRequest("partial-provider-retry"),
+    )).rejects.toThrow("second segment failed");
+    await expect(runtime.handleWebhook(
+      configured,
+      webhookRequest("partial-provider-retry"),
+    )).resolves.toBeInstanceOf(Response);
+
+    expect(handleTurn).toHaveBeenCalledOnce();
+    expect(adapter.postMessage).toHaveBeenCalledTimes(2);
+    expect(events).toContainEqual(expect.objectContaining({
+      details: { deliveredMessages: 1 },
+      name: "delivery.failed",
+    }));
+  });
+
   it("normalizes a slash command into the same provider-neutral turn", async () => {
     const adapter = slashCommandAdapter();
     const handleTurn = vi.fn(async () => ({ text: "Command completed" }));
@@ -1111,7 +1281,7 @@ describe("ChannelRuntime", () => {
     );
     expect(adapter.postChannelMessage).toHaveBeenCalledWith(
       "discord:guild-1:channel-1",
-      "Command completed",
+      { markdown: "Command completed" },
     );
     expect(events).toContainEqual(expect.objectContaining({
       messageId: "interaction-1",

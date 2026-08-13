@@ -84,6 +84,21 @@ describe("segmentChannelText", () => {
     expect(segments.join("")).toBe(text);
     expect(segments.every((part) => !part.includes("�"))).toBe(true);
   });
+
+  it("keeps a fenced code block intact when it fits the provider hard limit", () => {
+    const code = `\`\`\`ts\n${"const value = 1;\n".repeat(45)}\`\`\`\n`;
+    const text = `Before the code.\n\n${code}\nAfter the code.`;
+    const segments = segmentChannelText("telegram", text, {
+      maxMessages: 6,
+      style: "conversational",
+      targetCharacters: 200,
+    });
+
+    expect(segments.join("")).toBe(text);
+    expect(segments.filter((segment) => segment.includes("```"))).toHaveLength(1);
+    expect(segments.find((segment) => segment.includes("```")))
+      .toContain(code.trimEnd());
+  });
 });
 
 describe("normalizeChannelResponseDeliveryPolicy", () => {
