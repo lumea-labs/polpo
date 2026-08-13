@@ -53,12 +53,15 @@ const DEFAULT_CONCURRENCY = {
   strategy: "burst" as const,
 };
 const DEFAULT_DEDUPE_TTL_MS = 10 * 60_000;
+const DEFAULT_OBSERVABILITY_TIMEOUT_MS = 1_000;
+const OBSERVABILITY_TIMEOUT_BACKOFF_MS = 30_000;
 
 export class ChannelRuntime {
   private readonly entries = new Map<string, RuntimeEntry>();
   private readonly pendingEvents = new Set<Promise<void>>();
   private readonly pendingInstallations = new Map<string, Promise<RuntimeEntry>>();
   private readonly pendingTurns = new Map<string, Promise<void>>();
+  private observabilitySuppressedUntil = 0;
   private readonly options: Required<
     Pick<ChannelRuntimeOptions, "idleTtlMs" | "maxInstances">
   > & ChannelRuntimeOptions;
@@ -844,10 +847,30 @@ export class ChannelRuntime {
   }
 
   private async emit(event: ChannelRuntimeEvent): Promise<void> {
+    const onEvent = this.options.onEvent;
+    if (!onEvent || Date.now() < this.observabilitySuppressedUntil) return;
+    const timeoutMs = this.options.observabilityTimeoutMs
+      ?? DEFAULT_OBSERVABILITY_TIMEOUT_MS;
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    const hook = Promise.resolve()
+      .then(() => onEvent(event))
+      .then(() => "settled" as const)
+      .catch(() => "settled" as const);
     try {
-      await this.options.onEvent?.(event);
-    } catch {
-      // Observability must never alter webhook acknowledgement or turn execution.
+      const outcome = timeoutMs > 0
+        ? await Promise.race([
+            hook,
+            new Promise<"timeout">((resolve) => {
+              timeout = setTimeout(() => resolve("timeout"), timeoutMs);
+            }),
+          ])
+        : await hook;
+      if (outcome === "timeout") {
+        this.observabilitySuppressedUntil = Date.now()
+          + OBSERVABILITY_TIMEOUT_BACKOFF_MS;
+      }
+    } finally {
+      if (timeout) clearTimeout(timeout);
     }
   }
 

@@ -136,6 +136,10 @@ agent turn, or provider delivery. Pass `logger` when Chat SDK diagnostic logging
 is also required; Polpo defaults those diagnostics to `warn` while still emitting
 typed transport events.
 
+Hooks are best-effort and time-bounded. `observabilityTimeoutMs` defaults to one
+second; a timed-out hook is temporarily suppressed so an unavailable audit store
+cannot repeatedly delay webhook acknowledgement or agent execution.
+
 ## Events and native output
 
 `handleEvent` receives a discriminated union for messages, slash commands,

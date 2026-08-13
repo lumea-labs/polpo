@@ -336,6 +336,7 @@ export type ChannelRuntimeOptions = {
   handleEvent?: ChannelEventHandler;
   handleTurn?: ChannelTurnHandler;
   idleTtlMs?: number;
+  observabilityTimeoutMs?: number;
   logger?: Logger | LogLevel;
   maxInstances?: number;
   onEvent?: (event: ChannelRuntimeEvent) => void | Promise<void>;

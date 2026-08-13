@@ -253,6 +253,7 @@ function createRuntime(options: {
   coordinateEvent?: ConstructorParameters<typeof ChannelRuntime>[0]["coordinateEvent"];
   handleEvent?: ConstructorParameters<typeof ChannelRuntime>[0]["handleEvent"];
   handleTurn?: ConstructorParameters<typeof ChannelRuntime>[0]["handleTurn"];
+  observabilityTimeoutMs?: ConstructorParameters<typeof ChannelRuntime>[0]["observabilityTimeoutMs"];
   onEvent?: ConstructorParameters<typeof ChannelRuntime>[0]["onEvent"];
   shouldStartTyping?: ConstructorParameters<typeof ChannelRuntime>[0]["shouldStartTyping"];
 } = {}): ChannelRuntime {
@@ -263,6 +264,7 @@ function createRuntime(options: {
     coordinateEvent: options.coordinateEvent,
     handleEvent: options.handleEvent,
     handleTurn: options.handleTurn ?? (async () => ({ text: "reply" })),
+    observabilityTimeoutMs: options.observabilityTimeoutMs,
     onEvent: options.onEvent,
     shouldStartTyping: options.shouldStartTyping,
     stateFactory: () => createMockState(),
@@ -585,6 +587,26 @@ describe("ChannelRuntime", () => {
       webhookRequest("message-1"),
     )).resolves.toMatchObject({ status: 200 });
     expect(adapter.postMessage).toHaveBeenCalledOnce();
+  });
+
+  it("bounds a stalled observability hook and suppresses repeated stalls", async () => {
+    const adapter = testAdapter();
+    const onEvent = vi.fn(() => new Promise<void>(() => {}));
+    const runtime = createRuntime({
+      adapter,
+      observabilityTimeoutMs: 5,
+      onEvent,
+    });
+
+    const startedAt = Date.now();
+    await expect(runtime.handleWebhook(
+      installation(),
+      webhookRequest("message-1"),
+    )).resolves.toMatchObject({ status: 200 });
+
+    expect(Date.now() - startedAt).toBeLessThan(500);
+    expect(adapter.postMessage).toHaveBeenCalledOnce();
+    expect(onEvent).toHaveBeenCalledOnce();
   });
 
   it("preserves lazy authenticated attachment access in normalized turns", async () => {
