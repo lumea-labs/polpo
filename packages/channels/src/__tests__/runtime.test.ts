@@ -5,6 +5,7 @@ import {
 } from "@chat-adapter/tests";
 import { emoji, type Adapter, type ChatInstance, type MessageData } from "chat";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { createOfficialChannelAdapter } from "../providers.js";
 import { ChannelRuntime } from "../runtime.js";
 import type {
   ChannelInstallation,
@@ -16,6 +17,7 @@ const runtimes: ChannelRuntime[] = [];
 
 afterEach(async () => {
   await Promise.all(runtimes.splice(0).map((runtime) => runtime.shutdown()));
+  vi.unstubAllGlobals();
 });
 
 function installation(
@@ -274,6 +276,90 @@ function createRuntime(options: {
 }
 
 describe("ChannelRuntime", () => {
+  it("combines a Telegram media group into one ordered Polpo turn", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({
+      ok: true,
+      result: { first_name: "Polpo", id: 999, is_bot: true, username: "polpo" },
+    })));
+    const handleTurn = vi.fn(async () => ({}));
+    const runtime = createRuntime({
+      adapter: createOfficialChannelAdapter(installation({ typingEnabled: false })),
+      handleTurn,
+    });
+    const backgroundTasks: Promise<unknown>[] = [];
+    const mediaGroupRequest = (
+      updateId: number,
+      messageId: number,
+      fileId: string,
+      caption?: string,
+    ) => new Request("https://example.test/webhook", {
+      body: JSON.stringify({
+        update_id: updateId,
+        message: {
+          ...(caption ? { caption } : {}),
+          chat: { first_name: "Ada", id: 12345, type: "private" },
+          date: 1_786_000_001,
+          from: { first_name: "Ada", id: 456, is_bot: false, username: "ada" },
+          media_group_id: "album-1",
+          message_id: messageId,
+          photo: [{
+            file_id: fileId,
+            file_size: 128,
+            file_unique_id: `${fileId}-unique`,
+            height: 480,
+            width: 640,
+          }],
+        },
+      }),
+      headers: {
+        "content-type": "application/json",
+        "x-telegram-bot-api-secret-token": "secret",
+      },
+      method: "POST",
+    });
+
+    await Promise.all([
+      runtime.handleWebhook(
+        installation({ typingEnabled: false }),
+        mediaGroupRequest(101, 11, "file-1", "Inspect these images"),
+        { waitUntil: (task) => backgroundTasks.push(task) },
+      ),
+      runtime.handleWebhook(
+        installation({ typingEnabled: false }),
+        mediaGroupRequest(102, 12, "file-2"),
+        { waitUntil: (task) => backgroundTasks.push(task) },
+      ),
+    ]);
+    await Promise.all(backgroundTasks);
+
+    expect(handleTurn).toHaveBeenCalledOnce();
+    expect(handleTurn.mock.calls[0]?.[0]).toMatchObject({
+      coordination: {
+        grouped: false,
+        messageCount: 1,
+        messageIds: ["12345:12"],
+        primaryMessageId: "12345:12",
+      },
+      providerEventId: "12345:12",
+      threadId: "telegram:12345",
+    });
+    expect(handleTurn.mock.calls[0]?.[0].messages).toHaveLength(1);
+    expect(handleTurn.mock.calls[0]?.[0].messages[0]).toMatchObject({
+      id: "12345:12",
+      text: "Inspect these images",
+    });
+    expect(handleTurn.mock.calls[0]?.[0].messages[0].attachments).toEqual([
+      expect.objectContaining({
+        fetchMetadata: expect.objectContaining({ fileId: "file-1" }),
+        type: "image",
+      }),
+      expect.objectContaining({
+        fetchMetadata: expect.objectContaining({ fileId: "file-2" }),
+        type: "image",
+      }),
+    ]);
+  });
+
   it("normalizes an inbound message and posts the turn result", async () => {
     const adapter = testAdapter();
     const handleTurn = vi.fn(async () => ({ text: "Hello from Polpo" }));
