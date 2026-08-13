@@ -27,6 +27,7 @@ import type {
   ChannelInboundMessage,
   ChannelInboundTurn,
   ChannelInstallation,
+  ChannelProviderId,
   ChannelRuntimeEvent,
   ChannelRuntimeOptions,
   ChannelStateAdapter,
@@ -239,9 +240,9 @@ export class ChannelRuntime {
       thread: Thread,
       message: Message,
       context?: MessageContext,
-    ) => this.handleMessage(installation, thread, message, context);
+    ) => this.handleMessage(installation, state, thread, message, context);
     chat.onDirectMessage((thread, message, _channel, context) =>
-      this.handleMessage(installation, thread, message, context));
+      this.handleMessage(installation, state, thread, message, context));
     chat.onNewMention(handler);
     chat.onNewMessage(/[\s\S]*/, handler);
     chat.onSubscribedMessage(handler);
@@ -272,10 +273,22 @@ export class ChannelRuntime {
 
   private async handleMessage(
     installation: ChannelInstallation,
+    state: ChannelStateAdapter,
     thread: Thread,
     message: Message,
     context?: MessageContext,
   ): Promise<void> {
+    const providerEventId = messageProviderEventId(
+      installation.provider,
+      thread.id,
+      message,
+    );
+    if (
+      providerEventId !== message.id
+      && !await this.acceptEvent(state, installation, "message", providerEventId)
+    ) {
+      return;
+    }
     await thread.subscribe();
     const messages = await Promise.all(
       [...(context?.skipped ?? []), message].map(mapMessage),
@@ -298,7 +311,7 @@ export class ChannelRuntime {
       isDirectMessage: thread.isDM,
       messages,
       provider: installation.provider,
-      providerEventId: message.id,
+      providerEventId,
       threadId: thread.id,
     };
     await this.executeTurn(installation, {
@@ -1085,6 +1098,22 @@ async function mapMessage(message: Message): Promise<ChannelInboundMessage> {
     text: message.text,
     timestamp: message.metadata.dateSent,
   };
+}
+
+function messageProviderEventId(
+  provider: ChannelProviderId,
+  threadId: string,
+  message: Message,
+): string {
+  if (provider !== "telegram") return message.id;
+  const mediaGroupId = asRecord(message.raw)?.media_group_id;
+  if (
+    (typeof mediaGroupId === "string" && mediaGroupId.trim())
+    || (typeof mediaGroupId === "number" && Number.isFinite(mediaGroupId))
+  ) {
+    return `${threadId}:media-group:${String(mediaGroupId)}`;
+  }
+  return message.id;
 }
 
 function providerEventIdFor(raw: unknown, fallback: string[]): string {

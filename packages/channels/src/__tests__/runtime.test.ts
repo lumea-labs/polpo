@@ -332,6 +332,14 @@ describe("ChannelRuntime", () => {
     ]);
     await Promise.all(backgroundTasks);
 
+    const retryTasks: Promise<unknown>[] = [];
+    await runtime.handleWebhook(
+      installation({ typingEnabled: false }),
+      mediaGroupRequest(101, 11, "file-1", "Inspect these images"),
+      { waitUntil: (task) => retryTasks.push(task) },
+    );
+    await Promise.all(retryTasks);
+
     expect(handleTurn).toHaveBeenCalledOnce();
     expect(handleTurn.mock.calls[0]?.[0]).toMatchObject({
       coordination: {
@@ -340,7 +348,7 @@ describe("ChannelRuntime", () => {
         messageIds: ["12345:12"],
         primaryMessageId: "12345:12",
       },
-      providerEventId: "12345:12",
+      providerEventId: "telegram:12345:media-group:album-1",
       threadId: "telegram:12345",
     });
     expect(handleTurn.mock.calls[0]?.[0].messages).toHaveLength(1);
