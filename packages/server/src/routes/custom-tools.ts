@@ -3,7 +3,11 @@ import { streamSSE } from "hono/streaming";
 
 import {
   CUSTOM_TOOL_NAME_RE,
+  createSingleFileCustomToolArtifact,
+  customToolArtifactEntrySource,
+  parseCustomToolSourceArtifact,
   type CustomToolMeta,
+  type CustomToolSourceArtifact,
   type CustomToolsStore,
 } from "@polpo-ai/tools";
 
@@ -27,6 +31,11 @@ export interface CustomToolDeployer {
     source: string,
     onProgress?: (progress: CustomToolDeployProgress) => void,
   ): Promise<CustomToolDeployResult>;
+  deployArtifact?(
+    name: string,
+    artifact: CustomToolSourceArtifact,
+    onProgress?: (progress: CustomToolDeployProgress) => void,
+  ): Promise<CustomToolDeployResult>;
 }
 
 export interface CustomToolRunner {
@@ -42,40 +51,84 @@ export interface CustomToolRouteDeps {
 }
 
 type StoredSnapshot = {
-  source: string | null;
+  artifact: CustomToolSourceArtifact | null;
   meta: CustomToolMeta | null;
   bundle: string | null;
 };
 
 async function snapshot(store: CustomToolsStore, name: string): Promise<StoredSnapshot> {
-  const [source, meta, bundle] = await Promise.all([
-    store.getSource(name),
+  const [artifact, meta, bundle] = await Promise.all([
+    store.getArtifact(name),
     store.getMeta(name),
     store.getBundle(name),
   ]);
-  return { source, meta, bundle };
+  return { artifact, meta, bundle };
 }
 
 async function restore(store: CustomToolsStore, name: string, previous: StoredSnapshot) {
   await store.remove(name);
-  if (previous.source === null) return;
-  await store.putSource(name, previous.source);
+  if (previous.artifact === null) return;
+  await store.putArtifact(name, previous.artifact);
   if (previous.meta) await store.putMeta(name, previous.meta);
   if (previous.bundle) await store.putBundle(name, previous.bundle);
 }
 
-function validateInput(body: unknown): { name: string; source: string } | { error: string; code: string } {
-  const input = body as { name?: unknown; source?: unknown } | null;
+type ValidatedInput = {
+  name: string;
+  source: string;
+  artifact: CustomToolSourceArtifact;
+};
+
+function validateInput(body: unknown): ValidatedInput | { error: string; code: string } {
+  const input = body as { name?: unknown; source?: unknown; artifact?: unknown } | null;
   if (typeof input?.name !== "string" || !CUSTOM_TOOL_NAME_RE.test(input.name)) {
     return {
       error: "`name` is required and must be snake_case (lowercase letters, digits, underscores; starting with a letter)",
       code: "invalid_name",
     };
   }
-  if (typeof input.source !== "string" || input.source.trim().length === 0) {
-    return { error: "`source` is required and must be a non-empty string", code: "invalid_source" };
+  if (input.source !== undefined && input.artifact !== undefined) {
+    return { error: "Provide either `source` or `artifact`, not both", code: "ambiguous_source" };
   }
-  return { name: input.name, source: input.source };
+  if (input.artifact !== undefined) {
+    try {
+      const artifact = parseCustomToolSourceArtifact(input.artifact);
+      return {
+        name: input.name,
+        source: customToolArtifactEntrySource(artifact),
+        artifact,
+      };
+    } catch (error) {
+      return { error: (error as Error).message, code: "invalid_artifact" };
+    }
+  }
+  if (typeof input.source !== "string" || input.source.trim().length === 0) {
+    return {
+      error: "`source` or `artifact` is required",
+      code: "invalid_source",
+    };
+  }
+  return {
+    name: input.name,
+    source: input.source,
+    artifact: createSingleFileCustomToolArtifact(input.name, input.source),
+  };
+}
+
+function deployArtifact(
+  deployer: CustomToolDeployer,
+  input: ValidatedInput,
+  onProgress?: (progress: CustomToolDeployProgress) => void,
+): Promise<CustomToolDeployResult> {
+  if (deployer.deployArtifact) {
+    return deployer.deployArtifact(input.name, input.artifact, onProgress);
+  }
+  if (Object.keys(input.artifact.files).length > 1) {
+    return Promise.resolve({
+      errors: ["This runtime does not support multi-file custom tools"],
+    });
+  }
+  return deployer.deploy(input.name, input.source, onProgress);
 }
 
 /**
@@ -105,13 +158,13 @@ export function customToolRoutes(
 
     const deps = getDeps(c);
     const previous = await snapshot(deps.store, input.name);
-    await deps.store.putSource(input.name, input.source);
+    await deps.store.putArtifact(input.name, input.artifact);
     if (!deps.deployer) {
       return c.json({ ok: true, data: { name: input.name, validated: false, bundled: false } }, 201);
     }
 
     try {
-      const result = await deps.deployer.deploy(input.name, input.source);
+      const result = await deployArtifact(deps.deployer, input);
       if (result.errors.length > 0) {
         await restore(deps.store, input.name, previous);
         return c.json({ error: "Tool failed to deploy", code: "invalid_tool", details: result.errors }, 400);
@@ -136,13 +189,17 @@ export function customToolRoutes(
   app.post("/:name/deploy", async (c) => {
     const name = c.req.param("name");
     const body = await c.req.json().catch(() => null);
-    const input = validateInput({ name, source: body?.source });
+    const input = validateInput({
+      name,
+      source: body?.source,
+      artifact: body?.artifact,
+    });
     if ("error" in input) return c.json(input, 400);
 
     const deps = getDeps(c);
     if (!deps.deployer) return c.json({ error: "Deploy not available", code: "no_deployer" }, 503);
     const previous = await snapshot(deps.store, name);
-    await deps.store.putSource(name, input.source);
+    await deps.store.putArtifact(name, input.artifact);
 
     return streamSSE(c, async (stream) => {
       let writes = Promise.resolve();
@@ -151,7 +208,7 @@ export function customToolRoutes(
         return writes;
       };
       try {
-        const result = await deps.deployer!.deploy(name, input.source, (progress) => {
+        const result = await deployArtifact(deps.deployer!, input, (progress) => {
           void send("progress", progress);
         });
         if (result.errors.length > 0) {
@@ -178,9 +235,17 @@ export function customToolRoutes(
     const name = c.req.param("name");
     if (!CUSTOM_TOOL_NAME_RE.test(name)) return c.json({ error: "Invalid tool name", code: "invalid_name" }, 400);
     const { store } = getDeps(c);
-    const source = await store.getSource(name);
-    if (source === null) return c.json({ error: "Tool not found", code: "not_found" }, 404);
-    return c.json({ ok: true, data: { name, source, meta: await store.getMeta(name) } });
+    const artifact = await store.getArtifact(name);
+    if (artifact === null) return c.json({ error: "Tool not found", code: "not_found" }, 404);
+    return c.json({
+      ok: true,
+      data: {
+        name,
+        source: customToolArtifactEntrySource(artifact),
+        artifact,
+        meta: await store.getMeta(name),
+      },
+    });
   });
 
   app.post("/:name/run", async (c) => {

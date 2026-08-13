@@ -82,4 +82,80 @@ describe("customToolRoutes", () => {
     expect(response.status).toBe(400);
     expect(await store.getSource("echo")).toBe("old source");
   });
+
+  it("deploys a validated multi-file artifact and returns it from detail", async () => {
+    const store = createCustomToolsStore(new MemoryFs(), "/tools");
+    let receivedFiles: string[] = [];
+    const app = customToolRoutes(() => ({
+      store,
+      deployer: {
+        async deploy() {
+          throw new Error("single-file deploy should not be used");
+        },
+        async deployArtifact(name, artifact) {
+          receivedFiles = Object.keys(artifact.files);
+          return {
+            errors: [],
+            bundle: "bundle",
+            meta: {
+              name,
+              description: "Site context",
+              parameters: { type: "object" },
+              label: name,
+              clientSide: false,
+            },
+          };
+        },
+      },
+    }));
+    const artifact = {
+      version: 1,
+      entry: "site_context_get.ts",
+      files: {
+        "site_context_get.ts": `import "./_leo_platform"; export default {};`,
+        "_leo_platform.ts": `export const platform = "leo";`,
+      },
+    };
+
+    const response = await app.request("/", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name: "site_context_get", artifact }),
+    });
+    expect(response.status).toBe(201);
+    expect(receivedFiles).toEqual(["_leo_platform.ts", "site_context_get.ts"]);
+    expect(await (await app.request("/site_context_get")).json()).toMatchObject({
+      data: { artifact: { entry: "site_context_get.ts", files: artifact.files } },
+    });
+  });
+
+  it("rejects unsafe artifacts before storage or deployment", async () => {
+    const store = createCustomToolsStore(new MemoryFs(), "/tools");
+    let deployed = false;
+    const app = customToolRoutes(() => ({
+      store,
+      deployer: {
+        async deploy() {
+          deployed = true;
+          return { errors: [] };
+        },
+      },
+    }));
+    const response = await app.request("/", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        name: "escape",
+        artifact: {
+          version: 1,
+          entry: "../escape.ts",
+          files: { "../escape.ts": "export default {};" },
+        },
+      }),
+    });
+
+    expect(response.status).toBe(400);
+    expect(deployed).toBe(false);
+    expect(await store.has("escape")).toBe(false);
+  });
 });

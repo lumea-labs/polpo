@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import type { FileSystem, FileStat } from "@polpo-ai/core/filesystem";
 import { createCustomToolsStore } from "../custom-tool-store.js";
+import { parseCustomToolSourceArtifact } from "../custom-tool-source-artifact.js";
 
 class MemoryFs implements FileSystem {
   files = new Map<string, string>();
@@ -53,5 +54,33 @@ describe("createCustomToolsStore", () => {
     expect(await store.remove("echo")).toBe(true);
     expect(await store.has("echo")).toBe(false);
     await expect(store.putSource("../escape", "source")).rejects.toThrow("Invalid custom tool name");
+  });
+
+  it("round-trips a multi-file artifact and preserves the entry source API", async () => {
+    const store = createCustomToolsStore(new MemoryFs(), "/project/.polpo/tools");
+    const artifact = parseCustomToolSourceArtifact({
+      version: 1,
+      entry: "site_context_get.ts",
+      files: {
+        "site_context_get.ts": `import "./_leo_platform"; export default {};`,
+        "_leo_platform.ts": `export const platform = "leo";`,
+      },
+    });
+    await store.putArtifact("site_context_get", artifact);
+
+    expect(await store.getArtifact("site_context_get")).toEqual(artifact);
+    expect(await store.getSource("site_context_get")).toContain("_leo_platform");
+  });
+
+  it("reads legacy single-file records as versioned artifacts", async () => {
+    const fs = new MemoryFs();
+    fs.files.set("/project/.polpo/tools/echo.ts", "export default {};");
+    const store = createCustomToolsStore(fs, "/project/.polpo/tools");
+
+    expect(await store.getArtifact("echo")).toEqual({
+      version: 1,
+      entry: "echo.ts",
+      files: { "echo.ts": "export default {};" },
+    });
   });
 });

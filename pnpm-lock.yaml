@@ -143,12 +143,21 @@ importers:
       '@polpo-ai/server':
         specifier: workspace:*
         version: link:../server
+      '@polpo-ai/tools':
+        specifier: workspace:*
+        version: link:../tools
       '@polpo-ai/vault-crypto':
         specifier: workspace:*
         version: link:../vault-crypto
       commander:
         specifier: ^13.1.0
         version: 13.1.0
+      es-module-lexer:
+        specifier: ^2.3.1
+        version: 2.3.1
+      esbuild:
+        specifier: ^0.25.12
+        version: 0.25.12
       picocolors:
         specifier: ^1.1.1
         version: 1.1.1
