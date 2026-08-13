@@ -238,7 +238,7 @@ export const CLIENT_SIDE_TOOLS: Record<string, { description: string; inputSchem
 /** Set of tool names that are client-side (no server execute). */
 export const CLIENT_SIDE_TOOL_NAMES = new Set(Object.keys(CLIENT_SIDE_TOOLS));
 
-/** Select only client-side tools supported by both project policy and client. */
+/** Select only client-side tools supported by both agent policy and client. */
 export function clientSideToolsForCapabilities(
   capabilities: ResolvedChatInteractionCapabilities,
 ): Record<string, { description: string; inputSchema: any }> {

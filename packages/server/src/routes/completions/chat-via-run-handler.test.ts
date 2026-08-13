@@ -87,6 +87,66 @@ describe("chat via Run driver", () => {
     expect(visibleTools[1]).not.toContain("ask_user_question");
   });
 
+  it("uses agent-scoped chat policy instead of project settings", async () => {
+    const visibleTools: string[][] = [];
+    const deps = baseDeps({
+      getAgents: async () => [{
+        name: "agent-1",
+        role: "Test agent",
+        model: "mock",
+        chat: { allowUserQuestions: false },
+      }],
+      getConfig: () => ({
+        settings: {
+          chatExecution: "run",
+          chat: { allowUserQuestions: true },
+        },
+      }),
+      runChatViaRun: async (inject, hooks) => {
+        visibleTools.push([...Object.keys(inject.toolSet ?? {})]);
+        hooks.onEvent({ type: "text-delta", text: "done" });
+        return { status: "completed", result: { exitCode: 0, stdout: "done", stderr: "" } };
+      },
+    });
+
+    await runConversationTurn(deps, {
+      body: {
+        agent: "agent-1",
+        stream: false,
+        messages: [{ role: "user", content: "start" }],
+      },
+    });
+
+    expect(visibleTools[0]).not.toContain("ask_user_question");
+  });
+
+  it("does not apply project chat settings to an agent without overrides", async () => {
+    const visibleTools: string[][] = [];
+    const deps = baseDeps({
+      getConfig: () => ({
+        settings: {
+          chatExecution: "run",
+          chat: { allowUserQuestions: false },
+        },
+      }),
+      runChatViaRun: async (inject, hooks) => {
+        visibleTools.push([...Object.keys(inject.toolSet ?? {})]);
+        hooks.onEvent({ type: "text-delta", text: "done" });
+        return { status: "completed", result: { exitCode: 0, stdout: "done", stderr: "" } };
+      },
+    });
+
+    await runConversationTurn(deps, {
+      body: {
+        agent: "agent-1",
+        stream: false,
+        messages: [{ role: "user", content: "start" }],
+      },
+    });
+
+    expect(visibleTools[0]).toContain("ask_user_question");
+  });
+
   it("streams kind-free suggestions before the final stop chunk", async () => {
     const suggestionModel = new MockLanguageModelV3({
       doGenerate: {
@@ -109,10 +169,15 @@ describe("chat via Run driver", () => {
     } as any);
     const onAuxiliaryModelFinished = vi.fn();
     const deps = baseDeps({
+      getAgents: async () => [{
+        name: "agent-1",
+        role: "Test agent",
+        model: "mock",
+        chat: { suggestions: { enabled: true, maxItems: 3 } },
+      }],
       getConfig: () => ({
         settings: {
           chatExecution: "run",
-          chat: { suggestions: { enabled: true, maxItems: 3 } },
         },
       }),
       resolveAgentModel: async () => ({
@@ -179,10 +244,15 @@ describe("chat via Run driver", () => {
       },
     } as any);
     const deps = baseDeps({
+      getAgents: async () => [{
+        name: "agent-1",
+        role: "Test agent",
+        model: "mock",
+        chat: { suggestions: { enabled: true, maxItems: 3 } },
+      }],
       getConfig: () => ({
         settings: {
           chatExecution: "run",
-          chat: { suggestions: { enabled: true, maxItems: 3 } },
         },
       }),
       resolveAgentModel: async () => ({
@@ -245,10 +315,15 @@ describe("chat via Run driver", () => {
       },
     } as any);
     const deps = baseDeps({
+      getAgents: async () => [{
+        name: "agent-1",
+        role: "Test agent",
+        model: "mock",
+        chat: { suggestions: { enabled: true, maxItems: 2 } },
+      }],
       getConfig: () => ({
         settings: {
           chatExecution: "inline",
-          chat: { suggestions: { enabled: true, maxItems: 2 } },
         },
       }),
       resolveAgentModel: async () => ({
@@ -288,10 +363,15 @@ describe("chat via Run driver", () => {
   it("never generates suggestions for channel turns", async () => {
     const doGenerate = vi.fn();
     const deps = baseDeps({
+      getAgents: async () => [{
+        name: "agent-1",
+        role: "Test agent",
+        model: "mock",
+        chat: { suggestions: { enabled: true, maxItems: 3 } },
+      }],
       getConfig: () => ({
         settings: {
           chatExecution: "run",
-          chat: { suggestions: { enabled: true, maxItems: 3 } },
         },
       }),
       resolveAgentModel: async () => ({
@@ -826,6 +906,10 @@ describe("chat via Run driver", () => {
       modelSelection: { primary: "mock-model", fallbacks: [] },
       effectiveTools: [],
       effectiveToolExecutor: async () => "ok",
+      interactionSettings: {
+        allowUserQuestions: true,
+        suggestions: { enabled: false, maxItems: 3 },
+      },
       aiMessages: [{ role: "user", content: "hello" }],
       sessionStore,
       sessionId: "channel-session-1",
@@ -885,6 +969,10 @@ describe("chat via Run driver", () => {
       modelSelection: { primary: "mock-model", fallbacks: [] },
       effectiveTools: [],
       effectiveToolExecutor: async () => "ok",
+      interactionSettings: {
+        allowUserQuestions: true,
+        suggestions: { enabled: false, maxItems: 3 },
+      },
       aiMessages: [{ role: "user", content: "hello" }],
       sessionStore: sessionStore as any,
       sessionId: "session-1",

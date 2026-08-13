@@ -27,7 +27,10 @@ import {
   type RuntimePlan,
   type RuntimeContextTrustMode,
 } from "@polpo-ai/core";
-import { resolveChatInteractionCapabilities } from "@polpo-ai/core/chat-interactions";
+import {
+  normalizeChatInteractionSettings,
+  resolveChatInteractionCapabilities,
+} from "@polpo-ai/core/chat-interactions";
 import type {
   CompletionRouteDeps,
   CompletionRuntimeInvocation,
@@ -489,9 +492,12 @@ export async function prepareChatCompletionExecution(
   let executionRoute: ResolvedExecutionRoute | undefined;
 
   const invocation = completionInvocation(options.runtime);
+  const interactionSettings = normalizeChatInteractionSettings(
+    initialAgentConfig?.chat,
+  );
   const interactionCapabilities = resolveChatInteractionCapabilities({
     surface: invocation.surface,
-    settings: deps.getConfig()?.settings?.chat,
+    settings: interactionSettings,
     client: body.polpo?.capabilities,
   });
   const clientSideTools = clientSideToolsForCapabilities(interactionCapabilities);
@@ -913,6 +919,7 @@ export async function prepareChatCompletionExecution(
     modelOutput: modelOutputForResponseFormat(body.response_format),
     effectiveTools,
     effectiveToolExecutor,
+    interactionSettings,
     interactionCapabilities,
     clientSideTools,
     clientSideToolNames,

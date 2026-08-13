@@ -1,7 +1,4 @@
-import {
-  normalizeChatInteractionSettings,
-  type ChatSuggestion,
-} from "@polpo-ai/core/chat-interactions";
+import type { ChatSuggestion } from "@polpo-ai/core/chat-interactions";
 import { completionResolvedModelInfo } from "./agent-step-runner.js";
 import type { ChatCompletionExecution } from "./chat-handler.js";
 import { generateChatSuggestions } from "./chat-suggestions.js";
@@ -22,14 +19,7 @@ export async function suggestionsForCompletion(
     return [];
   }
 
-  let settings;
-  try {
-    settings = normalizeChatInteractionSettings(
-      execution.deps.getConfig()?.settings?.chat,
-    ).suggestions;
-  } catch {
-    return [];
-  }
+  const settings = execution.interactionSettings.suggestions;
 
   const result = await generateChatSuggestions({
     model: execution.m.aiModel,
