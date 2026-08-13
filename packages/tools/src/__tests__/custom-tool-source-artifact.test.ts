@@ -45,6 +45,8 @@ describe("custom tool source artifacts", () => {
     "./dot.ts",
     "nested//empty.ts",
     "node_modules/pkg.ts",
+    "evil;touch-pwned.ts",
+    "quoted'name.ts",
     "bad.txt",
   ])("rejects unsafe or unsupported path %s", (path) => {
     expect(() => parseCustomToolSourceArtifact({

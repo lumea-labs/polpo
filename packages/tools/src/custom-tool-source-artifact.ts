@@ -5,6 +5,7 @@ export const MAX_CUSTOM_TOOL_SOURCE_BYTES = 2 * 1024 * 1024;
 const MAX_SOURCE_PATH_LENGTH = 240;
 const MAX_SOURCE_PATH_DEPTH = 16;
 const SUPPORTED_SOURCE_EXTENSION_RE = /\.(?:[cm]?[jt]sx?|json)$/;
+const PORTABLE_SOURCE_PATH_RE = /^[A-Za-z0-9_./-]+$/;
 const CUSTOM_TOOL_NAME_RE = /^[a-z][a-z0-9_]*$/;
 
 export interface CustomToolSourceArtifact {
@@ -123,6 +124,7 @@ function validateSourcePath(path: string): string {
     || path !== path.normalize("NFC")
     || path.startsWith("/")
     || /^[A-Za-z]:/.test(path)
+    || !PORTABLE_SOURCE_PATH_RE.test(path)
     || !SUPPORTED_SOURCE_EXTENSION_RE.test(path)
   ) {
     throw new Error(`Unsafe or unsupported custom tool source path: ${path}`);
