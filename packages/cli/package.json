@@ -30,8 +30,11 @@
     "@clack/prompts": "^0.9.1",
     "@polpo-ai/core": "workspace:*",
     "@polpo-ai/server": "workspace:*",
+    "@polpo-ai/tools": "workspace:*",
     "@polpo-ai/vault-crypto": "workspace:*",
     "commander": "^13.1.0",
+    "es-module-lexer": "^2.3.1",
+    "esbuild": "^0.25.12",
     "picocolors": "^1.1.1"
   },
   "devDependencies": {

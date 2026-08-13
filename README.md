@@ -209,6 +209,13 @@ export default defineTool({
 `user`, `metadata`, and a `surface` (`chat`, `task`, `loop`, `schedule`, or
 `channel`). Missing or invalid required bindings fail before tool code runs.
 
+Custom tool entrypoints may import relative TypeScript, JavaScript, TSX, or JSON
+modules kept under the same source directory. Both `polpo tools push <file>` and
+`polpo deploy` collect that local dependency graph and upload it as one versioned
+artifact. Bare package imports remain runtime dependencies. Computed dynamic
+imports, symlinks, paths outside the tool directory, and path traversal are
+rejected before upload. Existing single-file custom tools remain compatible.
+
 ## Loops Beta
 
 Loops are project-level deterministic graphs stored in `.polpo/loops/*.json` or authored as static `.polpo/loops/*.ts` DSL files, then assigned to agents from `.polpo/agents.json`. This avoids duplicating loop definitions across agents: a loop has `name`, `context`, `start`, and `steps`; an agent has `assignedLoops` and `defaultLoop`.

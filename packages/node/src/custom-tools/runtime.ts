@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { mkdir, rm, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { builtinModules, createRequire } from "node:module";
+import { dirname, join, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { build, type Plugin } from "esbuild";
@@ -9,13 +10,16 @@ import {
   createToolInvocationContext,
   createJsonSchemaExample,
   createCustomToolsStore,
+  createSingleFileCustomToolArtifact,
   emptyCustomToolConnections,
   extractCustomTool,
+  parseCustomToolSourceArtifact,
   safeEnv,
   TOOL_CATALOG,
   type CustomToolMeta,
   type CustomToolConnections,
   type CustomToolsStore,
+  type CustomToolSourceArtifact,
   type ToolInvocationContext,
 } from "@polpo-ai/tools";
 import type { PolpoTool } from "@polpo-ai/core";
@@ -30,6 +34,7 @@ import type {
 const SOURCE_HASH_PREFIX = "// polpo-source-sha256:";
 const RUNTIME_RESOLVE_DIR = dirname(fileURLToPath(import.meta.url));
 const TOOLS_AUTHORING_ENTRY = join(RUNTIME_RESOLVE_DIR, "../../../tools/dist/custom-tools.js");
+const runtimeRequire = createRequire(import.meta.url);
 
 type RuntimeOptions = {
   polpoDir: string;
@@ -54,7 +59,7 @@ function importedPackages(source: string): string[] {
   return [...packages].sort();
 }
 
-function authoringImportPlugin(): Plugin {
+function authoringImportPlugin(sourceRoot: string): Plugin {
   return {
     name: "polpo-custom-tool-authoring-entry",
     setup(builder) {
@@ -64,6 +69,17 @@ function authoringImportPlugin(): Plugin {
       builder.onResolve({ filter: /^@polpo-ai\/tools$/ }, () => ({
         path: TOOLS_AUTHORING_ENTRY,
       }));
+      builder.onResolve({ filter: /^(?:@[^/]+\/[^/]+|[^./][^:]*)$/ }, (args) => {
+        if (!args.importer.startsWith(`${sourceRoot}${sep}`)) return undefined;
+        if (builtinModules.includes(args.path)) {
+          return { path: args.path, external: true };
+        }
+        try {
+          return { path: runtimeRequire.resolve(args.path) };
+        } catch {
+          return undefined;
+        }
+      });
     },
   };
 }
@@ -96,25 +112,41 @@ export class LocalCustomToolRuntime implements CustomToolDeployer, CustomToolRun
     source: string,
     onProgress?: (progress: CustomToolDeployProgress) => void,
   ) {
+    return this.deployArtifact(
+      name,
+      createSingleFileCustomToolArtifact(name, source),
+      onProgress,
+    );
+  }
+
+  async deployArtifact(
+    name: string,
+    inputArtifact: CustomToolSourceArtifact,
+    onProgress?: (progress: CustomToolDeployProgress) => void,
+  ) {
     const emit = (step: CustomToolDeployProgress["step"], detail?: string) => onProgress?.({ step, detail });
     emit("detect", "Inspecting imports and tool definition");
     if (TOOL_CATALOG.includes(name)) {
       return { errors: [`Custom tool name "${name}" conflicts with a built-in tool`], deps: [] };
     }
-    const deps = importedPackages(source);
+    const artifact = parseCustomToolSourceArtifact(inputArtifact);
+    const artifactSource = JSON.stringify(artifact);
+    const artifactHash = sourceHash(artifactSource);
+    const deps = [...new Set(Object.values(artifact.files).flatMap(importedPackages))].sort();
     emit("install", deps.length ? `Resolving ${deps.join(", ")}` : "No package dependencies");
     emit("bundle", "Compiling TypeScript for the local runtime");
 
+    const buildRoot = join(this.toolsDir, `.build-${name}-${artifactHash}`);
     try {
+      await rm(buildRoot, { recursive: true, force: true });
+      for (const [path, source] of Object.entries(artifact.files)) {
+        const target = join(buildRoot, path);
+        await mkdir(dirname(target), { recursive: true });
+        await writeFile(target, source, "utf8");
+      }
       const result = await build({
-        stdin: {
-          contents: source,
-          loader: "ts",
-          // Tool imports resolve against the runtime's own dependency graph.
-          // Relative project imports are intentionally unsupported in v1.
-          resolveDir: RUNTIME_RESOLVE_DIR,
-          sourcefile: `${name}.ts`,
-        },
+        absWorkingDir: buildRoot,
+        entryPoints: [join(buildRoot, artifact.entry)],
         bundle: true,
         format: "esm",
         platform: "node",
@@ -122,12 +154,12 @@ export class LocalCustomToolRuntime implements CustomToolDeployer, CustomToolRun
         write: false,
         sourcemap: false,
         treeShaking: true,
-        plugins: [authoringImportPlugin()],
+        plugins: [authoringImportPlugin(buildRoot)],
         logLevel: "silent",
       });
       const output = result.outputFiles?.[0]?.text;
       if (!output) return { errors: ["The tool compiler produced no output"], deps };
-      const bundle = `${SOURCE_HASH_PREFIX}${sourceHash(source)}\n${output}`;
+      const bundle = `${SOURCE_HASH_PREFIX}${artifactHash}\n${output}`;
 
       emit("validate", "Loading the compiled tool and validating its contract");
       const tool = extractCustomTool(await this.importBundle(name, bundle, true));
@@ -148,17 +180,19 @@ export class LocalCustomToolRuntime implements CustomToolDeployer, CustomToolRun
     } catch (error) {
       emit("error", (error as Error).message);
       return { errors: [(error as Error).message], deps };
+    } finally {
+      await rm(buildRoot, { recursive: true, force: true }).catch(() => undefined);
     }
   }
 
   async ensureDeployed(name: string): Promise<string> {
-    const source = await this.store.getSource(name);
-    if (source === null) throw new Error(`Custom tool "${name}" was not found`);
-    const expectedHeader = `${SOURCE_HASH_PREFIX}${sourceHash(source)}`;
+    const artifact = await this.store.getArtifact(name);
+    if (artifact === null) throw new Error(`Custom tool "${name}" was not found`);
+    const expectedHeader = `${SOURCE_HASH_PREFIX}${sourceHash(JSON.stringify(artifact))}`;
     const existing = await this.store.getBundle(name);
     if (existing?.startsWith(expectedHeader)) return existing;
 
-    const deployed = await this.deploy(name, source);
+    const deployed = await this.deployArtifact(name, artifact);
     if (deployed.errors.length > 0 || !deployed.bundle || !deployed.meta) {
       throw new Error(deployed.errors.join("\n") || `Custom tool "${name}" failed to deploy`);
     }

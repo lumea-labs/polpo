@@ -101,6 +101,15 @@ export type {
   CustomToolMeta,
   CustomToolsStore,
 } from "./custom-tool-store.js";
+export {
+  CUSTOM_TOOL_SOURCE_ARTIFACT_VERSION,
+  MAX_CUSTOM_TOOL_SOURCE_BYTES,
+  MAX_CUSTOM_TOOL_SOURCE_FILES,
+  createSingleFileCustomToolArtifact,
+  customToolArtifactEntrySource,
+  parseCustomToolSourceArtifact,
+} from "./custom-tool-source-artifact.js";
+export type { CustomToolSourceArtifact } from "./custom-tool-source-artifact.js";
 
 // Types
 export type { ResolvedVault } from "./types.js";

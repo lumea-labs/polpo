@@ -1,9 +1,9 @@
 /**
  * polpo tools — manage custom tools (defineTool). [BETA]
  *
- * Tools are single TypeScript files that `export default defineTool({...})`.
- * They're stored per-project and executed inside the project sandbox. These
- * commands are thin wrappers over the cloud API (`/v1/tools`).
+ * Tool entrypoints `export default defineTool({...})`. Relative TypeScript and
+ * JSON dependencies are packaged with the entrypoint and executed inside the
+ * project sandbox. These commands wrap the cloud API (`/v1/tools`).
  */
 import type { Command } from "commander";
 import fs from "node:fs";
@@ -14,13 +14,10 @@ import { createApiClient } from "./api.js";
 import { loadProjectId } from "./project-context.js";
 import { requireAuth } from "../../util/auth.js";
 import { friendlyError } from "../../util/errors.js";
-
-const NAME_RE = /name\s*:\s*["'`]([a-z][a-z0-9_]*)["'`]/;
-
-/** Extract the snake_case `name:` from a defineTool source. */
-function extractName(source: string): string | undefined {
-  return source.match(NAME_RE)?.[1];
-}
+import {
+  collectCustomToolSourceArtifact,
+  extractCustomToolName,
+} from "../../util/custom-tool-source.js";
 
 function clientFor(creds: { apiKey: string; baseUrl: string }) {
   return createApiClient(creds, loadProjectId());
@@ -46,7 +43,7 @@ export function registerToolsCommand(program: Command): void {
         process.exit(1);
       }
       const source = fs.readFileSync(abs, "utf-8");
-      const name = opts.name ?? extractName(source) ?? path.basename(abs).replace(/\.[tj]s$/, "");
+      const name = opts.name ?? extractCustomToolName(source) ?? path.basename(abs).replace(/\.[tj]s$/, "");
       if (!/^[a-z][a-z0-9_]*$/.test(name)) {
         clack.outro(pc.red(`Invalid tool name "${name}" — use snake_case, or pass --name.`));
         process.exit(1);
@@ -55,7 +52,8 @@ export function registerToolsCommand(program: Command): void {
       const s = clack.spinner();
       s.start(`Pushing "${name}"...`);
       try {
-        const res = await clientFor(creds).post<any>("/v1/tools", { name, source });
+        const artifact = await collectCustomToolSourceArtifact(abs, path.dirname(abs));
+        const res = await clientFor(creds).post<any>("/v1/tools", { name, artifact });
         if (res.status >= 200 && res.status < 300) {
           s.stop(`Pushed "${name}".`);
           clack.outro(pc.green("Done"));
