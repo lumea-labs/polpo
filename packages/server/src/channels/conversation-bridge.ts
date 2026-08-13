@@ -6,6 +6,10 @@ import type {
   ChannelTurnResult,
 } from "@polpo-ai/channels";
 import type { SessionContentPart, SessionStore } from "@polpo-ai/core/session-store";
+import {
+  createToolInvocationContext,
+  type ToolInvocationJsonValue,
+} from "@polpo-ai/core";
 import type { CompletionRouteDeps } from "../routes/completions.js";
 import {
   runConversationTurn,
@@ -30,6 +34,17 @@ export type ChannelConversationTurnExecutor = (
   input: RunConversationTurnInput,
 ) => Promise<ConversationTurnResult>;
 
+export type ChannelInvocationResolution =
+  | {
+      disposition: "dispatch";
+      user: string;
+      metadata?: Record<string, ToolInvocationJsonValue>;
+    }
+  | {
+      disposition: "consume";
+      reply: string;
+    };
+
 export interface ConversationChannelBridgeOptions {
   agent: string | ((turn: ChannelInboundTurn) => string | Promise<string>);
   createSession?: (input: {
@@ -52,6 +67,13 @@ export interface ConversationChannelBridgeOptions {
   ) => Promise<
     ChannelConversationContentPart[] | ChannelConversationContentPart | null
   >;
+  /**
+   * Resolve host-trusted application identity before agent/session/model work.
+   * A consumed turn returns directly to the provider and never enters history.
+   */
+  resolveInvocation?: (
+    turn: ChannelInboundTurn,
+  ) => ChannelInvocationResolution | Promise<ChannelInvocationResolution>;
   resolveExternalUserId?: (
     turn: ChannelInboundTurn,
   ) => string | Promise<string>;
@@ -90,6 +112,48 @@ export function createConversationChannelTurnHandler(
     ?? ((input) => runConversationTurn(deps, input));
 
   return async (turn): Promise<ChannelTurnResult> => {
+    const latest = turn.messages.at(-1);
+    if (!latest) {
+      throw new ChannelConversationError(
+        "Channel turn contains no messages",
+        "channel_turn_empty",
+      );
+    }
+    const invocationResolution = await options.resolveInvocation?.(turn);
+    if (invocationResolution?.disposition === "consume") {
+      if (!invocationResolution.reply.trim()) {
+        throw new ChannelConversationError(
+          "Channel invocation resolver returned an empty consume reply",
+          "channel_invocation_identity_invalid",
+        );
+      }
+      return {
+        metadata: { disposition: "consume" },
+        text: invocationResolution.reply,
+      };
+    }
+    if (
+      invocationResolution?.disposition === "dispatch"
+      && !invocationResolution.user.trim()
+    ) {
+      throw new ChannelConversationError(
+        "Channel invocation resolver returned an empty user identity",
+        "channel_invocation_identity_invalid",
+      );
+    }
+    const trustedMetadata = invocationResolution?.disposition === "dispatch"
+      ? createToolInvocationContext({
+          requestId: turn.providerEventId,
+          runId: turn.providerEventId,
+          surface: "channel",
+          metadata: invocationResolution.metadata ?? {},
+        }).metadata
+      : undefined;
+    const user = invocationResolution?.disposition === "dispatch"
+      ? invocationResolution.user.trim()
+      : options.resolveExternalUserId
+        ? await options.resolveExternalUserId(turn)
+        : defaultExternalUserId(turn, latest);
     const agent = typeof options.agent === "function"
       ? await options.agent(turn)
       : options.agent;
@@ -99,17 +163,6 @@ export function createConversationChannelTurnHandler(
         "channel_agent_not_resolved",
       );
     }
-
-    const latest = turn.messages.at(-1);
-    if (!latest) {
-      throw new ChannelConversationError(
-        "Channel turn contains no messages",
-        "channel_turn_empty",
-      );
-    }
-    const user = options.resolveExternalUserId
-      ? await options.resolveExternalUserId(turn)
-      : defaultExternalUserId(turn, latest);
     const metadata = {
       channel_installation_id: turn.installationId,
       channel_provider: turn.provider,
@@ -149,6 +202,8 @@ export function createConversationChannelTurnHandler(
         requestId: turn.providerEventId,
         source: "channel",
         surface: "channel",
+        user,
+        ...(trustedMetadata ? { metadata: trustedMetadata } : {}),
       },
       sessionId,
     });

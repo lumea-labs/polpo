@@ -175,6 +175,40 @@ Agents get access to tools based on their configuration. Built-in tool groups:
 - **Image** -- generation and analysis
 - **Vault** -- encrypted secret management
 
+Custom tools can keep host identity out of the model-visible parameter schema.
+Declare a separate binding schema and map it only to immutable invocation
+context paths:
+
+```ts
+import { Type } from "@sinclair/typebox";
+import { defineTool } from "@polpo-ai/tools";
+
+export default defineTool({
+  name: "site_context_get",
+  description: "Read the current user's site context.",
+  parameters: Type.Object({}, { additionalProperties: false }),
+  bindingsSchema: Type.Object({
+    externalUserId: Type.String({ minLength: 1 }),
+    tenantId: Type.String({ format: "uuid" }),
+    grant: Type.String({ minLength: 1 }),
+  }, { additionalProperties: false }),
+  serverBindings: {
+    externalUserId: { $context: "invocation.user" },
+    tenantId: { $context: "invocation.metadata.tenantId" },
+    grant: { $context: "invocation.metadata.grant" },
+  },
+  async execute(ctx) {
+    // ctx.invocation and ctx.bindings are copied, deeply frozen, and validated.
+    // None of these binding values are included in the model's tool arguments.
+    return JSON.stringify({ tenantId: ctx.bindings.tenantId });
+  },
+});
+```
+
+`ctx.invocation` contains `requestId`, `runId`, optional `sessionId`, optional
+`user`, `metadata`, and a `surface` (`chat`, `task`, `loop`, `schedule`, or
+`channel`). Missing or invalid required bindings fail before tool code runs.
+
 ## Loops Beta
 
 Loops are project-level deterministic graphs stored in `.polpo/loops/*.json` or authored as static `.polpo/loops/*.ts` DSL files, then assigned to agents from `.polpo/agents.json`. This avoids duplicating loop definitions across agents: a loop has `name`, `context`, `start`, and `steps`; an agent has `assignedLoops` and `defaultLoop`.

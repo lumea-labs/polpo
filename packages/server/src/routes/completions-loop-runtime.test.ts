@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  createToolInvocationContext,
   MemoryLoopRunStore,
   RuntimeGuardrailEngine,
   createRunOutputPolicy,
@@ -7,6 +8,7 @@ import {
   type LoopTraceEvent,
 } from "@polpo-ai/core";
 import { completionRoutes, type CompletionRouteDeps } from "./completions.js";
+import { runProjectLoopCompletion } from "./completions/project-loop-runner.js";
 
 describe("completionRoutes project loop runtime", () => {
   function makeDeps(projectLoop?: any): CompletionRouteDeps {
@@ -123,7 +125,11 @@ describe("completionRoutes project loop runtime", () => {
       assignedLoops: ["time-tracker"],
       allowedTools: ["project_checkout"],
     }];
-    deps.resolveAgentTools = async () => ({
+    const resolveAgentTools = vi.fn(async (
+      _agentConfig: any,
+      _scope?: unknown,
+      _invocation?: unknown,
+    ) => ({
       tools: [{
         name: "project_checkout",
         description: "Checkout a project",
@@ -138,7 +144,8 @@ describe("completionRoutes project loop runtime", () => {
         },
       }],
       executor: execute,
-    });
+    }));
+    deps.resolveAgentTools = resolveAgentTools;
 
     const res = await completionRoutes(() => deps).request("/", {
       method: "POST",
@@ -158,6 +165,11 @@ describe("completionRoutes project loop runtime", () => {
       { projectRef: "project-123", createIfMissing: true },
       expect.objectContaining({ callId: expect.any(String) }),
     );
+    expect(resolveAgentTools.mock.calls[0]?.[2]).toMatchObject({
+      surface: "loop",
+      metadata: { projectRef: "project-123" },
+    });
+    expect(Object.isFrozen(resolveAgentTools.mock.calls[0]?.[2])).toBe(true);
     const json = await res.json() as any;
     expect(JSON.parse(json.choices[0].message.content)).toEqual({
       checkout: { checkedOut: "project-123" },
@@ -471,6 +483,59 @@ describe("completionRoutes project loop runtime", () => {
     expect(JSON.stringify(runs[0].metadata)).not.toContain(
       "PRIVATE REQUEST BODY",
     );
+  });
+
+  it("does not persist host-trusted tool metadata in public loop records", async () => {
+    const loopRunStore = new MemoryLoopRunStore();
+    let invocation: unknown;
+    const deps = makeDeps({
+      name: "private-context",
+      start: "audit",
+      steps: {
+        audit: {
+          type: "tool",
+          tool: "audit_step",
+          next: "end",
+        },
+      },
+    });
+    deps.getLoopRunStore = () => loopRunStore;
+    deps.resolveAgentTools = async (_agent, _scope, value) => {
+      invocation = value;
+      return {
+        tools: [{
+          name: "audit_step",
+          parameters: { type: "object", properties: {} },
+        }],
+        executor: async () => "ok",
+      };
+    };
+
+    await runProjectLoopCompletion({
+      deps,
+      agentConfig: { name: "timer", model: "test" },
+      projectLoop: await deps.getProjectLoop!("private-context") as any,
+      aiMessages: [{ role: "user", content: "run" }],
+      extraSystemParts: [],
+      runtimeInvocation: {
+        surface: "channel",
+        source: "channel",
+        requestId: "provider-event-1",
+        user: "external-user-1",
+        metadata: { grant: "secret-grant", tenantId: "tenant-1" },
+      },
+      user: "external-user-1",
+    });
+
+    expect(invocation).toMatchObject({
+      surface: "channel",
+      user: "external-user-1",
+      metadata: { grant: "secret-grant", tenantId: "tenant-1" },
+    });
+    const runs = await loopRunStore.listRuns();
+    expect(JSON.stringify(runs)).not.toContain("secret-grant");
+    expect(runs[0]?.metadata?.runtimeInvocation).not.toHaveProperty("metadata");
+    expect(runs[0]?.metadata?.runtimeInvocation).not.toHaveProperty("user");
   });
 
   it("executes deterministic loop tools through the direct runtime executor when model tools are routerized", async () => {

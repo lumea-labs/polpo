@@ -214,6 +214,36 @@ const handleTurn = createConversationChannelTurnHandler(serverDeps, {
 });
 ```
 
+Applications that map provider users to their own identity can resolve that
+identity before Polpo selects an agent, creates a Session, or calls a model:
+
+```ts
+const handleTurn = createConversationChannelTurnHandler(serverDeps, {
+  agent: (turn) => resolveAgentForInstallation(turn.installationId),
+  resolveInvocation: async (turn) => {
+    const resolution = await resolveApplicationIdentity(turn);
+    if (resolution.kind === "pairing") {
+      return { disposition: "consume", reply: resolution.reply };
+    }
+    return {
+      disposition: "dispatch",
+      user: resolution.userId,
+      metadata: {
+        tenantId: resolution.tenantId,
+        siteId: resolution.siteId,
+        grant: resolution.grant,
+      },
+    };
+  },
+});
+```
+
+`consume` returns directly to the provider and never enters model history.
+`dispatch` supplies immutable trusted invocation identity to custom tools. The
+resolver metadata is not copied into model-visible tool arguments or ordinary
+Session metadata. A configured resolver must fail closed; do not fall back to
+provider identity after resolver errors.
+
 Chat SDK thread history is transport state. Polpo Sessions remain the canonical
 conversation history used by the model.
 

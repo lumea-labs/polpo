@@ -65,6 +65,7 @@ export {
   type ChannelAttachmentResolutionContext,
   type ChannelConversationTurnExecutor,
   type ChannelConversationContentPart,
+  type ChannelInvocationResolution,
   type ConversationChannelBridgeOptions,
 } from "./channels/conversation-bridge.js";
 export type { ModelControlledToolDisclosureConfig } from "./routes/completions/tool-disclosure.js";

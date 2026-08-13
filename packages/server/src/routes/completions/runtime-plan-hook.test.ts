@@ -206,6 +206,83 @@ describe("completion runtime plan hook", () => {
     );
   });
 
+  it("passes one immutable direct-chat invocation snapshot to tool resolution", async () => {
+    const resolveAgentTools = vi.fn(async (
+      _agentConfig: any,
+      _scope?: unknown,
+      _invocation?: any,
+    ) => ({
+      tools: [],
+      executor: async () => "ok",
+    }));
+    const deps = makeDeps({ resolveAgentTools });
+
+    const prepared = await prepareChatCompletionExecution(deps, {
+      agent: "agent-1",
+      stream: false,
+      user: "api-user",
+      metadata: { tenantId: "tenant-api" },
+      messages: [{ role: "user", content: "hello" }],
+    }, {
+      completionId: "completion-direct-1",
+    });
+
+    expect(prepared.kind).toBe("chat");
+    const invocation = resolveAgentTools.mock.calls[0]?.[2];
+    expect(invocation).toEqual({
+      requestId: "completion-direct-1",
+      runId: "completion-direct-1",
+      surface: "chat",
+      user: "api-user",
+      metadata: { tenantId: "tenant-api" },
+    });
+    expect(Object.isFrozen(invocation)).toBe(true);
+    expect(Object.isFrozen(invocation?.metadata)).toBe(true);
+  });
+
+  it("prefers host-resolved channel identity over body identity", async () => {
+    const resolveAgentTools = vi.fn(async (
+      _agentConfig: any,
+      _scope?: unknown,
+      _invocation?: any,
+    ) => ({
+      tools: [],
+      executor: async () => "ok",
+    }));
+    const deps = makeDeps({ resolveAgentTools });
+
+    await prepareChatCompletionExecution(deps, {
+      agent: "agent-1",
+      stream: false,
+      user: "spoofed-user",
+      metadata: { tenantId: "spoofed-tenant" },
+      messages: [{ role: "user", content: "hello" }],
+    }, {
+      completionId: "completion-channel-1",
+      runtime: {
+        surface: "channel",
+        source: "channel",
+        requestId: "provider-event-1",
+        user: "trusted-user",
+        metadata: {
+          tenantId: "trusted-tenant",
+          grant: "ag1.signed",
+        },
+      },
+    });
+
+    expect(resolveAgentTools.mock.calls[0]?.[2]).toEqual({
+      requestId: "provider-event-1",
+      runId: "completion-channel-1",
+      surface: "channel",
+      user: "trusted-user",
+      metadata: {
+        tenantId: "trusted-tenant",
+        grant: "ag1.signed",
+      },
+    });
+  });
+
   it("plans an authorized loop from its effective, overlaid agent settings", async () => {
     const resolveRuntimePlan = vi.fn(async (input) => {
       expect(input).toMatchObject({

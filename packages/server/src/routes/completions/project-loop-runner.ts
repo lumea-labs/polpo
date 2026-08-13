@@ -15,6 +15,7 @@ import {
   LoopToolInputValidationError,
   LoopPermissionApprovalRequiredError,
   buildLoopStepAgent,
+  createToolInvocationContext,
   maybeParseJson,
   normalizeProjectLoop,
   normalizeRuntimeContextTrustMode,
@@ -32,6 +33,8 @@ import {
   type RuntimeContextResolution,
   type ResolvedExecutionRoute,
   type RuntimePlan,
+  type ToolInvocationContext,
+  type ToolInvocationJsonValue,
 } from "@polpo-ai/core";
 import { validateToolInput } from "@polpo-ai/llm";
 import type { LanguageModelUsage } from "ai";
@@ -109,7 +112,60 @@ function runtimeInvocationMetadata(
     ...(typeof candidate.channelId === "string" && candidate.channelId.trim()
       ? { channelId: candidate.channelId }
       : {}),
+    ...(typeof candidate.requestId === "string" && candidate.requestId.trim()
+      ? { requestId: candidate.requestId }
+      : {}),
+    ...(typeof candidate.runId === "string" && candidate.runId.trim()
+      ? { runId: candidate.runId }
+      : {}),
   };
+}
+
+function projectLoopToolInvocation(input: {
+  loopRunId?: string;
+  runtimeInvocation?: CompletionRuntimeInvocation;
+  sessionId?: string | null;
+  user?: string;
+  requestMetadata?: Readonly<Record<string, string>>;
+}): ToolInvocationContext {
+  const runtime = input.runtimeInvocation;
+  const id = input.loopRunId ?? runtime?.runId ?? runtime?.requestId ?? `loop-${nanoid(16)}`;
+  const surface = runtime?.surface === "channel" || runtime?.source === "channel"
+    ? "channel"
+    : runtime?.source === "schedule"
+      ? "schedule"
+      : runtime?.surface === "task" || runtime?.source === "task"
+        ? "task"
+        : "loop";
+  return createToolInvocationContext({
+    requestId: runtime?.requestId ?? id,
+    runId: input.loopRunId ?? runtime?.runId ?? id,
+    ...(input.sessionId ? { sessionId: input.sessionId } : {}),
+    ...(runtime?.user ?? input.user ? { user: runtime?.user ?? input.user } : {}),
+    metadata: (runtime?.metadata ?? input.requestMetadata ?? {}) as Record<
+      string,
+      ToolInvocationJsonValue
+    >,
+    surface,
+  });
+}
+
+function loopRequestMetadata(
+  run: LoopRunRecord,
+): Record<string, string> | undefined {
+  const request = run.resume?.context.request;
+  if (!request || typeof request !== "object" || Array.isArray(request)) {
+    return undefined;
+  }
+  const metadata = (request as Record<string, unknown>).metadata;
+  if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) {
+    return undefined;
+  }
+  const entries = Object.entries(metadata);
+  if (!entries.every((entry): entry is [string, string] => typeof entry[1] === "string")) {
+    throw new Error("Loop resume request metadata is invalid");
+  }
+  return Object.fromEntries(entries);
 }
 
 function latestUserText(messages: readonly unknown[]): string {
@@ -176,6 +232,7 @@ export async function runProjectLoopCompletion(options: {
   contextTrust?: RuntimeContextTrustMode;
   runtimeContext?: RuntimeContextResolution;
   runtimeInvocation?: CompletionRuntimeInvocation;
+  toolInvocation?: ToolInvocationContext;
   sessionId?: string | null;
   user?: string;
   requestMetadata?: Readonly<Record<string, string>>;
@@ -194,6 +251,7 @@ export async function runProjectLoopCompletion(options: {
     extraSystemParts,
     runtimeContext,
     runtimeInvocation,
+    toolInvocation: providedToolInvocation,
     sessionId,
     user,
     onToolCall,
@@ -218,6 +276,13 @@ export async function runProjectLoopCompletion(options: {
     },
   };
   const loopRunId = resumeRun?.id ?? (loopRunStore ? `looprun-${nanoid(16)}` : undefined);
+  const toolInvocation = providedToolInvocation ?? projectLoopToolInvocation({
+      loopRunId,
+      runtimeInvocation,
+      sessionId,
+      user,
+      requestMetadata: options.requestMetadata,
+    });
   const toolRunScope = await deps.createToolRunScope?.({
     agentConfig,
     runId: loopRunId,
@@ -227,7 +292,11 @@ export async function runProjectLoopCompletion(options: {
   });
   let rootTools: Awaited<ReturnType<CompletionRouteDeps["resolveAgentTools"]>>;
   try {
-    rootTools = await deps.resolveAgentTools(agentConfig, toolRunScope);
+    rootTools = await deps.resolveAgentTools(
+      agentConfig,
+      toolRunScope,
+      toolInvocation,
+    );
   } catch (error) {
     await toolRunScope?.cleanup?.().catch(() => {});
     throw error;
@@ -341,6 +410,12 @@ export async function runProjectLoopCompletion(options: {
                 ...(runtimeInvocation.channelId
                   ? { channelId: runtimeInvocation.channelId }
                   : {}),
+                ...(runtimeInvocation.requestId
+                  ? { requestId: runtimeInvocation.requestId }
+                  : {}),
+                ...(runtimeInvocation.runId
+                  ? { runId: runtimeInvocation.runId }
+                  : {}),
               },
             }
           : {}),
@@ -453,6 +528,7 @@ export async function runProjectLoopCompletion(options: {
           sessionId: sessionId ?? undefined,
           runtimeContext,
           toolRunScope,
+          toolInvocation,
           onToolCall,
         });
         finalText = stepResult.text || finalText;
@@ -634,6 +710,30 @@ export async function resumeProjectLoopRun(options: {
     run,
     aiMessages,
   );
+  const resolvedToolInvocation = await options.deps.resolveResumedToolInvocation?.(run);
+  const toolInvocation = resolvedToolInvocation
+    ? createToolInvocationContext({
+        requestId: resolvedToolInvocation.requestId,
+        runId: resolvedToolInvocation.runId,
+        ...(resolvedToolInvocation.sessionId
+          ? { sessionId: resolvedToolInvocation.sessionId }
+          : {}),
+        ...(resolvedToolInvocation.user ? { user: resolvedToolInvocation.user } : {}),
+        metadata: resolvedToolInvocation.metadata as Record<string, ToolInvocationJsonValue>,
+        surface: resolvedToolInvocation.surface,
+      })
+    : undefined;
+  if (toolInvocation) {
+    if (toolInvocation.runId !== run.id) {
+      throw new Error("Resumed tool invocation run id does not match the loop run");
+    }
+    if (run.sessionId && toolInvocation.sessionId !== run.sessionId) {
+      throw new Error("Resumed tool invocation session id does not match the loop run");
+    }
+    if (run.user && toolInvocation.user !== run.user) {
+      throw new Error("Resumed tool invocation user does not match the loop run");
+    }
+  }
 
   await runProjectLoopCompletion({
     deps: options.deps,
@@ -643,8 +743,13 @@ export async function resumeProjectLoopRun(options: {
     extraSystemParts,
     contextTrust,
     runtimeContext,
+    runtimeInvocation: runtimeInvocationMetadata(
+      run.metadata?.runtimeInvocation,
+    ),
+    toolInvocation,
     sessionId: run.sessionId,
     user: run.user,
+    requestMetadata: loopRequestMetadata(run),
     resumeRun: run,
   });
 

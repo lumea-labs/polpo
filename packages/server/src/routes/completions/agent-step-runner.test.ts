@@ -4,6 +4,7 @@ import {
   RuntimeGuardrailEngine,
   createRunPreflightPolicy,
 } from "@polpo-ai/core/guardrails";
+import { createToolInvocationContext } from "@polpo-ai/core";
 import type { CompletionRouteDeps } from "../completions.js";
 import {
   agentConfigForModelPrimary,
@@ -248,6 +249,14 @@ describe("runAgentStepCompletion tool validation", () => {
       buildRuntimePrompt: vi.fn(async () => "system"),
     } as unknown as CompletionRouteDeps;
 
+    const toolInvocation = createToolInvocationContext({
+      requestId: "request-nested",
+      runId: "run-nested",
+      sessionId: "session-nested",
+      surface: "loop",
+      user: "user-nested",
+      metadata: { tenantId: "tenant-nested" },
+    });
     const result = await runAgentStepCompletion({
       deps,
       agentConfig: { name: "nested-agent", model: "mock/model", maxTurns: 3 },
@@ -255,6 +264,7 @@ describe("runAgentStepCompletion tool validation", () => {
       extraSystemParts: [],
       context: {},
       stepName: "nested",
+      toolInvocation,
     });
 
     expect(result.text).toBe("8");
@@ -265,6 +275,11 @@ describe("runAgentStepCompletion tool validation", () => {
       "calculate",
       { value: 4 },
       expect.objectContaining({ callId: "calculate_nested" }),
+    );
+    expect(deps.resolveAgentTools).toHaveBeenCalledWith(
+      expect.objectContaining({ name: "nested-agent" }),
+      undefined,
+      toolInvocation,
     );
   });
 

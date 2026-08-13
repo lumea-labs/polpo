@@ -284,14 +284,18 @@ export function createApp(orchestrator: Orchestrator, sseBridge: SSEBridge, opts
     buildAgentPrompt: (agentConfig: any) => {
       return buildSystemPrompt(agentConfig, o.getAgentWorkDir(), o.getPolpoDir(), undefined, agentConfig.allowedPaths);
     },
-    resolveAgentTools: async (agentConfig: any) => {
+    resolveAgentTools: async (agentConfig: any, _runScope, invocation) => {
       const { createSystemTools, createMemoryTools, createBrainTools, resolveAgentMcpTools, expandToolWildcards, TOOL_CATALOG } = await import("@polpo-ai/tools");
       const { resolveAgentVault } = await import("../vault/index.js");
       const { nanoid } = await import("nanoid");
       const vaultEntries = await o.getVaultStore()?.getAllForAgent(agentConfig.name);
       const vault = resolveAgentVault(vaultEntries);
       const tools: any[] = createSystemTools(o.getAgentWorkDir(), agentConfig.allowedTools, agentConfig.allowedPaths, undefined, vault, o.getFs(), o.getShell());
-      tools.push(...await customTools().loadAssigned(agentConfig.allowedTools));
+      tools.push(...await customTools().loadAssigned(
+        agentConfig.allowedTools,
+        undefined,
+        invocation,
+      ));
       const memoryStore = o.getMemoryStore();
       if (memoryStore) {
         const memoryTools = createMemoryTools(memoryStore, agentConfig.name);

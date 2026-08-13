@@ -26,6 +26,7 @@ import {
   resolveConfiguredModelSelection,
   type PolpoSettings,
   type RuntimePlan,
+  type ToolInvocationContext,
   type SummarizeFn,
   type RuntimeContextTrustMode,
 } from "@polpo-ai/core";
@@ -240,6 +241,7 @@ export async function runAgentStepCompletion(options: {
   sessionId?: string;
   runtimeContext?: RuntimeContextResolution;
   toolRunScope?: CompletionToolRunScope;
+  toolInvocation?: ToolInvocationContext;
   onToolCall?: (toolCall: LoopRuntimeToolCall) => Promise<void>;
 }): Promise<AgentStepRunResult> {
   const {
@@ -309,6 +311,7 @@ export async function runAgentStepCompletion(options: {
   const resolvedTools = await deps.resolveAgentTools(
     agentConfig,
     options.toolRunScope,
+    options.toolInvocation,
   );
   let executeTool = createGuardedCompletionToolExecutor({
     executor: resolvedTools.executor,

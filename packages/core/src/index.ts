@@ -440,6 +440,14 @@ export {
   LoopPolicyDeniedError,
   MemoryLoopRunStore,
 } from "./loop/run-store.js";
+export { createToolInvocationContext } from "./tool-invocation.js";
+export type {
+  ToolInvocationContext,
+  ToolInvocationContextInput,
+  ToolInvocationJsonPrimitive,
+  ToolInvocationJsonValue,
+  ToolInvocationSurface,
+} from "./tool-invocation.js";
 export type {
   CreateLoopRunInput,
   LoopApprovedGate,

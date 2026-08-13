@@ -6,6 +6,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { build, type Plugin } from "esbuild";
 import {
   bindCustomTool,
+  createToolInvocationContext,
   createJsonSchemaExample,
   createCustomToolsStore,
   emptyCustomToolConnections,
@@ -15,6 +16,7 @@ import {
   type CustomToolMeta,
   type CustomToolConnections,
   type CustomToolsStore,
+  type ToolInvocationContext,
 } from "@polpo-ai/tools";
 import type { PolpoTool } from "@polpo-ai/core";
 import type { FileSystem } from "@polpo-ai/core/filesystem";
@@ -138,6 +140,8 @@ export class LocalCustomToolRuntime implements CustomToolDeployer, CustomToolRun
         parameters: tool.parameters,
         label: tool.label ?? tool.name,
         clientSide: tool.clientSide ?? false,
+        ...(tool.bindingsSchema ? { bindingsSchema: tool.bindingsSchema } : {}),
+        ...(tool.serverBindings ? { serverBindings: tool.serverBindings } : {}),
       };
       emit("deployed", "Tool is ready");
       return { errors: [], meta, bundle, deps };
@@ -163,7 +167,11 @@ export class LocalCustomToolRuntime implements CustomToolDeployer, CustomToolRun
     return deployed.bundle;
   }
 
-  async load(name: string, connections: CustomToolConnections = this.options.connections ?? emptyCustomToolConnections()): Promise<PolpoTool> {
+  async load(
+    name: string,
+    connections: CustomToolConnections = this.options.connections ?? emptyCustomToolConnections(),
+    invocation: ToolInvocationContext = createLocalToolInvocation("custom-tool-load"),
+  ): Promise<PolpoTool> {
     const bundle = await this.ensureDeployed(name);
     const tool = extractCustomTool(await this.importBundle(name, bundle, false));
     return bindCustomTool(tool, {
@@ -172,16 +180,21 @@ export class LocalCustomToolRuntime implements CustomToolDeployer, CustomToolRun
       connections,
       env: safeEnv(),
       workDir: this.options.workDir,
+      invocation,
     });
   }
 
-  async loadAssigned(allowedTools: string[] | undefined, connections?: CustomToolConnections): Promise<PolpoTool[]> {
+  async loadAssigned(
+    allowedTools: string[] | undefined,
+    connections?: CustomToolConnections,
+    invocation?: ToolInvocationContext,
+  ): Promise<PolpoTool[]> {
     if (!allowedTools?.length) return [];
     const available = await this.store.list();
     const selected = allowedTools.includes("*")
       ? available
       : available.filter((name) => allowedTools.includes(name));
-    return Promise.all(selected.map((name) => this.load(name, connections)));
+    return Promise.all(selected.map((name) => this.load(name, connections, invocation)));
   }
 
   async run(name: string, args: Record<string, unknown>): Promise<unknown> {
@@ -202,6 +215,16 @@ export class LocalCustomToolRuntime implements CustomToolDeployer, CustomToolRun
     }
     return example as Record<string, unknown>;
   }
+}
+
+function createLocalToolInvocation(operation: string): ToolInvocationContext {
+  const id = `${operation}-${Date.now()}`;
+  return createToolInvocationContext({
+    requestId: id,
+    runId: id,
+    metadata: {},
+    surface: "chat",
+  });
 }
 
 export function createLocalCustomToolRuntime(options: RuntimeOptions) {

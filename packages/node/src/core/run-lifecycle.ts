@@ -40,6 +40,7 @@ import { EncryptedVaultStore } from "../vault/encrypted-store.js";
 import type { VaultStore } from "@polpo-ai/core/vault-store";
 import type { MemoryStore } from "@polpo-ai/core/memory-store";
 import {
+  createToolInvocationContext,
   normalizeRuntimePromptContextSegments,
   normalizeRuntimeContextTrustMode,
 } from "@polpo-ai/core";
@@ -441,6 +442,14 @@ export async function executeRun(config: RunnerConfig, deps: ExecuteRunDeps): Pr
     const spawnCtx = {
       polpoDir: config.polpoDir,
       runId: config.runId,
+      toolInvocation: config.toolInvocation ?? createToolInvocationContext({
+        requestId: config.runId,
+        runId: config.runId,
+        ...(correlatedSessionId ? { sessionId: correlatedSessionId } : {}),
+        ...(guardedTask.user ? { user: guardedTask.user } : {}),
+        metadata: {},
+        surface: "task",
+      }),
       outputDir: config.outputDir,
       emailAllowedDomains: config.emailAllowedDomains,
       reasoning: config.reasoning,

@@ -1,6 +1,7 @@
 import { nanoid } from "nanoid";
 import {
   agentMemoryScope,
+  createToolInvocationContext,
   createRuntimePromptContextSegment,
   compileExecutionRouteManifest,
   createExecutionRouteResolvedEvent,
@@ -26,6 +27,8 @@ import {
   type ResolvedExecutionRoute,
   type RuntimePlan,
   type RuntimeContextTrustMode,
+  type ToolInvocationContext,
+  type ToolInvocationJsonValue,
 } from "@polpo-ai/core";
 import {
   normalizeChatInteractionSettings,
@@ -337,6 +340,39 @@ function completionInvocation(
   return invocation ?? { surface: "agent", source: "request" };
 }
 
+function toolInvocationSurface(
+  invocation: CompletionRuntimeInvocation,
+  loop: boolean,
+): ToolInvocationContext["surface"] {
+  if (invocation.surface === "channel" || invocation.source === "channel") return "channel";
+  if (invocation.source === "schedule") return "schedule";
+  if (invocation.surface === "task" || invocation.source === "task") return "task";
+  if (loop || invocation.source === "loop-step") return "loop";
+  return "chat";
+}
+
+export function createCompletionToolInvocation(input: {
+  body: CompletionRequestBody;
+  completionId: string;
+  loop?: boolean;
+  runtime?: CompletionRuntimeInvocation;
+  sessionId?: string | null;
+}): ToolInvocationContext {
+  const invocation = completionInvocation(input.runtime);
+  const user = invocation.user ?? input.body.user;
+  return createToolInvocationContext({
+    requestId: invocation.requestId ?? input.completionId,
+    runId: invocation.runId ?? input.completionId,
+    ...(input.sessionId ? { sessionId: input.sessionId } : {}),
+    ...(user ? { user } : {}),
+    metadata: (invocation.metadata ?? input.body.metadata ?? {}) as Record<
+      string,
+      ToolInvocationJsonValue
+    >,
+    surface: toolInvocationSurface(invocation, input.loop ?? false),
+  });
+}
+
 function defaultExecution(): CompletionRuntimePlanInput["execution"] {
   return { mode: "direct", source: "default" };
 }
@@ -490,6 +526,8 @@ export async function prepareChatCompletionExecution(
   let runtimePlan: RuntimePlan | undefined;
   let runtimeContext: RuntimeContextResolution | undefined;
   let executionRoute: ResolvedExecutionRoute | undefined;
+  let deferredAgentTools = false;
+  const completionId = options.completionId ?? `chatcmpl-${nanoid(24)}`;
 
   const invocation = completionInvocation(options.runtime);
   const interactionSettings = normalizeChatInteractionSettings(
@@ -753,12 +791,9 @@ export async function prepareChatCompletionExecution(
         settings,
       );
 
-      const resolvedTools = await deps.resolveAgentTools(agentConfig);
-      effectiveTools = resolvedTools.tools;
-      effectiveToolExecutor = resolvedTools.executor;
-      toolDisclosure = resolvedTools.disclosure;
-      onResponseFinished = resolvedTools.cleanup;
-      extraAiTools = resolvedTools.extraAiTools;
+      effectiveTools = [];
+      effectiveToolExecutor = async () => "Error: Agent tools have not been resolved";
+      deferredAgentTools = true;
     }
   } else {
     if (!deps.resolveOrchestratorContext) {
@@ -818,7 +853,6 @@ export async function prepareChatCompletionExecution(
     );
   }
 
-  const completionId = options.completionId ?? `chatcmpl-${nanoid(24)}`;
   const sessionStore = deps.getSessionStore();
   let sessionId = options.sessionId ?? null;
 
@@ -840,6 +874,25 @@ export async function prepareChatCompletionExecution(
     if (lastUserMsg && sessionId) {
       await sessionStore.addMessage(sessionId, "user", lastUserMsg.content);
     }
+  }
+
+  if (deferredAgentTools) {
+    const toolInvocation = createCompletionToolInvocation({
+      body,
+      completionId,
+      runtime: options.runtime,
+      sessionId,
+    });
+    const resolvedTools = await deps.resolveAgentTools(
+      resolvedAgentConfig,
+      undefined,
+      toolInvocation,
+    );
+    effectiveTools = resolvedTools.tools;
+    effectiveToolExecutor = resolvedTools.executor;
+    toolDisclosure = resolvedTools.disclosure;
+    onResponseFinished = resolvedTools.cleanup;
+    extraAiTools = resolvedTools.extraAiTools;
   }
 
   if (!projectLoopRuntime) {
