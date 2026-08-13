@@ -1,5 +1,8 @@
 import { z } from "@hono/zod-openapi";
 import {
+  MAX_CHAT_SUGGESTION_GUIDANCE_CHARS,
+  MAX_CHAT_SUGGESTION_COUNT,
+  MIN_CHAT_SUGGESTION_COUNT,
   MAX_MODEL_FALLBACKS,
   MODEL_PROFILE_NAME_PATTERN,
   RUNTIME_INVOCATION_SOURCES,
@@ -768,6 +771,34 @@ const AgentModelRoutingSchema = z.object({
   }
 });
 
+const AgentChatSuggestionsSchema = z.object({
+  enabled: z.boolean().optional(),
+  maxItems: z.number().int()
+    .min(MIN_CHAT_SUGGESTION_COUNT)
+    .max(MAX_CHAT_SUGGESTION_COUNT)
+    .optional(),
+  guidance: z.string().max(MAX_CHAT_SUGGESTION_GUIDANCE_CHARS).optional(),
+}).passthrough().superRefine((value, ctx) => {
+  if (Object.keys(value).some((key) => !["enabled", "maxItems", "guidance"].includes(key))) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "Agent chat suggestions contain unsupported fields",
+    });
+  }
+});
+
+const AgentChatSettingsSchema = z.object({
+  allowUserQuestions: z.boolean().optional(),
+  suggestions: AgentChatSuggestionsSchema.optional(),
+}).passthrough().superRefine((value, ctx) => {
+  if (Object.keys(value).some((key) => !["allowUserQuestions", "suggestions"].includes(key))) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "Agent chat preferences contain unsupported fields",
+    });
+  }
+});
+
 const AgentLoopFieldsSchema = z.object({
   runtime: z.string().optional(),
   assignedLoops: z.array(z.string().min(1)).optional(),
@@ -792,6 +823,7 @@ export const AddAgentSchema = z.object({
   search_provider:  z.string().optional(),
   allowedTools: z.array(ToolNameSchema).optional(),
   systemPrompt: z.string().optional(),
+  chat: AgentChatSettingsSchema.optional(),
   skills: z.array(z.string()).optional(),
   maxTurns: z.number().int().positive().optional(),
   // Identity & hierarchy (vault credentials managed via encrypted store)
@@ -821,6 +853,7 @@ export const UpdateAgentSchema = z.object({
   allowedTools: z.array(ToolNameSchema).optional(),
   allowedPaths: z.array(z.string()).optional(),
   systemPrompt: z.string().optional(),
+  chat: AgentChatSettingsSchema.optional(),
   skills: z.array(z.string()).optional(),
   maxTurns: z.number().int().positive().optional(),
   maxConcurrency: z.number().int().positive().optional(),
