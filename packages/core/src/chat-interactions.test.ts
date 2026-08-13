@@ -65,7 +65,7 @@ describe("resolveChatInteractionCapabilities", () => {
     });
   });
 
-  it("lets either the project or client disable ask-user", () => {
+  it("lets either the agent or client disable ask-user", () => {
     expect(resolveChatInteractionCapabilities({
       surface: "api",
       settings: { allowUserQuestions: false },

@@ -99,6 +99,13 @@ function runtimeInvocationMetadata(
   return {
     surface: candidate.surface as CompletionRuntimeInvocation["surface"],
     source: candidate.source as CompletionRuntimeInvocation["source"],
+    ...(candidate.channelEvent
+      && typeof candidate.channelEvent === "object"
+      && !Array.isArray(candidate.channelEvent)
+      ? {
+          channelEvent: candidate.channelEvent as Readonly<Record<string, unknown>>,
+        }
+      : {}),
     ...(typeof candidate.channelId === "string" && candidate.channelId.trim()
       ? { channelId: candidate.channelId }
       : {}),
@@ -328,6 +335,9 @@ export async function runProjectLoopCompletion(options: {
               runtimeInvocation: {
                 surface: runtimeInvocation.surface,
                 source: runtimeInvocation.source,
+                ...(runtimeInvocation.channelEvent
+                  ? { channelEvent: runtimeInvocation.channelEvent }
+                  : {}),
                 ...(runtimeInvocation.channelId
                   ? { channelId: runtimeInvocation.channelId }
                   : {}),

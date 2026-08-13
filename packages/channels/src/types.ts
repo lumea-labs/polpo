@@ -4,6 +4,8 @@ import type {
   FormattedContent,
   LinkPreview,
   Lock,
+  Logger,
+  LogLevel,
   MessageSubject,
   ModalResponse,
   OptionsLoadResult,
@@ -138,6 +140,17 @@ export type ChannelTurnResult = {
   posts?: ChannelNativePost[];
   stream?: ChannelOutputStream;
   text?: string;
+};
+
+export type ChannelDeliveryMessage = {
+  id: string;
+  threadId: string;
+};
+
+export type ChannelDeliveryResult = {
+  channelId: string;
+  messages: ChannelDeliveryMessage[];
+  threadId?: string;
 };
 
 type ChannelEventBase = {
@@ -287,6 +300,7 @@ export type ChannelInstallation =
 
 export type ChannelRuntimeEvent = {
   channelId?: string;
+  details?: Record<string, string | number | boolean | null>;
   error?: string;
   installationId: string;
   messageId?: string;
@@ -299,6 +313,13 @@ export type ChannelRuntimeEvent = {
     | "event.queued"
     | "event.steered"
     | "event.rejected"
+    | "transport.message.queued"
+    | "transport.message.dequeued"
+    | "transport.message.dropped"
+    | "transport.message.expired"
+    | "transport.message.superseded"
+    | "transport.message.debouncing"
+    | "transport.message.debounce_reset"
     | "turn.started"
     | "turn.completed"
     | "turn.failed"
@@ -326,6 +347,8 @@ export type ChannelRuntimeOptions = {
   handleEvent?: ChannelEventHandler;
   handleTurn?: ChannelTurnHandler;
   idleTtlMs?: number;
+  observabilityTimeoutMs?: number;
+  logger?: Logger | LogLevel;
   maxInstances?: number;
   onEvent?: (event: ChannelRuntimeEvent) => void | Promise<void>;
   shouldStartTyping?: (turn: ChannelInboundTurn) => boolean | Promise<boolean>;

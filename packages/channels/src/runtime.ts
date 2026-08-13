@@ -1,7 +1,9 @@
 import { MemoryStateAdapter } from "@chat-adapter/state-memory";
 import {
   Chat,
+  ConsoleLogger,
   type ActionEvent,
+  type Logger,
   type Message,
   type MessageContext,
   type ModalCloseEvent,
@@ -18,11 +20,14 @@ import { createOfficialChannelAdapter } from "./providers.js";
 import { segmentChannelText } from "./response.js";
 import type {
   ChannelAuthor,
+  ChannelDeliveryMessage,
+  ChannelDeliveryResult,
   ChannelEventResult,
   ChannelInboundEvent,
   ChannelInboundMessage,
   ChannelInboundTurn,
   ChannelInstallation,
+  ChannelProviderId,
   ChannelRuntimeEvent,
   ChannelRuntimeOptions,
   ChannelStateAdapter,
@@ -40,7 +45,7 @@ type RuntimeEntry = {
 type TurnTarget = {
   channelId: string;
   postable: Postable<any, unknown>;
-  threadId: string;
+  threadId?: string;
 };
 
 const DEFAULT_CONCURRENCY = {
@@ -51,11 +56,25 @@ const DEFAULT_CONCURRENCY = {
   strategy: "burst" as const,
 };
 const DEFAULT_DEDUPE_TTL_MS = 10 * 60_000;
+const DEFAULT_OBSERVABILITY_TIMEOUT_MS = 1_000;
+const OBSERVABILITY_TIMEOUT_BACKOFF_MS = 30_000;
+
+class ChannelDeliveryFailure extends Error {
+  constructor(
+    error: unknown,
+    readonly deliveredMessages: number,
+  ) {
+    super(errorMessage(error), { cause: error });
+    this.name = "ChannelDeliveryFailure";
+  }
+}
 
 export class ChannelRuntime {
   private readonly entries = new Map<string, RuntimeEntry>();
+  private readonly pendingEvents = new Set<Promise<void>>();
   private readonly pendingInstallations = new Map<string, Promise<RuntimeEntry>>();
   private readonly pendingTurns = new Map<string, Promise<void>>();
+  private observabilitySuppressedUntil = 0;
   private readonly options: Required<
     Pick<ChannelRuntimeOptions, "idleTtlMs" | "maxInstances">
   > & ChannelRuntimeOptions;
@@ -89,23 +108,57 @@ export class ChannelRuntime {
     if (!webhook) {
       throw new Error(`Missing Chat SDK webhook for ${installation.provider}`);
     }
-    return webhook(request, options);
+    const webhookOptions = options?.waitUntil
+      ? {
+          ...options,
+          waitUntil: (task: Promise<unknown>) => {
+            options.waitUntil?.(
+              Promise.resolve(task).finally(() => this.flushPendingEvents()),
+            );
+          },
+        }
+      : options;
+    try {
+      return await webhook(request, webhookOptions);
+    } finally {
+      await this.flushPendingEvents();
+    }
   }
 
   async post(
     installation: ChannelInstallation,
     threadId: string,
     result: ChannelTurnResult | string,
-  ): Promise<void> {
+  ): Promise<ChannelDeliveryResult> {
     const entry = await this.getOrCreate(installation);
     entry.lastUsedAt = Date.now();
+    await entry.chat.initialize();
     const thread = entry.chat.thread(threadId);
-    await this.deliver(
+    return this.deliver(
       installation,
       {
         channelId: thread.channelId,
         postable: thread,
         threadId: thread.id,
+      },
+      typeof result === "string" ? { text: result } : result,
+    );
+  }
+
+  async postChannel(
+    installation: ChannelInstallation,
+    channelId: string,
+    result: ChannelTurnResult | string,
+  ): Promise<ChannelDeliveryResult> {
+    const entry = await this.getOrCreate(installation);
+    entry.lastUsedAt = Date.now();
+    await entry.chat.initialize();
+    const channel = entry.chat.channel(channelId);
+    return this.deliver(
+      installation,
+      {
+        channelId: channel.id,
+        postable: channel,
       },
       typeof result === "string" ? { text: result } : result,
     );
@@ -121,6 +174,7 @@ export class ChannelRuntime {
   async shutdown(): Promise<void> {
     const entries = [...this.entries.values()];
     await Promise.all(entries.map((entry) => this.evict(entry)));
+    await this.flushPendingEvents();
   }
 
   get size(): number {
@@ -170,6 +224,22 @@ export class ChannelRuntime {
       dedupeTtlMs: this.options.dedupeTtlMs,
       fallbackStreamingPlaceholderText:
         this.options.fallbackStreamingPlaceholderText ?? null,
+      logger: createRuntimeLogger(
+        installation,
+        this.options.logger,
+        (event) => this.emitDetached(event),
+      ),
+      onLockConflict: (threadId, message) => {
+        this.emitDetached({
+          details: { reason: "lock-busy" },
+          installationId: installation.id,
+          messageId: message.id,
+          name: "transport.message.dropped",
+          provider: installation.provider,
+          threadId,
+        });
+        return "drop";
+      },
       state,
       streamingUpdateIntervalMs: this.options.streamingUpdateIntervalMs,
       threadHistory: { maxMessages: 30, ttlMs: 24 * 60 * 60_000 },
@@ -180,9 +250,23 @@ export class ChannelRuntime {
       thread: Thread,
       message: Message,
       context?: MessageContext,
-    ) => this.handleMessage(installation, thread, message, context);
+    ) => this.handleMessage(
+      installation,
+      adapter.name,
+      state,
+      thread,
+      message,
+      context,
+    );
     chat.onDirectMessage((thread, message, _channel, context) =>
-      this.handleMessage(installation, thread, message, context));
+      this.handleMessage(
+        installation,
+        adapter.name,
+        state,
+        thread,
+        message,
+        context,
+      ));
     chat.onNewMention(handler);
     chat.onNewMessage(/[\s\S]*/, handler);
     chat.onSubscribedMessage(handler);
@@ -213,40 +297,68 @@ export class ChannelRuntime {
 
   private async handleMessage(
     installation: ChannelInstallation,
+    adapterName: string,
+    state: ChannelStateAdapter,
     thread: Thread,
     message: Message,
     context?: MessageContext,
   ): Promise<void> {
-    await thread.subscribe();
-    const messages = await Promise.all(
-      [...(context?.skipped ?? []), message].map(mapMessage),
+    const providerEventId = messageProviderEventId(
+      installation.provider,
+      thread.id,
+      message,
     );
-    const messageIds = messages.map((item) => item.id);
-    const concurrency = installation.concurrency
-      ?? this.options.concurrency
-      ?? DEFAULT_CONCURRENCY;
-    const turn: ChannelInboundTurn = {
-      channelId: thread.channelId,
-      coordination: {
-        grouped: messages.length > 1,
-        messageCount: messages.length,
-        messageIds,
-        primaryMessageId: message.id,
-        strategy: concurrency.strategy,
-      },
-      credentialRevision: installation.credentialRevision,
-      installationId: installation.id,
-      isDirectMessage: thread.isDM,
-      messages,
-      provider: installation.provider,
-      providerEventId: message.id,
-      threadId: thread.id,
-    };
-    await this.executeTurn(installation, {
-      channelId: thread.channelId,
-      postable: thread,
-      threadId: thread.id,
-    }, turn);
+    const hasLogicalDedupe = providerEventId !== message.id;
+    if (
+      hasLogicalDedupe
+      && !await this.acceptEvent(state, installation, "message", providerEventId)
+    ) {
+      return;
+    }
+    try {
+      await thread.subscribe();
+      const messages = await Promise.all(
+        [...(context?.skipped ?? []), message].map(mapMessage),
+      );
+      const messageIds = messages.map((item) => item.id);
+      const concurrency = installation.concurrency
+        ?? this.options.concurrency
+        ?? DEFAULT_CONCURRENCY;
+      const turn: ChannelInboundTurn = {
+        channelId: thread.channelId,
+        coordination: {
+          grouped: messages.length > 1,
+          messageCount: messages.length,
+          messageIds,
+          primaryMessageId: message.id,
+          strategy: concurrency.strategy,
+        },
+        credentialRevision: installation.credentialRevision,
+        installationId: installation.id,
+        isDirectMessage: thread.isDM,
+        messages,
+        provider: installation.provider,
+        providerEventId,
+        threadId: thread.id,
+      };
+      await this.executeTurn(installation, {
+        channelId: thread.channelId,
+        postable: thread,
+        threadId: thread.id,
+      }, turn);
+    } catch (error) {
+      if (!(error instanceof ChannelDeliveryFailure && error.deliveredMessages > 0)) {
+        await Promise.all([
+          state.delete(`dedupe:${adapterName}:${message.id}`),
+          hasLogicalDedupe
+            ? state.delete(
+                `polpo:event:${installation.provider}:${installation.id}:message:${providerEventId}`,
+              )
+            : Promise.resolve(),
+        ]).catch(() => undefined);
+      }
+      throw error;
+    }
   }
 
   private async handleSlashCommand(
@@ -707,13 +819,21 @@ export class ChannelRuntime {
     target: TurnTarget,
     result: ChannelTurnResult,
     sourceMessageId?: string,
-  ): Promise<void> {
+  ): Promise<ChannelDeliveryResult> {
+    const messages: ChannelDeliveryMessage[] = [];
+    let deliveredPosts = 0;
+    const post = async (message: unknown) => {
+      const sent = await target.postable.post(message as any);
+      deliveredPosts += 1;
+      const normalized = deliveryMessage(sent);
+      if (normalized) messages.push(normalized);
+    };
     try {
       validateTurnResult(result);
       if (result.posts?.length) {
-        for (const post of result.posts) await target.postable.post(post);
+        for (const nativePost of result.posts) await post(nativePost);
       } else if (result.stream && !result.files?.length && !result.text) {
-        await target.postable.post(result.stream);
+        await post(result.stream as any);
       } else {
         const streamedText = result.stream
           ? await collectText(result.stream)
@@ -738,27 +858,57 @@ export class ChannelRuntime {
             name: file.filename,
             type: file.type!,
           }));
-        const genericFiles = result.files?.some((file) => file.type)
-          ? files?.filter((_file, index) => !result.files?.[index]?.type)
-          : files;
-        if (segments.length === 0 && files?.length) {
-          await target.postable.post({
-            attachments,
-            files: genericFiles,
-            markdown: "",
-          });
-        } else {
-          for (const [index, text] of segments.entries()) {
-            if (index === 0 && files?.length) {
-              await target.postable.post({
-                attachments,
+        const genericFiles = files?.filter(
+          (_file, index) => !result.files?.[index]?.type,
+        );
+        const textSegments = segments.length > 0 ? segments : [""];
+        const [firstText = "", ...remainingText] = textSegments;
+
+        if (files?.length) {
+          if (installation.provider === "slack") {
+            if (firstText) await post({ markdown: firstText });
+            for (const file of files) {
+              await post({ files: [file], markdown: "" });
+            }
+          } else if (installation.provider === "discord") {
+            await post({ files, markdown: firstText });
+          } else if (installation.provider === "telegram") {
+            if (attachments?.length) {
+              await post({ attachments, markdown: firstText });
+            }
+            if (genericFiles?.length) {
+              await post({
                 files: genericFiles,
-                markdown: text,
+                markdown: attachments?.length ? "" : firstText,
               });
-            } else {
-              await target.postable.post(text);
+            }
+          } else {
+            if (firstText) await post({ markdown: firstText });
+            for (const [index, outputFile] of (result.files ?? []).entries()) {
+              const file = files[index]!;
+              if (outputFile.type) {
+                await post({
+                  attachments: [{
+                    data: outputFile.data instanceof ArrayBuffer
+                      ? new Blob([outputFile.data])
+                      : outputFile.data,
+                    mimeType: outputFile.mimeType,
+                    name: outputFile.filename,
+                    type: outputFile.type,
+                  }],
+                  markdown: "",
+                });
+              } else {
+                await post({ files: [file], markdown: "" });
+              }
             }
           }
+        } else if (segments.length > 0) {
+          await post({ markdown: firstText });
+        }
+
+        for (const text of remainingText) {
+          await post({ markdown: text });
         }
       }
       await this.emit({
@@ -769,9 +919,15 @@ export class ChannelRuntime {
         provider: installation.provider,
         threadId: target.threadId,
       });
+      return {
+        channelId: target.channelId,
+        messages,
+        ...(target.threadId ? { threadId: target.threadId } : {}),
+      };
     } catch (error) {
       await this.emit({
         channelId: target.channelId,
+        details: { deliveredMessages: deliveredPosts },
         error: errorMessage(error),
         installationId: installation.id,
         messageId: sourceMessageId,
@@ -779,7 +935,7 @@ export class ChannelRuntime {
         provider: installation.provider,
         threadId: target.threadId,
       });
-      throw error;
+      throw new ChannelDeliveryFailure(error, deliveredPosts);
     }
   }
 
@@ -810,8 +966,138 @@ export class ChannelRuntime {
   }
 
   private async emit(event: ChannelRuntimeEvent): Promise<void> {
-    await this.options.onEvent?.(event);
+    const onEvent = this.options.onEvent;
+    if (!onEvent || Date.now() < this.observabilitySuppressedUntil) return;
+    const timeoutMs = this.options.observabilityTimeoutMs
+      ?? DEFAULT_OBSERVABILITY_TIMEOUT_MS;
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    const hook = Promise.resolve()
+      .then(() => onEvent(event))
+      .then(() => "settled" as const)
+      .catch(() => "settled" as const);
+    try {
+      const outcome = timeoutMs > 0
+        ? await Promise.race([
+            hook,
+            new Promise<"timeout">((resolve) => {
+              timeout = setTimeout(() => resolve("timeout"), timeoutMs);
+            }),
+          ])
+        : await hook;
+      if (outcome === "timeout") {
+        this.observabilitySuppressedUntil = Date.now()
+          + OBSERVABILITY_TIMEOUT_BACKOFF_MS;
+      }
+    } finally {
+      if (timeout) clearTimeout(timeout);
+    }
   }
+
+  private emitDetached(event: ChannelRuntimeEvent): void {
+    let task: Promise<void>;
+    task = this.emit(event).finally(() => this.pendingEvents.delete(task));
+    this.pendingEvents.add(task);
+  }
+
+  private async flushPendingEvents(): Promise<void> {
+    while (this.pendingEvents.size > 0) {
+      await Promise.all([...this.pendingEvents]);
+    }
+  }
+}
+
+const TRANSPORT_LOG_EVENTS = {
+  "message-queued": "transport.message.queued",
+  "message-dequeued": "transport.message.dequeued",
+  "message-dropped": "transport.message.dropped",
+  "message-expired": "transport.message.expired",
+  "message-superseded": "transport.message.superseded",
+  "message-debouncing": "transport.message.debouncing",
+  "message-debounce-reset": "transport.message.debounce_reset",
+} as const satisfies Record<string, ChannelRuntimeEvent["name"]>;
+
+const TRANSPORT_DETAIL_KEYS = [
+  "debounceMs",
+  "droppedId",
+  "queueDepth",
+  "reason",
+  "skippedCount",
+  "totalSinceLastHandler",
+] as const;
+
+function createRuntimeLogger(
+  installation: ChannelInstallation,
+  configured: ChannelRuntimeOptions["logger"],
+  emit: (event: ChannelRuntimeEvent) => void,
+): Logger {
+  const base = typeof configured === "string"
+    ? new ConsoleLogger(configured)
+    : configured ?? new ConsoleLogger("warn");
+  return new RuntimeLogger(base, (message, args) => {
+    const name = TRANSPORT_LOG_EVENTS[message as keyof typeof TRANSPORT_LOG_EVENTS];
+    if (!name) return;
+    const data = recordValue(args[0]);
+    const threadId = stringValue(data.threadId);
+    const messageId = stringValue(data.messageId) ?? stringValue(data.droppedId);
+    const details: Record<string, string | number | boolean | null> = {};
+    for (const key of TRANSPORT_DETAIL_KEYS) {
+      const value = data[key];
+      if (
+        typeof value === "string"
+        || typeof value === "number"
+        || typeof value === "boolean"
+        || value === null
+      ) {
+        details[key] = value;
+      }
+    }
+    emit({
+      ...(Object.keys(details).length > 0 ? { details } : {}),
+      installationId: installation.id,
+      ...(messageId ? { messageId } : {}),
+      name,
+      provider: installation.provider,
+      ...(threadId ? { threadId } : {}),
+    });
+  });
+}
+
+class RuntimeLogger implements Logger {
+  constructor(
+    private readonly base: Logger,
+    private readonly observeInfo: (message: string, args: unknown[]) => void,
+  ) {}
+
+  child(prefix: string): Logger {
+    return new RuntimeLogger(this.base.child(prefix), this.observeInfo);
+  }
+
+  debug(message: string, ...args: unknown[]): void {
+    this.base.debug(message, ...args);
+  }
+
+  info(message: string, ...args: unknown[]): void {
+    this.observeInfo(message, args);
+    this.base.info(message, ...args);
+  }
+
+  warn(message: string, ...args: unknown[]): void {
+    this.base.warn(message, ...args);
+  }
+
+  error(message: string, ...args: unknown[]): void {
+    this.base.error(message, ...args);
+  }
+}
+
+function recordValue(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
 function runtimeKey(
@@ -887,6 +1173,22 @@ async function mapMessage(message: Message): Promise<ChannelInboundMessage> {
   };
 }
 
+function messageProviderEventId(
+  provider: ChannelProviderId,
+  threadId: string,
+  message: Message,
+): string {
+  if (provider !== "telegram") return message.id;
+  const mediaGroupId = asRecord(message.raw)?.media_group_id;
+  if (
+    (typeof mediaGroupId === "string" && mediaGroupId.trim())
+    || (typeof mediaGroupId === "number" && Number.isFinite(mediaGroupId))
+  ) {
+    return `${threadId}:media-group:${String(mediaGroupId)}`;
+  }
+  return message.id;
+}
+
 function providerEventIdFor(raw: unknown, fallback: string[]): string {
   const record = asRecord(raw);
   for (const key of ["id", "event_id", "trigger_id"] as const) {
@@ -921,6 +1223,14 @@ function asRecord(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === "object"
     ? value as Record<string, unknown>
     : null;
+}
+
+function deliveryMessage(value: unknown): ChannelDeliveryMessage | null {
+  const record = asRecord(value);
+  if (!record || typeof record.id !== "string" || typeof record.threadId !== "string") {
+    return null;
+  }
+  return { id: record.id, threadId: record.threadId };
 }
 
 function errorMessage(error: unknown): string {

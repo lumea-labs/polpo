@@ -19,7 +19,7 @@ export interface ChatSuggestionSettings {
   enabled?: boolean;
   /** Maximum suggestions returned per response. Allowed range: 2-4. */
   maxItems?: number;
-  /** Optional project guidance for suggestion generation. */
+  /** Optional agent-specific guidance for suggestion generation. */
   guidance?: string;
 }
 
@@ -111,7 +111,7 @@ export function normalizeChatInteractionSettings(
   };
 }
 
-/** Resolve project policy against the current client and invocation surface. */
+/** Resolve agent policy against the current client and invocation surface. */
 export function resolveChatInteractionCapabilities(input: {
   surface?: string;
   settings?: ChatInteractionSettings;

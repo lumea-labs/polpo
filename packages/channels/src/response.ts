@@ -55,6 +55,7 @@ export function segmentChannelText(
       remaining,
       targetCharacters,
       preferredMaximum,
+      hardLimit,
     );
     const part = remaining.slice(0, splitAt);
     if (part) segments.push(part);
@@ -133,13 +134,21 @@ function boundedInteger(
   return Number(value);
 }
 
-function findSemanticSplit(text: string, softLimit: number, hardLimit: number): number {
+function findSemanticSplit(
+  text: string,
+  softLimit: number,
+  hardLimit: number,
+  absoluteHardLimit = hardLimit,
+): number {
+  const fenceEnd = fencedBlockEndAfter(text, hardLimit, absoluteHardLimit);
+  if (fenceEnd !== undefined) return fenceEnd;
   const window = text.slice(0, hardLimit + 1);
   const preferred = ["\n\n", "\n", ". ", "! ", "? ", "; ", ", ", " "];
 
   for (const delimiter of preferred) {
     const index = window.lastIndexOf(delimiter, hardLimit);
-    if (index >= softLimit) return index + delimiter.length;
+    const splitAt = index + delimiter.length;
+    if (index >= softLimit && !insideFencedBlock(text, splitAt)) return splitAt;
   }
 
   // Prefer a coherent earlier boundary over a hard cut when no good split
@@ -147,10 +156,30 @@ function findSemanticSplit(text: string, softLimit: number, hardLimit: number): 
   const minimumUsefulLength = Math.floor(hardLimit * 0.35);
   for (const delimiter of preferred) {
     const index = window.lastIndexOf(delimiter, softLimit);
-    if (index >= minimumUsefulLength) return index + delimiter.length;
+    const splitAt = index + delimiter.length;
+    if (index >= minimumUsefulLength && !insideFencedBlock(text, splitAt)) {
+      return splitAt;
+    }
   }
 
   return avoidSplittingSurrogatePair(text, hardLimit);
+}
+
+function fencedBlockEndAfter(
+  text: string,
+  preferredLimit: number,
+  absoluteLimit = preferredLimit,
+): number | undefined {
+  if (!insideFencedBlock(text, preferredLimit)) return undefined;
+  const closingFence = text.indexOf("```", preferredLimit);
+  if (closingFence < 0) return undefined;
+  const lineEnd = text.indexOf("\n", closingFence + 3);
+  const splitAt = lineEnd < 0 ? closingFence + 3 : lineEnd + 1;
+  return splitAt <= absoluteLimit ? splitAt : undefined;
+}
+
+function insideFencedBlock(text: string, index: number): boolean {
+  return (text.slice(0, index).match(/```/g)?.length ?? 0) % 2 === 1;
 }
 
 function avoidSplittingSurrogatePair(text: string, index: number): number {

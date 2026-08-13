@@ -20,6 +20,7 @@ import {
 } from "@polpo-ai/core";
 import type {
   ChatSuggestion,
+  NormalizedChatInteractionSettings,
   ResolvedChatInteractionCapabilities,
 } from "@polpo-ai/core/chat-interactions";
 import { runModelPolicyTurn } from "@polpo-ai/llm";
@@ -93,7 +94,9 @@ export interface ChatCompletionExecution {
   modelOutput?: Output.Output<unknown, unknown, unknown>;
   effectiveTools: any[];
   effectiveToolExecutor: CompletionToolExecutor;
-  /** Effective client interaction support after project and surface policy. */
+  /** Normalized conversational behavior owned by the selected agent. */
+  interactionSettings: NormalizedChatInteractionSettings;
+  /** Effective client interaction support after agent and surface policy. */
   interactionCapabilities?: ResolvedChatInteractionCapabilities;
   clientSideTools?: Record<string, any>;
   clientSideToolNames?: Set<string>;

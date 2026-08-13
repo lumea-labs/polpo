@@ -21,6 +21,8 @@ export {
   type ChannelAuthor,
   type ChannelCapabilitySupport,
   type ChannelConcurrencyPolicy,
+  type ChannelDeliveryMessage,
+  type ChannelDeliveryResult,
   type ChannelEventCoordinator,
   type ChannelEventHandler,
   type ChannelEventResult,

@@ -5,6 +5,7 @@ import {
 } from "@chat-adapter/tests";
 import { emoji, type Adapter, type ChatInstance, type MessageData } from "chat";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { createOfficialChannelAdapter } from "../providers.js";
 import { ChannelRuntime } from "../runtime.js";
 import type {
   ChannelInstallation,
@@ -16,6 +17,7 @@ const runtimes: ChannelRuntime[] = [];
 
 afterEach(async () => {
   await Promise.all(runtimes.splice(0).map((runtime) => runtime.shutdown()));
+  vi.unstubAllGlobals();
 });
 
 function installation(
@@ -253,6 +255,7 @@ function createRuntime(options: {
   coordinateEvent?: ConstructorParameters<typeof ChannelRuntime>[0]["coordinateEvent"];
   handleEvent?: ConstructorParameters<typeof ChannelRuntime>[0]["handleEvent"];
   handleTurn?: ConstructorParameters<typeof ChannelRuntime>[0]["handleTurn"];
+  observabilityTimeoutMs?: ConstructorParameters<typeof ChannelRuntime>[0]["observabilityTimeoutMs"];
   onEvent?: ConstructorParameters<typeof ChannelRuntime>[0]["onEvent"];
   shouldStartTyping?: ConstructorParameters<typeof ChannelRuntime>[0]["shouldStartTyping"];
 } = {}): ChannelRuntime {
@@ -263,6 +266,7 @@ function createRuntime(options: {
     coordinateEvent: options.coordinateEvent,
     handleEvent: options.handleEvent,
     handleTurn: options.handleTurn ?? (async () => ({ text: "reply" })),
+    observabilityTimeoutMs: options.observabilityTimeoutMs,
     onEvent: options.onEvent,
     shouldStartTyping: options.shouldStartTyping,
     stateFactory: () => createMockState(),
@@ -272,6 +276,98 @@ function createRuntime(options: {
 }
 
 describe("ChannelRuntime", () => {
+  it("combines a Telegram media group into one ordered Polpo turn", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({
+      ok: true,
+      result: { first_name: "Polpo", id: 999, is_bot: true, username: "polpo" },
+    })));
+    const handleTurn = vi.fn(async () => ({}));
+    const runtime = createRuntime({
+      adapter: createOfficialChannelAdapter(installation({ typingEnabled: false })),
+      handleTurn,
+    });
+    const backgroundTasks: Promise<unknown>[] = [];
+    const mediaGroupRequest = (
+      updateId: number,
+      messageId: number,
+      fileId: string,
+      caption?: string,
+    ) => new Request("https://example.test/webhook", {
+      body: JSON.stringify({
+        update_id: updateId,
+        message: {
+          ...(caption ? { caption } : {}),
+          chat: { first_name: "Ada", id: 12345, type: "private" },
+          date: 1_786_000_001,
+          from: { first_name: "Ada", id: 456, is_bot: false, username: "ada" },
+          media_group_id: "album-1",
+          message_id: messageId,
+          photo: [{
+            file_id: fileId,
+            file_size: 128,
+            file_unique_id: `${fileId}-unique`,
+            height: 480,
+            width: 640,
+          }],
+        },
+      }),
+      headers: {
+        "content-type": "application/json",
+        "x-telegram-bot-api-secret-token": "secret",
+      },
+      method: "POST",
+    });
+
+    await Promise.all([
+      runtime.handleWebhook(
+        installation({ typingEnabled: false }),
+        mediaGroupRequest(101, 11, "file-1", "Inspect these images"),
+        { waitUntil: (task) => backgroundTasks.push(task) },
+      ),
+      runtime.handleWebhook(
+        installation({ typingEnabled: false }),
+        mediaGroupRequest(102, 12, "file-2"),
+        { waitUntil: (task) => backgroundTasks.push(task) },
+      ),
+    ]);
+    await Promise.all(backgroundTasks);
+
+    const retryTasks: Promise<unknown>[] = [];
+    await runtime.handleWebhook(
+      installation({ typingEnabled: false }),
+      mediaGroupRequest(101, 11, "file-1", "Inspect these images"),
+      { waitUntil: (task) => retryTasks.push(task) },
+    );
+    await Promise.all(retryTasks);
+
+    expect(handleTurn).toHaveBeenCalledOnce();
+    expect(handleTurn.mock.calls[0]?.[0]).toMatchObject({
+      coordination: {
+        grouped: false,
+        messageCount: 1,
+        messageIds: ["12345:12"],
+        primaryMessageId: "12345:12",
+      },
+      providerEventId: "telegram:12345:media-group:album-1",
+      threadId: "telegram:12345",
+    });
+    expect(handleTurn.mock.calls[0]?.[0].messages).toHaveLength(1);
+    expect(handleTurn.mock.calls[0]?.[0].messages[0]).toMatchObject({
+      id: "12345:12",
+      text: "Inspect these images",
+    });
+    expect(handleTurn.mock.calls[0]?.[0].messages[0].attachments).toEqual([
+      expect.objectContaining({
+        fetchMetadata: expect.objectContaining({ fileId: "file-1" }),
+        type: "image",
+      }),
+      expect.objectContaining({
+        fetchMetadata: expect.objectContaining({ fileId: "file-2" }),
+        type: "image",
+      }),
+    ]);
+  });
+
   it("normalizes an inbound message and posts the turn result", async () => {
     const adapter = testAdapter();
     const handleTurn = vi.fn(async () => ({ text: "Hello from Polpo" }));
@@ -308,13 +404,19 @@ describe("ChannelRuntime", () => {
     expect(adapter.startTyping).toHaveBeenCalledOnce();
     expect(adapter.postMessage).toHaveBeenCalledWith(
       "telegram:chat-1:thread-1",
-      "Hello from Polpo",
+      { markdown: "Hello from Polpo" },
     );
   });
 
   it("describes every message collapsed into a burst turn", async () => {
     const handleTurn = vi.fn(async () => ({ text: "One reply" }));
-    const runtime = createRuntime({ handleTurn });
+    const events: ConstructorParameters<NonNullable<
+      ConstructorParameters<typeof ChannelRuntime>[0]["onEvent"]
+    >>[0][] = [];
+    const runtime = createRuntime({
+      handleTurn,
+      onEvent: (event) => events.push(event),
+    });
     const burstInstallation = installation({
       concurrency: {
         debounceMs: 25,
@@ -353,6 +455,252 @@ describe("ChannelRuntime", () => {
     }));
     expect(handleTurn.mock.calls[0]?.[0].messages.map((message) => message.text))
       .toEqual(["first", "second", "third"]);
+    expect(events).toContainEqual(expect.objectContaining({
+      details: { debounceMs: 25 },
+      messageId: "message-1",
+      name: "transport.message.debouncing",
+      threadId: "telegram:chat-1:thread-1",
+    }));
+    expect(events).toContainEqual(expect.objectContaining({
+      details: { queueDepth: 2 },
+      messageId: "message-3",
+      name: "transport.message.queued",
+    }));
+    expect(events).toContainEqual(expect.objectContaining({
+      details: { skippedCount: 2, totalSinceLastHandler: 3 },
+      messageId: "message-3",
+      name: "transport.message.dequeued",
+    }));
+  });
+
+  it("records queue coordination while preserving every skipped message", async () => {
+    const activeTurn = deferred<void>();
+    const started = deferred<void>();
+    const turns: string[][] = [];
+    const events: ConstructorParameters<NonNullable<
+      ConstructorParameters<typeof ChannelRuntime>[0]["onEvent"]
+    >>[0][] = [];
+    const runtime = createRuntime({
+      handleTurn: async (turn) => {
+        turns.push(turn.messages.map((message) => message.text));
+        if (turn.providerEventId === "message-1") {
+          started.resolve();
+          await activeTurn.promise;
+        }
+        return { text: "done" };
+      },
+      onEvent: (event) => events.push(event),
+    });
+    const queuedInstallation = installation({
+      concurrency: {
+        maxQueueSize: 5,
+        onQueueFull: "drop-oldest",
+        queueEntryTtlMs: 120_000,
+        strategy: "queue",
+      },
+    });
+
+    const first = runtime.handleWebhook(
+      queuedInstallation,
+      webhookRequest("message-1", "first"),
+    );
+    await started.promise;
+    const second = runtime.handleWebhook(
+      queuedInstallation,
+      webhookRequest("message-2", "second"),
+    );
+    const third = runtime.handleWebhook(
+      queuedInstallation,
+      webhookRequest("message-3", "third"),
+    );
+    await Promise.all([second, third]);
+    activeTurn.resolve();
+    await first;
+
+    expect(turns).toEqual([["first"], ["second", "third"]]);
+    expect(events).toContainEqual(expect.objectContaining({
+      details: { queueDepth: 1 },
+      messageId: "message-3",
+      name: "transport.message.queued",
+    }));
+    expect(events).toContainEqual(expect.objectContaining({
+      details: { skippedCount: 1, totalSinceLastHandler: 2 },
+      messageId: "message-3",
+      name: "transport.message.dequeued",
+    }));
+    expect(JSON.stringify(events)).not.toContain("lockKey");
+    expect(JSON.stringify(events)).not.toContain("token");
+  });
+
+  it("records and rejects the newest message when a bounded queue is full", async () => {
+    const activeTurn = deferred<void>();
+    const started = deferred<void>();
+    const turns: string[] = [];
+    const events: ConstructorParameters<NonNullable<
+      ConstructorParameters<typeof ChannelRuntime>[0]["onEvent"]
+    >>[0][] = [];
+    const runtime = createRuntime({
+      handleTurn: async (turn) => {
+        turns.push(turn.providerEventId);
+        if (turn.providerEventId === "message-1") {
+          started.resolve();
+          await activeTurn.promise;
+        }
+        return { text: "done" };
+      },
+      onEvent: (event) => events.push(event),
+    });
+    const boundedInstallation = installation({
+      concurrency: {
+        maxQueueSize: 1,
+        onQueueFull: "drop-newest",
+        queueEntryTtlMs: 120_000,
+        strategy: "queue",
+      },
+    });
+
+    const first = runtime.handleWebhook(
+      boundedInstallation,
+      webhookRequest("message-1"),
+    );
+    await started.promise;
+    await runtime.handleWebhook(boundedInstallation, webhookRequest("message-2"));
+    await runtime.handleWebhook(boundedInstallation, webhookRequest("message-3"));
+    activeTurn.resolve();
+    await first;
+
+    expect(turns).toEqual(["message-1", "message-2"]);
+    expect(events).toContainEqual(expect.objectContaining({
+      details: { reason: "queue-full" },
+      messageId: "message-3",
+      name: "transport.message.dropped",
+    }));
+  });
+
+  it("records a lock-conflicting message dropped by the drop strategy", async () => {
+    const activeTurn = deferred<void>();
+    const started = deferred<void>();
+    const events: ConstructorParameters<NonNullable<
+      ConstructorParameters<typeof ChannelRuntime>[0]["onEvent"]
+    >>[0][] = [];
+    const runtime = createRuntime({
+      handleTurn: async (turn) => {
+        if (turn.providerEventId === "message-1") {
+          started.resolve();
+          await activeTurn.promise;
+        }
+        return { text: "done" };
+      },
+      onEvent: (event) => events.push(event),
+    });
+    const dropInstallation = installation({ concurrency: { strategy: "drop" } });
+
+    const first = runtime.handleWebhook(
+      dropInstallation,
+      webhookRequest("message-1"),
+    );
+    await started.promise;
+    await expect(runtime.handleWebhook(
+      dropInstallation,
+      webhookRequest("message-2"),
+    )).rejects.toThrow(/could not acquire lock/i);
+    activeTurn.resolve();
+    await first;
+
+    expect(events).toContainEqual(expect.objectContaining({
+      details: { reason: "lock-busy" },
+      messageId: "message-2",
+      name: "transport.message.dropped",
+      threadId: "telegram:chat-1:thread-1",
+    }));
+  });
+
+  it("records queued messages that expire before the active turn completes", async () => {
+    const activeTurn = deferred<void>();
+    const started = deferred<void>();
+    const turns: string[] = [];
+    const events: ConstructorParameters<NonNullable<
+      ConstructorParameters<typeof ChannelRuntime>[0]["onEvent"]
+    >>[0][] = [];
+    const runtime = createRuntime({
+      handleTurn: async (turn) => {
+        turns.push(turn.providerEventId);
+        if (turn.providerEventId === "message-1") {
+          started.resolve();
+          await activeTurn.promise;
+        }
+        return { text: "done" };
+      },
+      onEvent: (event) => events.push(event),
+    });
+    const expiringInstallation = installation({
+      concurrency: {
+        maxQueueSize: 5,
+        onQueueFull: "drop-oldest",
+        queueEntryTtlMs: 1,
+        strategy: "queue",
+      },
+    });
+
+    const first = runtime.handleWebhook(
+      expiringInstallation,
+      webhookRequest("message-1"),
+    );
+    await started.promise;
+    await runtime.handleWebhook(expiringInstallation, webhookRequest("message-2"));
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    activeTurn.resolve();
+    await first;
+
+    expect(turns).toEqual(["message-1"]);
+    expect(events).toContainEqual(expect.objectContaining({
+      messageId: "message-2",
+      name: "transport.message.expired",
+    }));
+  });
+
+  it("never lets a failing observability hook break channel processing", async () => {
+    const adapter = testAdapter();
+    const runtime = createRuntime({
+      adapter,
+      onEvent: async () => {
+        throw new Error("telemetry unavailable");
+      },
+    });
+
+    await expect(runtime.handleWebhook(
+      installation({
+        concurrency: {
+          debounceMs: 1,
+          maxQueueSize: 5,
+          onQueueFull: "drop-oldest",
+          queueEntryTtlMs: 120_000,
+          strategy: "burst",
+        },
+      }),
+      webhookRequest("message-1"),
+    )).resolves.toMatchObject({ status: 200 });
+    expect(adapter.postMessage).toHaveBeenCalledOnce();
+  });
+
+  it("bounds a stalled observability hook and suppresses repeated stalls", async () => {
+    const adapter = testAdapter();
+    const onEvent = vi.fn(() => new Promise<void>(() => {}));
+    const runtime = createRuntime({
+      adapter,
+      observabilityTimeoutMs: 5,
+      onEvent,
+    });
+
+    const startedAt = Date.now();
+    await expect(runtime.handleWebhook(
+      installation(),
+      webhookRequest("message-1"),
+    )).resolves.toMatchObject({ status: 200 });
+
+    expect(Date.now() - startedAt).toBeLessThan(500);
+    expect(adapter.postMessage).toHaveBeenCalledOnce();
+    expect(onEvent).toHaveBeenCalledOnce();
   });
 
   it("preserves lazy authenticated attachment access in normalized turns", async () => {
@@ -505,11 +853,11 @@ describe("ChannelRuntime", () => {
     await expect(optionsResponse.json()).resolves.toEqual([]);
     expect(adapter.postMessage).toHaveBeenCalledWith(
       "slack:channel-1:thread-1",
-      "handled:action",
+      { markdown: "handled:action" },
     );
   });
 
-  it("delivers typed media and generic files without duplicating either", async () => {
+  it("splits typed media and generic files for Telegram without duplicating either", async () => {
     const adapter = testAdapter();
     const runtime = createRuntime({
       adapter,
@@ -533,7 +881,8 @@ describe("ChannelRuntime", () => {
 
     await runtime.handleWebhook(installation(), webhookRequest("message-files"));
 
-    expect(adapter.postMessage).toHaveBeenCalledWith(
+    expect(adapter.postMessage).toHaveBeenNthCalledWith(
+      1,
       "telegram:chat-1:thread-1",
       expect.objectContaining({
         attachments: [expect.objectContaining({
@@ -541,12 +890,161 @@ describe("ChannelRuntime", () => {
           name: "preview.png",
           type: "image",
         })],
+        markdown: "Artifacts ready",
+      }),
+    );
+    expect(adapter.postMessage).toHaveBeenNthCalledWith(
+      2,
+      "telegram:chat-1:thread-1",
+      expect.objectContaining({
         files: [expect.objectContaining({
           filename: "report.pdf",
           mimeType: "application/pdf",
         })],
-        markdown: "Artifacts ready",
+        markdown: "",
       }),
+    );
+  });
+
+  it("separates Slack text from file uploads so partial delivery is observable", async () => {
+    const adapter = testAdapter();
+    const runtime = createRuntime({ adapter });
+
+    await runtime.post(
+      {
+        ...installation(),
+        credentials: { botToken: "token", signingSecret: "secret" },
+        provider: "slack",
+      },
+      "slack:channel-1:thread-1",
+      {
+        files: [{
+          data: Buffer.from("image"),
+          filename: "preview.png",
+          mimeType: "image/png",
+          type: "image",
+        }],
+        text: "Artifacts ready",
+      },
+    );
+
+    expect(adapter.postMessage).toHaveBeenNthCalledWith(
+      1,
+      "slack:channel-1:thread-1",
+      { markdown: "Artifacts ready" },
+    );
+    expect(adapter.postMessage).toHaveBeenNthCalledWith(
+      2,
+      "slack:channel-1:thread-1",
+      {
+        files: [expect.objectContaining({
+          filename: "preview.png",
+          mimeType: "image/png",
+        })],
+        markdown: "",
+      },
+    );
+  });
+
+  it("delivers typed media in one atomic Discord message", async () => {
+    const adapter = testAdapter();
+    const runtime = createRuntime({ adapter });
+
+    await runtime.post(
+      {
+        ...installation(),
+        credentials: {
+          applicationId: "app",
+          botToken: "token",
+          publicKey: "a".repeat(64),
+        },
+        provider: "discord",
+      },
+      "discord:channel-1:thread-1",
+      {
+        files: [{
+          data: Buffer.from("image"),
+          filename: "preview.png",
+          mimeType: "image/png",
+          type: "image",
+        }],
+        text: "Artifacts ready",
+      },
+    );
+
+    expect(adapter.postMessage).toHaveBeenCalledWith(
+      "discord:channel-1:thread-1",
+      {
+        files: [expect.objectContaining({
+          filename: "preview.png",
+          mimeType: "image/png",
+        })],
+        markdown: "Artifacts ready",
+      },
+    );
+  });
+
+  it("delivers WhatsApp text and each media item as observable operations", async () => {
+    const adapter = testAdapter();
+    const runtime = createRuntime({ adapter });
+
+    await runtime.post(
+      {
+        ...installation(),
+        credentials: {
+          accessToken: "token",
+          appSecret: "secret",
+          phoneNumberId: "phone-1",
+          verifyToken: "verify",
+        },
+        provider: "whatsapp",
+      },
+      "whatsapp:phone-1:user-1",
+      {
+        files: [
+          {
+            data: Buffer.from("audio"),
+            filename: "reply.ogg",
+            mimeType: "audio/ogg",
+            type: "audio",
+          },
+          {
+            data: Buffer.from("document"),
+            filename: "report.pdf",
+            mimeType: "application/pdf",
+          },
+        ],
+        text: "Artifacts ready",
+      },
+    );
+
+    expect(adapter.postMessage).toHaveBeenNthCalledWith(
+      1,
+      "whatsapp:phone-1:user-1",
+      { markdown: "Artifacts ready" },
+    );
+    expect(adapter.postMessage).toHaveBeenNthCalledWith(
+      2,
+      "whatsapp:phone-1:user-1",
+      {
+        attachments: [expect.objectContaining({
+          mimeType: "audio/ogg",
+          name: "reply.ogg",
+          type: "audio",
+        })],
+        markdown: "",
+      },
+    );
+    expect(adapter.postMessage).toHaveBeenNthCalledWith(
+      3,
+      "whatsapp:phone-1:user-1",
+      {
+        files: [expect.objectContaining({
+          filename: "report.pdf",
+          mimeType: "application/pdf",
+        })],
+        markdown: "",
+      },
     );
   });
 
@@ -585,6 +1083,303 @@ describe("ChannelRuntime", () => {
       { posts: [{ markdown: "native" }], text: "duplicate" },
     )).rejects.toThrow(/native posts cannot be combined/i);
     expect(adapter.postMessage).not.toHaveBeenCalled();
+  });
+
+  it("initializes the adapter and returns normalized thread delivery ids", async () => {
+    const adapter = testAdapter();
+    const initialize = vi.spyOn(adapter, "initialize");
+    vi.mocked(adapter.postMessage).mockResolvedValue({
+      id: "provider-message-1",
+      raw: { ok: true },
+      threadId: "telegram:chat-1:thread-1",
+    });
+    const runtime = createRuntime({ adapter });
+
+    const delivery = await runtime.post(
+      installation(),
+      "telegram:chat-1:thread-1",
+      "Scheduled result",
+    );
+
+    expect(initialize).toHaveBeenCalledOnce();
+    expect(adapter.postMessage).toHaveBeenCalledWith(
+      "telegram:chat-1:thread-1",
+      { markdown: "Scheduled result" },
+    );
+    expect(delivery).toEqual({
+      channelId: "telegram:chat-1",
+      messages: [{
+        id: "provider-message-1",
+        threadId: "telegram:chat-1:thread-1",
+      }],
+      threadId: "telegram:chat-1:thread-1",
+    });
+  });
+
+  it("posts outside a webhook through the official channel adapter", async () => {
+    const adapter = testAdapter();
+    const initialize = vi.spyOn(adapter, "initialize");
+    vi.mocked(adapter.postChannelMessage!).mockResolvedValue({
+      id: "provider-message-2",
+      raw: { ok: true },
+      threadId: "telegram:chat-1",
+    });
+    const runtime = createRuntime({ adapter });
+
+    const delivery = await runtime.postChannel(
+      installation(),
+      "telegram:chat-1",
+      "Proactive update",
+    );
+
+    expect(initialize).toHaveBeenCalledOnce();
+    expect(adapter.postChannelMessage).toHaveBeenCalledWith(
+      "telegram:chat-1",
+      { markdown: "Proactive update" },
+    );
+    expect(delivery).toEqual({
+      channelId: "telegram:chat-1",
+      messages: [{
+        id: "provider-message-2",
+        threadId: "telegram:chat-1",
+      }],
+    });
+  });
+
+  it("returns every provider message id from segmented proactive delivery", async () => {
+    const adapter = testAdapter();
+    vi.mocked(adapter.postMessage)
+      .mockResolvedValueOnce({
+        id: "provider-segment-1",
+        raw: { ok: true },
+        threadId: "telegram:chat-1:thread-1",
+      })
+      .mockResolvedValueOnce({
+        id: "provider-segment-2",
+        raw: { ok: true },
+        threadId: "telegram:chat-1:thread-1",
+      });
+    const runtime = createRuntime({ adapter });
+
+    const delivery = await runtime.post(
+      installation({
+        responseDelivery: {
+          maxMessages: 2,
+          style: "conversational",
+          targetCharacters: 200,
+        },
+      }),
+      "telegram:chat-1:thread-1",
+      `${"A".repeat(210)}.\n\n${"B".repeat(210)}.`,
+    );
+
+    expect(adapter.postMessage).toHaveBeenCalledTimes(2);
+    expect(delivery.messages).toEqual([
+      {
+        id: "provider-segment-1",
+        threadId: "telegram:chat-1:thread-1",
+      },
+      {
+        id: "provider-segment-2",
+        threadId: "telegram:chat-1:thread-1",
+      },
+    ]);
+  });
+
+  it("emits a correlated failure when proactive delivery fails", async () => {
+    const adapter = testAdapter();
+    vi.mocked(adapter.postMessage).mockRejectedValue(
+      new Error("provider unavailable"),
+    );
+    const events: Array<{ error?: string; name: string }> = [];
+    const runtime = createRuntime({
+      adapter,
+      onEvent: (event) => events.push(event),
+    });
+
+    await expect(runtime.post(
+      installation(),
+      "telegram:chat-1:thread-1",
+      "Scheduled result",
+    )).rejects.toThrow("provider unavailable");
+    expect(events).toContainEqual(expect.objectContaining({
+      error: "provider unavailable",
+      name: "delivery.failed",
+    }));
+  });
+
+  it("allows an exact provider retry after a transient turn failure", async () => {
+    const adapter = testAdapter();
+    const state = createMockState();
+    const handleTurn = vi.fn()
+      .mockRejectedValueOnce(new Error("temporary failure"))
+      .mockResolvedValueOnce({ text: "Recovered" });
+    const runtime = new ChannelRuntime({
+      adapterFactory: () => adapter,
+      handleTurn,
+      stateFactory: () => state,
+    });
+    runtimes.push(runtime);
+    const request = () => webhookRequest("provider-retry-1");
+
+    await expect(runtime.handleWebhook(installation(), request()))
+      .rejects.toThrow("temporary failure");
+    await expect(runtime.handleWebhook(installation(), request()))
+      .resolves.toBeInstanceOf(Response);
+
+    expect(handleTurn).toHaveBeenCalledTimes(2);
+    expect(adapter.postMessage).toHaveBeenCalledOnce();
+    expect(adapter.postMessage).toHaveBeenCalledWith(
+      "telegram:chat-1:thread-1",
+      { markdown: "Recovered" },
+    );
+  });
+
+  it("does not replay a turn after a partial segmented delivery", async () => {
+    const adapter = testAdapter();
+    vi.mocked(adapter.postMessage)
+      .mockResolvedValueOnce({
+        id: "segment-1",
+        raw: { ok: true },
+        threadId: "telegram:chat-1:thread-1",
+      })
+      .mockRejectedValueOnce(new Error("second segment failed"));
+    const handleTurn = vi.fn(async () => ({
+      text: `${"A".repeat(210)}.\n\n${"B".repeat(210)}.`,
+    }));
+    const events: Array<{ details?: Record<string, unknown>; name: string }> = [];
+    const runtime = new ChannelRuntime({
+      adapterFactory: () => adapter,
+      handleTurn,
+      onEvent: (event) => events.push(event),
+      stateFactory: () => createMockState(),
+    });
+    runtimes.push(runtime);
+    const configured = installation({
+      responseDelivery: {
+        maxMessages: 2,
+        style: "conversational",
+        targetCharacters: 200,
+      },
+    });
+
+    await expect(runtime.handleWebhook(
+      configured,
+      webhookRequest("partial-provider-retry"),
+    )).rejects.toThrow("second segment failed");
+    await expect(runtime.handleWebhook(
+      configured,
+      webhookRequest("partial-provider-retry"),
+    )).resolves.toBeInstanceOf(Response);
+
+    expect(handleTurn).toHaveBeenCalledOnce();
+    expect(adapter.postMessage).toHaveBeenCalledTimes(2);
+    expect(events).toContainEqual(expect.objectContaining({
+      details: { deliveredMessages: 1 },
+      name: "delivery.failed",
+    }));
+  });
+
+  it("does not replay a WhatsApp turn after text succeeds and media fails", async () => {
+    const adapter = testAdapter();
+    vi.mocked(adapter.postMessage)
+      .mockResolvedValueOnce({
+        id: "text-1",
+        raw: { ok: true },
+        threadId: "whatsapp:phone-1:user-1",
+      })
+      .mockRejectedValueOnce(new Error("media upload failed"));
+    const handleTurn = vi.fn(async () => ({
+      files: [{
+        data: Buffer.from("audio"),
+        filename: "reply.ogg",
+        mimeType: "audio/ogg",
+        type: "audio" as const,
+      }],
+      text: "Voice reply",
+    }));
+    const events: Array<{ details?: Record<string, unknown>; name: string }> = [];
+    const runtime = new ChannelRuntime({
+      adapterFactory: () => adapter,
+      handleTurn,
+      onEvent: (event) => events.push(event),
+      stateFactory: () => createMockState(),
+    });
+    runtimes.push(runtime);
+    const configured = {
+      ...installation(),
+      credentials: {
+        accessToken: "token",
+        appSecret: "secret",
+        phoneNumberId: "phone-1",
+        verifyToken: "verify",
+      },
+      provider: "whatsapp" as const,
+    };
+    const request = () => webhookRequest("whatsapp-partial-provider-retry");
+
+    await expect(runtime.handleWebhook(configured, request()))
+      .rejects.toThrow("media upload failed");
+    await expect(runtime.handleWebhook(configured, request()))
+      .resolves.toBeInstanceOf(Response);
+
+    expect(handleTurn).toHaveBeenCalledOnce();
+    expect(adapter.postMessage).toHaveBeenCalledTimes(2);
+    expect(events).toContainEqual(expect.objectContaining({
+      details: { deliveredMessages: 1 },
+      name: "delivery.failed",
+    }));
+  });
+
+  it("does not replay a Slack turn after one file upload succeeds", async () => {
+    const adapter = testAdapter();
+    vi.mocked(adapter.postMessage)
+      .mockResolvedValueOnce({
+        id: "file-1",
+        raw: { ok: true },
+        threadId: "slack:channel-1:thread-1",
+      })
+      .mockRejectedValueOnce(new Error("second file upload failed"));
+    const handleTurn = vi.fn(async () => ({
+      files: [
+        {
+          data: Buffer.from("first"),
+          filename: "first.txt",
+          mimeType: "text/plain",
+        },
+        {
+          data: Buffer.from("second"),
+          filename: "second.txt",
+          mimeType: "text/plain",
+        },
+      ],
+    }));
+    const events: Array<{ details?: Record<string, unknown>; name: string }> = [];
+    const runtime = new ChannelRuntime({
+      adapterFactory: () => adapter,
+      handleTurn,
+      onEvent: (event) => events.push(event),
+      stateFactory: () => createMockState(),
+    });
+    runtimes.push(runtime);
+    const configured = {
+      ...installation(),
+      credentials: { botToken: "token", signingSecret: "secret" },
+      provider: "slack" as const,
+    };
+    const request = () => webhookRequest("slack-partial-file-retry");
+
+    await expect(runtime.handleWebhook(configured, request()))
+      .rejects.toThrow("second file upload failed");
+    await expect(runtime.handleWebhook(configured, request()))
+      .resolves.toBeInstanceOf(Response);
+
+    expect(handleTurn).toHaveBeenCalledOnce();
+    expect(adapter.postMessage).toHaveBeenCalledTimes(2);
+    expect(events).toContainEqual(expect.objectContaining({
+      details: { deliveredMessages: 1 },
+      name: "delivery.failed",
+    }));
   });
 
   it("normalizes a slash command into the same provider-neutral turn", async () => {
@@ -640,7 +1435,7 @@ describe("ChannelRuntime", () => {
     );
     expect(adapter.postChannelMessage).toHaveBeenCalledWith(
       "discord:guild-1:channel-1",
-      "Command completed",
+      { markdown: "Command completed" },
     );
     expect(events).toContainEqual(expect.objectContaining({
       messageId: "interaction-1",

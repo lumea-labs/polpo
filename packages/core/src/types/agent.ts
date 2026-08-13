@@ -17,6 +17,7 @@ import type {
   ModelRuntimeMode,
 } from "../model-runtime.js";
 import type { RuntimeGuardrailAuditEvent } from "../guardrails/types.js";
+import type { ChatInteractionSettings } from "../chat-interactions.js";
 
 // === Reasoning / Thinking ===
 
@@ -133,6 +134,8 @@ export interface AgentConfig {
   reportsTo?: string;
   /** System prompt appended to the agent's base prompt */
   systemPrompt?: string;
+  /** Client-facing conversational behavior for this agent. */
+  chat?: ChatInteractionSettings;
   /** Installed skill names (e.g. "find-skills", "frontend-design") */
   skills?: string[];
   /** Max conversation turns before stopping. Default 150 */

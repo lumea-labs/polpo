@@ -102,6 +102,28 @@ limits. `maxMessages` is a conversational preference rather than permission to
 truncate; additional technical segments are emitted when a provider limit makes
 them unavoidable.
 
+### Proactive delivery
+
+Use the same official adapter outside a webhook to send scheduled work,
+notifications, or operator-triggered messages. `post` targets a thread and
+`postChannel` targets a channel. Both initialize the adapter, apply the same
+response policy, and return every provider message ID created by segmentation.
+
+```ts
+const delivery = await runtime.post(
+  installation,
+  "whatsapp:PHONE_NUMBER_ID:15551234567",
+  "Your report is ready.",
+);
+
+console.log(delivery.messages);
+// [{ id: "wamid...", threadId: "whatsapp:PHONE_NUMBER_ID:15551234567" }]
+```
+
+Treat the call as successful only when it resolves. A returned message ID means
+the provider accepted the send request; it does not by itself prove that the
+recipient received or read the message.
+
 ## Durable state
 
 The default state adapter is in-memory and is appropriate for local development
@@ -115,6 +137,30 @@ const runtime = new ChannelRuntime({
   handleTurn,
 });
 ```
+
+## Transport observability
+
+Set `onEvent` to receive provider-neutral runtime, turn, delivery, and transport
+coordination events. Queue, burst, and debounce lifecycle events include only
+safe scalar details such as message ID, queue depth, skipped count, and reason;
+locks, credentials, provider payloads, and media bytes are never emitted.
+
+```ts
+const runtime = new ChannelRuntime({
+  handleTurn,
+  onEvent: async (event) => audit.write(event),
+});
+```
+
+Transport events use the `transport.message.*` namespace. Observability hooks are
+isolated from execution: a logging or audit-store failure cannot fail a webhook,
+agent turn, or provider delivery. Pass `logger` when Chat SDK diagnostic logging
+is also required; Polpo defaults those diagnostics to `warn` while still emitting
+typed transport events.
+
+Hooks are best-effort and time-bounded. `observabilityTimeoutMs` defaults to one
+second; a timed-out hook is temporarily suppressed so an unavailable audit store
+cannot repeatedly delay webhook acknowledgement or agent execution.
 
 ## Events and native output
 
@@ -192,6 +238,50 @@ This exposes:
 The route without a key is useful only when the resolver has another trusted,
 host-controlled installation binding.
 
+## WhatsApp Cloud API
+
+Create a Meta app with the WhatsApp product and provision a Cloud API phone
+number. A WhatsApp installation requires four server-side values:
+
+```ts
+const installation = {
+  id: "channel_whatsapp_support",
+  provider: "whatsapp",
+  credentialRevision: "secret-version-1",
+  credentials: {
+    accessToken: process.env.WHATSAPP_ACCESS_TOKEN!,
+    appSecret: process.env.WHATSAPP_APP_SECRET!,
+    phoneNumberId: process.env.WHATSAPP_PHONE_NUMBER_ID!,
+    verifyToken: process.env.WHATSAPP_VERIFY_TOKEN!,
+  },
+} as const;
+```
+
+Register an opaque installation URL in Meta, for example
+`https://api.example.com/channels/whatsapp/<opaque-route-key>`. Route both the
+GET verification challenge and signed POST notifications to
+`dispatchChannelWebhook` without parsing or rewriting the body. Resolve the
+opaque key to exactly one installation before the official adapter verifies the
+request. Never route by a phone number or account ID taken from an unverified
+payload.
+
+The adapter normalizes inbound text, replies, images, audio, video, and files.
+Attachment bytes are fetched lazily through authenticated provider requests.
+The host decides size limits, transcription, model input support, durable
+Session routing, and retention. Duplicate webhook deliveries are suppressed by
+the configured state adapter; use shared durable state in a multi-replica host.
+
+WhatsApp's 24-hour customer service window and template approval rules still
+apply. `ChannelRuntime.post` sends normal conversation content; approved
+business-initiated templates are not part of the provider-neutral Polpo output
+contract yet.
+
+The Chat SDK WhatsApp adapter pinned by this release does not expose Meta
+`statuses` notifications as normalized delivered/read/failed events. Therefore
+`delivery.completed` means the provider accepted the send request, not that the
+recipient received or read it. Do not use it as an authoritative delivery
+receipt until the upstream adapter exposes that lifecycle.
+
 ## Provider behavior
 
 - Streams are delegated to the official Chat SDK adapter. Slack streams
@@ -199,6 +289,10 @@ host-controlled installation binding.
   and WhatsApp buffers until completion.
 - Long non-streaming text is split at semantic boundaries without silently
   truncating output.
+- Convenience output containing text and files is serialized into observable
+  provider operations for Slack and WhatsApp. If a later upload fails after an
+  earlier send succeeds, an exact webhook retry does not replay the agent turn
+  and duplicate content that was already accepted.
 - Typing indicator failures are observable but do not fail an agent turn.
 - Inbound files remain lazy when the provider supports authenticated fetching.
 - Discord HTTP interactions are supported by the official webhook adapter;

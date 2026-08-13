@@ -23,15 +23,15 @@
     "README.md"
   ],
   "dependencies": {
-    "@chat-adapter/discord": "4.36.0",
-    "@chat-adapter/slack": "4.36.0",
-    "@chat-adapter/state-memory": "4.36.0",
-    "@chat-adapter/telegram": "4.36.0",
-    "@chat-adapter/whatsapp": "4.36.0",
-    "chat": "4.36.0"
+    "@chat-adapter/discord": "4.37.0",
+    "@chat-adapter/slack": "4.37.0",
+    "@chat-adapter/state-memory": "4.37.0",
+    "@chat-adapter/telegram": "4.37.0",
+    "@chat-adapter/whatsapp": "4.37.0",
+    "chat": "4.37.0"
   },
   "devDependencies": {
-    "@chat-adapter/tests": "4.36.0",
+    "@chat-adapter/tests": "4.37.0",
     "@vitest/coverage-v8": "4.1.10",
     "ai": "6.0.182",
     "typescript": "^5.7.3",

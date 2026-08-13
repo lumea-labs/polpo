@@ -98,27 +98,27 @@ importers:
   packages/channels:
     dependencies:
       '@chat-adapter/discord':
-        specifier: 4.36.0
-        version: 4.36.0(ai@6.0.182(zod@4.3.6))(zod@4.3.6)
+        specifier: 4.37.0
+        version: 4.37.0(ai@6.0.182(zod@4.3.6))(zod@4.3.6)
       '@chat-adapter/slack':
-        specifier: 4.36.0
-        version: 4.36.0(ai@6.0.182(zod@4.3.6))(zod@4.3.6)
+        specifier: 4.37.0
+        version: 4.37.0(ai@6.0.182(zod@4.3.6))(zod@4.3.6)
       '@chat-adapter/state-memory':
-        specifier: 4.36.0
-        version: 4.36.0(ai@6.0.182(zod@4.3.6))(zod@4.3.6)
+        specifier: 4.37.0
+        version: 4.37.0(ai@6.0.182(zod@4.3.6))(zod@4.3.6)
       '@chat-adapter/telegram':
-        specifier: 4.36.0
-        version: 4.36.0(ai@6.0.182(zod@4.3.6))(zod@4.3.6)
+        specifier: 4.37.0
+        version: 4.37.0(ai@6.0.182(zod@4.3.6))(zod@4.3.6)
       '@chat-adapter/whatsapp':
-        specifier: 4.36.0
-        version: 4.36.0(ai@6.0.182(zod@4.3.6))(zod@4.3.6)
+        specifier: 4.37.0
+        version: 4.37.0(ai@6.0.182(zod@4.3.6))(zod@4.3.6)
       chat:
-        specifier: 4.36.0
-        version: 4.36.0(ai@6.0.182(zod@4.3.6))(zod@4.3.6)
+        specifier: 4.37.0
+        version: 4.37.0(ai@6.0.182(zod@4.3.6))(zod@4.3.6)
     devDependencies:
       '@chat-adapter/tests':
-        specifier: 4.36.0
-        version: 4.36.0(chat@4.36.0(ai@6.0.182(zod@4.3.6))(zod@4.3.6))(vitest@4.1.10)
+        specifier: 4.37.0
+        version: 4.37.0(chat@4.37.0(ai@6.0.182(zod@4.3.6))(zod@4.3.6))(vitest@4.1.10)
       '@vitest/coverage-v8':
         specifier: 4.1.10
         version: 4.1.10(vitest@4.1.10)
@@ -965,34 +965,34 @@ packages:
   '@cfworker/json-schema@4.1.1':
     resolution: {integrity: sha512-gAmrUZSGtKc3AiBL71iNWxDsyUC5uMaKKGdvzYsBoTW/xi42JQHl7eKV2OYzCUqvc+D2RCcf7EXY2iCyFIk6og==}
 
-  '@chat-adapter/discord@4.36.0':
-    resolution: {integrity: sha512-xkkL1dNeWa+G4bttZgJwAyq2ucnEOtn/UFjyWA1Xxh+Oi1LTJTD38qYGQOCmGGRGIslFrCBXUOELY0hHN0BbaQ==}
+  '@chat-adapter/discord@4.37.0':
+    resolution: {integrity: sha512-bzISEi/aV0V1uwZsdMOZefUvV9DfDkEd6REhOY9zXe4fqIPILqBZgLOCGTmjfMXujKzkB50fVHamox00kcoDJw==}
     engines: {node: '>=20'}
 
-  '@chat-adapter/shared@4.36.0':
-    resolution: {integrity: sha512-6w3GhiJiu6cEnO7c/j5Pu17x37mAKhcVosSo05k5z1CaaB6SoYps/rwbd02qqqxbzrS8usJ3/yhK+N4tazJjSA==}
+  '@chat-adapter/shared@4.37.0':
+    resolution: {integrity: sha512-q/uSBRfcHcHBdweDyx3tRy5teUYUTFR5jyaLzT5hVPwVJR59lTRv2AHxhpixBOL6UQloS3uGexWJUsBXxi/ifg==}
     engines: {node: '>=20'}
 
-  '@chat-adapter/slack@4.36.0':
-    resolution: {integrity: sha512-1w6idmjXjkUPLK5VmiG3S8CbTm+BOj51nio+4x9Y1HJsdkS/hnthT3Eam8owakTmKib6jBoog74GkRo8evY56w==}
+  '@chat-adapter/slack@4.37.0':
+    resolution: {integrity: sha512-4EWvfot/dl+LBEqGrNqcxpYsZ9y6UwE7l1t0kb0C3H59WnB5NXlsWyQeATM8UkjC2XmtzVWWQt/8Oc6DmKevqQ==}
     engines: {node: '>=20'}
 
-  '@chat-adapter/state-memory@4.36.0':
-    resolution: {integrity: sha512-zutvNwKopdg05dcLSdy8KuDZhJt40nwlAMXKqCyMt2GzM2FOqCJnFOixA8SNN8WMKZgYefeAnFovzVxySHYqUw==}
+  '@chat-adapter/state-memory@4.37.0':
+    resolution: {integrity: sha512-dI3dk+PUxkL1q5FZ7fn7T9nq9SIBnoovw3moTIl8xwuB4kWRNsvFa5CM7H0fGeaDPeyJPR+PQ+rUKPGKumMKTg==}
     engines: {node: '>=20'}
 
-  '@chat-adapter/telegram@4.36.0':
-    resolution: {integrity: sha512-DmL1lNu7O0GH8fZC/osN9yDAKactwPc2Z+M2iyhl6ohFOzhL+5zSz4EwsZhJclau4ABw9U+Jv5fNLWa7NWJo/Q==}
+  '@chat-adapter/telegram@4.37.0':
+    resolution: {integrity: sha512-A/lBDH7QUdGzxn+aBUyfg0Dp3uO9AW04Q2iXd4SwAz1t14wVb/gQ+KeI1QB287thgx+uLfr13f0/5Ss58ET11w==}
     engines: {node: '>=20'}
 
-  '@chat-adapter/tests@4.36.0':
-    resolution: {integrity: sha512-jwbbZQpxt+9x6QmFMTmB0S8jztYmyW03kFBdbbKEPDnzZx3RnRnlevmPAboCusRqEmni2Iv7cbcnNZSxET7nhA==}
+  '@chat-adapter/tests@4.37.0':
+    resolution: {integrity: sha512-Ktp4eG9j+TgHgX6Z+4go2bqhXsHh/cS0W6/2yR/43/1NocrotPQG7sYBYy+E0A/u3ZeAUIZevMikXmcvbKLqXw==}
     peerDependencies:
       chat: ^4.28.1
       vitest: ^4.0.0
 
-  '@chat-adapter/whatsapp@4.36.0':
-    resolution: {integrity: sha512-aLya34K4OaP8SMDo4Lrut/wQ11mugddryTZuKWnc6AT1AN55GKFB71+0pvT1p+cgXD8Zxr1+SkBOrnJwhZHt1Q==}
+  '@chat-adapter/whatsapp@4.37.0':
+    resolution: {integrity: sha512-+PjjwUmz5I/FL7U7zEnf48DiElw6tyvdvLUdMC81YoUBHkbirLBI9prcOYgXoO0H6hodJRuXTACXqMemzJRNng==}
     engines: {node: '>=20'}
 
   '@chevrotain/types@11.1.2':
@@ -3623,8 +3623,8 @@ packages:
   character-reference-invalid@2.0.1:
     resolution: {integrity: sha512-iBZ4F4wRbyORVsu0jPV7gXkOsGYjGHPmAyv+HiHG8gi5PtC9KI2j1+v8/tlibRvjoWX027ypmG/n0HtO5t7unw==}
 
-  chat@4.36.0:
-    resolution: {integrity: sha512-3A5HjnjilStMazAgY2PESloyT8g+GsoEf5uvqzPtvpGJrNh9oGWQ7IRZzw4+pFFTbUnCEtsclEAc2KMloRRZRQ==}
+  chat@4.37.0:
+    resolution: {integrity: sha512-rXWcVSPY0YiVXLpApYxuS2EbWzXBy3mI1kSAcnF9iPzw98FbDIDq73+Ri0JpUhS1bdVZPhWZgn8bum+Gy8jF3Q==}
     engines: {node: '>=20'}
     peerDependencies:
       ai: ^6.0.182 || ^7.0.0
@@ -7207,10 +7207,10 @@ snapshots:
   '@cfworker/json-schema@4.1.1':
     optional: true
 
-  '@chat-adapter/discord@4.36.0(ai@6.0.182(zod@4.3.6))(zod@4.3.6)':
+  '@chat-adapter/discord@4.37.0(ai@6.0.182(zod@4.3.6))(zod@4.3.6)':
     dependencies:
-      '@chat-adapter/shared': 4.36.0(ai@6.0.182(zod@4.3.6))(zod@4.3.6)
-      chat: 4.36.0(ai@6.0.182(zod@4.3.6))(zod@4.3.6)
+      '@chat-adapter/shared': 4.37.0(ai@6.0.182(zod@4.3.6))(zod@4.3.6)
+      chat: 4.37.0(ai@6.0.182(zod@4.3.6))(zod@4.3.6)
       discord-api-types: 0.37.120
       discord-interactions: 4.4.0
       discord.js: 14.27.0
@@ -7222,21 +7222,21 @@ snapshots:
       - workflow
       - zod
 
-  '@chat-adapter/shared@4.36.0(ai@6.0.182(zod@4.3.6))(zod@4.3.6)':
+  '@chat-adapter/shared@4.37.0(ai@6.0.182(zod@4.3.6))(zod@4.3.6)':
     dependencies:
-      chat: 4.36.0(ai@6.0.182(zod@4.3.6))(zod@4.3.6)
+      chat: 4.37.0(ai@6.0.182(zod@4.3.6))(zod@4.3.6)
     transitivePeerDependencies:
       - ai
       - supports-color
       - workflow
       - zod
 
-  '@chat-adapter/slack@4.36.0(ai@6.0.182(zod@4.3.6))(zod@4.3.6)':
+  '@chat-adapter/slack@4.37.0(ai@6.0.182(zod@4.3.6))(zod@4.3.6)':
     dependencies:
-      '@chat-adapter/shared': 4.36.0(ai@6.0.182(zod@4.3.6))(zod@4.3.6)
+      '@chat-adapter/shared': 4.37.0(ai@6.0.182(zod@4.3.6))(zod@4.3.6)
       '@slack/socket-mode': 2.0.7
       '@slack/web-api': 7.19.0
-      chat: 4.36.0(ai@6.0.182(zod@4.3.6))(zod@4.3.6)
+      chat: 4.37.0(ai@6.0.182(zod@4.3.6))(zod@4.3.6)
     transitivePeerDependencies:
       - ai
       - bufferutil
@@ -7246,34 +7246,34 @@ snapshots:
       - workflow
       - zod
 
-  '@chat-adapter/state-memory@4.36.0(ai@6.0.182(zod@4.3.6))(zod@4.3.6)':
+  '@chat-adapter/state-memory@4.37.0(ai@6.0.182(zod@4.3.6))(zod@4.3.6)':
     dependencies:
-      chat: 4.36.0(ai@6.0.182(zod@4.3.6))(zod@4.3.6)
+      chat: 4.37.0(ai@6.0.182(zod@4.3.6))(zod@4.3.6)
     transitivePeerDependencies:
       - ai
       - supports-color
       - workflow
       - zod
 
-  '@chat-adapter/telegram@4.36.0(ai@6.0.182(zod@4.3.6))(zod@4.3.6)':
+  '@chat-adapter/telegram@4.37.0(ai@6.0.182(zod@4.3.6))(zod@4.3.6)':
     dependencies:
-      '@chat-adapter/shared': 4.36.0(ai@6.0.182(zod@4.3.6))(zod@4.3.6)
-      chat: 4.36.0(ai@6.0.182(zod@4.3.6))(zod@4.3.6)
+      '@chat-adapter/shared': 4.37.0(ai@6.0.182(zod@4.3.6))(zod@4.3.6)
+      chat: 4.37.0(ai@6.0.182(zod@4.3.6))(zod@4.3.6)
     transitivePeerDependencies:
       - ai
       - supports-color
       - workflow
       - zod
 
-  '@chat-adapter/tests@4.36.0(chat@4.36.0(ai@6.0.182(zod@4.3.6))(zod@4.3.6))(vitest@4.1.10)':
+  '@chat-adapter/tests@4.37.0(chat@4.37.0(ai@6.0.182(zod@4.3.6))(zod@4.3.6))(vitest@4.1.10)':
     dependencies:
-      chat: 4.36.0(ai@6.0.182(zod@4.3.6))(zod@4.3.6)
+      chat: 4.37.0(ai@6.0.182(zod@4.3.6))(zod@4.3.6)
       vitest: 4.1.10(@opentelemetry/api@1.9.0)(@types/node@25.2.3)(@vitest/coverage-v8@4.1.10)(jsdom@29.0.1(@noble/hashes@1.8.0))(msw@2.12.10(@types/node@25.2.3)(typescript@5.9.3))(vite@7.3.1(@types/node@25.2.3)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.46.0)(tsx@4.21.0)(yaml@2.8.2))
 
-  '@chat-adapter/whatsapp@4.36.0(ai@6.0.182(zod@4.3.6))(zod@4.3.6)':
+  '@chat-adapter/whatsapp@4.37.0(ai@6.0.182(zod@4.3.6))(zod@4.3.6)':
     dependencies:
-      '@chat-adapter/shared': 4.36.0(ai@6.0.182(zod@4.3.6))(zod@4.3.6)
-      chat: 4.36.0(ai@6.0.182(zod@4.3.6))(zod@4.3.6)
+      '@chat-adapter/shared': 4.37.0(ai@6.0.182(zod@4.3.6))(zod@4.3.6)
+      chat: 4.37.0(ai@6.0.182(zod@4.3.6))(zod@4.3.6)
     transitivePeerDependencies:
       - ai
       - supports-color
@@ -9992,7 +9992,7 @@ snapshots:
 
   character-reference-invalid@2.0.1: {}
 
-  chat@4.36.0(ai@6.0.182(zod@4.3.6))(zod@4.3.6):
+  chat@4.37.0(ai@6.0.182(zod@4.3.6))(zod@4.3.6):
     dependencies:
       '@workflow/serde': 4.1.0-beta.2
       mdast-util-to-string: 4.0.0

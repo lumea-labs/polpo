@@ -403,9 +403,24 @@ rejects `response_format` explicitly instead of silently ignoring it.
 
 ### Chat interactions
 
-Projects can allow the built-in `ask_user_question` client tool and opt into
-suggested next messages through `settings.chat`. A client declares the optional
-interactions it can render in the request:
+Each agent can allow the built-in `ask_user_question` client tool and opt into
+suggested next messages through its `chat` configuration:
+
+```json
+{
+  "name": "support",
+  "chat": {
+    "allowUserQuestions": true,
+    "suggestions": {
+      "enabled": true,
+      "maxItems": 3,
+      "guidance": "Prefer concrete next actions."
+    }
+  }
+}
+```
+
+A client declares the optional interactions it can render in the request:
 
 ```json
 {
@@ -438,10 +453,12 @@ OpenAI-compatible finish reason:
 ```
 
 Streaming requests receive the same root-level `polpo.suggestions` object in a
-chunk immediately before the final `stop` chunk. Suggestions require both
-project opt-in and `polpo.capabilities.suggestions: true`; generation is
-bounded, tool-free, and fail-open. Structured outputs, failed or aborted turns,
-pending client tools, empty responses, and channel turns do not generate them.
+chunk immediately before the final `stop` chunk. Suggestions require both the
+selected agent to opt in and `polpo.capabilities.suggestions: true`; generation
+is bounded, tool-free, and fail-open. Structured outputs, failed or aborted
+turns, pending client tools, empty responses, and channel turns do not generate
+them. Agents without `chat` preserve the compatible defaults: questions are
+allowed and suggestions are disabled.
 
 ### Schedules
 

@@ -340,6 +340,8 @@ export interface CompletionRuntimePlanInput {
 export interface CompletionRuntimeInvocation {
   readonly surface: RuntimeSurface;
   readonly source: RuntimeInvocationSource;
+  /** Provider-neutral event supplied by a trusted channel adapter. */
+  readonly channelEvent?: Readonly<Record<string, unknown>>;
   readonly channelId?: string;
   readonly requestId?: string;
   readonly runId?: string;
