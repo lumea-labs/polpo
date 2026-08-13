@@ -528,7 +528,11 @@ export async function buildAgentTools(
     fs: prep.fs,
     shell: prep.shell,
   });
-  allPolpoTools.push(...await customTools.loadAssigned(agentConfig.allowedTools));
+  allPolpoTools.push(...await customTools.loadAssigned(
+    agentConfig.allowedTools,
+    undefined,
+    ctx?.toolInvocation,
+  ));
 
   return allPolpoTools;
 }

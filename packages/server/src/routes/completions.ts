@@ -33,6 +33,7 @@ import { OpenAPIHono } from "@hono/zod-openapi";
 import {
   type ExecutionRouteClassifier,
   type ExecutionRouteClassifierResolverContext,
+  type LoopRunRecord,
   type LoopRunStore,
   type ModelSelection,
   type ProfiledModelSelection,
@@ -44,6 +45,8 @@ import {
   type RunToolMiddleware,
   type RuntimeSurface,
   type RuntimeSandboxOptions,
+  type ToolInvocationContext,
+  type ToolInvocationJsonValue,
 } from "@polpo-ai/core";
 import type { ApprovalStore } from "@polpo-ai/core/approval-store";
 import type { ChatSessionInjection } from "@polpo-ai/core";
@@ -76,6 +79,7 @@ export {
   type ChatViaRunTurnResult,
 } from "./completions/chat-via-run-handler.js";
 export {
+  createCompletionToolInvocation,
   prepareChatCompletionExecution,
   runConversationTurn,
   type ConversationTurnResult,
@@ -201,6 +205,7 @@ export interface CompletionRouteDeps {
   resolveAgentTools: (
     agentConfig: any,
     runScope?: CompletionToolRunScope,
+    invocation?: ToolInvocationContext,
   ) => Promise<{
     tools: any[];
     /**
@@ -224,6 +229,13 @@ export interface CompletionRouteDeps {
      */
     disclosure?: ModelControlledToolDisclosureConfig;
   }>;
+  /**
+   * Re-authorize and rebuild private tool identity for a durable loop resume.
+   * Returned values are never persisted by the completion runtime.
+   */
+  resolveResumedToolInvocation?: (
+    run: LoopRunRecord,
+  ) => Promise<ToolInvocationContext | undefined>;
   /**
    * Optionally create a host resource scope for one project-loop execution.
    * The same scope is passed to root deterministic tools and every nested
@@ -345,6 +357,10 @@ export interface CompletionRuntimeInvocation {
   readonly channelId?: string;
   readonly requestId?: string;
   readonly runId?: string;
+  /** Host-resolved user identity. Overrides request body identity when set. */
+  readonly user?: string;
+  /** Host-resolved metadata. Overrides request body metadata when set. */
+  readonly metadata?: Readonly<Record<string, ToolInvocationJsonValue>>;
 }
 
 export function completionRoutes(getDeps: () => CompletionRouteDeps, apiKeys?: string[]): OpenAPIHono {

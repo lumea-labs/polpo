@@ -1,4 +1,5 @@
 import type { FileSystem } from "@polpo-ai/core/filesystem";
+import type { CustomToolServerBindings } from "./custom-tools.js";
 
 export const CUSTOM_TOOL_NAME_RE = /^[a-z][a-z0-9_]*$/;
 
@@ -8,6 +9,8 @@ export interface CustomToolMeta {
   parameters: unknown;
   label: string;
   clientSide: boolean;
+  bindingsSchema?: unknown;
+  serverBindings?: CustomToolServerBindings;
 }
 
 export interface CustomToolsStore {

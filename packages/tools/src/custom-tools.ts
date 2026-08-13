@@ -23,7 +23,27 @@ import { pathToFileURL } from "node:url";
 
 import type { FileSystem } from "@polpo-ai/core/filesystem";
 import type { Shell } from "@polpo-ai/core/shell";
-import type { PolpoTool, ToolResult, ToolUpdateCallback } from "@polpo-ai/core";
+import { validateJsonSchema } from "@polpo-ai/llm";
+import {
+  createToolInvocationContext,
+  type PolpoTool,
+  type ToolInvocationContext,
+  type ToolInvocationContextInput,
+  type ToolInvocationJsonPrimitive,
+  type ToolInvocationJsonValue,
+  type ToolInvocationSurface,
+  type ToolResult,
+  type ToolUpdateCallback,
+} from "@polpo-ai/core";
+
+export {
+  createToolInvocationContext,
+  type ToolInvocationContext,
+  type ToolInvocationContextInput,
+  type ToolInvocationJsonPrimitive,
+  type ToolInvocationJsonValue,
+  type ToolInvocationSurface,
+};
 
 export interface CustomToolConnection {
   id: string;
@@ -62,11 +82,175 @@ export function emptyCustomToolConnections(): CustomToolConnections {
   };
 }
 
+export interface CustomToolServerBinding {
+  readonly $context: string;
+}
+
+export type CustomToolServerBindings = Readonly<
+  Record<string, CustomToolServerBinding>
+>;
+
+export class CustomToolBindingError extends Error {
+  constructor(
+    message: string,
+    readonly code:
+      | "custom_tool_binding_missing"
+      | "custom_tool_binding_invalid",
+    readonly binding?: string,
+  ) {
+    super(message);
+    this.name = "CustomToolBindingError";
+  }
+}
+
+const FORBIDDEN_CONTEXT_SEGMENTS = new Set([
+  "__proto__",
+  "constructor",
+  "prototype",
+]);
+const INVOCATION_CONTEXT_ROOTS = new Set([
+  "metadata",
+  "requestId",
+  "runId",
+  "sessionId",
+  "surface",
+  "user",
+]);
+const CONTEXT_SEGMENT_RE = /^[A-Za-z0-9_-]+$/;
+
+function bindingPathSegments(path: string): string[] | null {
+  const segments = path.split(".");
+  if (
+    segments.length < 2
+    || segments[0] !== "invocation"
+    || !INVOCATION_CONTEXT_ROOTS.has(segments[1])
+    || segments.some((segment) =>
+      !CONTEXT_SEGMENT_RE.test(segment)
+      || FORBIDDEN_CONTEXT_SEGMENTS.has(segment))
+    || (segments[1] !== "metadata" && segments.length !== 2)
+  ) return null;
+  return segments;
+}
+
+function serverBindingErrors(value: unknown): string[] {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return ["`serverBindings` must be an object when provided"];
+  }
+  const errors: string[] = [];
+  for (const [name, candidate] of Object.entries(value)) {
+    if (!CONTEXT_SEGMENT_RE.test(name) || FORBIDDEN_CONTEXT_SEGMENTS.has(name)) {
+      errors.push(`server binding name "${name}" is invalid`);
+      continue;
+    }
+    if (
+      !candidate
+      || typeof candidate !== "object"
+      || Array.isArray(candidate)
+      || Object.keys(candidate).length !== 1
+      || typeof (candidate as Record<string, unknown>).$context !== "string"
+    ) {
+      errors.push(`server binding "${name}" must contain only a string \`$context\``);
+      continue;
+    }
+    const path = (candidate as Record<string, string>).$context;
+    if (!bindingPathSegments(path)) {
+      errors.push(`server binding "${name}" has an unsupported context path "${path}"`);
+    }
+  }
+  return errors;
+}
+
+function bindingSchemaMappingErrors(
+  schema: unknown,
+  bindings: unknown,
+): string[] {
+  if (
+    !schema
+    || typeof schema !== "object"
+    || Array.isArray(schema)
+    || !bindings
+    || typeof bindings !== "object"
+    || Array.isArray(bindings)
+  ) return [];
+  const candidate = schema as Record<string, unknown>;
+  const properties = candidate.properties;
+  if (!properties || typeof properties !== "object" || Array.isArray(properties)) {
+    return ["`bindingsSchema` must declare object `properties`"];
+  }
+  const propertyNames = new Set(Object.keys(properties));
+  const bindingNames = new Set(Object.keys(bindings));
+  const errors: string[] = [];
+  for (const name of bindingNames) {
+    if (!propertyNames.has(name)) {
+      errors.push(`server binding "${name}" is not declared in \`bindingsSchema.properties\``);
+    }
+  }
+  const required = Array.isArray(candidate.required) ? candidate.required : [];
+  for (const name of required) {
+    if (typeof name === "string" && !bindingNames.has(name)) {
+      errors.push(`required trusted binding "${name}" has no \`serverBindings\` mapping`);
+    }
+  }
+  return errors;
+}
+
+async function resolveServerBindings<T extends TSchema, TBindings extends TSchema>(
+  tool: CustomTool<T, TBindings>,
+  invocation: ToolInvocationContext,
+): Promise<Readonly<Record<string, unknown>>> {
+  if (!tool.bindingsSchema || !tool.serverBindings) return Object.freeze({});
+  const bindings: Record<string, unknown> = {};
+  for (const [name, binding] of Object.entries(tool.serverBindings)) {
+    const segments = bindingPathSegments(binding.$context);
+    if (!segments) {
+      throw new CustomToolBindingError(
+        `Custom tool "${tool.name}" has an invalid server binding path for "${name}"`,
+        "custom_tool_binding_invalid",
+        name,
+      );
+    }
+    let current: unknown = invocation;
+    for (const segment of segments.slice(1)) {
+      if (!current || typeof current !== "object") {
+        current = undefined;
+        break;
+      }
+      current = (current as Record<string, unknown>)[segment];
+    }
+    if (current !== undefined) bindings[name] = current;
+  }
+  const required = Array.isArray((tool.bindingsSchema as Record<string, unknown>).required)
+    ? (tool.bindingsSchema as Record<string, unknown>).required as unknown[]
+    : [];
+  const missingBinding = required.find((name) =>
+    typeof name === "string" && !Object.prototype.hasOwnProperty.call(bindings, name));
+  if (typeof missingBinding === "string") {
+    throw new CustomToolBindingError(
+      `Custom tool "${tool.name}" is missing trusted binding "${missingBinding}"`,
+      "custom_tool_binding_missing",
+      missingBinding,
+    );
+  }
+  const validation = await validateJsonSchema(tool.bindingsSchema, bindings);
+  if (!validation.success) {
+    throw new CustomToolBindingError(
+      `Custom tool "${tool.name}" received invalid trusted bindings: ${validation.error.message}`,
+      "custom_tool_binding_invalid",
+    );
+  }
+  return createToolInvocationContext({
+    requestId: invocation.requestId,
+    runId: invocation.runId,
+    surface: invocation.surface,
+    metadata: bindings as Record<string, ToolInvocationJsonValue>,
+  }).metadata as Readonly<Record<string, unknown>>;
+}
+
 /**
  * Capabilities injected into a custom tool's `execute`. Everything a tool can
  * touch arrives here — there are no ambient globals or platform env access.
  */
-export interface CustomToolContext {
+export interface CustomToolContext<TBindings = Record<string, never>> {
   /** Sandboxed filesystem rooted at the project workspace. */
   fs: FileSystem;
   /** Shell for running commands in the workspace. */
@@ -83,13 +267,20 @@ export interface CustomToolContext {
   signal?: AbortSignal;
   /** Stream partial results back to the runtime. */
   onUpdate?: ToolUpdateCallback;
+  /** Immutable host-owned identity for this invocation. */
+  invocation: ToolInvocationContext;
+  /** Validated server-only values that never enter model-visible parameters. */
+  bindings: Readonly<TBindings>;
 }
 
 /** A custom tool's return value — a plain string (wrapped as text) or a full ToolResult. */
 export type CustomToolExecuteResult = string | ToolResult;
 
 /** The object passed to {@link defineTool}. */
-export interface CustomToolSpec<T extends TSchema = TSchema> {
+export interface CustomToolSpec<
+  T extends TSchema = TSchema,
+  TBindings extends TSchema = TSchema,
+> {
   /** Unique, snake_case identifier exposed to the model. */
   name: string;
   /** What the tool does — shown to the model. */
@@ -100,15 +291,22 @@ export interface CustomToolSpec<T extends TSchema = TSchema> {
   label?: string;
   /** Run on the client instead of the sandbox (plumbed in a later phase). */
   clientSide?: boolean;
+  /** Server-only TypeBox schema. Never exposed as model tool parameters. */
+  bindingsSchema?: TBindings;
+  /** Exact mappings from immutable invocation context into hidden bindings. */
+  serverBindings?: CustomToolServerBindings;
   /** Tool body. Receives injected capabilities + validated params. */
   execute: (
-    ctx: CustomToolContext,
+    ctx: CustomToolContext<Static<TBindings>>,
     params: Static<T>,
   ) => CustomToolExecuteResult | Promise<CustomToolExecuteResult>;
 }
 
 /** A defined custom tool — a {@link CustomToolSpec} tagged with the `__custom` marker. */
-export interface CustomTool<T extends TSchema = TSchema> extends CustomToolSpec<T> {
+export interface CustomTool<
+  T extends TSchema = TSchema,
+  TBindings extends TSchema = TSchema,
+> extends CustomToolSpec<T, TBindings> {
   readonly __custom: true;
 }
 
@@ -119,7 +317,10 @@ const NAME_RE = /^[a-z][a-z0-9_]*$/;
  * Authoring helper. Returns the spec tagged with `__custom: true` so the loader
  * and the cloud registry can recognize it. Pure — no side effects.
  */
-export function defineTool<T extends TSchema>(spec: CustomToolSpec<T>): CustomTool<T> {
+export function defineTool<
+  T extends TSchema,
+  TBindings extends TSchema = TSchema,
+>(spec: CustomToolSpec<T, TBindings>): CustomTool<T, TBindings> {
   return { ...spec, __custom: true };
 }
 
@@ -156,6 +357,27 @@ export function getCustomToolErrors(value: unknown): string[] {
   }
   if (t.clientSide !== undefined && typeof t.clientSide !== "boolean") {
     errors.push("`clientSide` must be a boolean when provided");
+  }
+  if (t.bindingsSchema !== undefined && t.serverBindings === undefined) {
+    errors.push("`serverBindings` is required when `bindingsSchema` is provided");
+  }
+  if (t.serverBindings !== undefined && t.bindingsSchema === undefined) {
+    errors.push("`bindingsSchema` is required when `serverBindings` is provided");
+  }
+  if (t.bindingsSchema !== undefined) {
+    if (
+      typeof t.bindingsSchema !== "object"
+      || t.bindingsSchema === null
+      || (t.bindingsSchema as Record<string, unknown>).type !== "object"
+    ) {
+      errors.push("`bindingsSchema` must be an object TypeBox schema");
+    }
+  }
+  if (t.serverBindings !== undefined) {
+    errors.push(...serverBindingErrors(t.serverBindings));
+  }
+  if (t.bindingsSchema !== undefined && t.serverBindings !== undefined) {
+    errors.push(...bindingSchemaMappingErrors(t.bindingsSchema, t.serverBindings));
   }
   return errors;
 }
@@ -249,7 +471,10 @@ export function createJsonSchemaExample(schema: unknown, name = ""): unknown {
 }
 
 /** ctx without the per-call fields, which {@link bindCustomTool} supplies itself. */
-export type CustomToolBindContext = Omit<CustomToolContext, "signal" | "onUpdate">;
+export type CustomToolBindContext = Omit<
+  CustomToolContext,
+  "signal" | "onUpdate" | "bindings"
+>;
 
 /**
  * Adapt a {@link CustomTool} (ctx-based `execute`) into a runtime {@link PolpoTool}
@@ -257,8 +482,11 @@ export type CustomToolBindContext = Omit<CustomToolContext, "signal" | "onUpdate
  * This is the "wrap at registration" step that lets custom and built-in tools
  * coexist without touching the built-ins.
  */
-export function bindCustomTool<T extends TSchema>(
-  tool: CustomTool<T>,
+export function bindCustomTool<
+  T extends TSchema,
+  TBindings extends TSchema = TSchema,
+>(
+  tool: CustomTool<T, TBindings>,
   ctx: CustomToolBindContext,
 ): PolpoTool<T> {
   return {
@@ -267,8 +495,9 @@ export function bindCustomTool<T extends TSchema>(
     description: tool.description,
     parameters: tool.parameters,
     async execute(_toolCallId, params, signal, onUpdate) {
+      const bindings = await resolveServerBindings(tool, ctx.invocation);
       const result = await tool.execute(
-        { ...ctx, signal, onUpdate },
+        { ...ctx, bindings, signal, onUpdate },
         params as Static<T>,
       );
       return normalizeToolResult(result);

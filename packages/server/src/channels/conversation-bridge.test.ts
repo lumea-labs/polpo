@@ -262,4 +262,93 @@ describe("createConversationChannelTurnHandler", () => {
     expect(error).toBeInstanceOf(ChannelConversationError);
     expect(error).toMatchObject({ code: "guardrail_blocked", message: "blocked" });
   });
+
+  it("resolves trusted identity before agent selection and keeps it out of model arguments", async () => {
+    const store = new TestSessionStore();
+    const order: string[] = [];
+    const executeTurn = vi.fn<ChannelConversationTurnExecutor>(async (input) => {
+      order.push("execute");
+      return successfulResult(input.sessionId ?? null);
+    });
+    const handler = createConversationChannelTurnHandler(deps(store), {
+      agent: async () => {
+        order.push("agent");
+        return "assistant";
+      },
+      executeTurn,
+      resolveInvocation: async () => {
+        order.push("identity");
+        return {
+          disposition: "dispatch",
+          user: "better-auth-user-1",
+          metadata: {
+            tenantId: "tenant-1",
+            siteId: "site-1",
+            workingCopyId: "copy-1",
+            grant: "ag1.signed",
+          },
+        };
+      },
+    });
+
+    await handler(turn());
+
+    expect(order).toEqual(["identity", "agent", "execute"]);
+    expect(store.sessions[0]?.user).toBe("better-auth-user-1");
+    expect(store.sessions[0]?.metadata).not.toHaveProperty("grant");
+    expect(executeTurn.mock.calls[0]?.[0].body.user).toBe("better-auth-user-1");
+    expect(executeTurn.mock.calls[0]?.[0].body.metadata).not.toHaveProperty("grant");
+    expect(executeTurn.mock.calls[0]?.[0].runtime).toMatchObject({
+      user: "better-auth-user-1",
+      metadata: {
+        tenantId: "tenant-1",
+        siteId: "site-1",
+        workingCopyId: "copy-1",
+        grant: "ag1.signed",
+      },
+    });
+    expect(Object.isFrozen(executeTurn.mock.calls[0]?.[0].runtime?.metadata)).toBe(true);
+  });
+
+  it("consumes pairing turns without selecting an agent, creating a session, or invoking a model", async () => {
+    const store = new TestSessionStore();
+    const agent = vi.fn(async () => "assistant");
+    const executeTurn = vi.fn<ChannelConversationTurnExecutor>();
+    const handler = createConversationChannelTurnHandler(deps(store), {
+      agent,
+      executeTurn,
+      resolveInvocation: async () => ({
+        disposition: "consume",
+        reply: "WhatsApp account paired.",
+      }),
+    });
+
+    await expect(handler(turn())).resolves.toEqual({
+      metadata: { disposition: "consume" },
+      text: "WhatsApp account paired.",
+    });
+    expect(agent).not.toHaveBeenCalled();
+    expect(executeTurn).not.toHaveBeenCalled();
+    expect(store.sessions).toHaveLength(0);
+  });
+
+  it("fails closed on malformed trusted identity", async () => {
+    const store = new TestSessionStore();
+    const executeTurn = vi.fn<ChannelConversationTurnExecutor>();
+    const handler = createConversationChannelTurnHandler(deps(store), {
+      agent: "assistant",
+      executeTurn,
+      resolveInvocation: async () => ({
+        disposition: "dispatch",
+        user: "   ",
+        metadata: {},
+      }),
+    });
+
+    await expect(handler(turn())).rejects.toMatchObject({
+      code: "channel_invocation_identity_invalid",
+    });
+    expect(executeTurn).not.toHaveBeenCalled();
+    expect(store.sessions).toHaveLength(0);
+  });
 });

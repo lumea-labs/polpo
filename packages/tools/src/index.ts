@@ -73,6 +73,8 @@ export {
   extractCustomTool,
   loadCustomToolBundle,
   createJsonSchemaExample,
+  createToolInvocationContext,
+  CustomToolBindingError,
   emptyCustomToolConnections,
 } from "./custom-tools.js";
 export type {
@@ -83,6 +85,13 @@ export type {
   CustomToolContext,
   CustomToolBindContext,
   CustomToolExecuteResult,
+  CustomToolServerBinding,
+  CustomToolServerBindings,
+  ToolInvocationContext,
+  ToolInvocationContextInput,
+  ToolInvocationJsonPrimitive,
+  ToolInvocationJsonValue,
+  ToolInvocationSurface,
 } from "./custom-tools.js";
 export {
   CUSTOM_TOOL_NAME_RE,
