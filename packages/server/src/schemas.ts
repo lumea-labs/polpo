@@ -120,6 +120,33 @@ export const RuntimeSandboxSchema = z.object({
     description: "Sandbox isolation policy. `reuse` leases warm state exclusively, `fresh` requests one clean outer-run sandbox, and `shared` explicitly permits concurrent project-scoped use.",
   }),
   lifecycle: RuntimeSandboxLifecycleSchema.optional(),
+  volumes: z.array(z.object({
+    name: z.string().regex(/^[a-z][a-z0-9_-]{1,62}$/),
+    access: z.enum(["read-only", "read-write"]).optional(),
+    writeBack: z.enum(["auto", "manual"]).optional(),
+  }).strict().superRefine((volume, ctx) => {
+    if (volume.access === "read-only" && volume.writeBack !== undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["writeBack"],
+        message: "Read-only sandbox volumes cannot configure writeback",
+      });
+    }
+  })).max(32).optional().superRefine((volumes, ctx) => {
+    if (!volumes) return;
+    const names = new Set<string>();
+    for (let index = 0; index < volumes.length; index++) {
+      const name = volumes[index].name;
+      if (names.has(name)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: [index, "name"],
+          message: `Duplicate sandbox volume selection: ${name}`,
+        });
+      }
+      names.add(name);
+    }
+  }),
 }).strict().openapi({
   description: "Provider-neutral runtime sandbox policy.",
 });

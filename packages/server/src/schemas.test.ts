@@ -36,6 +36,35 @@ describe("shared runtime sandbox schema", () => {
     });
   });
 
+  it("accepts strict named volume selections", () => {
+    expect(RuntimeSandboxSchema.parse({
+      volumes: [
+        { name: "workspace", access: "read-write", writeBack: "auto" },
+        { name: "reference-data", access: "read-only" },
+      ],
+    })).toEqual({
+      volumes: [
+        { name: "workspace", access: "read-write", writeBack: "auto" },
+        { name: "reference-data", access: "read-only" },
+      ],
+    });
+  });
+
+  it.each([
+    { volumes: null },
+    { volumes: ["workspace"] },
+    { volumes: [{ name: "" }] },
+    { volumes: [{ name: "Workspace" }] },
+    { volumes: [{ name: "../workspace" }] },
+    { volumes: [{ name: "workspace", access: "owner" }] },
+    { volumes: [{ name: "workspace", writeBack: "sometimes" }] },
+    { volumes: [{ name: "workspace", access: "read-only", writeBack: "auto" }] },
+    { volumes: [{ name: "workspace", unknown: true }] },
+    { volumes: [{ name: "workspace" }, { name: "workspace" }] },
+  ])("rejects malformed volume selection %#", (sandbox) => {
+    expect(RuntimeSandboxSchema.safeParse(sandbox).success).toBe(false);
+  });
+
   it.each([
     null,
     [],

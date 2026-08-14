@@ -44,6 +44,8 @@ describe("completion request sandbox lifecycle", () => {
     { lifecycle: { onRelease: "pool", deleteAfterStopMinutes: 0 } },
     { lifecycle: { onRelease: "pool", idleTtlMinutes: 30 } },
     { isolation: "reuse", lifecycle: { onRelease: "destroy" } },
+    { volumes: [] },
+    { volumes: [{ name: "workspace", access: "read-write", writeBack: "manual" }] },
   ])("accepts valid sandbox policy %#", (sandbox) => {
     expect(completionRequestSchema.parse({ ...request, sandbox }).sandbox).toEqual(sandbox);
   });
@@ -62,6 +64,8 @@ describe("completion request sandbox lifecycle", () => {
     { lifecycle: { onRelease: "pool", unknown: true } },
     { lifecycle: "pool" },
     { isolation: "reuse", unknown: true },
+    { volumes: [{ name: "workspace", access: "read-only", writeBack: "auto" }] },
+    { volumes: [{ name: "workspace" }, { name: "workspace" }] },
   ])("rejects malformed sandbox policy %#", (sandbox) => {
     expect(completionRequestSchema.safeParse({ ...request, sandbox }).success).toBe(false);
   });

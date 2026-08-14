@@ -82,4 +82,24 @@ describe("SandboxProvider port", () => {
     expect(session.usage).toBeUndefined();
     await session.dispose();
   });
+
+  it("can expose one host-resolved immutable workspace plan", async () => {
+    const workspace = {
+      workDir: "/workspace",
+      volumes: [{
+        name: "code",
+        strategy: "hydrated" as const,
+        mountPath: "/workspace/code",
+        access: "read-write" as const,
+        writeBack: "manual" as const,
+        revision: "rev-1",
+      }],
+    };
+    const provider: SandboxProvider = {
+      open: () => ({ fs, shell, workspace, dispose: async () => {} }),
+    };
+
+    const session = await provider.open("run-1");
+    expect(session.workspace).toEqual(workspace);
+  });
 });

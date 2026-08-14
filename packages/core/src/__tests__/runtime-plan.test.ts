@@ -362,6 +362,42 @@ describe("createRuntimePlan", () => {
     });
   });
 
+  it("records and revalidates secret-free sandbox volume selections", () => {
+    const plan = createRuntimePlan({
+      surface: "agent",
+      source: "request",
+      model: { selection: "openai/gpt-5", source: "default" },
+      sandbox: {
+        isolation: "reuse",
+        source: "agent",
+        volumes: [
+          { name: "workspace", access: "read-write", writeBack: "manual" },
+          { name: "reference", access: "read-only" },
+        ],
+      },
+    }, fixedFactory);
+
+    expect(plan.sandbox.volumes).toEqual([
+      { name: "workspace", access: "read-write", writeBack: "manual" },
+      { name: "reference", access: "read-only" },
+    ]);
+    expect(Object.isFrozen(plan.sandbox.volumes)).toBe(true);
+    expect(normalizeRuntimePlan(plan)).toEqual(plan);
+  });
+
+  it.each([
+    { volumes: [{ name: "Workspace" }] },
+    { volumes: [{ name: "workspace" }, { name: "workspace" }] },
+    { volumes: [{ name: "workspace", access: "read-only", writeBack: "auto" }] },
+  ])("rejects malformed runtime-plan volumes %#", ({ volumes }) => {
+    expect(() => createRuntimePlan({
+      surface: "agent",
+      source: "request",
+      model: { selection: "openai/gpt-5", source: "default" },
+      sandbox: { volumes: volumes as any },
+    }, fixedFactory)).toThrow(/volume/i);
+  });
+
   it.each([
     {
       name: "unknown surface",

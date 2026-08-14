@@ -14,6 +14,28 @@
  */
 import type { FileSystem } from "./filesystem.js";
 import type { Shell } from "./shell.js";
+import type {
+  SandboxVolumeAccess,
+  SandboxVolumeWriteBack,
+} from "./runtime-sandbox.js";
+
+export type SandboxVolumeStrategy = "mounted" | "hydrated";
+
+/** Secret-free host resolution of one selected persistent volume. */
+export interface ResolvedSandboxVolumeAttachment {
+  readonly name: string;
+  readonly strategy: SandboxVolumeStrategy;
+  readonly mountPath: string;
+  readonly access: SandboxVolumeAccess;
+  readonly writeBack?: SandboxVolumeWriteBack;
+  readonly revision?: string;
+}
+
+/** One run-scoped workspace plan shared by every nested execution step. */
+export interface SandboxWorkspaceContext {
+  readonly workDir: string;
+  readonly volumes: readonly ResolvedSandboxVolumeAttachment[];
+}
 
 export interface SandboxProvider {
   /**
@@ -34,6 +56,8 @@ export interface SandboxProvider {
 export interface SandboxSession {
   readonly fs: FileSystem;
   readonly shell: Shell;
+  /** Host-resolved workspace used by this session, when supplied. */
+  readonly workspace?: SandboxWorkspaceContext;
   /**
    * Optional suspend/resume. When present, the caller may suspend the
    * sandbox during idle gaps (e.g. while the model is thinking) and resume
@@ -90,9 +114,23 @@ export type SandboxRuntimeEventType =
   | "sandbox.release.started"
   | "sandbox.released"
   | "sandbox.rejected"
-  | "sandbox.error";
+  | "sandbox.error"
+  | "sandbox.volume.prepare.started"
+  | "sandbox.volume.prepared"
+  | "sandbox.volume.checkpoint.started"
+  | "sandbox.volume.checkpointed"
+  | "sandbox.volume.finalize.started"
+  | "sandbox.volume.finalized"
+  | "sandbox.volume.conflict";
 
-export type SandboxRuntimeOperation = "acquire" | "suspend" | "resume" | "release";
+export type SandboxRuntimeOperation =
+  | "acquire"
+  | "suspend"
+  | "resume"
+  | "release"
+  | "prepare"
+  | "checkpoint"
+  | "finalize";
 export type SandboxAcquisitionSource = "created" | "pool" | "shared";
 export type SandboxReleaseOutcome = "pooled" | "destroyed" | "evicted";
 

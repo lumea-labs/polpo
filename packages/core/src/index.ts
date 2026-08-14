@@ -197,13 +197,21 @@ export type { Shell, ShellOptions, ShellResult } from "./shell.js";
 // ── Spawner Abstraction ─────────────────────────────────────────────────
 export type { Spawner, SpawnResult } from "./spawner.js";
 export { resolveExecutionMode } from "./execution-mode.js";
-export { resolveRuntimeSandboxOptions } from "./runtime-sandbox.js";
-export { SANDBOX_IDLE_TTL_MINUTES_MAX } from "./runtime-sandbox.js";
+export {
+  resolveRuntimeSandboxOptions,
+  SANDBOX_IDLE_TTL_MINUTES_MAX,
+  SANDBOX_VOLUME_NAME_PATTERN,
+  SANDBOX_VOLUMES_MAX,
+  SandboxVolumeGrantError,
+} from "./runtime-sandbox.js";
 export type {
   RuntimeSandboxLifecycleOptions,
   RuntimeSandboxOptions,
+  RuntimeSandboxVolumeSelection,
   SandboxIsolation,
   SandboxReleasePolicy,
+  SandboxVolumeAccess,
+  SandboxVolumeWriteBack,
 } from "./runtime-sandbox.js";
 
 // ── SandboxProvider Abstraction ──────────────────────────────────────────
@@ -218,6 +226,9 @@ export type {
   SandboxAcquisitionSource,
   SandboxReleaseOutcome,
   SandboxLifecycleInfo,
+  SandboxVolumeStrategy,
+  ResolvedSandboxVolumeAttachment,
+  SandboxWorkspaceContext,
 } from "./sandbox-provider.js";
 
 // ── Agent Prompt Builder ────────────────────────────────────────────────
