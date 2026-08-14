@@ -17,6 +17,7 @@ export type { ExtendedToolName, CreateAllToolsOptions } from "./system-tools.js"
 
 // Individual tool factories (for custom composition)
 export { createOutcomeTools } from "./outcome-tools.js";
+export { createSandboxVolumeCheckpointTool } from "./sandbox-volume-tools.js";
 export { createHttpTools, ALL_HTTP_TOOL_NAMES } from "./http-tools.js";
 export { createVaultToolsCore, createVaultTools, ALL_VAULT_TOOL_NAMES } from "./vault-tools.js";
 export { resolveAgentMcpTools } from "./mcp-client.js";

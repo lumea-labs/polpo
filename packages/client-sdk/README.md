@@ -17,6 +17,7 @@ await client.chatCompletions({
   model: "openai/gpt-5",
   sandbox: {
     isolation: "fresh",
+    volumes: [{ name: "reference", access: "read-only" }],
     lifecycle: {
       onRelease: "pool",
       stopAfterIdleMinutes: 30,
@@ -43,6 +44,12 @@ clients, but cannot be mixed with the explicit controls.
 Use `sandbox.isolation: "shared"` only when concurrent outer runs are intended
 to collaborate in one project-scoped workspace. `reuse` remains exclusive and
 only makes the sandbox available to another run after release.
+
+`sandbox.volumes` selects host-defined persistent volumes by name. The request
+may remove an agent grant or narrow it to `read-only` or manual writeback, but
+cannot add an ungranted volume, change its strategy, or choose a host mount
+path. The only provider-neutral strategies are `mounted` and `hydrated`;
+strategy and storage credentials are resolved by the runtime host.
 
 `runtime:plan` SSE payloads can be narrowed with
 `isRuntimePlanSSEEvent`. The store indexes valid, secret-free plans by id and

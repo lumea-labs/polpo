@@ -58,6 +58,8 @@ export interface SandboxSession {
   readonly shell: Shell;
   /** Host-resolved workspace used by this session, when supplied. */
   readonly workspace?: SandboxWorkspaceContext;
+  /** Persist one or every manually managed hydrated volume for this lease. */
+  checkpointVolume?(name?: string): Promise<void>;
   /**
    * Optional suspend/resume. When present, the caller may suspend the
    * sandbox during idle gaps (e.g. while the model is thinking) and resume

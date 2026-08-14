@@ -39,9 +39,9 @@ import {
   type FileEntry,
   fileUrl,
   formatSize,
-  modeDescription,
-  modeLabel,
-  VolumeModeIcon,
+  strategyDescription,
+  strategyLabel,
+  VolumeStrategyIcon,
 } from "./file-browser-primitives.js";
 
 /** A file to upload + its path relative to the drop/pick target (folders keep
@@ -217,7 +217,7 @@ export function FilesBrowser({
   type DriveDraft = {
     name: string;
     label: string;
-    mode: DriveVolume["mode"];
+    strategy: DriveVolume["strategy"];
     mountPath: string;
   };
   const [driveDialog, setDriveDialog] = useState<{
@@ -227,7 +227,7 @@ export function FilesBrowser({
   const [driveDraft, setDriveDraft] = useState<DriveDraft>({
     name: "",
     label: "",
-    mode: "file-drive",
+    strategy: "mounted",
     mountPath: "",
   });
   const [deleteDrive, setDeleteDrive] = useState<DriveVolume | null>(null);
@@ -236,7 +236,7 @@ export function FilesBrowser({
     setDriveDraft({
       name: "",
       label: "",
-      mode: "file-drive",
+      strategy: "mounted",
       mountPath: "",
     });
     setDriveDialog({ mode: "create" });
@@ -246,7 +246,7 @@ export function FilesBrowser({
     setDriveDraft({
       name: drive.name,
       label: drive.label ?? "",
-      mode: drive.mode,
+      strategy: drive.strategy,
       mountPath: drive.mountPath ?? "",
     });
     setDriveDialog({ mode: "edit", drive });
@@ -260,7 +260,7 @@ export function FilesBrowser({
       return polpo.saveVolume({
         ...(isCreate ? { name } : { name: driveDialog.drive!.name }),
         label: driveDraft.label.trim() || null,
-        mode: driveDraft.mode,
+        strategy: driveDraft.strategy,
         mountPath: driveDraft.mountPath.trim() || null,
       });
     },
@@ -536,11 +536,11 @@ function DrivesTable({
           const drive = row.original;
           return (
             <div className="flex min-w-0 items-center gap-2.5">
-              <VolumeModeIcon
-                mode={drive.mode}
+              <VolumeStrategyIcon
+                strategy={drive.strategy}
                 size={16}
                 className={
-                  drive.mode === "code-drive"
+                  drive.strategy === "hydrated"
                     ? "text-muted-foreground"
                     : "text-brand/70"
                 }
@@ -553,11 +553,11 @@ function DrivesTable({
         },
       },
       {
-        accessorKey: "mode",
+        accessorKey: "strategy",
         header: "Type",
         cell: ({ row }) => (
           <span className="text-[12px] text-muted-foreground">
-            {modeLabel(row.original.mode)}
+            {strategyLabel(row.original.strategy)}
           </span>
         ),
         meta: { width: 130 } satisfies ColumnMeta,
@@ -634,7 +634,7 @@ function DrivesTable({
         [
           drive.name,
           drive.label,
-          drive.mode,
+          drive.strategy,
           drive.mountPath,
           drive.path,
           drive.absolutePath,
@@ -669,13 +669,13 @@ function DriveDialog({
   draft: {
     name: string;
     label: string;
-    mode: DriveVolume["mode"];
+    strategy: DriveVolume["strategy"];
     mountPath: string;
   };
   setDraft: (draft: {
     name: string;
     label: string;
-    mode: DriveVolume["mode"];
+    strategy: DriveVolume["strategy"];
     mountPath: string;
   }) => void;
   saving: boolean;
@@ -686,7 +686,7 @@ function DriveDialog({
   const canSubmit =
     !saving &&
     (!isCreate || draft.name.trim().length > 0) &&
-    draft.mode.length > 0;
+    draft.strategy.length > 0;
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="v2 sm:max-w-lg">
@@ -732,15 +732,15 @@ function DriveDialog({
               Type
             </label>
             <div className="grid gap-2 sm:grid-cols-2" role="radiogroup">
-              {(["file-drive", "code-drive"] as const).map((driveMode) => {
-                const active = draft.mode === driveMode;
+              {(["mounted", "hydrated"] as const).map((strategy) => {
+                const active = draft.strategy === strategy;
                 return (
                   <button
-                    key={driveMode}
+                    key={strategy}
                     type="button"
                     role="radio"
                     aria-checked={active}
-                    onClick={() => setDraft({ ...draft, mode: driveMode })}
+                    onClick={() => setDraft({ ...draft, strategy })}
                     className={`flex min-h-[112px] flex-col gap-2 rounded-lg border p-3 text-left transition-colors ${
                       active
                         ? "border-brand/45 bg-brand/5"
@@ -755,14 +755,14 @@ function DriveDialog({
                             : "border-border bg-secondary text-muted-foreground"
                         }`}
                       >
-                        <VolumeModeIcon mode={driveMode} size={14} />
+                        <VolumeStrategyIcon strategy={strategy} size={14} />
                       </span>
                       <span className="text-[13px] font-medium text-foreground">
-                        {modeLabel(driveMode)}
+                        {strategyLabel(strategy)}
                       </span>
                     </span>
                     <span className="text-[12px] leading-5 text-muted-foreground">
-                      {modeDescription(driveMode)}
+                      {strategyDescription(strategy)}
                     </span>
                   </button>
                 );
@@ -914,8 +914,8 @@ function RootBrowser({
           onClick={() => goTo(-1)}
           className="inline-flex items-center gap-1.5 rounded px-1.5 py-0.5 font-medium text-foreground transition-colors hover:bg-secondary"
         >
-          <VolumeModeIcon
-            mode={drive.mode}
+          <VolumeStrategyIcon
+            strategy={drive.strategy}
             size={14}
             className="text-muted-foreground"
           />
