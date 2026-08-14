@@ -33,7 +33,11 @@ export function createActivity(): AgentActivity {
 }
 import { join, resolve, sep } from "node:path";
 import { buildResolvedModelProviderOptions, resolveModel, enforceModelAllowlist } from "@polpo-ai/llm";
-import { createSystemTools, createAllTools } from "@polpo-ai/tools";
+import {
+  createAllTools,
+  createSandboxVolumeCheckpointTool,
+  createSystemTools,
+} from "@polpo-ai/tools";
 import { NodeFileSystem } from "./node-filesystem.js";
 import { NodeShell } from "./node-shell.js";
 import type { FileSystem } from "@polpo-ai/core/filesystem";
@@ -520,6 +524,10 @@ export async function buildAgentTools(
       transcribeModel: agentConfig.transcribe_model,
       ttsModel:        agentConfig.tts_model,
     });
+  }
+
+  if (ctx?.checkpointSandboxVolume) {
+    allPolpoTools.push(createSandboxVolumeCheckpointTool(ctx.checkpointSandboxVolume));
   }
 
   const customTools = createLocalCustomToolRuntime({

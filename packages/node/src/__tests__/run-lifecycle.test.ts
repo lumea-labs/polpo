@@ -851,6 +851,48 @@ describe("executeRun — shared run lifecycle", () => {
     expect(run?.result?.stderr).toContain("No output generated");
   });
 
+  test("finalizes host resources once before persisting a successful terminal run", async () => {
+    setMockModel(mockTextModel("done"));
+    const store = new InMemoryRunStore();
+    const complete = vi.spyOn(store, "completeRun");
+    const finalize = vi.fn(async () => undefined);
+    const config = makeConfig();
+
+    const outcome = await executeRun(config, {
+      runStore: store,
+      pid: 1,
+      configPath: "memory://finalize-success",
+      finalize,
+    });
+
+    expect(outcome.status).toBe("completed");
+    expect(finalize).toHaveBeenCalledTimes(1);
+    expect(finalize.mock.invocationCallOrder[0]).toBeLessThan(
+      complete.mock.invocationCallOrder[0],
+    );
+  });
+
+  test("fails the run when host resource finalization fails", async () => {
+    setMockModel(mockTextModel("would have completed"));
+    const store = new InMemoryRunStore();
+    const finalize = vi.fn(async () => {
+      throw new Error("hydrated volume is dirty");
+    });
+    const config = makeConfig();
+
+    const outcome = await executeRun(config, {
+      runStore: store,
+      pid: 1,
+      configPath: "memory://finalize-failure",
+      finalize,
+    });
+
+    expect(outcome.status).toBe("failed");
+    expect(outcome.result.stderr).toContain("hydrated volume is dirty");
+    expect(finalize).toHaveBeenCalledTimes(1);
+    expect((await store.getRun(config.runId))?.status).toBe("failed");
+  });
+
   test("host steering reaches the run and closes when the lifecycle settles", async () => {
     const controller = new InMemorySteeringController();
     controller.enqueue({

@@ -153,6 +153,10 @@ export interface ExecuteRunDeps {
   fs?: FileSystem;
   /** Shell for tools. Default: a fresh NodeShell. */
   shell?: Shell;
+  /** Optional host checkpoint for manually managed hydrated sandbox volumes. */
+  checkpointSandboxVolume?: (name?: string) => Promise<void>;
+  /** Finalize run-scoped host resources before terminal persistence. */
+  finalize?: () => Promise<void>;
   /**
    * LLM gateway configuration for the loop's model resolution. The subprocess
    * host leaves this undefined and relies on gateway/provider env vars inside
@@ -219,6 +223,12 @@ function requestsBrainTools(allowedTools: readonly string[] | undefined): boolea
  * See module header for the host contract.
  */
 export async function executeRun(config: RunnerConfig, deps: ExecuteRunDeps): Promise<ExecuteRunOutcome> {
+  let finalized = false;
+  const finalize = async (): Promise<void> => {
+    if (finalized) return;
+    finalized = true;
+    await deps.finalize?.();
+  };
   const { runStore, pid, configPath } = deps;
   const actLog = new RunActivityLog(config.polpoDir, config.runId, config.taskId, config.agent.name, pid);
   const steering = deps.steering
@@ -474,6 +484,7 @@ export async function executeRun(config: RunnerConfig, deps: ExecuteRunDeps): Pr
       // injects the orchestrator's instances.
       fs: deps.fs ?? new NodeFileSystem(),
       shell: deps.shell ?? new NodeShell(),
+      checkpointSandboxVolume: deps.checkpointSandboxVolume,
       // Durable turns: resume checkpoint handed over by orphan recovery,
       // and the per-turn checkpoint sink (one RunStore write per turn,
       // best-effort — a flaky store must never fail a healthy run).
@@ -545,6 +556,7 @@ export async function executeRun(config: RunnerConfig, deps: ExecuteRunDeps): Pr
         // The runtime failure remains authoritative when audit persistence fails.
       }
     }
+    try { await finalize(); } catch { /* preserve the primary spawn error */ }
     await runStore.completeRun(config.runId, "failed", result);
     steering.close();
     return { status: "failed", result, spawnError: true };
@@ -596,18 +608,23 @@ export async function executeRun(config: RunnerConfig, deps: ExecuteRunDeps): Pr
       result.exitCode = 1;
       result.stderr = (result.stderr ? result.stderr + "\n" : "") + "Killed by SIGTERM (timeout or shutdown)";
     }
+    await finalize();
     const status: RunStatus = aborted ? "killed" : (result.exitCode === 0 ? "completed" : "failed");
     actLog.logEvent("done", { status, exitCode: result.exitCode, duration: result.duration });
     await runStore.completeRun(config.runId, status, result);
     return { status, result };
   } catch (err) {
     clearInterval(poll);
+    try { await finalize(); } catch (finalizeError) {
+      if (!(err instanceof Error)) err = finalizeError;
+    }
     try { await runStore.updateActivity(config.runId, handle.activity); } catch { /* best effort */ }
     actLog.logEvent("error", { message: err instanceof Error ? err.message : String(err) });
     const result = errorResult(err);
     await runStore.completeRun(config.runId, "failed", result);
     return { status: "failed", result };
   } finally {
+    try { await finalize(); } catch { /* the terminal result already captured finalization */ }
     deps.signal?.removeEventListener("abort", onAbort);
     steering?.signal.removeEventListener("abort", onSteeringAbort);
     steering?.close();

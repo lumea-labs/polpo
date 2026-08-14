@@ -1,6 +1,11 @@
 import { nanoid } from "nanoid";
 import { normalizeModelPolicy, type ModelSelection } from "../model-policy.js";
 import {
+  SANDBOX_VOLUME_NAME_PATTERN,
+  SANDBOX_VOLUMES_MAX,
+  type RuntimeSandboxVolumeSelection,
+} from "../runtime-sandbox.js";
+import {
   RUNTIME_DECISION_SOURCES,
   RUNTIME_EXECUTION_MODES,
   RUNTIME_GUARDRAIL_ACTIONS,
@@ -64,6 +69,42 @@ function uniqueStrings(value: unknown, label: string): string[] {
     output.push(normalized);
   }
   return output;
+}
+
+function runtimePlanVolumes(value: unknown): RuntimeSandboxVolumeSelection[] | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value) || value.length > SANDBOX_VOLUMES_MAX) {
+    throw new Error(`Runtime plan sandbox volumes must be an array with at most ${SANDBOX_VOLUMES_MAX} entries`);
+  }
+  const names = new Set<string>();
+  return value.map((candidate, index) => {
+    if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) {
+      throw new Error(`Runtime plan sandbox volume ${index} must be an object`);
+    }
+    const volume = candidate as Record<string, unknown>;
+    const name = requiredString(volume.name, `Runtime plan sandbox volume ${index} name`);
+    if (!SANDBOX_VOLUME_NAME_PATTERN.test(name)) {
+      throw new Error(`Runtime plan sandbox volume ${index} has an invalid name`);
+    }
+    if (names.has(name)) throw new Error(`Runtime plan sandbox volume is duplicated: ${name}`);
+    names.add(name);
+    const access = volume.access;
+    const writeBack = volume.writeBack;
+    if (access !== undefined && access !== "read-only" && access !== "read-write") {
+      throw new Error(`Runtime plan sandbox volume ${name} has invalid access`);
+    }
+    if (writeBack !== undefined && writeBack !== "auto" && writeBack !== "manual") {
+      throw new Error(`Runtime plan sandbox volume ${name} has invalid writeback`);
+    }
+    if (access === "read-only" && writeBack !== undefined) {
+      throw new Error(`Runtime plan sandbox volume ${name} cannot configure writeback while read-only`);
+    }
+    return {
+      name,
+      ...(access === undefined ? {} : { access }),
+      ...(writeBack === undefined ? {} : { writeBack }),
+    } as RuntimeSandboxVolumeSelection;
+  });
 }
 
 function normalizeLatencyMap(
@@ -275,6 +316,7 @@ export function createRuntimePlan(
   const sandboxReleasePolicy =
     input.sandbox?.lifecycle?.onRelease
     ?? RUNTIME_PLAN_DEFAULTS.sandboxReleasePolicy;
+  const sandboxVolumes = runtimePlanVolumes(input.sandbox?.volumes);
   if (sandboxReleasePolicy !== "pool" && sandboxReleasePolicy !== "destroy") {
     throw new Error("Runtime plan sandbox release policy must be one of: pool, destroy");
   }
@@ -396,6 +438,7 @@ export function createRuntimePlan(
     sandbox: {
       isolation: sandboxIsolation,
       source: sandboxSource,
+      ...(sandboxVolumes === undefined ? {} : { volumes: sandboxVolumes }),
       lifecycle: {
         onRelease: sandboxReleasePolicy,
         ...(sandboxIdleTtlMinutes !== undefined
@@ -496,6 +539,7 @@ export function normalizeRuntimePlan(value: unknown): RuntimePlan {
           "Runtime plan sandbox isolation",
         ),
         source: requiredValue(sandbox.source, "Runtime plan sandbox source"),
+        ...(sandbox.volumes !== undefined ? { volumes: sandbox.volumes } : {}),
         ...(sandboxLifecycle
           ? {
               lifecycle: {

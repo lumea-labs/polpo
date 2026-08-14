@@ -255,6 +255,45 @@ describe("schedule invocation validation", () => {
     });
   });
 
+  it("preserves strict sandbox volume selections in schedule execution", () => {
+    expect(normalizeScheduleInvocation({
+      surface: "agent",
+      agentName: "builder",
+      input: { messages: [{ role: "user", content: "continue" }] },
+      execution: {
+        sandbox: {
+          volumes: [
+            { name: "workspace", access: "read-write", writeBack: "manual" },
+            { name: "reference", access: "read-only" },
+          ],
+        },
+      },
+    })).toMatchObject({
+      execution: {
+        sandbox: {
+          volumes: [
+            { name: "workspace", access: "read-write", writeBack: "manual" },
+            { name: "reference", access: "read-only" },
+          ],
+        },
+      },
+    });
+  });
+
+  it.each([
+    { volumes: [{ name: "workspace" }, { name: "workspace" }] },
+    { volumes: [{ name: "Workspace" }] },
+    { volumes: [{ name: "workspace", access: "read-only", writeBack: "auto" }] },
+    { volumes: [{ name: "workspace", unknown: true }] },
+  ])("rejects unsafe schedule sandbox volumes %#", ({ volumes }) => {
+    expect(() => normalizeScheduleInvocation({
+      surface: "agent",
+      agentName: "builder",
+      input: { messages: [{ role: "user", content: "continue" }] },
+      execution: { sandbox: { volumes } as any },
+    })).toThrow(/volume/i);
+  });
+
   it("preserves explicit sandbox stop and delete controls", () => {
     expect(normalizeScheduleInvocation({
       surface: "agent",

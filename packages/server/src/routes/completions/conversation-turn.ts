@@ -310,6 +310,13 @@ async function resolveCompletionRuntimePlan(
                   ...(agentConfig.sandbox.lifecycle
                     ? { lifecycle: { ...agentConfig.sandbox.lifecycle } }
                     : {}),
+                  ...(Array.isArray(agentConfig.sandbox.volumes)
+                    ? {
+                        volumes: agentConfig.sandbox.volumes.map(
+                          (volume: Record<string, unknown>) => ({ ...volume }),
+                        ),
+                      }
+                    : {}),
                 }
               : undefined,
             allowedTools: Array.isArray(agentConfig.allowedTools)

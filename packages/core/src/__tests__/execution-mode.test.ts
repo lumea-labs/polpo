@@ -180,4 +180,95 @@ describe("resolveRuntimeSandboxOptions — runtime sandbox precedence", () => {
       lifecycle: { onRelease: "pool", idleTtlMinutes: 15 },
     });
   });
+
+  it("resolves volume selections by narrowing the inherited grant", () => {
+    expect(resolveRuntimeSandboxOptions(
+      {
+        sandbox: {
+          volumes: [
+            { name: "workspace" },
+            { name: "reference", access: "read-only" },
+          ],
+        },
+      },
+      {
+        sandbox: {
+          volumes: [
+            { name: "workspace", writeBack: "manual" },
+            { name: "reference" },
+          ],
+        },
+      },
+      {
+        sandbox: {
+          volumes: [{ name: "workspace", access: "read-only" }],
+        },
+      },
+    )).toEqual({
+      volumes: [{ name: "workspace", access: "read-only" }],
+    });
+  });
+
+  it("lets the first explicit tier establish the volume grant", () => {
+    expect(resolveRuntimeSandboxOptions(
+      { sandbox: { isolation: "reuse" } },
+      { sandbox: { volumes: [{ name: "workspace" }] } },
+    )).toEqual({
+      isolation: "reuse",
+      volumes: [{ name: "workspace" }],
+    });
+  });
+
+  it("preserves an explicit empty volume selection", () => {
+    expect(resolveRuntimeSandboxOptions(
+      { sandbox: { volumes: [{ name: "workspace" }] } },
+      { sandbox: { volumes: [] } },
+    )).toEqual({ volumes: [] });
+  });
+
+  it("rejects a lower-precedence attempt to add an ungranted volume", () => {
+    expect(() => resolveRuntimeSandboxOptions(
+      { sandbox: { volumes: [{ name: "workspace" }] } },
+      { sandbox: { volumes: [{ name: "workspace" }, { name: "secret" }] } },
+    )).toThrow(/not granted.*secret/i);
+  });
+
+  it("never widens inherited read-only or manual volume policy", () => {
+    expect(resolveRuntimeSandboxOptions(
+      {
+        sandbox: {
+          volumes: [{
+            name: "workspace",
+            access: "read-only",
+          }],
+        },
+      },
+      {
+        sandbox: {
+          volumes: [{
+            name: "workspace",
+            access: "read-write",
+            writeBack: "auto",
+          }],
+        },
+      },
+    )).toEqual({
+      volumes: [{ name: "workspace", access: "read-only" }],
+    });
+
+    expect(resolveRuntimeSandboxOptions(
+      {
+        sandbox: {
+          volumes: [{ name: "workspace", writeBack: "manual" }],
+        },
+      },
+      {
+        sandbox: {
+          volumes: [{ name: "workspace", writeBack: "auto" }],
+        },
+      },
+    )).toEqual({
+      volumes: [{ name: "workspace", writeBack: "manual" }],
+    });
+  });
 });

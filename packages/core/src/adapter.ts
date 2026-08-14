@@ -105,6 +105,8 @@ export interface SpawnContext {
   fs?: FileSystem;
   /** Shell implementation — created by the orchestrator, passed down to tools. */
   shell?: Shell;
+  /** Host-owned checkpoint for manually managed hydrated sandbox volumes. */
+  checkpointSandboxVolume?: (name?: string) => Promise<void>;
   /** LLM gateway configuration — passed per-request for multi-tenant support. */
   gatewayConfig?: unknown;
   /** Source- and trust-labelled prompt context for this run. */

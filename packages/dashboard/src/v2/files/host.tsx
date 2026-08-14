@@ -69,10 +69,7 @@ export function usePolpoClient(_projectId: string) {
           id: root.id,
           name: root.id,
           label: root.name,
-          mode:
-            root.id === "workspace"
-              ? ("code-drive" as const)
-              : ("file-drive" as const),
+          strategy: "mounted" as const,
           mountPath: root.path,
           path: root.path,
           absolutePath: root.absolutePath,
@@ -84,7 +81,7 @@ export function usePolpoClient(_projectId: string) {
       async saveVolume(_volume: {
         name: string;
         label: string | null;
-        mode: DriveVolume["mode"];
+        strategy: DriveVolume["strategy"];
         mountPath: string | null;
       }): Promise<DriveVolume> {
         throw new Error(

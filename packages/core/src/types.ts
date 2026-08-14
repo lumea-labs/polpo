@@ -22,6 +22,9 @@ export * from "./types/assessment.js";
 export type {
   RuntimeSandboxLifecycleOptions,
   RuntimeSandboxOptions,
+  RuntimeSandboxVolumeSelection,
   SandboxIsolation,
   SandboxReleasePolicy,
+  SandboxVolumeAccess,
+  SandboxVolumeWriteBack,
 } from "./runtime-sandbox.js";

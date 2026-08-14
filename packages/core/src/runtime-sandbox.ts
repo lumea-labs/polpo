@@ -8,6 +8,24 @@
 
 export type SandboxIsolation = "reuse" | "fresh" | "shared";
 export type SandboxReleasePolicy = "pool" | "destroy";
+export type SandboxVolumeAccess = "read-only" | "read-write";
+export type SandboxVolumeWriteBack = "auto" | "manual";
+
+export const SANDBOX_VOLUME_NAME_PATTERN = /^[a-z][a-z0-9_-]{1,62}$/;
+export const SANDBOX_VOLUMES_MAX = 32;
+
+/**
+ * A caller-visible selection of a host-defined persistent volume.
+ *
+ * The host owns backend credentials, strategy, and mount path. Lower
+ * precedence tiers may remove volumes or narrow policy, but cannot add a new
+ * name or widen inherited access.
+ */
+export interface RuntimeSandboxVolumeSelection {
+  name: string;
+  access?: SandboxVolumeAccess;
+  writeBack?: SandboxVolumeWriteBack;
+}
 
 export const SANDBOX_IDLE_TTL_MINUTES_MAX = 7 * 24 * 60;
 
@@ -42,6 +60,8 @@ export interface RuntimeSandboxOptions {
    */
   isolation?: SandboxIsolation;
   lifecycle?: RuntimeSandboxLifecycleOptions;
+  /** Named host-defined volumes available to this sandbox run. */
+  volumes?: RuntimeSandboxVolumeSelection[];
 }
 
 const VALID_ISOLATION: ReadonlySet<string> = new Set(["reuse", "fresh", "shared"]);
@@ -63,6 +83,49 @@ function validDeleteAfterStopMinutes(value: unknown): value is number {
   return Number.isInteger(value)
     && (value as number) >= 0
     && (value as number) <= SANDBOX_IDLE_TTL_MINUTES_MAX;
+}
+
+function normalizeVolumeSelections(
+  value: unknown,
+): RuntimeSandboxVolumeSelection[] | undefined {
+  if (!Array.isArray(value) || value.length > SANDBOX_VOLUMES_MAX) return undefined;
+  const names = new Set<string>();
+  const normalized: RuntimeSandboxVolumeSelection[] = [];
+  for (const candidate of value) {
+    if (!isPlainRecord(candidate)) return undefined;
+    const name = candidate.name;
+    if (
+      typeof name !== "string"
+      || !SANDBOX_VOLUME_NAME_PATTERN.test(name)
+      || names.has(name)
+    ) {
+      return undefined;
+    }
+    const access = candidate.access;
+    if (
+      access !== undefined
+      && access !== "read-only"
+      && access !== "read-write"
+    ) {
+      return undefined;
+    }
+    const writeBack = candidate.writeBack;
+    if (
+      writeBack !== undefined
+      && writeBack !== "auto"
+      && writeBack !== "manual"
+    ) {
+      return undefined;
+    }
+    if (access === "read-only" && writeBack !== undefined) return undefined;
+    names.add(name);
+    normalized.push({
+      name,
+      ...(access === undefined ? {} : { access }),
+      ...(writeBack === undefined ? {} : { writeBack }),
+    });
+  }
+  return normalized;
 }
 
 function normalizeRuntimeSandboxOptions(value: unknown): RuntimeSandboxOptions | undefined {
@@ -109,7 +172,55 @@ function normalizeRuntimeSandboxOptions(value: unknown): RuntimeSandboxOptions |
     }
   }
 
+  if (Object.prototype.hasOwnProperty.call(value, "volumes")) {
+    const volumes = normalizeVolumeSelections(
+      (value as { volumes?: unknown }).volumes,
+    );
+    if (volumes !== undefined) normalized.volumes = volumes;
+  }
+
   return Object.keys(normalized).length > 0 ? normalized : undefined;
+}
+
+export class SandboxVolumeGrantError extends Error {
+  readonly code = "sandbox_volume_not_granted";
+
+  constructor(readonly volumeName: string) {
+    super(`Sandbox volume is not granted by the parent policy: ${volumeName}`);
+    this.name = "SandboxVolumeGrantError";
+  }
+}
+
+function narrowVolumeSelection(
+  inherited: RuntimeSandboxVolumeSelection,
+  requested: RuntimeSandboxVolumeSelection,
+): RuntimeSandboxVolumeSelection {
+  const access: SandboxVolumeAccess | undefined =
+    inherited.access === "read-only" || requested.access === "read-only"
+      ? "read-only"
+      : requested.access ?? inherited.access;
+  const writeBack: SandboxVolumeWriteBack | undefined = access === "read-only"
+    ? undefined
+    : inherited.writeBack === "manual" || requested.writeBack === "manual"
+      ? "manual"
+      : requested.writeBack ?? inherited.writeBack;
+  return {
+    name: inherited.name,
+    ...(access === undefined ? {} : { access }),
+    ...(writeBack === undefined ? {} : { writeBack }),
+  };
+}
+
+function narrowVolumeSelections(
+  inherited: RuntimeSandboxVolumeSelection[],
+  requested: RuntimeSandboxVolumeSelection[],
+): RuntimeSandboxVolumeSelection[] {
+  const grants = new Map(inherited.map((volume) => [volume.name, volume]));
+  return requested.map((volume) => {
+    const grant = grants.get(volume.name);
+    if (!grant) throw new SandboxVolumeGrantError(volume.name);
+    return narrowVolumeSelection(grant, volume);
+  });
 }
 
 export function resolveRuntimeSandboxOptions(
@@ -121,6 +232,11 @@ export function resolveRuntimeSandboxOptions(
   for (const source of [settings?.sandbox, agent?.sandbox, request?.sandbox]) {
     const normalized = normalizeRuntimeSandboxOptions(source);
     if (normalized?.isolation !== undefined) merged.isolation = normalized.isolation;
+    if (normalized?.volumes !== undefined) {
+      merged.volumes = merged.volumes === undefined
+        ? normalized.volumes.map((volume) => ({ ...volume }))
+        : narrowVolumeSelections(merged.volumes, normalized.volumes);
+    }
     if (normalized?.lifecycle) {
       const lifecycle = merged.lifecycle ?? {};
       if (normalized.lifecycle.onRelease !== undefined) {

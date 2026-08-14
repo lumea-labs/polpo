@@ -1,5 +1,10 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import type { SandboxProvider, SandboxSession, SandboxUsage } from "@polpo-ai/core";
+import type {
+  SandboxProvider,
+  SandboxRuntimeEvent,
+  SandboxSession,
+  SandboxUsage,
+} from "@polpo-ai/core";
 import { SandboxLease } from "./lease.js";
 import { LocalSandboxProvider } from "./local-provider.js";
 
@@ -83,6 +88,32 @@ describe("SandboxLease", () => {
     );
   });
 
+  it("checkpoints through the provider session and acquires lazily", async () => {
+    const checkpointVolume = vi.fn(async () => undefined);
+    const base = fakeProvider();
+    const provider: SandboxProvider = {
+      open: () => ({
+        ...(base.provider.open("r1") as SandboxSession),
+        checkpointVolume,
+      }),
+    };
+    const lease = new SandboxLease(provider, "r1");
+
+    await lease.checkpointVolume("workspace");
+
+    expect(checkpointVolume).toHaveBeenCalledWith("workspace");
+    expect(base.opens()).toBe(1);
+  });
+
+  it("fails clearly when the provider does not support checkpoints", async () => {
+    const { provider } = fakeProvider();
+    const lease = new SandboxLease(provider, "r1");
+
+    await expect(lease.checkpointVolume()).rejects.toThrow(
+      "Sandbox volume checkpoints are not supported by this provider.",
+    );
+  });
+
   it("records acquisition failures and keeps telemetry best-effort", async () => {
     const onEvent = vi.fn(() => { throw new Error("sink unavailable"); });
     const onUsage = vi.fn(() => { throw new Error("usage sink unavailable"); });
@@ -115,8 +146,8 @@ describe("SandboxLease", () => {
     const lease = new SandboxLease(provider, "r1", { onEvent, onUsage });
 
     await lease.fs.readFile("/a");
-    await lease.dispose();
-    await lease.dispose();
+    await expect(lease.dispose()).rejects.toThrow("delete failed");
+    await expect(lease.dispose()).resolves.toBeUndefined();
 
     expect(onEvent.mock.calls.map(([event]) => event.type)).toEqual([
       "sandbox.acquire.started",
@@ -129,6 +160,97 @@ describe("SandboxLease", () => {
       error: "delete failed",
     });
     expect(onUsage).toHaveBeenCalledTimes(1);
+  });
+
+  it("merges provider volume events produced during session disposal", async () => {
+    const onEvent = vi.fn();
+    const onUsage = vi.fn();
+    const providerEvents: SandboxRuntimeEvent[] = [];
+    const base = fakeProvider();
+    const provider: SandboxProvider = {
+      open: () => {
+        const session = base.provider.open("r1") as SandboxSession;
+        return {
+          ...session,
+          usage: () => ({
+            runId: "r1",
+            acquired: true,
+            sandboxMs: 0,
+            sandboxId: "sandbox-1",
+            events: [...providerEvents],
+          }),
+          dispose: async () => {
+            providerEvents.push({
+              type: "sandbox.volume.finalized",
+              runId: "r1",
+              occurredAt: "2026-08-14T10:00:00.000Z",
+              projectId: "p1",
+              sandboxId: "sandbox-1",
+              operation: "finalize",
+              details: { volume: "workspace", changed: true },
+            });
+            await session.dispose();
+          },
+        };
+      },
+    };
+    const lease = new SandboxLease(provider, "r1", { onEvent, onUsage, projectId: "p1" });
+
+    await lease.fs.readFile("/a");
+    await lease.dispose();
+
+    expect(onEvent).toHaveBeenCalledWith(expect.objectContaining({
+      type: "sandbox.volume.finalized",
+      details: { volume: "workspace", changed: true },
+    }));
+    expect(onUsage.mock.calls[0]![0].events).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: "sandbox.volume.finalized" }),
+    ]));
+  });
+
+  it("keeps provider volume failure events when disposal rejects", async () => {
+    const onUsage = vi.fn();
+    const providerEvents: SandboxRuntimeEvent[] = [];
+    const base = fakeProvider();
+    const provider: SandboxProvider = {
+      open: () => {
+        const session = base.provider.open("r1") as SandboxSession;
+        return {
+          ...session,
+          usage: () => ({
+            runId: "r1",
+            acquired: true,
+            sandboxMs: 0,
+            sandboxId: "sandbox-1",
+            events: [...providerEvents],
+          }),
+          dispose: async () => {
+            providerEvents.push({
+              type: "sandbox.volume.conflict",
+              runId: "r1",
+              occurredAt: "2026-08-14T10:00:00.000Z",
+              projectId: "p1",
+              sandboxId: "sandbox-1",
+              operation: "finalize",
+              error: "revision conflict",
+              details: { volume: "workspace" },
+            });
+            throw new Error("revision conflict");
+          },
+        };
+      },
+    };
+    const lease = new SandboxLease(provider, "r1", { onUsage, projectId: "p1" });
+
+    await lease.fs.readFile("/a");
+    await expect(lease.dispose()).rejects.toThrow("revision conflict");
+
+    expect(onUsage.mock.calls[0]![0].events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: "sandbox.volume.conflict",
+        error: "revision conflict",
+      }),
+    ]));
   });
 
   it("never opens a session when fs/shell are untouched (lazy acquire)", async () => {
