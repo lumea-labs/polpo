@@ -1,6 +1,6 @@
 {
   "name": "@polpo-ai/channels",
-  "version": "0.15.66",
+  "version": "0.15.67",
   "description": "Provider-neutral messaging channels for the Polpo runtime, powered by Vercel Chat SDK",
   "type": "module",
   "main": "dist/index.js",
