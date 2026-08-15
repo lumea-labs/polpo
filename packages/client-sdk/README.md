@@ -117,7 +117,10 @@ For streaming requests, `ChatCompletionStream.suggestions` contains the latest
 validated suggestions after the stream completes. Each item has only `id`,
 `label`, and the exact `prompt` to send as the next user message. The React
 `useChat` hook requests both supported interactions, exposes `suggestions`, and
-stores them on the assistant message that produced them.
+stores them on the assistant message that produced them. When resuming a
+session, `useChat` restores active suggestions only when that assistant message
+is still the latest message; historical suggestions remain attached to their
+original messages without being offered again after a newer user turn.
 
 ## Steer an active run
 
