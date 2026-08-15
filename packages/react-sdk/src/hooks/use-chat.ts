@@ -102,6 +102,12 @@ export interface UseChatReturn {
   abort: () => void;
 }
 
+function activeSuggestionsFromHistory(messages: ChatMessage[]): ChatSuggestion[] {
+  const latestMessage = messages.at(-1);
+  if (latestMessage?.role !== "assistant") return [];
+  return latestMessage.suggestions ?? [];
+}
+
 // ── Hook ─────────────────────────────────────────────────
 
 export function useChat(options: UseChatOptions = {}): UseChatReturn {
@@ -122,6 +128,15 @@ export function useChat(options: UseChatOptions = {}): UseChatReturn {
   const optionsRef = useRef(options);
   optionsRef.current = options;
 
+  const applySessionMessages = useCallback((nextMessages: ChatMessage[]) => {
+    const activeSuggestions = activeSuggestionsFromHistory(nextMessages);
+    setMessages(nextMessages);
+    setSuggestions(activeSuggestions);
+    if (activeSuggestions.length > 0) {
+      optionsRef.current.onSuggestions?.(activeSuggestions);
+    }
+  }, []);
+
   // ── Auto-load session messages on mount ──
   const loadedRef = useRef(false);
   useEffect(() => {
@@ -129,15 +144,15 @@ export function useChat(options: UseChatOptions = {}): UseChatReturn {
     loadedRef.current = true;
     client.getSessionMessages(options.sessionId)
       .then((data) => {
-        setMessages(data.messages);
+        applySessionMessages(data.messages);
         setStatus("idle");
         requestAnimationFrame(() => optionsRef.current.onUpdate?.());
       })
       .catch(() => {
-        setMessages([]);
+        applySessionMessages([]);
         setStatus("idle");
       });
-  }, [options.sessionId, client]);
+  }, [options.sessionId, client, applySessionMessages]);
 
   // ── Set session ID (manual) ──
   const setSessionId = useCallback(
@@ -148,21 +163,20 @@ export function useChat(options: UseChatOptions = {}): UseChatReturn {
         setStatus("loading");
         try {
           const data = await client.getSessionMessages(id);
-          setMessages(data.messages);
+          applySessionMessages(data.messages);
         } catch {
-          setMessages([]);
+          applySessionMessages([]);
         }
         setStatus("idle");
         requestAnimationFrame(() => optionsRef.current.onUpdate?.());
       } else {
-        setMessages([]);
+        applySessionMessages([]);
         setStatus("idle");
       }
       setError(null);
       setPendingToolCall(null);
-      setSuggestions([]);
     },
-    [client],
+    [client, applySessionMessages],
   );
 
   const newSession = useCallback(() => {
