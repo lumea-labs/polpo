@@ -43,14 +43,36 @@ describe("project layout v2 agent definitions", () => {
       role: "Builder",
       model: { primary: { profile: "pro" }, fallbacks: ["openai/gpt-5"] },
       modelRouting: { mode: "off" },
+      chat: {
+        allowUserQuestions: true,
+        suggestions: {
+          enabled: true,
+          maxItems: 3,
+          guidance: "Suggest concrete next actions.",
+        },
+      },
       allowedTools: ["bash", "read"],
       allowedPaths: ["/workspace"],
       systemPrompt: "Build the requested product.",
       skills: ["frontend-design"],
       maxTurns: 42,
+      executionRouter: {
+        mode: "auto",
+        allowedLoops: ["build"],
+        rules: [{
+          id: "chat-direct",
+          mode: "direct",
+          when: { surfaces: ["chat"] },
+        }],
+        guidance: "Use the build loop for implementation requests.",
+      },
       sandbox: {
         isolation: "fresh",
         lifecycle: { onRelease: "pool", idleTtlMinutes: 30 },
+        volumes: [
+          { name: "workspace", access: "read-write", writeBack: "manual" },
+          { name: "reference", access: "read-only" },
+        ],
       },
       mcpServers: {
         local: { command: "node", args: ["server.js"], env: { MODE: "test" } },

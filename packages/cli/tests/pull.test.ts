@@ -70,6 +70,14 @@ describe("pullProject", () => {
       model: { profile: "pro" },
       allowedModelProfiles: ["pro"],
       modelRouting: { mode: "auto" },
+      chat: {
+        allowUserQuestions: true,
+        suggestions: {
+          enabled: true,
+          maxItems: 3,
+          guidance: "Suggest concrete next actions.",
+        },
+      },
       image_model: "fal/image",
       video_model: "fal/video",
       vision_model: "openai/vision",
@@ -89,7 +97,14 @@ describe("pullProject", () => {
       reportsTo: "lead",
       browserProfile: "builder",
       emailAllowedDomains: ["example.com"],
-      sandbox: { isolation: "fresh", lifecycle: { onRelease: "pool" } },
+      sandbox: {
+        isolation: "fresh",
+        lifecycle: { onRelease: "pool" },
+        volumes: [
+          { name: "workspace", access: "read-write", writeBack: "manual" },
+          { name: "reference", access: "read-only" },
+        ],
+      },
       mcpServers: {
         docs: { type: "http", url: "https://example.com/mcp" },
       },
