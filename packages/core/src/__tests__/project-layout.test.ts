@@ -60,9 +60,9 @@ describe("project layout v2 agent definitions", () => {
         mode: "auto",
         allowedLoops: ["build"],
         rules: [{
-          id: "chat-direct",
+          id: "agent-direct",
           mode: "direct",
-          when: { surfaces: ["chat"] },
+          when: { surfaces: ["agent"] },
         }],
         guidance: "Use the build loop for implementation requests.",
       },
