@@ -69,6 +69,15 @@ function mergeResult(target: DeployResult, source: DeployResult): void {
   target.details.push(...source.details);
 }
 
+/** A deploy is unsuccessful if either failure counter or error detail says so. */
+export function hasDeployFailures(result: DeployResult): boolean {
+  return result.failed > 0 || result.errors.length > 0;
+}
+
+export function deployExitCode(result: DeployResult): 0 | 1 {
+  return hasDeployFailures(result) ? 1 : 0;
+}
+
 // ── Helpers ──────────────────────────────────────────────
 
 function resolvePolpoDir(dir: string): string {
@@ -951,6 +960,23 @@ export async function runDeploy(opts: DeployOptions): Promise<DeployReport> {
         stopSpinner(`Teams: ${r.created} created, ${r.updated} updated${r.skipped ? `, ${r.skipped} skipped` : ""}${r.failed ? `, ${r.failed} failed` : ""}`);
       }
 
+      // Skills and custom tools are dependencies of loops and agents. Deploy
+      // them first so a clean project succeeds in one pass instead of relying
+      // on a second reconciliation after "unknown tool" validation errors.
+      if (hasSkills) {
+        startSpinner("Deploying skills...");
+        const r = await deploySkills(client, polpoDir, conflictOpts);
+        mergeResult(total, r);
+        stopSpinner(`Skills: ${r.created} created, ${r.updated} updated${r.skipped ? `, ${r.skipped} skipped` : ""}${r.failed ? `, ${r.failed} failed` : ""}`);
+      }
+
+      if (hasTools) {
+        s.start("Deploying custom tools...");
+        const r = await deployTools(client, polpoDir);
+        mergeResult(total, r);
+        s.stop(`Tools: ${r.created} created${r.updated ? `, ${r.updated} updated` : ""}${r.failed ? `, ${r.failed} failed` : ""}`);
+      }
+
       if (hasLoops) {
         s.start("Deploying loops...");
         const r = await deployLoops(client, polpoDir);
@@ -984,20 +1010,6 @@ export async function runDeploy(opts: DeployOptions): Promise<DeployReport> {
         const r = await deployPlaybooks(client, polpoDir);
         mergeResult(total, r);
         s.stop(`Playbooks: ${r.created} created${r.failed ? `, ${r.failed} failed` : ""}`);
-      }
-
-      if (hasSkills) {
-        startSpinner("Deploying skills...");
-        const r = await deploySkills(client, polpoDir, conflictOpts);
-        mergeResult(total, r);
-        stopSpinner(`Skills: ${r.created} created, ${r.updated} updated${r.skipped ? `, ${r.skipped} skipped` : ""}${r.failed ? `, ${r.failed} failed` : ""}`);
-      }
-
-      if (hasTools) {
-        s.start("Deploying custom tools...");
-        const r = await deployTools(client, polpoDir);
-        mergeResult(total, r);
-        s.stop(`Tools: ${r.created} created${r.updated ? `, ${r.updated} updated` : ""}${r.failed ? `, ${r.failed} failed` : ""}`);
       }
 
       if (hasSchedules) {
@@ -1098,7 +1110,7 @@ export function registerDeployCommand(program: Command): void {
       if (total.failed > 0) summaryParts.push(pc.red(`${total.failed} failed`));
 
       const outroLines: string[] = [];
-      if (total.failed === 0) {
+      if (!hasDeployFailures(total)) {
         outroLines.push(pc.green(`✓ Deployed: ${summaryParts.join(", ")}`));
       } else {
         outroLines.push(pc.yellow(`Deployed with errors: ${summaryParts.join(", ")}`));
@@ -1108,6 +1120,6 @@ export function registerDeployCommand(program: Command): void {
       }
 
       clack.outro(outroLines.join("\n"));
-      process.exit(total.failed > 0 ? 1 : 0);
+      process.exit(deployExitCode(total));
     });
 }
