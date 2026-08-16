@@ -14,6 +14,24 @@ export { FileCheckpointStore } from "./file-checkpoint-store.js";
 export { FileDelayStore } from "./file-delay-store.js";
 export { FileTeamStore } from "./file-team-store.js";
 export { FileAgentStore } from "./file-agent-store.js";
+export {
+  ProjectLayoutFilesystemError,
+  deleteProjectAgent,
+  deleteProjectTeam,
+  detectAgentLayout,
+  detectTeamLayout,
+  migrateProjectLayoutV2,
+  readProjectAgents,
+  readProjectTeams,
+  renameProjectTeam,
+  writeProjectAgent,
+  writeProjectTeam,
+} from "./project-layout-files.js";
+export type {
+  ProjectAgentEntry,
+  ProjectLayoutMigrationResult,
+  ProjectResourceLayout,
+} from "./project-layout-files.js";
 
 // .polpo directory layout helpers (canonical home)
 export { POLPO_DIR_NAME, getPolpoDir, getGlobalPolpoDir } from "./paths.js";

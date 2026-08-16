@@ -4,7 +4,7 @@
  * `skills` CLI.
  *
  * Rule packs teach the user's coding agent how to work with Polpo
- * (agents.json schema, `polpo deploy` flow, playbook YAML conventions,
+ * (directory-based agent schema, `polpo deploy` flow, playbook YAML conventions,
  * ...). They are additive: the `skills` tool merges into existing
  * agent configs rather than replacing them.
  *

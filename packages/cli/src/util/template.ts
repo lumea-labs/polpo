@@ -14,6 +14,8 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { exec } from "node:child_process";
 import { promisify } from "node:util";
+import type { AgentConfig } from "@polpo-ai/core/types";
+import { writeProjectAgent, writeProjectTeam } from "@polpo-ai/file-stores";
 import type { Scenario } from "./scenarios.js";
 
 const execAsync = promisify(exec);
@@ -74,32 +76,31 @@ export function findTemplate(id: string): TemplateDefinition | undefined {
 /**
  * Write a minimal .polpo/ scaffold into `targetDir` (blank template).
  * Creates:
- *   .polpo/polpo.json  — project config (projectId added later by create)
- *   .polpo/teams.json  — single "default" team
- *   .polpo/agents.json — array of wrapped agents: [{agent, teamName}]
+ *   .polpo/project.json — project config (projectId added later by create)
+ *   .polpo/teams/default.json
+ *   .polpo/agents/<agent>/agent.json + instructions.md
  *   .env.local.example
  *   README.md
  *
- * Layout follows the canonical format read by FileAgentStore / FileTeamStore
- * and validated by `polpo deploy`: agents live in a single agents.json array
- * with each entry as `{ agent: AgentConfig, teamName: string }`.
+ * Layout follows the canonical directory format read by FileAgentStore,
+ * FileTeamStore, and `polpo deploy`.
  */
 export function writeBlankScaffold(targetDir: string, projectName: string, scenario?: Scenario): void {
   fs.mkdirSync(path.join(targetDir, ".polpo"), { recursive: true });
 
   fs.writeFileSync(
-    path.join(targetDir, ".polpo", "polpo.json"),
-    JSON.stringify({ project: projectName }, null, 2) + "\n",
+    path.join(targetDir, ".polpo", "project.json"),
+    JSON.stringify({ schemaVersion: 2, project: projectName }, null, 2) + "\n",
   );
 
-  fs.writeFileSync(
-    path.join(targetDir, ".polpo", "teams.json"),
-    JSON.stringify(
-      [{ name: "default", description: "Default team" }],
-      null,
-      2,
-    ) + "\n",
-  );
+  const polpoDir = path.join(targetDir, ".polpo");
+  fs.mkdirSync(path.join(polpoDir, "agents"), { recursive: true });
+  fs.mkdirSync(path.join(polpoDir, "teams"), { recursive: true });
+  writeProjectTeam(polpoDir, {
+    name: "default",
+    description: "Default team",
+    agents: [],
+  });
 
   const agentName = scenario?.agent.name ?? "agent-1";
   const agentRole = scenario?.agent.role ?? "helpful assistant";
@@ -109,7 +110,7 @@ export function writeBlankScaffold(targetDir: string, projectName: string, scena
   // (browser navigation, doc/sheet/pdf creation, web search, image/audio
   // generation, vault lookups, email send). For tighter production agents,
   // strip the categories you don't need.
-  const agentConfig: Record<string, unknown> = {
+  const agentConfig: AgentConfig = {
     name: agentName,
     role: agentRole,
     model: "xai/grok-4.1-fast-non-reasoning",
@@ -142,14 +143,7 @@ export function writeBlankScaffold(targetDir: string, projectName: string, scena
     agentConfig.skills = [scenario.skill.name];
   }
 
-  fs.writeFileSync(
-    path.join(targetDir, ".polpo", "agents.json"),
-    JSON.stringify(
-      [{ agent: agentConfig, teamName: "default" }],
-      null,
-      2,
-    ) + "\n",
-  );
+  writeProjectAgent(polpoDir, agentConfig, "default");
 
   fs.writeFileSync(
     path.join(targetDir, ".env.local.example"),

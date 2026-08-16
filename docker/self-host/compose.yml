@@ -38,7 +38,7 @@ services:
       POLPO_MODEL: mock/e2e-model
       POLPO_API_KEY: polpo-e2e-secret
     volumes:
-      - ./project/polpo.json:/app/workspace/.polpo/polpo.json:ro
+      - ./project/project.json:/app/workspace/.polpo/project.json:ro
     depends_on:
       postgres:
         condition: service_healthy

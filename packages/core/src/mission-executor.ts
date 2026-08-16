@@ -369,7 +369,7 @@ export class MissionExecutor {
           .join(", ");
         throw new Error(
           `Missing API keys for providers: ${details}. ` +
-          `Set the corresponding environment variables or add them to polpo.json providers section.`
+          `Set the corresponding environment variables or add them to the project.json providers section.`
         );
       }
     }

@@ -1,17 +1,21 @@
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { existsSync, writeFileSync, mkdirSync } from "node:fs";
 import { join, dirname } from "node:path";
 import type { AgentConfig } from "@polpo-ai/core/types";
 import type { AgentStore } from "@polpo-ai/core/agent-store";
+import {
+  deleteProjectAgent,
+  detectAgentLayout,
+  readProjectAgents,
+  writeProjectAgent,
+  type ProjectAgentEntry,
+} from "./project-layout-files.js";
 
 /** Persisted agent entry — includes the teamName foreign key. */
-interface AgentEntry {
-  agent: AgentConfig;
-  teamName: string;
-}
+type AgentEntry = ProjectAgentEntry;
 
 /**
  * File-based AgentStore.
- * Persists agents as JSON in `.polpo/agents.json`.
+ * Persists directory-based agent definitions and reads legacy `agents.json`.
  */
 export class FileAgentStore implements AgentStore {
   private readonly filePath: string;
@@ -23,12 +27,7 @@ export class FileAgentStore implements AgentStore {
   // ── helpers ──────────────────────────────────────────────────────────
 
   private readAll(): AgentEntry[] {
-    if (!existsSync(this.filePath)) return [];
-    try {
-      return JSON.parse(readFileSync(this.filePath, "utf-8")) as AgentEntry[];
-    } catch {
-      return [];
-    }
+    return readProjectAgents(dirname(this.filePath));
   }
 
   private writeAll(entries: AgentEntry[]): void {
@@ -59,8 +58,12 @@ export class FileAgentStore implements AgentStore {
       throw new Error(`Agent "${agent.name}" already exists`);
     }
     if (!agent.createdAt) agent.createdAt = new Date().toISOString();
-    entries.push({ agent, teamName });
-    this.writeAll(entries);
+    if (detectAgentLayout(dirname(this.filePath)) === "directory") {
+      writeProjectAgent(dirname(this.filePath), agent, teamName);
+    } else {
+      entries.push({ agent, teamName });
+      this.writeAll(entries);
+    }
     return agent;
   }
 
@@ -69,7 +72,11 @@ export class FileAgentStore implements AgentStore {
     const entry = entries.find(e => e.agent.name === name);
     if (!entry) throw new Error(`Agent "${name}" not found`);
     Object.assign(entry.agent, updates);
-    this.writeAll(entries);
+    if (detectAgentLayout(dirname(this.filePath)) === "directory") {
+      writeProjectAgent(dirname(this.filePath), entry.agent, entry.teamName);
+    } else {
+      this.writeAll(entries);
+    }
     return entry.agent;
   }
 
@@ -78,11 +85,18 @@ export class FileAgentStore implements AgentStore {
     const entry = entries.find(e => e.agent.name === name);
     if (!entry) throw new Error(`Agent "${name}" not found`);
     entry.teamName = newTeamName;
-    this.writeAll(entries);
+    if (detectAgentLayout(dirname(this.filePath)) === "directory") {
+      writeProjectAgent(dirname(this.filePath), entry.agent, entry.teamName);
+    } else {
+      this.writeAll(entries);
+    }
     return entry.agent;
   }
 
   async deleteAgent(name: string): Promise<boolean> {
+    if (detectAgentLayout(dirname(this.filePath)) === "directory") {
+      return deleteProjectAgent(dirname(this.filePath), name);
+    }
     const entries = this.readAll();
     const idx = entries.findIndex(e => e.agent.name === name);
     if (idx < 0) return false;
@@ -93,6 +107,11 @@ export class FileAgentStore implements AgentStore {
 
   async cleanupVolatileAgents(missionGroup: string): Promise<number> {
     const entries = this.readAll();
+    if (detectAgentLayout(dirname(this.filePath)) === "directory") {
+      const matches = entries.filter(e => e.agent.volatile && e.agent.missionGroup === missionGroup);
+      for (const entry of matches) deleteProjectAgent(dirname(this.filePath), entry.agent.name);
+      return matches.length;
+    }
     const before = entries.length;
     const filtered = entries.filter(e => !(e.agent.volatile && e.agent.missionGroup === missionGroup));
     if (filtered.length === before) return 0;
@@ -106,10 +125,14 @@ export class FileAgentStore implements AgentStore {
     let changed = false;
     for (const { teamName, ...agent } of agents) {
       if (!existingNames.has(agent.name)) {
-        existing.push({ agent: agent as AgentConfig, teamName });
+        if (detectAgentLayout(dirname(this.filePath)) === "directory") {
+          writeProjectAgent(dirname(this.filePath), agent as AgentConfig, teamName);
+        } else {
+          existing.push({ agent: agent as AgentConfig, teamName });
+        }
         changed = true;
       }
     }
-    if (changed) this.writeAll(existing);
+    if (changed && detectAgentLayout(dirname(this.filePath)) === "legacy") this.writeAll(existing);
   }
 }

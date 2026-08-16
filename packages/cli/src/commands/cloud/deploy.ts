@@ -2,8 +2,8 @@
  * polpo deploy — sync local .polpo/ project to cloud.
  *
  * Core (always deployed):
- *   - agents.json (agent definitions)
- *   - teams.json (team structure)
+ *   - agents/<id>/agent.json + instructions.md (agent definitions)
+ *   - teams/<id>.json (team structure)
  *   - memory.md + memory/<agent>.md (knowledge base)
  *   - playbooks/ (mission templates)
  *   - missions/ (mission definitions)
@@ -23,6 +23,7 @@ import * as clack from "@clack/prompts";
 import { createApiClient, type ApiClient } from "./api.js";
 import { resolveKey, decrypt } from "@polpo-ai/vault-crypto";
 import { AddAgentSchema } from "@polpo-ai/server";
+import { readProjectAgents, readProjectTeams } from "@polpo-ai/file-stores";
 import { friendlyError } from "../../util/errors.js";
 import { pickOrg } from "../../util/org.js";
 import { resolveOrCreateProject } from "../../util/project.js";
@@ -31,6 +32,7 @@ import { isTTY } from "./prompt.js";
 import { resolveDeployConflict, type ConflictOptions } from "../../util/conflicts.js";
 import { listLoopSourceFiles, loadLoopDeployPayload } from "../../util/loops.js";
 import { prepareScheduleDeployments } from "../../util/schedules.js";
+import { readPolpoConfig, writePolpoConfig } from "../../util/polpo-config.js";
 import {
   collectCustomToolSourceArtifact,
   extractCustomToolName,
@@ -132,8 +134,8 @@ function readErrorBody(body: unknown, status: number): unknown {
 
 async function deployTeams(client: ApiClient, polpoDir: string, opts: ConflictOptions): Promise<DeployResult> {
   const result = emptyResult();
-  const teams = loadJson(path.join(polpoDir, "teams.json"));
-  if (!teams || !Array.isArray(teams)) return result;
+  const teams = readProjectTeams(polpoDir);
+  if (teams.length === 0) return result;
 
   // Fetch existing teams for conflict detection
   let existingTeams: Record<string, any> = {};
@@ -188,14 +190,8 @@ async function deployTeams(client: ApiClient, polpoDir: string, opts: ConflictOp
 
 async function deployAgents(client: ApiClient, polpoDir: string, opts: ConflictOptions): Promise<DeployResult> {
   const result = emptyResult();
-  const raw = loadJson(path.join(polpoDir, "agents.json"));
-  if (!raw || !Array.isArray(raw)) {
-    if (raw && !Array.isArray(raw)) {
-      result.errors.push("agents.json must be a JSON array, e.g. [{ \"agent\": { \"name\": \"...\", ... }, \"teamName\": \"default\" }]");
-      result.failed++;
-    }
-    return result;
-  }
+  const entries = readProjectAgents(polpoDir);
+  if (entries.length === 0) return result;
 
   // Fetch existing agents for conflict detection
   let existingAgents: Record<string, any> = {};
@@ -209,9 +205,8 @@ async function deployAgents(client: ApiClient, polpoDir: string, opts: ConflictO
     }
   } catch { /* proceed without comparison */ }
 
-  for (const entry of raw) {
-    const agent = entry.agent ?? entry;
-    const teamName = entry.teamName ?? "default";
+  for (const entry of entries) {
+    const { agent, teamName } = entry;
 
     const parsed = AddAgentSchema.safeParse(agent);
     if (!parsed.success) {
@@ -718,7 +713,7 @@ export async function runDeploy(opts: DeployOptions): Promise<DeployReport> {
   });
 
   const polpoDir = resolvePolpoDir(opts.dir);
-  const polpoConfig = loadJson(path.join(polpoDir, "polpo.json"));
+  const polpoConfig = readPolpoConfig(opts.dir);
   const projectName = polpoConfig?.project ?? path.basename(path.resolve(opts.dir));
   const force = opts.force || opts.yes || false;
   const interactive = !opts.silent && !force && isTTY();
@@ -750,7 +745,7 @@ export async function runDeploy(opts: DeployOptions): Promise<DeployReport> {
   }
 
   if (!projectId) {
-    throw new Error("No project resolved. Deploy from a directory with .polpo/polpo.json");
+    throw new Error("No project resolved. Deploy from a directory with .polpo/project.json");
   }
 
       // Backfill `projectSlug` for users with legacy polpo.json (id only).
@@ -769,7 +764,10 @@ export async function runDeploy(opts: DeployOptions): Promise<DeployReport> {
       if (polpoConfig && (!polpoConfig.projectId || (projectSlug && !polpoConfig.projectSlug))) {
         polpoConfig.projectId = projectId;
         if (projectSlug) polpoConfig.projectSlug = projectSlug;
-        fs.writeFileSync(path.join(polpoDir, "polpo.json"), JSON.stringify(polpoConfig, null, 2), "utf-8");
+        writePolpoConfig(opts.dir, {
+          projectId,
+          ...(projectSlug ? { projectSlug } : {}),
+        });
       }
 
       // ── Step 2: Detect LLM keys ────────────────────────
@@ -838,8 +836,8 @@ export async function runDeploy(opts: DeployOptions): Promise<DeployReport> {
       }
 
       // ── Step 3: Scan & show resources ────────────────────
-      const hasTeams = fs.existsSync(path.join(polpoDir, "teams.json"));
-      const hasAgents = fs.existsSync(path.join(polpoDir, "agents.json"));
+      const hasTeams = readProjectTeams(polpoDir).length > 0;
+      const hasAgents = readProjectAgents(polpoDir).length > 0;
       const loopSources = listLoopSourceFiles(polpoDir);
       const hasLoops = loopSources.length > 0;
       const hasMemory = fs.existsSync(path.join(polpoDir, "memory.md")) ||
@@ -869,17 +867,12 @@ export async function runDeploy(opts: DeployOptions): Promise<DeployReport> {
       // Build resource summary lines
       const resourceLines: string[] = [];
       if (hasAgents) {
-        const agentsData = loadJson(path.join(polpoDir, "agents.json"));
-        if (Array.isArray(agentsData)) {
-          const names = agentsData.map((e: any) => (e.agent ?? e).name).filter(Boolean);
-          resourceLines.push(`  ${pc.bold("Agents")}       ${names.length} ${pc.dim(`(${names.join(", ")})`)}`)
-        }
+        const names = readProjectAgents(polpoDir).map(({ agent }) => agent.name);
+        resourceLines.push(`  ${pc.bold("Agents")}       ${names.length} ${pc.dim(`(${names.join(", ")})`)}`)
       }
       if (hasTeams) {
-        const teamsData = loadJson(path.join(polpoDir, "teams.json"));
-        if (Array.isArray(teamsData)) {
-          resourceLines.push(`  ${pc.bold("Teams")}        ${teamsData.length} ${pc.dim(`(${teamsData.map((t: any) => t.name).join(", ")})`)}`);
-        }
+        const teamsData = readProjectTeams(polpoDir);
+        resourceLines.push(`  ${pc.bold("Teams")}        ${teamsData.length} ${pc.dim(`(${teamsData.map((team) => team.name).join(", ")})`)}`);
       }
       if (hasLoops) {
         resourceLines.push(`  ${pc.bold("Loops")}        ${loopSources.length} ${pc.dim("(beta)")}`);

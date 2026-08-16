@@ -1,7 +1,7 @@
 import { resolve, join } from "node:path";
 import { mkdirSync, existsSync, readFileSync, watch, type FSWatcher } from "node:fs";
 import { getPolpoDir } from "./constants.js";
-import { parseConfig, loadPolpoConfig, savePolpoConfig, loadEnvFile } from "./config.js";
+import { parseConfig, loadPolpoConfig, savePolpoConfig, loadEnvFile, projectConfigPath } from "./config.js";
 import { findLogForTask, buildExecutionSummary } from "../assessment/transcript-parser.js";
 import { FileTaskStore } from "@polpo-ai/file-stores";
 import { FileRunStore } from "@polpo-ai/file-stores";
@@ -385,7 +385,7 @@ export class Orchestrator extends TypedEmitter {
     this.applyTaskExecutionMode();
     await this.initManagers();
 
-    // Sync config.teams from stores (authoritative source — agents.json / teams.json)
+    // Sync config.teams from the authoritative agent and team stores.
     await this.agentMgr.syncConfigCache();
 
     this.initVaultStore();
@@ -440,7 +440,7 @@ export class Orchestrator extends TypedEmitter {
     if (modelSpecs.length === 0) {
       this.emit("log", {
         level: "warn",
-        message: "No model configured for any agent. Agent spawning will fail. Set a model in .polpo/polpo.json (`settings.orchestratorModel`) or on the agent (`model` field), and set the provider API key env var.",
+        message: "No model configured for any agent. Agent spawning will fail. Set a model in .polpo/project.json (`settings.orchestratorModel`) or in the agent's agent.json, and set the provider API key env var.",
       });
       return;
     }
@@ -728,7 +728,7 @@ export class Orchestrator extends TypedEmitter {
     this.applyTaskExecutionMode();
     await this.initManagers();
 
-    // Sync config.teams from stores (authoritative source — agents.json / teams.json)
+    // Sync config.teams from the authoritative agent and team stores.
     await this.agentMgr.syncConfigCache();
 
     this.initVaultStore();
@@ -746,16 +746,16 @@ export class Orchestrator extends TypedEmitter {
       this.emit("log", { level: "warn", message: `Recovered ${recovered} orphaned task(s) from previous session` });
     }
 
-    // Watch polpo.json for changes and auto-reload
+    // Watch the active project config for changes and auto-reload
     this.startConfigWatcher();
   }
 
   /**
-   * Watch `.polpo/polpo.json` for changes and auto-reload the config.
+   * Watch the active project config for changes and auto-reload it.
    * Uses a 500ms debounce to avoid reloading multiple times on rapid saves.
    */
   private startConfigWatcher(): void {
-    const configPath = join(this.polpoDir, "polpo.json");
+    const configPath = projectConfigPath(this.polpoDir);
     if (!existsSync(configPath)) return;
 
     try {
@@ -763,15 +763,15 @@ export class Orchestrator extends TypedEmitter {
         // Debounce: wait 500ms after the last change event
         if (this.configReloadTimer) clearTimeout(this.configReloadTimer);
         this.configReloadTimer = setTimeout(() => {
-          this.emit("log", { level: "info", message: "[watch] polpo.json changed on disk — auto-reloading config" });
+          this.emit("log", { level: "info", message: "[watch] project config changed on disk — auto-reloading config" });
           this.reloadConfig().catch(() => {});
         }, 500);
       });
 
-      this.emit("log", { level: "info", message: "[watch] Watching polpo.json for changes" });
+      this.emit("log", { level: "info", message: "[watch] Watching project config for changes" });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      this.emit("log", { level: "warn", message: `[watch] Failed to watch polpo.json: ${msg}` });
+      this.emit("log", { level: "warn", message: `[watch] Failed to watch project config: ${msg}` });
     }
   }
 
@@ -924,7 +924,7 @@ export class Orchestrator extends TypedEmitter {
   // ── Config Hot Reload ──
 
   /**
-   * Reload polpo.json at runtime without restarting the server.
+   * Reload project.json at runtime without restarting the server.
    * Disposes optional subsystems (approvals, escalation, SLA,
    * quality, scheduler) and re-initializes them from the
    * freshly-read config.  Core managers (agents, tasks, missions, runner,
@@ -935,7 +935,7 @@ export class Orchestrator extends TypedEmitter {
   async reloadConfig(): Promise<boolean> {
     const polpoConfig = loadPolpoConfig(this.polpoDir);
     if (!polpoConfig) {
-      this.emit("log", { level: "warn", message: "[reload] polpo.json not found or unparseable — skipping reload" });
+      this.emit("log", { level: "warn", message: "[reload] project configuration not found or unparseable — skipping reload" });
       return false;
     }
 
@@ -952,7 +952,7 @@ export class Orchestrator extends TypedEmitter {
     this.approvalMgr = undefined;
 
     // 2. Update config in-place (preserves the shared reference in OrchestratorContext)
-    //    Settings and providers come from polpo.json; teams come from stores.
+    //    Settings and providers come from project.json; teams come from stores.
     const newSettings = polpoConfig.settings ?? this.config.settings;
     this.config.settings = newSettings;
     if (polpoConfig.providers) {

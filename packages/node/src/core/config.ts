@@ -26,10 +26,17 @@ const DEFAULT_SETTINGS: PolpoSettings = {
   contextTrust: "off",
 };
 
-// --- .polpo/polpo.json (persistent project config) ---
+// --- .polpo/project.json (persistent project config) ---
+
+export function projectConfigPath(polpoDir: string): string {
+  const current = join(polpoDir, "project.json");
+  if (existsSync(current)) return current;
+  const legacy = join(polpoDir, "polpo.json");
+  return existsSync(legacy) ? legacy : current;
+}
 
 export function loadPolpoConfig(polpoDir: string): PolpoFileConfig | undefined {
-  const filePath = join(polpoDir, "polpo.json");
+  const filePath = projectConfigPath(polpoDir);
   if (!existsSync(filePath)) return undefined;
   try {
     const raw = JSON.parse(readFileSync(filePath, "utf-8")) as PolpoFileConfigRaw;
@@ -44,7 +51,25 @@ export function loadPolpoConfig(polpoDir: string): PolpoFileConfig | undefined {
 
 export function savePolpoConfig(polpoDir: string, config: PolpoFileConfig): void {
   if (!existsSync(polpoDir)) mkdirSync(polpoDir, { recursive: true });
-  writeFileSync(join(polpoDir, "polpo.json"), JSON.stringify(config, null, 2), "utf-8");
+  const filePath = projectConfigPath(polpoDir);
+  let existing: Record<string, unknown> = {};
+  if (existsSync(filePath)) {
+    try {
+      const parsed = JSON.parse(readFileSync(filePath, "utf-8"));
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        existing = parsed as Record<string, unknown>;
+      }
+    } catch {
+      // A caller explicitly saving a valid config replaces malformed content.
+    }
+  }
+  const { teams: _teams, ...projectConfig } = config;
+  const next = {
+    ...(filePath.endsWith("project.json") ? { schemaVersion: 2 } : {}),
+    ...existing,
+    ...projectConfig,
+  };
+  writeFileSync(filePath, `${JSON.stringify(next, null, 2)}\n`, "utf-8");
 }
 
 // --- Validation helpers ---
@@ -248,10 +273,10 @@ export function loadEnvFile(polpoDir: string): void {
   } catch { /* ignore */ }
 }
 
-// --- parseConfig: .polpo/polpo.json only ---
+// --- parseConfig: .polpo/project.json (legacy polpo.json remains readable) ---
 
 /**
- * Load config from workDir. Reads `.polpo/polpo.json` for project config.
+ * Load config from workDir. Reads `.polpo/project.json` for project config.
  * Tasks are managed via plans and the task store — not in the config file.
  */
 export async function parseConfig(workDir: string): Promise<PolpoConfig> {
@@ -265,12 +290,11 @@ export async function parseConfig(workDir: string): Promise<PolpoConfig> {
   const polpoConfig = loadPolpoConfig(polpoDir);
 
   if (!polpoConfig) {
-    throw new Error(`No configuration found: missing .polpo/polpo.json in ${workDir}. Run 'polpo create' or 'polpo link --project-id <id>' first.`);
+    throw new Error(`No configuration found: missing .polpo/project.json (or legacy .polpo/polpo.json) in ${workDir}. Run 'polpo create' or 'polpo link --project-id <id>' first.`);
   }
 
-  // Teams/agents are no longer read from polpo.json.
-  // They come exclusively from FileAgentStore/FileTeamStore (agents.json / teams.json).
-  // polpo.json only contains: project, settings, providers.
+  // Teams and agents come from their dedicated stores. Project settings and
+  // providers come from project.json (or legacy polpo.json).
 
   const settings = parseSettings(polpoConfig.settings ?? {});
   const providers = polpoConfig.providers

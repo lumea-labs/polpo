@@ -81,10 +81,10 @@ export interface OrchestratorContext {
   /** Kill an OS process by PID (Node shell: process.kill). */
   readonly killProcess?: (pid: number, signal?: string) => void;
 
-  /** Load polpo.json config from disk. */
+  /** Load project configuration from disk. */
   readonly loadConfig?: () => PolpoFileConfig | undefined;
 
-  /** Save polpo.json config to disk. */
+  /** Save project configuration to disk. */
   readonly saveConfig?: (config: PolpoFileConfig) => void;
 
   /** Query LLM for text completion (used by escalation, deadlock resolver). */

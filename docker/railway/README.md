@@ -33,7 +33,7 @@ WORK_DIR=/app/workspace
 RAILWAY_RUN_UID=0
 ```
 
-`RAILWAY_RUN_UID=0` avoids write permission issues with Railway volumes. The runtime entrypoint initializes `/app/workspace/.polpo/polpo.json` on first boot when the mounted volume is empty.
+`RAILWAY_RUN_UID=0` avoids write permission issues with Railway volumes. The runtime entrypoint initializes `/app/workspace/.polpo/project.json` on first boot when the mounted volume is empty.
 
 Healthcheck:
 

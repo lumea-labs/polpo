@@ -150,7 +150,7 @@ For Railway, deploy the runtime and dashboard as separate services and mount a r
 Polpo supports three storage backends:
 
 ```jsonc
-// .polpo/polpo.json
+// .polpo/project.json
 {
   "settings": {
     "storage": "file"      // default -- JSON/MD files in .polpo/
@@ -174,6 +174,31 @@ Agents get access to tools based on their configuration. Built-in tool groups:
 - **Audio** -- STT/TTS (Deepgram, OpenAI Whisper, ElevenLabs)
 - **Image** -- generation and analysis
 - **Vault** -- encrypted secret management
+
+## Project layout
+
+New projects keep each agent in its own directory. The directory name is the
+agent id, structured configuration lives in `agent.json`, and instructions
+live in Markdown:
+
+```text
+.polpo/
+├── project.json
+├── agents/
+│   └── support/
+│       ├── agent.json
+│       └── instructions.md
+├── teams/
+│   └── default.json
+├── loops/
+├── skills/
+└── tools/
+```
+
+Existing aggregate `polpo.json`, `agents.json`, and `teams.json` projects stay
+readable. Run `polpo migrate --dry-run` to validate a conversion, then
+`polpo migrate` to write the directory layout. Migration retains the original
+manifests as `*.v1.json` backups.
 
 Custom tools can keep host identity out of the model-visible parameter schema.
 Declare a separate binding schema and map it only to immutable invocation
@@ -218,7 +243,7 @@ rejected before upload. Existing single-file custom tools remain compatible.
 
 ## Loops Beta
 
-Loops are project-level deterministic graphs stored in `.polpo/loops/*.json` or authored as static `.polpo/loops/*.ts` DSL files, then assigned to agents from `.polpo/agents.json`. This avoids duplicating loop definitions across agents: a loop has `name`, `context`, `start`, and `steps`; an agent has `assignedLoops` and `defaultLoop`.
+Loops are project-level deterministic graphs stored in `.polpo/loops/*.json` or authored as static `.polpo/loops/*.ts` DSL files, then assigned from an agent's `agent.json`. This avoids duplicating loop definitions across agents: a loop has `name`, `context`, `start`, and `steps`; an agent has `assignedLoops` and optional execution routing.
 
 Use `type: "tool"` for deterministic sandbox/tool actions without an LLM turn, and `toolChoice` on `type: "agent"` when the model should still reason but must use a tool. Secrets stay in Connections; loop JSON should only contain non-secret input, while custom tools resolve credentials with `ctx.connections`.
 
@@ -282,22 +307,18 @@ Use `type: "tool"` for deterministic sandbox/tool actions without an LLM turn, a
 }
 ```
 
-`.polpo/agents.json`:
+`.polpo/agents/router/agent.json`:
 
 ```jsonc
-[
-  {
-    "agent": {
-      "name": "router",
-      "role": "Deterministic request router",
-      "runtime": "polpo-runner",
-      "assignedLoops": ["router-flow"],
-      "defaultLoop": "router-flow"
-    },
-    "teamName": "default"
-  }
-]
+{
+  "role": "Deterministic request router",
+  "runtime": "polpo-runner",
+  "assignedLoops": ["router-flow"]
+}
 ```
+
+The agent's system instructions belong in
+`.polpo/agents/router/instructions.md`.
 
 Loop guards use Polpo's safe expression evaluator instead of JavaScript `eval` or `new Function`. Step outputs are available in the shared context bag by step id or `saveAs` path, e.g. `classify.route`, `review.approved`, or `timing.start`. `saveAs` writes context data; it does not create shell variables inside later `bash` commands. The OSS surface validates and round-trips the contract through core types, API schemas, SDK types, `polpo deploy`, and `polpo pull`.
 

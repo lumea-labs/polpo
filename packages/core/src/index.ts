@@ -139,6 +139,7 @@ export { VALID_TRANSITIONS, isValidTransition, assertValidTransition } from "./s
 
 // ── Schemas (Zod validation) ─────────────────────────────────────────────
 export * from "./schemas.js";
+export * from "./project-layout.js";
 
 // ── Hooks ────────────────────────────────────────────────────────────────
 export { HookRegistry } from "./hooks.js";

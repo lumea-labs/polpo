@@ -849,15 +849,20 @@ export const AddAgentSchema = z.object({
   tts_model:        z.string().optional(),
   search_provider:  z.string().optional(),
   allowedTools: z.array(ToolNameSchema).optional(),
+  allowedPaths: z.array(z.string()).optional(),
   systemPrompt: z.string().optional(),
   chat: AgentChatSettingsSchema.optional(),
   skills: z.array(z.string()).optional(),
   maxTurns: z.number().int().positive().optional(),
+  maxConcurrency: z.number().int().positive().optional(),
   // Identity & hierarchy (vault credentials managed via encrypted store)
   identity: AgentIdentitySchema.optional(),
   reportsTo: z.string().optional(),
+  reasoning: z.enum(["off", "minimal", "low", "medium", "high", "xhigh"]).optional(),
+  emailAllowedDomains: z.array(z.string()).optional(),
   // Extended tool categories (browser, email, vault, image, video, audio, excel, pdf, docx, search — HTTP is always-on core)
   browserProfile: z.string().optional(),
+  team: z.string().optional(),
   /** External MCP servers — keyed by user-chosen name. Tools from each
    *  server are namespaced `mcp__<key>__<tool>` at runtime. */
   mcpServers: McpServersRecordSchema.optional(),
@@ -886,7 +891,7 @@ export const UpdateAgentSchema = z.object({
   maxConcurrency: z.number().int().positive().optional(),
   identity: AgentIdentitySchema.optional(),
   reportsTo: z.string().optional(),
-  reasoning: z.string().optional(),
+  reasoning: z.enum(["off", "minimal", "low", "medium", "high", "xhigh"]).optional(),
   browserProfile: z.string().optional(),
   emailAllowedDomains: z.array(z.string()).optional(),
   team: z.string().optional(),

@@ -63,6 +63,10 @@ import type {
   LoopTraceEvent,
   LoopTraceEventType,
   MetricResult,
+  McpHttpServerConfig,
+  McpServerConfig,
+  McpSseServerConfig,
+  McpStdioServerConfig,
   Mission,
   MissionCheckpoint,
   MissionDelay,
@@ -198,6 +202,10 @@ export type {
   LoopTraceEvent,
   LoopTraceEventType,
   MetricResult,
+  McpHttpServerConfig,
+  McpServerConfig,
+  McpSseServerConfig,
+  McpStdioServerConfig,
   Mission,
   MissionCheckpoint,
   MissionDelay,
@@ -386,36 +394,6 @@ export interface DimensionScoreEvidence {
 
 
 // === Agent ===
-
-// === MCP Server Config ===
-
-/** Stdio-based MCP server — spawns a child process */
-export interface McpStdioServerConfig {
-  type?: "stdio";
-  command: string;
-  args?: string[];
-  env?: Record<string, string>;
-}
-
-/** SSE-based MCP server (legacy, prefer HTTP) */
-export interface McpSseServerConfig {
-  type: "sse";
-  url: string;
-  headers?: Record<string, string>;
-}
-
-/** HTTP-based MCP server (streamable HTTP, recommended for remote) */
-export interface McpHttpServerConfig {
-  type: "http";
-  url: string;
-  headers?: Record<string, string>;
-}
-
-/** Union of all supported MCP server configs */
-export type McpServerConfig =
-  | McpStdioServerConfig
-  | McpSseServerConfig
-  | McpHttpServerConfig;
 
 // === Agent Identity & Vault ===
 
@@ -833,6 +811,13 @@ export interface AddAgentRequest {
   allowedModelProfiles?: string[];
   /** Explicit opt-in to automatic model alias selection. */
   modelRouting?: AgentModelRoutingConfig;
+  executionMode?: "subprocess" | "in-process";
+  image_model?: string;
+  video_model?: string;
+  vision_model?: string;
+  transcribe_model?: string;
+  tts_model?: string;
+  search_provider?: string;
   /** Default runtime sandbox policy for this agent. */
   sandbox?: RuntimeSandboxOptions;
   allowedTools?: string[];
@@ -841,6 +826,7 @@ export interface AddAgentRequest {
   maxTurns?: number;
   runtime?: string;
   assignedLoops?: string[];
+  executionRouter?: AgentConfig["executionRouter"];
   loops?: Record<string, LoopConfig>;
   pipeline?: Pipeline;
   /** Max concurrent tasks for this agent. */
@@ -854,6 +840,9 @@ export interface AddAgentRequest {
   // NOTE: Vault credentials managed via encrypted store, not in API body.
   /** Org chart: who this agent reports to. */
   reportsTo?: string;
+  reasoning?: ReasoningLevel;
+  browserProfile?: string;
+  team?: string;
   /** Allowed email recipient domains (overrides global setting). */
   emailAllowedDomains?: string[];
   // Tool categories activated via allowedTools (e.g. ["browser_*", "email_*", "image_*", "video_*", "audio_*", "excel_*", "pdf_*", "docx_*", "search_*"])
@@ -865,6 +854,13 @@ export interface UpdateAgentRequest {
   /** Optional narrowing allowlist for root profiles selected by this agent. */
   allowedModelProfiles?: string[];
   modelRouting?: AgentModelRoutingConfig;
+  executionMode?: "subprocess" | "in-process";
+  image_model?: string;
+  video_model?: string;
+  vision_model?: string;
+  transcribe_model?: string;
+  tts_model?: string;
+  search_provider?: string;
   sandbox?: RuntimeSandboxOptions;
   allowedTools?: string[];
   allowedPaths?: string[];
@@ -874,13 +870,15 @@ export interface UpdateAgentRequest {
   maxConcurrency?: number;
   runtime?: string;
   assignedLoops?: string[];
+  executionRouter?: AgentConfig["executionRouter"];
   loops?: Record<string, LoopConfig>;
   pipeline?: Pipeline;
   identity?: AgentIdentity;
   reportsTo?: string;
-  reasoning?: string;
+  reasoning?: ReasoningLevel;
   browserProfile?: string;
   emailAllowedDomains?: string[];
+  mcpServers?: Record<string, McpServerConfig>;
   /** Move agent to a different team. */
   team?: string;
 }

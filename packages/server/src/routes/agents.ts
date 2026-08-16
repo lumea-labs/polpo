@@ -76,7 +76,7 @@ export function agentRoutes(getDeps: () => {
   app.openapi(addAgentRoute, async (c) => {
     const deps = getDeps();
     const body = c.req.valid("json");
-    const teamName = c.req.query("team");
+    const teamName = c.req.query("team") ?? body.team;
 
     await deps.addAgent({
       name: body.name,
@@ -93,12 +93,16 @@ export function agentRoutes(getDeps: () => {
       tts_model:        body.tts_model,
       search_provider:  body.search_provider,
       allowedTools: body.allowedTools,
+      allowedPaths: body.allowedPaths,
       systemPrompt: body.systemPrompt,
       chat: body.chat,
       skills: body.skills,
       maxTurns: body.maxTurns,
+      maxConcurrency: body.maxConcurrency,
       identity: body.identity,
       reportsTo: body.reportsTo,
+      reasoning: body.reasoning,
+      emailAllowedDomains: body.emailAllowedDomains,
       runtime: body.runtime,
       assignedLoops: body.assignedLoops,
       executionRouter: body.executionRouter,

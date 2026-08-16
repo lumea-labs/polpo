@@ -60,6 +60,7 @@ import { registerCreateCommand } from "./commands/create.js";
 import { registerInstallCommand } from "./commands/install.js";
 import { registerWhoamiCommand } from "./commands/whoami.js";
 import { registerOrgsCommand } from "./commands/orgs.js";
+import { registerMigrateCommand } from "./commands/migrate.js";
 import { startUpdateCheck } from "./update-check.js";
 import { isBareInteractiveInvocation, runInteractiveMenu } from "./interactive-menu.js";
 
@@ -136,6 +137,7 @@ registerCreateCommand(program);
 registerInstallCommand(program);
 registerWhoamiCommand(program);
 registerOrgsCommand(program);
+registerMigrateCommand(program);
 
 // Non-blocking update check — prints notice at exit if a new version exists
 const printUpdateNotice = startUpdateCheck(PKG_VERSION);

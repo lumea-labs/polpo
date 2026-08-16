@@ -1,15 +1,15 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { writeFileSync, mkdirSync, rmSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { parseConfig, generatePolpoConfigDefault, savePolpoConfig } from "../core/config.js";
 
 const TMP = "/tmp/polpo-config-test";
 const POLPO_DIR = join(TMP, ".polpo");
 
-/** Write a polpo.json config and return the workDir (TMP). */
-function writeConfig(config: object): string {
+/** Write a project config and return the workDir (TMP). */
+function writeConfig(config: object, filename = "polpo.json"): string {
   mkdirSync(POLPO_DIR, { recursive: true });
-  writeFileSync(join(POLPO_DIR, "polpo.json"), JSON.stringify(config, null, 2));
+  writeFileSync(join(POLPO_DIR, filename), JSON.stringify(config, null, 2));
   return TMP;
 }
 
@@ -31,8 +31,9 @@ function minimalConfig() {
   };
 }
 
-describe("parseConfig (.polpo/polpo.json)", () => {
+describe("parseConfig project configuration", () => {
   beforeEach(() => {
+    rmSync(TMP, { recursive: true, force: true });
     mkdirSync(TMP, { recursive: true });
   });
 
@@ -53,6 +54,16 @@ describe("parseConfig (.polpo/polpo.json)", () => {
       expect(config.project).toBe("test-project");
       expect(config.teams).toEqual([]); // teams come from stores, not polpo.json
       expect(config.tasks).toEqual([]);
+    });
+
+    it("prefers the v2 project.json filename", async () => {
+      writeConfig({ ...minimalConfig(), project: "legacy" });
+      const workDir = writeConfig(
+        { ...minimalConfig(), project: "current", schemaVersion: 2 },
+        "project.json",
+      );
+      const config = await parseConfig(workDir);
+      expect(config.project).toBe("current");
     });
 
     it("parses config with full settings", async () => {
@@ -368,7 +379,7 @@ describe("parseConfig (.polpo/polpo.json)", () => {
   // ────────────────────────────────────────────────────
 
   describe("error cases", () => {
-    it("throws when .polpo/polpo.json is missing", async () => {
+    it("throws when the project configuration is missing", async () => {
       mkdirSync(POLPO_DIR, { recursive: true });
       // Don't write polpo.json
       await expect(parseConfig(TMP)).rejects.toThrow(/No configuration found/);
@@ -420,6 +431,15 @@ describe("parseConfig (.polpo/polpo.json)", () => {
 });
 
 describe("generatePolpoConfigDefault", () => {
+  beforeEach(() => {
+    rmSync(TMP, { recursive: true, force: true });
+    mkdirSync(TMP, { recursive: true });
+  });
+
+  afterEach(() => {
+    rmSync(TMP, { recursive: true, force: true });
+  });
+
   it("returns a valid config with project name", () => {
     const config = generatePolpoConfigDefault("my-project");
     expect(config.project).toBe("my-project");
@@ -440,5 +460,32 @@ describe("generatePolpoConfigDefault", () => {
     expect(parsed.teams).toEqual([]); // teams come from stores, not polpo.json
     expect(parsed.settings.maxRetries).toBe(3);
     expect(parsed.settings.chatExecution).toBe("run");
+    expect(existsSync(join(POLPO_DIR, "project.json"))).toBe(true);
+    expect(existsSync(join(POLPO_DIR, "polpo.json"))).toBe(false);
+    expect(JSON.parse(readFileSync(join(POLPO_DIR, "project.json"), "utf-8")))
+      .toMatchObject({ schemaVersion: 2, project: "round-trip" });
+  });
+
+  it("preserves project linkage fields when runtime settings are saved", () => {
+    writeConfig({
+      schemaVersion: 2,
+      project: "linked",
+      projectId: "project-id",
+      projectSlug: "project-slug",
+      settings: { maxRetries: 1 },
+    }, "project.json");
+
+    const config = generatePolpoConfigDefault("linked");
+    config.settings.maxRetries = 5;
+    savePolpoConfig(POLPO_DIR, config);
+
+    expect(JSON.parse(readFileSync(join(POLPO_DIR, "project.json"), "utf-8")))
+      .toMatchObject({
+        schemaVersion: 2,
+        project: "linked",
+        projectId: "project-id",
+        projectSlug: "project-slug",
+        settings: { maxRetries: 5 },
+      });
   });
 });

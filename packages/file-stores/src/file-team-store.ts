@@ -1,11 +1,18 @@
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { existsSync, writeFileSync, mkdirSync } from "node:fs";
 import { join, dirname } from "node:path";
 import type { Team } from "@polpo-ai/core/types";
 import type { TeamStore } from "@polpo-ai/core/team-store";
+import {
+  deleteProjectTeam,
+  detectTeamLayout,
+  readProjectTeams,
+  renameProjectTeam,
+  writeProjectTeam,
+} from "./project-layout-files.js";
 
 /**
  * File-based TeamStore.
- * Persists teams as JSON in `.polpo/teams.json`.
+ * Persists directory-based team definitions and reads legacy `teams.json`.
  */
 export class FileTeamStore implements TeamStore {
   private readonly filePath: string;
@@ -17,12 +24,7 @@ export class FileTeamStore implements TeamStore {
   // ── helpers ──────────────────────────────────────────────────────────
 
   private readAll(): Team[] {
-    if (!existsSync(this.filePath)) return [];
-    try {
-      return JSON.parse(readFileSync(this.filePath, "utf-8")) as Team[];
-    } catch {
-      return [];
-    }
+    return readProjectTeams(dirname(this.filePath));
   }
 
   private writeAll(teams: Team[]): void {
@@ -46,8 +48,12 @@ export class FileTeamStore implements TeamStore {
     if (teams.some(t => t.name === team.name)) {
       throw new Error(`Team "${team.name}" already exists`);
     }
-    teams.push(team);
-    this.writeAll(teams);
+    if (detectTeamLayout(dirname(this.filePath)) === "directory") {
+      writeProjectTeam(dirname(this.filePath), team);
+    } else {
+      teams.push(team);
+      this.writeAll(teams);
+    }
     return team;
   }
 
@@ -56,7 +62,11 @@ export class FileTeamStore implements TeamStore {
     const team = teams.find(t => t.name === name);
     if (!team) throw new Error(`Team "${name}" not found`);
     if (updates.description !== undefined) team.description = updates.description;
-    this.writeAll(teams);
+    if (detectTeamLayout(dirname(this.filePath)) === "directory") {
+      writeProjectTeam(dirname(this.filePath), team);
+    } else {
+      this.writeAll(teams);
+    }
     return team;
   }
 
@@ -67,12 +77,20 @@ export class FileTeamStore implements TeamStore {
     if (teams.some(t => t.name === newName)) {
       throw new Error(`Team "${newName}" already exists`);
     }
-    team.name = newName;
-    this.writeAll(teams);
+    if (detectTeamLayout(dirname(this.filePath)) === "directory") {
+      renameProjectTeam(dirname(this.filePath), oldName, newName);
+      team.name = newName;
+    } else {
+      team.name = newName;
+      this.writeAll(teams);
+    }
     return team;
   }
 
   async deleteTeam(name: string): Promise<boolean> {
+    if (detectTeamLayout(dirname(this.filePath)) === "directory") {
+      return deleteProjectTeam(dirname(this.filePath), name);
+    }
     const teams = this.readAll();
     const idx = teams.findIndex(t => t.name === name);
     if (idx < 0) return false;
@@ -87,11 +105,15 @@ export class FileTeamStore implements TeamStore {
     let changed = false;
     for (const team of teams) {
       if (!existingNames.has(team.name)) {
-        // Seed the team without its agents (agents live in AgentStore)
-        existing.push({ name: team.name, description: team.description, agents: [] });
+        const seeded = { name: team.name, description: team.description, agents: [] };
+        if (detectTeamLayout(dirname(this.filePath)) === "directory") {
+          writeProjectTeam(dirname(this.filePath), seeded);
+        } else {
+          existing.push(seeded);
+        }
         changed = true;
       }
     }
-    if (changed) this.writeAll(existing);
+    if (changed && detectTeamLayout(dirname(this.filePath)) === "legacy") this.writeAll(existing);
   }
 }
