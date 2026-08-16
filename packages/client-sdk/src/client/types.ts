@@ -1222,6 +1222,8 @@ export interface ChatCompletionRequest extends RuntimeCompletionRequestOptions {
   metadata?: Record<string, string>;
   /** Polpo-specific client capability declaration. */
   polpo?: {
+    /** Assigned skills to apply explicitly for this execution. Additive, not restrictive. */
+    skills?: string[];
     capabilities?: {
       ask_user_question?: boolean;
       suggestions?: boolean;

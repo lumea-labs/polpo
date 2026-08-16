@@ -175,7 +175,10 @@ export interface CompletionRouteDeps {
     providerOptions?: Record<string, any>;
   }>;
   /** Build agent system prompt for conversational mode. */
-  buildAgentPrompt: (agentConfig: any) => string | Promise<string>;
+  buildAgentPrompt: (
+    agentConfig: any,
+    options?: { activatedSkills?: readonly string[] },
+  ) => string | Promise<string>;
   /**
    * Optionally assemble the complete host-specific runtime prompt. Hosts use
    * this to inject shared memory, agent memory, skills, workspace policy, and
@@ -190,6 +193,8 @@ export interface CompletionRouteDeps {
       loopContextPart?: string;
       includeAgentMemory: boolean;
       includeSharedMemory: boolean;
+      /** Assigned skills explicitly requested for this execution. */
+      activatedSkills?: readonly string[];
     },
   ) => string | Promise<string>;
   /** Create tools + executor for the agent. Return empty arrays for chat-only.
@@ -415,6 +420,7 @@ export function completionRoutes(getDeps: () => CompletionRouteDeps, apiKeys?: s
         sessionId: prepared.sessionId,
         runtimePlan: prepared.runtimePlan,
         executionRoute: prepared.executionRoute,
+        activatedSkills: prepared.activatedSkills,
       }) as any;
     }
 

@@ -85,6 +85,24 @@ const chatSuggestionSchema = z.object({
   prompt: z.string(),
 }).strict();
 
+const requestedSkillNameSchema = z.string().trim().min(1).max(256);
+const requestedSkillsSchema = z.array(requestedSkillNameSchema)
+  .min(1)
+  .max(16)
+  .superRefine((skills, ctx) => {
+    const seen = new Set<string>();
+    for (const [index, skill] of skills.entries()) {
+      if (seen.has(skill)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `Duplicate requested skill: ${skill}`,
+          path: [index],
+        });
+      }
+      seen.add(skill);
+    }
+  });
+
 export const completionRequestSchema = z.object({
   messages: z.array(messageSchema).min(1).openapi({
     description: "Conversation messages in OpenAI format",
@@ -125,6 +143,10 @@ export const completionRequestSchema = z.object({
       "Optional bounded labels used by deterministic model and execution routing policies.",
   }),
   polpo: z.object({
+    skills: requestedSkillsSchema.optional().openapi({
+      description:
+        "Assigned skills to apply explicitly for this execution. This is additive: other skills assigned to the agent remain discoverable.",
+    }),
     capabilities: z.object({
       ask_user_question: z.boolean().optional(),
       suggestions: z.boolean().optional(),

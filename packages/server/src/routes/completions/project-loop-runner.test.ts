@@ -53,6 +53,23 @@ describe("buildLoopResumeState", () => {
     expect(state?.runtime).not.toHaveProperty("contextTrust");
   });
 
+  it("pins activated skills across approval checkpoints", () => {
+    const state = buildLoopResumeState(
+      continuation,
+      [],
+      [],
+      undefined,
+      "off",
+      ["frontend-design"],
+    );
+
+    expect(state?.runtime).toEqual({
+      aiMessages: [],
+      extraSystemParts: [],
+      activatedSkills: ["frontend-design"],
+    });
+  });
+
   it("does not create a checkpoint without a continuation", () => {
     expect(buildLoopResumeState(undefined, [], [], undefined, "enforce"))
       .toBeUndefined();

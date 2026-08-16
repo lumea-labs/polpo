@@ -426,6 +426,26 @@ The built-in OSS host keeps the active-run index in process; distributed hosts
 should implement the same `SteeringRunRegistry` contract with a durable command
 transport. Inline chat execution does not expose an active steering scope.
 
+### Activate skills for one request
+
+Callers can explicitly apply skills already assigned to the selected agent:
+
+```json
+{
+  "agent": "builder",
+  "messages": [{ "role": "user", "content": "Build the settings page." }],
+  "polpo": {
+    "skills": ["frontend-design"]
+  }
+}
+```
+
+The activation is additive and lasts only for that request. Other assigned
+skills remain available, and no agent configuration is mutated. Polpo validates
+the names against the effective direct-agent or loop skill set. Clients may
+offer `/skill-name` shortcuts, but must map them to `polpo.skills`; the runtime
+does not parse slash-prefixed message text.
+
 ### Structured outputs
 
 The OpenAI-compatible `/v1/chat/completions` endpoint accepts

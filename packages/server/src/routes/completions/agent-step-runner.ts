@@ -178,6 +178,7 @@ export async function buildRuntimeAgentPrompt(
   loopContextPart?: string,
   contextTrust: RuntimeContextTrustMode = "off",
   runtimeContext?: RuntimeContextResolution,
+  activatedSkills: readonly string[] = [],
 ): Promise<string> {
   let fullSystemPrompt: string;
   if (deps.buildRuntimePrompt) {
@@ -187,9 +188,13 @@ export async function buildRuntimeAgentPrompt(
       loopContextPart,
       includeAgentMemory: !replacesLegacyAgentMemory(runtimeContext),
       includeSharedMemory: !replacesLegacySharedMemory(runtimeContext),
+      ...(activatedSkills.length > 0 ? { activatedSkills } : {}),
     });
   } else {
-    const agentSystemPrompt = await deps.buildAgentPrompt(agentConfig);
+    const agentSystemPrompt = await deps.buildAgentPrompt(
+      agentConfig,
+      activatedSkills.length > 0 ? { activatedSkills } : undefined,
+    );
     const conversationalPreamble = [
       "You are now in interactive conversation mode with the user.",
       "Unlike task execution, you should engage in dialogue: ask clarifying questions,",
@@ -240,6 +245,7 @@ export async function runAgentStepCompletion(options: {
   runId?: string;
   sessionId?: string;
   runtimeContext?: RuntimeContextResolution;
+  activatedSkills?: readonly string[];
   toolRunScope?: CompletionToolRunScope;
   toolInvocation?: ToolInvocationContext;
   onToolCall?: (toolCall: LoopRuntimeToolCall) => Promise<void>;
@@ -270,6 +276,7 @@ export async function runAgentStepCompletion(options: {
     ),
     contextTrust,
     runtimeContext,
+    options.activatedSkills,
   );
   let messages: any[] = contextTrust === "enforce"
     ? protectRuntimeToolResultMessages(aiMessages)

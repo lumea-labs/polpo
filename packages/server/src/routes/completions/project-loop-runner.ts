@@ -242,6 +242,7 @@ export async function runProjectLoopCompletion(options: {
   onTrace?: (event: LoopTraceEvent) => Promise<void>;
   resumeRun?: LoopRunRecord;
   executionRoute?: ResolvedExecutionRoute;
+  activatedSkills?: readonly string[];
 }): Promise<ProjectLoopRunResult> {
   const {
     deps,
@@ -260,6 +261,7 @@ export async function runProjectLoopCompletion(options: {
     runtimePlan,
     executionRoute,
   } = options;
+  const activatedSkills = [...(options.activatedSkills ?? [])];
   const contextTrust = normalizeRuntimeContextTrustMode(
     options.contextTrust
       ?? resumeRun?.resume?.runtime?.contextTrust
@@ -514,6 +516,16 @@ export async function runProjectLoopCompletion(options: {
           state: "calling",
         });
         const stepAgent = buildLoopStepAgent(agentConfig, name, loop);
+        const stepSkillNames = new Set(
+          Array.isArray(stepAgent.skills)
+            ? stepAgent.skills.filter(
+                (skill: unknown): skill is string => typeof skill === "string",
+              )
+            : [],
+        );
+        const stepActivatedSkills = activatedSkills.filter((skill) =>
+          stepSkillNames.has(skill)
+        );
         const stepResult = await runAgentStepCompletion({
           deps,
           agentConfig: stepAgent,
@@ -527,6 +539,7 @@ export async function runProjectLoopCompletion(options: {
           runId: loopRunId,
           sessionId: sessionId ?? undefined,
           runtimeContext,
+          activatedSkills: stepActivatedSkills,
           toolRunScope,
           toolInvocation,
           onToolCall,
@@ -633,6 +646,7 @@ export async function runProjectLoopCompletion(options: {
             extraSystemParts,
             resumeRun?.resume?.approvedGates,
             contextTrust,
+            activatedSkills,
           ),
           error: err.message,
         });
@@ -657,6 +671,7 @@ export function buildLoopResumeState(
   extraSystemParts: string[],
   approvedGates: LoopApprovedGate[] | undefined,
   contextTrust: RuntimeContextTrustMode = "off",
+  activatedSkills: readonly string[] = [],
 ): LoopResumeState | undefined {
   if (!continuation) return undefined;
   return {
@@ -668,6 +683,9 @@ export function buildLoopResumeState(
       aiMessages,
       extraSystemParts,
       ...(contextTrust === "enforce" ? { contextTrust } : {}),
+      ...(activatedSkills.length > 0
+        ? { activatedSkills: [...activatedSkills] }
+        : {}),
     },
     attempts: 0,
     createdAt: new Date().toISOString(),
@@ -705,6 +723,24 @@ export async function resumeProjectLoopRun(options: {
   const contextTrust = normalizeRuntimeContextTrustMode(
     run.resume.runtime?.contextTrust,
   );
+  const activatedSkills = Array.isArray(run.resume.runtime?.activatedSkills)
+    ? run.resume.runtime.activatedSkills.filter(
+        (skill): skill is string => typeof skill === "string" && skill.length > 0,
+      )
+    : [];
+  const assignedSkills = new Set(
+    Array.isArray(agentConfig.skills)
+      ? agentConfig.skills.filter(
+          (skill: unknown): skill is string => typeof skill === "string",
+        )
+      : [],
+  );
+  const removedSkill = activatedSkills.find((skill) => !assignedSkills.has(skill));
+  if (removedSkill) {
+    throw new Error(
+      `Cannot resume loop: skill "${removedSkill}" is no longer assigned to agent "${agentConfig.name}"`,
+    );
+  }
   const runtimeContext = await resolveProjectLoopResumeRuntimeContext(
     options.deps,
     run,
@@ -750,6 +786,7 @@ export async function resumeProjectLoopRun(options: {
     sessionId: run.sessionId,
     user: run.user,
     requestMetadata: loopRequestMetadata(run),
+    activatedSkills,
     resumeRun: run,
   });
 
@@ -783,6 +820,7 @@ export async function handleProjectLoopCompletion(c: any, options: {
   sessionId: string | null;
   runtimePlan?: RuntimePlan;
   executionRoute?: ResolvedExecutionRoute;
+  activatedSkills?: readonly string[];
 }): Promise<any> {
   const {
     deps,
@@ -798,6 +836,7 @@ export async function handleProjectLoopCompletion(c: any, options: {
     sessionId,
     runtimePlan,
     executionRoute,
+    activatedSkills,
   } = options;
   const contextTrust = normalizeRuntimeContextTrustMode(
     options.contextTrust ?? deps.getConfig()?.settings?.contextTrust,
@@ -851,6 +890,7 @@ export async function handleProjectLoopCompletion(c: any, options: {
           runtimePlan,
           signal: abortController.signal,
           executionRoute,
+          activatedSkills,
           onToolCall: async (toolCall) => {
             if (abortController.signal.aborted) return;
             await stream.writeSSE({
@@ -960,6 +1000,7 @@ export async function handleProjectLoopCompletion(c: any, options: {
       runtimePlan,
       signal: c.req.raw.signal,
       executionRoute,
+      activatedSkills,
     });
     finalText = run.text;
     runUsage = run.usage;

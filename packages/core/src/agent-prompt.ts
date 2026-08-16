@@ -17,6 +17,8 @@ import { buildSkillPrompt } from "./skills-reader.js";
 export interface AgentPromptOptions {
   /** Pre-loaded skills to inject into the prompt. */
   skills?: LoadedSkill[];
+  /** Assigned skills explicitly selected for this execution. */
+  activatedSkills?: readonly string[];
 }
 
 export interface FilesystemWorkspacePromptOptions {
@@ -152,7 +154,9 @@ export function buildAgentSystemPrompt(agent: AgentConfig, options?: AgentPrompt
 
   // Skills
   if (options?.skills?.length) {
-    const skillBlock = buildSkillPrompt(options.skills);
+    const skillBlock = buildSkillPrompt(options.skills, {
+      activatedSkills: options.activatedSkills,
+    });
     if (skillBlock) parts.push("", skillBlock);
   }
 

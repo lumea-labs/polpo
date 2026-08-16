@@ -99,6 +99,7 @@ type PreparedProjectLoop = {
   runtimeContext?: RuntimeContextResolution;
   runtimeInvocation?: CompletionRuntimeInvocation;
   executionRoute?: ResolvedExecutionRoute;
+  activatedSkills: string[];
 };
 
 type PreparedChat = {
@@ -461,6 +462,14 @@ export async function prepareChatCompletionExecution(
   options: PrepareConversationTurnOptions = {},
 ): Promise<PreparedConversationTurn> {
   const agentMode = !!body.agent;
+  const requestedSkills = body.polpo?.skills ?? [];
+  if (requestedSkills.length > 0 && !agentMode) {
+    return completionError(
+      "Per-request skills require an explicit agent",
+      400,
+      "skill_activation_requires_agent",
+    );
+  }
   let effectiveBody = body;
   let initialAgentConfig: any;
   if (agentMode) {
@@ -533,6 +542,7 @@ export async function prepareChatCompletionExecution(
   let runtimePlan: RuntimePlan | undefined;
   let runtimeContext: RuntimeContextResolution | undefined;
   let executionRoute: ResolvedExecutionRoute | undefined;
+  let activatedSkills: string[] = [];
   let deferredAgentTools = false;
   const completionId = options.completionId ?? `chatcmpl-${nanoid(24)}`;
 
@@ -642,6 +652,22 @@ export async function prepareChatCompletionExecution(
       }
     }
     resolvedAgentConfig = agentConfig;
+    if (requestedSkills.length > 0) {
+      const assignedSkills = new Set(
+        Array.isArray(agentConfig.skills)
+          ? agentConfig.skills.filter((skill: unknown): skill is string => typeof skill === "string")
+          : [],
+      );
+      const unavailable = requestedSkills.find((skill) => !assignedSkills.has(skill));
+      if (unavailable) {
+        return completionError(
+          `Skill "${unavailable}" is not assigned to agent "${agentConfig.name}"`,
+          400,
+          "skill_not_assigned",
+        );
+      }
+      activatedSkills = [...requestedSkills];
+    }
     modelToolChoice = toAIToolChoice(agentConfig.toolChoice);
 
     try {
@@ -724,9 +750,13 @@ export async function prepareChatCompletionExecution(
           extraSystemParts: callerSystemParts,
           includeAgentMemory: !replacesLegacyAgentMemory(runtimeContext),
           includeSharedMemory: !replacesLegacySharedMemory(runtimeContext),
+          ...(activatedSkills.length > 0 ? { activatedSkills } : {}),
         });
       } else {
-        const agentSystemPrompt = await deps.buildAgentPrompt(agentConfig);
+        const agentSystemPrompt = await deps.buildAgentPrompt(
+          agentConfig,
+          activatedSkills.length > 0 ? { activatedSkills } : undefined,
+        );
         const conversationalPreamble = [
           "You are now in interactive conversation mode with the user.",
           "Unlike task execution, you should engage in dialogue: ask clarifying questions,",
@@ -962,6 +992,7 @@ export async function prepareChatCompletionExecution(
       runtimeContext,
       runtimeInvocation: options.runtime,
       executionRoute,
+      activatedSkills,
     };
   }
 

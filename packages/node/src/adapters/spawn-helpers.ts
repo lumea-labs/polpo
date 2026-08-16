@@ -240,7 +240,14 @@ function describeToolsForAgent(agent: AgentConfig): string {
 /**
  * Build the system prompt for the agent, including loaded skills.
  */
-export function buildSystemPrompt(agent: AgentConfig, cwd: string, polpoDir?: string, outputDir?: string, allowedPaths?: string[]): string {
+export function buildSystemPrompt(
+  agent: AgentConfig,
+  cwd: string,
+  polpoDir?: string,
+  outputDir?: string,
+  allowedPaths?: string[],
+  activatedSkills?: readonly string[],
+): string {
   // Load skills (sync, Node.js filesystem)
   const skills = polpoDir
     ? loadAgentSkills(cwd, polpoDir, agent.name, agent.skills)
@@ -248,7 +255,7 @@ export function buildSystemPrompt(agent: AgentConfig, cwd: string, polpoDir?: st
 
   // Core prompt: identity, responsibilities, tone, personality, hierarchy, systemPrompt, skills
   // Shared agent loop logic (lives in @polpo-ai/core).
-  const parts = [buildAgentSystemPrompt(agent, { skills })];
+  const parts = [buildAgentSystemPrompt(agent, { skills, activatedSkills })];
 
   // Shell-specific sections below (tools, cwd, sandbox paths)
 

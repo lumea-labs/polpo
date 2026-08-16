@@ -59,6 +59,36 @@ Runtime context accounting types are exported from the SDK and originate from
 `@polpo-ai/core/runtime-inspection`, so managed and self-hosted inspectors use
 the same categories.
 
+## Activate skills per request
+
+An agent can have several assigned skills while a caller explicitly applies
+one or more of them to a single execution:
+
+```ts
+const response = await client.chatCompletions({
+  agent: "builder",
+  messages: [{ role: "user", content: "Build the settings page." }],
+  polpo: {
+    skills: ["frontend-design"],
+  },
+});
+```
+
+This is additive and ephemeral. The selected skill is prioritized for that
+request, other skills assigned to the agent remain available, and the agent
+configuration is not changed. Polpo rejects skills that are not assigned to
+the effective agent or loop. Slash commands are a client-side convenience:
+clients should translate `/frontend-design` into `polpo.skills` rather than
+expecting the server to parse message text.
+
+With the React SDK, pass the selection to the individual message:
+
+```ts
+await chat.sendMessage("Build the settings page.", {
+  skills: ["frontend-design"],
+});
+```
+
 ## Structured outputs
 
 Use the OpenAI-compatible `response_format` field when the final assistant
