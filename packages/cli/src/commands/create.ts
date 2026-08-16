@@ -439,7 +439,7 @@ export function registerCreateCommand(program: Command): void {
       let deployOk = false;
       try {
         s.start("Deploying agents to cloud...");
-        const { runDeploy } = await import("./cloud/deploy.js");
+        const { hasDeployFailures, runDeploy } = await import("./cloud/deploy.js");
         const report = await runDeploy({
           dir: targetDir,
           yes: true,
@@ -452,7 +452,7 @@ export function registerCreateCommand(program: Command): void {
         });
         if (report.nothingToDeploy) {
           s.stop("Nothing to deploy.");
-        } else if (report.total.failed > 0) {
+        } else if (hasDeployFailures(report.total)) {
           s.stop(`Deploy completed with ${report.total.failed} failures.`);
         } else {
           const parts: string[] = [];
