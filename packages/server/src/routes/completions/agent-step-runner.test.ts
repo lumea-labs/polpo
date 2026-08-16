@@ -43,6 +43,32 @@ describe("buildRuntimeAgentPrompt", () => {
     expect(deps.buildAgentPrompt).not.toHaveBeenCalled();
   });
 
+  it("passes explicitly activated skills to loop-step prompt assembly", async () => {
+    const buildRuntimePrompt = vi.fn(async () => "host loop prompt");
+    const deps = {
+      buildRuntimePrompt,
+      buildAgentPrompt: vi.fn(() => "legacy prompt"),
+    } as unknown as CompletionRouteDeps;
+
+    await buildRuntimeAgentPrompt(
+      deps,
+      { name: "agent-1", skills: ["frontend-design"] },
+      [],
+      undefined,
+      "off",
+      undefined,
+      ["frontend-design"],
+    );
+
+    expect(buildRuntimePrompt).toHaveBeenCalledWith(
+      expect.any(Object),
+      expect.objectContaining({
+        mode: "loop-step",
+        activatedSkills: ["frontend-design"],
+      }),
+    );
+  });
+
   it("does not ask the host to inject legacy agent Memory when typed Memory replaces it", async () => {
     const buildRuntimePrompt = vi.fn(async () => "host loop prompt");
     const deps = {

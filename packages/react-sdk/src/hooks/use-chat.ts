@@ -61,6 +61,11 @@ export interface UseChatOptions {
 
 export type ChatStatus = "idle" | "streaming" | "loading" | "error";
 
+export interface SendMessageOptions {
+  /** Assigned skills to apply explicitly to this message. Additive, not restrictive. */
+  skills?: string[];
+}
+
 /** A pending client-side tool call that needs a result from the client. */
 export interface PendingToolCall {
   /** Tool call ID from the LLM. */
@@ -79,7 +84,10 @@ export interface UseChatReturn {
    */
   messages: ChatMessage[];
   /** Send a message (text or multimodal content parts). Streams the response automatically. */
-  sendMessage: (content: string | ContentPart[]) => Promise<void>;
+  sendMessage: (
+    content: string | ContentPart[],
+    options?: SendMessageOptions,
+  ) => Promise<void>;
   /** Send a tool result back to the server. Used for client-side tools (e.g. ask_user_question). */
   sendToolResult: (toolCallId: string, toolName: string, result: string) => Promise<void>;
   /** Current session ID. `null` until the first response from the server. */
@@ -197,7 +205,10 @@ export function useChat(options: UseChatOptions = {}): UseChatReturn {
 
   // ── Shared streaming logic ──
   const streamResponse = useCallback(
-    async (historyMessages: ChatCompletionMessage[]) => {
+    async (
+      historyMessages: ChatCompletionMessage[],
+      requestOptions: SendMessageOptions = {},
+    ) => {
       const stream = client.chatCompletionsStream({
         messages: historyMessages,
         sessionId: sessionIdRef.current ?? undefined,
@@ -206,6 +217,9 @@ export function useChat(options: UseChatOptions = {}): UseChatReturn {
         model: optionsRef.current.model,
         sandbox: optionsRef.current.sandbox,
         polpo: {
+          ...(requestOptions.skills?.length
+            ? { skills: [...requestOptions.skills] }
+            : {}),
           capabilities: {
             ask_user_question: true,
             suggestions: true,
@@ -351,7 +365,10 @@ export function useChat(options: UseChatOptions = {}): UseChatReturn {
 
   // ── Send message ──
   const sendMessage = useCallback(
-    async (content: string | ContentPart[]) => {
+    async (
+      content: string | ContentPart[],
+      requestOptions: SendMessageOptions = {},
+    ) => {
       if (isStreamingRef.current) return;
 
       // Optimistic: add user message immediately
@@ -377,7 +394,7 @@ export function useChat(options: UseChatOptions = {}): UseChatReturn {
           content: m.content,
         }));
 
-        await streamResponse(historyMessages);
+        await streamResponse(historyMessages, requestOptions);
       } catch (err) {
         if ((err as DOMException)?.name === "AbortError") {
           // Keep partial message as-is

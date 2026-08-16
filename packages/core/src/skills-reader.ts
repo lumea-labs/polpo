@@ -99,15 +99,42 @@ export function extractSkillBody(content: string): string {
 /**
  * Build the skill injection block for an agent's system prompt.
  */
-export function buildSkillPrompt(skills: LoadedSkill[]): string {
+export interface SkillPromptOptions {
+  /** Assigned skills that the caller explicitly selected for this execution. */
+  activatedSkills?: readonly string[];
+}
+
+export function buildSkillPrompt(
+  skills: LoadedSkill[],
+  options: SkillPromptOptions = {},
+): string {
   if (skills.length === 0) return "";
+
+  const skillsByName = new Map(skills.map((skill) => [skill.name, skill]));
+  const activated = [...new Set(options.activatedSkills ?? [])]
+    .map((name) => skillsByName.get(name))
+    .filter((skill): skill is LoadedSkill => skill !== undefined);
+  const activatedNames = new Set(activated.map((skill) => skill.name));
+  const orderedSkills = [
+    ...activated,
+    ...skills.filter((skill) => !activatedNames.has(skill.name)),
+  ];
 
   const parts = [
     `\n## Assigned Skills\n`,
     `You have ${skills.length} skill${skills.length > 1 ? "s" : ""} loaded. Use this knowledge when applicable:\n`,
   ];
 
-  for (const skill of skills) {
+  if (activated.length > 0) {
+    const names = activated.map((skill) => `\`${skill.name}\``).join(", ");
+    parts.push(
+      `The following assigned skill${activated.length > 1 ? "s are" : " is"} explicitly activated for this execution: ${names}.`,
+      "Apply the activated skill instructions to this request. Other assigned skills remain available when relevant.",
+      "",
+    );
+  }
+
+  for (const skill of orderedSkills) {
     parts.push(`### ${skill.name}`);
     if (skill.description) parts.push(`> ${skill.description}\n`);
     parts.push(skill.content);

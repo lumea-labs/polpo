@@ -245,7 +245,14 @@ export {
   discoverSkills, loadAgentSkills, listSkillsWithAssignments,
   buildSkillPrompt, parseSkillFrontmatter, extractSkillBody,
 } from "./skills-reader.js";
-export type { SkillInfo, LoadedSkill, SkillWithAssignment, SkillIndex, SkillIndexEntry } from "./skills-reader.js";
+export type {
+  SkillInfo,
+  LoadedSkill,
+  SkillWithAssignment,
+  SkillIndex,
+  SkillIndexEntry,
+  SkillPromptOptions,
+} from "./skills-reader.js";
 
 // ── Model Spec Parsing ─────────────────────────────────────────────────
 export { parseModelSpec, PROVIDER_ENV_MAP } from "./model-spec.js";

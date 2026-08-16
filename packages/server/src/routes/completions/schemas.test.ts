@@ -196,3 +196,26 @@ describe("completion request Polpo chat capabilities", () => {
     expect(completionRequestSchema.safeParse({ ...request, polpo }).success).toBe(false);
   });
 });
+
+describe("completion request skill activation", () => {
+  it("accepts one or more skills for the current execution", () => {
+    expect(completionRequestSchema.parse({
+      ...request,
+      polpo: {
+        skills: ["frontend-design", "accessibility-audit"],
+      },
+    }).polpo).toEqual({
+      skills: ["frontend-design", "accessibility-audit"],
+    });
+  });
+
+  it.each([
+    { skills: [] },
+    { skills: [""] },
+    { skills: ["frontend-design", "frontend-design"] },
+    { skills: "frontend-design" },
+    { skills: ["frontend-design"], unknown: true },
+  ])("rejects malformed skill activation %#", (polpo) => {
+    expect(completionRequestSchema.safeParse({ ...request, polpo }).success).toBe(false);
+  });
+});

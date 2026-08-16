@@ -281,8 +281,15 @@ export function createApp(orchestrator: Orchestrator, sseBridge: SSEBridge, opts
       const providerOptions = buildResolvedModelProviderOptions(m, r);
       return { model: m, providerOptions };
     },
-    buildAgentPrompt: (agentConfig: any) => {
-      return buildSystemPrompt(agentConfig, o.getAgentWorkDir(), o.getPolpoDir(), undefined, agentConfig.allowedPaths);
+    buildAgentPrompt: (agentConfig: any, promptOptions) => {
+      return buildSystemPrompt(
+        agentConfig,
+        o.getAgentWorkDir(),
+        o.getPolpoDir(),
+        undefined,
+        agentConfig.allowedPaths,
+        promptOptions?.activatedSkills,
+      );
     },
     resolveAgentTools: async (agentConfig: any, _runScope, invocation) => {
       const { createSystemTools, createMemoryTools, createBrainTools, resolveAgentMcpTools, expandToolWildcards, TOOL_CATALOG } = await import("@polpo-ai/tools");

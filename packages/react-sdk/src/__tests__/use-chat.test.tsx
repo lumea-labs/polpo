@@ -6,6 +6,40 @@ import { useChat } from "../hooks/use-chat.js";
 import { createMockClient, createMockStore, createWrapper } from "./helpers.js";
 
 describe("useChat interactions", () => {
+  it("activates assigned skills for one message without making them persistent", async () => {
+    const makeStream = () => ({
+      abort: vi.fn(),
+      async *[Symbol.asyncIterator]() {
+        yield {
+          id: "chatcmpl-1",
+          object: "chat.completion.chunk",
+          created: 1,
+          model: "polpo",
+          choices: [{ index: 0, delta: { content: "Done" }, finish_reason: "stop" }],
+        };
+      },
+    });
+    const chatCompletionsStream = vi.fn()
+      .mockImplementation(() => makeStream());
+    const client = createMockClient({ chatCompletionsStream });
+    const wrapper = createWrapper(client, createMockStore());
+    const { result } = renderHook(() => useChat({ agent: "builder" }), { wrapper });
+
+    await act(async () => {
+      await result.current.sendMessage("Build it", {
+        skills: ["frontend-design"],
+      });
+      await result.current.sendMessage("Summarize it");
+    });
+
+    expect(chatCompletionsStream.mock.calls[0]?.[0]).toEqual(
+      expect.objectContaining({
+        polpo: expect.objectContaining({ skills: ["frontend-design"] }),
+      }),
+    );
+    expect(chatCompletionsStream.mock.calls[1]?.[0].polpo).not.toHaveProperty("skills");
+  });
+
   it("declares supported capabilities and attaches suggestions to the response", async () => {
     const suggestion = {
       id: "suggestion_tests",
