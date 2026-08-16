@@ -26,11 +26,12 @@ import {
   resolveConfiguredModelSelection,
   type PolpoSettings,
   type RuntimePlan,
+  type ToolInvocationContext,
   type SummarizeFn,
   type RuntimeContextTrustMode,
 } from "@polpo-ai/core";
 import { generateText, type LanguageModel, type LanguageModelUsage } from "ai";
-import { runModelPolicyTurn } from "@polpo-ai/llm";
+import { prepareModelMessagesForTransport, runModelPolicyTurn } from "@polpo-ai/llm";
 import type {
   CompletionRouteDeps,
   CompletionToolRunScope,
@@ -163,7 +164,7 @@ export function buildSummarizeFn(
     const result = await generateText({
       model: m.aiModel,
       system: prompt,
-      messages: msgs,
+      messages: prepareModelMessagesForTransport(msgs, m.aiModel),
       providerOptions,
     });
     return result.text.trim();
@@ -240,6 +241,7 @@ export async function runAgentStepCompletion(options: {
   sessionId?: string;
   runtimeContext?: RuntimeContextResolution;
   toolRunScope?: CompletionToolRunScope;
+  toolInvocation?: ToolInvocationContext;
   onToolCall?: (toolCall: LoopRuntimeToolCall) => Promise<void>;
 }): Promise<AgentStepRunResult> {
   const {
@@ -309,6 +311,7 @@ export async function runAgentStepCompletion(options: {
   const resolvedTools = await deps.resolveAgentTools(
     agentConfig,
     options.toolRunScope,
+    options.toolInvocation,
   );
   let executeTool = createGuardedCompletionToolExecutor({
     executor: resolvedTools.executor,

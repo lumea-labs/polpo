@@ -59,6 +59,10 @@ export interface InProcessSpawnerDeps {
   brainContext?: BrainServiceContext;
   fs?: FileSystem;
   shell?: Shell;
+  /** Optional host checkpoint for manually managed hydrated sandbox volumes. */
+  checkpointSandboxVolume?: (name?: string) => Promise<void>;
+  /** Finalize run-scoped host resources before the run becomes terminal. */
+  finalize?: () => Promise<void>;
   /** Optional host-resolved guardrail middleware. */
   runToolMiddleware?: RunToolMiddleware;
   /** Optional host-resolved input/context/model guardrail policy. */
@@ -83,6 +87,12 @@ export class InProcessSpawner implements Spawner {
 
   async spawn(config: RunnerConfig): Promise<SpawnResult> {
     const deps = this.getDeps();
+    let finalized = false;
+    const finalize = async (): Promise<void> => {
+      if (finalized) return;
+      finalized = true;
+      await deps.finalize?.();
+    };
 
     // Parity with NodeSpawner for local execution. When a host injects a
     // remote filesystem (for example a sandbox proxy), config.outputDir is a
@@ -104,7 +114,13 @@ export class InProcessSpawner implements Spawner {
     const exitCallbacks: Array<() => void> = [];
 
     // Fire-and-forget: spawn() returns immediately, like a fork would.
-    void executeRun(config, { ...deps, pid, configPath, signal: abort.signal })
+    void executeRun(config, {
+      ...deps,
+      finalize,
+      pid,
+      configPath,
+      signal: abort.signal,
+    })
       .catch(async (err) => {
         // executeRun persists every run-level failure itself; this is the
         // last resort (e.g. the initial upsertRun threw). Never let a run
@@ -113,7 +129,13 @@ export class InProcessSpawner implements Spawner {
           await deps.runStore.completeRun(config.runId, "failed", errorResult(err));
         } catch { /* store is gone too — health checks will reap the run */ }
       })
-      .finally(() => {
+      .finally(async () => {
+        try {
+          await finalize();
+        } catch {
+          // executeRun persists failures after normal finalization. This path
+          // only covers failures before its lifecycle can take ownership.
+        }
         exited = true;
         this.active.delete(pid);
         for (const cb of exitCallbacks.splice(0)) cb();

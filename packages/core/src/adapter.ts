@@ -30,6 +30,7 @@ import type {
   BrainReadService,
   BrainServiceContext,
 } from "./brain/index.js";
+import type { ToolInvocationContext } from "./tool-invocation.js";
 
 /**
  * Handle returned by the engine after spawning an agent.
@@ -78,6 +79,8 @@ export interface SpawnContext {
   polpoDir: string;
   /** Current logical run id, when the host has allocated one. */
   runId?: string;
+  /** Host-owned immutable identity supplied to custom tools for this run. */
+  toolInvocation?: ToolInvocationContext;
   /** Pre-resolved retrieval snapshot rendered into task system prompts. */
   runtimeContext?: RuntimeContextResolution;
   /** Per-task output directory (.polpo/output/<taskId>/). Agents write deliverables here. */
@@ -102,6 +105,8 @@ export interface SpawnContext {
   fs?: FileSystem;
   /** Shell implementation — created by the orchestrator, passed down to tools. */
   shell?: Shell;
+  /** Host-owned checkpoint for manually managed hydrated sandbox volumes. */
+  checkpointSandboxVolume?: (name?: string) => Promise<void>;
   /** LLM gateway configuration — passed per-request for multi-tenant support. */
   gatewayConfig?: unknown;
   /** Source- and trust-labelled prompt context for this run. */

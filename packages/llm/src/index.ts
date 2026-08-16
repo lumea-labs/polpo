@@ -137,6 +137,8 @@ export {
 export {
   streamModelTurn,
   normalizeResponseMessagesForHistory,
+  prepareModelMessagesForProvider,
+  prepareModelMessagesForTransport,
 } from "./stream-turn.js";
 export type {
   ModelTurnEvent,

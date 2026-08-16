@@ -33,6 +33,7 @@ import { OpenAPIHono } from "@hono/zod-openapi";
 import {
   type ExecutionRouteClassifier,
   type ExecutionRouteClassifierResolverContext,
+  type LoopRunRecord,
   type LoopRunStore,
   type ModelSelection,
   type ProfiledModelSelection,
@@ -44,6 +45,8 @@ import {
   type RunToolMiddleware,
   type RuntimeSurface,
   type RuntimeSandboxOptions,
+  type ToolInvocationContext,
+  type ToolInvocationJsonValue,
 } from "@polpo-ai/core";
 import type { ApprovalStore } from "@polpo-ai/core/approval-store";
 import type { ChatSessionInjection } from "@polpo-ai/core";
@@ -76,9 +79,11 @@ export {
   type ChatViaRunTurnResult,
 } from "./completions/chat-via-run-handler.js";
 export {
+  createCompletionToolInvocation,
   prepareChatCompletionExecution,
   runConversationTurn,
   type ConversationTurnResult,
+  type RunConversationTurnInput,
   type PreparedConversationTurn,
 } from "./completions/conversation-turn.js";
 
@@ -200,6 +205,7 @@ export interface CompletionRouteDeps {
   resolveAgentTools: (
     agentConfig: any,
     runScope?: CompletionToolRunScope,
+    invocation?: ToolInvocationContext,
   ) => Promise<{
     tools: any[];
     /**
@@ -224,6 +230,13 @@ export interface CompletionRouteDeps {
     disclosure?: ModelControlledToolDisclosureConfig;
   }>;
   /**
+   * Re-authorize and rebuild private tool identity for a durable loop resume.
+   * Returned values are never persisted by the completion runtime.
+   */
+  resolveResumedToolInvocation?: (
+    run: LoopRunRecord,
+  ) => Promise<ToolInvocationContext | undefined>;
+  /**
    * Optionally create a host resource scope for one project-loop execution.
    * The same scope is passed to root deterministic tools and every nested
    * agent step, then cleaned exactly once after the outer loop finishes.
@@ -246,6 +259,17 @@ export interface CompletionRouteDeps {
     sessionId?: string;
     /** OpenAI-compat opaque end-user id from the request, when set. Lets the
      *  cloud meter attribute the usage row to the dev's authenticated user. */
+    user?: string;
+    providerMetadata?: Record<string, unknown>;
+  }) => void;
+  /** Meter or audit an auxiliary model call without emitting a second user completion. */
+  onAuxiliaryModelFinished?: (info: {
+    operation: "chat_suggestions";
+    usage: { inputTokens?: number; outputTokens?: number; totalTokens?: number };
+    model: string;
+    resolvedModel?: CompletionResolvedModelInfo;
+    agent?: string;
+    sessionId?: string;
     user?: string;
     providerMetadata?: Record<string, unknown>;
   }) => void;
@@ -328,9 +352,15 @@ export interface CompletionRuntimePlanInput {
 export interface CompletionRuntimeInvocation {
   readonly surface: RuntimeSurface;
   readonly source: RuntimeInvocationSource;
+  /** Provider-neutral event supplied by a trusted channel adapter. */
+  readonly channelEvent?: Readonly<Record<string, unknown>>;
   readonly channelId?: string;
   readonly requestId?: string;
   readonly runId?: string;
+  /** Host-resolved user identity. Overrides request body identity when set. */
+  readonly user?: string;
+  /** Host-resolved metadata. Overrides request body metadata when set. */
+  readonly metadata?: Readonly<Record<string, ToolInvocationJsonValue>>;
 }
 
 export function completionRoutes(getDeps: () => CompletionRouteDeps, apiKeys?: string[]): OpenAPIHono {

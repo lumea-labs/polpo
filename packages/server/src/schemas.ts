@@ -1,5 +1,8 @@
 import { z } from "@hono/zod-openapi";
 import {
+  MAX_CHAT_SUGGESTION_GUIDANCE_CHARS,
+  MAX_CHAT_SUGGESTION_COUNT,
+  MIN_CHAT_SUGGESTION_COUNT,
   MAX_MODEL_FALLBACKS,
   MODEL_PROFILE_NAME_PATTERN,
   RUNTIME_INVOCATION_SOURCES,
@@ -117,6 +120,33 @@ export const RuntimeSandboxSchema = z.object({
     description: "Sandbox isolation policy. `reuse` leases warm state exclusively, `fresh` requests one clean outer-run sandbox, and `shared` explicitly permits concurrent project-scoped use.",
   }),
   lifecycle: RuntimeSandboxLifecycleSchema.optional(),
+  volumes: z.array(z.object({
+    name: z.string().regex(/^[a-z][a-z0-9_-]{1,62}$/),
+    access: z.enum(["read-only", "read-write"]).optional(),
+    writeBack: z.enum(["auto", "manual"]).optional(),
+  }).strict().superRefine((volume, ctx) => {
+    if (volume.access === "read-only" && volume.writeBack !== undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["writeBack"],
+        message: "Read-only sandbox volumes cannot configure writeback",
+      });
+    }
+  })).max(32).optional().superRefine((volumes, ctx) => {
+    if (!volumes) return;
+    const names = new Set<string>();
+    for (let index = 0; index < volumes.length; index++) {
+      const name = volumes[index].name;
+      if (names.has(name)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: [index, "name"],
+          message: `Duplicate sandbox volume selection: ${name}`,
+        });
+      }
+      names.add(name);
+    }
+  }),
 }).strict().openapi({
   description: "Provider-neutral runtime sandbox policy.",
 });
@@ -768,6 +798,34 @@ const AgentModelRoutingSchema = z.object({
   }
 });
 
+const AgentChatSuggestionsSchema = z.object({
+  enabled: z.boolean().optional(),
+  maxItems: z.number().int()
+    .min(MIN_CHAT_SUGGESTION_COUNT)
+    .max(MAX_CHAT_SUGGESTION_COUNT)
+    .optional(),
+  guidance: z.string().max(MAX_CHAT_SUGGESTION_GUIDANCE_CHARS).optional(),
+}).passthrough().superRefine((value, ctx) => {
+  if (Object.keys(value).some((key) => !["enabled", "maxItems", "guidance"].includes(key))) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "Agent chat suggestions contain unsupported fields",
+    });
+  }
+});
+
+const AgentChatSettingsSchema = z.object({
+  allowUserQuestions: z.boolean().optional(),
+  suggestions: AgentChatSuggestionsSchema.optional(),
+}).passthrough().superRefine((value, ctx) => {
+  if (Object.keys(value).some((key) => !["allowUserQuestions", "suggestions"].includes(key))) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "Agent chat preferences contain unsupported fields",
+    });
+  }
+});
+
 const AgentLoopFieldsSchema = z.object({
   runtime: z.string().optional(),
   assignedLoops: z.array(z.string().min(1)).optional(),
@@ -793,6 +851,7 @@ export const AddAgentSchema = z.object({
   allowedTools: z.array(ToolNameSchema).optional(),
   allowedPaths: z.array(z.string()).optional(),
   systemPrompt: z.string().optional(),
+  chat: AgentChatSettingsSchema.optional(),
   skills: z.array(z.string()).optional(),
   maxTurns: z.number().int().positive().optional(),
   maxConcurrency: z.number().int().positive().optional(),
@@ -826,6 +885,7 @@ export const UpdateAgentSchema = z.object({
   allowedTools: z.array(ToolNameSchema).optional(),
   allowedPaths: z.array(z.string()).optional(),
   systemPrompt: z.string().optional(),
+  chat: AgentChatSettingsSchema.optional(),
   skills: z.array(z.string()).optional(),
   maxTurns: z.number().int().positive().optional(),
   maxConcurrency: z.number().int().positive().optional(),

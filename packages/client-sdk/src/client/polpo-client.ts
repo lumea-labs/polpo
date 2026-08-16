@@ -45,6 +45,7 @@ import type {
   ChatCompletionRequest,
   ChatCompletionResponse,
   ChatCompletionChunk,
+  ChatSuggestion,
   AskUserPayload,
   MissionPreviewPayload,
   VaultPreviewPayload,
@@ -147,6 +148,9 @@ export class ChatCompletionStream implements AsyncIterable<ChatCompletionChunk> 
 
   /** If the stream ended with finish_reason "ask_user", this contains the questions. */
   askUser: AskUserPayload | null = null;
+
+  /** Suggested next messages emitted before the stream closes. */
+  suggestions: ChatSuggestion[] = [];
 
   /** If the stream ended with finish_reason "mission_preview", this contains the proposed mission. */
   missionPreview: MissionPreviewPayload | null = null;
@@ -261,6 +265,9 @@ export class ChatCompletionStream implements AsyncIterable<ChatCompletionChunk> 
           if (data === "[DONE]") return;
           try {
             const chunk = JSON.parse(data) as ChatCompletionChunk;
+            if (chunk.polpo?.suggestions) {
+              this.suggestions = chunk.polpo.suggestions;
+            }
             // Capture ask_user payload from the chunk
             const choice = chunk.choices[0];
             if (choice?.finish_reason === "ask_user" && choice.ask_user) {

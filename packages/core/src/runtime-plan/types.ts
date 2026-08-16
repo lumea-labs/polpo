@@ -1,5 +1,6 @@
 import type { ModelSelection } from "../model-policy.js";
 import type {
+  RuntimeSandboxVolumeSelection,
   SandboxIsolation,
   SandboxReleasePolicy,
 } from "../runtime-sandbox.js";
@@ -99,6 +100,7 @@ export interface RuntimePlan {
   readonly sandbox: Readonly<{
     isolation: SandboxIsolation;
     source: Extract<RuntimeDecisionSource, "request" | "agent" | "default">;
+    volumes?: readonly Readonly<RuntimeSandboxVolumeSelection>[];
     lifecycle: Readonly<{
       onRelease: SandboxReleasePolicy;
       stopAfterIdleMinutes?: number;
@@ -134,6 +136,7 @@ export interface CreateRuntimePlanInput {
   readonly sandbox?: Readonly<{
     isolation?: SandboxIsolation;
     source?: Extract<RuntimeDecisionSource, "request" | "agent" | "default">;
+    volumes?: readonly Readonly<RuntimeSandboxVolumeSelection>[];
     lifecycle?: Readonly<{
       onRelease?: SandboxReleasePolicy;
       stopAfterIdleMinutes?: number;

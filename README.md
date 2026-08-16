@@ -200,6 +200,47 @@ readable. Run `polpo migrate --dry-run` to validate a conversion, then
 `polpo migrate` to write the directory layout. Migration retains the original
 manifests as `*.v1.json` backups.
 
+Custom tools can keep host identity out of the model-visible parameter schema.
+Declare a separate binding schema and map it only to immutable invocation
+context paths:
+
+```ts
+import { Type } from "@sinclair/typebox";
+import { defineTool } from "@polpo-ai/tools";
+
+export default defineTool({
+  name: "site_context_get",
+  description: "Read the current user's site context.",
+  parameters: Type.Object({}, { additionalProperties: false }),
+  bindingsSchema: Type.Object({
+    externalUserId: Type.String({ minLength: 1 }),
+    tenantId: Type.String({ format: "uuid" }),
+    grant: Type.String({ minLength: 1 }),
+  }, { additionalProperties: false }),
+  serverBindings: {
+    externalUserId: { $context: "invocation.user" },
+    tenantId: { $context: "invocation.metadata.tenantId" },
+    grant: { $context: "invocation.metadata.grant" },
+  },
+  async execute(ctx) {
+    // ctx.invocation and ctx.bindings are copied, deeply frozen, and validated.
+    // None of these binding values are included in the model's tool arguments.
+    return JSON.stringify({ tenantId: ctx.bindings.tenantId });
+  },
+});
+```
+
+`ctx.invocation` contains `requestId`, `runId`, optional `sessionId`, optional
+`user`, `metadata`, and a `surface` (`chat`, `task`, `loop`, `schedule`, or
+`channel`). Missing or invalid required bindings fail before tool code runs.
+
+Custom tool entrypoints may import relative TypeScript, JavaScript, TSX, or JSON
+modules kept under the same source directory. Both `polpo tools push <file>` and
+`polpo deploy` collect that local dependency graph and upload it as one versioned
+artifact. Bare package imports remain runtime dependencies. Computed dynamic
+imports, symlinks, paths outside the tool directory, and path traversal are
+rejected before upload. Existing single-file custom tools remain compatible.
+
 ## Loops Beta
 
 Loops are project-level deterministic graphs stored in `.polpo/loops/*.json` or authored as static `.polpo/loops/*.ts` DSL files, then assigned from an agent's `agent.json`. This avoids duplicating loop definitions across agents: a loop has `name`, `context`, `start`, and `steps`; an agent has `assignedLoops` and optional execution routing.
@@ -421,6 +462,65 @@ until the complete value is parsed and validated, then emitted in one content
 chunk so clients never receive a partial invalid object. Tool calls may still
 run before the final structured response. Project loop execution currently
 rejects `response_format` explicitly instead of silently ignoring it.
+
+### Chat interactions
+
+Each agent can allow the built-in `ask_user_question` client tool and opt into
+suggested next messages through its `chat` configuration:
+
+```json
+{
+  "name": "support",
+  "chat": {
+    "allowUserQuestions": true,
+    "suggestions": {
+      "enabled": true,
+      "maxItems": 3,
+      "guidance": "Prefer concrete next actions."
+    }
+  }
+}
+```
+
+A client declares the optional interactions it can render in the request:
+
+```json
+{
+  "agent": "support",
+  "messages": [{ "role": "user", "content": "Help me configure this" }],
+  "polpo": {
+    "capabilities": {
+      "ask_user_question": true,
+      "suggestions": true
+    }
+  }
+}
+```
+
+Suggestions are returned as a namespaced extension and never alter the normal
+OpenAI-compatible finish reason:
+
+```json
+{
+  "polpo": {
+    "suggestions": [
+      {
+        "id": "suggestion_...",
+        "label": "Show an example",
+        "prompt": "Show me a complete example."
+      }
+    ]
+  }
+}
+```
+
+Streaming requests receive the same root-level `polpo.suggestions` object in a
+chunk immediately before the final `stop` chunk. Suggestions require both the
+selected agent to opt in and `polpo.capabilities.suggestions: true`; generation
+is bounded, tool-free, and fail-open. Structured outputs, failed or aborted
+turns, pending client tools, empty responses, and channel turns do not generate
+them. Agents without `chat` preserve the compatible defaults: questions are
+allowed and suggestions are disabled.
 
 ### Schedules
 

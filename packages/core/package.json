@@ -1,6 +1,6 @@
 {
   "name": "@polpo-ai/core",
-  "version": "0.15.61",
+  "version": "0.15.68",
   "description": "Pure business logic, types, schemas, and store interfaces for the Polpo AI agent orchestration platform",
   "type": "module",
   "main": "dist/index.js",
@@ -73,6 +73,10 @@
     "./steering": {
       "types": "./dist/steering.d.ts",
       "import": "./dist/steering.js"
+    },
+    "./chat-interactions": {
+      "types": "./dist/chat-interactions.d.ts",
+      "import": "./dist/chat-interactions.js"
     },
     "./execution-router": {
       "types": "./dist/execution-router.d.ts",

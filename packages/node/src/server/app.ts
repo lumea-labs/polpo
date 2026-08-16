@@ -2,6 +2,11 @@ import { getPolpoDir } from "../core/constants.js";
 import { OpenAPIHono } from "@hono/zod-openapi";
 import { readFileSync } from "node:fs";
 import { cors } from "hono/cors";
+import {
+  dispatchChannelWebhook,
+  type ChannelInstallationResolver,
+  type ChannelRuntime,
+} from "@polpo-ai/channels";
 import { join } from "node:path";
 import { projectLoopConfigSchema } from "@polpo-ai/core/schemas";
 import { resolveConfiguredModelSelection } from "@polpo-ai/core";
@@ -97,6 +102,10 @@ export interface AppOptions {
       agentName?: string;
     }) => BrainServiceContext | Promise<BrainServiceContext>;
   };
+  channels?: {
+    resolveInstallation: ChannelInstallationResolver;
+    runtime: ChannelRuntime;
+  };
 }
 
 /**
@@ -169,6 +178,28 @@ export function createApp(orchestrator: Orchestrator, sseBridge: SSEBridge, opts
   // ── Public routes (no auth) ───────────────────────────────────────────
 
   app.route("/api/v1/health", healthRoutes(runtimeVersion));
+
+  if (opts?.channels) {
+    const handleChannelWebhook = async (c: any) => dispatchChannelWebhook({
+      provider: c.req.param("provider"),
+      request: c.req.raw,
+      resolveInstallation: opts.channels!.resolveInstallation,
+      routeKey: c.req.param("routeKey") || undefined,
+      runtime: opts.channels!.runtime,
+      webhookOptions: {
+        waitUntil: (task) => {
+          void task.catch((error) => {
+            console.error(
+              "[channels] background webhook failed:",
+              error instanceof Error ? error.message : String(error),
+            );
+          });
+        },
+      },
+    });
+    app.all("/v1/channel-webhooks/:provider", handleChannelWebhook);
+    app.all("/v1/channel-webhooks/:provider/:routeKey", handleChannelWebhook);
+  }
 
   // Config status + initialize — always available so setup wizard works
   if (opts?.workDir) {
@@ -253,14 +284,18 @@ export function createApp(orchestrator: Orchestrator, sseBridge: SSEBridge, opts
     buildAgentPrompt: (agentConfig: any) => {
       return buildSystemPrompt(agentConfig, o.getAgentWorkDir(), o.getPolpoDir(), undefined, agentConfig.allowedPaths);
     },
-    resolveAgentTools: async (agentConfig: any) => {
+    resolveAgentTools: async (agentConfig: any, _runScope, invocation) => {
       const { createSystemTools, createMemoryTools, createBrainTools, resolveAgentMcpTools, expandToolWildcards, TOOL_CATALOG } = await import("@polpo-ai/tools");
       const { resolveAgentVault } = await import("../vault/index.js");
       const { nanoid } = await import("nanoid");
       const vaultEntries = await o.getVaultStore()?.getAllForAgent(agentConfig.name);
       const vault = resolveAgentVault(vaultEntries);
       const tools: any[] = createSystemTools(o.getAgentWorkDir(), agentConfig.allowedTools, agentConfig.allowedPaths, undefined, vault, o.getFs(), o.getShell());
-      tools.push(...await customTools().loadAssigned(agentConfig.allowedTools));
+      tools.push(...await customTools().loadAssigned(
+        agentConfig.allowedTools,
+        undefined,
+        invocation,
+      ));
       const memoryStore = o.getMemoryStore();
       if (memoryStore) {
         const memoryTools = createMemoryTools(memoryStore, agentConfig.name);

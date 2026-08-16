@@ -48,6 +48,7 @@ export {
   runConversationTurn,
   runChatTurnViaRun,
   type ConversationTurnResult,
+  type RunConversationTurnInput,
   type ChatViaRunTurnResult,
   type PreparedConversationTurn,
   type CompletionRouteDeps,
@@ -58,6 +59,15 @@ export {
   type CompletionToolRunScope,
   type CompletionToolRunScopeInput,
 } from "./routes/completions.js";
+export {
+  ChannelConversationError,
+  createConversationChannelTurnHandler,
+  type ChannelAttachmentResolutionContext,
+  type ChannelConversationTurnExecutor,
+  type ChannelConversationContentPart,
+  type ChannelInvocationResolution,
+  type ConversationChannelBridgeOptions,
+} from "./channels/conversation-bridge.js";
 export type { ModelControlledToolDisclosureConfig } from "./routes/completions/tool-disclosure.js";
 export { agentRoutes } from "./routes/agents.js";
 export { loopRoutes, type LoopRouteDeps } from "./routes/loops.js";

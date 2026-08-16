@@ -24,6 +24,7 @@ import type {
 } from "@polpo-ai/core/brain";
 import type { MemoryStore } from "@polpo-ai/core";
 import type { ResolvedVault } from "./types.js";
+import { withBuiltInToolsRuntimeRequirements } from "./runtime-requirements.js";
 
 const MAX_READ_LINES = 500;
 const MAX_OUTPUT_BYTES = 30_000;
@@ -377,7 +378,13 @@ export function createSystemTools(cwd: string, allowedTools?: string[], allowedP
   // are derived from the message log instead. Removed from the public
   // TOOL_CATALOG so it can't be configured via `allowedTools`.
   if (outputDir) {
-    tools.push(...createOutcomeToolsCore(cwd, allowedPaths, allowedTools, outputDir));
+    tools.push(...createOutcomeToolsCore(
+      cwd,
+      allowedPaths,
+      undefined,
+      outputDir,
+      _fs,
+    ));
   }
 
   // http_fetch + http_download are always included — core tools with SSRF protection
@@ -388,7 +395,7 @@ export function createSystemTools(cwd: string, allowedTools?: string[], allowedP
     tools.push(...createVaultToolsCore(vault));
   }
 
-  return tools;
+  return withBuiltInToolsRuntimeRequirements(tools);
 }
 
 // === Extended Tools Factory ===
@@ -636,5 +643,5 @@ export async function createAllTools(options: CreateAllToolsOptions): Promise<Po
 
   // HTTP, register_outcome, and vault are already included via createSystemTools() above — no need to add again
 
-  return tools;
+  return withBuiltInToolsRuntimeRequirements(tools);
 }

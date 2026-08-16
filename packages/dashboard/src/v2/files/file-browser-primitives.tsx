@@ -24,7 +24,7 @@ export interface DriveVolume {
   id: string;
   name: string;
   label: string | null;
-  mode: "file-drive" | "code-drive";
+  strategy: "mounted" | "hydrated";
   mountPath: string | null;
   path: string;
   absolutePath: string;
@@ -46,14 +46,14 @@ export function fileUrl(projectId: string, path: string, download = false) {
   )}${download ? "&download=1" : ""}`;
 }
 
-export function modeLabel(mode?: DriveVolume["mode"]) {
-  switch (mode) {
-    case "code-drive":
-      return "Code Drive";
-    case "file-drive":
-      return "File Drive";
+export function strategyLabel(strategy?: DriveVolume["strategy"]) {
+  switch (strategy) {
+    case "hydrated":
+      return "Hydrated";
+    case "mounted":
+      return "Mounted";
     default:
-      return "File Drive";
+      return "Mounted";
   }
 }
 
@@ -61,31 +61,31 @@ export function driveLabel(drive: DriveVolume) {
   return drive.label?.trim() || drive.name;
 }
 
-export function VolumeModeIcon({
-  mode,
+export function VolumeStrategyIcon({
+  strategy,
   size = 16,
   className,
 }: {
-  mode?: DriveVolume["mode"];
+  strategy?: DriveVolume["strategy"];
   size?: number;
   className?: string;
 }) {
-  switch (mode) {
-    case "code-drive":
+  switch (strategy) {
+    case "hydrated":
       return <Code size={size} className={className} />;
-    case "file-drive":
+    case "mounted":
       return <FolderOpen size={size} className={className} weight="fill" />;
     default:
       return <FolderOpen size={size} className={className} weight="fill" />;
   }
 }
 
-export function modeDescription(mode?: DriveVolume["mode"]) {
-  switch (mode) {
-    case "code-drive":
-      return "For codebases and shell work. Polpo hydrates it into a real sandbox folder, then syncs useful changes back.";
-    case "file-drive":
-      return "For documents, uploaded assets, memory, skills, and files agents read or write on demand.";
+export function strategyDescription(strategy?: DriveVolume["strategy"]) {
+  switch (strategy) {
+    case "hydrated":
+      return "Copies persistent contents into local sandbox storage before the run and synchronizes according to the writeback policy.";
+    case "mounted":
+      return "Attaches persistent storage live at the configured sandbox path for the duration of the lease.";
     default:
       return "Project volume.";
   }

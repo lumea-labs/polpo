@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { NodeFileSystem } from "../adapters/node-filesystem.js";
 import { NodeShell } from "../adapters/node-shell.js";
 import { createLocalCustomToolRuntime } from "../custom-tools/runtime.js";
+import { parseCustomToolSourceArtifact } from "@polpo-ai/tools";
 
 const roots: string[] = [];
 afterEach(async () => Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))));
@@ -74,5 +75,45 @@ describe("LocalCustomToolRuntime", () => {
     expect((await runtime.deploy("expected_name", source("other_name"))).errors[0]).toMatch(
       /expected "expected_name"/,
     );
+  });
+
+  it("bundles and executes relative modules from a versioned source artifact", async () => {
+    const root = await mkdtemp(join(tmpdir(), "polpo-custom-tools-"));
+    roots.push(root);
+    const polpoDir = join(root, ".polpo");
+    await mkdir(polpoDir, { recursive: true });
+    const runtime = createLocalCustomToolRuntime({
+      polpoDir,
+      workDir: root,
+      fs: new NodeFileSystem(),
+      shell: new NodeShell(),
+    });
+    const artifact = parseCustomToolSourceArtifact({
+      version: 1,
+      entry: "site_context_get.ts",
+      files: {
+        "site_context_get.ts": `
+          import { defineTool } from "@polpo-ai/tools";
+          import { Type } from "@sinclair/typebox";
+          import { formatSite } from "./_leo_platform";
+          export default defineTool({
+            name: "site_context_get",
+            description: "Get trusted site context",
+            parameters: Type.Object({ site: Type.String() }),
+            async execute(_ctx, params) { return formatSite(params.site); },
+          });
+        `,
+        "_leo_platform.ts": `
+          export function formatSite(site: string) { return { site, trusted: true }; }
+        `,
+      },
+    });
+    await runtime.store.putArtifact("site_context_get", artifact);
+
+    const deployed = await runtime.deployArtifact("site_context_get", artifact);
+    expect(deployed.errors).toEqual([]);
+    expect(deployed.meta).toMatchObject({ name: "site_context_get" });
+    const result = await runtime.run("site_context_get", { site: "site-1" }) as any;
+    expect(JSON.parse(result.content[0].text)).toEqual({ site: "site-1", trusted: true });
   });
 });

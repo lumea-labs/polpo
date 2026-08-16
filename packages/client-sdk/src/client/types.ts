@@ -106,8 +106,11 @@ import type {
   ReviewerResult,
   RuntimeSandboxLifecycleOptions,
   RuntimeSandboxOptions,
+  RuntimeSandboxVolumeSelection,
   SandboxIsolation,
   SandboxReleasePolicy,
+  SandboxVolumeAccess,
+  SandboxVolumeWriteBack,
   Schedule,
   ScheduleDriverRegistration,
   ScheduleEntry,
@@ -242,8 +245,11 @@ export type {
   ReviewerResult,
   RuntimeSandboxLifecycleOptions,
   RuntimeSandboxOptions,
+  RuntimeSandboxVolumeSelection,
   SandboxIsolation,
   SandboxReleasePolicy,
+  SandboxVolumeAccess,
+  SandboxVolumeWriteBack,
   Schedule,
   ScheduleDriverRegistration,
   ScheduleEntry,
@@ -1114,6 +1120,8 @@ export interface ChatMessage {
   toolCalls?: ToolCallEvent[];
   /** Ordered segments preserving chronological interleaving of text and tool calls (assistant only). */
   segments?: MessageSegment[];
+  /** Optional next messages generated for this assistant response. */
+  suggestions?: ChatSuggestion[];
 }
 
 // === Chat Completions types (OpenAI-compatible) ===
@@ -1212,6 +1220,24 @@ export interface ChatCompletionRequest extends RuntimeCompletionRequestOptions {
    * value ≤512 chars. Use for tenant_id, plan, identity_provider, ab_variant.
    */
   metadata?: Record<string, string>;
+  /** Polpo-specific client capability declaration. */
+  polpo?: {
+    capabilities?: {
+      ask_user_question?: boolean;
+      suggestions?: boolean;
+    };
+  };
+}
+
+/** A user-selectable next message. Intentionally presentation-agnostic. */
+export interface ChatSuggestion {
+  id: string;
+  label: string;
+  prompt: string;
+}
+
+export interface ChatCompletionPolpoExtensions {
+  suggestions?: ChatSuggestion[];
 }
 
 export interface ChatCompletionChoice {
@@ -1247,6 +1273,8 @@ export interface ChatCompletionResponse {
   loop_trace?: LoopTraceEvent[];
   /** Polpo extension: durable loop run id, when loop run persistence is configured. */
   loop_run_id?: string;
+  /** Namespaced Polpo response extensions. */
+  polpo?: ChatCompletionPolpoExtensions;
 }
 
 export interface ChatCompletionChunkDelta {
@@ -1312,6 +1340,8 @@ export interface ChatCompletionChunk {
     /** Present when the model is emitting thinking/reasoning tokens. */
     thinking?: string;
   }>;
+  /** Namespaced Polpo streaming extensions. */
+  polpo?: ChatCompletionPolpoExtensions;
 }
 
 // === Ask User (structured clarification questions) ===

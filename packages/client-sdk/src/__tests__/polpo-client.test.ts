@@ -26,6 +26,41 @@ describe("PolpoClient approvals", () => {
 });
 
 describe("PolpoClient run steering", () => {
+  it("captures namespaced chat suggestions without requiring a kind", async () => {
+    const suggestion = {
+      id: "suggestion_tests",
+      label: "Add tests",
+      prompt: "Add tests for this change.",
+    };
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(new Response(
+      [
+        `data: ${JSON.stringify({
+          id: "chatcmpl-1",
+          object: "chat.completion.chunk",
+          created: 1,
+          model: "polpo",
+          choices: [{ index: 0, delta: {}, finish_reason: null }],
+          polpo: { suggestions: [suggestion] },
+        })}`,
+        "",
+        "data: [DONE]",
+        "",
+      ].join("\n"),
+      { status: 200, headers: { "content-type": "text/event-stream" } },
+    ));
+    const client = new PolpoClient({ baseUrl: "https://api.polpo.sh", fetch });
+    const stream = client.chatCompletionsStream({
+      messages: [{ role: "user", content: "start" }],
+    });
+
+    const chunks = [];
+    for await (const chunk of stream) chunks.push(chunk);
+
+    expect(chunks[0]?.polpo?.suggestions).toEqual([suggestion]);
+    expect(stream.suggestions).toEqual([suggestion]);
+    expect(stream.suggestions[0]).not.toHaveProperty("kind");
+  });
+
   it("sends typed steering and abort commands to encoded active run paths", async () => {
     const fetch = vi.fn<typeof globalThis.fetch>()
       .mockResolvedValueOnce(new Response(JSON.stringify({

@@ -128,6 +128,7 @@ export class SandboxLease {
       this.running = false;
     }
     let sandboxId: string | undefined;
+    let releaseError: unknown;
     if (this.session) {
       sandboxId = this.readSandboxId(this.session);
       this.emit("sandbox.release.started", {
@@ -147,7 +148,9 @@ export class SandboxLease {
         });
       } catch (error: unknown) {
         this.emitError("release", error, sandboxId);
+        releaseError = error;
       }
+      this.mergeSessionEvents(this.session);
     }
     try {
       this.onUsage?.({
@@ -161,6 +164,17 @@ export class SandboxLease {
     } catch {
       // Usage persistence is telemetry and must not change run completion.
     }
+    if (releaseError !== undefined) throw releaseError;
+  }
+
+  /** Persist manually managed hydrated volume changes without ending the lease. */
+  async checkpointVolume(name?: string): Promise<void> {
+    await this.bracket(async (session) => {
+      if (!session.checkpointVolume) {
+        throw new Error("Sandbox volume checkpoints are not supported by this provider.");
+      }
+      await session.checkpointVolume(name);
+    });
   }
 
   // ── activity tracking ──────────────────────────────────────────────────
@@ -257,6 +271,28 @@ export class SandboxLease {
       return session.lifecycleInfo?.() ?? {};
     } catch {
       return {};
+    }
+  }
+
+  private mergeSessionEvents(session: SandboxSession): void {
+    let providerEvents: readonly SandboxRuntimeEvent[] | undefined;
+    try {
+      providerEvents = session.usage?.().events;
+    } catch {
+      return;
+    }
+    if (!providerEvents?.length) return;
+    const existing = new Set(this.events.map((event) => JSON.stringify(event)));
+    for (const event of providerEvents) {
+      const identity = JSON.stringify(event);
+      if (existing.has(identity)) continue;
+      existing.add(identity);
+      this.events.push(event);
+      try {
+        this.onEvent?.(event);
+      } catch {
+        // Provider telemetry must not change run disposal.
+      }
     }
   }
 

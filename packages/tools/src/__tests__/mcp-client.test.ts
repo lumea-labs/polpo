@@ -160,6 +160,7 @@ describe("resolveAgentMcpTools", () => {
     };
     const { tools } = await resolveAgentMcpTools("agent-1", servers, undefined);
     const echo = tools.find((t) => t.name === "mcp__polpo__echo")!;
+    expect(echo.requiresSandbox).toBe(false);
     const result = await echo.execute("call-1", { msg: "hi" });
     expect(result.content).toEqual([{ type: "text", text: "echo:hi" }]);
   });

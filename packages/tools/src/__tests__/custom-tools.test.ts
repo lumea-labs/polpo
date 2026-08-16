@@ -25,7 +25,9 @@ import {
   extractCustomTool,
   loadCustomToolBundle,
   createJsonSchemaExample,
+  createToolInvocationContext,
   emptyCustomToolConnections,
+  CustomToolBindingError,
   type CustomTool,
   type CustomToolContext,
 } from "../custom-tools.js";
@@ -39,6 +41,15 @@ function fakeCtx(overrides: Partial<CustomToolContext> = {}): Omit<CustomToolCon
     env: { FOO: "bar" },
     workDir: "/work",
     polpo: { marker: "polpo" },
+    invocation: createToolInvocationContext({
+      requestId: "request-1",
+      runId: "run-1",
+      sessionId: "session-1",
+      surface: "chat",
+      user: "user-1",
+      metadata: { tenantId: "tenant-1" },
+    }),
+    bindings: Object.freeze({}),
     ...overrides,
   };
 }
@@ -91,6 +102,26 @@ describe("defineTool", () => {
     expect(tool.label).toBe("Echo Machine");
     expect(tool.clientSide).toBe(true);
   });
+
+  it("preserves hidden binding declarations without adding them to model parameters", () => {
+    const bindingsSchema = Type.Object({ tenantId: Type.String() });
+    const tool = defineTool({
+      name: "tenant_echo",
+      description: "Echoes within one tenant",
+      parameters: EchoSchema,
+      bindingsSchema,
+      serverBindings: {
+        tenantId: { $context: "invocation.metadata.tenantId" },
+      },
+      execute: (_ctx, params) => params.msg,
+    });
+    expect(tool.parameters).toBe(EchoSchema);
+    expect(tool.bindingsSchema).toBe(bindingsSchema);
+    expect(tool.serverBindings).toEqual({
+      tenantId: { $context: "invocation.metadata.tenantId" },
+    });
+    expect((tool.parameters as any).properties).toEqual({ msg: Type.String() });
+  });
 });
 
 describe("getCustomToolErrors / isCustomTool", () => {
@@ -134,6 +165,54 @@ describe("getCustomToolErrors / isCustomTool", () => {
   it("validates optional field types", () => {
     expect(getCustomToolErrors({ ...valid, label: 5 }).join()).toMatch(/label/i);
     expect(getCustomToolErrors({ ...valid, clientSide: "yes" }).join()).toMatch(/clientSide/i);
+  });
+
+  it("requires binding schema and mappings together", () => {
+    const bindingsSchema = Type.Object({ tenantId: Type.String() });
+    expect(getCustomToolErrors({ ...valid, bindingsSchema }).join()).toMatch(/serverBindings/i);
+    expect(getCustomToolErrors({
+      ...valid,
+      serverBindings: { tenantId: { $context: "invocation.metadata.tenantId" } },
+    }).join()).toMatch(/bindingsSchema/i);
+  });
+
+  it("rejects unsafe or unknown server binding paths", () => {
+    const bindingsSchema = Type.Object({ tenantId: Type.String() });
+    for (const path of [
+      "request.metadata.tenantId",
+      "invocation.__proto__.polluted",
+      "invocation.metadata.constructor.prototype",
+      "invocation.secrets.apiKey",
+    ]) {
+      expect(getCustomToolErrors({
+        ...valid,
+        bindingsSchema,
+        serverBindings: { tenantId: { $context: path } },
+      }).join()).toMatch(/binding|context|path/i);
+    }
+  });
+
+  it("rejects bindings that do not match the declared hidden schema", () => {
+    const bindingsSchema = Type.Object({
+      tenantId: Type.String(),
+      grant: Type.String(),
+    });
+    expect(getCustomToolErrors({
+      ...valid,
+      bindingsSchema,
+      serverBindings: {
+        tenantId: { $context: "invocation.metadata.tenantId" },
+      },
+    })).toContainEqual(expect.stringMatching(/grant.*mapping/i));
+    expect(getCustomToolErrors({
+      ...valid,
+      bindingsSchema,
+      serverBindings: {
+        tenantId: { $context: "invocation.metadata.tenantId" },
+        grant: { $context: "invocation.metadata.grant" },
+        undeclared: { $context: "invocation.metadata.siteId" },
+      },
+    })).toContainEqual(expect.stringMatching(/undeclared.*bindingsSchema/i));
   });
 
   it("isCustomTool requires the __custom marker", () => {
@@ -215,6 +294,15 @@ describe("bindCustomTool", () => {
     expect(received.env).toEqual({ FOO: "bar" });
     expect(received.workDir).toBe("/work");
     expect(received.polpo).toEqual({ marker: "polpo" });
+    expect(received.invocation).toMatchObject({
+      requestId: "request-1",
+      runId: "run-1",
+      sessionId: "session-1",
+      surface: "chat",
+      user: "user-1",
+      metadata: { tenantId: "tenant-1" },
+    });
+    expect(received.bindings).toEqual({});
     expect(received.signal).toBe(ctrl.signal);
     expect(received.onUpdate).toBe(onUpdate);
   });
@@ -240,6 +328,201 @@ describe("bindCustomTool", () => {
       },
     });
     await expect(bindCustomTool(t, fakeCtx()).execute("c", { msg: "x" })).rejects.toThrow("kaboom");
+  });
+
+  it("resolves and validates hidden bindings immediately before execution", async () => {
+    let received: any;
+    const t = defineTool({
+      name: "tenant_echo",
+      description: "Echoes within one tenant",
+      parameters: EchoSchema,
+      bindingsSchema: Type.Object({
+        tenantId: Type.String(),
+        externalUserId: Type.String(),
+        grant: Type.String(),
+      }),
+      serverBindings: {
+        tenantId: { $context: "invocation.metadata.tenantId" },
+        externalUserId: { $context: "invocation.user" },
+        grant: { $context: "invocation.metadata.grant" },
+      },
+      execute: (ctx, params) => {
+        received = { bindings: ctx.bindings, invocation: ctx.invocation, params };
+        return "ok";
+      },
+    });
+    const invocation = createToolInvocationContext({
+      requestId: "request-2",
+      runId: "run-2",
+      sessionId: "session-2",
+      surface: "channel",
+      user: "better-auth-user",
+      metadata: {
+        tenantId: "tenant-2",
+        grant: "ag1.signed",
+      },
+    });
+    const pt = bindCustomTool(t, fakeCtx({ invocation }));
+    await pt.execute("call-2", { msg: "hello" });
+
+    expect(received.bindings).toEqual({
+      tenantId: "tenant-2",
+      externalUserId: "better-auth-user",
+      grant: "ag1.signed",
+    });
+    expect(received.params).toEqual({ msg: "hello" });
+    expect(Object.isFrozen(received.bindings)).toBe(true);
+    expect(Object.isFrozen(received.invocation)).toBe(true);
+    expect(Object.isFrozen(received.invocation.metadata)).toBe(true);
+  });
+
+  it("does not let model arguments override a same-named hidden binding", async () => {
+    let received: unknown;
+    const t = defineTool({
+      name: "tenant_echo",
+      description: "Echoes within one tenant",
+      parameters: Type.Object({ tenantId: Type.String() }),
+      bindingsSchema: Type.Object({ tenantId: Type.String() }),
+      serverBindings: {
+        tenantId: { $context: "invocation.metadata.tenantId" },
+      },
+      execute: (ctx, params) => {
+        received = { hidden: ctx.bindings.tenantId, model: params.tenantId };
+        return "ok";
+      },
+    });
+    await bindCustomTool(t, fakeCtx()).execute("call-shadow", {
+      tenantId: "attacker-controlled",
+    });
+    expect(received).toEqual({
+      hidden: "tenant-1",
+      model: "attacker-controlled",
+    });
+  });
+
+  it("validates standard JSON Schema formats used by trusted bindings", async () => {
+    let received: any;
+    const t = defineTool({
+      name: "site_context_get",
+      description: "Reads one site context",
+      parameters: Type.Object({}, { additionalProperties: false }),
+      bindingsSchema: Type.Object({
+        siteId: Type.String({ format: "uuid" }),
+        grant: Type.String({ minLength: 1 }),
+      }, { additionalProperties: false }),
+      serverBindings: {
+        siteId: { $context: "invocation.metadata.siteId" },
+        grant: { $context: "invocation.metadata.grant" },
+      },
+      execute: (ctx) => {
+        received = ctx.bindings;
+        return "ok";
+      },
+    });
+    const invocation = createToolInvocationContext({
+      requestId: "request-uuid",
+      runId: "run-uuid",
+      surface: "channel",
+      metadata: {
+        siteId: "f35f696f-2ea3-4dda-b3c0-7c1ab8ab114d",
+        grant: "ag1.signed",
+      },
+    });
+
+    await bindCustomTool(t, fakeCtx({ invocation })).execute("call-uuid", {});
+    expect(received).toEqual({
+      siteId: "f35f696f-2ea3-4dda-b3c0-7c1ab8ab114d",
+      grant: "ag1.signed",
+    });
+  });
+
+  it("fails closed when a required hidden binding is missing", async () => {
+    const t = defineTool({
+      name: "tenant_echo",
+      description: "Echoes within one tenant",
+      parameters: EchoSchema,
+      bindingsSchema: Type.Object({ tenantId: Type.String() }),
+      serverBindings: {
+        tenantId: { $context: "invocation.metadata.tenantId" },
+      },
+      execute: () => "should not run",
+    });
+    const invocation = createToolInvocationContext({
+      requestId: "request-3",
+      runId: "run-3",
+      surface: "chat",
+      metadata: {},
+    });
+    const promise = bindCustomTool(t, fakeCtx({ invocation })).execute("call-3", { msg: "hello" });
+    await expect(promise).rejects.toMatchObject({
+      code: "custom_tool_binding_missing",
+      name: "CustomToolBindingError",
+    });
+  });
+
+  it("fails closed when a hidden binding has the wrong type", async () => {
+    const t = defineTool({
+      name: "tenant_echo",
+      description: "Echoes within one tenant",
+      parameters: EchoSchema,
+      bindingsSchema: Type.Object({ tenantId: Type.String() }),
+      serverBindings: {
+        tenantId: { $context: "invocation.metadata.tenantId" },
+      },
+      execute: () => "should not run",
+    });
+    const invocation = createToolInvocationContext({
+      requestId: "request-4",
+      runId: "run-4",
+      surface: "chat",
+      metadata: { tenantId: 42 },
+    });
+    await expect(
+      bindCustomTool(t, fakeCtx({ invocation })).execute("call-4", { msg: "hello" }),
+    ).rejects.toBeInstanceOf(CustomToolBindingError);
+    await expect(
+      bindCustomTool(t, fakeCtx({ invocation })).execute("call-5", { msg: "hello" }),
+    ).rejects.toMatchObject({ code: "custom_tool_binding_invalid" });
+  });
+});
+
+describe("createToolInvocationContext", () => {
+  it("copies and deeply freezes trusted JSON values", () => {
+    const metadata = { tenant: { id: "tenant-1" }, scopes: ["read"] };
+    const invocation = createToolInvocationContext({
+      requestId: "request-1",
+      runId: "run-1",
+      surface: "task",
+      metadata,
+    });
+    metadata.tenant.id = "tampered";
+    metadata.scopes.push("write");
+    expect(invocation.metadata).toEqual({
+      tenant: { id: "tenant-1" },
+      scopes: ["read"],
+    });
+    expect(Object.isFrozen(invocation.metadata)).toBe(true);
+    expect(Object.isFrozen(invocation.metadata.tenant)).toBe(true);
+    expect(Object.isFrozen(invocation.metadata.scopes)).toBe(true);
+  });
+
+  it("rejects non-JSON metadata deterministically", () => {
+    const cyclic: Record<string, unknown> = {};
+    cyclic.self = cyclic;
+    expect(() => createToolInvocationContext({
+      requestId: "request-1",
+      runId: "run-1",
+      surface: "chat",
+      metadata: cyclic as any,
+    })).toThrow(/JSON|cyclic/i);
+  });
+
+  it("rejects an unknown runtime surface even through untyped input", () => {
+    expect(() => createToolInvocationContext({
+      requestId: "request-1",
+      runId: "run-1",
+      surface: "unknown" as any,
+    })).toThrow(/surface.*invalid/i);
   });
 });
 

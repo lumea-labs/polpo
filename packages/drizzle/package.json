@@ -1,6 +1,6 @@
 {
   "name": "@polpo-ai/drizzle",
-  "version": "0.15.61",
+  "version": "0.15.68",
   "description": "Drizzle ORM store implementations for the Polpo AI agent orchestration platform (PostgreSQL + SQLite)",
   "type": "module",
   "main": "dist/index.js",
@@ -25,8 +25,8 @@
     "nanoid": "^5.1.2"
   },
   "peerDependencies": {
-    "postgres": "^3.4.0",
-    "better-sqlite3": "^11.0.0 || ^12.0.0"
+    "better-sqlite3": "^11.0.0 || ^12.0.0",
+    "postgres": "^3.4.0"
   },
   "peerDependenciesMeta": {
     "postgres": {
@@ -37,11 +37,11 @@
     }
   },
   "devDependencies": {
-    "typescript": "^5.7.3",
     "@types/better-sqlite3": "^7.6.8",
-    "postgres": "^3.4.0",
     "better-sqlite3": "^11.0.0",
-    "drizzle-kit": "^0.31.0"
+    "drizzle-kit": "^0.31.0",
+    "postgres": "^3.4.0",
+    "typescript": "^5.7.3"
   },
   "files": [
     "dist",

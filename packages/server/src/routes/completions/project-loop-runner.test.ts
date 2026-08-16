@@ -1,5 +1,7 @@
-import { describe, expect, it } from "vitest";
-import { buildLoopResumeState } from "./project-loop-runner.js";
+import { describe, expect, it, vi } from "vitest";
+import { createToolInvocationContext, MemoryLoopRunStore } from "@polpo-ai/core";
+import type { CompletionRouteDeps } from "../completions.js";
+import { buildLoopResumeState, resumeProjectLoopRun } from "./project-loop-runner.js";
 
 describe("buildLoopResumeState", () => {
   const continuation = {
@@ -54,5 +56,67 @@ describe("buildLoopResumeState", () => {
   it("does not create a checkpoint without a continuation", () => {
     expect(buildLoopResumeState(undefined, [], [], undefined, "enforce"))
       .toBeUndefined();
+  });
+
+  it("rehydrates private tool identity through the host without persisting it", async () => {
+    const store = new MemoryLoopRunStore();
+    await store.createRun({
+      id: "looprun-1",
+      loop: { name: "resume-loop" },
+      agentName: "assistant",
+      sessionId: "session-1",
+      user: "user-1",
+      context: { request: { metadata: { publicRef: "project-1" } } },
+      metadata: {
+        runtimeInvocation: { surface: "channel", source: "channel" },
+      },
+    });
+    await store.updateRun("looprun-1", {
+      status: "approval_approved",
+      resume: {
+        context: { request: { metadata: { publicRef: "project-1" } } },
+        steps: [{ type: "tool", tool: "probe", next: "end" } as any],
+        createdAt: new Date().toISOString(),
+      },
+    });
+    const captured: unknown[] = [];
+    const deps = {
+      getAgents: async () => [{ name: "assistant", model: "test" }],
+      getConfig: () => ({}),
+      getMemoryStore: () => null,
+      getSessionStore: () => null,
+      getStore: () => null,
+      emit: () => {},
+      getLoopRunStore: () => store,
+      getProjectLoop: async () => ({
+        name: "resume-loop",
+        start: "probe",
+        steps: { probe: { type: "tool", tool: "probe", next: "end" } },
+      }),
+      resolveAgentTools: async (_agent: unknown, _scope: unknown, invocation: unknown) => {
+        captured.push(invocation);
+        return {
+          tools: [{ name: "probe", parameters: { type: "object", properties: {} } }],
+          executor: async () => "ok",
+        };
+      },
+      resolveResumedToolInvocation: vi.fn(async () => createToolInvocationContext({
+        requestId: "provider-event-1",
+        runId: "looprun-1",
+        sessionId: "session-1",
+        user: "user-1",
+        metadata: { grant: "secret-grant" },
+        surface: "channel",
+      })),
+      buildAgentPrompt: () => "",
+      resolveAgentModel: async () => { throw new Error("model should not run"); },
+    } as unknown as CompletionRouteDeps;
+
+    await resumeProjectLoopRun({ deps, runId: "looprun-1" });
+
+    expect(deps.resolveResumedToolInvocation).toHaveBeenCalledOnce();
+    expect(captured[0]).toMatchObject({ metadata: { grant: "secret-grant" } });
+    const updated = await store.getRun("looprun-1");
+    expect(JSON.stringify(updated)).not.toContain("secret-grant");
   });
 });

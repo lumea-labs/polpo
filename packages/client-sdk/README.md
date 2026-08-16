@@ -17,6 +17,7 @@ await client.chatCompletions({
   model: "openai/gpt-5",
   sandbox: {
     isolation: "fresh",
+    volumes: [{ name: "reference", access: "read-only" }],
     lifecycle: {
       onRelease: "pool",
       stopAfterIdleMinutes: 30,
@@ -43,6 +44,12 @@ clients, but cannot be mixed with the explicit controls.
 Use `sandbox.isolation: "shared"` only when concurrent outer runs are intended
 to collaborate in one project-scoped workspace. `reuse` remains exclusive and
 only makes the sandbox available to another run after release.
+
+`sandbox.volumes` selects host-defined persistent volumes by name. The request
+may remove an agent grant or narrow it to `read-only` or manual writeback, but
+cannot add an ungranted volume, change its strategy, or choose a host mount
+path. The only provider-neutral strategies are `mounted` and `hydrated`;
+strategy and storage credentials are resolved by the runtime host.
 
 `runtime:plan` SSE payloads can be narrowed with
 `isRuntimePlanSSEEvent`. The store indexes valid, secret-free plans by id and
@@ -84,6 +91,36 @@ const result = JSON.parse(response.choices[0].message.content ?? "{}");
 The same request works with `chatCompletionsStream`. Polpo buffers the
 structured value until it is complete and schema-valid, then emits one
 canonical JSON content chunk. Existing text requests are unchanged.
+
+## Chat interactions
+
+Enable only interactions your client can render:
+
+```ts
+const response = await client.chatCompletions({
+  agent: "support",
+  messages: [{ role: "user", content: "Help me configure this" }],
+  polpo: {
+    capabilities: {
+      ask_user_question: true,
+      suggestions: true,
+    },
+  },
+});
+
+for (const suggestion of response.polpo?.suggestions ?? []) {
+  console.log(suggestion.label, suggestion.prompt);
+}
+```
+
+For streaming requests, `ChatCompletionStream.suggestions` contains the latest
+validated suggestions after the stream completes. Each item has only `id`,
+`label`, and the exact `prompt` to send as the next user message. The React
+`useChat` hook requests both supported interactions, exposes `suggestions`, and
+stores them on the assistant message that produced them. When resuming a
+session, `useChat` restores active suggestions only when that assistant message
+is still the latest message; historical suggestions remain attached to their
+original messages without being offered again after a newer user turn.
 
 ## Steer an active run
 

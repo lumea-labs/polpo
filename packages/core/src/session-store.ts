@@ -1,3 +1,5 @@
+import type { ChatSuggestion } from "./chat-interactions.js";
+
 /**
  * Chat session storage — persists conversation threads across TUI restarts.
  * Nomenclature aligned with OpenCode: Session, Message, SessionStore.
@@ -33,6 +35,8 @@ export interface Message {
   ts: string;              // ISO timestamp
   /** Tool calls executed during this assistant message (only for role=assistant) */
   toolCalls?: ToolCallInfo[];
+  /** Optional next messages generated for compatible chat clients. */
+  suggestions?: ChatSuggestion[];
 }
 
 export interface Session {
@@ -82,7 +86,13 @@ export interface SessionStore {
   create(opts?: SessionCreateOptions): Promise<string>;
   addMessage(sessionId: string, role: MessageRole, content: string | SessionContentPart[]): Promise<Message>;
   /** Update the content of an existing message (e.g. finalize a streaming response). */
-  updateMessage(sessionId: string, messageId: string, content: string | SessionContentPart[], toolCalls?: ToolCallInfo[]): Promise<boolean>;
+  updateMessage(
+    sessionId: string,
+    messageId: string,
+    content: string | SessionContentPart[],
+    toolCalls?: ToolCallInfo[],
+    suggestions?: ChatSuggestion[],
+  ): Promise<boolean>;
   getMessages(sessionId: string): Promise<Message[]>;
   getRecentMessages(sessionId: string, limit: number): Promise<Message[]>;
   /**

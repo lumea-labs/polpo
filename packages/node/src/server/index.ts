@@ -82,6 +82,7 @@ export class PolpoServer {
       corsOrigins: this.config.corsOrigins,
       workDir,
       onInitialize: (workDir: string) => this.completeSetup(workDir),
+      channels: this.config.channels,
     });
 
     this.server = serve({
@@ -123,6 +124,7 @@ export class PolpoServer {
     if (this.orchestrator?.isInitialized) {
       await this.orchestrator.gracefulStop();
     }
+    await this.config.channels?.runtime.shutdown();
     this.server?.close();
     for (const fn of this.shutdownHandlers) fn();
     console.log("Polpo Server stopped.");

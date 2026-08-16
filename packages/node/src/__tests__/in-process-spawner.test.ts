@@ -138,6 +138,19 @@ afterAll(async () => {
 // ── Tests ───────────────────────────────────────────────
 
 describe("InProcessSpawner", () => {
+  test("finalizes exactly once when persistence fails before the engine starts", async () => {
+    const store = new InMemoryRunStore();
+    vi.spyOn(store, "upsertRun").mockRejectedValue(new Error("database unavailable"));
+    const finalize = vi.fn(async () => undefined);
+    const spawner = new InProcessSpawner(() => ({ runStore: store, finalize }));
+
+    const spawnResult = await spawner.spawn(makeConfig());
+    await onExitPromise(spawnResult);
+
+    expect(finalize).toHaveBeenCalledTimes(1);
+    expect(spawner.isAlive(spawnResult.pid)).toBe(false);
+  });
+
   test("E2E: task runs in-process against the injected stores, result + transcript persisted", async () => {
     setMockModel(mockTurnSequenceModel([
       { type: "tool-call", toolName: "write", args: { path: "ip-a.txt", content: "in-process" } },

@@ -1,4 +1,11 @@
 import type { FileSystem } from "@polpo-ai/core/filesystem";
+import type { CustomToolServerBindings } from "./custom-tools.js";
+import {
+  createSingleFileCustomToolArtifact,
+  customToolArtifactEntrySource,
+  parseCustomToolSourceArtifact,
+  type CustomToolSourceArtifact,
+} from "./custom-tool-source-artifact.js";
 
 export const CUSTOM_TOOL_NAME_RE = /^[a-z][a-z0-9_]*$/;
 
@@ -8,13 +15,17 @@ export interface CustomToolMeta {
   parameters: unknown;
   label: string;
   clientSide: boolean;
+  bindingsSchema?: unknown;
+  serverBindings?: CustomToolServerBindings;
 }
 
 export interface CustomToolsStore {
   putSource(name: string, source: string): Promise<void>;
+  putArtifact(name: string, artifact: CustomToolSourceArtifact): Promise<void>;
   putMeta(name: string, meta: CustomToolMeta): Promise<void>;
   putBundle(name: string, code: string): Promise<void>;
   getSource(name: string): Promise<string | null>;
+  getArtifact(name: string): Promise<CustomToolSourceArtifact | null>;
   getMeta(name: string): Promise<CustomToolMeta | null>;
   getBundle(name: string): Promise<string | null>;
   list(): Promise<string[]>;
@@ -43,11 +54,38 @@ export function createCustomToolsStore(
     return fs.readFile(path);
   };
 
+  const putArtifact = async (
+    name: string,
+    artifact: CustomToolSourceArtifact,
+  ): Promise<void> => {
+    const parsed = parseCustomToolSourceArtifact(artifact);
+    await fs.mkdir(root);
+    await Promise.all([
+      fs.writeFile(pathFor(name, "ts"), customToolArtifactEntrySource(parsed)),
+      fs.writeFile(pathFor(name, "source.json"), JSON.stringify(parsed)),
+    ]);
+  };
+
+  const getArtifact = async (
+    name: string,
+  ): Promise<CustomToolSourceArtifact | null> => {
+    const raw = await readOptional(pathFor(name, "source.json"));
+    if (raw !== null) {
+      try {
+        return parseCustomToolSourceArtifact(JSON.parse(raw));
+      } catch {
+        return null;
+      }
+    }
+    const source = await readOptional(pathFor(name, "ts"));
+    return source === null ? null : createSingleFileCustomToolArtifact(name, source);
+  };
+
   return {
     async putSource(name, source) {
-      await fs.mkdir(root);
-      await fs.writeFile(pathFor(name, "ts"), source);
+      await putArtifact(name, createSingleFileCustomToolArtifact(name, source));
     },
+    putArtifact,
     async putMeta(name, meta) {
       await fs.mkdir(root);
       await fs.writeFile(pathFor(name, "json"), JSON.stringify(meta, null, 2));
@@ -57,8 +95,10 @@ export function createCustomToolsStore(
       await fs.writeFile(pathFor(name, "mjs"), code);
     },
     getSource(name) {
-      return readOptional(pathFor(name, "ts"));
+      return getArtifact(name).then((artifact) =>
+        artifact ? customToolArtifactEntrySource(artifact) : null);
     },
+    getArtifact,
     async getMeta(name) {
       const raw = await readOptional(pathFor(name, "json"));
       if (raw === null) return null;
@@ -85,7 +125,7 @@ export function createCustomToolsStore(
     async remove(name) {
       const existed = await fs.exists(pathFor(name, "ts"));
       await Promise.all(
-        ["ts", "json", "mjs"].map((extension) =>
+        ["ts", "source.json", "json", "mjs"].map((extension) =>
           fs.remove(pathFor(name, extension)).catch(() => undefined),
         ),
       );

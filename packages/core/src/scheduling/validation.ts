@@ -11,6 +11,11 @@ import type {
   ScheduleTiming,
   UpdateScheduleInput,
 } from "./types.js";
+import {
+  SANDBOX_VOLUME_NAME_PATTERN,
+  SANDBOX_VOLUMES_MAX,
+  type RuntimeSandboxVolumeSelection,
+} from "../runtime-sandbox.js";
 
 export const SCHEDULE_LIMITS = Object.freeze({
   idLength: 256,
@@ -624,7 +629,7 @@ function normalizeExecution(value: unknown): ScheduleExecutionOptions {
   }
   if (execution.sandbox !== undefined) {
     const sandbox = record(execution.sandbox, "Schedule execution sandbox");
-    assertKnownKeys(sandbox, ["isolation", "lifecycle"], "Schedule execution sandbox");
+    assertKnownKeys(sandbox, ["isolation", "lifecycle", "volumes"], "Schedule execution sandbox");
     if (
       sandbox.isolation !== undefined
       && sandbox.isolation !== "reuse"
@@ -639,6 +644,55 @@ function normalizeExecution(value: unknown): ScheduleExecutionOptions {
       deleteAfterStopMinutes?: number;
       idleTtlMinutes?: number;
     } | undefined;
+    let volumes: RuntimeSandboxVolumeSelection[] | undefined;
+    if (sandbox.volumes !== undefined) {
+      if (!Array.isArray(sandbox.volumes) || sandbox.volumes.length > SANDBOX_VOLUMES_MAX) {
+        throw new Error(`Schedule sandbox volumes must be an array with at most ${SANDBOX_VOLUMES_MAX} entries`);
+      }
+      const names = new Set<string>();
+      volumes = sandbox.volumes.map((value, index) => {
+        const volume = record(value, `Schedule sandbox volume ${index}`);
+        assertKnownKeys(
+          volume,
+          ["name", "access", "writeBack"],
+          `Schedule sandbox volume ${index}`,
+        );
+        const name = requiredString(
+          volume.name,
+          `Schedule sandbox volume ${index} name`,
+          63,
+        );
+        if (!SANDBOX_VOLUME_NAME_PATTERN.test(name)) {
+          throw new Error(`Schedule sandbox volume ${index} has an invalid name`);
+        }
+        if (names.has(name)) {
+          throw new Error(`Schedule sandbox volume is duplicated: ${name}`);
+        }
+        names.add(name);
+        if (
+          volume.access !== undefined
+          && volume.access !== "read-only"
+          && volume.access !== "read-write"
+        ) {
+          throw new Error(`Schedule sandbox volume ${name} access must be read-only or read-write`);
+        }
+        if (
+          volume.writeBack !== undefined
+          && volume.writeBack !== "auto"
+          && volume.writeBack !== "manual"
+        ) {
+          throw new Error(`Schedule sandbox volume ${name} writeBack must be auto or manual`);
+        }
+        if (volume.access === "read-only" && volume.writeBack !== undefined) {
+          throw new Error(`Schedule sandbox volume ${name} cannot configure writeback while read-only`);
+        }
+        return {
+          name,
+          ...(volume.access === undefined ? {} : { access: volume.access }),
+          ...(volume.writeBack === undefined ? {} : { writeBack: volume.writeBack }),
+        } as RuntimeSandboxVolumeSelection;
+      });
+    }
     if (sandbox.lifecycle !== undefined) {
       const rawLifecycle = record(
         sandbox.lifecycle,
@@ -724,6 +778,7 @@ function normalizeExecution(value: unknown): ScheduleExecutionOptions {
     normalized.sandbox = {
       ...(sandbox.isolation === undefined ? {} : { isolation: sandbox.isolation }),
       ...(lifecycle === undefined ? {} : { lifecycle }),
+      ...(volumes === undefined ? {} : { volumes }),
     };
   }
   if (execution.guardrails !== undefined) {

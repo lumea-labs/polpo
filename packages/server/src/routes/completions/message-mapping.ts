@@ -4,6 +4,7 @@
  */
 
 import type { z } from "@hono/zod-openapi";
+import { normalizeResponseMessagesForHistory } from "@polpo-ai/llm";
 import {
   createRuntimePromptContextSegment,
   protectRuntimeToolResultMessages,
@@ -18,6 +19,7 @@ import type { contentPartSchema, messageSchema } from "./schemas.js";
 
 /** Extract plain text from a content field (string or content-part array). */
 export function extractText(content: z.infer<typeof messageSchema>["content"]): string {
+  if (content === null) return "";
   if (typeof content === "string") return content;
   return content
     .filter((p): p is { type: "text"; text: string } =>
@@ -46,34 +48,12 @@ function objectInputOrEmpty(value: unknown): Record<string, unknown> {
     : {};
 }
 
-function normalizeToolCallHistory(messages: unknown[]): unknown[] {
-  return messages.map((message) => {
-    if (!message || typeof message !== "object") return message;
-
-    const record = message as { content?: unknown };
-    if (!Array.isArray(record.content)) return message;
-
-    let changed = false;
-    const content = record.content.map((part) => {
-      if (!part || typeof part !== "object") return part;
-      const partRecord = part as { type?: unknown; input?: unknown };
-      if (partRecord.type !== "tool-call") return part;
-      if (partRecord.input && typeof partRecord.input === "object" && !Array.isArray(partRecord.input)) return part;
-
-      changed = true;
-      return { ...(part as Record<string, unknown>), input: {} };
-    });
-
-    return changed ? { ...(message as Record<string, unknown>), content } : message;
-  });
-}
-
 /** Resolve file content parts → text references the agent can act on with its tools. */
 function resolveFileContentParts(
   content: z.infer<typeof messageSchema>["content"],
   contextTrust: RuntimeContextTrustMode,
 ): z.infer<typeof messageSchema>["content"] {
-  if (typeof content === "string" || !content.some((p) => p.type === "file")) return content;
+  if (content === null || typeof content === "string" || !content.some((p) => p.type === "file")) return content;
 
   const resolved: z.infer<typeof contentPartSchema>[] = [];
   for (const part of content) {
@@ -105,6 +85,7 @@ function resolveFileContentParts(
  * AI SDK TextPart:  { type: "text", text: string }
  */
 function toAIContent(content: z.infer<typeof messageSchema>["content"]): string | ({ type: "text"; text: string } | { type: "image"; image: string; mediaType?: string })[] {
+  if (content === null) return "";
   if (typeof content === "string") return content;
 
   const nonEmpty = content.filter((part) =>
@@ -234,7 +215,7 @@ export async function appendModelResponseMessages(
   try {
     const responseMessages = await result.responseMessages;
     if (Array.isArray(responseMessages) && responseMessages.length > 0) {
-      const normalized = normalizeToolCallHistory(responseMessages);
+      const normalized = normalizeResponseMessagesForHistory(responseMessages);
       messages.push(...(contextTrust === "enforce"
         ? protectRuntimeToolResultMessages(normalized)
         : normalized));

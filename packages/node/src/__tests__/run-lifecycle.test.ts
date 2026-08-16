@@ -738,7 +738,7 @@ describe("executeRun — shared run lifecycle", () => {
         if (turn === 1) {
           return { stream: convertArrayToReadableStream([
             { type: "stream-start", warnings: [] },
-            { type: "tool-call", toolCallId: "load_run", toolName: "tool_load", input: JSON.stringify({ names: ["calculate"] }) },
+            { type: "tool-call", toolCallId: "load_run", toolName: "polpo_tool_load", input: JSON.stringify({ names: ["calculate"] }) },
             { type: "finish", finishReason: { unified: "tool-calls", raw: undefined }, usage },
           ] as any[]) };
         }
@@ -758,9 +758,9 @@ describe("executeRun — shared run lifecycle", () => {
         ] as any[]) };
       },
     });
-    const active = new Set(["tool_load"]);
+    const active = new Set(["polpo_tool_load"]);
     const executor = vi.fn(async (name: string, args: Record<string, unknown>) => {
-      if (name === "tool_load") {
+      if (name === "polpo_tool_load") {
         active.add("calculate");
         return JSON.stringify({ loaded: ["calculate"] });
       }
@@ -777,11 +777,11 @@ describe("executeRun — shared run lifecycle", () => {
         sessionId: "conversation-session-1",
         agent: config.agent,
         model: { aiModel: model, contextWindow: 200_000, maxTokens: 8192 },
-        systemPrompt: "Use tool_load before calculate.",
+        systemPrompt: "Use polpo_tool_load before calculate.",
         maxTurns: 3,
         seedMessages: [{ role: "user", content: "Double 5" }],
         toolSet: {
-          tool_load: {
+          polpo_tool_load: {
             description: "Load a tool",
             inputSchema: jsonSchema({
               type: "object",
@@ -812,13 +812,13 @@ describe("executeRun — shared run lifecycle", () => {
     expect((await store.getRun(config.runId))?.sessionId).toBe("conversation-session-1");
     expect((await store.getRun(config.runId))?.activity.sessionId).toBe("conversation-session-1");
     expect(visibleByTurn).toEqual([
-      ["tool_load"],
-      ["tool_load", "calculate"],
-      ["tool_load", "calculate"],
+      ["polpo_tool_load"],
+      ["polpo_tool_load", "calculate"],
+      ["polpo_tool_load", "calculate"],
     ]);
     expect(executor).toHaveBeenNthCalledWith(
       1,
-      "tool_load",
+      "polpo_tool_load",
       { names: ["calculate"] },
       expect.objectContaining({ callId: "load_run" }),
     );
@@ -849,6 +849,48 @@ describe("executeRun — shared run lifecycle", () => {
     // The AI SDK surfaces stream errors as its "No output generated" error
     // — the exact legacy path (see loop-engine.ts modelStep).
     expect(run?.result?.stderr).toContain("No output generated");
+  });
+
+  test("finalizes host resources once before persisting a successful terminal run", async () => {
+    setMockModel(mockTextModel("done"));
+    const store = new InMemoryRunStore();
+    const complete = vi.spyOn(store, "completeRun");
+    const finalize = vi.fn(async () => undefined);
+    const config = makeConfig();
+
+    const outcome = await executeRun(config, {
+      runStore: store,
+      pid: 1,
+      configPath: "memory://finalize-success",
+      finalize,
+    });
+
+    expect(outcome.status).toBe("completed");
+    expect(finalize).toHaveBeenCalledTimes(1);
+    expect(finalize.mock.invocationCallOrder[0]).toBeLessThan(
+      complete.mock.invocationCallOrder[0],
+    );
+  });
+
+  test("fails the run when host resource finalization fails", async () => {
+    setMockModel(mockTextModel("would have completed"));
+    const store = new InMemoryRunStore();
+    const finalize = vi.fn(async () => {
+      throw new Error("hydrated volume is dirty");
+    });
+    const config = makeConfig();
+
+    const outcome = await executeRun(config, {
+      runStore: store,
+      pid: 1,
+      configPath: "memory://finalize-failure",
+      finalize,
+    });
+
+    expect(outcome.status).toBe("failed");
+    expect(outcome.result.stderr).toContain("hydrated volume is dirty");
+    expect(finalize).toHaveBeenCalledTimes(1);
+    expect((await store.getRun(config.runId))?.status).toBe("failed");
   });
 
   test("host steering reaches the run and closes when the lifecycle settles", async () => {

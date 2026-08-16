@@ -1,6 +1,6 @@
 {
   "name": "@polpo-ai/tools",
-  "version": "0.15.61",
+  "version": "0.15.68",
   "description": "Agent tools for Polpo — coding, browser, email, search, and more. Core tools work everywhere, extended tools are opt-in.",
   "type": "module",
   "main": "dist/index.js",
@@ -47,7 +47,7 @@
   },
   "peerDependencies": {
     "@ai-sdk/openai": "^3.0.48",
-    "ai": "^6.0.141",
+    "ai": ">=6.0.182 <7",
     "zod": ">=3.0.0 || >=4.0.0"
   },
   "license": "Apache-2.0",
@@ -67,6 +67,6 @@
   ],
   "devDependencies": {
     "@ai-sdk/openai": "^3.0.48",
-    "ai": "^6.0.141"
+    "ai": "6.0.182"
   }
 }

@@ -16,6 +16,7 @@ import type {
   RuntimePromptContextSegment,
 } from "../runtime-context/index.js";
 import type { ResolvedExecutionRoute } from "../execution-router.js";
+import type { ToolInvocationContext } from "../tool-invocation.js";
 
 // === Runner Config ===
 
@@ -42,6 +43,8 @@ export interface RunnerConfig {
   contextTrust?: RuntimeContextTrustMode;
   /** Validated direct-or-loop decision resolved before host dispatch. */
   executionRoute?: ResolvedExecutionRoute;
+  /** Host-owned immutable identity supplied to custom tools for this run. */
+  toolInvocation?: ToolInvocationContext;
   runId: string;
   taskId: string;
   agent: AgentConfig;

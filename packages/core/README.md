@@ -173,6 +173,28 @@ Runtime plans contain policy decisions and references only. Prompts, messages,
 provider headers, credentials, and retrieved private content do not belong in
 the plan or its `runtime:plan` event.
 
+## Sandbox volumes
+
+Every host provides a writable local workspace without a volume declaration.
+Persistent storage is selected by stable, host-defined names:
+
+```ts
+const sandbox = {
+  isolation: "fresh" as const,
+  volumes: [
+    { name: "reference", access: "read-only" as const },
+    { name: "workspace", writeBack: "manual" as const },
+  ],
+};
+```
+
+Requests can only narrow the volumes already granted to an agent. Hosts resolve
+the canonical `mounted` or `hydrated` strategy, mount path, backend credentials,
+and revision. Manually managed hydrated volumes can expose the built-in
+`sandbox_volume_checkpoint` tool through the host checkpoint callback. The
+outer sandbox lease finalizes persistent storage once, after all root and nested
+steps complete.
+
 ## Model profiles
 
 Model profiles give project configuration stable semantic names while keeping

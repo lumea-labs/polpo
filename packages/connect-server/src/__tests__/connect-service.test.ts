@@ -76,6 +76,26 @@ describe("connect service", () => {
     });
   });
 
+  it("stores host-only API-key metadata with the encrypted secret", async () => {
+    const { service, secrets } = createHarness();
+    const connection = await service.createApiKeyConnection({
+      providerId: "custom_api",
+      apiKey: "sk_live_123",
+      secretMetadata: {
+        channelCredentials: { publicKey: "provider-public-key" },
+      },
+    });
+
+    expect(connection.metadata).toBeUndefined();
+    await expect(secrets.getSecret(connection.secretRef!)).resolves.toEqual({
+      kind: "api_key",
+      apiKey: "sk_live_123",
+      metadata: {
+        channelCredentials: { publicKey: "provider-public-key" },
+      },
+    });
+  });
+
   it("creates bearer MCP connections and resolves MCP credentials without leaking the token", async () => {
     const { service, secrets } = createHarness();
     const connection = await service.createMcpConnection({

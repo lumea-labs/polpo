@@ -36,6 +36,35 @@ describe("shared runtime sandbox schema", () => {
     });
   });
 
+  it("accepts strict named volume selections", () => {
+    expect(RuntimeSandboxSchema.parse({
+      volumes: [
+        { name: "workspace", access: "read-write", writeBack: "auto" },
+        { name: "reference-data", access: "read-only" },
+      ],
+    })).toEqual({
+      volumes: [
+        { name: "workspace", access: "read-write", writeBack: "auto" },
+        { name: "reference-data", access: "read-only" },
+      ],
+    });
+  });
+
+  it.each([
+    { volumes: null },
+    { volumes: ["workspace"] },
+    { volumes: [{ name: "" }] },
+    { volumes: [{ name: "Workspace" }] },
+    { volumes: [{ name: "../workspace" }] },
+    { volumes: [{ name: "workspace", access: "owner" }] },
+    { volumes: [{ name: "workspace", writeBack: "sometimes" }] },
+    { volumes: [{ name: "workspace", access: "read-only", writeBack: "auto" }] },
+    { volumes: [{ name: "workspace", unknown: true }] },
+    { volumes: [{ name: "workspace" }, { name: "workspace" }] },
+  ])("rejects malformed volume selection %#", (sandbox) => {
+    expect(RuntimeSandboxSchema.safeParse(sandbox).success).toBe(false);
+  });
+
   it.each([
     null,
     [],
@@ -81,5 +110,36 @@ describe("agent create/update schema parity", () => {
       .toBe(false);
     expect(UpdateAgentSchema.safeParse({ reasoning: "extreme" }).success)
       .toBe(false);
+  });
+});
+
+describe("agent chat interaction schema", () => {
+  it("accepts agent-scoped chat preferences on create and update", () => {
+    const chat = {
+      allowUserQuestions: false,
+      suggestions: {
+        enabled: true,
+        maxItems: 4,
+        guidance: "Prefer concrete next actions.",
+      },
+    } as const;
+
+    expect(AddAgentSchema.parse({ name: "support", chat }).chat).toEqual(chat);
+    expect(UpdateAgentSchema.parse({ chat }).chat).toEqual(chat);
+  });
+
+  it.each([
+    null,
+    [],
+    { unknown: true },
+    { allowUserQuestions: "yes" },
+    { suggestions: null },
+    { suggestions: { enabled: "yes" } },
+    { suggestions: { maxItems: 1 } },
+    { suggestions: { maxItems: 5 } },
+    { suggestions: { guidance: "x".repeat(501) } },
+    { suggestions: { unknown: true } },
+  ])("rejects malformed agent chat preferences %#", (chat) => {
+    expect(UpdateAgentSchema.safeParse({ chat }).success).toBe(false);
   });
 });

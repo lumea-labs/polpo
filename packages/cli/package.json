@@ -1,8 +1,13 @@
 {
   "name": "@polpo-ai/cli",
-  "version": "0.15.61",
+  "version": "0.15.68",
   "description": "Command-line client for Polpo — create/link/deploy cloud projects from your terminal.",
   "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/lumea-labs/polpo.git",
+    "directory": "packages/cli"
+  },
   "type": "module",
   "main": "dist/index.js",
   "bin": {
@@ -26,8 +31,11 @@
     "@polpo-ai/core": "workspace:*",
     "@polpo-ai/file-stores": "workspace:*",
     "@polpo-ai/server": "workspace:*",
+    "@polpo-ai/tools": "workspace:*",
     "@polpo-ai/vault-crypto": "workspace:*",
     "commander": "^13.1.0",
+    "es-module-lexer": "^2.3.1",
+    "esbuild": "^0.25.12",
     "picocolors": "^1.1.1"
   },
   "devDependencies": {

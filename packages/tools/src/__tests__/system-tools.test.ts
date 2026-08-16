@@ -21,7 +21,7 @@
  * mechanical) and cross-runtime concerns (those are the Layer-2
  * Docker rig).
  */
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import {
   mkdtempSync, rmSync, writeFileSync, mkdirSync,
   readFileSync, statSync, symlinkSync,
@@ -60,7 +60,84 @@ afterEach(() => {
   rmSync(cwd, { recursive: true, force: true });
 });
 
+describe("runtime requirements", () => {
+  it("annotates the tools returned to the runtime", () => {
+    expect(tool("read").requiresSandbox).toBe(true);
+    expect(tool("bash").requiresSandbox).toBe(true);
+    expect(tool("http_fetch").requiresSandbox).toBe(false);
+    expect(tool("http_download").requiresSandbox).toBe(true);
+  });
+});
+
 // ────────────────────────────────────────────────────────────
+describe("task outcome tool availability", () => {
+  const toolNames = (allowedTools: string[] | undefined, outputDir?: string) =>
+    createSystemTools(
+      cwd,
+      allowedTools,
+      [cwd],
+      outputDir,
+      undefined,
+      new NodeFileSystem(),
+      new NodeShell(),
+    ).map((candidate) => candidate.name);
+
+  it.each([
+    ["an omitted allowlist", undefined],
+    ["an empty allowlist", []],
+    ["a restrictive allowlist", ["read"]],
+    ["a wildcard allowlist", ["*"]],
+  ] as const)("injects register_outcome for task runs with %s", (_label, allowedTools) => {
+    const outputDir = join(cwd, "task-output");
+
+    expect(toolNames(allowedTools ? [...allowedTools] : undefined, outputDir))
+      .toContain("register_outcome");
+  });
+
+  it("does not expose register_outcome without a task output directory", () => {
+    expect(toolNames(undefined)).not.toContain("register_outcome");
+    expect(toolNames(["register_outcome"])).not.toContain("register_outcome");
+  });
+
+  it("injects register_outcome exactly once", () => {
+    const names = toolNames(["register_outcome", "read"], join(cwd, "task-output"));
+
+    expect(names.filter((name) => name === "register_outcome")).toHaveLength(1);
+  });
+
+  it("uses the runtime filesystem when validating task artifacts", async () => {
+    const exists = vi.fn(async () => true);
+    const stat = vi.fn(async () => ({ size: 42 }));
+    const runtimeFs = { exists, stat } as unknown as NodeFileSystem;
+    const taskTools = createSystemTools(
+      cwd,
+      ["read"],
+      [cwd],
+      join(cwd, "task-output"),
+      undefined,
+      runtimeFs,
+      new NodeShell(),
+    );
+    const registerOutcome = taskTools.find((candidate) => candidate.name === "register_outcome");
+
+    expect(registerOutcome).toBeDefined();
+    const result = await registerOutcome!.execute("call-1", {
+      type: "file",
+      label: "Virtual report",
+      path: "virtual-report.xlsx",
+    });
+
+    expect(exists).toHaveBeenCalledWith(join(cwd, "virtual-report.xlsx"));
+    expect(stat).toHaveBeenCalledWith(join(cwd, "virtual-report.xlsx"));
+    expect(result.details).toMatchObject({
+      outcomeType: "file",
+      outcomeLabel: "Virtual report",
+      outcomeSize: 42,
+    });
+  });
+});
+
+// ───────────────────────────────────────────────────────────
 describe("read — happy path", () => {
   it("returns line-numbered content", async () => {
     writeFileSync(join(cwd, "a.txt"), "alpha\nbeta\ngamma");

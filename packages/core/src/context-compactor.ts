@@ -91,6 +91,42 @@ export interface CompactionResult {
   tokensAfter: number;
 }
 
+function safeCompactionSplit(messages: any[], requestedIndex: number): number {
+  const pending = new Set<string>();
+  const approvalCalls = new Map<string, string>();
+  let lastSafeIndex = 0;
+
+  for (let index = 0; index < requestedIndex; index++) {
+    const message = messages[index];
+    if (!message || !Array.isArray(message.content)) {
+      if (pending.size === 0) lastSafeIndex = index + 1;
+      continue;
+    }
+
+    for (const part of message.content) {
+      if (!part || typeof part !== "object") continue;
+      if (part.type === "tool-call" && part.providerExecuted !== true && typeof part.toolCallId === "string") {
+        pending.add(part.toolCallId);
+      } else if (part.type === "tool-result" && typeof part.toolCallId === "string") {
+        pending.delete(part.toolCallId);
+      } else if (
+        part.type === "tool-approval-request"
+        && typeof part.approvalId === "string"
+        && typeof part.toolCallId === "string"
+      ) {
+        approvalCalls.set(part.approvalId, part.toolCallId);
+      } else if (part.type === "tool-approval-response" && typeof part.approvalId === "string") {
+        const toolCallId = approvalCalls.get(part.approvalId);
+        if (toolCallId) pending.delete(toolCallId);
+      }
+    }
+
+    if (pending.size === 0) lastSafeIndex = index + 1;
+  }
+
+  return lastSafeIndex;
+}
+
 // ── Summarization prompts ───────────────────────────────────────────────
 
 const TASK_COMPACTION_PROMPT = `Summarize the conversation for handoff to a continuation agent.
@@ -385,6 +421,11 @@ export async function compactIfNeeded(input: CompactionInput): Promise<Compactio
     recentTokens += msgTokens;
     if (i === 0) splitIndex = 0;
   }
+
+  // Never split an assistant tool call from its tool result. Apart from
+  // losing useful context, such a split creates an invalid AI SDK prompt for
+  // both the summarizer and the continuation model.
+  splitIndex = safeCompactionSplit(pruned, splitIndex);
 
   // Need at least some older messages to summarize
   if (splitIndex <= 0) {

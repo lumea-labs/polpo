@@ -323,6 +323,41 @@ describe.each(ENGINES)("%s — characterization", (_label, spawn) => {
     expect(typeof outcome.producedAt).toBe("string");
   });
 
+  test.each([
+    ["restrictive core", ["read"]],
+    ["extended category", ["excel_*"]],
+    ["global wildcard", ["*"]],
+  ] as const)("register_outcome remains available with a %s task allowlist", async (_label, allowedTools) => {
+    const { handle, result, transcript } = await runEngine(
+      makeAgent({ allowedTools: [...allowedTools] }),
+      [
+        {
+          type: "tool-call",
+          toolName: "register_outcome",
+          args: { type: "text", label: "Summary", text: "Allowlist-safe outcome" },
+        },
+        { type: "text", text: "registered" },
+      ],
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(handle.outcomes).toHaveLength(1);
+    expect(handle.outcomes?.[0]).toMatchObject({
+      type: "text",
+      label: "Summary",
+      text: "Allowlist-safe outcome",
+      producedBy: "register_outcome",
+    });
+    expect(
+      transcript.some(
+        (entry) =>
+          entry.type === "tool_result"
+          && entry.tool === "register_outcome"
+          && entry.invalid === true,
+      ),
+    ).toBe(false);
+  });
+
   test("maxTurns: a model that never stops is capped, run still succeeds", async () => {
     // A fresh tool-call response per turn (a static mockToolCallModel reuses
     // one consumed stream) — the model would loop forever without the cap.

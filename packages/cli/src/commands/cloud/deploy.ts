@@ -33,6 +33,10 @@ import { resolveDeployConflict, type ConflictOptions } from "../../util/conflict
 import { listLoopSourceFiles, loadLoopDeployPayload } from "../../util/loops.js";
 import { prepareScheduleDeployments } from "../../util/schedules.js";
 import { readPolpoConfig, writePolpoConfig } from "../../util/polpo-config.js";
+import {
+  collectCustomToolSourceArtifact,
+  extractCustomToolName,
+} from "../../util/custom-tool-source.js";
 
 // ── Deploy result tracking ──────────────────────────────
 
@@ -369,7 +373,7 @@ async function deployPlaybooks(client: ApiClient, polpoDir: string): Promise<Dep
   return result;
 }
 
-/** Push custom tools (defineTool) from .polpo/tools/*.ts to the cloud. [beta] */
+/** Push custom tool entrypoints and their local dependency graphs. [beta] */
 async function deployTools(client: ApiClient, polpoDir: string): Promise<DeployResult> {
   const result = emptyResult();
   const toolsDir = path.join(polpoDir, "tools");
@@ -385,9 +389,14 @@ async function deployTools(client: ApiClient, polpoDir: string): Promise<DeployR
 
   for (const file of fs.readdirSync(toolsDir).filter((f) => f.endsWith(".ts"))) {
     const source = fs.readFileSync(path.join(toolsDir, file), "utf-8");
-    const name = source.match(/name\s*:\s*["'`]([a-z][a-z0-9_]*)["'`]/)?.[1] ?? file.replace(/\.ts$/, "");
+    const name = extractCustomToolName(source);
+    if (!name) continue;
     try {
-      const res = await client.post<any>("/v1/tools", { name, source });
+      const artifact = await collectCustomToolSourceArtifact(
+        path.join(toolsDir, file),
+        toolsDir,
+      );
+      const res = await client.post<any>("/v1/tools", { name, artifact });
       if (res.status >= 200 && res.status < 300) {
         if (existing.has(name)) result.updated++; else result.created++;
       } else {

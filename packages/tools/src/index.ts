@@ -17,6 +17,7 @@ export type { ExtendedToolName, CreateAllToolsOptions } from "./system-tools.js"
 
 // Individual tool factories (for custom composition)
 export { createOutcomeTools } from "./outcome-tools.js";
+export { createSandboxVolumeCheckpointTool } from "./sandbox-volume-tools.js";
 export { createHttpTools, ALL_HTTP_TOOL_NAMES } from "./http-tools.js";
 export { createVaultToolsCore, createVaultTools, ALL_VAULT_TOOL_NAMES } from "./vault-tools.js";
 export { resolveAgentMcpTools } from "./mcp-client.js";
@@ -57,6 +58,11 @@ export { NodeShell } from "./adapters/node-shell.js";
 export { assertPathAllowed, resolveAllowedPaths, isPathAllowed } from "./path-sandbox.js";
 export { safeEnv, bashSafeEnv } from "./safe-env.js";
 export { assertUrlAllowed } from "./ssrf-guard.js";
+export {
+  builtInToolRequiresSandbox,
+  withBuiltInToolRuntimeRequirements,
+  withBuiltInToolsRuntimeRequirements,
+} from "./runtime-requirements.js";
 
 // Custom tools (defineTool)
 export {
@@ -68,6 +74,8 @@ export {
   extractCustomTool,
   loadCustomToolBundle,
   createJsonSchemaExample,
+  createToolInvocationContext,
+  CustomToolBindingError,
   emptyCustomToolConnections,
 } from "./custom-tools.js";
 export type {
@@ -78,6 +86,13 @@ export type {
   CustomToolContext,
   CustomToolBindContext,
   CustomToolExecuteResult,
+  CustomToolServerBinding,
+  CustomToolServerBindings,
+  ToolInvocationContext,
+  ToolInvocationContextInput,
+  ToolInvocationJsonPrimitive,
+  ToolInvocationJsonValue,
+  ToolInvocationSurface,
 } from "./custom-tools.js";
 export {
   CUSTOM_TOOL_NAME_RE,
@@ -87,6 +102,15 @@ export type {
   CustomToolMeta,
   CustomToolsStore,
 } from "./custom-tool-store.js";
+export {
+  CUSTOM_TOOL_SOURCE_ARTIFACT_VERSION,
+  MAX_CUSTOM_TOOL_SOURCE_BYTES,
+  MAX_CUSTOM_TOOL_SOURCE_FILES,
+  createSingleFileCustomToolArtifact,
+  customToolArtifactEntrySource,
+  parseCustomToolSourceArtifact,
+} from "./custom-tool-source-artifact.js";
+export type { CustomToolSourceArtifact } from "./custom-tool-source-artifact.js";
 
 // Types
 export type { ResolvedVault } from "./types.js";

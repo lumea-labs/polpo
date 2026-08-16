@@ -24,6 +24,15 @@ export const contentPartSchema = z.discriminatedUnion("type", [
   }),
 ]);
 
+const assistantToolCallSchema = z.object({
+  id: z.string().min(1),
+  type: z.literal("function"),
+  function: z.object({
+    name: z.string().min(1),
+    arguments: z.string().default("{}"),
+  }),
+});
+
 export const messageSchema = z.object({
   role: z.enum(["system", "user", "assistant", "tool"]).openapi({
     description: "Message role. System messages are appended as additional context. Tool messages carry results of client-side tool calls.",
@@ -31,7 +40,11 @@ export const messageSchema = z.object({
   content: z.union([
     z.string(),
     z.array(contentPartSchema),
+    z.null(),
   ]).openapi({ description: "Message content — plain string or array of content parts (text / image_url)" }),
+  tool_calls: z.array(assistantToolCallSchema).optional().openapi({
+    description: "OpenAI-compatible assistant tool calls awaiting matching role=tool results.",
+  }),
   tool_call_id: z.string().optional().openapi({
     description: "ID of the tool call this message responds to (required for role=tool)",
   }),
@@ -65,6 +78,12 @@ export const responseFormatSchema = z.discriminatedUnion("type", [
 ]);
 
 export type CompletionResponseFormat = z.infer<typeof responseFormatSchema>;
+
+const chatSuggestionSchema = z.object({
+  id: z.string(),
+  label: z.string(),
+  prompt: z.string(),
+}).strict();
 
 export const completionRequestSchema = z.object({
   messages: z.array(messageSchema).min(1).openapi({
@@ -104,6 +123,15 @@ export const completionRequestSchema = z.object({
   routing: RuntimeRoutingSchema.optional().openapi({
     description:
       "Optional bounded labels used by deterministic model and execution routing policies.",
+  }),
+  polpo: z.object({
+    capabilities: z.object({
+      ask_user_question: z.boolean().optional(),
+      suggestions: z.boolean().optional(),
+    }).strict().optional(),
+  }).strict().optional().openapi({
+    description:
+      "Polpo client capabilities. Suggestions require explicit support; ask_user_question may be explicitly disabled by clients that cannot render it.",
   }),
   project: z.string().optional().openapi({
     description: "Deprecated. Ignored.",
@@ -149,6 +177,9 @@ export const completionResponseSchema = z.object({
     total_tokens: z.number().int(),
   }),
   loop_trace: z.array(z.unknown()).optional(),
+  polpo: z.object({
+    suggestions: z.array(chatSuggestionSchema).optional(),
+  }).strict().optional(),
 });
 
 export const errorResponseSchema = z.object({

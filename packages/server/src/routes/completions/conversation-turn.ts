@@ -1,6 +1,7 @@
 import { nanoid } from "nanoid";
 import {
   agentMemoryScope,
+  createToolInvocationContext,
   createRuntimePromptContextSegment,
   compileExecutionRouteManifest,
   createExecutionRouteResolvedEvent,
@@ -26,7 +27,13 @@ import {
   type ResolvedExecutionRoute,
   type RuntimePlan,
   type RuntimeContextTrustMode,
+  type ToolInvocationContext,
+  type ToolInvocationJsonValue,
 } from "@polpo-ai/core";
+import {
+  normalizeChatInteractionSettings,
+  resolveChatInteractionCapabilities,
+} from "@polpo-ai/core/chat-interactions";
 import type {
   CompletionRouteDeps,
   CompletionRuntimeInvocation,
@@ -34,7 +41,10 @@ import type {
 } from "../completions.js";
 import type { CompletionRequestBody } from "./schemas.js";
 import { convertMessages, extractText } from "./message-mapping.js";
-import { CLIENT_SIDE_TOOL_NAMES, toAIToolChoice } from "./tool-mapping.js";
+import {
+  clientSideToolsForCapabilities,
+  toAIToolChoice,
+} from "./tool-mapping.js";
 import {
   createGuardedCompletionToolExecutor,
   type CompletionToolExecutor,
@@ -300,6 +310,13 @@ async function resolveCompletionRuntimePlan(
                   ...(agentConfig.sandbox.lifecycle
                     ? { lifecycle: { ...agentConfig.sandbox.lifecycle } }
                     : {}),
+                  ...(Array.isArray(agentConfig.sandbox.volumes)
+                    ? {
+                        volumes: agentConfig.sandbox.volumes.map(
+                          (volume: Record<string, unknown>) => ({ ...volume }),
+                        ),
+                      }
+                    : {}),
                 }
               : undefined,
             allowedTools: Array.isArray(agentConfig.allowedTools)
@@ -328,6 +345,39 @@ function completionInvocation(
   invocation: CompletionRuntimeInvocation | undefined,
 ): CompletionRuntimeInvocation {
   return invocation ?? { surface: "agent", source: "request" };
+}
+
+function toolInvocationSurface(
+  invocation: CompletionRuntimeInvocation,
+  loop: boolean,
+): ToolInvocationContext["surface"] {
+  if (invocation.surface === "channel" || invocation.source === "channel") return "channel";
+  if (invocation.source === "schedule") return "schedule";
+  if (invocation.surface === "task" || invocation.source === "task") return "task";
+  if (loop || invocation.source === "loop-step") return "loop";
+  return "chat";
+}
+
+export function createCompletionToolInvocation(input: {
+  body: CompletionRequestBody;
+  completionId: string;
+  loop?: boolean;
+  runtime?: CompletionRuntimeInvocation;
+  sessionId?: string | null;
+}): ToolInvocationContext {
+  const invocation = completionInvocation(input.runtime);
+  const user = invocation.user ?? input.body.user;
+  return createToolInvocationContext({
+    requestId: invocation.requestId ?? input.completionId,
+    runId: invocation.runId ?? input.completionId,
+    ...(input.sessionId ? { sessionId: input.sessionId } : {}),
+    ...(user ? { user } : {}),
+    metadata: (invocation.metadata ?? input.body.metadata ?? {}) as Record<
+      string,
+      ToolInvocationJsonValue
+    >,
+    surface: toolInvocationSurface(invocation, input.loop ?? false),
+  });
 }
 
 function defaultExecution(): CompletionRuntimePlanInput["execution"] {
@@ -483,6 +533,20 @@ export async function prepareChatCompletionExecution(
   let runtimePlan: RuntimePlan | undefined;
   let runtimeContext: RuntimeContextResolution | undefined;
   let executionRoute: ResolvedExecutionRoute | undefined;
+  let deferredAgentTools = false;
+  const completionId = options.completionId ?? `chatcmpl-${nanoid(24)}`;
+
+  const invocation = completionInvocation(options.runtime);
+  const interactionSettings = normalizeChatInteractionSettings(
+    initialAgentConfig?.chat,
+  );
+  const interactionCapabilities = resolveChatInteractionCapabilities({
+    surface: invocation.surface,
+    settings: interactionSettings,
+    client: body.polpo?.capabilities,
+  });
+  const clientSideTools = clientSideToolsForCapabilities(interactionCapabilities);
+  const clientSideToolNames = new Set(Object.keys(clientSideTools));
 
   const contextTrust = normalizeRuntimeContextTrustMode(
     deps.getConfig()?.settings?.contextTrust,
@@ -734,12 +798,9 @@ export async function prepareChatCompletionExecution(
         settings,
       );
 
-      const resolvedTools = await deps.resolveAgentTools(agentConfig);
-      effectiveTools = resolvedTools.tools;
-      effectiveToolExecutor = resolvedTools.executor;
-      toolDisclosure = resolvedTools.disclosure;
-      onResponseFinished = resolvedTools.cleanup;
-      extraAiTools = resolvedTools.extraAiTools;
+      effectiveTools = [];
+      effectiveToolExecutor = async () => "Error: Agent tools have not been resolved";
+      deferredAgentTools = true;
     }
   } else {
     if (!deps.resolveOrchestratorContext) {
@@ -799,7 +860,6 @@ export async function prepareChatCompletionExecution(
     );
   }
 
-  const completionId = options.completionId ?? `chatcmpl-${nanoid(24)}`;
   const sessionStore = deps.getSessionStore();
   let sessionId = options.sessionId ?? null;
 
@@ -821,6 +881,25 @@ export async function prepareChatCompletionExecution(
     if (lastUserMsg && sessionId) {
       await sessionStore.addMessage(sessionId, "user", lastUserMsg.content);
     }
+  }
+
+  if (deferredAgentTools) {
+    const toolInvocation = createCompletionToolInvocation({
+      body,
+      completionId,
+      runtime: options.runtime,
+      sessionId,
+    });
+    const resolvedTools = await deps.resolveAgentTools(
+      resolvedAgentConfig,
+      undefined,
+      toolInvocation,
+    );
+    effectiveTools = resolvedTools.tools;
+    effectiveToolExecutor = resolvedTools.executor;
+    toolDisclosure = resolvedTools.disclosure;
+    onResponseFinished = resolvedTools.cleanup;
+    extraAiTools = resolvedTools.extraAiTools;
   }
 
   if (!projectLoopRuntime) {
@@ -853,7 +932,7 @@ export async function prepareChatCompletionExecution(
       });
       const alwaysActive = [
         ...Object.keys(extraAiTools ?? {}),
-        ...CLIENT_SIDE_TOOL_NAMES,
+        ...clientSideToolNames,
       ];
       effectiveTools = pool.tools;
       effectiveToolExecutor = pool.executor;
@@ -900,6 +979,10 @@ export async function prepareChatCompletionExecution(
     modelOutput: modelOutputForResponseFormat(body.response_format),
     effectiveTools,
     effectiveToolExecutor,
+    interactionSettings,
+    interactionCapabilities,
+    clientSideTools,
+    clientSideToolNames,
     activeToolNames,
     activeCompactionTools,
     extraAiTools,

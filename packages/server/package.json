@@ -1,6 +1,6 @@
 {
   "name": "@polpo-ai/server",
-  "version": "0.15.61",
+  "version": "0.15.68",
   "description": "Polpo API route factories — edge-compatible Hono routes for tasks, agents, missions, vault, and more",
   "type": "module",
   "main": "dist/index.js",
@@ -21,6 +21,7 @@
   ],
   "dependencies": {
     "@hono/zod-openapi": ">=1.0.0",
+    "@polpo-ai/channels": "workspace:*",
     "@polpo-ai/connect": "workspace:*",
     "@polpo-ai/connect-server": "workspace:*",
     "@polpo-ai/core": "workspace:*",
@@ -31,7 +32,7 @@
     "typescript": "^5.7.3"
   },
   "peerDependencies": {
-    "ai": ">=6.0.0",
+    "ai": ">=6.0.182 <7",
     "zod": ">=3.0.0 || >=4.0.0"
   },
   "license": "Apache-2.0",

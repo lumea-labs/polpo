@@ -116,6 +116,9 @@ export * from "./execution-router.js";
 // ── Run steering (provider-neutral queue, checkpoints, and abort) ────────
 export * from "./steering.js";
 
+// ── Chat interaction capabilities and suggestions ─────────────────────
+export * from "./chat-interactions.js";
+
 // ── Guardrails (host-neutral policy engine + tool middleware) ───────────
 export * from "./guardrails/index.js";
 
@@ -195,13 +198,21 @@ export type { Shell, ShellOptions, ShellResult } from "./shell.js";
 // ── Spawner Abstraction ─────────────────────────────────────────────────
 export type { Spawner, SpawnResult } from "./spawner.js";
 export { resolveExecutionMode } from "./execution-mode.js";
-export { resolveRuntimeSandboxOptions } from "./runtime-sandbox.js";
-export { SANDBOX_IDLE_TTL_MINUTES_MAX } from "./runtime-sandbox.js";
+export {
+  resolveRuntimeSandboxOptions,
+  SANDBOX_IDLE_TTL_MINUTES_MAX,
+  SANDBOX_VOLUME_NAME_PATTERN,
+  SANDBOX_VOLUMES_MAX,
+  SandboxVolumeGrantError,
+} from "./runtime-sandbox.js";
 export type {
   RuntimeSandboxLifecycleOptions,
   RuntimeSandboxOptions,
+  RuntimeSandboxVolumeSelection,
   SandboxIsolation,
   SandboxReleasePolicy,
+  SandboxVolumeAccess,
+  SandboxVolumeWriteBack,
 } from "./runtime-sandbox.js";
 
 // ── SandboxProvider Abstraction ──────────────────────────────────────────
@@ -216,6 +227,9 @@ export type {
   SandboxAcquisitionSource,
   SandboxReleaseOutcome,
   SandboxLifecycleInfo,
+  SandboxVolumeStrategy,
+  ResolvedSandboxVolumeAttachment,
+  SandboxWorkspaceContext,
 } from "./sandbox-provider.js";
 
 // ── Agent Prompt Builder ────────────────────────────────────────────────
@@ -438,6 +452,14 @@ export {
   LoopPolicyDeniedError,
   MemoryLoopRunStore,
 } from "./loop/run-store.js";
+export { createToolInvocationContext } from "./tool-invocation.js";
+export type {
+  ToolInvocationContext,
+  ToolInvocationContextInput,
+  ToolInvocationJsonPrimitive,
+  ToolInvocationJsonValue,
+  ToolInvocationSurface,
+} from "./tool-invocation.js";
 export type {
   CreateLoopRunInput,
   LoopApprovedGate,
