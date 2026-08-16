@@ -59,6 +59,29 @@ Runtime context accounting types are exported from the SDK and originate from
 `@polpo-ai/core/runtime-inspection`, so managed and self-hosted inspectors use
 the same categories.
 
+Hosts with a durable sandbox manager can expose a project inventory through
+the same SDK:
+
+```ts
+const page = await client.listSandboxes("project-id", {
+  allocationStates: ["idle", "leased"],
+  limit: 25,
+});
+
+const selected = await client.getSandbox("project-id", page.items[0].id);
+if (selected.actions.stop.allowed) {
+  await client.stopSandbox("project-id", selected.id, {
+    operationId: crypto.randomUUID(),
+    expectedState: selected.operationalState,
+  });
+}
+```
+
+Inventory is an optional host capability. An unsupported host returns
+`SANDBOX_MANAGEMENT_UNAVAILABLE`, never a fake empty list. Lifecycle controls
+must be authorized by the host and fail closed for leased, shared, reserved,
+or untracked resources.
+
 ## Activate skills per request
 
 An agent can have several assigned skills while a caller explicitly applies

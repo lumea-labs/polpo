@@ -74,6 +74,10 @@
       "types": "./dist/steering.d.ts",
       "import": "./dist/steering.js"
     },
+    "./sandbox-management": {
+      "types": "./dist/sandbox-management.d.ts",
+      "import": "./dist/sandbox-management.js"
+    },
     "./chat-interactions": {
       "types": "./dist/chat-interactions.d.ts",
       "import": "./dist/chat-interactions.js"

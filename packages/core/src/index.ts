@@ -195,6 +195,9 @@ export type { PlaybookStore } from "./playbook-store.js";
 export type { FileSystem, FileEntry, FileStat } from "./filesystem.js";
 export type { Shell, ShellOptions, ShellResult } from "./shell.js";
 
+// ── Sandbox operations (provider-neutral inventory and controls) ─────────
+export * from "./sandbox-management.js";
+
 // ── Spawner Abstraction ─────────────────────────────────────────────────
 export type { Spawner, SpawnResult } from "./spawner.js";
 export { resolveExecutionMode } from "./execution-mode.js";

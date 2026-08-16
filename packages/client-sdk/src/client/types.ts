@@ -107,7 +107,32 @@ import type {
   RuntimeSandboxLifecycleOptions,
   RuntimeSandboxOptions,
   RuntimeSandboxVolumeSelection,
+  SandboxAction,
+  SandboxActionCapability,
+  SandboxAllocationState,
+  SandboxClearIdleFailure,
   SandboxIsolation,
+  SandboxClearIdleOptions,
+  SandboxClearIdleResult,
+  SandboxInventoryPage,
+  SandboxInventoryQuery,
+  SandboxInventorySourceStatus,
+  SandboxInventorySources,
+  SandboxInventorySummary,
+  SandboxHealth,
+  SandboxLifecycleSummary,
+  SandboxManagementCapabilities,
+  SandboxManagementErrorCode,
+  SandboxMutationOptions,
+  SandboxMutationOutcome,
+  SandboxMutationResult,
+  SandboxOperationalState,
+  SandboxResourceCapacity,
+  SandboxRunReference,
+  SandboxSnapshotSummary,
+  SandboxSummary,
+  SandboxWorkspaceMode,
+  SandboxWorkspaceSummary,
   SandboxReleasePolicy,
   SandboxVolumeAccess,
   SandboxVolumeWriteBack,
@@ -246,7 +271,32 @@ export type {
   RuntimeSandboxLifecycleOptions,
   RuntimeSandboxOptions,
   RuntimeSandboxVolumeSelection,
+  SandboxAction,
+  SandboxActionCapability,
+  SandboxAllocationState,
+  SandboxClearIdleFailure,
   SandboxIsolation,
+  SandboxClearIdleOptions,
+  SandboxClearIdleResult,
+  SandboxInventoryPage,
+  SandboxInventoryQuery,
+  SandboxInventorySourceStatus,
+  SandboxInventorySources,
+  SandboxInventorySummary,
+  SandboxHealth,
+  SandboxLifecycleSummary,
+  SandboxManagementCapabilities,
+  SandboxManagementErrorCode,
+  SandboxMutationOptions,
+  SandboxMutationOutcome,
+  SandboxMutationResult,
+  SandboxOperationalState,
+  SandboxResourceCapacity,
+  SandboxRunReference,
+  SandboxSnapshotSummary,
+  SandboxSummary,
+  SandboxWorkspaceMode,
+  SandboxWorkspaceSummary,
   SandboxReleasePolicy,
   SandboxVolumeAccess,
   SandboxVolumeWriteBack,
@@ -614,6 +664,18 @@ export type ErrorCode =
   | "AUTH_REQUIRED"
   | "FORBIDDEN"
   | "CONFLICT"
+  | "SANDBOX_MANAGEMENT_UNAVAILABLE"
+  | "SANDBOX_INVALID_REQUEST"
+  | "SANDBOX_INVALID_RESPONSE"
+  | "SANDBOX_FORBIDDEN"
+  | "SANDBOX_NOT_FOUND"
+  | "SANDBOX_BUSY"
+  | "SANDBOX_STATE_CONFLICT"
+  | "SANDBOX_PROVIDER_UNAVAILABLE"
+  | "SANDBOX_COORDINATION_UNAVAILABLE"
+  | "SANDBOX_ACTION_TIMEOUT"
+  | "SANDBOX_ACTION_UNSUPPORTED"
+  | "SANDBOX_INTERNAL_ERROR"
   | "INTERNAL_ERROR";
 
 export interface ApiResponse<T> {
