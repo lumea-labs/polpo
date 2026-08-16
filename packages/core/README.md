@@ -195,6 +195,37 @@ and revision. Manually managed hydrated volumes can expose the built-in
 outer sandbox lease finalizes persistent storage once, after all root and nested
 steps complete.
 
+## Sandbox operations
+
+Hosts with durable sandbox resources can expose current inventory and safe
+lifecycle controls through the optional `SandboxManager` contract:
+
+```ts
+import type {
+  SandboxManagementContext,
+  SandboxManager,
+} from "@polpo-ai/core/sandbox-management";
+import {
+  sandboxManagementRoutes,
+  type SandboxManagementContextInput,
+} from "@polpo-ai/server";
+
+declare const manager: SandboxManager;
+declare function authorizeSandboxProject(
+  input: SandboxManagementContextInput,
+): Promise<SandboxManagementContext>;
+
+const routes = sandboxManagementRoutes(() => ({
+  manager,
+  resolveContext: authorizeSandboxProject,
+}));
+```
+
+`SandboxProvider` remains the run-scoped execution port. `SandboxManager` is a
+separate optional operational capability, so local and ephemeral hosts do not
+need to fabricate an inventory. Hosts must authorize the project context and
+fail closed when allocation or ownership cannot be proven.
+
 ## Model profiles
 
 Model profiles give project configuration stable semantic names while keeping

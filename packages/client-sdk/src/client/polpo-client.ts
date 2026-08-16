@@ -113,6 +113,14 @@ import type {
   AbortRunResult,
   SteeringMessageInput,
   SteeringJsonValue,
+  SandboxClearIdleOptions,
+  SandboxClearIdleResult,
+  SandboxInventoryPage,
+  SandboxInventoryQuery,
+  SandboxManagementCapabilities,
+  SandboxMutationOptions,
+  SandboxMutationResult,
+  SandboxSummary,
 } from "./types.js";
 
 export interface PolpoClientConfig {
@@ -311,6 +319,13 @@ export class ChatCompletionStream implements AsyncIterable<ChatCompletionChunk> 
 function scheduleIdentifier(value: unknown, label = "Schedule id"): string {
   if (typeof value !== "string" || !value.trim()) {
     throw new TypeError(`${label} must be a non-empty string`);
+  }
+  return value.trim();
+}
+
+function sandboxIdentifier(value: unknown, label: string): string {
+  if (typeof value !== "string" || !value.trim() || value.length > 256) {
+    throw new TypeError(`${label} must be a non-empty string up to 256 characters`);
   }
   return value.trim();
 }
@@ -915,6 +930,134 @@ export class PolpoClient {
 
   getProcesses(): Promise<AgentProcess[]> {
     return this.get<AgentProcess[]>("/agents/processes");
+  }
+
+  // ── Sandbox operations ──────────────────────────────────
+
+  getSandboxManagementCapabilities(
+    projectId: string,
+  ): Promise<SandboxManagementCapabilities> {
+    const project = encodeURIComponent(sandboxIdentifier(projectId, "Project id"));
+    return this.get<SandboxManagementCapabilities>(
+      `/projects/${project}/sandboxes/capabilities`,
+    );
+  }
+
+  listSandboxes(
+    projectId: string,
+    query: SandboxInventoryQuery = {},
+  ): Promise<SandboxInventoryPage> {
+    const project = encodeURIComponent(sandboxIdentifier(projectId, "Project id"));
+    if (
+      query.limit !== undefined
+      && (
+        !Number.isSafeInteger(query.limit)
+        || query.limit < 1
+        || query.limit > 100
+      )
+    ) {
+      return Promise.reject(
+        new TypeError("Sandbox page limit must be an integer from 1 to 100"),
+      );
+    }
+    const params = new URLSearchParams();
+    if (query.operationalStates?.length) {
+      params.set("operationalState", query.operationalStates.join(","));
+    }
+    if (query.allocationStates?.length) {
+      params.set("allocationState", query.allocationStates.join(","));
+    }
+    if (query.workspaceModes?.length) {
+      params.set("workspaceMode", query.workspaceModes.join(","));
+    }
+    if (query.search !== undefined) params.set("search", query.search);
+    if (query.limit !== undefined) params.set("limit", String(query.limit));
+    if (query.cursor !== undefined) params.set("cursor", query.cursor);
+    const suffix = params.size > 0 ? `?${params.toString()}` : "";
+    return this.get<SandboxInventoryPage>(
+      `/projects/${project}/sandboxes${suffix}`,
+    );
+  }
+
+  getSandbox(projectId: string, sandboxId: string): Promise<SandboxSummary> {
+    return this.get<SandboxSummary>(this.sandboxResourcePath(projectId, sandboxId));
+  }
+
+  startSandbox(
+    projectId: string,
+    sandboxId: string,
+    options: SandboxMutationOptions = {},
+  ): Promise<SandboxMutationResult> {
+    return this.post<SandboxMutationResult>(
+      `${this.sandboxResourcePath(projectId, sandboxId)}/start`,
+      options,
+    );
+  }
+
+  stopSandbox(
+    projectId: string,
+    sandboxId: string,
+    options: SandboxMutationOptions = {},
+  ): Promise<SandboxMutationResult> {
+    return this.post<SandboxMutationResult>(
+      `${this.sandboxResourcePath(projectId, sandboxId)}/stop`,
+      options,
+    );
+  }
+
+  destroySandbox(
+    projectId: string,
+    sandboxId: string,
+    options: SandboxMutationOptions = {},
+  ): Promise<SandboxMutationResult> {
+    const params = new URLSearchParams();
+    if (options.expectedState !== undefined) {
+      params.set("expectedState", options.expectedState);
+    }
+    const suffix = params.size > 0 ? `?${params.toString()}` : "";
+    const headers: Record<string, string> = options.operationId === undefined
+      ? {}
+      : {
+          "x-polpo-operation-id": sandboxIdentifier(
+            options.operationId,
+            "Sandbox operation id",
+          ),
+        };
+    return this.request<SandboxMutationResult>(
+      "DELETE",
+      this.apiUrl(`${this.sandboxResourcePath(projectId, sandboxId)}${suffix}`),
+      undefined,
+      headers,
+    );
+  }
+
+  clearIdleSandboxes(
+    projectId: string,
+    options: SandboxClearIdleOptions = {},
+  ): Promise<SandboxClearIdleResult> {
+    const project = encodeURIComponent(sandboxIdentifier(projectId, "Project id"));
+    if (
+      options.limit !== undefined
+      && (
+        !Number.isSafeInteger(options.limit)
+        || options.limit < 1
+        || options.limit > 100
+      )
+    ) {
+      return Promise.reject(
+        new TypeError("Sandbox clear-idle limit must be an integer from 1 to 100"),
+      );
+    }
+    return this.post<SandboxClearIdleResult>(
+      `/projects/${project}/sandboxes/clear-idle`,
+      options,
+    );
+  }
+
+  private sandboxResourcePath(projectId: string, sandboxId: string): string {
+    const project = encodeURIComponent(sandboxIdentifier(projectId, "Project id"));
+    const sandbox = encodeURIComponent(sandboxIdentifier(sandboxId, "Sandbox id"));
+    return `/projects/${project}/sandboxes/${sandbox}`;
   }
 
   // ── State ────────────────────────────────────────────────

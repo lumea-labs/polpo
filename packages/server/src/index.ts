@@ -76,6 +76,12 @@ export {
   runSteeringRoutes,
   type RunSteeringRouteDeps,
 } from "./routes/run-steering.js";
+export {
+  sandboxManagementRoutes,
+  type SandboxManagementContextInput,
+  type SandboxManagementRouteDeps,
+  type SandboxRoutePermission,
+} from "./routes/sandboxes.js";
 export { eventRoutes, type EventBridge, type EventClient } from "./routes/events.js";
 export { configRoutes } from "./routes/config.js";
 export { fileRoutes, type FileRouteDeps } from "./routes/files.js";
