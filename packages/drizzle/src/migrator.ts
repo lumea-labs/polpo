@@ -28,6 +28,7 @@ import {
   approvalsPg, memoryPg,
   teamsPg, agentsPg,
   vaultPg, playbooksPg, skillsPg,
+  conversationChannelsPg, conversationChannelRoutesPg,
 } from "./schema/index.js";
 
 const PG_TABLES = [
@@ -39,6 +40,7 @@ const PG_TABLES = [
   approvalsPg, memoryPg,
   teamsPg, agentsPg,
   vaultPg, playbooksPg, skillsPg,
+  conversationChannelsPg, conversationChannelRoutesPg,
 ];
 
 /** Render a Drizzle column default as SQL, or undefined when it can't be

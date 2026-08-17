@@ -111,5 +111,12 @@ export interface ServerConfig {
   channels?: {
     resolveInstallation: import("@polpo-ai/channels").ChannelInstallationResolver;
     runtime: import("@polpo-ai/channels").ChannelRuntime;
+    management?: {
+      resolveScope?: (
+        requestContext: unknown,
+      ) => import("@polpo-ai/channels").ChannelManagementScope
+        | Promise<import("@polpo-ai/channels").ChannelManagementScope>;
+      service: import("@polpo-ai/channels").ChannelManagementService;
+    };
   };
 }

@@ -43,6 +43,12 @@ import {
 import { vaultPg, vaultSqlite } from "./schema/vault.js";
 import { playbooksPg, playbooksSqlite } from "./schema/playbooks.js";
 import { skillsPg, skillsSqlite } from "./schema/skills.js";
+import {
+  conversationChannelsPg,
+  conversationChannelRoutesPg,
+  conversationChannelsSqlite,
+  conversationChannelRoutesSqlite,
+} from "./schema/conversation-channels.js";
 
 // ── Store classes ─────────────────────────────────────────────────────
 
@@ -62,6 +68,7 @@ import { DrizzleAgentStore } from "./stores/agent-store.js";
 import { DrizzleVaultStore } from "./stores/vault-store.js";
 import { DrizzlePlaybookStore } from "./stores/playbook-store.js";
 import { DrizzleSkillStore } from "./stores/skill-store.js";
+import { DrizzleChannelManagementStore } from "./stores/channel-management-store.js";
 
 // ── Store bundle type ─────────────────────────────────────────────────
 
@@ -82,6 +89,7 @@ import type { AgentStore } from "@polpo-ai/core/agent-store";
 import type { VaultStore } from "@polpo-ai/core/vault-store";
 import type { PlaybookStore } from "@polpo-ai/core/playbook-store";
 import type { SkillStore } from "@polpo-ai/core/skill-store";
+import type { ChannelManagementStore } from "@polpo-ai/channels";
 
 export interface DrizzleStores {
   /** Mission persistence — same instance as taskStore (implements both). */
@@ -102,6 +110,8 @@ export interface DrizzleStores {
   vaultStore: VaultStore;
   playbookStore: PlaybookStore;
   skillStore: SkillStore;
+  /** Conversational Channel and agent Route persistence. */
+  channelManagementStore: ChannelManagementStore;
   /**
    * Fresh LogStore over the SAME db handle (no second connection).
    * LogStore keeps its current session as instance state, so anything
@@ -151,6 +161,10 @@ export function createPgStores(db: any): DrizzleStores {
     vaultStore: new DrizzleVaultStore(db, vaultPg),
     playbookStore: new DrizzlePlaybookStore(db, playbooksPg, "pg"),
     skillStore: new DrizzleSkillStore(db, skillsPg, "pg"),
+    channelManagementStore: new DrizzleChannelManagementStore(db, {
+      channels: conversationChannelsPg,
+      routes: conversationChannelRoutesPg,
+    }, "pg"),
   };
 }
 
@@ -190,6 +204,10 @@ export function createSqliteStores(db: any): DrizzleStores {
     vaultStore: new DrizzleVaultStore(db, vaultSqlite),
     playbookStore: new DrizzlePlaybookStore(db, playbooksSqlite, "sqlite"),
     skillStore: new DrizzleSkillStore(db, skillsSqlite, "sqlite"),
+    channelManagementStore: new DrizzleChannelManagementStore(db, {
+      channels: conversationChannelsSqlite,
+      routes: conversationChannelRoutesSqlite,
+    }, "sqlite"),
   };
 }
 
@@ -214,6 +232,8 @@ export const pgSchema = {
   vault: vaultPg,
   playbooks: playbooksPg,
   skills: skillsPg,
+  conversationChannels: conversationChannelsPg,
+  conversationChannelRoutes: conversationChannelRoutesPg,
 };
 
 export const sqliteSchema = {
@@ -235,4 +255,6 @@ export const sqliteSchema = {
   vault: vaultSqlite,
   playbooks: playbooksSqlite,
   skills: skillsSqlite,
+  conversationChannels: conversationChannelsSqlite,
+  conversationChannelRoutes: conversationChannelRoutesSqlite,
 };

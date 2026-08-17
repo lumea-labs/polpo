@@ -295,6 +295,71 @@ opaque key to exactly one installation before the official adapter verifies the
 request. Never route by a phone number or account ID taken from an unverified
 payload.
 
+## Agent-native Channel management
+
+The webhook runtime and the management control plane are separate. A host can
+expose Channel provisioning through the API, SDK, CLI, or MCP while all four
+surfaces call the same `ChannelManagementService`.
+
+```ts
+import {
+  ChannelManagementService,
+  InMemoryChannelManagementStore,
+} from "@polpo-ai/channels";
+
+const channelManagement = new ChannelManagementService({
+  store: new InMemoryChannelManagementStore(),
+  agentExists: async (scope, agentName) => hasAgent(scope.projectId, agentName),
+  connectionResolver: projectConnectionResolver,
+  providerAutomation: channelProviderAutomation,
+  secureSetup: secureBrowserHandoff,
+});
+```
+
+The durable Drizzle implementation is exported as
+`DrizzleChannelManagementStore` by `@polpo-ai/drizzle`. Self-hosted Node hosts
+can mount the routes alongside the webhook runtime:
+
+```ts
+await server.start({
+  channels: {
+    runtime,
+    resolveInstallation,
+    management: {
+      service: channelManagement,
+      resolveScope: async (requestContext) => authenticatedProjectScope(requestContext),
+    },
+  },
+});
+```
+
+The resulting management API is available under `/api/v1/channels`. Cloud
+hosts expose the same contract under `/v1/channels`.
+
+The resource model is intentionally explicit:
+
+- a **Connection** stores project authorization and provider credentials;
+- a **Channel** identifies an installed provider destination;
+- a **Route** grants one agent access to that Channel;
+- a **setup** is temporary state for authorization or provider-side steps.
+
+Calling `configure` without a Connection never asks the model or CLI for a
+secret. The host returns an expiring HTTPS setup URL and resumes the idempotent
+operation after authorization. Public records and MCP results are redacted by
+contract.
+
+```bash
+polpo channels providers
+polpo channels add whatsapp --agent support
+polpo channels setup-status <setup-id>
+polpo channels list
+polpo channels routes add <channel-id> --agent triage
+```
+
+Use `--connection <id>` when the project already has the required Connection.
+Use `--json` for agentic or scripted callers. Destructive commands require an
+interactive confirmation or `--yes` in non-interactive environments.
+
 The adapter normalizes inbound text, replies, images, audio, video, and files.
 Attachment bytes are fetched lazily through authenticated provider requests.
 The host decides size limits, transcription, model input support, durable

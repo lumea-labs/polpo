@@ -1,4 +1,5 @@
 export { ChannelRuntime } from "./runtime.js";
+export * from "./management/index.js";
 export {
   channelProviderCapabilities,
   createOfficialChannelAdapter,

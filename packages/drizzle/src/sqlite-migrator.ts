@@ -24,6 +24,7 @@ import {
   approvalsSqlite, memorySqlite,
   teamsSqlite, agentsSqlite,
   vaultSqlite, playbooksSqlite, skillsSqlite,
+  conversationChannelsSqlite, conversationChannelRoutesSqlite,
 } from "./schema/index.js";
 
 const SQLITE_TABLES = [
@@ -35,6 +36,7 @@ const SQLITE_TABLES = [
   approvalsSqlite, memorySqlite,
   teamsSqlite, agentsSqlite,
   vaultSqlite, playbooksSqlite, skillsSqlite,
+  conversationChannelsSqlite, conversationChannelRoutesSqlite,
 ];
 
 /** Render a Drizzle column default as SQL, or undefined when it can't be
@@ -96,7 +98,8 @@ export async function ensureSqliteIndexes(db: any): Promise<void> {
     for (const idx of cfg.indexes) {
       const name = idx.config.name;
       const cols = idx.config.columns.map((c: any) => `"${c.name}"`).join(", ");
-      await db.run(sql.raw(`CREATE INDEX IF NOT EXISTS "${name}" ON "${cfg.name}" (${cols})`));
+      const unique = idx.config.unique ? "UNIQUE " : "";
+      await db.run(sql.raw(`CREATE ${unique}INDEX IF NOT EXISTS "${name}" ON "${cfg.name}" (${cols})`));
     }
   }
 }

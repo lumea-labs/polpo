@@ -41,6 +41,7 @@ Polpo is an open-source runtime for building, running, and managing AI agents. I
 - **Skills** -- reusable agent capabilities loaded from YAML playbooks
 - **Dashboard** -- reusable v2 React views and a single-tenant self-host app
 - **CLI** -- `polpo create`, `polpo dev`, `polpo deploy`
+- **Agent-native Channels** -- configure Slack, Telegram, Discord, and WhatsApp through the SDK, CLI, or MCP without exposing provider secrets
 
 ## Quick start
 

@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
-import type { ChannelRuntime } from "@polpo-ai/channels";
+import {
+  ChannelManagementService,
+  InMemoryChannelManagementStore,
+  type ChannelRuntime,
+} from "@polpo-ai/channels";
 import { createApp } from "../server/app.js";
 
 describe("self-hosted channel webhooks", () => {
@@ -46,5 +50,33 @@ describe("self-hosted channel webhooks", () => {
       method: "POST",
     });
     expect(response.status).toBe(404);
+  });
+
+  it("mounts optional authenticated Channel management without coupling webhook execution", async () => {
+    const runtime = { shutdown: vi.fn() } as unknown as ChannelRuntime;
+    const service = new ChannelManagementService({
+      store: new InMemoryChannelManagementStore(),
+      agentExists: async () => true,
+      connectionResolver: {
+        inspect: async () => null,
+        validateForProvider: async () => {},
+      },
+      providerAutomation: {
+        prepare: vi.fn(),
+        activate: vi.fn(),
+        test: vi.fn(),
+      },
+    });
+    const app = createApp({ isInitialized: true } as never, {} as never, {
+      channels: {
+        resolveInstallation: vi.fn(),
+        runtime,
+        management: { service },
+      },
+    });
+
+    const response = await app.request("/api/v1/channels/providers");
+    expect(response.status).toBe(200);
+    expect((await response.json()).data).toHaveLength(4);
   });
 });
