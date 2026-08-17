@@ -7,7 +7,7 @@
  *   - memory.md + memory/<agent>.md (knowledge base)
  *   - playbooks/ (mission templates)
  *   - missions/ (mission definitions)
- *   - skills/ (SKILL.md files)
+ *   - skills/ (complete Agent Skills bundles)
  *   - vault.enc (encrypted credentials)
  *
  * Opt-in (with flags):
@@ -37,6 +37,8 @@ import {
   collectCustomToolSourceArtifact,
   extractCustomToolName,
 } from "../../util/custom-tool-source.js";
+import { collectLocalSkillBundle } from "../../util/runtime-skill-bundle.js";
+import type { SkillBundle } from "@polpo-ai/core/skill-bundle";
 
 // ── Deploy result tracking ──────────────────────────────
 
@@ -443,74 +445,38 @@ async function deploySkills(client: ApiClient, polpoDir: string, opts: ConflictO
     const skillFile = path.join(skillsDir, entry.name, "SKILL.md");
     if (!fs.existsSync(skillFile)) continue;
 
-    const raw = fs.readFileSync(skillFile, "utf-8");
-    const fmMatch = raw.match(/^---\n([\s\S]*?)\n---/);
-    let name = entry.name;
-    let description = "";
-    let allowedTools: string[] | undefined;
-
-    if (fmMatch) {
-      const lines = fmMatch[1].split("\n");
-      let currentArray: string[] | null = null;
-      for (const line of lines) {
-        const arrayItem = line.match(/^\s+-\s+(.+)/);
-        if (arrayItem && currentArray) { currentArray.push(arrayItem[1].trim()); continue; }
-        currentArray = null;
-        const kv = line.match(/^(\w[\w-]*)\s*:\s*(.+)?/);
-        if (kv) {
-          const key = kv[1]; const val = kv[2]?.trim();
-          if (key === "name" && val) name = val;
-          if (key === "description" && val) description = val;
-          if (key === "allowed-tools" || key === "allowedTools") { allowedTools = []; currentArray = allowedTools; }
-        }
-      }
+    let localBundle: SkillBundle;
+    try {
+      localBundle = collectLocalSkillBundle(path.join(skillsDir, entry.name), entry.name);
+    } catch (error) {
+      result.errors.push(`skill "${entry.name}": ${error instanceof Error ? error.message : String(error)}`);
+      result.failed++;
+      continue;
     }
 
-    const bodyMatch = raw.match(/^---\n[\s\S]*?\n---\n?([\s\S]*)$/);
-    const content = bodyMatch ? bodyMatch[1].trim() : raw.trim();
-    const localSkill = { name, description, content };
+    const name = localBundle.name;
     const remote = existingSkills[name];
-    const action = await resolveDeployConflict(localSkill, remote ? { name: remote.name, description: remote.description, content: remote.content } : null, `skill "${name}"`, opts);
+    let remoteBundle: SkillBundle | null = null;
+    if (remote) {
+      const bundleRes = await client.get<any>(`/v1/skills/${encodeURIComponent(name)}/bundle`);
+      if (bundleRes.status === 200) remoteBundle = bundleRes.data?.data ?? bundleRes.data;
+    }
+    const action = await resolveDeployConflict(localBundle, remoteBundle, `skill "${name}"`, opts);
 
     if (action === "skip") {
       result.skipped++;
       continue;
     }
 
-    // The server doesn't expose `PUT /v1/skills/{name}` for in-place updates —
-    // only POST /v1/skills/create + DELETE /v1/skills/{name} exist. So
-    // "update existing skill" is implemented as delete-then-recreate. The
-    // DELETE failure is logged but we still try the create: if it succeeds
-    // the user ends up with a fresh copy, which is the intent.
-    if (remote) {
-      const delRes = await client.delete(`/v1/skills/${encodeURIComponent(name)}`);
-      if (delRes.status >= 400 && delRes.status !== 404) {
-        const msg = readErrorBody(delRes.data, delRes.status);
-        result.errors.push(`skill "${name}": delete-before-update failed — ${friendlyError(msg)}`);
-        result.failed++;
-        continue;
-      }
-      const res = await client.post("/v1/skills/create", {
-        name, description, content,
-        ...(allowedTools?.length ? { allowedTools } : {}),
-      });
-      if (res.status >= 200 && res.status < 300) { result.updated++; }
-      else {
-        const msg = readErrorBody(res.data, res.status);
-        result.errors.push(`skill "${name}": recreate failed — ${friendlyError(msg)}`);
-        result.failed++;
-      }
+    const res = await client.put(`/v1/skills/${encodeURIComponent(name)}/bundle`, {
+      files: localBundle.files,
+    });
+    if (res.status >= 200 && res.status < 300) {
+      if (remote) result.updated++; else result.created++;
     } else {
-      const res = await client.post("/v1/skills/create", {
-        name, description, content,
-        ...(allowedTools?.length ? { allowedTools } : {}),
-      });
-      if (res.status >= 200 && res.status < 300) { result.created++; }
-      else {
-        const msg = readErrorBody(res.data, res.status);
-        result.errors.push(`skill "${name}": ${friendlyError(msg)}`);
-        result.failed++;
-      }
+      const msg = readErrorBody(res.data, res.status);
+      result.errors.push(`skill "${name}": bundle deploy failed — ${friendlyError(msg)}`);
+      result.failed++;
     }
   }
   return result;

@@ -61,6 +61,17 @@ the same categories.
 
 ## Activate skills per request
 
+The management client can synchronize complete binary-safe skill bundles,
+including `references/`, `scripts/`, and `assets/`:
+
+```ts
+const bundle = await client.getSkillBundle("frontend-design");
+await client.putSkillBundle(bundle);
+```
+
+For project-local installation and assignment, use `polpo skills add` and
+`polpo deploy`; these preserve the same complete bundle contract.
+
 An agent can have several assigned skills while a caller explicitly applies
 one or more of them to a single execution:
 

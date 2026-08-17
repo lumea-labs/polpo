@@ -162,6 +162,10 @@
       "types": "./dist/skill-store.d.ts",
       "import": "./dist/skill-store.js"
     },
+    "./skill-bundle": {
+      "types": "./dist/skill-bundle.d.ts",
+      "import": "./dist/skill-bundle.js"
+    },
     "./adapter": {
       "types": "./dist/adapter.d.ts",
       "import": "./dist/adapter.js"

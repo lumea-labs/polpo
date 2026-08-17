@@ -25,6 +25,42 @@ describe("PolpoClient approvals", () => {
   });
 });
 
+describe("PolpoClient skill bundles", () => {
+  it("gets and atomically puts complete binary-safe bundles", async () => {
+    const bundle = {
+      name: "frontend-design",
+      files: [
+        { path: "SKILL.md", content: "IyBTa2lsbA==", encoding: "base64" as const },
+        { path: "assets/logo.bin", content: "AAEC/w==", encoding: "base64" as const },
+      ],
+    };
+    const fetch = vi.fn<typeof globalThis.fetch>()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true, data: bundle }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true, data: { name: bundle.name, files: 2 } }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }));
+    const client = new PolpoClient({ baseUrl: "https://api.polpo.sh", fetch });
+
+    await expect(client.getSkillBundle("frontend/design")).resolves.toEqual(bundle);
+    await expect(client.putSkillBundle(bundle)).resolves.toEqual({ name: bundle.name, files: 2 });
+
+    expect(fetch).toHaveBeenNthCalledWith(
+      1,
+      "https://api.polpo.sh/v1/skills/frontend%2Fdesign/bundle",
+      expect.objectContaining({ method: "GET" }),
+    );
+    expect(fetch).toHaveBeenNthCalledWith(
+      2,
+      "https://api.polpo.sh/v1/skills/frontend-design/bundle",
+      expect.objectContaining({ method: "PUT", body: JSON.stringify({ files: bundle.files }) }),
+    );
+  });
+});
+
 describe("PolpoClient conversation Channels", () => {
   it("keeps management endpoints distinct from legacy notification Channels", async () => {
     const fetch = vi.fn<typeof globalThis.fetch>().mockImplementation(async () => new Response(

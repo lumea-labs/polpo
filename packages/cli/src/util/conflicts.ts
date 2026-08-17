@@ -79,6 +79,20 @@ export async function resolveJsonConflict(
   return resolveConflictPrompt(`${label} differs from local version. Override local?`, opts);
 }
 
+/** Compare an incoming cloud value with local in-memory data during pull. */
+export async function resolveDataConflict(
+  incomingData: unknown,
+  localData: unknown | null | undefined,
+  label: string,
+  opts: ConflictOptions,
+): Promise<ConflictAction> {
+  if (localData == null) return "write";
+  if (stableStringify(strip(normalize(incomingData))) === stableStringify(strip(normalize(localData)))) {
+    return "skip";
+  }
+  return resolveConflictPrompt(`${label} differs from local version. Override local?`, opts);
+}
+
 // ── Deploy direction: local data → remote data ───────────────
 
 /**

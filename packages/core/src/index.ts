@@ -188,6 +188,16 @@ export type { ApprovalStore } from "./approval-store.js";
 export type { TeamStore } from "./team-store.js";
 export type { AgentStore } from "./agent-store.js";
 export type { SkillStore, SkillRecord } from "./skill-store.js";
+export {
+  SKILL_BUNDLE_MAX_FILES,
+  SKILL_BUNDLE_MAX_FILE_BYTES,
+  SKILL_BUNDLE_MAX_TOTAL_BYTES,
+  SKILL_BUNDLE_MAX_PATH_LENGTH,
+  decodedBase64Size,
+  validateSkillBundleFiles,
+  validateSkillName,
+} from "./skill-bundle.js";
+export type { SkillBundle, SkillBundleFile } from "./skill-bundle.js";
 export type { VaultStore } from "./vault-store.js";
 export type { PlaybookStore } from "./playbook-store.js";
 
