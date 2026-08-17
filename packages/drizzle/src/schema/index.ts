@@ -13,6 +13,10 @@ export { teamsSqlite, agentsSqlite } from "./teams.js";
 export { vaultSqlite } from "./vault.js";
 export { playbooksSqlite } from "./playbooks.js";
 export { skillsSqlite } from "./skills.js";
+export {
+  conversationChannelsSqlite,
+  conversationChannelRoutesSqlite,
+} from "./conversation-channels.js";
 
 // PostgreSQL schemas
 export {
@@ -29,3 +33,7 @@ export { teamsPg, agentsPg } from "./teams.js";
 export { vaultPg } from "./vault.js";
 export { playbooksPg } from "./playbooks.js";
 export { skillsPg } from "./skills.js";
+export {
+  conversationChannelsPg,
+  conversationChannelRoutesPg,
+} from "./conversation-channels.js";

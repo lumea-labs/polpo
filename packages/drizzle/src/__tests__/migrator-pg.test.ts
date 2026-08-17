@@ -50,7 +50,7 @@ describe.skipIf(!canConnect)("migratePgSchema", () => {
 
     // Simulate a v-old database: drop everything, then create a degraded
     // tasks table with only the original column subset.
-    await db.execute(sql.raw(`DROP TABLE IF EXISTS log_entries, messages, approvals, runs, loop_runs, tasks, missions, processes, metadata, sessions, log_sessions, memory, agents, teams, vault, playbooks, skills CASCADE`));
+    await db.execute(sql.raw(`DROP TABLE IF EXISTS conversation_channel_routes, conversation_channels, log_entries, messages, approvals, runs, loop_runs, tasks, missions, processes, metadata, sessions, log_sessions, memory, agents, teams, vault, playbooks, skills CASCADE`));
     await db.execute(sql.raw(`CREATE TABLE tasks (
       id          TEXT PRIMARY KEY,
       title       TEXT NOT NULL,

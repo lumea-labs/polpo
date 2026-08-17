@@ -5,6 +5,8 @@ import { cors } from "hono/cors";
 import {
   dispatchChannelWebhook,
   type ChannelInstallationResolver,
+  type ChannelManagementScope,
+  type ChannelManagementService,
   type ChannelRuntime,
 } from "@polpo-ai/channels";
 import { join } from "node:path";
@@ -37,6 +39,7 @@ import {
   customToolRoutes,
   brainRoutes,
   runSteeringRoutes,
+  conversationChannelRoutes,
   type CompletionRuntimeGuardrailsResolver,
 } from "@polpo-ai/server";
 // Node.js-only routes (stay in src/server/routes/)
@@ -105,6 +108,10 @@ export interface AppOptions {
   channels?: {
     resolveInstallation: ChannelInstallationResolver;
     runtime: ChannelRuntime;
+    management?: {
+      resolveScope?: (requestContext: unknown) => ChannelManagementScope | Promise<ChannelManagementScope>;
+      service: ChannelManagementService;
+    };
   };
 }
 
@@ -513,6 +520,18 @@ export function createApp(orchestrator: Orchestrator, sseBridge: SSEBridge, opts
     sessionStore: o.getSessionStore(),
     runStore: o.getRunStore(),
   })));
+
+  if (opts?.channels?.management) {
+    authed.route("/channels", conversationChannelRoutes(() => ({
+      channelManagementService: opts.channels!.management!.service,
+      resolveChannelManagementScope: opts.channels!.management!.resolveScope
+        ?? (() => ({
+          actorId: "local-user",
+          actorType: "user" as const,
+          projectId: "local",
+        })),
+    })));
+  }
 
   authed.route("/runs", runSteeringRoutes(() => ({ steeringRegistry })));
 

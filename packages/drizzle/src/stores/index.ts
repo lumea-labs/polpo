@@ -15,3 +15,4 @@ export { DrizzleAgentStore } from "./agent-store.js";
 export { DrizzleVaultStore } from "./vault-store.js";
 export { DrizzlePlaybookStore } from "./playbook-store.js";
 export { DrizzleSkillStore } from "./skill-store.js";
+export { DrizzleChannelManagementStore } from "./channel-management-store.js";

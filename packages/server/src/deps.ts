@@ -20,6 +20,10 @@ import type {
   MemoryUsageEvent,
 } from "@polpo-ai/core";
 import type { ScheduleService } from "./services/schedules.js";
+import type {
+  ChannelManagementScope,
+  ChannelManagementService,
+} from "@polpo-ai/channels";
 
 // ── Store-centric deps ───────────────────────────────────────────────
 
@@ -38,6 +42,13 @@ export interface LoopRunRouteDeps {
 
 export interface ConnectRouteDeps {
   connectService?: ConnectService;
+}
+
+export interface ChannelManagementRouteDeps {
+  channelManagementService?: ChannelManagementService;
+  resolveChannelManagementScope: (
+    requestContext: unknown,
+  ) => ChannelManagementScope | Promise<ChannelManagementScope>;
 }
 
 export interface MemoryRouteDeps {

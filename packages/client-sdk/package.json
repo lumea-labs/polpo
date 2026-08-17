@@ -60,6 +60,7 @@
     "url": "https://github.com/lumea-labs/polpo/issues"
   },
   "dependencies": {
+    "@polpo-ai/channels": "workspace:*",
     "@polpo-ai/core": "workspace:*"
   }
 }

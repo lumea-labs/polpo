@@ -171,6 +171,33 @@ export async function ensurePgTables(db: any): Promise<void> {
   )`);
   await db.execute(sql`ALTER TABLE messages ADD COLUMN IF NOT EXISTS suggestions TEXT`);
 
+  await db.execute(sql`CREATE TABLE IF NOT EXISTS conversation_channels (
+    id                  TEXT PRIMARY KEY,
+    org_id              TEXT NOT NULL DEFAULT '',
+    project_id          TEXT NOT NULL,
+    provider            TEXT NOT NULL,
+    name                TEXT NOT NULL,
+    connection_id       TEXT NOT NULL,
+    external_channel_id TEXT NOT NULL,
+    status              TEXT NOT NULL,
+    settings            JSONB NOT NULL DEFAULT '{}',
+    idempotency_key     TEXT NOT NULL,
+    created_at          TEXT NOT NULL,
+    updated_at          TEXT NOT NULL
+  )`);
+
+  await db.execute(sql`CREATE TABLE IF NOT EXISTS conversation_channel_routes (
+    id                  TEXT PRIMARY KEY,
+    org_id              TEXT NOT NULL DEFAULT '',
+    project_id          TEXT NOT NULL,
+    channel_id          TEXT NOT NULL REFERENCES conversation_channels(id) ON DELETE CASCADE,
+    agent_name          TEXT NOT NULL,
+    external_channel_id TEXT NOT NULL DEFAULT '',
+    enabled             INTEGER NOT NULL DEFAULT 1,
+    priority            INTEGER NOT NULL DEFAULT 100,
+    created_at          TEXT NOT NULL,
+    updated_at          TEXT NOT NULL
+  )`);
 
   await db.execute(sql`CREATE TABLE IF NOT EXISTS log_sessions (
     id         TEXT PRIMARY KEY,
@@ -303,6 +330,11 @@ export async function ensurePgTables(db: any): Promise<void> {
  * provisioned by older versions.
  */
 export async function ensurePgIndexes(db: any): Promise<void> {
+  await db.execute(sql`CREATE UNIQUE INDEX IF NOT EXISTS uq_pg_conversation_channels_operation ON conversation_channels(org_id, project_id, idempotency_key)`);
+  await db.execute(sql`CREATE UNIQUE INDEX IF NOT EXISTS uq_pg_conversation_channels_destination ON conversation_channels(org_id, project_id, provider, connection_id, external_channel_id)`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_pg_conversation_channels_scope ON conversation_channels(org_id, project_id)`);
+  await db.execute(sql`CREATE UNIQUE INDEX IF NOT EXISTS uq_pg_conversation_channel_routes_target ON conversation_channel_routes(org_id, project_id, channel_id, agent_name, external_channel_id)`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_pg_conversation_channel_routes_channel ON conversation_channel_routes(channel_id, priority)`);
   await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_pg_tasks_status ON tasks(status)`);
   await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_pg_tasks_group ON tasks("group")`);
   await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_pg_tasks_assign_to ON tasks(assign_to)`);

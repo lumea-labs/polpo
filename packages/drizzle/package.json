@@ -19,6 +19,7 @@
     "prepublishOnly": "tsc"
   },
   "dependencies": {
+    "@polpo-ai/channels": "workspace:*",
     "@polpo-ai/core": "workspace:*",
     "@polpo-ai/vault-crypto": "workspace:*",
     "drizzle-orm": "^0.44.0",

@@ -4,6 +4,24 @@
  * server-side dependencies (blessed, sqlite, etc.) into the client bundle.
  */
 
+export type {
+  ChannelProviderId,
+  ChannelProviderDescriptor,
+  ChannelProvisioningResult,
+  ChannelSetupError,
+  ChannelSetupRequirement,
+  ConfigureConversationChannelInput,
+  ConversationChannel,
+  ConversationChannelQuery,
+  ConversationChannelResponseModality,
+  ConversationChannelRoute,
+  ConversationChannelSettings,
+  ConversationChannelStatus,
+  SecureChannelSetupAction,
+  UpdateConversationChannelInput,
+  UpsertConversationChannelRouteInput,
+} from "@polpo-ai/channels";
+
 // === Task ===
 
 

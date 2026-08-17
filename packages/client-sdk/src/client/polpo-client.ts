@@ -113,6 +113,14 @@ import type {
   AbortRunResult,
   SteeringMessageInput,
   SteeringJsonValue,
+  ChannelProviderDescriptor,
+  ChannelProvisioningResult,
+  ConfigureConversationChannelInput,
+  ConversationChannel,
+  ConversationChannelQuery,
+  ConversationChannelRoute,
+  UpdateConversationChannelInput,
+  UpsertConversationChannelRouteInput,
 } from "./types.js";
 
 export interface PolpoClientConfig {
@@ -947,6 +955,86 @@ export class PolpoClient {
 
   testChannel(name: string): Promise<{ success: boolean }> {
     return this.post<{ success: boolean }>(`/config/channels/${encodeURIComponent(name)}/test`);
+  }
+
+  // ── Conversation Channels ───────────────────────────────
+
+  listConversationChannelProviders(): Promise<readonly ChannelProviderDescriptor[]> {
+    return this.get<readonly ChannelProviderDescriptor[]>("/channels/providers");
+  }
+
+  listConversationChannels(
+    query: ConversationChannelQuery = {},
+  ): Promise<ConversationChannel[]> {
+    const params = new URLSearchParams();
+    if (query.provider) params.set("provider", query.provider);
+    if (query.status) params.set("status", query.status);
+    if (query.connectionId) params.set("connectionId", query.connectionId);
+    const suffix = params.size > 0 ? `?${params.toString()}` : "";
+    return this.get<ConversationChannel[]>(`/channels${suffix}`);
+  }
+
+  getConversationChannel(channelId: string): Promise<ConversationChannel> {
+    return this.get<ConversationChannel>(`/channels/${encodeURIComponent(channelId)}`);
+  }
+
+  configureConversationChannel(
+    input: ConfigureConversationChannelInput,
+  ): Promise<ChannelProvisioningResult> {
+    return this.post<ChannelProvisioningResult>("/channels/configure", input);
+  }
+
+  updateConversationChannel(
+    channelId: string,
+    input: UpdateConversationChannelInput,
+  ): Promise<ConversationChannel> {
+    return this.patch<ConversationChannel>(
+      `/channels/${encodeURIComponent(channelId)}`,
+      input,
+    );
+  }
+
+  testConversationChannel(
+    channelId: string,
+  ): Promise<{ message?: string; success: boolean }> {
+    return this.post<{ message?: string; success: boolean }>(
+      `/channels/${encodeURIComponent(channelId)}/test`,
+    );
+  }
+
+  removeConversationChannel(channelId: string): Promise<{ removed: true }> {
+    return this.del<{ removed: true }>(`/channels/${encodeURIComponent(channelId)}`);
+  }
+
+  listConversationChannelRoutes(channelId: string): Promise<ConversationChannelRoute[]> {
+    return this.get<ConversationChannelRoute[]>(
+      `/channels/${encodeURIComponent(channelId)}/routes`,
+    );
+  }
+
+  upsertConversationChannelRoute(
+    channelId: string,
+    input: Omit<UpsertConversationChannelRouteInput, "channelId">,
+  ): Promise<ConversationChannelRoute> {
+    return this.post<ConversationChannelRoute>(
+      `/channels/${encodeURIComponent(channelId)}/routes`,
+      input,
+    );
+  }
+
+  removeConversationChannelRoute(
+    channelId: string,
+    routeId: string,
+  ): Promise<{ removed: true }> {
+    return this.del<{ removed: true }>(
+      `/channels/${encodeURIComponent(channelId)}/routes/${encodeURIComponent(routeId)}`,
+    );
+  }
+
+  getConversationChannelSetup(setupId: string): Promise<ChannelProvisioningResult> {
+    return this.get<ChannelProvisioningResult>(
+      `/channels/setups/${encodeURIComponent(setupId)}`,
+    );
   }
 
   // ── Brain ────────────────────────────────────────────────

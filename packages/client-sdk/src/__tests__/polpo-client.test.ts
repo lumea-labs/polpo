@@ -3,7 +3,7 @@ import { PolpoClient } from "../client/polpo-client.js";
 
 describe("PolpoClient approvals", () => {
   it("lists pending approvals through the status filter supported by the server", async () => {
-    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(new Response(
+    const fetch = vi.fn<typeof globalThis.fetch>().mockImplementation(async () => new Response(
       JSON.stringify({ ok: true, data: [] }),
       { status: 200, headers: { "content-type": "application/json" } },
     ));
@@ -21,6 +21,61 @@ describe("PolpoClient approvals", () => {
         method: "GET",
         headers: expect.objectContaining({ Authorization: "Bearer test-key" }),
       }),
+    );
+  });
+});
+
+describe("PolpoClient conversation Channels", () => {
+  it("keeps management endpoints distinct from legacy notification Channels", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>().mockImplementation(async () => new Response(
+      JSON.stringify({ ok: true, data: [] }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    ));
+    const client = new PolpoClient({ baseUrl: "https://api.polpo.sh", fetch });
+
+    await client.listChannels();
+    await client.listConversationChannels({
+      provider: "whatsapp",
+      status: "active",
+      connectionId: "connection/a",
+    });
+
+    expect(fetch.mock.calls[0]?.[0]).toBe("https://api.polpo.sh/v1/config/channels");
+    expect(fetch.mock.calls[1]?.[0]).toBe(
+      "https://api.polpo.sh/v1/channels?provider=whatsapp&status=active&connectionId=connection%2Fa",
+    );
+  });
+
+  it("encodes Channel and Route ids and sends typed bodies", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>().mockImplementation(async () => new Response(
+      JSON.stringify({ ok: true, data: { removed: true } }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    ));
+    const client = new PolpoClient({ baseUrl: "https://api.polpo.sh", fetch });
+
+    await client.configureConversationChannel({
+      provider: "telegram",
+      agentName: "assistant",
+      idempotencyKey: "setup-1",
+    });
+    await client.removeConversationChannelRoute("channel/a", "route b");
+
+    expect(fetch).toHaveBeenNthCalledWith(
+      1,
+      "https://api.polpo.sh/v1/channels/configure",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({
+          provider: "telegram",
+          agentName: "assistant",
+          idempotencyKey: "setup-1",
+        }),
+      }),
+    );
+    expect(fetch).toHaveBeenNthCalledWith(
+      2,
+      "https://api.polpo.sh/v1/channels/channel%2Fa/routes/route%20b",
+      expect.objectContaining({ method: "DELETE" }),
     );
   });
 });

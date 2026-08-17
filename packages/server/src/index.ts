@@ -105,11 +105,19 @@ export type {
   AuthRouteDeps,
   AgentRouteDeps,
   ConnectRouteDeps,
+  ChannelManagementRouteDeps,
   MemoryRouteDeps,
 } from "./deps.js";
 
 // Validation schemas (Zod — reusable by CLI for pre-flight validation)
 export { AddAgentSchema, UpdateAgentSchema, RenameTeamSchema, UpdateSettingsSchema, NotificationChannelConfigSchema } from "./schemas.js";
+export { conversationChannelRoutes } from "./routes/conversation-channels.js";
+export {
+  createChannelManagementTools,
+  type ChannelManagementToolContext,
+  type ChannelManagementToolDefinition,
+  type ChannelManagementToolsOptions,
+} from "./mcp/conversation-channels.js";
 export { compileLoopSource, LoopDslCompileError } from "./loop-dsl-compiler.js";
 
 // Playbook utilities (pure logic, edge-compatible)
