@@ -19,6 +19,9 @@ export type RunStreamEventType =
   | "run.cancelled"
   | "run.completed"
   | "run.failed"
+  | "response.chunk"
+  | "response.done"
+  | "response.error"
   | "output.text.delta"
   | "output.reasoning.delta"
   | "tool.started"
@@ -101,6 +104,17 @@ export interface RunExecutionLeaseStore {
   renew(runId: string, lease: RunExecutionLease): Promise<boolean>;
   release(runId: string, lease: RunExecutionLease): Promise<boolean>;
   get(runId: string): Promise<RunExecutionLease | null>;
+}
+
+export interface RunCancellationRequest {
+  requestedAt: string;
+  reason?: string;
+}
+
+export interface RunCancellationStore {
+  request(runId: string, request: RunCancellationRequest): Promise<RunCancellationRequest>;
+  get(runId: string): Promise<RunCancellationRequest | null>;
+  clear(runId: string): Promise<boolean>;
 }
 
 export class RunDeliveryValidationError extends Error {
@@ -303,6 +317,51 @@ export class InMemoryRunExecutionLeaseStore implements RunExecutionLeaseStore {
     const lease = this.leases.get(runId);
     return lease ? { ...lease } : null;
   }
+}
+
+export class InMemoryRunCancellationStore implements RunCancellationStore {
+  private readonly requests = new Map<string, RunCancellationRequest>();
+
+  async request(runId: string, input: RunCancellationRequest): Promise<RunCancellationRequest> {
+    const request = normalizeRunCancellationRequest(runId, input);
+    const existing = this.requests.get(runId);
+    if (existing) return { ...existing };
+    this.requests.set(runId, request);
+    return { ...request };
+  }
+
+  async get(runId: string): Promise<RunCancellationRequest | null> {
+    validateRunDeliveryRunId(runId);
+    const request = this.requests.get(runId);
+    return request ? { ...request } : null;
+  }
+
+  async clear(runId: string): Promise<boolean> {
+    validateRunDeliveryRunId(runId);
+    return this.requests.delete(runId);
+  }
+}
+
+export function normalizeRunCancellationRequest(
+  runId: string,
+  input: RunCancellationRequest,
+): RunCancellationRequest {
+  validateRunDeliveryRunId(runId);
+  if (!isPlainRecord(input)) {
+    throw new RunDeliveryValidationError("Run cancellation request must be an object");
+  }
+  const keys = Object.keys(input);
+  if (keys.some((key) => key !== "requestedAt" && key !== "reason")) {
+    throw new RunDeliveryValidationError("Run cancellation request contains unknown fields");
+  }
+  const requestedAt = normalizeTimestamp(input.requestedAt, () => new Date());
+  if (input.reason !== undefined) {
+    assertBoundedString(input.reason, "cancellation.reason", 500);
+  }
+  return {
+    requestedAt,
+    ...(input.reason === undefined ? {} : { reason: input.reason }),
+  };
 }
 
 function assertBoundedString(value: unknown, field: string, max: number): asserts value is string {

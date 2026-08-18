@@ -44,6 +44,14 @@ export const runExecutionLeasesSqlite = sqliteTable("run_execution_leases", {
   index("idx_run_execution_leases_expiry").on(table.expiresAt),
 ]);
 
+export const runCancellationRequestsSqlite = sqliteTable("run_cancellation_requests", {
+  runId: text("run_id").primaryKey(),
+  requestedAt: text("requested_at").notNull(),
+  reason: text("reason"),
+}, (table) => [
+  index("idx_run_cancellation_requests_time").on(table.requestedAt),
+]);
+
 export const runEventSequencesPg = pgTable("run_event_sequences", {
   runId: pgText("run_id").primaryKey(),
   lastSequence: bigint("last_sequence", { mode: "number" }).notNull(),
@@ -71,4 +79,12 @@ export const runExecutionLeasesPg = pgTable("run_execution_leases", {
   updatedAt: pgText("updated_at").notNull(),
 }, (table) => [
   pgIndex("idx_pg_run_execution_leases_expiry").on(table.expiresAt),
+]);
+
+export const runCancellationRequestsPg = pgTable("run_cancellation_requests", {
+  runId: pgText("run_id").primaryKey(),
+  requestedAt: pgText("requested_at").notNull(),
+  reason: pgText("reason"),
+}, (table) => [
+  pgIndex("idx_pg_run_cancellation_requests_time").on(table.requestedAt),
 ]);

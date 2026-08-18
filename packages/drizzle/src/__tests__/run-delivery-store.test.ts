@@ -179,3 +179,21 @@ describe("DrizzleRunExecutionLeaseStore", () => {
     await expect(stores.runExecutionLeaseStore.get("run-a")).resolves.toEqual(lease);
   });
 });
+
+describe("DrizzleRunCancellationStore", () => {
+  it("persists the first request idempotently and clears it after terminalization", async () => {
+    const first = {
+      requestedAt: "2026-08-19T10:00:00.000Z",
+      reason: "user_request",
+    };
+    await expect(stores.runCancellationStore.request("run-a", first)).resolves.toEqual(first);
+    await expect(stores.runCancellationStore.request("run-a", {
+      requestedAt: "2026-08-19T10:01:00.000Z",
+      reason: "duplicate",
+    })).resolves.toEqual(first);
+    await expect(stores.runCancellationStore.get("run-a")).resolves.toEqual(first);
+    await expect(stores.runCancellationStore.clear("run-a")).resolves.toBe(true);
+    await expect(stores.runCancellationStore.clear("run-a")).resolves.toBe(false);
+    await expect(stores.runCancellationStore.get("run-a")).resolves.toBeNull();
+  });
+});

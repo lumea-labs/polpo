@@ -7,6 +7,7 @@ export {
   runEventSequencesSqlite,
   runStreamEventsSqlite,
   runExecutionLeasesSqlite,
+  runCancellationRequestsSqlite,
 } from "./run-delivery.js";
 export { loopRunsSqlite } from "./loop-runs.js";
 export { sessionsSqlite, messagesSqlite } from "./sessions.js";
@@ -32,6 +33,7 @@ export {
   runEventSequencesPg,
   runStreamEventsPg,
   runExecutionLeasesPg,
+  runCancellationRequestsPg,
 } from "./run-delivery.js";
 export { loopRunsPg } from "./loop-runs.js";
 export { sessionsPg, messagesPg } from "./sessions.js";

@@ -9,6 +9,7 @@ import {
   formatRunEventCursor,
   materializeRunStreamEvent,
   normalizeRunExecutionLease,
+  normalizeRunCancellationRequest,
   normalizeRunStreamEventInput,
   parseRunEventCursor,
   runStreamEventMatchesInput,
@@ -20,6 +21,8 @@ import {
   type RunEventStore,
   type RunExecutionLease,
   type RunExecutionLeaseStore,
+  type RunCancellationRequest,
+  type RunCancellationStore,
   type RunStreamEvent,
 } from "@polpo-ai/core/run-delivery";
 import { deserializeJson, serializeJson, type Dialect } from "../utils.js";
@@ -282,5 +285,44 @@ export class DrizzleRunExecutionLeaseStore implements RunExecutionLeaseStore {
     return left.owner === right.owner
       && left.token === right.token
       && left.expiresAt === right.expiresAt;
+  }
+}
+
+export class DrizzleRunCancellationStore implements RunCancellationStore {
+  constructor(
+    private readonly db: any,
+    private readonly requests: any,
+  ) {}
+
+  async request(runId: string, input: RunCancellationRequest): Promise<RunCancellationRequest> {
+    const request = normalizeRunCancellationRequest(runId, input);
+    await this.db.insert(this.requests).values({
+      runId,
+      requestedAt: request.requestedAt,
+      reason: request.reason ?? null,
+    }).onConflictDoNothing();
+    const persisted = await this.get(runId);
+    if (!persisted) {
+      throw new RunDeliveryValidationError("Run cancellation request was not persisted");
+    }
+    return persisted;
+  }
+
+  async get(runId: string): Promise<RunCancellationRequest | null> {
+    validateRunDeliveryRunId(runId);
+    const rows: any[] = await this.db.select().from(this.requests)
+      .where(eq(this.requests.runId, runId)).limit(1);
+    const row = rows[0];
+    return row ? {
+      requestedAt: row.requestedAt,
+      ...(row.reason == null ? {} : { reason: row.reason }),
+    } : null;
+  }
+
+  async clear(runId: string): Promise<boolean> {
+    validateRunDeliveryRunId(runId);
+    const rows: any[] = await this.db.delete(this.requests)
+      .where(eq(this.requests.runId, runId)).returning();
+    return rows.length > 0;
   }
 }

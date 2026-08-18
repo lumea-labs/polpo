@@ -24,6 +24,7 @@ const ALL_TABLES = [
   "run_stream_events",
   "run_event_sequences",
   "run_execution_leases",
+  "run_cancellation_requests",
   "conversation_channel_routes",
   "conversation_channels",
   "log_entries",
@@ -118,6 +119,7 @@ describe.skipIf(!canConnect)("PostgreSQL Drizzle stores", () => {
       "run_event_sequences",
       "run_stream_events",
       "run_execution_leases",
+      "run_cancellation_requests",
     ];
     for (const table of expected) {
       const rows: any[] = await db.execute(sql.raw(

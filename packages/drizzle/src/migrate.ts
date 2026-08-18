@@ -150,6 +150,12 @@ export async function ensurePgTables(db: any): Promise<void> {
     updated_at TEXT NOT NULL
   )`);
 
+  await db.execute(sql`CREATE TABLE IF NOT EXISTS run_cancellation_requests (
+    run_id      TEXT PRIMARY KEY,
+    requested_at TEXT NOT NULL,
+    reason      TEXT
+  )`);
+
   await db.execute(sql`CREATE TABLE IF NOT EXISTS loop_runs (
     id                  TEXT PRIMARY KEY,
     loop_name           TEXT NOT NULL,
@@ -372,6 +378,7 @@ export async function ensurePgIndexes(db: any): Promise<void> {
   await db.execute(sql`CREATE UNIQUE INDEX IF NOT EXISTS uq_pg_run_stream_events_event_id ON run_stream_events(run_id, event_id)`);
   await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_pg_run_stream_events_cursor ON run_stream_events(run_id, sequence)`);
   await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_pg_run_execution_leases_expiry ON run_execution_leases(expires_at)`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_pg_run_cancellation_requests_time ON run_cancellation_requests(requested_at)`);
   await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_pg_loop_runs_status ON loop_runs(status)`);
   await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_pg_loop_runs_loop_name ON loop_runs(loop_name)`);
   await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_pg_loop_runs_agent_name ON loop_runs(agent_name)`);

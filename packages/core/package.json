@@ -78,6 +78,14 @@
       "types": "./dist/run-delivery.d.ts",
       "import": "./dist/run-delivery.js"
     },
+    "./run-delivery-follower": {
+      "types": "./dist/run-delivery-follower.d.ts",
+      "import": "./dist/run-delivery-follower.js"
+    },
+    "./run-delivery-owner": {
+      "types": "./dist/run-delivery-owner.d.ts",
+      "import": "./dist/run-delivery-owner.js"
+    },
     "./chat-interactions": {
       "types": "./dist/chat-interactions.d.ts",
       "import": "./dist/chat-interactions.js"
