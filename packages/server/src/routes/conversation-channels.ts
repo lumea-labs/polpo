@@ -6,6 +6,13 @@ import {
 import type { ChannelManagementRouteDeps } from "../deps.js";
 
 const providerId = z.enum(["slack", "telegram", "discord", "whatsapp"]);
+const channelIdentityResolver = z.object({
+  connectionId: z.string().min(1).max(256),
+  endpoint: z.string().url().max(2_048),
+  timeoutMs: z.number().int().min(250).max(10_000).optional(),
+  type: z.literal("http"),
+  version: z.literal(1),
+}).strict();
 const channelSettings = z.object({
   concurrency: z.object({
     debounceMs: z.number().int().nonnegative().optional(),
@@ -15,6 +22,7 @@ const channelSettings = z.object({
     queueEntryTtlMs: z.number().int().positive().optional(),
     strategy: z.enum(["drop", "queue", "debounce", "burst", "concurrent"]),
   }).strict().optional(),
+  identityResolver: channelIdentityResolver.optional(),
   responseDelivery: z.object({
     maxMessages: z.number().int().positive().optional(),
     style: z.enum(["single", "conversational"]),
@@ -37,7 +45,9 @@ const configureBody = z.object({
 
 const updateBody = z.object({
   name: z.string().min(1).max(256).optional(),
-  settings: channelSettings.optional(),
+  settings: channelSettings.extend({
+    identityResolver: channelIdentityResolver.nullable().optional(),
+  }).optional(),
   status: z.enum(["active", "disabled"]).optional(),
 }).strict().refine((value) => Object.keys(value).length > 0, {
   message: "Channel update must include at least one field",
@@ -48,6 +58,9 @@ const routeBody = z.object({
   enabled: z.boolean().optional(),
   externalChannelId: z.string().max(512).nullable().optional(),
   priority: z.number().int().min(-1_000_000).max(1_000_000).optional(),
+}).strict();
+const testBody = z.object({
+  to: z.string().min(1).max(512).optional(),
 }).strict();
 
 const channelParams = z.object({ channelId: z.string().min(1).max(256) });
@@ -172,12 +185,16 @@ export function conversationChannelRoutes(
     path: "/{channelId}/test",
     tags: ["Conversation Channels"],
     summary: "Test a conversational Channel",
-    request: { params: channelParams },
+    request: {
+      params: channelParams,
+      body: { required: false, content: { "application/json": { schema: testBody } } },
+    },
     responses: { 200: { content: { "application/json": { schema: success } }, description: "Test result" }, ...errors },
   }), (c: any) => withService(c, getDeps, async (service, deps) =>
     c.json({ ok: true, data: await service.test(
       await deps.resolveChannelManagementScope(c),
       c.req.valid("param").channelId,
+      { recipient: c.req.valid("json")?.to },
     ) }, 200)));
 
   openapi(createRoute({

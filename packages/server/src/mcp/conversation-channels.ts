@@ -128,9 +128,16 @@ export function createChannelManagementTools(
       name: "polpo_channels_test",
       title: "Test Channel",
       description: "Run the provider test for an active conversational Channel.",
-      inputSchema: object({ channelId: string("Channel id.") }, ["channelId"]),
+      inputSchema: object({
+        channelId: string("Channel id."),
+        recipient: string("Optional provider recipient for direct-message tests such as WhatsApp."),
+      }, ["channelId"]),
       annotations: { openWorldHint: true },
-      execute: async (args, context) => options.service.test(await scope(context), String(args.channelId)),
+      execute: async (args, context) => options.service.test(
+        await scope(context),
+        String(args.channelId),
+        typeof args.recipient === "string" ? { recipient: args.recipient } : {},
+      ),
     },
     {
       name: "polpo_channels_remove",
@@ -180,4 +187,3 @@ export function createChannelManagementTools(
     },
   ];
 }
-

@@ -40,12 +40,27 @@ export type ChannelManagementEvent = Readonly<{
 export type ConversationChannelStatus = "pending" | "active" | "disabled" | "error";
 export type ConversationChannelResponseModality = "text" | "voice";
 
+export type ConversationChannelIdentityResolver = Readonly<{
+  connectionId: string;
+  endpoint: string;
+  timeoutMs?: number;
+  type: "http";
+  version: 1;
+}>;
+
 export type ConversationChannelSettings = Readonly<{
   concurrency?: ChannelConcurrencyPolicy;
+  identityResolver?: ConversationChannelIdentityResolver;
   responseDelivery?: ChannelResponseDeliveryPolicy;
   responseModality?: ConversationChannelResponseModality;
   typingEnabled?: boolean;
 }>;
+
+export type ConversationChannelSettingsPatch = Readonly<
+  Omit<ConversationChannelSettings, "identityResolver"> & {
+    identityResolver?: ConversationChannelIdentityResolver | null;
+  }
+>;
 
 export type ConversationChannel = Readonly<{
   connectionId: string;
@@ -116,7 +131,9 @@ export type ChannelProvisioningResult =
       status: "setup_required";
     }>
   | Readonly<{
+      channel?: ConversationChannel;
       requirements: readonly ChannelSetupRequirement[];
+      route?: ConversationChannelRoute;
       setup?: SecureChannelSetupAction;
       status: "pending_external";
     }>
@@ -143,8 +160,12 @@ export type ConfigureConversationChannelInput = Readonly<{
 
 export type UpdateConversationChannelInput = Readonly<{
   name?: string;
-  settings?: ConversationChannelSettings;
+  settings?: ConversationChannelSettingsPatch;
   status?: Extract<ConversationChannelStatus, "active" | "disabled">;
+}>;
+
+export type TestConversationChannelInput = Readonly<{
+  recipient?: string;
 }>;
 
 export type UpsertConversationChannelRouteInput = Readonly<{
@@ -270,6 +291,7 @@ export interface ChannelProviderAutomation {
   test(input: {
     channel: ConversationChannel;
     connection: RedactedChannelConnection;
+    recipient?: string;
     scope: ChannelManagementScope;
   }): Promise<{ message?: string; success: boolean }>;
 }
@@ -279,6 +301,12 @@ export interface ChannelSecureSetupCoordinator {
     agentName: string;
     idempotencyKey: string;
     provider: ChannelProviderId;
+    requestedConfig?: Readonly<{
+      externalChannelId?: string;
+      name?: string;
+      priority?: number;
+      settings?: ConversationChannelSettings;
+    }>;
     scope: ChannelManagementScope;
   }): Promise<SecureChannelSetupAction>;
   get(

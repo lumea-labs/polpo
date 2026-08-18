@@ -238,6 +238,46 @@ const handleTurn = createConversationChannelTurnHandler(serverDeps, {
 });
 ```
 
+## Agent-native management
+
+The CLI uses the same provider-neutral management contract as the HTTP API and
+MCP. Credentials are referenced through project Connections and are never
+accepted inline.
+
+```bash
+polpo channels add whatsapp \
+  --agent leo \
+  --connection conn_whatsapp \
+  --destination 1234567890
+
+polpo channels test channel_id --to 15551234567
+```
+
+WhatsApp provisioning remains pending until Meta successfully verifies the
+callback challenge. The provisioning result includes the exact callback URL;
+configure it in the Meta app with the verify token stored in the WhatsApp
+Connection. A Channel is marked active only after that callback succeeds.
+
+### Trusted identity resolver
+
+Use a trusted resolver when the provider user must be mapped to an application
+user, tenant, workspace, or grant before routing to an agent:
+
+```bash
+polpo channels add whatsapp \
+  --agent leo \
+  --connection conn_whatsapp \
+  --destination 1234567890 \
+  --identity-resolver-endpoint https://api.example.com/polpo/channel-identity \
+  --identity-resolver-connection conn_resolver_bearer \
+  --identity-resolver-timeout 3000
+```
+
+Polpo calls the HTTPS endpoint server-side with the Bearer token held by the
+resolver Connection. The resolver output populates trusted invocation `user`
+and `metadata`; inbound messages and models cannot override those bindings.
+Use `polpo channels update CHANNEL_ID --disable-identity-resolver` to remove it.
+
 `consume` returns directly to the provider and never enters model history.
 `dispatch` supplies immutable trusted invocation identity to custom tools. The
 resolver metadata is not copied into model-visible tool arguments or ordinary

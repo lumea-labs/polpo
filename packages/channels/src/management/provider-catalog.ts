@@ -46,7 +46,7 @@ const descriptors: Record<ChannelProviderId, Omit<ChannelProviderDescriptor, "av
     setup: {
       authorization: "secure_credentials",
       secureHandoff: true,
-      automations: ["token_validation", "phone_number_validation", "waba_subscription", "webhook_verification"],
+      automations: ["token_validation", "phone_number_validation", "webhook_verification"],
       externalSteps: ["configure_meta_app"],
     },
   },
@@ -60,4 +60,3 @@ export function channelProviderCatalog(
     availability: enabled[id] === false ? "disabled" : "available",
   }));
 }
-
