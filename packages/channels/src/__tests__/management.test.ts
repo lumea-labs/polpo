@@ -83,6 +83,43 @@ describe("ChannelManagementService", () => {
     expect(JSON.stringify(result)).not.toMatch(/secret|token|credentialRevision/i);
   });
 
+  it("merges settings updates and can remove a trusted identity resolver", async () => {
+    const state = harness();
+    const result = await state.service.configure(scope, {
+      agentName: "assistant",
+      connectionId: "connection-1",
+      externalChannelId: "phone-1",
+      idempotencyKey: "settings-update",
+      provider: "whatsapp",
+      settings: {
+        identityResolver: {
+          connectionId: "resolver-connection",
+          endpoint: "https://resolver.example.com/channel-context",
+          type: "http",
+          version: 1,
+        },
+        typingEnabled: true,
+      },
+    });
+    expect(result.status).toBe("ready");
+    if (result.status !== "ready") return;
+
+    const renamed = await state.service.update(scope, result.channel.id, {
+      settings: { responseModality: "text" },
+    });
+    expect(renamed.settings).toMatchObject({
+      identityResolver: { connectionId: "resolver-connection" },
+      responseModality: "text",
+      typingEnabled: true,
+    });
+
+    const removed = await state.service.update(scope, result.channel.id, {
+      settings: { identityResolver: null },
+    });
+    expect(removed.settings.identityResolver).toBeUndefined();
+    expect(removed.settings).toMatchObject({ responseModality: "text", typingEnabled: true });
+  });
+
   it("converges repeated and concurrent idempotent requests", async () => {
     const state = harness();
     const input = {
@@ -121,8 +158,10 @@ describe("ChannelManagementService", () => {
 
     const result = await state.service.configure(scope, {
       agentName: "assistant",
+      externalChannelId: "phone-1",
       idempotencyKey: "setup-needed",
       provider: "whatsapp",
+      settings: { typingEnabled: true },
     });
 
     expect(result).toEqual({
@@ -135,6 +174,12 @@ describe("ChannelManagementService", () => {
     });
     expect(await state.store.listChannels(scope)).toEqual([]);
     expect(JSON.stringify(result)).not.toContain("must-not-escape");
+    expect(secureSetup.begin).toHaveBeenCalledWith(expect.objectContaining({
+      requestedConfig: {
+        externalChannelId: "phone-1",
+        settings: { typingEnabled: true },
+      },
+    }));
   });
 
   it("fails closed when a secure setup host is unavailable", async () => {

@@ -79,5 +79,7 @@ describe("createChannelManagementTools", () => {
       .toMatchObject({ destructiveHint: true });
     expect(tools.find((tool) => tool.name === "polpo_channel_routes_remove")?.annotations)
       .toMatchObject({ destructiveHint: true });
+    expect(tools.find((tool) => tool.name === "polpo_channels_test")?.inputSchema)
+      .toMatchObject({ properties: { recipient: { type: "string" } } });
   });
 });

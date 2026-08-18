@@ -107,10 +107,24 @@ export class InMemoryChannelManagementStore implements ChannelManagementStore {
   ): Promise<ConversationChannel | null> {
     const current = this.channels.get(id);
     if (!current || current.scopeKey !== scopeKey(scope)) return null;
+    let settings = current.value.settings;
+    if (patch.settings !== undefined) {
+      const { identityResolver, ...rest } = structuredClone(patch.settings);
+      const { identityResolver: _currentResolver, ...currentRest } = current.value.settings;
+      settings = {
+        ...currentRest,
+        ...rest,
+        ...(identityResolver === undefined
+          ? (_currentResolver ? { identityResolver: _currentResolver } : {})
+          : identityResolver === null
+            ? {}
+            : { identityResolver }),
+      };
+    }
     const value: ConversationChannel = {
       ...current.value,
       ...(patch.name === undefined ? {} : { name: patch.name }),
-      ...(patch.settings === undefined ? {} : { settings: structuredClone(patch.settings) }),
+      settings,
       ...(patch.status === undefined ? {} : { status: patch.status }),
       updatedAt: patch.timestamp,
     };

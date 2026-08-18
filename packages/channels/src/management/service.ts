@@ -12,8 +12,10 @@ import type {
   ConversationChannel,
   ConversationChannelQuery,
   ConversationChannelRoute,
+  ConversationChannelSettingsPatch,
   RedactedChannelConnection,
   SecureChannelSetupAction,
+  TestConversationChannelInput,
   UpdateConversationChannelInput,
   UpsertConversationChannelRouteInput,
 } from "./contracts.js";
@@ -29,6 +31,11 @@ export type ChannelManagementServiceOptions = {
   providerCatalog?: readonly ChannelProviderDescriptor[];
   secureSetup?: ChannelSecureSetupCoordinator;
   store: ChannelManagementStore;
+  validateSettings?: (
+    scope: ChannelManagementScope,
+    settings: NonNullable<ConfigureConversationChannelInput["settings"]> | ConversationChannelSettingsPatch,
+    channelId?: string,
+  ) => Promise<void>;
   onEvent?: (event: ChannelManagementEvent) => void | Promise<void>;
   onEventError?: (error: unknown, event: ChannelManagementEvent) => void;
 };
@@ -194,6 +201,9 @@ export class ChannelManagementService {
     if (!await this.options.agentExists(scope, agentName)) {
       throw new ChannelManagementError("AGENT_NOT_FOUND", "Agent not found", 404);
     }
+    if (input.settings && this.options.validateSettings) {
+      await this.options.validateSettings(scope, input.settings);
+    }
     if (!input.connectionId) {
       if (!this.options.secureSetup) {
         throw new ChannelManagementError(
@@ -207,6 +217,12 @@ export class ChannelManagementService {
         provider: input.provider,
         agentName,
         idempotencyKey: input.idempotencyKey,
+        requestedConfig: {
+          ...(input.externalChannelId === undefined ? {} : { externalChannelId: input.externalChannelId }),
+          ...(input.name === undefined ? {} : { name: input.name }),
+          ...(input.priority === undefined ? {} : { priority: input.priority }),
+          ...(input.settings === undefined ? {} : { settings: input.settings }),
+        },
       }));
       return { status: "setup_required", setup };
     }
@@ -282,7 +298,9 @@ export class ChannelManagementService {
       if (activation.status === "pending_external") {
         return {
           status: "pending_external",
+          channel,
           requirements: redactRequirements(activation.requirements),
+          route,
           ...(activation.setup ? { setup: assertSetupAction(activation.setup) } : {}),
         };
       }
@@ -311,7 +329,11 @@ export class ChannelManagementService {
   ): Promise<ConversationChannel> {
     assertScope(scope);
     if (patch.name !== undefined) assertIdentifier(patch.name, "name");
-    const updated = await this.options.store.updateChannel(scope, assertIdentifier(channelId, "channelId"), {
+    const normalizedChannelId = assertIdentifier(channelId, "channelId");
+    if (patch.settings && this.options.validateSettings) {
+      await this.options.validateSettings(scope, patch.settings, normalizedChannelId);
+    }
+    const updated = await this.options.store.updateChannel(scope, normalizedChannelId, {
       ...patch,
       timestamp: timestamp(this.now),
     });
@@ -377,6 +399,7 @@ export class ChannelManagementService {
   async test(
     scope: ChannelManagementScope,
     channelId: string,
+    input: TestConversationChannelInput = {},
   ): Promise<{ message?: string; success: boolean }> {
     const channel = await this.get(scope, channelId);
     if (channel.status !== "active") {
@@ -390,7 +413,10 @@ export class ChannelManagementService {
     if (connection.status !== "active") {
       throw new ChannelManagementError("CONNECTION_INACTIVE", "Connection is not active", 409);
     }
-    return this.options.providerAutomation.test({ scope, channel, connection });
+    const recipient = input.recipient === undefined
+      ? undefined
+      : assertIdentifier(input.recipient, "recipient", 512);
+    return this.options.providerAutomation.test({ scope, channel, connection, recipient });
   }
 
   setupStatus(scope: ChannelManagementScope, setupId: string): Promise<ChannelProvisioningResult> {
@@ -417,6 +443,8 @@ export class ChannelManagementService {
       case "pending_external":
         return {
           outcome: "pending_external",
+          ...(result.channel ? { channelId: result.channel.id } : {}),
+          ...(result.route ? { routeId: result.route.id } : {}),
           ...(result.setup ? { setupId: result.setup.setupId } : {}),
         };
       case "verifying":

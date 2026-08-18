@@ -32,7 +32,7 @@ function harness() {
         externalChannelId: input.externalChannelId ?? "phone-1",
       }),
       activate: async () => ({ status: "ready" }),
-      test: async () => ({ success: true }),
+      test: vi.fn(async () => ({ success: true })),
     },
     createId: (kind) => `${kind}-${++sequence}`,
     now: () => "2026-08-17T10:00:00.000Z",
@@ -62,12 +62,35 @@ describe("conversationChannelRoutes", () => {
       connectionId: "connection-1",
       externalChannelId: "phone-1",
       idempotencyKey: "operation-1",
-      settings: { typingEnabled: true },
+      settings: {
+        identityResolver: {
+          connectionId: "resolver-connection-1",
+          endpoint: "https://resolver.example.com/v1/channel-context",
+          timeoutMs: 2_000,
+          type: "http",
+          version: 1,
+        },
+        typingEnabled: true,
+      },
     }));
     expect(configured.status).toBe(200);
     expect(await configured.json()).toMatchObject({
       ok: true,
-      data: { status: "ready", channel: { id: "channel-1" } },
+      data: {
+        status: "ready",
+        channel: {
+          id: "channel-1",
+          settings: {
+            identityResolver: {
+              connectionId: "resolver-connection-1",
+              endpoint: "https://resolver.example.com/v1/channel-context",
+              timeoutMs: 2_000,
+              type: "http",
+              version: 1,
+            },
+          },
+        },
+      },
     });
 
     expect((await (await state.app.request("/")).json()).data).toHaveLength(1);
@@ -75,7 +98,10 @@ describe("conversationChannelRoutes", () => {
 
     const updated = await state.app.request("/channel-1", json("PATCH", { name: "Support" }));
     expect((await updated.json()).data.name).toBe("Support");
-    expect((await (await state.app.request("/channel-1/test", json("POST"))).json()).data.success).toBe(true);
+    expect((await (await state.app.request(
+      "/channel-1/test",
+      json("POST", { to: "+15551234567" }),
+    )).json()).data.success).toBe(true);
 
     const addedRoute = await state.app.request("/channel-1/routes", json("POST", {
       agentName: "assistant",
@@ -88,6 +114,27 @@ describe("conversationChannelRoutes", () => {
 
     expect((await state.app.request(`/channel-1/routes/${routeId}`, { method: "DELETE" })).status).toBe(200);
     expect((await state.app.request("/channel-1", { method: "DELETE" })).status).toBe(200);
+  });
+
+  it("rejects malformed trusted identity resolver settings", async () => {
+    const state = harness();
+    const response = await state.app.request("/configure", json("POST", {
+      provider: "whatsapp",
+      agentName: "assistant",
+      connectionId: "connection-1",
+      externalChannelId: "phone-1",
+      idempotencyKey: "bad-resolver",
+      settings: {
+        identityResolver: {
+          connectionId: "resolver-connection-1",
+          endpoint: "not-a-url",
+          type: "http",
+          version: 1,
+        },
+      },
+    }));
+
+    expect(response.status).toBe(400);
   });
 
   it("fails before storage when request validation or authoritative scope fails", async () => {
@@ -123,4 +170,3 @@ describe("conversationChannelRoutes", () => {
     });
   });
 });
-

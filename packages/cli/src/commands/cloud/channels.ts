@@ -27,7 +27,8 @@ class ChannelCliApiError extends Error {
 }
 
 export function conversationChannelPath(...segments: string[]): string {
-  return `/v1/channels${segments.length ? `/${segments.map(encodeURIComponent).join("/")}` : ""}`;
+  const base = "/v1/channels/management";
+  return `${base}${segments.length ? `/${segments.map(encodeURIComponent).join("/")}` : ""}`;
 }
 
 function parseJsonObject(value: string | undefined, label: string): Record<string, unknown> | undefined {
@@ -42,6 +43,60 @@ function parseJsonObject(value: string | undefined, label: string): Record<strin
     throw new Error(`${label} must be a JSON object.`);
   }
   return parsed as Record<string, unknown>;
+}
+
+type IdentityResolverOptions = {
+  disableIdentityResolver?: boolean;
+  identityResolverConnection?: string;
+  identityResolverEndpoint?: string;
+  identityResolverTimeout?: string;
+  settings?: string;
+};
+
+export function channelSettingsFromOptions(
+  options: IdentityResolverOptions,
+): Record<string, unknown> | undefined {
+  const settings = parseJsonObject(options.settings, "--settings") ?? {};
+  if (options.disableIdentityResolver) {
+    if (options.identityResolverConnection || options.identityResolverEndpoint || options.identityResolverTimeout) {
+      throw new Error("--disable-identity-resolver cannot be combined with identity resolver configuration options.");
+    }
+    return { ...settings, identityResolver: null };
+  }
+  const resolverValues = [
+    options.identityResolverConnection,
+    options.identityResolverEndpoint,
+    options.identityResolverTimeout,
+  ];
+  if (resolverValues.every((value) => value === undefined)) {
+    return Object.keys(settings).length > 0 ? settings : undefined;
+  }
+  if (!options.identityResolverConnection || !options.identityResolverEndpoint) {
+    throw new Error(
+      "--identity-resolver-endpoint and --identity-resolver-connection must be provided together.",
+    );
+  }
+  const timeoutMs = options.identityResolverTimeout === undefined
+    ? undefined
+    : Number(options.identityResolverTimeout);
+  if (timeoutMs !== undefined && (!Number.isSafeInteger(timeoutMs) || timeoutMs < 250 || timeoutMs > 10_000)) {
+    throw new Error("--identity-resolver-timeout must be an integer between 250 and 10000 milliseconds.");
+  }
+  return {
+    ...settings,
+    identityResolver: {
+      connectionId: options.identityResolverConnection,
+      endpoint: options.identityResolverEndpoint,
+      ...(timeoutMs === undefined ? {} : { timeoutMs }),
+      type: "http",
+      version: 1,
+    },
+  };
+}
+
+export function channelTestBody(to?: string): Record<string, string> | undefined {
+  const recipient = to?.trim();
+  return recipient ? { to: recipient } : undefined;
 }
 
 function dataFrom<T>(response: ApiResponse<ApiEnvelope<T>>): T {
@@ -74,6 +129,17 @@ function printResult(value: unknown, json: boolean): void {
   const result = value as any;
   if (result?.status === "setup_required" || result?.setup?.url) {
     clack.log.info(`${pc.bold("Secure setup required")}\n${result.setup.url}\n${pc.dim(`Expires ${result.setup.expiresAt}`)}`);
+    return;
+  }
+  if (result?.status === "pending_external") {
+    const requirements = Array.isArray(result.requirements) ? result.requirements : [];
+    clack.log.info([
+      pc.bold("Provider action required"),
+      ...requirements.flatMap((requirement: any) => [
+        requirement.label,
+        ...(requirement.url ? [requirement.url] : []),
+      ]),
+    ].join("\n"));
     return;
   }
   clack.log.info(JSON.stringify(value, null, 2));
@@ -149,6 +215,9 @@ export function registerChannelsCommand(program: Command): void {
     .option("--name <name>", "Channel display name")
     .option("--priority <number>", "Route priority", "100")
     .option("--settings <json>", "Channel settings as a JSON object")
+    .option("--identity-resolver-endpoint <url>", "Trusted pre-run identity resolver HTTPS endpoint")
+    .option("--identity-resolver-connection <id>", "Bearer Connection used by the identity resolver")
+    .option("--identity-resolver-timeout <ms>", "Identity resolver timeout in milliseconds")
     .option("--idempotency-key <key>", "Stable retry key")
     .option("--json", "Print JSON")
     .action((provider: string, opts: {
@@ -156,6 +225,9 @@ export function registerChannelsCommand(program: Command): void {
       connection?: string;
       destination?: string;
       idempotencyKey?: string;
+      identityResolverConnection?: string;
+      identityResolverEndpoint?: string;
+      identityResolverTimeout?: string;
       json?: boolean;
       name?: string;
       priority: string;
@@ -171,7 +243,7 @@ export function registerChannelsCommand(program: Command): void {
         idempotencyKey: opts.idempotencyKey ?? randomUUID(),
         name: opts.name,
         priority,
-        settings: parseJsonObject(opts.settings, "--settings"),
+        settings: channelSettingsFromOptions(opts),
       };
       printResult(dataFrom(await client.post(conversationChannelPath("configure"), body)), Boolean(opts.json));
     }));
@@ -181,13 +253,18 @@ export function registerChannelsCommand(program: Command): void {
     .option("--name <name>", "Channel display name")
     .option("--status <status>", "active or disabled")
     .option("--settings <json>", "Channel settings as a JSON object")
+    .option("--identity-resolver-endpoint <url>", "Trusted pre-run identity resolver HTTPS endpoint")
+    .option("--identity-resolver-connection <id>", "Bearer Connection used by the identity resolver")
+    .option("--identity-resolver-timeout <ms>", "Identity resolver timeout in milliseconds")
+    .option("--disable-identity-resolver", "Remove the trusted pre-run identity resolver")
     .option("--json", "Print JSON")
-    .action((channelId: string, opts: { json?: boolean; name?: string; settings?: string; status?: string }) =>
+    .action((channelId: string, opts: IdentityResolverOptions & { json?: boolean; name?: string; status?: string }) =>
       withChannelClient("Updating a Channel", opts, async (client) => {
+        const settings = channelSettingsFromOptions(opts);
         const body = {
           ...(opts.name ? { name: opts.name } : {}),
           ...(opts.status ? { status: opts.status } : {}),
-          ...(opts.settings ? { settings: parseJsonObject(opts.settings, "--settings") } : {}),
+          ...(settings ? { settings } : {}),
         };
         if (Object.keys(body).length === 0) throw new Error("Provide --name, --status, or --settings.");
         printResult(dataFrom(await client.patch(conversationChannelPath(channelId), body)), Boolean(opts.json));
@@ -195,10 +272,17 @@ export function registerChannelsCommand(program: Command): void {
 
   channels.command("test <channel-id>")
     .description("Test an active Channel")
+    .option("--to <recipient>", "Provider recipient for direct-message tests such as WhatsApp")
     .option("--json", "Print JSON")
-    .action((channelId: string, opts: { json?: boolean }) =>
+    .action((channelId: string, opts: { json?: boolean; to?: string }) =>
       withChannelClient("Testing a Channel", opts, async (client) => {
-        printResult(dataFrom(await client.post(conversationChannelPath(channelId, "test"))), Boolean(opts.json));
+        printResult(
+          dataFrom(await client.post(
+            conversationChannelPath(channelId, "test"),
+            channelTestBody(opts.to),
+          )),
+          Boolean(opts.json),
+        );
       }));
 
   channels.command("remove <channel-id>")
