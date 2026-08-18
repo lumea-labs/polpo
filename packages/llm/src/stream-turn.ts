@@ -519,6 +519,7 @@ export async function streamModelTurn<TOOLS extends ToolSet = ToolSet>(
   });
 
   let text = "";
+  let streamError: unknown;
 
   for await (const part of result.fullStream) {
     switch (part.type) {
@@ -582,10 +583,17 @@ export async function streamModelTurn<TOOLS extends ToolSet = ToolSet>(
         });
         break;
       case "error":
+        streamError ??= part.error;
         await onEvent?.({ type: "error", error: part.error });
         break;
     }
   }
+
+  // AI SDK reports transport/provider failures as stream parts instead of
+  // throwing them. Preserve that original error before accessing derived
+  // promises such as `output`, which otherwise replace it with a generic
+  // NoOutputGeneratedError and discard the actionable provider diagnostic.
+  if (streamError !== undefined) throw streamError;
 
   const responsePromise = Promise.resolve()
     .then(() => result.response)

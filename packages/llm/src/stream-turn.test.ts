@@ -36,6 +36,34 @@ function mockModel(parts: unknown[]) {
 }
 
 describe("streamModelTurn", () => {
+  it("preserves the provider error emitted by a failed stream", async () => {
+    const providerError = new Error(
+      "Invalid schema for response_format: 'uri' is not a valid format.",
+    );
+    const events: ModelTurnEvent[] = [];
+    const model = mockModel([
+      { type: "stream-start", warnings: [] },
+      { type: "error", error: providerError },
+    ]);
+
+    await expect(streamModelTurn({
+      model,
+      messages: [{ role: "user", content: "Create a structured response" }],
+      output: Output.object({
+        schema: jsonSchema({
+          type: "object",
+          properties: { url: { type: "string", format: "uri" } },
+          required: ["url"],
+          additionalProperties: false,
+        }),
+      }),
+    }, event => {
+      events.push(event);
+    })).rejects.toBe(providerError);
+
+    expect(events).toContainEqual({ type: "error", error: providerError });
+  });
+
   it("only sends active tools to the model provider", async () => {
     let providerTools: Array<{ name: string }> | undefined;
     const model = new MockLanguageModelV3({
