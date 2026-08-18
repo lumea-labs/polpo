@@ -846,9 +846,9 @@ describe("executeRun — shared run lifecycle", () => {
     expect(outcome.result.exitCode).toBe(1);
     const run = await store.getRun(config.runId);
     expect(run?.status).toBe("failed");
-    // The AI SDK surfaces stream errors as its "No output generated" error
-    // — the exact legacy path (see loop-engine.ts modelStep).
-    expect(run?.result?.stderr).toContain("No output generated");
+    // The shared model turn preserves the original provider diagnostic across
+    // the run lifecycle instead of replacing it with a generic output error.
+    expect(run?.result?.stderr).toContain("model exploded");
   });
 
   test("finalizes host resources once before persisting a successful terminal run", async () => {

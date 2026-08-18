@@ -413,10 +413,9 @@ describe.each(ENGINES)("%s — characterization", (_label, spawn) => {
 
     expect(result.exitCode).toBe(1);
     expect(result.stdout).toBe("");
-    // Characterization: the stream error surfaces as an "error" part in
-    // fullStream (with the real message), while awaiting stream.text then
-    // throws the generic AI SDK error — which is what lands in stderr.
-    expect(result.stderr).toContain("No output generated");
+    // The runtime preserves the provider error emitted through fullStream
+    // instead of replacing it with AI SDK's generic no-output error.
+    expect(result.stderr).toContain("provider exploded");
     expect(handle.isAlive()).toBe(false);
     const errors = transcript.filter((t) => t.type === "error");
     expect(errors.length).toBeGreaterThanOrEqual(1);
