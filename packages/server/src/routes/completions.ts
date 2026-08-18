@@ -30,6 +30,7 @@
  */
 
 import { OpenAPIHono } from "@hono/zod-openapi";
+import { streamSSE } from "hono/streaming";
 import {
   type ExecutionRouteClassifier,
   type ExecutionRouteClassifierResolverContext,
@@ -56,12 +57,26 @@ import type {
   CompletionResolvedModelInfo,
   ResolvedModelInfo,
 } from "./completions/agent-step-runner.js";
-import { handleProjectLoopCompletion } from "./completions/project-loop-runner.js";
 import {
+  executeStreamingProjectLoopCompletion,
+  handleProjectLoopCompletion,
+  type ProjectLoopCompletionOptions,
+} from "./completions/project-loop-runner.js";
+import {
+  executeStreamingChatCompletion,
   runNonStreamingChatCompletion,
   streamChatCompletion,
 } from "./completions/chat-handler.js";
-import { streamChatViaRun, runNonStreamingChatViaRun } from "./completions/chat-via-run-handler.js";
+import {
+  startDurableCompletion,
+  streamDurableCompletionFrames,
+  type CompletionRunDeliveryScope,
+} from "./completions/durable-stream.js";
+import {
+  executeStreamingChatViaRun,
+  streamChatViaRun,
+  runNonStreamingChatViaRun,
+} from "./completions/chat-via-run-handler.js";
 import { prepareChatCompletionExecution } from "./completions/conversation-turn.js";
 import type {
   RunOutputPolicy,
@@ -106,6 +121,13 @@ export interface CompletionToolRunScopeInput {
   sessionId?: string;
   runtimePlan?: RuntimePlan;
   signal?: AbortSignal;
+}
+
+export interface CompletionRunDeliveryScopeInput {
+  runId: string;
+  sessionId?: string;
+  agent?: string;
+  onDisconnect: "continue";
 }
 
 /**
@@ -249,6 +271,14 @@ export interface CompletionRouteDeps {
   createToolRunScope?: (
     input: CompletionToolRunScopeInput,
   ) => CompletionToolRunScope | Promise<CompletionToolRunScope>;
+  /**
+   * Resolve durable, host-scoped stores for an explicitly detached completion.
+   * Omitted keeps the legacy cancel-on-disconnect path and rejects explicit
+   * continue requests rather than silently weakening their contract.
+   */
+  createRunDeliveryScope?: (
+    input: CompletionRunDeliveryScopeInput,
+  ) => CompletionRunDeliveryScope | Promise<CompletionRunDeliveryScope>;
   /** Optional project-level loop loader. When provided, assigned/default agent loops can run as deterministic graphs. */
   getProjectLoop?: (name: string) => Promise<ProjectLoopConfig | null>;
   /** Optional durable store for agentic loop runtime traces. */
@@ -385,6 +415,15 @@ export function completionRoutes(getDeps: () => CompletionRouteDeps, apiKeys?: s
 
     // ── Parse body ──
     const body = c.req.valid("json");
+    if (durableDeliveryRequested(body) && !body.stream) {
+      return c.json({
+        error: {
+          message: "polpo.delivery.onDisconnect=continue requires stream=true.",
+          type: "invalid_request_error",
+          code: "durable_delivery_requires_streaming",
+        },
+      }, 400) as any;
+    }
     const rawSessionHeader = c.req.header("x-session-id") ?? null;
     const prepared = await prepareChatCompletionExecution(deps, body, {
       sessionId: rawSessionHeader === "new" ? null : rawSessionHeader,
@@ -405,7 +444,7 @@ export function completionRoutes(getDeps: () => CompletionRouteDeps, apiKeys?: s
     }
 
     if (prepared.kind === "project-loop") {
-      return await handleProjectLoopCompletion(c, {
+      const loopOptions: ProjectLoopCompletionOptions = {
         deps: prepared.deps,
         body: prepared.body,
         completionId: prepared.completionId,
@@ -421,12 +460,34 @@ export function completionRoutes(getDeps: () => CompletionRouteDeps, apiKeys?: s
         runtimePlan: prepared.runtimePlan,
         executionRoute: prepared.executionRoute,
         activatedSkills: prepared.activatedSkills,
-      }) as any;
+      };
+      if (body.stream && durableDeliveryRequested(body)) {
+        const scope = await resolveRunDeliveryScope(deps, {
+          runId: prepared.completionId,
+          sessionId: prepared.sessionId,
+          agent: body.agent,
+        });
+        if ("response" in scope) return scope.response(c) as any;
+        c.header("x-polpo-run-id", prepared.completionId);
+        return streamDurableCompletion(c, prepared.completionId, scope.value, ({ writer, signal }) =>
+          executeStreamingProjectLoopCompletion(writer, loopOptions, signal)) as any;
+      }
+      return await handleProjectLoopCompletion(c, loopOptions) as any;
     }
 
     const { execution, viaRun } = prepared;
     if (viaRun) {
       c.header("x-polpo-run-id", execution.completionId);
+      if (body.stream && durableDeliveryRequested(body)) {
+        const scope = await resolveRunDeliveryScope(deps, {
+          runId: execution.completionId,
+          sessionId: execution.sessionId,
+          agent: body.agent,
+        });
+        if ("response" in scope) return scope.response(c) as any;
+        return streamDurableCompletion(c, execution.completionId, scope.value, ({ writer, signal }) =>
+          executeStreamingChatViaRun(writer, execution, signal)) as any;
+      }
       return (body.stream
         ? await streamChatViaRun(c, execution)
         : await runNonStreamingChatViaRun(c, execution)) as any;
@@ -434,6 +495,17 @@ export function completionRoutes(getDeps: () => CompletionRouteDeps, apiKeys?: s
 
     if (body.stream) {
       // ── Streaming mode ──
+      if (durableDeliveryRequested(body)) {
+        const scope = await resolveRunDeliveryScope(deps, {
+          runId: execution.completionId,
+          sessionId: execution.sessionId,
+          agent: body.agent,
+        });
+        if ("response" in scope) return scope.response(c) as any;
+        c.header("x-polpo-run-id", execution.completionId);
+        return streamDurableCompletion(c, execution.completionId, scope.value, ({ writer, signal }) =>
+          executeStreamingChatCompletion(writer, execution, signal)) as any;
+      }
       return streamChatCompletion(c, execution) as any;
     }
     // ── Non-streaming mode ──
@@ -441,4 +513,74 @@ export function completionRoutes(getDeps: () => CompletionRouteDeps, apiKeys?: s
   });
 
   return app;
+}
+
+function streamDurableCompletion(
+  c: any,
+  runId: string,
+  scope: CompletionRunDeliveryScope,
+  producer: Parameters<typeof startDurableCompletion>[0]["producer"],
+) {
+  return streamSSE(c, async (stream) => {
+    const follower = new AbortController();
+    stream.onAbort(() => follower.abort());
+    const heartbeat = setInterval(() => {
+      if (follower.signal.aborted) return;
+      stream.write(": ping\n\n").catch(() => follower.abort());
+    }, 20_000);
+    const owner = startDurableCompletion({
+      runId,
+      scope,
+      producer,
+    });
+    owner.catch(() => {});
+    try {
+      await streamDurableCompletionFrames({
+        runId,
+        scope,
+        signal: follower.signal,
+        write: async (frame) => {
+          await stream.writeSSE({
+            data: frame.data,
+            id: frame.cursor,
+            ...(frame.event ? { event: frame.event } : {}),
+          });
+        },
+      });
+    } finally {
+      clearInterval(heartbeat);
+    }
+  });
+}
+
+function durableDeliveryRequested(body: { polpo?: { delivery?: { onDisconnect: string } } }): boolean {
+  return body.polpo?.delivery?.onDisconnect === "continue";
+}
+
+async function resolveRunDeliveryScope(
+  deps: CompletionRouteDeps,
+  input: { runId: string; sessionId?: string | null; agent?: string },
+): Promise<
+  | { value: CompletionRunDeliveryScope }
+  | { response: (c: any) => any }
+> {
+  if (!deps.createRunDeliveryScope) {
+    return {
+      response: (c) => c.json({
+        error: {
+          message: "Durable run delivery is not configured by this host.",
+          type: "invalid_request_error",
+          code: "run_delivery_unavailable",
+        },
+      }, 501),
+    };
+  }
+  return {
+    value: await deps.createRunDeliveryScope({
+      runId: input.runId,
+      ...(input.sessionId ? { sessionId: input.sessionId } : {}),
+      ...(input.agent ? { agent: input.agent } : {}),
+      onDisconnect: "continue",
+    }),
+  };
 }

@@ -78,6 +78,14 @@ import type { FileSystem } from "@polpo-ai/core/filesystem";
 import type { Shell } from "@polpo-ai/core/shell";
 import { resolveNodeModelOptions } from "../llm/model-runtime-options.js";
 import type { RuntimeContextProvider } from "@polpo-ai/core/runtime-context";
+import {
+  InMemoryRunCancellationStore,
+  InMemoryRunEventStore,
+  InMemoryRunExecutionLeaseStore,
+  type RunCancellationStore,
+  type RunEventStore,
+  type RunExecutionLeaseStore,
+} from "@polpo-ai/core/run-delivery";
 
 // Re-export for backward compatibility (consumed by core/index.ts and external modules)
 export { buildFixPrompt, buildRetryPrompt };
@@ -139,6 +147,9 @@ export class Orchestrator extends TypedEmitter {
   private gatewayConfig: GatewayConfig | undefined;
   private runtimeContext?: RuntimeContextProvider;
   private executionRouteClassifierResolver?: OrchestratorOptions["resolveExecutionRouteClassifier"];
+  private readonly ephemeralRunEventStore = new InMemoryRunEventStore();
+  private readonly ephemeralRunExecutionLeaseStore = new InMemoryRunExecutionLeaseStore();
+  private readonly ephemeralRunCancellationStore = new InMemoryRunCancellationStore();
 
   // Managers
   private agentMgr!: AgentManager;
@@ -783,6 +794,17 @@ export class Orchestrator extends TypedEmitter {
 
   getStore(): TaskStore { return this.registry; }
   getRunStore(): RunStore { return this.runStore; }
+  getRunDeliveryStores(): {
+    eventStore: RunEventStore;
+    leaseStore: RunExecutionLeaseStore;
+    cancellationStore: RunCancellationStore;
+  } {
+    return {
+      eventStore: this.drizzleStores?.runEventStore ?? this.ephemeralRunEventStore,
+      leaseStore: this.drizzleStores?.runExecutionLeaseStore ?? this.ephemeralRunExecutionLeaseStore,
+      cancellationStore: this.drizzleStores?.runCancellationStore ?? this.ephemeralRunCancellationStore,
+    };
+  }
   getPolpoDir(): string { return this.polpoDir; }
   getMemoryStore(): MemoryStore { return this.memoryStore; }
   getVaultStore(): VaultStore | undefined { return this.vaultStore; }

@@ -30,6 +30,7 @@ import {
   mockToolCallModel,
   mockTurnSequenceModel,
   mockResolvedModel,
+  mockTextGenerateResult,
   type MockResponse,
 } from "./helpers/mock-llm.js";
 
@@ -258,6 +259,56 @@ describe("POST /v1/chat/completions", () => {
   });
 
   describe("streaming", () => {
+    test("continues after the initial SSE subscriber disconnects and replays the terminal run", async () => {
+      let releaseModel!: () => void;
+      const modelGate = new Promise<void>((resolve) => { releaseModel = resolve; });
+      setMockModel(new MockLanguageModelV3({
+        doGenerate: mockTextGenerateResult("before after"),
+        doStream: async () => ({
+          stream: new ReadableStream({
+            start(controller) {
+              controller.enqueue({ type: "stream-start", warnings: [] });
+              controller.enqueue({ type: "text-start", id: "durable-text" });
+              controller.enqueue({ type: "text-delta", id: "durable-text", delta: "before " });
+              void modelGate.then(() => {
+                controller.enqueue({ type: "text-delta", id: "durable-text", delta: "after" });
+                controller.enqueue({ type: "text-end", id: "durable-text" });
+                controller.enqueue({
+                  type: "finish",
+                  finishReason: { unified: "stop", raw: undefined },
+                  usage: {
+                    inputTokens: { total: 10 },
+                    outputTokens: { total: 2 },
+                  },
+                });
+                controller.close();
+              });
+            },
+          }),
+        }),
+      }));
+
+      const res = await postCompletions({
+        messages: [{ role: "user", content: "continue after disconnect" }],
+        stream: true,
+        polpo: { delivery: { onDisconnect: "continue" } },
+      });
+      const runId = res.headers.get("x-polpo-run-id");
+      expect(res.status).toBe(200);
+      expect(runId).toMatch(/^chatcmpl-/);
+      const reader = res.body!.getReader();
+      const first = await reader.read();
+      expect(new TextDecoder().decode(first.value)).toContain("data:");
+      await reader.cancel();
+
+      releaseModel();
+      const replay = await app.request(`/v1/runs/${runId}/events`);
+      expect(replay.status).toBe(200);
+      const replayBody = await replay.text();
+      expect(replayBody).toContain("after");
+      expect(replayBody).toContain('"type":"run.completed"');
+    });
+
     test("returns SSE stream with text deltas and [DONE]", async () => {
       setMockModel(mockTextModel("Streamed response!"));
 

@@ -163,4 +163,22 @@ describe("followRunEvents", () => {
     }
     expect(sequences).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
   });
+
+  it("keeps canonical followers open through response completion until run terminal state", async () => {
+    const store = new InMemoryRunEventStore();
+    const notifier = new InMemoryRunEventNotifier();
+    const journal = new RunEventJournal(store, notifier);
+    await journal.append("run-a", { type: "response.done", data: { data: "[DONE]" } });
+    const received: string[] = [];
+    const follower = (async () => {
+      for await (const event of followRunEvents({ runId: "run-a", store, notifier })) {
+        received.push(event.type);
+      }
+    })();
+
+    await journal.append("run-a", { type: "run.completed", data: {} });
+    await follower;
+
+    expect(received).toEqual(["response.done", "run.completed"]);
+  });
 });

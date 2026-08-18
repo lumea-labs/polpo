@@ -29,6 +29,8 @@ export interface UseChatOptions {
   model?: string;
   /** Optional runtime sandbox policy for chat requests. */
   sandbox?: RuntimeSandboxOptions;
+  /** Keep execution alive and resume automatically when its SSE connection drops. */
+  durable?: boolean;
   /** Resume an existing session by ID. If omitted, the server auto-creates or reuses one (30-min window). */
   sessionId?: string;
   /** Called on each streaming text chunk. */
@@ -59,7 +61,7 @@ export interface UseChatOptions {
   onToolCall?: (toolCall: ToolCallEvent) => void;
 }
 
-export type ChatStatus = "idle" | "streaming" | "loading" | "error";
+export type ChatStatus = "idle" | "streaming" | "reconnecting" | "loading" | "error";
 
 export interface SendMessageOptions {
   /** Assigned skills to apply explicitly to this message. Additive, not restrictive. */
@@ -106,8 +108,16 @@ export interface UseChatReturn {
   pendingToolCall: PendingToolCall | null;
   /** Suggested next messages for the latest assistant response. */
   suggestions: ChatSuggestion[];
-  /** Abort the current streaming response. */
+  /** Active durable run identifier, once accepted by the server. */
+  runId: string | null;
+  /** Last fully processed durable stream cursor. */
+  lastEventId: string | null;
+  /** Explicitly cancel the active run. */
   abort: () => void;
+  /** Close this subscriber while allowing a durable run to continue. */
+  detach: () => void;
+  /** Explicitly cancel the active run and wait for acknowledgement. */
+  cancel: (reason?: string) => Promise<void>;
 }
 
 function activeSuggestionsFromHistory(messages: ChatMessage[]): ChatSuggestion[] {
@@ -127,6 +137,8 @@ export function useChat(options: UseChatOptions = {}): UseChatReturn {
   const [error, setError] = useState<Error | null>(null);
   const [pendingToolCall, setPendingToolCall] = useState<PendingToolCall | null>(null);
   const [suggestions, setSuggestions] = useState<ChatSuggestion[]>([]);
+  const [runId, setRunId] = useState<string | null>(null);
+  const [lastEventId, setLastEventId] = useState<string | null>(null);
 
   const streamRef = useRef<ChatCompletionStream | null>(null);
   const isStreamingRef = useRef(false);
@@ -203,6 +215,25 @@ export function useChat(options: UseChatOptions = {}): UseChatReturn {
     streamRef.current?.abort();
   }, []);
 
+  const detach = useCallback(() => {
+    streamRef.current?.detach();
+    isStreamingRef.current = false;
+    setStatus("idle");
+  }, []);
+
+  const cancel = useCallback(async (reason?: string) => {
+    await streamRef.current?.cancel(reason);
+    isStreamingRef.current = false;
+    setStatus("idle");
+  }, []);
+
+  useEffect(() => () => {
+    const stream = streamRef.current;
+    if (!stream) return;
+    if (optionsRef.current.durable) stream.detach();
+    else stream.abort();
+  }, []);
+
   // ── Shared streaming logic ──
   const streamResponse = useCallback(
     async (
@@ -224,6 +255,9 @@ export function useChat(options: UseChatOptions = {}): UseChatReturn {
             ask_user_question: true,
             suggestions: true,
           },
+          ...(optionsRef.current.durable
+            ? { delivery: { onDisconnect: "continue" as const } }
+            : {}),
         },
       });
       streamRef.current = stream;
@@ -240,6 +274,8 @@ export function useChat(options: UseChatOptions = {}): UseChatReturn {
       const segments: MessageSegment[] = [];
 
       for await (const chunk of stream) {
+        setRunId(stream.runId);
+        setLastEventId(stream.lastEventId);
         // Capture session ID
         if (stream.sessionId && !sessionIdRef.current) {
           sessionIdRef.current = stream.sessionId;
@@ -356,6 +392,8 @@ export function useChat(options: UseChatOptions = {}): UseChatReturn {
       }
 
       streamRef.current = null;
+      setRunId(stream.runId);
+      setLastEventId(stream.lastEventId);
       isStreamingRef.current = false;
       setStatus("idle");
       optionsRef.current.onFinish?.(fullText);
@@ -484,6 +522,10 @@ export function useChat(options: UseChatOptions = {}): UseChatReturn {
     isStreaming: status === "streaming",
     pendingToolCall,
     suggestions,
+    runId,
+    lastEventId,
     abort,
+    detach,
+    cancel,
   };
 }

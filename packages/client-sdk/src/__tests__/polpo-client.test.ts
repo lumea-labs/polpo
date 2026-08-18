@@ -221,6 +221,190 @@ describe("PolpoClient run steering", () => {
     expect(stream.sessionId).toBe("session-1");
     expect(stream.runId).toBe("chatcmpl-1");
   });
+
+  it("reconnects a durable chat from the last complete SSE cursor without recreating it", async () => {
+    const chunk = (content: string) => ({
+      id: "chatcmpl-1",
+      object: "chat.completion.chunk",
+      created: 1,
+      model: "polpo",
+      choices: [{ index: 0, delta: { content }, finish_reason: null }],
+    });
+    const event = (sequence: number, type: string, data: Record<string, unknown>) => ({
+      id: String(sequence),
+      runId: "chatcmpl-1",
+      sequence,
+      schemaVersion: 1,
+      type,
+      data,
+      createdAt: "2026-08-19T00:00:00.000Z",
+    });
+    const fetch = vi.fn<typeof globalThis.fetch>()
+      .mockResolvedValueOnce(new Response(
+        `data: ${JSON.stringify(chunk("before "))}\nid: 1\n\n`,
+        { status: 200, headers: { "x-polpo-run-id": "chatcmpl-1" } },
+      ))
+      .mockResolvedValueOnce(new Response([
+        `data: ${JSON.stringify(event(2, "response.chunk", { data: JSON.stringify(chunk("after")) }))}`,
+        "id: 2",
+        "",
+        `data: ${JSON.stringify(event(3, "response.done", { data: "[DONE]" }))}`,
+        "id: 3",
+        "",
+        "",
+      ].join("\n"), { status: 200 }));
+    const client = new PolpoClient({ baseUrl: "https://api.polpo.sh", apiKey: "key", fetch });
+    const stream = client.chatCompletionsStream({
+      messages: [{ role: "user", content: "start" }],
+      polpo: { delivery: { onDisconnect: "continue" } },
+    });
+
+    const received = [];
+    for await (const item of stream) received.push(item);
+
+    expect(received.map((item) => item.choices[0]?.delta.content)).toEqual(["before ", "after"]);
+    expect(stream.lastEventId).toBe("3");
+    expect(fetch).toHaveBeenNthCalledWith(
+      2,
+      "https://api.polpo.sh/v1/runs/chatcmpl-1/events?cursor=1",
+      expect.objectContaining({
+        method: "GET",
+        headers: expect.objectContaining({
+          Authorization: "Bearer key",
+          "Last-Event-ID": "1",
+        }),
+      }),
+    );
+  });
+
+  it("distinguishes local detach from explicit durable cancellation", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>()
+      .mockResolvedValueOnce(new Response("data: [DONE]\nid: 1\n\n", {
+        status: 200,
+        headers: { "x-polpo-run-id": "chatcmpl/a" },
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        ok: true,
+        data: { runId: "chatcmpl/a", accepted: true },
+      }), { status: 202 }));
+    const client = new PolpoClient({ baseUrl: "https://api.polpo.sh", fetch });
+    const detached = client.chatCompletionsStream({ messages: [{ role: "user", content: "start" }] });
+    await detached.start();
+    detached.detach();
+    expect(fetch).toHaveBeenCalledTimes(1);
+
+    const cancellable = client.chatCompletionsStream({ messages: [{ role: "user", content: "start" }] });
+    cancellable.runId = "chatcmpl/a";
+    await cancellable.cancel("stop");
+    expect(fetch).toHaveBeenLastCalledWith(
+      "https://api.polpo.sh/v1/runs/chatcmpl%2Fa/cancel",
+      expect.objectContaining({ method: "POST", body: JSON.stringify({ reason: "stop" }) }),
+    );
+  });
+
+  it("streams typed canonical run events from an explicit cursor", async () => {
+    const event = {
+      id: "event-2",
+      runId: "run/a",
+      sequence: 2,
+      schemaVersion: 1,
+      type: "run.completed",
+      data: {},
+      createdAt: "2026-08-19T00:00:00.000Z",
+    };
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(new Response(
+      `event: run.event\ndata: ${JSON.stringify(event)}\nid: 2\n\n`,
+      { status: 200 },
+    ));
+    const client = new PolpoClient({ baseUrl: "https://api.polpo.sh", fetch });
+    const received = [];
+    for await (const item of client.streamRunEvents("run/a", { after: "1" })) received.push(item);
+
+    expect(received).toEqual([event]);
+    expect(fetch).toHaveBeenCalledWith(
+      "https://api.polpo.sh/v1/runs/run%2Fa/events?cursor=1",
+      expect.objectContaining({
+        headers: expect.objectContaining({ "Last-Event-ID": "1" }),
+      }),
+    );
+  });
+
+  it("parses CRLF event boundaries split across transport chunks", async () => {
+    const chunk = {
+      id: "chatcmpl-1",
+      object: "chat.completion.chunk",
+      created: 1,
+      model: "polpo",
+      choices: [{ index: 0, delta: { content: "split" }, finish_reason: null }],
+    };
+    const encoder = new TextEncoder();
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify(chunk)}\r`));
+        controller.enqueue(encoder.encode("\n\r"));
+        controller.enqueue(encoder.encode("\ndata: [DONE]\r\n\r"));
+        controller.enqueue(encoder.encode("\n"));
+        controller.close();
+      },
+    });
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(new Response(body, {
+      status: 200,
+      headers: { "x-polpo-run-id": "chatcmpl-1" },
+    }));
+    const client = new PolpoClient({ baseUrl: "https://api.polpo.sh", fetch });
+    const received = [];
+
+    for await (const item of client.chatCompletionsStream({
+      messages: [{ role: "user", content: "start" }],
+    })) received.push(item);
+
+    expect(received).toEqual([chunk]);
+  });
+
+  it("surfaces a persisted terminal failure without reconnecting", async () => {
+    const failed = {
+      id: "run.failed",
+      runId: "run-1",
+      sequence: 2,
+      schemaVersion: 1,
+      type: "run.failed",
+      data: { message: "provider unavailable" },
+      createdAt: "2026-08-19T00:00:00.000Z",
+    };
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(new Response(
+      `id: 2\nevent: run.event\ndata: ${JSON.stringify(failed)}\n\n`,
+      { status: 200 },
+    ));
+    const client = new PolpoClient({ baseUrl: "https://api.polpo.sh", fetch });
+    const stream = client.chatCompletionsStream({
+      messages: [{ role: "user", content: "start" }],
+      polpo: { delivery: { onDisconnect: "continue" } },
+    });
+    stream.runId = "run-1";
+    stream.resume({ after: "1" });
+
+    await expect(async () => {
+      for await (const _item of stream) { /* consume */ }
+    }).rejects.toThrow("provider unavailable");
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects malformed durable response chunks instead of reconnecting forever", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(new Response(
+      "id: 1\ndata: {not-json}\n\n",
+      { status: 200, headers: { "x-polpo-run-id": "run-1" } },
+    ));
+    const client = new PolpoClient({ baseUrl: "https://api.polpo.sh", fetch });
+    const stream = client.chatCompletionsStream({
+      messages: [{ role: "user", content: "start" }],
+      polpo: { delivery: { onDisconnect: "continue" } },
+    });
+
+    await expect(async () => {
+      for await (const _item of stream) { /* consume */ }
+    }).rejects.toThrow("malformed response chunk");
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe("PolpoClient structured outputs", () => {

@@ -70,7 +70,6 @@ const TERMINAL_RUN_EVENT_TYPES = new Set<RunStreamEvent["type"]>([
   "run.completed",
   "run.failed",
   "run.cancelled",
-  "response.done",
 ]);
 
 export function isTerminalRunStreamEvent(event: RunStreamEvent): boolean {

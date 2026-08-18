@@ -156,6 +156,35 @@ function clientSideToolNames(exec: ChatCompletionExecution): Set<string> {
 
 /** Streaming chat mode — SSE stream of OpenAI-format chunks. */
 export function streamChatCompletion(c: any, exec: ChatCompletionExecution): any {
+  return streamSSE(c, async (stream) => {
+    const abortController = new AbortController();
+    stream.onAbort(() => { abortController.abort(); });
+    const heartbeatInterval = setInterval(() => {
+      if (abortController.signal.aborted) {
+        clearInterval(heartbeatInterval);
+        return;
+      }
+      stream.write(": ping\n\n").catch(() => clearInterval(heartbeatInterval));
+    }, 20_000);
+    try {
+      await executeStreamingChatCompletion(stream, exec, abortController.signal);
+    } finally {
+      clearInterval(heartbeatInterval);
+    }
+  }) as any;
+}
+
+export interface CompletionSseWriter {
+  write(data: string): Promise<unknown>;
+  writeSSE(message: { data: string; event?: string; id?: string }): Promise<unknown>;
+}
+
+/** Transport-independent producer used by attached and durable followers. */
+export async function executeStreamingChatCompletion(
+  stream: CompletionSseWriter,
+  exec: ChatCompletionExecution,
+  signal: AbortSignal,
+): Promise<void> {
   const {
     deps, body, completionId, agentMode, fullSystemPrompt,
     m: primaryModel, providerOpts: primaryProviderOpts,
@@ -169,26 +198,6 @@ export function streamChatCompletion(c: any, exec: ChatCompletionExecution): any
   const reasoning = exec.agentConfig?.reasoning ?? deps.getConfig()?.settings?.reasoning;
   const outputMode = streamingOutputPolicyMode(deps.runOutputPolicy);
   const structuredResponse = isStructuredResponseFormat(body.response_format);
-
-  return streamSSE(c, async (stream) => {
-    // Abort controller: cancelled when the client disconnects (closes SSE)
-    const abortController = new AbortController();
-    stream.onAbort(() => { abortController.abort(); });
-
-    // SSE heartbeat: write a comment (`: ping`) every 20s to prevent
-    // proxy idle timeouts (nginx 60s, Cloudflare 100s) during long tool
-    // execution pauses. SSE comments are invisible to compliant clients.
-    // WritableStream serializes writes, so heartbeats cannot interleave
-    // mid-payload with writeSSE calls.
-    const heartbeatInterval = setInterval(() => {
-      if (abortController.signal.aborted) {
-        clearInterval(heartbeatInterval);
-        return;
-      }
-      stream.write(": ping\n\n").catch(() => {
-        clearInterval(heartbeatInterval);
-      });
-    }, 20_000);
 
     await stream.writeSSE({ data: sseChunk(completionId, { role: "assistant" }) });
 
@@ -216,7 +225,7 @@ export function streamChatCompletion(c: any, exec: ChatCompletionExecution): any
         runtimePlan: exec.runtimePlan,
         agent: body.agent,
         sessionId,
-        signal: abortController.signal,
+        signal,
       });
       if (validateStructured) {
         finalText = await finalizeResponseFormatText(body.response_format, finalText);
@@ -230,7 +239,7 @@ export function streamChatCompletion(c: any, exec: ChatCompletionExecution): any
     try {
       for (let turn = 0; turn < MAX_TURNS; turn++) {
         // Bail out early if the client already disconnected
-        if (abortController.signal.aborted) break;
+        if (signal.aborted) break;
 
         // Compact context if approaching the model's context window limit.
         // Under threshold this is just a cheap token estimation — zero LLM calls.
@@ -293,9 +302,9 @@ export function streamChatCompletion(c: any, exec: ChatCompletionExecution): any
           ...(exec.activeToolNames ? { activeTools: exec.activeToolNames() } : {}),
           ...(modelToolChoice ? { toolChoice: modelToolChoice as any } : {}),
           ...(exec.modelOutput ? { output: exec.modelOutput } : {}),
-          abortSignal: abortController.signal,
+          abortSignal: signal,
         }, async (event) => {
-          if (abortController.signal.aborted) return;
+          if (signal.aborted) return;
           if (event.type === "reasoning-delta") {
             await stream.writeSSE({ data: sseChunk(completionId, {}, null, { thinking: event.text }) });
           } else if (event.type === "text-delta") {
@@ -338,7 +347,7 @@ export function streamChatCompletion(c: any, exec: ChatCompletionExecution): any
         });
 
         // If aborted, stop the loop — skip error/tool processing
-        if (abortController.signal.aborted) {
+        if (signal.aborted) {
           break;
         }
 
@@ -522,7 +531,7 @@ export function streamChatCompletion(c: any, exec: ChatCompletionExecution): any
 
         for (const call of dispatchableToolCalls) {
           // Stop executing tools if client disconnected
-          if (abortController.signal.aborted) break;
+          if (signal.aborted) break;
 
           const callArgs = call.input as Record<string, unknown>;
 
@@ -540,7 +549,7 @@ export function streamChatCompletion(c: any, exec: ChatCompletionExecution): any
 
           const result = await effectiveToolExecutor(call.toolName, callArgs, {
             callId: call.toolCallId,
-            signal: abortController.signal,
+            signal,
           });
           const isError = result.startsWith("Error:");
           emitFileChanged(call.toolName, callArgs, result, deps.emit);
@@ -555,7 +564,7 @@ export function streamChatCompletion(c: any, exec: ChatCompletionExecution): any
           });
 
           // Notify client with tool result (skip if aborted mid-tool)
-          if (!abortController.signal.aborted) {
+          if (!signal.aborted) {
             await stream.writeSSE({
               data: sseChunk(completionId, {}, null, {
                 tool_call: { id: call.toolCallId, name: call.toolName, result, state: isError ? "error" : "completed" },
@@ -588,9 +597,9 @@ export function streamChatCompletion(c: any, exec: ChatCompletionExecution): any
         }
       }
 
-      if (!abortController.signal.aborted) {
+      if (!signal.aborted) {
         await finalizeOutput();
-        suggestions = await suggestionsForCompletion(exec, finalText, abortController.signal);
+        suggestions = await suggestionsForCompletion(exec, finalText, signal);
         if (suggestions.length > 0) {
           await stream.writeSSE({
             data: ssePolpoChunk(completionId, { suggestions }),
@@ -601,7 +610,7 @@ export function streamChatCompletion(c: any, exec: ChatCompletionExecution): any
       }
     } catch (err) {
       // Suppress AbortError — expected when client disconnects
-      if ((err instanceof DOMException && err.name === "AbortError") || abortController.signal.aborted) {
+      if ((err instanceof DOMException && err.name === "AbortError") || signal.aborted) {
         // fall through to finally — no SSE error event needed
       } else {
         // Friendly model_not_found surface — gateway returns 404 for
@@ -637,7 +646,6 @@ export function streamChatCompletion(c: any, exec: ChatCompletionExecution): any
         }
       }
     } finally {
-      clearInterval(heartbeatInterval);
       // Always persist the assistant response — even on disconnect.
       // (Vault credentials are redacted inside persistAssistantMessage.)
       await persistAssistantMessage(
@@ -667,7 +675,6 @@ export function streamChatCompletion(c: any, exec: ChatCompletionExecution): any
         onResponseFinished().catch(() => {});
       }
     }
-  }) as any;
 }
 
 /** Non-streaming chat mode — single OpenAI-format JSON response. */
