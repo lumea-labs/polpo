@@ -13,10 +13,16 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ApiClient } from "../commands/cloud/api.js";
 import {
+  resolveDataConflict,
   resolveJsonConflict,
   resolveFileConflict,
   type ConflictOptions,
 } from "./conflicts.js";
+import {
+  collectLocalSkillBundle,
+  replaceLocalSkillBundle,
+} from "./runtime-skill-bundle.js";
+import type { SkillBundle } from "@polpo-ai/core/skill-bundle";
 import { scheduleDefinitionForPull } from "./schedules.js";
 import {
   serializeAgentDefinition,
@@ -262,9 +268,31 @@ export async function pullProject(
       if (Array.isArray(skills)) {
         for (const skill of skills) {
           try {
-            const contentRes = await client.get<any>(
-              `/v1/skills/${encodeURIComponent(skill.name)}/content`,
+            const bundleRes = await client.get<any>(
+              `/v1/skills/${encodeURIComponent(skill.name)}/bundle`,
             );
+            if (bundleRes.status === 200) {
+              const bundle = (bundleRes.data?.data ?? bundleRes.data) as SkillBundle;
+              const skillDir = path.join(polpoDir, "skills", skill.name);
+              const localBundle = fs.existsSync(skillDir)
+                ? collectLocalSkillBundle(skillDir, skill.name)
+                : null;
+              const action = await resolveDataConflict(bundle, localBundle, `skill "${skill.name}"`, {
+                ...opts,
+                beforePrompt: opts.beforePrompt,
+                afterPrompt: opts.afterPrompt,
+              });
+              if (action === "write") {
+                replaceLocalSkillBundle(skillDir, bundle);
+                result.pulled.push(`skill (${skill.name})`);
+              } else {
+                result.skipped.push(`skill/${skill.name} (local kept)`);
+              }
+              continue;
+            }
+
+            // Backward compatibility with servers that predate bundle sync.
+            const contentRes = await client.get<any>(`/v1/skills/${encodeURIComponent(skill.name)}/content`);
             if (contentRes.status === 200) {
               const content = contentRes.data?.content ?? contentRes.data;
               if (typeof content === "string" && content.trim()) {
@@ -273,9 +301,7 @@ export async function pullProject(
                 if (action === "write") {
                   writeText(filePath, content);
                   result.pulled.push(`skill (${skill.name})`);
-                } else {
-                  result.skipped.push(`skill/${skill.name} (local kept)`);
-                }
+                } else result.skipped.push(`skill/${skill.name} (local kept)`);
               }
             }
           } catch {

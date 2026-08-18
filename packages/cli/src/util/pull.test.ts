@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pullProject } from "./pull.js";
@@ -46,5 +46,48 @@ describe("pullProject agent execution router", () => {
 
     expect(result.errors).toEqual([]);
     expect(entries[0].agent.executionRouter).toEqual(agent.executionRouter);
+  });
+});
+
+describe("pullProject skill bundles", () => {
+  it("restores nested text and binary resources from cloud", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "polpo-pull-skill-bundle-"));
+    dirs.push(dir);
+    const files = [
+      {
+        path: "SKILL.md",
+        content: Buffer.from("---\nname: frontend-design\ndescription: Design\n---\n\nInstructions.").toString("base64"),
+        encoding: "base64",
+      },
+      {
+        path: "references/guide.md",
+        content: Buffer.from("# Guide\n").toString("base64"),
+        encoding: "base64",
+      },
+      {
+        path: "assets/palette.bin",
+        content: Buffer.from([0, 1, 2, 255]).toString("base64"),
+        encoding: "base64",
+      },
+    ];
+    const client = {
+      get: async (requestPath: string) => {
+        if (requestPath === "/v1/skills") {
+          return { status: 200, data: { data: [{ name: "frontend-design" }] } };
+        }
+        if (requestPath === "/v1/skills/frontend-design/bundle") {
+          return { status: 200, data: { data: { name: "frontend-design", files } } };
+        }
+        return { status: 404, data: {} };
+      },
+    };
+
+    const result = await pullProject(client as any, dir, { force: true, interactive: false });
+
+    expect(result.errors).toEqual([]);
+    expect(await readFile(join(dir, "skills", "frontend-design", "references", "guide.md"), "utf8"))
+      .toBe("# Guide\n");
+    expect(await readFile(join(dir, "skills", "frontend-design", "assets", "palette.bin")))
+      .toEqual(Buffer.from([0, 1, 2, 255]));
   });
 });

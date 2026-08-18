@@ -59,6 +59,7 @@ import type {
   SkillWithAssignment,
   SkillIndexEntry,
   SkillIndex,
+  SkillBundle,
   NotificationChannelConfig,
   NotificationRecord,
   NotificationStats,
@@ -1315,6 +1316,18 @@ export class PolpoClient {
   /** Get the full content of an agent skill by name. */
   getSkillContent(name: string): Promise<LoadedSkill> {
     return this.get<LoadedSkill>(`/skills/${encodeURIComponent(name)}/content`);
+  }
+
+  /** Get every file in a skill directory as a binary-safe bundle. */
+  getSkillBundle(name: string): Promise<SkillBundle> {
+    return this.get<SkillBundle>(`/skills/${encodeURIComponent(name)}/bundle`);
+  }
+
+  /** Atomically replace every file in a skill directory. */
+  putSkillBundle(bundle: SkillBundle): Promise<{ name: string; files: number }> {
+    return this.put<{ name: string; files: number }>(`/skills/${encodeURIComponent(bundle.name)}/bundle`, {
+      files: bundle.files,
+    });
   }
 
   /** Get the full content of an orchestrator skill by name. */

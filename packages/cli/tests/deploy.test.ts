@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -166,5 +166,72 @@ describe("cloud deploy dependency order", () => {
       'loop "build": deploy failed — references unknown tool project_checkout',
     ]);
     expect(deployExitCode(report.total)).toBe(1);
+  });
+});
+
+describe("cloud deploy skill bundles", () => {
+  async function skillFixture(): Promise<string> {
+    const root = await mkdtemp(join(tmpdir(), "polpo-skill-deploy-test-"));
+    roots.push(root);
+    const skillDir = join(root, ".polpo", "skills", "frontend-design");
+    await mkdir(join(skillDir, "references"), { recursive: true });
+    await mkdir(join(skillDir, "assets"), { recursive: true });
+    await writeFile(join(root, ".polpo", "project.json"), JSON.stringify({
+      schemaVersion: 2,
+      project: "skill-bundle",
+      projectId: "project-1",
+      projectSlug: "skill-bundle-project",
+    }));
+    await writeFile(
+      join(skillDir, "SKILL.md"),
+      "---\nname: frontend-design\ndescription: Design interfaces\n---\n\nUse the guide.",
+    );
+    await writeFile(join(skillDir, "references", "guide.md"), "# Guide\n");
+    await writeFile(join(skillDir, "assets", "palette.bin"), Buffer.from([0, 1, 2, 255]));
+    return root;
+  }
+
+  it("deploys every nested text and binary file in a skill bundle", async () => {
+    const root = await skillFixture();
+    let payload: any;
+
+    vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(typeof input === "string" ? input : input instanceof URL ? input : input.url);
+      const method = init?.method ?? "GET";
+      if (method === "GET" && url.pathname === "/v1/skills") {
+        return Response.json({ ok: true, data: [] });
+      }
+      if (method === "PUT" && url.pathname === "/v1/skills/frontend-design/bundle") {
+        payload = JSON.parse(String(init?.body));
+        return Response.json({ ok: true, data: { name: "frontend-design" } });
+      }
+      return Response.json({ ok: false, error: `unexpected ${method} ${url.pathname}` }, { status: 500 });
+    }));
+
+    const report = await runDeploy({ dir: root, yes: true, force: true, silent: true });
+
+    expect(report.total.failed).toBe(0);
+    expect(payload.files.map((file: any) => file.path)).toEqual([
+      "assets/palette.bin",
+      "references/guide.md",
+      "SKILL.md",
+    ]);
+    const binary = payload.files.find((file: any) => file.path === "assets/palette.bin");
+    expect(Buffer.from(binary.content, "base64")).toEqual(Buffer.from([0, 1, 2, 255]));
+  });
+
+  it("fails closed instead of following symlinks outside the skill bundle", async () => {
+    const root = await skillFixture();
+    const outside = join(root, "secret.txt");
+    await writeFile(outside, "do not upload");
+    await symlink(outside, join(root, ".polpo", "skills", "frontend-design", "secret.txt"));
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const report = await runDeploy({ dir: root, yes: true, force: true, silent: true });
+
+    expect(report.total.failed).toBe(1);
+    expect(report.total.errors.join("\n")).toContain("symbolic link");
+    expect(fetchMock.mock.calls.some(([, init]) => (init as RequestInit | undefined)?.method === "PUT")).toBe(false);
   });
 });

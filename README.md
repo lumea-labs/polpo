@@ -201,6 +201,40 @@ readable. Run `polpo migrate --dry-run` to validate a conversion, then
 `polpo migrate` to write the directory layout. Migration retains the original
 manifests as `*.v1.json` backups.
 
+### Runtime skills
+
+Runtime skills follow the [Agent Skills specification](https://agentskills.io/specification).
+Each directory is a complete bundle: `SKILL.md` plus optional `references/`,
+`scripts/`, `assets/`, and other files used by the skill.
+
+```bash
+# Add one skill from a registry repository and assign it locally.
+polpo skills add owner/repository --skill frontend-design --agent builder
+
+# Local custom bundles work the same way.
+polpo skills add ./my-skill --agent builder
+
+# Inspect, update, or deploy the project explicitly.
+polpo skills list
+polpo skills update frontend-design
+polpo deploy
+```
+
+`polpo skills add` writes the complete bundle under `.polpo/skills/`, updates
+the selected agents' `skills` arrays, and records source provenance in
+`.polpo/skills.lock.json`. It does not deploy unless `--deploy` is present.
+`polpo deploy` and `polpo pull` preserve all nested text and binary files.
+Symlinks are rejected rather than followed outside the bundle.
+
+Other local operations are available without the dashboard:
+
+```bash
+polpo skills assign frontend-design --agent builder
+polpo skills unassign frontend-design --agent builder
+polpo skills remove frontend-design
+polpo skills update --all
+```
+
 Custom tools can keep host identity out of the model-visible parameter schema.
 Declare a separate binding schema and map it only to immutable invocation
 context paths:

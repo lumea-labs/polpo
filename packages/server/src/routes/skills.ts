@@ -10,9 +10,16 @@
  */
 
 import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
-import { resolve, join, basename } from "node:path";
+import { randomUUID } from "node:crypto";
+import { resolve, join, basename, dirname } from "node:path";
 import type { FileSystem } from "@polpo-ai/core";
 import type { Shell } from "@polpo-ai/core";
+import {
+  validateSkillBundleFiles,
+  validateSkillName,
+  type SkillBundle,
+  type SkillBundleFile,
+} from "@polpo-ai/core/skill-bundle";
 // Dynamic import to work around workspace version resolution.
 // At publish time, @polpo-ai/core@^0.3.5 will be resolved correctly.
 // @ts-ignore — resolved at publish time with @polpo-ai/core@^0.3.5
@@ -33,34 +40,126 @@ interface LoadedSkill extends SkillInfo {
   content: string;
 }
 
-/**
- * Recursively copy a skill bundle from one FileSystem to another using ONLY the
- * FileSystem abstraction — so install works on any backend (local, sandbox
- * proxy, cloud object store), never assuming a POSIX shell. Copies every file
- * and subdirectory (SKILL.md, references/, scripts/, assets/, …), not just
- * SKILL.md. Binary-safe via readFileBuffer/writeFileBuffer when available.
- */
-async function copySkillBundle(srcFs: FileSystem, src: string, dstFs: FileSystem, dst: string): Promise<void> {
-  await dstFs.mkdir(dst);
-  const entries = (srcFs as any).readdirWithTypes
-    ? await (srcFs as any).readdirWithTypes(src)
-    : (await srcFs.readdir(src)).map((name: string) => ({ name, isFile: true, isDirectory: false }));
-  for (const entry of entries) {
-    const s = join(src, entry.name);
-    const d = join(dst, entry.name);
-    if (entry.isDirectory) {
-      await copySkillBundle(srcFs, s, dstFs, d);
-    } else {
-      const data = (srcFs as any).readFileBuffer
-        ? await (srcFs as any).readFileBuffer(s)
-        : new TextEncoder().encode(await srcFs.readFile(s));
-      if ((dstFs as any).writeFileBuffer) await (dstFs as any).writeFileBuffer(d, data);
-      else await dstFs.writeFile(d, new TextDecoder().decode(data));
+const skillBundleFileSchema = z.object({
+  path: z.string().min(1),
+  content: z.string(),
+  encoding: z.literal("base64"),
+});
+
+function bytesAsUtf8(bytes: Uint8Array, filePath: string): string {
+  const text = new TextDecoder().decode(bytes);
+  const encoded = new TextEncoder().encode(text);
+  if (encoded.length !== bytes.length || encoded.some((byte, index) => byte !== bytes[index])) {
+    throw new Error(`FileSystem requires binary read/write support for ${filePath}`);
+  }
+  return text;
+}
+
+async function readBundleFile(fs: FileSystem, filePath: string): Promise<Uint8Array> {
+  if (fs.readFileBuffer) return fs.readFileBuffer(filePath);
+  return new TextEncoder().encode(await fs.readFile(filePath));
+}
+
+async function writeBundleFile(fs: FileSystem, filePath: string, bytes: Uint8Array): Promise<void> {
+  if (fs.writeFileBuffer) {
+    await fs.writeFileBuffer(filePath, bytes);
+    return;
+  }
+  await fs.writeFile(filePath, bytesAsUtf8(bytes, filePath));
+}
+
+async function readSkillBundle(fs: FileSystem, root: string, name: string): Promise<SkillBundle> {
+  const files: SkillBundleFile[] = [];
+
+  async function walk(directory: string, relativeDirectory = ""): Promise<void> {
+    const entries = fs.readdirWithTypes
+      ? await fs.readdirWithTypes(directory)
+      : await Promise.all((await fs.readdir(directory)).map(async (entryName) => {
+          const stat = await fs.stat(join(directory, entryName));
+          return { name: entryName, isDirectory: stat.isDirectory, isFile: stat.isFile };
+        }));
+
+    for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
+      const absolutePath = join(directory, entry.name);
+      const relativePath = relativeDirectory ? `${relativeDirectory}/${entry.name}` : entry.name;
+      if (entry.isDirectory) {
+        await walk(absolutePath, relativePath);
+      } else if (entry.isFile) {
+        const bytes = await readBundleFile(fs, absolutePath);
+        files.push({
+          path: relativePath,
+          content: Buffer.from(bytes).toString("base64"),
+          encoding: "base64",
+        });
+      } else {
+        throw new Error(`Skill bundle contains an unsupported filesystem entry: ${relativePath}`);
+      }
+    }
+  }
+
+  await walk(root);
+  files.sort((a, b) => a.path.localeCompare(b.path));
+  const validationError = validateSkillBundleFiles(files);
+  if (validationError) throw new Error(validationError);
+  return { name, files };
+}
+
+async function writeSkillBundle(fs: FileSystem, root: string, files: readonly SkillBundleFile[]): Promise<void> {
+  for (const file of files) {
+    const destination = join(root, ...file.path.split("/"));
+    await fs.mkdir(dirname(destination)).catch(() => {});
+    const bytes = new Uint8Array(Buffer.from(file.content, "base64"));
+    await writeBundleFile(fs, destination, bytes);
+  }
+}
+
+async function replaceSkillBundle(
+  fs: FileSystem,
+  polpoDir: string,
+  name: string,
+  files: readonly SkillBundleFile[],
+): Promise<void> {
+  const target = join(polpoDir, "skills", name);
+  const transactionRoot = join(polpoDir, ".skill-bundle-staging", `${name}-${randomUUID()}`);
+  const staged = join(transactionRoot, "next");
+  const backup = join(transactionRoot, "previous");
+  const targetExists = await fs.exists(target);
+  let preserveTransaction = false;
+
+  try {
+    await writeSkillBundle(fs, staged, files);
+    await readSkillBundle(fs, staged, name);
+
+    if (targetExists) await fs.rename(target, backup);
+    try {
+      await fs.rename(staged, target);
+    } catch (error) {
+      try {
+        if (await fs.exists(target)) await fs.remove(target);
+        if (targetExists && await fs.exists(backup)) await fs.rename(backup, target);
+      } catch (rollbackError) {
+        preserveTransaction = true;
+        throw new AggregateError(
+          [error, rollbackError],
+          `Could not replace or restore skill bundle ${name}; backup retained at ${backup}`,
+        );
+      }
+      throw error;
+    }
+
+    if (await fs.exists(backup)) await fs.remove(backup).catch(() => {});
+  } finally {
+    if (!preserveTransaction && await fs.exists(transactionRoot)) {
+      await fs.remove(transactionRoot).catch(() => {});
     }
   }
 }
 
 type SkillIndex = Record<string, { tags?: string[]; category?: string }>;
+
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, `'"'"'`)}'`;
+}
 
 // ── Dependencies ──
 
@@ -175,6 +274,83 @@ export function skillRoutes(getDeps: () => SkillRouteDeps): OpenAPIHono {
       const loaded = await loadSkillContent(fs, info);
       if (!loaded) return c.json({ ok: false, error: "Could not load skill content" }, 404);
       return c.json({ ok: true, data: loaded });
+    },
+  );
+
+  // GET /:name/bundle — complete binary-safe skill directory
+  app.openapi(
+    createRoute({
+      method: "get", path: "/:name/bundle", tags: ["Skills"], summary: "Get complete skill bundle",
+      request: { params: z.object({ name: z.string() }) },
+      responses: {
+        200: { content: { "application/json": { schema: z.object({ ok: z.literal(true), data: z.any() }) } }, description: "Complete skill bundle" },
+        400: { content: { "application/json": { schema: z.object({ ok: z.literal(false), error: z.string() }) } }, description: "Invalid bundle" },
+        404: { content: { "application/json": { schema: z.object({ ok: z.literal(false), error: z.string() }) } }, description: "Not found" },
+      },
+    }),
+    async (c: any) => {
+      const { fs, polpoDir } = getDeps();
+      const name = c.req.param("name");
+      const nameError = validateSkillName(name);
+      if (nameError) return c.json({ ok: false, error: nameError }, 400);
+      const target = join(polpoDir, "skills", name);
+      if (!(await fs.exists(target))) return c.json({ ok: false, error: "Skill not found" }, 404);
+      try {
+        return c.json({ ok: true, data: await readSkillBundle(fs, target, name) }, 200);
+      } catch (error) {
+        return c.json({ ok: false, error: error instanceof Error ? error.message : String(error) }, 400);
+      }
+    },
+  );
+
+  // PUT /:name/bundle — atomically create or replace a complete skill directory
+  app.openapi(
+    createRoute({
+      method: "put", path: "/:name/bundle", tags: ["Skills"], summary: "Create or replace complete skill bundle",
+      request: {
+        params: z.object({ name: z.string() }),
+        body: { content: { "application/json": { schema: z.object({ files: z.array(skillBundleFileSchema) }) } } },
+      },
+      responses: {
+        200: { content: { "application/json": { schema: z.object({ ok: z.literal(true), data: z.any() }) } }, description: "Bundle stored" },
+        400: { content: { "application/json": { schema: z.object({ ok: z.literal(false), error: z.string() }) } }, description: "Invalid bundle" },
+        500: { content: { "application/json": { schema: z.object({ ok: z.literal(false), error: z.string() }) } }, description: "Storage failure" },
+      },
+    }),
+    async (c: any) => {
+      const { fs, polpoDir, skillStore } = getDeps();
+      const name = c.req.param("name");
+      const nameError = validateSkillName(name);
+      if (nameError) return c.json({ ok: false, error: nameError }, 400);
+
+      const { files } = await c.req.json() as { files: SkillBundleFile[] };
+      const validationError = validateSkillBundleFiles(files);
+      if (validationError) return c.json({ ok: false, error: validationError }, 400);
+
+      const skillFile = files.find((file) => file.path === "SKILL.md")!;
+      const rawSkill = Buffer.from(skillFile.content, "base64").toString("utf8");
+      const core = await coreImport();
+      const frontmatter = core.parseSkillFrontmatter(rawSkill);
+      if (!frontmatter?.name || frontmatter.name !== name) {
+        return c.json({ ok: false, error: `SKILL.md name must match directory name "${name}"` }, 400);
+      }
+      if (!frontmatter.description) {
+        return c.json({ ok: false, error: "SKILL.md must contain a description" }, 400);
+      }
+
+      try {
+        await replaceSkillBundle(fs, polpoDir, name, files);
+        await skillStore?.upsert({
+          name,
+          description: frontmatter.description,
+          source: "local",
+          installedAt: new Date().toISOString(),
+          allowedTools: frontmatter.allowedTools,
+        });
+        return c.json({ ok: true, data: { name, files: files.length } }, 200);
+      } catch (error) {
+        return c.json({ ok: false, error: error instanceof Error ? error.message : String(error) }, 500);
+      }
     },
   );
 
@@ -423,12 +599,16 @@ export function skillRoutes(getDeps: () => SkillRouteDeps): OpenAPIHono {
           ? ghMatch[1].replace(/\.git$/, "")
           : /^[^/]+\/[^/]+$/.test(source) ? source : null;
 
-        cloneUrl = ownerRepo
+        const resolvedCloneUrl = ownerRepo
           ? `https://github.com/${ownerRepo}.git`
           : source;
+        cloneUrl = resolvedCloneUrl;
 
         const tmpDir = `/tmp/polpo-skills-${Date.now()}`;
-        const cloneResult = await shell.execute(`git clone --depth 1 --quiet "${cloneUrl}" "${tmpDir}"`, { timeout: 60_000 });
+        const cloneResult = await shell.execute(
+          `git clone --depth 1 --quiet ${shellQuote(resolvedCloneUrl)} ${shellQuote(tmpDir)}`,
+          { timeout: 60_000 },
+        );
         if (cloneResult.exitCode !== 0) {
           return c.json({ ok: false, error: `Failed to clone: ${cloneResult.stderr}` }, 400);
         }
@@ -511,17 +691,22 @@ export function skillRoutes(getDeps: () => SkillRouteDeps): OpenAPIHono {
 
       for (const skill of toInstall) {
         const targetDir = join(targetBase, skill.name);
-        if (await fs.exists(targetDir)) {
-          if (!force) { skipped.push(skill.name); continue; }
-          await fs.remove(targetDir);
+        if (await fs.exists(targetDir) && !force) {
+          skipped.push(skill.name);
+          continue;
         }
-        // Copy the FULL skill bundle via the FileSystem abstraction — SKILL.md
-        // plus references/ scripts/ assets/ and any nested files. Portable:
-        // works with any FileSystem (cloud object stores included), unlike the
-        // old `shell cp -r` which needed a POSIX shell and both paths on one
-        // real filesystem (and silently no-op'd on a mocked/abstract shell).
         try {
-          await copySkillBundle(scanFs, skill.path, fs, targetDir);
+          const bundle = await readSkillBundle(scanFs, skill.path, skill.name);
+          const skillFile = bundle.files.find((file) => file.path === "SKILL.md")!;
+          const raw = Buffer.from(skillFile.content, "base64").toString("utf8");
+          const core = await coreImport();
+          const metadata = core.parseSkillFrontmatter(raw);
+          if (!metadata?.name || metadata.name !== skill.name || !metadata.description) {
+            throw new Error(`SKILL.md must define name "${skill.name}" and a description`);
+          }
+          await replaceSkillBundle(fs, polpoDir, skill.name, bundle.files);
+          skill.description = metadata.description;
+          (skill as any).allowedTools = metadata.allowedTools;
         } catch (err) {
           errors.push(`${skill.name}: ${err instanceof Error ? err.message : String(err)}`);
           continue;

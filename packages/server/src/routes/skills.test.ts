@@ -85,9 +85,24 @@ class MemoryFileSystem implements FileSystem {
 
   async rename(oldPath: string, newPath: string): Promise<void> {
     const file = this.files.get(oldPath);
-    if (!file) throw new Error(`File not found: ${oldPath}`);
-    await this.writeFileBuffer(newPath, file);
-    this.files.delete(oldPath);
+    if (file) {
+      await this.writeFileBuffer(newPath, file);
+      this.files.delete(oldPath);
+      return;
+    }
+    const prefix = oldPath.endsWith("/") ? oldPath : `${oldPath}/`;
+    const matches = [...this.files.entries()].filter(([path]) => path.startsWith(prefix));
+    if (matches.length === 0 && !this.dirs.has(oldPath)) throw new Error(`File not found: ${oldPath}`);
+    await this.mkdir(newPath);
+    for (const [source, data] of matches) {
+      await this.writeFileBuffer(`${newPath}/${source.slice(prefix.length)}`, data);
+      this.files.delete(source);
+    }
+    for (const dir of [...this.dirs].filter((path) => path === oldPath || path.startsWith(prefix))) {
+      const suffix = dir === oldPath ? "" : dir.slice(prefix.length);
+      this.dirs.delete(dir);
+      await this.mkdir(suffix ? `${newPath}/${suffix}` : newPath);
+    }
   }
 }
 
@@ -131,5 +146,102 @@ describe("skillRoutes", () => {
       "scripts",
       "SKILL.md",
     ]));
+  });
+
+  it("round-trips complete skill bundles through the management API", async () => {
+    const fs = new MemoryFileSystem();
+    const app = skillRoutes(() => ({
+      polpoDir: "/project/.polpo",
+      fs,
+      getAgents: async () => [],
+    }));
+
+    const files = [
+      {
+        path: "SKILL.md",
+        content: Buffer.from("---\nname: frontend-design\ndescription: Design interfaces\n---\n\nUse references.").toString("base64"),
+        encoding: "base64",
+      },
+      {
+        path: "references/guide.md",
+        content: Buffer.from("# Guide\n\nRead me.").toString("base64"),
+        encoding: "base64",
+      },
+      {
+        path: "assets/palette.bin",
+        content: Buffer.from([0, 1, 2, 255]).toString("base64"),
+        encoding: "base64",
+      },
+    ];
+
+    const put = await app.request("/frontend-design/bundle", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ files }),
+    });
+    expect(put.status).toBe(200);
+
+    const get = await app.request("/frontend-design/bundle");
+    expect(get.status).toBe(200);
+    expect((await get.json()).data.files).toEqual(
+      [...files].sort((a, b) => a.path.localeCompare(b.path)),
+    );
+  });
+
+  it("replaces a bundle and removes files absent from the new version", async () => {
+    const fs = new MemoryFileSystem();
+    await fs.writeFile(
+      "/project/.polpo/skills/reviewer/SKILL.md",
+      "---\nname: reviewer\ndescription: Review code\n---\n\nOld.",
+    );
+    await fs.writeFile("/project/.polpo/skills/reviewer/references/stale.md", "stale");
+    const app = skillRoutes(() => ({
+      polpoDir: "/project/.polpo",
+      fs,
+      getAgents: async () => [],
+    }));
+
+    const response = await app.request("/reviewer/bundle", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        files: [{
+          path: "SKILL.md",
+          content: Buffer.from("---\nname: reviewer\ndescription: Review code\n---\n\nNew.").toString("base64"),
+          encoding: "base64",
+        }],
+      }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(await fs.readFile("/project/.polpo/skills/reviewer/SKILL.md")).toContain("New.");
+    expect(await fs.exists("/project/.polpo/skills/reviewer/references/stale.md")).toBe(false);
+  });
+
+  it.each([
+    ["a traversal path", [{ path: "../secret", content: "eA==", encoding: "base64" }]],
+    ["an absolute path", [{ path: "/secret", content: "eA==", encoding: "base64" }]],
+    ["duplicate paths", [
+      { path: "SKILL.md", content: "eA==", encoding: "base64" },
+      { path: "SKILL.md", content: "eQ==", encoding: "base64" },
+    ]],
+    ["no SKILL.md", [{ path: "references/guide.md", content: "eA==", encoding: "base64" }]],
+    ["invalid base64", [{ path: "SKILL.md", content: "not base64!", encoding: "base64" }]],
+  ])("rejects bundles containing %s", async (_label, files) => {
+    const fs = new MemoryFileSystem();
+    const app = skillRoutes(() => ({
+      polpoDir: "/project/.polpo",
+      fs,
+      getAgents: async () => [],
+    }));
+
+    const response = await app.request("/safe-skill/bundle", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ files }),
+    });
+
+    expect(response.status).toBe(400);
+    expect(await fs.exists("/project/.polpo/skills/safe-skill")).toBe(false);
   });
 });

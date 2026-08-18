@@ -41,7 +41,7 @@ for (const envPath of [".env", ".polpo/.env"]) {
 import pc from "picocolors";
 
 import { registerModelsCommands } from "./commands/models.js";
-// Removed: task, mission, team, memory, config, playbook, skills, schedule,
+// Removed: task, mission, team, memory, config, playbook, schedule,
 // agent-onboard, logs, browser-profile — all file-based commands.
 // Resources are defined in files and synced via polpo deploy.
 import { registerUpdateCommand } from "./commands/update.js";
@@ -52,6 +52,7 @@ import { registerDeployCommand } from "./commands/cloud/deploy.js";
 import { registerByokCommand } from "./commands/cloud/byok.js";
 import { registerToolsCommand } from "./commands/cloud/tools.js";
 import { registerChannelsCommand } from "./commands/cloud/channels.js";
+import { registerRuntimeSkillsCommand } from "./commands/runtime-skills.js";
 import { registerLoopsCommand } from "./commands/cloud/loops.js";
 import { registerProjectsCommand } from "./commands/cloud/projects.js";
 import { registerStatusCommand as registerCloudStatusCommand } from "./commands/cloud/status.js";
@@ -130,6 +131,7 @@ registerDeployCommand(program);
 registerByokCommand(program);
 registerToolsCommand(program);
 registerChannelsCommand(program);
+registerRuntimeSkillsCommand(program);
 registerLoopsCommand(program);
 registerProjectsCommand(program);
 registerCloudStatusCommand(program);

@@ -247,6 +247,8 @@ export type {
   PlaybookRunResult,
   CreatePlaybookRequest,
   CreateSkillRequest,
+  SkillBundle,
+  SkillBundleFile,
   InstallSkillsResult,
   InstallSkillsOptions,
   TemplateParameter,
