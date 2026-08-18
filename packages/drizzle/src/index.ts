@@ -30,6 +30,14 @@ import {
   tasksSqlite, missionsSqlite, metadataSqlite, processesSqlite,
 } from "./schema/tasks.js";
 import { runsPg, runsSqlite } from "./schema/runs.js";
+import {
+  runEventSequencesPg,
+  runStreamEventsPg,
+  runExecutionLeasesPg,
+  runEventSequencesSqlite,
+  runStreamEventsSqlite,
+  runExecutionLeasesSqlite,
+} from "./schema/run-delivery.js";
 import { loopRunsPg, loopRunsSqlite } from "./schema/loop-runs.js";
 import { sessionsPg, messagesPg, sessionsSqlite, messagesSqlite } from "./schema/sessions.js";
 import { logSessionsPg, logEntriesPg, logSessionsSqlite, logEntriesSqlite } from "./schema/logs.js";
@@ -54,6 +62,10 @@ import {
 
 import { DrizzleTaskStore } from "./stores/task-store.js";
 import { DrizzleRunStore } from "./stores/run-store.js";
+import {
+  DrizzleRunEventStore,
+  DrizzleRunExecutionLeaseStore,
+} from "./stores/run-delivery-store.js";
 import { DrizzleLoopRunStore, DualWriteLoopRunStore } from "./stores/loop-run-store.js";
 import { DrizzleSessionStore } from "./stores/session-store.js";
 import { DrizzleLogStore } from "./stores/log-store.js";
@@ -75,6 +87,10 @@ import { DrizzleChannelManagementStore } from "./stores/channel-management-store
 import type { MissionStore } from "@polpo-ai/core";
 import type { TaskStore } from "@polpo-ai/core/task-store";
 import type { RunStore } from "@polpo-ai/core/run-store";
+import type {
+  RunEventStore,
+  RunExecutionLeaseStore,
+} from "@polpo-ai/core/run-delivery";
 import type { LoopRunStore } from "@polpo-ai/core/loop-run-store";
 import type { SessionStore } from "@polpo-ai/core/session-store";
 import type { LogStore } from "@polpo-ai/core/log-store";
@@ -96,6 +112,8 @@ export interface DrizzleStores {
   missionStore: MissionStore;
   taskStore: TaskStore;
   runStore: RunStore;
+  runEventStore: RunEventStore;
+  runExecutionLeaseStore: RunExecutionLeaseStore;
   loopRunStore: LoopRunStore;
   sessionStore: SessionStore;
   logStore: LogStore;
@@ -139,6 +157,11 @@ export function createPgStores(db: any): DrizzleStores {
     // Same instance: the Drizzle task store also implements the mission block.
     missionStore: taskStore as unknown as MissionStore,
     runStore: new DrizzleRunStore(db, runsPg, "pg"),
+    runEventStore: new DrizzleRunEventStore(db, {
+      sequences: runEventSequencesPg,
+      events: runStreamEventsPg,
+    }, "pg"),
+    runExecutionLeaseStore: new DrizzleRunExecutionLeaseStore(db, runExecutionLeasesPg),
     // F2: dual-write loop runs to both loop_runs (legacy) and runs (shadow,
     // engine="graph"). Reads now come from runs (shadow) — flipped in PR4 after
     // the backfill. loop_runs is still written for rollback until PR5 drops it.
@@ -184,6 +207,11 @@ export function createSqliteStores(db: any): DrizzleStores {
     // Same instance: the Drizzle task store also implements the mission block.
     missionStore: taskStore as unknown as MissionStore,
     runStore: new DrizzleRunStore(db, runsSqlite, "sqlite"),
+    runEventStore: new DrizzleRunEventStore(db, {
+      sequences: runEventSequencesSqlite,
+      events: runStreamEventsSqlite,
+    }, "sqlite"),
+    runExecutionLeaseStore: new DrizzleRunExecutionLeaseStore(db, runExecutionLeasesSqlite),
     // F2: dual-write, reads from shadow (see pg factory above).
     loopRunStore: new DualWriteLoopRunStore(
       new DrizzleLoopRunStore(db, loopRunsSqlite, "sqlite"),
@@ -219,6 +247,9 @@ export const pgSchema = {
   metadata: metadataPg,
   processes: processesPg,
   runs: runsPg,
+  runEventSequences: runEventSequencesPg,
+  runStreamEvents: runStreamEventsPg,
+  runExecutionLeases: runExecutionLeasesPg,
   loopRuns: loopRunsPg,
   sessions: sessionsPg,
   messages: messagesPg,
@@ -242,6 +273,9 @@ export const sqliteSchema = {
   metadata: metadataSqlite,
   processes: processesSqlite,
   runs: runsSqlite,
+  runEventSequences: runEventSequencesSqlite,
+  runStreamEvents: runStreamEventsSqlite,
+  runExecutionLeases: runExecutionLeasesSqlite,
   loopRuns: loopRunsSqlite,
   sessions: sessionsSqlite,
   messages: messagesSqlite,

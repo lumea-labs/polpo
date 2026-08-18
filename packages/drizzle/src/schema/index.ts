@@ -3,6 +3,11 @@ export {
   tasksSqlite, missionsSqlite, metadataSqlite, processesSqlite,
 } from "./tasks.js";
 export { runsSqlite } from "./runs.js";
+export {
+  runEventSequencesSqlite,
+  runStreamEventsSqlite,
+  runExecutionLeasesSqlite,
+} from "./run-delivery.js";
 export { loopRunsSqlite } from "./loop-runs.js";
 export { sessionsSqlite, messagesSqlite } from "./sessions.js";
 export { logSessionsSqlite, logEntriesSqlite } from "./logs.js";
@@ -23,6 +28,11 @@ export {
   tasksPg, missionsPg, metadataPg, processesPg,
 } from "./tasks.js";
 export { runsPg } from "./runs.js";
+export {
+  runEventSequencesPg,
+  runStreamEventsPg,
+  runExecutionLeasesPg,
+} from "./run-delivery.js";
 export { loopRunsPg } from "./loop-runs.js";
 export { sessionsPg, messagesPg } from "./sessions.js";
 export { logSessionsPg, logEntriesPg } from "./logs.js";

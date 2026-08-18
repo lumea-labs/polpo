@@ -74,6 +74,10 @@
       "types": "./dist/steering.d.ts",
       "import": "./dist/steering.js"
     },
+    "./run-delivery": {
+      "types": "./dist/run-delivery.d.ts",
+      "import": "./dist/run-delivery.js"
+    },
     "./chat-interactions": {
       "types": "./dist/chat-interactions.d.ts",
       "import": "./dist/chat-interactions.js"

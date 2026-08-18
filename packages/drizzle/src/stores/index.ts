@@ -1,6 +1,10 @@
 export { DrizzleTaskStore } from "./task-store.js";
 export type { TaskStoreSchema } from "./task-store.js";
 export { DrizzleRunStore } from "./run-store.js";
+export {
+  DrizzleRunEventStore,
+  DrizzleRunExecutionLeaseStore,
+} from "./run-delivery-store.js";
 export { DrizzleLoopRunStore } from "./loop-run-store.js";
 export { DrizzleSessionStore } from "./session-store.js";
 export { DrizzleLogStore } from "./log-store.js";

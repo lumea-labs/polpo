@@ -18,6 +18,7 @@ import { getTableConfig } from "drizzle-orm/sqlite-core";
 import {
   tasksSqlite, missionsSqlite, metadataSqlite, processesSqlite,
   runsSqlite, loopRunsSqlite,
+  runEventSequencesSqlite, runStreamEventsSqlite, runExecutionLeasesSqlite,
   sessionsSqlite, messagesSqlite,
   logSessionsSqlite, logEntriesSqlite,
   modelInvocationLogsSqlite,
@@ -30,6 +31,7 @@ import {
 const SQLITE_TABLES = [
   tasksSqlite, missionsSqlite, metadataSqlite, processesSqlite,
   runsSqlite, loopRunsSqlite,
+  runEventSequencesSqlite, runStreamEventsSqlite, runExecutionLeasesSqlite,
   sessionsSqlite, messagesSqlite,
   logSessionsSqlite, logEntriesSqlite,
   modelInvocationLogsSqlite,

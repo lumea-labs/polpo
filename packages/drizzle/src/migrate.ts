@@ -127,6 +127,29 @@ export async function ensurePgTables(db: any): Promise<void> {
   await db.execute(sql`ALTER TABLE runs ADD COLUMN IF NOT EXISTS engine TEXT DEFAULT 'agent'`);
   await db.execute(sql`ALTER TABLE runs ADD COLUMN IF NOT EXISTS delivery TEXT`);
 
+  await db.execute(sql`CREATE TABLE IF NOT EXISTS run_event_sequences (
+    run_id       TEXT PRIMARY KEY,
+    last_sequence BIGINT NOT NULL
+  )`);
+
+  await db.execute(sql`CREATE TABLE IF NOT EXISTS run_stream_events (
+    run_id        TEXT NOT NULL,
+    sequence      BIGINT NOT NULL,
+    event_id      TEXT NOT NULL,
+    schema_version INTEGER NOT NULL,
+    type          TEXT NOT NULL,
+    data          JSONB NOT NULL,
+    created_at    TEXT NOT NULL
+  )`);
+
+  await db.execute(sql`CREATE TABLE IF NOT EXISTS run_execution_leases (
+    run_id     TEXT PRIMARY KEY,
+    owner      TEXT NOT NULL,
+    token      TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  )`);
+
   await db.execute(sql`CREATE TABLE IF NOT EXISTS loop_runs (
     id                  TEXT PRIMARY KEY,
     loop_name           TEXT NOT NULL,
@@ -345,6 +368,10 @@ export async function ensurePgIndexes(db: any): Promise<void> {
   await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_pg_runs_status ON runs(status)`);
   await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_pg_runs_task_id ON runs(task_id)`);
   await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_pg_runs_user ON runs("user")`);
+  await db.execute(sql`CREATE UNIQUE INDEX IF NOT EXISTS uq_pg_run_stream_events_sequence ON run_stream_events(run_id, sequence)`);
+  await db.execute(sql`CREATE UNIQUE INDEX IF NOT EXISTS uq_pg_run_stream_events_event_id ON run_stream_events(run_id, event_id)`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_pg_run_stream_events_cursor ON run_stream_events(run_id, sequence)`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_pg_run_execution_leases_expiry ON run_execution_leases(expires_at)`);
   await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_pg_loop_runs_status ON loop_runs(status)`);
   await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_pg_loop_runs_loop_name ON loop_runs(loop_name)`);
   await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_pg_loop_runs_agent_name ON loop_runs(agent_name)`);
