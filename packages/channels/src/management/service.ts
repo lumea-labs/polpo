@@ -315,7 +315,7 @@ export class ChannelManagementService {
       return { status: "ready", channel: active, route };
     } catch (error) {
       await this.options.store.updateChannel(scope, channel.id, {
-        status: "error",
+        status: "pending",
         timestamp: timestamp(this.now),
       });
       return { status: "failed", error: channelSetupError(error) };

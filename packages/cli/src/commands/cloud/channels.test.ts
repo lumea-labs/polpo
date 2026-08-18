@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { Command } from "commander";
 import {
+  channelDataFrom,
   channelSettingsFromOptions,
   channelTestBody,
   conversationChannelPath,
@@ -57,6 +58,23 @@ describe("Channels CLI", () => {
   it("sends an explicit recipient only when one is supplied", () => {
     expect(channelTestBody(" +15551234567 ")).toEqual({ to: "+15551234567" });
     expect(channelTestBody("   ")).toBeUndefined();
+  });
+
+  it("treats a failed provisioning result as a CLI failure", () => {
+    expect(() => channelDataFrom({
+      status: 200,
+      data: {
+        ok: true,
+        data: {
+          status: "failed",
+          error: {
+            code: "CHANNEL_DESTINATION_CONFLICT",
+            message: "The destination is already registered",
+            retryable: false,
+          },
+        },
+      },
+    } as any)).toThrow("The destination is already registered");
   });
 
   it("exposes lifecycle and route commands without credential flags", () => {
