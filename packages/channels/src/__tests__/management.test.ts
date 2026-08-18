@@ -256,7 +256,7 @@ describe("ChannelManagementService", () => {
     })).rejects.toMatchObject({ code: "PROVIDER_DISABLED", status: 403 });
   });
 
-  it("keeps pending external setup explicit and records activation failure", async () => {
+  it("keeps pending external setup explicit and leaves activation failures retryable", async () => {
     const pending = harness({
       connectionResolver: {
         inspect: vi.fn(async () => ({
@@ -294,15 +294,18 @@ describe("ChannelManagementService", () => {
     expect(JSON.stringify(result)).not.toContain("must-not-escape");
     expect(await pending.store.listChannels(scope)).toEqual([]);
 
+    const activate = vi.fn()
+      .mockRejectedValueOnce(
+        new ChannelManagementError("PROVIDER_RATE_LIMITED", "Retry later", 429, true),
+      )
+      .mockResolvedValueOnce({ status: "ready" as const });
     const failing = harness({
       automation: {
         prepare: vi.fn(async () => ({
           status: "ready" as const,
           externalChannelId: "phone-1",
         })),
-        activate: vi.fn(async () => {
-          throw new ChannelManagementError("PROVIDER_RATE_LIMITED", "Retry later", 429, true);
-        }),
+        activate,
         test: vi.fn(),
       },
     });
@@ -316,7 +319,16 @@ describe("ChannelManagementService", () => {
       status: "failed",
       error: { code: "PROVIDER_RATE_LIMITED", retryable: true },
     });
-    expect(await failing.store.getChannel(scope, "channel-1")).toMatchObject({ status: "error" });
+    expect(await failing.store.getChannel(scope, "channel-1")).toMatchObject({ status: "pending" });
+
+    const retried = await failing.service.configure(scope, {
+      agentName: "assistant",
+      connectionId: "connection-1",
+      idempotencyKey: "provider-failure",
+      provider: "whatsapp",
+    });
+    expect(retried).toMatchObject({ status: "ready", channel: { status: "active" } });
+    expect(activate).toHaveBeenCalledTimes(2);
   });
 
   it("projects Connection data before passing it to provider automation", async () => {

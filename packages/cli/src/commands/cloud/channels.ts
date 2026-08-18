@@ -99,7 +99,7 @@ export function channelTestBody(to?: string): Record<string, string> | undefined
   return recipient ? { to: recipient } : undefined;
 }
 
-function dataFrom<T>(response: ApiResponse<ApiEnvelope<T>>): T {
+export function channelDataFrom<T>(response: ApiResponse<ApiEnvelope<T>>): T {
   if (response.status < 200 || response.status >= 300) {
     throw new ChannelCliApiError(
       response.data?.error ?? `Channel API returned HTTP ${response.status}`,
@@ -107,7 +107,23 @@ function dataFrom<T>(response: ApiResponse<ApiEnvelope<T>>): T {
       response.status,
     );
   }
-  return response.data?.data as T;
+  const data = response.data?.data as T;
+  if (
+    data &&
+    typeof data === "object" &&
+    "status" in data &&
+    (data as { status?: unknown }).status === "failed"
+  ) {
+    const failure = (data as {
+      error?: { code?: unknown; message?: unknown };
+    }).error;
+    throw new ChannelCliApiError(
+      typeof failure?.message === "string" ? failure.message : "Channel provisioning failed",
+      typeof failure?.code === "string" ? failure.code : "CHANNEL_SETUP_FAILED",
+      500,
+    );
+  }
+  return data;
 }
 
 function printResult(value: unknown, json: boolean): void {
@@ -180,7 +196,7 @@ export function registerChannelsCommand(program: Command): void {
     .description("List supported Channel providers")
     .option("--json", "Print JSON")
     .action((opts: { json?: boolean }) => withChannelClient("Listing Channel providers", opts, async (client) => {
-      printResult(dataFrom(await client.get(conversationChannelPath("providers"))), Boolean(opts.json));
+      printResult(channelDataFrom(await client.get(conversationChannelPath("providers"))), Boolean(opts.json));
     }));
 
   channels.command("list")
@@ -196,7 +212,7 @@ export function registerChannelsCommand(program: Command): void {
         if (opts.status) query.set("status", opts.status);
         if (opts.connection) query.set("connectionId", opts.connection);
         const suffix = query.size ? `?${query.toString()}` : "";
-        printResult(dataFrom(await client.get(`${conversationChannelPath()}${suffix}`)), Boolean(opts.json));
+        printResult(channelDataFrom(await client.get(`${conversationChannelPath()}${suffix}`)), Boolean(opts.json));
       }));
 
   channels.command("get <channel-id>")
@@ -204,7 +220,7 @@ export function registerChannelsCommand(program: Command): void {
     .option("--json", "Print JSON")
     .action((channelId: string, opts: { json?: boolean }) =>
       withChannelClient("Getting a Channel", opts, async (client) => {
-        printResult(dataFrom(await client.get(conversationChannelPath(channelId))), Boolean(opts.json));
+        printResult(channelDataFrom(await client.get(conversationChannelPath(channelId))), Boolean(opts.json));
       }));
 
   channels.command("add <provider>")
@@ -245,7 +261,7 @@ export function registerChannelsCommand(program: Command): void {
         priority,
         settings: channelSettingsFromOptions(opts),
       };
-      printResult(dataFrom(await client.post(conversationChannelPath("configure"), body)), Boolean(opts.json));
+      printResult(channelDataFrom(await client.post(conversationChannelPath("configure"), body)), Boolean(opts.json));
     }));
 
   channels.command("update <channel-id>")
@@ -267,7 +283,7 @@ export function registerChannelsCommand(program: Command): void {
           ...(settings ? { settings } : {}),
         };
         if (Object.keys(body).length === 0) throw new Error("Provide --name, --status, or --settings.");
-        printResult(dataFrom(await client.patch(conversationChannelPath(channelId), body)), Boolean(opts.json));
+        printResult(channelDataFrom(await client.patch(conversationChannelPath(channelId), body)), Boolean(opts.json));
       }));
 
   channels.command("test <channel-id>")
@@ -277,7 +293,7 @@ export function registerChannelsCommand(program: Command): void {
     .action((channelId: string, opts: { json?: boolean; to?: string }) =>
       withChannelClient("Testing a Channel", opts, async (client) => {
         printResult(
-          dataFrom(await client.post(
+          channelDataFrom(await client.post(
             conversationChannelPath(channelId, "test"),
             channelTestBody(opts.to),
           )),
@@ -297,7 +313,7 @@ export function registerChannelsCommand(program: Command): void {
           const confirmed = await clack.confirm({ message: `Remove Channel ${channelId}?` });
           if (clack.isCancel(confirmed) || !confirmed) return;
         }
-        printResult(dataFrom(await client.delete(conversationChannelPath(channelId))), Boolean(opts.json));
+        printResult(channelDataFrom(await client.delete(conversationChannelPath(channelId))), Boolean(opts.json));
       }));
 
   const routes = channels.command("routes").description("Manage agent Routes for a Channel");
@@ -305,7 +321,7 @@ export function registerChannelsCommand(program: Command): void {
     .option("--json", "Print JSON")
     .action((channelId: string, opts: { json?: boolean }) =>
       withChannelClient("Listing Channel Routes", opts, async (client) => {
-        printResult(dataFrom(await client.get(conversationChannelPath(channelId, "routes"))), Boolean(opts.json));
+        printResult(channelDataFrom(await client.get(conversationChannelPath(channelId, "routes"))), Boolean(opts.json));
       }));
   routes.command("add <channel-id>")
     .requiredOption("--agent <name>", "Agent name")
@@ -317,7 +333,7 @@ export function registerChannelsCommand(program: Command): void {
       withChannelClient("Adding a Channel Route", opts, async (client) => {
         const priority = Number(opts.priority);
         if (!Number.isSafeInteger(priority)) throw new Error("--priority must be an integer.");
-        printResult(dataFrom(await client.post(conversationChannelPath(channelId, "routes"), {
+        printResult(channelDataFrom(await client.post(conversationChannelPath(channelId, "routes"), {
           agentName: opts.agent,
           externalChannelId: opts.destination,
           enabled: !opts.disabled,
@@ -335,7 +351,7 @@ export function registerChannelsCommand(program: Command): void {
           const confirmed = await clack.confirm({ message: `Remove Route ${routeId}?` });
           if (clack.isCancel(confirmed) || !confirmed) return;
         }
-        printResult(dataFrom(await client.delete(
+        printResult(channelDataFrom(await client.delete(
           conversationChannelPath(channelId, "routes", routeId),
         )), Boolean(opts.json));
       }));
@@ -345,6 +361,6 @@ export function registerChannelsCommand(program: Command): void {
     .option("--json", "Print JSON")
     .action((setupId: string, opts: { json?: boolean }) =>
       withChannelClient("Getting Channel setup status", opts, async (client) => {
-        printResult(dataFrom(await client.get(conversationChannelPath("setups", setupId))), Boolean(opts.json));
+        printResult(channelDataFrom(await client.get(conversationChannelPath("setups", setupId))), Boolean(opts.json));
       }));
 }
