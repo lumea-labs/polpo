@@ -261,6 +261,10 @@ export function useChat(options: UseChatOptions = {}): UseChatReturn {
         },
       });
       streamRef.current = stream;
+      const unsubscribeConnectionState = stream.subscribeConnectionState?.((next) => {
+        if (next === "reconnecting") setStatus("reconnecting");
+        else if (next === "streaming") setStatus("streaming");
+      });
 
       // Add empty assistant message that will be updated in-place
       const assistantId = `msg-${Date.now()}`;
@@ -273,9 +277,10 @@ export function useChat(options: UseChatOptions = {}): UseChatReturn {
       const toolCalls = new Map<string, ToolCallEvent>();
       const segments: MessageSegment[] = [];
 
-      for await (const chunk of stream) {
-        setRunId(stream.runId);
-        setLastEventId(stream.lastEventId);
+      try {
+        for await (const chunk of stream) {
+          setRunId(stream.runId);
+          setLastEventId(stream.lastEventId);
         // Capture session ID
         if (stream.sessionId && !sessionIdRef.current) {
           sessionIdRef.current = stream.sessionId;
@@ -388,7 +393,10 @@ export function useChat(options: UseChatOptions = {}): UseChatReturn {
         if (choice.finish_reason === "navigate_to" && choice.navigate_to) optionsRef.current.onNavigateTo?.(choice.navigate_to);
         if (choice.finish_reason === "open_tab" && choice.open_tab) optionsRef.current.onOpenTab?.(choice.open_tab);
 
-        optionsRef.current.onChunk?.(chunk);
+          optionsRef.current.onChunk?.(chunk);
+        }
+      } finally {
+        unsubscribeConnectionState?.();
       }
 
       streamRef.current = null;

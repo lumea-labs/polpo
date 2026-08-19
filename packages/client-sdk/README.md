@@ -59,6 +59,53 @@ Runtime context accounting types are exported from the SDK and originate from
 `@polpo-ai/core/runtime-inspection`, so managed and self-hosted inspectors use
 the same categories.
 
+## Continue after an SSE disconnect
+
+Durable delivery is opt-in. Existing requests retain cancel-on-disconnect
+behavior. Set `polpo.delivery.onDisconnect` to `continue` when execution must
+outlive the current SSE subscriber:
+
+```ts
+const stream = client.chatCompletionsStream({
+  agent: "builder",
+  messages: [{ role: "user", content: "Build and test the application" }],
+  polpo: { delivery: { onDisconnect: "continue" } },
+});
+
+stream.subscribeConnectionState((state) => {
+  // streaming | reconnecting | closed
+  console.log(state);
+});
+
+for await (const chunk of stream) {
+  console.log(chunk.choices[0]?.delta.content ?? "");
+}
+```
+
+The initial response includes `x-polpo-run-id`; each persisted frame has an SSE
+`id`. The SDK reconnects to `GET /v1/runs/{runId}/events` from the last complete
+cursor and never repeats the creation request. Invalid and ahead cursors fail
+explicitly; hosts with bounded event retention also reject expired cursors.
+
+Use the stream controls deliberately:
+
+- `stream.detach()` closes only this subscriber; a durable run continues;
+- `await stream.cancel(reason)` requests idempotent server-side cancellation;
+- `stream.abort()` keeps its historical cancel meaning;
+- `stream.resume({ after })` explicitly reattaches an existing stream.
+
+Canonical events are also available without the chat projection:
+
+```ts
+for await (const event of client.streamRunEvents(runId, { after: lastEventId })) {
+  console.log(event.sequence, event.type, event.data);
+}
+```
+
+Self-hosted SQLite and PostgreSQL persist replay events and cancellation state.
+The file-storage fallback keeps them only in process memory, so it survives a
+subscriber disconnect but not a server restart.
+
 ## Activate skills per request
 
 The management client can synchronize complete binary-safe skill bundles,
@@ -196,7 +243,8 @@ for await (const chunk of stream) {
 ```
 
 Use `mode: "follow_up"` to run the message only after the current work would
-otherwise stop. Use `client.abortRun(stream.runId, "Cancelled by user")` for a
-server-side cancellation; `stream.abort()` only closes the caller's HTTP
-stream. Steering is available on Run-backed execution and never interrupts an
-individual tool call in progress.
+otherwise stop. Use `client.abortRun(stream.runId, "Cancelled by user")` for the
+existing steering abort endpoint. On a durable completion, `stream.cancel()` is
+the acknowledged cancellation API and `stream.detach()` is the local-only
+transport operation. Steering is available on Run-backed execution and never
+interrupts an individual tool call in progress.

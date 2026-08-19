@@ -94,6 +94,24 @@ describe("runDeliveryRoutes", () => {
     expect(await conflict.json()).toMatchObject({ code: "RUN_CURSOR_CONFLICT" });
   });
 
+  it("closes an already-acknowledged terminal stream and rejects ahead cursors", async () => {
+    const eventStore = new InMemoryRunEventStore();
+    const cancellationStore = new InMemoryRunCancellationStore();
+    await eventStore.append("run-a", { type: "run.completed", data: {} });
+    const app = runDeliveryRoutes(() => ({
+      resolveRunDelivery: async () => ({ eventStore, cancellationStore }),
+    }));
+
+    const terminal = await app.request("http://localhost/run-a/events?cursor=1");
+    expect(terminal.status).toBe(200);
+    expect(terminal.headers.get("x-polpo-run-terminal")).toBe("true");
+    expect(await terminal.text()).toBe("");
+
+    const ahead = await app.request("http://localhost/run-a/events?cursor=2");
+    expect(ahead.status).toBe(400);
+    expect(await ahead.json()).toMatchObject({ code: "RUN_CURSOR_AHEAD" });
+  });
+
   it("persists explicit cancellation idempotently", async () => {
     const eventStore = new InMemoryRunEventStore();
     const cancellationStore = new InMemoryRunCancellationStore();

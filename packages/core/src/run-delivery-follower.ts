@@ -2,7 +2,10 @@ import {
   DEFAULT_RUN_EVENT_PAGE_SIZE,
   MAX_RUN_EVENT_PAGE_SIZE,
   RunDeliveryValidationError,
+  RunEventCursorAheadError,
+  RunEventCursorExpiredError,
   formatRunEventCursor,
+  parseRunEventCursor,
   validateRunDeliveryRunId,
   type AppendRunStreamEvent,
   type RunEventStore,
@@ -87,6 +90,38 @@ export interface FollowRunEventsOptions {
   isTerminal?: (event: RunStreamEvent) => boolean;
 }
 
+export type RunEventCursorAvailability = "available" | "terminal";
+
+/** Validate a cursor against retained history before opening a live follower. */
+export async function inspectRunEventCursor(
+  store: RunEventStore,
+  runId: string,
+  cursor?: string,
+): Promise<RunEventCursorAvailability> {
+  const normalizedRunId = validateRunDeliveryRunId(runId);
+  const sequence = parseRunEventCursor(cursor);
+  const bounds = await store.bounds(normalizedRunId);
+  if (!bounds) {
+    if (sequence > 0) {
+      throw new RunEventCursorAheadError("Run event cursor is ahead of available history");
+    }
+    return "available";
+  }
+  const first = parseRunEventCursor(bounds.firstCursor);
+  const last = parseRunEventCursor(bounds.lastCursor);
+  if (sequence > last) {
+    throw new RunEventCursorAheadError("Run event cursor is ahead of available history");
+  }
+  if (sequence < first - 1) {
+    throw new RunEventCursorExpiredError("Run event cursor is no longer retained");
+  }
+  if (sequence !== last) return "available";
+  const page = await store.listAfter(normalizedRunId, formatRunEventCursor(last - 1), 1);
+  return page.events[0] && isTerminalRunStreamEvent(page.events[0])
+    ? "terminal"
+    : "available";
+}
+
 /**
  * Replay persisted events and then follow the live tail. Subscribing before the
  * first read closes the read/wait race; polling guarantees progress when a wake
@@ -109,6 +144,10 @@ export async function* followRunEvents(
     );
   }
   if (options.signal?.aborted) return;
+
+  if (await inspectRunEventCursor(options.store, runId, options.cursor) === "terminal") {
+    return;
+  }
 
   let wakeVersion = 0;
   let wakeWaiter: (() => void) | undefined;

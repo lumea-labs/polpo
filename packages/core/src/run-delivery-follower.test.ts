@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
-import { InMemoryRunEventStore } from "./run-delivery.js";
+import {
+  InMemoryRunEventStore,
+  RunEventCursorAheadError,
+  RunEventCursorExpiredError,
+} from "./run-delivery.js";
 import {
   InMemoryRunEventNotifier,
   RunEventJournal,
@@ -180,5 +184,46 @@ describe("followRunEvents", () => {
     await follower;
 
     expect(received).toEqual(["response.done", "run.completed"]);
+  });
+
+  it("closes immediately when the cursor already acknowledges the terminal event", async () => {
+    const store = new InMemoryRunEventStore();
+    await store.append("run-a", { type: "run.completed", data: {} });
+    const received = [];
+
+    for await (const event of followRunEvents({ runId: "run-a", store, cursor: "1" })) {
+      received.push(event);
+    }
+
+    expect(received).toEqual([]);
+  });
+
+  it("rejects cursors ahead of available history", async () => {
+    const store = new InMemoryRunEventStore();
+    await store.append("run-a", { type: "run.started", data: {} });
+
+    await expect(async () => {
+      for await (const _event of followRunEvents({ runId: "run-a", store, cursor: "2" })) {
+        // consume
+      }
+    }).rejects.toBeInstanceOf(RunEventCursorAheadError);
+  });
+
+  it("rejects cursors older than retained history", async () => {
+    const retained = new InMemoryRunEventStore();
+    for (let index = 0; index < 5; index += 1) {
+      await retained.append("run-a", { type: "output.text.delta", data: { text: String(index) } });
+    }
+    const store = {
+      append: retained.append.bind(retained),
+      bounds: async () => ({ firstCursor: "5", lastCursor: "5", count: 1 }),
+      listAfter: retained.listAfter.bind(retained),
+    };
+
+    await expect(async () => {
+      for await (const _event of followRunEvents({ runId: "run-a", store, cursor: "3" })) {
+        // consume
+      }
+    }).rejects.toBeInstanceOf(RunEventCursorExpiredError);
   });
 });

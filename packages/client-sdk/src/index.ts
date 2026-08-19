@@ -156,6 +156,7 @@ export type {
   RunStreamEvent,
   RunEventStreamOptions,
   CancelRunResult,
+  ChatStreamConnectionState,
   LoopApprovedGate,
   LoopHookAction,
   LoopLifecycleHook,

@@ -122,7 +122,15 @@ export class RunDeliveryValidationError extends Error {
 }
 
 export class RunEventCursorError extends RunDeliveryValidationError {
-  override readonly name = "RunEventCursorError";
+  override readonly name: string = "RunEventCursorError";
+}
+
+export class RunEventCursorAheadError extends RunEventCursorError {
+  override readonly name = "RunEventCursorAheadError";
+}
+
+export class RunEventCursorExpiredError extends RunEventCursorError {
+  override readonly name = "RunEventCursorExpiredError";
 }
 
 export class RunEventConflictError extends Error {

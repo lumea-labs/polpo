@@ -97,6 +97,29 @@ await client.createTask({ title: '...', description: '...', assignTo: 'backend-d
 await client.createMission({ data: '...', name: 'my-mission' });
 ```
 
+#### Durable chat delivery
+
+`useChat({ durable: true })` opts a chat into execution that continues when the
+browser's SSE connection disappears. The hook delegates replay and reconnect to
+`@polpo-ai/sdk` and exposes the current run and cursor:
+
+```tsx
+const chat = useChat({ agent: "builder", durable: true });
+
+return (
+  <>
+    <button onClick={() => chat.sendMessage("Build and test the app")}>Run</button>
+    <button onClick={() => chat.cancel("Cancelled by user")}>Stop</button>
+    <span>{chat.status}</span>
+  </>
+);
+```
+
+During a transient disconnect, `status` becomes `reconnecting`. Unmounting a
+durable hook detaches its subscriber without cancelling the run. Call
+`cancel()` for explicit server-side cancellation; call `detach()` to close only
+the current subscriber. The default remains legacy attached delivery.
+
 #### useTasks(filter?)
 
 Get all tasks with optional filtering.

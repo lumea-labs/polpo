@@ -239,6 +239,7 @@ describe("useChat interactions", () => {
       detach,
       abort,
       cancel,
+      subscribeConnectionState: vi.fn(() => () => {}),
       async *[Symbol.asyncIterator]() {
         await finished;
       },

@@ -2,12 +2,15 @@ import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
 import { streamSSE } from "hono/streaming";
 import {
   RunDeliveryValidationError,
+  RunEventCursorAheadError,
+  RunEventCursorExpiredError,
   parseRunEventCursor,
   type RunCancellationStore,
   type RunEventStore,
 } from "@polpo-ai/core/run-delivery";
 import {
   followRunEvents,
+  inspectRunEventCursor,
   isTerminalRunStreamEvent,
   type RunEventNotifier,
 } from "@polpo-ai/core/run-delivery-follower";
@@ -44,6 +47,7 @@ const eventsRoute = createRoute({
       description: "Versioned run events, replayed after the supplied cursor and followed live",
     },
     400: { content: { "application/json": { schema: errorSchema } }, description: "Invalid or conflicting cursor" },
+    410: { content: { "application/json": { schema: errorSchema } }, description: "Cursor history expired" },
     404: { content: { "application/json": { schema: errorSchema } }, description: "Run not found" },
     501: { content: { "application/json": { schema: errorSchema } }, description: "Durable run delivery unavailable" },
   },
@@ -116,9 +120,27 @@ export function runDeliveryRoutes(
       }, 400);
     }
     const cursor = queryCursor ?? headerCursor;
+    c.header("Cache-Control", "no-cache, no-transform");
+    c.header("X-Accel-Buffering", "no");
     try {
       parseRunEventCursor(cursor);
+      const availability = await inspectRunEventCursor(resolved.eventStore, runId, cursor);
+      if (availability === "terminal") c.header("x-polpo-run-terminal", "true");
     } catch (error) {
+      if (error instanceof RunEventCursorExpiredError) {
+        return c.json({
+          ok: false,
+          error: error.message,
+          code: "RUN_CURSOR_EXPIRED",
+        }, 410);
+      }
+      if (error instanceof RunEventCursorAheadError) {
+        return c.json({
+          ok: false,
+          error: error.message,
+          code: "RUN_CURSOR_AHEAD",
+        }, 400);
+      }
       if (error instanceof RunDeliveryValidationError) {
         return c.json({
           ok: false,

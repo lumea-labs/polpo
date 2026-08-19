@@ -258,12 +258,15 @@ describe("PolpoClient run steering", () => {
       messages: [{ role: "user", content: "start" }],
       polpo: { delivery: { onDisconnect: "continue" } },
     });
+    const states: string[] = [];
+    stream.subscribeConnectionState((state) => states.push(state));
 
     const received = [];
     for await (const item of stream) received.push(item);
 
     expect(received.map((item) => item.choices[0]?.delta.content)).toEqual(["before ", "after"]);
     expect(stream.lastEventId).toBe("3");
+    expect(states).toEqual(["streaming", "reconnecting", "streaming", "closed"]);
     expect(fetch).toHaveBeenNthCalledWith(
       2,
       "https://api.polpo.sh/v1/runs/chatcmpl-1/events?cursor=1",
@@ -403,6 +406,45 @@ describe("PolpoClient run steering", () => {
     await expect(async () => {
       for await (const _item of stream) { /* consume */ }
     }).rejects.toThrow("malformed response chunk");
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not reconnect when the resume endpoint confirms the terminal cursor", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(new Response("", {
+      status: 200,
+      headers: { "x-polpo-run-terminal": "true" },
+    }));
+    const client = new PolpoClient({ baseUrl: "https://api.polpo.sh", fetch });
+    const stream = client.chatCompletionsStream({
+      messages: [{ role: "user", content: "start" }],
+      polpo: { delivery: { onDisconnect: "continue" } },
+    });
+    stream.runId = "run-1";
+    stream.resume({ after: "4" });
+    const received = [];
+
+    for await (const item of stream) received.push(item);
+
+    expect(received).toEqual([]);
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not reopen a stream detached during reconnect backoff", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(new Response("", {
+      status: 200,
+      headers: { "x-polpo-run-id": "run-1" },
+    }));
+    const client = new PolpoClient({ baseUrl: "https://api.polpo.sh", fetch });
+    const stream = client.chatCompletionsStream({
+      messages: [{ role: "user", content: "start" }],
+      polpo: { delivery: { onDisconnect: "continue" } },
+    });
+    stream.subscribeConnectionState((state) => {
+      if (state === "reconnecting") stream.detach();
+    });
+
+    for await (const _item of stream) { /* consume */ }
+
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 });

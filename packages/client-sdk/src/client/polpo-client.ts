@@ -125,6 +125,7 @@ import type {
   RunStreamEvent,
   RunEventStreamOptions,
   CancelRunResult,
+  ChatStreamConnectionState,
 } from "./types.js";
 
 export interface PolpoClientConfig {
@@ -198,6 +199,10 @@ export class ChatCompletionStream implements AsyncIterable<ChatCompletionChunk> 
   private resumeMode = false;
   private resumeAfter: string | undefined;
   private detached = false;
+  private terminal = false;
+  private readonly connectionStateListeners = new Set<(
+    state: ChatStreamConnectionState,
+  ) => void>();
 
   constructor(
     fetchFn: typeof globalThis.fetch,
@@ -213,13 +218,18 @@ export class ChatCompletionStream implements AsyncIterable<ChatCompletionChunk> 
     this.req = req;
   }
 
-  /**
-   * Abort the in-flight stream. Cancels the fetch request and closes the reader.
-   * The server will detect the disconnect and stop generating.
-   */
+  /** Backward-compatible cancel command. Use detach() to keep a durable run alive. */
   abort(): void {
     this.aborted = true;
-    void this.cancel();
+    void this.cancel().catch(() => { /* use cancel() when acknowledgement matters */ });
+  }
+
+  /** Observe transport state without implementing a second SSE parser. */
+  subscribeConnectionState(
+    listener: (state: ChatStreamConnectionState) => void,
+  ): () => void {
+    this.connectionStateListeners.add(listener);
+    return () => { this.connectionStateListeners.delete(listener); };
   }
 
   /** Close only this subscriber. A durable run continues server-side. */
@@ -258,6 +268,7 @@ export class ChatCompletionStream implements AsyncIterable<ChatCompletionChunk> 
     this.started = false;
     this.aborted = false;
     this.detached = false;
+    this.terminal = false;
     this.resumeMode = true;
     this.resumeAfter = options.after ?? this.lastEventId ?? undefined;
     return this;
@@ -311,14 +322,18 @@ export class ChatCompletionStream implements AsyncIterable<ChatCompletionChunk> 
       this.sessionId = res.headers.get("x-session-id");
       this.runId = res.headers.get("x-polpo-run-id");
     }
+    this.terminal = res.headers.get("x-polpo-run-terminal") === "true";
 
     this.reader = res.body?.getReader() ?? null;
     if (!this.reader) throw new PolpoApiError("No response body", "INTERNAL_ERROR", 500);
+    this.emitConnectionState("streaming");
   }
 
   async *[Symbol.asyncIterator](): AsyncGenerator<ChatCompletionChunk, void, unknown> {
     await this.ensureStarted();
+    if (this.terminal) return;
     let reconnectAttempts = 0;
+    try {
     while (!this.aborted && !this.detached) {
       const reader = this.reader!;
       let terminal = false;
@@ -399,14 +414,23 @@ export class ChatCompletionStream implements AsyncIterable<ChatCompletionChunk> 
         throw new PolpoApiError("Run stream reconnect limit exceeded", "INTERNAL_ERROR", 503);
       }
       reconnectAttempts += 1;
+      this.emitConnectionState("reconnecting");
       await reconnectDelay(reconnectAttempts, this.abortController.signal);
+      if (this.aborted || this.detached) return;
       this.resume({ after: this.lastEventId ?? undefined });
       await this.ensureStarted();
+    }
+    } finally {
+      this.emitConnectionState("closed");
     }
   }
 
   private isDurable(): boolean {
     return this.req.polpo?.delivery?.onDisconnect === "continue";
+  }
+
+  private emitConnectionState(state: ChatStreamConnectionState): void {
+    for (const listener of this.connectionStateListeners) listener(state);
   }
 }
 
@@ -493,6 +517,7 @@ async function responseError(response: Response, fallback: string): Promise<Polp
 }
 
 function reconnectDelay(attempt: number, signal: AbortSignal): Promise<void> {
+  if (signal.aborted) return Promise.resolve();
   const delay = Math.min(2_000, 100 * 2 ** (attempt - 1));
   return new Promise((resolve) => {
     const timer = setTimeout(finish, delay);

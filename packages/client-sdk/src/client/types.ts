@@ -1277,6 +1277,8 @@ export interface CancelRunResult {
   data: { runId: string; accepted: boolean };
 }
 
+export type ChatStreamConnectionState = "streaming" | "reconnecting" | "closed";
+
 /** A user-selectable next message. Intentionally presentation-agnostic. */
 export interface ChatSuggestion {
   id: string;

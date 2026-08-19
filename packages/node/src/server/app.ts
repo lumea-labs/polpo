@@ -172,7 +172,7 @@ export function createApp(orchestrator: Orchestrator, sseBridge: SSEBridge, opts
   app.use("/api/*", rateLimitMiddleware());
   app.use("/v1/*", rateLimitMiddleware());
 
-  const corsExposeHeaders = ["x-session-id", "x-polpo-run-id"];
+  const corsExposeHeaders = ["x-session-id", "x-polpo-run-id", "x-polpo-run-terminal"];
   if (opts?.corsOrigins && opts.corsOrigins.length > 0) {
     app.use("*", cors({ origin: opts.corsOrigins, exposeHeaders: corsExposeHeaders }));
   } else {
@@ -439,7 +439,9 @@ export function createApp(orchestrator: Orchestrator, sseBridge: SSEBridge, opts
   app.route("/v1/runs", runDeliveryRoutes(() => ({
     resolveRunDelivery: async (runId) => {
       const stores = o.getRunDeliveryStores();
-      if (!knownDurableRuns.has(runId) && !(await stores.eventStore.bounds(runId))) {
+      const bounds = await stores.eventStore.bounds(runId);
+      if (bounds) knownDurableRuns.delete(runId);
+      if (!knownDurableRuns.has(runId) && !bounds) {
         return null;
       }
       return {
