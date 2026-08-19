@@ -2,7 +2,11 @@ import { randomBytes } from "node:crypto";
 import Database from "better-sqlite3";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { RunEventConflictError } from "@polpo-ai/core/run-delivery";
+import {
+  MAX_RUN_EVENT_BATCH_SIZE,
+  RunDeliveryValidationError,
+  RunEventConflictError,
+} from "@polpo-ai/core/run-delivery";
 import { createSqliteStores, type DrizzleStores } from "../index.js";
 import { migrateSqliteSchema } from "../sqlite-migrator.js";
 import { runExecutionLeasesSqlite } from "../schema/index.js";
@@ -121,6 +125,74 @@ describe("DrizzleRunEventStore", () => {
 
     expect(new Set(appended.map((event) => event.sequence)).size).toBe(50);
     expect((await stores.runEventStore.listAfter("run-a", undefined, 50)).events).toHaveLength(50);
+  });
+
+  it("allocates one contiguous sequence range for an ordered event batch", async () => {
+    const batch = await stores.runEventStore.appendMany!("run-a", [
+      { type: "response.chunk", data: { data: "one" } },
+      { type: "response.chunk", data: { data: "two" } },
+      { type: "response.done", data: { data: "[DONE]" } },
+    ]);
+    const next = await stores.runEventStore.append("run-a", {
+      type: "run.completed",
+      data: {},
+    });
+
+    expect(batch.map((event) => event.sequence)).toEqual([1, 2, 3]);
+    expect(next.sequence).toBe(4);
+    expect((await stores.runEventStore.listAfter("run-a")).events.map(
+      (event) => event.type,
+    )).toEqual([
+      "response.chunk",
+      "response.chunk",
+      "response.done",
+      "run.completed",
+    ]);
+  });
+
+  it("keeps batch and single-writer sequence allocation collision-free", async () => {
+    const [batch, single] = await Promise.all([
+      stores.runEventStore.appendMany!("run-a", [
+        { type: "response.chunk", data: { data: "one" } },
+        { type: "response.chunk", data: { data: "two" } },
+        { type: "response.chunk", data: { data: "three" } },
+      ]),
+      stores.runEventStore.append("run-a", {
+        type: "tool.completed",
+        data: { result: "done" },
+      }),
+    ]);
+    const sequences = [...batch.map((event) => event.sequence), single.sequence];
+
+    expect(new Set(sequences).size).toBe(4);
+    expect(sequences.slice().sort((left, right) => left - right)).toEqual([1, 2, 3, 4]);
+    expect((await stores.runEventStore.listAfter("run-a")).events).toHaveLength(4);
+  });
+
+  it("keeps explicit producer retry semantics on the batch compatibility path", async () => {
+    const input = {
+      id: "stable-batch-event",
+      type: "tool.completed" as const,
+      data: { result: "done" },
+      createdAt: "2026-08-19T10:00:00.000Z",
+    };
+
+    const first = await stores.runEventStore.appendMany!("run-a", [input]);
+    const retry = await stores.runEventStore.appendMany!("run-a", [input]);
+
+    expect(retry).toEqual(first);
+    expect((await stores.runEventStore.listAfter("run-a")).events).toHaveLength(1);
+  });
+
+  it("rejects oversized batches before allocating a sequence range", async () => {
+    const oversized = Array.from({ length: MAX_RUN_EVENT_BATCH_SIZE + 1 }, () => ({
+      type: "response.chunk" as const,
+      data: { data: "x" },
+    }));
+
+    await expect(stores.runEventStore.appendMany!("run-a", oversized))
+      .rejects.toBeInstanceOf(RunDeliveryValidationError);
+    expect(await stores.runEventStore.bounds("run-a")).toBeNull();
   });
 });
 

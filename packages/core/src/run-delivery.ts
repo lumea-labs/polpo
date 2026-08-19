@@ -5,6 +5,7 @@ export const MAX_RUN_EVENT_BYTES = 256 * 1024;
 export const MAX_RUN_EVENT_ID_LENGTH = 500;
 export const MAX_RUN_ID_LENGTH = 200;
 export const MAX_RUN_EVENT_TYPE_LENGTH = 200;
+export const MAX_RUN_EVENT_BATCH_SIZE = 256;
 
 export type RunDisconnectPolicy = "cancel" | "continue";
 
@@ -89,6 +90,15 @@ export interface RunEventBounds {
 
 export interface RunEventStore {
   append(runId: string, event: AppendRunStreamEvent): Promise<RunStreamEvent>;
+  /**
+   * Append an ordered batch using one store transaction when supported.
+   * Implementations that omit this method remain compatible; RunEventJournal
+   * falls back to ordered single-event appends.
+   */
+  appendMany?(
+    runId: string,
+    events: readonly AppendRunStreamEvent[],
+  ): Promise<RunStreamEvent[]>;
   listAfter(runId: string, cursor?: string, limit?: number): Promise<RunEventPage>;
   bounds(runId: string): Promise<RunEventBounds | null>;
 }
@@ -232,6 +242,20 @@ export class InMemoryRunEventStore implements RunEventStore {
     byId.set(event.id, event);
     this.eventsByProducerId.set(runId, byId);
     return cloneRunEvent(event);
+  }
+
+  async appendMany(
+    runId: string,
+    inputs: readonly AppendRunStreamEvent[],
+  ): Promise<RunStreamEvent[]> {
+    if (inputs.length > MAX_RUN_EVENT_BATCH_SIZE) {
+      throw new RunDeliveryValidationError(
+        `Run event batch cannot exceed ${MAX_RUN_EVENT_BATCH_SIZE} events`,
+      );
+    }
+    const events: RunStreamEvent[] = [];
+    for (const input of inputs) events.push(await this.append(runId, input));
+    return events;
   }
 
   async listAfter(

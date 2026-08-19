@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   InMemoryRunCancellationStore,
   InMemoryRunEventStore,
@@ -91,6 +91,10 @@ describe("durable completion stream", () => {
 
   it("serializes concurrent writer calls in invocation order", async () => {
     const delivery = scope();
+    const appendMany = vi.spyOn(
+      delivery.eventStore as InMemoryRunEventStore,
+      "appendMany",
+    );
     const writer = createDurableCompletionWriter("run-a", delivery);
     await Promise.all([
       writer.writeSSE({ data: "one" }),
@@ -99,6 +103,87 @@ describe("durable completion stream", () => {
     ]);
     const events = (await delivery.eventStore.listAfter("run-a")).events;
     expect(events.map((event) => event.data.data)).toEqual(["one", "two", "[DONE]"]);
+    expect(appendMany).toHaveBeenCalledTimes(1);
+  });
+
+  it("persists large streams in bounded batches without losing frame order", async () => {
+    const delivery = scope();
+    const appendMany = vi.spyOn(
+      delivery.eventStore as InMemoryRunEventStore,
+      "appendMany",
+    );
+    const writer = createDurableCompletionWriter("run-a", delivery);
+    const writes = Array.from({ length: 300 }, (_, index) =>
+      writer.writeSSE({ data: `chunk-${index}` })
+    );
+
+    await Promise.all(writes);
+    await writer.flush();
+
+    const events = [];
+    let cursor: string | undefined;
+    do {
+      const page = await delivery.eventStore.listAfter("run-a", cursor, 100);
+      events.push(...page.events);
+      cursor = page.hasMore ? page.nextCursor : undefined;
+      if (!page.hasMore) break;
+    } while (cursor);
+    expect(events).toHaveLength(300);
+    expect(events.map((event) => event.data.data)).toEqual(
+      Array.from({ length: 300 }, (_, index) => `chunk-${index}`),
+    );
+    expect(appendMany.mock.calls.length).toBeGreaterThanOrEqual(3);
+    expect(appendMany.mock.calls.length).toBeLessThanOrEqual(4);
+    expect(appendMany.mock.calls.every(([events]) => events.length <= 128)).toBe(true);
+  });
+
+  it("flushes a producer batch before appending the terminal lifecycle event", async () => {
+    const delivery = scope();
+    const appendMany = vi.spyOn(
+      delivery.eventStore as InMemoryRunEventStore,
+      "appendMany",
+    );
+    const execution = startDurableCompletion({
+      runId: "run-a",
+      scope: delivery,
+      producer: async ({ writer }) => {
+        await writer.writeSSE({ data: "one" });
+        await writer.writeSSE({ data: "two" });
+      },
+    });
+
+    await expect(execution).resolves.toEqual({ status: "completed" });
+    expect(appendMany).toHaveBeenCalledTimes(1);
+    expect((await delivery.eventStore.listAfter("run-a")).events.map(
+      (event) => event.type,
+    )).toEqual([
+      "run.started",
+      "response.chunk",
+      "response.chunk",
+      "run.completed",
+    ]);
+  });
+
+  it("surfaces a scheduled background flush failure at producer finalization", async () => {
+    const delivery = scope();
+    vi.spyOn(delivery.eventStore as InMemoryRunEventStore, "appendMany")
+      .mockRejectedValueOnce(new Error("event store unavailable"));
+    const execution = startDurableCompletion({
+      runId: "run-a",
+      scope: delivery,
+      producer: async ({ writer }) => {
+        await writer.writeSSE({ data: "one" });
+        await new Promise((resolve) => setTimeout(resolve, 40));
+      },
+    });
+
+    await expect(execution).resolves.toEqual({
+      status: "failed",
+      error: "event store unavailable",
+    });
+    expect((await delivery.eventStore.listAfter("run-a")).events.map(
+      (event) => event.type,
+    )).toEqual(["run.started", "run.failed"]);
   });
 
   it("projects unexpected producer failures to the initial subscriber", async () => {

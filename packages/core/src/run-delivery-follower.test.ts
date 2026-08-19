@@ -36,6 +36,40 @@ describe("RunEventJournal", () => {
       .rejects.toThrow("storage down");
     expect(publish).not.toHaveBeenCalled();
   });
+
+  it("publishes one wake hint for an ordered durable batch", async () => {
+    const store = new InMemoryRunEventStore();
+    const notifier = new InMemoryRunEventNotifier();
+    const publish = vi.spyOn(notifier, "publish");
+    const journal = new RunEventJournal(store, notifier);
+
+    const events = await journal.appendMany("run-a", [
+      { type: "response.chunk", data: { data: "one" } },
+      { type: "response.chunk", data: { data: "two" } },
+    ]);
+
+    expect(events.map((event) => event.sequence)).toEqual([1, 2]);
+    expect(publish).toHaveBeenCalledTimes(1);
+    expect(publish).toHaveBeenCalledWith("run-a", "2");
+  });
+
+  it("falls back to ordered single appends for third-party stores", async () => {
+    const base = new InMemoryRunEventStore();
+    const append = vi.fn(base.append.bind(base));
+    const journal = new RunEventJournal({
+      append,
+      listAfter: base.listAfter.bind(base),
+      bounds: base.bounds.bind(base),
+    });
+
+    const events = await journal.appendMany("run-a", [
+      { type: "response.chunk", data: { data: "one" } },
+      { type: "response.done", data: { data: "[DONE]" } },
+    ]);
+
+    expect(append).toHaveBeenCalledTimes(2);
+    expect(events.map((event) => event.sequence)).toEqual([1, 2]);
+  });
 });
 
 describe("followRunEvents", () => {
