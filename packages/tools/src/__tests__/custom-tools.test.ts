@@ -182,6 +182,9 @@ describe("getCustomToolErrors / isCustomTool", () => {
       "request.metadata.tenantId",
       "invocation.__proto__.polluted",
       "invocation.metadata.constructor.prototype",
+      "invocation.scope",
+      "invocation.scope.unknown",
+      "invocation.scope.key.extra",
       "invocation.secrets.apiKey",
     ]) {
       expect(getCustomToolErrors({
@@ -340,11 +343,13 @@ describe("bindCustomTool", () => {
         tenantId: Type.String(),
         externalUserId: Type.String(),
         grant: Type.String(),
+        scopeKey: Type.String(),
       }),
       serverBindings: {
         tenantId: { $context: "invocation.metadata.tenantId" },
         externalUserId: { $context: "invocation.user" },
         grant: { $context: "invocation.metadata.grant" },
+        scopeKey: { $context: "invocation.scope.key" },
       },
       execute: (ctx, params) => {
         received = { bindings: ctx.bindings, invocation: ctx.invocation, params };
@@ -361,6 +366,7 @@ describe("bindCustomTool", () => {
         tenantId: "tenant-2",
         grant: "ag1.signed",
       },
+      scope: { key: "workspace-2", version: "4" },
     });
     const pt = bindCustomTool(t, fakeCtx({ invocation }));
     await pt.execute("call-2", { msg: "hello" });
@@ -369,6 +375,7 @@ describe("bindCustomTool", () => {
       tenantId: "tenant-2",
       externalUserId: "better-auth-user",
       grant: "ag1.signed",
+      scopeKey: "workspace-2",
     });
     expect(received.params).toEqual({ msg: "hello" });
     expect(Object.isFrozen(received.bindings)).toBe(true);
@@ -504,6 +511,30 @@ describe("createToolInvocationContext", () => {
     expect(Object.isFrozen(invocation.metadata)).toBe(true);
     expect(Object.isFrozen(invocation.metadata.tenant)).toBe(true);
     expect(Object.isFrozen(invocation.metadata.scopes)).toBe(true);
+  });
+
+  it("normalizes and freezes a trusted application scope", () => {
+    const invocation = createToolInvocationContext({
+      requestId: "request-1",
+      runId: "run-1",
+      surface: "channel",
+      scope: { key: " workspace-1 ", version: " 3 " },
+    });
+
+    expect(invocation.scope).toEqual({ key: "workspace-1", version: "3" });
+    expect(Object.isFrozen(invocation.scope)).toBe(true);
+    expect(() => createToolInvocationContext({
+      requestId: "request-1",
+      runId: "run-1",
+      surface: "channel",
+      scope: { key: "" },
+    })).toThrow(/scope key/i);
+    expect(() => createToolInvocationContext({
+      requestId: "request-1",
+      runId: "run-1",
+      surface: "channel",
+      scope: { key: "workspace-1", extra: true } as any,
+    })).toThrow(/unsupported fields/i);
   });
 
   it("rejects non-JSON metadata deterministically", () => {

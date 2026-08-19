@@ -16,6 +16,7 @@ import type {
   StreamEvent,
   WebhookOptions,
 } from "chat";
+import type { WhatsAppTemplateMessage } from "@chat-adapter/whatsapp";
 
 export type ChannelStateAdapter = StateAdapter;
 export type ChannelStateLock = Lock;
@@ -152,6 +153,9 @@ export type ChannelDeliveryResult = {
   messages: ChannelDeliveryMessage[];
   threadId?: string;
 };
+
+/** Explicit pre-approved WhatsApp template. Never inferred from normal text. */
+export type ChannelWhatsAppTemplate = WhatsAppTemplateMessage;
 
 type ChannelEventBase = {
   channelId?: string;

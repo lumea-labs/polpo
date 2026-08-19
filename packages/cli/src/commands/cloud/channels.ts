@@ -45,6 +45,18 @@ function parseJsonObject(value: string | undefined, label: string): Record<strin
   return parsed as Record<string, unknown>;
 }
 
+function parseJsonArray(value: string | undefined, label: string): unknown[] | undefined {
+  if (!value) return undefined;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    throw new Error(`${label} must be valid JSON.`);
+  }
+  if (!Array.isArray(parsed)) throw new Error(`${label} must be a JSON array.`);
+  return parsed;
+}
+
 type IdentityResolverOptions = {
   disableIdentityResolver?: boolean;
   identityResolverConnection?: string;
@@ -97,6 +109,35 @@ export function channelSettingsFromOptions(
 export function channelTestBody(to?: string): Record<string, string> | undefined {
   const recipient = to?.trim();
   return recipient ? { to: recipient } : undefined;
+}
+
+export function channelTemplateBody(input: {
+  components?: string;
+  idempotencyKey?: string;
+  language: string;
+  name: string;
+  to: string;
+}): Record<string, unknown> {
+  const recipient = input.to.trim();
+  const name = input.name.trim();
+  const language = input.language.trim();
+  if (!recipient) throw new Error("--to is required.");
+  if (!/^[a-z0-9_]+$/.test(name)) {
+    throw new Error("--name must use lowercase letters, numbers, and underscores.");
+  }
+  if (!/^[A-Za-z]{2,3}(?:_[A-Za-z]{2})?$/.test(language)) {
+    throw new Error("--language must be a valid WhatsApp language code.");
+  }
+  const components = parseJsonArray(input.components, "--components");
+  return {
+    idempotencyKey: input.idempotencyKey?.trim() || randomUUID(),
+    to: recipient,
+    template: {
+      name,
+      language,
+      ...(components ? { components } : {}),
+    },
+  };
 }
 
 export function channelDataFrom<T>(response: ApiResponse<ApiEnvelope<T>>): T {
@@ -300,6 +341,28 @@ export function registerChannelsCommand(program: Command): void {
           Boolean(opts.json),
         );
       }));
+
+  channels.command("send-template <channel-id>")
+    .description("Send an approved WhatsApp template")
+    .requiredOption("--to <recipient>", "WhatsApp recipient phone number")
+    .requiredOption("--name <name>", "Approved WhatsApp template name")
+    .requiredOption("--language <code>", "WhatsApp template language code")
+    .option("--components <json>", "Template component substitutions as a JSON array")
+    .option("--idempotency-key <key>", "Stable key for retry-safe delivery")
+    .option("--json", "Print JSON")
+    .action((channelId: string, opts: {
+      components?: string;
+      idempotencyKey?: string;
+      json?: boolean;
+      language: string;
+      name: string;
+      to: string;
+    }) => withChannelClient("Sending a WhatsApp template", opts, async (client) => {
+      printResult(channelDataFrom(await client.post(
+        conversationChannelPath(channelId, "templates"),
+        channelTemplateBody(opts),
+      )), Boolean(opts.json));
+    }));
 
   channels.command("remove <channel-id>")
     .alias("rm")

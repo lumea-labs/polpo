@@ -522,6 +522,7 @@ describe("completionRoutes project loop runtime", () => {
         source: "channel",
         requestId: "provider-event-1",
         user: "external-user-1",
+        scope: { key: "workspace-1", version: "3" },
         metadata: { grant: "secret-grant", tenantId: "tenant-1" },
       },
       user: "external-user-1",
@@ -530,12 +531,16 @@ describe("completionRoutes project loop runtime", () => {
     expect(invocation).toMatchObject({
       surface: "channel",
       user: "external-user-1",
+      scope: { key: "workspace-1", version: "3" },
       metadata: { grant: "secret-grant", tenantId: "tenant-1" },
     });
     const runs = await loopRunStore.listRuns();
     expect(JSON.stringify(runs)).not.toContain("secret-grant");
     expect(runs[0]?.metadata?.runtimeInvocation).not.toHaveProperty("metadata");
     expect(runs[0]?.metadata?.runtimeInvocation).not.toHaveProperty("user");
+    expect(runs[0]?.metadata?.runtimeInvocation).toMatchObject({
+      scope: { key: "workspace-1", version: "3" },
+    });
   });
 
   it("executes deterministic loop tools through the direct runtime executor when model tools are routerized", async () => {

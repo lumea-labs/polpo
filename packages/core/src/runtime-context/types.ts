@@ -88,6 +88,8 @@ export interface RuntimeContextRetrievalInput {
   readonly channelId?: string;
   readonly runId?: string;
   readonly requestId?: string;
+  /** Optional host-trusted application partition. */
+  readonly scope?: Readonly<{ key: string; version?: string }>;
   readonly signal?: AbortSignal;
 }
 

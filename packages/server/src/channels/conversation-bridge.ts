@@ -9,6 +9,7 @@ import type { SessionContentPart, SessionStore } from "@polpo-ai/core/session-st
 import {
   createToolInvocationContext,
   type ToolInvocationJsonValue,
+  type ToolInvocationScope,
 } from "@polpo-ai/core";
 import type { CompletionRouteDeps } from "../routes/completions.js";
 import {
@@ -39,10 +40,11 @@ export type ChannelInvocationResolution =
       disposition: "dispatch";
       user: string;
       metadata?: Record<string, ToolInvocationJsonValue>;
+      scope?: ToolInvocationScope;
     }
   | {
       disposition: "consume";
-      reply: string;
+      reply?: string;
     };
 
 export interface ConversationChannelBridgeOptions {
@@ -50,6 +52,7 @@ export interface ConversationChannelBridgeOptions {
   createSession?: (input: {
     agent: string;
     metadata: Record<string, string>;
+    scope?: ToolInvocationScope;
     title?: string;
     user: string;
   }) => Promise<string>;
@@ -60,6 +63,7 @@ export interface ConversationChannelBridgeOptions {
   onSessionResolved?: (
     turn: ChannelInboundTurn,
     sessionId: string,
+    scope?: ToolInvocationScope,
   ) => void | Promise<void>;
   resolveAttachment?: (
     attachment: ChannelAttachment,
@@ -82,6 +86,7 @@ export interface ConversationChannelBridgeOptions {
   ) => Record<string, string> | Promise<Record<string, string>>;
   resolveSessionId?: (
     turn: ChannelInboundTurn,
+    scope?: ToolInvocationScope,
   ) => Promise<string | null>;
 }
 
@@ -121,15 +126,11 @@ export function createConversationChannelTurnHandler(
     }
     const invocationResolution = await options.resolveInvocation?.(turn);
     if (invocationResolution?.disposition === "consume") {
-      if (!invocationResolution.reply.trim()) {
-        throw new ChannelConversationError(
-          "Channel invocation resolver returned an empty consume reply",
-          "channel_invocation_identity_invalid",
-        );
-      }
       return {
         metadata: { disposition: "consume" },
-        text: invocationResolution.reply,
+        ...(invocationResolution.reply?.trim()
+          ? { text: invocationResolution.reply.trim() }
+          : {}),
       };
     }
     if (
@@ -141,14 +142,16 @@ export function createConversationChannelTurnHandler(
         "channel_invocation_identity_invalid",
       );
     }
-    const trustedMetadata = invocationResolution?.disposition === "dispatch"
+    const trustedInvocation = invocationResolution?.disposition === "dispatch"
       ? createToolInvocationContext({
           requestId: turn.providerEventId,
           runId: turn.providerEventId,
           surface: "channel",
           metadata: invocationResolution.metadata ?? {},
-        }).metadata
+          scope: invocationResolution.scope,
+        })
       : undefined;
+    const trustedScope = trustedInvocation?.scope;
     const user = invocationResolution?.disposition === "dispatch"
       ? invocationResolution.user.trim()
       : options.resolveExternalUserId
@@ -168,19 +171,28 @@ export function createConversationChannelTurnHandler(
       channel_provider: turn.provider,
       channel_thread_id: turn.threadId,
       ...(options.resolveMetadata ? await options.resolveMetadata(turn) : {}),
+      ...(trustedScope
+        ? {
+            channel_scope_key: trustedScope.key,
+            ...(trustedScope.version
+              ? { channel_scope_version: trustedScope.version }
+              : {}),
+          }
+        : {}),
     };
     const sessionId = await resolveSessionOnce(
       pendingSessions,
-      sessionIdentity(turn),
+      sessionIdentity(turn, trustedScope),
       () => resolveOrCreateSession(deps.getSessionStore(), turn, {
         agent,
         metadata,
         options,
+        scope: trustedScope,
         title: latest.text.slice(0, 60) || `${turn.provider} conversation`,
         user,
       }),
     );
-    if (sessionId) await options.onSessionResolved?.(turn, sessionId);
+    if (sessionId) await options.onSessionResolved?.(turn, sessionId, trustedScope);
 
     const history = await loadHistory(
       deps.getSessionStore(),
@@ -203,7 +215,8 @@ export function createConversationChannelTurnHandler(
         source: "channel",
         surface: "channel",
         user,
-        ...(trustedMetadata ? { metadata: trustedMetadata } : {}),
+        ...(trustedInvocation ? { metadata: trustedInvocation.metadata } : {}),
+        ...(trustedScope ? { scope: trustedScope } : {}),
       },
       sessionId,
     });
@@ -251,11 +264,12 @@ async function resolveOrCreateSession(
     agent: string;
     metadata: Record<string, string>;
     options: ConversationChannelBridgeOptions;
+    scope?: ToolInvocationScope;
     title: string;
     user: string;
   },
 ): Promise<string | null> {
-  const resolved = await input.options.resolveSessionId?.(turn);
+  const resolved = await input.options.resolveSessionId?.(turn, input.scope);
   if (resolved) return resolved;
 
   if (!input.options.resolveSessionId && store) {
@@ -264,6 +278,14 @@ async function resolveOrCreateSession(
         channel_installation_id: turn.installationId,
         channel_provider: turn.provider,
         channel_thread_id: turn.threadId,
+        ...(input.scope
+          ? {
+              channel_scope_key: input.scope.key,
+              ...(input.scope.version
+                ? { channel_scope_version: input.scope.version }
+                : {}),
+            }
+          : {}),
       },
       user: input.user,
     });
@@ -275,6 +297,7 @@ async function resolveOrCreateSession(
     return input.options.createSession({
       agent: input.agent,
       metadata: input.metadata,
+      scope: input.scope,
       title: input.title,
       user: input.user,
     });
@@ -419,6 +442,15 @@ function defaultExternalUserId(
   return `${turn.provider}:${turn.installationId}:${latest.author.userId}`;
 }
 
-function sessionIdentity(turn: ChannelInboundTurn): string {
-  return `${turn.provider}:${turn.installationId}:${turn.threadId}`;
+function sessionIdentity(
+  turn: ChannelInboundTurn,
+  scope?: ToolInvocationScope,
+): string {
+  return JSON.stringify([
+    turn.provider,
+    turn.installationId,
+    turn.threadId,
+    scope?.key ?? "",
+    scope?.version ?? "",
+  ]);
 }

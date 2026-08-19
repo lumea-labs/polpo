@@ -389,6 +389,22 @@ function normalizeRequest(
     ...(optionalText(request.requestId, "requestId")
       ? { requestId: optionalText(request.requestId, "requestId") }
       : {}),
+    ...(request.scope
+      ? {
+          scope: Object.freeze({
+            key: requiredText(request.scope.key, "scope.key", 512),
+            ...(optionalText(request.scope.version, "scope.version")
+              ? {
+                  version: requiredText(
+                    request.scope.version!,
+                    "scope.version",
+                    128,
+                  ),
+                }
+              : {}),
+          }),
+        }
+      : {}),
     ...(request.signal ? { signal: request.signal } : {}),
   });
 }

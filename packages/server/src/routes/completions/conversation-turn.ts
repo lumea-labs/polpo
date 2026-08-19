@@ -377,6 +377,7 @@ export function createCompletionToolInvocation(input: {
       string,
       ToolInvocationJsonValue
     >,
+    ...(invocation.scope ? { scope: invocation.scope } : {}),
     surface: toolInvocationSurface(invocation, input.loop ?? false),
   });
 }
@@ -709,6 +710,7 @@ export async function prepareChatCompletionExecution(
             ? { requestId: options.runtime.requestId }
             : {}),
           ...(options.runtime?.runId ? { runId: options.runtime.runId } : {}),
+          ...(options.runtime?.scope ? { scope: options.runtime.scope } : {}),
           ...(options.signal ? { signal: options.signal } : {}),
         });
       } catch (error) {

@@ -85,7 +85,11 @@ describe("buildLoopResumeState", () => {
       user: "user-1",
       context: { request: { metadata: { publicRef: "project-1" } } },
       metadata: {
-        runtimeInvocation: { surface: "channel", source: "channel" },
+        runtimeInvocation: {
+          surface: "channel",
+          source: "channel",
+          scope: { key: "workspace-1", version: "3" },
+        },
       },
     });
     await store.updateRun("looprun-1", {
@@ -123,6 +127,7 @@ describe("buildLoopResumeState", () => {
         sessionId: "session-1",
         user: "user-1",
         metadata: { grant: "secret-grant" },
+        scope: { key: "workspace-1", version: "3" },
         surface: "channel",
       })),
       buildAgentPrompt: () => "",
@@ -133,7 +138,64 @@ describe("buildLoopResumeState", () => {
 
     expect(deps.resolveResumedToolInvocation).toHaveBeenCalledOnce();
     expect(captured[0]).toMatchObject({ metadata: { grant: "secret-grant" } });
+    expect(captured[0]).toMatchObject({
+      scope: { key: "workspace-1", version: "3" },
+    });
     const updated = await store.getRun("looprun-1");
     expect(JSON.stringify(updated)).not.toContain("secret-grant");
+  });
+
+  it("fails closed when trusted scope changes across a loop resume", async () => {
+    const store = new MemoryLoopRunStore();
+    await store.createRun({
+      id: "looprun-scope-drift",
+      loop: { name: "resume-loop" },
+      agentName: "assistant",
+      sessionId: "session-1",
+      user: "user-1",
+      context: {},
+      metadata: {
+        runtimeInvocation: {
+          surface: "channel",
+          source: "channel",
+          scope: { key: "personal", version: "1" },
+        },
+      },
+    });
+    await store.updateRun("looprun-scope-drift", {
+      status: "approval_approved",
+      resume: {
+        context: {},
+        steps: [{ type: "tool", tool: "probe", next: "end" } as any],
+        createdAt: new Date().toISOString(),
+      },
+    });
+    const deps = {
+      getAgents: async () => [{ name: "assistant", model: "test" }],
+      getConfig: () => ({}),
+      getMemoryStore: () => null,
+      getSessionStore: () => null,
+      getStore: () => null,
+      emit: () => {},
+      getLoopRunStore: () => store,
+      getProjectLoop: async () => ({
+        name: "resume-loop",
+        start: "probe",
+        steps: { probe: { type: "tool", tool: "probe", next: "end" } },
+      }),
+      resolveResumedToolInvocation: async () => createToolInvocationContext({
+        requestId: "provider-event-2",
+        runId: "looprun-scope-drift",
+        sessionId: "session-1",
+        user: "user-1",
+        scope: { key: "work", version: "1" },
+        surface: "channel",
+      }),
+    } as unknown as CompletionRouteDeps;
+
+    await expect(resumeProjectLoopRun({
+      deps,
+      runId: "looprun-scope-drift",
+    })).rejects.toThrow(/scope does not match/i);
   });
 });

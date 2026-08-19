@@ -62,6 +62,64 @@ const routeBody = z.object({
 const testBody = z.object({
   to: z.string().min(1).max(512).optional(),
 }).strict();
+const templateParameter = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("text"), text: z.string().max(4_096) }).strict(),
+  z.object({
+    type: z.literal("currency"),
+    currency: z.object({
+      amount_1000: z.number().int(),
+      code: z.string().min(3).max(3),
+      fallback_value: z.string().min(1).max(1_024),
+    }).strict(),
+  }).strict(),
+  z.object({
+    type: z.literal("date_time"),
+    date_time: z.object({ fallback_value: z.string().min(1).max(1_024) }).strict(),
+  }).strict(),
+  z.object({
+    type: z.literal("image"),
+    image: z.object({ id: z.string().min(1).max(512).optional(), link: z.string().url().max(2_048).optional() })
+      .strict().refine((value) => Boolean(value.id || value.link), "image requires id or link"),
+  }).strict(),
+  z.object({
+    type: z.literal("document"),
+    document: z.object({
+      filename: z.string().min(1).max(512).optional(),
+      id: z.string().min(1).max(512).optional(),
+      link: z.string().url().max(2_048).optional(),
+    }).strict().refine((value) => Boolean(value.id || value.link), "document requires id or link"),
+  }).strict(),
+  z.object({
+    type: z.literal("video"),
+    video: z.object({ id: z.string().min(1).max(512).optional(), link: z.string().url().max(2_048).optional() })
+      .strict().refine((value) => Boolean(value.id || value.link), "video requires id or link"),
+  }).strict(),
+]);
+const templateButtonParameter = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("text"), text: z.string().max(4_096) }).strict(),
+  z.object({ type: z.literal("payload"), payload: z.string().max(4_096) }).strict(),
+]);
+const templateComponent = z.union([
+  z.object({
+    type: z.enum(["header", "body"]),
+    parameters: z.array(templateParameter).max(50),
+  }).strict(),
+  z.object({
+    type: z.literal("button"),
+    sub_type: z.enum(["url", "quick_reply"]),
+    index: z.number().int().min(0).max(9),
+    parameters: z.array(templateButtonParameter).max(10),
+  }).strict(),
+]);
+const templateBody = z.object({
+  idempotencyKey: z.string().min(1).max(512),
+  to: z.string().min(1).max(100),
+  template: z.object({
+    name: z.string().regex(/^[a-z0-9_]+$/).max(512),
+    language: z.string().regex(/^[A-Za-z]{2,3}(?:_[A-Za-z]{2})?$/).max(35),
+    components: z.array(templateComponent).max(20).optional(),
+  }).strict(),
+}).strict();
 
 const channelParams = z.object({ channelId: z.string().min(1).max(256) });
 const routeParams = channelParams.extend({ routeId: z.string().min(1).max(256) });
@@ -196,6 +254,29 @@ export function conversationChannelRoutes(
       c.req.valid("param").channelId,
       { recipient: c.req.valid("json")?.to },
     ) }, 200)));
+
+  openapi(createRoute({
+    method: "post",
+    path: "/{channelId}/templates",
+    tags: ["Conversation Channels"],
+    summary: "Send an approved WhatsApp template",
+    request: {
+      params: channelParams,
+      body: { content: { "application/json": { schema: templateBody } } },
+    },
+    responses: { 200: { content: { "application/json": { schema: success } }, description: "Template delivery" }, ...errors },
+  }), (c: any) => withService(c, getDeps, async (service, deps) => {
+    const body = c.req.valid("json");
+    return c.json({ ok: true, data: await service.sendTemplate(
+      await deps.resolveChannelManagementScope(c),
+      c.req.valid("param").channelId,
+      {
+        idempotencyKey: body.idempotencyKey,
+        recipient: body.to,
+        template: body.template,
+      },
+    ) }, 200);
+  }));
 
   openapi(createRoute({
     method: "get",

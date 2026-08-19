@@ -11,6 +11,7 @@ import type {
   ChannelInstallation,
   DiscordChannelInstallation,
   TelegramChannelInstallation,
+  WhatsAppChannelInstallation,
 } from "../types.js";
 
 const runtimes: ChannelRuntime[] = [];
@@ -46,6 +47,24 @@ function discordInstallation(
     },
     id: "installation-1",
     provider: "discord",
+    ...overrides,
+  };
+}
+
+function whatsappInstallation(
+  overrides: Partial<WhatsAppChannelInstallation> = {},
+): WhatsAppChannelInstallation {
+  return {
+    concurrency: { strategy: "concurrent" },
+    credentialRevision: "revision-1",
+    credentials: {
+      accessToken: "token",
+      appSecret: "secret",
+      phoneNumberId: "phone-1",
+      verifyToken: "verify",
+    },
+    id: "installation-1",
+    provider: "whatsapp",
     ...overrides,
   };
 }
@@ -1144,6 +1163,76 @@ describe("ChannelRuntime", () => {
         threadId: "telegram:chat-1",
       }],
     });
+  });
+
+  it("sends an explicit approved WhatsApp template and returns its provider id", async () => {
+    const adapter = testAdapter() as Adapter & {
+      sendTemplate: ReturnType<typeof vi.fn>;
+    };
+    adapter.sendTemplate = vi.fn(async (threadId: string) => ({
+      id: "wamid.template-1",
+      raw: { messages: [{ id: "wamid.template-1" }] },
+      threadId,
+    }));
+    const runtime = createRuntime({ adapter });
+
+    const delivery = await runtime.sendWhatsAppTemplate(
+      whatsappInstallation(),
+      " +15551234567 ",
+      {
+        name: "welcome_user",
+        language: "en_US",
+        components: [{
+          type: "body",
+          parameters: [{ type: "text", text: "Ada" }],
+        }],
+      },
+    );
+
+    expect(adapter.sendTemplate).toHaveBeenCalledWith(
+      "whatsapp:phone-1:+15551234567",
+      {
+        name: "welcome_user",
+        language: "en_US",
+        components: [{
+          type: "body",
+          parameters: [{ type: "text", text: "Ada" }],
+        }],
+      },
+    );
+    expect(delivery).toEqual({
+      channelId: "whatsapp:phone-1",
+      messages: [{
+        id: "wamid.template-1",
+        threadId: "whatsapp:phone-1:+15551234567",
+      }],
+      threadId: "whatsapp:phone-1:+15551234567",
+    });
+  });
+
+  it("rejects invalid or cross-provider template delivery before sending", async () => {
+    const adapter = testAdapter() as Adapter & {
+      sendTemplate: ReturnType<typeof vi.fn>;
+    };
+    adapter.sendTemplate = vi.fn();
+    const runtime = createRuntime({ adapter });
+
+    await expect(runtime.sendWhatsAppTemplate(
+      installation(),
+      "+15551234567",
+      { name: "welcome_user", language: "en" },
+    )).rejects.toThrow(/require a WhatsApp installation/i);
+    await expect(runtime.sendWhatsAppTemplate(
+      whatsappInstallation(),
+      " ",
+      { name: "welcome_user", language: "en" },
+    )).rejects.toThrow(/recipient/i);
+    await expect(runtime.sendWhatsAppTemplate(
+      whatsappInstallation(),
+      "+15551234567",
+      { name: "Invalid Name", language: "en" },
+    )).rejects.toThrow(/lowercase/i);
+    expect(adapter.sendTemplate).not.toHaveBeenCalled();
   });
 
   it("returns every provider message id from segmented proactive delivery", async () => {

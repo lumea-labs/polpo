@@ -2,6 +2,7 @@ import type {
   ChannelConcurrencyPolicy,
   ChannelProviderId,
   ChannelResponseDeliveryPolicy,
+  ChannelWhatsAppTemplate,
 } from "../types.js";
 
 export type ChannelManagementActorType = "user" | "service" | "agent";
@@ -294,6 +295,20 @@ export interface ChannelProviderAutomation {
     recipient?: string;
     scope: ChannelManagementScope;
   }): Promise<{ message?: string; success: boolean }>;
+  sendTemplate?(input: {
+    channel: ConversationChannel;
+    connection: RedactedChannelConnection;
+    idempotencyKey: string;
+    recipient: string;
+    scope: ChannelManagementScope;
+    template: ChannelWhatsAppTemplate;
+  }): Promise<{ messageId?: string; success: boolean }>;
+}
+
+export interface SendConversationChannelTemplateInput {
+  idempotencyKey: string;
+  recipient: string;
+  template: ChannelWhatsAppTemplate;
 }
 
 export interface ChannelSecureSetupCoordinator {

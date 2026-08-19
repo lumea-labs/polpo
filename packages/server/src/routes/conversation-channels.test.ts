@@ -33,6 +33,10 @@ function harness() {
       }),
       activate: async () => ({ status: "ready" }),
       test: vi.fn(async () => ({ success: true })),
+      sendTemplate: vi.fn(async () => ({
+        messageId: "wamid.template-1",
+        success: true,
+      })),
     },
     createId: (kind) => `${kind}-${++sequence}`,
     now: () => "2026-08-17T10:00:00.000Z",
@@ -102,6 +106,26 @@ describe("conversationChannelRoutes", () => {
       "/channel-1/test",
       json("POST", { to: "+15551234567" }),
     )).json()).data.success).toBe(true);
+    const template = await state.app.request(
+      "/channel-1/templates",
+      json("POST", {
+        idempotencyKey: "template-1",
+        to: "+15551234567",
+        template: {
+          language: "en_US",
+          name: "welcome_user",
+          components: [{
+            type: "body",
+            parameters: [{ type: "text", text: "Ada" }],
+          }],
+        },
+      }),
+    );
+    expect(template.status).toBe(200);
+    expect((await template.json()).data).toEqual({
+      messageId: "wamid.template-1",
+      success: true,
+    });
 
     const addedRoute = await state.app.request("/channel-1/routes", json("POST", {
       agentName: "assistant",
