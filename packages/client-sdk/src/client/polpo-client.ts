@@ -122,6 +122,10 @@ import type {
   ConversationChannelRoute,
   UpdateConversationChannelInput,
   UpsertConversationChannelRouteInput,
+  RunStreamEvent,
+  RunEventStreamOptions,
+  CancelRunResult,
+  ChatStreamConnectionState,
 } from "./types.js";
 
 export interface PolpoClientConfig {
@@ -155,6 +159,9 @@ export class ChatCompletionStream implements AsyncIterable<ChatCompletionChunk> 
   /** Active Run id used by steering APIs. Available after start() or first next(). */
   runId: string | null = null;
 
+  /** Last fully processed durable SSE cursor. */
+  lastEventId: string | null = null;
+
   /** If the stream ended with finish_reason "ask_user", this contains the questions. */
   askUser: AskUserPayload | null = null;
 
@@ -181,6 +188,7 @@ export class ChatCompletionStream implements AsyncIterable<ChatCompletionChunk> 
 
   private fetchFn: typeof globalThis.fetch;
   private url: string;
+  private runsUrl: string;
   private clientHeaders: Record<string, string>;
   private req: ChatCompletionRequest;
   private reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
@@ -188,25 +196,85 @@ export class ChatCompletionStream implements AsyncIterable<ChatCompletionChunk> 
   private buffer = "";
   private started = false;
   private abortController = new AbortController();
+  private resumeMode = false;
+  private resumeAfter: string | undefined;
+  private detached = false;
+  private terminal = false;
+  private readonly connectionStateListeners = new Set<(
+    state: ChatStreamConnectionState,
+  ) => void>();
 
   constructor(
     fetchFn: typeof globalThis.fetch,
     url: string,
+    runsUrl: string,
     clientHeaders: Record<string, string>,
     req: ChatCompletionRequest,
   ) {
     this.fetchFn = fetchFn;
     this.url = url;
+    this.runsUrl = runsUrl;
     this.clientHeaders = clientHeaders;
     this.req = req;
   }
 
-  /**
-   * Abort the in-flight stream. Cancels the fetch request and closes the reader.
-   * The server will detect the disconnect and stop generating.
-   */
+  /** Backward-compatible cancel command. Use detach() to keep a durable run alive. */
   abort(): void {
     this.aborted = true;
+    void this.cancel().catch(() => { /* use cancel() when acknowledgement matters */ });
+  }
+
+  /** Observe transport state without implementing a second SSE parser. */
+  subscribeConnectionState(
+    listener: (state: ChatStreamConnectionState) => void,
+  ): () => void {
+    this.connectionStateListeners.add(listener);
+    return () => { this.connectionStateListeners.delete(listener); };
+  }
+
+  /** Close only this subscriber. A durable run continues server-side. */
+  detach(): void {
+    this.detached = true;
+    this.closeLocalStream();
+  }
+
+  /** Explicitly cancel the underlying run, then close this subscriber. */
+  async cancel(reason?: string): Promise<void> {
+    this.aborted = true;
+    const runId = this.runId;
+    this.closeLocalStream();
+    if (!runId) return;
+    const res = await this.fetchFn(`${this.runsUrl}/${encodeURIComponent(runId)}/cancel`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...authorizationHeader(this.clientHeaders),
+      },
+      body: JSON.stringify(reason ? { reason } : {}),
+    });
+    if (!res.ok) throw await responseError(res, "Run cancellation failed");
+  }
+
+  /** Reattach this stream to its existing run after the last processed cursor. */
+  resume(options: { after?: string } = {}): this {
+    if (!this.runId) {
+      throw new PolpoApiError("Cannot resume before the server returns a run id", "VALIDATION_ERROR", 400);
+    }
+    this.closeLocalStream();
+    this.abortController = new AbortController();
+    this.decoder = new TextDecoder();
+    this.buffer = "";
+    this.reader = null;
+    this.started = false;
+    this.aborted = false;
+    this.detached = false;
+    this.terminal = false;
+    this.resumeMode = true;
+    this.resumeAfter = options.after ?? this.lastEventId ?? undefined;
+    return this;
+  }
+
+  private closeLocalStream(): void {
     this.abortController.abort();
     this.reader?.cancel().catch(() => { /* best effort */ });
   }
@@ -223,98 +291,243 @@ export class ChatCompletionStream implements AsyncIterable<ChatCompletionChunk> 
 
     const headers: Record<string, string> = {
       "Content-Type": "application/json",
+      ...authorizationHeader(this.clientHeaders),
     };
-    if (this.clientHeaders["Authorization"]) {
-      headers["Authorization"] = this.clientHeaders["Authorization"];
+    if (this.resumeMode && this.resumeAfter !== undefined) {
+      headers["Last-Event-ID"] = this.resumeAfter;
     }
     if (this.req.sessionId) {
       headers["x-session-id"] = this.req.sessionId;
     }
     const { sessionId: _, ...body } = this.req;
-    const res = await this.fetchFn(this.url, {
-      method: "POST",
-      headers,
-      body: JSON.stringify({ ...body, stream: true }),
-      signal: this.abortController.signal,
-    });
+    const res = this.resumeMode
+      ? await this.fetchFn(
+          `${this.runsUrl}/${encodeURIComponent(this.runId!)}/events${
+            this.resumeAfter === undefined ? "" : `?cursor=${encodeURIComponent(this.resumeAfter)}`
+          }`,
+          { method: "GET", headers, signal: this.abortController.signal },
+        )
+      : await this.fetchFn(this.url, {
+          method: "POST",
+          headers,
+          body: JSON.stringify({ ...body, stream: true }),
+          signal: this.abortController.signal,
+        });
     if (!res.ok) {
-      const err = await res.json().catch(() => ({ error: { message: res.statusText } }));
-      throw new PolpoApiError(
-        (err as any).error?.message ?? "Chat completions failed",
-        res.status === 401 ? "AUTH_REQUIRED" : "INTERNAL_ERROR",
-        res.status,
-      );
+      throw await responseError(res, this.resumeMode ? "Run resume failed" : "Chat completions failed");
     }
 
     // Capture session ID from response header
-    this.sessionId = res.headers.get("x-session-id");
-    this.runId = res.headers.get("x-polpo-run-id");
+    if (!this.resumeMode) {
+      this.sessionId = res.headers.get("x-session-id");
+      this.runId = res.headers.get("x-polpo-run-id");
+    }
+    this.terminal = res.headers.get("x-polpo-run-terminal") === "true";
 
     this.reader = res.body?.getReader() ?? null;
     if (!this.reader) throw new PolpoApiError("No response body", "INTERNAL_ERROR", 500);
+    this.emitConnectionState("streaming");
   }
 
   async *[Symbol.asyncIterator](): AsyncGenerator<ChatCompletionChunk, void, unknown> {
     await this.ensureStarted();
-    const reader = this.reader!;
-
+    if (this.terminal) return;
+    let reconnectAttempts = 0;
     try {
+    while (!this.aborted && !this.detached) {
+      const reader = this.reader!;
+      let terminal = false;
+      try {
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
 
         this.buffer += this.decoder.decode(value, { stream: true });
-        const lines = this.buffer.split("\n");
-        this.buffer = lines.pop() ?? "";
+        const parsed = extractSseEvents(this.buffer);
+        this.buffer = parsed.remainder;
 
-        for (const line of lines) {
-          const trimmed = line.trim();
-          if (!trimmed || !trimmed.startsWith("data: ")) continue;
-          const data = trimmed.slice(6);
-          if (data === "[DONE]") return;
-          try {
-            const chunk = JSON.parse(data) as ChatCompletionChunk;
-            if (chunk.polpo?.suggestions) {
-              this.suggestions = chunk.polpo.suggestions;
-            }
-            // Capture ask_user payload from the chunk
-            const choice = chunk.choices[0];
-            if (choice?.finish_reason === "ask_user" && choice.ask_user) {
-              this.askUser = choice.ask_user;
-            }
-            // Capture mission_preview payload from the chunk
-            if (choice?.finish_reason === "mission_preview" && choice.mission_preview) {
-              this.missionPreview = choice.mission_preview;
-            }
-            // Capture vault_preview payload from the chunk
-            if (choice?.finish_reason === "vault_preview" && choice.vault_preview) {
-              this.vaultPreview = choice.vault_preview;
-            }
-            // Capture open_file payload from the chunk
-            if (choice?.finish_reason === "open_file" && choice.open_file) {
-              this.openFile = choice.open_file;
-            }
-            // Capture navigate_to payload from the chunk
-            if (choice?.finish_reason === "navigate_to" && choice.navigate_to) {
-              this.navigateTo = choice.navigate_to;
-            }
-            // Capture open_tab payload from the chunk
-            if (choice?.finish_reason === "open_tab" && choice.open_tab) {
-              this.openTab = choice.open_tab;
-            }
-            yield chunk;
-          } catch {
-            // skip malformed chunks
+        for (const event of parsed.events) {
+          if (event.id !== undefined) this.lastEventId = event.id;
+          const projected = projectChatSseData(event.data);
+          if (projected.kind === "ignore") continue;
+          if (projected.kind === "error") {
+            throw new PolpoApiError(projected.message, "INTERNAL_ERROR", 500);
           }
+          if (projected.kind === "done") {
+            terminal = true;
+            return;
+          }
+          let chunk: ChatCompletionChunk;
+          try {
+            chunk = JSON.parse(projected.data) as ChatCompletionChunk;
+          } catch {
+            if (this.isDurable()) {
+              throw new PolpoApiError(
+                "Durable run returned a malformed response chunk",
+                "INTERNAL_ERROR",
+                502,
+              );
+            }
+            continue;
+          }
+          if (chunk.polpo?.suggestions) {
+            this.suggestions = chunk.polpo.suggestions;
+          }
+          // Capture ask_user payload from the chunk
+          const choice = chunk.choices[0];
+          if (choice?.finish_reason === "ask_user" && choice.ask_user) {
+            this.askUser = choice.ask_user;
+          }
+          // Capture mission_preview payload from the chunk
+          if (choice?.finish_reason === "mission_preview" && choice.mission_preview) {
+            this.missionPreview = choice.mission_preview;
+          }
+          // Capture vault_preview payload from the chunk
+          if (choice?.finish_reason === "vault_preview" && choice.vault_preview) {
+            this.vaultPreview = choice.vault_preview;
+          }
+          // Capture open_file payload from the chunk
+          if (choice?.finish_reason === "open_file" && choice.open_file) {
+            this.openFile = choice.open_file;
+          }
+          // Capture navigate_to payload from the chunk
+          if (choice?.finish_reason === "navigate_to" && choice.navigate_to) {
+            this.navigateTo = choice.navigate_to;
+          }
+          // Capture open_tab payload from the chunk
+          if (choice?.finish_reason === "open_tab" && choice.open_tab) {
+            this.openTab = choice.open_tab;
+          }
+          yield chunk;
+          reconnectAttempts = 0;
         }
       }
-    } catch (err) {
-      // Suppress AbortError — this is expected when the user stops the stream
-      if (err instanceof DOMException && err.name === "AbortError") return;
-      if (this.aborted) return;
-      throw err;
+      } catch (err) {
+        if (this.aborted || this.detached) return;
+        if (err instanceof PolpoApiError) throw err;
+        if (!(err instanceof DOMException && err.name === "AbortError") && !this.isDurable()) {
+          throw err;
+        }
+      }
+      if (terminal || this.aborted || this.detached || !this.isDurable() || !this.runId) return;
+      if (reconnectAttempts >= 5) {
+        throw new PolpoApiError("Run stream reconnect limit exceeded", "INTERNAL_ERROR", 503);
+      }
+      reconnectAttempts += 1;
+      this.emitConnectionState("reconnecting");
+      await reconnectDelay(reconnectAttempts, this.abortController.signal);
+      if (this.aborted || this.detached) return;
+      this.resume({ after: this.lastEventId ?? undefined });
+      await this.ensureStarted();
+    }
+    } finally {
+      this.emitConnectionState("closed");
     }
   }
+
+  private isDurable(): boolean {
+    return this.req.polpo?.delivery?.onDisconnect === "continue";
+  }
+
+  private emitConnectionState(state: ChatStreamConnectionState): void {
+    for (const listener of this.connectionStateListeners) listener(state);
+  }
+}
+
+interface ParsedSseEvent { data: string; id?: string; event?: string }
+
+function extractSseEvents(buffer: string): { events: ParsedSseEvent[]; remainder: string } {
+  const separator = /(?:\r\n|\r|\n){2}/g;
+  const blocks: string[] = [];
+  let offset = 0;
+  for (let match = separator.exec(buffer); match; match = separator.exec(buffer)) {
+    blocks.push(buffer.slice(offset, match.index));
+    offset = match.index + match[0].length;
+  }
+  const remainder = buffer.slice(offset);
+  const events: ParsedSseEvent[] = [];
+  for (const block of blocks) {
+    let id: string | undefined;
+    let event: string | undefined;
+    const data: string[] = [];
+    for (const line of block.split(/\r\n|\r|\n/)) {
+      if (line.startsWith(":")) continue;
+      if (line.startsWith("id:")) id = line.slice(3).trimStart();
+      else if (line.startsWith("event:")) event = line.slice(6).trimStart();
+      else if (line.startsWith("data:")) data.push(line.slice(5).trimStart());
+    }
+    if (data.length > 0) events.push({ data: data.join("\n"), ...(id === undefined ? {} : { id }), ...(event === undefined ? {} : { event }) });
+  }
+  return { events, remainder };
+}
+
+type ProjectedChatData =
+  | { kind: "chunk"; data: string }
+  | { kind: "done" }
+  | { kind: "ignore" }
+  | { kind: "error"; message: string };
+
+function projectChatSseData(data: string): ProjectedChatData {
+  if (data === "[DONE]") return { kind: "done" };
+  try {
+    const parsed = JSON.parse(data) as RunStreamEvent | {
+      error?: { message?: unknown };
+    };
+    if ("error" in parsed && parsed.error) {
+      return {
+        kind: "error",
+        message: typeof parsed.error.message === "string"
+          ? parsed.error.message
+          : "Run failed",
+      };
+    }
+    const event = parsed as RunStreamEvent;
+    if (event.schemaVersion !== 1 || typeof event.type !== "string") {
+      return { kind: "chunk", data };
+    }
+    if (event.type === "response.done") return { kind: "done" };
+    if (event.type === "response.chunk" && typeof event.data?.data === "string") {
+      return { kind: "chunk", data: event.data.data };
+    }
+    if (event.type === "run.failed") {
+      return {
+        kind: "error",
+        message: typeof event.data?.message === "string" ? event.data.message : "Run failed",
+      };
+    }
+    if (event.type === "run.cancelled") return { kind: "done" };
+    return { kind: "ignore" };
+  } catch {
+    return { kind: "chunk", data };
+  }
+}
+
+function authorizationHeader(headers: Record<string, string>): Record<string, string> {
+  return headers.Authorization ? { Authorization: headers.Authorization } : {};
+}
+
+async function responseError(response: Response, fallback: string): Promise<PolpoApiError> {
+  const body = await response.json().catch(() => ({ error: { message: response.statusText } }));
+  const message = (body as any).error?.message ?? (body as any).error ?? fallback;
+  return new PolpoApiError(
+    typeof message === "string" ? message : fallback,
+    response.status === 401 ? "AUTH_REQUIRED" : "INTERNAL_ERROR",
+    response.status,
+  );
+}
+
+function reconnectDelay(attempt: number, signal: AbortSignal): Promise<void> {
+  if (signal.aborted) return Promise.resolve();
+  const delay = Math.min(2_000, 100 * 2 ** (attempt - 1));
+  return new Promise((resolve) => {
+    const timer = setTimeout(finish, delay);
+    function finish() {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", finish);
+      resolve();
+    }
+    signal.addEventListener("abort", finish, { once: true });
+  });
 }
 
 function scheduleIdentifier(value: unknown, label = "Schedule id"): string {
@@ -1397,6 +1610,69 @@ export class PolpoClient {
     );
   }
 
+  /** Follow the canonical durable event log for an existing run. */
+  async *streamRunEvents(
+    runId: string,
+    options: RunEventStreamOptions = {},
+  ): AsyncGenerator<RunStreamEvent, void, unknown> {
+    const query = options.after === undefined
+      ? ""
+      : `?cursor=${encodeURIComponent(options.after)}`;
+    const response = await this.fetchFn(
+      `${this.baseUrl}/v1/runs/${encodeURIComponent(runId)}/events${query}`,
+      {
+        method: "GET",
+        headers: {
+          Accept: "text/event-stream",
+          ...authorizationHeader(this.headers),
+          ...(options.after === undefined ? {} : { "Last-Event-ID": options.after }),
+        },
+        signal: options.signal,
+      },
+    );
+    if (!response.ok) throw await responseError(response, "Run event stream failed");
+    const reader = response.body?.getReader();
+    if (!reader) throw new PolpoApiError("No response body", "INTERNAL_ERROR", 500);
+    const decoder = new TextDecoder();
+    let buffer = "";
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const parsed = extractSseEvents(buffer);
+        buffer = parsed.remainder;
+        for (const item of parsed.events) {
+          try {
+            const event = JSON.parse(item.data) as RunStreamEvent;
+            if (event.schemaVersion === 1 && event.runId === runId) yield event;
+          } catch {
+            // Canonical streams ignore malformed transport frames.
+          }
+        }
+      }
+    } finally {
+      reader.releaseLock();
+    }
+  }
+
+  /** Request idempotent cancellation for a durable run. */
+  async cancelRun(runId: string, reason?: string): Promise<CancelRunResult> {
+    const response = await this.fetchFn(
+      `${this.baseUrl}/v1/runs/${encodeURIComponent(runId)}/cancel`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...authorizationHeader(this.headers),
+        },
+        body: JSON.stringify(reason ? { reason } : {}),
+      },
+    );
+    if (!response.ok) throw await responseError(response, "Run cancellation failed");
+    return await response.json() as CancelRunResult;
+  }
+
   // ── Chat Completions (OpenAI-compatible) ─────────────────
 
   /**
@@ -1448,7 +1724,13 @@ export class PolpoClient {
       req.user === undefined && this.defaultUser !== undefined
         ? { ...req, user: this.defaultUser }
         : req;
-    return new ChatCompletionStream(this.fetchFn, url, this.headers, reqWithUser);
+    return new ChatCompletionStream(
+      this.fetchFn,
+      url,
+      `${this.baseUrl}/v1/runs`,
+      this.headers,
+      reqWithUser,
+    );
   }
 
   // ── Sessions ────────────────────────────────────────────

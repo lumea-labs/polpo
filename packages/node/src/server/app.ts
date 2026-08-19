@@ -10,6 +10,7 @@ import {
   type ChannelRuntime,
 } from "@polpo-ai/channels";
 import { join } from "node:path";
+import { randomUUID } from "node:crypto";
 import { projectLoopConfigSchema } from "@polpo-ai/core/schemas";
 import { resolveConfiguredModelSelection } from "@polpo-ai/core";
 import { buildSystemPrompt } from "../adapters/spawn-helpers.js";
@@ -38,6 +39,7 @@ import {
   configRoutes,
   customToolRoutes,
   brainRoutes,
+  runDeliveryRoutes,
   runSteeringRoutes,
   conversationChannelRoutes,
   type CompletionRuntimeGuardrailsResolver,
@@ -64,6 +66,9 @@ import type {
   BrainManagementService,
   BrainServiceContext,
 } from "@polpo-ai/core/brain";
+import {
+  InMemoryRunEventNotifier,
+} from "@polpo-ai/core/run-delivery-follower";
 import {
   InMemorySteeringController,
   InMemorySteeringRunRegistry,
@@ -126,6 +131,9 @@ export interface AppOptions {
 export function createApp(orchestrator: Orchestrator, sseBridge: SSEBridge, opts?: AppOptions): OpenAPIHono {
   const app = new OpenAPIHono();
   const steeringRegistry = new InMemorySteeringRunRegistry();
+  const runEventNotifier = new InMemoryRunEventNotifier();
+  const durableRunOwner = `node-${process.pid}-${randomUUID()}`;
+  const knownDurableRuns = new Set<string>();
   const localBrain = !opts?.brain && opts?.workDir
     ? createLocalBrainRuntime({
         workDir: opts.workDir,
@@ -164,7 +172,7 @@ export function createApp(orchestrator: Orchestrator, sseBridge: SSEBridge, opts
   app.use("/api/*", rateLimitMiddleware());
   app.use("/v1/*", rateLimitMiddleware());
 
-  const corsExposeHeaders = ["x-session-id", "x-polpo-run-id"];
+  const corsExposeHeaders = ["x-session-id", "x-polpo-run-id", "x-polpo-run-terminal"];
   if (opts?.corsOrigins && opts.corsOrigins.length > 0) {
     app.use("*", cors({ origin: opts.corsOrigins, exposeHeaders: corsExposeHeaders }));
   } else {
@@ -229,6 +237,18 @@ export function createApp(orchestrator: Orchestrator, sseBridge: SSEBridge, opts
     getMemoryStore: () => o.getMemoryStore(),
     getSessionStore: () => o.getSessionStore(),
     getStore: () => o.getStore(),
+    createRunDeliveryScope: ({ runId }) => {
+      knownDurableRuns.add(runId);
+      const stores = o.getRunDeliveryStores();
+      return {
+        eventStore: stores.eventStore,
+        leaseStore: stores.leaseStore,
+        cancellationStore: stores.cancellationStore,
+        notifier: runEventNotifier,
+        owner: durableRunOwner,
+        token: randomUUID(),
+      };
+    },
     runToolMiddleware: opts?.runToolMiddleware
       ?? createConfiguredRunToolMiddleware(o.getConfig()?.settings?.guardrails),
     runOutputPolicy: opts?.runOutputPolicy
@@ -413,6 +433,22 @@ export function createApp(orchestrator: Orchestrator, sseBridge: SSEBridge, opts
         },
       );
       return { status: outcome.status, result: outcome.result };
+    },
+  }), opts?.apiKeys));
+
+  app.route("/v1/runs", runDeliveryRoutes(() => ({
+    resolveRunDelivery: async (runId) => {
+      const stores = o.getRunDeliveryStores();
+      const bounds = await stores.eventStore.bounds(runId);
+      if (bounds) knownDurableRuns.delete(runId);
+      if (!knownDurableRuns.has(runId) && !bounds) {
+        return null;
+      }
+      return {
+        eventStore: stores.eventStore,
+        cancellationStore: stores.cancellationStore,
+        notifier: runEventNotifier,
+      };
     },
   }), opts?.apiKeys));
 

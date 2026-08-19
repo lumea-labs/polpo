@@ -225,4 +225,45 @@ describe("useChat interactions", () => {
     expect(result.current.messages).toEqual([]);
     expect(result.current.suggestions).toEqual([]);
   });
+
+  it("opts into durable delivery and detaches without cancelling the run", async () => {
+    let finish!: () => void;
+    const finished = new Promise<void>((resolve) => { finish = resolve; });
+    const detach = vi.fn(() => finish());
+    const abort = vi.fn();
+    const cancel = vi.fn().mockResolvedValue(undefined);
+    const stream = {
+      runId: "run-1",
+      lastEventId: "4",
+      sessionId: null,
+      detach,
+      abort,
+      cancel,
+      subscribeConnectionState: vi.fn(() => () => {}),
+      async *[Symbol.asyncIterator]() {
+        await finished;
+      },
+    };
+    const chatCompletionsStream = vi.fn().mockReturnValue(stream);
+    const client = createMockClient({ chatCompletionsStream });
+    const wrapper = createWrapper(client, createMockStore());
+    const { result } = renderHook(() => useChat({ durable: true }), { wrapper });
+
+    let pending!: Promise<void>;
+    act(() => {
+      pending = result.current.sendMessage("Keep working");
+    });
+    await waitFor(() => expect(chatCompletionsStream).toHaveBeenCalledOnce());
+    act(() => result.current.detach());
+    await act(async () => pending);
+
+    expect(chatCompletionsStream).toHaveBeenCalledWith(expect.objectContaining({
+      polpo: expect.objectContaining({ delivery: { onDisconnect: "continue" } }),
+    }));
+    expect(detach).toHaveBeenCalledOnce();
+    expect(abort).not.toHaveBeenCalled();
+    expect(cancel).not.toHaveBeenCalled();
+    expect(result.current.runId).toBe("run-1");
+    expect(result.current.lastEventId).toBe("4");
+  });
 });

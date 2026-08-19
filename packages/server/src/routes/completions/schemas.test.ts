@@ -219,3 +219,26 @@ describe("completion request skill activation", () => {
     expect(completionRequestSchema.safeParse({ ...request, polpo }).success).toBe(false);
   });
 });
+
+describe("completion request durable delivery", () => {
+  it("accepts an explicit continue-on-disconnect policy", () => {
+    expect(completionRequestSchema.parse({
+      ...request,
+      stream: true,
+      polpo: { delivery: { onDisconnect: "continue" } },
+    }).polpo?.delivery).toEqual({ onDisconnect: "continue" });
+  });
+
+  it("keeps delivery omitted for backward-compatible cancellation semantics", () => {
+    expect(completionRequestSchema.parse(request).polpo?.delivery).toBeUndefined();
+  });
+
+  it.each([
+    { delivery: { onDisconnect: "detach" } },
+    { delivery: { onDisconnect: true } },
+    { delivery: { onDisconnect: "continue", unknown: true } },
+    { delivery: "continue" },
+  ])("rejects malformed delivery policy %#", (polpo) => {
+    expect(completionRequestSchema.safeParse({ ...request, polpo }).success).toBe(false);
+  });
+});

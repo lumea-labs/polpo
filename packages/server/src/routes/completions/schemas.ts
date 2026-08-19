@@ -151,6 +151,12 @@ export const completionRequestSchema = z.object({
       ask_user_question: z.boolean().optional(),
       suggestions: z.boolean().optional(),
     }).strict().optional(),
+    delivery: z.object({
+      onDisconnect: z.enum(["cancel", "continue"]),
+    }).strict().optional().openapi({
+      description:
+        "Control whether a streaming run is cancelled or continues when the client disconnects. Omitted preserves cancel-on-disconnect behavior.",
+    }),
   }).strict().optional().openapi({
     description:
       "Polpo client capabilities. Suggestions require explicit support; ask_user_question may be explicitly disabled by clients that cannot render it.",

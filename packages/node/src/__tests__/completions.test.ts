@@ -19,6 +19,7 @@ import { describe, test, expect, beforeAll, afterAll, vi, type Mock } from "vite
 import { mkdtemp, writeFile, mkdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { AddressInfo } from "node:net";
 import type { Orchestrator } from "../core/orchestrator.js";
 import {
   RuntimeGuardrailEngine,
@@ -30,6 +31,7 @@ import {
   mockToolCallModel,
   mockTurnSequenceModel,
   mockResolvedModel,
+  mockTextGenerateResult,
   type MockResponse,
 } from "./helpers/mock-llm.js";
 
@@ -258,6 +260,121 @@ describe("POST /v1/chat/completions", () => {
   });
 
   describe("streaming", () => {
+    test("continues after the initial SSE subscriber disconnects and replays the terminal run", async () => {
+      let releaseModel!: () => void;
+      const modelGate = new Promise<void>((resolve) => { releaseModel = resolve; });
+      setMockModel(new MockLanguageModelV3({
+        doGenerate: mockTextGenerateResult("before after"),
+        doStream: async () => ({
+          stream: new ReadableStream({
+            start(controller) {
+              controller.enqueue({ type: "stream-start", warnings: [] });
+              controller.enqueue({ type: "text-start", id: "durable-text" });
+              controller.enqueue({ type: "text-delta", id: "durable-text", delta: "before " });
+              void modelGate.then(() => {
+                controller.enqueue({ type: "text-delta", id: "durable-text", delta: "after" });
+                controller.enqueue({ type: "text-end", id: "durable-text" });
+                controller.enqueue({
+                  type: "finish",
+                  finishReason: { unified: "stop", raw: undefined },
+                  usage: {
+                    inputTokens: { total: 10 },
+                    outputTokens: { total: 2 },
+                  },
+                });
+                controller.close();
+              });
+            },
+          }),
+        }),
+      }));
+
+      const res = await postCompletions({
+        messages: [{ role: "user", content: "continue after disconnect" }],
+        stream: true,
+        polpo: { delivery: { onDisconnect: "continue" } },
+      });
+      const runId = res.headers.get("x-polpo-run-id");
+      expect(res.status).toBe(200);
+      expect(runId).toMatch(/^chatcmpl-/);
+      const reader = res.body!.getReader();
+      const first = await reader.read();
+      expect(new TextDecoder().decode(first.value)).toContain("data:");
+      await reader.cancel();
+
+      releaseModel();
+      const replay = await app.request(`/v1/runs/${runId}/events`);
+      expect(replay.status).toBe(200);
+      const replayBody = await replay.text();
+      expect(replayBody).toContain("after");
+      expect(replayBody).toContain('"type":"run.completed"');
+    });
+
+    test("survives a real TCP subscriber disconnect and resumes over HTTP", async () => {
+      const { serve } = await import("@hono/node-server");
+      let releaseModel!: () => void;
+      const modelGate = new Promise<void>((resolve) => { releaseModel = resolve; });
+      setMockModel(new MockLanguageModelV3({
+        doGenerate: mockTextGenerateResult("network suffix"),
+        doStream: async () => ({
+          stream: new ReadableStream({
+            start(controller) {
+              controller.enqueue({ type: "stream-start", warnings: [] });
+              controller.enqueue({ type: "text-start", id: "network-text" });
+              controller.enqueue({ type: "text-delta", id: "network-text", delta: "network " });
+              void modelGate.then(() => {
+                controller.enqueue({ type: "text-delta", id: "network-text", delta: "suffix" });
+                controller.enqueue({ type: "text-end", id: "network-text" });
+                controller.enqueue({
+                  type: "finish",
+                  finishReason: { unified: "stop", raw: undefined },
+                  usage: {
+                    inputTokens: { total: 4 },
+                    outputTokens: { total: 2 },
+                  },
+                });
+                controller.close();
+              });
+            },
+          }),
+        }),
+      }));
+      let server!: ReturnType<typeof serve>;
+      const port = await new Promise<number>((resolve) => {
+        server = serve({ fetch: app.fetch, port: 0 }, (info: AddressInfo) => resolve(info.port));
+      });
+
+      try {
+        const response = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            agent: "agent-1",
+            messages: [{ role: "user", content: "network disconnect" }],
+            stream: true,
+            polpo: { delivery: { onDisconnect: "continue" } },
+          }),
+        });
+        const runId = response.headers.get("x-polpo-run-id");
+        expect(runId).toMatch(/^chatcmpl-/);
+        const reader = response.body!.getReader();
+        expect((await reader.read()).done).toBe(false);
+        await reader.cancel();
+
+        releaseModel();
+        const replay = await fetch(
+          `http://127.0.0.1:${port}/v1/runs/${encodeURIComponent(runId!)}/events`,
+        );
+        const replayBody = await replay.text();
+        expect(replay.status).toBe(200);
+        expect(replayBody).toContain("suffix");
+        expect(replayBody).toContain('"type":"run.completed"');
+      } finally {
+        releaseModel?.();
+        server.close();
+      }
+    });
+
     test("returns SSE stream with text deltas and [DONE]", async () => {
       setMockModel(mockTextModel("Streamed response!"));
 

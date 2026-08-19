@@ -36,6 +36,7 @@ Polpo is an open-source runtime for building, running, and managing AI agents. I
 - **Completions** -- OpenAI-compatible `/v1/chat/completions` endpoint
 - **Loops** -- beta project-level deterministic graphs assigned to agents
 - **Real-time** -- SSE event streaming for live agent activity
+- **Durable delivery** -- opt-in completion replay and reconnect after SSE loss
 - **Storage** -- file (default), SQLite, or PostgreSQL via Drizzle
 - **Assessment** -- built-in quality scoring with LLM review
 - **Skills** -- reusable agent capabilities loaded from YAML playbooks

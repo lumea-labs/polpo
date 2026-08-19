@@ -20,7 +20,10 @@ import { streamSSE } from "hono/streaming";
 import type { ChatSessionInjection } from "@polpo-ai/core";
 import type { ChatSuggestion } from "@polpo-ai/core/chat-interactions";
 import type { SteeringController } from "@polpo-ai/core/steering";
-import type { ChatCompletionExecution } from "./chat-handler.js";
+import type {
+  ChatCompletionExecution,
+  CompletionSseWriter,
+} from "./chat-handler.js";
 import { agentConfigForModelAttempt, completionResolvedModelInfo, MAX_TURNS } from "./agent-step-runner.js";
 import {
   completionResponse,
@@ -334,17 +337,32 @@ async function finishCommon(
 
 /** Streaming chat completion via executeRun. */
 export async function streamChatViaRun(c: Context, execution: ChatCompletionExecution) {
-  const { deps, body, completionId, m, sessionStore, sessionId } = execution;
-  const inject = buildChatRunInjection(execution);
-  const steeringScope = await createRunSteeringScope(execution);
-
   return streamSSE(c, async (stream) => {
     const abortController = new AbortController();
     stream.onAbort(() => abortController.abort());
     const heartbeat = setInterval(() => {
-      if (abortController.signal.aborted) { clearInterval(heartbeat); return; }
+      if (abortController.signal.aborted) {
+        clearInterval(heartbeat);
+        return;
+      }
       stream.write(": ping\n\n").catch(() => clearInterval(heartbeat));
     }, 20_000);
+    try {
+      await executeStreamingChatViaRun(stream, execution, abortController.signal);
+    } finally {
+      clearInterval(heartbeat);
+    }
+  });
+}
+
+export async function executeStreamingChatViaRun(
+  stream: CompletionSseWriter,
+  execution: ChatCompletionExecution,
+  signal: AbortSignal,
+): Promise<void> {
+  const { deps, body, completionId, m, sessionStore, sessionId } = execution;
+  const inject = buildChatRunInjection(execution);
+  const steeringScope = await createRunSteeringScope(execution);
 
     let assistantMsgId: string | null = null;
     const state = newState();
@@ -352,7 +370,11 @@ export async function streamChatViaRun(c: Context, execution: ChatCompletionExec
     const structuredResponse = isStructuredResponseFormat(body.response_format);
     let suggestions: ChatSuggestion[] = [];
     let writeChain: Promise<void> = Promise.resolve();
-    const write = (data: string) => { writeChain = writeChain.then(() => stream.writeSSE({ data })).catch(() => {}); };
+    const write = (data: string) => {
+      writeChain = writeChain
+        .then(async () => { await stream.writeSSE({ data }); })
+        .catch(() => {});
+    };
     const onEvent = makeOnEvent(
       execution,
       state,
@@ -369,14 +391,14 @@ export async function streamChatViaRun(c: Context, execution: ChatCompletionExec
 
       const outcome = await deps.runChatViaRun!(inject, {
         onEvent,
-        signal: abortController.signal,
+        signal,
         runId: completionId,
         steering: steeringScope.steering,
       });
       captureRunFailure(state, outcome);
       await writeChain;
 
-      if (state.errorEvent && !abortController.signal.aborted) {
+      if (state.errorEvent && !signal.aborted) {
         const structuredOutput = structuredOutputErrorEnvelope(state.errorEvent, structuredResponse);
         const guardrail = guardrailErrorEnvelope(state.errorEvent);
         const notFound = modelNotFoundEnvelope(state.errorEvent, m?.id, body.agent);
@@ -395,7 +417,7 @@ export async function streamChatViaRun(c: Context, execution: ChatCompletionExec
           execution,
           state,
           outputMode === "buffer" ? "enforce" : "audit",
-          abortController.signal,
+          signal,
           false,
         );
         if ((outputMode === "buffer" || structuredResponse) && state.finalText) {
@@ -404,12 +426,12 @@ export async function streamChatViaRun(c: Context, execution: ChatCompletionExec
         state.toolCallsAccum.push({ id: state.clientReturn.id, name: state.clientReturn.name, arguments: state.clientReturn.arguments, state: "interrupted" });
         await stream.writeSSE({ data: clientToolFinishChunk(completionId, state.clientReturn) });
         await stream.writeSSE({ data: "[DONE]" });
-      } else if (!abortController.signal.aborted) {
+      } else if (!signal.aborted) {
         await applyStateOutputPolicy(
           execution,
           state,
           outputMode === "buffer" ? "enforce" : "audit",
-          abortController.signal,
+          signal,
         );
         if ((outputMode === "buffer" || structuredResponse) && state.finalText) {
           await stream.writeSSE({ data: sseChunk(completionId, { content: state.finalText }) });
@@ -417,7 +439,7 @@ export async function streamChatViaRun(c: Context, execution: ChatCompletionExec
         suggestions = await suggestionsForCompletion(
           execution,
           state.finalText,
-          abortController.signal,
+          signal,
         );
         if (suggestions.length > 0) {
           await stream.writeSSE({
@@ -428,7 +450,7 @@ export async function streamChatViaRun(c: Context, execution: ChatCompletionExec
         await stream.writeSSE({ data: "[DONE]" });
       }
     } catch (err) {
-      if (!((err instanceof DOMException && err.name === "AbortError") || abortController.signal.aborted)) {
+      if (!((err instanceof DOMException && err.name === "AbortError") || signal.aborted)) {
         const structuredOutput = structuredOutputErrorEnvelope(err, structuredResponse);
         const guardrail = guardrailErrorEnvelope(err);
         const notFound = modelNotFoundEnvelope(err, m?.id, body.agent);
@@ -453,7 +475,6 @@ export async function streamChatViaRun(c: Context, execution: ChatCompletionExec
         }
       }
     } finally {
-      clearInterval(heartbeat);
       try {
         await finishCommon(
           execution,
@@ -465,7 +486,6 @@ export async function streamChatViaRun(c: Context, execution: ChatCompletionExec
         await steeringScope.release();
       }
     }
-  });
 }
 
 /** Non-streaming chat completion via executeRun. */

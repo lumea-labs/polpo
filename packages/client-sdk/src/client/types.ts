@@ -1250,8 +1250,34 @@ export interface ChatCompletionRequest extends RuntimeCompletionRequestOptions {
       ask_user_question?: boolean;
       suggestions?: boolean;
     };
+    /** Delivery lifecycle for streaming completions. Omitted keeps attached cancellation. */
+    delivery?: {
+      onDisconnect: "cancel" | "continue";
+    };
   };
 }
+
+export interface RunStreamEvent<TData extends Record<string, unknown> = Record<string, unknown>> {
+  id: string;
+  runId: string;
+  sequence: number;
+  schemaVersion: 1;
+  type: string;
+  data: TData;
+  createdAt: string;
+}
+
+export interface RunEventStreamOptions {
+  after?: string;
+  signal?: AbortSignal;
+}
+
+export interface CancelRunResult {
+  ok: true;
+  data: { runId: string; accepted: boolean };
+}
+
+export type ChatStreamConnectionState = "streaming" | "reconnecting" | "closed";
 
 /** A user-selectable next message. Intentionally presentation-agnostic. */
 export interface ChatSuggestion {

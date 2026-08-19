@@ -21,6 +21,10 @@ const DATABASE_URL = process.env.TEST_DATABASE_URL ?? "postgresql://postgres:pos
 
 // All tables managed by ensurePgSchema, in safe truncation order (children before parents)
 const ALL_TABLES = [
+  "run_stream_events",
+  "run_event_sequences",
+  "run_execution_leases",
+  "run_cancellation_requests",
   "conversation_channel_routes",
   "conversation_channels",
   "log_entries",
@@ -107,6 +111,21 @@ describe.skipIf(!canConnect)("PostgreSQL Drizzle stores", () => {
     const present = new Set(list.map((r: any) => r.column_name));
     for (const col of getTableConfig(tasksPg).columns.map((c) => c.name)) {
       expect(present.has(col), `migrate.ts missing tasks column: ${col}`).toBe(true);
+    }
+  });
+
+  it("ensurePgSchema provisions durable run event and lease tables", async () => {
+    const expected = [
+      "run_event_sequences",
+      "run_stream_events",
+      "run_execution_leases",
+      "run_cancellation_requests",
+    ];
+    for (const table of expected) {
+      const rows: any[] = await db.execute(sql.raw(
+        `SELECT to_regclass('public.${table}') AS name`,
+      ));
+      expect(rows[0]?.name, `migrate.ts missing table: ${table}`).toBe(table);
     }
   });
 

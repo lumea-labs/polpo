@@ -22,6 +22,8 @@ import { ensurePgTables, ensurePgIndexes } from "./migrate.js";
 import {
   tasksPg, missionsPg, metadataPg, processesPg,
   runsPg, loopRunsPg,
+  runEventSequencesPg, runStreamEventsPg, runExecutionLeasesPg,
+  runCancellationRequestsPg,
   sessionsPg, messagesPg,
   logSessionsPg, logEntriesPg,
   modelInvocationLogsPg,
@@ -34,6 +36,8 @@ import {
 const PG_TABLES = [
   tasksPg, missionsPg, metadataPg, processesPg,
   runsPg, loopRunsPg,
+  runEventSequencesPg, runStreamEventsPg, runExecutionLeasesPg,
+  runCancellationRequestsPg,
   sessionsPg, messagesPg,
   logSessionsPg, logEntriesPg,
   modelInvocationLogsPg,

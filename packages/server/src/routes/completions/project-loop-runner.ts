@@ -61,6 +61,7 @@ import {
   applyCompletionOutputPolicy,
   streamingOutputPolicyMode,
 } from "./output-guardrails.js";
+import type { CompletionSseWriter } from "./chat-handler.js";
 
 export interface ProjectLoopRunResult {
   text: string;
@@ -800,7 +801,7 @@ export async function resumeProjectLoopRun(options: {
  * pipeline and adapts it to the OpenAI response surface (SSE stream with
  * tool_call / loop_trace chunks, or a single JSON body).
  */
-export async function handleProjectLoopCompletion(c: any, options: {
+export interface ProjectLoopCompletionOptions {
   deps: CompletionRouteDeps;
   body: {
     stream?: boolean;
@@ -821,7 +822,46 @@ export async function handleProjectLoopCompletion(c: any, options: {
   runtimePlan?: RuntimePlan;
   executionRoute?: ResolvedExecutionRoute;
   activatedSkills?: readonly string[];
-}): Promise<any> {
+}
+
+export async function handleProjectLoopCompletion(
+  c: any,
+  options: ProjectLoopCompletionOptions,
+): Promise<any> {
+  if (options.body.stream) {
+    return streamSSE(c, async (stream) => {
+      const abortController = new AbortController();
+      stream.onAbort(() => { abortController.abort(); });
+      const heartbeatInterval = setInterval(() => {
+        if (abortController.signal.aborted) {
+          clearInterval(heartbeatInterval);
+          return;
+        }
+        stream.write(": ping\n\n").catch(() => {
+          clearInterval(heartbeatInterval);
+        });
+      }, 20_000);
+      try {
+        await executeStreamingProjectLoopCompletion(
+          stream,
+          options,
+          abortController.signal,
+        );
+      } finally {
+        clearInterval(heartbeatInterval);
+      }
+    }) as any;
+  }
+
+  return runNonStreamingProjectLoopCompletion(c, options);
+}
+
+/** Transport-independent loop producer used by attached and durable followers. */
+export async function executeStreamingProjectLoopCompletion(
+  stream: CompletionSseWriter,
+  options: ProjectLoopCompletionOptions,
+  signal: AbortSignal,
+): Promise<void> {
   const {
     deps,
     body,
@@ -841,20 +881,6 @@ export async function handleProjectLoopCompletion(c: any, options: {
   const contextTrust = normalizeRuntimeContextTrustMode(
     options.contextTrust ?? deps.getConfig()?.settings?.contextTrust,
   );
-
-  if (body.stream) {
-    return streamSSE(c, async (stream) => {
-      const abortController = new AbortController();
-      stream.onAbort(() => { abortController.abort(); });
-      const heartbeatInterval = setInterval(() => {
-        if (abortController.signal.aborted) {
-          clearInterval(heartbeatInterval);
-          return;
-        }
-        stream.write(": ping\n\n").catch(() => {
-          clearInterval(heartbeatInterval);
-        });
-      }, 20_000);
 
       let assistantMsgId: string | null = null;
       let finalText = "";
@@ -888,17 +914,17 @@ export async function handleProjectLoopCompletion(c: any, options: {
           user: body.user,
           requestMetadata: body.metadata,
           runtimePlan,
-          signal: abortController.signal,
+          signal,
           executionRoute,
           activatedSkills,
           onToolCall: async (toolCall) => {
-            if (abortController.signal.aborted) return;
+            if (signal.aborted) return;
             await stream.writeSSE({
               data: sseChunk(completionId, {}, null, { tool_call: toolCall }),
             });
           },
           onTrace: async (event) => {
-            if (abortController.signal.aborted) return;
+            if (signal.aborted) return;
             await stream.writeSSE({
               data: sseChunk(completionId, {}, null, { loop_trace: event }),
             });
@@ -918,18 +944,18 @@ export async function handleProjectLoopCompletion(c: any, options: {
           agent: body.agent,
           runId: run.loopRunId,
           sessionId,
-          signal: abortController.signal,
+          signal,
         });
 
-        if (!abortController.signal.aborted && finalText) {
+        if (!signal.aborted && finalText) {
           await stream.writeSSE({ data: sseChunk(completionId, { content: finalText }) });
         }
-        if (!abortController.signal.aborted) {
+        if (!signal.aborted) {
           await stream.writeSSE({ data: sseChunk(completionId, {}, "stop", { loop_run_id: run.loopRunId }) });
           await stream.writeSSE({ data: "[DONE]" });
         }
       } catch (err) {
-        if ((err instanceof DOMException && err.name === "AbortError") || abortController.signal.aborted) {
+        if ((err instanceof DOMException && err.name === "AbortError") || signal.aborted) {
           return;
         }
         const guardrailError = guardrailErrorEnvelope(err);
@@ -953,7 +979,6 @@ export async function handleProjectLoopCompletion(c: any, options: {
         }
         throw err;
       } finally {
-        clearInterval(heartbeatInterval);
         await persistAssistantMessage(sessionStore, sessionId, assistantMsgId, finalText, toolCalls);
         try {
           deps.onCompletionFinished?.({
@@ -967,9 +992,31 @@ export async function handleProjectLoopCompletion(c: any, options: {
           });
         } catch { /* never fail on callback */ }
       }
-    }) as any;
-  }
+}
 
+async function runNonStreamingProjectLoopCompletion(
+  c: any,
+  options: ProjectLoopCompletionOptions,
+): Promise<any> {
+  const {
+    deps,
+    body,
+    completionId,
+    agentConfig,
+    projectLoop,
+    aiMessages,
+    extraSystemParts,
+    runtimeContext,
+    runtimeInvocation,
+    sessionStore,
+    sessionId,
+    runtimePlan,
+    executionRoute,
+    activatedSkills,
+  } = options;
+  const contextTrust = normalizeRuntimeContextTrustMode(
+    options.contextTrust ?? deps.getConfig()?.settings?.contextTrust,
+  );
   let assistantMsgId: string | null = null;
   let runUsage: LanguageModelUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 } as LanguageModelUsage;
   let runModel = agentConfigForModelPrimary(

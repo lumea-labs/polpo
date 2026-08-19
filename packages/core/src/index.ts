@@ -116,6 +116,11 @@ export * from "./execution-router.js";
 // ── Run steering (provider-neutral queue, checkpoints, and abort) ────────
 export * from "./steering.js";
 
+// ── Durable Run delivery (disconnect policy, cursors, and event store) ───
+export * from "./run-delivery.js";
+export * from "./run-delivery-follower.js";
+export * from "./run-delivery-owner.js";
+
 // ── Chat interaction capabilities and suggestions ─────────────────────
 export * from "./chat-interactions.js";
 
