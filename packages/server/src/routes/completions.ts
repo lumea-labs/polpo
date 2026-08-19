@@ -396,6 +396,8 @@ export interface CompletionRuntimeInvocation {
   readonly user?: string;
   /** Host-resolved metadata. Overrides request body metadata when set. */
   readonly metadata?: Readonly<Record<string, ToolInvocationJsonValue>>;
+  /** Host-resolved application partition. It cannot be supplied by model input. */
+  readonly scope?: Readonly<{ key: string; version?: string }>;
 }
 
 export function completionRoutes(getDeps: () => CompletionRouteDeps, apiKeys?: string[]): OpenAPIHono {

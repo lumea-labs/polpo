@@ -11,6 +11,13 @@ export type ToolInvocationSurface =
   | "schedule"
   | "channel";
 
+export interface ToolInvocationScope {
+  /** Host-owned partition key, such as an application workspace id. */
+  readonly key: string;
+  /** Optional host-owned epoch that rotates the partition without changing its key. */
+  readonly version?: string;
+}
+
 const TOOL_INVOCATION_SURFACES = new Set<ToolInvocationSurface>([
   "chat",
   "task",
@@ -26,6 +33,7 @@ export interface ToolInvocationContext {
   readonly sessionId?: string;
   readonly user?: string;
   readonly metadata: Readonly<Record<string, ToolInvocationJsonValue>>;
+  readonly scope?: ToolInvocationScope;
   readonly surface: ToolInvocationSurface;
 }
 
@@ -35,8 +43,12 @@ export interface ToolInvocationContextInput {
   sessionId?: string;
   user?: string;
   metadata?: Record<string, ToolInvocationJsonValue>;
+  scope?: ToolInvocationScope;
   surface: ToolInvocationSurface;
 }
+
+const MAX_SCOPE_KEY_LENGTH = 512;
+const MAX_SCOPE_VERSION_LENGTH = 128;
 
 function cloneInvocationJson(
   value: ToolInvocationJsonValue,
@@ -89,6 +101,44 @@ function requiredInvocationId(name: string, value: string): string {
   return normalized;
 }
 
+function scopedText(name: string, value: unknown, maxLength: number): string {
+  if (typeof value !== "string") {
+    throw new TypeError(`Tool invocation scope ${name} must be a string`);
+  }
+  const normalized = value.trim();
+  if (!normalized || normalized.length > maxLength) {
+    throw new TypeError(
+      `Tool invocation scope ${name} must contain between 1 and ${maxLength} characters`,
+    );
+  }
+  return normalized;
+}
+
+function normalizeInvocationScope(
+  value: ToolInvocationScope | undefined,
+): ToolInvocationScope | undefined {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new TypeError("Tool invocation scope must be an object");
+  }
+  const keys = Object.keys(value);
+  if (keys.some((key) => key !== "key" && key !== "version")) {
+    throw new TypeError("Tool invocation scope contains unsupported fields");
+  }
+  return Object.freeze({
+    key: scopedText("key", value.key, MAX_SCOPE_KEY_LENGTH),
+    ...(value.version === undefined
+      ? {}
+      : {
+          version: scopedText(
+            "version",
+            value.version,
+            MAX_SCOPE_VERSION_LENGTH,
+          ),
+        }),
+  });
+}
+
 /** Copy and deeply freeze host data before it crosses into tool code. */
 export function createToolInvocationContext(
   input: ToolInvocationContextInput,
@@ -101,6 +151,7 @@ export function createToolInvocationContext(
     new WeakSet(),
     "invocation.metadata",
   ) as Readonly<Record<string, ToolInvocationJsonValue>>;
+  const scope = normalizeInvocationScope(input.scope);
   return Object.freeze({
     requestId: requiredInvocationId("requestId", input.requestId),
     runId: requiredInvocationId("runId", input.runId),
@@ -109,6 +160,7 @@ export function createToolInvocationContext(
       : {}),
     ...(input.user ? { user: requiredInvocationId("user", input.user) } : {}),
     metadata,
+    ...(scope ? { scope } : {}),
     surface: input.surface,
   });
 }

@@ -478,6 +478,7 @@ export { createToolInvocationContext } from "./tool-invocation.js";
 export type {
   ToolInvocationContext,
   ToolInvocationContextInput,
+  ToolInvocationScope,
   ToolInvocationJsonPrimitive,
   ToolInvocationJsonValue,
   ToolInvocationSurface,

@@ -54,6 +54,7 @@ export {
   type ChannelTurnCoordinator,
   type ChannelTurnResult,
   type ChannelWebhookOptions,
+  type ChannelWhatsAppTemplate,
   type ChannelSlashCommandEvent,
   type DiscordChannelInstallation,
   type SlackChannelInstallation,

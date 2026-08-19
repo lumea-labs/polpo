@@ -14,6 +14,7 @@ import type {
   ConversationChannelRoute,
   ConversationChannelSettingsPatch,
   RedactedChannelConnection,
+  SendConversationChannelTemplateInput,
   SecureChannelSetupAction,
   TestConversationChannelInput,
   UpdateConversationChannelInput,
@@ -417,6 +418,56 @@ export class ChannelManagementService {
       ? undefined
       : assertIdentifier(input.recipient, "recipient", 512);
     return this.options.providerAutomation.test({ scope, channel, connection, recipient });
+  }
+
+  async sendTemplate(
+    scope: ChannelManagementScope,
+    channelId: string,
+    input: SendConversationChannelTemplateInput,
+  ): Promise<{ messageId?: string; success: boolean }> {
+    const channel = await this.get(scope, channelId);
+    if (channel.provider !== "whatsapp") {
+      throw new ChannelManagementError(
+        "PROVIDER_UNSUPPORTED",
+        "Template delivery is only available for WhatsApp Channels",
+        400,
+      );
+    }
+    if (channel.status !== "active") {
+      throw new ChannelManagementError("CHANNEL_INACTIVE", "Channel is not active", 409);
+    }
+    if (!this.options.providerAutomation.sendTemplate) {
+      throw new ChannelManagementError(
+        "TEMPLATE_DELIVERY_UNAVAILABLE",
+        "WhatsApp template delivery is not configured",
+        501,
+      );
+    }
+    const inspectedConnection = await this.options.connectionResolver.inspect(
+      scope,
+      channel.connectionId,
+    );
+    if (!inspectedConnection) {
+      throw new ChannelManagementError("CONNECTION_INACTIVE", "Connection is not active", 409);
+    }
+    const connection = assertRedactedConnection(inspectedConnection);
+    if (connection.status !== "active") {
+      throw new ChannelManagementError("CONNECTION_INACTIVE", "Connection is not active", 409);
+    }
+    return this.options.providerAutomation.sendTemplate({
+      scope,
+      channel,
+      connection,
+      recipient: assertIdentifier(input.recipient, "recipient", 100),
+      idempotencyKey: assertIdentifier(input.idempotencyKey, "idempotencyKey", 512),
+      template: {
+        name: assertIdentifier(input.template.name, "template.name", 512),
+        language: assertIdentifier(input.template.language, "template.language", 35),
+        ...(input.template.components
+          ? { components: structuredClone(input.template.components) }
+          : {}),
+      },
+    });
   }
 
   setupStatus(scope: ChannelManagementScope, setupId: string): Promise<ChannelProvisioningResult> {

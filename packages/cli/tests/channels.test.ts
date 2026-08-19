@@ -3,10 +3,11 @@ import { Command } from "commander";
 import {
   channelDataFrom,
   channelSettingsFromOptions,
+  channelTemplateBody,
   channelTestBody,
   conversationChannelPath,
   registerChannelsCommand,
-} from "./channels.js";
+} from "../src/commands/cloud/channels.js";
 
 describe("Channels CLI", () => {
   it("encodes every resource path segment", () => {
@@ -60,6 +61,32 @@ describe("Channels CLI", () => {
     expect(channelTestBody("   ")).toBeUndefined();
   });
 
+  it("builds an explicit retry-safe WhatsApp template request", () => {
+    expect(channelTemplateBody({
+      components: '[{"type":"body","parameters":[{"type":"text","text":"Ada"}]}]',
+      idempotencyKey: "template-delivery-1",
+      language: "en_US",
+      name: "welcome_user",
+      to: " +15551234567 ",
+    })).toEqual({
+      idempotencyKey: "template-delivery-1",
+      to: "+15551234567",
+      template: {
+        name: "welcome_user",
+        language: "en_US",
+        components: [{
+          type: "body",
+          parameters: [{ type: "text", text: "Ada" }],
+        }],
+      },
+    });
+    expect(() => channelTemplateBody({
+      language: "en",
+      name: "Invalid Name",
+      to: "+15551234567",
+    })).toThrow(/lowercase/i);
+  });
+
   it("treats a failed provisioning result as a CLI failure", () => {
     expect(() => channelDataFrom({
       status: 200,
@@ -105,7 +132,16 @@ describe("Channels CLI", () => {
     ]));
     const test = channels.commands.find((command) => command.name() === "test")!;
     expect(test.options.map((option) => option.long)).toContain("--to");
+    const template = channels.commands.find((command) => command.name() === "send-template")!;
+    expect(template.options.map((option) => option.long)).toEqual(expect.arrayContaining([
+      "--to",
+      "--name",
+      "--language",
+      "--components",
+      "--idempotency-key",
+    ]));
     const update = channels.commands.find((command) => command.name() === "update")!;
     expect(update.options.map((option) => option.long)).toContain("--disable-identity-resolver");
   });
 });
+

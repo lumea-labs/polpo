@@ -112,6 +112,7 @@ const INVOCATION_CONTEXT_ROOTS = new Set([
   "metadata",
   "requestId",
   "runId",
+  "scope",
   "sessionId",
   "surface",
   "user",
@@ -127,7 +128,11 @@ function bindingPathSegments(path: string): string[] | null {
     || segments.some((segment) =>
       !CONTEXT_SEGMENT_RE.test(segment)
       || FORBIDDEN_CONTEXT_SEGMENTS.has(segment))
-    || (segments[1] !== "metadata" && segments.length !== 2)
+    || (
+      segments[1] === "scope"
+        ? segments.length !== 3 || (segments[2] !== "key" && segments[2] !== "version")
+        : segments[1] !== "metadata" && segments.length !== 2
+    )
   ) return null;
   return segments;
 }

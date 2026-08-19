@@ -1,5 +1,10 @@
 import { MemoryStateAdapter } from "@chat-adapter/state-memory";
+import type {
+  WhatsAppAdapter,
+  WhatsAppTemplateMessage,
+} from "@chat-adapter/whatsapp";
 import {
+  type Adapter,
   Chat,
   ConsoleLogger,
   type ActionEvent,
@@ -36,6 +41,7 @@ import type {
 } from "./types.js";
 
 type RuntimeEntry = {
+  adapter: Adapter;
   chat: Chat<Record<string, never>>;
   installation: ChannelInstallation;
   key: string;
@@ -164,6 +170,51 @@ export class ChannelRuntime {
     );
   }
 
+  async sendWhatsAppTemplate(
+    installation: ChannelInstallation,
+    recipient: string,
+    template: WhatsAppTemplateMessage,
+  ): Promise<ChannelDeliveryResult> {
+    if (installation.provider !== "whatsapp") {
+      throw new Error("WhatsApp templates require a WhatsApp installation");
+    }
+    const normalizedRecipient = requiredOutboundText(recipient, "recipient", 100);
+    const normalizedTemplate = normalizeWhatsAppTemplate(template);
+    const entry = await this.getOrCreate(installation);
+    entry.lastUsedAt = Date.now();
+    await entry.chat.initialize();
+    const threadId = `whatsapp:${installation.credentials.phoneNumberId}:${normalizedRecipient}`;
+    try {
+      const sent = await (entry.adapter as WhatsAppAdapter).sendTemplate(
+        threadId,
+        normalizedTemplate,
+      );
+      await this.emit({
+        channelId: `whatsapp:${installation.credentials.phoneNumberId}`,
+        installationId: installation.id,
+        messageId: sent.id,
+        name: "delivery.completed",
+        provider: installation.provider,
+        threadId,
+      });
+      return {
+        channelId: `whatsapp:${installation.credentials.phoneNumberId}`,
+        messages: [{ id: sent.id, threadId: sent.threadId }],
+        threadId,
+      };
+    } catch (error) {
+      await this.emit({
+        channelId: `whatsapp:${installation.credentials.phoneNumberId}`,
+        error: errorMessage(error),
+        installationId: installation.id,
+        name: "delivery.failed",
+        provider: installation.provider,
+        threadId,
+      });
+      throw error;
+    }
+  }
+
   async invalidate(installationId: string): Promise<void> {
     const matching = [...this.entries.values()].filter(
       (entry) => entry.installation.id === installationId,
@@ -281,6 +332,7 @@ export class ChannelRuntime {
     }
 
     const entry: RuntimeEntry = {
+      adapter,
       chat: chat as Chat<Record<string, never>>,
       installation,
       key,
@@ -1004,6 +1056,41 @@ export class ChannelRuntime {
       await Promise.all([...this.pendingEvents]);
     }
   }
+}
+
+function requiredOutboundText(value: unknown, name: string, max: number): string {
+  if (typeof value !== "string") throw new Error(`${name} must be a string`);
+  const normalized = value.trim();
+  if (!normalized || normalized.length > max || normalized.includes("\u0000")) {
+    throw new Error(`${name} must contain between 1 and ${max} characters`);
+  }
+  return normalized;
+}
+
+function normalizeWhatsAppTemplate(
+  value: WhatsAppTemplateMessage,
+): WhatsAppTemplateMessage {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("WhatsApp template must be an object");
+  }
+  const name = requiredOutboundText(value.name, "template.name", 512);
+  const language = requiredOutboundText(value.language, "template.language", 35);
+  if (!/^[a-z0-9_]+$/.test(name)) {
+    throw new Error("template.name must use lowercase letters, numbers, and underscores");
+  }
+  if (!/^[A-Za-z]{2,3}(?:_[A-Za-z]{2})?$/.test(language)) {
+    throw new Error("template.language must be a valid WhatsApp language code");
+  }
+  if (value.components !== undefined && !Array.isArray(value.components)) {
+    throw new Error("template.components must be an array");
+  }
+  return {
+    name,
+    language,
+    ...(value.components === undefined
+      ? {}
+      : { components: structuredClone(value.components) }),
+  };
 }
 
 const TRANSPORT_LOG_EVENTS = {

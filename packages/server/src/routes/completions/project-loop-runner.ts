@@ -119,6 +119,20 @@ function runtimeInvocationMetadata(
     ...(typeof candidate.runId === "string" && candidate.runId.trim()
       ? { runId: candidate.runId }
       : {}),
+    ...(candidate.scope
+      && typeof candidate.scope === "object"
+      && !Array.isArray(candidate.scope)
+      && typeof (candidate.scope as Record<string, unknown>).key === "string"
+      && (candidate.scope as Record<string, unknown>).key
+      ? {
+          scope: {
+            key: String((candidate.scope as Record<string, unknown>).key),
+            ...(typeof (candidate.scope as Record<string, unknown>).version === "string"
+              ? { version: String((candidate.scope as Record<string, unknown>).version) }
+              : {}),
+          },
+        }
+      : {}),
   };
 }
 
@@ -147,6 +161,7 @@ function projectLoopToolInvocation(input: {
       string,
       ToolInvocationJsonValue
     >,
+    ...(runtime?.scope ? { scope: runtime.scope } : {}),
     surface,
   });
 }
@@ -218,6 +233,7 @@ export async function resolveProjectLoopResumeRuntimeContext(
       ...(run.sessionId ? { sessionId: run.sessionId } : {}),
       ...(invocation.channelId ? { channelId: invocation.channelId } : {}),
       runId: run.id,
+      ...(invocation.scope ? { scope: invocation.scope } : {}),
     });
   } catch {
     throw new Error("Runtime context retrieval failed");
@@ -418,6 +434,9 @@ export async function runProjectLoopCompletion(options: {
                   : {}),
                 ...(runtimeInvocation.runId
                   ? { runId: runtimeInvocation.runId }
+                  : {}),
+                ...(runtimeInvocation.scope
+                  ? { scope: runtimeInvocation.scope }
                   : {}),
               },
             }
@@ -757,6 +776,7 @@ export async function resumeProjectLoopRun(options: {
           : {}),
         ...(resolvedToolInvocation.user ? { user: resolvedToolInvocation.user } : {}),
         metadata: resolvedToolInvocation.metadata as Record<string, ToolInvocationJsonValue>,
+        ...(resolvedToolInvocation.scope ? { scope: resolvedToolInvocation.scope } : {}),
         surface: resolvedToolInvocation.surface,
       })
     : undefined;
@@ -769,6 +789,15 @@ export async function resumeProjectLoopRun(options: {
     }
     if (run.user && toolInvocation.user !== run.user) {
       throw new Error("Resumed tool invocation user does not match the loop run");
+    }
+    const storedScope = runtimeInvocationMetadata(
+      run.metadata?.runtimeInvocation,
+    )?.scope;
+    if (
+      storedScope?.key !== toolInvocation.scope?.key
+      || storedScope?.version !== toolInvocation.scope?.version
+    ) {
+      throw new Error("Resumed tool invocation scope does not match the loop run");
     }
   }
 

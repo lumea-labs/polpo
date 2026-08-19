@@ -310,6 +310,47 @@ describe("createConversationChannelTurnHandler", () => {
     expect(Object.isFrozen(executeTurn.mock.calls[0]?.[0].runtime?.metadata)).toBe(true);
   });
 
+  it("partitions sessions and history by immutable trusted scope", async () => {
+    const store = new TestSessionStore();
+    let scope = { key: "personal", version: "1" };
+    const executeTurn = vi.fn<ChannelConversationTurnExecutor>(async (input) => {
+      const current = input.body.messages.at(-1)!;
+      await store.addMessage(input.sessionId!, "user", current.content!);
+      await store.addMessage(input.sessionId!, "assistant", `reply-${scope.key}`);
+      return successfulResult(input.sessionId ?? null);
+    });
+    const handler = createConversationChannelTurnHandler(deps(store), {
+      agent: "assistant",
+      executeTurn,
+      resolveInvocation: async () => ({
+        disposition: "dispatch",
+        user: "stable-user",
+        scope,
+      }),
+    });
+
+    await handler(turn());
+    scope = { key: "work", version: "1" };
+    await handler(turn({ providerEventId: "event-2" }));
+    scope = { key: "personal", version: "1" };
+    await handler(turn({ providerEventId: "event-3" }));
+
+    expect(store.sessions).toHaveLength(2);
+    expect(executeTurn.mock.calls[0]?.[0].runtime?.scope).toEqual({
+      key: "personal",
+      version: "1",
+    });
+    expect(Object.isFrozen(executeTurn.mock.calls[0]?.[0].runtime?.scope)).toBe(true);
+    expect(executeTurn.mock.calls[1]?.[0].body.messages).toEqual([
+      { content: "hello", role: "user" },
+    ]);
+    expect(executeTurn.mock.calls[2]?.[0].body.messages).toEqual([
+      { content: "hello", role: "user" },
+      { content: "reply-personal", role: "assistant" },
+      { content: "hello", role: "user" },
+    ]);
+  });
+
   it("consumes pairing turns without selecting an agent, creating a session, or invoking a model", async () => {
     const store = new TestSessionStore();
     const agent = vi.fn(async () => "assistant");
@@ -326,6 +367,24 @@ describe("createConversationChannelTurnHandler", () => {
     await expect(handler(turn())).resolves.toEqual({
       metadata: { disposition: "consume" },
       text: "WhatsApp account paired.",
+    });
+    expect(agent).not.toHaveBeenCalled();
+    expect(executeTurn).not.toHaveBeenCalled();
+    expect(store.sessions).toHaveLength(0);
+  });
+
+  it("silently consumes a turn without creating runtime state", async () => {
+    const store = new TestSessionStore();
+    const agent = vi.fn(async () => "assistant");
+    const executeTurn = vi.fn<ChannelConversationTurnExecutor>();
+    const handler = createConversationChannelTurnHandler(deps(store), {
+      agent,
+      executeTurn,
+      resolveInvocation: async () => ({ disposition: "consume" }),
+    });
+
+    await expect(handler(turn())).resolves.toEqual({
+      metadata: { disposition: "consume" },
     });
     expect(agent).not.toHaveBeenCalled();
     expect(executeTurn).not.toHaveBeenCalled();
