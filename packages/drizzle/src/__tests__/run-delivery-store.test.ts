@@ -165,7 +165,7 @@ describe("DrizzleRunEventStore", () => {
     const sequences = [...batch.map((event) => event.sequence), single.sequence];
 
     expect(new Set(sequences).size).toBe(4);
-    expect(sequences.toSorted((left, right) => left - right)).toEqual([1, 2, 3, 4]);
+    expect(sequences.slice().sort((left, right) => left - right)).toEqual([1, 2, 3, 4]);
     expect((await stores.runEventStore.listAfter("run-a")).events).toHaveLength(4);
   });
 
