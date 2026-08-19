@@ -5,6 +5,20 @@ export const MIN_CHAT_SUGGESTION_COUNT = 2;
 export const MAX_CHAT_SUGGESTION_COUNT = 4;
 export const MAX_CHAT_SUGGESTION_GUIDANCE_CHARS = 500;
 
+export const ASK_USER_QUESTION_TOOL_NAME = "ask_user_question" as const;
+
+/** Client-rendered tools that may suspend a direct chat turn. */
+export const CLIENT_INTERACTION_TOOL_NAMES = [
+  ASK_USER_QUESTION_TOOL_NAME,
+] as const;
+
+export function isClientInteractionToolName(
+  value: unknown,
+): value is (typeof CLIENT_INTERACTION_TOOL_NAMES)[number] {
+  return typeof value === "string"
+    && (CLIENT_INTERACTION_TOOL_NAMES as readonly string[]).includes(value);
+}
+
 export interface ChatSuggestion {
   /** Stable identifier within the assistant message that produced it. */
   id: string;

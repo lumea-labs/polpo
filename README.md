@@ -538,6 +538,11 @@ suggested next messages through its `chat` configuration:
 }
 ```
 
+`ask_user_question` is supported by direct chat turns only. Project Loop agent
+steps reject client-interaction tools because a Loop does not yet provide a
+durable suspend-and-resume contract. Collect required user input before
+starting a Loop.
+
 A client declares the optional interactions it can render in the request:
 
 ```json
