@@ -10,7 +10,7 @@
  *
  * Test-first: these encode the contract before the implementation exists.
  */
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { Type } from "@sinclair/typebox";
 import { mkdtemp, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -28,6 +28,9 @@ import {
   createToolInvocationContext,
   emptyCustomToolConnections,
   CustomToolBindingError,
+  CustomToolTimeoutError,
+  MAX_CUSTOM_TOOL_TIMEOUT_MS,
+  MIN_CUSTOM_TOOL_TIMEOUT_MS,
   type CustomTool,
   type CustomToolContext,
 } from "../custom-tools.js";
@@ -103,6 +106,19 @@ describe("defineTool", () => {
     expect(tool.clientSide).toBe(true);
   });
 
+  it("preserves an execution timeout without exposing it in model parameters", () => {
+    const tool = defineTool({
+      name: "slow_echo",
+      description: "Echoes after external work",
+      parameters: EchoSchema,
+      timeoutMs: 15_000,
+      execute: () => "ok",
+    });
+
+    expect(tool.timeoutMs).toBe(15_000);
+    expect((tool.parameters as any).properties).toEqual({ msg: Type.String() });
+  });
+
   it("preserves hidden binding declarations without adding them to model parameters", () => {
     const bindingsSchema = Type.Object({ tenantId: Type.String() });
     const tool = defineTool({
@@ -165,6 +181,21 @@ describe("getCustomToolErrors / isCustomTool", () => {
   it("validates optional field types", () => {
     expect(getCustomToolErrors({ ...valid, label: 5 }).join()).toMatch(/label/i);
     expect(getCustomToolErrors({ ...valid, clientSide: "yes" }).join()).toMatch(/clientSide/i);
+  });
+
+  it("rejects custom-tool timeouts outside the supported integer range", () => {
+    for (const timeoutMs of [
+      0,
+      MIN_CUSTOM_TOOL_TIMEOUT_MS - 1,
+      MAX_CUSTOM_TOOL_TIMEOUT_MS + 1,
+      1_500.5,
+      Number.NaN,
+      "15000",
+    ]) {
+      expect(getCustomToolErrors({ ...valid, timeoutMs }).join()).toMatch(/timeoutMs/i);
+    }
+    expect(getCustomToolErrors({ ...valid, timeoutMs: MIN_CUSTOM_TOOL_TIMEOUT_MS })).toEqual([]);
+    expect(getCustomToolErrors({ ...valid, timeoutMs: MAX_CUSTOM_TOOL_TIMEOUT_MS })).toEqual([]);
   });
 
   it("requires binding schema and mappings together", () => {
@@ -331,6 +362,36 @@ describe("bindCustomTool", () => {
       },
     });
     await expect(bindCustomTool(t, fakeCtx()).execute("c", { msg: "x" })).rejects.toThrow("kaboom");
+  });
+
+  it("aborts and rejects deterministically when a configured timeout expires", async () => {
+    vi.useFakeTimers();
+    try {
+      let receivedSignal: AbortSignal | undefined;
+      const t = defineTool({
+        name: "slow_tool",
+        description: "Never completes",
+        parameters: EchoSchema,
+        timeoutMs: MIN_CUSTOM_TOOL_TIMEOUT_MS,
+        execute: (ctx) => {
+          receivedSignal = ctx.signal;
+          return new Promise(() => {});
+        },
+      });
+      const execution = bindCustomTool(t, fakeCtx()).execute("c", { msg: "x" });
+      const rejection = expect(execution).rejects.toMatchObject({
+        name: "CustomToolTimeoutError",
+        code: "custom_tool_timeout",
+        timeoutMs: MIN_CUSTOM_TOOL_TIMEOUT_MS,
+      });
+
+      await vi.advanceTimersByTimeAsync(MIN_CUSTOM_TOOL_TIMEOUT_MS);
+      await rejection;
+      expect(receivedSignal?.aborted).toBe(true);
+      expect(receivedSignal?.reason).toBeInstanceOf(CustomToolTimeoutError);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("resolves and validates hidden bindings immediately before execution", async () => {

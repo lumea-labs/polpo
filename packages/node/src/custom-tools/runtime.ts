@@ -172,6 +172,7 @@ export class LocalCustomToolRuntime implements CustomToolDeployer, CustomToolRun
         parameters: tool.parameters,
         label: tool.label ?? tool.name,
         clientSide: tool.clientSide ?? false,
+        ...(tool.timeoutMs !== undefined ? { timeoutMs: tool.timeoutMs } : {}),
         ...(tool.bindingsSchema ? { bindingsSchema: tool.bindingsSchema } : {}),
         ...(tool.serverBindings ? { serverBindings: tool.serverBindings } : {}),
       };

@@ -30,6 +30,7 @@ describe("LocalCustomToolRuntime", () => {
         name: "echo_value",
         description: "Echo a value",
         parameters: Type.Object({ value: Type.String() }),
+        timeoutMs: 15000,
         async execute(_ctx, params) { return JSON.stringify({ echoed: params.value }); },
       });
     `;
@@ -37,7 +38,11 @@ describe("LocalCustomToolRuntime", () => {
 
     const deployed = await runtime.deploy("echo_value", source);
     expect(deployed.errors).toEqual([]);
-    expect(deployed.meta).toMatchObject({ name: "echo_value", description: "Echo a value" });
+    expect(deployed.meta).toMatchObject({
+      name: "echo_value",
+      description: "Echo a value",
+      timeoutMs: 15000,
+    });
     await runtime.store.putBundle("echo_value", deployed.bundle!);
     await runtime.store.putMeta("echo_value", deployed.meta!);
 

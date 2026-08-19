@@ -103,6 +103,20 @@ export class CustomToolBindingError extends Error {
   }
 }
 
+/** Smallest author-configurable custom-tool timeout. */
+export const MIN_CUSTOM_TOOL_TIMEOUT_MS = 1_000;
+/** Largest author-configurable custom-tool timeout. */
+export const MAX_CUSTOM_TOOL_TIMEOUT_MS = 30 * 60_000;
+
+export class CustomToolTimeoutError extends Error {
+  readonly code = "custom_tool_timeout";
+
+  constructor(readonly timeoutMs: number) {
+    super(`Custom tool timed out after ${timeoutMs}ms`);
+    this.name = "CustomToolTimeoutError";
+  }
+}
+
 const FORBIDDEN_CONTEXT_SEGMENTS = new Set([
   "__proto__",
   "constructor",
@@ -296,6 +310,8 @@ export interface CustomToolSpec<
   label?: string;
   /** Run on the client instead of the sandbox (plumbed in a later phase). */
   clientSide?: boolean;
+  /** Maximum execution time. Hosts may apply their own default when omitted. */
+  timeoutMs?: number;
   /** Server-only TypeBox schema. Never exposed as model tool parameters. */
   bindingsSchema?: TBindings;
   /** Exact mappings from immutable invocation context into hidden bindings. */
@@ -362,6 +378,19 @@ export function getCustomToolErrors(value: unknown): string[] {
   }
   if (t.clientSide !== undefined && typeof t.clientSide !== "boolean") {
     errors.push("`clientSide` must be a boolean when provided");
+  }
+  if (
+    t.timeoutMs !== undefined
+    && (
+      typeof t.timeoutMs !== "number"
+      || !Number.isInteger(t.timeoutMs)
+      || t.timeoutMs < MIN_CUSTOM_TOOL_TIMEOUT_MS
+      || t.timeoutMs > MAX_CUSTOM_TOOL_TIMEOUT_MS
+    )
+  ) {
+    errors.push(
+      `\`timeoutMs\` must be an integer between ${MIN_CUSTOM_TOOL_TIMEOUT_MS} and ${MAX_CUSTOM_TOOL_TIMEOUT_MS}`,
+    );
   }
   if (t.bindingsSchema !== undefined && t.serverBindings === undefined) {
     errors.push("`serverBindings` is required when `bindingsSchema` is provided");
@@ -501,11 +530,53 @@ export function bindCustomTool<
     parameters: tool.parameters,
     async execute(_toolCallId, params, signal, onUpdate) {
       const bindings = await resolveServerBindings(tool, ctx.invocation);
-      const result = await tool.execute(
-        { ...ctx, bindings, signal, onUpdate },
-        params as Static<T>,
-      );
-      return normalizeToolResult(result);
+      const timeoutController = tool.timeoutMs === undefined
+        ? undefined
+        : new AbortController();
+      const combinedController = signal && timeoutController
+        ? new AbortController()
+        : undefined;
+      const forwardAbort = (source: AbortSignal) => {
+        if (!combinedController?.signal.aborted) {
+          combinedController?.abort(source.reason);
+        }
+      };
+      const onCallerAbort = () => forwardAbort(signal!);
+      const onTimeoutAbort = () => forwardAbort(timeoutController!.signal);
+
+      if (combinedController) {
+        if (signal!.aborted) forwardAbort(signal!);
+        else signal!.addEventListener("abort", onCallerAbort, { once: true });
+        if (timeoutController!.signal.aborted) forwardAbort(timeoutController!.signal);
+        else timeoutController!.signal.addEventListener("abort", onTimeoutAbort, { once: true });
+      }
+
+      const executionSignal = combinedController?.signal ?? timeoutController?.signal ?? signal;
+      let timeoutId: ReturnType<typeof setTimeout> | undefined;
+      const timeoutPromise = tool.timeoutMs === undefined
+        ? undefined
+        : new Promise<never>((_resolve, reject) => {
+          timeoutId = setTimeout(() => {
+            const error = new CustomToolTimeoutError(tool.timeoutMs!);
+            timeoutController!.abort(error);
+            reject(error);
+          }, tool.timeoutMs);
+        });
+
+      try {
+        const execution = Promise.resolve(tool.execute(
+          { ...ctx, bindings, signal: executionSignal, onUpdate },
+          params as Static<T>,
+        ));
+        const result = timeoutPromise
+          ? await Promise.race([execution, timeoutPromise])
+          : await execution;
+        return normalizeToolResult(result);
+      } finally {
+        if (timeoutId !== undefined) clearTimeout(timeoutId);
+        signal?.removeEventListener("abort", onCallerAbort);
+        timeoutController?.signal.removeEventListener("abort", onTimeoutAbort);
+      }
     },
   };
 }

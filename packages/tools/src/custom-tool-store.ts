@@ -15,6 +15,7 @@ export interface CustomToolMeta {
   parameters: unknown;
   label: string;
   clientSide: boolean;
+  timeoutMs?: number;
   bindingsSchema?: unknown;
   serverBindings?: CustomToolServerBindings;
 }

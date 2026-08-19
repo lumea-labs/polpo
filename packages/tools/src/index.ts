@@ -76,6 +76,9 @@ export {
   createJsonSchemaExample,
   createToolInvocationContext,
   CustomToolBindingError,
+  CustomToolTimeoutError,
+  MIN_CUSTOM_TOOL_TIMEOUT_MS,
+  MAX_CUSTOM_TOOL_TIMEOUT_MS,
   emptyCustomToolConnections,
 } from "./custom-tools.js";
 export type {
