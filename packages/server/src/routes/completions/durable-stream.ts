@@ -14,6 +14,9 @@ import {
 } from "@polpo-ai/core/run-delivery-owner";
 import type { CompletionSseWriter } from "./chat-handler.js";
 
+const DURABLE_WRITE_BATCH_SIZE = 128;
+const DURABLE_WRITE_FLUSH_MS = 25;
+
 export interface CompletionRunDeliveryScope {
   eventStore: RunEventStore;
   leaseStore: RunExecutionLeaseStore;
@@ -32,23 +35,75 @@ export interface DurableCompletionProducerContext {
 export function createDurableCompletionWriter(
   runId: string,
   scope: CompletionRunDeliveryScope,
-): CompletionSseWriter {
+): CompletionSseWriter & { flush(): Promise<void> } {
   const journal = new RunEventJournal(scope.eventStore, scope.notifier);
-  let writeChain: Promise<unknown> = Promise.resolve();
-  return {
+  const pending: Array<{
+    type: "response.chunk" | "response.done";
+    data: Record<string, string>;
+  }> = [];
+  let flushTimer: ReturnType<typeof setTimeout> | undefined;
+  let drainPromise: Promise<void> | undefined;
+  let drainError: unknown;
+
+  const drain = (): Promise<void> => {
+    if (drainError) return Promise.reject(drainError);
+    if (drainPromise) return drainPromise;
+    if (flushTimer) clearTimeout(flushTimer);
+    flushTimer = undefined;
+    drainPromise = (async () => {
+      while (pending.length > 0) {
+        const batch = pending.splice(0, DURABLE_WRITE_BATCH_SIZE);
+        await journal.appendMany(runId, batch);
+      }
+    })().catch((error) => {
+      drainError = error;
+      throw error;
+    }).finally(() => {
+      drainPromise = undefined;
+      // A write can arrive after the drain observes an empty queue but before
+      // its promise settles. Make sure that tail is not left until finalization.
+      if (pending.length > 0 && !drainError) scheduleDrain();
+    });
+    return drainPromise;
+  };
+
+  const scheduleDrain = () => {
+    if (flushTimer || drainPromise || drainError) return;
+    flushTimer = setTimeout(() => {
+      flushTimer = undefined;
+      void drain().catch(() => undefined);
+    }, DURABLE_WRITE_FLUSH_MS);
+  };
+
+  const writer: CompletionSseWriter & { flush(): Promise<void> } = {
     write: async () => undefined,
     writeSSE: (message) => {
-      writeChain = writeChain.then(() => journal.append(runId, {
+      if (drainError) return Promise.reject(drainError);
+      pending.push({
         type: message.data === "[DONE]" ? "response.done" : "response.chunk",
         data: {
           data: message.data,
           ...(message.event === undefined ? {} : { event: message.event }),
           ...(message.id === undefined ? {} : { id: message.id }),
         },
-      }));
-      return writeChain;
+      });
+      if (
+        message.data === "[DONE]"
+        || pending.length >= DURABLE_WRITE_BATCH_SIZE
+      ) {
+        return drain();
+      }
+      scheduleDrain();
+      return Promise.resolve();
+    },
+    async flush() {
+      if (flushTimer) clearTimeout(flushTimer);
+      flushTimer = undefined;
+      while (pending.length > 0 || drainPromise) await drain();
+      if (drainError) throw drainError;
     },
   };
+  return writer;
 }
 
 export interface StartDurableCompletionOptions {
@@ -69,10 +124,12 @@ export function startDurableCompletion(
     leaseStore: options.scope.leaseStore,
     cancellationStore: options.scope.cancellationStore,
     producer: async ({ signal }) => {
-      await options.producer({
-        signal,
-        writer: createDurableCompletionWriter(options.runId, options.scope),
-      });
+      const writer = createDurableCompletionWriter(options.runId, options.scope);
+      try {
+        await options.producer({ signal, writer });
+      } finally {
+        await writer.flush();
+      }
     },
   });
 }

@@ -1,6 +1,7 @@
 import { and, asc, count, eq, gt, lte, sql } from "drizzle-orm";
 import {
   DEFAULT_RUN_EVENT_PAGE_SIZE,
+  MAX_RUN_EVENT_BATCH_SIZE,
   MAX_RUN_EVENT_PAGE_SIZE,
   RunDeliveryValidationError,
   RunEventConflictError,
@@ -84,6 +85,52 @@ export class DrizzleRunEventStore implements RunEventStore {
     );
   }
 
+  async appendMany(
+    runId: string,
+    inputs: readonly AppendRunStreamEvent[],
+  ): Promise<RunStreamEvent[]> {
+    if (inputs.length === 0) return [];
+    if (inputs.length > MAX_RUN_EVENT_BATCH_SIZE) {
+      throw new RunDeliveryValidationError(
+        `Run event batch cannot exceed ${MAX_RUN_EVENT_BATCH_SIZE} events`,
+      );
+    }
+    const normalized = inputs.map((input) =>
+      normalizeRunStreamEventInput(runId, input, { now: this.now })
+    );
+
+    // Explicit producer IDs require retry/conflict reconciliation. Keep that
+    // uncommon path on the existing strict append implementation; streamed
+    // response chunks use generated IDs and take the atomic range fast path.
+    if (normalized.some((event) => event.id !== undefined)) {
+      const events: RunStreamEvent[] = [];
+      for (const input of inputs) events.push(await this.append(runId, input));
+      return events;
+    }
+
+    const lastSequence = await this.allocateSequenceRange(runId, normalized.length);
+    const firstSequence = lastSequence - normalized.length + 1;
+    const events = normalized.map((event, index) =>
+      materializeRunStreamEvent(runId, firstSequence + index, event)
+    );
+    const rows: any[] = await this.db.insert(this.tables.events).values(events.map((event) => ({
+      runId: event.runId,
+      sequence: event.sequence,
+      eventId: event.id,
+      schemaVersion: event.schemaVersion,
+      type: event.type,
+      data: serializeJson(event.data, this.dialect),
+      createdAt: event.createdAt,
+    }))).returning();
+    if (rows.length !== events.length) {
+      throw new RunEventConflictError(
+        `Could not append complete event batch to run ${runId}`,
+      );
+    }
+    return rows.map((row) => this.rowToEvent(row))
+      .sort((left, right) => left.sequence - right.sequence);
+  }
+
   async listAfter(
     runId: string,
     cursor?: string,
@@ -130,12 +177,21 @@ export class DrizzleRunEventStore implements RunEventStore {
   }
 
   private async allocateSequence(runId: string): Promise<number> {
+    return this.allocateSequenceRange(runId, 1);
+  }
+
+  private async allocateSequenceRange(runId: string, count: number): Promise<number> {
+    if (!Number.isSafeInteger(count) || count < 1 || count > MAX_RUN_EVENT_BATCH_SIZE) {
+      throw new RunDeliveryValidationError(
+        `Run event sequence range must be between 1 and ${MAX_RUN_EVENT_BATCH_SIZE}`,
+      );
+    }
     const rows: any[] = await this.db.insert(this.tables.sequences).values({
       runId,
-      lastSequence: 1,
+      lastSequence: count,
     }).onConflictDoUpdate({
       target: this.tables.sequences.runId,
-      set: { lastSequence: sql`${this.tables.sequences.lastSequence} + 1` },
+      set: { lastSequence: sql`${this.tables.sequences.lastSequence} + ${count}` },
     }).returning({ sequence: this.tables.sequences.lastSequence });
     const sequence = Number(rows[0]?.sequence);
     if (!Number.isSafeInteger(sequence) || sequence < 1) {

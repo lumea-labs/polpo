@@ -67,6 +67,35 @@ export class RunEventJournal {
     }
     return event;
   }
+
+  async appendMany(
+    runId: string,
+    inputs: readonly AppendRunStreamEvent[],
+  ): Promise<RunStreamEvent[]> {
+    if (inputs.length === 0) return [];
+    const events = this.store.appendMany
+      ? await this.store.appendMany(runId, inputs)
+      : await appendInOrder(this.store, runId, inputs);
+    const last = events.at(-1);
+    if (last) {
+      try {
+        await this.notifier?.publish(runId, formatRunEventCursor(last.sequence));
+      } catch {
+        // Notification loss is safe: followers poll the authoritative store.
+      }
+    }
+    return events;
+  }
+}
+
+async function appendInOrder(
+  store: RunEventStore,
+  runId: string,
+  inputs: readonly AppendRunStreamEvent[],
+): Promise<RunStreamEvent[]> {
+  const events: RunStreamEvent[] = [];
+  for (const input of inputs) events.push(await store.append(runId, input));
+  return events;
 }
 
 const TERMINAL_RUN_EVENT_TYPES = new Set<RunStreamEvent["type"]>([
