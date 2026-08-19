@@ -29,6 +29,8 @@ import {
   type ToolInvocationContext,
   type SummarizeFn,
   type RuntimeContextTrustMode,
+  isClientInteractionToolName,
+  LoopInteractiveToolUnsupportedError,
 } from "@polpo-ai/core";
 import { generateText, type LanguageModel, type LanguageModelUsage } from "ai";
 import { prepareModelMessagesForTransport, runModelPolicyTurn } from "@polpo-ai/llm";
@@ -320,9 +322,25 @@ export async function runAgentStepCompletion(options: {
     options.toolRunScope,
     options.toolInvocation,
   );
+  const forcedTool = agentConfig.toolChoice
+    && typeof agentConfig.toolChoice === "object"
+    && agentConfig.toolChoice.mode === "required"
+    ? agentConfig.toolChoice.tool
+    : undefined;
+  if (isClientInteractionToolName(forcedTool)) {
+    throw new LoopInteractiveToolUnsupportedError(forcedTool, stepName);
+  }
+  const loopTools = resolvedTools.tools.filter(
+    (tool) => !isClientInteractionToolName(tool?.name),
+  );
+  const loopExtraAiTools = Object.fromEntries(
+    Object.entries(resolvedTools.extraAiTools ?? {}).filter(
+      ([name]) => !isClientInteractionToolName(name),
+    ),
+  );
   let executeTool = createGuardedCompletionToolExecutor({
     executor: resolvedTools.executor,
-    tools: resolvedTools.tools,
+    tools: loopTools,
     middleware: deps.runToolMiddleware,
     context: {
       planId: options.runtimePlan?.id,
@@ -334,7 +352,7 @@ export async function runAgentStepCompletion(options: {
     },
   });
   const modelToolChoice = toAIToolChoice(agentConfig.toolChoice);
-  let modelTools = resolvedTools.tools;
+  let modelTools = loopTools;
   let activeToolNames: (() => string[]) | undefined;
   let activeCompactionTools: (() => any[]) | undefined;
   if (resolvedTools.disclosure?.mode === "model-controlled") {
@@ -351,7 +369,7 @@ export async function runAgentStepCompletion(options: {
       maxLoadBatch: resolvedTools.disclosure.maxLoadBatch,
       maxSearchResults: resolvedTools.disclosure.maxSearchResults,
     });
-    const providerToolNames = Object.keys(resolvedTools.extraAiTools ?? {});
+    const providerToolNames = Object.keys(loopExtraAiTools);
     modelTools = pool.tools;
     executeTool = pool.executor;
     activeToolNames = () => [...new Set([
@@ -363,9 +381,9 @@ export async function runAgentStepCompletion(options: {
   }
   const aiTools = {
     ...toAITools(modelTools),
-    ...(resolvedTools.extraAiTools ?? {}),
+    ...loopExtraAiTools,
   };
-  const providerToolNames = new Set(Object.keys(resolvedTools.extraAiTools ?? {}));
+  const providerToolNames = new Set(Object.keys(loopExtraAiTools));
   let finalText = "";
   let totalUsage: LanguageModelUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 } as LanguageModelUsage;
   let lastProviderMetadata: Record<string, unknown> | undefined;

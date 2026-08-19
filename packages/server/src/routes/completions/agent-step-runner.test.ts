@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { jsonSchema } from "ai";
 import { MockLanguageModelV3, convertArrayToReadableStream } from "ai/test";
 import {
   RuntimeGuardrailEngine,
@@ -211,6 +212,120 @@ describe("agent model profile resolution", () => {
 });
 
 describe("runAgentStepCompletion tool validation", () => {
+  it("rejects a forced client interaction tool before nested model execution", async () => {
+    const deps = {
+      getConfig: () => ({ settings: {} }),
+      getMemoryStore: () => undefined,
+      emit: vi.fn(),
+      resolveAgentModel: vi.fn(async () => ({
+        model: {
+          id: "mock/model",
+          aiModel: {},
+          provider: "mock",
+          contextWindow: 128_000,
+          maxTokens: 8192,
+        },
+      })),
+      resolveAgentTools: vi.fn(async () => ({
+        tools: [],
+        extraAiTools: {},
+        executor: vi.fn(),
+      })),
+      buildRuntimePrompt: vi.fn(async () => "system"),
+    } as unknown as CompletionRouteDeps;
+
+    await expect(runAgentStepCompletion({
+      deps,
+      agentConfig: {
+        name: "nested-agent",
+        model: "mock/model",
+        toolChoice: { mode: "required", tool: "ask_user_question" },
+      },
+      aiMessages: [{ role: "user", content: "Complete the step" }],
+      extraSystemParts: [],
+      context: {},
+      stepName: "implement",
+    })).rejects.toMatchObject({
+      name: "LoopInteractiveToolUnsupportedError",
+      code: "loop_interactive_tool_not_supported",
+      tool: "ask_user_question",
+      stepName: "implement",
+    });
+  });
+
+  it("never exposes client interaction tools inside nested loop agent steps", async () => {
+    const visibleTools: string[] = [];
+    const model = new MockLanguageModelV3({
+      doStream: async (options) => {
+        visibleTools.push(...(options.tools ?? []).map((tool) => tool.name));
+        return { stream: convertArrayToReadableStream([
+          { type: "stream-start", warnings: [] },
+          { type: "text-start", id: "text" },
+          { type: "text-delta", id: "text", delta: "done" },
+          { type: "text-end", id: "text" },
+          {
+            type: "finish",
+            finishReason: { unified: "stop", raw: undefined },
+            usage: {
+              inputTokens: { total: 1 },
+              outputTokens: { total: 1 },
+            },
+          },
+        ] as any[]) };
+      },
+    });
+    const deps = {
+      getConfig: () => ({ settings: {} }),
+      getMemoryStore: () => undefined,
+      emit: vi.fn(),
+      resolveAgentModel: vi.fn(async () => ({
+        model: {
+          id: "mock/model",
+          aiModel: model,
+          provider: "mock",
+          contextWindow: 128_000,
+          maxTokens: 8192,
+        },
+      })),
+      resolveAgentTools: vi.fn(async () => ({
+        tools: [
+          {
+            name: "ask_user_question",
+            parameters: { type: "object", properties: {} },
+          },
+          {
+            name: "read",
+            parameters: { type: "object", properties: {} },
+          },
+        ],
+        extraAiTools: {
+          ask_user_question: {
+            inputSchema: jsonSchema({ type: "object", properties: {} }),
+          },
+          provider_search: {
+            inputSchema: jsonSchema({ type: "object", properties: {} }),
+          },
+        },
+        executor: vi.fn(async () => "unused"),
+      })),
+      buildRuntimePrompt: vi.fn(async () => "system"),
+    } as unknown as CompletionRouteDeps;
+
+    const result = await runAgentStepCompletion({
+      deps,
+      agentConfig: { name: "nested-agent", model: "mock/model" },
+      aiMessages: [{ role: "user", content: "Complete the step" }],
+      extraSystemParts: [],
+      context: {},
+      stepName: "implement",
+    });
+
+    expect(result.text).toBe("done");
+    expect(visibleTools).toContain("read");
+    expect(visibleTools).toContain("provider_search");
+    expect(visibleTools).not.toContain("ask_user_question");
+  });
+
   it("loads a tool explicitly before exposing and directly executing it in a nested agent step", async () => {
     const usage = {
       inputTokens: { total: 10, noCache: undefined, cacheRead: undefined, cacheWrite: undefined },

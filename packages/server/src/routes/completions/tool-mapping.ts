@@ -9,8 +9,12 @@ import {
   toValidatedToolInputSchema,
 } from "@polpo-ai/llm";
 import { jsonSchema } from "ai";
-import type { ChatSuggestion } from "@polpo-ai/core/chat-interactions";
-import type { ResolvedChatInteractionCapabilities } from "@polpo-ai/core/chat-interactions";
+import {
+  ASK_USER_QUESTION_TOOL_NAME,
+  CLIENT_INTERACTION_TOOL_NAMES,
+  type ChatSuggestion,
+  type ResolvedChatInteractionCapabilities,
+} from "@polpo-ai/core/chat-interactions";
 
 export { toPortableToolInputSchema } from "@polpo-ai/llm";
 
@@ -187,7 +191,7 @@ export function toAIToolChoice(choice: unknown): unknown | undefined {
 // (shows UI, collects input) and sends the result back as a tool message.
 
 export const CLIENT_SIDE_TOOLS: Record<string, { description: string; inputSchema: any }> = {
-  ask_user_question: {
+  [ASK_USER_QUESTION_TOOL_NAME]: {
     description: [
       "Ask the user clarifying questions before proceeding.",
       "Use when the request is ambiguous or has multiple valid interpretations.",
@@ -237,6 +241,15 @@ export const CLIENT_SIDE_TOOLS: Record<string, { description: string; inputSchem
 
 /** Set of tool names that are client-side (no server execute). */
 export const CLIENT_SIDE_TOOL_NAMES = new Set(Object.keys(CLIENT_SIDE_TOOLS));
+
+if (
+  CLIENT_SIDE_TOOL_NAMES.size !== CLIENT_INTERACTION_TOOL_NAMES.length
+  || CLIENT_INTERACTION_TOOL_NAMES.some(
+    (name) => !CLIENT_SIDE_TOOL_NAMES.has(name),
+  )
+) {
+  throw new Error("Client-side tool registry is out of sync with the core interaction contract");
+}
 
 /** Select only client-side tools supported by both agent policy and client. */
 export function clientSideToolsForCapabilities(

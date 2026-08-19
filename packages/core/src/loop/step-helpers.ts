@@ -8,12 +8,28 @@
  */
 
 import type { AgentConfig } from "../types.js";
+import { isClientInteractionToolName } from "../chat-interactions.js";
 import {
   createRuntimePromptContextSegment,
   renderRuntimePromptContextSegment,
   type RuntimeContextTrustMode,
 } from "../runtime-context/index.js";
 import type { ContextBag, LoopConfig } from "./types.js";
+
+export class LoopInteractiveToolUnsupportedError extends Error {
+  readonly code = "loop_interactive_tool_not_supported";
+
+  constructor(
+    public readonly tool: string,
+    public readonly stepName: string,
+  ) {
+    super(
+      `Interactive tool "${tool}" is not supported in loop agent step "${stepName}". `
+      + "Collect user input before starting the loop.",
+    );
+    this.name = "LoopInteractiveToolUnsupportedError";
+  }
+}
 
 /** Best-effort JSON parse of a step's final text — shared rules so
  *  context bags look identical across runtimes. */
@@ -98,6 +114,26 @@ export function loopContextPrompt(
  *  task loop engine: the loop's overrides win, the base agent fills gaps. */
 export function buildLoopStepAgent(baseAgent: AgentConfig, stepName: string, loop: LoopConfig): AgentConfig {
   const loopPrompt = loop.systemPrompt?.trim();
+  const explicitTools = loop.tools;
+  const unsupportedExplicitTool = explicitTools?.find(isClientInteractionToolName);
+  if (unsupportedExplicitTool) {
+    throw new LoopInteractiveToolUnsupportedError(
+      unsupportedExplicitTool,
+      stepName,
+    );
+  }
+  const allowedTools = explicitTools
+    ?? baseAgent.allowedTools?.filter((tool) => !isClientInteractionToolName(tool));
+  const toolChoice = (loop.toolChoice as AgentConfig["toolChoice"])
+    ?? baseAgent.toolChoice;
+  const forcedTool = toolChoice
+    && typeof toolChoice === "object"
+    && toolChoice.mode === "required"
+    ? toolChoice.tool
+    : undefined;
+  if (isClientInteractionToolName(forcedTool)) {
+    throw new LoopInteractiveToolUnsupportedError(forcedTool, stepName);
+  }
   return {
     ...baseAgent,
     systemPrompt: [
@@ -105,11 +141,11 @@ export function buildLoopStepAgent(baseAgent: AgentConfig, stepName: string, loo
       `## Active loop step: ${stepName}`,
       loopPrompt,
     ].filter(Boolean).join("\n\n"),
-    allowedTools: loop.tools ?? baseAgent.allowedTools,
+    allowedTools,
     skills: loop.skills ?? baseAgent.skills,
     model: loop.model ?? baseAgent.model,
     reasoning: (loop.reasoning as AgentConfig["reasoning"]) ?? baseAgent.reasoning,
     maxTurns: loop.maxTurns ?? baseAgent.maxTurns,
-    toolChoice: (loop.toolChoice as AgentConfig["toolChoice"]) ?? baseAgent.toolChoice,
+    toolChoice,
   };
 }

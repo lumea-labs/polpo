@@ -415,6 +415,7 @@ export { LOOP_LIFECYCLE_HOOKS, isLoopStep, isToolStep, isParallelStep, isSwitchS
 export { normalizeProjectLoop } from "./loop/normalize.js";
 export {
   buildLoopStepAgent,
+  LoopInteractiveToolUnsupportedError,
   loopContextPrompt,
   maybeParseJson,
   normalizeToolInput,
