@@ -440,6 +440,35 @@ describe("completion durable delivery routing", () => {
     ]));
   });
 
+  it("runs an agent step from deterministic loop context without sending an empty prompt", async () => {
+    const observedModelMessages: unknown[][] = [];
+    const executedTools: string[] = [];
+    const deps = continuationLoopDeps(
+      deliveryScope(),
+      observedModelMessages,
+      executedTools,
+    );
+
+    const res = await completionRoutes(() => deps).request("/", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        agent: "leo",
+        loop: "leo-change-site",
+        stream: true,
+        messages: [{ role: "user", content: "" }],
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.text()).toContain("implemented");
+    expect(executedTools).toEqual(["site_context_get", "site_checkout"]);
+    expect(observedModelMessages).toHaveLength(1);
+    expect(observedModelMessages[0]).toEqual(expect.arrayContaining([
+      expect.objectContaining({ role: "user" }),
+    ]));
+  });
+
   it("rejects an orphan client-tool result before any project-loop side effect", async () => {
     const observedModelMessages: unknown[][] = [];
     const executedTools: string[] = [];

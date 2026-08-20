@@ -33,7 +33,11 @@ import {
   LoopInteractiveToolUnsupportedError,
 } from "@polpo-ai/core";
 import { generateText, type LanguageModel, type LanguageModelUsage } from "ai";
-import { prepareModelMessagesForTransport, runModelPolicyTurn } from "@polpo-ai/llm";
+import {
+  prepareModelMessagesForProvider,
+  prepareModelMessagesForTransport,
+  runModelPolicyTurn,
+} from "@polpo-ai/llm";
 import type {
   CompletionRouteDeps,
   CompletionToolRunScope,
@@ -58,6 +62,18 @@ import {
 } from "./tool-disclosure.js";
 
 export const MAX_TURNS = 20;
+
+const CONTEXT_ONLY_STEP_INSTRUCTION =
+  "Execute the current loop step using the deterministic loop context provided in the system instructions.";
+
+export class LoopAgentStepPromptRequiredError extends Error {
+  readonly code = "loop_agent_step_prompt_required";
+
+  constructor(readonly stepName: string) {
+    super(`Loop agent step "${stepName}" has neither model messages nor deterministic context`);
+    this.name = "LoopAgentStepPromptRequiredError";
+  }
+}
 
 /**
  * Minimal model info needed by the completions route.
@@ -267,13 +283,14 @@ export async function runAgentStepCompletion(options: {
     options.contextTrust ?? settings?.contextTrust,
   );
   const reasoning = agentConfig.reasoning ?? settings?.reasoning;
+  const visibleLoopContext = loopUserVisibleContext(context);
   let fullSystemPrompt = await buildRuntimeAgentPrompt(
     deps,
     agentConfig,
     extraSystemParts,
     loopContextPrompt(
       stepName,
-      loopUserVisibleContext(context),
+      visibleLoopContext,
       contextTrust,
     ),
     contextTrust,
@@ -283,6 +300,12 @@ export async function runAgentStepCompletion(options: {
   let messages: any[] = contextTrust === "enforce"
     ? protectRuntimeToolResultMessages(aiMessages)
     : [...aiMessages];
+  if (
+    prepareModelMessagesForProvider(messages).length === 0
+    && Object.keys(visibleLoopContext).length > 0
+  ) {
+    messages = [{ role: "user", content: CONTEXT_ONLY_STEP_INSTRUCTION }];
+  }
   if (deps.runPreflightPolicy) {
     const guarded = await deps.runPreflightPolicy.evaluate({
       phase: "model.preflight",
@@ -305,6 +328,9 @@ export async function runAgentStepCompletion(options: {
     assertModelPreflightValue(guarded.value, guarded.decisions);
     fullSystemPrompt = guarded.value.systemPrompt;
     messages = guarded.value.messages;
+  }
+  if (prepareModelMessagesForProvider(messages).length === 0) {
+    throw new LoopAgentStepPromptRequiredError(stepName);
   }
   const initialResolved = await deps.resolveAgentModel(
     agentConfigForModelPrimary(agentConfig, settings),

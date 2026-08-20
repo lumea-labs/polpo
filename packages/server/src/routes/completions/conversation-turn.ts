@@ -779,15 +779,17 @@ export async function prepareChatCompletionExecution(
     ) {
       const orphanToolResult = !continuation
         && body.messages.some((message) => message.role === "tool");
-      return completionError(
-        orphanToolResult
-          ? "A client tool result can enter a Project Loop only through polpo.continuation."
-          : "The selected Project Loop contains an agent step, but the request has no model-visible messages.",
-        400,
-        orphanToolResult
-          ? "client_tool_continuation_required"
-          : "project_loop_prompt_required",
-      );
+      if (orphanToolResult || continuation) {
+        return completionError(
+          orphanToolResult
+            ? "A client tool result can enter a Project Loop only through polpo.continuation."
+            : "The canonical client-tool continuation has no model-visible history.",
+          400,
+          orphanToolResult
+            ? "client_tool_continuation_required"
+            : "project_loop_prompt_required",
+        );
+      }
     }
     if (requestedSkills.length > 0) {
       const assignedSkills = new Set(
