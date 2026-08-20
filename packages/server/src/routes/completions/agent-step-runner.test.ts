@@ -212,6 +212,107 @@ describe("agent model profile resolution", () => {
 });
 
 describe("runAgentStepCompletion tool validation", () => {
+  it("creates an internal instruction when deterministic context is the only agent-step input", async () => {
+    const observedPrompts: unknown[][] = [];
+    const model = new MockLanguageModelV3({
+      doStream: async (options) => {
+        observedPrompts.push(options.prompt);
+        return { stream: convertArrayToReadableStream([
+          { type: "stream-start", warnings: [] },
+          { type: "text-start", id: "text" },
+          { type: "text-delta", id: "text", delta: "done" },
+          { type: "text-end", id: "text" },
+          {
+            type: "finish",
+            finishReason: { unified: "stop", raw: undefined },
+            usage: {
+              inputTokens: { total: 1 },
+              outputTokens: { total: 1 },
+            },
+          },
+        ] as any[]) };
+      },
+    });
+    const deps = {
+      getConfig: () => ({ settings: {} }),
+      getMemoryStore: () => undefined,
+      emit: vi.fn(),
+      resolveAgentModel: vi.fn(async () => ({
+        model: {
+          id: "mock/model",
+          aiModel: model,
+          provider: "mock",
+          contextWindow: 128_000,
+          maxTokens: 8192,
+        },
+      })),
+      resolveAgentTools: vi.fn(async () => ({
+        tools: [],
+        extraAiTools: {},
+        executor: vi.fn(),
+      })),
+      buildRuntimePrompt: vi.fn(async () => "system"),
+    } as unknown as CompletionRouteDeps;
+
+    const result = await runAgentStepCompletion({
+      deps,
+      agentConfig: { name: "nested-agent", model: "mock/model" },
+      aiMessages: [],
+      extraSystemParts: [],
+      context: {
+        site_context: {
+          output: { operation: { summary: "Add WhatsApp" } },
+        },
+      },
+      stepName: "implement",
+    });
+
+    expect(result.text).toBe("done");
+    expect(observedPrompts).toHaveLength(1);
+    expect(observedPrompts[0]).toEqual(expect.arrayContaining([
+      expect.objectContaining({ role: "user" }),
+    ]));
+  });
+
+  it("fails before provider invocation when an agent step has neither messages nor context", async () => {
+    const doStream = vi.fn();
+    const model = new MockLanguageModelV3({ doStream });
+    const deps = {
+      getConfig: () => ({ settings: {} }),
+      getMemoryStore: () => undefined,
+      emit: vi.fn(),
+      resolveAgentModel: vi.fn(async () => ({
+        model: {
+          id: "mock/model",
+          aiModel: model,
+          provider: "mock",
+          contextWindow: 128_000,
+          maxTokens: 8192,
+        },
+      })),
+      resolveAgentTools: vi.fn(async () => ({
+        tools: [],
+        extraAiTools: {},
+        executor: vi.fn(),
+      })),
+      buildRuntimePrompt: vi.fn(async () => "system"),
+    } as unknown as CompletionRouteDeps;
+
+    await expect(runAgentStepCompletion({
+      deps,
+      agentConfig: { name: "nested-agent", model: "mock/model" },
+      aiMessages: [],
+      extraSystemParts: [],
+      context: {},
+      stepName: "implement",
+    })).rejects.toMatchObject({
+      name: "LoopAgentStepPromptRequiredError",
+      code: "loop_agent_step_prompt_required",
+      stepName: "implement",
+    });
+    expect(doStream).not.toHaveBeenCalled();
+  });
+
   it("rejects a forced client interaction tool before nested model execution", async () => {
     const deps = {
       getConfig: () => ({ settings: {} }),
