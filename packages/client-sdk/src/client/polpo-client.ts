@@ -43,6 +43,7 @@ import type {
   ChatSession,
   ChatMessage,
   ChatCompletionRequest,
+  ContinueClientToolResultRequest,
   ChatCompletionResponse,
   ChatCompletionChunk,
   ChatSuggestion,
@@ -155,6 +156,9 @@ export interface PolpoClientConfig {
 export class ChatCompletionStream implements AsyncIterable<ChatCompletionChunk> {
   /** Session ID assigned by the server. Available after the first `next()` call. */
   sessionId: string | null = null;
+
+  /** Monotonic transcript version after this completion is persisted. */
+  sessionVersion: number | null = null;
 
   /** Active Run id used by steering APIs. Available after start() or first next(). */
   runId: string | null = null;
@@ -299,7 +303,10 @@ export class ChatCompletionStream implements AsyncIterable<ChatCompletionChunk> 
     if (this.req.sessionId) {
       headers["x-session-id"] = this.req.sessionId;
     }
-    const { sessionId: _, ...body } = this.req;
+    if (this.req.idempotencyKey) {
+      headers["Idempotency-Key"] = this.req.idempotencyKey;
+    }
+    const { sessionId: _, idempotencyKey: __, ...body } = this.req;
     const res = this.resumeMode
       ? await this.fetchFn(
           `${this.runsUrl}/${encodeURIComponent(this.runId!)}/events${
@@ -321,6 +328,8 @@ export class ChatCompletionStream implements AsyncIterable<ChatCompletionChunk> 
     if (!this.resumeMode) {
       this.sessionId = res.headers.get("x-session-id");
       this.runId = res.headers.get("x-polpo-run-id");
+      const sessionVersion = res.headers.get("x-session-version");
+      this.sessionVersion = sessionVersion === null ? null : Number(sessionVersion);
     }
     this.terminal = res.headers.get("x-polpo-run-terminal") === "true";
 
@@ -1690,6 +1699,9 @@ export class PolpoClient {
     if (req.sessionId) {
       headers["x-session-id"] = req.sessionId;
     }
+    if (req.idempotencyKey) {
+      headers["Idempotency-Key"] = req.idempotencyKey;
+    }
     // Apply the constructor-level default user when the call didn't pass one.
     // Per-call `user` always wins so a single SDK instance can serve multiple
     // end-users by overriding case-by-case.
@@ -1697,7 +1709,7 @@ export class PolpoClient {
       req.user === undefined && this.defaultUser !== undefined
         ? { ...req, user: this.defaultUser }
         : req;
-    const { sessionId: _, ...body } = reqWithUser;
+    const { sessionId: _, idempotencyKey: __, ...body } = reqWithUser;
     const res = await this.fetchFn(url, {
       method: "POST",
       headers,
@@ -1731,6 +1743,31 @@ export class PolpoClient {
       this.headers,
       reqWithUser,
     );
+  }
+
+  /** Resume one pending client-side tool call through an explicit Project Loop. */
+  continueWithToolResult(req: ContinueClientToolResultRequest): ChatCompletionStream {
+    return this.chatCompletionsStream({
+      sessionId: req.sessionId,
+      idempotencyKey: req.idempotencyKey,
+      agent: req.agent,
+      loop: req.loop,
+      ...(req.user ? { user: req.user } : {}),
+      ...(req.metadata ? { metadata: req.metadata } : {}),
+      messages: [{
+        role: "tool",
+        tool_call_id: req.toolCallId,
+        content: req.result,
+      }],
+      polpo: {
+        continuation: {
+          type: "client_tool",
+          tool_call_id: req.toolCallId,
+          expected_session_version: req.sessionVersion,
+        },
+        delivery: { onDisconnect: "continue" },
+      },
+    });
   }
 
   // ── Sessions ────────────────────────────────────────────

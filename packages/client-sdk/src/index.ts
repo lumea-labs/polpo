@@ -141,6 +141,7 @@ export type {
   ChatCompletionFunctionTool,
   ChatCompletionToolChoice,
   ChatCompletionRequest,
+  ContinueClientToolResultRequest,
   RuntimeCompletionRequestOptions,
   SteeringAttachment,
   SteeringContent,

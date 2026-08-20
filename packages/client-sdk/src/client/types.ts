@@ -1126,6 +1126,8 @@ export interface ChatSession {
   user?: string;
   /** Arbitrary key/value tags attached at create time. */
   metadata?: Record<string, string>;
+  /** Monotonic transcript version used for optimistic continuation. */
+  version?: number;
 }
 
 /** An ordered segment in the assistant message stream. */
@@ -1251,6 +1253,8 @@ export interface ChatCompletionRequest extends RuntimeCompletionRequestOptions {
   project?: string;
   /** Session ID for conversation persistence. If omitted, server auto-selects or creates one. */
   sessionId?: string;
+  /** Transport-only retry identity. Sent as the Idempotency-Key header. */
+  idempotencyKey?: string;
   /** Target a specific agent by name for direct conversation. Uses the agent's own model, system prompt, and coding tools. Omit to talk to the orchestrator (default). */
   agent?: string;
   /**
@@ -1276,7 +1280,25 @@ export interface ChatCompletionRequest extends RuntimeCompletionRequestOptions {
     delivery?: {
       onDisconnect: "cancel" | "continue";
     };
+    /** Continue a pending client-side tool call into an explicit Project Loop. */
+    continuation?: {
+      type: "client_tool";
+      tool_call_id: string;
+      expected_session_version: number;
+    };
   };
+}
+
+export interface ContinueClientToolResultRequest {
+  sessionId: string;
+  sessionVersion: number;
+  idempotencyKey: string;
+  agent: string;
+  loop: string;
+  toolCallId: string;
+  result: string | ContentPart[];
+  user?: string;
+  metadata?: Record<string, string>;
 }
 
 export interface RunStreamEvent<TData extends Record<string, unknown> = Record<string, unknown>> {

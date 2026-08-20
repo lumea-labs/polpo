@@ -324,7 +324,8 @@ async function loadHistory(
   if (limit === 0) return [];
   const messages = await store.getRecentMessages(sessionId, limit);
   return messages
-    .filter((message) => message.role === "assistant" || message.role === "user")
+    .filter((message): message is typeof message & { role: "assistant" | "user" } =>
+      message.role === "assistant" || message.role === "user")
     .map((message) => ({
       content: normalizeStoredContent(message.content),
       role: message.role,

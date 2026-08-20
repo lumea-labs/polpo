@@ -9,8 +9,16 @@ import type {
   SessionContentPart,
   SessionCreateOptions,
   SessionListFilter,
+  SessionMessageOptions,
 } from "@polpo-ai/core/session-store";
 import { normalizeSessionCreateArgs } from "@polpo-ai/core/session-store";
+import {
+  projectResolvedClientToolCalls,
+  resolvePendingClientToolCall,
+  SessionContinuationError,
+  type PreparedSessionContinuation,
+  type PrepareSessionContinuationInput,
+} from "@polpo-ai/core/session-continuation";
 import type { ChatSuggestion } from "@polpo-ai/core/chat-interactions";
 import { type Dialect, deserializeJson, extractAffectedRows } from "../utils.js";
 
@@ -21,6 +29,7 @@ export class DrizzleSessionStore implements SessionStore {
     private db: any,
     private sessions: AnyTable,
     private messages: AnyTable,
+    private continuations: AnyTable,
     private dialect: Dialect,
   ) {}
 
@@ -63,9 +72,18 @@ export class DrizzleSessionStore implements SessionStore {
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
       messageCount,
+      version: Number(row.version ?? 0),
       ...(row.agent ? { agent: row.agent } : {}),
       ...(row.user ? { user: row.user } : {}),
       ...(metadata ? { metadata } : {}),
+      ...(row.scopeKey
+        ? {
+            scope: {
+              key: row.scopeKey,
+              ...(row.scopeVersion ? { version: row.scopeVersion } : {}),
+            },
+          }
+        : {}),
     };
   }
 
@@ -77,6 +95,7 @@ export class DrizzleSessionStore implements SessionStore {
       ts: row.ts,
       toolCalls: deserializeJson<ToolCallInfo[] | undefined>(row.toolCalls, undefined, this.dialect),
       suggestions: deserializeJson<ChatSuggestion[] | undefined>(row.suggestions, undefined, this.dialect),
+      ...(row.toolCallId ? { toolCallId: row.toolCallId } : {}),
     };
   }
 
@@ -90,13 +109,21 @@ export class DrizzleSessionStore implements SessionStore {
       agent: opts.agent ?? null,
       user: opts.user ?? null,
       metadata: this.serializeMetadata(opts.metadata),
+      version: 0,
+      scopeKey: opts.scope?.key ?? null,
+      scopeVersion: opts.scope?.version ?? null,
       createdAt: now,
       updatedAt: now,
     });
     return id;
   }
 
-  async addMessage(sessionId: string, role: MessageRole, content: string | SessionContentPart[]): Promise<Message> {
+  async addMessage(
+    sessionId: string,
+    role: MessageRole,
+    content: string | SessionContentPart[],
+    options?: SessionMessageOptions,
+  ): Promise<Message> {
     const id = nanoid();
     const ts = new Date().toISOString();
     const serialized = this.serializeContent(content);
@@ -108,12 +135,19 @@ export class DrizzleSessionStore implements SessionStore {
       ts,
       toolCalls: null,
       suggestions: null,
+      toolCallId: options?.toolCallId ?? null,
     });
     await this.db.update(this.sessions)
-      .set({ updatedAt: ts })
+      .set({ updatedAt: ts, version: sql`${this.sessions.version} + 1` })
       .where(eq(this.sessions.id, sessionId));
 
-    return { id, role, content, ts };
+    return {
+      id,
+      role,
+      content,
+      ts,
+      ...(options?.toolCallId ? { toolCallId: options.toolCallId } : {}),
+    };
   }
 
   async updateMessage(
@@ -148,7 +182,7 @@ export class DrizzleSessionStore implements SessionStore {
     const rows: any[] = await this.db.select().from(this.messages)
       .where(eq(this.messages.sessionId, sessionId))
       .orderBy(asc(this.messages.ts));
-    return rows.map((r) => this.rowToMessage(r));
+    return projectResolvedClientToolCalls(rows.map((r) => this.rowToMessage(r)));
   }
 
   async getRecentMessages(sessionId: string, limit: number): Promise<Message[]> {
@@ -156,7 +190,7 @@ export class DrizzleSessionStore implements SessionStore {
       .where(eq(this.messages.sessionId, sessionId))
       .orderBy(desc(this.messages.ts))
       .limit(limit);
-    return rows.reverse().map((r) => this.rowToMessage(r));
+    return projectResolvedClientToolCalls(rows.reverse().map((r) => this.rowToMessage(r)));
   }
 
   async listSessions(filter?: SessionListFilter): Promise<Session[]> {
@@ -167,6 +201,9 @@ export class DrizzleSessionStore implements SessionStore {
         agent: this.sessions.agent,
         user: this.sessions.user,
         metadata: this.sessions.metadata,
+        version: this.sessions.version,
+        scopeKey: this.sessions.scopeKey,
+        scopeVersion: this.sessions.scopeVersion,
         createdAt: this.sessions.createdAt,
         updatedAt: this.sessions.updatedAt,
         messageCount: drizzleCount(this.messages.id),
@@ -207,6 +244,9 @@ export class DrizzleSessionStore implements SessionStore {
         agent: this.sessions.agent,
         user: this.sessions.user,
         metadata: this.sessions.metadata,
+        version: this.sessions.version,
+        scopeKey: this.sessions.scopeKey,
+        scopeVersion: this.sessions.scopeVersion,
         createdAt: this.sessions.createdAt,
         updatedAt: this.sessions.updatedAt,
         messageCount: drizzleCount(this.messages.id),
@@ -227,6 +267,9 @@ export class DrizzleSessionStore implements SessionStore {
         agent: this.sessions.agent,
         user: this.sessions.user,
         metadata: this.sessions.metadata,
+        version: this.sessions.version,
+        scopeKey: this.sessions.scopeKey,
+        scopeVersion: this.sessions.scopeVersion,
         createdAt: this.sessions.createdAt,
         updatedAt: this.sessions.updatedAt,
         messageCount: drizzleCount(this.messages.id),
@@ -281,6 +324,257 @@ export class DrizzleSessionStore implements SessionStore {
       deleted++;
     }
     return deleted;
+  }
+
+  async prepareContinuation(
+    input: PrepareSessionContinuationInput,
+  ): Promise<PreparedSessionContinuation> {
+    if (this.dialect === "sqlite") {
+      if (typeof this.db.transaction !== "function") {
+        throw new Error("Session continuation requires transactional database support");
+      }
+      return this.db.transaction((db: any) => {
+        const session = db.select().from(this.sessions)
+          .where(eq(this.sessions.id, input.sessionId))
+          .limit(1)
+          .all()[0];
+        if (!session) {
+          throw new SessionContinuationError("session_not_found", "Session not found");
+        }
+        this.assertContinuationScope(session, input);
+
+        const existing = db
+          .select()
+          .from(this.continuations)
+          .where(and(
+            eq(this.continuations.sessionId, input.sessionId),
+            eq(this.continuations.idempotencyKey, input.idempotencyKey),
+          ))
+          .limit(1)
+          .all()[0];
+        if (existing) {
+          if (existing.fingerprint !== input.fingerprint) {
+            throw new SessionContinuationError(
+              "idempotency_conflict",
+              "Idempotency key was already used with a different continuation",
+            );
+          }
+          const rows: any[] = db.select().from(this.messages)
+            .where(eq(this.messages.sessionId, input.sessionId))
+            .orderBy(asc(this.messages.ts))
+            .all();
+          return {
+            status: "replay" as const,
+            sessionVersion: Number(existing.sessionVersion),
+            runId: existing.runId,
+            messages: projectResolvedClientToolCalls(rows.map((row) => this.rowToMessage(row))),
+          };
+        }
+
+        if (Number(session.version ?? 0) !== input.expectedSessionVersion) {
+          throw new SessionContinuationError(
+            "session_version_conflict",
+            "Session version does not match",
+          );
+        }
+
+        const rows: any[] = db.select().from(this.messages)
+          .where(eq(this.messages.sessionId, input.sessionId))
+          .orderBy(asc(this.messages.ts))
+          .all();
+        resolvePendingClientToolCall(
+          projectResolvedClientToolCalls(rows.map((row) => this.rowToMessage(row))),
+          input.toolCallId,
+        );
+
+        const now = new Date().toISOString();
+        const nextVersion = input.expectedSessionVersion + 1;
+        const updated = db.update(this.sessions)
+          .set({ updatedAt: now, version: nextVersion })
+          .where(and(
+            eq(this.sessions.id, input.sessionId),
+            eq(this.sessions.version, input.expectedSessionVersion),
+          ))
+          .run();
+        if (extractAffectedRows(updated) !== 1) {
+          throw new SessionContinuationError(
+            "session_version_conflict",
+            "Session version changed while continuing",
+          );
+        }
+
+        const message: Message = {
+          id: nanoid(),
+          role: "tool",
+          content: input.result,
+          ts: now,
+          toolCallId: input.toolCallId,
+        };
+        db.insert(this.messages).values({
+          id: message.id,
+          sessionId: input.sessionId,
+          role: message.role,
+          content: this.serializeContent(message.content),
+          ts: message.ts,
+          toolCalls: null,
+          suggestions: null,
+          toolCallId: message.toolCallId,
+        }).run();
+        db.insert(this.continuations).values({
+          id: nanoid(),
+          sessionId: input.sessionId,
+          idempotencyKey: input.idempotencyKey,
+          fingerprint: input.fingerprint,
+          toolCallId: input.toolCallId,
+          runId: input.runId,
+          sessionVersion: nextVersion,
+          createdAt: now,
+        }).run();
+
+        return {
+          status: "prepared" as const,
+          sessionVersion: nextVersion,
+          runId: input.runId,
+          messages: projectResolvedClientToolCalls([
+            ...rows.map((row) => this.rowToMessage(row)),
+            message,
+          ]),
+        };
+      });
+    }
+
+    const execute = async (db: any): Promise<PreparedSessionContinuation> => {
+      const sessionRows: any[] = await db.select().from(this.sessions)
+        .where(eq(this.sessions.id, input.sessionId))
+        .limit(1);
+      const session = sessionRows[0];
+      if (!session) {
+        throw new SessionContinuationError("session_not_found", "Session not found");
+      }
+      this.assertContinuationScope(session, input);
+
+      const existingRows: any[] = await db
+        .select()
+        .from(this.continuations)
+        .where(and(
+          eq(this.continuations.sessionId, input.sessionId),
+          eq(this.continuations.idempotencyKey, input.idempotencyKey),
+        ))
+        .limit(1);
+      const existing = existingRows[0];
+      if (existing) {
+        if (existing.fingerprint !== input.fingerprint) {
+          throw new SessionContinuationError(
+            "idempotency_conflict",
+            "Idempotency key was already used with a different continuation",
+          );
+        }
+        const rows: any[] = await db.select().from(this.messages)
+          .where(eq(this.messages.sessionId, input.sessionId))
+          .orderBy(asc(this.messages.ts));
+        return {
+          status: "replay",
+          sessionVersion: Number(existing.sessionVersion),
+          runId: existing.runId,
+          messages: projectResolvedClientToolCalls(rows.map((row) => this.rowToMessage(row))),
+        };
+      }
+
+      if (Number(session.version ?? 0) !== input.expectedSessionVersion) {
+        throw new SessionContinuationError(
+          "session_version_conflict",
+          "Session version does not match",
+        );
+      }
+
+      const rows: any[] = await db.select().from(this.messages)
+        .where(eq(this.messages.sessionId, input.sessionId))
+        .orderBy(asc(this.messages.ts));
+      resolvePendingClientToolCall(
+        projectResolvedClientToolCalls(rows.map((row) => this.rowToMessage(row))),
+        input.toolCallId,
+      );
+
+      const now = new Date().toISOString();
+      const nextVersion = input.expectedSessionVersion + 1;
+      const updated = await db.update(this.sessions)
+        .set({
+          updatedAt: now,
+          version: nextVersion,
+        })
+        .where(and(
+          eq(this.sessions.id, input.sessionId),
+          eq(this.sessions.version, input.expectedSessionVersion),
+        ));
+      if (extractAffectedRows(updated) !== 1) {
+        throw new SessionContinuationError(
+          "session_version_conflict",
+          "Session version changed while continuing",
+        );
+      }
+
+      const message: Message = {
+        id: nanoid(),
+        role: "tool",
+        content: input.result,
+        ts: now,
+        toolCallId: input.toolCallId,
+      };
+      await db.insert(this.messages).values({
+        id: message.id,
+        sessionId: input.sessionId,
+        role: message.role,
+        content: this.serializeContent(message.content),
+        ts: message.ts,
+        toolCalls: null,
+        suggestions: null,
+        toolCallId: message.toolCallId,
+      });
+      await db.insert(this.continuations).values({
+        id: nanoid(),
+        sessionId: input.sessionId,
+        idempotencyKey: input.idempotencyKey,
+        fingerprint: input.fingerprint,
+        toolCallId: input.toolCallId,
+        runId: input.runId,
+        sessionVersion: nextVersion,
+        createdAt: now,
+      });
+
+      return {
+        status: "prepared",
+        sessionVersion: nextVersion,
+        runId: input.runId,
+        messages: projectResolvedClientToolCalls([
+          ...rows.map((row) => this.rowToMessage(row)),
+          message,
+        ]),
+      };
+    };
+
+    if (typeof this.db.transaction !== "function") {
+      throw new Error("Session continuation requires transactional database support");
+    }
+    return this.db.transaction(execute);
+  }
+
+  private assertContinuationScope(
+    session: any,
+    input: PrepareSessionContinuationInput,
+  ): void {
+    const storedScope = session.scopeKey
+      ? { key: session.scopeKey, ...(session.scopeVersion ? { version: session.scopeVersion } : {}) }
+      : undefined;
+    if (
+      (session.agent ?? undefined) !== input.agent
+      || (session.user ?? undefined) !== input.user
+      || JSON.stringify(storedScope) !== JSON.stringify(input.scope)
+    ) {
+      throw new SessionContinuationError(
+        "continuation_scope_mismatch",
+        "Continuation scope does not match the session",
+      );
+    }
   }
 
   async close(): Promise<void> {

@@ -691,6 +691,85 @@ describe.skipIf(!canConnect)("PostgreSQL Drizzle stores", () => {
       const messages = await stores.sessionStore.getMessages(sid);
       expect(messages[0]?.suggestions).toEqual(suggestions);
     });
+
+    it("atomically prepares and replays a client-tool continuation", async () => {
+      const sid = await stores.sessionStore.create({
+        agent: "leo",
+        user: "user-1",
+        scope: { key: "tenant:site", version: "3" },
+      });
+      const assistant = await stores.sessionStore.addMessage(sid, "assistant", "Choose");
+      await stores.sessionStore.updateMessage(sid, assistant.id, "Choose", [{
+        id: "call-1",
+        name: "configure_site_module",
+        state: "interrupted",
+      }]);
+      const input = {
+        sessionId: sid,
+        agent: "leo",
+        user: "user-1",
+        scope: { key: "tenant:site", version: "3" },
+        toolCallId: "call-1",
+        result: "configured",
+        expectedSessionVersion: 1,
+        idempotencyKey: "idem-1",
+        fingerprint: "fingerprint-1",
+        runId: "looprun-1",
+      } as const;
+
+      await expect(stores.sessionStore.prepareContinuation!(input)).resolves.toMatchObject({
+        status: "prepared",
+        sessionVersion: 2,
+        runId: "looprun-1",
+      });
+      await expect(stores.sessionStore.prepareContinuation!(input)).resolves.toMatchObject({
+        status: "replay",
+        runId: "looprun-1",
+      });
+      await expect(stores.sessionStore.prepareContinuation!({
+        ...input,
+        scope: { key: "other-site", version: "3" },
+      })).rejects.toMatchObject({ code: "continuation_scope_mismatch" });
+      await expect(stores.sessionStore.prepareContinuation!({
+        ...input,
+        fingerprint: "different",
+      })).rejects.toMatchObject({ code: "idempotency_conflict" });
+      expect(await stores.sessionStore.getMessages(sid)).toHaveLength(2);
+    });
+
+    it("allows only one concurrent continuation for one pending call", async () => {
+      const sid = await stores.sessionStore.create();
+      const assistant = await stores.sessionStore.addMessage(sid, "assistant", "Choose");
+      await stores.sessionStore.updateMessage(sid, assistant.id, "Choose", [{
+        id: "call-1",
+        name: "configure",
+        state: "interrupted",
+      }]);
+      const base = {
+        sessionId: sid,
+        toolCallId: "call-1",
+        result: "configured",
+        expectedSessionVersion: 1,
+        fingerprint: "fingerprint",
+      } as const;
+
+      const outcomes = await Promise.allSettled([
+        stores.sessionStore.prepareContinuation!({
+          ...base,
+          idempotencyKey: "idem-a",
+          runId: "looprun-a",
+        }),
+        stores.sessionStore.prepareContinuation!({
+          ...base,
+          idempotencyKey: "idem-b",
+          runId: "looprun-b",
+        }),
+      ]);
+
+      expect(outcomes.filter((outcome) => outcome.status === "fulfilled")).toHaveLength(1);
+      expect(outcomes.filter((outcome) => outcome.status === "rejected")).toHaveLength(1);
+      expect(await stores.sessionStore.getMessages(sid)).toHaveLength(2);
+    });
   });
 
   // ═══════════════════════════════════════════════════════════════════════

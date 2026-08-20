@@ -41,7 +41,14 @@ import {
   runCancellationRequestsSqlite,
 } from "./schema/run-delivery.js";
 import { loopRunsPg, loopRunsSqlite } from "./schema/loop-runs.js";
-import { sessionsPg, messagesPg, sessionsSqlite, messagesSqlite } from "./schema/sessions.js";
+import {
+  sessionsPg,
+  messagesPg,
+  sessionContinuationsPg,
+  sessionsSqlite,
+  messagesSqlite,
+  sessionContinuationsSqlite,
+} from "./schema/sessions.js";
 import { logSessionsPg, logEntriesPg, logSessionsSqlite, logEntriesSqlite } from "./schema/logs.js";
 import { modelInvocationLogsPg, modelInvocationLogsSqlite } from "./schema/model-invocations.js";
 import { approvalsPg, approvalsSqlite } from "./schema/approvals.js";
@@ -176,7 +183,13 @@ export function createPgStores(db: any): DrizzleStores {
       new DrizzleLoopRunStore(db, runsPg, "pg", true),
       "shadow",
     ),
-    sessionStore: new DrizzleSessionStore(db, sessionsPg, messagesPg, "pg"),
+    sessionStore: new DrizzleSessionStore(
+      db,
+      sessionsPg,
+      messagesPg,
+      sessionContinuationsPg,
+      "pg",
+    ),
     logStore: new DrizzleLogStore(db, logSessionsPg, logEntriesPg, "pg"),
     modelInvocationStore: new DrizzleModelInvocationStore(db, modelInvocationLogsPg, "pg"),
     createLogStore: () => new DrizzleLogStore(db, logSessionsPg, logEntriesPg, "pg"),
@@ -225,7 +238,13 @@ export function createSqliteStores(db: any): DrizzleStores {
       new DrizzleLoopRunStore(db, runsSqlite, "sqlite", true),
       "shadow",
     ),
-    sessionStore: new DrizzleSessionStore(db, sessionsSqlite, messagesSqlite, "sqlite"),
+    sessionStore: new DrizzleSessionStore(
+      db,
+      sessionsSqlite,
+      messagesSqlite,
+      sessionContinuationsSqlite,
+      "sqlite",
+    ),
     logStore: new DrizzleLogStore(db, logSessionsSqlite, logEntriesSqlite, "sqlite"),
     modelInvocationStore: new DrizzleModelInvocationStore(db, modelInvocationLogsSqlite, "sqlite"),
     createLogStore: () => new DrizzleLogStore(db, logSessionsSqlite, logEntriesSqlite, "sqlite"),

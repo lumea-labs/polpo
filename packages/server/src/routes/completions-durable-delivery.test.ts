@@ -172,4 +172,122 @@ describe("completion durable delivery routing", () => {
     expect(events.at(-1)?.type).toBe("run.completed");
     expect(events.some((event) => event.type === "response.done")).toBe(true);
   });
+
+  it("rejects a client-tool continuation without session and idempotency headers", async () => {
+    const res = await completionRoutes(() => loopDeps(deliveryScope())).request("/", request({
+      agent: "timer",
+      loop: "time-tracker",
+      stream: true,
+      messages: [{ role: "tool", tool_call_id: "call-1", content: "configured" }],
+      polpo: {
+        continuation: {
+          type: "client_tool",
+          tool_call_id: "call-1",
+          expected_session_version: 2,
+        },
+        delivery: { onDisconnect: "continue" },
+      },
+    }));
+
+    expect(res.status).toBe(400);
+    await expect(res.json()).resolves.toMatchObject({
+      error: { code: "continuation_session_required" },
+    });
+  });
+
+  it("atomically continues canonical session history into one durable loop run", async () => {
+    const scope = deliveryScope();
+    let reservedRunId: string | undefined;
+    const prepareContinuation = vi.fn(async (input: any) => {
+      reservedRunId ??= input.runId;
+      return {
+        status: reservedRunId === input.runId ? "prepared" : "replay",
+        sessionVersion: 3,
+        runId: reservedRunId,
+        messages: [
+          { id: "u1", role: "user", content: "Build a site", ts: "2026-01-01T00:00:00Z" },
+          {
+            id: "a1",
+            role: "assistant",
+            content: "Choose a module",
+            ts: "2026-01-01T00:00:01Z",
+            toolCalls: [{
+              id: "call-1",
+              name: "configure_site_module",
+              arguments: { module: "booking" },
+              state: "completed",
+              result: "configured",
+            }],
+          },
+          {
+            id: "t1",
+            role: "tool",
+            content: "configured",
+            ts: "2026-01-01T00:00:02Z",
+            toolCallId: "call-1",
+          },
+        ],
+      };
+    });
+    const addMessage = vi.fn(async (_sessionId, role, content) => ({
+      id: `message-${role}`,
+      role,
+      content,
+      ts: new Date().toISOString(),
+    }));
+    const sessionStore = {
+      prepareContinuation,
+      addMessage,
+      updateMessage: vi.fn(async () => true),
+    };
+    const deps = loopDeps(scope);
+    deps.getSessionStore = () => sessionStore;
+
+    const continuationRequest = () => ({
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-session-id": "session-1",
+        "idempotency-key": "continue-1",
+      },
+      body: JSON.stringify({
+        agent: "timer",
+        loop: "time-tracker",
+        stream: true,
+        user: "user-1",
+        messages: [{ role: "tool", tool_call_id: "call-1", content: "configured" }],
+        polpo: {
+          continuation: {
+            type: "client_tool",
+            tool_call_id: "call-1",
+            expected_session_version: 2,
+          },
+          delivery: { onDisconnect: "continue" },
+        },
+      }),
+    });
+
+    const first = await completionRoutes(() => deps).request("/", continuationRequest());
+    expect(first.status).toBe(200);
+    expect(first.headers.get("x-session-id")).toBe("session-1");
+    expect(first.headers.get("x-session-version")).toBe("4");
+    expect(await first.text()).toContain("[DONE]");
+    const runId = first.headers.get("x-polpo-run-id");
+    expect(runId).toBe(reservedRunId);
+
+    const second = await completionRoutes(() => deps).request("/", continuationRequest());
+    expect(second.status).toBe(200);
+    expect(second.headers.get("x-polpo-run-id")).toBe(runId);
+    expect(await second.text()).toContain("[DONE]");
+    expect(prepareContinuation).toHaveBeenCalledTimes(2);
+    expect(prepareContinuation).toHaveBeenCalledWith(expect.objectContaining({
+      sessionId: "session-1",
+      agent: "timer",
+      user: "user-1",
+      toolCallId: "call-1",
+      expectedSessionVersion: 2,
+      idempotencyKey: "continue-1",
+    }));
+    expect(addMessage.mock.calls.every((call) => call[1] === "assistant")).toBe(true);
+  });
 });

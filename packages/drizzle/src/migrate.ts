@@ -183,11 +183,17 @@ export async function ensurePgTables(db: any): Promise<void> {
     agent      TEXT,
     "user"     TEXT,
     metadata   JSONB,
+    version    INTEGER NOT NULL DEFAULT 0,
+    scope_key  TEXT,
+    scope_version TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
   )`);
   await db.execute(sql`ALTER TABLE sessions ADD COLUMN IF NOT EXISTS "user" TEXT`);
   await db.execute(sql`ALTER TABLE sessions ADD COLUMN IF NOT EXISTS metadata JSONB`);
+  await db.execute(sql`ALTER TABLE sessions ADD COLUMN IF NOT EXISTS version INTEGER NOT NULL DEFAULT 0`);
+  await db.execute(sql`ALTER TABLE sessions ADD COLUMN IF NOT EXISTS scope_key TEXT`);
+  await db.execute(sql`ALTER TABLE sessions ADD COLUMN IF NOT EXISTS scope_version TEXT`);
 
   await db.execute(sql`CREATE TABLE IF NOT EXISTS messages (
     id         TEXT PRIMARY KEY,
@@ -196,9 +202,24 @@ export async function ensurePgTables(db: any): Promise<void> {
     content    TEXT NOT NULL,
     ts         TEXT NOT NULL,
     tool_calls TEXT,
-    suggestions TEXT
+    suggestions TEXT,
+    tool_call_id TEXT
   )`);
   await db.execute(sql`ALTER TABLE messages ADD COLUMN IF NOT EXISTS suggestions TEXT`);
+  await db.execute(sql`ALTER TABLE messages ADD COLUMN IF NOT EXISTS tool_call_id TEXT`);
+
+  await db.execute(sql`CREATE TABLE IF NOT EXISTS session_continuations (
+    id              TEXT PRIMARY KEY,
+    session_id      TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    idempotency_key TEXT NOT NULL,
+    fingerprint     TEXT NOT NULL,
+    tool_call_id    TEXT NOT NULL,
+    run_id          TEXT NOT NULL,
+    session_version INTEGER NOT NULL,
+    created_at      TEXT NOT NULL
+  )`);
+  await db.execute(sql`CREATE UNIQUE INDEX IF NOT EXISTS uq_pg_session_continuations_key ON session_continuations(session_id, idempotency_key)`);
+  await db.execute(sql`CREATE UNIQUE INDEX IF NOT EXISTS uq_pg_session_continuations_call ON session_continuations(session_id, tool_call_id)`);
 
   await db.execute(sql`CREATE TABLE IF NOT EXISTS conversation_channels (
     id                  TEXT PRIMARY KEY,

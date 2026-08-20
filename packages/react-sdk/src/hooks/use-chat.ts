@@ -92,8 +92,16 @@ export interface UseChatReturn {
   ) => Promise<void>;
   /** Send a tool result back to the server. Used for client-side tools (e.g. ask_user_question). */
   sendToolResult: (toolCallId: string, toolName: string, result: string) => Promise<void>;
+  /** Continue a pending client tool into an explicit durable Project Loop. */
+  continueToolResult: (
+    toolCallId: string,
+    result: string | ContentPart[],
+    options: { loop: string; idempotencyKey: string },
+  ) => Promise<void>;
   /** Current session ID. `null` until the first response from the server. */
   sessionId: string | null;
+  /** Monotonic server transcript version used by deterministic continuations. */
+  sessionVersion: number | null;
   /** Set the session ID manually (e.g. to resume a different session). Loads its messages. */
   setSessionId: (id: string | null) => Promise<void>;
   /** Start a new session. Clears messages and session ID. */
@@ -133,6 +141,7 @@ export function useChat(options: UseChatOptions = {}): UseChatReturn {
 
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [sessionId, setSessionIdState] = useState<string | null>(options.sessionId ?? null);
+  const [sessionVersion, setSessionVersion] = useState<number | null>(null);
   const [status, setStatus] = useState<ChatStatus>(options.sessionId ? "loading" : "idle");
   const [error, setError] = useState<Error | null>(null);
   const [pendingToolCall, setPendingToolCall] = useState<PendingToolCall | null>(null);
@@ -143,6 +152,7 @@ export function useChat(options: UseChatOptions = {}): UseChatReturn {
   const streamRef = useRef<ChatCompletionStream | null>(null);
   const isStreamingRef = useRef(false);
   const sessionIdRef = useRef<string | null>(options.sessionId ?? null);
+  const sessionVersionRef = useRef<number | null>(null);
   const messagesRef = useRef(messages);
   messagesRef.current = messages;
   const optionsRef = useRef(options);
@@ -165,6 +175,10 @@ export function useChat(options: UseChatOptions = {}): UseChatReturn {
     client.getSessionMessages(options.sessionId)
       .then((data) => {
         applySessionMessages(data.messages);
+        if (data.session?.version !== undefined) {
+          sessionVersionRef.current = data.session.version;
+          setSessionVersion(data.session.version);
+        }
         setStatus("idle");
         requestAnimationFrame(() => optionsRef.current.onUpdate?.());
       })
@@ -184,6 +198,8 @@ export function useChat(options: UseChatOptions = {}): UseChatReturn {
         try {
           const data = await client.getSessionMessages(id);
           applySessionMessages(data.messages);
+          sessionVersionRef.current = data.session?.version ?? null;
+          setSessionVersion(data.session?.version ?? null);
         } catch {
           applySessionMessages([]);
         }
@@ -204,6 +220,8 @@ export function useChat(options: UseChatOptions = {}): UseChatReturn {
     setSessionIdState(null);
     sessionIdRef.current = null;
     setMessages([]);
+    setSessionVersion(null);
+    sessionVersionRef.current = null;
     setStatus("idle");
     setError(null);
     setPendingToolCall(null);
@@ -239,8 +257,9 @@ export function useChat(options: UseChatOptions = {}): UseChatReturn {
     async (
       historyMessages: ChatCompletionMessage[],
       requestOptions: SendMessageOptions = {},
+      providedStream?: ChatCompletionStream,
     ) => {
-      const stream = client.chatCompletionsStream({
+      const stream = providedStream ?? client.chatCompletionsStream({
         messages: historyMessages,
         sessionId: sessionIdRef.current ?? undefined,
         agent: optionsRef.current.agent,
@@ -400,6 +419,10 @@ export function useChat(options: UseChatOptions = {}): UseChatReturn {
       }
 
       streamRef.current = null;
+      if (stream.sessionVersion !== null) {
+        sessionVersionRef.current = stream.sessionVersion;
+        setSessionVersion(stream.sessionVersion);
+      }
       setRunId(stream.runId);
       setLastEventId(stream.lastEventId);
       isStreamingRef.current = false;
@@ -518,11 +541,64 @@ export function useChat(options: UseChatOptions = {}): UseChatReturn {
     [streamResponse],
   );
 
+  const continueToolResult = useCallback(
+    async (
+      toolCallId: string,
+      result: string | ContentPart[],
+      continuationOptions: { loop: string; idempotencyKey: string },
+    ) => {
+      if (isStreamingRef.current) return;
+      const currentSessionId = sessionIdRef.current;
+      const currentVersion = sessionVersionRef.current;
+      const agent = optionsRef.current.agent;
+      if (!currentSessionId || currentVersion === null || !agent) {
+        const nextError = new Error(
+          "Loop continuation requires an agent, active session, and session version",
+        );
+        setError(nextError);
+        setStatus("error");
+        optionsRef.current.onError?.(nextError);
+        return;
+      }
+
+      setPendingToolCall(null);
+      setSuggestions([]);
+      setStatus("streaming");
+      isStreamingRef.current = true;
+      setError(null);
+      try {
+        const stream = client.continueWithToolResult({
+          sessionId: currentSessionId,
+          sessionVersion: currentVersion,
+          idempotencyKey: continuationOptions.idempotencyKey,
+          agent,
+          loop: continuationOptions.loop,
+          toolCallId,
+          result,
+        });
+        await streamResponse([], {}, stream);
+      } catch (err) {
+        if ((err as DOMException)?.name === "AbortError") {
+          isStreamingRef.current = false;
+          setStatus("idle");
+          return;
+        }
+        setError(err as Error);
+        setStatus("error");
+        isStreamingRef.current = false;
+        optionsRef.current.onError?.(err as Error);
+      }
+    },
+    [client, streamResponse],
+  );
+
   return {
     messages,
     sendMessage,
     sendToolResult,
+    continueToolResult,
     sessionId,
+    sessionVersion,
     setSessionId,
     newSession,
     status,

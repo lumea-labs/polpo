@@ -40,7 +40,12 @@ import type {
   CompletionRuntimePlanInput,
 } from "../completions.js";
 import type { CompletionRequestBody } from "./schemas.js";
-import { convertMessages, extractText } from "./message-mapping.js";
+import {
+  convertMessages,
+  extractText,
+  sessionMessagesToCompletionMessages,
+} from "./message-mapping.js";
+import { SessionContinuationError } from "@polpo-ai/core/session-continuation";
 import {
   clientSideToolsForCapabilities,
   toAIToolChoice,
@@ -123,6 +128,10 @@ export interface PrepareConversationTurnOptions {
   /** Trusted surface identity. Omit for ordinary HTTP/API agent calls. */
   runtime?: CompletionRuntimeInvocation;
   signal?: AbortSignal;
+  continuation?: {
+    idempotencyKey: string;
+    fingerprint: string;
+  };
 }
 
 export interface RunConversationTurnInput extends PrepareConversationTurnOptions {
@@ -562,7 +571,8 @@ export async function prepareChatCompletionExecution(
   let executionRoute: ResolvedExecutionRoute | undefined;
   let activatedSkills: string[] = [];
   let deferredAgentTools = false;
-  const completionId = options.completionId ?? `chatcmpl-${nanoid(24)}`;
+  let completionId = options.completionId ?? `chatcmpl-${nanoid(24)}`;
+  const sessionStore = deps.getSessionStore();
 
   const invocation = completionInvocation(options.runtime);
   const interactionSettings = normalizeChatInteractionSettings(
@@ -601,7 +611,7 @@ export async function prepareChatCompletionExecution(
     extraSystemParts,
     promptContextSegments,
   } = converted;
-  const callerSystemParts = contextTrust === "enforce" && promptContextSegments.length > 0
+  let callerSystemParts = contextTrust === "enforce" && promptContextSegments.length > 0
     ? [renderRuntimePromptContextSegments(promptContextSegments)]
     : extraSystemParts;
 
@@ -686,6 +696,67 @@ export async function prepareChatCompletionExecution(
       }
     }
     resolvedAgentConfig = agentConfig;
+    const continuation = body.polpo?.continuation;
+    if (continuation) {
+      if (!projectLoopRuntime) {
+        return completionError(
+          "The selected loop is not available as a Project Loop",
+          422,
+          "loop_not_available",
+        );
+      }
+      if (!options.sessionId || !options.continuation) {
+        return completionError(
+          "Client-tool continuation requires an existing session and Idempotency-Key",
+          400,
+          "invalid_continuation_request",
+        );
+      }
+      if (!sessionStore?.prepareContinuation) {
+        return completionError(
+          "Session continuation is not supported by the configured store",
+          501,
+          "session_continuation_unavailable",
+        );
+      }
+      const toolResult = body.messages[0]!;
+      try {
+        const prepared = await sessionStore.prepareContinuation({
+          sessionId: options.sessionId,
+          agent: body.agent,
+          user: options.runtime?.user ?? body.user,
+          ...(options.runtime?.scope ? { scope: options.runtime.scope } : {}),
+          toolCallId: continuation.tool_call_id,
+          result: toolResult.content,
+          expectedSessionVersion: continuation.expected_session_version,
+          idempotencyKey: options.continuation.idempotencyKey,
+          fingerprint: options.continuation.fingerprint,
+          runId: completionId,
+        });
+        completionId = prepared.runId;
+        const canonicalMessages = sessionMessagesToCompletionMessages(prepared.messages);
+        body = { ...body, messages: canonicalMessages } as CompletionRequestBody;
+        const canonical = convertMessages(body.messages, contextTrust);
+        aiMessages = canonical.aiMessages;
+        extraSystemParts = canonical.extraSystemParts;
+        promptContextSegments = canonical.promptContextSegments;
+        callerSystemParts = contextTrust === "enforce" && promptContextSegments.length > 0
+          ? [renderRuntimePromptContextSegments(promptContextSegments)]
+          : extraSystemParts;
+        options.setHeader?.("x-polpo-run-id", completionId);
+        options.setHeader?.("x-session-version", String(prepared.sessionVersion + 1));
+      } catch (error) {
+        if (error instanceof SessionContinuationError) {
+          const status = error.code === "session_not_found"
+            ? 404
+            : error.code === "continuation_scope_mismatch"
+              ? 403
+              : 409;
+          return completionError(error.message, status, error.code);
+        }
+        throw error;
+      }
+    }
     if (requestedSkills.length > 0) {
       const assignedSkills = new Set(
         Array.isArray(agentConfig.skills)
@@ -925,7 +996,6 @@ export async function prepareChatCompletionExecution(
     );
   }
 
-  const sessionStore = deps.getSessionStore();
   let sessionId = options.sessionId ?? null;
 
   if (sessionStore) {
@@ -937,14 +1007,19 @@ export async function prepareChatCompletionExecution(
       sessionId = await sessionStore.create({
         title: sessionTitle,
         agent: agentScope ?? undefined,
-        user: body.user,
+        user: options.runtime?.user ?? body.user,
         metadata: body.metadata,
+        ...(options.runtime?.scope ? { scope: options.runtime.scope } : {}),
       });
     }
 
     const lastUserMsg = [...body.messages].reverse().find((message) => message.role === "user");
-    if (lastUserMsg && sessionId) {
+    if (!body.polpo?.continuation && lastUserMsg && sessionId) {
       await sessionStore.addMessage(sessionId, "user", lastUserMsg.content);
+    }
+    if (!body.polpo?.continuation && sessionId && sessionStore.getSession) {
+      const current = await sessionStore.getSession(sessionId);
+      if (current) options.setHeader?.("x-session-version", String(Number(current.version ?? 0) + 1));
     }
   }
 

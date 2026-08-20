@@ -78,6 +78,7 @@ import {
   runNonStreamingChatViaRun,
 } from "./completions/chat-via-run-handler.js";
 import { prepareChatCompletionExecution } from "./completions/conversation-turn.js";
+import { continuationFingerprint } from "./completions/continuation.js";
 import type {
   RunOutputPolicy,
   RunPreflightPolicy,
@@ -417,6 +418,42 @@ export function completionRoutes(getDeps: () => CompletionRouteDeps, apiKeys?: s
 
     // ── Parse body ──
     const body = c.req.valid("json");
+    const rawSessionHeader = c.req.header("x-session-id") ?? null;
+    let continuation: { idempotencyKey: string; fingerprint: string } | undefined;
+    if (body.polpo?.continuation) {
+      if (!rawSessionHeader || rawSessionHeader === "new") {
+        return c.json({
+          error: {
+            message: "Client-tool continuation requires an existing x-session-id.",
+            type: "invalid_request_error",
+            code: "continuation_session_required",
+          },
+        }, 400) as any;
+      }
+      const idempotencyKey = c.req.header("Idempotency-Key")?.trim();
+      if (!idempotencyKey || idempotencyKey.length > 256) {
+        return c.json({
+          error: {
+            message: "Client-tool continuation requires an Idempotency-Key of at most 256 characters.",
+            type: "invalid_request_error",
+            code: "idempotency_key_required",
+          },
+        }, 400) as any;
+      }
+      const message = body.messages[0]!;
+      continuation = {
+        idempotencyKey,
+        fingerprint: continuationFingerprint({
+          sessionId: rawSessionHeader,
+          agent: body.agent!,
+          loop: body.loop!,
+          ...(body.user ? { user: body.user } : {}),
+          toolCallId: body.polpo.continuation.tool_call_id,
+          expectedSessionVersion: body.polpo.continuation.expected_session_version,
+          result: message.content,
+        }),
+      };
+    }
     if (durableDeliveryRequested(body) && !body.stream) {
       return c.json({
         error: {
@@ -426,11 +463,11 @@ export function completionRoutes(getDeps: () => CompletionRouteDeps, apiKeys?: s
         },
       }, 400) as any;
     }
-    const rawSessionHeader = c.req.header("x-session-id") ?? null;
     const prepared = await prepareChatCompletionExecution(deps, body, {
       sessionId: rawSessionHeader === "new" ? null : rawSessionHeader,
       setHeader: (name, value) => c.header(name, value),
       signal: c.req.raw.signal,
+      ...(continuation ? { continuation } : {}),
     });
 
     if (prepared.kind === "error") {

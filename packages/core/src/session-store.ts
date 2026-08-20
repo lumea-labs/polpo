@@ -1,11 +1,16 @@
 import type { ChatSuggestion } from "./chat-interactions.js";
+import type {
+  PreparedSessionContinuation,
+  PrepareSessionContinuationInput,
+  SessionContinuationScope,
+} from "./session-continuation.js";
 
 /**
  * Chat session storage — persists conversation threads across TUI restarts.
  * Nomenclature aligned with OpenCode: Session, Message, SessionStore.
  */
 
-export type MessageRole = "user" | "assistant";
+export type MessageRole = "user" | "assistant" | "tool";
 
 /** Multimodal content parts — mirrors OpenAI content-part format. */
 export type SessionContentPart =
@@ -37,6 +42,8 @@ export interface Message {
   toolCalls?: ToolCallInfo[];
   /** Optional next messages generated for compatible chat clients. */
   suggestions?: ChatSuggestion[];
+  /** Matching OpenAI tool call for role=tool messages. */
+  toolCallId?: string;
 }
 
 export interface Session {
@@ -58,6 +65,10 @@ export interface Session {
    * value ≤512 chars. Validation enforced at the API boundary, not here.
    */
   metadata?: Record<string, string>;
+  /** Monotonic append version used for optimistic continuation. */
+  version?: number;
+  /** Trusted application partition captured when the session is created. */
+  scope?: SessionContinuationScope;
 }
 
 export interface SessionCreateOptions {
@@ -65,6 +76,11 @@ export interface SessionCreateOptions {
   agent?: string;
   user?: string;
   metadata?: Record<string, string>;
+  scope?: SessionContinuationScope;
+}
+
+export interface SessionMessageOptions {
+  toolCallId?: string;
 }
 
 export interface SessionListFilter {
@@ -84,7 +100,12 @@ export interface SessionStore {
    * positional form `(title, agent)` — internally normalised.
    */
   create(opts?: SessionCreateOptions): Promise<string>;
-  addMessage(sessionId: string, role: MessageRole, content: string | SessionContentPart[]): Promise<Message>;
+  addMessage(
+    sessionId: string,
+    role: MessageRole,
+    content: string | SessionContentPart[],
+    options?: SessionMessageOptions,
+  ): Promise<Message>;
   /** Update the content of an existing message (e.g. finalize a streaming response). */
   updateMessage(
     sessionId: string,
@@ -107,6 +128,10 @@ export interface SessionStore {
   renameSession(sessionId: string, title: string): Promise<boolean>;
   deleteSession(sessionId: string): Promise<boolean>;
   prune(keepSessions: number): Promise<number>;
+  /** Atomically append one pending client-tool result and reserve its Loop run. */
+  prepareContinuation?(
+    input: PrepareSessionContinuationInput,
+  ): Promise<PreparedSessionContinuation>;
   close(): Promise<void> | void;
 }
 

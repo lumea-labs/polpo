@@ -850,6 +850,155 @@ describe("DrizzleSessionStore", () => {
     expect(msgs[0].content).toBe("just a string");
     expect(typeof msgs[0].content).toBe("string");
   });
+
+  it("atomically prepares a client-tool continuation and projects the resolved call", async () => {
+    const sid = await stores.sessionStore.create({
+      agent: "leo",
+      user: "user-1",
+      scope: { key: "site-1", version: "3" },
+    });
+    await stores.sessionStore.addMessage(sid, "user", "Build a booking site");
+    const assistant = await stores.sessionStore.addMessage(sid, "assistant", "");
+    await stores.sessionStore.updateMessage(sid, assistant.id, "", [{
+      id: "call-1",
+      name: "configure_site_module",
+      arguments: { module: "booking" },
+      state: "interrupted",
+    }]);
+
+    const prepared = await stores.sessionStore.prepareContinuation!({
+      sessionId: sid,
+      agent: "leo",
+      user: "user-1",
+      scope: { key: "site-1", version: "3" },
+      toolCallId: "call-1",
+      result: "{\"configured\":true}",
+      expectedSessionVersion: 2,
+      idempotencyKey: "continue-1",
+      fingerprint: "sha256:one",
+      runId: "chatcmpl-loop-1",
+    });
+
+    expect(prepared).toMatchObject({
+      status: "prepared",
+      sessionVersion: 3,
+      runId: "chatcmpl-loop-1",
+    });
+    expect(prepared.messages.at(-1)).toMatchObject({
+      role: "tool",
+      toolCallId: "call-1",
+    });
+    expect(prepared.messages[1]?.toolCalls?.[0]).toMatchObject({
+      id: "call-1",
+      state: "completed",
+      result: "{\"configured\":true}",
+    });
+    await expect(stores.sessionStore.getSession(sid)).resolves.toMatchObject({
+      version: 3,
+    });
+  });
+
+  it("replays the same continuation and rejects idempotency-key reuse", async () => {
+    const sid = await stores.sessionStore.create({ agent: "leo" });
+    const assistant = await stores.sessionStore.addMessage(sid, "assistant", "");
+    await stores.sessionStore.updateMessage(sid, assistant.id, "", [{
+      id: "call-1",
+      name: "configure",
+      state: "interrupted",
+    }]);
+    const input = {
+      sessionId: sid,
+      agent: "leo",
+      toolCallId: "call-1",
+      result: "ok",
+      expectedSessionVersion: 1,
+      idempotencyKey: "continue-1",
+      fingerprint: "sha256:one",
+      runId: "run-1",
+    };
+
+    await expect(stores.sessionStore.prepareContinuation!(input)).resolves.toMatchObject({
+      status: "prepared",
+    });
+    await expect(stores.sessionStore.prepareContinuation!(input)).resolves.toMatchObject({
+      status: "replay",
+      runId: "run-1",
+      sessionVersion: 2,
+    });
+    await expect(stores.sessionStore.prepareContinuation!({
+      ...input,
+      agent: "other-agent",
+    })).rejects.toMatchObject({ code: "continuation_scope_mismatch" });
+    await expect(stores.sessionStore.prepareContinuation!({
+      ...input,
+      fingerprint: "sha256:different",
+    })).rejects.toMatchObject({ code: "idempotency_conflict" });
+  });
+
+  it("rejects stale versions and trusted-scope changes without appending", async () => {
+    const sid = await stores.sessionStore.create({
+      agent: "leo",
+      user: "user-1",
+      scope: { key: "site-1", version: "3" },
+    });
+    const assistant = await stores.sessionStore.addMessage(sid, "assistant", "");
+    await stores.sessionStore.updateMessage(sid, assistant.id, "", [{
+      id: "call-1",
+      name: "configure",
+      state: "interrupted",
+    }]);
+    const base = {
+      sessionId: sid,
+      agent: "leo",
+      user: "user-1",
+      scope: { key: "site-1", version: "3" },
+      toolCallId: "call-1",
+      result: "ok",
+      expectedSessionVersion: 1,
+      idempotencyKey: "continue-1",
+      fingerprint: "sha256:one",
+      runId: "run-1",
+    };
+
+    await expect(stores.sessionStore.prepareContinuation!({
+      ...base,
+      expectedSessionVersion: 0,
+    })).rejects.toMatchObject({ code: "session_version_conflict" });
+    await expect(stores.sessionStore.prepareContinuation!({
+      ...base,
+      scope: { key: "site-2", version: "3" },
+    })).rejects.toMatchObject({ code: "continuation_scope_mismatch" });
+    expect(await stores.sessionStore.getMessages(sid)).toHaveLength(1);
+  });
+
+  it("allows only one concurrent continuation for the same pending call", async () => {
+    const sid = await stores.sessionStore.create({ agent: "leo" });
+    const assistant = await stores.sessionStore.addMessage(sid, "assistant", "");
+    await stores.sessionStore.updateMessage(sid, assistant.id, "", [{
+      id: "call-1",
+      name: "configure",
+      state: "interrupted",
+    }]);
+    const makeInput = (suffix: string) => ({
+      sessionId: sid,
+      agent: "leo",
+      toolCallId: "call-1",
+      result: suffix,
+      expectedSessionVersion: 1,
+      idempotencyKey: `continue-${suffix}`,
+      fingerprint: `sha256:${suffix}`,
+      runId: `run-${suffix}`,
+    });
+
+    const outcomes = await Promise.allSettled([
+      stores.sessionStore.prepareContinuation!(makeInput("a")),
+      stores.sessionStore.prepareContinuation!(makeInput("b")),
+    ]);
+
+    expect(outcomes.filter((outcome) => outcome.status === "fulfilled")).toHaveLength(1);
+    expect(outcomes.filter((outcome) => outcome.status === "rejected")).toHaveLength(1);
+    expect(await stores.sessionStore.getMessages(sid)).toHaveLength(2);
+  });
 });
 
 // ═══════════════════════════════════════════════════════════════════════
