@@ -128,6 +128,71 @@ describe("createConnectionCapabilityResolver", () => {
     }
   });
 
+  it("matches a deliberately shared binding against a more specific invocation", async () => {
+    const shared = record("shared", {
+      binding: {
+        tenant: { namespace: "sitoinchat", id: "tenant-1" },
+        resource: { namespace: "sitoinchat", type: "site", id: "site-1" },
+      },
+    });
+    const materialize = vi.fn(async () => ({
+      kind: "api_key" as const,
+      value: "secret",
+      scopes: ["site:read"],
+      connectionId: shared.id,
+      providerId: shared.providerId,
+    }));
+    const resolver = createConnectionCapabilityResolver({
+      store: store([shared]),
+      resolveSelector: () => selector,
+      materialize,
+    });
+
+    await expect(resolver.resolve(input())).resolves.toMatchObject({
+      providerId: "sitoinchat",
+    });
+    expect(materialize).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "shared" }),
+      expect.anything(),
+    );
+  });
+
+  it("does not match a constrained binding when the selector omits that dimension", async () => {
+    const resolver = createConnectionCapabilityResolver({
+      store: store([record("user-specific")]),
+      resolveSelector: () => ({
+        projectId: selector.projectId,
+        tenant: selector.tenant,
+        resource: selector.resource,
+        scopeEpoch: selector.scopeEpoch,
+      }),
+      materialize: vi.fn(),
+    });
+
+    await expect(resolver.resolve(input())).rejects.toMatchObject({
+      code: "connection_not_found_for_scope",
+    });
+  });
+
+  it("fails as ambiguous when shared and specific bindings both authorize the invocation", async () => {
+    const shared = record("shared", {
+      binding: {
+        tenant: selector.tenant,
+        resource: selector.resource,
+        scopeEpoch: selector.scopeEpoch,
+      },
+    });
+    const resolver = createConnectionCapabilityResolver({
+      store: store([shared, record("specific")]),
+      resolveSelector: () => selector,
+      materialize: vi.fn(),
+    });
+
+    await expect(resolver.resolve(input())).rejects.toMatchObject({
+      code: "connection_selection_ambiguous",
+    });
+  });
+
   it("fails with scope denied for insufficient grants or a policy rejection", async () => {
     for (const options of [
       {

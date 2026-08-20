@@ -27,15 +27,17 @@ export interface ConnectionCapabilityResolverOptions {
   policy?: ConnectPolicy;
 }
 
-function samePart<T extends object>(
-  left: T | undefined,
-  right: T | undefined,
+function bindingPartMatches<T extends object>(
+  binding: T | undefined,
+  selector: T | undefined,
 ): boolean {
-  if (!left || !right) return left === right;
-  const leftRecord = left as Record<string, unknown>;
-  const rightRecord = right as Record<string, unknown>;
-  const keys = new Set([...Object.keys(leftRecord), ...Object.keys(rightRecord)]);
-  return [...keys].every((key) => leftRecord[key] === rightRecord[key]);
+  if (!binding) return true;
+  if (!selector) return false;
+  const bindingRecord = binding as Record<string, unknown>;
+  const selectorRecord = selector as Record<string, unknown>;
+  return Object.keys(bindingRecord).every(
+    (key) => bindingRecord[key] === selectorRecord[key],
+  );
 }
 
 function bindingMatches(
@@ -43,10 +45,11 @@ function bindingMatches(
   selector: ConnectionSelectionSelector,
 ): boolean {
   if (!binding) return false;
-  return samePart(binding.principal, selector.principal)
-    && samePart(binding.tenant, selector.tenant)
-    && samePart(binding.resource, selector.resource)
-    && binding.scopeEpoch === selector.scopeEpoch;
+  return bindingPartMatches(binding.principal, selector.principal)
+    && bindingPartMatches(binding.tenant, selector.tenant)
+    && bindingPartMatches(binding.resource, selector.resource)
+    && (binding.scopeEpoch === undefined
+      || binding.scopeEpoch === selector.scopeEpoch);
 }
 
 function requiredText(name: string, value: unknown): string {
