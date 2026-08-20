@@ -188,7 +188,18 @@ export type {
   AudioModelDefinition,
 } from "./agent-models.js";
 export type { LogStore, LogEntry, SessionInfo } from "./log-store.js";
-export type { SessionStore, Session, Message, MessageRole, ToolCallInfo, ToolCallState, SessionContentPart } from "./session-store.js";
+export type { SessionStore, Session, Message, MessageRole, ToolCallInfo, ToolCallState, SessionContentPart, SessionMessageOptions } from "./session-store.js";
+export {
+  SessionContinuationError,
+  projectResolvedClientToolCalls,
+  resolvePendingClientToolCall,
+} from "./session-continuation.js";
+export type {
+  PreparedSessionContinuation,
+  PrepareSessionContinuationInput,
+  SessionContinuationErrorCode,
+  SessionContinuationScope,
+} from "./session-continuation.js";
 export type { ApprovalStore } from "./approval-store.js";
 export type { TeamStore } from "./team-store.js";
 export type { AgentStore } from "./agent-store.js";

@@ -256,6 +256,14 @@ export const completionRequestSchema = z.object({
       description:
         "Control whether a streaming run is cancelled or continues when the client disconnects. Omitted preserves cancel-on-disconnect behavior.",
     }),
+    continuation: z.object({
+      type: z.literal("client_tool"),
+      tool_call_id: z.string().trim().min(1).max(256),
+      expected_session_version: z.number().int().nonnegative(),
+    }).strict().optional().openapi({
+      description:
+        "Continue the current session into an explicit Project Loop with one previously requested client-tool result.",
+    }),
   }).strict().optional().openapi({
     description:
       "Polpo client capabilities. Suggestions require explicit support; ask_user_question may be explicitly disabled by clients that cannot render it.",
@@ -349,6 +357,57 @@ export const completionRequestSchema = z.object({
       message: "Request-declared client tools are not supported inside Project Loops",
       path: ["tools"],
     });
+  }
+
+  const continuation = body.polpo?.continuation;
+  if (continuation) {
+    if (!body.agent) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Client-tool continuation requires an explicit agent",
+        path: ["agent"],
+      });
+    }
+    if (!body.loop) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Client-tool continuation requires an explicit project loop",
+        path: ["loop"],
+      });
+    }
+    if (body.messages.length !== 1 || body.messages[0]?.role !== "tool") {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Client-tool continuation accepts exactly one tool result message",
+        path: ["messages"],
+      });
+    } else if (body.messages[0].content === null) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Continuation tool result content cannot be null",
+        path: ["messages", 0, "content"],
+      });
+    } else if (body.messages[0].tool_call_id !== continuation.tool_call_id) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Continuation tool_call_id must match the tool result message",
+        path: ["polpo", "continuation", "tool_call_id"],
+      });
+    }
+    if (!body.stream || body.polpo?.delivery?.onDisconnect !== "continue") {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Client-tool continuation requires stream=true and durable delivery",
+        path: ["polpo", "delivery"],
+      });
+    }
+    if (tools.length > 0 || body.tool_choice !== undefined || body.parallel_tool_calls !== undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Client-tool continuation cannot redeclare request tools",
+        path: ["tools"],
+      });
+    }
   }
 });
 

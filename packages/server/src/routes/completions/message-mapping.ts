@@ -14,6 +14,7 @@ import {
   type RuntimePromptContextSegment,
 } from "@polpo-ai/core";
 import type { contentPartSchema, messageSchema } from "./schemas.js";
+import type { Message } from "@polpo-ai/core/session-store";
 
 // ── Helpers ────────────────────────────────────────────────────────────
 
@@ -206,6 +207,52 @@ export function convertMessages(
   }
 
   return { aiMessages, extraSystemParts, promptContextSegments };
+}
+
+/** Rebuild the canonical OpenAI transcript used for a client-tool continuation. */
+export function sessionMessagesToCompletionMessages(messages: readonly Message[]): any[] {
+  const resolvedCallIds = new Set(
+    messages
+      .filter((message) => message.role === "tool" && message.toolCallId)
+      .map((message) => message.toolCallId!),
+  );
+  const toolNames = new Map<string, string>();
+
+  return messages.flatMap((message) => {
+    if (message.role === "user") {
+      return [{ role: "user", content: message.content }];
+    }
+    if (message.role === "assistant") {
+      const calls = (message.toolCalls ?? []).filter((call) => resolvedCallIds.has(call.id));
+      for (const call of calls) toolNames.set(call.id, call.name);
+      if (calls.length === 0 && !hasModelContent(message.content)) return [];
+      return [{
+        role: "assistant",
+        content: message.content,
+        ...(calls.length > 0
+          ? {
+              tool_calls: calls.map((call) => ({
+                id: call.id,
+                type: "function" as const,
+                function: {
+                  name: call.name,
+                  arguments: JSON.stringify(objectInputOrEmpty(call.arguments)),
+                },
+              })),
+            }
+          : {}),
+      }];
+    }
+    if (!message.toolCallId) return [];
+    return [{
+      role: "tool",
+      content: message.content,
+      tool_call_id: message.toolCallId,
+      ...(toolNames.get(message.toolCallId)
+        ? { name: toolNames.get(message.toolCallId) }
+        : {}),
+    }];
+  });
 }
 
 export async function appendModelResponseMessages(

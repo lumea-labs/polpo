@@ -376,3 +376,76 @@ describe("completion request durable delivery", () => {
     expect(completionRequestSchema.safeParse({ ...request, polpo }).success).toBe(false);
   });
 });
+
+describe("completion request client-tool continuation", () => {
+  const continuation = {
+    type: "client_tool" as const,
+    tool_call_id: "call_configure",
+    expected_session_version: 2,
+  };
+
+  it("accepts exactly one tool result for an explicit durable project loop", () => {
+    expect(completionRequestSchema.parse({
+      messages: [{ role: "tool", tool_call_id: "call_configure", content: "configured" }],
+      stream: true,
+      agent: "leo",
+      loop: "build-site",
+      polpo: {
+        continuation,
+        delivery: { onDisconnect: "continue" },
+      },
+    }).polpo?.continuation).toEqual(continuation);
+  });
+
+  it.each([
+    {
+      messages: [{ role: "user", content: "duplicate request" }],
+      agent: "leo",
+      loop: "build-site",
+    },
+    {
+      messages: [
+        { role: "tool", tool_call_id: "call_configure", content: "configured" },
+        { role: "user", content: "duplicate request" },
+      ],
+      agent: "leo",
+      loop: "build-site",
+    },
+    {
+      messages: [{ role: "tool", tool_call_id: "other", content: "configured" }],
+      agent: "leo",
+      loop: "build-site",
+    },
+    {
+      messages: [{ role: "tool", tool_call_id: "call_configure", content: "configured" }],
+      loop: "build-site",
+    },
+    {
+      messages: [{ role: "tool", tool_call_id: "call_configure", content: "configured" }],
+      agent: "leo",
+    },
+  ])("rejects malformed or underspecified continuation %#", (input) => {
+    expect(completionRequestSchema.safeParse({
+      ...input,
+      stream: true,
+      polpo: {
+        continuation,
+        delivery: { onDisconnect: "continue" },
+      },
+    }).success).toBe(false);
+  });
+
+  it.each([
+    { stream: false, delivery: { onDisconnect: "continue" } },
+    { stream: true, delivery: { onDisconnect: "cancel" } },
+    { stream: true, delivery: undefined },
+  ])("requires durable streaming execution %#", ({ stream, delivery }) => {
+    expect(completionRequestSchema.safeParse({
+      messages: [{ role: "tool", tool_call_id: "call_configure", content: "configured" }],
+      stream,
+      agent: "leo",
+      loop: "build-site",
+      polpo: { continuation, ...(delivery ? { delivery } : {}) },
+    }).success).toBe(false);
+  });
+});

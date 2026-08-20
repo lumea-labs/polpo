@@ -450,6 +450,67 @@ describe("PolpoClient run steering", () => {
 });
 
 describe("PolpoClient structured outputs", () => {
+  it("continues a client tool through a durable loop with transport-only headers", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(new Response(
+      "data: [DONE]\n\n",
+      {
+        status: 200,
+        headers: {
+          "content-type": "text/event-stream",
+          "x-session-id": "session-1",
+          "x-session-version": "4",
+          "x-polpo-run-id": "chatcmpl-1",
+        },
+      },
+    ));
+    const client = new PolpoClient({ baseUrl: "https://api.polpo.sh", fetch });
+
+    const stream = client.continueWithToolResult({
+      sessionId: "session-1",
+      sessionVersion: 2,
+      idempotencyKey: "continue-1",
+      agent: "leo",
+      loop: "build-site",
+      toolCallId: "call-1",
+      result: [{ type: "text", text: "configured" }],
+      user: "user-1",
+    });
+    await stream.start();
+
+    expect(stream.sessionId).toBe("session-1");
+    expect(stream.sessionVersion).toBe(4);
+    expect(stream.runId).toBe("chatcmpl-1");
+    expect(fetch).toHaveBeenCalledWith(
+      "https://api.polpo.sh/v1/chat/completions",
+      expect.objectContaining({
+        method: "POST",
+        headers: expect.objectContaining({
+          "x-session-id": "session-1",
+          "Idempotency-Key": "continue-1",
+        }),
+      }),
+    );
+    const init = fetch.mock.calls[0]?.[1] as RequestInit;
+    const body = JSON.parse(init.body as string);
+    expect(body).not.toHaveProperty("sessionId");
+    expect(body).not.toHaveProperty("idempotencyKey");
+    expect(body).toMatchObject({
+      agent: "leo",
+      loop: "build-site",
+      stream: true,
+      user: "user-1",
+      messages: [{ role: "tool", tool_call_id: "call-1" }],
+      polpo: {
+        continuation: {
+          type: "client_tool",
+          tool_call_id: "call-1",
+          expected_session_version: 2,
+        },
+        delivery: { onDisconnect: "continue" },
+      },
+    });
+  });
+
   it("forwards response_format in non-streaming and streaming requests", async () => {
     const fetch = vi.fn<typeof globalThis.fetch>()
       .mockResolvedValueOnce(new Response(JSON.stringify({

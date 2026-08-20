@@ -6,6 +6,81 @@ import { useChat } from "../hooks/use-chat.js";
 import { createMockClient, createMockStore, createWrapper } from "./helpers.js";
 
 describe("useChat interactions", () => {
+  it("continues a pending client tool into a durable project loop", async () => {
+    const directStream = {
+      sessionId: "session-1",
+      sessionVersion: 2,
+      runId: null,
+      lastEventId: null,
+      abort: vi.fn(),
+      async *[Symbol.asyncIterator]() {
+        yield {
+          id: "chatcmpl-1",
+          object: "chat.completion.chunk",
+          created: 1,
+          model: "polpo",
+          choices: [{
+            index: 0,
+            delta: {
+              tool_calls: [{
+                id: "call-1",
+                type: "function",
+                function: { name: "configure_site_module", arguments: "{}" },
+              }],
+            },
+            finish_reason: "tool_calls",
+          }],
+        };
+      },
+    };
+    const loopStream = {
+      sessionId: "session-1",
+      sessionVersion: 4,
+      runId: "chatcmpl-loop",
+      lastEventId: "3",
+      abort: vi.fn(),
+      async *[Symbol.asyncIterator]() {
+        yield {
+          id: "chatcmpl-loop",
+          object: "chat.completion.chunk",
+          created: 1,
+          model: "polpo",
+          choices: [{ index: 0, delta: { content: "Built" }, finish_reason: "stop" }],
+        };
+      },
+    };
+    const chatCompletionsStream = vi.fn().mockReturnValue(directStream);
+    const continueWithToolResult = vi.fn().mockReturnValue(loopStream);
+    const client = createMockClient({ chatCompletionsStream, continueWithToolResult });
+    const wrapper = createWrapper(client, createMockStore());
+    const { result } = renderHook(() => useChat({ agent: "leo" }), { wrapper });
+
+    await act(async () => {
+      await result.current.sendMessage("Build a site");
+    });
+    expect(result.current.sessionVersion).toBe(2);
+    expect(result.current.pendingToolCall?.toolCallId).toBe("call-1");
+
+    await act(async () => {
+      await result.current.continueToolResult("call-1", "configured", {
+        loop: "build-site",
+        idempotencyKey: "continue-1",
+      });
+    });
+
+    expect(continueWithToolResult).toHaveBeenCalledWith({
+      sessionId: "session-1",
+      sessionVersion: 2,
+      idempotencyKey: "continue-1",
+      agent: "leo",
+      loop: "build-site",
+      toolCallId: "call-1",
+      result: "configured",
+    });
+    expect(result.current.sessionVersion).toBe(4);
+    expect(result.current.messages.at(-1)?.content).toBe("Built");
+  });
+
   it("activates assigned skills for one message without making them persistent", async () => {
     const makeStream = () => ({
       abort: vi.fn(),

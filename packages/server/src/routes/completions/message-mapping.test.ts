@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { appendModelResponseMessages, convertMessages } from "./message-mapping.js";
+import {
+  appendModelResponseMessages,
+  convertMessages,
+  sessionMessagesToCompletionMessages,
+} from "./message-mapping.js";
 
 describe("convertMessages", () => {
   it("drops empty text blocks before sending messages to a provider", () => {
@@ -200,5 +204,53 @@ describe("convertMessages", () => {
         { type: "tool-call", toolCallId: "call_3", toolName: "search", input: { query: "slack" } },
       ],
     }]);
+  });
+});
+
+describe("sessionMessagesToCompletionMessages", () => {
+  it("reconstructs canonical OpenAI history including the resolved client call", () => {
+    expect(sessionMessagesToCompletionMessages([
+      { id: "u1", role: "user", content: "Build it", ts: "2026-01-01T00:00:00Z" },
+      {
+        id: "a1",
+        role: "assistant",
+        content: "Choose a module",
+        ts: "2026-01-01T00:00:01Z",
+        toolCalls: [{
+          id: "call-1",
+          name: "configure_site_module",
+          arguments: { module: "booking" },
+          state: "completed",
+          result: "configured",
+        }],
+      },
+      {
+        id: "t1",
+        role: "tool",
+        content: "configured",
+        ts: "2026-01-01T00:00:02Z",
+        toolCallId: "call-1",
+      },
+    ])).toEqual([
+      { role: "user", content: "Build it" },
+      {
+        role: "assistant",
+        content: "Choose a module",
+        tool_calls: [{
+          id: "call-1",
+          type: "function",
+          function: {
+            name: "configure_site_module",
+            arguments: "{\"module\":\"booking\"}",
+          },
+        }],
+      },
+      {
+        role: "tool",
+        content: "configured",
+        tool_call_id: "call-1",
+        name: "configure_site_module",
+      },
+    ]);
   });
 });

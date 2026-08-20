@@ -138,6 +138,10 @@
       "types": "./dist/session-store.d.ts",
       "import": "./dist/session-store.js"
     },
+    "./session-continuation": {
+      "types": "./dist/session-continuation.d.ts",
+      "import": "./dist/session-continuation.js"
+    },
     "./notification-store": {
       "types": "./dist/notification-store.d.ts",
       "import": "./dist/notification-store.js"

@@ -4,6 +4,7 @@ import {
   appendFileSync,
   readFileSync,
   writeFileSync,
+  renameSync,
   readdirSync,
   unlinkSync,
   statSync,
@@ -19,9 +20,17 @@ import type {
   SessionContentPart,
   SessionCreateOptions,
   SessionListFilter,
+  SessionMessageOptions,
 } from "@polpo-ai/core/session-store";
 import { normalizeSessionCreateArgs } from "@polpo-ai/core/session-store";
 import type { ChatSuggestion } from "@polpo-ai/core/chat-interactions";
+import {
+  projectResolvedClientToolCalls,
+  resolvePendingClientToolCall,
+  SessionContinuationError,
+  type PreparedSessionContinuation,
+  type PrepareSessionContinuationInput,
+} from "@polpo-ai/core/session-continuation";
 
 /**
  * File-backed SessionStore.
@@ -31,6 +40,7 @@ import type { ChatSuggestion } from "@polpo-ai/core/chat-interactions";
  * First line of each file: `{"_session":true,"id":"...","title":"...","createdAt":"..."}`
  */
 export class FileSessionStore implements SessionStore {
+  private static readonly sessionLocks = new Map<string, Promise<void>>();
   private readonly sessionsDir: string;
 
   constructor(polpoDir: string) {
@@ -48,10 +58,12 @@ export class FileSessionStore implements SessionStore {
       id: sessionId,
       title: opts.title,
       createdAt: new Date().toISOString(),
+      version: 0,
     };
     if (opts.agent) header.agent = opts.agent;
     if (opts.user) header.user = opts.user;
     if (opts.metadata) header.metadata = opts.metadata;
+    if (opts.scope) header.scope = opts.scope;
     try {
       appendFileSync(this.sessionFile(sessionId), JSON.stringify(header) + "\n", "utf-8");
     } catch { /* best-effort: non-critical */
@@ -59,18 +71,27 @@ export class FileSessionStore implements SessionStore {
     return sessionId;
   }
 
-  async addMessage(sessionId: string, role: MessageRole, content: string | SessionContentPart[]): Promise<Message> {
+  async addMessage(
+    sessionId: string,
+    role: MessageRole,
+    content: string | SessionContentPart[],
+    options?: SessionMessageOptions,
+  ): Promise<Message> {
     const message: Message = {
       id: nanoid(10),
       role,
       content,
       ts: new Date().toISOString(),
+      ...(options?.toolCallId ? { toolCallId: options.toolCallId } : {}),
     };
-    try {
-      const line = JSON.stringify(message);
-      appendFileSync(this.sessionFile(sessionId), line + "\n", "utf-8");
-    } catch { /* best-effort: non-critical */
-    }
+    await this.withSessionLock(sessionId, () => {
+      try {
+        const state = this.readSessionFile(sessionId);
+        state.header.version = Number(state.header.version ?? 0) + 1;
+        state.messages.push(message);
+        this.writeSessionFileAtomic(sessionId, state.header, state.messages);
+      } catch { /* best-effort: non-critical */ }
+    });
     return message;
   }
 
@@ -122,7 +143,7 @@ export class FileSessionStore implements SessionStore {
         if (obj._session) continue;
         messages.push(obj as Message);
       }
-      return messages;
+      return projectResolvedClientToolCalls(messages);
     } catch { /* unreadable session file */
       return [];
     }
@@ -142,10 +163,97 @@ export class FileSessionStore implements SessionStore {
       createdAt: header.createdAt ?? updatedAt,
       updatedAt,
       messageCount: 0,
+      version: Number(header.version ?? 0),
       ...(header.agent ? { agent: header.agent } : {}),
       ...(header.user ? { user: header.user } : {}),
       ...(header.metadata ? { metadata: header.metadata } : {}),
+      ...(header.scope ? { scope: header.scope } : {}),
     };
+  }
+
+  async prepareContinuation(
+    input: PrepareSessionContinuationInput,
+  ): Promise<PreparedSessionContinuation> {
+    return this.withSessionLock(input.sessionId, () => {
+      let state: { header: any; messages: Message[] };
+      try {
+        state = this.readSessionFile(input.sessionId);
+      } catch {
+        throw new SessionContinuationError("session_not_found", "Session not found");
+      }
+
+      if (
+        (state.header.agent ?? undefined) !== input.agent
+        || (state.header.user ?? undefined) !== input.user
+        || JSON.stringify(state.header.scope ?? undefined) !== JSON.stringify(input.scope)
+      ) {
+        throw new SessionContinuationError(
+          "continuation_scope_mismatch",
+          "Continuation scope does not match the session",
+        );
+      }
+
+      const continuations = (state.header.continuations ?? {}) as Record<string, {
+        fingerprint: string;
+        toolCallId: string;
+        runId: string;
+        sessionVersion: number;
+      }>;
+      const existing = continuations[input.idempotencyKey];
+      if (existing) {
+        if (existing.fingerprint !== input.fingerprint) {
+          throw new SessionContinuationError(
+            "idempotency_conflict",
+            "Idempotency key was already used with a different continuation",
+          );
+        }
+        return {
+          status: "replay",
+          sessionVersion: existing.sessionVersion,
+          runId: existing.runId,
+          messages: projectResolvedClientToolCalls(state.messages),
+        };
+      }
+
+      if (Number(state.header.version ?? 0) !== input.expectedSessionVersion) {
+        throw new SessionContinuationError(
+          "session_version_conflict",
+          "Session version does not match",
+        );
+      }
+      resolvePendingClientToolCall(
+        projectResolvedClientToolCalls(state.messages),
+        input.toolCallId,
+      );
+
+      const nextVersion = input.expectedSessionVersion + 1;
+      const message: Message = {
+        id: nanoid(10),
+        role: "tool",
+        content: input.result,
+        ts: new Date().toISOString(),
+        toolCallId: input.toolCallId,
+      };
+      state.header.version = nextVersion;
+      state.header.continuations = {
+        ...continuations,
+        [input.idempotencyKey]: {
+          fingerprint: input.fingerprint,
+          toolCallId: input.toolCallId,
+          runId: input.runId,
+          sessionVersion: nextVersion,
+        },
+      };
+      state.messages.push(message);
+      this.writeSessionFileAtomic(input.sessionId, state.header, state.messages);
+
+      return {
+        status: "prepared",
+        sessionVersion: nextVersion,
+        runId: input.runId,
+        messages: projectResolvedClientToolCalls(state.messages),
+      };
+    });
   }
 
   async listSessions(filter?: SessionListFilter): Promise<Session[]> {
@@ -265,5 +373,41 @@ export class FileSessionStore implements SessionStore {
 
   private sessionFile(sessionId: string): string {
     return join(this.sessionsDir, `${sessionId}.jsonl`);
+  }
+
+  private readSessionFile(sessionId: string): { header: any; messages: Message[] } {
+    const lines = readFileSync(this.sessionFile(sessionId), "utf-8").split("\n").filter(Boolean);
+    if (lines.length === 0) throw new Error("Session file is empty");
+    const header = JSON.parse(lines[0]);
+    if (!header._session) throw new Error("Session header is invalid");
+    return {
+      header,
+      messages: lines.slice(1).map((line) => JSON.parse(line) as Message),
+    };
+  }
+
+  private writeSessionFileAtomic(sessionId: string, header: any, messages: Message[]): void {
+    const file = this.sessionFile(sessionId);
+    const temporary = `${file}.${process.pid}.${nanoid(6)}.tmp`;
+    const content = [header, ...messages].map((entry) => JSON.stringify(entry)).join("\n") + "\n";
+    writeFileSync(temporary, content, "utf-8");
+    renameSync(temporary, file);
+  }
+
+  private async withSessionLock<T>(sessionId: string, operation: () => T | Promise<T>): Promise<T> {
+    const key = this.sessionFile(sessionId);
+    const previous = FileSessionStore.sessionLocks.get(key) ?? Promise.resolve();
+    let release!: () => void;
+    const current = new Promise<void>((resolve) => { release = resolve; });
+    FileSessionStore.sessionLocks.set(key, current);
+    await previous;
+    try {
+      return await operation();
+    } finally {
+      release();
+      if (FileSessionStore.sessionLocks.get(key) === current) {
+        FileSessionStore.sessionLocks.delete(key);
+      }
+    }
   }
 }
