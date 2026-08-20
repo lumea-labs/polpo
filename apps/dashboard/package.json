@@ -1,6 +1,6 @@
 {
   "name": "@polpo-ai/dashboard-app",
-  "version": "0.15.87",
+  "version": "0.15.88",
   "private": true,
   "scripts": {
     "dev": "next dev",
