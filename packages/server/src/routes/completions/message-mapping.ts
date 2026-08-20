@@ -138,6 +138,7 @@ export function convertMessages(
   const aiMessages: any[] = [];
   const extraSystemParts: string[] = [];
   const promptContextSegments: RuntimePromptContextSegment[] = [];
+  const toolNamesByCallId = new Map<string, string>();
 
   for (const [index, msg] of messages.entries()) {
     if (msg.role === "system") {
@@ -164,6 +165,7 @@ export function convertMessages(
         const text = extractText(msg.content);
         if (text) parts.push({ type: "text", text });
         for (const call of tc) {
+          toolNamesByCallId.set(call.id, call.function.name);
           let input: unknown = {};
           try { input = JSON.parse(call.function.arguments); } catch { /* best effort */ }
           parts.push({
@@ -180,18 +182,19 @@ export function convertMessages(
       }
     } else if (msg.role === "tool" && msg.tool_call_id) {
       const text = extractText(msg.content);
+      const toolName = msg.name ?? toolNamesByCallId.get(msg.tool_call_id) ?? "unknown";
       // Client-side tool result — convert to AI SDK tool-result format
       aiMessages.push({
         role: "tool",
         content: [{
           type: "tool-result",
           toolCallId: msg.tool_call_id,
-          toolName: msg.name ?? "unknown",
+          toolName,
           output: {
             type: "text" as const,
             value: contextTrust === "enforce"
               ? renderRuntimeToolResult(
-                  msg.name ?? "unknown",
+                  toolName,
                   msg.tool_call_id,
                   hasText(text) ? text : "(empty tool result)",
                 )

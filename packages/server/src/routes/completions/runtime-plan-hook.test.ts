@@ -64,6 +64,115 @@ function makeDeps(overrides: Partial<CompletionRouteDeps> = {}): CompletionRoute
 }
 
 describe("completion runtime plan hook", () => {
+  it("merges request-scoped client tools and applies request tool_choice", async () => {
+    const prepared = await prepareChatCompletionExecution(makeDeps(), {
+      agent: "agent-1",
+      stream: false,
+      messages: [{ role: "user", content: "configure commerce" }],
+      tools: [{
+        type: "function",
+        function: {
+          name: "configure_site_module",
+          description: "Open the module configuration UI.",
+          parameters: {
+            type: "object",
+            properties: { module: { type: "string" } },
+            required: ["module"],
+          },
+        },
+      }],
+      tool_choice: {
+        type: "function",
+        function: { name: "configure_site_module" },
+      },
+      parallel_tool_calls: false,
+    });
+
+    expect(prepared.kind).toBe("chat");
+    if (prepared.kind !== "chat") throw new Error("Expected chat preparation");
+    expect(prepared.execution.clientSideToolNames).toContain("configure_site_module");
+    expect(prepared.execution.clientSideTools?.configure_site_module).not.toHaveProperty("execute");
+    expect(prepared.execution.modelToolChoice).toEqual({
+      type: "tool",
+      toolName: "configure_site_module",
+    });
+  });
+
+  it("fails before model execution when a request tool shadows a runtime tool", async () => {
+    const prepared = await prepareChatCompletionExecution(makeDeps({
+      resolveAgentTools: async () => ({
+        tools: [{
+          name: "configure_site_module",
+          description: "Server implementation",
+          parameters: { type: "object", properties: {} },
+        }],
+        executor: async () => "must not run",
+      }),
+    }), {
+      agent: "agent-1",
+      stream: false,
+      messages: [{ role: "user", content: "configure commerce" }],
+      tools: [{
+        type: "function",
+        function: { name: "CONFIGURE_SITE_MODULE" },
+      }],
+      parallel_tool_calls: false,
+    });
+
+    expect(prepared).toMatchObject({
+      kind: "error",
+      status: 400,
+      body: { error: { code: "tool_name_conflict" } },
+    });
+  });
+
+  it("preserves the conflict response when failed-preparation cleanup also fails", async () => {
+    const prepared = await prepareChatCompletionExecution(makeDeps({
+      resolveAgentTools: async () => ({
+        tools: [{
+          name: "configure_site_module",
+          parameters: { type: "object", properties: {} },
+        }],
+        executor: async () => "must not run",
+        cleanup: async () => { throw new Error("cleanup failed"); },
+      }),
+    }), {
+      agent: "agent-1",
+      stream: false,
+      messages: [{ role: "user", content: "configure commerce" }],
+      tools: [{
+        type: "function",
+        function: { name: "configure_site_module" },
+      }],
+      parallel_tool_calls: false,
+    });
+
+    expect(prepared).toMatchObject({
+      kind: "error",
+      status: 400,
+      body: { error: { code: "tool_name_conflict" } },
+    });
+  });
+
+  it("fails when a request tool shadows an enabled built-in interaction", async () => {
+    const prepared = await prepareChatCompletionExecution(makeDeps(), {
+      agent: "agent-1",
+      stream: false,
+      messages: [{ role: "user", content: "ask me" }],
+      tools: [{
+        type: "function",
+        function: { name: "ASK_USER_QUESTION" },
+      }],
+      parallel_tool_calls: false,
+    });
+
+    expect(prepared).toMatchObject({
+      kind: "error",
+      status: 400,
+      body: { error: { code: "tool_name_conflict" } },
+    });
+  });
+
   it("plans with the semantic profile, then resolves a concrete model before provider adaptation", async () => {
     const planningInputs: unknown[] = [];
     const resolvedAgentConfigs: any[] = [];

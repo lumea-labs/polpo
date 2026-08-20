@@ -1220,11 +1220,33 @@ export type ChatCompletionResponseFormat =
       };
     };
 
+export interface ChatCompletionFunctionTool {
+  type: "function";
+  function: {
+    name: string;
+    description?: string;
+    parameters?: Record<string, unknown>;
+    strict?: boolean;
+  };
+}
+
+export type ChatCompletionToolChoice =
+  | "none"
+  | "auto"
+  | "required"
+  | { type: "function"; function: { name: string } };
+
 export interface ChatCompletionRequest extends RuntimeCompletionRequestOptions {
   messages: ChatCompletionMessage[];
   stream?: boolean;
   /** OpenAI-compatible structured response mode. */
   response_format?: ChatCompletionResponseFormat;
+  /** OpenAI-compatible return-only tools executed by the calling client. */
+  tools?: ChatCompletionFunctionTool[];
+  /** Tool selection policy for request-scoped client tools. */
+  tool_choice?: ChatCompletionToolChoice;
+  /** Dynamic client tools require false; parallel dispatch is rejected. */
+  parallel_tool_calls?: false;
   /** Polpo extension: target a specific project by ID. If omitted, uses the first registered project. */
   project?: string;
   /** Session ID for conversation persistence. If omitted, server auto-selects or creates one. */
@@ -1292,7 +1314,15 @@ export interface ChatCompletionPolpoExtensions {
 
 export interface ChatCompletionChoice {
   index: number;
-  message: { role: "assistant"; content: string };
+  message: {
+    role: "assistant";
+    content: string | null;
+    tool_calls?: Array<{
+      id: string;
+      type: "function";
+      function: { name: string; arguments: string };
+    }>;
+  };
   finish_reason: "stop" | "length" | "tool_calls" | "ask_user" | "mission_preview" | "vault_preview" | "open_file" | "navigate_to" | "open_tab";
   /** Present when finish_reason is "ask_user" — structured questions for the user. */
   ask_user?: AskUserPayload;

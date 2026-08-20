@@ -168,6 +168,140 @@ describe("completion request tool-call history", () => {
   });
 });
 
+describe("completion request dynamic client tools", () => {
+  const configureSiteModule = {
+    type: "function" as const,
+    function: {
+      name: "configure_site_module",
+      description: "Open the native module configuration dialog.",
+      parameters: {
+        type: "object",
+        properties: {
+          module: { type: "string" },
+          siteId: { type: "string" },
+        },
+        required: ["module", "siteId"],
+        additionalProperties: false,
+      },
+      strict: true,
+    },
+  };
+
+  it.each([
+    { tools: [configureSiteModule] },
+    { tools: [configureSiteModule], tool_choice: "auto" },
+    { tools: [configureSiteModule], tool_choice: "none" },
+    { tools: [configureSiteModule], tool_choice: "required" },
+    {
+      tools: [configureSiteModule],
+      tool_choice: {
+        type: "function",
+        function: { name: "configure_site_module" },
+      },
+      parallel_tool_calls: false,
+    },
+  ])("accepts OpenAI-compatible client tools %#", (input) => {
+    expect(completionRequestSchema.parse({ ...request, ...input })).toMatchObject(input);
+  });
+
+  it("accepts a parameterless function with an omitted schema", () => {
+    const parsed = completionRequestSchema.parse({
+      ...request,
+      tools: [{ type: "function", function: { name: "open_dialog" } }],
+    });
+    expect(parsed.tools?.[0]?.function).toEqual({ name: "open_dialog" });
+  });
+
+  it.each([
+    {
+      label: "invalid name",
+      tools: [{ type: "function", function: { name: "has spaces" } }],
+    },
+    {
+      label: "duplicate name",
+      tools: [configureSiteModule, configureSiteModule],
+    },
+    {
+      label: "non-object root",
+      tools: [{
+        type: "function",
+        function: { name: "bad", parameters: { type: "array", items: { type: "string" } } },
+      }],
+    },
+    {
+      label: "external ref",
+      tools: [{
+        type: "function",
+        function: { name: "bad", parameters: { type: "object", $ref: "https://example.com/schema.json" } },
+      }],
+    },
+    {
+      label: "prototype key",
+      tools: [{
+        type: "function",
+        function: {
+          name: "bad",
+          parameters: JSON.parse('{"type":"object","properties":{"constructor":{"type":"string"}}}'),
+        },
+      }],
+    },
+    {
+      label: "parallel client calls",
+      tools: [configureSiteModule],
+      parallel_tool_calls: true,
+    },
+    {
+      label: "unknown forced function",
+      tools: [configureSiteModule],
+      tool_choice: { type: "function", function: { name: "missing" } },
+    },
+    {
+      label: "tool choice without tools",
+      tool_choice: "required",
+    },
+    {
+      label: "client tools inside a loop",
+      loop: "create-site",
+      tools: [configureSiteModule],
+    },
+    {
+      label: "unknown nested field",
+      tools: [{ type: "function", function: { name: "bad", unknown: true } }],
+    },
+  ])("rejects $label", ({ label: _label, ...input }) => {
+    expect(completionRequestSchema.safeParse({ ...request, ...input }).success).toBe(false);
+  });
+
+  it("rejects more than 64 client tools", () => {
+    const tools = Array.from({ length: 65 }, (_, index) => ({
+      type: "function",
+      function: { name: `client_tool_${index}` },
+    }));
+    expect(completionRequestSchema.safeParse({ ...request, tools }).success).toBe(false);
+  });
+
+  it("rejects an aggregate tool declaration larger than 128 KiB", () => {
+    expect(completionRequestSchema.safeParse({
+      ...request,
+      tools: [{
+        type: "function",
+        function: { name: "large", description: "x".repeat(128 * 1024) },
+      }],
+    }).success).toBe(false);
+  });
+
+  it("rejects pathologically deep schemas", () => {
+    let schema: Record<string, unknown> = { type: "string" };
+    for (let index = 0; index < 40; index += 1) {
+      schema = { type: "object", properties: { nested: schema } };
+    }
+    expect(completionRequestSchema.safeParse({
+      ...request,
+      tools: [{ type: "function", function: { name: "deep", parameters: schema } }],
+    }).success).toBe(false);
+  });
+});
+
 describe("completion request Polpo chat capabilities", () => {
   it("accepts explicit ask-user and suggestions support", () => {
     expect(completionRequestSchema.parse({

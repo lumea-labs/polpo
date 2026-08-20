@@ -67,6 +67,7 @@ import {
   isStructuredResponseFormat,
   serializeModelOutput,
 } from "./structured-output.js";
+import { selectRequestClientToolCall } from "./client-tools.js";
 
 /** Resolved execution context for a standard (non-loop) chat completion. */
 export interface ChatCompletionExecution {
@@ -406,7 +407,10 @@ export async function executeStreamingChatCompletion(
         if (dispatchableToolCalls.length === 0) continue;
 
         // ── Client-side tools — return to client as standard tool_calls ──
-        const clientSideCall = dispatchableToolCalls.find((tc: any) => clientSideToolNames(exec).has(tc.toolName));
+        const clientSideCall = selectRequestClientToolCall(
+          dispatchableToolCalls,
+          clientSideToolNames(exec),
+        );
         if (clientSideCall) {
           // Persist for session history
           toolCallsAccum.push({
@@ -807,7 +811,10 @@ export async function runNonStreamingChatCompletion(c: any, exec: ChatCompletion
       if (dispatchableToolCalls.length === 0) continue;
 
       // ── Client-side tools — return to client as standard tool_calls ──
-      const clientSideCall = dispatchableToolCalls.find((tc: any) => clientSideToolNames(exec).has(tc.toolName));
+      const clientSideCall = selectRequestClientToolCall(
+        dispatchableToolCalls,
+        clientSideToolNames(exec),
+      );
       if (clientSideCall) {
         toolCallsAccum.push({
           id: clientSideCall.toolCallId,
