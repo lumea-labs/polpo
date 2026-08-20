@@ -177,9 +177,10 @@ async function deployTeams(client: ApiClient, polpoDir: string, opts: ConflictOp
     }
 
     if (remote) {
-      // Update existing — server exposes PATCH /v1/agents/team (rename + describe),
-      // not PUT. Using PUT here would 404 ("Resource not found") on the server side.
-      const res = await client.patch(`/v1/agents/team`, { name: team.name, description: team.description });
+      const res = await client.patch(
+        `/v1/agents/teams/${encodeURIComponent(team.name)}`,
+        { description: team.description },
+      );
       if (res.status >= 200 && res.status < 300) { result.updated++; }
       else {
         const msg = readErrorBody(res.data, res.status);

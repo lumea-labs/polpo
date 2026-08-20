@@ -20,6 +20,7 @@ describe("agentRoutes", () => {
       getTeams: async () => [],
       getTeam: async () => undefined,
       addTeam: async () => undefined,
+      updateTeam: async () => undefined,
       removeTeam: async () => false,
       renameTeam: async () => undefined,
       taskStore: {},
@@ -69,6 +70,7 @@ describe("agentRoutes", () => {
       getTeams: async () => [],
       getTeam: async () => undefined,
       addTeam: async () => undefined,
+      updateTeam: async () => undefined,
       removeTeam: async () => false,
       renameTeam: async () => undefined,
       taskStore: {},
@@ -108,6 +110,7 @@ function routeDeps() {
       getTeams: async () => [],
       getTeam: async () => undefined,
       addTeam: async () => {},
+      updateTeam: async () => undefined,
       removeTeam: async () => true,
       renameTeam: async () => {},
       taskStore: {},
@@ -168,5 +171,47 @@ describe("agent chat preferences routes", () => {
         suggestions: { enabled: false, maxItems: 3 },
       },
     });
+  });
+});
+
+describe("agent team metadata routes", () => {
+  it("updates an existing team without invoking the rename contract", async () => {
+    const updateTeam = vi.fn(async (name: string, updates: { description?: string }) => ({
+      name,
+      description: updates.description,
+      agents: [],
+    }));
+    const renameTeam = vi.fn(async () => undefined);
+    const app = agentRoutes(() => ({
+      getAgents: async () => [],
+      addAgent: async () => undefined,
+      removeAgent: async () => false,
+      updateAgent: async () => undefined,
+      getTeams: async () => [],
+      getTeam: async () => undefined,
+      addTeam: async () => undefined,
+      updateTeam,
+      removeTeam: async () => false,
+      renameTeam,
+      taskStore: {},
+      runStore: {},
+      polpoDir: ".polpo",
+    }));
+
+    const response = await app.request("/teams/product", {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ description: "Updated description" }),
+    });
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      ok: true,
+      data: { name: "product", description: "Updated description" },
+    });
+    expect(updateTeam).toHaveBeenCalledWith("product", {
+      description: "Updated description",
+    });
+    expect(renameTeam).not.toHaveBeenCalled();
   });
 });

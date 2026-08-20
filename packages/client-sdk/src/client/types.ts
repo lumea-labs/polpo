@@ -627,6 +627,10 @@ export interface AddTeamRequest {
   description?: string;
 }
 
+export interface UpdateTeamRequest {
+  description?: string;
+}
+
 // === API ===
 
 export type ErrorCode =

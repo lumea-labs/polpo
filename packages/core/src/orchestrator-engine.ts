@@ -592,6 +592,7 @@ export class OrchestratorEngine {
   async getTeam(name?: string): Promise<Team | undefined> { return this.agentMgr.getTeam(name); }
   async addTeam(team: Team): Promise<void> { return this.agentMgr.addTeam(team); }
   async removeTeam(name: string): Promise<boolean> { return this.agentMgr.removeTeam(name); }
+  async updateTeam(name: string, updates: { description?: string }): Promise<Team> { return this.agentMgr.updateTeam(name, updates); }
   async renameTeam(oldName: string, newName: string): Promise<void> { return this.agentMgr.renameTeam(oldName, newName); }
   async addAgent(agent: AgentConfig, teamName?: string): Promise<void> { return this.agentMgr.addAgent(agent, teamName); }
   async removeAgent(name: string): Promise<boolean> { return this.agentMgr.removeAgent(name); }

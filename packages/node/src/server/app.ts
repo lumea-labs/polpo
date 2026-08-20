@@ -544,6 +544,7 @@ export function createApp(orchestrator: Orchestrator, sseBridge: SSEBridge, opts
     getTeams: () => o.engine.getTeams(),
     getTeam: (name?: string) => o.engine.getTeam(name),
     addTeam: (team: any) => o.engine.addTeam(team),
+    updateTeam: (name: string, updates: { description?: string }) => o.engine.updateTeam(name, updates),
     removeTeam: (name: string) => o.engine.removeTeam(name),
     renameTeam: (oldName: string, newName: string) => o.engine.renameTeam(oldName, newName),
     taskStore: o.getStore(),

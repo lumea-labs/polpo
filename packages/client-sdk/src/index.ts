@@ -110,6 +110,7 @@ export type {
   UpdateAgentRequest,
   UpdateSettingsRequest,
   AddTeamRequest,
+  UpdateTeamRequest,
   TaskFilters,
   LogSession,
   LogEntry,

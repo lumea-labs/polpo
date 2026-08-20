@@ -49,6 +49,7 @@ export interface AgentRouteDeps {
   getTeams: () => Promise<any[]>;
   getTeam: (name?: string) => Promise<any>;
   addTeam: (...args: any[]) => Promise<any>;
+  updateTeam: (name: string, updates: { description?: string }) => Promise<any>;
   removeTeam: (...args: any[]) => Promise<any>;
   renameTeam: (oldName: string, newName: string) => Promise<any>;
   getStore: () => TaskStore;

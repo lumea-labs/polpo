@@ -169,6 +169,69 @@ describe("cloud deploy dependency order", () => {
   });
 });
 
+describe("cloud deploy teams", () => {
+  it("updates an existing team through the team update contract", async () => {
+    const root = await mkdtemp(join(tmpdir(), "polpo-team-deploy-test-"));
+    roots.push(root);
+    const polpoDir = join(root, ".polpo");
+    await mkdir(join(polpoDir, "teams"), { recursive: true });
+    await writeFile(join(polpoDir, "project.json"), JSON.stringify({
+      schemaVersion: 2,
+      project: "team-update",
+      projectId: "project-1",
+      projectSlug: "team-update-project",
+    }));
+    await writeFile(join(polpoDir, "teams", "product.json"), JSON.stringify({
+      description: "Updated description",
+    }));
+
+    const requests: Array<{ method: string; path: string; body?: unknown }> = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(typeof input === "string" ? input : input instanceof URL ? input : input.url);
+      const method = init?.method ?? "GET";
+      requests.push({
+        method,
+        path: url.pathname,
+        ...(init?.body ? { body: JSON.parse(String(init.body)) } : {}),
+      });
+      if (method === "GET" && url.pathname === "/v1/agents/teams") {
+        return Response.json({
+          ok: true,
+          data: [{ name: "product", description: "Old description", agents: [] }],
+        });
+      }
+      if (method === "PATCH" && url.pathname === "/v1/agents/teams/product") {
+        return Response.json({
+          ok: true,
+          data: { name: "product", description: "Updated description", agents: [] },
+        });
+      }
+      return Response.json(
+        { ok: false, error: `unexpected ${method} ${url.pathname}` },
+        { status: 500 },
+      );
+    }));
+
+    const report = await runDeploy({
+      dir: root,
+      yes: true,
+      force: true,
+      silent: true,
+    });
+
+    expect(report.total.failed).toBe(0);
+    expect(report.total.updated).toBe(1);
+    expect(requests).toEqual([
+      { method: "GET", path: "/v1/agents/teams" },
+      {
+        method: "PATCH",
+        path: "/v1/agents/teams/product",
+        body: { description: "Updated description" },
+      },
+    ]);
+  });
+});
+
 describe("cloud deploy skill bundles", () => {
   async function skillFixture(): Promise<string> {
     const root = await mkdtemp(join(tmpdir(), "polpo-skill-deploy-test-"));

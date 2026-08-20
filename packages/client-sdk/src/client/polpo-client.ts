@@ -35,6 +35,7 @@ import type {
   UpdateAgentRequest,
   UpdateSettingsRequest,
   AddTeamRequest,
+  UpdateTeamRequest,
   ExecuteMissionResult,
   ResumeMissionResult,
   ApiResult,
@@ -1134,6 +1135,10 @@ export class PolpoClient {
 
   addTeam(req: AddTeamRequest): Promise<{ added: boolean }> {
     return this.post<{ added: boolean }>("/agents/teams", req);
+  }
+
+  updateTeam(name: string, req: UpdateTeamRequest): Promise<Team> {
+    return this.patch<Team>(`/agents/teams/${encodeURIComponent(name)}`, req);
   }
 
   removeTeam(name: string): Promise<{ removed: boolean }> {
