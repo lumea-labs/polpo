@@ -24,6 +24,10 @@ import { type Dialect, deserializeJson, extractAffectedRows } from "../utils.js"
 
 type AnyTable = any;
 
+export type DrizzleTransactionProvider = <T>(
+  execute: (transaction: any) => Promise<T>,
+) => Promise<T>;
+
 export class DrizzleSessionStore implements SessionStore {
   constructor(
     private db: any,
@@ -31,6 +35,7 @@ export class DrizzleSessionStore implements SessionStore {
     private messages: AnyTable,
     private continuations: AnyTable,
     private dialect: Dialect,
+    private transactionProvider?: DrizzleTransactionProvider,
   ) {}
 
   /** Serialize content for DB TEXT column: arrays → JSON string, plain strings → as-is. */
@@ -552,6 +557,9 @@ export class DrizzleSessionStore implements SessionStore {
       };
     };
 
+    if (this.transactionProvider) {
+      return this.transactionProvider(execute);
+    }
     if (typeof this.db.transaction !== "function") {
       throw new Error("Session continuation requires transactional database support");
     }
