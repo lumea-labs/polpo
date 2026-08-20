@@ -1,7 +1,9 @@
-import type {
-  RunCancellationStore,
-  RunEventStore,
-  RunExecutionLeaseStore,
+import {
+  MAX_RUN_EVENT_BYTES,
+  type AppendRunStreamEvent,
+  type RunCancellationStore,
+  type RunEventStore,
+  type RunExecutionLeaseStore,
 } from "@polpo-ai/core/run-delivery";
 import {
   RunEventJournal,
@@ -15,7 +17,10 @@ import {
 import type { CompletionSseWriter } from "./chat-handler.js";
 
 const DURABLE_WRITE_BATCH_SIZE = 128;
+const DURABLE_WRITE_BATCH_BYTES = MAX_RUN_EVENT_BYTES - 16 * 1024;
 const DURABLE_WRITE_FLUSH_MS = 25;
+const DURABLE_FRAME_FRAGMENT_CHARS = 32_000;
+const DURABLE_FRAME_FRAGMENT_THRESHOLD_BYTES = MAX_RUN_EVENT_BYTES - 2_048;
 
 export interface CompletionRunDeliveryScope {
   eventStore: RunEventStore;
@@ -44,6 +49,20 @@ export function createDurableCompletionWriter(
   let flushTimer: ReturnType<typeof setTimeout> | undefined;
   let drainPromise: Promise<void> | undefined;
   let drainError: unknown;
+  let frameSequence = 0;
+
+  const takeBatch = (): typeof pending => {
+    const batch: typeof pending = [];
+    let encodedBytes = 0;
+    while (pending.length > 0 && batch.length < DURABLE_WRITE_BATCH_SIZE) {
+      const next = pending[0]!;
+      const nextBytes = encodedEventBytes(next);
+      if (batch.length > 0 && encodedBytes + nextBytes > DURABLE_WRITE_BATCH_BYTES) break;
+      batch.push(pending.shift()!);
+      encodedBytes += nextBytes;
+    }
+    return batch;
+  };
 
   const drain = (): Promise<void> => {
     if (drainError) return Promise.reject(drainError);
@@ -52,7 +71,7 @@ export function createDurableCompletionWriter(
     flushTimer = undefined;
     drainPromise = (async () => {
       while (pending.length > 0) {
-        const batch = pending.splice(0, DURABLE_WRITE_BATCH_SIZE);
+        const batch = takeBatch();
         await journal.appendMany(runId, batch);
       }
     })().catch((error) => {
@@ -79,14 +98,18 @@ export function createDurableCompletionWriter(
     write: async () => undefined,
     writeSSE: (message) => {
       if (drainError) return Promise.reject(drainError);
-      pending.push({
+      const event = {
         type: message.data === "[DONE]" ? "response.done" : "response.chunk",
         data: {
           data: message.data,
           ...(message.event === undefined ? {} : { event: message.event }),
           ...(message.id === undefined ? {} : { id: message.id }),
         },
-      });
+      } as const;
+      pending.push(...splitDurableResponseEvent(
+        event,
+        `${runId}:frame:${++frameSequence}`,
+      ));
       if (
         message.data === "[DONE]"
         || pending.length >= DURABLE_WRITE_BATCH_SIZE
@@ -104,6 +127,40 @@ export function createDurableCompletionWriter(
     },
   };
   return writer;
+}
+
+function encodedEventBytes(event: AppendRunStreamEvent): number {
+  return new TextEncoder().encode(JSON.stringify(event)).byteLength;
+}
+
+function splitDurableResponseEvent(
+  event: {
+    type: "response.chunk" | "response.done";
+    data: Record<string, string>;
+  },
+  fragmentId: string,
+): Array<typeof event> {
+  if (
+    event.type === "response.done"
+    || encodedEventBytes(event) <= DURABLE_FRAME_FRAGMENT_THRESHOLD_BYTES
+  ) {
+    return [event];
+  }
+  const data = event.data.data ?? "";
+  const parts: string[] = [];
+  for (let offset = 0; offset < data.length; offset += DURABLE_FRAME_FRAGMENT_CHARS) {
+    parts.push(data.slice(offset, offset + DURABLE_FRAME_FRAGMENT_CHARS));
+  }
+  return parts.map((part, index) => ({
+    type: "response.chunk",
+    data: {
+      ...event.data,
+      data: part,
+      fragmentId,
+      fragmentIndex: String(index),
+      fragmentCount: String(parts.length),
+    },
+  }));
 }
 
 export interface StartDurableCompletionOptions {
@@ -153,6 +210,14 @@ export async function streamDurableCompletionFrames(
   options: StreamDurableCompletionFramesOptions,
 ): Promise<void> {
   let responseDone = false;
+  let fragmentedFrame: {
+    id: string;
+    count: number;
+    nextIndex: number;
+    parts: string[];
+    event?: string;
+    messageId?: string;
+  } | undefined;
   for await (const event of followRunEvents({
     runId: options.runId,
     store: options.scope.eventStore,
@@ -163,6 +228,54 @@ export async function streamDurableCompletionFrames(
     if (event.type === "response.chunk" || event.type === "response.done") {
       const data = typeof event.data.data === "string" ? event.data.data : undefined;
       if (data === undefined) continue;
+      const fragmentId = typeof event.data.fragmentId === "string"
+        ? event.data.fragmentId
+        : undefined;
+      if (fragmentId) {
+        const index = Number(event.data.fragmentIndex);
+        const count = Number(event.data.fragmentCount);
+        if (
+          !Number.isSafeInteger(index)
+          || !Number.isSafeInteger(count)
+          || index < 0
+          || count < 1
+          || index >= count
+          || (index === 0 && fragmentedFrame !== undefined)
+          || (index > 0 && (
+            fragmentedFrame?.id !== fragmentId
+            || fragmentedFrame.count !== count
+            || fragmentedFrame.nextIndex !== index
+          ))
+        ) {
+          throw new Error("Durable response fragment sequence is invalid");
+        }
+        if (index === 0) {
+          fragmentedFrame = {
+            id: fragmentId,
+            count,
+            nextIndex: 0,
+            parts: [],
+            ...(typeof event.data.event === "string" ? { event: event.data.event } : {}),
+            ...(typeof event.data.id === "string" ? { messageId: event.data.id } : {}),
+          };
+        }
+        fragmentedFrame!.parts.push(data);
+        fragmentedFrame!.nextIndex += 1;
+        if (fragmentedFrame!.nextIndex === fragmentedFrame!.count) {
+          const completed = fragmentedFrame!;
+          fragmentedFrame = undefined;
+          await options.write({
+            data: completed.parts.join(""),
+            cursor: String(event.sequence),
+            ...(completed.event === undefined ? {} : { event: completed.event }),
+            ...(completed.messageId === undefined ? {} : { id: completed.messageId }),
+          });
+        }
+        continue;
+      }
+      if (fragmentedFrame) {
+        throw new Error("Durable response fragment sequence ended prematurely");
+      }
       responseDone ||= event.type === "response.done";
       await options.write({
         data,

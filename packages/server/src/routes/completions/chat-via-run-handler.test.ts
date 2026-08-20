@@ -1306,6 +1306,11 @@ describe("chat via Run driver", () => {
     const chunks = parseSse(await response.text());
     const toolEvents = chunks.map((chunk) => chunk.choices?.[0]?.tool_call).filter(Boolean);
     expect(toolEvents.some((event) => event.state === "preparing")).toBe(true);
+    expect(toolEvents).toContainEqual(expect.objectContaining({
+      id: "call_1",
+      state: "preparing",
+      argumentsDelta: "{\"query\":\"Polpo\"}",
+    }));
     expect(toolEvents.some((event) => event.state === "calling" || event.state === "completed")).toBe(false);
     expect(chunks.map((chunk) => chunk.choices?.[0]?.delta?.content).filter(Boolean).join("")).toBe("done");
 

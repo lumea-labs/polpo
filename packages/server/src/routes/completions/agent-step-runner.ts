@@ -436,7 +436,6 @@ export async function runAgentStepCompletion(options: {
       }
 
       const toolCallNames = new Map<string, string>();
-      const toolCallArgsText = new Map<string, string>();
       const resolvedAttempts = new Map<number, typeof initialResolved>();
       const turnResult = await runModelPolicyTurn({
         selection: modelSelection,
@@ -466,13 +465,11 @@ export async function runAgentStepCompletion(options: {
             state: "preparing",
           });
         } else if (event.type === "tool-input-delta") {
-          const acc = (toolCallArgsText.get(event.id) ?? "") + event.delta;
-          toolCallArgsText.set(event.id, acc);
           await onToolCall?.({
             id: event.id,
             name: toolCallNames.get(event.id) ?? "",
             state: "preparing",
-            argumentsText: acc,
+            argumentsDelta: event.delta,
           });
         }
       });

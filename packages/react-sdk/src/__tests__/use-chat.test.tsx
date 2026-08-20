@@ -6,6 +6,45 @@ import { useChat } from "../hooks/use-chat.js";
 import { createMockClient, createMockStore, createWrapper } from "./helpers.js";
 
 describe("useChat interactions", () => {
+  it("reconstructs streamed tool arguments from linear deltas", async () => {
+    const onToolCall = vi.fn();
+    const stream = {
+      abort: vi.fn(),
+      async *[Symbol.asyncIterator]() {
+        for (const toolCall of [
+          { id: "call-1", name: "write", state: "preparing" },
+          { id: "call-1", name: "write", state: "preparing", argumentsDelta: "{\"path\":" },
+          { id: "call-1", name: "write", state: "preparing", argumentsDelta: "\"file.txt\"}" },
+        ]) {
+          yield {
+            id: "chatcmpl-1",
+            object: "chat.completion.chunk",
+            created: 1,
+            model: "polpo",
+            choices: [{ index: 0, delta: {}, tool_call: toolCall, finish_reason: null }],
+          };
+        }
+      },
+    };
+    const client = createMockClient({
+      chatCompletionsStream: vi.fn().mockReturnValue(stream),
+    });
+    const wrapper = createWrapper(client, createMockStore());
+    const { result } = renderHook(() => useChat({ onToolCall }), { wrapper });
+
+    await act(async () => {
+      await result.current.sendMessage("Write the file");
+    });
+
+    expect(result.current.messages.at(-1)?.toolCalls?.[0]).toEqual(expect.objectContaining({
+      id: "call-1",
+      argumentsText: "{\"path\":\"file.txt\"}",
+    }));
+    expect(onToolCall).toHaveBeenLastCalledWith(expect.objectContaining({
+      argumentsText: "{\"path\":\"file.txt\"}",
+    }));
+  });
+
   it("continues a pending client tool into a durable project loop", async () => {
     const directStream = {
       sessionId: "session-1",
