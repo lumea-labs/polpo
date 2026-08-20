@@ -138,6 +138,8 @@ export type {
   FileContentPart,
   ContentPart,
   ChatCompletionResponseFormat,
+  ChatCompletionFunctionTool,
+  ChatCompletionToolChoice,
   ChatCompletionRequest,
   RuntimeCompletionRequestOptions,
   SteeringAttachment,

@@ -542,6 +542,109 @@ describe("chat via Run driver", () => {
     expect(execute).toHaveBeenCalledOnce();
   });
 
+  it.each([false, true])(
+    "returns request-scoped client tool calls in OpenAI format (stream=%s)",
+    async (stream) => {
+      const execute = vi.fn(async () => "must not execute");
+      const visibleTools: string[][] = [];
+      const model = new MockLanguageModelV3({
+        doStream: async (options) => {
+          visibleTools.push((options.tools ?? []).map((tool) => tool.name));
+          return { stream: convertArrayToReadableStream([
+            { type: "stream-start", warnings: [] },
+            {
+              type: "tool-call",
+              toolCallId: "call_configure_1",
+              toolName: "configure_site_module",
+              input: JSON.stringify({ module: "commerce" }),
+            },
+            {
+              type: "finish",
+              finishReason: { unified: "tool-calls", raw: undefined },
+              usage: mockUsage,
+            },
+          ] as any[]) };
+        },
+      });
+      const deps = baseDeps({
+        getConfig: () => ({ settings: { chatExecution: "inline" } }),
+        resolveAgentModel: async () => ({
+          model: {
+            id: "mock-model",
+            provider: "mock",
+            aiModel: model,
+            contextWindow: 200_000,
+            maxTokens: 8192,
+          },
+        }),
+        resolveAgentTools: async () => ({ tools: [], executor: execute }),
+      });
+
+      const response = await completionRoutes(() => deps).request("/", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          agent: "agent-1",
+          stream,
+          messages: [{ role: "user", content: "Configure commerce" }],
+          tools: [{
+            type: "function",
+            function: {
+              name: "configure_site_module",
+              description: "Open the module configuration UI.",
+              parameters: {
+                type: "object",
+                properties: { module: { type: "string" } },
+                required: ["module"],
+                additionalProperties: false,
+              },
+            },
+          }],
+          tool_choice: {
+            type: "function",
+            function: { name: "configure_site_module" },
+          },
+          parallel_tool_calls: false,
+        }),
+      });
+
+      expect(response.status).toBe(200);
+
+      if (stream) {
+        const chunks = parseSse(await response.text());
+        const final = chunks.find((chunk) => chunk.choices?.[0]?.finish_reason === "tool_calls");
+        expect(final.choices[0].delta.tool_calls[0]).toEqual({
+          index: 0,
+          id: "call_configure_1",
+          type: "function",
+          function: {
+            name: "configure_site_module",
+            arguments: JSON.stringify({ module: "commerce" }),
+          },
+        });
+      } else {
+        const payload = await response.json() as any;
+        expect(payload.choices[0]).toMatchObject({
+          finish_reason: "tool_calls",
+          message: {
+            role: "assistant",
+            content: null,
+            tool_calls: [{
+              id: "call_configure_1",
+              type: "function",
+              function: {
+                name: "configure_site_module",
+                arguments: JSON.stringify({ module: "commerce" }),
+              },
+            }],
+          },
+        });
+      }
+      expect(visibleTools[0]).toContain("configure_site_module");
+      expect(execute).not.toHaveBeenCalled();
+    },
+  );
+
   it("enforces output policy before channel delivery and persistence", async () => {
     const updateMessage = vi.fn(async () => true);
     const outputPolicy = createRunOutputPolicy(new RuntimeGuardrailEngine([{

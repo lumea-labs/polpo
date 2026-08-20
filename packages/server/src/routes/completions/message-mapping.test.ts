@@ -15,14 +15,24 @@ describe("convertMessages", () => {
   });
 
   it("keeps tool-result structure but replaces an empty tool payload", () => {
-    const { aiMessages } = convertMessages([{
-      role: "tool",
-      tool_call_id: "call_1",
-      name: "ask_user_question",
-      content: "",
-    }] as any);
+    const { aiMessages } = convertMessages([
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [{
+          id: "call_1",
+          type: "function",
+          function: { name: "ask_user_question", arguments: "{}" },
+        }],
+      },
+      {
+        role: "tool",
+        tool_call_id: "call_1",
+        content: "",
+      },
+    ] as any);
 
-    expect(aiMessages).toEqual([{
+    expect(aiMessages[1]).toEqual({
       role: "tool",
       content: [{
         type: "tool-result",
@@ -30,7 +40,7 @@ describe("convertMessages", () => {
         toolName: "ask_user_question",
         output: { type: "text", value: "(empty tool result)" },
       }],
-    }]);
+    });
   });
 
   it("keeps caller context structural and protects file/tool data when enforced", () => {

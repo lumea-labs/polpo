@@ -494,6 +494,65 @@ describe("PolpoClient structured outputs", () => {
       stream: true,
     });
   });
+
+  it("forwards OpenAI-compatible request-scoped client tools", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(
+      new Response(JSON.stringify({
+        id: "chatcmpl-tool-1",
+        choices: [{
+          index: 0,
+          message: {
+            role: "assistant",
+            content: null,
+            tool_calls: [{
+              id: "call_1",
+              type: "function",
+              function: {
+                name: "configure_site_module",
+                arguments: "{\"module\":\"commerce\"}",
+              },
+            }],
+          },
+          finish_reason: "tool_calls",
+        }],
+      }), { status: 200, headers: { "content-type": "application/json" } }),
+    );
+    const client = new PolpoClient({ baseUrl: "https://api.polpo.sh", fetch });
+
+    const response = await client.chatCompletions({
+      agent: "leo",
+      messages: [{ role: "user", content: "Configure commerce" }],
+      tools: [{
+        type: "function",
+        function: {
+          name: "configure_site_module",
+          parameters: {
+            type: "object",
+            properties: { module: { type: "string" } },
+            required: ["module"],
+          },
+          strict: true,
+        },
+      }],
+      tool_choice: {
+        type: "function",
+        function: { name: "configure_site_module" },
+      },
+      parallel_tool_calls: false,
+    });
+
+    expect(JSON.parse((fetch.mock.calls[0]?.[1] as RequestInit).body as string)).toMatchObject({
+      tools: [{ function: { name: "configure_site_module", strict: true } }],
+      tool_choice: {
+        type: "function",
+        function: { name: "configure_site_module" },
+      },
+      parallel_tool_calls: false,
+      stream: false,
+    });
+    expect(response.choices[0]?.message.tool_calls?.[0]?.function.name)
+      .toBe("configure_site_module");
+  });
 });
 
 describe("PolpoClient schedules v2", () => {

@@ -180,6 +180,44 @@ The same request works with `chatCompletionsStream`. Polpo buffers the
 structured value until it is complete and schema-valid, then emits one
 canonical JSON content chunk. Existing text requests are unchanged.
 
+## Client-side tools
+
+Declare OpenAI-compatible tools on an individual direct-chat request when the
+calling application, rather than Polpo, owns the action:
+
+```ts
+const response = await client.chatCompletions({
+  agent: "leo",
+  messages: [{ role: "user", content: "Configure commerce" }],
+  tools: [{
+    type: "function",
+    function: {
+      name: "configure_site_module",
+      description: "Open the module configuration UI.",
+      parameters: {
+        type: "object",
+        properties: { module: { type: "string" } },
+        required: ["module"],
+        additionalProperties: false,
+      },
+      strict: true,
+    },
+  }],
+  tool_choice: "auto",
+  parallel_tool_calls: false,
+});
+
+if (response.choices[0]?.finish_reason === "tool_calls") {
+  const call = response.choices[0].message.tool_calls?.[0];
+  // Execute call.function in the client, then continue the same session with
+  // the assistant tool-call message and a role=tool result message.
+}
+```
+
+Polpo never invokes request-scoped tools on the server. A client-side call is
+returned atomically; mixed or parallel calls fail closed. Project Loops do not
+accept request-scoped client tools.
+
 ## Chat interactions
 
 Enable only interactions your client can render:

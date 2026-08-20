@@ -62,6 +62,94 @@ const responseFormatNameSchema = z.string()
 
 const jsonSchemaObject = z.record(z.string(), z.unknown());
 
+const clientToolNameSchema = z.string()
+  .min(1)
+  .max(64)
+  .regex(/^[A-Za-z0-9_-]+$/, {
+    message: "Tool names may contain only letters, numbers, underscores, and hyphens",
+  });
+
+export const clientFunctionToolSchema = z.object({
+  type: z.literal("function"),
+  function: z.object({
+    name: clientToolNameSchema,
+    description: z.string().max(8_192).optional(),
+    parameters: jsonSchemaObject.optional(),
+    strict: z.boolean().optional(),
+  }).strict(),
+}).strict();
+
+export const clientToolChoiceSchema = z.union([
+  z.enum(["none", "auto", "required"]),
+  z.object({
+    type: z.literal("function"),
+    function: z.object({ name: clientToolNameSchema }).strict(),
+  }).strict(),
+]);
+
+const MAX_CLIENT_TOOLS = 64;
+const MAX_CLIENT_TOOLS_BYTES = 128 * 1024;
+const MAX_CLIENT_SCHEMA_DEPTH = 32;
+const MAX_CLIENT_SCHEMA_NODES = 4_096;
+const UNSAFE_SCHEMA_KEYS = new Set(["__proto__", "prototype", "constructor"]);
+
+function inspectClientJsonSchema(
+  value: unknown,
+  ctx: z.RefinementCtx,
+  path: (string | number)[],
+  state: { nodes: number },
+  depth = 0,
+): void {
+  state.nodes += 1;
+  if (state.nodes > MAX_CLIENT_SCHEMA_NODES) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: `Tool parameter schema exceeds ${MAX_CLIENT_SCHEMA_NODES} nodes`,
+      path,
+    });
+    return;
+  }
+  if (depth > MAX_CLIENT_SCHEMA_DEPTH) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: `Tool parameter schema exceeds depth ${MAX_CLIENT_SCHEMA_DEPTH}`,
+      path,
+    });
+    return;
+  }
+  if (Array.isArray(value)) {
+    value.forEach((entry, index) => inspectClientJsonSchema(
+      entry,
+      ctx,
+      [...path, index],
+      state,
+      depth + 1,
+    ));
+    return;
+  }
+  if (!value || typeof value !== "object") return;
+
+  for (const [key, entry] of Object.entries(value)) {
+    if (UNSAFE_SCHEMA_KEYS.has(key)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `Unsafe JSON Schema key: ${key}`,
+        path: [...path, key],
+      });
+      continue;
+    }
+    if (key === "$ref" && typeof entry === "string" && !entry.startsWith("#")) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "External JSON Schema references are not supported",
+        path: [...path, key],
+      });
+      continue;
+    }
+    inspectClientJsonSchema(entry, ctx, [...path, key], state, depth + 1);
+  }
+}
+
 /** OpenAI-compatible text, JSON object, and strict JSON Schema response modes. */
 export const responseFormatSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("text") }).strict(),
@@ -123,6 +211,17 @@ export const completionRequestSchema = z.object({
     description:
       "OpenAI-compatible response format. Use json_object for valid JSON or json_schema for schema-validated structured output.",
   }),
+  tools: z.array(clientFunctionToolSchema).max(MAX_CLIENT_TOOLS).optional().openapi({
+    description:
+      "OpenAI-compatible client-executed function tools. Polpo may return calls to these tools but never executes them.",
+  }),
+  tool_choice: clientToolChoiceSchema.optional().openapi({
+    description: "OpenAI-compatible tool selection policy for this completion.",
+  }),
+  parallel_tool_calls: z.boolean().optional().openapi({
+    description:
+      "Whether parallel tool calls are allowed. Dynamic client tools currently require false.",
+  }),
   agent: z.string().optional().openapi({
     description: "Target a specific agent by name for direct conversation. Uses the agent's own model, system prompt, and coding tools instead of the orchestrator. Omit to talk to the orchestrator (default).",
   }),
@@ -181,6 +280,76 @@ export const completionRequestSchema = z.object({
       description:
         "Arbitrary key/value tags (OpenAI-compat). Up to 16 keys, key ≤64 chars, value ≤512 chars. Persisted on the session for filtering and analytics. Deterministic loop tool inputs can bind them from request.metadata.<key>; they are not added to model prompts. Use for tenant_id, plan, identity_provider, ab_variant, etc.",
     }),
+}).superRefine((body, ctx) => {
+  const tools = body.tools ?? [];
+  const seen = new Set<string>();
+  for (const [index, tool] of tools.entries()) {
+    const normalizedName = tool.function.name.toLowerCase();
+    if (seen.has(normalizedName)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `Duplicate client tool name: ${tool.function.name}`,
+        path: ["tools", index, "function", "name"],
+      });
+    }
+    seen.add(normalizedName);
+
+    const parameters = tool.function.parameters;
+    if (parameters !== undefined) {
+      if (parameters.type !== "object") {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "Tool parameters must be a JSON Schema with type=object",
+          path: ["tools", index, "function", "parameters", "type"],
+        });
+      }
+      inspectClientJsonSchema(
+        parameters,
+        ctx,
+        ["tools", index, "function", "parameters"],
+        { nodes: 0 },
+      );
+    }
+  }
+
+  if (new TextEncoder().encode(JSON.stringify(tools)).byteLength > MAX_CLIENT_TOOLS_BYTES) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: `Client tool declarations exceed ${MAX_CLIENT_TOOLS_BYTES} bytes`,
+      path: ["tools"],
+    });
+  }
+  if (tools.length > 0 && body.parallel_tool_calls === true) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "parallel_tool_calls=true is not supported with client tools",
+      path: ["parallel_tool_calls"],
+    });
+  }
+  if (body.tool_choice !== undefined && tools.length === 0) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "tool_choice requires at least one request tool",
+      path: ["tool_choice"],
+    });
+  }
+  if (typeof body.tool_choice === "object") {
+    const forcedName = body.tool_choice.function.name.toLowerCase();
+    if (!seen.has(forcedName)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `tool_choice references undeclared client tool: ${body.tool_choice.function.name}`,
+        path: ["tool_choice", "function", "name"],
+      });
+    }
+  }
+  if (tools.length > 0 && body.loop) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "Request-declared client tools are not supported inside Project Loops",
+      path: ["tools"],
+    });
+  }
 });
 
 /** Parsed request body shape (post-validation, defaults applied). */
@@ -195,9 +364,10 @@ export const completionResponseSchema = z.object({
     index: z.number().int(),
     message: z.object({
       role: z.literal("assistant"),
-      content: z.string(),
+      content: z.string().nullable(),
+      tool_calls: z.array(assistantToolCallSchema).optional(),
     }),
-    finish_reason: z.enum(["stop", "length", "ask_user", "mission_preview", "vault_preview"]),
+    finish_reason: z.enum(["stop", "length", "tool_calls", "ask_user", "mission_preview", "vault_preview"]),
   })),
   usage: z.object({
     prompt_tokens: z.number().int(),

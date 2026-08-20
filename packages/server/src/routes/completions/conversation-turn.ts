@@ -46,6 +46,12 @@ import {
   toAIToolChoice,
 } from "./tool-mapping.js";
 import {
+  RequestClientToolError,
+  assertRequestClientToolNamesAvailable,
+  createRequestClientTools,
+  requestToolChoiceToAI,
+} from "./client-tools.js";
+import {
   createGuardedCompletionToolExecutor,
   type CompletionToolExecutor,
 } from "./tool-guardrails.js";
@@ -146,6 +152,17 @@ function completionError(
       },
     },
   };
+}
+
+async function cleanupFailedPreparation(
+  cleanup: (() => Promise<void>) | undefined,
+): Promise<void> {
+  if (!cleanup) return;
+  try {
+    await cleanup();
+  } catch {
+    // Preserve the deterministic preflight error; cleanup is best-effort here.
+  }
 }
 
 function preflightError(error: unknown): PreparedError {
@@ -556,7 +573,23 @@ export async function prepareChatCompletionExecution(
     settings: interactionSettings,
     client: body.polpo?.capabilities,
   });
-  const clientSideTools = clientSideToolsForCapabilities(interactionCapabilities);
+  const builtInClientSideTools = clientSideToolsForCapabilities(interactionCapabilities);
+  try {
+    assertRequestClientToolNamesAvailable(
+      body.tools,
+      Object.keys(builtInClientSideTools),
+    );
+  } catch (error) {
+    if (error instanceof RequestClientToolError) {
+      return completionError(error.message, 400, error.code);
+    }
+    throw error;
+  }
+  const requestClientSideTools = createRequestClientTools(body.tools);
+  const clientSideTools = {
+    ...builtInClientSideTools,
+    ...requestClientSideTools,
+  };
   const clientSideToolNames = new Set(Object.keys(clientSideTools));
 
   const contextTrust = normalizeRuntimeContextTrustMode(
@@ -935,6 +968,21 @@ export async function prepareChatCompletionExecution(
   }
 
   if (!projectLoopRuntime) {
+    try {
+      assertRequestClientToolNamesAvailable(body.tools, [
+        ...effectiveTools
+          .map((tool) => tool?.name)
+          .filter((name): name is string => typeof name === "string"),
+        ...Object.keys(extraAiTools ?? {}),
+      ]);
+    } catch (error) {
+      if (error instanceof RequestClientToolError) {
+        await cleanupFailedPreparation(onResponseFinished);
+        return completionError(error.message, 400, error.code);
+      }
+      throw error;
+    }
+
     effectiveToolExecutor = createGuardedCompletionToolExecutor({
       executor: effectiveToolExecutor,
       tools: effectiveTools,
@@ -962,6 +1010,20 @@ export async function prepareChatCompletionExecution(
         maxLoadBatch: toolDisclosure.maxLoadBatch,
         maxSearchResults: toolDisclosure.maxSearchResults,
       });
+      try {
+        assertRequestClientToolNamesAvailable(
+          body.tools,
+          pool.tools
+            .map((tool) => tool?.name)
+            .filter((name): name is string => typeof name === "string"),
+        );
+      } catch (error) {
+        if (error instanceof RequestClientToolError) {
+          await cleanupFailedPreparation(onResponseFinished);
+          return completionError(error.message, 400, error.code);
+        }
+        throw error;
+      }
       const alwaysActive = [
         ...Object.keys(extraAiTools ?? {}),
         ...clientSideToolNames,
@@ -996,6 +1058,10 @@ export async function prepareChatCompletionExecution(
       executionRoute,
       activatedSkills,
     };
+  }
+
+  if (body.tool_choice !== undefined) {
+    modelToolChoice = requestToolChoiceToAI(body.tool_choice);
   }
 
   const execution: ChatCompletionExecution = {

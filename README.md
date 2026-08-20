@@ -519,6 +519,51 @@ chunk so clients never receive a partial invalid object. Tool calls may still
 run before the final structured response. Project loop execution currently
 rejects `response_format` explicitly instead of silently ignoring it.
 
+### Client-side tools
+
+Direct chat completions accept OpenAI-compatible function tools declared by
+the caller. Polpo exposes them to the model but never executes them server-side:
+
+```json
+{
+  "agent": "leo",
+  "messages": [{ "role": "user", "content": "Configure commerce" }],
+  "tools": [{
+    "type": "function",
+    "function": {
+      "name": "configure_site_module",
+      "description": "Open the module configuration UI.",
+      "parameters": {
+        "type": "object",
+        "properties": { "module": { "type": "string" } },
+        "required": ["module"],
+        "additionalProperties": false
+      },
+      "strict": true
+    }
+  }],
+  "tool_choice": "auto",
+  "parallel_tool_calls": false
+}
+```
+
+When selected, the response uses standard `finish_reason: "tool_calls"` and
+`choices[0].message.tool_calls`. Execute the call in the application, then send
+the assistant tool-call message followed by its result on the same session:
+
+```json
+{
+  "role": "tool",
+  "tool_call_id": "call_...",
+  "content": "{\"configured\":true}"
+}
+```
+
+Tool declarations are request-scoped. Names may not shadow built-in, server,
+provider, or disclosure tools. Polpo rejects oversized or unsafe schemas,
+parallel client calls, and client tools inside Project Loops before model or
+tool execution.
+
 ### Chat interactions
 
 Each agent can allow the built-in `ask_user_question` client tool and opt into
