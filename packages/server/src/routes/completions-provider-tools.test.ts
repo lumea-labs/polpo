@@ -419,7 +419,7 @@ describe("completionRoutes provider-executed tools", () => {
     expect(response.status).toBe(200);
   });
 
-  it("streams raw tool argument text while the model is preparing a tool call", async () => {
+  it("streams linear tool argument deltas while the model is preparing a tool call", async () => {
     async function* fullStream() {
       yield { type: "tool-input-start", id: "call_search", toolName: "search_web" };
       yield { type: "tool-input-delta", id: "call_search", delta: "{\"query\":\"Polpo" };
@@ -459,13 +459,13 @@ describe("completionRoutes provider-executed tools", () => {
         id: "call_search",
         name: "search_web",
         state: "preparing",
-        argumentsText: "{\"query\":\"Polpo",
+        argumentsDelta: "{\"query\":\"Polpo",
       }),
       expect.objectContaining({
         id: "call_search",
         name: "search_web",
         state: "preparing",
-        argumentsText: "{\"query\":\"Polpo pricing\"}",
+        argumentsDelta: " pricing\"}",
       }),
     ]);
   });
@@ -742,8 +742,8 @@ describe("completionRoutes loop agent-step tool streaming", () => {
     expect(toolEvents).toEqual([
       expect.objectContaining({ name: "loop:implement", state: "calling" }),
       expect.objectContaining({ id: "call_bash", name: "bash", state: "preparing" }),
-      expect.objectContaining({ id: "call_bash", name: "bash", state: "preparing", argumentsText: "{\"command\":" }),
-      expect.objectContaining({ id: "call_bash", name: "bash", state: "preparing", argumentsText: "{\"command\":\"echo hello\"}" }),
+      expect.objectContaining({ id: "call_bash", name: "bash", state: "preparing", argumentsDelta: "{\"command\":" }),
+      expect.objectContaining({ id: "call_bash", name: "bash", state: "preparing", argumentsDelta: "\"echo hello\"}" }),
       expect.objectContaining({ id: "call_bash", name: "bash", arguments: { command: "echo hello" }, state: "calling" }),
       expect.objectContaining({ id: "call_bash", name: "bash", result: "ran echo hello", state: "completed" }),
       expect.objectContaining({ name: "loop:implement", state: "completed" }),

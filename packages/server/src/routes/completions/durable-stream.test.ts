@@ -134,7 +134,64 @@ describe("durable completion stream", () => {
     );
     expect(appendMany.mock.calls.length).toBeGreaterThanOrEqual(3);
     expect(appendMany.mock.calls.length).toBeLessThanOrEqual(4);
-    expect(appendMany.mock.calls.every(([events]) => events.length <= 128)).toBe(true);
+    expect(appendMany.mock.calls.every(([, events]) => events.length <= 128)).toBe(true);
+  });
+
+  it("bounds durable batches by encoded payload size", async () => {
+    const delivery = scope();
+    const appendMany = vi.spyOn(
+      delivery.eventStore as InMemoryRunEventStore,
+      "appendMany",
+    );
+    const writer = createDurableCompletionWriter("run-a", delivery);
+    const payloads = ["a", "b", "c"].map((prefix) => `${prefix}${"x".repeat(200_000)}`);
+
+    for (const data of payloads) await writer.writeSSE({ data });
+    await writer.flush();
+
+    expect(appendMany).toHaveBeenCalledTimes(3);
+    expect(appendMany.mock.calls.map(([, events]) => events.length)).toEqual([1, 1, 1]);
+    expect((await delivery.eventStore.listAfter("run-a")).events.map(
+      (event) => event.data.data,
+    )).toEqual(payloads);
+  });
+
+  it("fragments and exactly reassembles an oversized SSE frame", async () => {
+    const delivery = scope();
+    const oversized = JSON.stringify({
+      choices: [{ delta: { tool_call: { result: "x".repeat(300_000) } } }],
+    });
+
+    const execution = startDurableCompletion({
+      runId: "run-a",
+      scope: delivery,
+      producer: async ({ writer }) => {
+        await writer.writeSSE({ data: oversized, event: "message", id: "provider-frame" });
+        await writer.writeSSE({ data: "[DONE]" });
+      },
+    });
+    await expect(execution).resolves.toEqual({ status: "completed" });
+
+    const persisted = (await delivery.eventStore.listAfter("run-a", undefined, 100)).events;
+    expect(persisted.filter((event) => event.type === "response.chunk").length).toBeGreaterThan(1);
+
+    const frames: Array<{ data: string; event?: string; id?: string }> = [];
+    await streamDurableCompletionFrames({
+      runId: "run-a",
+      scope: delivery,
+      write: async ({ data, event, id }) => {
+        frames.push({
+          data,
+          ...(event === undefined ? {} : { event }),
+          ...(id === undefined ? {} : { id }),
+        });
+      },
+    });
+
+    expect(frames).toEqual([
+      { data: oversized, event: "message", id: "provider-frame" },
+      { data: "[DONE]" },
+    ]);
   });
 
   it("flushes a producer batch before appending the terminal lifecycle event", async () => {

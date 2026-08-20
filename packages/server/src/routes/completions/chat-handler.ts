@@ -280,7 +280,6 @@ export async function executeStreamingChatCompletion(
         // token-by-token input deltas, so the UI can render the call as it
         // builds up instead of waiting for the whole turn to finish.
         const toolCallNames = new Map<string, string>();
-        const toolCallArgsText = new Map<string, string>();
         const resolvedAttempts = new Map<number, { model: ResolvedModelInfo; providerOptions?: Record<string, any> }>();
 
         const result = await runModelPolicyTurn({
@@ -324,18 +323,16 @@ export async function executeStreamingChatCompletion(
               }),
             });
           } else if (event.type === "tool-input-delta") {
-            // Stream the argument tokens as they arrive. Accumulate the raw
-            // JSON and forward it so the client can show the tool input
-            // building up live. Still "preparing": args aren't final yet.
-            const acc = (toolCallArgsText.get(event.id) ?? "") + event.delta;
-            toolCallArgsText.set(event.id, acc);
+            // Forward only the new fragment. Cumulative snapshots grow
+            // quadratically for large tool inputs and can overflow durable
+            // event persistence; clients reconstruct the preview locally.
             await stream.writeSSE({
               data: sseChunk(completionId, {}, null, {
                 tool_call: {
                   id: event.id,
                   name: toolCallNames.get(event.id) ?? "",
                   state: "preparing",
-                  argumentsText: acc,
+                  argumentsDelta: event.delta,
                 },
               }),
             });

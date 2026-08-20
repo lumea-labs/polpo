@@ -363,9 +363,21 @@ export function useChat(options: UseChatOptions = {}): UseChatReturn {
         if (choice.tool_call) {
           const incoming = choice.tool_call;
           const prev = toolCalls.get(incoming.id);
+          const { argumentsDelta, ...incomingWithoutDelta } = incoming;
+          const argumentsText = argumentsDelta !== undefined
+            ? `${prev?.argumentsText ?? ""}${argumentsDelta}`
+            : incoming.argumentsText;
           const merged: ToolCallEvent = prev
-            ? { ...prev, ...incoming, state: incoming.state }
-            : incoming;
+            ? {
+                ...prev,
+                ...incomingWithoutDelta,
+                ...(argumentsText === undefined ? {} : { argumentsText }),
+                state: incoming.state,
+              }
+            : {
+                ...incomingWithoutDelta,
+                ...(argumentsText === undefined ? {} : { argumentsText }),
+              };
           toolCalls.set(merged.id, merged);
           // Update existing segment or add new one
           const existing = segments.find(

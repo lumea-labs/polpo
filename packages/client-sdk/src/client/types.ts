@@ -1406,10 +1406,16 @@ export interface ToolCallEvent {
   /** Tool input arguments (present when state is "calling") */
   arguments?: Record<string, unknown>;
   /**
+   * New raw JSON fragment emitted while the model generates tool input.
+   * Append fragments in order to reconstruct `argumentsText` locally.
+   */
+  argumentsDelta?: string;
+  /**
    * Raw arguments JSON accumulated so far, streamed token-by-token while the
    * model is still generating the call (state "preparing"). Partial and may
    * not parse as JSON until complete; superseded by `arguments` once "calling".
    * Lets the UI show the tool input live instead of waiting for the full call.
+   * Legacy servers can still send this cumulative form.
    */
   argumentsText?: string;
   /** Tool execution result (present when state is "completed" or "error") */

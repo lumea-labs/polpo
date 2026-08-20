@@ -167,7 +167,6 @@ function makeOnEvent(
   const providerToolNames = new Set(Object.keys(extraAiTools ?? {}));
   const toolArgsById = new Map<string, Record<string, unknown>>();
   const toolNamesById = new Map<string, string>();
-  const toolArgsTextById = new Map<string, string>();
   return (e: Record<string, unknown>) => {
     switch (e.type) {
       case "text-delta": {
@@ -187,14 +186,12 @@ function makeOnEvent(
       }
       case "tool_input_delta": {
         const toolId = String(e.toolId);
-        const acc = (toolArgsTextById.get(toolId) ?? "") + String(e.delta ?? "");
-        toolArgsTextById.set(toolId, acc);
         write(sseChunk(completionId, {}, null, {
           tool_call: {
             id: e.toolId,
             name: toolNamesById.get(toolId) ?? "",
             state: "preparing",
-            argumentsText: acc,
+            argumentsDelta: String(e.delta ?? ""),
           },
         }));
         break;

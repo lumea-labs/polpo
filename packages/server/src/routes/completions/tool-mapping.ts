@@ -23,6 +23,9 @@ export type LoopRuntimeToolCall = {
   id: string;
   name: string;
   arguments?: Record<string, unknown>;
+  /** Incremental raw JSON fragment emitted while tool input is generated. */
+  argumentsDelta?: string;
+  /** @deprecated Cumulative snapshots are accepted for backward compatibility only. */
   argumentsText?: string;
   result?: string;
   state: "preparing" | "calling" | "completed" | "error" | "interrupted";
