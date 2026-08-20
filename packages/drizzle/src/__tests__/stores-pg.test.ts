@@ -770,6 +770,64 @@ describe.skipIf(!canConnect)("PostgreSQL Drizzle stores", () => {
       expect(outcomes.filter((outcome) => outcome.status === "rejected")).toHaveLength(1);
       expect(await stores.sessionStore.getMessages(sid)).toHaveLength(2);
     });
+
+    it("uses an explicit transaction provider when the primary driver cannot transact", async () => {
+      const transactionCalls: string[] = [];
+      const nonTransactionalDb = new Proxy(db as any, {
+        get(target, property, receiver) {
+          if (property === "transaction") {
+            return () => {
+              throw new Error("No transactions support in primary driver");
+            };
+          }
+          const value = Reflect.get(target, property, receiver);
+          return typeof value === "function" ? value.bind(target) : value;
+        },
+      });
+      const storesWithProvider = createPgStores(nonTransactionalDb, {
+        transaction: async (execute) => {
+          transactionCalls.push("called");
+          return db.transaction(execute);
+        },
+      });
+      const sid = await storesWithProvider.sessionStore.create({ agent: "leo" });
+      const assistant = await storesWithProvider.sessionStore.addMessage(
+        sid,
+        "assistant",
+        "Choose",
+      );
+      await storesWithProvider.sessionStore.updateMessage(sid, assistant.id, "Choose", [{
+        id: "call-1",
+        name: "configure",
+        state: "interrupted",
+      }]);
+      const input = {
+        sessionId: sid,
+        agent: "leo",
+        toolCallId: "call-1",
+        result: "configured",
+        expectedSessionVersion: 1,
+        idempotencyKey: "idem-1",
+        fingerprint: "fingerprint-1",
+        runId: "looprun-1",
+      } as const;
+
+      await expect(
+        storesWithProvider.sessionStore.prepareContinuation!(input),
+      ).resolves.toMatchObject({
+        status: "prepared",
+        sessionVersion: 2,
+        runId: "looprun-1",
+      });
+      await expect(
+        storesWithProvider.sessionStore.prepareContinuation!(input),
+      ).resolves.toMatchObject({
+        status: "replay",
+        runId: "looprun-1",
+      });
+      expect(transactionCalls).toHaveLength(2);
+      expect(await storesWithProvider.sessionStore.getMessages(sid)).toHaveLength(2);
+    });
   });
 
   // ═══════════════════════════════════════════════════════════════════════

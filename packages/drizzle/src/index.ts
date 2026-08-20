@@ -78,6 +78,7 @@ import {
 } from "./stores/run-delivery-store.js";
 import { DrizzleLoopRunStore, DualWriteLoopRunStore } from "./stores/loop-run-store.js";
 import { DrizzleSessionStore } from "./stores/session-store.js";
+import type { DrizzleTransactionProvider } from "./stores/session-store.js";
 import { DrizzleLogStore } from "./stores/log-store.js";
 import { DrizzleModelInvocationStore } from "./stores/model-invocation-store.js";
 import { DrizzleApprovalStore } from "./stores/approval-store.js";
@@ -160,7 +161,18 @@ export interface DrizzleStores {
  *
  * @param db A Drizzle database instance (e.g. from `drizzle(postgres(...))`)
  */
-export function createPgStores(db: any): DrizzleStores {
+export interface CreatePgStoresOptions {
+  /**
+   * Optional transaction executor for drivers such as drizzle neon-http whose
+   * primary database handle cannot run interactive transactions.
+   */
+  transaction?: DrizzleTransactionProvider;
+}
+
+export function createPgStores(
+  db: any,
+  options: CreatePgStoresOptions = {},
+): DrizzleStores {
   const taskStore = new DrizzleTaskStore(db, {
     tasks: tasksPg, missions: missionsPg, metadata: metadataPg, processes: processesPg,
   }, "pg");
@@ -189,6 +201,7 @@ export function createPgStores(db: any): DrizzleStores {
       messagesPg,
       sessionContinuationsPg,
       "pg",
+      options.transaction,
     ),
     logStore: new DrizzleLogStore(db, logSessionsPg, logEntriesPg, "pg"),
     modelInvocationStore: new DrizzleModelInvocationStore(db, modelInvocationLogsPg, "pg"),

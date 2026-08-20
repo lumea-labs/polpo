@@ -8,6 +8,7 @@ export {
 } from "./run-delivery-store.js";
 export { DrizzleLoopRunStore } from "./loop-run-store.js";
 export { DrizzleSessionStore } from "./session-store.js";
+export type { DrizzleTransactionProvider } from "./session-store.js";
 export { DrizzleLogStore } from "./log-store.js";
 export { DrizzleModelInvocationStore } from "./model-invocation-store.js";
 export { DrizzleApprovalStore } from "./approval-store.js";
