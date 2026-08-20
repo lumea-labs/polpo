@@ -6,7 +6,10 @@ import { afterEach, describe, expect, it } from "vitest";
 import { NodeFileSystem } from "../adapters/node-filesystem.js";
 import { NodeShell } from "../adapters/node-shell.js";
 import { createLocalCustomToolRuntime } from "../custom-tools/runtime.js";
-import { parseCustomToolSourceArtifact } from "@polpo-ai/tools";
+import {
+  createToolInvocationContext,
+  parseCustomToolSourceArtifact,
+} from "@polpo-ai/tools";
 
 const roots: string[] = [];
 afterEach(async () => Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))));
@@ -120,5 +123,69 @@ describe("LocalCustomToolRuntime", () => {
     expect(deployed.meta).toMatchObject({ name: "site_context_get" });
     const result = await runtime.run("site_context_get", { site: "site-1" }) as any;
     expect(JSON.parse(result.content[0].text)).toEqual({ site: "site-1", trusted: true });
+  });
+
+  it("deploys slot metadata and resolves a fresh capability for every invocation", async () => {
+    const root = await mkdtemp(join(tmpdir(), "polpo-custom-tools-"));
+    roots.push(root);
+    const polpoDir = join(root, ".polpo");
+    await mkdir(polpoDir, { recursive: true });
+    const calls: string[] = [];
+    const runtime = createLocalCustomToolRuntime({
+      polpoDir,
+      workDir: root,
+      fs: new NodeFileSystem(),
+      shell: new NodeShell(),
+      connectionCapabilityResolver: {
+        async resolve(input) {
+          calls.push(`${input.invocation.user}:${input.toolCallId}`);
+          return {
+            providerId: "sitoinchat",
+            scopes: ["site:read"],
+            getToken: () => `token:${input.invocation.user}`,
+          };
+        },
+      },
+    });
+    const source = `
+      import { defineTool } from "@polpo-ai/tools";
+      import { Type } from "@sinclair/typebox";
+      export default defineTool({
+        name: "site_context_get",
+        description: "Get one site",
+        parameters: Type.Object({}),
+        connections: {
+          siteApi: { provider: "sitoinchat", scopes: ["site:read"] },
+        },
+        async execute(ctx) { return ctx.connections.require("siteApi").getToken(); },
+      });
+    `;
+    await runtime.store.putSource("site_context_get", source);
+    const deployed = await runtime.deploy("site_context_get", source);
+    expect(deployed.errors).toEqual([]);
+    expect(deployed.meta?.connections).toEqual({
+      siteApi: { provider: "sitoinchat", scopes: ["site:read"] },
+    });
+    await runtime.store.putBundle("site_context_get", deployed.bundle!);
+    await runtime.store.putMeta("site_context_get", deployed.meta!);
+
+    for (const user of ["user-1", "user-2"]) {
+      const tool = await runtime.load(
+        "site_context_get",
+        undefined,
+        createToolInvocationContext({
+          requestId: `request-${user}`,
+          runId: `run-${user}`,
+          surface: "chat",
+          user,
+        }),
+      );
+      const result = await tool.execute(`call-${user}`, {});
+      expect(result.content[0]).toEqual({ type: "text", text: `token:${user}` });
+    }
+    expect(calls).toEqual([
+      "user-1:call-user-1",
+      "user-2:call-user-2",
+    ]);
   });
 });

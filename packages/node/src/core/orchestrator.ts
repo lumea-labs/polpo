@@ -98,6 +98,7 @@ export interface OrchestratorOptions {
   assessFn?: AssessFn;
   spawner?: Spawner;
   runtimeContext?: RuntimeContextProvider;
+  connectionCapabilityResolver?: import("@polpo-ai/core").ConnectionCapabilityResolver;
   /**
    * Host-owned classifier factory for opt-in automatic execution routing.
    * Neither core nor the Node host chooses a model implicitly.
@@ -124,6 +125,7 @@ export class Orchestrator extends TypedEmitter {
   private spawner: Spawner;
   /** True when the caller injected a spawner — settings never override it. */
   private spawnerInjected = false;
+  private connectionCapabilityResolver?: import("@polpo-ai/core").ConnectionCapabilityResolver;
   private injectedStore?: TaskStore;
   private injectedRunStore?: RunStore;
   private memoryStore!: MemoryStore;
@@ -238,6 +240,7 @@ export class Orchestrator extends TypedEmitter {
       this.injectedRunStore = opts.runStore;
       this.runtimeContext = opts.runtimeContext;
       this.executionRouteClassifierResolver = opts.resolveExecutionRouteClassifier;
+      this.connectionCapabilityResolver = opts.connectionCapabilityResolver;
       this.spawnerInjected = !!opts.spawner;
       this.spawner = opts.spawner ?? new NodeSpawner({ polpoDir: this.polpoDir, cwd: this.workDir });
     }
@@ -280,6 +283,7 @@ export class Orchestrator extends TypedEmitter {
         memoryStore: this.memoryStore,
         fs: this.fs,
         shell: this.shell,
+        connectionCapabilityResolver: this.connectionCapabilityResolver,
       };
     });
     this.spawner = new CompositeSpawner(this.spawner, inProcess);

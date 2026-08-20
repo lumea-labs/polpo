@@ -81,6 +81,8 @@ export interface SpawnContext {
   runId?: string;
   /** Host-owned immutable identity supplied to custom tools for this run. */
   toolInvocation?: ToolInvocationContext;
+  /** Host-owned resolver for invocation-scoped logical Connection slots. */
+  connectionCapabilityResolver?: import("./connection-capability.js").ConnectionCapabilityResolver;
   /** Pre-resolved retrieval snapshot rendered into task system prompts. */
   runtimeContext?: RuntimeContextResolution;
   /** Per-task output directory (.polpo/output/<taskId>/). Agents write deliverables here. */

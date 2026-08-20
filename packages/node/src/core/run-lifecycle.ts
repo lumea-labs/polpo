@@ -155,6 +155,8 @@ export interface ExecuteRunDeps {
   shell?: Shell;
   /** Optional host checkpoint for manually managed hydrated sandbox volumes. */
   checkpointSandboxVolume?: (name?: string) => Promise<void>;
+  /** Host-owned resolver for strict logical Connection slots. */
+  connectionCapabilityResolver?: import("@polpo-ai/core").ConnectionCapabilityResolver;
   /** Finalize run-scoped host resources before terminal persistence. */
   finalize?: () => Promise<void>;
   /**
@@ -485,6 +487,7 @@ export async function executeRun(config: RunnerConfig, deps: ExecuteRunDeps): Pr
       fs: deps.fs ?? new NodeFileSystem(),
       shell: deps.shell ?? new NodeShell(),
       checkpointSandboxVolume: deps.checkpointSandboxVolume,
+      connectionCapabilityResolver: deps.connectionCapabilityResolver,
       // Durable turns: resume checkpoint handed over by orphan recovery,
       // and the per-turn checkpoint sink (one RunStore write per turn,
       // best-effort — a flaky store must never fail a healthy run).

@@ -542,6 +542,7 @@ export async function buildAgentTools(
     workDir: cwd,
     fs: prep.fs,
     shell: prep.shell,
+    connectionCapabilityResolver: ctx?.connectionCapabilityResolver,
   });
   allPolpoTools.push(...await customTools.loadAssigned(
     agentConfig.allowedTools,
