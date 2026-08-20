@@ -5,6 +5,7 @@ import {
   InMemoryRunExecutionLeaseStore,
 } from "@polpo-ai/core/run-delivery";
 import { InMemoryRunEventNotifier } from "@polpo-ai/core/run-delivery-follower";
+import { MockLanguageModelV3, convertArrayToReadableStream } from "ai/test";
 import {
   completionRoutes,
   type CompletionRouteDeps,
@@ -75,6 +76,77 @@ function loopDeps(scope: CompletionRunDeliveryScope): CompletionRouteDeps {
         inputSchema: { type: "object", properties: {}, additionalProperties: false },
       }],
       executor: async () => String(time++),
+    }),
+    createRunDeliveryScope: async () => scope,
+  };
+}
+
+function continuationLoopDeps(
+  scope: CompletionRunDeliveryScope,
+  observedModelMessages: unknown[][],
+  executedTools: string[],
+): CompletionRouteDeps {
+  const model = new MockLanguageModelV3({
+    doStream: async (options) => {
+      observedModelMessages.push(options.prompt);
+      return {
+        stream: convertArrayToReadableStream([
+          { type: "stream-start", warnings: [] },
+          { type: "text-start", id: "text" },
+          { type: "text-delta", id: "text", delta: "implemented" },
+          { type: "text-end", id: "text" },
+          {
+            type: "finish",
+            finishReason: { unified: "stop", raw: undefined },
+            usage: {
+              inputTokens: { total: 10 },
+              outputTokens: { total: 2 },
+            },
+          },
+        ] as any[]),
+      };
+    },
+  });
+
+  return {
+    ...viaRunDeps(),
+    getConfig: () => ({}),
+    getAgents: async () => [{
+      name: "leo",
+      model: "mock",
+      assignedLoops: ["leo-change-site"],
+      allowedTools: ["site_context_get", "site_checkout"],
+    }],
+    getProjectLoop: async (name) => ({
+      name,
+      start: "context",
+      steps: {
+        context: { type: "tool", tool: "site_context_get", next: "checkout" },
+        checkout: { type: "tool", tool: "site_checkout", next: "implement" },
+        implement: { type: "agent", next: "end" },
+      },
+    }),
+    resolveAgentModel: async () => ({
+      model: {
+        id: "mock-model",
+        provider: "mock",
+        runtimeMode: "provider",
+        aiModel: model,
+        contextWindow: 200_000,
+        maxTokens: 8192,
+      },
+    }),
+    buildRuntimePrompt: async () => "Implement the requested change.",
+    resolveAgentTools: async () => ({
+      tools: ["site_context_get", "site_checkout"].map((name) => ({
+        name,
+        description: name,
+        inputSchema: { type: "object", properties: {}, additionalProperties: false },
+      })),
+      executor: async (name) => {
+        executedTools.push(name);
+        return `${name}:ok`;
+      },
     }),
     createRunDeliveryScope: async () => scope,
   };
@@ -289,5 +361,160 @@ describe("completion durable delivery routing", () => {
       idempotencyKey: "continue-1",
     }));
     expect(addMessage.mock.calls.every((call) => call[1] === "assistant")).toBe(true);
+  });
+
+  it("carries canonical client-tool history through deterministic tools into an agent step", async () => {
+    const scope = deliveryScope();
+    const observedModelMessages: unknown[][] = [];
+    const executedTools: string[] = [];
+    const deps = continuationLoopDeps(scope, observedModelMessages, executedTools);
+    deps.getSessionStore = () => ({
+      prepareContinuation: vi.fn(async (input: any) => ({
+        status: "prepared",
+        sessionVersion: 8,
+        runId: input.runId,
+        messages: [
+          { id: "u1", role: "user", content: "Add Calendly", ts: "2026-01-01T00:00:00Z" },
+          {
+            id: "a1",
+            role: "assistant",
+            content: "",
+            ts: "2026-01-01T00:00:01Z",
+            toolCalls: [{
+              id: "call-1",
+              name: "configure_site_connector",
+              arguments: { connector: "calendly" },
+              state: "completed",
+              result: "configured",
+            }],
+          },
+          {
+            id: "t1",
+            role: "tool",
+            content: "configured",
+            ts: "2026-01-01T00:00:02Z",
+            toolCallId: "call-1",
+          },
+        ],
+      })),
+      addMessage: vi.fn(async (_sessionId, role, content) => ({
+        id: `message-${role}`,
+        role,
+        content,
+        ts: new Date().toISOString(),
+      })),
+      updateMessage: vi.fn(async () => true),
+    } as any);
+
+    const res = await completionRoutes(() => deps).request("/", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-session-id": "session-1",
+        "idempotency-key": "continue-1",
+      },
+      body: JSON.stringify({
+        agent: "leo",
+        loop: "leo-change-site",
+        stream: true,
+        messages: [{ role: "tool", tool_call_id: "call-1", content: "configured" }],
+        polpo: {
+          continuation: {
+            type: "client_tool",
+            tool_call_id: "call-1",
+            expected_session_version: 7,
+          },
+          delivery: { onDisconnect: "continue" },
+        },
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.text()).toContain("implemented");
+    expect(executedTools).toEqual(["site_context_get", "site_checkout"]);
+    expect(observedModelMessages).toHaveLength(1);
+    expect(observedModelMessages[0]).toEqual(expect.arrayContaining([
+      expect.objectContaining({ role: "user" }),
+      expect.objectContaining({ role: "assistant" }),
+      expect.objectContaining({ role: "tool" }),
+    ]));
+  });
+
+  it("rejects an orphan client-tool result before any project-loop side effect", async () => {
+    const observedModelMessages: unknown[][] = [];
+    const executedTools: string[] = [];
+    const deps = continuationLoopDeps(deliveryScope(), observedModelMessages, executedTools);
+
+    const res = await completionRoutes(() => deps).request("/", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-session-id": "session-1",
+      },
+      body: JSON.stringify({
+        agent: "leo",
+        loop: "leo-change-site",
+        stream: true,
+        messages: [{ role: "tool", tool_call_id: "call-1", content: "configured" }],
+        polpo: { delivery: { onDisconnect: "continue" } },
+      }),
+    });
+
+    expect(res.status).toBe(400);
+    await expect(res.json()).resolves.toMatchObject({
+      error: { code: "client_tool_continuation_required" },
+    });
+    expect(executedTools).toEqual([]);
+    expect(observedModelMessages).toEqual([]);
+  });
+
+  it("fails closed before loop tools when canonical continuation history has no model prompt", async () => {
+    const observedModelMessages: unknown[][] = [];
+    const executedTools: string[] = [];
+    const deps = continuationLoopDeps(deliveryScope(), observedModelMessages, executedTools);
+    deps.getSessionStore = () => ({
+      prepareContinuation: vi.fn(async (input: any) => ({
+        status: "prepared",
+        sessionVersion: 2,
+        runId: input.runId,
+        messages: [{
+          id: "t1",
+          role: "tool",
+          content: "configured",
+          ts: "2026-01-01T00:00:02Z",
+          toolCallId: "call-1",
+        }],
+      })),
+    } as any);
+
+    const res = await completionRoutes(() => deps).request("/", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-session-id": "session-1",
+        "idempotency-key": "continue-corrupt",
+      },
+      body: JSON.stringify({
+        agent: "leo",
+        loop: "leo-change-site",
+        stream: true,
+        messages: [{ role: "tool", tool_call_id: "call-1", content: "configured" }],
+        polpo: {
+          continuation: {
+            type: "client_tool",
+            tool_call_id: "call-1",
+            expected_session_version: 1,
+          },
+          delivery: { onDisconnect: "continue" },
+        },
+      }),
+    });
+
+    expect(res.status).toBe(400);
+    await expect(res.json()).resolves.toMatchObject({
+      error: { code: "project_loop_prompt_required" },
+    });
+    expect(executedTools).toEqual([]);
+    expect(observedModelMessages).toEqual([]);
   });
 });

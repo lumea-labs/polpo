@@ -34,6 +34,7 @@ import {
   normalizeChatInteractionSettings,
   resolveChatInteractionCapabilities,
 } from "@polpo-ai/core/chat-interactions";
+import { prepareModelMessagesForProvider } from "@polpo-ai/llm";
 import type {
   CompletionRouteDeps,
   CompletionRuntimeInvocation,
@@ -118,6 +119,20 @@ type PreparedChat = {
   execution: ChatCompletionExecution;
   viaRun: boolean;
 };
+
+function projectLoopHasAgentStep(loop: ProjectLoopConfig): boolean {
+  const candidate = loop as ProjectLoopConfig & {
+    loops?: Record<string, unknown>;
+  };
+  if (candidate.steps && typeof candidate.steps === "object") {
+    return Object.values(candidate.steps).some((step) => step.type === "agent");
+  }
+  return Boolean(
+    candidate.loops
+    && typeof candidate.loops === "object"
+    && Object.keys(candidate.loops).length > 0,
+  );
+}
 
 export type PreparedConversationTurn = PreparedError | PreparedProjectLoop | PreparedChat;
 
@@ -756,6 +771,23 @@ export async function prepareChatCompletionExecution(
         }
         throw error;
       }
+    }
+    if (
+      projectLoopRuntime
+      && projectLoopHasAgentStep(projectLoopRuntime.projectLoop)
+      && prepareModelMessagesForProvider(aiMessages).length === 0
+    ) {
+      const orphanToolResult = !continuation
+        && body.messages.some((message) => message.role === "tool");
+      return completionError(
+        orphanToolResult
+          ? "A client tool result can enter a Project Loop only through polpo.continuation."
+          : "The selected Project Loop contains an agent step, but the request has no model-visible messages.",
+        400,
+        orphanToolResult
+          ? "client_tool_continuation_required"
+          : "project_loop_prompt_required",
+      );
     }
     if (requestedSkills.length > 0) {
       const assignedSkills = new Set(

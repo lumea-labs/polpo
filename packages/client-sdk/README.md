@@ -263,6 +263,12 @@ already-resolved call fails deterministically. The raw API requires
 `x-session-id`, `Idempotency-Key`, `stream: true`, and
 `polpo.delivery.onDisconnect: "continue"`.
 
+Do not send a standalone `role: "tool"` message directly to a Project Loop.
+Without `polpo.continuation`, Polpo rejects it with
+`client_tool_continuation_required` before any deterministic Loop tool runs.
+Use `continueWithToolResult()` so session versioning, idempotency, canonical
+history reconstruction, and durable delivery are applied together.
+
 ## Chat interactions
 
 Enable only interactions your client can render:
