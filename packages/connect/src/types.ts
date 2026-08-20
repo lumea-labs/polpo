@@ -80,6 +80,35 @@ export interface ConnectorProviderDefinition {
 
 export type ConnectionStatus = "active" | "pending" | "revoked" | "error";
 
+export interface ConnectionBindingPrincipal {
+  type: string;
+  id: string;
+}
+
+export interface ConnectionBindingTenant {
+  namespace: string;
+  id: string;
+}
+
+export interface ConnectionBindingResource {
+  namespace: string;
+  type: string;
+  id: string;
+}
+
+/** Non-secret dimensions used for strict trusted Connection selection. */
+export interface ConnectionBindingAttributes {
+  principal?: ConnectionBindingPrincipal;
+  tenant?: ConnectionBindingTenant;
+  resource?: ConnectionBindingResource;
+  scopeEpoch?: string;
+}
+
+export interface ConnectionSelectionSelector extends ConnectionBindingAttributes {
+  projectId: string;
+  orgId?: string;
+}
+
 export interface ConnectionRecord {
   id: string;
   providerId: string;
@@ -95,6 +124,7 @@ export interface ConnectionRecord {
   createdAt: string;
   updatedAt: string;
   metadata?: Record<string, unknown>;
+  binding?: ConnectionBindingAttributes;
 }
 
 export interface OAuthStateRecord {

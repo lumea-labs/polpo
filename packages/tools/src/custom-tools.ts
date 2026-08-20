@@ -25,7 +25,17 @@ import type { FileSystem } from "@polpo-ai/core/filesystem";
 import type { Shell } from "@polpo-ai/core/shell";
 import { validateJsonSchema } from "@polpo-ai/llm";
 import {
+  ConnectionSelectionError,
   createToolInvocationContext,
+  getConnectionSlotSpecErrors,
+  normalizeConnectionSlotSpecs,
+  type ConnectionCapability,
+  type ConnectionCapabilityResolveInput,
+  type ConnectionCapabilityResolver,
+  type ConnectionSelectionErrorCode,
+  type ConnectionSlotSpec,
+  type ConnectionSlotSpecs,
+  type ResolvedConnectionCapability,
   type PolpoTool,
   type ToolInvocationContext,
   type ToolInvocationContextInput,
@@ -37,12 +47,20 @@ import {
 } from "@polpo-ai/core";
 
 export {
+  ConnectionSelectionError,
   createToolInvocationContext,
   type ToolInvocationContext,
   type ToolInvocationContextInput,
   type ToolInvocationJsonPrimitive,
   type ToolInvocationJsonValue,
   type ToolInvocationSurface,
+  type ConnectionCapability,
+  type ConnectionCapabilityResolveInput,
+  type ConnectionCapabilityResolver,
+  type ConnectionSelectionErrorCode,
+  type ConnectionSlotSpec,
+  type ConnectionSlotSpecs,
+  type ResolvedConnectionCapability,
 };
 
 export interface CustomToolConnection {
@@ -69,6 +87,8 @@ export interface CustomToolConnections {
   getHeaders(ref: string): Record<string, string> | undefined;
   has(ref: string): boolean;
   list(): CustomToolConnection[];
+  /** Invocation-scoped capability resolved from a strict logical slot. */
+  require(slot: string): ConnectionCapability;
 }
 
 export function emptyCustomToolConnections(): CustomToolConnections {
@@ -79,6 +99,13 @@ export function emptyCustomToolConnections(): CustomToolConnections {
     getHeaders: () => undefined,
     has: () => false,
     list: () => [],
+    require: (slot) => {
+      throw new ConnectionSelectionError(
+        "connection_slot_invalid",
+        `Connection slot "${slot}" is not available in this tool invocation`,
+        { slot },
+      );
+    },
   };
 }
 
@@ -316,6 +343,8 @@ export interface CustomToolSpec<
   bindingsSchema?: TBindings;
   /** Exact mappings from immutable invocation context into hidden bindings. */
   serverBindings?: CustomToolServerBindings;
+  /** Logical credential capabilities resolved from trusted invocation context. */
+  connections?: ConnectionSlotSpecs;
   /** Tool body. Receives injected capabilities + validated params. */
   execute: (
     ctx: CustomToolContext<Static<TBindings>>,
@@ -413,6 +442,9 @@ export function getCustomToolErrors(value: unknown): string[] {
   if (t.bindingsSchema !== undefined && t.serverBindings !== undefined) {
     errors.push(...bindingSchemaMappingErrors(t.bindingsSchema, t.serverBindings));
   }
+  if (t.connections !== undefined) {
+    errors.push(...getConnectionSlotSpecErrors(t.connections));
+  }
   return errors;
 }
 
@@ -508,7 +540,244 @@ export function createJsonSchemaExample(schema: unknown, name = ""): unknown {
 export type CustomToolBindContext = Omit<
   CustomToolContext,
   "signal" | "onUpdate" | "bindings"
->;
+> & {
+  /** Host-owned strict Connection resolver. It is never exposed to tool code. */
+  connectionResolver?: ConnectionCapabilityResolver;
+};
+
+type AcquiredConnectionCapability = {
+  readonly slot: string;
+  readonly view: ConnectionCapability;
+  release(): Promise<void>;
+};
+
+async function disposeRejectedCapability(
+  capability: ResolvedConnectionCapability,
+): Promise<void> {
+  try {
+    await capability.dispose?.();
+  } catch {
+    // Preserve the deterministic selection error. This capability was never
+    // exposed to tool code and its invocation wrapper is already unreachable.
+  }
+}
+
+function frozenCapabilityMetadata(
+  metadata: ResolvedConnectionCapability["metadata"],
+): ConnectionCapability["metadata"] {
+  if (metadata === undefined) return undefined;
+  const inspect = (value: unknown, path: string): void => {
+    if (!value || typeof value !== "object") return;
+    if (Array.isArray(value)) {
+      value.forEach((entry, index) => inspect(entry, `${path}[${index}]`));
+      return;
+    }
+    for (const [key, nested] of Object.entries(value)) {
+      if (/^(?:connection_?id|token|access_?token|refresh_?token|secret|password|api_?key)$/i.test(key)) {
+        throw new ConnectionSelectionError(
+          "connection_slot_invalid",
+          `Connection capability metadata contains forbidden field "${path}.${key}"`,
+        );
+      }
+      inspect(nested, `${path}.${key}`);
+    }
+  };
+  inspect(metadata, "metadata");
+  return createToolInvocationContext({
+    requestId: "connection-capability-metadata",
+    runId: "connection-capability-metadata",
+    surface: "chat",
+    metadata: metadata as Record<string, ToolInvocationJsonValue>,
+  }).metadata;
+}
+
+function capabilityMethod<T>(
+  slot: string,
+  active: () => boolean,
+  method: (() => T) | undefined,
+  fallback: T,
+): () => T {
+  return () => {
+    if (!active()) {
+      throw new ConnectionSelectionError(
+        "connection_scope_denied",
+        `Connection capability "${slot}" is no longer active`,
+        { slot },
+      );
+    }
+    return method ? method() : fallback;
+  };
+}
+
+function frozenHeaders(
+  slot: string,
+  value: Readonly<Record<string, string>> | undefined,
+): Readonly<Record<string, string>> | undefined {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new ConnectionSelectionError(
+      "connection_slot_invalid",
+      `Connection capability "${slot}" returned invalid headers`,
+      { slot },
+    );
+  }
+  const headers: Record<string, string> = {};
+  for (const [name, headerValue] of Object.entries(value)) {
+    if (typeof headerValue !== "string") {
+      throw new ConnectionSelectionError(
+        "connection_slot_invalid",
+        `Connection capability "${slot}" returned invalid headers`,
+        { slot },
+      );
+    }
+    headers[name] = headerValue;
+  }
+  return Object.freeze(headers);
+}
+
+async function acquireConnectionCapabilities(
+  tool: CustomTool,
+  resolver: ConnectionCapabilityResolver | undefined,
+  invocation: ToolInvocationContext,
+  toolCallId: string,
+  signal?: AbortSignal,
+): Promise<AcquiredConnectionCapability[]> {
+  if (tool.connections === undefined) return [];
+  const specs = normalizeConnectionSlotSpecs(tool.connections);
+  const firstSlot = Object.keys(specs)[0];
+  if (!resolver) {
+    throw new ConnectionSelectionError(
+      "connection_resolver_unavailable",
+      `Custom tool "${tool.name}" requires a trusted Connection resolver`,
+      { slot: firstSlot },
+    );
+  }
+
+  const acquired: AcquiredConnectionCapability[] = [];
+  try {
+    for (const [slot, spec] of Object.entries(specs)) {
+      let resolved: ResolvedConnectionCapability;
+      try {
+        resolved = await resolver.resolve(Object.freeze({
+          slot,
+          spec,
+          toolName: tool.name,
+          toolCallId,
+          invocation,
+          ...(signal ? { signal } : {}),
+        }));
+      } catch (error) {
+        if (error instanceof ConnectionSelectionError) throw error;
+        throw new ConnectionSelectionError(
+          "connection_resolver_unavailable",
+          `Connection resolver failed for slot "${slot}"`,
+          { slot, cause: error },
+        );
+      }
+      if (!resolved || typeof resolved.providerId !== "string" || !Array.isArray(resolved.scopes)) {
+        if (resolved) await disposeRejectedCapability(resolved);
+        throw new ConnectionSelectionError(
+          "connection_resolver_unavailable",
+          `Connection resolver returned an invalid capability for slot "${slot}"`,
+          { slot },
+        );
+      }
+      if (spec.provider && resolved.providerId !== spec.provider) {
+        await disposeRejectedCapability(resolved);
+        throw new ConnectionSelectionError(
+          "connection_scope_denied",
+          `Connection capability for slot "${slot}" has the wrong provider`,
+          { slot },
+        );
+      }
+      const grantedScopes = new Set(resolved.scopes);
+      if (spec.scopes.some((scope) => !grantedScopes.has(scope))) {
+        await disposeRejectedCapability(resolved);
+        throw new ConnectionSelectionError(
+          "connection_scope_denied",
+          `Connection capability for slot "${slot}" is missing required scopes`,
+          { slot },
+        );
+      }
+
+      let active = true;
+      const view = Object.freeze<ConnectionCapability>({
+        providerId: resolved.providerId,
+        scopes: Object.freeze([...resolved.scopes]),
+        ...(resolved.metadata === undefined
+          ? {}
+          : { metadata: frozenCapabilityMetadata(resolved.metadata) }),
+        getHeaders: capabilityMethod(
+          slot,
+          () => active,
+          resolved.getHeaders
+            ? () => frozenHeaders(slot, resolved.getHeaders!())
+            : undefined,
+          undefined,
+        ),
+        getToken: capabilityMethod(
+          slot,
+          () => active,
+          resolved.getToken ? () => resolved.getToken!() : undefined,
+          undefined,
+        ),
+        getKey: capabilityMethod(
+          slot,
+          () => active,
+          resolved.getKey ? () => resolved.getKey!() : undefined,
+          undefined,
+        ),
+      });
+      acquired.push({
+        slot,
+        view,
+        async release() {
+          if (!active) return;
+          active = false;
+          try {
+            await resolved.dispose?.();
+          } catch (error) {
+            throw new ConnectionSelectionError(
+              "connection_resolver_unavailable",
+              `Connection capability cleanup failed for slot "${slot}"`,
+              { slot, cause: error },
+            );
+          }
+        },
+      });
+    }
+    return acquired;
+  } catch (error) {
+    await Promise.allSettled(acquired.map((capability) => capability.release()));
+    throw error;
+  }
+}
+
+function invocationConnections(
+  legacy: CustomToolConnections,
+  acquired: readonly AcquiredConnectionCapability[],
+): CustomToolConnections {
+  const bySlot = new Map(acquired.map(({ slot, view }) => [slot, view]));
+  return Object.freeze({
+    get: legacy.get.bind(legacy),
+    getToken: legacy.getToken.bind(legacy),
+    getKey: legacy.getKey.bind(legacy),
+    getHeaders: legacy.getHeaders.bind(legacy),
+    has: legacy.has.bind(legacy),
+    list: legacy.list.bind(legacy),
+    require(slot: string) {
+      const capability = bySlot.get(slot);
+      if (!capability) {
+        throw new ConnectionSelectionError(
+          "connection_slot_invalid",
+          `Connection slot "${slot}" is not declared for this tool`,
+          { slot },
+        );
+      }
+      return capability;
+    },
+  });
+}
 
 /**
  * Adapt a {@link CustomTool} (ctx-based `execute`) into a runtime {@link PolpoTool}
@@ -528,8 +797,16 @@ export function bindCustomTool<
     label: tool.label ?? tool.name,
     description: tool.description,
     parameters: tool.parameters,
-    async execute(_toolCallId, params, signal, onUpdate) {
+    async execute(toolCallId, params, signal, onUpdate) {
       const bindings = await resolveServerBindings(tool, ctx.invocation);
+      const { connectionResolver, ...baseCtx } = ctx;
+      const acquired = await acquireConnectionCapabilities(
+        tool,
+        connectionResolver,
+        ctx.invocation,
+        toolCallId,
+        signal,
+      );
       const timeoutController = tool.timeoutMs === undefined
         ? undefined
         : new AbortController();
@@ -563,19 +840,36 @@ export function bindCustomTool<
           }, tool.timeoutMs);
         });
 
+      let executionError: unknown;
       try {
         const execution = Promise.resolve(tool.execute(
-          { ...ctx, bindings, signal: executionSignal, onUpdate },
+          {
+            ...baseCtx,
+            connections: invocationConnections(ctx.connections, acquired),
+            bindings,
+            signal: executionSignal,
+            onUpdate,
+          },
           params as Static<T>,
         ));
         const result = timeoutPromise
           ? await Promise.race([execution, timeoutPromise])
           : await execution;
         return normalizeToolResult(result);
+      } catch (error) {
+        executionError = error;
+        throw error;
       } finally {
         if (timeoutId !== undefined) clearTimeout(timeoutId);
         signal?.removeEventListener("abort", onCallerAbort);
         timeoutController?.signal.removeEventListener("abort", onTimeoutAbort);
+        const cleanup = await Promise.allSettled(
+          acquired.map((capability) => capability.release()),
+        );
+        const cleanupFailure = cleanup.find((result) => result.status === "rejected");
+        if (!executionError && cleanupFailure?.status === "rejected") {
+          throw cleanupFailure.reason;
+        }
       }
     },
   };

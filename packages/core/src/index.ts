@@ -495,6 +495,23 @@ export type {
   ToolInvocationJsonValue,
   ToolInvocationSurface,
 } from "./tool-invocation.js";
+export {
+  ConnectionSelectionError,
+  MAX_CONNECTION_SLOTS,
+  MAX_CONNECTION_SLOT_SCOPES,
+  MAX_CONNECTION_SLOT_TEXT_LENGTH,
+  getConnectionSlotSpecErrors,
+  normalizeConnectionSlotSpecs,
+} from "./connection-capability.js";
+export type {
+  ConnectionCapability,
+  ConnectionCapabilityResolveInput,
+  ConnectionCapabilityResolver,
+  ConnectionSelectionErrorCode,
+  ConnectionSlotSpec,
+  ConnectionSlotSpecs,
+  ResolvedConnectionCapability,
+} from "./connection-capability.js";
 export type {
   CreateLoopRunInput,
   LoopApprovedGate,

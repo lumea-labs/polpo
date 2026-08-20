@@ -142,6 +142,10 @@
       "types": "./dist/session-continuation.d.ts",
       "import": "./dist/session-continuation.js"
     },
+    "./connection-capability": {
+      "types": "./dist/connection-capability.d.ts",
+      "import": "./dist/connection-capability.js"
+    },
     "./notification-store": {
       "types": "./dist/notification-store.d.ts",
       "import": "./dist/notification-store.js"

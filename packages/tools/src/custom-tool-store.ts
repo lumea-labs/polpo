@@ -1,4 +1,5 @@
 import type { FileSystem } from "@polpo-ai/core/filesystem";
+import type { ConnectionSlotSpecs } from "@polpo-ai/core";
 import type { CustomToolServerBindings } from "./custom-tools.js";
 import {
   createSingleFileCustomToolArtifact,
@@ -18,6 +19,7 @@ export interface CustomToolMeta {
   timeoutMs?: number;
   bindingsSchema?: unknown;
   serverBindings?: CustomToolServerBindings;
+  connections?: ConnectionSlotSpecs;
 }
 
 export interface CustomToolsStore {

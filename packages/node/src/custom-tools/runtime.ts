@@ -18,6 +18,7 @@ import {
   TOOL_CATALOG,
   type CustomToolMeta,
   type CustomToolConnections,
+  type ConnectionCapabilityResolver,
   type CustomToolsStore,
   type CustomToolSourceArtifact,
   type ToolInvocationContext,
@@ -36,12 +37,13 @@ const RUNTIME_RESOLVE_DIR = dirname(fileURLToPath(import.meta.url));
 const TOOLS_AUTHORING_ENTRY = join(RUNTIME_RESOLVE_DIR, "../../../tools/dist/custom-tools.js");
 const runtimeRequire = createRequire(import.meta.url);
 
-type RuntimeOptions = {
+export type RuntimeOptions = {
   polpoDir: string;
   workDir: string;
   fs: FileSystem;
   shell: Shell;
   connections?: CustomToolConnections;
+  connectionCapabilityResolver?: ConnectionCapabilityResolver;
 };
 
 function sourceHash(source: string): string {
@@ -175,6 +177,7 @@ export class LocalCustomToolRuntime implements CustomToolDeployer, CustomToolRun
         ...(tool.timeoutMs !== undefined ? { timeoutMs: tool.timeoutMs } : {}),
         ...(tool.bindingsSchema ? { bindingsSchema: tool.bindingsSchema } : {}),
         ...(tool.serverBindings ? { serverBindings: tool.serverBindings } : {}),
+        ...(tool.connections ? { connections: tool.connections } : {}),
       };
       emit("deployed", "Tool is ready");
       return { errors: [], meta, bundle, deps };
@@ -216,6 +219,7 @@ export class LocalCustomToolRuntime implements CustomToolDeployer, CustomToolRun
       env: safeEnv(),
       workDir: this.options.workDir,
       invocation,
+      connectionResolver: this.options.connectionCapabilityResolver,
     });
   }
 

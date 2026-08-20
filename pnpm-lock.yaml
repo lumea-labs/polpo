@@ -186,6 +186,10 @@ importers:
         version: 5.9.3
 
   packages/connect:
+    dependencies:
+      '@polpo-ai/core':
+        specifier: workspace:*
+        version: link:../core
     devDependencies:
       typescript:
         specifier: ^5.7.3

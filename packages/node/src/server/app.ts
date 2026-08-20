@@ -12,7 +12,10 @@ import {
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { projectLoopConfigSchema } from "@polpo-ai/core/schemas";
-import { resolveConfiguredModelSelection } from "@polpo-ai/core";
+import {
+  resolveConfiguredModelSelection,
+  type ConnectionCapabilityResolver,
+} from "@polpo-ai/core";
 import { buildSystemPrompt } from "../adapters/spawn-helpers.js";
 // NodeFileSystem no longer instantiated here — use orchestrator's getFs() instead
 import type { Orchestrator } from "../core/orchestrator.js";
@@ -93,6 +96,8 @@ export interface AppOptions {
   corsOrigins?: string[];
   workDir?: string;
   onInitialize?: (workDir: string) => Promise<void>;
+  /** Resolver for strict logical Connection slots used by custom tools. */
+  connectionCapabilityResolver?: ConnectionCapabilityResolver;
   /** Optional process-local override for completion tool guardrails. */
   runToolMiddleware?: RunToolMiddleware;
   /** Optional process-local override for final-output guardrails. */
@@ -415,6 +420,7 @@ export function createApp(orchestrator: Orchestrator, sseBridge: SSEBridge, opts
           configPath: `memory://${runId}`,
           fs: o.getFs(),
           shell: o.getShell(),
+          connectionCapabilityResolver: opts?.connectionCapabilityResolver,
           memoryStore: o.getMemoryStore(),
           ...(brain
             ? {
@@ -480,6 +486,7 @@ export function createApp(orchestrator: Orchestrator, sseBridge: SSEBridge, opts
     workDir: o.getAgentWorkDir(),
     fs: o.getFs(),
     shell: o.getShell(),
+    connectionCapabilityResolver: opts?.connectionCapabilityResolver,
   });
 
   authed.route("/tasks", taskRoutes(() => ({

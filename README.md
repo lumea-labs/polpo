@@ -270,6 +270,42 @@ export default defineTool({
 `user`, `metadata`, and a `surface` (`chat`, `task`, `loop`, `schedule`, or
 `channel`). Missing or invalid required bindings fail before tool code runs.
 
+Credential-bearing tools can declare logical Connection slots. The host
+resolves each slot from immutable invocation identity immediately before the
+tool executes; the physical Connection ID and selector never enter the
+model-visible arguments:
+
+```ts
+export default defineTool({
+  name: "site_publish",
+  description: "Publish the current site.",
+  parameters: Type.Object({ message: Type.String() }),
+  connections: {
+    siteApi: {
+      provider: "sitoinchat",
+      scopes: ["site:read", "site:write"],
+    },
+  },
+  async execute(ctx, params) {
+    const siteApi = ctx.connections.require("siteApi");
+    const response = await fetch("https://api.example.com/sites/current/publish", {
+      method: "POST",
+      headers: {
+        ...siteApi.getHeaders(),
+        "content-type": "application/json",
+      },
+      body: JSON.stringify(params),
+    });
+    return await response.text();
+  },
+});
+```
+
+Strict slots never fall back to a project-level Connection. Missing, denied,
+or ambiguous selections fail before tool code runs. Capabilities are invalidated
+after each call, so revocation and scope changes apply to the next execution.
+Legacy `ctx.connections.get(ref)` access remains available for existing tools.
+
 Custom tool entrypoints may import relative TypeScript, JavaScript, TSX, or JSON
 modules kept under the same source directory. Both `polpo tools push <file>` and
 `polpo deploy` collect that local dependency graph and upload it as one versioned

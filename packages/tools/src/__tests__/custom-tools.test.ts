@@ -27,6 +27,7 @@ import {
   createJsonSchemaExample,
   createToolInvocationContext,
   emptyCustomToolConnections,
+  ConnectionSelectionError,
   CustomToolBindingError,
   CustomToolTimeoutError,
   MAX_CUSTOM_TOOL_TIMEOUT_MS,
@@ -181,6 +182,22 @@ describe("getCustomToolErrors / isCustomTool", () => {
   it("validates optional field types", () => {
     expect(getCustomToolErrors({ ...valid, label: 5 }).join()).toMatch(/label/i);
     expect(getCustomToolErrors({ ...valid, clientSide: "yes" }).join()).toMatch(/clientSide/i);
+  });
+
+  it("validates logical Connection slot declarations", () => {
+    expect(getCustomToolErrors({
+      ...valid,
+      connections: {
+        siteApi: {
+          provider: "sitoinchat",
+          scopes: ["site:read", "site:write"],
+        },
+      },
+    })).toEqual([]);
+    expect(getCustomToolErrors({
+      ...valid,
+      connections: { "bad-slot": { scopes: [] } },
+    }).join()).toMatch(/connection|slot|scope/i);
   });
 
   it("rejects custom-tool timeouts outside the supported integer range", () => {
@@ -362,6 +379,225 @@ describe("bindCustomTool", () => {
       },
     });
     await expect(bindCustomTool(t, fakeCtx()).execute("c", { msg: "x" })).rejects.toThrow("kaboom");
+  });
+
+  it("resolves declared Connections immediately before each execution", async () => {
+    const resolve = vi.fn(async (input: any) => ({
+      providerId: "sitoinchat",
+      scopes: ["site:read", "site:write"],
+      metadata: { region: "eu" },
+      getHeaders: () => ({ Authorization: "Bearer secret" }),
+      getToken: () => "secret",
+      getKey: () => undefined,
+    }));
+    let received: any;
+    const t = defineTool({
+      name: "site_context_get",
+      description: "Reads a site",
+      parameters: Type.Object({}),
+      connections: {
+        siteApi: { provider: "sitoinchat", scopes: ["site:read"] },
+      },
+      execute: (ctx) => {
+        const capability = ctx.connections.require("siteApi");
+        received = {
+          capability,
+          headers: capability.getHeaders(),
+          token: capability.getToken(),
+        };
+        return "ok";
+      },
+    });
+
+    await bindCustomTool(t, fakeCtx({ connectionResolver: { resolve } } as any))
+      .execute("call-site", {});
+
+    expect(resolve).toHaveBeenCalledWith(expect.objectContaining({
+      slot: "siteApi",
+      toolName: "site_context_get",
+      toolCallId: "call-site",
+      spec: { provider: "sitoinchat", scopes: ["site:read"] },
+      invocation: expect.objectContaining({ user: "user-1" }),
+    }));
+    expect(received.headers).toEqual({ Authorization: "Bearer secret" });
+    expect(received.token).toBe("secret");
+    expect(received.capability).not.toHaveProperty("id");
+    expect(() => received.capability.getHeaders()).toThrow(/no longer active/i);
+  });
+
+  it("fails closed when a strict slot has no resolver", async () => {
+    const t = defineTool({
+      name: "site_context_get",
+      description: "Reads a site",
+      parameters: Type.Object({}),
+      connections: { siteApi: { scopes: ["site:read"] } },
+      execute: () => "must not run",
+    });
+
+    await expect(bindCustomTool(t, fakeCtx()).execute("call-site", {}))
+      .rejects.toMatchObject({
+        code: "connection_resolver_unavailable",
+        status: 503,
+        slot: "siteApi",
+      });
+  });
+
+  it("rejects provider and scope mismatches before running tool code", async () => {
+    const execute = vi.fn(() => "must not run");
+    const t = defineTool({
+      name: "site_context_get",
+      description: "Reads a site",
+      parameters: Type.Object({}),
+      connections: {
+        siteApi: { provider: "sitoinchat", scopes: ["site:read", "site:write"] },
+      },
+      execute,
+    });
+    for (const capability of [
+      { providerId: "other", scopes: ["site:read", "site:write"] },
+      { providerId: "sitoinchat", scopes: ["site:read"] },
+    ]) {
+      await expect(bindCustomTool(t, fakeCtx({
+        connectionResolver: { resolve: async () => capability },
+      } as any)).execute("call-site", {})).rejects.toBeInstanceOf(ConnectionSelectionError);
+    }
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it("disposes every acquired capability on success, failure, and partial resolution", async () => {
+    const disposed: string[] = [];
+    const capability = (slot: string) => ({
+      providerId: "sitoinchat",
+      scopes: ["site:read"],
+      dispose: async () => { disposed.push(slot); },
+    });
+    const success = defineTool({
+      name: "site_read",
+      description: "Reads a site",
+      parameters: Type.Object({}),
+      connections: { siteApi: { scopes: ["site:read"] } },
+      execute: () => "ok",
+    });
+    await bindCustomTool(success, fakeCtx({
+      connectionResolver: { resolve: async () => capability("success") },
+    } as any)).execute("success", {});
+
+    const failure = defineTool({
+      ...success,
+      name: "site_fail",
+      execute: () => { throw new Error("boom"); },
+    });
+    await expect(bindCustomTool(failure, fakeCtx({
+      connectionResolver: { resolve: async () => capability("failure") },
+    } as any)).execute("failure", {})).rejects.toThrow("boom");
+
+    const partial = defineTool({
+      ...success,
+      name: "site_partial",
+      connections: {
+        first: { scopes: ["site:read"] },
+        second: { scopes: ["site:read"] },
+      },
+    });
+    await expect(bindCustomTool(partial, fakeCtx({
+      connectionResolver: {
+        resolve: async ({ slot }: any) => {
+          if (slot === "second") throw new Error("resolver down");
+          return capability("partial");
+        },
+      },
+    } as any)).execute("partial", {})).rejects.toMatchObject({
+      code: "connection_resolver_unavailable",
+    });
+
+    expect(disposed).toEqual(["success", "failure", "partial"]);
+  });
+
+  it("does not add Connection selectors to the model-visible parameter schema", () => {
+    const t = defineTool({
+      name: "site_read",
+      description: "Reads a site",
+      parameters: EchoSchema,
+      connections: { siteApi: { provider: "sitoinchat", scopes: ["site:read"] } },
+      execute: () => "ok",
+    });
+    const bound = bindCustomTool(t, fakeCtx({
+      connectionResolver: { resolve: async () => ({ providerId: "sitoinchat", scopes: ["site:read"] }) },
+    } as any));
+    expect(bound.parameters).toBe(EchoSchema);
+    expect(bound.parameters).not.toHaveProperty("connections");
+  });
+
+  it("rejects secret or physical Connection identifiers in capability metadata", async () => {
+    const t = defineTool({
+      name: "site_read",
+      description: "Reads a site",
+      parameters: Type.Object({}),
+      connections: { siteApi: { scopes: ["site:read"] } },
+      execute: () => "must not run",
+    });
+    for (const metadata of [
+      { connectionId: "connection-1" },
+      { nested: { accessToken: "secret" } },
+      { api_key: "secret" },
+    ]) {
+      await expect(bindCustomTool(t, fakeCtx({
+        connectionResolver: {
+          resolve: async () => ({
+            providerId: "sitoinchat",
+            scopes: ["site:read"],
+            metadata,
+          }),
+        },
+      } as any)).execute("call-site", {})).rejects.toMatchObject({
+        code: "connection_slot_invalid",
+      });
+    }
+  });
+
+  it("preserves selection errors when rejected capability cleanup also fails", async () => {
+    const t = defineTool({
+      name: "site_read",
+      description: "Reads a site",
+      parameters: Type.Object({}),
+      connections: {
+        siteApi: { provider: "sitoinchat", scopes: ["site:read"] },
+      },
+      execute: () => "must not run",
+    });
+    await expect(bindCustomTool(t, fakeCtx({
+      connectionResolver: {
+        resolve: async () => ({
+          providerId: "wrong-provider",
+          scopes: ["site:read"],
+          dispose: async () => { throw new Error("cleanup failed"); },
+        }),
+      },
+    } as any)).execute("call-site", {})).rejects.toMatchObject({
+      code: "connection_scope_denied",
+    });
+  });
+
+  it("normalizes cleanup failures after a successful tool execution", async () => {
+    const t = defineTool({
+      name: "site_read",
+      description: "Reads a site",
+      parameters: Type.Object({}),
+      connections: { siteApi: { scopes: ["site:read"] } },
+      execute: () => "ok",
+    });
+    await expect(bindCustomTool(t, fakeCtx({
+      connectionResolver: {
+        resolve: async () => ({
+          providerId: "sitoinchat",
+          scopes: ["site:read"],
+          dispose: async () => { throw new Error("cleanup failed"); },
+        }),
+      },
+    } as any)).execute("call-site", {})).rejects.toMatchObject({
+      code: "connection_resolver_unavailable",
+      slot: "siteApi",
+    });
   });
 
   it("aborts and rejects deterministically when a configured timeout expires", async () => {
