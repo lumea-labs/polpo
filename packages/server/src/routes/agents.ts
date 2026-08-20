@@ -1,7 +1,13 @@
 import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
 import { join, extname } from "node:path";
 import type { FileSystem } from "@polpo-ai/core";
-import { AddAgentSchema, UpdateAgentSchema, RenameTeamSchema, AddTeamSchema } from "../schemas.js";
+import {
+  AddAgentSchema,
+  UpdateAgentSchema,
+  RenameTeamSchema,
+  AddTeamSchema,
+  UpdateTeamSchema,
+} from "../schemas.js";
 import { redactAgentConfig, redactTeam, sanitizeTranscriptEntry } from "../security.js";
 
 /** Enrich agent with avatarUrl for client convenience. */
@@ -27,6 +33,7 @@ export function agentRoutes(getDeps: () => {
   getTeams: () => Promise<any[]>;
   getTeam: (name?: string) => Promise<any>;
   addTeam: (team: any) => Promise<void>;
+  updateTeam: (name: string, updates: { description?: string }) => Promise<any>;
   removeTeam: (name: string) => Promise<boolean>;
   renameTeam: (oldName: string, newName: string) => Promise<void>;
   taskStore: any;
@@ -207,6 +214,32 @@ export function agentRoutes(getDeps: () => {
     const body = c.req.valid("json");
     await deps.addTeam({ name: body.name, description: body.description, agents: [] });
     return c.json({ ok: true, data: { added: true } }, 201);
+  });
+
+  // PATCH /teams/:name — update team metadata without renaming it
+  const updateTeamRoute = createRoute({
+    method: "patch",
+    path: "/teams/{name}",
+    tags: ["Agents"],
+    summary: "Update team",
+    request: {
+      params: z.object({ name: z.string().min(1) }),
+      body: { content: { "application/json": { schema: UpdateTeamSchema } } },
+    },
+    responses: {
+      200: {
+        content: { "application/json": { schema: z.object({ ok: z.boolean(), data: z.any() }) } },
+        description: "Team updated",
+      },
+    },
+  });
+
+  app.openapi(updateTeamRoute, async (c) => {
+    const deps = getDeps();
+    const { name } = c.req.valid("param");
+    const updates = c.req.valid("json");
+    const updatedTeam = await deps.updateTeam(name, updates);
+    return c.json({ ok: true, data: redactTeam(updatedTeam) }, 200);
   });
 
   // DELETE /teams/:name — remove a team

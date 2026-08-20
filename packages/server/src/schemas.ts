@@ -909,6 +909,10 @@ export const AddTeamSchema = z.object({
   description: z.string().optional(),
 });
 
+export const UpdateTeamSchema = z.object({
+  description: z.string().optional(),
+});
+
 // ── Notification channel config schema ─────────────────────────────────
 
 

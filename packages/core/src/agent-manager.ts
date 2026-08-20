@@ -98,6 +98,13 @@ export class AgentManager {
     return deleted;
   }
 
+  async updateTeam(name: string, updates: { description?: string }): Promise<Team> {
+    const team = await this.ctx.teamStore.updateTeam(name, updates);
+    await this.syncConfigCache();
+    this.ctx.emitter.emit("log", { level: "info", message: `Team updated: ${name}` });
+    return team;
+  }
+
   async renameTeam(oldName: string, newName: string): Promise<void> {
     await this.ctx.teamStore.renameTeam(oldName, newName);
 
