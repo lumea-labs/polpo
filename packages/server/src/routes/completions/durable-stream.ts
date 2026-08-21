@@ -30,6 +30,11 @@ export interface CompletionRunDeliveryScope {
   owner: string;
   /** Unique execution-attempt token. Hosts must not reuse it for concurrent dispatches. */
   token: string;
+  /** Registers detached producer work so a host can drain it during shutdown. */
+  trackExecution?: (
+    runId: string,
+    execution: Promise<OwnedRunExecutionResult>,
+  ) => void;
 }
 
 export interface DurableCompletionProducerContext {
@@ -173,7 +178,7 @@ export function startDurableCompletion(
   options: StartDurableCompletionOptions,
 ): Promise<OwnedRunExecutionResult> {
   const journal = new RunEventJournal(options.scope.eventStore, options.scope.notifier);
-  return executeOwnedRun({
+  const execution = executeOwnedRun({
     runId: options.runId,
     owner: options.scope.owner,
     token: options.scope.token,
@@ -189,6 +194,8 @@ export function startDurableCompletion(
       }
     },
   });
+  options.scope.trackExecution?.(options.runId, execution);
+  return execution;
 }
 
 export interface DurableCompletionFrame {

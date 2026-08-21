@@ -260,6 +260,7 @@ export async function runProjectLoopCompletion(options: {
   resumeRun?: LoopRunRecord;
   executionRoute?: ResolvedExecutionRoute;
   activatedSkills?: readonly string[];
+  deliveryRunId?: string;
 }): Promise<ProjectLoopRunResult> {
   const {
     deps,
@@ -391,6 +392,7 @@ export async function runProjectLoopCompletion(options: {
       context: initialContext,
       metadata: {
         runtime: "chat.completions",
+        ...(options.deliveryRunId ? { deliveryRunId: options.deliveryRunId } : {}),
         surface: runtimePlan?.surface ?? executionRoute?.surface ?? "agent",
         source:
           runtimePlan?.source
@@ -946,6 +948,7 @@ export async function executeStreamingProjectLoopCompletion(
           signal,
           executionRoute,
           activatedSkills,
+          deliveryRunId: completionId,
           onToolCall: async (toolCall) => {
             if (signal.aborted) return;
             await stream.writeSSE({
@@ -1077,6 +1080,7 @@ async function runNonStreamingProjectLoopCompletion(
       signal: c.req.raw.signal,
       executionRoute,
       activatedSkills,
+      deliveryRunId: completionId,
     });
     finalText = run.text;
     runUsage = run.usage;

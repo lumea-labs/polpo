@@ -117,6 +117,8 @@ export interface FollowRunEventsOptions {
   pollIntervalMs?: number;
   signal?: AbortSignal;
   isTerminal?: (event: RunStreamEvent) => boolean;
+  /** Optional liveness reconciliation invoked while a live tail is idle. */
+  onIdle?: () => Promise<void>;
 }
 
 export type RunEventCursorAvailability = "available" | "terminal";
@@ -202,6 +204,7 @@ export async function* followRunEvents(
         if (terminal(event)) return;
       }
       if (page.hasMore) continue;
+      await options.onIdle?.();
       if (wakeVersion !== observedWakeVersion) continue;
       await waitForWakeOrPoll({
         signal: options.signal,

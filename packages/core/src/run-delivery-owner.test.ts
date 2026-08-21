@@ -146,4 +146,30 @@ describe("executeOwnedRun", () => {
       "run.started",
     ]);
   });
+
+  it("revalidates lease ownership before writing a terminal event", async () => {
+    const baseLeases = new InMemoryRunExecutionLeaseStore();
+    const leaseStore = {
+      claim: baseLeases.claim.bind(baseLeases),
+      get: baseLeases.get.bind(baseLeases),
+      release: baseLeases.release.bind(baseLeases),
+      renew: async () => false,
+    };
+    const events = new InMemoryRunEventStore();
+
+    const result = await executeOwnedRun({
+      runId: "run-finalize-race",
+      ...lease,
+      journal: new RunEventJournal(events),
+      leaseStore,
+      heartbeatIntervalMs: 20_000,
+      leaseDurationMs: 30_000,
+      producer: async () => undefined,
+    });
+
+    expect(result).toEqual({ status: "lost-lease" });
+    expect((await events.listAfter("run-finalize-race")).events.map(
+      (event) => event.type,
+    )).toEqual(["run.started"]);
+  });
 });
