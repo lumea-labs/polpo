@@ -5,13 +5,16 @@ import type {
   ChannelTurnHandler,
   ChannelTurnResult,
 } from "@polpo-ai/channels";
+import { createHash } from "node:crypto";
 import type { SessionContentPart, SessionStore } from "@polpo-ai/core/session-store";
 import {
   createToolInvocationContext,
+  type ToolInvocationContext,
   type ToolInvocationJsonValue,
   type ToolInvocationScope,
 } from "@polpo-ai/core";
 import type { CompletionRouteDeps } from "../routes/completions.js";
+import { continuationFingerprint } from "../routes/completions/continuation.js";
 import {
   runConversationTurn,
   type ConversationTurnResult,
@@ -35,6 +38,24 @@ export type ChannelConversationTurnExecutor = (
   input: RunConversationTurnInput,
 ) => Promise<ConversationTurnResult>;
 
+export type ChannelClientToolExecution = {
+  result: ToolInvocationJsonValue;
+  loop?: string;
+};
+
+export type ChannelClientToolExecutionInput = {
+  idempotencyKey: string;
+  invocation?: ToolInvocationContext;
+  sessionId: string;
+  sessionVersion: number;
+  toolCall: Readonly<{ id: string; name: string; arguments: unknown }>;
+  turn: ChannelInboundTurn;
+};
+
+export type ChannelClientToolExecutor = (
+  input: ChannelClientToolExecutionInput,
+) => Promise<ChannelClientToolExecution>;
+
 export type ChannelInvocationResolution =
   | {
       disposition: "dispatch";
@@ -57,7 +78,9 @@ export interface ConversationChannelBridgeOptions {
     user: string;
   }) => Promise<string>;
   executeTurn?: ChannelConversationTurnExecutor;
+  executeClientTool?: ChannelClientToolExecutor;
   historyLimit?: number;
+  maxClientToolContinuations?: number;
   maxInlineAttachmentBytes?: number;
   onRunEvent?: (event: Record<string, unknown>) => void;
   onSessionResolved?: (
@@ -103,6 +126,7 @@ export class ChannelConversationError extends Error {
 
 const DEFAULT_HISTORY_LIMIT = 30;
 const DEFAULT_MAX_INLINE_ATTACHMENT_BYTES = 10 * 1024 * 1024;
+const DEFAULT_MAX_CLIENT_TOOL_CONTINUATIONS = 4;
 
 /**
  * Bind normalized Chat SDK turns to Polpo's canonical conversation runtime.
@@ -147,6 +171,7 @@ export function createConversationChannelTurnHandler(
           requestId: turn.providerEventId,
           runId: turn.providerEventId,
           surface: "channel",
+          user: invocationResolution.user.trim(),
           metadata: invocationResolution.metadata ?? {},
           scope: invocationResolution.scope,
         })
@@ -200,7 +225,16 @@ export function createConversationChannelTurnHandler(
       options.historyLimit ?? DEFAULT_HISTORY_LIMIT,
     );
     const content = await channelTurnContent(turn, options);
-    const result = await executeTurn({
+    const runtime: RunConversationTurnInput["runtime"] = {
+      channelId: turn.installationId,
+      requestId: turn.providerEventId,
+      source: "channel",
+      surface: "channel",
+      user,
+      ...(trustedInvocation ? { metadata: trustedInvocation.metadata } : {}),
+      ...(trustedScope ? { scope: trustedScope } : {}),
+    };
+    let result = await executeTurn({
       body: {
         agent,
         messages: [...history, { content, role: "user" }],
@@ -209,17 +243,90 @@ export function createConversationChannelTurnHandler(
         user,
       },
       onRunEvent: options.onRunEvent,
-      runtime: {
-        channelId: turn.installationId,
-        requestId: turn.providerEventId,
-        source: "channel",
-        surface: "channel",
-        user,
-        ...(trustedInvocation ? { metadata: trustedInvocation.metadata } : {}),
-        ...(trustedScope ? { scope: trustedScope } : {}),
-      },
+      runtime,
       sessionId,
     });
+
+    const maxContinuations = options.maxClientToolContinuations
+      ?? DEFAULT_MAX_CLIENT_TOOL_CONTINUATIONS;
+    let continuationIndex = 0;
+    while (result.clientToolCall) {
+      if (!options.executeClientTool) {
+        throw new ChannelConversationError(
+          `Client tool "${result.clientToolCall.name}" requires a Channel client-tool executor`,
+          "channel_client_tool_executor_required",
+        );
+      }
+      if (!result.sessionId || result.sessionVersion === undefined) {
+        throw new ChannelConversationError(
+          "Client-tool continuation requires a persisted Session and version",
+          "channel_client_tool_session_required",
+        );
+      }
+      if (continuationIndex >= maxContinuations) {
+        throw new ChannelConversationError(
+          `Channel client-tool continuation exceeded the limit of ${maxContinuations}`,
+          "channel_client_tool_limit_exceeded",
+        );
+      }
+      const toolCall = Object.freeze({ ...result.clientToolCall });
+      const idempotencyKey = channelClientToolIdempotencyKey(
+        turn,
+        continuationIndex,
+        toolCall.name,
+      );
+      const execution = await options.executeClientTool({
+        idempotencyKey,
+        invocation: trustedInvocation,
+        sessionId: result.sessionId,
+        sessionVersion: result.sessionVersion,
+        toolCall,
+        turn,
+      });
+      const toolResult = typeof execution.result === "string"
+        ? execution.result
+        : JSON.stringify(execution.result);
+      const loop = execution.loop?.trim() || undefined;
+      const continuationBody = {
+        agent,
+        ...(loop ? { loop } : {}),
+        messages: [{
+          role: "tool" as const,
+          tool_call_id: toolCall.id,
+          content: toolResult,
+        }],
+        metadata,
+        stream: true,
+        user,
+        polpo: {
+          continuation: {
+            type: "client_tool" as const,
+            tool_call_id: toolCall.id,
+            expected_session_version: result.sessionVersion,
+          },
+          delivery: { onDisconnect: "continue" as const },
+        },
+      };
+      result = await executeTurn({
+        body: continuationBody,
+        continuation: {
+          idempotencyKey,
+          fingerprint: continuationFingerprint({
+            sessionId: result.sessionId,
+            agent,
+            ...(loop ? { loop } : {}),
+            user,
+            toolCallId: toolCall.id,
+            expectedSessionVersion: result.sessionVersion,
+            result: toolResult,
+          }),
+        },
+        onRunEvent: options.onRunEvent,
+        runtime,
+        sessionId: result.sessionId,
+      });
+      continuationIndex += 1;
+    }
 
     if (result.error) {
       throw new ChannelConversationError(
@@ -239,6 +346,22 @@ export function createConversationChannelTurnHandler(
       text: result.text,
     };
   };
+}
+
+function channelClientToolIdempotencyKey(
+  turn: ChannelInboundTurn,
+  index: number,
+  toolName: string,
+): string {
+  const source = [
+    "channel-client-tool",
+    turn.provider,
+    turn.installationId,
+    turn.providerEventId,
+    String(index),
+    toolName,
+  ].join(":");
+  return `channel-client-tool:${createHash("sha256").update(source).digest("hex")}`;
 }
 
 async function resolveSessionOnce(

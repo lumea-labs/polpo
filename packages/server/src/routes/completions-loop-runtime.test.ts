@@ -7,7 +7,11 @@ import {
   createRunToolMiddleware,
   type LoopTraceEvent,
 } from "@polpo-ai/core";
-import { completionRoutes, type CompletionRouteDeps } from "./completions.js";
+import {
+  completionRoutes,
+  runConversationTurn,
+  type CompletionRouteDeps,
+} from "./completions.js";
 import { runProjectLoopCompletion } from "./completions/project-loop-runner.js";
 
 describe("completionRoutes project loop runtime", () => {
@@ -97,6 +101,97 @@ describe("completionRoutes project loop runtime", () => {
       "loop.end",
     ]);
     expect(json.loop_trace[0]).toMatchObject({ loop: "time-tracker", status: "started" });
+  });
+
+  it("runs an atomic client-tool continuation into a Project Loop through the internal conversation surface", async () => {
+    const deps = makeDeps();
+    const prepareContinuation = vi.fn(async (input: any) => ({
+      status: "prepared" as const,
+      sessionVersion: 3,
+      runId: input.runId,
+      messages: [
+        { id: "u1", role: "user", content: "Start", ts: "2026-01-01T00:00:00Z" },
+        {
+          id: "a1",
+          role: "assistant",
+          content: "",
+          ts: "2026-01-01T00:00:01Z",
+          toolCalls: [{
+            id: "call-1",
+            name: "configure",
+            arguments: {},
+            state: "completed",
+            result: "configured",
+          }],
+        },
+        {
+          id: "t1",
+          role: "tool",
+          content: "configured",
+          ts: "2026-01-01T00:00:02Z",
+          toolCallId: "call-1",
+        },
+      ],
+    }));
+    const addMessage = vi.fn(async (_sessionId, role, content) => ({
+      id: `message-${role}`,
+      role,
+      content,
+      ts: new Date().toISOString(),
+    }));
+    deps.getSessionStore = () => ({
+      prepareContinuation,
+      addMessage,
+      updateMessage: vi.fn(async () => true),
+    } as any);
+
+    const result = await runConversationTurn(deps, {
+      body: {
+        agent: "timer",
+        loop: "time-tracker",
+        stream: true,
+        messages: [{ role: "tool", tool_call_id: "call-1", content: "configured" }],
+        polpo: {
+          continuation: {
+            type: "client_tool",
+            tool_call_id: "call-1",
+            expected_session_version: 2,
+          },
+          delivery: { onDisconnect: "continue" },
+        },
+      },
+      sessionId: "session-1",
+      continuation: {
+        idempotencyKey: "channel-event-1",
+        fingerprint: "fingerprint-1",
+      },
+      runtime: {
+        surface: "channel",
+        source: "channel",
+        channelId: "channel-1",
+        requestId: "event-1",
+        user: "user-1",
+        scope: { key: "site-1", version: "3" },
+      },
+    } as any);
+
+    expect(result).toMatchObject({
+      sessionId: "session-1",
+      sessionVersion: 4,
+      runStatus: "completed",
+    });
+    expect(JSON.parse(result.text)).toEqual({
+      timing: { start: "100", end: "105" },
+    });
+    expect(prepareContinuation).toHaveBeenCalledWith(expect.objectContaining({
+      sessionId: "session-1",
+      toolCallId: "call-1",
+      expectedSessionVersion: 2,
+      idempotencyKey: "channel-event-1",
+      user: "user-1",
+      scope: { key: "site-1", version: "3" },
+    }));
+    expect(addMessage).toHaveBeenCalledWith("session-1", "assistant", "");
   });
 
   it("binds request metadata into the first deterministic tool step without an LLM call", async () => {

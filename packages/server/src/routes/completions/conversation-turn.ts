@@ -77,6 +77,9 @@ import {
   runChatTurnViaRun,
   type ChatViaRunTurnResult,
 } from "./chat-via-run-handler.js";
+import { runProjectLoopCompletion } from "./project-loop-runner.js";
+import { persistAssistantMessage } from "./tool-mapping.js";
+import { applyCompletionOutputPolicy } from "./output-guardrails.js";
 import { guardrailErrorEnvelope } from "./sse.js";
 import {
   MODEL_CONTROLLED_TOOL_PROMPT,
@@ -157,6 +160,7 @@ export interface RunConversationTurnInput extends PrepareConversationTurnOptions
 export type ConversationTurnResult = ChatViaRunTurnResult & {
   sessionId: string | null;
   completionId: string;
+  sessionVersion?: number;
 };
 
 function completionError(
@@ -1257,19 +1261,109 @@ export async function runConversationTurn(
   deps: CompletionRouteDeps,
   input: RunConversationTurnInput,
 ): Promise<ConversationTurnResult> {
+  let sessionVersion: number | undefined;
   const prepared = await prepareChatCompletionExecution(deps, input.body, {
     sessionId: input.sessionId,
     completionId: input.completionId,
-    setHeader: input.setHeader,
+    setHeader: (name, value) => {
+      if (name.toLowerCase() === "x-session-version") {
+        const parsed = Number.parseInt(value, 10);
+        if (Number.isInteger(parsed) && parsed >= 0) sessionVersion = parsed;
+      }
+      input.setHeader?.(name, value);
+    },
     runtime: input.runtime,
     signal: input.signal,
+    continuation: input.continuation,
   });
 
   if (prepared.kind === "error") {
     throw new Error(prepared.body.error.message);
   }
   if (prepared.kind === "project-loop") {
-    throw new Error("Project loop conversations are not available through runConversationTurn yet");
+    let assistantMessageId: string | null = null;
+    let finalText = "";
+    let toolCalls: any[] = [];
+    let usage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 };
+    let model = "polpo";
+    let resolvedModel;
+    let providerMetadata: Record<string, unknown> | undefined;
+    try {
+      if (prepared.sessionStore && prepared.sessionId) {
+        const placeholder = await prepared.sessionStore.addMessage(
+          prepared.sessionId,
+          "assistant",
+          "",
+        );
+        assistantMessageId = placeholder.id;
+      }
+      const result = await runProjectLoopCompletion({
+        deps: prepared.deps,
+        agentConfig: prepared.agentConfig,
+        projectLoop: prepared.projectLoop,
+        aiMessages: prepared.aiMessages,
+        extraSystemParts: prepared.extraSystemParts,
+        contextTrust: prepared.contextTrust,
+        runtimeContext: prepared.runtimeContext,
+        runtimeInvocation: prepared.runtimeInvocation,
+        sessionId: prepared.sessionId,
+        user: prepared.body.user,
+        requestMetadata: prepared.body.metadata,
+        runtimePlan: prepared.runtimePlan,
+        signal: input.signal,
+        executionRoute: prepared.executionRoute,
+        activatedSkills: prepared.activatedSkills,
+      });
+      finalText = await applyCompletionOutputPolicy({
+        outputPolicy: prepared.deps.runOutputPolicy,
+        text: result.text,
+        mode: "enforce",
+        runtimePlan: prepared.runtimePlan,
+        agent: prepared.body.agent,
+        runId: result.loopRunId,
+        sessionId: prepared.sessionId,
+        signal: input.signal,
+      });
+      toolCalls = result.toolCalls;
+      usage = {
+        inputTokens: result.usage.inputTokens ?? 0,
+        outputTokens: result.usage.outputTokens ?? 0,
+        totalTokens:
+          result.usage.totalTokens
+          ?? (result.usage.inputTokens ?? 0) + (result.usage.outputTokens ?? 0),
+      };
+      model = result.model;
+      resolvedModel = result.resolvedModel;
+      providerMetadata = result.providerMetadata;
+      return {
+        completionId: prepared.completionId,
+        sessionId: prepared.sessionId,
+        ...(sessionVersion !== undefined ? { sessionVersion } : {}),
+        text: finalText,
+        toolCalls,
+        usage,
+        providerMetadata,
+        runStatus: "completed",
+        runResult: { exitCode: 0, stdout: finalText, stderr: "" },
+      };
+    } finally {
+      await persistAssistantMessage(
+        prepared.sessionStore,
+        prepared.sessionId,
+        assistantMessageId,
+        finalText,
+        toolCalls,
+      );
+      prepared.deps.onCompletionFinished?.({
+        usage,
+        model,
+        resolvedModel,
+        agent: prepared.body.agent,
+        sessionId: prepared.sessionId ?? undefined,
+        user: prepared.body.user,
+        providerMetadata,
+      });
+    }
   }
   if (!prepared.execution.agentMode) {
     throw new Error("runConversationTurn requires agent-direct mode");
@@ -1283,5 +1377,6 @@ export async function runConversationTurn(
     ...result,
     sessionId: prepared.execution.sessionId,
     completionId: prepared.execution.completionId,
+    ...(sessionVersion !== undefined ? { sessionVersion } : {}),
   };
 }

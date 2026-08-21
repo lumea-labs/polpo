@@ -263,6 +263,165 @@ describe("createConversationChannelTurnHandler", () => {
     expect(error).toMatchObject({ code: "guardrail_blocked", message: "blocked" });
   });
 
+  it("executes an allowlisted client tool and continues the same Session into a Project Loop", async () => {
+    const store = new TestSessionStore();
+    const executeTurn = vi.fn<ChannelConversationTurnExecutor>()
+      .mockResolvedValueOnce({
+        ...successfulResult("session-1", ""),
+        clientToolCall: {
+          id: "call-1",
+          name: "apply_site_change",
+          arguments: { instruction: "Add booking" },
+        },
+        sessionVersion: 2,
+      })
+      .mockResolvedValueOnce({
+        ...successfulResult("session-1", "Site updated"),
+        sessionVersion: 4,
+      });
+    const executeClientTool = vi.fn(async () => ({
+      result: JSON.stringify({ workingCopyId: "copy-1" }),
+      loop: "leo-change-site",
+    }));
+    const handler = createConversationChannelTurnHandler(deps(store), {
+      agent: "leo",
+      executeTurn,
+      executeClientTool,
+      resolveInvocation: async () => ({
+        disposition: "dispatch",
+        user: "user-1",
+        metadata: { tenantId: "tenant-1", grant: "signed" },
+        scope: { key: "site-1", version: "3" },
+      }),
+    });
+
+    await expect(handler(turn())).resolves.toMatchObject({
+      text: "Site updated",
+      metadata: { sessionId: "session-1" },
+    });
+    expect(executeClientTool).toHaveBeenCalledWith(expect.objectContaining({
+      idempotencyKey: expect.stringMatching(/^channel-client-tool:[a-f0-9]{64}$/),
+      sessionId: "session-1",
+      sessionVersion: 2,
+      toolCall: {
+        id: "call-1",
+        name: "apply_site_change",
+        arguments: { instruction: "Add booking" },
+      },
+      invocation: expect.objectContaining({
+        user: "user-1",
+        metadata: { tenantId: "tenant-1", grant: "signed" },
+        scope: { key: "site-1", version: "3" },
+      }),
+    }));
+    const continuation = executeTurn.mock.calls[1]?.[0];
+    expect(continuation?.sessionId).toBe("session-1");
+    expect(continuation?.body).toMatchObject({
+      agent: "leo",
+      loop: "leo-change-site",
+      stream: true,
+      messages: [{
+        role: "tool",
+        tool_call_id: "call-1",
+        content: '{"workingCopyId":"copy-1"}',
+      }],
+      polpo: {
+        continuation: {
+          type: "client_tool",
+          tool_call_id: "call-1",
+          expected_session_version: 2,
+        },
+        delivery: { onDisconnect: "continue" },
+      },
+    });
+    expect(continuation?.continuation).toEqual({
+      idempotencyKey: expect.stringMatching(/^channel-client-tool:[a-f0-9]{64}$/),
+      fingerprint: expect.stringMatching(/^[a-f0-9]{64}$/),
+    });
+    expect(continuation?.runtime).toMatchObject({
+      source: "channel",
+      surface: "channel",
+      user: "user-1",
+      scope: { key: "site-1", version: "3" },
+    });
+  });
+
+  it("keeps direct client-tool continuations in chat and supports a bounded chain", async () => {
+    const store = new TestSessionStore();
+    const executeTurn = vi.fn<ChannelConversationTurnExecutor>()
+      .mockResolvedValueOnce({
+        ...successfulResult("session-1", ""),
+        clientToolCall: { id: "call-1", name: "first", arguments: {} },
+        sessionVersion: 2,
+      })
+      .mockResolvedValueOnce({
+        ...successfulResult("session-1", ""),
+        clientToolCall: { id: "call-2", name: "second", arguments: {} },
+        sessionVersion: 4,
+      })
+      .mockResolvedValueOnce({
+        ...successfulResult("session-1", "done"),
+        sessionVersion: 6,
+      });
+    const executeClientTool = vi.fn(async ({ toolCall }) => ({
+      result: `${toolCall.name}-result`,
+    }));
+    const handler = createConversationChannelTurnHandler(deps(store), {
+      agent: "assistant",
+      executeTurn,
+      executeClientTool,
+    });
+
+    await expect(handler(turn())).resolves.toMatchObject({ text: "done" });
+    expect(executeClientTool).toHaveBeenCalledTimes(2);
+    expect(executeTurn.mock.calls[1]?.[0].body).not.toHaveProperty("loop");
+    expect(executeTurn.mock.calls[2]?.[0].body).not.toHaveProperty("loop");
+    expect(executeClientTool.mock.calls[0]?.[0].idempotencyKey)
+      .not.toBe(executeClientTool.mock.calls[1]?.[0].idempotencyKey);
+  });
+
+  it("fails closed when a Channel receives a client tool without an executor", async () => {
+    const store = new TestSessionStore();
+    const handler = createConversationChannelTurnHandler(deps(store), {
+      agent: "assistant",
+      executeTurn: async () => ({
+        ...successfulResult("session-1", ""),
+        clientToolCall: { id: "call-1", name: "configure", arguments: {} },
+        sessionVersion: 2,
+      }),
+    });
+
+    await expect(handler(turn())).rejects.toMatchObject({
+      code: "channel_client_tool_executor_required",
+    });
+  });
+
+  it("stops recursive client-tool continuations at the configured limit", async () => {
+    const store = new TestSessionStore();
+    let version = 0;
+    const handler = createConversationChannelTurnHandler(deps(store), {
+      agent: "assistant",
+      executeTurn: async () => {
+        version += 2;
+        return {
+          ...successfulResult("session-1", ""),
+          clientToolCall: {
+            id: `call-${version}`,
+            name: "again",
+            arguments: {},
+          },
+          sessionVersion: version,
+        };
+      },
+      executeClientTool: async () => ({ result: "again" }),
+      maxClientToolContinuations: 1,
+    });
+
+    await expect(handler(turn())).rejects.toMatchObject({
+      code: "channel_client_tool_limit_exceeded",
+    });
+  });
+
   it("resolves trusted identity before agent selection and keeps it out of model arguments", async () => {
     const store = new TestSessionStore();
     const order: string[] = [];
