@@ -1,13 +1,17 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   InMemoryRunCancellationStore,
   InMemoryRunEventStore,
+  InMemoryRunExecutionLeaseStore,
 } from "@polpo-ai/core/run-delivery";
 import {
   InMemoryRunEventNotifier,
   RunEventJournal,
 } from "@polpo-ai/core/run-delivery-follower";
-import { runDeliveryRoutes } from "./run-delivery.js";
+import {
+  reconcileInterruptedRun,
+  runDeliveryRoutes,
+} from "./run-delivery.js";
 
 function cancelRequest(runId: string, body: unknown = {}) {
   return new Request(`http://localhost/${runId}/cancel`, {
@@ -145,5 +149,179 @@ describe("runDeliveryRoutes", () => {
       data: { runId: "run-a", accepted: false },
     });
     expect(await cancellationStore.get("run-a")).toBeNull();
+  });
+
+  it("terminalizes an ownerless started run as retryable exactly once", async () => {
+    let now = new Date("2026-08-21T00:00:00.000Z");
+    const eventStore = new InMemoryRunEventStore({ now: () => now });
+    const leaseStore = new InMemoryRunExecutionLeaseStore({ now: () => now });
+    const cancellationStore = new InMemoryRunCancellationStore();
+    const notifier = new InMemoryRunEventNotifier();
+    const journal = new RunEventJournal(eventStore, notifier);
+    await leaseStore.claim("run-orphan", {
+      owner: "worker-old",
+      token: "attempt-old",
+      expiresAt: "2026-08-21T00:00:30.000Z",
+    });
+    await journal.append("run-orphan", { type: "run.started", data: {} });
+    now = new Date("2026-08-21T00:00:31.000Z");
+
+    const first = await reconcileInterruptedRun({
+      runId: "run-orphan",
+      eventStore,
+      leaseStore,
+      cancellationStore,
+      notifier,
+      now: () => now,
+      createToken: () => "recovery-a",
+    });
+    const duplicate = await reconcileInterruptedRun({
+      runId: "run-orphan",
+      eventStore,
+      leaseStore,
+      cancellationStore,
+      notifier,
+      now: () => now,
+      createToken: () => "recovery-b",
+    });
+
+    expect(first).toBe("interrupted");
+    expect(duplicate).toBe("terminal");
+    const events = (await eventStore.listAfter("run-orphan")).events;
+    expect(events.map((event) => event.type)).toEqual(["run.started", "run.failed"]);
+    expect(events[1]?.data).toEqual({
+      code: "run_execution_interrupted",
+      message: "Run execution was interrupted before completion",
+      retryable: true,
+    });
+    expect(await leaseStore.get("run-orphan")).toBeNull();
+  });
+
+  it("serializes concurrent orphan reconcilers without duplicate terminal events", async () => {
+    let now = new Date("2026-08-21T00:00:00.000Z");
+    const eventStore = new InMemoryRunEventStore({ now: () => now });
+    const leaseStore = new InMemoryRunExecutionLeaseStore({ now: () => now });
+    const cancellationStore = new InMemoryRunCancellationStore();
+    await leaseStore.claim("run-race", {
+      owner: "worker-old",
+      token: "attempt-old",
+      expiresAt: "2026-08-21T00:00:01.000Z",
+    });
+    await eventStore.append("run-race", { type: "run.started", data: {} });
+    now = new Date("2026-08-21T00:00:02.000Z");
+
+    const results = await Promise.all([
+      reconcileInterruptedRun({
+        runId: "run-race",
+        eventStore,
+        leaseStore,
+        cancellationStore,
+        now: () => now,
+        createToken: () => "recovery-a",
+      }),
+      reconcileInterruptedRun({
+        runId: "run-race",
+        eventStore,
+        leaseStore,
+        cancellationStore,
+        now: () => now,
+        createToken: () => "recovery-b",
+      }),
+    ]);
+
+    expect(results).toContain("interrupted");
+    expect((await eventStore.listAfter("run-race")).events.filter(
+      (event) => event.type === "run.failed",
+    )).toHaveLength(1);
+  });
+
+  it("does not terminalize a run while its owner lease is live", async () => {
+    const now = new Date("2026-08-21T00:00:00.000Z");
+    const eventStore = new InMemoryRunEventStore({ now: () => now });
+    const leaseStore = new InMemoryRunExecutionLeaseStore({ now: () => now });
+    await leaseStore.claim("run-live", {
+      owner: "worker-live",
+      token: "attempt-live",
+      expiresAt: "2026-08-21T00:00:30.000Z",
+    });
+    await eventStore.append("run-live", { type: "run.started", data: {} });
+
+    await expect(reconcileInterruptedRun({
+      runId: "run-live",
+      eventStore,
+      leaseStore,
+      cancellationStore: new InMemoryRunCancellationStore(),
+      now: () => now,
+      createToken: () => "must-not-claim",
+    })).resolves.toBe("active");
+    expect((await eventStore.listAfter("run-live")).events).toHaveLength(1);
+  });
+
+  it("does not terminalize event history that never reached run.started", async () => {
+    const eventStore = new InMemoryRunEventStore();
+    await eventStore.append("run-accepted", { type: "run.accepted", data: {} });
+
+    await expect(reconcileInterruptedRun({
+      runId: "run-accepted",
+      eventStore,
+      leaseStore: new InMemoryRunExecutionLeaseStore(),
+      cancellationStore: new InMemoryRunCancellationStore(),
+      createToken: () => "must-not-claim",
+    })).resolves.toBe("not-started");
+  });
+
+  it("runs host reconciliation after persisting the interrupted terminal event", async () => {
+    let now = new Date("2026-08-21T00:00:00.000Z");
+    const eventStore = new InMemoryRunEventStore({ now: () => now });
+    const leaseStore = new InMemoryRunExecutionLeaseStore({ now: () => now });
+    const cancellationStore = new InMemoryRunCancellationStore();
+    await leaseStore.claim("run-host", {
+      owner: "worker-old",
+      token: "attempt-old",
+      expiresAt: "2026-08-21T00:00:01.000Z",
+    });
+    await eventStore.append("run-host", { type: "run.started", data: {} });
+    now = new Date("2026-08-21T00:00:02.000Z");
+    const onInterrupted = vi.fn(async () => {
+      const last = (await eventStore.listAfter("run-host")).events.at(-1);
+      expect(last?.type).toBe("run.failed");
+    });
+
+    await reconcileInterruptedRun({
+      runId: "run-host",
+      eventStore,
+      leaseStore,
+      cancellationStore,
+      now: () => now,
+      createToken: () => "recovery",
+      onInterrupted,
+    });
+
+    expect(onInterrupted).toHaveBeenCalledOnce();
+  });
+
+  it("keeps the terminal event readable when host reconciliation fails", async () => {
+    let now = new Date("2026-08-21T00:00:00.000Z");
+    const eventStore = new InMemoryRunEventStore({ now: () => now });
+    const leaseStore = new InMemoryRunExecutionLeaseStore({ now: () => now });
+    await leaseStore.claim("run-host-failure", {
+      owner: "worker-old",
+      token: "attempt-old",
+      expiresAt: "2026-08-21T00:00:01.000Z",
+    });
+    await eventStore.append("run-host-failure", { type: "run.started", data: {} });
+    now = new Date("2026-08-21T00:00:02.000Z");
+
+    await expect(reconcileInterruptedRun({
+      runId: "run-host-failure",
+      eventStore,
+      leaseStore,
+      cancellationStore: new InMemoryRunCancellationStore(),
+      now: () => now,
+      createToken: () => "recovery",
+      onInterrupted: async () => { throw new Error("host store unavailable"); },
+    })).resolves.toBe("interrupted");
+    expect((await eventStore.listAfter("run-host-failure")).events.at(-1)?.type)
+      .toBe("run.failed");
   });
 });

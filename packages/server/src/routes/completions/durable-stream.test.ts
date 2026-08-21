@@ -89,6 +89,26 @@ describe("durable completion stream", () => {
     expect(frames).toEqual(['{"chunk":1}']);
   });
 
+  it("registers the detached owner execution with the host lifecycle", async () => {
+    const delivery = scope();
+    let trackedRunId: string | undefined;
+    let trackedExecution: Promise<unknown> | undefined;
+    delivery.trackExecution = (runId, execution) => {
+      trackedRunId = runId;
+      trackedExecution = execution;
+    };
+
+    const execution = startDurableCompletion({
+      runId: "run-tracked",
+      scope: delivery,
+      producer: async () => undefined,
+    });
+
+    expect(trackedRunId).toBe("run-tracked");
+    expect(trackedExecution).toBe(execution);
+    await expect(execution).resolves.toEqual({ status: "completed" });
+  });
+
   it("serializes concurrent writer calls in invocation order", async () => {
     const delivery = scope();
     const appendMany = vi.spyOn(

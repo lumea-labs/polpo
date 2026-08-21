@@ -5,6 +5,7 @@ import {
   InMemoryRunExecutionLeaseStore,
 } from "@polpo-ai/core/run-delivery";
 import { InMemoryRunEventNotifier } from "@polpo-ai/core/run-delivery-follower";
+import { MemoryLoopRunStore } from "@polpo-ai/core/loop-run-store";
 import { MockLanguageModelV3, convertArrayToReadableStream } from "ai/test";
 import {
   completionRoutes,
@@ -51,7 +52,10 @@ function viaRunDeps(overrides: Partial<CompletionRouteDeps> = {}): CompletionRou
   };
 }
 
-function loopDeps(scope: CompletionRunDeliveryScope): CompletionRouteDeps {
+function loopDeps(
+  scope: CompletionRunDeliveryScope,
+  loopRunStore?: MemoryLoopRunStore,
+): CompletionRouteDeps {
   let time = 100;
   return {
     ...viaRunDeps(),
@@ -78,6 +82,7 @@ function loopDeps(scope: CompletionRunDeliveryScope): CompletionRouteDeps {
       executor: async () => String(time++),
     }),
     createRunDeliveryScope: async () => scope,
+    ...(loopRunStore ? { getLoopRunStore: () => loopRunStore } : {}),
   };
 }
 
@@ -227,7 +232,8 @@ describe("completion durable delivery routing", () => {
 
   it("journals a deterministic project loop on the same delivery contract", async () => {
     const scope = deliveryScope();
-    const res = await completionRoutes(() => loopDeps(scope)).request("/", request({
+    const loopRunStore = new MemoryLoopRunStore();
+    const res = await completionRoutes(() => loopDeps(scope, loopRunStore)).request("/", request({
       agent: "timer",
       loop: "time-tracker",
       stream: true,
@@ -243,6 +249,9 @@ describe("completion durable delivery routing", () => {
     expect(events[0]?.type).toBe("run.started");
     expect(events.at(-1)?.type).toBe("run.completed");
     expect(events.some((event) => event.type === "response.done")).toBe(true);
+    const loopRuns = await loopRunStore.listRuns();
+    expect(loopRuns).toHaveLength(1);
+    expect(loopRuns[0]?.metadata?.deliveryRunId).toBe(runId);
   });
 
   it("rejects a client-tool continuation without session and idempotency headers", async () => {

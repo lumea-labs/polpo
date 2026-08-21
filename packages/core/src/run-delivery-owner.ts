@@ -65,6 +65,17 @@ export async function executeOwnedRun(
   let lostLease = false;
   let cancellationObserved = false;
 
+  const renewLease = async (): Promise<boolean> => {
+    const renewed = makeLease();
+    if (!await options.leaseStore.renew(options.runId, renewed)) {
+      lostLease = true;
+      controller.abort("run_lease_lost");
+      return false;
+    }
+    activeLease = renewed;
+    return true;
+  };
+
   const waitForHeartbeat = () => new Promise<void>((resolve) => {
     let settled = false;
     const finish = () => {
@@ -96,13 +107,7 @@ export async function executeOwnedRun(
         controller.abort("run_cancelled");
         return;
       }
-      const renewed = makeLease();
-      if (!await options.leaseStore.renew(options.runId, renewed)) {
-        lostLease = true;
-        controller.abort("run_lease_lost");
-        return;
-      }
-      activeLease = renewed;
+      if (!await renewLease()) return;
     }
   };
 
@@ -138,6 +143,7 @@ export async function executeOwnedRun(
       if (lostLease) return { status: "lost-lease" };
       if (!cancellationObserved) {
         const message = safeErrorMessage(error);
+        if (!await renewLease()) return { status: "lost-lease" };
         await options.journal.append(options.runId, {
           id: "run.failed",
           type: "run.failed",
@@ -149,6 +155,7 @@ export async function executeOwnedRun(
 
     if (lostLease) return { status: "lost-lease" };
     if (cancellationObserved) {
+      if (!await renewLease()) return { status: "lost-lease" };
       await options.journal.append(options.runId, {
         id: "run.cancelled",
         type: "run.cancelled",
@@ -157,6 +164,7 @@ export async function executeOwnedRun(
       await options.cancellationStore?.clear(options.runId);
       return { status: "cancelled" };
     }
+    if (!await renewLease()) return { status: "lost-lease" };
     await options.journal.append(options.runId, {
       id: "run.completed",
       type: "run.completed",
