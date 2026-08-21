@@ -247,7 +247,7 @@ describe("F1c parity: inline vs run", () => {
       toolEvents(chunks)
         .filter((event) => event.state !== "preparing")
         .map((event) => event.state);
-    expect(terminalStates(viaRun)).toEqual(["error", "error"]);
+    expect(terminalStates(viaRun)).toEqual(["error"]);
     expect(terminalStates(viaRun)).toEqual(terminalStates(inline));
     expect(content(viaRun)).toBe("recovered");
   });

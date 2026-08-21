@@ -518,6 +518,7 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
 
       let stepText = "";
       const toolCalls: LoopToolCall[] = [];
+      const seenModelToolCallIds = new Set<string>();
       const hasStructuredOutput = inject?.output !== undefined;
       const resolvedAttempts = new Map<number, Pick<SpawnPrep, "model" | "providerOptions">>();
       const turn = await runModelPolicyTurn({
@@ -577,6 +578,8 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
             break;
           }
           case "tool-call": {
+            if (!event.id || seenModelToolCallIds.has(event.id)) break;
+            seenModelToolCallIds.add(event.id);
             activity.toolCalls++;
             activity.lastTool = event.name;
             activity.lastUpdate = new Date().toISOString();
