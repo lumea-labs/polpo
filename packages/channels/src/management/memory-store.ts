@@ -109,16 +109,25 @@ export class InMemoryChannelManagementStore implements ChannelManagementStore {
     if (!current || current.scopeKey !== scopeKey(scope)) return null;
     let settings = current.value.settings;
     if (patch.settings !== undefined) {
-      const { identityResolver, ...rest } = structuredClone(patch.settings);
-      const { identityResolver: _currentResolver, ...currentRest } = current.value.settings;
+      const { clientToolHandler, identityResolver, ...rest } = structuredClone(patch.settings);
+      const {
+        clientToolHandler: currentClientToolHandler,
+        identityResolver: currentIdentityResolver,
+        ...currentRest
+      } = current.value.settings;
       settings = {
         ...currentRest,
         ...rest,
         ...(identityResolver === undefined
-          ? (_currentResolver ? { identityResolver: _currentResolver } : {})
+          ? (currentIdentityResolver ? { identityResolver: currentIdentityResolver } : {})
           : identityResolver === null
             ? {}
             : { identityResolver }),
+        ...(clientToolHandler === undefined
+          ? (currentClientToolHandler ? { clientToolHandler: currentClientToolHandler } : {})
+          : clientToolHandler === null
+            ? {}
+            : { clientToolHandler }),
       };
     }
     const value: ConversationChannel = {

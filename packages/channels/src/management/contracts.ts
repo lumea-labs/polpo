@@ -49,7 +49,22 @@ export type ConversationChannelIdentityResolver = Readonly<{
   version: 1;
 }>;
 
+export type ConversationChannelClientToolContinuation =
+  | Readonly<{ mode: "direct" }>
+  | Readonly<{ loop: string; mode: "loop" }>;
+
+export type ConversationChannelClientToolHandler = Readonly<{
+  connectionId: string;
+  endpoint: string;
+  maxContinuations?: number;
+  timeoutMs?: number;
+  tools: Readonly<Record<string, ConversationChannelClientToolContinuation>>;
+  type: "http";
+  version: 1;
+}>;
+
 export type ConversationChannelSettings = Readonly<{
+  clientToolHandler?: ConversationChannelClientToolHandler;
   concurrency?: ChannelConcurrencyPolicy;
   identityResolver?: ConversationChannelIdentityResolver;
   responseDelivery?: ChannelResponseDeliveryPolicy;
@@ -58,7 +73,8 @@ export type ConversationChannelSettings = Readonly<{
 }>;
 
 export type ConversationChannelSettingsPatch = Readonly<
-  Omit<ConversationChannelSettings, "identityResolver"> & {
+  Omit<ConversationChannelSettings, "clientToolHandler" | "identityResolver"> & {
+    clientToolHandler?: ConversationChannelClientToolHandler | null;
     identityResolver?: ConversationChannelIdentityResolver | null;
   }
 >;

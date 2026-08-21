@@ -83,7 +83,7 @@ describe("ChannelManagementService", () => {
     expect(JSON.stringify(result)).not.toMatch(/secret|token|credentialRevision/i);
   });
 
-  it("merges settings updates and can remove a trusted identity resolver", async () => {
+  it("merges settings updates and can independently remove trusted runtime handlers", async () => {
     const state = harness();
     const result = await state.service.configure(scope, {
       agentName: "assistant",
@@ -92,6 +92,15 @@ describe("ChannelManagementService", () => {
       idempotencyKey: "settings-update",
       provider: "whatsapp",
       settings: {
+        clientToolHandler: {
+          connectionId: "handler-connection",
+          endpoint: "https://resolver.example.com/client-tools",
+          tools: {
+            apply_site_change: { loop: "leo-change-site", mode: "loop" },
+          },
+          type: "http",
+          version: 1,
+        },
         identityResolver: {
           connectionId: "resolver-connection",
           endpoint: "https://resolver.example.com/channel-context",
@@ -109,6 +118,7 @@ describe("ChannelManagementService", () => {
     });
     expect(renamed.settings).toMatchObject({
       identityResolver: { connectionId: "resolver-connection" },
+      clientToolHandler: { connectionId: "handler-connection" },
       responseModality: "text",
       typingEnabled: true,
     });
@@ -117,7 +127,13 @@ describe("ChannelManagementService", () => {
       settings: { identityResolver: null },
     });
     expect(removed.settings.identityResolver).toBeUndefined();
+    expect(removed.settings.clientToolHandler).toBeDefined();
     expect(removed.settings).toMatchObject({ responseModality: "text", typingEnabled: true });
+
+    const removedHandler = await state.service.update(scope, result.channel.id, {
+      settings: { clientToolHandler: null },
+    });
+    expect(removedHandler.settings.clientToolHandler).toBeUndefined();
   });
 
   it("converges repeated and concurrent idempotent requests", async () => {
