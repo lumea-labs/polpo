@@ -1,6 +1,6 @@
 {
   "name": "@polpo-ai/llm",
-  "version": "0.15.91",
+  "version": "0.15.92",
   "description": "LLM abstraction for Polpo — multi-provider model resolution, streaming, cost tracking, and failover built on Vercel AI SDK + AI Gateway",
   "type": "module",
   "main": "dist/index.js",
