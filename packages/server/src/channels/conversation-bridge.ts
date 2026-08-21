@@ -41,7 +41,19 @@ export type ChannelConversationTurnExecutor = (
 export type ChannelClientToolExecution = {
   result: ToolInvocationJsonValue;
   loop?: string;
+  /** Host-trusted context for the continuation. Never persisted as tool output. */
+  trustedMetadata?: Readonly<Record<string, ToolInvocationJsonValue>>;
 };
+
+export type ChannelClientToolDefinition = Readonly<{
+  type: "function";
+  function: Readonly<{
+    name: string;
+    description?: string;
+    parameters?: Readonly<Record<string, unknown>>;
+    strict?: boolean;
+  }>;
+}>;
 
 export type ChannelClientToolExecutionInput = {
   idempotencyKey: string;
@@ -70,6 +82,8 @@ export type ChannelInvocationResolution =
 
 export interface ConversationChannelBridgeOptions {
   agent: string | ((turn: ChannelInboundTurn) => string | Promise<string>);
+  /** OpenAI-compatible tools executed by executeClientTool, not by Polpo. */
+  clientTools?: readonly ChannelClientToolDefinition[];
   createSession?: (input: {
     agent: string;
     metadata: Record<string, string>;
@@ -166,7 +180,7 @@ export function createConversationChannelTurnHandler(
         "channel_invocation_identity_invalid",
       );
     }
-    const trustedInvocation = invocationResolution?.disposition === "dispatch"
+    let trustedInvocation = invocationResolution?.disposition === "dispatch"
       ? createToolInvocationContext({
           requestId: turn.providerEventId,
           runId: turn.providerEventId,
@@ -225,7 +239,14 @@ export function createConversationChannelTurnHandler(
       options.historyLimit ?? DEFAULT_HISTORY_LIMIT,
     );
     const content = await channelTurnContent(turn, options);
-    const runtime: RunConversationTurnInput["runtime"] = {
+    if (trustedInvocation && sessionId) {
+      trustedInvocation = invocationWithMetadata(
+        trustedInvocation,
+        trustedInvocation.metadata,
+        sessionId,
+      );
+    }
+    let runtime: RunConversationTurnInput["runtime"] = {
       channelId: turn.installationId,
       requestId: turn.providerEventId,
       source: "channel",
@@ -241,6 +262,7 @@ export function createConversationChannelTurnHandler(
         metadata,
         stream: false,
         user,
+        ...clientToolRequestFields(options.clientTools),
       },
       onRunEvent: options.onRunEvent,
       runtime,
@@ -283,6 +305,28 @@ export function createConversationChannelTurnHandler(
         toolCall,
         turn,
       });
+      if (execution.trustedMetadata !== undefined) {
+        const baseInvocation = trustedInvocation ?? createToolInvocationContext({
+          requestId: turn.providerEventId,
+          runId: turn.providerEventId,
+          ...(result.sessionId ? { sessionId: result.sessionId } : {}),
+          surface: "channel",
+          user,
+          metadata: {},
+        });
+        trustedInvocation = invocationWithMetadata(
+          baseInvocation,
+          {
+            ...baseInvocation.metadata,
+            ...execution.trustedMetadata,
+          },
+          result.sessionId,
+        );
+        runtime = {
+          ...runtime,
+          metadata: trustedInvocation.metadata,
+        };
+      }
       const toolResult = typeof execution.result === "string"
         ? execution.result
         : JSON.stringify(execution.result);
@@ -306,6 +350,7 @@ export function createConversationChannelTurnHandler(
           },
           delivery: { onDisconnect: "continue" as const },
         },
+        ...(!loop ? clientToolRequestFields(options.clientTools) : {}),
       };
       result = await executeTurn({
         body: continuationBody,
@@ -318,7 +363,10 @@ export function createConversationChannelTurnHandler(
             user,
             toolCallId: toolCall.id,
             expectedSessionVersion: result.sessionVersion,
-            result: toolResult,
+            result: {
+              content: toolResult,
+              trustedMetadata: trustedInvocation?.metadata,
+            },
           }),
         },
         onRunEvent: options.onRunEvent,
@@ -345,6 +393,33 @@ export function createConversationChannelTurnHandler(
       },
       text: result.text,
     };
+  };
+}
+
+function invocationWithMetadata(
+  invocation: ToolInvocationContext,
+  metadata: Readonly<Record<string, ToolInvocationJsonValue>>,
+  sessionId?: string | null,
+): ToolInvocationContext {
+  return createToolInvocationContext({
+    requestId: invocation.requestId,
+    runId: invocation.runId,
+    ...(sessionId ? { sessionId } : invocation.sessionId ? { sessionId: invocation.sessionId } : {}),
+    ...(invocation.user ? { user: invocation.user } : {}),
+    metadata: { ...metadata },
+    ...(invocation.scope ? { scope: invocation.scope } : {}),
+    surface: invocation.surface,
+  });
+}
+
+function clientToolRequestFields(
+  tools: readonly ChannelClientToolDefinition[] | undefined,
+): Pick<RunConversationTurnInput["body"], "parallel_tool_calls" | "tool_choice" | "tools"> | Record<string, never> {
+  if (!tools?.length) return {};
+  return {
+    parallel_tool_calls: false,
+    tool_choice: "auto",
+    tools: [...tools],
   };
 }
 

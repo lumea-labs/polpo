@@ -16,6 +16,7 @@ import type { CompletionRouteDeps } from "../routes/completions.js";
 import {
   ChannelConversationError,
   createConversationChannelTurnHandler,
+  type ChannelClientToolExecution,
   type ChannelConversationTurnExecutor,
 } from "./conversation-bridge.js";
 
@@ -280,13 +281,31 @@ describe("createConversationChannelTurnHandler", () => {
         sessionVersion: 4,
       });
     const executeClientTool = vi.fn(async () => ({
-      result: JSON.stringify({ workingCopyId: "copy-1" }),
+      result: { accepted: true },
       loop: "leo-change-site",
+      trustedMetadata: {
+        grant: "rotated-signed-grant",
+        workingCopyId: "copy-1",
+      },
     }));
     const handler = createConversationChannelTurnHandler(deps(store), {
       agent: "leo",
       executeTurn,
       executeClientTool,
+      clientTools: [{
+        type: "function",
+        function: {
+          name: "apply_site_change",
+          description: "Apply a requested site change",
+          parameters: {
+            type: "object",
+            properties: { instruction: { type: "string" } },
+            required: ["instruction"],
+            additionalProperties: false,
+          },
+          strict: true,
+        },
+      }],
       resolveInvocation: async () => ({
         disposition: "dispatch",
         user: "user-1",
@@ -315,6 +334,14 @@ describe("createConversationChannelTurnHandler", () => {
       }),
     }));
     const continuation = executeTurn.mock.calls[1]?.[0];
+    expect(executeTurn.mock.calls[0]?.[0].body).toMatchObject({
+      tools: [{
+        type: "function",
+        function: { name: "apply_site_change", strict: true },
+      }],
+      tool_choice: "auto",
+      parallel_tool_calls: false,
+    });
     expect(continuation?.sessionId).toBe("session-1");
     expect(continuation?.body).toMatchObject({
       agent: "leo",
@@ -323,7 +350,7 @@ describe("createConversationChannelTurnHandler", () => {
       messages: [{
         role: "tool",
         tool_call_id: "call-1",
-        content: '{"workingCopyId":"copy-1"}',
+        content: '{"accepted":true}',
       }],
       polpo: {
         continuation: {
@@ -334,6 +361,9 @@ describe("createConversationChannelTurnHandler", () => {
         delivery: { onDisconnect: "continue" },
       },
     });
+    expect(continuation?.body).not.toHaveProperty("tools");
+    expect(JSON.stringify(continuation?.body)).not.toContain("rotated-signed-grant");
+    expect(JSON.stringify(continuation?.body)).not.toContain("copy-1");
     expect(continuation?.continuation).toEqual({
       idempotencyKey: expect.stringMatching(/^channel-client-tool:[a-f0-9]{64}$/),
       fingerprint: expect.stringMatching(/^[a-f0-9]{64}$/),
@@ -342,8 +372,85 @@ describe("createConversationChannelTurnHandler", () => {
       source: "channel",
       surface: "channel",
       user: "user-1",
+      metadata: {
+        tenantId: "tenant-1",
+        grant: "rotated-signed-grant",
+        workingCopyId: "copy-1",
+      },
       scope: { key: "site-1", version: "3" },
     });
+    expect(Object.isFrozen(continuation?.runtime?.metadata)).toBe(true);
+  });
+
+  it("carries trusted handler metadata across direct continuations without exposing it", async () => {
+    const store = new TestSessionStore();
+    const executeTurn = vi.fn<ChannelConversationTurnExecutor>()
+      .mockResolvedValueOnce({
+        ...successfulResult("session-1", ""),
+        clientToolCall: { id: "call-1", name: "first", arguments: {} },
+        sessionVersion: 2,
+      })
+      .mockResolvedValueOnce({
+        ...successfulResult("session-1", ""),
+        clientToolCall: { id: "call-2", name: "second", arguments: {} },
+        sessionVersion: 4,
+      })
+      .mockResolvedValueOnce({
+        ...successfulResult("session-1", "done"),
+        sessionVersion: 6,
+      });
+    const executeClientTool = vi.fn(async ({ toolCall, invocation }): Promise<ChannelClientToolExecution> => {
+      if (toolCall.name === "first") {
+        return {
+          result: { ok: true },
+          trustedMetadata: { grant: "grant-2", workingCopyId: "copy-1" },
+        };
+      }
+      return {
+        result: { ok: true },
+        trustedMetadata: {
+          revisionId: "revision-1",
+          previousGrant: invocation?.metadata.grant ?? null,
+        },
+      };
+    });
+    const clientTools = ["first", "second"].map((name) => ({
+      type: "function" as const,
+      function: {
+        name,
+        parameters: { type: "object", properties: {}, additionalProperties: false },
+      },
+    }));
+    const handler = createConversationChannelTurnHandler(deps(store), {
+      agent: "assistant",
+      clientTools,
+      executeTurn,
+      executeClientTool,
+      resolveInvocation: () => ({
+        disposition: "dispatch",
+        user: "user-1",
+        metadata: { grant: "grant-1", tenantId: "tenant-1" },
+      }),
+    });
+
+    await expect(handler(turn())).resolves.toMatchObject({ text: "done" });
+    expect(executeClientTool.mock.calls[1]?.[0].invocation?.metadata).toEqual({
+      grant: "grant-2",
+      tenantId: "tenant-1",
+      workingCopyId: "copy-1",
+    });
+    expect(executeTurn.mock.calls[1]?.[0].body).toMatchObject({ tools: clientTools });
+    expect(executeTurn.mock.calls[2]?.[0].runtime?.metadata).toEqual({
+      grant: "grant-2",
+      tenantId: "tenant-1",
+      workingCopyId: "copy-1",
+      revisionId: "revision-1",
+      previousGrant: "grant-2",
+    });
+    for (const call of executeTurn.mock.calls.slice(1)) {
+      expect(JSON.stringify(call[0].body)).not.toContain("grant-2");
+      expect(JSON.stringify(call[0].body)).not.toContain("copy-1");
+    }
   });
 
   it("keeps direct client-tool continuations in chat and supports a bounded chain", async () => {

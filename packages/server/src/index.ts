@@ -66,6 +66,7 @@ export {
   type ChannelConversationTurnExecutor,
   type ChannelConversationContentPart,
   type ChannelClientToolExecution,
+  type ChannelClientToolDefinition,
   type ChannelClientToolExecutionInput,
   type ChannelClientToolExecutor,
   type ChannelInvocationResolution,

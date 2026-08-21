@@ -88,12 +88,12 @@ export const clientToolChoiceSchema = z.union([
 ]);
 
 const MAX_CLIENT_TOOLS = 64;
-const MAX_CLIENT_TOOLS_BYTES = 128 * 1024;
+export const MAX_CLIENT_TOOLS_BYTES = 128 * 1024;
 const MAX_CLIENT_SCHEMA_DEPTH = 32;
 const MAX_CLIENT_SCHEMA_NODES = 4_096;
 const UNSAFE_SCHEMA_KEYS = new Set(["__proto__", "prototype", "constructor"]);
 
-function inspectClientJsonSchema(
+export function inspectClientJsonSchema(
   value: unknown,
   ctx: z.RefinementCtx,
   path: (string | number)[],

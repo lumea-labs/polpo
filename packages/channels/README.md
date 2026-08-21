@@ -247,8 +247,22 @@ Project Loop. The model cannot select the handler endpoint, credentials, or Loop
 ```ts
 const handleTurn = createConversationChannelTurnHandler(serverDeps, {
   agent: (turn) => resolveAgentForInstallation(turn.installationId),
+  clientTools: [{
+    type: "function",
+    function: {
+      name: "apply_site_change",
+      description: "Apply a requested site change",
+      parameters: {
+        type: "object",
+        properties: { instruction: { type: "string" } },
+        required: ["instruction"],
+        additionalProperties: false,
+      },
+      strict: true,
+    },
+  }],
   executeClientTool: async (execution) => {
-    const result = await applicationTools.execute({
+    const { result, grant, workingCopyId } = await applicationTools.execute({
       idempotencyKey: execution.idempotencyKey,
       invocation: execution.invocation,
       sessionId: execution.sessionId,
@@ -256,7 +270,11 @@ const handleTurn = createConversationChannelTurnHandler(serverDeps, {
       toolCall: execution.toolCall,
     });
     return execution.toolCall.name === "apply_site_change"
-      ? { result, loop: "site-change" }
+      ? {
+          result,
+          loop: "site-change",
+          trustedMetadata: { grant, workingCopyId },
+        }
       : { result };
   },
   maxClientToolContinuations: 4,
@@ -266,8 +284,10 @@ const handleTurn = createConversationChannelTurnHandler(serverDeps, {
 The bridge derives a stable idempotency key from the verified provider event and
 tool call. The handler must treat repeated keys as the same operation. Each
 continuation uses the canonical Session version, appends exactly one tool result,
-and preserves trusted invocation identity and metadata. A configured Loop starts
-only after that atomic continuation succeeds.
+and preserves trusted invocation identity and metadata. Handler-provided
+`trustedMetadata` is merged into the immutable invocation context for the next
+direct turn or Loop. It is never appended to the tool result or model history.
+A configured Loop starts only after that atomic continuation succeeds.
 
 Reject unknown tools before network or application work, bound the continuation
 count, and fail closed on handler, authorization, or Session-version errors.
@@ -298,10 +318,64 @@ handler request has this provider-neutral shape:
 }
 ```
 
-Return one JSON object containing only `result`:
+Return one JSON object containing `result` and optional host-trusted metadata:
 
 ```json
-{ "result": { "accepted": true } }
+{
+  "result": { "accepted": true },
+  "trustedMetadata": {
+    "grant": "short-lived-signed-grant",
+    "workingCopyId": "working-copy-id"
+  }
+}
+```
+
+Cloud Channel configuration declares both the continuation policy and the
+OpenAI-compatible function schema. The endpoint, Connection, Loop, and trusted
+metadata remain server-controlled:
+
+```json
+{
+  "clientToolHandler": {
+    "version": 1,
+    "type": "http",
+    "endpoint": "https://app.example.com/polpo/client-tools",
+    "connectionId": "conn_handler",
+    "tools": {
+      "apply_site_change": {
+        "mode": "loop",
+        "loop": "site-change",
+        "description": "Apply a requested site change",
+        "parameters": {
+          "type": "object",
+          "properties": { "instruction": { "type": "string" } },
+          "required": ["instruction"],
+          "additionalProperties": false
+        },
+        "strict": true
+      }
+    }
+  }
+}
+```
+
+Custom tools inside the Loop consume secrets through existing hidden bindings,
+not model-visible arguments:
+
+```ts
+defineTool({
+  name: "site_checkout",
+  inputSchema: Type.Object({}),
+  bindingsSchema: Type.Object({
+    grant: Type.String(),
+    workingCopyId: Type.String(),
+  }),
+  serverBindings: {
+    grant: { $context: "invocation.metadata.grant" },
+    workingCopyId: { $context: "invocation.metadata.workingCopyId" },
+  },
+  execute: async (_input, ctx) => checkout(ctx.bindings),
+});
 ```
 
 ## Agent-native management

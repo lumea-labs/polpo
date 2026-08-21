@@ -50,8 +50,19 @@ export type ConversationChannelIdentityResolver = Readonly<{
 }>;
 
 export type ConversationChannelClientToolContinuation =
-  | Readonly<{ mode: "direct" }>
-  | Readonly<{ loop: string; mode: "loop" }>;
+  | Readonly<{
+      description?: string;
+      mode: "direct";
+      parameters?: Readonly<Record<string, unknown>>;
+      strict?: boolean;
+    }>
+  | Readonly<{
+      description?: string;
+      loop: string;
+      mode: "loop";
+      parameters?: Readonly<Record<string, unknown>>;
+      strict?: boolean;
+    }>;
 
 export type ConversationChannelClientToolHandler = Readonly<{
   connectionId: string;
