@@ -1284,7 +1284,7 @@ export interface ChatCompletionRequest extends RuntimeCompletionRequestOptions {
     delivery?: {
       onDisconnect: "cancel" | "continue";
     };
-    /** Continue a pending client-side tool call into an explicit Project Loop. */
+    /** Continue a pending client-side tool call in direct chat or an explicit Project Loop. */
     continuation?: {
       type: "client_tool";
       tool_call_id: string;
@@ -1298,7 +1298,8 @@ export interface ContinueClientToolResultRequest {
   sessionVersion: number;
   idempotencyKey: string;
   agent: string;
-  loop: string;
+  /** Include to hand off into a Project Loop; omit to continue direct chat. */
+  loop?: string;
   toolCallId: string;
   result: string | ContentPart[];
   user?: string;

@@ -14,7 +14,7 @@ function stableJson(value: unknown): string {
 export function continuationFingerprint(input: {
   sessionId: string;
   agent: string;
-  loop: string;
+  loop?: string;
   user?: string;
   toolCallId: string;
   expectedSessionVersion: number;

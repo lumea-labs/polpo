@@ -92,11 +92,11 @@ export interface UseChatReturn {
   ) => Promise<void>;
   /** Send a tool result back to the server. Used for client-side tools (e.g. ask_user_question). */
   sendToolResult: (toolCallId: string, toolName: string, result: string) => Promise<void>;
-  /** Continue a pending client tool into an explicit durable Project Loop. */
+  /** Continue a pending client tool in direct chat or an explicit durable Project Loop. */
   continueToolResult: (
     toolCallId: string,
     result: string | ContentPart[],
-    options: { loop: string; idempotencyKey: string },
+    options: { loop?: string; idempotencyKey: string },
   ) => Promise<void>;
   /** Current session ID. `null` until the first response from the server. */
   sessionId: string | null;
@@ -557,7 +557,7 @@ export function useChat(options: UseChatOptions = {}): UseChatReturn {
     async (
       toolCallId: string,
       result: string | ContentPart[],
-      continuationOptions: { loop: string; idempotencyKey: string },
+      continuationOptions: { loop?: string; idempotencyKey: string },
     ) => {
       if (isStreamingRef.current) return;
       const currentSessionId = sessionIdRef.current;
@@ -565,7 +565,7 @@ export function useChat(options: UseChatOptions = {}): UseChatReturn {
       const agent = optionsRef.current.agent;
       if (!currentSessionId || currentVersion === null || !agent) {
         const nextError = new Error(
-          "Loop continuation requires an agent, active session, and session version",
+          "Client-tool continuation requires an agent, active session, and session version",
         );
         setError(nextError);
         setStatus("error");
@@ -584,7 +584,7 @@ export function useChat(options: UseChatOptions = {}): UseChatReturn {
           sessionVersion: currentVersion,
           idempotencyKey: continuationOptions.idempotencyKey,
           agent,
-          loop: continuationOptions.loop,
+          ...(continuationOptions.loop ? { loop: continuationOptions.loop } : {}),
           toolCallId,
           result,
         });
