@@ -57,11 +57,29 @@ export type StreamModelTurnInput<TOOLS extends ToolSet = ToolSet> = {
   tools?: TOOLS;
   activeTools?: Array<keyof TOOLS>;
   toolChoice?: ToolChoice<TOOLS>;
+  parallelToolCalls?: boolean;
   maxOutputTokens?: number;
   providerOptions?: Record<string, unknown>;
   abortSignal?: AbortSignal;
   output?: Output.Output<unknown, unknown, unknown>;
 };
+
+export function providerOptionsWithParallelToolCalls(
+  providerOptions: Record<string, unknown> | undefined,
+  parallelToolCalls: boolean | undefined,
+): Record<string, unknown> | undefined {
+  if (parallelToolCalls === undefined) return providerOptions;
+  const openai = isRecord(providerOptions?.openai)
+    ? providerOptions.openai
+    : {};
+  return {
+    ...(providerOptions ?? {}),
+    openai: {
+      ...openai,
+      parallelToolCalls,
+    },
+  };
+}
 
 type ModelTransportIdentity = {
   provider?: unknown;
@@ -501,10 +519,28 @@ function normalizeToolCallInput<TOOLS extends ToolSet>(toolCall: TypedToolCall<T
   return { ...toolCall, input: {} } as TypedToolCall<TOOLS>;
 }
 
+function normalizeExecutableToolCalls<TOOLS extends ToolSet>(
+  toolCalls: TypedToolCall<TOOLS>[],
+): TypedToolCall<TOOLS>[] {
+  const seen = new Set<string>();
+  const normalized: TypedToolCall<TOOLS>[] = [];
+  for (const rawCall of toolCalls) {
+    const call = normalizeToolCallInput(rawCall);
+    if (!call.toolCallId || seen.has(call.toolCallId)) continue;
+    seen.add(call.toolCallId);
+    normalized.push(call);
+  }
+  return normalized;
+}
+
 export async function streamModelTurn<TOOLS extends ToolSet = ToolSet>(
   input: StreamModelTurnInput<TOOLS>,
   onEvent?: (event: ModelTurnEvent<TOOLS>) => void | Promise<void>,
 ): Promise<ModelTurnResult<TOOLS>> {
+  const providerOptions = providerOptionsWithParallelToolCalls(
+    input.providerOptions,
+    input.parallelToolCalls,
+  );
   const result = streamText({
     model: input.model,
     ...(input.system ? { system: input.system } : {}),
@@ -513,7 +549,7 @@ export async function streamModelTurn<TOOLS extends ToolSet = ToolSet>(
     ...(input.activeTools ? { activeTools: input.activeTools } : {}),
     ...(input.toolChoice ? { toolChoice: input.toolChoice } : {}),
     ...(input.maxOutputTokens ? { maxOutputTokens: input.maxOutputTokens } : {}),
-    ...(input.providerOptions ? { providerOptions: input.providerOptions as any } : {}),
+    ...(providerOptions ? { providerOptions: providerOptions as any } : {}),
     ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
     ...(input.output ? { output: input.output } : {}),
   });
@@ -623,7 +659,7 @@ export async function streamModelTurn<TOOLS extends ToolSet = ToolSet>(
   return {
     text,
     ...(output !== undefined ? { output } : {}),
-    toolCalls: toolCalls.map(normalizeToolCallInput),
+    toolCalls: normalizeExecutableToolCalls(toolCalls),
     toolResults,
     usage,
     totalUsage,

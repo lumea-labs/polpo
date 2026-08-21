@@ -189,6 +189,7 @@ function buildAttemptInput<TOOLS extends ToolSet>(
     ...(input.tools ? { tools: input.tools } : {}),
     ...(input.activeTools ? { activeTools: input.activeTools } : {}),
     ...(input.toolChoice ? { toolChoice: input.toolChoice } : {}),
+    ...(input.parallelToolCalls !== undefined ? { parallelToolCalls: input.parallelToolCalls } : {}),
     ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
     ...(input.output ? { output: input.output } : {}),
     model: resolution.model,

@@ -36,6 +36,103 @@ function mockModel(parts: unknown[]) {
 }
 
 describe("streamModelTurn", () => {
+  it("drops duplicate and empty tool-call ids before local execution", async () => {
+    const model = new MockLanguageModelV3({
+      doStream: async () => ({
+        stream: convertArrayToReadableStream([
+          { type: "stream-start", warnings: [] },
+          { type: "tool-call", toolCallId: "call_1", toolName: "read_one", input: "{}" },
+          { type: "tool-call", toolCallId: "call_1", toolName: "read_two", input: "{}" },
+          { type: "tool-call", toolCallId: "", toolName: "read_three", input: "{}" },
+          {
+            type: "finish",
+            finishReason: { unified: "tool-calls", raw: undefined },
+            usage: {
+              inputTokens: { total: 1, noCache: undefined, cacheRead: undefined, cacheWrite: undefined },
+              outputTokens: { total: 1, text: undefined, reasoning: undefined },
+            },
+          },
+        ] as any[]),
+      }),
+    });
+
+    const result = await streamModelTurn({
+      model,
+      messages: [{ role: "user", content: "read" }],
+    });
+
+    expect(result.toolCalls).toHaveLength(1);
+    expect(result.toolCalls[0]).toMatchObject({
+      toolCallId: "call_1",
+      toolName: "read_one",
+      input: {},
+    });
+  });
+
+  it("maps the OpenAI-compatible parallel tool preference without dropping provider options", async () => {
+    let seenProviderOptions: unknown;
+    const model = new MockLanguageModelV3({
+      doGenerate: {
+        content: [{ type: "text", text: "unused" }],
+        finishReason: { unified: "stop", raw: undefined },
+        usage: usage(),
+        warnings: [],
+      },
+      doStream: async (options) => {
+        seenProviderOptions = options.providerOptions;
+        return {
+          stream: convertArrayToReadableStream([
+            { type: "stream-start", warnings: [] },
+            { type: "finish", finishReason: { unified: "stop", raw: undefined }, usage: usage() },
+          ] as any[]),
+        };
+      },
+    });
+
+    await streamModelTurn({
+      model,
+      messages: [{ role: "user", content: "Inspect two resources" }],
+      parallelToolCalls: false,
+      providerOptions: {
+        gateway: { order: ["openai"] },
+        openai: { reasoningEffort: "low" },
+      },
+    });
+
+    expect(seenProviderOptions).toEqual({
+      gateway: { order: ["openai"] },
+      openai: { reasoningEffort: "low", parallelToolCalls: false },
+    });
+  });
+
+  it("does not add provider options when the preference is omitted", async () => {
+    let seenProviderOptions: unknown = "not-called";
+    const model = new MockLanguageModelV3({
+      doGenerate: {
+        content: [{ type: "text", text: "unused" }],
+        finishReason: { unified: "stop", raw: undefined },
+        usage: usage(),
+        warnings: [],
+      },
+      doStream: async (options) => {
+        seenProviderOptions = options.providerOptions;
+        return {
+          stream: convertArrayToReadableStream([
+            { type: "stream-start", warnings: [] },
+            { type: "finish", finishReason: { unified: "stop", raw: undefined }, usage: usage() },
+          ] as any[]),
+        };
+      },
+    });
+
+    await streamModelTurn({
+      model,
+      messages: [{ role: "user", content: "hello" }],
+    });
+
+    expect(seenProviderOptions).toBeUndefined();
+  });
+
   it("preserves the provider error emitted by a failed stream", async () => {
     const providerError = new Error(
       "Invalid schema for response_format: 'uri' is not a valid format.",

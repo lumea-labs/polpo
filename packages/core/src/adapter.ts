@@ -206,6 +206,8 @@ export interface ChatSessionInjection {
   maxTurns: number;
   /** streamText toolChoice, if the route set one. */
   toolChoice?: unknown;
+  /** OpenAI-compatible preference for same-turn server tool execution. */
+  parallelToolCalls?: boolean;
   /** Provider-neutral AI SDK structured output specification, kept opaque in core. */
   output?: unknown;
   /** Seed conversation (AI-SDK ModelMessage[]). */

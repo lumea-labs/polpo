@@ -60,6 +60,7 @@ import {
   createModelControlledToolPool,
   forcedModelToolName,
 } from "./tool-disclosure.js";
+import { executeCompletionToolBatch } from "./tool-execution-batch.js";
 
 export const MAX_TURNS = 20;
 
@@ -267,6 +268,7 @@ export async function runAgentStepCompletion(options: {
   toolRunScope?: CompletionToolRunScope;
   toolInvocation?: ToolInvocationContext;
   onToolCall?: (toolCall: LoopRuntimeToolCall) => Promise<void>;
+  parallelToolCalls?: boolean;
 }): Promise<AgentStepRunResult> {
   const {
     deps,
@@ -456,6 +458,9 @@ export async function runAgentStepCompletion(options: {
         tools: aiTools,
         ...(activeToolNames ? { activeTools: activeToolNames() } : {}),
         ...(modelToolChoice ? { toolChoice: modelToolChoice as any } : {}),
+        ...(options.parallelToolCalls !== undefined
+          ? { parallelToolCalls: options.parallelToolCalls }
+          : {}),
       }, async (event) => {
         if (event.type === "tool-input-start") {
           toolCallNames.set(event.id, event.name);
@@ -506,26 +511,12 @@ export async function runAgentStepCompletion(options: {
 
       const providerToolResults = indexToolResultsByCallId(turnResult.toolResults as any[] | undefined);
 
-      for (const call of dispatchableToolCalls) {
-        const callArgs = call.input as Record<string, unknown>;
-        if (providerToolNames.has(call.toolName)) {
-          const event = providerToolCallEvent(call, providerToolResults);
-          toolCallsAccum.push(event);
-          await onToolCall?.(event);
-          continue;
-        }
-
-        await onToolCall?.({
-          id: call.toolCallId,
-          name: call.toolName,
-          arguments: callArgs,
-          state: "calling",
-        });
-        const result = await executeTool(call.toolName, callArgs, {
-          callId: call.toolCallId,
-          signal: options.signal,
-        });
-        const isError = result.startsWith("Error:");
+      const appendLocalResult = async (
+        call: { toolCallId: string; toolName: string },
+        callArgs: Record<string, unknown>,
+        result: string,
+        isError: boolean,
+      ) => {
         emitFileChanged(call.toolName, callArgs, result, deps.emit);
         const event = {
           id: call.toolCallId,
@@ -536,6 +527,9 @@ export async function runAgentStepCompletion(options: {
         } satisfies LoopRuntimeToolCall;
         toolCallsAccum.push(event);
         await onToolCall?.(event);
+        const modelResult = contextTrust === "enforce"
+          ? renderRuntimeToolResult(call.toolName, call.toolCallId, result)
+          : result;
         messages.push({
           role: "tool",
           content: [{
@@ -543,20 +537,66 @@ export async function runAgentStepCompletion(options: {
             toolCallId: call.toolCallId,
             toolName: call.toolName,
             output: isError
-              ? {
-                  type: "error-text" as const,
-                  value: contextTrust === "enforce"
-                    ? renderRuntimeToolResult(call.toolName, call.toolCallId, result)
-                    : result,
-                }
-              : {
-                  type: "text" as const,
-                  value: contextTrust === "enforce"
-                    ? renderRuntimeToolResult(call.toolName, call.toolCallId, result)
-                    : result,
-                },
+              ? { type: "error-text" as const, value: modelResult }
+              : { type: "text" as const, value: modelResult },
           }],
         });
+      };
+
+      if (options.parallelToolCalls === true) {
+        const localCalls = dispatchableToolCalls
+          .filter((call) => !providerToolNames.has(call.toolName))
+          .map((call) => ({
+            toolCallId: call.toolCallId,
+            toolName: call.toolName,
+            input: call.input as Record<string, unknown>,
+          }));
+        const localResults = await executeCompletionToolBatch({
+          calls: localCalls,
+          executor: executeTool,
+          signal: options.signal,
+          onCalling: async (call) => {
+            await onToolCall?.({
+              id: call.toolCallId,
+              name: call.toolName,
+              arguments: call.input,
+              state: "calling",
+            });
+          },
+        });
+        let localResultIndex = 0;
+        for (const call of dispatchableToolCalls) {
+          if (providerToolNames.has(call.toolName)) {
+            const event = providerToolCallEvent(call, providerToolResults);
+            toolCallsAccum.push(event);
+            await onToolCall?.(event);
+            continue;
+          }
+          const local = localResults[localResultIndex++]!;
+          await appendLocalResult(call, local.input, local.result, local.isError);
+        }
+      } else {
+        for (const call of dispatchableToolCalls) {
+          const callArgs = call.input as Record<string, unknown>;
+          if (providerToolNames.has(call.toolName)) {
+            const event = providerToolCallEvent(call, providerToolResults);
+            toolCallsAccum.push(event);
+            await onToolCall?.(event);
+            continue;
+          }
+
+          await onToolCall?.({
+            id: call.toolCallId,
+            name: call.toolName,
+            arguments: callArgs,
+            state: "calling",
+          });
+          const result = await executeTool(call.toolName, callArgs, {
+            callId: call.toolCallId,
+            signal: options.signal,
+          });
+          await appendLocalResult(call, callArgs, result, result.startsWith("Error:"));
+        }
       }
     }
 

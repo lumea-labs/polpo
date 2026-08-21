@@ -543,6 +543,81 @@ describe("chat via Run driver", () => {
   });
 
   it.each([false, true])(
+    "executes explicitly parallel read-only calls in inline chat with ordered history (stream=%s)",
+    async (stream) => {
+      let turn = 0;
+      let active = 0;
+      let maxActive = 0;
+      let secondPrompt = "";
+      const model = new MockLanguageModelV3({
+        doStream: async (options) => {
+          turn += 1;
+          if (turn === 1) {
+            return { stream: convertArrayToReadableStream([
+              { type: "stream-start", warnings: [] },
+              { type: "tool-call", toolCallId: "slow", toolName: "read_slow", input: "{}" },
+              { type: "tool-call", toolCallId: "fast", toolName: "list_fast", input: "{}" },
+              { type: "finish", finishReason: { unified: "tool-calls", raw: undefined }, usage: mockUsage },
+            ] as any[]) };
+          }
+          secondPrompt = JSON.stringify(options.prompt);
+          return { stream: convertArrayToReadableStream([
+            { type: "stream-start", warnings: [] },
+            { type: "text-start", id: "done" },
+            { type: "text-delta", id: "done", delta: "complete" },
+            { type: "text-end", id: "done" },
+            { type: "finish", finishReason: { unified: "stop", raw: undefined }, usage: mockUsage },
+          ] as any[]) };
+        },
+      });
+      const execute = vi.fn(async (name: string) => {
+        active += 1;
+        maxActive = Math.max(maxActive, active);
+        await new Promise((resolve) => setTimeout(resolve, name === "read_slow" ? 15 : 2));
+        active -= 1;
+        return `${name}:done`;
+      });
+      const deps = baseDeps({
+        getConfig: () => ({ settings: { chatExecution: "inline" } }),
+        resolveAgentModel: async () => ({
+          model: {
+            id: "mock-model",
+            provider: "mock",
+            aiModel: model,
+            contextWindow: 200_000,
+            maxTokens: 8192,
+          },
+        }),
+        resolveAgentTools: async () => ({
+          tools: ["read_slow", "list_fast"].map((name) => ({
+            name,
+            description: name,
+            parameters: { type: "object", properties: {} },
+          })),
+          executor: execute,
+        }),
+      });
+
+      const response = await completionRoutes(() => deps).request("/", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          agent: "agent-1",
+          stream,
+          parallel_tool_calls: true,
+          messages: [{ role: "user", content: "Inspect both" }],
+        }),
+      });
+
+      expect(response.status).toBe(200);
+      await response.text();
+      expect(maxActive).toBe(2);
+      expect(secondPrompt.indexOf("read_slow:done"))
+        .toBeLessThan(secondPrompt.indexOf("list_fast:done"));
+    },
+  );
+
+  it.each([false, true])(
     "returns request-scoped client tool calls in OpenAI format (stream=%s)",
     async (stream) => {
       const execute = vi.fn(async () => "must not execute");

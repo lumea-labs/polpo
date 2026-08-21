@@ -518,6 +518,7 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
 
       let stepText = "";
       const toolCalls: LoopToolCall[] = [];
+      const seenModelToolCallIds = new Set<string>();
       const hasStructuredOutput = inject?.output !== undefined;
       const resolvedAttempts = new Map<number, Pick<SpawnPrep, "model" | "providerOptions">>();
       const turn = await runModelPolicyTurn({
@@ -544,6 +545,9 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
         tools: toolSet,
         ...(inject?.activeToolNames ? { activeTools: inject.activeToolNames() as Array<keyof typeof toolSet> } : {}),
         ...(inject?.toolChoice ? { toolChoice: inject.toolChoice as any } : {}),
+        ...(inject?.parallelToolCalls !== undefined
+          ? { parallelToolCalls: inject.parallelToolCalls }
+          : {}),
         ...(hasStructuredOutput ? { output: inject.output as any } : {}),
         abortSignal: abortController.signal,
       }, (event) => {
@@ -574,6 +578,8 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
             break;
           }
           case "tool-call": {
+            if (!event.id || seenModelToolCallIds.has(event.id)) break;
+            seenModelToolCallIds.add(event.id);
             activity.toolCalls++;
             activity.lastTool = event.name;
             activity.lastUpdate = new Date().toISOString();
@@ -779,23 +785,6 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
         ({ llmText, isError } = await performToolCall(toolByName.get(toolCall.name), toolCall));
       }
 
-      // Append the tool result to conversation history so the next model
-      // step sees it (the model stream no longer auto-executes tools).
-      const modelResult = contextTrust === "enforce"
-        ? renderRuntimeToolResult(toolCall.name, toolCall.id, llmText)
-        : llmText;
-      messages.push({
-        role: "tool",
-        content: [{
-          type: "tool-result",
-          toolCallId: toolCall.id,
-          toolName: toolCall.name,
-          output: isError
-            ? { type: "error-text" as const, value: modelResult }
-            : { type: "text" as const, value: modelResult },
-        }],
-      });
-
       return llmText;
     };
 
@@ -835,6 +824,31 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
       startTurn: resume ? resume.turn! + 1 : 0,
       model: modelStep,
       executeTool,
+      parallelToolCalls: inject?.parallelToolCalls,
+      onToolResults: (toolResults) => {
+        for (const { toolCall, result, isError } of toolResults) {
+          // AI SDK already persisted provider-executed results and invalid
+          // argument errors in responseMessages. Only local results belong
+          // in this host-owned ordered append.
+          if (toolCall.inputValidationError || inject?.providerToolNames.has(toolCall.name)) {
+            continue;
+          }
+          const modelResult = contextTrust === "enforce"
+            ? renderRuntimeToolResult(toolCall.name, toolCall.id, result)
+            : result;
+          messages.push({
+            role: "tool",
+            content: [{
+              type: "tool-result",
+              toolCallId: toolCall.id,
+              toolName: toolCall.name,
+              output: isError
+                ? { type: "error-text" as const, value: modelResult }
+                : { type: "text" as const, value: modelResult },
+            }],
+          });
+        }
+      },
       steering,
       onSteering: async (steeringMessages) => {
         for (const message of steeringMessages) {

@@ -296,6 +296,7 @@ describe("completion runtime plan hook", () => {
       agent: "agent-1",
       model: "untrusted/request-override",
       stream: false,
+      parallel_tool_calls: true,
       metadata: { source: "channel", provider: "telegram" },
       messages: [{ role: "user", content: "hello from telegram" }],
     }, {
@@ -313,6 +314,7 @@ describe("completion runtime plan hook", () => {
     expect(buildChatRunInjection(prepared.execution).runtimePlan).toBe(
       prepared.execution.runtimePlan,
     );
+    expect(buildChatRunInjection(prepared.execution).parallelToolCalls).toBe(true);
   });
 
   it("passes one immutable direct-chat invocation snapshot to tool resolution", async () => {

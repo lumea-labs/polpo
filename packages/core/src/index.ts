@@ -466,6 +466,15 @@ export type {
 } from "./loop/hooks.js";
 export { LoopRunner } from "./loop/runner.js";
 export type { LoopModelInput, LoopModelResult, LoopRunnerOptions, LoopRunResult } from "./loop/runner.js";
+export {
+  DEFAULT_MAX_PARALLEL_TOOL_CALLS,
+  executeToolBatch,
+  normalizeToolExecutionError,
+} from "./loop/tool-batch.js";
+export type {
+  ExecuteToolBatchOptions,
+  ToolBatchCall,
+} from "./loop/tool-batch.js";
 export { resolveLoopSelection, resolveActiveLoopTools, resolveActiveLoopSkills } from "./loop/selector.js";
 export type { LoopSelection } from "./loop/selector.js";
 export { PipelineExecutor } from "./loop/pipeline.js";

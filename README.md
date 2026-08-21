@@ -555,6 +555,29 @@ chunk so clients never receive a partial invalid object. Tool calls may still
 run before the final structured response. Project loop execution currently
 rejects `response_format` explicitly instead of silently ignoring it.
 
+### Parallel server tool calls
+
+Set `parallel_tool_calls` on an OpenAI-compatible completion to control how
+Polpo executes multiple server-side tool calls returned by one model turn:
+
+```json
+{
+  "agent": "researcher",
+  "messages": [{ "role": "user", "content": "Check both data sources." }],
+  "parallel_tool_calls": true
+}
+```
+
+`true` enables bounded concurrent execution when every call in the batch is
+classified read-only. A write or unknown call makes the complete batch execute
+sequentially. `false` guarantees sequential execution; omitting the field keeps
+the same sequential behavior for backward compatibility. Results, history,
+hooks, and checkpoints always retain the model's original call order.
+
+Request-scoped client tools must continue to use
+`"parallel_tool_calls": false`: Polpo returns those calls to the client and
+does not execute them.
+
 ### Client-side tools
 
 Direct chat completions accept OpenAI-compatible function tools declared by

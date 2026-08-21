@@ -264,7 +264,7 @@ describe.each(ENGINES)("%s — characterization", (_label, spawn) => {
       transcript.filter(
         (entry) => entry.type === "tool_result" && entry.invalid === true,
       ),
-    ).toHaveLength(2);
+    ).toHaveLength(1);
   });
 
   test("invalid arguments for a known tool never reach background execution", async () => {

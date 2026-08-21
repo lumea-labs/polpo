@@ -3,6 +3,8 @@ import { LoopHookRegistry } from "./hooks.js";
 import { LoopRunner } from "./runner.js";
 import { InMemorySteeringController, SteeringClosedError } from "../steering.js";
 
+const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
 describe("LoopRunner", () => {
   it("runs the implicit loop with ordered lifecycle hooks", async () => {
     const events: string[] = [];
@@ -47,6 +49,137 @@ describe("LoopRunner", () => {
     });
 
     expect(seenTools).toEqual([["read"]]);
+  });
+
+  it("executes eligible tool bodies concurrently while preserving hook and checkpoint order", async () => {
+    const events: string[] = [];
+    let active = 0;
+    let maxActive = 0;
+    const hooks = new LoopHookRegistry();
+    hooks.register({
+      hook: "tool:before",
+      phase: "before",
+      handler: ({ data }) => { events.push(`before:${data.toolCall.name}`); },
+    });
+    hooks.register({
+      hook: "tool:after",
+      phase: "after",
+      handler: ({ data }) => { events.push(`after:${data.toolCall.name}`); },
+    });
+
+    const result = await new LoopRunner(hooks).run({
+      loop: { name: "parallel" },
+      maxTurns: 1,
+      parallelToolCalls: true,
+      model: async () => ({
+        text: "",
+        toolCalls: [
+          { id: "a", name: "read_alpha", args: {} },
+          { id: "b", name: "list_beta", args: {} },
+        ],
+      }),
+      executeTool: async (call) => {
+        active += 1;
+        maxActive = Math.max(maxActive, active);
+        await delay(10);
+        active -= 1;
+        events.push(`execute:${call.name}`);
+        return call.name;
+      },
+      onTurnCheckpoint: ({ toolResults }) => {
+        events.push(`checkpoint:${toolResults.map((item) => item.toolCall.name).join(",")}`);
+      },
+    });
+
+    expect(maxActive).toBe(2);
+    expect(result.toolResults.map((item) => item.result)).toEqual(["read_alpha", "list_beta"]);
+    expect(events.slice(0, 2)).toEqual(["before:read_alpha", "before:list_beta"]);
+    expect(events.slice(-3)).toEqual([
+      "after:read_alpha",
+      "after:list_beta",
+      "checkpoint:read_alpha,list_beta",
+    ]);
+  });
+
+  it("keeps the complete batch serial when one tool is not read-only", async () => {
+    let active = 0;
+    let maxActive = 0;
+
+    await new LoopRunner().run({
+      loop: { name: "safe" },
+      maxTurns: 1,
+      parallelToolCalls: true,
+      model: async () => ({
+        text: "",
+        toolCalls: [
+          { id: "a", name: "read_alpha", args: {} },
+          { id: "b", name: "write_beta", args: {} },
+        ],
+      }),
+      executeTool: async () => {
+        active += 1;
+        maxActive = Math.max(maxActive, active);
+        await delay(5);
+        active -= 1;
+        return "ok";
+      },
+    });
+
+    expect(maxActive).toBe(1);
+  });
+
+  it("turns a thrown tool failure into one ordered error result", async () => {
+    const result = await new LoopRunner().run({
+      loop: { name: "errors" },
+      maxTurns: 1,
+      parallelToolCalls: true,
+      model: async () => ({
+        text: "",
+        toolCalls: [
+          { id: "a", name: "read_alpha", args: {} },
+          { id: "b", name: "read_beta", args: {} },
+        ],
+      }),
+      executeTool: async (call) => {
+        if (call.id === "a") throw new Error("unavailable");
+        return "ok";
+      },
+    });
+
+    expect(result.toolResults).toMatchObject([
+      { result: "Error: unavailable", isError: true, skipped: false },
+      { result: "ok", isError: false, skipped: false },
+    ]);
+  });
+
+  it("settles and exposes the complete ordered batch before surfacing a steering abort", async () => {
+    const steering = new InMemorySteeringController();
+    const observed: string[][] = [];
+
+    await expect(new LoopRunner().run({
+      loop: { name: "abort" },
+      maxTurns: 1,
+      parallelToolCalls: true,
+      steering,
+      onSteering: () => {},
+      model: async () => ({
+        text: "",
+        toolCalls: [
+          { id: "a", name: "read_alpha", args: {} },
+          { id: "b", name: "read_beta", args: {} },
+        ],
+      }),
+      executeTool: async (call) => {
+        if (call.id === "a") steering.abort("stop");
+        await delay(2);
+        return call.name;
+      },
+      onToolResults: (results) => {
+        observed.push(results.map((item) => item.toolCall.id));
+      },
+    })).rejects.toThrow("stop");
+
+    expect(observed).toEqual([["a", "b"]]);
   });
 
   it("allows tool:before hooks to deny a tool call without invoking the executor", async () => {
