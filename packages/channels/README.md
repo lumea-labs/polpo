@@ -238,6 +238,72 @@ const handleTurn = createConversationChannelTurnHandler(serverDeps, {
 });
 ```
 
+### Server-side client tools
+
+A channel host can execute an allowlisted client tool on behalf of a messaging
+client, then continue the same Polpo Session either directly or in a fixed
+Project Loop. The model cannot select the handler endpoint, credentials, or Loop.
+
+```ts
+const handleTurn = createConversationChannelTurnHandler(serverDeps, {
+  agent: (turn) => resolveAgentForInstallation(turn.installationId),
+  executeClientTool: async (execution) => {
+    const result = await applicationTools.execute({
+      idempotencyKey: execution.idempotencyKey,
+      invocation: execution.invocation,
+      sessionId: execution.sessionId,
+      sessionVersion: execution.sessionVersion,
+      toolCall: execution.toolCall,
+    });
+    return execution.toolCall.name === "apply_site_change"
+      ? { result, loop: "site-change" }
+      : { result };
+  },
+  maxClientToolContinuations: 4,
+});
+```
+
+The bridge derives a stable idempotency key from the verified provider event and
+tool call. The handler must treat repeated keys as the same operation. Each
+continuation uses the canonical Session version, appends exactly one tool result,
+and preserves trusted invocation identity and metadata. A configured Loop starts
+only after that atomic continuation succeeds.
+
+Reject unknown tools before network or application work, bound the continuation
+count, and fail closed on handler, authorization, or Session-version errors.
+Cloud hosts can authenticate an HTTPS handler through a project Connection; the
+handler request has this provider-neutral shape:
+
+```json
+{
+  "version": 1,
+  "idempotencyKey": "channel-tool:...",
+  "channel": {
+    "provider": "whatsapp",
+    "installationId": "channel_id",
+    "threadId": "whatsapp:phone:user",
+    "providerEventId": "wamid..."
+  },
+  "session": { "id": "session_id", "version": 2 },
+  "toolCall": {
+    "id": "call_id",
+    "name": "apply_site_change",
+    "arguments": { "siteId": "site_id" }
+  },
+  "invocation": {
+    "user": "stable_user_id",
+    "metadata": { "tenantId": "tenant_id" },
+    "scope": { "key": "workspace_id", "version": "3" }
+  }
+}
+```
+
+Return one JSON object containing only `result`:
+
+```json
+{ "result": { "accepted": true } }
+```
+
 ## Agent-native management
 
 The CLI uses the same provider-neutral management contract as the HTTP API and
