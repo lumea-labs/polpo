@@ -5,8 +5,11 @@ function transitionSteps(next: LoopNext | undefined, loop: ProjectLoopConfig, se
   if (typeof next === "string") return stepFor(next, loop, new Set(seen));
 
   const cases = next
-    .filter((t) => t.to !== "end" && t.when)
-    .map((t) => ({ when: t.when!, steps: stepFor(t.to, loop, new Set(seen)) }));
+    .filter((t) => t.when)
+    .map((t) => ({
+      when: t.when!,
+      steps: t.to === "end" ? [] : stepFor(t.to, loop, new Set(seen)),
+    }));
   const fallback = next.find((t) => !t.when);
 
   if (cases.length === 0) {
