@@ -13,7 +13,27 @@ const channelIdentityResolver = z.object({
   type: z.literal("http"),
   version: z.literal(1),
 }).strict();
+const channelClientToolContinuation = z.discriminatedUnion("mode", [
+  z.object({ mode: z.literal("direct") }).strict(),
+  z.object({
+    loop: z.string().trim().min(1).max(256),
+    mode: z.literal("loop"),
+  }).strict(),
+]);
+const channelClientToolHandler = z.object({
+  connectionId: z.string().min(1).max(256),
+  endpoint: z.string().url().max(2_048),
+  maxContinuations: z.number().int().min(1).max(8).optional(),
+  timeoutMs: z.number().int().min(250).max(30_000).optional(),
+  tools: z.record(z.string().trim().min(1).max(256), channelClientToolContinuation)
+    .refine((tools) => Object.keys(tools).length > 0 && Object.keys(tools).length <= 32, {
+      message: "clientToolHandler.tools must contain between 1 and 32 tools",
+    }),
+  type: z.literal("http"),
+  version: z.literal(1),
+}).strict();
 const channelSettings = z.object({
+  clientToolHandler: channelClientToolHandler.optional(),
   concurrency: z.object({
     debounceMs: z.number().int().nonnegative().optional(),
     maxConcurrent: z.number().int().positive().optional(),
@@ -46,6 +66,7 @@ const configureBody = z.object({
 const updateBody = z.object({
   name: z.string().min(1).max(256).optional(),
   settings: channelSettings.extend({
+    clientToolHandler: channelClientToolHandler.nullable().optional(),
     identityResolver: channelIdentityResolver.nullable().optional(),
   }).optional(),
   status: z.enum(["active", "disabled"]).optional(),

@@ -161,6 +161,80 @@ describe("conversationChannelRoutes", () => {
     expect(response.status).toBe(400);
   });
 
+  it("accepts a bounded server-side client tool handler contract", async () => {
+    const state = harness();
+    const response = await state.app.request("/configure", json("POST", {
+      provider: "whatsapp",
+      agentName: "assistant",
+      connectionId: "connection-1",
+      externalChannelId: "phone-1",
+      idempotencyKey: "client-tool-handler",
+      settings: {
+        clientToolHandler: {
+          connectionId: "handler-connection",
+          endpoint: "https://app.example.com/polpo/client-tools",
+          maxContinuations: 2,
+          timeoutMs: 5000,
+          tools: {
+            configure_site_connector: { mode: "direct" },
+            apply_site_change: { loop: "leo-change-site", mode: "loop" },
+          },
+          type: "http",
+          version: 1,
+        },
+      },
+    }));
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      data: {
+        channel: {
+          settings: {
+            clientToolHandler: {
+              tools: {
+                configure_site_connector: { mode: "direct" },
+                apply_site_change: { loop: "leo-change-site", mode: "loop" },
+              },
+            },
+          },
+        },
+      },
+    });
+  });
+
+  it("rejects empty, oversized, and malformed client tool handler mappings", async () => {
+    const state = harness();
+    const base = {
+      provider: "whatsapp",
+      agentName: "assistant",
+      connectionId: "connection-1",
+      externalChannelId: "phone-1",
+      idempotencyKey: "bad-client-tool-handler",
+    };
+    for (const tools of [
+      {},
+      { apply_site_change: { mode: "loop" } },
+      Object.fromEntries(Array.from({ length: 33 }, (_, index) => [
+        `tool_${index}`,
+        { mode: "direct" },
+      ])),
+    ]) {
+      const response = await state.app.request("/configure", json("POST", {
+        ...base,
+        settings: {
+          clientToolHandler: {
+            connectionId: "handler-connection",
+            endpoint: "https://app.example.com/polpo/client-tools",
+            tools,
+            type: "http",
+            version: 1,
+          },
+        },
+      }));
+      expect(response.status).toBe(400);
+    }
+  });
+
   it("fails before storage when request validation or authoritative scope fails", async () => {
     const state = harness();
     const invalid = await state.app.request("/configure", json("POST", {
