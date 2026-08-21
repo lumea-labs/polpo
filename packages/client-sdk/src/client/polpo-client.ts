@@ -1750,13 +1750,13 @@ export class PolpoClient {
     );
   }
 
-  /** Resume one pending client-side tool call through an explicit Project Loop. */
+  /** Resume one pending client-side tool call in direct chat or through an explicit Project Loop. */
   continueWithToolResult(req: ContinueClientToolResultRequest): ChatCompletionStream {
     return this.chatCompletionsStream({
       sessionId: req.sessionId,
       idempotencyKey: req.idempotencyKey,
       agent: req.agent,
-      loop: req.loop,
+      ...(req.loop ? { loop: req.loop } : {}),
       ...(req.user ? { user: req.user } : {}),
       ...(req.metadata ? { metadata: req.metadata } : {}),
       messages: [{

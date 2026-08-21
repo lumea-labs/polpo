@@ -511,6 +511,49 @@ describe("PolpoClient structured outputs", () => {
     });
   });
 
+  it("continues a client tool in direct chat when loop is omitted", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(new Response(
+      "data: [DONE]\n\n",
+      {
+        status: 200,
+        headers: {
+          "content-type": "text/event-stream",
+          "x-session-id": "session-1",
+          "x-session-version": "56",
+          "x-polpo-run-id": "chatcmpl-1",
+        },
+      },
+    ));
+    const client = new PolpoClient({ baseUrl: "https://api.polpo.sh", fetch });
+
+    const stream = client.continueWithToolResult({
+      sessionId: "session-1",
+      sessionVersion: 54,
+      idempotencyKey: "cancel-1",
+      agent: "leo",
+      toolCallId: "call-1",
+      result: '{"cancelled":true}',
+    });
+    await stream.start();
+
+    const init = fetch.mock.calls[0]?.[1] as RequestInit;
+    const body = JSON.parse(init.body as string);
+    expect(body).not.toHaveProperty("loop");
+    expect(body).toMatchObject({
+      agent: "leo",
+      stream: true,
+      messages: [{ role: "tool", tool_call_id: "call-1", content: '{"cancelled":true}' }],
+      polpo: {
+        continuation: {
+          type: "client_tool",
+          tool_call_id: "call-1",
+          expected_session_version: 54,
+        },
+        delivery: { onDisconnect: "continue" },
+      },
+    });
+  });
+
   it("forwards response_format in non-streaming and streaming requests", async () => {
     const fetch = vi.fn<typeof globalThis.fetch>()
       .mockResolvedValueOnce(new Response(JSON.stringify({

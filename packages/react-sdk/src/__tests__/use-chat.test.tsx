@@ -120,6 +120,78 @@ describe("useChat interactions", () => {
     expect(result.current.messages.at(-1)?.content).toBe("Built");
   });
 
+  it("continues a cancelled client tool in direct chat when loop is omitted", async () => {
+    const directStream = {
+      sessionId: "session-1",
+      sessionVersion: 54,
+      runId: null,
+      lastEventId: null,
+      abort: vi.fn(),
+      async *[Symbol.asyncIterator]() {
+        yield {
+          id: "chatcmpl-1",
+          object: "chat.completion.chunk",
+          created: 1,
+          model: "polpo",
+          choices: [{
+            index: 0,
+            delta: {
+              tool_calls: [{
+                id: "call-1",
+                type: "function",
+                function: { name: "configure_site_connector", arguments: "{}" },
+              }],
+            },
+            finish_reason: "tool_calls",
+          }],
+        };
+      },
+    };
+    const continuationStream = {
+      sessionId: "session-1",
+      sessionVersion: 56,
+      runId: "chatcmpl-next",
+      lastEventId: "3",
+      abort: vi.fn(),
+      async *[Symbol.asyncIterator]() {
+        yield {
+          id: "chatcmpl-next",
+          object: "chat.completion.chunk",
+          created: 1,
+          model: "polpo",
+          choices: [{ index: 0, delta: { content: "No problem." }, finish_reason: "stop" }],
+        };
+      },
+    };
+    const continueWithToolResult = vi.fn().mockReturnValue(continuationStream);
+    const client = createMockClient({
+      chatCompletionsStream: vi.fn().mockReturnValue(directStream),
+      continueWithToolResult,
+    });
+    const wrapper = createWrapper(client, createMockStore());
+    const { result } = renderHook(() => useChat({ agent: "leo" }), { wrapper });
+
+    await act(async () => {
+      await result.current.sendMessage("Add Calendly");
+    });
+    await act(async () => {
+      await result.current.continueToolResult("call-1", '{"cancelled":true}', {
+        idempotencyKey: "cancel-1",
+      });
+    });
+
+    expect(continueWithToolResult).toHaveBeenCalledWith({
+      sessionId: "session-1",
+      sessionVersion: 54,
+      idempotencyKey: "cancel-1",
+      agent: "leo",
+      toolCallId: "call-1",
+      result: '{"cancelled":true}',
+    });
+    expect(result.current.sessionVersion).toBe(56);
+    expect(result.current.messages.at(-1)?.content).toBe("No problem.");
+  });
+
   it("activates assigned skills for one message without making them persistent", async () => {
     const makeStream = () => ({
       abort: vi.fn(),

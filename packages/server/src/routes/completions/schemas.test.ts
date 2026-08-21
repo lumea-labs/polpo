@@ -397,6 +397,18 @@ describe("completion request client-tool continuation", () => {
     }).polpo?.continuation).toEqual(continuation);
   });
 
+  it("accepts exactly one tool result for a durable direct-chat continuation", () => {
+    expect(completionRequestSchema.parse({
+      messages: [{ role: "tool", tool_call_id: "call_configure", content: '{"cancelled":true}' }],
+      stream: true,
+      agent: "leo",
+      polpo: {
+        continuation,
+        delivery: { onDisconnect: "continue" },
+      },
+    }).polpo?.continuation).toEqual(continuation);
+  });
+
   it.each([
     {
       messages: [{ role: "user", content: "duplicate request" }],
@@ -419,10 +431,6 @@ describe("completion request client-tool continuation", () => {
     {
       messages: [{ role: "tool", tool_call_id: "call_configure", content: "configured" }],
       loop: "build-site",
-    },
-    {
-      messages: [{ role: "tool", tool_call_id: "call_configure", content: "configured" }],
-      agent: "leo",
     },
   ])("rejects malformed or underspecified continuation %#", (input) => {
     expect(completionRequestSchema.safeParse({

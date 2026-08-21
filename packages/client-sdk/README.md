@@ -218,8 +218,8 @@ Polpo never invokes request-scoped tools on the server. A client-side call is
 returned atomically; mixed or parallel calls fail closed. Project Loops do not
 accept request-scoped client tools.
 
-To use a client result as the deterministic handoff into a Project Loop, start
-the direct request as a stream and retain its tool call plus response metadata:
+To continue after a client result, start the direct request as a stream and
+retain its tool call plus response metadata:
 
 ```ts
 const direct = client.chatCompletionsStream({
@@ -240,34 +240,34 @@ for await (const chunk of direct) {
   toolCallId = chunk.choices[0]?.delta.tool_calls?.[0]?.id ?? toolCallId;
 }
 
-const loop = client.continueWithToolResult({
+const nextTurn = client.continueWithToolResult({
   sessionId: direct.sessionId!,
   sessionVersion: direct.sessionVersion!,
   idempotencyKey: crypto.randomUUID(), // retain this value for retries
   agent: "leo",
-  loop: "build-site",
   toolCallId,
-  result: JSON.stringify({ module: "booking" }),
+  result: JSON.stringify({ cancelled: true }),
 });
 
-for await (const chunk of loop) {
+for await (const chunk of nextTurn) {
   console.log(chunk.choices[0]?.delta.content ?? "");
 }
 ```
 
 The continuation sends exactly one OpenAI-compatible `role: "tool"` message.
 Polpo validates it against the latest pending call, rebuilds history from the
-session store, and starts one durable Loop run. Retry the same request with the
-same idempotency key; a changed payload, stale version, wrong user/scope, or an
-already-resolved call fails deterministically. The raw API requires
+session store, and continues direct chat. Add `loop: "build-site"` to the same
+request to hand off into a durable Project Loop instead. Retry the same request
+with the same idempotency key; a changed payload, stale version, wrong
+user/scope, or an already-resolved call fails deterministically. The raw API requires
 `x-session-id`, `Idempotency-Key`, `stream: true`, and
 `polpo.delivery.onDisconnect: "continue"`.
 
-Do not send a standalone `role: "tool"` message directly to a Project Loop.
-Without `polpo.continuation`, Polpo rejects it with
-`client_tool_continuation_required` before any deterministic Loop tool runs.
-Use `continueWithToolResult()` so session versioning, idempotency, canonical
-history reconstruction, and durable delivery are applied together.
+Do not send an isolated `role: "tool"` message. Without its matching assistant
+tool call in the request history or `polpo.continuation`, Polpo rejects it with
+`client_tool_continuation_required` before model or Loop execution. Use
+`continueWithToolResult()` so session versioning, idempotency, canonical history
+reconstruction, and durable delivery are applied together.
 
 ## Chat interactions
 

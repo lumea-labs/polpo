@@ -372,6 +372,233 @@ describe("completion durable delivery routing", () => {
     expect(addMessage.mock.calls.every((call) => call[1] === "assistant")).toBe(true);
   });
 
+  it("atomically continues a cancelled client tool in direct chat", async () => {
+    const scope = deliveryScope();
+    const observedModelMessages: unknown[][] = [];
+    const executedTools: string[] = [];
+    const deps = continuationLoopDeps(scope, observedModelMessages, executedTools);
+    const prepareContinuation = vi.fn(async (input: any) => ({
+      status: "prepared" as const,
+      sessionVersion: 55,
+      runId: input.runId,
+      messages: [
+        { id: "u1", role: "user", content: "Add Calendly", ts: "2026-01-01T00:00:00Z" },
+        {
+          id: "a1",
+          role: "assistant",
+          content: "",
+          ts: "2026-01-01T00:00:01Z",
+          toolCalls: [{
+            id: "call-1",
+            name: "configure_site_connector",
+            arguments: { connector: "calendly" },
+            state: "completed",
+            result: '{"cancelled":true}',
+          }],
+        },
+        {
+          id: "t1",
+          role: "tool",
+          content: '{"cancelled":true}',
+          ts: "2026-01-01T00:00:02Z",
+          toolCallId: "call-1",
+        },
+      ],
+    }));
+    deps.getSessionStore = () => ({
+      prepareContinuation,
+      addMessage: vi.fn(async (_sessionId, role, content) => ({
+        id: `message-${role}`,
+        role,
+        content,
+        ts: new Date().toISOString(),
+      })),
+      updateMessage: vi.fn(async () => true),
+    } as any);
+
+    const res = await completionRoutes(() => deps).request("/", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-session-id": "session-1",
+        "idempotency-key": "cancel-1",
+      },
+      body: JSON.stringify({
+        agent: "leo",
+        stream: true,
+        messages: [{ role: "tool", tool_call_id: "call-1", content: '{"cancelled":true}' }],
+        polpo: {
+          continuation: {
+            type: "client_tool",
+            tool_call_id: "call-1",
+            expected_session_version: 54,
+          },
+          delivery: { onDisconnect: "continue" },
+        },
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get("x-session-version")).toBe("56");
+    expect(await res.text()).toContain("implemented");
+    expect(prepareContinuation).toHaveBeenCalledWith(expect.objectContaining({
+      sessionId: "session-1",
+      toolCallId: "call-1",
+      result: '{"cancelled":true}',
+    }));
+    expect(observedModelMessages).toHaveLength(1);
+    expect(observedModelMessages[0]).toEqual(expect.arrayContaining([
+      expect.objectContaining({ role: "user" }),
+      expect.objectContaining({ role: "assistant" }),
+      expect.objectContaining({ role: "tool" }),
+    ]));
+    expect(executedTools).toEqual([]);
+    expect((await scope.eventStore.listAfter(res.headers.get("x-polpo-run-id")!)).events.at(-1)?.type)
+      .toBe("run.completed");
+  });
+
+  it.each([
+    {
+      name: "isolated",
+      messages: [{ role: "tool", tool_call_id: "call-1", content: '{"cancelled":true}' }],
+    },
+    {
+      name: "before its assistant call",
+      messages: [
+        { role: "tool", tool_call_id: "call-1", content: '{"cancelled":true}' },
+        {
+          role: "assistant",
+          content: "",
+          tool_calls: [{
+            id: "call-1",
+            type: "function",
+            function: { name: "configure_site_connector", arguments: "{}" },
+          }],
+        },
+      ],
+    },
+    {
+      name: "duplicated",
+      messages: [
+        {
+          role: "assistant",
+          content: "",
+          tool_calls: [{
+            id: "call-1",
+            type: "function",
+            function: { name: "configure_site_connector", arguments: "{}" },
+          }],
+        },
+        { role: "tool", tool_call_id: "call-1", content: '{"cancelled":true}' },
+        { role: "tool", tool_call_id: "call-1", content: '{"cancelled":true}' },
+      ],
+    },
+  ])("rejects a $name direct-chat tool result before invoking the model", async ({ messages }) => {
+    const observedModelMessages: unknown[][] = [];
+    const deps = continuationLoopDeps(deliveryScope(), observedModelMessages, []);
+
+    const res = await completionRoutes(() => deps).request("/", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-session-id": "session-1",
+      },
+      body: JSON.stringify({
+        agent: "leo",
+        stream: true,
+        messages,
+      }),
+    });
+
+    expect(res.status).toBe(400);
+    await expect(res.json()).resolves.toMatchObject({
+      error: { code: "client_tool_continuation_required" },
+    });
+    expect(observedModelMessages).toEqual([]);
+  });
+
+  it("keeps a complete OpenAI-compatible direct tool history supported", async () => {
+    const observedModelMessages: unknown[][] = [];
+    const deps = continuationLoopDeps(deliveryScope(), observedModelMessages, []);
+
+    const res = await completionRoutes(() => deps).request("/", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        agent: "leo",
+        stream: true,
+        messages: [
+          { role: "user", content: "Add Calendly" },
+          {
+            role: "assistant",
+            content: "",
+            tool_calls: [{
+              id: "call-1",
+              type: "function",
+              function: { name: "configure_site_connector", arguments: "{}" },
+            }],
+          },
+          { role: "tool", tool_call_id: "call-1", content: '{"cancelled":true}' },
+        ],
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.text()).toContain("implemented");
+    expect(observedModelMessages[0]).toEqual(expect.arrayContaining([
+      expect.objectContaining({ role: "user" }),
+      expect.objectContaining({ role: "assistant" }),
+      expect.objectContaining({ role: "tool" }),
+    ]));
+  });
+
+  it("fails closed when a direct continuation rebuilds no model-visible history", async () => {
+    const observedModelMessages: unknown[][] = [];
+    const deps = continuationLoopDeps(deliveryScope(), observedModelMessages, []);
+    deps.getSessionStore = () => ({
+      prepareContinuation: vi.fn(async (input: any) => ({
+        status: "prepared",
+        sessionVersion: 2,
+        runId: input.runId,
+        messages: [{
+          id: "t1",
+          role: "tool",
+          content: '{"cancelled":true}',
+          ts: "2026-01-01T00:00:02Z",
+          toolCallId: "call-1",
+        }],
+      })),
+    } as any);
+
+    const res = await completionRoutes(() => deps).request("/", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-session-id": "session-1",
+        "idempotency-key": "cancel-corrupt",
+      },
+      body: JSON.stringify({
+        agent: "leo",
+        stream: true,
+        messages: [{ role: "tool", tool_call_id: "call-1", content: '{"cancelled":true}' }],
+        polpo: {
+          continuation: {
+            type: "client_tool",
+            tool_call_id: "call-1",
+            expected_session_version: 1,
+          },
+          delivery: { onDisconnect: "continue" },
+        },
+      }),
+    });
+
+    expect(res.status).toBe(400);
+    await expect(res.json()).resolves.toMatchObject({
+      error: { code: "client_tool_continuation_prompt_required" },
+    });
+    expect(observedModelMessages).toEqual([]);
+  });
+
   it("carries canonical client-tool history through deterministic tools into an agent step", async () => {
     const scope = deliveryScope();
     const observedModelMessages: unknown[][] = [];

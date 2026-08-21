@@ -128,7 +128,7 @@ export interface SessionStore {
   renameSession(sessionId: string, title: string): Promise<boolean>;
   deleteSession(sessionId: string): Promise<boolean>;
   prune(keepSessions: number): Promise<number>;
-  /** Atomically append one pending client-tool result and reserve its Loop run. */
+  /** Atomically append one pending client-tool result and reserve its continuation run. */
   prepareContinuation?(
     input: PrepareSessionContinuationInput,
   ): Promise<PreparedSessionContinuation>;

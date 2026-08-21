@@ -262,7 +262,7 @@ export const completionRequestSchema = z.object({
       expected_session_version: z.number().int().nonnegative(),
     }).strict().optional().openapi({
       description:
-        "Continue the current session into an explicit Project Loop with one previously requested client-tool result.",
+        "Continue the current session with one previously requested client-tool result. Include loop for a Project Loop handoff; omit it to continue direct chat.",
     }),
   }).strict().optional().openapi({
     description:
@@ -366,13 +366,6 @@ export const completionRequestSchema = z.object({
         code: z.ZodIssueCode.custom,
         message: "Client-tool continuation requires an explicit agent",
         path: ["agent"],
-      });
-    }
-    if (!body.loop) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: "Client-tool continuation requires an explicit project loop",
-        path: ["loop"],
       });
     }
     if (body.messages.length !== 1 || body.messages[0]?.role !== "tool") {

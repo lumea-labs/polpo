@@ -713,7 +713,7 @@ export async function prepareChatCompletionExecution(
     resolvedAgentConfig = agentConfig;
     const continuation = body.polpo?.continuation;
     if (continuation) {
-      if (!projectLoopRuntime) {
+      if (body.loop && !projectLoopRuntime) {
         return completionError(
           "The selected loop is not available as a Project Loop",
           422,
@@ -772,20 +772,59 @@ export async function prepareChatCompletionExecution(
         throw error;
       }
     }
+    if (!continuation) {
+      const declaredToolCalls = new Set<string>();
+      const resolvedToolCalls = new Set<string>();
+      let invalidToolResult = false;
+      for (const message of body.messages) {
+        if (message.role === "assistant") {
+          for (const call of message.tool_calls ?? []) declaredToolCalls.add(call.id);
+          continue;
+        }
+        if (message.role !== "tool") continue;
+        if (
+          !message.tool_call_id
+          || !declaredToolCalls.has(message.tool_call_id)
+          || resolvedToolCalls.has(message.tool_call_id)
+        ) {
+          invalidToolResult = true;
+          break;
+        }
+        resolvedToolCalls.add(message.tool_call_id);
+      }
+      if (invalidToolResult) {
+        return completionError(
+          "A standalone client tool result requires polpo.continuation or its matching assistant tool call in the request history.",
+          400,
+          "client_tool_continuation_required",
+        );
+      }
+    }
+    if (
+      continuation
+      && !projectLoopRuntime
+      && prepareModelMessagesForProvider(aiMessages).length === 0
+    ) {
+      return completionError(
+        "The canonical client-tool continuation has no model-visible history.",
+        400,
+        "client_tool_continuation_prompt_required",
+      );
+    }
     if (
       projectLoopRuntime
       && projectLoopHasAgentStep(projectLoopRuntime.projectLoop)
       && prepareModelMessagesForProvider(aiMessages).length === 0
     ) {
-      const orphanToolResult = !continuation
+      const loopToolResult = !continuation
         && body.messages.some((message) => message.role === "tool");
-      if (orphanToolResult || continuation) {
+      if (loopToolResult || continuation) {
         return completionError(
-          orphanToolResult
+          loopToolResult
             ? "A client tool result can enter a Project Loop only through polpo.continuation."
             : "The canonical client-tool continuation has no model-visible history.",
           400,
-          orphanToolResult
+          loopToolResult
             ? "client_tool_continuation_required"
             : "project_loop_prompt_required",
         );

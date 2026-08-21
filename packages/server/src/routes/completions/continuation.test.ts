@@ -37,4 +37,19 @@ describe("continuationFingerprint", () => {
       result: "different",
     }));
   });
+
+  it("separates direct-chat continuation from a Project Loop handoff", () => {
+    const direct = {
+      sessionId: "session-1",
+      agent: "leo",
+      toolCallId: "call-1",
+      expectedSessionVersion: 2,
+      result: '{"cancelled":true}',
+    };
+
+    expect(continuationFingerprint(direct)).not.toBe(continuationFingerprint({
+      ...direct,
+      loop: "build",
+    }));
+  });
 });

@@ -446,7 +446,7 @@ export function completionRoutes(getDeps: () => CompletionRouteDeps, apiKeys?: s
         fingerprint: continuationFingerprint({
           sessionId: rawSessionHeader,
           agent: body.agent!,
-          loop: body.loop!,
+          ...(body.loop ? { loop: body.loop } : {}),
           ...(body.user ? { user: body.user } : {}),
           toolCallId: body.polpo.continuation.tool_call_id,
           expectedSessionVersion: body.polpo.continuation.expected_session_version,
