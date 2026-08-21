@@ -180,6 +180,26 @@ The same request works with `chatCompletionsStream`. Polpo buffers the
 structured value until it is complete and schema-valid, then emits one
 canonical JSON content chunk. Existing text requests are unchanged.
 
+## Parallel server tool calls
+
+Opt in when an agent can satisfy one turn with independent server-side reads:
+
+```ts
+const response = await client.chatCompletions({
+  agent: "researcher",
+  messages: [{ role: "user", content: "Check both data sources." }],
+  parallel_tool_calls: true,
+});
+```
+
+Polpo uses bounded concurrency only when every call in the batch is classified
+read-only. Batches containing a write or an unknown tool remain sequential.
+Results and persisted history retain call order even when individual tools
+finish out of order. `false` and omitted requests remain sequential.
+
+This option applies to server-executed tools. Request-scoped client tools must
+set it to `false`.
+
 ## Client-side tools
 
 Declare OpenAI-compatible tools on an individual direct-chat request when the

@@ -220,7 +220,7 @@ export const completionRequestSchema = z.object({
   }),
   parallel_tool_calls: z.boolean().optional().openapi({
     description:
-      "Whether parallel tool calls are allowed. Dynamic client tools currently require false.",
+      "Allow eligible server-executed tool calls to run concurrently. Request-scoped client tools require false.",
   }),
   agent: z.string().optional().openapi({
     description: "Target a specific agent by name for direct conversation. Uses the agent's own model, system prompt, and coding tools instead of the orchestrator. Omit to talk to the orchestrator (default).",

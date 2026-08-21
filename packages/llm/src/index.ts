@@ -136,6 +136,7 @@ export {
 // ─── Model Turn Primitive ───────────────────────────
 export {
   streamModelTurn,
+  providerOptionsWithParallelToolCalls,
   normalizeResponseMessagesForHistory,
   prepareModelMessagesForProvider,
   prepareModelMessagesForTransport,

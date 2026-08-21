@@ -15,6 +15,8 @@ import {
   runAgentStepCompletion,
 } from "./agent-step-runner.js";
 
+const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
 describe("buildRuntimeAgentPrompt", () => {
   it("delegates loop prompt assembly to the host when available", async () => {
     const buildRuntimePrompt = vi.fn(async () => "host loop prompt");
@@ -146,6 +148,85 @@ describe("buildRuntimeAgentPrompt", () => {
         includeSharedMemory: false,
       },
     );
+  });
+});
+
+describe("runAgentStepCompletion parallel tool calls", () => {
+  it("executes read-only calls concurrently and appends ordered history", async () => {
+    const usage = {
+      inputTokens: { total: 10, noCache: undefined, cacheRead: undefined, cacheWrite: undefined },
+      outputTokens: { total: 5, text: undefined, reasoning: undefined },
+    };
+    let turn = 0;
+    let active = 0;
+    let maxActive = 0;
+    let secondPrompt = "";
+    const model = new MockLanguageModelV3({
+      doStream: async (options) => {
+        turn += 1;
+        if (turn === 1) {
+          return { stream: convertArrayToReadableStream([
+            { type: "stream-start", warnings: [] },
+            { type: "tool-call", toolCallId: "slow", toolName: "read_slow", input: "{}" },
+            { type: "tool-call", toolCallId: "fast", toolName: "list_fast", input: "{}" },
+            { type: "finish", finishReason: { unified: "tool-calls", raw: undefined }, usage },
+          ] as any[]) };
+        }
+        secondPrompt = JSON.stringify(options.prompt);
+        return { stream: convertArrayToReadableStream([
+          { type: "stream-start", warnings: [] },
+          { type: "text-start", id: "txt" },
+          { type: "text-delta", id: "txt", delta: "done" },
+          { type: "text-end", id: "txt" },
+          { type: "finish", finishReason: { unified: "stop", raw: undefined }, usage },
+        ] as any[]) };
+      },
+    });
+    const executor = vi.fn(async (name: string) => {
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      await delay(name === "read_slow" ? 15 : 2);
+      active -= 1;
+      return `${name}:done`;
+    });
+    const deps = {
+      getConfig: () => ({ settings: {} }),
+      getMemoryStore: () => undefined,
+      emit: vi.fn(),
+      resolveAgentModel: vi.fn(async () => ({
+        model: {
+          id: "mock/model",
+          aiModel: model,
+          provider: "mock",
+          contextWindow: 128_000,
+          maxTokens: 8192,
+        },
+      })),
+      resolveAgentTools: vi.fn(async () => ({
+        tools: ["read_slow", "list_fast"].map((name) => ({
+          name,
+          description: name,
+          parameters: { type: "object", properties: {} },
+        })),
+        executor,
+      })),
+      buildRuntimePrompt: vi.fn(async () => "system"),
+    } as unknown as CompletionRouteDeps;
+
+    const result = await runAgentStepCompletion({
+      deps,
+      agentConfig: { name: "nested-agent", model: "mock/model", maxTurns: 2 },
+      aiMessages: [{ role: "user", content: "Inspect both resources" }],
+      extraSystemParts: [],
+      context: {},
+      stepName: "inspect",
+      parallelToolCalls: true,
+    });
+
+    expect(result.text).toBe("done");
+    expect(maxActive).toBe(2);
+    expect(secondPrompt.indexOf("read_slow:done"))
+      .toBeLessThan(secondPrompt.indexOf("list_fast:done"));
   });
 });
 

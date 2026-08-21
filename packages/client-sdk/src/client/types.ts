@@ -1251,8 +1251,8 @@ export interface ChatCompletionRequest extends RuntimeCompletionRequestOptions {
   tools?: ChatCompletionFunctionTool[];
   /** Tool selection policy for request-scoped client tools. */
   tool_choice?: ChatCompletionToolChoice;
-  /** Dynamic client tools require false; parallel dispatch is rejected. */
-  parallel_tool_calls?: false;
+  /** Allow eligible server-executed tool calls from one model turn to run concurrently. */
+  parallel_tool_calls?: boolean;
   /** Polpo extension: target a specific project by ID. If omitted, uses the first registered project. */
   project?: string;
   /** Session ID for conversation persistence. If omitted, server auto-selects or creates one. */

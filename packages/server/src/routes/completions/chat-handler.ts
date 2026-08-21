@@ -68,6 +68,7 @@ import {
   serializeModelOutput,
 } from "./structured-output.js";
 import { selectRequestClientToolCall } from "./client-tools.js";
+import { executeCompletionToolBatch } from "./tool-execution-batch.js";
 
 /** Resolved execution context for a standard (non-loop) chat completion. */
 export interface ChatCompletionExecution {
@@ -78,6 +79,7 @@ export interface ChatCompletionExecution {
     agent?: string;
     user?: string;
     sandbox?: CompletionRequestBody["sandbox"];
+    parallel_tool_calls?: CompletionRequestBody["parallel_tool_calls"];
     response_format?: CompletionRequestBody["response_format"];
     polpo?: CompletionRequestBody["polpo"];
   };
@@ -301,6 +303,9 @@ export async function executeStreamingChatCompletion(
           tools: aiTools,
           ...(exec.activeToolNames ? { activeTools: exec.activeToolNames() } : {}),
           ...(modelToolChoice ? { toolChoice: modelToolChoice as any } : {}),
+          ...(body.parallel_tool_calls !== undefined
+            ? { parallelToolCalls: body.parallel_tool_calls }
+            : {}),
           ...(exec.modelOutput ? { output: exec.modelOutput } : {}),
           abortSignal: signal,
         }, async (event) => {
@@ -530,50 +535,35 @@ export async function executeStreamingChatCompletion(
         const providerToolNames = new Set(Object.keys(extraAiTools ?? {}));
         const providerToolResults = indexToolResultsByCallId(result.toolResults as any[] | undefined);
 
-        for (const call of dispatchableToolCalls) {
-          // Stop executing tools if client disconnected
-          if (signal.aborted) break;
-
-          const callArgs = call.input as Record<string, unknown>;
-
-          if (providerToolNames.has(call.toolName)) {
-            recordProviderToolCall(toolCallsAccum, call, providerToolResults);
-            continue;
-          }
-
-          // Notify client that a tool is being called
-          await stream.writeSSE({
-            data: sseChunk(completionId, {}, null, {
-              tool_call: { id: call.toolCallId, name: call.toolName, arguments: callArgs, state: "calling" },
-            }),
-          });
-
-          const result = await effectiveToolExecutor(call.toolName, callArgs, {
-            callId: call.toolCallId,
-            signal,
-          });
-          const isError = result.startsWith("Error:");
-          emitFileChanged(call.toolName, callArgs, result, deps.emit);
-
-          // Accumulate for persistence
+        const appendLocalResult = async (
+          call: { toolCallId: string; toolName: string },
+          callArgs: Record<string, unknown>,
+          toolResult: string,
+          isError: boolean,
+        ) => {
+          emitFileChanged(call.toolName, callArgs, toolResult, deps.emit);
           toolCallsAccum.push({
             id: call.toolCallId,
             name: call.toolName,
             arguments: callArgs,
-            result,
+            result: toolResult,
             state: isError ? "error" : "completed",
           });
-
-          // Notify client with tool result (skip if aborted mid-tool)
           if (!signal.aborted) {
             await stream.writeSSE({
               data: sseChunk(completionId, {}, null, {
-                tool_call: { id: call.toolCallId, name: call.toolName, result, state: isError ? "error" : "completed" },
+                tool_call: {
+                  id: call.toolCallId,
+                  name: call.toolName,
+                  result: toolResult,
+                  state: isError ? "error" : "completed",
+                },
               }),
             });
           }
-
-          // Push tool result message in AI SDK format
+          const modelResult = exec.contextTrust === "enforce"
+            ? renderRuntimeToolResult(call.toolName, call.toolCallId, toolResult)
+            : toolResult;
           messages.push({
             role: "tool",
             content: [{
@@ -581,20 +571,65 @@ export async function executeStreamingChatCompletion(
               toolCallId: call.toolCallId,
               toolName: call.toolName,
               output: isError
-                ? {
-                    type: "error-text" as const,
-                    value: exec.contextTrust === "enforce"
-                      ? renderRuntimeToolResult(call.toolName, call.toolCallId, result)
-                      : result,
-                  }
-                : {
-                    type: "text" as const,
-                    value: exec.contextTrust === "enforce"
-                      ? renderRuntimeToolResult(call.toolName, call.toolCallId, result)
-                      : result,
-                  },
+                ? { type: "error-text" as const, value: modelResult }
+                : { type: "text" as const, value: modelResult },
             }],
           });
+        };
+
+        if (body.parallel_tool_calls === true) {
+          const localCalls = dispatchableToolCalls
+            .filter((call) => !providerToolNames.has(call.toolName))
+            .map((call) => ({
+              toolCallId: call.toolCallId,
+              toolName: call.toolName,
+              input: call.input as Record<string, unknown>,
+            }));
+          const localResults = await executeCompletionToolBatch({
+            calls: localCalls,
+            executor: effectiveToolExecutor,
+            signal,
+            onCalling: async (call) => {
+              await stream.writeSSE({
+                data: sseChunk(completionId, {}, null, {
+                  tool_call: {
+                    id: call.toolCallId,
+                    name: call.toolName,
+                    arguments: call.input,
+                    state: "calling",
+                  },
+                }),
+              });
+            },
+          });
+          let localResultIndex = 0;
+          for (const call of dispatchableToolCalls) {
+            if (providerToolNames.has(call.toolName)) {
+              recordProviderToolCall(toolCallsAccum, call, providerToolResults);
+              continue;
+            }
+            const local = localResults[localResultIndex++]!;
+            await appendLocalResult(call, local.input, local.result, local.isError);
+          }
+        } else {
+          for (const call of dispatchableToolCalls) {
+            if (signal.aborted) break;
+            const callArgs = call.input as Record<string, unknown>;
+            if (providerToolNames.has(call.toolName)) {
+              recordProviderToolCall(toolCallsAccum, call, providerToolResults);
+              continue;
+            }
+            await stream.writeSSE({
+              data: sseChunk(completionId, {}, null, {
+                tool_call: { id: call.toolCallId, name: call.toolName, arguments: callArgs, state: "calling" },
+              }),
+            });
+            const toolResult = await effectiveToolExecutor(call.toolName, callArgs, {
+              callId: call.toolCallId,
+              signal,
+            });
+            await appendLocalResult(call, callArgs, toolResult, toolResult.startsWith("Error:"));
+          }
         }
       }
 
@@ -763,6 +798,9 @@ export async function runNonStreamingChatCompletion(c: any, exec: ChatCompletion
         tools: aiTools,
         ...(exec.activeToolNames ? { activeTools: exec.activeToolNames() } : {}),
         ...(modelToolChoice ? { toolChoice: modelToolChoice as any } : {}),
+        ...(body.parallel_tool_calls !== undefined
+          ? { parallelToolCalls: body.parallel_tool_calls }
+          : {}),
         ...(exec.modelOutput ? { output: exec.modelOutput } : {}),
       });
 
@@ -982,31 +1020,23 @@ export async function runNonStreamingChatCompletion(c: any, exec: ChatCompletion
       const providerToolNames = new Set(Object.keys(extraAiTools ?? {}));
       const providerToolResults = indexToolResultsByCallId(turnResult.toolResults as any[] | undefined);
 
-      for (const call of dispatchableToolCalls) {
-        const callArgs = call.input as Record<string, unknown>;
-
-        if (providerToolNames.has(call.toolName)) {
-          recordProviderToolCall(toolCallsAccum, call, providerToolResults);
-          continue;
-        }
-
-        const result = await effectiveToolExecutor(call.toolName, callArgs, {
-          callId: call.toolCallId,
-          signal: c.req.raw.signal,
-        });
-        const isError = result.startsWith("Error:");
-        emitFileChanged(call.toolName, callArgs, result, deps.emit);
-
-        // Accumulate for persistence
+      const appendLocalResult = (
+        call: { toolCallId: string; toolName: string },
+        callArgs: Record<string, unknown>,
+        toolResult: string,
+        isError: boolean,
+      ) => {
+        emitFileChanged(call.toolName, callArgs, toolResult, deps.emit);
         toolCallsAccum.push({
           id: call.toolCallId,
           name: call.toolName,
           arguments: callArgs,
-          result,
+          result: toolResult,
           state: isError ? "error" : "completed",
         });
-
-        // Push tool result message in AI SDK format
+        const modelResult = exec.contextTrust === "enforce"
+          ? renderRuntimeToolResult(call.toolName, call.toolCallId, toolResult)
+          : toolResult;
         messages.push({
           role: "tool",
           content: [{
@@ -1014,20 +1044,47 @@ export async function runNonStreamingChatCompletion(c: any, exec: ChatCompletion
             toolCallId: call.toolCallId,
             toolName: call.toolName,
             output: isError
-              ? {
-                  type: "error-text" as const,
-                  value: exec.contextTrust === "enforce"
-                    ? renderRuntimeToolResult(call.toolName, call.toolCallId, result)
-                    : result,
-                }
-              : {
-                  type: "text" as const,
-                  value: exec.contextTrust === "enforce"
-                    ? renderRuntimeToolResult(call.toolName, call.toolCallId, result)
-                    : result,
-                },
+              ? { type: "error-text" as const, value: modelResult }
+              : { type: "text" as const, value: modelResult },
           }],
         });
+      };
+
+      if (body.parallel_tool_calls === true) {
+        const localCalls = dispatchableToolCalls
+          .filter((call) => !providerToolNames.has(call.toolName))
+          .map((call) => ({
+            toolCallId: call.toolCallId,
+            toolName: call.toolName,
+            input: call.input as Record<string, unknown>,
+          }));
+        const localResults = await executeCompletionToolBatch({
+          calls: localCalls,
+          executor: effectiveToolExecutor,
+          signal: c.req.raw.signal,
+        });
+        let localResultIndex = 0;
+        for (const call of dispatchableToolCalls) {
+          if (providerToolNames.has(call.toolName)) {
+            recordProviderToolCall(toolCallsAccum, call, providerToolResults);
+            continue;
+          }
+          const local = localResults[localResultIndex++]!;
+          appendLocalResult(call, local.input, local.result, local.isError);
+        }
+      } else {
+        for (const call of dispatchableToolCalls) {
+          const callArgs = call.input as Record<string, unknown>;
+          if (providerToolNames.has(call.toolName)) {
+            recordProviderToolCall(toolCallsAccum, call, providerToolResults);
+            continue;
+          }
+          const toolResult = await effectiveToolExecutor(call.toolName, callArgs, {
+            callId: call.toolCallId,
+            signal: c.req.raw.signal,
+          });
+          appendLocalResult(call, callArgs, toolResult, toolResult.startsWith("Error:"));
+        }
       }
     }
 

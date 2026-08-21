@@ -1313,6 +1313,7 @@ export async function runConversationTurn(
         signal: input.signal,
         executionRoute: prepared.executionRoute,
         activatedSkills: prepared.activatedSkills,
+        parallelToolCalls: prepared.body.parallel_tool_calls,
       });
       finalText = await applyCompletionOutputPolicy({
         outputPolicy: prepared.deps.runOutputPolicy,

@@ -261,6 +261,7 @@ export async function runProjectLoopCompletion(options: {
   executionRoute?: ResolvedExecutionRoute;
   activatedSkills?: readonly string[];
   deliveryRunId?: string;
+  parallelToolCalls?: boolean;
 }): Promise<ProjectLoopRunResult> {
   const {
     deps,
@@ -565,6 +566,7 @@ export async function runProjectLoopCompletion(options: {
           toolRunScope,
           toolInvocation,
           onToolCall,
+          parallelToolCalls: options.parallelToolCalls,
         });
         finalText = stepResult.text || finalText;
         totalUsage = addUsage(totalUsage, stepResult.usage);
@@ -669,6 +671,7 @@ export async function runProjectLoopCompletion(options: {
             resumeRun?.resume?.approvedGates,
             contextTrust,
             activatedSkills,
+            options.parallelToolCalls,
           ),
           error: err.message,
         });
@@ -694,6 +697,7 @@ export function buildLoopResumeState(
   approvedGates: LoopApprovedGate[] | undefined,
   contextTrust: RuntimeContextTrustMode = "off",
   activatedSkills: readonly string[] = [],
+  parallelToolCalls?: boolean,
 ): LoopResumeState | undefined {
   if (!continuation) return undefined;
   return {
@@ -708,6 +712,7 @@ export function buildLoopResumeState(
       ...(activatedSkills.length > 0
         ? { activatedSkills: [...activatedSkills] }
         : {}),
+      ...(parallelToolCalls !== undefined ? { parallelToolCalls } : {}),
     },
     attempts: 0,
     createdAt: new Date().toISOString(),
@@ -750,6 +755,9 @@ export async function resumeProjectLoopRun(options: {
         (skill): skill is string => typeof skill === "string" && skill.length > 0,
       )
     : [];
+  const parallelToolCalls = typeof run.resume.runtime?.parallelToolCalls === "boolean"
+    ? run.resume.runtime.parallelToolCalls
+    : undefined;
   const assignedSkills = new Set(
     Array.isArray(agentConfig.skills)
       ? agentConfig.skills.filter(
@@ -819,6 +827,7 @@ export async function resumeProjectLoopRun(options: {
     user: run.user,
     requestMetadata: loopRequestMetadata(run),
     activatedSkills,
+    parallelToolCalls,
     resumeRun: run,
   });
 
@@ -839,6 +848,7 @@ export interface ProjectLoopCompletionOptions {
     agent?: string;
     user?: string;
     metadata?: Record<string, string>;
+    parallel_tool_calls?: boolean;
   };
   completionId: string;
   agentConfig: any;
@@ -949,6 +959,7 @@ export async function executeStreamingProjectLoopCompletion(
           executionRoute,
           activatedSkills,
           deliveryRunId: completionId,
+          parallelToolCalls: body.parallel_tool_calls,
           onToolCall: async (toolCall) => {
             if (signal.aborted) return;
             await stream.writeSSE({
@@ -1081,6 +1092,7 @@ async function runNonStreamingProjectLoopCompletion(
       executionRoute,
       activatedSkills,
       deliveryRunId: completionId,
+      parallelToolCalls: body.parallel_tool_calls,
     });
     finalText = run.text;
     runUsage = run.usage;

@@ -70,6 +70,24 @@ describe("buildLoopResumeState", () => {
     });
   });
 
+  it("pins the parallel tool preference across approval checkpoints", () => {
+    const state = buildLoopResumeState(
+      continuation,
+      [],
+      [],
+      undefined,
+      "off",
+      [],
+      true,
+    );
+
+    expect(state?.runtime).toEqual({
+      aiMessages: [],
+      extraSystemParts: [],
+      parallelToolCalls: true,
+    });
+  });
+
   it("does not create a checkpoint without a continuation", () => {
     expect(buildLoopResumeState(undefined, [], [], undefined, "enforce"))
       .toBeUndefined();

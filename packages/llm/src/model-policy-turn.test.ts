@@ -14,6 +14,32 @@ import {
 const messages: ModelMessage[] = [{ role: "user", content: "hello" }];
 
 describe("runModelPolicyTurn", () => {
+  it("preserves the parallel tool preference across fallback attempts", async () => {
+    const preferences: Array<boolean | undefined> = [];
+
+    await runModelPolicyTurn({
+      selection: {
+        primary: "anthropic/claude-sonnet-5",
+        fallbacks: ["openai/gpt-4o"],
+      },
+      messages,
+      parallelToolCalls: true,
+      resolveAttempt: (attempt) => ({ model: fakeModel(attempt.model) }),
+      classifyError: error => ({
+        class: "overloaded",
+        retryable: true,
+        message: error instanceof Error ? error.message : "error",
+      }),
+      runAttempt: async (input) => {
+        preferences.push(input.parallelToolCalls);
+        if (preferences.length === 1) throw new Error("retry");
+        return fakeResult("ok");
+      },
+    });
+
+    expect(preferences).toEqual([true, true]);
+  });
+
   it("preserves structured output across provider fallback attempts", async () => {
     const outputs: unknown[] = [];
     const output = Output.json();

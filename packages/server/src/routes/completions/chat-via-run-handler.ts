@@ -98,6 +98,7 @@ export function buildChatRunInjection(execution: ChatCompletionExecution): ChatS
     providerOptions: providerOpts as ChatSessionInjection["providerOptions"],
     maxTurns: MAX_TURNS,
     toolChoice: modelToolChoice,
+    parallelToolCalls: execution.body.parallel_tool_calls,
     output: execution.modelOutput,
     seedMessages: aiMessages,
     toolSet: { ...toAITools(effectiveTools), ...(extraAiTools ?? {}), ...(execution.clientSideTools ?? CLIENT_SIDE_TOOLS) },

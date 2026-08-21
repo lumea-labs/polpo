@@ -15,6 +15,10 @@ import {
   type LoopToolCall,
   type LoopToolResult,
 } from "./hooks.js";
+import {
+  executeToolBatch,
+  normalizeToolExecutionError,
+} from "./tool-batch.js";
 
 export interface LoopModelInput {
   agent?: AgentConfig;
@@ -82,6 +86,15 @@ export interface LoopRunnerOptions {
   startTurn?: number;
   model: (input: LoopModelInput) => Promise<LoopModelResult>;
   executeTool: (toolCall: LoopToolCall, input: LoopModelInput) => Promise<string>;
+  /** Allow bounded concurrent execution for batches classified entirely read-only. */
+  parallelToolCalls?: boolean;
+  /** Runtime safety bound for an eligible parallel batch. Defaults to four. */
+  maxParallelToolCalls?: number;
+  /** Host hook for appending the complete ordered batch to provider history. */
+  onToolResults?: (
+    results: readonly LoopToolResult[],
+    input: LoopModelInput,
+  ) => void | Promise<void>;
   /** Run-scoped steering queue. Hosts own ingress and persistence. */
   steering?: SteeringController;
   /**
@@ -244,43 +257,112 @@ export class LoopRunner {
       finalText += modelResult.text;
 
       const toolResults: LoopToolResult[] = [];
-      for (const rawCall of modelResult.toolCalls ?? []) {
-        throwIfSteeringAborted(options.steering);
-        const before = await hooks.runBefore("tool:before", {
-          agent: options.agent,
-          loop,
-          turn,
-          context,
-          toolCall: { ...rawCall, args: { ...rawCall.args } },
+      if (options.parallelToolCalls !== true) {
+        for (const rawCall of modelResult.toolCalls ?? []) {
+          throwIfSteeringAborted(options.steering);
+          const before = await hooks.runBefore("tool:before", {
+            agent: options.agent,
+            loop,
+            turn,
+            context,
+            toolCall: { ...rawCall, args: { ...rawCall.args } },
+          });
+
+          const toolCall = before.data.toolCall;
+          const skipped = before.cancelled;
+          const result = skipped
+            ? before.data.result ?? `Error: Tool call "${toolCall.name}" denied${before.cancelReason ? `: ${before.cancelReason}` : ""}`
+            : await options.executeTool(toolCall, modelInput);
+          const toolResult: LoopToolResult = {
+            toolCall,
+            result,
+            isError: result.startsWith("Error:"),
+            skipped,
+          };
+
+          toolResults.push(toolResult);
+          allToolResults.push(toolResult);
+
+          await hooks.runAfter("tool:after", {
+            agent: options.agent,
+            loop,
+            turn,
+            context,
+            toolCall,
+            result,
+            isError: toolResult.isError,
+            skipped,
+          });
+          throwIfSteeringAborted(options.steering);
+        }
+      } else {
+        const preparedCalls: Array<{
+          name: string;
+          toolCall: LoopToolCall;
+          skipped: boolean;
+          skippedResult?: string;
+        }> = [];
+        for (const rawCall of modelResult.toolCalls ?? []) {
+          throwIfSteeringAborted(options.steering);
+          const before = await hooks.runBefore("tool:before", {
+            agent: options.agent,
+            loop,
+            turn,
+            context,
+            toolCall: { ...rawCall, args: { ...rawCall.args } },
+          });
+          const toolCall = before.data.toolCall;
+          preparedCalls.push({
+            name: toolCall.name,
+            toolCall,
+            skipped: before.cancelled,
+            ...(before.cancelled
+              ? {
+                  skippedResult: before.data.result
+                    ?? `Error: Tool call "${toolCall.name}" denied${before.cancelReason ? `: ${before.cancelReason}` : ""}`,
+                }
+              : {}),
+          });
+        }
+
+        const executableCalls = preparedCalls.filter((call) => !call.skipped);
+        const executedResults = await executeToolBatch({
+          calls: executableCalls,
+          parallel: true,
+          maxConcurrency: options.maxParallelToolCalls,
+          signal: options.steering?.signal,
+          execute: ({ toolCall }) => options.executeTool(toolCall, modelInput),
+          onError: (error) => normalizeToolExecutionError(error),
         });
-
-        const toolCall = before.data.toolCall;
-        const skipped = before.cancelled;
-        const result = skipped
-          ? before.data.result ?? `Error: Tool call "${toolCall.name}" denied${before.cancelReason ? `: ${before.cancelReason}` : ""}`
-          : await options.executeTool(toolCall, modelInput);
-        const toolResult: LoopToolResult = {
-          toolCall,
-          result,
-          isError: result.startsWith("Error:"),
-          skipped,
-        };
-
-        toolResults.push(toolResult);
-        allToolResults.push(toolResult);
-
-        await hooks.runAfter("tool:after", {
-          agent: options.agent,
-          loop,
-          turn,
-          context,
-          toolCall,
-          result,
-          isError: toolResult.isError,
-          skipped,
-        });
-        throwIfSteeringAborted(options.steering);
+        let executedIndex = 0;
+        for (const prepared of preparedCalls) {
+          const { toolCall, skipped } = prepared;
+          const result = skipped
+            ? prepared.skippedResult!
+            : executedResults[executedIndex++]!;
+          const toolResult: LoopToolResult = {
+            toolCall,
+            result,
+            isError: result.startsWith("Error:"),
+            skipped,
+          };
+          toolResults.push(toolResult);
+          allToolResults.push(toolResult);
+          await hooks.runAfter("tool:after", {
+            agent: options.agent,
+            loop,
+            turn,
+            context,
+            toolCall,
+            result,
+            isError: toolResult.isError,
+            skipped,
+          });
+        }
       }
+
+      await options.onToolResults?.(toolResults, modelInput);
+      throwIfSteeringAborted(options.steering);
 
       await hooks.runAfter("step:after", {
         agent: options.agent,
