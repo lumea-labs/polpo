@@ -1,6 +1,6 @@
 {
   "name": "polpo-ai",
-  "version": "0.15.94",
+  "version": "0.15.95",
   "description": "The open backend for AI agents",
   "type": "module",
   "main": "dist/index.js",
