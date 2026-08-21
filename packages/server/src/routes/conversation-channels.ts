@@ -4,6 +4,10 @@ import {
   type ChannelManagementService,
 } from "@polpo-ai/channels";
 import type { ChannelManagementRouteDeps } from "../deps.js";
+import {
+  inspectClientJsonSchema,
+  MAX_CLIENT_TOOLS_BYTES,
+} from "./completions/schemas.js";
 
 const providerId = z.enum(["slack", "telegram", "discord", "whatsapp"]);
 const channelIdentityResolver = z.object({
@@ -13,9 +17,18 @@ const channelIdentityResolver = z.object({
   type: z.literal("http"),
   version: z.literal(1),
 }).strict();
+const channelClientToolDefinition = {
+  description: z.string().max(8_192).optional(),
+  parameters: z.record(z.string(), z.unknown()).optional(),
+  strict: z.boolean().optional(),
+};
 const channelClientToolContinuation = z.discriminatedUnion("mode", [
-  z.object({ mode: z.literal("direct") }).strict(),
   z.object({
+    ...channelClientToolDefinition,
+    mode: z.literal("direct"),
+  }).strict(),
+  z.object({
+    ...channelClientToolDefinition,
     loop: z.string().trim().min(1).max(256),
     mode: z.literal("loop"),
   }).strict(),
@@ -28,6 +41,31 @@ const channelClientToolHandler = z.object({
   tools: z.record(z.string().trim().min(1).max(256), channelClientToolContinuation)
     .refine((tools) => Object.keys(tools).length > 0 && Object.keys(tools).length <= 32, {
       message: "clientToolHandler.tools must contain between 1 and 32 tools",
+    })
+    .superRefine((tools, ctx) => {
+      for (const [name, tool] of Object.entries(tools)) {
+        if (tool.parameters === undefined) continue;
+        if (tool.parameters.type !== "object") {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: "Tool parameters must be a JSON Schema with type=object",
+            path: [name, "parameters", "type"],
+          });
+        }
+        inspectClientJsonSchema(
+          tool.parameters,
+          ctx,
+          [name, "parameters"],
+          { nodes: 0 },
+        );
+      }
+      if (new TextEncoder().encode(JSON.stringify(tools)).byteLength > MAX_CLIENT_TOOLS_BYTES) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `Client tool declarations exceed ${MAX_CLIENT_TOOLS_BYTES} bytes`,
+          path: [],
+        });
+      }
     }),
   type: z.literal("http"),
   version: z.literal(1),

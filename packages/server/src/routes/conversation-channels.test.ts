@@ -177,7 +177,18 @@ describe("conversationChannelRoutes", () => {
           timeoutMs: 5000,
           tools: {
             configure_site_connector: { mode: "direct" },
-            apply_site_change: { loop: "leo-change-site", mode: "loop" },
+            apply_site_change: {
+              description: "Apply a requested site change",
+              loop: "leo-change-site",
+              mode: "loop",
+              parameters: {
+                type: "object",
+                properties: { instruction: { type: "string" } },
+                required: ["instruction"],
+                additionalProperties: false,
+              },
+              strict: true,
+            },
           },
           type: "http",
           version: 1,
@@ -193,7 +204,12 @@ describe("conversationChannelRoutes", () => {
             clientToolHandler: {
               tools: {
                 configure_site_connector: { mode: "direct" },
-                apply_site_change: { loop: "leo-change-site", mode: "loop" },
+                apply_site_change: {
+                  description: "Apply a requested site change",
+                  loop: "leo-change-site",
+                  mode: "loop",
+                  strict: true,
+                },
               },
             },
           },
@@ -214,6 +230,12 @@ describe("conversationChannelRoutes", () => {
     for (const tools of [
       {},
       { apply_site_change: { mode: "loop" } },
+      { apply_site_change: { mode: "direct", parameters: { type: "string" } } },
+      { apply_site_change: {
+        mode: "direct",
+        parameters: { type: "object", properties: {}, $ref: "https://example.com/schema" },
+      } },
+      { apply_site_change: { mode: "direct", strict: "yes" } },
       Object.fromEntries(Array.from({ length: 33 }, (_, index) => [
         `tool_${index}`,
         { mode: "direct" },
