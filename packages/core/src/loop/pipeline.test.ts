@@ -262,6 +262,85 @@ describe("PipelineExecutor", () => {
     expect(result.context.ship).toBeUndefined();
   });
 
+  it("terminates on a matching conditional end transition without running the fallback", async () => {
+    const normalized = normalizeProjectLoop({
+      name: "preview-flow",
+      start: "preview",
+      steps: {
+        preview: {
+          type: "tool",
+          tool: "site_preview_request",
+          saveAs: "preview",
+          next: [
+            { when: "preview.ok == true", to: "end" },
+            { to: "report_preview_failure" },
+          ],
+        },
+        report_preview_failure: {
+          type: "agent",
+          systemPrompt: "Report the preview failure.",
+          next: "end",
+        },
+      },
+    });
+    const loopCalls: string[] = [];
+    const executor = new PipelineExecutor();
+
+    const result = await executor.execute({
+      loops: normalized.loops,
+      pipeline: normalized.pipeline!,
+      runLoop: async (name) => {
+        loopCalls.push(name);
+        return { output: { reported: true } };
+      },
+      runTool: async () => ({ output: { ok: true, previewUrl: "https://example.test" } }),
+    });
+
+    expect(loopCalls).toEqual([]);
+    expect(result.context.preview).toEqual({ ok: true, previewUrl: "https://example.test" });
+    expect(result.trace).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: "switch", when: "preview.ok == true", matched: true }),
+    ]));
+  });
+
+  it("runs the fallback when a conditional end transition does not match", async () => {
+    const normalized = normalizeProjectLoop({
+      name: "preview-flow",
+      start: "preview",
+      steps: {
+        preview: {
+          type: "tool",
+          tool: "site_preview_request",
+          saveAs: "preview",
+          next: [
+            { when: "preview.ok == true", to: "end" },
+            { to: "report_preview_failure" },
+          ],
+        },
+        report_preview_failure: {
+          type: "agent",
+          systemPrompt: "Report the preview failure.",
+          next: "end",
+        },
+      },
+    });
+    const loopCalls: string[] = [];
+    const executor = new PipelineExecutor();
+
+    const result = await executor.execute({
+      loops: normalized.loops,
+      pipeline: normalized.pipeline!,
+      runLoop: async (name) => {
+        loopCalls.push(name);
+        return { output: { reported: true } };
+      },
+      runTool: async () => ({ output: { ok: false } }),
+    });
+
+    expect(loopCalls).toEqual(["report_preview_failure"]);
+    expect(result.context.report_preview_failure).toEqual({ reported: true });
+  });
+
   it("runs parallel branches against a frozen snapshot and merges by branch output", async () => {
     const executor = new PipelineExecutor();
     const result = await executor.execute({

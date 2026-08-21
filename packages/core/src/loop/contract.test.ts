@@ -132,6 +132,42 @@ describe("agentLoopConfigSchema", () => {
     expect(JSON.stringify(normalized.pipeline?.steps)).toContain("clone_repository");
   });
 
+  it("preserves conditional transitions to end as empty switch branches", () => {
+    const loop = defineProjectLoop({
+      name: "preview-flow",
+      start: "preview",
+      steps: {
+        preview: toolStep({
+          tool: "site_preview_request",
+          saveAs: "preview",
+          next: [
+            when("preview.ok == true", "end"),
+            otherwise("report_preview_failure"),
+          ],
+        }),
+        report_preview_failure: agentStep({
+          systemPrompt: "Report the preview failure.",
+          next: "end",
+        }),
+      },
+    });
+
+    expect(normalizeProjectLoop(loop).pipeline?.steps).toEqual([
+      {
+        tool: "site_preview_request",
+        input: undefined,
+        saveAs: "preview",
+        when: undefined,
+      },
+      {
+        switch: {
+          cases: [{ when: "preview.ok == true", steps: [] }],
+          default: { steps: [{ loop: "report_preview_failure", when: undefined }] },
+        },
+      },
+    ]);
+  });
+
   it("accepts the v1 governance contract fields without changing graph normalization", () => {
     const loop = projectLoopConfigSchema.parse({
       version: "1",
