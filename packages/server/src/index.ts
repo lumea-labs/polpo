@@ -65,6 +65,9 @@ export {
   type ChannelAttachmentResolutionContext,
   type ChannelConversationTurnExecutor,
   type ChannelConversationContentPart,
+  type ChannelClientToolExecution,
+  type ChannelClientToolExecutionInput,
+  type ChannelClientToolExecutor,
   type ChannelInvocationResolution,
   type ConversationChannelBridgeOptions,
 } from "./channels/conversation-bridge.js";
