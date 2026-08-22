@@ -14,6 +14,96 @@ describe("execution tool policy runtime", () => {
     channels: { allowedTools: ["ask_user_question"] },
   };
 
+  it("implicitly authorizes assigned skill tools through static policy layers", () => {
+    const skilledAgent = {
+      ...agent,
+      skills: ["frontend-design"],
+    };
+    const chat = resolveExecutionToolPolicy({
+      agent: skilledAgent,
+      mode: "chat",
+    });
+    const loop = resolveExecutionToolPolicy({
+      agent: skilledAgent,
+      mode: "loop",
+      loopAllowedTools: ["site_checkout"],
+      stepAllowedTools: ["site_checkout"],
+    });
+
+    expect(filterToolDefinitionsByPolicy([
+      { name: "ask_user_question" },
+      { name: "skill_list" },
+      { name: "skill_read" },
+      { name: "site_checkout" },
+    ], chat)).toEqual([
+      { name: "ask_user_question" },
+      { name: "skill_list" },
+      { name: "skill_read" },
+    ]);
+    expect(filterToolDefinitionsByPolicy([
+      { name: "skill_list" },
+      { name: "skill_read" },
+      { name: "site_checkout" },
+    ], loop)).toEqual([
+      { name: "skill_list" },
+      { name: "skill_read" },
+      { name: "site_checkout" },
+    ]);
+  });
+
+  it("does not authorize skill tools when the agent has no assigned skills", () => {
+    const policy = resolveExecutionToolPolicy({ agent, mode: "chat" });
+
+    expect(filterToolDefinitionsByPolicy([
+      { name: "ask_user_question" },
+      { name: "skill_list" },
+      { name: "skill_read" },
+    ], policy)).toEqual([{ name: "ask_user_question" }]);
+  });
+
+  it("lets request and trusted restrictions deny implicitly authorized skill tools", () => {
+    const skilledAgent = {
+      ...agent,
+      skills: ["frontend-design"],
+    };
+    const requestRestricted = resolveExecutionToolPolicy({
+      agent: skilledAgent,
+      mode: "loop",
+      requestAllowedTools: ["site_checkout"],
+    });
+    const grantRestricted = resolveExecutionToolPolicy({
+      agent: skilledAgent,
+      mode: "loop",
+      grantAllowedTools: ["site_checkout"],
+    });
+
+    const tools = [
+      { name: "skill_list" },
+      { name: "skill_read" },
+      { name: "site_checkout" },
+    ];
+    expect(filterToolDefinitionsByPolicy(tools, requestRestricted)).toEqual([
+      { name: "site_checkout" },
+    ]);
+    expect(filterToolDefinitionsByPolicy(tools, grantRestricted)).toEqual([
+      { name: "site_checkout" },
+    ]);
+  });
+
+  it("lets Channel Route restrictions deny implicitly authorized skill tools", () => {
+    const policy = resolveExecutionToolPolicy({
+      agent: { ...agent, skills: ["frontend-design"] },
+      mode: "channels",
+      routeAllowedTools: ["ask_user_question"],
+    });
+
+    expect(filterToolDefinitionsByPolicy([
+      { name: "ask_user_question" },
+      { name: "skill_list" },
+      { name: "skill_read" },
+    ], policy)).toEqual([{ name: "ask_user_question" }]);
+  });
+
   it("recalculates Loop policy without carrying chat or Channel restrictions", () => {
     const loop = resolveExecutionToolPolicy({
       agent,

@@ -768,6 +768,68 @@ describe("completionRoutes project loop runtime", () => {
     );
   });
 
+  it("executes assigned skill tools without duplicating them in static Loop policies", async () => {
+    const execute = vi.fn(async (name: string, args: Record<string, unknown>) =>
+      JSON.stringify({ name, args, references: ["references/design-system.md"] })
+    );
+    const deps = makeDeps({
+      name: "skill-smoke",
+      context: "shared",
+      allowedTools: ["read"],
+      start: "load_skill",
+      steps: {
+        load_skill: {
+          type: "tool",
+          tool: "skill_read",
+          input: { name: "frontend-design" },
+          saveAs: "skill.bundle",
+          next: "end",
+        },
+      },
+    });
+    deps.resolveAgentTools = async () => ({
+      tools: [{
+        name: "skill_read",
+        parameters: {
+          type: "object",
+          properties: { name: { type: "string" } },
+          required: ["name"],
+          additionalProperties: false,
+        },
+      }],
+      executor: execute,
+    });
+
+    const result = await runProjectLoopCompletion({
+      deps,
+      agentConfig: {
+        name: "timer",
+        model: "test",
+        skills: ["frontend-design"],
+        allowedTools: ["read"],
+      },
+      projectLoop: await deps.getProjectLoop!("skill-smoke") as any,
+      aiMessages: [{ role: "user", content: "load it" }],
+      extraSystemParts: [],
+    });
+
+    expect(execute).toHaveBeenCalledOnce();
+    expect(execute).toHaveBeenCalledWith(
+      "skill_read",
+      { name: "frontend-design" },
+      expect.anything(),
+    );
+    expect(result.context).toMatchObject({
+      skill: {
+        bundle: {
+          name: "skill_read",
+          args: { name: "frontend-design" },
+          references: ["references/design-system.md"],
+        },
+      },
+    });
+  });
+
   it("enforces the same middleware around deterministic pipeline tool steps", async () => {
     const deps = makeDeps({
       name: "guarded-loop",

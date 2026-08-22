@@ -165,6 +165,46 @@ describe("chat via Run driver", () => {
     ]]);
   });
 
+  it("keeps assigned skill tools available without static allowlist bookkeeping", async () => {
+    const visibleTools: string[][] = [];
+    const deps = baseDeps({
+      getAgents: async () => [{
+        name: "agent-1",
+        model: "mock",
+        skills: ["frontend-design"],
+        allowedTools: ["ask_user_question"],
+        chat: { allowedTools: ["ask_user_question"] },
+      }],
+      resolveAgentTools: async () => ({
+        tools: [
+          { name: "skill_list", description: "List assigned skills" },
+          { name: "skill_read", description: "Read an assigned skill" },
+          { name: "ask_user_question", description: "Ask the user a question" },
+        ],
+        executor: async () => "ok",
+      }),
+      runChatViaRun: async (inject, hooks) => {
+        visibleTools.push(Object.keys(inject.toolSet ?? {}).sort());
+        hooks.onEvent({ type: "text-delta", text: "done" });
+        return { status: "completed", result: { exitCode: 0, stdout: "done", stderr: "" } };
+      },
+    });
+
+    await runConversationTurn(deps, {
+      body: {
+        agent: "agent-1",
+        stream: false,
+        messages: [{ role: "user", content: "start" }],
+      },
+    });
+
+    expect(visibleTools).toEqual([[
+      "ask_user_question",
+      "skill_list",
+      "skill_read",
+    ]]);
+  });
+
   it("intersects request, route, and trusted grant restrictions", async () => {
     const visibleTools: string[][] = [];
     const deps = baseDeps({
