@@ -270,10 +270,13 @@ export type { AgentPromptOptions, FilesystemWorkspacePromptOptions } from "./age
 export {
   discoverSkills, loadAgentSkills, listSkillsWithAssignments,
   buildSkillPrompt, parseSkillFrontmatter, extractSkillBody,
+  normalizeSkillResourcePath, readSkillResource, SkillResourceError,
 } from "./skills-reader.js";
 export type {
   SkillInfo,
   LoadedSkill,
+  SkillResource,
+  SkillResourceErrorCode,
   SkillWithAssignment,
   SkillIndex,
   SkillIndexEntry,

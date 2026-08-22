@@ -9,7 +9,7 @@
  * because they use git clone, symlinks, and other Node-specific ops.
  */
 
-import { resolve, join } from "node:path";
+import { resolve, join, sep } from "node:path";
 import type { FileSystem } from "./filesystem.js";
 
 // ── Types ──
@@ -26,6 +26,29 @@ export interface SkillInfo {
 
 export interface LoadedSkill extends SkillInfo {
   content: string;
+}
+
+export interface SkillResource {
+  /** POSIX path relative to the skill bundle root. */
+  path: string;
+  /** UTF-8 text safe to return to the model. */
+  content: string;
+}
+
+export type SkillResourceErrorCode =
+  | "invalid_path"
+  | "not_found"
+  | "not_a_file"
+  | "read_failed";
+
+export class SkillResourceError extends Error {
+  constructor(
+    readonly code: SkillResourceErrorCode,
+    message: string,
+  ) {
+    super(message);
+    this.name = "SkillResourceError";
+  }
 }
 
 export interface SkillIndexEntry {
@@ -92,6 +115,74 @@ export function parseSkillFrontmatter(content: string): { name?: string; descrip
 export function extractSkillBody(content: string): string {
   const match = content.match(/^---\n[\s\S]*?\n---\n?([\s\S]*)$/);
   return match ? match[1].trim() : content.trim();
+}
+
+/**
+ * Validate the public, bundle-relative path accepted by skill_read.
+ * Skill bundles always use POSIX paths, regardless of the runtime host.
+ */
+export function normalizeSkillResourcePath(path?: string): string {
+  if (path === undefined) return "SKILL.md";
+
+  const value = path.trim();
+  if (
+    value.length === 0 ||
+    value.startsWith("/") ||
+    value.includes("\\") ||
+    value.includes("\0")
+  ) {
+    throw new SkillResourceError("invalid_path", "Skill resource path must be relative to the skill bundle");
+  }
+
+  const segments = value.split("/");
+  if (segments.some((segment) => segment === "" || segment === "." || segment === "..")) {
+    throw new SkillResourceError("invalid_path", "Skill resource path contains an invalid segment");
+  }
+
+  return segments.join("/");
+}
+
+/**
+ * Read a text resource from one loaded skill without exposing its physical root.
+ * Omitting path reads the main SKILL.md body; all other paths are relative to
+ * the same skill directory.
+ */
+export async function readSkillResource(
+  fs: FileSystem,
+  skill: LoadedSkill,
+  path?: string,
+): Promise<SkillResource> {
+  const resourcePath = normalizeSkillResourcePath(path);
+  const root = resolve(skill.path);
+  const target = resolve(root, ...resourcePath.split("/"));
+  if (target !== root && !target.startsWith(`${root}${sep}`)) {
+    throw new SkillResourceError("invalid_path", "Skill resource path escapes the skill bundle");
+  }
+
+  let exists: boolean;
+  try {
+    exists = await fs.exists(target);
+  } catch {
+    throw new SkillResourceError("read_failed", `Skill resource "${resourcePath}" could not be inspected`);
+  }
+  if (!exists) {
+    throw new SkillResourceError("not_found", `Skill resource "${resourcePath}" was not found`);
+  }
+
+  try {
+    const stat = await fs.stat(target);
+    if (!stat.isFile) {
+      throw new SkillResourceError("not_a_file", `Skill resource "${resourcePath}" is not a file`);
+    }
+    const raw = await fs.readFile(target);
+    return {
+      path: resourcePath,
+      content: resourcePath === "SKILL.md" ? extractSkillBody(raw) : raw,
+    };
+  } catch (error) {
+    if (error instanceof SkillResourceError) throw error;
+    throw new SkillResourceError("read_failed", `Skill resource "${resourcePath}" could not be read`);
+  }
 }
 
 // ── Build prompt (pure, no FS) ──
