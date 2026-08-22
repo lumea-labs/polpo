@@ -12,6 +12,11 @@ export interface LoopContextBinding {
   readonly $context: string;
 }
 
+export interface LoopContextBindingResolution {
+  readonly inputPath: string;
+  readonly contextPath: string;
+}
+
 export class LoopContextBindingError extends Error {
   readonly code: LoopContextBindingErrorCode;
   readonly contextPath?: string;
@@ -192,6 +197,7 @@ export function cloneLoopJsonValue(value: unknown, inputPath = "$"): unknown {
 export function resolveLoopInputBindings(
   input: unknown,
   context: Readonly<ContextBag>,
+  onResolve?: (binding: LoopContextBindingResolution) => void,
 ): unknown {
   const visiting = new WeakSet<object>();
   let nodes = 0;
@@ -215,6 +221,7 @@ export function resolveLoopInputBindings(
         invalidBinding(`"${LOOP_CONTEXT_BINDING_KEY}" must be a string`, inputPath);
       }
       const value = readContextPath(context, path, inputPath);
+      onResolve?.({ inputPath, contextPath: path });
       return cloneLoopJsonValue(value, inputPath);
     }
 

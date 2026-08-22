@@ -368,6 +368,80 @@ describe("pipeline durable turns — in-flight agent step (Phase A composition)"
     const inFlight = resumed.checkpoints.find((cp) => typeof cp.turn === "number");
     expect(inFlight?.turn).toBe(1);
   });
+
+  test("projected input survives an in-flight checkpoint without restoring task history or full context", async () => {
+    await writeProjectLoop("projected-resume", {
+      name: "projected-resume",
+      start: "validate",
+      steps: {
+        validate: {
+          type: "tool",
+          tool: "bash",
+          input: { command: "printf '%s' 'fix-this-exactly'" },
+          saveAs: "validation",
+          next: "unrelated",
+        },
+        unrelated: {
+          type: "tool",
+          tool: "bash",
+          input: { command: "printf '%s' 'secret-creative-context'" },
+          saveAs: "creative",
+          next: "repair",
+        },
+        repair: {
+          type: "agent",
+          input: {
+            diagnostic: { $context: "validation" },
+            attempt: 1,
+          },
+          inputSchema: {
+            type: "object",
+            additionalProperties: false,
+            required: ["diagnostic", "attempt"],
+            properties: {
+              diagnostic: { type: "string", minLength: 1 },
+              attempt: { type: "integer", minimum: 1 },
+            },
+          },
+          next: "end",
+        },
+      },
+    });
+    const agent = makeAgent("projected-resume");
+
+    const crash = await runEngine(
+      crashingAfterModel([{
+        type: "tool-call",
+        toolName: "write",
+        args: { path: "projected-resume.txt", content: "turn 0" },
+      }]),
+      { agent },
+    );
+    expect(crash.result.exitCode).toBe(1);
+    const checkpoint = crash.checkpoints[crash.checkpoints.length - 1]!;
+    expect(checkpoint.loopName).toBe("repair");
+    expect(checkpoint.turn).toBe(0);
+    const storedHistory = JSON.stringify(checkpoint.history);
+    expect(storedHistory).toContain("fix-this-exactly");
+    expect(storedHistory).not.toContain("secret-creative-context");
+    expect(storedHistory).not.toContain("Do the scripted flow");
+
+    await unlink(join(cwd, "projected-resume.txt"));
+    const prompts: unknown[][] = [];
+    const resumed = await runEngine(
+      capturingSequenceModel([{ type: "text", text: "REPAIRED" }], prompts),
+      { agent, resumeState: checkpoint },
+    );
+
+    expect(resumed.result.exitCode).toBe(0);
+    expect(resumed.result.stdout).toBe("REPAIRED");
+    expect(existsSync(join(cwd, "projected-resume.txt"))).toBe(false);
+    const resumedPrompt = JSON.stringify(prompts[0]);
+    expect(resumedPrompt).toContain("fix-this-exactly");
+    expect(resumedPrompt).toContain("tool-result");
+    expect(resumedPrompt).not.toContain("secret-creative-context");
+    expect(resumedPrompt).not.toContain("Do the scripted flow");
+  });
 });
 
 describe("pipeline durable turns — while and switch", () => {

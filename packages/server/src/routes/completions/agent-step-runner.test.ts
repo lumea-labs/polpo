@@ -5,7 +5,7 @@ import {
   RuntimeGuardrailEngine,
   createRunPreflightPolicy,
 } from "@polpo-ai/core/guardrails";
-import { createToolInvocationContext } from "@polpo-ai/core";
+import { createToolInvocationContext, prepareLoopAgentInput } from "@polpo-ai/core";
 import type { CompletionRouteDeps } from "../completions.js";
 import {
   agentConfigForModelPrimary,
@@ -353,6 +353,97 @@ describe("runAgentStepCompletion tool validation", () => {
     expect(observedPrompts[0]).toEqual(expect.arrayContaining([
       expect.objectContaining({ role: "user" }),
     ]));
+  });
+
+  it("uses projected input as the only user payload and excludes conversation and shared context", async () => {
+    const observedPrompts: unknown[][] = [];
+    const model = new MockLanguageModelV3({
+      doStream: async (options) => {
+        observedPrompts.push(options.prompt);
+        return { stream: convertArrayToReadableStream([
+          { type: "stream-start", warnings: [] },
+          { type: "text-start", id: "text" },
+          { type: "text-delta", id: "text", delta: "repaired" },
+          { type: "text-end", id: "text" },
+          {
+            type: "finish",
+            finishReason: { unified: "stop", raw: undefined },
+            usage: {
+              inputTokens: { total: 1 },
+              outputTokens: { total: 1 },
+            },
+          },
+        ] as any[]) };
+      },
+    });
+    const buildRuntimePrompt = vi.fn(async () => "step system prompt");
+    const deps = {
+      getConfig: () => ({ settings: {} }),
+      getMemoryStore: () => undefined,
+      emit: vi.fn(),
+      resolveAgentModel: vi.fn(async () => ({
+        model: {
+          id: "mock/model",
+          aiModel: model,
+          provider: "mock",
+          contextWindow: 128_000,
+          maxTokens: 8192,
+        },
+      })),
+      resolveAgentTools: vi.fn(async () => ({
+        tools: [],
+        extraAiTools: {},
+        executor: vi.fn(),
+      })),
+      buildRuntimePrompt,
+    } as unknown as CompletionRouteDeps;
+
+    const context = {
+      validation: { failures: [{ message: "fix-this-exactly" }] },
+      creativeBrief: "must-not-reach-model",
+    };
+    const projectedInput = prepareLoopAgentInput(
+      {
+        failures: { $context: "validation.failures" },
+        attempt: 1,
+      },
+      {
+        type: "object",
+        additionalProperties: false,
+        required: ["failures", "attempt"],
+        properties: {
+          failures: { type: "array", minItems: 1 },
+          attempt: { type: "integer", minimum: 1 },
+        },
+      },
+      context,
+    );
+
+    await runAgentStepCompletion({
+      deps,
+      agentConfig: { name: "repair-agent", model: "mock/model" },
+      aiMessages: [{ role: "user", content: "redesign everything creatively" }],
+      extraSystemParts: ["caller creative system context"],
+      context,
+      stepName: "repair",
+      projectedInput,
+    });
+
+    expect(buildRuntimePrompt).toHaveBeenCalledWith(
+      expect.any(Object),
+      expect.objectContaining({
+        extraSystemParts: [],
+        loopContextPart: "",
+        includeAgentMemory: false,
+        includeSharedMemory: false,
+      }),
+    );
+    const prompt = JSON.stringify(observedPrompts[0]);
+    expect(prompt).toContain("fix-this-exactly");
+    expect(prompt).toContain('\\"attempt\\":1');
+    expect(prompt).not.toContain("redesign everything creatively");
+    expect(prompt).not.toContain("must-not-reach-model");
+    expect(prompt).not.toContain("caller creative system context");
   });
 
   it("fails before provider invocation when an agent step has neither messages nor context", async () => {

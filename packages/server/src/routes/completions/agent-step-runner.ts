@@ -11,7 +11,9 @@ import {
   compactIfNeeded,
   createRuntimePromptContextSegment,
   loopContextPrompt,
+  loopAgentInputPrompt,
   loopUserVisibleContext,
+  type PreparedLoopAgentInput,
   maybeParseJson,
   normalizeRuntimeContextTrustMode,
   protectRuntimeToolResultMessages,
@@ -207,6 +209,7 @@ export async function buildRuntimeAgentPrompt(
   contextTrust: RuntimeContextTrustMode = "off",
   runtimeContext?: RuntimeContextResolution,
   activatedSkills: readonly string[] = [],
+  isolateModelContext = false,
 ): Promise<string> {
   let fullSystemPrompt: string;
   if (deps.buildRuntimePrompt) {
@@ -214,8 +217,8 @@ export async function buildRuntimeAgentPrompt(
       mode: "loop-step",
       extraSystemParts,
       loopContextPart,
-      includeAgentMemory: !replacesLegacyAgentMemory(runtimeContext),
-      includeSharedMemory: !replacesLegacySharedMemory(runtimeContext),
+      includeAgentMemory: !isolateModelContext && !replacesLegacyAgentMemory(runtimeContext),
+      includeSharedMemory: !isolateModelContext && !replacesLegacySharedMemory(runtimeContext),
       ...(activatedSkills.length > 0 ? { activatedSkills } : {}),
     });
   } else {
@@ -223,14 +226,16 @@ export async function buildRuntimeAgentPrompt(
       agentConfig,
       activatedSkills.length > 0 ? { activatedSkills } : undefined,
     );
-    const conversationalPreamble = [
+    const conversationalPreamble = isolateModelContext ? "" : [
       "You are now in interactive conversation mode with the user.",
       "Unlike task execution, you should engage in dialogue: ask clarifying questions,",
       "explain your reasoning, and wait for user input when needed.",
       "You still have access to all your coding tools to help the user.",
     ].join("\n");
 
-    fullSystemPrompt = `${conversationalPreamble}\n\n${agentSystemPrompt}`;
+    fullSystemPrompt = conversationalPreamble
+      ? `${conversationalPreamble}\n\n${agentSystemPrompt}`
+      : agentSystemPrompt;
     if (extraSystemParts.length > 0) {
       fullSystemPrompt += `\n\n## Additional context from caller\n\n${extraSystemParts.join("\n\n")}`;
     }
@@ -238,7 +243,7 @@ export async function buildRuntimeAgentPrompt(
       fullSystemPrompt += `\n\n${loopContextPart}`;
     }
 
-    if (!replacesLegacyAgentMemory(runtimeContext)) {
+    if (!isolateModelContext && !replacesLegacyAgentMemory(runtimeContext)) {
       const memoryStore = deps.getMemoryStore();
       const agentMemory = await memoryStore?.get(agentMemoryScope(agentConfig.name));
       if (agentMemory) {
@@ -253,7 +258,9 @@ export async function buildRuntimeAgentPrompt(
       }
     }
   }
-  const runtimeContextPrompt = renderRuntimeContextPrompt(runtimeContext);
+  const runtimeContextPrompt = isolateModelContext
+    ? ""
+    : renderRuntimeContextPrompt(runtimeContext);
   if (runtimeContextPrompt) {
     fullSystemPrompt += `\n\n${runtimeContextPrompt}`;
   }
@@ -279,6 +286,7 @@ export async function runAgentStepCompletion(options: {
   onToolCall?: (toolCall: LoopRuntimeToolCall) => Promise<void>;
   parallelToolCalls?: boolean;
   toolPolicy?: ResolvedAllowedToolPolicy;
+  projectedInput?: PreparedLoopAgentInput;
 }): Promise<AgentStepRunResult> {
   const {
     deps,
@@ -296,22 +304,28 @@ export async function runAgentStepCompletion(options: {
   );
   const reasoning = agentConfig.reasoning ?? settings?.reasoning;
   const visibleLoopContext = loopUserVisibleContext(context);
+  const projectedInput = options.projectedInput;
   let fullSystemPrompt = await buildRuntimeAgentPrompt(
     deps,
     agentConfig,
-    extraSystemParts,
-    loopContextPrompt(
-      stepName,
-      visibleLoopContext,
-      contextTrust,
-    ),
+    projectedInput ? [] : extraSystemParts,
+    projectedInput
+      ? ""
+      : loopContextPrompt(
+          stepName,
+          visibleLoopContext,
+          contextTrust,
+        ),
     contextTrust,
     runtimeContext,
     options.activatedSkills,
+    Boolean(projectedInput),
   );
-  let messages: any[] = contextTrust === "enforce"
-    ? protectRuntimeToolResultMessages(aiMessages)
-    : [...aiMessages];
+  let messages: any[] = projectedInput
+    ? [{ role: "user", content: loopAgentInputPrompt(stepName, projectedInput) }]
+    : contextTrust === "enforce"
+      ? protectRuntimeToolResultMessages(aiMessages)
+      : [...aiMessages];
   if (
     prepareModelMessagesForProvider(messages).length === 0
     && Object.keys(visibleLoopContext).length > 0

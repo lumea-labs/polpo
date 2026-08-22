@@ -8,6 +8,7 @@ import type { TaskExpectation, MissionCheckpoint, MissionQualityGate } from "./t
 import { LOOP_LIFECYCLE_HOOKS } from "./loop/types.js";
 import { MAX_MODEL_FALLBACKS } from "./model-policy.js";
 import { MODEL_PROFILE_NAME_PATTERN } from "./model-profiles.js";
+import { assertLoopAgentInputSchema } from "./loop/agent-input.js";
 
 // ── Expectation Schemas (discriminated union on `type`) ──────────────
 
@@ -266,6 +267,8 @@ export const loopConfigSchema = z.object({
   label: z.string().min(1).optional(),
   description: z.string().min(1).optional(),
   systemPrompt: z.string().optional(),
+  input: z.unknown().optional(),
+  inputSchema: z.unknown().optional(),
   allowedTools: z.array(z.string().min(1)).optional(),
   tools: z.array(z.string().min(1)).optional(),
   skills: z.array(z.string().min(1)).optional(),
@@ -285,6 +288,24 @@ export const loopConfigSchema = z.object({
       message: "Use allowedTools or legacy tools, not both",
       path: ["allowedTools"],
     });
+  }
+  if (loop.inputSchema !== undefined && loop.input === undefined) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "inputSchema requires input",
+      path: ["inputSchema"],
+    });
+  }
+  if (loop.inputSchema !== undefined) {
+    try {
+      assertLoopAgentInputSchema(loop.inputSchema);
+    } catch (error) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: error instanceof Error ? error.message : String(error),
+        path: ["inputSchema"],
+      });
+    }
   }
 });
 
