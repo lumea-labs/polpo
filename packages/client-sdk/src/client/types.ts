@@ -847,6 +847,8 @@ export interface AddAgentRequest {
   /** Default runtime sandbox policy for this agent. */
   sandbox?: RuntimeSandboxOptions;
   allowedTools?: string[];
+  chat?: AgentConfig["chat"];
+  channels?: AgentConfig["channels"];
   systemPrompt?: string;
   skills?: string[];
   maxTurns?: number;
@@ -889,6 +891,8 @@ export interface UpdateAgentRequest {
   search_provider?: string;
   sandbox?: RuntimeSandboxOptions;
   allowedTools?: string[];
+  chat?: AgentConfig["chat"];
+  channels?: AgentConfig["channels"];
   allowedPaths?: string[];
   systemPrompt?: string;
   skills?: string[];
@@ -1280,6 +1284,10 @@ export interface ChatCompletionRequest extends RuntimeCompletionRequestOptions {
       ask_user_question?: boolean;
       suggestions?: boolean;
     };
+    /** Temporary tool restriction for this execution. Never expands agent policy. */
+    execution?: {
+      allowedTools?: string[];
+    };
     /** Delivery lifecycle for streaming completions. Omitted keeps attached cancellation. */
     delivery?: {
       onDisconnect: "cancel" | "continue";
@@ -1303,6 +1311,8 @@ export interface ContinueClientToolResultRequest {
   toolCallId: string;
   result: string | ContentPart[];
   user?: string;
+  /** Temporary restriction applied after the direct/Loop policy is recalculated. */
+  allowedTools?: string[];
   metadata?: Record<string, string>;
 }
 

@@ -474,6 +474,7 @@ describe("PolpoClient structured outputs", () => {
       toolCallId: "call-1",
       result: [{ type: "text", text: "configured" }],
       user: "user-1",
+      allowedTools: ["site_*"],
     });
     await stream.start();
 
@@ -501,6 +502,7 @@ describe("PolpoClient structured outputs", () => {
       user: "user-1",
       messages: [{ role: "tool", tool_call_id: "call-1" }],
       polpo: {
+        execution: { allowedTools: ["site_*"] },
         continuation: {
           type: "client_tool",
           tool_call_id: "call-1",

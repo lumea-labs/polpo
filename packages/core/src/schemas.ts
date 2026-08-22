@@ -266,6 +266,7 @@ export const loopConfigSchema = z.object({
   label: z.string().min(1).optional(),
   description: z.string().min(1).optional(),
   systemPrompt: z.string().optional(),
+  allowedTools: z.array(z.string().min(1)).optional(),
   tools: z.array(z.string().min(1)).optional(),
   skills: z.array(z.string().min(1)).optional(),
   toolChoice: loopToolChoiceSchema.optional(),
@@ -277,6 +278,14 @@ export const loopConfigSchema = z.object({
   output: z.object({
     schema: z.unknown().optional(),
   }).optional(),
+}).superRefine((loop, ctx) => {
+  if (loop.allowedTools !== undefined && loop.tools !== undefined) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "Use allowedTools or legacy tools, not both",
+      path: ["allowedTools"],
+    });
+  }
 });
 
 export const loopNextSchema: z.ZodType<unknown> = z.union([
@@ -385,6 +394,7 @@ export const projectLoopConfigSchema = z.object({
   label: z.string().min(1).optional(),
   description: z.string().optional(),
   metadata: z.record(z.string(), z.unknown()).optional(),
+  allowedTools: z.array(z.string().min(1)).optional(),
   context: z.literal("shared").optional(),
   hooks: projectLoopHooksSchema.optional(),
   permissions: z.array(projectLoopPermissionSchema).optional(),

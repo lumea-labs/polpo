@@ -191,6 +191,23 @@ const requestedSkillsSchema = z.array(requestedSkillNameSchema)
     }
   });
 
+const executionAllowedToolsSchema = z.array(z.string().trim().min(1).max(256))
+  .max(256)
+  .superRefine((tools, ctx) => {
+    const seen = new Set<string>();
+    for (const [index, tool] of tools.entries()) {
+      const key = tool.toLocaleLowerCase("en-US");
+      if (seen.has(key)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `Duplicate execution tool pattern: ${tool}`,
+          path: [index],
+        });
+      }
+      seen.add(key);
+    }
+  });
+
 export const completionRequestSchema = z.object({
   messages: z.array(messageSchema).min(1).openapi({
     description: "Conversation messages in OpenAI format",
@@ -250,6 +267,12 @@ export const completionRequestSchema = z.object({
       ask_user_question: z.boolean().optional(),
       suggestions: z.boolean().optional(),
     }).strict().optional(),
+    execution: z.object({
+      allowedTools: executionAllowedToolsSchema.optional(),
+    }).strict().optional().openapi({
+      description:
+        "Request-scoped tool restriction. It can only narrow the effective agent and execution-mode policy.",
+    }),
     delivery: z.object({
       onDisconnect: z.enum(["cancel", "continue"]),
     }).strict().optional().openapi({

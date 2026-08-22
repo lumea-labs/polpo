@@ -91,6 +91,14 @@ import {
   isStructuredResponseFormat,
   modelOutputForResponseFormat,
 } from "./structured-output.js";
+import {
+  createPolicyGuardedToolExecutor,
+  filterToolDefinitionsByPolicy,
+  filterToolRecordByPolicy,
+  resolveExecutionToolPolicy,
+  toolPolicyAuditData,
+  type ExecutionToolPolicyMode,
+} from "./tool-policy-runtime.js";
 
 type PreparedError = {
   kind: "error";
@@ -115,6 +123,9 @@ type PreparedProjectLoop = {
   runtimeInvocation?: CompletionRuntimeInvocation;
   executionRoute?: ResolvedExecutionRoute;
   activatedSkills: string[];
+  requestAllowedTools?: readonly string[];
+  executionAllowedTools?: readonly string[];
+  grantAllowedTools?: readonly string[];
 };
 
 type PreparedChat = {
@@ -397,10 +408,10 @@ function toolInvocationSurface(
   invocation: CompletionRuntimeInvocation,
   loop: boolean,
 ): ToolInvocationContext["surface"] {
+  if (loop || invocation.source === "loop-step") return "loop";
   if (invocation.surface === "channel" || invocation.source === "channel") return "channel";
   if (invocation.source === "schedule") return "schedule";
   if (invocation.surface === "task" || invocation.source === "task") return "task";
-  if (loop || invocation.source === "loop-step") return "loop";
   return "chat";
 }
 
@@ -588,6 +599,7 @@ export async function prepareChatCompletionExecution(
   let runtimePlan: RuntimePlan | undefined;
   let runtimeContext: RuntimeContextResolution | undefined;
   let executionRoute: ResolvedExecutionRoute | undefined;
+  let selectedLoopAllowedTools: readonly string[] | undefined;
   let activatedSkills: string[] = [];
   let deferredAgentTools = false;
   let completionId = options.completionId ?? `chatcmpl-${nanoid(24)}`;
@@ -615,11 +627,11 @@ export async function prepareChatCompletionExecution(
     throw error;
   }
   const requestClientSideTools = createRequestClientTools(body.tools);
-  const clientSideTools = {
+  let clientSideTools = {
     ...builtInClientSideTools,
     ...requestClientSideTools,
   };
-  const clientSideToolNames = new Set(Object.keys(clientSideTools));
+  let clientSideToolNames = new Set(Object.keys(clientSideTools));
 
   const contextTrust = normalizeRuntimeContextTrustMode(
     deps.getConfig()?.settings?.contextTrust,
@@ -642,6 +654,7 @@ export async function prepareChatCompletionExecution(
         const selection = resolveLoopSelection(agentConfig, body.loop);
         if (!selection) throw new Error(`Loop "${body.loop}" was not resolved`);
         agentConfig = selection.agent;
+        selectedLoopAllowedTools = selection.allowedTools;
         options.setHeader?.("x-loop", selection.name);
         const invocation = completionInvocation(options.runtime);
         executionRoute = createExplicitExecutionRoute({
@@ -702,6 +715,7 @@ export async function prepareChatCompletionExecution(
             );
           }
           agentConfig = selection.agent;
+          selectedLoopAllowedTools = selection.allowedTools;
           projectLoopRuntime = { agentConfig, projectLoop };
           options.setHeader?.("x-loop", selection.name);
         }
@@ -1120,6 +1134,30 @@ export async function prepareChatCompletionExecution(
   }
 
   if (!projectLoopRuntime) {
+    const runtimeInvocation = completionInvocation(options.runtime);
+    const policyMode: ExecutionToolPolicyMode = body.loop
+        || runtimeInvocation.source === "loop-step"
+      ? "loop"
+      : runtimeInvocation.surface === "channel"
+          || runtimeInvocation.source === "channel"
+        ? "channels"
+        : "chat";
+    const toolPolicy = resolveExecutionToolPolicy({
+      agent: resolvedAgentConfig,
+      mode: policyMode,
+      routeAllowedTools: options.runtime?.toolPolicy?.routeAllowedTools,
+      requestAllowedTools: body.polpo?.execution?.allowedTools,
+      executionAllowedTools: options.runtime?.toolPolicy?.executionAllowedTools,
+      loopAllowedTools: selectedLoopAllowedTools,
+      grantAllowedTools: options.runtime?.toolPolicy?.grantAllowedTools,
+    });
+    const requestedToolNames = [
+      ...effectiveTools
+        .map((tool) => tool?.name)
+        .filter((name): name is string => typeof name === "string"),
+      ...Object.keys(extraAiTools ?? {}),
+      ...Object.keys(clientSideTools),
+    ];
     try {
       assertRequestClientToolNamesAvailable(body.tools, [
         ...effectiveTools
@@ -1133,6 +1171,35 @@ export async function prepareChatCompletionExecution(
         return completionError(error.message, 400, error.code);
       }
       throw error;
+    }
+    effectiveTools = filterToolDefinitionsByPolicy(effectiveTools, toolPolicy);
+    extraAiTools = filterToolRecordByPolicy(extraAiTools, toolPolicy);
+    clientSideTools = filterToolRecordByPolicy(clientSideTools, toolPolicy);
+    clientSideToolNames = new Set(Object.keys(clientSideTools));
+    effectiveToolExecutor = createPolicyGuardedToolExecutor(
+      effectiveToolExecutor,
+      toolPolicy,
+    );
+    deps.emit("runtime:tool-policy", toolPolicyAuditData({
+      policy: toolPolicy,
+      requested: requestedToolNames,
+      mode: policyMode,
+    }));
+
+    const forcedTool = typeof body.tool_choice === "object"
+      ? body.tool_choice.function.name
+      : forcedModelToolName(modelToolChoice);
+    if (forcedTool && ![
+      ...effectiveTools.map((tool) => tool?.name),
+      ...Object.keys(extraAiTools),
+      ...Object.keys(clientSideTools),
+    ].includes(forcedTool)) {
+      await cleanupFailedPreparation(onResponseFinished);
+      return completionError(
+        `Tool "${forcedTool}" is not allowed by the effective execution policy`,
+        400,
+        "tool_policy_denied",
+      );
     }
 
     effectiveToolExecutor = createGuardedCompletionToolExecutor({
@@ -1209,6 +1276,9 @@ export async function prepareChatCompletionExecution(
       runtimeInvocation: options.runtime,
       executionRoute,
       activatedSkills,
+      requestAllowedTools: body.polpo?.execution?.allowedTools,
+      executionAllowedTools: options.runtime?.toolPolicy?.executionAllowedTools,
+      grantAllowedTools: options.runtime?.toolPolicy?.grantAllowedTools,
     };
   }
 
@@ -1314,6 +1384,9 @@ export async function runConversationTurn(
         executionRoute: prepared.executionRoute,
         activatedSkills: prepared.activatedSkills,
         parallelToolCalls: prepared.body.parallel_tool_calls,
+        requestAllowedTools: prepared.requestAllowedTools,
+        executionAllowedTools: prepared.executionAllowedTools,
+        grantAllowedTools: prepared.grantAllowedTools,
       });
       finalText = await applyCompletionOutputPolicy({
         outputPolicy: prepared.deps.runOutputPolicy,

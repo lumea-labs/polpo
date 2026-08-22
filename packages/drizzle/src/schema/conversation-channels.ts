@@ -52,6 +52,7 @@ export const conversationChannelRoutesSqlite = sqliteTable("conversation_channel
     { onDelete: "cascade" },
   ),
   agentName: text("agent_name").notNull(),
+  allowedTools: text("allowed_tools", { mode: "json" }),
   externalChannelId: text("external_channel_id").notNull().default(""),
   enabled: integer("enabled", { mode: "boolean" }).notNull().default(true),
   priority: integer("priority").notNull().default(100),
@@ -106,6 +107,7 @@ export const conversationChannelRoutesPg = pgTable("conversation_channel_routes"
     { onDelete: "cascade" },
   ),
   agentName: pgText("agent_name").notNull(),
+  allowedTools: jsonb("allowed_tools"),
   externalChannelId: pgText("external_channel_id").notNull().default(""),
   enabled: pgInteger("enabled").notNull().default(1),
   priority: pgInteger("priority").notNull().default(100),
@@ -121,4 +123,3 @@ export const conversationChannelRoutesPg = pgTable("conversation_channel_routes"
   ),
   pgIndex("idx_pg_conversation_channel_routes_channel").on(table.channelId, table.priority),
 ]);
-

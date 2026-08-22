@@ -476,6 +476,7 @@ const LoopToolChoiceSchema = z.union([
 const LoopConfigSchema = z.object({
   name: z.string().min(1).optional(),
   systemPrompt: z.string().optional(),
+  allowedTools: z.array(z.string().min(1)).optional(),
   tools: z.array(z.string().min(1)).optional(),
   skills: z.array(z.string().min(1)).optional(),
   toolChoice: LoopToolChoiceSchema.optional(),
@@ -485,6 +486,14 @@ const LoopConfigSchema = z.object({
   maxTurns: z.number().int().positive().optional(),
   stopWhen: LoopConditionSchema.optional(),
   output: LoopOutputSchema.optional(),
+}).superRefine((loop, ctx) => {
+  if (loop.allowedTools !== undefined && loop.tools !== undefined) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "Use allowedTools or legacy tools, not both",
+      path: ["allowedTools"],
+    });
+  }
 });
 
 type ValidationContext = {
@@ -815,16 +824,21 @@ const AgentChatSuggestionsSchema = z.object({
 });
 
 const AgentChatSettingsSchema = z.object({
+  allowedTools: z.array(ToolNameSchema).optional(),
   allowUserQuestions: z.boolean().optional(),
   suggestions: AgentChatSuggestionsSchema.optional(),
 }).passthrough().superRefine((value, ctx) => {
-  if (Object.keys(value).some((key) => !["allowUserQuestions", "suggestions"].includes(key))) {
+  if (Object.keys(value).some((key) => !["allowedTools", "allowUserQuestions", "suggestions"].includes(key))) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
       message: "Agent chat preferences contain unsupported fields",
     });
   }
 });
+
+const AgentChannelsSettingsSchema = z.object({
+  allowedTools: z.array(ToolNameSchema).optional(),
+}).strict();
 
 const AgentLoopFieldsSchema = z.object({
   runtime: z.string().optional(),
@@ -852,6 +866,7 @@ export const AddAgentSchema = z.object({
   allowedPaths: z.array(z.string()).optional(),
   systemPrompt: z.string().optional(),
   chat: AgentChatSettingsSchema.optional(),
+  channels: AgentChannelsSettingsSchema.optional(),
   skills: z.array(z.string()).optional(),
   maxTurns: z.number().int().positive().optional(),
   maxConcurrency: z.number().int().positive().optional(),
@@ -886,6 +901,7 @@ export const UpdateAgentSchema = z.object({
   allowedPaths: z.array(z.string()).optional(),
   systemPrompt: z.string().optional(),
   chat: AgentChatSettingsSchema.optional(),
+  channels: AgentChannelsSettingsSchema.optional(),
   skills: z.array(z.string()).optional(),
   maxTurns: z.number().int().positive().optional(),
   maxConcurrency: z.number().int().positive().optional(),

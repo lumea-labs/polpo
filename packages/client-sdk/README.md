@@ -147,6 +147,27 @@ await chat.sendMessage("Build the settings page.", {
 });
 ```
 
+Restrict the tools exposed for one execution with
+`polpo.execution.allowedTools`. This is an intersection with agent, mode, Loop,
+Route, and trusted grant policy; it can never expand configured access:
+
+```ts
+const response = await client.chatCompletions({
+  agent: "leo",
+  messages: [{ role: "user", content: "Configure the site connector." }],
+  tools: [configureSiteConnector],
+  polpo: {
+    execution: {
+      allowedTools: ["ask_user_question", "configure_site_connector"],
+    },
+  },
+});
+```
+
+The same restriction can be supplied to `continueClientToolResult` through its
+`allowedTools` option. It is retained when the continuation explicitly starts a
+Project Loop, while chat or Channel Route policy is recalculated for Loop mode.
+
 ## Structured outputs
 
 Use the OpenAI-compatible `response_format` field when the final assistant

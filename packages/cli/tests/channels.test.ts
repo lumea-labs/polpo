@@ -127,6 +127,7 @@ describe("Channels CLI", () => {
       "--verify-token",
     ]));
     expect(add.options.map((option) => option.long)).toEqual(expect.arrayContaining([
+      "--allowed-tool",
       "--identity-resolver-endpoint",
       "--identity-resolver-connection",
     ]));
@@ -142,6 +143,8 @@ describe("Channels CLI", () => {
     ]));
     const update = channels.commands.find((command) => command.name() === "update")!;
     expect(update.options.map((option) => option.long)).toContain("--disable-identity-resolver");
+    const routes = channels.commands.find((command) => command.name() === "routes")!;
+    const addRoute = routes.commands.find((command) => command.name() === "add")!;
+    expect(addRoute.options.map((option) => option.long)).toContain("--allowed-tool");
   });
 });
-

@@ -29,8 +29,10 @@ import {
   type ToolInvocationContext,
   type SummarizeFn,
   type RuntimeContextTrustMode,
+  type ResolvedAllowedToolPolicy,
   isClientInteractionToolName,
   LoopInteractiveToolUnsupportedError,
+  assertToolNameAllowedByPolicy,
 } from "@polpo-ai/core";
 import { generateText, type LanguageModel, type LanguageModelUsage } from "ai";
 import {
@@ -61,6 +63,12 @@ import {
   forcedModelToolName,
 } from "./tool-disclosure.js";
 import { executeCompletionToolBatch } from "./tool-execution-batch.js";
+import {
+  createPolicyGuardedToolExecutor,
+  filterToolDefinitionsByPolicy,
+  filterToolRecordByPolicy,
+  toolPolicyAuditData,
+} from "./tool-policy-runtime.js";
 
 export const MAX_TURNS = 20;
 
@@ -269,6 +277,7 @@ export async function runAgentStepCompletion(options: {
   toolInvocation?: ToolInvocationContext;
   onToolCall?: (toolCall: LoopRuntimeToolCall) => Promise<void>;
   parallelToolCalls?: boolean;
+  toolPolicy?: ResolvedAllowedToolPolicy;
 }): Promise<AgentStepRunResult> {
   const {
     deps,
@@ -358,16 +367,40 @@ export async function runAgentStepCompletion(options: {
   if (isClientInteractionToolName(forcedTool)) {
     throw new LoopInteractiveToolUnsupportedError(forcedTool, stepName);
   }
-  const loopTools = resolvedTools.tools.filter(
+  if (forcedTool && options.toolPolicy) {
+    assertToolNameAllowedByPolicy(forcedTool, options.toolPolicy);
+  }
+  if (options.toolPolicy) {
+    deps.emit("runtime:tool-policy", toolPolicyAuditData({
+      policy: options.toolPolicy,
+      requested: [
+        ...resolvedTools.tools
+          .map((tool) => tool?.name)
+          .filter((name): name is string => typeof name === "string"),
+        ...Object.keys(resolvedTools.extraAiTools ?? {}),
+      ],
+      mode: "loop",
+    }));
+  }
+  const policyTools = options.toolPolicy
+    ? filterToolDefinitionsByPolicy(resolvedTools.tools, options.toolPolicy)
+    : resolvedTools.tools;
+  const loopTools = policyTools.filter(
     (tool) => !isClientInteractionToolName(tool?.name),
   );
+  const policyExtraAiTools = options.toolPolicy
+    ? filterToolRecordByPolicy(resolvedTools.extraAiTools, options.toolPolicy)
+    : resolvedTools.extraAiTools ?? {};
   const loopExtraAiTools = Object.fromEntries(
-    Object.entries(resolvedTools.extraAiTools ?? {}).filter(
+    Object.entries(policyExtraAiTools).filter(
       ([name]) => !isClientInteractionToolName(name),
     ),
   );
+  const policyExecutor = options.toolPolicy
+    ? createPolicyGuardedToolExecutor(resolvedTools.executor, options.toolPolicy)
+    : resolvedTools.executor;
   let executeTool = createGuardedCompletionToolExecutor({
-    executor: resolvedTools.executor,
+    executor: policyExecutor,
     tools: loopTools,
     middleware: deps.runToolMiddleware,
     context: {

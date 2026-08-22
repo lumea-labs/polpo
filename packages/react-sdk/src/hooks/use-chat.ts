@@ -557,7 +557,7 @@ export function useChat(options: UseChatOptions = {}): UseChatReturn {
     async (
       toolCallId: string,
       result: string | ContentPart[],
-      continuationOptions: { loop?: string; idempotencyKey: string },
+      continuationOptions: { loop?: string; idempotencyKey: string; allowedTools?: string[] },
     ) => {
       if (isStreamingRef.current) return;
       const currentSessionId = sessionIdRef.current;
@@ -585,6 +585,9 @@ export function useChat(options: UseChatOptions = {}): UseChatReturn {
           idempotencyKey: continuationOptions.idempotencyKey,
           agent,
           ...(continuationOptions.loop ? { loop: continuationOptions.loop } : {}),
+          ...(continuationOptions.allowedTools !== undefined
+            ? { allowedTools: continuationOptions.allowedTools }
+            : {}),
           toolCallId,
           result,
         });

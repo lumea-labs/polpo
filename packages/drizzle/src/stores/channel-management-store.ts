@@ -131,14 +131,22 @@ export class DrizzleChannelManagementStore implements ChannelManagementStore {
     );
     const existing = await this.db.select().from(this.tables.routes).where(target).limit(1);
     if (existing[0]) {
-      await this.db.update(this.tables.routes).set({
+      const updates: Record<string, unknown> = {
         enabled: this.dialect === "sqlite" ? input.enabled : input.enabled ? 1 : 0,
         priority: input.priority,
         updatedAt: input.timestamp,
-      }).where(eq(this.tables.routes.id, existing[0].id));
+      };
+      if (input.allowedTools !== undefined) {
+        updates.allowedTools = serializeJson(input.allowedTools, this.dialect);
+      }
+      await this.db.update(this.tables.routes).set(updates)
+        .where(eq(this.tables.routes.id, existing[0].id));
       return this.route({
         ...existing[0],
         enabled: input.enabled,
+        ...(input.allowedTools !== undefined
+          ? { allowedTools: input.allowedTools }
+          : {}),
         priority: input.priority,
         updatedAt: input.timestamp,
       });
@@ -149,6 +157,9 @@ export class DrizzleChannelManagementStore implements ChannelManagementStore {
       projectId: scope.projectId,
       channelId: input.channelId,
       agentName: input.agentName,
+      ...(input.allowedTools !== undefined
+        ? { allowedTools: serializeJson(input.allowedTools, this.dialect) }
+        : {}),
       externalChannelId: externalId(input.externalChannelId),
       enabled: this.dialect === "sqlite" ? input.enabled : input.enabled ? 1 : 0,
       priority: input.priority,
@@ -222,6 +233,15 @@ export class DrizzleChannelManagementStore implements ChannelManagementStore {
       id: row.id,
       channelId: row.channelId,
       agentName: row.agentName,
+      ...(row.allowedTools !== null && row.allowedTools !== undefined
+        ? {
+            allowedTools: deserializeJson<readonly string[]>(
+              row.allowedTools,
+              [],
+              this.dialect,
+            ),
+          }
+        : {}),
       externalChannelId: row.externalChannelId || null,
       enabled: row.enabled === true || row.enabled === 1,
       priority: row.priority,
@@ -230,4 +250,3 @@ export class DrizzleChannelManagementStore implements ChannelManagementStore {
     };
   }
 }
-

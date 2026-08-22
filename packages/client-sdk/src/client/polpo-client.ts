@@ -1765,6 +1765,9 @@ export class PolpoClient {
         content: req.result,
       }],
       polpo: {
+        ...(req.allowedTools !== undefined
+          ? { execution: { allowedTools: req.allowedTools } }
+          : {}),
         continuation: {
           type: "client_tool",
           tool_call_id: req.toolCallId,

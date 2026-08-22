@@ -1,5 +1,7 @@
 /** Provider-neutral chat interaction policy and public extension contracts. */
 
+import type { AllowedToolsSettings } from "./tool-policy.js";
+
 export const DEFAULT_CHAT_SUGGESTION_COUNT = 3;
 export const MIN_CHAT_SUGGESTION_COUNT = 2;
 export const MAX_CHAT_SUGGESTION_COUNT = 4;
@@ -37,7 +39,7 @@ export interface ChatSuggestionSettings {
   guidance?: string;
 }
 
-export interface ChatInteractionSettings {
+export interface ChatInteractionSettings extends AllowedToolsSettings {
   /** Allow compatible clients to receive the ask_user_question tool. Default: true. */
   allowUserQuestions?: boolean;
   /** Suggested-next-message policy. Disabled by default. */
@@ -45,6 +47,7 @@ export interface ChatInteractionSettings {
 }
 
 export interface NormalizedChatInteractionSettings {
+  allowedTools?: readonly string[];
   allowUserQuestions: boolean;
   suggestions: {
     enabled: boolean;
@@ -87,6 +90,25 @@ export function normalizeChatInteractionSettings(
     settings.allowUserQuestions,
     "chat.allowUserQuestions",
   ) ?? true;
+  let allowedTools: readonly string[] | undefined;
+  if (settings.allowedTools !== undefined) {
+    if (!Array.isArray(settings.allowedTools)) {
+      throw new TypeError("chat.allowedTools must be an array");
+    }
+    const seen = new Set<string>();
+    allowedTools = Object.freeze(settings.allowedTools.map((entry, index) => {
+      if (typeof entry !== "string" || !entry.trim()) {
+        throw new TypeError(`chat.allowedTools[${index}] must be a non-empty string`);
+      }
+      const normalized = entry.trim();
+      const key = normalized.toLocaleLowerCase("en-US");
+      if (seen.has(key)) {
+        throw new TypeError(`chat.allowedTools contains duplicate tool pattern "${normalized}"`);
+      }
+      seen.add(key);
+      return normalized;
+    }));
+  }
   const enabled = optionalBoolean(
     suggestions.enabled,
     "chat.suggestions.enabled",
@@ -116,6 +138,7 @@ export function normalizeChatInteractionSettings(
   }
 
   return {
+    ...(allowedTools !== undefined ? { allowedTools } : {}),
     allowUserQuestions,
     suggestions: {
       enabled,

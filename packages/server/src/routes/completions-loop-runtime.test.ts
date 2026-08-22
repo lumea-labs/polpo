@@ -22,7 +22,7 @@ describe("completionRoutes project loop runtime", () => {
         name: "timer",
         model: "test",
         assignedLoops: ["time-tracker"],
-        allowedTools: ["unix_time"],
+        allowedTools: ["*"],
       }],
       getConfig: () => ({}),
       getMemoryStore: () => null,
@@ -101,6 +101,59 @@ describe("completionRoutes project loop runtime", () => {
       "loop.end",
     ]);
     expect(json.loop_trace[0]).toMatchObject({ loop: "time-tracker", status: "started" });
+  });
+
+  it("recalculates Loop tools without inheriting the Channel Route restriction", async () => {
+    const result = await runConversationTurn(makeDeps(), {
+      body: {
+        agent: "timer",
+        loop: "time-tracker",
+        stream: false,
+        messages: [{ role: "user", content: "track it" }],
+      },
+      runtime: {
+        surface: "channel",
+        source: "channel",
+        toolPolicy: { routeAllowedTools: [] },
+      },
+    });
+
+    expect(result.runStatus).toBe("completed");
+    expect(JSON.parse(result.text)).toEqual({
+      timing: { start: "100", end: "105" },
+    });
+  });
+
+  it("fails closed when the Project Loop policy denies a deterministic tool", async () => {
+    const execute = vi.fn(async () => "100");
+    const deps = makeDeps({
+      name: "time-tracker",
+      allowedTools: [],
+      start: "capture",
+      steps: {
+        capture: { type: "tool", tool: "unix_time", next: "end" },
+      },
+    });
+    deps.resolveAgentTools = async () => ({
+      tools: [{ name: "unix_time" }],
+      executor: execute,
+    });
+
+    const res = await completionRoutes(() => deps).request("/", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        agent: "timer",
+        loop: "time-tracker",
+        messages: [{ role: "user", content: "track it" }],
+      }),
+    });
+
+    expect(res.status).toBe(403);
+    expect(execute).not.toHaveBeenCalled();
+    expect(await res.json()).toMatchObject({
+      error: { code: "tool_policy_denied" },
+    });
   });
 
   it("runs an atomic client-tool continuation into a Project Loop through the internal conversation surface", async () => {
@@ -624,7 +677,7 @@ describe("completionRoutes project loop runtime", () => {
     });
 
     expect(invocation).toMatchObject({
-      surface: "channel",
+      surface: "loop",
       user: "external-user-1",
       scope: { key: "workspace-1", version: "3" },
       metadata: { grant: "secret-grant", tenantId: "tenant-1" },

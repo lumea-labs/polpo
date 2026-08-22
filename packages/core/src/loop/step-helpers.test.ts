@@ -41,13 +41,13 @@ describe("buildLoopStepAgent interactive tool boundary", () => {
     }, "implement", {})).toThrow(LoopInteractiveToolUnsupportedError);
   });
 
-  it("preserves ordinary explicit loop tools and tool choice", () => {
+  it("preserves the agent ceiling while exposing ordinary step tool choice", () => {
     const stepAgent = buildLoopStepAgent(agent, "implement", {
-      tools: ["write"],
+      allowedTools: ["write"],
       toolChoice: { mode: "required", tool: "write" },
     });
 
-    expect(stepAgent.allowedTools).toEqual(["write"]);
+    expect(stepAgent.allowedTools).toEqual(["read", "write"]);
     expect(stepAgent.toolChoice).toEqual({ mode: "required", tool: "write" });
   });
 });

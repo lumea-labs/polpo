@@ -6,10 +6,11 @@ export interface LoopSelection {
   name: string;
   loop: LoopConfig & { name: string };
   agent: AgentConfig;
+  allowedTools?: string[];
 }
 
 export function resolveActiveLoopTools(agent: AgentConfig, loop?: LoopConfig): string[] | undefined {
-  return loop?.tools ?? agent.allowedTools;
+  return loop?.allowedTools ?? loop?.tools;
 }
 
 export function resolveActiveLoopSkills(agent: AgentConfig, loop?: LoopConfig): string[] | undefined {
@@ -32,6 +33,7 @@ export function resolveLoopSelection(agent: AgentConfig, requestedLoop?: string)
         name: requestedLoop,
         loop: { name: requestedLoop, tools: agent.allowedTools, model: agent.model, reasoning: agent.reasoning, maxTurns: agent.maxTurns },
         agent,
+        allowedTools: agent.allowedTools,
       };
     }
     const available = Object.keys(agent.loops ?? {});
@@ -57,10 +59,10 @@ function materializeLoopSelection(agent: AgentConfig, name: string, loop: LoopCo
   return {
     name: loopWithName.name,
     loop: loopWithName,
+    allowedTools: resolveActiveLoopTools(agent, loop),
     agent: {
       ...agent,
       systemPrompt,
-      allowedTools: resolveActiveLoopTools(agent, loop),
       skills: resolveActiveLoopSkills(agent, loop),
       model: loop.model ?? agent.model,
       reasoning: (loop.reasoning as ReasoningLevel | undefined) ?? agent.reasoning,

@@ -41,6 +41,8 @@ export type ChannelConversationTurnExecutor = (
 export type ChannelClientToolExecution = {
   result: ToolInvocationJsonValue;
   loop?: string;
+  /** Trusted continuation restriction. It can only narrow configured tools. */
+  allowedTools?: readonly string[];
   /** Host-trusted context for the continuation. Never persisted as tool output. */
   trustedMetadata?: Readonly<Record<string, ToolInvocationJsonValue>>;
 };
@@ -74,6 +76,8 @@ export type ChannelInvocationResolution =
       user: string;
       metadata?: Record<string, ToolInvocationJsonValue>;
       scope?: ToolInvocationScope;
+      /** Trusted grant restriction for this identity and turn. */
+      allowedTools?: readonly string[];
     }
   | {
       disposition: "consume";
@@ -84,6 +88,8 @@ export interface ConversationChannelBridgeOptions {
   agent: string | ((turn: ChannelInboundTurn) => string | Promise<string>);
   /** OpenAI-compatible tools executed by executeClientTool, not by Polpo. */
   clientTools?: readonly ChannelClientToolDefinition[];
+  /** Channel Route restriction for the active Channel turn only. */
+  allowedTools?: readonly string[];
   createSession?: (input: {
     agent: string;
     metadata: Record<string, string>;
@@ -254,6 +260,23 @@ export function createConversationChannelTurnHandler(
       user,
       ...(trustedInvocation ? { metadata: trustedInvocation.metadata } : {}),
       ...(trustedScope ? { scope: trustedScope } : {}),
+      ...(
+        options.allowedTools !== undefined
+        || (invocationResolution?.disposition === "dispatch"
+          && invocationResolution.allowedTools !== undefined)
+          ? {
+              toolPolicy: {
+                ...(options.allowedTools !== undefined
+                  ? { routeAllowedTools: [...options.allowedTools] }
+                  : {}),
+                ...(invocationResolution?.disposition === "dispatch"
+                  && invocationResolution.allowedTools !== undefined
+                  ? { grantAllowedTools: [...invocationResolution.allowedTools] }
+                  : {}),
+              },
+            }
+          : {}
+      ),
     };
     let result = await executeTurn({
       body: {
@@ -327,6 +350,15 @@ export function createConversationChannelTurnHandler(
           metadata: trustedInvocation.metadata,
         };
       }
+      if (execution.allowedTools !== undefined) {
+        runtime = {
+          ...runtime,
+          toolPolicy: {
+            ...runtime.toolPolicy,
+            executionAllowedTools: [...execution.allowedTools],
+          },
+        };
+      }
       const toolResult = typeof execution.result === "string"
         ? execution.result
         : JSON.stringify(execution.result);
@@ -352,6 +384,9 @@ export function createConversationChannelTurnHandler(
         },
         ...(!loop ? clientToolRequestFields(options.clientTools) : {}),
       };
+      const continuationRuntime = loop
+        ? runtimeWithoutRouteToolPolicy(runtime)
+        : runtime;
       result = await executeTurn({
         body: continuationBody,
         continuation: {
@@ -366,11 +401,12 @@ export function createConversationChannelTurnHandler(
             result: {
               content: toolResult,
               trustedMetadata: trustedInvocation?.metadata,
+              trustedAllowedTools: execution.allowedTools,
             },
           }),
         },
         onRunEvent: options.onRunEvent,
-        runtime,
+        runtime: continuationRuntime,
         sessionId: result.sessionId,
       });
       continuationIndex += 1;
@@ -393,6 +429,20 @@ export function createConversationChannelTurnHandler(
       },
       text: result.text,
     };
+  };
+}
+
+function runtimeWithoutRouteToolPolicy(
+  runtime: RunConversationTurnInput["runtime"],
+): RunConversationTurnInput["runtime"] {
+  if (!runtime?.toolPolicy?.routeAllowedTools) return runtime;
+  const {
+    routeAllowedTools: _routeAllowedTools,
+    ...toolPolicy
+  } = runtime.toolPolicy;
+  return {
+    ...runtime,
+    ...(Object.keys(toolPolicy).length > 0 ? { toolPolicy } : { toolPolicy: undefined }),
   };
 }
 

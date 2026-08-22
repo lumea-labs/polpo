@@ -399,6 +399,12 @@ export interface CompletionRuntimeInvocation {
   readonly metadata?: Readonly<Record<string, ToolInvocationJsonValue>>;
   /** Host-resolved application partition. It cannot be supplied by model input. */
   readonly scope?: Readonly<{ key: string; version?: string }>;
+  /** Trusted host restrictions. Each layer can only narrow configured policy. */
+  readonly toolPolicy?: Readonly<{
+    routeAllowedTools?: readonly string[];
+    executionAllowedTools?: readonly string[];
+    grantAllowedTools?: readonly string[];
+  }>;
 }
 
 export function completionRoutes(getDeps: () => CompletionRouteDeps, apiKeys?: string[]): OpenAPIHono {

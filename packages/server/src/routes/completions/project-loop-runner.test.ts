@@ -88,6 +88,27 @@ describe("buildLoopResumeState", () => {
     });
   });
 
+  it("pins every temporary tool restriction across approval checkpoints", () => {
+    const state = buildLoopResumeState(
+      continuation,
+      [],
+      [],
+      undefined,
+      "off",
+      [],
+      false,
+      ["site_*"],
+      ["site_checkout"],
+      ["site_checkout", "site_validate"],
+    );
+
+    expect(state?.runtime).toMatchObject({
+      requestAllowedTools: ["site_*"],
+      executionAllowedTools: ["site_checkout"],
+      grantAllowedTools: ["site_checkout", "site_validate"],
+    });
+  });
+
   it("does not create a checkpoint without a continuation", () => {
     expect(buildLoopResumeState(undefined, [], [], undefined, "enforce"))
       .toBeUndefined();

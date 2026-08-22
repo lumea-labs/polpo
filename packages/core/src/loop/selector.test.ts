@@ -7,7 +7,7 @@ describe("resolveLoopSelection", () => {
     expect(resolveLoopSelection(agent)).toBeUndefined();
   });
 
-  it("applies requested loop overrides to the effective agent", () => {
+  it("applies requested loop overrides without replacing the agent tool ceiling", () => {
     const selected = resolveLoopSelection({
       name: "agent",
       model: "base",
@@ -18,7 +18,7 @@ describe("resolveLoopSelection", () => {
       loops: {
         plan: {
           systemPrompt: "plan prompt",
-          tools: ["read"],
+          allowedTools: ["read"],
           skills: ["planning"],
           model: "planner",
           reasoning: "high",
@@ -31,13 +31,25 @@ describe("resolveLoopSelection", () => {
     expect(selected.agent).toMatchObject({
       model: "planner",
       reasoning: "high",
-      allowedTools: ["read"],
+      allowedTools: ["read", "write"],
       skills: ["planning"],
       maxTurns: 3,
     });
+    expect(selected.allowedTools).toEqual(["read"]);
     expect(selected.agent.systemPrompt).toContain("base prompt");
     expect(selected.agent.systemPrompt).toContain("## Active loop: plan");
     expect(selected.agent.systemPrompt).toContain("plan prompt");
+  });
+
+  it("accepts the legacy tools key as the loop restriction", () => {
+    const selected = resolveLoopSelection({
+      name: "agent",
+      allowedTools: ["read", "write"],
+      loops: { plan: { tools: ["read"] } },
+    }, "plan")!;
+
+    expect(selected.agent.allowedTools).toEqual(["read", "write"]);
+    expect(selected.allowedTools).toEqual(["read"]);
   });
 
   it("inherits agent skills when a requested loop does not narrow them", () => {

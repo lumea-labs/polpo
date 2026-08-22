@@ -59,6 +59,90 @@ function baseDeps(overrides: Partial<CompletionRouteDeps> = {}): CompletionRoute
 }
 
 describe("chat via Run driver", () => {
+  it("filters server and OpenAI-compatible client tools by the active mode", async () => {
+    const visibleTools: string[][] = [];
+    const deps = baseDeps({
+      getAgents: async () => [{
+        name: "agent-1",
+        model: "mock",
+        allowedTools: ["read", "bash", "configure_site_connector"],
+        chat: {
+          allowedTools: ["read", "configure_site_connector"],
+          allowUserQuestions: false,
+        },
+        channels: { allowedTools: ["bash"] },
+      }],
+      resolveAgentTools: async () => ({
+        tools: [{ name: "read" }, { name: "bash" }],
+        executor: async () => "ok",
+      }),
+      runChatViaRun: async (inject, hooks) => {
+        visibleTools.push(Object.keys(inject.toolSet ?? {}).sort());
+        hooks.onEvent({ type: "text-delta", text: "done" });
+        return { status: "completed", result: { exitCode: 0, stdout: "done", stderr: "" } };
+      },
+    });
+    const body: CompletionRequestBody = {
+      agent: "agent-1",
+      stream: false,
+      messages: [{ role: "user", content: "start" }],
+      tools: [{
+        type: "function",
+        function: { name: "configure_site_connector" },
+      }],
+    };
+
+    await runConversationTurn(deps, { body });
+    await runConversationTurn(deps, {
+      body,
+      runtime: { surface: "channel", source: "channel" },
+    });
+
+    expect(visibleTools[0]).toEqual(["configure_site_connector", "read"]);
+    expect(visibleTools[1]).toEqual(["bash"]);
+  });
+
+  it("intersects request, route, and trusted grant restrictions", async () => {
+    const visibleTools: string[][] = [];
+    const deps = baseDeps({
+      getAgents: async () => [{
+        name: "agent-1",
+        model: "mock",
+        allowedTools: ["read", "bash"],
+        channels: { allowedTools: ["read", "bash"] },
+      }],
+      resolveAgentTools: async () => ({
+        tools: [{ name: "read" }, { name: "bash" }],
+        executor: async () => "ok",
+      }),
+      runChatViaRun: async (inject, hooks) => {
+        visibleTools.push(Object.keys(inject.toolSet ?? {}).sort());
+        hooks.onEvent({ type: "text-delta", text: "done" });
+        return { status: "completed", result: { exitCode: 0, stdout: "done", stderr: "" } };
+      },
+    });
+
+    await runConversationTurn(deps, {
+      body: {
+        agent: "agent-1",
+        stream: false,
+        messages: [{ role: "user", content: "start" }],
+        polpo: { execution: { allowedTools: ["read", "bash"] } },
+      },
+      runtime: {
+        surface: "channel",
+        source: "channel",
+        toolPolicy: {
+          routeAllowedTools: ["read"],
+          executionAllowedTools: ["read", "bash"],
+          grantAllowedTools: ["read"],
+        },
+      },
+    });
+
+    expect(visibleTools[0]).toEqual(["read"]);
+  });
+
   it("exposes ask-user only on compatible non-channel surfaces", async () => {
     const visibleTools: string[][] = [];
     const deps = baseDeps({

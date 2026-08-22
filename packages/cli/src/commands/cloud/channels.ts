@@ -26,6 +26,10 @@ class ChannelCliApiError extends Error {
   }
 }
 
+function collectOption(value: string, previous: string[]): string[] {
+  return [...previous, value];
+}
+
 export function conversationChannelPath(...segments: string[]): string {
   const base = "/v1/channels/management";
   return `${base}${segments.length ? `/${segments.map(encodeURIComponent).join("/")}` : ""}`;
@@ -267,6 +271,7 @@ export function registerChannelsCommand(program: Command): void {
   channels.command("add <provider>")
     .description("Configure a Channel and grant it to an agent")
     .requiredOption("--agent <name>", "Agent receiving the Channel route")
+    .option("--allowed-tool <pattern>", "Restrict tools for Channel turns (repeatable)", collectOption, [])
     .option("--connection <id>", "Existing project Connection id")
     .option("--destination <id>", "Provider destination id, when known")
     .option("--name <name>", "Channel display name")
@@ -279,6 +284,7 @@ export function registerChannelsCommand(program: Command): void {
     .option("--json", "Print JSON")
     .action((provider: string, opts: {
       agent: string;
+      allowedTool: string[];
       connection?: string;
       destination?: string;
       idempotencyKey?: string;
@@ -295,6 +301,7 @@ export function registerChannelsCommand(program: Command): void {
       const body = {
         provider,
         agentName: opts.agent,
+        ...(opts.allowedTool.length > 0 ? { allowedTools: opts.allowedTool } : {}),
         connectionId: opts.connection,
         externalChannelId: opts.destination,
         idempotencyKey: opts.idempotencyKey ?? randomUUID(),
@@ -388,16 +395,18 @@ export function registerChannelsCommand(program: Command): void {
       }));
   routes.command("add <channel-id>")
     .requiredOption("--agent <name>", "Agent name")
+    .option("--allowed-tool <pattern>", "Restrict tools for this Route (repeatable)", collectOption, [])
     .option("--destination <id>", "Route-specific destination")
     .option("--priority <number>", "Route priority", "100")
     .option("--disabled", "Create the Route disabled")
     .option("--json", "Print JSON")
-    .action((channelId: string, opts: { agent: string; destination?: string; disabled?: boolean; json?: boolean; priority: string }) =>
+    .action((channelId: string, opts: { agent: string; allowedTool: string[]; destination?: string; disabled?: boolean; json?: boolean; priority: string }) =>
       withChannelClient("Adding a Channel Route", opts, async (client) => {
         const priority = Number(opts.priority);
         if (!Number.isSafeInteger(priority)) throw new Error("--priority must be an integer.");
         printResult(channelDataFrom(await client.post(conversationChannelPath(channelId, "routes"), {
           agentName: opts.agent,
+          ...(opts.allowedTool.length > 0 ? { allowedTools: opts.allowedTool } : {}),
           externalChannelId: opts.destination,
           enabled: !opts.disabled,
           priority,
