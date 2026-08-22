@@ -571,7 +571,7 @@ export async function runProjectLoopCompletion(options: {
         if (isError) throw new Error(output);
         return { output: maybeParseJson(output) };
       },
-      runLoop: async (name, loop, context) => {
+      runLoop: async (name, loop, context, _position, agentInput) => {
         const id = `loop-step-${nanoid(12)}`;
         await onToolCall?.({
           id,
@@ -619,6 +619,7 @@ export async function runProjectLoopCompletion(options: {
           onToolCall,
           parallelToolCalls: options.parallelToolCalls,
           toolPolicy: stepToolPolicy,
+          projectedInput: agentInput,
         });
         finalText = stepResult.text || finalText;
         totalUsage = addUsage(totalUsage, stepResult.usage);
@@ -1219,7 +1220,9 @@ async function runNonStreamingProjectLoopCompletion(
       const invalidInput = loopError.code === "loop_binding_invalid"
         || loopError.code === "loop_binding_missing"
         || loopError.code === "loop_context_readonly"
-        || loopError.code === "loop_tool_input_invalid";
+        || loopError.code === "loop_tool_input_invalid"
+        || loopError.code === "loop_agent_input_invalid"
+        || loopError.code === "loop_agent_input_too_large";
       return c.json({ error: loopError }, (invalidInput ? 400 : 403) as any);
     }
     throw err;

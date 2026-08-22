@@ -4,6 +4,10 @@ import {
   LoopContextBindingError,
   resolveLoopInputBindings,
 } from "./bindings.js";
+import {
+  prepareLoopAgentInput,
+  type PreparedLoopAgentInput,
+} from "./agent-input.js";
 import type { LoopHookRegistry } from "./hooks.js";
 import {
   type LoopApprovedGate,
@@ -92,6 +96,8 @@ export interface PipelineCheckpoint {
 export interface PipelineStepPosition {
   steps: Step[];
   previousNode?: string;
+  /** Frozen projected input for the in-flight agent step. */
+  agentInput?: PreparedLoopAgentInput;
 }
 
 export interface PipelineExecutorOptions {
@@ -129,7 +135,13 @@ export interface PipelineExecutorOptions {
    * re-executes every branch (see the parallel handler below).
    */
   onCheckpoint?: (checkpoint: PipelineCheckpoint) => void | Promise<void>;
-  runLoop: (name: string, loop: LoopConfig, context: Readonly<ContextBag>, position?: PipelineStepPosition) => Promise<PipelineLoopResult>;
+  runLoop: (
+    name: string,
+    loop: LoopConfig,
+    context: Readonly<ContextBag>,
+    position?: PipelineStepPosition,
+    agentInput?: PreparedLoopAgentInput,
+  ) => Promise<PipelineLoopResult>;
   runTool?: (name: string, input: unknown, context: Readonly<ContextBag>, step: Extract<Step, { tool: string }>) => Promise<PipelineToolResult>;
   handleHuman?: (name: string, step: Extract<Step, { human: string }>, context: Readonly<ContextBag>) => Promise<PipelineHumanResult>;
 }
@@ -233,12 +245,32 @@ export class PipelineExecutor {
           await this.runLifecyclePoint("step:before", context, options, state, { step: { name: step.loop, type: "agent" } });
           await this.runLifecyclePoint("model:before", context, options, state, { step: { name: step.loop, type: "agent" } });
           await state.emit({ type: "step.start", step: step.loop, status: "started", when: step.when });
+          const agentInput = Object.prototype.hasOwnProperty.call(loop, "input")
+            ? prepareLoopAgentInput(loop.input, loop.inputSchema, freezeContext(context))
+            : undefined;
+          if (agentInput) {
+            await state.emit({
+              type: "agent.input",
+              step: step.loop,
+              status: "completed",
+              data: {
+                ...agentInput.diagnostics,
+                bindingPaths: agentInput.diagnostics.bindingPaths.map((binding) => ({ ...binding })),
+              },
+            });
+          }
           // Position lets the host compose per-turn session checkpoints with
           // the pipeline position while this agent step is in flight.
           const position = checkpoints && options.onCheckpoint
-            ? { steps: [step, ...remainingAfter()], previousNode: lastNode }
+            ? { steps: [step, ...remainingAfter()], previousNode: lastNode, agentInput }
             : undefined;
-          const result = await options.runLoop(step.loop, loop, freezeContext(context), position);
+          const result = await options.runLoop(
+            step.loop,
+            loop,
+            freezeContext(context),
+            position,
+            agentInput,
+          );
           mergeLoopResult(context, step.loop, result, protectedRoots);
           trace.push({ type: "loop", name: step.loop, when: step.when, matched: true });
           await this.runLifecyclePoint("step:after", context, options, state, { step: { name: step.loop, type: "agent" }, output: result.output });

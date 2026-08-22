@@ -404,9 +404,23 @@ export {
 export type {
   LoopContextBinding,
   LoopContextBindingErrorCode,
+  LoopContextBindingResolution,
 } from "./loop/bindings.js";
+export {
+  LOOP_AGENT_INPUT_MAX_BYTES,
+  LoopAgentInputError,
+  assertLoopAgentInputSchema,
+  loopAgentInputPrompt,
+  prepareLoopAgentInput,
+} from "./loop/agent-input.js";
+export type {
+  LoopAgentInputDiagnostics,
+  LoopAgentInputErrorCode,
+  PreparedLoopAgentInput,
+} from "./loop/agent-input.js";
 export type {
   AgentLoopConfig,
+  AgentLoopStep,
   ContextBag,
   LoopConfig,
   LoopHookAction,

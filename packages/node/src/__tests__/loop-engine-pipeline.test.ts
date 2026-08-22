@@ -17,6 +17,7 @@ import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ResolvedModel } from "@polpo-ai/llm";
+import { MockLanguageModelV3, convertArrayToReadableStream } from "ai/test";
 import {
   mockTurnSequenceModel,
   mockResolvedModel,
@@ -172,6 +173,93 @@ describe("spawnLoopEngine — project loop graphs", () => {
     const bashResult = transcript.find((t) => t.type === "tool_result" && t.tool === "bash");
     expect(bashResult).toBeDefined();
     expect(String(bashResult?.content)).toContain("pipeline-hi");
+  });
+
+  test("projected agent input excludes the task prompt and unrelated shared context", async () => {
+    await writeProjectLoop("repair-flow", {
+      name: "repair-flow",
+      start: "validate",
+      steps: {
+        validate: {
+          type: "tool",
+          tool: "bash",
+          input: {
+            command: "printf '%s' '{\"failures\":[{\"message\":\"fix-this-exactly\"}]}'",
+          },
+          saveAs: "validation",
+          next: "unrelated",
+        },
+        unrelated: {
+          type: "tool",
+          tool: "bash",
+          input: { command: "printf '%s' 'do-not-pass'" },
+          saveAs: "creative",
+          next: "repair",
+        },
+        repair: {
+          type: "agent",
+          systemPrompt: "Repair only the supplied failures.",
+          input: {
+            diagnostic: { $context: "validation" },
+            attempt: 1,
+          },
+          inputSchema: {
+            type: "object",
+            additionalProperties: false,
+            required: ["diagnostic", "attempt"],
+            properties: {
+              diagnostic: { type: "string", minLength: 1 },
+              attempt: { type: "integer", minimum: 1 },
+            },
+          },
+          next: "end",
+        },
+      },
+    });
+
+    const prompts: unknown[] = [];
+    activeResolvedModel = mockResolvedModel(new MockLanguageModelV3({
+      doStream: async (options) => {
+        prompts.push(options.prompt);
+        return {
+          stream: convertArrayToReadableStream([
+            { type: "stream-start", warnings: [] },
+            { type: "text-start", id: "text" },
+            { type: "text-delta", id: "text", delta: "REPAIRED" },
+            { type: "text-end", id: "text" },
+            {
+              type: "finish",
+              finishReason: { unified: "stop", raw: undefined },
+              usage: {
+                inputTokens: { total: 1 },
+                outputTokens: { total: 1 },
+              },
+            },
+          ] as any[]),
+        };
+      },
+    }));
+    const handle = spawnLoopEngine(
+      {
+        name: "loop-agent",
+        role: "developer",
+        assignedLoops: ["repair-flow"],
+      },
+      makeTask({
+        loop: "repair-flow",
+        description: "redesign the whole site creatively",
+      }),
+      cwd,
+      { polpoDir, outputDir },
+    );
+    const result = await handle.done;
+
+    expect(result.exitCode, result.stderr).toBe(0);
+    const prompt = JSON.stringify(prompts[0]);
+    expect(prompt).toContain("fix-this-exactly");
+    expect(prompt).toContain('\\"attempt\\":1');
+    expect(prompt).not.toContain("redesign the whole site creatively");
+    expect(prompt).not.toContain("do-not-pass");
   });
 
   test("missing assigned loop file fails the task loudly", async () => {

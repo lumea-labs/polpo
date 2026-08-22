@@ -50,6 +50,7 @@ import {
   PipelineExecutor,
   buildLoopStepAgent,
   loopContextPrompt,
+  loopAgentInputPrompt,
   maybeParseJson,
   normalizeProjectLoop,
   normalizeToolInput,
@@ -66,6 +67,7 @@ import {
   extractToolUsageRecord,
 } from "@polpo-ai/core";
 import type { LoopToolCall, LoopConfig, LoopResumeState, ProjectLoopConfig } from "@polpo-ai/core";
+import type { PreparedLoopAgentInput } from "@polpo-ai/core";
 import {
   InMemorySteeringController,
   type SteeringMessage,
@@ -395,6 +397,8 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
     loopName: string;
     loop: LoopConfig;
     contextPrompt?: string;
+    /** Explicit model-visible input for a projected Project Loop agent step. */
+    initialUserMessage?: string;
     /** Durable-turns checkpoint to resume from (single-session paths only). */
     resume?: LoopResumeState;
     /** Durable-turns checkpoint sink — wired to RunStore.updateResumeState by the runner. */
@@ -457,7 +461,7 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
         ? [...(resume.history as ModelMessage[])]
         : [{
             role: "user",
-            content: buildPrompt(
+            content: options.initialUserMessage ?? buildPrompt(
               task,
               ctx?.promptContextSegments,
               ctx?.contextTrust,
@@ -1009,7 +1013,7 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
         }
         return normalizeToolInput(validation.value);
       },
-      runLoop: async (name, loop, context, position) => {
+      runLoop: async (name, loop, context, position, agentInput?: PreparedLoopAgentInput) => {
         const sessionResume = pendingSessionResume;
         pendingSessionResume = undefined;
         const stepAgent = buildLoopStepAgent(agentConfig, name, loop);
@@ -1017,11 +1021,16 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
           sessionAgent: stepAgent,
           loopName: name,
           loop,
-          contextPrompt: loopContextPrompt(
-            name,
-            context,
-            ctx?.contextTrust ?? "off",
-          ),
+          contextPrompt: agentInput
+            ? undefined
+            : loopContextPrompt(
+                name,
+                context,
+                ctx?.contextTrust ?? "off",
+              ),
+          initialUserMessage: agentInput
+            ? loopAgentInputPrompt(name, agentInput)
+            : undefined,
           resume: sessionResume,
           // (b) Per-turn checkpoint INSIDE this agent step: the session
           // state wrapped with the pipeline position. No position = the

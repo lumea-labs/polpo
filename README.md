@@ -476,6 +476,39 @@ The agent's system instructions belong in
 
 Loop guards use Polpo's safe expression evaluator instead of JavaScript `eval` or `new Function`. Step outputs are available in the shared context bag by step id or `saveAs` path, e.g. `classify.route`, `review.approved`, or `timing.start`. `saveAs` writes context data; it does not create shell variables inside later `bash` commands. The OSS surface validates and round-trips the contract through core types, API schemas, SDK types, `polpo deploy`, and `polpo pull`.
 
+Agent steps can opt into a minimal, typed context projection. When `input` is
+present, exact `{ "$context": "path.to.value" }` markers resolve before the
+model call and the optional `inputSchema` validates the resulting JSON:
+
+```jsonc
+{
+  "type": "agent",
+  "systemPrompt": "Correct only the supplied validation failures.",
+  "input": {
+    "failures": { "$context": "validation.failures" },
+    "attempt": 1
+  },
+  "inputSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["failures", "attempt"],
+    "properties": {
+      "failures": { "type": "array", "minItems": 1 },
+      "attempt": { "type": "integer", "minimum": 1 }
+    }
+  },
+  "next": "validate"
+}
+```
+
+For that step, the resolved input replaces both the shared-context prompt and
+the canonical user conversation history. Session identity, sandbox/workspace,
+tools, trusted invocation bindings, checkpoints, and subsequent graph context
+remain unchanged. Missing bindings, malformed schemas, validation failures,
+and payloads above 256 KiB fail before model invocation. Trace events record
+binding paths, UTF-8 size, validation status, and a deterministic hash without
+recording the resolved values.
+
 Loops also have first-class governance fields:
 
 - `permissions`: readable allow/deny/approval rules for resources such as `tool`, `step`, `model`, `human`, and `loop`. Use this for least-privilege runtime constraints beyond an agent's broad tool assignment.
@@ -846,7 +879,7 @@ Agent-direct chat can target a loop explicitly:
 }
 ```
 
-At runtime, the selected project loop can narrow the effective prompt, tools, skills, model, reasoning, tool choice, and max turns per agent step. If a step omits `skills`, it inherits the agent-level `skills`. Project loop execution in chat completions uses the shared context graph: deterministic tool steps run first, store outputs in the context bag, and later agent steps receive that context as runtime data in their system prompt. Core keeps a compatibility normalizer for legacy inline `loops` + `pipeline` configs and ships a pure `PipelineExecutor` for sequential, tool, switch, parallel, and human nodes; hosts wire `runLoop`, `runTool`, and `handleHuman` callbacks to their concrete runtime.
+At runtime, the selected project loop can narrow the effective prompt, tools, skills, model, reasoning, tool choice, and max turns per agent step. If a step omits `skills`, it inherits the agent-level `skills`. Project loop execution in chat completions uses the shared context graph: deterministic tool steps run first and store outputs in the context bag. Agent steps without `input` retain the compatible full-context behavior; agent steps with `input` receive only their validated projection. Core keeps a compatibility normalizer for legacy inline `loops` + `pipeline` configs and ships a pure `PipelineExecutor` for sequential, tool, switch, parallel, and human nodes; hosts wire `runLoop`, `runTool`, and `handleHuman` callbacks to their concrete runtime.
 
 Deterministic tool inputs can read typed request metadata without an LLM step:
 

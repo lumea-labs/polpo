@@ -1227,6 +1227,107 @@ describe("PipelineExecutor — durable checkpoints", () => {
     expect(positions[1]?.previousNode).toBe("a");
   });
 
+  it("resolves, validates, traces, and freezes projected agent input before invoking the host", async () => {
+    const executor = new PipelineExecutor();
+    const inputs: unknown[] = [];
+    const events: unknown[] = [];
+
+    await executor.execute({
+      loops: {
+        repair: {
+          input: {
+            failures: { $context: "validation.failures" },
+            attempt: 1,
+          },
+          inputSchema: {
+            type: "object",
+            additionalProperties: false,
+            required: ["failures", "attempt"],
+            properties: {
+              failures: { type: "array", minItems: 1 },
+              attempt: { type: "integer", minimum: 1 },
+            },
+          },
+        },
+      },
+      context: { validation: { failures: [{ message: "broken" }] } },
+      pipeline: { steps: [{ loop: "repair" }] },
+      onTrace: (event) => { events.push(event); },
+      runLoop: async (_name, _loop, _context, _position, input) => {
+        inputs.push(input);
+        expect(Object.isFrozen(input?.value)).toBe(true);
+        return { output: { repaired: true } };
+      },
+    });
+
+    expect(inputs).toHaveLength(1);
+    expect((inputs[0] as any).value).toEqual({
+      failures: [{ message: "broken" }],
+      attempt: 1,
+    });
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "agent.input",
+      step: "repair",
+      data: expect.objectContaining({
+        bytes: expect.any(Number),
+        hash: expect.stringMatching(/^fnv1a64:/),
+        schemaValidated: true,
+        bindingPaths: [{ inputPath: "$.failures", contextPath: "validation.failures" }],
+      }),
+    }));
+    expect(JSON.stringify(events)).not.toContain("broken");
+  });
+
+  it("fails before host invocation when projected agent input is missing or invalid", async () => {
+    const executor = new PipelineExecutor();
+    let calls = 0;
+    await expect(executor.execute({
+      loops: {
+        repair: {
+          input: { failures: { $context: "validation.failures" } },
+          inputSchema: {
+            type: "object",
+            required: ["failures"],
+            properties: { failures: { type: "array", minItems: 1 } },
+          },
+        },
+      },
+      context: {},
+      pipeline: { steps: [{ loop: "repair" }] },
+      runLoop: async () => {
+        calls += 1;
+        return { output: {} };
+      },
+    })).rejects.toMatchObject({ code: "loop_binding_missing" });
+    expect(calls).toBe(0);
+  });
+
+  it("isolates projected inputs across parallel agent branches", async () => {
+    const executor = new PipelineExecutor();
+    const observed = new Map<string, unknown>();
+    await executor.execute({
+      loops: {
+        first: { input: { value: { $context: "source.first" } } },
+        second: { input: { value: { $context: "source.second" } } },
+      },
+      context: { source: { first: { id: 1 }, second: { id: 2 } } },
+      pipeline: {
+        steps: [{ parallel: [[{ loop: "first" }], [{ loop: "second" }]], join: "all" }],
+      },
+      runLoop: async (name, _loop, _context, position, input) => {
+        expect(position).toBeUndefined();
+        observed.set(name, input?.value);
+        return { output: { completed: name } };
+      },
+    });
+
+    expect(observed).toEqual(new Map([
+      ["first", { value: { id: 1 } }],
+      ["second", { value: { id: 2 } }],
+    ]));
+    expect(observed.get("first")).not.toBe(observed.get("second"));
+  });
+
   it("without onCheckpoint nothing changes: no position, no checkpoint machinery", async () => {
     const executor = new PipelineExecutor();
     const positions: Array<PipelineStepPosition | undefined> = [];

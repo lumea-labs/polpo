@@ -99,6 +99,7 @@ export type LoopTraceEventType =
   | "step.start"
   | "step.end"
   | "step.skip"
+  | "agent.input"
   | "tool.call"
   | "tool.result"
   | "human.request"
@@ -153,6 +154,10 @@ export interface LoopConfig {
   /** Human-readable description for visualizers, docs, and audit UI. */
   description?: string;
   systemPrompt?: string;
+  /** Model-visible JSON projected from static values and shared context bindings. */
+  input?: unknown;
+  /** Optional JSON Schema validated after bindings resolve and before model invocation. */
+  inputSchema?: unknown;
   /** Tool subset active in this loop (restriction = determinism/safety). */
   allowedTools?: string[];
   /** @deprecated Use allowedTools. Retained for authored-config compatibility. */

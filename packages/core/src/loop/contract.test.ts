@@ -359,3 +359,62 @@ describe("agentLoopConfigSchema", () => {
     ]);
   });
 });
+
+describe("project loop agent input projection contract", () => {
+  it("preserves input and inputSchema on agent steps through normalization", () => {
+    const loop = projectLoopConfigSchema.parse({
+      version: "1",
+      kind: "graph",
+      name: "repair-flow",
+      start: "repair",
+      steps: {
+        repair: {
+          type: "agent",
+          input: {
+            failures: { $context: "validation.failures" },
+            attempt: 1,
+          },
+          inputSchema: {
+            type: "object",
+            required: ["failures", "attempt"],
+          },
+          next: "end",
+        },
+      },
+    }) as ProjectLoopConfig;
+
+    expect(normalizeProjectLoop(loop).loops.repair).toMatchObject({
+      input: {
+        failures: { $context: "validation.failures" },
+        attempt: 1,
+      },
+      inputSchema: {
+        type: "object",
+        required: ["failures", "attempt"],
+      },
+    });
+  });
+
+  it("rejects inputSchema without input and malformed schemas at config load", () => {
+    const base = { name: "repair-flow", start: "repair" };
+
+    expect(projectLoopConfigSchema.safeParse({
+      ...base,
+      steps: {
+        repair: { type: "agent", inputSchema: { type: "object" }, next: "end" },
+      },
+    }).success).toBe(false);
+
+    expect(projectLoopConfigSchema.safeParse({
+      ...base,
+      steps: {
+        repair: {
+          type: "agent",
+          input: {},
+          inputSchema: { $ref: "https://example.com/remote.json" },
+          next: "end",
+        },
+      },
+    }).success).toBe(false);
+  });
+});

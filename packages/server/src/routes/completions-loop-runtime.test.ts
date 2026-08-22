@@ -366,6 +366,82 @@ describe("completionRoutes project loop runtime", () => {
     });
   });
 
+  it("returns a typed 400 when projected agent input fails its schema before model invocation", async () => {
+    const deps = makeDeps({
+      name: "time-tracker",
+      start: "repair",
+      steps: {
+        repair: {
+          type: "agent",
+          input: { failures: [], attempt: 0 },
+          inputSchema: {
+            type: "object",
+            required: ["failures", "attempt"],
+            properties: {
+              failures: { type: "array", minItems: 1 },
+              attempt: { type: "integer", minimum: 1 },
+            },
+          },
+          next: "end",
+        },
+      },
+    });
+    const model = vi.fn();
+    deps.resolveAgentModel = model as any;
+
+    const res = await completionRoutes(() => deps).request("/", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        agent: "timer",
+        loop: "time-tracker",
+        messages: [{ role: "user", content: "repair" }],
+      }),
+    });
+
+    expect(res.status).toBe(400);
+    expect(model).not.toHaveBeenCalled();
+    expect(await res.json()).toMatchObject({
+      error: {
+        type: "loop_runtime_error",
+        code: "loop_agent_input_invalid",
+      },
+    });
+  });
+
+  it("streams a projected agent binding failure without invoking the model", async () => {
+    const deps = makeDeps({
+      name: "time-tracker",
+      start: "repair",
+      steps: {
+        repair: {
+          type: "agent",
+          input: { failures: { $context: "validation.failures" } },
+          next: "end",
+        },
+      },
+    });
+    const model = vi.fn();
+    deps.resolveAgentModel = model as any;
+
+    const res = await completionRoutes(() => deps).request("/", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        agent: "timer",
+        loop: "time-tracker",
+        stream: true,
+        messages: [{ role: "user", content: "repair" }],
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(model).not.toHaveBeenCalled();
+    const body = await res.text();
+    expect(body).toContain('"code":"loop_binding_missing"');
+    expect(body).toContain("[DONE]");
+  });
+
   it("validates resolved values against the tool schema before side effects", async () => {
     const execute = vi.fn(async () => "must not run");
     const deps = makeDeps({
