@@ -35,6 +35,35 @@ export interface SkillResource {
   content: string;
 }
 
+export const DEFAULT_SKILL_AUTO_REFERENCE_MAX_BYTES = 64 * 1024;
+export const SKILL_AUTO_REFERENCE_MAX_FILES = 512;
+
+export type SkillReferenceOmissionReason =
+  | "binary"
+  | "budget_exceeded"
+  | "read_failed"
+  | "unsupported_entry";
+
+export interface LoadedSkillReference extends SkillResource {
+  bytes: number;
+}
+
+export interface OmittedSkillReference {
+  path: string;
+  reason: SkillReferenceOmissionReason;
+}
+
+export interface AssembledSkillRead {
+  entrypoint: SkillResource;
+  references: LoadedSkillReference[];
+  omitted: OmittedSkillReference[];
+  totalReferenceBytes: number;
+}
+
+export interface AssembleSkillReadOptions {
+  maxReferenceBytes?: number;
+}
+
 export type SkillResourceErrorCode =
   | "invalid_path"
   | "not_found"
@@ -185,6 +214,160 @@ export async function readSkillResource(
   }
 }
 
+function comparePaths(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
+function utf8Bytes(value: string): number {
+  return new TextEncoder().encode(value).byteLength;
+}
+
+function looksBinary(value: string): boolean {
+  if (value.includes("\0")) return true;
+  if (value.length === 0) return false;
+
+  let controls = 0;
+  const sampled = value.slice(0, 8_192);
+  for (const char of sampled) {
+    const code = char.charCodeAt(0);
+    if (code === 0xfffd || (code < 32 && code !== 9 && code !== 10 && code !== 13)) {
+      controls += 1;
+    }
+  }
+  return controls / sampled.length > 0.05;
+}
+
+function explicitReferencePaths(content: string): string[] {
+  const paths: string[] = [];
+  const seen = new Set<string>();
+  const pattern = /references\/[A-Za-z0-9][A-Za-z0-9._/-]*/g;
+  for (const match of content.matchAll(pattern)) {
+    const path = match[0].replace(/[.,;:!?]+$/, "");
+    if (!seen.has(path)) {
+      seen.add(path);
+      paths.push(path);
+    }
+  }
+  return paths;
+}
+
+async function listBundledReferences(
+  fs: FileSystem,
+  skill: LoadedSkill,
+): Promise<{ paths: string[]; omitted: OmittedSkillReference[] }> {
+  const root = resolve(skill.path, "references");
+  try {
+    if (!(await fs.exists(root))) return { paths: [], omitted: [] };
+    const rootStat = await fs.stat(root);
+    if (!rootStat.isDirectory) {
+      return {
+        paths: [],
+        omitted: [{ path: "references", reason: "unsupported_entry" }],
+      };
+    }
+  } catch {
+    return {
+      paths: [],
+      omitted: [{ path: "references", reason: "read_failed" }],
+    };
+  }
+
+  const paths: string[] = [];
+  const omitted: OmittedSkillReference[] = [];
+  const visit = async (directory: string, relativeDirectory: string): Promise<void> => {
+    if (paths.length + omitted.length >= SKILL_AUTO_REFERENCE_MAX_FILES) return;
+
+    let entries: Array<{ name: string; isDirectory: boolean; isFile: boolean }>;
+    try {
+      if (fs.readdirWithTypes) {
+        entries = await fs.readdirWithTypes(directory);
+      } else {
+        const names = await fs.readdir(directory);
+        entries = await Promise.all(names.map(async (name) => {
+          const stat = await fs.stat(resolve(directory, name));
+          return { name, isDirectory: stat.isDirectory, isFile: stat.isFile };
+        }));
+      }
+    } catch {
+      omitted.push({ path: relativeDirectory, reason: "read_failed" });
+      return;
+    }
+
+    entries.sort((left, right) => comparePaths(left.name, right.name));
+    for (const entry of entries) {
+      if (paths.length + omitted.length >= SKILL_AUTO_REFERENCE_MAX_FILES) break;
+      const relativePath = `${relativeDirectory}/${entry.name}`;
+      const absolutePath = resolve(directory, entry.name);
+      if (entry.isDirectory) {
+        await visit(absolutePath, relativePath);
+      } else if (entry.isFile) {
+        paths.push(relativePath);
+      } else {
+        omitted.push({ path: relativePath, reason: "unsupported_entry" });
+      }
+    }
+  };
+
+  await visit(root, "references");
+  return { paths, omitted };
+}
+
+/**
+ * Build the model-facing view of one assigned skill. The entrypoint is always
+ * loaded first; textual references are included deterministically so skill
+ * authors do not need Polpo-specific instructions in SKILL.md.
+ */
+export async function assembleSkillRead(
+  fs: FileSystem,
+  skill: LoadedSkill,
+  options: AssembleSkillReadOptions = {},
+): Promise<AssembledSkillRead> {
+  const entrypoint = await readSkillResource(fs, skill);
+  const configuredBudget = options.maxReferenceBytes;
+  const maxReferenceBytes = typeof configuredBudget === "number" && Number.isFinite(configuredBudget)
+    ? Math.max(0, Math.floor(configuredBudget))
+    : DEFAULT_SKILL_AUTO_REFERENCE_MAX_BYTES;
+  const listed = await listBundledReferences(fs, skill);
+  const explicit = explicitReferencePaths(entrypoint.content);
+  const available = new Set(listed.paths);
+  const orderedPaths = [
+    ...explicit.filter((path) => available.has(path)),
+    ...listed.paths.filter((path) => !explicit.includes(path)).sort(comparePaths),
+  ];
+
+  const references: LoadedSkillReference[] = [];
+  const omitted = [...listed.omitted];
+  let totalReferenceBytes = 0;
+  for (const path of orderedPaths) {
+    let resource: SkillResource;
+    try {
+      resource = await readSkillResource(fs, skill, path);
+    } catch {
+      omitted.push({ path, reason: "read_failed" });
+      continue;
+    }
+
+    if (looksBinary(resource.content)) {
+      omitted.push({ path, reason: "binary" });
+      continue;
+    }
+    const bytes = utf8Bytes(resource.content);
+    if (totalReferenceBytes + bytes > maxReferenceBytes) {
+      omitted.push({ path, reason: "budget_exceeded" });
+      continue;
+    }
+    references.push({ ...resource, bytes });
+    totalReferenceBytes += bytes;
+  }
+
+  return {
+    entrypoint,
+    references,
+    omitted: omitted.sort((left, right) => comparePaths(left.path, right.path)),
+    totalReferenceBytes,
+  };
+}
+
 // ── Build prompt (pure, no FS) ──
 
 /**
@@ -193,6 +376,68 @@ export async function readSkillResource(
 export interface SkillPromptOptions {
   /** Assigned skills that the caller explicitly selected for this execution. */
   activatedSkills?: readonly string[];
+}
+
+export interface ProgressiveSkillPromptEntry {
+  name?: unknown;
+  description?: unknown;
+  content?: unknown;
+}
+
+/** Build the prompt contract for runtimes that expose skills progressively. */
+export function buildProgressiveSkillPrompt(
+  skills: ProgressiveSkillPromptEntry[],
+  activatedSkills: readonly string[] = [],
+): string {
+  const available = skills
+    .filter(
+      (skill): skill is ProgressiveSkillPromptEntry & { name: string } =>
+        typeof skill.name === "string" && skill.name.trim().length > 0,
+    )
+    .map((skill) => ({
+      name: skill.name,
+      description: typeof skill.description === "string" ? skill.description : "",
+      content: typeof skill.content === "string" ? skill.content : "",
+    }));
+  if (available.length === 0) return "";
+
+  const skillsByName = new Map(available.map((skill) => [skill.name, skill]));
+  const activated = [...new Set(activatedSkills)].flatMap((name) => {
+    const skill = skillsByName.get(name);
+    return skill ? [skill] : [];
+  });
+  const parts = [
+    "## Assigned Skills",
+    "",
+    `You have ${available.length} assigned skill${available.length === 1 ? "" : "s"}.`,
+    `Assigned skill names: ${available.map((skill) => `\`${skill.name}\``).join(", ")}.`,
+    "Always use `skill_read` for assigned skill instructions and resources.",
+    "Calling `skill_read` with only `name` loads SKILL.md and automatically includes the textual files bundled under `references/`.",
+    "Use its optional bundle-relative `path` only for a resource reported as omitted or when you need one exact bundle file.",
+    "Do not use workspace file tools or shell commands to read SKILL.md, references, scripts, or assets from an assigned skill bundle.",
+  ];
+
+  if (activated.length === 0) {
+    parts.push(
+      "For non-trivial work, call `skill_list` first to inspect available skills, then call `skill_read` before applying a skill's detailed instructions.",
+      "Do not infer detailed skill behavior from the name alone.",
+    );
+    return parts.join("\n");
+  }
+
+  parts.push(
+    "Other assigned skills remain discoverable through `skill_list` and `skill_read`.",
+    "",
+    "## Skills Activated for This Execution",
+    "",
+    "Apply the following complete skill instructions to this request. This does not disable other assigned skills.",
+  );
+  for (const skill of activated) {
+    parts.push("", `### ${skill.name}`);
+    if (skill.description) parts.push(`> ${skill.description}`);
+    if (skill.content) parts.push("", skill.content);
+  }
+  return parts.join("\n");
 }
 
 export function buildSkillPrompt(

@@ -227,6 +227,14 @@ the selected agents' `skills` arrays, and records source provenance in
 `polpo deploy` and `polpo pull` preserve all nested text and binary files.
 Symlinks are rejected rather than followed outside the bundle.
 
+At runtime, `skill_list` exposes only the compact assigned-skill index.
+`skill_read({ name })` loads the selected `SKILL.md` and automatically
+assembles textual files under `references/` into the same model-visible
+result. Skill authors can use ordinary bundle-relative references without
+adding Polpo-specific reading instructions. Use
+`skill_read({ name, path })` for an exact resource that was not loaded
+automatically; skill resources are never read through workspace file tools.
+
 Other local operations are available without the dashboard:
 
 ```bash

@@ -119,6 +119,12 @@ await client.putSkillBundle(bundle);
 For project-local installation and assignment, use `polpo skills add` and
 `polpo deploy`; these preserve the same complete bundle contract.
 
+The runtime consumes that contract directly: `skill_read({ name })` returns
+the skill entrypoint together with its textual `references/` resources, while
+`skill_read({ name, path })` reads one exact bundle-relative resource. Clients
+do not need to rewrite imported skills or instruct the model to use workspace
+file tools for bundle content.
+
 An agent can have several assigned skills while a caller explicitly applies
 one or more of them to a single execution:
 
