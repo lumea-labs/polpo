@@ -269,8 +269,11 @@ export type { AgentPromptOptions, FilesystemWorkspacePromptOptions } from "./age
 // ── Skills Reader (async, FileSystem-based) ────────────────────────────
 export {
   discoverSkills, loadAgentSkills, listSkillsWithAssignments,
-  buildSkillPrompt, parseSkillFrontmatter, extractSkillBody,
-  normalizeSkillResourcePath, readSkillResource, SkillResourceError,
+  buildSkillPrompt, buildProgressiveSkillPrompt,
+  parseSkillFrontmatter, extractSkillBody,
+  normalizeSkillResourcePath, readSkillResource, assembleSkillRead,
+  SkillResourceError, DEFAULT_SKILL_AUTO_REFERENCE_MAX_BYTES,
+  SKILL_AUTO_REFERENCE_MAX_FILES,
 } from "./skills-reader.js";
 export type {
   SkillInfo,
@@ -281,6 +284,12 @@ export type {
   SkillIndex,
   SkillIndexEntry,
   SkillPromptOptions,
+  ProgressiveSkillPromptEntry,
+  LoadedSkillReference,
+  OmittedSkillReference,
+  SkillReferenceOmissionReason,
+  AssembledSkillRead,
+  AssembleSkillReadOptions,
 } from "./skills-reader.js";
 
 // ── Model Spec Parsing ─────────────────────────────────────────────────

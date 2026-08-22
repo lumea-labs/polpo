@@ -1,11 +1,16 @@
 import { Type } from "@sinclair/typebox";
 import {
+  assembleSkillRead,
   readSkillResource,
   SkillResourceError,
   type FileSystem,
   type LoadedSkill,
   type PolpoTool,
 } from "@polpo-ai/core";
+
+export interface SkillToolOptions {
+  maxAutoReferenceBytes?: number;
+}
 
 function summarizeSkill(skill: LoadedSkill): Record<string, unknown> {
   return {
@@ -42,6 +47,7 @@ export function createSkillListTool(skills: readonly LoadedSkill[]): PolpoTool<a
 export function createSkillReadTool(
   fs: FileSystem,
   skills: readonly LoadedSkill[],
+  options: SkillToolOptions = {},
 ): PolpoTool<any> | null {
   const byName = new Map(skills.map((skill) => [skill.name, skill]));
   if (byName.size === 0) return null;
@@ -50,7 +56,7 @@ export function createSkillReadTool(
     name: "skill_read",
     label: "Read Skill",
     description:
-      "Read an assigned skill. Omit path to read its main SKILL.md instructions. When those instructions reference a bundled file, call skill_read again with its bundle-relative path, for example references/design-system.md. Do not use workspace file tools for skill resources.",
+      "Read an assigned skill bundle. Omit path to load SKILL.md plus its textual references automatically. Set path only for one exact bundle resource that was omitted or is needed explicitly. Never use workspace file tools for skill resources.",
     parameters: Type.Object({
       name: Type.String({
         description: `Assigned skill name. Allowed values: ${[...byName.keys()].join(", ")}`,
@@ -76,6 +82,59 @@ export function createSkillReadTool(
 
       const requestedPath = typeof args.path === "string" ? args.path : undefined;
       try {
+        if (requestedPath === undefined) {
+          const assembled = await assembleSkillRead(fs, skill, {
+            maxReferenceBytes: options.maxAutoReferenceBytes,
+          });
+          const parts = [
+            `# ${skill.name}`,
+            skill.description ? `\n${skill.description}` : "",
+            "",
+            "Resource: SKILL.md",
+            "",
+            assembled.entrypoint.content,
+          ];
+          if (assembled.references.length > 0) {
+            parts.push(
+              "",
+              "## Bundled references (already loaded)",
+              "",
+              "These resources are already in context. Do not read them again with workspace file tools or shell commands.",
+            );
+            for (const reference of assembled.references) {
+              parts.push("", `### Resource: ${reference.path}`, "", reference.content);
+            }
+          }
+          if (assembled.omitted.length > 0) {
+            parts.push("", "## Additional bundled resources", "");
+            for (const omitted of assembled.omitted) {
+              parts.push(`- ${omitted.path} (${omitted.reason})`);
+            }
+            if (assembled.omitted.some((item) => item.reason === "budget_exceeded" || item.reason === "read_failed")) {
+              parts.push(
+                "",
+                "Use `skill_read` with this skill name and the exact bundle-relative `path` for a required textual resource listed above. Do not use workspace file tools.",
+              );
+            }
+          }
+
+          return {
+            content: [{ type: "text" as const, text: parts.filter((part) => part !== "").join("\n") }],
+            details: {
+              ok: true,
+              skill: skill.name,
+              entrypoint: assembled.entrypoint.path,
+              references: assembled.references.map((reference) => ({
+                path: reference.path,
+                loaded: true,
+                bytes: reference.bytes,
+              })),
+              omitted: assembled.omitted,
+              totalReferenceBytes: assembled.totalReferenceBytes,
+            },
+          };
+        }
+
         const resource = await readSkillResource(fs, skill, requestedPath);
         return {
           content: [
@@ -120,9 +179,10 @@ export function createSkillReadTool(
 export function createSkillTools(
   fs: FileSystem,
   skills: readonly LoadedSkill[],
+  options: SkillToolOptions = {},
 ): PolpoTool<any>[] {
   return [
     createSkillListTool(skills),
-    createSkillReadTool(fs, skills),
+    createSkillReadTool(fs, skills, options),
   ].filter((tool): tool is PolpoTool<any> => tool !== null);
 }
