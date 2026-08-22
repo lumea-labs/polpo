@@ -1,6 +1,6 @@
 {
   "name": "@polpo-ai/vault-crypto",
-  "version": "0.15.106",
+  "version": "0.15.107",
   "description": "AES-256-GCM encryption helpers for Polpo vault stores",
   "type": "module",
   "main": "dist/index.js",
