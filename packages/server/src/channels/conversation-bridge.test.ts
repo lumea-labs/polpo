@@ -198,9 +198,7 @@ describe("createConversationChannelTurnHandler", () => {
       metadata: { sessionId: "session-1" },
     });
     expect(allowedTools).toHaveBeenCalledOnce();
-    expect(executeTurn.mock.calls[0]?.[0].runtime?.toolPolicy).not.toHaveProperty(
-      "routeAllowedTools",
-    );
+    expect(executeTurn.mock.calls[0]?.[0].runtime?.toolPolicy).toBeUndefined();
   });
 
   it("preserves burst order and inlines authenticated image data", async () => {
