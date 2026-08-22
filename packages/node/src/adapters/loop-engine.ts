@@ -39,6 +39,7 @@ import {
   normalizeResponseMessagesForHistory,
   prepareModelMessagesForTransport,
   runModelPolicyTurn,
+  classifyRuntimeError,
   toValidatedToolInputSchema,
   validateToolInput,
 } from "@polpo-ai/llm";
@@ -162,16 +163,29 @@ function modelSelectionForResolvedModel(model: SpawnPrep["model"]): string {
 }
 
 function runtimeErrorMetadata(error: unknown): Record<string, unknown> {
-  const raw = error as any;
+  const normalized = classifyRuntimeError(error);
+  const raw = error && typeof error === "object"
+    ? error as Record<string, unknown>
+    : undefined;
+  const cause = raw?.cause && typeof raw.cause === "object"
+    ? raw.cause as Record<string, unknown>
+    : undefined;
   return {
-    name: raw?.name ?? raw?.constructor?.name,
-    message: raw?.message ?? String(error),
-    statusCode: raw?.statusCode ?? raw?.cause?.statusCode,
-    responseBody: raw?.responseBody ?? raw?.cause?.responseBody,
-    modelId: raw?.modelId ?? raw?.cause?.modelId,
-    code: raw?.code ?? raw?.cause?.code,
-    type: raw?.type ?? raw?.cause?.type,
-    data: raw?.data ?? raw?.cause?.data,
+    name: typeof raw?.name === "string"
+      ? raw.name
+      : error instanceof Error
+        ? error.name
+        : undefined,
+    message: normalized.message ?? "Unknown model runtime error",
+    class: normalized.class,
+    retryable: normalized.retryable,
+    retryScope: normalized.retryScope,
+    statusCode: normalized.statusCode,
+    code: raw?.code ?? cause?.code ?? normalized.providerCode,
+    type: raw?.type ?? cause?.type,
+    data: raw?.data ?? cause?.data,
+    responseBody: raw?.responseBody ?? cause?.responseBody,
+    modelId: raw?.modelId ?? cause?.modelId,
   };
 }
 
@@ -577,6 +591,17 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
             if (inject) emitTranscript({ type: "tool_input_delta", toolId: event.id, delta: event.delta });
             break;
           }
+          case "tool-input-aborted": {
+            if (inject) {
+              emitTranscript({
+                type: "tool_input_interrupted",
+                toolId: event.id,
+                tool: event.name,
+                error: event.error,
+              });
+            }
+            break;
+          }
           case "tool-call": {
             if (!event.id || seenModelToolCallIds.has(event.id)) break;
             seenModelToolCallIds.add(event.id);
@@ -661,9 +686,10 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
             break;
           }
           case "error": {
+            const normalized = classifyRuntimeError(event.error);
             emitTranscript({
               type: "error",
-              message: event.error instanceof Error ? event.error.message : String(event.error),
+              message: normalized.message ?? "Unknown model runtime error",
               error: runtimeErrorMetadata(event.error),
             });
             break;

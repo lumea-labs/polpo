@@ -126,4 +126,79 @@ describe("runtime normalization", () => {
       retryable: false,
     });
   });
+
+  it("extracts actionable diagnostics from plain and nested provider errors", () => {
+    expect(classifyRuntimeError({
+      code: "Client specified an invalid argument",
+      error: "Invalid arguments passed to the model.",
+      statusCode: 400,
+      isRetryable: true,
+    })).toMatchObject({
+      class: "invalid-request",
+      retryable: false,
+      message: "Invalid arguments passed to the model.",
+      providerCode: "Client specified an invalid argument",
+      statusCode: 400,
+    });
+
+    expect(classifyRuntimeError({
+      cause: {
+        message: "Provider temporarily unavailable",
+        statusCode: 503,
+        isRetryable: true,
+      },
+    })).toMatchObject({
+      class: "overloaded",
+      retryable: true,
+      message: "Provider temporarily unavailable",
+      statusCode: 503,
+    });
+  });
+
+  it("always returns a non-empty safe message for unknown thrown values", () => {
+    const circular: Record<string, unknown> = {};
+    circular.self = circular;
+
+    expect(classifyRuntimeError(circular)).toMatchObject({
+      class: "unknown",
+      retryable: false,
+      message: "Unknown model runtime error",
+    });
+  });
+
+  it("prefers nested provider diagnostics over generic wrapper messages", () => {
+    expect(classifyRuntimeError({
+      message: "No output generated. Check the stream for errors.",
+      statusCode: 400,
+      cause: {
+        responseBody: JSON.stringify({
+          error: { message: "Missing required parameter: input[10].arguments." },
+        }),
+      },
+    })).toMatchObject({
+      class: "invalid-request",
+      retryable: false,
+      message: "Missing required parameter: input[10].arguments.",
+      statusCode: 400,
+    });
+
+    expect(classifyRuntimeError({ message: "provider failed", statusCode: 500 })).toMatchObject({
+      class: "unavailable",
+      retryable: true,
+      retryScope: "model-turn",
+    });
+  });
+
+  it("classifies nested network failures using provider codes", () => {
+    expect(classifyRuntimeError({
+      message: "fetch failed",
+      cause: new AggregateError([
+        Object.assign(new Error("connect failed"), { code: "ENETUNREACH" }),
+      ]),
+    })).toMatchObject({
+      class: "unavailable",
+      retryable: true,
+      providerCode: "ENETUNREACH",
+    });
+  });
 });

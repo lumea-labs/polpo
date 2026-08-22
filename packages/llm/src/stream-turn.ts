@@ -9,10 +9,14 @@ import {
   type StreamTextResult,
   type ToolChoice,
   type ToolSet,
+  type TimeoutConfiguration,
   type TypedToolCall,
   type TypedToolError,
   type TypedToolResult,
 } from "ai";
+import type { NormalizedModelError } from "./model-runtime.js";
+
+export type ModelTurnErrorInfo = Omit<NormalizedModelError, "raw">;
 
 export type ModelTurnEvent<TOOLS extends ToolSet = ToolSet> =
   | { type: "reasoning-delta"; id: string; text: string }
@@ -20,6 +24,7 @@ export type ModelTurnEvent<TOOLS extends ToolSet = ToolSet> =
   | { type: "tool-input-start"; id: string; name: string; providerExecuted?: boolean; dynamic?: boolean; title?: string }
   | { type: "tool-input-delta"; id: string; delta: string }
   | { type: "tool-input-end"; id: string }
+  | { type: "tool-input-aborted"; id: string; name: string; error: ModelTurnErrorInfo }
   | {
       type: "tool-call";
       id: string;
@@ -58,6 +63,9 @@ export type StreamModelTurnInput<TOOLS extends ToolSet = ToolSet> = {
   activeTools?: Array<keyof TOOLS>;
   toolChoice?: ToolChoice<TOOLS>;
   parallelToolCalls?: boolean;
+  /** AI SDK request-phase retries. Defaults explicitly to the SDK default. */
+  maxRetries?: number;
+  timeout?: TimeoutConfiguration;
   maxOutputTokens?: number;
   providerOptions?: Record<string, unknown>;
   abortSignal?: AbortSignal;
@@ -548,6 +556,8 @@ export async function streamModelTurn<TOOLS extends ToolSet = ToolSet>(
     ...(input.tools ? { tools: input.tools } : {}),
     ...(input.activeTools ? { activeTools: input.activeTools } : {}),
     ...(input.toolChoice ? { toolChoice: input.toolChoice } : {}),
+    maxRetries: input.maxRetries ?? 2,
+    ...(input.timeout !== undefined ? { timeout: input.timeout } : {}),
     ...(input.maxOutputTokens ? { maxOutputTokens: input.maxOutputTokens } : {}),
     ...(providerOptions ? { providerOptions: providerOptions as any } : {}),
     ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),

@@ -69,6 +69,9 @@ export interface NormalizedModelError {
   retryable: boolean;
   message?: string;
   providerCode?: string;
+  statusCode?: number;
+  phase?: "request" | "stream" | "tool-input" | "finalize" | "tool-execution";
+  retryScope?: "none" | "model-turn" | "tool-call";
   raw?: unknown;
 }
 

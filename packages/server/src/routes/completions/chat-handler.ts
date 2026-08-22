@@ -341,6 +341,18 @@ export async function executeStreamingChatCompletion(
                 },
               }),
             });
+          } else if (event.type === "tool-input-aborted") {
+            toolCallNames.delete(event.id);
+            await stream.writeSSE({
+              data: sseChunk(completionId, {}, null, {
+                tool_call: {
+                  id: event.id,
+                  name: event.name,
+                  state: "interrupted",
+                  result: `Error: ${event.error.message ?? "Model stream interrupted during tool input"}`,
+                },
+              }),
+            });
           } else if (event.type === "finish") {
             // Capture error from finish reason if applicable
             if (event.finishReason === "error") {

@@ -522,6 +522,14 @@ export async function runAgentStepCompletion(options: {
             state: "preparing",
             argumentsDelta: event.delta,
           });
+        } else if (event.type === "tool-input-aborted") {
+          toolCallNames.delete(event.id);
+          await onToolCall?.({
+            id: event.id,
+            name: event.name,
+            state: "interrupted",
+            result: `Error: ${event.error.message ?? "Model stream interrupted during tool input"}`,
+          });
         }
       });
 

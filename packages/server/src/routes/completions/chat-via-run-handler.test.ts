@@ -1564,6 +1564,41 @@ describe("chat via Run driver", () => {
     await vi.waitFor(() => expect(cleanup).toHaveBeenCalledTimes(1));
   });
 
+  it("maps interrupted tool input from a durable run to a terminal SSE state", async () => {
+    const deps = baseDeps({
+      runChatViaRun: async (_inject, hooks) => {
+        hooks.onEvent({ type: "tool_input_start", toolId: "call_1", tool: "edit" });
+        hooks.onEvent({
+          type: "tool_input_interrupted",
+          toolId: "call_1",
+          tool: "edit",
+          error: { message: "Provider temporarily unavailable", class: "overloaded" },
+        });
+        hooks.onEvent({ type: "text-delta", text: "recovered" });
+        return { status: "completed", result: { exitCode: 0, stdout: "recovered", stderr: "" } };
+      },
+    });
+
+    const response = await completionRoutes(() => deps).request("/", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ agent: "agent-1", stream: true, messages: [{ role: "user", content: "edit" }] }),
+    });
+
+    expect(response.status).toBe(200);
+    const chunks = parseSse(await response.text());
+    const toolEvents = chunks.map((chunk) => chunk.choices?.[0]?.tool_call).filter(Boolean);
+    expect(toolEvents).toEqual([
+      expect.objectContaining({ id: "call_1", name: "edit", state: "preparing" }),
+      expect.objectContaining({
+        id: "call_1",
+        name: "edit",
+        state: "interrupted",
+        result: "Error: Provider temporarily unavailable",
+      }),
+    ]);
+  });
+
   it("surfaces a failed Run instead of returning a silent empty completion", async () => {
     const deps = baseDeps({
       runChatViaRun: async () => ({
