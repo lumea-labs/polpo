@@ -122,6 +122,49 @@ describe("chat via Run driver", () => {
     }));
   });
 
+  it("drops host preloads excluded by the effective chat policy", async () => {
+    const visibleTools: string[][] = [];
+    const deps = baseDeps({
+      getAgents: async () => [{
+        name: "agent-1",
+        model: "mock",
+        allowedTools: ["skill_list", "ask_user_question"],
+        chat: { allowedTools: ["ask_user_question"] },
+      }],
+      resolveAgentTools: async () => ({
+        tools: [
+          { name: "skill_list", description: "List assigned skills" },
+          { name: "ask_user_question", description: "Ask the user a question" },
+        ],
+        executor: async () => "ok",
+        disclosure: {
+          mode: "progressive",
+          initiallyLoaded: ["skill_list"],
+        },
+      }),
+      runChatViaRun: async (inject, hooks) => {
+        visibleTools.push(Object.keys(inject.toolSet ?? {}).sort());
+        hooks.onEvent({ type: "text-delta", text: "done" });
+        return { status: "completed", result: { exitCode: 0, stdout: "done", stderr: "" } };
+      },
+    });
+
+    await expect(runConversationTurn(deps, {
+      body: {
+        agent: "agent-1",
+        stream: false,
+        messages: [{ role: "user", content: "start" }],
+      },
+    })).resolves.toBeDefined();
+
+    expect(visibleTools).toEqual([[
+      "ask_user_question",
+      "polpo_tool_list",
+      "polpo_tool_load",
+      "polpo_tool_search",
+    ]]);
+  });
+
   it("intersects request, route, and trusted grant restrictions", async () => {
     const visibleTools: string[][] = [];
     const deps = baseDeps({

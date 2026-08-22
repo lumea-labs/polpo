@@ -160,6 +160,36 @@ describe("model-controlled tool disclosure", () => {
     ]);
   });
 
+  it("intersects configured preloads with the authorized catalog", () => {
+    const pool = createModelControlledToolPool({
+      tools: [runtimeTool("ask_user_question", "Ask the user a question")],
+      executor: vi.fn(async () => "ok"),
+      initiallyLoaded: ["skill_list", "ask_user_question", "skill_list"],
+    });
+
+    expect(pool.activeToolNames()).toEqual([
+      "ask_user_question",
+      "polpo_tool_list",
+      "polpo_tool_search",
+      "polpo_tool_load",
+    ]);
+  });
+
+  it("keeps discovery usable when every configured preload is unauthorized", () => {
+    const pool = createModelControlledToolPool({
+      tools: [runtimeTool("ask_user_question", "Ask the user a question")],
+      executor: vi.fn(async () => "ok"),
+      initiallyLoaded: ["skill_list", "skill_read"],
+    });
+
+    expect(pool.activeToolNames()).toEqual([
+      "polpo_tool_list",
+      "polpo_tool_search",
+      "polpo_tool_load",
+    ]);
+    expect(pool.loadedToolNames()).toEqual([]);
+  });
+
   it("keeps discovery read-only and returns compact metadata without schemas", async () => {
     const pool = createModelControlledToolPool({
       tools: [
