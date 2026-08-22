@@ -374,9 +374,9 @@ export function createModelControlledToolPool(
   const loaded = new Set<string>();
   for (const rawName of options.initiallyLoaded ?? []) {
     const name = String(rawName).trim();
-    if (!catalog.has(name)) {
-      throw new Error(`Initially loaded tool "${name}" is not in the authorized catalog.`);
-    }
+    // Host preloads are resolved before request and surface policies. A later
+    // restriction must remove visibility, not turn a valid deny into a 500.
+    if (!catalog.has(name)) continue;
     loaded.add(name);
   }
   if (loaded.size > maxLoadedTools) {
