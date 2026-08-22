@@ -380,7 +380,12 @@ export function createApp(orchestrator: Orchestrator, sseBridge: SSEBridge, opts
           return `Error: ${err.message}`;
         }
       };
-      return { tools, executor, cleanup: mcp.dispose };
+      return {
+        tools,
+        executor,
+        cleanup: mcp.dispose,
+        disclosure: { mode: agentConfig.toolLoading?.mode ?? "auto" },
+      };
     },
     getProjectLoop: (name: string) => o.getProjectLoop(name),
     createRunSteeringScope: (runId: string) => {

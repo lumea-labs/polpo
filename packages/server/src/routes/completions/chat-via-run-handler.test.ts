@@ -61,6 +61,7 @@ function baseDeps(overrides: Partial<CompletionRouteDeps> = {}): CompletionRoute
 describe("chat via Run driver", () => {
   it("filters server and OpenAI-compatible client tools by the active mode", async () => {
     const visibleTools: string[][] = [];
+    const emit = vi.fn();
     const deps = baseDeps({
       getAgents: async () => [{
         name: "agent-1",
@@ -75,7 +76,13 @@ describe("chat via Run driver", () => {
       resolveAgentTools: async () => ({
         tools: [{ name: "read" }, { name: "bash" }],
         executor: async () => "ok",
+        disclosure: {
+          mode: "auto",
+          maxDirectTools: 1,
+          maxDirectSchemaBytes: 100_000,
+        },
       }),
+      emit,
       runChatViaRun: async (inject, hooks) => {
         visibleTools.push(Object.keys(inject.toolSet ?? {}).sort());
         hooks.onEvent({ type: "text-delta", text: "done" });
@@ -100,6 +107,19 @@ describe("chat via Run driver", () => {
 
     expect(visibleTools[0]).toEqual(["configure_site_connector", "read"]);
     expect(visibleTools[1]).toEqual(["bash"]);
+    expect(emit).toHaveBeenCalledWith("runtime:tool-loading", expect.objectContaining({
+      requestedMode: "auto",
+      effectiveMode: "direct",
+      reason: "within_auto_budget",
+      toolCount: 1,
+      mode: "chat",
+    }));
+    expect(emit).toHaveBeenCalledWith("runtime:tool-loading", expect.objectContaining({
+      requestedMode: "auto",
+      effectiveMode: "direct",
+      toolCount: 1,
+      mode: "channels",
+    }));
   });
 
   it("intersects request, route, and trusted grant restrictions", async () => {

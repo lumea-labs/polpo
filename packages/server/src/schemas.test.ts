@@ -111,6 +111,31 @@ describe("agent create/update schema parity", () => {
     expect(UpdateAgentSchema.safeParse({ reasoning: "extreme" }).success)
       .toBe(false);
   });
+
+  it.each(["auto", "direct", "progressive"] as const)(
+    "accepts the %s agent tool-loading mode on create and update",
+    (mode) => {
+      const toolLoading = { mode };
+
+      expect(AddAgentSchema.parse({ name: "builder", toolLoading }).toolLoading)
+        .toEqual(toolLoading);
+      expect(UpdateAgentSchema.parse({ toolLoading }).toolLoading)
+        .toEqual(toolLoading);
+    },
+  );
+
+  it.each([
+    null,
+    {},
+    { mode: null },
+    { mode: "model-controlled" },
+    { mode: "automatic" },
+    { mode: "auto", unknown: true },
+  ])("rejects malformed agent tool-loading settings %#", (toolLoading) => {
+    expect(AddAgentSchema.safeParse({ name: "builder", toolLoading }).success)
+      .toBe(false);
+    expect(UpdateAgentSchema.safeParse({ toolLoading }).success).toBe(false);
+  });
 });
 
 describe("agent chat interaction schema", () => {

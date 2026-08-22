@@ -8,13 +8,42 @@ export const MODEL_CONTROLLED_TOOL_NAMES = [
 
 const MODEL_CONTROLLED_TOOL_NAME_SET = new Set<string>(MODEL_CONTROLLED_TOOL_NAMES);
 
-/** Host-owned opt-in for model-controlled progressive tool disclosure. */
+export const DEFAULT_AUTO_DIRECT_TOOL_LIMIT = 16;
+export const DEFAULT_AUTO_DIRECT_SCHEMA_BYTES = 49_152;
+
+export type ToolLoadingRequestedMode =
+  | "auto"
+  | "direct"
+  | "progressive"
+  /** Compatibility alias for hosts configured before agent-level modes. */
+  | "model-controlled";
+
+/** Host-owned capability and limits for model-facing tool loading. */
 export interface ModelControlledToolDisclosureConfig {
-  mode: "model-controlled";
+  mode: ToolLoadingRequestedMode;
   initiallyLoaded?: readonly string[];
   maxLoadedTools?: number;
   maxLoadBatch?: number;
   maxSearchResults?: number;
+  maxDirectTools?: number;
+  maxDirectSchemaBytes?: number;
+}
+
+export type ToolLoadingDecisionReason =
+  | "policy_direct"
+  | "policy_progressive"
+  | "empty_catalog"
+  | "within_auto_budget"
+  | "tool_count_exceeded"
+  | "schema_budget_exceeded"
+  | "schema_unserializable";
+
+export interface ToolLoadingDecision {
+  requestedMode: ToolLoadingRequestedMode;
+  effectiveMode: "direct" | "progressive";
+  reason: ToolLoadingDecisionReason;
+  toolCount: number;
+  schemaBytes: number;
 }
 
 export interface ModelControlledToolPoolOptions {
@@ -55,6 +84,104 @@ function positiveInteger(value: number | undefined, fallback: number): number {
 
 function toolName(tool: any): string {
   return typeof tool?.name === "string" ? tool.name.trim() : "";
+}
+
+function serializedToolCatalogBytes(tools: readonly any[]): number | null {
+  try {
+    const serialized = JSON.stringify(tools.map((tool) => ({
+      name: toolName(tool),
+      ...(typeof tool?.label === "string" ? { label: tool.label } : {}),
+      ...(typeof tool?.description === "string" ? { description: tool.description } : {}),
+      parameters: tool?.parameters,
+    })));
+    return new TextEncoder().encode(serialized).byteLength;
+  } catch {
+    return null;
+  }
+}
+
+/** Resolve loading from an already authorization-filtered runtime catalog. */
+export function resolveToolLoadingDecision(
+  config: ModelControlledToolDisclosureConfig | undefined,
+  tools: readonly any[],
+): ToolLoadingDecision {
+  const requestedMode = config?.mode ?? "direct";
+  const catalog = tools.filter((tool) => toolName(tool));
+  const toolCount = catalog.length;
+  const measuredBytes = serializedToolCatalogBytes(catalog);
+  const schemaBytes = measuredBytes ?? Number.MAX_SAFE_INTEGER;
+
+  if (toolCount === 0) {
+    return {
+      requestedMode,
+      effectiveMode: "direct",
+      reason: "empty_catalog",
+      toolCount,
+      schemaBytes,
+    };
+  }
+
+  if (requestedMode === "direct") {
+    return {
+      requestedMode,
+      effectiveMode: "direct",
+      reason: "policy_direct",
+      toolCount,
+      schemaBytes,
+    };
+  }
+  if (requestedMode === "progressive" || requestedMode === "model-controlled") {
+    return {
+      requestedMode,
+      effectiveMode: "progressive",
+      reason: "policy_progressive",
+      toolCount,
+      schemaBytes,
+    };
+  }
+  if (measuredBytes === null) {
+    return {
+      requestedMode,
+      effectiveMode: "progressive",
+      reason: "schema_unserializable",
+      toolCount,
+      schemaBytes,
+    };
+  }
+
+  const maxDirectTools = positiveInteger(
+    config?.maxDirectTools,
+    DEFAULT_AUTO_DIRECT_TOOL_LIMIT,
+  );
+  const maxDirectSchemaBytes = positiveInteger(
+    config?.maxDirectSchemaBytes,
+    DEFAULT_AUTO_DIRECT_SCHEMA_BYTES,
+  );
+  if (toolCount > maxDirectTools) {
+    return {
+      requestedMode,
+      effectiveMode: "progressive",
+      reason: "tool_count_exceeded",
+      toolCount,
+      schemaBytes,
+    };
+  }
+  if (schemaBytes > maxDirectSchemaBytes) {
+    return {
+      requestedMode,
+      effectiveMode: "progressive",
+      reason: "schema_budget_exceeded",
+      toolCount,
+      schemaBytes,
+    };
+  }
+  return {
+    requestedMode,
+    effectiveMode: "direct",
+    reason: "within_auto_budget",
+    toolCount,
+    schemaBytes,
+  };
 }
 
 function toolSource(tool: any): string {

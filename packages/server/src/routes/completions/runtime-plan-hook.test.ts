@@ -319,6 +319,7 @@ describe("completion runtime plan hook", () => {
       "model",
       "tools",
       "emit:runtime:tool-policy",
+      "emit:runtime:tool-loading",
     ]);
     expect(emit).toHaveBeenCalledWith("runtime:plan", {
       type: "runtime.plan.resolved",

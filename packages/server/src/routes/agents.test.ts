@@ -35,6 +35,7 @@ describe("agentRoutes", () => {
       model: "openai/gpt-5",
       allowedPaths: ["/workspace"],
       allowedTools: ["bash"],
+      toolLoading: { mode: "direct" },
       maxConcurrency: 2,
       reasoning: "high",
       emailAllowedDomains: ["example.com"],
@@ -51,6 +52,7 @@ describe("agentRoutes", () => {
       model: "openai/gpt-5",
       allowedPaths: ["/workspace"],
       allowedTools: ["bash"],
+      toolLoading: { mode: "direct" },
       maxConcurrency: 2,
       reasoning: "high",
       emailAllowedDomains: ["example.com"],
@@ -170,6 +172,44 @@ describe("agent chat preferences routes", () => {
         allowUserQuestions: true,
         suggestions: { enabled: false, maxItems: 3 },
       },
+    });
+  });
+});
+
+describe("agent tool-loading routes", () => {
+  it("persists the loading mode when creating an agent", async () => {
+    const deps = routeDeps();
+    const app = agentRoutes(deps.getDeps);
+
+    const response = await app.request("/", json({
+      name: "builder",
+      toolLoading: { mode: "progressive" },
+    }));
+
+    expect(response.status).toBe(201);
+    expect(deps.addAgent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: "builder",
+        toolLoading: { mode: "progressive" },
+      }),
+      undefined,
+    );
+  });
+
+  it("persists the loading mode when updating an agent", async () => {
+    const deps = routeDeps();
+    deps.agents.push({ name: "builder", toolLoading: { mode: "auto" } });
+    const app = agentRoutes(deps.getDeps);
+
+    const response = await app.request("/builder", {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ toolLoading: { mode: "direct" } }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(deps.updateAgent).toHaveBeenCalledWith("builder", {
+      toolLoading: { mode: "direct" },
     });
   });
 });
