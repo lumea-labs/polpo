@@ -5,11 +5,15 @@ const { generateTextMock, streamTextMock } = vi.hoisted(() => ({
   streamTextMock: vi.fn(),
 }));
 
-vi.mock("ai", () => ({
-  generateText: generateTextMock,
-  streamText: streamTextMock,
-  jsonSchema: (schema: unknown) => schema,
-}));
+vi.mock("ai", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("ai")>();
+  return {
+    ...actual,
+    generateText: generateTextMock,
+    streamText: streamTextMock,
+    jsonSchema: (schema: unknown) => schema,
+  };
+});
 
 import { completionRoutes, type CompletionRouteDeps } from "./completions.js";
 import {
@@ -468,6 +472,50 @@ describe("completionRoutes provider-executed tools", () => {
         argumentsDelta: " pricing\"}",
       }),
     ]);
+  });
+
+  it("terminalizes interrupted tool input and recovers the turn without a dangling call", async () => {
+    async function* interruptedStream() {
+      yield { type: "tool-input-start", id: "call_search", toolName: "search_web" };
+      yield { type: "tool-input-delta", id: "call_search", delta: '{"query":"Polpo"' };
+      yield {
+        type: "error",
+        error: { message: "Provider temporarily unavailable", statusCode: 503 },
+      };
+    }
+
+    streamTextMock
+      .mockReturnValueOnce({
+        fullStream: interruptedStream(),
+      })
+      .mockReturnValueOnce(mockStreamResult({
+        text: "recovered",
+        responseMessages: [{ role: "assistant", content: "recovered" }],
+      }));
+
+    const res = await completionRoutes(() => makeDeps()).request("/", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        agent: "researcher",
+        stream: true,
+        messages: [{ role: "user", content: "search pricing" }],
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    const chunks = parseSseJsonChunks(await res.text());
+    const toolEvents = chunks
+      .map((chunk) => chunk.choices?.[0]?.tool_call)
+      .filter(Boolean);
+    expect(toolEvents).toEqual([
+      expect.objectContaining({ id: "call_search", state: "preparing" }),
+      expect.objectContaining({ id: "call_search", state: "preparing" }),
+      expect.objectContaining({ id: "call_search", state: "interrupted" }),
+    ]);
+    expect(chunks.map((chunk) => chunk.choices?.[0]?.delta?.content).filter(Boolean).join(""))
+      .toBe("recovered");
+    expect(streamTextMock).toHaveBeenCalledTimes(2);
   });
 
   it("falls back to the next agent model candidate before committing output", async () => {

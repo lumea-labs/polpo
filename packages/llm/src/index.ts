@@ -142,6 +142,7 @@ export {
   prepareModelMessagesForTransport,
 } from "./stream-turn.js";
 export type {
+  ModelTurnErrorInfo,
   ModelTurnEvent,
   ModelTurnResult,
   StreamModelTurnInput,

@@ -16,6 +16,7 @@ import { classifyRuntimeError } from "./runtime-normalization.js";
 
 export interface ModelPolicyAttempt {
   index: number;
+  retryIndex: number;
   model: string;
   isFallback: boolean;
   totalCandidates: number;
@@ -57,6 +58,8 @@ export interface RunModelPolicyTurnInput<TOOLS extends ToolSet = ToolSet>
   classifyError?: (error: unknown, attempt: ModelPolicyAttempt) => NormalizedModelError;
   onPolicyEvent?: (event: ModelPolicyEvent) => void | Promise<void>;
   preserveSingleAttemptError?: boolean;
+  /** One replay is safe only before text/reasoning or a validated tool call was emitted. */
+  maxRecoverableStreamRetries?: number;
 }
 
 export type ModelPolicyTurnResult<TOOLS extends ToolSet = ToolSet> = ModelTurnResult<TOOLS> & {
@@ -68,10 +71,13 @@ export type ModelPolicyTurnResult<TOOLS extends ToolSet = ToolSet> = ModelTurnRe
 export class ModelPolicyTurnError extends Error {
   readonly failures: ModelPolicyAttemptFailure[];
 
-  constructor(message: string, failures: ModelPolicyAttemptFailure[]) {
+  constructor(message: string, failures: ModelPolicyAttemptFailure[], cause?: unknown) {
     super(message);
     this.name = "ModelPolicyTurnError";
     this.failures = failures;
+    if (cause !== undefined) {
+      (this as Error & { cause?: unknown }).cause = cause;
+    }
   }
 }
 
@@ -80,87 +86,101 @@ export async function runModelPolicyTurn<TOOLS extends ToolSet = ToolSet>(
   onEvent?: (event: ModelTurnEvent<TOOLS>) => void | Promise<void>,
 ): Promise<ModelPolicyTurnResult<TOOLS>> {
   const policy = normalizeModelPolicy(input.selection);
-  const attempts = policy.candidates.map((model, index): ModelPolicyAttempt => ({
-    index,
-    model,
-    isFallback: index > 0,
-    totalCandidates: policy.candidates.length,
-  }));
+  const maxRecoverableStreamRetries = normalizeRetryCount(
+    input.maxRecoverableStreamRetries,
+  );
   const runAttempt: ModelPolicyAttemptRunner<TOOLS> =
     input.runAttempt ?? ((attemptInput, attemptEventHandler) =>
       streamModelTurn<TOOLS>(attemptInput, attemptEventHandler));
   const failures: ModelPolicyAttemptFailure[] = [];
 
-  for (const attempt of attempts) {
-    await input.onPolicyEvent?.({ type: "model-attempt-started", attempt });
+  for (let candidateIndex = 0; candidateIndex < policy.candidates.length; candidateIndex += 1) {
+    const model = policy.candidates[candidateIndex];
 
-    const resolution = await input.resolveAttempt(attempt, policy);
-    const attemptInput = buildAttemptInput(input, resolution);
-    const bufferedEvents: ModelTurnEvent<TOOLS>[] = [];
-    let committed = false;
+    for (let retryIndex = 0; retryIndex <= maxRecoverableStreamRetries; retryIndex += 1) {
+      const attempt = createAttempt(candidateIndex, retryIndex, model, policy.candidates.length);
+      await input.onPolicyEvent?.({ type: "model-attempt-started", attempt });
 
-    const forwardEvent = async (event: ModelTurnEvent<TOOLS>) => {
-      if (!committed && isCommittingModelTurnEvent(event)) {
-        committed = true;
-        for (const buffered of bufferedEvents) {
-          await onEvent?.(buffered);
+      const resolution = await input.resolveAttempt(attempt, policy);
+      const attemptInput = buildAttemptInput(input, resolution);
+      const bufferedEvents: ModelTurnEvent<TOOLS>[] = [];
+      const openToolInputs = new Map<string, string>();
+      let committed = false;
+
+      const forwardEvent = async (event: ModelTurnEvent<TOOLS>) => {
+        if (event.type === "tool-input-start") openToolInputs.set(event.id, event.name);
+        if (event.type === "tool-call") openToolInputs.delete(event.id);
+
+        if (isProvisionalToolInputEvent(event)) {
+          await flushEvents(bufferedEvents, onEvent);
+          await onEvent?.(event);
+          return;
         }
-        bufferedEvents.length = 0;
-      }
 
-      if (committed) {
-        await onEvent?.(event);
-      } else {
-        bufferedEvents.push(event);
-      }
-    };
-
-    try {
-      const result = await runAttempt(attemptInput, forwardEvent);
-      if (!committed) {
-        for (const buffered of bufferedEvents) {
-          await onEvent?.(buffered);
+        if (!committed && isCommittingModelTurnEvent(event)) {
+          committed = true;
+          await flushEvents(bufferedEvents, onEvent);
         }
-      }
-      await input.onPolicyEvent?.({ type: "model-attempt-succeeded", attempt });
-      return {
-        ...result,
-        policy,
-        selectedAttempt: attempt,
-        failedAttempts: failures,
+
+        if (committed) await onEvent?.(event);
+        else bufferedEvents.push(event);
       };
-    } catch (error) {
-      const classification = input.classifyError?.(error, attempt) ?? classifyRuntimeError(error);
-      const failure: ModelPolicyAttemptFailure = {
-        attempt,
-        error,
-        classification,
-        committed,
-      };
-      failures.push(failure);
-      await input.onPolicyEvent?.({ type: "model-attempt-failed", failure });
 
-      const next = attempts[attempt.index + 1];
-      if (!committed && classification.retryable && next) {
-        await input.onPolicyEvent?.({
-          type: "model-fallback-selected",
-          from: attempt,
-          to: next,
-          reason: classification,
-        });
-        continue;
-      }
+      try {
+        const result = await runAttempt(attemptInput, forwardEvent);
+        await flushEvents(bufferedEvents, onEvent);
+        await input.onPolicyEvent?.({ type: "model-attempt-succeeded", attempt });
+        return {
+          ...result,
+          policy,
+          selectedAttempt: attempt,
+          failedAttempts: failures,
+        };
+      } catch (error) {
+        const baseClassification = input.classifyError?.(error, attempt) ?? classifyRuntimeError(error);
+        const classification: NormalizedModelError = openToolInputs.size > 0
+          ? { ...baseClassification, phase: "tool-input" }
+          : baseClassification;
+        const failure: ModelPolicyAttemptFailure = { attempt, error, classification, committed };
+        failures.push(failure);
+        await input.onPolicyEvent?.({ type: "model-attempt-failed", failure });
 
-      await input.onPolicyEvent?.({ type: "model-turn-failed", failures });
-      if (input.preserveSingleAttemptError && attempts.length === 1) {
-        if (!committed) {
-          for (const buffered of bufferedEvents) {
-            await onEvent?.(buffered);
-          }
+        for (const [id, name] of openToolInputs) {
+          const { raw: _raw, ...publicError } = classification;
+          await onEvent?.({ type: "tool-input-aborted", id, name, error: publicError });
         }
-        throw error;
+
+        const canReplayPartialToolInput = !committed
+          && openToolInputs.size > 0
+          && classification.retryable
+          && retryIndex < maxRecoverableStreamRetries;
+        if (canReplayPartialToolInput) {
+          continue;
+        }
+
+        const nextModel = policy.candidates[candidateIndex + 1];
+        if (!committed && classification.retryable && nextModel) {
+          const next = createAttempt(candidateIndex + 1, 0, nextModel, policy.candidates.length);
+          await input.onPolicyEvent?.({
+            type: "model-fallback-selected",
+            from: attempt,
+            to: next,
+            reason: classification,
+          });
+          break;
+        }
+
+        await input.onPolicyEvent?.({ type: "model-turn-failed", failures });
+        await flushEvents(bufferedEvents, onEvent);
+        if (input.preserveSingleAttemptError && policy.candidates.length === 1 && error instanceof Error) {
+          throw error;
+        }
+        throw new ModelPolicyTurnError(
+          classification.message ?? "Unknown model runtime error",
+          failures,
+          error,
+        );
       }
-      throw new ModelPolicyTurnError(classification.message ?? "Model policy turn failed", failures);
     }
   }
 
@@ -171,12 +191,44 @@ export async function runModelPolicyTurn<TOOLS extends ToolSet = ToolSet>(
 export function isCommittingModelTurnEvent(event: ModelTurnEvent): boolean {
   return event.type === "reasoning-delta"
     || event.type === "text-delta"
-    || event.type === "tool-input-start"
-    || event.type === "tool-input-delta"
-    || event.type === "tool-input-end"
     || event.type === "tool-call"
     || event.type === "tool-result"
     || event.type === "tool-error";
+}
+
+function isProvisionalToolInputEvent(event: ModelTurnEvent): boolean {
+  return event.type === "tool-input-start"
+    || event.type === "tool-input-delta"
+    || event.type === "tool-input-end";
+}
+
+function createAttempt(
+  index: number,
+  retryIndex: number,
+  model: string,
+  totalCandidates: number,
+): ModelPolicyAttempt {
+  return {
+    index,
+    retryIndex,
+    model,
+    isFallback: index > 0,
+    totalCandidates,
+  };
+}
+
+async function flushEvents<TOOLS extends ToolSet>(
+  events: ModelTurnEvent<TOOLS>[],
+  onEvent?: (event: ModelTurnEvent<TOOLS>) => void | Promise<void>,
+): Promise<void> {
+  for (const event of events) await onEvent?.(event);
+  events.length = 0;
+}
+
+function normalizeRetryCount(value: number | undefined): number {
+  if (value === undefined) return 1;
+  if (!Number.isFinite(value) || value <= 0) return 0;
+  return Math.floor(value);
 }
 
 function buildAttemptInput<TOOLS extends ToolSet>(
@@ -190,6 +242,8 @@ function buildAttemptInput<TOOLS extends ToolSet>(
     ...(input.activeTools ? { activeTools: input.activeTools } : {}),
     ...(input.toolChoice ? { toolChoice: input.toolChoice } : {}),
     ...(input.parallelToolCalls !== undefined ? { parallelToolCalls: input.parallelToolCalls } : {}),
+    ...(input.maxRetries !== undefined ? { maxRetries: input.maxRetries } : {}),
+    ...(input.timeout !== undefined ? { timeout: input.timeout } : {}),
     ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
     ...(input.output ? { output: input.output } : {}),
     model: resolution.model,

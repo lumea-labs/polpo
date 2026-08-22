@@ -197,6 +197,22 @@ function makeOnEvent(
         }));
         break;
       }
+      case "tool_input_interrupted": {
+        const toolId = String(e.toolId);
+        const error = e.error && typeof e.error === "object"
+          ? e.error as Record<string, unknown>
+          : undefined;
+        write(sseChunk(completionId, {}, null, {
+          tool_call: {
+            id: e.toolId,
+            name: String(e.tool ?? toolNamesById.get(toolId) ?? ""),
+            state: "interrupted",
+            result: `Error: ${String(error?.message ?? "Model stream interrupted during tool input")}`,
+          },
+        }));
+        toolNamesById.delete(toolId);
+        break;
+      }
       case "tool_use": {
         const name = String(e.tool);
         const args = (e.input ?? {}) as Record<string, unknown>;
