@@ -61,6 +61,7 @@ import {
   MODEL_CONTROLLED_TOOL_PROMPT,
   createModelControlledToolPool,
   forcedModelToolName,
+  resolveToolLoadingDecision,
 } from "./tool-disclosure.js";
 import { executeCompletionToolBatch } from "./tool-execution-batch.js";
 import {
@@ -416,8 +417,20 @@ export async function runAgentStepCompletion(options: {
   let modelTools = loopTools;
   let activeToolNames: (() => string[]) | undefined;
   let activeCompactionTools: (() => any[]) | undefined;
-  if (resolvedTools.disclosure?.mode === "model-controlled") {
-    const configuredInitial = [...(resolvedTools.disclosure.initiallyLoaded ?? [])];
+  const toolLoadingDecision = resolveToolLoadingDecision(
+    resolvedTools.disclosure,
+    modelTools,
+  );
+  deps.emit("runtime:tool-loading", {
+    ...toolLoadingDecision,
+    mode: "loop",
+    source: "loop-step",
+    agent: agentConfig.name,
+    runId: options.runId,
+    sessionId: options.sessionId,
+  });
+  if (toolLoadingDecision.effectiveMode === "progressive") {
+    const configuredInitial = [...(resolvedTools.disclosure?.initiallyLoaded ?? [])];
     const forcedTool = forcedModelToolName(modelToolChoice);
     if (forcedTool && modelTools.some((tool) => tool?.name === forcedTool)) {
       configuredInitial.push(forcedTool);
@@ -426,9 +439,9 @@ export async function runAgentStepCompletion(options: {
       tools: modelTools,
       executor: executeTool,
       initiallyLoaded: [...new Set(configuredInitial)],
-      maxLoadedTools: resolvedTools.disclosure.maxLoadedTools,
-      maxLoadBatch: resolvedTools.disclosure.maxLoadBatch,
-      maxSearchResults: resolvedTools.disclosure.maxSearchResults,
+      maxLoadedTools: resolvedTools.disclosure?.maxLoadedTools,
+      maxLoadBatch: resolvedTools.disclosure?.maxLoadBatch,
+      maxSearchResults: resolvedTools.disclosure?.maxSearchResults,
     });
     const providerToolNames = Object.keys(loopExtraAiTools);
     modelTools = pool.tools;

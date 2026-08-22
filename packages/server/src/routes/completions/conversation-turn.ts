@@ -85,6 +85,7 @@ import {
   MODEL_CONTROLLED_TOOL_PROMPT,
   createModelControlledToolPool,
   forcedModelToolName,
+  resolveToolLoadingDecision,
   type ModelControlledToolDisclosureConfig,
 } from "./tool-disclosure.js";
 import {
@@ -1215,8 +1216,21 @@ export async function prepareChatCompletionExecution(
       },
     });
 
-    if (toolDisclosure?.mode === "model-controlled") {
-      const configuredInitial = [...(toolDisclosure.initiallyLoaded ?? [])];
+    const toolLoadingDecision = resolveToolLoadingDecision(
+      toolDisclosure,
+      effectiveTools,
+    );
+    deps.emit("runtime:tool-loading", {
+      ...toolLoadingDecision,
+      mode: policyMode,
+      agent: resolvedAgentConfig?.name,
+      requestId: completionId,
+      runId: completionId,
+      sessionId: sessionId ?? undefined,
+    });
+
+    if (toolLoadingDecision.effectiveMode === "progressive") {
+      const configuredInitial = [...(toolDisclosure?.initiallyLoaded ?? [])];
       const forcedTool = forcedModelToolName(modelToolChoice);
       if (forcedTool && effectiveTools.some((tool) => tool?.name === forcedTool)) {
         configuredInitial.push(forcedTool);
@@ -1225,9 +1239,9 @@ export async function prepareChatCompletionExecution(
         tools: effectiveTools,
         executor: effectiveToolExecutor,
         initiallyLoaded: [...new Set(configuredInitial)],
-        maxLoadedTools: toolDisclosure.maxLoadedTools,
-        maxLoadBatch: toolDisclosure.maxLoadBatch,
-        maxSearchResults: toolDisclosure.maxSearchResults,
+        maxLoadedTools: toolDisclosure?.maxLoadedTools,
+        maxLoadBatch: toolDisclosure?.maxLoadBatch,
+        maxSearchResults: toolDisclosure?.maxSearchResults,
       });
       try {
         assertRequestClientToolNamesAvailable(

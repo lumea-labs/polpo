@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { createModelControlledToolPool } from "./tool-disclosure.js";
+import {
+  createModelControlledToolPool,
+  resolveToolLoadingDecision,
+} from "./tool-disclosure.js";
 
 function runtimeTool(
   name: string,
@@ -22,6 +25,114 @@ function runtimeTool(
 function parseResult(value: string): Record<string, any> {
   return JSON.parse(value);
 }
+
+describe("tool-loading decision", () => {
+  it("keeps historical host integrations direct when no policy is provided", () => {
+    expect(resolveToolLoadingDecision(undefined, [runtimeTool("read", "Read a file")]))
+      .toMatchObject({
+        requestedMode: "direct",
+        effectiveMode: "direct",
+        reason: "policy_direct",
+        toolCount: 1,
+      });
+  });
+
+  it.each([
+    ["direct", "direct", "policy_direct"],
+    ["progressive", "progressive", "policy_progressive"],
+    ["model-controlled", "progressive", "policy_progressive"],
+  ] as const)("resolves %s to %s", (mode, effectiveMode, reason) => {
+    expect(resolveToolLoadingDecision({ mode }, [runtimeTool("read", "Read a file")]))
+      .toMatchObject({ requestedMode: mode, effectiveMode, reason });
+  });
+
+  it("does not expose discovery tools for an empty progressive catalog", () => {
+    expect(resolveToolLoadingDecision({ mode: "progressive" }, []))
+      .toMatchObject({
+        requestedMode: "progressive",
+        effectiveMode: "direct",
+        reason: "empty_catalog",
+        toolCount: 0,
+      });
+  });
+
+  it("keeps the exact auto tool-count boundary direct", () => {
+    const tools = Array.from({ length: 3 }, (_, index) =>
+      runtimeTool(`tool_${index}`, `Tool ${index}`),
+    );
+
+    expect(resolveToolLoadingDecision(
+      { mode: "auto", maxDirectTools: 3, maxDirectSchemaBytes: 100_000 },
+      tools,
+    )).toMatchObject({
+      effectiveMode: "direct",
+      reason: "within_auto_budget",
+      toolCount: 3,
+    });
+
+    expect(resolveToolLoadingDecision(
+      { mode: "auto", maxDirectTools: 2, maxDirectSchemaBytes: 100_000 },
+      tools,
+    )).toMatchObject({
+      effectiveMode: "progressive",
+      reason: "tool_count_exceeded",
+      toolCount: 3,
+    });
+  });
+
+  it("decides from the effective catalog supplied after policy filtering", () => {
+    const rawCatalog = Array.from({ length: 20 }, (_, index) =>
+      runtimeTool(`tool_${index}`, `Tool ${index}`),
+    );
+    const effectiveCatalog = rawCatalog.slice(0, 2);
+
+    expect(resolveToolLoadingDecision(
+      { mode: "auto", maxDirectTools: 2, maxDirectSchemaBytes: 100_000 },
+      effectiveCatalog,
+    )).toMatchObject({ effectiveMode: "direct", toolCount: 2 });
+  });
+
+  it("keeps the exact schema-size boundary direct and progresses above it", () => {
+    const tools = [runtimeTool("read", "Read a file")];
+    const measured = resolveToolLoadingDecision(
+      { mode: "auto", maxDirectTools: 10, maxDirectSchemaBytes: 100_000 },
+      tools,
+    ).schemaBytes;
+
+    expect(resolveToolLoadingDecision(
+      { mode: "auto", maxDirectTools: 10, maxDirectSchemaBytes: measured },
+      tools,
+    )).toMatchObject({ effectiveMode: "direct", reason: "within_auto_budget" });
+    expect(resolveToolLoadingDecision(
+      { mode: "auto", maxDirectTools: 10, maxDirectSchemaBytes: measured - 1 },
+      tools,
+    )).toMatchObject({ effectiveMode: "progressive", reason: "schema_budget_exceeded" });
+  });
+
+  it("fails safely into progressive mode for an unserializable tool schema", () => {
+    const parameters: Record<string, unknown> = { type: "object" };
+    parameters.self = parameters;
+
+    expect(() => resolveToolLoadingDecision(
+      { mode: "auto" },
+      [runtimeTool("broken", "Circular schema", parameters)],
+    )).not.toThrow();
+    expect(resolveToolLoadingDecision(
+      { mode: "auto" },
+      [runtimeTool("broken", "Circular schema", parameters)],
+    )).toMatchObject({
+      effectiveMode: "progressive",
+      reason: "schema_unserializable",
+    });
+  });
+
+  it("ignores unnamed catalog entries and uses safe defaults for invalid limits", () => {
+    expect(resolveToolLoadingDecision(
+      { mode: "auto", maxDirectTools: 0, maxDirectSchemaBytes: -1 },
+      [{ description: "missing name" }, runtimeTool("read", "Read a file")],
+    )).toMatchObject({ effectiveMode: "direct", toolCount: 1 });
+  });
+});
 
 describe("model-controlled tool disclosure", () => {
   it("starts with discovery and explicitly pinned tools only", () => {

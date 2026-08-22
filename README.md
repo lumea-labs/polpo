@@ -342,6 +342,35 @@ schemas. A forced `tool_choice` that is not effective fails before model
 execution with `tool_policy_denied`. Omitting every mode-specific field preserves
 the existing behavior.
 
+### Agent tool loading
+
+Each agent can choose how its effective runtime tool schemas are shown to the
+model. This controls model visibility only; it never expands `allowedTools` or
+any execution policy:
+
+```jsonc
+{
+  "allowedTools": ["read", "bash", "site_*"],
+  "toolLoading": {
+    "mode": "auto"
+  }
+}
+```
+
+- `auto` (default) evaluates the authorized catalog on every execution, after
+  chat, Channel, Loop, request, and trusted-grant restrictions. Small catalogs
+  are sent directly; larger catalogs use progressive loading.
+- `direct` sends every effective runtime tool definition to the model at once.
+- `progressive` initially exposes `polpo_tool_list`, `polpo_tool_search`, and
+  `polpo_tool_load`. The model loads exact authorized names and then calls those
+  tools normally on the next model turn.
+
+Client-side OpenAI-compatible tools and provider-executed tools remain direct;
+progressive loading applies only to Polpo runtime tools. A forced authorized
+runtime tool is preloaded. Hosts can retain a rollout kill switch and tune the
+automatic catalog limits, but the agent setting remains portable across OSS and
+Polpo Cloud.
+
 Custom tool entrypoints may import relative TypeScript, JavaScript, TSX, or JSON
 modules kept under the same source directory. Both `polpo tools push <file>` and
 `polpo deploy` collect that local dependency graph and upload it as one versioned

@@ -840,6 +840,17 @@ const AgentChannelsSettingsSchema = z.object({
   allowedTools: z.array(ToolNameSchema).optional(),
 }).strict();
 
+const AgentToolLoadingSchema = z.object({
+  mode: z.enum(["auto", "direct", "progressive"]),
+}).passthrough().superRefine((value, ctx) => {
+  if (Object.keys(value).some((key) => key !== "mode")) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "Agent tool loading contains unsupported fields",
+    });
+  }
+});
+
 const AgentLoopFieldsSchema = z.object({
   runtime: z.string().optional(),
   assignedLoops: z.array(z.string().min(1)).optional(),
@@ -863,6 +874,7 @@ export const AddAgentSchema = z.object({
   tts_model:        z.string().optional(),
   search_provider:  z.string().optional(),
   allowedTools: z.array(ToolNameSchema).optional(),
+  toolLoading: AgentToolLoadingSchema.optional(),
   allowedPaths: z.array(z.string()).optional(),
   systemPrompt: z.string().optional(),
   chat: AgentChatSettingsSchema.optional(),
@@ -898,6 +910,7 @@ export const UpdateAgentSchema = z.object({
   tts_model:        z.string().optional(),
   search_provider:  z.string().optional(),
   allowedTools: z.array(ToolNameSchema).optional(),
+  toolLoading: AgentToolLoadingSchema.optional(),
   allowedPaths: z.array(z.string()).optional(),
   systemPrompt: z.string().optional(),
   chat: AgentChatSettingsSchema.optional(),

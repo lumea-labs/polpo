@@ -105,6 +105,17 @@ export type McpServerConfig =
 
 // === Agent ===
 
+export type ToolLoadingMode = "auto" | "direct" | "progressive";
+
+export interface ToolLoadingSettings {
+  /**
+   * Controls how authorized runtime tool schemas are exposed to the model.
+   * `auto` selects direct or progressive loading for each execution after
+   * surface and runtime policies have been applied.
+   */
+  mode: ToolLoadingMode;
+}
+
 export interface AgentConfig {
   name: string;
   /** ISO timestamp of when this agent was created / added to the team. Auto-set by addAgent(). */
@@ -147,6 +158,8 @@ export interface AgentConfig {
   /** Allowed tools for the agent (e.g. ["read", "write", "edit", "bash", "glob", "grep", "browser_*", "email_*", "image_*", "video_*", "audio_*", "excel_*", "pdf_*", "docx_*"]).
    *  Core tools (always available): read, write, edit, bash, glob, grep, ls, http_fetch, http_download, register_outcome, vault_get, vault_list. */
   allowedTools?: string[];
+  /** Model-facing tool schema loading strategy. Defaults to `auto`. */
+  toolLoading?: ToolLoadingSettings;
   /** Filesystem sandbox — directories the agent is allowed to access.
    *  Paths can be absolute or relative to workDir. When set, all file tool operations
    *  and bash cwd are validated against these paths. When omitted, defaults to [workDir]. */
