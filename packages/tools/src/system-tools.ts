@@ -388,7 +388,7 @@ export function createSystemTools(cwd: string, allowedTools?: string[], allowedP
   }
 
   // http_fetch + http_download are always included — core tools with SSRF protection
-  tools.push(...createHttpToolsCore(cwd, allowedPaths, allowedTools));
+  tools.push(...createHttpToolsCore(cwd, allowedPaths, allowedTools, _fs));
 
   // vault_get + vault_list are always included — core tools for credential access
   if (vault) {

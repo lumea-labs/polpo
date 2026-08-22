@@ -67,6 +67,46 @@ describe("runtime requirements", () => {
     expect(tool("http_fetch").requiresSandbox).toBe(false);
     expect(tool("http_download").requiresSandbox).toBe(true);
   });
+
+  it("routes http_download writes through the runtime filesystem", async () => {
+    const mkdir = vi.fn(async () => undefined);
+    const writeFileBuffer = vi.fn(async () => undefined);
+    const runtimeFs = {
+      mkdir,
+      writeFileBuffer,
+    } as unknown as NodeFileSystem;
+    const runtimeTools = createSystemTools(
+      cwd,
+      ["http_download"],
+      [cwd],
+      undefined,
+      undefined,
+      runtimeFs,
+      new NodeShell(),
+    );
+    const httpDownload = runtimeTools.find((candidate) => candidate.name === "http_download");
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = vi.fn(async () => new Response(new Uint8Array([1, 2, 3]), {
+      status: 200,
+      headers: { "content-type": "application/octet-stream" },
+    })) as typeof fetch;
+
+    try {
+      const result = await httpDownload!.execute("call-1", {
+        url: "https://files.example.com/asset.bin",
+        path: "public/asset.bin",
+      });
+
+      expect(mkdir).toHaveBeenCalledWith(join(cwd, "public"));
+      expect(writeFileBuffer).toHaveBeenCalledWith(
+        join(cwd, "public/asset.bin"),
+        new Uint8Array([1, 2, 3]),
+      );
+      expect(result.details).toMatchObject({ bytes: 3 });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
 });
 
 // ────────────────────────────────────────────────────────────
