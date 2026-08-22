@@ -19,6 +19,11 @@ export type { ExtendedToolName, CreateAllToolsOptions } from "./system-tools.js"
 export { createOutcomeTools } from "./outcome-tools.js";
 export { createSandboxVolumeCheckpointTool } from "./sandbox-volume-tools.js";
 export { createHttpTools, ALL_HTTP_TOOL_NAMES } from "./http-tools.js";
+export {
+  createSkillListTool,
+  createSkillReadTool,
+  createSkillTools,
+} from "./skill-tools.js";
 export { createVaultToolsCore, createVaultTools, ALL_VAULT_TOOL_NAMES } from "./vault-tools.js";
 export { resolveAgentMcpTools } from "./mcp-client.js";
 export type { McpServerSpec, ResolvedMcpTools, VaultLookup } from "./mcp-client.js";
