@@ -289,9 +289,10 @@ describe("createConversationChannelTurnHandler", () => {
         workingCopyId: "copy-1",
       },
     }));
+    const allowedTools = vi.fn(async () => ["apply_site_change"]);
     const handler = createConversationChannelTurnHandler(deps(store), {
       agent: "leo",
-      allowedTools: ["apply_site_change"],
+      allowedTools,
       executeTurn,
       executeClientTool,
       clientTools: [{
@@ -321,6 +322,7 @@ describe("createConversationChannelTurnHandler", () => {
       text: "Site updated",
       metadata: { sessionId: "session-1" },
     });
+    expect(allowedTools).toHaveBeenCalledOnce();
     expect(executeClientTool).toHaveBeenCalledWith(expect.objectContaining({
       idempotencyKey: expect.stringMatching(/^channel-client-tool:[a-f0-9]{64}$/),
       sessionId: "session-1",
@@ -632,9 +634,11 @@ describe("createConversationChannelTurnHandler", () => {
   it("consumes pairing turns without selecting an agent, creating a session, or invoking a model", async () => {
     const store = new TestSessionStore();
     const agent = vi.fn(async () => "assistant");
+    const allowedTools = vi.fn(async () => ["apply_site_change"]);
     const executeTurn = vi.fn<ChannelConversationTurnExecutor>();
     const handler = createConversationChannelTurnHandler(deps(store), {
       agent,
+      allowedTools,
       executeTurn,
       resolveInvocation: async () => ({
         disposition: "consume",
@@ -647,6 +651,7 @@ describe("createConversationChannelTurnHandler", () => {
       text: "WhatsApp account paired.",
     });
     expect(agent).not.toHaveBeenCalled();
+    expect(allowedTools).not.toHaveBeenCalled();
     expect(executeTurn).not.toHaveBeenCalled();
     expect(store.sessions).toHaveLength(0);
   });

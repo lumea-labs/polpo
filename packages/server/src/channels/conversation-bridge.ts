@@ -89,7 +89,9 @@ export interface ConversationChannelBridgeOptions {
   /** OpenAI-compatible tools executed by executeClientTool, not by Polpo. */
   clientTools?: readonly ChannelClientToolDefinition[];
   /** Channel Route restriction for the active Channel turn only. */
-  allowedTools?: readonly string[];
+  allowedTools?: readonly string[] | (
+    (turn: ChannelInboundTurn) => readonly string[] | Promise<readonly string[]>
+  );
   createSession?: (input: {
     agent: string;
     metadata: Record<string, string>;
@@ -211,6 +213,9 @@ export function createConversationChannelTurnHandler(
         "channel_agent_not_resolved",
       );
     }
+    const routeAllowedTools = typeof options.allowedTools === "function"
+      ? await options.allowedTools(turn)
+      : options.allowedTools;
     const metadata = {
       channel_installation_id: turn.installationId,
       channel_provider: turn.provider,
@@ -261,13 +266,13 @@ export function createConversationChannelTurnHandler(
       ...(trustedInvocation ? { metadata: trustedInvocation.metadata } : {}),
       ...(trustedScope ? { scope: trustedScope } : {}),
       ...(
-        options.allowedTools !== undefined
+        routeAllowedTools !== undefined
         || (invocationResolution?.disposition === "dispatch"
           && invocationResolution.allowedTools !== undefined)
           ? {
               toolPolicy: {
-                ...(options.allowedTools !== undefined
-                  ? { routeAllowedTools: [...options.allowedTools] }
+                ...(routeAllowedTools !== undefined
+                  ? { routeAllowedTools: [...routeAllowedTools] }
                   : {}),
                 ...(invocationResolution?.disposition === "dispatch"
                   && invocationResolution.allowedTools !== undefined
