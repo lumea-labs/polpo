@@ -90,7 +90,10 @@ export interface ConversationChannelBridgeOptions {
   clientTools?: readonly ChannelClientToolDefinition[];
   /** Channel Route restriction for the active Channel turn only. */
   allowedTools?: readonly string[] | (
-    (turn: ChannelInboundTurn) => readonly string[] | Promise<readonly string[]>
+    (turn: ChannelInboundTurn) =>
+      | readonly string[]
+      | undefined
+      | Promise<readonly string[] | undefined>
   );
   createSession?: (input: {
     agent: string;

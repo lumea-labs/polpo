@@ -183,6 +183,26 @@ describe("createConversationChannelTurnHandler", () => {
     ]);
   });
 
+  it("treats an unresolved lazy Route policy as unrestricted", async () => {
+    const store = new TestSessionStore();
+    const allowedTools = vi.fn(async () => undefined);
+    const executeTurn = vi.fn<ChannelConversationTurnExecutor>(async (input) =>
+      successfulResult(input.sessionId ?? null));
+    const handler = createConversationChannelTurnHandler(deps(store), {
+      agent: "assistant",
+      allowedTools,
+      executeTurn,
+    });
+
+    await expect(handler(turn())).resolves.toMatchObject({
+      metadata: { sessionId: "session-1" },
+    });
+    expect(allowedTools).toHaveBeenCalledOnce();
+    expect(executeTurn.mock.calls[0]?.[0].runtime?.toolPolicy).not.toHaveProperty(
+      "routeAllowedTools",
+    );
+  });
+
   it("preserves burst order and inlines authenticated image data", async () => {
     const store = new TestSessionStore();
     const executeTurn = vi.fn<ChannelConversationTurnExecutor>(async (input) =>
