@@ -123,7 +123,10 @@ The runtime consumes that contract directly: `skill_read({ name })` returns
 the skill entrypoint together with its textual `references/` resources, while
 `skill_read({ name, path })` reads one exact bundle-relative resource. Clients
 do not need to rewrite imported skills or instruct the model to use workspace
-file tools for bundle content.
+file tools for bundle content. Assigned skills implicitly authorize
+`skill_list` and `skill_read` through static agent and Loop allowlists;
+request, route, execution, and trusted-grant restrictions remain
+authoritative.
 
 An agent can have several assigned skills while a caller explicitly applies
 one or more of them to a single execution:

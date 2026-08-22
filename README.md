@@ -234,6 +234,11 @@ result. Skill authors can use ordinary bundle-relative references without
 adding Polpo-specific reading instructions. Use
 `skill_read({ name, path })` for an exact resource that was not loaded
 automatically; skill resources are never read through workspace file tools.
+Assigning at least one skill also makes `skill_list` and `skill_read`
+available through the agent's static agent, chat, channel, Loop, and step
+allowlists without repeating those tool names. Request-scoped restrictions,
+Channel Route policy, runtime execution policy, and trusted grants can still
+narrow or deny them.
 
 Other local operations are available without the dashboard:
 

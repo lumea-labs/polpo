@@ -9,9 +9,25 @@ import type { CompletionToolExecutor } from "./tool-guardrails.js";
 
 export type ExecutionToolPolicyMode = "chat" | "channels" | "loop";
 
+const ASSIGNED_SKILL_RUNTIME_TOOLS = ["skill_list", "skill_read"] as const;
+
+function hasAssignedSkills(skills: readonly unknown[] | undefined): boolean {
+  return Array.isArray(skills)
+    && skills.some((skill) => typeof skill === "string" && skill.trim().length > 0);
+}
+
+function includeAssignedSkillTools(
+  allowedTools: readonly string[] | undefined,
+  enabled: boolean,
+): readonly string[] | undefined {
+  if (!enabled || allowedTools === undefined) return allowedTools;
+  return [...new Set([...allowedTools, ...ASSIGNED_SKILL_RUNTIME_TOOLS])];
+}
+
 export function resolveExecutionToolPolicy(input: {
   agent?: {
     allowedTools?: readonly string[];
+    skills?: readonly string[];
     chat?: { allowedTools?: readonly string[] };
     channels?: { allowedTools?: readonly string[] };
   };
@@ -23,13 +39,18 @@ export function resolveExecutionToolPolicy(input: {
   stepAllowedTools?: readonly string[];
   grantAllowedTools?: readonly string[];
 }): ResolvedAllowedToolPolicy {
-  const modeAllowedTools = input.mode === "chat"
+  const assignedSkills = hasAssignedSkills(input.agent?.skills);
+  const configuredModeAllowedTools = input.mode === "chat"
     ? input.agent?.chat?.allowedTools
     : input.mode === "channels"
       ? input.agent?.channels?.allowedTools
       : undefined;
+  const modeAllowedTools = includeAssignedSkillTools(
+    configuredModeAllowedTools,
+    assignedSkills,
+  );
   return resolveAllowedToolPolicy({
-    global: input.agent?.allowedTools,
+    global: includeAssignedSkillTools(input.agent?.allowedTools, assignedSkills),
     mode: modeAllowedTools,
     ...(input.mode === "channels" && input.routeAllowedTools !== undefined
       ? { route: input.routeAllowedTools }
@@ -37,10 +58,10 @@ export function resolveExecutionToolPolicy(input: {
     request: input.requestAllowedTools,
     execution: input.executionAllowedTools,
     ...(input.mode === "loop" && input.loopAllowedTools !== undefined
-      ? { loop: input.loopAllowedTools }
+      ? { loop: includeAssignedSkillTools(input.loopAllowedTools, assignedSkills) }
       : {}),
     ...(input.mode === "loop" && input.stepAllowedTools !== undefined
-      ? { step: input.stepAllowedTools }
+      ? { step: includeAssignedSkillTools(input.stepAllowedTools, assignedSkills) }
       : {}),
     grant: input.grantAllowedTools,
   });
