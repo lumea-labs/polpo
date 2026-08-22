@@ -283,6 +283,7 @@ describe("createConversationChannelTurnHandler", () => {
     const executeClientTool = vi.fn(async () => ({
       result: { accepted: true },
       loop: "leo-change-site",
+      allowedTools: ["site_*"],
       trustedMetadata: {
         grant: "rotated-signed-grant",
         workingCopyId: "copy-1",
@@ -290,6 +291,7 @@ describe("createConversationChannelTurnHandler", () => {
     }));
     const handler = createConversationChannelTurnHandler(deps(store), {
       agent: "leo",
+      allowedTools: ["apply_site_change"],
       executeTurn,
       executeClientTool,
       clientTools: [{
@@ -311,6 +313,7 @@ describe("createConversationChannelTurnHandler", () => {
         user: "user-1",
         metadata: { tenantId: "tenant-1", grant: "signed" },
         scope: { key: "site-1", version: "3" },
+        allowedTools: ["apply_site_change", "site_*"],
       }),
     });
 
@@ -341,6 +344,10 @@ describe("createConversationChannelTurnHandler", () => {
       }],
       tool_choice: "auto",
       parallel_tool_calls: false,
+    });
+    expect(executeTurn.mock.calls[0]?.[0].runtime?.toolPolicy).toEqual({
+      routeAllowedTools: ["apply_site_change"],
+      grantAllowedTools: ["apply_site_change", "site_*"],
     });
     expect(continuation?.sessionId).toBe("session-1");
     expect(continuation?.body).toMatchObject({
@@ -378,7 +385,12 @@ describe("createConversationChannelTurnHandler", () => {
         workingCopyId: "copy-1",
       },
       scope: { key: "site-1", version: "3" },
+      toolPolicy: {
+        executionAllowedTools: ["site_*"],
+        grantAllowedTools: ["apply_site_change", "site_*"],
+      },
     });
+    expect(continuation?.runtime?.toolPolicy).not.toHaveProperty("routeAllowedTools");
     expect(Object.isFrozen(continuation?.runtime?.metadata)).toBe(true);
   });
 

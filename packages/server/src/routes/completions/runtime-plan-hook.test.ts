@@ -65,7 +65,14 @@ function makeDeps(overrides: Partial<CompletionRouteDeps> = {}): CompletionRoute
 
 describe("completion runtime plan hook", () => {
   it("merges request-scoped client tools and applies request tool_choice", async () => {
-    const prepared = await prepareChatCompletionExecution(makeDeps(), {
+    const prepared = await prepareChatCompletionExecution(makeDeps({
+      getAgents: async () => [{
+        name: "agent-1",
+        model: "mock",
+        systemPrompt: "private prompt",
+        allowedTools: ["bash", "configure_site_module"],
+      }],
+    }), {
       agent: "agent-1",
       stream: false,
       messages: [{ role: "user", content: "configure commerce" }],
@@ -305,7 +312,14 @@ describe("completion runtime plan hook", () => {
 
     expect(prepared.kind).toBe("chat");
     if (prepared.kind !== "chat") throw new Error("Expected chat preparation");
-    expect(calls).toEqual(["plan", "emit:runtime:plan", "prompt", "model", "tools"]);
+    expect(calls).toEqual([
+      "plan",
+      "emit:runtime:plan",
+      "prompt",
+      "model",
+      "tools",
+      "emit:runtime:tool-policy",
+    ]);
     expect(emit).toHaveBeenCalledWith("runtime:plan", {
       type: "runtime.plan.resolved",
       plan,
@@ -411,7 +425,7 @@ describe("completion runtime plan hook", () => {
         agent: {
           name: "agent-1",
           model: "research-model",
-          allowedTools: ["read"],
+          allowedTools: ["bash", "read"],
         },
       });
       expect(JSON.stringify(input)).not.toContain("private loop prompt");
@@ -433,7 +447,7 @@ describe("completion runtime plan hook", () => {
       getAgents: async () => [{
         name: "agent-1",
         model: "mock",
-        allowedTools: ["bash"],
+        allowedTools: ["bash", "read"],
         loops: {
           research: {
             model: "research-model",

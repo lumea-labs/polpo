@@ -104,6 +104,7 @@ export type ConversationChannel = Readonly<{
 
 export type ConversationChannelRoute = Readonly<{
   agentName: string;
+  allowedTools?: readonly string[];
   channelId: string;
   createdAt: string;
   enabled: boolean;
@@ -177,6 +178,7 @@ export type ChannelProvisioningResult =
 
 export type ConfigureConversationChannelInput = Readonly<{
   agentName: string;
+  allowedTools?: readonly string[];
   connectionId?: string;
   externalChannelId?: string;
   idempotencyKey: string;
@@ -198,6 +200,7 @@ export type TestConversationChannelInput = Readonly<{
 
 export type UpsertConversationChannelRouteInput = Readonly<{
   agentName: string;
+  allowedTools?: readonly string[];
   channelId: string;
   enabled?: boolean;
   externalChannelId?: string | null;
@@ -231,6 +234,7 @@ export type CreateConversationChannelRecord = Readonly<{
 
 export type CreateConversationChannelRouteRecord = Readonly<{
   agentName: string;
+  allowedTools?: readonly string[];
   channelId: string;
   enabled: boolean;
   externalChannelId: string | null;

@@ -306,6 +306,42 @@ or ambiguous selections fail before tool code runs. Capabilities are invalidated
 after each call, so revocation and scope changes apply to the next execution.
 Legacy `ctx.connections.get(ref)` access remains available for existing tools.
 
+### Tool policies by execution mode
+
+An agent can expose different subsets of its tools in direct chat, messaging
+Channels, and Project Loops without splitting identity or Session history across
+multiple agents. `agent.allowedTools` remains the global ceiling. Each execution
+then intersects that ceiling with the restrictions for its current mode:
+
+```jsonc
+{
+  "allowedTools": ["ask_user_question", "site_*"],
+  "chat": {
+    "allowedTools": ["ask_user_question"]
+  },
+  "channels": {
+    "allowedTools": ["ask_user_question", "site_context_get"]
+  }
+}
+```
+
+For direct chat the effective set is `agent + chat + request + trusted grants`.
+For a Channel turn it is `agent + channels + Route + request + trusted grants`.
+For a Project Loop it is `agent + Loop + step + request + trusted grants`.
+Every configured layer narrows the set; no layer can grant a tool excluded by an
+earlier layer. An explicit transition from chat or a Channel into a Project Loop
+recalculates the policy for Loop mode, so the previous chat or Route restriction
+does not leak into the Loop. Session history, identity, metadata, and grants are
+preserved.
+
+Callers can add an ephemeral restriction with
+`polpo.execution.allowedTools`. Trusted hosts can add a stricter execution or
+grant restriction through `CompletionRuntimeInvocation.toolPolicy`. Request and
+client-side OpenAI-compatible tools are filtered before the model sees their
+schemas. A forced `tool_choice` that is not effective fails before model
+execution with `tool_policy_denied`. Omitting every mode-specific field preserves
+the existing behavior.
+
 Custom tool entrypoints may import relative TypeScript, JavaScript, TSX, or JSON
 modules kept under the same source directory. Both `polpo tools push <file>` and
 `polpo deploy` collect that local dependency graph and upload it as one versioned
@@ -318,6 +354,10 @@ rejected before upload. Existing single-file custom tools remain compatible.
 Loops are project-level deterministic graphs stored in `.polpo/loops/*.json` or authored as static `.polpo/loops/*.ts` DSL files, then assigned from an agent's `agent.json`. This avoids duplicating loop definitions across agents: a loop has `name`, `context`, `start`, and `steps`; an agent has `assignedLoops` and optional execution routing.
 
 Use `type: "tool"` for deterministic sandbox/tool actions without an LLM turn, and `toolChoice` on `type: "agent"` when the model should still reason but must use a tool. Secrets stay in Connections; loop JSON should only contain non-secret input, while custom tools resolve credentials with `ctx.connections`.
+
+Both a Project Loop and each agent step can narrow the agent's global tool
+ceiling with `allowedTools`. The former `tools` field on agent steps remains a
+deprecated compatibility alias; new definitions should use `allowedTools`.
 
 `.polpo/loops/router-flow.json`:
 

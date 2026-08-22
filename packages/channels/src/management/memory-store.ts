@@ -29,7 +29,10 @@ function cloneChannel(value: ConversationChannel): ConversationChannel {
 }
 
 function cloneRoute(value: ConversationChannelRoute): ConversationChannelRoute {
-  return { ...value };
+  return {
+    ...value,
+    ...(value.allowedTools ? { allowedTools: [...value.allowedTools] } : {}),
+  };
 }
 
 export class InMemoryChannelManagementStore implements ChannelManagementStore {
@@ -184,6 +187,9 @@ export class InMemoryChannelManagementStore implements ChannelManagementStore {
       const value: ConversationChannelRoute = {
         ...existing.value,
         enabled: input.enabled,
+        ...(input.allowedTools !== undefined
+          ? { allowedTools: [...input.allowedTools] }
+          : {}),
         priority: input.priority,
         updatedAt: input.timestamp,
       };
@@ -194,6 +200,9 @@ export class InMemoryChannelManagementStore implements ChannelManagementStore {
       id: input.id,
       channelId: input.channelId,
       agentName: input.agentName,
+      ...(input.allowedTools !== undefined
+        ? { allowedTools: [...input.allowedTools] }
+        : {}),
       externalChannelId: input.externalChannelId,
       enabled: input.enabled,
       priority: input.priority,

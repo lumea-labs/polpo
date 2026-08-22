@@ -18,6 +18,7 @@ import type {
 } from "../model-runtime.js";
 import type { RuntimeGuardrailAuditEvent } from "../guardrails/types.js";
 import type { ChatInteractionSettings } from "../chat-interactions.js";
+import type { AllowedToolsSettings } from "../tool-policy.js";
 
 // === Reasoning / Thinking ===
 
@@ -161,6 +162,8 @@ export interface AgentConfig {
   systemPrompt?: string;
   /** Client-facing conversational behavior for this agent. */
   chat?: ChatInteractionSettings;
+  /** Tool capability restriction for provider Channels such as WhatsApp or Telegram. */
+  channels?: AllowedToolsSettings;
   /** Installed skill names (e.g. "find-skills", "frontend-design") */
   skills?: string[];
   /** MCP servers available to this agent. */

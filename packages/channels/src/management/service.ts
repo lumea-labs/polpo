@@ -57,6 +57,30 @@ function assertIdentifier(value: unknown, label: string, max = 256): string {
   return normalized;
 }
 
+function normalizeAllowedTools(value: readonly string[]): string[] {
+  if (!Array.isArray(value) || value.length > 256) {
+    throw new ChannelManagementError(
+      "INVALID_ARGUMENT",
+      "allowedTools must contain at most 256 entries",
+      400,
+    );
+  }
+  const seen = new Set<string>();
+  return value.map((entry, index) => {
+    const tool = assertIdentifier(entry, `allowedTools[${index}]`);
+    const key = tool.toLocaleLowerCase("en-US");
+    if (seen.has(key)) {
+      throw new ChannelManagementError(
+        "INVALID_ARGUMENT",
+        `allowedTools contains duplicate entry "${tool}"`,
+        400,
+      );
+    }
+    seen.add(key);
+    return tool;
+  });
+}
+
 function assertScope(scope: ChannelManagementScope): void {
   assertIdentifier(scope.projectId, "projectId");
   assertIdentifier(scope.actorId, "actorId");
@@ -279,6 +303,9 @@ export class ChannelManagementService {
       id: this.createId("route"),
       channelId: channel.id,
       agentName,
+      ...(input.allowedTools !== undefined
+        ? { allowedTools: normalizeAllowedTools(input.allowedTools) }
+        : {}),
       externalChannelId,
       enabled: true,
       priority: input.priority ?? 100,
@@ -369,6 +396,9 @@ export class ChannelManagementService {
       id: this.createId("route"),
       channelId: channel.id,
       agentName,
+      ...(input.allowedTools !== undefined
+        ? { allowedTools: normalizeAllowedTools(input.allowedTools) }
+        : {}),
       externalChannelId: input.externalChannelId === undefined
         ? channel.externalChannelId
         : input.externalChannelId,

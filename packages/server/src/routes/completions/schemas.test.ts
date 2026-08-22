@@ -331,6 +331,28 @@ describe("completion request Polpo chat capabilities", () => {
   });
 });
 
+describe("completion request execution tool policy", () => {
+  it("accepts an empty deny-all restriction and wildcard patterns", () => {
+    expect(completionRequestSchema.parse({
+      ...request,
+      polpo: { execution: { allowedTools: [] } },
+    }).polpo?.execution).toEqual({ allowedTools: [] });
+    expect(completionRequestSchema.parse({
+      ...request,
+      polpo: { execution: { allowedTools: ["site_*", "ask_user_question"] } },
+    }).polpo?.execution?.allowedTools).toEqual(["site_*", "ask_user_question"]);
+  });
+
+  it.each([
+    { execution: { allowedTools: [""] } },
+    { execution: { allowedTools: ["read", "READ"] } },
+    { execution: { allowedTools: "read" } },
+    { execution: { deniedTools: ["bash"] } },
+  ])("rejects malformed execution tool policy %#", (polpo) => {
+    expect(completionRequestSchema.safeParse({ ...request, polpo }).success).toBe(false);
+  });
+});
+
 describe("completion request skill activation", () => {
   it("accepts one or more skills for the current execution", () => {
     expect(completionRequestSchema.parse({

@@ -114,7 +114,7 @@ export function loopContextPrompt(
  *  task loop engine: the loop's overrides win, the base agent fills gaps. */
 export function buildLoopStepAgent(baseAgent: AgentConfig, stepName: string, loop: LoopConfig): AgentConfig {
   const loopPrompt = loop.systemPrompt?.trim();
-  const explicitTools = loop.tools;
+  const explicitTools = loop.allowedTools ?? loop.tools;
   const unsupportedExplicitTool = explicitTools?.find(isClientInteractionToolName);
   if (unsupportedExplicitTool) {
     throw new LoopInteractiveToolUnsupportedError(
@@ -122,8 +122,9 @@ export function buildLoopStepAgent(baseAgent: AgentConfig, stepName: string, loo
       stepName,
     );
   }
-  const allowedTools = explicitTools
-    ?? baseAgent.allowedTools?.filter((tool) => !isClientInteractionToolName(tool));
+  const allowedTools = baseAgent.allowedTools?.filter(
+    (tool) => !isClientInteractionToolName(tool),
+  );
   const toolChoice = (loop.toolChoice as AgentConfig["toolChoice"])
     ?? baseAgent.toolChoice;
   const forcedTool = toolChoice

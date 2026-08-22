@@ -5,6 +5,18 @@ import { normalizeProjectLoop } from "./normalize.js";
 import type { ProjectLoopConfig } from "./types.js";
 
 describe("agentLoopConfigSchema", () => {
+  it("rejects ambiguous legacy and canonical tool restrictions", () => {
+    const parsed = agentLoopConfigSchema.safeParse({
+      loops: {
+        work: {
+          allowedTools: ["read"],
+          tools: ["write"],
+        },
+      },
+    });
+
+    expect(parsed.success).toBe(false);
+  });
   it("accepts a loop collection with a deterministic pipeline", () => {
     const parsed = agentLoopConfigSchema.parse({
       name: "router-agent",

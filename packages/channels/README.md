@@ -238,6 +238,40 @@ const handleTurn = createConversationChannelTurnHandler(serverDeps, {
 });
 ```
 
+### Channel tool policy
+
+Channel turns can narrow the agent's tool ceiling at two levels. Configure
+`agent.channels.allowedTools` for every messaging Channel using the agent, and
+`allowedTools` on a Channel Route for one destination or route. The runtime
+intersects both restrictions with `agent.allowedTools` and trusted grant policy
+before exposing server or OpenAI-compatible client tool schemas to the model.
+
+```ts
+await channelManagement.upsertRoute(channelId, {
+  agentName: "leo",
+  allowedTools: ["ask_user_question", "site_context_get"],
+  enabled: true,
+  priority: 100,
+});
+```
+
+With the CLI, repeat `--allowed-tool`:
+
+```bash
+polpo channels add whatsapp --agent leo \
+  --allowed-tool ask_user_question \
+  --allowed-tool 'site_context_*'
+
+polpo channels routes add CHANNEL_ID --agent leo \
+  --allowed-tool ask_user_question
+```
+
+The Route policy applies only to the current Channel turn. When a server-side
+client tool explicitly continues into a Project Loop, Polpo recalculates the
+effective set from the agent, Loop, step, request, and trusted grant policies.
+It preserves the canonical Session and trusted identity but does not carry the
+Route restriction into Loop execution.
+
 ### Server-side client tools
 
 A channel host can execute an allowlisted client tool on behalf of a messaging

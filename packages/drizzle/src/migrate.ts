@@ -242,12 +242,14 @@ export async function ensurePgTables(db: any): Promise<void> {
     project_id          TEXT NOT NULL,
     channel_id          TEXT NOT NULL REFERENCES conversation_channels(id) ON DELETE CASCADE,
     agent_name          TEXT NOT NULL,
+    allowed_tools       JSONB,
     external_channel_id TEXT NOT NULL DEFAULT '',
     enabled             INTEGER NOT NULL DEFAULT 1,
     priority            INTEGER NOT NULL DEFAULT 100,
     created_at          TEXT NOT NULL,
     updated_at          TEXT NOT NULL
   )`);
+  await db.execute(sql`ALTER TABLE conversation_channel_routes ADD COLUMN IF NOT EXISTS allowed_tools JSONB`);
 
   await db.execute(sql`CREATE TABLE IF NOT EXISTS log_sessions (
     id         TEXT PRIMARY KEY,

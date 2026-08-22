@@ -95,6 +95,7 @@ export function createChannelManagementTools(
       inputSchema: object({
         provider: { type: "string", enum: ["slack", "telegram", "discord", "whatsapp"] },
         agentName: string("Agent name to route messages to."),
+        allowedTools: { type: "array", items: { type: "string" }, maxItems: 256 },
         connectionId: string("Existing project Connection id, when already authorized."),
         externalChannelId: string("Provider destination id, when known."),
         name: string("Optional display name."),
@@ -162,6 +163,7 @@ export function createChannelManagementTools(
       inputSchema: object({
         channelId: string("Channel id."),
         agentName: string("Agent name."),
+        allowedTools: { type: "array", items: { type: "string" }, maxItems: 256 },
         enabled: { type: "boolean" },
         externalChannelId: { type: ["string", "null"] },
         priority: { type: "integer" },

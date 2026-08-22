@@ -496,6 +496,22 @@ export {
   MemoryLoopRunStore,
 } from "./loop/run-store.js";
 export { createToolInvocationContext } from "./tool-invocation.js";
+export {
+  ALLOWED_TOOL_POLICY_LAYERS,
+  ToolPolicyDeniedError,
+  assertToolNameAllowedByPolicy,
+  filterToolNamesByPolicy,
+  resolveAllowedToolPolicy,
+  toolNameAllowedByPolicy,
+  toolNameMatchesAllowedPattern,
+} from "./tool-policy.js";
+export type {
+  AllowedToolPolicyInput,
+  AllowedToolPolicyLayer,
+  AllowedToolPolicyLayerName,
+  AllowedToolsSettings,
+  ResolvedAllowedToolPolicy,
+} from "./tool-policy.js";
 export type {
   ToolInvocationContext,
   ToolInvocationContextInput,

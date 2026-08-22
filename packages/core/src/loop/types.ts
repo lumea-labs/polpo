@@ -154,6 +154,8 @@ export interface LoopConfig {
   description?: string;
   systemPrompt?: string;
   /** Tool subset active in this loop (restriction = determinism/safety). */
+  allowedTools?: string[];
+  /** @deprecated Use allowedTools. Retained for authored-config compatibility. */
   tools?: string[];
   /** Skill subset active in this loop. Defaults to the agent-level skills. */
   skills?: string[];
@@ -238,6 +240,8 @@ export interface ProjectLoopConfig {
   label?: string;
   description?: string;
   metadata?: Record<string, unknown>;
+  /** Tool subset available to every step in this Project Loop. */
+  allowedTools?: string[];
   context?: "shared";
   hooks?: ProjectLoopHooks;
   permissions?: ProjectLoopPermission[];

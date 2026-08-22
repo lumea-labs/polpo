@@ -128,6 +128,17 @@ describe("agent chat interaction schema", () => {
     expect(UpdateAgentSchema.parse({ chat }).chat).toEqual(chat);
   });
 
+  it("accepts per-chat and per-channel tool restrictions", () => {
+    const input = {
+      allowedTools: ["read", "bash", "ask_user_question"],
+      chat: { allowedTools: ["read", "ask_user_question"] },
+      channels: { allowedTools: ["ask_user_question"] },
+    };
+
+    expect(AddAgentSchema.parse({ name: "policy-agent", ...input })).toMatchObject(input);
+    expect(UpdateAgentSchema.parse(input)).toMatchObject(input);
+  });
+
   it.each([
     null,
     [],

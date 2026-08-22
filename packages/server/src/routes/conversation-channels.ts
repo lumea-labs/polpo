@@ -10,6 +10,21 @@ import {
 } from "./completions/schemas.js";
 
 const providerId = z.enum(["slack", "telegram", "discord", "whatsapp"]);
+const routeAllowedTools = z.array(z.string().trim().min(1).max(256)).max(256)
+  .superRefine((tools, ctx) => {
+    const seen = new Set<string>();
+    for (const [index, tool] of tools.entries()) {
+      const key = tool.toLocaleLowerCase("en-US");
+      if (seen.has(key)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `Duplicate tool pattern: ${tool}`,
+          path: [index],
+        });
+      }
+      seen.add(key);
+    }
+  });
 const channelIdentityResolver = z.object({
   connectionId: z.string().min(1).max(256),
   endpoint: z.string().url().max(2_048),
@@ -92,6 +107,7 @@ const channelSettings = z.object({
 
 const configureBody = z.object({
   agentName: z.string().min(1).max(256),
+  allowedTools: routeAllowedTools.optional(),
   connectionId: z.string().min(1).max(256).optional(),
   externalChannelId: z.string().min(1).max(512).optional(),
   idempotencyKey: z.string().min(1).max(512),
@@ -114,6 +130,7 @@ const updateBody = z.object({
 
 const routeBody = z.object({
   agentName: z.string().min(1).max(256),
+  allowedTools: routeAllowedTools.optional(),
   enabled: z.boolean().optional(),
   externalChannelId: z.string().max(512).nullable().optional(),
   priority: z.number().int().min(-1_000_000).max(1_000_000).optional(),

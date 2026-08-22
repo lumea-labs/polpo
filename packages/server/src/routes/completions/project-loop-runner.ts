@@ -58,6 +58,12 @@ import {
 import { emitFileChanged, persistAssistantMessage, type LoopRuntimeToolCall } from "./tool-mapping.js";
 import { createGuardedCompletionToolExecutor } from "./tool-guardrails.js";
 import {
+  createPolicyGuardedToolExecutor,
+  filterToolDefinitionsByPolicy,
+  resolveExecutionToolPolicy,
+  toolPolicyAuditData,
+} from "./tool-policy-runtime.js";
+import {
   applyCompletionOutputPolicy,
   streamingOutputPolicyMode,
 } from "./output-guardrails.js";
@@ -136,6 +142,20 @@ function runtimeInvocationMetadata(
   };
 }
 
+function stringArrayRuntimeValue(
+  value: unknown,
+  field: string,
+): string[] | undefined {
+  if (value === undefined) return undefined;
+  if (
+    !Array.isArray(value)
+    || value.some((entry) => typeof entry !== "string" || !entry.trim())
+  ) {
+    throw new Error(`Loop resume ${field} is invalid`);
+  }
+  return value.map((entry) => entry.trim());
+}
+
 function projectLoopToolInvocation(input: {
   loopRunId?: string;
   runtimeInvocation?: CompletionRuntimeInvocation;
@@ -145,13 +165,6 @@ function projectLoopToolInvocation(input: {
 }): ToolInvocationContext {
   const runtime = input.runtimeInvocation;
   const id = input.loopRunId ?? runtime?.runId ?? runtime?.requestId ?? `loop-${nanoid(16)}`;
-  const surface = runtime?.surface === "channel" || runtime?.source === "channel"
-    ? "channel"
-    : runtime?.source === "schedule"
-      ? "schedule"
-      : runtime?.surface === "task" || runtime?.source === "task"
-        ? "task"
-        : "loop";
   return createToolInvocationContext({
     requestId: runtime?.requestId ?? id,
     runId: input.loopRunId ?? runtime?.runId ?? id,
@@ -162,7 +175,9 @@ function projectLoopToolInvocation(input: {
       ToolInvocationJsonValue
     >,
     ...(runtime?.scope ? { scope: runtime.scope } : {}),
-    surface,
+    // The invocation has transitioned into a Project Loop. Preserve trusted
+    // ingress identity separately, but do not leak the prior surface policy.
+    surface: "loop",
   });
 }
 
@@ -262,6 +277,9 @@ export async function runProjectLoopCompletion(options: {
   activatedSkills?: readonly string[];
   deliveryRunId?: string;
   parallelToolCalls?: boolean;
+  requestAllowedTools?: readonly string[];
+  executionAllowedTools?: readonly string[];
+  grantAllowedTools?: readonly string[];
 }): Promise<ProjectLoopRunResult> {
   const {
     deps,
@@ -326,9 +344,32 @@ export async function runProjectLoopCompletion(options: {
     await rootTools.cleanup?.().catch(() => {});
     await toolRunScope?.cleanup?.().catch(() => {});
   };
-  const deterministicTools = rootTools.runtimeTools ?? rootTools.tools;
+  const rootPolicy = resolveExecutionToolPolicy({
+    agent: agentConfig,
+    mode: "loop",
+    requestAllowedTools: options.requestAllowedTools,
+    executionAllowedTools: options.executionAllowedTools,
+    loopAllowedTools: projectLoop.allowedTools,
+    grantAllowedTools: options.grantAllowedTools,
+  });
+  const rootResolvedTools = rootTools.runtimeTools ?? rootTools.tools;
+  const deterministicTools = filterToolDefinitionsByPolicy(
+    rootResolvedTools,
+    rootPolicy,
+  );
+  deps.emit("runtime:tool-policy", toolPolicyAuditData({
+    policy: rootPolicy,
+    requested: rootResolvedTools
+      .map((tool: any) => tool?.name)
+      .filter((name: unknown): name is string => typeof name === "string"),
+    mode: "loop",
+  }));
+  const rootExecutor = createPolicyGuardedToolExecutor(
+    rootTools.runtimeExecutor ?? rootTools.executor,
+    rootPolicy,
+  );
   const executeLoopTool = createGuardedCompletionToolExecutor({
-    executor: rootTools.runtimeExecutor ?? rootTools.executor,
+    executor: rootExecutor,
     tools: deterministicTools,
     middleware: deps.runToolMiddleware,
     context: {
@@ -539,6 +580,16 @@ export async function runProjectLoopCompletion(options: {
           state: "calling",
         });
         const stepAgent = buildLoopStepAgent(agentConfig, name, loop);
+        const stepAllowedTools = loop.allowedTools ?? loop.tools;
+        const stepToolPolicy = resolveExecutionToolPolicy({
+          agent: agentConfig,
+          mode: "loop",
+          requestAllowedTools: options.requestAllowedTools,
+          executionAllowedTools: options.executionAllowedTools,
+          loopAllowedTools: projectLoop.allowedTools,
+          stepAllowedTools,
+          grantAllowedTools: options.grantAllowedTools,
+        });
         const stepSkillNames = new Set(
           Array.isArray(stepAgent.skills)
             ? stepAgent.skills.filter(
@@ -567,6 +618,7 @@ export async function runProjectLoopCompletion(options: {
           toolInvocation,
           onToolCall,
           parallelToolCalls: options.parallelToolCalls,
+          toolPolicy: stepToolPolicy,
         });
         finalText = stepResult.text || finalText;
         totalUsage = addUsage(totalUsage, stepResult.usage);
@@ -672,6 +724,9 @@ export async function runProjectLoopCompletion(options: {
             contextTrust,
             activatedSkills,
             options.parallelToolCalls,
+            options.requestAllowedTools,
+            options.executionAllowedTools,
+            options.grantAllowedTools,
           ),
           error: err.message,
         });
@@ -698,6 +753,9 @@ export function buildLoopResumeState(
   contextTrust: RuntimeContextTrustMode = "off",
   activatedSkills: readonly string[] = [],
   parallelToolCalls?: boolean,
+  requestAllowedTools?: readonly string[],
+  executionAllowedTools?: readonly string[],
+  grantAllowedTools?: readonly string[],
 ): LoopResumeState | undefined {
   if (!continuation) return undefined;
   return {
@@ -713,6 +771,15 @@ export function buildLoopResumeState(
         ? { activatedSkills: [...activatedSkills] }
         : {}),
       ...(parallelToolCalls !== undefined ? { parallelToolCalls } : {}),
+      ...(requestAllowedTools !== undefined
+        ? { requestAllowedTools: [...requestAllowedTools] }
+        : {}),
+      ...(executionAllowedTools !== undefined
+        ? { executionAllowedTools: [...executionAllowedTools] }
+        : {}),
+      ...(grantAllowedTools !== undefined
+        ? { grantAllowedTools: [...grantAllowedTools] }
+        : {}),
     },
     attempts: 0,
     createdAt: new Date().toISOString(),
@@ -758,6 +825,18 @@ export async function resumeProjectLoopRun(options: {
   const parallelToolCalls = typeof run.resume.runtime?.parallelToolCalls === "boolean"
     ? run.resume.runtime.parallelToolCalls
     : undefined;
+  const requestAllowedTools = stringArrayRuntimeValue(
+    run.resume.runtime?.requestAllowedTools,
+    "requestAllowedTools",
+  );
+  const executionAllowedTools = stringArrayRuntimeValue(
+    run.resume.runtime?.executionAllowedTools,
+    "executionAllowedTools",
+  );
+  const grantAllowedTools = stringArrayRuntimeValue(
+    run.resume.runtime?.grantAllowedTools,
+    "grantAllowedTools",
+  );
   const assignedSkills = new Set(
     Array.isArray(agentConfig.skills)
       ? agentConfig.skills.filter(
@@ -828,6 +907,9 @@ export async function resumeProjectLoopRun(options: {
     requestMetadata: loopRequestMetadata(run),
     activatedSkills,
     parallelToolCalls,
+    requestAllowedTools,
+    executionAllowedTools,
+    grantAllowedTools,
     resumeRun: run,
   });
 
@@ -863,6 +945,9 @@ export interface ProjectLoopCompletionOptions {
   runtimePlan?: RuntimePlan;
   executionRoute?: ResolvedExecutionRoute;
   activatedSkills?: readonly string[];
+  requestAllowedTools?: readonly string[];
+  executionAllowedTools?: readonly string[];
+  grantAllowedTools?: readonly string[];
 }
 
 export async function handleProjectLoopCompletion(
@@ -960,6 +1045,9 @@ export async function executeStreamingProjectLoopCompletion(
           activatedSkills,
           deliveryRunId: completionId,
           parallelToolCalls: body.parallel_tool_calls,
+          requestAllowedTools: options.requestAllowedTools,
+          executionAllowedTools: options.executionAllowedTools,
+          grantAllowedTools: options.grantAllowedTools,
           onToolCall: async (toolCall) => {
             if (signal.aborted) return;
             await stream.writeSSE({
@@ -1093,6 +1181,9 @@ async function runNonStreamingProjectLoopCompletion(
       activatedSkills,
       deliveryRunId: completionId,
       parallelToolCalls: body.parallel_tool_calls,
+      requestAllowedTools: options.requestAllowedTools,
+      executionAllowedTools: options.executionAllowedTools,
+      grantAllowedTools: options.grantAllowedTools,
     });
     finalText = run.text;
     runUsage = run.usage;

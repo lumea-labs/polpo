@@ -63,6 +63,7 @@ describe("ChannelManagementService", () => {
 
     const result = await state.service.configure(scope, {
       agentName: "assistant",
+      allowedTools: ["ask_user_question", "apply_site_change"],
       connectionId: "connection-1",
       externalChannelId: "phone-1",
       idempotencyKey: "setup-1",
@@ -78,7 +79,11 @@ describe("ChannelManagementService", () => {
         provider: "whatsapp",
         status: "active",
       },
-      route: { agentName: "assistant", enabled: true },
+      route: {
+        agentName: "assistant",
+        allowedTools: ["ask_user_question", "apply_site_change"],
+        enabled: true,
+      },
     });
     expect(JSON.stringify(result)).not.toMatch(/secret|token|credentialRevision/i);
   });

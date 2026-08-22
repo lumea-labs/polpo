@@ -84,6 +84,7 @@ describe("DrizzleChannelManagementStore", () => {
       id: "route-1",
       channelId: "channel-1",
       agentName: "assistant",
+      allowedTools: ["read"],
       externalChannelId: null,
       enabled: true,
       priority: 100,
@@ -93,6 +94,7 @@ describe("DrizzleChannelManagementStore", () => {
       id: "route-2",
       channelId: "channel-1",
       agentName: "assistant",
+      allowedTools: ["read", "bash"],
       externalChannelId: null,
       enabled: false,
       priority: 10,
@@ -100,7 +102,12 @@ describe("DrizzleChannelManagementStore", () => {
     });
 
     expect(first.id).toBe("route-1");
-    expect(updated).toMatchObject({ id: "route-1", enabled: false, priority: 10 });
+    expect(updated).toMatchObject({
+      id: "route-1",
+      allowedTools: ["read", "bash"],
+      enabled: false,
+      priority: 10,
+    });
     expect(await store.listRoutes(scope, "channel-1")).toHaveLength(1);
     expect(await store.removeChannel(scope, "channel-1")).toBe(true);
     expect(await store.listRoutes(scope, "channel-1")).toEqual([]);
