@@ -620,6 +620,7 @@ export async function runProjectLoopCompletion(options: {
           parallelToolCalls: options.parallelToolCalls,
           toolPolicy: stepToolPolicy,
           projectedInput: agentInput,
+          outputSchema: loop.output?.schema,
         });
         finalText = stepResult.text || finalText;
         totalUsage = addUsage(totalUsage, stepResult.usage);

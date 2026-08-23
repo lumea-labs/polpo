@@ -262,6 +262,134 @@ describe("spawnLoopEngine — project loop graphs", () => {
     expect(prompt).not.toContain("do-not-pass");
   });
 
+  test("enforces structured Agent step output after an intermediate tool call", async () => {
+    await writeProjectLoop("structured-flow", {
+      name: "structured-flow",
+      start: "implement",
+      steps: {
+        implement: {
+          type: "agent",
+          allowedTools: ["bash"],
+          maxTurns: 2,
+          output: {
+            schema: {
+              type: "object",
+              additionalProperties: false,
+              required: ["summary", "response"],
+              properties: {
+                summary: { type: "string" },
+                response: { type: "string" },
+              },
+            },
+          },
+          next: "end",
+        },
+      },
+    });
+
+    let turn = 0;
+    const responseFormats: unknown[] = [];
+    activeResolvedModel = mockResolvedModel(new MockLanguageModelV3({
+      doStream: async (options) => {
+        responseFormats.push(options.responseFormat);
+        turn += 1;
+        return {
+          stream: convertArrayToReadableStream(turn === 1
+            ? [
+                { type: "stream-start", warnings: [] },
+                { type: "text-start", id: "preface" },
+                { type: "text-delta", id: "preface", delta: "Inspecting first." },
+                { type: "text-end", id: "preface" },
+                { type: "tool-call", toolCallId: "bash_1", toolName: "bash", input: '{"command":"true"}' },
+                { type: "finish", finishReason: { unified: "tool-calls", raw: undefined }, usage: {
+                  inputTokens: { total: 1 }, outputTokens: { total: 1 },
+                } },
+              ]
+            : [
+                { type: "stream-start", warnings: [] },
+                { type: "text-start", id: "final" },
+                { type: "text-delta", id: "final", delta: '{"summary":"implemented","response":"ready"}' },
+                { type: "text-end", id: "final" },
+                { type: "finish", finishReason: { unified: "stop", raw: undefined }, usage: {
+                  inputTokens: { total: 1 }, outputTokens: { total: 1 },
+                } },
+              ] as any[]),
+        };
+      },
+    }));
+    const transcript: TranscriptEntry[] = [];
+    const handle = spawnLoopEngine(
+      {
+        name: "loop-agent",
+        role: "developer",
+        allowedTools: ["bash"],
+        assignedLoops: ["structured-flow"],
+      },
+      makeTask({ loop: "structured-flow" }),
+      cwd,
+      { polpoDir, outputDir },
+    );
+    handle.onTranscript = (entry) => transcript.push(entry as TranscriptEntry);
+    const result = await handle.done;
+
+    expect(result.exitCode, result.stderr).toBe(0);
+    expect(result.stdout).toBe('{"summary":"implemented","response":"ready"}');
+    expect(responseFormats).toEqual([
+      expect.objectContaining({ type: "json" }),
+      expect.objectContaining({ type: "json" }),
+    ]);
+    expect(transcript.filter((entry) => entry.type === "assistant").map((entry) => entry.text))
+      .toEqual(['{"summary":"implemented","response":"ready"}']);
+  });
+
+  test("fails the Task before completing a step whose structured output is invalid", async () => {
+    await writeProjectLoop("invalid-structured-flow", {
+      name: "invalid-structured-flow",
+      start: "implement",
+      steps: {
+        implement: {
+          type: "agent",
+          output: {
+            schema: {
+              type: "object",
+              additionalProperties: false,
+              required: ["summary", "response"],
+              properties: {
+                summary: { type: "string" },
+                response: { type: "string" },
+              },
+            },
+          },
+          next: "end",
+        },
+      },
+    });
+
+    activeResolvedModel = mockResolvedModel(mockTurnSequenceModel([
+      { type: "text", text: "**summary:** implemented" },
+    ]));
+    const transcript: TranscriptEntry[] = [];
+    const handle = spawnLoopEngine(
+      {
+        name: "loop-agent",
+        role: "developer",
+        assignedLoops: ["invalid-structured-flow"],
+      },
+      makeTask({ loop: "invalid-structured-flow" }),
+      cwd,
+      { polpoDir, outputDir },
+    );
+    handle.onTranscript = (entry) => transcript.push(entry as TranscriptEntry);
+    const result = await handle.done;
+
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain("did not produce valid structured output");
+    expect(transcript).not.toContainEqual(expect.objectContaining({
+      type: "loop_trace",
+      trace: expect.objectContaining({ type: "step.end", status: "completed" }),
+    }));
+  });
+
   test("missing assigned loop file fails the task loudly", async () => {
     const { result } = await runAgent(
       {
