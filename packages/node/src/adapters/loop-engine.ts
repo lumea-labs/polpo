@@ -39,6 +39,8 @@ import {
   normalizeResponseMessagesForHistory,
   prepareModelMessagesForTransport,
   runModelPolicyTurn,
+  isStructuredModelOutputError,
+  modelOutputForJsonSchema,
   classifyRuntimeError,
   toValidatedToolInputSchema,
   validateToolInput,
@@ -52,6 +54,8 @@ import {
   loopContextPrompt,
   loopAgentInputPrompt,
   maybeParseJson,
+  LoopAgentOutputError,
+  prepareLoopAgentOutput,
   normalizeProjectLoop,
   normalizeToolInput,
   protectRuntimeToolResultMessages,
@@ -450,6 +454,11 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
       resolvedModelSelection ??
       modelSelectionForResolvedModel(model);
     const contextTrust = inject?.contextTrust ?? ctx?.contextTrust ?? "off";
+    const outputSchema = loop.output?.schema;
+    const modelOutput = inject?.output ?? (outputSchema !== undefined
+      ? modelOutputForJsonSchema(outputSchema, `loop_${loopName}_output`)
+      : undefined);
+    const hasStructuredOutput = modelOutput !== undefined;
 
     // Conversation state owned by the host, exactly like the legacy loop.
     // On resume the recorded history (already containing tool-call and
@@ -472,6 +481,7 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
     }
     let lastStepText = "";
     let accumText = resume?.accumText ?? "";
+    let completedStructuredOutput = false;
     const providerToolResults = new Map<string, { content: string; isError: boolean }>();
 
     const renderProviderResult = (value: unknown): string => {
@@ -537,38 +547,39 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
       let stepText = "";
       const toolCalls: LoopToolCall[] = [];
       const seenModelToolCallIds = new Set<string>();
-      const hasStructuredOutput = inject?.output !== undefined;
       const resolvedAttempts = new Map<number, Pick<SpawnPrep, "model" | "providerOptions">>();
-      const turn = await runModelPolicyTurn({
-        selection: modelSelection,
-        resolveAttempt: async (attempt) => {
-          const resolvedAttempt = attempt.index === 0
-            ? primaryResolved
-            : inject
-              ? await inject.resolveModelAttempt?.(attempt.model) as Pick<SpawnPrep, "model" | "providerOptions"> | undefined
-              : resolveSpawnModelAttempt(sessionAgent, attempt.model, ctx);
-          if (!resolvedAttempt) {
-            throw new Error(`No model resolver is available for fallback "${attempt.model}"`);
-          }
-          resolvedAttempts.set(attempt.index, resolvedAttempt);
-          return {
-            model: resolvedAttempt.model.aiModel,
-            maxOutputTokens: resolvedAttempt.model.maxTokens,
-            providerOptions: resolvedAttempt.providerOptions,
-          };
-        },
-        preserveSingleAttemptError: true,
-        system: systemPrompt,
-        messages,
-        tools: toolSet,
-        ...(inject?.activeToolNames ? { activeTools: inject.activeToolNames() as Array<keyof typeof toolSet> } : {}),
-        ...(inject?.toolChoice ? { toolChoice: inject.toolChoice as any } : {}),
-        ...(inject?.parallelToolCalls !== undefined
-          ? { parallelToolCalls: inject.parallelToolCalls }
-          : {}),
-        ...(hasStructuredOutput ? { output: inject.output as any } : {}),
-        abortSignal: abortController.signal,
-      }, (event) => {
+      let turn;
+      try {
+        turn = await runModelPolicyTurn({
+          selection: modelSelection,
+          resolveAttempt: async (attempt) => {
+            const resolvedAttempt = attempt.index === 0
+              ? primaryResolved
+              : inject
+                ? await inject.resolveModelAttempt?.(attempt.model) as Pick<SpawnPrep, "model" | "providerOptions"> | undefined
+                : resolveSpawnModelAttempt(sessionAgent, attempt.model, ctx);
+            if (!resolvedAttempt) {
+              throw new Error(`No model resolver is available for fallback "${attempt.model}"`);
+            }
+            resolvedAttempts.set(attempt.index, resolvedAttempt);
+            return {
+              model: resolvedAttempt.model.aiModel,
+              maxOutputTokens: resolvedAttempt.model.maxTokens,
+              providerOptions: resolvedAttempt.providerOptions,
+            };
+          },
+          preserveSingleAttemptError: true,
+          system: systemPrompt,
+          messages,
+          tools: toolSet,
+          ...(inject?.activeToolNames ? { activeTools: inject.activeToolNames() as Array<keyof typeof toolSet> } : {}),
+          ...(inject?.toolChoice ? { toolChoice: inject.toolChoice as any } : {}),
+          ...(inject?.parallelToolCalls !== undefined
+            ? { parallelToolCalls: inject.parallelToolCalls }
+            : {}),
+          ...(hasStructuredOutput ? { output: modelOutput as any } : {}),
+          abortSignal: abortController.signal,
+        }, (event) => {
         switch (event.type) {
           case "reasoning-delta": {
             // Chat parity (F1c): surface model reasoning as a thinking delta.
@@ -699,7 +710,19 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
             break;
           }
         }
-      });
+        });
+      } catch (error) {
+        if (outputSchema !== undefined && isStructuredModelOutputError(error)) {
+          throw new LoopAgentOutputError(
+            "loop_agent_output_invalid",
+            loopName,
+            `Agent step ${JSON.stringify(loopName)} did not produce valid structured output`,
+            { phase: "model_output" },
+            { cause: error },
+          );
+        }
+        throw error;
+      }
 
       const stepUsage = turn.usage;
       const selectedResolved = resolvedAttempts.get(turn.selectedAttempt.index);
@@ -712,9 +735,22 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
       }
       activity.lastUpdate = new Date().toISOString();
 
-      const rawText = hasStructuredOutput && toolCalls.length === 0 && turn.output !== undefined
-        ? JSON.stringify(turn.output)
-        : stepText || (toolCalls.length === 0 ? turn.text : "");
+      let rawText: string;
+      if (hasStructuredOutput) {
+        if (toolCalls.length === 0 && turn.output !== undefined) {
+          if (outputSchema !== undefined) {
+            const prepared = prepareLoopAgentOutput(loopName, turn.output, outputSchema);
+            rawText = prepared.serialized;
+            completedStructuredOutput = true;
+          } else {
+            rawText = JSON.stringify(turn.output);
+          }
+        } else {
+          rawText = "";
+        }
+      } else {
+        rawText = stepText || (toolCalls.length === 0 ? turn.text : "");
+      }
       const guardedText = rawText && ctx?.runOutputPolicy
         ? (await ctx.runOutputPolicy.evaluate({
             output: rawText,
@@ -898,6 +934,15 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
       },
       onTurnCheckpoint,
     });
+
+    if (outputSchema !== undefined && !completedStructuredOutput) {
+      throw new LoopAgentOutputError(
+        "loop_agent_output_invalid",
+        loopName,
+        `Agent step ${JSON.stringify(loopName)} exhausted maxTurns before producing structured output`,
+        { phase: "max_turns" },
+      );
+    }
 
     return { lastText: lastStepText, accumText };
   }

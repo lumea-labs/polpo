@@ -9,6 +9,7 @@ import { LOOP_LIFECYCLE_HOOKS } from "./loop/types.js";
 import { MAX_MODEL_FALLBACKS } from "./model-policy.js";
 import { MODEL_PROFILE_NAME_PATTERN } from "./model-profiles.js";
 import { assertLoopAgentInputSchema } from "./loop/agent-input.js";
+import { assertLoopAgentOutputSchema } from "./loop/agent-output.js";
 
 // ── Expectation Schemas (discriminated union on `type`) ──────────────
 
@@ -304,6 +305,17 @@ export const loopConfigSchema = z.object({
         code: z.ZodIssueCode.custom,
         message: error instanceof Error ? error.message : String(error),
         path: ["inputSchema"],
+      });
+    }
+  }
+  if (loop.output?.schema !== undefined) {
+    try {
+      assertLoopAgentOutputSchema(loop.output.schema);
+    } catch (error) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: error instanceof Error ? error.message : String(error),
+        path: ["output", "schema"],
       });
     }
   }

@@ -34,12 +34,16 @@ import {
   type ResolvedAllowedToolPolicy,
   isClientInteractionToolName,
   LoopInteractiveToolUnsupportedError,
+  LoopAgentOutputError,
+  prepareLoopAgentOutput,
   assertToolNameAllowedByPolicy,
 } from "@polpo-ai/core";
 import { generateText, type LanguageModel, type LanguageModelUsage } from "ai";
 import {
   prepareModelMessagesForProvider,
   prepareModelMessagesForTransport,
+  isStructuredModelOutputError,
+  modelOutputForJsonSchema,
   runModelPolicyTurn,
 } from "@polpo-ai/llm";
 import type {
@@ -287,6 +291,8 @@ export async function runAgentStepCompletion(options: {
   parallelToolCalls?: boolean;
   toolPolicy?: ResolvedAllowedToolPolicy;
   projectedInput?: PreparedLoopAgentInput;
+  /** JSON Schema enforced on the terminal, non-tool model turn. */
+  outputSchema?: unknown;
 }): Promise<AgentStepRunResult> {
   const {
     deps,
@@ -472,7 +478,13 @@ export async function runAgentStepCompletion(options: {
     ...loopExtraAiTools,
   };
   const providerToolNames = new Set(Object.keys(loopExtraAiTools));
+  const outputSchema = options.outputSchema;
+  const modelOutput = outputSchema !== undefined
+    ? modelOutputForJsonSchema(outputSchema, `loop_${stepName}_output`)
+    : undefined;
   let finalText = "";
+  let finalOutput: unknown;
+  let completedStructuredOutput = false;
   let totalUsage: LanguageModelUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 } as LanguageModelUsage;
   let lastProviderMetadata: Record<string, unknown> | undefined;
   const toolCallsAccum: any[] = [];
@@ -499,53 +511,68 @@ export async function runAgentStepCompletion(options: {
 
       const toolCallNames = new Map<string, string>();
       const resolvedAttempts = new Map<number, typeof initialResolved>();
-      const turnResult = await runModelPolicyTurn({
-        selection: modelSelection,
-        resolveAttempt: async (attempt) => {
-          const resolvedAttempt = attempt.index === 0
-            ? initialResolved
-            : await deps.resolveAgentModel(agentConfigForModelAttempt(agentConfig, attempt.model), reasoning);
-          resolvedAttempts.set(attempt.index, resolvedAttempt);
-          return {
-            model: resolvedAttempt.model.aiModel,
-            maxOutputTokens: resolvedAttempt.model.maxTokens,
-            providerOptions: resolvedAttempt.providerOptions,
-          };
-        },
-        preserveSingleAttemptError: true,
-        system: fullSystemPrompt,
-        messages,
-        tools: aiTools,
-        ...(activeToolNames ? { activeTools: activeToolNames() } : {}),
-        ...(modelToolChoice ? { toolChoice: modelToolChoice as any } : {}),
-        ...(options.parallelToolCalls !== undefined
-          ? { parallelToolCalls: options.parallelToolCalls }
-          : {}),
-      }, async (event) => {
-        if (event.type === "tool-input-start") {
-          toolCallNames.set(event.id, event.name);
-          await onToolCall?.({
-            id: event.id,
-            name: event.name,
-            state: "preparing",
-          });
-        } else if (event.type === "tool-input-delta") {
-          await onToolCall?.({
-            id: event.id,
-            name: toolCallNames.get(event.id) ?? "",
-            state: "preparing",
-            argumentsDelta: event.delta,
-          });
-        } else if (event.type === "tool-input-aborted") {
-          toolCallNames.delete(event.id);
-          await onToolCall?.({
-            id: event.id,
-            name: event.name,
-            state: "interrupted",
-            result: `Error: ${event.error.message ?? "Model stream interrupted during tool input"}`,
-          });
+      let turnResult;
+      try {
+        turnResult = await runModelPolicyTurn({
+          selection: modelSelection,
+          resolveAttempt: async (attempt) => {
+            const resolvedAttempt = attempt.index === 0
+              ? initialResolved
+              : await deps.resolveAgentModel(agentConfigForModelAttempt(agentConfig, attempt.model), reasoning);
+            resolvedAttempts.set(attempt.index, resolvedAttempt);
+            return {
+              model: resolvedAttempt.model.aiModel,
+              maxOutputTokens: resolvedAttempt.model.maxTokens,
+              providerOptions: resolvedAttempt.providerOptions,
+            };
+          },
+          preserveSingleAttemptError: true,
+          system: fullSystemPrompt,
+          messages,
+          tools: aiTools,
+          ...(activeToolNames ? { activeTools: activeToolNames() } : {}),
+          ...(modelToolChoice ? { toolChoice: modelToolChoice as any } : {}),
+          ...(options.parallelToolCalls !== undefined
+            ? { parallelToolCalls: options.parallelToolCalls }
+            : {}),
+          ...(modelOutput ? { output: modelOutput } : {}),
+        }, async (event) => {
+          if (event.type === "tool-input-start") {
+            toolCallNames.set(event.id, event.name);
+            await onToolCall?.({
+              id: event.id,
+              name: event.name,
+              state: "preparing",
+            });
+          } else if (event.type === "tool-input-delta") {
+            await onToolCall?.({
+              id: event.id,
+              name: toolCallNames.get(event.id) ?? "",
+              state: "preparing",
+              argumentsDelta: event.delta,
+            });
+          } else if (event.type === "tool-input-aborted") {
+            toolCallNames.delete(event.id);
+            await onToolCall?.({
+              id: event.id,
+              name: event.name,
+              state: "interrupted",
+              result: `Error: ${event.error.message ?? "Model stream interrupted during tool input"}`,
+            });
+          }
+        });
+      } catch (error) {
+        if (outputSchema !== undefined && isStructuredModelOutputError(error)) {
+          throw new LoopAgentOutputError(
+            "loop_agent_output_invalid",
+            stepName,
+            `Agent step ${JSON.stringify(stepName)} did not produce valid structured output`,
+            { phase: "model_output" },
+            { cause: error },
+          );
         }
-      });
+        throw error;
+      }
 
       const turnText = turnResult.text;
       const selectedResolved = resolvedAttempts.get(turnResult.selectedAttempt.index);
@@ -563,9 +590,29 @@ export async function runAgentStepCompletion(options: {
         turnResult.toolCalls,
         contextTrust,
       );
-      finalText += turnText;
+      if (outputSchema === undefined) finalText += turnText;
 
-      if (turnResult.toolCalls.length === 0) break;
+      if (turnResult.toolCalls.length === 0) {
+        if (outputSchema !== undefined) {
+          if (turnResult.output === undefined) {
+            throw new LoopAgentOutputError(
+              "loop_agent_output_invalid",
+              stepName,
+              `Agent step ${JSON.stringify(stepName)} completed without structured output`,
+              { phase: "model_output" },
+            );
+          }
+          const prepared = prepareLoopAgentOutput(
+            stepName,
+            turnResult.output,
+            outputSchema,
+          );
+          finalOutput = prepared.value;
+          finalText = prepared.serialized;
+          completedStructuredOutput = true;
+        }
+        break;
+      }
 
       const dispatchableToolCalls = turnResult.toolCalls.filter(
         (call) => !isInvalidModelToolCall(call),
@@ -668,9 +715,18 @@ export async function runAgentStepCompletion(options: {
       }
     }
 
+    if (outputSchema !== undefined && !completedStructuredOutput) {
+      throw new LoopAgentOutputError(
+        "loop_agent_output_invalid",
+        stepName,
+        `Agent step ${JSON.stringify(stepName)} exhausted maxTurns before producing structured output`,
+        { phase: "max_turns" },
+      );
+    }
+
     return {
       text: finalText,
-      output: maybeParseJson(finalText),
+      output: outputSchema !== undefined ? finalOutput : maybeParseJson(finalText),
       usage: totalUsage,
       model: m.id ?? m.provider,
       resolvedModel: completionResolvedModelInfo(m),

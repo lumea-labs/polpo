@@ -1227,6 +1227,73 @@ describe("PipelineExecutor — durable checkpoints", () => {
     expect(positions[1]?.previousNode).toBe("a");
   });
 
+  it("fails closed before context merge and checkpoint when an agent output violates its schema", async () => {
+    const executor = new PipelineExecutor();
+    const checkpoints: PipelineCheckpoint[] = [];
+    const events: unknown[] = [];
+
+    await expect(executor.execute({
+      loops: {
+        implement: {
+          output: {
+            schema: {
+              type: "object",
+              additionalProperties: false,
+              required: ["summary", "response"],
+              properties: {
+                summary: { type: "string" },
+                response: { type: "string" },
+              },
+            },
+          },
+        },
+      },
+      context: { validation: { passed: true } },
+      pipeline: { steps: [{ loop: "implement" }] },
+      onCheckpoint: async (checkpoint) => { checkpoints.push(checkpoint); },
+      onTrace: async (event) => { events.push(event); },
+      runLoop: async () => ({ output: "**summary:** implemented" }),
+    })).rejects.toMatchObject({
+      code: "loop_agent_output_invalid",
+      stepName: "implement",
+    });
+
+    expect(checkpoints).toEqual([]);
+    expect(events).not.toContainEqual(expect.objectContaining({
+      type: "step.end",
+      step: "implement",
+      status: "completed",
+    }));
+  });
+
+  it("stores a detached validated agent output before continuing the graph", async () => {
+    const executor = new PipelineExecutor();
+    const output = { summary: "implemented", response: "ready" };
+
+    const result = await executor.execute({
+      loops: {
+        implement: {
+          output: {
+            schema: {
+              type: "object",
+              additionalProperties: false,
+              required: ["summary", "response"],
+              properties: {
+                summary: { type: "string" },
+                response: { type: "string" },
+              },
+            },
+          },
+        },
+      },
+      pipeline: { steps: [{ loop: "implement" }] },
+      runLoop: async () => ({ output }),
+    });
+
+    expect(result.context.implement).toEqual(output);
+    expect(result.context.implement).not.toBe(output);
+  });
+
   it("resolves, validates, traces, and freezes projected agent input before invoking the host", async () => {
     const executor = new PipelineExecutor();
     const inputs: unknown[] = [];

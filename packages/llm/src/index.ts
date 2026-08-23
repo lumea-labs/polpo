@@ -157,6 +157,12 @@ export {
 } from "./tool-schema.js";
 export type { ToolInputValidationResult } from "./tool-schema.js";
 
+// ─── Structured Model Outputs ───────────────────────
+export {
+  isStructuredModelOutputError,
+  modelOutputForJsonSchema,
+} from "./model-output.js";
+
 // ─── Model Policy Turn Primitive ────────────────────
 export {
   ModelPolicyTurnError,

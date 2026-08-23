@@ -8,6 +8,7 @@ import {
   prepareLoopAgentInput,
   type PreparedLoopAgentInput,
 } from "./agent-input.js";
+import { prepareLoopAgentOutput } from "./agent-output.js";
 import type { LoopHookRegistry } from "./hooks.js";
 import {
   type LoopApprovedGate,
@@ -271,10 +272,20 @@ export class PipelineExecutor {
             position,
             agentInput,
           );
-          mergeLoopResult(context, step.loop, result, protectedRoots);
+          const validatedResult = loop.output?.schema !== undefined
+            ? {
+                ...result,
+                output: prepareLoopAgentOutput(
+                  step.loop,
+                  result.output,
+                  loop.output.schema,
+                ).value,
+              }
+            : result;
+          mergeLoopResult(context, step.loop, validatedResult, protectedRoots);
           trace.push({ type: "loop", name: step.loop, when: step.when, matched: true });
-          await this.runLifecyclePoint("step:after", context, options, state, { step: { name: step.loop, type: "agent" }, output: result.output });
-          await state.emit({ type: "step.end", step: step.loop, status: "completed", output: result.output });
+          await this.runLifecyclePoint("step:after", context, options, state, { step: { name: step.loop, type: "agent" }, output: validatedResult.output });
+          await state.emit({ type: "step.end", step: step.loop, status: "completed", output: validatedResult.output });
           lastNode = step.loop;
           await emitCheckpoint(remainingAfter(), lastNode);
           continue;

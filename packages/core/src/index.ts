@@ -418,6 +418,16 @@ export type {
   LoopAgentInputErrorCode,
   PreparedLoopAgentInput,
 } from "./loop/agent-input.js";
+export {
+  LOOP_AGENT_OUTPUT_MAX_BYTES,
+  LoopAgentOutputError,
+  assertLoopAgentOutputSchema,
+  prepareLoopAgentOutput,
+} from "./loop/agent-output.js";
+export type {
+  LoopAgentOutputErrorCode,
+  PreparedLoopAgentOutput,
+} from "./loop/agent-output.js";
 export type {
   AgentLoopConfig,
   AgentLoopStep,

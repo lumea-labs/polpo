@@ -418,3 +418,39 @@ describe("project loop agent input projection contract", () => {
     }).success).toBe(false);
   });
 });
+
+describe("project loop agent output contract", () => {
+  it("rejects malformed output schemas at config load", () => {
+    const parsed = projectLoopConfigSchema.safeParse({
+      name: "structured-flow",
+      start: "implement",
+      steps: {
+        implement: {
+          type: "agent",
+          output: {
+            schema: { $ref: "https://example.com/remote.json" },
+          },
+          next: "end",
+        },
+      },
+    });
+
+    expect(parsed.success).toBe(false);
+  });
+
+  it("rejects boolean output schemas that providers cannot enforce portably", () => {
+    const parsed = projectLoopConfigSchema.safeParse({
+      name: "structured-flow",
+      start: "implement",
+      steps: {
+        implement: {
+          type: "agent",
+          output: { schema: true },
+          next: "end",
+        },
+      },
+    });
+
+    expect(parsed.success).toBe(false);
+  });
+});

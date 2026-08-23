@@ -819,3 +819,127 @@ describe("runAgentStepCompletion tool validation", () => {
     );
   });
 });
+
+describe("runAgentStepCompletion structured loop output", () => {
+  const usage = {
+    inputTokens: { total: 10, noCache: undefined, cacheRead: undefined, cacheWrite: undefined },
+    outputTokens: { total: 5, text: undefined, reasoning: undefined },
+  };
+  const outputSchema = {
+    type: "object",
+    additionalProperties: false,
+    required: ["summary", "response"],
+    properties: {
+      summary: { type: "string" },
+      response: { type: "string" },
+    },
+  };
+
+  function structuredStepDeps(finalText: string, maxTurns = 2) {
+    let turn = 0;
+    const responseFormats: unknown[] = [];
+    const model = new MockLanguageModelV3({
+      doStream: async (options) => {
+        responseFormats.push(options.responseFormat);
+        turn += 1;
+        if (turn === 1) {
+          return { stream: convertArrayToReadableStream([
+            { type: "stream-start", warnings: [] },
+            { type: "text-start", id: "preface" },
+            { type: "text-delta", id: "preface", delta: "I will inspect first." },
+            { type: "text-end", id: "preface" },
+            { type: "tool-call", toolCallId: "inspect_1", toolName: "inspect", input: "{}" },
+            { type: "finish", finishReason: { unified: "tool-calls", raw: undefined }, usage },
+          ] as any[]) };
+        }
+        return { stream: convertArrayToReadableStream([
+          { type: "stream-start", warnings: [] },
+          { type: "text-start", id: "final" },
+          { type: "text-delta", id: "final", delta: finalText },
+          { type: "text-end", id: "final" },
+          { type: "finish", finishReason: { unified: "stop", raw: undefined }, usage },
+        ] as any[]) };
+      },
+    });
+    const deps = {
+      getConfig: () => ({ settings: {} }),
+      getMemoryStore: () => undefined,
+      emit: vi.fn(),
+      resolveAgentModel: vi.fn(async () => ({
+        model: {
+          id: "mock/model",
+          aiModel: model,
+          provider: "mock",
+          contextWindow: 128_000,
+          maxTokens: 8192,
+        },
+      })),
+      resolveAgentTools: vi.fn(async () => ({
+        tools: [{
+          name: "inspect",
+          description: "Inspect the workspace",
+          parameters: { type: "object", properties: {}, additionalProperties: false },
+        }],
+        executor: vi.fn(async () => "inspection complete"),
+      })),
+      buildRuntimePrompt: vi.fn(async () => "system"),
+    } as unknown as CompletionRouteDeps;
+
+    return { deps, maxTurns, responseFormats };
+  }
+
+  it("enforces the schema on the terminal turn after tool use", async () => {
+    const fixture = structuredStepDeps('{"summary":"implemented","response":"ready"}');
+
+    const result = await runAgentStepCompletion({
+      deps: fixture.deps,
+      agentConfig: { name: "nested-agent", model: "mock/model", maxTurns: fixture.maxTurns },
+      aiMessages: [{ role: "user", content: "Implement it" }],
+      extraSystemParts: [],
+      context: {},
+      stepName: "implement",
+      outputSchema,
+    });
+
+    expect(fixture.responseFormats).toEqual([
+      expect.objectContaining({ type: "json" }),
+      expect.objectContaining({ type: "json" }),
+    ]);
+    expect(result.output).toEqual({ summary: "implemented", response: "ready" });
+    expect(result.text).toBe('{"summary":"implemented","response":"ready"}');
+  });
+
+  it("rejects markdown instead of completing the structured step", async () => {
+    const fixture = structuredStepDeps("**summary:** implemented\n**response:** ready");
+
+    await expect(runAgentStepCompletion({
+      deps: fixture.deps,
+      agentConfig: { name: "nested-agent", model: "mock/model", maxTurns: fixture.maxTurns },
+      aiMessages: [{ role: "user", content: "Implement it" }],
+      extraSystemParts: [],
+      context: {},
+      stepName: "implement",
+      outputSchema,
+    })).rejects.toMatchObject({
+      code: "loop_agent_output_invalid",
+      stepName: "implement",
+    });
+  });
+
+  it("rejects max-turn exhaustion before a structured terminal output exists", async () => {
+    const fixture = structuredStepDeps('{"summary":"unused","response":"unused"}', 1);
+
+    await expect(runAgentStepCompletion({
+      deps: fixture.deps,
+      agentConfig: { name: "nested-agent", model: "mock/model", maxTurns: fixture.maxTurns },
+      aiMessages: [{ role: "user", content: "Implement it" }],
+      extraSystemParts: [],
+      context: {},
+      stepName: "implement",
+      outputSchema,
+    })).rejects.toMatchObject({
+      code: "loop_agent_output_invalid",
+      stepName: "implement",
+    });
+  });
+});
