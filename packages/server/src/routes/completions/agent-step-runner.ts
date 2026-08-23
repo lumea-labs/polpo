@@ -513,6 +513,14 @@ export async function runAgentStepCompletion(options: {
           };
         },
         preserveSingleAttemptError: true,
+        onPolicyEvent: (event) => deps.onModelPolicyEvent?.(event, {
+          surface: "loop-step",
+          ...(options.runId ? { runId: options.runId } : {}),
+          ...(options.sessionId ? { sessionId: options.sessionId } : {}),
+          ...(agentConfig.name ? { agent: agentConfig.name } : {}),
+          stepName,
+          turn,
+        }),
         system: fullSystemPrompt,
         messages,
         tools: aiTools,

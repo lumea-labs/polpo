@@ -298,6 +298,13 @@ export async function executeStreamingChatCompletion(
             };
           },
           preserveSingleAttemptError: true,
+          onPolicyEvent: (event) => deps.onModelPolicyEvent?.(event, {
+            surface: "chat",
+            runId: completionId,
+            ...(sessionId ? { sessionId } : {}),
+            ...(body.agent ? { agent: body.agent } : {}),
+            turn,
+          }),
           system: fullSystemPrompt,
           messages,
           tools: aiTools,
@@ -805,6 +812,13 @@ export async function runNonStreamingChatCompletion(c: any, exec: ChatCompletion
           };
         },
         preserveSingleAttemptError: true,
+        onPolicyEvent: (event) => deps.onModelPolicyEvent?.(event, {
+          surface: "chat",
+          runId: completionId,
+          ...(sessionId ? { sessionId } : {}),
+          ...(body.agent ? { agent: body.agent } : {}),
+          turn,
+        }),
         system: fullSystemPrompt,
         messages,
         tools: aiTools,

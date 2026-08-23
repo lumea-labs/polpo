@@ -1,5 +1,5 @@
 import { Output, type ModelMessage, type ToolSet } from "ai";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import type {
   ModelTurnEvent,
@@ -24,6 +24,7 @@ describe("runModelPolicyTurn", () => {
         fallbacks: ["openai/gpt-4o"],
       },
       messages,
+      retryBackoff: { initialDelayMs: 0, maxDelayMs: 0, jitter: "none" },
       parallelToolCalls: true,
       resolveAttempt: (attempt) => ({ model: fakeModel(attempt.model) }),
       classifyError: error => ({
@@ -125,7 +126,7 @@ describe("runModelPolicyTurn", () => {
     expect(events.map(event => event.type)).toEqual(["text-delta", "finish"]);
   });
 
-  it("tries the next candidate after a retryable pre-commit failure", async () => {
+  it("retries the same candidate before falling back after a retryable pre-commit failure", async () => {
     const attempted: string[] = [];
     const events: ModelTurnEvent[] = [];
     const policyEvents: string[] = [];
@@ -136,6 +137,7 @@ describe("runModelPolicyTurn", () => {
         fallbacks: ["openai/gpt-4o"],
       },
       messages,
+      retryBackoff: { initialDelayMs: 0, maxDelayMs: 0, jitter: "none" },
       resolveAttempt: (attempt) => {
         attempted.push(attempt.model);
         return { model: fakeModel(attempt.model) };
@@ -160,18 +162,189 @@ describe("runModelPolicyTurn", () => {
       events.push(event);
     });
 
-    expect(attempted).toEqual(["anthropic/claude-sonnet-5", "openai/gpt-4o"]);
+    expect(attempted).toEqual([
+      "anthropic/claude-sonnet-5",
+      "anthropic/claude-sonnet-5",
+      "openai/gpt-4o",
+    ]);
     expect(result.selectedAttempt).toMatchObject({ index: 1, model: "openai/gpt-4o", isFallback: true });
-    expect(result.failedAttempts).toHaveLength(1);
-    expect(result.failedAttempts[0]).toMatchObject({ committed: false });
+    expect(result.failedAttempts).toHaveLength(2);
+    expect(result.failedAttempts).toEqual([
+      expect.objectContaining({ committed: false }),
+      expect.objectContaining({ committed: false }),
+    ]);
     expect(events.map(event => event.type)).toEqual(["text-delta", "finish"]);
     expect(policyEvents).toEqual([
       "model-attempt-started",
       "model-attempt-failed",
+      "model-retry-scheduled",
+      "model-attempt-started",
+      "model-attempt-failed",
       "model-fallback-selected",
       "model-attempt-started",
+      "model-attempt-first-event",
       "model-attempt-succeeded",
     ]);
+  });
+
+  it("emits bounded retry metadata before replaying an uncommitted transport failure", async () => {
+    const policyEvents: any[] = [];
+    let calls = 0;
+
+    const result = await runModelPolicyTurn({
+      selection: "openai/gpt-4o",
+      messages,
+      retryBackoff: { initialDelayMs: 0, maxDelayMs: 0, jitter: "none" },
+      resolveAttempt: (attempt) => ({ model: fakeModel(attempt.model) }),
+      onPolicyEvent: event => { policyEvents.push(event); },
+      runAttempt: async () => {
+        calls += 1;
+        if (calls === 1) {
+          throw { message: "fetch failed", code: "UND_ERR_HEADERS_TIMEOUT" };
+        }
+        return fakeResult("recovered");
+      },
+    });
+
+    expect(result.text).toBe("recovered");
+    expect(calls).toBe(2);
+    expect(policyEvents).toContainEqual(expect.objectContaining({
+      type: "model-retry-scheduled",
+      delayMs: 0,
+      reason: expect.objectContaining({ class: "timeout", retryable: true }),
+      from: expect.objectContaining({ retryIndex: 0 }),
+      to: expect.objectContaining({ retryIndex: 1 }),
+    }));
+  });
+
+  it("can disable every same-model replay while preserving fallback policy", async () => {
+    const attempts: ModelPolicyAttempt[] = [];
+
+    const result = await runModelPolicyTurn({
+      selection: {
+        primary: "openai/gpt-4o",
+        fallbacks: ["anthropic/claude-sonnet-5"],
+      },
+      messages,
+      maxPreCommitRetries: 0,
+      resolveAttempt: (attempt) => {
+        attempts.push(attempt);
+        return { model: fakeModel(attempt.model) };
+      },
+      runAttempt: async (input) => {
+        if ((input.model as { modelId?: string }).modelId === "openai/gpt-4o") {
+          throw { message: "fetch failed", code: "UND_ERR_HEADERS_TIMEOUT" };
+        }
+        return fakeResult("fallback");
+      },
+    });
+
+    expect(result.text).toBe("fallback");
+    expect(attempts).toEqual([
+      expect.objectContaining({ model: "openai/gpt-4o", retryIndex: 0 }),
+      expect.objectContaining({ model: "anthropic/claude-sonnet-5", retryIndex: 0 }),
+    ]);
+  });
+
+  it("forces AI SDK retries off for every supervised attempt", async () => {
+    const seenRetries: Array<number | undefined> = [];
+
+    await runModelPolicyTurn({
+      selection: "openai/gpt-4o",
+      messages,
+      maxRetries: 7,
+      resolveAttempt: attempt => ({ model: fakeModel(attempt.model) }),
+      runAttempt: async input => {
+        seenRetries.push(input.maxRetries);
+        return fakeResult("ok");
+      },
+    });
+
+    expect(seenRetries).toEqual([0]);
+  });
+
+  it("cancels during retry backoff without starting another attempt", async () => {
+    const controller = new AbortController();
+    let calls = 0;
+    const result = runModelPolicyTurn({
+      selection: "openai/gpt-4o",
+      messages,
+      abortSignal: controller.signal,
+      retryBackoff: { initialDelayMs: 10_000, maxDelayMs: 10_000, jitter: "none" },
+      resolveAttempt: attempt => ({ model: fakeModel(attempt.model) }),
+      runAttempt: async () => {
+        calls += 1;
+        throw { message: "fetch failed", code: "UND_ERR_HEADERS_TIMEOUT" };
+      },
+    });
+
+    await new Promise(resolve => setTimeout(resolve, 0));
+    controller.abort(new Error("request cancelled"));
+
+    await expect(result).rejects.toThrow("request cancelled");
+    expect(calls).toBe(1);
+  });
+
+  it("does not let an observability sink failure affect the turn", async () => {
+    const result = await runModelPolicyTurn({
+      selection: "openai/gpt-4o",
+      messages,
+      resolveAttempt: attempt => ({ model: fakeModel(attempt.model) }),
+      onPolicyEvent: () => { throw new Error("collector unavailable"); },
+      runAttempt: async () => fakeResult("ok"),
+    });
+
+    expect(result.text).toBe("ok");
+  });
+
+  it("bounds retry backoff and fallback attempts by one total turn deadline", async () => {
+    vi.useFakeTimers();
+    try {
+      let calls = 0;
+      const result = runModelPolicyTurn({
+        selection: {
+          primary: "openai/gpt-4o",
+          fallbacks: ["anthropic/claude-sonnet-5"],
+        },
+        messages,
+        modelTurnTimeoutMs: 500,
+        retryBackoff: { initialDelayMs: 10_000, maxDelayMs: 10_000, jitter: "none" },
+        resolveAttempt: attempt => ({ model: fakeModel(attempt.model) }),
+        runAttempt: async () => {
+          calls += 1;
+          throw { message: "headers timeout", code: "UND_ERR_HEADERS_TIMEOUT" };
+        },
+      });
+
+      const rejection = expect(result).rejects.toMatchObject({
+        name: "ModelPolicyTurnError",
+        message: "Model turn exceeded its 500ms total timeout",
+      });
+      await vi.advanceTimersByTimeAsync(501);
+      await rejection;
+      expect(calls).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("passes the remaining turn budget into every model stream attempt", async () => {
+    const totals: Array<number | undefined> = [];
+    await runModelPolicyTurn({
+      selection: "openai/gpt-4o",
+      messages,
+      modelTurnTimeoutMs: 10_000,
+      streamTimeouts: { firstEventMs: 1_000, totalMs: 20_000 },
+      resolveAttempt: attempt => ({ model: fakeModel(attempt.model) }),
+      runAttempt: async input => {
+        totals.push(input.streamTimeouts?.totalMs);
+        return fakeResult("ok");
+      },
+    });
+
+    expect(totals).toHaveLength(1);
+    expect(totals[0]).toBeGreaterThan(0);
+    expect(totals[0]).toBeLessThanOrEqual(10_000);
   });
 
   it("does not fallback after a committed event", async () => {

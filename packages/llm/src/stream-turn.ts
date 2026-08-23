@@ -55,6 +55,50 @@ export type ModelTurnResult<TOOLS extends ToolSet = ToolSet> = {
   response?: Awaited<StreamTextResult<TOOLS, any>["response"]>;
 };
 
+export type ModelStreamTimeoutPhase = "first-event" | "between-events" | "total";
+
+export interface ModelStreamTimeouts {
+  /** Maximum wait for the first semantic provider event (text, reasoning, tool, finish, or error). */
+  firstEventMs?: number;
+  /** Maximum idle gap between provider stream events. */
+  betweenEventsMs?: number;
+  /** Maximum wall-clock duration of one model attempt. */
+  totalMs?: number;
+}
+
+export const DEFAULT_MODEL_STREAM_TIMEOUTS: Required<ModelStreamTimeouts> = {
+  firstEventMs: 120_000,
+  betweenEventsMs: 120_000,
+  totalMs: 600_000,
+};
+
+const SEMANTIC_STREAM_EVENT_TYPES = new Set([
+  "reasoning-start",
+  "reasoning-delta",
+  "text-start",
+  "text-delta",
+  "tool-input-start",
+  "tool-input-delta",
+  "tool-input-end",
+  "tool-call",
+  "tool-result",
+  "tool-error",
+  "finish",
+  "error",
+]);
+
+export class ModelStreamTimeoutError extends Error {
+  readonly code = "model_stream_timeout";
+
+  constructor(
+    readonly phase: ModelStreamTimeoutPhase,
+    readonly timeoutMs: number,
+  ) {
+    super(`Model stream timed out during ${phase} after ${timeoutMs}ms`);
+    this.name = "ModelStreamTimeoutError";
+  }
+}
+
 export type StreamModelTurnInput<TOOLS extends ToolSet = ToolSet> = {
   model: LanguageModel;
   system?: string;
@@ -63,9 +107,11 @@ export type StreamModelTurnInput<TOOLS extends ToolSet = ToolSet> = {
   activeTools?: Array<keyof TOOLS>;
   toolChoice?: ToolChoice<TOOLS>;
   parallelToolCalls?: boolean;
-  /** AI SDK request-phase retries. Defaults explicitly to the SDK default. */
+  /** AI SDK request-phase retries. Defaults to zero; the policy supervisor owns retries. */
   maxRetries?: number;
   timeout?: TimeoutConfiguration;
+  /** Polpo-owned stream watchdogs. Set individual values to 0 to disable them. */
+  streamTimeouts?: ModelStreamTimeouts;
   maxOutputTokens?: number;
   providerOptions?: Record<string, unknown>;
   abortSignal?: AbortSignal;
@@ -545,30 +591,55 @@ export async function streamModelTurn<TOOLS extends ToolSet = ToolSet>(
   input: StreamModelTurnInput<TOOLS>,
   onEvent?: (event: ModelTurnEvent<TOOLS>) => void | Promise<void>,
 ): Promise<ModelTurnResult<TOOLS>> {
+  const attemptAbort = new AbortController();
+  const combinedAbort = combineAbortSignals(input.abortSignal, attemptAbort);
   const providerOptions = providerOptionsWithParallelToolCalls(
     input.providerOptions,
     input.parallelToolCalls,
   );
-  const result = streamText({
-    model: input.model,
-    ...(input.system ? { system: input.system } : {}),
-    messages: prepareModelMessagesForTransport(input.messages, input.model),
-    ...(input.tools ? { tools: input.tools } : {}),
-    ...(input.activeTools ? { activeTools: input.activeTools } : {}),
-    ...(input.toolChoice ? { toolChoice: input.toolChoice } : {}),
-    maxRetries: input.maxRetries ?? 2,
-    ...(input.timeout !== undefined ? { timeout: input.timeout } : {}),
-    ...(input.maxOutputTokens ? { maxOutputTokens: input.maxOutputTokens } : {}),
-    ...(providerOptions ? { providerOptions: providerOptions as any } : {}),
-    ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
-    ...(input.output ? { output: input.output } : {}),
-  });
+  let result: ReturnType<typeof streamText<TOOLS>>;
+  try {
+    result = streamText({
+      model: input.model,
+      ...(input.system ? { system: input.system } : {}),
+      messages: prepareModelMessagesForTransport(input.messages, input.model),
+      ...(input.tools ? { tools: input.tools } : {}),
+      ...(input.activeTools ? { activeTools: input.activeTools } : {}),
+      ...(input.toolChoice ? { toolChoice: input.toolChoice } : {}),
+      // Direct callers may explicitly own retries. runModelPolicyTurn always
+      // overrides this to zero so retries cannot multiply across layers.
+      maxRetries: input.maxRetries ?? 0,
+      ...(input.timeout !== undefined ? { timeout: input.timeout } : {}),
+      ...(input.maxOutputTokens ? { maxOutputTokens: input.maxOutputTokens } : {}),
+      ...(providerOptions ? { providerOptions: providerOptions as any } : {}),
+      abortSignal: combinedAbort.signal,
+      ...(input.output ? { output: input.output } : {}),
+    });
+  } catch (error) {
+    combinedAbort.cleanup();
+    throw error;
+  }
 
   let text = "";
   let streamError: unknown;
+  const streamTimeouts = normalizeStreamTimeouts(input.streamTimeouts);
+  const streamStartedAt = Date.now();
+  let receivedEvent = false;
+  const iterator = result.fullStream[Symbol.asyncIterator]();
 
-  for await (const part of result.fullStream) {
-    switch (part.type) {
+  try {
+    while (true) {
+      const next = await nextModelStreamEvent({
+        iterator,
+        receivedEvent,
+        startedAt: streamStartedAt,
+        timeouts: streamTimeouts,
+        abortController: attemptAbort,
+      });
+      if (next.done) break;
+      const part = next.value;
+      if (isSemanticStreamEvent(part)) receivedEvent = true;
+      switch (part.type) {
       case "reasoning-delta":
         await onEvent?.({ type: "reasoning-delta", id: part.id, text: part.text });
         break;
@@ -632,7 +703,10 @@ export async function streamModelTurn<TOOLS extends ToolSet = ToolSet>(
         streamError ??= part.error;
         await onEvent?.({ type: "error", error: part.error });
         break;
+      }
     }
+  } finally {
+    combinedAbort.cleanup();
   }
 
   // AI SDK reports transport/provider failures as stream parts instead of
@@ -678,5 +752,114 @@ export async function streamModelTurn<TOOLS extends ToolSet = ToolSet>(
     providerMetadata,
     responseMessages: normalizeResponseMessagesForHistory(response?.messages ?? []),
     response,
+  };
+}
+
+function isSemanticStreamEvent(value: unknown): boolean {
+  if (!value || typeof value !== "object" || !("type" in value)) return false;
+  return SEMANTIC_STREAM_EVENT_TYPES.has(String((value as { type: unknown }).type));
+}
+
+function normalizeStreamTimeouts(
+  input: ModelStreamTimeouts | undefined,
+): Required<ModelStreamTimeouts> {
+  return {
+    firstEventMs: normalizeTimeoutValue(
+      input?.firstEventMs,
+      DEFAULT_MODEL_STREAM_TIMEOUTS.firstEventMs,
+    ),
+    betweenEventsMs: normalizeTimeoutValue(
+      input?.betweenEventsMs,
+      DEFAULT_MODEL_STREAM_TIMEOUTS.betweenEventsMs,
+    ),
+    totalMs: normalizeTimeoutValue(
+      input?.totalMs,
+      DEFAULT_MODEL_STREAM_TIMEOUTS.totalMs,
+    ),
+  };
+}
+
+function normalizeTimeoutValue(value: number | undefined, fallback: number): number {
+  if (value === undefined) return fallback;
+  if (!Number.isFinite(value) || value <= 0) return 0;
+  return Math.floor(value);
+}
+
+async function nextModelStreamEvent<T>(input: {
+  iterator: AsyncIterator<T>;
+  receivedEvent: boolean;
+  startedAt: number;
+  timeouts: Required<ModelStreamTimeouts>;
+  abortController: AbortController;
+}): Promise<IteratorResult<T>> {
+  const elapsedMs = Date.now() - input.startedAt;
+  const totalRemainingMs = input.timeouts.totalMs > 0
+    ? Math.max(0, input.timeouts.totalMs - elapsedMs)
+    : 0;
+  if (input.timeouts.totalMs > 0 && totalRemainingMs === 0) {
+    throw abortForStreamTimeout(input.abortController, "total", input.timeouts.totalMs);
+  }
+
+  const idlePhase: ModelStreamTimeoutPhase = input.receivedEvent
+    ? "between-events"
+    : "first-event";
+  const idleTimeoutMs = input.receivedEvent
+    ? input.timeouts.betweenEventsMs
+    : input.timeouts.firstEventMs;
+  const candidates = [
+    ...(idleTimeoutMs > 0 ? [{ phase: idlePhase, timeoutMs: idleTimeoutMs }] : []),
+    ...(totalRemainingMs > 0
+      ? [{ phase: "total" as const, timeoutMs: totalRemainingMs }]
+      : []),
+  ];
+  const deadline = candidates.sort((a, b) => a.timeoutMs - b.timeoutMs)[0];
+  if (!deadline) return input.iterator.next();
+
+  const pending = input.iterator.next();
+  // The provider may reject after the timeout abort wins the race. Always
+  // observe that loser so it cannot surface as an unhandled rejection.
+  void pending.catch(() => {});
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      pending,
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => {
+          reject(abortForStreamTimeout(
+            input.abortController,
+            deadline.phase,
+            deadline.phase === "total" ? input.timeouts.totalMs : deadline.timeoutMs,
+          ));
+        }, deadline.timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+function abortForStreamTimeout(
+  controller: AbortController,
+  phase: ModelStreamTimeoutPhase,
+  timeoutMs: number,
+): ModelStreamTimeoutError {
+  const error = new ModelStreamTimeoutError(phase, timeoutMs);
+  if (!controller.signal.aborted) controller.abort(error);
+  return error;
+}
+
+function combineAbortSignals(
+  parent: AbortSignal | undefined,
+  internal: AbortController,
+): { signal: AbortSignal; cleanup: () => void } {
+  if (!parent) return { signal: internal.signal, cleanup: () => {} };
+  const abortFromParent = () => {
+    if (!internal.signal.aborted) internal.abort(parent.reason);
+  };
+  if (parent.aborted) abortFromParent();
+  else parent.addEventListener("abort", abortFromParent, { once: true });
+  return {
+    signal: internal.signal,
+    cleanup: () => parent.removeEventListener("abort", abortFromParent),
   };
 }

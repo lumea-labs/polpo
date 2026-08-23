@@ -87,6 +87,16 @@ import type {
 } from "@polpo-ai/core/guardrails";
 import type { CompletionToolExecutor } from "./completions/tool-guardrails.js";
 import type { ModelControlledToolDisclosureConfig } from "./completions/tool-disclosure.js";
+import type { ModelPolicyEvent } from "@polpo-ai/llm";
+
+export interface CompletionModelPolicyEventContext {
+  surface: "chat" | "loop-step";
+  runId?: string;
+  sessionId?: string;
+  agent?: string;
+  stepName?: string;
+  turn: number;
+}
 
 export { resumeProjectLoopRun } from "./completions/project-loop-runner.js";
 export {
@@ -197,6 +207,11 @@ export interface CompletionRouteDeps {
     model: ResolvedModelInfo;
     providerOptions?: Record<string, any>;
   }>;
+  /** Provider-neutral attempt telemetry. Sink failures never affect execution. */
+  onModelPolicyEvent?: (
+    event: ModelPolicyEvent,
+    context: CompletionModelPolicyEventContext,
+  ) => void | Promise<void>;
   /** Build agent system prompt for conversational mode. */
   buildAgentPrompt: (
     agentConfig: any,

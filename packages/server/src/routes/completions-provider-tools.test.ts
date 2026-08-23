@@ -525,6 +525,9 @@ describe("completionRoutes provider-executed tools", () => {
       .mockImplementationOnce(() => {
         throw new Error("503 overloaded");
       })
+      .mockImplementationOnce(() => {
+        throw new Error("503 overloaded after retry");
+      })
       .mockReturnValueOnce(mockStreamResult({
         text: "fallback response",
         usage: { inputTokens: 12, outputTokens: 3, totalTokens: 15 },
