@@ -1,10 +1,11 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { jsonSchema, Output } from "ai";
 import { MockLanguageModelV3, convertArrayToReadableStream } from "ai/test";
 import {
   prepareModelMessagesForProvider,
   prepareModelMessagesForTransport,
   normalizeResponseMessagesForHistory,
+  ModelStreamTimeoutError,
   streamModelTurn,
   type ModelTurnEvent,
 } from "./stream-turn.js";
@@ -36,6 +37,113 @@ function mockModel(parts: unknown[]) {
 }
 
 describe("streamModelTurn", () => {
+  it("disables invisible AI SDK request retries by default", async () => {
+    const doStream = vi.fn(async () => {
+      throw Object.assign(new Error("fetch failed"), {
+        code: "UND_ERR_HEADERS_TIMEOUT",
+      });
+    });
+    const model = new MockLanguageModelV3({ doStream });
+
+    await expect(streamModelTurn({
+      model,
+      messages: [{ role: "user", content: "hello" }],
+    })).rejects.toThrow("fetch failed");
+
+    expect(doStream).toHaveBeenCalledOnce();
+  });
+
+  it("aborts a stream that never produces its first event", async () => {
+    const model = new MockLanguageModelV3({
+      doStream: async () => ({ stream: new ReadableStream() }),
+    });
+
+    await expect(streamModelTurn({
+      model,
+      messages: [{ role: "user", content: "hello" }],
+      streamTimeouts: {
+        firstEventMs: 25,
+        betweenEventsMs: 1_000,
+        totalMs: 2_000,
+      },
+    })).rejects.toMatchObject({
+      name: "ModelStreamTimeoutError",
+      phase: "first-event",
+      timeoutMs: 25,
+    });
+  });
+
+  it("aborts a stream that stalls after delivering output", async () => {
+    vi.useFakeTimers();
+    try {
+      const stream = new ReadableStream<any>({
+        start(controller) {
+          controller.enqueue({ type: "stream-start", warnings: [] });
+          controller.enqueue({ type: "text-start", id: "txt_1" });
+          controller.enqueue({ type: "text-delta", id: "txt_1", delta: "partial" });
+        },
+      });
+      const model = new MockLanguageModelV3({
+        doStream: async () => ({ stream }),
+      });
+      const events: ModelTurnEvent[] = [];
+      const result = streamModelTurn({
+        model,
+        messages: [{ role: "user", content: "hello" }],
+        streamTimeouts: {
+          firstEventMs: 1_000,
+          betweenEventsMs: 100,
+          totalMs: 2_000,
+        },
+      }, event => { events.push(event); });
+
+      const rejection = expect(result).rejects.toBeInstanceOf(ModelStreamTimeoutError);
+      await Promise.resolve();
+      await vi.advanceTimersByTimeAsync(101);
+      await rejection;
+      expect(events).toContainEqual({ type: "text-delta", id: "txt_1", text: "partial" });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("enforces the total attempt deadline even while events keep arriving", async () => {
+    vi.useFakeTimers();
+    try {
+      const stream = new ReadableStream<any>({
+        start(controller) {
+          controller.enqueue({ type: "stream-start", warnings: [] });
+          controller.enqueue({ type: "text-start", id: "txt_1" });
+          const timer = setInterval(() => {
+            controller.enqueue({ type: "text-delta", id: "txt_1", delta: "." });
+          }, 20);
+          return () => clearInterval(timer);
+        },
+      });
+      const model = new MockLanguageModelV3({
+        doStream: async () => ({ stream }),
+      });
+      const result = streamModelTurn({
+        model,
+        messages: [{ role: "user", content: "hello" }],
+        streamTimeouts: {
+          firstEventMs: 100,
+          betweenEventsMs: 100,
+          totalMs: 75,
+        },
+      });
+
+      const rejection = expect(result).rejects.toMatchObject({
+        name: "ModelStreamTimeoutError",
+        phase: "total",
+        timeoutMs: 75,
+      });
+      await vi.advanceTimersByTimeAsync(80);
+      await rejection;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
   it("drops duplicate and empty tool-call ids before local execution", async () => {
     const model = new MockLanguageModelV3({
       doStream: async () => ({

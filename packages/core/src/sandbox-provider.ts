@@ -111,6 +111,8 @@ export interface SandboxUsage {
 export type SandboxRuntimeEventType =
   | "sandbox.acquire.started"
   | "sandbox.acquired"
+  | "sandbox.heartbeat"
+  | "sandbox.restarted"
   | "sandbox.suspended"
   | "sandbox.resumed"
   | "sandbox.release.started"
@@ -127,6 +129,8 @@ export type SandboxRuntimeEventType =
 
 export type SandboxRuntimeOperation =
   | "acquire"
+  | "heartbeat"
+  | "restart"
   | "suspend"
   | "resume"
   | "release"

@@ -34,14 +34,29 @@ export interface ModelPolicyAttemptFailure {
   error: unknown;
   classification: NormalizedModelError;
   committed: boolean;
+  durationMs: number;
 }
 
 export type ModelPolicyEvent =
   | { type: "model-attempt-started"; attempt: ModelPolicyAttempt }
+  | { type: "model-attempt-first-event"; attempt: ModelPolicyAttempt; latencyMs: number }
   | { type: "model-attempt-failed"; failure: ModelPolicyAttemptFailure }
+  | {
+      type: "model-retry-scheduled";
+      from: ModelPolicyAttempt;
+      to: ModelPolicyAttempt;
+      delayMs: number;
+      reason: NormalizedModelError;
+    }
   | { type: "model-fallback-selected"; from: ModelPolicyAttempt; to: ModelPolicyAttempt; reason: NormalizedModelError }
-  | { type: "model-attempt-succeeded"; attempt: ModelPolicyAttempt }
+  | { type: "model-attempt-succeeded"; attempt: ModelPolicyAttempt; durationMs: number }
   | { type: "model-turn-failed"; failures: ModelPolicyAttemptFailure[] };
+
+export interface ModelRetryBackoff {
+  initialDelayMs?: number;
+  maxDelayMs?: number;
+  jitter?: "full" | "none";
+}
 
 export type ModelPolicyAttemptRunner<TOOLS extends ToolSet = ToolSet> = (
   input: StreamModelTurnInput<TOOLS>,
@@ -59,7 +74,12 @@ export interface RunModelPolicyTurnInput<TOOLS extends ToolSet = ToolSet>
   onPolicyEvent?: (event: ModelPolicyEvent) => void | Promise<void>;
   preserveSingleAttemptError?: boolean;
   /** One replay is safe only before text/reasoning or a validated tool call was emitted. */
+  maxPreCommitRetries?: number;
+  /** @deprecated Use maxPreCommitRetries. Preserved for compatibility. */
   maxRecoverableStreamRetries?: number;
+  retryBackoff?: ModelRetryBackoff;
+  /** Wall-clock budget shared by retries and fallback candidates. Default 10 minutes. */
+  modelTurnTimeoutMs?: number;
 }
 
 export type ModelPolicyTurnResult<TOOLS extends ToolSet = ToolSet> = ModelTurnResult<TOOLS> & {
@@ -86,8 +106,10 @@ export async function runModelPolicyTurn<TOOLS extends ToolSet = ToolSet>(
   onEvent?: (event: ModelTurnEvent<TOOLS>) => void | Promise<void>,
 ): Promise<ModelPolicyTurnResult<TOOLS>> {
   const policy = normalizeModelPolicy(input.selection);
-  const maxRecoverableStreamRetries = normalizeRetryCount(
-    input.maxRecoverableStreamRetries,
+  const turnStartedAt = Date.now();
+  const modelTurnTimeoutMs = normalizeNonNegativeInteger(input.modelTurnTimeoutMs, 600_000);
+  const maxPreCommitRetries = normalizeRetryCount(
+    input.maxPreCommitRetries ?? input.maxRecoverableStreamRetries,
   );
   const runAttempt: ModelPolicyAttemptRunner<TOOLS> =
     input.runAttempt ?? ((attemptInput, attemptEventHandler) =>
@@ -97,17 +119,47 @@ export async function runModelPolicyTurn<TOOLS extends ToolSet = ToolSet>(
   for (let candidateIndex = 0; candidateIndex < policy.candidates.length; candidateIndex += 1) {
     const model = policy.candidates[candidateIndex];
 
-    for (let retryIndex = 0; retryIndex <= maxRecoverableStreamRetries; retryIndex += 1) {
+    for (let retryIndex = 0; retryIndex <= maxPreCommitRetries; retryIndex += 1) {
+      const remainingMs = remainingTurnMs(turnStartedAt, modelTurnTimeoutMs);
+      if (remainingMs === 0) {
+        await emitPolicyEvent(input.onPolicyEvent, { type: "model-turn-failed", failures });
+        const timeout = Object.assign(new Error(
+          `Model turn exceeded its ${modelTurnTimeoutMs}ms total timeout`,
+        ), { code: "model_turn_timeout" });
+        throw new ModelPolicyTurnError(timeout.message, failures, timeout);
+      }
       const attempt = createAttempt(candidateIndex, retryIndex, model, policy.candidates.length);
-      await input.onPolicyEvent?.({ type: "model-attempt-started", attempt });
+      const attemptStartedAt = Date.now();
+      await emitPolicyEvent(input.onPolicyEvent, { type: "model-attempt-started", attempt });
 
       const resolution = await input.resolveAttempt(attempt, policy);
-      const attemptInput = buildAttemptInput(input, resolution);
+      const attemptBudgetMs = remainingTurnMs(turnStartedAt, modelTurnTimeoutMs);
+      if (attemptBudgetMs === 0) {
+        await emitPolicyEvent(input.onPolicyEvent, { type: "model-turn-failed", failures });
+        const timeout = Object.assign(new Error(
+          `Model turn exceeded its ${modelTurnTimeoutMs}ms total timeout`,
+        ), { code: "model_turn_timeout" });
+        throw new ModelPolicyTurnError(timeout.message, failures, timeout);
+      }
+      const attemptInput = buildAttemptInput(
+        input,
+        resolution,
+        attemptBudgetMs,
+      );
       const bufferedEvents: ModelTurnEvent<TOOLS>[] = [];
       const openToolInputs = new Map<string, string>();
       let committed = false;
+      let firstEventSeen = false;
 
       const forwardEvent = async (event: ModelTurnEvent<TOOLS>) => {
+        if (!firstEventSeen) {
+          firstEventSeen = true;
+          await emitPolicyEvent(input.onPolicyEvent, {
+            type: "model-attempt-first-event",
+            attempt,
+            latencyMs: Math.max(0, Date.now() - attemptStartedAt),
+          });
+        }
         if (event.type === "tool-input-start") openToolInputs.set(event.id, event.name);
         if (event.type === "tool-call") openToolInputs.delete(event.id);
 
@@ -129,7 +181,11 @@ export async function runModelPolicyTurn<TOOLS extends ToolSet = ToolSet>(
       try {
         const result = await runAttempt(attemptInput, forwardEvent);
         await flushEvents(bufferedEvents, onEvent);
-        await input.onPolicyEvent?.({ type: "model-attempt-succeeded", attempt });
+        await emitPolicyEvent(input.onPolicyEvent, {
+          type: "model-attempt-succeeded",
+          attempt,
+          durationMs: Math.max(0, Date.now() - attemptStartedAt),
+        });
         return {
           ...result,
           policy,
@@ -141,27 +197,50 @@ export async function runModelPolicyTurn<TOOLS extends ToolSet = ToolSet>(
         const classification: NormalizedModelError = openToolInputs.size > 0
           ? { ...baseClassification, phase: "tool-input" }
           : baseClassification;
-        const failure: ModelPolicyAttemptFailure = { attempt, error, classification, committed };
+        const failure: ModelPolicyAttemptFailure = {
+          attempt,
+          error,
+          classification,
+          committed,
+          durationMs: Math.max(0, Date.now() - attemptStartedAt),
+        };
         failures.push(failure);
-        await input.onPolicyEvent?.({ type: "model-attempt-failed", failure });
+        await emitPolicyEvent(input.onPolicyEvent, { type: "model-attempt-failed", failure });
 
         for (const [id, name] of openToolInputs) {
           const { raw: _raw, ...publicError } = classification;
           await onEvent?.({ type: "tool-input-aborted", id, name, error: publicError });
         }
 
-        const canReplayPartialToolInput = !committed
-          && openToolInputs.size > 0
+        const canRetryBeforeCommit = !committed
           && classification.retryable
-          && retryIndex < maxRecoverableStreamRetries;
-        if (canReplayPartialToolInput) {
+          && retryIndex < maxPreCommitRetries;
+        if (canRetryBeforeCommit) {
+          const next = createAttempt(
+            candidateIndex,
+            retryIndex + 1,
+            model,
+            policy.candidates.length,
+          );
+          const delayMs = Math.min(
+            retryDelayMs(input.retryBackoff, retryIndex),
+            remainingTurnMs(turnStartedAt, modelTurnTimeoutMs) || 0,
+          );
+          await emitPolicyEvent(input.onPolicyEvent, {
+            type: "model-retry-scheduled",
+            from: attempt,
+            to: next,
+            delayMs,
+            reason: classification,
+          });
+          await waitForRetry(delayMs, input.abortSignal);
           continue;
         }
 
         const nextModel = policy.candidates[candidateIndex + 1];
         if (!committed && classification.retryable && nextModel) {
           const next = createAttempt(candidateIndex + 1, 0, nextModel, policy.candidates.length);
-          await input.onPolicyEvent?.({
+          await emitPolicyEvent(input.onPolicyEvent, {
             type: "model-fallback-selected",
             from: attempt,
             to: next,
@@ -170,7 +249,7 @@ export async function runModelPolicyTurn<TOOLS extends ToolSet = ToolSet>(
           break;
         }
 
-        await input.onPolicyEvent?.({ type: "model-turn-failed", failures });
+        await emitPolicyEvent(input.onPolicyEvent, { type: "model-turn-failed", failures });
         await flushEvents(bufferedEvents, onEvent);
         if (input.preserveSingleAttemptError && policy.candidates.length === 1 && error instanceof Error) {
           throw error;
@@ -184,7 +263,7 @@ export async function runModelPolicyTurn<TOOLS extends ToolSet = ToolSet>(
     }
   }
 
-  await input.onPolicyEvent?.({ type: "model-turn-failed", failures });
+  await emitPolicyEvent(input.onPolicyEvent, { type: "model-turn-failed", failures });
   throw new ModelPolicyTurnError("All model policy attempts failed", failures);
 }
 
@@ -231,10 +310,72 @@ function normalizeRetryCount(value: number | undefined): number {
   return Math.floor(value);
 }
 
+function retryDelayMs(
+  input: ModelRetryBackoff | undefined,
+  retryIndex: number,
+): number {
+  const initial = normalizeNonNegativeInteger(input?.initialDelayMs, 500);
+  const maximum = normalizeNonNegativeInteger(input?.maxDelayMs, 5_000);
+  const capped = Math.min(maximum, initial * (2 ** Math.max(0, retryIndex)));
+  if (capped === 0 || input?.jitter === "none") return capped;
+  return Math.floor(Math.random() * (capped + 1));
+}
+
+function normalizeNonNegativeInteger(value: number | undefined, fallback: number): number {
+  if (value === undefined) return fallback;
+  if (!Number.isFinite(value) || value <= 0) return 0;
+  return Math.floor(value);
+}
+
+function remainingTurnMs(startedAt: number, timeoutMs: number): number {
+  if (timeoutMs === 0) return Number.POSITIVE_INFINITY;
+  return Math.max(0, timeoutMs - (Date.now() - startedAt));
+}
+
+async function waitForRetry(delayMs: number, signal: AbortSignal | undefined): Promise<void> {
+  if (signal?.aborted) throw signal.reason ?? new Error("Model retry cancelled");
+  if (delayMs <= 0) return;
+  await new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      cleanup();
+      resolve();
+    }, delayMs);
+    const onAbort = () => {
+      clearTimeout(timer);
+      cleanup();
+      reject(signal?.reason ?? new Error("Model retry cancelled"));
+    };
+    const cleanup = () => signal?.removeEventListener("abort", onAbort);
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+async function emitPolicyEvent(
+  sink: RunModelPolicyTurnInput["onPolicyEvent"],
+  event: ModelPolicyEvent,
+): Promise<void> {
+  if (!sink) return;
+  try {
+    await sink(event);
+  } catch {
+    // Model reliability telemetry must never change completion semantics.
+  }
+}
+
 function buildAttemptInput<TOOLS extends ToolSet>(
   input: RunModelPolicyTurnInput<TOOLS>,
   resolution: ModelPolicyAttemptResolution<TOOLS>,
+  remainingMs: number,
 ): StreamModelTurnInput<TOOLS> {
+  const configuredAttemptTotal = input.streamTimeouts?.totalMs;
+  const attemptTotalMs = Number.isFinite(remainingMs)
+    ? Math.min(
+        remainingMs,
+        configuredAttemptTotal !== undefined && configuredAttemptTotal > 0
+          ? configuredAttemptTotal
+          : remainingMs,
+      )
+    : configuredAttemptTotal;
   return {
     ...(input.system ? { system: input.system } : {}),
     messages: input.messages,
@@ -242,8 +383,20 @@ function buildAttemptInput<TOOLS extends ToolSet>(
     ...(input.activeTools ? { activeTools: input.activeTools } : {}),
     ...(input.toolChoice ? { toolChoice: input.toolChoice } : {}),
     ...(input.parallelToolCalls !== undefined ? { parallelToolCalls: input.parallelToolCalls } : {}),
-    ...(input.maxRetries !== undefined ? { maxRetries: input.maxRetries } : {}),
+    // The policy supervisor is the only retry owner. AI SDK retries here would
+    // multiply with same-model replays and provider fallback attempts.
+    maxRetries: 0,
     ...(input.timeout !== undefined ? { timeout: input.timeout } : {}),
+    ...(
+      input.streamTimeouts !== undefined || attemptTotalMs !== undefined
+        ? {
+            streamTimeouts: {
+              ...(input.streamTimeouts ?? {}),
+              ...(attemptTotalMs !== undefined ? { totalMs: attemptTotalMs } : {}),
+            },
+          }
+        : {}
+    ),
     ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
     ...(input.output ? { output: input.output } : {}),
     model: resolution.model,

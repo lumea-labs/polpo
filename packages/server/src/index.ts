@@ -52,6 +52,7 @@ export {
   type ChatViaRunTurnResult,
   type PreparedConversationTurn,
   type CompletionRouteDeps,
+  type CompletionModelPolicyEventContext,
   type CompletionRuntimeGuardrails,
   type CompletionRuntimeGuardrailsResolver,
   type CompletionRuntimeInvocation,

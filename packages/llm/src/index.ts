@@ -135,6 +135,8 @@ export {
 
 // ─── Model Turn Primitive ───────────────────────────
 export {
+  DEFAULT_MODEL_STREAM_TIMEOUTS,
+  ModelStreamTimeoutError,
   streamModelTurn,
   providerOptionsWithParallelToolCalls,
   normalizeResponseMessagesForHistory,
@@ -142,6 +144,8 @@ export {
   prepareModelMessagesForTransport,
 } from "./stream-turn.js";
 export type {
+  ModelStreamTimeoutPhase,
+  ModelStreamTimeouts,
   ModelTurnErrorInfo,
   ModelTurnEvent,
   ModelTurnResult,
@@ -169,6 +173,7 @@ export type {
   ModelPolicyAttemptResolution,
   ModelPolicyAttemptRunner,
   ModelPolicyEvent,
+  ModelRetryBackoff,
   ModelPolicyTurnResult,
   RunModelPolicyTurnInput,
 } from "./model-policy-turn.js";
