@@ -71,6 +71,64 @@ function mergeResult(target: DeployResult, source: DeployResult): void {
   target.details.push(...source.details);
 }
 
+type DeployVolume = {
+  id: string;
+  name: string;
+  strategy: "mounted" | "hydrated";
+  access: "read-only" | "read-write";
+  syncState: "ready" | "syncing" | "failed";
+};
+
+type DeployVolumeGrant = {
+  agentName: string;
+  volumeId: string;
+  access: "read-only" | "read-write";
+  writeBack: "auto" | "manual" | null;
+};
+
+export function agentVolumePreflightErrors(
+  agent: any,
+  volumes: readonly DeployVolume[],
+  grants: readonly DeployVolumeGrant[],
+): string[] {
+  const requested = Array.isArray(agent?.sandbox?.volumes)
+    ? agent.sandbox.volumes as Array<{ name?: unknown; writeBack?: unknown }>
+    : [];
+  if (requested.length === 0) return [];
+
+  const errors: string[] = [];
+  const byName = new Map(volumes.map((volume) => [volume.name, volume]));
+  const grantsByVolume = new Map(grants.map((grant) => [grant.volumeId, grant]));
+  for (const selection of requested) {
+    if (typeof selection.name !== "string" || !selection.name.trim()) continue;
+    const volume = byName.get(selection.name);
+    if (!volume) {
+      errors.push(`volume "${selection.name}" does not exist in the project catalog.`);
+      continue;
+    }
+    const grant = grantsByVolume.get(volume.id);
+    if (!grant) {
+      errors.push(
+        `volume "${volume.name}" is not granted to agent "${agent.name}". `
+        + `Run: polpo volumes grants set ${volume.name} --agent ${agent.name}`,
+      );
+      continue;
+    }
+    if (volume.syncState !== "ready") {
+      errors.push(`volume "${volume.name}" is ${volume.syncState} and cannot be deployed yet.`);
+    }
+    if (selection.writeBack !== undefined && volume.strategy === "mounted") {
+      errors.push(`mounted volume "${volume.name}" cannot configure writeBack.`);
+    } else if (
+      selection.writeBack !== undefined
+      && (volume.access === "read-only" || grant.access === "read-only")
+    ) {
+      errors.push(`read-only volume "${volume.name}" cannot configure writeBack.`);
+    }
+  }
+  return errors;
+}
+
 /** A deploy is unsuccessful if either failure counter or error detail says so. */
 export function hasDeployFailures(result: DeployResult): boolean {
   return result.failed > 0 || result.errors.length > 0;
@@ -205,6 +263,27 @@ async function deployAgents(client: ApiClient, polpoDir: string, opts: ConflictO
   const entries = readProjectAgents(polpoDir);
   if (entries.length === 0) return result;
 
+  const hasVolumeSelections = entries.some(({ agent }) =>
+    Array.isArray(agent?.sandbox?.volumes) && agent.sandbox.volumes.length > 0
+  );
+  let volumeCatalog: DeployVolume[] | null = null;
+  let volumeApiError: string | null = null;
+  if (hasVolumeSelections) {
+    try {
+      const response = await client.get<any>("/v1/files/volumes");
+      if (response.status === 404) {
+        // OSS hosts without the managed Volumes API keep the historical deploy path.
+        volumeCatalog = null;
+      } else if (response.status >= 200 && response.status < 300) {
+        volumeCatalog = response.data?.data?.volumes ?? response.data?.volumes ?? [];
+      } else {
+        volumeApiError = `volume catalog preflight failed — ${friendlyError(readErrorBody(response.data, response.status))}`;
+      }
+    } catch (error) {
+      volumeApiError = `volume catalog preflight failed — ${friendlyError(error)}`;
+    }
+  }
+
   // Fetch existing agents for conflict detection
   let existingAgents: Record<string, any> = {};
   try {
@@ -226,6 +305,39 @@ async function deployAgents(client: ApiClient, polpoDir: string, opts: ConflictO
       result.errors.push(`agent "${agent.name ?? "unknown"}": ${issues}`);
       result.failed++;
       continue;
+    }
+
+    if (Array.isArray(agent?.sandbox?.volumes) && agent.sandbox.volumes.length > 0) {
+      if (volumeApiError) {
+        result.errors.push(`agent "${agent.name}": ${volumeApiError}`);
+        result.failed++;
+        continue;
+      }
+      if (volumeCatalog) {
+        try {
+          const response = await client.get<any>(
+            `/v1/files/volume-grants/${encodeURIComponent(agent.name)}`,
+          );
+          if (response.status < 200 || response.status >= 300) {
+            result.errors.push(
+              `agent "${agent.name}": volume grant preflight failed — ${friendlyError(readErrorBody(response.data, response.status))}`,
+            );
+            result.failed++;
+            continue;
+          }
+          const grants = response.data?.data?.grants ?? response.data?.grants ?? [];
+          const errors = agentVolumePreflightErrors(agent, volumeCatalog, grants);
+          if (errors.length > 0) {
+            result.errors.push(...errors.map((error) => `agent "${agent.name}": ${error}`));
+            result.failed++;
+            continue;
+          }
+        } catch (error) {
+          result.errors.push(`agent "${agent.name}": volume grant preflight failed — ${friendlyError(error)}`);
+          result.failed++;
+          continue;
+        }
+      }
     }
 
     const remote = existingAgents[agent.name];

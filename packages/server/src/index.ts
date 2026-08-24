@@ -47,6 +47,7 @@ export {
   prepareChatCompletionExecution,
   runConversationTurn,
   runChatTurnViaRun,
+  CompletionRuntimeError,
   type ConversationTurnResult,
   type RunConversationTurnInput,
   type ChatViaRunTurnResult,

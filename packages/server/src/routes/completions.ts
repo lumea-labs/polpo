@@ -87,6 +87,9 @@ import type {
 } from "@polpo-ai/core/guardrails";
 import type { CompletionToolExecutor } from "./completions/tool-guardrails.js";
 import type { ModelControlledToolDisclosureConfig } from "./completions/tool-disclosure.js";
+import {
+  completionRuntimeErrorEnvelope,
+} from "./completions/runtime-error.js";
 
 export { resumeProjectLoopRun } from "./completions/project-loop-runner.js";
 export {
@@ -102,6 +105,7 @@ export {
   type RunConversationTurnInput,
   type PreparedConversationTurn,
 } from "./completions/conversation-turn.js";
+export { CompletionRuntimeError } from "./completions/runtime-error.js";
 
 // ── Route factory ──────────────────────────────────────────────────────
 
@@ -469,12 +473,21 @@ export function completionRoutes(getDeps: () => CompletionRouteDeps, apiKeys?: s
         },
       }, 400) as any;
     }
-    const prepared = await prepareChatCompletionExecution(deps, body, {
-      sessionId: rawSessionHeader === "new" ? null : rawSessionHeader,
-      setHeader: (name, value) => c.header(name, value),
-      signal: c.req.raw.signal,
-      ...(continuation ? { continuation } : {}),
-    });
+    let prepared;
+    try {
+      prepared = await prepareChatCompletionExecution(deps, body, {
+        sessionId: rawSessionHeader === "new" ? null : rawSessionHeader,
+        setHeader: (name, value) => c.header(name, value),
+        signal: c.req.raw.signal,
+        ...(continuation ? { continuation } : {}),
+      });
+    } catch (error) {
+      const runtimeError = completionRuntimeErrorEnvelope(error);
+      if (runtimeError) {
+        return c.json({ error: runtimeError.error }, runtimeError.status as any);
+      }
+      throw error;
+    }
 
     if (prepared.kind === "error") {
       return c.json(prepared.body, prepared.status as any);
