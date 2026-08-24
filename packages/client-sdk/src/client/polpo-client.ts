@@ -91,6 +91,12 @@ import type {
   FileRoot,
   FileEntry,
   FilePreview,
+  SandboxVolumeCatalog,
+  SandboxVolumeResource,
+  SandboxVolumeGrant,
+  CreateSandboxVolumeInput,
+  UpdateSandboxVolumeInput,
+  SetSandboxVolumeGrantInput,
   CreateMemoryItemInput,
   MemoryItem,
   MemoryItemsPage,
@@ -1874,6 +1880,63 @@ export class PolpoClient {
 
   getFileRoots(): Promise<{ roots: FileRoot[] }> {
     return this.get<{ roots: FileRoot[] }>("/files/roots");
+  }
+
+  /** List the host-managed persistent volume catalog and supported policies. */
+  listSandboxVolumes(): Promise<SandboxVolumeCatalog> {
+    return this.get<SandboxVolumeCatalog>("/files/volumes");
+  }
+
+  /** Create a project-scoped persistent volume. */
+  createSandboxVolume(input: CreateSandboxVolumeInput): Promise<SandboxVolumeResource> {
+    return this.post<SandboxVolumeResource>("/files/volumes", input);
+  }
+
+  /** Update a persistent volume policy. Volume names are immutable. */
+  updateSandboxVolume(
+    name: string,
+    input: UpdateSandboxVolumeInput,
+  ): Promise<SandboxVolumeResource> {
+    return this.patch<SandboxVolumeResource>(
+      `/files/volumes/${encodeURIComponent(name)}`,
+      input,
+    );
+  }
+
+  /** Delete a persistent volume and its grants. */
+  deleteSandboxVolume(name: string): Promise<{ removed: true; name: string }> {
+    return this.del<{ removed: true; name: string }>(
+      `/files/volumes/${encodeURIComponent(name)}`,
+    );
+  }
+
+  /** List persistent-volume grants for one agent. */
+  listSandboxVolumeGrants(agentName: string): Promise<{ grants: SandboxVolumeGrant[] }> {
+    return this.get<{ grants: SandboxVolumeGrant[] }>(
+      `/files/volume-grants/${encodeURIComponent(agentName)}`,
+    );
+  }
+
+  /** Create or narrow an agent's persistent-volume grant. */
+  setSandboxVolumeGrant(
+    agentName: string,
+    volumeId: string,
+    input: SetSandboxVolumeGrantInput = {},
+  ): Promise<SandboxVolumeGrant> {
+    return this.put<SandboxVolumeGrant>(
+      `/files/volume-grants/${encodeURIComponent(agentName)}/${encodeURIComponent(volumeId)}`,
+      input,
+    );
+  }
+
+  /** Revoke an agent's persistent-volume grant. */
+  revokeSandboxVolumeGrant(
+    agentName: string,
+    volumeId: string,
+  ): Promise<{ removed: true }> {
+    return this.del<{ removed: true }>(
+      `/files/volume-grants/${encodeURIComponent(agentName)}/${encodeURIComponent(volumeId)}`,
+    );
   }
 
   listFiles(path?: string): Promise<{ path: string; entries: FileEntry[] }> {

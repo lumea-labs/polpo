@@ -51,6 +51,32 @@ cannot add an ungranted volume, change its strategy, or choose a host mount
 path. The only provider-neutral strategies are `mounted` and `hydrated`;
 strategy and storage credentials are resolved by the runtime host.
 
+Hosts with managed volume APIs can expose their catalog and grants through the
+typed SDK methods:
+
+```ts
+const { volumes } = await client.listSandboxVolumes();
+const volume = await client.createSandboxVolume({
+  name: "build_cache",
+  strategy: "hydrated",
+  access: "read-write",
+  writeBack: "auto",
+});
+
+await client.setSandboxVolumeGrant("builder", volume.id, {
+  access: "read-write",
+  writeBack: "manual",
+});
+
+await client.updateSandboxVolume("build_cache", { label: "Build cache" });
+await client.revokeSandboxVolumeGrant("builder", volume.id);
+await client.deleteSandboxVolume("build_cache");
+```
+
+Grant methods intentionally accept the immutable volume id returned by the
+catalog. Runtime requests continue to select volumes by stable name. Provider
+credentials and storage locations never enter these payloads.
+
 `runtime:plan` SSE payloads can be narrowed with
 `isRuntimePlanSSEEvent`. The store indexes valid, secret-free plans by id and
 retains malformed raw events only in its bounded diagnostics history.

@@ -195,6 +195,16 @@ and revision. Manually managed hydrated volumes can expose the built-in
 outer sandbox lease finalizes persistent storage once, after all root and nested
 steps complete.
 
+Volume catalog entries, agent grants, and runtime selections are separate:
+
+- the host volume catalog defines strategy, mount path, and maximum policy;
+- an agent grant authorizes one catalog volume and may narrow its policy;
+- `sandbox.volumes` selects or narrows authorized volumes for one agent or run.
+
+Defining `sandbox.volumes` in an agent does not create a host volume or grant.
+On Polpo Cloud, manage those resources with `polpo volumes` before deploying an
+agent that selects them.
+
 ## Model profiles
 
 Model profiles give project configuration stable semantic names while keeping
