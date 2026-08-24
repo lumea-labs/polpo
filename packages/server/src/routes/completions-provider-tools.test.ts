@@ -421,6 +421,40 @@ describe("completionRoutes provider-executed tools", () => {
     expect(streamTextMock).not.toHaveBeenCalled();
   });
 
+  it("terminalizes streamed project Loops with the same safe runtime resource error", async () => {
+    const deps = makeDeps();
+    deps.createToolRunScope = vi.fn(async () => {
+      throw new CompletionRuntimeError(
+        "Sandbox volume workspace is still syncing.",
+        "sandbox_volume_sync_unavailable",
+        409,
+      );
+    });
+
+    const response = await completionRoutes(() => deps).request("/", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        agent: "researcher",
+        loop: "research-loop",
+        stream: true,
+        messages: [{ role: "user", content: "Research Polpo" }],
+      }),
+    });
+
+    expect(response.status).toBe(200);
+    const chunks = parseSseJsonChunks(await response.text());
+    expect(chunks.at(-1)?.choices?.[0]).toMatchObject({
+      finish_reason: "stop",
+      error: {
+        message: "Sandbox volume workspace is still syncing.",
+        type: "runtime_error",
+        code: "sandbox_volume_sync_unavailable",
+      },
+    });
+    expect(streamTextMock).not.toHaveBeenCalled();
+  });
+
   it("cleans root tools and the run scope when loop initialization fails", async () => {
     const deps = makeDeps();
     const scopeCleanup = vi.fn(async () => undefined);
