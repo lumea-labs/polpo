@@ -55,6 +55,7 @@ import {
   modelNotFoundEnvelope,
   sseChunk,
 } from "./sse.js";
+import { completionRuntimeErrorEnvelope } from "./runtime-error.js";
 import { emitFileChanged, persistAssistantMessage, type LoopRuntimeToolCall } from "./tool-mapping.js";
 import { createGuardedCompletionToolExecutor } from "./tool-guardrails.js";
 import {
@@ -1110,6 +1111,12 @@ export async function executeStreamingProjectLoopCompletion(
           await stream.writeSSE({ data: "[DONE]" });
           return;
         }
+        const runtimeError = completionRuntimeErrorEnvelope(err);
+        if (runtimeError) {
+          await stream.writeSSE({ data: sseChunk(completionId, {}, "stop", { error: runtimeError.error }) });
+          await stream.writeSSE({ data: "[DONE]" });
+          return;
+        }
         throw err;
       } finally {
         await persistAssistantMessage(sessionStore, sessionId, assistantMsgId, finalText, toolCalls);
@@ -1225,6 +1232,10 @@ async function runNonStreamingProjectLoopCompletion(
         || loopError.code === "loop_agent_input_invalid"
         || loopError.code === "loop_agent_input_too_large";
       return c.json({ error: loopError }, (invalidInput ? 400 : 403) as any);
+    }
+    const runtimeError = completionRuntimeErrorEnvelope(err);
+    if (runtimeError) {
+      return c.json({ error: runtimeError.error }, runtimeError.status as any);
     }
     throw err;
   } finally {
