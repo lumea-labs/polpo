@@ -116,6 +116,136 @@ describe("PolpoClient conversation Channels", () => {
   });
 });
 
+describe("PolpoClient sandbox volumes", () => {
+  it("manages the volume catalog through typed canonical payloads", async () => {
+    const volume = {
+      id: "volume-1",
+      name: "assets",
+      label: "Assets",
+      strategy: "hydrated",
+      access: "read-write",
+      writeBack: "manual",
+      mountPath: "/home/daytona/project/assets",
+      path: "assets",
+      absolutePath: "/home/daytona/project/assets",
+      sync: {},
+      revision: 2,
+      syncState: "ready",
+      syncError: null,
+      lastSyncedAt: null,
+      totalFiles: 3,
+      totalSize: 42,
+    } as const;
+    const fetch = vi.fn<typeof globalThis.fetch>()
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        ok: true,
+        data: {
+          volumes: [volume],
+          defaults: {
+            strategies: ["mounted", "hydrated"],
+            accessModes: ["read-only", "read-write"],
+            writeBackModes: ["auto", "manual"],
+          },
+        },
+      }), { status: 200, headers: { "content-type": "application/json" } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true, data: volume }), {
+        status: 201,
+        headers: { "content-type": "application/json" },
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true, data: volume }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true, data: { removed: true, name: "assets" } }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }));
+    const client = new PolpoClient({ baseUrl: "https://api.polpo.sh", apiKey: "key", fetch });
+
+    await expect(client.listSandboxVolumes()).resolves.toMatchObject({ volumes: [volume] });
+    await client.createSandboxVolume({
+      name: "assets",
+      strategy: "hydrated",
+      access: "read-write",
+      writeBack: "manual",
+    });
+    await client.updateSandboxVolume("assets/a", { label: null, mountPath: null });
+    await client.deleteSandboxVolume("assets/a");
+
+    expect(fetch).toHaveBeenNthCalledWith(
+      1,
+      "https://api.polpo.sh/v1/files/volumes",
+      expect.objectContaining({ method: "GET" }),
+    );
+    expect(fetch).toHaveBeenNthCalledWith(
+      2,
+      "https://api.polpo.sh/v1/files/volumes",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({
+          name: "assets",
+          strategy: "hydrated",
+          access: "read-write",
+          writeBack: "manual",
+        }),
+      }),
+    );
+    expect(fetch).toHaveBeenNthCalledWith(
+      3,
+      "https://api.polpo.sh/v1/files/volumes/assets%2Fa",
+      expect.objectContaining({
+        method: "PATCH",
+        body: JSON.stringify({ label: null, mountPath: null }),
+      }),
+    );
+    expect(fetch).toHaveBeenNthCalledWith(
+      4,
+      "https://api.polpo.sh/v1/files/volumes/assets%2Fa",
+      expect.objectContaining({ method: "DELETE" }),
+    );
+  });
+
+  it("manages per-agent grants without conflating them with runtime selection", async () => {
+    const grant = {
+      agentName: "builder/a",
+      volumeId: "volume/b",
+      access: "read-only",
+      writeBack: null,
+      createdAt: "2026-08-24T00:00:00.000Z",
+      updatedAt: "2026-08-24T00:00:00.000Z",
+    } as const;
+    const fetch = vi.fn<typeof globalThis.fetch>()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true, data: { grants: [grant] } }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true, data: grant }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true, data: { removed: true } }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }));
+    const client = new PolpoClient({ baseUrl: "https://api.polpo.sh", fetch });
+
+    await client.listSandboxVolumeGrants("builder/a");
+    await client.setSandboxVolumeGrant("builder/a", "volume/b", { access: "read-only" });
+    await client.revokeSandboxVolumeGrant("builder/a", "volume/b");
+
+    expect(fetch.mock.calls.map(([url]) => url)).toEqual([
+      "https://api.polpo.sh/v1/files/volume-grants/builder%2Fa",
+      "https://api.polpo.sh/v1/files/volume-grants/builder%2Fa/volume%2Fb",
+      "https://api.polpo.sh/v1/files/volume-grants/builder%2Fa/volume%2Fb",
+    ]);
+    expect(fetch.mock.calls[1]?.[1]).toEqual(expect.objectContaining({
+      method: "PUT",
+      body: JSON.stringify({ access: "read-only" }),
+    }));
+    expect(fetch.mock.calls[2]?.[1]).toEqual(expect.objectContaining({ method: "DELETE" }));
+  });
+});
+
 describe("PolpoClient run steering", () => {
   it("captures namespaced chat suggestions without requiring a kind", async () => {
     const suggestion = {

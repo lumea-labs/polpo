@@ -128,6 +128,7 @@ import type {
   SandboxIsolation,
   SandboxReleasePolicy,
   SandboxVolumeAccess,
+  SandboxVolumeStrategy,
   SandboxVolumeWriteBack,
   Schedule,
   ScheduleDriverRegistration,
@@ -269,6 +270,7 @@ export type {
   SandboxIsolation,
   SandboxReleasePolicy,
   SandboxVolumeAccess,
+  SandboxVolumeStrategy,
   SandboxVolumeWriteBack,
   Schedule,
   ScheduleDriverRegistration,
@@ -972,6 +974,62 @@ export interface FileRoot {
   icon: string;
   totalFiles: number;
   totalSize: number;
+}
+
+export type SandboxVolumeSyncState = "ready" | "syncing" | "failed";
+
+/** Host-managed persistent volume available to sandbox runs. */
+export interface SandboxVolumeResource {
+  id: string;
+  name: string;
+  label: string | null;
+  strategy: SandboxVolumeStrategy;
+  access: SandboxVolumeAccess;
+  writeBack: SandboxVolumeWriteBack | null;
+  mountPath: string;
+  path: string;
+  absolutePath: string;
+  sync: Record<string, unknown>;
+  revision: number;
+  syncState: SandboxVolumeSyncState;
+  syncError: string | null;
+  lastSyncedAt: string | null;
+  totalFiles: number;
+  totalSize: number;
+}
+
+export interface SandboxVolumeCatalog {
+  volumes: SandboxVolumeResource[];
+  defaults: {
+    strategies: SandboxVolumeStrategy[];
+    accessModes: SandboxVolumeAccess[];
+    writeBackModes: SandboxVolumeWriteBack[];
+  };
+}
+
+export interface CreateSandboxVolumeInput {
+  name: string;
+  strategy: SandboxVolumeStrategy;
+  label?: string | null;
+  access?: SandboxVolumeAccess;
+  writeBack?: SandboxVolumeWriteBack | null;
+  mountPath?: string | null;
+}
+
+export type UpdateSandboxVolumeInput = Partial<Omit<CreateSandboxVolumeInput, "name">>;
+
+export interface SandboxVolumeGrant {
+  agentName: string;
+  volumeId: string;
+  access: SandboxVolumeAccess;
+  writeBack: SandboxVolumeWriteBack | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface SetSandboxVolumeGrantInput {
+  access?: SandboxVolumeAccess;
+  writeBack?: SandboxVolumeWriteBack | null;
 }
 
 
