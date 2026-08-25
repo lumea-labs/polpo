@@ -77,7 +77,7 @@ import { MemoryLoopRunStore } from "@polpo-ai/core/loop-run-store";
 const loopRunStore = new MemoryLoopRunStore();
 ```
 
-`PipelineExecutor` emits typed `LoopPermissionDeniedError`, `LoopPermissionApprovalRequiredError`, `LoopPolicyDeniedError`, and `LoopApprovalRequiredError`, plus structured trace events such as `permission.result`, `policy.result`, and `approval.required`. Approval errors include a resume continuation: the context bag, remaining steps, and previous node. Hosts can persist that on `LoopRunRecord.resume`, approve the gate, then resume from the checkpoint without rerunning completed steps.
+`PipelineExecutor` emits typed `LoopPermissionDeniedError`, `LoopPermissionApprovalRequiredError`, `LoopPolicyDeniedError`, and `LoopApprovalRequiredError`, plus structured trace events such as `permission.result`, `policy.result`, and `approval.required`. Project Loop step events include the canonical `stepKey` independently from the legacy result alias in `step`; transitions include `fromStepKey` and `toStepKey`. Approval errors include a resume continuation: the context bag, remaining steps, previous node alias, and previous canonical step key. Hosts can persist that on `LoopRunRecord.resume`, approve the gate, then resume from the checkpoint without rerunning completed steps.
 
 Tool steps and hook actions accept recursive, typed context bindings:
 

@@ -112,11 +112,17 @@ export interface LoopTraceEvent {
   type: LoopTraceEventType;
   ts: string;
   loop?: string;
+  /** Canonical key from ProjectLoopConfig.steps. Stable even when result aliases are reused. */
+  stepKey?: string;
+  /** Result/context alias retained for backwards compatibility (for example saveAs ?? tool). */
   step?: string;
   tool?: string;
   human?: string;
   from?: string;
   to?: string;
+  /** Canonical graph identities for transition endpoints. */
+  fromStepKey?: string;
+  toStepKey?: string;
   status?: "started" | "completed" | "skipped" | "failed";
   when?: string;
   input?: unknown;
@@ -275,13 +281,14 @@ export interface WhileBlock {
   steps: Step[];
 }
 
-export type Step =
+export type Step = { key?: string } & (
   | { loop: string; when?: string }
   | { tool: string; input?: unknown; saveAs?: string; when?: string }
   | { parallel: Step[][]; join?: "all" | "any" | number; when?: string }
   | { switch: { cases: SwitchCase[]; default?: { steps: Step[] } }; when?: string }
   | { while: WhileBlock; when?: string }
-  | { human: string; output?: { schema?: unknown }; notify?: string[]; when?: string };
+  | { human: string; output?: { schema?: unknown }; notify?: string[]; when?: string }
+);
 
 export interface Pipeline {
   mode?: "sequential" | "parallel";
@@ -299,15 +306,15 @@ export interface AgentLoopConfig {
 }
 
 // ─── Step type guards ────────────────────────────────────
-export const isLoopStep = (s: Step): s is { loop: string; when?: string } => "loop" in s;
-export const isToolStep = (s: Step): s is { tool: string; input?: unknown; saveAs?: string; when?: string } =>
+export const isLoopStep = (s: Step): s is Extract<Step, { loop: string }> => "loop" in s;
+export const isToolStep = (s: Step): s is Extract<Step, { tool: string }> =>
   "tool" in s;
-export const isParallelStep = (s: Step): s is { parallel: Step[][]; join?: "all" | "any" | number; when?: string } =>
+export const isParallelStep = (s: Step): s is Extract<Step, { parallel: Step[][] }> =>
   "parallel" in s;
 export const isSwitchStep = (
   s: Step,
-): s is { switch: { cases: SwitchCase[]; default?: { steps: Step[] } }; when?: string } => "switch" in s;
-export const isWhileStep = (s: Step): s is { while: WhileBlock; when?: string } => "while" in s;
+): s is Extract<Step, { switch: { cases: SwitchCase[] } }> => "switch" in s;
+export const isWhileStep = (s: Step): s is Extract<Step, { while: WhileBlock }> => "while" in s;
 export const isHumanStep = (
   s: Step,
-): s is { human: string; output?: { schema?: unknown }; notify?: string[]; when?: string } => "human" in s;
+): s is Extract<Step, { human: string }> => "human" in s;

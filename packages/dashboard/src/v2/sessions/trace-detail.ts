@@ -289,9 +289,12 @@ type RawLoopEvent = {
   type: string;
   ts?: string;
   step?: string;
+  stepKey?: string;
   tool?: string;
   from?: string;
   to?: string;
+  fromStepKey?: string;
+  toStepKey?: string;
   status?: string;
   input?: unknown;
   output?: unknown;

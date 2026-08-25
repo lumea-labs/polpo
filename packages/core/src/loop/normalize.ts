@@ -36,6 +36,7 @@ function stepFor(id: string, loop: ProjectLoopConfig, seen = new Set<string>()):
   if (node.type === "human") {
     return [
       {
+        key: id,
         human: id,
         when: node.when,
         output: node.output,
@@ -48,6 +49,7 @@ function stepFor(id: string, loop: ProjectLoopConfig, seen = new Set<string>()):
   if (node.type === "parallel") {
     return [
       {
+        key: id,
         parallel: node.branches.map((branch) => {
           const nested = stepFor(branch, loop, new Set(seen));
           return nested.length ? nested : [{ loop: branch }];
@@ -64,6 +66,7 @@ function stepFor(id: string, loop: ProjectLoopConfig, seen = new Set<string>()):
       .flatMap((entry) => stepFor(entry, loop, new Set(seen)));
     return [
       {
+        key: id,
         while: {
           condition: node.condition,
           until: node.until,
@@ -79,6 +82,7 @@ function stepFor(id: string, loop: ProjectLoopConfig, seen = new Set<string>()):
   if (node.type === "tool") {
     return [
       {
+        key: id,
         tool: node.tool,
         input: node.input,
         saveAs: node.saveAs,
@@ -89,7 +93,7 @@ function stepFor(id: string, loop: ProjectLoopConfig, seen = new Set<string>()):
   }
 
   return [
-    { loop: id, when: node.when },
+    { key: id, loop: id, when: node.when },
     ...transitionSteps(node.next, loop, seen),
   ];
 }

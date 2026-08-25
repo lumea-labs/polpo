@@ -8,6 +8,7 @@ describe("buildLoopResumeState", () => {
     context: { draft: { ready: true } },
     steps: [{ loop: "review" }],
     previousNode: "prepare",
+    previousStepKey: "prepare_step",
   };
 
   it("pins enforced context trust across approval checkpoints", () => {
@@ -23,6 +24,7 @@ describe("buildLoopResumeState", () => {
       context: continuation.context,
       steps: continuation.steps,
       previousNode: "prepare",
+      previousStepKey: "prepare_step",
       approvedGates: [{
         type: "policy",
         id: "approve-release",

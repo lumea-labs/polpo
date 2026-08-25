@@ -24,6 +24,7 @@ export interface LoopResumeState {
   context: ContextBag;
   steps: Step[];
   previousNode?: string;
+  previousStepKey?: string;
   approvedGates?: LoopApprovedGate[];
   runtime?: Record<string, unknown>;
   attempts?: number;
@@ -208,6 +209,7 @@ export interface LoopApprovalContinuation {
   context: ContextBag;
   steps: Step[];
   previousNode?: string;
+  previousStepKey?: string;
 }
 
 export class LoopApprovalRequiredError extends Error {

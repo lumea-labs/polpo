@@ -254,8 +254,9 @@ describe("pipeline durable turns — step boundaries", () => {
     // position only (no session history), plan's output already in the bag.
     const checkpoint = crash.checkpoints[crash.checkpoints.length - 1]!;
     expect(checkpoint.pipelineName).toBe("two-step");
-    expect(checkpoint.steps).toEqual([{ loop: "build" }]);
+    expect(checkpoint.steps).toEqual([{ key: "build", loop: "build" }]);
     expect(checkpoint.previousNode).toBe("plan");
+    expect(checkpoint.previousStepKey).toBe("plan");
     expect(checkpoint.context).toMatchObject({ plan: { planned: true } });
     expect(checkpoint.history).toBeUndefined();
 
@@ -334,7 +335,7 @@ describe("pipeline durable turns — in-flight agent step (Phase A composition)"
     // Last checkpoint: build in flight — pipeline position AND session state.
     const checkpoint = crash.checkpoints[crash.checkpoints.length - 1]!;
     expect(checkpoint.pipelineName).toBe("two-step-b");
-    expect(checkpoint.steps).toEqual([{ loop: "build" }]);
+    expect(checkpoint.steps).toEqual([{ key: "build", loop: "build" }]);
     expect(checkpoint.loopName).toBe("build");
     expect(checkpoint.turn).toBe(0);
     expect(Array.isArray(checkpoint.history)).toBe(true);
@@ -513,7 +514,7 @@ describe("pipeline durable turns — while and switch", () => {
     // The selection checkpoint pinned the choice: branch x inlined, the
     // switch step GONE — nothing left to re-evaluate.
     const checkpoint = crash.checkpoints[crash.checkpoints.length - 1]!;
-    expect(checkpoint.steps).toEqual([{ loop: "x" }]);
+    expect(checkpoint.steps).toEqual([{ key: "x", loop: "x" }]);
     expect(checkpoint.steps.some((step) => "switch" in step)).toBe(false);
 
     // Tamper the restored bag so a re-evaluation WOULD choose y — the
