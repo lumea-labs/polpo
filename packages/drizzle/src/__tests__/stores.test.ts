@@ -590,6 +590,62 @@ describe("DrizzleLoopRunStore — dual-write + runs-backed (F2)", () => {
     expect(fetched?.trace).toHaveLength(1);
   });
 
+  it("preserves terminal status and every trace event under concurrent writes", async () => {
+    const { DrizzleLoopRunStore } = await import("../stores/loop-run-store.js");
+    const { runsSqlite } = await import("../schema/runs.js");
+    const runsBacked = new DrizzleLoopRunStore(db, runsSqlite, "sqlite", true);
+    await runsBacked.createRun(loopInput("looprun-concurrent") as any);
+
+    const events = Array.from({ length: 24 }, (_, index) => ({
+      id: `trace-${index}`,
+      type: "sandbox.released",
+      data: { index },
+    }));
+    await Promise.all([
+      runsBacked.updateRun("looprun-concurrent", {
+        status: "completed" as any,
+        completedAt: "2026-08-25T19:40:00.000Z",
+      }),
+      ...events.map((event) => runsBacked.appendTrace("looprun-concurrent", event as any)),
+    ]);
+
+    const fetched = await runsBacked.getRun("looprun-concurrent");
+    expect(fetched?.status).toBe("completed");
+    expect(fetched?.completedAt).toBe("2026-08-25T19:40:00.000Z");
+    expect(fetched?.trace).toHaveLength(events.length);
+    expect(new Set(fetched?.trace.map((event) => event.id))).toEqual(
+      new Set(events.map((event) => event.id)),
+    );
+  });
+
+  it("appends a trace event idempotently without reopening a terminal run", async () => {
+    const { DrizzleLoopRunStore } = await import("../stores/loop-run-store.js");
+    const { runsSqlite } = await import("../schema/runs.js");
+    const runsBacked = new DrizzleLoopRunStore(db, runsSqlite, "sqlite", true);
+    await runsBacked.createRun(loopInput("looprun-idempotent") as any);
+    await runsBacked.updateRun("looprun-idempotent", {
+      status: "failed" as any,
+      error: "provider timeout",
+      completedAt: "2026-08-25T19:40:00.000Z",
+    });
+    const event = {
+      id: "sandbox-release-1",
+      type: "sandbox.released",
+      data: { outcome: "destroyed" },
+    } as any;
+
+    await Promise.all([
+      runsBacked.appendTrace("looprun-idempotent", event),
+      runsBacked.appendTrace("looprun-idempotent", event),
+      runsBacked.appendTrace("looprun-idempotent", event),
+    ]);
+
+    const fetched = await runsBacked.getRun("looprun-idempotent");
+    expect(fetched?.status).toBe("failed");
+    expect(fetched?.error).toBe("provider timeout");
+    expect(fetched?.trace).toEqual([event]);
+  });
+
   it("backfillLoopRunsIntoRuns copies historical loop_runs into runs, idempotently (F2 PR3)", async () => {
     const { DrizzleLoopRunStore } = await import("../stores/loop-run-store.js");
     const { backfillLoopRunsIntoRuns } = await import("../backfill.js");

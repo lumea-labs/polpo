@@ -26,6 +26,7 @@ import {
   type ContextBag,
   type LoopApprovedGate,
   type LoopRunRecord,
+  type LoopRunStore,
   type LoopResumeState,
   type LoopTraceEvent,
   type ProjectLoopConfig,
@@ -91,6 +92,34 @@ const runtimeSources = new Set([
   "loop-step",
   "internal",
 ]);
+const LOOP_RUN_PERSIST_ATTEMPTS = 3;
+
+async function persistLoopRunUpdate(
+  store: LoopRunStore,
+  runId: string,
+  patch: Partial<Omit<LoopRunRecord, "id" | "startedAt">>,
+  emit: CompletionRouteDeps["emit"],
+  phase: string,
+): Promise<LoopRunRecord> {
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= LOOP_RUN_PERSIST_ATTEMPTS; attempt += 1) {
+    try {
+      const updated = await store.updateRun(runId, patch);
+      if (!updated) throw new Error(`Loop run "${runId}" no longer exists`);
+      return updated;
+    } catch (error) {
+      lastError = error;
+      emit("loop_run:persist_retry", {
+        loopRunId: runId,
+        phase,
+        attempt,
+        maxAttempts: LOOP_RUN_PERSIST_ATTEMPTS,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+  throw lastError;
+}
 
 function runtimeInvocationMetadata(
   value: unknown,
@@ -407,7 +436,7 @@ export async function runProjectLoopCompletion(options: {
     deps.getConfig()?.settings,
   ).model ?? "polpo";
   if (loopRunStore && loopRunId && resumeRun) {
-    await loopRunStore.updateRun(loopRunId, {
+    await persistLoopRunUpdate(loopRunStore, loopRunId, {
       status: "resuming",
       error: undefined,
       completedAt: undefined,
@@ -421,7 +450,7 @@ export async function runProjectLoopCompletion(options: {
         attempts: (resumeState.attempts ?? 0) + 1,
         updatedAt: new Date().toISOString(),
       } : undefined,
-    }).catch(async (error) => {
+    }, deps.emit, "resuming").catch(async (error) => {
       await cleanupToolRun();
       throw error;
     });
@@ -649,14 +678,14 @@ export async function runProjectLoopCompletion(options: {
 
     if (!finalText) finalText = JSON.stringify(loopUserVisibleContext(result.context), null, 2);
     if (loopRunStore && loopRunId) {
-      await loopRunStore.updateRun(loopRunId, {
+      await persistLoopRunUpdate(loopRunStore, loopRunId, {
         status: "completed",
         context: result.context,
         trace: resumeRun ? [...resumeRun.trace, ...result.events] : result.events,
         resume: undefined,
         approval: resumeRun?.approval ? { ...resumeRun.approval, status: "approved" } : undefined,
         completedAt: new Date().toISOString(),
-      });
+      }, deps.emit, "completed");
     }
     return {
       text: finalText,
@@ -705,7 +734,7 @@ export async function runProjectLoopCompletion(options: {
           });
           (err as any).approvalRequestId = approvalRequestId;
         }
-        await loopRunStore.updateRun(loopRunId, {
+        await persistLoopRunUpdate(loopRunStore, loopRunId, {
           status: "awaiting_approval",
           context: err.context,
           trace: resumeRun ? [...resumeRun.trace, ...events] : events,
@@ -733,14 +762,25 @@ export async function runProjectLoopCompletion(options: {
             options.grantAllowedTools,
           ),
           error: err.message,
-        });
+        }, deps.emit, "awaiting_approval");
       } else {
-        await loopRunStore.updateRun(loopRunId, {
-          status: "failed",
-          trace: resumeRun ? [...resumeRun.trace, ...events] : events,
-          error: err instanceof Error ? err.message : String(err),
-          completedAt: new Date().toISOString(),
-        });
+        try {
+          await persistLoopRunUpdate(loopRunStore, loopRunId, {
+            status: "failed",
+            trace: resumeRun ? [...resumeRun.trace, ...events] : events,
+            error: err instanceof Error ? err.message : String(err),
+            completedAt: new Date().toISOString(),
+          }, deps.emit, "failed");
+        } catch (persistenceError) {
+          deps.emit("loop_run:terminal_persist_failed", {
+            loopRunId,
+            loop: projectLoop.name,
+            status: "failed",
+            error: persistenceError instanceof Error
+              ? persistenceError.message
+              : String(persistenceError),
+          });
+        }
       }
     }
     throw err;

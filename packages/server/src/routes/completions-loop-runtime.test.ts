@@ -1047,6 +1047,45 @@ describe("completionRoutes project loop runtime", () => {
     );
   });
 
+  it("retries idempotent terminal persistence after transient database timeouts", async () => {
+    class FlakyTerminalStore extends MemoryLoopRunStore {
+      completedAttempts = 0;
+
+      override async updateRun(runId: string, patch: any) {
+        if (patch.status === "completed") {
+          this.completedAttempts += 1;
+          if (this.completedAttempts < 3) {
+            throw new DOMException("The operation was aborted due to timeout", "TimeoutError");
+          }
+        }
+        return super.updateRun(runId, patch);
+      }
+    }
+
+    const store = new FlakyTerminalStore();
+    const diagnostics: { event: string; data: any }[] = [];
+    const deps = makeDeps();
+    deps.getLoopRunStore = () => store;
+    deps.emit = (event, data) => diagnostics.push({ event, data });
+
+    const app = completionRoutes(() => deps);
+    const res = await app.request("/", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        agent: "timer",
+        loop: "time-tracker",
+        messages: [{ role: "user", content: "track it" }],
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(store.completedAttempts).toBe(3);
+    expect((await store.listRuns())[0]?.status).toBe("completed");
+    expect(diagnostics.filter(({ event }) => event === "loop_run:persist_retry"))
+      .toHaveLength(2);
+  });
+
   it("streams project loop step tool call events", async () => {
     const app = completionRoutes(() => makeDeps());
     const res = await app.request("/", {
