@@ -166,6 +166,7 @@ describe("agentLoopConfigSchema", () => {
 
     expect(normalizeProjectLoop(loop).pipeline?.steps).toEqual([
       {
+        key: "preview",
         tool: "site_preview_request",
         input: undefined,
         saveAs: "preview",
@@ -174,13 +175,13 @@ describe("agentLoopConfigSchema", () => {
       {
         switch: {
           cases: [{ when: "preview.ok == true", steps: [] }],
-          default: { steps: [{ loop: "report_preview_failure", when: undefined }] },
+          default: { steps: [{ key: "report_preview_failure", loop: "report_preview_failure", when: undefined }] },
         },
       },
     ]);
   });
 
-  it("accepts the v1 governance contract fields without changing graph normalization", () => {
+  it("accepts the v1 governance contract fields while preserving graph identity", () => {
     const loop = projectLoopConfigSchema.parse({
       version: "1",
       kind: "graph",
@@ -249,7 +250,9 @@ describe("agentLoopConfigSchema", () => {
     expect(loop.permissions?.[0]?.resource).toBe("tool");
     expect(loop.permissions?.[1]?.effect).toBe("approval");
     expect(loop.policies?.[0]?.effect).toBe("deny");
-    expect(normalizeProjectLoop(loop as ProjectLoopConfig).pipeline?.steps).toEqual([{ loop: "work" }]);
+    expect(normalizeProjectLoop(loop as ProjectLoopConfig).pipeline?.steps).toEqual([
+      { key: "work", loop: "work", when: undefined },
+    ]);
   });
 
   it("rejects unknown loop hook names", () => {

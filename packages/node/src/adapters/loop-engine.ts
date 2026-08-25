@@ -1029,7 +1029,11 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
       projectPermissions: projectLoop.permissions,
       projectPolicies: projectLoop.policies,
       resume: resume
-        ? { previousNode: resume.previousNode, approvedGates: resume.approvedGates }
+        ? {
+            previousNode: resume.previousNode,
+            previousStepKey: resume.previousStepKey,
+            approvedGates: resume.approvedGates,
+          }
         : undefined,
       // (a) Step-boundary checkpoint: pure pipeline position, no session.
       onCheckpoint: writeCheckpoint
@@ -1039,6 +1043,7 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
               context: checkpoint.context,
               steps: checkpoint.steps,
               previousNode: checkpoint.previousNode,
+              previousStepKey: checkpoint.previousStepKey,
               steering: steeringSnapshot,
               ...composedBase(),
             });
@@ -1087,6 +1092,7 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
                   context: { ...context },
                   steps: position.steps,
                   previousNode: position.previousNode,
+                  previousStepKey: position.previousStepKey,
                   ...composedBase(),
                 });
               }

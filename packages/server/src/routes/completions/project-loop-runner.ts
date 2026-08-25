@@ -539,6 +539,7 @@ export async function runProjectLoopCompletion(options: {
       projectPolicies: projectLoop.policies,
       resume: resumeState ? {
         previousNode: resumeState.previousNode,
+        previousStepKey: resumeState.previousStepKey,
         approvedGates: resumeState.approvedGates,
       } : undefined,
       onTrace: async (event) => {
@@ -749,7 +750,12 @@ export async function runProjectLoopCompletion(options: {
 }
 
 export function buildLoopResumeState(
-  continuation: { context: ContextBag; steps: any[]; previousNode?: string } | undefined,
+  continuation: {
+    context: ContextBag;
+    steps: any[];
+    previousNode?: string;
+    previousStepKey?: string;
+  } | undefined,
   aiMessages: any[],
   extraSystemParts: string[],
   approvedGates: LoopApprovedGate[] | undefined,
@@ -765,6 +771,7 @@ export function buildLoopResumeState(
     context: continuation.context,
     steps: continuation.steps,
     previousNode: continuation.previousNode,
+    previousStepKey: continuation.previousStepKey,
     approvedGates: approvedGates ?? [],
     runtime: {
       aiMessages,

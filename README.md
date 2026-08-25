@@ -514,7 +514,7 @@ Loops also have first-class governance fields:
 - `permissions`: readable allow/deny/approval rules for resources such as `tool`, `step`, `model`, `human`, and `loop`. Use this for least-privilege runtime constraints beyond an agent's broad tool assignment.
 - `policies`: expression-based gates for advanced compliance rules.
 - `hooks`: deterministic tool actions at lifecycle points such as `loop:start`, `tool:before`, `tool:after`, and `loop:end`.
-- `loop_trace`: durable runtime events including `permission.result`, `policy.result`, `approval.required`, tool calls, transitions, and step outcomes.
+- `loop_trace`: durable runtime events including `permission.result`, `policy.result`, `approval.required`, tool calls, transitions, and step outcomes. Project Loop events expose `stepKey` as the canonical key from `steps`, while `step` remains the result/context alias (`saveAs ?? tool`) for compatibility. Transition events likewise expose `fromStepKey` and `toStepKey`. Consumers should prefer the canonical key for graph overlays and use the legacy aliases only for historical traces that predate these fields.
 
 When a permission or policy requires approval, the runtime stores a checkpoint on the loop run. Approving the gate moves the run to `approval_approved`; `POST /loop-runs/:id/resume` continues from the saved context and remaining steps without replaying completed steps.
 

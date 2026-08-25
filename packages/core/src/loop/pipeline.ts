@@ -86,6 +86,8 @@ export interface PipelineCheckpoint {
   context: ContextBag;
   /** Last completed node — drives the loop:transition hook on resume. */
   previousNode?: string;
+  /** Canonical key of the last completed project-loop step. */
+  previousStepKey?: string;
 }
 
 /**
@@ -97,6 +99,7 @@ export interface PipelineCheckpoint {
 export interface PipelineStepPosition {
   steps: Step[];
   previousNode?: string;
+  previousStepKey?: string;
   /** Frozen projected input for the in-flight agent step. */
   agentInput?: PreparedLoopAgentInput;
 }
@@ -121,6 +124,7 @@ export interface PipelineExecutorOptions {
   projectPolicies?: ProjectLoopPolicy[];
   resume?: {
     previousNode?: string;
+    previousStepKey?: string;
     approvedGates?: LoopApprovedGate[];
   };
   onTrace?: (event: LoopTraceEvent) => void | Promise<void>;
@@ -153,6 +157,11 @@ interface PipelineExecutionState {
   emit(event: Omit<LoopTraceEvent, "id" | "ts" | "loop">): Promise<void>;
 }
 
+interface PipelineCursor {
+  node?: string;
+  stepKey?: string;
+}
+
 export class PipelineExecutor {
   private readonly evaluator = new SafeExpressionEvaluator();
 
@@ -182,7 +191,14 @@ export class PipelineExecutor {
     };
 
     if (options.resume) {
-      await state.emit({ type: "loop.resume", status: "started", data: { previousNode: options.resume.previousNode } });
+      await state.emit({
+        type: "loop.resume",
+        status: "started",
+        data: {
+          previousNode: options.resume.previousNode,
+          previousStepKey: options.resume.previousStepKey,
+        },
+      });
     } else {
       await state.emit({ type: "loop.start", status: "started" });
     }
@@ -190,7 +206,16 @@ export class PipelineExecutor {
       if (!options.resume) {
         await this.runLifecyclePoint("loop:start", context, options, state, { loop: { name: options.name } });
       }
-      await this.executeSteps(options.pipeline.steps, context, trace, options, state, options.resume?.previousNode, [], !!options.onCheckpoint);
+      await this.executeSteps(
+        options.pipeline.steps,
+        context,
+        trace,
+        options,
+        state,
+        { node: options.resume?.previousNode, stepKey: options.resume?.previousStepKey },
+        [],
+        !!options.onCheckpoint,
+      );
       await this.runLifecyclePoint("loop:end", context, options, state, { loop: { name: options.name }, status: "completed" });
       await state.emit({ type: "loop.end", status: "completed" });
       return { context, trace, events: state.events };
@@ -210,21 +235,26 @@ export class PipelineExecutor {
     trace: PipelineTraceEvent[],
     options: PipelineExecutorOptions,
     state: PipelineExecutionState,
-    previousNode?: string,
+    previousCursor: PipelineCursor = {},
     /** Steps the OUTER frames still have to execute after this frame — the
      *  durable continuation composed across switch branches and while bodies. */
     tail: Step[] = [],
     /** Checkpointing active for this frame (false inside parallel branches). */
     checkpoints = false,
-  ): Promise<string | undefined> {
-    let lastNode = previousNode;
+  ): Promise<PipelineCursor> {
+    let cursor = previousCursor;
     const protectedRoots = new Set(options.protectedContextRoots ?? []);
 
     // Best-effort durable checkpoint: remaining steps + live bag + position.
-    const emitCheckpoint = async (remaining: Step[], node: string | undefined): Promise<void> => {
+    const emitCheckpoint = async (remaining: Step[], position: PipelineCursor): Promise<void> => {
       if (!checkpoints || !options.onCheckpoint) return;
       try {
-        await options.onCheckpoint({ steps: remaining, context: { ...context }, previousNode: node });
+        await options.onCheckpoint({
+          steps: remaining,
+          context: { ...context },
+          previousNode: position.node,
+          previousStepKey: position.stepKey,
+        });
       } catch { /* checkpoint persistence is best-effort */ }
     };
 
@@ -235,23 +265,25 @@ export class PipelineExecutor {
       try {
         if (!this.matchesWhen(step.when, context)) {
           trace.push({ type: "skip", when: step.when, matched: false });
-          await state.emit({ type: "step.skip", status: "skipped", when: step.when });
+          await state.emit({ type: "step.skip", stepKey: step.key, status: "skipped", when: step.when });
           continue;
         }
 
         if (isLoopStep(step)) {
           const loop = options.loops[step.loop];
           if (!loop) throw new Error(`Pipeline references unknown loop "${step.loop}"`);
-          await this.runTransitionHook(lastNode, step.loop, context, options, state);
-          await this.runLifecyclePoint("step:before", context, options, state, { step: { name: step.loop, type: "agent" } });
-          await this.runLifecyclePoint("model:before", context, options, state, { step: { name: step.loop, type: "agent" } });
-          await state.emit({ type: "step.start", step: step.loop, status: "started", when: step.when });
+          await this.runTransitionHook(cursor, { node: step.loop, stepKey: step.key }, context, options, state);
+          const lifecycleStep = { key: step.key, name: step.loop, type: "agent" };
+          await this.runLifecyclePoint("step:before", context, options, state, { step: lifecycleStep });
+          await this.runLifecyclePoint("model:before", context, options, state, { step: lifecycleStep });
+          await state.emit({ type: "step.start", stepKey: step.key, step: step.loop, status: "started", when: step.when });
           const agentInput = Object.prototype.hasOwnProperty.call(loop, "input")
             ? prepareLoopAgentInput(loop.input, loop.inputSchema, freezeContext(context))
             : undefined;
           if (agentInput) {
             await state.emit({
               type: "agent.input",
+              stepKey: step.key,
               step: step.loop,
               status: "completed",
               data: {
@@ -263,7 +295,12 @@ export class PipelineExecutor {
           // Position lets the host compose per-turn session checkpoints with
           // the pipeline position while this agent step is in flight.
           const position = checkpoints && options.onCheckpoint
-            ? { steps: [step, ...remainingAfter()], previousNode: lastNode, agentInput }
+            ? {
+                steps: [step, ...remainingAfter()],
+                previousNode: cursor.node,
+                previousStepKey: cursor.stepKey,
+                agentInput,
+              }
             : undefined;
           const result = await options.runLoop(
             step.loop,
@@ -284,10 +321,10 @@ export class PipelineExecutor {
             : result;
           mergeLoopResult(context, step.loop, validatedResult, protectedRoots);
           trace.push({ type: "loop", name: step.loop, when: step.when, matched: true });
-          await this.runLifecyclePoint("step:after", context, options, state, { step: { name: step.loop, type: "agent" }, output: validatedResult.output });
-          await state.emit({ type: "step.end", step: step.loop, status: "completed", output: validatedResult.output });
-          lastNode = step.loop;
-          await emitCheckpoint(remainingAfter(), lastNode);
+          await this.runLifecyclePoint("step:after", context, options, state, { step: lifecycleStep, output: validatedResult.output });
+          await state.emit({ type: "step.end", stepKey: step.key, step: step.loop, status: "completed", output: validatedResult.output });
+          cursor = { node: step.loop, stepKey: step.key };
+          await emitCheckpoint(remainingAfter(), cursor);
           continue;
         }
 
@@ -304,19 +341,20 @@ export class PipelineExecutor {
               )
             : resolvedInput;
           resolvedStep.input = validatedInput;
-          await this.runTransitionHook(lastNode, step.tool, context, options, state);
+          await this.runTransitionHook(cursor, { node: step.tool, stepKey: step.key }, context, options, state);
           const stepName = step.saveAs ?? step.tool;
-          await this.runLifecyclePoint("step:before", context, options, state, { step: { name: stepName, type: "tool" }, tool: { name: step.tool, input: validatedInput } });
-          await this.runLifecyclePoint("tool:before", context, options, state, { step: { name: stepName, type: "tool" }, tool: { name: step.tool, input: validatedInput } });
-          await state.emit({ type: "tool.call", tool: step.tool, step: step.saveAs ?? step.tool, status: "started", input: validatedInput });
+          const lifecycleStep = { key: step.key, name: stepName, type: "tool" };
+          await this.runLifecyclePoint("step:before", context, options, state, { step: lifecycleStep, tool: { name: step.tool, input: validatedInput } });
+          await this.runLifecyclePoint("tool:before", context, options, state, { step: lifecycleStep, tool: { name: step.tool, input: validatedInput } });
+          await state.emit({ type: "tool.call", tool: step.tool, stepKey: step.key, step: stepName, status: "started", input: validatedInput });
           const result = await options.runTool(step.tool, validatedInput, freezeContext(context), resolvedStep);
           mergeStepResult(context, step.saveAs ?? step.tool, result, protectedRoots);
           trace.push({ type: "tool", name: step.tool, when: step.when, matched: true });
-          await this.runLifecyclePoint("tool:after", context, options, state, { step: { name: stepName, type: "tool" }, tool: { name: step.tool, input: validatedInput }, output: result.output });
-          await this.runLifecyclePoint("step:after", context, options, state, { step: { name: stepName, type: "tool" }, tool: { name: step.tool, input: validatedInput }, output: result.output });
-          await state.emit({ type: "tool.result", tool: step.tool, step: step.saveAs ?? step.tool, status: "completed", output: result.output });
-          lastNode = step.tool;
-          await emitCheckpoint(remainingAfter(), lastNode);
+          await this.runLifecyclePoint("tool:after", context, options, state, { step: lifecycleStep, tool: { name: step.tool, input: validatedInput }, output: result.output });
+          await this.runLifecyclePoint("step:after", context, options, state, { step: lifecycleStep, tool: { name: step.tool, input: validatedInput }, output: result.output });
+          await state.emit({ type: "tool.result", tool: step.tool, stepKey: step.key, step: stepName, status: "completed", output: result.output });
+          cursor = { node: step.tool, stepKey: step.key };
+          await emitCheckpoint(remainingAfter(), cursor);
           continue;
         }
 
@@ -328,25 +366,27 @@ export class PipelineExecutor {
               // Pin the choice as a historical fact: the selection checkpoint
               // inlines the chosen branch ahead of the rest — a resume replays
               // the branch without ever re-evaluating the condition.
-              await emitCheckpoint([...branch.steps, ...remainingAfter()], lastNode);
-              lastNode = await this.executeSteps(branch.steps, context, trace, options, state, lastNode, remainingAfter(), checkpoints);
+              await emitCheckpoint([...branch.steps, ...remainingAfter()], cursor);
+              cursor = await this.executeSteps(branch.steps, context, trace, options, state, cursor, remainingAfter(), checkpoints);
               matched = true;
               break;
             }
           }
           if (!matched && step.switch.default) {
             trace.push({ type: "switch", matched: false });
-            await emitCheckpoint([...step.switch.default.steps, ...remainingAfter()], lastNode);
-            lastNode = await this.executeSteps(step.switch.default.steps, context, trace, options, state, lastNode, remainingAfter(), checkpoints);
+            await emitCheckpoint([...step.switch.default.steps, ...remainingAfter()], cursor);
+            cursor = await this.executeSteps(step.switch.default.steps, context, trace, options, state, cursor, remainingAfter(), checkpoints);
           }
-          await emitCheckpoint(remainingAfter(), lastNode);
+          await emitCheckpoint(remainingAfter(), cursor);
           continue;
         }
 
         if (isWhileStep(step)) {
-          await this.runLifecyclePoint("step:before", context, options, state, { step: { name: "while", type: "while" } });
+          const lifecycleStep = { key: step.key, name: "while", type: "while" };
+          await this.runLifecyclePoint("step:before", context, options, state, { step: lifecycleStep });
           await state.emit({
             type: "step.start",
+            stepKey: step.key,
             step: "while",
             status: "started",
             when: step.when,
@@ -364,6 +404,7 @@ export class PipelineExecutor {
             trace.push({ type: "while", when: step.while.condition ?? step.while.until, matched: true, iteration: iterations });
             await state.emit({
               type: "step.start",
+              stepKey: step.key,
               step: "while",
               status: "started",
               data: { iteration: iterations, condition: step.while.condition, until: step.while.until },
@@ -372,28 +413,30 @@ export class PipelineExecutor {
             // body's remaining steps, then re-entering the while with this
             // iteration already accounted for. The continuation drops the
             // step's `when` guard — entry already happened, it is history.
-            const continuation: Step = { while: { ...step.while, completedIterations: iterations } };
-            lastNode = await this.executeSteps(step.while.steps, context, trace, options, state, lastNode, [continuation, ...remainingAfter()], checkpoints);
+            const continuation: Step = { key: step.key, while: { ...step.while, completedIterations: iterations } };
+            cursor = await this.executeSteps(step.while.steps, context, trace, options, state, cursor, [continuation, ...remainingAfter()], checkpoints);
             await state.emit({
               type: "step.end",
+              stepKey: step.key,
               step: "while",
               status: "completed",
               data: { iteration: iterations },
             });
             // Iteration boundary — even when the body emitted no checkpoint.
-            await emitCheckpoint([continuation, ...remainingAfter()], lastNode);
+            await emitCheckpoint([continuation, ...remainingAfter()], cursor);
           }
           trace.push({ type: "while", when: step.while.condition ?? step.while.until, matched: false, iteration: iterations });
-          await this.runLifecyclePoint("step:after", context, options, state, { step: { name: "while", type: "while" }, output: { iterations } });
-          await state.emit({ type: "step.end", step: "while", status: "completed", output: { iterations } });
-          lastNode = "while";
-          await emitCheckpoint(remainingAfter(), lastNode);
+          await this.runLifecyclePoint("step:after", context, options, state, { step: lifecycleStep, output: { iterations } });
+          await state.emit({ type: "step.end", stepKey: step.key, step: "while", status: "completed", output: { iterations } });
+          cursor = { node: "while", stepKey: step.key };
+          await emitCheckpoint(remainingAfter(), cursor);
           continue;
         }
 
         if (isParallelStep(step)) {
-          await this.runLifecyclePoint("step:before", context, options, state, { step: { name: "parallel", type: "parallel" } });
-          await state.emit({ type: "step.start", step: "parallel", status: "started", when: step.when });
+          const lifecycleStep = { key: step.key, name: "parallel", type: "parallel" };
+          await this.runLifecyclePoint("step:before", context, options, state, { step: lifecycleStep });
+          await state.emit({ type: "step.start", stepKey: step.key, step: "parallel", status: "started", when: step.when });
           const snapshot = freezeContext(context);
           const branches = normalizeParallelBranches(step.parallel);
           // Durable v1 cut (deliberate): checkpointing is DISABLED inside the
@@ -406,7 +449,7 @@ export class PipelineExecutor {
           const branchResults = await Promise.all(branches.map(async (branchSteps) => {
             const branchContext = { ...snapshot };
             const branchTrace: PipelineTraceEvent[] = [];
-            await this.executeSteps(branchSteps, branchContext, branchTrace, options, state, lastNode, [], false);
+            await this.executeSteps(branchSteps, branchContext, branchTrace, options, state, cursor, [], false);
             return { branchContext, branchTrace };
           }));
           for (const result of branchResults) {
@@ -414,32 +457,33 @@ export class PipelineExecutor {
             trace.push(...result.branchTrace);
           }
           trace.push({ type: "parallel", matched: true });
-          await this.runLifecyclePoint("step:after", context, options, state, { step: { name: "parallel", type: "parallel" } });
-          await state.emit({ type: "step.end", step: "parallel", status: "completed" });
-          lastNode = "parallel";
-          await emitCheckpoint(remainingAfter(), lastNode);
+          await this.runLifecyclePoint("step:after", context, options, state, { step: lifecycleStep });
+          await state.emit({ type: "step.end", stepKey: step.key, step: "parallel", status: "completed" });
+          cursor = { node: "parallel", stepKey: step.key };
+          await emitCheckpoint(remainingAfter(), cursor);
           continue;
         }
 
         if (isHumanStep(step)) {
           if (!options.handleHuman) throw new Error(`Pipeline human step "${step.human}" requires a human handler`);
-          await this.runTransitionHook(lastNode, step.human, context, options, state);
-          await this.runLifecyclePoint("step:before", context, options, state, { step: { name: step.human, type: "human" } });
-          await state.emit({ type: "human.request", human: step.human, step: step.human, status: "started", when: step.when });
+          await this.runTransitionHook(cursor, { node: step.human, stepKey: step.key }, context, options, state);
+          const lifecycleStep = { key: step.key, name: step.human, type: "human" };
+          await this.runLifecyclePoint("step:before", context, options, state, { step: lifecycleStep });
+          await state.emit({ type: "human.request", human: step.human, stepKey: step.key, step: step.human, status: "started", when: step.when });
           const result = await options.handleHuman(step.human, step, freezeContext(context));
           mergeLoopResult(context, step.human, result, protectedRoots);
           trace.push({ type: "human", name: step.human, when: step.when, matched: true });
-          await this.runLifecyclePoint("step:after", context, options, state, { step: { name: step.human, type: "human" }, output: result.output });
-          await state.emit({ type: "human.result", human: step.human, step: step.human, status: "completed", output: result.output });
-          lastNode = step.human;
-          await emitCheckpoint(remainingAfter(), lastNode);
+          await this.runLifecyclePoint("step:after", context, options, state, { step: lifecycleStep, output: result.output });
+          await state.emit({ type: "human.result", human: step.human, stepKey: step.key, step: step.human, status: "completed", output: result.output });
+          cursor = { node: step.human, stepKey: step.key };
+          await emitCheckpoint(remainingAfter(), cursor);
         }
       } catch (err) {
-        this.attachApprovalResume(err, context, (err as any).resume ? steps.slice(i + 1) : steps.slice(i), lastNode);
+        this.attachApprovalResume(err, context, (err as any).resume ? steps.slice(i + 1) : steps.slice(i), cursor);
         throw err;
       }
     }
-    return lastNode;
+    return cursor;
   }
 
   private matchesWhen(expression: string | undefined, context: ContextBag): boolean {
@@ -454,29 +498,37 @@ export class PipelineExecutor {
   }
 
   private async runTransitionHook(
-    from: string | undefined,
-    to: string,
+    from: PipelineCursor,
+    to: PipelineCursor,
     context: ContextBag,
     options: PipelineExecutorOptions,
     state: PipelineExecutionState,
   ): Promise<void> {
-    if (!from) return;
-    await this.runLifecyclePoint("loop:transition", context, options, state, { transition: { from, to } });
+    if (!from.node || !to.node) return;
+    const transition = {
+      from: from.node,
+      to: to.node,
+      fromStepKey: from.stepKey,
+      toStepKey: to.stepKey,
+    };
+    await this.runLifecyclePoint("loop:transition", context, options, state, { transition });
     if (!options.hooks) {
-      await state.emit({ type: "transition", from, to, status: "completed" });
+      await state.emit({ type: "transition", ...transition, status: "completed" });
       return;
     }
     const result = await options.hooks.runBefore("loop:transition", {
-      from,
-      to,
+      from: from.node,
+      to: to.node,
+      fromStepKey: from.stepKey,
+      toStepKey: to.stepKey,
       context,
     });
     if (result.cancelled) {
-      throw new Error(`Loop transition from "${from}" to "${to}" cancelled${result.cancelReason ? `: ${result.cancelReason}` : ""}`);
+      throw new Error(`Loop transition from "${from.node}" to "${to.node}" cancelled${result.cancelReason ? `: ${result.cancelReason}` : ""}`);
     }
     mergeContext(context, result.data.context, new Set(options.protectedContextRoots ?? []));
     await options.hooks.runAfter("loop:transition", result.data);
-    await state.emit({ type: "transition", from, to, status: "completed" });
+    await state.emit({ type: "transition", ...transition, status: "completed" });
   }
 
   private async runLifecyclePoint(
@@ -733,13 +785,14 @@ export class PipelineExecutor {
     err: unknown,
     context: ContextBag,
     remainingSteps: Step[],
-    previousNode?: string,
+    previous: PipelineCursor,
   ): void {
     if (!(err instanceof LoopApprovalRequiredError || err instanceof LoopPermissionApprovalRequiredError)) return;
     const existing = err.resume;
     err.resume = {
       context: { ...context },
-      previousNode: existing?.previousNode ?? previousNode,
+      previousNode: existing?.previousNode ?? previous.node,
+      previousStepKey: existing?.previousStepKey ?? previous.stepKey,
       steps: existing ? [...existing.steps, ...remainingSteps] : remainingSteps,
     };
   }

@@ -81,6 +81,8 @@ export interface LoopHookPayloads {
     agent?: AgentConfig;
     from: string;
     to: string;
+    fromStepKey?: string;
+    toStepKey?: string;
     context: ContextBag;
   };
   "loop:end": {
