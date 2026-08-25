@@ -1,4 +1,4 @@
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, sql } from "drizzle-orm";
 import type {
   CreateLoopRunInput,
   LoopRunListFilter,
@@ -96,23 +96,55 @@ export class DrizzleLoopRunStore implements LoopRunStore {
   }
 
   async appendTrace(runId: string, event: LoopTraceEvent): Promise<void> {
-    const run = await this.getRun(runId);
-    if (!run) return;
-    await this.updateRun(runId, { trace: [...run.trace, event] });
+    const encodedEvent = JSON.stringify(event);
+    const eventId = typeof event.id === "string" && event.id.length > 0
+      ? event.id
+      : undefined;
+    const pgTrace = sql`case
+      when ${this.loopRuns.trace} is null then '[]'::jsonb
+      when jsonb_typeof(${this.loopRuns.trace}) = 'array' then ${this.loopRuns.trace}
+      when jsonb_typeof(${this.loopRuns.trace}) = 'string'
+        and left(ltrim(${this.loopRuns.trace} #>> '{}'), 1) = '['
+        and right(rtrim(${this.loopRuns.trace} #>> '{}'), 1) = ']'
+        then (${this.loopRuns.trace} #>> '{}')::jsonb
+      else '[]'::jsonb
+    end`;
+    const pgAppendedTrace = sql`${pgTrace} || jsonb_build_array(${encodedEvent}::jsonb)`;
+    const sqliteTrace = sql`coalesce(${this.loopRuns.trace}, '[]')`;
+    const sqliteAppendedTrace = sql`json_insert(${sqliteTrace}, '$[#]', json(${encodedEvent}))`;
+    const trace = this.dialect === "pg"
+      ? eventId
+        ? sql`case
+            when exists (
+              select 1
+              from jsonb_array_elements(${pgTrace}) as trace_event(value)
+              where trace_event.value ->> 'id' = ${eventId}
+            ) then ${pgTrace}
+            else ${pgAppendedTrace}
+          end`
+        : pgAppendedTrace
+      : eventId
+        ? sql`case
+            when exists (
+              select 1
+              from json_each(${sqliteTrace})
+              where json_extract(value, '$.id') = ${eventId}
+            ) then ${sqliteTrace}
+            else ${sqliteAppendedTrace}
+          end`
+        : sqliteAppendedTrace;
+
+    await this.db.update(this.loopRuns).set({
+      trace,
+      updatedAt: new Date().toISOString(),
+    }).where(this.runWhere(runId));
   }
 
   async updateRun(runId: string, patch: Partial<Omit<LoopRunRecord, "id" | "startedAt">>): Promise<LoopRunRecord | undefined> {
-    const current = await this.getRun(runId);
-    if (!current) return undefined;
-    const updated: LoopRunRecord = {
-      ...current,
-      ...patch,
-      updatedAt: patch.updatedAt ?? new Date().toISOString(),
-    };
     await this.db.update(this.loopRuns)
-      .set(this.recordToValues(updated))
-      .where(eq(this.loopRuns.id, runId));
-    return updated;
+      .set(this.patchToValues(patch))
+      .where(this.runWhere(runId));
+    return this.getRun(runId);
   }
 
   async close(): Promise<void> {
@@ -155,6 +187,42 @@ export class DrizzleLoopRunStore implements LoopRunStore {
       agentName: run.agentName ?? null,
       resume: serializeJson(run.resume, this.dialect),
     };
+  }
+
+  private runWhere(runId: string): any {
+    return this.targetsRuns
+      ? and(eq(this.loopRuns.id, runId), eq(this.loopRuns.engine, "graph"))
+      : eq(this.loopRuns.id, runId);
+  }
+
+  private patchToValues(
+    patch: Partial<Omit<LoopRunRecord, "id" | "startedAt">>,
+  ): Record<string, unknown> {
+    const values: Record<string, unknown> = {
+      updatedAt: patch.updatedAt ?? new Date().toISOString(),
+    };
+    const owns = (key: keyof typeof patch): boolean =>
+      Object.prototype.hasOwnProperty.call(patch, key);
+
+    if (patch.loopName !== undefined) values.loopName = patch.loopName;
+    if (patch.agentName !== undefined) values.agentName = patch.agentName;
+    if (owns("sessionId")) values.sessionId = patch.sessionId ?? null;
+    if (owns("user")) values.user = patch.user ?? null;
+    if (patch.status !== undefined) values.status = patch.status;
+    if (patch.context !== undefined) values.context = serializeJson(patch.context, this.dialect);
+    if (patch.trace !== undefined) values.trace = serializeJson(patch.trace, this.dialect);
+    if (owns("error")) values.error = patch.error ?? null;
+    if (owns("approvalRequestId")) values.approvalRequestId = patch.approvalRequestId ?? null;
+    if (owns("approval")) values.approval = serializeJson(patch.approval, this.dialect);
+    if (owns("metadata")) values.metadata = serializeJson(patch.metadata, this.dialect);
+    if (owns("completedAt")) values.completedAt = patch.completedAt ?? null;
+    if (owns("resume")) {
+      values[this.targetsRuns ? "resumeState" : "resume"] = serializeJson(
+        patch.resume,
+        this.dialect,
+      );
+    }
+    return values;
   }
 }
 
