@@ -1300,6 +1300,134 @@ describe("chat via Run driver", () => {
     }));
   });
 
+  it("persists a non-HTTP client tool call as pending for Session continuation", async () => {
+    const updateMessage = vi.fn(async () => true);
+    const sessionStore = {
+      addMessage: vi.fn(async () => ({ id: "assistant-message" })),
+      updateMessage,
+    };
+    const deps = baseDeps({
+      getSessionStore: () => sessionStore,
+      runChatViaRun: async (_inject, hooks) => {
+        hooks.onEvent({
+          type: "client_tool_call",
+          toolId: "call_apply_1",
+          tool: "apply_site_change",
+          input: { instruction: "Update the primary button" },
+        });
+        return {
+          status: "completed",
+          result: { exitCode: 0, stdout: "", stderr: "" },
+        };
+      },
+    });
+
+    const result = await runChatTurnViaRun({
+      deps,
+      body: { agent: "agent-1" },
+      completionId: "chatcmpl-client-tool",
+      agentConfig: { name: "agent-1", role: "Test agent", model: "mock" },
+      agentMode: true,
+      fullSystemPrompt: "You are a test agent.",
+      m: {
+        id: "mock-model",
+        provider: "mock",
+        aiModel: {} as any,
+        contextWindow: 200_000,
+        maxTokens: 8192,
+      },
+      modelSelection: { primary: "mock-model", fallbacks: [] },
+      effectiveTools: [],
+      effectiveToolExecutor: async () => "ok",
+      interactionSettings: {
+        allowUserQuestions: true,
+        suggestions: { enabled: false, maxItems: 3 },
+      },
+      aiMessages: [{ role: "user", content: "Update the site" }],
+      sessionStore: sessionStore as any,
+      sessionId: "channel-session-1",
+    });
+
+    expect(result.clientToolCall).toEqual({
+      id: "call_apply_1",
+      name: "apply_site_change",
+      arguments: { instruction: "Update the primary button" },
+    });
+    expect(updateMessage).toHaveBeenCalledWith(
+      "channel-session-1",
+      "assistant-message",
+      "",
+      [{
+        id: "call_apply_1",
+        name: "apply_site_change",
+        arguments: { instruction: "Update the primary button" },
+        state: "interrupted",
+      }],
+    );
+  });
+
+  it("does not persist or return a client tool call from a failed non-HTTP run", async () => {
+    const updateMessage = vi.fn(async () => true);
+    const sessionStore = {
+      addMessage: vi.fn(async () => ({ id: "assistant-message" })),
+      updateMessage,
+    };
+    const deps = baseDeps({
+      getSessionStore: () => sessionStore,
+      runChatViaRun: async (_inject, hooks) => {
+        hooks.onEvent({
+          type: "client_tool_call",
+          toolId: "call_must_not_run",
+          tool: "apply_site_change",
+          input: { instruction: "unsafe partial call" },
+        });
+        hooks.onEvent({
+          type: "error",
+          error: { message: "provider stream failed after tool call" },
+        });
+        return {
+          status: "failed",
+          result: { exitCode: 1, stdout: "", stderr: "provider stream failed" },
+        };
+      },
+    });
+
+    const result = await runChatTurnViaRun({
+      deps,
+      body: { agent: "agent-1" },
+      completionId: "chatcmpl-failed-client-tool",
+      agentConfig: { name: "agent-1", role: "Test agent", model: "mock" },
+      agentMode: true,
+      fullSystemPrompt: "You are a test agent.",
+      m: {
+        id: "mock-model",
+        provider: "mock",
+        aiModel: {} as any,
+        contextWindow: 200_000,
+        maxTokens: 8192,
+      },
+      modelSelection: { primary: "mock-model", fallbacks: [] },
+      effectiveTools: [],
+      effectiveToolExecutor: async () => "ok",
+      interactionSettings: {
+        allowUserQuestions: true,
+        suggestions: { enabled: false, maxItems: 3 },
+      },
+      aiMessages: [{ role: "user", content: "Update the site" }],
+      sessionStore: sessionStore as any,
+      sessionId: "channel-session-1",
+    });
+
+    expect(result.clientToolCall).toBeUndefined();
+    expect(result.error).toBeDefined();
+    expect(updateMessage).toHaveBeenCalledWith(
+      "channel-session-1",
+      "assistant-message",
+      "[Response interrupted]",
+      [],
+    );
+  });
+
   it("releases the steering scope when final session persistence fails", async () => {
     const release = vi.fn(async () => {});
     const sessionStore = {
