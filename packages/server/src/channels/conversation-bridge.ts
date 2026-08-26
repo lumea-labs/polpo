@@ -512,7 +512,7 @@ export function createConversationChannelTurnHandler(
         sessionId: result.sessionId,
         usage: result.usage,
       },
-      text: result.text,
+      text: result.loopPresentation?.text ?? result.text,
     };
   };
 }

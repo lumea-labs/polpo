@@ -450,7 +450,10 @@ describe("createConversationChannelTurnHandler", () => {
         sessionVersion: 2,
       })
       .mockResolvedValueOnce({
-        ...successfulResult("session-1", "The preview is ready."),
+        ...successfulResult(
+          "session-1",
+          '{"summary":"Update button","response":"internal fallback"}',
+        ),
         loopPresentation: {
           text: "The preview is ready.",
           actions: [{
