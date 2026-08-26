@@ -97,6 +97,10 @@ describe("ChannelManagementService", () => {
       idempotencyKey: "settings-update",
       provider: "whatsapp",
       settings: {
+        activeRunPolicy: {
+          behavior: "reject",
+          reply: "Still working on the previous request.",
+        },
         clientToolHandler: {
           connectionId: "handler-connection",
           endpoint: "https://resolver.example.com/client-tools",
@@ -122,6 +126,7 @@ describe("ChannelManagementService", () => {
       settings: { responseModality: "text" },
     });
     expect(renamed.settings).toMatchObject({
+      activeRunPolicy: { behavior: "reject" },
       identityResolver: { connectionId: "resolver-connection" },
       clientToolHandler: { connectionId: "handler-connection" },
       responseModality: "text",
@@ -133,11 +138,13 @@ describe("ChannelManagementService", () => {
     });
     expect(removed.settings.identityResolver).toBeUndefined();
     expect(removed.settings.clientToolHandler).toBeDefined();
+    expect(removed.settings.activeRunPolicy).toBeDefined();
     expect(removed.settings).toMatchObject({ responseModality: "text", typingEnabled: true });
 
     const removedHandler = await state.service.update(scope, result.channel.id, {
-      settings: { clientToolHandler: null },
+      settings: { activeRunPolicy: null, clientToolHandler: null },
     });
+    expect(removedHandler.settings.activeRunPolicy).toBeUndefined();
     expect(removedHandler.settings.clientToolHandler).toBeUndefined();
   });
 
