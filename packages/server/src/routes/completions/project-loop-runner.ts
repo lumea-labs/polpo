@@ -21,6 +21,7 @@ import {
   normalizeRuntimeContextTrustMode,
   normalizeToolInput,
   loopUserVisibleContext,
+  prepareProjectLoopResult,
   resolveRuntimeContext,
   stringifyLoopContext,
   type ContextBag,
@@ -29,6 +30,7 @@ import {
   type LoopRunStore,
   type LoopResumeState,
   type LoopTraceEvent,
+  type LoopPresentation,
   type ProjectLoopConfig,
   type RuntimeContextTrustMode,
   type RuntimeContextResolution,
@@ -81,6 +83,8 @@ export interface ProjectLoopRunResult {
   context: ContextBag;
   trace: LoopTraceEvent[];
   loopRunId?: string;
+  loopResult?: unknown;
+  loopPresentation?: LoopPresentation;
 }
 
 const runtimeSurfaces = new Set(["agent", "task", "channel", "webhook"]);
@@ -676,12 +680,18 @@ export async function runProjectLoopCompletion(options: {
       },
     });
 
+    const projectedResult = prepareProjectLoopResult(projectLoop.result, result.context);
+    if (projectedResult.presentation) finalText = projectedResult.presentation.text;
     if (!finalText) finalText = JSON.stringify(loopUserVisibleContext(result.context), null, 2);
     if (loopRunStore && loopRunId) {
       await persistLoopRunUpdate(loopRunStore, loopRunId, {
         status: "completed",
         context: result.context,
         trace: resumeRun ? [...resumeRun.trace, ...result.events] : result.events,
+        ...(projectedResult.data === undefined ? {} : { result: projectedResult.data }),
+        ...(projectedResult.presentation === undefined
+          ? {}
+          : { presentation: projectedResult.presentation }),
         resume: undefined,
         approval: resumeRun?.approval ? { ...resumeRun.approval, status: "approved" } : undefined,
         completedAt: new Date().toISOString(),
@@ -697,6 +707,10 @@ export async function runProjectLoopCompletion(options: {
       context: result.context,
       trace: result.events,
       loopRunId,
+      ...(projectedResult.data === undefined ? {} : { loopResult: projectedResult.data }),
+      ...(projectedResult.presentation === undefined
+        ? {}
+        : { loopPresentation: projectedResult.presentation }),
     };
   } catch (err) {
     if (loopRunStore && loopRunId) {
@@ -1132,7 +1146,15 @@ export async function executeStreamingProjectLoopCompletion(
           await stream.writeSSE({ data: sseChunk(completionId, { content: finalText }) });
         }
         if (!signal.aborted) {
-          await stream.writeSSE({ data: sseChunk(completionId, {}, "stop", { loop_run_id: run.loopRunId }) });
+          await stream.writeSSE({
+            data: sseChunk(completionId, {}, "stop", {
+              loop_run_id: run.loopRunId,
+              ...(run.loopResult === undefined ? {} : { loop_result: run.loopResult }),
+              ...(run.loopPresentation === undefined
+                ? {}
+                : { loop_presentation: run.loopPresentation }),
+            }),
+          });
           await stream.writeSSE({ data: "[DONE]" });
         }
       } catch (err) {
@@ -1256,7 +1278,14 @@ async function runNonStreamingProjectLoopCompletion(
       runId: run.loopRunId,
       sessionId,
     });
-    return c.json(completionResponse(completionId, finalText, runUsage, { loop_trace: run.trace, loop_run_id: run.loopRunId }));
+    return c.json(completionResponse(completionId, finalText, runUsage, {
+      loop_trace: run.trace,
+      loop_run_id: run.loopRunId,
+      ...(run.loopResult === undefined ? {} : { loop_result: run.loopResult }),
+      ...(run.loopPresentation === undefined
+        ? {}
+        : { loop_presentation: run.loopPresentation }),
+    }));
   } catch (err) {
     const guardrailError = guardrailErrorEnvelope(err);
     if (guardrailError) {
@@ -1277,7 +1306,8 @@ async function runNonStreamingProjectLoopCompletion(
         || loopError.code === "loop_context_readonly"
         || loopError.code === "loop_tool_input_invalid"
         || loopError.code === "loop_agent_input_invalid"
-        || loopError.code === "loop_agent_input_too_large";
+        || loopError.code === "loop_agent_input_too_large"
+        || loopError.code === "loop_result_invalid";
       return c.json({ error: loopError }, (invalidInput ? 400 : 403) as any);
     }
     const runtimeError = completionRuntimeErrorEnvelope(err);

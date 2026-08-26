@@ -590,6 +590,31 @@ describe("DrizzleLoopRunStore — dual-write + runs-backed (F2)", () => {
     expect(fetched?.trace).toHaveLength(1);
   });
 
+  it("round-trips projected loop data and Channel presentation on both stores", async () => {
+    const { DrizzleLoopRunStore } = await import("../stores/loop-run-store.js");
+    const { runsSqlite } = await import("../schema/runs.js");
+    const runsBacked = new DrizzleLoopRunStore(db, runsSqlite, "sqlite", true);
+    const result = { summary: "Updated CTA", revisionId: "revision-1" };
+    const presentation = {
+      text: "The preview is ready.",
+      actions: [{ id: "preview", type: "open_url", label: "Open preview", url: "https://example.com/preview" }],
+    } as const;
+
+    await stores.loopRunStore.createRun(loopInput("looprun-projected-legacy") as any);
+    await stores.loopRunStore.updateRun("looprun-projected-legacy", { result, presentation });
+    expect(await stores.loopRunStore.getRun("looprun-projected-legacy")).toMatchObject({
+      result,
+      presentation,
+    });
+
+    await runsBacked.createRun(loopInput("looprun-projected-unified") as any);
+    await runsBacked.updateRun("looprun-projected-unified", { result, presentation });
+    expect(await runsBacked.getRun("looprun-projected-unified")).toMatchObject({
+      result,
+      presentation,
+    });
+  });
+
   it("preserves terminal status and every trace event under concurrent writes", async () => {
     const { DrizzleLoopRunStore } = await import("../stores/loop-run-store.js");
     const { runsSqlite } = await import("../schema/runs.js");

@@ -5,10 +5,15 @@ import type {
 } from "@chat-adapter/whatsapp";
 import {
   type Adapter,
+  Actions,
+  Button,
+  Card,
+  CardText,
   Chat,
   ConsoleLogger,
   type ActionEvent,
   type Logger,
+  LinkButton,
   type Message,
   type MessageContext,
   type ModalCloseEvent,
@@ -393,7 +398,7 @@ export class ChannelRuntime {
         providerEventId,
         threadId: thread.id,
       };
-      await this.executeTurn(installation, {
+      await this.executeTurn(installation, state, {
         channelId: thread.channelId,
         postable: thread,
         threadId: thread.id,
@@ -484,7 +489,7 @@ export class ChannelRuntime {
       providerEventId,
       threadId: event.channel.id,
     };
-    await this.executeTurn(installation, {
+    await this.executeTurn(installation, state, {
       channelId: event.channel.id,
       postable: event.channel,
       threadId: event.channel.id,
@@ -670,6 +675,7 @@ export class ChannelRuntime {
 
   private async executeTurn(
     installation: ChannelInstallation,
+    state: ChannelStateAdapter,
     target: TurnTarget,
     turn: ChannelInboundTurn,
   ): Promise<void> {
@@ -704,9 +710,15 @@ export class ChannelRuntime {
             });
           }
         }
+        const executionContext = this.turnExecutionContext(
+          installation,
+          state,
+          target,
+          messageId,
+        );
         const result = this.options.handleEvent
-          ? await this.options.handleEvent(event)
-          : await this.options.handleTurn!(turn);
+          ? await this.options.handleEvent(event, executionContext)
+          : await this.options.handleTurn!(turn, executionContext);
         if (result) await this.deliver(installation, target, result, messageId);
         await this.emit({
           channelId: target.channelId,
@@ -884,6 +896,15 @@ export class ChannelRuntime {
       validateTurnResult(result);
       if (result.posts?.length) {
         for (const nativePost of result.posts) await post(nativePost);
+      } else if (result.actions?.length) {
+        await post(Card({
+          children: [
+            CardText(result.text ?? ""),
+            Actions(result.actions.map((action) => action.type === "open_url"
+              ? LinkButton({ id: action.id, label: action.label, url: action.url })
+              : Button({ id: action.id, label: action.label, value: action.value }))),
+          ],
+        }));
       } else if (result.stream && !result.files?.length && !result.text) {
         await post(result.stream as any);
       } else {
@@ -989,6 +1010,75 @@ export class ChannelRuntime {
       });
       throw new ChannelDeliveryFailure(error, deliveredPosts);
     }
+  }
+
+  private turnExecutionContext(
+    installation: ChannelInstallation,
+    state: ChannelStateAdapter,
+    target: TurnTarget,
+    sourceMessageId: string,
+  ) {
+    return Object.freeze({
+      deliverProgress: async (
+        result: ChannelTurnResult,
+        options: { idempotencyKey: string },
+      ): Promise<ChannelDeliveryResult> => {
+        const idempotencyKey = options.idempotencyKey.trim();
+        if (!idempotencyKey || idempotencyKey.length > 256) {
+          throw new Error("Channel progress delivery requires an idempotency key of at most 256 characters");
+        }
+        const stateKey = `polpo:progress:${installation.provider}:${installation.id}:${stableHash(idempotencyKey)}`;
+        const accepted = await state.setIfNotExists(
+          stateKey,
+          true,
+          this.options.dedupeTtlMs ?? DEFAULT_DEDUPE_TTL_MS,
+        );
+        if (!accepted) {
+          await this.emit({
+            channelId: target.channelId,
+            installationId: installation.id,
+            messageId: sourceMessageId,
+            name: "progress.delivery.skipped",
+            provider: installation.provider,
+            threadId: target.threadId,
+          });
+          return {
+            channelId: target.channelId,
+            messages: [],
+            ...(target.threadId ? { threadId: target.threadId } : {}),
+          };
+        }
+        try {
+          const delivery = await this.deliver(
+            installation,
+            target,
+            result,
+            sourceMessageId,
+          );
+          await this.emit({
+            channelId: target.channelId,
+            installationId: installation.id,
+            messageId: sourceMessageId,
+            name: "progress.delivery.completed",
+            provider: installation.provider,
+            threadId: target.threadId,
+          });
+          return delivery;
+        } catch (error) {
+          await state.delete(stateKey).catch(() => undefined);
+          await this.emit({
+            channelId: target.channelId,
+            error: errorMessage(error),
+            installationId: installation.id,
+            messageId: sourceMessageId,
+            name: "progress.delivery.failed",
+            provider: installation.provider,
+            threadId: target.threadId,
+          });
+          throw error;
+        }
+      },
+    });
   }
 
   private async prune(): Promise<void> {
@@ -1382,12 +1472,21 @@ function eventTarget(
 }
 
 function hasDeliverableOutput(result: ChannelEventResult): boolean {
-  return Boolean(result.posts?.length || result.stream || result.files?.length || result.text);
+  return Boolean(
+    result.actions?.length
+    || result.posts?.length
+    || result.stream
+    || result.files?.length
+    || result.text,
+  );
 }
 
 function validateTurnResult(result: ChannelTurnResult): void {
-  if (result.posts?.length && (result.text || result.stream || result.files?.length)) {
+  if (result.posts?.length && (result.actions?.length || result.text || result.stream || result.files?.length)) {
     throw new Error("Native posts cannot be combined with text, stream, or files");
+  }
+  if (result.actions?.length && (result.stream || result.files?.length)) {
+    throw new Error("Channel actions can only be combined with text");
   }
 }
 

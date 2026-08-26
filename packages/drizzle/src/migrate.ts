@@ -176,6 +176,8 @@ export async function ensurePgTables(db: any): Promise<void> {
   )`);
 
   await db.execute(sql`ALTER TABLE loop_runs ADD COLUMN IF NOT EXISTS resume JSONB`);
+  await db.execute(sql`ALTER TABLE loop_runs ADD COLUMN IF NOT EXISTS result JSONB`);
+  await db.execute(sql`ALTER TABLE loop_runs ADD COLUMN IF NOT EXISTS presentation JSONB`);
 
   await db.execute(sql`CREATE TABLE IF NOT EXISTS sessions (
     id         TEXT PRIMARY KEY,

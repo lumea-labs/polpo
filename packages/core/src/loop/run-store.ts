@@ -1,4 +1,4 @@
-import type { ContextBag, LoopLifecycleHook, LoopTraceEvent, ProjectLoopConfig, ProjectLoopPermission, ProjectLoopPolicy, Step } from "./types.js";
+import type { ContextBag, LoopLifecycleHook, LoopPresentation, LoopTraceEvent, ProjectLoopConfig, ProjectLoopPermission, ProjectLoopPolicy, Step } from "./types.js";
 import type { SteeringQueueSnapshot } from "../steering.js";
 
 export type ProjectLoopRunStatus =
@@ -93,6 +93,8 @@ export interface LoopRunRecord {
   approval?: LoopApprovalSnapshot;
   resume?: LoopResumeState;
   metadata?: Record<string, unknown>;
+  result?: unknown;
+  presentation?: LoopPresentation;
   startedAt: string;
   updatedAt: string;
   completedAt?: string;

@@ -77,6 +77,33 @@ import { MemoryLoopRunStore } from "@polpo-ai/core/loop-run-store";
 const loopRunStore = new MemoryLoopRunStore();
 ```
 
+A Project Loop can project its terminal context into separate structured data
+and user-facing presentation without another model step:
+
+```ts
+const loop = defineProjectLoop({
+  name: "site-change",
+  result: {
+    data: { $context: "finalization" },
+    presentation: {
+      text: { $context: "finalization.response" },
+      actions: [{
+        id: "preview",
+        type: "open_url",
+        label: "Open preview",
+        url: { $context: "finalization.previewUrl" },
+      }],
+    },
+  },
+  // start and steps omitted
+});
+```
+
+Bindings resolve only after successful Loop completion. Missing paths, invalid
+types, unsafe URLs, or malformed actions fail deterministically. Projected
+`data` and `presentation` are persisted on the Loop run and returned as
+`loop_result` and `loop_presentation` in completions.
+
 `PipelineExecutor` emits typed `LoopPermissionDeniedError`, `LoopPermissionApprovalRequiredError`, `LoopPolicyDeniedError`, and `LoopApprovalRequiredError`, plus structured trace events such as `permission.result`, `policy.result`, and `approval.required`. Project Loop step events include the canonical `stepKey` independently from the legacy result alias in `step`; transitions include `fromStepKey` and `toStepKey`. Approval errors include a resume continuation: the context bag, remaining steps, previous node alias, and previous canonical step key. Hosts can persist that on `LoopRunRecord.resume`, approve the gate, then resume from the checkpoint without rerunning completed steps.
 
 Tool steps and hook actions accept recursive, typed context bindings:

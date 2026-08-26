@@ -307,6 +307,9 @@ const handleTurn = createConversationChannelTurnHandler(serverDeps, {
       ? {
           result,
           loop: "site-change",
+          acknowledgement: {
+            text: "I am updating the site now. I will send the preview when it is ready.",
+          },
           trustedMetadata: { grant, workingCopyId },
         }
       : { result };
@@ -322,6 +325,11 @@ and preserves trusted invocation identity and metadata. Handler-provided
 `trustedMetadata` is merged into the immutable invocation context for the next
 direct turn or Loop. It is never appended to the tool result or model history.
 A configured Loop starts only after that atomic continuation succeeds.
+When a Loop continuation includes `acknowledgement`, Channels validates and
+delivers it before starting the Loop. Progress delivery is idempotent for the
+provider event and is persisted in the canonical Session before continuation.
+If the handler omits it, non-empty assistant content emitted alongside the
+client-tool call is delivered instead.
 
 Reject unknown tools before network or application work, bound the continuation
 count, and fail closed on handler, authorization, or Session-version errors.
@@ -357,12 +365,56 @@ Return one JSON object containing `result` and optional host-trusted metadata:
 ```json
 {
   "result": { "accepted": true },
+  "acknowledgement": {
+    "text": "I am updating the site now. I will send the preview when it is ready."
+  },
   "trustedMetadata": {
     "grant": "short-lived-signed-grant",
     "workingCopyId": "working-copy-id"
   }
 }
 ```
+
+Project Loops can separate machine-readable output from Channel presentation:
+
+```json
+{
+  "result": {
+    "data": { "$context": "finalization" },
+    "presentation": {
+      "text": { "$context": "finalization.response" },
+      "actions": [
+        {
+          "id": "preview",
+          "type": "open_url",
+          "label": "Open preview",
+          "url": { "$context": "finalization.previewUrl" }
+        }
+      ]
+    }
+  }
+}
+```
+
+`data` remains available as `loop_result` and on the persisted Loop run.
+`presentation.text` is the user-visible completion; supported actions are
+`open_url` and `postback`. Channels render them through Chat SDK cards and use
+the adapter fallback on providers without native controls. Postback clicks
+return as ordinary typed Channel action events and are not trusted bindings.
+
+Hosts can reject a Channel turn after resolving its canonical Session by using
+`resolveSessionDisposition`. This runs before history, model, Memory, or tools:
+
+```ts
+resolveSessionDisposition: async (_turn, sessionId) =>
+  await hasActiveMutation(sessionId)
+    ? { disposition: "consume", reply: "I am still completing the previous change." }
+    : { disposition: "dispatch" },
+```
+
+Managed hosts expose the equivalent opt-in `activeRunPolicy`. Use Channel
+concurrency `concurrent` when the rejection must be immediate rather than
+queued behind the active turn.
 
 Cloud Channel configuration declares both the continuation policy and the
 OpenAI-compatible function schema. The endpoint, Connection, Loop, and trusted

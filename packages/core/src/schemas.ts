@@ -432,6 +432,15 @@ export const projectLoopConfigSchema = z.object({
   hooks: projectLoopHooksSchema.optional(),
   permissions: z.array(projectLoopPermissionSchema).optional(),
   policies: z.array(projectLoopPolicySchema).optional(),
+  result: z.object({
+    data: z.unknown().optional(),
+    presentation: z.object({
+      text: z.unknown(),
+      actions: z.unknown().optional(),
+    }).optional(),
+  }).refine((result) => result.data !== undefined || result.presentation !== undefined, {
+    message: "result requires data or presentation",
+  }).optional(),
   start: z.string().min(1),
   steps: z.record(z.string().min(1), z.union([
     loopConfigSchema.extend({

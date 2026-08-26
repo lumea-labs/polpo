@@ -11,6 +11,22 @@ import { type Dialect, deserializeJson, serializeJson } from "../utils.js";
 
 type AnyTable = any;
 
+const LOOP_RESULT_ENVELOPE_VERSION = 1;
+
+interface LoopResultEnvelope {
+  __polpoLoopResult: 1;
+  data?: unknown;
+  presentation?: LoopRunRecord["presentation"];
+}
+
+function isLoopResultEnvelope(value: unknown): value is LoopResultEnvelope {
+  return Boolean(
+    value
+    && typeof value === "object"
+    && (value as Record<string, unknown>).__polpoLoopResult === LOOP_RESULT_ENVELOPE_VERSION,
+  );
+}
+
 export class DrizzleLoopRunStore implements LoopRunStore {
   constructor(
     private db: any,
@@ -24,6 +40,10 @@ export class DrizzleLoopRunStore implements LoopRunStore {
   ) {}
 
   private rowToRecord(row: any): LoopRunRecord {
+    const storedResult = deserializeJson<unknown>(row.result, undefined, this.dialect);
+    const resultEnvelope = this.targetsRuns && isLoopResultEnvelope(storedResult)
+      ? storedResult
+      : undefined;
     return {
       id: row.id,
       loopName: row.loopName,
@@ -38,6 +58,10 @@ export class DrizzleLoopRunStore implements LoopRunStore {
       approval: deserializeJson(row.approval, undefined, this.dialect),
       resume: deserializeJson(this.targetsRuns ? row.resumeState : row.resume, undefined, this.dialect),
       metadata: deserializeJson(row.metadata, undefined, this.dialect),
+      result: resultEnvelope ? resultEnvelope.data : storedResult,
+      presentation: resultEnvelope
+        ? resultEnvelope.presentation
+        : deserializeJson(row.presentation, undefined, this.dialect),
       startedAt: row.startedAt,
       updatedAt: row.updatedAt,
       completedAt: row.completedAt ?? undefined,
@@ -141,6 +165,22 @@ export class DrizzleLoopRunStore implements LoopRunStore {
   }
 
   async updateRun(runId: string, patch: Partial<Omit<LoopRunRecord, "id" | "startedAt">>): Promise<LoopRunRecord | undefined> {
+    if (
+      this.targetsRuns
+      && (Object.prototype.hasOwnProperty.call(patch, "result")
+        !== Object.prototype.hasOwnProperty.call(patch, "presentation"))
+    ) {
+      const current = await this.getRun(runId);
+      if (current) {
+        patch = {
+          ...patch,
+          result: Object.prototype.hasOwnProperty.call(patch, "result") ? patch.result : current.result,
+          presentation: Object.prototype.hasOwnProperty.call(patch, "presentation")
+            ? patch.presentation
+            : current.presentation,
+        };
+      }
+    }
     await this.db.update(this.loopRuns)
       .set(this.patchToValues(patch))
       .where(this.runWhere(runId));
@@ -179,12 +219,19 @@ export class DrizzleLoopRunStore implements LoopRunStore {
         adapterType: "loop",
         configPath: "",
         engine: "graph",
+        result: serializeJson({
+          __polpoLoopResult: LOOP_RESULT_ENVELOPE_VERSION,
+          data: run.result,
+          presentation: run.presentation,
+        }, this.dialect),
         resumeState: serializeJson(run.resume, this.dialect),
       };
     }
     return {
       ...base,
       agentName: run.agentName ?? null,
+      result: serializeJson(run.result, this.dialect),
+      presentation: serializeJson(run.presentation, this.dialect),
       resume: serializeJson(run.resume, this.dialect),
     };
   }
@@ -215,6 +262,20 @@ export class DrizzleLoopRunStore implements LoopRunStore {
     if (owns("approvalRequestId")) values.approvalRequestId = patch.approvalRequestId ?? null;
     if (owns("approval")) values.approval = serializeJson(patch.approval, this.dialect);
     if (owns("metadata")) values.metadata = serializeJson(patch.metadata, this.dialect);
+    if (owns("result") || owns("presentation")) {
+      if (this.targetsRuns) {
+        values.result = serializeJson({
+          __polpoLoopResult: LOOP_RESULT_ENVELOPE_VERSION,
+          data: patch.result,
+          presentation: patch.presentation,
+        }, this.dialect);
+      } else {
+        if (owns("result")) values.result = serializeJson(patch.result, this.dialect);
+        if (owns("presentation")) {
+          values.presentation = serializeJson(patch.presentation, this.dialect);
+        }
+      }
+    }
     if (owns("completedAt")) values.completedAt = patch.completedAt ?? null;
     if (owns("resume")) {
       values[this.targetsRuns ? "resumeState" : "resume"] = serializeJson(
