@@ -112,8 +112,14 @@ export class InMemoryChannelManagementStore implements ChannelManagementStore {
     if (!current || current.scopeKey !== scopeKey(scope)) return null;
     let settings = current.value.settings;
     if (patch.settings !== undefined) {
-      const { clientToolHandler, identityResolver, ...rest } = structuredClone(patch.settings);
       const {
+        activeRunPolicy,
+        clientToolHandler,
+        identityResolver,
+        ...rest
+      } = structuredClone(patch.settings);
+      const {
+        activeRunPolicy: currentActiveRunPolicy,
         clientToolHandler: currentClientToolHandler,
         identityResolver: currentIdentityResolver,
         ...currentRest
@@ -121,6 +127,11 @@ export class InMemoryChannelManagementStore implements ChannelManagementStore {
       settings = {
         ...currentRest,
         ...rest,
+        ...(activeRunPolicy === undefined
+          ? (currentActiveRunPolicy ? { activeRunPolicy: currentActiveRunPolicy } : {})
+          : activeRunPolicy === null
+            ? {}
+            : { activeRunPolicy }),
         ...(identityResolver === undefined
           ? (currentIdentityResolver ? { identityResolver: currentIdentityResolver } : {})
           : identityResolver === null

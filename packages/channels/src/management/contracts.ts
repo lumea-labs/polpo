@@ -90,7 +90,11 @@ export type ConversationChannelSettings = Readonly<{
 }>;
 
 export type ConversationChannelSettingsPatch = Readonly<
-  Omit<ConversationChannelSettings, "clientToolHandler" | "identityResolver"> & {
+  Omit<
+    ConversationChannelSettings,
+    "activeRunPolicy" | "clientToolHandler" | "identityResolver"
+  > & {
+    activeRunPolicy?: ConversationChannelActiveRunPolicy | null;
     clientToolHandler?: ConversationChannelClientToolHandler | null;
     identityResolver?: ConversationChannelIdentityResolver | null;
   }
