@@ -74,7 +74,13 @@ export type ConversationChannelClientToolHandler = Readonly<{
   version: 1;
 }>;
 
+export type ConversationChannelActiveRunPolicy = Readonly<{
+  behavior: "reject";
+  reply: string;
+}>;
+
 export type ConversationChannelSettings = Readonly<{
+  activeRunPolicy?: ConversationChannelActiveRunPolicy;
   clientToolHandler?: ConversationChannelClientToolHandler;
   concurrency?: ChannelConcurrencyPolicy;
   identityResolver?: ConversationChannelIdentityResolver;

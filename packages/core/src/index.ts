@@ -450,7 +450,10 @@ export type {
   ProjectLoopKind,
   ProjectLoopPermission,
   ProjectLoopPolicy,
+  ProjectLoopResultConfig,
   ProjectLoopVersion,
+  LoopPresentation,
+  LoopPresentationAction,
   Step,
   SwitchCase,
   WhileBlock,
@@ -458,6 +461,11 @@ export type {
   ToolLoopStep,
   WhileLoopStep,
 } from "./loop/types.js";
+export {
+  LoopResultProjectionError,
+  prepareProjectLoopResult,
+} from "./loop/result.js";
+export type { PreparedProjectLoopResult } from "./loop/result.js";
 export { LOOP_LIFECYCLE_HOOKS, isLoopStep, isToolStep, isParallelStep, isSwitchStep, isWhileStep, isHumanStep } from "./loop/types.js";
 export { normalizeProjectLoop } from "./loop/normalize.js";
 export {

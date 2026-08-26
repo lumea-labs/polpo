@@ -414,7 +414,7 @@ describe("ChannelRuntime", () => {
       provider: "telegram",
       providerEventId: "message-1",
       threadId: "telegram:chat-1:thread-1",
-    }));
+    }), expect.anything());
     expect(handleTurn.mock.calls[0]?.[0].messages[0]).toMatchObject({
       author: { userId: "user-1", userName: "ada" },
       id: "message-1",
@@ -424,6 +424,63 @@ describe("ChannelRuntime", () => {
     expect(adapter.postMessage).toHaveBeenCalledWith(
       "telegram:chat-1:thread-1",
       { markdown: "Hello from Polpo" },
+    );
+  });
+
+  it("delivers progress idempotently before the terminal result", async () => {
+    const adapter = testAdapter();
+    const handleTurn: NonNullable<ConstructorParameters<typeof ChannelRuntime>[0]["handleTurn"]> =
+      async (_turn, context) => {
+        await context!.deliverProgress(
+          { text: "Working on it" },
+          { idempotencyKey: "accepted:call-1" },
+        );
+        await context!.deliverProgress(
+          { text: "Working on it" },
+          { idempotencyKey: "accepted:call-1" },
+        );
+        return { text: "Done" };
+      };
+    const runtime = createRuntime({ adapter, handleTurn });
+
+    await runtime.handleWebhook(installation(), webhookRequest("message-progress"));
+
+    expect(adapter.postMessage.mock.calls).toEqual([
+      ["telegram:chat-1:thread-1", { markdown: "Working on it" }],
+      ["telegram:chat-1:thread-1", { markdown: "Done" }],
+    ]);
+  });
+
+  it("renders provider-neutral actions through Chat SDK cards", async () => {
+    const adapter = testAdapter();
+    const runtime = createRuntime({
+      adapter,
+      handleTurn: async () => ({
+        actions: [
+          { id: "preview", label: "Open preview", type: "open_url", url: "https://example.test/preview" },
+          { id: "change-site", label: "Change site", type: "postback", value: "change-site" },
+        ],
+        text: "The preview is ready.",
+      }),
+    });
+
+    await runtime.handleWebhook(installation(), webhookRequest("message-actions"));
+
+    expect(adapter.postMessage).toHaveBeenCalledWith(
+      "telegram:chat-1:thread-1",
+      expect.objectContaining({
+        type: "card",
+        children: [
+          expect.objectContaining({ type: "text", content: "The preview is ready." }),
+          expect.objectContaining({
+            type: "actions",
+            children: [
+              expect.objectContaining({ type: "link-button", id: "preview" }),
+              expect.objectContaining({ type: "button", id: "change-site", value: "change-site" }),
+            ],
+          }),
+        ],
+      }),
     );
   });
 
@@ -471,7 +528,7 @@ describe("ChannelRuntime", () => {
         strategy: "burst",
       },
       providerEventId: "message-3",
-    }));
+    }), expect.anything());
     expect(handleTurn.mock.calls[0]?.[0].messages.map((message) => message.text))
       .toEqual(["first", "second", "third"]);
     expect(events).toContainEqual(expect.objectContaining({
@@ -1507,7 +1564,7 @@ describe("ChannelRuntime", () => {
       provider: "discord",
       providerEventId: "interaction-1",
       threadId: "discord:guild-1:channel-1",
-    }));
+    }), expect.anything());
     expect(handleTurn.mock.calls[0]?.[0].messages).toEqual([
       expect.objectContaining({
         attachments: [],

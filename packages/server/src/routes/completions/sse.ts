@@ -12,6 +12,7 @@ import {
   LoopPolicyDeniedError,
   LoopContextBindingError,
   LoopAgentInputError,
+  LoopResultProjectionError,
   ToolPolicyDeniedError,
 } from "@polpo-ai/core";
 import { classifyGatewayError, extractGatewayModelNotFoundDetails } from "@polpo-ai/llm";
@@ -152,7 +153,7 @@ export function modelNotFoundEnvelope(
 
 export function loopRuntimeErrorEnvelope(
   err: unknown,
-): { message: string; type: "loop_runtime_error"; code: "tool_policy_denied" | "loop_policy_blocked" | "loop_permission_blocked" | "loop_approval_required" | "loop_hook_failed" | "loop_binding_invalid" | "loop_binding_missing" | "loop_context_readonly" | "loop_tool_input_invalid" | "loop_agent_input_invalid" | "loop_agent_input_too_large"; approvalRequestId?: string; loopRunId?: string } | null {
+): { message: string; type: "loop_runtime_error"; code: "tool_policy_denied" | "loop_policy_blocked" | "loop_permission_blocked" | "loop_approval_required" | "loop_hook_failed" | "loop_binding_invalid" | "loop_binding_missing" | "loop_context_readonly" | "loop_tool_input_invalid" | "loop_agent_input_invalid" | "loop_agent_input_too_large" | "loop_result_invalid"; approvalRequestId?: string; loopRunId?: string } | null {
   const message = err instanceof Error ? err.message : String(err);
   if (err instanceof LoopContextBindingError) {
     return {
@@ -163,6 +164,14 @@ export function loopRuntimeErrorEnvelope(
     };
   }
   if (err instanceof LoopAgentInputError) {
+    return {
+      message,
+      type: "loop_runtime_error",
+      code: err.code,
+      loopRunId: (err as any).loopRunId,
+    };
+  }
+  if (err instanceof LoopResultProjectionError) {
     return {
       message,
       type: "loop_runtime_error",

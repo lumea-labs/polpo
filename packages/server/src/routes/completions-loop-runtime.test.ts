@@ -103,6 +103,130 @@ describe("completionRoutes project loop runtime", () => {
     expect(json.loop_trace[0]).toMatchObject({ loop: "time-tracker", status: "started" });
   });
 
+  it("projects a deterministic structured result and Channel presentation", async () => {
+    const deps = makeDeps({
+      name: "time-tracker",
+      context: "shared",
+      result: {
+        data: { $context: "timing" },
+        presentation: {
+          text: { $context: "timing.end" },
+          actions: [{
+            id: "open-report",
+            label: "Open report",
+            type: "open_url",
+            url: "https://example.test/report",
+          }],
+        },
+      },
+      start: "capture_start",
+      steps: {
+        capture_start: {
+          type: "tool",
+          tool: "unix_time",
+          saveAs: "timing.start",
+          next: "capture_end",
+        },
+        capture_end: {
+          type: "tool",
+          tool: "unix_time",
+          saveAs: "timing.end",
+          next: "end",
+        },
+      },
+    });
+
+    const res = await completionRoutes(() => deps).request("/", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        agent: "timer",
+        loop: "time-tracker",
+        messages: [{ role: "user", content: "track it" }],
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({
+      choices: [{ message: { content: "105" } }],
+      loop_result: { start: "100", end: "105" },
+      loop_presentation: {
+        text: "105",
+        actions: [{
+          id: "open-report",
+          label: "Open report",
+          type: "open_url",
+          url: "https://example.test/report",
+        }],
+      },
+    });
+
+    await expect(runConversationTurn(deps, {
+      body: {
+        agent: "timer",
+        loop: "time-tracker",
+        stream: false,
+        messages: [{ role: "user", content: "track it" }],
+      },
+    })).resolves.toMatchObject({
+      text: "115",
+      loopResult: { start: "110", end: "115" },
+      loopPresentation: { text: "115" },
+    });
+  });
+
+  it("includes projected Loop output in the terminal streaming chunk", async () => {
+    const deps = makeDeps({
+      name: "time-tracker",
+      result: {
+        data: { $context: "timing" },
+        presentation: { text: { $context: "timing.end" } },
+      },
+      start: "capture_start",
+      steps: {
+        capture_start: { type: "tool", tool: "unix_time", saveAs: "timing.start", next: "capture_end" },
+        capture_end: { type: "tool", tool: "unix_time", saveAs: "timing.end", next: "end" },
+      },
+    });
+
+    const res = await completionRoutes(() => deps).request("/", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        agent: "timer",
+        loop: "time-tracker",
+        stream: true,
+        messages: [{ role: "user", content: "track it" }],
+      }),
+    });
+    const body = await res.text();
+    expect(body).toContain('"finish_reason":"stop"');
+    expect(body).toContain('"loop_result":{"start":"100","end":"105"}');
+    expect(body).toContain('"loop_presentation":{"text":"105"}');
+  });
+
+  it("returns a typed 400 when the terminal presentation is invalid", async () => {
+    const deps = makeDeps({
+      name: "time-tracker",
+      result: { presentation: { text: { $context: "missing.text" } } },
+      start: "capture",
+      steps: { capture: { type: "tool", tool: "unix_time", next: "end" } },
+    });
+    const res = await completionRoutes(() => deps).request("/", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        agent: "timer",
+        loop: "time-tracker",
+        messages: [{ role: "user", content: "track it" }],
+      }),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({
+      error: { type: "loop_runtime_error", code: "loop_binding_missing" },
+    });
+  });
+
   it("recalculates Loop tools without inheriting the Channel Route restriction", async () => {
     const result = await runConversationTurn(makeDeps(), {
       body: {

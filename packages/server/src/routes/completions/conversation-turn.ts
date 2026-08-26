@@ -1431,6 +1431,10 @@ export async function runConversationTurn(
         toolCalls,
         usage,
         providerMetadata,
+        ...(result.loopResult === undefined ? {} : { loopResult: result.loopResult }),
+        ...(result.loopPresentation === undefined
+          ? {}
+          : { loopPresentation: result.loopPresentation }),
         runStatus: "completed",
         runResult: { exitCode: 0, stdout: finalText, stderr: "" },
       };

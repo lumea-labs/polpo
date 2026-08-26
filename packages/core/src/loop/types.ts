@@ -242,6 +242,36 @@ export interface ToolLoopStep {
 
 export type LoopStepConfig = AgentLoopStep | HumanLoopStep | ParallelLoopStep | WhileLoopStep | ToolLoopStep;
 
+export type LoopPresentationAction =
+  | Readonly<{
+      id: string;
+      label: string;
+      type: "open_url";
+      url: string;
+    }>
+  | Readonly<{
+      id: string;
+      label: string;
+      type: "postback";
+      value: string;
+    }>;
+
+export type LoopPresentation = Readonly<{
+  text: string;
+  actions?: readonly LoopPresentationAction[];
+}>;
+
+/** Deterministic terminal projection over the completed shared context. */
+export interface ProjectLoopResultConfig {
+  /** Structured run result. Static JSON and exact `$context` bindings are supported. */
+  data?: unknown;
+  /** User-facing result, independent from the structured data consumed by the graph. */
+  presentation?: {
+    text: unknown;
+    actions?: unknown;
+  };
+}
+
 /** Project-level reusable loop graph. Agents assign these by name/id. */
 export interface ProjectLoopConfig {
   version?: ProjectLoopVersion;
@@ -257,6 +287,7 @@ export interface ProjectLoopConfig {
   hooks?: ProjectLoopHooks;
   permissions?: ProjectLoopPermission[];
   policies?: ProjectLoopPolicy[];
+  result?: ProjectLoopResultConfig;
   start: string;
   steps: Record<string, LoopStepConfig>;
 }

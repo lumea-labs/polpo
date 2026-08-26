@@ -135,7 +135,12 @@ export type ChannelOutputFile = {
 export type ChannelNativePost = PostableMessage;
 export type ChannelOutputStream = AsyncIterable<string | StreamChunk | StreamEvent>;
 
+export type ChannelResponseAction =
+  | { id: string; label: string; type: "open_url"; url: string }
+  | { id: string; label: string; type: "postback"; value: string };
+
 export type ChannelTurnResult = {
+  actions?: ChannelResponseAction[];
   files?: ChannelOutputFile[];
   metadata?: Record<string, unknown>;
   posts?: ChannelNativePost[];
@@ -152,6 +157,13 @@ export type ChannelDeliveryResult = {
   channelId: string;
   messages: ChannelDeliveryMessage[];
   threadId?: string;
+};
+
+export type ChannelTurnExecutionContext = {
+  deliverProgress(
+    result: ChannelTurnResult,
+    options: { idempotencyKey: string },
+  ): Promise<ChannelDeliveryResult>;
 };
 
 /** Explicit pre-approved WhatsApp template. Never inferred from normal text. */
@@ -235,10 +247,12 @@ export type ChannelEventResult = ChannelTurnResult & {
 
 export type ChannelEventHandler = (
   event: ChannelInboundEvent,
+  context?: ChannelTurnExecutionContext,
 ) => Promise<ChannelEventResult | void>;
 
 export type ChannelTurnHandler = (
   turn: ChannelInboundTurn,
+  context?: ChannelTurnExecutionContext,
 ) => Promise<ChannelTurnResult | void>;
 
 export type ChannelTurnCoordinator = (
@@ -327,6 +341,9 @@ export type ChannelRuntimeEvent = {
     | "turn.started"
     | "turn.completed"
     | "turn.failed"
+    | "progress.delivery.completed"
+    | "progress.delivery.failed"
+    | "progress.delivery.skipped"
     | "delivery.completed"
     | "delivery.failed";
   provider: ChannelProviderId;

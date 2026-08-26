@@ -282,6 +282,32 @@ describe("createConversationChannelTurnHandler", () => {
     expect(error).toMatchObject({ code: "guardrail_blocked", message: "blocked" });
   });
 
+  it("returns an immediate busy reply after Session resolution without invoking the model", async () => {
+    const store = new TestSessionStore();
+    const executeTurn = vi.fn<ChannelConversationTurnExecutor>();
+    const resolveSessionDisposition = vi.fn(async () => ({
+      disposition: "consume" as const,
+      reply: "I am still completing the previous change.",
+    }));
+    const handler = createConversationChannelTurnHandler(deps(store), {
+      agent: "leo",
+      executeTurn,
+      resolveSessionDisposition,
+    });
+
+    await expect(handler(turn())).resolves.toEqual({
+      metadata: { disposition: "consume", sessionId: "session-1" },
+      text: "I am still completing the previous change.",
+    });
+    expect(resolveSessionDisposition).toHaveBeenCalledWith(
+      expect.any(Object),
+      "session-1",
+      undefined,
+    );
+    expect(executeTurn).not.toHaveBeenCalled();
+    expect(await store.getMessages("session-1")).toEqual([]);
+  });
+
   it("executes an allowlisted client tool and continues the same Session into a Project Loop", async () => {
     const store = new TestSessionStore();
     const executeTurn = vi.fn<ChannelConversationTurnExecutor>()
@@ -412,6 +438,58 @@ describe("createConversationChannelTurnHandler", () => {
     });
     expect(continuation?.runtime?.toolPolicy).not.toHaveProperty("routeAllowedTools");
     expect(Object.isFrozen(continuation?.runtime?.metadata)).toBe(true);
+  });
+
+  it("delivers and persists a handler acknowledgement before starting the Project Loop", async () => {
+    const store = new TestSessionStore();
+    await store.create({ agent: "leo" });
+    const executeTurn = vi.fn<ChannelConversationTurnExecutor>()
+      .mockResolvedValueOnce({
+        ...successfulResult("session-1", "I can make that change."),
+        clientToolCall: { id: "call-1", name: "apply_site_change", arguments: {} },
+        sessionVersion: 2,
+      })
+      .mockResolvedValueOnce({
+        ...successfulResult("session-1", "The preview is ready."),
+        loopPresentation: {
+          text: "The preview is ready.",
+          actions: [{
+            id: "preview",
+            label: "Open preview",
+            type: "open_url",
+            url: "https://example.test/preview",
+          }],
+        },
+        sessionVersion: 5,
+      });
+    const deliverProgress = vi.fn(async () => ({
+      channelId: "channel-1",
+      messages: [{ id: "provider-message-1", threadId: "thread-1" }],
+    }));
+    const handler = createConversationChannelTurnHandler(deps(store), {
+      agent: "leo",
+      executeTurn,
+      executeClientTool: async () => ({
+        acknowledgement: { text: "Working on the site now." },
+        loop: "leo-change-site",
+        result: { accepted: true },
+      }),
+    });
+
+    await expect(handler(turn(), { deliverProgress })).resolves.toMatchObject({
+      text: "The preview is ready.",
+      actions: [{ id: "preview", type: "open_url" }],
+    });
+    expect(deliverProgress).toHaveBeenCalledWith(
+      { text: "Working on the site now." },
+      { idempotencyKey: expect.stringMatching(/^channel-client-tool:[a-f0-9]{64}:ack$/) },
+    );
+    expect((await store.getMessages("session-1")).at(-1)).toMatchObject({
+      role: "assistant",
+      content: "Working on the site now.",
+    });
+    expect(executeTurn.mock.calls[1]?.[0].body.polpo?.continuation)
+      .toMatchObject({ expected_session_version: 3 });
   });
 
   it("carries trusted handler metadata across direct continuations without exposing it", async () => {

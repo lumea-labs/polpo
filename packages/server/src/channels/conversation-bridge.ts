@@ -9,6 +9,7 @@ import { createHash } from "node:crypto";
 import type { SessionContentPart, SessionStore } from "@polpo-ai/core/session-store";
 import {
   createToolInvocationContext,
+  prepareProjectLoopResult,
   type ToolInvocationContext,
   type ToolInvocationJsonValue,
   type ToolInvocationScope,
@@ -40,6 +41,8 @@ export type ChannelConversationTurnExecutor = (
 
 export type ChannelClientToolExecution = {
   result: ToolInvocationJsonValue;
+  /** Immediate provider-neutral response delivered before a Loop continuation. */
+  acknowledgement?: ChannelTurnResult;
   loop?: string;
   /** Trusted continuation restriction. It can only narrow configured tools. */
   allowedTools?: readonly string[];
@@ -136,6 +139,15 @@ export interface ConversationChannelBridgeOptions {
     turn: ChannelInboundTurn,
     scope?: ToolInvocationScope,
   ) => Promise<string | null>;
+  /** Resolve run-aware policy after the canonical Session is known, before model work. */
+  resolveSessionDisposition?: (
+    turn: ChannelInboundTurn,
+    sessionId: string,
+    scope?: ToolInvocationScope,
+  ) =>
+    | { disposition: "dispatch" }
+    | { disposition: "consume"; reply: string }
+    | Promise<{ disposition: "dispatch" } | { disposition: "consume"; reply: string }>;
 }
 
 export class ChannelConversationError extends Error {
@@ -165,7 +177,7 @@ export function createConversationChannelTurnHandler(
   const executeTurn = options.executeTurn
     ?? ((input) => runConversationTurn(deps, input));
 
-  return async (turn): Promise<ChannelTurnResult> => {
+  return async (turn, executionContext): Promise<ChannelTurnResult> => {
     const latest = turn.messages.at(-1);
     if (!latest) {
       throw new ChannelConversationError(
@@ -246,6 +258,26 @@ export function createConversationChannelTurnHandler(
       }),
     );
     if (sessionId) await options.onSessionResolved?.(turn, sessionId, trustedScope);
+    if (sessionId && options.resolveSessionDisposition) {
+      const disposition = await options.resolveSessionDisposition(
+        turn,
+        sessionId,
+        trustedScope,
+      );
+      if (disposition.disposition === "consume") {
+        const reply = disposition.reply.trim();
+        if (!reply) {
+          throw new ChannelConversationError(
+            "Channel Session disposition returned an empty reply",
+            "channel_session_disposition_invalid",
+          );
+        }
+        return {
+          metadata: { disposition: "consume", sessionId },
+          text: reply,
+        };
+      }
+    }
 
     const history = await loadHistory(
       deps.getSessionStore(),
@@ -336,6 +368,41 @@ export function createConversationChannelTurnHandler(
         toolCall,
         turn,
       });
+      const loop = execution.loop?.trim() || undefined;
+      if (loop) {
+        const acknowledgement = execution.acknowledgement
+          ? prepareChannelPresentation(execution.acknowledgement)
+          : result.text.trim()
+            ? { text: result.text.trim() }
+            : undefined;
+        if (acknowledgement) {
+          if (!executionContext) {
+            throw new ChannelConversationError(
+              "Channel runtime does not support progress delivery",
+              "channel_progress_delivery_unavailable",
+            );
+          }
+          const delivery = await executionContext.deliverProgress(
+            acknowledgement,
+            { idempotencyKey: `${idempotencyKey}:ack` },
+          );
+          if (
+            execution.acknowledgement
+            && acknowledgement.text !== result.text.trim()
+            && delivery.messages.length > 0
+          ) {
+            await deps.getSessionStore()?.addMessage(
+              result.sessionId,
+              "assistant",
+              acknowledgement.text,
+            );
+            result = {
+              ...result,
+              sessionVersion: result.sessionVersion + 1,
+            };
+          }
+        }
+      }
       if (execution.trustedMetadata !== undefined) {
         const baseInvocation = trustedInvocation ?? createToolInvocationContext({
           requestId: turn.providerEventId,
@@ -370,7 +437,14 @@ export function createConversationChannelTurnHandler(
       const toolResult = typeof execution.result === "string"
         ? execution.result
         : JSON.stringify(execution.result);
-      const loop = execution.loop?.trim() || undefined;
+      const continuationSessionId = result.sessionId;
+      const continuationSessionVersion = result.sessionVersion;
+      if (!continuationSessionId || continuationSessionVersion === undefined) {
+        throw new ChannelConversationError(
+          "Client-tool acknowledgement invalidated the persisted Session",
+          "channel_client_tool_session_required",
+        );
+      }
       const continuationBody = {
         agent,
         ...(loop ? { loop } : {}),
@@ -386,7 +460,7 @@ export function createConversationChannelTurnHandler(
           continuation: {
             type: "client_tool" as const,
             tool_call_id: toolCall.id,
-            expected_session_version: result.sessionVersion,
+            expected_session_version: continuationSessionVersion,
           },
           delivery: { onDisconnect: "continue" as const },
         },
@@ -400,12 +474,12 @@ export function createConversationChannelTurnHandler(
         continuation: {
           idempotencyKey,
           fingerprint: continuationFingerprint({
-            sessionId: result.sessionId,
+            sessionId: continuationSessionId,
             agent,
             ...(loop ? { loop } : {}),
             user,
             toolCallId: toolCall.id,
-            expectedSessionVersion: result.sessionVersion,
+            expectedSessionVersion: continuationSessionVersion,
             result: {
               content: toolResult,
               trustedMetadata: trustedInvocation?.metadata,
@@ -415,7 +489,7 @@ export function createConversationChannelTurnHandler(
         },
         onRunEvent: options.onRunEvent,
         runtime: continuationRuntime,
-        sessionId: result.sessionId,
+        sessionId: continuationSessionId,
       });
       continuationIndex += 1;
     }
@@ -428,6 +502,9 @@ export function createConversationChannelTurnHandler(
       );
     }
     return {
+      ...(result.loopPresentation?.actions?.length
+        ? { actions: [...result.loopPresentation.actions] }
+        : {}),
       metadata: {
         completionId: result.completionId,
         providerMetadata: result.providerMetadata,
@@ -438,6 +515,35 @@ export function createConversationChannelTurnHandler(
       text: result.text,
     };
   };
+}
+
+function prepareChannelPresentation(result: ChannelTurnResult): ChannelTurnResult & { text: string } {
+  if (result.files?.length || result.posts?.length || result.stream) {
+    throw new ChannelConversationError(
+      "Channel acknowledgement supports only text and actions",
+      "channel_acknowledgement_invalid",
+    );
+  }
+  try {
+    const projected = prepareProjectLoopResult({
+      presentation: {
+        text: result.text,
+        ...(result.actions ? { actions: result.actions } : {}),
+      },
+    }, {});
+    return {
+      text: projected.presentation!.text,
+      ...(projected.presentation?.actions?.length
+        ? { actions: [...projected.presentation.actions] }
+        : {}),
+    };
+  } catch (error) {
+    throw new ChannelConversationError(
+      error instanceof Error ? error.message : "Channel acknowledgement is invalid",
+      "channel_acknowledgement_invalid",
+      error,
+    );
+  }
 }
 
 function runtimeWithoutRouteToolPolicy(

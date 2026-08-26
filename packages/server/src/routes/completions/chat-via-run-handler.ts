@@ -137,6 +137,8 @@ export interface ChatViaRunTurnResult {
   error?: { message: string; type: string; code?: string; param?: unknown };
   runStatus: string;
   runResult: { exitCode: number; stdout: string; stderr: string };
+  loopResult?: unknown;
+  loopPresentation?: import("@polpo-ai/core").LoopPresentation;
 }
 
 interface RunSteeringScope {
