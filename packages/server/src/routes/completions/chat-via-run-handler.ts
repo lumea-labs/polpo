@@ -327,6 +327,17 @@ function captureRunFailure(
   };
 }
 
+function recordPendingClientToolCall(state: DriverState): void {
+  if (!state.clientReturn || state.errorEvent) return;
+  if (state.toolCallsAccum.some((call) => call.id === state.clientReturn?.id)) return;
+  state.toolCallsAccum.push({
+    id: state.clientReturn.id,
+    name: state.clientReturn.name,
+    arguments: state.clientReturn.arguments,
+    state: "interrupted",
+  });
+}
+
 async function finishCommon(
   execution: ChatCompletionExecution,
   state: DriverState,
@@ -334,6 +345,7 @@ async function finishCommon(
   options?: { emptyFallback?: string; suggestions?: ChatSuggestion[] },
 ) {
   const { deps, body, m, sessionStore, sessionId, onResponseFinished } = execution;
+  recordPendingClientToolCall(state);
   await persistAssistantMessage(sessionStore, sessionId, assistantMsgId, state.finalText, state.toolCallsAccum, options);
   try {
     deps.onCompletionFinished?.({
@@ -437,7 +449,7 @@ export async function executeStreamingChatViaRun(
         if ((outputMode === "buffer" || structuredResponse) && state.finalText) {
           await stream.writeSSE({ data: sseChunk(completionId, { content: state.finalText }) });
         }
-        state.toolCallsAccum.push({ id: state.clientReturn.id, name: state.clientReturn.name, arguments: state.clientReturn.arguments, state: "interrupted" });
+        recordPendingClientToolCall(state);
         await stream.writeSSE({ data: clientToolFinishChunk(completionId, state.clientReturn) });
         await stream.writeSSE({ data: "[DONE]" });
       } else if (!signal.aborted) {
@@ -696,7 +708,7 @@ export async function runChatTurnViaRun(
     toolCalls: state.toolCallsAccum,
     usage: state.totalUsage,
     providerMetadata: state.lastProviderMetadata,
-    clientToolCall: state.clientReturn,
+    clientToolCall: error ? undefined : state.clientReturn,
     error,
     runStatus,
     runResult,
