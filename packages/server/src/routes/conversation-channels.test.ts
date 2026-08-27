@@ -161,6 +161,67 @@ describe("conversationChannelRoutes", () => {
     expect(response.status).toBe(400);
   });
 
+  it("accepts and removes the active run policy through the management API", async () => {
+    const state = harness();
+    const configured = await state.app.request("/configure", json("POST", {
+      provider: "whatsapp",
+      agentName: "assistant",
+      connectionId: "connection-1",
+      externalChannelId: "phone-1",
+      idempotencyKey: "active-run-policy",
+      settings: {
+        activeRunPolicy: {
+          behavior: "reject",
+          reply: "Still completing the previous request.",
+        },
+        concurrency: { strategy: "concurrent" },
+      },
+    }));
+
+    expect(configured.status).toBe(200);
+    expect(await configured.json()).toMatchObject({
+      data: {
+        channel: {
+          settings: {
+            activeRunPolicy: {
+              behavior: "reject",
+              reply: "Still completing the previous request.",
+            },
+          },
+        },
+      },
+    });
+
+    const removed = await state.app.request("/channel-1", json("PATCH", {
+      settings: { activeRunPolicy: null },
+    }));
+    expect(removed.status).toBe(200);
+    const removedBody = await removed.json();
+    expect(removedBody.data.settings.activeRunPolicy).toBeUndefined();
+  });
+
+  it("rejects malformed active run policies at the management boundary", async () => {
+    const state = harness();
+    for (const activeRunPolicy of [
+      { behavior: "queue" },
+      { behavior: "reject", reply: "" },
+      { behavior: "reject", unsupported: true },
+    ]) {
+      const response = await state.app.request("/configure", json("POST", {
+        provider: "whatsapp",
+        agentName: "assistant",
+        connectionId: "connection-1",
+        externalChannelId: "phone-1",
+        idempotencyKey: `invalid-${JSON.stringify(activeRunPolicy)}`,
+        settings: {
+          activeRunPolicy,
+          concurrency: { strategy: "concurrent" },
+        },
+      }));
+      expect(response.status).toBe(400);
+    }
+  });
+
   it("accepts a bounded server-side client tool handler contract", async () => {
     const state = harness();
     const response = await state.app.request("/configure", json("POST", {

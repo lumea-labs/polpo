@@ -32,6 +32,10 @@ const channelIdentityResolver = z.object({
   type: z.literal("http"),
   version: z.literal(1),
 }).strict();
+const channelActiveRunPolicy = z.object({
+  behavior: z.literal("reject"),
+  reply: z.string().trim().min(1).max(1_000),
+}).strict();
 const channelClientToolDefinition = {
   description: z.string().max(8_192).optional(),
   parameters: z.record(z.string(), z.unknown()).optional(),
@@ -86,6 +90,7 @@ const channelClientToolHandler = z.object({
   version: z.literal(1),
 }).strict();
 const channelSettings = z.object({
+  activeRunPolicy: channelActiveRunPolicy.optional(),
   clientToolHandler: channelClientToolHandler.optional(),
   concurrency: z.object({
     debounceMs: z.number().int().nonnegative().optional(),
@@ -120,6 +125,7 @@ const configureBody = z.object({
 const updateBody = z.object({
   name: z.string().min(1).max(256).optional(),
   settings: channelSettings.extend({
+    activeRunPolicy: channelActiveRunPolicy.nullable().optional(),
     clientToolHandler: channelClientToolHandler.nullable().optional(),
     identityResolver: channelIdentityResolver.nullable().optional(),
   }).optional(),
