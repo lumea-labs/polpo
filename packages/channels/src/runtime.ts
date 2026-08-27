@@ -764,6 +764,10 @@ export class ChannelRuntime {
       await this.options.coordinateTurn(turn, execute);
       return;
     }
+    if (turn.coordination.strategy === "concurrent") {
+      await execute();
+      return;
+    }
     await this.coordinateLocally(turn, execute);
   }
 
