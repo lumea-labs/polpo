@@ -382,16 +382,28 @@ export function createConversationChannelTurnHandler(
               "channel_progress_delivery_unavailable",
             );
           }
+          const persistAcknowledgement = Boolean(
+            execution.acknowledgement
+            && acknowledgement.text !== result.text.trim(),
+          );
+          const sessionStore = persistAcknowledgement
+            ? deps.getSessionStore()
+            : undefined;
+          if (persistAcknowledgement && !sessionStore) {
+            throw new ChannelConversationError(
+              "Channel acknowledgement requires canonical Session persistence",
+              "channel_progress_persistence_unavailable",
+            );
+          }
           const delivery = await executionContext.deliverProgress(
             acknowledgement,
             { idempotencyKey: `${idempotencyKey}:ack` },
           );
           if (
-            execution.acknowledgement
-            && acknowledgement.text !== result.text.trim()
+            persistAcknowledgement
             && delivery.messages.length > 0
           ) {
-            await deps.getSessionStore()?.addMessage(
+            await sessionStore!.addMessage(
               result.sessionId,
               "assistant",
               acknowledgement.text,

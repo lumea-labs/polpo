@@ -495,6 +495,37 @@ describe("createConversationChannelTurnHandler", () => {
       .toMatchObject({ expected_session_version: 3 });
   });
 
+  it("fails before acknowledgement delivery when canonical Session persistence is unavailable", async () => {
+    const executeTurn = vi.fn<ChannelConversationTurnExecutor>()
+      .mockResolvedValueOnce({
+        ...successfulResult("session-1", ""),
+        clientToolCall: { id: "call-1", name: "apply_site_change", arguments: {} },
+        sessionVersion: 4,
+      });
+    const deliverProgress = vi.fn(async () => ({
+      channelId: "channel-1",
+      messages: [{ id: "provider-message-1", threadId: "thread-1" }],
+    }));
+    const handler = createConversationChannelTurnHandler(
+      { getSessionStore: () => null } as unknown as CompletionRouteDeps,
+      {
+        agent: "leo",
+        executeTurn,
+        executeClientTool: async () => ({
+          acknowledgement: { text: "Working on the site now." },
+          loop: "leo-change-site",
+          result: { accepted: true },
+        }),
+      },
+    );
+
+    await expect(handler(turn(), { deliverProgress })).rejects.toMatchObject({
+      code: "channel_progress_persistence_unavailable",
+    });
+    expect(deliverProgress).not.toHaveBeenCalled();
+    expect(executeTurn).toHaveBeenCalledOnce();
+  });
+
   it("carries trusted handler metadata across direct continuations without exposing it", async () => {
     const store = new TestSessionStore();
     const executeTurn = vi.fn<ChannelConversationTurnExecutor>()
