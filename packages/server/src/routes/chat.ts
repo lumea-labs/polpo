@@ -2,6 +2,57 @@ import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
 import type { RunRecord } from "@polpo-ai/core/run-store";
 import type { ChatRouteDeps } from "../deps.js";
 
+const TRANSIENT_SESSION_READ_CODES = new Set([
+  "EAI_AGAIN",
+  "ECONNRESET",
+  "ENETDOWN",
+  "ENETUNREACH",
+  "ETIMEDOUT",
+  "UND_ERR_CONNECT_TIMEOUT",
+]);
+const SESSION_READ_RETRY_DELAY_MS = 50;
+
+function isTransientSessionReadError(error: unknown): boolean {
+  const seen = new Set<unknown>();
+  const visit = (value: unknown): boolean => {
+    if (!value || (typeof value !== "object" && typeof value !== "function") || seen.has(value)) {
+      return false;
+    }
+    seen.add(value);
+    const candidate = value as {
+      cause?: unknown;
+      code?: unknown;
+      errors?: unknown;
+      message?: unknown;
+      name?: unknown;
+      sourceError?: unknown;
+    };
+    if (candidate.name === "TimeoutError" || candidate.name === "AbortError") return true;
+    if (typeof candidate.code === "string" && TRANSIENT_SESSION_READ_CODES.has(candidate.code)) {
+      return true;
+    }
+    if (
+      typeof candidate.message === "string"
+      && /(?:aborted due to timeout|request exceeded its \d+ms deadline)/i.test(candidate.message)
+    ) {
+      return true;
+    }
+    if (visit(candidate.cause) || visit(candidate.sourceError)) return true;
+    return Array.isArray(candidate.errors) && candidate.errors.some(visit);
+  };
+  return visit(error);
+}
+
+async function retryTransientSessionRead<T>(operation: () => Promise<T>): Promise<T> {
+  try {
+    return await operation();
+  } catch (error) {
+    if (!isTransientSessionReadError(error)) throw error;
+    await new Promise((resolve) => setTimeout(resolve, SESSION_READ_RETRY_DELAY_MS));
+    return operation();
+  }
+}
+
 /* ── Route definitions ─────────────────────────────────────────────── */
 
 const listSessionsRoute = createRoute({
@@ -135,6 +186,38 @@ const deleteSessionRoute = createRoute({
  */
 export function chatRoutes(getDeps: () => ChatRouteDeps): OpenAPIHono {
   const app = new OpenAPIHono();
+  const inFlightSessionHistory = new WeakMap<object, Map<string, Promise<{
+    messages: any[];
+    session: any;
+  }>>>();
+
+  const readSessionHistory = (
+    sessionStore: NonNullable<ChatRouteDeps["sessionStore"]>,
+    sessionId: string,
+  ) => {
+    let storeReads = inFlightSessionHistory.get(sessionStore);
+    if (!storeReads) {
+      storeReads = new Map();
+      inFlightSessionHistory.set(sessionStore, storeReads);
+    }
+    const current = storeReads.get(sessionId);
+    if (current) return current;
+
+    const read = retryTransientSessionRead(async () => {
+      const [session, messages] = await Promise.all([
+        sessionStore.getSession(sessionId),
+        sessionStore.getMessages(sessionId),
+      ]);
+      return { messages, session };
+    });
+    const tracked = read.finally(() => {
+      if (storeReads.get(sessionId) === tracked) {
+        storeReads.delete(sessionId);
+      }
+    });
+    storeReads.set(sessionId, tracked);
+    return tracked;
+  };
 
   const safeSessionMessages = (messages: any[]) => messages.map((m: any) => {
     const toolCalls = Array.isArray(m.toolCalls) ? m.toolCalls : undefined;
@@ -219,11 +302,26 @@ export function chatRoutes(getDeps: () => ChatRouteDeps): OpenAPIHono {
       return c.json({ ok: false, error: "Session store not available", code: "NOT_AVAILABLE" }, 503);
     }
     const { id } = c.req.valid("param");
-    const session = await sessionStore.getSession(id);
+    let session: any;
+    let messages: any[];
+    try {
+      ({ messages, session } = await readSessionHistory(sessionStore, id));
+    } catch (error) {
+      if (!isTransientSessionReadError(error)) throw error;
+      console.warn("[chat] session history temporarily unavailable", {
+        errorName: error instanceof Error ? error.name : "UnknownError",
+        sessionId: id,
+      });
+      c.header("Retry-After", "1");
+      return c.json({
+        ok: false,
+        error: "Session history is temporarily unavailable",
+        code: "SESSION_STORE_TEMPORARILY_UNAVAILABLE",
+      }, 503);
+    }
     if (!session) {
       return c.json({ ok: false, error: "Session not found", code: "NOT_FOUND" }, 404);
     }
-    const messages = await sessionStore.getMessages(id);
     // SECURITY: Redact vault credentials from persisted tool calls before serving to client
     const safeMessages = safeSessionMessages(messages);
     return c.json({ ok: true, data: { session, messages: safeMessages } }, 200);
@@ -235,14 +333,27 @@ export function chatRoutes(getDeps: () => ChatRouteDeps): OpenAPIHono {
       return c.json({ ok: false, error: "Session store not available", code: "NOT_AVAILABLE" }, 503);
     }
     const { id } = c.req.valid("param");
-    const session = await sessionStore.getSession(id);
+    let session: any;
+    let messages: any[];
+    try {
+      ({ messages, session } = await readSessionHistory(sessionStore, id));
+    } catch (error) {
+      if (!isTransientSessionReadError(error)) throw error;
+      console.warn("[chat] session activity temporarily unavailable", {
+        errorName: error instanceof Error ? error.name : "UnknownError",
+        sessionId: id,
+      });
+      c.header("Retry-After", "1");
+      return c.json({
+        ok: false,
+        error: "Session activity is temporarily unavailable",
+        code: "SESSION_STORE_TEMPORARILY_UNAVAILABLE",
+      }, 503);
+    }
     if (!session) {
       return c.json({ ok: false, error: "Session not found", code: "NOT_FOUND" }, 404);
     }
-    const [messages, runs] = await Promise.all([
-      sessionStore.getMessages(id),
-      runStore?.getRunsBySessionId?.(id) ?? Promise.resolve([]),
-    ]);
+    const runs = await (runStore?.getRunsBySessionId?.(id) ?? Promise.resolve([]));
     return c.json({
       ok: true,
       data: { session, messages: safeSessionMessages(messages), runs: safeSessionRuns(runs) },
