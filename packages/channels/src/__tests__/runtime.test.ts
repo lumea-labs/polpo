@@ -295,6 +295,42 @@ function createRuntime(options: {
 }
 
 describe("ChannelRuntime", () => {
+  it("does not serialize turns configured for concurrent execution", async () => {
+    const releaseFirst = deferred<void>();
+    const firstStarted = deferred<void>();
+    const secondStarted = deferred<void>();
+    const runtime = createRuntime({
+      handleTurn: async (turn) => {
+        if (turn.providerEventId === "message-1") {
+          firstStarted.resolve();
+          await releaseFirst.promise;
+        } else {
+          secondStarted.resolve();
+        }
+        return { text: "done" };
+      },
+    });
+
+    const first = runtime.handleWebhook(
+      installation({ concurrency: { strategy: "concurrent" } }),
+      webhookRequest("message-1", "first"),
+    );
+    await firstStarted.promise;
+
+    const second = runtime.handleWebhook(
+      installation({ concurrency: { strategy: "concurrent" } }),
+      webhookRequest("message-2", "second"),
+    );
+    const overlapped = await Promise.race([
+      secondStarted.promise.then(() => true),
+      new Promise<false>((resolve) => setTimeout(() => resolve(false), 50)),
+    ]);
+
+    releaseFirst.resolve();
+    await Promise.all([first, second]);
+    expect(overlapped).toBe(true);
+  });
+
   it("combines a Telegram media group into one ordered Polpo turn", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => Response.json({
       ok: true,
@@ -1766,7 +1802,7 @@ describe("ChannelRuntime", () => {
     expect(chunks).toEqual(structured);
   });
 
-  it("serializes overlapping turns for the same thread by default", async () => {
+  it("serializes overlapping turns for the same thread in queue mode", async () => {
     let active = 0;
     let maxActive = 0;
     const releaseFirst = deferred<void>();
@@ -1784,12 +1820,12 @@ describe("ChannelRuntime", () => {
     const runtime = createRuntime({ handleTurn });
 
     const first = runtime.handleWebhook(
-      installation(),
+      installation({ concurrency: { strategy: "queue" } }),
       webhookRequest("message-1"),
     );
     await firstStarted.promise;
     const second = runtime.handleWebhook(
-      installation(),
+      installation({ concurrency: { strategy: "queue" } }),
       webhookRequest("message-2"),
     );
     await new Promise((resolve) => setTimeout(resolve, 10));
