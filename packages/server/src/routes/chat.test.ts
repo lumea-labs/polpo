@@ -3,10 +3,12 @@ import { chatRoutes } from "./chat.js";
 
 function deferred<T>() {
   let resolve!: (value: T | PromiseLike<T>) => void;
-  const promise = new Promise<T>((resolvePromise) => {
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
     resolve = resolvePromise;
+    reject = rejectPromise;
   });
-  return { promise, resolve };
+  return { promise, reject, resolve };
 }
 
 function session(id = "session-1") {
@@ -35,6 +37,17 @@ function transientTimeout(): Error {
   error.cause = new DOMException("The operation was aborted due to timeout", "TimeoutError");
   return error;
 }
+
+function transientNetworkError(code: string): Error {
+  const error = new Error("Failed query");
+  error.cause = Object.assign(new Error("fetch failed"), { code });
+  return error;
+}
+
+const fastReadPolicy = {
+  hedgeAfterMs: 5,
+  responseTimeoutMs: 40,
+};
 
 describe("chatRoutes session history", () => {
   it("coalesces concurrent reads for the same session without caching the result", async () => {
@@ -78,6 +91,100 @@ describe("chatRoutes session history", () => {
     expect(response.status).toBe(200);
     expect(getSession).toHaveBeenCalledTimes(2);
     expect(getMessages).toHaveBeenCalledTimes(2);
+  });
+
+  it("hedges one stalled read for an entire concurrent burst", async () => {
+    const stalledSession = deferred<ReturnType<typeof session>>();
+    const stalledMessages = deferred<ReturnType<typeof message>[]>();
+    const getSession = vi.fn()
+      .mockImplementationOnce(() => stalledSession.promise)
+      .mockResolvedValue(session());
+    const getMessages = vi.fn()
+      .mockImplementationOnce(() => stalledMessages.promise)
+      .mockResolvedValue([message()]);
+    const sessionStore = { getMessages, getSession } as any;
+    const app = chatRoutes(() => ({
+      sessionHistoryReadPolicy: fastReadPolicy,
+      sessionStore,
+    }));
+
+    const responses = await Promise.all(Array.from({ length: 20 }, () =>
+      app.request("/sessions/session-1/messages")));
+
+    expect(responses.every((response) => response.status === 200)).toBe(true);
+    expect(getSession).toHaveBeenCalledTimes(2);
+    expect(getMessages).toHaveBeenCalledTimes(2);
+  });
+
+  it("bounds each stalled concurrent burst without starting a retry storm", async () => {
+    const stalledSession = deferred<ReturnType<typeof session>>();
+    const stalledMessages = deferred<ReturnType<typeof message>[]>();
+    const getSession = vi.fn(() => stalledSession.promise);
+    const getMessages = vi.fn(() => stalledMessages.promise);
+    const sessionStore = { getMessages, getSession } as any;
+    const app = chatRoutes(() => ({
+      sessionHistoryReadPolicy: fastReadPolicy,
+      sessionStore,
+    }));
+
+    const responses = await Promise.all(Array.from({ length: 20 }, () =>
+      app.request("/sessions/session-1/messages")));
+    const retry = await app.request("/sessions/session-1/messages");
+
+    expect(responses.every((response) => response.status === 503)).toBe(true);
+    expect(responses.every((response) => response.headers.get("retry-after") === "1")).toBe(true);
+    expect(retry.status).toBe(503);
+    expect(getSession).toHaveBeenCalledTimes(4);
+    expect(getMessages).toHaveBeenCalledTimes(4);
+  });
+
+  it("evicts a timed-out shared read so a later request can recover", async () => {
+    const stalledSession = deferred<ReturnType<typeof session>>();
+    const stalledMessages = deferred<ReturnType<typeof message>[]>();
+    const getSession = vi.fn()
+      .mockImplementationOnce(() => stalledSession.promise)
+      .mockImplementationOnce(() => stalledSession.promise)
+      .mockResolvedValue(session());
+    const getMessages = vi.fn()
+      .mockImplementationOnce(() => stalledMessages.promise)
+      .mockImplementationOnce(() => stalledMessages.promise)
+      .mockResolvedValue([message()]);
+    const sessionStore = { getMessages, getSession } as any;
+    const app = chatRoutes(() => ({
+      sessionHistoryReadPolicy: fastReadPolicy,
+      sessionStore,
+    }));
+
+    const timedOut = await app.request("/sessions/session-1/messages");
+    const recovered = await app.request("/sessions/session-1/messages");
+
+    expect(timedOut.status).toBe(503);
+    expect(recovered.status).toBe(200);
+    expect(getSession).toHaveBeenCalledTimes(3);
+    expect(getMessages).toHaveBeenCalledTimes(3);
+  });
+
+  it.each([
+    "ECONNABORTED",
+    "ECONNREFUSED",
+    "ENOTFOUND",
+    "EPIPE",
+    "UND_ERR_BODY_TIMEOUT",
+    "UND_ERR_HEADERS_TIMEOUT",
+    "UND_ERR_SOCKET",
+  ])("maps transient network code %s to retryable 503", async (code) => {
+    const getSession = vi.fn().mockRejectedValue(transientNetworkError(code));
+    const getMessages = vi.fn().mockResolvedValue([message()]);
+    const app = chatRoutes(() => ({
+      sessionHistoryReadPolicy: fastReadPolicy,
+      sessionStore: { getMessages, getSession } as any,
+    }));
+
+    const response = await app.request("/sessions/session-1/messages");
+
+    expect(response.status).toBe(503);
+    expect(response.headers.get("retry-after")).toBe("1");
+    expect(getSession).toHaveBeenCalledTimes(2);
   });
 
   it("never coalesces identical session IDs across different stores", async () => {
@@ -136,8 +243,48 @@ describe("chatRoutes session history", () => {
     expect(getRunsBySessionId).toHaveBeenCalledOnce();
   });
 
+  it("applies the same bounded transient response to session activity", async () => {
+    const stalledSession = deferred<ReturnType<typeof session>>();
+    const stalledMessages = deferred<ReturnType<typeof message>[]>();
+    const app = chatRoutes(() => ({
+      runStore: { getRunsBySessionId: vi.fn() } as any,
+      sessionHistoryReadPolicy: fastReadPolicy,
+      sessionStore: {
+        getMessages: vi.fn(() => stalledMessages.promise),
+        getSession: vi.fn(() => stalledSession.promise),
+      } as any,
+    }));
+
+    const response = await app.request("/sessions/session-1/activity");
+
+    expect(response.status).toBe(503);
+    expect(response.headers.get("retry-after")).toBe("1");
+    expect(await response.json()).toMatchObject({
+      code: "SESSION_STORE_TEMPORARILY_UNAVAILABLE",
+      ok: false,
+    });
+  });
+
   it("does not retry non-transient store failures", async () => {
     const getSession = vi.fn().mockRejectedValue(new Error("invalid row mapping"));
+    const app = chatRoutes(() => ({
+      sessionStore: {
+        getMessages: vi.fn().mockResolvedValue([message()]),
+        getSession,
+      } as any,
+    }));
+
+    const response = await app.request("/sessions/session-1/messages");
+
+    expect(response.status).toBe(500);
+    expect(getSession).toHaveBeenCalledOnce();
+  });
+
+  it("does not classify a mixed aggregate as retryable", async () => {
+    const getSession = vi.fn().mockRejectedValue(new AggregateError([
+      transientTimeout(),
+      new Error("invalid row mapping"),
+    ], "mixed failure"));
     const app = chatRoutes(() => ({
       sessionStore: {
         getMessages: vi.fn().mockResolvedValue([message()]),
