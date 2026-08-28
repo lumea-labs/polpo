@@ -302,6 +302,7 @@ describe("ScheduleService", () => {
     const first = await state.service.trigger(created.id, {
       idempotencyKey: " manual-test-1 ",
     });
+    state.setNow("2026-07-28T08:11:00.000Z");
     const duplicate = await state.service.trigger(created.id, {
       idempotencyKey: "manual-test-1",
     });
@@ -315,7 +316,22 @@ describe("ScheduleService", () => {
       status: "pending",
     });
     expect(await state.service.listRuns(created.id)).toHaveLength(1);
-    expect(state.onRunCreated).toHaveBeenCalledTimes(2);
+    expect(state.onRunCreated).toHaveBeenCalledTimes(1);
+  });
+
+  it("collapses concurrent manual retries into one durable run and one wake-up", async () => {
+    const state = harness();
+    const created = await state.service.create(input());
+    state.setNow("2026-07-28T08:10:00.000Z");
+
+    const [first, duplicate] = await Promise.all([
+      state.service.trigger(created.id, { idempotencyKey: "concurrent-1" }),
+      state.service.trigger(created.id, { idempotencyKey: "concurrent-1" }),
+    ]);
+
+    expect(first).toEqual(duplicate);
+    expect(await state.service.listRuns(created.id)).toHaveLength(1);
+    expect(state.onRunCreated).toHaveBeenCalledTimes(1);
   });
 
   it("rejects manual runs for inactive schedules and malformed keys", async () => {

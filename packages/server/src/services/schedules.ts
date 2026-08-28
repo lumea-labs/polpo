@@ -55,6 +55,7 @@ export class ScheduleService {
   private readonly driver: ScheduleDriver;
   private readonly nowProvider: () => Date | string;
   private readonly onRunCreated?: ScheduleServiceOptions["onRunCreated"];
+  private readonly manualTriggers = new Map<string, Promise<ScheduleRun>>();
 
   constructor(options: ScheduleServiceOptions) {
     if (!options?.store) throw new Error("Schedule service requires a store");
@@ -196,14 +197,43 @@ export class ScheduleService {
       input?.idempotencyKey,
       "Manual schedule idempotency key",
     );
-    const now = this.now().toISOString();
     const identity = `manual:${schedule.id}:${callerKey}`;
-    const run = await this.store.createRun({
-      scheduleId: schedule.id,
-      occurrenceAt: now,
-      triggerId: identity,
-      idempotencyKey: identity,
-    });
+    const pending = this.manualTriggers.get(identity);
+    if (pending) return pending;
+
+    const operation = this.triggerManualRun(schedule, identity);
+    this.manualTriggers.set(identity, operation);
+    try {
+      return await operation;
+    } finally {
+      if (this.manualTriggers.get(identity) === operation) {
+        this.manualTriggers.delete(identity);
+      }
+    }
+  }
+
+  private async triggerManualRun(
+    schedule: Schedule,
+    identity: string,
+  ): Promise<ScheduleRun> {
+    const existing = await this.store.getRunByIdempotencyKey(identity);
+    if (existing && sameManualRun(existing, schedule.id, identity)) {
+      return existing;
+    }
+
+    let run: ScheduleRun;
+    try {
+      run = await this.store.createRun({
+        scheduleId: schedule.id,
+        occurrenceAt: this.now().toISOString(),
+        triggerId: identity,
+        idempotencyKey: identity,
+      });
+    } catch (error) {
+      const raced = await this.store.getRunByIdempotencyKey(identity);
+      if (raced && sameManualRun(raced, schedule.id, identity)) return raced;
+      throw error;
+    }
     try {
       await this.onRunCreated?.(run);
     } catch {
@@ -274,6 +304,16 @@ export class ScheduleService {
     }
     return now;
   }
+}
+
+function sameManualRun(
+  run: ScheduleRun,
+  scheduleId: string,
+  identity: string,
+): boolean {
+  return run.scheduleId === scheduleId
+    && run.triggerId === identity
+    && run.idempotencyKey === identity;
 }
 
 function failedRegistration(
