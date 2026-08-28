@@ -135,12 +135,30 @@ export interface LoopTraceEvent {
   data?: Record<string, unknown>;
 }
 
-export type LoopNext =
-  | string
-  | Array<{
-      when?: string;
-      to: string;
-    }>;
+export interface LoopTransition {
+  when?: string;
+  to: string;
+  /** Human-readable branch label for visualizers and editors. */
+  label?: string;
+  /** Optional branch explanation kept separate from the executable guard. */
+  description?: string;
+}
+
+export type LoopNext = string | LoopTransition[];
+
+export interface LoopDisplayMetadata {
+  /** Human-readable label for visualizers and editors. */
+  label?: string;
+  /** Human-readable description for visualizers, docs, and audit UI. */
+  description?: string;
+  /** Optional logical group id. Groups never affect execution semantics. */
+  group?: string;
+}
+
+export interface LoopGroup {
+  label: string;
+  description?: string;
+}
 
 export type LoopToolChoice =
   | "auto"
@@ -152,13 +170,9 @@ export type LoopToolChoice =
       tool?: string;
     };
 
-export interface LoopConfig {
+export interface LoopConfig extends LoopDisplayMetadata {
   /** Optional — the loops-map key is the canonical name. */
   name?: string;
-  /** Human-readable label for visualizers and editors. */
-  label?: string;
-  /** Human-readable description for visualizers, docs, and audit UI. */
-  description?: string;
   systemPrompt?: string;
   /** Model-visible JSON projected from static values and shared context bindings. */
   input?: unknown;
@@ -190,30 +204,24 @@ export interface AgentLoopStep extends LoopConfig {
   next?: LoopNext;
 }
 
-export interface HumanLoopStep {
+export interface HumanLoopStep extends LoopDisplayMetadata {
   type: "human";
-  label?: string;
-  description?: string;
   when?: string;
   output?: { schema?: unknown };
   notify?: string[];
   next?: LoopNext;
 }
 
-export interface ParallelLoopStep {
+export interface ParallelLoopStep extends LoopDisplayMetadata {
   type: "parallel";
-  label?: string;
-  description?: string;
   when?: string;
   branches: string[];
   join?: "all" | "any" | number;
   next?: LoopNext;
 }
 
-export interface WhileLoopStep {
+export interface WhileLoopStep extends LoopDisplayMetadata {
   type: "while";
-  label?: string;
-  description?: string;
   when?: string;
   /** Run the body while this expression evaluates true. Mutually optional with `until`. */
   condition?: string;
@@ -226,10 +234,8 @@ export interface WhileLoopStep {
   next?: LoopNext;
 }
 
-export interface ToolLoopStep {
+export interface ToolLoopStep extends LoopDisplayMetadata {
   type: "tool";
-  label?: string;
-  description?: string;
   when?: string;
   /** Built-in or custom tool name to execute directly, without an LLM turn. */
   tool: string;
@@ -281,6 +287,8 @@ export interface ProjectLoopConfig {
   label?: string;
   description?: string;
   metadata?: Record<string, unknown>;
+  /** Logical visual groups keyed by stable author-defined id. */
+  groups?: Record<string, LoopGroup>;
   /** Tool subset available to every step in this Project Loop. */
   allowedTools?: string[];
   context?: "shared";
@@ -294,6 +302,14 @@ export interface ProjectLoopConfig {
 
 export interface SwitchCase {
   when: string;
+  label?: string;
+  description?: string;
+  steps: Step[];
+}
+
+export interface SwitchDefault {
+  label?: string;
+  description?: string;
   steps: Step[];
 }
 
@@ -312,11 +328,11 @@ export interface WhileBlock {
   steps: Step[];
 }
 
-export type Step = { key?: string } & (
+export type Step = { key?: string } & LoopDisplayMetadata & (
   | { loop: string; when?: string }
   | { tool: string; input?: unknown; saveAs?: string; when?: string }
   | { parallel: Step[][]; join?: "all" | "any" | number; when?: string }
-  | { switch: { cases: SwitchCase[]; default?: { steps: Step[] } }; when?: string }
+  | { switch: { cases: SwitchCase[]; default?: SwitchDefault }; when?: string }
   | { while: WhileBlock; when?: string }
   | { human: string; output?: { schema?: unknown }; notify?: string[]; when?: string }
 );
@@ -324,6 +340,8 @@ export type Step = { key?: string } & (
 export interface Pipeline {
   mode?: "sequential" | "parallel";
   context?: "shared";
+  /** Logical visual groups keyed by stable author-defined id. */
+  groups?: Record<string, LoopGroup>;
   steps: Step[];
 }
 

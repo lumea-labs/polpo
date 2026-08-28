@@ -263,10 +263,22 @@ export const loopToolChoiceSchema = z.union([
   }),
 ]);
 
-export const loopConfigSchema = z.object({
-  name: z.string().min(1).optional(),
+const loopDisplayMetadataShape = {
   label: z.string().min(1).optional(),
   description: z.string().min(1).optional(),
+  group: z.string().min(1).optional(),
+};
+
+export const loopGroupSchema = z.object({
+  label: z.string().min(1),
+  description: z.string().min(1).optional(),
+});
+
+export const loopGroupsSchema = z.record(z.string().min(1), loopGroupSchema);
+
+export const loopConfigSchema = z.object({
+  name: z.string().min(1).optional(),
+  ...loopDisplayMetadataShape,
   systemPrompt: z.string().optional(),
   input: z.unknown().optional(),
   inputSchema: z.unknown().optional(),
@@ -326,6 +338,8 @@ export const loopNextSchema: z.ZodType<unknown> = z.union([
   z.array(z.object({
     when: z.string().min(1).optional(),
     to: z.string().min(1),
+    label: z.string().min(1).optional(),
+    description: z.string().min(1).optional(),
   })).min(1),
 ]);
 
@@ -337,8 +351,7 @@ export const loopStepConfigSchema = z.discriminatedUnion("type", [
   }),
   z.object({
     type: z.literal("human"),
-    label: z.string().min(1).optional(),
-    description: z.string().min(1).optional(),
+    ...loopDisplayMetadataShape,
     when: z.string().min(1).optional(),
     output: z.object({
       schema: z.unknown().optional(),
@@ -348,8 +361,7 @@ export const loopStepConfigSchema = z.discriminatedUnion("type", [
   }),
   z.object({
     type: z.literal("parallel"),
-    label: z.string().min(1).optional(),
-    description: z.string().min(1).optional(),
+    ...loopDisplayMetadataShape,
     when: z.string().min(1).optional(),
     branches: z.array(z.string().min(1)).min(1),
     join: z.union([z.literal("all"), z.literal("any"), z.number().int().positive()]).optional(),
@@ -357,8 +369,7 @@ export const loopStepConfigSchema = z.discriminatedUnion("type", [
   }),
   z.object({
     type: z.literal("tool"),
-    label: z.string().min(1).optional(),
-    description: z.string().min(1).optional(),
+    ...loopDisplayMetadataShape,
     when: z.string().min(1).optional(),
     tool: z.string().min(1),
     input: z.unknown().optional(),
@@ -427,6 +438,7 @@ export const projectLoopConfigSchema = z.object({
   label: z.string().min(1).optional(),
   description: z.string().optional(),
   metadata: z.record(z.string(), z.unknown()).optional(),
+  groups: loopGroupsSchema.optional(),
   allowedTools: z.array(z.string().min(1)).optional(),
   context: z.literal("shared").optional(),
   hooks: projectLoopHooksSchema.optional(),
@@ -450,8 +462,7 @@ export const projectLoopConfigSchema = z.object({
     }),
     z.object({
       type: z.literal("human"),
-      label: z.string().min(1).optional(),
-      description: z.string().min(1).optional(),
+      ...loopDisplayMetadataShape,
       when: z.string().min(1).optional(),
       output: z.object({ schema: z.unknown().optional() }).optional(),
       notify: z.array(z.string().min(1)).optional(),
@@ -459,8 +470,7 @@ export const projectLoopConfigSchema = z.object({
     }),
     z.object({
       type: z.literal("parallel"),
-      label: z.string().min(1).optional(),
-      description: z.string().min(1).optional(),
+      ...loopDisplayMetadataShape,
       when: z.string().min(1).optional(),
       branches: z.array(z.string().min(1)).min(1),
       join: z.union([z.literal("all"), z.literal("any"), z.number().int().positive()]).optional(),
@@ -468,8 +478,7 @@ export const projectLoopConfigSchema = z.object({
     }),
     z.object({
       type: z.literal("while"),
-      label: z.string().min(1).optional(),
-      description: z.string().min(1).optional(),
+      ...loopDisplayMetadataShape,
       when: z.string().min(1).optional(),
       condition: z.string().min(1).optional(),
       until: z.string().min(1).optional(),
@@ -481,8 +490,7 @@ export const projectLoopConfigSchema = z.object({
     }),
     z.object({
       type: z.literal("tool"),
-      label: z.string().min(1).optional(),
-      description: z.string().min(1).optional(),
+      ...loopDisplayMetadataShape,
       when: z.string().min(1).optional(),
       tool: z.string().min(1),
       input: z.unknown().optional(),
@@ -492,6 +500,7 @@ export const projectLoopConfigSchema = z.object({
   ])),
 }).superRefine((loop, ctx) => {
   const knownSteps = new Set(Object.keys(loop.steps));
+  const knownGroups = new Set(Object.keys(loop.groups ?? {}));
   if (!knownSteps.has(loop.start)) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: `start references unknown step "${loop.start}"`, path: ["start"] });
   }
@@ -501,6 +510,13 @@ export const projectLoopConfigSchema = z.object({
     }
   };
   for (const [name, step] of Object.entries(loop.steps)) {
+    if (step.group && !knownGroups.has(step.group)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `step references unknown group "${step.group}"`,
+        path: ["steps", name, "group"],
+      });
+    }
     if (step.type === "parallel") {
       step.branches.forEach((branch, i) => checkTarget(branch, ["steps", name, "branches", i]));
     }
@@ -530,21 +546,29 @@ export const projectLoopConfigSchema = z.object({
 
 export const loopStepSchema: z.ZodType<unknown> = z.lazy(() => z.union([
   z.object({
+    key: z.string().min(1).optional(),
+    ...loopDisplayMetadataShape,
     loop: z.string().min(1),
     when: z.string().min(1).optional(),
   }),
   z.object({
+    key: z.string().min(1).optional(),
+    ...loopDisplayMetadataShape,
     tool: z.string().min(1),
     input: z.unknown().optional(),
     saveAs: z.string().min(1).optional(),
     when: z.string().min(1).optional(),
   }),
   z.object({
+    key: z.string().min(1).optional(),
+    ...loopDisplayMetadataShape,
     parallel: z.array(loopStepSchema).min(1),
     join: z.union([z.literal("all"), z.literal("any"), z.number().int().positive()]).optional(),
     when: z.string().min(1).optional(),
   }),
   z.object({
+    key: z.string().min(1).optional(),
+    ...loopDisplayMetadataShape,
     while: z.object({
       condition: z.string().min(1).optional(),
       until: z.string().min(1).optional(),
@@ -556,18 +580,26 @@ export const loopStepSchema: z.ZodType<unknown> = z.lazy(() => z.union([
     when: z.string().min(1).optional(),
   }),
   z.object({
+    key: z.string().min(1).optional(),
+    ...loopDisplayMetadataShape,
     switch: z.object({
       cases: z.array(z.object({
         when: z.string().min(1),
+        label: z.string().min(1).optional(),
+        description: z.string().min(1).optional(),
         steps: z.array(loopStepSchema).min(1),
       })).min(1),
       default: z.object({
+        label: z.string().min(1).optional(),
+        description: z.string().min(1).optional(),
         steps: z.array(loopStepSchema).min(1),
       }).optional(),
     }),
     when: z.string().min(1).optional(),
   }),
   z.object({
+    key: z.string().min(1).optional(),
+    ...loopDisplayMetadataShape,
     human: z.string().min(1),
     output: z.object({
       schema: z.unknown().optional(),
@@ -580,6 +612,7 @@ export const loopStepSchema: z.ZodType<unknown> = z.lazy(() => z.union([
 export const pipelineSchema = z.object({
   mode: z.enum(["sequential", "parallel"]).optional(),
   context: z.literal("shared").optional(),
+  groups: loopGroupsSchema.optional(),
   steps: z.array(loopStepSchema).min(1),
 });
 
@@ -611,6 +644,29 @@ function collectLoopStepRefs(step: unknown, refs: string[]): void {
   }
 }
 
+function collectLoopStepGroupRefs(step: unknown, refs: string[]): void {
+  if (!step || typeof step !== "object") return;
+  const node = step as Record<string, unknown>;
+  if (typeof node.group === "string") refs.push(node.group);
+  if (Array.isArray(node.parallel)) {
+    for (const child of node.parallel) collectLoopStepGroupRefs(child, refs);
+  }
+  if (node.switch && typeof node.switch === "object") {
+    const switchStep = node.switch as {
+      cases?: Array<{ steps?: unknown[] }>;
+      default?: { steps?: unknown[] };
+    };
+    for (const branch of switchStep.cases ?? []) {
+      for (const child of branch.steps ?? []) collectLoopStepGroupRefs(child, refs);
+    }
+    for (const child of switchStep.default?.steps ?? []) collectLoopStepGroupRefs(child, refs);
+  }
+  if (node.while && typeof node.while === "object") {
+    const whileStep = node.while as { steps?: unknown[] };
+    for (const child of whileStep.steps ?? []) collectLoopStepGroupRefs(child, refs);
+  }
+}
+
 export const agentLoopConfigSchema = z.object({
   name: z.string().min(1).optional(),
   model: modelSelectionSchema.optional(),
@@ -628,6 +684,18 @@ export const agentLoopConfigSchema = z.object({
         code: z.ZodIssueCode.custom,
         message: `pipeline references unknown loop "${ref}"`,
         path: ["pipeline"],
+      });
+    }
+  }
+  const knownGroups = new Set(Object.keys(config.pipeline.groups ?? {}));
+  const groupRefs: string[] = [];
+  for (const step of config.pipeline.steps) collectLoopStepGroupRefs(step, groupRefs);
+  for (const ref of groupRefs) {
+    if (!knownGroups.has(ref)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `pipeline references unknown group "${ref}"`,
+        path: ["pipeline", "groups"],
       });
     }
   }

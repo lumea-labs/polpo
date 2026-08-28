@@ -1,5 +1,13 @@
 import type { AgentLoopConfig, LoopNext, Pipeline, ProjectLoopConfig, Step } from "./types.js";
 
+function stepMetadata(step: { label?: string; description?: string; group?: string }) {
+  return {
+    ...(step.label ? { label: step.label } : {}),
+    ...(step.description ? { description: step.description } : {}),
+    ...(step.group ? { group: step.group } : {}),
+  };
+}
+
 function transitionSteps(next: LoopNext | undefined, loop: ProjectLoopConfig, seen: Set<string>): Step[] {
   if (!next || next === "end") return [];
   if (typeof next === "string") return stepFor(next, loop, new Set(seen));
@@ -8,6 +16,8 @@ function transitionSteps(next: LoopNext | undefined, loop: ProjectLoopConfig, se
     .filter((t) => t.when)
     .map((t) => ({
       when: t.when!,
+      ...(t.label ? { label: t.label } : {}),
+      ...(t.description ? { description: t.description } : {}),
       steps: t.to === "end" ? [] : stepFor(t.to, loop, new Set(seen)),
     }));
   const fallback = next.find((t) => !t.when);
@@ -20,7 +30,15 @@ function transitionSteps(next: LoopNext | undefined, loop: ProjectLoopConfig, se
     {
       switch: {
         cases,
-        ...(fallback && fallback.to !== "end" ? { default: { steps: stepFor(fallback.to, loop, new Set(seen)) } } : {}),
+        ...(fallback && fallback.to !== "end"
+          ? {
+              default: {
+                ...(fallback.label ? { label: fallback.label } : {}),
+                ...(fallback.description ? { description: fallback.description } : {}),
+                steps: stepFor(fallback.to, loop, new Set(seen)),
+              },
+            }
+          : {}),
       },
     },
   ];
@@ -37,6 +55,7 @@ function stepFor(id: string, loop: ProjectLoopConfig, seen = new Set<string>()):
     return [
       {
         key: id,
+        ...stepMetadata(node),
         human: id,
         when: node.when,
         output: node.output,
@@ -50,6 +69,7 @@ function stepFor(id: string, loop: ProjectLoopConfig, seen = new Set<string>()):
     return [
       {
         key: id,
+        ...stepMetadata(node),
         parallel: node.branches.map((branch) => {
           const nested = stepFor(branch, loop, new Set(seen));
           return nested.length ? nested : [{ loop: branch }];
@@ -67,6 +87,7 @@ function stepFor(id: string, loop: ProjectLoopConfig, seen = new Set<string>()):
     return [
       {
         key: id,
+        ...stepMetadata(node),
         while: {
           condition: node.condition,
           until: node.until,
@@ -83,6 +104,7 @@ function stepFor(id: string, loop: ProjectLoopConfig, seen = new Set<string>()):
     return [
       {
         key: id,
+        ...stepMetadata(node),
         tool: node.tool,
         input: node.input,
         saveAs: node.saveAs,
@@ -93,7 +115,7 @@ function stepFor(id: string, loop: ProjectLoopConfig, seen = new Set<string>()):
   }
 
   return [
-    { key: id, loop: id, when: node.when },
+    { key: id, ...stepMetadata(node), loop: id, when: node.when },
     ...transitionSteps(node.next, loop, seen),
   ];
 }
@@ -109,6 +131,7 @@ export function normalizeProjectLoop(loop: ProjectLoopConfig): AgentLoopConfig {
 
   const pipeline: Pipeline = {
     context: loop.context ?? "shared",
+    ...(loop.groups ? { groups: loop.groups } : {}),
     steps: stepFor(loop.start, loop),
   };
 
