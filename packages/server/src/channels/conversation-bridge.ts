@@ -73,6 +73,10 @@ export type ChannelClientToolExecutor = (
   input: ChannelClientToolExecutionInput,
 ) => Promise<ChannelClientToolExecution>;
 
+export type ChannelConsumePresentation = Readonly<
+  Pick<ChannelTurnResult, "actions" | "text">
+>;
+
 export type ChannelInvocationResolution =
   | {
       disposition: "dispatch";
@@ -85,6 +89,8 @@ export type ChannelInvocationResolution =
   | {
       disposition: "consume";
       reply?: string;
+      /** Trusted provider-neutral response delivered without creating runtime state. */
+      presentation?: ChannelConsumePresentation;
     };
 
 export interface ConversationChannelBridgeOptions {
@@ -187,11 +193,23 @@ export function createConversationChannelTurnHandler(
     }
     const invocationResolution = await options.resolveInvocation?.(turn);
     if (invocationResolution?.disposition === "consume") {
-      return {
-        metadata: { disposition: "consume" },
-        ...(invocationResolution.reply?.trim()
+      if (invocationResolution.reply !== undefined && invocationResolution.presentation !== undefined) {
+        throw new ChannelConversationError(
+          "A consumed Channel turn cannot define both reply and presentation",
+          "channel_invocation_presentation_invalid",
+        );
+      }
+      const presentation = invocationResolution.presentation === undefined
+        ? invocationResolution.reply?.trim()
           ? { text: invocationResolution.reply.trim() }
-          : {}),
+          : {}
+        : prepareChannelPresentation(invocationResolution.presentation, {
+            code: "channel_invocation_presentation_invalid",
+            label: "Channel consume presentation",
+          });
+      return {
+        ...presentation,
+        metadata: { disposition: "consume" },
       };
     }
     if (
@@ -529,11 +547,18 @@ export function createConversationChannelTurnHandler(
   };
 }
 
-function prepareChannelPresentation(result: ChannelTurnResult): ChannelTurnResult & { text: string } {
-  if (result.files?.length || result.posts?.length || result.stream) {
+function prepareChannelPresentation(
+  result: Pick<ChannelTurnResult, "actions" | "text">,
+  failure: { code: string; label: string } = {
+    code: "channel_acknowledgement_invalid",
+    label: "Channel acknowledgement",
+  },
+): ChannelTurnResult & { text: string } {
+  const candidate = result as ChannelTurnResult;
+  if (candidate.files?.length || candidate.posts?.length || candidate.stream) {
     throw new ChannelConversationError(
-      "Channel acknowledgement supports only text and actions",
-      "channel_acknowledgement_invalid",
+      `${failure.label} supports only text and actions`,
+      failure.code,
     );
   }
   try {
@@ -551,8 +576,8 @@ function prepareChannelPresentation(result: ChannelTurnResult): ChannelTurnResul
     };
   } catch (error) {
     throw new ChannelConversationError(
-      error instanceof Error ? error.message : "Channel acknowledgement is invalid",
-      "channel_acknowledgement_invalid",
+      error instanceof Error ? error.message : `${failure.label} is invalid`,
+      failure.code,
       error,
     );
   }

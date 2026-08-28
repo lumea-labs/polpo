@@ -70,6 +70,7 @@ export {
   type ChannelClientToolDefinition,
   type ChannelClientToolExecutionInput,
   type ChannelClientToolExecutor,
+  type ChannelConsumePresentation,
   type ChannelInvocationResolution,
   type ConversationChannelBridgeOptions,
 } from "./channels/conversation-bridge.js";

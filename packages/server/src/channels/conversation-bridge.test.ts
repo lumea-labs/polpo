@@ -786,6 +786,67 @@ describe("createConversationChannelTurnHandler", () => {
     expect(store.sessions).toHaveLength(0);
   });
 
+  it("delivers a validated presentation when the trusted resolver consumes a turn", async () => {
+    const store = new TestSessionStore();
+    const executeTurn = vi.fn<ChannelConversationTurnExecutor>();
+    const handler = createConversationChannelTurnHandler(deps(store), {
+      agent: "leo",
+      executeTurn,
+      resolveInvocation: async () => ({
+        disposition: "consume",
+        presentation: {
+          actions: [{
+            id: "open-builder",
+            label: "Open builder",
+            type: "open_url",
+            url: "https://example.test/builder",
+          }],
+          text: "Your account is paired.",
+        },
+      }),
+    });
+
+    await expect(handler(turn())).resolves.toEqual({
+      actions: [{
+        id: "open-builder",
+        label: "Open builder",
+        type: "open_url",
+        url: "https://example.test/builder",
+      }],
+      metadata: { disposition: "consume" },
+      text: "Your account is paired.",
+    });
+    expect(executeTurn).not.toHaveBeenCalled();
+    expect(store.sessions).toHaveLength(0);
+  });
+
+  it("fails closed before runtime work on an unsafe consumed-turn action", async () => {
+    const store = new TestSessionStore();
+    const executeTurn = vi.fn<ChannelConversationTurnExecutor>();
+    const handler = createConversationChannelTurnHandler(deps(store), {
+      agent: "leo",
+      executeTurn,
+      resolveInvocation: async () => ({
+        disposition: "consume",
+        presentation: {
+          actions: [{
+            id: "unsafe",
+            label: "Open",
+            type: "open_url",
+            url: "javascript:alert(1)",
+          }],
+          text: "Unsafe action",
+        },
+      }),
+    });
+
+    await expect(handler(turn())).rejects.toMatchObject({
+      code: "channel_invocation_presentation_invalid",
+    });
+    expect(executeTurn).not.toHaveBeenCalled();
+    expect(store.sessions).toHaveLength(0);
+  });
+
   it("silently consumes a turn without creating runtime state", async () => {
     const store = new TestSessionStore();
     const agent = vi.fn(async () => "assistant");
