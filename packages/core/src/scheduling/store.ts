@@ -84,6 +84,9 @@ export interface ScheduleStore {
 
   createRun(input: CreateScheduleRunInput): Promise<ScheduleRun>;
   getRun(id: string): Promise<ScheduleRun | null>;
+  getRunByIdempotencyKey(
+    key: string,
+  ): ScheduleRun | null | Promise<ScheduleRun | null>;
   listRuns(filter?: ScheduleRunFilter): Promise<ScheduleRun[]>;
   claimRun(id: string, lease: ScheduleLease): Promise<ScheduleRun | null>;
   renewLease(id: string, lease: ScheduleLease): Promise<boolean>;
@@ -312,6 +315,18 @@ export class InMemoryScheduleStore implements ScheduleStore {
   async getRun(id: string): Promise<ScheduleRun | null> {
     const run = this.runs.get(id);
     return run ? clone(run) : null;
+  }
+
+  async getRunByIdempotencyKey(key: string): Promise<ScheduleRun | null> {
+    const id = this.runIdsByIdempotencyKey.get(key.trim());
+    if (!id) return null;
+    const run = this.runs.get(id);
+    if (!run) {
+      throw new ScheduleInvalidStateError(
+        `Schedule run idempotency index is corrupted for "${key.trim()}"`,
+      );
+    }
+    return clone(run);
   }
 
   async listRuns(filter: ScheduleRunFilter = {}): Promise<ScheduleRun[]> {

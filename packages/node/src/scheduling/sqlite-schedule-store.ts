@@ -691,7 +691,7 @@ export class SQLiteScheduleStore implements ScheduleStore {
     return decodeRun(row);
   }
 
-  private getRunByIdempotencyKey(key: string): ScheduleRun | null {
+  getRunByIdempotencyKey(key: string): ScheduleRun | null {
     const row = this.db.prepare(
       "SELECT * FROM polpo_schedule_runs_v2 WHERE idempotency_key = ?",
     ).get(key) as RunRow | undefined;
