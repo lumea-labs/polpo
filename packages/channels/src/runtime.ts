@@ -1388,7 +1388,8 @@ function runtimeKey(
     installation.concurrency ?? defaultConcurrency ?? DEFAULT_CONCURRENCY,
   );
   const responseDelivery = JSON.stringify(installation.responseDelivery ?? null);
-  return `${installation.provider}:${installation.id}:${installation.credentialRevision}:${typing}:${activity}:${concurrency}:${responseDelivery}`;
+  const turnExecution = installation.turnExecution ?? "inline";
+  return `${installation.provider}:${installation.id}:${installation.credentialRevision}:${typing}:${activity}:${concurrency}:${responseDelivery}:${turnExecution}`;
 }
 
 function channelActivityPolicy(
