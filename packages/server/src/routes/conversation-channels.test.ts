@@ -67,6 +67,21 @@ describe("conversationChannelRoutes", () => {
       externalChannelId: "phone-1",
       idempotencyKey: "operation-1",
       settings: {
+        activity: {
+          readReceipt: "immediate",
+          typing: "before-delivery",
+        },
+        attachmentHandler: {
+          allowedMimeTypes: ["image/jpeg", "image/png"],
+          connectionId: "asset-connection-1",
+          endpoint: "https://assets.example.com/v1/channel-attachments",
+          maxAttachments: 5,
+          maxBytes: 10 * 1024 * 1024,
+          maxTotalBytes: 50 * 1024 * 1024,
+          timeoutMs: 10_000,
+          type: "http",
+          version: 1,
+        },
         identityResolver: {
           connectionId: "resolver-connection-1",
           endpoint: "https://resolver.example.com/v1/channel-context",
@@ -85,6 +100,16 @@ describe("conversationChannelRoutes", () => {
         channel: {
           id: "channel-1",
           settings: {
+            activity: {
+              readReceipt: "immediate",
+              typing: "before-delivery",
+            },
+            attachmentHandler: {
+              connectionId: "asset-connection-1",
+              maxAttachments: 5,
+              type: "http",
+              version: 1,
+            },
             identityResolver: {
               connectionId: "resolver-connection-1",
               endpoint: "https://resolver.example.com/v1/channel-context",
@@ -159,6 +184,40 @@ describe("conversationChannelRoutes", () => {
     }));
 
     expect(response.status).toBe(400);
+  });
+
+  it("rejects unsafe attachment handler limits and unknown activity values", async () => {
+    const state = harness();
+    const invalidLimits = await state.app.request("/configure", json("POST", {
+      provider: "whatsapp",
+      agentName: "assistant",
+      connectionId: "connection-1",
+      externalChannelId: "phone-1",
+      idempotencyKey: "invalid-attachment-limits",
+      settings: {
+        attachmentHandler: {
+          connectionId: "asset-connection",
+          endpoint: "https://assets.example.com/ingest",
+          maxBytes: 1024,
+          maxTotalBytes: 512,
+          type: "http",
+          version: 1,
+        },
+      },
+    }));
+    expect(invalidLimits.status).toBe(400);
+
+    const invalidActivity = await state.app.request("/configure", json("POST", {
+      provider: "whatsapp",
+      agentName: "assistant",
+      connectionId: "connection-1",
+      externalChannelId: "phone-1",
+      idempotencyKey: "invalid-activity",
+      settings: {
+        activity: { readReceipt: "eventually", typing: "forever" },
+      },
+    }));
+    expect(invalidActivity.status).toBe(400);
   });
 
   it("accepts and removes the active run policy through the management API", async () => {

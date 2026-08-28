@@ -214,6 +214,38 @@ const handleTurn = createConversationChannelTurnHandler(serverDeps, {
 });
 ```
 
+Attachment resolution runs after trusted identity resolution but before agent
+selection, Session creation, history, or model work. The resolver receives the
+immutable invocation context so a host can ingest provider media into its own
+authoritative asset store and return only an opaque application reference:
+
+```ts
+resolveAttachment: async (attachment, { invocation, turn }) => {
+  const asset = await assets.ingest({ attachment, invocation, turn });
+  return { type: "text", text: `[attachment reference: ${asset.id}]` };
+},
+```
+
+Do not expose provider credentials, temporary download URLs, or trusted grants
+in the returned model content.
+
+Read receipts and typing have separate lifecycle controls. Existing
+`typingEnabled` remains compatible; new installations should use `activity`:
+
+```ts
+const installation = {
+  // ...provider and credentials
+  activity: {
+    readReceipt: "immediate",
+    typing: "before-delivery",
+  },
+};
+```
+
+`before-delivery` emits typing for progress and terminal delivery, rather than
+at the start of a potentially long-running turn. Unsupported read receipts are
+a provider capability no-op and never block execution.
+
 Applications that map provider users to their own identity can resolve that
 identity before Polpo selects an agent, creates a Session, or calls a model:
 

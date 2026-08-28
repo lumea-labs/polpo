@@ -46,6 +46,13 @@ export type ChannelResponseDeliveryPolicy = {
   targetCharacters?: number;
 };
 
+export type ChannelActivityPolicy = {
+  /** Mark accepted inbound messages as read independently from typing. */
+  readReceipt?: "off" | "immediate";
+  /** Control when a transient typing indicator is emitted. */
+  typing?: "off" | "immediate" | "before-delivery";
+};
+
 export type ChannelCapabilitySupport =
   | "native"
   | "partial"
@@ -266,6 +273,7 @@ export type ChannelEventCoordinator = (
 ) => Promise<"executed" | "queued" | "steered" | "rejected" | void>;
 
 type ChannelInstallationBase = {
+  activity?: ChannelActivityPolicy;
   concurrency?: ChannelConcurrencyPolicy;
   credentialRevision: string;
   id: string;
@@ -326,6 +334,9 @@ export type ChannelRuntimeEvent = {
     | "runtime.created"
     | "runtime.evicted"
     | "webhook.received"
+    | "read.completed"
+    | "read.failed"
+    | "typing.started"
     | "typing.failed"
     | "event.unhandled"
     | "event.queued"

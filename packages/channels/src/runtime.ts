@@ -55,8 +55,10 @@ type RuntimeEntry = {
 
 type TurnTarget = {
   channelId: string;
+  markAsRead?: (messageId: string) => Promise<void>;
   postable: Postable<any, unknown>;
   threadId?: string;
+  typingAllowed?: boolean;
 };
 
 const DEFAULT_CONCURRENCY = {
@@ -400,6 +402,7 @@ export class ChannelRuntime {
       };
       await this.executeTurn(installation, state, {
         channelId: thread.channelId,
+        markAsRead: whatsappReadMarker(thread),
         postable: thread,
         threadId: thread.id,
       }, turn);
@@ -692,34 +695,32 @@ export class ChannelRuntime {
       });
 
       try {
-        if (
-          installation.typingEnabled !== false
-          && await (this.options.shouldStartTyping?.(turn) ?? true)
-        ) {
-          try {
-            await target.postable.startTyping();
-          } catch (error) {
-            await this.emit({
-              channelId: target.channelId,
-              error: errorMessage(error),
-              installationId: installation.id,
-              messageId,
-              name: "typing.failed",
-              provider: installation.provider,
-              threadId: target.threadId,
-            });
+        const activity = channelActivityPolicy(installation);
+        const executionTarget: TurnTarget = {
+          ...target,
+          typingAllowed: await (this.options.shouldStartTyping?.(turn) ?? true),
+        };
+        if (activity.readReceipt === "immediate" && target.markAsRead) {
+          for (const inbound of turn.messages) {
+            await this.markAsRead(installation, target, inbound.id);
           }
+        }
+        if (
+          activity.typing === "immediate"
+          && executionTarget.typingAllowed
+        ) {
+          await this.startTyping(installation, executionTarget, messageId);
         }
         const executionContext = this.turnExecutionContext(
           installation,
           state,
-          target,
+          executionTarget,
           messageId,
         );
         const result = this.options.handleEvent
           ? await this.options.handleEvent(event, executionContext)
           : await this.options.handleTurn!(turn, executionContext);
-        if (result) await this.deliver(installation, target, result, messageId);
+        if (result) await this.deliver(installation, executionTarget, result, messageId);
         await this.emit({
           channelId: target.channelId,
           installationId: installation.id,
@@ -898,6 +899,12 @@ export class ChannelRuntime {
     };
     try {
       validateTurnResult(result);
+      if (
+        target.typingAllowed !== false
+        && channelActivityPolicy(installation).typing === "before-delivery"
+      ) {
+        await this.startTyping(installation, target, sourceMessageId);
+      }
       if (result.posts?.length) {
         for (const nativePost of result.posts) await post(nativePost);
       } else if (result.actions?.length) {
@@ -1083,6 +1090,62 @@ export class ChannelRuntime {
         }
       },
     });
+  }
+
+  private async markAsRead(
+    installation: ChannelInstallation,
+    target: TurnTarget,
+    messageId: string,
+  ): Promise<void> {
+    try {
+      await target.markAsRead?.(messageId);
+      await this.emit({
+        channelId: target.channelId,
+        installationId: installation.id,
+        messageId,
+        name: "read.completed",
+        provider: installation.provider,
+        threadId: target.threadId,
+      });
+    } catch (error) {
+      await this.emit({
+        channelId: target.channelId,
+        error: errorMessage(error),
+        installationId: installation.id,
+        messageId,
+        name: "read.failed",
+        provider: installation.provider,
+        threadId: target.threadId,
+      });
+    }
+  }
+
+  private async startTyping(
+    installation: ChannelInstallation,
+    target: TurnTarget,
+    messageId?: string,
+  ): Promise<void> {
+    try {
+      await target.postable.startTyping();
+      await this.emit({
+        channelId: target.channelId,
+        installationId: installation.id,
+        messageId,
+        name: "typing.started",
+        provider: installation.provider,
+        threadId: target.threadId,
+      });
+    } catch (error) {
+      await this.emit({
+        channelId: target.channelId,
+        error: errorMessage(error),
+        installationId: installation.id,
+        messageId,
+        name: "typing.failed",
+        provider: installation.provider,
+        threadId: target.threadId,
+      });
+    }
   }
 
   private async prune(): Promise<void> {
@@ -1286,11 +1349,33 @@ function runtimeKey(
   defaultConcurrency?: ChannelRuntimeOptions["concurrency"],
 ): string {
   const typing = installation.typingEnabled === false ? "silent" : "typing";
+  const activity = JSON.stringify(installation.activity ?? null);
   const concurrency = JSON.stringify(
     installation.concurrency ?? defaultConcurrency ?? DEFAULT_CONCURRENCY,
   );
   const responseDelivery = JSON.stringify(installation.responseDelivery ?? null);
-  return `${installation.provider}:${installation.id}:${installation.credentialRevision}:${typing}:${concurrency}:${responseDelivery}`;
+  return `${installation.provider}:${installation.id}:${installation.credentialRevision}:${typing}:${activity}:${concurrency}:${responseDelivery}`;
+}
+
+function channelActivityPolicy(
+  installation: ChannelInstallation,
+): Required<NonNullable<ChannelInstallation["activity"]>> {
+  return {
+    readReceipt: installation.activity?.readReceipt ?? "off",
+    typing: installation.activity?.typing
+      ?? (installation.typingEnabled === false ? "off" : "immediate"),
+  };
+}
+
+function whatsappReadMarker(
+  thread: Thread,
+): ((messageId: string) => Promise<void>) | undefined {
+  const adapter = thread.adapter as Adapter & {
+    markAsRead?: (messageId: string) => Promise<void>;
+  };
+  return typeof adapter.markAsRead === "function"
+    ? (messageId) => adapter.markAsRead!(messageId)
+    : undefined;
 }
 
 async function coordinateWithDisposition(
