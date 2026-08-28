@@ -223,7 +223,18 @@ const handleTurn = createConversationChannelTurnHandler(serverDeps, {
   resolveInvocation: async (turn) => {
     const resolution = await resolveApplicationIdentity(turn);
     if (resolution.kind === "pairing") {
-      return { disposition: "consume", reply: resolution.reply };
+      return {
+        disposition: "consume",
+        presentation: {
+          text: resolution.reply,
+          actions: [{
+            id: "open-builder",
+            label: "Open builder",
+            type: "open_url",
+            url: resolution.builderUrl,
+          }],
+        },
+      };
     }
     return {
       disposition: "dispatch",
@@ -237,6 +248,11 @@ const handleTurn = createConversationChannelTurnHandler(serverDeps, {
   },
 });
 ```
+
+A consumed turn may use the legacy text-only `reply` or a provider-neutral
+`presentation`, but never both. Presentations are validated before delivery,
+do not create a Session or invoke a model, and support the same `open_url` and
+`postback` actions as Project Loop results.
 
 ### Channel tool policy
 
