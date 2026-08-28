@@ -406,6 +406,12 @@ deprecated compatibility alias; new definitions should use `allowedTools`.
 ```jsonc
 {
   "name": "router-flow",
+  "groups": {
+    "request_routing": {
+      "label": "Route request",
+      "description": "Classify the request and select its execution path."
+    }
+  },
   "context": "shared",
   "start": "clone_repo",
   "steps": {
@@ -421,6 +427,9 @@ deprecated compatibility alias; new definitions should use `allowedTools`.
     },
     "classify": {
       "type": "agent",
+      "label": "Classify request",
+      "description": "Select the route without executing it.",
+      "group": "request_routing",
       "systemPrompt": "Classify the incoming request.",
       "tools": ["read"],
       "skills": ["classification"],
@@ -434,8 +443,12 @@ deprecated compatibility alias; new definitions should use `allowedTools`.
       },
       "stopWhen": { "expression": "classify.route != null" },
       "next": [
-        { "when": "classify.route == 'answer'", "to": "answer" },
-        { "to": "human_review" }
+        {
+          "when": "classify.route == 'answer'",
+          "label": "Answer directly",
+          "to": "answer"
+        },
+        { "label": "Needs review", "to": "human_review" }
       ]
     },
     "answer": {
@@ -460,6 +473,15 @@ deprecated compatibility alias; new definitions should use `allowedTools`.
   }
 }
 ```
+
+`label` and `description` are optional display metadata on named and inline
+steps, switch cases, and conditional transitions. `groups` declares logical
+visual sections, while a step's `group` assigns it to one section. These fields
+never alter execution, ordering, tool access, or context propagation. Existing
+Loop definitions remain valid without them, and runtimes that do not render
+graphs can safely ignore them.
+Each step belongs to at most one logical group; groups do not nest in this
+contract version.
 
 `.polpo/agents/router/agent.json`:
 

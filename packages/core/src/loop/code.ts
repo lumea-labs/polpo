@@ -4,6 +4,7 @@ import type {
   HumanLoopStep,
   LoopHookAction,
   LoopNext,
+  LoopTransition,
   ParallelLoopStep,
   ProjectLoopConfig,
   ProjectLoopPermission,
@@ -52,12 +53,19 @@ export function whileStep(step: Omit<WhileLoopStep, "type">): WhileLoopStep {
   return { type: "while", ...step };
 }
 
-export function when(expression: string, to: string): Exclude<LoopNext, string>[number] {
-  return { when: expression, to };
+export function when(
+  expression: string,
+  to: string,
+  metadata: Pick<LoopTransition, "label" | "description"> = {},
+): Exclude<LoopNext, string>[number] {
+  return { when: expression, to, ...metadata };
 }
 
-export function otherwise(to: string): Exclude<LoopNext, string>[number] {
-  return { to };
+export function otherwise(
+  to: string,
+  metadata: Pick<LoopTransition, "label" | "description"> = {},
+): Exclude<LoopNext, string>[number] {
+  return { to, ...metadata };
 }
 
 export function requireTool(tool: string): { mode: "required"; tool: string } {

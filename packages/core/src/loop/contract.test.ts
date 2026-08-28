@@ -59,6 +59,115 @@ describe("agentLoopConfigSchema", () => {
     expect(parsed.pipeline?.steps).toHaveLength(2);
   });
 
+  it("preserves human metadata and logical groups on inline pipeline steps", () => {
+    const parsed = agentLoopConfigSchema.parse({
+      loops: {
+        classify: {},
+        process: {},
+      },
+      pipeline: {
+        groups: {
+          invoice_processing: {
+            label: "Processing invoice",
+            description: "Extract and validate invoice data.",
+          },
+        },
+        steps: [
+          {
+            key: "classify_invoice",
+            label: "Classify invoice",
+            description: "Determine the invoice route.",
+            group: "invoice_processing",
+            loop: "classify",
+          },
+          {
+            label: "Choose processing route",
+            group: "invoice_processing",
+            switch: {
+              cases: [{
+                label: "New customer",
+                description: "The invoice belongs to a new customer.",
+                when: "classification.customer == 'new'",
+                steps: [{
+                  label: "Process new customer invoice",
+                  group: "invoice_processing",
+                  loop: "process",
+                }],
+              }],
+              default: {
+                label: "Existing customer",
+                steps: [{ loop: "process", group: "invoice_processing" }],
+              },
+            },
+          },
+        ],
+      },
+    });
+
+    expect(parsed.pipeline?.groups?.invoice_processing).toEqual({
+      label: "Processing invoice",
+      description: "Extract and validate invoice data.",
+    });
+    expect(parsed.pipeline?.steps[0]).toMatchObject({
+      key: "classify_invoice",
+      label: "Classify invoice",
+      description: "Determine the invoice route.",
+      group: "invoice_processing",
+    });
+    expect((parsed.pipeline?.steps[1] as any).switch.cases[0]).toMatchObject({
+      label: "New customer",
+      description: "The invoice belongs to a new customer.",
+    });
+    expect((parsed.pipeline?.steps[1] as any).switch.default).toMatchObject({
+      label: "Existing customer",
+    });
+  });
+
+  it("rejects inline steps that reference an unknown logical group", () => {
+    const parsed = agentLoopConfigSchema.safeParse({
+      loops: { classify: {} },
+      pipeline: {
+        steps: [{ loop: "classify", group: "missing" }],
+      },
+    });
+
+    expect(parsed.success).toBe(false);
+    expect(parsed.error?.issues.some((issue) =>
+      issue.message.includes('unknown group "missing"'))).toBe(true);
+  });
+
+  it("rejects unknown logical groups in nested inline branches", () => {
+    const parsed = agentLoopConfigSchema.safeParse({
+      loops: { classify: {} },
+      pipeline: {
+        groups: { known: { label: "Known" } },
+        steps: [{
+          switch: {
+            cases: [{
+              when: "true",
+              steps: [{ loop: "classify", group: "missing" }],
+            }],
+          },
+        }],
+      },
+    });
+
+    expect(parsed.success).toBe(false);
+    expect(parsed.error?.issues.some((issue) =>
+      issue.message.includes('unknown group "missing"'))).toBe(true);
+  });
+
+  it("rejects empty logical group display metadata", () => {
+    const parsed = projectLoopConfigSchema.safeParse({
+      name: "invalid-group-label",
+      groups: { processing: { label: "" } },
+      start: "work",
+      steps: { work: { type: "agent", next: "end" } },
+    });
+
+    expect(parsed.success).toBe(false);
+  });
+
   it("accepts structured model policies on loop model overrides", () => {
     const model = {
       primary: "anthropic/claude-sonnet-4",
@@ -142,6 +251,73 @@ describe("agentLoopConfigSchema", () => {
       { switch: { cases: [{ when: "approve_plan.decision == 'approve'" }] } },
     ]);
     expect(JSON.stringify(normalized.pipeline?.steps)).toContain("clone_repository");
+  });
+
+  it("preserves project-loop groups and human transition labels when normalizing", () => {
+    const loop = projectLoopConfigSchema.parse({
+      name: "invoice-flow",
+      groups: {
+        invoice_processing: {
+          label: "Processing invoice",
+          description: "Extract, validate, and reconcile.",
+        },
+      },
+      start: "classify",
+      steps: {
+        classify: {
+          type: "agent",
+          label: "Classify invoice",
+          group: "invoice_processing",
+          next: [
+            {
+              when: "classification.customer == 'new'",
+              label: "New customer",
+              description: "Start customer onboarding.",
+              to: "process",
+            },
+            { label: "Existing customer", to: "end" },
+          ],
+        },
+        process: {
+          type: "tool",
+          label: "Process invoice",
+          group: "invoice_processing",
+          tool: "invoice_process",
+          next: "end",
+        },
+      },
+    }) as ProjectLoopConfig;
+
+    const normalized = normalizeProjectLoop(loop);
+
+    expect(normalized.pipeline?.groups).toEqual(loop.groups);
+    expect(normalized.pipeline?.steps[0]).toMatchObject({
+      key: "classify",
+      label: "Classify invoice",
+      group: "invoice_processing",
+    });
+    expect((normalized.pipeline?.steps[1] as any).switch.cases[0]).toMatchObject({
+      label: "New customer",
+      description: "Start customer onboarding.",
+    });
+    expect((loop.steps.classify.next as any[])[1]).toMatchObject({
+      label: "Existing customer",
+      to: "end",
+    });
+  });
+
+  it("rejects project steps that reference an unknown logical group", () => {
+    const parsed = projectLoopConfigSchema.safeParse({
+      name: "invalid-group",
+      start: "work",
+      steps: {
+        work: { type: "agent", group: "missing", next: "end" },
+      },
+    });
+
+    expect(parsed.success).toBe(false);
+    expect(parsed.error?.issues.some((issue) =>
+      issue.message.includes('unknown group "missing"'))).toBe(true);
   });
 
   it("preserves conditional transitions to end as empty switch branches", () => {
@@ -292,7 +468,10 @@ describe("agentLoopConfigSchema", () => {
           tool: "bash",
           input: { command: "pnpm build" },
           saveAs: "build",
-          next: [when("build.exitCode != 0", "plan"), otherwise("end")],
+          next: [
+            when("build.exitCode != 0", "plan", { label: "Retry planning" }),
+            otherwise("end", { label: "Build passed" }),
+          ],
         }),
       },
     });
@@ -315,7 +494,10 @@ describe("agentLoopConfigSchema", () => {
           type: "tool",
           label: "Build check",
           description: "Run the deterministic build command.",
-          next: [{ when: "build.exitCode != 0", to: "plan" }, { to: "end" }],
+          next: [
+            { when: "build.exitCode != 0", to: "plan", label: "Retry planning" },
+            { to: "end", label: "Build passed" },
+          ],
         },
       },
     });
