@@ -262,6 +262,11 @@ describe("brainRoutes", () => {
 
     for (const response of responses) {
       expect(response.status).toBe(400);
+      expect(await response.json()).toEqual({
+        ok: false,
+        error: "Invalid Brain request",
+        code: "invalid_request",
+      });
     }
     expect(runtime.runtime.readSource).not.toHaveBeenCalled();
     expect(runtime.runtime.listVersions).not.toHaveBeenCalled();
@@ -351,6 +356,11 @@ describe("brainRoutes", () => {
 
     for (const response of await Promise.all(requests)) {
       expect(response.status).toBe(400);
+      expect(await response.json()).toEqual({
+        ok: false,
+        error: "Invalid Brain request",
+        code: "invalid_request",
+      });
     }
     expect(runtime.runtime.createSource).not.toHaveBeenCalled();
     expect(runtime.runtime.search).not.toHaveBeenCalled();

@@ -366,7 +366,16 @@ function inferredScope(
 export function brainRoutes(
   resolveDeps: BrainRouteDepsResolver,
 ): OpenAPIHono {
-  const app = new OpenAPIHono();
+  const app = new OpenAPIHono({
+    defaultHook: (result, c) => {
+      if (result.success) return;
+      return c.json({
+        ok: false as const,
+        error: "Invalid Brain request",
+        code: "invalid_request" as const,
+      }, 400);
+    },
+  });
 
   app.openapi(listRoute, async (c) => {
     try {
