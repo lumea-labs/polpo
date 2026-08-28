@@ -83,6 +83,7 @@ class ChannelDeliveryFailure extends Error {
 }
 
 export class ChannelRuntime {
+  private readonly backgroundTurns = new Map<Promise<void>, string>();
   private readonly entries = new Map<string, RuntimeEntry>();
   private readonly pendingEvents = new Set<Promise<void>>();
   private readonly pendingInstallations = new Map<string, Promise<RuntimeEntry>>();
@@ -223,6 +224,7 @@ export class ChannelRuntime {
   }
 
   async invalidate(installationId: string): Promise<void> {
+    await this.drainBackgroundTurns(installationId);
     const matching = [...this.entries.values()].filter(
       (entry) => entry.installation.id === installationId,
     );
@@ -230,6 +232,7 @@ export class ChannelRuntime {
   }
 
   async shutdown(): Promise<void> {
+    await this.drainBackgroundTurns();
     const entries = [...this.entries.values()];
     await Promise.all(entries.map((entry) => this.evict(entry)));
     await this.flushPendingEvents();
@@ -743,33 +746,64 @@ export class ChannelRuntime {
       }
     };
 
-    if (this.options.handleEvent && this.options.coordinateEvent) {
-      const disposition = await coordinateWithDisposition(
-        this.options.coordinateEvent,
-        event,
-        execute,
-      );
-      if (disposition && disposition !== "executed") {
-        await this.emit({
-          channelId: turn.channelId,
-          installationId: installation.id,
-          messageId,
-          name: `event.${disposition}`,
-          provider: installation.provider,
-          threadId: turn.threadId,
-        });
+    const coordinate = async (serializeLocally: boolean) => {
+      if (this.options.handleEvent && this.options.coordinateEvent) {
+        const disposition = await coordinateWithDisposition(
+          this.options.coordinateEvent,
+          event,
+          execute,
+        );
+        if (disposition && disposition !== "executed") {
+          await this.emit({
+            channelId: turn.channelId,
+            installationId: installation.id,
+            messageId,
+            name: `event.${disposition}`,
+            provider: installation.provider,
+            threadId: turn.threadId,
+          });
+        }
+        return;
       }
+      if (this.options.coordinateTurn) {
+        await this.options.coordinateTurn(turn, execute);
+        return;
+      }
+      if (!serializeLocally || turn.coordination.strategy === "concurrent") {
+        await execute();
+        return;
+      }
+      await this.coordinateLocally(turn, execute);
+    };
+
+    if (installation.turnExecution === "background") {
+      this.scheduleBackgroundTurn(installation.id, coordinate(false));
       return;
     }
-    if (this.options.coordinateTurn) {
-      await this.options.coordinateTurn(turn, execute);
-      return;
+    await coordinate(true);
+  }
+
+  private scheduleBackgroundTurn(
+    installationId: string,
+    execution: Promise<void>,
+  ): void {
+    let tracked: Promise<void>;
+    tracked = execution
+      .catch(() => undefined)
+      .finally(() => this.backgroundTurns.delete(tracked));
+    this.backgroundTurns.set(tracked, installationId);
+    this.options.waitUntil?.(tracked);
+  }
+
+  private async drainBackgroundTurns(installationId?: string): Promise<void> {
+    while (true) {
+      const pending = [...this.backgroundTurns.entries()]
+        .filter(([, owner]) =>
+          installationId === undefined || owner === installationId)
+        .map(([task]) => task);
+      if (pending.length === 0) return;
+      await Promise.all(pending);
     }
-    if (turn.coordination.strategy === "concurrent") {
-      await execute();
-      return;
-    }
-    await this.coordinateLocally(turn, execute);
   }
 
   private async executeEvent(
