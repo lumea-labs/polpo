@@ -89,6 +89,7 @@ function deferred<T>() {
 
 function testAdapter(options: {
   disconnect?: () => Promise<void>;
+  markAsRead?: (messageId: string) => Promise<void>;
   startTyping?: () => Promise<void>;
   stream?: Adapter["stream"];
 } = {}): Adapter {
@@ -122,6 +123,9 @@ function testAdapter(options: {
     ...(options.startTyping ? { startTyping: options.startTyping } : {}),
     ...(options.stream ? { stream: options.stream } : {}),
   });
+  if (options.markAsRead) {
+    Object.assign(adapter, { markAsRead: options.markAsRead });
+  }
   return adapter;
 }
 
@@ -1720,6 +1724,113 @@ describe("ChannelRuntime", () => {
     expect(events).toContain("turn.completed");
   });
 
+  it("separates immediate read receipts from typing before delivery", async () => {
+    const markAsRead = vi.fn(async () => {});
+    const startTyping = vi.fn(async () => {});
+    const adapter = testAdapter({ markAsRead, startTyping });
+    const handleTurn = vi.fn(async () => ({ text: "done" }));
+    const runtime = createRuntime({ adapter, handleTurn });
+
+    await runtime.handleWebhook(
+      whatsappInstallation({
+        activity: {
+          readReceipt: "immediate",
+          typing: "before-delivery",
+        },
+      }),
+      webhookRequest("message-1"),
+    );
+
+    expect(markAsRead).toHaveBeenCalledWith("message-1");
+    expect(markAsRead.mock.invocationCallOrder[0])
+      .toBeLessThan(handleTurn.mock.invocationCallOrder[0]!);
+    expect(startTyping.mock.invocationCallOrder[0])
+      .toBeGreaterThan(handleTurn.mock.invocationCallOrder[0]!);
+    expect(startTyping.mock.invocationCallOrder[0])
+      .toBeLessThan(vi.mocked(adapter.postMessage).mock.invocationCallOrder[0]!);
+  });
+
+  it("does not emit delivery typing when a turn fails before delivery", async () => {
+    const markAsRead = vi.fn(async () => {});
+    const startTyping = vi.fn(async () => {});
+    const adapter = testAdapter({ markAsRead, startTyping });
+    const runtime = createRuntime({
+      adapter,
+      handleTurn: async () => {
+        throw new Error("model failed");
+      },
+    });
+
+    await expect(runtime.handleWebhook(
+      whatsappInstallation({
+        activity: {
+          readReceipt: "immediate",
+          typing: "before-delivery",
+        },
+      }),
+      webhookRequest("message-1"),
+    )).rejects.toThrow("model failed");
+
+    expect(markAsRead).toHaveBeenCalledOnce();
+    expect(startTyping).not.toHaveBeenCalled();
+  });
+
+  it("keeps read receipt failures observable but non-blocking", async () => {
+    const events: string[] = [];
+    const adapter = testAdapter({
+      markAsRead: async () => {
+        throw new Error("read unavailable");
+      },
+    });
+    const handleTurn = vi.fn(async () => ({ text: "still replied" }));
+    const runtime = createRuntime({
+      adapter,
+      handleTurn,
+      onEvent: (event) => events.push(event.name),
+    });
+
+    await runtime.handleWebhook(
+      whatsappInstallation({
+        activity: { readReceipt: "immediate", typing: "off" },
+      }),
+      webhookRequest("message-1"),
+    );
+
+    expect(handleTurn).toHaveBeenCalledOnce();
+    expect(adapter.postMessage).toHaveBeenCalledOnce();
+    expect(events).toContain("read.failed");
+    expect(events).toContain("turn.completed");
+  });
+
+  it("starts delivery typing for both idempotent progress and terminal delivery", async () => {
+    const startTyping = vi.fn(async () => {});
+    const adapter = testAdapter({ startTyping });
+    const runtime = createRuntime({
+      adapter,
+      handleTurn: async (_turn, context) => {
+        await context!.deliverProgress(
+          { text: "Working" },
+          { idempotencyKey: "progress-1" },
+        );
+        await context!.deliverProgress(
+          { text: "Working" },
+          { idempotencyKey: "progress-1" },
+        );
+        return { text: "Done" };
+      },
+    });
+
+    await runtime.handleWebhook(
+      whatsappInstallation({
+        activity: { readReceipt: "off", typing: "before-delivery" },
+      }),
+      webhookRequest("message-1"),
+    );
+
+    expect(startTyping).toHaveBeenCalledTimes(2);
+    expect(adapter.postMessage).toHaveBeenCalledTimes(2);
+  });
+
   it("lets the host suppress typing without suppressing the turn", async () => {
     const adapter = testAdapter();
     const handleTurn = vi.fn(async () => ({ text: "shadow-safe" }));
@@ -1729,7 +1840,12 @@ describe("ChannelRuntime", () => {
       shouldStartTyping: () => false,
     });
 
-    await runtime.handleWebhook(installation(), webhookRequest("message-1"));
+    await runtime.handleWebhook(
+      installation({
+        activity: { readReceipt: "off", typing: "before-delivery" },
+      }),
+      webhookRequest("message-1"),
+    );
 
     expect(adapter.startTyping).not.toHaveBeenCalled();
     expect(handleTurn).toHaveBeenCalledOnce();

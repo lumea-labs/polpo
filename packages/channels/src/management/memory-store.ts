@@ -114,12 +114,14 @@ export class InMemoryChannelManagementStore implements ChannelManagementStore {
     if (patch.settings !== undefined) {
       const {
         activeRunPolicy,
+        attachmentHandler,
         clientToolHandler,
         identityResolver,
         ...rest
       } = structuredClone(patch.settings);
       const {
         activeRunPolicy: currentActiveRunPolicy,
+        attachmentHandler: currentAttachmentHandler,
         clientToolHandler: currentClientToolHandler,
         identityResolver: currentIdentityResolver,
         ...currentRest
@@ -132,6 +134,11 @@ export class InMemoryChannelManagementStore implements ChannelManagementStore {
           : activeRunPolicy === null
             ? {}
             : { activeRunPolicy }),
+        ...(attachmentHandler === undefined
+          ? (currentAttachmentHandler ? { attachmentHandler: currentAttachmentHandler } : {})
+          : attachmentHandler === null
+            ? {}
+            : { attachmentHandler }),
         ...(identityResolver === undefined
           ? (currentIdentityResolver ? { identityResolver: currentIdentityResolver } : {})
           : identityResolver === null

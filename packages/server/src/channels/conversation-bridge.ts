@@ -23,6 +23,8 @@ import {
 } from "../routes/completions/conversation-turn.js";
 
 export type ChannelAttachmentResolutionContext = {
+  /** Trusted resolver output for server-side attachment ingestion. */
+  invocation?: ToolInvocationContext;
   message: ChannelInboundMessage;
   turn: ChannelInboundTurn;
 };
@@ -237,6 +239,7 @@ export function createConversationChannelTurnHandler(
       : options.resolveExternalUserId
         ? await options.resolveExternalUserId(turn)
         : defaultExternalUserId(turn, latest);
+    const content = await channelTurnContent(turn, options, trustedInvocation);
     const agent = typeof options.agent === "function"
       ? await options.agent(turn)
       : options.agent;
@@ -302,7 +305,6 @@ export function createConversationChannelTurnHandler(
       sessionId,
       options.historyLimit ?? DEFAULT_HISTORY_LIMIT,
     );
-    const content = await channelTurnContent(turn, options);
     if (trustedInvocation && sessionId) {
       trustedInvocation = invocationWithMetadata(
         trustedInvocation,
@@ -734,6 +736,7 @@ async function loadHistory(
 async function channelTurnContent(
   turn: ChannelInboundTurn,
   options: ConversationChannelBridgeOptions,
+  invocation?: ToolInvocationContext,
 ): Promise<string | ChannelConversationContentPart[]> {
   const parts: ChannelConversationContentPart[] = [];
   for (const [index, message] of turn.messages.entries()) {
@@ -745,7 +748,11 @@ async function channelTurnContent(
     }
     for (const attachment of message.attachments) {
       const resolved = options.resolveAttachment
-        ? await options.resolveAttachment(attachment, { message, turn })
+        ? await options.resolveAttachment(attachment, {
+            invocation,
+            message,
+            turn,
+          })
         : await defaultAttachmentParts(
             attachment,
             options.maxInlineAttachmentBytes

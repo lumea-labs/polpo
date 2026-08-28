@@ -16,6 +16,7 @@ export {
 } from "./webhook.js";
 export {
   CHANNEL_PROVIDER_IDS,
+  type ChannelActivityPolicy,
   type ChannelActionEvent,
   type ChannelAdapterFactory,
   type ChannelAttachment,

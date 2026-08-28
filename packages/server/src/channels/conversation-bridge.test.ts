@@ -720,6 +720,72 @@ describe("createConversationChannelTurnHandler", () => {
     expect(Object.isFrozen(executeTurn.mock.calls[0]?.[0].runtime?.metadata)).toBe(true);
   });
 
+  it("prepares attachments with trusted identity before Session and model work", async () => {
+    const store = new TestSessionStore();
+    const order: string[] = [];
+    const executeTurn = vi.fn<ChannelConversationTurnExecutor>(async (input) => {
+      order.push("execute");
+      return successfulResult(input.sessionId ?? null);
+    });
+    const resolveAttachment = vi.fn(async (_attachment, context) => {
+      order.push("attachment");
+      expect(store.sessions).toHaveLength(0);
+      expect(context.invocation).toMatchObject({
+        user: "user-1",
+        metadata: {
+          grant: "signed-grant",
+          siteId: "site-1",
+        },
+        scope: { key: "site-1", version: "4" },
+      });
+      return {
+        type: "text" as const,
+        text: "[attachment reference: asset-1]",
+      };
+    });
+    const message = turn().messages[0]!;
+    const handler = createConversationChannelTurnHandler(deps(store), {
+      agent: async () => {
+        order.push("agent");
+        return "assistant";
+      },
+      executeTurn,
+      resolveAttachment,
+      resolveInvocation: async () => {
+        order.push("identity");
+        return {
+          disposition: "dispatch",
+          user: "user-1",
+          metadata: { grant: "signed-grant", siteId: "site-1" },
+          scope: { key: "site-1", version: "4" },
+        };
+      },
+    });
+
+    await handler(turn({
+      messages: [{
+        ...message,
+        attachments: [{
+          fetchData: async () => {
+            throw new Error("the default attachment reader must not run");
+          },
+          mimeType: "image/png",
+          name: "hero.png",
+          size: 123,
+          type: "image",
+        }],
+        text: "",
+      }],
+    }));
+
+    expect(order).toEqual(["identity", "attachment", "agent", "execute"]);
+    expect(resolveAttachment).toHaveBeenCalledOnce();
+    expect(executeTurn.mock.calls[0]?.[0].body.messages.at(-1)?.content)
+      .toBe("[attachment reference: asset-1]");
+    expect(JSON.stringify(executeTurn.mock.calls[0]?.[0].body))
+      .not.toContain("signed-grant");
+  });
+
   it("partitions sessions and history by immutable trusted scope", async () => {
     const store = new TestSessionStore();
     let scope = { key: "personal", version: "1" };

@@ -1,4 +1,5 @@
 import type {
+  ChannelActivityPolicy,
   ChannelConcurrencyPolicy,
   ChannelProviderId,
   ChannelResponseDeliveryPolicy,
@@ -49,6 +50,18 @@ export type ConversationChannelIdentityResolver = Readonly<{
   version: 1;
 }>;
 
+export type ConversationChannelAttachmentHandler = Readonly<{
+  allowedMimeTypes?: readonly string[];
+  connectionId: string;
+  endpoint: string;
+  maxAttachments?: number;
+  maxBytes?: number;
+  maxTotalBytes?: number;
+  timeoutMs?: number;
+  type: "http";
+  version: 1;
+}>;
+
 export type ConversationChannelClientToolContinuation =
   | Readonly<{
       description?: string;
@@ -81,6 +94,8 @@ export type ConversationChannelActiveRunPolicy = Readonly<{
 
 export type ConversationChannelSettings = Readonly<{
   activeRunPolicy?: ConversationChannelActiveRunPolicy;
+  activity?: ChannelActivityPolicy;
+  attachmentHandler?: ConversationChannelAttachmentHandler;
   clientToolHandler?: ConversationChannelClientToolHandler;
   concurrency?: ChannelConcurrencyPolicy;
   identityResolver?: ConversationChannelIdentityResolver;
@@ -92,9 +107,10 @@ export type ConversationChannelSettings = Readonly<{
 export type ConversationChannelSettingsPatch = Readonly<
   Omit<
     ConversationChannelSettings,
-    "activeRunPolicy" | "clientToolHandler" | "identityResolver"
+    "activeRunPolicy" | "attachmentHandler" | "clientToolHandler" | "identityResolver"
   > & {
     activeRunPolicy?: ConversationChannelActiveRunPolicy | null;
+    attachmentHandler?: ConversationChannelAttachmentHandler | null;
     clientToolHandler?: ConversationChannelClientToolHandler | null;
     identityResolver?: ConversationChannelIdentityResolver | null;
   }

@@ -89,8 +89,36 @@ const channelClientToolHandler = z.object({
   type: z.literal("http"),
   version: z.literal(1),
 }).strict();
+const channelAttachmentHandler = z.object({
+  allowedMimeTypes: z.array(z.string().trim().min(1).max(255)).max(64).optional(),
+  connectionId: z.string().min(1).max(256),
+  endpoint: z.string().url().max(2_048),
+  maxAttachments: z.number().int().min(1).max(16).optional(),
+  maxBytes: z.number().int().min(1).max(25 * 1024 * 1024).optional(),
+  maxTotalBytes: z.number().int().min(1).max(50 * 1024 * 1024).optional(),
+  timeoutMs: z.number().int().min(250).max(30_000).optional(),
+  type: z.literal("http"),
+  version: z.literal(1),
+}).strict().superRefine((handler, ctx) => {
+  if (
+    handler.maxBytes !== undefined
+    && handler.maxTotalBytes !== undefined
+    && handler.maxTotalBytes < handler.maxBytes
+  ) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "attachmentHandler.maxTotalBytes must be at least maxBytes",
+      path: ["maxTotalBytes"],
+    });
+  }
+});
 const channelSettings = z.object({
   activeRunPolicy: channelActiveRunPolicy.optional(),
+  activity: z.object({
+    readReceipt: z.enum(["off", "immediate"]).optional(),
+    typing: z.enum(["off", "immediate", "before-delivery"]).optional(),
+  }).strict().optional(),
+  attachmentHandler: channelAttachmentHandler.optional(),
   clientToolHandler: channelClientToolHandler.optional(),
   concurrency: z.object({
     debounceMs: z.number().int().nonnegative().optional(),
@@ -126,6 +154,7 @@ const updateBody = z.object({
   name: z.string().min(1).max(256).optional(),
   settings: channelSettings.extend({
     activeRunPolicy: channelActiveRunPolicy.nullable().optional(),
+    attachmentHandler: channelAttachmentHandler.nullable().optional(),
     clientToolHandler: channelClientToolHandler.nullable().optional(),
     identityResolver: channelIdentityResolver.nullable().optional(),
   }).optional(),
