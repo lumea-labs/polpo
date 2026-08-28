@@ -34,6 +34,15 @@ export interface VaultRouteDeps {
 export interface ChatRouteDeps {
   sessionStore?: SessionStore;
   runStore?: RunStore;
+  /**
+   * Tail-latency policy for read-only Session history requests.
+   * One hedge is shared by all concurrent callers for the same store/session;
+   * the response deadline never cancels or replays mutations.
+   */
+  sessionHistoryReadPolicy?: {
+    hedgeAfterMs?: number;
+    responseTimeoutMs?: number;
+  };
 }
 
 export interface LoopRunRouteDeps {

@@ -4,21 +4,59 @@ import type { ChatRouteDeps } from "../deps.js";
 
 const TRANSIENT_SESSION_READ_CODES = new Set([
   "EAI_AGAIN",
+  "ECONNABORTED",
+  "ECONNREFUSED",
   "ECONNRESET",
   "ENETDOWN",
   "ENETUNREACH",
+  "ENOTFOUND",
+  "EPIPE",
   "ETIMEDOUT",
+  "UND_ERR_BODY_TIMEOUT",
   "UND_ERR_CONNECT_TIMEOUT",
+  "UND_ERR_HEADERS_TIMEOUT",
+  "UND_ERR_SOCKET",
 ]);
-const SESSION_READ_RETRY_DELAY_MS = 50;
+const DEFAULT_SESSION_READ_HEDGE_AFTER_MS = 750;
+const DEFAULT_SESSION_READ_RESPONSE_TIMEOUT_MS = 5_000;
+
+type SessionHistoryReadPolicy = NonNullable<ChatRouteDeps["sessionHistoryReadPolicy"]>;
+
+class SessionHistoryReadTimeoutError extends Error {
+  readonly code = "SESSION_READ_DEADLINE_EXCEEDED";
+
+  constructor(readonly elapsedMs: number) {
+    super(`Session history read exceeded its ${elapsedMs}ms response deadline`);
+    this.name = "TimeoutError";
+  }
+}
+
+function positiveDuration(value: number | undefined, fallback: number): number {
+  return Number.isFinite(value) && value! > 0 ? Math.floor(value!) : fallback;
+}
+
+function normalizedSessionHistoryReadPolicy(policy?: SessionHistoryReadPolicy) {
+  return {
+    hedgeAfterMs: positiveDuration(policy?.hedgeAfterMs, DEFAULT_SESSION_READ_HEDGE_AFTER_MS),
+    responseTimeoutMs: positiveDuration(
+      policy?.responseTimeoutMs,
+      DEFAULT_SESSION_READ_RESPONSE_TIMEOUT_MS,
+    ),
+  };
+}
 
 function isTransientSessionReadError(error: unknown): boolean {
-  const seen = new Set<unknown>();
+  const active = new Set<object>();
+  const results = new Map<object, boolean>();
   const visit = (value: unknown): boolean => {
-    if (!value || (typeof value !== "object" && typeof value !== "function") || seen.has(value)) {
+    if (!value || (typeof value !== "object" && typeof value !== "function")) {
       return false;
     }
-    seen.add(value);
+    const objectValue = value as object;
+    const previous = results.get(objectValue);
+    if (previous !== undefined) return previous;
+    if (active.has(objectValue)) return false;
+    active.add(objectValue);
     const candidate = value as {
       cause?: unknown;
       code?: unknown;
@@ -27,29 +65,98 @@ function isTransientSessionReadError(error: unknown): boolean {
       name?: unknown;
       sourceError?: unknown;
     };
-    if (candidate.name === "TimeoutError" || candidate.name === "AbortError") return true;
-    if (typeof candidate.code === "string" && TRANSIENT_SESSION_READ_CODES.has(candidate.code)) {
-      return true;
-    }
-    if (
+    const directMatch = candidate.name === "TimeoutError"
+      || candidate.name === "AbortError"
+      || (typeof candidate.code === "string" && TRANSIENT_SESSION_READ_CODES.has(candidate.code))
+      || (
       typeof candidate.message === "string"
       && /(?:aborted due to timeout|request exceeded its \d+ms deadline)/i.test(candidate.message)
-    ) {
-      return true;
-    }
-    if (visit(candidate.cause) || visit(candidate.sourceError)) return true;
-    return Array.isArray(candidate.errors) && candidate.errors.some(visit);
+      );
+    const result = directMatch
+      || visit(candidate.cause)
+      || visit(candidate.sourceError)
+      || (
+        Array.isArray(candidate.errors)
+        && candidate.errors.length > 0
+        && candidate.errors.every(visit)
+      );
+    active.delete(objectValue);
+    results.set(objectValue, result);
+    return result;
   };
   return visit(error);
 }
 
-async function retryTransientSessionRead<T>(operation: () => Promise<T>): Promise<T> {
+function hedgedSessionRead<T>(operation: () => Promise<T>, hedgeAfterMs: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    let attemptsStarted = 0;
+    let settled = false;
+    const failures: unknown[] = [];
+    let hedgeTimer: ReturnType<typeof setTimeout> | undefined;
+
+    const finish = (callback: () => void) => {
+      if (settled) return;
+      settled = true;
+      if (hedgeTimer) clearTimeout(hedgeTimer);
+      callback();
+    };
+
+    const startAttempt = () => {
+      if (settled || attemptsStarted >= 2) return;
+      attemptsStarted += 1;
+      let attempt: Promise<T>;
+      try {
+        attempt = operation();
+      } catch (error) {
+        attempt = Promise.reject(error);
+      }
+      attempt.then(
+        (value) => finish(() => resolve(value)),
+        (error) => {
+          if (settled) return;
+          if (!isTransientSessionReadError(error)) {
+            finish(() => reject(error));
+            return;
+          }
+          failures.push(error);
+          if (attemptsStarted === 1) {
+            startAttempt();
+            return;
+          }
+          if (failures.length === attemptsStarted) {
+            finish(() => reject(new AggregateError(
+              failures,
+              "Session history read failed after two transient attempts",
+            )));
+          }
+        },
+      );
+    };
+
+    startAttempt();
+    if (!settled && attemptsStarted < 2) {
+      hedgeTimer = setTimeout(startAttempt, hedgeAfterMs);
+    }
+  });
+}
+
+async function withSessionReadResponseDeadline<T>(
+  operation: Promise<T>,
+  responseTimeoutMs: number,
+): Promise<T> {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
   try {
-    return await operation();
-  } catch (error) {
-    if (!isTransientSessionReadError(error)) throw error;
-    await new Promise((resolve) => setTimeout(resolve, SESSION_READ_RETRY_DELAY_MS));
-    return operation();
+    return await Promise.race([
+      operation,
+      new Promise<never>((_, reject) => {
+        timeout = setTimeout(
+          () => reject(new SessionHistoryReadTimeoutError(responseTimeoutMs)),
+          responseTimeoutMs,
+        );
+      }),
+    ]);
+  } finally {
+    if (timeout) clearTimeout(timeout);
   }
 }
 
@@ -194,22 +301,29 @@ export function chatRoutes(getDeps: () => ChatRouteDeps): OpenAPIHono {
   const readSessionHistory = (
     sessionStore: NonNullable<ChatRouteDeps["sessionStore"]>,
     sessionId: string,
+    policy?: SessionHistoryReadPolicy,
   ) => {
+    const normalizedPolicy = normalizedSessionHistoryReadPolicy(policy);
     let storeReads = inFlightSessionHistory.get(sessionStore);
     if (!storeReads) {
       storeReads = new Map();
       inFlightSessionHistory.set(sessionStore, storeReads);
     }
     const current = storeReads.get(sessionId);
-    if (current) return current;
+    if (current) {
+      return current;
+    }
 
-    const read = retryTransientSessionRead(async () => {
-      const [session, messages] = await Promise.all([
-        sessionStore.getSession(sessionId),
-        sessionStore.getMessages(sessionId),
-      ]);
-      return { messages, session };
-    });
+    const read = withSessionReadResponseDeadline(
+      hedgedSessionRead(async () => {
+        const [session, messages] = await Promise.all([
+          sessionStore.getSession(sessionId),
+          sessionStore.getMessages(sessionId),
+        ]);
+        return { messages, session };
+      }, normalizedPolicy.hedgeAfterMs),
+      normalizedPolicy.responseTimeoutMs,
+    );
     const tracked = read.finally(() => {
       if (storeReads.get(sessionId) === tracked) {
         storeReads.delete(sessionId);
@@ -297,7 +411,7 @@ export function chatRoutes(getDeps: () => ChatRouteDeps): OpenAPIHono {
 
   // GET /chat/sessions/:id/messages — get messages for a session
   app.openapi(getSessionMessagesRoute, async (c) => {
-    const { sessionStore } = getDeps();
+    const { sessionHistoryReadPolicy, sessionStore } = getDeps();
     if (!sessionStore) {
       return c.json({ ok: false, error: "Session store not available", code: "NOT_AVAILABLE" }, 503);
     }
@@ -305,7 +419,11 @@ export function chatRoutes(getDeps: () => ChatRouteDeps): OpenAPIHono {
     let session: any;
     let messages: any[];
     try {
-      ({ messages, session } = await readSessionHistory(sessionStore, id));
+      ({ messages, session } = await readSessionHistory(
+        sessionStore,
+        id,
+        sessionHistoryReadPolicy,
+      ));
     } catch (error) {
       if (!isTransientSessionReadError(error)) throw error;
       console.warn("[chat] session history temporarily unavailable", {
@@ -328,7 +446,7 @@ export function chatRoutes(getDeps: () => ChatRouteDeps): OpenAPIHono {
   });
 
   app.openapi(getSessionActivityRoute, async (c) => {
-    const { sessionStore, runStore } = getDeps();
+    const { sessionHistoryReadPolicy, sessionStore, runStore } = getDeps();
     if (!sessionStore) {
       return c.json({ ok: false, error: "Session store not available", code: "NOT_AVAILABLE" }, 503);
     }
@@ -336,7 +454,11 @@ export function chatRoutes(getDeps: () => ChatRouteDeps): OpenAPIHono {
     let session: any;
     let messages: any[];
     try {
-      ({ messages, session } = await readSessionHistory(sessionStore, id));
+      ({ messages, session } = await readSessionHistory(
+        sessionStore,
+        id,
+        sessionHistoryReadPolicy,
+      ));
     } catch (error) {
       if (!isTransientSessionReadError(error)) throw error;
       console.warn("[chat] session activity temporarily unavailable", {
