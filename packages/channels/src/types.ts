@@ -278,6 +278,12 @@ type ChannelInstallationBase = {
   credentialRevision: string;
   id: string;
   responseDelivery?: ChannelResponseDeliveryPolicy;
+  /**
+   * Release transport coordination after a canonical turn has been assembled,
+   * then execute and deliver the turn through the runtime background task set.
+   * Hosts must pair this with authoritative Session/run coordination.
+   */
+  turnExecution?: "background" | "inline";
   typingEnabled?: boolean;
   userName?: string;
 };
@@ -386,6 +392,8 @@ export type ChannelRuntimeOptions = {
   shouldStartTyping?: (turn: ChannelInboundTurn) => boolean | Promise<boolean>;
   stateFactory?: ChannelStateFactory;
   streamingUpdateIntervalMs?: number;
+  /** Extend the host lifetime while a background Channel turn is executing. */
+  waitUntil?: (task: Promise<unknown>) => void;
 };
 
 export type ChannelWebhookOptions = WebhookOptions;

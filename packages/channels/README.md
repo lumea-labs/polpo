@@ -461,8 +461,29 @@ resolveSessionDisposition: async (_turn, sessionId) =>
 ```
 
 Managed hosts expose the equivalent opt-in `activeRunPolicy`. Use Channel
-concurrency `concurrent` when the rejection must be immediate rather than
-queued behind the active turn.
+concurrency `concurrent` for zero-delay rejection. A host that needs bounded
+`burst` aggregation before the same check can mark the resolved installation
+with `turnExecution: "background"`. The runtime then releases Chat SDK transport
+coordination after the canonical burst is assembled, while the turn and its
+delivery continue through the runtime background task set:
+
+```ts
+const runtime = new ChannelRuntime({
+  handleTurn,
+  waitUntil: (task) => executionContext.waitUntil(task),
+});
+
+const installation = {
+  ...resolvedInstallation,
+  concurrency: { strategy: "burst", debounceMs: 2_000 },
+  turnExecution: "background",
+};
+```
+
+Only hosts with authoritative Session/run coordination should enable this
+mode. `shutdown()` and installation invalidation drain matching background
+turns before disconnecting their adapters; execution failures remain visible
+through `turn.failed` without converting an acknowledged webhook into a retry.
 
 Cloud Channel configuration declares both the continuation policy and the
 OpenAI-compatible function schema. The endpoint, Connection, Loop, and trusted

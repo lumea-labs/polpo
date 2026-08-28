@@ -281,6 +281,7 @@ function createRuntime(options: {
   observabilityTimeoutMs?: ConstructorParameters<typeof ChannelRuntime>[0]["observabilityTimeoutMs"];
   onEvent?: ConstructorParameters<typeof ChannelRuntime>[0]["onEvent"];
   shouldStartTyping?: ConstructorParameters<typeof ChannelRuntime>[0]["shouldStartTyping"];
+  waitUntil?: ConstructorParameters<typeof ChannelRuntime>[0]["waitUntil"];
 } = {}): ChannelRuntime {
   const adapter = options.adapter ?? testAdapter();
   const runtime = new ChannelRuntime({
@@ -293,6 +294,7 @@ function createRuntime(options: {
     onEvent: options.onEvent,
     shouldStartTyping: options.shouldStartTyping,
     stateFactory: () => createMockState(),
+    waitUntil: options.waitUntil,
   });
   runtimes.push(runtime);
   return runtime;
@@ -587,6 +589,86 @@ describe("ChannelRuntime", () => {
       messageId: "message-3",
       name: "transport.message.dequeued",
     }));
+  });
+
+  it("releases burst transport coordination before a background turn finishes", async () => {
+    const firstStarted = deferred<void>();
+    const releaseFirst = deferred<void>();
+    const secondStarted = deferred<void>();
+    const turns: string[][] = [];
+    const waitUntil = vi.fn<(task: Promise<unknown>) => void>();
+    const runtime = createRuntime({
+      handleTurn: async (turn) => {
+        const messages = turn.messages.map((message) => message.text);
+        turns.push(messages);
+        if (messages.includes("caption")) {
+          firstStarted.resolve();
+          await releaseFirst.promise;
+        } else {
+          secondStarted.resolve();
+        }
+        return { text: "done" };
+      },
+      waitUntil,
+    });
+    const backgroundBurst = installation({
+      concurrency: {
+        debounceMs: 10,
+        maxQueueSize: 20,
+        onQueueFull: "drop-oldest",
+        queueEntryTtlMs: 120_000,
+        strategy: "burst",
+      },
+      turnExecution: "background",
+    });
+
+    const image = runtime.handleWebhook(
+      backgroundBurst,
+      webhookRequest("message-image", "image"),
+    );
+    const caption = runtime.handleWebhook(
+      backgroundBurst,
+      webhookRequest("message-caption", "caption"),
+    );
+    await Promise.all([image, caption]);
+    await firstStarted.promise;
+
+    try {
+      await runtime.handleWebhook(
+        backgroundBurst,
+        webhookRequest("message-busy", "still there?"),
+      );
+      await secondStarted.promise;
+
+      expect(turns).toEqual([
+        ["image", "caption"],
+        ["still there?"],
+      ]);
+      expect(waitUntil).toHaveBeenCalledTimes(2);
+    } finally {
+      releaseFirst.resolve();
+    }
+  });
+
+  it("keeps background turn failures out of webhook delivery and reports them", async () => {
+    const events: string[] = [];
+    const failed = deferred<void>();
+    const runtime = createRuntime({
+      handleTurn: async () => {
+        throw new Error("turn failed");
+      },
+      onEvent: (event) => {
+        events.push(event.name);
+        if (event.name === "turn.failed") failed.resolve();
+      },
+    });
+
+    await expect(runtime.handleWebhook(
+      installation({ turnExecution: "background" }),
+      webhookRequest("message-background-failure"),
+    )).resolves.toMatchObject({ status: 200 });
+    await failed.promise;
+    expect(events).toContain("turn.failed");
   });
 
   it("records queue coordination while preserving every skipped message", async () => {
