@@ -1782,6 +1782,48 @@ describe("ChannelRuntime", () => {
     expect(runtime.size).toBe(1);
   });
 
+  it("recreates the runtime when turn execution changes", async () => {
+    const releaseBackground = deferred<void>();
+    const backgroundStarted = deferred<void>();
+    const adapterFactory = vi.fn(() => testAdapter());
+    const waitUntil = vi.fn<(task: Promise<unknown>) => void>();
+    const runtime = createRuntime({
+      adapterFactory,
+      handleTurn: async (turn) => {
+        if (turn.providerEventId === "message-background") {
+          backgroundStarted.resolve();
+          await releaseBackground.promise;
+        }
+        return { text: "done" };
+      },
+      waitUntil,
+    });
+
+    await runtime.handleWebhook(
+      installation({ turnExecution: "inline" }),
+      webhookRequest("message-inline"),
+    );
+
+    try {
+      const response = await Promise.race([
+        runtime.handleWebhook(
+          installation({ turnExecution: "background" }),
+          webhookRequest("message-background"),
+        ),
+        new Promise<"timeout">((resolve) =>
+          setTimeout(() => resolve("timeout"), 100)),
+      ]);
+
+      expect(response).not.toBe("timeout");
+      await backgroundStarted.promise;
+      expect(adapterFactory).toHaveBeenCalledTimes(2);
+      expect(waitUntil).toHaveBeenCalledOnce();
+      expect(runtime.size).toBe(1);
+    } finally {
+      releaseBackground.resolve();
+    }
+  });
+
   it("does not fail the agent turn when typing is unsupported", async () => {
     const events: string[] = [];
     const handleTurn = vi.fn(async () => ({ text: "still replied" }));
