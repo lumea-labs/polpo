@@ -520,7 +520,11 @@ export async function buildAgentTools(
       fs: prep.fs,
       shell: prep.shell,
       memoryStore: ctx?.memoryStore,
+      memoryItemStore: ctx?.memoryItemStore,
       agentName: agentConfig.name,
+      agentMemory: agentConfig.memory,
+      memoryNamespace: ctx?.polpoDir,
+      toolInvocation: ctx?.toolInvocation,
       brainService: ctx?.brainService,
       brainContext: ctx?.brainContext,
       // Per-modality models from agent config. When undefined, the

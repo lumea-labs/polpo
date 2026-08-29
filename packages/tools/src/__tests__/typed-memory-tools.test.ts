@@ -9,6 +9,7 @@ import {
   createTypedMemoryTools,
   type TypedMemoryToolGrants,
 } from "../typed-memory-tools.js";
+import { InMemoryMemoryToolOperationCoordinator } from "../memory-tool-operations.js";
 
 const now = "2026-07-28T10:00:00.000Z";
 const toolContext: MemoryStoreContext = {
@@ -336,5 +337,80 @@ describe("createTypedMemoryTools", () => {
         writableKinds: ["fact"],
       },
     })).toThrow("requires a host-fixed write scope");
+  });
+
+  it("replays concurrent and later retries of the same write exactly once", async () => {
+    const store = new InMemoryMemoryItemStore();
+    const coordinator = new InMemoryMemoryToolOperationCoordinator();
+    let creates = 0;
+    const originalCreate = store.create.bind(store);
+    store.create = async (...args) => {
+      creates += 1;
+      await Promise.resolve();
+      return originalCreate(...args);
+    };
+    const tools = createTypedMemoryTools(store, {
+      agentName: "support",
+      context: toolContext,
+      grants: {
+        remember: true,
+        writableScopeKinds: ["user"],
+        writableKinds: ["fact"],
+      },
+      writeScope: {
+        kind: "user",
+        subjectId: "user-a",
+        agentName: "support",
+      },
+      provenance: { source: "tool", runId: "run-a" },
+      operationCoordinator: coordinator,
+      createId: () => "memory-once",
+      now: () => now,
+    });
+    const params = { kind: "fact", content: "Renewal is in October." };
+    const tool = tools[0]!;
+
+    const [first, concurrent] = await Promise.all([
+      tool.execute("stable-call", params),
+      tool.execute("stable-call", { content: params.content, kind: params.kind }),
+    ]);
+    const later = await tool.execute("stable-call", params);
+
+    expect(first).toEqual(concurrent);
+    expect(first).toEqual(later);
+    expect(creates).toBe(1);
+    expect(await store.list({}, toolContext)).toHaveLength(1);
+  });
+
+  it("rejects reuse of a tool-call id with different arguments", async () => {
+    const coordinator = new InMemoryMemoryToolOperationCoordinator();
+    const store = new InMemoryMemoryItemStore();
+    const guarded = createTypedMemoryTools(store, {
+      agentName: "support",
+      context: toolContext,
+      grants: {
+        remember: true,
+        writableScopeKinds: ["user"],
+        writableKinds: ["fact"],
+      },
+      writeScope: {
+        kind: "user",
+        subjectId: "user-a",
+        agentName: "support",
+      },
+      provenance: { source: "tool", runId: "run-a" },
+      operationCoordinator: coordinator,
+      createId: () => "memory-a",
+      now: () => now,
+    });
+    await guarded[0]!.execute("stable-call", {
+      kind: "fact",
+      content: "First value",
+    });
+
+    await expect(guarded[0]!.execute("stable-call", {
+      kind: "fact",
+      content: "Changed value",
+    })).rejects.toMatchObject({ code: "memory_tool_operation_conflict" });
   });
 });

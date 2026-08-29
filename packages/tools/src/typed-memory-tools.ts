@@ -17,6 +17,7 @@ import {
   type MemoryUsageEventType,
   type PolpoTool,
 } from "@polpo-ai/core";
+import type { MemoryToolOperationCoordinator } from "./memory-tool-operations.js";
 
 export const ALL_TYPED_MEMORY_TOOL_NAMES = [
   "memory_search",
@@ -55,6 +56,32 @@ export interface CreateTypedMemoryToolsOptions {
     error: unknown,
     event: MemoryUsageEvent,
   ) => void | Promise<void>;
+  /** Host-owned idempotency boundary for stable tool-call retries. */
+  readonly operationCoordinator?: MemoryToolOperationCoordinator;
+}
+
+function canonicalJson(value: unknown): string {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  const record = value as Record<string, unknown>;
+  return `{${Object.keys(record).sort().map((key) =>
+    `${JSON.stringify(key)}:${canonicalJson(record[key])}`).join(",")}}`;
+}
+
+function runOperation<T>(
+  options: CreateTypedMemoryToolsOptions,
+  toolName: TypedMemoryToolName,
+  toolCallId: string,
+  params: unknown,
+  execute: () => Promise<T>,
+): Promise<T> {
+  if (!options.operationCoordinator) return execute();
+  const runId = options.provenance?.runId;
+  if (!runId) return execute();
+  return options.operationCoordinator.run({
+    key: `${runId}:${options.agentName}:${toolName}:${toolCallId}`,
+    fingerprint: canonicalJson(params),
+  }, execute);
 }
 
 const memoryKindSchema = Type.Union(
@@ -237,26 +264,34 @@ export function createTypedMemoryTools(
         "Search only the typed Memory authorized for this agent and user context.",
       parameters: MemorySearchSchema,
       async execute(toolCallId, params) {
-        const results = await store.search({
-          query: params.query,
-          kinds: params.kinds,
-          tokenBudget: params.token_budget,
-          maxResults: params.max_results,
-        }, options.context);
-        for (const result of results) {
-          await appendUsage(
-            store,
-            options,
-            result.item.id,
-            "retrieved",
-            toolCallId,
-          );
-        }
-        const data = { total: results.length, results };
-        return {
-          content: [{ type: "text", text: resultText(data) }],
-          details: data,
-        };
+        return runOperation(
+          options,
+          "memory_search",
+          toolCallId,
+          params,
+          async () => {
+            const results = await store.search({
+              query: params.query,
+              kinds: params.kinds,
+              tokenBudget: params.token_budget,
+              maxResults: params.max_results,
+            }, options.context);
+            for (const result of results) {
+              await appendUsage(
+                store,
+                options,
+                result.item.id,
+                "retrieved",
+                toolCallId,
+              );
+            }
+            const data = { total: results.length, results };
+            return {
+              content: [{ type: "text", text: resultText(data) }],
+              details: data,
+            };
+          },
+        );
       },
     };
     tools.push(search);
@@ -270,47 +305,58 @@ export function createTypedMemoryTools(
         "Store one durable typed Memory item in the host-authorized scope.",
       parameters: MemoryRememberSchema,
       async execute(toolCallId, params) {
-        if (!options.writeScope) {
-          throw new Error("Memory write scope is not configured");
-        }
-        assertWriteGrant(options, {
-          scope: options.writeScope,
-          kind: params.kind,
-        });
-        const item = createMemoryItem({
-          scope: options.writeScope,
-          kind: params.kind,
-          content: params.content,
-          summary: params.summary,
-          provenance: options.provenance!,
-          confidence: params.confidence,
-          status: params.pending ? "pending" : "active",
-          expiresAt: params.expires_at,
-        }, {
-          createId: options.createId,
-          now: options.now,
-        });
-        const duplicate = await store.findDedupeCandidate(item, options.context);
-        if (duplicate) {
-          throw new MemoryConflictError(
-            "An equivalent Memory item already exists",
-          );
-        }
-        const created = await store.create(item, options.context);
-        await appendUsage(
-          store,
+        return runOperation(
           options,
-          created.id,
-          "written",
+          "memory_remember",
           toolCallId,
+          params,
+          async () => {
+            if (!options.writeScope) {
+              throw new Error("Memory write scope is not configured");
+            }
+            assertWriteGrant(options, {
+              scope: options.writeScope,
+              kind: params.kind,
+            });
+            const item = createMemoryItem({
+              scope: options.writeScope,
+              kind: params.kind,
+              content: params.content,
+              summary: params.summary,
+              provenance: options.provenance!,
+              confidence: params.confidence,
+              status: params.pending ? "pending" : "active",
+              expiresAt: params.expires_at,
+            }, {
+              createId: options.createId,
+              now: options.now,
+            });
+            const duplicate = await store.findDedupeCandidate(
+              item,
+              options.context,
+            );
+            if (duplicate) {
+              throw new MemoryConflictError(
+                "An equivalent Memory item already exists",
+              );
+            }
+            const created = await store.create(item, options.context);
+            await appendUsage(
+              store,
+              options,
+              created.id,
+              "written",
+              toolCallId,
+            );
+            return {
+              content: [{
+                type: "text",
+                text: resultText({ remembered: true, item: created }),
+              }],
+              details: { remembered: true, item: created },
+            };
+          },
         );
-        return {
-          content: [{
-            type: "text",
-            text: resultText({ remembered: true, item: created }),
-          }],
-          details: { remembered: true, item: created },
-        };
       },
     };
     tools.push(remember);
@@ -324,36 +370,44 @@ export function createTypedMemoryTools(
         "Update one existing typed Memory item when the host grants its scope and kind.",
       parameters: MemoryUpdateSchema,
       async execute(toolCallId, params) {
-        await getWritableItem(store, options, params.id);
-        const patch: MemoryItemPatch = {
-          ...(params.content === undefined ? {} : { content: params.content }),
-          ...(params.summary === undefined ? {} : { summary: params.summary }),
-          ...(params.confidence === undefined
-            ? {}
-            : { confidence: params.confidence }),
-          ...(params.expires_at === undefined
-            ? {}
-            : { expiresAt: params.expires_at }),
-        };
-        if (Object.keys(patch).length === 0) {
-          throw new Error("Memory update requires at least one field");
-        }
-        const item = await store.update(params.id, patch, options.context);
-        if (!item) throw new Error("Memory item not found");
-        await appendUsage(
-          store,
+        return runOperation(
           options,
-          item.id,
-          "updated",
+          "memory_update_item",
           toolCallId,
+          params,
+          async () => {
+            await getWritableItem(store, options, params.id);
+            const patch: MemoryItemPatch = {
+              ...(params.content === undefined ? {} : { content: params.content }),
+              ...(params.summary === undefined ? {} : { summary: params.summary }),
+              ...(params.confidence === undefined
+                ? {}
+                : { confidence: params.confidence }),
+              ...(params.expires_at === undefined
+                ? {}
+                : { expiresAt: params.expires_at }),
+            };
+            if (Object.keys(patch).length === 0) {
+              throw new Error("Memory update requires at least one field");
+            }
+            const item = await store.update(params.id, patch, options.context);
+            if (!item) throw new Error("Memory item not found");
+            await appendUsage(
+              store,
+              options,
+              item.id,
+              "updated",
+              toolCallId,
+            );
+            return {
+              content: [{
+                type: "text",
+                text: resultText({ updated: true, item }),
+              }],
+              details: { updated: true, item },
+            };
+          },
         );
-        return {
-          content: [{
-            type: "text",
-            text: resultText({ updated: true, item }),
-          }],
-          details: { updated: true, item },
-        };
       },
     };
     tools.push(update);
@@ -367,23 +421,31 @@ export function createTypedMemoryTools(
         "Soft-delete one typed Memory item when the host grants its scope and kind.",
       parameters: MemoryForgetSchema,
       async execute(toolCallId, params) {
-        await getWritableItem(store, options, params.id);
-        const forgotten = await store.forget(params.id, options.context);
-        if (!forgotten) throw new Error("Memory item not found");
-        await appendUsage(
-          store,
+        return runOperation(
           options,
-          params.id,
-          "forgotten",
+          "memory_forget",
           toolCallId,
+          params,
+          async () => {
+            await getWritableItem(store, options, params.id);
+            const forgotten = await store.forget(params.id, options.context);
+            if (!forgotten) throw new Error("Memory item not found");
+            await appendUsage(
+              store,
+              options,
+              params.id,
+              "forgotten",
+              toolCallId,
+            );
+            return {
+              content: [{
+                type: "text",
+                text: resultText({ forgotten: true, itemId: params.id }),
+              }],
+              details: { forgotten: true, itemId: params.id },
+            };
+          },
         );
-        return {
-          content: [{
-            type: "text",
-            text: resultText({ forgotten: true, itemId: params.id }),
-          }],
-          details: { forgotten: true, itemId: params.id },
-        };
       },
     };
     tools.push(forget);

@@ -50,6 +50,19 @@ export type {
   TypedMemoryToolGrants,
   TypedMemoryToolName,
 } from "./typed-memory-tools.js";
+export { resolveTypedMemoryTools } from "./typed-memory-runtime.js";
+export type {
+  ResolveTypedMemoryToolsOptions,
+  TypedMemoryRuntimeAgent,
+} from "./typed-memory-runtime.js";
+export {
+  InMemoryMemoryToolOperationCoordinator,
+  MemoryToolOperationConflictError,
+} from "./memory-tool-operations.js";
+export type {
+  MemoryToolOperation,
+  MemoryToolOperationCoordinator,
+} from "./memory-tool-operations.js";
 export {
   ALL_BRAIN_TOOL_NAMES,
   createBrainTools,

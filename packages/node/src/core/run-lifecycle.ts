@@ -145,6 +145,8 @@ export interface ExecuteRunDeps {
   vaultStore?: VaultStore;
   /** Memory store. Default: FileMemoryStore(polpoDir). */
   memoryStore?: MemoryStore;
+  /** Typed Memory store. Default: FileMemoryItemStore(polpoDir). */
+  memoryItemStore?: import("@polpo-ai/core").MemoryItemStore;
   /** Scoped Brain reader. Must be supplied together with brainContext. */
   brainService?: BrainReadService;
   /** Host-resolved Brain actor and scopes. Must accompany brainService. */
@@ -292,6 +294,9 @@ export async function executeRun(config: RunnerConfig, deps: ExecuteRunDeps): Pr
     }
 
     const memoryStore: MemoryStore = deps.memoryStore ?? new FileMemoryStore(config.polpoDir);
+    const { FileMemoryItemStore } = await import("@polpo-ai/file-stores");
+    const memoryItemStore = deps.memoryItemStore
+      ?? new FileMemoryItemStore(config.polpoDir);
     const contextTrust = normalizeRuntimeContextTrustMode(
       config.contextTrust ?? deps.inject?.contextTrust,
     );
@@ -469,6 +474,7 @@ export async function executeRun(config: RunnerConfig, deps: ExecuteRunDeps): Pr
       modelAllowlist: config.modelAllowlist,
       vaultStore,
       memoryStore,
+      memoryItemStore,
       brainService,
       brainContext,
       // Per-tenant gateway for the in-process host (undefined for subprocess,

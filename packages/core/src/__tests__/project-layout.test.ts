@@ -52,6 +52,14 @@ describe("project layout v2 agent definitions", () => {
         },
       },
       allowedTools: ["bash", "read"],
+      memory: {
+        tools: {
+          search: true,
+          remember: true,
+          writeScope: "invocation-user",
+          writableKinds: ["fact", "preference"],
+        },
+      },
       allowedPaths: ["/workspace"],
       systemPrompt: "Build the requested product.",
       skills: ["frontend-design"],

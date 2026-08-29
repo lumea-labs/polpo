@@ -9,6 +9,7 @@ import type {
 } from "@polpo-ai/core/types";
 import type { VaultStore } from "@polpo-ai/core/vault-store";
 import type { MemoryStore } from "@polpo-ai/core/memory-store";
+import type { MemoryItemStore } from "./memory/index.js";
 import type { FileSystem } from "@polpo-ai/core/filesystem";
 import type { Shell } from "@polpo-ai/core/shell";
 import type { LoopResumeState } from "@polpo-ai/core/loop-run-store";
@@ -99,6 +100,8 @@ export interface SpawnContext {
   vaultStore?: VaultStore;
   /** Memory store — for agent-scoped memory_* tools. */
   memoryStore?: MemoryStore;
+  /** Typed Memory store. Hosts own its tenant isolation boundary. */
+  memoryItemStore?: MemoryItemStore;
   /** Scoped Brain reader — omitted when Brain is unavailable in this host. */
   brainService?: BrainReadService;
   /** Host-resolved Brain actor and scopes. Never supplied by the model. */
