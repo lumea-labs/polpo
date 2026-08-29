@@ -95,13 +95,49 @@ describe("streamModelTurn", () => {
       parallelToolCalls: false,
       providerOptions: {
         gateway: { order: ["openai"] },
-        openai: { reasoningEffort: "low" },
+        openai: { reasoningEffort: "low", reasoningSummary: "auto" },
       },
     });
 
     expect(seenProviderOptions).toEqual({
       gateway: { order: ["openai"] },
-      openai: { reasoningEffort: "low", parallelToolCalls: false },
+      openai: {
+        reasoningEffort: "low",
+        reasoningSummary: "auto",
+        parallelToolCalls: false,
+      },
+    });
+  });
+
+  it("forwards provider reasoning summaries as reasoning deltas", async () => {
+    const events: ModelTurnEvent[] = [];
+    const model = mockModel([
+      { type: "stream-start", warnings: [] },
+      { type: "reasoning-start", id: "reasoning_1" },
+      { type: "reasoning-delta", id: "reasoning_1", delta: "Checked the constraints." },
+      { type: "reasoning-end", id: "reasoning_1" },
+      { type: "text-start", id: "text_1" },
+      { type: "text-delta", id: "text_1", delta: "Done." },
+      { type: "text-end", id: "text_1" },
+      { type: "finish", finishReason: { unified: "stop", raw: undefined }, usage: usage() },
+    ]);
+
+    await streamModelTurn({
+      model,
+      messages: [{ role: "user", content: "Inspect the constraints" }],
+    }, event => {
+      events.push(event);
+    });
+
+    expect(events).toContainEqual({
+      type: "reasoning-delta",
+      id: "reasoning_1",
+      text: "Checked the constraints.",
+    });
+    expect(events).toContainEqual({
+      type: "text-delta",
+      id: "text_1",
+      text: "Done.",
     });
   });
 

@@ -1,5 +1,19 @@
 import { describe, expect, it } from "vitest";
-import { modelErrorEnvelope, modelNotFoundEnvelope, visibleModelError } from "./sse.js";
+import { modelErrorEnvelope, modelNotFoundEnvelope, sseChunk, visibleModelError } from "./sse.js";
+
+describe("sseChunk", () => {
+  it("emits reasoning summaries through the existing thinking extension", () => {
+    expect(JSON.parse(sseChunk("chat-1", {}, null, {
+      thinking: "Checked the constraints.",
+    }))).toMatchObject({
+      choices: [{
+        delta: {},
+        finish_reason: null,
+        thinking: "Checked the constraints.",
+      }],
+    });
+  });
+});
 
 describe("model error envelopes", () => {
   it("extracts a nested gateway error without leaking the whole response", () => {

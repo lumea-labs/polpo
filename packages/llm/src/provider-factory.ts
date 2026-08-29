@@ -70,7 +70,7 @@ export function createGatewayModel(provider: string, modelId: string, config?: G
  *
  * Each provider has its own way of enabling extended thinking:
  * - Anthropic: thinking.type + thinking.budgetTokens
- * - OpenAI: reasoningEffort
+ * - OpenAI: reasoningEffort + a safe reasoning summary
  * - Google: thinkingConfig.thinkingBudget
  */
 export function mapReasoningToProviderOptions(
@@ -122,6 +122,7 @@ export function mapReasoningToProviderOptions(
     return {
       openai: {
         reasoningEffort: effortMap[level] ?? "medium",
+        reasoningSummary: "auto",
       },
     };
   }

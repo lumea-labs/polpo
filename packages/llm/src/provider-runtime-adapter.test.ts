@@ -112,6 +112,7 @@ describe("provider runtime adapter", () => {
     expect(options).toEqual({
       openai: {
         reasoningEffort: "high",
+        reasoningSummary: "auto",
       },
     });
   });
