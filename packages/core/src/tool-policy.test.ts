@@ -47,6 +47,48 @@ describe("tool execution policy", () => {
     expect(toolNameAllowedByPolicy("site_long_get", policy)).toBe(false);
   });
 
+  it("treats hyphens and regular-expression syntax as literal tool-name characters", () => {
+    const policy = resolveAllowedToolPolicy({
+      global: [
+        "mcp__insforge__fetch-docs",
+        "tool.with+(syntax)[v2]",
+      ],
+    });
+
+    expect(toolNameAllowedByPolicy("mcp__insforge__fetch-docs", policy)).toBe(true);
+    expect(toolNameAllowedByPolicy("mcp__insforge__fetchXdocs", policy)).toBe(false);
+    expect(toolNameAllowedByPolicy("tool.with+(syntax)[v2]", policy)).toBe(true);
+    expect(toolNameAllowedByPolicy("toolXwithhhhhsyntaxv", policy)).toBe(false);
+  });
+
+  it("supports wildcards around literal hyphens without broadening the match", () => {
+    const policy = resolveAllowedToolPolicy({
+      global: ["mcp__insforge__fetch-*", "mcp__?-server__read"],
+    });
+
+    expect(toolNameAllowedByPolicy("mcp__insforge__fetch-docs", policy)).toBe(true);
+    expect(toolNameAllowedByPolicy("mcp__insforge__fetch-schema-v2", policy)).toBe(true);
+    expect(toolNameAllowedByPolicy("mcp__x-server__read", policy)).toBe(true);
+    expect(toolNameAllowedByPolicy("mcp__xx-server__read", policy)).toBe(false);
+    expect(toolNameAllowedByPolicy("mcp__insforge__list-docs", policy)).toBe(false);
+  });
+
+  it("compiles every printable ASCII tool-name character safely", () => {
+    const wildcardCharacters = new Set(["*", "?"]);
+
+    for (let codePoint = 33; codePoint <= 126; codePoint += 1) {
+      const character = String.fromCodePoint(codePoint);
+      if (wildcardCharacters.has(character)) continue;
+      const toolName = `mcp__provider__tool${character}name`;
+      const policy = resolveAllowedToolPolicy({ global: [toolName] });
+
+      expect(
+        toolNameAllowedByPolicy(toolName, policy),
+        `failed to match ASCII U+${codePoint.toString(16).padStart(4, "0")}`,
+      ).toBe(true);
+    }
+  });
+
   it("does not let a narrower execution layer add a globally denied tool", () => {
     const policy = resolveAllowedToolPolicy({
       global: ["site_context_get"],
