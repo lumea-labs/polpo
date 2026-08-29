@@ -20,6 +20,7 @@ import {
   type MemoryListQuery,
   type MemorySearchQuery,
   type MemorySearchResult,
+  type MemorySemanticRetrievalOptions,
   type MemoryStoreContext,
   type MemorySupersedeResult,
   type MemoryUsageEvent,
@@ -36,6 +37,7 @@ export class MemoryStoreCorruptionError extends Error {
 export interface FileMemoryItemStoreOptions {
   readonly fileName?: string;
   readonly writePolicy?: MemoryWritePolicy;
+  readonly semantic?: MemorySemanticRetrievalOptions;
 }
 
 export class FileMemoryItemStore implements MemoryItemStore {
@@ -44,13 +46,18 @@ export class FileMemoryItemStore implements MemoryItemStore {
   private loaded = false;
   private loadError: MemoryStoreCorruptionError | undefined;
   private writes: Promise<void> = Promise.resolve();
+  private semanticIndex: Promise<void> | undefined;
 
   constructor(
     polpoDir: string,
     options: FileMemoryItemStoreOptions = {},
   ) {
     this.path = join(polpoDir, options.fileName ?? "memory-items.json");
-    this.memory = new InMemoryMemoryItemStore(options.writePolicy);
+    this.memory = new InMemoryMemoryItemStore(
+      options.writePolicy,
+      undefined,
+      options.semantic,
+    );
   }
 
   private load(): void {
@@ -71,6 +78,12 @@ export class FileMemoryItemStore implements MemoryItemStore {
       );
       throw this.loadError;
     }
+  }
+
+  private async ready(): Promise<void> {
+    this.load();
+    this.semanticIndex ??= this.memory.rebuildSemanticIndex().then(() => undefined);
+    await this.semanticIndex;
   }
 
   private persist(): void {
@@ -96,13 +109,13 @@ export class FileMemoryItemStore implements MemoryItemStore {
 
   private async read<T>(operation: () => Promise<T>): Promise<T> {
     await this.writes;
-    this.load();
+    await this.ready();
     return operation();
   }
 
   private mutate<T>(operation: () => Promise<T>): Promise<T> {
     const result = this.writes.then(async () => {
-      this.load();
+      await this.ready();
       const before = this.memory.exportSnapshot();
       try {
         const value = await operation();
@@ -110,6 +123,13 @@ export class FileMemoryItemStore implements MemoryItemStore {
         return value;
       } catch (error) {
         this.memory.replaceSnapshot(before);
+        this.semanticIndex = undefined;
+        try {
+          await this.ready();
+        } catch {
+          // Preserve the original mutation error; the next operation retries indexing.
+          this.semanticIndex = undefined;
+        }
         throw error;
       }
     });

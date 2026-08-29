@@ -124,6 +124,7 @@ export type {
   MemoryListQuery,
   MemorySearchQuery,
   MemorySearchResult,
+  MemorySemanticRetrievalOptions,
   MemoryStoreContext,
   MemoryStoreSnapshotNamespace,
   MemorySupersedeResult,
@@ -131,3 +132,9 @@ export type {
   MemoryUsageEventType,
   MemoryWriteSurface,
 } from "./store-types.js";
+export type {
+  TextEmbeddingIdentity,
+  TextEmbeddingProvider,
+  TextEmbeddingRequest,
+  TextEmbeddingResult,
+} from "../semantic-retrieval.js";

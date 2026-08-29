@@ -9,6 +9,7 @@ import {
   rankMemoryItems,
   selectMemoryResultsWithinBudget,
   type MemoryScope,
+  type TextEmbeddingProvider,
 } from "../memory/index.js";
 
 const context = {
@@ -182,5 +183,178 @@ describe("Memory lexical ranking", () => {
     expect(selectMemoryResultsWithinBudget(ranked, {
       tokenBudget: 0,
     })).toEqual([]);
+  });
+});
+
+describe("Memory semantic retrieval", () => {
+  function provider(options: {
+    revision?: () => string;
+    failQuery?: boolean;
+  } = {}): TextEmbeddingProvider {
+    const currentIdentity = () => ({
+      provider: "fixture",
+      model: "meaning-v1",
+      dimensions: 2,
+      revision: options.revision?.() ?? "r1",
+    });
+    return {
+      identity: currentIdentity,
+      embed: async ({ texts, task, signal }) => {
+        if (signal?.aborted) {
+          throw Object.assign(new Error("cancelled"), { name: "AbortError" });
+        }
+        if (options.failQuery && task === "query") {
+          throw new Error("embedding offline");
+        }
+        return {
+          identity: currentIdentity(),
+          vectors: texts.map((text) => (
+            /refund|reimbursement|money back/i.test(text) ? [1, 0] : [0, 1]
+          )),
+        };
+      },
+    };
+  }
+
+  it("recovers paraphrased authorized Memory and exposes deterministic ranking details", async () => {
+    const store = new InMemoryMemoryItemStore({}, undefined, {
+      embeddingProvider: provider(),
+    });
+    await store.create(item("refund", "Refunds are approved in five days."), context);
+    await store.create(item("other", "The dashboard theme is green."), context);
+
+    const results = await store.search({
+      query: "When can I get my money back?",
+      maxResults: 5,
+    }, context);
+
+    expect(results.map((result) => result.item.id)).toEqual(["refund"]);
+    expect(results[0]).toMatchObject({
+      retrievalMode: "semantic",
+      scores: { semantic: 1 },
+      ranks: { semantic: 1 },
+    });
+  });
+
+  it("falls back to lexical retrieval when query embedding fails", async () => {
+    const store = new InMemoryMemoryItemStore({}, undefined, {
+      embeddingProvider: provider({ failQuery: true }),
+    });
+    await store.create(item("refund", "Refund billing policy."), context);
+
+    await expect(store.search({ query: "refund" }, context)).resolves.toMatchObject([
+      {
+        item: { id: "refund" },
+        retrievalMode: "lexical",
+        fallbackReason: "embedding_unavailable",
+      },
+    ]);
+  });
+
+  it("does not compare stale vectors after update, forget, or identity migration", async () => {
+    let revision = "r1";
+    const store = new InMemoryMemoryItemStore({}, undefined, {
+      embeddingProvider: provider({ revision: () => revision }),
+    });
+    await store.create(item("memory", "Refund policy."), context);
+    await store.update("memory", { content: "Dashboard theme." }, context);
+    await expect(store.search({ query: "money back" }, context)).resolves.toEqual([]);
+
+    await store.update("memory", { content: "Refund policy." }, context);
+    revision = "r2";
+    await expect(store.search({ query: "money back" }, context)).resolves.toEqual([]);
+
+    revision = "r1";
+    await store.forget("memory", context);
+    await expect(store.search({ query: "money back" }, context)).resolves.toEqual([]);
+  });
+
+  it("never embeds a query when no authorized semantic record is eligible", async () => {
+    let queryCalls = 0;
+    const base = provider();
+    const embeddingProvider: TextEmbeddingProvider = {
+      identity: base.identity,
+      embed: async (request) => {
+        if (request.task === "query") queryCalls += 1;
+        return base.embed(request);
+      },
+    };
+    const store = new InMemoryMemoryItemStore({}, undefined, {
+      embeddingProvider,
+    });
+    await store.create(item(
+      "private",
+      "Refund policy.",
+      { kind: "user", subjectId: "other-user" },
+    ), {
+      ...context,
+      access: { ...context.access, externalUserId: "other-user" },
+    });
+
+    await expect(store.search({ query: "refund" }, context)).resolves.toEqual([]);
+    expect(queryCalls).toBe(0);
+  });
+
+  it("propagates an already-aborted semantic query in strict mode", async () => {
+    const controller = new AbortController();
+    const store = new InMemoryMemoryItemStore({}, undefined, {
+      embeddingProvider: provider(),
+    });
+    await store.create(item("refund", "Refund policy."), context);
+    controller.abort();
+
+    await expect(store.search({
+      query: "refund",
+      signal: controller.signal,
+    }, context)).rejects.toMatchObject({ name: "AbortError" });
+  });
+
+  it("allows only one concurrent create across a delayed semantic indexing boundary", async () => {
+    let releaseEmbedding: (() => void) | undefined;
+    const released = new Promise<void>((resolve) => {
+      releaseEmbedding = resolve;
+    });
+    const base = provider();
+    const store = new InMemoryMemoryItemStore({}, undefined, {
+      embeddingProvider: {
+        identity: base.identity,
+        embed: async (request) => {
+          if (request.task === "document") await released;
+          return base.embed(request);
+        },
+      },
+    });
+
+    const first = store.create(item("race", "Refund policy."), context);
+    const second = store.create(item("race", "Refund policy."), context);
+    await Promise.resolve();
+    releaseEmbedding?.();
+    const settled = await Promise.allSettled([first, second]);
+
+    expect(settled.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    expect(settled.filter((result) => result.status === "rejected")).toMatchObject([
+      { reason: expect.any(MemoryConflictError) },
+    ]);
+    await expect(store.search({ query: "money back" }, context))
+      .resolves.toHaveLength(1);
+  });
+
+  it("rejects an empty semantic query before calling the provider", async () => {
+    let queryCalls = 0;
+    const base = provider();
+    const store = new InMemoryMemoryItemStore({}, undefined, {
+      embeddingProvider: {
+        identity: base.identity,
+        embed: async (request) => {
+          if (request.task === "query") queryCalls += 1;
+          return base.embed(request);
+        },
+      },
+    });
+    await store.create(item("refund", "Refund policy."), context);
+
+    await expect(store.search({ query: " \n\t" }, context))
+      .rejects.toThrow("searchable terms");
+    expect(queryCalls).toBe(0);
   });
 });

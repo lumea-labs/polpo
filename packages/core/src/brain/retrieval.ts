@@ -17,6 +17,7 @@ export interface RetrieveBrainInput {
   readonly actor: BrainActorContext;
   readonly limit?: number;
   readonly tokenBudget?: number;
+  readonly signal?: AbortSignal;
 }
 
 export interface RetrieveBrainDeps {
@@ -72,6 +73,10 @@ function resultIdentity(result: BrainRetrievalResult): string {
   ]);
 }
 
+function isAbortError(error: unknown): boolean {
+  return error instanceof Error && error.name === "AbortError";
+}
+
 function validateReranked(
   original: readonly BrainRetrievalResult[],
   candidate: readonly BrainRetrievalResult[],
@@ -120,6 +125,11 @@ export async function retrieveBrain(
   input: RetrieveBrainInput,
   deps: RetrieveBrainDeps,
 ): Promise<readonly BrainRetrievalResult[]> {
+  if (input.signal?.aborted) {
+    const error = new Error("Brain retrieval was aborted");
+    error.name = "AbortError";
+    throw error;
+  }
   if (!Array.isArray(input.scopes) || input.scopes.length === 0) {
     throw new BrainStoreValidationError(
       "At least one explicit Brain scope is required",
@@ -158,16 +168,29 @@ export async function retrieveBrain(
     })),
     query,
     limit: Math.min(1_000, Math.max(limit * 4, limit)),
+    ...(input.signal ? { signal: input.signal } : {}),
   });
+
+  if (input.signal?.aborted) {
+    const error = new Error("Brain retrieval was aborted");
+    error.name = "AbortError";
+    throw error;
+  }
 
   let ranked = candidates;
   if (deps.reranker && candidates.length > 0) {
     try {
       ranked = validateReranked(
         candidates,
-        await deps.reranker.rerank({ query, results: candidates, limit }),
+        await deps.reranker.rerank({
+          query,
+          results: candidates,
+          limit,
+          ...(input.signal ? { signal: input.signal } : {}),
+        }),
       );
     } catch (error) {
+      if (isAbortError(error)) throw error;
       if ((deps.failureMode ?? "fallback") === "strict") throw error;
       ranked = candidates;
     }

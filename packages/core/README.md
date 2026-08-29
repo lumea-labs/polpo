@@ -588,13 +588,16 @@ project or organization boundary and passes only authorized dimensions to
 
 The contract validates item lifecycle, provenance, expiry, and exact dedupe
 identity. `InMemoryMemoryItemStore` adds authorized CRUD, deterministic lexical
-search, token-budget selection, soft deletion, usage events, and fail-closed
-write policy. Every operation requires a host-owned `namespace`, so external
-user identifiers are never shared across project boundaries.
+search, optional provider-neutral semantic search, token-budget selection, soft
+deletion, usage events, and fail-closed write policy. Lexical and semantic
+candidate rankings are fused with reciprocal rank fusion; raw scores are never
+added. Every operation requires a host-owned `namespace`, so external user
+identifiers are never shared across project boundaries.
 
 `FileMemoryItemStore` from `@polpo-ai/file-stores` is the local durable
-reference adapter. It writes `memory-items.json` atomically and leaves the
-existing markdown store untouched during migration.
+reference adapter. It writes canonical items to `memory-items.json` atomically,
+leaves the existing markdown store untouched during migration, and rebuilds
+derived embeddings when reopened if a semantic provider is configured.
 
 The typed HTTP and model-tool surfaces are independently authorized:
 
@@ -641,8 +644,16 @@ position into an opaque, filter-bound cursor, and
 `PolpoClient.listMemoryItemsPage()` returns `{ items, nextCursor }`. Invalid,
 cross-filter, and cross-agent cursors fail without exposing store details.
 
-Typed Memory still does not inject retrieved items into prompts. Semantic
-runtime retrieval is a separate opt-in.
+Semantic retrieval is additive and opt-in. Hosts supply a
+`TextEmbeddingProvider` to Memory and Knowledge stores. Provider, model,
+dimensions, and revision form the immutable embedding identity; incompatible
+vectors are never compared. Provider failure falls back to lexical retrieval
+unless strict mode is selected, while cancellation always propagates. Runtime
+context providers keep Memory and Knowledge as separate authorized corpora and
+allocate their token budgets proportionally so one cannot starve the other.
+
+Automatic Memory extraction and writes are intentionally separate from this
+retrieval capability and remain opt-in host behavior.
 
 ## License
 

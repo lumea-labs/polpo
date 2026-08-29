@@ -6,6 +6,10 @@ import type {
   MemoryScopeAccess,
   MemoryStatus,
 } from "./types.js";
+import type {
+  HybridRetrievalMode,
+  TextEmbeddingProvider,
+} from "../semantic-retrieval.js";
 
 export type MemoryWriteSurface =
   | "api"
@@ -69,6 +73,7 @@ export interface MemorySearchQuery {
   readonly tokenBudget?: number;
   readonly maxResults?: number;
   readonly now?: Date | string;
+  readonly signal?: AbortSignal;
 }
 
 export interface MemorySearchResult {
@@ -76,6 +81,22 @@ export interface MemorySearchResult {
   readonly score: number;
   readonly matchedTerms: readonly string[];
   readonly estimatedTokens: number;
+  readonly scores?: {
+    readonly lexical?: number;
+    readonly semantic?: number;
+    readonly rerank?: number;
+  };
+  readonly ranks?: {
+    readonly lexical?: number;
+    readonly semantic?: number;
+  };
+  readonly retrievalMode?: HybridRetrievalMode;
+  readonly fallbackReason?: string;
+}
+
+export interface MemorySemanticRetrievalOptions {
+  readonly embeddingProvider?: TextEmbeddingProvider;
+  readonly embeddingFailureMode?: "fallback" | "strict";
 }
 
 export type MemoryUsageEventType =
