@@ -596,7 +596,7 @@ user identifiers are never shared across project boundaries.
 reference adapter. It writes `memory-items.json` atomically and leaves the
 existing markdown store untouched during migration.
 
-The typed HTTP and model-tool surfaces are separate opt-ins:
+The typed HTTP and model-tool surfaces are independently authorized:
 
 - `memoryItemRoutes` in `@polpo-ai/server` receives a host-resolved
   `MemoryStoreContext`, so authentication, namespace, and external-user
@@ -607,6 +607,33 @@ The typed HTTP and model-tool surfaces are separate opt-ins:
 - `PolpoClient` in `@polpo-ai/sdk` exposes typed list, create, search, update,
   and forget methods.
 
+The Node runtime mounts the authenticated HTTP routes at
+`/api/v1/agents/:agentName/memory/*` and persists local items in
+`.polpo/memory-items.json`. User-scoped administration supplies the hosted
+application identity through `x-polpo-external-user-id`; omitting it never
+broadens access.
+
+Model tools require both an agent capability and the normal tool allowlist:
+
+```json
+{
+  "allowedTools": ["memory_search", "memory_remember"],
+  "memory": {
+    "tools": {
+      "search": true,
+      "remember": true,
+      "writeScope": "invocation-user",
+      "writableKinds": ["fact", "preference"]
+    }
+  }
+}
+```
+
+`invocation-user` binds writes to the immutable invocation `user`. A missing
+external user disables write tools. `agent` is the explicit alternative for
+agent-wide memory. Stable retries of one tool call are idempotent; reusing its
+ID with different arguments fails closed.
+
 The original `MemoryItemStore.list()` contract remains compatible. Built-in
 stores additionally implement `listPage()` with deterministic
 `(createdAt, id)` keyset ordering. The HTTP route converts the typed store
@@ -614,8 +641,8 @@ position into an opaque, filter-bound cursor, and
 `PolpoClient.listMemoryItemsPage()` returns `{ items, nextCursor }`. Invalid,
 cross-filter, and cross-agent cursors fail without exposing store details.
 
-No typed Memory route or tool is mounted automatically, and this layer does not
-inject retrieved items into prompts. Runtime retrieval is a separate opt-in.
+Typed Memory still does not inject retrieved items into prompts. Semantic
+runtime retrieval is a separate opt-in.
 
 ## License
 

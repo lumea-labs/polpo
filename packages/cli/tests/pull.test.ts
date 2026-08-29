@@ -78,6 +78,14 @@ describe("pullProject", () => {
           guidance: "Suggest concrete next actions.",
         },
       },
+      memory: {
+        tools: {
+          search: true,
+          remember: true,
+          writeScope: "invocation-user",
+          writableKinds: ["fact", "preference"],
+        },
+      },
       image_model: "fal/image",
       video_model: "fal/video",
       vision_model: "openai/vision",

@@ -19,6 +19,7 @@ import type {
 import type { RuntimeGuardrailAuditEvent } from "../guardrails/types.js";
 import type { ChatInteractionSettings } from "../chat-interactions.js";
 import type { AllowedToolsSettings } from "../tool-policy.js";
+import type { AgentMemorySettings } from "../memory/tool-settings.js";
 
 // === Reasoning / Thinking ===
 
@@ -177,6 +178,8 @@ export interface AgentConfig {
   chat?: ChatInteractionSettings;
   /** Tool capability restriction for provider Channels such as WhatsApp or Telegram. */
   channels?: AllowedToolsSettings;
+  /** Portable typed Memory tool capability. Omitted exposes no new Memory tools. */
+  memory?: AgentMemorySettings;
   /** Installed skill names (e.g. "find-skills", "frontend-design") */
   skills?: string[];
   /** MCP servers available to this agent. */

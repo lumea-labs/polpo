@@ -84,6 +84,42 @@ describe("Health", () => {
   });
 });
 
+describe("Typed Memory API", () => {
+  test("persists user-scoped items and isolates external users", async () => {
+    const path = api("/agents/agent-1/memory/items");
+    const created = await app.request(path, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-polpo-external-user-id": "user-a",
+      },
+      body: JSON.stringify({
+        scope: {
+          kind: "user",
+          subjectId: "user-a",
+          agentName: "agent-1",
+        },
+        kind: "preference",
+        content: "Prefers concise status updates.",
+        provenance: { source: "explicit", actor: "user" },
+      }),
+    });
+    expect(created.status).toBe(201);
+
+    const visible = await app.request(path, {
+      headers: { "x-polpo-external-user-id": "user-a" },
+    });
+    expect(visible.status).toBe(200);
+    expect((await visible.json()).data.items).toHaveLength(1);
+
+    const isolated = await app.request(path, {
+      headers: { "x-polpo-external-user-id": "user-b" },
+    });
+    expect(isolated.status).toBe(200);
+    expect((await isolated.json()).data.items).toEqual([]);
+  });
+});
+
 // ── Tasks API ────────────────────────────────────────────────────────
 
 describe("Tasks API", () => {

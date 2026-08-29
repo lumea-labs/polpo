@@ -31,6 +31,7 @@ import type { RunnerConfig } from "@polpo-ai/core/types";
 import type { RunStore } from "@polpo-ai/core/run-store";
 import type { VaultStore } from "@polpo-ai/core/vault-store";
 import type { MemoryStore } from "@polpo-ai/core/memory-store";
+import type { MemoryItemStore } from "@polpo-ai/core";
 import type { FileSystem } from "@polpo-ai/core/filesystem";
 import type { Shell } from "@polpo-ai/core/shell";
 import type {
@@ -55,6 +56,7 @@ export interface InProcessSpawnerDeps {
   createLogSession?: () => Promise<TranscriptSession>;
   vaultStore?: VaultStore;
   memoryStore?: MemoryStore;
+  memoryItemStore?: MemoryItemStore;
   brainService?: BrainReadService;
   brainContext?: BrainServiceContext;
   fs?: FileSystem;

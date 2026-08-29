@@ -44,6 +44,17 @@ export {
 } from "./ranking.js";
 export { InMemoryMemoryItemStore } from "./in-memory-store.js";
 export {
+  MEMORY_TOOL_WRITE_SCOPES,
+  normalizeAgentMemorySettings,
+} from "./tool-settings.js";
+export type {
+  AgentMemorySettings,
+  AgentMemoryToolSettings,
+  MemoryToolWriteScope,
+  NormalizedAgentMemorySettings,
+  NormalizedAgentMemoryToolSettings,
+} from "./tool-settings.js";
+export {
   MEMORY_EXTRACTION_AUDIT_TYPES,
   MEMORY_EXTRACTION_PROPOSAL_ACTIONS,
   MEMORY_EXTRACTION_STATUSES,

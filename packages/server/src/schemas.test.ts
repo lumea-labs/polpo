@@ -136,6 +136,41 @@ describe("agent create/update schema parity", () => {
       .toBe(false);
     expect(UpdateAgentSchema.safeParse({ toolLoading }).success).toBe(false);
   });
+
+  it("accepts typed Memory capabilities on create and update", () => {
+    const memory = {
+      tools: {
+        search: true,
+        remember: true,
+        update: true,
+        forget: true,
+        writeScope: "invocation-user" as const,
+        writableKinds: ["fact", "preference"] as const,
+      },
+    };
+
+    expect(AddAgentSchema.parse({ name: "support", memory }).memory)
+      .toEqual(memory);
+    expect(UpdateAgentSchema.parse({ memory }).memory).toEqual(memory);
+  });
+
+  it.each([
+    null,
+    [],
+    { unknown: true },
+    { tools: null },
+    { tools: [] },
+    { tools: { unknown: true } },
+    { tools: { search: "yes" } },
+    { tools: { writeScope: "project" } },
+    { tools: { writableKinds: ["secret"] } },
+    { tools: { remember: true } },
+    { tools: { forget: true, writableKinds: [] } },
+  ])("rejects malformed typed Memory settings %#", (memory) => {
+    expect(AddAgentSchema.safeParse({ name: "support", memory }).success)
+      .toBe(false);
+    expect(UpdateAgentSchema.safeParse({ memory }).success).toBe(false);
+  });
 });
 
 describe("agent chat interaction schema", () => {

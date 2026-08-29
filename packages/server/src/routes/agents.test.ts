@@ -214,6 +214,47 @@ describe("agent tool-loading routes", () => {
   });
 });
 
+describe("agent typed Memory routes", () => {
+  const memory = {
+    tools: {
+      search: true,
+      remember: true,
+      update: true,
+      forget: true,
+      writeScope: "invocation-user" as const,
+      writableKinds: ["fact", "preference"] as const,
+    },
+  };
+
+  it("persists typed Memory settings when creating an agent", async () => {
+    const deps = routeDeps();
+    const app = agentRoutes(deps.getDeps);
+
+    const response = await app.request("/", json({ name: "support", memory }));
+
+    expect(response.status).toBe(201);
+    expect(deps.addAgent).toHaveBeenCalledWith(
+      expect.objectContaining({ name: "support", memory }),
+      undefined,
+    );
+  });
+
+  it("persists typed Memory settings when updating an agent", async () => {
+    const deps = routeDeps();
+    deps.agents.push({ name: "support" });
+    const app = agentRoutes(deps.getDeps);
+
+    const response = await app.request("/support", {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ memory }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(deps.updateAgent).toHaveBeenCalledWith("support", { memory });
+  });
+});
+
 describe("agent team metadata routes", () => {
   it("updates an existing team without invoking the rename contract", async () => {
     const updateTeam = vi.fn(async (name: string, updates: { description?: string }) => ({

@@ -17,12 +17,19 @@ import { createOutcomeTools as createOutcomeToolsCore } from "./outcome-tools.js
 import { createHttpTools as createHttpToolsCore, ALL_HTTP_TOOL_NAMES as CORE_HTTP_TOOL_NAMES } from "./http-tools.js";
 import { createVaultToolsCore } from "./vault-tools.js";
 import { ALL_MEMORY_TOOL_NAMES, createMemoryTools } from "./memory-tools.js";
+import { ALL_TYPED_MEMORY_TOOL_NAMES } from "./typed-memory-tools.js";
+import { resolveTypedMemoryTools } from "./typed-memory-runtime.js";
 import { ALL_BRAIN_TOOL_NAMES, createBrainTools } from "./brain-tools.js";
 import type {
   BrainReadService,
   BrainServiceContext,
 } from "@polpo-ai/core/brain";
-import type { MemoryStore } from "@polpo-ai/core";
+import type {
+  AgentMemorySettings,
+  MemoryItemStore,
+  MemoryStore,
+  ToolInvocationContext,
+} from "@polpo-ai/core";
 import type { ResolvedVault } from "./types.js";
 import { withBuiltInToolsRuntimeRequirements } from "./runtime-requirements.js";
 
@@ -438,6 +445,7 @@ export type ExtendedToolName = SystemToolName
   | import("./pdf-tools.js").PdfToolName
   | import("./docx-tools.js").DocxToolName
   | import("./search-tools.js").SearchToolName
+  | import("./typed-memory-tools.js").TypedMemoryToolName
   | import("./brain-tools.js").BrainToolName;
 
 /**
@@ -464,6 +472,7 @@ export const TOOL_CATALOG: string[] = [
   ...ALL_DOCX_TOOL_NAMES,
   ...ALL_SEARCH_TOOL_NAMES,
   ...ALL_MEMORY_TOOL_NAMES,
+  ...ALL_TYPED_MEMORY_TOOL_NAMES,
   ...ALL_BRAIN_TOOL_NAMES,
 ];
 
@@ -514,6 +523,14 @@ export interface CreateAllToolsOptions {
   memoryStore?: MemoryStore;
   /** Agent name — required for memory_* tools to scope memory access. */
   agentName?: string;
+  /** Typed Memory store. Omitted keeps typed Memory tools unavailable. */
+  memoryItemStore?: MemoryItemStore;
+  /** Agent-authored typed Memory capabilities. */
+  agentMemory?: AgentMemorySettings;
+  /** Host-owned namespace for typed Memory isolation. */
+  memoryNamespace?: string;
+  /** Immutable invocation identity used to resolve typed Memory scope. */
+  toolInvocation?: ToolInvocationContext;
   /** Scoped Brain reader. Brain tools remain unavailable when omitted. */
   brainService?: BrainReadService;
   /** Host-resolved Brain scopes and actor. Never supplied by the model. */
@@ -627,6 +644,26 @@ export async function createAllTools(options: CreateAllToolsOptions): Promise<Po
       ? allMemoryTools.filter(t => allowedTools.includes(t.name))
       : allMemoryTools;
     tools.push(...filtered);
+  }
+
+  if (
+    categoryRequested(ALL_TYPED_MEMORY_TOOL_NAMES)
+    && options.memoryItemStore
+    && options.agentName
+    && options.agentMemory
+    && options.memoryNamespace
+    && options.toolInvocation
+  ) {
+    tools.push(...resolveTypedMemoryTools({
+      store: options.memoryItemStore,
+      namespace: options.memoryNamespace,
+      agent: {
+        name: options.agentName,
+        allowedTools: options.allowedTools,
+        memory: options.agentMemory,
+      },
+      invocation: options.toolInvocation,
+    }));
   }
 
   if (

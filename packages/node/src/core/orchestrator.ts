@@ -5,11 +5,12 @@ import { parseConfig, loadPolpoConfig, savePolpoConfig, loadEnvFile, projectConf
 import { findLogForTask, buildExecutionSummary } from "../assessment/transcript-parser.js";
 import { FileTaskStore } from "@polpo-ai/file-stores";
 import { FileRunStore } from "@polpo-ai/file-stores";
-import { FileMemoryStore } from "@polpo-ai/file-stores";
+import { FileMemoryItemStore, FileMemoryStore } from "@polpo-ai/file-stores";
 import { FileLogStore } from "@polpo-ai/file-stores";
 import { FileSessionStore } from "@polpo-ai/file-stores";
 import type { SessionStore } from "@polpo-ai/core/session-store";
 import type { MemoryStore } from "@polpo-ai/core/memory-store";
+import type { MemoryItemStore } from "@polpo-ai/core";
 import type { LogStore } from "@polpo-ai/core/log-store";
 import { assessTask } from "../assessment/assessor.js";
 import { analyzeBlockedTasks, resolveDeadlock, isResolving } from "./deadlock-resolver.js";
@@ -129,6 +130,7 @@ export class Orchestrator extends TypedEmitter {
   private injectedStore?: TaskStore;
   private injectedRunStore?: RunStore;
   private memoryStore!: MemoryStore;
+  private memoryItemStore!: MemoryItemStore;
   private logStore!: LogStore;
   private sessionStore!: SessionStore;
   private hookRegistry = new HookRegistry();
@@ -281,6 +283,7 @@ export class Orchestrator extends TypedEmitter {
           : undefined,
         vaultStore: this.vaultStore,
         memoryStore: this.memoryStore,
+        memoryItemStore: this.memoryItemStore,
         fs: this.fs,
         shell: this.shell,
         connectionCapabilityResolver: this.connectionCapabilityResolver,
@@ -389,6 +392,7 @@ export class Orchestrator extends TypedEmitter {
     this.memoryStore = ("memoryStore" in stores && stores.memoryStore)
       ? stores.memoryStore
       : new FileMemoryStore(this.polpoDir);
+    this.memoryItemStore = new FileMemoryItemStore(this.polpoDir);
 
     // Team & Agent stores — Drizzle when available, otherwise file-based
     this.teamStore = this.drizzleStores?.teamStore ?? new FileTeamStore(this.polpoDir);
@@ -704,6 +708,7 @@ export class Orchestrator extends TypedEmitter {
     this.memoryStore = ("memoryStore" in stores && stores.memoryStore)
       ? stores.memoryStore
       : new FileMemoryStore(this.polpoDir);
+    this.memoryItemStore = new FileMemoryItemStore(this.polpoDir);
 
     // Team & Agent stores — Drizzle when available, otherwise file-based
     this.teamStore = this.drizzleStores?.teamStore ?? new FileTeamStore(this.polpoDir);
@@ -811,6 +816,7 @@ export class Orchestrator extends TypedEmitter {
   }
   getPolpoDir(): string { return this.polpoDir; }
   getMemoryStore(): MemoryStore { return this.memoryStore; }
+  getMemoryItemStore(): MemoryItemStore { return this.memoryItemStore; }
   getVaultStore(): VaultStore | undefined { return this.vaultStore; }
   getPlaybookStore(): PlaybookStore { return this.playbookStore; }
   getTeamStore(): TeamStore { return this.teamStore; }

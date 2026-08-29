@@ -45,6 +45,7 @@ import {
   runDeliveryRoutes,
   runSteeringRoutes,
   conversationChannelRoutes,
+  memoryItemRoutes,
   type CompletionRuntimeGuardrailsResolver,
 } from "@polpo-ai/server";
 // Node.js-only routes (stay in src/server/routes/)
@@ -324,7 +325,7 @@ export function createApp(orchestrator: Orchestrator, sseBridge: SSEBridge, opts
       );
     },
     resolveAgentTools: async (agentConfig: any, _runScope, invocation) => {
-      const { createSystemTools, createMemoryTools, createBrainTools, resolveAgentMcpTools, expandToolWildcards, TOOL_CATALOG } = await import("@polpo-ai/tools");
+      const { createSystemTools, createMemoryTools, createBrainTools, resolveTypedMemoryTools, resolveAgentMcpTools, expandToolWildcards, TOOL_CATALOG } = await import("@polpo-ai/tools");
       const { resolveAgentVault } = await import("../vault/index.js");
       const { nanoid } = await import("nanoid");
       const vaultEntries = await o.getVaultStore()?.getAllForAgent(agentConfig.name);
@@ -346,6 +347,14 @@ export function createApp(orchestrator: Orchestrator, sseBridge: SSEBridge, opts
           ? memoryTools.filter((t: any) => allowed.includes(t.name))
           : memoryTools;
         tools.push(...filtered);
+      }
+      if (invocation) {
+        tools.push(...resolveTypedMemoryTools({
+          store: o.getMemoryItemStore(),
+          namespace: o.getPolpoDir(),
+          agent: agentConfig,
+          invocation,
+        }));
       }
       if (brain && agentConfig.allowedTools) {
         const allowed = expandToolWildcards(
@@ -427,6 +436,7 @@ export function createApp(orchestrator: Orchestrator, sseBridge: SSEBridge, opts
           shell: o.getShell(),
           connectionCapabilityResolver: opts?.connectionCapabilityResolver,
           memoryStore: o.getMemoryStore(),
+          memoryItemStore: o.getMemoryItemStore(),
           ...(brain
             ? {
                 brainService: brain.service,
@@ -650,6 +660,26 @@ export function createApp(orchestrator: Orchestrator, sseBridge: SSEBridge, opts
 
   authed.route("/vault", vaultRoutes(() => ({
     vaultStore: o.getVaultStore(),
+  })));
+
+  authed.route("/", memoryItemRoutes((requestContext: any) => ({
+    memoryItemStore: o.getMemoryItemStore(),
+    resolveMemoryContext: (agentName: string) => {
+      const externalUserId = requestContext.req.header("x-polpo-external-user-id")?.trim();
+      const sessionId = requestContext.req.header("x-session-id")?.trim();
+      const channelId = requestContext.req.header("x-polpo-channel-id")?.trim();
+      return {
+        namespace: o.getPolpoDir(),
+        access: {
+          projectId: o.getConfig()?.project,
+          agentName,
+          ...(externalUserId ? { externalUserId } : {}),
+          ...(sessionId ? { sessionId } : {}),
+          ...(channelId ? { channelId } : {}),
+        },
+        surface: "api" as const,
+      };
+    },
   })));
 
   authed.route("/files", fileRoutes(() => ({

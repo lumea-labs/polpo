@@ -4,6 +4,7 @@ import {
   MAX_CHAT_SUGGESTION_COUNT,
   MIN_CHAT_SUGGESTION_COUNT,
   MAX_MODEL_FALLBACKS,
+  MEMORY_KINDS,
   MODEL_PROFILE_NAME_PATTERN,
   RUNTIME_INVOCATION_SOURCES,
   RUNTIME_SURFACES,
@@ -851,6 +852,53 @@ const AgentToolLoadingSchema = z.object({
   }
 });
 
+const AgentMemoryToolsSchema = z.object({
+  search: z.boolean().optional(),
+  remember: z.boolean().optional(),
+  update: z.boolean().optional(),
+  forget: z.boolean().optional(),
+  writeScope: z.enum(["invocation-user", "agent"]).optional(),
+  writableKinds: z.array(z.enum(MEMORY_KINDS)).max(MEMORY_KINDS.length).optional(),
+}).passthrough().superRefine((value, ctx) => {
+  if (
+    Object.keys(value).some((key) => ![
+      "search",
+      "remember",
+      "update",
+      "forget",
+      "writeScope",
+      "writableKinds",
+    ].includes(key))
+  ) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "Typed Memory tools contain unsupported fields",
+    });
+  }
+
+  if (
+    (value.remember || value.update || value.forget)
+    && (!value.writableKinds || value.writableKinds.length === 0)
+  ) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["writableKinds"],
+      message: "Typed Memory writes require at least one writable kind",
+    });
+  }
+});
+
+const AgentMemorySettingsSchema = z.object({
+  tools: AgentMemoryToolsSchema.optional(),
+}).passthrough().superRefine((value, ctx) => {
+  if (Object.keys(value).some((key) => key !== "tools")) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "Typed Memory settings contain unsupported fields",
+    });
+  }
+});
+
 const AgentLoopFieldsSchema = z.object({
   runtime: z.string().optional(),
   assignedLoops: z.array(z.string().min(1)).optional(),
@@ -879,6 +927,7 @@ export const AddAgentSchema = z.object({
   systemPrompt: z.string().optional(),
   chat: AgentChatSettingsSchema.optional(),
   channels: AgentChannelsSettingsSchema.optional(),
+  memory: AgentMemorySettingsSchema.optional(),
   skills: z.array(z.string()).optional(),
   maxTurns: z.number().int().positive().optional(),
   maxConcurrency: z.number().int().positive().optional(),
@@ -915,6 +964,7 @@ export const UpdateAgentSchema = z.object({
   systemPrompt: z.string().optional(),
   chat: AgentChatSettingsSchema.optional(),
   channels: AgentChannelsSettingsSchema.optional(),
+  memory: AgentMemorySettingsSchema.optional(),
   skills: z.array(z.string()).optional(),
   maxTurns: z.number().int().positive().optional(),
   maxConcurrency: z.number().int().positive().optional(),
