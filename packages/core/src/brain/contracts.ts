@@ -549,6 +549,36 @@ function normalizeScores(value: unknown): BrainRetrievalScores {
   });
 }
 
+function normalizeRetrievalRanks(value: unknown) {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new BrainContractError(
+      "Brain retrieval ranks must be an object",
+      "invalid_retrieval_result",
+      "ranks",
+    );
+  }
+  const candidate = value as Record<string, unknown>;
+  const rank = (field: "keyword" | "semantic") => {
+    const raw = candidate[field];
+    if (raw === undefined) return undefined;
+    if (!Number.isSafeInteger(raw) || (raw as number) < 1) {
+      throw new BrainContractError(
+        `Brain retrieval ranks.${field} must be a positive integer`,
+        "invalid_retrieval_result",
+        `ranks.${field}`,
+      );
+    }
+    return raw as number;
+  };
+  const keyword = rank("keyword");
+  const semantic = rank("semantic");
+  return Object.freeze({
+    ...(keyword === undefined ? {} : { keyword }),
+    ...(semantic === undefined ? {} : { semantic }),
+  });
+}
+
 export function createBrainRetrievalResult(
   input: CreateBrainRetrievalResultInput,
 ): BrainRetrievalResult {
@@ -567,6 +597,30 @@ export function createBrainRetrievalResult(
       "invalid_retrieval_result",
     ),
     scores: normalizeScores(input.scores),
+    ...(input.ranks === undefined
+      ? {}
+      : { ranks: normalizeRetrievalRanks(input.ranks) }),
+    ...(input.retrievalMode === undefined
+      ? {}
+      : {
+          retrievalMode: enumValue<"lexical" | "semantic" | "hybrid">(
+            input.retrievalMode,
+            new Set(["lexical", "semantic", "hybrid"]),
+            "retrievalMode",
+            "invalid_retrieval_result",
+            "retrieval mode",
+          ),
+        }),
+    ...(input.fallbackReason === undefined
+      ? {}
+      : {
+          fallbackReason: requiredText(
+            input.fallbackReason,
+            "fallbackReason",
+            512,
+            "invalid_retrieval_result",
+          ),
+        }),
     trust: normalizeTrust(input.trust, "invalid_retrieval_result"),
   });
 }

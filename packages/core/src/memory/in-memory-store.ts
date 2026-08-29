@@ -9,6 +9,14 @@ import {
 import { evaluateMemoryWrite, type MemoryWritePolicy } from "./policy.js";
 import { rankMemoryItems, selectMemoryResultsWithinBudget } from "./ranking.js";
 import {
+  assertTextEmbeddingResult,
+  cosineSimilarity,
+  fuseHybridRankings,
+  normalizeTextEmbeddingIdentity,
+  textEmbeddingIdentitiesEqual,
+  type TextEmbeddingIdentity,
+} from "../semantic-retrieval.js";
+import {
   canAccessMemoryScope,
   memoryScopeKey,
   normalizeMemoryScope,
@@ -29,6 +37,7 @@ import type {
   MemoryListQuery,
   MemorySearchQuery,
   MemorySearchResult,
+  MemorySemanticRetrievalOptions,
   MemoryStoreContext,
   MemoryStoreSnapshotNamespace,
   MemorySupersedeResult,
@@ -47,6 +56,16 @@ import {
 interface NamespaceState {
   readonly items: Map<string, MemoryItem>;
   readonly usage: MemoryUsageEvent[];
+}
+
+interface StoredMemoryVector {
+  readonly values: readonly number[];
+  readonly identity: TextEmbeddingIdentity;
+  readonly updatedAt: string;
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof Error && error.name === "AbortError";
 }
 
 const memoryKinds = new Set<string>(MEMORY_KINDS);
@@ -195,12 +214,78 @@ function cloneUsage(event: MemoryUsageEvent): MemoryUsageEvent {
 
 export class InMemoryMemoryItemStore implements MemoryItemStore {
   private readonly namespaces = new Map<string, NamespaceState>();
+  private readonly vectors = new Map<string, StoredMemoryVector>();
+  private readonly embeddingProvider?: MemorySemanticRetrievalOptions["embeddingProvider"];
+  private readonly embeddingFailureMode: "fallback" | "strict";
 
   constructor(
     private readonly writePolicy: MemoryWritePolicy = {},
     snapshot?: MemoryItemStoreSnapshot,
+    semantic: MemorySemanticRetrievalOptions = {},
   ) {
+    this.embeddingProvider = semantic.embeddingProvider;
+    this.embeddingFailureMode = semantic.embeddingFailureMode ?? "fallback";
     if (snapshot) this.replaceSnapshot(snapshot);
+  }
+
+  private vectorKey(namespace: string, itemId: string): string {
+    return JSON.stringify([namespace, itemId]);
+  }
+
+  private async embedItem(
+    item: MemoryItem,
+  ): Promise<StoredMemoryVector | undefined> {
+    if (!this.embeddingProvider) return undefined;
+    try {
+      const identity = normalizeTextEmbeddingIdentity(
+        await this.embeddingProvider.identity(),
+      );
+      const result = assertTextEmbeddingResult(
+        await this.embeddingProvider.embed({
+          texts: [`${item.summary ?? ""}\n${item.content}`],
+          task: "document",
+        }),
+        { expectedCount: 1, expectedIdentity: identity },
+      );
+      return Object.freeze({
+        values: result.vectors[0]!,
+        identity: result.identity,
+        updatedAt: item.updatedAt,
+      });
+    } catch (error) {
+      if (isAbortError(error)) throw error;
+      if (this.embeddingFailureMode === "strict") throw error;
+      return undefined;
+    }
+  }
+
+  async rebuildSemanticIndex(): Promise<Readonly<{
+    indexed: number;
+    skipped: number;
+  }>> {
+    if (!this.embeddingProvider) {
+      return Object.freeze({ indexed: 0, skipped: 0 });
+    }
+    const candidates = [...this.namespaces.entries()].flatMap(([namespace, state]) => (
+      [...state.items.values()]
+        .filter((item) => item.status === "active")
+        .map((item) => ({ namespace, item }))
+    ));
+    let indexed = 0;
+    let skipped = 0;
+    for (const { namespace, item } of candidates) {
+      const key = this.vectorKey(namespace, item.id);
+      this.vectors.delete(key);
+      const vector = await this.embedItem(item);
+      const current = this.namespaces.get(namespace)?.items.get(item.id);
+      if (current !== item || current.status !== "active" || !vector) {
+        skipped += 1;
+        continue;
+      }
+      this.vectors.set(key, vector);
+      indexed += 1;
+    }
+    return Object.freeze({ indexed, skipped });
   }
 
   private state(namespace: string): NamespaceState {
@@ -264,7 +349,16 @@ export class InMemoryMemoryItemStore implements MemoryItemStore {
         `Memory item "${item.id}" already exists in this namespace`,
       );
     }
+    const vector = await this.embedItem(item);
+    if (state.items.has(item.id)) {
+      throw new MemoryConflictError(
+        `Memory item "${item.id}" was created during semantic indexing`,
+      );
+    }
     state.items.set(item.id, item);
+    if (vector) {
+      this.vectors.set(this.vectorKey(normalizedContext.namespace, item.id), vector);
+    }
     return cloneItem(item);
   }
 
@@ -384,7 +478,18 @@ export class InMemoryMemoryItemStore implements MemoryItemStore {
         `Memory item "${current.id}" changed during update`,
       );
     }
+    const vector = candidate.status === "active"
+      ? await this.embedItem(candidate)
+      : undefined;
+    if (state.items.get(current.id) !== current) {
+      throw new MemoryConflictError(
+        `Memory item "${current.id}" changed during semantic indexing`,
+      );
+    }
     state.items.set(candidate.id, candidate);
+    const vectorKey = this.vectorKey(normalized.namespace, candidate.id);
+    if (vector) this.vectors.set(vectorKey, vector);
+    else this.vectors.delete(vectorKey);
     return cloneItem(candidate);
   }
 
@@ -425,6 +530,10 @@ export class InMemoryMemoryItemStore implements MemoryItemStore {
         `Memory item "${replacement.id}" was created during supersede`,
       );
     }
+    const replacementVector = await this.embedItem(replacement);
+    if (state.items.get(current.id) !== current || state.items.has(replacement.id)) {
+      throw new MemoryConflictError("Memory changed during semantic indexing");
+    }
     const updatedAt = timestamp(normalized.now ?? new Date(), "now");
     const superseded = normalizeMemoryItem({
       ...current,
@@ -433,6 +542,13 @@ export class InMemoryMemoryItemStore implements MemoryItemStore {
     });
     state.items.set(current.id, superseded);
     state.items.set(replacement.id, replacement);
+    this.vectors.delete(this.vectorKey(normalized.namespace, current.id));
+    if (replacementVector) {
+      this.vectors.set(
+        this.vectorKey(normalized.namespace, replacement.id),
+        replacementVector,
+      );
+    }
     return {
       superseded: cloneItem(superseded),
       replacement: cloneItem(replacement),
@@ -450,6 +566,7 @@ export class InMemoryMemoryItemStore implements MemoryItemStore {
       updatedAt: timestamp(normalized.now ?? new Date(), "now"),
     });
     this.state(normalized.namespace).items.set(deleted.id, deleted);
+    this.vectors.delete(this.vectorKey(normalized.namespace, deleted.id));
     return true;
   }
 
@@ -457,21 +574,72 @@ export class InMemoryMemoryItemStore implements MemoryItemStore {
     query: MemorySearchQuery,
     context: MemoryStoreContext,
   ): Promise<MemorySearchResult[]> {
+    const normalizedContext = normalizeContext(context);
     const candidates = await this.list({
       statuses: ["active"],
       kinds: query.kinds,
       scope: query.scope,
       now: query.now,
       limit: 10_000,
-    }, context);
-    const ranked = rankMemoryItems(
-      candidates.filter((item) => isMemoryItemRetrievable(
+    }, normalizedContext);
+    const visible = candidates.filter((item) => isMemoryItemRetrievable(
         item,
         query.now ?? context.now ?? new Date(),
-      )),
-      query.query,
-    );
-    return selectMemoryResultsWithinBudget(ranked, {
+      ));
+    const eligibleVectors = visible.flatMap((item) => {
+      const vector = this.vectors.get(this.vectorKey(normalizedContext.namespace, item.id));
+      return vector?.updatedAt === item.updatedAt ? [[item, vector] as const] : [];
+    });
+    const lexical = rankMemoryItems(visible, query.query);
+    let semantic: Array<{ id: string; score: number }> = [];
+    let fallbackReason = this.embeddingProvider && eligibleVectors.length === 0
+      ? "semantic_index_unavailable"
+      : undefined;
+    if (this.embeddingProvider && eligibleVectors.length > 0) {
+      try {
+        const identity = normalizeTextEmbeddingIdentity(
+          await this.embeddingProvider.identity(),
+        );
+        const embedded = assertTextEmbeddingResult(
+          await this.embeddingProvider.embed({
+            texts: [query.query],
+            task: "query",
+            ...(query.signal ? { signal: query.signal } : {}),
+          }),
+          { expectedCount: 1, expectedIdentity: identity },
+        );
+        semantic = eligibleVectors.flatMap(([item, vector]) => {
+          if (!textEmbeddingIdentitiesEqual(vector.identity, embedded.identity)) return [];
+          const score = cosineSimilarity(embedded.vectors[0]!, vector.values);
+          return score > 0 ? [{ id: item.id, score }] : [];
+        });
+      } catch (error) {
+        if (isAbortError(error)) throw error;
+        if (this.embeddingFailureMode === "strict") throw error;
+        fallbackReason = "embedding_unavailable";
+      }
+    }
+    const lexicalById = new Map(lexical.map((result) => [result.item.id, result]));
+    const itemById = new Map(visible.map((item) => [item.id, item]));
+    const fused = fuseHybridRankings({
+      lexical: lexical.map((result) => ({ id: result.item.id, score: result.score })),
+      semantic,
+    }).map((result): MemorySearchResult => {
+      const lexicalResult = lexicalById.get(result.id);
+      const item = itemById.get(result.id)!;
+      return Object.freeze({
+        item,
+        score: result.score,
+        matchedTerms: lexicalResult?.matchedTerms ?? Object.freeze([]),
+        estimatedTokens: lexicalResult?.estimatedTokens
+          ?? Math.max(1, Math.ceil((item.content.length + (item.summary?.length ?? 0)) / 4)),
+        scores: Object.freeze(result.scores),
+        ranks: Object.freeze(result.ranks),
+        retrievalMode: result.mode,
+        ...(fallbackReason ? { fallbackReason } : {}),
+      });
+    });
+    return selectMemoryResultsWithinBudget(fused, {
       tokenBudget: query.tokenBudget ?? Number.MAX_SAFE_INTEGER,
       maxResults: query.maxResults ?? 20,
     });
@@ -591,6 +759,7 @@ export class InMemoryMemoryItemStore implements MemoryItemStore {
       next.set(namespace, { items, usage });
     }
     this.namespaces.clear();
+    this.vectors.clear();
     for (const [namespace, state] of next) {
       this.namespaces.set(namespace, state);
     }

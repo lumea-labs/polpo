@@ -111,6 +111,7 @@ export type {
 // ── Runtime planning (host-neutral, serializable execution decisions) ───
 export * from "./runtime-plan/index.js";
 export * from "./runtime-context/index.js";
+export * from "./semantic-retrieval.js";
 export * from "./execution-router.js";
 
 // ── Run steering (provider-neutral queue, checkpoints, and abort) ────────

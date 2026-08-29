@@ -18,6 +18,7 @@ import {
   type CreateMemoryItemInput,
   type MemoryItemStore,
   type MemoryStoreContext,
+  type TextEmbeddingProvider,
 } from "@polpo-ai/core/memory";
 import { FileMemoryItemStore } from "../file-memory-item-store.js";
 
@@ -413,6 +414,52 @@ describe("FileMemoryItemStore durability", () => {
       await expect(reopened.get("memory-1", context))
         .resolves.toMatchObject({ content: "Persists." });
       expect(readFileSync(legacyPath, "utf8")).toBe("# Existing legacy memory\n");
+      await reopened.close();
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("rebuilds semantic embeddings from canonical items after reopen", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "polpo-memory-items-"));
+    const embeddingProvider: TextEmbeddingProvider = {
+      identity: () => ({
+        provider: "fixture",
+        model: "meaning-v1",
+        dimensions: 2,
+        revision: "r1",
+      }),
+      embed: async ({ texts }) => ({
+        identity: {
+          provider: "fixture",
+          model: "meaning-v1",
+          dimensions: 2,
+          revision: "r1",
+        },
+        vectors: texts.map((text) => (
+          /refund|money back/i.test(text) ? [1, 0] : [0, 1]
+        )),
+      }),
+    };
+    try {
+      const first = new FileMemoryItemStore(directory, {
+        semantic: { embeddingProvider },
+      });
+      await first.create(memory("refund", "Refunds are approved in five days."), context);
+      await first.close();
+
+      const canonical = readFileSync(join(directory, "memory-items.json"), "utf8");
+      expect(canonical).not.toContain("meaning-v1");
+      expect(canonical).not.toContain("vectors");
+
+      const reopened = new FileMemoryItemStore(directory, {
+        semantic: { embeddingProvider },
+      });
+      await expect(reopened.search({ query: "When can I get my money back?" }, context))
+        .resolves.toMatchObject([{
+          item: { id: "refund" },
+          retrievalMode: "semantic",
+        }]);
       await reopened.close();
     } finally {
       rmSync(directory, { recursive: true, force: true });

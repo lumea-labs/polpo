@@ -115,6 +115,7 @@ export type {
   BrainPublishVersionInput,
   BrainReplaceVersionChunksInput,
   BrainRetrievalResult,
+  BrainRetrievalRanks,
   BrainRetrievalScores,
   BrainRerankRequest,
   BrainScope,
@@ -148,6 +149,7 @@ export type {
 export type {
   BrainAccessPolicy,
   BrainEmbeddingProvider,
+  LegacyBrainEmbeddingProvider,
   BrainParser,
   BrainReranker,
   BrainTrustPolicy,

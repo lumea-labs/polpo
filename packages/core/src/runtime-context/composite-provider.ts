@@ -47,6 +47,33 @@ function mergeLegacyMemory(
   });
 }
 
+function allocateProviderBudgets(
+  providers: readonly RuntimeContextProvider[],
+  available: number,
+): number[] {
+  const configured = providers.map((provider) => provider.tokenBudget);
+  const total = configured.reduce((sum, value) => sum + value, 0);
+  if (available === 0 || total === 0) return configured.map(() => 0);
+  if (available >= total) return configured;
+  const exact = configured.map((value) => value * available / total);
+  const allocated = exact.map(Math.floor);
+  let remainder = available - allocated.reduce((sum, value) => sum + value, 0);
+  const order = exact.map((value, index) => ({
+    index,
+    fraction: value - allocated[index]!,
+  })).sort((left, right) => (
+    right.fraction - left.fraction || left.index - right.index
+  ));
+  for (const { index } of order) {
+    if (remainder === 0) break;
+    if (allocated[index]! < configured[index]!) {
+      allocated[index] = allocated[index]! + 1;
+      remainder -= 1;
+    }
+  }
+  return allocated;
+}
+
 export function createCompositeRuntimeContextProvider(
   options: CreateCompositeRuntimeContextProviderOptions,
 ): RuntimeContextProvider {
@@ -74,10 +101,14 @@ export function createCompositeRuntimeContextProvider(
     retrieve: async (input: RuntimeContextRetrievalInput) => {
       if (input.signal?.aborted) throw abortError();
       const active = providers.filter((provider) => provider.tokenBudget > 0);
-      const results = await Promise.all(active.map((provider) =>
+      const budgets = allocateProviderBudgets(
+        active,
+        Math.min(input.tokenBudget, totalBudget),
+      );
+      const results = await Promise.all(active.map((provider, index) =>
         provider.retrieve(Object.freeze({
           ...input,
-          tokenBudget: Math.min(input.tokenBudget, provider.tokenBudget),
+          tokenBudget: budgets[index]!,
         }))
       ));
       if (input.signal?.aborted) throw abortError();

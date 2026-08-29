@@ -166,11 +166,19 @@ export interface BrainRetrievalScores {
   readonly rerank?: number;
 }
 
+export interface BrainRetrievalRanks {
+  readonly keyword?: number;
+  readonly semantic?: number;
+}
+
 export interface BrainRetrievalResult {
   readonly scope: BrainScope;
   readonly chunk: BrainChunk;
   readonly score: number;
   readonly scores: BrainRetrievalScores;
+  readonly ranks?: BrainRetrievalRanks;
+  readonly retrievalMode?: "lexical" | "semantic" | "hybrid";
+  readonly fallbackReason?: string;
   readonly trust: BrainTrustLevel;
 }
 
@@ -179,6 +187,9 @@ export interface CreateBrainRetrievalResultInput {
   readonly chunk: BrainChunk;
   readonly score: number;
   readonly scores?: BrainRetrievalScores;
+  readonly ranks?: BrainRetrievalRanks;
+  readonly retrievalMode?: "lexical" | "semantic" | "hybrid";
+  readonly fallbackReason?: string;
   readonly trust: BrainTrustLevel;
 }
 
@@ -300,6 +311,7 @@ export interface BrainCandidateSearchQuery {
   readonly sources: readonly BrainSourceRef[];
   readonly query: string;
   readonly limit: number;
+  readonly signal?: AbortSignal;
 }
 
 export interface BrainEnqueueResult {
@@ -351,18 +363,24 @@ export interface BrainParserResult {
 export interface BrainEmbeddingRequest {
   readonly texts: readonly string[];
   readonly model?: string;
+  readonly task?: "document" | "query";
+  readonly signal?: AbortSignal;
 }
 
 export interface BrainEmbeddingResult {
   readonly vectors: readonly (readonly number[])[];
   readonly model: string;
   readonly dimensions: number;
+  readonly provider?: string;
+  readonly revision?: string;
+  readonly usage?: unknown;
 }
 
 export interface BrainRerankRequest {
   readonly query: string;
   readonly results: readonly BrainRetrievalResult[];
   readonly limit: number;
+  readonly signal?: AbortSignal;
 }
 
 export interface BrainStoreSnapshot {

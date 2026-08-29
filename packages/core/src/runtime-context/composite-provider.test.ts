@@ -99,7 +99,7 @@ describe("createCompositeRuntimeContextProvider", () => {
         shared: "replace",
       },
     });
-    expect(calls).toEqual(["memory:400", "brain:900"]);
+    expect(calls).toEqual(["memory:308", "brain:692"]);
   });
 
   it("skips disabled providers and preserves an empty replacement directive", async () => {
@@ -145,5 +145,26 @@ describe("createCompositeRuntimeContextProvider", () => {
       composite.retrieve(input(100, controller.signal)),
     ).rejects.toMatchObject({ name: "AbortError" });
     expect(retrieve).not.toHaveBeenCalled();
+  });
+
+  it("never allocates more than the request budget and preserves every corpus deterministically", async () => {
+    const budgets: number[] = [];
+    const composite = createCompositeRuntimeContextProvider({
+      tokenBudget: 1_000,
+      providers: [
+        provider(400, async (value) => {
+          budgets.push(value.tokenBudget);
+          return { segments: [] };
+        }),
+        provider(900, async (value) => {
+          budgets.push(value.tokenBudget);
+          return { segments: [] };
+        }),
+      ],
+    });
+
+    await composite.retrieve(input(100));
+    expect(budgets).toEqual([31, 69]);
+    expect(budgets.reduce((sum, value) => sum + value, 0)).toBe(100);
   });
 });

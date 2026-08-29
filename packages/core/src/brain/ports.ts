@@ -10,6 +10,7 @@ import type {
   BrainTrustDecision,
   BrainTrustRequest,
 } from "./types.js";
+import type { TextEmbeddingProvider } from "../semantic-retrieval.js";
 
 export interface BrainAccessPolicy {
   authorize(
@@ -28,9 +29,14 @@ export interface BrainParser {
   parse(input: BrainParserInput): Promise<BrainParserResult>;
 }
 
-export interface BrainEmbeddingProvider {
+/** @deprecated Implement TextEmbeddingProvider for new adapters. */
+export interface LegacyBrainEmbeddingProvider {
   embed(request: BrainEmbeddingRequest): Promise<BrainEmbeddingResult>;
 }
+
+export type BrainEmbeddingProvider =
+  | LegacyBrainEmbeddingProvider
+  | TextEmbeddingProvider;
 
 export interface BrainReranker {
   rerank(request: BrainRerankRequest): Promise<readonly BrainRetrievalResult[]>;

@@ -12,7 +12,7 @@ import {
   retrieveBrain,
   type BrainAccessPolicy,
   type BrainActorContext,
-  type BrainEmbeddingProvider,
+  type LegacyBrainEmbeddingProvider,
   type BrainReranker,
   type BrainScope,
 } from "../brain/index.js";
@@ -609,7 +609,7 @@ describe("Brain ingestion and retrieval", () => {
   });
 
   it("falls back to lexical order when embedding or reranking fails", async () => {
-    const embedder: BrainEmbeddingProvider = {
+    const embedder: LegacyBrainEmbeddingProvider = {
       embed: async () => {
         throw new Error("embedding offline");
       },
@@ -646,6 +646,103 @@ describe("Brain ingestion and retrieval", () => {
     });
 
     expect(results.map((result) => result.chunk.sourceId)).toEqual(["a", "b"]);
+    expect(results.every((result) => (
+      result.retrievalMode === "lexical"
+      && result.fallbackReason === "semantic_index_unavailable"
+    ))).toBe(true);
+  });
+
+  it("recovers paraphrases semantically and fuses overlap with deterministic diagnostics", async () => {
+    const tasks: Array<string | undefined> = [];
+    const embedder: LegacyBrainEmbeddingProvider = {
+      embed: async ({ texts, task }) => {
+        tasks.push(task);
+        return {
+          provider: "fixture",
+          model: "meaning-v1",
+          revision: "r1",
+          dimensions: 2,
+          vectors: texts.map((text) => (
+            /refund|reimbursement|money back/i.test(text) ? [1, 0] : [0, 1]
+          )),
+        };
+      },
+    };
+    const store = new InMemoryBrainStore({ embeddingProvider: embedder });
+    await seed(store, {
+      sourceId: "policy",
+      content: "Billing refunds are approved within five days.",
+    });
+
+    const results = await store.searchCandidates({
+      sources: [{ scope: projectA, sourceId: "policy" }],
+      query: "When can a customer get their money back?",
+      limit: 5,
+    });
+
+    expect(results).toHaveLength(1);
+    expect(results[0]).toMatchObject({
+      retrievalMode: "semantic",
+      ranks: { semantic: 1 },
+      scores: { semantic: 1 },
+    });
+    expect(tasks).toContain("document");
+    expect(tasks.at(-1)).toBe("query");
+  });
+
+  it("never compares vectors after the embedding identity changes", async () => {
+    let revision = "r1";
+    const embedder: LegacyBrainEmbeddingProvider = {
+      embed: async ({ texts }) => ({
+        provider: "fixture",
+        model: "meaning-v1",
+        revision,
+        dimensions: 2,
+        vectors: texts.map(() => [1, 0]),
+      }),
+    };
+    const store = new InMemoryBrainStore({ embeddingProvider: embedder });
+    await seed(store, { content: "Refund policy." });
+    revision = "r2";
+
+    await expect(store.searchCandidates({
+      sources: [{ scope: projectA, sourceId: "source-1" }],
+      query: "money back",
+      limit: 5,
+    })).resolves.toEqual([]);
+  });
+
+  it("propagates cancellation to query embedding", async () => {
+    const controller = new AbortController();
+    const embedder: LegacyBrainEmbeddingProvider = {
+      embed: async ({ texts, task, signal }) => {
+        if (task === "query") {
+          expect(signal).toBe(controller.signal);
+          controller.abort();
+          throw Object.assign(new Error("cancelled"), { name: "AbortError" });
+        }
+        return {
+          model: "fixture",
+          dimensions: 1,
+          vectors: texts.map(() => [1]),
+        };
+      },
+    };
+    const store = new InMemoryBrainStore({
+      embeddingProvider: embedder,
+    });
+    await seed(store);
+
+    await expect(retrieveBrain({
+      query: "billing",
+      scopes: [projectA],
+      actor,
+      signal: controller.signal,
+    }, {
+      sourceStore: store,
+      chunkStore: store,
+      accessPolicy: allow,
+    })).rejects.toMatchObject({ name: "AbortError" });
   });
 
   it("rejects a reranker that drops citation identity in strict mode", async () => {
@@ -677,6 +774,28 @@ describe("Brain ingestion and retrieval", () => {
       reranker,
       failureMode: "strict",
     })).rejects.toThrow(/reranker/i);
+  });
+
+  it("never converts reranker cancellation into a lexical fallback", async () => {
+    const store = new InMemoryBrainStore();
+    await seed(store);
+    const reranker: BrainReranker = {
+      rerank: async () => {
+        throw Object.assign(new Error("cancelled"), { name: "AbortError" });
+      },
+    };
+
+    await expect(retrieveBrain({
+      query: "billing",
+      scopes: [projectA],
+      actor,
+    }, {
+      sourceStore: store,
+      chunkStore: store,
+      accessPolicy: allow,
+      reranker,
+      failureMode: "fallback",
+    })).rejects.toMatchObject({ name: "AbortError" });
   });
 
   it("enforces the final token budget and returns no segment for empty input", async () => {

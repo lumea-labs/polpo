@@ -1,4 +1,4 @@
-import type { LanguageModel } from "ai";
+import type { EmbeddingModel, LanguageModel } from "ai";
 import type {
   ModelInvocationContext,
   ModelInvocationDetails,
@@ -53,7 +53,9 @@ export interface ProviderOptionInput extends CreateModelInput {
 export interface ModelRuntimeAdapter {
   mode: ModelRuntimeMode;
   createLanguageModel(input: CreateModelInput): Promise<LanguageModel> | LanguageModel;
-  createEmbeddingModel?(input: CreateModelInput): Promise<unknown> | unknown;
+  createEmbeddingModel?(
+    input: CreateModelInput,
+  ): Promise<EmbeddingModel> | EmbeddingModel;
   createImageModel?(input: CreateModelInput): Promise<unknown> | unknown;
   createVideoModel?(input: CreateModelInput): Promise<unknown> | unknown;
   createTranscriptionModel?(input: CreateModelInput): Promise<unknown> | unknown;

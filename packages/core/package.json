@@ -70,6 +70,10 @@
       "types": "./dist/runtime-context/index.d.ts",
       "import": "./dist/runtime-context/index.js"
     },
+    "./semantic-retrieval": {
+      "types": "./dist/semantic-retrieval.d.ts",
+      "import": "./dist/semantic-retrieval.js"
+    },
     "./steering": {
       "types": "./dist/steering.d.ts",
       "import": "./dist/steering.js"

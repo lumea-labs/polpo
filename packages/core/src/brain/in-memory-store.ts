@@ -18,7 +18,17 @@ import {
   BrainStoreConflictError,
   BrainStoreValidationError,
 } from "./store-errors.js";
-import type { BrainEmbeddingProvider } from "./ports.js";
+import type {
+  BrainEmbeddingProvider,
+  LegacyBrainEmbeddingProvider,
+} from "./ports.js";
+import {
+  assertTextEmbeddingResult,
+  cosineSimilarity,
+  fuseHybridRankings,
+  type TextEmbeddingIdentity,
+  type TextEmbeddingProvider,
+} from "../semantic-retrieval.js";
 import type {
   BrainChunkStore,
   BrainIngestionJobStore,
@@ -48,7 +58,7 @@ import type {
 
 interface StoredVector {
   readonly values: readonly number[];
-  readonly model: string;
+  readonly identity: TextEmbeddingIdentity;
 }
 
 export interface InMemoryBrainStoreOptions {
@@ -235,37 +245,36 @@ function lexicalScore(content: string, queryTerms: readonly string[]): number {
   return matched / queryTerms.length + frequency / (queryTerms.length * 20);
 }
 
-function cosine(left: readonly number[], right: readonly number[]): number {
-  if (left.length === 0 || left.length !== right.length) return 0;
-  let dot = 0;
-  let leftMagnitude = 0;
-  let rightMagnitude = 0;
-  for (let index = 0; index < left.length; index += 1) {
-    const l = left[index];
-    const r = right[index];
-    if (!Number.isFinite(l) || !Number.isFinite(r)) return 0;
-    dot += l * r;
-    leftMagnitude += l * l;
-    rightMagnitude += r * r;
+async function embedTexts(
+  provider: BrainEmbeddingProvider,
+  request: {
+    readonly texts: readonly string[];
+    readonly task: "document" | "query";
+    readonly signal?: AbortSignal;
+  },
+) {
+  if ("identity" in provider && typeof provider.identity === "function") {
+    const identity = await provider.identity();
+    return assertTextEmbeddingResult(
+      await (provider as TextEmbeddingProvider).embed(request),
+      { expectedCount: request.texts.length, expectedIdentity: identity },
+    );
   }
-  if (leftMagnitude === 0 || rightMagnitude === 0) return 0;
-  const score = dot / Math.sqrt(leftMagnitude * rightMagnitude);
-  return Number.isFinite(score) ? score : 0;
+  const result = await (provider as LegacyBrainEmbeddingProvider).embed(request);
+  return assertTextEmbeddingResult({
+    vectors: result.vectors,
+    identity: {
+      provider: result.provider ?? "legacy",
+      model: result.model,
+      dimensions: result.dimensions,
+      revision: result.revision ?? result.model,
+    },
+    ...(result.usage === undefined ? {} : { usage: result.usage }),
+  }, { expectedCount: request.texts.length });
 }
 
-function validateVectors(
-  vectors: readonly (readonly number[])[],
-  expectedCount: number,
-  expectedDimensions: number,
-): boolean {
-  return (
-    vectors.length === expectedCount
-    && expectedDimensions > 0
-    && vectors.every((vector) => (
-      vector.length === expectedDimensions
-      && vector.every(Number.isFinite)
-    ))
-  );
+function isAbortError(error: unknown): boolean {
+  return error instanceof Error && error.name === "AbortError";
 }
 
 export class InMemoryBrainStore implements
@@ -595,22 +604,17 @@ export class InMemoryBrainStore implements
     }
 
     let embedded: readonly (readonly number[])[] | undefined;
-    let model: string | undefined;
+    let embeddingIdentity: TextEmbeddingIdentity | undefined;
     if (this.embeddingProvider && chunks.length > 0) {
       try {
-        const result = await this.embeddingProvider.embed({
+        const normalized = await embedTexts(this.embeddingProvider, {
           texts: chunks.map((chunk) => chunk.content),
+          task: "document",
         });
-        if (
-          !validateVectors(result.vectors, chunks.length, result.dimensions)
-        ) {
-          throw new BrainStoreValidationError(
-            "Embedding provider returned malformed vectors",
-          );
-        }
-        embedded = result.vectors;
-        model = result.model;
+        embedded = normalized.vectors;
+        embeddingIdentity = normalized.identity;
       } catch (error) {
+        if (isAbortError(error)) throw error;
         if (this.embeddingFailureMode === "strict") throw error;
       }
     }
@@ -620,11 +624,11 @@ export class InMemoryBrainStore implements
     for (const [storedKey] of this.vectors) {
       if (storedKey.startsWith(`${key}:`)) this.vectors.delete(storedKey);
     }
-    if (embedded && model) {
+    if (embedded && embeddingIdentity) {
       chunks.forEach((chunk, index) => {
         this.vectors.set(`${key}:${chunk.id}`, {
           values: Object.freeze([...embedded![index]]),
-          model: model!,
+          identity: embeddingIdentity!,
         });
       });
     }
@@ -647,24 +651,44 @@ export class InMemoryBrainStore implements
     const limit = normalizeLimit(query.limit, 10);
     const queryTerms = terms(queryText);
 
+    const eligibleVectors = sources.flatMap(({ scope, sourceId }) => {
+      const source = this.source({ scope, sourceId });
+      if (!source || !isBrainSourceRetrievable(source)) return [];
+      const ref = { scope, sourceId, version: source.currentVersion! };
+      return (this.chunks.get(versionKey(ref)) ?? []).flatMap((chunk) => {
+        const stored = this.vectors.get(`${versionKey(ref)}:${chunk.id}`);
+        return stored ? [stored] : [];
+      });
+    });
     let queryVector: readonly number[] | undefined;
-    if (this.embeddingProvider) {
+    let queryIdentity: TextEmbeddingIdentity | undefined;
+    let fallbackReason: string | undefined = this.embeddingProvider
+      && eligibleVectors.length === 0
+      ? "semantic_index_unavailable"
+      : undefined;
+    if (this.embeddingProvider && eligibleVectors.length > 0) {
       try {
-        const result = await this.embeddingProvider.embed({
+        const normalized = await embedTexts(this.embeddingProvider, {
           texts: [queryText],
+          task: "query",
+          ...(query.signal ? { signal: query.signal } : {}),
         });
-        if (!validateVectors(result.vectors, 1, result.dimensions)) {
-          throw new BrainStoreValidationError(
-            "Embedding provider returned a malformed query vector",
-          );
-        }
-        queryVector = result.vectors[0];
+        queryVector = normalized.vectors[0];
+        queryIdentity = normalized.identity;
       } catch (error) {
+        if (isAbortError(error)) throw error;
         if (this.embeddingFailureMode === "strict") throw error;
+        fallbackReason = "embedding_unavailable";
       }
     }
 
-    const results: BrainRetrievalResult[] = [];
+    const candidates = new Map<string, {
+      readonly scope: BrainScope;
+      readonly chunk: BrainChunk;
+      readonly trust: BrainSource["trust"];
+    }>();
+    const lexical: { id: string; score: number }[] = [];
+    const semantic: { id: string; score: number }[] = [];
     for (const { scope, sourceId } of sources) {
       const source = this.source({ scope, sourceId });
       if (!source || !isBrainSourceRetrievable(source)) continue;
@@ -674,33 +698,54 @@ export class InMemoryBrainStore implements
       for (const chunk of chunks) {
         const keyword = lexicalScore(chunk.content, queryTerms);
         const stored = this.vectors.get(`${versionKey(ref)}:${chunk.id}`);
-        const semantic = queryVector && stored
-          ? cosine(queryVector, stored.values)
+        const semanticScore = queryVector && queryIdentity && stored
+          && stored.identity.provider === queryIdentity.provider
+          && stored.identity.model === queryIdentity.model
+          && stored.identity.dimensions === queryIdentity.dimensions
+          && stored.identity.revision === queryIdentity.revision
+          ? cosineSimilarity(queryVector, stored.values)
           : 0;
-        if (keyword <= 0 && semantic <= 0) continue;
-        const score = keyword + Math.max(0, semantic);
-        results.push(createBrainRetrievalResult({
-          scope,
-          chunk,
-          score,
-          scores: {
-            ...(keyword > 0 ? { keyword } : {}),
-            ...(semantic > 0 ? { semantic } : {}),
-          },
-          trust: source.trust,
-        }));
+        if (keyword <= 0 && semanticScore <= 0) continue;
+        const id = JSON.stringify([
+          scope.kind,
+          scope.subjectId,
+          sourceId,
+          currentVersion,
+          chunk.id,
+        ]);
+        candidates.set(id, { scope, chunk, trust: source.trust });
+        if (keyword > 0) lexical.push({ id, score: keyword });
+        if (semanticScore > 0) semantic.push({ id, score: semanticScore });
       }
     }
-    return Object.freeze(
-      results
-        .sort((left, right) => (
-          right.score - left.score
-          || left.chunk.sourceId.localeCompare(right.chunk.sourceId)
-          || left.chunk.index - right.chunk.index
-          || left.chunk.id.localeCompare(right.chunk.id)
-        ))
-        .slice(0, limit),
-    );
+    const fused = fuseHybridRankings({ lexical, semantic, limit });
+    return Object.freeze(fused.map((ranking) => {
+      const candidate = candidates.get(ranking.id)!;
+      return createBrainRetrievalResult({
+        scope: candidate.scope,
+        chunk: candidate.chunk,
+        score: ranking.score,
+        scores: {
+          ...(ranking.scores.lexical === undefined
+            ? {}
+            : { keyword: ranking.scores.lexical }),
+          ...(ranking.scores.semantic === undefined
+            ? {}
+            : { semantic: ranking.scores.semantic }),
+        },
+        ranks: {
+          ...(ranking.ranks.lexical === undefined
+            ? {}
+            : { keyword: ranking.ranks.lexical }),
+          ...(ranking.ranks.semantic === undefined
+            ? {}
+            : { semantic: ranking.ranks.semantic }),
+        },
+        retrievalMode: ranking.mode,
+        ...(fallbackReason ? { fallbackReason } : {}),
+        trust: candidate.trust,
+      });
+    }));
   }
 
   async deleteVersionChunks(ref: BrainVersionRef): Promise<void> {

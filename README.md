@@ -122,6 +122,27 @@ unchanged. Stores can implement `listPage()` for stable `(createdAt, id)`
 keyset pagination, and clients can use `listMemoryItemsPage()` with the opaque
 cursor returned by the HTTP API.
 
+Memory and Knowledge can optionally share a provider-neutral semantic
+retrieval foundation without merging their data or permissions. Supply a
+`TextEmbeddingProvider` to the local stores to add semantic candidates while
+retaining lexical matching and deterministic reciprocal-rank fusion:
+
+```ts
+import { FileMemoryItemStore } from "@polpo-ai/file-stores";
+
+const memory = new FileMemoryItemStore(".polpo", {
+  semantic: {
+    embeddingProvider,
+    embeddingFailureMode: "fallback",
+  },
+});
+```
+
+Embedding identity includes provider, model, dimensions, and revision.
+Derived vectors are rebuildable, excluded from canonical Memory snapshots,
+and never compared across incompatible identities. A provider or reranker
+outage can fall back to lexical retrieval; an aborted request always stops.
+
 ## Self-host with the dashboard
 
 The repository includes a single-tenant dashboard host that keeps the runtime API key on the server. Start the production-oriented example with PostgreSQL:
