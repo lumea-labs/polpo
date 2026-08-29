@@ -1526,7 +1526,8 @@ export interface ChatCompletionChunk {
     tool_call?: ToolCallEvent;
     /** Present when a project loop runtime trace event is emitted. */
     loop_trace?: LoopTraceEvent;
-    /** Present when the model is emitting thinking/reasoning tokens. */
+    /** Provider-exposed reasoning content, such as an OpenAI reasoning summary.
+     * Never guaranteed to contain private chain-of-thought. */
     thinking?: string;
   }>;
   /** Namespaced Polpo streaming extensions. */

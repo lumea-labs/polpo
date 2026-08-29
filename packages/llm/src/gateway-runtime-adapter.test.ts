@@ -42,6 +42,7 @@ describe("gateway runtime adapter", () => {
     expect(options).toEqual({
       openai: {
         reasoningEffort: "medium",
+        reasoningSummary: "auto",
       },
     });
   });

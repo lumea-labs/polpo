@@ -187,6 +187,7 @@ export interface AgentConfig {
   maxConcurrency?: number;
   /** Reasoning / deep thinking level for this agent's LLM calls.
    *  "off" disables thinking (default). Higher levels = more reasoning tokens = better quality but slower + more expensive.
+   *  Supporting providers may stream provider-exposed reasoning summaries; private chain-of-thought is never guaranteed.
    *  Falls back to the global `settings.reasoning` when not set. */
   reasoning?: ReasoningLevel;
   /** Runtime/environment ref for configurable loop execution. */
