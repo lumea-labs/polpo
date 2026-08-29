@@ -89,7 +89,7 @@ describe("streamModelTurn", () => {
       },
     });
 
-    await streamModelTurn({
+    const result = await streamModelTurn({
       model,
       messages: [{ role: "user", content: "Inspect two resources" }],
       parallelToolCalls: false,
@@ -122,7 +122,7 @@ describe("streamModelTurn", () => {
       { type: "finish", finishReason: { unified: "stop", raw: undefined }, usage: usage() },
     ]);
 
-    await streamModelTurn({
+    const result = await streamModelTurn({
       model,
       messages: [{ role: "user", content: "Inspect the constraints" }],
     }, event => {
@@ -139,6 +139,8 @@ describe("streamModelTurn", () => {
       id: "text_1",
       text: "Done.",
     });
+    expect(result.reasoning).toBe("Checked the constraints.");
+    expect(result.text).toBe("Done.");
   });
 
   it("does not add provider options when the preference is omitted", async () => {

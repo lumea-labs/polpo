@@ -205,10 +205,14 @@ export async function ensurePgTables(db: any): Promise<void> {
     ts         TEXT NOT NULL,
     tool_calls TEXT,
     suggestions TEXT,
-    tool_call_id TEXT
+    tool_call_id TEXT,
+    reasoning TEXT,
+    reasoning_truncated BOOLEAN NOT NULL DEFAULT FALSE
   )`);
   await db.execute(sql`ALTER TABLE messages ADD COLUMN IF NOT EXISTS suggestions TEXT`);
   await db.execute(sql`ALTER TABLE messages ADD COLUMN IF NOT EXISTS tool_call_id TEXT`);
+  await db.execute(sql`ALTER TABLE messages ADD COLUMN IF NOT EXISTS reasoning TEXT`);
+  await db.execute(sql`ALTER TABLE messages ADD COLUMN IF NOT EXISTS reasoning_truncated BOOLEAN NOT NULL DEFAULT FALSE`);
 
   await db.execute(sql`CREATE TABLE IF NOT EXISTS session_continuations (
     id              TEXT PRIMARY KEY,

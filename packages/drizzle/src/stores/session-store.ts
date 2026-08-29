@@ -10,6 +10,7 @@ import type {
   SessionCreateOptions,
   SessionListFilter,
   SessionMessageOptions,
+  PersistedReasoning,
 } from "@polpo-ai/core/session-store";
 import { normalizeSessionCreateArgs } from "@polpo-ai/core/session-store";
 import {
@@ -101,6 +102,8 @@ export class DrizzleSessionStore implements SessionStore {
       toolCalls: deserializeJson<ToolCallInfo[] | undefined>(row.toolCalls, undefined, this.dialect),
       suggestions: deserializeJson<ChatSuggestion[] | undefined>(row.suggestions, undefined, this.dialect),
       ...(row.toolCallId ? { toolCallId: row.toolCallId } : {}),
+      ...(row.reasoning ? { reasoning: row.reasoning } : {}),
+      ...(row.reasoningTruncated ? { reasoningTruncated: true } : {}),
     };
   }
 
@@ -141,6 +144,8 @@ export class DrizzleSessionStore implements SessionStore {
       toolCalls: null,
       suggestions: null,
       toolCallId: options?.toolCallId ?? null,
+      reasoning: null,
+      reasoningTruncated: false,
     });
     await this.db.update(this.sessions)
       .set({ updatedAt: ts, version: sql`${this.sessions.version} + 1` })
@@ -161,6 +166,7 @@ export class DrizzleSessionStore implements SessionStore {
     content: string | SessionContentPart[],
     toolCalls?: ToolCallInfo[],
     suggestions?: ChatSuggestion[],
+    reasoning?: PersistedReasoning,
   ): Promise<boolean> {
     const now = new Date().toISOString();
     const tcValue = toolCalls ? JSON.stringify(toolCalls) : null;
@@ -171,6 +177,8 @@ export class DrizzleSessionStore implements SessionStore {
         content: serialized,
         toolCalls: tcValue,
         suggestions: suggestions?.length ? JSON.stringify(suggestions) : null,
+        reasoning: reasoning?.text ?? null,
+        reasoningTruncated: reasoning?.truncated ?? false,
       })
       .where(eq(this.messages.id, messageId));
 

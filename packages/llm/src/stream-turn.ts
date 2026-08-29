@@ -42,6 +42,8 @@ export type ModelTurnEvent<TOOLS extends ToolSet = ToolSet> =
 
 export type ModelTurnResult<TOOLS extends ToolSet = ToolSet> = {
   text: string;
+  /** Provider-exposed reasoning summary, separate from model-visible text. */
+  reasoning: string;
   /** Complete parsed output when a structured output specification was used. */
   output?: unknown;
   toolCalls: TypedToolCall<TOOLS>[];
@@ -565,11 +567,13 @@ export async function streamModelTurn<TOOLS extends ToolSet = ToolSet>(
   });
 
   let text = "";
+  let reasoning = "";
   let streamError: unknown;
 
   for await (const part of result.fullStream) {
     switch (part.type) {
       case "reasoning-delta":
+        reasoning += part.text;
         await onEvent?.({ type: "reasoning-delta", id: part.id, text: part.text });
         break;
       case "text-delta":
@@ -668,6 +672,7 @@ export async function streamModelTurn<TOOLS extends ToolSet = ToolSet>(
 
   return {
     text,
+    reasoning,
     ...(output !== undefined ? { output } : {}),
     toolCalls: normalizeExecutableToolCalls(toolCalls),
     toolResults,

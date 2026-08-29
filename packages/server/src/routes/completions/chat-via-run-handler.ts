@@ -120,6 +120,7 @@ export function buildChatRunInjection(execution: ChatCompletionExecution): ChatS
  */
 interface DriverState {
   finalText: string;
+  reasoning: string;
   toolCallsAccum: any[];
   totalUsage: { inputTokens: number; outputTokens: number; totalTokens: number };
   lastProviderMetadata: Record<string, unknown> | undefined;
@@ -130,6 +131,7 @@ interface DriverState {
 
 export interface ChatViaRunTurnResult {
   text: string;
+  reasoning?: string;
   toolCalls: any[];
   usage: { inputTokens: number; outputTokens: number; totalTokens: number };
   providerMetadata?: Record<string, unknown>;
@@ -179,7 +181,9 @@ function makeOnEvent(
         break;
       }
       case "reasoning-delta": {
-        write(sseChunk(completionId, {}, null, { thinking: String(e.text ?? "") }));
+        const text = String(e.text ?? "");
+        state.reasoning += text;
+        write(sseChunk(completionId, {}, null, { thinking: text }));
         break;
       }
       case "tool_input_start": {
@@ -284,6 +288,7 @@ function clientToolFinishChunk(completionId: string, ret: { id: string; name: st
 function newState(): DriverState {
   return {
     finalText: "",
+    reasoning: "",
     toolCallsAccum: [],
     totalUsage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
     lastProviderMetadata: undefined,
@@ -348,7 +353,10 @@ async function finishCommon(
 ) {
   const { deps, body, m, sessionStore, sessionId, onResponseFinished } = execution;
   recordPendingClientToolCall(state);
-  await persistAssistantMessage(sessionStore, sessionId, assistantMsgId, state.finalText, state.toolCallsAccum, options);
+  await persistAssistantMessage(sessionStore, sessionId, assistantMsgId, state.finalText, state.toolCallsAccum, {
+    ...options,
+    reasoning: state.reasoning,
+  });
   try {
     deps.onCompletionFinished?.({
       usage: state.totalUsage,
@@ -707,6 +715,7 @@ export async function runChatTurnViaRun(
 
   return {
     text: state.finalText,
+    ...(state.reasoning ? { reasoning: state.reasoning } : {}),
     toolCalls: state.toolCallsAccum,
     usage: state.totalUsage,
     providerMetadata: state.lastProviderMetadata,

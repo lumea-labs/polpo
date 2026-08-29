@@ -1367,6 +1367,7 @@ export async function runConversationTurn(
   if (prepared.kind === "project-loop") {
     let assistantMessageId: string | null = null;
     let finalText = "";
+    let finalReasoning = "";
     let toolCalls: any[] = [];
     let usage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 };
     let model = "polpo";
@@ -1413,6 +1414,7 @@ export async function runConversationTurn(
         signal: input.signal,
       });
       toolCalls = result.toolCalls;
+      finalReasoning = result.reasoning;
       usage = {
         inputTokens: result.usage.inputTokens ?? 0,
         outputTokens: result.usage.outputTokens ?? 0,
@@ -1429,6 +1431,7 @@ export async function runConversationTurn(
         ...(sessionVersion !== undefined ? { sessionVersion } : {}),
         text: finalText,
         toolCalls,
+        ...(finalReasoning ? { reasoning: finalReasoning } : {}),
         usage,
         providerMetadata,
         ...(result.loopResult === undefined ? {} : { loopResult: result.loopResult }),
@@ -1445,6 +1448,7 @@ export async function runConversationTurn(
         assistantMessageId,
         finalText,
         toolCalls,
+        { reasoning: finalReasoning },
       );
       prepared.deps.onCompletionFinished?.({
         usage,

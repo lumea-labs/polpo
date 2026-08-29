@@ -21,6 +21,7 @@ import type {
   SessionCreateOptions,
   SessionListFilter,
   SessionMessageOptions,
+  PersistedReasoning,
 } from "@polpo-ai/core/session-store";
 import { normalizeSessionCreateArgs } from "@polpo-ai/core/session-store";
 import type { ChatSuggestion } from "@polpo-ai/core/chat-interactions";
@@ -101,6 +102,7 @@ export class FileSessionStore implements SessionStore {
     content: string | SessionContentPart[],
     toolCalls?: ToolCallInfo[],
     suggestions?: ChatSuggestion[],
+    reasoning?: PersistedReasoning,
   ): Promise<boolean> {
     const file = this.sessionFile(sessionId);
     if (!existsSync(file)) return false;
@@ -118,6 +120,10 @@ export class FileSessionStore implements SessionStore {
           }
           if (suggestions && suggestions.length > 0) {
             patched.suggestions = suggestions;
+          }
+          if (reasoning?.text) {
+            patched.reasoning = reasoning.text;
+            if (reasoning.truncated) patched.reasoningTruncated = true;
           }
           return JSON.stringify(patched);
         }

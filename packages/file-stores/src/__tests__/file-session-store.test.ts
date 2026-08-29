@@ -33,6 +33,26 @@ async function pendingSession(sessionStore: FileSessionStore): Promise<string> {
 }
 
 describe("FileSessionStore continuation", () => {
+  it("persists reasoning separately from assistant content", async () => {
+    const sessionStore = store();
+    const sessionId = await sessionStore.create();
+    const assistant = await sessionStore.addMessage(sessionId, "assistant", "draft");
+    await sessionStore.updateMessage(
+      sessionId,
+      assistant.id,
+      "final",
+      undefined,
+      undefined,
+      { text: "Checked the files.", truncated: true },
+    );
+
+    expect((await sessionStore.getMessages(sessionId))[0]).toMatchObject({
+      content: "final",
+      reasoning: "Checked the files.",
+      reasoningTruncated: true,
+    });
+  });
+
   it("persists a resolved client tool result and monotonic version", async () => {
     const sessionStore = store();
     const sessionId = await pendingSession(sessionStore);
