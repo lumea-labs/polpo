@@ -293,6 +293,7 @@ export function useChat(options: UseChatOptions = {}): UseChatReturn {
       ]);
 
       let fullText = "";
+      let fullReasoning = "";
       const toolCalls = new Map<string, ToolCallEvent>();
       const segments: MessageSegment[] = [];
 
@@ -341,6 +342,11 @@ export function useChat(options: UseChatOptions = {}): UseChatReturn {
         const choice = chunk.choices[0];
         if (!choice) continue;
         let updated = false;
+
+        if (choice.thinking) {
+          fullReasoning += choice.thinking;
+          updated = true;
+        }
 
         // Text content — append to last text segment or create new one
         if (choice.delta.content) {
@@ -399,7 +405,15 @@ export function useChat(options: UseChatOptions = {}): UseChatReturn {
           const segs = segments.length > 0 ? [...segments] : undefined;
           setMessages((prev) => [
             ...prev.slice(0, -1),
-            { id: assistantId, role: "assistant", content, ts: new Date().toISOString(), toolCalls: tc, segments: segs },
+            {
+              id: assistantId,
+              role: "assistant",
+              content,
+              ts: new Date().toISOString(),
+              toolCalls: tc,
+              segments: segs,
+              ...(fullReasoning ? { reasoning: fullReasoning } : {}),
+            },
           ]);
           optionsRef.current.onUpdate?.();
         }

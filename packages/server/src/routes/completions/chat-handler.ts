@@ -52,6 +52,7 @@ import {
   indexToolResultsByCallId,
   invalidModelToolCallEvent,
   isInvalidModelToolCall,
+  appendReasoningSummary,
   persistAssistantMessage,
   recordProviderToolCall,
   toAITools,
@@ -214,6 +215,7 @@ export async function executeStreamingChatCompletion(
 
     const messages: any[] = [...aiMessages];
     let finalText = "";
+    let finalReasoning = "";
     let totalUsage: LanguageModelUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 } as LanguageModelUsage;
     const toolCallsAccum: any[] = [];
     let lastProviderMetadata: Record<string, unknown> | undefined;
@@ -360,6 +362,7 @@ export async function executeStreamingChatCompletion(
             }
           }
         });
+        finalReasoning = appendReasoningSummary(finalReasoning, result.reasoning);
 
         // If aborted, stop the loop — skip error/tool processing
         if (signal.aborted) {
@@ -702,7 +705,10 @@ export async function executeStreamingChatCompletion(
         assistantMsgId,
         finalText,
         toolCallsAccum,
-        suggestions.length > 0 ? { suggestions } : undefined,
+        {
+          ...(suggestions.length > 0 ? { suggestions } : {}),
+          reasoning: finalReasoning,
+        },
       );
       // Notify consumer (e.g. metering) — fire-and-forget
       try {
@@ -749,6 +755,7 @@ export async function runNonStreamingChatCompletion(c: any, exec: ChatCompletion
 
   const messages: any[] = [...aiMessages];
   let finalText = "";
+  let finalReasoning = "";
   let totalUsage: LanguageModelUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 } as LanguageModelUsage;
   const toolCallsAccum: any[] = [];
   let lastProviderMetadata: Record<string, unknown> | undefined;
@@ -815,6 +822,7 @@ export async function runNonStreamingChatCompletion(c: any, exec: ChatCompletion
           : {}),
         ...(exec.modelOutput ? { output: exec.modelOutput } : {}),
       });
+      finalReasoning = appendReasoningSummary(finalReasoning, turnResult.reasoning);
 
       const turnText = structuredResponse && turnResult.toolCalls.length === 0
         ? await serializeModelOutput(
@@ -1138,6 +1146,7 @@ export async function runNonStreamingChatCompletion(c: any, exec: ChatCompletion
     await persistAssistantMessage(sessionStore, sessionId, assistantMsgId, finalText, toolCallsAccum, {
       emptyFallback: "[Response interrupted]",
       ...(suggestions.length > 0 ? { suggestions } : {}),
+      reasoning: finalReasoning,
     });
     // Notify consumer (e.g. metering) — fire-and-forget
     try {

@@ -1152,6 +1152,8 @@ describe("chat via Run driver", () => {
     const runChatViaRun = vi.fn(async (inject: any, hooks: any) => {
       expect(inject.systemPrompt).toBe("channel-runtime-prompt");
       expect(inject.seedMessages).toEqual([{ role: "user", content: "hello from slack" }]);
+      hooks.onEvent({ type: "reasoning-delta", text: "Check the " });
+      hooks.onEvent({ type: "reasoning-delta", text: "channel context." });
       hooks.onEvent({ type: "text-delta", text: "reply to slack" });
       hooks.onEvent({
         type: "usage",
@@ -1182,6 +1184,7 @@ describe("chat via Run driver", () => {
 
     expect(result).toMatchObject({
       text: "reply to slack",
+      reasoning: "Check the channel context.",
       sessionId: "channel-session-1",
       runStatus: "completed",
       usage: { inputTokens: 6, outputTokens: 3, totalTokens: 9 },
@@ -1207,6 +1210,10 @@ describe("chat via Run driver", () => {
       "message-2",
       "reply to slack",
       [],
+      undefined,
+      {
+        text: "Check the channel context.",
+      },
     );
     expect(buildRuntimePrompt).toHaveBeenCalledWith(
       expect.objectContaining({ name: "agent-1" }),

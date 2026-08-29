@@ -1,5 +1,5 @@
 import { sqliteTable, text, integer, index, uniqueIndex } from "drizzle-orm/sqlite-core";
-import { pgTable, text as pgText, integer as pgInteger, jsonb, index as pgIndex, uniqueIndex as pgUniqueIndex } from "drizzle-orm/pg-core";
+import { pgTable, text as pgText, integer as pgInteger, boolean as pgBoolean, jsonb, index as pgIndex, uniqueIndex as pgUniqueIndex } from "drizzle-orm/pg-core";
 
 // ── SQLite schema ──────────────────────────────────────────────────────
 
@@ -29,6 +29,8 @@ export const messagesSqlite = sqliteTable("messages", {
   toolCalls: text("tool_calls"),
   suggestions: text("suggestions"),
   toolCallId: text("tool_call_id"),
+  reasoning: text("reasoning"),
+  reasoningTruncated: integer("reasoning_truncated", { mode: "boolean" }).notNull().default(false),
 }, (table) => [
   index("idx_messages_session").on(table.sessionId, table.ts),
 ]);
@@ -75,6 +77,8 @@ export const messagesPg = pgTable("messages", {
   toolCalls: pgText("tool_calls"),
   suggestions: pgText("suggestions"),
   toolCallId: pgText("tool_call_id"),
+  reasoning: pgText("reasoning"),
+  reasoningTruncated: pgBoolean("reasoning_truncated").notNull().default(false),
 }, (table) => [
   pgIndex("idx_pg_messages_session").on(table.sessionId, table.ts),
 ]);

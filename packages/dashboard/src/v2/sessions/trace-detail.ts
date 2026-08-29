@@ -114,6 +114,8 @@ type RawChatMessage = {
   ts?: string;
   createdAt?: string;
   toolCalls?: RawToolCall[];
+  reasoning?: string;
+  reasoningTruncated?: boolean;
 };
 
 /**
@@ -137,6 +139,13 @@ export function chatToItems(messages: RawChatMessage[]): TraceStep[] {
       body: contentText(m.content),
       markdown: true,
       ts: m.ts ?? m.createdAt,
+      payload: m.reasoning
+        ? [{
+            label: m.reasoningTruncated ? "reasoning (truncated)" : "reasoning",
+            value: m.reasoning,
+            format: "markdown",
+          }]
+        : undefined,
       raw: m,
     });
     // The backend folds tool calls INSIDE the assistant message. A debug trace

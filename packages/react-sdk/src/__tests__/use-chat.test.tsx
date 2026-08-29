@@ -6,6 +6,36 @@ import { useChat } from "../hooks/use-chat.js";
 import { createMockClient, createMockStore, createWrapper } from "./helpers.js";
 
 describe("useChat interactions", () => {
+  it("accumulates live reasoning separately and never sends it back in history", async () => {
+    const stream = {
+      abort: vi.fn(),
+      async *[Symbol.asyncIterator]() {
+        yield {
+          choices: [{ index: 0, delta: {}, thinking: "Checked ", finish_reason: null }],
+        };
+        yield {
+          choices: [{ index: 0, delta: { content: "Done" }, thinking: "constraints.", finish_reason: "stop" }],
+        };
+      },
+    };
+    const chatCompletionsStream = vi.fn().mockReturnValue(stream);
+    const client = createMockClient({ chatCompletionsStream });
+    const wrapper = createWrapper(client, createMockStore());
+    const { result } = renderHook(() => useChat(), { wrapper });
+
+    await act(async () => {
+      await result.current.sendMessage("Inspect");
+    });
+
+    expect(result.current.messages.at(-1)).toMatchObject({
+      content: "Done",
+      reasoning: "Checked constraints.",
+    });
+    const request = chatCompletionsStream.mock.calls[0]?.[0];
+    expect(request.messages).toEqual([{ role: "user", content: "Inspect" }]);
+    expect(JSON.stringify(request.messages)).not.toContain("Checked constraints");
+  });
+
   it("reconstructs streamed tool arguments from linear deltas", async () => {
     const onToolCall = vi.fn();
     const stream = {

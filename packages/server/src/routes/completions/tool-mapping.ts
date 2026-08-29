@@ -15,6 +15,7 @@ import {
   type ChatSuggestion,
   type ResolvedChatInteractionCapabilities,
 } from "@polpo-ai/core/chat-interactions";
+import { preparePersistedReasoning } from "@polpo-ai/core/session-store";
 
 export { toPortableToolInputSchema } from "@polpo-ai/llm";
 
@@ -73,6 +74,11 @@ export function redactVaultToolCalls(toolCalls: any[]): any[] {
   });
 }
 
+export function appendReasoningSummary(current: string, next: string | undefined): string {
+  if (!next) return current;
+  return current ? `${current}\n\n${next}` : next;
+}
+
 /**
  * Persist a completed assistant turn to the chat session — the single
  * projection of a finished LLM turn onto `Session.Message`, shared by the
@@ -89,7 +95,7 @@ export async function persistAssistantMessage(
   messageId: string | null | undefined,
   finalText: string,
   toolCalls: any[],
-  opts?: { emptyFallback?: string; suggestions?: ChatSuggestion[] },
+  opts?: { emptyFallback?: string; suggestions?: ChatSuggestion[]; reasoning?: string },
 ): Promise<void> {
   if (!sessionStore || !sessionId || !messageId) return;
   const safeToolCalls = redactVaultToolCalls(toolCalls);
@@ -97,7 +103,17 @@ export async function persistAssistantMessage(
   // an interrupted response. Use the fallback only when the turn contains
   // neither assistant text nor a persisted tool call.
   const content = finalText.trim() || (safeToolCalls.length > 0 ? "" : (opts?.emptyFallback ?? ""));
-  if (opts?.suggestions) {
+  const reasoning = preparePersistedReasoning(opts?.reasoning);
+  if (reasoning) {
+    await sessionStore.updateMessage(
+      sessionId,
+      messageId,
+      content,
+      safeToolCalls,
+      opts?.suggestions,
+      reasoning,
+    );
+  } else if (opts?.suggestions) {
     await sessionStore.updateMessage(
       sessionId,
       messageId,
@@ -105,9 +121,9 @@ export async function persistAssistantMessage(
       safeToolCalls,
       opts.suggestions,
     );
-    return;
+  } else {
+    await sessionStore.updateMessage(sessionId, messageId, content, safeToolCalls);
   }
-  await sessionStore.updateMessage(sessionId, messageId, content, safeToolCalls);
 }
 
 export function indexToolResultsByCallId(toolResults: any[] | undefined): Map<string, any> {

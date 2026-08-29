@@ -692,6 +692,24 @@ describe.skipIf(!canConnect)("PostgreSQL Drizzle stores", () => {
       expect(messages[0]?.suggestions).toEqual(suggestions);
     });
 
+    it("updateMessage persists reasoning separately from assistant content", async () => {
+      const sid = await stores.sessionStore.create();
+      const msg = await stores.sessionStore.addMessage(sid, "assistant", "draft");
+      await stores.sessionStore.updateMessage(
+        sid,
+        msg.id,
+        "final",
+        undefined,
+        undefined,
+        { text: "Checked Postgres." },
+      );
+
+      expect((await stores.sessionStore.getMessages(sid))[0]).toMatchObject({
+        content: "final",
+        reasoning: "Checked Postgres.",
+      });
+    });
+
     it("atomically prepares and replays a client-tool continuation", async () => {
       const sid = await stores.sessionStore.create({
         agent: "leo",

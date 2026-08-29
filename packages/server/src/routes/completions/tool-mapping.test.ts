@@ -76,6 +76,22 @@ describe("persistAssistantMessage", () => {
       suggestions,
     );
   });
+
+  it("persists a bounded reasoning summary separately from content", async () => {
+    const store = fakeStore();
+    await persistAssistantMessage(store, "s1", "m1", "done", [], {
+      reasoning: "Checked the constraints.",
+    });
+
+    expect(store.updateMessage).toHaveBeenCalledWith(
+      "s1",
+      "m1",
+      "done",
+      [],
+      undefined,
+      { text: "Checked the constraints." },
+    );
+  });
 });
 
 describe("toPortableToolInputSchema", () => {

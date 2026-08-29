@@ -1220,6 +1220,10 @@ export interface ChatMessage {
   segments?: MessageSegment[];
   /** Optional next messages generated for this assistant response. */
   suggestions?: ChatSuggestion[];
+  /** Provider-exposed reasoning summary, persisted separately from content. */
+  reasoning?: string;
+  /** True when the persisted reasoning reached the server storage limit. */
+  reasoningTruncated?: boolean;
 }
 
 // === Chat Completions types (OpenAI-compatible) ===

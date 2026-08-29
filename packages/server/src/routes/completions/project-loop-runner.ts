@@ -59,7 +59,7 @@ import {
   sseChunk,
 } from "./sse.js";
 import { completionRuntimeErrorEnvelope } from "./runtime-error.js";
-import { emitFileChanged, persistAssistantMessage, type LoopRuntimeToolCall } from "./tool-mapping.js";
+import { appendReasoningSummary, emitFileChanged, persistAssistantMessage, type LoopRuntimeToolCall } from "./tool-mapping.js";
 import { createGuardedCompletionToolExecutor } from "./tool-guardrails.js";
 import {
   createPolicyGuardedToolExecutor,
@@ -75,6 +75,7 @@ import type { CompletionSseWriter } from "./chat-handler.js";
 
 export interface ProjectLoopRunResult {
   text: string;
+  reasoning: string;
   usage: LanguageModelUsage;
   model: string;
   resolvedModel?: CompletionResolvedModelInfo;
@@ -306,6 +307,7 @@ export async function runProjectLoopCompletion(options: {
   signal?: AbortSignal;
   onToolCall?: (toolCall: LoopRuntimeToolCall) => Promise<void>;
   onTrace?: (event: LoopTraceEvent) => Promise<void>;
+  onReasoning?: (text: string) => Promise<void>;
   resumeRun?: LoopRunRecord;
   executionRoute?: ResolvedExecutionRoute;
   activatedSkills?: readonly string[];
@@ -527,6 +529,7 @@ export async function runProjectLoopCompletion(options: {
   }
   const executor = new PipelineExecutor();
   let finalText = "";
+  let finalReasoning = "";
   let totalUsage: LanguageModelUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 } as LanguageModelUsage;
   let lastModel = initialModel;
   let lastResolvedModel: CompletionResolvedModelInfo | undefined;
@@ -652,12 +655,14 @@ export async function runProjectLoopCompletion(options: {
           toolRunScope,
           toolInvocation,
           onToolCall,
+          onReasoning: options.onReasoning,
           parallelToolCalls: options.parallelToolCalls,
           toolPolicy: stepToolPolicy,
           projectedInput: agentInput,
           outputSchema: loop.output?.schema,
         });
         finalText = stepResult.text || finalText;
+        finalReasoning = appendReasoningSummary(finalReasoning, stepResult.reasoning);
         totalUsage = addUsage(totalUsage, stepResult.usage);
         lastModel = stepResult.model;
         lastResolvedModel = stepResult.resolvedModel;
@@ -699,6 +704,7 @@ export async function runProjectLoopCompletion(options: {
     }
     return {
       text: finalText,
+      reasoning: finalReasoning,
       usage: totalUsage,
       model: lastModel,
       resolvedModel: lastResolvedModel,
@@ -1074,6 +1080,7 @@ export async function executeStreamingProjectLoopCompletion(
 
       let assistantMsgId: string | null = null;
       let finalText = "";
+      let finalReasoning = "";
       let runUsage: LanguageModelUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 } as LanguageModelUsage;
       let runModel = agentConfigForModelPrimary(
         agentConfig,
@@ -1124,8 +1131,13 @@ export async function executeStreamingProjectLoopCompletion(
               data: sseChunk(completionId, {}, null, { loop_trace: event }),
             });
           },
+          onReasoning: async (text) => {
+            if (signal.aborted) return;
+            await stream.writeSSE({ data: sseChunk(completionId, {}, null, { thinking: text }) });
+          },
         });
         finalText = run.text;
+        finalReasoning = run.reasoning;
         runUsage = run.usage;
         runModel = run.model;
         resolvedModel = run.resolvedModel;
@@ -1188,7 +1200,9 @@ export async function executeStreamingProjectLoopCompletion(
         }
         throw err;
       } finally {
-        await persistAssistantMessage(sessionStore, sessionId, assistantMsgId, finalText, toolCalls);
+        await persistAssistantMessage(sessionStore, sessionId, assistantMsgId, finalText, toolCalls, {
+          reasoning: finalReasoning,
+        });
         try {
           deps.onCompletionFinished?.({
             usage: runUsage,
@@ -1236,6 +1250,7 @@ async function runNonStreamingProjectLoopCompletion(
   let providerMetadata: Record<string, unknown> | undefined;
   let toolCalls: any[] = [];
   let finalText = "";
+  let finalReasoning = "";
   try {
     if (sessionStore && sessionId) {
       const placeholder = await sessionStore.addMessage(sessionId, "assistant", "");
@@ -1264,6 +1279,7 @@ async function runNonStreamingProjectLoopCompletion(
       grantAllowedTools: options.grantAllowedTools,
     });
     finalText = run.text;
+    finalReasoning = run.reasoning;
     runUsage = run.usage;
     runModel = run.model;
     resolvedModel = run.resolvedModel;
@@ -1316,7 +1332,9 @@ async function runNonStreamingProjectLoopCompletion(
     }
     throw err;
   } finally {
-    await persistAssistantMessage(sessionStore, sessionId, assistantMsgId, finalText, toolCalls);
+    await persistAssistantMessage(sessionStore, sessionId, assistantMsgId, finalText, toolCalls, {
+      reasoning: finalReasoning,
+    });
     try {
       deps.onCompletionFinished?.({
         usage: runUsage,

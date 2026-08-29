@@ -824,6 +824,15 @@ turns, pending client tools, empty responses, and channel turns do not generate
 them. Agents without `chat` preserve the compatible defaults: questions are
 allowed and suggestions are disabled.
 
+Provider-exposed reasoning summaries continue to stream through the existing
+`choices[].thinking` extension. When a Session is active, Polpo also persists
+the summary on the assistant message as `reasoning`, separately from
+`content`, with `reasoningTruncated: true` when the 64 KiB UTF-8 storage limit
+is reached. Persisted reasoning is observability data: it is returned by the
+Session API and React SDK, but is never added to the conversation history sent
+back to the model. Providers may omit it, and it is not guaranteed to contain
+private chain-of-thought.
+
 ### Schedules
 
 Schedules are first-class, durable invocations stored in

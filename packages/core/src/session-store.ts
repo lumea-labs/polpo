@@ -44,6 +44,37 @@ export interface Message {
   suggestions?: ChatSuggestion[];
   /** Matching OpenAI tool call for role=tool messages. */
   toolCallId?: string;
+  /** Provider-exposed reasoning summary. Kept separate from model-visible content. */
+  reasoning?: string;
+  /** True when the persisted reasoning summary reached the storage byte limit. */
+  reasoningTruncated?: boolean;
+}
+
+export interface PersistedReasoning {
+  text: string;
+  truncated?: boolean;
+}
+
+export const MAX_PERSISTED_REASONING_BYTES = 64 * 1024;
+
+/** Bound provider-exposed reasoning summaries without splitting UTF-8 code points. */
+export function preparePersistedReasoning(
+  value: string | null | undefined,
+  maxBytes = MAX_PERSISTED_REASONING_BYTES,
+): PersistedReasoning | undefined {
+  if (!value || maxBytes <= 0) return undefined;
+  const encoder = new TextEncoder();
+  if (encoder.encode(value).byteLength <= maxBytes) return { text: value };
+
+  let text = "";
+  let bytes = 0;
+  for (const character of value) {
+    const characterBytes = encoder.encode(character).byteLength;
+    if (bytes + characterBytes > maxBytes) break;
+    text += character;
+    bytes += characterBytes;
+  }
+  return text ? { text, truncated: true } : undefined;
 }
 
 export interface Session {
@@ -113,6 +144,7 @@ export interface SessionStore {
     content: string | SessionContentPart[],
     toolCalls?: ToolCallInfo[],
     suggestions?: ChatSuggestion[],
+    reasoning?: PersistedReasoning,
   ): Promise<boolean>;
   getMessages(sessionId: string): Promise<Message[]>;
   getRecentMessages(sessionId: string, limit: number): Promise<Message[]>;

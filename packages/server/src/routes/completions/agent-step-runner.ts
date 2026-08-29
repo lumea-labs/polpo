@@ -52,6 +52,7 @@ import type {
 } from "../completions.js";
 import { appendModelResponseMessages } from "./message-mapping.js";
 import {
+  appendReasoningSummary,
   emitFileChanged,
   indexToolResultsByCallId,
   invalidModelToolCallEvent,
@@ -117,6 +118,7 @@ export interface CompletionResolvedModelInfo {
 
 export interface AgentStepRunResult {
   text: string;
+  reasoning: string;
   output: unknown;
   usage: LanguageModelUsage;
   model: string;
@@ -288,6 +290,7 @@ export async function runAgentStepCompletion(options: {
   toolRunScope?: CompletionToolRunScope;
   toolInvocation?: ToolInvocationContext;
   onToolCall?: (toolCall: LoopRuntimeToolCall) => Promise<void>;
+  onReasoning?: (text: string) => Promise<void>;
   parallelToolCalls?: boolean;
   toolPolicy?: ResolvedAllowedToolPolicy;
   projectedInput?: PreparedLoopAgentInput;
@@ -483,6 +486,7 @@ export async function runAgentStepCompletion(options: {
     ? modelOutputForJsonSchema(outputSchema, `loop_${stepName}_output`)
     : undefined;
   let finalText = "";
+  let finalReasoning = "";
   let finalOutput: unknown;
   let completedStructuredOutput = false;
   let totalUsage: LanguageModelUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 } as LanguageModelUsage;
@@ -544,6 +548,8 @@ export async function runAgentStepCompletion(options: {
               name: event.name,
               state: "preparing",
             });
+          } else if (event.type === "reasoning-delta") {
+            await options.onReasoning?.(event.text);
           } else if (event.type === "tool-input-delta") {
             await onToolCall?.({
               id: event.id,
@@ -575,6 +581,7 @@ export async function runAgentStepCompletion(options: {
       }
 
       const turnText = turnResult.text;
+      finalReasoning = appendReasoningSummary(finalReasoning, turnResult.reasoning);
       const selectedResolved = resolvedAttempts.get(turnResult.selectedAttempt.index);
       if (selectedResolved) {
         m = selectedResolved.model;
@@ -726,6 +733,7 @@ export async function runAgentStepCompletion(options: {
 
     return {
       text: finalText,
+      reasoning: finalReasoning,
       output: outputSchema !== undefined ? finalOutput : maybeParseJson(finalText),
       usage: totalUsage,
       model: m.id ?? m.provider,
