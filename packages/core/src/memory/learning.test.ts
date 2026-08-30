@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 import type { CanonicalTurnCommitted } from "../canonical-turn.js";
+import type {
+  TextEmbeddingProvider,
+  TextReranker,
+} from "../semantic-retrieval.js";
 import {
   DeterministicMemoryConsolidationPolicy,
   InMemoryMemoryExtractionStore,
@@ -169,6 +173,66 @@ describe("MemoryLearningService", () => {
         }),
       }),
     ]);
+  });
+
+  it("makes an automatically learned Memory available to hybrid retrieval and reranking", async () => {
+    const embeddingProvider: TextEmbeddingProvider = {
+      identity: async () => ({
+        provider: "fixture",
+        model: "meaning-v1",
+        dimensions: 2,
+        revision: "r1",
+      }),
+      embed: async ({ texts, task }) => ({
+        identity: {
+          provider: "fixture",
+          model: "meaning-v1",
+          dimensions: 2,
+          revision: "r1",
+        },
+        vectors: texts.map((text) => (
+          /concise|short|format/i.test(text) ? [1, 0] : [0, 1]
+        )),
+        usage: { inputTokens: texts.length },
+        providerMetadata: { task },
+      }),
+    };
+    const reranker: TextReranker = {
+      rerank: vi.fn(async ({ candidates }: Parameters<TextReranker["rerank"]>[0]) => ({
+        ranking: candidates.map(({ id }) => ({ id, score: 0.99 })),
+      })),
+    };
+    const itemStore = new InMemoryMemoryItemStore({}, undefined, {
+      embeddingProvider,
+      reranker,
+      rerankLimit: 5,
+      rerankFailureMode: "strict",
+    });
+    const { learning } = service([preference], itemStore);
+
+    const learned = await learning.process(processInput({ mode: "automatic" }));
+    const results = await itemStore.search({
+      query: "How should the weekly report be formatted?",
+      kinds: ["preference"],
+      scope: { kind: "user", subjectId: "user-1", agentName: "assistant" },
+      maxResults: 5,
+      tokenBudget: 1_000,
+    }, itemContext);
+
+    expect(learned.appliedMemoryIds).toHaveLength(1);
+    expect(results).toHaveLength(1);
+    expect(results[0]).toMatchObject({
+      item: {
+        id: learned.appliedMemoryIds[0],
+        provenance: {
+          source: "extraction",
+          sourceId: "turn-1",
+        },
+      },
+      retrievalMode: "hybrid",
+      scores: { rerank: 0.99 },
+    });
+    expect(reranker.rerank).toHaveBeenCalledOnce();
   });
 
   it("rejects secret-like content and never creates active Memory", async () => {
