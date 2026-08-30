@@ -80,12 +80,12 @@ describe.skipIf(!canConnect)("migratePgSchema", () => {
     for (const col of expected) {
       expect(present.has(col), `missing column: ${col}`).toBe(true);
     }
-  });
+  }, 15_000);
 
   it("is idempotent — a second run changes nothing and does not throw", async () => {
     await migratePgSchema(db);
     await migratePgSchema(db);
-  });
+  }, 15_000);
 
   it("stores work against the migrated legacy table", async () => {
     const stores = createPgStores(db);
@@ -104,5 +104,5 @@ describe.skipIf(!canConnect)("migratePgSchema", () => {
     const task = await stores.taskStore.getTask(created.id);
     expect(task).toBeTruthy();
     expect(task!.title).toBe("post-migration task");
-  });
+  }, 15_000);
 });

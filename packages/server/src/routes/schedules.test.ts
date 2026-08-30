@@ -260,6 +260,8 @@ describe("scheduleRoutes v2", () => {
 describe("scheduleRoutes legacy compatibility", () => {
   it("translates mission-shaped create/update/delete without using mission state as truth", async () => {
     const state = harness();
+    const futureEndDate = new Date(Date.now() + 24 * 60 * 60 * 1000)
+      .toISOString();
 
     const createResponse = await state.app.request(
       "/",
@@ -267,7 +269,7 @@ describe("scheduleRoutes legacy compatibility", () => {
         missionId: "mission-1",
         expression: "0 9 * * *",
         recurring: true,
-        endDate: "2026-08-30T00:00:00.000Z",
+        endDate: futureEndDate,
       }),
     );
     expect(createResponse.status).toBe(201);
@@ -348,6 +350,8 @@ describe("scheduleRoutes legacy compatibility", () => {
   });
 
   it("keeps mission writes only in the legacy scheduler fallback", async () => {
+    const futureEndDate = new Date(Date.now() + 24 * 60 * 60 * 1000)
+      .toISOString();
     const schedules = new Map<string, {
       id: string;
       missionId: string;
@@ -397,7 +401,7 @@ describe("scheduleRoutes legacy compatibility", () => {
     expect((await app.request("/mission-1", json("PATCH", {
       expression: "30 10 * * *",
       recurring: true,
-      endDate: "2026-08-30T00:00:00.000Z",
+      endDate: futureEndDate,
     }))).status).toBe(200);
     expect((await app.request("/mission-1", { method: "DELETE" })).status)
       .toBe(200);
@@ -411,7 +415,7 @@ describe("scheduleRoutes legacy compatibility", () => {
       status: "recurring",
     });
     expect(updateMission).toHaveBeenCalledWith("mission-1", {
-      endDate: "2026-08-30T00:00:00.000Z",
+      endDate: futureEndDate,
     });
     expect(updateMission).toHaveBeenCalledWith("mission-1", {
       schedule: undefined,
