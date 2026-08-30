@@ -93,6 +93,17 @@ export function registerConnectionsCommand(program: Command): void {
     .command("connections")
     .description("Inspect Connections and manage trusted runtime bindings");
 
+  connections.command("catalog")
+    .description("List available Connectors, setup modes, scopes, and health")
+    .option("--json", "Print JSON")
+    .action((options: { json?: boolean }) =>
+      withConnectionClient("Listing the Connector catalog", options, async (client, projectId) => {
+        const response = await client.get<ApiEnvelope<unknown[]>>(
+          projectConnectionsPath(projectId, "catalog"),
+        );
+        printResult(connectionDataFrom(response), Boolean(options.json));
+      }));
+
   connections.command("list")
     .description("List non-secret project Connections")
     .option("--provider <provider>", "Filter by provider")
@@ -125,6 +136,86 @@ export function registerConnectionsCommand(program: Command): void {
         const suffix = query.size ? `?${query.toString()}` : "";
         const response = await client.get<ApiEnvelope<unknown[]>>(
           `${projectConnectionsPath(projectId, "grants")}${suffix}`,
+        );
+        printResult(connectionDataFrom(response), Boolean(options.json));
+      }));
+
+  connections.command("links")
+    .description("List active and revoked project Connection links")
+    .option("--status <status>", "Filter by active or revoked status")
+    .option("--json", "Print JSON")
+    .action((options: { json?: boolean; status?: string }) =>
+      withConnectionClient("Listing Connection links", options, async (client, projectId) => {
+        const query = new URLSearchParams();
+        if (options.status) query.set("status", options.status);
+        const response = await client.get<ApiEnvelope<unknown[]>>(
+          `${projectConnectionsPath(projectId, "links")}${query.size ? `?${query}` : ""}`,
+        );
+        printResult(connectionDataFrom(response), Boolean(options.json));
+      }));
+
+  connections.command("link <connection-id>")
+    .description("Link an authorized Connection to the current project")
+    .option("--json", "Print JSON")
+    .action((connectionId: string, options: { json?: boolean }) =>
+      withConnectionClient("Linking a Connection", options, async (client, projectId) => {
+        const response = await client.post<ApiEnvelope<unknown>>(
+          projectConnectionsPath(projectId, "connections", connectionId, "link"),
+        );
+        printResult(connectionDataFrom(response), Boolean(options.json));
+      }));
+
+  connections.command("unlink <connection-id>")
+    .description("Revoke the current project's link without deleting a shared Connection")
+    .option("--json", "Print JSON")
+    .action((connectionId: string, options: { json?: boolean }) =>
+      withConnectionClient("Unlinking a Connection", options, async (client, projectId) => {
+        const response = await client.delete<ApiEnvelope<unknown>>(
+          projectConnectionsPath(projectId, "connections", connectionId, "link"),
+        );
+        printResult(connectionDataFrom(response), Boolean(options.json));
+      }));
+
+  connections.command("setup-session <provider>")
+    .description("Create a short-lived end-user Connection setup session")
+    .requiredOption("--audience <audience>", "personal, shared, or end_user")
+    .requiredOption("--subject <json>", "Trusted Connection owner JSON")
+    .requiredOption("--return-url <url>", "Approved application return URL")
+    .option("--binding <json>", "Trusted principal/tenant/resource binding JSON")
+    .option("--scope <scope...>", "Requested Connector scopes", [])
+    .option("--oauth-client-mode <mode>", "managed, customer, or instance", "managed")
+    .option("--json", "Print JSON")
+    .action((providerId: string, options: {
+      audience: string;
+      binding?: string;
+      json?: boolean;
+      oauthClientMode: string;
+      returnUrl: string;
+      scope: string[];
+      subject: string;
+    }) => withConnectionClient("Creating a Connection setup session", options, async (client, projectId) => {
+      const response = await client.post<ApiEnvelope<unknown>>(
+        projectConnectionsPath(projectId, "setup-sessions"),
+        {
+          providerId,
+          audience: options.audience,
+          subject: parseJsonObject(options.subject, "--subject"),
+          binding: parseJsonObject(options.binding, "--binding"),
+          scopes: options.scope,
+          returnUrl: options.returnUrl,
+          oauthClientMode: options.oauthClientMode,
+        },
+      );
+      printResult(connectionDataFrom(response), Boolean(options.json));
+    }));
+
+  connections.command("health")
+    .description("Check Connection links, grants, OAuth clients, and secret readiness")
+    .option("--json", "Print JSON")
+    .action((options: { json?: boolean }) =>
+      withConnectionClient("Checking Connection health", options, async (client, projectId) => {
+        const response = await client.get<ApiEnvelope<unknown>>(
+          projectConnectionsPath(projectId, "health"),
         );
         printResult(connectionDataFrom(response), Boolean(options.json));
       }));

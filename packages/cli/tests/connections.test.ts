@@ -38,8 +38,14 @@ describe("Connections CLI", () => {
     const command = program.commands.find((item) => item.name() === "connections")!;
     const names = command.commands.map((item) => item.name());
     expect(names).toEqual(expect.arrayContaining([
+      "catalog",
       "list",
       "grants",
+      "links",
+      "link",
+      "unlink",
+      "setup-session",
+      "health",
       "bind",
       "grant-slot",
       "revoke-slot",
