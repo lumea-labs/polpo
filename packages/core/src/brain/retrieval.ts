@@ -2,6 +2,10 @@ import { normalizeBrainAccessDecision } from "./contracts.js";
 import { isBrainSourceRetrievable } from "./lifecycle.js";
 import { normalizeBrainScope } from "./scope.js";
 import { BrainStoreValidationError } from "./store-errors.js";
+import {
+  rerankTextCandidates,
+  type TextReranker,
+} from "../semantic-retrieval.js";
 import type { BrainAccessPolicy, BrainReranker } from "./ports.js";
 import type { BrainChunkStore, BrainSourceStore } from "./stores.js";
 import type {
@@ -71,6 +75,47 @@ function resultIdentity(result: BrainRetrievalResult): string {
     result.chunk.citation.version,
     result.chunk.citation.chunkId,
   ]);
+}
+
+export function createBrainTextRerankerAdapter(
+  reranker: TextReranker,
+  options: {
+    readonly timeoutMs?: number;
+  } = {},
+): BrainReranker {
+  if (!reranker || typeof reranker.rerank !== "function") {
+    throw new BrainStoreValidationError("Text reranker is required");
+  }
+  const adapter: BrainReranker = {
+    rerank: async ({ query, results, limit, signal }) => {
+      if (results.length === 0) return Object.freeze([]);
+      const candidateById = new Map<string, BrainRetrievalResult>();
+      const candidates = results.map((result, index) => {
+        const id = String(index);
+        candidateById.set(id, result);
+        return Object.freeze({ id, text: result.chunk.content });
+      });
+      const outcome = await rerankTextCandidates({
+        query,
+        candidates,
+        limit: Math.min(limit, candidates.length),
+        failureMode: "strict",
+        ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
+        ...(signal ? { signal } : {}),
+      }, reranker);
+      return Object.freeze(outcome.ranking.map(({ candidate, score }) => {
+        const original = candidateById.get(candidate.id)!;
+        return Object.freeze({
+          ...original,
+          ...(score === undefined ? {} : {
+            score,
+            scores: Object.freeze({ ...original.scores, rerank: score }),
+          }),
+        });
+      }));
+    },
+  };
+  return Object.freeze(adapter);
 }
 
 function isAbortError(error: unknown): boolean {

@@ -5,6 +5,7 @@ export type ModelRuntimeMode = (typeof MODEL_RUNTIME_MODES)[number];
 export type ModelOperation =
   | "chat"
   | "embed"
+  | "rerank"
   | "image.generate"
   | "image.analyze"
   | "video.generate"

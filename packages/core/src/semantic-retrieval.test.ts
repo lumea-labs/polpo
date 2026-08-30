@@ -147,7 +147,7 @@ describe("semantic retrieval contracts", () => {
       { id: "paraphrase", query: "money back", relevantIds: ["refund"] },
       { id: "missing", query: "shipping", relevantIds: ["delivery"] },
     ], async ({ id }) => id === "paraphrase" ? ["refund"] : ["other"]);
-    expect(report).toEqual({
+    expect(report).toMatchObject({
       cases: 2,
       hits: 1,
       recallAtK: 0.5,

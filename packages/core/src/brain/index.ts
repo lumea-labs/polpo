@@ -60,7 +60,7 @@ export type {
   BrainIngestionWorkerOutcome,
   ProcessNextBrainIngestionJobInput,
 } from "./ingestion-worker.js";
-export { retrieveBrain } from "./retrieval.js";
+export { createBrainTextRerankerAdapter, retrieveBrain } from "./retrieval.js";
 export type {
   RetrieveBrainDeps,
   RetrieveBrainInput,
@@ -161,3 +161,4 @@ export type {
   BrainReranker,
   BrainTrustPolicy,
 } from "./ports.js";
+export type { TextReranker } from "../semantic-retrieval.js";

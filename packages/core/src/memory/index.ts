@@ -170,4 +170,11 @@ export type {
   TextEmbeddingProvider,
   TextEmbeddingRequest,
   TextEmbeddingResult,
+  TextRerankCandidate,
+  TextRerankOutcome,
+  TextRerankRequest,
+  TextRerankResult,
+  TextRerankScore,
+  TextRerankedCandidate,
+  TextReranker,
 } from "../semantic-retrieval.js";
