@@ -14,6 +14,7 @@ import {
 } from "../brain/index.js";
 import {
   PlainTextBrainParser,
+  createBrainIngestionJob,
   createBrainSource,
   createBrainSourceVersion,
   ingestBrainSource,
@@ -103,5 +104,45 @@ describe("FileBrainStore", () => {
     }));
 
     expect(statSync(path).mode & 0o777).toBe(0o600);
+  });
+
+  it("persists lease heartbeats so a restored worker cannot double-claim", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "polpo-file-brain-lease-"));
+    const path = join(dir, "brain.json");
+    const store = new FileBrainStore(path, { createId: () => "claim-1" });
+    await store.enqueueJob(createBrainIngestionJob({
+      id: "job-1",
+      scope,
+      sourceId: "source-1",
+      version: "v1",
+      operation: "ingest",
+      dedupeKey: "source-1:v1",
+    }, { now: () => "2026-08-30T08:00:00.000Z" }));
+    const claimed = await store.claimNextJob({
+      scope,
+      workerId: "worker-1",
+      now: "2026-08-30T08:00:00.000Z",
+      leaseMs: 1_000,
+    });
+    await store.renewJobLease({
+      scope,
+      jobId: claimed!.id,
+      claimToken: claimed!.claimToken!,
+      now: "2026-08-30T08:00:00.900Z",
+      leaseMs: 1_000,
+    });
+
+    const restored = new FileBrainStore(path);
+    await expect(restored.claimNextJob({
+      scope,
+      workerId: "worker-2",
+      now: "2026-08-30T08:00:01.100Z",
+      leaseMs: 1_000,
+    })).resolves.toBeNull();
+    await expect(restored.getJob({ scope, jobId: "job-1" })).resolves.toMatchObject({
+      status: "processing",
+      claimedBy: "worker-1",
+      leaseExpiresAt: "2026-08-30T08:00:01.900Z",
+    });
   });
 });

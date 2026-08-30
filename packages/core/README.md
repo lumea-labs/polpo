@@ -655,6 +655,28 @@ allocate their token budgets proportionally so one cannot starve the other.
 Automatic Memory extraction and writes are intentionally separate from this
 retrieval capability and remain opt-in host behavior.
 
+Knowledge ingestion can run synchronously through `ingestBrainSource` or on a
+durable host queue through `processNextBrainIngestionJob`. The worker claims a
+single scoped job, heartbeats adapters that implement `renewJobLease`, retries
+sanitized transient failures, and uses claim-token compare-and-swap for every
+terminal mutation. Executors must remain idempotent because a process can fail
+after publishing a version but before acknowledging its job.
+
+```ts
+const result = await processNextBrainIngestionJob({
+  jobStore,
+  scope: { kind: "project", subjectId: projectId },
+  workerId,
+  execute: async ({ job, signal }) => {
+    await ingestStagedKnowledgeVersion(job, { signal });
+  },
+});
+```
+
+The queue stores identifiers and lifecycle facts, not source bodies or provider
+credentials. Hosts own durable payload/object storage and must resolve it again
+under the job's exact scope before parsing or publishing.
+
 ## License
 
 Apache 2.0
