@@ -76,6 +76,10 @@ describe("Orchestrator", () => {
     });
   });
 
+  it("initializes the automatic Memory candidate store in interactive mode", () => {
+    expect(orchestrator.getMemoryExtractionStore()).toBeDefined();
+  });
+
   describe("tick", () => {
     it("returns true when all tasks are terminal", async () => {
       const task = await orchestrator.engine.createTask({

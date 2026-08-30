@@ -8,6 +8,7 @@ import {
   createExplicitExecutionRoute,
   createRuntimePlanResolvedEvent,
   executionRouteRuntimePlanFields,
+  normalizeAgentMemorySettings,
   normalizeRuntimeContextTrustMode,
   normalizeRuntimePlan,
   renderRuntimePromptContextSegment,
@@ -78,7 +79,11 @@ import {
   type ChatViaRunTurnResult,
 } from "./chat-via-run-handler.js";
 import { runProjectLoopCompletion } from "./project-loop-runner.js";
-import { persistAssistantMessage } from "./tool-mapping.js";
+import {
+  persistAssistantMessage,
+  notifyCanonicalTurnCommitted,
+  type CanonicalTurnPersistenceContext,
+} from "./tool-mapping.js";
 import { applyCompletionOutputPolicy } from "./output-guardrails.js";
 import { guardrailErrorEnvelope } from "./sse.js";
 import {
@@ -119,6 +124,8 @@ type PreparedProjectLoop = {
   contextTrust: RuntimeContextTrustMode;
   sessionStore: any;
   sessionId: string | null;
+  turnId?: string;
+  canonicalTurn?: CanonicalTurnPersistenceContext;
   runtimePlan?: RuntimePlan;
   runtimeContext?: RuntimeContextResolution;
   runtimeInvocation?: CompletionRuntimeInvocation;
@@ -604,6 +611,8 @@ export async function prepareChatCompletionExecution(
   let activatedSkills: string[] = [];
   let deferredAgentTools = false;
   let completionId = options.completionId ?? `chatcmpl-${nanoid(24)}`;
+  let turnId: string | undefined;
+  let userMessageId: string | undefined;
   const sessionStore = deps.getSessionStore();
 
   const invocation = completionInvocation(options.runtime);
@@ -768,6 +777,12 @@ export async function prepareChatCompletionExecution(
           runId: completionId,
         });
         completionId = prepared.runId;
+        turnId = prepared.turnId;
+        userMessageId = turnId
+          ? prepared.messages.find(
+              (message: any) => message.role === "user" && message.turnId === turnId,
+            )?.id
+          : undefined;
         const canonicalMessages = sessionMessagesToCompletionMessages(prepared.messages);
         body = { ...body, messages: canonicalMessages } as CompletionRequestBody;
         const canonical = convertMessages(body.messages, contextTrust);
@@ -1088,6 +1103,19 @@ export async function prepareChatCompletionExecution(
     );
   }
 
+  const canonicalSurface = invocation.surface === "channel" ? "channel" : "chat";
+  const memoryLearning = agentMode && resolvedAgentConfig
+    ? normalizeAgentMemorySettings(resolvedAgentConfig.memory).learning
+    : undefined;
+  const memoryLearningEnabled = Boolean(
+    memoryLearning
+    && memoryLearning.mode !== "off"
+    && memoryLearning.surfaces.includes(canonicalSurface),
+  );
+  if (!body.polpo?.continuation && memoryLearningEnabled) {
+    turnId = `turn-${completionId}`;
+  }
+
   let sessionId = options.sessionId ?? null;
 
   if (sessionStore) {
@@ -1107,11 +1135,59 @@ export async function prepareChatCompletionExecution(
 
     const lastUserMsg = [...body.messages].reverse().find((message) => message.role === "user");
     if (!body.polpo?.continuation && lastUserMsg && sessionId) {
-      await sessionStore.addMessage(sessionId, "user", lastUserMsg.content);
+      const userMessage = turnId
+        ? await sessionStore.addMessage(
+            sessionId,
+            "user",
+            lastUserMsg.content,
+            { turnId },
+          )
+        : await sessionStore.addMessage(sessionId, "user", lastUserMsg.content);
+      if (turnId) {
+        if (!userMessage || typeof userMessage.id !== "string" || !userMessage.id) {
+          throw new Error("Session store did not return the canonical user message identity");
+        }
+        userMessageId = userMessage.id;
+      }
     }
     if (!body.polpo?.continuation && sessionId && sessionStore.getSession) {
       const current = await sessionStore.getSession(sessionId);
       if (current) options.setHeader?.("x-session-version", String(Number(current.version ?? 0) + 1));
+    }
+  }
+
+  let canonicalTurn: CanonicalTurnPersistenceContext | undefined;
+  if (
+    agentMode
+    && resolvedAgentConfig
+    && sessionId
+    && turnId
+    && userMessageId
+    && typeof sessionStore?.commitCanonicalTurn === "function"
+  ) {
+    if (memoryLearningEnabled) {
+      canonicalTurn = {
+        turnId,
+        userMessageId,
+        agentName: resolvedAgentConfig.name,
+        surface: canonicalSurface,
+        requestId: completionId,
+        runId: completionId,
+        trustedInvocation: {
+          ...(options.runtime?.user ?? body.user
+            ? { externalUserId: options.runtime?.user ?? body.user }
+            : {}),
+          ...(options.runtime?.channelId
+            ? { channelId: options.runtime.channelId }
+            : {}),
+          ...(options.runtime?.scope ? { scope: options.runtime.scope } : {}),
+        },
+        learningPolicy: {
+          mode: memoryLearning!.mode as "suggest" | "automatic",
+          surfaces: memoryLearning!.surfaces,
+          kinds: memoryLearning!.kinds,
+        },
+      };
     }
   }
 
@@ -1285,6 +1361,8 @@ export async function prepareChatCompletionExecution(
       contextTrust,
       sessionStore,
       sessionId,
+      ...(turnId ? { turnId } : {}),
+      ...(canonicalTurn ? { canonicalTurn } : {}),
       runtimePlan,
       runtimeContext,
       runtimeInvocation: options.runtime,
@@ -1325,6 +1403,8 @@ export async function prepareChatCompletionExecution(
     aiMessages,
     sessionStore,
     sessionId,
+    turnId,
+    canonicalTurn,
     onResponseFinished,
     runtimePlan,
     contextTrust,
@@ -1373,13 +1453,21 @@ export async function runConversationTurn(
     let model = "polpo";
     let resolvedModel;
     let providerMetadata: Record<string, unknown> | undefined;
+    let canonicalTurnSucceeded = false;
     try {
       if (prepared.sessionStore && prepared.sessionId) {
-        const placeholder = await prepared.sessionStore.addMessage(
-          prepared.sessionId,
-          "assistant",
-          "",
-        );
+        const placeholder = prepared.turnId
+          ? await prepared.sessionStore.addMessage(
+              prepared.sessionId,
+              "assistant",
+              "",
+              { turnId: prepared.turnId },
+            )
+          : await prepared.sessionStore.addMessage(
+              prepared.sessionId,
+              "assistant",
+              "",
+            );
         assistantMessageId = placeholder.id;
       }
       const result = await runProjectLoopCompletion({
@@ -1425,6 +1513,7 @@ export async function runConversationTurn(
       model = result.model;
       resolvedModel = result.resolvedModel;
       providerMetadata = result.providerMetadata;
+      canonicalTurnSucceeded = true;
       return {
         completionId: prepared.completionId,
         sessionId: prepared.sessionId,
@@ -1442,13 +1531,22 @@ export async function runConversationTurn(
         runResult: { exitCode: 0, stdout: finalText, stderr: "" },
       };
     } finally {
-      await persistAssistantMessage(
+      const committedTurn = await persistAssistantMessage(
         prepared.sessionStore,
         prepared.sessionId,
         assistantMessageId,
         finalText,
         toolCalls,
-        { reasoning: finalReasoning },
+        {
+          reasoning: finalReasoning,
+          ...(canonicalTurnSucceeded && prepared.canonicalTurn
+            ? { canonicalTurn: prepared.canonicalTurn }
+            : {}),
+        },
+      );
+      notifyCanonicalTurnCommitted(
+        prepared.deps.onCanonicalTurnCommitted,
+        committedTurn,
       );
       prepared.deps.onCompletionFinished?.({
         usage,

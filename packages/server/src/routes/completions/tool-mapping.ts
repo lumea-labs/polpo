@@ -16,6 +16,11 @@ import {
   type ResolvedChatInteractionCapabilities,
 } from "@polpo-ai/core/chat-interactions";
 import { preparePersistedReasoning } from "@polpo-ai/core/session-store";
+import type {
+  CanonicalTurnCommitted,
+  CanonicalTurnInvocationIdentity,
+  CanonicalTurnSurface,
+} from "@polpo-ai/core/canonical-turn";
 
 export { toPortableToolInputSchema } from "@polpo-ai/llm";
 
@@ -89,21 +94,77 @@ export function appendReasoningSummary(current: string, next: string | undefined
  * back to `emptyFallback` (default "") when the model produced no text.
  * No-op when the session isn't tracked (no store / sessionId / messageId).
  */
+export interface CanonicalTurnPersistenceContext {
+  readonly turnId: string;
+  readonly userMessageId: string;
+  readonly agentName: string;
+  readonly surface: CanonicalTurnSurface;
+  readonly requestId?: string;
+  readonly runId?: string;
+  readonly trustedInvocation: CanonicalTurnInvocationIdentity;
+  readonly learningPolicy: NonNullable<CanonicalTurnCommitted["learningPolicy"]>;
+}
+
+export function notifyCanonicalTurnCommitted(
+  callback: ((turn: CanonicalTurnCommitted) => void | Promise<void>) | undefined,
+  turn: CanonicalTurnCommitted | undefined,
+): void {
+  if (!callback || !turn) return;
+  try {
+    Promise.resolve(callback(turn)).catch(() => {});
+  } catch {
+    // The durable outbox remains authoritative when inline delivery fails.
+  }
+}
+
 export async function persistAssistantMessage(
   sessionStore: any,
   sessionId: string | null | undefined,
   messageId: string | null | undefined,
   finalText: string,
   toolCalls: any[],
-  opts?: { emptyFallback?: string; suggestions?: ChatSuggestion[]; reasoning?: string },
-): Promise<void> {
-  if (!sessionStore || !sessionId || !messageId) return;
+  opts?: {
+    emptyFallback?: string;
+    suggestions?: ChatSuggestion[];
+    reasoning?: string;
+    canonicalTurn?: CanonicalTurnPersistenceContext;
+  },
+): Promise<CanonicalTurnCommitted | undefined> {
+  if (!sessionStore || !sessionId || !messageId) return undefined;
   const safeToolCalls = redactVaultToolCalls(toolCalls);
   // A textless client/provider tool turn is valid and must not be rewritten as
   // an interrupted response. Use the fallback only when the turn contains
   // neither assistant text nor a persisted tool call.
   const content = finalText.trim() || (safeToolCalls.length > 0 ? "" : (opts?.emptyFallback ?? ""));
   const reasoning = preparePersistedReasoning(opts?.reasoning);
+  if (opts?.canonicalTurn && typeof sessionStore.commitCanonicalTurn === "function") {
+    const committed = await sessionStore.commitCanonicalTurn({
+      turn: {
+        turnId: opts.canonicalTurn.turnId,
+        ...(opts.canonicalTurn.requestId
+          ? { requestId: opts.canonicalTurn.requestId }
+          : {}),
+        ...(opts.canonicalTurn.runId ? { runId: opts.canonicalTurn.runId } : {}),
+        sessionId,
+        agentName: opts.canonicalTurn.agentName,
+        surface: opts.canonicalTurn.surface,
+        terminalStatus: "succeeded",
+        userMessage: { id: opts.canonicalTurn.userMessageId, role: "user" },
+        assistantMessage: { id: messageId, role: "assistant" },
+        trustedInvocation: opts.canonicalTurn.trustedInvocation,
+        learningPolicy: opts.canonicalTurn.learningPolicy,
+        occurredAt: new Date().toISOString(),
+      },
+      assistant: {
+        messageId,
+        content,
+        toolCalls: safeToolCalls,
+        ...(opts.suggestions ? { suggestions: opts.suggestions } : {}),
+        ...(reasoning ? { reasoning } : {}),
+      },
+    });
+    return committed.created ? committed.turn : undefined;
+  }
   if (reasoning) {
     await sessionStore.updateMessage(
       sessionId,
@@ -124,6 +185,7 @@ export async function persistAssistantMessage(
   } else {
     await sessionStore.updateMessage(sessionId, messageId, content, safeToolCalls);
   }
+  return undefined;
 }
 
 export function indexToolResultsByCallId(toolResults: any[] | undefined): Map<string, any> {

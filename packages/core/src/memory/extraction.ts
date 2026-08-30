@@ -59,6 +59,9 @@ export interface MemoryExtractionSource {
   readonly sourceId?: string;
   readonly runId?: string;
   readonly sessionId?: string;
+  readonly turnId?: string;
+  readonly extractorRevision?: string;
+  readonly policyRevision?: string;
   readonly messageIds?: readonly string[];
 }
 
@@ -135,6 +138,11 @@ export interface MemoryExtractionListQuery {
   readonly statuses?: readonly MemoryExtractionStatus[];
   readonly scope?: MemoryScope;
   readonly limit?: number;
+  /** Exclusive keyset in canonical descending-createdAt, ascending-id order. */
+  readonly after?: {
+    readonly createdAt: string;
+    readonly id: string;
+  };
 }
 
 export interface MemoryExtractionStoreContext {
@@ -164,6 +172,12 @@ export interface MemoryExtractionCandidateStore {
   ): Promise<MemoryExtractionProposeResult>;
   get(
     id: string,
+    context: MemoryExtractionStoreContext,
+  ): Promise<MemoryExtractionCandidate | undefined>;
+  /** Stable retry lookup scoped by the policy-controlled Memory scope. */
+  getByIdempotencyKey?(
+    idempotencyKey: string,
+    scope: MemoryScope,
     context: MemoryExtractionStoreContext,
   ): Promise<MemoryExtractionCandidate | undefined>;
   list(
@@ -324,6 +338,21 @@ function normalizeSource(value: unknown): MemoryExtractionSource {
     "source.sessionId",
     MAX_REFERENCE_CHARACTERS,
   );
+  const turnId = optionalText(
+    source.turnId,
+    "source.turnId",
+    MAX_REFERENCE_CHARACTERS,
+  );
+  const extractorRevision = optionalText(
+    source.extractorRevision,
+    "source.extractorRevision",
+    MAX_REFERENCE_CHARACTERS,
+  );
+  const policyRevision = optionalText(
+    source.policyRevision,
+    "source.policyRevision",
+    MAX_REFERENCE_CHARACTERS,
+  );
   let messageIds: readonly string[] | undefined;
   if (source.messageIds !== undefined) {
     if (
@@ -347,7 +376,7 @@ function normalizeSource(value: unknown): MemoryExtractionSource {
     );
     if (messageIds.length === 0) messageIds = undefined;
   }
-  if (!sourceId && !runId && !sessionId && !messageIds?.length) {
+  if (!sourceId && !runId && !sessionId && !turnId && !messageIds?.length) {
     throw new MemoryContractError(
       "source requires sourceId, runId, sessionId, or messageIds",
       "invalid_provenance",
@@ -358,6 +387,9 @@ function normalizeSource(value: unknown): MemoryExtractionSource {
     ...(sourceId ? { sourceId } : {}),
     ...(runId ? { runId } : {}),
     ...(sessionId ? { sessionId } : {}),
+    ...(turnId ? { turnId } : {}),
+    ...(extractorRevision ? { extractorRevision } : {}),
+    ...(policyRevision ? { policyRevision } : {}),
     ...(messageIds ? { messageIds } : {}),
   });
 }

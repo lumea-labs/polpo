@@ -22,9 +22,16 @@ import type {
   SessionListFilter,
   SessionMessageOptions,
   PersistedReasoning,
+  CommitCanonicalTurnInput,
+  CommitCanonicalTurnResult,
+  CanonicalTurnOutboxEntry,
 } from "@polpo-ai/core/session-store";
 import { normalizeSessionCreateArgs } from "@polpo-ai/core/session-store";
 import type { ChatSuggestion } from "@polpo-ai/core/chat-interactions";
+import {
+  normalizeCanonicalTurnCommitted,
+  type CanonicalTurnCommitted,
+} from "@polpo-ai/core/canonical-turn";
 import {
   projectResolvedClientToolCalls,
   resolvePendingClientToolCall,
@@ -84,6 +91,7 @@ export class FileSessionStore implements SessionStore {
       content,
       ts: new Date().toISOString(),
       ...(options?.toolCallId ? { toolCallId: options.toolCallId } : {}),
+      ...(options?.turnId ? { turnId: options.turnId } : {}),
     };
     await this.withSessionLock(sessionId, () => {
       try {
@@ -213,10 +221,12 @@ export class FileSessionStore implements SessionStore {
             "Idempotency key was already used with a different continuation",
           );
         }
+        const turnId = this.continuationTurnId(state.messages, input.toolCallId);
         return {
           status: "replay",
           sessionVersion: existing.sessionVersion,
           runId: existing.runId,
+          ...(turnId ? { turnId } : {}),
           messages: projectResolvedClientToolCalls(state.messages),
         };
       }
@@ -231,6 +241,7 @@ export class FileSessionStore implements SessionStore {
         projectResolvedClientToolCalls(state.messages),
         input.toolCallId,
       );
+      const turnId = this.continuationTurnId(state.messages, input.toolCallId);
 
       const nextVersion = input.expectedSessionVersion + 1;
       const message: Message = {
@@ -239,6 +250,7 @@ export class FileSessionStore implements SessionStore {
         content: input.result,
         ts: new Date().toISOString(),
         toolCallId: input.toolCallId,
+        ...(turnId ? { turnId } : {}),
       };
       state.header.version = nextVersion;
       state.header.continuations = {
@@ -257,8 +269,131 @@ export class FileSessionStore implements SessionStore {
         status: "prepared",
         sessionVersion: nextVersion,
         runId: input.runId,
+        ...(turnId ? { turnId } : {}),
         messages: projectResolvedClientToolCalls(state.messages),
       };
+    });
+  }
+
+  async commitCanonicalTurn(
+    input: CommitCanonicalTurnInput,
+  ): Promise<CommitCanonicalTurnResult> {
+    const turn = normalizeCanonicalTurnCommitted(input.turn);
+    if (turn.assistantMessage?.id !== input.assistant.messageId) {
+      throw new Error("Canonical turn assistant identity does not match persistence input");
+    }
+    return this.withSessionLock(turn.sessionId, () => {
+      const state = this.readSessionFile(turn.sessionId);
+      const outbox = this.canonicalOutbox(state.header);
+      const existing = outbox[turn.turnId];
+      if (existing) {
+        if (JSON.stringify(existing.turn) !== JSON.stringify(turn)) {
+          throw new Error("Canonical turn id was already committed with different metadata");
+        }
+        return { turn, created: false };
+      }
+      const user = state.messages.find((message) => message.id === turn.userMessage.id);
+      const assistantIndex = state.messages.findIndex(
+        (message) => message.id === turn.assistantMessage!.id,
+      );
+      const assistant = state.messages[assistantIndex];
+      if (
+        !user
+        || user.role !== "user"
+        || user.turnId !== turn.turnId
+        || !assistant
+        || assistant.role !== "assistant"
+        || assistant.turnId !== turn.turnId
+      ) {
+        throw new Error("Canonical turn messages do not match the committed turn");
+      }
+
+      state.messages[assistantIndex] = {
+        ...assistant,
+        content: input.assistant.content,
+        ...(input.assistant.toolCalls?.length
+          ? { toolCalls: [...input.assistant.toolCalls] }
+          : { toolCalls: undefined }),
+        ...(input.assistant.suggestions?.length
+          ? { suggestions: [...input.assistant.suggestions] }
+          : { suggestions: undefined }),
+        ...(input.assistant.reasoning?.text
+          ? {
+              reasoning: input.assistant.reasoning.text,
+              ...(input.assistant.reasoning.truncated
+                ? { reasoningTruncated: true }
+                : { reasoningTruncated: undefined }),
+            }
+          : { reasoning: undefined, reasoningTruncated: undefined }),
+      };
+      state.header.canonicalTurnOutbox = {
+        ...outbox,
+        [turn.turnId]: {
+          turn,
+          status: "pending",
+          attempts: 0,
+          createdAt: turn.occurredAt,
+          updatedAt: turn.occurredAt,
+        },
+      };
+      this.writeSessionFileAtomic(turn.sessionId, state.header, state.messages);
+      return { turn, created: true };
+    });
+  }
+
+  async getCanonicalTurn(turnId: string): Promise<CanonicalTurnCommitted | undefined> {
+    const located = this.findCanonicalTurn(turnId);
+    return located ? normalizeCanonicalTurnCommitted(located.entry.turn) : undefined;
+  }
+
+  async listPendingCanonicalTurns(limit = 100): Promise<readonly CanonicalTurnOutboxEntry[]> {
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1_000) {
+      throw new TypeError("Canonical turn outbox limit must be between 1 and 1000");
+    }
+    if (!existsSync(this.sessionsDir)) return [];
+    const pending: CanonicalTurnOutboxEntry[] = [];
+    for (const file of readdirSync(this.sessionsDir).filter((value) => value.endsWith(".jsonl"))) {
+      const sessionId = file.slice(0, -".jsonl".length);
+      let state: { header: any; messages: Message[] };
+      try {
+        state = this.readSessionFile(sessionId);
+      } catch {
+        continue;
+      }
+      for (const raw of Object.values(this.canonicalOutbox(state.header))) {
+        if (raw.status !== "pending") continue;
+        pending.push(Object.freeze({
+          turn: normalizeCanonicalTurnCommitted(raw.turn),
+          status: "pending",
+          attempts: Number(raw.attempts ?? 0),
+          createdAt: raw.createdAt,
+          updatedAt: raw.updatedAt,
+        }));
+      }
+    }
+    return pending
+      .sort((left, right) =>
+        left.createdAt.localeCompare(right.createdAt)
+        || left.turn.turnId.localeCompare(right.turn.turnId)
+      )
+      .slice(0, limit);
+  }
+
+  async markCanonicalTurnDispatched(turnId: string): Promise<boolean> {
+    return this.updateCanonicalTurnOutbox(turnId, (entry) => {
+      if (entry.status !== "pending") return false;
+      entry.status = "dispatched";
+      entry.updatedAt = new Date().toISOString();
+      return true;
+    });
+  }
+
+  async recordCanonicalTurnDispatchFailure(turnId: string): Promise<boolean> {
+    return this.updateCanonicalTurnOutbox(turnId, (entry) => {
+      if (entry.status !== "pending") return false;
+      entry.attempts = Number(entry.attempts ?? 0) + 1;
+      entry.updatedAt = new Date().toISOString();
+      return true;
     });
   }
 
@@ -398,6 +533,55 @@ export class FileSessionStore implements SessionStore {
     const content = [header, ...messages].map((entry) => JSON.stringify(entry)).join("\n") + "\n";
     writeFileSync(temporary, content, "utf-8");
     renameSync(temporary, file);
+  }
+
+  private continuationTurnId(
+    messages: readonly Message[],
+    toolCallId: string,
+  ): string | undefined {
+    return [...messages].reverse().find((message) =>
+      message.role === "assistant"
+      && message.turnId
+      && message.toolCalls?.some((call) => call.id === toolCallId)
+    )?.turnId;
+  }
+
+  private canonicalOutbox(header: any): Record<string, any> {
+    const value = header.canonicalTurnOutbox;
+    return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  }
+
+  private findCanonicalTurn(
+    turnId: string,
+  ): { sessionId: string; entry: any } | undefined {
+    if (!existsSync(this.sessionsDir)) return undefined;
+    for (const file of readdirSync(this.sessionsDir).filter((value) => value.endsWith(".jsonl"))) {
+      const sessionId = file.slice(0, -".jsonl".length);
+      try {
+        const entry = this.canonicalOutbox(this.readSessionFile(sessionId).header)[turnId];
+        if (entry) return { sessionId, entry };
+      } catch {
+        // Ignore unrelated unreadable legacy sessions.
+      }
+    }
+    return undefined;
+  }
+
+  private async updateCanonicalTurnOutbox(
+    turnId: string,
+    update: (entry: any) => boolean,
+  ): Promise<boolean> {
+    const located = this.findCanonicalTurn(turnId);
+    if (!located) return false;
+    return this.withSessionLock(located.sessionId, () => {
+      const state = this.readSessionFile(located.sessionId);
+      const outbox = this.canonicalOutbox(state.header);
+      const entry = outbox[turnId];
+      if (!entry || !update(entry)) return false;
+      state.header.canonicalTurnOutbox = { ...outbox, [turnId]: entry };
+      this.writeSessionFileAtomic(located.sessionId, state.header, state.messages);
+      return true;
+    });
   }
 
   private async withSessionLock<T>(sessionId: string, operation: () => T | Promise<T>): Promise<T> {

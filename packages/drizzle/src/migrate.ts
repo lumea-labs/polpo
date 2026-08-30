@@ -207,12 +207,26 @@ export async function ensurePgTables(db: any): Promise<void> {
     suggestions TEXT,
     tool_call_id TEXT,
     reasoning TEXT,
-    reasoning_truncated BOOLEAN NOT NULL DEFAULT FALSE
+    reasoning_truncated BOOLEAN NOT NULL DEFAULT FALSE,
+    turn_id TEXT
   )`);
   await db.execute(sql`ALTER TABLE messages ADD COLUMN IF NOT EXISTS suggestions TEXT`);
   await db.execute(sql`ALTER TABLE messages ADD COLUMN IF NOT EXISTS tool_call_id TEXT`);
   await db.execute(sql`ALTER TABLE messages ADD COLUMN IF NOT EXISTS reasoning TEXT`);
   await db.execute(sql`ALTER TABLE messages ADD COLUMN IF NOT EXISTS reasoning_truncated BOOLEAN NOT NULL DEFAULT FALSE`);
+  await db.execute(sql`ALTER TABLE messages ADD COLUMN IF NOT EXISTS turn_id TEXT`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_pg_messages_turn ON messages(session_id, turn_id)`);
+
+  await db.execute(sql`CREATE TABLE IF NOT EXISTS canonical_turn_outbox (
+    turn_id    TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    event      JSONB NOT NULL,
+    status     TEXT NOT NULL DEFAULT 'pending',
+    attempts   INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  )`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_pg_canonical_turn_outbox_status ON canonical_turn_outbox(status, created_at)`);
 
   await db.execute(sql`CREATE TABLE IF NOT EXISTS session_continuations (
     id              TEXT PRIMARY KEY,

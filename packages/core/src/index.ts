@@ -124,6 +124,8 @@ export * from "./run-delivery-owner.js";
 
 // ── Chat interaction capabilities and suggestions ─────────────────────
 export * from "./chat-interactions.js";
+export * from "./canonical-turn.js";
+export * from "./canonical-turn-dispatcher.js";
 
 // ── Guardrails (host-neutral policy engine + tool middleware) ───────────
 export * from "./guardrails/index.js";
@@ -189,7 +191,7 @@ export type {
   AudioModelDefinition,
 } from "./agent-models.js";
 export type { LogStore, LogEntry, SessionInfo } from "./log-store.js";
-export type { SessionStore, Session, Message, MessageRole, ToolCallInfo, ToolCallState, SessionContentPart, SessionMessageOptions } from "./session-store.js";
+export type { SessionStore, Session, Message, MessageRole, ToolCallInfo, ToolCallState, SessionContentPart, SessionMessageOptions, CanonicalTurnOutboxEntry } from "./session-store.js";
 export {
   SessionContinuationError,
   projectResolvedClientToolCalls,

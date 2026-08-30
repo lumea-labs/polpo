@@ -31,8 +31,22 @@ export const messagesSqlite = sqliteTable("messages", {
   toolCallId: text("tool_call_id"),
   reasoning: text("reasoning"),
   reasoningTruncated: integer("reasoning_truncated", { mode: "boolean" }).notNull().default(false),
+  turnId: text("turn_id"),
 }, (table) => [
   index("idx_messages_session").on(table.sessionId, table.ts),
+  index("idx_messages_turn").on(table.sessionId, table.turnId),
+]);
+
+export const canonicalTurnOutboxSqlite = sqliteTable("canonical_turn_outbox", {
+  turnId: text("turn_id").primaryKey(),
+  sessionId: text("session_id").notNull().references(() => sessionsSqlite.id, { onDelete: "cascade" }),
+  event: text("event").notNull(),
+  status: text("status").notNull().default("pending"),
+  attempts: integer("attempts").notNull().default(0),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+}, (table) => [
+  index("idx_canonical_turn_outbox_status").on(table.status, table.createdAt),
 ]);
 
 export const sessionContinuationsSqlite = sqliteTable("session_continuations", {
@@ -79,8 +93,22 @@ export const messagesPg = pgTable("messages", {
   toolCallId: pgText("tool_call_id"),
   reasoning: pgText("reasoning"),
   reasoningTruncated: pgBoolean("reasoning_truncated").notNull().default(false),
+  turnId: pgText("turn_id"),
 }, (table) => [
   pgIndex("idx_pg_messages_session").on(table.sessionId, table.ts),
+  pgIndex("idx_pg_messages_turn").on(table.sessionId, table.turnId),
+]);
+
+export const canonicalTurnOutboxPg = pgTable("canonical_turn_outbox", {
+  turnId: pgText("turn_id").primaryKey(),
+  sessionId: pgText("session_id").notNull().references(() => sessionsPg.id, { onDelete: "cascade" }),
+  event: jsonb("event").notNull(),
+  status: pgText("status").notNull().default("pending"),
+  attempts: pgInteger("attempts").notNull().default(0),
+  createdAt: pgText("created_at").notNull(),
+  updatedAt: pgText("updated_at").notNull(),
+}, (table) => [
+  pgIndex("idx_pg_canonical_turn_outbox_status").on(table.status, table.createdAt),
 ]);
 
 export const sessionContinuationsPg = pgTable("session_continuations", {

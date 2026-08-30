@@ -59,7 +59,14 @@ import {
   sseChunk,
 } from "./sse.js";
 import { completionRuntimeErrorEnvelope } from "./runtime-error.js";
-import { appendReasoningSummary, emitFileChanged, persistAssistantMessage, type LoopRuntimeToolCall } from "./tool-mapping.js";
+import {
+  appendReasoningSummary,
+  emitFileChanged,
+  persistAssistantMessage,
+  notifyCanonicalTurnCommitted,
+  type CanonicalTurnPersistenceContext,
+  type LoopRuntimeToolCall,
+} from "./tool-mapping.js";
 import { createGuardedCompletionToolExecutor } from "./tool-guardrails.js";
 import {
   createPolicyGuardedToolExecutor,
@@ -1012,6 +1019,8 @@ export interface ProjectLoopCompletionOptions {
   runtimeInvocation?: CompletionRuntimeInvocation;
   sessionStore: any;
   sessionId: string | null;
+  turnId?: string;
+  canonicalTurn?: CanonicalTurnPersistenceContext;
   runtimePlan?: RuntimePlan;
   executionRoute?: ResolvedExecutionRoute;
   activatedSkills?: readonly string[];
@@ -1089,12 +1098,17 @@ export async function executeStreamingProjectLoopCompletion(
       let resolvedModel: CompletionResolvedModelInfo | undefined;
       let providerMetadata: Record<string, unknown> | undefined;
       let toolCalls: any[] = [];
+      let canonicalTurnSucceeded = false;
       const outputMode = streamingOutputPolicyMode(deps.runOutputPolicy);
 
       try {
         await stream.writeSSE({ data: sseChunk(completionId, { role: "assistant" }) });
         if (sessionStore && sessionId) {
-          const placeholder = await sessionStore.addMessage(sessionId, "assistant", "");
+          const placeholder = options.turnId
+            ? await sessionStore.addMessage(sessionId, "assistant", "", {
+                turnId: options.turnId,
+              })
+            : await sessionStore.addMessage(sessionId, "assistant", "");
           assistantMsgId = placeholder.id;
         }
 
@@ -1168,6 +1182,7 @@ export async function executeStreamingProjectLoopCompletion(
             }),
           });
           await stream.writeSSE({ data: "[DONE]" });
+          canonicalTurnSucceeded = true;
         }
       } catch (err) {
         if ((err instanceof DOMException && err.name === "AbortError") || signal.aborted) {
@@ -1200,9 +1215,13 @@ export async function executeStreamingProjectLoopCompletion(
         }
         throw err;
       } finally {
-        await persistAssistantMessage(sessionStore, sessionId, assistantMsgId, finalText, toolCalls, {
+        const committedTurn = await persistAssistantMessage(sessionStore, sessionId, assistantMsgId, finalText, toolCalls, {
           reasoning: finalReasoning,
+          ...(canonicalTurnSucceeded && options.canonicalTurn
+            ? { canonicalTurn: options.canonicalTurn }
+            : {}),
         });
+        notifyCanonicalTurnCommitted(deps.onCanonicalTurnCommitted, committedTurn);
         try {
           deps.onCompletionFinished?.({
             usage: runUsage,
@@ -1251,9 +1270,14 @@ async function runNonStreamingProjectLoopCompletion(
   let toolCalls: any[] = [];
   let finalText = "";
   let finalReasoning = "";
+  let canonicalTurnSucceeded = false;
   try {
     if (sessionStore && sessionId) {
-      const placeholder = await sessionStore.addMessage(sessionId, "assistant", "");
+      const placeholder = options.turnId
+        ? await sessionStore.addMessage(sessionId, "assistant", "", {
+            turnId: options.turnId,
+          })
+        : await sessionStore.addMessage(sessionId, "assistant", "");
       assistantMsgId = placeholder.id;
     }
     const run = await runProjectLoopCompletion({
@@ -1294,6 +1318,7 @@ async function runNonStreamingProjectLoopCompletion(
       runId: run.loopRunId,
       sessionId,
     });
+    canonicalTurnSucceeded = true;
     return c.json(completionResponse(completionId, finalText, runUsage, {
       loop_trace: run.trace,
       loop_run_id: run.loopRunId,
@@ -1332,9 +1357,13 @@ async function runNonStreamingProjectLoopCompletion(
     }
     throw err;
   } finally {
-    await persistAssistantMessage(sessionStore, sessionId, assistantMsgId, finalText, toolCalls, {
+    const committedTurn = await persistAssistantMessage(sessionStore, sessionId, assistantMsgId, finalText, toolCalls, {
       reasoning: finalReasoning,
+      ...(canonicalTurnSucceeded && options.canonicalTurn
+        ? { canonicalTurn: options.canonicalTurn }
+        : {}),
     });
+    notifyCanonicalTurnCommitted(deps.onCanonicalTurnCommitted, committedTurn);
     try {
       deps.onCompletionFinished?.({
         usage: runUsage,

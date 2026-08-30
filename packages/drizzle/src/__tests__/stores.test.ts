@@ -743,6 +743,134 @@ describe("DrizzleSessionStore", () => {
     expect(msgs[1].content).toBe("Hi there");
   });
 
+  it("atomically commits one canonical turn and replays it idempotently", async () => {
+    const sid = await stores.sessionStore.create({ agent: "assistant", user: "user-1" });
+    const user = await stores.sessionStore.addMessage(
+      sid,
+      "user",
+      "Remember that I prefer concise answers",
+      { turnId: "turn-1" },
+    );
+    const assistant = await stores.sessionStore.addMessage(
+      sid,
+      "assistant",
+      "",
+      { turnId: "turn-1" },
+    );
+    const input = {
+      turn: {
+        turnId: "turn-1",
+        requestId: "request-1",
+        runId: "run-1",
+        sessionId: sid,
+        agentName: "assistant",
+        surface: "chat",
+        terminalStatus: "succeeded",
+        userMessage: { id: user.id, role: "user" },
+        assistantMessage: { id: assistant.id, role: "assistant" },
+        trustedInvocation: { externalUserId: "user-1" },
+        occurredAt: "2026-08-30T10:00:00.000Z",
+      },
+      assistant: {
+        messageId: assistant.id,
+        content: "I will keep answers concise.",
+        reasoning: { text: "Preference was explicit.", truncated: false },
+      },
+    } as const;
+
+    await expect(stores.sessionStore.commitCanonicalTurn!(input)).resolves.toMatchObject({
+      created: true,
+      turn: { turnId: "turn-1" },
+    });
+    await expect(stores.sessionStore.commitCanonicalTurn!(input)).resolves.toMatchObject({
+      created: false,
+    });
+    expect(await stores.sessionStore.getCanonicalTurn!("turn-1")).toMatchObject({
+      turnId: "turn-1",
+      sessionId: sid,
+      trustedInvocation: { externalUserId: "user-1" },
+    });
+    expect(await stores.sessionStore.getMessages(sid)).toEqual([
+      expect.objectContaining({ id: user.id, turnId: "turn-1" }),
+      expect.objectContaining({
+        id: assistant.id,
+        turnId: "turn-1",
+        content: "I will keep answers concise.",
+        reasoning: "Preference was explicit.",
+      }),
+    ]);
+    expect(await stores.sessionStore.listPendingCanonicalTurns!()).toEqual([
+      expect.objectContaining({
+        turn: expect.objectContaining({ turnId: "turn-1" }),
+        status: "pending",
+        attempts: 0,
+      }),
+    ]);
+    await expect(stores.sessionStore.recordCanonicalTurnDispatchFailure!("turn-1"))
+      .resolves.toBe(true);
+    expect((await stores.sessionStore.listPendingCanonicalTurns!())[0]?.attempts).toBe(1);
+    await expect(stores.sessionStore.markCanonicalTurnDispatched!("turn-1"))
+      .resolves.toBe(true);
+    await expect(stores.sessionStore.markCanonicalTurnDispatched!("turn-1"))
+      .resolves.toBe(false);
+    expect(await stores.sessionStore.listPendingCanonicalTurns!()).toEqual([]);
+  });
+
+  it("rolls back a canonical turn when its message identities do not match", async () => {
+    const sid = await stores.sessionStore.create({ agent: "assistant" });
+    const user = await stores.sessionStore.addMessage(sid, "user", "Hello", {
+      turnId: "turn-2",
+    });
+    const assistant = await stores.sessionStore.addMessage(sid, "assistant", "draft", {
+      turnId: "different-turn",
+    });
+
+    await expect(stores.sessionStore.commitCanonicalTurn!({
+      turn: {
+        turnId: "turn-2",
+        sessionId: sid,
+        agentName: "assistant",
+        surface: "channel",
+        terminalStatus: "succeeded",
+        userMessage: { id: user.id, role: "user" },
+        assistantMessage: { id: assistant.id, role: "assistant" },
+        trustedInvocation: { channelId: "whatsapp-1" },
+        occurredAt: "2026-08-30T10:01:00.000Z",
+      },
+      assistant: { messageId: assistant.id, content: "must not persist" },
+    })).rejects.toThrow("Canonical turn messages do not match");
+
+    expect((await stores.sessionStore.getMessages(sid))[1]?.content).toBe("draft");
+    expect(await stores.sessionStore.getCanonicalTurn!("turn-2")).toBeUndefined();
+  });
+
+  it("rejects reuse of a canonical turn id with different metadata", async () => {
+    const sid = await stores.sessionStore.create({ agent: "assistant" });
+    const user = await stores.sessionStore.addMessage(sid, "user", "Hello", { turnId: "turn-3" });
+    const assistant = await stores.sessionStore.addMessage(sid, "assistant", "", { turnId: "turn-3" });
+    const input = {
+      turn: {
+        turnId: "turn-3",
+        requestId: "request-original",
+        sessionId: sid,
+        agentName: "assistant",
+        surface: "chat",
+        terminalStatus: "succeeded",
+        userMessage: { id: user.id, role: "user" },
+        assistantMessage: { id: assistant.id, role: "assistant" },
+        trustedInvocation: {},
+        occurredAt: "2026-08-30T10:02:00.000Z",
+      },
+      assistant: { messageId: assistant.id, content: "done" },
+    } as const;
+    await stores.sessionStore.commitCanonicalTurn!(input);
+
+    await expect(stores.sessionStore.commitCanonicalTurn!({
+      ...input,
+      turn: { ...input.turn, requestId: "request-conflict" },
+    })).rejects.toThrow("already committed with different metadata");
+  });
+
   it("getRecentMessages returns last N", async () => {
     const sid = await stores.sessionStore.create();
     await stores.sessionStore.addMessage(sid, "user", "1");
@@ -996,6 +1124,45 @@ describe("DrizzleSessionStore", () => {
     await expect(stores.sessionStore.getSession(sid)).resolves.toMatchObject({
       version: 3,
     });
+  });
+
+  it("preserves one logical turn across a delayed client-tool continuation", async () => {
+    const sid = await stores.sessionStore.create({ agent: "leo", user: "user-1" });
+    await stores.sessionStore.addMessage(sid, "user", "Configure the booking module", {
+      turnId: "turn-continuation-1",
+    });
+    const assistant = await stores.sessionStore.addMessage(sid, "assistant", "", {
+      turnId: "turn-continuation-1",
+    });
+    await stores.sessionStore.updateMessage(sid, assistant.id, "", [{
+      id: "call-continuation-1",
+      name: "configure_site_module",
+      arguments: { module: "booking" },
+      state: "interrupted",
+    }]);
+
+    const prepared = await stores.sessionStore.prepareContinuation!({
+      sessionId: sid,
+      agent: "leo",
+      user: "user-1",
+      toolCallId: "call-continuation-1",
+      result: "{\"configured\":true}",
+      expectedSessionVersion: 2,
+      idempotencyKey: "continue-logical-turn-1",
+      fingerprint: "sha256:logical-turn-1",
+      runId: "run-continuation-1",
+    });
+
+    expect(prepared.turnId).toBe("turn-continuation-1");
+    expect(prepared.messages).toEqual(expect.arrayContaining([
+      expect.objectContaining({ role: "user", turnId: "turn-continuation-1" }),
+      expect.objectContaining({ role: "assistant", turnId: "turn-continuation-1" }),
+      expect.objectContaining({
+        role: "tool",
+        toolCallId: "call-continuation-1",
+        turnId: "turn-continuation-1",
+      }),
+    ]));
   });
 
   it("replays the same continuation and rejects idempotency-key reuse", async () => {

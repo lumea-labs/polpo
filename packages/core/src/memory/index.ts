@@ -44,12 +44,18 @@ export {
 } from "./ranking.js";
 export { InMemoryMemoryItemStore } from "./in-memory-store.js";
 export {
+  DEFAULT_MEMORY_LEARNING_KINDS,
+  MEMORY_LEARNING_MODES,
+  MEMORY_LEARNING_SURFACES,
   MEMORY_TOOL_WRITE_SCOPES,
   normalizeAgentMemorySettings,
 } from "./tool-settings.js";
 export type {
+  AgentMemoryLearningSettings,
   AgentMemorySettings,
   AgentMemoryToolSettings,
+  MemoryLearningMode,
+  MemoryLearningSurface,
   MemoryToolWriteScope,
   NormalizedAgentMemorySettings,
   NormalizedAgentMemoryToolSettings,
@@ -64,6 +70,33 @@ export {
   normalizeMemoryExtractionAuditEvent,
   normalizeMemoryExtractionCandidate,
 } from "./extraction.js";
+export {
+  DEFAULT_AUTOMATIC_MEMORY_CONFIDENCE,
+  MAX_MEMORY_LEARNING_CANDIDATES,
+  MAX_MEMORY_LEARNING_TURN_CHARACTERS,
+  DeterministicMemoryConsolidationPolicy,
+  MemoryLearningService,
+  applyMemoryExtractionCandidate,
+  evaluateMemoryTurnEligibility,
+} from "./learning.js";
+export type {
+  DeterministicMemoryConsolidationPolicyOptions,
+  MemoryConsolidationDecision,
+  MemoryConsolidationInput,
+  MemoryConsolidationPolicy,
+  MemoryConsolidationResolution,
+  MemoryExtractor,
+  MemoryExtractorCandidate,
+  MemoryExtractorInput,
+  MemoryExtractorResult,
+  MemoryLearningProcessInput,
+  MemoryLearningProcessResult,
+  MemoryLearningServiceOptions,
+  MemoryLearningVisibleTurn,
+  MemoryTurnEligibility,
+  MemoryTurnEligibilityInput,
+  MemoryTurnIneligibilityReason,
+} from "./learning.js";
 export type {
   CreateMemoryExtractionCandidateInput,
   MemoryExtractionApplyInput,

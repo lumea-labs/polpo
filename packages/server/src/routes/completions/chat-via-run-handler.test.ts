@@ -1231,6 +1231,121 @@ describe("chat via Run driver", () => {
     }));
   });
 
+  it("commits one canonical channel turn only after successful completion", async () => {
+    let messageIndex = 0;
+    const commitCanonicalTurn = vi.fn(async (input: any) => ({
+      turn: input.turn,
+      created: true,
+    }));
+    const onCanonicalTurnCommitted = vi.fn();
+    const sessionStore = {
+      create: vi.fn(async () => "channel-session-learning"),
+      addMessage: vi.fn(async (
+        _sessionId: string,
+        role: string,
+        content: unknown,
+        options?: { turnId?: string },
+      ) => ({
+        id: `learning-message-${++messageIndex}`,
+        role,
+        content,
+        ...(options?.turnId ? { turnId: options.turnId } : {}),
+      })),
+      updateMessage: vi.fn(async () => true),
+      commitCanonicalTurn,
+    };
+    const deps = baseDeps({
+      getAgents: async () => [{
+        name: "agent-1",
+        role: "Test agent",
+        model: "mock",
+        memory: { learning: { mode: "automatic", surfaces: ["channel"] } },
+      }],
+      getSessionStore: () => sessionStore,
+      onCanonicalTurnCommitted,
+    });
+
+    await runConversationTurn(deps, {
+      body: {
+        agent: "agent-1",
+        stream: false,
+        messages: [{ role: "user", content: "I prefer concise answers" }],
+      },
+      runtime: {
+        surface: "channel",
+        source: "channel",
+        user: "trusted-user-1",
+        channelId: "whatsapp-1",
+        scope: { key: "site-1", version: "2" },
+      },
+    });
+
+    const userOptions = sessionStore.addMessage.mock.calls[0]?.[3];
+    const assistantOptions = sessionStore.addMessage.mock.calls[1]?.[3];
+    expect(userOptions?.turnId).toMatch(/^turn-chatcmpl-/);
+    expect(assistantOptions).toEqual(userOptions);
+    expect(commitCanonicalTurn).toHaveBeenCalledOnce();
+    expect(commitCanonicalTurn).toHaveBeenCalledWith(expect.objectContaining({
+      turn: expect.objectContaining({
+        turnId: userOptions?.turnId,
+        surface: "channel",
+        userMessage: { id: "learning-message-1", role: "user" },
+        assistantMessage: { id: "learning-message-2", role: "assistant" },
+        trustedInvocation: {
+          externalUserId: "trusted-user-1",
+          channelId: "whatsapp-1",
+          scope: { key: "site-1", version: "2" },
+        },
+      }),
+    }));
+    expect(onCanonicalTurnCommitted).toHaveBeenCalledOnce();
+  });
+
+  it("does not commit a canonical turn while waiting for a client tool result", async () => {
+    const commitCanonicalTurn = vi.fn();
+    const sessionStore = {
+      create: vi.fn(async () => "waiting-session"),
+      addMessage: vi.fn(async (
+        _sessionId: string,
+        role: string,
+        content: unknown,
+        options?: { turnId?: string },
+      ) => ({ id: `${role}-message`, role, content, turnId: options?.turnId })),
+      updateMessage: vi.fn(async () => true),
+      commitCanonicalTurn,
+    };
+    const deps = baseDeps({
+      getAgents: async () => [{
+        name: "agent-1",
+        role: "Test agent",
+        model: "mock",
+        memory: { learning: { mode: "automatic" } },
+      }],
+      getSessionStore: () => sessionStore,
+      runChatViaRun: async (_inject, hooks) => {
+        hooks.onEvent({
+          type: "client_tool_call",
+          toolId: "call-1",
+          tool: "ask_user_question",
+          input: { questions: [{ question: "Which tone?" }] },
+        });
+        return { status: "completed", result: { exitCode: 0, stdout: "", stderr: "" } };
+      },
+    });
+
+    const result = await runConversationTurn(deps, {
+      body: {
+        agent: "agent-1",
+        stream: false,
+        messages: [{ role: "user", content: "Write it" }],
+      },
+    });
+
+    expect(result.clientToolCall).toMatchObject({ id: "call-1" });
+    expect(commitCanonicalTurn).not.toHaveBeenCalled();
+    expect(sessionStore.updateMessage).toHaveBeenCalledOnce();
+  });
+
   it("runs a non-HTTP chat turn through the same Run lifecycle", async () => {
     const onCompletionFinished = vi.fn();
     const updateMessage = vi.fn(async () => true);

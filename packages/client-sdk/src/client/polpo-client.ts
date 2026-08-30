@@ -106,6 +106,13 @@ import type {
   ListMemoryItemsQuery,
   ListMemoryItemsPageQuery,
   SearchMemoryRequest,
+  ListMemoryCandidatesQuery,
+  MemoryCandidatesPage,
+  MemoryExtractionAuditEvent,
+  MemoryExtractionCandidate,
+  DecideMemoryCandidateInput,
+  ApplyMemoryCandidateInput,
+  AppliedMemoryCandidate,
   BrainScope,
   BrainSource,
   BrainSourceFilters,
@@ -1514,6 +1521,63 @@ export class PolpoClient {
     return this.del<{ forgotten: boolean; itemId: string }>(
       `/agents/${encodeURIComponent(agentName)}/memory/items/${encodeURIComponent(itemId)}`,
     ).then((data) => data.forgotten);
+  }
+
+  listMemoryCandidates(
+    agentName: string,
+    query: ListMemoryCandidatesQuery = {},
+  ): Promise<MemoryCandidatesPage> {
+    const params = new URLSearchParams();
+    if (query.statuses?.length) params.set("statuses", query.statuses.join(","));
+    if (query.limit !== undefined) params.set("limit", String(query.limit));
+    if (query.cursor !== undefined) params.set("cursor", query.cursor);
+    const suffix = params.size > 0 ? `?${params.toString()}` : "";
+    return this.get<MemoryCandidatesPage>(
+      `/agents/${encodeURIComponent(agentName)}/memory/candidates${suffix}`,
+    ).then((page) => ({
+      candidates: page.candidates,
+      nextCursor: page.nextCursor ?? null,
+    }));
+  }
+
+  getMemoryCandidate(
+    agentName: string,
+    candidateId: string,
+  ): Promise<MemoryExtractionCandidate> {
+    return this.get<{ candidate: MemoryExtractionCandidate }>(
+      `/agents/${encodeURIComponent(agentName)}/memory/candidates/${encodeURIComponent(candidateId)}`,
+    ).then((data) => data.candidate);
+  }
+
+  decideMemoryCandidate(
+    agentName: string,
+    candidateId: string,
+    input: DecideMemoryCandidateInput,
+  ): Promise<MemoryExtractionCandidate> {
+    return this.post<{ candidate: MemoryExtractionCandidate }>(
+      `/agents/${encodeURIComponent(agentName)}/memory/candidates/${encodeURIComponent(candidateId)}/decision`,
+      input,
+    ).then((data) => data.candidate);
+  }
+
+  applyMemoryCandidate(
+    agentName: string,
+    candidateId: string,
+    input: ApplyMemoryCandidateInput = {},
+  ): Promise<AppliedMemoryCandidate> {
+    return this.post<AppliedMemoryCandidate>(
+      `/agents/${encodeURIComponent(agentName)}/memory/candidates/${encodeURIComponent(candidateId)}/apply`,
+      input,
+    );
+  }
+
+  getMemoryCandidateAudit(
+    agentName: string,
+    candidateId: string,
+  ): Promise<MemoryExtractionAuditEvent[]> {
+    return this.get<{ events: MemoryExtractionAuditEvent[] }>(
+      `/agents/${encodeURIComponent(agentName)}/memory/candidates/${encodeURIComponent(candidateId)}/audit`,
+    ).then((data) => data.events);
   }
 
   getLogs(): Promise<LogSession[]> {

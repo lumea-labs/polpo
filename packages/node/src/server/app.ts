@@ -46,6 +46,7 @@ import {
   runSteeringRoutes,
   conversationChannelRoutes,
   memoryItemRoutes,
+  memoryCandidateRoutes,
   type CompletionRuntimeGuardrailsResolver,
 } from "@polpo-ai/server";
 // Node.js-only routes (stay in src/server/routes/)
@@ -242,6 +243,7 @@ export function createApp(orchestrator: Orchestrator, sseBridge: SSEBridge, opts
     getConfig: () => o.getConfig(),
     getMemoryStore: () => o.getMemoryStore(),
     getSessionStore: () => o.getSessionStore(),
+    onCanonicalTurnCommitted: () => o.reconcileMemoryLearning(),
     getStore: () => o.getStore(),
     createRunDeliveryScope: ({ runId }) => {
       knownDurableRuns.add(runId);
@@ -680,6 +682,32 @@ export function createApp(orchestrator: Orchestrator, sseBridge: SSEBridge, opts
         surface: "api" as const,
       };
     },
+  })));
+
+  authed.route("/", memoryCandidateRoutes((requestContext: any) => ({
+    memoryItemStore: o.getMemoryItemStore(),
+    memoryExtractionStore: o.getMemoryExtractionStore(),
+    resolveMemoryContext: (agentName: string) => {
+      const externalUserId = requestContext.req.header("x-polpo-external-user-id")?.trim();
+      const sessionId = requestContext.req.header("x-session-id")?.trim();
+      const channelId = requestContext.req.header("x-polpo-channel-id")?.trim();
+      return {
+        namespace: o.getPolpoDir(),
+        access: {
+          projectId: o.getConfig()?.project,
+          agentName,
+          ...(externalUserId ? { externalUserId } : {}),
+          ...(sessionId ? { sessionId } : {}),
+          ...(channelId ? { channelId } : {}),
+        },
+        surface: "api" as const,
+      };
+    },
+    resolveMemoryReviewer: () => ({
+      actor: "user" as const,
+      actorId: requestContext.req.header("x-polpo-reviewer-id")?.trim()
+        || "self-host-api-key",
+    }),
   })));
 
   authed.route("/files", fileRoutes(() => ({

@@ -147,6 +147,11 @@ describe("agent create/update schema parity", () => {
         writeScope: "invocation-user" as const,
         writableKinds: ["fact", "preference"] as const,
       },
+      learning: {
+        mode: "suggest" as const,
+        surfaces: ["chat", "channel"] as const,
+        kinds: ["fact", "preference"] as const,
+      },
     };
 
     expect(AddAgentSchema.parse({ name: "support", memory }).memory)
@@ -166,6 +171,13 @@ describe("agent create/update schema parity", () => {
     { tools: { writableKinds: ["secret"] } },
     { tools: { remember: true } },
     { tools: { forget: true, writableKinds: [] } },
+    { learning: null },
+    { learning: { mode: "enabled" } },
+    { learning: { surfaces: [] } },
+    { learning: { surfaces: ["task"] } },
+    { learning: { kinds: [] } },
+    { learning: { kinds: ["secret"] } },
+    { learning: { mode: "suggest", threshold: 0.5 } },
   ])("rejects malformed typed Memory settings %#", (memory) => {
     expect(AddAgentSchema.safeParse({ name: "support", memory }).success)
       .toBe(false);

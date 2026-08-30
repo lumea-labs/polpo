@@ -36,6 +36,7 @@ import {
 } from "./sse.js";
 import {
   persistAssistantMessage,
+  notifyCanonicalTurnCommitted,
   emitFileChanged,
   toAITools,
   CLIENT_SIDE_TOOLS,
@@ -350,13 +351,18 @@ async function finishCommon(
   state: DriverState,
   assistantMsgId: string | null,
   options?: { emptyFallback?: string; suggestions?: ChatSuggestion[] },
+  canonicalTurnSucceeded = false,
 ) {
   const { deps, body, m, sessionStore, sessionId, onResponseFinished } = execution;
   recordPendingClientToolCall(state);
-  await persistAssistantMessage(sessionStore, sessionId, assistantMsgId, state.finalText, state.toolCallsAccum, {
+  const committedTurn = await persistAssistantMessage(sessionStore, sessionId, assistantMsgId, state.finalText, state.toolCallsAccum, {
     ...options,
     reasoning: state.reasoning,
+    ...(canonicalTurnSucceeded && execution.canonicalTurn
+      ? { canonicalTurn: execution.canonicalTurn }
+      : {}),
   });
+  notifyCanonicalTurnCommitted(deps.onCanonicalTurnCommitted, committedTurn);
   try {
     deps.onCompletionFinished?.({
       usage: state.totalUsage,
@@ -421,7 +427,11 @@ export async function executeStreamingChatViaRun(
     try {
       await stream.writeSSE({ data: sseChunk(completionId, { role: "assistant" }) });
       if (sessionStore && sessionId) {
-        const placeholder = await sessionStore.addMessage(sessionId, "assistant", "");
+        const placeholder = execution.turnId
+          ? await sessionStore.addMessage(sessionId, "assistant", "", {
+              turnId: execution.turnId,
+            })
+          : await sessionStore.addMessage(sessionId, "assistant", "");
         assistantMsgId = placeholder.id;
       }
 
@@ -517,6 +527,7 @@ export async function executeStreamingChatViaRun(
           state,
           assistantMsgId,
           suggestions.length > 0 ? { suggestions } : undefined,
+          !signal.aborted && !state.errorEvent && !state.clientReturn,
         );
       } finally {
         await steeringScope.release();
@@ -537,7 +548,11 @@ export async function runNonStreamingChatViaRun(c: Context, execution: ChatCompl
 
   try {
     if (sessionStore && sessionId) {
-      const placeholder = await sessionStore.addMessage(sessionId, "assistant", "");
+      const placeholder = execution.turnId
+        ? await sessionStore.addMessage(sessionId, "assistant", "", {
+            turnId: execution.turnId,
+          })
+        : await sessionStore.addMessage(sessionId, "assistant", "");
       assistantMsgId = placeholder.id;
     }
 
@@ -629,7 +644,7 @@ export async function runNonStreamingChatViaRun(c: Context, execution: ChatCompl
       await finishCommon(execution, state, assistantMsgId, {
         emptyFallback: "[Response interrupted]",
         ...(suggestions.length > 0 ? { suggestions } : {}),
-      });
+      }, !c.req.raw.signal.aborted && !state.errorEvent && !state.clientReturn);
     } finally {
       await steeringScope.release();
     }
@@ -662,7 +677,11 @@ export async function runChatTurnViaRun(
 
   try {
     if (sessionStore && sessionId) {
-      const placeholder = await sessionStore.addMessage(sessionId, "assistant", "");
+      const placeholder = execution.turnId
+        ? await sessionStore.addMessage(sessionId, "assistant", "", {
+            turnId: execution.turnId,
+          })
+        : await sessionStore.addMessage(sessionId, "assistant", "");
       assistantMsgId = placeholder.id;
     }
 
@@ -693,7 +712,13 @@ export async function runChatTurnViaRun(
     runResult = { exitCode: 1, stdout: "", stderr: message };
   } finally {
     try {
-      await finishCommon(execution, state, assistantMsgId, { emptyFallback: "[Response interrupted]" });
+      await finishCommon(
+        execution,
+        state,
+        assistantMsgId,
+        { emptyFallback: "[Response interrupted]" },
+        runStatus === "completed" && !hooks.signal?.aborted && !state.errorEvent && !state.clientReturn,
+      );
     } finally {
       await steeringScope.release();
     }

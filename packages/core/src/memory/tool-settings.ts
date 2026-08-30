@@ -20,8 +20,39 @@ export interface AgentMemoryToolSettings {
   readonly writableKinds?: readonly MemoryKind[];
 }
 
+export const MEMORY_LEARNING_MODES = [
+  "off",
+  "suggest",
+  "automatic",
+] as const;
+
+export type MemoryLearningMode =
+  (typeof MEMORY_LEARNING_MODES)[number];
+
+export const MEMORY_LEARNING_SURFACES = [
+  "chat",
+  "channel",
+] as const;
+
+export type MemoryLearningSurface =
+  (typeof MEMORY_LEARNING_SURFACES)[number];
+
+export const DEFAULT_MEMORY_LEARNING_KINDS = [
+  "fact",
+  "preference",
+  "open_thread",
+  "style",
+] as const satisfies readonly MemoryKind[];
+
+export interface AgentMemoryLearningSettings {
+  readonly mode?: MemoryLearningMode;
+  readonly surfaces?: readonly MemoryLearningSurface[];
+  readonly kinds?: readonly MemoryKind[];
+}
+
 export interface AgentMemorySettings {
   readonly tools?: AgentMemoryToolSettings;
+  readonly learning?: AgentMemoryLearningSettings;
 }
 
 export interface NormalizedAgentMemoryToolSettings {
@@ -35,10 +66,17 @@ export interface NormalizedAgentMemoryToolSettings {
 
 export interface NormalizedAgentMemorySettings {
   readonly tools: NormalizedAgentMemoryToolSettings;
+  readonly learning: {
+    readonly mode: MemoryLearningMode;
+    readonly surfaces: readonly MemoryLearningSurface[];
+    readonly kinds: readonly MemoryKind[];
+  };
 }
 
 const memoryKinds = new Set<string>(MEMORY_KINDS);
 const writeScopes = new Set<string>(MEMORY_TOOL_WRITE_SCOPES);
+const learningModes = new Set<string>(MEMORY_LEARNING_MODES);
+const learningSurfaces = new Set<string>(MEMORY_LEARNING_SURFACES);
 
 function objectValue(
   value: unknown,
@@ -78,11 +116,16 @@ export function normalizeAgentMemorySettings(
         writeScope: "invocation-user",
         writableKinds: Object.freeze([]),
       }),
+      learning: Object.freeze({
+        mode: "off",
+        surfaces: Object.freeze([...MEMORY_LEARNING_SURFACES]),
+        kinds: Object.freeze([...DEFAULT_MEMORY_LEARNING_KINDS]),
+      }),
     });
   }
 
   const memory = objectValue(value, "memory");
-  rejectUnknownFields(memory, ["tools"], "memory");
+  rejectUnknownFields(memory, ["tools", "learning"], "memory");
   const rawTools = memory.tools === undefined
     ? {}
     : objectValue(memory.tools, "memory.tools");
@@ -122,6 +165,31 @@ export function normalizeAgentMemorySettings(
     );
   }
 
+  const rawLearning = memory.learning === undefined
+    ? {}
+    : objectValue(memory.learning, "memory.learning");
+  rejectUnknownFields(
+    rawLearning,
+    ["mode", "surfaces", "kinds"],
+    "memory.learning",
+  );
+  const mode = rawLearning.mode ?? "off";
+  if (typeof mode !== "string" || !learningModes.has(mode)) {
+    throw new TypeError("memory.learning.mode is invalid");
+  }
+  const surfaces = normalizedSelection(
+    rawLearning.surfaces,
+    MEMORY_LEARNING_SURFACES,
+    learningSurfaces,
+    "memory.learning.surfaces",
+  ) as MemoryLearningSurface[];
+  const learningKinds = normalizedSelection(
+    rawLearning.kinds,
+    DEFAULT_MEMORY_LEARNING_KINDS,
+    memoryKinds,
+    "memory.learning.kinds",
+  ) as MemoryKind[];
+
   return Object.freeze({
     tools: Object.freeze({
       search,
@@ -131,5 +199,30 @@ export function normalizeAgentMemorySettings(
       writeScope: writeScope as MemoryToolWriteScope,
       writableKinds: Object.freeze(writableKinds),
     }),
+    learning: Object.freeze({
+      mode: mode as MemoryLearningMode,
+      surfaces: Object.freeze(surfaces),
+      kinds: Object.freeze(learningKinds),
+    }),
   });
+}
+
+function normalizedSelection(
+  value: unknown,
+  defaults: readonly string[],
+  allowed: ReadonlySet<string>,
+  path: string,
+): string[] {
+  if (value === undefined) return [...defaults];
+  if (!Array.isArray(value) || value.length === 0) {
+    throw new TypeError(`${path} must be a non-empty array`);
+  }
+  const selected = new Set<string>();
+  for (const [index, entry] of value.entries()) {
+    if (typeof entry !== "string" || !allowed.has(entry)) {
+      throw new TypeError(`${path}[${index}] is invalid`);
+    }
+    selected.add(entry);
+  }
+  return defaults.filter((entry) => selected.has(entry));
 }
