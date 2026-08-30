@@ -142,6 +142,14 @@
       "types": "./dist/session-store.d.ts",
       "import": "./dist/session-store.js"
     },
+    "./canonical-turn": {
+      "types": "./dist/canonical-turn.d.ts",
+      "import": "./dist/canonical-turn.js"
+    },
+    "./canonical-turn-dispatcher": {
+      "types": "./dist/canonical-turn-dispatcher.d.ts",
+      "import": "./dist/canonical-turn-dispatcher.js"
+    },
     "./session-continuation": {
       "types": "./dist/session-continuation.d.ts",
       "import": "./dist/session-continuation.js"

@@ -11,8 +11,15 @@ import type {
   SessionListFilter,
   SessionMessageOptions,
   PersistedReasoning,
+  CommitCanonicalTurnInput,
+  CommitCanonicalTurnResult,
+  CanonicalTurnOutboxEntry,
 } from "@polpo-ai/core/session-store";
 import { normalizeSessionCreateArgs } from "@polpo-ai/core/session-store";
+import {
+  normalizeCanonicalTurnCommitted,
+  type CanonicalTurnCommitted,
+} from "@polpo-ai/core/canonical-turn";
 import {
   projectResolvedClientToolCalls,
   resolvePendingClientToolCall,
@@ -37,6 +44,7 @@ export class DrizzleSessionStore implements SessionStore {
     private continuations: AnyTable,
     private dialect: Dialect,
     private transactionProvider?: DrizzleTransactionProvider,
+    private canonicalTurnOutbox?: AnyTable,
   ) {}
 
   /** Serialize content for DB TEXT column: arrays → JSON string, plain strings → as-is. */
@@ -104,6 +112,7 @@ export class DrizzleSessionStore implements SessionStore {
       ...(row.toolCallId ? { toolCallId: row.toolCallId } : {}),
       ...(row.reasoning ? { reasoning: row.reasoning } : {}),
       ...(row.reasoningTruncated ? { reasoningTruncated: true } : {}),
+      ...(row.turnId ? { turnId: row.turnId } : {}),
     };
   }
 
@@ -146,6 +155,7 @@ export class DrizzleSessionStore implements SessionStore {
       toolCallId: options?.toolCallId ?? null,
       reasoning: null,
       reasoningTruncated: false,
+      turnId: options?.turnId ?? null,
     });
     await this.db.update(this.sessions)
       .set({ updatedAt: ts, version: sql`${this.sessions.version} + 1` })
@@ -157,7 +167,224 @@ export class DrizzleSessionStore implements SessionStore {
       content,
       ts,
       ...(options?.toolCallId ? { toolCallId: options.toolCallId } : {}),
+      ...(options?.turnId ? { turnId: options.turnId } : {}),
     };
+  }
+
+  async commitCanonicalTurn(
+    input: CommitCanonicalTurnInput,
+  ): Promise<CommitCanonicalTurnResult> {
+    if (!this.canonicalTurnOutbox) {
+      throw new Error("Canonical turn persistence is not configured");
+    }
+    const turn = normalizeCanonicalTurnCommitted(input.turn);
+    if (turn.assistantMessage?.id !== input.assistant.messageId) {
+      throw new Error("Canonical turn assistant identity does not match persistence input");
+    }
+    const serializedEvent = JSON.stringify(turn);
+    const serializedContent = this.serializeContent(input.assistant.content);
+    const serializedToolCalls = input.assistant.toolCalls?.length
+      ? JSON.stringify(input.assistant.toolCalls)
+      : null;
+    const serializedSuggestions = input.assistant.suggestions?.length
+      ? JSON.stringify(input.assistant.suggestions)
+      : null;
+
+    if (this.dialect === "sqlite") {
+      if (typeof this.db.transaction !== "function") {
+        throw new Error("Canonical turn persistence requires transactional database support");
+      }
+      return this.db.transaction((db: any) => {
+        const existing = db.select().from(this.canonicalTurnOutbox)
+          .where(eq(this.canonicalTurnOutbox.turnId, turn.turnId))
+          .limit(1)
+          .all()[0];
+        if (existing) {
+          this.assertSameCanonicalTurn(existing.event, serializedEvent);
+          return { turn, created: false };
+        }
+        this.assertCanonicalTurnMessagesSync(db, turn);
+        const updated = db.update(this.messages).set({
+          content: serializedContent,
+          toolCalls: serializedToolCalls,
+          suggestions: serializedSuggestions,
+          reasoning: input.assistant.reasoning?.text ?? null,
+          reasoningTruncated: input.assistant.reasoning?.truncated ?? false,
+        }).where(and(
+          eq(this.messages.id, input.assistant.messageId),
+          eq(this.messages.sessionId, turn.sessionId),
+          eq(this.messages.turnId, turn.turnId),
+        )).run();
+        if (extractAffectedRows(updated) !== 1) {
+          throw new Error("Canonical assistant message changed before commit");
+        }
+        db.insert(this.canonicalTurnOutbox).values({
+          turnId: turn.turnId,
+          sessionId: turn.sessionId,
+          event: serializedEvent,
+          status: "pending",
+          attempts: 0,
+          createdAt: turn.occurredAt,
+          updatedAt: turn.occurredAt,
+        }).run();
+        db.update(this.sessions).set({ updatedAt: turn.occurredAt })
+          .where(eq(this.sessions.id, turn.sessionId)).run();
+        return { turn, created: true };
+      });
+    }
+
+    const execute = async (db: any): Promise<CommitCanonicalTurnResult> => {
+      const existingRows = await db.select().from(this.canonicalTurnOutbox)
+        .where(eq(this.canonicalTurnOutbox.turnId, turn.turnId))
+        .limit(1);
+      if (existingRows[0]) {
+        this.assertSameCanonicalTurn(existingRows[0].event, serializedEvent);
+        return { turn, created: false };
+      }
+      await this.assertCanonicalTurnMessages(db, turn);
+      const updated = await db.update(this.messages).set({
+        content: serializedContent,
+        toolCalls: serializedToolCalls,
+        suggestions: serializedSuggestions,
+        reasoning: input.assistant.reasoning?.text ?? null,
+        reasoningTruncated: input.assistant.reasoning?.truncated ?? false,
+      }).where(and(
+        eq(this.messages.id, input.assistant.messageId),
+        eq(this.messages.sessionId, turn.sessionId),
+        eq(this.messages.turnId, turn.turnId),
+      ));
+      if (extractAffectedRows(updated) !== 1) {
+        throw new Error("Canonical assistant message changed before commit");
+      }
+      await db.insert(this.canonicalTurnOutbox).values({
+        turnId: turn.turnId,
+        sessionId: turn.sessionId,
+        event: turn,
+        status: "pending",
+        attempts: 0,
+        createdAt: turn.occurredAt,
+        updatedAt: turn.occurredAt,
+      });
+      await db.update(this.sessions).set({ updatedAt: turn.occurredAt })
+        .where(eq(this.sessions.id, turn.sessionId));
+      return { turn, created: true };
+    };
+
+    if (this.transactionProvider) return this.transactionProvider(execute);
+    if (typeof this.db.transaction !== "function") {
+      throw new Error("Canonical turn persistence requires transactional database support");
+    }
+    return this.db.transaction(execute);
+  }
+
+  async getCanonicalTurn(turnId: string): Promise<CanonicalTurnCommitted | undefined> {
+    if (!this.canonicalTurnOutbox) return undefined;
+    const rows = await this.db.select().from(this.canonicalTurnOutbox)
+      .where(eq(this.canonicalTurnOutbox.turnId, turnId))
+      .limit(1);
+    const row = rows[0];
+    if (!row) return undefined;
+    const value = typeof row.event === "string" ? JSON.parse(row.event) : row.event;
+    return normalizeCanonicalTurnCommitted(value);
+  }
+
+  async listPendingCanonicalTurns(
+    limit = 100,
+  ): Promise<readonly CanonicalTurnOutboxEntry[]> {
+    if (!this.canonicalTurnOutbox) return [];
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1_000) {
+      throw new TypeError("Canonical turn outbox limit must be between 1 and 1000");
+    }
+    const rows = await this.db.select().from(this.canonicalTurnOutbox)
+      .where(eq(this.canonicalTurnOutbox.status, "pending"))
+      .orderBy(asc(this.canonicalTurnOutbox.createdAt))
+      .limit(limit);
+    return rows.map((row: any) => Object.freeze({
+      turn: normalizeCanonicalTurnCommitted(
+        typeof row.event === "string" ? JSON.parse(row.event) : row.event,
+      ),
+      status: "pending" as const,
+      attempts: Number(row.attempts ?? 0),
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt,
+    }));
+  }
+
+  async markCanonicalTurnDispatched(turnId: string): Promise<boolean> {
+    if (!this.canonicalTurnOutbox) return false;
+    const now = new Date().toISOString();
+    const result = await this.db.update(this.canonicalTurnOutbox).set({
+      status: "dispatched",
+      updatedAt: now,
+    }).where(and(
+      eq(this.canonicalTurnOutbox.turnId, turnId),
+      eq(this.canonicalTurnOutbox.status, "pending"),
+    ));
+    return extractAffectedRows(result) === 1;
+  }
+
+  async recordCanonicalTurnDispatchFailure(turnId: string): Promise<boolean> {
+    if (!this.canonicalTurnOutbox) return false;
+    const now = new Date().toISOString();
+    const result = await this.db.update(this.canonicalTurnOutbox).set({
+      attempts: sql`${this.canonicalTurnOutbox.attempts} + 1`,
+      updatedAt: now,
+    }).where(and(
+      eq(this.canonicalTurnOutbox.turnId, turnId),
+      eq(this.canonicalTurnOutbox.status, "pending"),
+    ));
+    return extractAffectedRows(result) === 1;
+  }
+
+  private assertCanonicalTurnMessagesSync(db: any, turn: CanonicalTurnCommitted): void {
+    const user = db.select().from(this.messages).where(and(
+      eq(this.messages.id, turn.userMessage.id),
+      eq(this.messages.sessionId, turn.sessionId),
+    )).limit(1).all()[0];
+    const assistant = db.select().from(this.messages).where(and(
+      eq(this.messages.id, turn.assistantMessage!.id),
+      eq(this.messages.sessionId, turn.sessionId),
+    )).limit(1).all()[0];
+    this.assertCanonicalMessageRows(user, assistant, turn);
+  }
+
+  private async assertCanonicalTurnMessages(
+    db: any,
+    turn: CanonicalTurnCommitted,
+  ): Promise<void> {
+    const userRows = await db.select().from(this.messages).where(and(
+      eq(this.messages.id, turn.userMessage.id),
+      eq(this.messages.sessionId, turn.sessionId),
+    )).limit(1);
+    const assistantRows = await db.select().from(this.messages).where(and(
+      eq(this.messages.id, turn.assistantMessage!.id),
+      eq(this.messages.sessionId, turn.sessionId),
+    )).limit(1);
+    this.assertCanonicalMessageRows(userRows[0], assistantRows[0], turn);
+  }
+
+  private assertCanonicalMessageRows(
+    user: any,
+    assistant: any,
+    turn: CanonicalTurnCommitted,
+  ): void {
+    if (
+      !user
+      || user.role !== "user"
+      || user.turnId !== turn.turnId
+      || !assistant
+      || assistant.role !== "assistant"
+      || assistant.turnId !== turn.turnId
+    ) {
+      throw new Error("Canonical turn messages do not match the committed turn");
+    }
+  }
+
+  private assertSameCanonicalTurn(existing: unknown, expected: string): void {
+    const value = typeof existing === "string" ? existing : JSON.stringify(existing);
+    if (value !== expected) {
+      throw new Error("Canonical turn id was already committed with different metadata");
+    }
   }
 
   async updateMessage(
@@ -376,11 +603,14 @@ export class DrizzleSessionStore implements SessionStore {
             .where(eq(this.messages.sessionId, input.sessionId))
             .orderBy(asc(this.messages.ts))
             .all();
+          const messages = rows.map((row) => this.rowToMessage(row));
+          const turnId = this.continuationTurnId(messages, input.toolCallId);
           return {
             status: "replay" as const,
             sessionVersion: Number(existing.sessionVersion),
             runId: existing.runId,
-            messages: projectResolvedClientToolCalls(rows.map((row) => this.rowToMessage(row))),
+            ...(turnId ? { turnId } : {}),
+            messages: projectResolvedClientToolCalls(messages),
           };
         }
 
@@ -395,10 +625,12 @@ export class DrizzleSessionStore implements SessionStore {
           .where(eq(this.messages.sessionId, input.sessionId))
           .orderBy(asc(this.messages.ts))
           .all();
+        const storedMessages = rows.map((row) => this.rowToMessage(row));
         resolvePendingClientToolCall(
-          projectResolvedClientToolCalls(rows.map((row) => this.rowToMessage(row))),
+          projectResolvedClientToolCalls(storedMessages),
           input.toolCallId,
         );
+        const turnId = this.continuationTurnId(storedMessages, input.toolCallId);
 
         const now = new Date().toISOString();
         const nextVersion = input.expectedSessionVersion + 1;
@@ -422,6 +654,7 @@ export class DrizzleSessionStore implements SessionStore {
           content: input.result,
           ts: now,
           toolCallId: input.toolCallId,
+          ...(turnId ? { turnId } : {}),
         };
         db.insert(this.messages).values({
           id: message.id,
@@ -432,6 +665,7 @@ export class DrizzleSessionStore implements SessionStore {
           toolCalls: null,
           suggestions: null,
           toolCallId: message.toolCallId,
+          turnId: message.turnId ?? null,
         }).run();
         db.insert(this.continuations).values({
           id: nanoid(),
@@ -448,8 +682,9 @@ export class DrizzleSessionStore implements SessionStore {
           status: "prepared" as const,
           sessionVersion: nextVersion,
           runId: input.runId,
+          ...(turnId ? { turnId } : {}),
           messages: projectResolvedClientToolCalls([
-            ...rows.map((row) => this.rowToMessage(row)),
+            ...storedMessages,
             message,
           ]),
         };
@@ -485,11 +720,14 @@ export class DrizzleSessionStore implements SessionStore {
         const rows: any[] = await db.select().from(this.messages)
           .where(eq(this.messages.sessionId, input.sessionId))
           .orderBy(asc(this.messages.ts));
+        const messages = rows.map((row) => this.rowToMessage(row));
+        const turnId = this.continuationTurnId(messages, input.toolCallId);
         return {
           status: "replay",
           sessionVersion: Number(existing.sessionVersion),
           runId: existing.runId,
-          messages: projectResolvedClientToolCalls(rows.map((row) => this.rowToMessage(row))),
+          ...(turnId ? { turnId } : {}),
+          messages: projectResolvedClientToolCalls(messages),
         };
       }
 
@@ -503,10 +741,12 @@ export class DrizzleSessionStore implements SessionStore {
       const rows: any[] = await db.select().from(this.messages)
         .where(eq(this.messages.sessionId, input.sessionId))
         .orderBy(asc(this.messages.ts));
+      const storedMessages = rows.map((row) => this.rowToMessage(row));
       resolvePendingClientToolCall(
-        projectResolvedClientToolCalls(rows.map((row) => this.rowToMessage(row))),
+        projectResolvedClientToolCalls(storedMessages),
         input.toolCallId,
       );
+      const turnId = this.continuationTurnId(storedMessages, input.toolCallId);
 
       const now = new Date().toISOString();
       const nextVersion = input.expectedSessionVersion + 1;
@@ -532,6 +772,7 @@ export class DrizzleSessionStore implements SessionStore {
         content: input.result,
         ts: now,
         toolCallId: input.toolCallId,
+        ...(turnId ? { turnId } : {}),
       };
       await db.insert(this.messages).values({
         id: message.id,
@@ -542,6 +783,7 @@ export class DrizzleSessionStore implements SessionStore {
         toolCalls: null,
         suggestions: null,
         toolCallId: message.toolCallId,
+        turnId: message.turnId ?? null,
       });
       await db.insert(this.continuations).values({
         id: nanoid(),
@@ -558,8 +800,9 @@ export class DrizzleSessionStore implements SessionStore {
         status: "prepared",
         sessionVersion: nextVersion,
         runId: input.runId,
+        ...(turnId ? { turnId } : {}),
         messages: projectResolvedClientToolCalls([
-          ...rows.map((row) => this.rowToMessage(row)),
+          ...storedMessages,
           message,
         ]),
       };
@@ -572,6 +815,17 @@ export class DrizzleSessionStore implements SessionStore {
       throw new Error("Session continuation requires transactional database support");
     }
     return this.db.transaction(execute);
+  }
+
+  private continuationTurnId(
+    messages: readonly Message[],
+    toolCallId: string,
+  ): string | undefined {
+    return [...messages].reverse().find((message) =>
+      message.role === "assistant"
+      && message.turnId
+      && message.toolCalls?.some((call) => call.id === toolCallId)
+    )?.turnId;
   }
 
   private assertContinuationScope(

@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type {
   CreateMemoryItemInput,
+  MemoryExtractionCandidate,
   MemoryItem,
   MemorySearchResult,
   MemoryUsageEvent,
@@ -21,6 +22,12 @@ const item: MemoryItem = {
   createdAt: "2026-07-28T10:00:00.000Z",
   updatedAt: "2026-07-28T10:00:00.000Z",
 };
+
+const candidate = {
+  id: "candidate / 1",
+  status: "pending",
+  revision: 1,
+} as MemoryExtractionCandidate;
 
 function response(data: unknown): Response {
   return new Response(JSON.stringify({ ok: true, data }), {
@@ -181,5 +188,58 @@ describe("PolpoClient typed Memory", () => {
         + "/memory/items/memory%20%2F%201/usage",
       expect.objectContaining({ method: "GET" }),
     );
+  });
+
+  it("reviews automatic-learning candidates through the typed API", async () => {
+    const applied = { ...candidate, status: "applied", revision: 3 } as MemoryExtractionCandidate;
+    const audit = [{ id: "audit-1", candidateId: candidate.id, type: "proposed" }];
+    const { client, fetch } = clientWithResponses(
+      { candidates: [candidate], nextCursor: "next/cursor" },
+      { candidate },
+      { candidate: { ...candidate, status: "approved", revision: 2 } },
+      { candidate: applied, memoryId: "learned-candidate-1" },
+      { events: audit },
+    );
+
+    await expect(client.listMemoryCandidates("support / eu", {
+      statuses: ["pending", "approved"],
+      limit: 10,
+      cursor: "current/cursor",
+    })).resolves.toEqual({ candidates: [candidate], nextCursor: "next/cursor" });
+    await expect(client.getMemoryCandidate("support / eu", "candidate / 1"))
+      .resolves.toEqual(candidate);
+    await client.decideMemoryCandidate("support / eu", "candidate / 1", {
+      decision: "approve",
+      expectedRevision: 1,
+    });
+    await expect(client.applyMemoryCandidate("support / eu", "candidate / 1", {
+      expectedRevision: 2,
+    })).resolves.toEqual({ candidate: applied, memoryId: "learned-candidate-1" });
+    await expect(client.getMemoryCandidateAudit("support / eu", "candidate / 1"))
+      .resolves.toEqual(audit);
+
+    expect(fetch.mock.calls.map(([url, init]) => [url, init?.method])).toEqual([
+      [
+        "https://api.example.test/api/v1/agents/support%20%2F%20eu/memory/candidates"
+          + "?statuses=pending%2Capproved&limit=10&cursor=current%2Fcursor",
+        "GET",
+      ],
+      [
+        "https://api.example.test/api/v1/agents/support%20%2F%20eu/memory/candidates/candidate%20%2F%201",
+        "GET",
+      ],
+      [
+        "https://api.example.test/api/v1/agents/support%20%2F%20eu/memory/candidates/candidate%20%2F%201/decision",
+        "POST",
+      ],
+      [
+        "https://api.example.test/api/v1/agents/support%20%2F%20eu/memory/candidates/candidate%20%2F%201/apply",
+        "POST",
+      ],
+      [
+        "https://api.example.test/api/v1/agents/support%20%2F%20eu/memory/candidates/candidate%20%2F%201/audit",
+        "GET",
+      ],
+    ]);
   });
 });

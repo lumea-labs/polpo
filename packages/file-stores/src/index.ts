@@ -7,6 +7,10 @@ export {
   MemoryStoreCorruptionError,
 } from "./file-memory-item-store.js";
 export type { FileMemoryItemStoreOptions } from "./file-memory-item-store.js";
+export { FileMemoryExtractionStore } from "./file-memory-extraction-store.js";
+export type {
+  FileMemoryExtractionStoreOptions,
+} from "./file-memory-extraction-store.js";
 export { FileLogStore } from "./file-log-store.js";
 export { FileSessionStore } from "./file-session-store.js";
 export { FileApprovalStore } from "./file-approval-store.js";

@@ -59,6 +59,11 @@ describe("project layout v2 agent definitions", () => {
           writeScope: "invocation-user",
           writableKinds: ["fact", "preference"],
         },
+        learning: {
+          mode: "suggest",
+          surfaces: ["chat", "channel"],
+          kinds: ["fact", "preference"],
+        },
       },
       allowedPaths: ["/workspace"],
       systemPrompt: "Build the requested product.",

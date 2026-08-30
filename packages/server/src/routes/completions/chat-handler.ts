@@ -54,6 +54,8 @@ import {
   isInvalidModelToolCall,
   appendReasoningSummary,
   persistAssistantMessage,
+  notifyCanonicalTurnCommitted,
+  type CanonicalTurnPersistenceContext,
   recordProviderToolCall,
   toAITools,
 } from "./tool-mapping.js";
@@ -119,6 +121,10 @@ export interface ChatCompletionExecution {
   aiMessages: any[];
   sessionStore: any;
   sessionId: string | null;
+  /** Logical request turn shared by user, tool continuation, and assistant messages. */
+  turnId?: string;
+  /** Present only when automatic/suggest learning is enabled for this surface. */
+  canonicalTurn?: CanonicalTurnPersistenceContext;
   /** Frozen, secret-free runtime decision emitted before provider/tool resolution. */
   runtimePlan?: RuntimePlan;
   /** Explicit, host-resolved context-trust mode for this conversation turn. */
@@ -209,7 +215,11 @@ export async function executeStreamingChatCompletion(
     // This guarantees the assistant message exists even if the client disconnects.
     let assistantMsgId: string | null = null;
     if (sessionStore && sessionId) {
-      const placeholder = await sessionStore.addMessage(sessionId, "assistant", "");
+      const placeholder = exec.turnId
+        ? await sessionStore.addMessage(sessionId, "assistant", "", {
+            turnId: exec.turnId,
+          })
+        : await sessionStore.addMessage(sessionId, "assistant", "");
       assistantMsgId = placeholder.id;
     }
 
@@ -221,6 +231,7 @@ export async function executeStreamingChatCompletion(
     let lastProviderMetadata: Record<string, unknown> | undefined;
     let outputPolicyApplied = false;
     let suggestions: ChatSuggestion[] = [];
+    let canonicalTurnSucceeded = false;
     const finalizeOutput = async (validateStructured = true) => {
       if (outputPolicyApplied) return;
       finalText = await applyCompletionOutputPolicy({
@@ -658,6 +669,7 @@ export async function executeStreamingChatCompletion(
         }
         await stream.writeSSE({ data: sseChunk(completionId, {}, "stop") });
         await stream.writeSSE({ data: "[DONE]" });
+        canonicalTurnSucceeded = true;
       }
     } catch (err) {
       // Suppress AbortError — expected when client disconnects
@@ -699,7 +711,7 @@ export async function executeStreamingChatCompletion(
     } finally {
       // Always persist the assistant response — even on disconnect.
       // (Vault credentials are redacted inside persistAssistantMessage.)
-      await persistAssistantMessage(
+      const committedTurn = await persistAssistantMessage(
         sessionStore,
         sessionId,
         assistantMsgId,
@@ -708,8 +720,12 @@ export async function executeStreamingChatCompletion(
         {
           ...(suggestions.length > 0 ? { suggestions } : {}),
           reasoning: finalReasoning,
+          ...(canonicalTurnSucceeded && exec.canonicalTurn
+            ? { canonicalTurn: exec.canonicalTurn }
+            : {}),
         },
       );
+      notifyCanonicalTurnCommitted(deps.onCanonicalTurnCommitted, committedTurn);
       // Notify consumer (e.g. metering) — fire-and-forget
       try {
         deps.onCompletionFinished?.({
@@ -749,7 +765,11 @@ export async function runNonStreamingChatCompletion(c: any, exec: ChatCompletion
   // Reserve placeholder so the message is visible even if the request is interrupted
   let assistantMsgId: string | null = null;
   if (sessionStore && sessionId) {
-    const placeholder = await sessionStore.addMessage(sessionId, "assistant", "");
+    const placeholder = exec.turnId
+      ? await sessionStore.addMessage(sessionId, "assistant", "", {
+          turnId: exec.turnId,
+        })
+      : await sessionStore.addMessage(sessionId, "assistant", "");
     assistantMsgId = placeholder.id;
   }
 
@@ -761,6 +781,7 @@ export async function runNonStreamingChatCompletion(c: any, exec: ChatCompletion
   let lastProviderMetadata: Record<string, unknown> | undefined;
   let outputPolicyApplied = false;
   let suggestions: ChatSuggestion[] = [];
+  let canonicalTurnSucceeded = false;
   const finalizeOutput = async (validateStructured = true) => {
     if (outputPolicyApplied) return;
     finalText = await applyCompletionOutputPolicy({
@@ -1110,6 +1131,7 @@ export async function runNonStreamingChatCompletion(c: any, exec: ChatCompletion
 
     await finalizeOutput();
     suggestions = await suggestionsForCompletion(exec, finalText, c.req.raw.signal);
+    canonicalTurnSucceeded = true;
     return c.json(completionResponse(
       completionId,
       finalText,
@@ -1143,11 +1165,15 @@ export async function runNonStreamingChatCompletion(c: any, exec: ChatCompletion
   } finally {
     // Always persist the final text + tool calls — even on early return (ask_user) or error.
     // (Vault credentials are redacted inside persistAssistantMessage.)
-    await persistAssistantMessage(sessionStore, sessionId, assistantMsgId, finalText, toolCallsAccum, {
+    const committedTurn = await persistAssistantMessage(sessionStore, sessionId, assistantMsgId, finalText, toolCallsAccum, {
       emptyFallback: "[Response interrupted]",
       ...(suggestions.length > 0 ? { suggestions } : {}),
       reasoning: finalReasoning,
+      ...(canonicalTurnSucceeded && exec.canonicalTurn
+        ? { canonicalTurn: exec.canonicalTurn }
+        : {}),
     });
+    notifyCanonicalTurnCommitted(deps.onCanonicalTurnCommitted, committedTurn);
     // Notify consumer (e.g. metering) — fire-and-forget
     try {
       deps.onCompletionFinished?.({

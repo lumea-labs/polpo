@@ -147,4 +147,112 @@ describe("FileSessionStore continuation", () => {
     expect(outcomes.filter((outcome) => outcome.status === "rejected")).toHaveLength(1);
     expect(await sessionStore.getMessages(sessionId)).toHaveLength(2);
   });
+
+  it("preserves the logical turn through a delayed continuation", async () => {
+    const sessionStore = store();
+    const sessionId = await sessionStore.create({ agent: "leo", user: "user-1" });
+    await sessionStore.addMessage(sessionId, "user", "Configure booking", {
+      turnId: "turn-1",
+    });
+    const assistant = await sessionStore.addMessage(sessionId, "assistant", "", {
+      turnId: "turn-1",
+    });
+    await sessionStore.updateMessage(sessionId, assistant.id, "", [{
+      id: "call-turn-1",
+      name: "configure_site_module",
+      state: "interrupted",
+    }]);
+
+    const prepared = await sessionStore.prepareContinuation!({
+      sessionId,
+      agent: "leo",
+      user: "user-1",
+      toolCallId: "call-turn-1",
+      result: "configured",
+      expectedSessionVersion: 2,
+      idempotencyKey: "idem-turn-1",
+      fingerprint: "fingerprint-turn-1",
+      runId: "looprun-turn-1",
+    });
+
+    expect(prepared.turnId).toBe("turn-1");
+    expect(prepared.messages.every((message) => message.turnId === "turn-1")).toBe(true);
+  });
+
+  it("atomically finalizes a canonical turn and persists its durable outbox", async () => {
+    const sessionStore = store();
+    const sessionId = await sessionStore.create({ agent: "leo", user: "user-1" });
+    const user = await sessionStore.addMessage(sessionId, "user", "I prefer concise replies", {
+      turnId: "turn-canonical-1",
+    });
+    const assistant = await sessionStore.addMessage(sessionId, "assistant", "", {
+      turnId: "turn-canonical-1",
+    });
+    const input = {
+      turn: {
+        turnId: "turn-canonical-1",
+        sessionId,
+        agentName: "leo",
+        surface: "chat" as const,
+        terminalStatus: "succeeded" as const,
+        userMessage: { id: user.id, role: "user" as const },
+        assistantMessage: { id: assistant.id, role: "assistant" as const },
+        trustedInvocation: { externalUserId: "user-1" },
+        occurredAt: "2026-08-30T10:00:00.000Z",
+      },
+      assistant: {
+        messageId: assistant.id,
+        content: "Understood.",
+      },
+    };
+
+    await expect(sessionStore.commitCanonicalTurn!(input)).resolves.toMatchObject({
+      created: true,
+    });
+    await expect(sessionStore.commitCanonicalTurn!(input)).resolves.toMatchObject({
+      created: false,
+    });
+    expect((await sessionStore.getMessages(sessionId))[1]?.content).toBe("Understood.");
+    await expect(sessionStore.listPendingCanonicalTurns!()).resolves.toEqual([
+      expect.objectContaining({
+        turn: expect.objectContaining({ turnId: "turn-canonical-1" }),
+        attempts: 0,
+      }),
+    ]);
+
+    await expect(sessionStore.recordCanonicalTurnDispatchFailure!("turn-canonical-1"))
+      .resolves.toBe(true);
+    expect((await sessionStore.listPendingCanonicalTurns!())[0]?.attempts).toBe(1);
+    await expect(sessionStore.markCanonicalTurnDispatched!("turn-canonical-1"))
+      .resolves.toBe(true);
+    await expect(sessionStore.listPendingCanonicalTurns!()).resolves.toEqual([]);
+  });
+
+  it("rolls back a canonical commit whose message identity is inconsistent", async () => {
+    const sessionStore = store();
+    const sessionId = await sessionStore.create({ agent: "leo", user: "user-1" });
+    const user = await sessionStore.addMessage(sessionId, "user", "Hello", {
+      turnId: "turn-good",
+    });
+    const assistant = await sessionStore.addMessage(sessionId, "assistant", "draft", {
+      turnId: "turn-other",
+    });
+
+    await expect(sessionStore.commitCanonicalTurn!({
+      turn: {
+        turnId: "turn-good",
+        sessionId,
+        agentName: "leo",
+        surface: "chat",
+        terminalStatus: "succeeded",
+        userMessage: { id: user.id, role: "user" },
+        assistantMessage: { id: assistant.id, role: "assistant" },
+        trustedInvocation: { externalUserId: "user-1" },
+        occurredAt: "2026-08-30T10:00:00.000Z",
+      },
+      assistant: { messageId: assistant.id, content: "final" },
+    })).rejects.toThrow("messages do not match");
+    expect((await sessionStore.getMessages(sessionId))[1]?.content).toBe("draft");
+    await expect(sessionStore.listPendingCanonicalTurns!()).resolves.toEqual([]);
+  });
 });

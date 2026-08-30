@@ -5,22 +5,28 @@ import { parseConfig, loadPolpoConfig, savePolpoConfig, loadEnvFile, projectConf
 import { findLogForTask, buildExecutionSummary } from "../assessment/transcript-parser.js";
 import { FileTaskStore } from "@polpo-ai/file-stores";
 import { FileRunStore } from "@polpo-ai/file-stores";
-import { FileMemoryItemStore, FileMemoryStore } from "@polpo-ai/file-stores";
+import {
+  FileMemoryExtractionStore,
+  FileMemoryItemStore,
+  FileMemoryStore,
+} from "@polpo-ai/file-stores";
 import { FileLogStore } from "@polpo-ai/file-stores";
 import { FileSessionStore } from "@polpo-ai/file-stores";
 import type { SessionStore } from "@polpo-ai/core/session-store";
 import type { MemoryStore } from "@polpo-ai/core/memory-store";
-import type { MemoryItemStore } from "@polpo-ai/core";
+import type { MemoryExtractionCandidateStore, MemoryItemStore } from "@polpo-ai/core";
 import type { LogStore } from "@polpo-ai/core/log-store";
 import { assessTask } from "../assessment/assessor.js";
 import { analyzeBlockedTasks, resolveDeadlock, isResolving } from "./deadlock-resolver.js";
 import {
+  CanonicalTurnOutboxDispatcher,
   OrchestratorEngine,
   normalizeModelPolicy,
   resolveConfiguredModelSelection,
   resolveMissionStore,
 } from "@polpo-ai/core";
-import type { DeadlockResolverPort, DeadlockFacade } from "@polpo-ai/core";
+import type { DeadlockResolverPort, DeadlockFacade, MemoryExtractor } from "@polpo-ai/core";
+import { createLocalMemoryLearningHandler } from "../memory/automatic-learning.js";
 import { TypedEmitter } from "./events.js";
 import type { TaskStore } from "@polpo-ai/core/task-store";
 import type { RunStore } from "@polpo-ai/core/run-store";
@@ -100,6 +106,8 @@ export interface OrchestratorOptions {
   spawner?: Spawner;
   runtimeContext?: RuntimeContextProvider;
   connectionCapabilityResolver?: import("@polpo-ai/core").ConnectionCapabilityResolver;
+  /** Optional host-selected extractor. Automatic learning stays durable-pending when absent. */
+  memoryExtractor?: MemoryExtractor;
   /**
    * Host-owned classifier factory for opt-in automatic execution routing.
    * Neither core nor the Node host chooses a model implicitly.
@@ -131,6 +139,8 @@ export class Orchestrator extends TypedEmitter {
   private injectedRunStore?: RunStore;
   private memoryStore!: MemoryStore;
   private memoryItemStore!: MemoryItemStore;
+  private memoryExtractionStore!: MemoryExtractionCandidateStore;
+  private memoryExtractor?: MemoryExtractor;
   private logStore!: LogStore;
   private sessionStore!: SessionStore;
   private hookRegistry = new HookRegistry();
@@ -243,6 +253,7 @@ export class Orchestrator extends TypedEmitter {
       this.runtimeContext = opts.runtimeContext;
       this.executionRouteClassifierResolver = opts.resolveExecutionRouteClassifier;
       this.connectionCapabilityResolver = opts.connectionCapabilityResolver;
+      this.memoryExtractor = opts.memoryExtractor;
       this.spawnerInjected = !!opts.spawner;
       this.spawner = opts.spawner ?? new NodeSpawner({ polpoDir: this.polpoDir, cwd: this.workDir });
     }
@@ -393,6 +404,18 @@ export class Orchestrator extends TypedEmitter {
       ? stores.memoryStore
       : new FileMemoryStore(this.polpoDir);
     this.memoryItemStore = new FileMemoryItemStore(this.polpoDir);
+    this.memoryExtractionStore = new FileMemoryExtractionStore(this.polpoDir);
+    if (this.memoryExtractor) {
+      queueMicrotask(() => {
+        void this.reconcileMemoryLearning().catch((error) => {
+          const message = error instanceof Error ? error.message : String(error);
+          this.emit("log", {
+            level: "warn",
+            message: `Automatic Memory reconciliation failed: ${message}`,
+          });
+        });
+      });
+    }
 
     // Team & Agent stores — Drizzle when available, otherwise file-based
     this.teamStore = this.drizzleStores?.teamStore ?? new FileTeamStore(this.polpoDir);
@@ -709,6 +732,7 @@ export class Orchestrator extends TypedEmitter {
       ? stores.memoryStore
       : new FileMemoryStore(this.polpoDir);
     this.memoryItemStore = new FileMemoryItemStore(this.polpoDir);
+    this.memoryExtractionStore = new FileMemoryExtractionStore(this.polpoDir);
 
     // Team & Agent stores — Drizzle when available, otherwise file-based
     this.teamStore = this.drizzleStores?.teamStore ?? new FileTeamStore(this.polpoDir);
@@ -759,6 +783,17 @@ export class Orchestrator extends TypedEmitter {
       teams: this.config.teams,
       startedAt: new Date().toISOString(),
     });
+    if (this.memoryExtractor) {
+      queueMicrotask(() => {
+        void this.reconcileMemoryLearning().catch((error) => {
+          const message = error instanceof Error ? error.message : String(error);
+          this.emit("log", {
+            level: "warn",
+            message: `Automatic Memory reconciliation failed: ${message}`,
+          });
+        });
+      });
+    }
 
     // Recover any tasks left in limbo from a previous crash
     const recovered = await this.runner.recoverOrphanedTasks();
@@ -817,6 +852,25 @@ export class Orchestrator extends TypedEmitter {
   getPolpoDir(): string { return this.polpoDir; }
   getMemoryStore(): MemoryStore { return this.memoryStore; }
   getMemoryItemStore(): MemoryItemStore { return this.memoryItemStore; }
+  getMemoryExtractionStore(): MemoryExtractionCandidateStore {
+    return this.memoryExtractionStore;
+  }
+
+  async reconcileMemoryLearning(limit = 100): Promise<void> {
+    if (!this.memoryExtractor || !this.sessionStore) return;
+    const dispatcher = new CanonicalTurnOutboxDispatcher({
+      sessionStore: this.sessionStore,
+      handler: createLocalMemoryLearningHandler({
+        extractor: this.memoryExtractor,
+        sessionStore: this.sessionStore,
+        candidateStore: this.memoryExtractionStore,
+        itemStore: this.memoryItemStore,
+        namespace: this.polpoDir,
+        projectId: this.config.project,
+      }),
+    });
+    await dispatcher.dispatchPending(limit);
+  }
   getVaultStore(): VaultStore | undefined { return this.vaultStore; }
   getPlaybookStore(): PlaybookStore { return this.playbookStore; }
   getTeamStore(): TeamStore { return this.teamStore; }
@@ -951,6 +1005,7 @@ export class Orchestrator extends TypedEmitter {
     await this.hookRegistry.runAfter("orchestrator:shutdown", {});
     await this.logStore?.close();
     await this.sessionStore?.close();
+    await this.memoryExtractionStore?.close?.();
   }
 
   // ── Config Hot Reload ──

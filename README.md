@@ -143,6 +143,38 @@ Derived vectors are rebuildable, excluded from canonical Memory snapshots,
 and never compared across incompatible identities. A provider or reranker
 outage can fall back to lexical retrieval; an aborted request always stops.
 
+Agents can also opt into post-turn Memory learning. The default is `off`:
+
+```json
+{
+  "memory": {
+    "learning": {
+      "mode": "suggest",
+      "surfaces": ["chat", "channel"],
+      "kinds": ["fact", "preference", "style", "open_thread"]
+    }
+  }
+}
+```
+
+`suggest` creates reviewable candidates; `automatic` applies only candidates
+accepted by the deterministic policy and leaves uncertain candidates pending.
+Learning requires a trusted external user, runs only after a successful
+canonical user-to-assistant turn is durably committed, and excludes hidden
+reasoning, tool payloads, nested Loop steps, failed turns, and incomplete
+client-tool or ask-user continuations.
+
+OSS defines the `MemoryExtractor` port but does not silently choose a model.
+Self-hosts inject an extractor into `Orchestrator`; without one, existing typed
+Memory tools and retrieval continue to work and no automatic extraction runs.
+The canonical-turn outbox is durable and retries safely using the turn,
+extractor revision, and policy revision as idempotency identity.
+
+Hosts can mount `memoryCandidateRoutes` for scoped list/get/approve/reject,
+apply, and audit operations. The SDK exposes the corresponding candidate
+methods, and reviewer identity is supplied by the authenticated host rather
+than accepted from the request body.
+
 ## Self-host with the dashboard
 
 The repository includes a single-tenant dashboard host that keeps the runtime API key on the server. Start the production-oriented example with PostgreSQL:

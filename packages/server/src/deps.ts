@@ -15,6 +15,8 @@ import type { PlaybookStore } from "@polpo-ai/core/playbook-store";
 import type { SessionStore } from "@polpo-ai/core/session-store";
 import type { ConnectService } from "@polpo-ai/connect-server";
 import type {
+  MemoryExtractionCandidateStore,
+  MemoryExtractionReviewer,
   MemoryItemStore,
   MemoryStoreContext,
   MemoryUsageEvent,
@@ -63,11 +65,18 @@ export interface ChannelManagementRouteDeps {
 export interface MemoryRouteDeps {
   /** Omit the store to keep typed Memory unavailable. */
   memoryItemStore?: MemoryItemStore;
+  /** Omit the store to keep automatic-learning review unavailable. */
+  memoryExtractionStore?: MemoryExtractionCandidateStore;
   /** Host-owned authentication, isolation namespace, and external-user scope. */
   resolveMemoryContext: (
     agentName: string,
     requestContext: unknown,
   ) => MemoryStoreContext | Promise<MemoryStoreContext>;
+  /** Host-authenticated reviewer identity; request bodies cannot override it. */
+  resolveMemoryReviewer?: (
+    agentName: string,
+    requestContext: unknown,
+  ) => MemoryExtractionReviewer | Promise<MemoryExtractionReviewer>;
   createId?: () => string;
   createUsageId?: () => string;
   now?: () => Date | string;

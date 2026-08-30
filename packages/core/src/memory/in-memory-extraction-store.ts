@@ -26,6 +26,7 @@ import {
   MemoryAuthorizationError,
   MemoryConflictError,
 } from "./store-errors.js";
+import type { MemoryScope } from "./types.js";
 
 interface NamespaceState {
   readonly candidates: Map<string, MemoryExtractionCandidate>;
@@ -340,11 +341,51 @@ implements MemoryExtractionCandidateStore {
     return cloneCandidate(candidate);
   }
 
+  async getByIdempotencyKey(
+    idempotencyKey: string,
+    scope: MemoryScope,
+    context: MemoryExtractionStoreContext,
+  ): Promise<MemoryExtractionCandidate | undefined> {
+    const state = this.namespaces.get(namespace(context.namespace));
+    if (!state) return undefined;
+    const normalizedKey = typeof idempotencyKey === "string"
+      ? idempotencyKey.trim()
+      : "";
+    if (!normalizedKey) {
+      throw new MemoryContractError("Memory extraction idempotency key is required");
+    }
+    const indexed = JSON.stringify([
+      memoryScopeKey(normalizeMemoryScope(scope)),
+      normalizedKey,
+    ]);
+    const candidateId = state.idempotency.get(indexed);
+    if (!candidateId) return undefined;
+    const candidate = state.candidates.get(candidateId);
+    if (!candidate) {
+      throw new MemoryContractError("Memory extraction idempotency index is corrupted");
+    }
+    this.authorize(candidate, context);
+    return cloneCandidate(candidate);
+  }
+
   async list(
     query: MemoryExtractionListQuery,
     context: MemoryExtractionStoreContext,
   ): Promise<MemoryExtractionCandidate[]> {
     const limit = boundedLimit(query.limit);
+    const after = query.after
+      ? {
+          createdAt: timestamp(query.after.createdAt),
+          id: typeof query.after.id === "string" ? query.after.id.trim() : "",
+        }
+      : undefined;
+    if (after && !after.id) {
+      throw new MemoryContractError(
+        "Memory extraction cursor id is required",
+        "invalid_item",
+        "after.id",
+      );
+    }
     const requestedScope = query.scope
       ? normalizeMemoryScope(query.scope)
       : undefined;
@@ -386,6 +427,12 @@ implements MemoryExtractionCandidateStore {
         right.createdAt.localeCompare(left.createdAt)
         || left.id.localeCompare(right.id)
       )
+      .filter((candidate) => !after
+        || candidate.createdAt < after.createdAt
+        || (
+          candidate.createdAt === after.createdAt
+          && candidate.id > after.id
+        ))
       .slice(0, limit);
   }
 

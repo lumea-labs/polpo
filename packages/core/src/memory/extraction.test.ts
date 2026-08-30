@@ -253,6 +253,35 @@ describe("InMemoryMemoryExtractionStore", () => {
     expect(await store.list({}, context("project-b", "user-a"))).toHaveLength(1);
   });
 
+  it("paginates by a stable exclusive createdAt and id keyset", async () => {
+    const store = new InMemoryMemoryExtractionStore();
+    for (const [id, at] of [
+      ["candidate-b", "2026-08-30T12:00:00.000Z"],
+      ["candidate-a", "2026-08-30T12:00:00.000Z"],
+      ["candidate-c", "2026-08-30T11:00:00.000Z"],
+    ] as const) {
+      await store.propose(createMemoryExtractionCandidate(input({
+        idempotencyKey: `turn-${id}:extractor-v1:policy-v1:0`,
+      }), {
+        createId: () => id,
+        now: () => at,
+      }), context());
+    }
+
+    expect((await store.list({ limit: 2 }, context())).map((value) => value.id))
+      .toEqual(["candidate-a", "candidate-b"]);
+    expect((await store.list({
+      limit: 2,
+      after: {
+        createdAt: "2026-08-30T12:00:00.000Z",
+        id: "candidate-b",
+      },
+    }, context())).map((value) => value.id)).toEqual(["candidate-c"]);
+    await expect(store.list({
+      after: { createdAt: "invalid", id: "candidate-b" },
+    }, context())).rejects.toThrow(MemoryContractError);
+  });
+
   it("isolates idempotency keys across authorized scopes in one namespace", async () => {
     const store = new InMemoryMemoryExtractionStore();
     await store.propose(candidate(), context());

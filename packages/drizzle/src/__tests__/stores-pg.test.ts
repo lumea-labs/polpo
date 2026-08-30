@@ -29,6 +29,7 @@ const ALL_TABLES = [
   "conversation_channels",
   "log_entries",
   "model_invocation_logs",
+  "canonical_turn_outbox",
   "messages",
   "approvals",
   "runs",
@@ -127,6 +128,20 @@ describe.skipIf(!canConnect)("PostgreSQL Drizzle stores", () => {
       ));
       expect(rows[0]?.name, `migrate.ts missing table: ${table}`).toBe(table);
     }
+  });
+
+  it("ensurePgSchema provisions canonical turn persistence", async () => {
+    const expected = ["sessions", "messages", "canonical_turn_outbox"];
+    for (const table of expected) {
+      const rows: any[] = await db.execute(sql.raw(
+        `SELECT to_regclass('public.${table}') AS name`,
+      ));
+      expect(rows[0]?.name, `migrate.ts missing table: ${table}`).toBe(table);
+    }
+    const messageColumns: any[] = await db.execute(sql.raw(
+      `SELECT column_name FROM information_schema.columns WHERE table_name = 'messages'`,
+    ));
+    expect(messageColumns.some((row: any) => row.column_name === "turn_id")).toBe(true);
   });
 
   // ═══════════════════════════════════════════════════════════════════════
@@ -593,6 +608,52 @@ describe.skipIf(!canConnect)("PostgreSQL Drizzle stores", () => {
       expect(msgs).toHaveLength(2);
       expect(msgs[0].role).toBe("user");
       expect(msgs[1].content).toBe("Hi there");
+    });
+
+    it("atomically commits and reads a canonical turn", async () => {
+      const sid = await stores.sessionStore.create({ agent: "assistant", user: "user-pg" });
+      const user = await stores.sessionStore.addMessage(sid, "user", "Remember this", {
+        turnId: "turn-pg-1",
+      });
+      const assistant = await stores.sessionStore.addMessage(sid, "assistant", "", {
+        turnId: "turn-pg-1",
+      });
+      const result = await stores.sessionStore.commitCanonicalTurn!({
+        turn: {
+          turnId: "turn-pg-1",
+          sessionId: sid,
+          agentName: "assistant",
+          surface: "chat",
+          terminalStatus: "succeeded",
+          userMessage: { id: user.id, role: "user" },
+          assistantMessage: { id: assistant.id, role: "assistant" },
+          trustedInvocation: { externalUserId: "user-pg" },
+          occurredAt: "2026-08-30T11:00:00.000Z",
+        },
+        assistant: { messageId: assistant.id, content: "Remembered" },
+      });
+
+      expect(result.created).toBe(true);
+      expect(await stores.sessionStore.getCanonicalTurn!("turn-pg-1")).toMatchObject({
+        turnId: "turn-pg-1",
+        sessionId: sid,
+      });
+      expect((await stores.sessionStore.getMessages(sid))[1]).toMatchObject({
+        turnId: "turn-pg-1",
+        content: "Remembered",
+      });
+      expect(await stores.sessionStore.listPendingCanonicalTurns!()).toEqual([
+        expect.objectContaining({
+          turn: expect.objectContaining({ turnId: "turn-pg-1" }),
+          attempts: 0,
+        }),
+      ]);
+      expect(await stores.sessionStore.recordCanonicalTurnDispatchFailure!("turn-pg-1"))
+        .toBe(true);
+      expect((await stores.sessionStore.listPendingCanonicalTurns!())[0]?.attempts).toBe(1);
+      expect(await stores.sessionStore.markCanonicalTurnDispatched!("turn-pg-1"))
+        .toBe(true);
+      expect(await stores.sessionStore.listPendingCanonicalTurns!()).toEqual([]);
     });
 
     it("getRecentMessages returns last N", async () => {

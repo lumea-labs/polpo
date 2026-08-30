@@ -92,6 +92,61 @@ describe("persistAssistantMessage", () => {
       { text: "Checked the constraints." },
     );
   });
+
+  it("atomically commits an eligible canonical turn instead of updating separately", async () => {
+    const committedTurn = {
+      turnId: "turn-1",
+      sessionId: "s1",
+      agentName: "agent-1",
+      surface: "chat" as const,
+      terminalStatus: "succeeded" as const,
+      userMessage: { id: "u1", role: "user" as const },
+      assistantMessage: { id: "m1", role: "assistant" as const },
+      trustedInvocation: {},
+      occurredAt: "2026-08-30T10:00:00.000Z",
+    };
+    const store = {
+      updateMessage: vi.fn(),
+      commitCanonicalTurn: vi.fn(async () => ({
+        turn: committedTurn,
+        created: true,
+      })),
+    };
+
+    const result = await persistAssistantMessage(store, "s1", "m1", " done ", [], {
+      reasoning: "No hidden chain of thought.",
+      canonicalTurn: {
+        turnId: "turn-1",
+        userMessageId: "u1",
+        agentName: "agent-1",
+        surface: "chat",
+        requestId: "request-1",
+        runId: "run-1",
+        trustedInvocation: {},
+        learningPolicy: {
+          mode: "suggest",
+          surfaces: ["chat"],
+          kinds: ["preference"],
+        },
+      },
+    });
+
+    expect(result).toBe(committedTurn);
+    expect(store.updateMessage).not.toHaveBeenCalled();
+    expect(store.commitCanonicalTurn).toHaveBeenCalledWith(expect.objectContaining({
+      turn: expect.objectContaining({
+        turnId: "turn-1",
+        requestId: "request-1",
+        runId: "run-1",
+        sessionId: "s1",
+        assistantMessage: { id: "m1", role: "assistant" },
+      }),
+      assistant: expect.objectContaining({
+        messageId: "m1",
+        content: "done",
+      }),
+    }));
+  });
 });
 
 describe("toPortableToolInputSchema", () => {

@@ -39,6 +39,8 @@ export interface PreparedSessionContinuation {
   status: "prepared" | "replay";
   sessionVersion: number;
   runId: string;
+  /** Logical conversation turn resumed by this client-tool result. */
+  turnId?: string;
   messages: Message[];
 }
 

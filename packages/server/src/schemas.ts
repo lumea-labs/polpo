@@ -888,10 +888,24 @@ const AgentMemoryToolsSchema = z.object({
   }
 });
 
+const AgentMemoryLearningSchema = z.object({
+  mode: z.enum(["off", "suggest", "automatic"]).optional(),
+  surfaces: z.array(z.enum(["chat", "channel"])).min(1).max(2).optional(),
+  kinds: z.array(z.enum(MEMORY_KINDS)).min(1).max(MEMORY_KINDS.length).optional(),
+}).passthrough().superRefine((value, ctx) => {
+  if (Object.keys(value).some((key) => !["mode", "surfaces", "kinds"].includes(key))) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "Automatic Memory learning contains unsupported fields",
+    });
+  }
+});
+
 const AgentMemorySettingsSchema = z.object({
   tools: AgentMemoryToolsSchema.optional(),
+  learning: AgentMemoryLearningSchema.optional(),
 }).passthrough().superRefine((value, ctx) => {
-  if (Object.keys(value).some((key) => key !== "tools")) {
+  if (Object.keys(value).some((key) => !["tools", "learning"].includes(key))) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
       message: "Typed Memory settings contain unsupported fields",

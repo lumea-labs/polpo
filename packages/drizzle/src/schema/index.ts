@@ -10,7 +10,12 @@ export {
   runCancellationRequestsSqlite,
 } from "./run-delivery.js";
 export { loopRunsSqlite } from "./loop-runs.js";
-export { sessionsSqlite, messagesSqlite, sessionContinuationsSqlite } from "./sessions.js";
+export {
+  sessionsSqlite,
+  messagesSqlite,
+  sessionContinuationsSqlite,
+  canonicalTurnOutboxSqlite,
+} from "./sessions.js";
 export { logSessionsSqlite, logEntriesSqlite } from "./logs.js";
 export { modelInvocationLogsSqlite } from "./model-invocations.js";
 export { approvalsSqlite } from "./approvals.js";
@@ -36,7 +41,12 @@ export {
   runCancellationRequestsPg,
 } from "./run-delivery.js";
 export { loopRunsPg } from "./loop-runs.js";
-export { sessionsPg, messagesPg, sessionContinuationsPg } from "./sessions.js";
+export {
+  sessionsPg,
+  messagesPg,
+  sessionContinuationsPg,
+  canonicalTurnOutboxPg,
+} from "./sessions.js";
 export { logSessionsPg, logEntriesPg } from "./logs.js";
 export { modelInvocationLogsPg } from "./model-invocations.js";
 export { approvalsPg } from "./approvals.js";

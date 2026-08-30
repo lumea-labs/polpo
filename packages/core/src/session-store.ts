@@ -4,6 +4,7 @@ import type {
   PrepareSessionContinuationInput,
   SessionContinuationScope,
 } from "./session-continuation.js";
+import type { CanonicalTurnCommitted } from "./canonical-turn.js";
 
 /**
  * Chat session storage — persists conversation threads across TUI restarts.
@@ -48,6 +49,8 @@ export interface Message {
   reasoning?: string;
   /** True when the persisted reasoning summary reached the storage byte limit. */
   reasoningTruncated?: boolean;
+  /** Stable logical user-to-assistant turn identity. */
+  turnId?: string;
 }
 
 export interface PersistedReasoning {
@@ -112,6 +115,31 @@ export interface SessionCreateOptions {
 
 export interface SessionMessageOptions {
   toolCallId?: string;
+  turnId?: string;
+}
+
+export interface CommitCanonicalTurnInput {
+  readonly turn: CanonicalTurnCommitted;
+  readonly assistant: {
+    readonly messageId: string;
+    readonly content: string | SessionContentPart[];
+    readonly toolCalls?: readonly ToolCallInfo[];
+    readonly suggestions?: readonly ChatSuggestion[];
+    readonly reasoning?: PersistedReasoning;
+  };
+}
+
+export interface CommitCanonicalTurnResult {
+  readonly turn: CanonicalTurnCommitted;
+  readonly created: boolean;
+}
+
+export interface CanonicalTurnOutboxEntry {
+  readonly turn: CanonicalTurnCommitted;
+  readonly status: "pending" | "dispatched";
+  readonly attempts: number;
+  readonly createdAt: string;
+  readonly updatedAt: string;
 }
 
 export interface SessionListFilter {
@@ -164,6 +192,20 @@ export interface SessionStore {
   prepareContinuation?(
     input: PrepareSessionContinuationInput,
   ): Promise<PreparedSessionContinuation>;
+  /** Atomically finalize the assistant message and insert one durable turn outbox record. */
+  commitCanonicalTurn?(
+    input: CommitCanonicalTurnInput,
+  ): Promise<CommitCanonicalTurnResult>;
+  /** Read one committed identifier-only turn event for durable dispatch/reconcile. */
+  getCanonicalTurn?(
+    turnId: string,
+  ): Promise<CanonicalTurnCommitted | undefined>;
+  /** Reconcile committed turns whose host-side learning job was not acknowledged. */
+  listPendingCanonicalTurns?(
+    limit?: number,
+  ): Promise<readonly CanonicalTurnOutboxEntry[]>;
+  markCanonicalTurnDispatched?(turnId: string): Promise<boolean>;
+  recordCanonicalTurnDispatchFailure?(turnId: string): Promise<boolean>;
   close(): Promise<void> | void;
 }
 

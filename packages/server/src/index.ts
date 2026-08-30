@@ -93,6 +93,7 @@ export { fileRoutes, type FileRouteDeps } from "./routes/files.js";
 export { skillRoutes, type SkillRouteDeps } from "./routes/skills.js";
 export { connectRoutes } from "./routes/connect.js";
 export { memoryItemRoutes } from "./routes/memory-items.js";
+export { memoryCandidateRoutes } from "./routes/memory-candidates.js";
 export {
   customToolRoutes,
   type CustomToolDeployer,

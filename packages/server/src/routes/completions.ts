@@ -52,6 +52,7 @@ import {
 import type { ApprovalStore } from "@polpo-ai/core/approval-store";
 import type { ChatSessionInjection } from "@polpo-ai/core";
 import type { SteeringController } from "@polpo-ai/core/steering";
+import type { CanonicalTurnCommitted } from "@polpo-ai/core/canonical-turn";
 import { chatCompletionsRoute } from "./completions/schemas.js";
 import type {
   CompletionResolvedModelInfo,
@@ -302,6 +303,10 @@ export interface CompletionRouteDeps {
     user?: string;
     providerMetadata?: Record<string, unknown>;
   }) => void;
+  /** Best-effort wake-up after an atomically committed, durable canonical turn. */
+  onCanonicalTurnCommitted?: (
+    turn: CanonicalTurnCommitted,
+  ) => void | Promise<void>;
   /** Meter or audit an auxiliary model call without emitting a second user completion. */
   onAuxiliaryModelFinished?: (info: {
     operation: "chat_suggestions";
@@ -515,6 +520,8 @@ export function completionRoutes(getDeps: () => CompletionRouteDeps, apiKeys?: s
         runtimeInvocation: prepared.runtimeInvocation,
         sessionStore: prepared.sessionStore,
         sessionId: prepared.sessionId,
+        turnId: prepared.turnId,
+        canonicalTurn: prepared.canonicalTurn,
         runtimePlan: prepared.runtimePlan,
         executionRoute: prepared.executionRoute,
         activatedSkills: prepared.activatedSkills,

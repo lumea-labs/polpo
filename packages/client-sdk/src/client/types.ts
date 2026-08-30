@@ -56,6 +56,9 @@ import type {
   CreateMemoryItemInput,
   MemoryItem,
   MemoryItemPatch,
+  MemoryExtractionAuditEvent,
+  MemoryExtractionCandidate,
+  MemoryExtractionStatus,
   MemoryUsageEvent,
   MemoryKind,
   MemoryListQuery,
@@ -202,6 +205,9 @@ export type {
   CreateMemoryItemInput,
   MemoryItem,
   MemoryItemPatch,
+  MemoryExtractionAuditEvent,
+  MemoryExtractionCandidate,
+  MemoryExtractionStatus,
   MemoryUsageEvent,
   MemoryKind,
   MemoryListQuery,
@@ -347,6 +353,27 @@ export interface MemoryItemUsage {
   readonly retrievalCount: number;
 }
 export type SearchMemoryRequest = Omit<MemorySearchQuery, "now">;
+export interface ListMemoryCandidatesQuery {
+  readonly statuses?: readonly MemoryExtractionStatus[];
+  readonly limit?: number;
+  readonly cursor?: string;
+}
+export interface MemoryCandidatesPage {
+  readonly candidates: MemoryExtractionCandidate[];
+  readonly nextCursor: string | null;
+}
+export interface DecideMemoryCandidateInput {
+  readonly decision: "approve" | "reject";
+  readonly reason?: string;
+  readonly expectedRevision?: number;
+}
+export interface ApplyMemoryCandidateInput {
+  readonly expectedRevision?: number;
+}
+export interface AppliedMemoryCandidate {
+  readonly candidate: MemoryExtractionCandidate;
+  readonly memoryId: string;
+}
 
 import type {
   BrainCreateSourceRequest as CoreBrainCreateSourceRequest,
