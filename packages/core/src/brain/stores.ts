@@ -5,6 +5,7 @@ import type {
   BrainIngestionJob,
   BrainJobClaimInput,
   BrainJobFailureInput,
+  BrainJobLeaseInput,
   BrainJobMutationInput,
   BrainPublishVersionInput,
   BrainReplaceVersionChunksInput,
@@ -67,6 +68,8 @@ export interface BrainIngestionJobStore {
     readonly jobId: string;
   }): Promise<BrainIngestionJob | null>;
   claimNextJob(input: BrainJobClaimInput): Promise<BrainIngestionJob | null>;
+  /** Optional for compatibility; workers heartbeat when the adapter provides it. */
+  renewJobLease?(input: BrainJobLeaseInput): Promise<BrainIngestionJob>;
   completeJob(input: BrainJobMutationInput): Promise<BrainIngestionJob>;
   failJob(input: BrainJobFailureInput): Promise<BrainIngestionJob>;
   cancelJob(input: BrainJobMutationInput): Promise<BrainIngestionJob>;

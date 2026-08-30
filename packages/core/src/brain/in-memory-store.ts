@@ -42,6 +42,7 @@ import type {
   BrainIngestionJob,
   BrainJobClaimInput,
   BrainJobFailureInput,
+  BrainJobLeaseInput,
   BrainJobMutationInput,
   BrainPublishVersionInput,
   BrainReplaceVersionChunksInput,
@@ -880,6 +881,27 @@ export class InMemoryBrainStore implements
       );
     }
     return current;
+  }
+
+  async renewJobLease(input: BrainJobLeaseInput): Promise<BrainIngestionJob> {
+    const current = this.claimedJob(input);
+    const now = timestamp(input.now);
+    if (
+      !Number.isSafeInteger(input.leaseMs)
+      || input.leaseMs < 1
+      || input.leaseMs > 86_400_000
+    ) {
+      throw new BrainStoreValidationError(
+        "leaseMs must be an integer between 1 and 86400000",
+      );
+    }
+    const renewed = createBrainIngestionJob({
+      ...current,
+      leaseExpiresAt: new Date(Date.parse(now) + input.leaseMs).toISOString(),
+      updatedAt: now,
+    });
+    this.jobs.set(jobKey(input.scope, input.jobId), renewed);
+    return cloneJob(renewed);
   }
 
   async completeJob(input: BrainJobMutationInput): Promise<BrainIngestionJob> {

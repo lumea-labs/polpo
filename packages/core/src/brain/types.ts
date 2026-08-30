@@ -333,6 +333,10 @@ export interface BrainJobMutationInput {
   readonly now: string;
 }
 
+export interface BrainJobLeaseInput extends BrainJobMutationInput {
+  readonly leaseMs: number;
+}
+
 export interface BrainJobFailureInput extends BrainJobMutationInput {
   readonly failure: BrainFailure;
   readonly retryAt?: string;

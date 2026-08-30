@@ -17,6 +17,7 @@ import {
   type BrainIngestionJob,
   type BrainJobClaimInput,
   type BrainJobFailureInput,
+  type BrainJobLeaseInput,
   type BrainJobMutationInput,
   type BrainPublishVersionInput,
   type BrainReplaceVersionChunksInput,
@@ -166,6 +167,12 @@ export class FileBrainStore extends InMemoryBrainStore {
 
   override async completeJob(input: BrainJobMutationInput): Promise<BrainIngestionJob> {
     const result = await super.completeJob(input);
+    this.persist();
+    return result;
+  }
+
+  override async renewJobLease(input: BrainJobLeaseInput): Promise<BrainIngestionJob> {
+    const result = await super.renewJobLease(input);
     this.persist();
     return result;
   }

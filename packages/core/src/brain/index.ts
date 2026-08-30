@@ -54,6 +54,12 @@ export type {
   IngestBrainSourceDeps,
   IngestBrainSourceInput,
 } from "./ingestion.js";
+export { processNextBrainIngestionJob } from "./ingestion-worker.js";
+export type {
+  BrainIngestionExecutionContext,
+  BrainIngestionWorkerOutcome,
+  ProcessNextBrainIngestionJobInput,
+} from "./ingestion-worker.js";
 export { retrieveBrain } from "./retrieval.js";
 export type {
   RetrieveBrainDeps,
@@ -104,6 +110,7 @@ export type {
   BrainIngestionOperation,
   BrainJobClaimInput,
   BrainJobFailureInput,
+  BrainJobLeaseInput,
   BrainJobMutationInput,
   BrainMetadata,
   BrainMetadataScalar,
