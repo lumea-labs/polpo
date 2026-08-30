@@ -1,4 +1,4 @@
-import { Output, type ModelMessage, type ToolSet } from "ai";
+import { Output, TypeValidationError, type ModelMessage, type ToolSet } from "ai";
 import { describe, expect, it } from "vitest";
 
 import type {
@@ -300,6 +300,62 @@ describe("runModelPolicyTurn", () => {
     ]);
     expect(events.find(event => event.type === "tool-input-aborted"))
       .not.toHaveProperty("error.raw");
+  });
+
+  it("replays an uncommitted partial tool input after a provider event schema change", async () => {
+    const events: ModelTurnEvent[] = [];
+    let attempts = 0;
+
+    const result = await runModelPolicyTurn({
+      selection: "openai/gpt-5.6-sol",
+      messages,
+      resolveAttempt: (attempt) => ({ model: fakeModel(attempt.model) }),
+      runAttempt: async (_input, onEvent) => {
+        attempts += 1;
+        if (attempts === 1) {
+          await onEvent?.({ type: "tool-input-start", id: "call_write", name: "write" });
+          await onEvent?.({
+            type: "tool-input-delta",
+            id: "call_write",
+            delta: '{"path":"src/app.ts","content":"ok"}',
+          });
+          throw new TypeValidationError({
+            value: { type: "response.rate_limits.updated", sequence_number: 250 },
+            cause: new Error("Invalid union"),
+          });
+        }
+        await onEvent?.({ type: "tool-input-start", id: "call_write_2", name: "write" });
+        await onEvent?.({
+          type: "tool-call",
+          id: "call_write_2",
+          name: "write",
+          args: { path: "src/app.ts", content: "ok" },
+        });
+        return {
+          ...fakeResult(""),
+          finishReason: "tool-calls",
+          toolCalls: [{
+            type: "tool-call",
+            toolCallId: "call_write_2",
+            toolName: "write",
+            input: { path: "src/app.ts", content: "ok" },
+          }],
+        } as ModelTurnResult;
+      },
+    }, event => {
+      events.push(event);
+    });
+
+    expect(attempts).toBe(2);
+    expect(result.toolCalls).toHaveLength(1);
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "tool-input-aborted",
+      id: "call_write",
+      error: expect.objectContaining({
+        providerCode: "provider_stream_event_invalid",
+        retryable: true,
+      }),
+    }));
   });
 
   it("terminalizes partial tool input and never stringifies plain errors as object Object", async () => {

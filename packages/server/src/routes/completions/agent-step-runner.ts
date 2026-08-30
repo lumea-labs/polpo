@@ -40,6 +40,7 @@ import {
 } from "@polpo-ai/core";
 import { generateText, type LanguageModel, type LanguageModelUsage } from "ai";
 import {
+  classifyRuntimeError,
   prepareModelMessagesForProvider,
   prepareModelMessagesForTransport,
   isStructuredModelOutputError,
@@ -492,6 +493,7 @@ export async function runAgentStepCompletion(options: {
   let totalUsage: LanguageModelUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 } as LanguageModelUsage;
   let lastProviderMetadata: Record<string, unknown> | undefined;
   const toolCallsAccum: any[] = [];
+  let structuredOutputRecoveryUsed = false;
 
   try {
     for (let turn = 0; turn < (agentConfig.maxTurns ?? MAX_TURNS); turn++) {
@@ -515,6 +517,88 @@ export async function runAgentStepCompletion(options: {
 
       const toolCallNames = new Map<string, string>();
       const resolvedAttempts = new Map<number, typeof initialResolved>();
+      const recoverTerminalStructuredOutput = async (originalError: unknown) => {
+        const originalClassification = classifyRuntimeError(originalError);
+        const hasCompletedOperationalTool = toolCallsAccum.some(
+          (toolCall) => toolCall?.state === "completed",
+        );
+        if (
+          structuredOutputRecoveryUsed
+          || modelOutput === undefined
+          || !hasCompletedOperationalTool
+          || originalClassification.providerCode === "provider_stream_event_invalid"
+        ) {
+          return undefined;
+        }
+
+        structuredOutputRecoveryUsed = true;
+        const { raw: _originalRaw, ...originalDiagnostic } = originalClassification;
+        deps.emit("runtime:structured-output-recovery", {
+          phase: "started",
+          step: stepName,
+          agent: agentConfig.name,
+          runId: options.runId,
+          sessionId: options.sessionId,
+          original: originalDiagnostic,
+        });
+
+        try {
+          const recoveryResult = await runModelPolicyTurn({
+            selection: modelSelection,
+            resolveAttempt: async (attempt) => {
+              const resolvedAttempt = attempt.index === 0
+                ? initialResolved
+                : await deps.resolveAgentModel(
+                    agentConfigForModelAttempt(agentConfig, attempt.model),
+                    reasoning,
+                  );
+              resolvedAttempts.set(attempt.index, resolvedAttempt);
+              return {
+                model: resolvedAttempt.model.aiModel,
+                maxOutputTokens: resolvedAttempt.model.maxTokens,
+                providerOptions: resolvedAttempt.providerOptions,
+              };
+            },
+            preserveSingleAttemptError: true,
+            maxRecoverableStreamRetries: 0,
+            system: `${fullSystemPrompt}\n\n## Terminal structured output recovery\n\nAll operational work is already complete. Produce only the terminal JSON matching the requested schema from the canonical tool results. Do not call tools, modify files, reinterpret the requested scope, or claim work not evidenced by those results.`,
+            messages,
+            output: modelOutput,
+            ...(options.signal ? { abortSignal: options.signal } : {}),
+          });
+          deps.emit("runtime:structured-output-recovery", {
+            phase: "succeeded",
+            step: stepName,
+            agent: agentConfig.name,
+            runId: options.runId,
+            sessionId: options.sessionId,
+          });
+          return recoveryResult;
+        } catch (recoveryError) {
+          const recoveryClassification = classifyRuntimeError(recoveryError);
+          const { raw: _recoveryRaw, ...recoveryDiagnostic } = recoveryClassification;
+          deps.emit("runtime:structured-output-recovery", {
+            phase: "failed",
+            step: stepName,
+            agent: agentConfig.name,
+            runId: options.runId,
+            sessionId: options.sessionId,
+            original: originalDiagnostic,
+            recovery: recoveryDiagnostic,
+          });
+          throw new LoopAgentOutputError(
+            "loop_agent_output_invalid",
+            stepName,
+            `Agent step ${JSON.stringify(stepName)} did not produce valid structured output after one terminal recovery attempt`,
+            {
+              phase: "terminal_output_recovery",
+              original: originalDiagnostic,
+              recovery: recoveryDiagnostic,
+            },
+            { cause: recoveryError },
+          );
+        }
+      };
       let turnResult;
       try {
         turnResult = await runModelPolicyTurn({
@@ -540,6 +624,7 @@ export async function runAgentStepCompletion(options: {
             ? { parallelToolCalls: options.parallelToolCalls }
             : {}),
           ...(modelOutput ? { output: modelOutput } : {}),
+          ...(options.signal ? { abortSignal: options.signal } : {}),
         }, async (event) => {
           if (event.type === "tool-input-start") {
             toolCallNames.set(event.id, event.name);
@@ -569,15 +654,35 @@ export async function runAgentStepCompletion(options: {
         });
       } catch (error) {
         if (outputSchema !== undefined && isStructuredModelOutputError(error)) {
-          throw new LoopAgentOutputError(
-            "loop_agent_output_invalid",
-            stepName,
-            `Agent step ${JSON.stringify(stepName)} did not produce valid structured output`,
-            { phase: "model_output" },
-            { cause: error },
-          );
+          const recoveryResult = await recoverTerminalStructuredOutput(error);
+          if (recoveryResult) {
+            turnResult = recoveryResult;
+          } else {
+            throw new LoopAgentOutputError(
+              "loop_agent_output_invalid",
+              stepName,
+              `Agent step ${JSON.stringify(stepName)} did not produce valid structured output`,
+              { phase: "model_output" },
+              { cause: error },
+            );
+          }
+        } else {
+          throw error;
         }
-        throw error;
+      }
+
+      if (
+        outputSchema !== undefined
+        && turnResult.toolCalls.length === 0
+        && turnResult.output === undefined
+      ) {
+        const recoveryResult = await recoverTerminalStructuredOutput(
+          new Error("Model completed without structured output"),
+        );
+        if (recoveryResult) {
+          totalUsage = addUsage(totalUsage, turnResult.usage);
+          turnResult = recoveryResult;
+        }
       }
 
       const turnText = turnResult.text;

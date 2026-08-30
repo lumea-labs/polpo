@@ -1,3 +1,4 @@
+import { TypeValidationError } from "ai";
 import { describe, expect, it } from "vitest";
 import {
   extractGatewayMetadataDetails,
@@ -152,6 +153,36 @@ describe("runtime normalization", () => {
       retryable: true,
       message: "Provider temporarily unavailable",
       statusCode: 503,
+    });
+  });
+
+  it("treats an unrecognized provider stream event as a recoverable protocol failure", () => {
+    const error = new TypeValidationError({
+      value: {
+        type: "response.rate_limits.updated",
+        sequence_number: 250,
+      },
+      cause: new Error("Invalid union"),
+    });
+
+    expect(classifyRuntimeError(error)).toMatchObject({
+      class: "unavailable",
+      retryable: true,
+      retryScope: "model-turn",
+      providerCode: "provider_stream_event_invalid",
+      message: 'Provider stream event "response.rate_limits.updated" failed validation.',
+    });
+  });
+
+  it("keeps ordinary structured-output validation failures non-retryable", () => {
+    const error = new TypeValidationError({
+      value: { summary: "missing response" },
+      cause: new Error("Invalid structured output"),
+    });
+
+    expect(classifyRuntimeError(error)).toMatchObject({
+      class: "invalid-request",
+      retryable: false,
     });
   });
 
