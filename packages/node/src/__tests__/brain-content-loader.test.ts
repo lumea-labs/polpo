@@ -13,6 +13,7 @@ import {
   HtmlBrainParser,
   NodeBrainContentLoader,
 } from "../brain/index.js";
+import { createPinnedAddressLookup } from "../brain/content-loader.js";
 
 function loader(overrides: ConstructorParameters<typeof NodeBrainContentLoader>[0] = {}) {
   return new NodeBrainContentLoader({
@@ -126,6 +127,24 @@ describe("NodeBrainContentLoader paste and files", () => {
 });
 
 describe("NodeBrainContentLoader URLs", () => {
+  it("returns the pinned address in both Node lookup callback modes", async () => {
+    const lookup = createPinnedAddressLookup("93.184.216.34", 4);
+
+    await expect(new Promise((resolve, reject) => {
+      lookup("example.com", { all: false }, (error, address, family) => {
+        if (error) reject(error);
+        else resolve({ address, family });
+      });
+    })).resolves.toEqual({ address: "93.184.216.34", family: 4 });
+
+    await expect(new Promise((resolve, reject) => {
+      lookup("example.com", { all: true }, (error, addresses) => {
+        if (error) reject(error);
+        else resolve(addresses);
+      });
+    })).resolves.toEqual([{ address: "93.184.216.34", family: 4 }]);
+  });
+
   it.each([
     "http://localhost/private",
     "http://127.0.0.1/private",

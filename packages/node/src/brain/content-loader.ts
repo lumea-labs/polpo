@@ -2,7 +2,7 @@ import { lookup as systemLookup } from "node:dns/promises";
 import { lstat, readFile, realpath } from "node:fs/promises";
 import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
-import { isIP } from "node:net";
+import { isIP, type LookupFunction } from "node:net";
 import { basename, extname, isAbsolute, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { Readable } from "node:stream";
@@ -150,13 +150,42 @@ async function defaultDnsLookup(hostname: string): Promise<BrainDnsAddress[]> {
   return result.map(({ address, family }) => ({ address, family }));
 }
 
-function pinnedNodeFetch(
+export function createPinnedAddressLookup(
+  address: string,
+  family: number,
+): LookupFunction {
+  return (_hostname, options, callback) => {
+    if (options.all) {
+      callback(null, [{ address, family }]);
+      return;
+    }
+    callback(null, address, family);
+  };
+}
+
+async function pinnedNodeFetch(
   url: string,
   init: BrainSafeFetchInit,
 ): Promise<Response> {
+  const failures: unknown[] = [];
+  for (const address of init.validatedAddresses) {
+    try {
+      return await requestPinnedAddress(url, init, address);
+    } catch (error) {
+      if (init.signal.aborted) throw error;
+      failures.push(error);
+    }
+  }
+  throw new AggregateError(failures, "Unable to connect to any validated address");
+}
+
+function requestPinnedAddress(
+  url: string,
+  init: BrainSafeFetchInit,
+  address: string,
+): Promise<Response> {
   return new Promise((resolveResponse, rejectResponse) => {
     const target = new URL(url);
-    const address = init.validatedAddresses[0];
     const family = isIP(address);
     if (!address || family === 0) {
       rejectResponse(new Error("No validated network address"));
@@ -168,9 +197,7 @@ function pinnedNodeFetch(
       headers: { ...init.headers, host: target.host },
       signal: init.signal,
       agent: false,
-      lookup: (_hostname, _options, callback) => {
-        callback(null, address, family);
-      },
+      lookup: createPinnedAddressLookup(address, family),
     }, (response) => {
       const headers = new Headers();
       for (let index = 0; index < response.rawHeaders.length; index += 2) {
