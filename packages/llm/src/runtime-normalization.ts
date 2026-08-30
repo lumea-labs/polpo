@@ -96,6 +96,7 @@ export function extractGatewayMetadataDetails(input: UsageExtractionInput): Gate
 
 export function classifyRuntimeError(error: unknown): NormalizedModelError {
   const facts = collectErrorFacts(error);
+  const invalidProviderStreamEvent = providerStreamEventType(error);
   const message = facts.message;
   const lower = message.toLowerCase();
   const statusCode = facts.statusCode;
@@ -107,6 +108,17 @@ export function classifyRuntimeError(error: unknown): NormalizedModelError {
     ...(statusCode !== undefined ? { statusCode } : {}),
     raw: error,
   };
+
+  if (invalidProviderStreamEvent) {
+    return {
+      ...base,
+      class: "unavailable",
+      retryable: true,
+      retryScope: "model-turn",
+      providerCode: "provider_stream_event_invalid",
+      message: `Provider stream event ${JSON.stringify(invalidProviderStreamEvent)} failed validation.`,
+    };
+  }
 
   if (diagnostic.includes("cancel") || diagnostic.includes("abort")) {
     return { ...base, class: "cancelled", retryable: false, retryScope: "none" };
@@ -146,6 +158,28 @@ export function classifyRuntimeError(error: unknown): NormalizedModelError {
   }
 
   return { ...base, class: "unknown", retryable: false, retryScope: "none" };
+}
+
+function providerStreamEventType(error: unknown): string | undefined {
+  const queue: unknown[] = [error];
+  const seen = new Set<object>();
+
+  for (let index = 0; index < queue.length && index < 16; index += 1) {
+    const candidate = queue[index];
+    if (!candidate || typeof candidate !== "object" || seen.has(candidate)) continue;
+    seen.add(candidate);
+
+    if (isAiSdkError(TypeValidationError, candidate)) {
+      const value = asRecord(candidate.value);
+      const type = stringFrom(value?.type);
+      if (type && /^(?:response\.|event\.)/u.test(type)) return type;
+    }
+
+    const record = candidate as Record<string, unknown>;
+    queue.push(record.cause, record.error, record.reason);
+  }
+
+  return undefined;
 }
 
 export function asRecord(value: unknown): Record<string, unknown> | undefined {

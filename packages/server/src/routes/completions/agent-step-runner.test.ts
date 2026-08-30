@@ -835,12 +835,19 @@ describe("runAgentStepCompletion structured loop output", () => {
     },
   };
 
-  function structuredStepDeps(finalText: string, maxTurns = 2) {
+  function structuredStepDeps(
+    finalText: string,
+    maxTurns = 2,
+    recoveryText = finalText,
+  ) {
     let turn = 0;
     const responseFormats: unknown[] = [];
+    const toolCounts: number[] = [];
+    const executeTool = vi.fn(async () => "inspection complete");
     const model = new MockLanguageModelV3({
       doStream: async (options) => {
         responseFormats.push(options.responseFormat);
+        toolCounts.push(options.tools?.length ?? 0);
         turn += 1;
         if (turn === 1) {
           return { stream: convertArrayToReadableStream([
@@ -852,10 +859,11 @@ describe("runAgentStepCompletion structured loop output", () => {
             { type: "finish", finishReason: { unified: "tool-calls", raw: undefined }, usage },
           ] as any[]) };
         }
+        const terminalText = turn === 2 ? finalText : recoveryText;
         return { stream: convertArrayToReadableStream([
           { type: "stream-start", warnings: [] },
           { type: "text-start", id: "final" },
-          { type: "text-delta", id: "final", delta: finalText },
+          { type: "text-delta", id: "final", delta: terminalText },
           { type: "text-end", id: "final" },
           { type: "finish", finishReason: { unified: "stop", raw: undefined }, usage },
         ] as any[]) };
@@ -880,12 +888,12 @@ describe("runAgentStepCompletion structured loop output", () => {
           description: "Inspect the workspace",
           parameters: { type: "object", properties: {}, additionalProperties: false },
         }],
-        executor: vi.fn(async () => "inspection complete"),
+        executor: executeTool,
       })),
       buildRuntimePrompt: vi.fn(async () => "system"),
     } as unknown as CompletionRouteDeps;
 
-    return { deps, maxTurns, responseFormats };
+    return { deps, executeTool, maxTurns, responseFormats, toolCounts };
   }
 
   it("enforces the schema on the terminal turn after tool use", async () => {
@@ -924,6 +932,65 @@ describe("runAgentStepCompletion structured loop output", () => {
       code: "loop_agent_output_invalid",
       stepName: "implement",
     });
+  });
+
+  it("recovers only the terminal structured output without re-executing completed tools", async () => {
+    const fixture = structuredStepDeps(
+      "I completed the implementation.",
+      2,
+      '{"summary":"implemented","response":"ready"}',
+    );
+
+    const result = await runAgentStepCompletion({
+      deps: fixture.deps,
+      agentConfig: { name: "nested-agent", model: "mock/model", maxTurns: fixture.maxTurns },
+      aiMessages: [{ role: "user", content: "Implement it" }],
+      extraSystemParts: [],
+      context: {},
+      stepName: "implement",
+      outputSchema,
+    });
+
+    expect(result.output).toEqual({ summary: "implemented", response: "ready" });
+    expect(result.text).toBe('{"summary":"implemented","response":"ready"}');
+    expect(fixture.responseFormats).toHaveLength(3);
+    expect(fixture.toolCounts).toEqual([1, 1, 0]);
+    expect(fixture.deps.resolveAgentTools).toHaveBeenCalledTimes(1);
+    expect(fixture.executeTool).toHaveBeenCalledTimes(1);
+    expect(fixture.deps.emit).toHaveBeenCalledWith(
+      "runtime:structured-output-recovery",
+      expect.objectContaining({ phase: "succeeded", step: "implement" }),
+    );
+  });
+
+  it("fails closed when the bounded terminal structured-output recovery is also invalid", async () => {
+    const fixture = structuredStepDeps(
+      "I completed the implementation.",
+      2,
+      "Still not JSON.",
+    );
+
+    await expect(runAgentStepCompletion({
+      deps: fixture.deps,
+      agentConfig: { name: "nested-agent", model: "mock/model", maxTurns: fixture.maxTurns },
+      aiMessages: [{ role: "user", content: "Implement it" }],
+      extraSystemParts: [],
+      context: {},
+      stepName: "implement",
+      outputSchema,
+    })).rejects.toMatchObject({
+      code: "loop_agent_output_invalid",
+      stepName: "implement",
+      details: expect.objectContaining({ phase: "terminal_output_recovery" }),
+    });
+
+    expect(fixture.executeTool).toHaveBeenCalledTimes(1);
+    expect(fixture.responseFormats).toHaveLength(3);
+    expect(fixture.toolCounts).toEqual([1, 1, 0]);
+    expect(fixture.deps.emit).toHaveBeenCalledWith(
+      "runtime:structured-output-recovery",
+      expect.objectContaining({ phase: "failed", step: "implement" }),
+    );
   });
 
   it("rejects max-turn exhaustion before a structured terminal output exists", async () => {
