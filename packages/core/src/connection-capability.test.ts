@@ -21,11 +21,25 @@ describe("connection capability contracts", () => {
         provider: "sitoinchat",
         scopes: ["site:read", "site:write"],
         description: "Site operations",
+        mode: "legacy_credentials",
       },
     });
     expect(Object.isFrozen(slots)).toBe(true);
     expect(Object.isFrozen(slots.siteApi)).toBe(true);
     expect(Object.isFrozen(slots.siteApi.scopes)).toBe(true);
+  });
+
+  it("keeps omitted modes legacy-compatible and accepts explicit gateway slots", () => {
+    const slots = normalizeConnectionSlotSpecs({
+      legacyApi: { scopes: ["read"] },
+      safeApi: { scopes: ["read"], mode: "gateway" },
+    });
+
+    expect(slots.legacyApi.mode).toBe("legacy_credentials");
+    expect(slots.safeApi.mode).toBe("gateway");
+    expect(getConnectionSlotSpecErrors({
+      siteApi: { scopes: ["read"], mode: "raw" },
+    })).toContain('Connection slot "siteApi" mode is invalid');
   });
 
   it("rejects malformed, unsafe, and unbounded declarations", () => {
@@ -40,6 +54,7 @@ describe("connection capability contracts", () => {
       { siteApi: { scopes: [""] } },
       { siteApi: { scopes: ["read"], provider: "UPPER CASE" } },
       { siteApi: { scopes: ["read"], unknown: true } },
+      { siteApi: { scopes: ["read"], mode: "raw" } },
     ]) {
       expect(getConnectionSlotSpecErrors(slots).length).toBeGreaterThan(0);
       expect(() => normalizeConnectionSlotSpecs(slots)).toThrow(ConnectionSelectionError);
@@ -68,5 +83,29 @@ describe("connection capability contracts", () => {
       "connection_resolver_unavailable",
       "unavailable",
     ).status).toBe(503);
+    expect(new ConnectionSelectionError(
+      "connection_credential_exposure_denied",
+      "denied",
+    ).status).toBe(403);
+    expect(new ConnectionSelectionError(
+      "connection_operation_denied",
+      "denied",
+    ).status).toBe(403);
+    expect(new ConnectionSelectionError(
+      "connection_refresh_unavailable",
+      "unavailable",
+    ).status).toBe(503);
+    expect(new ConnectionSelectionError(
+      "connection_setup_invalid",
+      "invalid",
+    ).status).toBe(422);
+    expect(new ConnectionSelectionError(
+      "connection_setup_expired",
+      "expired",
+    ).status).toBe(410);
+    expect(new ConnectionSelectionError(
+      "connection_setup_consumed",
+      "consumed",
+    ).status).toBe(409);
   });
 });

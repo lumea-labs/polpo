@@ -30,6 +30,8 @@ import {
   getConnectionSlotSpecErrors,
   normalizeConnectionSlotSpecs,
   type ConnectionCapability,
+  type ConnectionRequest,
+  type ConnectionResponse,
   type ConnectionCapabilityResolveInput,
   type ConnectionCapabilityResolver,
   type ConnectionSelectionErrorCode,
@@ -55,6 +57,8 @@ export {
   type ToolInvocationJsonValue,
   type ToolInvocationSurface,
   type ConnectionCapability,
+  type ConnectionRequest,
+  type ConnectionResponse,
   type ConnectionCapabilityResolveInput,
   type ConnectionCapabilityResolver,
   type ConnectionSelectionErrorCode,
@@ -609,6 +613,30 @@ function capabilityMethod<T>(
   };
 }
 
+function assertCapabilityActive(slot: string, active: () => boolean): void {
+  if (!active()) {
+    throw new ConnectionSelectionError(
+      "connection_scope_denied",
+      `Connection capability "${slot}" is no longer active`,
+      { slot },
+    );
+  }
+}
+
+function deniedCredentialMethod<T>(
+  slot: string,
+  active: () => boolean,
+): () => T {
+  return () => {
+    assertCapabilityActive(slot, active);
+    throw new ConnectionSelectionError(
+      "connection_credential_exposure_denied",
+      `Connection capability "${slot}" does not expose credentials in gateway mode`,
+      { slot },
+    );
+  };
+}
+
 function frozenHeaders(
   slot: string,
   value: Readonly<Record<string, string>> | undefined,
@@ -682,6 +710,22 @@ async function acquireConnectionCapabilities(
           { slot },
         );
       }
+      if (resolved.mode !== undefined && resolved.mode !== spec.mode) {
+        await disposeRejectedCapability(resolved);
+        throw new ConnectionSelectionError(
+          "connection_resolver_unavailable",
+          `Connection resolver returned the wrong capability mode for slot "${slot}"`,
+          { slot },
+        );
+      }
+      if (spec.mode === "gateway" && typeof resolved.request !== "function") {
+        await disposeRejectedCapability(resolved);
+        throw new ConnectionSelectionError(
+          "connection_resolver_unavailable",
+          `Connection resolver did not provide a gateway request capability for slot "${slot}"`,
+          { slot },
+        );
+      }
       if (spec.provider && resolved.providerId !== spec.provider) {
         await disposeRejectedCapability(resolved);
         throw new ConnectionSelectionError(
@@ -702,31 +746,49 @@ async function acquireConnectionCapabilities(
 
       let active = true;
       const view = Object.freeze<ConnectionCapability>({
+        mode: spec.mode ?? "legacy_credentials",
         providerId: resolved.providerId,
         scopes: Object.freeze([...resolved.scopes]),
         ...(resolved.metadata === undefined
           ? {}
           : { metadata: frozenCapabilityMetadata(resolved.metadata) }),
-        getHeaders: capabilityMethod(
-          slot,
-          () => active,
-          resolved.getHeaders
-            ? () => frozenHeaders(slot, resolved.getHeaders!())
-            : undefined,
-          undefined,
-        ),
-        getToken: capabilityMethod(
-          slot,
-          () => active,
-          resolved.getToken ? () => resolved.getToken!() : undefined,
-          undefined,
-        ),
-        getKey: capabilityMethod(
-          slot,
-          () => active,
-          resolved.getKey ? () => resolved.getKey!() : undefined,
-          undefined,
-        ),
+        request: async <T = unknown>(request: ConnectionRequest): Promise<ConnectionResponse<T>> => {
+          assertCapabilityActive(slot, () => active);
+          if (!resolved.request) {
+            throw new ConnectionSelectionError(
+              "connection_operation_denied",
+              `Connection capability "${slot}" does not support gateway requests`,
+              { slot },
+            );
+          }
+          return resolved.request<T>(request);
+        },
+        getHeaders: spec.mode === "gateway"
+          ? deniedCredentialMethod(slot, () => active)
+          : capabilityMethod(
+              slot,
+              () => active,
+              resolved.getHeaders
+                ? () => frozenHeaders(slot, resolved.getHeaders!())
+                : undefined,
+              undefined,
+            ),
+        getToken: spec.mode === "gateway"
+          ? deniedCredentialMethod(slot, () => active)
+          : capabilityMethod(
+              slot,
+              () => active,
+              resolved.getToken ? () => resolved.getToken!() : undefined,
+              undefined,
+            ),
+        getKey: spec.mode === "gateway"
+          ? deniedCredentialMethod(slot, () => active)
+          : capabilityMethod(
+              slot,
+              () => active,
+              resolved.getKey ? () => resolved.getKey!() : undefined,
+              undefined,
+            ),
       });
       acquired.push({
         slot,

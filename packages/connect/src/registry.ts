@@ -1,5 +1,6 @@
 import { ConnectError } from "./errors.js";
 import { assertAllowedScopes } from "./scopes.js";
+import { normalizeConnectorHttpPolicy } from "./http-policy.js";
 import type { ConnectorProviderDefinition } from "./types.js";
 
 export interface ConnectorRegistry {
@@ -16,7 +17,10 @@ export function createConnectorRegistry(providers: readonly ConnectorProviderDef
     if (byId.has(provider.id)) {
       throw new ConnectError("invalid_provider", `Duplicate connector provider id: ${provider.id}`);
     }
-    byId.set(provider.id, Object.freeze({ ...provider }));
+    byId.set(provider.id, Object.freeze({
+      ...provider,
+      ...(provider.http ? { http: normalizeConnectorHttpPolicy(provider.http) } : {}),
+    }));
   }
 
   return {

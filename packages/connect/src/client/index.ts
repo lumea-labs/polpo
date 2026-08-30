@@ -1,7 +1,14 @@
 import { ConnectError } from "../errors.js";
+import type { ConnectionRequest, ConnectionResponse } from "@polpo-ai/core";
 import type {
   ConnectSubject,
+  ConnectionAudience,
+  ConnectionBindingAttributes,
+  ConnectionLink,
+  ConnectionLinkListFilter,
+  ConnectionOwner,
   ConnectionRecord,
+  ConnectionSetupSession,
   ConnectorProviderDefinition,
   McpConnectionAuth,
   McpConnectionTransport,
@@ -71,6 +78,23 @@ export interface GetTokenRequest {
   forceRefresh?: boolean;
 }
 
+export interface CreateConnectionSetupSessionRequest {
+  providerId: string;
+  projectId: string;
+  orgId?: string;
+  audience: ConnectionAudience;
+  subject: ConnectionOwner;
+  binding?: ConnectionBindingAttributes;
+  scopes?: string[];
+  returnUrl: string;
+  oauthClientMode: "managed" | "customer" | "instance";
+  metadata?: Record<string, unknown>;
+}
+
+export interface ConnectionGatewayRequest extends GetTokenRequest {
+  request: ConnectionRequest;
+}
+
 export class PolpoConnectClient {
   private readonly baseUrl: string;
   private readonly fetchImpl: typeof fetch;
@@ -90,6 +114,22 @@ export class PolpoConnectClient {
     return this.request("GET", "/v1/connect/connections");
   }
 
+  listConnectionLinks(filter: ConnectionLinkListFilter = {}): Promise<ConnectionLink[]> {
+    const query = new URLSearchParams();
+    if (filter.connectionId) query.set("connectionId", filter.connectionId);
+    if (filter.projectId) query.set("projectId", filter.projectId);
+    if (filter.status) query.set("status", filter.status);
+    return this.request("GET", `/v1/connect/connection-links${query.size ? `?${query}` : ""}`);
+  }
+
+  linkConnection(connectionId: string, projectId: string): Promise<ConnectionLink> {
+    return this.request("POST", "/v1/connect/connection-links", { connectionId, projectId });
+  }
+
+  unlinkConnection(linkId: string): Promise<ConnectionLink> {
+    return this.request("POST", `/v1/connect/connection-links/${encodeURIComponent(linkId)}/revoke`);
+  }
+
   createApiKeyConnection(input: CreateApiKeyConnectionRequest): Promise<ConnectionRecord> {
     return this.request("POST", "/v1/connect/connections/api-key", input);
   }
@@ -106,8 +146,30 @@ export class PolpoConnectClient {
     return this.request("POST", "/v1/connect/oauth/callback", input);
   }
 
+  createSetupSession(input: CreateConnectionSetupSessionRequest): Promise<ConnectionSetupSession> {
+    return this.request("POST", "/v1/connect/setup-sessions", input);
+  }
+
+  startOAuthSetup(setupSessionId: string): Promise<StartOAuthResponse> {
+    return this.request(
+      "POST",
+      `/v1/connect/setup-sessions/${encodeURIComponent(setupSessionId)}/start`,
+    );
+  }
+
   getToken(connectionId: string, input: GetTokenRequest = {}): Promise<RuntimeToken> {
     return this.request("POST", `/v1/connect/connections/${encodeURIComponent(connectionId)}/token`, input);
+  }
+
+  gatewayRequest<T = unknown>(
+    connectionId: string,
+    input: ConnectionGatewayRequest,
+  ): Promise<ConnectionResponse<T>> {
+    return this.request(
+      "POST",
+      `/v1/connect/connections/${encodeURIComponent(connectionId)}/request`,
+      input,
+    );
   }
 
   revokeConnection(connectionId: string): Promise<ConnectionRecord> {
@@ -130,6 +192,15 @@ export class PolpoConnectClient {
     if (!response.ok) {
       const message = payload && typeof payload === "object" && "error" in payload ? String(payload.error) : response.statusText;
       throw new ConnectError("http_error", message, { status: response.status, details: payload });
+    }
+    if (
+      payload
+      && typeof payload === "object"
+      && "ok" in payload
+      && (payload as { ok?: unknown }).ok === true
+      && "data" in payload
+    ) {
+      return (payload as { data: T }).data;
     }
     return payload as T;
   }

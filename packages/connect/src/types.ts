@@ -49,7 +49,9 @@ export interface OAuth2AuthConfig {
   authorizationUrl: string;
   tokenUrl: string;
   revokeUrl?: string;
+  /** @deprecated Use an OAuthClientResolver. Retained for legacy instance setup. */
   clientId?: string;
+  /** @deprecated Use an OAuthClientResolver. Retained for legacy instance setup. */
   clientSecret?: string;
   defaultScopes?: string[];
   supportsPkce?: boolean;
@@ -65,6 +67,22 @@ export interface McpAuthConfig {
 
 export type ConnectorAuthConfig = ApiKeyAuthConfig | OAuth2AuthConfig | McpAuthConfig;
 
+export interface ConnectorHttpAuthPolicy {
+  mode: "bearer" | "header" | "query";
+  name?: string;
+}
+
+export interface ConnectorHttpPolicy {
+  origins: string[];
+  allowedMethods?: string[];
+  allowedPathPatterns?: string[];
+  auth: ConnectorHttpAuthPolicy;
+  followRedirects?: boolean;
+  maxRequestBytes?: number;
+  maxResponseBytes?: number;
+  timeoutMs?: number;
+}
+
 export interface ConnectorProviderDefinition {
   id: string;
   name: string;
@@ -76,9 +94,64 @@ export interface ConnectorProviderDefinition {
   allowCustomScopes?: boolean;
   icon?: string;
   metadata?: Record<string, unknown>;
+  http?: ConnectorHttpPolicy;
 }
 
 export type ConnectionStatus = "active" | "pending" | "revoked" | "error";
+
+export type ConnectionAudience = "personal" | "shared" | "end_user";
+
+export type ConnectionOwner =
+  | ConnectSubject
+  | { type: "external_user"; namespace: string; id: string };
+
+export type ConnectionLinkStatus = "active" | "revoked";
+
+export interface ConnectionLink {
+  id: string;
+  connectionId: string;
+  projectId: string;
+  status: ConnectionLinkStatus;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type OAuthClientOwner = {
+  type: "platform" | "instance" | "org" | "project";
+  id: string;
+};
+
+export interface OAuthClientRecord {
+  id: string;
+  providerId: string;
+  owner: OAuthClientOwner;
+  status: "active" | "disabled" | "error";
+  clientId: string;
+  secretRef?: string;
+  redirectUris: string[];
+  metadata?: Record<string, unknown>;
+}
+
+export interface ResolvedOAuthClient {
+  id: string;
+  providerId: string;
+  clientId: string;
+  clientSecret?: string;
+  redirectUris: readonly string[];
+  owner: OAuthClientOwner;
+}
+
+export interface OAuthClientResolverInput {
+  providerId: string;
+  projectId?: string;
+  orgId?: string;
+  mode: "managed" | "customer" | "instance";
+}
+
+export interface OAuthClientResolver {
+  resolve(input: OAuthClientResolverInput): Promise<ResolvedOAuthClient>;
+  resolveById(id: string): Promise<ResolvedOAuthClient | null>;
+}
 
 export interface ConnectionBindingPrincipal {
   type: string;
@@ -115,7 +188,11 @@ export interface ConnectionRecord {
   name?: string;
   projectId?: string;
   orgId?: string;
-  owner?: ConnectSubject;
+  owner?: ConnectionOwner;
+  audience?: ConnectionAudience;
+  oauthClientId?: string;
+  providerAccountId?: string;
+  credentialVersion?: string;
   authType: ConnectorAuthType;
   status: ConnectionStatus;
   grantedScopes: string[];
@@ -130,7 +207,7 @@ export interface ConnectionRecord {
 export interface OAuthStateRecord {
   state: string;
   providerId: string;
-  subject?: ConnectSubject;
+  subject?: ConnectionOwner;
   requestedScopes: string[];
   redirectUri: string;
   codeVerifier?: string;
@@ -140,6 +217,27 @@ export interface OAuthStateRecord {
   connectionName?: string;
   expiresAt: string;
   createdAt: string;
+  metadata?: Record<string, unknown>;
+  oauthClientId?: string;
+  audience?: ConnectionAudience;
+  binding?: ConnectionBindingAttributes;
+  returnUrl?: string;
+}
+
+export interface ConnectionSetupSession {
+  id: string;
+  providerId: string;
+  oauthClientId: string;
+  projectId: string;
+  orgId?: string;
+  audience: ConnectionAudience;
+  subject: ConnectionOwner;
+  binding?: ConnectionBindingAttributes;
+  scopes: string[];
+  returnUrl: string;
+  expiresAt: string;
+  createdAt: string;
+  consumedAt?: string;
   metadata?: Record<string, unknown>;
 }
 
@@ -219,7 +317,7 @@ export interface ConnectionListFilter {
   providerId?: string;
   projectId?: string;
   orgId?: string;
-  owner?: ConnectSubject;
+  owner?: ConnectionOwner;
   status?: ConnectionStatus;
 }
 
@@ -231,6 +329,28 @@ export interface ConnectStore {
   deleteConnection(id: string): Promise<void>;
   saveOAuthState(record: OAuthStateRecord): Promise<void>;
   consumeOAuthState(state: string): Promise<OAuthStateRecord | null>;
+}
+
+export interface ConnectionLinkListFilter {
+  connectionId?: string;
+  projectId?: string;
+  status?: ConnectionLinkStatus;
+}
+
+export interface ConnectionLinkStore {
+  listConnectionLinks(filter?: ConnectionLinkListFilter): Promise<ConnectionLink[]>;
+  getConnectionLink(id: string): Promise<ConnectionLink | null>;
+  upsertConnectionLink(link: ConnectionLink): Promise<ConnectionLink>;
+  updateConnectionLink(
+    id: string,
+    patch: Partial<Omit<ConnectionLink, "id" | "createdAt">>,
+  ): Promise<ConnectionLink>;
+}
+
+export interface ConnectionSetupSessionStore {
+  saveConnectionSetupSession(session: ConnectionSetupSession): Promise<void>;
+  getConnectionSetupSession(id: string): Promise<ConnectionSetupSession | null>;
+  consumeConnectionSetupSession(id: string, consumedAt: string): Promise<ConnectionSetupSession | null>;
 }
 
 export interface ConnectPolicyDecisionInput {
