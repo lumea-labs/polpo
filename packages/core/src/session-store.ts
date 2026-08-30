@@ -21,6 +21,17 @@ export type SessionContentPart =
 
 export type ToolCallState = "preparing" | "calling" | "completed" | "error" | "interrupted";
 
+/** Validated OpenAI-compatible client tool retained for a delayed continuation. */
+export interface SessionClientToolDefinition {
+  type: "function";
+  function: {
+    name: string;
+    description?: string;
+    parameters?: Record<string, unknown>;
+    strict?: boolean;
+  };
+}
+
 export interface ToolCallInfo {
   /** Tool call ID from the LLM */
   id: string;
@@ -32,6 +43,12 @@ export interface ToolCallInfo {
   result?: string;
   /** Final state of the tool call */
   state: ToolCallState;
+  /**
+   * Immutable request-scoped client capabilities available when this pending
+   * interaction was created. The runtime rehydrates them on direct-chat
+   * continuation; callers cannot redeclare or widen this catalog.
+   */
+  continuationClientTools?: SessionClientToolDefinition[];
 }
 
 export interface Message {

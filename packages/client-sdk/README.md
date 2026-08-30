@@ -332,8 +332,12 @@ for await (const chunk of nextTurn) {
 
 The continuation sends exactly one OpenAI-compatible `role: "tool"` message.
 Polpo validates it against the latest pending call, rebuilds history from the
-session store, and continues direct chat. Add `loop: "build-site"` to the same
-request to hand off into a durable Project Loop instead. Retry the same request
+session store, and continues direct chat. Request-scoped client tools declared
+on the original turn are retained by the server and remain available after an
+`ask_user_question` or another delayed direct-chat continuation; do not
+redeclare them in the continuation request. Add `loop: "build-site"` to the
+same request to hand off into a durable Project Loop instead; the request tool
+catalog is intentionally not propagated into Loop execution. Retry the same request
 with the same idempotency key; a changed payload, stale version, wrong
 user/scope, or an already-resolved call fails deterministically. The raw API requires
 `x-session-id`, `Idempotency-Key`, `stream: true`, and

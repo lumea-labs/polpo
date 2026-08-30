@@ -22,6 +22,7 @@ import {
 } from "@polpo-ai/core/canonical-turn";
 import {
   projectResolvedClientToolCalls,
+  requestClientToolsForContinuation,
   resolvePendingClientToolCall,
   SessionContinuationError,
   type PreparedSessionContinuation,
@@ -605,11 +606,13 @@ export class DrizzleSessionStore implements SessionStore {
             .all();
           const messages = rows.map((row) => this.rowToMessage(row));
           const turnId = this.continuationTurnId(messages, input.toolCallId);
+          const requestClientTools = requestClientToolsForContinuation(messages, input.toolCallId);
           return {
             status: "replay" as const,
             sessionVersion: Number(existing.sessionVersion),
             runId: existing.runId,
             ...(turnId ? { turnId } : {}),
+            ...(requestClientTools ? { requestClientTools } : {}),
             messages: projectResolvedClientToolCalls(messages),
           };
         }
@@ -631,6 +634,10 @@ export class DrizzleSessionStore implements SessionStore {
           input.toolCallId,
         );
         const turnId = this.continuationTurnId(storedMessages, input.toolCallId);
+        const requestClientTools = requestClientToolsForContinuation(
+          storedMessages,
+          input.toolCallId,
+        );
 
         const now = new Date().toISOString();
         const nextVersion = input.expectedSessionVersion + 1;
@@ -683,6 +690,7 @@ export class DrizzleSessionStore implements SessionStore {
           sessionVersion: nextVersion,
           runId: input.runId,
           ...(turnId ? { turnId } : {}),
+          ...(requestClientTools ? { requestClientTools } : {}),
           messages: projectResolvedClientToolCalls([
             ...storedMessages,
             message,
@@ -722,11 +730,13 @@ export class DrizzleSessionStore implements SessionStore {
           .orderBy(asc(this.messages.ts));
         const messages = rows.map((row) => this.rowToMessage(row));
         const turnId = this.continuationTurnId(messages, input.toolCallId);
+        const requestClientTools = requestClientToolsForContinuation(messages, input.toolCallId);
         return {
           status: "replay",
           sessionVersion: Number(existing.sessionVersion),
           runId: existing.runId,
           ...(turnId ? { turnId } : {}),
+          ...(requestClientTools ? { requestClientTools } : {}),
           messages: projectResolvedClientToolCalls(messages),
         };
       }
@@ -747,6 +757,10 @@ export class DrizzleSessionStore implements SessionStore {
         input.toolCallId,
       );
       const turnId = this.continuationTurnId(storedMessages, input.toolCallId);
+      const requestClientTools = requestClientToolsForContinuation(
+        storedMessages,
+        input.toolCallId,
+      );
 
       const now = new Date().toISOString();
       const nextVersion = input.expectedSessionVersion + 1;
@@ -801,6 +815,7 @@ export class DrizzleSessionStore implements SessionStore {
         sessionVersion: nextVersion,
         runId: input.runId,
         ...(turnId ? { turnId } : {}),
+        ...(requestClientTools ? { requestClientTools } : {}),
         messages: projectResolvedClientToolCalls([
           ...storedMessages,
           message,

@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   SessionContinuationError,
+  projectResolvedClientToolCalls,
+  requestClientToolsForContinuation,
   resolvePendingClientToolCall,
 } from "./session-continuation.js";
 import type { Message } from "./session-store.js";
@@ -33,6 +35,35 @@ describe("session client-tool continuation", () => {
     expect(resolvePendingClientToolCall(messages, "call-1")).toMatchObject({
       id: "call-1",
       name: "configure_site_module",
+    });
+  });
+
+  it("returns a detached continuation catalog and removes it from resolved history", () => {
+    const tools = [{
+      type: "function" as const,
+      function: { name: "apply_site_change" },
+    }];
+    const messages = [
+      message({
+        role: "assistant",
+        toolCalls: [{
+          id: "call-1",
+          name: "ask_user_question",
+          state: "interrupted",
+          continuationClientTools: tools,
+        }],
+      }),
+      message({ role: "tool", toolCallId: "call-1", content: "Use Start now" }),
+    ];
+
+    const restored = requestClientToolsForContinuation(messages, "call-1");
+    expect(restored).toEqual(tools);
+    expect(restored).not.toBe(tools);
+    expect(projectResolvedClientToolCalls(messages)[0]?.toolCalls?.[0]).toEqual({
+      id: "call-1",
+      name: "ask_user_question",
+      state: "completed",
+      result: "Use Start now",
     });
   });
 

@@ -41,7 +41,10 @@ import type {
   CompletionRuntimeInvocation,
   CompletionRuntimePlanInput,
 } from "../completions.js";
-import type { CompletionRequestBody } from "./schemas.js";
+import {
+  completionRequestSchema,
+  type CompletionRequestBody,
+} from "./schemas.js";
 import {
   convertMessages,
   extractText,
@@ -625,9 +628,10 @@ export async function prepareChatCompletionExecution(
     client: body.polpo?.capabilities,
   });
   const builtInClientSideTools = clientSideToolsForCapabilities(interactionCapabilities);
+  let requestClientTools = body.tools;
   try {
     assertRequestClientToolNamesAvailable(
-      body.tools,
+      requestClientTools,
       Object.keys(builtInClientSideTools),
     );
   } catch (error) {
@@ -636,7 +640,7 @@ export async function prepareChatCompletionExecution(
     }
     throw error;
   }
-  const requestClientSideTools = createRequestClientTools(body.tools);
+  let requestClientSideTools = createRequestClientTools(requestClientTools);
   let clientSideTools = {
     ...builtInClientSideTools,
     ...requestClientSideTools,
@@ -778,6 +782,38 @@ export async function prepareChatCompletionExecution(
         });
         completionId = prepared.runId;
         turnId = prepared.turnId;
+        if (!projectLoopRuntime && prepared.requestClientTools?.length) {
+          const restored = completionRequestSchema.safeParse({
+            messages: [{ role: "user", content: "continuation catalog validation" }],
+            tools: prepared.requestClientTools,
+            parallel_tool_calls: false,
+          });
+          if (!restored.success) {
+            return completionError(
+              "The stored client-tool continuation catalog is invalid",
+              409,
+              "client_tool_continuation_catalog_invalid",
+            );
+          }
+          requestClientTools = restored.data.tools;
+          try {
+            assertRequestClientToolNamesAvailable(
+              requestClientTools,
+              Object.keys(builtInClientSideTools),
+            );
+          } catch (error) {
+            if (error instanceof RequestClientToolError) {
+              return completionError(error.message, 409, error.code);
+            }
+            throw error;
+          }
+          requestClientSideTools = createRequestClientTools(requestClientTools);
+          clientSideTools = {
+            ...builtInClientSideTools,
+            ...requestClientSideTools,
+          };
+          clientSideToolNames = new Set(Object.keys(clientSideTools));
+        }
         userMessageId = turnId
           ? prepared.messages.find(
               (message: any) => message.role === "user" && message.turnId === turnId,
@@ -1236,7 +1272,7 @@ export async function prepareChatCompletionExecution(
       ...Object.keys(clientSideTools),
     ];
     try {
-      assertRequestClientToolNamesAvailable(body.tools, [
+      assertRequestClientToolNamesAvailable(requestClientTools, [
         ...effectiveTools
           .map((tool) => tool?.name)
           .filter((name): name is string => typeof name === "string"),
@@ -1321,7 +1357,7 @@ export async function prepareChatCompletionExecution(
       });
       try {
         assertRequestClientToolNamesAvailable(
-          body.tools,
+          requestClientTools,
           pool.tools
             .map((tool) => tool?.name)
             .filter((name): name is string => typeof name === "string"),
@@ -1396,6 +1432,7 @@ export async function prepareChatCompletionExecution(
     interactionCapabilities,
     clientSideTools,
     clientSideToolNames,
+    requestClientTools,
     activeToolNames,
     activeCompactionTools,
     extraAiTools,

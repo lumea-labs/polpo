@@ -46,6 +46,41 @@ describe("persistAssistantMessage", () => {
     expect(store.updateMessage).toHaveBeenCalledWith("s1", "m1", "", toolCalls);
   });
 
+  it("persists the immutable request-client-tool catalog on an interrupted interaction", async () => {
+    const store = fakeStore();
+    const toolCalls = [{
+      id: "ask-1",
+      name: "ask_user_question",
+      arguments: { question: "Which color?" },
+      state: "interrupted",
+    }];
+    const requestClientTools = [{
+      type: "function" as const,
+      function: {
+        name: "apply_site_change",
+        description: "Open the site change dialog.",
+        parameters: {
+          type: "object",
+          properties: { instruction: { type: "string" } },
+          required: ["instruction"],
+          additionalProperties: false,
+        },
+        strict: true,
+      },
+    }];
+
+    await persistAssistantMessage(store, "s1", "m1", "", toolCalls, {
+      requestClientTools,
+      clientToolCallId: "ask-1",
+    });
+
+    expect(store.updateMessage).toHaveBeenCalledWith("s1", "m1", "", [{
+      ...toolCalls[0],
+      continuationClientTools: requestClientTools,
+    }]);
+    expect(toolCalls[0]).not.toHaveProperty("continuationClientTools");
+  });
+
   it("redacts vault credentials before persisting", async () => {
     const store = fakeStore();
     const toolCalls = [

@@ -15,7 +15,10 @@ import {
   type ChatSuggestion,
   type ResolvedChatInteractionCapabilities,
 } from "@polpo-ai/core/chat-interactions";
-import { preparePersistedReasoning } from "@polpo-ai/core/session-store";
+import {
+  preparePersistedReasoning,
+  type SessionClientToolDefinition,
+} from "@polpo-ai/core/session-store";
 import type {
   CanonicalTurnCommitted,
   CanonicalTurnInvocationIdentity,
@@ -127,11 +130,20 @@ export async function persistAssistantMessage(
     emptyFallback?: string;
     suggestions?: ChatSuggestion[];
     reasoning?: string;
+    requestClientTools?: readonly SessionClientToolDefinition[];
+    clientToolCallId?: string;
     canonicalTurn?: CanonicalTurnPersistenceContext;
   },
 ): Promise<CanonicalTurnCommitted | undefined> {
   if (!sessionStore || !sessionId || !messageId) return undefined;
-  const safeToolCalls = redactVaultToolCalls(toolCalls);
+  let safeToolCalls = redactVaultToolCalls(toolCalls);
+  if (opts?.requestClientTools?.length) {
+    const continuationClientTools = structuredClone(opts.requestClientTools);
+    safeToolCalls = safeToolCalls.map((call) =>
+      call?.state === "interrupted" && call.id === opts.clientToolCallId
+      ? { ...call, continuationClientTools }
+      : call);
+  }
   // A textless client/provider tool turn is valid and must not be rewritten as
   // an interrupted response. Use the fallback only when the turn contains
   // neither assistant text nor a persisted tool call.

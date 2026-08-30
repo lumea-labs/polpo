@@ -907,6 +907,173 @@ describe("chat via Run driver", () => {
     },
   );
 
+  it("rehydrates request-scoped client tools after an ask-user continuation", async () => {
+    const visibleTools: string[][] = [];
+    const requestClientTools = [{
+      type: "function" as const,
+      function: {
+        name: "apply_site_change",
+        description: "Open the site change dialog.",
+        parameters: {
+          type: "object",
+          properties: { instruction: { type: "string" } },
+          required: ["instruction"],
+          additionalProperties: false,
+        },
+      },
+    }];
+    const sessionStore = {
+      prepareContinuation: vi.fn(async (input: any) => ({
+        status: "prepared" as const,
+        sessionVersion: 3,
+        runId: input.runId,
+        requestClientTools,
+        messages: [
+          { id: "u1", role: "user", content: "Change the site", ts: "2026-01-01T00:00:00Z" },
+          {
+            id: "a1",
+            role: "assistant",
+            content: "",
+            ts: "2026-01-01T00:00:01Z",
+            toolCalls: [{
+              id: "ask-1",
+              name: "ask_user_question",
+              arguments: { question: "Which text?" },
+              state: "completed",
+              result: "Use Start now",
+              continuationClientTools: requestClientTools,
+            }],
+          },
+          {
+            id: "t1",
+            role: "tool",
+            content: "Use Start now",
+            ts: "2026-01-01T00:00:02Z",
+            toolCallId: "ask-1",
+          },
+        ],
+      })),
+      addMessage: vi.fn(async (_sessionId: string, role: string, content: unknown) => ({
+        id: `${role}-message`,
+        role,
+        content,
+      })),
+      updateMessage: vi.fn(async () => true),
+    };
+    const deps = baseDeps({
+      getSessionStore: () => sessionStore as any,
+      runChatViaRun: async (inject, hooks) => {
+        visibleTools.push(Object.keys(inject.toolSet ?? {}).sort());
+        hooks.onEvent({
+          type: "client_tool_call",
+          toolId: "apply-1",
+          tool: "apply_site_change",
+          input: { instruction: "Use Start now" },
+        });
+        return { status: "completed", result: { exitCode: 0, stdout: "", stderr: "" } };
+      },
+    });
+
+    const result = await runConversationTurn(deps, {
+      sessionId: "session-1",
+      continuation: {
+        idempotencyKey: "continue-ask-1",
+        fingerprint: "sha256:continuation",
+      },
+      body: {
+        agent: "agent-1",
+        stream: true,
+        messages: [{ role: "tool", tool_call_id: "ask-1", content: "Use Start now" }],
+        polpo: {
+          continuation: {
+            type: "client_tool",
+            tool_call_id: "ask-1",
+            expected_session_version: 2,
+          },
+          delivery: { onDisconnect: "continue" },
+        },
+      } as CompletionRequestBody,
+    });
+
+    expect(visibleTools).toHaveLength(1);
+    expect(visibleTools[0]).toContain("apply_site_change");
+    expect(result.clientToolCall).toEqual({
+      id: "apply-1",
+      name: "apply_site_change",
+      arguments: { instruction: "Use Start now" },
+    });
+    expect(sessionStore.updateMessage).toHaveBeenCalledWith(
+      "session-1",
+      "assistant-message",
+      "",
+      [expect.objectContaining({
+        id: "apply-1",
+        continuationClientTools: requestClientTools,
+      })],
+    );
+  });
+
+  it("fails closed before execution when a stored continuation catalog is invalid", async () => {
+    const runChatViaRun = vi.fn();
+    const sessionStore = {
+      prepareContinuation: vi.fn(async (input: any) => ({
+        status: "prepared" as const,
+        sessionVersion: 3,
+        runId: input.runId,
+        requestClientTools: [{
+          type: "function",
+          function: {
+            name: "apply_site_change",
+            parameters: {
+              type: "object",
+              properties: {},
+              $ref: "https://untrusted.example/schema.json",
+            },
+          },
+        }],
+        messages: [
+          { id: "u1", role: "user", content: "Change it", ts: "2026-01-01T00:00:00Z" },
+          {
+            id: "a1",
+            role: "assistant",
+            content: "",
+            ts: "2026-01-01T00:00:01Z",
+            toolCalls: [{ id: "ask-1", name: "ask_user_question", state: "completed" }],
+          },
+          { id: "t1", role: "tool", content: "yes", ts: "2026-01-01T00:00:02Z", toolCallId: "ask-1" },
+        ],
+      })),
+      addMessage: vi.fn(),
+      updateMessage: vi.fn(),
+    };
+
+    await expect(runConversationTurn(baseDeps({
+      getSessionStore: () => sessionStore as any,
+      runChatViaRun,
+    }), {
+      sessionId: "session-1",
+      continuation: {
+        idempotencyKey: "continue-invalid",
+        fingerprint: "sha256:invalid",
+      },
+      body: {
+        agent: "agent-1",
+        stream: true,
+        messages: [{ role: "tool", tool_call_id: "ask-1", content: "yes" }],
+        polpo: {
+          continuation: {
+            type: "client_tool",
+            tool_call_id: "ask-1",
+            expected_session_version: 2,
+          },
+          delivery: { onDisconnect: "continue" },
+        },
+      } as CompletionRequestBody,
+    })).rejects.toThrow("The stored client-tool continuation catalog is invalid");
+    expect(runChatViaRun).not.toHaveBeenCalled();
+    expect(sessionStore.addMessage).not.toHaveBeenCalled();
+  });
+
   it("enforces output policy before channel delivery and persistence", async () => {
     const updateMessage = vi.fn(async () => true);
     const outputPolicy = createRunOutputPolicy(new RuntimeGuardrailEngine([{

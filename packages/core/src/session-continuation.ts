@@ -1,4 +1,9 @@
-import type { Message, SessionContentPart, ToolCallInfo } from "./session-store.js";
+import type {
+  Message,
+  SessionClientToolDefinition,
+  SessionContentPart,
+  ToolCallInfo,
+} from "./session-store.js";
 
 export type SessionContinuationErrorCode =
   | "session_not_found"
@@ -41,7 +46,20 @@ export interface PreparedSessionContinuation {
   runId: string;
   /** Logical conversation turn resumed by this client-tool result. */
   turnId?: string;
+  /** Server-owned snapshot from the interrupted turn. */
+  requestClientTools?: SessionClientToolDefinition[];
   messages: Message[];
+}
+
+export function requestClientToolsForContinuation(
+  messages: readonly Message[],
+  toolCallId: string,
+): SessionClientToolDefinition[] | undefined {
+  const call = [...messages].reverse().flatMap((message) =>
+    message.role === "assistant" ? [...(message.toolCalls ?? [])].reverse() : []
+  ).find((candidate) => candidate.id === toolCallId);
+  if (!call?.continuationClientTools?.length) return undefined;
+  return structuredClone(call.continuationClientTools);
 }
 
 /** Resolve only the latest unresolved client call without exposing other IDs. */
@@ -86,8 +104,9 @@ export function projectResolvedClientToolCalls(
       const result = results.get(call.id);
       if (result === undefined || call.state !== "interrupted") return call;
       changed = true;
+      const { continuationClientTools: _continuationClientTools, ...resolvedCall } = call;
       return {
-        ...call,
+        ...resolvedCall,
         state: "completed" as const,
         result: typeof result === "string" ? result : JSON.stringify(result),
       };
