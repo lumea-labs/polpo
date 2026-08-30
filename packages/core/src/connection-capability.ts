@@ -7,6 +7,49 @@ export const MAX_CONNECTION_SLOTS = 16;
 export const MAX_CONNECTION_SLOT_SCOPES = 32;
 export const MAX_CONNECTION_SLOT_TEXT_LENGTH = 256;
 
+export type ConnectionCapabilityMode = "gateway" | "legacy_credentials";
+
+export interface ConnectionRequest {
+  readonly method: string;
+  readonly path: string;
+  readonly query?: Readonly<Record<string, string | readonly string[]>>;
+  readonly headers?: Readonly<Record<string, string>>;
+  readonly body?: unknown;
+  readonly idempotencyKey?: string;
+  readonly timeoutMs?: number;
+}
+
+export interface ConnectionResponse<T = unknown> {
+  readonly status: number;
+  readonly headers: Readonly<Record<string, string>>;
+  readonly body: T;
+  readonly requestId?: string;
+}
+
+/** Additional restriction applied after Connector and grant policy. */
+export interface ConnectionOperationPolicy {
+  readonly methods?: readonly string[];
+  readonly pathPatterns?: readonly string[];
+  readonly requiredScopes?: readonly string[];
+}
+
+export interface ApplicationCapabilitySpec {
+  readonly id: string;
+  readonly provider: string;
+  readonly scopes: readonly string[];
+  readonly allowedOperations?: readonly ConnectionOperationPolicy[];
+}
+
+export interface ApplicationCapabilityResolveInput {
+  readonly spec: ApplicationCapabilitySpec;
+  readonly invocation: ToolInvocationContext;
+  readonly signal?: AbortSignal;
+}
+
+export interface ApplicationCapabilityResolver {
+  resolve(input: ApplicationCapabilityResolveInput): Promise<ResolvedConnectionCapability>;
+}
+
 const SLOT_NAME_RE = /^[A-Za-z][A-Za-z0-9_]*$/;
 const PROVIDER_ID_RE = /^[a-z0-9][a-z0-9._:-]*$/;
 const FORBIDDEN_KEYS = new Set(["__proto__", "constructor", "prototype"]);
@@ -15,23 +58,28 @@ export interface ConnectionSlotSpec {
   readonly provider?: string;
   readonly scopes: readonly string[];
   readonly description?: string;
+  readonly mode?: ConnectionCapabilityMode;
 }
 
 export type ConnectionSlotSpecs = Readonly<Record<string, ConnectionSlotSpec>>;
 
 export interface ConnectionCapability {
+  readonly mode: ConnectionCapabilityMode;
   readonly providerId: string;
   readonly scopes: readonly string[];
   readonly metadata?: Readonly<Record<string, ToolInvocationJsonValue>>;
+  request<T = unknown>(input: ConnectionRequest): Promise<ConnectionResponse<T>>;
   getHeaders(): Readonly<Record<string, string>> | undefined;
   getToken(): string | undefined;
   getKey(): string | undefined;
 }
 
 export interface ResolvedConnectionCapability {
+  readonly mode?: ConnectionCapabilityMode;
   readonly providerId: string;
   readonly scopes: readonly string[];
   readonly metadata?: Readonly<Record<string, ToolInvocationJsonValue>>;
+  request?<T = unknown>(input: ConnectionRequest): Promise<ConnectionResponse<T>>;
   getHeaders?(): Readonly<Record<string, string>> | undefined;
   getToken?(): string | undefined;
   getKey?(): string | undefined;
@@ -58,15 +106,27 @@ export type ConnectionSelectionErrorCode =
   | "connection_not_found_for_scope"
   | "connection_selection_ambiguous"
   | "connection_slot_invalid"
-  | "connection_resolver_unavailable";
+  | "connection_resolver_unavailable"
+  | "connection_credential_exposure_denied"
+  | "connection_operation_denied"
+  | "connection_refresh_unavailable"
+  | "connection_setup_invalid"
+  | "connection_setup_expired"
+  | "connection_setup_consumed";
 
 function connectionSelectionStatus(code: ConnectionSelectionErrorCode): number {
   switch (code) {
     case "connection_scope_denied": return 403;
+    case "connection_credential_exposure_denied": return 403;
+    case "connection_operation_denied": return 403;
     case "connection_not_found_for_scope": return 404;
     case "connection_selection_ambiguous": return 409;
+    case "connection_setup_consumed": return 409;
+    case "connection_setup_expired": return 410;
     case "connection_slot_invalid": return 422;
+    case "connection_setup_invalid": return 422;
     case "connection_resolver_unavailable": return 503;
+    case "connection_refresh_unavailable": return 503;
   }
 }
 
@@ -124,7 +184,7 @@ export function getConnectionSlotSpecErrors(value: unknown): string[] {
       continue;
     }
     const unsupported = Object.keys(candidate).filter((key) =>
-      key !== "provider" && key !== "scopes" && key !== "description");
+      key !== "provider" && key !== "scopes" && key !== "description" && key !== "mode");
     if (unsupported.length > 0) {
       errors.push(`Connection slot "${slot}" contains unsupported fields: ${unsupported.join(", ")}`);
     }
@@ -153,6 +213,13 @@ export function getConnectionSlotSpecErrors(value: unknown): string[] {
     if (candidate.description !== undefined && normalizedText(candidate.description) === null) {
       errors.push(`Connection slot "${slot}" description is invalid`);
     }
+    if (
+      candidate.mode !== undefined
+      && candidate.mode !== "gateway"
+      && candidate.mode !== "legacy_credentials"
+    ) {
+      errors.push(`Connection slot "${slot}" mode is invalid`);
+    }
   }
   return errors;
 }
@@ -178,6 +245,7 @@ export function normalizeConnectionSlotSpecs(value: unknown): ConnectionSlotSpec
       ...(candidate.description === undefined
         ? {}
         : { description: (candidate.description as string).trim() }),
+      mode: candidate.mode === "gateway" ? "gateway" : "legacy_credentials",
     });
   }
   return Object.freeze(normalized);

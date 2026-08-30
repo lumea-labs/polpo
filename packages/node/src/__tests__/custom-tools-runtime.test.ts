@@ -188,4 +188,96 @@ describe("LocalCustomToolRuntime", () => {
       "user-2:call-user-2",
     ]);
   });
+
+  it("executes gateway-mode connections through the invocation-bound runtime capability", async () => {
+    const root = await mkdtemp(join(tmpdir(), "polpo-custom-tools-"));
+    roots.push(root);
+    const polpoDir = join(root, ".polpo");
+    await mkdir(polpoDir, { recursive: true });
+    const requests: Array<{ user: string; method: string; path: string }> = [];
+    const runtime = createLocalCustomToolRuntime({
+      polpoDir,
+      workDir: root,
+      fs: new NodeFileSystem(),
+      shell: new NodeShell(),
+      connectionCapabilityResolver: {
+        async resolve(input) {
+          const request = async (gatewayRequest: { method: string; path: string }) => {
+            requests.push({
+              user: input.invocation.user!,
+              method: gatewayRequest.method,
+              path: gatewayRequest.path,
+            });
+            return {
+              status: 200,
+              headers: {},
+              body: { user: input.invocation.user, path: gatewayRequest.path },
+            };
+          };
+          return {
+            mode: "gateway" as const,
+            providerId: "sitoinchat",
+            scopes: ["site:read"],
+            request,
+          };
+        },
+      },
+    });
+    const source = `
+      import { defineTool } from "@polpo-ai/tools";
+      import { Type } from "@sinclair/typebox";
+      export default defineTool({
+        name: "site_context_get",
+        description: "Get one site",
+        parameters: Type.Object({ siteId: Type.String() }),
+        connections: {
+          siteApi: {
+            provider: "sitoinchat",
+            scopes: ["site:read"],
+            mode: "gateway",
+          },
+        },
+        async execute(ctx, params) {
+          const response = await ctx.connections.require("siteApi").request({
+            method: "GET",
+            path: "/v1/sites/" + encodeURIComponent(params.siteId),
+          });
+          return response.body;
+        },
+      });
+    `;
+    await runtime.store.putSource("site_context_get", source);
+    const deployed = await runtime.deploy("site_context_get", source);
+    expect(deployed.errors).toEqual([]);
+    expect(deployed.meta?.connections).toEqual({
+      siteApi: {
+        provider: "sitoinchat",
+        scopes: ["site:read"],
+        mode: "gateway",
+      },
+    });
+    await runtime.store.putBundle("site_context_get", deployed.bundle!);
+    await runtime.store.putMeta("site_context_get", deployed.meta!);
+
+    const tool = await runtime.load(
+      "site_context_get",
+      undefined,
+      createToolInvocationContext({
+        requestId: "request-user-1",
+        runId: "run-user-1",
+        surface: "chat",
+        user: "user-1",
+      }),
+    );
+    const result = await tool.execute("call-user-1", { siteId: "site/one" });
+    expect(JSON.parse(result.content[0].text)).toEqual({
+      user: "user-1",
+      path: "/v1/sites/site%2Fone",
+    });
+    expect(requests).toEqual([{
+      user: "user-1",
+      method: "GET",
+      path: "/v1/sites/site%2Fone",
+    }]);
+  });
 });

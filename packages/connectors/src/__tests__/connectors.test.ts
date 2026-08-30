@@ -26,6 +26,15 @@ describe("curated connectors", () => {
     expect(mcpUrlConnector.actions?.map((action) => action.id)).toContain("mcp_call_tool");
   });
 
+  it("ships bounded gateway policies without OAuth client secrets", () => {
+    for (const connector of [githubConnector, slackConnector, googleDriveConnector]) {
+      expect(connector.http?.origins).toHaveLength(1);
+      expect(connector.http?.auth.mode).toBe("bearer");
+      expect(connector.http?.allowedMethods).toEqual(expect.arrayContaining(["GET"]));
+      expect(JSON.stringify(connector)).not.toMatch(/clientSecret|accessToken|refreshToken/);
+    }
+  });
+
   it("allows generic OAuth connectors to define custom scopes", () => {
     const provider = createGenericOAuthConnector({
       id: "custom_crm",

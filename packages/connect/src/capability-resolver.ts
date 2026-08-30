@@ -2,7 +2,12 @@ import {
   ConnectionSelectionError,
   type ConnectionCapabilityResolver,
   type ConnectionCapabilityResolveInput,
+  type ConnectionRequest,
+  type ConnectionResponse,
   type ResolvedConnectionCapability,
+  type ApplicationCapabilityResolveInput,
+  type ApplicationCapabilityResolver,
+  type ConnectionOperationPolicy,
 } from "@polpo-ai/core";
 
 import { hasScopes } from "./scopes.js";
@@ -20,11 +25,29 @@ export interface ConnectionCapabilityResolverOptions {
   resolveSelector(
     input: ConnectionCapabilityResolveInput,
   ): ConnectionSelectionSelector | Promise<ConnectionSelectionSelector>;
-  materialize(
+  materialize?(
     connection: ConnectionRecord,
     input: ConnectionCapabilityResolveInput,
   ): ResolvedConnectionCredential | Promise<ResolvedConnectionCredential>;
+  request?<T = unknown>(
+    connection: ConnectionRecord,
+    input: ConnectionCapabilityResolveInput,
+    request: ConnectionRequest,
+  ): Promise<ConnectionResponse<T>>;
+  isConnectionVisible?(
+    connection: ConnectionRecord,
+    selector: ConnectionSelectionSelector,
+  ): boolean | Promise<boolean>;
   policy?: ConnectPolicy;
+}
+
+export interface ApplicationCapabilityResolverOptions extends Omit<
+  ConnectionCapabilityResolverOptions,
+  "resolveSelector"
+> {
+  resolveSelector(
+    input: ApplicationCapabilityResolveInput,
+  ): ConnectionSelectionSelector | Promise<ConnectionSelectionSelector>;
 }
 
 function bindingPartMatches<T extends object>(
@@ -154,6 +177,7 @@ function credentialCapability(
     ? credential.tokenType ?? "Bearer"
     : "Bearer";
   return {
+    mode: "legacy_credentials",
     providerId: credential.providerId,
     scopes: credential.scopes,
     getHeaders: () => token
@@ -175,17 +199,26 @@ export function createConnectionCapabilityResolver(
     async resolve(input) {
       try {
         const selector = normalizeSelector(await options.resolveSelector(input));
-        const candidates = (await options.store.listConnections({
-          projectId: selector.projectId,
+        const listed = await options.store.listConnections({
+          ...(options.isConnectionVisible ? {} : { projectId: selector.projectId }),
           ...(selector.orgId ? { orgId: selector.orgId } : {}),
           ...(input.spec.provider ? { providerId: input.spec.provider } : {}),
           status: "active",
-        })).filter((connection) =>
-          connection.status === "active"
-          && connection.projectId === selector.projectId
-          && (selector.orgId === undefined || connection.orgId === selector.orgId)
-          && (input.spec.provider === undefined || connection.providerId === input.spec.provider)
-          && bindingMatches(connection.binding, selector));
+        });
+        const candidates: ConnectionRecord[] = [];
+        for (const connection of listed) {
+          const visible = connection.projectId === selector.projectId
+            || await options.isConnectionVisible?.(connection, selector) === true;
+          if (
+            connection.status === "active"
+            && visible
+            && (selector.orgId === undefined || connection.orgId === selector.orgId)
+            && (input.spec.provider === undefined || connection.providerId === input.spec.provider)
+            && bindingMatches(connection.binding, selector)
+          ) {
+            candidates.push(connection);
+          }
+        }
 
         if (candidates.length === 0) {
           throw new ConnectionSelectionError(
@@ -223,7 +256,32 @@ export function createConnectionCapabilityResolver(
           );
         }
 
-        return credentialCapability(await options.materialize(authorized[0], input));
+        const selected = authorized[0];
+        const mode = input.spec.mode ?? "legacy_credentials";
+        if (mode === "gateway") {
+          if (!options.request) {
+            throw new ConnectionSelectionError(
+              "connection_resolver_unavailable",
+              `Connection gateway is unavailable for slot "${input.slot}"`,
+              { slot: input.slot },
+            );
+          }
+          return {
+            mode,
+            providerId: selected.providerId,
+            scopes: Object.freeze([...selected.grantedScopes]),
+            request: <T = unknown>(request: ConnectionRequest) =>
+              options.request!<T>(selected, input, request),
+          };
+        }
+        if (!options.materialize) {
+          throw new ConnectionSelectionError(
+            "connection_resolver_unavailable",
+            `Legacy credential materialization is unavailable for slot "${input.slot}"`,
+            { slot: input.slot },
+          );
+        }
+        return credentialCapability(await options.materialize(selected, input));
       } catch (error) {
         if (error instanceof ConnectionSelectionError) throw error;
         throw new ConnectionSelectionError(
@@ -234,4 +292,65 @@ export function createConnectionCapabilityResolver(
       }
     },
   };
+}
+
+export function createApplicationCapabilityResolver(
+  options: ApplicationCapabilityResolverOptions,
+): ApplicationCapabilityResolver {
+  return {
+    async resolve(input) {
+      const id = input.spec?.id?.trim();
+      const provider = input.spec?.provider?.trim();
+      if (!id || !provider || !Array.isArray(input.spec.scopes) || input.spec.scopes.length === 0) {
+        throw new ConnectionSelectionError(
+          "connection_slot_invalid",
+          "Application capability id, provider, and scopes are required",
+        );
+      }
+      const resolver = createConnectionCapabilityResolver({
+        ...options,
+        resolveSelector: () => options.resolveSelector(input),
+        request: options.request
+          ? async (connection, resolveInput, request) => {
+              assertApplicationOperationAllowed(input.spec.allowedOperations, request, input.spec.scopes);
+              return options.request!(connection, resolveInput, request);
+            }
+          : undefined,
+      });
+      return resolver.resolve({
+        slot: id,
+        spec: {
+          provider,
+          scopes: input.spec.scopes,
+          description: `Application capability ${id}`,
+          mode: "gateway",
+        },
+        toolName: `application:${id}`,
+        toolCallId: `${input.invocation.runId}:${id}`,
+        invocation: input.invocation,
+        signal: input.signal,
+      });
+    },
+  };
+}
+
+function assertApplicationOperationAllowed(
+  policies: readonly ConnectionOperationPolicy[] | undefined,
+  request: ConnectionRequest,
+  capabilityScopes: readonly string[],
+): void {
+  if (!policies || policies.length === 0) return;
+  const method = request.method.trim().toUpperCase();
+  const allowed = policies.some((policy) => {
+    if (policy.methods && !policy.methods.some((candidate) => candidate.toUpperCase() === method)) return false;
+    if (policy.pathPatterns && !policy.pathPatterns.some((pattern) =>
+      pattern.endsWith("*") ? request.path.startsWith(pattern.slice(0, -1)) : request.path === pattern)) return false;
+    return !policy.requiredScopes || hasScopes(capabilityScopes, policy.requiredScopes);
+  });
+  if (!allowed) {
+    throw new ConnectionSelectionError(
+      "connection_operation_denied",
+      `Application Connection operation is not allowed: ${method} ${request.path}`,
+    );
+  }
 }

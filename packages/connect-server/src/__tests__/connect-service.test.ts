@@ -1,6 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 import { ConnectError, type ConnectorProviderDefinition, type TokenSet } from "@polpo-ai/connect";
-import { MemoryConnectStore, MemoryConnectionSecretStore, createConnectService } from "../index.js";
+import {
+  MemoryConnectStore,
+  MemoryConnectionSecretStore,
+  MemoryTokenRefreshCoordinator,
+  createConnectService,
+} from "../index.js";
 
 const oauthProvider: ConnectorProviderDefinition = {
   id: "test_oauth",
@@ -28,6 +33,15 @@ const apiKeyProvider: ConnectorProviderDefinition = {
     defaultScopes: ["use"],
   },
   scopes: [{ id: "use" }],
+  http: {
+    origins: ["https://api.example.com"],
+    allowedMethods: ["GET", "POST"],
+    allowedPathPatterns: ["/v1/items", "/v1/items/*"],
+    auth: { mode: "header", name: "X-Api-Key" },
+    maxRequestBytes: 1_024,
+    maxResponseBytes: 1_024,
+    timeoutMs: 5_000,
+  },
 };
 
 const mcpProvider: ConnectorProviderDefinition = {
@@ -218,6 +232,201 @@ describe("connect service", () => {
     });
   });
 
+  it("resolves OAuth client ownership independently from the Connector manifest", async () => {
+    const protocolOnlyProvider: ConnectorProviderDefinition = {
+      ...oauthProvider,
+      auth: {
+        ...oauthProvider.auth,
+        clientId: undefined,
+        clientSecret: undefined,
+      },
+    };
+    const oauthClient = {
+      id: "oauth-client-managed",
+      providerId: "test_oauth",
+      clientId: "managed-client-id",
+      clientSecret: "managed-client-secret",
+      redirectUris: ["https://app.example/callback"],
+      owner: { type: "platform" as const, id: "polpo" },
+    };
+    const oauthClients = {
+      resolve: vi.fn(async () => oauthClient),
+      resolveById: vi.fn(async (id: string) => id === oauthClient.id ? oauthClient : null),
+    };
+    const fetchImpl = queueFetch([jsonResponse(200, {
+      access_token: "access-1",
+      refresh_token: "refresh-1",
+      scope: "read",
+    })]);
+    const { service } = createHarness({
+      providers: [protocolOnlyProvider, apiKeyProvider, mcpProvider],
+      oauthClients,
+      fetchImpl,
+    });
+
+    const started = await service.startOAuth({
+      providerId: "test_oauth",
+      redirectUri: "https://app.example/callback",
+      projectId: "project-1",
+      oauthClientMode: "managed",
+    });
+    const connection = await service.completeOAuth({ state: started.state, code: "code-1" });
+
+    expect(connection.oauthClientId).toBe(oauthClient.id);
+    expect(oauthClients.resolve).toHaveBeenCalledWith({
+      providerId: "test_oauth",
+      projectId: "project-1",
+      mode: "managed",
+    });
+    expect(oauthClients.resolveById).toHaveBeenCalledWith(oauthClient.id);
+    expect(fetchImpl.calls[0]!.bodyString).toContain("client_id=managed-client-id");
+    expect(fetchImpl.calls[0]!.bodyString).toContain("client_secret=managed-client-secret");
+
+    await expect(service.startOAuth({
+      providerId: "test_oauth",
+      redirectUri: "https://attacker.example/callback",
+      oauthClientMode: "managed",
+    })).rejects.toMatchObject({ code: "invalid_request" });
+  });
+
+  it("uses immutable single-use setup sessions and creates an explicit project link", async () => {
+    const protocolOnlyProvider: ConnectorProviderDefinition = {
+      ...oauthProvider,
+      auth: { ...oauthProvider.auth, clientId: undefined, clientSecret: undefined },
+    };
+    const oauthClient = {
+      id: "oauth-client-managed",
+      providerId: "test_oauth",
+      clientId: "managed-client-id",
+      clientSecret: "managed-client-secret",
+      redirectUris: ["https://polpo.example/v1/connect/oauth/callback"],
+      owner: { type: "platform" as const, id: "polpo" },
+    };
+    const oauthClients = {
+      resolve: vi.fn(async () => oauthClient),
+      resolveById: vi.fn(async () => oauthClient),
+    };
+    const fetchImpl = queueFetch([jsonResponse(200, {
+      access_token: "access-1",
+      refresh_token: "refresh-1",
+      scope: "read",
+    })]);
+    const { service, store } = createHarness({
+      providers: [protocolOnlyProvider, apiKeyProvider, mcpProvider],
+      oauthClients,
+      fetchImpl,
+      allowedReturnUrlOrigins: ["https://app.example"],
+    });
+    const setup = await service.createSetupSession({
+      providerId: "test_oauth",
+      projectId: "project-1",
+      audience: "end_user",
+      subject: { type: "external_user", namespace: "acme", id: "user-1" },
+      binding: {
+        principal: { type: "external_user", id: "user-1" },
+        tenant: { namespace: "acme", id: "tenant-1" },
+        resource: { namespace: "acme", type: "site", id: "site-1" },
+        scopeEpoch: "4",
+      },
+      scopes: ["read"],
+      returnUrl: "https://app.example/settings/integrations",
+      oauthClientMode: "managed",
+    });
+
+    const started = await service.startOAuthSetup({ setupSessionId: setup.id });
+    await expect(service.startOAuthSetup({ setupSessionId: setup.id }))
+      .rejects.toMatchObject({ code: "setup_consumed", status: 409 });
+    const connection = await service.completeOAuth({ state: started.state, code: "code-1" });
+
+    expect(connection).toMatchObject({
+      audience: "end_user",
+      owner: { type: "external_user", namespace: "acme", id: "user-1" },
+      oauthClientId: oauthClient.id,
+      binding: expect.objectContaining({ scopeEpoch: "4" }),
+    });
+    expect(connection.projectId).toBeUndefined();
+    await expect(store.listConnectionLinks({ connectionId: connection.id }))
+      .resolves.toEqual([expect.objectContaining({
+        connectionId: connection.id,
+        projectId: "project-1",
+        status: "active",
+      })]);
+  });
+
+  it("links and unlinks one shared Connection idempotently", async () => {
+    const { service } = createHarness();
+    const connection = await service.createApiKeyConnection({
+      providerId: "custom_api",
+      apiKey: "secret",
+      scopes: ["use"],
+    });
+
+    const first = await service.linkConnection({ connectionId: connection.id, projectId: "project-1" });
+    const second = await service.linkConnection({ connectionId: connection.id, projectId: "project-1" });
+    expect(second.id).toBe(first.id);
+    await expect(service.listConnectionLinks({ projectId: "project-1", status: "active" }))
+      .resolves.toEqual([expect.objectContaining({ id: first.id, connectionId: connection.id })]);
+
+    const revoked = await service.unlinkConnection({ linkId: first.id });
+    expect(revoked.status).toBe("revoked");
+    await expect(service.unlinkConnection({ linkId: first.id })).resolves.toEqual(revoked);
+  });
+
+  it("rejects setup return URL attacks, expiry, and concurrent replay", async () => {
+    let clock = new Date(Date.UTC(2026, 0, 1, 10, 0, 0));
+    const oauthClient = {
+      id: "oauth-client-managed",
+      providerId: "test_oauth",
+      clientId: "managed-client-id",
+      clientSecret: "managed-client-secret",
+      redirectUris: ["https://polpo.example/v1/connect/oauth/callback"],
+      owner: { type: "platform" as const, id: "polpo" },
+    };
+    const { service } = createHarness({
+      oauthClients: {
+        resolve: vi.fn(async () => oauthClient),
+        resolveById: vi.fn(async () => oauthClient),
+      },
+      now: () => clock,
+      allowedReturnUrlOrigins: ["https://app.example"],
+    });
+    const base = {
+      providerId: "test_oauth",
+      projectId: "project-1",
+      audience: "end_user" as const,
+      subject: { type: "external_user" as const, namespace: "app", id: "user-1" },
+      scopes: ["read"],
+      oauthClientMode: "managed" as const,
+    };
+
+    await expect(service.createSetupSession({
+      ...base,
+      returnUrl: "https://attacker.example/callback",
+    })).rejects.toMatchObject({ code: "setup_invalid" });
+
+    const expired = await service.createSetupSession({
+      ...base,
+      returnUrl: "https://app.example/settings",
+    });
+    clock = new Date(clock.getTime() + 11 * 60_000);
+    await expect(service.startOAuthSetup({ setupSessionId: expired.id }))
+      .rejects.toMatchObject({ code: "setup_expired", status: 410 });
+
+    clock = new Date(Date.UTC(2026, 0, 1, 11, 0, 0));
+    const singleUse = await service.createSetupSession({
+      ...base,
+      returnUrl: "https://app.example/settings",
+    });
+    const results = await Promise.allSettled([
+      service.startOAuthSetup({ setupSessionId: singleUse.id }),
+      service.startOAuthSetup({ setupSessionId: singleUse.id }),
+    ]);
+    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    expect(results.filter((result) => result.status === "rejected")).toEqual([
+      expect.objectContaining({ reason: expect.objectContaining({ code: "setup_consumed" }) }),
+    ]);
+  });
+
   it("exchanges OAuth code, stores tokens, and rejects reused state", async () => {
     const fetchImpl = queueFetch([
       jsonResponse(200, {
@@ -333,6 +542,170 @@ describe("connect service", () => {
     expect(fetchImpl.calls[1]!.bodyString).toContain("grant_type=refresh_token");
   });
 
+  it("single-flights refresh across runtime replicas and preserves rotated refresh tokens", async () => {
+    let nowMs = Date.UTC(2026, 0, 1, 10, 0, 0);
+    const fetchImpl = queueFetch([
+      jsonResponse(200, {
+        access_token: "expired_access",
+        refresh_token: "refresh_1",
+        expires_in: 1,
+        scope: "read",
+      }),
+      jsonResponse(200, {
+        access_token: "fresh_access",
+        refresh_token: "refresh_2",
+        expires_in: 3600,
+        scope: "read",
+      }),
+    ]);
+    const store = new MemoryConnectStore();
+    const secrets = new MemoryConnectionSecretStore();
+    const refreshCoordinator = new MemoryTokenRefreshCoordinator();
+    const options = {
+      providers: [oauthProvider, apiKeyProvider, mcpProvider],
+      store,
+      secrets,
+      fetch: fetchImpl,
+      now: () => new Date(nowMs),
+      tokenRefreshSkewMs: 0,
+      refreshCoordinator,
+    };
+    const replicaA = createConnectService(options);
+    const replicaB = createConnectService(options);
+    const started = await replicaA.startOAuth({
+      providerId: "test_oauth",
+      scopes: ["read"],
+      redirectUri: "https://app.example/callback",
+    });
+    const connection = await replicaA.completeOAuth({ state: started.state, code: "code_123" });
+    nowMs += 2_000;
+
+    const tokens = await Promise.all(Array.from({ length: 12 }, (_, index) =>
+      (index % 2 === 0 ? replicaA : replicaB).getToken({
+        connectionId: connection.id,
+        scopes: ["read"],
+      })));
+
+    expect(tokens.map((token) => token.accessToken)).toEqual(
+      Array.from({ length: 12 }, () => "fresh_access"),
+    );
+    expect(fetchImpl.calls).toHaveLength(2);
+    expect((await secrets.getSecret(connection.secretRef!))?.tokens).toMatchObject({
+      accessToken: "fresh_access",
+      refreshToken: "refresh_2",
+    });
+  });
+
+  it("provides versioned secret compare-and-set semantics", async () => {
+    const secrets = new MemoryConnectionSecretStore();
+    await secrets.setSecret("secret-1", { kind: "api_key", apiKey: "one" });
+    const first = await secrets.getVersioned("secret-1");
+    expect(first).toMatchObject({ version: "1", secret: { apiKey: "one" } });
+
+    await expect(secrets.compareAndSet(
+      "secret-1",
+      first!.version,
+      { kind: "api_key", apiKey: "two" },
+    )).resolves.toBe(true);
+    await expect(secrets.compareAndSet(
+      "secret-1",
+      first!.version,
+      { kind: "api_key", apiKey: "stale" },
+    )).resolves.toBe(false);
+    await expect(secrets.getSecret("secret-1")).resolves.toMatchObject({ apiKey: "two" });
+  });
+
+  it("executes opaque provider requests with server-injected auth and sanitized responses", async () => {
+    const fetchImpl = queueFetch([new Response(JSON.stringify({ ok: true }), {
+      status: 200,
+      headers: {
+        "content-type": "application/json",
+        "x-request-id": "provider-request-1",
+        "set-cookie": "secret-cookie=1",
+        authorization: "should-not-return",
+      },
+    })]);
+    const { service } = createHarness({ fetchImpl });
+    const connection = await service.createApiKeyConnection({
+      providerId: "custom_api",
+      apiKey: "secret-api-key",
+      scopes: ["use"],
+    });
+
+    const response = await service.request({
+      connectionId: connection.id,
+      scopes: ["use"],
+      request: {
+        method: "POST",
+        path: "/v1/items",
+        headers: { Accept: "application/json" },
+        body: { name: "Item" },
+        idempotencyKey: "request-1",
+      },
+    });
+
+    expect(response).toEqual({
+      status: 200,
+      headers: {
+        "content-type": "application/json",
+        "x-request-id": "provider-request-1",
+      },
+      body: { ok: true },
+      requestId: "provider-request-1",
+    });
+    const call = fetchImpl.calls[0]!;
+    expect(call.url).toBe("https://api.example.com/v1/items");
+    expect(new Headers(call.init.headers)).toMatchObject(expect.any(Headers));
+    expect(new Headers(call.init.headers).get("x-api-key")).toBe("secret-api-key");
+    expect(new Headers(call.init.headers).get("idempotency-key")).toBe("request-1");
+    expect(new Headers(call.init.headers).get("content-type")).toBe("application/json");
+    expect(call.bodyString).toBe(JSON.stringify({ name: "Item" }));
+  });
+
+  it("fails closed on DNS rebinding, redirects, and oversized provider responses", async () => {
+    const privateFetch = queueFetch([jsonResponse(200, { should: "not run" })]);
+    const privateHarness = createHarness({
+      fetchImpl: privateFetch,
+      resolveHostname: async () => ["10.0.0.1"],
+    });
+    const privateConnection = await privateHarness.service.createApiKeyConnection({
+      providerId: "custom_api",
+      apiKey: "secret",
+    });
+    await expect(privateHarness.service.request({
+      connectionId: privateConnection.id,
+      request: { method: "GET", path: "/v1/items" },
+    })).rejects.toMatchObject({ code: "http_error", status: 502 });
+    expect(privateFetch.calls).toHaveLength(0);
+
+    const redirectHarness = createHarness({
+      fetchImpl: queueFetch([new Response(null, {
+        status: 302,
+        headers: { location: "https://evil.example/steal" },
+      })]),
+    });
+    const redirectConnection = await redirectHarness.service.createApiKeyConnection({
+      providerId: "custom_api",
+      apiKey: "secret",
+    });
+    await expect(redirectHarness.service.request({
+      connectionId: redirectConnection.id,
+      request: { method: "GET", path: "/v1/items" },
+    })).rejects.toMatchObject({ code: "http_error" });
+
+    const largeHarness = createHarness({
+      fetchImpl: queueFetch([textResponse(200, "x".repeat(1_025))]),
+    });
+    const largeConnection = await largeHarness.service.createApiKeyConnection({
+      providerId: "custom_api",
+      apiKey: "secret",
+    });
+    await expect(largeHarness.service.request({
+      connectionId: largeConnection.id,
+      request: { method: "GET", path: "/v1/items" },
+    })).rejects.toMatchObject({ code: "http_error" });
+  });
+
   it("fails expired OAuth tokens that cannot be refreshed", async () => {
     let nowMs = Date.UTC(2026, 0, 1, 10, 0, 0);
     const { service } = createHarness({
@@ -388,6 +761,9 @@ function createHarness(input: {
   tokenRefreshSkewMs?: number;
   oauthStateTtlMs?: number;
   policy?: Parameters<typeof createConnectService>[0]["policy"];
+  resolveHostname?: Parameters<typeof createConnectService>[0]["resolveHostname"];
+  oauthClients?: Parameters<typeof createConnectService>[0]["oauthClients"];
+  allowedReturnUrlOrigins?: Parameters<typeof createConnectService>[0]["allowedReturnUrlOrigins"];
 } = {}) {
   const store = new MemoryConnectStore();
   const secrets = new MemoryConnectionSecretStore();
@@ -400,6 +776,11 @@ function createHarness(input: {
     tokenRefreshSkewMs: input.tokenRefreshSkewMs,
     oauthStateTtlMs: input.oauthStateTtlMs,
     policy: input.policy,
+    resolveHostname: input.resolveHostname ?? (async () => ["93.184.216.34"]),
+    oauthClients: input.oauthClients,
+    setupSessions: store,
+    links: store,
+    allowedReturnUrlOrigins: input.allowedReturnUrlOrigins,
   });
   return { service, store, secrets };
 }

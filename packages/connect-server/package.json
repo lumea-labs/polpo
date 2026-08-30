@@ -23,7 +23,8 @@
     "README.md"
   ],
   "dependencies": {
-    "@polpo-ai/connect": "workspace:*"
+    "@polpo-ai/connect": "workspace:*",
+    "@polpo-ai/core": "workspace:*"
   },
   "devDependencies": {
     "typescript": "^5.7.3",

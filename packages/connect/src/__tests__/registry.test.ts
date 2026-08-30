@@ -39,4 +39,31 @@ describe("connect registry", () => {
     const registry = createConnectorRegistry([{ ...provider, id: "custom_oauth", allowCustomScopes: true }]);
     expect(registry.validateScopes("custom_oauth", ["custom.write", "custom.read"])).toEqual(["custom.read", "custom.write"]);
   });
+
+  it("normalizes and freezes Connector HTTP policy at registration", () => {
+    const registry = createConnectorRegistry([{
+      ...provider,
+      http: {
+        origins: ["https://api.github.test"],
+        allowedMethods: ["get", "POST", "GET"],
+        allowedPathPatterns: ["/repos/*"],
+        auth: { mode: "bearer" },
+      },
+    }]);
+
+    const registered = registry.require("github");
+    expect(registered.http?.allowedMethods).toEqual(["GET", "POST"]);
+    expect(Object.isFrozen(registered.http)).toBe(true);
+    expect(Object.isFrozen(registered.http?.origins)).toBe(true);
+  });
+
+  it("rejects unsafe Connector HTTP policy before runtime", () => {
+    expect(() => createConnectorRegistry([{
+      ...provider,
+      http: {
+        origins: ["https://169.254.169.254"],
+        auth: { mode: "bearer" },
+      },
+    }])).toThrow(/safe public HTTPS origin/i);
+  });
 });

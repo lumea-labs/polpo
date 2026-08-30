@@ -6,6 +6,7 @@ import {
   type ConnectionCapabilityResolveInput,
 } from "@polpo-ai/core";
 import {
+  createApplicationCapabilityResolver,
   createConnectionCapabilityResolver,
   type ConnectionRecord,
   type ConnectStore,
@@ -62,6 +63,17 @@ function input(): ConnectionCapabilityResolveInput {
   };
 }
 
+function gatewayInput(): ConnectionCapabilityResolveInput {
+  return {
+    ...input(),
+    spec: {
+      provider: "sitoinchat",
+      scopes: ["site:read"],
+      mode: "gateway",
+    },
+  };
+}
+
 const selector = {
   projectId: "project-1",
   principal: { type: "external_user", id: "user-1" },
@@ -89,11 +101,119 @@ describe("createConnectionCapabilityResolver", () => {
     const capability = await resolver.resolve(input());
     expect(capability).not.toHaveProperty("connectionId");
     expect(capability.providerId).toBe("sitoinchat");
+    expect(capability.mode).toBe("legacy_credentials");
     expect(capability.getHeaders?.()).toEqual({ "X-Api-Key": "secret" });
     expect(materialize).toHaveBeenCalledWith(
       expect.objectContaining({ id: "connection-1" }),
       expect.objectContaining({ slot: "siteApi" }),
     );
+  });
+
+  it("creates an opaque gateway capability without materializing credentials", async () => {
+    const materialize = vi.fn();
+    const request = vi.fn(async (_connection, _resolveInput, gatewayRequest) => ({
+      status: 200,
+      headers: { "content-type": "application/json" },
+      body: { path: gatewayRequest.path },
+      requestId: "provider-request-1",
+    }));
+    const resolver = createConnectionCapabilityResolver({
+      store: store([record("connection-1")]),
+      resolveSelector: () => selector,
+      materialize,
+      request,
+    });
+
+    const capability = await resolver.resolve(gatewayInput());
+    expect(capability.mode).toBe("gateway");
+    expect(capability.getHeaders).toBeUndefined();
+    expect(capability.getToken).toBeUndefined();
+    expect(capability.getKey).toBeUndefined();
+    await expect(capability.request?.({ method: "GET", path: "/v1/site" }))
+      .resolves.toMatchObject({ status: 200, body: { path: "/v1/site" } });
+    expect(materialize).not.toHaveBeenCalled();
+    expect(request).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "connection-1" }),
+      expect.objectContaining({ slot: "siteApi" }),
+      expect.objectContaining({ method: "GET", path: "/v1/site" }),
+    );
+  });
+
+  it("resolves application capabilities by logical id and enforces operation policy", async () => {
+    const request = vi.fn(async (_connection, _resolveInput, gatewayRequest) => ({
+      status: 200,
+      headers: {},
+      body: { path: gatewayRequest.path },
+    }));
+    const resolver = createApplicationCapabilityResolver({
+      store: store([record("connection-1")]),
+      resolveSelector: () => selector,
+      request,
+    });
+    const capability = await resolver.resolve({
+      spec: {
+        id: "site-management",
+        provider: "sitoinchat",
+        scopes: ["site:read"],
+        allowedOperations: [{ methods: ["GET"], pathPatterns: ["/v1/sites/*"] }],
+      },
+      invocation: input().invocation,
+    });
+
+    await expect(capability.request?.({ method: "GET", path: "/v1/sites/site-1" }))
+      .resolves.toMatchObject({ status: 200 });
+    await expect(capability.request?.({ method: "DELETE", path: "/v1/sites/site-1" }))
+      .rejects.toMatchObject({ code: "connection_operation_denied", status: 403 });
+  });
+
+  it("supports linked shared Connections without weakening legacy project isolation", async () => {
+    const shared = record("shared", { projectId: undefined });
+    const isConnectionVisible = vi.fn(async (connection, projectSelector) =>
+      connection.id === "shared" && projectSelector.projectId === "project-1");
+    const resolver = createConnectionCapabilityResolver({
+      store: store([shared]),
+      resolveSelector: () => selector,
+      isConnectionVisible,
+      request: async () => ({ status: 204, headers: {}, body: null }),
+    });
+
+    await expect(resolver.resolve(gatewayInput())).resolves.toMatchObject({
+      mode: "gateway",
+      providerId: "sitoinchat",
+    });
+    expect(isConnectionVisible).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "shared" }),
+      expect.objectContaining({ projectId: "project-1" }),
+    );
+
+    const isolated = createConnectionCapabilityResolver({
+      store: store([shared]),
+      resolveSelector: () => selector,
+      request: async () => ({ status: 204, headers: {}, body: null }),
+    });
+    await expect(isolated.resolve(gatewayInput())).rejects.toMatchObject({
+      code: "connection_not_found_for_scope",
+    });
+  });
+
+  it("fails closed when the selected capability mode has no host executor", async () => {
+    const gateway = createConnectionCapabilityResolver({
+      store: store([record("connection-1")]),
+      resolveSelector: () => selector,
+      materialize: vi.fn(),
+    });
+    await expect(gateway.resolve(gatewayInput())).rejects.toMatchObject({
+      code: "connection_resolver_unavailable",
+    });
+
+    const legacy = createConnectionCapabilityResolver({
+      store: store([record("connection-1")]),
+      resolveSelector: () => selector,
+      request: vi.fn(),
+    });
+    await expect(legacy.resolve(input())).rejects.toMatchObject({
+      code: "connection_resolver_unavailable",
+    });
   });
 
   it("fails deterministically on zero and multiple exact matches", async () => {

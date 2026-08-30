@@ -9,9 +9,13 @@ export type ConnectErrorCode =
   | "secret_not_found"
   | "token_not_available"
   | "token_exchange_failed"
+  | "refresh_unavailable"
   | "oauth_state_not_found"
   | "oauth_state_expired"
   | "oauth_error"
+  | "setup_invalid"
+  | "setup_expired"
+  | "setup_consumed"
   | "policy_denied"
   | "http_error";
 
@@ -37,6 +41,12 @@ function defaultStatus(code: ConnectErrorCode): number {
     case "unsupported_auth":
     case "oauth_error":
       return 400;
+    case "setup_invalid":
+      return 422;
+    case "setup_expired":
+      return 410;
+    case "setup_consumed":
+      return 409;
     case "connection_not_found":
     case "provider_not_found":
     case "oauth_state_not_found":
@@ -50,6 +60,8 @@ function defaultStatus(code: ConnectErrorCode): number {
     case "token_not_available":
     case "http_error":
       return 502;
+    case "refresh_unavailable":
+      return 503;
     default:
       return 500;
   }

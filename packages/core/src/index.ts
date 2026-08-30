@@ -580,9 +580,16 @@ export {
   normalizeConnectionSlotSpecs,
 } from "./connection-capability.js";
 export type {
+  ApplicationCapabilitySpec,
+  ApplicationCapabilityResolveInput,
+  ApplicationCapabilityResolver,
   ConnectionCapability,
+  ConnectionCapabilityMode,
   ConnectionCapabilityResolveInput,
   ConnectionCapabilityResolver,
+  ConnectionOperationPolicy,
+  ConnectionRequest,
+  ConnectionResponse,
   ConnectionSelectionErrorCode,
   ConnectionSlotSpec,
   ConnectionSlotSpecs,

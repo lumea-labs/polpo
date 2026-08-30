@@ -8,6 +8,12 @@ const apiKeyProvider: ConnectorProviderDefinition = {
   name: "Custom API",
   auth: { type: "api_key", defaultScopes: ["use"] },
   scopes: [{ id: "use" }],
+  http: {
+    origins: ["https://api.example"],
+    allowedMethods: ["GET", "POST"],
+    allowedPathPatterns: ["/v1/items", "/v1/items/*"],
+    auth: { mode: "header", name: "x-api-key" },
+  },
 };
 
 const oauthProvider: ConnectorProviderDefinition = {
@@ -147,9 +153,94 @@ describe("connectRoutes", () => {
     expect(body.data).toHaveLength(1);
     expect(body.data[0].owner).toEqual({ type: "agent", id: "support" });
   });
+
+  it("creates and consumes a trusted OAuth setup session exactly once", async () => {
+    const harness = createHarness({
+      fetchImpl: queueFetch([
+        jsonResponse(200, {
+          access_token: "oauth_access",
+          refresh_token: "oauth_refresh",
+          expires_in: 3600,
+          scope: "read",
+        }),
+      ]),
+      withOAuthClient: true,
+    });
+    const app = connectRoutes(() => ({ connectService: harness.service }));
+    const setupRes = await app.request("/setup-sessions", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        providerId: "test_oauth",
+        projectId: "project-1",
+        audience: "end_user",
+        subject: { type: "external_user", namespace: "app", id: "user-1" },
+        binding: {
+          principal: { type: "external_user", id: "user-1" },
+          tenant: { namespace: "app", id: "tenant-1" },
+        },
+        scopes: ["read"],
+        returnUrl: "https://app.example/settings/connections",
+        oauthClientMode: "managed",
+      }),
+    });
+    const setup = await setupRes.json();
+
+    expect(setupRes.status).toBe(201);
+    expect(setup.data).toMatchObject({
+      projectId: "project-1",
+      audience: "end_user",
+      subject: { type: "external_user", namespace: "app", id: "user-1" },
+    });
+    expect(setup.data).not.toHaveProperty("oauthClientSecret");
+
+    const startRes = await app.request(`/setup-sessions/${setup.data.id}/start`, { method: "POST" });
+    const started = await startRes.json();
+    expect(startRes.status).toBe(200);
+    expect(started.data.authorizationUrl).toContain("client_id=managed-client");
+
+    const replayRes = await app.request(`/setup-sessions/${setup.data.id}/start`, { method: "POST" });
+    expect(replayRes.status).toBe(409);
+    await expect(replayRes.json()).resolves.toMatchObject({ ok: false, code: "setup_consumed" });
+  });
+
+  it("executes a policy-bound gateway request without exposing credentials", async () => {
+    const harness = createHarness({
+      fetchImpl: queueFetch([
+        jsonResponse(200, { id: "item-1" }, { "x-request-id": "provider-request-1" }),
+      ]),
+    });
+    const connection = await harness.service.createApiKeyConnection({
+      providerId: "custom_api",
+      apiKey: "sk_gateway_secret",
+      scopes: ["use"],
+    });
+    const app = connectRoutes(() => ({ connectService: harness.service }));
+
+    const res = await app.request(`/connections/${connection.id}/request`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        scopes: ["use"],
+        request: { method: "GET", path: "/v1/items" },
+      }),
+    });
+    const body = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(body.data).toEqual({
+      status: 200,
+      headers: { "content-type": "application/json", "x-request-id": "provider-request-1" },
+      body: { id: "item-1" },
+      requestId: "provider-request-1",
+    });
+    expect(JSON.stringify(body)).not.toContain("sk_gateway_secret");
+    expect(harness.fetchImpl.calls[0]!.init.headers).toEqual(expect.any(Headers));
+    expect((harness.fetchImpl.calls[0]!.init.headers as Headers).get("x-api-key")).toBe("sk_gateway_secret");
+  });
 });
 
-function createHarness(input: { fetchImpl?: MockFetch } = {}) {
+function createHarness(input: { fetchImpl?: MockFetch; withOAuthClient?: boolean } = {}) {
   const store = new MemoryConnectStore();
   const secrets = new MemoryConnectionSecretStore();
   const fetchImpl = input.fetchImpl ?? queueFetch([]);
@@ -159,6 +250,34 @@ function createHarness(input: { fetchImpl?: MockFetch } = {}) {
     secrets,
     fetch: fetchImpl,
     now: () => new Date(Date.UTC(2026, 0, 1, 10, 0, 0)),
+    resolveHostname: async () => ["93.184.216.34"],
+    ...(input.withOAuthClient ? {
+      oauthClients: {
+        async resolve() {
+          return {
+            id: "oauth-client-1",
+            providerId: "test_oauth",
+            clientId: "managed-client",
+            clientSecret: "managed-secret",
+            redirectUris: ["https://api.polpo.example/v1/connect/oauth/callback"],
+            owner: { type: "instance" as const, id: "managed" },
+          };
+        },
+        async resolveById() {
+          return {
+            id: "oauth-client-1",
+            providerId: "test_oauth",
+            clientId: "managed-client",
+            clientSecret: "managed-secret",
+            redirectUris: ["https://api.polpo.example/v1/connect/oauth/callback"],
+            owner: { type: "instance" as const, id: "managed" },
+          };
+        },
+      },
+      setupSessions: store,
+      links: store,
+      allowedReturnUrlOrigins: ["https://app.example"],
+    } : {}),
   });
   return { service, store, secrets, fetchImpl };
 }
@@ -182,9 +301,9 @@ function queueFetch(responses: Response[]) {
   return Object.assign(fetchImpl, { calls });
 }
 
-function jsonResponse(status: number, payload: unknown): Response {
+function jsonResponse(status: number, payload: unknown, headers?: Record<string, string>): Response {
   return new Response(JSON.stringify(payload), {
     status,
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", ...headers },
   });
 }

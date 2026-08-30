@@ -416,13 +416,102 @@ describe("bindCustomTool", () => {
       slot: "siteApi",
       toolName: "site_context_get",
       toolCallId: "call-site",
-      spec: { provider: "sitoinchat", scopes: ["site:read"] },
+      spec: {
+        provider: "sitoinchat",
+        scopes: ["site:read"],
+        mode: "legacy_credentials",
+      },
       invocation: expect.objectContaining({ user: "user-1" }),
     }));
     expect(received.headers).toEqual({ Authorization: "Bearer secret" });
     expect(received.token).toBe("secret");
     expect(received.capability).not.toHaveProperty("id");
     expect(() => received.capability.getHeaders()).toThrow(/no longer active/i);
+  });
+
+  it("executes gateway requests without exposing credentials to tool code", async () => {
+    const request = vi.fn(async (input) => ({
+      status: 200,
+      headers: { "content-type": "application/json" },
+      body: { path: input.path },
+    }));
+    let capabilityAfterExecution: any;
+    const t = defineTool({
+      name: "site_gateway_read",
+      description: "Reads a site through the trusted gateway",
+      parameters: Type.Object({}),
+      connections: {
+        siteApi: {
+          provider: "sitoinchat",
+          scopes: ["site:read"],
+          mode: "gateway",
+        },
+      },
+      execute: async (ctx) => {
+        const capability = ctx.connections.require("siteApi");
+        capabilityAfterExecution = capability;
+        expect(capability.mode).toBe("gateway");
+        expect(() => capability.getHeaders()).toThrow(expect.objectContaining({
+          code: "connection_credential_exposure_denied",
+        }));
+        expect(() => capability.getToken()).toThrow(expect.objectContaining({
+          code: "connection_credential_exposure_denied",
+        }));
+        expect(() => capability.getKey()).toThrow(expect.objectContaining({
+          code: "connection_credential_exposure_denied",
+        }));
+        const response = await capability.request({ method: "GET", path: "/v1/site" });
+        return JSON.stringify(response.body);
+      },
+    });
+    const resolver = {
+      resolve: vi.fn(async () => ({
+        mode: "gateway" as const,
+        providerId: "sitoinchat",
+        scopes: ["site:read"],
+        request,
+        // A buggy host adapter must still not make these visible.
+        getHeaders: () => ({ Authorization: "Bearer secret" }),
+        getToken: () => "secret",
+        getKey: () => "secret",
+      })),
+    };
+
+    const result = await bindCustomTool(t, fakeCtx({ connectionResolver: resolver } as any))
+      .execute("call-gateway", {});
+
+    expect(result.content[0]).toEqual({
+      type: "text",
+      text: JSON.stringify({ path: "/v1/site" }),
+    });
+    expect(request).toHaveBeenCalledWith({ method: "GET", path: "/v1/site" });
+    await expect(capabilityAfterExecution.request({ method: "GET", path: "/late" }))
+      .rejects.toMatchObject({ code: "connection_scope_denied" });
+  });
+
+  it("fails before tool execution when a gateway slot lacks request capability", async () => {
+    const execute = vi.fn(() => "must not run");
+    const t = defineTool({
+      name: "site_gateway_read",
+      description: "Reads a site through the trusted gateway",
+      parameters: Type.Object({}),
+      connections: {
+        siteApi: { scopes: ["site:read"], mode: "gateway" },
+      },
+      execute,
+    });
+
+    await expect(bindCustomTool(t, fakeCtx({
+      connectionResolver: {
+        resolve: async () => ({
+          providerId: "sitoinchat",
+          scopes: ["site:read"],
+        }),
+      },
+    } as any)).execute("call-gateway", {})).rejects.toMatchObject({
+      code: "connection_resolver_unavailable",
+    });
+    expect(execute).not.toHaveBeenCalled();
   });
 
   it("fails closed when a strict slot has no resolver", async () => {

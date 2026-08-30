@@ -34,6 +34,15 @@ export const githubConnector: ConnectorProviderDefinition = {
     { id: "read:user", label: "Read user profile" },
     { id: "repo", label: "Repository read/write", dangerous: true },
   ],
+  http: {
+    origins: ["https://api.github.com"],
+    allowedMethods: ["GET", "POST", "PUT", "PATCH", "DELETE"],
+    allowedPathPatterns: ["/*"],
+    auth: { mode: "bearer" },
+    maxRequestBytes: 1024 * 1024,
+    maxResponseBytes: 8 * 1024 * 1024,
+    timeoutMs: 30_000,
+  },
   actions: [
     {
       id: "github_list_repos",
@@ -78,6 +87,15 @@ export const slackConnector: ConnectorProviderDefinition = {
     { id: "chat:write", label: "Send messages", dangerous: true },
     { id: "users:read", label: "Read users" },
   ],
+  http: {
+    origins: ["https://slack.com"],
+    allowedMethods: ["GET", "POST"],
+    allowedPathPatterns: ["/api/*"],
+    auth: { mode: "bearer" },
+    maxRequestBytes: 1024 * 1024,
+    maxResponseBytes: 8 * 1024 * 1024,
+    timeoutMs: 30_000,
+  },
   actions: [
     {
       id: "slack_list_channels",
@@ -117,6 +135,15 @@ export const googleDriveConnector: ConnectorProviderDefinition = {
     { id: "https://www.googleapis.com/auth/drive.readonly", label: "Read Drive files" },
     { id: "https://www.googleapis.com/auth/drive.file", label: "Create and edit selected Drive files", dangerous: true },
   ],
+  http: {
+    origins: ["https://www.googleapis.com"],
+    allowedMethods: ["GET", "POST", "PATCH", "DELETE"],
+    allowedPathPatterns: ["/drive/*", "/upload/drive/*"],
+    auth: { mode: "bearer" },
+    maxRequestBytes: 8 * 1024 * 1024,
+    maxResponseBytes: 16 * 1024 * 1024,
+    timeoutMs: 60_000,
+  },
   actions: [
     {
       id: "drive_search_files",
