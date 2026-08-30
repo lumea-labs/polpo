@@ -66,16 +66,21 @@ describe("createApiClient — URL + headers", () => {
     );
     await client.get("/v1/memory", {
       headers: {
-        Authorization: "Bearer attacker",
-        "x-project-id": "project-2",
+        authorization: "Bearer attacker",
+        "content-type": "text/plain",
+        "X-Project-Id": "project-2",
         "x-polpo-external-user-id": "v1:user-1",
       },
     });
     expect(fetchMock.mock.calls[0][1].headers).toMatchObject({
       Authorization: "Bearer sk",
+      "Content-Type": "application/json",
       "x-project-id": "project-1",
       "x-polpo-external-user-id": "v1:user-1",
     });
+    expect(fetchMock.mock.calls[0][1].headers).not.toHaveProperty("authorization");
+    expect(fetchMock.mock.calls[0][1].headers).not.toHaveProperty("content-type");
+    expect(fetchMock.mock.calls[0][1].headers).not.toHaveProperty("X-Project-Id");
   });
 
   it("concatenates baseUrl and path correctly", async () => {

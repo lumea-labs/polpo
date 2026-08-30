@@ -8,6 +8,12 @@
 import type { Credentials } from "./config.js";
 import { ApiNetworkError } from "../../util/errors.js";
 
+const protectedHeaders = new Set([
+  "authorization",
+  "content-type",
+  "x-project-id",
+]);
+
 export interface ApiResponse<T = unknown> {
   status: number;
   data: T;
@@ -42,13 +48,18 @@ export function createApiClient(credentials: Credentials, projectId?: string): A
     options?: ApiRequestOptions,
   ): Promise<ApiResponse<T>> {
     const url = `${baseUrl.replace(/\/$/, "")}${path}`;
+    const contextHeaders = Object.fromEntries(
+      Object.entries(options?.headers ?? {}).filter(
+        ([name]) => !protectedHeaders.has(name.toLowerCase()),
+      ),
+    );
 
     let res: Response;
     try {
       res = await fetch(url, {
         method,
         headers: {
-          ...options?.headers,
+          ...contextHeaders,
           ...headers,
         },
         body: body !== undefined ? JSON.stringify(body) : undefined,
