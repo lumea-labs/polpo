@@ -9,6 +9,7 @@ import type {
 import type {
   HybridRetrievalMode,
   TextEmbeddingProvider,
+  TextReranker,
 } from "../semantic-retrieval.js";
 
 export type MemoryWriteSurface =
@@ -97,6 +98,10 @@ export interface MemorySearchResult {
 export interface MemorySemanticRetrievalOptions {
   readonly embeddingProvider?: TextEmbeddingProvider;
   readonly embeddingFailureMode?: "fallback" | "strict";
+  readonly reranker?: TextReranker;
+  readonly rerankLimit?: number;
+  readonly rerankTimeoutMs?: number;
+  readonly rerankFailureMode?: "fallback" | "strict";
 }
 
 export type MemoryUsageEventType =

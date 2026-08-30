@@ -10,6 +10,7 @@ import {
   selectMemoryResultsWithinBudget,
   type MemoryScope,
   type TextEmbeddingProvider,
+  type TextReranker,
 } from "../memory/index.js";
 
 const context = {
@@ -216,6 +217,12 @@ describe("Memory semantic retrieval", () => {
     };
   }
 
+  it("rejects a positive rerank limit without a configured reranker", () => {
+    expect(() => new InMemoryMemoryItemStore({}, undefined, {
+      rerankLimit: 1,
+    })).toThrow("requires a reranker");
+  });
+
   it("recovers paraphrased authorized Memory and exposes deterministic ranking details", async () => {
     const store = new InMemoryMemoryItemStore({}, undefined, {
       embeddingProvider: provider(),
@@ -356,5 +363,79 @@ describe("Memory semantic retrieval", () => {
     await expect(store.search({ query: " \n\t" }, context))
       .rejects.toThrow("searchable terms");
     expect(queryCalls).toBe(0);
+  });
+
+  it("reranks only the authorized shortlist and preserves score diagnostics", async () => {
+    let receivedIds: readonly string[] = [];
+    const reranker: TextReranker = {
+      rerank: async ({ candidates }) => {
+        receivedIds = candidates.map(({ id }) => id);
+        return {
+          ranking: [
+            { id: "b", score: 0.9 },
+            { id: "a", score: 0.8 },
+          ],
+        };
+      },
+    };
+    const store = new InMemoryMemoryItemStore({}, undefined, {
+      reranker,
+      rerankLimit: 2,
+      rerankFailureMode: "strict",
+    });
+    await store.create(item("a", "Billing invoice details."), context);
+    await store.create(item("b", "Billing invoice details."), context);
+    await store.create(item(
+      "denied",
+      "Billing invoice secret.",
+      { kind: "user", subjectId: "other-user" },
+    ), {
+      ...context,
+      access: { ...context.access, externalUserId: "other-user" },
+    });
+
+    const results = await store.search({ query: "billing invoice" }, context);
+    expect(receivedIds).toEqual(["a", "b"]);
+    expect(results.map(({ item: value }) => value.id)).toEqual(["b", "a"]);
+    expect(results.map(({ scores }) => scores?.rerank)).toEqual([0.9, 0.8]);
+  });
+
+  it("falls back to fused order on malformed reranker output", async () => {
+    const store = new InMemoryMemoryItemStore({}, undefined, {
+      reranker: {
+        rerank: async () => ({ ranking: [{ id: "invented", score: 1 }] }),
+      },
+      rerankLimit: 1,
+      rerankFailureMode: "fallback",
+    });
+    await store.create(item("a", "Billing invoice details."), context);
+    await store.create(item("b", "Billing invoice details."), context);
+
+    const results = await store.search({ query: "billing invoice" }, context);
+    expect(results.map(({ item: value }) => value.id)).toEqual(["a", "b"]);
+    expect(results.every(({ fallbackReason }) => (
+      fallbackReason === "reranker_invalid_output"
+    ))).toBe(true);
+  });
+
+  it("rechecks lifecycle after asynchronous reranking", async () => {
+    let store: InMemoryMemoryItemStore;
+    store = new InMemoryMemoryItemStore({}, undefined, {
+      reranker: {
+        rerank: async ({ candidates }) => {
+          await store.forget("a", context);
+          return {
+            ranking: candidates.map(({ id }, index) => ({ id, score: 1 - index })),
+          };
+        },
+      },
+      rerankLimit: 2,
+      rerankFailureMode: "strict",
+    });
+    await store.create(item("a", "Billing invoice details."), context);
+    await store.create(item("b", "Billing invoice details."), context);
+
+    const results = await store.search({ query: "billing invoice" }, context);
+    expect(results.map(({ item: value }) => value.id)).toEqual(["b"]);
   });
 });

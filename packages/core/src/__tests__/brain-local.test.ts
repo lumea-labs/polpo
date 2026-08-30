@@ -8,6 +8,7 @@ import {
   createBrainIngestionJob,
   createBrainSource,
   createBrainSourceVersion,
+  createBrainTextRerankerAdapter,
   ingestBrainSource,
   retrieveBrain,
   type BrainAccessPolicy,
@@ -15,6 +16,7 @@ import {
   type LegacyBrainEmbeddingProvider,
   type BrainReranker,
   type BrainScope,
+  type TextReranker,
 } from "../brain/index.js";
 
 const projectA = { kind: "project", subjectId: "project-a" } as const;
@@ -796,6 +798,53 @@ describe("Brain ingestion and retrieval", () => {
       reranker,
       failureMode: "fallback",
     })).rejects.toMatchObject({ name: "AbortError" });
+  });
+
+  it("adapts the shared text reranker without losing citation identity", async () => {
+    const store = new InMemoryBrainStore();
+    await seed(store, {
+      sourceId: "a",
+      content: "Billing guide alpha.",
+      label: "A",
+    });
+    await seed(store, {
+      sourceId: "b",
+      content: "Billing guide beta.",
+      label: "B",
+    });
+    let received: readonly string[] = [];
+    const textReranker: TextReranker = {
+      rerank: async ({ candidates }) => {
+        received = candidates.map(({ text }) => text);
+        return {
+          ranking: [
+            { id: "1", score: 0.9 },
+            { id: "0", score: 0.8 },
+          ],
+        };
+      },
+    };
+
+    const results = await retrieveBrain({
+      query: "billing guide",
+      scopes: [projectA],
+      actor,
+      limit: 2,
+      tokenBudget: 1_000,
+    }, {
+      sourceStore: store,
+      chunkStore: store,
+      accessPolicy: allow,
+      reranker: createBrainTextRerankerAdapter(textReranker),
+      failureMode: "strict",
+    });
+
+    expect(received).toHaveLength(2);
+    expect(results.map((result) => result.chunk.sourceId)).toEqual(["b", "a"]);
+    expect(results.map((result) => result.scores.rerank)).toEqual([0.9, 0.8]);
+    expect(results.every((result) => (
+      result.chunk.citation.sourceId === result.chunk.sourceId
+    ))).toBe(true);
   });
 
   it("enforces the final token budget and returns no segment for empty input", async () => {

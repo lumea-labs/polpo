@@ -13,8 +13,10 @@ import {
   cosineSimilarity,
   fuseHybridRankings,
   normalizeTextEmbeddingIdentity,
+  rerankTextCandidates,
   textEmbeddingIdentitiesEqual,
   type TextEmbeddingIdentity,
+  type HybridRankingResult,
 } from "../semantic-retrieval.js";
 import {
   canAccessMemoryScope,
@@ -139,6 +141,28 @@ function normalizeLimit(value: number | undefined): number {
   return value;
 }
 
+function normalizeSemanticInteger(
+  value: number | undefined,
+  fallback: number,
+  path: string,
+  minimum: number,
+  maximum: number,
+): number {
+  const resolved = value ?? fallback;
+  if (
+    !Number.isSafeInteger(resolved)
+    || resolved < minimum
+    || resolved > maximum
+  ) {
+    throw new MemoryContractError(
+      `Memory ${path} must be an integer between ${minimum} and ${maximum}`,
+      "invalid_item",
+      path,
+    );
+  }
+  return resolved;
+}
+
 function normalizeListCursor(value: MemoryListCursor): MemoryListCursor {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new MemoryContractError(
@@ -217,6 +241,10 @@ export class InMemoryMemoryItemStore implements MemoryItemStore {
   private readonly vectors = new Map<string, StoredMemoryVector>();
   private readonly embeddingProvider?: MemorySemanticRetrievalOptions["embeddingProvider"];
   private readonly embeddingFailureMode: "fallback" | "strict";
+  private readonly reranker?: MemorySemanticRetrievalOptions["reranker"];
+  private readonly rerankLimit: number;
+  private readonly rerankTimeoutMs: number;
+  private readonly rerankFailureMode: "fallback" | "strict";
 
   constructor(
     private readonly writePolicy: MemoryWritePolicy = {},
@@ -225,6 +253,39 @@ export class InMemoryMemoryItemStore implements MemoryItemStore {
   ) {
     this.embeddingProvider = semantic.embeddingProvider;
     this.embeddingFailureMode = semantic.embeddingFailureMode ?? "fallback";
+    this.reranker = semantic.reranker;
+    this.rerankLimit = normalizeSemanticInteger(
+      semantic.rerankLimit,
+      0,
+      "rerankLimit",
+      0,
+      1_000,
+    );
+    this.rerankTimeoutMs = normalizeSemanticInteger(
+      semantic.rerankTimeoutMs,
+      1_500,
+      "rerankTimeoutMs",
+      1,
+      120_000,
+    );
+    this.rerankFailureMode = semantic.rerankFailureMode ?? "fallback";
+    if (this.rerankLimit > 0 && !this.reranker) {
+      throw new MemoryContractError(
+        "Memory rerankLimit requires a reranker",
+        "invalid_item",
+        "rerankLimit",
+      );
+    }
+    if (
+      this.rerankFailureMode !== "fallback"
+      && this.rerankFailureMode !== "strict"
+    ) {
+      throw new MemoryContractError(
+        "Memory rerankFailureMode must be fallback or strict",
+        "invalid_item",
+        "rerankFailureMode",
+      );
+    }
     if (snapshot) this.replaceSnapshot(snapshot);
   }
 
@@ -624,22 +685,65 @@ export class InMemoryMemoryItemStore implements MemoryItemStore {
     const fused = fuseHybridRankings({
       lexical: lexical.map((result) => ({ id: result.item.id, score: result.score })),
       semantic,
-    }).map((result): MemorySearchResult => {
+    });
+    let ranked: readonly HybridRankingResult[] = fused;
+    if (this.reranker && this.rerankLimit > 0 && fused.length > 0) {
+      const count = Math.min(this.rerankLimit, fused.length);
+      const outcome = await rerankTextCandidates({
+        query: query.query,
+        candidates: fused.slice(0, count).map(({ id }) => {
+          const item = itemById.get(id)!;
+          return {
+            id,
+            text: `${item.summary ?? ""}\n${item.content}`,
+          };
+        }),
+        limit: count,
+        timeoutMs: this.rerankTimeoutMs,
+        failureMode: this.rerankFailureMode,
+        ...(query.signal ? { signal: query.signal } : {}),
+      }, this.reranker);
+      const fusedById = new Map(fused.map((result) => [result.id, result]));
+      const reranked = outcome.ranking.map(({ candidate, score }) => {
+        const original = fusedById.get(candidate.id)!;
+        return Object.freeze({
+          ...original,
+          ...(score === undefined ? {} : {
+            score,
+            scores: Object.freeze({ ...original.scores, rerank: score }),
+          }),
+        });
+      });
+      ranked = Object.freeze([...reranked, ...fused.slice(count)]);
+      if (outcome.fallbackReason) fallbackReason = outcome.fallbackReason;
+    }
+    const resultNow = query.now ?? context.now ?? new Date();
+    const currentState = this.namespaces.get(normalizedContext.namespace);
+    const final = ranked.flatMap((result): MemorySearchResult[] => {
       const lexicalResult = lexicalById.get(result.id);
-      const item = itemById.get(result.id)!;
-      return Object.freeze({
-        item,
+      const candidate = itemById.get(result.id)!;
+      const current = currentState?.items.get(result.id);
+      if (
+        !current
+        || current.updatedAt !== candidate.updatedAt
+        || !canAccessMemoryScope(current.scope, normalizedContext.access)
+        || !isMemoryItemRetrievable(current, resultNow)
+      ) {
+        return [];
+      }
+      return [Object.freeze({
+        item: cloneItem(current),
         score: result.score,
         matchedTerms: lexicalResult?.matchedTerms ?? Object.freeze([]),
         estimatedTokens: lexicalResult?.estimatedTokens
-          ?? Math.max(1, Math.ceil((item.content.length + (item.summary?.length ?? 0)) / 4)),
+          ?? Math.max(1, Math.ceil((current.content.length + (current.summary?.length ?? 0)) / 4)),
         scores: Object.freeze(result.scores),
         ranks: Object.freeze(result.ranks),
         retrievalMode: result.mode,
         ...(fallbackReason ? { fallbackReason } : {}),
-      });
+      })];
     });
-    return selectMemoryResultsWithinBudget(fused, {
+    return selectMemoryResultsWithinBudget(final, {
       tokenBudget: query.tokenBudget ?? Number.MAX_SAFE_INTEGER,
       maxResults: query.maxResults ?? 20,
     });
