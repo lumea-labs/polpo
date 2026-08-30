@@ -1089,9 +1089,21 @@ describe("DrizzleSessionStore", () => {
     const assistant = await stores.sessionStore.addMessage(sid, "assistant", "");
     await stores.sessionStore.updateMessage(sid, assistant.id, "", [{
       id: "call-1",
-      name: "configure_site_module",
-      arguments: { module: "booking" },
+      name: "ask_user_question",
+      arguments: { question: "Which module?" },
       state: "interrupted",
+      continuationClientTools: [{
+        type: "function",
+        function: {
+          name: "configure_site_module",
+          parameters: {
+            type: "object",
+            properties: { module: { type: "string" } },
+            required: ["module"],
+            additionalProperties: false,
+          },
+        },
+      }],
     }]);
 
     const prepared = await stores.sessionStore.prepareContinuation!({
@@ -1111,6 +1123,10 @@ describe("DrizzleSessionStore", () => {
       status: "prepared",
       sessionVersion: 3,
       runId: "chatcmpl-loop-1",
+      requestClientTools: [{
+        type: "function",
+        function: { name: "configure_site_module" },
+      }],
     });
     expect(prepared.messages.at(-1)).toMatchObject({
       role: "tool",

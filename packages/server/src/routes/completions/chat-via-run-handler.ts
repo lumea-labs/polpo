@@ -358,6 +358,8 @@ async function finishCommon(
   const committedTurn = await persistAssistantMessage(sessionStore, sessionId, assistantMsgId, state.finalText, state.toolCallsAccum, {
     ...options,
     reasoning: state.reasoning,
+    requestClientTools: execution.requestClientTools,
+    clientToolCallId: state.clientReturn?.id,
     ...(canonicalTurnSucceeded && execution.canonicalTurn
       ? { canonicalTurn: execution.canonicalTurn }
       : {}),

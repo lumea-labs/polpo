@@ -780,8 +780,15 @@ describe.skipIf(!canConnect)("PostgreSQL Drizzle stores", () => {
       const assistant = await stores.sessionStore.addMessage(sid, "assistant", "Choose");
       await stores.sessionStore.updateMessage(sid, assistant.id, "Choose", [{
         id: "call-1",
-        name: "configure_site_module",
+        name: "ask_user_question",
         state: "interrupted",
+        continuationClientTools: [{
+          type: "function",
+          function: {
+            name: "configure_site_module",
+            parameters: { type: "object", properties: {}, additionalProperties: false },
+          },
+        }],
       }]);
       const input = {
         sessionId: sid,
@@ -800,10 +807,18 @@ describe.skipIf(!canConnect)("PostgreSQL Drizzle stores", () => {
         status: "prepared",
         sessionVersion: 2,
         runId: "looprun-1",
+        requestClientTools: [{
+          type: "function",
+          function: { name: "configure_site_module" },
+        }],
       });
       await expect(stores.sessionStore.prepareContinuation!(input)).resolves.toMatchObject({
         status: "replay",
         runId: "looprun-1",
+        requestClientTools: [{
+          type: "function",
+          function: { name: "configure_site_module" },
+        }],
       });
       await expect(stores.sessionStore.prepareContinuation!({
         ...input,

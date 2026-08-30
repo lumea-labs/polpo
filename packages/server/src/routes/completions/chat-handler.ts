@@ -23,6 +23,7 @@ import type {
   NormalizedChatInteractionSettings,
   ResolvedChatInteractionCapabilities,
 } from "@polpo-ai/core/chat-interactions";
+import type { SessionClientToolDefinition } from "@polpo-ai/core/session-store";
 import { runModelPolicyTurn } from "@polpo-ai/llm";
 import { Output, type LanguageModelUsage } from "ai";
 import type { CompletionRouteDeps } from "../completions.js";
@@ -106,6 +107,8 @@ export interface ChatCompletionExecution {
   interactionCapabilities?: ResolvedChatInteractionCapabilities;
   clientSideTools?: Record<string, any>;
   clientSideToolNames?: Set<string>;
+  /** Server-owned catalog retained across delayed direct-chat continuation. */
+  requestClientTools?: readonly SessionClientToolDefinition[];
   /** Dynamic model-facing pool for progressive disclosure. */
   activeToolNames?: () => string[];
   /** Dynamic Polpo tool definitions used for compaction estimation. */
@@ -232,6 +235,7 @@ export async function executeStreamingChatCompletion(
     let outputPolicyApplied = false;
     let suggestions: ChatSuggestion[] = [];
     let canonicalTurnSucceeded = false;
+    let clientToolCallId: string | undefined;
     const finalizeOutput = async (validateStructured = true) => {
       if (outputPolicyApplied) return;
       finalText = await applyCompletionOutputPolicy({
@@ -440,6 +444,7 @@ export async function executeStreamingChatCompletion(
           clientSideToolNames(exec),
         );
         if (clientSideCall) {
+          clientToolCallId = clientSideCall.toolCallId;
           // Persist for session history
           toolCallsAccum.push({
             id: clientSideCall.toolCallId,
@@ -720,6 +725,8 @@ export async function executeStreamingChatCompletion(
         {
           ...(suggestions.length > 0 ? { suggestions } : {}),
           reasoning: finalReasoning,
+          requestClientTools: exec.requestClientTools,
+          clientToolCallId,
           ...(canonicalTurnSucceeded && exec.canonicalTurn
             ? { canonicalTurn: exec.canonicalTurn }
             : {}),
@@ -782,6 +789,7 @@ export async function runNonStreamingChatCompletion(c: any, exec: ChatCompletion
   let outputPolicyApplied = false;
   let suggestions: ChatSuggestion[] = [];
   let canonicalTurnSucceeded = false;
+  let clientToolCallId: string | undefined;
   const finalizeOutput = async (validateStructured = true) => {
     if (outputPolicyApplied) return;
     finalText = await applyCompletionOutputPolicy({
@@ -892,6 +900,7 @@ export async function runNonStreamingChatCompletion(c: any, exec: ChatCompletion
         clientSideToolNames(exec),
       );
       if (clientSideCall) {
+        clientToolCallId = clientSideCall.toolCallId;
         toolCallsAccum.push({
           id: clientSideCall.toolCallId,
           name: clientSideCall.toolName,
@@ -1169,6 +1178,8 @@ export async function runNonStreamingChatCompletion(c: any, exec: ChatCompletion
       emptyFallback: "[Response interrupted]",
       ...(suggestions.length > 0 ? { suggestions } : {}),
       reasoning: finalReasoning,
+      requestClientTools: exec.requestClientTools,
+      clientToolCallId,
       ...(canonicalTurnSucceeded && exec.canonicalTurn
         ? { canonicalTurn: exec.canonicalTurn }
         : {}),
