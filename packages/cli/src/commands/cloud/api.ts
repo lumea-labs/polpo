@@ -13,12 +13,17 @@ export interface ApiResponse<T = unknown> {
   data: T;
 }
 
+export interface ApiRequestOptions {
+  /** Request context only. Authentication and project headers cannot be overridden. */
+  headers?: Readonly<Record<string, string>>;
+}
+
 export interface ApiClient {
-  get<T = unknown>(path: string): Promise<ApiResponse<T>>;
-  post<T = unknown>(path: string, body?: unknown): Promise<ApiResponse<T>>;
-  put<T = unknown>(path: string, body?: unknown): Promise<ApiResponse<T>>;
-  patch<T = unknown>(path: string, body?: unknown): Promise<ApiResponse<T>>;
-  delete<T = unknown>(path: string): Promise<ApiResponse<T>>;
+  get<T = unknown>(path: string, options?: ApiRequestOptions): Promise<ApiResponse<T>>;
+  post<T = unknown>(path: string, body?: unknown, options?: ApiRequestOptions): Promise<ApiResponse<T>>;
+  put<T = unknown>(path: string, body?: unknown, options?: ApiRequestOptions): Promise<ApiResponse<T>>;
+  patch<T = unknown>(path: string, body?: unknown, options?: ApiRequestOptions): Promise<ApiResponse<T>>;
+  delete<T = unknown>(path: string, options?: ApiRequestOptions): Promise<ApiResponse<T>>;
 }
 
 export function createApiClient(credentials: Credentials, projectId?: string): ApiClient {
@@ -34,6 +39,7 @@ export function createApiClient(credentials: Credentials, projectId?: string): A
     method: string,
     path: string,
     body?: unknown,
+    options?: ApiRequestOptions,
   ): Promise<ApiResponse<T>> {
     const url = `${baseUrl.replace(/\/$/, "")}${path}`;
 
@@ -41,7 +47,10 @@ export function createApiClient(credentials: Credentials, projectId?: string): A
     try {
       res = await fetch(url, {
         method,
-        headers,
+        headers: {
+          ...options?.headers,
+          ...headers,
+        },
         body: body !== undefined ? JSON.stringify(body) : undefined,
       });
     } catch (err) {
@@ -62,13 +71,15 @@ export function createApiClient(credentials: Credentials, projectId?: string): A
   }
 
   return {
-    get: <T = unknown>(path: string) => request<T>("GET", path),
-    post: <T = unknown>(path: string, body?: unknown) =>
-      request<T>("POST", path, body),
-    put: <T = unknown>(path: string, body?: unknown) =>
-      request<T>("PUT", path, body),
-    patch: <T = unknown>(path: string, body?: unknown) =>
-      request<T>("PATCH", path, body),
-    delete: <T = unknown>(path: string) => request<T>("DELETE", path),
+    get: <T = unknown>(path: string, options?: ApiRequestOptions) =>
+      request<T>("GET", path, undefined, options),
+    post: <T = unknown>(path: string, body?: unknown, options?: ApiRequestOptions) =>
+      request<T>("POST", path, body, options),
+    put: <T = unknown>(path: string, body?: unknown, options?: ApiRequestOptions) =>
+      request<T>("PUT", path, body, options),
+    patch: <T = unknown>(path: string, body?: unknown, options?: ApiRequestOptions) =>
+      request<T>("PATCH", path, body, options),
+    delete: <T = unknown>(path: string, options?: ApiRequestOptions) =>
+      request<T>("DELETE", path, undefined, options),
   };
 }
