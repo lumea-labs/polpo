@@ -22,6 +22,8 @@ export type {
   ApplicationCapabilityRecord,
   ApplicationCapabilityRequest,
   ConfigureApplicationCapabilityRequest,
+  ConfigureCloudOAuthClientRequest,
+  CloudOAuthClientRecord,
   ConnectionEventRecord,
   ConnectionSetupStatus,
   CreateConnectionSetupSessionRequest,

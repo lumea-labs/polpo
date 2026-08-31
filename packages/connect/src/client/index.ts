@@ -93,6 +93,7 @@ export interface CreateConnectionSetupSessionRequest {
   scopes?: string[];
   returnUrl: string;
   oauthClientMode: "managed" | "customer" | "instance";
+  application?: { name: string; url?: string };
   metadata?: Record<string, unknown>;
 }
 
@@ -139,6 +140,29 @@ export interface ConnectionSetupStatus {
   resultingConnectionId?: string;
   expiresAt: string;
   consumedAt?: string;
+  scopes: string[];
+  application?: { name: string; url?: string };
+}
+
+export interface CloudOAuthClientRecord {
+  id: string;
+  providerId: string;
+  owner: { type: "organization" | "project"; id: string };
+  name?: string;
+  status: "active" | "revoked";
+  clientId: string;
+  hasSecret: boolean;
+  redirectUris: string[];
+  returnOrigins: string[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ConfigureCloudOAuthClientRequest {
+  name?: string;
+  clientId: string;
+  clientSecret?: string;
+  returnOrigins?: string[];
 }
 
 export interface ConnectionEventRecord {
@@ -310,6 +334,58 @@ export class PolpoConnectClient {
     );
   }
 
+  listProjectOAuthClients(projectId: string): Promise<CloudOAuthClientRecord[]> {
+    return this.request("GET", `${projectConnectPath(projectId)}/oauth-clients`);
+  }
+
+  configureProjectOAuthClient(
+    projectId: string,
+    providerId: string,
+    input: ConfigureCloudOAuthClientRequest,
+  ): Promise<CloudOAuthClientRecord> {
+    return this.request(
+      "PUT",
+      `${projectConnectPath(projectId)}/oauth-clients/${encodeURIComponent(providerId)}`,
+      input,
+    );
+  }
+
+  revokeProjectOAuthClient(
+    projectId: string,
+    providerId: string,
+  ): Promise<CloudOAuthClientRecord> {
+    return this.request(
+      "DELETE",
+      `${projectConnectPath(projectId)}/oauth-clients/${encodeURIComponent(providerId)}`,
+    );
+  }
+
+  listOrganizationOAuthClients(organizationId: string): Promise<CloudOAuthClientRecord[]> {
+    return this.request("GET", `${organizationConnectPath(organizationId)}/oauth-clients`);
+  }
+
+  configureOrganizationOAuthClient(
+    organizationId: string,
+    providerId: string,
+    input: ConfigureCloudOAuthClientRequest,
+  ): Promise<CloudOAuthClientRecord> {
+    return this.request(
+      "PUT",
+      `${organizationConnectPath(organizationId)}/oauth-clients/${encodeURIComponent(providerId)}`,
+      input,
+    );
+  }
+
+  revokeOrganizationOAuthClient(
+    organizationId: string,
+    providerId: string,
+  ): Promise<CloudOAuthClientRecord> {
+    return this.request(
+      "DELETE",
+      `${organizationConnectPath(organizationId)}/oauth-clients/${encodeURIComponent(providerId)}`,
+    );
+  }
+
   configureApplicationCapability(
     projectId: string,
     capabilityId: string,
@@ -395,6 +471,11 @@ export class PolpoConnectClient {
 function projectConnectPath(projectId: string): string {
   if (!projectId.trim()) throw new TypeError("projectId is required");
   return `/v1/projects/${encodeURIComponent(projectId)}/connect`;
+}
+
+function organizationConnectPath(organizationId: string): string {
+  if (!organizationId.trim()) throw new TypeError("organizationId is required");
+  return `/v1/orgs/${encodeURIComponent(organizationId)}/connect`;
 }
 
 export function openConnectionSetup(

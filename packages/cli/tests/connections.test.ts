@@ -51,6 +51,7 @@ describe("Connections CLI", () => {
       "setup-session",
       "setup-status",
       "capabilities",
+      "oauth-clients",
       "events",
       "health",
       "bind",

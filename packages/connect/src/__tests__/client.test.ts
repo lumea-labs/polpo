@@ -143,6 +143,44 @@ describe("PolpoConnectClient", () => {
     await expect(client.waitForSetupCompletion("setup-token", { timeoutMs: 100 }))
       .resolves.toMatchObject({ status: "completed" });
   });
+
+  it("administers customer OAuth Clients without reading their client secret", async () => {
+    const clientRecord = {
+      id: "oauthclient-1",
+      providerId: "github",
+      owner: { type: "project", id: "project-1" },
+      clientId: "client-id",
+      hasSecret: true,
+      status: "active",
+    };
+    const responses = [
+      ok([clientRecord]),
+      ok(clientRecord),
+      ok({ ...clientRecord, status: "revoked", hasSecret: false }),
+      ok([{ ...clientRecord, owner: { type: "organization", id: "org-1" } }]),
+    ];
+    const fetchImpl = vi.fn(async () => responses.shift()!);
+    const client = new PolpoConnectClient({ baseUrl: "https://api.polpo.test", fetch: fetchImpl as typeof fetch });
+
+    await client.listProjectOAuthClients("project/one");
+    await client.configureProjectOAuthClient("project/one", "github", {
+      clientId: "client-id",
+      clientSecret: "write-only-secret",
+      returnOrigins: ["https://app.example"],
+    });
+    await client.revokeProjectOAuthClient("project/one", "github");
+    await client.listOrganizationOAuthClients("org/one");
+
+    expect(fetchImpl.mock.calls.map((call) => call[0])).toEqual([
+      "https://api.polpo.test/v1/projects/project%2Fone/connect/oauth-clients",
+      "https://api.polpo.test/v1/projects/project%2Fone/connect/oauth-clients/github",
+      "https://api.polpo.test/v1/projects/project%2Fone/connect/oauth-clients/github",
+      "https://api.polpo.test/v1/orgs/org%2Fone/connect/oauth-clients",
+    ]);
+    expect(JSON.parse(String(fetchImpl.mock.calls[1]![1]?.body))).toMatchObject({
+      clientSecret: "write-only-secret",
+    });
+  });
 });
 
 function ok(data: unknown): Response {

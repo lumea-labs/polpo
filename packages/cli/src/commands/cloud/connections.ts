@@ -290,6 +290,74 @@ export function registerConnectionsCommand(program: Command): void {
         printResult(connectionDataFrom(response), Boolean(options.json));
       }));
 
+  const oauthClients = connections.command("oauth-clients")
+    .description("Manage customer-owned OAuth applications separately from Connections");
+
+  oauthClients.command("list")
+    .description("List non-secret OAuth Client registrations")
+    .option("--organization <id>", "List organization-owned clients instead of project-owned clients")
+    .option("--json", "Print JSON")
+    .action((options: { json?: boolean; organization?: string }) =>
+      withConnectionClient("Listing OAuth Clients", options, async (client, projectId) => {
+        const path = options.organization
+          ? `/v1/orgs/${encodeURIComponent(options.organization)}/connect/oauth-clients`
+          : projectConnectionsPath(projectId, "oauth-clients");
+        const response = await client.get<ApiEnvelope<unknown[]>>(path);
+        printResult(connectionDataFrom(response), Boolean(options.json));
+      }));
+
+  oauthClients.command("set <provider>")
+    .description("Create or update a customer OAuth Client; the secret is read from an environment variable")
+    .requiredOption("--client-id <id>", "Provider OAuth client ID")
+    .option("--client-secret-env <name>", "Environment variable containing the write-only client secret")
+    .option("--name <name>", "Display name")
+    .option("--origin <origin...>", "Approved application return origins", [])
+    .option("--organization <id>", "Configure an organization-owned client instead of a project-owned client")
+    .option("--json", "Print JSON")
+    .action((provider: string, options: {
+      clientId: string;
+      clientSecretEnv?: string;
+      json?: boolean;
+      name?: string;
+      origin: string[];
+      organization?: string;
+    }) => withConnectionClient("Configuring an OAuth Client", options, async (client, projectId) => {
+      const secret = options.clientSecretEnv
+        ? process.env[options.clientSecretEnv]
+        : undefined;
+      if (options.clientSecretEnv && !secret) {
+        throw new Error(`Environment variable ${options.clientSecretEnv} is empty or unavailable.`);
+      }
+      const base = options.organization
+        ? `/v1/orgs/${encodeURIComponent(options.organization)}/connect/oauth-clients`
+        : projectConnectionsPath(projectId, "oauth-clients");
+      const response = await client.put<ApiEnvelope<unknown>>(
+        `${base}/${encodeURIComponent(provider)}`,
+        {
+          clientId: options.clientId,
+          ...(secret ? { clientSecret: secret } : {}),
+          ...(options.name ? { name: options.name } : {}),
+          returnOrigins: options.origin,
+        },
+      );
+      printResult(connectionDataFrom(response), Boolean(options.json));
+    }));
+
+  oauthClients.command("revoke <provider>")
+    .description("Revoke a customer OAuth Client without revoking existing Connections")
+    .option("--organization <id>", "Revoke an organization-owned client instead of a project-owned client")
+    .option("--json", "Print JSON")
+    .action((provider: string, options: { json?: boolean; organization?: string }) =>
+      withConnectionClient("Revoking an OAuth Client", options, async (client, projectId) => {
+        const base = options.organization
+          ? `/v1/orgs/${encodeURIComponent(options.organization)}/connect/oauth-clients`
+          : projectConnectionsPath(projectId, "oauth-clients");
+        const response = await client.delete<ApiEnvelope<unknown>>(
+          `${base}/${encodeURIComponent(provider)}`,
+        );
+        printResult(connectionDataFrom(response), Boolean(options.json));
+      }));
+
   connections.command("events <connection-id>")
     .description("List sanitized Connection audit events")
     .option("--limit <count>", "Maximum events to return", "50")
