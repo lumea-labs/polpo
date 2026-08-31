@@ -61,6 +61,7 @@
   },
   "dependencies": {
     "@polpo-ai/channels": "workspace:*",
+    "@polpo-ai/connect": "workspace:*",
     "@polpo-ai/core": "workspace:*"
   }
 }

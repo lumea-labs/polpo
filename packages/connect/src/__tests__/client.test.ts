@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { PolpoConnectClient } from "../client/index.js";
+import { openConnectionSetup, PolpoConnectClient } from "../client/index.js";
 
 describe("PolpoConnectClient", () => {
   it("unwraps server envelopes for setup and gateway requests", async () => {
@@ -49,6 +49,99 @@ describe("PolpoConnectClient", () => {
     }));
     const client = new PolpoConnectClient({ baseUrl: "https://api.polpo.test", fetch: fetchImpl as typeof fetch });
     await expect(client.listProviders()).resolves.toEqual([{ id: "github" }]);
+  });
+
+  it("uses logical application capabilities without exposing a physical Connection at invocation time", async () => {
+    const responses = [
+      ok([{ capabilityId: "github.repositories", status: "active" }]),
+      ok({ capabilityId: "github.repositories", status: "active" }),
+      ok({ status: 200, headers: {}, body: { repositories: [] } }),
+      ok({ capabilityId: "github.repositories", status: "revoked" }),
+    ];
+    const fetchImpl = vi.fn(async () => responses.shift()!);
+    const client = new PolpoConnectClient({
+      baseUrl: "https://api.polpo.test/",
+      headers: { authorization: "Bearer project-key" },
+      fetch: fetchImpl as typeof fetch,
+    });
+
+    await client.listApplicationCapabilities("project/one");
+    await client.configureApplicationCapability("project/one", "github.repositories", {
+      connectionId: "connection-secret-selection",
+      scopes: ["repo"],
+      allowedOperations: [{ methods: ["GET"], pathPatterns: ["/user/repos"] }],
+    });
+    await expect(client.requestApplicationCapability("project/one", "github.repositories", {
+      invocation: {
+        user: "user-1",
+        metadata: { tenantId: "tenant-1" },
+        scope: { key: "site-1", version: "3" },
+      },
+      request: { method: "GET", path: "/user/repos" },
+    })).resolves.toMatchObject({ status: 200, body: { repositories: [] } });
+    await client.revokeApplicationCapability("project/one", "github.repositories");
+
+    expect(fetchImpl.mock.calls.map((call) => call[0])).toEqual([
+      "https://api.polpo.test/v1/projects/project%2Fone/connect/application-capabilities?status=active",
+      "https://api.polpo.test/v1/projects/project%2Fone/connect/application-capabilities/github.repositories",
+      "https://api.polpo.test/v1/projects/project%2Fone/connect/capabilities/github.repositories/request",
+      "https://api.polpo.test/v1/projects/project%2Fone/connect/application-capabilities/github.repositories",
+    ]);
+    expect(JSON.parse(String(fetchImpl.mock.calls[2]![1]?.body))).not.toHaveProperty("connectionId");
+  });
+
+  it("supports embedded setup status, cancellation, and bounded sanitized events", async () => {
+    const responses = [
+      ok({ id: "setup-token", setupUrl: "https://polpo.sh/connect/setup/setup-token" }),
+      ok({ providerId: "github", projectId: "project-1", status: "pending" }),
+      ok({ providerId: "github", projectId: "project-1", status: "cancelled" }),
+      ok([{ id: "event-1", eventType: "connection.used", status: "success" }]),
+    ];
+    const fetchImpl = vi.fn(async () => responses.shift()!);
+    const client = new PolpoConnectClient({ baseUrl: "https://api.polpo.test", fetch: fetchImpl as typeof fetch });
+
+    await client.createProjectSetupSession("project-1", {
+      providerId: "github",
+      audience: "end_user",
+      subject: { type: "external_user", namespace: "app", id: "user-1" },
+      returnUrl: "https://app.example/settings",
+      oauthClientMode: "managed",
+    });
+    await client.getSetupStatus("setup/token");
+    await client.cancelSetupSession("setup/token");
+    await client.listConnectionEvents("project-1", "connection/one", 25);
+
+    expect(fetchImpl.mock.calls.map((call) => call[0])).toEqual([
+      "https://api.polpo.test/v1/projects/project-1/connect/setup-sessions",
+      "https://api.polpo.test/v1/connect/setup/setup%2Ftoken/status",
+      "https://api.polpo.test/v1/connect/setup/setup%2Ftoken/cancel",
+      "https://api.polpo.test/v1/projects/project-1/connect/connections/connection%2Fone/events?limit=25",
+    ]);
+    expect(() => client.listConnectionEvents("project-1", "connection-1", 0)).toThrow(/between 1 and 200/);
+  });
+
+  it("opens and observes embedded setup without placing credentials in the browser", async () => {
+    const popup = { closed: false } as Window;
+    const open = vi.fn(() => popup);
+    expect(openConnectionSetup("https://polpo.sh/connect/setup/token", { open })).toBe(popup);
+    expect(open).toHaveBeenCalledWith(
+      "https://polpo.sh/connect/setup/token",
+      "polpo-connect",
+      expect.stringContaining("popup"),
+    );
+    expect(() => openConnectionSetup("javascript:alert(1)", { open })).toThrow(/HTTP or HTTPS/);
+    expect(() => openConnectionSetup("https://polpo.sh/connect/setup/token", { open: () => null }))
+      .toThrow(/blocked/);
+
+    const fetchImpl = vi.fn(async () => ok({
+      providerId: "github",
+      projectId: "project-1",
+      status: "completed",
+      expiresAt: "2026-08-31T00:10:00.000Z",
+    }));
+    const client = new PolpoConnectClient({ baseUrl: "https://api.polpo.test", fetch: fetchImpl as typeof fetch });
+    await expect(client.waitForSetupCompletion("setup-token", { timeoutMs: 100 }))
+      .resolves.toMatchObject({ status: "completed" });
   });
 });
 

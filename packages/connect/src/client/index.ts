@@ -1,5 +1,10 @@
 import { ConnectError } from "../errors.js";
-import type { ConnectionRequest, ConnectionResponse } from "@polpo-ai/core";
+import type {
+  ConnectionOperationPolicy,
+  ConnectionRequest,
+  ConnectionResponse,
+  ToolInvocationJsonValue,
+} from "@polpo-ai/core";
 import type {
   ConnectSubject,
   ConnectionAudience,
@@ -95,6 +100,78 @@ export interface ConnectionGatewayRequest extends GetTokenRequest {
   request: ConnectionRequest;
 }
 
+export interface ApplicationCapabilityRecord {
+  capabilityId: string;
+  connectionId: string;
+  providerId: string;
+  scopes: string[];
+  allowedOperations: ConnectionOperationPolicy[];
+  binding?: ConnectionBindingAttributes;
+  status: "pending" | "active" | "revoked";
+  version: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ConfigureApplicationCapabilityRequest {
+  connectionId: string;
+  scopes?: string[];
+  allowedOperations?: ConnectionOperationPolicy[];
+  binding?: ConnectionBindingAttributes;
+}
+
+export interface ApplicationCapabilityInvocation {
+  user?: string;
+  metadata?: Record<string, ToolInvocationJsonValue>;
+  scope?: { key: string; version?: string };
+  sessionId?: string;
+}
+
+export interface ApplicationCapabilityRequest {
+  invocation?: ApplicationCapabilityInvocation;
+  request: ConnectionRequest;
+}
+
+export interface ConnectionSetupStatus {
+  providerId: string;
+  projectId: string;
+  status: "pending" | "started" | "completed" | "cancelled" | "expired" | "error";
+  resultingConnectionId?: string;
+  expiresAt: string;
+  consumedAt?: string;
+}
+
+export interface ConnectionEventRecord {
+  id: string;
+  connectionId?: string | null;
+  providerId?: string | null;
+  agentName?: string | null;
+  eventType: string;
+  actionId?: string | null;
+  toolName?: string | null;
+  status: string;
+  subjectType?: string | null;
+  subjectId?: string | null;
+  runId?: string | null;
+  sessionId?: string | null;
+  requestId?: string | null;
+  metadata?: Record<string, unknown>;
+  error?: string | null;
+  createdAt: string;
+}
+
+export interface WaitForConnectionSetupOptions {
+  signal?: AbortSignal;
+  pollIntervalMs?: number;
+  timeoutMs?: number;
+}
+
+export interface OpenConnectionSetupOptions {
+  target?: string;
+  features?: string;
+  open?: (url: string, target: string, features?: string) => Window | null;
+}
+
 export class PolpoConnectClient {
   private readonly baseUrl: string;
   private readonly fetchImpl: typeof fetch;
@@ -150,6 +227,57 @@ export class PolpoConnectClient {
     return this.request("POST", "/v1/connect/setup-sessions", input);
   }
 
+  createProjectSetupSession(
+    projectId: string,
+    input: Omit<CreateConnectionSetupSessionRequest, "projectId">,
+  ): Promise<ConnectionSetupSession & { setupUrl: string }> {
+    return this.request(
+      "POST",
+      `${projectConnectPath(projectId)}/setup-sessions`,
+      input,
+    );
+  }
+
+  getSetupStatus(setupToken: string): Promise<ConnectionSetupStatus> {
+    return this.request(
+      "GET",
+      `/v1/connect/setup/${encodeURIComponent(setupToken)}/status`,
+    );
+  }
+
+  cancelSetupSession(setupToken: string): Promise<ConnectionSetupStatus> {
+    return this.request(
+      "POST",
+      `/v1/connect/setup/${encodeURIComponent(setupToken)}/cancel`,
+    );
+  }
+
+  async waitForSetupCompletion(
+    setupToken: string,
+    options: WaitForConnectionSetupOptions = {},
+  ): Promise<ConnectionSetupStatus> {
+    const pollIntervalMs = options.pollIntervalMs ?? 1_000;
+    const timeoutMs = options.timeoutMs ?? 10 * 60_000;
+    if (!Number.isFinite(pollIntervalMs) || pollIntervalMs < 100 || pollIntervalMs > 60_000) {
+      throw new TypeError("pollIntervalMs must be between 100 and 60000");
+    }
+    if (!Number.isFinite(timeoutMs) || timeoutMs < 100 || timeoutMs > 60 * 60_000) {
+      throw new TypeError("timeoutMs must be between 100 and 3600000");
+    }
+    const deadline = Date.now() + timeoutMs;
+    while (true) {
+      throwIfAborted(options.signal);
+      const status = await this.getSetupStatus(setupToken);
+      if (["completed", "cancelled", "expired", "error"].includes(status.status)) {
+        return status;
+      }
+      if (Date.now() >= deadline) {
+        throw new ConnectError("http_error", "Connection setup timed out", { status: 408 });
+      }
+      await delay(Math.min(pollIntervalMs, Math.max(1, deadline - Date.now())), options.signal);
+    }
+  }
+
   startOAuthSetup(setupSessionId: string): Promise<StartOAuthResponse> {
     return this.request(
       "POST",
@@ -169,6 +297,64 @@ export class PolpoConnectClient {
       "POST",
       `/v1/connect/connections/${encodeURIComponent(connectionId)}/request`,
       input,
+    );
+  }
+
+  listApplicationCapabilities(
+    projectId: string,
+    status: "pending" | "active" | "revoked" = "active",
+  ): Promise<ApplicationCapabilityRecord[]> {
+    return this.request(
+      "GET",
+      `${projectConnectPath(projectId)}/application-capabilities?status=${status}`,
+    );
+  }
+
+  configureApplicationCapability(
+    projectId: string,
+    capabilityId: string,
+    input: ConfigureApplicationCapabilityRequest,
+  ): Promise<ApplicationCapabilityRecord> {
+    return this.request(
+      "PUT",
+      `${projectConnectPath(projectId)}/application-capabilities/${encodeURIComponent(capabilityId)}`,
+      input,
+    );
+  }
+
+  revokeApplicationCapability(
+    projectId: string,
+    capabilityId: string,
+  ): Promise<ApplicationCapabilityRecord> {
+    return this.request(
+      "DELETE",
+      `${projectConnectPath(projectId)}/application-capabilities/${encodeURIComponent(capabilityId)}`,
+    );
+  }
+
+  requestApplicationCapability<T = unknown>(
+    projectId: string,
+    capabilityId: string,
+    input: ApplicationCapabilityRequest,
+  ): Promise<ConnectionResponse<T>> {
+    return this.request(
+      "POST",
+      `${projectConnectPath(projectId)}/capabilities/${encodeURIComponent(capabilityId)}/request`,
+      input,
+    );
+  }
+
+  listConnectionEvents(
+    projectId: string,
+    connectionId: string,
+    limit = 50,
+  ): Promise<ConnectionEventRecord[]> {
+    if (!Number.isInteger(limit) || limit < 1 || limit > 200) {
+      throw new TypeError("Connection event limit must be an integer between 1 and 200");
+    }
+    return this.request(
+      "GET",
+      `${projectConnectPath(projectId)}/connections/${encodeURIComponent(connectionId)}/events?limit=${limit}`,
     );
   }
 
@@ -204,6 +390,57 @@ export class PolpoConnectClient {
     }
     return payload as T;
   }
+}
+
+function projectConnectPath(projectId: string): string {
+  if (!projectId.trim()) throw new TypeError("projectId is required");
+  return `/v1/projects/${encodeURIComponent(projectId)}/connect`;
+}
+
+export function openConnectionSetup(
+  setupUrl: string,
+  options: OpenConnectionSetupOptions = {},
+): Window {
+  const url = new URL(setupUrl);
+  if (url.protocol !== "https:" && url.protocol !== "http:") {
+    throw new TypeError("Connection setup URL must use HTTP or HTTPS");
+  }
+  const open = options.open
+    ?? (typeof window !== "undefined" ? window.open.bind(window) : undefined);
+  if (!open) throw new Error("Connection setup can only be opened in a browser");
+  const popup = open(
+    url.toString(),
+    options.target ?? "polpo-connect",
+    options.features ?? "popup,width=520,height=720,resizable=yes,scrollbars=yes",
+  );
+  if (!popup) throw new Error("Connection setup popup was blocked");
+  return popup;
+}
+
+function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (!signal?.aborted) return;
+  throw signal.reason instanceof Error
+    ? signal.reason
+    : new DOMException("The operation was aborted", "AbortError");
+}
+
+function delay(ms: number, signal: AbortSignal | undefined): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const onAbort = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+      try {
+        throwIfAborted(signal);
+      } catch (error) {
+        reject(error);
+      }
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
 }
 
 function safeJson(text: string): unknown {

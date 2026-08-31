@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { Command } from "commander";
 import {
   connectionDataFrom,
+  parseJsonArray,
   parseJsonObject,
   projectConnectionsPath,
   registerConnectionsCommand,
@@ -18,6 +19,9 @@ describe("Connections CLI", () => {
       .toEqual({ tenant: { namespace: "app", id: "tenant-1" } });
     expect(() => parseJsonObject("[]", "--binding")).toThrow(/JSON object/);
     expect(() => parseJsonObject("{", "--binding")).toThrow(/valid JSON/);
+    expect(parseJsonArray('[{"methods":["GET"]}]', "--operations"))
+      .toEqual([{ methods: ["GET"] }]);
+    expect(() => parseJsonArray("{}", "--operations")).toThrow(/JSON array/);
   });
 
   it("surfaces stable Cloud error codes", () => {
@@ -45,6 +49,9 @@ describe("Connections CLI", () => {
       "link",
       "unlink",
       "setup-session",
+      "setup-status",
+      "capabilities",
+      "events",
       "health",
       "bind",
       "grant-slot",

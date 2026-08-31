@@ -177,6 +177,9 @@ importers:
       '@polpo-ai/channels':
         specifier: workspace:*
         version: link:../channels
+      '@polpo-ai/connect':
+        specifier: workspace:*
+        version: link:../connect
       '@polpo-ai/core':
         specifier: workspace:*
         version: link:../core

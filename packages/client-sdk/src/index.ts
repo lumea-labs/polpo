@@ -15,6 +15,21 @@ export type {
   RuntimePlanSSEEvent,
 } from "./client/runtime-events.js";
 
+// ── Connections ──────────────────────────────────────────────
+export { openConnectionSetup, PolpoConnectClient } from "@polpo-ai/connect/client";
+export type {
+  ApplicationCapabilityInvocation,
+  ApplicationCapabilityRecord,
+  ApplicationCapabilityRequest,
+  ConfigureApplicationCapabilityRequest,
+  ConnectionEventRecord,
+  ConnectionSetupStatus,
+  CreateConnectionSetupSessionRequest,
+  OpenConnectionSetupOptions,
+  PolpoConnectClientOptions,
+  WaitForConnectionSetupOptions,
+} from "@polpo-ai/connect/client";
+
 // ── Store ─────────────────────────────────────────────────────
 export { PolpoStore } from "./store/polpo-store.js";
 export { reduceEvent } from "./store/event-reducer.js";
