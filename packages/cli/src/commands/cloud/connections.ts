@@ -39,6 +39,23 @@ export function parseJsonObject(
   return parsed as Record<string, unknown>;
 }
 
+export function parseJsonArray(
+  value: string | undefined,
+  label: string,
+): unknown[] | undefined {
+  if (!value) return undefined;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    throw new Error(`${label} must be valid JSON.`);
+  }
+  if (!Array.isArray(parsed)) {
+    throw new Error(`${label} must be a JSON array.`);
+  }
+  return parsed;
+}
+
 export function connectionDataFrom<T>(response: ApiResponse<ApiEnvelope<T>>): T {
   if (response.status < 200 || response.status >= 300) {
     throw new ConnectionCliApiError(
@@ -209,6 +226,154 @@ export function registerConnectionsCommand(program: Command): void {
       printResult(connectionDataFrom(response), Boolean(options.json));
     }));
 
+  connections.command("setup-status <token>")
+    .description("Inspect a public embedded Connection setup session")
+    .option("--json", "Print JSON")
+    .action((token: string, options: { json?: boolean }) =>
+      withConnectionClient("Inspecting a Connection setup session", options, async (client) => {
+        const response = await client.get<ApiEnvelope<unknown>>(
+          `/v1/connect/setup/${encodeURIComponent(token)}/status`,
+        );
+        printResult(connectionDataFrom(response), Boolean(options.json));
+      }));
+
+  const capabilities = connections.command("capabilities")
+    .description("Manage logical application Connection capabilities");
+
+  capabilities.command("list")
+    .description("List application capabilities without exposing provider credentials")
+    .option("--status <status>", "Filter by pending, active, or revoked", "active")
+    .option("--json", "Print JSON")
+    .action((options: { json?: boolean; status: string }) =>
+      withConnectionClient("Listing application capabilities", options, async (client, projectId) => {
+        const query = new URLSearchParams({ status: options.status });
+        const response = await client.get<ApiEnvelope<unknown[]>>(
+          `${projectConnectionsPath(projectId, "application-capabilities")}?${query}`,
+        );
+        printResult(connectionDataFrom(response), Boolean(options.json));
+      }));
+
+  capabilities.command("set <capability-id>")
+    .description("Bind a logical application capability to a trusted Connection")
+    .requiredOption("--connection <id>", "Physical Connection selected only in the trusted control plane")
+    .option("--scope <scope...>", "Scopes the application capability may request", [])
+    .requiredOption("--operations <json>", "Allowed operation policies as a JSON array")
+    .option("--binding <json>", "Optional trusted principal/tenant/resource binding JSON")
+    .option("--json", "Print JSON")
+    .action((capabilityId: string, options: {
+      binding?: string;
+      connection: string;
+      json?: boolean;
+      operations: string;
+      scope: string[];
+    }) => withConnectionClient("Configuring an application capability", options, async (client, projectId) => {
+      const response = await client.put<ApiEnvelope<unknown>>(
+        projectConnectionsPath(projectId, "application-capabilities", capabilityId),
+        {
+          connectionId: options.connection,
+          scopes: options.scope,
+          allowedOperations: parseJsonArray(options.operations, "--operations"),
+          binding: parseJsonObject(options.binding, "--binding"),
+        },
+      );
+      printResult(connectionDataFrom(response), Boolean(options.json));
+    }));
+
+  capabilities.command("revoke <capability-id>")
+    .description("Revoke a logical application capability")
+    .option("--json", "Print JSON")
+    .action((capabilityId: string, options: { json?: boolean }) =>
+      withConnectionClient("Revoking an application capability", options, async (client, projectId) => {
+        const response = await client.delete<ApiEnvelope<unknown>>(
+          projectConnectionsPath(projectId, "application-capabilities", capabilityId),
+        );
+        printResult(connectionDataFrom(response), Boolean(options.json));
+      }));
+
+  const oauthClients = connections.command("oauth-clients")
+    .description("Manage customer-owned OAuth applications separately from Connections");
+
+  oauthClients.command("list")
+    .description("List non-secret OAuth Client registrations")
+    .option("--organization <id>", "List organization-owned clients instead of project-owned clients")
+    .option("--json", "Print JSON")
+    .action((options: { json?: boolean; organization?: string }) =>
+      withConnectionClient("Listing OAuth Clients", options, async (client, projectId) => {
+        const path = options.organization
+          ? `/v1/orgs/${encodeURIComponent(options.organization)}/connect/oauth-clients`
+          : projectConnectionsPath(projectId, "oauth-clients");
+        const response = await client.get<ApiEnvelope<unknown[]>>(path);
+        printResult(connectionDataFrom(response), Boolean(options.json));
+      }));
+
+  oauthClients.command("set <provider>")
+    .description("Create or update a customer OAuth Client; the secret is read from an environment variable")
+    .requiredOption("--client-id <id>", "Provider OAuth client ID")
+    .option("--client-secret-env <name>", "Environment variable containing the write-only client secret")
+    .option("--name <name>", "Display name")
+    .option("--origin <origin...>", "Approved application return origins", [])
+    .option("--organization <id>", "Configure an organization-owned client instead of a project-owned client")
+    .option("--json", "Print JSON")
+    .action((provider: string, options: {
+      clientId: string;
+      clientSecretEnv?: string;
+      json?: boolean;
+      name?: string;
+      origin: string[];
+      organization?: string;
+    }) => withConnectionClient("Configuring an OAuth Client", options, async (client, projectId) => {
+      const secret = options.clientSecretEnv
+        ? process.env[options.clientSecretEnv]
+        : undefined;
+      if (options.clientSecretEnv && !secret) {
+        throw new Error(`Environment variable ${options.clientSecretEnv} is empty or unavailable.`);
+      }
+      const base = options.organization
+        ? `/v1/orgs/${encodeURIComponent(options.organization)}/connect/oauth-clients`
+        : projectConnectionsPath(projectId, "oauth-clients");
+      const response = await client.put<ApiEnvelope<unknown>>(
+        `${base}/${encodeURIComponent(provider)}`,
+        {
+          clientId: options.clientId,
+          ...(secret ? { clientSecret: secret } : {}),
+          ...(options.name ? { name: options.name } : {}),
+          returnOrigins: options.origin,
+        },
+      );
+      printResult(connectionDataFrom(response), Boolean(options.json));
+    }));
+
+  oauthClients.command("revoke <provider>")
+    .description("Revoke a customer OAuth Client without revoking existing Connections")
+    .option("--organization <id>", "Revoke an organization-owned client instead of a project-owned client")
+    .option("--json", "Print JSON")
+    .action((provider: string, options: { json?: boolean; organization?: string }) =>
+      withConnectionClient("Revoking an OAuth Client", options, async (client, projectId) => {
+        const base = options.organization
+          ? `/v1/orgs/${encodeURIComponent(options.organization)}/connect/oauth-clients`
+          : projectConnectionsPath(projectId, "oauth-clients");
+        const response = await client.delete<ApiEnvelope<unknown>>(
+          `${base}/${encodeURIComponent(provider)}`,
+        );
+        printResult(connectionDataFrom(response), Boolean(options.json));
+      }));
+
+  connections.command("events <connection-id>")
+    .description("List sanitized Connection audit events")
+    .option("--limit <count>", "Maximum events to return", "50")
+    .option("--json", "Print JSON")
+    .action((connectionId: string, options: { json?: boolean; limit: string }) =>
+      withConnectionClient("Listing Connection events", options, async (client, projectId) => {
+        const limit = Number(options.limit);
+        if (!Number.isInteger(limit) || limit < 1 || limit > 200) {
+          throw new Error("--limit must be an integer between 1 and 200.");
+        }
+        const response = await client.get<ApiEnvelope<unknown[]>>(
+          `${projectConnectionsPath(projectId, "connections", connectionId, "events")}?limit=${limit}`,
+        );
+        printResult(connectionDataFrom(response), Boolean(options.json));
+      }));
+
   connections.command("health")
     .description("Check Connection links, grants, OAuth clients, and secret readiness")
     .option("--json", "Print JSON")
@@ -216,6 +381,24 @@ export function registerConnectionsCommand(program: Command): void {
       withConnectionClient("Checking Connection health", options, async (client, projectId) => {
         const response = await client.get<ApiEnvelope<unknown>>(
           projectConnectionsPath(projectId, "health"),
+        );
+        printResult(connectionDataFrom(response), Boolean(options.json));
+      }));
+
+  connections.command("reconcile")
+    .description("Audit Connection state and optionally apply deterministic repairs")
+    .option("--apply", "Apply safe, idempotent repairs (default is dry-run)")
+    .option("--limit <count>", "Maximum records per resource type", "200")
+    .option("--json", "Print JSON")
+    .action((options: { apply?: boolean; json?: boolean; limit: string }) =>
+      withConnectionClient("Reconciling Connections", options, async (client, projectId) => {
+        const limit = Number(options.limit);
+        if (!Number.isInteger(limit) || limit < 1 || limit > 500) {
+          throw new Error("--limit must be an integer between 1 and 500.");
+        }
+        const response = await client.post<ApiEnvelope<unknown>>(
+          projectConnectionsPath(projectId, "reconcile"),
+          { dryRun: !options.apply, limit },
         );
         printResult(connectionDataFrom(response), Boolean(options.json));
       }));
