@@ -23,6 +23,10 @@ import {
   type McpConnectionAuth,
   type McpConnectionMetadata,
   type McpConnectionTransport,
+  type McpOAuthClientInformation,
+  type McpOAuthClientMode,
+  type McpOAuthInspection,
+  type McpOAuthSecretMaterial,
   type OAuth2AuthConfig,
   type OAuthClientResolver,
   type ResolvedOAuthClient,
@@ -44,6 +48,10 @@ import {
   type TokenRefreshCoordinator,
 } from "./secrets.js";
 import { createOpaqueToken, createPkcePair, parseScopes, toFormBody } from "./oauth.js";
+import {
+  createMcpOAuthProtocol,
+  type McpOAuthClientRegistrationStore,
+} from "./mcp-oauth.js";
 
 export interface CreateConnectServiceOptions {
   providers: readonly ConnectorProviderDefinition[];
@@ -62,6 +70,8 @@ export interface CreateConnectServiceOptions {
   links?: ConnectionLinkStore;
   setupSessionTtlMs?: number;
   allowedReturnUrlOrigins?: readonly string[];
+  mcpOAuthRegistrations?: McpOAuthClientRegistrationStore;
+  mcpOAuthCallbackClaimTtlMs?: number;
 }
 
 export interface CreateApiKeyConnectionInput {
@@ -107,6 +117,29 @@ export interface StartOAuthResult {
   authorizationUrl: string;
   state: string;
   expiresAt: string;
+}
+
+export interface InspectMcpOAuthConnectionInput {
+  url: string;
+  transport?: McpConnectionTransport;
+}
+
+export interface StartMcpOAuthInput {
+  providerId?: string;
+  name?: string;
+  url: string;
+  transport?: McpConnectionTransport;
+  scopes?: string[];
+  subject?: ConnectionOwner;
+  projectId?: string;
+  orgId?: string;
+  redirectUri: string;
+  mode: McpOAuthClientMode;
+  clientName?: string;
+  clientUri?: string;
+  clientMetadataUrl?: string;
+  preRegisteredClient?: McpOAuthClientInformation;
+  metadata?: Record<string, unknown>;
 }
 
 export interface CompleteOAuthInput {
@@ -169,6 +202,9 @@ export interface ConnectService {
   unlinkConnection(input: UnlinkConnectionInput): Promise<ConnectionLink>;
   createApiKeyConnection(input: CreateApiKeyConnectionInput): Promise<ConnectionRecord>;
   createMcpConnection(input: CreateMcpConnectionInput): Promise<ConnectionRecord>;
+  inspectMcpOAuth(input: InspectMcpOAuthConnectionInput): Promise<McpOAuthInspection>;
+  startMcpOAuth(input: StartMcpOAuthInput): Promise<StartOAuthResult>;
+  completeMcpOAuth(input: CompleteOAuthInput): Promise<ConnectionRecord>;
   createSetupSession(input: CreateConnectionSetupSessionInput): Promise<ConnectionSetupSession>;
   startOAuthSetup(input: StartOAuthSetupInput): Promise<StartOAuthResult>;
   startOAuth(input: StartOAuthInput): Promise<StartOAuthResult>;
@@ -189,6 +225,20 @@ export function createConnectService(options: CreateConnectServiceOptions): Conn
   const refreshCoordinator = options.refreshCoordinator ?? new MemoryTokenRefreshCoordinator();
   const resolveHostname = options.resolveHostname ?? (async (hostname: string) =>
     (await lookup(hostname, { all: true, verbatim: true })).map((entry) => entry.address));
+  const mcpOAuthFetch: typeof fetch = async (request, init) => {
+    const url = new URL(request instanceof Request ? request.url : String(request));
+    if (url.protocol !== "https:") {
+      throw new ConnectError("oauth_discovery_failed", "MCP OAuth network requests must use HTTPS");
+    }
+    await assertPublicDns(url.hostname, resolveHostname);
+    return fetchImpl(request, { ...init, redirect: "error" });
+  };
+  const mcpOAuth = createMcpOAuthProtocol({
+    fetch: mcpOAuthFetch,
+    registrations: options.mcpOAuthRegistrations,
+    now,
+  });
+  const mcpOAuthCallbackClaimTtlMs = options.mcpOAuthCallbackClaimTtlMs ?? 30_000;
 
   const resolveOAuthClient = async (input: {
     provider: ConnectorProviderDefinition;
@@ -463,6 +513,157 @@ export function createConnectService(options: CreateConnectServiceOptions): Conn
       });
     },
 
+    async inspectMcpOAuth(input) {
+      return mcpOAuth.inspect({ url: input.url, transport: input.transport });
+    },
+
+    async startMcpOAuth(input) {
+      const provider = registry.require(input.providerId ?? "mcp_url");
+      if (provider.auth.type !== "mcp") {
+        throw new ConnectError("unsupported_auth", `Provider "${provider.id}" does not use MCP auth`);
+      }
+      const url = normalizeMcpUrl(input.url, false);
+      const transport = input.transport ?? "http";
+      const requestedScopes = normalizeScopes(input.scopes ?? provider.auth.defaultScopes ?? []);
+      const state = createOpaqueToken();
+      const pendingConnectionId = createId("conn");
+      const temporarySecretRef = createId("connsec");
+      const started = await mcpOAuth.start({
+        url,
+        transport,
+        redirectUri: input.redirectUri,
+        state,
+        scopes: requestedScopes,
+        mode: input.mode,
+        clientName: input.clientName,
+        clientUri: input.clientUri,
+        clientMetadataUrl: input.clientMetadataUrl,
+        preRegisteredClient: input.preRegisteredClient,
+      });
+      const createdAt = now();
+      const expiresAt = new Date(createdAt.getTime() + oauthStateTtlMs);
+      await options.secrets.setSecret(temporarySecretRef, {
+        kind: "mcp",
+        mcpOAuth: started.material,
+      });
+      try {
+        await options.store.saveOAuthState({
+          state,
+          providerId: provider.id,
+          flowKind: "mcp",
+          status: "pending",
+          subject: input.subject,
+          requestedScopes,
+          redirectUri: started.material.redirectUri,
+          projectId: input.projectId,
+          orgId: input.orgId,
+          connectionName: input.name,
+          temporarySecretRef,
+          createdAt: createdAt.toISOString(),
+          expiresAt: expiresAt.toISOString(),
+          metadata: {
+            ...(input.metadata ?? {}),
+            url,
+            transport,
+            auth: "oauth2",
+            oauthClientMode: input.mode,
+            pendingConnectionId,
+          },
+        });
+      } catch (error) {
+        await options.secrets.deleteSecret(temporarySecretRef).catch(() => undefined);
+        throw error;
+      }
+      return { authorizationUrl: started.authorizationUrl, state, expiresAt: expiresAt.toISOString() };
+    },
+
+    async completeMcpOAuth(input) {
+      const store = options.store;
+      if (!store.getOAuthState || !store.claimOAuthState || !store.completeOAuthState || !store.releaseOAuthState) {
+        throw new ConnectError("setup_invalid", "Host store does not support retry-safe MCP OAuth callbacks");
+      }
+      const current = await store.getOAuthState(input.state);
+      if (!current || current.flowKind !== "mcp") {
+        throw new ConnectError("oauth_state_not_found", "MCP OAuth state was not found");
+      }
+      if (current.status === "completed" && current.completedConnectionId) {
+        const completed = await store.getConnection(current.completedConnectionId);
+        if (completed) return completed;
+      }
+      if (new Date(current.expiresAt).getTime() <= now().getTime()) {
+        throw new ConnectError("oauth_state_expired", "MCP OAuth state has expired");
+      }
+      if (input.error) {
+        throw new ConnectError("oauth_error", input.errorDescription ?? input.error);
+      }
+      if (!input.code) throw new ConnectError("invalid_request", "OAuth callback is missing code");
+
+      const claimToken = createOpaqueToken();
+      const claimed = await store.claimOAuthState(
+        input.state,
+        claimToken,
+        new Date(now().getTime() + mcpOAuthCallbackClaimTtlMs).toISOString(),
+        now().toISOString(),
+      );
+      if (!claimed) {
+        throw new ConnectError("oauth_callback_in_progress", "MCP OAuth callback is already being processed");
+      }
+      const pendingConnectionId = typeof claimed.metadata?.pendingConnectionId === "string"
+        ? claimed.metadata.pendingConnectionId
+        : undefined;
+      try {
+        if (pendingConnectionId) {
+          const existing = await store.getConnection(pendingConnectionId);
+          if (existing?.status === "active") {
+            await store.completeOAuthState(input.state, claimToken, existing.id);
+            return existing;
+          }
+        }
+        if (!claimed.temporarySecretRef) {
+          throw new ConnectError("secret_not_found", "MCP OAuth transient secret is missing");
+        }
+        const transient = await options.secrets.getSecret(claimed.temporarySecretRef);
+        if (!transient?.mcpOAuth) {
+          throw new ConnectError("secret_not_found", "MCP OAuth transient material is unavailable");
+        }
+        const tokens = await mcpOAuth.complete({
+          material: transient.mcpOAuth,
+          code: input.code,
+          requestedScopes: claimed.requestedScopes,
+        });
+        const grantedScopes = normalizeScopes(tokens.scopes ?? claimed.requestedScopes);
+        const material: McpOAuthSecretMaterial = {
+          ...transient.mcpOAuth,
+          codeVerifier: undefined,
+          tokens,
+        };
+        await options.secrets.setSecret(claimed.temporarySecretRef, { kind: "mcp", mcpOAuth: material });
+        const id = pendingConnectionId ?? createId("conn");
+        const connection = await store.upsertConnection({
+          id,
+          providerId: claimed.providerId,
+          name: claimed.connectionName,
+          projectId: claimed.projectId,
+          orgId: claimed.orgId,
+          owner: claimed.subject,
+          authType: "mcp",
+          status: "active",
+          grantedScopes,
+          secretRef: claimed.temporarySecretRef,
+          tokenExpiresAt: tokens.expiresAt,
+          createdAt: now().toISOString(),
+          updatedAt: now().toISOString(),
+          metadata: omitInternalMcpStateMetadata(claimed.metadata),
+        });
+        await store.completeOAuthState(input.state, claimToken, connection.id);
+        return connection;
+      } catch (error) {
+        const code = error instanceof ConnectError ? error.code : "oauth_error";
+        await store.releaseOAuthState(input.state, claimToken, code).catch(() => undefined);
+        throw error;
+      }
+    },
+
     async createSetupSession(input) {
       if (!options.setupSessions || !options.oauthClients) {
         throw new ConnectError(
@@ -722,6 +923,41 @@ export function createConnectService(options: CreateConnectServiceOptions): Conn
       }
 
       if (secret.kind === "mcp") {
+        if (secret.mcpOAuth?.tokens?.accessToken) {
+          let material = secret.mcpOAuth;
+          if (input.forceRefresh || shouldRefresh(material.tokens!, now(), tokenRefreshSkewMs)) {
+            material = await refreshCoordinator.runExclusive(connection.id, async () => {
+              const latest = await options.secrets.getSecret(connection.secretRef!);
+              if (!latest?.mcpOAuth?.tokens?.accessToken) {
+                throw new ConnectError("token_not_available", "MCP OAuth connection secret is empty");
+              }
+              if (!input.forceRefresh && !shouldRefresh(latest.mcpOAuth.tokens, now(), tokenRefreshSkewMs)) {
+                return latest.mcpOAuth;
+              }
+              const tokens = await mcpOAuth.refresh({
+                material: latest.mcpOAuth,
+                fallbackScopes: scopes,
+              });
+              const refreshed = { ...latest.mcpOAuth, tokens };
+              await options.secrets.setSecret(connection.secretRef!, { kind: "mcp", mcpOAuth: refreshed });
+              await options.store.updateConnection(connection.id, {
+                tokenExpiresAt: tokens.expiresAt,
+                updatedAt: now().toISOString(),
+              });
+              return refreshed;
+            });
+          }
+          return {
+            kind: "mcp",
+            accessToken: material.tokens!.accessToken,
+            tokenType: material.tokens!.tokenType ?? "Bearer",
+            expiresAt: material.tokens!.expiresAt,
+            scopes,
+            connectionId: connection.id,
+            providerId: connection.providerId,
+            metadata: connection.metadata as McpConnectionMetadata | undefined,
+          };
+        }
         if (!secret.apiKey) throw new ConnectError("token_not_available", "MCP connection secret is empty");
         return {
           kind: "mcp",
@@ -1339,7 +1575,16 @@ function isLocalHost(hostname: string): boolean {
 }
 
 function readMcpAuthMode(metadata: Record<string, unknown> | undefined): McpConnectionAuth {
-  return metadata?.auth === "none" ? "none" : "bearer";
+  if (metadata?.auth === "none") return "none";
+  if (metadata?.auth === "oauth2") return "oauth2";
+  if (metadata?.auth === "header") return "header";
+  return "bearer";
+}
+
+function omitInternalMcpStateMetadata(metadata: Record<string, unknown> | undefined): Record<string, unknown> | undefined {
+  if (!metadata) return undefined;
+  const { pendingConnectionId: _pendingConnectionId, ...publicMetadata } = metadata;
+  return publicMetadata;
 }
 
 function readTokenType(secret: StoredConnectionSecret): string {

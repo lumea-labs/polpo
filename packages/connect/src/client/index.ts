@@ -17,6 +17,9 @@ import type {
   ConnectorProviderDefinition,
   McpConnectionAuth,
   McpConnectionTransport,
+  McpOAuthClientInformation,
+  McpOAuthClientMode,
+  McpOAuthInspection,
   RuntimeToken,
 } from "../types.js";
 
@@ -74,6 +77,20 @@ export interface CompleteOAuthRequest {
   code?: string;
   error?: string;
   errorDescription?: string;
+}
+
+export interface InspectMcpOAuthRequest {
+  url: string;
+  transport?: McpConnectionTransport;
+}
+
+export interface StartMcpOAuthRequest extends InspectMcpOAuthRequest {
+  name?: string;
+  scopes?: string[];
+  mode: McpOAuthClientMode;
+  clientMetadataUrl?: string;
+  preRegisteredClient?: McpOAuthClientInformation;
+  metadata?: Record<string, unknown>;
 }
 
 export interface GetTokenRequest {
@@ -237,6 +254,28 @@ export class PolpoConnectClient {
 
   createMcpConnection(input: CreateMcpConnectionRequest): Promise<ConnectionRecord> {
     return this.request("POST", "/v1/connect/connections/mcp", input);
+  }
+
+  inspectProjectMcpOAuth(projectId: string, input: InspectMcpOAuthRequest): Promise<McpOAuthInspection> {
+    return this.request("POST", `${projectConnectPath(projectId)}/mcp/inspect`, input);
+  }
+
+  startProjectMcpOAuth(projectId: string, input: StartMcpOAuthRequest): Promise<StartOAuthResponse> {
+    return this.request("POST", `${projectConnectPath(projectId)}/mcp/oauth/start`, input);
+  }
+
+  reconnectProjectMcpConnection(projectId: string, connectionId: string): Promise<StartOAuthResponse> {
+    return this.request(
+      "POST",
+      `${projectConnectPath(projectId)}/connections/${encodeURIComponent(connectionId)}/mcp/reconnect`,
+    );
+  }
+
+  verifyProjectMcpConnection(projectId: string, connectionId: string): Promise<{ ok: boolean; toolCount?: number }> {
+    return this.request(
+      "POST",
+      `${projectConnectPath(projectId)}/connections/${encodeURIComponent(connectionId)}/mcp/verify`,
+    );
   }
 
   startOAuth(input: StartOAuthRequest): Promise<StartOAuthResponse> {

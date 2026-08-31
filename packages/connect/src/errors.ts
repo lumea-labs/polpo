@@ -13,6 +13,9 @@ export type ConnectErrorCode =
   | "oauth_state_not_found"
   | "oauth_state_expired"
   | "oauth_error"
+  | "oauth_discovery_failed"
+  | "oauth_registration_failed"
+  | "oauth_callback_in_progress"
   | "setup_invalid"
   | "setup_expired"
   | "setup_consumed"
@@ -40,12 +43,15 @@ function defaultStatus(code: ConnectErrorCode): number {
     case "invalid_scope":
     case "unsupported_auth":
     case "oauth_error":
+    case "oauth_discovery_failed":
+    case "oauth_registration_failed":
       return 400;
     case "setup_invalid":
       return 422;
     case "setup_expired":
       return 410;
     case "setup_consumed":
+    case "oauth_callback_in_progress":
       return 409;
     case "connection_not_found":
     case "provider_not_found":

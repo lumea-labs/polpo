@@ -23,6 +23,7 @@
     "README.md"
   ],
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "@polpo-ai/connect": "workspace:*",
     "@polpo-ai/core": "workspace:*"
   },
