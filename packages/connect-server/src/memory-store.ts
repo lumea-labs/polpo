@@ -53,6 +53,72 @@ export class MemoryConnectStore implements ConnectStore, ConnectionLinkStore, Co
     return record ? clone(record) : null;
   }
 
+  async getOAuthState(state: string): Promise<OAuthStateRecord | null> {
+    const record = this.oauthStates.get(state);
+    return record ? clone(record) : null;
+  }
+
+  async claimOAuthState(
+    state: string,
+    claimToken: string,
+    claimExpiresAt: string,
+    now: string,
+  ): Promise<OAuthStateRecord | null> {
+    const record = this.oauthStates.get(state);
+    if (!record || record.status === "completed") return record ? clone(record) : null;
+    if (
+      record.status === "processing"
+      && record.claimExpiresAt
+      && new Date(record.claimExpiresAt).getTime() > new Date(now).getTime()
+    ) return null;
+    const claimed: OAuthStateRecord = {
+      ...record,
+      status: "processing",
+      claimToken,
+      claimExpiresAt,
+      attempts: (record.attempts ?? 0) + 1,
+    };
+    this.oauthStates.set(state, clone(claimed));
+    return clone(claimed);
+  }
+
+  async completeOAuthState(
+    state: string,
+    claimToken: string,
+    connectionId: string,
+  ): Promise<OAuthStateRecord | null> {
+    const record = this.oauthStates.get(state);
+    if (!record || record.claimToken !== claimToken) return null;
+    const completed: OAuthStateRecord = {
+      ...record,
+      status: "completed",
+      completedConnectionId: connectionId,
+      claimToken: undefined,
+      claimExpiresAt: undefined,
+      lastErrorCode: undefined,
+    };
+    this.oauthStates.set(state, clone(completed));
+    return clone(completed);
+  }
+
+  async releaseOAuthState(
+    state: string,
+    claimToken: string,
+    errorCode: string,
+  ): Promise<OAuthStateRecord | null> {
+    const record = this.oauthStates.get(state);
+    if (!record || record.claimToken !== claimToken) return null;
+    const released: OAuthStateRecord = {
+      ...record,
+      status: "pending",
+      claimToken: undefined,
+      claimExpiresAt: undefined,
+      lastErrorCode: errorCode,
+    };
+    this.oauthStates.set(state, clone(released));
+    return clone(released);
+  }
+
   async listConnectionLinks(filter: ConnectionLinkListFilter = {}): Promise<ConnectionLink[]> {
     return [...this.links.values()].filter((link) =>
       (!filter.connectionId || link.connectionId === filter.connectionId)

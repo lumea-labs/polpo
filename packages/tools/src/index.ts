@@ -27,7 +27,13 @@ export {
 export type { SkillToolOptions } from "./skill-tools.js";
 export { createVaultToolsCore, createVaultTools, ALL_VAULT_TOOL_NAMES } from "./vault-tools.js";
 export { resolveAgentMcpTools } from "./mcp-client.js";
-export type { McpServerSpec, ResolvedMcpTools, VaultLookup } from "./mcp-client.js";
+export type {
+  McpRuntimeOAuthProvider,
+  McpRuntimeOAuthProviders,
+  McpServerSpec,
+  ResolvedMcpTools,
+  VaultLookup,
+} from "./mcp-client.js";
 
 // Extended tool factories
 export { createBrowserTools, ALL_BROWSER_TOOL_NAMES, cleanupAgentBrowserSession } from "./browser-tools.js";

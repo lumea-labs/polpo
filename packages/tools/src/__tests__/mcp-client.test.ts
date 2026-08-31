@@ -92,6 +92,49 @@ describe("resolveAgentMcpTools", () => {
     expect(call.transport.headers.Authorization).toBe("Bearer secret-123");
   });
 
+  it("passes host-owned OAuth providers to HTTP transports without serializing credentials", async () => {
+    const oauthProvider = {
+      tokens: vi.fn(async () => ({ access_token: "access-1", token_type: "Bearer" })),
+      saveTokens: vi.fn(async () => {}),
+      redirectToAuthorization: vi.fn(async () => {}),
+      saveCodeVerifier: vi.fn(async () => {}),
+      codeVerifier: vi.fn(async () => "verifier"),
+      redirectUrl: "https://app.example/connect/oauth/callback",
+      clientMetadata: {
+        client_name: "Polpo",
+        redirect_uris: ["https://app.example/connect/oauth/callback"],
+      },
+      clientInformation: vi.fn(async () => ({ client_id: "client-1" })),
+    };
+    const servers: Record<string, McpServerSpec> = {
+      linear: { type: "http", url: "https://mcp.linear.app/mcp", connectionId: "conn_linear" },
+    };
+
+    await resolveAgentMcpTools("agent-1", servers, undefined, { linear: oauthProvider });
+
+    const call = createClientMock.mock.calls[0]?.[0] as any;
+    expect(call.transport.authProvider).toBe(oauthProvider);
+    expect(call.transport).not.toHaveProperty("connectionId");
+    expect(servers.linear).not.toHaveProperty("authProvider");
+    expect(JSON.stringify(servers)).not.toContain("access-1");
+  });
+
+  it("rejects runtime OAuth providers for stdio transports", async () => {
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const servers: Record<string, McpServerSpec> = {
+      local: { type: "stdio", command: "node", args: ["server.js"] },
+    };
+
+    const result = await resolveAgentMcpTools("agent-1", servers, undefined, {
+      local: {} as any,
+    });
+
+    expect(result.tools).toEqual([]);
+    expect(createClientMock).not.toHaveBeenCalled();
+    expect(errSpy.mock.calls[0]?.[1]).toContain("only supported for HTTP or SSE");
+    errSpy.mockRestore();
+  });
+
   it("errors clearly when a vault placeholder cannot be resolved", async () => {
     // We swallow per-server errors and log them, so the resolve still
     // succeeds with an empty tool array — the agent simply doesn't get

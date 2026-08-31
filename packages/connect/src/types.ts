@@ -222,6 +222,16 @@ export interface OAuthStateRecord {
   audience?: ConnectionAudience;
   binding?: ConnectionBindingAttributes;
   returnUrl?: string;
+  /** Distinguishes static Connector OAuth from protocol-discovered MCP OAuth. */
+  flowKind?: "connector" | "mcp";
+  /** Encrypted host secret containing transient client/discovery material. */
+  temporarySecretRef?: string;
+  status?: "pending" | "processing" | "completed" | "failed";
+  claimToken?: string;
+  claimExpiresAt?: string;
+  attempts?: number;
+  completedConnectionId?: string;
+  lastErrorCode?: string;
 }
 
 export interface ConnectionSetupSession {
@@ -261,13 +271,54 @@ export interface RuntimeToken {
 
 export type McpConnectionTransport = "http" | "sse";
 
-export type McpConnectionAuth = "none" | "bearer";
+export type McpConnectionAuth = "none" | "bearer" | "header" | "oauth2";
+
+export type McpOAuthClientMode = "dynamic" | "metadata_document" | "pre_registered";
+
+export interface McpOAuthClientInformation extends Record<string, unknown> {
+  client_id: string;
+  client_secret?: string;
+  client_id_issued_at?: number;
+  client_secret_expires_at?: number;
+}
+
+export interface McpOAuthDiscovery extends Record<string, unknown> {
+  resource: string;
+  authorizationServer: string;
+  authorizationEndpoint: string;
+  tokenEndpoint: string;
+  registrationEndpoint?: string;
+  revocationEndpoint?: string;
+  scopesSupported?: string[];
+  codeChallengeMethodsSupported?: string[];
+  rawAuthorizationServerMetadata?: Record<string, unknown>;
+  rawProtectedResourceMetadata?: Record<string, unknown>;
+}
+
+export interface McpOAuthSecretMaterial {
+  mode: McpOAuthClientMode;
+  redirectUri: string;
+  discovery: McpOAuthDiscovery;
+  client: McpOAuthClientInformation;
+  tokens?: TokenSet;
+  codeVerifier?: string;
+}
+
+export interface McpOAuthInspection {
+  url: string;
+  transport: McpConnectionTransport;
+  auth: "oauth2" | "none" | "unknown";
+  discovery?: McpOAuthDiscovery;
+  clientModes: McpOAuthClientMode[];
+  warnings: string[];
+}
 
 export interface McpConnectionMetadata extends Record<string, unknown> {
   url: string;
   transport: McpConnectionTransport;
   auth: McpConnectionAuth;
   serverName?: string;
+  oauthClientMode?: McpOAuthClientMode;
 }
 
 export type ResolvedConnectionCredential =
@@ -300,6 +351,7 @@ export type ResolvedConnectionCredential =
       kind: "mcp";
       accessToken?: string;
       tokenType?: string;
+      expiresAt?: string;
       scopes: string[];
       connectionId: string;
       providerId: string;
@@ -310,6 +362,7 @@ export interface StoredConnectionSecret {
   kind: "api_key" | "oauth2" | "mcp";
   apiKey?: string;
   tokens?: TokenSet;
+  mcpOAuth?: McpOAuthSecretMaterial;
   metadata?: Record<string, unknown>;
 }
 
@@ -329,6 +382,23 @@ export interface ConnectStore {
   deleteConnection(id: string): Promise<void>;
   saveOAuthState(record: OAuthStateRecord): Promise<void>;
   consumeOAuthState(state: string): Promise<OAuthStateRecord | null>;
+  getOAuthState?(state: string): Promise<OAuthStateRecord | null>;
+  claimOAuthState?(
+    state: string,
+    claimToken: string,
+    claimExpiresAt: string,
+    now: string,
+  ): Promise<OAuthStateRecord | null>;
+  completeOAuthState?(
+    state: string,
+    claimToken: string,
+    connectionId: string,
+  ): Promise<OAuthStateRecord | null>;
+  releaseOAuthState?(
+    state: string,
+    claimToken: string,
+    errorCode: string,
+  ): Promise<OAuthStateRecord | null>;
 }
 
 export interface ConnectionLinkListFilter {

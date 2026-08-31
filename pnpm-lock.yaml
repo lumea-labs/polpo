@@ -203,6 +203,9 @@ importers:
 
   packages/connect-server:
     dependencies:
+      '@modelcontextprotocol/sdk':
+        specifier: ^1.29.0
+        version: 1.29.0(@cfworker/json-schema@4.1.1)(zod@4.3.6)
       '@polpo-ai/connect':
         specifier: workspace:*
         version: link:../connect
@@ -8284,7 +8287,7 @@ snapshots:
       cors: 2.8.6
       cross-spawn: 7.0.6
       eventsource: 3.0.7
-      eventsource-parser: 3.0.6
+      eventsource-parser: 3.0.8
       express: 5.2.1
       express-rate-limit: 8.4.1(express@5.2.1)
       hono: 4.11.9
@@ -10708,7 +10711,7 @@ snapshots:
 
   eventsource@3.0.7:
     dependencies:
-      eventsource-parser: 3.0.6
+      eventsource-parser: 3.0.8
 
   exceljs@4.4.0:
     dependencies:

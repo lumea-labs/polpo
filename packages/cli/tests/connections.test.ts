@@ -44,6 +44,7 @@ describe("Connections CLI", () => {
     expect(names).toEqual(expect.arrayContaining([
       "catalog",
       "list",
+      "mcp",
       "grants",
       "links",
       "link",
@@ -60,6 +61,13 @@ describe("Connections CLI", () => {
       "revoke-slot",
       "readiness",
     ]));
+    const mcp = command.commands.find((item) => item.name() === "mcp")!;
+    expect(mcp.commands.map((item) => item.name())).toEqual([
+      "catalog",
+      "inspect",
+      "connect",
+      "reconnect",
+    ]);
     const options = command.commands.flatMap((item) => item.options.map((option) => option.long));
     expect(options).not.toEqual(expect.arrayContaining([
       "--token",

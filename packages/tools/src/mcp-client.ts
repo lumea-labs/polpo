@@ -37,8 +37,8 @@ export type McpServerSpec =
       args?: string[];
       env?: Record<string, string>;
     }
-  | { type: "sse"; url: string; headers?: Record<string, string> }
-  | { type: "http"; url: string; headers?: Record<string, string> };
+  | { type: "sse"; url: string; headers?: Record<string, string>; connectionId?: string }
+  | { type: "http"; url: string; headers?: Record<string, string>; connectionId?: string };
 
 /**
  * Minimal subset of the existing `ResolvedVault` interface we depend on.
@@ -48,6 +48,30 @@ export type McpServerSpec =
 export interface VaultLookup {
   getKey(service: string, key: string): string | undefined;
 }
+
+/**
+ * Host-owned OAuth capability accepted by the MCP SDK transport. It is
+ * deliberately separate from `McpServerSpec`: authored agent configuration
+ * remains serializable and can never contain access or refresh tokens.
+ */
+export interface McpRuntimeOAuthProvider {
+  tokens(): unknown | undefined | Promise<unknown | undefined>;
+  saveTokens(tokens: any): void | Promise<void>;
+  redirectToAuthorization(authorizationUrl: URL): void | Promise<void>;
+  saveCodeVerifier(codeVerifier: string): void | Promise<void>;
+  codeVerifier(): string | Promise<string>;
+  readonly redirectUrl: string | URL;
+  readonly clientMetadata: Record<string, unknown>;
+  clientInformation(): unknown | undefined | Promise<unknown | undefined>;
+  saveClientInformation?(clientInformation: any): void | Promise<void>;
+  state?(): string | Promise<string>;
+  saveState?(state: string): void | Promise<void>;
+  storedState?(): string | undefined | Promise<string | undefined>;
+  invalidateCredentials?(scope: "all" | "client" | "tokens" | "verifier"): void | Promise<void>;
+  validateResourceURL?(serverUrl: string | URL, resource?: string): Promise<URL | undefined>;
+}
+
+export type McpRuntimeOAuthProviders = Readonly<Record<string, McpRuntimeOAuthProvider>>;
 
 export interface ResolvedMcpTools {
   /** Polpo-format tools — drop straight into the agent's tool array. */
@@ -206,6 +230,7 @@ export async function resolveAgentMcpTools(
   agentName: string,
   mcpServers: Record<string, McpServerSpec> | undefined,
   vault: VaultLookup | undefined,
+  runtimeOAuth?: McpRuntimeOAuthProviders,
 ): Promise<ResolvedMcpTools> {
   if (!mcpServers || Object.keys(mcpServers).length === 0) {
     return { tools: [], dispose: async () => {} };
@@ -225,6 +250,10 @@ export async function resolveAgentMcpTools(
 
   for (const [serverName, spec] of Object.entries(mcpServers)) {
     try {
+      const authProvider = runtimeOAuth?.[serverName];
+      if (authProvider && (spec.type === "stdio" || (spec as any).command)) {
+        throw new Error("MCP OAuth is only supported for HTTP or SSE transports");
+      }
       // Validate host upfront for HTTP/SSE — stdio is local-only and
       // already gated by the sandbox boundary.
       if (spec.type === "http" || spec.type === "sse") {
@@ -244,6 +273,7 @@ export async function resolveAgentMcpTools(
           type: "sse" as const,
           url: spec.url,
           headers: resolveHeaders(spec.headers, vault),
+          authProvider,
         };
       } else if (spec.type === "stdio" || (spec as any).command) {
         const stdioSpec = spec as Extract<McpServerSpec, { command: string }>;
@@ -263,6 +293,7 @@ export async function resolveAgentMcpTools(
           type: "http" as const,
           url: httpSpec.url,
           headers: resolveHeaders(httpSpec.headers, vault),
+          authProvider,
           // Defense-in-depth: refuse 3xx so an attacker can't bounce us
           // off-allowlist via a redirect.
           redirect: "error" as const,
