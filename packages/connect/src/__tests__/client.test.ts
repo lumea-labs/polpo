@@ -51,6 +51,28 @@ describe("PolpoConnectClient", () => {
     await expect(client.listProviders()).resolves.toEqual([{ id: "github" }]);
   });
 
+  it("uses canonical Cloud routes for MCP reconnect and verification", async () => {
+    const responses = [
+      ok({ authorizationUrl: "https://provider.example/authorize", state: "state-1" }),
+      ok({ tools: [{ name: "search" }, { name: "read" }] }),
+    ];
+    const fetchImpl = vi.fn(async () => responses.shift()!);
+    const client = new PolpoConnectClient({
+      baseUrl: "https://api.polpo.test",
+      fetch: fetchImpl as typeof fetch,
+    });
+
+    await expect(client.reconnectProjectMcpConnection("project/one", "connection/one"))
+      .resolves.toMatchObject({ state: "state-1" });
+    await expect(client.verifyProjectMcpConnection("project/one", "connection/one"))
+      .resolves.toEqual({ ok: true, toolCount: 2 });
+
+    expect(fetchImpl.mock.calls.map((call) => call[0])).toEqual([
+      "https://api.polpo.test/v1/projects/project%2Fone/connect/connections/connection%2Fone/reconnect",
+      "https://api.polpo.test/v1/projects/project%2Fone/connect/connections/connection%2Fone/mcp/discover",
+    ]);
+  });
+
   it("uses logical application capabilities without exposing a physical Connection at invocation time", async () => {
     const responses = [
       ok([{ capabilityId: "github.repositories", status: "active" }]),

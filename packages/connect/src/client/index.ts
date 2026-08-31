@@ -267,15 +267,16 @@ export class PolpoConnectClient {
   reconnectProjectMcpConnection(projectId: string, connectionId: string): Promise<StartOAuthResponse> {
     return this.request(
       "POST",
-      `${projectConnectPath(projectId)}/connections/${encodeURIComponent(connectionId)}/mcp/reconnect`,
+      `${projectConnectPath(projectId)}/connections/${encodeURIComponent(connectionId)}/reconnect`,
     );
   }
 
-  verifyProjectMcpConnection(projectId: string, connectionId: string): Promise<{ ok: boolean; toolCount?: number }> {
-    return this.request(
+  async verifyProjectMcpConnection(projectId: string, connectionId: string): Promise<{ ok: true; toolCount: number }> {
+    const result = await this.request<{ tools?: unknown[] }>(
       "POST",
-      `${projectConnectPath(projectId)}/connections/${encodeURIComponent(connectionId)}/mcp/verify`,
+      `${projectConnectPath(projectId)}/connections/${encodeURIComponent(connectionId)}/mcp/discover`,
     );
+    return { ok: true, toolCount: result.tools?.length ?? 0 };
   }
 
   startOAuth(input: StartOAuthRequest): Promise<StartOAuthResponse> {
