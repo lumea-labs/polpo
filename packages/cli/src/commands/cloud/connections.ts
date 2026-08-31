@@ -385,6 +385,24 @@ export function registerConnectionsCommand(program: Command): void {
         printResult(connectionDataFrom(response), Boolean(options.json));
       }));
 
+  connections.command("reconcile")
+    .description("Audit Connection state and optionally apply deterministic repairs")
+    .option("--apply", "Apply safe, idempotent repairs (default is dry-run)")
+    .option("--limit <count>", "Maximum records per resource type", "200")
+    .option("--json", "Print JSON")
+    .action((options: { apply?: boolean; json?: boolean; limit: string }) =>
+      withConnectionClient("Reconciling Connections", options, async (client, projectId) => {
+        const limit = Number(options.limit);
+        if (!Number.isInteger(limit) || limit < 1 || limit > 500) {
+          throw new Error("--limit must be an integer between 1 and 500.");
+        }
+        const response = await client.post<ApiEnvelope<unknown>>(
+          projectConnectionsPath(projectId, "reconcile"),
+          { dryRun: !options.apply, limit },
+        );
+        printResult(connectionDataFrom(response), Boolean(options.json));
+      }));
+
   connections.command("bind <connection-id>")
     .description("Set or clear a non-secret trusted scope binding")
     .option("--binding <json>", "Canonical principal/tenant/resource binding JSON")

@@ -54,6 +54,7 @@ describe("Connections CLI", () => {
       "oauth-clients",
       "events",
       "health",
+      "reconcile",
       "bind",
       "grant-slot",
       "revoke-slot",
