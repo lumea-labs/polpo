@@ -107,13 +107,14 @@ describe("resolveAgentMcpTools", () => {
       clientInformation: vi.fn(async () => ({ client_id: "client-1" })),
     };
     const servers: Record<string, McpServerSpec> = {
-      linear: { type: "http", url: "https://mcp.linear.app/mcp" },
+      linear: { type: "http", url: "https://mcp.linear.app/mcp", connectionId: "conn_linear" },
     };
 
     await resolveAgentMcpTools("agent-1", servers, undefined, { linear: oauthProvider });
 
     const call = createClientMock.mock.calls[0]?.[0] as any;
     expect(call.transport.authProvider).toBe(oauthProvider);
+    expect(call.transport).not.toHaveProperty("connectionId");
     expect(servers.linear).not.toHaveProperty("authProvider");
     expect(JSON.stringify(servers)).not.toContain("access-1");
   });

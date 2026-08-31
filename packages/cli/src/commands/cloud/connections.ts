@@ -4,6 +4,7 @@ import pc from "picocolors";
 import { createApiClient, type ApiClient, type ApiResponse } from "./api.js";
 import { loadProjectId } from "./project-context.js";
 import { requireAuth } from "../../util/auth.js";
+import { openBrowser } from "../../util/browser.js";
 import { friendlyError } from "../../util/errors.js";
 
 type ApiEnvelope<T> = { code?: string; data?: T; error?: string; ok?: boolean };
@@ -136,6 +137,88 @@ export function registerConnectionsCommand(program: Command): void {
           `${projectConnectionsPath(projectId, "connections")}${suffix}`,
         );
         printResult(connectionDataFrom(response), Boolean(options.json));
+      }));
+
+  const mcp = connections.command("mcp")
+    .description("Inspect and authorize remote MCP servers");
+
+  mcp.command("catalog")
+    .description("List curated remote MCP servers and their setup modes")
+    .option("--json", "Print JSON")
+    .action((options: { json?: boolean }) =>
+      withConnectionClient("Listing the MCP catalog", options, async (client, projectId) => {
+        const response = await client.get<ApiEnvelope<unknown>>(
+          projectConnectionsPath(projectId, "mcp", "catalog"),
+        );
+        printResult(connectionDataFrom(response), Boolean(options.json));
+      }));
+
+  mcp.command("inspect <url>")
+    .description("Inspect a custom MCP endpoint without sending credentials")
+    .option("--transport <transport>", "http or sse", "http")
+    .option("--json", "Print JSON")
+    .action((url: string, options: { json?: boolean; transport: string }) =>
+      withConnectionClient("Inspecting an MCP endpoint", options, async (client, projectId) => {
+        if (options.transport !== "http" && options.transport !== "sse") {
+          throw new Error("--transport must be http or sse.");
+        }
+        const response = await client.post<ApiEnvelope<unknown>>(
+          projectConnectionsPath(projectId, "mcp", "inspect"),
+          { url, transport: options.transport },
+        );
+        printResult(connectionDataFrom(response), Boolean(options.json));
+      }));
+
+  mcp.command("connect <server>")
+    .description("Authorize a curated server ID or custom MCP URL with dynamic OAuth")
+    .option("--name <name>", "Connection display name")
+    .option("--transport <transport>", "http or sse", "http")
+    .option("--scope <scope...>", "Requested OAuth scopes", [])
+    .option("--no-open", "Do not open the authorization URL in a browser")
+    .option("--json", "Print JSON and do not open a browser")
+    .action((server: string, options: {
+      json?: boolean;
+      name?: string;
+      open: boolean;
+      scope: string[];
+      transport: string;
+    }) => withConnectionClient("Authorizing an MCP server", options, async (client, projectId) => {
+      if (options.transport !== "http" && options.transport !== "sse") {
+        throw new Error("--transport must be http or sse.");
+      }
+      const resolved = await resolveMcpCatalogServer(client, projectId, server);
+      const response = await client.post<ApiEnvelope<{ authorizationUrl: string }>>(
+        projectConnectionsPath(projectId, "mcp", "oauth", "start"),
+        {
+          name: options.name ?? resolved.name,
+          url: resolved.url,
+          transport: resolved.transport ?? options.transport,
+          mode: "dynamic",
+          scopes: options.scope.length > 0 ? options.scope : resolved.scopes,
+          metadata: {
+            setupMode: "remote_mcp_oauth",
+            catalogKind: "remote_mcp",
+            ...(resolved.id ? { presetId: resolved.id, presetName: resolved.name } : {}),
+          },
+        },
+      );
+      const result = connectionDataFrom(response);
+      printResult(result, Boolean(options.json));
+      if (options.open && !options.json) await openBrowser(result.authorizationUrl);
+    }));
+
+  mcp.command("reconnect <connection-id>")
+    .description("Replace an MCP OAuth authorization without deleting the current Connection first")
+    .option("--no-open", "Do not open the authorization URL in a browser")
+    .option("--json", "Print JSON and do not open a browser")
+    .action((connectionId: string, options: { json?: boolean; open: boolean }) =>
+      withConnectionClient("Reconnecting an MCP server", options, async (client, projectId) => {
+        const response = await client.post<ApiEnvelope<{ authorizationUrl: string }>>(
+          projectConnectionsPath(projectId, "connections", connectionId, "reconnect"),
+        );
+        const result = connectionDataFrom(response);
+        printResult(result, Boolean(options.json));
+        if (options.open && !options.json) await openBrowser(result.authorizationUrl);
       }));
 
   connections.command("grants")
@@ -504,4 +587,50 @@ export function registerConnectionsCommand(program: Command): void {
       );
       printResult(connectionDataFrom(response), Boolean(options.json));
     }));
+}
+
+type McpCatalogResponse = {
+  entries?: Array<{
+    id?: string;
+    name?: string;
+    endpoint?: string;
+    transport?: "http" | "sse";
+    setupModes?: string[];
+    recommendedScopes?: string[];
+  }>;
+};
+
+async function resolveMcpCatalogServer(
+  client: ApiClient,
+  projectId: string,
+  server: string,
+): Promise<{
+  id?: string;
+  name: string;
+  scopes: string[];
+  transport?: "http" | "sse";
+  url: string;
+}> {
+  if (/^https:\/\//i.test(server)) {
+    return { name: "Remote MCP server", scopes: [], url: server };
+  }
+  const response = await client.get<ApiEnvelope<McpCatalogResponse>>(
+    projectConnectionsPath(projectId, "mcp", "catalog"),
+  );
+  const catalog = connectionDataFrom(response);
+  const entry = catalog.entries?.find((candidate) => candidate.id === server);
+  if (!entry) throw new Error(`Unknown MCP catalog server: ${server}. Run polpo connections mcp catalog.`);
+  if (!entry.endpoint) {
+    throw new Error(`MCP catalog server ${server} requires a custom endpoint. Pass its HTTPS URL instead.`);
+  }
+  if (!entry.setupModes?.includes("oauth_dynamic")) {
+    throw new Error(`MCP catalog server ${server} does not support dynamic OAuth onboarding.`);
+  }
+  return {
+    id: entry.id,
+    name: entry.name ?? entry.id ?? server,
+    scopes: entry.recommendedScopes ?? [],
+    transport: entry.transport,
+    url: entry.endpoint,
+  };
 }

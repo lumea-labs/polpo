@@ -37,8 +37,8 @@ export type McpServerSpec =
       args?: string[];
       env?: Record<string, string>;
     }
-  | { type: "sse"; url: string; headers?: Record<string, string> }
-  | { type: "http"; url: string; headers?: Record<string, string> };
+  | { type: "sse"; url: string; headers?: Record<string, string>; connectionId?: string }
+  | { type: "http"; url: string; headers?: Record<string, string>; connectionId?: string };
 
 /**
  * Minimal subset of the existing `ResolvedVault` interface we depend on.
