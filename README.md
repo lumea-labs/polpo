@@ -745,6 +745,20 @@ chunk so clients never receive a partial invalid object. Tool calls may still
 run before the final structured response. Project loop execution currently
 rejects `response_format` explicitly instead of silently ignoring it.
 
+Custom OpenAI-compatible gateways receive `response_format.type: "json_schema"`
+with `strict: true` for schema-based output, including an Agent Loop step's
+`output.schema`. They must forward and support that contract; Polpo does not
+silently fall back to `json_object` if it is rejected. Responses are still
+validated locally. Plain text and explicit `json_object` requests are unchanged.
+
+Schemas must satisfy the selected provider's strict-output requirements. For
+OpenAI, declare all object properties in `required` and use
+`additionalProperties: false`. Represent absent values with an explicitly
+nullable type, or use an empty array when that is valid for your contract.
+Polpo does not silently add required fields, allow nulls, or rewrite the
+consumer's schema. Provider schema rejections must be fixed in the schema, not
+bypassed by removing strict mode.
+
 ### Parallel server tool calls
 
 Set `parallel_tool_calls` on an OpenAI-compatible completion to control how

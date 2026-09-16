@@ -1,4 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { generateText } from "ai";
+import { createGatewayModel } from "@polpo-ai/llm";
 import {
   CompletionStructuredOutputError,
   finalizeResponseFormatText,
@@ -22,6 +24,8 @@ const profileFormat = {
   },
 };
 
+afterEach(() => vi.unstubAllGlobals());
+
 describe("OpenAI response_format translation", () => {
   it("keeps text generation on the legacy path", () => {
     expect(modelOutputForResponseFormat(undefined)).toBeUndefined();
@@ -36,6 +40,26 @@ describe("OpenAI response_format translation", () => {
       name: "user_profile",
       description: undefined,
     });
+  });
+
+  it("sends the Chat Completions response_format schema through a custom gateway", async () => {
+    let requestBody: Record<string, unknown> | undefined;
+    vi.stubGlobal("fetch", vi.fn(async (_url: unknown, init?: RequestInit) => {
+      requestBody = JSON.parse(String(init?.body));
+      return Response.json({
+        id: "test", created: 1, model: "openai/test",
+        choices: [{ index: 0, message: { role: "assistant", content: '{"name":"Ada","plan":"pro"}' }, finish_reason: "stop" }],
+        usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+      });
+    }));
+    const result = await generateText({
+      model: createGatewayModel("openai", "test", { url: "https://gateway.test/v1", apiKey: "test" }),
+      messages: [{ role: "user", content: "Return a profile" }],
+      output: modelOutputForResponseFormat(profileFormat),
+      maxRetries: 0,
+    });
+    expect(result.output).toEqual({ name: "Ada", plan: "pro" });
+    expect(requestBody?.response_format).toEqual(profileFormat);
   });
 
   it("uses provider-native JSON mode for json_object", async () => {
