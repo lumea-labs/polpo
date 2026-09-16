@@ -59,6 +59,8 @@ export function createGatewayModel(provider: string, modelId: string, config?: G
     name: "gateway",
     apiKey: config.apiKey,
     headers: config.headers,
+    // Without this, the adapter silently drops output schemas and sends json_object.
+    supportsStructuredOutputs: true,
   });
 
   const modelSpec = `${provider}/${modelId}`;
