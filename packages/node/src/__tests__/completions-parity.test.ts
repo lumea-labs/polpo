@@ -90,6 +90,12 @@ function toolEvents(chunks: Record<string, unknown>[]): any[] {
     .map((ch) => (ch.choices as any)?.[0]?.tool_call)
     .filter(Boolean);
 }
+/** Polpo `structured_output` extension events, in order. */
+function structuredEvents(chunks: Record<string, unknown>[]): any[] {
+  return chunks
+    .map((ch) => (ch.polpo as any)?.structured_output)
+    .filter(Boolean);
+}
 /** The finish_reason of the terminal chunk, if any. */
 function finishReason(chunks: Record<string, unknown>[]): string | undefined {
   for (let i = chunks.length - 1; i >= 0; i--) {
@@ -296,9 +302,9 @@ describe("F1c parity: inline vs run", () => {
     );
   });
 
-  it("buffers and canonicalizes json_schema output identically", async () => {
+  it("streams json_schema output and confirms the canonical JSON identically", async () => {
     const messages = [{ role: "user", content: "Return a profile" }];
-    const response = '{\n  "name": "Ada",\n  "tier": "paid"\n}';
+    const response = '\n{\n  "name": "Ada",\n  "tier": "paid"\n}';
 
     setChatExecution("inline");
     setMockModel(mockTurnSequenceModel([{ type: "text", text: response }]));
@@ -308,11 +314,49 @@ describe("F1c parity: inline vs run", () => {
     setMockModel(mockTurnSequenceModel([{ type: "text", text: response }]));
     const viaRun = await postStream({ messages, response_format: profileResponseFormat });
 
-    expect(content(inline)).toBe('{"name":"Ada","tier":"paid"}');
+    // Raw JSON streams as OpenAI content deltas (leading whitespace held back).
+    expect(content(inline)).toBe(response.trimStart());
     expect(content(viaRun)).toBe(content(inline));
-    expect(inline.filter((chunk) => (chunk.choices as any)?.[0]?.delta?.content)).toHaveLength(1);
-    expect(viaRun.filter((chunk) => (chunk.choices as any)?.[0]?.delta?.content)).toHaveLength(1);
+    expect(inline.filter((chunk) => (chunk.choices as any)?.[0]?.delta?.content).length)
+      .toBeGreaterThan(1);
+    expect(viaRun.filter((chunk) => (chunk.choices as any)?.[0]?.delta?.content).length)
+      .toBeGreaterThan(1);
+    // The validated canonical JSON closes the stream.
+    expect(structuredEvents(inline)).toEqual([
+      { state: "complete", content: '{"name":"Ada","tier":"paid"}' },
+    ]);
+    expect(structuredEvents(viaRun)).toEqual(structuredEvents(inline));
     expect(finishReason(viaRun)).toBe("stop");
+  });
+
+  it("withdraws JSON-looking text from a turn that ends in tool calls", async () => {
+    const messages = [{ role: "user", content: "Use a tool, then return a profile" }];
+    const sequence = () => mockTurnSequenceModel([
+      {
+        type: "tool-call",
+        text: '{"draft":true}',
+        toolName: "definitely_not_a_real_tool",
+        args: { value: 1 },
+      },
+      { type: "text", text: '{"name":"Ada","tier":"free"}' },
+    ]);
+
+    setChatExecution("inline");
+    setMockModel(sequence());
+    const inline = await postStream({ messages, response_format: profileResponseFormat });
+
+    setChatExecution("run");
+    setMockModel(sequence());
+    const viaRun = await postStream({ messages, response_format: profileResponseFormat });
+
+    const expected = [
+      { state: "reset" },
+      { state: "complete", content: '{"name":"Ada","tier":"free"}' },
+    ];
+    expect(structuredEvents(inline)).toEqual(expected);
+    expect(structuredEvents(viaRun)).toEqual(expected);
+    expect(content(inline)).toBe('{"draft":true}{"name":"Ada","tier":"free"}');
+    expect(content(viaRun)).toBe(content(inline));
   });
 
   it("does not validate an intermediate tool-call turn as structured output", async () => {
@@ -363,7 +407,10 @@ describe("F1c parity: inline vs run", () => {
       code: "invalid_response_format_output",
       param: "response_format",
     });
-    expect(content(inline)).toBe("");
-    expect(content(viaRun)).toBe("");
+    // The raw JSON already streamed; the terminal error tells clients to discard it.
+    expect(content(inline)).toBe(invalid);
+    expect(content(viaRun)).toBe(invalid);
+    expect(structuredEvents(inline)).toEqual([]);
+    expect(structuredEvents(viaRun)).toEqual([]);
   });
 });

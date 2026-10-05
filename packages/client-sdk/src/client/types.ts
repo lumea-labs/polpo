@@ -1444,6 +1444,15 @@ export interface ChatSuggestion {
 
 export interface ChatCompletionPolpoExtensions {
   suggestions?: ChatSuggestion[];
+  /**
+   * Streaming `response_format` answers. The raw JSON streams as
+   * `delta.content`; `reset` withdraws the text streamed so far (that turn
+   * ended in tool calls), `complete` carries the validated canonical JSON
+   * that replaces it.
+   */
+  structured_output?:
+    | { state: "reset" }
+    | { state: "complete"; content: string };
 }
 
 export interface ChatCompletionChoice {

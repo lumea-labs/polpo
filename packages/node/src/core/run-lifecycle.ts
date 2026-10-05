@@ -512,9 +512,16 @@ export async function executeRun(config: RunnerConfig, deps: ExecuteRunDeps): Pr
       // NOT onTranscript, so persistence stays turn-granularity. No-op when no
       // subscriber is attached (background hosts).
       onDelta: deps.onEvent
-        ? (delta: { text: string; kind?: "text" | "reasoning" }) => {
+        ? (delta: { text: string; kind?: "text" | "reasoning" | "structured" | "structured-reset" }) => {
             try {
-              deps.onEvent?.({ type: delta.kind === "reasoning" ? "reasoning-delta" : "text-delta", text: delta.text });
+              const type = delta.kind === "reasoning"
+                ? "reasoning-delta"
+                : delta.kind === "structured"
+                  ? "structured-delta"
+                  : delta.kind === "structured-reset"
+                    ? "structured-reset"
+                    : "text-delta";
+              deps.onEvent?.({ type, text: delta.text });
             } catch { /* can't sink the run */ }
           }
         : undefined,

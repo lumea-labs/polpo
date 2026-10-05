@@ -1169,6 +1169,43 @@ describe("chat via Run driver", () => {
     expect(body).not.toContain("unsafe stream");
   });
 
+  it("holds structured deltas back when output enforcement buffers", async () => {
+    const outputPolicy = createRunOutputPolicy(
+      new RuntimeGuardrailEngine([]),
+      { streamingMode: "buffer" },
+    );
+    const deps = baseDeps({
+      runOutputPolicy: outputPolicy,
+      runChatViaRun: async (_inject, hooks) => {
+        hooks.onEvent({ type: "structured-delta", text: '{"name":' });
+        hooks.onEvent({ type: "structured-delta", text: ' "Ada"}' });
+        hooks.onEvent({ type: "text-delta", text: '{"name":"Ada"}' });
+        return {
+          status: "completed",
+          result: { exitCode: 0, stdout: '{"name":"Ada"}', stderr: "" },
+        };
+      },
+    });
+
+    const response = await completionRoutes(() => deps).request("/", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        agent: "agent-1",
+        stream: true,
+        messages: [{ role: "user", content: "hello" }],
+        response_format: { type: "json_object" },
+      }),
+    });
+    const chunks = parseSse(await response.text());
+    const contents = chunks
+      .map((chunk) => chunk.choices?.[0]?.delta?.content)
+      .filter(Boolean);
+
+    expect(contents).toEqual(['{"name":"Ada"}']);
+    expect(chunks.some((chunk) => chunk.polpo?.structured_output)).toBe(false);
+  });
+
   it("keeps unbuffered streaming byte-compatible while auditing final output", async () => {
     const evaluate = vi.fn(async (request) => ({
       output: request.output,

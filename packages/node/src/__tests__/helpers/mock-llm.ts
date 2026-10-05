@@ -198,7 +198,7 @@ export function mockToolCallModel(
  */
 export type MockResponse =
   | { type: "text"; text: string }
-  | { type: "tool-call"; toolName: string; args: Record<string, unknown> }
+  | { type: "tool-call"; toolName: string; args: Record<string, unknown>; text?: string }
   | { type: "tool-calls"; calls: Array<{ toolName: string; args: Record<string, unknown>; toolCallId?: string }> };
 
 export function mockTurnSequenceModel(responses: MockResponse[]): MockLanguageModelV3 {
@@ -217,7 +217,13 @@ export function mockTurnSequenceModel(responses: MockResponse[]): MockLanguageMo
       const idx = Math.min(streamIndex++, responses.length - 1);
       const r = responses[idx];
       if (r.type === "text") return streamResult(textStreamParts(r.text));
-      if (r.type === "tool-call") return streamResult(toolCallStreamParts(r.toolName, r.args));
+      if (r.type === "tool-call") {
+        const toolParts = toolCallStreamParts(r.toolName, r.args);
+        if (!r.text) return streamResult(toolParts);
+        // Text emitted before the call in the same turn (stream-start stays first).
+        const textParts = textStreamParts(r.text).slice(1, -1);
+        return streamResult([toolParts[0], ...textParts, ...toolParts.slice(1)]);
+      }
       return streamResult(toolCallsStreamParts(r.calls));
     },
   });

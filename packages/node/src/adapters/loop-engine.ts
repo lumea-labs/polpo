@@ -41,6 +41,7 @@ import {
   runModelPolicyTurn,
   isStructuredModelOutputError,
   modelOutputForJsonSchema,
+  StructuredOutputDeltaGate,
   classifyRuntimeError,
   toValidatedToolInputSchema,
   validateToolInput,
@@ -545,6 +546,11 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
       }
 
       let stepText = "";
+      // Chat injections stream a structured answer's raw JSON as it arrives;
+      // the validated serialization still follows once the step completes.
+      const structuredGate = inject && hasStructuredOutput
+        ? new StructuredOutputDeltaGate()
+        : undefined;
       const toolCalls: LoopToolCall[] = [];
       const seenModelToolCallIds = new Set<string>();
       const resolvedAttempts = new Map<number, Pick<SpawnPrep, "model" | "providerOptions">>();
@@ -592,6 +598,11 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
             // stays turn-granularity for persistence). Best-effort.
             if (!hasStructuredOutput) {
               try { ctx?.onDelta?.({ text: event.text }); } catch { /* a delta subscriber can't sink the run */ }
+            } else {
+              const structuredText = structuredGate?.push(event.text);
+              if (structuredText) {
+                try { ctx?.onDelta?.({ text: structuredText, kind: "structured" }); } catch { /* a delta subscriber can't sink the run */ }
+              }
             }
             break;
           }
@@ -734,6 +745,10 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
         activity.totalTokens += (stepUsage.totalTokens ?? 0);
       }
       activity.lastUpdate = new Date().toISOString();
+
+      if (structuredGate?.streamed && toolCalls.length > 0) {
+        try { ctx?.onDelta?.({ text: "", kind: "structured-reset" }); } catch { /* a delta subscriber can't sink the run */ }
+      }
 
       let rawText: string;
       if (hasStructuredOutput) {
