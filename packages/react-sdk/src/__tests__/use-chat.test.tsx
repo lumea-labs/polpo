@@ -256,6 +256,35 @@ describe("useChat interactions", () => {
     expect(chatCompletionsStream.mock.calls[1]?.[0].polpo).not.toHaveProperty("skills");
   });
 
+  it("replaces streamed structured JSON with the canonical answer", async () => {
+    const chunk = (delta: Record<string, unknown>, polpo?: Record<string, unknown>) => ({
+      choices: [{ index: 0, delta, finish_reason: null }],
+      ...(polpo ? { polpo } : {}),
+    });
+    const stream = {
+      abort: vi.fn(),
+      async *[Symbol.asyncIterator]() {
+        yield chunk({ content: '{"draft":true}' });
+        yield chunk({}, { structured_output: { state: "reset" } });
+        yield chunk({ content: '{ "name":' });
+        yield chunk({ content: ' "Ada" }' });
+        yield chunk({}, { structured_output: { state: "complete", content: '{"name":"Ada"}' } });
+      },
+    };
+    const client = createMockClient({ chatCompletionsStream: vi.fn().mockReturnValue(stream) });
+    const wrapper = createWrapper(client, createMockStore());
+    const { result } = renderHook(() => useChat(), { wrapper });
+
+    await act(async () => {
+      await result.current.sendMessage("Return a profile");
+    });
+
+    expect(result.current.messages.at(-1)?.content).toBe('{"name":"Ada"}');
+    expect(result.current.messages.at(-1)?.segments).toEqual([
+      { type: "text", content: '{"name":"Ada"}' },
+    ]);
+  });
+
   it("declares supported capabilities and attaches suggestions to the response", async () => {
     const suggestion = {
       id: "suggestion_tests",

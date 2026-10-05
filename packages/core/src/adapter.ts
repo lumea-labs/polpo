@@ -156,8 +156,16 @@ export interface SpawnContext {
    * WITHOUT polluting the turn-granularity transcript persistence. Optional and
    * additive — background hosts leave it undefined ⇒ no per-delta emission, the
    * historical whole-turn behaviour. Best-effort; must not throw.
+   *
+   * `structured` carries a structured-output turn's raw JSON text as it
+   * streams; `structured-reset` (empty text) withdraws what that turn already
+   * streamed because it ended in tool calls instead of the final answer. The
+   * validated answer still arrives as a `text` delta once the turn completes.
    */
-  onDelta?: (delta: { text: string; kind?: "text" | "reasoning" }) => void;
+  onDelta?: (delta: {
+    text: string;
+    kind?: "text" | "reasoning" | "structured" | "structured-reset";
+  }) => void;
   /**
    * Initial transcript sink available at spawn time. Runners also set
    * AgentHandle.onTranscript after spawn, but in-process engines can emit very

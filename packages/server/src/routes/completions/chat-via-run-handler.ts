@@ -128,6 +128,8 @@ interface DriverState {
   clientReturn: { id: string; name: string; arguments: unknown } | undefined;
   errorEvent: Record<string, unknown> | undefined;
   outputPolicyApplied: boolean;
+  /** The final structured answer's raw JSON already reached the client. */
+  structuredStreamed: boolean;
 }
 
 export interface ChatViaRunTurnResult {
@@ -168,6 +170,7 @@ function makeOnEvent(
   state: DriverState,
   write: (data: string) => void,
   writeTextDeltas = true,
+  writeStructuredDeltas = false,
 ) {
   const { completionId, deps, extraAiTools } = execution;
   const providerToolNames = new Set(Object.keys(extraAiTools ?? {}));
@@ -179,6 +182,18 @@ function makeOnEvent(
         const text = String(e.text ?? "");
         state.finalText += text;
         if (writeTextDeltas) write(sseChunk(completionId, { content: text }));
+        break;
+      }
+      case "structured-delta": {
+        if (!writeStructuredDeltas) break;
+        state.structuredStreamed = true;
+        write(sseChunk(completionId, { content: String(e.text ?? "") }));
+        break;
+      }
+      case "structured-reset": {
+        if (!state.structuredStreamed) break;
+        state.structuredStreamed = false;
+        write(ssePolpoChunk(completionId, { structured_output: { state: "reset" } }));
         break;
       }
       case "reasoning-delta": {
@@ -296,6 +311,7 @@ function newState(): DriverState {
     clientReturn: undefined,
     errorEvent: undefined,
     outputPolicyApplied: false,
+    structuredStreamed: false,
   };
 }
 
@@ -424,6 +440,7 @@ export async function executeStreamingChatViaRun(
       state,
       write,
       outputMode !== "buffer" && !structuredResponse,
+      outputMode !== "buffer" && structuredResponse,
     );
 
     try {
@@ -468,7 +485,10 @@ export async function executeStreamingChatViaRun(
           signal,
           false,
         );
-        if ((outputMode === "buffer" || structuredResponse) && state.finalText) {
+        if (
+          (outputMode === "buffer" || (structuredResponse && !state.structuredStreamed))
+          && state.finalText
+        ) {
           await stream.writeSSE({ data: sseChunk(completionId, { content: state.finalText }) });
         }
         recordPendingClientToolCall(state);
@@ -481,8 +501,17 @@ export async function executeStreamingChatViaRun(
           outputMode === "buffer" ? "enforce" : "audit",
           signal,
         );
-        if ((outputMode === "buffer" || structuredResponse) && state.finalText) {
+        if (
+          (outputMode === "buffer" || (structuredResponse && !state.structuredStreamed))
+          && state.finalText
+        ) {
           await stream.writeSSE({ data: sseChunk(completionId, { content: state.finalText }) });
+        } else if (state.structuredStreamed && state.finalText) {
+          await stream.writeSSE({
+            data: ssePolpoChunk(completionId, {
+              structured_output: { state: "complete", content: state.finalText },
+            }),
+          });
         }
         suggestions = await suggestionsForCompletion(
           execution,

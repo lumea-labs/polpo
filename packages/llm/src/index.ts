@@ -159,6 +159,7 @@ export type { ToolInputValidationResult } from "./tool-schema.js";
 
 // ─── Structured Model Outputs ───────────────────────
 export {
+  StructuredOutputDeltaGate,
   isStructuredModelOutputError,
   modelOutputForJsonSchema,
 } from "./model-output.js";

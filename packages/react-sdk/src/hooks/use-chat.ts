@@ -339,9 +339,23 @@ export function useChat(options: UseChatOptions = {}): UseChatReturn {
           optionsRef.current.onUpdate?.();
         }
 
+        // Structured answers: drop the raw streamed JSON on reset, swap in
+        // the validated canonical JSON on completion.
+        const structured = chunk.polpo?.structured_output;
+        if (structured) {
+          for (let i = segments.length - 1; i >= 0; i--) {
+            if (segments[i].type === "text") segments.splice(i, 1);
+          }
+          fullText = "";
+          if (structured.state === "complete") {
+            fullText = structured.content;
+            segments.push({ type: "text", content: structured.content });
+          }
+        }
+
         const choice = chunk.choices[0];
         if (!choice) continue;
-        let updated = false;
+        let updated = structured !== undefined;
 
         if (choice.thinking) {
           fullReasoning += choice.thinking;

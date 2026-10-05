@@ -739,10 +739,24 @@ curl http://localhost:3890/v1/chat/completions \
 
 The validated object is returned as a canonical JSON string in
 `choices[0].message.content`, matching the OpenAI chat-completions wire shape.
-`{"type":"json_object"}` is also supported. Structured streaming is buffered
-until the complete value is parsed and validated, then emitted in one content
-chunk so clients never receive a partial invalid object. Tool calls may still
-run before the final structured response. Project loop execution currently
+`{"type":"json_object"}` is also supported. Tool calls may still run before
+the final structured response.
+
+With `stream: true` the raw JSON streams as `delta.content` chunks as the model
+produces it, like OpenAI; concatenated, they form the answer. Validation still
+runs on the complete value, and the stream then ends one of two ways:
+
+- `polpo.structured_output: { "state": "complete", "content": "..." }` carries
+  the validated canonical JSON, which clients should keep in place of the raw
+  concatenation.
+- An `invalid_response_format_output` error on the terminal chunk means the
+  streamed JSON must be discarded.
+
+If a turn starts streaming JSON and then ends in tool calls instead,
+`polpo.structured_output: { "state": "reset" }` withdraws what was streamed.
+`useChat` in `@polpo-ai/react` applies both events. When output guardrails run
+in `buffer` mode, structured answers stay buffered and arrive in one validated
+content chunk. Project loop execution currently
 rejects `response_format` explicitly instead of silently ignoring it.
 
 Custom OpenAI-compatible gateways receive `response_format.type: "json_schema"`

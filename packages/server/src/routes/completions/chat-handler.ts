@@ -24,7 +24,7 @@ import type {
   ResolvedChatInteractionCapabilities,
 } from "@polpo-ai/core/chat-interactions";
 import type { SessionClientToolDefinition } from "@polpo-ai/core/session-store";
-import { runModelPolicyTurn } from "@polpo-ai/llm";
+import { StructuredOutputDeltaGate, runModelPolicyTurn } from "@polpo-ai/llm";
 import { Output, type LanguageModelUsage } from "ai";
 import type { CompletionRouteDeps } from "../completions.js";
 import type { CompletionRequestBody } from "./schemas.js";
@@ -211,6 +211,9 @@ export async function executeStreamingChatCompletion(
   const reasoning = exec.agentConfig?.reasoning ?? deps.getConfig()?.settings?.reasoning;
   const outputMode = streamingOutputPolicyMode(deps.runOutputPolicy);
   const structuredResponse = isStructuredResponseFormat(body.response_format);
+  // Structured answers stream their raw JSON like plain text; the validated,
+  // canonical JSON is confirmed (or the stream fails) once the turn ends.
+  const streamStructured = structuredResponse && outputMode !== "buffer";
 
     await stream.writeSSE({ data: sseChunk(completionId, { role: "assistant" }) });
 
@@ -236,6 +239,7 @@ export async function executeStreamingChatCompletion(
     let suggestions: ChatSuggestion[] = [];
     let canonicalTurnSucceeded = false;
     let clientToolCallId: string | undefined;
+    let structuredStreamed = false;
     const finalizeOutput = async (validateStructured = true) => {
       if (outputPolicyApplied) return;
       finalText = await applyCompletionOutputPolicy({
@@ -251,8 +255,15 @@ export async function executeStreamingChatCompletion(
         finalText = await finalizeResponseFormatText(body.response_format, finalText);
       }
       outputPolicyApplied = true;
-      if ((outputMode === "buffer" || structuredResponse) && finalText) {
+      if (!finalText) return;
+      if (outputMode === "buffer" || (structuredResponse && !structuredStreamed)) {
         await stream.writeSSE({ data: sseChunk(completionId, { content: finalText }) });
+      } else if (structuredStreamed && validateStructured) {
+        await stream.writeSSE({
+          data: ssePolpoChunk(completionId, {
+            structured_output: { state: "complete", content: finalText },
+          }),
+        });
       }
     };
 
@@ -299,6 +310,7 @@ export async function executeStreamingChatCompletion(
         // token-by-token input deltas, so the UI can render the call as it
         // builds up instead of waiting for the whole turn to finish.
         const toolCallNames = new Map<string, string>();
+        const structuredGate = streamStructured ? new StructuredOutputDeltaGate() : undefined;
         const resolvedAttempts = new Map<number, { model: ResolvedModelInfo; providerOptions?: Record<string, any> }>();
 
         const result = await runModelPolicyTurn({
@@ -334,6 +346,10 @@ export async function executeStreamingChatCompletion(
             if (!structuredResponse) finalText += event.text;
             if (outputMode !== "buffer" && !structuredResponse) {
               await stream.writeSSE({ data: sseChunk(completionId, { content: event.text }) });
+            }
+            const structuredText = structuredGate?.push(event.text);
+            if (structuredText) {
+              await stream.writeSSE({ data: sseChunk(completionId, { content: structuredText }) });
             }
           } else if (event.type === "tool-input-start") {
             // Emit early "preparing" signal — the LLM has started generating a tool call
@@ -393,6 +409,13 @@ export async function executeStreamingChatCompletion(
         }
 
         const toolCalls = result.toolCalls;
+        structuredStreamed = structuredGate?.streamed === true && toolCalls.length === 0;
+        if (structuredGate?.streamed && toolCalls.length > 0) {
+          // This turn's JSON-looking text was not the answer: withdraw it.
+          await stream.writeSSE({
+            data: ssePolpoChunk(completionId, { structured_output: { state: "reset" } }),
+          });
+        }
         if (structuredResponse && toolCalls.length === 0) {
           turnText = await serializeModelOutput(
             body.response_format,
