@@ -283,7 +283,9 @@ Symlinks are rejected rather than followed outside the bundle.
 At runtime, `skill_list` exposes only the compact assigned-skill index.
 `skill_read({ name })` loads the selected `SKILL.md` and automatically
 assembles textual files under `references/` into the same model-visible
-result. Skill authors can use ordinary bundle-relative references without
+result. An empty or whitespace-only `path` has the same behavior as an omitted
+path. An explicit `path: "SKILL.md"` reads only the entrypoint without assembling
+references. Skill authors can use ordinary bundle-relative references without
 adding Polpo-specific reading instructions. Use
 `skill_read({ name, path })` for an exact resource that was not loaded
 automatically; skill resources are never read through workspace file tools.
