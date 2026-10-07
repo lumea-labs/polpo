@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { FileSystem, LoadedSkill, PolpoTool } from "@polpo-ai/core";
+import { validateToolInput } from "@polpo-ai/llm";
 import { createSkillTools } from "../skill-tools.js";
 
 const skillRoot = "/project/.polpo/skills/sitoinchat-site-runtime";
@@ -78,7 +79,7 @@ describe("runtime skill tools", () => {
     expect(payload).not.toContain("Cached instructions");
   });
 
-  it("reads SKILL.md and assembles nested textual references by default", async () => {
+  it.each([undefined, "", "   ", "\t\r\n", "\u00a0\u2003"])("assembles the default skill bundle for an omitted or blank path: %j", async (path) => {
     const fs = createFs({
       [`${skillRoot}/SKILL.md`]: [
         "---",
@@ -90,8 +91,11 @@ describe("runtime skill tools", () => {
       [`${skillRoot}/references/design-system.md`]: "Use semantic color tokens.",
       [`${skillRoot}/references/platform/scaffold.md`]: "Use the platform scaffold.",
     });
-    const result = await pick(createSkillTools(fs, [skill]), "skill_read")
-      .execute("call-1", { name: skill.name });
+    const tool = pick(createSkillTools(fs, [skill]), "skill_read");
+    const args = { name: skill.name, ...(path === undefined ? {} : { path }) };
+    const validation = await validateToolInput(tool.parameters, args);
+    expect(validation).toEqual({ success: true, value: args });
+    const result = await tool.execute("call-1", args);
 
     expect(firstText(result)).toContain("Resource: SKILL.md");
     expect(firstText(result)).toContain("Read references/design-system.md before editing.");
@@ -111,6 +115,29 @@ describe("runtime skill tools", () => {
       ],
       omitted: [],
     });
+  });
+
+  it.each(["SKILL.md", "  SKILL.md  "])("keeps an explicit entrypoint read limited to that resource: %j", async (path) => {
+    const fs = createFs({
+      [`${skillRoot}/SKILL.md`]: "Main instructions.",
+      [`${skillRoot}/references/design-system.md`]: "Use semantic color tokens.",
+    });
+    const readFile = vi.spyOn(fs, "readFile");
+    const result = await pick(createSkillTools(fs, [skill]), "skill_read")
+      .execute("call-1", { name: skill.name, path });
+
+    expect(result.details).toEqual({ ok: true, skill: skill.name, path: "SKILL.md" });
+    expect(firstText(result)).toContain("Main instructions.");
+    expect(firstText(result)).not.toContain("Use semantic color tokens.");
+    expect(readFile).toHaveBeenCalledTimes(1);
+    expect(readFile).toHaveBeenCalledWith(`${skillRoot}/SKILL.md`);
+  });
+
+  it.each([null, 0, false, [], {}].map((path) => ({ path })))("rejects a non-string path at schema validation: $path", async ({ path }) => {
+    const tool = pick(createSkillTools(createFs({}), [skill]), "skill_read");
+    const validation = await validateToolInput(tool.parameters, { name: skill.name, path });
+
+    expect(validation.success).toBe(false);
   });
 
   it("reads a nested reference relative to the selected bundle", async () => {
@@ -159,14 +186,14 @@ describe("runtime skill tools", () => {
     });
   });
 
-  it("applies a deterministic reference budget and reports omitted files", async () => {
+  it.each([undefined, "", " \t "])("preserves the reference budget for a default bundle read: %j", async (path) => {
     const fs = createFs({
       [`${skillRoot}/SKILL.md`]: "Use references/a.md and references/b.md.",
       [`${skillRoot}/references/a.md`]: "12345",
       [`${skillRoot}/references/b.md`]: "67890",
     });
     const result = await pick(createSkillTools(fs, [skill], { maxAutoReferenceBytes: 5 }), "skill_read")
-      .execute("call-1", { name: skill.name });
+      .execute("call-1", { name: skill.name, ...(path === undefined ? {} : { path }) });
 
     expect(firstText(result)).toContain("Resource: references/a.md");
     expect(firstText(result)).not.toContain("Resource: references/b.md");
@@ -177,7 +204,7 @@ describe("runtime skill tools", () => {
     });
   });
 
-  it("fails closed when the skill is not assigned", async () => {
+  it.each([undefined, "", " \t ", "references/private.md"])("refuses unassigned skills before reading a resource: %j", async (path) => {
     const readFile = vi.fn(async () => "secret");
     const fs = {
       exists: vi.fn(async () => true),
@@ -185,13 +212,14 @@ describe("runtime skill tools", () => {
       readFile,
     } as unknown as FileSystem;
     const result = await pick(createSkillTools(fs, [skill]), "skill_read")
-      .execute("call-1", { name: "other-skill", path: "references/private.md" });
+      .execute("call-1", { name: "other-skill", ...(path === undefined ? {} : { path }) });
 
     expect(result.details).toMatchObject({
       ok: false,
       error: { code: "skill_not_assigned" },
     });
     expect(readFile).not.toHaveBeenCalled();
+    expect(fs.exists).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -199,8 +227,16 @@ describe("runtime skill tools", () => {
     "/etc/passwd",
     "references/../../secrets.md",
     "references\\private.md",
+    "  ../secrets.md  ",
+    "references//private.md",
+    "references/./private.md",
+    ".",
+    "..",
+    "\0",
   ])("returns a deterministic error for unsafe paths: %s", async (path) => {
-    const result = await pick(createSkillTools(createFs({}), [skill]), "skill_read")
+    const fs = createFs({});
+    const exists = vi.spyOn(fs, "exists");
+    const result = await pick(createSkillTools(fs, [skill]), "skill_read")
       .execute("call-1", { name: skill.name, path });
 
     expect(result.details).toMatchObject({
@@ -209,6 +245,7 @@ describe("runtime skill tools", () => {
       error: { code: "invalid_path" },
     });
     expect(firstText(result)).not.toContain(skillRoot);
+    expect(exists).not.toHaveBeenCalled();
   });
 
   it("does not expose physical paths when a bundled resource is missing", async () => {

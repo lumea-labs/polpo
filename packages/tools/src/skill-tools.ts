@@ -56,13 +56,13 @@ export function createSkillReadTool(
     name: "skill_read",
     label: "Read Skill",
     description:
-      "Read an assigned skill bundle. Omit path to load SKILL.md plus its textual references automatically. Set path only for one exact bundle resource that was omitted or is needed explicitly. Never use workspace file tools for skill resources.",
+      "Read an assigned skill bundle. Omit path or leave it blank to load SKILL.md plus its textual references automatically. Set path only for one exact bundle resource that was omitted or is needed explicitly. Never use workspace file tools for skill resources.",
     parameters: Type.Object({
       name: Type.String({
         description: `Assigned skill name. Allowed values: ${[...byName.keys()].join(", ")}`,
       }),
       path: Type.Optional(Type.String({
-        description: "Optional POSIX path relative to the selected skill bundle. Defaults to SKILL.md.",
+        description: "Optional POSIX path relative to the selected skill bundle. Omitted, empty, or whitespace-only paths load SKILL.md and its textual references. A non-blank path reads only that resource.",
       })),
     }, { additionalProperties: false }),
     requiresSandbox: false,
@@ -80,7 +80,9 @@ export function createSkillReadTool(
         };
       }
 
-      const requestedPath = typeof args.path === "string" ? args.path : undefined;
+      // Blank optional paths select bundle assembly, just like an omitted path.
+      // Substituting "SKILL.md" instead would skip the automatic references.
+      const requestedPath = typeof args.path === "string" ? args.path.trim() || undefined : undefined;
       try {
         if (requestedPath === undefined) {
           const assembled = await assembleSkillRead(fs, skill, {
