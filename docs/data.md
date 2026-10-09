@@ -4,6 +4,11 @@ Data stores structured application records independently from Polpo runtime
 storage and file Volumes. It does not implement application user authentication.
 Use server-side Polpo credentials; an application's backend owns user access rules.
 
+The product calls each logical Data resource a **database**. Each database owns
+its tables and grants; a provider may implement it as a PostgreSQL schema.
+The HTTP `/data`, SDK `data()` and custom-tool `ctx.data` interfaces retain their
+generic Data namespace. Agent tools use `database_*`.
+
 ## Self-hosting
 
 Provision a separate PostgreSQL application database. Its owner must be able to
@@ -20,7 +25,7 @@ The standard Node server exposes Data under its authenticated `/api/v1/data` API
 
 Grants may additionally restrict `tables`. `manage` grants schema administration;
 only a global resource grant (`resource: "*"`) with unrestricted `manage` can
-create resources. Assign built-in tools using `allowedTools: ["data_*"]`.
+create resources. Assign built-in tools using `allowedTools: ["database_*"]`.
 Custom tools receive `ctx.data.list()`, `.describe(resource)` and
 `.execute(resource, {operations, idempotencyKey})` with the same agent grants.
 Local custom tools run as trusted Node code; these capabilities do not sandbox
@@ -79,6 +84,19 @@ columns/indexes cannot be changed or removed. `data.rename({expectedVersion,name
 keeps resource identity and grants. `data.remove(expectedVersion)` explicitly
 deletes the resource and its records. Neither schema changes nor deletion are
 available through ordinary Data record tools.
+
+## Agent reads and transactions
+
+`database_list` lists accessible databases; `database_describe` inspects their
+table schemas. `database_read` reads records from one table using typed filters,
+ordering and pagination. `database_insert`, `database_update`, `database_delete`
+and `database_upsert` operate on records; `database_delete` never drops a database.
+
+`database_transaction` submits multiple structured record operations in one
+database as a single atomic batch: all commit or all roll back. It is not a SQL
+query tool. Neither record tools nor the record API accept arbitrary SQL, joins
+or aggregations. Database creation, schema changes and removal are available
+through the administrative HTTP API, SDK and CLI, not agent tools or `ctx.data`.
 
 ## CLI and HTTP
 

@@ -25,6 +25,13 @@ describe("browser profile root override", () => {
   });
 });
 
+describe("database tool loading", () => {
+  it.each(["database_read", "database_*"])("loads extended capabilities for %s", (name) => {
+    const prep = prepareSpawn({ ...agent, allowedTools: [name] }, "/proj", ctx);
+    expect(prep.hasExtendedTools).toBe(true);
+  });
+});
+
 describe("runtime context prompt", () => {
   it("is absent by default and appended exactly once when provided", () => {
     const baseline = prepareSpawn(agent, "/proj", ctx).systemPrompt;

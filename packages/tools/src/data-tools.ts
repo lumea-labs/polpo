@@ -3,20 +3,20 @@ import type { PolpoTool } from "@polpo-ai/core";
 import { DataError, type DataClient } from "@polpo-ai/core/data";
 
 export const ALL_DATA_TOOL_NAMES = [
-  "data_list",
-  "data_describe",
-  "data_read",
-  "data_insert",
-  "data_update",
-  "data_delete",
-  "data_upsert",
-  "data_transaction",
+  "database_list",
+  "database_describe",
+  "database_read",
+  "database_insert",
+  "database_update",
+  "database_delete",
+  "database_upsert",
+  "database_transaction",
 ] as const;
 export type DataToolName = (typeof ALL_DATA_TOOL_NAMES)[number];
 const resource = Type.String({
-  description: "Data resource name or immutable ID",
+  description: "Database name or immutable ID",
 });
-const table = Type.String({ description: "Table name from data_describe" });
+const table = Type.String({ description: "Table name from database_describe" });
 const values = Type.Record(Type.String(), Type.Unknown());
 const idempotencyKey = Type.Optional(
   Type.String({
@@ -25,9 +25,9 @@ const idempotencyKey = Type.Optional(
   }),
 );
 const schemas = {
-  data_list: Type.Object({}),
-  data_describe: Type.Object({ resource }),
-  data_read: Type.Object({
+  database_list: Type.Object({}),
+  database_describe: Type.Object({ resource }),
+  database_read: Type.Object({
     resource,
     table,
     filter: Type.Optional(values),
@@ -42,15 +42,15 @@ const schemas = {
     limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 50 })),
     offset: Type.Optional(Type.Integer({ minimum: 0, maximum: 10000 })),
   }),
-  data_insert: Type.Object({ resource, table, values, idempotencyKey }),
-  data_upsert: Type.Object({
+  database_insert: Type.Object({ resource, table, values, idempotencyKey }),
+  database_upsert: Type.Object({
     resource,
     table,
     values,
     onConflict: Type.Array(Type.String(), { minItems: 1, maxItems: 4 }),
     idempotencyKey,
   }),
-  data_update: Type.Object({
+  database_update: Type.Object({
     resource,
     table,
     id: Type.String(),
@@ -58,35 +58,35 @@ const schemas = {
     values,
     idempotencyKey,
   }),
-  data_delete: Type.Object({
+  database_delete: Type.Object({
     resource,
     table,
     id: Type.String(),
     expectedVersion: Type.Integer({ minimum: 1 }),
     idempotencyKey,
   }),
-  data_transaction: Type.Object({
+  database_transaction: Type.Object({
     resource,
     operations: Type.Array(values, { minItems: 1, maxItems: 100 }),
     idempotencyKey,
   }),
 };
 const descriptions: Record<DataToolName, string> = {
-  data_list: "List the Data resources granted to this agent.",
-  data_describe:
-    "Read the table definitions, column types and schema version of a granted Data resource.",
-  data_read:
-    "Read typed records. Filters combine with AND; each column accepts eq, ne, gt, gte, lt, lte, in or isNull. Results include row IDs and revisions.",
-  data_insert:
-    "Insert a record into a granted Data table. Use an idempotency key for retry safety.",
-  data_update:
+  database_list: "List the databases granted to this agent.",
+  database_describe:
+    "Read the table definitions, column types and schema version of a granted database.",
+  database_read:
+    "Read typed records from one table with filters, ordering and pagination; no arbitrary SQL, joins or aggregations. Filters combine with AND; each column accepts eq, ne, gt, gte, lt, lte, in or isNull. Results include row IDs and revisions.",
+  database_insert:
+    "Insert a record into a table in a granted database. Use an idempotency key for retry safety.",
+  database_update:
     "Update one record using its _id and expected _version. Refresh on conflict before deciding how to retry.",
-  data_delete:
+  database_delete:
     "Delete one record using its _id and expected _version. Requires write access.",
-  data_upsert:
+  database_upsert:
     "Insert or update a record identified by a declared unique key. Use an idempotency key for retry safety.",
-  data_transaction:
-    "Execute an atomic batch of list/insert/update/delete/upsert operations within one Data resource; every operation commits or all roll back.",
+  database_transaction:
+    "Execute an atomic batch of list/insert/update/delete/upsert operations within one database; every operation commits or all roll back. Accepts structured operations, not SQL.",
 };
 
 export function createDataTools(
@@ -102,19 +102,22 @@ export function createDataTools(
       requiresSandbox: false,
       async execute(_id: string, args: any) {
         let result: unknown;
-        if (name === "data_list") result = await client.list();
-        else if (name === "data_describe")
+        if (name === "database_list") result = await client.list();
+        else if (name === "database_describe")
           result = await client.describe(args.resource);
         else {
           const { resource: ref, idempotencyKey: key, ...input } = args;
           const operations =
-            name === "data_transaction"
+            name === "database_transaction"
               ? input.operations
               : [
                   {
                     ...input,
-                    op: name === "data_read" ? "list" : name.slice(5),
-                    ...(name === "data_read"
+                    op:
+                      name === "database_read"
+                        ? "list"
+                        : name.slice("database_".length),
+                    ...(name === "database_read"
                       ? { limit: input.limit ?? 20 }
                       : {}),
                   },
@@ -129,9 +132,9 @@ export function createDataTools(
         // response is large. Return identities/revisions so a caller can read later.
         if (
           text.length > 30000 &&
-          name !== "data_read" &&
-          name !== "data_describe" &&
-          name !== "data_list"
+          name !== "database_read" &&
+          name !== "database_describe" &&
+          name !== "database_list"
         ) {
           return {
             content: [

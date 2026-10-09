@@ -103,7 +103,7 @@ describe.skipIf(!process.env.DATA_TEST_DATABASE_URL)(
         "execute",
         "list",
       ]);
-      const read = createDataTools(capability, ["data_read"])[0];
+      const read = createDataTools(capability, ["database_read"])[0];
       expect(
         (await read.execute("call", { resource: "crm", table: "customers" }))
           .content[0],

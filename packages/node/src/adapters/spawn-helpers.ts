@@ -435,7 +435,7 @@ export function prepareSpawn(agentConfig: AgentConfig, cwd: string, ctx?: SpawnC
     return lc.startsWith("browser_") || lc.startsWith("email_")
       || lc.startsWith("image_") || lc.startsWith("video_") || lc.startsWith("audio_")
       || lc.startsWith("excel_") || lc.startsWith("pdf_") || lc.startsWith("docx_")
-      || lc.startsWith("search_") || lc.startsWith("memory_") || lc.startsWith("data_") || lc === "*"
+      || lc.startsWith("search_") || lc.startsWith("memory_") || lc.startsWith("database_") || lc === "*"
       || lc === "brain_search" || lc === "source_read";
   }) ?? false;
 
