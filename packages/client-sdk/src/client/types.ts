@@ -671,6 +671,7 @@ export interface UpdateTeamRequest {
 // === API ===
 
 export type ErrorCode =
+  | import("@polpo-ai/core/data").DataErrorCode
   | "NOT_FOUND"
   | "INVALID_STATE"
   | "VALIDATION_ERROR"

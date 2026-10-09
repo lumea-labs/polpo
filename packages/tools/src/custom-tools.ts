@@ -23,6 +23,7 @@ import { pathToFileURL } from "node:url";
 
 import type { FileSystem } from "@polpo-ai/core/filesystem";
 import type { Shell } from "@polpo-ai/core/shell";
+import type { DataClient } from "@polpo-ai/core/data";
 import { validateJsonSchema } from "@polpo-ai/llm";
 import {
   ConnectionSelectionError,
@@ -301,6 +302,8 @@ async function resolveServerBindings<T extends TSchema, TBindings extends TSchem
  * touch arrives here — there are no ambient globals or platform env access.
  */
 export interface CustomToolContext<TBindings = Record<string, never>> {
+  /** Host-bound Data capability. Grants are never selected by model arguments. */
+  data?: DataClient;
   /** Sandboxed filesystem rooted at the project workspace. */
   fs: FileSystem;
   /** Shell for running commands in the workspace. */

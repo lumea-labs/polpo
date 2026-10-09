@@ -1,4 +1,6 @@
 export { PolpoClient } from "./polpo-client.js";
+export { DataResourceClient, type DataWriteOptions } from "./data.js";
+export type { DataResource, DataSchemaDefinition, DataColumn, DataTable, DataGrant, DataRow, DataValue, DataBatch, DataOperation, DataResult, DataListQuery, CreateDataInput, DataMigration } from "@polpo-ai/core/data";
 export type { PolpoClientConfig } from "./polpo-client.js";
 export { EventSourceManager, POLPO_SSE_EVENT_NAMES } from "./event-source.js";
 export type { ConnectionStatus, EventSourceConfig } from "./event-source.js";

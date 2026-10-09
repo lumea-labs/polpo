@@ -57,6 +57,7 @@ export interface InProcessSpawnerDeps {
   vaultStore?: VaultStore;
   memoryStore?: MemoryStore;
   memoryItemStore?: MemoryItemStore;
+  data?: import("@polpo-ai/core/data").DataClient;
   brainService?: BrainReadService;
   brainContext?: BrainServiceContext;
   fs?: FileSystem;

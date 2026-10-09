@@ -76,6 +76,8 @@ export interface AgentHandle {
 
 /** Extra context passed to the engine at spawn time. */
 export interface SpawnContext {
+  /** Host-bound application Data capability, unavailable unless explicitly configured. */
+  data?: import("./data/index.js").DataClient;
   /** Absolute path to the .polpo directory. Used for skill loading, logs, etc. */
   polpoDir: string;
   /** Current logical run id, when the host has allocated one. */

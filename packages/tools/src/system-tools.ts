@@ -20,6 +20,8 @@ import { ALL_MEMORY_TOOL_NAMES, createMemoryTools } from "./memory-tools.js";
 import { ALL_TYPED_MEMORY_TOOL_NAMES } from "./typed-memory-tools.js";
 import { resolveTypedMemoryTools } from "./typed-memory-runtime.js";
 import { ALL_BRAIN_TOOL_NAMES, createBrainTools } from "./brain-tools.js";
+import { ALL_DATA_TOOL_NAMES, createDataTools } from "./data-tools.js";
+import type { DataClient } from "@polpo-ai/core/data";
 import type {
   BrainReadService,
   BrainServiceContext,
@@ -446,7 +448,8 @@ export type ExtendedToolName = SystemToolName
   | import("./docx-tools.js").DocxToolName
   | import("./search-tools.js").SearchToolName
   | import("./typed-memory-tools.js").TypedMemoryToolName
-  | import("./brain-tools.js").BrainToolName;
+  | import("./brain-tools.js").BrainToolName
+  | import("./data-tools.js").DataToolName;
 
 /**
  * Public catalog of every configurable built-in tool name (core coding
@@ -474,9 +477,12 @@ export const TOOL_CATALOG: string[] = [
   ...ALL_MEMORY_TOOL_NAMES,
   ...ALL_TYPED_MEMORY_TOOL_NAMES,
   ...ALL_BRAIN_TOOL_NAMES,
+  ...ALL_DATA_TOOL_NAMES,
 ];
 
 export interface CreateAllToolsOptions {
+  /** Host-bound Data capability; never derive grants from tool arguments. */
+  data?: DataClient;
   /** Working directory for the agent */
   cwd: string;
   /** Tool name filter — only include tools with these names.
@@ -562,6 +568,8 @@ export async function createAllTools(options: CreateAllToolsOptions): Promise<Po
   // Helper: check if any tool from a category is in the (expanded) allowedTools list
   const categoryRequested = (names: readonly string[]) =>
     allowedTools?.some(a => names.some(n => n === a.toLowerCase()));
+
+  if (options.data && categoryRequested(ALL_DATA_TOOL_NAMES)) tools.push(...createDataTools(options.data, allowedTools!));
 
   // Core coding tools (always included unless filtered out) — includes vault_get/vault_list
   tools.push(...createSystemTools(cwd, allowedTools, allowedPaths, options.outputDir, options.vault, options.fs, options.shell));

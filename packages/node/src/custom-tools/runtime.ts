@@ -38,6 +38,7 @@ const TOOLS_AUTHORING_ENTRY = join(RUNTIME_RESOLVE_DIR, "../../../tools/dist/cus
 const runtimeRequire = createRequire(import.meta.url);
 
 export type RuntimeOptions = {
+  data?: import("@polpo-ai/core/data").DataClient;
   polpoDir: string;
   workDir: string;
   fs: FileSystem;
@@ -213,6 +214,7 @@ export class LocalCustomToolRuntime implements CustomToolDeployer, CustomToolRun
     const bundle = await this.ensureDeployed(name);
     const tool = extractCustomTool(await this.importBundle(name, bundle, false));
     return bindCustomTool(tool, {
+      data: this.options.data,
       fs: this.options.fs,
       shell: this.options.shell,
       connections,
