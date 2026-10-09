@@ -1,3 +1,6 @@
+// @vitest-environment jsdom
+
+import "../../test/setup.js";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
