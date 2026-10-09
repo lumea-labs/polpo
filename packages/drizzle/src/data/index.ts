@@ -1,6 +1,8 @@
 import {
   DataError,
   DataSchema,
+  DataQuerySchema,
+  DataSqlMigrationSchema,
   canonicalDataJson,
   dataColumn,
   parseData,
@@ -17,7 +19,14 @@ import {
   type DataRow,
   type DataSchemaDefinition,
   type DataTable,
+  type DataQuery,
+  type DataQueryAccess,
+  type DataQueryResult,
+  type DataSqlMigration,
+  type DataMigrationRecord,
 } from "@polpo-ai/core/data";
+import { compileQuery, migrationStatement } from "./sql.js";
+import { dataValueConstraint, finiteDataJson } from "./constraints.js";
 
 /** Drivers must keep every transaction callback on one connection. */
 export interface DataSqlExecutor {
@@ -75,6 +84,26 @@ function rowResult(row: Record<string, any>, table: DataTable): DataRow {
 function safeError(error: unknown): never {
   if (error instanceof DataError) throw error;
   const code = (error as { code?: string })?.code;
+  if (code === "57014")
+    throw new DataError(
+      "data_limit",
+      "Database query exceeded its execution limit",
+    );
+  if (code === "42501")
+    throw new DataError(
+      "data_forbidden",
+      "Database operation is not permitted",
+    );
+  if (code?.startsWith("42") || code === "2BP01")
+    throw new DataError(
+      "data_invalid",
+      "SQL is incompatible with the current database schema",
+    );
+  if (code?.startsWith("22"))
+    throw new DataError(
+      "data_constraint",
+      "SQL values or calculations are invalid for the requested operation",
+    );
   if (code === "23505")
     throw new DataError("data_conflict", "A unique value already exists");
   if (
@@ -100,6 +129,7 @@ export class PostgresDataProvider implements DataProvider {
     transactions: true,
     relations: true,
     schemaEvolution: "additive" as const,
+    sql: { dialect: "postgresql" as const, migrations: true },
   };
   constructor(private readonly database: DataSqlDatabase) {}
   private async transaction<T>(
@@ -129,6 +159,10 @@ export class PostgresDataProvider implements DataProvider {
         resource_id uuid NOT NULL REFERENCES "_polpo_data"."resources"(id) ON DELETE CASCADE,
         principal text NOT NULL, key text NOT NULL, request text NOT NULL, result jsonb NOT NULL,
         created_at timestamptz NOT NULL DEFAULT now(), PRIMARY KEY(resource_id, principal, key))`);
+      await tx.query(`CREATE TABLE IF NOT EXISTS "_polpo_data"."migrations" (
+        resource_id uuid NOT NULL REFERENCES "_polpo_data"."resources"(id) ON DELETE CASCADE,
+        id text NOT NULL, checksum text NOT NULL, version integer NOT NULL, result jsonb NOT NULL,
+        applied_at timestamptz NOT NULL DEFAULT now(), PRIMARY KEY(resource_id,id))`);
     });
   }
   async list(scope: string): Promise<DataResource[]> {
@@ -228,7 +262,7 @@ export class PostgresDataProvider implements DataProvider {
           );
     }
     const columnDdl = (name: string, column: DataColumn) =>
-      `${identifier(name)} ${sqlTypes[column.type]}${column.nullable ? "" : " NOT NULL"}${column.unique ? " UNIQUE" : ""}`;
+      `${identifier(name)} ${sqlTypes[column.type]}${column.nullable ? "" : " NOT NULL"}${column.unique ? " UNIQUE" : ""}${dataValueConstraint(name, column)}`;
     for (const [tableName, table] of Object.entries(next.tables)) {
       const old = previous.tables[tableName];
       if (!old) {
@@ -258,7 +292,7 @@ export class PostgresDataProvider implements DataProvider {
       ) {
         const index = table.indexes![i];
         await tx.query(
-          `CREATE ${index.unique ? "UNIQUE " : ""}INDEX ${identifier(`idx_${tableName}_${i}`)} ON ${qualified(id, tableName)} (${index.columns.map(identifier).join(", ")})`,
+          `CREATE ${index.unique ? "UNIQUE " : ""}INDEX ${identifier(index.name ?? `idx_${tableName}_${i}`)} ON ${qualified(id, tableName)} (${index.columns.map(identifier).join(", ")})`,
         );
       }
     }
@@ -332,6 +366,209 @@ export class PostgresDataProvider implements DataProvider {
         [JSON.stringify(input.schema), id],
       );
       return resource(row);
+    });
+  }
+  private async sqlResult(
+    tx: DataSqlExecutor,
+    compiled: { sql: string; write: boolean },
+    input: DataQuery,
+  ): Promise<DataQueryResult> {
+    const limit = input.maxRows ?? 200;
+    // JSON and byte accounting happen inside PostgreSQL before any rows cross
+    // the driver boundary. DML always completes atomically even if its result
+    // page is truncated; rowCount reports every affected row.
+    const source = compiled.write ? '"_polpo_mutation"' : `(${compiled.sql})`;
+    const prefix = compiled.write
+      ? `WITH "_polpo_mutation" AS (${compiled.sql}) `
+      : "";
+    const count = compiled.write
+      ? '(SELECT count(*) FROM "_polpo_mutation")'
+      : "count(*)";
+    const [result] = await tx.query(
+      `${prefix}SELECT ${count} AS affected,
+      count(*) AS fetched,
+      COALESCE(bool_and(${finiteDataJson("r")}), true) AS finite,
+      CASE WHEN COALESCE(sum(octet_length(r::text)),0) <= 1048576
+        THEN COALESCE(jsonb_agg(r), '[]'::jsonb) ELSE NULL END AS rows
+      FROM (SELECT to_jsonb(q) AS r FROM ${source} AS q LIMIT ${limit + 1}) AS bounded`,
+      input.params ?? [],
+    );
+    if (result.rows === null)
+      throw new DataError(
+        "data_limit",
+        "SQL result exceeds 1 MiB; select fewer or smaller columns",
+      );
+    if (!result.finite)
+      throw new DataError(
+        "data_invalid",
+        "SQL result contains a number outside the supported finite range",
+      );
+    const rows =
+      typeof result.rows === "string" ? JSON.parse(result.rows) : result.rows;
+    return {
+      rows: rows.slice(0, limit),
+      rowCount: compiled.write
+        ? Number(result.affected)
+        : Math.min(Number(result.fetched), limit),
+      truncated: Number(result.fetched) > limit,
+    };
+  }
+  async query(
+    scope: string,
+    id: string,
+    principalId: string,
+    input: DataQuery,
+    access: DataQueryAccess,
+  ): Promise<DataQueryResult> {
+    input = parseData(DataQuerySchema, input);
+    return this.transaction(async (tx) => {
+      const current = await this.locked(tx, scope, id, "SHARE");
+      const compiled = compileQuery(
+        input.sql,
+        namespace(id),
+        current.schema,
+        access,
+        input.mode ?? "read",
+        input.params?.length ?? 0,
+      );
+      const { idempotencyKey: _key, ...queryInput } = input;
+      const request = canonicalDataJson({ kind: "sql", ...queryInput });
+      if (input.idempotencyKey) {
+        await tx.query(
+          "SELECT pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended($1, 0))",
+          [canonicalDataJson([id, principalId, input.idempotencyKey])],
+        );
+        const [replay] = await tx.query(
+          'SELECT request,result FROM "_polpo_data"."replays" WHERE resource_id=$1 AND principal=$2 AND key=$3',
+          [id, principalId, input.idempotencyKey],
+        );
+        if (replay) {
+          if (replay.request !== request)
+            throw new DataError(
+              "data_conflict",
+              "Idempotency key was already used for a different request",
+            );
+          return replay.result as DataQueryResult;
+        }
+      }
+      await tx.query(
+        `SET LOCAL ROLE ${identifier(`${namespace(id)}_${compiled.write ? "write" : "read"}`)}`,
+      );
+      const result = await this.sqlResult(tx, compiled, input);
+      await tx.query("RESET ROLE");
+      if (input.idempotencyKey)
+        await tx.query(
+          'INSERT INTO "_polpo_data"."replays" (resource_id,principal,key,request,result) VALUES ($1,$2,$3,$4,$5::text::jsonb)',
+          [
+            id,
+            principalId,
+            input.idempotencyKey,
+            request,
+            JSON.stringify(result),
+          ],
+        );
+      return result;
+    });
+  }
+  async migrateSql(
+    scope: string,
+    id: string,
+    input: DataSqlMigration,
+  ): Promise<DataResource> {
+    input = parseData(DataSqlMigrationSchema, input);
+    const digest = await crypto.subtle.digest(
+      "SHA-256",
+      new TextEncoder().encode(canonicalDataJson(input)),
+    );
+    const checksum = Array.from(new Uint8Array(digest), (b) =>
+      b.toString(16).padStart(2, "0"),
+    ).join("");
+    return this.transaction(async (tx) => {
+      const current = await this.locked(tx, scope, id, "UPDATE");
+      const [prior] = await tx.query(
+        'SELECT checksum,result FROM "_polpo_data"."migrations" WHERE resource_id=$1 AND id=$2',
+        [id, input.id],
+      );
+      if (prior) {
+        if (prior.checksum !== checksum)
+          throw new DataError(
+            "data_conflict",
+            "Migration ID was already used for different content",
+          );
+        return prior.result as DataResource;
+      }
+      if (current.schemaVersion !== input.expectedVersion)
+        throw new DataError(
+          "data_conflict",
+          "Schema version changed; refresh before retrying",
+        );
+      const schema = structuredClone(current.schema);
+      for (const [name, table] of Object.entries(schema.tables))
+        table.indexes?.forEach((index, i) => {
+          index.name ??= `idx_${name}_${i}`;
+        });
+      for (const statement of input.statements) {
+        const ddl = migrationStatement(
+          statement.sql,
+          namespace(id),
+          schema,
+          input.allowDestructive ?? false,
+        );
+        if (ddl) {
+          if (statement.params?.length)
+            throw new DataError(
+              "data_invalid",
+              "DDL statements do not accept parameters",
+            );
+          for (const text of ddl) await tx.query(text);
+          await this.grantTables(tx, id);
+        } else {
+          const tables = Object.keys(schema.tables);
+          const compiled = compileQuery(
+            statement.sql,
+            namespace(id),
+            schema,
+            { readTables: tables, writeTables: tables },
+            "write",
+            statement.params?.length ?? 0,
+          );
+          await tx.query(
+            `SET LOCAL ROLE ${identifier(`${namespace(id)}_write`)}`,
+          );
+          // Backfills do not transfer record values or arbitrary result sizes.
+          await tx.query(
+            `WITH "_polpo_backfill" AS (${compiled.sql}) SELECT count(*) FROM "_polpo_backfill"`,
+            statement.params ?? [],
+          );
+          await tx.query("RESET ROLE");
+        }
+      }
+      parseData(DataSchema, schema);
+      const [row] = await tx.query(
+        'UPDATE "_polpo_data"."resources" SET definition=$1::text::jsonb, version=version+1 WHERE id=$2 RETURNING *',
+        [JSON.stringify(schema), id],
+      );
+      const result = resource(row);
+      await tx.query(
+        'INSERT INTO "_polpo_data"."migrations" (resource_id,id,checksum,version,result) VALUES ($1,$2,$3,$4,$5::text::jsonb)',
+        [id, input.id, checksum, result.schemaVersion, JSON.stringify(result)],
+      );
+      return result;
+    });
+  }
+  async migrations(scope: string, id: string): Promise<DataMigrationRecord[]> {
+    return this.transaction(async (tx) => {
+      await this.locked(tx, scope, id, "SHARE");
+      const rows = await tx.query(
+        'SELECT id,checksum,version,applied_at FROM "_polpo_data"."migrations" WHERE resource_id=$1 ORDER BY version',
+        [id],
+      );
+      return rows.map((row) => ({
+        id: row.id,
+        checksum: row.checksum,
+        schemaVersion: row.version,
+        appliedAt: new Date(row.applied_at).toISOString(),
+      }));
     });
   }
   async rename(

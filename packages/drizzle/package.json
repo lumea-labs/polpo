@@ -27,7 +27,8 @@
     "@polpo-ai/core": "workspace:*",
     "@polpo-ai/vault-crypto": "workspace:*",
     "drizzle-orm": "^0.44.0",
-    "nanoid": "^5.1.2"
+    "nanoid": "^5.1.2",
+    "pgsql-ast-parser": "12.0.2"
   },
   "peerDependencies": {
     "better-sqlite3": "^11.0.0 || ^12.0.0",

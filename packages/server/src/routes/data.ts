@@ -1,13 +1,16 @@
-import { Hono, type Context } from "hono";
+import type { Context } from "hono";
+import { OpenAPIHono } from "@hono/zod-openapi";
 import { bodyLimit } from "hono/body-limit";
 import { DataError, type DataService } from "@polpo-ai/core/data";
+import { registerDataOpenApi } from "./data-openapi.js";
 
 export type DataServiceResolver = (
   request: Request,
 ) => DataService | Promise<DataService>;
 /** The host authenticates requests and resolves grants afresh before each operation. */
-export function dataRoutes(resolve: DataServiceResolver): Hono {
-  const app = new Hono();
+export function dataRoutes(resolve: DataServiceResolver): OpenAPIHono {
+  const app = new OpenAPIHono();
+  registerDataOpenApi(app);
   app.use(
     "*",
     bodyLimit({
@@ -103,6 +106,32 @@ export function dataRoutes(resolve: DataServiceResolver): Hono {
       data: await (
         await resolve(c.req.raw)
       ).execute(c.req.param("resource"), input),
+    });
+  });
+  app.post("/:resource/query", async (c) => {
+    const input = await body(c);
+    return c.json({
+      ok: true,
+      data: await (
+        await resolve(c.req.raw)
+      ).query(c.req.param("resource"), input),
+    });
+  });
+  app.get("/:resource/migrations", async (c) =>
+    c.json({
+      ok: true,
+      data: await (
+        await resolve(c.req.raw)
+      ).migrations(c.req.param("resource")),
+    }),
+  );
+  app.post("/:resource/migrations", async (c) => {
+    const input = await body(c);
+    return c.json({
+      ok: true,
+      data: await (
+        await resolve(c.req.raw)
+      ).migrateSql(c.req.param("resource"), input),
     });
   });
   return app;

@@ -9,6 +9,7 @@ export interface DashboardCapabilities {
   managedConnections?: boolean;
   managedGateway?: boolean;
   provisioning?: boolean;
+  data?: boolean;
 }
 
 export interface DashboardHost {

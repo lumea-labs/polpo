@@ -23,6 +23,7 @@ import {
   GearSix,
   GraduationCap,
   HardDrives,
+  Database,
   Moon,
   PlugsConnected,
   SignOut,
@@ -51,7 +52,7 @@ type NavItem = {
   href: string;
   icon: IconComponent;
   external?: boolean;
-  capability?: "billing";
+  capability?: "billing" | "data";
 };
 type NavGroup = { heading: string; items: NavItem[] };
 
@@ -68,6 +69,7 @@ const GROUPS: NavGroup[] = [
       { label: "Tool Functions", href: "/tools", icon: Wrench },
       { label: "Memory", href: "/memory", icon: Brain },
       { label: "Drives", href: "/files", icon: HardDrives },
+      { label: "Databases", href: "/data", icon: Database, capability: "data" },
     ],
   },
   {

@@ -190,6 +190,11 @@ docker compose \
 
 Open `http://localhost:3000`. The runtime is only exposed to the private Compose network; the dashboard proxies API and completion requests with `POLPO_API_KEY` server-side.
 
+The dashboard's **Databases** page is at `/data`. Configure a separate application
+PostgreSQL database through `POLPO_DATA_DATABASE_URL` on the runtime to use schema
+and table browsing, record editing, SQL queries and migrations. See
+[Application Data](docs/data.md#self-hosting) for setup and agent permissions.
+
 Use the deterministic, isolated verification stack before deploying changes:
 
 ```bash
@@ -1187,3 +1192,13 @@ Polpo Cloud is the managed version at [polpo.sh](https://polpo.sh). It uses the 
 ## License
 
 [Apache 2.0](LICENSE) -- Lumea Labs
+
+### Application databases
+
+[Data](docs/data.md) provides named application databases alongside file Volumes:
+typed tables, record CRUD, atomic batches, scoped SQL queries and versioned SQL
+migrations. Agents use `database_*`; custom tools use `ctx.data`. Administration
+is available through HTTP, the SDK, `polpo data` and the self-hosted dashboard's
+`/data` page. Applications use the normal Polpo API key; agent permissions are
+configured separately. The first OSS provider is PostgreSQL; managed Cloud
+provisions Neon behind the same Data contracts.

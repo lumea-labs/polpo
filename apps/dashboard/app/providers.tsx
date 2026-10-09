@@ -19,6 +19,7 @@ export function Providers({ children }: { children: ReactNode }) {
       managedConnections: false,
       managedGateway: false,
       provisioning: false,
+      data: true,
     },
     navigate: (path: string) => router.push(path.replace(/^\/projects\/local(?=\/|$)/, "")),
     href: (path: string) => path.replace(/^\/projects\/local(?=\/|$)/, ""),

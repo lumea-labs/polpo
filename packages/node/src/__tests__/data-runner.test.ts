@@ -24,8 +24,29 @@ describe("Hosted runner Data capability", () => {
     const { runnerDataClient } = await import("../data/index.js");
     const client = runnerDataClient("project", "support")!;
     expect(process.env.POLPO_DATA_CAPABILITY).toBeUndefined();
-    expect(Object.keys(client).sort()).toEqual(["describe", "execute", "list"]);
+    expect(Object.keys(client).sort()).toEqual([
+      "describe",
+      "execute",
+      "list",
+      "query",
+    ]);
     expect(await client.list()).toEqual([]);
+    fetcher.mockResolvedValueOnce(
+      Response.json({
+        ok: true,
+        data: { rows: [{ total: 1 }], rowCount: 1, truncated: false },
+      }),
+    );
+    expect(
+      await client.query!("crm", {
+        sql: "SELECT count(*) AS total FROM customers",
+      }),
+    ).toMatchObject({ rows: [{ total: 1 }] });
+    expect(JSON.parse(fetcher.mock.calls.at(-1)![1].body)).toEqual({
+      operation: "query",
+      resource: "crm",
+      query: { sql: "SELECT count(*) AS total FROM customers" },
+    });
     expect(fetcher).toHaveBeenCalledWith(
       "https://gateway.example.test/",
       expect.objectContaining({

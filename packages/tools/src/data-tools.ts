@@ -11,6 +11,7 @@ export const ALL_DATA_TOOL_NAMES = [
   "database_delete",
   "database_upsert",
   "database_transaction",
+  "database_query",
 ] as const;
 export type DataToolName = (typeof ALL_DATA_TOOL_NAMES)[number];
 const resource = Type.String({
@@ -25,6 +26,28 @@ const idempotencyKey = Type.Optional(
   }),
 );
 const schemas = {
+  database_query: Type.Object({
+    resource,
+    sql: Type.String({
+      maxLength: 65536,
+      description:
+        "One PostgreSQL SELECT, INSERT, UPDATE or DELETE using logical table names and $1 parameters. No DDL or cross-database access.",
+    }),
+    params: Type.Optional(
+      Type.Array(
+        Type.Union([Type.String(), Type.Number(), Type.Boolean(), Type.Null()]),
+        { maxItems: 1000 },
+      ),
+    ),
+    mode: Type.Optional(
+      Type.Union([Type.Literal("read"), Type.Literal("write")], {
+        description:
+          "Defaults to read. Mutations require write mode and write grants.",
+      }),
+    ),
+    maxRows: Type.Optional(Type.Integer({ minimum: 1, maximum: 50 })),
+    idempotencyKey,
+  }),
   database_list: Type.Object({}),
   database_describe: Type.Object({ resource }),
   database_read: Type.Object({
@@ -72,6 +95,8 @@ const schemas = {
   }),
 };
 const descriptions: Record<DataToolName, string> = {
+  database_query:
+    "Execute parameterized SQL within one granted database, including joins and aggregates. Read is the default. Explicit write mode supports record mutations; use idempotencyKey for retries and WHERE _version = ... for optimistic updates. Returns bounded rows and affected rowCount. Schema migrations remain administrative.",
   database_list: "List the databases granted to this agent.",
   database_describe:
     "Read the table definitions, column types and schema version of a granted database.",
@@ -105,7 +130,18 @@ export function createDataTools(
         if (name === "database_list") result = await client.list();
         else if (name === "database_describe")
           result = await client.describe(args.resource);
-        else {
+        else if (name === "database_query") {
+          if (!client.query)
+            throw new DataError(
+              "data_invalid",
+              "SQL queries are not supported by this provider",
+            );
+          const { resource: ref, ...input } = args;
+          result = await client.query(ref, {
+            ...input,
+            maxRows: input.maxRows ?? 20,
+          });
+        } else {
           const { resource: ref, idempotencyKey: key, ...input } = args;
           const operations =
             name === "database_transaction"
@@ -128,13 +164,33 @@ export function createDataTools(
           });
         }
         const text = JSON.stringify(result);
+        if (
+          text.length > 30000 &&
+          name === "database_query" &&
+          args.mode === "write"
+        ) {
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: JSON.stringify({
+                  committed: true,
+                  rowCount: (result as any).rowCount,
+                  rowsOmitted: true,
+                }),
+              },
+            ],
+            details: { resource: args.resource },
+          };
+        }
         // Writes have already committed: never report failure merely because their
         // response is large. Return identities/revisions so a caller can read later.
         if (
           text.length > 30000 &&
           name !== "database_read" &&
           name !== "database_describe" &&
-          name !== "database_list"
+          name !== "database_list" &&
+          name !== "database_query"
         ) {
           return {
             content: [

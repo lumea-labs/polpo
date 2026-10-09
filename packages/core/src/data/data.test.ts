@@ -240,7 +240,12 @@ describe("Remote Data capability", () => {
       headers: { "x-sandbox": "one" },
       fetch: fetcher,
     });
-    expect(Object.keys(client).sort()).toEqual(["describe", "execute", "list"]);
+    expect(Object.keys(client).sort()).toEqual([
+      "describe",
+      "execute",
+      "list",
+      "query",
+    ]);
     expect(Object.isFrozen(client)).toBe(true);
     await expect(client.describe("crm")).rejects.toMatchObject({
       code: "data_forbidden",

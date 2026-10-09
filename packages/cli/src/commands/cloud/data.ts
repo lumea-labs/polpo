@@ -4,6 +4,8 @@ import {
   CreateDataSchema,
   DataBatchSchema,
   MigrateDataSchema,
+  DataQuerySchema,
+  DataSqlMigrationSchema,
   parseData,
 } from "@polpo-ai/core/data";
 import { createApiClient, type ApiClient } from "./api.js";
@@ -25,8 +27,8 @@ async function run(
 ) {
   try {
     const credentials =
-      process.env.POLPO_DATA_API_KEY && options.url
-        ? { apiKey: process.env.POLPO_DATA_API_KEY, baseUrl: options.url }
+      process.env.POLPO_API_KEY && options.url
+        ? { apiKey: process.env.POLPO_API_KEY, baseUrl: options.url }
         : await requireAuth({
             context: "Data requires an authenticated session.",
           });
@@ -56,7 +58,7 @@ async function run(
 export function registerDataCommand(program: Command): void {
   const data = program
     .command("data")
-    .description("Manage structured application Data");
+    .description("Manage application databases, records and SQL migrations");
   const command = (signature: string, description: string) =>
     data
       .command(signature)
@@ -66,7 +68,7 @@ export function registerDataCommand(program: Command): void {
         "--url <url>",
         "API origin override (including /api for self-hosted)",
       );
-  command("list", "List granted Data resources").action((opts) =>
+  command("list", "List granted databases").action((opts) =>
     run((client) => client.get("/v1/data"), opts),
   );
   command("describe <resource>", "Inspect tables and schema version").action(
@@ -75,7 +77,7 @@ export function registerDataCommand(program: Command): void {
   );
   command(
     "create <file>",
-    "Create Data from a JSON {name,schema} document",
+    "Create a database from a JSON {name,schema} document",
   ).action((file, opts) =>
     run(
       async (client) =>
@@ -114,7 +116,7 @@ export function registerDataCommand(program: Command): void {
   );
   command(
     "rename <resource> <name>",
-    "Rename Data without changing its identity",
+    "Rename a database without changing its identity",
   )
     .requiredOption("--version <version>", "Expected schema version")
     .action((ref, name, opts) =>
@@ -127,7 +129,7 @@ export function registerDataCommand(program: Command): void {
         opts,
       ),
     );
-  command("delete <resource>", "Delete Data and its records")
+  command("delete <resource>", "Delete a database and its records")
     .requiredOption("--version <version>", "Expected schema version")
     .requiredOption(
       "--confirm <resource>",
@@ -142,4 +144,39 @@ export function registerDataCommand(program: Command): void {
         );
       }, opts),
     );
+  command(
+    "query <resource> <file>",
+    "Execute parameterized SQL from a JSON {sql,params?,mode?,idempotencyKey?} document",
+  ).action((ref, file, opts) =>
+    run(
+      async (client) =>
+        client.post(
+          `/v1/data/${encodeURIComponent(ref)}/query`,
+          parseData(DataQuerySchema, await readDataJson(file)),
+        ),
+      opts,
+    ),
+  );
+  command(
+    "migrate-sql <resource> <file>",
+    "Apply an atomic versioned SQL migration JSON document",
+  ).action((ref, file, opts) =>
+    run(
+      async (client) =>
+        client.post(
+          `/v1/data/${encodeURIComponent(ref)}/migrations`,
+          parseData(DataSqlMigrationSchema, await readDataJson(file)),
+        ),
+      opts,
+    ),
+  );
+  command(
+    "migrations <resource>",
+    "List applied SQL migration IDs, checksums and versions",
+  ).action((ref, opts) =>
+    run(
+      (client) => client.get(`/v1/data/${encodeURIComponent(ref)}/migrations`),
+      opts,
+    ),
+  );
 }

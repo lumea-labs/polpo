@@ -99,3 +99,33 @@ export function Toggle({
     </button>
   );
 }
+
+export function EmptyState({
+  icon,
+  title,
+  children,
+  action,
+}: {
+  icon: ReactNode;
+  title: string;
+  /** One line of guidance — say what to do, not just what isn't there. */
+  children?: ReactNode;
+  action?: ReactNode;
+}) {
+  return (
+    <div className="flex flex-col items-center gap-3 rounded-lg border border-dashed border-border px-3.5 py-12 text-center">
+      <span className="grid h-11 w-11 place-items-center rounded-lg border border-border bg-secondary text-muted-foreground">
+        {icon}
+      </span>
+      <div>
+        <div className="text-sm font-medium text-foreground">{title}</div>
+        {children && (
+          <div className="mx-auto mt-1 max-w-md text-[13px] leading-5 text-muted-foreground">
+            {children}
+          </div>
+        )}
+      </div>
+      {action}
+    </div>
+  );
+}

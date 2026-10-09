@@ -28,6 +28,10 @@ export const DataIdentifier = z
   .string()
   .regex(/^[a-z][a-z0-9_]{0,47}$/)
   .refine((v) => !forbiddenNames.has(v), "Reserved identifier");
+export const DataIndexName = z
+  .string()
+  .regex(/^[a-z][a-z0-9_]{0,62}$/)
+  .refine((v) => !forbiddenNames.has(v), "Reserved index name");
 export const DataName = z
   .string()
   .regex(/^[a-z][a-z0-9_-]{0,62}$/)
@@ -74,6 +78,7 @@ export const DataTableSchema = z
       .array(
         z
           .object({
+            name: DataIndexName.optional(),
             columns: z.array(DataIdentifier).min(1).max(4),
             unique: z.boolean().optional(),
           })
@@ -91,8 +96,17 @@ export const DataSchema = z
   })
   .strict()
   .superRefine((schema, ctx) => {
+    const indexNames = new Set<string>();
     for (const [tableName, table] of Object.entries(schema.tables)) {
-      for (const index of table.indexes ?? []) {
+      for (const [position, index] of (table.indexes ?? []).entries()) {
+        const indexName = index.name ?? `idx_${tableName}_${position}`;
+        if (indexNames.has(indexName))
+          ctx.addIssue({
+            code: "custom",
+            message: "Index names must be unique within a database",
+            path: ["tables", tableName, "indexes", position, "name"],
+          });
+        indexNames.add(indexName);
         if (
           new Set(index.columns).size !== index.columns.length ||
           index.columns.some((c) => !Object.hasOwn(table.columns, c))
@@ -178,7 +192,9 @@ export type DataRow = Record<string, DataValue> & {
   _created_at: string;
   _updated_at: string;
 };
-const json = z.json();
+/** Canonical recursive JSON values, also named by API schema generators. */
+export const DataValueSchema = z.json();
+const json = DataValueSchema;
 const filterOperators = z
   .object({
     eq: json.optional(),
@@ -263,6 +279,55 @@ export type DataResult = {
   total?: number;
   nextOffset?: number | null;
 };
+const sqlStatement = z
+  .object({
+    sql: z.string().trim().min(1).max(65536),
+    params: z
+      .array(
+        z.union([
+          z.string().max(65536),
+          z.number().finite(),
+          z.boolean(),
+          z.null(),
+        ]),
+      )
+      .max(1000)
+      .optional(),
+  })
+  .strict();
+export const DataQuerySchema = sqlStatement.extend({
+  mode: z.enum(["read", "write"]).optional(),
+  maxRows: z.number().int().min(1).max(200).optional(),
+  idempotencyKey: z
+    .string()
+    .min(1)
+    .max(200)
+    .regex(/^[\x21-\x7e]+$/)
+    .optional(),
+});
+export type DataQuery = z.infer<typeof DataQuerySchema>;
+export type DataQueryResult = {
+  rows: Record<string, DataValue>[];
+  rowCount: number;
+  truncated: boolean;
+};
+export const DataSqlMigrationSchema = z
+  .object({
+    id: DataIdentifier,
+    expectedVersion: z.number().int().positive(),
+    statements: z.array(sqlStatement).min(1).max(100),
+    allowDestructive: z.boolean().optional(),
+  })
+  .strict();
+export type DataSqlMigration = z.infer<typeof DataSqlMigrationSchema>;
+export type DataMigrationRecord = {
+  id: string;
+  checksum: string;
+  schemaVersion: number;
+  appliedAt: string;
+};
+/** Host-computed permissions; never accept these from query arguments. */
+export type DataQueryAccess = { readTables: string[]; writeTables: string[] };
 export const DataGrantSchema = z
   .object({
     resource: z.union([uuid, z.literal("*")]),
@@ -283,6 +348,7 @@ export interface DataCapabilities {
   transactions: boolean;
   relations: boolean;
   schemaEvolution: "additive";
+  sql?: { dialect: "postgresql"; migrations: boolean };
 }
 export interface DataProvider {
   readonly capabilities: DataCapabilities;
@@ -302,6 +368,19 @@ export interface DataProvider {
     principalId: string,
     batch: DataBatch,
   ): Promise<DataResult[]>;
+  query?(
+    scope: string,
+    id: string,
+    principalId: string,
+    input: DataQuery,
+    access: DataQueryAccess,
+  ): Promise<DataQueryResult>;
+  migrateSql?(
+    scope: string,
+    id: string,
+    input: DataSqlMigration,
+  ): Promise<DataResource>;
+  migrations?(scope: string, id: string): Promise<DataMigrationRecord[]>;
 }
 
 /** Bound capability safe to pass to a custom tool; no credentials or mutable host context. */
@@ -309,6 +388,7 @@ export interface DataClient {
   list(): Promise<DataResource[]>;
   describe(reference: string): Promise<DataResource>;
   execute(reference: string, batch: DataBatch): Promise<DataResult[]>;
+  query?(reference: string, input: DataQuery): Promise<DataQueryResult>;
 }
 
 /** Re-resolve authorization on each call; expose no provider or host internals. */
@@ -321,6 +401,15 @@ export function createDataCapability(
       (await resolve()).describe(reference),
     execute: async (reference: string, batch: DataBatch) =>
       (await resolve()).execute(reference, batch),
+    query: async (reference: string, input: DataQuery) => {
+      const client = await resolve();
+      if (!client.query)
+        throw new DataError(
+          "data_invalid",
+          "SQL queries are not supported by this provider",
+        );
+      return client.query(reference, input);
+    },
   });
 }
 
@@ -366,7 +455,8 @@ function validateValue(column: DataColumn, value: unknown, name: string): void {
     column.type === "json"
       ? json.safeParse(value).success
       : column.type === "text"
-        ? typeof value === "string" && value.length <= 65536
+        ? typeof value === "string" &&
+          new TextEncoder().encode(value).byteLength <= 65536
         : column.type === "boolean"
           ? typeof value === "boolean"
           : column.type === "integer"
@@ -604,6 +694,53 @@ export class DataService implements DataClient {
       batch,
     );
   }
+  async query(reference: string, input: DataQuery): Promise<DataQueryResult> {
+    const query = parseData(DataQuerySchema, input);
+    const resource = await this.resolve(reference);
+    const action = query.mode === "write" ? "write" : "read";
+    if (!this.allows(resource.id, action)) return forbidden();
+    if (!this.provider.capabilities.sql || !this.provider.query)
+      return invalid("SQL queries are not supported by this provider");
+    const tables = Object.keys(resource.schema.tables);
+    return this.provider.query(
+      this.#access.scope,
+      resource.id,
+      this.#access.principalId,
+      query,
+      {
+        readTables: tables.filter((table) =>
+          this.allows(resource.id, "read", table),
+        ),
+        writeTables: tables.filter((table) =>
+          this.allows(resource.id, "write", table),
+        ),
+      },
+    );
+  }
+  async migrateSql(
+    reference: string,
+    input: DataSqlMigration,
+  ): Promise<DataResource> {
+    const resource = await this.resolve(reference);
+    if (!this.allows(resource.id, "manage")) return forbidden();
+    if (
+      !this.provider.capabilities.sql?.migrations ||
+      !this.provider.migrateSql
+    )
+      return invalid("SQL migrations are not supported by this provider");
+    return this.provider.migrateSql(
+      this.#access.scope,
+      resource.id,
+      parseData(DataSqlMigrationSchema, input),
+    );
+  }
+  async migrations(reference: string): Promise<DataMigrationRecord[]> {
+    const resource = await this.resolve(reference);
+    if (!this.allows(resource.id, "manage")) return forbidden();
+    if (!this.provider.migrations)
+      return invalid("SQL migrations are not supported by this provider");
+    return this.provider.migrations(this.#access.scope, resource.id);
+  }
 }
 
 /** Credential-bearing transport for a trusted host. Returned tools see only DataClient. */
@@ -683,6 +820,12 @@ export function createRemoteDataClient(options: {
         operation: "execute",
         resource: reference(ref),
         batch: parseData(DataBatchSchema, batch),
+      }),
+    query: (ref: string, query: DataQuery) =>
+      call<DataQueryResult>({
+        operation: "query",
+        resource: reference(ref),
+        query: parseData(DataQuerySchema, query),
       }),
   });
 }

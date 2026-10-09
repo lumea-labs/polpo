@@ -7,6 +7,10 @@ import type {
   DataResult,
   DataRow,
   DataValue,
+  DataQuery,
+  DataQueryResult,
+  DataSqlMigration,
+  DataMigrationRecord,
 } from "@polpo-ai/core/data";
 
 export type DataRequest = <T>(
@@ -28,6 +32,15 @@ export class DataResourceClient {
   }
   migrate(input: DataMigration): Promise<DataResource> {
     return this.request("PUT", `${this.path}/schema`, input);
+  }
+  query(input: DataQuery): Promise<DataQueryResult> {
+    return this.request("POST", `${this.path}/query`, input);
+  }
+  migrateSql(input: DataSqlMigration): Promise<DataResource> {
+    return this.request("POST", `${this.path}/migrations`, input);
+  }
+  migrations(): Promise<DataMigrationRecord[]> {
+    return this.request("GET", `${this.path}/migrations`);
   }
   rename(input: DataRename): Promise<DataResource> {
     return this.request("PATCH", this.path, input);

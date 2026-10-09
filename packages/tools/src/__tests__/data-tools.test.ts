@@ -6,6 +6,38 @@ import { NodeShell } from "../adapters/node-shell.js";
 import type { DataClient } from "@polpo-ai/core/data";
 
 describe("Data agent capabilities", () => {
+  it("bounds SQL results and acknowledges successful writes when rows are too large for the agent", async () => {
+    const query = vi
+      .fn()
+      .mockResolvedValue({
+        rows: [{ notes: "a".repeat(40000) }],
+        rowCount: 1,
+        truncated: false,
+      });
+    const tool = createDataTools({ query } as unknown as DataClient, [
+      "database_query",
+    ])[0];
+    const result = await tool.execute("sql", {
+      resource: "crm",
+      sql: "UPDATE customers SET name=$1",
+      params: ["Maria"],
+      mode: "write",
+      idempotencyKey: "update-1",
+    });
+    expect(query).toHaveBeenCalledWith("crm", {
+      sql: "UPDATE customers SET name=$1",
+      params: ["Maria"],
+      mode: "write",
+      maxRows: 20,
+      idempotencyKey: "update-1",
+    });
+    expect(result.content[0]).toMatchObject({
+      text: expect.stringContaining('"committed":true'),
+    });
+    await expect(
+      tool.execute("read", { resource: "crm", sql: "SELECT * FROM customers" }),
+    ).rejects.toMatchObject({ code: "data_limit" });
+  });
   it("exposes only explicitly requested tools without requiring a sandbox", () => {
     const client = {} as DataClient;
     expect(createDataTools(client, []).length).toBe(0);
@@ -40,6 +72,7 @@ describe("Data agent capabilities", () => {
       "database_describe",
       "database_insert",
       "database_list",
+      "database_query",
       "database_read",
       "database_transaction",
       "database_update",

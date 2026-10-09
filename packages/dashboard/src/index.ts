@@ -12,6 +12,7 @@ export { SelfHostAgentDetailView as V2AgentDetailView } from "./v2/agents/self-h
 export { SkillsCatalog as V2SkillsView } from "./v2/views/skills.js";
 export { SelfHostSkillDetailView as V2SkillDetailView } from "./v2/skills/self-host-detail.js";
 export { FilesView as V2FilesView } from "./v2/views/files.js";
+export { SelfHostDataView as V2DataView } from "./v2/views/data.js";
 export { MemoryView as V2MemoryView } from "./v2/views/memory.js";
 export { SelfHostSessionsView as V2SessionsView, SelfHostSessionDetailView as V2SessionDetailView } from "./v2/sessions/self-host.js";
 export { SelfHostPlaygroundView as V2PlaygroundView } from "./v2/playground/self-host.js";

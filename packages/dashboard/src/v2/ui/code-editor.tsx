@@ -23,6 +23,7 @@ export function CodeEditor({
   height = 200,
   readOnly = false,
   placeholder,
+  ariaLabel,
 }: {
   value: string;
   onChange: (value: string) => void;
@@ -30,6 +31,7 @@ export function CodeEditor({
   height?: string | number;
   readOnly?: boolean;
   placeholder?: string;
+  ariaLabel?: string;
 }) {
   const { resolvedTheme } = useTheme();
 
@@ -47,6 +49,7 @@ export function CodeEditor({
           onChange={(next) => onChange(next ?? "")}
           options={{
             readOnly,
+            ariaLabel,
             placeholder,
             minimap: { enabled: false },
             fontSize: 12.5,
