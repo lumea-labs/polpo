@@ -47,6 +47,7 @@ export { createSearchTools, ALL_SEARCH_TOOL_NAMES } from "./search-tools.js";
 // Phone tools removed — VAPI integration moved out of the
 // first-class catalog. Future: MCP-based.
 export { createMemoryTools } from "./memory-tools.js";
+export { createDataTools, ALL_DATA_TOOL_NAMES, type DataToolName } from "./data-tools.js";
 export {
   ALL_TYPED_MEMORY_TOOL_NAMES,
   createTypedMemoryTools,
@@ -150,3 +151,5 @@ export type { CustomToolSourceArtifact } from "./custom-tool-source-artifact.js"
 
 // Types
 export type { ResolvedVault } from "./types.js";
+
+export { createRemoteDataClient } from "@polpo-ai/core/data";

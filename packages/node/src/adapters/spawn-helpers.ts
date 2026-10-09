@@ -435,7 +435,7 @@ export function prepareSpawn(agentConfig: AgentConfig, cwd: string, ctx?: SpawnC
     return lc.startsWith("browser_") || lc.startsWith("email_")
       || lc.startsWith("image_") || lc.startsWith("video_") || lc.startsWith("audio_")
       || lc.startsWith("excel_") || lc.startsWith("pdf_") || lc.startsWith("docx_")
-      || lc.startsWith("search_") || lc.startsWith("memory_")
+      || lc.startsWith("search_") || lc.startsWith("memory_") || lc.startsWith("database_") || lc === "*"
       || lc === "brain_search" || lc === "source_read";
   }) ?? false;
 
@@ -509,6 +509,7 @@ export async function buildAgentTools(
 
   if (prep.hasExtendedTools) {
     allPolpoTools = await createAllTools({
+      data: ctx?.data,
       cwd,
       allowedTools: agentConfig.allowedTools,
       allowedPaths: prep.effectiveAllowedPaths,
@@ -542,6 +543,7 @@ export async function buildAgentTools(
   }
 
   const customTools = createLocalCustomToolRuntime({
+    data: ctx?.data,
     polpoDir: prep.polpoDir,
     workDir: cwd,
     fs: prep.fs,

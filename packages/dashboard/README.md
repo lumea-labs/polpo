@@ -1,10 +1,11 @@
 # @polpo-ai/dashboard
 
-Reusable Polpo v2 dashboard views. The package is the shared visual source for
-the managed Cloud dashboard and the single-tenant self-hosted dashboard.
+Reusable Polpo v2 dashboard views for the single-tenant self-hosted dashboard and
+embedding hosts. Views follow the managed Cloud design system; the parity check
+tracks mapped components across repositories.
 
 The package owns project-scoped runtime surfaces: agents, playground, sessions,
-files, memory, skills, and custom tools. The host application owns deployment
+files, databases, memory, skills, and custom tools. The host application owns deployment
 boundaries such as authentication, organizations, project provisioning,
 billing, managed connections, and the managed model gateway.
 
@@ -26,6 +27,7 @@ import "@polpo-ai/dashboard/v2.css";
         managedConnections: false,
         managedGateway: false,
         provisioning: false,
+        data: true,
       },
       navigate,
       href,
@@ -41,6 +43,24 @@ import "@polpo-ai/dashboard/v2.css";
 `apps/dashboard` is the reference self-hosted host. It proxies browser requests
 to the runtime and keeps `POLPO_API_KEY` server-side. Never expose privileged
 keys through a `NEXT_PUBLIC_*` variable.
+
+## Databases
+
+`V2DataView` includes its own page layout and uses the SDK client from `PolpoProvider`.
+The reference host mounts it at `/data`, linked as **Databases**. Its Schema selector
+chooses a logical database; tables appear beside the record, SQL query and migration
+views. Database and record mutations retain version checks and retry semantics from
+the shared Data API.
+
+Set `POLPO_DATA_DATABASE_URL` on the runtime to configure a separate PostgreSQL
+application database. The existing runtime API key authorizes dashboard requests.
+An embedding host can hide Databases with `capabilities.data: false`; the capability
+does not configure or authorize Data on the server.
+
+The self-hosted view uses a single configured backend. Cloud Live/Test selection,
+Neon provisioning status and managed grant editors are host-specific. Self-hosted
+agent grants remain trusted runtime configuration. See
+[Application Data](../../docs/data.md) for setup, supported SQL and permissions.
 
 ## Parity
 

@@ -133,6 +133,7 @@ export interface TranscriptSession {
 }
 
 export interface ExecuteRunDeps {
+  data?: import("@polpo-ai/core/data").DataClient;
   /** Run persistence. NOT closed by executeRun — the host owns it. */
   runStore: RunStore;
   /**
@@ -477,6 +478,7 @@ export async function executeRun(config: RunnerConfig, deps: ExecuteRunDeps): Pr
       memoryItemStore,
       brainService,
       brainContext,
+      data: deps.data ?? (await import("../data/index.js")).runnerDataClient(config.polpoDir, config.agent.name),
       // Per-tenant gateway for the in-process host (undefined for subprocess,
       // which resolves the gateway from sandbox env).
       gatewayConfig: deps.gatewayConfig,

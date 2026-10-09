@@ -61,6 +61,7 @@ jobs:
         run: pnpm run test run
         env:
           TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/polpo_test
+          DATA_TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/polpo_test
 
   install-check:
     name: Install Check

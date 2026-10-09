@@ -14,18 +14,18 @@ export class PolpoApiError extends Error {
   }
 
   get isNotFound(): boolean {
-    return this.code === "NOT_FOUND";
+    return this.code === "NOT_FOUND" || this.code === "data_not_found";
   }
 
   get isAuthError(): boolean {
-    return this.code === "AUTH_REQUIRED" || this.code === "FORBIDDEN";
+    return this.code === "AUTH_REQUIRED" || this.code === "FORBIDDEN" || this.code === "data_forbidden";
   }
 
   get isValidationError(): boolean {
-    return this.code === "VALIDATION_ERROR";
+    return this.code === "VALIDATION_ERROR" || this.code === "data_invalid" || this.code === "data_constraint";
   }
 
   get isConflict(): boolean {
-    return this.code === "INVALID_STATE" || this.code === "CONFLICT";
+    return this.code === "INVALID_STATE" || this.code === "CONFLICT" || this.code === "data_conflict";
   }
 }

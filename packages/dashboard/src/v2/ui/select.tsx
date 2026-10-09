@@ -28,20 +28,57 @@ function SelectValue({ className, ...props }: SelectPrimitive.Value.Props) {
   )
 }
 
+/**
+ * Two surfaces, one control.
+ *
+ * `field` is the inset form field shared with `input.tsx` — right for a
+ * dense form where the control must read as "type/pick here".
+ * `card` is the flat button surface the model selector uses: it reads as
+ * a thing you press to open a list, not as an empty slot waiting to be
+ * filled, and it does not stamp a 3px ring over the layout on focus.
+ */
+type SelectTriggerVariant = "field" | "card";
+
+const TRIGGER_VARIANT: Record<SelectTriggerVariant, string> = {
+  field: cn(
+    "rounded-lg border-input bg-secondary/25 shadow-[inset_0_1px_2px_rgba(0,0,0,0.05)] dark:bg-input/30 dark:shadow-[inset_0_1.5px_3px_rgba(0,0,0,0.35)]",
+    "hover:border-muted-foreground/40 dark:hover:bg-input/50",
+    "focus-visible:border-brand/60 focus-visible:ring-3 focus-visible:ring-brand/20 data-popup-open:border-brand/50 data-popup-open:ring-3 data-popup-open:ring-brand/15",
+    "data-[size=default]:h-8 data-[size=sm]:h-7 data-[size=sm]:rounded-[min(var(--radius-md),10px)]",
+  ),
+  card: cn(
+    "rounded-md border-border bg-card shadow-none",
+    // px-3 and gap-2, like the model selector's own trigger: side by side,
+    // a 10/8px inset next to a 12px one reads as a mistake
+    "gap-2 pr-3 pl-3",
+    "hover:border-muted-foreground/30 dark:hover:bg-card",
+    "focus-visible:border-muted-foreground/40 focus-visible:ring-0 data-popup-open:border-muted-foreground/40 data-popup-open:ring-0",
+    "data-[size=default]:h-9 data-[size=sm]:h-8",
+  ),
+};
+
 function SelectTrigger({
   className,
   size = "default",
+  variant = "field",
   children,
   ...props
 }: SelectPrimitive.Trigger.Props & {
   size?: "sm" | "default"
+  variant?: SelectTriggerVariant
 }) {
   return (
     <SelectPrimitive.Trigger
       data-slot="select-trigger"
       data-size={size}
+      data-variant={variant}
       className={cn(
-        "flex w-fit items-center justify-between gap-1.5 rounded-lg border border-input bg-transparent py-2 pr-2 pl-2.5 text-sm whitespace-nowrap transition-colors outline-none select-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 disabled:cursor-not-allowed disabled:opacity-50 aria-invalid:border-destructive aria-invalid:ring-3 aria-invalid:ring-destructive/20 data-placeholder:text-muted-foreground data-[size=default]:h-8 data-[size=sm]:h-7 data-[size=sm]:rounded-[min(var(--radius-md),10px)] *:data-[slot=select-value]:line-clamp-1 *:data-[slot=select-value]:flex *:data-[slot=select-value]:items-center *:data-[slot=select-value]:gap-1.5 dark:bg-input/30 dark:hover:bg-input/50 dark:aria-invalid:border-destructive/50 dark:aria-invalid:ring-destructive/40 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
+        // layout shared by both surfaces; the variant supplies the skin
+        "flex w-fit items-center justify-between gap-1.5 border py-2 pr-2 pl-2.5 text-sm whitespace-nowrap outline-none select-none",
+        "transition-[border-color,box-shadow,background-color,color] duration-150",
+        "disabled:cursor-not-allowed disabled:opacity-50 aria-invalid:border-destructive aria-invalid:ring-3 aria-invalid:ring-destructive/20 dark:aria-invalid:border-destructive/50 dark:aria-invalid:ring-destructive/40",
+        "data-placeholder:text-muted-foreground *:data-[slot=select-value]:line-clamp-1 *:data-[slot=select-value]:flex *:data-[slot=select-value]:items-center *:data-[slot=select-value]:gap-1.5 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
+        TRIGGER_VARIANT[variant],
         className
       )}
       {...props}
@@ -49,7 +86,14 @@ function SelectTrigger({
       {children}
       <SelectPrimitive.Icon
         render={
-          <ChevronDownIcon className="pointer-events-none size-4 text-muted-foreground" />
+          <ChevronDownIcon
+            className={cn(
+              "pointer-events-none text-muted-foreground",
+              // a quieter caret on the card surface: the control is the
+              // button, the arrow is only a hint that a list opens
+              variant === "card" ? "ml-auto !size-3.5" : "size-4",
+            )}
+          />
         }
       />
     </SelectPrimitive.Trigger>

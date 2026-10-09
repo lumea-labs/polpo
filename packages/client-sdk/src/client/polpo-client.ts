@@ -1,4 +1,6 @@
 import { PolpoApiError } from "./errors.js";
+import { DataResourceClient } from "./data.js";
+import type { CreateDataInput, DataResource } from "@polpo-ai/core/data";
 import type {
   AuthStatusResponse,
   VaultEntryMeta,
@@ -636,6 +638,13 @@ export class PolpoClient {
   private apiUrl(path: string): string {
     return `${this.baseUrl}${this.apiPrefix}${path}`;
   }
+
+  /** Generic application data; server credentials must stay in trusted backends. */
+  data(reference: string): DataResourceClient {
+    return new DataResourceClient((method, path, body) => this.request(method, this.apiUrl(path), body), reference);
+  }
+  listData(): Promise<DataResource[]> { return this.request("GET", this.apiUrl("/data")); }
+  createData(input: CreateDataInput): Promise<DataResource> { return this.post("/data", input); }
 
   private async request<T>(
     method: string,

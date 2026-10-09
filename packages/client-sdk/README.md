@@ -417,3 +417,14 @@ existing steering abort endpoint. On a durable completion, `stream.cancel()` is
 the acknowledged cancellation API and `stream.detach()` is the local-only
 transport operation. Steering is available on Run-backed execution and never
 interrupts an individual tool call in progress.
+
+## Application databases
+
+Use `client.listData()`, `client.createData({name,schema})` and
+`client.data(nameOrId)` for provider-neutral application records. The resource
+client exposes typed `table(name)` CRUD, atomic `transaction`, scoped SQL `query`,
+additive `migrate`, administrative `migrateSql` and `migrations` history.
+Queries are parameterized; SQL mutations require explicit write mode and current
+grants. Keep application keys on your backend; app user authorization remains
+its responsibility. See [the Data guide](../../docs/data.md) for examples,
+supported SQL, limits and self-hosted configuration.

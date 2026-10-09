@@ -67,6 +67,8 @@ import {
   type RunToolMiddleware,
 } from "@polpo-ai/core/guardrails";
 import { createLocalBrainRuntime } from "../brain/local-runtime.js";
+import { localDataRuntime, type NodeDataRuntime } from "../data/index.js";
+import { dataRoutes } from "@polpo-ai/server";
 import type {
   BrainManagementService,
   BrainServiceContext,
@@ -94,6 +96,7 @@ function readRuntimeVersion(): string {
 const runtimeVersion = readRuntimeVersion();
 
 export interface AppOptions {
+  data?: NodeDataRuntime;
   apiKeys?: string[];
   corsOrigins?: string[];
   workDir?: string;
@@ -137,6 +140,7 @@ export interface AppOptions {
  */
 export function createApp(orchestrator: Orchestrator, sseBridge: SSEBridge, opts?: AppOptions): OpenAPIHono {
   const app = new OpenAPIHono();
+  const data = opts?.data ?? (process.env.POLPO_DATA_DATABASE_URL ? localDataRuntime(orchestrator.getPolpoDir()) : undefined);
   const steeringRegistry = new InMemorySteeringRunRegistry();
   const runEventNotifier = new InMemoryRunEventNotifier();
   const durableRunOwner = `node-${process.pid}-${randomUUID()}`;
@@ -327,13 +331,14 @@ export function createApp(orchestrator: Orchestrator, sseBridge: SSEBridge, opts
       );
     },
     resolveAgentTools: async (agentConfig: any, _runScope, invocation) => {
-      const { createSystemTools, createMemoryTools, createBrainTools, resolveTypedMemoryTools, resolveAgentMcpTools, expandToolWildcards, TOOL_CATALOG } = await import("@polpo-ai/tools");
+      const { createSystemTools, createMemoryTools, createBrainTools, createDataTools, resolveTypedMemoryTools, resolveAgentMcpTools, expandToolWildcards, TOOL_CATALOG } = await import("@polpo-ai/tools");
       const { resolveAgentVault } = await import("../vault/index.js");
       const { nanoid } = await import("nanoid");
       const vaultEntries = await o.getVaultStore()?.getAllForAgent(agentConfig.name);
       const vault = resolveAgentVault(vaultEntries);
       const tools: any[] = createSystemTools(o.getAgentWorkDir(), agentConfig.allowedTools, agentConfig.allowedPaths, undefined, vault, o.getFs(), o.getShell());
-      tools.push(...await customTools().loadAssigned(
+      if (data && agentConfig.allowedTools) tools.push(...createDataTools(data.forAgent(agentConfig.name), expandToolWildcards(agentConfig.allowedTools, TOOL_CATALOG)));
+      tools.push(...await customTools(agentConfig.name).loadAssigned(
         agentConfig.allowedTools,
         undefined,
         invocation,
@@ -439,6 +444,7 @@ export function createApp(orchestrator: Orchestrator, sseBridge: SSEBridge, opts
           connectionCapabilityResolver: opts?.connectionCapabilityResolver,
           memoryStore: o.getMemoryStore(),
           memoryItemStore: o.getMemoryItemStore(),
+          data: data?.forAgent(inject.agent?.name ?? "agent"),
           ...(brain
             ? {
                 brainService: brain.service,
@@ -498,13 +504,16 @@ export function createApp(orchestrator: Orchestrator, sseBridge: SSEBridge, opts
   // read from database stores directly.
 
   const o = orchestrator; // short alias
-  const customTools = () => createLocalCustomToolRuntime({
+  const customTools = (agentName?: string) => createLocalCustomToolRuntime({
+    data: agentName ? data?.forAgent(agentName) : undefined,
     polpoDir: o.getPolpoDir(),
     workDir: o.getAgentWorkDir(),
     fs: o.getFs(),
     shell: o.getShell(),
     connectionCapabilityResolver: opts?.connectionCapabilityResolver,
   });
+
+  if (data) authed.route("/data", dataRoutes(request => data.resolveService(request)));
 
   authed.route("/tasks", taskRoutes(() => ({
     taskStore: o.getStore(),

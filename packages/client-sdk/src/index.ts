@@ -1,5 +1,7 @@
 // ── Client ────────────────────────────────────────────────────
 export { PolpoClient, ChatCompletionStream } from "./client/polpo-client.js";
+export { DataResourceClient, type DataWriteOptions } from "./client/data.js";
+export type { DataResource, DataSchemaDefinition, DataColumn, DataTable, DataGrant, DataRow, DataValue, DataBatch, DataOperation, DataResult, DataListQuery, CreateDataInput, DataMigration, DataRename, DataQuery, DataQueryResult, DataSqlMigration, DataMigrationRecord } from "@polpo-ai/core/data";
 export type { PolpoClientConfig } from "./client/polpo-client.js";
 export {
   EventSourceManager,

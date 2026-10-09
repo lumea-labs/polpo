@@ -1,6 +1,8 @@
 "use client";
 
+import { SearchInput } from "./search-input.js";
 import { Fragment, useState, type ReactNode } from "react";
+import { useDashboardHost } from "../../host.js";
 import {
   type ColumnDef,
   type SortingState,
@@ -13,14 +15,12 @@ import {
   useReactTable,
 } from "@tanstack/react-table";
 import {
-  MagnifyingGlass,
   CaretUp,
   CaretDown,
   CaretUpDown,
   CaretLeft,
   CaretRight,
 } from "@phosphor-icons/react/dist/ssr";
-import { useDashboardHost } from "../../host.js";
 
 /** Per-column presentation hints, read off `columnDef.meta`. */
 export type ColumnMeta = {
@@ -52,8 +52,19 @@ export type DataTableProps<T> = {
   filters?: ReactNode;
   /** Right-aligned toolbar slot (e.g. a refresh control). */
   rightSlot?: ReactNode;
+  /** Keep the table within its container instead of allowing horizontal scroll. */
+  fitWidth?: boolean;
   pageSize?: number;
   initialSorting?: SortingState;
+  /** A server-owned page. Keeps the shared footer without paginating a page again. */
+  pagination?: {
+    pageIndex: number;
+    pageSize: number;
+    rowCount: number;
+    hasNextPage: boolean;
+    disabled?: boolean;
+    onPageChange: (pageIndex: number) => void;
+  };
   /** Empty state when there is no data at all. */
   empty?: ReactNode;
   /** Empty state when filters/search exclude everything. */
@@ -72,8 +83,10 @@ export function DataTable<T>({
   searchFn,
   filters,
   rightSlot,
+  fitWidth = false,
   pageSize = 12,
   initialSorting = [],
+  pagination,
   empty,
   emptyFiltered,
 }: DataTableProps<T>) {
@@ -86,14 +99,29 @@ export function DataTable<T>({
     if (!q) return true;
     if (searchFn) return searchFn(row.original, q);
     return Object.values(row.original as Record<string, unknown>).some((v) =>
-      String(v ?? "").toLowerCase().includes(q),
+      String(v ?? "")
+        .toLowerCase()
+        .includes(q),
     );
   };
 
   const table = useReactTable({
     data,
     columns,
-    state: { sorting, globalFilter },
+    state: {
+      sorting,
+      globalFilter,
+      ...(pagination
+        ? {
+            pagination: {
+              pageIndex: pagination.pageIndex,
+              pageSize: pagination.pageSize,
+            },
+          }
+        : {}),
+    },
+    manualPagination: !!pagination,
+    rowCount: pagination?.rowCount,
     onSortingChange: setSorting,
     onGlobalFilterChange: setGlobalFilter,
     globalFilterFn,
@@ -101,32 +129,30 @@ export function DataTable<T>({
     getCoreRowModel: getCoreRowModel(),
     getSortedRowModel: getSortedRowModel(),
     getFilteredRowModel: getFilteredRowModel(),
-    getPaginationRowModel: getPaginationRowModel(),
+    getPaginationRowModel: pagination ? undefined : getPaginationRowModel(),
     initialState: { pagination: { pageSize } },
   });
 
   const rows = table.getRowModel().rows;
   const filteredCount = table.getFilteredRowModel().rows.length;
   const showToolbar = searchPlaceholder || filters || rightSlot;
-  const showPagination = table.getPageCount() > 1;
+  const showPagination = pagination
+    ? pagination.rowCount > pagination.pageSize || pagination.pageIndex > 0
+    : table.getPageCount() > 1;
+  const displayedPageSize = pagination?.pageSize ?? pageSize;
+  const totalCount = pagination?.rowCount ?? filteredCount;
+  const pageStart = table.getState().pagination.pageIndex * displayedPageSize;
 
   return (
     <div className="flex flex-col gap-3">
       {showToolbar && (
         <div className="flex flex-wrap items-center gap-2">
           {searchPlaceholder && (
-            <div className="relative">
-              <MagnifyingGlass
-                size={14}
-                className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground"
-              />
-              <input
-                value={globalFilter}
-                onChange={(e) => setGlobalFilter(e.target.value)}
-                placeholder={searchPlaceholder}
-                className="h-8 w-56 rounded-md border border-border bg-transparent pl-8 pr-3 text-[13px] text-foreground placeholder:text-muted-foreground/50 focus:border-ring/50 focus:outline-none"
-              />
-            </div>
+            <SearchInput
+              value={globalFilter}
+              onChange={setGlobalFilter}
+              placeholder={searchPlaceholder}
+            />
           )}
           {filters}
           <div className="ml-auto flex items-center gap-3">{rightSlot}</div>
@@ -134,8 +160,10 @@ export function DataTable<T>({
       )}
 
       <div className="overflow-hidden rounded-lg border border-border bg-card">
-        <div className="overflow-x-auto">
-          <table className="w-full border-collapse text-sm">
+        <div className={fitWidth ? "overflow-hidden" : "overflow-x-auto"}>
+          <table
+            className={`w-full border-collapse text-sm ${fitWidth ? "table-fixed" : ""}`}
+          >
             <thead>
               {table.getHeaderGroups().map((hg) => (
                 <tr key={hg.id} className="border-b border-border">
@@ -162,9 +190,7 @@ export function DataTable<T>({
                             type="button"
                             onClick={header.column.getToggleSortingHandler()}
                             className={`inline-flex items-center gap-1 transition-colors hover:text-foreground ${
-                              meta?.align === "right"
-                                ? "flex-row-reverse"
-                                : ""
+                              meta?.align === "right" ? "flex-row-reverse" : ""
                             }`}
                           >
                             {flexRender(
@@ -172,11 +198,22 @@ export function DataTable<T>({
                               header.getContext(),
                             )}
                             {sorted === "asc" ? (
-                              <CaretUp size={11} weight="bold" className="text-foreground" />
+                              <CaretUp
+                                size={11}
+                                weight="bold"
+                                className="text-foreground"
+                              />
                             ) : sorted === "desc" ? (
-                              <CaretDown size={11} weight="bold" className="text-foreground" />
+                              <CaretDown
+                                size={11}
+                                weight="bold"
+                                className="text-foreground"
+                              />
                             ) : (
-                              <CaretUpDown size={11} className="text-muted-foreground/40" />
+                              <CaretUpDown
+                                size={11}
+                                className="text-muted-foreground/40"
+                              />
                             )}
                           </button>
                         ) : (
@@ -195,7 +232,8 @@ export function DataTable<T>({
               {rows.map((row) => {
                 const href = rowHref?.(row.original);
                 const clickable = !!href || !!rowOnClick;
-                const expanded = renderExpandedRow && isRowExpanded?.(row.original);
+                const expanded =
+                  renderExpandedRow && isRowExpanded?.(row.original);
                 return (
                   <Fragment key={row.id}>
                     <tr
@@ -239,14 +277,20 @@ export function DataTable<T>({
                                   : "text-left"
                             } ${meta?.cellClassName ?? ""}`}
                           >
-                            {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                            {flexRender(
+                              cell.column.columnDef.cell,
+                              cell.getContext(),
+                            )}
                           </td>
                         );
                       })}
                     </tr>
                     {expanded && (
                       <tr className="border-b border-border last:border-0">
-                        <td colSpan={columns.length} className="bg-background p-3">
+                        <td
+                          colSpan={columns.length}
+                          className="bg-background p-3"
+                        >
                           {renderExpandedRow(row.original)}
                         </td>
                       </tr>
@@ -256,7 +300,10 @@ export function DataTable<T>({
               })}
               {rows.length === 0 && (
                 <tr>
-                  <td colSpan={columns.length} className="px-3.5 py-14 text-center">
+                  <td
+                    colSpan={columns.length}
+                    className="px-3.5 py-14 text-center"
+                  >
                     {data.length === 0
                       ? (empty ?? (
                           <span className="text-sm text-muted-foreground">
@@ -278,24 +325,36 @@ export function DataTable<T>({
         {showPagination && (
           <div className="flex items-center justify-between border-t border-border px-3.5 py-2">
             <span className="text-xs text-muted-foreground" data-tabular>
-              {table.getState().pagination.pageIndex * pageSize + 1}–
-              {Math.min(
-                (table.getState().pagination.pageIndex + 1) * pageSize,
-                filteredCount,
-              )}{" "}
-              of {filteredCount}
+              {rows.length ? pageStart + 1 : 0}–
+              {rows.length ? Math.min(pageStart + rows.length, totalCount) : 0} of {totalCount}
             </span>
             <div className="flex items-center gap-1">
               <PagerButton
-                disabled={!table.getCanPreviousPage()}
-                onClick={() => table.previousPage()}
+                disabled={
+                  pagination
+                    ? pagination.disabled || pagination.pageIndex === 0
+                    : !table.getCanPreviousPage()
+                }
+                onClick={() =>
+                  pagination
+                    ? pagination.onPageChange(pagination.pageIndex - 1)
+                    : table.previousPage()
+                }
                 label="Previous page"
               >
                 <CaretLeft size={13} />
               </PagerButton>
               <PagerButton
-                disabled={!table.getCanNextPage()}
-                onClick={() => table.nextPage()}
+                disabled={
+                  pagination
+                    ? pagination.disabled || !pagination.hasNextPage
+                    : !table.getCanNextPage()
+                }
+                onClick={() =>
+                  pagination
+                    ? pagination.onPageChange(pagination.pageIndex + 1)
+                    : table.nextPage()
+                }
                 label="Next page"
               >
                 <CaretRight size={13} />

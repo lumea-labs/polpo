@@ -9,6 +9,7 @@
  */
 
 // Route factories
+export { dataRoutes, type DataServiceResolver } from "./routes/data.js";
 export { taskRoutes } from "./routes/tasks.js";
 export { missionRoutes } from "./routes/missions.js";
 export { playbookRoutes } from "./routes/playbooks.js";
