@@ -317,6 +317,10 @@
     "./data": {
       "types": "./dist/data/index.d.ts",
       "import": "./dist/data/index.js"
+    },
+    "./task-execution": {
+      "types": "./dist/task-execution.d.ts",
+      "import": "./dist/task-execution.js"
     }
   },
   "sideEffects": false,

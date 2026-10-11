@@ -1,3 +1,6 @@
+import { normalizeTaskExecutionReference, normalizeTaskExecutionMutation, prepareTaskExecutionClaim, prepareTaskExecutionMutation,
+  TaskExecutionError, taskExecutionReference, nextTaskExecutionRevision, type TaskExecutionStore, type TaskExecutionReference, type TaskExecutionMutation, type TaskExecutionState } from "@polpo-ai/core/task-execution";
+import type { RunRecord } from "@polpo-ai/core/run-store";
 import { normalizeRuntimeMetadata } from "@polpo-ai/core";
 import { join } from "node:path";
 import { mkdirSync } from "node:fs";
@@ -50,7 +53,7 @@ function readJson<T>(tx: ProjectFileTransaction, path: string, fallback: T): T {
  *   .polpo/missions/<missionId>.json
  *   .polpo/_meta.json
  */
-export class FileTaskStore implements TaskStore, MissionExecutionStore {
+export class FileTaskStore implements TaskStore, MissionExecutionStore, TaskExecutionStore {
   constructor(private readonly polpoDir: string) {
     mkdirSync(join(polpoDir, "tasks"), { recursive: true });
     mkdirSync(join(polpoDir, "missions"), { recursive: true });
@@ -124,11 +127,13 @@ export class FileTaskStore implements TaskStore, MissionExecutionStore {
       this.write(tx, "_meta.json", meta);
     });
   }
-  async createTask(input: Omit<Task, "id" | "status" | "retries" | "createdAt" | "updatedAt"> & { status?: TaskStatus }): Promise<Task> {
+  async createTask(input: Omit<Task, "id" | "status" | "retries" | "createdAt" | "updatedAt" | "executionRevision" | "activeRunId"> & { status?: TaskStatus }): Promise<Task> {
     input = { ...input, metadata: normalizeRuntimeMetadata(input.metadata) };
     return this.transaction(tx => {
       const now = new Date().toISOString();
       const task: Task = { ...input, id: nanoid(), status: input.status ?? "pending", retries: 0, createdAt: now, updatedAt: now };
+      delete task.executionRevision;
+      delete task.activeRunId;
       this.write(tx, this.taskPath(task.id), task);
       return task;
     });
@@ -139,18 +144,23 @@ export class FileTaskStore implements TaskStore, MissionExecutionStore {
     return this.transaction(tx => {
       const existing = this.readTask(tx, id);
       if (!existing) throw new Error(`Task not found: ${id}`);
-      const updated = { ...existing, status, updatedAt: new Date().toISOString() };
+      if (status === "pending" && existing.activeRunId) {
+        return this.mutateExecution(tx, taskExecutionReference(existing), { type: "requeue", countRetry: false, reason }).task;
+      }
+      const updated = { ...existing, status, updatedAt: new Date().toISOString(),
+        ...(status === "pending" ? { executionRevision: nextTaskExecutionRevision(existing), activeRunId: undefined } : {}) };
       this.write(tx, this.taskPath(id), updated);
       console.warn(`[unsafeSetStatus] ${id}: ${existing.status} → ${status} — ${reason}`);
       return updated;
     });
   }
-  async updateTask(id: string, updates: Partial<Omit<Task, "id" | "status">>): Promise<Task> {
+  async updateTask(id: string, updates: Partial<Omit<Task, "id" | "status" | "executionRevision" | "activeRunId">>): Promise<Task> {
     if (updates.metadata !== undefined) updates = { ...updates, metadata: normalizeRuntimeMetadata(updates.metadata) };
     return this.transaction(tx => {
       const existing = this.readTask(tx, id);
       if (!existing) throw new Error(`Task not found: ${id}`);
-      const updated = { ...existing, ...updates, id, status: existing.status, updatedAt: new Date().toISOString() };
+      const updated = { ...existing, ...updates, id, status: existing.status,
+        executionRevision: existing.executionRevision, activeRunId: existing.activeRunId, updatedAt: new Date().toISOString() };
       this.write(tx, this.taskPath(id), updated);
       return updated;
     });
@@ -173,12 +183,54 @@ export class FileTaskStore implements TaskStore, MissionExecutionStore {
     return this.transaction(tx => {
       const existing = this.readTask(tx, id);
       if (!existing) throw new Error(`Task not found: ${id}`);
+      if (status === "pending" && existing.activeRunId) {
+        return this.mutateExecution(tx, taskExecutionReference(existing), { type: "transition", status }).task;
+      }
       assertValidTransition(existing.status, status);
       const updated = { ...existing, status, updatedAt: new Date().toISOString(),
-        retries: existing.retries + (status === "pending" && existing.status === "failed" ? 1 : 0) };
+        retries: existing.retries + (status === "pending" && existing.status === "failed" ? 1 : 0),
+        ...(status === "pending" ? { executionRevision: nextTaskExecutionRevision(existing), activeRunId: undefined } : {}) };
       this.write(tx, this.taskPath(id), updated);
       return updated;
     });
+  }
+
+  private executionRun(tx: ProjectFileTransaction, id: string): RunRecord | undefined {
+    const raw = tx.read(this.entityPath("runs", id));
+    if (raw === null) return undefined;
+    let run: RunRecord;
+    try { run = JSON.parse(raw); } catch { throw new TaskExecutionError("task_execution_invalid", "Invalid stored Run"); }
+    if (!run || run.id !== id || !["running", "completed", "failed", "killed"].includes(run.status)) {
+      throw new TaskExecutionError("task_execution_invalid", "Invalid stored Run");
+    }
+    return run;
+  }
+
+  async claimTaskExecution(raw: TaskExecutionReference, runId: string): Promise<TaskExecutionState & { run: RunRecord }> {
+    const expected = normalizeTaskExecutionReference(raw);
+    normalizeTaskExecutionReference({ taskId: runId, revision: 0 });
+    return this.transaction(tx => {
+      if (this.executionRun(tx, runId)) throw new TaskExecutionError("task_execution_conflict", "Run identity is already in use");
+      const state = prepareTaskExecutionClaim(this.readTask(tx, expected.taskId), expected, runId, new Date().toISOString());
+      this.write(tx, this.taskPath(state.task.id), state.task);
+      this.write(tx, this.entityPath("runs", runId), state.run);
+      return state;
+    });
+  }
+
+  async mutateTaskExecution(raw: TaskExecutionReference, mutation: TaskExecutionMutation): Promise<TaskExecutionState> {
+    const expected = normalizeTaskExecutionReference(raw);
+    const copied = normalizeTaskExecutionMutation(mutation);
+    return this.transaction(tx => this.mutateExecution(tx, expected, copied));
+  }
+
+  private mutateExecution(tx: ProjectFileTransaction, expected: TaskExecutionReference, mutation: TaskExecutionMutation): TaskExecutionState {
+    const task = this.readTask(tx, expected.taskId);
+    const run = expected.runId === undefined ? undefined : this.executionRun(tx, expected.runId);
+    const state = prepareTaskExecutionMutation(task, run, expected, mutation, new Date().toISOString());
+    this.write(tx, this.taskPath(state.task.id), state.task);
+    if (state.run && state.run !== run) this.write(tx, this.entityPath("runs", state.run.id), state.run);
+    return state;
   }
 
   async createMission(input: Omit<Mission, "id" | "createdAt" | "updatedAt">): Promise<Mission> {

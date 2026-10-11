@@ -1,3 +1,6 @@
+import { normalizeTaskExecutionReference, normalizeTaskExecutionMutation, prepareTaskExecutionClaim, prepareTaskExecutionMutation,
+  TaskExecutionError, taskExecutionReference, nextTaskExecutionRevision, type TaskExecutionStore, type TaskExecutionReference, type TaskExecutionMutation, type TaskExecutionState } from "@polpo-ai/core/task-execution";
+import { runRecordFromRow, runRecordToValues } from "./run-store.js";
 import { eq, desc, asc, and, or, inArray, notInArray, sql, getTableColumns } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import type { TaskStore } from "@polpo-ai/core/task-store";
@@ -18,13 +21,14 @@ type AnyTable = any;
 
 export interface TaskStoreSchema {
   tasks: AnyTable;
+  runs?: AnyTable;
   missions: AnyTable;
   metadata: AnyTable;
   processes: AnyTable;
   missionExecutions?: AnyTable;
 }
 
-export class DrizzleTaskStore implements TaskStore, MissionExecutionStore {
+export class DrizzleTaskStore implements TaskStore, MissionExecutionStore, TaskExecutionStore {
   constructor(
     private db: any,
     private schema: TaskStoreSchema,
@@ -47,6 +51,8 @@ export class DrizzleTaskStore implements TaskStore, MissionExecutionStore {
       missionExecutionId: row.missionExecutionId ?? undefined,
       dependsOn: deserializeJson<string[]>(row.dependsOn, [], d),
       status: row.status as TaskStatus,
+      ...(row.executionRevision ? { executionRevision: row.executionRevision } : {}),
+      ...(row.activeRunId == null ? {} : { activeRunId: row.activeRunId }),
       retries: row.retries,
       maxRetries: row.maxRetries,
       maxDuration: row.maxDuration ?? undefined,
@@ -90,6 +96,8 @@ export class DrizzleTaskStore implements TaskStore, MissionExecutionStore {
     if (task.missionExecutionId !== undefined) v.missionExecutionId = task.missionExecutionId;
     if (task.dependsOn !== undefined) v.dependsOn = serializeJson(task.dependsOn, d);
     if (task.status !== undefined) v.status = task.status;
+    if (task.executionRevision !== undefined) v.executionRevision = task.executionRevision;
+    if (task.activeRunId !== undefined) v.activeRunId = task.activeRunId;
     if (task.retries !== undefined) v.retries = task.retries;
     if (task.maxRetries !== undefined) v.maxRetries = task.maxRetries;
     if (task.maxDuration !== undefined) v.maxDuration = task.maxDuration;
@@ -236,7 +244,7 @@ export class DrizzleTaskStore implements TaskStore, MissionExecutionStore {
 
   // ── Task CRUD ────────────────────────────────────────────────────────
 
-  async createTask(input: Omit<Task, "id" | "status" | "retries" | "createdAt" | "updatedAt"> & { status?: TaskStatus }): Promise<Task> {
+  async createTask(input: Omit<Task, "id" | "status" | "retries" | "createdAt" | "updatedAt" | "executionRevision" | "activeRunId"> & { status?: TaskStatus }): Promise<Task> {
     input = { ...input, metadata: normalizeRuntimeMetadata(input.metadata) };
     const now = new Date().toISOString();
     const task: Task = {
@@ -247,6 +255,8 @@ export class DrizzleTaskStore implements TaskStore, MissionExecutionStore {
       createdAt: now,
       updatedAt: now,
     };
+    delete task.executionRevision;
+    delete task.activeRunId;
     await this.db.insert(this.schema.tasks).values(this.taskToValues(task));
     return task;
   }
@@ -263,7 +273,7 @@ export class DrizzleTaskStore implements TaskStore, MissionExecutionStore {
     return rows.map((r) => this.rowToTask(r));
   }
 
-  async updateTask(taskId: string, updates: Partial<Omit<Task, "id" | "status">>): Promise<Task> {
+  async updateTask(taskId: string, updates: Partial<Omit<Task, "id" | "status" | "executionRevision" | "activeRunId">>): Promise<Task> {
     if (updates.metadata !== undefined) updates = { ...updates, metadata: normalizeRuntimeMetadata(updates.metadata) };
     const existing = await this.getTask(taskId);
     if (!existing) throw new Error(`Task "${taskId}" not found`);
@@ -282,6 +292,8 @@ export class DrizzleTaskStore implements TaskStore, MissionExecutionStore {
     }
     delete values.id;
     delete values.status;
+    delete values.executionRevision;
+    delete values.activeRunId;
     const rows: any[] = await this.db.update(this.schema.tasks).set(values)
       .where(eq(this.schema.tasks.id, taskId)).returning();
     if (!rows[0]) throw new Error(`Task "${taskId}" not found`);
@@ -311,11 +323,18 @@ export class DrizzleTaskStore implements TaskStore, MissionExecutionStore {
     const task = await this.getTask(taskId);
     if (!task) throw new Error(`Task "${taskId}" not found`);
 
+    if (newStatus === "pending" && task.activeRunId) {
+      return (await this.mutateTaskExecution(taskExecutionReference(task), { type: "transition", status: newStatus })).task;
+    }
     assertValidTransition(task.status, newStatus);
 
     const now = new Date().toISOString();
     const updates: Record<string, unknown> = { status: newStatus, updatedAt: now };
 
+    if (newStatus === "pending") {
+      updates.executionRevision = nextTaskExecutionRevision(task);
+      updates.activeRunId = null;
+    }
     // Increment retries on failed → pending
     if (task.status === "failed" && newStatus === "pending") {
       updates.retries = task.retries + 1;
@@ -323,13 +342,14 @@ export class DrizzleTaskStore implements TaskStore, MissionExecutionStore {
 
     // Validation and mutation must refer to the same observed state. A later
     // writer cannot overwrite completion/cancellation or a new retry that has
-    // returned to the same status. This is not a complete execution lease:
-    // administrative resets without a retry still need run-identity fencing.
+    // returned to the same status. Callers processing a specific attempt must
+    // additionally pass its captured reference through mutateTaskExecution.
     const rows: any[] = await this.db.update(this.schema.tasks).set(updates)
       .where(and(
         eq(this.schema.tasks.id, taskId),
         eq(this.schema.tasks.status, task.status),
         eq(this.schema.tasks.retries, task.retries),
+        eq(this.schema.tasks.executionRevision, task.executionRevision ?? 0),
       )).returning();
     if (!rows[0]) throw new Error(`Task "${taskId}" state changed during transition`);
     return this.rowToTask(rows[0]);
@@ -339,12 +359,77 @@ export class DrizzleTaskStore implements TaskStore, MissionExecutionStore {
     const task = await this.getTask(taskId);
     if (!task) throw new Error(`Task "${taskId}" not found`);
 
+    if (newStatus === "pending" && task.activeRunId) {
+      return (await this.mutateTaskExecution(taskExecutionReference(task), { type: "requeue", countRetry: false, reason: _reason })).task;
+    }
     const now = new Date().toISOString();
-    await this.db.update(this.schema.tasks)
-      .set({ status: newStatus, updatedAt: now })
-      .where(eq(this.schema.tasks.id, taskId));
+    const execution = newStatus === "pending" ? { executionRevision: nextTaskExecutionRevision(task), activeRunId: null } : {};
+    const rows = await this.db.update(this.schema.tasks)
+      .set({ status: newStatus, updatedAt: now, ...execution })
+      .where(and(eq(this.schema.tasks.id, taskId), eq(this.schema.tasks.executionRevision, task.executionRevision ?? 0))).returning();
+    if (!rows[0]) throw new TaskExecutionError("task_execution_conflict", "Task execution changed");
+    return this.rowToTask(rows[0]);
+  }
 
-    return { ...task, status: newStatus, updatedAt: now };
+  async claimTaskExecution(raw: TaskExecutionReference, runId: string): Promise<TaskExecutionState & { run: import("@polpo-ai/core/run-store").RunRecord }> {
+    const expected = normalizeTaskExecutionReference(raw);
+    normalizeTaskExecutionReference({ taskId: runId, revision: 0 });
+    return this.executeTaskMutation(expected, { claim: runId }) as Promise<TaskExecutionState & { run: import("@polpo-ai/core/run-store").RunRecord }>;
+  }
+
+  async mutateTaskExecution(raw: TaskExecutionReference, mutation: TaskExecutionMutation): Promise<TaskExecutionState> {
+    const expected = normalizeTaskExecutionReference(raw);
+    return this.executeTaskMutation(expected, { mutation: normalizeTaskExecutionMutation(mutation) });
+  }
+
+  private async executeTaskMutation(expected: TaskExecutionReference, operation: { claim: string } | { mutation: TaskExecutionMutation }): Promise<TaskExecutionState> {
+    const { tasks, runs } = this.schema;
+    if (!runs) throw new TaskExecutionError("task_execution_unsupported", "Task execution requires shared Task and Run storage");
+    const runId = "claim" in operation ? operation.claim : expected.runId;
+    const taskQuery = (tx: any) => tx.select().from(tasks).where(eq(tasks.id, expected.taskId));
+    const runQuery = (tx: any) => tx.select().from(runs).where(eq(runs.id, runId));
+    const prepare = (taskRow: any, runRow: any) => {
+      const task = taskRow ? this.rowToTask(taskRow) : undefined;
+      const run = runRow ? runRecordFromRow(runRow, this.dialect) : undefined;
+      if ("claim" in operation && run) throw new TaskExecutionError("task_execution_conflict", "Run identity is already in use");
+      const now = new Date().toISOString();
+      const state = "claim" in operation
+        ? prepareTaskExecutionClaim(task, expected, operation.claim, now)
+        : prepareTaskExecutionMutation(task, run, expected, operation.mutation, now);
+      const values = this.taskToValues(state.task);
+      const columns = getTableColumns(tasks);
+      for (const [field, value] of Object.entries(state.task)) {
+        if (value === undefined && Object.hasOwn(columns, field) && !columns[field].notNull) values[field] = null;
+      }
+      delete values.id;
+      return { state, values, runChanged: state.run !== run };
+    };
+    const writes = (tx: any, prepared: ReturnType<typeof prepare>) => {
+      const queries = [tx.update(tasks).set(prepared.values).where(eq(tasks.id, expected.taskId))];
+      const run = prepared.state.run;
+      if ("claim" in operation) queries.push(tx.insert(runs).values(runRecordToValues(run!, this.dialect)));
+      else if (run && prepared.runChanged) queries.push(tx.update(runs).set({
+        status: run.status, result: serializeJson(run.result, this.dialect), updatedAt: run.updatedAt, completedAt: run.completedAt,
+      }).where(and(eq(runs.id, run.id), eq(runs.status, "running"))));
+      return queries;
+    };
+    if (this.dialect === "sqlite") {
+      return this.db.transaction((tx: any) => {
+        const prepared = prepare(taskQuery(tx).get(), runId === undefined ? undefined : runQuery(tx).get());
+        for (const query of writes(tx, prepared)) query.run();
+        return prepared.state;
+      }, { behavior: "immediate" });
+    }
+    const execute = async (tx: any) => {
+      const taskRow = (await taskQuery(tx).for("update"))[0];
+      const runRow = runId === undefined ? undefined : (await runQuery(tx).for("update"))[0];
+      const prepared = prepare(taskRow, runRow);
+      for (const query of writes(tx, prepared)) await query;
+      return prepared.state;
+    };
+    if (this.transactionProvider) return this.transactionProvider(execute);
+    if (typeof this.db.transaction !== "function") throw new TaskExecutionError("task_execution_unsupported", "Task execution requires an interactive transaction");
+    return this.db.transaction(execute);
   }
 
   // ── Missions ─────────────────────────────────────────────────────────

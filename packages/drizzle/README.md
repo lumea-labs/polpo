@@ -6,7 +6,8 @@ exports the runtime store factories and schema migration helpers.
 ## Concurrent Task writes
 
 `taskStore.updateTask` patches only supplied fields and returns the committed
-row. It cannot write `id` or `status`, including when called from untyped code.
+row. It cannot write `id`, `status`, `executionRevision` or `activeRunId`,
+including when called from untyped code.
 Unrelated concurrent edits, status changes and retry counts are preserved.
 An explicitly `undefined` optional field is cleared to SQL `NULL`; omitted
 fields remain unchanged, matching the file-store patch behavior.
@@ -21,6 +22,34 @@ This protects individual mutations, not an entire execution attempt. Claiming a
 Run, stopping its host and fencing late results across retry/recovery still require
 execution identity. Administrative `unsafeSetStatus` and whole-state imports
 remain explicit bypasses and must not be used as concurrency fallbacks.
+
+## Atomic Task execution persistence
+
+The factories expose `taskExecutionStore`, the core `TaskExecutionStore`
+capability also implemented by `taskStore`. Capture `taskExecutionReference(task)`
+and pass it to `claimTaskExecution(reference, newRunId)`. Claiming changes the
+pending Task and inserts its initial Run in one transaction; competing schedulers
+cannot both claim the same attempt. Caller-authored Task patches cannot set its
+execution revision or active Run ID.
+
+`mutateTaskExecution(reference, mutation)` applies patches, transitions, requeues
+and cancellation only to that exact revision/Run pair. Cancellation and requeue
+invalidate the reference, clear the active Run link, and stop a still-running Run
+in the same transaction. Completed Run results remain history. Recovery and fix
+requeues advance the revision even when they do not consume a retry. An unset
+optional attempt counter resets to zero; required fields cannot be cleared.
+
+SQLite uses an immediate synchronous transaction. PostgreSQL locks the Task then
+the Run and uses the factory's interactive transaction provider when supplied
+(including HTTP-backed hosts). A missing transaction capability is an error;
+there is no non-atomic fallback. Run schema migrations before admitting work;
+old rows start at revision zero with no invented active Run. Stop old Task/Run
+writers during rollout or rollback. Whole-state imports bypass this protocol.
+
+After an uncertain acknowledgement, read the captured Task and Run IDs. A repeated
+claim conflicts; it must not create another attempt automatically. This storage
+capability still requires callers to carry the reference through result collection
+and assessment, and hosts to observe the terminal Run and stop execution.
 
 ## Connect storage
 

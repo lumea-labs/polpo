@@ -9,6 +9,66 @@ type AnyTable = any;
 
 const TERMINAL_STATUSES: RunStatus[] = ["completed", "failed", "killed"];
 
+export function runRecordFromRow(row: any, dialect: Dialect): RunRecord {
+  const d = dialect;
+  const activity = deserializeJson<AgentActivity>(row.activity, {
+    filesCreated: [], filesEdited: [], toolCalls: 0, totalTokens: 0, lastUpdate: "",
+  }, d);
+
+  return {
+    id: row.id,
+    taskId: row.taskId,
+    ...(row.taskExecutionRevision == null ? {} : { taskExecutionRevision: row.taskExecutionRevision }),
+    pid: row.pid,
+    agentName: row.agentName,
+    sessionId: row.sessionId ?? activity.sessionId,
+    status: row.status as RunStatus,
+    startedAt: row.startedAt,
+    updatedAt: row.updatedAt,
+    activity,
+    result: deserializeJson<TaskResult | undefined>(row.result, undefined, d),
+    outcomes: deserializeJson<TaskOutcome[] | undefined>(row.outcomes, undefined, d),
+    config: deserializeJson<RunnerConfig | undefined>(row.config, undefined, d),
+    configPath: row.configPath,
+    user: row.user ?? undefined,
+    resumeState: deserializeJson<LoopResumeState | undefined>(row.resumeState, undefined, d),
+    executionMode: row.executionMode ?? undefined,
+    engine: row.engine ?? undefined,
+    delivery: row.delivery ?? undefined,
+    trace: deserializeJson<LoopTraceEvent[] | undefined>(row.trace, undefined, d),
+    completedAt: row.completedAt ?? undefined,
+    collectedAt: row.collectedAt ?? undefined,
+  };
+}
+
+export function runRecordToValues(run: RunRecord, d: Dialect): Record<string, unknown> {
+  return {
+    id: run.id,
+    taskId: run.taskId,
+    taskExecutionRevision: run.taskExecutionRevision ?? null,
+    pid: run.pid,
+    agentName: run.agentName,
+    adapterType: "sdk",
+    sessionId: run.sessionId ?? null,
+    status: run.status,
+    startedAt: run.startedAt,
+    updatedAt: run.updatedAt,
+    activity: serializeJson(run.activity, d),
+    result: serializeJson(run.result, d),
+    outcomes: serializeJson(run.outcomes, d),
+    config: serializeJson(run.config, d),
+    configPath: run.configPath,
+    user: run.user ?? null,
+    resumeState: serializeJson(run.resumeState, d),
+    executionMode: run.executionMode ?? null,
+    engine: run.engine ?? "agent",
+    delivery: run.delivery ?? null,
+    trace: d === "pg" ? (run.trace ?? null) : serializeJson(run.trace, d),
+    completedAt: run.completedAt ?? null,
+    collectedAt: run.collectedAt ?? null,
+  };
+}
+
 export class DrizzleRunStore implements RunStore {
   constructor(
     private db: any,
@@ -16,63 +76,11 @@ export class DrizzleRunStore implements RunStore {
     private dialect: Dialect,
   ) {}
 
-  private rowToRecord(row: any): RunRecord {
-    const d = this.dialect;
-    const activity = deserializeJson<AgentActivity>(row.activity, {
-      filesCreated: [], filesEdited: [], toolCalls: 0, totalTokens: 0, lastUpdate: "",
-    }, d);
-
-    return {
-      id: row.id,
-      taskId: row.taskId,
-      pid: row.pid,
-      agentName: row.agentName,
-      sessionId: row.sessionId ?? activity.sessionId,
-      status: row.status as RunStatus,
-      startedAt: row.startedAt,
-      updatedAt: row.updatedAt,
-      activity,
-      result: deserializeJson<TaskResult | undefined>(row.result, undefined, d),
-      outcomes: deserializeJson<TaskOutcome[] | undefined>(row.outcomes, undefined, d),
-      config: deserializeJson<RunnerConfig | undefined>(row.config, undefined, d),
-      configPath: row.configPath,
-      user: row.user ?? undefined,
-      resumeState: deserializeJson<LoopResumeState | undefined>(row.resumeState, undefined, d),
-      executionMode: row.executionMode ?? undefined,
-      engine: row.engine ?? undefined,
-      delivery: row.delivery ?? undefined,
-      trace: deserializeJson<LoopTraceEvent[] | undefined>(row.trace, undefined, d),
-      completedAt: row.completedAt ?? undefined,
-      collectedAt: row.collectedAt ?? undefined,
-    };
-  }
+  private rowToRecord(row: any): RunRecord { return runRecordFromRow(row, this.dialect); }
 
   async upsertRun(run: RunRecord): Promise<void> {
     const d = this.dialect;
-    const values = {
-      id: run.id,
-      taskId: run.taskId,
-      pid: run.pid,
-      agentName: run.agentName,
-      adapterType: "sdk",
-      sessionId: run.sessionId ?? null,
-      status: run.status,
-      startedAt: run.startedAt,
-      updatedAt: run.updatedAt,
-      activity: serializeJson(run.activity, d),
-      result: serializeJson(run.result, d),
-      outcomes: serializeJson(run.outcomes, d),
-      config: serializeJson(run.config, d),
-      configPath: run.configPath,
-      user: run.user ?? null,
-      resumeState: serializeJson(run.resumeState, d),
-      executionMode: run.executionMode ?? null,
-      engine: run.engine ?? "agent",
-      delivery: run.delivery ?? null,
-      trace: d === "pg" ? (run.trace ?? null) : serializeJson(run.trace, d),
-      completedAt: run.completedAt ?? null,
-      collectedAt: run.collectedAt ?? null,
-    };
+    const values = runRecordToValues(run, d);
     const conflictSet: Record<string, unknown> = {
       pid: values.pid,
       sessionId: values.sessionId,

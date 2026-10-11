@@ -7,6 +7,8 @@ export type RunStatus = "running" | "completed" | "failed" | "killed";
 export interface RunRecord {
   id: string;
   taskId: string;
+  /** Immutable generation assigned by atomic Task execution claim. */
+  taskExecutionRevision?: number;
   pid: number;
   agentName: string;
   sessionId?: string;

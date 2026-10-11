@@ -127,6 +127,10 @@ export interface Task {
   missionExecutionId?: string;
   dependsOn: string[];
   status: TaskStatus;
+  /** Host-owned attempt generation; absent on legacy/unclaimed tasks means zero. */
+  executionRevision?: number;
+  /** Run currently allowed to mutate this task. Changed only by execution control. */
+  activeRunId?: string;
   expectations: TaskExpectation[];
   metrics: TaskMetric[];
   retries: number;

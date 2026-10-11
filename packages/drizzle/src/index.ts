@@ -121,11 +121,14 @@ import type { PlaybookStore } from "@polpo-ai/core/playbook-store";
 import type { SkillStore } from "@polpo-ai/core/skill-store";
 import type { ChannelManagementStore } from "@polpo-ai/channels";
 
+import type { TaskExecutionStore } from "@polpo-ai/core/task-execution";
+
 export interface DrizzleStores {
   /** Mission persistence — same instance as taskStore (implements both). */
   missionStore: MissionStore;
   missionExecutionStore: MissionExecutionStore;
   taskStore: TaskStore;
+  taskExecutionStore: TaskExecutionStore;
   runStore: RunStore;
   runEventStore: RunEventStore;
   runExecutionLeaseStore: RunExecutionLeaseStore;
@@ -177,10 +180,11 @@ export function createPgStores(
   options: CreatePgStoresOptions = {},
 ): DrizzleStores {
   const taskStore = new DrizzleTaskStore(db, {
-    tasks: tasksPg, missions: missionsPg, missionExecutions: missionExecutionsPg, metadata: metadataPg, processes: processesPg,
+    tasks: tasksPg, runs: runsPg, missions: missionsPg, missionExecutions: missionExecutionsPg, metadata: metadataPg, processes: processesPg,
   }, "pg", options.transaction);
   return {
     taskStore,
+    taskExecutionStore: taskStore,
     // Same instance: the Drizzle task store also implements the mission block.
     missionStore: taskStore as unknown as MissionStore,
     missionExecutionStore: taskStore,
@@ -237,10 +241,11 @@ export function createPgStores(
  */
 export function createSqliteStores(db: any): DrizzleStores {
   const taskStore = new DrizzleTaskStore(db, {
-    tasks: tasksSqlite, missions: missionsSqlite, missionExecutions: missionExecutionsSqlite, metadata: metadataSqlite, processes: processesSqlite,
+    tasks: tasksSqlite, runs: runsSqlite, missions: missionsSqlite, missionExecutions: missionExecutionsSqlite, metadata: metadataSqlite, processes: processesSqlite,
   }, "sqlite");
   return {
     taskStore,
+    taskExecutionStore: taskStore,
     // Same instance: the Drizzle task store also implements the mission block.
     missionStore: taskStore as unknown as MissionStore,
     missionExecutionStore: taskStore,

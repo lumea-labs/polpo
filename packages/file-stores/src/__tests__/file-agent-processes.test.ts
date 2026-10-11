@@ -9,6 +9,7 @@ import { FileAgentStore } from "../file-agent-store.js";
 import { FileTaskStore } from "../file-task-store.js";
 import { FileRunStore } from "../file-run-store.js";
 import { randomUUID } from "node:crypto";
+import { taskExecutionReference } from "@polpo-ai/core/task-execution";
 import type { Mission, Task } from "@polpo-ai/core/types";
 
 const directories: string[] = [];
@@ -67,6 +68,52 @@ async function missionFixture() {
   const mission = await store.createMission({ name: "Process mission", data: '{"tasks":[]}', status: "recurring", user: "customer-a" });
   return { dir, store, mission };
 }
+
+describe("Task execution across real file-store processes", () => {
+  async function taskFixture(claimed: boolean) {
+    const { dir } = await fixture();
+    const tasks = new FileTaskStore(dir), runs = new FileRunStore(dir);
+    let task = await tasks.createTask({ title: "Claim me", description: "Work", assignTo: "support", dependsOn: [], expectations: [], metrics: [], maxRetries: 1 });
+    const runId = "claimed-run";
+    if (claimed) task = (await tasks.claimTaskExecution(taskExecutionReference(task), runId)).task;
+    const input = claimed ? { expected: taskExecutionReference(task), mutation: { type: "cancel" } }
+      : { operation: "claim", expected: taskExecutionReference(task), runId };
+    return { dir, tasks, runs, task, runId, input };
+  }
+  it("gives separate scheduler processes one claim and one Run", async () => {
+    const f = await taskFixture(false);
+    const [a, b] = await Promise.all([worker(f.dir, "task-execution"), worker(f.dir, "task-execution")]);
+    a.start(f.input); b.start({ ...f.input, runId: "other-run" });
+    const results = await Promise.all([a.next(m => m.ok || m.error), b.next(m => m.ok || m.error)]);
+    await Promise.all([a.closed, b.closed]);
+    expect(results.filter(r => r.ok)).toHaveLength(1);
+    expect(results.filter(r => r.error)).toEqual([{ error: "task_execution_conflict" }]);
+    const current = (await f.tasks.getTask(f.task.id))!;
+    expect(current).toMatchObject({ status: "in_progress", executionRevision: 1 });
+    expect(await f.runs.getActiveRuns()).toEqual([expect.objectContaining({ id: current.activeRunId, taskExecutionRevision: 1 })]);
+  });
+  it.each([false, true])("recovers Task and Run as one unit after writer death (cancel=%s)", async cancelling => {
+    const baseline = await taskFixture(cancelling), counter = await worker(baseline.dir, "task-execution-count");
+    counter.start(baseline.input);
+    const count = await counter.next(m => m.ok || m.error); await counter.closed;
+    expect(count).toMatchObject({ ok: true }); expect(count.checkpoints).toBeGreaterThan(5);
+    for (let index = 1; index <= count.checkpoints; index++) {
+      const f = await taskFixture(cancelling), writer = await worker(f.dir, "task-execution-crash", String(index));
+      writer.start(f.input); await writer.next(m => m.checkpoint); await writer.kill();
+      const task = (await f.tasks.getTask(f.task.id))!, run = await f.runs.getRun(f.runId);
+      if (!cancelling && task.status === "pending") {
+        expect(run).toBeUndefined(); expect(task.executionRevision ?? 0).toBe(0);
+      } else if (task.status === "in_progress") {
+        expect(task).toMatchObject({ executionRevision: 1, activeRunId: f.runId });
+        expect(run).toMatchObject({ status: "running", taskExecutionRevision: 1 });
+      } else {
+        expect(cancelling).toBe(true);
+        expect(task).toMatchObject({ status: "failed", executionRevision: 2 });
+        expect(task.activeRunId).toBeUndefined(); expect(run).toMatchObject({ status: "killed", taskExecutionRevision: 1 });
+      }
+    }
+  }, 45_000);
+});
 
 describe("Run cancellation across real file-store processes", () => {
   async function runFixture() {

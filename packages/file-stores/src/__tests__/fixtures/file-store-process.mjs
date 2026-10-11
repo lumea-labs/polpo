@@ -69,7 +69,11 @@ process.stdin.once("data", async data => {
     const input = JSON.parse(data.toString());
     let receipt;
     let created;
-    if (mode.startsWith("run")) {
+    if (mode.startsWith("task-execution")) {
+      const tasks = new FileTaskStore(directory);
+      if (input.operation === "claim") await tasks.claimTaskExecution(input.expected, input.runId);
+      else await tasks.mutateTaskExecution(input.expected, input.mutation);
+    } else if (mode.startsWith("run")) {
       const runs = new FileRunStore(directory);
       if (input.operation === "complete") await runs.completeRun("run-1", "killed", { exitCode: 143, stdout: "", stderr: "cancelled", duration: 1 });
       else if (input.operation === "activity") await runs.updateActivity("run-1", { filesCreated: [], filesEdited: [], toolCalls: 9, totalTokens: 9, lastUpdate: "now" });

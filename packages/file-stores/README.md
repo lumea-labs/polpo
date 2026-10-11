@@ -98,6 +98,21 @@ as old agent writers must be stopped when adopting the coordinator.
 
 ## Run status and concurrent activity
 
+`FileTaskStore` implements `TaskExecutionStore` from
+`@polpo-ai/core/task-execution`. A claim commits the Task's execution revision,
+active Run ID and initial Run together. Conditional patches, transitions,
+cancellation and requeues take the captured `taskExecutionReference(task)`;
+obsolete references conflict instead of affecting a newer attempt. Cancellation
+and requeue clear the active link, advance the revision and terminate a running
+Run in the same journal commit. A terminal Task result is preserved even when
+its still-running Run needs cancellation. Retries use a new Run ID.
+
+Ordinary reads recover both files after a crashed writer. These guarantees use
+the same coordinator and filesystem requirements described above. The cached
+legacy `JsonTaskStore` does not implement this capability. TaskRunner, result
+collection/assessment and host termination must integrate this contract; storage
+atomicity alone does not interrupt running code or fence an unadapted caller.
+
 `FileRunStore` keeps each Run in `runs/<id>.json`. Every reader and writer uses
 the same project coordinator, including activity, traces, checkpoints, spawn
 metadata, results and collection acknowledgements. This prevents a runner's

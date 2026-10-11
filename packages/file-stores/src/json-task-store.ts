@@ -48,7 +48,7 @@ export class JsonTaskStore implements TaskStore {
   }
 
   async createTask(
-    task: Omit<Task, "id" | "status" | "retries" | "createdAt" | "updatedAt"> & { status?: TaskStatus },
+    task: Omit<Task, "id" | "status" | "retries" | "createdAt" | "updatedAt" | "executionRevision" | "activeRunId"> & { status?: TaskStatus },
   ): Promise<Task> {
     const now = new Date().toISOString();
     const newTask: Task = {
@@ -59,6 +59,8 @@ export class JsonTaskStore implements TaskStore {
       createdAt: now,
       updatedAt: now,
     };
+    delete newTask.executionRevision;
+    delete newTask.activeRunId;
     this.state.tasks.push(newTask);
     this.persist();
     return newTask;
@@ -83,12 +85,12 @@ export class JsonTaskStore implements TaskStore {
     return task;
   }
 
-  async updateTask(taskId: string, updates: Partial<Omit<Task, "id" | "status">>): Promise<Task> {
+  async updateTask(taskId: string, updates: Partial<Omit<Task, "id" | "status" | "executionRevision" | "activeRunId">>): Promise<Task> {
     const task = this.state.tasks.find((t) => t.id === taskId);
     if (!task) {
       throw new Error(`Task not found: ${taskId}`);
     }
-    Object.assign(task, updates, { id: task.id, status: task.status, updatedAt: new Date().toISOString() });
+    Object.assign(task, updates, { id: task.id, status: task.status, executionRevision: task.executionRevision, activeRunId: task.activeRunId, updatedAt: new Date().toISOString() });
     this.persist();
     return task;
   }

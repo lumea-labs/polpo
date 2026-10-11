@@ -47,6 +47,8 @@ export class FileRunStore implements RunStore {
       this.writeRun(tx, existing ? {
         ...existing,
         ...run,
+        taskId: existing.taskId,
+        taskExecutionRevision: existing.taskExecutionRevision,
         config: run.config ?? existing.config,
         executionMode: run.executionMode ?? existing.executionMode,
         engine: run.engine ?? existing.engine,
