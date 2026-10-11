@@ -138,6 +138,25 @@ afterAll(async () => {
 // ── Tests ───────────────────────────────────────────────
 
 describe("InProcessSpawner", () => {
+  test.each([false, true])("streams the real transcript without giving the observer lifecycle authority (throws=%s)", async throws => {
+    setMockModel(mockTextModel("Observer output"));
+    const store = new InMemoryRunStore(), config = makeConfig();
+    const events: Record<string, unknown>[] = [];
+    const finalize = vi.fn(async () => undefined);
+    const spawner = new InProcessSpawner(() => ({ runStore: store, finalize,
+      onEvent: entry => {
+        events.push(entry);
+        if (throws) throw new Error("SSE subscriber disconnected");
+      },
+    }));
+    const handle = await spawner.spawn(config);
+    await onExitPromise(handle);
+    expect(events.some(entry => entry.type === "assistant")).toBe(true);
+    expect((await store.getRun(config.runId))?.status).toBe("completed");
+    expect(finalize).toHaveBeenCalledOnce();
+    expect(spawner.isAlive(handle.pid)).toBe(false);
+  });
+
   test("finalizes exactly once when persistence fails before the engine starts", async () => {
     const store = new InMemoryRunStore();
     vi.spyOn(store, "upsertRun").mockRejectedValue(new Error("database unavailable"));

@@ -36,6 +36,41 @@ export async function claimTaskDispatch(ctx: TaskDispatchContext, task: Task, ru
     : ctx.taskStore.claimTaskExecution(taskExecutionReference(task), runId);
 }
 
+/** Withdraw an uncertain claim using the Task transaction, not Run absence.
+ * Advancing an unchanged source revision prevents a late database commit from
+ * publishing the abandoned attempt. If our claim already won, requeue only its
+ * still-running Run. A competing owner or completed result remains untouched.
+ * Hosts register this cleanup before claiming and retry it if storage fails. */
+export async function fenceTaskDispatch(ctx: Pick<TaskDispatchContext, "taskStore" | "runStore">,
+  source: Task, runId: string): Promise<void> {
+  if (!isTaskExecutionStore(ctx.taskStore)) {
+    throw new TaskExecutionError("task_execution_unsupported", "Task execution persistence is required");
+  }
+  const expected = taskExecutionReference(source);
+  for (let attempt = 0; attempt < 8; attempt++) {
+    const current = await ctx.taskStore.getTask(source.id);
+    if (!current) return;
+    const ref = taskExecutionReference(current);
+    const unclaimed = ref.revision === expected.revision && ref.runId === expected.runId
+      && current.status === "pending" && current.activeRunId === undefined;
+    const ours = current.activeRunId === runId;
+    if (!unclaimed && !ours) return;
+    if (ours) {
+      const run = await ctx.runStore.getRun(runId);
+      if (!run) throw new TaskExecutionError("task_execution_conflict", "Task dispatch Run is unavailable; retry cleanup");
+      if (run.status !== "running") return;
+    }
+    try {
+      await ctx.taskStore.mutateTaskExecution(ref, { type: "requeue", countRetry: false,
+        reason: "Task dispatch interrupted", ...(ours ? { onlyIfRunRunning: true } : {}) });
+      return;
+    } catch (error) {
+      if (!(error instanceof TaskExecutionError && error.code === "task_execution_conflict")) throw error;
+    }
+  }
+  throw new TaskExecutionError("task_execution_conflict", "Task dispatch cleanup requires a retry");
+}
+
 export async function isTaskDispatchActive(ctx: Pick<TaskDispatchContext, "taskStore" | "runStore">,
   task: Task, run: RunRecord): Promise<boolean> {
   const current = await ctx.taskStore.getTask(task.id);

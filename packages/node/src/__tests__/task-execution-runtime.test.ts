@@ -14,7 +14,7 @@ import type { OrchestratorContext } from "@polpo-ai/core/orchestrator-context";
 import type { RunnerConfig } from "@polpo-ai/core/types";
 import type { LoopResumeState } from "@polpo-ai/core/loop/run-store";
 import { taskExecutionReference } from "@polpo-ai/core/task-execution";
-import { claimTaskDispatch, authorizeTaskDispatch } from "@polpo-ai/core/task-dispatch";
+import { claimTaskDispatch, authorizeTaskDispatch, fenceTaskDispatch } from "@polpo-ai/core/task-dispatch";
 
 const roots: string[] = [];
 afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); roots.splice(0).forEach(root => rmSync(root, { recursive: true, force: true })); });
@@ -40,6 +40,37 @@ async function fixture() {
 }
 
 describe("Task execution dispatch and cancellation", () => {
+  it("fences an unacknowledged claim before its delayed transaction can commit", async () => {
+    const f = await fixture(), release = deferred();
+    const claim = f.taskStore.claimTaskExecution.bind(f.taskStore);
+    const lateCommit = release.promise.then(() => claim(taskExecutionReference(f.task), "uncertain-run"));
+    const rejected = expect(lateCommit).rejects.toMatchObject({ code: "task_execution_conflict" });
+    vi.spyOn(f.taskStore, "claimTaskExecution").mockRejectedValueOnce(new Error("transport acknowledgement lost"));
+    await expect(claimTaskDispatch(f.ctx, f.task, "uncertain-run")).rejects.toThrow("acknowledgement lost");
+    await fenceTaskDispatch(f.ctx, f.task, "uncertain-run");
+    release.resolve(); await rejected;
+    expect(await f.runStore.getRun("uncertain-run")).toBeUndefined();
+    expect(await f.taskStore.getTask(f.task.id)).toMatchObject({ status: "pending", retries: 0 });
+  });
+
+  it.each(["ours", "other", "completed"] as const)("fences a committed claim without damaging a %s owner/result", async owner => {
+    const f = await fixture();
+    const runId = owner === "other" ? "competing-run" : "uncertain-run";
+    await claimTaskDispatch(f.ctx, f.task, runId);
+    if (owner === "completed") await f.runStore.completeRun(runId, "completed", {
+      exitCode: 0, stdout: "finished", stderr: "", duration: 1,
+    });
+    const before = await f.taskStore.getTask(f.task.id);
+    await fenceTaskDispatch(f.ctx, f.task, "uncertain-run");
+    if (owner === "ours") {
+      expect(await f.runStore.getRun(runId)).toMatchObject({ status: "killed" });
+      expect(await f.taskStore.getTask(f.task.id)).toMatchObject({ status: "pending", retries: 0 });
+    } else {
+      expect(await f.taskStore.getTask(f.task.id)).toEqual(before);
+      expect(await f.runStore.getRun(runId)).toMatchObject({ status: owner === "completed" ? "completed" : "running" });
+    }
+  });
+
   it("shares one canonical claim with a direct host and returns durable principal authority", async () => {
     const f = await fixture();
     await f.taskStore.updateTask(f.task.id, { user: "current-principal" });

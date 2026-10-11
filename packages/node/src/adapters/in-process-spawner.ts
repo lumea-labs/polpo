@@ -54,6 +54,8 @@ import { executeRun, errorResult, type ExecuteRunDeps } from "../core/run-lifecy
 export interface InProcessSpawnerDeps {
   runStore: RunStore;
   createLogSession?: ExecuteRunDeps["createLogSession"];
+  /** Host-only live transcript observer; never serialized into RunnerConfig. */
+  onEvent?: ExecuteRunDeps["onEvent"];
   preparationTimeoutMs?: ExecuteRunDeps["preparationTimeoutMs"];
   vaultStore?: VaultStore;
   memoryStore?: MemoryStore;
