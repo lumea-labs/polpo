@@ -1,5 +1,5 @@
 import { normalizeTaskExecutionReference, normalizeTaskExecutionMutation, prepareTaskExecutionClaim, prepareTaskExecutionMutation,
-  TaskExecutionError, taskExecutionReference, nextTaskExecutionRevision, type TaskExecutionStore, type TaskExecutionReference, type TaskExecutionMutation, type TaskExecutionState } from "@polpo-ai/core/task-execution";
+  TaskExecutionError, taskExecutionReference, nextTaskExecutionRevision, type ConditionalTaskExecutionStore, type TaskExecutionPrecondition, normalizeTaskExecutionPreconditions, assertTaskExecutionPreconditions, type TaskExecutionReference, type TaskExecutionMutation, type TaskExecutionState } from "@polpo-ai/core/task-execution";
 import type { RunRecord } from "@polpo-ai/core/run-store";
 import { normalizeRuntimeMetadata } from "@polpo-ai/core";
 import { join } from "node:path";
@@ -53,7 +53,7 @@ function readJson<T>(tx: ProjectFileTransaction, path: string, fallback: T): T {
  *   .polpo/missions/<missionId>.json
  *   .polpo/_meta.json
  */
-export class FileTaskStore implements TaskStore, MissionExecutionStore, TaskExecutionStore {
+export class FileTaskStore implements TaskStore, MissionExecutionStore, ConditionalTaskExecutionStore {
   constructor(private readonly polpoDir: string) {
     mkdirSync(join(polpoDir, "tasks"), { recursive: true });
     mkdirSync(join(polpoDir, "missions"), { recursive: true });
@@ -222,6 +222,26 @@ export class FileTaskStore implements TaskStore, MissionExecutionStore, TaskExec
     const expected = normalizeTaskExecutionReference(raw);
     const copied = normalizeTaskExecutionMutation(mutation);
     return this.transaction(tx => this.mutateExecution(tx, expected, copied));
+  }
+
+  async mutateTaskExecutionConditionally(raw: TaskExecutionReference, mutation: TaskExecutionMutation,
+    preconditions: readonly TaskExecutionPrecondition[]): Promise<TaskExecutionState> {
+    const expected = normalizeTaskExecutionReference(raw), copied = normalizeTaskExecutionMutation(mutation);
+    const conditions = normalizeTaskExecutionPreconditions(preconditions);
+    return this.transaction(tx => {
+      assertTaskExecutionPreconditions(conditions, id => {
+        const raw = tx.read(this.taskPath(id));
+        if (raw === null) return undefined;
+        let task: Task;
+        try { task = JSON.parse(raw); } catch { throw new TaskExecutionError("task_execution_invalid", "Invalid stored Task"); }
+        if (!task || task.id !== id || !Object.hasOwn(VALID_TRANSITIONS, task.status)) {
+          throw new TaskExecutionError("task_execution_invalid", "Invalid stored Task");
+        }
+        taskExecutionReference(task);
+        return task;
+      });
+      return this.mutateExecution(tx, expected, copied);
+    });
   }
 
   private mutateExecution(tx: ProjectFileTransaction, expected: TaskExecutionReference, mutation: TaskExecutionMutation): TaskExecutionState {

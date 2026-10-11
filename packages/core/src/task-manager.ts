@@ -4,7 +4,7 @@ import type { Task, TaskExpectation, ExpectedOutcome, RetryPolicy, ReviewContext
 import { setAssessment } from "./types.js";
 import { sanitizeExpectations } from "./schemas.js";
 import { normalizeRuntimeMetadata } from "./runtime-metadata.js";
-import { isTaskExecutionStore, taskExecutionReference, TaskExecutionError, type TaskExecutionReference } from "./task-execution.js";
+import { isTaskExecutionStore, taskExecutionReference, TaskExecutionError, type TaskExecutionReference, type TaskExecutionMutation, type TaskExecutionPrecondition, type TaskExecutionState, isConditionalTaskExecutionStore } from "./task-execution.js";
 
 export type CreateTaskOptions = {
   title: string;
@@ -351,6 +351,25 @@ export class TaskManager {
         await this.ctx.taskStore.updateTask(taskId, { dependsOn: resolved });
       }
     }
+  }
+
+  /** Commit a decision against every row it observed, then notify its Run owner. */
+  async applyTaskExecutionDecision(expected: TaskExecutionReference, mutation: TaskExecutionMutation,
+    preconditions: readonly TaskExecutionPrecondition[]): Promise<TaskExecutionState> {
+    if (!isConditionalTaskExecutionStore(this.ctx.taskStore)) {
+      throw new TaskExecutionError("task_execution_unsupported", "Task decisions require atomic read preconditions");
+    }
+    const state = await this.ctx.taskStore.mutateTaskExecutionConditionally(expected, mutation, preconditions);
+    if (state.run?.status === "killed") {
+      try { await this.ctx.spawner.cancelRun?.(state.run.id); }
+      catch {
+        // Persistence is already committed. A failed local notification cannot
+        // undo it or turn the resolver's other decisions into failures. Remote
+        // owners also observe the durable cancellation independently.
+        this.ctx.emitter.emit("log", { level: "error", message: `Task decision committed; Run cancellation notification failed for ${state.run.id}` });
+      }
+    }
+    return state;
   }
 
   /** Fail one captured attempt, including its still-owned Run. */

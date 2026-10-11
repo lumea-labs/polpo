@@ -17,7 +17,7 @@ import { TickWaiter } from "./tick-waiter.js";
 import { resolveMissionStore, resolveMissionForTask } from "./mission-store.js";
 import { MissionExecutionError, type MissionExecutionOptions, type MissionExecutionResult } from "./mission-execution.js";
 import type { TaskManager } from "./task-manager.js";
-import { isTaskExecutionStore, taskExecutionReference, TaskExecutionError, type TaskExecutionReference } from "./task-execution.js";
+import { isConditionalTaskExecutionStore, taskDependencyPreconditions, taskExecutionReference, TaskExecutionError, type TaskExecutionReference, type TaskExecutionMutation, type TaskExecutionPrecondition, type TaskExecutionState } from "./task-execution.js";
 import type { AgentManager } from "./agent-manager.js";
 import type { ApprovalManager } from "./approval-manager.js";
 import type { Scheduler } from "./scheduler.js";
@@ -158,6 +158,8 @@ export interface DeadlockFacade {
   getStore(): TaskStore;
   emit(event: string, payload: unknown): boolean;
   forceFailTask(taskId: string, expected?: TaskExecutionReference): Promise<void>;
+  applyTaskExecutionDecision(expected: TaskExecutionReference, mutation: TaskExecutionMutation,
+    preconditions: readonly TaskExecutionPrecondition[]): Promise<TaskExecutionState>;
   createTask(opts: {
     title: string; description: string; assignTo: string;
     expectations?: TaskExpectation[]; expectedOutcomes?: ExpectedOutcome[];
@@ -443,13 +445,13 @@ export class OrchestratorEngine {
           });
 
           // Build the facade that the deadlock resolver needs
-          const facade = this.buildDeadlockFacade();
+          const facade = this.getDeadlockFacade();
 
           // Async LLM resolution (same pattern as question detection)
           this.deadlockResolver.resolveDeadlock(analysis, facade).catch(async err => {
             this.ctx.emitter.emit("log", { level: "error", message: `Deadlock resolution failed: ${(err as Error).message}` });
             for (const task of pending) {
-              try { await this.forceFailCapturedTask(task); }
+              try { await this.forceFailCapturedTask(task, tasks); }
               catch {
                 // The background fallback must not become an unhandled
                 // rejection, nor retry cancellation against a newer owner.
@@ -466,7 +468,7 @@ export class OrchestratorEngine {
       this.ctx.emitter.emit("orchestrator:deadlock", { taskIds: pending.map(t => t.id) });
       let allFailed = true;
       for (const task of pending) {
-        if (!(await this.forceFailCapturedTask(task))) allFailed = false;
+        if (!(await this.forceFailCapturedTask(task, tasks))) allFailed = false;
       }
       return allFailed;
     }
@@ -532,13 +534,14 @@ export class OrchestratorEngine {
   }
 
   /** Build the minimal facade that the deadlock resolver needs. */
-  private buildDeadlockFacade(): DeadlockFacade {
+  getDeadlockFacade(): DeadlockFacade {
     return {
       getConfig: () => this.getConfig(),
       getMemory: () => this.getMemory(),
       getStore: () => this.getStore(),
       emit: (event: string, payload: unknown) => this.ctx.emitter.emit(event, payload),
       forceFailTask: (taskId: string, expected?: TaskExecutionReference) => this.forceFailTask(taskId, expected),
+      applyTaskExecutionDecision: (expected, mutation, preconditions) => this.taskMgr.applyTaskExecutionDecision(expected, mutation, preconditions),
       createTask: (opts) => this.createTask(opts),
     };
   }
@@ -587,11 +590,14 @@ export class OrchestratorEngine {
   async clearTasks(filter: (task: Task) => boolean): Promise<number> { return this.taskMgr.clearTasks(filter); }
   async forceFailTask(taskId: string, expected?: TaskExecutionReference): Promise<void> { return this.taskMgr.forceFailTask(taskId, expected); }
 
-  private async forceFailCapturedTask(task: Task): Promise<boolean> {
-    const expected = isTaskExecutionStore(this.ctx.taskStore) || task.executionRevision !== undefined || task.activeRunId !== undefined
-      ? taskExecutionReference(task) : undefined;
+  private async forceFailCapturedTask(task: Task, tasks: Task[]): Promise<boolean> {
+    if (!isConditionalTaskExecutionStore(this.ctx.taskStore)) {
+      this.ctx.emitter.emit("log", { level: "error", message: "Deadlock recovery requires atomic dependency checks" });
+      return false;
+    }
     try {
-      await this.forceFailTask(task.id, expected);
+      await this.taskMgr.applyTaskExecutionDecision(taskExecutionReference(task),
+        { type: "cancel", reason: "Deadlock could not be resolved" }, taskDependencyPreconditions(task, tasks));
       return true;
     } catch (error) {
       if (error instanceof TaskExecutionError && error.code === "task_execution_conflict") return false;

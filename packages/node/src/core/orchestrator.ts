@@ -17,7 +17,7 @@ import type { MemoryStore } from "@polpo-ai/core/memory-store";
 import type { MemoryExtractionCandidateStore, MemoryItemStore } from "@polpo-ai/core";
 import type { LogStore } from "@polpo-ai/core/log-store";
 import { assessTask } from "../assessment/assessor.js";
-import { analyzeBlockedTasks, resolveDeadlock, isResolving } from "./deadlock-resolver.js";
+import { createDeadlockResolver } from "./deadlock-resolver.js";
 import {
   CanonicalTurnOutboxDispatcher,
   OrchestratorEngine,
@@ -25,7 +25,7 @@ import {
   resolveConfiguredModelSelection,
   resolveMissionStore,
 } from "@polpo-ai/core";
-import type { DeadlockResolverPort, DeadlockFacade, MemoryExtractor } from "@polpo-ai/core";
+import type { MemoryExtractor } from "@polpo-ai/core";
 import { createLocalMemoryLearningHandler } from "../memory/automatic-learning.js";
 import { TypedEmitter } from "./events.js";
 import type { TaskStore } from "@polpo-ai/core/task-store";
@@ -635,12 +635,7 @@ export class Orchestrator extends TypedEmitter {
     this.watcherMgr.start();
 
     // Build the deadlock resolver port (wraps the shell's deadlock-resolver module)
-    const deadlockResolver: DeadlockResolverPort = {
-      isResolving,
-      analyzeBlockedTasks,
-      resolveDeadlock: (analysis, facade: DeadlockFacade) =>
-        resolveDeadlock(analysis as ReturnType<typeof analyzeBlockedTasks>, this),
-    };
+    const deadlockResolver = createDeadlockResolver();
 
     // Create the pure orchestration engine
     this._engine = new OrchestratorEngine({

@@ -38,23 +38,29 @@ const document = () => ({ tasks: [
 ] });
 
 describe("durable Mission execution through the real OSS executor", () => {
-  it.each(["resolver-rejection", "missing-dependency"] as const)("does not cancel a newer attempt from stale %s analysis", async mode => {
+  it.each([
+    { mode: "resolver-rejection", changed: "task" }, { mode: "missing-dependency", changed: "task" },
+    { mode: "resolver-rejection", changed: "dependency" }, { mode: "missing-dependency", changed: "dependency" },
+  ] as const)("does not cancel stale $mode analysis after $changed changes", async ({ mode, changed }) => {
     const cancelRun = vi.fn();
     const f = fixture({ spawner: { spawn: vi.fn(), kill: vi.fn(), isAlive: () => true, cancelRun } });
     await f.executor.ready;
-    const task = await f.taskManager.createTask({ title: "Blocked", description: "Wait", assignTo: "support", dependsOn: ["missing"] });
+    const dependency = changed === "dependency" ? await f.taskManager.createTask({ title: "Dependency", description: "Original input", assignTo: "support" }) : undefined;
+    if (dependency) await f.taskManager.forceFailTask(dependency.id);
+    const task = await f.taskManager.createTask({ title: "Blocked", description: "Wait", assignTo: "support", dependsOn: [dependency?.id ?? "missing"] });
+    const changedId = dependency?.id ?? task.id;
     let replacement: Awaited<ReturnType<typeof f.store.claimTaskExecution>>;
     const retry = async () => {
-      await f.taskManager.killTask(task.id);
-      const pending = await f.store.transition(task.id, "pending");
+      await f.taskManager.killTask(changedId);
+      const pending = await f.store.transition(changedId, "pending");
       replacement = await f.store.claimTaskExecution(taskExecutionReference(pending), "replacement-run");
     };
     let reject!: (error: Error) => void, finished!: () => void;
     const resolving = new Promise<void>((_, fail) => { reject = fail; });
     const fallbackFinished = new Promise<void>(resolve => { finished = resolve; });
-    const forceFail = f.taskManager.forceFailTask.bind(f.taskManager);
-    vi.spyOn(f.taskManager, "forceFailTask").mockImplementation(async (...args) => {
-      try { await forceFail(...args); } finally { finished(); }
+    const forceFail = f.taskManager.applyTaskExecutionDecision.bind(f.taskManager);
+    vi.spyOn(f.taskManager, "applyTaskExecutionDecision").mockImplementation(async (...args) => {
+      try { return await forceFail(...args); } finally { finished(); }
     });
     const engine = new OrchestratorEngine({ ctx: f.ctx, taskManager: f.taskManager, agentManager: f.agentManager,
       missionExecutor: f.executor, assessmentOrchestrator: { handleResult: async () => {}, retryOrFail: async () => {} },
@@ -65,7 +71,8 @@ describe("durable Mission execution through the real OSS executor", () => {
     });
     const allDone = await engine.tick();
     if (mode === "resolver-rejection") { await retry(); reject(new Error("fixture delayed analysis failure")); await fallbackFinished; }
-    expect(await f.store.getTask(task.id)).toEqual(replacement!.task);
+    expect(await f.store.getTask(changedId)).toEqual(replacement!.task);
+    if (dependency) expect(await f.store.getTask(task.id)).toEqual(task);
     expect(await f.ctx.runStore.getRun(replacement!.run.id)).toMatchObject({ status: "running" });
     expect(cancelRun).not.toHaveBeenCalled();
     expect(allDone).toBe(false);

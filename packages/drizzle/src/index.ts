@@ -121,14 +121,14 @@ import type { PlaybookStore } from "@polpo-ai/core/playbook-store";
 import type { SkillStore } from "@polpo-ai/core/skill-store";
 import type { ChannelManagementStore } from "@polpo-ai/channels";
 
-import type { TaskExecutionStore } from "@polpo-ai/core/task-execution";
+import type { ConditionalTaskExecutionStore } from "@polpo-ai/core/task-execution";
 
 export interface DrizzleStores {
   /** Mission persistence — same instance as taskStore (implements both). */
   missionStore: MissionStore;
   missionExecutionStore: MissionExecutionStore;
   taskStore: TaskStore;
-  taskExecutionStore: TaskExecutionStore;
+  taskExecutionStore: ConditionalTaskExecutionStore;
   runStore: RunStore;
   runEventStore: RunEventStore;
   runExecutionLeaseStore: RunExecutionLeaseStore;

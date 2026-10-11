@@ -23,6 +23,32 @@ export interface TaskExecutionStore {
   claimTaskExecution(expected: TaskExecutionReference, runId: string): Promise<TaskExecutionState & { run: RunRecord }>;
   mutateTaskExecution(expected: TaskExecutionReference, mutation: TaskExecutionMutation): Promise<TaskExecutionState>;
 }
+/** A captured row (or its absence) used to make an asynchronous decision.
+ * Full snapshots also fence edits that do not advance the execution generation. */
+export interface TaskExecutionPrecondition { taskId: string; snapshot: Task | null }
+export interface ConditionalTaskExecutionStore extends TaskExecutionStore {
+  mutateTaskExecutionConditionally(expected: TaskExecutionReference, mutation: TaskExecutionMutation,
+    preconditions: readonly TaskExecutionPrecondition[]): Promise<TaskExecutionState>;
+}
+export function isConditionalTaskExecutionStore(value: unknown): value is ConditionalTaskExecutionStore {
+  return isTaskExecutionStore(value)
+    && typeof (value as Partial<ConditionalTaskExecutionStore>).mutateTaskExecutionConditionally === "function";
+}
+/** Capture the decision's whole dependency graph before asynchronous work. */
+export function taskDependencyPreconditions(task: Task, allTasks: readonly Task[]): TaskExecutionPrecondition[] {
+  const tasks = new Map(allTasks.map(value => [value.id, value]));
+  tasks.set(task.id, task);
+  const conditions = new Map<string, TaskExecutionPrecondition>(), pending = [task.id];
+  while (pending.length) {
+    const id = pending.pop()!;
+    if (conditions.has(id)) continue;
+    const current = tasks.get(id);
+    conditions.set(id, { taskId: id, snapshot: current ?? null });
+    if (current) pending.push(...current.dependsOn);
+  }
+  return normalizeTaskExecutionPreconditions([...conditions.values()]);
+}
+
 export class TaskExecutionError extends Error {
   constructor(readonly code: "task_execution_invalid" | "task_execution_conflict" | "task_execution_unsupported", message: string) {
     super(message); this.name = "TaskExecutionError";
@@ -82,6 +108,42 @@ export function normalizeTaskExecutionMutation(mutation: TaskExecutionMutation):
   }
   if (copy.type === "patch" && copy.updates === undefined) invalid();
   return copy;
+}
+
+/** Copy and validate before any I/O; a legacy adapter cannot silently ignore these checks. */
+export function normalizeTaskExecutionPreconditions(input: readonly TaskExecutionPrecondition[]): TaskExecutionPrecondition[] {
+  let copied: TaskExecutionPrecondition[];
+  try { copied = structuredClone(input) as TaskExecutionPrecondition[]; } catch { return invalid(); }
+  if (!Array.isArray(copied) || !copied.length || copied.length > 10000) invalid();
+  const seen = new Set<string>();
+  for (const condition of copied) {
+    if (!condition || !validId(condition.taskId) || seen.has(condition.taskId)) invalid();
+    seen.add(condition.taskId);
+    if (condition.snapshot !== null) {
+      if (!condition.snapshot || condition.snapshot.id !== condition.taskId) invalid();
+      taskExecutionReference(condition.snapshot);
+      taskSnapshotKey(condition.snapshot);
+    }
+  }
+  return copied;
+}
+function taskSnapshotKey(task: Task): string {
+  // SQL supplies zero defaults and file rows may omit them. JSON object key
+  // order is not semantic; optional undefined fields represent absence.
+  const normalized = { ...task, executionRevision: task.executionRevision ?? 0,
+    fixAttempts: task.fixAttempts ?? 0, questionRounds: task.questionRounds ?? 0, resolutionAttempts: task.resolutionAttempts ?? 0 };
+  const stable = (value: any): string => value === null || typeof value !== "object" ? JSON.stringify(value)
+    : Array.isArray(value) ? `[${value.map(stable).join(",")}]`
+      : `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${stable(value[key])}`).join(",")}}`;
+  try { return stable(JSON.parse(JSON.stringify(normalized))); } catch { return invalid(); }
+}
+/** The adapter must keep the read rows/absence stable until its write commits. */
+export function assertTaskExecutionPreconditions(conditions: readonly TaskExecutionPrecondition[], read: (id: string) => Task | undefined): void {
+  for (const condition of conditions) {
+    const current = read(condition.taskId);
+    if (condition.snapshot === null) { if (current) conflict(); }
+    else if (!current || taskSnapshotKey(current) !== taskSnapshotKey(condition.snapshot)) conflict();
+  }
 }
 
 /** Called only while holding the Task/Run transaction. Initial Run state comes

@@ -95,3 +95,37 @@ Upgrade participating runtime, store, server and SDK packages together. Old
 executors and file writers must be stopped during migration or rollback: they do
 not enforce the new admission and recovery barrier. Retain receipts for as long
 as callers may replay keys.
+
+
+### Dependency recovery and custom persistence
+
+When dependency recovery analyzes a blocked task, it captures the task and its
+dependency graph before waiting for the model. Absorb, retry and fail decisions
+are committed only if every captured row is unchanged, including its execution
+identity, status, retry budget, description and dependencies. A stale decision
+is discarded and the next tick reevaluates current work. Absorbing one dependency
+retains other dependencies and any previously absorbed instructions.
+
+The file, SQLite and PostgreSQL stores implement
+`ConditionalTaskExecutionStore.mutateTaskExecutionConditionally`. Custom stores
+must implement this capability to support automatic dependency recovery. They
+must copy inputs before I/O, validate every `TaskExecutionPrecondition` in the
+same transaction as the Task/Run mutation, and preserve asserted absence until
+commit. Checking `getTask` before a separate mutation is insufficient. A
+`snapshot: null` means the row is absent; unreadable or invalid state must reject.
+Stores without this capability retain ordinary operations but cannot safely
+apply automatic deadlock decisions; no non-atomic fallback is attempted.
+
+PostgreSQL locks existing decision rows in ID order. Decisions asserting missing
+rows acquire an exclusive Task-table lock before row locks to prevent inserts
+and avoid lock-upgrade deadlocks. These rare decisions can briefly delay other
+Task writers; transactions must not perform model or provider calls.
+
+The Node resolver is scoped to one engine. `resolveDeadlock` accepts the shared
+`DeadlockFacade` or the existing `Orchestrator` shell; the latter delegates to the
+same facade. `isResolving()` remains a process-wide diagnostic; use the resolver
+port's method when deciding whether a particular engine is busy. A failure to
+notify a local Run owner after a committed decision is logged separately and
+does not undo the decision or fail unrelated work. Durable Run observation
+remains responsible for cross-host notification; this does not prove termination
+of uncooperative code or remote provider sessions.

@@ -1,5 +1,5 @@
 import { normalizeTaskExecutionReference, normalizeTaskExecutionMutation, prepareTaskExecutionClaim, prepareTaskExecutionMutation,
-  TaskExecutionError, taskExecutionReference, nextTaskExecutionRevision, type TaskExecutionStore, type TaskExecutionReference, type TaskExecutionMutation, type TaskExecutionState } from "@polpo-ai/core/task-execution";
+  TaskExecutionError, taskExecutionReference, nextTaskExecutionRevision, type ConditionalTaskExecutionStore, type TaskExecutionPrecondition, normalizeTaskExecutionPreconditions, assertTaskExecutionPreconditions, type TaskExecutionReference, type TaskExecutionMutation, type TaskExecutionState } from "@polpo-ai/core/task-execution";
 import { runRecordFromRow, runRecordToValues } from "./run-store.js";
 import { eq, desc, asc, and, or, inArray, notInArray, sql, getTableColumns } from "drizzle-orm";
 import { nanoid } from "nanoid";
@@ -28,7 +28,7 @@ export interface TaskStoreSchema {
   missionExecutions?: AnyTable;
 }
 
-export class DrizzleTaskStore implements TaskStore, MissionExecutionStore, TaskExecutionStore {
+export class DrizzleTaskStore implements TaskStore, MissionExecutionStore, ConditionalTaskExecutionStore {
   constructor(
     private db: any,
     private schema: TaskStoreSchema,
@@ -382,11 +382,26 @@ export class DrizzleTaskStore implements TaskStore, MissionExecutionStore, TaskE
     return this.executeTaskMutation(expected, { mutation: normalizeTaskExecutionMutation(mutation) });
   }
 
-  private async executeTaskMutation(expected: TaskExecutionReference, operation: { claim: string } | { mutation: TaskExecutionMutation }): Promise<TaskExecutionState> {
+  async mutateTaskExecutionConditionally(raw: TaskExecutionReference, mutation: TaskExecutionMutation,
+    preconditions: readonly TaskExecutionPrecondition[]): Promise<TaskExecutionState> {
+    const expected = normalizeTaskExecutionReference(raw), copied = normalizeTaskExecutionMutation(mutation);
+    const conditions = normalizeTaskExecutionPreconditions(preconditions);
+    return this.executeTaskMutation(expected, { mutation: copied }, conditions);
+  }
+
+  private async executeTaskMutation(expected: TaskExecutionReference, operation: { claim: string } | { mutation: TaskExecutionMutation }, conditions?: TaskExecutionPrecondition[]): Promise<TaskExecutionState> {
     const { tasks, runs } = this.schema;
     if (!runs) throw new TaskExecutionError("task_execution_unsupported", "Task execution requires shared Task and Run storage");
     const runId = "claim" in operation ? operation.claim : expected.runId;
-    const taskQuery = (tx: any) => tx.select().from(tasks).where(eq(tasks.id, expected.taskId));
+    const taskIds = [...new Set([expected.taskId, ...conditions?.map(condition => condition.taskId) ?? []])].sort();
+    const taskQuery = (tx: any) => tx.select().from(tasks).where(inArray(tasks.id, taskIds)).orderBy(asc(tasks.id));
+    const checkedTaskRow = (rows: any[]) => {
+      const captured = new Map(rows.map(row => [row.id, row]));
+      if (conditions) assertTaskExecutionPreconditions(conditions, id => {
+        const row = captured.get(id); return row ? this.rowToTask(row) : undefined;
+      });
+      return captured.get(expected.taskId);
+    };
     const runQuery = (tx: any) => tx.select().from(runs).where(eq(runs.id, runId));
     const prepare = (taskRow: any, runRow: any) => {
       const task = taskRow ? this.rowToTask(taskRow) : undefined;
@@ -415,13 +430,22 @@ export class DrizzleTaskStore implements TaskStore, MissionExecutionStore, TaskE
     };
     if (this.dialect === "sqlite") {
       return this.db.transaction((tx: any) => {
-        const prepared = prepare(taskQuery(tx).get(), runId === undefined ? undefined : runQuery(tx).get());
+        const prepared = prepare(checkedTaskRow(taskQuery(tx).all()), runId === undefined ? undefined : runQuery(tx).get());
         for (const query of writes(tx, prepared)) query.run();
         return prepared.state;
       }, { behavior: "immediate" });
     }
     const execute = async (tx: any) => {
-      const taskRow = (await taskQuery(tx).for("update"))[0];
+      // Missing rows cannot be protected with FOR UPDATE. Take this broader
+      // lock before row locks only for an absence assertion, excluding existing
+      // SELECT FOR UPDATE owners as well as writes to prevent lock upgrades
+      // from deadlocking. This prevents inserts
+      // (including legacy writers) until the decision commits. Existing rows
+      // are locked in deterministic ID order to avoid cross-dependency deadlocks.
+      if (conditions?.some(condition => condition.snapshot === null)) {
+        await tx.execute(sql`LOCK TABLE ${tasks} IN EXCLUSIVE MODE`);
+      }
+      const taskRow = checkedTaskRow(await taskQuery(tx).for("update"));
       const runRow = runId === undefined ? undefined : (await runQuery(tx).for("update"))[0];
       const prepared = prepare(taskRow, runRow);
       for (const query of writes(tx, prepared)) await query;
@@ -523,7 +547,7 @@ export class DrizzleTaskStore implements TaskStore, MissionExecutionStore, TaskE
       // Serialize admission within this project's task table, including across
       // different Missions whose active titles could conflict. Ordinary task
       // writes wait for this short transaction; readers can see committed work.
-      await tx.execute(sql`LOCK TABLE ${tasks} IN SHARE ROW EXCLUSIVE MODE`);
+      await tx.execute(sql`LOCK TABLE ${tasks} IN EXCLUSIVE MODE`);
       const existing = this.receiptFromRow((await receiptQuery(tx))[0]);
       if (existing) return { receipt: existing, created: false };
       assertUnusedIdentity((await identityQuery(tx))[0]);

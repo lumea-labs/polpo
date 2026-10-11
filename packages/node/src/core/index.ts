@@ -15,7 +15,7 @@ export type { OrchestratorOptions, AssessFn } from "./orchestrator.js";
 export { parseConfig, loadPolpoConfig, savePolpoConfig, generatePolpoConfigDefault, validateAgents } from "./config.js";
 export { readSessionSummary, readSessionSummaryFromPath, getRecentMessages, findTranscriptPath } from "./session-reader.js";
 export { looksLikeQuestion, classifyAsQuestion } from "./question-detector.js";
-export { analyzeBlockedTasks, resolveDeadlock, isResolving } from "./deadlock-resolver.js";
+export { analyzeBlockedTasks, resolveDeadlock, isResolving, createDeadlockResolver } from "./deadlock-resolver.js";
 // Hooks
 export { HookRegistry } from "@polpo-ai/core/hooks";
 export type {

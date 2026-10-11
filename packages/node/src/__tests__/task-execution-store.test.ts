@@ -1,5 +1,5 @@
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { mkdtempSync, rmSync } from "node:fs";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -9,11 +9,11 @@ import { drizzle as pgDrizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
 import { createSqliteStores, createPgStores, migrateSqliteSchema, migratePgSchema } from "@polpo-ai/drizzle";
 import { FileTaskStore, FileRunStore } from "@polpo-ai/file-stores";
-import { taskExecutionReference, type TaskExecutionStore } from "@polpo-ai/core/task-execution";
+import { taskExecutionReference, type ConditionalTaskExecutionStore } from "@polpo-ai/core/task-execution";
 import type { TaskStore } from "@polpo-ai/core/task-store";
 import type { RunStore } from "@polpo-ai/core/run-store";
 
-type Fixture = { taskStore: TaskStore; runStore: RunStore; executions: TaskExecutionStore };
+type Fixture = { taskStore: TaskStore; runStore: RunStore; executions: ConditionalTaskExecutionStore };
 const databaseUrl = process.env.AGENT_TEST_DATABASE_URL ?? process.env.TEST_DATABASE_URL;
 for (const kind of ["file", "sqlite", "pg"] as const) {
   describe.skipIf(kind === "pg" && !databaseUrl)(`${kind} atomic Task executions`, () => {
@@ -24,8 +24,8 @@ for (const kind of ["file", "sqlite", "pg"] as const) {
     beforeAll(async () => {
       if (kind !== "pg") return;
       admin = postgres(databaseUrl!, { max: 1, onnotice: () => undefined });
-      clientA = postgres(databaseUrl!, { max: 1, connection: { search_path: namespace }, onnotice: () => undefined });
-      clientB = postgres(databaseUrl!, { max: 1, connection: { search_path: namespace }, onnotice: () => undefined });
+      clientA = postgres(databaseUrl!, { max: 1, connection: { search_path: namespace, application_name: `${namespace}_a` }, onnotice: () => undefined });
+      clientB = postgres(databaseUrl!, { max: 1, connection: { search_path: namespace, application_name: `${namespace}_b` }, onnotice: () => undefined });
       await admin.unsafe(`CREATE SCHEMA "${namespace}"`);
       await migratePgSchema(pgDrizzle(clientA));
     });
@@ -51,6 +51,44 @@ for (const kind of ["file", "sqlite", "pg"] as const) {
     });
     const create = () => a.taskStore.createTask({ title: "Read Drive", description: "Read the authorized account", assignTo: "support",
       dependsOn: [], expectations: [], metrics: [], maxRetries: 2, user: "person-a", metadata: { connectionNamespace: "app-a" } });
+
+    it.each(["retry", "edit", "delete"] as const)("rejects a decision after dependency %s without changing its target", async change => {
+      const task = (await a.taskStore.getTask((await create()).id))!, dependency = await create();
+      const guards = [{ taskId: task.id, snapshot: task }, { taskId: dependency.id, snapshot: dependency }];
+      if (change === "retry") await b.executions.mutateTaskExecution(taskExecutionReference(dependency), { type: "requeue", countRetry: false, reason: "New input" });
+      else if (change === "edit") await b.taskStore.updateTask(dependency.id, { description: "Changed in the same generation" });
+      else await b.taskStore.deleteTask(dependency.id);
+      await expect(a.executions.mutateTaskExecutionConditionally(taskExecutionReference(task), {
+        type: "requeue", countRetry: false, reason: "Delayed absorption", updates: { description: "Stale replacement", dependsOn: [] },
+      }, guards)).rejects.toMatchObject({ code: "task_execution_conflict" });
+      expect(await a.taskStore.getTask(task.id)).toEqual(task);
+    });
+
+    it("publishes complete guarded replacement input and fences a waiting scheduler", async () => {
+      const task = (await a.taskStore.getTask((await create()).id))!, dependency = await create();
+      const result = await a.executions.mutateTaskExecutionConditionally(taskExecutionReference(task), {
+        type: "requeue", countRetry: false, reason: "Absorb", updates: { description: "Complete input", originalDescription: task.description, dependsOn: [], resolutionAttempts: 1 },
+      }, [{ taskId: task.id, snapshot: task }, { taskId: dependency.id, snapshot: dependency }]);
+      expect(result.task).toMatchObject({ description: "Complete input", originalDescription: task.description, resolutionAttempts: 1, executionRevision: 1 });
+      expect(await b.taskStore.getTask(task.id)).toEqual(result.task);
+      await expect(b.executions.claimTaskExecution(taskExecutionReference(task), randomUUID())).rejects.toMatchObject({ code: "task_execution_conflict" });
+      const claimed = await b.executions.claimTaskExecution(taskExecutionReference(result.task), randomUUID());
+      expect(claimed.task.description).toBe("Complete input");
+    });
+
+    it("checks missing rows and rejects malformed or duplicate read conditions", async () => {
+      const task = (await a.taskStore.getTask((await create()).id))!, dependency = await create();
+      const cancel = { type: "cancel" } as const, reference = taskExecutionReference(task);
+      await expect(a.executions.mutateTaskExecutionConditionally(reference, cancel, [{ taskId: dependency.id, snapshot: null }]))
+        .rejects.toMatchObject({ code: "task_execution_conflict" });
+      for (const guards of [[], [{ taskId: "../invalid", snapshot: null }],
+        [{ taskId: task.id, snapshot: dependency }], [{ taskId: task.id, snapshot: task }, { taskId: task.id, snapshot: null }]]) {
+        await expect(a.executions.mutateTaskExecutionConditionally(reference, cancel, guards)).rejects.toMatchObject({ code: "task_execution_invalid" });
+      }
+      expect(await a.taskStore.getTask(task.id)).toEqual(task);
+      const stopped = await a.executions.mutateTaskExecutionConditionally(reference, cancel, [{ taskId: "not-created", snapshot: null }]);
+      expect(stopped.task.status).toBe("failed");
+    });
 
     it("normalizes cleared counters and returns the same state that was persisted", async () => {
       const first = await a.executions.claimTaskExecution(taskExecutionReference(await create()), randomUUID());
@@ -263,7 +301,76 @@ for (const kind of ["file", "sqlite", "pg"] as const) {
       });
     }
 
+    if (kind === "file") {
+      it.each(["corrupt-json", "wrong-identity"] as const)("does not accept a %s Task file as a missing dependency", async kind => {
+        const first = await a.executions.claimTaskExecution(taskExecutionReference(await create()), randomUUID());
+        writeFileSync(join(root, "tasks", "broken-dependency.json"), kind === "corrupt-json" ? "{broken"
+          : JSON.stringify({ ...first.task, id: "another-id" }));
+        await expect(a.executions.mutateTaskExecutionConditionally(taskExecutionReference(first.task), { type: "cancel" }, [
+          { taskId: "broken-dependency", snapshot: null },
+        ])).rejects.toMatchObject({ code: "task_execution_invalid" });
+        expect(await a.taskStore.getTask(first.task.id)).toEqual(first.task);
+        expect(await a.runStore.getRun(first.run.id)).toEqual(first.run);
+      });
+    }
+
     if (kind === "pg") {
+      it.each(["existing", "missing"] as const)("holds the %s dependency condition until commit against a concurrent writer", async kind => {
+        const task = (await a.taskStore.getTask((await create()).id))!, dependency = await create();
+        let entered!: () => void, release!: () => void;
+        const ready = new Promise<void>(resolve => { entered = resolve; }), wait = new Promise<void>(resolve => { release = resolve; });
+        const hosted = createPgStores({}, { transaction: execute => pgDrizzle(clientA).transaction(async tx => {
+          const result = await execute(tx); entered(); await wait; return result;
+        }) }).taskExecutionStore;
+        const deciding = hosted.mutateTaskExecutionConditionally(taskExecutionReference(task), { type: "cancel" }, [
+          { taskId: task.id, snapshot: task },
+          kind === "existing" ? { taskId: dependency.id, snapshot: dependency } : { taskId: "appears-later", snapshot: null },
+        ]);
+        let writing: Promise<unknown> | undefined;
+        try {
+          await Promise.race([ready, deciding.then(() => { throw new Error("Decision completed before the transaction barrier"); })]);
+          writing = kind === "existing" ? b.taskStore.updateTask(dependency.id, { description: "Concurrent input" })
+            : clientB`INSERT INTO tasks (id, title, description, assign_to, created_at, updated_at)
+                VALUES ('appears-later', 'New dependency', 'Created concurrently', 'support', ${task.createdAt}, ${task.createdAt})`.then(value => value);
+          // Observe a database lock wait, not a timer-based assumption that a
+          // promise happened to remain pending on a slow machine.
+          await vi.waitFor(async () => {
+            const rows = await admin`SELECT count(*)::int AS count FROM pg_stat_activity
+              WHERE application_name = ${`${namespace}_b`} AND wait_event_type = 'Lock'`;
+            expect(rows[0].count).toBe(1);
+          });
+        } finally { release(); await deciding; await writing; }
+        expect(await a.taskStore.getTask(task.id)).toMatchObject({ status: "failed" });
+        if (kind === "existing") expect(await a.taskStore.getTask(dependency.id)).toMatchObject({ description: "Concurrent input" });
+        else expect(await a.taskStore.getTask("appears-later")).toBeDefined();
+      });
+
+      it("does not deadlock with an existing row-lock writer when asserting absence", async () => {
+        const task = await create();
+        let entered!: () => void, release!: () => void;
+        const ready = new Promise<void>(resolve => { entered = resolve; }), wait = new Promise<void>(resolve => { release = resolve; });
+        // Reproduce the Task writer's SELECT FOR UPDATE -> UPDATE lock upgrade.
+        const writer = clientB.begin(async tx => {
+          await tx`SELECT id FROM tasks WHERE id = ${task.id} FOR UPDATE`;
+          entered(); await wait;
+          await tx`UPDATE tasks SET description = 'Concurrent edit' WHERE id = ${task.id}`;
+        });
+        await Promise.race([ready, writer.then(() => { throw new Error("Writer completed before the row-lock barrier"); })]);
+        const decision = a.executions.mutateTaskExecutionConditionally(taskExecutionReference(task), { type: "cancel" }, [
+          { taskId: task.id, snapshot: task }, { taskId: "not-created", snapshot: null },
+        ]).then(value => ({ value }), error => ({ error }));
+        try {
+          await vi.waitFor(async () => {
+            const rows = await admin`SELECT count(*)::int AS count FROM pg_stat_activity
+              WHERE application_name = ${`${namespace}_a`} AND wait_event_type = 'Lock'`;
+            expect(rows[0].count).toBe(1);
+          });
+        } finally { release(); }
+        await expect(writer).resolves.toBeUndefined();
+        expect(await decision).toMatchObject({ error: { code: "task_execution_conflict" } });
+        expect(await a.taskStore.getTask(task.id)).toMatchObject({ status: "pending", description: "Concurrent edit" });
+      });
+
       it("uses the hosted transaction provider and does not duplicate a claim after a lost acknowledgement", async () => {
         const task = await create(), runId = randomUUID();
         let committed = false;
