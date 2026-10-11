@@ -42,7 +42,7 @@ import type {
   BrainReadService,
   BrainServiceContext,
 } from "@polpo-ai/core/brain";
-import { executeRun, errorResult, type TranscriptSession } from "../core/run-lifecycle.js";
+import { executeRun, errorResult, type ExecuteRunDeps } from "../core/run-lifecycle.js";
 
 /**
  * Stores and ports the in-process lifecycle runs against — the
@@ -53,7 +53,8 @@ import { executeRun, errorResult, type TranscriptSession } from "../core/run-lif
  */
 export interface InProcessSpawnerDeps {
   runStore: RunStore;
-  createLogSession?: () => Promise<TranscriptSession>;
+  createLogSession?: ExecuteRunDeps["createLogSession"];
+  preparationTimeoutMs?: ExecuteRunDeps["preparationTimeoutMs"];
   vaultStore?: VaultStore;
   memoryStore?: MemoryStore;
   memoryItemStore?: MemoryItemStore;
@@ -94,12 +95,8 @@ export class InProcessSpawner implements Spawner {
 
   async spawn(config: RunnerConfig): Promise<SpawnResult> {
     const deps = this.getDeps();
-    let finalized = false;
-    const finalize = async (): Promise<void> => {
-      if (finalized) return;
-      finalized = true;
-      await deps.finalize?.();
-    };
+    let finalization: Promise<void> | undefined;
+    const finalize = (): Promise<void> => finalization ??= Promise.resolve().then(() => deps.finalize?.());
 
     // Parity with NodeSpawner for local execution. When a host injects a
     // remote filesystem (for example a sandbox proxy), config.outputDir is a

@@ -146,7 +146,7 @@ export interface ExecuteRunDeps {
    * mode: the JSONL activity log is the only transcript side-channel,
    * matching the historical subprocess behavior.
    */
-  createLogSession?: () => Promise<TranscriptSession>;
+  createLogSession?: (context: { signal: AbortSignal }) => Promise<TranscriptSession>;
   /** Vault store. Default: EncryptedVaultStore(polpoDir), best-effort. */
   vaultStore?: VaultStore;
   /** Memory store. Default: FileMemoryStore(polpoDir). */
@@ -188,6 +188,10 @@ export interface ExecuteRunDeps {
   configPath: string;
   /** Abort = graceful kill (subprocess SIGTERM / in-process spawner.kill). */
   signal?: AbortSignal;
+  /** Deadline for initial preparation/preflight only (default 30 seconds).
+   * Requests cancellation; pending non-cooperative I/O remains owned and awaited.
+   * Hosts must adopt resources inside callbacks before returning them. */
+  preparationTimeoutMs?: number;
   /**
    * Run-scoped steering controller. Hosts expose ingress; executeRun consumes
    * it at model/tool safe points. A local controller is restored from a
@@ -247,30 +251,42 @@ function requestsBrainTools(allowedTools: readonly string[] | undefined): boolea
  */
 export async function executeRun(config: RunnerConfig, deps: ExecuteRunDeps): Promise<ExecuteRunOutcome> {
   const abort = new AbortController();
+  const steering = deps.steering ?? new InMemorySteeringController({ delivery: config.resumeState?.steering?.delivery });
+  const onSteeringStop = () => abort.abort(steering.signal.reason);
+  if (steering.signal.aborted) onSteeringStop();
+  else steering.signal.addEventListener("abort", onSteeringStop, { once: true });
   const onHostAbort = () => abort.abort(deps.signal?.reason);
   if (deps.signal?.aborted) onHostAbort();
   else deps.signal?.addEventListener("abort", onHostAbort, { once: true });
+  const timeoutMs = deps.preparationTimeoutMs ?? 30_000;
+  const validTimeout = Number.isSafeInteger(timeoutMs) && timeoutMs > 0 && timeoutMs <= 300_000;
+  const preparationDeadline = validTimeout
+    ? setTimeout(() => abort.abort(new Error("Run preparation timed out")), timeoutMs)
+    : undefined;
+  preparationDeadline?.unref?.();
+  const finishPreparation = () => clearTimeout(preparationDeadline);
   let monitor: ReturnType<typeof watchRunState> | undefined;
   const onPersistedStop = () => abort.abort(monitor?.signal.reason);
   try {
-    return await executeRegisteredRun(config, { ...deps, signal: abort.signal }, () => {
+    return await executeRegisteredRun(config, { ...deps, steering, signal: abort.signal }, () => {
+      if (monitor) return;
       monitor = watchRunState({ runId: config.runId, runStore: deps.runStore });
       monitor.signal.addEventListener("abort", onPersistedStop, { once: true });
-    });
+    }, finishPreparation);
   } finally {
+    finishPreparation();
     monitor?.dispose();
     monitor?.signal.removeEventListener("abort", onPersistedStop);
     deps.signal?.removeEventListener("abort", onHostAbort);
+    steering.signal.removeEventListener("abort", onSteeringStop);
   }
 }
 
-async function executeRegisteredRun(config: RunnerConfig, deps: ExecuteRunDeps, observe: () => void): Promise<ExecuteRunOutcome> {
-  let finalized = false;
-  const finalize = async (): Promise<void> => {
-    if (finalized) return;
-    finalized = true;
-    await deps.finalize?.();
-  };
+async function executeRegisteredRun(
+  config: RunnerConfig, deps: ExecuteRunDeps, observe: () => void, finishPreparation: () => void,
+): Promise<ExecuteRunOutcome> {
+  let finalization: Promise<void> | undefined;
+  const finalize = (): Promise<void> => finalization ??= Promise.resolve().then(() => deps.finalize?.());
   const { runStore, pid, configPath } = deps;
   const readRun = () => boundedRunPersistence(() => runStore.getRun(config.runId));
   const persistOutcome = async (status: RunStatus, result: TaskResult, spawnError = false): Promise<ExecuteRunOutcome> => {
@@ -290,23 +306,14 @@ async function executeRegisteredRun(config: RunnerConfig, deps: ExecuteRunDeps, 
     }
   };
   const actLog = new RunActivityLog(config.polpoDir, config.runId, config.taskId, config.agent.name, pid);
-  const steering = deps.steering
-    ?? (config.resumeState?.steering
-      ? InMemorySteeringController.fromSnapshot(config.resumeState.steering)
-      : new InMemorySteeringController());
-  if (steering && deps.steering && config.resumeState?.steering) {
-    await steering.restore(config.resumeState.steering);
-  }
-
-  // When a transcript session is available (postgres/sqlite), persist the
-  // transcript to the DB. This ensures it survives sandbox destruction.
+  const steering: SteeringController = deps.steering!;
+  const checkPreparation = () => {
+    deps.signal?.throwIfAborted();
+    steering.signal.throwIfAborted();
+  };
   let logSession: TranscriptSession | undefined;
-  if (deps.createLogSession) {
-    logSession = await deps.createLogSession();
-  }
-
+  let correlatedSessionId = deps.inject?.sessionId;
   const now = new Date().toISOString();
-  const correlatedSessionId = logSession?.sessionId ?? deps.inject?.sessionId;
   const initialRecord: RunRecord = {
     id: config.runId,
     taskId: config.taskId,
@@ -333,11 +340,6 @@ async function executeRegisteredRun(config: RunnerConfig, deps: ExecuteRunDeps, 
     engine: "agent",
     delivery: deps.inject ? "stream" : "background",
   };
-  // In DB mode, run record already exists (created by spawner) — update it with PID
-  await runStore.upsertRun(initialRecord);
-  observe();
-  actLog.logEvent("spawning", { task: config.task.title });
-
   let handle: AgentHandle;
   const guardrailDecisions: RuntimeGuardrailAuditEvent[] = [];
   let guardrailDecisionsTruncated = false;
@@ -345,6 +347,7 @@ async function executeRegisteredRun(config: RunnerConfig, deps: ExecuteRunDeps, 
     let current = await readRun();
     if (!current) throw new Error("Run record is unavailable before execution");
     if (current.status === "running" && !deps.signal?.aborted && !steering.signal.aborted) return;
+    finishPreparation();
     await finalize();
     steering.close();
     if (current.status === "running") {
@@ -358,6 +361,47 @@ async function executeRegisteredRun(config: RunnerConfig, deps: ExecuteRunDeps, 
     } };
   };
   try {
+    const preparationTimeoutMs = deps.preparationTimeoutMs ?? 30_000;
+    if (!Number.isSafeInteger(preparationTimeoutMs) || preparationTimeoutMs < 1 || preparationTimeoutMs > 300_000) {
+      throw new Error("Run preparation requires a bounded positive deadline");
+    }
+    checkPreparation();
+    // TaskRunner already owns a durable Run. Observe it before initial log or
+    // steering I/O. A fresh file-mode run has no row yet, so start its observer
+    // only after registration; missing rows are never given grace afterwards.
+    const existing = await readRun();
+    checkPreparation();
+    if (existing) {
+      observe();
+      const stoppedBeforePreparation = await stopBeforeSpawn();
+      if (stoppedBeforePreparation) return stoppedBeforePreparation;
+    }
+    if (config.resumeState?.steering) {
+      await steering.restore(config.resumeState.steering, { signal: deps.signal! });
+      checkPreparation();
+    }
+    if (deps.createLogSession) {
+      // Do not race this promise against abort: the host may still allocate a
+      // session/resource. Its finalizer retains ownership until it settles.
+      logSession = await deps.createLogSession({ signal: deps.signal! });
+      checkPreparation();
+    }
+    correlatedSessionId = logSession?.sessionId ?? deps.inject?.sessionId;
+    if (correlatedSessionId) {
+      initialRecord.sessionId = correlatedSessionId;
+      initialRecord.activity.sessionId = correlatedSessionId;
+    }
+    if (existing) {
+      const stoppedBeforeRegistration = await stopBeforeSpawn();
+      if (stoppedBeforeRegistration) return stoppedBeforeRegistration;
+    }
+    checkPreparation();
+    // Keep an uncertain/late commit owned until it settles. Never retry this
+    // registration after lost acknowledgement or cancellation.
+    await runStore.upsertRun(initialRecord);
+    observe();
+    checkPreparation();
+    actLog.logEvent("spawning", { task: config.task.title });
     const stoppedAtRegistration = await stopBeforeSpawn();
     if (stoppedAtRegistration) return stoppedAtRegistration;
     const agentIdentity = config.agentIdentity === undefined ? undefined : normalizeAgentIdentity(config.agentIdentity);
@@ -387,6 +431,7 @@ async function executeRegisteredRun(config: RunnerConfig, deps: ExecuteRunDeps, 
 
     const memoryStore: MemoryStore = deps.memoryStore ?? new FileMemoryStore(config.polpoDir);
     const { FileMemoryItemStore } = await import("@polpo-ai/file-stores");
+    checkPreparation();
     const memoryItemStore = deps.memoryItemStore
       ?? new FileMemoryItemStore(config.polpoDir);
     const contextTrust = normalizeRuntimeContextTrustMode(
@@ -477,6 +522,7 @@ async function executeRegisteredRun(config: RunnerConfig, deps: ExecuteRunDeps, 
           guardedInput.decisions,
         );
       }
+      checkPreparation();
       guardedTask = guardedInput.value;
 
       const guardedContext = await runPreflightPolicy.evaluate({
@@ -495,6 +541,7 @@ async function executeRegisteredRun(config: RunnerConfig, deps: ExecuteRunDeps, 
           guardedContext.decisions,
         );
       }
+      checkPreparation();
       promptContextSegments = normalizeRuntimePromptContextSegments(
         guardedContext.value.promptContextSegments,
       );
@@ -527,6 +574,7 @@ async function executeRegisteredRun(config: RunnerConfig, deps: ExecuteRunDeps, 
           guardedModelInput.decisions,
         );
       }
+      checkPreparation();
       guardedAgent = guardedModelInput.value.agent;
       guardedTask = guardedModelInput.value.task;
       promptContextSegments = normalizeRuntimePromptContextSegments(
@@ -624,7 +672,9 @@ async function executeRegisteredRun(config: RunnerConfig, deps: ExecuteRunDeps, 
     // those waits, before creating model/tool capabilities for this run.
     const stoppedAfterPreparation = await stopBeforeSpawn();
     if (stoppedAfterPreparation) return stoppedAfterPreparation;
+    checkPreparation();
     handle = spawnLoopEngine(guardedAgent, guardedTask, config.cwd, spawnCtx);
+    finishPreparation();
     if (config.resumeState) {
       actLog.logEvent("resuming", {
         loopName: config.resumeState.loopName,
@@ -651,6 +701,7 @@ async function executeRegisteredRun(config: RunnerConfig, deps: ExecuteRunDeps, 
     handle.onTranscript = handleTranscript;
     actLog.logEvent("spawned");
   } catch (err) {
+    finishPreparation();
     const result = errorResult(err);
     actLog.logEvent("error", { message: result.stderr });
     if (guardrailDecisions.length > 0) {
