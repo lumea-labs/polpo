@@ -16,6 +16,7 @@ export class EphemeralRunStore implements RunStore {
 
   async upsertRun(run: RunRecord): Promise<void> {
     const existing = this.runs.get(run.id);
+    if (existing && existing.status !== "running") return;
     this.runs.set(run.id, existing ? {
       ...existing,
       ...run,
@@ -55,7 +56,7 @@ export class EphemeralRunStore implements RunStore {
 
   async completeRun(runId: string, status: RunStatus, result: TaskResult): Promise<void> {
     const run = this.runs.get(runId);
-    if (run) {
+    if (run?.status === "running") {
       run.status = status;
       run.result = result;
       run.updatedAt = new Date().toISOString();

@@ -95,6 +95,9 @@ export class DrizzleRunStore implements RunStore {
         // resumeState/collectedAt deliberately stay out: a runner
         // re-registering itself must not erase checkpoints or acknowledgements.
         set: conflictSet,
+        // Preparation/registration may finish after cancellation. Terminal run
+        // identities never reopen; a deliberate retry uses a new run ID.
+        setWhere: eq(this.runs.status, "running"),
       });
   }
 

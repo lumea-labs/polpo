@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { FileAgentStore } from "../file-agent-store.js";
 import { FileTaskStore } from "../file-task-store.js";
+import { FileRunStore } from "../file-run-store.js";
 import { randomUUID } from "node:crypto";
 import type { Mission, Task } from "@polpo-ai/core/types";
 
@@ -66,6 +67,67 @@ async function missionFixture() {
   const mission = await store.createMission({ name: "Process mission", data: '{"tasks":[]}', status: "recurring", user: "customer-a" });
   return { dir, store, mission };
 }
+
+describe("Run cancellation across real file-store processes", () => {
+  async function runFixture() {
+    const { dir } = await fixture();
+    const store = new FileRunStore(dir);
+    await store.upsertRun({ id: "run-1", taskId: "task", agentName: "support", pid: 1, status: "running",
+      startedAt: "now", updatedAt: "now", configPath: "memory://run-1",
+      activity: { filesCreated: [], filesEdited: [], toolCalls: 0, totalTokens: 0, lastUpdate: "now" } });
+    return { dir, store };
+  }
+
+  it("refuses unlocked cancellation when the file coordinator is unavailable", async () => {
+    const { dir, store } = await runFixture();
+    const writer = await worker(dir, "run-unavailable");
+    writer.start({ operation: "complete" });
+    expect(await writer.next(message => message.ok || message.error)).toEqual({ error: "file_coordinator_unavailable" });
+    await writer.closed;
+    expect((await store.getRun("run-1"))?.status).toBe("running");
+  });
+
+  it("recovers cancellation after a writer dies at each durable file checkpoint", async () => {
+    const baseline = await runFixture(), counter = await worker(baseline.dir, "run-count");
+    counter.start({ operation: "complete" });
+    const { checkpoints } = await counter.next(message => message.ok);
+    await counter.closed;
+    expect(checkpoints).toBeGreaterThan(3);
+    for (let index = 1; index <= checkpoints; index++) {
+      const { dir, store } = await runFixture();
+      const writer = await worker(dir, "run-crash", String(index));
+      writer.start({ operation: "complete" });
+      await writer.next(message => message.checkpoint);
+      await writer.kill();
+      expect(["running", "killed"]).toContain((await store.getRun("run-1"))?.status);
+      await store.completeRun("run-1", "killed", { exitCode: 143, stdout: "", stderr: "cancelled", duration: 1 });
+      expect(await store.getRun("run-1")).toMatchObject({ status: "killed", result: { stderr: "cancelled" } });
+    }
+  }, 30_000);
+
+  it.each(["activity", "trace", "spawn", "outcomes", "resume", "collected"])("preserves cancellation during a concurrent %s update", async operation => {
+    const { dir, store } = await runFixture();
+    const [writer, cancel] = await Promise.all([worker(dir, "run-pause"), worker(dir, "run-contend")]);
+    writer.start({ operation });
+    await writer.next(message => message.read);
+    cancel.start({ operation: "complete" });
+    // An unlocked writer completes cancellation here. A coordinated writer
+    // instead proves SQLITE_BUSY while the other process holds its read.
+    await cancel.next(message => message.contended || message.ok || message.error);
+    writeFileSync(join(dir, "release-run-writer"), "release");
+    const results = await Promise.all([writer.next(message => message.ok || message.error), cancel.next(message => message.ok || message.error)]);
+    await Promise.all([writer.closed, cancel.closed]);
+    expect(results.every(result => result.ok)).toBe(true);
+    const saved = await store.getRun("run-1");
+    expect(saved).toMatchObject({ status: "killed", result: { stderr: "cancelled" } });
+    if (operation === "activity") expect(saved?.activity.toolCalls).toBe(9);
+    if (operation === "trace") expect(saved?.trace?.map(event => event.id)).toEqual(["trace"]);
+    if (operation === "spawn") expect(saved?.pid).toBe(9999);
+    if (operation === "outcomes") expect(saved?.outcomes).toEqual([]);
+    if (operation === "resume") expect(saved?.resumeState?.turn).toBe(1);
+    if (operation === "collected") expect(saved?.collectedAt).toBeTruthy();
+  });
+});
 function missionPlan(mission: Mission, key = "occurrence") {
   const createdAt = new Date().toISOString(), id = randomUUID();
   const task = (taskId: string, title: string, dependsOn: string[]): Task => ({ id: taskId, title, description: title,

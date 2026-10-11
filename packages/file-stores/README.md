@@ -4,7 +4,7 @@
 `agents.json` and directory definitions (`agents/<name>/agent.json` plus
 `instructions.md`). `FileTeamStore` shares the same project coordinator.
 
-Agent, team, task and Mission persistence requires the optional `better-sqlite3` dependency.
+Agent, team, task, Mission and Run persistence requires the optional `better-sqlite3` dependency.
 Install optional dependencies on hosts using these stores. If its native binding
 is unavailable, access fails with `file_coordinator_unavailable`; there is no
 unlocked fallback. Other file stores do not acquire this coordinator.
@@ -95,3 +95,17 @@ HTTP routes or schedule delivery idempotent. Those callers must integrate it;
 hooks, volatile agents and checkpoint/delay preparation are separate runtime
 work. Old task/Mission writers must be stopped during rollout or rollback, just
 as old agent writers must be stopped when adopting the coordinator.
+
+## Run status and concurrent activity
+
+`FileRunStore` keeps each Run in `runs/<id>.json`. Every reader and writer uses
+the same project coordinator, including activity, traces, checkpoints, spawn
+metadata, results and collection acknowledgements. This prevents a runner's
+stale activity write from restoring `running` after cancellation. Terminal
+status/result writes and late registration preserve the first terminal record;
+a deliberate retry must use a new Run ID. Missing records remain absent, while
+malformed records fail closed instead of being silently replaced.
+
+Upgrade orchestrators and runner processes together and stop all old file writers
+before using this contract. These persistence guarantees do not themselves stop a
+process or cancel a provider request; the runtime host must also stop execution.

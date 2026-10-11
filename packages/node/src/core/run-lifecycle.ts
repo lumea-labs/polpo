@@ -292,7 +292,25 @@ export async function executeRun(config: RunnerConfig, deps: ExecuteRunDeps): Pr
   let handle: AgentHandle;
   const guardrailDecisions: RuntimeGuardrailAuditEvent[] = [];
   let guardrailDecisionsTruncated = false;
+  const stopBeforeSpawn = async (): Promise<ExecuteRunOutcome | undefined> => {
+    let current = await runStore.getRun(config.runId);
+    if (!current) throw new Error("Run record is unavailable before execution");
+    if (current.status === "running" && !deps.signal?.aborted && !steering.signal.aborted) return;
+    await finalize();
+    steering.close();
+    if (current.status === "running") {
+      actLog.logEvent("sigterm");
+      await runStore.completeRun(config.runId, "killed", errorResult(new Error("Killed by SIGTERM (timeout or shutdown) before engine start")));
+      current = await runStore.getRun(config.runId);
+      if (!current || current.status === "running") throw new Error("Run cancellation was not persisted");
+    }
+    return { status: current.status, result: current.result ?? {
+      exitCode: current.status === "completed" ? 0 : 1, stdout: "", stderr: "", duration: 0,
+    } };
+  };
   try {
+    const stoppedAtRegistration = await stopBeforeSpawn();
+    if (stoppedAtRegistration) return stoppedAtRegistration;
     const agentIdentity = config.agentIdentity === undefined ? undefined : normalizeAgentIdentity(config.agentIdentity);
     if ((agentIdentity && agentIdentity.name !== config.agent.name)
       || (config.toolInvocation?.agent && (config.toolInvocation.agent.name !== agentIdentity?.name
@@ -553,6 +571,10 @@ export async function executeRun(config: RunnerConfig, deps: ExecuteRunDeps): Pr
       inject: deps.inject,
       onTranscript: handleTranscript,
     };
+    // Preflight and host preparation can await network work. Recheck after
+    // those waits, before creating model/tool capabilities for this run.
+    const stoppedAfterPreparation = await stopBeforeSpawn();
+    if (stoppedAfterPreparation) return stoppedAfterPreparation;
     handle = spawnLoopEngine(guardedAgent, guardedTask, config.cwd, spawnCtx);
     if (config.resumeState) {
       actLog.logEvent("resuming", {
@@ -596,9 +618,14 @@ export async function executeRun(config: RunnerConfig, deps: ExecuteRunDeps): Pr
       }
     }
     try { await finalize(); } catch { /* preserve the primary spawn error */ }
-    await runStore.completeRun(config.runId, "failed", result);
+    const requestedStatus = deps.signal?.aborted || steering.signal.aborted ? "killed" : "failed";
     steering.close();
-    return { status: "failed", result, spawnError: true };
+    await runStore.completeRun(config.runId, requestedStatus, result);
+    // Another controller may already have committed a terminal result. Cleanup
+    // or aborted preflight must not report an outcome different from that row.
+    const persisted = await runStore.getRun(config.runId);
+    const status = persisted && persisted.status !== "running" ? persisted.status : requestedStatus;
+    return { status, result: persisted?.result ?? result, ...(status === "failed" ? { spawnError: true } : {}) };
   }
 
   // Activity polling + persistent logging

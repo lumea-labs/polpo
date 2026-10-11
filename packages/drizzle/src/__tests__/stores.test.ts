@@ -462,6 +462,17 @@ describe("DrizzleRunStore", () => {
     expect(await stores.runStore.getRunByTaskId("looprun-running")).toBeUndefined();
   });
 
+  it.each(["completed", "failed", "killed"] as const)("does not reopen a %s run when a delayed runner registers", async status => {
+    const original = makeRun("terminal-replay", "task") as any;
+    await stores.runStore.upsertRun(original);
+    await stores.runStore.completeRun(original.id, status, { exitCode: 143, stdout: "", stderr: "terminal result", duration: 1 });
+    await stores.runStore.markRunCollected!(original.id);
+    const terminal = await stores.runStore.getRun(original.id);
+    await stores.runStore.upsertRun({ ...original, pid: 9876, updatedAt: new Date().toISOString() });
+    await stores.runStore.completeRun(original.id, "completed", { exitCode: 0, stdout: "late", stderr: "", duration: 2 });
+    expect(await stores.runStore.getRun(original.id)).toEqual(terminal);
+  });
+
   it("completeRun guards against overwriting terminal status", async () => {
     await stores.runStore.upsertRun({ ...makeRun("r1", "t1"), status: "completed" as any } as any);
 

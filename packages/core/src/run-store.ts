@@ -46,6 +46,8 @@ export interface RunRecord {
 }
 
 export interface RunStore {
+  /** Register/update an active run. Existing terminal records are immutable to
+   * this operation; retries require a new run ID. The check must be atomic. */
   upsertRun(run: RunRecord): Promise<void>;
   updateActivity(runId: string, activity: AgentActivity): Promise<void>;
   /** Store auto-collected outcomes on the run record (called before completeRun). */
@@ -59,6 +61,7 @@ export interface RunStore {
   updateResumeState?(runId: string, state: LoopResumeState): Promise<void>;
   /** Update host-assigned spawn metadata without overwriting status or result. */
   updateSpawnInfo?(runId: string, pid: number, configPath: string): Promise<void>;
+  /** Atomically finish a running record. The first terminal status/result wins. */
   completeRun(runId: string, status: RunStatus, result: TaskResult): Promise<void>;
   /** Acknowledge a terminal result while retaining its Run history. */
   markRunCollected?(runId: string): Promise<void>;

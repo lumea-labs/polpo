@@ -27,6 +27,7 @@
 import { describe, test, expect, beforeAll, afterAll, vi } from "vitest";
 import { mkdtemp, mkdir, rm, readFile, unlink, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
+import { EphemeralRunStore } from "../server/ephemeral-run-store.js";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ResolvedModel } from "@polpo-ai/llm";
@@ -932,6 +933,38 @@ describe("executeRun — shared run lifecycle", () => {
     expect(run?.result?.stderr).toContain("model exploded");
   });
 
+  test.each((["before-registration", "during-preflight", "aborted-signal", "abort-during-preflight"] as const).flatMap(when =>
+    [false, true].map(cleanupFailure => ({ when, cleanupFailure }))))("does not create tools after cancellation $when (cleanup failure=$cleanupFailure)", async ({ when, cleanupFailure }) => {
+    setMockModel(mockTextModel("must not start"));
+    const store = new EphemeralRunStore();
+    const config = makeConfig();
+    const result = { exitCode: 143, stdout: "", stderr: "cancelled by operator", duration: 1 };
+    if (when === "before-registration") await store.upsertRun({ id: config.runId, taskId: config.taskId,
+      agentName: config.agent.name, pid: 0, status: "killed", result, startedAt: "now", updatedAt: "now",
+      configPath: "pending://run", activity: { filesCreated: [], filesEdited: [], toolCalls: 0, totalTokens: 0, lastUpdate: "now" } });
+    const resolveCustomTools = vi.fn<import("@polpo-ai/core").ResolveCustomTools>(async () => []);
+    const finalize = vi.fn(async () => { if (cleanupFailure) throw new Error("fixture cleanup failed"); });
+    const abort = new AbortController();
+    if (when === "aborted-signal") abort.abort();
+    const steering = new InMemorySteeringController();
+    const policy = new RuntimeGuardrailEngine([{ id: "cancel-during-preparation", phases: ["input"], evaluate: async () => {
+      if (when === "during-preflight") await store.completeRun(config.runId, "killed", result);
+      if (when === "abort-during-preflight") abort.abort();
+      return { action: "allow", risk: "low", reason: "Fixture preparation" };
+    } }]);
+    const outcome = await executeRun(config, { runStore: store, pid: -1, configPath: "memory://cancelled",
+      finalize, steering, resolveCustomTools, runPreflightPolicy: createRunPreflightPolicy(policy),
+      signal: abort.signal,
+    });
+    expect(outcome.status).toBe("killed");
+    expect(resolveCustomTools).not.toHaveBeenCalled();
+    expect(finalize).toHaveBeenCalledOnce();
+    expect((await store.getRun(config.runId))?.status).toBe("killed");
+    expect(outcome.result).toEqual((await store.getRun(config.runId))?.result);
+    if (when === "before-registration" || when === "during-preflight") expect(outcome.result).toEqual(result);
+    expect(() => steering.enqueue({ id: "late", mode: "steer", content: { text: "late" } })).toThrow();
+  });
+
   test("finalizes host resources once before persisting a successful terminal run", async () => {
     setMockModel(mockTextModel("done"));
     const store = new InMemoryRunStore();
@@ -1009,11 +1042,13 @@ describe("executeRun — shared run lifecycle", () => {
   });
 
   test("abort: engine killed, run 'killed', exitCode forced to 1", async () => {
+    let modelStarted = false;
     // A model that never finishes its stream until aborted.
     let releaseStream: (() => void) | undefined;
     const blocked = new Promise<void>((resolve) => { releaseStream = resolve; });
     setMockModel(new MockLanguageModelV3({
       doStream: async (opts) => {
+        modelStarted = true;
         // Block until the abort signal fires, then throw AbortError like a
         // real provider would.
         await new Promise<void>((resolve, reject) => {
@@ -1034,9 +1069,10 @@ describe("executeRun — shared run lifecycle", () => {
       runStore: store, pid: 7, configPath: "memory://x", signal: abort.signal,
     });
 
-    // Wait for the run record to appear, then abort mid-turn.
+    // Wait for the actual model turn, rather than only its pre-spawn record.
     await vi.waitFor(async () => {
       expect((await store.getRun(config.runId))?.status).toBe("running");
+      expect(modelStarted).toBe(true);
     });
     abort.abort();
 

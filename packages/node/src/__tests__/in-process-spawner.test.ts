@@ -218,8 +218,10 @@ describe("InProcessSpawner", () => {
 
   test("lifecycle: isAlive during the run, false after; kill() → run killed", async () => {
     // Model blocks until aborted.
+    let modelStarted = false;
     setMockModel(new MockLanguageModelV3({
       doStream: (opts) => new Promise((_resolve, reject) => {
+        modelStarted = true;
         const fail = () => reject(Object.assign(new Error("aborted"), { name: "AbortError" }));
         if (opts.abortSignal?.aborted) return fail();
         opts.abortSignal?.addEventListener("abort", fail, { once: true });
@@ -234,6 +236,7 @@ describe("InProcessSpawner", () => {
     expect(spawner.isAlive(spawnResult.pid)).toBe(true);
 
     // Kill mid-turn — the AbortController reaches the engine.
+    await vi.waitFor(() => expect(modelStarted).toBe(true));
     spawner.kill(spawnResult.pid);
     await onExitPromise(spawnResult);
 
