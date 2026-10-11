@@ -1,4 +1,5 @@
 import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
+import { TaskExecutionError } from "@polpo-ai/core/task-execution";
 import { CreateTaskSchema, UpdateTaskSchema } from "../schemas.js";
 
 // ── Route definitions ─────────────────────────────────────────────────
@@ -120,6 +121,21 @@ const retryTaskRoute = createRoute({
   },
 });
 
+const taskExecutionErrorResponses = {
+  400: {
+    content: { "application/json": { schema: z.object({ ok: z.boolean(), error: z.string(), code: z.string() }) } },
+    description: "Invalid Task execution state",
+  },
+  409: {
+    content: { "application/json": { schema: z.object({ ok: z.boolean(), error: z.string(), code: z.string() }) } },
+    description: "Task execution changed; the newer attempt was not cancelled",
+  },
+  501: {
+    content: { "application/json": { schema: z.object({ ok: z.boolean(), error: z.string(), code: z.string() }) } },
+    description: "The store does not support atomic Task cancellation",
+  },
+};
+
 const killTaskRoute = createRoute({
   method: "post",
   path: "/{taskId}/kill",
@@ -129,6 +145,7 @@ const killTaskRoute = createRoute({
     params: z.object({ taskId: z.string() }),
   },
   responses: {
+    ...taskExecutionErrorResponses,
     200: {
       content: { "application/json": { schema: z.object({ ok: z.boolean(), data: z.object({ killed: z.boolean() }) }) } },
       description: "Task killed",
@@ -185,6 +202,7 @@ const forceFailTaskRoute = createRoute({
     params: z.object({ taskId: z.string() }),
   },
   responses: {
+    ...taskExecutionErrorResponses,
     200: {
       content: { "application/json": { schema: z.object({ ok: z.boolean(), data: z.object({ failed: z.boolean() }) }) } },
       description: "Task force-failed",
@@ -413,11 +431,17 @@ export function taskRoutes(getDeps: () => {
   app.openapi(killTaskRoute, async (c) => {
     const deps = getDeps();
     const { taskId } = c.req.valid("param");
-    const killed = await deps.killTask(taskId);
-    if (!killed) {
-      return c.json({ ok: false, error: "Task not found", code: "NOT_FOUND" }, 404);
+    try {
+      const killed = await deps.killTask(taskId);
+      if (!killed) {
+        return c.json({ ok: false, error: "Task not found", code: "NOT_FOUND" }, 404);
+      }
+      return c.json({ ok: true, data: { killed: true } }, 200);
+    } catch (error) {
+      if (!(error instanceof TaskExecutionError)) throw error;
+      const status = error.code === "task_execution_conflict" ? 409 : error.code === "task_execution_unsupported" ? 501 : 400;
+      return c.json({ ok: false, error: error.message, code: error.code }, status);
     }
-    return c.json({ ok: true, data: { killed: true } }, 200);
   });
 
   // POST /tasks/:taskId/reassess — re-run assessment
@@ -528,8 +552,14 @@ export function taskRoutes(getDeps: () => {
     if (!task) {
       return c.json({ ok: false, error: "Task not found", code: "NOT_FOUND" }, 404);
     }
-    await deps.forceFailTask(taskId);
-    return c.json({ ok: true, data: { failed: true } }, 200);
+    try {
+      await deps.forceFailTask(taskId);
+      return c.json({ ok: true, data: { failed: true } }, 200);
+    } catch (error) {
+      if (!(error instanceof TaskExecutionError)) throw error;
+      const status = error.code === "task_execution_conflict" ? 409 : error.code === "task_execution_unsupported" ? 501 : 400;
+      return c.json({ ok: false, error: error.message, code: error.code }, status);
+    }
   });
 
   // DELETE /tasks — bulk delete tasks by filter

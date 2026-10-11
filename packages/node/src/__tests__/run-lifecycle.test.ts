@@ -26,7 +26,10 @@
 
 import { describe, test, expect, beforeAll, afterAll, vi } from "vitest";
 import { mkdtemp, mkdir, rm, readFile, unlink, writeFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { existsSync } from "node:fs";
+import { FileRunStore } from "@polpo-ai/file-stores";
 import { EphemeralRunStore } from "../server/ephemeral-run-store.js";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -965,6 +968,26 @@ describe("executeRun — shared run lifecycle", () => {
     expect(() => steering.enqueue({ id: "late", mode: "steer", content: { text: "late" } })).toThrow();
   });
 
+  test.each(["completed", "killed"] as const)("confirms persisted %s when completion acknowledgement is lost", async status => {
+    setMockModel(mockTextModel("done"));
+    const store = new EphemeralRunStore(), config = makeConfig();
+    const complete = store.completeRun.bind(store);
+    const cancelledResult = { exitCode: 143, stdout: "", stderr: "operator cancelled", duration: 1 };
+    const finalize = vi.fn(async () => {
+      if (status === "killed") await complete(config.runId, "killed", cancelledResult);
+    });
+    vi.spyOn(store, "completeRun").mockImplementation(async (...args) => {
+      await complete(...args);
+      throw new Error("fixture lost acknowledgement after commit");
+    });
+    const outcome = await executeRun(config, { runStore: store, pid: -1, configPath: "memory://ack-lost", finalize });
+    const persisted = (await store.getRun(config.runId))!;
+    expect(outcome.status).toBe(status);
+    expect(outcome.result).toEqual(persisted.result);
+    if (status === "killed") expect(outcome.result).toEqual(cancelledResult);
+    expect(finalize).toHaveBeenCalledTimes(1);
+  });
+
   test("finalizes host resources once before persisting a successful terminal run", async () => {
     setMockModel(mockTextModel("done"));
     const store = new InMemoryRunStore();
@@ -1039,6 +1062,119 @@ describe("executeRun — shared run lifecycle", () => {
       mode: "steer",
       content: { text: "too late" },
     })).toThrow(/closed/i);
+  });
+
+  test.each([false, true])("observes another owner's persisted cancellation during a model call (cleanup failure=%s)", async cleanupFailure => {
+    let started = false, observedAbort = false;
+    setMockModel(new MockLanguageModelV3({ doStream: async opts => {
+      started = true;
+      await new Promise<void>((_, reject) => {
+        const stop = () => { observedAbort = true; reject(Object.assign(new Error("aborted"), { name: "AbortError" })); };
+        if (opts.abortSignal?.aborted) stop();
+        else opts.abortSignal?.addEventListener("abort", stop, { once: true });
+      });
+      return { stream: new ReadableStream() };
+    } }));
+    const config = makeConfig(), owner = new FileRunStore(polpoDir), operator = new FileRunStore(polpoDir);
+    const cleanupAbort = new AbortController(), finalize = vi.fn(async () => {
+      if (cleanupFailure) throw new Error("fixture finalization failed");
+    });
+    let settled: Awaited<ReturnType<typeof executeRun>> | undefined;
+    const running = executeRun(config, { runStore: owner, pid: -1, configPath: "memory://remote-stop", signal: cleanupAbort.signal, finalize })
+      .then(value => { settled = value; return value; });
+    const result = { exitCode: 143, stdout: "", stderr: "Stopped by a different host", duration: 10 };
+    try {
+      await vi.waitFor(() => expect(started).toBe(true));
+      if (cleanupFailure) await operator.completeRun(config.runId, "killed", result);
+      else {
+        // A different OS process commits cancellation through the real file
+        // coordinator. No local signal or spawner notification reaches us.
+        const module = new URL("../../node_modules/@polpo-ai/file-stores/dist/index.js", import.meta.url).href;
+        await promisify(execFile)(process.execPath, ["--input-type=module", "-e",
+          `import { FileRunStore } from ${JSON.stringify(module)}; await new FileRunStore(${JSON.stringify(polpoDir)}).completeRun(${JSON.stringify(config.runId)}, "killed", ${JSON.stringify(result)});`]);
+      }
+      await vi.waitFor(() => expect(settled).toBeDefined(), { timeout: 2200 });
+      expect(observedAbort).toBe(true);
+      expect(settled).toEqual({ status: "killed", result });
+      expect(await operator.getRun(config.runId)).toMatchObject({ status: "killed", result });
+      expect(finalize).toHaveBeenCalledTimes(1);
+    } finally { cleanupAbort.abort(); await running; }
+  });
+
+  test("observes durable cancellation during cooperative preflight without creating model or tools", async () => {
+    const store = new EphemeralRunStore(), config = makeConfig(), cleanupAbort = new AbortController();
+    let entered = false, settled: Awaited<ReturnType<typeof executeRun>> | undefined;
+    const tools = vi.fn(async () => []), finalize = vi.fn(async () => {});
+    const running = executeRun(config, { runStore: store, pid: -1, configPath: "memory://waiting-preflight",
+      signal: cleanupAbort.signal, resolveCustomTools: tools, finalize,
+      runPreflightPolicy: { evaluate: async input => {
+        entered = true;
+        await new Promise<void>((_, reject) => {
+          const stop = () => reject(new Error("Preflight stopped"));
+          if (input.signal?.aborted) stop(); else input.signal?.addEventListener("abort", stop, { once: true });
+        });
+        return { value: input.value, decisions: [] };
+      } },
+    }).then(value => { settled = value; return value; });
+    const result = { exitCode: 143, stdout: "", stderr: "Stopped during preparation", duration: 1 };
+    try {
+      await vi.waitFor(() => expect(entered).toBe(true));
+      await store.completeRun(config.runId, "killed", result);
+      await vi.waitFor(() => expect(settled).toEqual({ status: "killed", result }), { timeout: 2200 });
+      expect(tools).not.toHaveBeenCalled(); expect(finalize).toHaveBeenCalledTimes(1);
+    } finally { cleanupAbort.abort(); await running; }
+  });
+
+  test("does not report success when finalization removes the authoritative Run", async () => {
+    setMockModel(mockTextModel("Finished"));
+    const config = makeConfig(), store = new FileRunStore(polpoDir), operator = new FileRunStore(polpoDir);
+    const outcome = await executeRun(config, { runStore: store, pid: -1, configPath: "memory://deleted",
+      finalize: () => operator.deleteRun(config.runId) });
+    expect(outcome.status).toBe("failed");
+    expect(outcome.result.exitCode).toBe(1);
+    expect(outcome.result.stderr).toContain("not confirmed");
+    expect(await store.getRun(config.runId)).toBeUndefined();
+  });
+
+  test("cleans up when the first persisted-state lookup never resolves", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const store = new EphemeralRunStore(), config = makeConfig(), finalize = vi.fn(async () => {});
+    let enter!: () => void, release!: () => void;
+    const entered = new Promise<void>(resolve => { enter = resolve; });
+    const waiting = new Promise<void>(resolve => { release = resolve; });
+    const read = store.getRun.bind(store);
+    vi.spyOn(store, "getRun").mockImplementation(async id => { enter(); await waiting; return read(id); });
+    let settled: Awaited<ReturnType<typeof executeRun>> | undefined;
+    const running = executeRun(config, { runStore: store, pid: -1, configPath: "memory://hung", finalize })
+      .then(value => { settled = value; return value; });
+    try {
+      await entered; await vi.advanceTimersByTimeAsync(6000);
+      expect(finalize).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(settled?.status).toBe("failed");
+      expect(settled?.result.stderr).toContain("not confirmed");
+      expect(vi.getTimerCount()).toBe(0);
+    } finally { release(); vi.useRealTimers(); await running; }
+  });
+
+  test.each(["activity", "completion"] as const)("bounds a hung %s flush without retaining the local owner", async operation => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    setMockModel(mockTextModel("Finished"));
+    const store = new EphemeralRunStore(), config = makeConfig(), finalize = vi.fn(async () => {});
+    let enter!: () => void, release!: () => void;
+    const entered = new Promise<void>(resolve => { enter = resolve; });
+    const waiting = new Promise<void>(resolve => { release = resolve; });
+    if (operation === "activity") vi.spyOn(store, "updateActivity").mockImplementation(async () => { enter(); await waiting; });
+    else vi.spyOn(store, "completeRun").mockImplementation(async () => { enter(); await waiting; });
+    let settled: Awaited<ReturnType<typeof executeRun>> | undefined;
+    const running = executeRun(config, { runStore: store, pid: -1, configPath: "memory://hung-flush", finalize })
+      .then(value => { settled = value; return value; });
+    try {
+      await entered; await vi.advanceTimersByTimeAsync(6000);
+      expect(finalize).toHaveBeenCalledTimes(1);
+      expect(settled?.status).toBe(operation === "activity" ? "completed" : "failed");
+      expect(vi.getTimerCount()).toBe(0);
+    } finally { release(); vi.useRealTimers(); await running; }
   });
 
   test("abort: engine killed, run 'killed', exitCode forced to 1", async () => {

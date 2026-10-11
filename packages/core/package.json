@@ -321,6 +321,10 @@
     "./task-execution": {
       "types": "./dist/task-execution.d.ts",
       "import": "./dist/task-execution.js"
+    },
+    "./run-state-monitor": {
+      "types": "./dist/run-state-monitor.d.ts",
+      "import": "./dist/run-state-monitor.js"
     }
   },
   "sideEffects": false,

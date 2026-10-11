@@ -20,6 +20,7 @@
  *     the engine, force exitCode 1, mark the run "killed".
  */
 
+import { watchRunState } from "@polpo-ai/core/run-state-monitor";
 import { appendFileSync, mkdirSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { FileMemoryStore } from "@polpo-ai/file-stores";
@@ -220,6 +221,17 @@ export interface ExecuteRunOutcome {
   spawnError?: boolean;
 }
 
+/** A stalled persistence lookup must not prevent local owner cleanup. */
+async function boundedRunPersistence<T>(work: () => Promise<T>): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([Promise.resolve().then(work), new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error("Run persistence timed out")), 5000);
+      timer.unref?.();
+    })]);
+  } finally { clearTimeout(timer); }
+}
+
 function requestsBrainTools(allowedTools: readonly string[] | undefined): boolean {
   if (!allowedTools?.length) return false;
   return allowedTools.some((pattern) =>
@@ -234,6 +246,25 @@ function requestsBrainTools(allowedTools: readonly string[] | undefined): boolea
  * See module header for the host contract.
  */
 export async function executeRun(config: RunnerConfig, deps: ExecuteRunDeps): Promise<ExecuteRunOutcome> {
+  const abort = new AbortController();
+  const onHostAbort = () => abort.abort(deps.signal?.reason);
+  if (deps.signal?.aborted) onHostAbort();
+  else deps.signal?.addEventListener("abort", onHostAbort, { once: true });
+  let monitor: ReturnType<typeof watchRunState> | undefined;
+  const onPersistedStop = () => abort.abort(monitor?.signal.reason);
+  try {
+    return await executeRegisteredRun(config, { ...deps, signal: abort.signal }, () => {
+      monitor = watchRunState({ runId: config.runId, runStore: deps.runStore });
+      monitor.signal.addEventListener("abort", onPersistedStop, { once: true });
+    });
+  } finally {
+    monitor?.dispose();
+    monitor?.signal.removeEventListener("abort", onPersistedStop);
+    deps.signal?.removeEventListener("abort", onHostAbort);
+  }
+}
+
+async function executeRegisteredRun(config: RunnerConfig, deps: ExecuteRunDeps, observe: () => void): Promise<ExecuteRunOutcome> {
   let finalized = false;
   const finalize = async (): Promise<void> => {
     if (finalized) return;
@@ -241,6 +272,23 @@ export async function executeRun(config: RunnerConfig, deps: ExecuteRunDeps): Pr
     await deps.finalize?.();
   };
   const { runStore, pid, configPath } = deps;
+  const readRun = () => boundedRunPersistence(() => runStore.getRun(config.runId));
+  const persistOutcome = async (status: RunStatus, result: TaskResult, spawnError = false): Promise<ExecuteRunOutcome> => {
+    // An error or timeout can occur after a successful commit. Always confirm
+    // against durable state, including a cancellation committed by another host.
+    try { await boundedRunPersistence(() => runStore.completeRun(config.runId, status, result)); } catch { /* read below */ }
+    try {
+      const persisted = await readRun();
+      if (!persisted || persisted.status === "running") throw new Error("Unconfirmed run outcome");
+      return { status: persisted.status, result: persisted.result ?? result,
+        ...(spawnError && persisted.status === "failed" ? { spawnError: true } : {}) };
+    } catch {
+      // No success can be inferred from a local result if its authoritative row
+      // disappeared or persistence is unavailable. Never recreate a missing Run.
+      return { status: "failed", result: errorResult(new Error("Run outcome was not confirmed by persistence")),
+        ...(spawnError ? { spawnError: true } : {}) };
+    }
+  };
   const actLog = new RunActivityLog(config.polpoDir, config.runId, config.taskId, config.agent.name, pid);
   const steering = deps.steering
     ?? (config.resumeState?.steering
@@ -287,21 +335,22 @@ export async function executeRun(config: RunnerConfig, deps: ExecuteRunDeps): Pr
   };
   // In DB mode, run record already exists (created by spawner) — update it with PID
   await runStore.upsertRun(initialRecord);
+  observe();
   actLog.logEvent("spawning", { task: config.task.title });
 
   let handle: AgentHandle;
   const guardrailDecisions: RuntimeGuardrailAuditEvent[] = [];
   let guardrailDecisionsTruncated = false;
   const stopBeforeSpawn = async (): Promise<ExecuteRunOutcome | undefined> => {
-    let current = await runStore.getRun(config.runId);
+    let current = await readRun();
     if (!current) throw new Error("Run record is unavailable before execution");
     if (current.status === "running" && !deps.signal?.aborted && !steering.signal.aborted) return;
     await finalize();
     steering.close();
     if (current.status === "running") {
       actLog.logEvent("sigterm");
-      await runStore.completeRun(config.runId, "killed", errorResult(new Error("Killed by SIGTERM (timeout or shutdown) before engine start")));
-      current = await runStore.getRun(config.runId);
+      await boundedRunPersistence(() => runStore.completeRun(config.runId, "killed", errorResult(new Error("Killed by SIGTERM (timeout or shutdown) before engine start"))));
+      current = await readRun();
       if (!current || current.status === "running") throw new Error("Run cancellation was not persisted");
     }
     return { status: current.status, result: current.result ?? {
@@ -606,13 +655,13 @@ export async function executeRun(config: RunnerConfig, deps: ExecuteRunDeps): Pr
     actLog.logEvent("error", { message: result.stderr });
     if (guardrailDecisions.length > 0) {
       try {
-        await runStore.updateActivity(config.runId, {
+        await boundedRunPersistence(() => runStore.updateActivity(config.runId, {
           ...initialRecord.activity,
           guardrailDecisions,
           ...(guardrailDecisionsTruncated
             ? { guardrailDecisionsTruncated: true }
             : {}),
-        });
+        }));
       } catch {
         // The runtime failure remains authoritative when audit persistence fails.
       }
@@ -620,18 +669,13 @@ export async function executeRun(config: RunnerConfig, deps: ExecuteRunDeps): Pr
     try { await finalize(); } catch { /* preserve the primary spawn error */ }
     const requestedStatus = deps.signal?.aborted || steering.signal.aborted ? "killed" : "failed";
     steering.close();
-    await runStore.completeRun(config.runId, requestedStatus, result);
-    // Another controller may already have committed a terminal result. Cleanup
-    // or aborted preflight must not report an outcome different from that row.
-    const persisted = await runStore.getRun(config.runId);
-    const status = persisted && persisted.status !== "running" ? persisted.status : requestedStatus;
-    return { status, result: persisted?.result ?? result, ...(status === "failed" ? { spawnError: true } : {}) };
+    return persistOutcome(requestedStatus, result, true);
   }
 
   // Activity polling + persistent logging
   const poll = setInterval(async () => {
     try {
-      await runStore.updateActivity(config.runId, handle.activity);
+      await boundedRunPersistence(() => runStore.updateActivity(config.runId, handle.activity));
       actLog.logActivity({ ...handle.activity });
     } catch { /* DB temporarily locked */
     }
@@ -659,12 +703,12 @@ export async function executeRun(config: RunnerConfig, deps: ExecuteRunDeps): Pr
       handle.activity.guardrailDecisionsTruncated = true;
     }
     // Final activity + sessionId flush before marking terminal
-    try { await runStore.updateActivity(config.runId, handle.activity); } catch { /* best effort */ }
+    try { await boundedRunPersistence(() => runStore.updateActivity(config.runId, handle.activity)); } catch { /* best effort */ }
     actLog.logActivity({ ...handle.activity });
 
     // Store auto-collected outcomes on the run record
     if (handle.outcomes && handle.outcomes.length > 0) {
-      try { await runStore.updateOutcomes(config.runId, handle.outcomes); } catch { /* best effort */ }
+      try { await boundedRunPersistence(() => runStore.updateOutcomes(config.runId, handle.outcomes!)); } catch { /* best effort */ }
       actLog.logEvent("outcomes", { count: handle.outcomes.length, types: handle.outcomes.map((o: any) => o.type) });
     }
 
@@ -677,18 +721,17 @@ export async function executeRun(config: RunnerConfig, deps: ExecuteRunDeps): Pr
     await finalize();
     const status: RunStatus = aborted ? "killed" : (result.exitCode === 0 ? "completed" : "failed");
     actLog.logEvent("done", { status, exitCode: result.exitCode, duration: result.duration });
-    await runStore.completeRun(config.runId, status, result);
-    return { status, result };
+    return await persistOutcome(status, result);
   } catch (err) {
     clearInterval(poll);
     try { await finalize(); } catch (finalizeError) {
       if (!(err instanceof Error)) err = finalizeError;
     }
-    try { await runStore.updateActivity(config.runId, handle.activity); } catch { /* best effort */ }
+    try { await boundedRunPersistence(() => runStore.updateActivity(config.runId, handle.activity)); } catch { /* best effort */ }
     actLog.logEvent("error", { message: err instanceof Error ? err.message : String(err) });
     const result = errorResult(err);
-    await runStore.completeRun(config.runId, "failed", result);
-    return { status: "failed", result };
+    const requestedStatus = aborted ? "killed" : "failed";
+    return await persistOutcome(requestedStatus, result);
   } finally {
     try { await finalize(); } catch { /* the terminal result already captured finalization */ }
     deps.signal?.removeEventListener("abort", onAbort);
