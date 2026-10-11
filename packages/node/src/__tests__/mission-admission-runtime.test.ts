@@ -2,17 +2,19 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { FileTaskStore } from "@polpo-ai/file-stores";
+import { FileTaskStore, FileRunStore } from "@polpo-ai/file-stores";
 import { MissionExecutor } from "@polpo-ai/core/mission-executor";
 import { TaskManager } from "@polpo-ai/core/task-manager";
 import { AgentManager } from "@polpo-ai/core/agent-manager";
 import { HookRegistry } from "@polpo-ai/core/hooks";
 import { OrchestratorEngine, Scheduler } from "@polpo-ai/core";
+import { ApprovalManager } from "@polpo-ai/core/approval-manager";
+import type { ApprovalStore } from "@polpo-ai/core/approval-store";
 import { TaskRunner } from "@polpo-ai/core/task-runner";
 import type { OrchestratorContext } from "@polpo-ai/core/orchestrator-context";
 import { InMemoryCheckpointStore, InMemoryDelayStore } from "../../../core/src/in-memory-stores.js";
 import { TypedEmitter } from "../core/events.js";
-import { createMockStores, createTestAgent, InMemoryRunStore } from "./fixtures.js";
+import { createMockStores, createTestAgent } from "./fixtures.js";
 
 let root: string;
 beforeEach(() => { root = mkdtempSync(join(tmpdir(), "polpo-mission-runtime-")); });
@@ -22,7 +24,7 @@ function fixture(extra: Partial<OrchestratorContext> = {}) {
   const teams = [{ name: "main", agents: [createTestAgent({ name: "support" })] }];
   const store = new FileTaskStore(root);
   const ctx = { taskStore: store, ...createMockStores(teams), emitter: new TypedEmitter(), hooks: new HookRegistry(),
-    runStore: new InMemoryRunStore(), config: { version: "1", project: "fixture", teams, tasks: [], settings: { maxRetries: 2 } },
+    runStore: new FileRunStore(root), config: { version: "1", project: "fixture", teams, tasks: [], settings: { maxRetries: 2 } },
     workDir: root, agentWorkDir: root, polpoDir: root,
     checkpointStore: new InMemoryCheckpointStore(), delayStore: new InMemoryDelayStore(), ...extra } as OrchestratorContext;
   const taskManager = new TaskManager(ctx), agentManager = new AgentManager(ctx);
@@ -35,6 +37,43 @@ const document = () => ({ tasks: [
 ] });
 
 describe("durable Mission execution through the real OSS executor", () => {
+  it.each([
+    { hook: "mission:execute", fails: false }, { hook: "mission:execute", fails: true },
+    { hook: "schedule:trigger", fails: false }, { hook: "schedule:trigger", fails: true },
+  ] as const)("awaits real $hook approval persistence and stays blocked (failure=$fails)", async ({ hook, fails }) => {
+    const f = fixture(); await f.executor.ready;
+    let entered!: () => void, release!: () => void;
+    const waiting = new Promise<void>(resolve => { entered = resolve; });
+    const released = new Promise<void>(resolve => { release = resolve; });
+    const requests: unknown[] = [];
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    f.ctx.config.settings.approvalGates = [{ id: "human", name: "Approve execution", hook, handler: "human" }];
+    const approvals = new ApprovalManager(f.ctx, { list: async () => [], upsert: async (request: unknown) => {
+      entered(); await released;
+      if (fails) throw new Error("fixture approval unavailable");
+      requests.push(request);
+    } } as unknown as ApprovalStore);
+    await approvals.init();
+    const when = new Date(Date.now() + 60_000).toISOString();
+    const mission = await f.executor.createMission({ data: JSON.stringify(document()),
+      ...(hook === "schedule:trigger" ? { status: "scheduled", schedule: when } : {}) });
+    const scheduler = new Scheduler(f.ctx, { checkIntervalMs: 0 });
+    scheduler.setExecutor((id, options) => f.executor.executeMission(id, options));
+    await scheduler.init();
+    if (hook === "schedule:trigger") vi.spyOn(Date, "now").mockReturnValue(Date.parse(when) + 1);
+    let settled = false;
+    const operation = (hook === "mission:execute" ? f.executor.executeMission(mission.id) : scheduler.check())
+      .then(value => ({ value }), error => ({ error })).finally(() => { settled = true; });
+    try {
+      await waiting;
+      expect(settled).toBe(false); expect(await f.store.listTasks()).toEqual([]);
+      release(); await operation;
+      expect(settled).toBe(true); expect(await f.store.listTasks()).toEqual([]);
+      expect(requests).toHaveLength(fails ? 0 : 1);
+      expect((await f.store.getMission(mission.id))?.executionCount ?? 0).toBe(0);
+    } finally { release(); await operation; scheduler.dispose(); approvals.dispose(); }
+  });
+
   it("reads persisted gate identities and current resumable work without starting or mutating a runtime", async () => {
     const f = fixture(); await f.executor.ready;
     const identities = [];
@@ -190,7 +229,7 @@ describe("durable Mission execution through the real OSS executor", () => {
 
   it("validates every task hook before creating tasks or incrementing the counter", async () => {
     const f = fixture(); await f.executor.ready;
-    vi.spyOn(f.ctx.hooks, "runBeforeSync").mockImplementation((name, data: any) => ({ data, cancelled: name === "task:create" && data.title === "Second", cancelReason: "fixture denial" }));
+    vi.spyOn(f.ctx.hooks, "runBefore").mockImplementation(async (name, data: any) => ({ data, cancelled: name === "task:create" && data.title === "Second", cancelReason: "fixture denial" }));
     const mission = await f.executor.createMission({ data: JSON.stringify(document()), user: "customer-a" });
     await expect(f.executor.executeMission(mission.id, { idempotencyKey: "delivery" })).rejects.toThrow("fixture denial");
     expect(await f.store.listTasks()).toEqual([]);
@@ -258,7 +297,7 @@ describe("durable Mission execution through the real OSS executor", () => {
     await f.executor.ready;
     const mission = await f.executor.createMission({ data: JSON.stringify(document()), user: "customer-a", metadata: { connectionNamespace: "app-a" } });
     const accepted = await f.executor.executeMission(mission.id);
-    vi.spyOn(f.ctx.hooks, "runBeforeSync").mockImplementation((name, data: any) => {
+    vi.spyOn(f.ctx.hooks, "runBefore").mockImplementation(async (name, data: any) => {
       if (name === "task:spawn") { data.task.user = "customer-b"; data.task.metadata = { connectionNamespace: "app-b" }; }
       return { data, cancelled: false };
     });
@@ -377,7 +416,7 @@ describe("durable Mission execution through the real OSS executor", () => {
 
   it("keeps checkpoints attached to tasks renamed by a planning hook, including after restart", async () => {
     const f = fixture(); await f.executor.ready;
-    vi.spyOn(f.ctx.hooks, "runBeforeSync").mockImplementation((name, data: any) => ({
+    vi.spyOn(f.ctx.hooks, "runBefore").mockImplementation(async (name, data: any) => ({
       data: name === "task:create" ? { ...data, title: `Renamed ${data.title}` } : data, cancelled: false,
     }));
     const mission = await f.executor.createMission({ data: JSON.stringify({ ...document(),

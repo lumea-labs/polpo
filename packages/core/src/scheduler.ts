@@ -143,7 +143,7 @@ export class Scheduler {
       }
     }
 
-    const hookResult = this.ctx.hooks.runBeforeSync("schedule:trigger", {
+    const hookResult = await this.ctx.hooks.runBefore("schedule:trigger", {
       scheduleId: schedId,
       missionId: entry.missionId,
       expression: entry.expression,

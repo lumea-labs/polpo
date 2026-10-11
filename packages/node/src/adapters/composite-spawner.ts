@@ -31,4 +31,8 @@ export class CompositeSpawner implements Spawner {
     if (pid < 0) this.inProcess.kill(pid);
     else this.subprocess.kill(pid);
   }
+
+  async cancelRun(runId: string): Promise<void> {
+    await Promise.all([this.subprocess.cancelRun?.(runId), this.inProcess.cancelRun?.(runId)]);
+  }
 }

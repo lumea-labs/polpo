@@ -48,8 +48,10 @@ writers during rollout or rollback. Whole-state imports bypass this protocol.
 
 After an uncertain acknowledgement, read the captured Task and Run IDs. A repeated
 claim conflicts; it must not create another attempt automatically. This storage
-capability still requires callers to carry the reference through result collection
-and assessment, and hosts to observe the terminal Run and stop execution.
+capability is consumed by TaskRunner, TaskManager and AssessmentOrchestrator.
+Custom result callbacks must forward the execution reference, and hosts must
+observe the terminal Run and stop execution. Human suspension also invalidates
+the active reference; queued escalation and retry input are committed together.
 
 ## Connect storage
 

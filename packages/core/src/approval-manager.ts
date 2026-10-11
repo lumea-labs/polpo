@@ -1,7 +1,8 @@
 import { nanoid } from "nanoid";
 import type { OrchestratorContext } from "./orchestrator-context.js";
 import type { ApprovalStore } from "./approval-store.js";
-import type { ApprovalGate, ApprovalRequest, ApprovalStatus } from "./types.js";
+import type { ApprovalGate, ApprovalRequest, ApprovalStatus, Task } from "./types.js";
+import { isTaskExecutionStore, taskExecutionReference } from "./task-execution.js";
 import type { LifecycleHook } from "./hooks.js";
 import { SafeExpressionEvaluator } from "./loop/expression.js";
 /**
@@ -63,7 +64,7 @@ export class ApprovalManager {
       phase: "before",
       priority: gate.priority ?? 50,
       name: `approval-gate:${gate.name}`,
-      handler: (ctx) => {
+      handler: async (ctx) => {
         if (gate.condition?.expression) {
           const matches = this.evaluateCondition(gate.condition.expression, ctx.data);
           if (!matches) return;
@@ -80,11 +81,15 @@ export class ApprovalManager {
         ctx.cancel(`Awaiting human approval: ${gate.name} (request: ${request.id})`);
 
         const taskId = this.extractTaskId(ctx.data);
+        const payloadTask = (ctx.data as { task?: Task }).task;
+        const execution = payloadTask && payloadTask.id === taskId ? taskExecutionReference(payloadTask) : undefined;
+        await this.store.upsert(request);
         if (taskId) {
-          // Fire-and-forget async transition
-          this.ctx.taskStore.transition(taskId, "awaiting_approval").catch(() => {
-            /* Task may already be in a state that doesn't allow this transition */
-          });
+          if (execution && isTaskExecutionStore(this.ctx.taskStore)) {
+            await this.ctx.taskStore.mutateTaskExecution(execution, { type: "transition", status: "awaiting_approval" });
+          } else {
+            await this.ctx.taskStore.transition(taskId, "awaiting_approval");
+          }
         }
 
         this.ctx.emitter.emit("approval:requested", {
@@ -113,8 +118,6 @@ export class ApprovalManager {
       payload,
       requestedAt: new Date().toISOString(),
     };
-    // Fire-and-forget async store write
-    this.store.upsert(request).catch(() => {});
     return request;
   }
 

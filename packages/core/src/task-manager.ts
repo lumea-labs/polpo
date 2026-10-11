@@ -4,6 +4,7 @@ import type { Task, TaskExpectation, ExpectedOutcome, RetryPolicy, ReviewContext
 import { setAssessment } from "./types.js";
 import { sanitizeExpectations } from "./schemas.js";
 import { normalizeRuntimeMetadata } from "./runtime-metadata.js";
+import { isTaskExecutionStore, taskExecutionReference, TaskExecutionError } from "./task-execution.js";
 
 export type CreateTaskOptions = {
   title: string;
@@ -47,8 +48,8 @@ export class TaskManager {
     const metadata = normalizeRuntimeMetadata(opts.metadata);
     if (!this.ctx.taskStore) throw new Error("Orchestrator not initialized");
 
-    // Run before:task:create hook (sync — createTask is synchronous)
-    const hookResult = this.ctx.hooks.runBeforeSync("task:create", {
+    // Durable approval hooks must settle before admission can continue.
+    const hookResult = await this.ctx.hooks.runBefore("task:create", {
       title: opts.title,
       description: opts.description,
       assignTo: opts.assignTo,
@@ -248,6 +249,18 @@ export class TaskManager {
   }
 
   async killTask(taskId: string): Promise<boolean> {
+    const captured = await this.ctx.taskStore.getTask(taskId);
+    if (!captured) return false;
+    if (isTaskExecutionStore(this.ctx.taskStore)) {
+      const { run } = await this.ctx.taskStore.mutateTaskExecution(taskExecutionReference(captured), { type: "cancel" });
+      // Durable cancellation is authoritative; immediate notification is only
+      // for a host that owns this Run. Never signal a PID read from another host.
+      if (run?.status === "killed") await this.ctx.spawner.cancelRun?.(run.id);
+      return true;
+    }
+    if (captured.activeRunId !== undefined || captured.executionRevision !== undefined) {
+      throw new TaskExecutionError("task_execution_unsupported", "Task cancellation requires execution persistence");
+    }
     const run = await this.ctx.runStore.getRunByTaskId(taskId);
     if (run && run.status === "running" && run.pid > 0) {
       if (this.ctx.killProcess) {

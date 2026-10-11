@@ -183,7 +183,7 @@ export class FileTaskStore implements TaskStore, MissionExecutionStore, TaskExec
     return this.transaction(tx => {
       const existing = this.readTask(tx, id);
       if (!existing) throw new Error(`Task not found: ${id}`);
-      if (status === "pending" && existing.activeRunId) {
+      if ((status === "pending" || status === "awaiting_approval") && existing.activeRunId) {
         return this.mutateExecution(tx, taskExecutionReference(existing), { type: "transition", status }).task;
       }
       assertValidTransition(existing.status, status);

@@ -129,6 +129,35 @@ for (const kind of ["file", "sqlite", "pg"] as const) {
       expect(await b.taskStore.getTask(pending.id)).toEqual(second.task);
     });
 
+    it("publishes counted retry input from review in a single conditional mutation", async () => {
+      const first = await a.executions.claimTaskExecution(taskExecutionReference(await create()), randomUUID());
+      await a.taskStore.transition(first.task.id, "review");
+      const pending = await b.executions.mutateTaskExecution(taskExecutionReference(first.task), {
+        type: "requeue", countRetry: true, reason: "Assessment retry", updates: { description: "Complete retry prompt", phase: "execution", outcomes: [] },
+      });
+      expect(pending.task).toMatchObject({ status: "pending", retries: 1, executionRevision: 2, description: "Complete retry prompt", outcomes: [] });
+      expect(pending.task.activeRunId).toBeUndefined();
+      expect(await a.runStore.getRun(first.run.id)).toMatchObject({ status: "killed" });
+      await expect(a.executions.mutateTaskExecution(taskExecutionReference(first.task), {
+        type: "requeue", countRetry: true, reason: "Duplicate retry",
+      })).rejects.toMatchObject({ code: "task_execution_conflict" });
+      expect(await a.taskStore.getTask(first.task.id)).toEqual(pending.task);
+    });
+
+    it("replaces pending escalation input without allowing the previous queued snapshot to claim", async () => {
+      const task = await create();
+      const next = await a.executions.mutateTaskExecution(taskExecutionReference(task), {
+        type: "requeue", countRetry: false, reason: "Escalation timeout", updates: { assignTo: "fallback" },
+      });
+      expect(next.task).toMatchObject({ status: "pending", executionRevision: 1, retries: 0, assignTo: "fallback" });
+      expect(next.run).toBeUndefined();
+      await expect(b.executions.claimTaskExecution(taskExecutionReference(task), randomUUID()))
+        .rejects.toMatchObject({ code: "task_execution_conflict" });
+      await expect(b.executions.mutateTaskExecution(taskExecutionReference(next.task), { type: "requeue", countRetry: true, reason: "No run to retry" }))
+        .rejects.toMatchObject({ code: "task_execution_conflict" });
+      expect(await b.taskStore.getTask(task.id)).toEqual(next.task);
+    });
+
     it("keeps a completed Run outcome when cancellation occurs during assessment", async () => {
       const first = await a.executions.claimTaskExecution(taskExecutionReference(await create()), randomUUID());
       const result = { exitCode: 0, stdout: "Completed", stderr: "", duration: 1 };
@@ -136,6 +165,17 @@ for (const kind of ["file", "sqlite", "pg"] as const) {
       await b.executions.mutateTaskExecution(taskExecutionReference(first.task), { type: "cancel" });
       expect(await a.runStore.getRun(first.run.id)).toMatchObject({ status: "completed", result });
       expect(await a.taskStore.getTask(first.task.id)).toMatchObject({ status: "failed", executionRevision: 2 });
+    });
+
+    it("suspends an attempt atomically while preserving the human approval state", async () => {
+      const first = await a.executions.claimTaskExecution(taskExecutionReference(await create()), randomUUID());
+      const waiting = await b.taskStore.transition(first.task.id, "awaiting_approval");
+      expect(waiting).toMatchObject({ status: "awaiting_approval", executionRevision: 2, retries: 0 });
+      expect(waiting.activeRunId).toBeUndefined();
+      expect(await a.runStore.getRun(first.run.id)).toMatchObject({ status: "killed" });
+      await expect(a.executions.mutateTaskExecution(taskExecutionReference(first.task), { type: "requeue", countRetry: false, reason: "Late veto" }))
+        .rejects.toMatchObject({ code: "task_execution_conflict" });
+      expect(await a.taskStore.getTask(first.task.id)).toEqual(waiting);
     });
 
     it.each(["done", "failed"] as const)("cancels a still-active Run when the Task is already %s", async status => {

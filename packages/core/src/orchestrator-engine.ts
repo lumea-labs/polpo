@@ -61,7 +61,7 @@ import type {
  */
 export interface TaskRunnerPort {
   setMissionExecutionPreparer?(prepare: (task: Task) => Promise<void>): void;
-  collectResults(onResult: (taskId: string, result: TaskResult) => Promise<void> | void): Promise<void>;
+  collectResults(onResult: (taskId: string, result: TaskResult, execution?: import("./task-execution.js").TaskExecutionReference) => Promise<void> | void): Promise<void>;
   enforceHealthChecks(): Promise<void>;
   spawnForTask(task: Task): Promise<void>;
   syncProcessesFromRunStore(): Promise<void>;
@@ -73,7 +73,7 @@ export interface TaskRunnerPort {
  * Implemented by AssessmentOrchestrator in the shell layer.
  */
 export interface AssessmentOrchestratorPort {
-  handleResult(taskId: string, result: TaskResult): Promise<void>;
+  handleResult(taskId: string, result: TaskResult, execution?: import("./task-execution.js").TaskExecutionReference): Promise<void>;
   retryOrFail(taskId: string, task: Task, result: TaskResult): Promise<void>;
 }
 
@@ -345,7 +345,8 @@ export class OrchestratorEngine {
     }
 
     // 1. Collect results from finished runners
-    await this.runner.collectResults((id, res) => this.assessor.handleResult(id, res));
+    await this.runner.collectResults((id, res, execution) => execution
+      ? this.assessor.handleResult(id, res, execution) : this.assessor.handleResult(id, res));
 
     // 2. Enforce health checks (timeouts + stale detection)
     await this.runner.enforceHealthChecks();

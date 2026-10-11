@@ -83,6 +83,7 @@ export class InProcessSpawner implements Spawner {
   private pidSeq = 0;
   /** Active in-process runs, keyed by synthetic pid. */
   private active = new Map<number, AbortController>();
+  private runOwners = new Map<string, AbortController>();
 
   /**
    * Deps are resolved lazily at spawn() time: the orchestrator constructs
@@ -112,6 +113,7 @@ export class InProcessSpawner implements Spawner {
     const pid = --this.pidSeq;
     const abort = new AbortController();
     this.active.set(pid, abort);
+    this.runOwners.set(config.runId, abort);
 
     // Nothing is written to disk — the config only lives on the run record
     // (TaskRunner persists it right after spawn, as with every spawner).
@@ -144,6 +146,7 @@ export class InProcessSpawner implements Spawner {
         }
         exited = true;
         this.active.delete(pid);
+        if (this.runOwners.get(config.runId) === abort) this.runOwners.delete(config.runId);
         for (const cb of exitCallbacks.splice(0)) cb();
       });
 
@@ -163,5 +166,9 @@ export class InProcessSpawner implements Spawner {
 
   kill(pid: number): void {
     this.active.get(pid)?.abort();
+  }
+
+  cancelRun(runId: string): void {
+    this.runOwners.get(runId)?.abort();
   }
 }

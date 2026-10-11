@@ -15,6 +15,13 @@ const config = (mode?: string): RunnerConfig =>
   ({ runId: "r1", taskId: "t1", executionMode: mode, agent: { name: "a" }, task: { id: "t1" } }) as any;
 
 describe("CompositeSpawner — adaptive isolation dispatch", () => {
+  it("notifies possible local Run owners without guessing a persisted PID", async () => {
+    const sub = { ...fakeSpawner(4242), cancelRun: vi.fn() };
+    const inp = { ...fakeSpawner(-7), cancelRun: vi.fn() };
+    await new CompositeSpawner(sub, inp).cancelRun("run-a");
+    expect(sub.cancelRun).toHaveBeenCalledWith("run-a"); expect(inp.cancelRun).toHaveBeenCalledWith("run-a");
+    expect(sub.kill).not.toHaveBeenCalled(); expect(inp.kill).not.toHaveBeenCalled();
+  });
   it("routes in-process mode to the in-process backend", async () => {
     const sub = fakeSpawner(4242);
     const inp = fakeSpawner(-7);

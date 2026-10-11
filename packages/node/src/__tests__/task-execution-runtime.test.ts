@@ -1,0 +1,407 @@
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { FileTaskStore, FileRunStore } from "@polpo-ai/file-stores";
+import { TaskRunner } from "@polpo-ai/core/task-runner";
+import { TaskManager } from "@polpo-ai/core/task-manager";
+import { AssessmentOrchestrator } from "@polpo-ai/core/assessment-orchestrator";
+import { EscalationManager } from "@polpo-ai/core/escalation-manager";
+import { ApprovalManager } from "@polpo-ai/core/approval-manager";
+import type { ApprovalStore } from "@polpo-ai/core/approval-store";
+import { HookRegistry } from "@polpo-ai/core/hooks";
+import type { OrchestratorContext } from "@polpo-ai/core/orchestrator-context";
+import type { RunnerConfig } from "@polpo-ai/core/types";
+import { taskExecutionReference } from "@polpo-ai/core/task-execution";
+
+const roots: string[] = [];
+afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); roots.splice(0).forEach(root => rmSync(root, { recursive: true, force: true })); });
+function deferred() {
+  let resolve!: () => void;
+  const promise = new Promise<void>(done => { resolve = done; });
+  return { promise, resolve };
+}
+async function fixture() {
+  const root = mkdtempSync(join(tmpdir(), "polpo-task-attempt-runtime-")); roots.push(root);
+  const taskStore = new FileTaskStore(root), runStore = new FileRunStore(root);
+  const agentStore = { getAgent: vi.fn(async () => ({ name: "support", role: "Read Drive" })) };
+  const spawner = { spawn: vi.fn(async (_config: RunnerConfig) => ({ pid: -1, configPath: "memory://run" })),
+    kill: vi.fn(), cancelRun: vi.fn(), isAlive: () => false };
+  const memoryStore = { get: vi.fn(async () => "") };
+  const ctx = { taskStore, runStore, agentStore, spawner, memoryStore, emitter: { emit: vi.fn() }, hooks: new HookRegistry(),
+    config: { settings: { maxRetries: 2, workDir: ".", logLevel: "quiet" }, teams: [] },
+    workDir: root, agentWorkDir: root, polpoDir: root,
+  } as unknown as OrchestratorContext;
+  const task = await taskStore.createTask({ title: "Read", description: "Read the account", assignTo: "support", dependsOn: [],
+    expectations: [], metrics: [], maxRetries: 2, user: "person-a", metadata: { connectionNamespace: "app-a" } });
+  return { task, taskStore, runStore, agentStore, memoryStore, spawner, ctx, runner: new TaskRunner(ctx), manager: new TaskManager(ctx) };
+}
+
+describe("Task execution dispatch and cancellation", () => {
+  it("fences a legacy result when a new attempt is claimed after its initial task read", async () => {
+    const f = await fixture(), entered = deferred(), release = deferred();
+    await f.taskStore.transition(f.task.id, "assigned");
+    await f.taskStore.transition(f.task.id, "in_progress");
+    const now = new Date().toISOString();
+    await f.runStore.upsertRun({ id: "legacy-run", taskId: f.task.id, agentName: "support", pid: 0,
+      status: "completed", startedAt: now, updatedAt: now, configPath: "legacy", sessionId: "obsolete-session",
+      activity: { filesCreated: [], filesEdited: [], toolCalls: 0, totalTokens: 0, lastUpdate: now },
+      result: { exitCode: 0, stdout: "Obsolete", stderr: "", duration: 1 } });
+    const read = f.taskStore.getTask.bind(f.taskStore);
+    vi.spyOn(f.taskStore, "getTask").mockImplementationOnce(async id => {
+      const snapshot = await read(id); entered.resolve(); await release.promise; return snapshot;
+    });
+    const onResult = vi.fn(), collecting = f.runner.collectResults(onResult);
+    try {
+      await entered.promise;
+      await f.manager.killTask(f.task.id);
+      const pending = await f.taskStore.transition(f.task.id, "pending");
+      const next = await f.taskStore.claimTaskExecution(taskExecutionReference(pending), "new-run");
+      release.resolve(); await collecting;
+      expect(onResult).not.toHaveBeenCalled();
+      expect(await read(f.task.id)).toEqual(next.task);
+      expect((await f.runStore.getRun("legacy-run"))?.collectedAt).toBeTruthy();
+    } finally { release.resolve(); await collecting; }
+  });
+
+  it("ignores delayed escalation analysis after cancellation and a new claim", async () => {
+    const f = await fixture(), entered = deferred(), release = deferred();
+    f.ctx.config.settings.escalationPolicy = { levels: [
+      { level: 2, handler: "orchestrator" }, { level: 3, handler: "human" },
+    ] };
+    f.ctx.queryLLM = async () => { entered.resolve(); await release.promise; return { text: "A reformulated description for the obsolete attempt" }; };
+    const escalation = new EscalationManager(f.ctx); escalation.init();
+    await f.taskStore.updateTask(f.task.id, { maxRetries: 0 });
+    const first = await f.taskStore.claimTaskExecution(taskExecutionReference(f.task), "old-run");
+    await f.runStore.completeRun(first.run.id, "failed", { exitCode: 1, stdout: "", stderr: "Failure", duration: 1 });
+    const assessor = new AssessmentOrchestrator(f.ctx);
+    const collecting = f.runner.collectResults((id, result, execution) => assessor.handleResult(id, result, execution));
+    try {
+      await entered.promise;
+      await f.manager.killTask(f.task.id);
+      const pending = await f.taskStore.transition(f.task.id, "pending");
+      const next = await f.taskStore.claimTaskExecution(taskExecutionReference(pending), "new-run");
+      release.resolve(); await collecting;
+      expect(await f.taskStore.getTask(f.task.id)).toEqual(next.task);
+      expect(await f.runStore.getRun(next.run.id)).toMatchObject({ status: "running" });
+      expect(f.ctx.emitter.emit).not.toHaveBeenCalledWith("escalation:human", expect.anything());
+      expect((await f.runStore.getRun(first.run.id))?.collectedAt).toBeTruthy();
+    } finally { release.resolve(); await collecting; escalation.dispose(); }
+  });
+
+  it.each(["pending", "claimed", "superseded"] as const)("binds escalation timeout to its own published attempt (%s)", async state => {
+    const f = await fixture(); vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    f.ctx.config.settings.escalationPolicy = { levels: [
+      { level: 2, handler: "orchestrator", timeoutMs: 100 }, { level: 3, handler: "agent", target: "fallback", timeoutMs: 100 },
+      { level: 4, handler: "human" },
+    ] };
+    f.ctx.queryLLM = async () => ({ text: "A reformulated description for this execution" });
+    const escalation = new EscalationManager(f.ctx); escalation.init();
+    try {
+      const first = await f.taskStore.claimTaskExecution(taskExecutionReference(f.task), "old-run");
+      await f.ctx.hooks.runBefore("task:fail", { taskId: f.task.id, task: first.task,
+        reason: "maxRetries", result: { exitCode: 1, stdout: "", stderr: "Failure", duration: 1 } });
+      const pending = (await f.taskStore.getTask(f.task.id))!;
+      expect(pending).toMatchObject({ status: "pending", executionRevision: 2 });
+      if (state !== "pending") await f.taskStore.claimTaskExecution(taskExecutionReference(pending), "escalation-run");
+      let replacement;
+      if (state === "superseded") {
+        await f.manager.killTask(f.task.id);
+        const retry = await f.taskStore.transition(f.task.id, "pending");
+        replacement = await f.taskStore.claimTaskExecution(taskExecutionReference(retry), "unrelated-run");
+      }
+      await vi.advanceTimersByTimeAsync(100);
+      if (replacement) {
+        expect(await f.taskStore.getTask(f.task.id)).toEqual(replacement.task);
+        expect(await f.runStore.getRun(replacement.run.id)).toMatchObject({ status: "running" });
+      } else {
+        const reassigned = (await f.taskStore.getTask(f.task.id))!;
+        expect(reassigned).toMatchObject({ status: "pending", assignTo: "fallback", retries: 0 });
+        expect(reassigned.executionRevision).toBeGreaterThan(pending.executionRevision!);
+        await vi.advanceTimersByTimeAsync(100);
+        expect(await f.taskStore.getTask(f.task.id)).toMatchObject({ status: "awaiting_approval", retries: 0 });
+      }
+    } finally { escalation.dispose(); }
+  });
+
+  it.each([false, true])("awaits real task-create approval persistence and stays blocked on failure (%s)", async fails => {
+    const f = await fixture(), entered = deferred(), release = deferred();
+    const errorLog = vi.spyOn(console, "error").mockImplementation(() => {});
+    const approvals = new ApprovalManager(f.ctx, { list: async () => [], upsert: async () => {
+      entered.resolve(); await release.promise; if (fails) throw new Error("fixture approval unavailable");
+    } } as unknown as ApprovalStore);
+    f.ctx.config.settings.approvalGates = [{ id: "human", name: "Approve creation", hook: "task:create", handler: "human" }];
+    await approvals.init();
+    let settled = false;
+    const creating = f.manager.createTask({ title: "New task", description: "Read", assignTo: "support" })
+      .then(value => ({ value }), error => ({ error })).finally(() => { settled = true; });
+    try {
+      await entered.promise;
+      expect(settled).toBe(false);
+      expect(await f.taskStore.listTasks()).toHaveLength(1);
+      release.resolve();
+      expect(await creating).toMatchObject({ error: expect.objectContaining({ message: expect.stringContaining("blocked by hook") }) });
+      expect(await f.taskStore.listTasks()).toHaveLength(1);
+      expect(errorLog).toHaveBeenCalledTimes(fails ? 1 : 0);
+    } finally { release.resolve(); await creating; approvals.dispose(); }
+  });
+
+  it("acknowledges a superseded result without attaching its session, outcomes or assessment to the retry", async () => {
+    const f = await fixture();
+    const first = await f.taskStore.claimTaskExecution(taskExecutionReference(f.task), "old-run");
+    await f.runStore.upsertRun({ ...first.run, sessionId: "old-session", outcomes: [{ id: "old", type: "text", label: "Old", text: "obsolete", producedAt: new Date().toISOString() }] });
+    await f.manager.killTask(f.task.id);
+    const pending = await f.taskStore.transition(f.task.id, "pending");
+    const second = await f.taskStore.claimTaskExecution(taskExecutionReference(pending), "new-run");
+    const onResult = vi.fn();
+    await f.runner.collectResults(onResult);
+    expect(onResult).not.toHaveBeenCalled();
+    expect(await f.taskStore.getTask(f.task.id)).toEqual(second.task);
+    expect((await f.runStore.getRun(first.run.id))?.collectedAt).toBeTruthy();
+  });
+
+  it("fences assessment writes when cancellation and retry happen while the assessor awaits", async () => {
+    const f = await fixture(), entered = deferred(), release = deferred();
+    await f.taskStore.updateTask(f.task.id, { expectations: [{ type: "test", command: "true" }] });
+    const first = await f.taskStore.claimTaskExecution(taskExecutionReference(f.task), "old-run");
+    const result = { exitCode: 0, stdout: "Read complete", stderr: "", duration: 2 };
+    await f.runStore.completeRun(first.run.id, "completed", result);
+    const assessor = new AssessmentOrchestrator({ ...f.ctx, assessFn: async () => {
+      entered.resolve(); await release.promise;
+      return { passed: true, checks: [], metrics: [], timestamp: new Date().toISOString() };
+    } });
+    const collecting = f.runner.collectResults((id, output, execution) => assessor.handleResult(id, output, execution));
+    try {
+      await entered.promise;
+      await f.manager.killTask(f.task.id);
+      const pending = await f.taskStore.transition(f.task.id, "pending");
+      const second = await f.taskStore.claimTaskExecution(taskExecutionReference(pending), "new-run");
+      release.resolve(); await collecting;
+      expect(await f.taskStore.getTask(f.task.id)).toEqual(second.task);
+      expect(await f.runStore.getRun(second.run.id)).toMatchObject({ status: "running" });
+      expect((await f.runStore.getRun(first.run.id))?.collectedAt).toBeTruthy();
+    } finally { release.resolve(); await collecting; }
+  });
+
+  it("collects and completes a current attempt with its exact execution reference", async () => {
+    const f = await fixture();
+    const first = await f.taskStore.claimTaskExecution(taskExecutionReference(f.task), "current-run");
+    const result = { exitCode: 0, stdout: "Read complete", stderr: "", duration: 2 };
+    await f.runStore.completeRun(first.run.id, "completed", result);
+    const assessor = new AssessmentOrchestrator(f.ctx);
+    const received = vi.fn((id, output, execution) => assessor.handleResult(id, output, execution));
+    await f.runner.collectResults(received);
+    expect(received).toHaveBeenCalledWith(f.task.id, result, taskExecutionReference(first.task));
+    expect(await f.taskStore.getTask(f.task.id)).toMatchObject({ status: "done", result });
+    expect((await f.taskStore.getTask(f.task.id))?.phase).toBeUndefined();
+  });
+
+  it.each(["fix", "retry"] as const)("publishes the complete %s input before a competing scheduler can claim it", async mode => {
+    const f = await fixture();
+    f.ctx.config.settings.autoCorrectExpectations = false;
+    await f.taskStore.updateTask(f.task.id, { expectations: [{ type: "test", command: "verify" }] });
+    const first = await f.taskStore.claimTaskExecution(taskExecutionReference(f.task), "old-run");
+    const result = { exitCode: mode === "fix" ? 0 : 1, stdout: "Read complete", stderr: "", duration: 2 };
+    await f.runStore.completeRun(first.run.id, result.exitCode ? "failed" : "completed", result);
+    const assessor = new AssessmentOrchestrator({ ...f.ctx, assessFn: async () => ({
+      passed: false, checks: [{ type: "test", passed: false, message: "Missing required output" }], metrics: [], timestamp: new Date().toISOString(),
+    }) });
+    const mutate = f.taskStore.mutateTaskExecution.bind(f.taskStore);
+    let next: Awaited<ReturnType<typeof f.taskStore.claimTaskExecution>> | undefined;
+    vi.spyOn(f.taskStore, "mutateTaskExecution").mockImplementation(async (reference, mutation) => {
+      const state = await mutate(reference, mutation);
+      if (mutation.type === "requeue") next = await f.taskStore.claimTaskExecution(taskExecutionReference(state.task), "new-run");
+      return state;
+    });
+    await f.runner.collectResults((id, output, execution) => assessor.handleResult(id, output, execution));
+    expect(next?.task).toMatchObject({ phase: mode === "fix" ? "fix" : "execution", originalDescription: f.task.description,
+      retries: mode === "fix" ? 0 : 1, fixAttempts: mode === "fix" ? 1 : 0, outcomes: [] });
+    expect(next?.task.description).not.toBe(f.task.description);
+    expect(await f.taskStore.getTask(f.task.id)).toEqual(next?.task);
+  });
+
+  it.each([false, true])("fences an asynchronous clarification answer (cancelled=%s)", async cancelled => {
+    const f = await fixture(), entered = deferred(), release = deferred();
+    const first = await f.taskStore.claimTaskExecution(taskExecutionReference(f.task), "old-run");
+    await f.runStore.completeRun(first.run.id, "completed", { exitCode: 0, stdout: "Which account should I use?", stderr: "", duration: 1 });
+    const assessor = new AssessmentOrchestrator({ ...f.ctx, queryLLM: async () => ({ text: "unused" }) }, {
+      classifyAsQuestion: async () => ({ isQuestion: true, question: "Which account?" }),
+      generateAnswer: async () => { entered.resolve(); await release.promise; return "Use the authorized account"; },
+    });
+    const collecting = f.runner.collectResults((id, output, execution) => assessor.handleResult(id, output, execution));
+    try {
+      await entered.promise;
+      let next: Awaited<ReturnType<typeof f.taskStore.claimTaskExecution>> | undefined;
+      if (cancelled) {
+        await f.manager.killTask(f.task.id);
+        const pending = await f.taskStore.transition(f.task.id, "pending");
+        next = await f.taskStore.claimTaskExecution(taskExecutionReference(pending), "new-run");
+      }
+      release.resolve(); await collecting;
+      const current = await f.taskStore.getTask(f.task.id);
+      if (cancelled) expect(current).toEqual(next?.task);
+      else {
+        expect(current).toMatchObject({ status: "pending", executionRevision: 2, questionRounds: 1, retries: 0,
+          originalDescription: f.task.description, description: expect.stringContaining("Use the authorized account") });
+        expect(current?.activeRunId).toBeUndefined();
+      }
+    } finally { release.resolve(); await collecting; }
+  });
+
+  it("requires the captured execution reference when assessing a versioned Task", async () => {
+    const f = await fixture();
+    const first = await f.taskStore.claimTaskExecution(taskExecutionReference(f.task), "current-run");
+    await expect(new AssessmentOrchestrator(f.ctx).handleResult(f.task.id, { exitCode: 0, stdout: "Unbound", stderr: "", duration: 1 }))
+      .rejects.toMatchObject({ code: "task_execution_invalid" });
+    expect(await f.taskStore.getTask(f.task.id)).toEqual(first.task);
+  });
+
+  it("does not finish a new attempt when a completion hook resumes after cancellation", async () => {
+    const f = await fixture(), entered = deferred(), release = deferred();
+    const first = await f.taskStore.claimTaskExecution(taskExecutionReference(f.task), "old-run");
+    await f.runStore.completeRun(first.run.id, "completed", { exitCode: 0, stdout: "Complete", stderr: "", duration: 1 });
+    f.ctx.hooks.register({ hook: "task:complete", phase: "before", handler: async () => { entered.resolve(); await release.promise; } });
+    const assessor = new AssessmentOrchestrator(f.ctx);
+    const collecting = f.runner.collectResults((id, output, execution) => assessor.handleResult(id, output, execution));
+    try {
+      await entered.promise; await f.manager.killTask(f.task.id);
+      const pending = await f.taskStore.transition(f.task.id, "pending");
+      const second = await f.taskStore.claimTaskExecution(taskExecutionReference(pending), "new-run");
+      release.resolve(); await collecting;
+      expect(await f.taskStore.getTask(f.task.id)).toEqual(second.task);
+      expect(f.ctx.emitter.emit).not.toHaveBeenCalledWith("task:transition", expect.objectContaining({ to: "done" }));
+    } finally { release.resolve(); await collecting; }
+  });
+
+  it("claims one durable attempt before asynchronous agent lookup", async () => {
+    const f = await fixture();
+    f.agentStore.getAgent.mockImplementationOnce(async () => {
+      const task = (await f.taskStore.getTask(f.task.id))!;
+      expect(task).toMatchObject({ status: "in_progress", executionRevision: 1 });
+      expect(await f.runStore.getRun(task.activeRunId!)).toMatchObject({ taskId: task.id, taskExecutionRevision: 1, status: "running" });
+      return { name: "support", role: "Read Drive" };
+    });
+    await f.runner.spawnForTask(f.task);
+    expect(f.spawner.spawn).toHaveBeenCalledOnce();
+    expect(f.spawner.spawn.mock.calls[0][0].task).toMatchObject({ executionRevision: 1, activeRunId: expect.any(String) });
+  });
+
+  it("allows competing schedulers to dispatch only one host execution", async () => {
+    const f = await fixture();
+    const results = await Promise.allSettled([f.runner.spawnForTask(f.task), new TaskRunner(f.ctx).spawnForTask(f.task)]);
+    expect(results.filter(result => result.status === "fulfilled")).toHaveLength(1);
+    expect(results.find(result => result.status === "rejected")).toMatchObject({ reason: { code: "task_execution_conflict" } });
+    expect(f.spawner.spawn).toHaveBeenCalledOnce();
+    expect(await f.runStore.getActiveRuns()).toHaveLength(1);
+  });
+
+  it("does not dispatch a cancelled preparation or disturb its newer retry", async () => {
+    const f = await fixture(), entered = deferred(), release = deferred();
+    f.memoryStore.get.mockImplementationOnce(async () => { entered.resolve(); await release.promise; return ""; });
+    const preparing = f.runner.spawnForTask(f.task);
+    try {
+      await entered.promise;
+      const old = (await f.taskStore.getTask(f.task.id))!;
+      expect(await f.manager.killTask(f.task.id)).toBe(true);
+      expect(await f.runStore.getRun(old.activeRunId!)).toMatchObject({ status: "killed" });
+      expect(f.spawner.cancelRun).toHaveBeenCalledWith(old.activeRunId);
+      const pending = await f.taskStore.transition(f.task.id, "pending");
+      await new TaskRunner(f.ctx).spawnForTask(pending);
+      const current = (await f.taskStore.getTask(f.task.id))!;
+      release.resolve(); await preparing;
+      expect(f.spawner.spawn).toHaveBeenCalledOnce();
+      expect(await f.taskStore.getTask(f.task.id)).toEqual(current);
+      expect(await f.runStore.getRun(current.activeRunId!)).toMatchObject({ status: "running" });
+    } finally { release.resolve(); await preparing; }
+  });
+
+  it("rejects an old scheduler snapshot after cancellation before dispatch", async () => {
+    const f = await fixture();
+    await f.manager.killTask(f.task.id);
+    await expect(f.runner.spawnForTask(f.task)).rejects.toMatchObject({ code: "task_execution_conflict" });
+    expect(f.spawner.spawn).not.toHaveBeenCalled(); expect(f.agentStore.getAgent).not.toHaveBeenCalled();
+  });
+
+  it("notifies the exact host when acquisition finishes after cancellation", async () => {
+    const f = await fixture(), entered = deferred(), release = deferred();
+    f.spawner.spawn.mockImplementationOnce(async () => { entered.resolve(); await release.promise; return { pid: -23, configPath: "memory://late" }; });
+    const starting = f.runner.spawnForTask(f.task);
+    try {
+      await entered.promise;
+      const task = (await f.taskStore.getTask(f.task.id))!;
+      await f.manager.killTask(task.id);
+      release.resolve(); await starting;
+      expect(f.spawner.cancelRun.mock.calls).toEqual([[task.activeRunId], [task.activeRunId]]);
+      expect(await f.runStore.getRun(task.activeRunId!)).toMatchObject({ status: "killed", pid: -23 });
+      expect(await f.taskStore.getTask(task.id)).toMatchObject({ status: "failed" });
+    } finally { release.resolve(); await starting; }
+  });
+
+  it("does not chase a new attempt when cancellation races a retry", async () => {
+    const f = await fixture();
+    const first = await f.taskStore.claimTaskExecution(taskExecutionReference(f.task), "first-run");
+    const read = f.taskStore.getTask.bind(f.taskStore);
+    vi.spyOn(f.taskStore, "getTask").mockImplementationOnce(async () => {
+      await f.taskStore.mutateTaskExecution(taskExecutionReference(first.task), { type: "cancel" });
+      const pending = await f.taskStore.transition(f.task.id, "pending");
+      await f.taskStore.claimTaskExecution(taskExecutionReference(pending), "second-run");
+      return first.task;
+    });
+    await expect(f.manager.killTask(f.task.id)).rejects.toMatchObject({ code: "task_execution_conflict" });
+    expect(await read(f.task.id)).toMatchObject({ activeRunId: "second-run", status: "in_progress" });
+    expect(await f.runStore.getRun("second-run")).toMatchObject({ status: "running" });
+    expect(f.spawner.cancelRun).not.toHaveBeenCalled();
+  });
+
+  it("uses the principal and input of the persisted claim instead of a stale caller snapshot", async () => {
+    const f = await fixture();
+    await f.taskStore.updateTask(f.task.id, { description: "Updated input", user: "person-b", metadata: { connectionNamespace: "app-b" } });
+    await f.runner.spawnForTask(f.task);
+    const config = f.spawner.spawn.mock.calls[0][0];
+    expect(config.task).toMatchObject({ description: "Updated input", user: "person-b", metadata: { connectionNamespace: "app-b" } });
+    expect(await f.runStore.getRun(config.runId)).toMatchObject({ user: "person-b", taskExecutionRevision: 1 });
+  });
+
+  it("retains one inspectable failed Run when preflight fails after claiming", async () => {
+    const f = await fixture(); f.agentStore.getAgent.mockResolvedValueOnce(undefined as never);
+    await f.runner.spawnForTask(f.task);
+    const current = (await f.taskStore.getTask(f.task.id))!;
+    expect(await f.runStore.getRun(current.activeRunId!)).toMatchObject({ status: "failed", taskExecutionRevision: 1,
+      result: { stderr: expect.stringContaining('No agent "support"') } });
+    expect(f.spawner.spawn).not.toHaveBeenCalled();
+  });
+
+  it("keeps hook-vetoed work pending without burning a retry or changing execution identity", async () => {
+    const f = await fixture();
+    f.ctx.hooks.register({ hook: "task:spawn", phase: "before", handler: hook => {
+      Object.assign(hook.data.task, { id: "forged", executionRevision: 99, activeRunId: "forged", user: "foreign" });
+      hook.cancel("Awaiting operator");
+    } });
+    await f.runner.spawnForTask(f.task);
+    expect(await f.taskStore.getTask(f.task.id)).toMatchObject({ status: "pending", retries: 0, executionRevision: 2, user: "person-a" });
+    expect((await f.taskStore.getTask(f.task.id))?.activeRunId).toBeUndefined();
+    expect(await f.runStore.getTerminalRuns()).toEqual([expect.objectContaining({ status: "killed", taskId: f.task.id, taskExecutionRevision: 1 })]);
+    expect(f.spawner.spawn).not.toHaveBeenCalled();
+  });
+
+  it("preserves a real human approval gate after slow approval persistence", async () => {
+    const f = await fixture(), entered = deferred(), release = deferred();
+    const requests: unknown[] = [];
+    const approvalStore = { list: async () => [], upsert: async (request: unknown) => {
+      entered.resolve(); await release.promise; requests.push(request);
+    } } as unknown as ApprovalStore;
+    f.ctx.config.settings.approvalGates = [{ id: "human", name: "Approve access", hook: "task:spawn", handler: "human" }];
+    const approvals = new ApprovalManager(f.ctx, approvalStore);
+    await approvals.init();
+    const starting = f.runner.spawnForTask(f.task);
+    try {
+      await entered.promise; release.resolve(); await starting;
+      const current = (await f.taskStore.getTask(f.task.id))!;
+      expect(current).toMatchObject({ status: "awaiting_approval", retries: 0, executionRevision: 2 });
+      expect(current.activeRunId).toBeUndefined();
+      await expect(new TaskRunner(f.ctx).spawnForTask(current)).rejects.toMatchObject({ code: "task_execution_conflict" });
+      expect(requests).toHaveLength(1); expect(f.spawner.spawn).not.toHaveBeenCalled();
+      expect(await f.runStore.getActiveRuns()).toHaveLength(0);
+    } finally { release.resolve(); await starting; }
+  });
+});

@@ -109,9 +109,10 @@ its still-running Run needs cancellation. Retries use a new Run ID.
 
 Ordinary reads recover both files after a crashed writer. These guarantees use
 the same coordinator and filesystem requirements described above. The cached
-legacy `JsonTaskStore` does not implement this capability. TaskRunner, result
-collection/assessment and host termination must integrate this contract; storage
-atomicity alone does not interrupt running code or fence an unadapted caller.
+legacy `JsonTaskStore` does not implement this capability. TaskRunner, TaskManager
+and AssessmentOrchestrator consume it with the paired FileRunStore for the same
+project. Custom result callbacks must forward the execution reference. Storage
+atomicity alone does not interrupt running code or fence an unadapted host.
 
 `FileRunStore` keeps each Run in `runs/<id>.json`. Every reader and writer uses
 the same project coordinator, including activity, traces, checkpoints, spawn

@@ -50,4 +50,9 @@ export interface Spawner {
    * No-op for spawners that don't track OS processes (e.g. sandbox).
    */
   kill(pid: number): void;
+
+  /** Notify the local owner of this exact Run after durable cancellation.
+   * Unknown Run IDs are a no-op; never translate a foreign persisted PID.
+   * Hosts must also observe durable cancellation from other processes. */
+  cancelRun?(runId: string): void | Promise<void>;
 }

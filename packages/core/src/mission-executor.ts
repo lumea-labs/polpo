@@ -389,7 +389,7 @@ export class MissionExecutor {
       const sequence = (mission.executionCount ?? 0) + 1;
       const group = sequence > 1 ? `${mission.name} #${sequence}` : mission.name;
       const doc = parseMissionDocument(JSON.parse(mission.data));
-      const hook = this.ctx.hooks.runBeforeSync("mission:execute", { missionId, mission: structuredClone(mission), taskCount: doc.tasks.length });
+      const hook = await this.ctx.hooks.runBefore("mission:execute", { missionId, mission: structuredClone(mission), taskCount: doc.tasks.length });
       if (hook.cancelled) throw new Error(`Mission execution blocked by hook: ${hook.cancelReason ?? "no reason"}`);
 
       const existingAgents = await this.agentMgr.getAgents();

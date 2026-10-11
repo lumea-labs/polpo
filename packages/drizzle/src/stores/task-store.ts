@@ -323,7 +323,7 @@ export class DrizzleTaskStore implements TaskStore, MissionExecutionStore, TaskE
     const task = await this.getTask(taskId);
     if (!task) throw new Error(`Task "${taskId}" not found`);
 
-    if (newStatus === "pending" && task.activeRunId) {
+    if ((newStatus === "pending" || newStatus === "awaiting_approval") && task.activeRunId) {
       return (await this.mutateTaskExecution(taskExecutionReference(task), { type: "transition", status: newStatus })).task;
     }
     assertValidTransition(task.status, newStatus);

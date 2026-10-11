@@ -26,6 +26,7 @@ import {
   type ResolvedExecutionRoute,
 } from "./execution-router.js";
 import type { RuntimeGuardrailAuditEvent } from "./guardrails/index.js";
+import { isTaskExecutionStore, taskExecutionReference, TaskExecutionError, type TaskExecutionReference } from "./task-execution.js";
 
 /**
  * Durable turns: max age of a resume checkpoint before orphan recovery
@@ -114,25 +115,58 @@ export class TaskRunner {
    * The callback is typically the assessment pipeline (handleResult).
    */
   async collectResults(
-    onResult: (taskId: string, result: TaskResult) => Promise<void> | void,
+    onResult: (taskId: string, result: TaskResult, execution?: TaskExecutionReference) => Promise<void> | void,
   ): Promise<void> {
     const terminalRuns = await this.ctx.runStore.getTerminalRuns();
     for (const run of terminalRuns) {
+      let execution: TaskExecutionReference | undefined;
+      const sid = run.sessionId ?? run.activity.sessionId;
+      if (run.taskExecutionRevision !== undefined) {
+        if (!isTaskExecutionStore(this.ctx.taskStore)) {
+          throw new TaskExecutionError("task_execution_unsupported", "Result collection requires execution persistence");
+        }
+        execution = { taskId: run.taskId, revision: run.taskExecutionRevision, runId: run.id };
+        try {
+          await this.ctx.taskStore.mutateTaskExecution(execution, { type: "patch", updates: {
+            ...(sid ? { sessionId: sid } : {}), ...(run.outcomes ? { outcomes: run.outcomes } : {}),
+          } });
+        } catch (error) {
+          if (!(error instanceof TaskExecutionError) || error.code !== "task_execution_conflict") throw error;
+          await this.acknowledgeRun(run);
+          continue;
+        }
+      } else if (isTaskExecutionStore(this.ctx.taskStore)) {
+        const task = await this.ctx.taskStore.getTask(run.taskId);
+        if (!task || task.executionRevision !== undefined || task.activeRunId !== undefined) {
+          // An old, unversioned writer cannot attach its result to a new attempt.
+          await this.acknowledgeRun(run);
+          continue;
+        }
+        execution = taskExecutionReference(task);
+        try {
+          await this.ctx.taskStore.mutateTaskExecution(execution, { type: "patch", updates: {
+            ...(sid ? { sessionId: sid } : {}), ...(run.outcomes ? { outcomes: run.outcomes } : {}),
+          } });
+        } catch (error) {
+          if (!(error instanceof TaskExecutionError) || error.code !== "task_execution_conflict") throw error;
+          await this.acknowledgeRun(run);
+          continue;
+        }
+      }
       await this.emitGuardrailEvents(run);
       // Persist sessionId on the task before acknowledging the run.
-      const sid = run.sessionId ?? run.activity.sessionId;
-      if (sid) {
+      if (!execution && sid) {
         try { await this.ctx.taskStore.updateTask(run.taskId, { sessionId: sid }); } catch { /* task may already be gone */ }
       }
       // Persist auto-collected outcomes on the task.
       // REPLACE (not append) — each execution produces its own definitive outcomes.
       // Appending caused "exponential outcome" accumulation across retries/fix cycles.
-      if (run.outcomes && run.outcomes.length > 0) {
+      if (!execution && run.outcomes && run.outcomes.length > 0) {
         try {
           await this.ctx.taskStore.updateTask(run.taskId, { outcomes: run.outcomes });
         } catch { /* task may already be gone */ }
       }
-      const result = run.result ?? {
+      const result = run.result ? { ...run.result } : {
         exitCode: 1,
         stdout: "",
         stderr: `Run ${run.id} ended with status ${run.status} without a result`,
@@ -154,17 +188,17 @@ export class TaskRunner {
             result.stderr = (result.stderr ? result.stderr + "\n" : "") + diagnosis;
           }
         }
-        await onResult(run.taskId, result);
+        if (execution) await onResult(run.taskId, result, execution);
+        else await onResult(run.taskId, result);
       }
-      // Keep terminal Runs as durable history. Older/custom stores can keep
-      // their previous consume-and-delete behavior until they implement ack.
-      if (this.ctx.runStore.markRunCollected) {
-        await this.ctx.runStore.markRunCollected(run.id);
-      } else {
-        await this.ctx.runStore.deleteRun(run.id);
-      }
-      this.staleWarned.delete(run.taskId);
+      await this.acknowledgeRun(run);
     }
+  }
+
+  private async acknowledgeRun(run: RunRecord): Promise<void> {
+    if (this.ctx.runStore.markRunCollected) await this.ctx.runStore.markRunCollected(run.id);
+    else await this.ctx.runStore.deleteRun(run.id);
+    this.staleWarned.delete(run.taskId);
   }
 
   private async emitGuardrailEvents(run: RunRecord): Promise<void> {
@@ -503,7 +537,11 @@ export class TaskRunner {
   }
 
   /** Persist failures that happen before a host process/sandbox can start. */
-  private async failBeforeSpawn(task: Task, message: string): Promise<void> {
+  private async failBeforeSpawn(task: Task, message: string, claimedRun?: RunRecord): Promise<void> {
+    if (claimedRun) {
+      await this.ctx.runStore.completeRun(claimedRun.id, "failed", { exitCode: 1, stdout: "", stderr: message, duration: 0 });
+      return;
+    }
     await this.ctx.taskStore.transition(task.id, "assigned");
     await this.ctx.taskStore.transition(task.id, "in_progress");
     await this.ctx.taskStore.updateTask(task.id, { phase: "execution" });
@@ -535,8 +573,39 @@ export class TaskRunner {
   }
 
   async spawnForTask(task: Task): Promise<void> {
+    if (task.missionExecutionId && !this.prepareMissionExecution) {
+      throw new MissionExecutionError("mission_execution_unsupported", "Mission execution must be prepared before dispatch");
+    }
+    const executions = this.ctx.taskStore;
+    if (!isTaskExecutionStore(executions)) {
+      if (task.activeRunId !== undefined || task.executionRevision !== undefined) {
+        throw new TaskExecutionError("task_execution_unsupported", "Task execution persistence is required for this Task");
+      }
+      return this.prepareAndSpawn(task);
+    }
+    // Claim before any asynchronous preparation. The stored Task is the source
+    // of the principal, assignment and input; the scheduler's snapshot may lag.
+    const claimed = await executions.claimTaskExecution(taskExecutionReference(task), nanoid());
+    try {
+      await this.prepareAndSpawn(claimed.task, claimed.run);
+    } catch (error) {
+      await this.ctx.runStore.completeRun(claimed.run.id, "failed", {
+        exitCode: 1, stdout: "", stderr: error instanceof Error ? error.message : "Task preparation failed", duration: 0,
+      });
+    }
+  }
+
+  private async claimIsActive(task: Task, run: RunRecord): Promise<boolean> {
+    const current = await this.ctx.taskStore.getTask(task.id);
+    if (!current || current.executionRevision !== task.executionRevision || current.activeRunId !== run.id) return false;
+    return (await this.ctx.runStore.getRun(run.id))?.status === "running";
+  }
+
+  private async prepareAndSpawn(task: Task, initialRun?: RunRecord): Promise<void> {
+    const claimed = initialRun !== undefined;
     const callerContext = { user: task.user, metadata: normalizeRuntimeMetadata(task.metadata) };
-    task = { ...task, ...callerContext };
+    const executionIdentity = claimed ? { id: task.id, executionRevision: task.executionRevision, activeRunId: task.activeRunId } : {};
+    task = { ...task, ...callerContext, ...executionIdentity };
     if (task.missionExecutionId) {
       if (!this.prepareMissionExecution) throw new MissionExecutionError("mission_execution_unsupported", "Mission execution must be prepared before dispatch");
       await this.prepareMissionExecution(task);
@@ -548,7 +617,7 @@ export class TaskRunner {
     if (!agent) {
       const message = `No agent "${task.assignTo}" for task "${task.title}"`;
       this.ctx.emitter.emit("log", { level: "error", message });
-      await this.failBeforeSpawn(task, message);
+      await this.failBeforeSpawn(task, message, initialRun);
       return;
     }
     const agentIdentity = snapshot ? agentIdentityFromSnapshot(snapshot) : undefined;
@@ -558,7 +627,7 @@ export class TaskRunner {
       if (pendingResume && (versioned || pendingResume.agentIdentity)) assertAgentIdentity(pendingResume.agentIdentity, snapshot);
     } catch (error) {
       this.pendingResume.delete(task.id);
-      await this.failBeforeSpawn(task, error instanceof Error ? error.message : "Agent identity check failed");
+      await this.failBeforeSpawn(task, error instanceof Error ? error.message : "Agent identity check failed", initialRun);
       return;
     }
 
@@ -576,40 +645,44 @@ export class TaskRunner {
           level: "error",
           message: `[${task.id}] Missing API key for ${detail} — cannot spawn agent "${agent.name}"`,
         });
-        await this.failBeforeSpawn(task, `Missing API key for ${detail}`);
+        await this.failBeforeSpawn(task, `Missing API key for ${detail}`, initialRun);
         return;
       }
     }
 
-    // Run before:task:spawn hook (sync — tick loop is synchronous)
-    const hookResult = this.ctx.hooks.runBeforeSync("task:spawn", { task, agent });
+    // Await durable decisions made by approval hooks before deciding whether
+    // a generic veto should return this attempt to the queue.
+    const hookResult = await this.ctx.hooks.runBefore("task:spawn", { task, agent });
     // Hooks may rewrite task content, but cannot change the admitted account.
-    task = { ...task, ...callerContext };
+    task = { ...task, ...callerContext, ...executionIdentity };
     if (hookResult.cancelled) {
       this.ctx.emitter.emit("log", {
         level: "info",
         message: `[${task.id}] Spawn blocked by hook: ${hookResult.cancelReason ?? "no reason"}`,
       });
+      if (claimed && isTaskExecutionStore(this.ctx.taskStore)) {
+        await this.ctx.taskStore.mutateTaskExecution(taskExecutionReference(task), {
+          type: "requeue", countRetry: false, reason: "Spawn blocked by hook",
+        });
+      }
       return;  // task stays pending — will be re-evaluated next tick
     }
 
-    await this.ctx.taskStore.transition(task.id, "assigned");
-    await this.ctx.taskStore.transition(task.id, "in_progress");
-
-    // Set phase if not already set (new tasks start in execution phase)
-    if (!task.phase) {
-      await this.ctx.taskStore.updateTask(task.id, { phase: "execution" });
+    if (!claimed) {
+      await this.ctx.taskStore.transition(task.id, "assigned");
+      await this.ctx.taskStore.transition(task.id, "in_progress");
+      if (!task.phase) await this.ctx.taskStore.updateTask(task.id, { phase: "execution" });
     }
 
-    const runId = nanoid();
+    const runId = initialRun?.id ?? nanoid();
 
     // Create per-task output directory for deliverables
     const outputDir = pathJoin(this.ctx.polpoDir, "output", task.id);
 
     // Establish the durable Run before memory, mission context, storage or
     // sandbox preparation. Any subsequent failure is therefore inspectable.
-    const startedAt = new Date().toISOString();
-    const initialRun: RunRecord = {
+    const startedAt = initialRun?.startedAt ?? new Date().toISOString();
+    initialRun ??= {
       id: runId,
       taskId: task.id,
       pid: 0,
@@ -625,9 +698,10 @@ export class TaskRunner {
       engine: "agent",
       delivery: "background",
     };
-    await this.ctx.runStore.upsertRun(initialRun);
+    if (!claimed) await this.ctx.runStore.upsertRun(initialRun);
 
     try {
+      if (claimed && !await this.claimIsActive(task, initialRun)) return;
       let runtimeContext: RuntimeContextResolution | undefined;
       try {
         runtimeContext = await resolveRuntimeContext(this.ctx.runtimeContext, {
@@ -641,6 +715,7 @@ export class TaskRunner {
       } catch {
         throw new Error("Runtime context retrieval failed");
       }
+      if (claimed && !await this.claimIsActive(task, initialRun)) return;
       const executionRoute = await this.resolveTaskExecutionRoute(task, agent);
 
       const contextTrust = this.ctx.config.settings.contextTrust === "enforce"
@@ -794,6 +869,7 @@ export class TaskRunner {
 
       // Persist the complete input before handing control to the host. This is
       // also the recovery/debug snapshot when host acquisition fails.
+      if (claimed && !await this.claimIsActive(task, initialRun)) return;
       await this.ctx.runStore.upsertRun({
         ...initialRun,
         executionMode,
@@ -801,7 +877,15 @@ export class TaskRunner {
         updatedAt: new Date().toISOString(),
       });
 
+      if (claimed && !await this.claimIsActive(task, initialRun)) return;
       const spawnResult = await this.ctx.spawner.spawn(runnerConfig);
+
+      // A host may finish acquisition after cancellation. Only this spawn's
+      // returned handle is local authority to kill; a persisted foreign PID is not.
+      if (claimed && (await this.ctx.runStore.getRun(runId))?.status === "killed") {
+        if (this.ctx.spawner.cancelRun) await this.ctx.spawner.cancelRun(runId);
+        else this.ctx.spawner.kill(spawnResult.pid);
+      }
 
       // Never upsert the whole record here: an in-process runner can complete
       // before spawn() returns. Updating only spawn metadata cannot resurrect

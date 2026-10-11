@@ -216,7 +216,7 @@ describe("InProcessSpawner", () => {
     expect(remoteFs.mkdir).not.toHaveBeenCalled();
   });
 
-  test("lifecycle: isAlive during the run, false after; kill() → run killed", async () => {
+  test.each(["pid", "run"])("lifecycle: cancellation by %s → run killed", async kind => {
     // Model blocks until aborted.
     let modelStarted = false;
     setMockModel(new MockLanguageModelV3({
@@ -237,7 +237,10 @@ describe("InProcessSpawner", () => {
 
     // Kill mid-turn — the AbortController reaches the engine.
     await vi.waitFor(() => expect(modelStarted).toBe(true));
-    spawner.kill(spawnResult.pid);
+    spawner.cancelRun("unknown-run");
+    expect(spawner.isAlive(spawnResult.pid)).toBe(true);
+    if (kind === "pid") spawner.kill(spawnResult.pid);
+    else spawner.cancelRun(config.runId);
     await onExitPromise(spawnResult);
 
     expect(spawner.isAlive(spawnResult.pid)).toBe(false);
@@ -245,6 +248,7 @@ describe("InProcessSpawner", () => {
     expect(run?.status).toBe("killed");
     expect(run?.result?.exitCode).toBe(1);
     expect(run?.result?.stderr).toContain("Killed by SIGTERM (timeout or shutdown)");
+    expect(() => spawner.cancelRun(config.runId)).not.toThrow();
   });
 
   test("kill of an unknown pid is a safe no-op", () => {

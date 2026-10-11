@@ -109,23 +109,26 @@ export function prepareTaskExecutionMutation(task: Task | undefined, run: RunRec
   const terminalTask = task.status === "done" || task.status === "failed";
   if (mutation.type === "cancel" && terminalTask && task.activeRunId === undefined) return { task, run };
   const requeue = mutation.type === "requeue" || (mutation.type === "transition" && mutation.status === "pending");
+  const awaitingApproval = mutation.type === "transition" && mutation.status === "awaiting_approval";
   if (mutation.type === "transition") assertValidTransition(task.status, mutation.status);
   if (mutation.type === "requeue") {
-    if (task.status === "draft" || task.status === "pending" || task.status === "done") conflict();
-    if (mutation.countRetry && task.status !== "failed") conflict();
+    // Escalation may replace work that is still queued. Publishing its new
+    // input also advances the generation so a scheduler holding the previous
+    // pending snapshot cannot claim it. Counted retries still require a run.
+    if (task.status === "draft" || task.status === "done") conflict();
+    if (mutation.countRetry && !["failed", "review", "in_progress", "assigned"].includes(task.status)) conflict();
   }
   const updated: Task = { ...task, ...(mutation.type === "cancel" ? {} : mutation.updates), updatedAt: now };
   if (mutation.type === "transition") updated.status = mutation.status;
-  if (requeue || mutation.type === "cancel") {
+  if (requeue || awaitingApproval || mutation.type === "cancel") {
     updated.executionRevision = nextTaskExecutionRevision(task);
+    updated.activeRunId = undefined;
     if (requeue) {
       updated.status = "pending";
-      updated.activeRunId = undefined;
       const countRetry = mutation.type === "requeue" ? mutation.countRetry : task.status === "failed";
       updated.retries = task.retries + (countRetry ? 1 : 0);
     } else if (mutation.type === "cancel") {
       // The old Run remains history, but no longer owns the Task generation.
-      updated.activeRunId = undefined;
       if (!terminalTask) {
         updated.status = "failed";
         updated.result = { exitCode: 1, stdout: "", stderr: mutation.reason || "Task cancelled", duration: 0 };
@@ -134,7 +137,7 @@ export function prepareTaskExecutionMutation(task: Task | undefined, run: RunRec
     }
     if (run?.status === "running") {
       run = { ...run, status: "killed", completedAt: now, updatedAt: now,
-        result: { exitCode: 1, stdout: "", stderr: mutation.type === "cancel" ? mutation.reason || "Task cancelled" : "Task requeued",
+        result: { exitCode: 1, stdout: "", stderr: mutation.type === "cancel" ? mutation.reason || "Task cancelled" : awaitingApproval ? "Task awaiting approval" : "Task requeued",
           duration: Math.max(0, Date.parse(now) - Date.parse(run.startedAt)) } };
     }
   }
