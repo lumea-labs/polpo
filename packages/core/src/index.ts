@@ -555,6 +555,13 @@ export {
   MAX_MCP_RUNNER_REQUEST_BYTES, MAX_MCP_RUNNER_RESPONSE_BYTES, MCP_RUNNER_REQUEST_TIMEOUT_MS,
 } from "./mcp-runner.js";
 export type { McpRunnerLeasePayload, McpRunnerRequest, McpRunnerInventory } from "./mcp-runner.js";
+export {
+  createRemoteCustomTools, CustomToolRunnerLeasePayloadSchema, CustomToolRunnerRequestSchema,
+  CustomToolRunnerInventorySchema, CustomToolRunnerResultSchema, CUSTOM_TOOL_RUNNER_LEASE_VERSION,
+  MAX_CUSTOM_TOOL_RUNNER_REQUEST_BYTES, MAX_CUSTOM_TOOL_RUNNER_RESPONSE_BYTES,
+  CUSTOM_TOOL_RUNNER_INVENTORY_TIMEOUT_MS, CUSTOM_TOOL_RUNNER_CALL_TIMEOUT_MS,
+} from "./custom-tool-runner.js";
+export type { CustomToolRunnerLeasePayload, CustomToolRunnerRequest, CustomToolRunnerInventory } from "./custom-tool-runner.js";
 export type {
   McpCapabilityTool, McpCapabilityResolveInput, ResolvedMcpCapability,
   McpCapabilityResolver, McpRuntimeCapabilityProvider, McpRuntimeCapabilities,

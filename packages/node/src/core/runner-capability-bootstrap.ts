@@ -1,9 +1,9 @@
 import { createRemoteDataClient, type DataClient } from "@polpo-ai/core/data";
 import type { Readable } from "node:stream";
 import {
-  createRemoteMcpRuntimeCapabilities, RunnerCapabilityBootstrapPayloadSchema,
+  createRemoteMcpRuntimeCapabilities, createRemoteCustomTools, RunnerCapabilityBootstrapPayloadSchema,
   MAX_RUNNER_CAPABILITY_BOOTSTRAP_BYTES, RUNNER_CAPABILITY_BOOTSTRAP_TIMEOUT_MS,
-  type RunnerCapabilityBootstrapPayload, type ResolveMcpRuntimeCapabilities,
+  type RunnerCapabilityBootstrapPayload, type ResolveMcpRuntimeCapabilities, type ResolveCustomTools,
   normalizeAgentIdentity, type RunnerConfig,
 } from "@polpo-ai/core";
 
@@ -41,7 +41,7 @@ export function readRunnerCapabilities(input: Readable, onReady: () => void): Pr
       try {
         if (buffered.subarray(newline + 1).toString("utf8").trim()) { invalid(); return; }
         const result = RunnerCapabilityBootstrapPayloadSchema.safeParse(JSON.parse(buffered.subarray(0, newline).toString("utf8")));
-        if (!result.success || (result.data.mcp && Date.parse(result.data.mcp.expiresAt) <= Date.now())) { invalid(); return; }
+        if (!result.success || [result.data.mcp, result.data.customTools].some(lease => lease && Date.parse(lease.expiresAt) <= Date.now())) { invalid(); return; }
         settled = true;
         cleanup();
         resolve(Object.freeze(result.data));
@@ -56,17 +56,17 @@ export function readRunnerCapabilities(input: Readable, onReady: () => void): Pr
   });
 }
 
-/** Validate every binding before constructing either port. Null Data means the
- * host explicitly granted none, so executeRun must not consult ambient env. */
+/** Validate every binding before constructing ports. The frame is the explicit
+ * grant ceiling: absent Data/custom tools must not use ambient env/local code. */
 export function bindRunnerCapabilities(
   input: unknown,
   config: Pick<RunnerConfig, "runId" | "agentIdentity" | "toolInvocation"> & { agent: { name: string } },
-): { data: DataClient | null; resolveMcpCapabilities?: ResolveMcpRuntimeCapabilities } {
+): { data: DataClient | null; resolveMcpCapabilities?: ResolveMcpRuntimeCapabilities; resolveCustomTools: ResolveCustomTools } {
   const parsed = RunnerCapabilityBootstrapPayloadSchema.safeParse(input);
   if (!parsed.success) throw failed();
   const payload = parsed.data;
   if (payload.runId !== config.runId || payload.agentName !== config.agent.name
-    || (payload.mcp && Date.parse(payload.mcp.expiresAt) <= Date.now())) throw failed();
+    || [payload.mcp, payload.customTools].some(lease => lease && Date.parse(lease.expiresAt) <= Date.now())) throw failed();
   try {
     const identity = config.agentIdentity ? normalizeAgentIdentity(config.agentIdentity) : undefined;
     if (identity?.name !== payload.agentIdentity?.name || identity?.incarnation !== payload.agentIdentity?.incarnation
@@ -75,8 +75,9 @@ export function bindRunnerCapabilities(
         || config.toolInvocation.agent.incarnation !== identity?.incarnation))
       || (config.toolInvocation && config.toolInvocation.runId !== config.runId)) throw failed();
     const resolveMcpCapabilities = payload.mcp ? createRemoteMcpRuntimeCapabilities(payload.mcp) : undefined;
+    const resolveCustomTools: ResolveCustomTools = payload.customTools ? createRemoteCustomTools(payload.customTools) : async () => [];
     const data = payload.data ? createRemoteDataClient({ url: payload.data.url, token: payload.data.token,
       headers: { "x-polpo-sandbox-id": payload.data.sandboxId } }) : null;
-    return { data, resolveMcpCapabilities };
+    return { data, resolveMcpCapabilities, resolveCustomTools };
   } catch { throw failed(); }
 }

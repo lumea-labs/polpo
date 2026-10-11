@@ -5,7 +5,7 @@ import { readRunnerCapabilities, bindRunnerCapabilities } from "../core/runner-c
 const mcp = () => ({ version: 2 as const, url: "https://polpo.example/mcp", token: "fixture-secret",
   agentName: "support", agentIdentity: { name: "support", incarnation: "original" }, runId: "run", sandboxId: "sandbox", expiresAt: new Date(Date.now() + 60_000).toISOString() });
 
-const payload = () => ({ version: 2 as const, agentName: "support", agentIdentity: { name: "support", incarnation: "original" }, runId: "run", sandboxId: "sandbox", mcp: mcp(),
+const payload = () => ({ version: 3 as const, agentName: "support", agentIdentity: { name: "support", incarnation: "original" }, runId: "run", sandboxId: "sandbox", mcp: mcp(),
   data: { url: "https://polpo.example/data", token: "data-secret", sandboxId: "sandbox", agentName: "support" } });
 
 afterEach(() => vi.useRealTimers());
@@ -98,6 +98,30 @@ describe("combined runner capabilities", () => {
     const ports = bindRunnerCapabilities(input, config);
     expect(ports.resolveMcpCapabilities).toBeUndefined();
     expect(typeof ports.data?.list).toBe("function");
+  });
+  it("binds a custom-tool-only runner without implicit Data or local tool fallback", async () => {
+    const { data: _, mcp: granted, ...input } = payload();
+    const ports = bindRunnerCapabilities({ ...input, customTools: { ...granted, version: 1 } }, config);
+    expect(ports.data).toBeNull();
+    expect(ports.resolveMcpCapabilities).toBeUndefined();
+    expect(typeof ports.resolveCustomTools).toBe("function");
+    const stream = new PassThrough();
+    await expect(readRunnerCapabilities(stream, () => stream.write(JSON.stringify({ ...input,
+      customTools: { ...granted, version: 1, expiresAt: "2000-01-01T00:00:00.000Z" } }) + "\n"))).rejects.toThrow();
+  });
+  it("explicitly returns an empty custom-tool host when the frame grants none", async () => {
+    const ports = bindRunnerCapabilities(payload(), config);
+    expect(await ports.resolveCustomTools?.({ agentName: "support", allowedTools: ["*"] })).toEqual([]);
+  });
+  it.each(["run", "sandbox", "identity", "expired", "missing-identity", "version"])("rejects custom-tool %s without constructing any port", scenario => {
+    const input: any = { ...payload(), customTools: { ...mcp(), version: 1 } };
+    if (scenario === "run") input.customTools.runId = "other";
+    if (scenario === "sandbox") input.customTools.sandboxId = "other";
+    if (scenario === "identity") input.customTools.agentIdentity.incarnation = "replacement";
+    if (scenario === "expired") input.customTools.expiresAt = "2000-01-01T00:00:00.000Z";
+    if (scenario === "missing-identity") delete input.agentIdentity;
+    if (scenario === "version") input.version = 2;
+    expect(() => bindRunnerCapabilities(input, config)).toThrow(/^Runner capability bootstrap failed$/);
   });
   it.each(["data-agent", "data-sandbox", "mcp-agent", "mcp-run", "mcp-sandbox", "http", "credentials", "query", "empty", "mcp-lifetime", "missing-identity", "old-protocol"])("rejects the entire frame for %s", scenario => {
     const input: any = payload();

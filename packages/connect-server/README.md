@@ -193,18 +193,46 @@ bounded, including cancellation during acquisition. Responses and errors never
 include the host's raw diagnostics.
 
 The Node runner accepts `--capabilities-stdin`. Before loading configuration it
-emits `POLPO_RUNNER_CAPABILITIES_READY_V1`, consumes one newline-delimited JSON
+emits `POLPO_RUNNER_CAPABILITIES_READY_V3`, consumes one newline-delimited JSON
 envelope (16-KiB maximum, 30-second timeout), pauses stdin and removes listeners.
-The envelope carries a shared agent/run/sandbox identity and optional `mcp` and
-`data` leases; at least one must exist. It validates every nested binding before
-constructing either runtime port. An absent Data binding explicitly disables
-ambient Data fallback. The two remote protocols remain independent. The host must
+The version-3 envelope carries a shared agent/run/sandbox identity and optional
+`mcp`, `data` and `customTools` leases; at least one must exist. MCP and custom
+tools bind the captured agent incarnation as well as its name. It validates every
+nested binding before constructing ports. Absent Data and custom-tool bindings
+explicitly disable ambient Data and local tool-import fallbacks. The remote
+protocols remain independent (MCP lease version 2, custom-tool lease version 1).
+Old bootstrap versions are rejected; deploy the host and runner together. The host must
 disable input echo, wait for readiness, send the frame once, and revoke it on
 every exit. Do not put the bearer in argv, shell commands, persistent sandbox
 environment, RunnerConfig or RunStore. A late or uncertain delivery requires
 revocation and process termination, not retransmission. This is a host adapter
 contract; providing these OSS primitives does not itself configure Cloud lease
 storage or a remote sandbox lifecycle.
+
+### Remote custom tools
+
+`ResolveCustomTools` lets a trusted host own custom-tool loading and isolated
+execution. The Node runtime keeps exact-name/`*` assignment and narrower tool
+policies. A configured host returning no tools or throwing never enables local
+bundle imports; an unconfigured standalone OSS runtime retains its local loader.
+
+`createRemoteCustomTools` implements this port using a run lease, and
+`createCustomToolRunnerBroker` supplies its HTTP-neutral host endpoint. The wire
+contains only `inventory` and `call { toolName, toolCallId, arguments }`.
+The host supplies a frozen inventory, immutable invocation, atomic call-ID
+consumption, live lease/run authorization and an isolated tool resolver. The
+broker compares current public metadata with the issued inventory before
+execution. The host must recheck authorization after asynchronous preparation
+and immediately before delivering credentials, and clean up on cancellation.
+Provider/account choice, Connection slots and gateway/direct credential mode
+remain host-owned. This is an agent-run endpoint, not a public integration API.
+
+The transport never retries calls or follows redirects, strips raw diagnostic
+errors, and limits requests to 2 MiB and results to 8 MiB. Inventory has a
+30-second deadline; execution allows the existing 30-minute tool ceiling plus
+30 seconds for setup/cleanup, always bounded by lease expiry. The host applies
+each tool's narrower timeout. Neither bearer tokens nor provider credentials
+appear in the model-visible inventory.
 
 ### OAuth host authorization
 
