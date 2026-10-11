@@ -65,6 +65,7 @@ export interface InProcessSpawnerDeps {
   /** Optional host checkpoint for manually managed hydrated sandbox volumes. */
   checkpointSandboxVolume?: (name?: string) => Promise<void>;
   connectionCapabilityResolver?: import("@polpo-ai/core").ConnectionCapabilityResolver;
+  resolveMcpCapabilities?: import("@polpo-ai/core").ResolveMcpRuntimeCapabilities;
   /** Finalize run-scoped host resources before the run becomes terminal. */
   finalize?: () => Promise<void>;
   /** Optional host-resolved guardrail middleware. */

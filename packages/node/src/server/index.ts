@@ -59,7 +59,8 @@ export class PolpoServer {
   /** Start the server: init orchestrator if config exists, bind HTTP. */
   async start(): Promise<void> {
     const workDir = resolve(this.config.workDir);
-    this.orchestrator = new Orchestrator(workDir);
+    this.orchestrator = new Orchestrator({ workDir, connectionCapabilityResolver: this.config.connectionCapabilityResolver,
+      resolveMcpCapabilities: this.config.resolveMcpCapabilities });
 
     const configPath = projectConfigPath(getPolpoDir(workDir));
     const hasConfig = existsSync(configPath);
@@ -83,6 +84,9 @@ export class PolpoServer {
       workDir,
       onInitialize: (workDir: string) => this.completeSetup(workDir),
       channels: this.config.channels,
+      connectService: this.config.connectService,
+      connectionCapabilityResolver: this.config.connectionCapabilityResolver,
+      resolveMcpCapabilities: this.config.resolveMcpCapabilities,
     });
 
     this.server = serve({
@@ -157,7 +161,7 @@ export {
   taskRoutes, missionRoutes, chatRoutes, approvalRoutes,
   playbookRoutes, stateRoutes, completionRoutes, scheduleRoutes,
   watcherRoutes, vaultRoutes, healthRoutes, agentRoutes, eventRoutes, configRoutes,
-  brainRoutes,
+  brainRoutes, connectRoutes,
 } from "@polpo-ai/server";
 // eventRoutes now in @polpo-ai/server (decoupled with EventBridge interface)
 export { skillRoutes } from "./routes/skills.js";

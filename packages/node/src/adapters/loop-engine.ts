@@ -249,6 +249,7 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
   let alive = true;
 
   const abortController = new AbortController();
+  const toolCleanups = new Set<() => Promise<void>>();
   const steering = ctx?.steering
     ?? (ctx?.resumeState?.steering
       ? InMemorySteeringController.fromSnapshot(ctx.resumeState.steering)
@@ -408,8 +409,11 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
     resume?: LoopResumeState;
     /** Durable-turns checkpoint sink — wired to RunStore.updateResumeState by the runner. */
     onCheckpoint?: (state: LoopResumeState) => void | Promise<void>;
+    projectAllowedTools?: string[];
   }): Promise<{ lastText: string; accumText: string }> {
     const { sessionAgent, loopName, loop, contextPrompt } = options;
+    let sessionCleanup: (() => Promise<void>) | undefined;
+    try {
     const resume = usableResumeState(options.resume, loopName);
     const inject = ctx?.inject;
 
@@ -444,7 +448,11 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
         ? `${prep.systemPrompt}\n\n${contextPrompt}`
         : prep.systemPrompt;
       maxTurns = loop.maxTurns ?? prep.maxTurns;
-      const allPolpoTools = await buildAgentTools(sessionAgent, cwd, prep, ctx);
+      const resolved = await buildAgentTools(sessionAgent, cwd, prep, ctx, { signal: abortController.signal,
+        policy: { loop: options.projectAllowedTools, step: loop.allowedTools ?? loop.tools } });
+      toolCleanups.add(resolved.cleanup);
+      sessionCleanup = resolved.cleanup;
+      const allPolpoTools = resolved.tools;
       toolByName = new Map(allPolpoTools.map((t) => [t.name, t]));
       toolSet = toToolDeclarations(allPolpoTools);
       compactionTools = allPolpoTools.map((t) => ({ description: t.description ?? "" }));
@@ -960,6 +968,12 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
     }
 
     return { lastText: lastStepText, accumText };
+    } finally {
+      if (sessionCleanup) {
+        await sessionCleanup().catch(() => undefined);
+        toolCleanups.delete(sessionCleanup);
+      }
+    }
   }
 
   /**
@@ -991,8 +1005,10 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
     const getBaseTools = () => {
       baseToolsPromise ??= (async () => {
         const prep = prepareSpawn(agentConfig, cwd, ctx);
-        const tools = await buildAgentTools(agentConfig, cwd, prep, ctx);
-        return new Map(tools.map((t) => [t.name, t]));
+        const resolved = await buildAgentTools(agentConfig, cwd, prep, ctx, { signal: abortController.signal,
+          policy: { loop: projectLoop.allowedTools } });
+        toolCleanups.add(resolved.cleanup);
+        return new Map(resolved.tools.map((t) => [t.name, t]));
       })();
       return baseToolsPromise;
     };
@@ -1084,6 +1100,7 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
         const stepAgent = buildLoopStepAgent(agentConfig, name, loop);
         const session = await runLoopSession({
           sessionAgent: stepAgent,
+          projectAllowedTools: projectLoop.allowedTools,
           loopName: name,
           loop,
           contextPrompt: agentInput
@@ -1231,6 +1248,8 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
         duration: Date.now() - start,
       };
     } finally {
+      await Promise.allSettled([...toolCleanups].map(cleanup => cleanup()));
+      toolCleanups.clear();
       steering.signal.removeEventListener("abort", onSteeringAbort);
       steering.close();
       // Close agent-browser session (profile data auto-persisted by --profile).

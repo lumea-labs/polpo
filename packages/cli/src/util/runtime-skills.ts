@@ -10,6 +10,7 @@ import {
   detectAgentLayout,
   readProjectAgents,
   writeProjectAgent,
+  withProjectFileTransaction,
 } from "@polpo-ai/file-stores";
 import {
   collectLocalSkillBundle,
@@ -201,25 +202,27 @@ function updateAgentSkillAssignments(
   operation: "assign" | "unassign",
 ): Array<{ agent: string; skill: string }> {
   if (agentNames.length === 0 || skillNames.length === 0) return [];
-  requireDirectoryAgents(polpoDir);
-  const entries = readProjectAgents(polpoDir);
-  const byName = new Map(entries.map((entry) => [entry.agent.name, entry]));
-  const missing = [...new Set(agentNames)].filter((name) => !byName.has(name));
-  if (missing.length > 0) throw new Error(`Unknown agent${missing.length === 1 ? "" : "s"}: ${missing.join(", ")}`);
+  return withProjectFileTransaction(polpoDir, () => {
+    requireDirectoryAgents(polpoDir);
+    const entries = readProjectAgents(polpoDir);
+    const byName = new Map(entries.map((entry) => [entry.agent.name, entry]));
+    const missing = [...new Set(agentNames)].filter((name) => !byName.has(name));
+    if (missing.length > 0) throw new Error(`Unknown agent${missing.length === 1 ? "" : "s"}: ${missing.join(", ")}`);
 
-  const changes: Array<{ agent: string; skill: string }> = [];
-  for (const agentName of [...new Set(agentNames)]) {
-    const entry = byName.get(agentName)!;
-    const current = new Set(entry.agent.skills ?? []);
-    for (const skillName of skillNames) {
-      const had = current.has(skillName);
-      if (operation === "assign") current.add(skillName);
-      else current.delete(skillName);
-      if (had !== current.has(skillName)) changes.push({ agent: agentName, skill: skillName });
+    const changes: Array<{ agent: string; skill: string }> = [];
+    for (const agentName of [...new Set(agentNames)]) {
+      const entry = byName.get(agentName)!;
+      const current = new Set(entry.agent.skills ?? []);
+      for (const skillName of skillNames) {
+        const had = current.has(skillName);
+        if (operation === "assign") current.add(skillName);
+        else current.delete(skillName);
+        if (had !== current.has(skillName)) changes.push({ agent: agentName, skill: skillName });
+      }
+      writeProjectAgent(polpoDir, { ...entry.agent, skills: [...current].sort() }, entry.teamName);
     }
-    writeProjectAgent(polpoDir, { ...entry.agent, skills: [...current].sort() }, entry.teamName);
-  }
-  return changes;
+    return changes;
+  });
 }
 
 export function assignRuntimeSkills(

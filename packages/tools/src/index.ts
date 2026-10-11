@@ -26,7 +26,7 @@ export {
 } from "./skill-tools.js";
 export type { SkillToolOptions } from "./skill-tools.js";
 export { createVaultToolsCore, createVaultTools, ALL_VAULT_TOOL_NAMES } from "./vault-tools.js";
-export { resolveAgentMcpTools } from "./mcp-client.js";
+export { resolveAgentMcpTools, resolveConnectionMcpTools, resolveRuntimeMcpTools } from "./mcp-client.js";
 export type {
   McpRuntimeOAuthProvider,
   McpRuntimeOAuthProviders,

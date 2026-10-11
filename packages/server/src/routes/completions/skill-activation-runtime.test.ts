@@ -84,6 +84,7 @@ describe("per-request skill activation", () => {
       }),
       undefined,
       expect.any(Object),
+      undefined,
     );
   });
 

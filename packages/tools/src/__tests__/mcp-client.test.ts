@@ -70,6 +70,19 @@ describe("resolveAgentMcpTools", () => {
     expect(createClientMock).not.toHaveBeenCalled();
   });
 
+  it.each([
+    { type: "http", url: "https://mcp.example", connectionId: "private-account" },
+    { type: "sse", url: "https://mcp.example", headers: { Authorization: "Bearer ${connection:private-account:accessToken}" } },
+    { type: "http", url: "https://mcp.example/${connection:private-account}" },
+    { command: "mcp-server", args: ["${connection:private-account:accessToken}"] },
+    { command: "mcp-server", env: { TOKEN: "${connection:private-account}" } },
+  ] satisfies McpServerSpec[])("rejects Connection references before opening any direct transport (%j)", async spec => {
+    await expect(resolveAgentMcpTools("agent-1", {
+      public: { type: "http", url: "https://public.example" }, managed: spec,
+    }, fakeVault)).rejects.toMatchObject({ code: "connection_scope_denied" });
+    expect(createClientMock).not.toHaveBeenCalled();
+  });
+
   it("namespaces tools as mcp__<server>__<tool>", async () => {
     const servers: Record<string, McpServerSpec> = {
       polpo: { type: "http", url: "https://api.polpo.sh/mcp" },
@@ -92,7 +105,7 @@ describe("resolveAgentMcpTools", () => {
     expect(call.transport.headers.Authorization).toBe("Bearer secret-123");
   });
 
-  it("passes host-owned OAuth providers to HTTP transports without serializing credentials", async () => {
+  it("supports operator-owned OAuth on a direct server without a Connection reference", async () => {
     const oauthProvider = {
       tokens: vi.fn(async () => ({ access_token: "access-1", token_type: "Bearer" })),
       saveTokens: vi.fn(async () => {}),
@@ -107,7 +120,7 @@ describe("resolveAgentMcpTools", () => {
       clientInformation: vi.fn(async () => ({ client_id: "client-1" })),
     };
     const servers: Record<string, McpServerSpec> = {
-      linear: { type: "http", url: "https://mcp.linear.app/mcp", connectionId: "conn_linear" },
+      linear: { type: "http", url: "https://mcp.linear.app/mcp" },
     };
 
     await resolveAgentMcpTools("agent-1", servers, undefined, { linear: oauthProvider });

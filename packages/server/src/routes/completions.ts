@@ -146,6 +146,9 @@ export interface CompletionRunDeliveryScopeInput {
  */
 export interface CompletionRouteDeps {
   getAgents: () => Promise<any[]>;
+  /** Atomically load execution config and creation identity. When provided,
+   * absence never falls back to an unversioned lookup. */
+  getAgentSnapshot?: import("@polpo-ai/core").VersionedAgentStore["getAgentSnapshot"];
   getConfig: () => any;
   getMemoryStore: () => any;
   getSessionStore: () => any;
@@ -239,6 +242,7 @@ export interface CompletionRouteDeps {
     agentConfig: any,
     runScope?: CompletionToolRunScope,
     invocation?: ToolInvocationContext,
+    signal?: AbortSignal,
   ) => Promise<{
     tools: any[];
     /**
@@ -512,6 +516,7 @@ export function completionRoutes(getDeps: () => CompletionRouteDeps, apiKeys?: s
         body: prepared.body,
         completionId: prepared.completionId,
         agentConfig: prepared.agentConfig,
+        agentIdentity: prepared.agentIdentity,
         projectLoop: prepared.projectLoop,
         aiMessages: prepared.aiMessages,
         extraSystemParts: prepared.extraSystemParts,

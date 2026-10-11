@@ -356,23 +356,26 @@ export default defineTool({
   connections: {
     siteApi: {
       provider: "sitoinchat",
+      mode: "gateway",
       scopes: ["site:read", "site:write"],
     },
   },
   async execute(ctx, params) {
     const siteApi = ctx.connections.require("siteApi");
-    const response = await fetch("https://api.example.com/sites/current/publish", {
+    const response = await siteApi.request({
       method: "POST",
-      headers: {
-        ...siteApi.getHeaders(),
-        "content-type": "application/json",
-      },
-      body: JSON.stringify(params),
+      path: "/sites/current/publish",
+      body: params,
     });
-    return await response.text();
+    if (response.status >= 400) throw new Error(`Site API returned ${response.status}`);
+    return JSON.stringify(response.body);
   },
 });
 ```
+
+This example assumes a configured `sitoinchat` HTTP Connector whose request
+policy permits the operation. The gateway attaches credentials outside the
+tool sandbox; the tool receives only the provider response.
 
 Strict slots never fall back to a project-level Connection. Missing, denied,
 or ambiguous selections fail before tool code runs. Capabilities are invalidated

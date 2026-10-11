@@ -141,6 +141,48 @@ afterAll(async () => {
 // ── Tests ───────────────────────────────────────────────
 
 describe("executeRun — shared run lifecycle", () => {
+  test.each([
+    { agentIdentity: { name: "another-agent", incarnation: "original" } },
+    { agentIdentity: { name: "lifecycle-agent", incarnation: "original" }, toolInvocation: {
+      requestId: "r", runId: "r", surface: "task" as const, metadata: {}, agent: { name: "lifecycle-agent", incarnation: "replacement" },
+    } },
+  ])("refuses inconsistent runner agent identity before creating capabilities: %j", async binding => {
+    const resolveMcpCapabilities = vi.fn();
+    const outcome = await executeRun(makeConfig(binding), { runStore: new InMemoryRunStore(), pid: -1, configPath: "memory://identity",
+      resolveMcpCapabilities });
+    expect(outcome.status).toBe("failed");
+    expect(outcome.result.stderr).toMatch(/identity/i);
+    expect(resolveMcpCapabilities).not.toHaveBeenCalled();
+  });
+  test("carries host MCP capability selection through the real task lifecycle and cleans up each call", async () => {
+    setMockModel(mockTurnSequenceModel([
+      { type: "tool-call", toolName: "mcp__docs__read", args: { user: "forged" } },
+      { type: "text", text: "done" },
+    ]));
+    const dispose = vi.fn();
+    const resolve = vi.fn(async (_input: import("@polpo-ai/core").McpCapabilityResolveInput) => ({
+      call: async () => ({ content: [{ type: "text", text: "private account read" }] }), dispose,
+    }));
+    const config = makeConfig({ agent: makeAgent({ allowedTools: ["mcp__docs__read"] }), task: makeTask({ user: "customer-a" }),
+      agentIdentity: { name: "lifecycle-agent", incarnation: "original" } });
+    const outcome = await executeRun(config, { runStore: new InMemoryRunStore(), pid: -1, configPath: "memory://mcp",
+      resolveMcpCapabilities: () => ({ docs: { tools: [{ name: "read", inputSchema: { type: "object" } }], resolver: { resolve } } }),
+    });
+    expect(outcome.status).toBe("completed");
+    expect(resolve).toHaveBeenCalledOnce();
+    expect(resolve.mock.calls[0][0].invocation).toMatchObject({ user: "customer-a", runId: config.runId, surface: "task",
+      agent: { name: "lifecycle-agent", incarnation: "original" } });
+    expect(dispose).toHaveBeenCalledOnce();
+  });
+  test("fails a Connection-backed subprocess configuration without a host resolver instead of using its URL", async () => {
+    setMockModel(mockTextModel("must not start"));
+    const config = makeConfig({ agent: makeAgent({ mcpServers: { docs: {
+      type: "http", url: "https://must-not-be-opened.example/mcp", connectionId: "physical-account",
+    } } }) });
+    const outcome = await executeRun(config, { runStore: new InMemoryRunStore(), pid: 1, configPath: "file://runner" });
+    expect(outcome.status).toBe("failed");
+    expect(outcome.result.stderr).toContain("MCP Connection capability is unavailable");
+  });
   test("local activity logging is best-effort for a non-writable remote polpoDir", async () => {
     const notADirectory = join(tmpRoot, "not-a-directory");
     await import("node:fs/promises").then(({ writeFile }) => writeFile(notADirectory, "file"));
@@ -1128,4 +1170,19 @@ describe("executeRun — shared run lifecycle", () => {
     // Transcript entries flowed through the session.
     expect(appended.some((e) => e.event === "transcript:assistant")).toBe(true);
   });
+});
+
+
+test("explicitly absent host Data capability does not fall back to an environment token", async () => {
+  const previous = process.env.POLPO_DATA_CAPABILITY;
+  process.env.POLPO_DATA_CAPABILITY = "invalid-legacy-value";
+  try {
+    setMockModel(mockTextModel("completed without data"));
+    const result = await executeRun(makeConfig(), { runStore: new InMemoryRunStore(), pid: 1, configPath: "memory://test", data: null });
+    expect(result.status).toBe("completed");
+    expect(process.env.POLPO_DATA_CAPABILITY).toBe("invalid-legacy-value");
+  } finally {
+    if (previous === undefined) delete process.env.POLPO_DATA_CAPABILITY;
+    else process.env.POLPO_DATA_CAPABILITY = previous;
+  }
 });

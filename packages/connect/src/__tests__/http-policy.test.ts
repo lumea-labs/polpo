@@ -19,6 +19,22 @@ const policy = normalizeConnectorHttpPolicy({
 });
 
 describe("Connector HTTP policy", () => {
+  it("rejects malformed JSON policy fields with a policy error rather than a TypeError", () => {
+    for (const invalid of [
+      { allowedMethods: "GET" }, { allowedMethods: [null] }, { allowedPathPatterns: [5] },
+      { auth: { mode: "header", name: 123 } }, { origins: [false] },
+    ]) {
+      expect(() => normalizeConnectorHttpPolicy({ ...policy, ...invalid } as never))
+        .toThrow(expect.objectContaining({ code: "connection_operation_denied" }));
+    }
+  });
+
+  it("rejects IPv4-mapped IPv6 private addresses", () => {
+    for (const origin of ["https://[::ffff:7f00:1]", "https://[::ffff:a00:1]", "https://[::ffff:192.168.1.1]"]) {
+      expect(() => normalizeConnectorHttpPolicy({ ...policy, origins: [origin] })).toThrow();
+    }
+  });
+
   it("normalizes a relative provider request without accepting credentials", () => {
     const resolved = resolveConnectorHttpRequest(policy, {
       method: "get",

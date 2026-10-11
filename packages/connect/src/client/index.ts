@@ -1,4 +1,7 @@
 import { ConnectError } from "../errors.js";
+import type { ConnectorCatalogEntry, ConnectorDefinition } from "../definitions.js";
+import type { StoredConnectorDefinition } from "../definition-store.js";
+import type { ConnectionVerificationResult, ConnectorSetupReadinessInput, ConnectorSetupReadinessResult } from "../verification.js";
 import type {
   ConnectionOperationPolicy,
   ConnectionRequest,
@@ -9,17 +12,20 @@ import type {
   ConnectSubject,
   ConnectionAudience,
   ConnectionBindingAttributes,
+  ConnectionCreationContext,
   ConnectionLink,
   ConnectionLinkListFilter,
   ConnectionOwner,
   ConnectionRecord,
   ConnectionSetupSession,
+  ConnectionSetupStatus,
   ConnectorProviderDefinition,
   McpConnectionAuth,
   McpConnectionTransport,
   McpOAuthClientInformation,
   McpOAuthClientMode,
   McpOAuthInspection,
+  ResolvedMcpOAuthClient,
   RuntimeToken,
 } from "../types.js";
 
@@ -29,27 +35,30 @@ export interface PolpoConnectClientOptions {
   fetch?: typeof fetch;
 }
 
-export interface CreateApiKeyConnectionRequest {
+export interface CreateApiKeyConnectionRequest extends ConnectionCreationContext {
   providerId: string;
+  authenticationId?: string;
   apiKey: string;
   scopes?: string[];
-  subject?: ConnectSubject;
   name?: string;
   projectId?: string;
   orgId?: string;
   metadata?: Record<string, unknown>;
 }
 
-export interface CreateMcpConnectionRequest {
+export type CreatePublicConnectionRequest = Omit<CreateApiKeyConnectionRequest, "apiKey">;
+
+export interface CreateMcpConnectionRequest extends ConnectionCreationContext {
   providerId?: string;
+  authenticationId?: string;
   name?: string;
   url: string;
   transport?: McpConnectionTransport;
   auth?: McpConnectionAuth;
+  headerName?: string;
   apiKey?: string;
   bearerToken?: string;
   scopes?: string[];
-  subject?: ConnectSubject;
   projectId?: string;
   orgId?: string;
   metadata?: Record<string, unknown>;
@@ -57,6 +66,8 @@ export interface CreateMcpConnectionRequest {
 
 export interface StartOAuthRequest {
   providerId: string;
+  authenticationId?: string;
+  oauthClientMode?: "managed" | "customer" | "instance";
   scopes?: string[];
   subject?: ConnectSubject;
   redirectUri: string;
@@ -84,7 +95,9 @@ export interface InspectMcpOAuthRequest {
   transport?: McpConnectionTransport;
 }
 
-export interface StartMcpOAuthRequest extends InspectMcpOAuthRequest {
+export interface StartMcpOAuthRequest extends InspectMcpOAuthRequest, ConnectionCreationContext {
+  providerId?: string;
+  authenticationId?: string;
   name?: string;
   scopes?: string[];
   mode: McpOAuthClientMode;
@@ -102,6 +115,9 @@ export interface GetTokenRequest {
 
 export interface CreateConnectionSetupSessionRequest {
   providerId: string;
+  authenticationId?: string;
+  /** Reusable host-owned MCP OAuth configuration; never a provider secret. */
+  configurationId?: string;
   projectId: string;
   orgId?: string;
   audience: ConnectionAudience;
@@ -150,20 +166,17 @@ export interface ApplicationCapabilityRequest {
   request: ConnectionRequest;
 }
 
-export interface ConnectionSetupStatus {
-  providerId: string;
-  projectId: string;
-  status: "pending" | "started" | "completed" | "cancelled" | "expired" | "error";
-  resultingConnectionId?: string;
-  expiresAt: string;
-  consumedAt?: string;
-  scopes: string[];
-  application?: { name: string; url?: string };
+export type { ConnectionSetupStatus } from "../types.js";
+
+/** Project-approved destinations after provider authorization, independent of OAuth app ownership. */
+export interface ProjectConnectionSetupConfiguration {
+  returnOrigins: string[];
 }
 
 export interface CloudOAuthClientRecord {
   id: string;
   providerId: string;
+  authenticationId?: string;
   owner: { type: "organization" | "project"; id: string };
   name?: string;
   status: "active" | "revoked";
@@ -177,10 +190,23 @@ export interface CloudOAuthClientRecord {
 
 export interface ConfigureCloudOAuthClientRequest {
   name?: string;
+  authenticationId?: string;
   clientId: string;
   clientSecret?: string;
   returnOrigins?: string[];
 }
+
+export type McpOAuthConfigurationScope = { type: "project" | "organization"; id: string };
+export type ConfigureMcpOAuthRequest = Pick<ResolvedMcpOAuthClient, "providerId" | "authenticationId" | "resourceUrl" | "transport" | "registration"> & {
+  name?: string; returnOrigins?: string[];
+};
+export type CloudMcpOAuthConfiguration = Omit<ResolvedMcpOAuthClient, "registration"> & {
+  registration: Exclude<ResolvedMcpOAuthClient["registration"], { mode: "pre_registered" }>
+    // Omit over the metadata index signature would erase required client_id.
+    | { mode: "pre_registered"; client: McpOAuthClientInformation & { client_secret?: never } };
+  name?: string; status: "active" | "revoked"; hasSecret: boolean; fingerprint: string;
+  revision: string; returnOrigins: string[]; createdAt: string; updatedAt: string;
+};
 
 export interface ConnectionEventRecord {
   id: string;
@@ -228,6 +254,40 @@ export class PolpoConnectClient {
     return this.request("GET", "/v1/connect/providers");
   }
 
+  listCatalog(): Promise<ConnectorCatalogEntry[]> {
+    return this.request("GET", "/v1/connect/catalog");
+  }
+
+  listProjectCatalog(projectId: string): Promise<ConnectorCatalogEntry[]> {
+    return this.request("GET", `${projectConnectPath(projectId)}/catalog`);
+  }
+
+  getProjectSetupReadiness(projectId: string, input: Pick<ConnectorSetupReadinessInput, "providerId" | "authenticationId"> & {
+    oauthClientMode?: "managed" | "customer";
+  }): Promise<ConnectorSetupReadinessResult> {
+    return this.request("POST", `${projectConnectPath(projectId)}/setup-readiness`, input);
+  }
+
+  registerProjectConnectorDefinition(projectId: string, definition: ConnectorDefinition): Promise<StoredConnectorDefinition> {
+    return this.request("POST", `${projectConnectPath(projectId)}/connectors`, definition);
+  }
+
+  disableProjectConnectorDefinition(projectId: string, connectorId: string): Promise<StoredConnectorDefinition> {
+    return this.request("POST", `${projectConnectPath(projectId)}/connectors/${encodeURIComponent(connectorId)}/disable`);
+  }
+
+  getSetupReadiness(input: ConnectorSetupReadinessInput): Promise<ConnectorSetupReadinessResult> {
+    return this.request("POST", "/v1/connect/setup-readiness", input);
+  }
+
+  registerConnectorDefinition(definition: ConnectorDefinition): Promise<StoredConnectorDefinition> {
+    return this.request("POST", "/v1/connect/connectors", definition);
+  }
+
+  disableConnectorDefinition(connectorId: string): Promise<StoredConnectorDefinition> {
+    return this.request("POST", `/v1/connect/connectors/${encodeURIComponent(connectorId)}/disable`);
+  }
+
   listConnections(): Promise<ConnectionRecord[]> {
     return this.request("GET", "/v1/connect/connections");
   }
@@ -252,18 +312,55 @@ export class PolpoConnectClient {
     return this.request("POST", "/v1/connect/connections/api-key", input);
   }
 
+  createPublicConnection(input: CreatePublicConnectionRequest): Promise<ConnectionRecord> {
+    return this.request("POST", "/v1/connect/connections/public", input);
+  }
+
+  verifyConnection(connectionId: string): Promise<ConnectionVerificationResult> {
+    return this.request("POST", `/v1/connect/connections/${encodeURIComponent(connectionId)}/verify`);
+  }
+
+  verifyProjectConnection(projectId: string, connectionId: string): Promise<ConnectionVerificationResult> {
+    return this.request("POST", `${projectConnectPath(projectId)}/connections/${encodeURIComponent(connectionId)}/verify`);
+  }
+
   createMcpConnection(input: CreateMcpConnectionRequest): Promise<ConnectionRecord> {
     return this.request("POST", "/v1/connect/connections/mcp", input);
+  }
+
+  createProjectApiKeyConnection(projectId: string, input: CreateApiKeyConnectionRequest): Promise<ConnectionRecord> {
+    return this.request("POST", `${projectConnectPath(projectId)}/connections/api-key`, input);
+  }
+
+  createProjectPublicConnection(projectId: string, input: CreatePublicConnectionRequest): Promise<ConnectionRecord> {
+    return this.request("POST", `${projectConnectPath(projectId)}/connections/public`, input);
+  }
+
+  createProjectMcpConnection(projectId: string, input: CreateMcpConnectionRequest): Promise<ConnectionRecord> {
+    return this.request("POST", `${projectConnectPath(projectId)}/connections/mcp`, input);
+  }
+
+  inspectMcpOAuth(input: InspectMcpOAuthRequest): Promise<McpOAuthInspection> {
+    return this.request("POST", "/v1/connect/mcp/inspect", input);
+  }
+
+  startMcpOAuth(input: StartMcpOAuthRequest & { redirectUri: string; projectId?: string; orgId?: string }): Promise<StartOAuthResponse> {
+    return this.request("POST", "/v1/connect/mcp/oauth/start", input);
   }
 
   inspectProjectMcpOAuth(projectId: string, input: InspectMcpOAuthRequest): Promise<McpOAuthInspection> {
     return this.request("POST", `${projectConnectPath(projectId)}/mcp/inspect`, input);
   }
 
+  /** Requires a Polpo browser session; a platform key does not identify the
+   * person authorizing MCP. CLI users review and confirm setup in the dashboard. */
   startProjectMcpOAuth(projectId: string, input: StartMcpOAuthRequest): Promise<StartOAuthResponse> {
     return this.request("POST", `${projectConnectPath(projectId)}/mcp/oauth/start`, input);
   }
 
+  /** @deprecated Cloud deliberately rejects MCP reconnect until verified-account
+   * continuity is supported. Create a new Connection and explicitly reassign
+   * its tools; this compatibility method surfaces the server's 409 denial. */
   reconnectProjectMcpConnection(projectId: string, connectionId: string): Promise<StartOAuthResponse> {
     return this.request(
       "POST",
@@ -300,6 +397,31 @@ export class PolpoConnectClient {
       `${projectConnectPath(projectId)}/setup-sessions`,
       input,
     );
+  }
+
+  getProjectSetupConfiguration(projectId: string): Promise<ProjectConnectionSetupConfiguration> {
+    return this.request("GET", `${projectConnectPath(projectId)}/setup-configuration`);
+  }
+
+  listProjectEndUserConnections(
+    projectId: string,
+    owner: { namespace: string; id: string },
+  ): Promise<ConnectionRecord[]> {
+    const query = new URLSearchParams({ namespace: owner.namespace });
+    return this.request("GET", `${projectConnectPath(projectId)}/end-users/${encodeURIComponent(owner.id)}/connections?${query}`);
+  }
+
+  revokeProjectEndUserConnection(
+    projectId: string,
+    owner: { namespace: string; id: string },
+    connectionId: string,
+  ): Promise<ConnectionRecord> {
+    const query = new URLSearchParams({ namespace: owner.namespace });
+    return this.request("POST", `${projectConnectPath(projectId)}/end-users/${encodeURIComponent(owner.id)}/connections/${encodeURIComponent(connectionId)}/revoke?${query}`);
+  }
+
+  configureProjectSetup(projectId: string, input: ProjectConnectionSetupConfiguration): Promise<ProjectConnectionSetupConfiguration> {
+    return this.request("PUT", `${projectConnectPath(projectId)}/setup-configuration`, input);
   }
 
   getSetupStatus(setupToken: string): Promise<ConnectionSetupStatus> {
@@ -349,6 +471,14 @@ export class PolpoConnectClient {
     );
   }
 
+  /** Starts a session from createProjectSetupSession through the Cloud public setup API. */
+  startProjectOAuthSetup(setupToken: string): Promise<StartOAuthResponse> {
+    return this.request(
+      "POST",
+      `/v1/connect/setup/${encodeURIComponent(setupToken)}/oauth/start`,
+    );
+  }
+
   getToken(connectionId: string, input: GetTokenRequest = {}): Promise<RuntimeToken> {
     return this.request("POST", `/v1/connect/connections/${encodeURIComponent(connectionId)}/token`, input);
   }
@@ -378,6 +508,23 @@ export class PolpoConnectClient {
     return this.request("GET", `${projectConnectPath(projectId)}/oauth-clients`);
   }
 
+  listMcpOAuthConfigurations(owner: McpOAuthConfigurationScope): Promise<CloudMcpOAuthConfiguration[]> {
+    return this.request("GET", mcpConfigurationPath(owner));
+  }
+
+  createMcpOAuthConfiguration(owner: McpOAuthConfigurationScope, input: ConfigureMcpOAuthRequest): Promise<CloudMcpOAuthConfiguration> {
+    return this.request("POST", mcpConfigurationPath(owner), input);
+  }
+
+  updateMcpOAuthConfiguration(owner: McpOAuthConfigurationScope, id: string,
+    input: ConfigureMcpOAuthRequest & { expectedRevision: string }): Promise<CloudMcpOAuthConfiguration> {
+    return this.request("PUT", `${mcpConfigurationPath(owner)}/${encodeURIComponent(id)}`, input);
+  }
+
+  revokeMcpOAuthConfiguration(owner: McpOAuthConfigurationScope, id: string, expectedRevision: string): Promise<CloudMcpOAuthConfiguration> {
+    return this.request("DELETE", `${mcpConfigurationPath(owner)}/${encodeURIComponent(id)}?${new URLSearchParams({ expectedRevision })}`);
+  }
+
   configureProjectOAuthClient(
     projectId: string,
     providerId: string,
@@ -393,10 +540,11 @@ export class PolpoConnectClient {
   revokeProjectOAuthClient(
     projectId: string,
     providerId: string,
+    authenticationId?: string,
   ): Promise<CloudOAuthClientRecord> {
     return this.request(
       "DELETE",
-      `${projectConnectPath(projectId)}/oauth-clients/${encodeURIComponent(providerId)}`,
+      `${projectConnectPath(projectId)}/oauth-clients/${encodeURIComponent(providerId)}${authenticationId ? `?authenticationId=${encodeURIComponent(authenticationId)}` : ""}`,
     );
   }
 
@@ -419,10 +567,11 @@ export class PolpoConnectClient {
   revokeOrganizationOAuthClient(
     organizationId: string,
     providerId: string,
+    authenticationId?: string,
   ): Promise<CloudOAuthClientRecord> {
     return this.request(
       "DELETE",
-      `${organizationConnectPath(organizationId)}/oauth-clients/${encodeURIComponent(providerId)}`,
+      `${organizationConnectPath(organizationId)}/oauth-clients/${encodeURIComponent(providerId)}${authenticationId ? `?authenticationId=${encodeURIComponent(authenticationId)}` : ""}`,
     );
   }
 
@@ -506,6 +655,10 @@ export class PolpoConnectClient {
     }
     return payload as T;
   }
+}
+
+function mcpConfigurationPath(owner: McpOAuthConfigurationScope): string {
+  return `${owner.type === "project" ? projectConnectPath(owner.id) : organizationConnectPath(owner.id)}/mcp-oauth-configurations`;
 }
 
 function projectConnectPath(projectId: string): string {

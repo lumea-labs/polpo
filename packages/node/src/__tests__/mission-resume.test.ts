@@ -53,6 +53,25 @@ describe("Mission resume (Orchestrator)", () => {
     if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
   });
 
+  it.each(["external-user-123", undefined])(
+    "keeps the mission's trusted user on every persisted task (%s)",
+    async (user) => {
+      const mission = await orchestrator.engine.createMission({
+        user,
+        data: JSON.stringify({ tasks: [
+          { title: "First", description: "First authorized operation", assignTo: "dev", user: "document-selected-user" },
+          { title: "Second", description: "Dependent authorized operation", assignTo: "dev", dependsOn: ["First"], user: "another-user" },
+        ] }),
+      });
+      const { tasks } = await orchestrator.engine.executeMission(mission.id);
+      expect(tasks).toHaveLength(2);
+      for (const task of tasks) {
+        expect(task.user).toBe(user);
+        expect((await store.getTask(task.id))?.user).toBe(user);
+      }
+    },
+  );
+
   describe("getResumableMissions", () => {
     it("returns empty array when no missions exist", async () => {
       expect(await orchestrator.engine.getResumableMissions()).toEqual([]);

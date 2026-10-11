@@ -1,5 +1,22 @@
 import {
   ConnectError,
+  canCommitMcpOAuthConnection,
+  canCommitMcpOAuthSetup,
+  canFailMcpOAuthSetup,
+  failedMcpOAuthState,
+  completedMcpOAuthState,
+  type McpOAuthConnectionCommit,
+  type McpOAuthSetupCommit,
+  type McpOAuthSetupFailure,
+  matchesOAuthReconnect,
+  canConsumeConnectionSetup,
+  finishConnectionSetup,
+  prepareConnectionSetupCompletion,
+  reconcileConnectionSetup,
+  type ConnectionSetupCompletionIntent,
+  type ConnectionSetupOutcome,
+  type OAuthReconnectSnapshot,
+  type OAuthCredentialReplacement,
   type ConnectStore,
   type ConnectionLink,
   type ConnectionLinkListFilter,
@@ -43,6 +60,14 @@ export class MemoryConnectStore implements ConnectStore, ConnectionLinkStore, Co
     this.connections.delete(id);
   }
 
+  async replaceOAuthCredential(expected: OAuthReconnectSnapshot, replacement: OAuthCredentialReplacement): Promise<ConnectionRecord | null> {
+    const current = this.connections.get(expected.connectionId);
+    if (!current || !matchesOAuthReconnect(current, expected)) return null;
+    const next = { ...current, ...clone(replacement) };
+    this.connections.set(current.id, next);
+    return clone(next);
+  }
+
   async saveOAuthState(record: OAuthStateRecord): Promise<void> {
     this.oauthStates.set(record.state, clone(record));
   }
@@ -58,6 +83,36 @@ export class MemoryConnectStore implements ConnectStore, ConnectionLinkStore, Co
     return record ? clone(record) : null;
   }
 
+  async commitMcpOAuthConnection(input: McpOAuthConnectionCommit): Promise<ConnectionRecord | null> {
+    const state = this.oauthStates.get(input.state);
+    if (!state || !canCommitMcpOAuthConnection(state, input) || this.connections.has(input.connection.id)) return null;
+    const connection = clone(input.connection);
+    this.connections.set(connection.id, connection);
+    this.oauthStates.set(input.state, clone(completedMcpOAuthState(state, connection.id)));
+    return clone(connection);
+  }
+
+  async commitMcpOAuthSetup(input: McpOAuthSetupCommit): Promise<ConnectionRecord | null> {
+    const state = this.oauthStates.get(input.state), setup = this.setupSessions.get(input.setupReference);
+    if (!state || !setup || !canCommitMcpOAuthSetup(state, setup, input)
+      || this.connections.has(input.connection.id) || this.links.has(input.link.id)
+      || [...this.links.values()].some(link => link.connectionId === input.connection.id && link.projectId === input.link.projectId)) return null;
+    this.connections.set(input.connection.id, clone(input.connection));
+    this.links.set(input.link.id, clone(input.link));
+    this.setupSessions.set(setup.id, clone(finishConnectionSetup(setup, { status: "completed", connectionId: input.connection.id })!));
+    this.oauthStates.set(input.state, clone(completedMcpOAuthState(state, input.connection.id)));
+    return clone(input.connection);
+  }
+
+  async failMcpOAuthSetup(input: McpOAuthSetupFailure): Promise<ConnectionSetupSession | null> {
+    const state = this.oauthStates.get(input.state), setup = this.setupSessions.get(input.setupReference);
+    if (!state || !setup || !canFailMcpOAuthSetup(state, setup, input)) return null;
+    const failed = finishConnectionSetup(setup, { status: "error" })!;
+    this.setupSessions.set(setup.id, clone(failed));
+    this.oauthStates.set(input.state, clone(failedMcpOAuthState(state)));
+    return clone(failed);
+  }
+
   async claimOAuthState(
     state: string,
     claimToken: string,
@@ -65,7 +120,7 @@ export class MemoryConnectStore implements ConnectStore, ConnectionLinkStore, Co
     now: string,
   ): Promise<OAuthStateRecord | null> {
     const record = this.oauthStates.get(state);
-    if (!record || record.status === "completed") return record ? clone(record) : null;
+    if (!record || record.status === "completed" || record.status === "failed" || !(Date.parse(record.expiresAt) > Date.parse(now))) return null;
     if (
       record.status === "processing"
       && record.claimExpiresAt
@@ -157,15 +212,54 @@ export class MemoryConnectStore implements ConnectStore, ConnectionLinkStore, Co
     return session ? clone(session) : null;
   }
 
+  getConnectionSetupSessionByReference(reference: string): Promise<ConnectionSetupSession | null> {
+    return this.getConnectionSetupSession(reference);
+  }
+
   async consumeConnectionSetupSession(
     id: string,
     consumedAt: string,
+    authorizationExpiresAt?: string,
   ): Promise<ConnectionSetupSession | null> {
     const session = this.setupSessions.get(id);
-    if (!session || session.consumedAt) return null;
-    const consumed = { ...session, consumedAt };
+    if (!session || !canConsumeConnectionSetup(session, consumedAt)) return null;
+    const consumed = { ...session, status: "started" as const, consumedAt, authorizationExpiresAt };
     this.setupSessions.set(id, clone(consumed));
     return clone(session);
+  }
+
+  async cancelConnectionSetupSession(id: string, cancelledAt: string): Promise<ConnectionSetupSession | null> {
+    const session = this.setupSessions.get(id);
+    if (!session || !canConsumeConnectionSetup(session, cancelledAt)) return null;
+    const cancelled = { ...session, status: "cancelled" as const };
+    this.setupSessions.set(id, clone(cancelled));
+    return clone(cancelled);
+  }
+
+  async prepareConnectionSetupCompletion(reference: string, intent: ConnectionSetupCompletionIntent): Promise<ConnectionSetupSession | null> {
+    const session = this.setupSessions.get(reference);
+    const prepared = session ? prepareConnectionSetupCompletion(session, intent) : null;
+    if (!prepared) return null;
+    this.setupSessions.set(reference, clone(prepared));
+    return clone(prepared);
+  }
+
+  async reconcileConnectionSetupSession(reference: string): Promise<ConnectionSetupSession | null> {
+    const session = this.setupSessions.get(reference);
+    if (!session) return null;
+    const intent = session.completionIntent;
+    const reconciled = intent ? reconcileConnectionSetup(session,
+      this.connections.get(intent.connection.connectionId) ?? null, this.links.get(intent.link.id) ?? null) : null;
+    if (reconciled) this.setupSessions.set(reference, clone(reconciled));
+    return clone(reconciled ?? session);
+  }
+
+  async finishConnectionSetupSession(reference: string, outcome: ConnectionSetupOutcome, _finishedAt: string): Promise<ConnectionSetupSession | null> {
+    const session = this.setupSessions.get(reference);
+    const finished = session ? finishConnectionSetup(session, outcome) : null;
+    if (!finished) return null;
+    this.setupSessions.set(reference, clone(finished));
+    return clone(finished);
   }
 }
 

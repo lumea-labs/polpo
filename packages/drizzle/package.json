@@ -13,6 +13,10 @@
     "./data": {
       "types": "./dist/data/index.d.ts",
       "import": "./dist/data/index.js"
+    },
+    "./connect": {
+      "types": "./dist/connect/index.d.ts",
+      "import": "./dist/connect/index.js"
     }
   },
   "sideEffects": false,
@@ -24,6 +28,8 @@
   },
   "dependencies": {
     "@polpo-ai/channels": "workspace:*",
+    "@polpo-ai/connect": "workspace:*",
+    "@polpo-ai/connect-server": "workspace:*",
     "@polpo-ai/core": "workspace:*",
     "@polpo-ai/vault-crypto": "workspace:*",
     "drizzle-orm": "^0.44.0",

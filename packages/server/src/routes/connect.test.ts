@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { ConnectorProviderDefinition } from "@polpo-ai/connect";
-import { MemoryConnectStore, MemoryConnectionSecretStore, createConnectService } from "@polpo-ai/connect-server";
+import { MemoryConnectStore, MemoryConnectionSecretStore, MemoryConnectorDefinitionStore, createConnectService } from "@polpo-ai/connect-server";
 import { connectRoutes } from "./connect.js";
 
 const apiKeyProvider: ConnectorProviderDefinition = {
@@ -31,6 +31,157 @@ const oauthProvider: ConnectorProviderDefinition = {
 };
 
 describe("connectRoutes", () => {
+  it("creates an embedded MCP setup with the selected reusable client and trusted owner", async () => {
+    const store = new MemoryConnectStore();
+    const client = { id: "mcp-config", providerId: "mcp_url", owner: { type: "instance" as const, id: "host" },
+      resourceUrl: "https://mcp.example/mcp", transport: "http" as const, redirectUri: "https://host.example/callback",
+      registration: { mode: "pre_registered" as const, client: { client_id: "client", client_secret: "private-config-secret" } } };
+    const resolver = { resolve: vi.fn(async () => client), resolveById: vi.fn(async () => client) };
+    const service = createConnectService({ providers: [{ id: "mcp_url", name: "MCP", auth: { type: "mcp", auth: "oauth2" }, scopes: [] }],
+      store, setupSessions: store, links: store, secrets: new MemoryConnectionSecretStore(),
+      mcpOAuthClients: resolver, allowedReturnUrlOrigins: ["https://app.example"] });
+    const app = connectRoutes(() => ({ connectService: service }));
+    const subject = { type: "external_user", namespace: "app", id: "gioia" };
+    const response = await app.request("/setup-sessions", { method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ providerId: "mcp_url", projectId: "project", audience: "end_user", subject,
+        returnUrl: "https://app.example/connected", oauthClientMode: "instance", configurationId: "mcp-config" }) });
+    expect(response.status).toBe(201);
+    const body = await response.json();
+    expect(body).toMatchObject({ data: { flowKind: "mcp", oauthClientId: "mcp-config", subject } });
+    expect(resolver.resolve).toHaveBeenCalledWith(expect.objectContaining({ configurationId: "mcp-config", projectId: "project", mode: "instance" }));
+    expect(JSON.stringify(body)).not.toContain("private-config-secret");
+  });
+
+  it("dispatches the authenticated callback by its stored flow, including MCP", async () => {
+    const { service, store } = createHarness();
+    await store.saveOAuthState({ state: "mcp-state", providerId: "mcp_url", flowKind: "mcp", requestedScopes: [],
+      redirectUri: "https://host.example/callback", createdAt: new Date().toISOString(), expiresAt: "2099-01-01T00:00:00.000Z" });
+    const completeMcp = vi.spyOn(service, "completeMcpOAuth").mockResolvedValue({ id: "mcp-connection", authType: "mcp" } as never);
+    const completeApi = vi.spyOn(service, "completeOAuth");
+    const app = connectRoutes(() => ({ connectService: service }));
+    const response = await app.request("/oauth/callback", { method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ state: "mcp-state", code: "code" }) });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ data: { id: "mcp-connection", authType: "mcp" } });
+    expect(completeMcp).toHaveBeenCalledWith({ state: "mcp-state", code: "code" });
+    expect(completeApi).not.toHaveBeenCalled();
+  });
+
+  it("returns a structured denial for unsafe generic MCP auth headers instead of HTTP 500", async () => {
+    const service = createConnectService({ providers: [{ id: "mcp_url", name: "MCP", auth: { type: "mcp", auth: "bearer" }, scopes: [] }],
+      store: new MemoryConnectStore(), secrets: new MemoryConnectionSecretStore() });
+    const app = connectRoutes(() => ({ connectService: service }));
+    const response = await app.request("/connections/mcp", { method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ url: "https://mcp.example", auth: "header", headerName: "Cookie", apiKey: "private" }) });
+    expect(response.status).toBe(403);
+    expect(await response.json()).toMatchObject({ ok: false, code: "connection_operation_denied" });
+  });
+  it("preserves trusted audience and binding through the API-key route", async () => {
+    const app = connectRoutes(() => ({ connectService: createHarness().service }));
+    const owner = { type: "external_user", namespace: "app", id: "viewer" };
+    const response = await app.request("/connections/api-key", { method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ providerId: "custom_api", apiKey: "private", audience: "end_user", subject: owner, binding: { scopeEpoch: "one" } }) });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ data: { audience: "end_user", owner, binding: { principal: owner, scopeEpoch: "one" } } });
+  });
+
+  it("creates a custom MCP through the SDK's advertised OSS route with its selected authentication and identity", async () => {
+    const service = createConnectService({ providers: [{ version: 2, id: "notes", name: "Notes", source: "custom", protocol: "mcp",
+      defaultAuthenticationId: "public", authentication: [{ id: "public", type: "none" }] }],
+      store: new MemoryConnectStore(), secrets: new MemoryConnectionSecretStore() });
+    const app = connectRoutes(() => ({ connectService: service }));
+    const response = await app.request("/connections/mcp", { method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ providerId: "notes", authenticationId: "public", url: "https://mcp.example/mcp", audience: "personal", subject: { type: "user", id: "builder" } }) });
+    expect(response.status).toBe(201);
+    expect(await response.json()).toMatchObject({ data: { providerId: "notes", authenticationId: "public", audience: "personal",
+      binding: { principal: { type: "user", id: "builder" } }, metadata: { auth: "none" } } });
+  });
+
+  it("exposes OSS MCP inspect and OAuth start, keeping the callback and trusted context explicit", async () => {
+    const { service } = createHarness();
+    const inspect = vi.spyOn(service, "inspectMcpOAuth").mockResolvedValue({} as never);
+    const start = vi.spyOn(service, "startMcpOAuth").mockResolvedValue({ authorizationUrl: "https://provider.example", state: "state", expiresAt: "2099" });
+    const app = connectRoutes(() => ({ connectService: service }));
+    const post = (path: string, body: unknown) => app.request(path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+    expect((await post("/mcp/inspect", { url: "https://mcp.example/mcp", transport: "sse" })).status).toBe(200);
+    const input = { providerId: "notes", authenticationId: "oauth", url: "https://mcp.example/mcp", mode: "dynamic",
+      redirectUri: "https://host.example/v1/connect/oauth/callback", audience: "personal", subject: { type: "user", id: "builder" } };
+    expect((await post("/mcp/oauth/start", input)).status).toBe(200);
+    expect(inspect).toHaveBeenCalledWith({ url: "https://mcp.example/mcp", transport: "sse" });
+    expect(start).toHaveBeenCalledWith(input);
+    expect((await post("/mcp/oauth/start", { ...input, redirectUri: undefined })).status).toBe(400);
+    expect(start).toHaveBeenCalledOnce();
+  });
+  it("exposes local setup readiness separately from live verification", async () => {
+    const app = connectRoutes(() => ({ connectService: createHarness().service }));
+    const response = await app.request("/setup-readiness", { method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ providerId: "custom_api" }),
+    });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ data: { check: "configuration", outcome: "passed", code: "credentials_required" } });
+  });
+
+  it("registers a custom API through HTTP and blocks it after disabling the definition", async () => {
+    const service = createConnectService({ providers: [], store: new MemoryConnectStore(), secrets: new MemoryConnectionSecretStore(), definitions: new MemoryConnectorDefinitionStore() });
+    const app = connectRoutes(() => ({ connectService: service }));
+    const response = await app.request("/connectors", { method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ version: 2, id: "weather", name: "Weather", source: "catalog", protocol: "http_api",
+        defaultAuthenticationId: "public", authentication: [{ id: "public", type: "none" }], http: { origins: ["https://api.example.com"] } }),
+    });
+    expect(response.status).toBe(201);
+    expect(await response.json()).toMatchObject({ data: { definition: { source: "custom" } } });
+    expect(await (await app.request("/catalog")).json()).toMatchObject({ data: [{ id: "weather" }] });
+    expect((await app.request("/connectors/weather/disable", { method: "POST" })).status).toBe(200);
+    expect(await (await app.request("/catalog")).json()).toMatchObject({ data: [] });
+  });
+
+  it("exposes an honest verification result without serializing credentials", async () => {
+    const { service } = createHarness();
+    const connection = await service.createApiKeyConnection({ providerId: "custom_api", apiKey: "private-test-key" });
+    const app = connectRoutes(() => ({ connectService: service }));
+    const response = await app.request(`/connections/${connection.id}/verify`, { method: "POST" });
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body).toMatchObject({ ok: true, data: { outcome: "unsupported", code: "probe_not_configured" } });
+    expect(JSON.stringify(body)).not.toContain("private-test-key");
+    expect((await app.request("/connections/missing/verify", { method: "POST" })).status).toBe(404);
+  });
+
+  it("does not expose OAuth app credentials in the provider catalog", async () => {
+    const app = connectRoutes(() => ({ connectService: createHarness().service }));
+    const response = await app.request("/providers");
+    expect(response.status).toBe(200);
+    const body = await response.text();
+    expect(body).not.toContain("client_secret");
+    expect(body).not.toContain('"clientSecret"');
+  });
+
+  it("exposes the normalized catalog and public HTTP setup without discarding authentication selection", async () => {
+    const service = createConnectService({
+      providers: [{
+        version: 2, id: "public_api", name: "Public API", source: "custom", protocol: "http_api",
+        defaultAuthenticationId: "public", authentication: [{ id: "public", type: "none" }],
+        http: { origins: ["https://api.example.com"] },
+      }],
+      store: new MemoryConnectStore(), secrets: new MemoryConnectionSecretStore(),
+    });
+    const app = connectRoutes(() => ({ connectService: service }));
+    const catalog = await app.request("/catalog");
+    expect(catalog.status).toBe(200);
+    expect(await catalog.json()).toMatchObject({ data: [{ protocol: "http_api", authentication: [{ type: "none" }] }] });
+    const created = await app.request("/connections/public", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ providerId: "public_api", authenticationId: "public" }),
+    });
+    expect(created.status).toBe(201);
+    expect(await created.json()).toMatchObject({ data: { authType: "none", authenticationId: "public" } });
+    const invalid = await app.request("/connections/public", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ providerId: "public_api", authenticationId: "unknown" }),
+    });
+    expect(invalid.status).toBe(400);
+  });
+
   it("returns 501 when connect service is not wired", async () => {
     const app = connectRoutes(() => ({}));
     const res = await app.request("/providers");
@@ -176,7 +327,7 @@ describe("connectRoutes", () => {
         audience: "end_user",
         subject: { type: "external_user", namespace: "app", id: "user-1" },
         binding: {
-          principal: { type: "external_user", id: "user-1" },
+          principal: { type: "external_user", namespace: "app", id: "user-1" },
           tenant: { namespace: "app", id: "tenant-1" },
         },
         scopes: ["read"],
@@ -191,8 +342,16 @@ describe("connectRoutes", () => {
       projectId: "project-1",
       audience: "end_user",
       subject: { type: "external_user", namespace: "app", id: "user-1" },
+      binding: { principal: { type: "external_user", namespace: "app", id: "user-1" } },
     });
     expect(setup.data).not.toHaveProperty("oauthClientSecret");
+
+    const observed = await app.request(`/setup/${setup.data.id}/status`);
+    expect(observed.status).toBe(200);
+    const publicStatus = await observed.json();
+    expect(publicStatus.data).toMatchObject({ status: "pending", scopes: ["read"] });
+    expect(publicStatus.data).not.toHaveProperty("subject");
+    expect(publicStatus.data).not.toHaveProperty("binding");
 
     const startRes = await app.request(`/setup-sessions/${setup.data.id}/start`, { method: "POST" });
     const started = await startRes.json();
@@ -202,6 +361,28 @@ describe("connectRoutes", () => {
     const replayRes = await app.request(`/setup-sessions/${setup.data.id}/start`, { method: "POST" });
     expect(replayRes.status).toBe(409);
     await expect(replayRes.json()).resolves.toMatchObject({ ok: false, code: "setup_consumed" });
+
+    const cancelStarted = await app.request(`/setup/${setup.data.id}/cancel`, { method: "POST" });
+    expect(cancelStarted.status).toBe(410);
+    const callback = await app.request("/oauth/callback", { method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ state: started.data.state, code: "code" }) });
+    expect(callback.status).toBe(200);
+    const completed = await (await app.request(`/setup/${setup.data.id}/status`)).json();
+    expect(completed.data).toMatchObject({ status: "completed", resultingConnectionId: (await callback.json()).data.id });
+  });
+
+  it("observes missing setup and cancels a pending setup through SDK-compatible routes", async () => {
+    const harness = createHarness({ withOAuthClient: true });
+    const app = connectRoutes(() => ({ connectService: harness.service }));
+    expect((await app.request("/setup/missing/status")).status).toBe(404);
+    expect((await app.request("/setup/missing/cancel", { method: "POST" })).status).toBe(404);
+    const setup = await harness.service.createSetupSession({ providerId: "test_oauth", projectId: "project-1", audience: "end_user",
+      subject: { type: "external_user", namespace: "app", id: "user-1" }, scopes: ["read"],
+      returnUrl: "https://app.example/settings", oauthClientMode: "managed" });
+    const cancelled = await app.request(`/setup/${setup.id}/cancel`, { method: "POST" });
+    expect(cancelled.status).toBe(200);
+    expect((await cancelled.json()).data.status).toBe("cancelled");
+    expect((await app.request(`/setup-sessions/${setup.id}/start`, { method: "POST" })).status).toBe(409);
   });
 
   it("executes a policy-bound gateway request without exposing credentials", async () => {

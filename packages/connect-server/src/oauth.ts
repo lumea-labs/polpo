@@ -19,6 +19,6 @@ export function toFormBody(input: Record<string, string | undefined>): URLSearch
 }
 
 export function parseScopes(scope: string | undefined, fallback: readonly string[]): string[] {
-  if (!scope) return [...fallback];
+  if (scope === undefined) return [...fallback];
   return scope.split(/[,\s]+/).map((part) => part.trim()).filter(Boolean);
 }

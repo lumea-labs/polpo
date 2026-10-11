@@ -383,6 +383,7 @@ export async function runAgentStepCompletion(options: {
     agentConfig,
     options.toolRunScope,
     options.toolInvocation,
+    options.signal,
   );
   const forcedTool = agentConfig.toolChoice
     && typeof agentConfig.toolChoice === "object"
