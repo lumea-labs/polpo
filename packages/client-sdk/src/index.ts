@@ -135,6 +135,7 @@ export type {
   UpdateMissionTeamMemberRequest,
   UpdateMissionNotificationsRequest,
   ExecuteMissionResult,
+  ExecuteMissionOptions,
   ResumeMissionResult,
   AddAgentRequest,
   UpdateAgentRequest,

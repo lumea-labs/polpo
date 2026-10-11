@@ -1,7 +1,8 @@
 import { nanoid } from "nanoid";
 import { isVersionedAgentStore, agentIdentityFromSnapshot, assertAgentIdentity, AgentIdentityError, type AgentIdentity } from "./agent-store.js";
 import type { OrchestratorContext } from "./orchestrator-context.js";
-import { resolveMissionStore, resolveMissionForTask } from "./mission-store.js";
+import { resolveMissionStore, resolveMissionForTask, resolveMissionExecutionStore } from "./mission-store.js";
+import { MissionExecutionError } from "./mission-execution.js";
 import type { Task, TaskResult, RunnerConfig } from "./types.js";
 import { agentMemoryScope } from "./memory-store.js";
 import { resolveExecutionMode } from "./execution-mode.js";
@@ -88,6 +89,8 @@ export class TaskRunner {
   private pendingResume = new Map<string, { state: LoopResumeState; agentIdentity?: AgentIdentity }>();
 
   constructor(private ctx: OrchestratorContext) {}
+  private prepareMissionExecution?: (task: Task) => Promise<void>;
+  setMissionExecutionPreparer(prepare: (task: Task) => Promise<void>): void { this.prepareMissionExecution = prepare; }
 
   private async resolveTaskExecutionRoute(
     task: Task,
@@ -531,6 +534,10 @@ export class TaskRunner {
   }
 
   async spawnForTask(task: Task): Promise<void> {
+    if (task.missionExecutionId) {
+      if (!this.prepareMissionExecution) throw new MissionExecutionError("mission_execution_unsupported", "Mission execution must be prepared before dispatch");
+      await this.prepareMissionExecution(task);
+    }
     const store = this.ctx.agentStore;
     const versioned = isVersionedAgentStore(store);
     const snapshot = versioned ? await store.getAgentSnapshot(task.assignTo) : undefined;
@@ -681,7 +688,9 @@ export class TaskRunner {
     if (task.group) {
       try {
         // Resolve mission via direct ID (preferred) or group name (legacy fallback)
-        const mission = await resolveMissionForTask(resolveMissionStore(this.ctx), task);
+        const mission = task.missionExecutionId
+          ? (await resolveMissionExecutionStore(this.ctx)?.getMissionExecutionById(task.missionExecutionId))?.expected
+          : await resolveMissionForTask(resolveMissionStore(this.ctx), task);
         const legacyMissionParts: string[] = [];
         // Original user prompt that generated this mission (the "why")
         if (mission?.prompt) {
@@ -698,7 +707,7 @@ export class TaskRunner {
 
         // Sibling tasks — just titles and statuses for awareness, not full descriptions
         const allTasks = await this.ctx.taskStore.listTasks();
-        const siblings = allTasks.filter(t => t.group === task.group && t.id !== task.id);
+        const siblings = allTasks.filter(t => (task.missionExecutionId ? t.missionExecutionId === task.missionExecutionId : t.group === task.group) && t.id !== task.id);
         if (siblings.length > 0) {
           const missionParts = [`Other tasks in this mission:`];
           for (const s of siblings) {

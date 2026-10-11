@@ -39,6 +39,7 @@ import type {
   AddTeamRequest,
   UpdateTeamRequest,
   ExecuteMissionResult,
+  ExecuteMissionOptions,
   ResumeMissionResult,
   ApiResult,
   LogSession,
@@ -790,8 +791,8 @@ export class PolpoClient {
     return this.del<{ deleted: boolean }>(`/missions/${missionId}`);
   }
 
-  executeMission(missionId: string): Promise<ExecuteMissionResult> {
-    return this.post<ExecuteMissionResult>(`/missions/${missionId}/execute`);
+  executeMission(missionId: string, options?: ExecuteMissionOptions): Promise<ExecuteMissionResult> {
+    return this.post<ExecuteMissionResult>(`/missions/${encodeURIComponent(missionId)}/execute`, options);
   }
 
   resumeMission(missionId: string, opts?: { retryFailed?: boolean }): Promise<ResumeMissionResult> {

@@ -1,5 +1,5 @@
 import type { OrchestratorContext } from "./orchestrator-context.js";
-import { resolveMissionStore } from "./mission-store.js";
+import { resolveMissionStore, resolveMissionExecutionStore, type MissionExecutionOptions } from "./mission-store.js";
 import type { ScheduleEntry, Mission } from "./types.js";
 import { isCronExpression, nextCronOccurrence } from "./cron.js";
 
@@ -17,7 +17,7 @@ export class Scheduler {
   private schedules = new Map<string, ScheduleEntry>();
   private lastCheckMs = 0;
   private checkIntervalMs: number;
-  private executeMissionFn?: (missionId: string) => void;
+  private executeMissionFn?: (missionId: string, options?: MissionExecutionOptions) => unknown;
   private missionCompletedHandler?: (evt: { missionId: string }) => void;
 
   constructor(
@@ -46,7 +46,7 @@ export class Scheduler {
     this.ctx.emitter.on("mission:completed", this.missionCompletedHandler);
   }
 
-  setExecutor(fn: (missionId: string) => void): void {
+  setExecutor(fn: (missionId: string, options?: MissionExecutionOptions) => unknown): void {
     this.executeMissionFn = fn;
   }
 
@@ -161,7 +161,11 @@ export class Scheduler {
     let executionFailed = false;
     try {
       if (this.executeMissionFn) {
-        this.executeMissionFn(entry.missionId);
+        if (resolveMissionExecutionStore(this.ctx)) {
+          await this.executeMissionFn(entry.missionId, { idempotencyKey: `schedule:${entry.missionId}:${entry.nextRunAt}` });
+        } else {
+          await this.executeMissionFn(entry.missionId);
+        }
       }
     } catch (err) {
       executionFailed = true;
@@ -172,7 +176,7 @@ export class Scheduler {
       });
     }
 
-    if (executionFailed && !entry.recurring) {
+    if (executionFailed) {
       return;
     }
 

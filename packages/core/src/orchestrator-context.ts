@@ -15,6 +15,7 @@ import type { CheckpointStore } from "./checkpoint-store.js";
 import type { DelayStore } from "./delay-store.js";
 import type { ConfigStore } from "./config-store.js";
 import type { MissionStore } from "./mission-store.js";
+import type { MissionExecutionStore } from "./mission-execution.js";
 import type { TeamStore } from "./team-store.js";
 import type { AgentStore } from "./agent-store.js";
 import type { PolpoConfig, PolpoFileConfig, Task, AssessmentResult, ReviewContext, ReasoningLevel, ModelConfig } from "./types.js";
@@ -134,4 +135,6 @@ export interface OrchestratorContext {
    * task store's legacy mission block via resolveMissionStore(ctx).
    */
   readonly missionStore?: MissionStore;
+  /** Atomic Mission/task admission and immutable execution snapshots. */
+  readonly missionExecutionStore?: MissionExecutionStore;
 }

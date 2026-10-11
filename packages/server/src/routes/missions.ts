@@ -1,4 +1,5 @@
 import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
+import { MissionExecutionError, type MissionExecutionOptions } from "@polpo-ai/core/mission-store";
 import {
   CreateMissionSchema, UpdateMissionSchema,
   AddMissionTaskSchema, UpdateMissionTaskSchema, ReorderMissionTasksSchema,
@@ -117,12 +118,18 @@ const executeMissionRoute = createRoute({
   summary: "Execute mission",
   request: {
     params: z.object({ missionId: z.string() }),
+    body: { required: false, content: { "application/json": { schema: z.object({
+      idempotencyKey: z.string().min(1).max(200).refine(key => key === key.trim() && !/[\x00-\x1f\x7f]/.test(key), "Invalid idempotency key").optional(),
+    }).strict() } } },
   },
   responses: {
     200: {
       content: { "application/json": { schema: z.object({ ok: z.boolean(), data: z.any() }) } },
       description: "Mission execution result",
     },
+    400: { description: "Invalid execution request", content: { "application/json": { schema: z.object({ ok: z.boolean(), error: z.string(), code: z.string() }) } } },
+    409: { description: "Mission changed before admission", content: { "application/json": { schema: z.object({ ok: z.boolean(), error: z.string(), code: z.string() }) } } },
+    501: { description: "Store does not support atomic execution", content: { "application/json": { schema: z.object({ ok: z.boolean(), error: z.string(), code: z.string() }) } } },
   },
 });
 
@@ -359,7 +366,7 @@ export function missionRoutes(getDeps: () => {
   createMission: (opts: any) => Promise<any>;
   updateMission: (id: string, updates: any) => Promise<any>;
   deleteMission: (id: string) => Promise<boolean>;
-  executeMission: (id: string) => Promise<any>;
+  executeMission: (id: string, options?: MissionExecutionOptions) => Promise<any>;
   resumeMission: (id: string, opts?: any) => Promise<any>;
   abortGroup: (group: string) => Promise<number>;
   getActiveCheckpoints: () => any;
@@ -462,8 +469,14 @@ export function missionRoutes(getDeps: () => {
   app.openapi(executeMissionRoute, async (c) => {
     const deps = getDeps();
     const { missionId } = c.req.valid("param");
-    const result = await deps.executeMission(missionId);
-    return c.json({ ok: true, data: result });
+    try {
+      const result = await deps.executeMission(missionId, c.req.valid("json") ?? {});
+      return c.json({ ok: true, data: result }, 200);
+    } catch (error) {
+      if (!(error instanceof MissionExecutionError)) throw error;
+      const status = error.code === "mission_execution_conflict" ? 409 : error.code === "mission_execution_unsupported" ? 501 : 400;
+      return c.json({ ok: false, error: error.message, code: error.code }, status);
+    }
   });
 
   // POST /missions/:missionId/resume — resume mission

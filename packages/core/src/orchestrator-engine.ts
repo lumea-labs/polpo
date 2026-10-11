@@ -14,6 +14,7 @@
 import type { OrchestratorContext } from "./orchestrator-context.js";
 import { TickWaiter } from "./tick-waiter.js";
 import { resolveMissionStore, resolveMissionForTask } from "./mission-store.js";
+import { MissionExecutionError, type MissionExecutionOptions, type MissionExecutionResult } from "./mission-execution.js";
 import type { TaskManager } from "./task-manager.js";
 import type { AgentManager } from "./agent-manager.js";
 import type { ApprovalManager } from "./approval-manager.js";
@@ -58,6 +59,7 @@ import type {
  * Implemented by TaskRunner in the shell layer.
  */
 export interface TaskRunnerPort {
+  setMissionExecutionPreparer?(prepare: (task: Task) => Promise<void>): void;
   collectResults(onResult: (taskId: string, result: TaskResult) => Promise<void> | void): Promise<void>;
   enforceHealthChecks(): Promise<void>;
   spawnForTask(task: Task): Promise<void>;
@@ -98,7 +100,9 @@ export interface MissionExecutorPort {
   listMissions(): Promise<Mission[]>;
   updateMission(missionId: string, updates: Partial<Omit<Mission, "id">>): Promise<Mission>;
   deleteMission(missionId: string): Promise<boolean>;
-  executeMission(missionId: string): Promise<{ tasks: Task[]; group: string }>;
+  executeMission(missionId: string, options?: MissionExecutionOptions): Promise<MissionExecutionResult>;
+  prepareTaskExecution?(task: Task): Promise<void>;
+  resumeCheckpointByMissionId?(missionId: string, checkpointName: string): Promise<boolean>;
   resumeMission(missionId: string, opts?: { retryFailed?: boolean }): Promise<{ retried: number; pending: number }>;
   getResumableMissions(): Promise<Mission[]>;
   cleanupCompletedGroups(tasks: Task[]): Promise<void>;
@@ -232,6 +236,7 @@ export class OrchestratorEngine {
     this.agentMgr = deps.agentManager;
     this.missionExec = deps.missionExecutor;
     this.runner = deps.taskRunner;
+    this.runner.setMissionExecutionPreparer?.(task => this.prepareMissionTask(task));
     this.assessor = deps.assessmentOrchestrator;
     this.approvalMgr = deps.approvalManager;
     this.scheduler = deps.scheduler;
@@ -239,6 +244,12 @@ export class OrchestratorEngine {
     this.qualityController = deps.qualityController;
     this.escalationMgr = deps.escalationManager;
     this.deadlockResolver = deps.deadlockResolver;
+  }
+
+  private async prepareMissionTask(task: Task): Promise<void> {
+    if (!task.missionExecutionId) return;
+    if (!this.missionExec.prepareTaskExecution) throw new MissionExecutionError("mission_execution_unsupported", "Mission execution recovery is unavailable");
+    await this.missionExec.prepareTaskExecution(task);
   }
 
   // ── Mutable setters (for hot-reload) ─────────────────────────────────
@@ -342,23 +353,31 @@ export class OrchestratorEngine {
 
     // 3. Spawn agents for ready tasks (skip tasks from cancelled/completed/paused missions)
     const readyList: Task[] = [];
+    let missionPreparationBlocked = false;
     for (const task of pending) {
+      try { await this.prepareMissionTask(task); }
+      catch (error) {
+        missionPreparationBlocked = true;
+        this.ctx.emitter.emit("log", { level: "error", message: `Mission preparation blocked task ${task.id}: ${error instanceof Error ? error.message : "unavailable"}` });
+        continue;
+      }
       let isReady = true;
       if (task.group) {
+        const executionGroup = task.missionExecutionId ?? task.group;
         // Resolve mission via direct ID (preferred) or group name (legacy fallback)
         const mission = await resolveMissionForTask(resolveMissionStore(this.ctx), task);
         if (mission && (mission.status === "cancelled" || mission.status === "completed" || mission.status === "paused")) { isReady = false; }
 
         // Check quality gates — task may be blocked by a gate even if deps are done
         if (isReady && this.qualityController) {
-          const gates = this.missionExec.getQualityGates(task.group);
+          const gates = this.missionExec.getQualityGates(executionGroup);
           if (gates.length > 0) {
             const blocking = this.qualityController.getBlockingGate(
-              mission?.id ?? task.group,
+              task.missionExecutionId ?? mission?.id ?? task.group,
               task.title,
               task.id,
               gates,
-              tasks,
+              task.missionExecutionId ? tasks.filter(candidate => candidate.missionExecutionId === task.missionExecutionId) : tasks,
             );
             if (blocking) isReady = false; // Blocked by quality gate
           }
@@ -366,13 +385,13 @@ export class OrchestratorEngine {
 
         // Check checkpoints — task may be blocked by a checkpoint awaiting human resume
         if (isReady) {
-          const checkpoints = this.missionExec.getCheckpoints(task.group);
+          const checkpoints = this.missionExec.getCheckpoints(executionGroup);
           if (checkpoints.length > 0) {
             const blockingCp = await this.missionExec.getBlockingCheckpoint(
-              task.group,
+              executionGroup,
               task.title,
               task.id,
-              tasks,
+              task.missionExecutionId ? tasks.filter(candidate => candidate.missionExecutionId === task.missionExecutionId) : tasks,
             );
             if (blockingCp) isReady = false; // Blocked by checkpoint
           }
@@ -380,13 +399,13 @@ export class OrchestratorEngine {
 
         // Check delays — task may be blocked by a timed delay
         if (isReady) {
-          const delays = this.missionExec.getDelays(task.group);
+          const delays = this.missionExec.getDelays(executionGroup);
           if (delays.length > 0) {
             const blockingDelay = await this.missionExec.getBlockingDelay(
-              task.group,
+              executionGroup,
               task.title,
               task.id,
-              tasks,
+              task.missionExecutionId ? tasks.filter(candidate => candidate.missionExecutionId === task.missionExecutionId) : tasks,
             );
             if (blockingDelay) isReady = false; // Blocked by delay
           }
@@ -406,7 +425,7 @@ export class OrchestratorEngine {
     // Don't consider it a deadlock if tasks are awaiting approval, blocked by checkpoints, or waiting on delays
     const hasActiveCheckpoints = this.missionExec.getActiveCheckpoints().length > 0;
     const hasActiveDelays = this.missionExec.getActiveDelays().length > 0;
-    if (ready.length === 0 && inProgress.length === 0 && pending.length > 0 && awaitingApproval.length === 0 && !hasActiveCheckpoints && !hasActiveDelays) {
+    if (ready.length === 0 && inProgress.length === 0 && pending.length > 0 && awaitingApproval.length === 0 && !hasActiveCheckpoints && !hasActiveDelays && !missionPreparationBlocked) {
       if (this.deadlockResolver) {
         // Async resolution already in progress — wait for next tick
         if (this.deadlockResolver.isResolving()) return false;
@@ -732,7 +751,7 @@ export class OrchestratorEngine {
 
   async getResumableMissions(): Promise<Mission[]> { return this.missionExec.getResumableMissions(); }
   async resumeMission(missionId: string, opts?: { retryFailed?: boolean }): Promise<{ retried: number; pending: number }> { return this.missionExec.resumeMission(missionId, opts); }
-  async executeMission(missionId: string): Promise<{ tasks: Task[]; group: string }> { return this.missionExec.executeMission(missionId); }
+  async executeMission(missionId: string, options?: MissionExecutionOptions): Promise<MissionExecutionResult> { return this.missionExec.executeMission(missionId, options); }
 
   // ── Checkpoints ────────────────────────────────────────────────────
 
@@ -743,6 +762,7 @@ export class OrchestratorEngine {
   }
 
   async resumeCheckpointByMissionId(missionId: string, checkpointName: string): Promise<boolean> {
+    if (this.missionExec.resumeCheckpointByMissionId) return this.missionExec.resumeCheckpointByMissionId(missionId, checkpointName);
     const mission = await this.missionExec.getMission(missionId);
     if (!mission) return false;
     return this.missionExec.resumeCheckpoint(mission.name, checkpointName);

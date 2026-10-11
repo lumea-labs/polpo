@@ -51,15 +51,15 @@ export class MissionGating {
   }
 
   /** Register (persist) checkpoint definitions for a mission group. */
-  async setCheckpointDefinitions(group: string, checkpoints: MissionCheckpoint[]): Promise<void> {
+  async setCheckpointDefinitions(group: string, checkpoints: MissionCheckpoint[], persist = true): Promise<void> {
     this.cpState.definitions[group] = checkpoints;
-    await this.cpStore.save(this.cpState);
+    if (persist) await this.cpStore.save(this.cpState);
   }
 
   /** Register (persist) delay definitions for a mission group. */
-  async setDelayDefinitions(group: string, delays: MissionDelay[]): Promise<void> {
+  async setDelayDefinitions(group: string, delays: MissionDelay[], persist = true): Promise<void> {
     this.delayState.definitions[group] = delays;
-    await this.delayStore.save(this.delayState);
+    if (persist) await this.delayStore.save(this.delayState);
   }
 
   /** Remove persisted checkpoint and delay entries for a mission group. */
@@ -132,7 +132,7 @@ export class MissionGating {
         await this.cpStore.save(this.cpState);
 
         // Pause the mission — use task.missionId when available
-        const taskMissionId = tasks.find(t => t.group === group && t.missionId)?.missionId;
+        const taskMissionId = tasks.find(t => (t.missionExecutionId ?? t.group) === group && t.missionId)?.missionId;
         const mission = taskMissionId
           ? await this.missions.getMission(taskMissionId)
           : await this.missions.getMissionByName(group);
@@ -176,7 +176,7 @@ export class MissionGating {
     await this.cpStore.save(this.cpState);
 
     // Un-pause the mission (back to active) — resolve via missionId from tasks
-    const groupTasks = (await this.ctx.taskStore.listTasks()).filter(t => t.group === group);
+    const groupTasks = (await this.ctx.taskStore.listTasks()).filter(t => (t.missionExecutionId ?? t.group) === group);
     const mission = await resolveMissionForGroup(this.missions, groupTasks, group);
     if (mission && mission.status === "paused") {
       await this.missions.updateMission(mission.id, { status: "active" });
@@ -316,7 +316,7 @@ export class MissionGating {
 
   /** Resolve a mission by group name (helper for delay/checkpoint events). */
   private async resolveMissionForGroupByName(group: string): Promise<Mission | undefined> {
-    const groupTasks = (await this.ctx.taskStore.listTasks()).filter(t => t.group === group);
+    const groupTasks = (await this.ctx.taskStore.listTasks()).filter(t => (t.missionExecutionId ?? t.group) === group);
     return resolveMissionForGroup(this.missions, groupTasks, group);
   }
 }

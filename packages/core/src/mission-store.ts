@@ -18,6 +18,7 @@
 
 import type { Mission } from "./types.js";
 import type { TaskStore } from "./task-store.js";
+import { isMissionExecutionStore, type MissionExecutionStore } from "./mission-execution.js";
 export * from "./mission-execution.js";
 
 export interface MissionStore {
@@ -60,6 +61,12 @@ export function taskStoreMissionAdapter(store: TaskStore & Partial<MissionStore>
 export function resolveMissionStore(ctx: { missionStore?: MissionStore; taskStore: TaskStore }): MissionStore {
   // The legacy file/drizzle task stores still carry the mission methods on the class.
   return ctx.missionStore ?? taskStoreMissionAdapter(ctx.taskStore as TaskStore & Partial<MissionStore>);
+}
+
+export function resolveMissionExecutionStore(ctx: { missionExecutionStore?: MissionExecutionStore; missionStore?: MissionStore; taskStore: TaskStore }): MissionExecutionStore | undefined {
+  if (ctx.missionExecutionStore) return ctx.missionExecutionStore;
+  const candidate = ctx.missionStore ?? ctx.taskStore;
+  return isMissionExecutionStore(candidate) ? candidate : undefined;
 }
 
 /**

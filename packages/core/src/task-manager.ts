@@ -4,6 +4,27 @@ import type { Task, TaskExpectation, ExpectedOutcome, RetryPolicy, ReviewContext
 import { setAssessment } from "./types.js";
 import { sanitizeExpectations } from "./schemas.js";
 
+export type CreateTaskOptions = {
+  title: string;
+  description: string;
+  assignTo: string;
+  loop?: string;
+  expectations?: TaskExpectation[];
+  expectedOutcomes?: ExpectedOutcome[];
+  dependsOn?: string[];
+  group?: string;
+  missionId?: string;
+  maxDuration?: number;
+  retryPolicy?: RetryPolicy;
+  notifications?: ScopedNotificationRules;
+  sideEffects?: boolean;
+  executionMode?: import("./types/config.js").ExecutionMode;
+  sandbox?: RuntimeSandboxOptions;
+  routing?: RuntimeRoutingOptions;
+  user?: string;
+  draft?: boolean;
+};
+
 /**
  * Task CRUD: add, update, retry, reassess, kill, abort, clear.
  */
@@ -12,26 +33,15 @@ export class TaskManager {
 
   constructor(private ctx: OrchestratorContext) {}
 
-  async createTask(opts: {
-    title: string;
-    description: string;
-    assignTo: string;
-    loop?: string;
-    expectations?: TaskExpectation[];
-    expectedOutcomes?: ExpectedOutcome[];
-    dependsOn?: string[];
-    group?: string;
-    missionId?: string;
-    maxDuration?: number;
-    retryPolicy?: RetryPolicy;
-    notifications?: ScopedNotificationRules;
-    sideEffects?: boolean;
-    executionMode?: import("./types/config.js").ExecutionMode;
-    sandbox?: RuntimeSandboxOptions;
-    routing?: RuntimeRoutingOptions;
-    user?: string;
-    draft?: boolean;
-  }): Promise<Task> {
+  async createTask(opts: CreateTaskOptions): Promise<Task> {
+    const prepared = await this.prepareTask(opts);
+    const task = await this.ctx.taskStore.createTask(prepared);
+    this.notifyTaskCreated(task);
+    return task;
+  }
+
+  /** Run planning hooks and validation without publishing a runnable task. */
+  async prepareTask(opts: CreateTaskOptions): Promise<Parameters<OrchestratorContext["taskStore"]["createTask"]>[0]> {
     if (!this.ctx.taskStore) throw new Error("Orchestrator not initialized");
 
     // Run before:task:create hook (sync — createTask is synchronous)
@@ -76,7 +86,7 @@ export class TaskManager {
     const rawExps = hookData.expectations ?? [];
     const { valid: expectations, warnings } = sanitizeExpectations(rawExps);
     for (const w of warnings) this.ctx.emitter.emit("log", { level: "warn", message: `[createTask "${hookData.title}"] ${w}` });
-    const task = await this.ctx.taskStore.createTask({
+    return {
       title: hookData.title,
       description: hookData.description,
       assignTo: hookData.assignTo,
@@ -97,7 +107,11 @@ export class TaskManager {
       routing: hookData.routing ?? opts.routing,
       user: hookData.user ?? opts.user,
       status: hookData.draft ? "draft" : undefined,
-    });
+    };
+  }
+
+  /** Publish only after the task (or whole Mission admission) has committed. */
+  notifyTaskCreated(task: Task): void {
     this.ctx.emitter.emit("task:created", { task });
 
     // Fire after:task:create hook (async, fire-and-forget)
@@ -110,7 +124,6 @@ export class TaskManager {
       group: task.group,
     }).catch(() => { /* hook errors are logged internally */ });
 
-    return task;
   }
 
   async updateTaskDescription(taskId: string, description: string): Promise<void> {

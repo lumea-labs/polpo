@@ -43,4 +43,11 @@ describe("Mission execution admission contract", () => {
     expect(admitMissionExecution(captured, { ...captured.expected, executionCount: 0 }, [])).toMatchObject({ status: "active", executionCount: 1 });
     expect(() => admitMissionExecution(captured, input.expected, [])).toThrowError(expect.objectContaining({ code: "mission_execution_conflict" }));
   });
+
+  it.each([null, {}, { volatileAgents: [null] }, { volatileAgents: [{ name: "helper" }, { name: "helper" }] },
+    { volatileAgents: [], taskTitles: [] }, { volatileAgents: [], taskTitles: [{ authored: "Work", accepted: "Unknown" }] },
+  ])("rejects runtime recovery metadata that cannot describe the accepted task plan: %j", runtime => {
+    const input = plan();
+    expect(() => normalizeMissionExecutionCommit({ ...input, runtime })).toThrowError(expect.objectContaining({ code: "mission_execution_invalid" }));
+  });
 });

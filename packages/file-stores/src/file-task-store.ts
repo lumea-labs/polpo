@@ -5,7 +5,7 @@ import { nanoid } from "nanoid";
 import type { Task, TaskStatus, PolpoState, AgentProcess, Team, Mission } from "@polpo-ai/core/types";
 import type { TaskStore } from "@polpo-ai/core/task-store";
 import { assertValidTransition, VALID_TRANSITIONS } from "@polpo-ai/core/state-machine";
-import { admitMissionExecution, normalizeMissionExecutionCommit, validateMissionExecutionKey,
+import { admitMissionExecution, normalizeMissionExecutionCommit, validateMissionExecutionKey, validateMissionExecutionFinalStatus, type MissionExecutionFinalStatus,
   MissionExecutionError, type MissionExecutionCommit, type MissionExecutionReceipt, type MissionExecutionStore } from "@polpo-ai/core/mission-store";
 import { withProjectFileTransaction, type ProjectFileTransaction } from "./project-file-transaction.js";
 
@@ -216,6 +216,35 @@ export class FileTaskStore implements TaskStore, MissionExecutionStore {
   }
   async getMissionExecution(missionId: string, key: string): Promise<MissionExecutionReceipt | undefined> {
     return this.transaction(tx => this.receipt(tx, missionId, key));
+  }
+  private admissionById(tx: ProjectFileTransaction, executionId: string): MissionExecutionCommit | undefined {
+    const index = tx.read(`.runtime/mission-executions/by-id/${executionId}.json`);
+    if (index === null) return undefined;
+    const identity = JSON.parse(index);
+    const raw = tx.read(this.executionPath(identity.missionId, identity.idempotencyKey));
+    if (raw === null) throw new MissionExecutionError("mission_execution_invalid", "Missing indexed Mission execution");
+    const input = normalizeMissionExecutionCommit(JSON.parse(raw));
+    if (input.receipt.executionId !== executionId || input.receipt.missionId !== identity.missionId
+      || input.receipt.idempotencyKey !== identity.idempotencyKey) throw new MissionExecutionError("mission_execution_invalid", "Invalid indexed Mission execution");
+    return input;
+  }
+  async getMissionExecutionById(executionId: string): Promise<MissionExecutionCommit | undefined> {
+    validateMissionExecutionKey(executionId, "lookup");
+    return this.transaction(tx => this.admissionById(tx, executionId));
+  }
+  async finalizeMissionExecution(executionId: string, status: MissionExecutionFinalStatus): Promise<boolean> {
+    validateMissionExecutionKey(executionId, "finalize");
+    validateMissionExecutionFinalStatus(status);
+    return this.transaction(tx => {
+      const admission = this.admissionById(tx, executionId);
+      if (!admission) return false;
+      const mission = this.readMission(tx, admission.receipt.missionId);
+      if (!mission || mission.status !== "active" || mission.executionCount !== admission.receipt.sequence) return false;
+      const tasks = this.admissionTasks(tx);
+      if (!admission.receipt.tasks.every(captured => tasks.some(task => task.id === captured.id && (task.status === "done" || task.status === "failed")))) return false;
+      this.write(tx, this.missionPath(mission.id), { ...mission, status, updatedAt: new Date().toISOString() });
+      return true;
+    });
   }
   async commitMissionExecution(request: MissionExecutionCommit): Promise<{ receipt: MissionExecutionReceipt; created: boolean }> {
     const input = normalizeMissionExecutionCommit(request);

@@ -992,7 +992,11 @@ export interface TaskFilters {
 export interface ExecuteMissionResult {
   tasks: Task[];
   group: string;
+  /** Stable admission identity when the runtime supports atomic execution. */
+  executionId?: string;
 }
+
+export interface ExecuteMissionOptions { idempotencyKey?: string }
 
 export interface ResumeMissionResult {
   retried: number;

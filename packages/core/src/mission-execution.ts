@@ -1,4 +1,4 @@
-import type { Mission, ScopedNotificationRules, Task } from "./types.js";
+import type { AgentConfig, Mission, ScopedNotificationRules, Task } from "./types.js";
 
 /** Immutable admission receipt. Task snapshots describe what was created;
  * callers read TaskStore separately for current execution status. */
@@ -18,13 +18,32 @@ export interface MissionExecutionCommit {
   expected: Mission;
   receipt: MissionExecutionReceipt;
   notifications?: ScopedNotificationRules;
+  /** Agent definitions selected during planning, recovered only for this execution. */
+  runtime?: { volatileAgents: AgentConfig[]; taskTitles?: Array<{ authored: string; accepted: string }> };
 }
 
 /** Capability separate from ordinary Mission CRUD. Implementations must commit
  * the receipt, all tasks, Mission activation and counter as one durable unit. */
 export interface MissionExecutionStore {
   getMissionExecution(missionId: string, idempotencyKey: string): Promise<MissionExecutionReceipt | undefined>;
+  getMissionExecutionById(executionId: string): Promise<MissionExecutionCommit | undefined>;
   commitMissionExecution(input: MissionExecutionCommit): Promise<{ receipt: MissionExecutionReceipt; created: boolean }>;
+  /** Finalize only the current active execution, with all accepted tasks terminal. */
+  finalizeMissionExecution(executionId: string, status: MissionExecutionFinalStatus): Promise<boolean>;
+}
+export type MissionExecutionFinalStatus = "completed" | "failed" | "scheduled" | "recurring";
+
+export function validateMissionExecutionFinalStatus(status: MissionExecutionFinalStatus): void {
+  if (!["completed", "failed", "scheduled", "recurring"].includes(status)) invalid();
+}
+
+export interface MissionExecutionOptions { idempotencyKey?: string }
+export interface MissionExecutionResult { tasks: Task[]; group: string; executionId?: string }
+
+export function isMissionExecutionStore(value: unknown): value is MissionExecutionStore {
+  const store = value as Partial<MissionExecutionStore> | undefined;
+  return !!store && typeof store.getMissionExecution === "function" && typeof store.getMissionExecutionById === "function"
+    && typeof store.commitMissionExecution === "function" && typeof store.finalizeMissionExecution === "function";
 }
 
 export class MissionExecutionError extends Error {
@@ -82,10 +101,29 @@ export function normalizeMissionExecutionCommit(input: unknown): MissionExecutio
       || typeof task.title !== "string" || !task.title.trim() || titles.has(task.title)
       || typeof task.description !== "string" || typeof task.assignTo !== "string" || !task.assignTo.trim()
       || task.missionId !== expected.id || task.group !== receipt.group || task.user !== receipt.user
+      || (task.missionExecutionId !== undefined && task.missionExecutionId !== receipt.executionId)
       || task.status !== "pending" || task.retries !== 0 || !Number.isSafeInteger(task.maxRetries) || task.maxRetries < 0
       || task.createdAt !== receipt.createdAt || task.updatedAt !== receipt.createdAt || !Array.isArray(task.dependsOn)
       || task.dependsOn.some(id => !ids.has(id)) || !Array.isArray(task.expectations) || !Array.isArray(task.metrics)) invalid();
     ids.add(task.id); titles.add(task.title);
+  }
+  if (copied.runtime !== undefined) {
+    const runtime = copied.runtime;
+    if (!runtime || !Array.isArray(runtime.volatileAgents)) invalid();
+    const names = new Set<string>();
+    for (const agent of runtime.volatileAgents) {
+      if (!agent || typeof agent.name !== "string" || !agent.name.trim() || names.has(agent.name)) invalid();
+      names.add(agent.name);
+    }
+    if (runtime.taskTitles !== undefined) {
+      if (!Array.isArray(runtime.taskTitles) || runtime.taskTitles.length !== receipt.tasks.length) invalid();
+      const authored = new Set<string>(), accepted = new Set<string>();
+      for (const entry of runtime.taskTitles) {
+        if (!entry || typeof entry.authored !== "string" || !entry.authored.trim() || authored.has(entry.authored)
+          || !titles.has(entry.accepted) || accepted.has(entry.accepted)) invalid();
+        authored.add(entry.authored); accepted.add(entry.accepted);
+      }
+    }
   }
   return copied;
 }

@@ -1,3 +1,4 @@
+import type { MissionExecutionOptions } from "@polpo-ai/core/mission-store";
 import { getPolpoDir } from "../core/constants.js";
 import { OpenAPIHono } from "@hono/zod-openapi";
 import { readFileSync } from "node:fs";
@@ -553,7 +554,7 @@ export function createApp(orchestrator: Orchestrator, sseBridge: SSEBridge, opts
     createMission: (opts: any) => o.engine.createMission(opts),
     updateMission: (id: string, updates: any) => o.engine.updateMission(id, updates),
     deleteMission: (id: string) => o.engine.deleteMission(id),
-    executeMission: (id: string) => o.engine.executeMission(id),
+    executeMission: (id: string, options?: MissionExecutionOptions) => o.engine.executeMission(id, options),
     resumeMission: (id: string, opts?: any) => o.engine.resumeMission(id, opts),
     abortGroup: (group: string) => o.engine.abortGroup(group),
     getActiveCheckpoints: () => o.engine.getActiveCheckpoints(),
@@ -642,13 +643,13 @@ export function createApp(orchestrator: Orchestrator, sseBridge: SSEBridge, opts
   authed.route("/playbooks", playbookRoutes(() => ({
     playbookStore: o.getPlaybookStore(),
     createMission: (opts: any) => o.engine.createMission(opts),
-    executeMission: (id: string) => o.engine.executeMission(id),
+    executeMission: (id: string, options?: MissionExecutionOptions) => o.engine.executeMission(id, options),
   })));
   // Backward-compat: keep /templates as alias
   authed.route("/templates", playbookRoutes(() => ({
     playbookStore: o.getPlaybookStore(),
     createMission: (opts: any) => o.engine.createMission(opts),
-    executeMission: (id: string) => o.engine.executeMission(id),
+    executeMission: (id: string, options?: MissionExecutionOptions) => o.engine.executeMission(id, options),
   })));
 
   authed.route("/config", configRoutes(() => ({

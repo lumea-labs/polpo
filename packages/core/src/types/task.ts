@@ -123,6 +123,8 @@ export interface Task {
   group?: string;
   /** ID of the mission this task belongs to (set when created via executeMission). */
   missionId?: string;
+  /** Immutable admission this task belongs to; group remains a display label. */
+  missionExecutionId?: string;
   dependsOn: string[];
   status: TaskStatus;
   expectations: TaskExpectation[];

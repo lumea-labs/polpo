@@ -65,6 +65,7 @@ export async function ensurePgTables(db: any): Promise<void> {
   await db.execute(sql`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS routing JSONB`);
   // Explicit per-task project loop — additive, idempotent
   await db.execute(sql`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS loop TEXT`);
+  await db.execute(sql`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS mission_execution_id TEXT`);
   await db.execute(sql`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS execution_mode TEXT`);
   await db.execute(sql`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS question_rounds INTEGER NOT NULL DEFAULT 0`);
 

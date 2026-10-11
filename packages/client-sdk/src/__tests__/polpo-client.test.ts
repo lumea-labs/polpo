@@ -1,6 +1,18 @@
 import { describe, expect, it, vi } from "vitest";
 import { PolpoClient } from "../client/polpo-client.js";
 
+describe("PolpoClient Mission execution", () => {
+  it("sends the retry key and retains the returned execution identity", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(new Response(JSON.stringify({ ok: true,
+      data: { tasks: [], group: "Example", executionId: "accepted" } }), { headers: { "content-type": "application/json" } }));
+    const client = new PolpoClient({ baseUrl: "https://api.polpo.sh", fetch });
+    expect(await client.executeMission("mission", { idempotencyKey: "delivery" })).toMatchObject({ executionId: "accepted" });
+    expect(fetch).toHaveBeenCalledWith("https://api.polpo.sh/v1/missions/mission/execute", expect.objectContaining({
+      method: "POST", body: JSON.stringify({ idempotencyKey: "delivery" }),
+    }));
+  });
+});
+
 describe("PolpoClient approvals", () => {
   it("lists pending approvals through the status filter supported by the server", async () => {
     const fetch = vi.fn<typeof globalThis.fetch>().mockImplementation(async () => new Response(

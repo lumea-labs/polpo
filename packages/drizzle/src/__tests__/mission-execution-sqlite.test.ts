@@ -32,6 +32,7 @@ describe("SQLite Mission execution admission", () => {
     const reopened = createSqliteStores(drizzle(sqlite));
     const persistence = reopened.missionExecutionStore;
     expect(await persistence.getMissionExecution(original.id, "occurrence-a")).toEqual(input.receipt);
+    expect(await persistence.getMissionExecutionById(input.receipt.executionId)).toEqual(input);
     expect(await persistence.commitMissionExecution(executionPlan(original))).toEqual({ receipt: input.receipt, created: false });
     expect(await reopened.taskStore.listTasks()).toHaveLength(2);
     expect(await reopened.missionStore.getMission(original.id)).toMatchObject({ status: "active", executionCount: 1 });
@@ -102,4 +103,20 @@ describe("SQLite Mission execution admission", () => {
     expect(await stores.taskStore.listTasks()).toHaveLength(2);
     expect(await stores.missionStore.getMission(other.id)).toMatchObject({ status: "draft" });
   });
+  it("finalizes only terminal work belonging to the current execution", async () => {
+    const original = await mission(), input = executionPlan(original);
+    input.receipt.tasks.forEach(task => { task.missionExecutionId = input.receipt.executionId; });
+    input.runtime = { volatileAgents: [{ name: "helper", role: "Accepted" }] };
+    await executions.commitMissionExecution(input);
+    expect(await executions.getMissionExecutionById(input.receipt.executionId)).toEqual(input);
+    expect(await stores.taskStore.getTask(input.receipt.tasks[0].id)).toMatchObject({ missionExecutionId: input.receipt.executionId });
+    expect(await executions.finalizeMissionExecution(input.receipt.executionId, "recurring")).toBe(false);
+    for (const task of input.receipt.tasks) await stores.taskStore.unsafeSetStatus(task.id, "done", "fixture");
+    expect(await executions.finalizeMissionExecution(input.receipt.executionId, "recurring")).toBe(true);
+    const next = (await stores.missionStore.getMission(original.id))!;
+    await executions.commitMissionExecution(executionPlan(next, "second"));
+    expect(await executions.finalizeMissionExecution(input.receipt.executionId, "completed")).toBe(false);
+    expect(await stores.missionStore.getMission(original.id)).toMatchObject({ status: "active", executionCount: 2 });
+  });
+
 });

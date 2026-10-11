@@ -7,7 +7,7 @@ import type {
 import { assertValidTransition } from "@polpo-ai/core/state-machine";
 import { type Dialect, serializeJson, deserializeJson, extractAffectedRows } from "../utils.js";
 import {
-  admitMissionExecution, normalizeMissionExecutionCommit, validateMissionExecutionKey,
+  admitMissionExecution, normalizeMissionExecutionCommit, validateMissionExecutionKey, validateMissionExecutionFinalStatus, type MissionExecutionFinalStatus,
   MissionExecutionError, type MissionExecutionStore, type MissionExecutionCommit, type MissionExecutionReceipt,
 } from "@polpo-ai/core/mission-store";
 import type { DrizzleTransactionProvider } from "./session-store.js";
@@ -43,6 +43,7 @@ export class DrizzleTaskStore implements TaskStore, MissionExecutionStore {
       loop: row.loop ?? undefined,
       group: row.group ?? undefined,
       missionId: row.missionId ?? undefined,
+      missionExecutionId: row.missionExecutionId ?? undefined,
       dependsOn: deserializeJson<string[]>(row.dependsOn, [], d),
       status: row.status as TaskStatus,
       retries: row.retries,
@@ -84,6 +85,7 @@ export class DrizzleTaskStore implements TaskStore, MissionExecutionStore {
     if (task.loop !== undefined) v.loop = task.loop;
     if (task.group !== undefined) v.group = task.group;
     if (task.missionId !== undefined) v.missionId = task.missionId;
+    if (task.missionExecutionId !== undefined) v.missionExecutionId = task.missionExecutionId;
     if (task.dependsOn !== undefined) v.dependsOn = serializeJson(task.dependsOn, d);
     if (task.status !== undefined) v.status = task.status;
     if (task.retries !== undefined) v.retries = task.retries;
@@ -342,6 +344,30 @@ export class DrizzleTaskStore implements TaskStore, MissionExecutionStore {
     const table = this.executionTable();
     const rows = await this.db.select().from(table).where(and(eq(table.missionId, missionId), eq(table.idempotencyKey, idempotencyKey)));
     return this.receiptFromRow(rows[0]);
+  }
+
+  async getMissionExecutionById(executionId: string): Promise<MissionExecutionCommit | undefined> {
+    validateMissionExecutionKey(executionId, "lookup");
+    const table = this.executionTable();
+    const rows = await this.db.select().from(table).where(eq(table.executionId, executionId));
+    if (!rows[0]) return undefined;
+    this.receiptFromRow(rows[0]);
+    return normalizeMissionExecutionCommit(deserializeJson(rows[0].admission, undefined, this.dialect));
+  }
+
+  async finalizeMissionExecution(executionId: string, status: MissionExecutionFinalStatus): Promise<boolean> {
+    validateMissionExecutionFinalStatus(status);
+    const admission = await this.getMissionExecutionById(executionId);
+    if (!admission) return false;
+    const { missions, tasks } = this.schema;
+    const ids = admission.receipt.tasks.map(task => task.id);
+    // The immutable receipt can be read separately. The current sequence,
+    // state and complete terminal task set are checked in the UPDATE itself.
+    const updated = await this.db.update(missions).set({ status, updatedAt: new Date().toISOString() }).where(and(
+      eq(missions.id, admission.receipt.missionId), eq(missions.status, "active"), eq(missions.executionCount, admission.receipt.sequence),
+      sql`(SELECT count(*) FROM ${tasks} WHERE ${inArray(tasks.id, ids)} AND ${inArray(tasks.status, ["done", "failed"])}) = ${ids.length}`,
+    )).returning({ id: missions.id });
+    return updated.length > 0;
   }
 
   async commitMissionExecution(raw: MissionExecutionCommit): Promise<{ receipt: MissionExecutionReceipt; created: boolean }> {

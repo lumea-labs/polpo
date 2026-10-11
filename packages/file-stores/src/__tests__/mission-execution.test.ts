@@ -42,6 +42,7 @@ describe("file Mission execution admission", () => {
     expect(await reopened.getMission(mission.id)).toMatchObject({ status: "active", executionCount: 1, user: "customer-a" });
     expect((await reopened.listTasks()).sort((a, b) => a.title.localeCompare(b.title))).toEqual(input.receipt.tasks);
     expect(await reopened.getMissionExecution(mission.id, "occurrence-a")).toEqual(input.receipt);
+    expect(await reopened.getMissionExecutionById(input.receipt.executionId)).toEqual(input);
     const replay = await reopened.commitMissionExecution(plan(mission));
     expect(replay).toEqual({ created: false, receipt: input.receipt });
     expect(await reopened.listTasks()).toHaveLength(2);

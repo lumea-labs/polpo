@@ -334,7 +334,7 @@ export { OrchestratorEngine } from "./orchestrator-engine.js";
 export { TickWaiter } from "./tick-waiter.js";
 
 // ── Mission store (canonical mission persistence contract) ──────────────
-export { taskStoreMissionAdapter, resolveMissionStore, resolveMissionForTask } from "./mission-store.js";
+export { taskStoreMissionAdapter, resolveMissionStore, resolveMissionForTask, resolveMissionExecutionStore } from "./mission-store.js";
 
 // ── Playbook pure logic (validation + instantiation; file IO lives in @polpo-ai/file-stores) ──
 export { validateParams, instantiatePlaybook, validatePlaybookDefinition } from "./playbook-logic.js";

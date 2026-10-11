@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { randomUUID } from "node:crypto";
 import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
@@ -36,6 +36,7 @@ describe.skipIf(!databaseUrl)("PostgreSQL Mission admission across independent c
     expect(await second.missionStore.getMission(original.id)).toMatchObject({ status: "active", executionCount: 1 });
     await migratePgSchema(dbB);
     expect(await b.getMissionExecution(original.id, "occurrence-a")).toEqual(results[0].receipt);
+    expect((await b.getMissionExecutionById(results[0].receipt.executionId))?.receipt).toEqual(results[0].receipt);
   });
 
   it("rejects a competing occurrence without partial tasks or a second counter increment", async () => {
@@ -149,4 +150,25 @@ describe.skipIf(!databaseUrl)("PostgreSQL Mission admission across independent c
     expect(await first.taskStore.listTasks()).toHaveLength(2);
     expect(await first.missionStore.getMission(other.id)).toMatchObject({ status: "draft" });
   });
+  it("finalizes only terminal work and fences a delayed finalizer from a new execution", async () => {
+    const original = await mission(), input = executionPlan(original);
+    input.receipt.tasks.forEach(task => { task.missionExecutionId = input.receipt.executionId; });
+    input.runtime = { volatileAgents: [{ name: "helper", role: "Accepted" }] };
+    await a.commitMissionExecution(input);
+    expect(await b.getMissionExecutionById(input.receipt.executionId)).toEqual(input);
+    expect(await second.taskStore.getTask(input.receipt.tasks[0].id)).toMatchObject({ missionExecutionId: input.receipt.executionId });
+    expect(await a.finalizeMissionExecution(input.receipt.executionId, "recurring")).toBe(false);
+    for (const task of input.receipt.tasks) await first.taskStore.unsafeSetStatus(task.id, "done", "fixture");
+    const lookup = a.getMissionExecutionById.bind(a);
+    vi.spyOn(a, "getMissionExecutionById").mockImplementationOnce(async id => {
+      const admission = await lookup(id);
+      expect(await b.finalizeMissionExecution(id, "recurring")).toBe(true);
+      const next = (await second.missionStore.getMission(original.id))!;
+      await b.commitMissionExecution(executionPlan(next, "second"));
+      return admission;
+    });
+    expect(await a.finalizeMissionExecution(input.receipt.executionId, "completed")).toBe(false);
+    expect(await first.missionStore.getMission(original.id)).toMatchObject({ status: "active", executionCount: 2 });
+  });
+
 });
