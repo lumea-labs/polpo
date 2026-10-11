@@ -10,6 +10,7 @@ import {
   createConnectionCapabilityResolver,
   createConnectionAccessResolver,
   getConnectionCapabilitySelection,
+  assertConnectionCapabilityAuthorized,
   type ConnectionRecord,
   type ConnectStore,
 } from "../index.js";
@@ -85,6 +86,24 @@ const selector = {
 } as const;
 
 describe("protocol-independent host Connection access", () => {
+  it("rechecks the acquired direct account before host delivery without rematerializing or switching accounts", async () => {
+    let allowed = true;
+    const materialize = vi.fn(async () => ({ kind: "api_key" as const, value: "fixture-key",
+      scopes: ["site:read"], connectionId: "selected", providerId: "sitoinchat" }));
+    const resolver = createConnectionCapabilityResolver({ store: store([record("selected")]),
+      resolveSelector: () => selector, materialize, policy: { canUseConnection: () => allowed } });
+    const capability = await resolver.resolve(input());
+    await assertConnectionCapabilityAuthorized(capability);
+    expect(getConnectionCapabilitySelection(capability)?.connectionId).toBe("selected");
+    expect(Object.keys(capability)).not.toContain("reauthorize");
+    allowed = false;
+    await expect(assertConnectionCapabilityAuthorized(capability)).rejects.toMatchObject({ code: "connection_scope_denied" });
+    expect(materialize).toHaveBeenCalledOnce();
+    allowed = true;
+    await capability.dispose?.();
+    await expect(assertConnectionCapabilityAuthorized(capability)).rejects.toMatchObject({ code: "connection_scope_denied" });
+  });
+
   it("lets the host authorize credential export separately from gateway access", async () => {
     let exportAllowed = false;
     const decisions: unknown[] = [];

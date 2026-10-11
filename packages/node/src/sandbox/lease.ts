@@ -59,6 +59,8 @@ export class SandboxLease {
   private idleTimer: ReturnType<typeof setTimeout> | null = null;
   private resumeLock: Promise<void> | null = null;
   private released = false;
+  private disposal: Promise<void> | null = null;
+  private activityWaiters: Array<() => void> = [];
 
   private readonly now: () => number;
   private readonly onUsage?: (usage: SandboxUsage) => void;
@@ -127,10 +129,18 @@ export class SandboxLease {
   }
 
   /** Release the sandbox and emit usage. Idempotent. */
-  async dispose(): Promise<void> {
-    if (this.released) return;
+  dispose(): Promise<void> {
+    if (this.disposal) return this.disposal;
     this.released = true;
     this.clearIdle();
+    return this.disposal = this.finishDisposal();
+  }
+
+  private async finishDisposal(): Promise<void> {
+    // An acquisition started before disposal must still be released. New
+    // operations are denied even if open/resume completes after this point.
+    try { await this.sessionPromise; } catch { /* acquisition emitted its error */ }
+    if (this.inFlight > 0) await new Promise<void>(resolve => this.activityWaiters.push(resolve));
     if (this.running) {
       this.runningMs += this.now() - this.runningSince;
       this.running = false;
@@ -193,14 +203,17 @@ export class SandboxLease {
     try {
       if (!this.running) await this.ensureRunning();
     } catch (error: unknown) {
-      this.inFlight = Math.max(0, this.inFlight - 1);
+      this.activityEnd();
       throw error;
     }
   }
 
   private activityEnd(): void {
     this.inFlight = Math.max(0, this.inFlight - 1);
-    if (this.inFlight === 0) this.armIdle();
+    if (this.inFlight === 0) {
+      for (const resolve of this.activityWaiters.splice(0)) resolve();
+      this.armIdle();
+    }
   }
 
   /** Resume the compute on demand; a single resume is shared by parallel ops. */
@@ -337,9 +350,12 @@ export class SandboxLease {
 
   /** Open (lazily), bracket a fs/shell op with the refcount, and run it. */
   private async bracket<T>(op: (s: SandboxSession) => Promise<T>): Promise<T> {
+    if (this.released) throw new Error("Sandbox lease has been released");
     const session = await this.ensureSession();
+    if (this.released) throw new Error("Sandbox lease has been released");
     await this.activityStart();
     try {
+      if (this.released) throw new Error("Sandbox lease has been released");
       return await op(session);
     } finally {
       this.activityEnd();

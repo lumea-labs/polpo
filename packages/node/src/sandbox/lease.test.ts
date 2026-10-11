@@ -61,6 +61,34 @@ function fakeProvider(opts: {
 }
 
 describe("SandboxLease", () => {
+  it("disposes a late acquisition without starting its host operation", async () => {
+    const f = fakeProvider();
+    let acquire!: (session: SandboxSession) => void;
+    const lease = new SandboxLease({ open: () => new Promise(resolve => { acquire = resolve; }) }, "late");
+    const callback = vi.fn(async () => {});
+    const running = expect(lease.withActivity(callback)).rejects.toThrow("released");
+    const disposal = lease.dispose();
+    acquire(await f.provider.open("late"));
+    await running; await disposal;
+    expect(callback).not.toHaveBeenCalled();
+    expect(f.dispose).toHaveBeenCalledOnce();
+  });
+
+  it("waits for an active host operation before disposing and denies new work", async () => {
+    const f = fakeProvider();
+    const lease = new SandboxLease(f.provider, "active");
+    let finish!: () => void;
+    let entered!: () => void;
+    const ready = new Promise<void>(resolve => { entered = resolve; });
+    const operation = lease.withActivity(() => new Promise<void>(resolve => { finish = resolve; entered(); }));
+    await ready;
+    const disposal = lease.dispose();
+    await expect(lease.withActivity(async () => {})).rejects.toThrow("released");
+    expect(f.dispose).not.toHaveBeenCalled();
+    finish(); await operation; await disposal;
+    expect(f.dispose).toHaveBeenCalledOnce();
+  });
+
   it("keeps a host-owned session operation active and resumes before the next operation", async () => {
     vi.useFakeTimers();
     const f = fakeProvider({ withLifecycle: true });
@@ -168,7 +196,8 @@ describe("SandboxLease", () => {
 
     await lease.fs.readFile("/a");
     await expect(lease.dispose()).rejects.toThrow("delete failed");
-    await expect(lease.dispose()).resolves.toBeUndefined();
+    await expect(lease.dispose()).rejects.toThrow("delete failed");
+    expect(dispose).toHaveBeenCalledOnce();
 
     expect(onEvent.mock.calls.map(([event]) => event.type)).toEqual([
       "sandbox.acquire.started",

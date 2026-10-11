@@ -62,6 +62,16 @@ export interface ConnectionCapabilitySelection {
 }
 
 const capabilitySelections = new WeakMap<ResolvedConnectionCapability, ConnectionCapabilitySelection>();
+const capabilityAuthorizations = new WeakMap<ResolvedConnectionCapability, () => Promise<void>>();
+
+/** Host-only delivery guard. Rechecks the acquired account, grant, identity
+ * and credential installation without switching selection or rematerializing
+ * secrets. Never serialize this guard into a tool or sandbox capability. */
+export async function assertConnectionCapabilityAuthorized(capability: ResolvedConnectionCapability): Promise<void> {
+  const authorize = capabilityAuthorizations.get(capability);
+  if (!authorize) throw new ConnectionSelectionError("connection_resolver_unavailable", "Connection capability has no host authorization guard");
+  await authorize();
+}
 
 export function getConnectionCapabilitySelection(capability: ResolvedConnectionCapability): ConnectionCapabilitySelection | undefined {
   return capabilitySelections.get(capability);
@@ -449,6 +459,7 @@ export function createConnectionCapabilityResolver(
             },
           };
           capabilitySelections.set(capability, acquired.selection);
+          capabilityAuthorizations.set(capability, async () => { await acquired.current(); });
           return capability;
         }
         if (!options.materialize) throw new ConnectionSelectionError("connection_resolver_unavailable",
@@ -457,7 +468,10 @@ export function createConnectionCapabilityResolver(
         const credential = await options.materialize(selected, input);
         await access.current();
         const capability = credentialCapability(credential);
-        access.dispose();
+        const acquired = access;
+        capability.dispose = () => acquired.dispose();
+        capabilitySelections.set(capability, acquired.selection);
+        capabilityAuthorizations.set(capability, async () => { await acquired.current(); });
         return capability;
       } catch (error) {
         access?.dispose();
