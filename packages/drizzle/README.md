@@ -3,6 +3,25 @@
 SQLite and PostgreSQL adapters for Polpo runtime stores. The root entry point
 exports the runtime store factories and schema migration helpers.
 
+## Concurrent Task writes
+
+`taskStore.updateTask` patches only supplied fields and returns the committed
+row. It cannot write `id` or `status`, including when called from untyped code.
+Unrelated concurrent edits, status changes and retry counts are preserved.
+An explicitly `undefined` optional field is cleared to SQL `NULL`; omitted
+fields remain unchanged, matching the file-store patch behavior.
+
+`taskStore.transition` validates the observed state and conditionally writes
+against that same status and retry count. A competing state change rejects the
+transition; callers must handle the conflict instead of forcing a status write.
+The returned Task is the row produced by the write, including concurrent metadata.
+Both SQLite and PostgreSQL use the same contract without a read/write transaction.
+
+This protects individual mutations, not an entire execution attempt. Claiming a
+Run, stopping its host and fencing late results across retry/recovery still require
+execution identity. Administrative `unsafeSetStatus` and whole-state imports
+remain explicit bypasses and must not be used as concurrency fallbacks.
+
 ## Connect storage
 
 `@polpo-ai/drizzle/connect` supplies an opt-in, durable self-hosted adapter for

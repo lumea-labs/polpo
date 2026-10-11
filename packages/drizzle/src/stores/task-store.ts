@@ -1,4 +1,4 @@
-import { eq, desc, asc, and, or, inArray, notInArray, sql } from "drizzle-orm";
+import { eq, desc, asc, and, or, inArray, notInArray, sql, getTableColumns } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import type { TaskStore } from "@polpo-ai/core/task-store";
 import type {
@@ -269,12 +269,23 @@ export class DrizzleTaskStore implements TaskStore, MissionExecutionStore {
     if (!existing) throw new Error(`Task "${taskId}" not found`);
 
     const now = new Date().toISOString();
-    const merged = { ...existing, ...updates, updatedAt: now };
-    const values = this.taskToValues(merged);
+    // Write only the requested fields. Rewriting a previously read Task can
+    // resurrect a cancelled execution or lose a concurrent retry/metadata edit.
+    const values = this.taskToValues({ ...updates, id: taskId, updatedAt: now });
+    const columns = getTableColumns(this.schema.tasks);
+    for (const [field, value] of Object.entries(updates)) {
+      // An explicitly cleared optional field is different from an omitted one.
+      // Assessment, for example, clears phase when its work is complete.
+      if (value === undefined && Object.hasOwn(columns, field) && !columns[field].notNull) {
+        values[field] = null;
+      }
+    }
     delete values.id;
-    await this.db.update(this.schema.tasks).set(values)
-      .where(eq(this.schema.tasks.id, taskId));
-    return merged;
+    delete values.status;
+    const rows: any[] = await this.db.update(this.schema.tasks).set(values)
+      .where(eq(this.schema.tasks.id, taskId)).returning();
+    if (!rows[0]) throw new Error(`Task "${taskId}" not found`);
+    return this.rowToTask(rows[0]);
   }
 
   async deleteTask(taskId: string): Promise<boolean> {
@@ -310,10 +321,18 @@ export class DrizzleTaskStore implements TaskStore, MissionExecutionStore {
       updates.retries = task.retries + 1;
     }
 
-    await this.db.update(this.schema.tasks).set(updates)
-      .where(eq(this.schema.tasks.id, taskId));
-
-    return { ...task, status: newStatus, updatedAt: now, retries: (updates.retries as number) ?? task.retries };
+    // Validation and mutation must refer to the same observed state. A later
+    // writer cannot overwrite completion/cancellation or a new retry that has
+    // returned to the same status. This is not a complete execution lease:
+    // administrative resets without a retry still need run-identity fencing.
+    const rows: any[] = await this.db.update(this.schema.tasks).set(updates)
+      .where(and(
+        eq(this.schema.tasks.id, taskId),
+        eq(this.schema.tasks.status, task.status),
+        eq(this.schema.tasks.retries, task.retries),
+      )).returning();
+    if (!rows[0]) throw new Error(`Task "${taskId}" state changed during transition`);
+    return this.rowToTask(rows[0]);
   }
 
   async unsafeSetStatus(taskId: string, newStatus: TaskStatus, _reason: string): Promise<Task> {

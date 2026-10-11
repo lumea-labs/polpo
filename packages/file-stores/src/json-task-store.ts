@@ -88,7 +88,7 @@ export class JsonTaskStore implements TaskStore {
     if (!task) {
       throw new Error(`Task not found: ${taskId}`);
     }
-    Object.assign(task, updates, { updatedAt: new Date().toISOString() });
+    Object.assign(task, updates, { id: task.id, status: task.status, updatedAt: new Date().toISOString() });
     this.persist();
     return task;
   }

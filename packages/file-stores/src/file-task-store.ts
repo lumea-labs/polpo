@@ -150,7 +150,7 @@ export class FileTaskStore implements TaskStore, MissionExecutionStore {
     return this.transaction(tx => {
       const existing = this.readTask(tx, id);
       if (!existing) throw new Error(`Task not found: ${id}`);
-      const updated = { ...existing, ...updates, id, updatedAt: new Date().toISOString() };
+      const updated = { ...existing, ...updates, id, status: existing.status, updatedAt: new Date().toISOString() };
       this.write(tx, this.taskPath(id), updated);
       return updated;
     });

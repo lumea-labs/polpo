@@ -4,6 +4,7 @@
  * Uses better-sqlite3 :memory: — no PG required.
  */
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { taskMutationContract } from "./helpers/task-mutation-contract.js";
 import { randomBytes } from "node:crypto";
 import Database from "better-sqlite3";
 import { drizzle } from "drizzle-orm/better-sqlite3";
@@ -38,6 +39,7 @@ afterEach(() => {
 // ═══════════════════════════════════════════════════════════════════════
 
 describe("DrizzleTaskStore", () => {
+  taskMutationContract(() => stores.taskStore);
   it("createTask + getTask round-trip", async () => {
     const task = await stores.taskStore.createTask({
       title: "Fix bug",
