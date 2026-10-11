@@ -1,3 +1,4 @@
+import { currentMissionExecutionTasks, resumableMissions } from "./mission-inspection.js";
 import type { ActiveCheckpoint, ActiveDelay } from "./types.js";
 import { nanoid } from "nanoid";
 import type { OrchestratorContext } from "./orchestrator-context.js";
@@ -7,11 +8,11 @@ import type { Mission, MissionStatus, MissionReport, Task, TaskExpectation, Miss
 import type { QualityController } from "./quality-controller.js";
 import { sanitizeExpectations, parseMissionDocument, type MissionDocumentParsed } from "./schemas.js";
 import { resolveMissionStore, resolveMissionForGroup, resolveMissionExecutionStore, type MissionStore } from "./mission-store.js";
-import { MissionExecutionError, validateMissionExecutionKey, type MissionExecutionCommit, type MissionExecutionOptions, type MissionExecutionResult } from "./mission-execution.js";
+import { assertMissionExecutionTask, MissionExecutionError, validateMissionExecutionKey, type MissionExecutionCommit, type MissionExecutionOptions, type MissionExecutionResult } from "./mission-execution.js";
 import { InMemoryCheckpointStore, InMemoryDelayStore } from "./in-memory-stores.js";
 import { MissionGating, parseISO8601Duration } from "./mission-gating.js";
 import { resolveConfiguredModelSelection } from "./model-profiles.js";
-import { normalizeRuntimeMetadata, sameRuntimeMetadata } from "./runtime-metadata.js";
+import { normalizeRuntimeMetadata } from "./runtime-metadata.js";
 
 /** Mission document keys holding list collections editable via the atomic data operations. */
 type MissionCollectionKey = "tasks" | "checkpoints" | "delays" | "qualityGates" | "team";
@@ -269,33 +270,12 @@ export class MissionExecutor {
   }
 
   private async currentExecutionTasks(mission: Mission, tasks: Task[]): Promise<Task[]> {
-    const current: Task[] = [];
-    const receipts = new Map<string, MissionExecutionCommit | undefined>();
-    const legacyGroup = (mission.executionCount ?? 0) > 1 ? `${mission.name} #${mission.executionCount}` : mission.name;
-    for (const task of tasks) {
-      if (task.missionId !== mission.id && (task.missionId || task.group !== legacyGroup)) continue;
-      if (task.missionExecutionId) {
-        if (!receipts.has(task.missionExecutionId)) receipts.set(task.missionExecutionId,
-          await resolveMissionExecutionStore(this.ctx)?.getMissionExecutionById(task.missionExecutionId));
-        const admission = receipts.get(task.missionExecutionId);
-        if (!admission) throw new MissionExecutionError("mission_execution_invalid", "Mission execution receipt is missing");
-        if (admission.receipt.sequence !== mission.executionCount) continue;
-      } else if (task.group !== legacyGroup) continue;
-      current.push(task);
-    }
-    return current;
+    return currentMissionExecutionTasks(mission, tasks, resolveMissionExecutionStore(this.ctx));
   }
 
   async getResumableMissions(): Promise<Mission[]> {
     await this.ready;
-    const missions = await this.listMissions();
-    const tasks = await this.ctx.taskStore.listTasks();
-    const resumable: Mission[] = [];
-    for (const mission of missions) {
-      if (!["active", "paused", "failed"].includes(mission.status)) continue;
-      if ((await this.currentExecutionTasks(mission, tasks)).some(task => task.status === "pending" || task.status === "failed")) resumable.push(mission);
-    }
-    return resumable;
+    return resumableMissions(await this.listMissions(), await this.ctx.taskStore.listTasks(), resolveMissionExecutionStore(this.ctx));
   }
 
   async resumeMission(missionId: string, opts?: { retryFailed?: boolean }): Promise<{ retried: number; pending: number }> {
@@ -377,12 +357,7 @@ export class MissionExecutor {
       pending.catch(() => this.preparedExecutions.delete(task.missionExecutionId!));
     }
     const admission = await pending;
-    const captured = admission.receipt.tasks.find(candidate => candidate.id === task.id);
-    if (!captured || task.missionId !== admission.receipt.missionId || task.group !== admission.receipt.group
-      || task.user !== admission.receipt.user || !sameRuntimeMetadata(task.metadata, admission.receipt.metadata)
-      || captured.missionExecutionId !== task.missionExecutionId) {
-      throw new MissionExecutionError("mission_execution_invalid", "Task does not match its accepted Mission execution");
-    }
+    assertMissionExecutionTask(task, admission.receipt);
     // Never recreate volatile agents for historical/terminal work. New active
     // tasks recover them from the accepted plan, not the edited Mission data.
     if (restoreAgents && task.status !== "done" && task.status !== "failed") {

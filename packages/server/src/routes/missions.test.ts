@@ -36,6 +36,13 @@ describe("Mission execution API contract", () => {
 
 
 describe("Mission runtime collection routes", () => {
+  it.each(["delays", "checkpoints"])("awaits a cold persisted /%s read", async kind => {
+    const gate = { missionId: "mission", executionId: "execution", group: "Display" };
+    const app = missionRoutes(() => ({ getActiveDelays: async () => [gate], getActiveCheckpoints: async () => [gate] }) as any);
+    const response = await app.request(`/${kind}`);
+    expect(response.status).toBe(200);
+    expect((await response.json()).data).toEqual([gate]);
+  });
   it.each(["delays", "checkpoints"])("does not interpret /%s as a Mission ID", async kind => {
     const getMission = vi.fn(async () => undefined);
     const gate = { group: "Display", executionId: "run", missionId: "mission" };

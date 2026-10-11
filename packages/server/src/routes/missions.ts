@@ -405,15 +405,15 @@ export function missionRoutes(getDeps: () => {
   });
 
   // GET /missions/checkpoints — list all active checkpoints
-  app.openapi(listCheckpointsRoute, (c) => {
+  app.openapi(listCheckpointsRoute, async (c) => {
     const deps = getDeps();
-    return c.json({ ok: true, data: deps.getActiveCheckpoints() });
+    return c.json({ ok: true, data: await deps.getActiveCheckpoints() });
   });
 
   // GET /missions/delays — list active delays
-  app.openapi(listDelaysRoute, (c) => {
+  app.openapi(listDelaysRoute, async (c) => {
     const deps = getDeps();
-    return c.json({ ok: true, data: deps.getActiveDelays() });
+    return c.json({ ok: true, data: await deps.getActiveDelays() });
   });
 
   // GET /missions/:missionId — get mission by ID

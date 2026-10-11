@@ -70,9 +70,9 @@ export interface MissionRouteDeps {
   executeMission: (missionId: string, options?: MissionExecutionOptions) => Promise<any>;
   resumeMission: (missionId: string, opts?: any) => Promise<any>;
   abortGroup: (groupName: string) => Promise<any>;
-  getActiveCheckpoints: () => any[];
+  getActiveCheckpoints: () => any[] | Promise<any[]>;
   resumeCheckpointByMissionId: (missionId: string, checkpointName: string) => Promise<any>;
-  getActiveDelays: () => any[];
+  getActiveDelays: () => any[] | Promise<any[]>;
   addMissionTask: (missionId: string, task: any) => Promise<any>;
   updateMissionTask: (missionId: string, taskTitle: string, updates: any) => Promise<any>;
   removeMissionTask: (missionId: string, taskTitle: string) => Promise<any>;

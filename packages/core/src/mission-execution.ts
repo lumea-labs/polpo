@@ -15,6 +15,16 @@ export interface MissionExecutionReceipt {
   tasks: Task[];
 }
 
+/** Every control/inspection surface must use the same accepted task identity. */
+export function assertMissionExecutionTask(task: Task, receipt: MissionExecutionReceipt): void {
+  const captured = receipt.tasks.find(candidate => candidate.id === task.id);
+  if (!captured || task.missionId !== receipt.missionId || task.group !== receipt.group
+    || task.missionExecutionId !== receipt.executionId || captured.missionExecutionId !== task.missionExecutionId
+    || task.user !== receipt.user || !sameRuntimeMetadata(task.metadata, receipt.metadata)) {
+    throw new MissionExecutionError("mission_execution_invalid", "Task does not match its accepted Mission execution");
+  }
+}
+
 export interface MissionExecutionCommit {
   /** Mission used to plan and authorize all tasks, rechecked at admission. */
   expected: Mission;

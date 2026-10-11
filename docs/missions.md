@@ -64,6 +64,15 @@ and delay name. The SDK exports `activeDelayKey()` for the `activeDelays` store;
 legacy hosts without execution receipts use the group label as a fallback. The
 React hook reconciles initial HTTP snapshots with newer SSE starts/expirations.
 
+Hosts that initialize their execution engine lazily can use
+`createMissionRuntimeInspector(stores)` from `@polpo-ai/core` for checkpoint,
+delay and resumable-Mission reads. Each getter reads current persistence without
+starting an engine, restoring temporary agents, advancing timers or dispatching
+pending work. The shared HTTP routes await asynchronous gate getters. Cloud uses
+this reader so saved gates remain visible after a process restart. Resumability
+requires a pending or failed task in the Mission's current execution; an empty
+failed Mission or a failed task from an older execution does not qualify.
+
 The built-in file, SQLite and PostgreSQL stores support this contract. Custom
 stores can implement `MissionExecutionStore` from `@polpo-ai/core/mission-store`:
 receipt lookup by key and execution ID, atomic admission and conditional

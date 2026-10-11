@@ -35,6 +35,50 @@ const document = () => ({ tasks: [
 ] });
 
 describe("durable Mission execution through the real OSS executor", () => {
+  it("reads persisted gate identities and current resumable work without starting or mutating a runtime", async () => {
+    const f = fixture(); await f.executor.ready;
+    const identities = [];
+    for (const [name, suffix, count] of [["Same:label", "a", 1], ["Same:label #2", "b", 0]] as const) {
+      const mission = await f.executor.createMission({ name, data: JSON.stringify({
+        tasks: [{ title: `First ${suffix}`, description: "First", assignTo: "support" },
+          { title: `Second ${suffix}`, description: "Wait", assignTo: "support", dependsOn: [`First ${suffix}`] }],
+        checkpoints: [{ name: "review:wait", afterTasks: [`First ${suffix}`], blocksTasks: [`Second ${suffix}`] }],
+        delays: [{ name: "cool:down", afterTasks: [`First ${suffix}`], blocksTasks: [`Second ${suffix}`], duration: "PT1H" }],
+      }) });
+      await f.store.updateMission(mission.id, { executionCount: count });
+      const execution = await f.executor.executeMission(mission.id);
+      const [first, blocked] = execution.tasks;
+      await f.store.unsafeSetStatus(first.id, "done", "fixture");
+      const tasks = await f.store.listTasks();
+      await f.executor.getBlockingCheckpoint(execution.executionId!, blocked.title, blocked.id, tasks);
+      await f.executor.getBlockingDelay(execution.executionId!, blocked.title, blocked.id, tasks);
+      identities.push({ missionId: mission.id, executionId: execution.executionId, group: execution.group });
+    }
+    const before = { tasks: await f.store.listTasks(), missions: await f.store.listMissions(),
+      checkpoints: await f.ctx.checkpointStore!.load(), delays: await f.ctx.delayStore!.load() };
+    const { createMissionRuntimeInspector } = await import("@polpo-ai/core");
+    // Expose only read ports: there is no spawner, scheduler, emitter or write method.
+    const input = { taskStore: { listTasks: () => f.store.listTasks() }, missionStore: { listMissions: () => f.store.listMissions() },
+      missionExecutionStore: { getMissionExecutionById: (id: string) => f.store.getMissionExecutionById(id) },
+      checkpointStore: { load: () => f.ctx.checkpointStore!.load() }, delayStore: { load: () => f.ctx.delayStore!.load() } };
+    const reader = createMissionRuntimeInspector(input);
+    const inspect = async () => ({ checkpoints: await reader.getActiveCheckpoints(), delays: await reader.getActiveDelays(),
+      resumableMissions: await reader.getResumableMissions() });
+    const result = await inspect();
+    expect(result.checkpoints).toEqual(identities.map(identity => expect.objectContaining({ ...identity, checkpointName: "review:wait" })));
+    expect(result.delays).toEqual(identities.map(identity => expect.objectContaining({ ...identity, delayName: "cool:down" })));
+    expect(result.resumableMissions.map((mission: { id: string }) => mission.id).sort()).toEqual(identities.map(identity => identity.missionId).sort());
+    expect({ tasks: await f.store.listTasks(), missions: await f.store.listMissions(),
+      checkpoints: await f.ctx.checkpointStore!.load(), delays: await f.ctx.delayStore!.load() }).toEqual(before);
+    vi.spyOn(input.missionExecutionStore, "getMissionExecutionById").mockRejectedValueOnce(new Error("fixture unavailable"));
+    await expect(inspect()).rejects.toThrow("fixture unavailable");
+    expect(await inspect()).toEqual(result);
+    const taskRead = vi.spyOn(input.taskStore, "listTasks").mockRejectedValue(new Error("unrelated invalid task"));
+    expect(await reader.getActiveCheckpoints()).toEqual(result.checkpoints);
+    expect(await reader.getActiveDelays()).toEqual(result.delays);
+    expect(taskRead).not.toHaveBeenCalled();
+  });
+
   it("captures application metadata outside the authored document and preserves it on replay and restart", async () => {
     const f = fixture(); await f.executor.ready;
     const metadata = { connectionNamespace: "app-a" };
@@ -52,6 +96,33 @@ describe("durable Mission execution through the real OSS executor", () => {
     await expect(restarted.executor.prepareTaskExecution(task)).resolves.toBeUndefined();
     await expect(restarted.executor.prepareTaskExecution({ ...task, metadata: { connectionNamespace: "app-b" } }))
       .rejects.toMatchObject({ code: "mission_execution_invalid" });
+  });
+
+  it("does not advertise historical failed tasks or empty failed Missions as resumable", async () => {
+    const f = fixture(); await f.executor.ready;
+    const mission = await f.executor.createMission({ data: JSON.stringify(document()) });
+    const old = await f.executor.executeMission(mission.id);
+    for (const task of old.tasks) await f.store.unsafeSetStatus(task.id, "failed", "fixture old failure");
+    await f.executor.cleanupCompletedGroups(await f.store.listTasks());
+    const current = await f.executor.executeMission(mission.id);
+    for (const task of current.tasks) await f.store.unsafeSetStatus(task.id, "done", "fixture current success");
+    await f.store.createMission({ name: "Empty", data: "{}", status: "failed" });
+    expect(await f.executor.getResumableMissions()).toEqual([]);
+    const { createMissionRuntimeInspector, currentMissionExecutionTasks } = await import("@polpo-ai/core");
+    const reader = createMissionRuntimeInspector({ taskStore: f.store, missionStore: f.store, missionExecutionStore: f.store,
+      checkpointStore: f.ctx.checkpointStore!, delayStore: f.ctx.delayStore! });
+    expect(await reader.getResumableMissions()).toEqual([]);
+    // A task cannot borrow another accepted task's receipt to become current.
+    const saved = (await f.store.getMission(mission.id))!;
+    await expect(currentMissionExecutionTasks(saved, [{ ...old.tasks[0], missionExecutionId: current.executionId }], f.store))
+      .rejects.toMatchObject({ code: "mission_execution_invalid" });
+    await expect(currentMissionExecutionTasks(saved, [{ ...current.tasks[0], missionId: undefined }], f.store))
+      .rejects.toMatchObject({ code: "mission_execution_invalid" });
+    // Unrelated broken work must not make a gate-only inspection fail.
+    await f.store.updateTask(current.tasks[0].id, { missionExecutionId: "missing-receipt" });
+    expect(await reader.getActiveCheckpoints()).toEqual([]);
+    expect(await reader.getActiveDelays()).toEqual([]);
+    await expect(reader.getResumableMissions()).rejects.toMatchObject({ code: "mission_execution_invalid" });
   });
 
   it("keeps display labels and stable execution identity in gate lists and events after restart", async () => {

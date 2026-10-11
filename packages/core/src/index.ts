@@ -632,3 +632,5 @@ export { RunnerCapabilityBootstrapPayloadSchema, RUNNER_CAPABILITY_BOOTSTRAP_ARG
   RUNNER_CAPABILITY_BOOTSTRAP_READY, RUNNER_CAPABILITY_BOOTSTRAP_VERSION, MAX_RUNNER_CAPABILITY_BOOTSTRAP_BYTES,
   RUNNER_CAPABILITY_BOOTSTRAP_TIMEOUT_MS } from "./runner-capability.js";
 export type { RunnerCapabilityBootstrapPayload } from "./runner-capability.js";
+
+export { createMissionRuntimeInspector, currentMissionExecutionTasks, resumableMissions } from "./mission-inspection.js";

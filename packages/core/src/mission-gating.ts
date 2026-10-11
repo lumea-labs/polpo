@@ -1,3 +1,4 @@
+import { activeMissionCheckpoints, activeMissionDelays } from "./mission-inspection.js";
 /**
  * MissionGating — runtime checkpoint/delay gating for mission task flow.
  *
@@ -205,13 +206,7 @@ export class MissionGating {
 
   /** Get all active (unresumed) checkpoints across all mission groups. */
   getActiveCheckpoints(): ActiveCheckpoint[] {
-    const result: ActiveCheckpoint[] = [];
-    for (const [cpKey, data] of Object.entries(this.cpState.active)) {
-      const checkpointName = data.checkpoint.name;
-      const group = cpKey.slice(0, -(checkpointName.length + 1));
-      result.push({ ...this.identity(group), checkpointName, checkpoint: data.checkpoint, reachedAt: data.reachedAt });
-    }
-    return result;
+    return activeMissionCheckpoints(this.cpState, key => this.identity(key));
   }
 
   /** Notification rules for checkpoints removed — no-op. */
@@ -312,13 +307,7 @@ export class MissionGating {
 
   /** Get all active (unexpired) delays across all mission groups. */
   getActiveDelays(): ActiveDelay[] {
-    const result: ActiveDelay[] = [];
-    for (const [dlKey, data] of Object.entries(this.delayState.active)) {
-      const delayName = data.delay.name;
-      const group = dlKey.slice(0, -(delayName.length + 1));
-      result.push({ ...this.identity(group), delayName, delay: data.delay, startedAt: data.startedAt, expiresAt: data.expiresAt });
-    }
-    return result;
+    return activeMissionDelays(this.delayState, key => this.identity(key));
   }
 
   /** Notification rules for delays removed — no-op. */
