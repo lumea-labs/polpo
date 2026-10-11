@@ -5,7 +5,7 @@
  * Requires TEST_DATABASE_URL env var (default: postgresql://postgres:postgres@localhost:5432/polpo_test).
  * Skipped when no PG connection is available.
  */
-import { describe, it, expect, beforeAll, beforeEach, afterAll } from "vitest";
+import { describe, it, expect, beforeAll, beforeEach, afterAll, vi } from "vitest";
 import { randomBytes } from "node:crypto";
 import { sql } from "drizzle-orm";
 import postgres from "postgres";
@@ -530,6 +530,43 @@ describe.skipIf(!canConnect)("PostgreSQL Drizzle stores", () => {
       const fetched = await stores.runStore.getRun("r1");
       expect(fetched!.status).toBe("completed"); // unchanged
     });
+
+    it("keeps cancellation when a late completion has already read the running row", async () => {
+      await stores.runStore.upsertRun(makeRun("cancel-race", "task") as any);
+      let release!: () => void, locked!: () => void;
+      const released = new Promise<void>(resolve => { release = resolve; });
+      const ready = new Promise<void>(resolve => { locked = resolve; });
+      const blocker = pgClient.begin(async tx => {
+        await tx.unsafe("SET LOCAL lock_timeout = '3s'");
+        await tx.unsafe("SELECT id FROM runs WHERE id = 'cancel-race' FOR UPDATE");
+        locked();
+        await released;
+      });
+      let cancellation: Promise<void> | undefined, completion: Promise<void> | undefined;
+      const waitForWriters = async (count: number) => vi.waitFor(async () => {
+        const rows = await pgClient`SELECT count(*)::int AS waiting FROM pg_stat_activity
+          WHERE datname = current_database() AND wait_event_type = 'Lock'
+          AND query LIKE 'update "runs"%'`;
+        expect(rows[0].waiting).toBe(count);
+      }, { timeout: 5000, interval: 20 });
+      try {
+        // A failed BEGIN/lock must reach cleanup instead of leaving readiness
+        // pending until the outer test timeout.
+        await Promise.race([ready, blocker]);
+        cancellation = stores.runStore.completeRun("cancel-race", "killed", { exitCode: 143, stdout: "", stderr: "cancelled", duration: 1 });
+        await waitForWriters(1);
+        completion = stores.runStore.completeRun("cancel-race", "completed", { exitCode: 0, stdout: "late result", stderr: "", duration: 2 });
+        await waitForWriters(2);
+        release();
+        await Promise.all([blocker, cancellation, completion]);
+        expect(await stores.runStore.getRun("cancel-race")).toMatchObject({
+          status: "killed", result: { exitCode: 143, stderr: "cancelled", stdout: "" },
+        });
+      } finally {
+        release();
+        await Promise.allSettled([blocker, cancellation, completion]);
+      }
+    }, 15_000);
 
     it("updateActivity updates activity and sessionId", async () => {
       await stores.runStore.upsertRun(makeRun("r1", "t1") as any);

@@ -130,20 +130,15 @@ export class DrizzleRunStore implements RunStore {
   }
 
   async completeRun(runId: string, status: RunStatus, result: TaskResult): Promise<void> {
-    // Race-condition guard: don't overwrite terminal states
-    const rows: any[] = await this.db.select({ status: this.runs.status })
-      .from(this.runs).where(eq(this.runs.id, runId));
-    if (rows.length > 0 && TERMINAL_STATUSES.includes(rows[0].status as RunStatus)) {
-      return;
-    }
-
+    // Check inside the write: a separate SELECT can observe "running" in
+    // two processes and let a late completion overwrite cancellation.
     const now = new Date().toISOString();
     await this.db.update(this.runs).set({
       status,
       result: serializeJson(result, this.dialect),
       updatedAt: now,
       completedAt: now,
-    }).where(eq(this.runs.id, runId));
+    }).where(and(eq(this.runs.id, runId), eq(this.runs.status, "running")));
   }
 
   async markRunCollected(runId: string): Promise<void> {
