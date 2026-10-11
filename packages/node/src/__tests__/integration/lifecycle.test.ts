@@ -1,6 +1,10 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { Orchestrator } from "../../core/orchestrator.js";
 import { InMemoryTaskStore, InMemoryRunStore, createTestAgent } from "../fixtures.js";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { FileTaskStore, FileRunStore } from "@polpo-ai/file-stores";
 import type { TaskResult } from "@polpo-ai/core/types";
 
 // Mock child_process.spawn and writeFileSync since spawnForTask spawns a real subprocess
@@ -182,9 +186,10 @@ describe("integration: lifecycle", () => {
     expect((await store.getTask(task.id))!.status).toBe("done");
   });
 
-  it("deadlock detection with unresolvable deps", async () => {
-    const deadlockEvents: any[] = [];
+  it("detects deadlock but leaves work unchanged when the adapter lacks atomic dependency checks", async () => {
+    const deadlockEvents: any[] = [], errors: string[] = [];
     orchestrator.on("orchestrator:deadlock", (e) => deadlockEvents.push(e));
+    orchestrator.on("log", e => { if (e.level === "error") errors.push(e.message); });
 
     await orchestrator.engine.createTask({
       title: "Blocked task",
@@ -197,6 +202,22 @@ describe("integration: lifecycle", () => {
 
     expect(deadlockEvents).toHaveLength(1);
     const task = (await store.listTasks())[0];
-    expect(task.status).toBe("failed");
+    expect(task.status).toBe("pending");
+    expect(errors).toContain("Deadlock recovery requires atomic dependency checks");
+  });
+
+  it("fails unresolvable dependencies through the real atomic Task/Run store", async () => {
+    const root = mkdtempSync(join(tmpdir(), "polpo-lifecycle-deadlock-"));
+    const durableTasks = new FileTaskStore(join(root, ".polpo"));
+    const durableRuns = new FileRunStore(join(root, ".polpo"));
+    const shell = new Orchestrator({ workDir: root, store: durableTasks, runStore: durableRuns });
+    try {
+      await shell.initInteractive("atomic-lifecycle", { name: "main", agents: [createTestAgent({ name: "worker" })] });
+      const task = await shell.engine.createTask({ title: "Blocked task", description: "Missing input", assignTo: "worker", dependsOn: ["not-created"] });
+      expect(await shell.tick()).toBe(true);
+      expect(await durableTasks.getTask(task.id)).toMatchObject({ status: "failed", executionRevision: 1,
+        result: { exitCode: 1, stderr: "Deadlock could not be resolved" } });
+      expect(await durableRuns.getActiveRuns()).toEqual([]);
+    } finally { await shell.gracefulStop(0); rmSync(root, { recursive: true, force: true }); }
   });
 });
