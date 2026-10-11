@@ -7,8 +7,8 @@ export function executionPlan(mission: Mission, key = "occurrence-a"): MissionEx
   const group = sequence > 1 ? `${mission.name} #${sequence}` : mission.name;
   const createdAt = new Date().toISOString(), first = randomUUID();
   const task = (id: string, title: string, dependsOn: string[]): Task => ({ id, title, description: title, assignTo: "support",
-    missionId: mission.id, group, user: mission.user, dependsOn, status: "pending", retries: 0, maxRetries: 0,
+    missionId: mission.id, group, user: mission.user, metadata: mission.metadata, dependsOn, status: "pending", retries: 0, maxRetries: 0,
     expectations: [], metrics: [], createdAt, updatedAt: createdAt });
   return { expected: mission, receipt: { executionId: randomUUID(), missionId: mission.id, idempotencyKey: key,
-    group, sequence, user: mission.user, createdAt, tasks: [task(first, "First", []), task(randomUUID(), "Second", [first])] } };
+    group, sequence, user: mission.user, metadata: mission.metadata, createdAt, tasks: [task(first, "First", []), task(randomUUID(), "Second", [first])] } };
 }

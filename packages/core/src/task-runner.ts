@@ -7,6 +7,7 @@ import type { Task, TaskResult, RunnerConfig } from "./types.js";
 import { agentMemoryScope } from "./memory-store.js";
 import { resolveExecutionMode } from "./execution-mode.js";
 import { resolveRuntimeSandboxOptions } from "./runtime-sandbox.js";
+import { normalizeRuntimeMetadata } from "./runtime-metadata.js";
 import type { RunRecord } from "./run-store.js";
 import type { LoopResumeState } from "./loop/run-store.js";
 import { resolveConfiguredModelSelection } from "./model-profiles.js";
@@ -534,6 +535,8 @@ export class TaskRunner {
   }
 
   async spawnForTask(task: Task): Promise<void> {
+    const callerContext = { user: task.user, metadata: normalizeRuntimeMetadata(task.metadata) };
+    task = { ...task, ...callerContext };
     if (task.missionExecutionId) {
       if (!this.prepareMissionExecution) throw new MissionExecutionError("mission_execution_unsupported", "Mission execution must be prepared before dispatch");
       await this.prepareMissionExecution(task);
@@ -580,6 +583,8 @@ export class TaskRunner {
 
     // Run before:task:spawn hook (sync — tick loop is synchronous)
     const hookResult = this.ctx.hooks.runBeforeSync("task:spawn", { task, agent });
+    // Hooks may rewrite task content, but cannot change the admitted account.
+    task = { ...task, ...callerContext };
     if (hookResult.cancelled) {
       this.ctx.emitter.emit("log", {
         level: "info",

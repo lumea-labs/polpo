@@ -5,6 +5,7 @@
 
 import { createRoute, z } from "@hono/zod-openapi";
 import { RuntimeRoutingSchema, RuntimeSandboxSchema } from "../../schemas.js";
+import { runtimeMetadataSchema } from "@polpo-ai/core";
 
 // ── Zod Schemas ────────────────────────────────────────────────────────
 
@@ -301,11 +302,7 @@ export const completionRequestSchema = z.object({
     description:
       "Opaque end-user identifier (OpenAI-compat). Persisted on the session and used for filtering, per-user analytics, and pass-through to billing integrations (e.g. Autumn customer_id). Polpo does not verify this — set it from your authenticated end-user id.",
   }),
-  metadata: z
-    .record(z.string(), z.string())
-    .refine((m) => Object.keys(m).length <= 16, { message: "metadata: max 16 keys" })
-    .refine((m) => Object.keys(m).every((k) => k.length <= 64), { message: "metadata: key max 64 chars" })
-    .refine((m) => Object.values(m).every((v) => v.length <= 512), { message: "metadata: value max 512 chars" })
+  metadata: runtimeMetadataSchema
     .optional()
     .openapi({
       description:

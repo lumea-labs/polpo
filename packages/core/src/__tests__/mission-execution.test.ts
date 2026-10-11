@@ -13,6 +13,17 @@ function plan(): MissionExecutionCommit {
 }
 
 describe("Mission execution admission contract", () => {
+  it("rejects changed or missing application metadata in task snapshots", () => {
+    const input = plan();
+    input.expected.metadata = { connectionNamespace: "app-a" };
+    input.receipt.metadata = { connectionNamespace: "app-a" };
+    for (const task of input.receipt.tasks) task.metadata = { connectionNamespace: "app-a" };
+    expect(normalizeMissionExecutionCommit(input)).toEqual(input);
+    input.receipt.tasks[0].metadata = { connectionNamespace: "app-b" };
+    expect(() => normalizeMissionExecutionCommit(input)).toThrowError(expect.objectContaining({ code: "mission_execution_invalid" }));
+    delete input.receipt.tasks[0].metadata;
+    expect(() => normalizeMissionExecutionCommit(input)).toThrowError(expect.objectContaining({ code: "mission_execution_invalid" }));
+  });
   it.each([undefined, null, [], {}, { expected: {} }, { receipt: {} }])("rejects a malformed plan: %j", input => {
     expect(() => normalizeMissionExecutionCommit(input)).toThrowError(expect.objectContaining({ code: "mission_execution_invalid" }));
   });

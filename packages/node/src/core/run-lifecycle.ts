@@ -41,6 +41,7 @@ import type { VaultStore } from "@polpo-ai/core/vault-store";
 import type { MemoryStore } from "@polpo-ai/core/memory-store";
 import {
   createToolInvocationContext,
+  normalizeRuntimeMetadata,
   normalizeAgentIdentity,
   AgentIdentityError,
   normalizeRuntimePromptContextSegments,
@@ -296,6 +297,20 @@ export async function executeRun(config: RunnerConfig, deps: ExecuteRunDeps): Pr
     if ((agentIdentity && agentIdentity.name !== config.agent.name)
       || (config.toolInvocation?.agent && (config.toolInvocation.agent.name !== agentIdentity?.name
         || config.toolInvocation.agent.incarnation !== agentIdentity?.incarnation))) throw new AgentIdentityError();
+    // Snapshot host-owned identity before any content guardrail can rewrite it.
+    const toolInvocation = config.toolInvocation ? createToolInvocationContext({
+      ...config.toolInvocation,
+      metadata: { ...config.toolInvocation.metadata },
+      ...(agentIdentity ? { agent: agentIdentity } : {}),
+    }) : createToolInvocationContext({
+      ...(agentIdentity ? { agent: agentIdentity } : {}),
+      requestId: config.runId,
+      runId: config.runId,
+      ...(correlatedSessionId ? { sessionId: correlatedSessionId } : {}),
+      ...(config.task.user ? { user: config.task.user } : {}),
+      metadata: normalizeRuntimeMetadata(config.task.metadata) ?? {},
+      surface: "task",
+    });
     // Use the injected vault store when available (postgres/sqlite or
     // orchestrator-owned), fall back to file-based
     let vaultStore: VaultStore | undefined = deps.vaultStore;
@@ -469,19 +484,7 @@ export async function executeRun(config: RunnerConfig, deps: ExecuteRunDeps): Pr
     const spawnCtx = {
       polpoDir: config.polpoDir,
       runId: config.runId,
-      toolInvocation: config.toolInvocation ? createToolInvocationContext({
-        ...config.toolInvocation,
-        metadata: { ...config.toolInvocation.metadata },
-        ...(agentIdentity ? { agent: agentIdentity } : {}),
-      }) : createToolInvocationContext({
-        ...(agentIdentity ? { agent: agentIdentity } : {}),
-        requestId: config.runId,
-        runId: config.runId,
-        ...(correlatedSessionId ? { sessionId: correlatedSessionId } : {}),
-        ...(guardedTask.user ? { user: guardedTask.user } : {}),
-        metadata: {},
-        surface: "task",
-      }),
+      toolInvocation,
       outputDir: config.outputDir,
       emailAllowedDomains: config.emailAllowedDomains,
       reasoning: config.reasoning,

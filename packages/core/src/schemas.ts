@@ -10,6 +10,13 @@ import { MAX_MODEL_FALLBACKS } from "./model-policy.js";
 import { MODEL_PROFILE_NAME_PATTERN } from "./model-profiles.js";
 import { assertLoopAgentInputSchema } from "./loop/agent-input.js";
 import { assertLoopAgentOutputSchema } from "./loop/agent-output.js";
+import { normalizeRuntimeMetadata } from "./runtime-metadata.js";
+
+/** Bounded caller metadata, shared by API schemas and queued runtime validation. */
+export const runtimeMetadataSchema = z.record(z.string(), z.string()).superRefine((value, ctx) => {
+  try { normalizeRuntimeMetadata(value); }
+  catch (error) { ctx.addIssue({ code: z.ZodIssueCode.custom, message: (error as Error).message }); }
+}).transform(value => normalizeRuntimeMetadata(value)!);
 
 // ── Expectation Schemas (discriminated union on `type`) ──────────────
 

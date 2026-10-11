@@ -41,6 +41,7 @@ export const tasksSqlite = sqliteTable("tasks", {
   routing: text("routing"),
   /** OpenAI-compat opaque end-user id. Propagates to runs at spawn time. */
   user: text("user"),
+  metadata: text("metadata"),
   createdAt: text("created_at").notNull(),
   updatedAt: text("updated_at").notNull(),
 }, (table) => [
@@ -65,6 +66,7 @@ export const missionsSqlite = sqliteTable("missions", {
   executionCount: integer("execution_count").notNull().default(0),
   /** OpenAI-compat opaque end-user id. Inherited by tasks created from this mission. */
   user: text("user"),
+  metadata: text("metadata"),
   createdAt: text("created_at").notNull(),
   updatedAt: text("updated_at").notNull(),
 }, (table) => [
@@ -136,6 +138,7 @@ export const tasksPg = pgTable("tasks", {
   routing: jsonb("routing"),
   /** OpenAI-compat opaque end-user id. Propagates to runs at spawn time. */
   user: pgText("user"),
+  metadata: jsonb("metadata"),
   createdAt: pgText("created_at").notNull(),
   updatedAt: pgText("updated_at").notNull(),
 }, (table) => [
@@ -160,6 +163,7 @@ export const missionsPg = pgTable("missions", {
   executionCount: pgInteger("execution_count").notNull().default(0),
   /** OpenAI-compat opaque end-user id. Inherited by tasks created from this mission. */
   user: pgText("user"),
+  metadata: jsonb("metadata"),
   createdAt: pgText("created_at").notNull(),
   updatedAt: pgText("updated_at").notNull(),
 }, (table) => [

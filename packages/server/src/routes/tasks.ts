@@ -338,6 +338,7 @@ export function taskRoutes(getDeps: () => {
       routing: body.routing,
       draft: body.draft,
       user: body.user,
+      metadata: body.metadata,
     });
 
     return c.json({ ok: true, data: task }, 201);

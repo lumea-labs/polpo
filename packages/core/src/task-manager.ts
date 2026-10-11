@@ -3,6 +3,7 @@ import { resolveMissionStore, resolveMissionForTask } from "./mission-store.js";
 import type { Task, TaskExpectation, ExpectedOutcome, RetryPolicy, ReviewContext, ScopedNotificationRules, RuntimeRoutingOptions, RuntimeSandboxOptions } from "./types.js";
 import { setAssessment } from "./types.js";
 import { sanitizeExpectations } from "./schemas.js";
+import { normalizeRuntimeMetadata } from "./runtime-metadata.js";
 
 export type CreateTaskOptions = {
   title: string;
@@ -22,6 +23,7 @@ export type CreateTaskOptions = {
   sandbox?: RuntimeSandboxOptions;
   routing?: RuntimeRoutingOptions;
   user?: string;
+  metadata?: Record<string, string>;
   draft?: boolean;
 };
 
@@ -42,6 +44,7 @@ export class TaskManager {
 
   /** Run planning hooks and validation without publishing a runnable task. */
   async prepareTask(opts: CreateTaskOptions): Promise<Parameters<OrchestratorContext["taskStore"]["createTask"]>[0]> {
+    const metadata = normalizeRuntimeMetadata(opts.metadata);
     if (!this.ctx.taskStore) throw new Error("Orchestrator not initialized");
 
     // Run before:task:create hook (sync — createTask is synchronous)
@@ -106,6 +109,7 @@ export class TaskManager {
       sandbox: hookData.sandbox ?? opts.sandbox,
       routing: hookData.routing ?? opts.routing,
       user: hookData.user ?? opts.user,
+      metadata,
       status: hookData.draft ? "draft" : undefined,
     };
   }

@@ -5,6 +5,7 @@ import type {
   Task, TaskStatus, Mission, PolpoState, AgentProcess,
 } from "@polpo-ai/core/types";
 import { assertValidTransition } from "@polpo-ai/core/state-machine";
+import { normalizeRuntimeMetadata } from "@polpo-ai/core";
 import { type Dialect, serializeJson, deserializeJson, extractAffectedRows } from "../utils.js";
 import {
   admitMissionExecution, normalizeMissionExecutionCommit, validateMissionExecutionKey, validateMissionExecutionFinalStatus, type MissionExecutionFinalStatus,
@@ -70,6 +71,7 @@ export class DrizzleTaskStore implements TaskStore, MissionExecutionStore {
       sandbox: deserializeJson(row.sandbox, undefined, d),
       routing: deserializeJson(row.routing, undefined, d),
       user: row.user ?? undefined,
+      metadata: normalizeRuntimeMetadata(deserializeJson(row.metadata, undefined, d)),
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
     };
@@ -112,6 +114,7 @@ export class DrizzleTaskStore implements TaskStore, MissionExecutionStore {
     if (task.sandbox !== undefined) v.sandbox = serializeJson(task.sandbox, d);
     if (task.routing !== undefined) v.routing = serializeJson(task.routing, d);
     if (task.user !== undefined) v.user = task.user;
+    if (task.metadata !== undefined) v.metadata = serializeJson(normalizeRuntimeMetadata(task.metadata), d);
     if (task.createdAt !== undefined) v.createdAt = task.createdAt;
     if (task.updatedAt !== undefined) v.updatedAt = task.updatedAt;
     return v;
@@ -132,6 +135,7 @@ export class DrizzleTaskStore implements TaskStore, MissionExecutionStore {
       notifications: deserializeJson(row.notifications, undefined, d),
       executionCount: row.executionCount ?? 0,
       user: row.user ?? undefined,
+      metadata: normalizeRuntimeMetadata(deserializeJson(row.metadata, undefined, d)),
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
     };
@@ -233,6 +237,7 @@ export class DrizzleTaskStore implements TaskStore, MissionExecutionStore {
   // ── Task CRUD ────────────────────────────────────────────────────────
 
   async createTask(input: Omit<Task, "id" | "status" | "retries" | "createdAt" | "updatedAt"> & { status?: TaskStatus }): Promise<Task> {
+    input = { ...input, metadata: normalizeRuntimeMetadata(input.metadata) };
     const now = new Date().toISOString();
     const task: Task = {
       ...input,
@@ -259,6 +264,7 @@ export class DrizzleTaskStore implements TaskStore, MissionExecutionStore {
   }
 
   async updateTask(taskId: string, updates: Partial<Omit<Task, "id" | "status">>): Promise<Task> {
+    if (updates.metadata !== undefined) updates = { ...updates, metadata: normalizeRuntimeMetadata(updates.metadata) };
     const existing = await this.getTask(taskId);
     if (!existing) throw new Error(`Task "${taskId}" not found`);
 
@@ -430,6 +436,7 @@ export class DrizzleTaskStore implements TaskStore, MissionExecutionStore {
   }
 
   async createMission(input: Omit<Mission, "id" | "createdAt" | "updatedAt">): Promise<Mission> {
+    input = { ...input, metadata: normalizeRuntimeMetadata(input.metadata) };
     const now = new Date().toISOString();
     const mission: Mission = {
       ...input,
@@ -451,6 +458,7 @@ export class DrizzleTaskStore implements TaskStore, MissionExecutionStore {
       notifications: serializeJson(mission.notifications, d),
       executionCount: mission.executionCount ?? 0,
       user: mission.user ?? null,
+      metadata: serializeJson(mission.metadata, d),
       createdAt: mission.createdAt,
       updatedAt: mission.updatedAt,
     });
@@ -476,6 +484,7 @@ export class DrizzleTaskStore implements TaskStore, MissionExecutionStore {
   }
 
   async updateMission(missionId: string, updates: Partial<Omit<Mission, "id">>): Promise<Mission> {
+    if (updates.metadata !== undefined) updates = { ...updates, metadata: normalizeRuntimeMetadata(updates.metadata) };
     const existing = await this.getMission(missionId);
     if (!existing) throw new Error(`Mission "${missionId}" not found`);
 
@@ -494,6 +503,7 @@ export class DrizzleTaskStore implements TaskStore, MissionExecutionStore {
     if (updates.notifications !== undefined) values.notifications = serializeJson(updates.notifications, d);
     if (updates.executionCount !== undefined) values.executionCount = updates.executionCount;
     if (updates.user !== undefined) values.user = updates.user;
+    if (updates.metadata !== undefined) values.metadata = serializeJson(updates.metadata, d);
 
     await this.db.update(this.schema.missions).set(values)
       .where(eq(this.schema.missions.id, missionId));

@@ -147,6 +147,7 @@ export { VALID_TRANSITIONS, isValidTransition, assertValidTransition } from "./s
 
 // ── Schemas (Zod validation) ─────────────────────────────────────────────
 export * from "./schemas.js";
+export { normalizeRuntimeMetadata, sameRuntimeMetadata } from "./runtime-metadata.js";
 export * from "./project-layout.js";
 
 // ── Hooks ────────────────────────────────────────────────────────────────

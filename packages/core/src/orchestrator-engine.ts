@@ -95,6 +95,7 @@ export interface MissionExecutorPort {
     endDate?: string;
     notifications?: ScopedNotificationRules;
     user?: string;
+    metadata?: Record<string, string>;
   }): Promise<Mission>;
   getMission(missionId: string): Promise<Mission | undefined>;
   getMissionByName(name: string): Promise<Mission | undefined>;
@@ -549,6 +550,7 @@ export class OrchestratorEngine {
     executionMode?: import("./types/config.js").ExecutionMode;
     sandbox?: RuntimeSandboxOptions;
     user?: string;
+    metadata?: Record<string, string>;
     draft?: boolean;
   }): Promise<Task> { return this.taskMgr.createTask(opts); }
 
@@ -637,6 +639,7 @@ export class OrchestratorEngine {
     endDate?: string;
     notifications?: ScopedNotificationRules;
     user?: string;
+    metadata?: Record<string, string>;
   }): Promise<Mission> { return this.missionExec.createMission(opts); }
   async getMission(missionId: string): Promise<Mission | undefined> { return this.missionExec.getMission(missionId); }
   async getMissionByName(name: string): Promise<Mission | undefined> { return this.missionExec.getMissionByName(name); }

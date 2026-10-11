@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   AddAgentSchema,
   CreateTaskSchema,
+  CreateMissionSchema,
   RuntimeSandboxSchema,
   UpdateAgentSchema,
   UpdateTaskSchema,
@@ -15,6 +16,21 @@ const lifecycle = {
     deleteAfterStopMinutes: 45,
   },
 };
+
+describe("queued invocation metadata", () => {
+  const task = { title: "Read", description: "Read account", assignTo: "support" };
+  it("preserves bounded metadata on authenticated Task and Mission inputs", () => {
+    const metadata = { connectionNamespace: "app-a" };
+    expect(CreateTaskSchema.parse({ ...task, metadata })).toMatchObject({ metadata });
+    expect(CreateMissionSchema.parse({ data: "{}", metadata })).toMatchObject({ metadata });
+  });
+  it.each([null, [], { nested: { id: "app-a" } }, { a: 1 }, { a: "x".repeat(513) },
+    { ["k".repeat(65)]: "a" }, Object.fromEntries(Array.from({ length: 17 }, (_, i) => [String(i), "a"])),
+  ])("rejects invalid metadata before queue admission: %j", metadata => {
+    expect(CreateTaskSchema.safeParse({ ...task, metadata }).success).toBe(false);
+    expect(CreateMissionSchema.safeParse({ data: "{}", metadata }).success).toBe(false);
+  });
+});
 
 describe("shared runtime sandbox schema", () => {
   it("is reused by agent and task mutation surfaces", () => {

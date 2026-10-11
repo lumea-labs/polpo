@@ -165,6 +165,8 @@ export interface Task {
    * Propagates from Task → Run for per-user attribution and metering.
    */
   user?: string;
+  /** Trusted caller metadata captured at admission; not model-authored task data. */
+  metadata?: Record<string, string>;
   /** Execution mode override for this task (wins over agent and settings). */
   executionMode?: import("./config.js").ExecutionMode;
   /** Runtime sandbox policy override for this task (wins over agent and settings). */

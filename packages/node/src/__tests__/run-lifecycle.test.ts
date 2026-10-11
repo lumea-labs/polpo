@@ -76,6 +76,7 @@ import { InMemorySteeringController } from "@polpo-ai/core/steering";
 import {
   RuntimeGuardrailEngine,
   createRunToolMiddleware,
+  createRunPreflightPolicy,
 } from "@polpo-ai/core/guardrails";
 
 // ── Helpers ─────────────────────────────────────────────
@@ -164,14 +165,14 @@ describe("executeRun — shared run lifecycle", () => {
     const resolve = vi.fn(async (_input: import("@polpo-ai/core").McpCapabilityResolveInput) => ({
       call: async () => ({ content: [{ type: "text", text: "private account read" }] }), dispose,
     }));
-    const config = makeConfig({ agent: makeAgent({ allowedTools: ["mcp__docs__read"] }), task: makeTask({ user: "customer-a" }),
+    const config = makeConfig({ agent: makeAgent({ allowedTools: ["mcp__docs__read"] }), task: makeTask({ user: "customer-a", metadata: { connectionNamespace: "app-a" } }),
       agentIdentity: { name: "lifecycle-agent", incarnation: "original" } });
     const outcome = await executeRun(config, { runStore: new InMemoryRunStore(), pid: -1, configPath: "memory://mcp",
       resolveMcpCapabilities: () => ({ docs: { tools: [{ name: "read", inputSchema: { type: "object" } }], resolver: { resolve } } }),
     });
     expect(outcome.status).toBe("completed");
     expect(resolve).toHaveBeenCalledOnce();
-    expect(resolve.mock.calls[0][0].invocation).toMatchObject({ user: "customer-a", runId: config.runId, surface: "task",
+    expect(resolve.mock.calls[0][0].invocation).toMatchObject({ user: "customer-a", metadata: { connectionNamespace: "app-a" }, runId: config.runId, surface: "task",
       agent: { name: "lifecycle-agent", incarnation: "original" } });
     expect(dispose).toHaveBeenCalledOnce();
   });
@@ -184,17 +185,33 @@ describe("executeRun — shared run lifecycle", () => {
     const resolveCustomTools = vi.fn<import("@polpo-ai/core").ResolveCustomTools>(async () => [{
       name: "signed_request", label: "Sign", description: "Host-owned sandbox execution", parameters: Type.Object({ user: Type.String() }), execute,
     }]);
-    const config = makeConfig({ agent: makeAgent({ allowedTools: ["signed_request"] }), task: makeTask({ user: "customer-a" }),
+    const config = makeConfig({ agent: makeAgent({ allowedTools: ["signed_request"] }), task: makeTask({ user: "customer-a", metadata: { connectionNamespace: "app-a" } }),
       agentIdentity: { name: "lifecycle-agent", incarnation: "original" } });
     const outcome = await executeRun(config, { runStore: new InMemoryRunStore(), pid: -1,
       configPath: "memory://custom-tools", resolveCustomTools });
     expect(outcome.status).toBe("completed");
     expect(resolveCustomTools).toHaveBeenCalledOnce();
     expect(resolveCustomTools.mock.calls[0][0]).toMatchObject({ agentName: "lifecycle-agent", allowedTools: ["signed_request"],
-      invocation: { user: "customer-a", runId: config.runId, surface: "task",
+      invocation: { user: "customer-a", metadata: { connectionNamespace: "app-a" }, runId: config.runId, surface: "task",
         agent: { name: "lifecycle-agent", incarnation: "original" } } });
     expect(resolveCustomTools.mock.calls[0][0].signal).toBeInstanceOf(AbortSignal);
     expect(execute).toHaveBeenCalledOnce();
+  });
+  test.each(["input", "model.preflight"] as const)("keeps the original caller context when %s rewrites task content", async phase => {
+    setMockModel(mockTextModel("done"));
+    const config = makeConfig({ task: makeTask({ user: "customer-a", metadata: { connectionNamespace: "app-a" } }) });
+    const resolveCustomTools = vi.fn<import("@polpo-ai/core").ResolveCustomTools>(async () => []);
+    const policy = new RuntimeGuardrailEngine([{ id: "rewrite-caller", phases: [phase], evaluate: input => {
+      const value = input.value as Record<string, any>;
+      const task = phase === "input" ? value : value.task;
+      const rewritten = { ...task, user: "customer-b", metadata: { connectionNamespace: "app-b" } };
+      return { action: "rewrite", risk: "low", reason: "Fixture content rewrite", value: phase === "input" ? rewritten : { ...value, task: rewritten } };
+    } }]);
+    const outcome = await executeRun(config, { runStore: new InMemoryRunStore(), pid: -1, configPath: "memory://preflight",
+      runPreflightPolicy: createRunPreflightPolicy(policy), resolveCustomTools });
+    expect(outcome.status).toBe("completed");
+    expect(resolveCustomTools).toHaveBeenCalledOnce();
+    expect(resolveCustomTools.mock.calls[0][0].invocation).toMatchObject({ user: "customer-a", metadata: { connectionNamespace: "app-a" } });
   });
   test("fails a Connection-backed subprocess configuration without a host resolver instead of using its URL", async () => {
     setMockModel(mockTextModel("must not start"));

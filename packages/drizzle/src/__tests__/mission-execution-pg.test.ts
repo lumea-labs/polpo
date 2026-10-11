@@ -25,15 +25,15 @@ describe.skipIf(!databaseUrl)("PostgreSQL Mission admission across independent c
     await admin.unsafe(`DROP SCHEMA IF EXISTS "${namespace}" CASCADE`);
     await admin.end();
   });
-  const mission = () => first.missionStore.createMission({ name: "Receipt fixture", data: '{"tasks":[]}', status: "recurring", user: "customer-a" });
+  const mission = () => first.missionStore.createMission({ name: "Receipt fixture", data: '{"tasks":[]}', status: "recurring", user: "customer-a", metadata: { connectionNamespace: "app-a" } });
 
   it("deduplicates simultaneous retries and returns one stable receipt", async () => {
     const original = await mission();
     const results = await Promise.all([a, b].map(store => store.commitMissionExecution(executionPlan(original))));
     expect(results.map(result => result.created).sort()).toEqual([false, true]);
     expect(results[0].receipt).toEqual(results[1].receipt);
-    expect(await second.taskStore.listTasks()).toHaveLength(2);
-    expect(await second.missionStore.getMission(original.id)).toMatchObject({ status: "active", executionCount: 1 });
+    expect(await second.taskStore.listTasks()).toEqual(expect.arrayContaining(results[0].receipt.tasks.map(task => expect.objectContaining({ id: task.id, metadata: { connectionNamespace: "app-a" } }))));
+    expect(await second.missionStore.getMission(original.id)).toMatchObject({ status: "active", executionCount: 1, metadata: { connectionNamespace: "app-a" } });
     await migratePgSchema(dbB);
     expect(await b.getMissionExecution(original.id, "occurrence-a")).toEqual(results[0].receipt);
     expect((await b.getMissionExecutionById(results[0].receipt.executionId))?.receipt).toEqual(results[0].receipt);
@@ -46,6 +46,27 @@ describe.skipIf(!databaseUrl)("PostgreSQL Mission admission across independent c
     expect(results.find(result => result.status === "rejected")).toMatchObject({ reason: { code: "mission_execution_conflict" } });
     expect(await first.taskStore.listTasks()).toHaveLength(2);
     expect(await first.missionStore.getMission(original.id)).toMatchObject({ executionCount: 1 });
+  });
+
+  it("migrates old rows and preserves the accepted namespace independently of later edits", async () => {
+    const old = await first.missionStore.createMission({ name: "Old", data: "{}", status: "draft" });
+    await clientA`ALTER TABLE tasks DROP COLUMN metadata`;
+    await clientA`ALTER TABLE missions DROP COLUMN metadata`;
+    await migratePgSchema(dbA);
+    await migratePgSchema(dbB);
+    expect((await second.missionStore.getMission(old.id))?.metadata).toBeUndefined();
+    const original = await first.missionStore.updateMission(old.id, { metadata: { connectionNamespace: "app-a" } });
+    const forged = executionPlan(original);
+    forged.receipt.tasks[0].metadata = { connectionNamespace: "app-b" };
+    await expect(a.commitMissionExecution(forged)).rejects.toMatchObject({ code: "mission_execution_invalid" });
+    await first.missionStore.updateMission(old.id, { metadata: { connectionNamespace: "app-b" } });
+    await expect(b.commitMissionExecution(executionPlan(original))).rejects.toMatchObject({ code: "mission_execution_conflict" });
+    expect(await second.taskStore.listTasks()).toEqual([]);
+    const current = (await second.missionStore.getMission(old.id))!;
+    const accepted = await b.commitMissionExecution(executionPlan(current));
+    await first.missionStore.updateMission(old.id, { metadata: { connectionNamespace: "app-c" } });
+    expect(await a.commitMissionExecution(executionPlan(original))).toEqual({ ...accepted, created: false });
+    expect((await first.taskStore.getTask(accepted.receipt.tasks[0].id))?.metadata).toEqual({ connectionNamespace: "app-b" });
   });
 
   it("serializes conflicting task titles across different Missions", async () => {
@@ -83,7 +104,7 @@ describe.skipIf(!databaseUrl)("PostgreSQL Mission admission across independent c
     expect(committed).toBe(true);
     const next = await first.missionStore.updateMission(original.id, { user: "customer-b" });
     expect(await b.commitMissionExecution(executionPlan({ ...next, executionCount: 0 }))).toEqual({ receipt: input.receipt, created: false });
-    expect(await second.taskStore.listTasks()).toHaveLength(2);
+    expect(await second.taskStore.listTasks()).toEqual(expect.arrayContaining(input.receipt.tasks.map(task => expect.objectContaining({ id: task.id, metadata: { connectionNamespace: "app-a" } }))));
   });
 
   it("refuses a driver without transactions instead of sending individual writes", async () => {

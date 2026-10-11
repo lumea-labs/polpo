@@ -35,6 +35,25 @@ const document = () => ({ tasks: [
 ] });
 
 describe("durable Mission execution through the real OSS executor", () => {
+  it("captures application metadata outside the authored document and preserves it on replay and restart", async () => {
+    const f = fixture(); await f.executor.ready;
+    const metadata = { connectionNamespace: "app-a" };
+    const doc = { tasks: [{ title: "Scoped", description: "Read account", assignTo: "support",
+      metadata: { connectionNamespace: "forged" }, user: "forged" }] };
+    const mission = await f.executor.createMission({ data: JSON.stringify(doc), user: "customer-a", metadata });
+    metadata.connectionNamespace = "mutated";
+    expect((await f.executor.getMission(mission.id))).toMatchObject({ metadata: { connectionNamespace: "app-a" } });
+    const accepted = await f.executor.executeMission(mission.id, { idempotencyKey: "delivery" });
+    expect(accepted.tasks[0]).toMatchObject({ user: "customer-a", metadata: { connectionNamespace: "app-a" } });
+    await f.store.updateMission(mission.id, { metadata: { connectionNamespace: "app-b" } });
+    const restarted = fixture(); await restarted.executor.ready;
+    expect(await restarted.executor.executeMission(mission.id, { idempotencyKey: "delivery" })).toEqual(accepted);
+    const task = (await restarted.store.getTask(accepted.tasks[0].id))!;
+    await expect(restarted.executor.prepareTaskExecution(task)).resolves.toBeUndefined();
+    await expect(restarted.executor.prepareTaskExecution({ ...task, metadata: { connectionNamespace: "app-b" } }))
+      .rejects.toMatchObject({ code: "mission_execution_invalid" });
+  });
+
   it("keeps display labels and stable execution identity in gate lists and events after restart", async () => {
     const f = fixture(); await f.executor.ready;
     const doc = { ...document(),
@@ -160,6 +179,23 @@ describe("durable Mission execution through the real OSS executor", () => {
     const mission = await f.executor.createMission({ data: JSON.stringify(document()), user: "customer-a" });
     const receipt = await f.executor.executeMission(mission.id, { idempotencyKey: "delivery" });
     await expect(f.executor.prepareTaskExecution({ ...receipt.tasks[0], user: "customer-b" })).rejects.toThrow(/execution/i);
+  });
+
+  it("preserves accepted caller context when a spawn hook replaces task fields", async () => {
+    const spawn = vi.fn(async (_config: import("@polpo-ai/core/types").RunnerConfig) => ({ pid: -1, configPath: "memory://hook" }));
+    const f = fixture({ spawner: { spawn, kill: vi.fn(), isAlive: () => true } });
+    await f.executor.ready;
+    const mission = await f.executor.createMission({ data: JSON.stringify(document()), user: "customer-a", metadata: { connectionNamespace: "app-a" } });
+    const accepted = await f.executor.executeMission(mission.id);
+    vi.spyOn(f.ctx.hooks, "runBeforeSync").mockImplementation((name, data: any) => {
+      if (name === "task:spawn") { data.task.user = "customer-b"; data.task.metadata = { connectionNamespace: "app-b" }; }
+      return { data, cancelled: false };
+    });
+    const runner = new TaskRunner(f.ctx);
+    runner.setMissionExecutionPreparer(task => f.executor.prepareTaskExecution(task));
+    await runner.spawnForTask(accepted.tasks[0]);
+    expect(spawn).toHaveBeenCalledOnce();
+    expect(spawn.mock.calls[0][0].task).toMatchObject({ user: "customer-a", metadata: { connectionNamespace: "app-a" } });
   });
 
   it("holds dispatch and deadlock repair while accepted runtime setup is unavailable", async () => {

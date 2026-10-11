@@ -11,6 +11,7 @@ import { MissionExecutionError, validateMissionExecutionKey, type MissionExecuti
 import { InMemoryCheckpointStore, InMemoryDelayStore } from "./in-memory-stores.js";
 import { MissionGating, parseISO8601Duration } from "./mission-gating.js";
 import { resolveConfiguredModelSelection } from "./model-profiles.js";
+import { normalizeRuntimeMetadata, sameRuntimeMetadata } from "./runtime-metadata.js";
 
 /** Mission document keys holding list collections editable via the atomic data operations. */
 type MissionCollectionKey = "tasks" | "checkpoints" | "delays" | "qualityGates" | "team";
@@ -204,7 +205,9 @@ export class MissionExecutor {
     notifications?: ScopedNotificationRules;
     /** Opaque end-user identifier (OpenAI-compat). */
     user?: string;
+    metadata?: Record<string, string>;
   }): Promise<Mission> {
+    const metadata = normalizeRuntimeMetadata(opts.metadata);
     const name = opts.name ?? await this.missions.nextMissionName();
     const mission = await this.missions.createMission({
       name,
@@ -216,6 +219,7 @@ export class MissionExecutor {
       endDate: opts.endDate,
       notifications: opts.notifications,
       user: opts.user,
+      metadata,
     });
     this.ctx.emitter.emit("mission:saved", { missionId: mission.id, name: mission.name, status: mission.status });
     return mission;
@@ -375,7 +379,8 @@ export class MissionExecutor {
     const admission = await pending;
     const captured = admission.receipt.tasks.find(candidate => candidate.id === task.id);
     if (!captured || task.missionId !== admission.receipt.missionId || task.group !== admission.receipt.group
-      || task.user !== admission.receipt.user || captured.missionExecutionId !== task.missionExecutionId) {
+      || task.user !== admission.receipt.user || !sameRuntimeMetadata(task.metadata, admission.receipt.metadata)
+      || captured.missionExecutionId !== task.missionExecutionId) {
       throw new MissionExecutionError("mission_execution_invalid", "Task does not match its accepted Mission execution");
     }
     // Never recreate volatile agents for historical/terminal work. New active
@@ -442,14 +447,14 @@ export class MissionExecutor {
           assignTo: authored.assignTo || agents[0]?.name || "default",
           dependsOn: (authored.dependsOn ?? []).map(title => titleToId.get(title)!),
           expectations: authored.expectations, expectedOutcomes: authored.expectedOutcomes,
-          group, missionId, user: mission.user, maxDuration: authored.maxDuration,
+          group, missionId, user: mission.user, metadata: mission.metadata, maxDuration: authored.maxDuration,
           retryPolicy: authored.retryPolicy, notifications: authored.notifications, sideEffects: authored.sideEffects,
         });
         const agent = agents.find(candidate => candidate.name === prepared.assignTo);
         if (!agent) throw new Error(`Mission references agent "${prepared.assignTo}" (task "${prepared.title}") but no such agent exists. Available agents: ${agents.map(agent => agent.name).join(", ")}`);
         if (agent.model) referencedModels.push(...resolveConfiguredModelSelection(agent.model, this.ctx.config.settings, agent.allowedModelProfiles).policy.candidates);
         const task: Task = { ...prepared, id: nanoid(), status: "pending", retries: 0, createdAt, updatedAt: createdAt,
-          missionId, group, user: mission.user, ...(persistence ? { missionExecutionId: executionId } : {}) };
+          missionId, group, user: mission.user, metadata: normalizeRuntimeMetadata(mission.metadata), ...(persistence ? { missionExecutionId: executionId } : {}) };
         tasks.push(task); titleToId.set(authored.title, task.id);
         taskTitles.push({ authored: authored.title, accepted: task.title });
       }
@@ -461,7 +466,7 @@ export class MissionExecutor {
       if (persistence) {
         const result = await persistence.commitMissionExecution({ expected: mission, notifications: doc.notifications,
           runtime: { volatileAgents, taskTitles }, receipt: { executionId, missionId, idempotencyKey: options.idempotencyKey ?? `execution:${executionId}`,
-            group, sequence, user: mission.user, createdAt, tasks } });
+            group, sequence, user: mission.user, metadata: normalizeRuntimeMetadata(mission.metadata), createdAt, tasks } });
         admitted = true;
         if (result.created) {
           await this.prepareTaskExecution(result.receipt.tasks[0]);

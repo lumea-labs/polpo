@@ -1,4 +1,5 @@
 import type { AgentConfig, Mission, ScopedNotificationRules, Task } from "./types.js";
+import { normalizeRuntimeMetadata, sameRuntimeMetadata } from "./runtime-metadata.js";
 
 /** Immutable admission receipt. Task snapshots describe what was created;
  * callers read TaskStore separately for current execution status. */
@@ -9,6 +10,7 @@ export interface MissionExecutionReceipt {
   group: string;
   sequence: number;
   user?: string;
+  metadata?: Record<string, string>;
   createdAt: string;
   tasks: Task[];
 }
@@ -86,6 +88,11 @@ export function normalizeMissionExecutionCommit(input: unknown): MissionExecutio
   if (new TextEncoder().encode(JSON.stringify(copied)).length > 4 * 1024 * 1024) invalid();
   const { expected, receipt } = copied;
   if (!expected || !receipt) invalid();
+  try {
+    normalizeRuntimeMetadata(expected.metadata);
+    if (!sameRuntimeMetadata(expected.metadata, receipt.metadata)
+      || receipt.tasks?.some(task => !sameRuntimeMetadata(task?.metadata, receipt.metadata))) invalid();
+  } catch { invalid(); }
   validateMissionExecutionKey(receipt.missionId, receipt.idempotencyKey);
   if (expected.id !== receipt.missionId || typeof expected.name !== "string" || !expected.name.trim()
     || typeof expected.data !== "string" || (expected.user !== undefined && (typeof expected.user !== "string" || !expected.user.trim()))

@@ -1,6 +1,20 @@
 import { describe, expect, it, vi } from "vitest";
 import { PolpoClient } from "../client/polpo-client.js";
 
+describe("PolpoClient queued caller context", () => {
+  it("sends application namespace and user on both task and Mission creation", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>().mockImplementation(async () => Response.json({ ok: true, data: {} }));
+    const client = new PolpoClient({ baseUrl: "https://api.polpo.sh", fetch });
+    const context = { user: "customer-a", metadata: { connectionNamespace: "app-a" } };
+    await client.createTask({ title: "Read", description: "Read account", assignTo: "support", ...context });
+    await client.createMission({ data: '{"tasks":[]}', ...context });
+    expect(fetch.mock.calls.map(([url, init]) => ({ url, body: JSON.parse(init!.body as string) }))).toEqual([
+      { url: "https://api.polpo.sh/v1/tasks", body: expect.objectContaining(context) },
+      { url: "https://api.polpo.sh/v1/missions", body: expect.objectContaining(context) },
+    ]);
+  });
+});
+
 describe("PolpoClient Mission execution", () => {
   it("sends the retry key and retains the returned execution identity", async () => {
     const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(new Response(JSON.stringify({ ok: true,

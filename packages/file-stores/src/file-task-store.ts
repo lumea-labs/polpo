@@ -1,3 +1,4 @@
+import { normalizeRuntimeMetadata } from "@polpo-ai/core";
 import { join } from "node:path";
 import { mkdirSync } from "node:fs";
 import { createHash } from "node:crypto";
@@ -124,6 +125,7 @@ export class FileTaskStore implements TaskStore, MissionExecutionStore {
     });
   }
   async createTask(input: Omit<Task, "id" | "status" | "retries" | "createdAt" | "updatedAt"> & { status?: TaskStatus }): Promise<Task> {
+    input = { ...input, metadata: normalizeRuntimeMetadata(input.metadata) };
     return this.transaction(tx => {
       const now = new Date().toISOString();
       const task: Task = { ...input, id: nanoid(), status: input.status ?? "pending", retries: 0, createdAt: now, updatedAt: now };
@@ -144,6 +146,7 @@ export class FileTaskStore implements TaskStore, MissionExecutionStore {
     });
   }
   async updateTask(id: string, updates: Partial<Omit<Task, "id" | "status">>): Promise<Task> {
+    if (updates.metadata !== undefined) updates = { ...updates, metadata: normalizeRuntimeMetadata(updates.metadata) };
     return this.transaction(tx => {
       const existing = this.readTask(tx, id);
       if (!existing) throw new Error(`Task not found: ${id}`);
@@ -179,6 +182,7 @@ export class FileTaskStore implements TaskStore, MissionExecutionStore {
   }
 
   async createMission(input: Omit<Mission, "id" | "createdAt" | "updatedAt">): Promise<Mission> {
+    input = { ...input, metadata: normalizeRuntimeMetadata(input.metadata) };
     return this.transaction(tx => {
       const now = new Date().toISOString();
       const mission: Mission = { ...input, id: nanoid(), createdAt: now, updatedAt: now };
@@ -190,6 +194,7 @@ export class FileTaskStore implements TaskStore, MissionExecutionStore {
   async getMissionByName(name: string): Promise<Mission | undefined> { return this.transaction(tx => this.missions(tx).find(m => m.name === name)); }
   async listMissions(): Promise<Mission[]> { return this.transaction(tx => this.missions(tx)); }
   async updateMission(id: string, updates: Partial<Omit<Mission, "id">>): Promise<Mission> {
+    if (updates.metadata !== undefined) updates = { ...updates, metadata: normalizeRuntimeMetadata(updates.metadata) };
     return this.transaction(tx => {
       const existing = this.readMission(tx, id);
       if (!existing) throw new Error(`Mission not found: ${id}`);

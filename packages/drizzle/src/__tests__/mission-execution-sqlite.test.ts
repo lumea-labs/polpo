@@ -21,7 +21,7 @@ describe("SQLite Mission execution admission", () => {
     executions = stores.missionExecutionStore;
   });
   afterEach(() => { sqlite.close(); rmSync(directory, { recursive: true, force: true }); });
-  const mission = () => stores.missionStore.createMission({ name: "Receipt fixture", data: '{"tasks":[]}', status: "recurring", user: "customer-a" });
+  const mission = () => stores.missionStore.createMission({ name: "Receipt fixture", data: '{"tasks":[]}', status: "recurring", user: "customer-a", metadata: { connectionNamespace: "app-a" } });
 
   it("atomically commits and replays across reopened adapters and a repeated migration", async () => {
     const original = await mission(), input = executionPlan(original);
@@ -34,8 +34,8 @@ describe("SQLite Mission execution admission", () => {
     expect(await persistence.getMissionExecution(original.id, "occurrence-a")).toEqual(input.receipt);
     expect(await persistence.getMissionExecutionById(input.receipt.executionId)).toEqual(input);
     expect(await persistence.commitMissionExecution(executionPlan(original))).toEqual({ receipt: input.receipt, created: false });
-    expect(await reopened.taskStore.listTasks()).toHaveLength(2);
-    expect(await reopened.missionStore.getMission(original.id)).toMatchObject({ status: "active", executionCount: 1 });
+    expect(await reopened.taskStore.listTasks()).toEqual(input.receipt.tasks.map(task => expect.objectContaining({ id: task.id, metadata: { connectionNamespace: "app-a" } })));
+    expect(await reopened.missionStore.getMission(original.id)).toMatchObject({ status: "active", executionCount: 1, metadata: { connectionNamespace: "app-a" } });
   });
 
   it.each(["tasks", "mission_executions"])("rolls back every write if %s persistence fails", async (table) => {
@@ -57,6 +57,32 @@ describe("SQLite Mission execution admission", () => {
     await stores.missionStore.updateMission(original.id, { user: "customer-b" });
     await expect(executions.commitMissionExecution(executionPlan(original))).rejects.toMatchObject({ code: "mission_execution_conflict" });
     expect(await stores.taskStore.listTasks()).toEqual([]);
+  });
+
+  it("adds metadata columns to existing databases without inventing a namespace for old rows", async () => {
+    const original = await stores.missionStore.createMission({ name: "Old", data: "{}", status: "draft" });
+    sqlite.exec("ALTER TABLE tasks DROP COLUMN metadata; ALTER TABLE missions DROP COLUMN metadata");
+    await migrateSqliteSchema(drizzle(sqlite));
+    await migrateSqliteSchema(drizzle(sqlite));
+    expect((await stores.missionStore.getMission(original.id))?.metadata).toBeUndefined();
+    const updated = await stores.missionStore.updateMission(original.id, { metadata: { connectionNamespace: "app-a" } });
+    const input = executionPlan(updated);
+    await executions.commitMissionExecution(input);
+    expect((await stores.taskStore.getTask(input.receipt.tasks[0].id))?.metadata).toEqual({ connectionNamespace: "app-a" });
+  });
+
+  it("rejects forged and stale metadata, but replays the accepted namespace after an edit", async () => {
+    const original = await mission(), input = executionPlan(original);
+    input.receipt.tasks[0].metadata = { connectionNamespace: "app-b" };
+    await expect(executions.commitMissionExecution(input)).rejects.toMatchObject({ code: "mission_execution_invalid" });
+    await stores.missionStore.updateMission(original.id, { metadata: { connectionNamespace: "app-b" } });
+    await expect(executions.commitMissionExecution(executionPlan(original))).rejects.toMatchObject({ code: "mission_execution_conflict" });
+    expect(await stores.taskStore.listTasks()).toEqual([]);
+    const current = (await stores.missionStore.getMission(original.id))!;
+    const accepted = await executions.commitMissionExecution(executionPlan(current));
+    await stores.missionStore.updateMission(original.id, { metadata: { connectionNamespace: "app-c" } });
+    expect(await executions.commitMissionExecution(executionPlan(original))).toEqual({ ...accepted, created: false });
+    expect(accepted.receipt.metadata).toEqual({ connectionNamespace: "app-b" });
   });
 
   it("keeps the accepted principal on replay and captures the new principal for a new occurrence", async () => {

@@ -442,6 +442,7 @@ export function missionRoutes(getDeps: () => {
       endDate: body.endDate,
       notifications: body.notifications,
       user: body.user,
+      metadata: body.metadata,
     });
 
     return c.json({ ok: true, data: mission }, 201);
