@@ -401,6 +401,9 @@ export class MissionExecutor {
         expectedOutcomes: t.expectedOutcomes,
         group,
         missionId,
+        // Keep the trusted mission principal when tasks enter the background
+        // runtime; the authored task document cannot select another user.
+        user: mission.user,
         maxDuration: t.maxDuration,
         retryPolicy: t.retryPolicy,
         notifications: t.notifications,

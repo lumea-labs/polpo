@@ -1,3 +1,5 @@
+import { normalizeAgentIdentity, type AgentIdentity } from "./agent-store.js";
+
 export type ToolInvocationJsonPrimitive = string | number | boolean | null;
 export type ToolInvocationJsonValue =
   | ToolInvocationJsonPrimitive
@@ -28,6 +30,8 @@ const TOOL_INVOCATION_SURFACES = new Set<ToolInvocationSurface>([
 
 /** Immutable, host-owned identity for one tool-bearing runtime invocation. */
 export interface ToolInvocationContext {
+  /** Identity from the authoritative configuration snapshot, never caller metadata. */
+  readonly agent?: AgentIdentity;
   readonly requestId: string;
   readonly runId: string;
   readonly sessionId?: string;
@@ -38,6 +42,7 @@ export interface ToolInvocationContext {
 }
 
 export interface ToolInvocationContextInput {
+  agent?: AgentIdentity;
   requestId: string;
   runId: string;
   sessionId?: string;
@@ -87,7 +92,12 @@ function cloneInvocationJson(
       if (nested === undefined) {
         throw new TypeError(`Tool invocation context must contain JSON values: ${path}.${key} is undefined`);
       }
-      copy[key] = cloneInvocationJson(nested, seen, `${path}.${key}`);
+      // JSON may contain an own __proto__ key. Assignment would invoke the
+      // inherited setter and promote nested values into trusted metadata.
+      Object.defineProperty(copy, key, {
+        value: cloneInvocationJson(nested, seen, `${path}.${key}`),
+        enumerable: true, writable: true, configurable: true,
+      });
     }
     return Object.freeze(copy);
   } finally {
@@ -153,6 +163,7 @@ export function createToolInvocationContext(
   ) as Readonly<Record<string, ToolInvocationJsonValue>>;
   const scope = normalizeInvocationScope(input.scope);
   return Object.freeze({
+    ...(input.agent === undefined ? {} : { agent: normalizeAgentIdentity(input.agent) }),
     requestId: requiredInvocationId("requestId", input.requestId),
     runId: requiredInvocationId("runId", input.runId),
     ...(input.sessionId

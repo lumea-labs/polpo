@@ -1,6 +1,8 @@
 import { nanoid } from "nanoid";
 import {
   agentMemoryScope,
+  agentIdentityFromSnapshot,
+  type AgentIdentity,
   createToolInvocationContext,
   createRuntimePromptContextSegment,
   compileExecutionRouteManifest,
@@ -121,6 +123,7 @@ type PreparedProjectLoop = {
   body: CompletionRequestBody;
   completionId: string;
   agentConfig: any;
+  agentIdentity?: AgentIdentity;
   projectLoop: ProjectLoopConfig;
   aiMessages: any[];
   extraSystemParts: string[];
@@ -427,6 +430,7 @@ function toolInvocationSurface(
 }
 
 export function createCompletionToolInvocation(input: {
+  agentIdentity?: AgentIdentity;
   body: CompletionRequestBody;
   completionId: string;
   loop?: boolean;
@@ -436,6 +440,7 @@ export function createCompletionToolInvocation(input: {
   const invocation = completionInvocation(input.runtime);
   const user = invocation.user ?? input.body.user;
   return createToolInvocationContext({
+    ...(input.agentIdentity ? { agent: input.agentIdentity } : {}),
     requestId: invocation.requestId ?? input.completionId,
     runId: invocation.runId ?? input.completionId,
     ...(input.sessionId ? { sessionId: input.sessionId } : {}),
@@ -540,9 +545,19 @@ export async function prepareChatCompletionExecution(
   }
   let effectiveBody = body;
   let initialAgentConfig: any;
+  let agentIdentity: AgentIdentity | undefined;
   if (agentMode) {
-    const agents = await deps.getAgents();
-    initialAgentConfig = agents.find((agent: any) => agent.name === body.agent);
+    if (deps.getAgentSnapshot) {
+      const snapshot = await deps.getAgentSnapshot(body.agent!);
+      if (snapshot) {
+        agentIdentity = agentIdentityFromSnapshot(snapshot);
+        if (agentIdentity.name !== body.agent) throw new TypeError("Agent snapshot identity does not match the requested agent");
+        initialAgentConfig = snapshot.agent;
+      }
+    } else {
+      const agents = await deps.getAgents();
+      initialAgentConfig = agents.find((agent: any) => agent.name === body.agent);
+    }
     if (!initialAgentConfig) {
       return completionError(`Agent "${body.agent}" not found`, 404, "agent_not_found");
     }
@@ -1227,17 +1242,19 @@ export async function prepareChatCompletionExecution(
     }
   }
 
-  if (deferredAgentTools) {
-    const toolInvocation = createCompletionToolInvocation({
+  const toolInvocation = agentMode ? createCompletionToolInvocation({
+      agentIdentity,
       body,
       completionId,
       runtime: options.runtime,
       sessionId,
-    });
+    }) : undefined;
+  if (deferredAgentTools) {
     const resolvedTools = await deps.resolveAgentTools(
       resolvedAgentConfig,
       undefined,
       toolInvocation,
+      options.signal,
     );
     effectiveTools = resolvedTools.tools;
     effectiveToolExecutor = resolvedTools.executor;
@@ -1391,6 +1408,7 @@ export async function prepareChatCompletionExecution(
       body,
       completionId,
       agentConfig: projectLoopRuntime.agentConfig,
+      agentIdentity,
       projectLoop: projectLoopRuntime.projectLoop,
       aiMessages,
       extraSystemParts: callerSystemParts,
@@ -1419,6 +1437,7 @@ export async function prepareChatCompletionExecution(
     body,
     completionId,
     agentConfig: resolvedAgentConfig,
+    toolInvocation,
     agentMode,
     fullSystemPrompt,
     m,
@@ -1510,6 +1529,7 @@ export async function runConversationTurn(
       const result = await runProjectLoopCompletion({
         deps: prepared.deps,
         agentConfig: prepared.agentConfig,
+        agentIdentity: prepared.agentIdentity,
         projectLoop: prepared.projectLoop,
         aiMessages: prepared.aiMessages,
         extraSystemParts: prepared.extraSystemParts,

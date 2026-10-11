@@ -8,6 +8,8 @@ import {
 import {
   createApplicationCapabilityResolver,
   createConnectionCapabilityResolver,
+  createConnectionAccessResolver,
+  getConnectionCapabilitySelection,
   type ConnectionRecord,
   type ConnectStore,
 } from "../index.js";
@@ -38,7 +40,7 @@ function record(
 function store(records: ConnectionRecord[]): ConnectStore {
   return {
     listConnections: vi.fn(async () => records),
-    getConnection: vi.fn(),
+    getConnection: vi.fn(async (id: string) => records.find(record => record.id === id) ?? null),
     upsertConnection: vi.fn(),
     updateConnection: vi.fn(),
     deleteConnection: vi.fn(),
@@ -82,7 +84,168 @@ const selector = {
   scopeEpoch: "9",
 } as const;
 
+describe("protocol-independent host Connection access", () => {
+  it("requires the captured identity and rejects a recreated agent despite identical account permissions", async () => {
+    let incarnation = "original";
+    const getAgentSnapshot = vi.fn(async (name: string) => ({ agent: { name }, teamName: "default", revision: { incarnation, version: 7 } }));
+    const resolver = createConnectionAccessResolver({ store: store([record("selected")]), resolveSelector: () => selector, getAgentSnapshot });
+    await expect(resolver.acquire(input())).rejects.toMatchObject({ code: "connection_scope_denied" });
+    expect(getAgentSnapshot).not.toHaveBeenCalled();
+    const request = input();
+    request.invocation = createToolInvocationContext({ ...request.invocation, agent: { name: "support", incarnation: "original" } });
+    const access = await resolver.acquire(request);
+    expect((await access.current()).id).toBe("selected");
+    incarnation = "replacement";
+    await expect(access.current()).rejects.toMatchObject({ code: "connection_scope_denied" });
+    await expect(resolver.acquire(request)).rejects.toMatchObject({ code: "connection_scope_denied" });
+  });
+
+  it("does not release legacy credentials after agent deletion during materialization", async () => {
+    let alive = true;
+    const resolver = createConnectionCapabilityResolver({ store: store([record("selected")]), resolveSelector: () => selector,
+      getAgentSnapshot: async () => alive ? { agent: { name: "support" }, teamName: "default", revision: { incarnation: "original", version: 0 } } : undefined,
+      materialize: async () => { alive = false; return { kind: "api_key" as const, connectionId: "selected", providerId: "sitoinchat", value: "must-not-be-returned", scopes: ["site:read"] }; },
+    });
+    const request = input();
+    request.invocation = createToolInvocationContext({ ...request.invocation, agent: { name: "support", incarnation: "original" } });
+    await expect(resolver.resolve(request)).rejects.toMatchObject({ code: "connection_scope_denied" });
+  });
+
+  it("hands the gateway a live reauthorization function for refresh and redirect waits", async () => {
+    let alive = true;
+    const send = vi.fn();
+    const resolver = createConnectionCapabilityResolver({ store: store([record("selected")]), resolveSelector: () => selector,
+      getAgentSnapshot: async () => alive ? { agent: { name: "support" }, teamName: "default", revision: { incarnation: "original", version: 0 } } : undefined,
+      request: async (_connection, _input, _request, reauthorize) => {
+        alive = false; // Simulate waiting for OAuth refresh inside the host transport.
+        await reauthorize(); send(); return { status: 200, headers: {}, body: null as any };
+      },
+    });
+    const request = gatewayInput();
+    request.invocation = createToolInvocationContext({ ...request.invocation, agent: { name: "support", incarnation: "original" } });
+    const capability = await resolver.resolve(request);
+    await expect(capability.request!({ method: "GET", path: "/v1/site" })).rejects.toMatchObject({ code: "connection_scope_denied" });
+    expect(send).not.toHaveBeenCalled();
+  });
+  it("reuses exact-account authorization without materializing credentials or an HTTP transport", async () => {
+    const selected = record("selected");
+    const records = [selected];
+    let granted = true;
+    const access = await createConnectionAccessResolver({ store: store(records), resolveSelector: () => selector,
+      policy: { canUseConnection: () => granted } }).acquire(input());
+    expect(access.selection.connectionId).toBe("selected");
+    expect((await access.current()).id).toBe("selected");
+    granted = false;
+    records.push(record("replacement"));
+    await expect(access.current()).rejects.toMatchObject({ code: "connection_scope_denied" });
+  });
+  it("keeps the original permission request when the caller mutates its input", async () => {
+    const request = input();
+    const policy = vi.fn(() => true);
+    const access = await createConnectionAccessResolver({ store: store([record("selected")]), resolveSelector: () => selector,
+      policy: { canUseConnection: policy } }).acquire(request);
+    (request.spec.scopes as string[]).push("site:write");
+    (request as { toolName: string }).toolName = "different_tool";
+    await access.current();
+    expect(policy).toHaveBeenLastCalledWith(expect.objectContaining({ actionId: "site_context_get", scopes: ["site:read"] }));
+    expect(access.input.spec.scopes).toEqual(["site:read"]);
+    access.dispose();
+    await expect(access.current()).rejects.toMatchObject({ code: "connection_scope_denied" });
+  });
+});
+
 describe("createConnectionCapabilityResolver", () => {
+  it.each(["replacement", "generation", "audience"])("resumes only the acquired account across host requests after %s changes", async change => {
+    const selected = record("selected", { credentialVersion: "generation-1" });
+    const records = [selected];
+    const request = vi.fn();
+    const dependencies = { store: store(records), resolveSelector: () => selector, request };
+    const capability = await createConnectionCapabilityResolver(dependencies).resolve(gatewayInput());
+    const selection = getConnectionCapabilitySelection(capability);
+    expect(selection).toMatchObject({ connectionId: "selected", credentialVersion: "generation-1" });
+    expect(JSON.stringify(capability)).not.toContain("selected");
+    await capability.dispose?.();
+    if (change === "replacement") { records.splice(0, 1, record("replacement")); }
+    if (change === "generation") selected.credentialVersion = "generation-2";
+    if (change === "audience") selected.audience = "end_user";
+    await expect(createConnectionCapabilityResolver({ ...dependencies, selection }).resolve(gatewayInput()))
+      .rejects.toMatchObject({ code: "connection_not_found_for_scope" });
+    expect(request).not.toHaveBeenCalled();
+  });
+
+  it("requires explicit shared selection and never falls back from a missing user binding", async () => {
+    const shared = record("shared", { audience: "shared", binding: undefined });
+    const request = vi.fn(async () => ({ status: 200, headers: {}, body: null }));
+    const dependencies = { store: store([shared]), request };
+    await expect(createConnectionCapabilityResolver({ ...dependencies, resolveSelector: () => selector })
+      .resolve(gatewayInput())).rejects.toMatchObject({ code: "connection_not_found_for_scope" });
+    const capability = await createConnectionCapabilityResolver({ ...dependencies,
+      resolveSelector: () => ({ projectId: "project-1", audience: "shared" }),
+    }).resolve(gatewayInput());
+    await capability.request!({ method: "GET", path: "/" });
+    expect(request).toHaveBeenCalledTimes(1);
+    // Shared is a host-selected capability; an identified caller does not turn
+    // the account into a personal credential.
+    await expect(createConnectionCapabilityResolver({ ...dependencies,
+      resolveSelector: () => ({ ...selector, audience: "shared" }),
+    }).resolve(gatewayInput())).resolves.toMatchObject({ mode: "gateway" });
+    shared.audience = "end_user";
+    await expect(capability.request!({ method: "GET", path: "/" }))
+      .rejects.toMatchObject({ code: "connection_not_found_for_scope" });
+    expect(request).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not select a personal credential for a different owner despite a matching resource", async () => {
+    const personal = record("personal", { audience: "personal", owner: { type: "user", id: "owner-1" },
+      binding: { resource: selector.resource } });
+    const resolver = createConnectionCapabilityResolver({ store: store([personal]),
+      resolveSelector: () => selector, request: vi.fn(),
+    });
+    await expect(resolver.resolve(gatewayInput())).rejects.toMatchObject({ code: "connection_not_found_for_scope" });
+  });
+
+  it("honors the host visibility decision for the original project before and after acquisition", async () => {
+    const selected = record("selected");
+    let visible = false;
+    const request = vi.fn();
+    const resolver = createConnectionCapabilityResolver({ store: store([selected]),
+      resolveSelector: () => selector, isConnectionVisible: () => visible, request,
+    });
+    await expect(resolver.resolve(gatewayInput())).rejects.toMatchObject({ code: "connection_not_found_for_scope" });
+    visible = true;
+    const capability = await resolver.resolve(gatewayInput());
+    visible = false;
+    await expect(capability.request!({ method: "GET", path: "/" }))
+      .rejects.toMatchObject({ code: "connection_not_found_for_scope" });
+    expect(request).not.toHaveBeenCalled();
+  });
+
+  it.each(["revoked", "binding", "audience", "unlink", "grant", "scopes", "disposed"])("rechecks %s before every gateway request without selecting a replacement", async change => {
+    const selected = record("selected");
+    const records = [selected];
+    let linked = true, granted = true;
+    const request = vi.fn(async () => ({ status: 200, headers: {}, body: null }));
+    const resolver = createConnectionCapabilityResolver({
+      store: store(records), resolveSelector: () => selector, request,
+      policy: { canUseConnection: () => granted },
+      isConnectionVisible: () => linked,
+    });
+    // Use the link path rather than legacy direct project ownership.
+    selected.projectId = undefined;
+    const capability = await resolver.resolve(gatewayInput());
+    expect(capability.scopes).toEqual(["site:read"]);
+    if (change === "revoked") selected.status = "revoked";
+    if (change === "binding") selected.binding = { principal: { type: "external_user", id: "another-user" } };
+    if (change === "audience") selected.audience = "end_user";
+    if (change === "unlink") linked = false;
+    if (change === "grant") granted = false;
+    if (change === "scopes") selected.grantedScopes = [];
+    if (change === "disposed") await capability.dispose?.();
+    records.push(record("replacement", { projectId: undefined }));
+    await expect(capability.request?.({ method: "GET", path: "/v1/site" })).rejects.toBeInstanceOf(ConnectionSelectionError);
+    expect(request).not.toHaveBeenCalled();
+  });
+
   it("selects one exact active binding and materializes a secret-safe capability", async () => {
     const materialize = vi.fn(async () => ({
       kind: "api_key" as const,
@@ -136,6 +299,7 @@ describe("createConnectionCapabilityResolver", () => {
       expect.objectContaining({ id: "connection-1" }),
       expect.objectContaining({ slot: "siteApi" }),
       expect.objectContaining({ method: "GET", path: "/v1/site" }),
+      expect.any(Function),
     );
   });
 

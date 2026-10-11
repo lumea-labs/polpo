@@ -1,4 +1,6 @@
 import type { ConnectorProviderDefinition } from "@polpo-ai/connect";
+import { gmailConnector } from "./google.js";
+export * from "./google.js";
 
 export const apiKeyConnector: ConnectorProviderDefinition = {
   id: "api_key",
@@ -166,6 +168,7 @@ export const mcpUrlConnector: ConnectorProviderDefinition = {
   id: "mcp_url",
   name: "MCP Server URL",
   description: "Connect a remote MCP server and expose discovered tools through Polpo permissions and traces.",
+  verification: { kind: "mcp_discovery", scopes: ["tools:read"] },
   auth: {
     type: "mcp",
     auth: "bearer",
@@ -222,5 +225,6 @@ export const defaultConnectors: ConnectorProviderDefinition[] = [
   githubConnector,
   slackConnector,
   googleDriveConnector,
+  gmailConnector,
   mcpUrlConnector,
 ];

@@ -106,6 +106,7 @@ export interface OrchestratorOptions {
   spawner?: Spawner;
   runtimeContext?: RuntimeContextProvider;
   connectionCapabilityResolver?: import("@polpo-ai/core").ConnectionCapabilityResolver;
+  resolveMcpCapabilities?: import("@polpo-ai/core").ResolveMcpRuntimeCapabilities;
   /** Optional host-selected extractor. Automatic learning stays durable-pending when absent. */
   memoryExtractor?: MemoryExtractor;
   /**
@@ -135,6 +136,7 @@ export class Orchestrator extends TypedEmitter {
   /** True when the caller injected a spawner — settings never override it. */
   private spawnerInjected = false;
   private connectionCapabilityResolver?: import("@polpo-ai/core").ConnectionCapabilityResolver;
+  private resolveMcpCapabilities?: import("@polpo-ai/core").ResolveMcpRuntimeCapabilities;
   private injectedStore?: TaskStore;
   private injectedRunStore?: RunStore;
   private memoryStore!: MemoryStore;
@@ -253,6 +255,7 @@ export class Orchestrator extends TypedEmitter {
       this.runtimeContext = opts.runtimeContext;
       this.executionRouteClassifierResolver = opts.resolveExecutionRouteClassifier;
       this.connectionCapabilityResolver = opts.connectionCapabilityResolver;
+      this.resolveMcpCapabilities = opts.resolveMcpCapabilities;
       this.memoryExtractor = opts.memoryExtractor;
       this.spawnerInjected = !!opts.spawner;
       this.spawner = opts.spawner ?? new NodeSpawner({ polpoDir: this.polpoDir, cwd: this.workDir });
@@ -298,6 +301,7 @@ export class Orchestrator extends TypedEmitter {
         fs: this.fs,
         shell: this.shell,
         connectionCapabilityResolver: this.connectionCapabilityResolver,
+        resolveMcpCapabilities: this.resolveMcpCapabilities,
       };
     });
     this.spawner = new CompositeSpawner(this.spawner, inProcess);

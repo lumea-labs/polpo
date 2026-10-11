@@ -16,6 +16,10 @@ import {
   LoopPermissionApprovalRequiredError,
   buildLoopStepAgent,
   createToolInvocationContext,
+  normalizeAgentIdentity,
+  assertAgentIdentity,
+  AgentIdentityError,
+  type AgentIdentity,
   maybeParseJson,
   normalizeProjectLoop,
   normalizeRuntimeContextTrustMode,
@@ -199,6 +203,7 @@ function stringArrayRuntimeValue(
 }
 
 function projectLoopToolInvocation(input: {
+  agentIdentity?: AgentIdentity;
   loopRunId?: string;
   runtimeInvocation?: CompletionRuntimeInvocation;
   sessionId?: string | null;
@@ -208,6 +213,7 @@ function projectLoopToolInvocation(input: {
   const runtime = input.runtimeInvocation;
   const id = input.loopRunId ?? runtime?.runId ?? runtime?.requestId ?? `loop-${nanoid(16)}`;
   return createToolInvocationContext({
+    ...(input.agentIdentity ? { agent: input.agentIdentity } : {}),
     requestId: runtime?.requestId ?? id,
     runId: input.loopRunId ?? runtime?.runId ?? id,
     ...(input.sessionId ? { sessionId: input.sessionId } : {}),
@@ -300,6 +306,7 @@ export async function resolveProjectLoopResumeRuntimeContext(
 export async function runProjectLoopCompletion(options: {
   deps: CompletionRouteDeps;
   agentConfig: any;
+  agentIdentity?: AgentIdentity;
   projectLoop: ProjectLoopConfig;
   aiMessages: any[];
   extraSystemParts: string[];
@@ -358,7 +365,16 @@ export async function runProjectLoopCompletion(options: {
     },
   };
   const loopRunId = resumeRun?.id ?? (loopRunStore ? `looprun-${nanoid(16)}` : undefined);
-  const toolInvocation = providedToolInvocation ?? projectLoopToolInvocation({
+  const agentIdentity = options.agentIdentity === undefined ? providedToolInvocation?.agent : normalizeAgentIdentity(options.agentIdentity);
+  if ((agentIdentity && agentIdentity.name !== agentConfig.name)
+    || (providedToolInvocation?.agent && (providedToolInvocation.agent.name !== agentIdentity?.name
+      || providedToolInvocation.agent.incarnation !== agentIdentity?.incarnation))) throw new AgentIdentityError();
+  const toolInvocation = providedToolInvocation ? createToolInvocationContext({
+      ...providedToolInvocation,
+      metadata: providedToolInvocation.metadata as Record<string, ToolInvocationJsonValue>,
+      ...(agentIdentity ? { agent: agentIdentity } : {}),
+    }) : projectLoopToolInvocation({
+      agentIdentity,
       loopRunId,
       runtimeInvocation,
       sessionId,
@@ -378,6 +394,7 @@ export async function runProjectLoopCompletion(options: {
       agentConfig,
       toolRunScope,
       toolInvocation,
+      options.signal,
     );
   } catch (error) {
     await toolRunScope?.cleanup?.().catch(() => {});
@@ -477,6 +494,7 @@ export async function runProjectLoopCompletion(options: {
       context: initialContext,
       metadata: {
         runtime: "chat.completions",
+        ...(agentIdentity ? { agentIdentity } : {}),
         ...(options.deliveryRunId ? { deliveryRunId: options.deliveryRunId } : {}),
         surface: runtimePlan?.surface ?? executionRoute?.surface ?? "agent",
         source:
@@ -880,8 +898,18 @@ export async function resumeProjectLoopRun(options: {
     throw new Error(`Loop run "${options.runId}" has no resume checkpoint`);
   }
 
-  const agents = await options.deps.getAgents();
-  const agentConfig = agents.find((agent: any) => agent.name === run.agentName);
+  const agentIdentity = run.metadata?.agentIdentity === undefined ? undefined : normalizeAgentIdentity(run.metadata.agentIdentity);
+  let agentConfig: any;
+  if (options.deps.getAgentSnapshot) {
+    const snapshot = run.agentName ? await options.deps.getAgentSnapshot(run.agentName) : undefined;
+    assertAgentIdentity(agentIdentity, snapshot);
+    agentConfig = snapshot!.agent;
+  } else {
+    // A bound checkpoint must never become unbound after a host downgrade.
+    if (agentIdentity) throw new AgentIdentityError();
+    const agents = await options.deps.getAgents();
+    agentConfig = agents.find((agent: any) => agent.name === run.agentName);
+  }
   if (!agentConfig) throw new Error(`Agent "${run.agentName ?? "unknown"}" not found for loop run "${run.id}"`);
   if (!options.deps.getProjectLoop) throw new Error("Project loop resolver is not configured");
   const projectLoop = await options.deps.getProjectLoop(run.loopName);
@@ -933,8 +961,11 @@ export async function resumeProjectLoopRun(options: {
     aiMessages,
   );
   const resolvedToolInvocation = await options.deps.resolveResumedToolInvocation?.(run);
+  if (resolvedToolInvocation?.agent && (resolvedToolInvocation.agent.name !== agentIdentity?.name
+    || resolvedToolInvocation.agent.incarnation !== agentIdentity?.incarnation)) throw new AgentIdentityError();
   const toolInvocation = resolvedToolInvocation
     ? createToolInvocationContext({
+        ...(agentIdentity ? { agent: agentIdentity } : {}),
         requestId: resolvedToolInvocation.requestId,
         runId: resolvedToolInvocation.runId,
         ...(resolvedToolInvocation.sessionId
@@ -970,6 +1001,7 @@ export async function resumeProjectLoopRun(options: {
   await runProjectLoopCompletion({
     deps: options.deps,
     agentConfig,
+    agentIdentity,
     projectLoop,
     aiMessages,
     extraSystemParts,
@@ -1011,6 +1043,7 @@ export interface ProjectLoopCompletionOptions {
   };
   completionId: string;
   agentConfig: any;
+  agentIdentity?: AgentIdentity;
   projectLoop: ProjectLoopConfig;
   aiMessages: any[];
   extraSystemParts: string[];
@@ -1115,6 +1148,7 @@ export async function executeStreamingProjectLoopCompletion(
         const run = await runProjectLoopCompletion({
           deps,
           agentConfig,
+          agentIdentity: options.agentIdentity,
           projectLoop,
           aiMessages,
           extraSystemParts,
@@ -1283,6 +1317,7 @@ async function runNonStreamingProjectLoopCompletion(
     const run = await runProjectLoopCompletion({
       deps,
       agentConfig,
+      agentIdentity: options.agentIdentity,
       projectLoop,
       aiMessages,
       extraSystemParts,

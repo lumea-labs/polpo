@@ -1,6 +1,7 @@
 import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
 import { join, extname } from "node:path";
 import type { FileSystem } from "@polpo-ai/core";
+import { AgentMutationError, normalizeAgentMutation, type AgentSnapshot, type AgentMutation, type AgentMutationReceipt, type AgentRevision } from "@polpo-ai/core/agent-store";
 import {
   AddAgentSchema,
   UpdateAgentSchema,
@@ -22,6 +23,24 @@ function withAvatarUrl(agent: any): any {
   };
 }
 
+function revisionEtag(revision: AgentRevision): string {
+  return `"agent:${revision.incarnation}:${revision.version}"`;
+}
+
+const agentRevisionSchema = z.object({ incarnation: z.string(), version: z.number().int().nonnegative() });
+const agentSnapshotResponseSchema = z.object({
+  ok: z.boolean(), data: z.any(), revision: agentRevisionSchema.optional(),
+  mutation: z.object({ mutationId: z.string(), previousRevision: agentRevisionSchema }).optional(),
+});
+
+function mutationPrecondition(etag: string | undefined, mutationId: string | undefined): Pick<AgentMutation, "expected" | "mutationId"> | undefined {
+  if (etag === undefined && mutationId === undefined) return undefined;
+  const match = etag?.match(/^"agent:([\w.:-]+):([0-9]+)"$/);
+  if (!match || !mutationId) throw new AgentMutationError("invalid_agent_mutation", "Supply a strong agent If-Match and Idempotency-Key together");
+  const normalized = normalizeAgentMutation({ expected: { incarnation: match[1], version: Number(match[2]) }, mutationId, patch: {} });
+  return { expected: normalized.expected, mutationId: normalized.mutationId };
+}
+
 /**
  * Agent/team management routes.
  */
@@ -30,6 +49,8 @@ export function agentRoutes(getDeps: () => {
   addAgent: (agent: any, teamName?: string) => Promise<void>;
   removeAgent: (name: string) => Promise<boolean>;
   updateAgent: (name: string, updates: any) => Promise<any>;
+  getAgentSnapshot?: (name: string) => Promise<AgentSnapshot | undefined>;
+  compareAndSwapAgent?: (name: string, mutation: AgentMutation) => Promise<AgentMutationReceipt>;
   getTeams: () => Promise<any[]>;
   getTeam: (name?: string) => Promise<any>;
   addTeam: (team: any) => Promise<void>;
@@ -141,13 +162,24 @@ export function agentRoutes(getDeps: () => {
         content: { "application/json": { schema: z.object({ ok: z.boolean(), error: z.string(), code: z.string() }) } },
         description: "Agent not found",
       },
+      409: {
+        content: { "application/json": { schema: z.object({ ok: z.boolean(), error: z.string(), code: z.string() }) } },
+        description: "Agent changed while deletion was pending",
+      },
     },
   });
 
   app.openapi(deleteAgentRoute, async (c) => {
     const deps = getDeps();
     const { name } = c.req.valid("param");
-    const removed = await deps.removeAgent(name);
+    let removed: boolean;
+    try { removed = await deps.removeAgent(name); }
+    catch (error) {
+      if (error instanceof AgentMutationError && error.code === "agent_revision_conflict") {
+        return c.json({ ok: false, error: error.message, code: error.code }, 409);
+      }
+      throw error;
+    }
     if (!removed) {
       return c.json({ ok: false, error: "Agent not found", code: "NOT_FOUND" }, 404);
     }
@@ -396,24 +428,39 @@ export function agentRoutes(getDeps: () => {
     summary: "Update agent",
     request: {
       params: z.object({ name: z.string() }),
+      headers: z.object({ "if-match": z.string().optional(), "idempotency-key": z.string().optional() }),
       body: { content: { "application/json": { schema: UpdateAgentSchema } } },
     },
     responses: {
       200: {
-        content: { "application/json": { schema: z.object({ ok: z.boolean(), data: z.any() }) } },
+        content: { "application/json": { schema: agentSnapshotResponseSchema } },
         description: "Agent updated",
       },
       404: {
         content: { "application/json": { schema: z.object({ ok: z.boolean(), error: z.string(), code: z.string() }) } },
         description: "Agent not found",
       },
+      400: { content: { "application/json": { schema: z.object({ ok: z.boolean(), error: z.string(), code: z.string() }) } }, description: "Invalid mutation precondition" },
+      412: { content: { "application/json": { schema: z.object({ ok: z.boolean(), error: z.string(), code: z.string() }) } }, description: "Agent revision changed" },
+      501: { content: { "application/json": { schema: z.object({ ok: z.boolean(), error: z.string(), code: z.string() }) } }, description: "Host does not support versioned agent writes" },
     },
   });
 
   app.openapi(updateAgentRoute, async (c) => {
     const deps = getDeps();
     const { name } = c.req.valid("param");
-    const existing = (await deps.getAgents()).find(a => a.name === name);
+    let precondition: ReturnType<typeof mutationPrecondition>;
+    try {
+      precondition = mutationPrecondition(c.req.header("If-Match"), c.req.header("Idempotency-Key"));
+    } catch (error) {
+      return c.json({ ok: false, error: (error as Error).message, code: "invalid_agent_mutation" }, 400);
+    }
+    if (precondition && (!deps.getAgentSnapshot || !deps.compareAndSwapAgent)) {
+      return c.json({ ok: false, error: "This host does not support conditional agent mutations", code: "agent_revision_unsupported" }, 501);
+    }
+    const existing = precondition
+      ? (await deps.getAgentSnapshot!(name))?.agent
+      : (await deps.getAgents()).find(a => a.name === name);
     if (!existing) {
       return c.json({ ok: false, error: "Agent not found", code: "NOT_FOUND" }, 404);
     }
@@ -421,6 +468,9 @@ export function agentRoutes(getDeps: () => {
     const body = c.req.valid("json");
 
     // Handle reportsTo: empty string clears it
+    if (body.unset !== undefined && !precondition) {
+      return c.json({ ok: false, error: "Explicit field removal requires If-Match and Idempotency-Key", code: "invalid_agent_mutation" }, 400);
+    }
     let reportsTo: string | undefined = undefined;
     if (typeof body.reportsTo === "string") {
       reportsTo = body.reportsTo.trim() || undefined;
@@ -469,9 +519,31 @@ export function agentRoutes(getDeps: () => {
       ...(body.mcpServers !== undefined && { mcpServers: body.mcpServers }),
     };
 
-    await deps.updateAgent(name, updates);
-
-    const updated = (await deps.getAgents()).find(a => a.name === name);
+    if (precondition) {
+      const set: Record<string, unknown> = {}, unset: string[] = [...(body.unset ?? [])];
+      for (const [field, value] of Object.entries(updates)) {
+        if (field === "team") continue;
+        if (value === undefined) unset.push(field);
+        else set[field] = value;
+      }
+      try {
+        const mutation = normalizeAgentMutation({ ...precondition, patch: {
+          set, unset: unset as NonNullable<AgentMutation["patch"]["unset"]>,
+          ...(body.team !== undefined && { teamName: body.team }),
+        } });
+        const receipt = await deps.compareAndSwapAgent!(name, mutation);
+        c.header("ETag", revisionEtag(receipt.snapshot.revision));
+        return c.json({ ok: true, data: withAvatarUrl(redactAgentConfig(receipt.snapshot.agent)),
+          revision: receipt.snapshot.revision, mutation: { mutationId: receipt.mutationId, previousRevision: receipt.previousRevision } }, 200);
+      } catch (error) {
+        if (error instanceof AgentMutationError) {
+          const status = error.code === "agent_revision_conflict" ? 412 : error.code === "agent_not_found" ? 404 : 400;
+          return c.json({ ok: false, error: error.message, code: error.code }, status);
+        }
+        throw error;
+      }
+    }
+    const updated = await deps.updateAgent(name, updates);
     return c.json({ ok: true, data: updated ? withAvatarUrl(redactAgentConfig(updated)) : null }, 200);
   });
 
@@ -486,7 +558,7 @@ export function agentRoutes(getDeps: () => {
     },
     responses: {
       200: {
-        content: { "application/json": { schema: z.object({ ok: z.boolean(), data: z.any() }) } },
+        content: { "application/json": { schema: agentSnapshotResponseSchema } },
         description: "Agent detail",
       },
       404: {
@@ -499,11 +571,13 @@ export function agentRoutes(getDeps: () => {
   app.openapi(getAgentRoute, async (c) => {
     const deps = getDeps();
     const { name } = c.req.valid("param");
-    const agent = (await deps.getAgents()).find(a => a.name === name);
+    const snapshot = deps.getAgentSnapshot ? await deps.getAgentSnapshot(name) : undefined;
+    const agent = deps.getAgentSnapshot ? snapshot?.agent : (await deps.getAgents()).find(a => a.name === name);
     if (!agent) {
       return c.json({ ok: false, error: "Agent not found", code: "NOT_FOUND" }, 404);
     }
-    return c.json({ ok: true, data: withAvatarUrl(redactAgentConfig(agent)) }, 200);
+    if (snapshot) c.header("ETag", revisionEtag(snapshot.revision));
+    return c.json({ ok: true, data: withAvatarUrl(redactAgentConfig(agent)), ...(snapshot && { revision: snapshot.revision }) }, 200);
   });
 
   // ── POST /agents/:name/avatar — upload agent avatar ──

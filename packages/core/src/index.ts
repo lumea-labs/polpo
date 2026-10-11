@@ -205,7 +205,9 @@ export type {
 } from "./session-continuation.js";
 export type { ApprovalStore } from "./approval-store.js";
 export type { TeamStore } from "./team-store.js";
-export type { AgentStore } from "./agent-store.js";
+export type { AgentStore, VersionedAgentStore, AgentRevision, AgentSnapshot, AgentIdentity, AgentConfigPatch, AgentMutation, AgentMutationReceipt } from "./agent-store.js";
+export { normalizeAgentIdentity, agentIdentityFromSnapshot, assertAgentIdentity, AgentIdentityError } from "./agent-store.js";
+export { AgentMutationError, isVersionedAgentStore, normalizeAgentMutation, applyAgentConfigPatch } from "./agent-store.js";
 export type { SkillStore, SkillRecord } from "./skill-store.js";
 export {
   SKILL_BUNDLE_MAX_FILES,
@@ -548,6 +550,17 @@ export {
 } from "./loop/run-store.js";
 export { createToolInvocationContext } from "./tool-invocation.js";
 export {
+  createRemoteMcpRuntimeCapabilities, MCP_RUNNER_LEASE_VERSION, McpRunnerLeasePayloadSchema,
+  McpRunnerRequestSchema, McpRunnerInventorySchema,
+  MAX_MCP_RUNNER_REQUEST_BYTES, MAX_MCP_RUNNER_RESPONSE_BYTES, MCP_RUNNER_REQUEST_TIMEOUT_MS,
+} from "./mcp-runner.js";
+export type { McpRunnerLeasePayload, McpRunnerRequest, McpRunnerInventory } from "./mcp-runner.js";
+export type {
+  McpCapabilityTool, McpCapabilityResolveInput, ResolvedMcpCapability,
+  McpCapabilityResolver, McpRuntimeCapabilityProvider, McpRuntimeCapabilities,
+  ResolveMcpRuntimeCapabilities,
+} from "./mcp-capability.js";
+export {
   ALLOWED_TOOL_POLICY_LAYERS,
   ToolPolicyDeniedError,
   assertToolNameAllowedByPolicy,
@@ -605,3 +618,8 @@ export type {
   ProjectLoopRunStatus,
   LoopRunStore,
 } from "./loop/run-store.js";
+
+export { RunnerCapabilityBootstrapPayloadSchema, RUNNER_CAPABILITY_BOOTSTRAP_ARGUMENT,
+  RUNNER_CAPABILITY_BOOTSTRAP_READY, RUNNER_CAPABILITY_BOOTSTRAP_VERSION, MAX_RUNNER_CAPABILITY_BOOTSTRAP_BYTES,
+  RUNNER_CAPABILITY_BOOTSTRAP_TIMEOUT_MS } from "./runner-capability.js";
+export type { RunnerCapabilityBootstrapPayload } from "./runner-capability.js";

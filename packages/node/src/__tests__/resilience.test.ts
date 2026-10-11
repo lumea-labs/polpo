@@ -610,6 +610,7 @@ describe("Durable turns recovery", () => {
   let runStore: InMemoryRunStore;
   let orchestrator: Orchestrator;
   let spawnedConfigs: RunnerConfig[];
+  let agentIdentity: RunnerConfig["agentIdentity"];
 
   /** Spawner double: records configs, reports every PID as dead. */
   function fakeSpawner(): Spawner {
@@ -654,6 +655,7 @@ describe("Durable turns recovery", () => {
       updatedAt: now,
       activity: createTestActivity(),
       configPath: "/tmp/run.json",
+      config: { agentIdentity } as RunnerConfig,
       ...overrides,
     };
   }
@@ -697,6 +699,9 @@ describe("Durable turns recovery", () => {
       name: "test-team",
       agents: [createTestAgent({ name: "agent-1" })],
     });
+    const snapshot = await orchestrator.engine.getAgentSnapshot("agent-1");
+    expect(snapshot).toBeDefined();
+    agentIdentity = { name: "agent-1", incarnation: snapshot!.revision.incarnation };
   });
 
   afterEach(() => {
@@ -719,6 +724,7 @@ describe("Durable turns recovery", () => {
     expect(spawnedConfigs[0].resumeState!.turn).toBe(1);
     expect(spawnedConfigs[0].resumeState!.loopName).toBe("default");
     expect(spawnedConfigs[0].resumeState!.history).toHaveLength(3);
+    expect(spawnedConfigs[0].agentIdentity).toEqual(agentIdentity);
 
     // The handoff is one-shot: a later spawn of the same task (e.g. a real
     // retry after a genuine failure) starts from zero again.
@@ -726,6 +732,14 @@ describe("Durable turns recovery", () => {
     await (orchestrator.engine as any).runner.spawnForTask(await store.getTask(task.id));
     expect(spawnedConfigs).toHaveLength(2);
     expect(spawnedConfigs[1].resumeState).toBeUndefined();
+  });
+
+  it("does not resume a legacy checkpoint without a captured agent identity", async () => {
+    const task = await createOrphanTask("Unknown checkpoint owner");
+    await runStore.upsertRun(runRecord(task.id, { config: undefined, resumeState: makeCheckpoint() }));
+    expect(await orchestrator.engine.recoverOrphanedTasks()).toBe(1);
+    await respawn(task.id);
+    expect(spawnedConfigs).toHaveLength(0);
   });
 
   it("spawned runner config carries task sandbox policy", async () => {

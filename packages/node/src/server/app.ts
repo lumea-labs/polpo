@@ -11,6 +11,7 @@ import {
 } from "@polpo-ai/channels";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
+import { isVersionedAgentStore, type AgentMutation } from "@polpo-ai/core/agent-store";
 import { projectLoopConfigSchema } from "@polpo-ai/core/schemas";
 import {
   resolveConfiguredModelSelection,
@@ -45,9 +46,12 @@ import {
   runDeliveryRoutes,
   runSteeringRoutes,
   conversationChannelRoutes,
+  connectRoutes,
+  connectCallbackRoutes,
   memoryItemRoutes,
   memoryCandidateRoutes,
   type CompletionRuntimeGuardrailsResolver,
+  type ConnectRouteDeps,
 } from "@polpo-ai/server";
 // Node.js-only routes (stay in src/server/routes/)
 import { publicConfigRoutes } from "./routes/config.js";
@@ -96,6 +100,8 @@ function readRuntimeVersion(): string {
 const runtimeVersion = readRuntimeVersion();
 
 export interface AppOptions {
+  /** Explicit operator-configured Connect service; routes use normal control-plane auth. */
+  connectService?: ConnectRouteDeps["connectService"];
   data?: NodeDataRuntime;
   apiKeys?: string[];
   corsOrigins?: string[];
@@ -103,6 +109,7 @@ export interface AppOptions {
   onInitialize?: (workDir: string) => Promise<void>;
   /** Resolver for strict logical Connection slots used by custom tools. */
   connectionCapabilityResolver?: ConnectionCapabilityResolver;
+  resolveMcpCapabilities?: import("@polpo-ai/core").ResolveMcpRuntimeCapabilities;
   /** Optional process-local override for completion tool guardrails. */
   runToolMiddleware?: RunToolMiddleware;
   /** Optional process-local override for final-output guardrails. */
@@ -183,7 +190,7 @@ export function createApp(orchestrator: Orchestrator, sseBridge: SSEBridge, opts
   app.use("/api/*", rateLimitMiddleware());
   app.use("/v1/*", rateLimitMiddleware());
 
-  const corsExposeHeaders = ["x-session-id", "x-polpo-run-id", "x-polpo-run-terminal"];
+  const corsExposeHeaders = ["x-session-id", "x-polpo-run-id", "x-polpo-run-terminal", "ETag"];
   if (opts?.corsOrigins && opts.corsOrigins.length > 0) {
     app.use("*", cors({ origin: opts.corsOrigins, exposeHeaders: corsExposeHeaders }));
   } else {
@@ -204,6 +211,7 @@ export function createApp(orchestrator: Orchestrator, sseBridge: SSEBridge, opts
   // ── Public routes (no auth) ───────────────────────────────────────────
 
   app.route("/api/v1/health", healthRoutes(runtimeVersion));
+  if (opts?.connectService) app.route("/api/v1/connect", connectCallbackRoutes(() => ({ connectService: opts.connectService })));
 
   if (opts?.channels) {
     const handleChannelWebhook = async (c: any) => dispatchChannelWebhook({
@@ -244,6 +252,9 @@ export function createApp(orchestrator: Orchestrator, sseBridge: SSEBridge, opts
   // OpenAI-compatible chat completions
   app.route("/v1/chat/completions", completionRoutes(() => ({
     getAgents: () => o.engine.getAgents(),
+    ...(isVersionedAgentStore(o.getAgentStore()) ? {
+      getAgentSnapshot: (name: string) => o.engine.getAgentSnapshot(name),
+    } : {}),
     getConfig: () => o.getConfig(),
     getMemoryStore: () => o.getMemoryStore(),
     getSessionStore: () => o.getSessionStore(),
@@ -330,8 +341,8 @@ export function createApp(orchestrator: Orchestrator, sseBridge: SSEBridge, opts
         promptOptions?.activatedSkills,
       );
     },
-    resolveAgentTools: async (agentConfig: any, _runScope, invocation) => {
-      const { createSystemTools, createMemoryTools, createBrainTools, createDataTools, resolveTypedMemoryTools, resolveAgentMcpTools, expandToolWildcards, TOOL_CATALOG } = await import("@polpo-ai/tools");
+    resolveAgentTools: async (agentConfig: any, _runScope, invocation, signal) => {
+      const { createSystemTools, createMemoryTools, createBrainTools, createDataTools, resolveTypedMemoryTools, resolveRuntimeMcpTools, expandToolWildcards, TOOL_CATALOG } = await import("@polpo-ai/tools");
       const { resolveAgentVault } = await import("../vault/index.js");
       const { nanoid } = await import("nanoid");
       const vaultEntries = await o.getVaultStore()?.getAllForAgent(agentConfig.name);
@@ -383,14 +394,15 @@ export function createApp(orchestrator: Orchestrator, sseBridge: SSEBridge, opts
       // The connections are opened once per request; `dispose` is wired into
       // the `cleanup` callback so transports close as soon as the agent's
       // turn finishes — no orphaned file descriptors / keep-alives.
-      const mcp = await resolveAgentMcpTools(agentConfig.name, agentConfig.mcpServers, vault);
+      const mcp = await resolveRuntimeMcpTools({ agentName: agentConfig.name, mcpServers: agentConfig.mcpServers, vault,
+        invocation, signal, resolveCapabilities: opts?.resolveMcpCapabilities, policy: { global: agentConfig.allowedTools } });
       tools.push(...mcp.tools);
       const toolMap = new Map(tools.map((t: any) => [t.name, t]));
-      const executor = async (name: string, args: Record<string, unknown>): Promise<string> => {
+      const executor = async (name: string, args: Record<string, unknown>, execution?: { callId?: string; signal?: AbortSignal }): Promise<string> => {
         const tool = toolMap.get(name);
         if (!tool) return `Error: Unknown tool "${name}"`;
         try {
-          const result = await tool.execute(nanoid(), args as any);
+          const result = await tool.execute(execution?.callId ?? nanoid(), args as any, execution?.signal);
           return result.content.map((c: any) => c.text ?? "").join("");
         } catch (err: any) {
           return `Error: ${err.message}`;
@@ -432,6 +444,8 @@ export function createApp(orchestrator: Orchestrator, sseBridge: SSEBridge, opts
       const outcome = await executeRun(
         {
           runId, taskId: runId, agent: inject.agent, task,
+          agentIdentity: inject.toolInvocation?.agent,
+          toolInvocation: inject.toolInvocation,
           polpoDir: o.getPolpoDir(), cwd: o.getAgentWorkDir(),
           outputDir: join(o.getPolpoDir(), "output", runId),
         } as any,
@@ -442,6 +456,7 @@ export function createApp(orchestrator: Orchestrator, sseBridge: SSEBridge, opts
           fs: o.getFs(),
           shell: o.getShell(),
           connectionCapabilityResolver: opts?.connectionCapabilityResolver,
+          resolveMcpCapabilities: opts?.resolveMcpCapabilities,
           memoryStore: o.getMemoryStore(),
           memoryItemStore: o.getMemoryItemStore(),
           data: data?.forAgent(inject.agent?.name ?? "agent"),
@@ -514,6 +529,7 @@ export function createApp(orchestrator: Orchestrator, sseBridge: SSEBridge, opts
   });
 
   if (data) authed.route("/data", dataRoutes(request => data.resolveService(request)));
+  if (opts?.connectService) authed.route("/connect", connectRoutes(() => ({ connectService: opts.connectService })));
 
   authed.route("/tasks", taskRoutes(() => ({
     taskStore: o.getStore(),
@@ -567,6 +583,10 @@ export function createApp(orchestrator: Orchestrator, sseBridge: SSEBridge, opts
     addAgent: (agent: any, teamName?: string) => o.engine.addAgent(agent, teamName),
     removeAgent: (name: string) => o.engine.removeAgent(name),
     updateAgent: (name: string, updates: any) => o.engine.updateAgent(name, updates),
+    ...(isVersionedAgentStore(o.getAgentStore()) ? {
+      getAgentSnapshot: (name: string) => o.engine.getAgentSnapshot(name),
+      compareAndSwapAgent: (name: string, mutation: AgentMutation) => o.engine.compareAndSwapAgent(name, mutation),
+    } : {}),
     getTeams: () => o.engine.getTeams(),
     getTeam: (name?: string) => o.engine.getTeam(name),
     addTeam: (team: any) => o.engine.addTeam(team),

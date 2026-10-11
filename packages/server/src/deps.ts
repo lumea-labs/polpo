@@ -109,6 +109,8 @@ export interface AgentRouteDeps {
   addAgent: (...args: any[]) => Promise<any>;
   removeAgent: (...args: any[]) => Promise<any>;
   updateAgent: (...args: any[]) => Promise<any>;
+  getAgentSnapshot?: import("@polpo-ai/core/agent-store").VersionedAgentStore["getAgentSnapshot"];
+  compareAndSwapAgent?: import("@polpo-ai/core/agent-store").VersionedAgentStore["compareAndSwapAgent"];
   getTeams: () => Promise<any[]>;
   getTeam: (name?: string) => Promise<any>;
   addTeam: (...args: any[]) => Promise<any>;

@@ -1,4 +1,5 @@
 import { nanoid } from "nanoid";
+import { isVersionedAgentStore, agentIdentityFromSnapshot, assertAgentIdentity, AgentIdentityError, type AgentIdentity } from "./agent-store.js";
 import type { OrchestratorContext } from "./orchestrator-context.js";
 import { resolveMissionStore, resolveMissionForTask } from "./mission-store.js";
 import type { Task, TaskResult, RunnerConfig } from "./types.js";
@@ -84,7 +85,7 @@ export class TaskRunner {
    * respawning tick happen in the same orchestrator process, so in-memory
    * handoff is sufficient — the durable copy lives on the run record.
    */
-  private pendingResume = new Map<string, LoopResumeState>();
+  private pendingResume = new Map<string, { state: LoopResumeState; agentIdentity?: AgentIdentity }>();
 
   constructor(private ctx: OrchestratorContext) {}
 
@@ -427,7 +428,7 @@ export class TaskRunner {
         // so the respawn resumes at turn + 1 instead of starting over.
         const checkpoint = usableCheckpoint(run.resumeState);
         if (checkpoint) {
-          this.pendingResume.set(run.taskId, checkpoint);
+          this.pendingResume.set(run.taskId, { state: checkpoint, agentIdentity: run.config?.agentIdentity });
           this.ctx.emitter.emit("log", {
             level: "info",
             message: `[${run.taskId}] Runner died mid-run — checkpoint at turn ${checkpoint.turn! + 1} saved for resume`,
@@ -530,11 +531,24 @@ export class TaskRunner {
   }
 
   async spawnForTask(task: Task): Promise<void> {
-    const agent = await this.ctx.agentStore.getAgent(task.assignTo);
+    const store = this.ctx.agentStore;
+    const versioned = isVersionedAgentStore(store);
+    const snapshot = versioned ? await store.getAgentSnapshot(task.assignTo) : undefined;
+    const agent = versioned ? snapshot?.agent : await store.getAgent(task.assignTo);
     if (!agent) {
       const message = `No agent "${task.assignTo}" for task "${task.title}"`;
       this.ctx.emitter.emit("log", { level: "error", message });
       await this.failBeforeSpawn(task, message);
+      return;
+    }
+    const agentIdentity = snapshot ? agentIdentityFromSnapshot(snapshot) : undefined;
+    const pendingResume = this.pendingResume.get(task.id);
+    try {
+      if (agent.name !== task.assignTo) throw new AgentIdentityError();
+      if (pendingResume && (versioned || pendingResume.agentIdentity)) assertAgentIdentity(pendingResume.agentIdentity, snapshot);
+    } catch (error) {
+      this.pendingResume.delete(task.id);
+      await this.failBeforeSpawn(task, error instanceof Error ? error.message : "Agent identity check failed");
       return;
     }
 
@@ -720,7 +734,7 @@ export class TaskRunner {
     // Durable turns: consume (one-shot) a checkpoint harvested by orphan
     // recovery — the runner resumes the conversation at turn + 1 instead
     // of redoing completed work. Absent checkpoint = spawn from zero.
-    const resumeState = this.pendingResume.get(task.id);
+    const resumeState = pendingResume?.state;
     if (resumeState) {
       this.pendingResume.delete(task.id);
       const from = resumeState.pipelineName
@@ -748,6 +762,7 @@ export class TaskRunner {
       runtimeContext,
       executionRoute,
       agent,
+      ...(agentIdentity ? { agentIdentity } : {}),
       task: taskForRun,
       polpoDir: this.ctx.polpoDir,
       cwd: this.ctx.agentWorkDir,

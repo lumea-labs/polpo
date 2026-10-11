@@ -448,11 +448,13 @@ const McpServerConfigSchema = z.union([
     type: z.literal("sse"),
     url: z.string().url(),
     headers: z.record(z.string(), z.string()).optional(),
+    connectionId: z.string().min(1).optional(),
   }),
   z.object({
     type: z.literal("http"),
     url: z.string().url(),
     headers: z.record(z.string(), z.string()).optional(),
+    connectionId: z.string().min(1).optional(),
   }),
 ]);
 
@@ -958,7 +960,7 @@ export const AddAgentSchema = z.object({
   mcpServers: McpServersRecordSchema.optional(),
 }).and(AgentLoopFieldsSchema);
 
-export const UpdateAgentSchema = z.object({
+const UpdateAgentFieldsSchema = z.object({
   executionMode: z.enum(["subprocess", "in-process"]).optional(),
   sandbox: RuntimeSandboxSchema.optional(),
   role: z.string().optional(),
@@ -990,7 +992,12 @@ export const UpdateAgentSchema = z.object({
   team: z.string().optional(),
   /** Replace the agent's MCP server map. Pass an empty object to clear. */
   mcpServers: McpServersRecordSchema.optional(),
-}).and(AgentLoopFieldsSchema);
+}).extend(AgentLoopFieldsSchema.shape);
+
+export const UpdateAgentSchema = UpdateAgentFieldsSchema.extend({
+  /** Explicit removal requires a conditional mutation; omitted fields stay unchanged. */
+  unset: z.array(UpdateAgentFieldsSchema.omit({ team: true }).keyof()).optional(),
+});
 
 export const RenameTeamSchema = z.object({
   oldName: z.string().min(1),

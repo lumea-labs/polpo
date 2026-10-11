@@ -27,7 +27,7 @@ import type { MemoryStore } from "./memory-store.js";
 import type { LogStore } from "./log-store.js";
 import type { SessionStore } from "./session-store.js";
 import type { TeamStore } from "./team-store.js";
-import type { AgentStore } from "./agent-store.js";
+import type { AgentStore, AgentMutation, AgentMutationReceipt, AgentSnapshot } from "./agent-store.js";
 import { agentMemoryScope } from "./memory-store.js";
 import type {
   PolpoConfig,
@@ -597,6 +597,8 @@ export class OrchestratorEngine {
   async addAgent(agent: AgentConfig, teamName?: string): Promise<void> { return this.agentMgr.addAgent(agent, teamName); }
   async removeAgent(name: string): Promise<boolean> { return this.agentMgr.removeAgent(name); }
   async updateAgent(name: string, updates: Partial<Omit<AgentConfig, "name">>): Promise<AgentConfig> { return this.agentMgr.updateAgent(name, updates); }
+  async getAgentSnapshot(name: string): Promise<AgentSnapshot | undefined> { return this.agentMgr.getAgentSnapshot(name); }
+  async compareAndSwapAgent(name: string, mutation: AgentMutation): Promise<AgentMutationReceipt> { return this.agentMgr.compareAndSwapAgent(name, mutation); }
   async findAgentTeam(name: string): Promise<Team | undefined> { return this.agentMgr.findAgentTeam(name); }
   async addVolatileAgent(agent: AgentConfig, group: string): Promise<void> { return this.agentMgr.addVolatileAgent(agent, group); }
   async cleanupVolatileAgents(group: string): Promise<number> { return this.agentMgr.cleanupVolatileAgents(group); }

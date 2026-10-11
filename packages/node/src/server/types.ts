@@ -108,6 +108,9 @@ export interface ServerConfig {
   corsOrigins?: string[];
   /** Start the supervisor loop on server start. Default: true. */
   autoStart?: boolean;
+  connectService?: import("@polpo-ai/server").ConnectRouteDeps["connectService"];
+  connectionCapabilityResolver?: import("@polpo-ai/core").ConnectionCapabilityResolver;
+  resolveMcpCapabilities?: import("@polpo-ai/core").ResolveMcpRuntimeCapabilities;
   channels?: {
     resolveInstallation: import("@polpo-ai/channels").ChannelInstallationResolver;
     runtime: import("@polpo-ai/channels").ChannelRuntime;

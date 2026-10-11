@@ -86,6 +86,8 @@ export interface SpawnContext {
   toolInvocation?: ToolInvocationContext;
   /** Host-owned resolver for invocation-scoped logical Connection slots. */
   connectionCapabilityResolver?: import("./connection-capability.js").ConnectionCapabilityResolver;
+  /** Host-owned MCP inventory and per-operation capability factory. */
+  resolveMcpCapabilities?: import("./mcp-capability.js").ResolveMcpRuntimeCapabilities;
   /** Pre-resolved retrieval snapshot rendered into task system prompts. */
   runtimeContext?: RuntimeContextResolution;
   /** Per-task output directory (.polpo/output/<taskId>/). Agents write deliverables here. */
@@ -194,6 +196,8 @@ export interface SpawnContext {
  * takes no dependency on `ai`.
  */
 export interface ChatSessionInjection {
+  /** Original captured invocation, including agent creation identity. */
+  toolInvocation?: ToolInvocationContext;
   /** Conversation session that groups this streaming run with its chat transcript. */
   sessionId?: string;
   /** Frozen, secret-free planning decision for this invocation. */

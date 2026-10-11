@@ -5,7 +5,7 @@ import { createGenericOAuthConnector, defaultConnectors, githubConnector, google
 describe("curated connectors", () => {
   it("has unique valid provider definitions", () => {
     const registry = createConnectorRegistry(defaultConnectors);
-    expect(registry.list().map((provider) => provider.id)).toEqual(["api_key", "github", "slack", "google_drive", "mcp_url"]);
+    expect(registry.list().map((provider) => provider.id)).toEqual(["api_key", "github", "slack", "google_drive", "gmail", "mcp_url"]);
   });
 
   it("declares actions only with scopes supported by each provider", () => {

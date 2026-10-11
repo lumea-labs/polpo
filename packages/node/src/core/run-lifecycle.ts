@@ -41,6 +41,8 @@ import type { VaultStore } from "@polpo-ai/core/vault-store";
 import type { MemoryStore } from "@polpo-ai/core/memory-store";
 import {
   createToolInvocationContext,
+  normalizeAgentIdentity,
+  AgentIdentityError,
   normalizeRuntimePromptContextSegments,
   normalizeRuntimeContextTrustMode,
 } from "@polpo-ai/core";
@@ -133,7 +135,8 @@ export interface TranscriptSession {
 }
 
 export interface ExecuteRunDeps {
-  data?: import("@polpo-ai/core/data").DataClient;
+  /** Null explicitly disables environment/local Data fallback for a host-bound runner. */
+  data?: import("@polpo-ai/core/data").DataClient | null;
   /** Run persistence. NOT closed by executeRun — the host owns it. */
   runStore: RunStore;
   /**
@@ -160,6 +163,7 @@ export interface ExecuteRunDeps {
   checkpointSandboxVolume?: (name?: string) => Promise<void>;
   /** Host-owned resolver for strict logical Connection slots. */
   connectionCapabilityResolver?: import("@polpo-ai/core").ConnectionCapabilityResolver;
+  resolveMcpCapabilities?: import("@polpo-ai/core").ResolveMcpRuntimeCapabilities;
   /** Finalize run-scoped host resources before terminal persistence. */
   finalize?: () => Promise<void>;
   /**
@@ -287,6 +291,10 @@ export async function executeRun(config: RunnerConfig, deps: ExecuteRunDeps): Pr
   const guardrailDecisions: RuntimeGuardrailAuditEvent[] = [];
   let guardrailDecisionsTruncated = false;
   try {
+    const agentIdentity = config.agentIdentity === undefined ? undefined : normalizeAgentIdentity(config.agentIdentity);
+    if ((agentIdentity && agentIdentity.name !== config.agent.name)
+      || (config.toolInvocation?.agent && (config.toolInvocation.agent.name !== agentIdentity?.name
+        || config.toolInvocation.agent.incarnation !== agentIdentity?.incarnation))) throw new AgentIdentityError();
     // Use the injected vault store when available (postgres/sqlite or
     // orchestrator-owned), fall back to file-based
     let vaultStore: VaultStore | undefined = deps.vaultStore;
@@ -460,7 +468,12 @@ export async function executeRun(config: RunnerConfig, deps: ExecuteRunDeps): Pr
     const spawnCtx = {
       polpoDir: config.polpoDir,
       runId: config.runId,
-      toolInvocation: config.toolInvocation ?? createToolInvocationContext({
+      toolInvocation: config.toolInvocation ? createToolInvocationContext({
+        ...config.toolInvocation,
+        metadata: { ...config.toolInvocation.metadata },
+        ...(agentIdentity ? { agent: agentIdentity } : {}),
+      }) : createToolInvocationContext({
+        ...(agentIdentity ? { agent: agentIdentity } : {}),
         requestId: config.runId,
         runId: config.runId,
         ...(correlatedSessionId ? { sessionId: correlatedSessionId } : {}),
@@ -478,7 +491,9 @@ export async function executeRun(config: RunnerConfig, deps: ExecuteRunDeps): Pr
       memoryItemStore,
       brainService,
       brainContext,
-      data: deps.data ?? (await import("../data/index.js")).runnerDataClient(config.polpoDir, config.agent.name),
+      data: deps.data === undefined
+        ? (await import("../data/index.js")).runnerDataClient(config.polpoDir, config.agent.name)
+        : deps.data ?? undefined,
       // Per-tenant gateway for the in-process host (undefined for subprocess,
       // which resolves the gateway from sandbox env).
       gatewayConfig: deps.gatewayConfig,
@@ -496,6 +511,7 @@ export async function executeRun(config: RunnerConfig, deps: ExecuteRunDeps): Pr
       shell: deps.shell ?? new NodeShell(),
       checkpointSandboxVolume: deps.checkpointSandboxVolume,
       connectionCapabilityResolver: deps.connectionCapabilityResolver,
+      resolveMcpCapabilities: deps.resolveMcpCapabilities,
       // Durable turns: resume checkpoint handed over by orphan recovery,
       // and the per-turn checkpoint sink (one RunStore write per turn,
       // best-effort — a flaky store must never fail a healthy run).

@@ -115,7 +115,7 @@ import type { CheckpointStore } from "@polpo-ai/core/checkpoint-store";
 import type { DelayStore } from "@polpo-ai/core/delay-store";
 import type { ConfigStore } from "@polpo-ai/core/config-store";
 import type { TeamStore } from "@polpo-ai/core/team-store";
-import type { AgentStore } from "@polpo-ai/core/agent-store";
+import type { VersionedAgentStore } from "@polpo-ai/core/agent-store";
 import type { VaultStore } from "@polpo-ai/core/vault-store";
 import type { PlaybookStore } from "@polpo-ai/core/playbook-store";
 import type { SkillStore } from "@polpo-ai/core/skill-store";
@@ -139,7 +139,7 @@ export interface DrizzleStores {
   delayStore: DelayStore;
   configStore: ConfigStore;
   teamStore: TeamStore;
-  agentStore: AgentStore;
+  agentStore: VersionedAgentStore;
   vaultStore: VaultStore;
   playbookStore: PlaybookStore;
   skillStore: SkillStore;

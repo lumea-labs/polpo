@@ -90,12 +90,16 @@ export interface McpSseServerConfig {
   type: "sse";
   url: string;
   headers?: Record<string, string>;
+  /** Trusted control-plane reference. Requires a host MCP capability resolver. */
+  connectionId?: string;
 }
 
 export interface McpHttpServerConfig {
   type: "http";
   url: string;
   headers?: Record<string, string>;
+  /** Trusted control-plane reference. Requires a host MCP capability resolver. */
+  connectionId?: string;
 }
 
 /** MCP transport configuration resolved when an agent is materialized. */

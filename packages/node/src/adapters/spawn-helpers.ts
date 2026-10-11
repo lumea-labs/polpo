@@ -16,6 +16,9 @@ import {
   resolveModelProfileSelection,
   type ModelSelection,
   renderRuntimePromptContextSegments,
+  resolveAllowedToolPolicy,
+  toolNameAllowedByPolicy,
+  type AllowedToolPolicyInput,
   type RuntimeContextTrustMode,
   type RuntimePromptContextSegment,
 } from "@polpo-ai/core";
@@ -37,6 +40,7 @@ import {
   createAllTools,
   createSandboxVolumeCheckpointTool,
   createSystemTools,
+  resolveRuntimeMcpTools,
 } from "@polpo-ai/tools";
 import { NodeFileSystem } from "./node-filesystem.js";
 import { NodeShell } from "./node-shell.js";
@@ -501,7 +505,8 @@ export async function buildAgentTools(
   cwd: string,
   prep: SpawnPrep,
   ctx?: SpawnContext,
-): Promise<PolpoTool[]> {
+  options?: { signal?: AbortSignal; policy?: Omit<AllowedToolPolicyInput, "global"> },
+): Promise<{ tools: PolpoTool[]; cleanup: () => Promise<void> }> {
   const vaultEntries = await ctx?.vaultStore?.getAllForAgent(agentConfig.name);
   const vault = resolveAgentVault(vaultEntries);
 
@@ -556,7 +561,16 @@ export async function buildAgentTools(
     ctx?.toolInvocation,
   ));
 
-  return allPolpoTools;
+  const policy = { ...options?.policy, global: agentConfig.allowedTools };
+  const mcp = await resolveRuntimeMcpTools({ agentName: agentConfig.name, mcpServers: agentConfig.mcpServers,
+    invocation: ctx?.toolInvocation, resolveCapabilities: ctx?.resolveMcpCapabilities, vault, signal: options?.signal, policy,
+    // Task engines historically did not load legacy MCP transports. Adding
+    // capabilities must not start authored stdio commands in a managed host.
+    allowLegacy: false });
+  // Existing builders own their category/global activation (including internal
+  // skill helpers). Apply additional Loop restrictions to the complete palette.
+  const effectivePolicy = resolveAllowedToolPolicy(options?.policy ?? {});
+  return { tools: [...allPolpoTools, ...mcp.tools].filter(tool => toolNameAllowedByPolicy(tool.name, effectivePolicy)), cleanup: mcp.dispose };
 }
 
 // ─── Outcome Collection ────���────────────────────────

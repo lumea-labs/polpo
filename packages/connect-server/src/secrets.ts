@@ -3,6 +3,8 @@ import type { StoredConnectionSecret } from "@polpo-ai/connect";
 export interface ConnectionSecretStore {
   setSecret(ref: string, secret: StoredConnectionSecret): Promise<void>;
   getSecret(ref: string): Promise<StoredConnectionSecret | null>;
+  /** Destructive: does not check Connection/OAuth references. Do not use as
+   * compensation after an uncertain reference write. */
   deleteSecret(ref: string): Promise<void>;
 }
 

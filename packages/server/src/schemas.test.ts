@@ -97,7 +97,7 @@ describe("agent create/update schema parity", () => {
       reasoning: "high" as const,
       emailAllowedDomains: ["example.com"],
       mcpServers: {
-        docs: { type: "http" as const, url: "https://example.com/mcp" },
+        docs: { type: "http" as const, url: "https://example.com/mcp", connectionId: "conn_docs" },
       },
     };
     expect(AddAgentSchema.parse({ name: "builder", ...authored }))

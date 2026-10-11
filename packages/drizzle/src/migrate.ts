@@ -355,9 +355,17 @@ export async function ensurePgTables(db: any): Promise<void> {
     name        TEXT PRIMARY KEY,
     team_name   TEXT NOT NULL,
     config      JSONB NOT NULL,
+    incarnation TEXT,
+    revision    INTEGER NOT NULL DEFAULT 0,
+    last_mutation JSONB,
     created_at  TEXT NOT NULL,
     updated_at  TEXT NOT NULL
   )`);
+  // ensurePgSchema is also the standalone Node startup path. Evolve existing
+  // agent tables here as well as through the schema-derived migrator.
+  await db.execute(sql`ALTER TABLE agents ADD COLUMN IF NOT EXISTS incarnation TEXT`);
+  await db.execute(sql`ALTER TABLE agents ADD COLUMN IF NOT EXISTS revision INTEGER NOT NULL DEFAULT 0`);
+  await db.execute(sql`ALTER TABLE agents ADD COLUMN IF NOT EXISTS last_mutation JSONB`);
 
   await db.execute(sql`CREATE TABLE IF NOT EXISTS vault (
     agent       TEXT NOT NULL,

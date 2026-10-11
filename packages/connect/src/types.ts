@@ -1,4 +1,7 @@
-export type ConnectorAuthType = "api_key" | "oauth2" | "mcp";
+/** Legacy credential discriminator. New definitions separate protocol and authentication. */
+export type ConnectorAuthType = "api_key" | "oauth2" | "mcp" | "none";
+
+export type ConnectorProtocol = "http_api" | "mcp";
 
 export type ConnectSubjectType = "user" | "project" | "org" | "agent" | "service";
 
@@ -27,6 +30,15 @@ export interface ConnectorActionDefinition {
   outputSchema?: unknown;
   metadata?: Record<string, unknown>;
 }
+
+/** A host binds identity, the Connection and grants; action handlers never receive credentials. */
+export interface ConnectorActionRequest {
+  actionId: string;
+  scopes: string[];
+  request: import("@polpo-ai/core").ConnectionRequest;
+}
+
+export type ConnectorActionGateway = (input: ConnectorActionRequest) => Promise<import("@polpo-ai/core").ConnectionResponse>;
 
 export interface ConnectorTriggerDefinition {
   id: string;
@@ -57,18 +69,58 @@ export interface OAuth2AuthConfig {
   supportsPkce?: boolean;
   extraAuthorizeParams?: Record<string, string>;
   extraTokenParams?: Record<string, string>;
+  /** Server-only account continuity check. This endpoint is not an agent API. */
+  identity?: OAuthUserInfoPolicy;
+}
+
+export interface OAuthUserInfoPolicy {
+  method: "userinfo";
+  issuer: string;
+  url: string;
+  requiredScopes: string[];
+  /** Provider-returned scope spelling to its declared canonical spelling. */
+  scopeAliases?: Record<string, string>;
+}
+
+export interface OAuthAccountIdentity {
+  issuer: string;
+  subject: string;
+  verifiedAt: string;
+  policyFingerprint: string;
+}
+
+/** Host-only immutable authorization snapshot, never a tool argument. */
+export interface OAuthReconnectSnapshot {
+  connectionId: string;
+  authorizationFingerprint: string;
+}
+
+export interface OAuthCredentialReplacement {
+  secretRef: string;
+  credentialVersion: string;
+  tokenExpiresAt?: string;
+  grantedScopes: string[];
+  oauthClientFingerprint: string;
+  oauthIdentity: OAuthAccountIdentity;
+  updatedAt: string;
 }
 
 export interface McpAuthConfig {
   type: "mcp";
-  auth?: "none" | "bearer" | "oauth2";
+  auth?: "none" | "bearer" | "header" | "oauth2";
+  headerName?: string;
   defaultScopes?: string[];
 }
 
-export type ConnectorAuthConfig = ApiKeyAuthConfig | OAuth2AuthConfig | McpAuthConfig;
+export interface NoAuthConfig {
+  type: "none";
+  defaultScopes?: string[];
+}
+
+export type ConnectorAuthConfig = ApiKeyAuthConfig | OAuth2AuthConfig | McpAuthConfig | NoAuthConfig;
 
 export interface ConnectorHttpAuthPolicy {
-  mode: "bearer" | "header" | "query";
+  mode: "bearer" | "header" | "query" | "none";
   name?: string;
 }
 
@@ -95,6 +147,11 @@ export interface ConnectorProviderDefinition {
   icon?: string;
   metadata?: Record<string, unknown>;
   http?: ConnectorHttpPolicy;
+  verification?: import("./verification.js").ConnectorVerificationProbe;
+  /** Normalized execution projection; authored v2 definitions retain all supported methods. */
+  protocol?: ConnectorProtocol;
+  authenticationId?: string;
+  source?: "catalog" | "custom";
 }
 
 export type ConnectionStatus = "active" | "pending" | "revoked" | "error";
@@ -104,6 +161,16 @@ export type ConnectionAudience = "personal" | "shared" | "end_user";
 export type ConnectionOwner =
   | ConnectSubject
   | { type: "external_user"; namespace: string; id: string };
+
+/** Host-authenticated control-plane input, never model/tool arguments.
+ * Omitted audience retains the shared default; ownership does not imply audience.
+ * Personal/end-user audiences require a matching owner and derive its principal binding.
+ */
+export interface ConnectionCreationContext {
+  audience?: ConnectionAudience;
+  subject?: ConnectionOwner;
+  binding?: ConnectionBindingAttributes;
+}
 
 export type ConnectionLinkStatus = "active" | "revoked";
 
@@ -143,6 +210,7 @@ export interface ResolvedOAuthClient {
 
 export interface OAuthClientResolverInput {
   providerId: string;
+  authenticationId?: string;
   projectId?: string;
   orgId?: string;
   mode: "managed" | "customer" | "instance";
@@ -156,6 +224,8 @@ export interface OAuthClientResolver {
 export interface ConnectionBindingPrincipal {
   type: string;
   id: string;
+  /** Application identity namespace. Required to select an external user's account. */
+  namespace?: string;
 }
 
 export interface ConnectionBindingTenant {
@@ -180,18 +250,25 @@ export interface ConnectionBindingAttributes {
 export interface ConnectionSelectionSelector extends ConnectionBindingAttributes {
   projectId: string;
   orgId?: string;
+  /** Host-selected audience, never a model argument. Unbound shared access must be explicit. */
+  audience?: ConnectionAudience;
 }
 
 export interface ConnectionRecord {
   id: string;
   providerId: string;
+  authenticationId?: string;
   name?: string;
   projectId?: string;
   orgId?: string;
   owner?: ConnectionOwner;
   audience?: ConnectionAudience;
   oauthClientId?: string;
+  /** Registration/endpoint identity; rotating only the client secret keeps this stable. */
+  oauthClientFingerprint?: string;
   providerAccountId?: string;
+  /** Callback-verified identity only; ordinary probes and caller metadata must never populate this field. */
+  oauthIdentity?: OAuthAccountIdentity;
   credentialVersion?: string;
   authType: ConnectorAuthType;
   status: ConnectionStatus;
@@ -205,8 +282,11 @@ export interface ConnectionRecord {
 }
 
 export interface OAuthStateRecord {
+  /** Assigned only by startOAuthSetup; never accepted from caller metadata. */
+  setupSessionRef?: string;
   state: string;
   providerId: string;
+  authenticationId?: string;
   subject?: ConnectionOwner;
   requestedScopes: string[];
   redirectUri: string;
@@ -219,6 +299,9 @@ export interface OAuthStateRecord {
   createdAt: string;
   metadata?: Record<string, unknown>;
   oauthClientId?: string;
+  oauthClientFingerprint?: string;
+  oauthIdentityPolicyFingerprint?: string;
+  reconnect?: OAuthReconnectSnapshot;
   audience?: ConnectionAudience;
   binding?: ConnectionBindingAttributes;
   returnUrl?: string;
@@ -236,8 +319,20 @@ export interface OAuthStateRecord {
 
 export interface ConnectionSetupSession {
   id: string;
+  /** Missing on existing API-provider sessions. Assigned by the service. */
+  flowKind?: "connector" | "mcp";
+  /** Private persistence reference, distinct from a hosted bearer token. */
+  reference?: string;
+  status?: "pending" | "started" | "completed" | "cancelled" | "error";
+  resultingConnectionId?: string;
+  authorizationExpiresAt?: string;
+  /** Private callback intent, assigned by the service before account persistence. */
+  completionIntent?: ConnectionSetupCompletionIntent;
   providerId: string;
+  authenticationId?: string;
   oauthClientId: string;
+  oauthClientFingerprint?: string;
+  oauthIdentityPolicyFingerprint?: string;
   projectId: string;
   orgId?: string;
   audience: ConnectionAudience;
@@ -282,6 +377,33 @@ export interface McpOAuthClientInformation extends Record<string, unknown> {
   client_secret_expires_at?: number;
 }
 
+/** Host-owned reusable client setup. Never serialize private client information
+ * in a browser setup session or accept it from an agent invocation. */
+export interface ResolvedMcpOAuthClient {
+  id: string;
+  providerId: string;
+  authenticationId?: string;
+  owner: OAuthClientOwner;
+  resourceUrl: string;
+  transport: McpConnectionTransport;
+  redirectUri: string;
+  registration:
+    | { mode: "dynamic"; clientName: string; clientUri?: string }
+    | { mode: "metadata_document"; clientMetadataUrl: string }
+    | { mode: "pre_registered"; client: McpOAuthClientInformation };
+}
+
+export interface McpOAuthClientResolverInput extends OAuthClientResolverInput {
+  /** Optional trusted backend choice. The resolver must still enforce its
+   * owner/project/organization scope; ambiguous unselected matches must fail. */
+  configurationId?: string;
+}
+
+export interface McpOAuthClientResolver {
+  resolve(input: McpOAuthClientResolverInput): Promise<ResolvedMcpOAuthClient>;
+  resolveById(id: string): Promise<ResolvedMcpOAuthClient | null>;
+}
+
 export interface McpOAuthDiscovery extends Record<string, unknown> {
   resource: string;
   authorizationServer: string;
@@ -317,6 +439,7 @@ export interface McpConnectionMetadata extends Record<string, unknown> {
   url: string;
   transport: McpConnectionTransport;
   auth: McpConnectionAuth;
+  headerName?: string;
   serverName?: string;
   oauthClientMode?: McpOAuthClientMode;
 }
@@ -375,14 +498,32 @@ export interface ConnectionListFilter {
 }
 
 export interface ConnectStore {
+  // Write exceptions do not imply rollback: a remote commit can outlive its
+  // acknowledgement. Only a matching positive read proves a completed write;
+  // a missing row must not trigger destructive secret compensation.
   listConnections(filter?: ConnectionListFilter): Promise<ConnectionRecord[]>;
   getConnection(id: string): Promise<ConnectionRecord | null>;
   upsertConnection(record: ConnectionRecord): Promise<ConnectionRecord>;
   updateConnection(id: string, patch: Partial<Omit<ConnectionRecord, "id" | "createdAt">>): Promise<ConnectionRecord>;
+  /** Atomic authorization CAS. null confirms no replacement; an exception may
+   * mean the outcome is unknown. Unsupported hosts must reject reconnect,
+   * never use updateConnection as fallback. */
+  replaceOAuthCredential?(expected: OAuthReconnectSnapshot, replacement: OAuthCredentialReplacement): Promise<ConnectionRecord | null>;
   deleteConnection(id: string): Promise<void>;
   saveOAuthState(record: OAuthStateRecord): Promise<void>;
   consumeOAuthState(state: string): Promise<OAuthStateRecord | null>;
   getOAuthState?(state: string): Promise<OAuthStateRecord | null>;
+  /** Insert a new MCP account and complete its OAuth receipt atomically under
+   * the current unexpired claim. Never upsert/reactivate a conflicting account.
+   * null proves rejection; a write exception may have committed. No fallback
+   * to separate account/receipt writes is safe. */
+  commitMcpOAuthConnection?(input: McpOAuthConnectionCommit): Promise<ConnectionRecord | null>;
+  /** Atomic embedded activation: account, active project link, setup receipt
+   * and OAuth receipt. All must match the saved, consumed setup authority. */
+  commitMcpOAuthSetup?(input: McpOAuthSetupCommit): Promise<ConnectionRecord | null>;
+  /** End a provider-denied embedded flow and its OAuth receipt atomically,
+   * only while the matching callback still owns an unexpired claim. */
+  failMcpOAuthSetup?(input: McpOAuthSetupFailure): Promise<ConnectionSetupSession | null>;
   claimOAuthState?(
     state: string,
     claimToken: string,
@@ -399,6 +540,25 @@ export interface ConnectStore {
     claimToken: string,
     errorCode: string,
   ): Promise<OAuthStateRecord | null>;
+}
+
+export interface McpOAuthConnectionCommit {
+  state: string;
+  claimToken: string;
+  now: string;
+  connection: ConnectionRecord;
+}
+
+export interface McpOAuthSetupCommit extends McpOAuthConnectionCommit {
+  setupReference: string;
+  link: ConnectionLink;
+}
+
+export interface McpOAuthSetupFailure {
+  state: string;
+  setupReference: string;
+  claimToken: string;
+  now: string;
 }
 
 export interface ConnectionLinkListFilter {
@@ -420,7 +580,42 @@ export interface ConnectionLinkStore {
 export interface ConnectionSetupSessionStore {
   saveConnectionSetupSession(session: ConnectionSetupSession): Promise<void>;
   getConnectionSetupSession(id: string): Promise<ConnectionSetupSession | null>;
-  consumeConnectionSetupSession(id: string, consumedAt: string): Promise<ConnectionSetupSession | null>;
+  /** Host-only lookup by persisted reference, never exposed as a public token. */
+  getConnectionSetupSessionByReference?(reference: string): Promise<ConnectionSetupSession | null>;
+  /** CAS pending/unconsumed/unexpired; returns the PRE-consumption snapshot. */
+  consumeConnectionSetupSession(id: string, consumedAt: string, authorizationExpiresAt?: string): Promise<ConnectionSetupSession | null>;
+  /** CAS with the same pending/expiry predicate as consume. */
+  cancelConnectionSetupSession?(id: string, cancelledAt: string): Promise<ConnectionSetupSession | null>;
+  /** Terminal outcome for a server-owned OAuth state reference. A completed
+   * receipt must never be replaced by error or another Connection ID. Hosts
+   * committing atomically may verify their receipt here without another write. */
+  finishConnectionSetupSession?(reference: string, outcome: ConnectionSetupOutcome, finishedAt: string): Promise<ConnectionSetupSession | null>;
+  /** Optional recovery for hosts whose account/link/receipt writes are separate.
+   * Pin once, idempotent only for the exact same server-owned intent. */
+  prepareConnectionSetupCompletion?(reference: string, intent: ConnectionSetupCompletionIntent): Promise<ConnectionSetupSession | null>;
+  /** Verify only the pinned account generation and existing active project link.
+   * Never create or reactivate an account/link while reconciling. */
+  reconcileConnectionSetupSession?(reference: string): Promise<ConnectionSetupSession | null>;
+}
+
+export type ConnectionSetupOutcome = { status: "completed"; connectionId: string } | { status: "error" };
+
+export interface ConnectionSetupCompletionIntent {
+  connection: OAuthReconnectSnapshot;
+  link: Pick<ConnectionLink, "id" | "connectionId" | "projectId">;
+}
+
+export interface ConnectionSetupStatus {
+  providerId: string;
+  providerName?: string;
+  projectId: string;
+  status: "pending" | "started" | "completed" | "cancelled" | "expired" | "error";
+  resultingConnectionId?: string;
+  expiresAt: string;
+  consumedAt?: string;
+  scopes: string[];
+  permissions?: { id: string; label: string; description?: string }[];
+  application?: { name: string; url?: string };
 }
 
 export interface ConnectPolicyDecisionInput {

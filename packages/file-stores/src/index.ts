@@ -27,12 +27,18 @@ export {
   migrateProjectLayoutV2,
   readProjectAgents,
   readProjectTeams,
+  reconcileProjectAgentFiles,
+  captureProjectDefinitionFiles,
+  commitProjectDefinitionFiles,
   renameProjectTeam,
   writeProjectAgent,
   writeProjectTeam,
 } from "./project-layout-files.js";
+export { withProjectFileTransaction, ProjectFileTransactionError } from "./project-file-transaction.js";
+export type { ProjectFileTransaction } from "./project-file-transaction.js";
 export type {
   ProjectAgentEntry,
+  ProjectDefinitionSnapshot,
   ProjectLayoutMigrationResult,
   ProjectResourceLayout,
 } from "./project-layout-files.js";

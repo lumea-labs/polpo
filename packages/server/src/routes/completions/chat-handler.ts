@@ -91,6 +91,7 @@ export interface ChatCompletionExecution {
   /** Resolved agent config (agent-direct mode). Used by chat-via-executeRun
    *  (F1c) to build the RunnerConfig. Undefined in orchestrator mode. */
   agentConfig: any;
+  toolInvocation?: import("@polpo-ai/core").ToolInvocationContext;
   agentMode: boolean;
   fullSystemPrompt: string;
   m: ResolvedModelInfo;
