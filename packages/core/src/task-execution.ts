@@ -1,4 +1,4 @@
-import type { Task, TaskStatus } from "./types.js";
+import type { ApprovalRequest, Task, TaskStatus } from "./types.js";
 import type { RunRecord } from "./run-store.js";
 import { assertValidTransition } from "./state-machine.js";
 import { normalizeRuntimeMetadata } from "./runtime-metadata.js";
@@ -29,6 +29,95 @@ export interface TaskExecutionPrecondition { taskId: string; snapshot: Task | nu
 export interface ConditionalTaskExecutionStore extends TaskExecutionStore {
   mutateTaskExecutionConditionally(expected: TaskExecutionReference, mutation: TaskExecutionMutation,
     preconditions: readonly TaskExecutionPrecondition[]): Promise<TaskExecutionState>;
+}
+/** An approval read condition and optional replacement in the SAME transaction
+ * as Task/Run state. null asserts absence; omitted next is a read condition only. */
+export interface TaskApprovalChange {
+  id: string;
+  expected: ApprovalRequest | null;
+  next?: ApprovalRequest;
+}
+export interface TaskApprovalDecision {
+  expected: TaskExecutionReference;
+  /** Must include the complete captured target Task, not only its generation. */
+  tasks: TaskExecutionPrecondition[];
+  approvals: TaskApprovalChange[];
+  /** Omit for a partial gate decision which must leave the waiting Task intact. */
+  operation?: TaskExecutionMutation | { type: "claim"; runId: string };
+}
+/** This is a persistence capability, not permission to approve arbitrary work.
+ * The runtime must bind gate policy and one-use consent to the execution. */
+export interface TaskApprovalExecutionStore extends ConditionalTaskExecutionStore {
+  commitTaskApprovalDecision(decision: TaskApprovalDecision): Promise<TaskExecutionState>;
+}
+export function isTaskApprovalExecutionStore(value: unknown): value is TaskApprovalExecutionStore {
+  return isConditionalTaskExecutionStore(value)
+    && typeof (value as Partial<TaskApprovalExecutionStore>).commitTaskApprovalDecision === "function";
+}
+export class TaskApprovalError extends Error {
+  constructor(readonly code: "task_approval_invalid" | "task_approval_conflict" | "task_approval_unsupported", message: string) {
+    super(message); this.name = "TaskApprovalError";
+  }
+}
+function invalidApproval(): never { throw new TaskApprovalError("task_approval_invalid", "Invalid Task approval decision"); }
+function approvalSnapshotKey(value: unknown): string {
+  const stable = (input: any): string => input === null || typeof input !== "object" ? JSON.stringify(input)
+    : Array.isArray(input) ? `[${input.map(stable).join(",")}]`
+      : `{${Object.keys(input).sort().map(key => `${JSON.stringify(key)}:${stable(input[key])}`).join(",")}}`;
+  try { return stable(JSON.parse(JSON.stringify(value))); } catch { return invalidApproval(); }
+}
+function checkApproval(request: ApprovalRequest, id: string, taskId: string): void {
+  if (!request || typeof request !== "object" || Array.isArray(request) || request.id !== id || request.taskId !== taskId
+    || typeof request.gateId !== "string" || typeof request.gateName !== "string" || typeof request.requestedAt !== "string"
+    || !["pending", "approved", "rejected", "timeout"].includes(request.status)
+    || [request.missionId, request.resolvedAt, request.resolvedBy, request.note].some(value => value !== undefined && typeof value !== "string")) invalidApproval();
+  const fields = new Set(["id", "gateId", "gateName", "taskId", "missionId", "status", "payload", "requestedAt", "resolvedAt", "resolvedBy", "note"]);
+  if (Object.keys(request).some(key => !fields.has(key))) invalidApproval();
+  approvalSnapshotKey(request);
+}
+export function normalizeTaskApprovalDecision(raw: TaskApprovalDecision): TaskApprovalDecision {
+  let input: TaskApprovalDecision;
+  try { input = structuredClone(raw); } catch { return invalidApproval(); }
+  if (!input || !Array.isArray(input.approvals) || input.approvals.length === 0 || input.approvals.length > 1000) invalidApproval();
+  input.expected = normalizeTaskExecutionReference(input.expected);
+  input.tasks = normalizeTaskExecutionPreconditions(input.tasks);
+  const target = input.tasks.find(condition => condition.taskId === input.expected.taskId)?.snapshot;
+  if (!target || JSON.stringify(taskExecutionReference(target)) !== JSON.stringify(input.expected)) invalidApproval();
+  const seen = new Set<string>();
+  for (const change of input.approvals) {
+    if (!change || !validId(change.id) || seen.has(change.id)) invalidApproval();
+    seen.add(change.id);
+    if (change.expected !== null) checkApproval(change.expected, change.id, input.expected.taskId);
+    if (change.next !== undefined) {
+      checkApproval(change.next, change.id, input.expected.taskId);
+      if (change.expected === null) {
+        if (change.next.status !== "pending" || change.next.resolvedAt !== undefined || change.next.resolvedBy !== undefined) invalidApproval();
+      } else {
+        // Resolution cannot silently replace the captured gate, subject or input.
+        const immutable = (request: ApprovalRequest) => {
+          const { status, resolvedAt, resolvedBy, note, ...snapshot } = request;
+          return snapshot;
+        };
+        if (approvalSnapshotKey(immutable(change.expected)) !== approvalSnapshotKey(immutable(change.next))) invalidApproval();
+        if (change.expected.status !== "pending" && approvalSnapshotKey(change.expected) !== approvalSnapshotKey(change.next)) invalidApproval();
+      }
+    }
+  }
+  if (input.operation !== undefined) {
+    if (input.operation?.type === "claim") normalizeTaskExecutionReference({ taskId: input.operation.runId, revision: 0 });
+    else input.operation = normalizeTaskExecutionMutation(input.operation);
+  }
+  return input;
+}
+/** Call while all approval reads, including absence, are protected until commit. */
+export function assertTaskApprovalPreconditions(changes: readonly TaskApprovalChange[], read: (id: string) => ApprovalRequest | undefined): void {
+  for (const change of changes) {
+    const current = read(change.id);
+    if (change.expected === null ? current !== undefined
+      : current === undefined || approvalSnapshotKey(current) !== approvalSnapshotKey(change.expected)) {
+      throw new TaskApprovalError("task_approval_conflict", "Approval request changed");
+    }
+  }
 }
 export function isConditionalTaskExecutionStore(value: unknown): value is ConditionalTaskExecutionStore {
   return isTaskExecutionStore(value)

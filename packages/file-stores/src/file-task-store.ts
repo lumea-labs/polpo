@@ -1,5 +1,6 @@
 import { normalizeTaskExecutionReference, normalizeTaskExecutionMutation, prepareTaskExecutionClaim, prepareTaskExecutionMutation,
   TaskExecutionError, taskExecutionReference, nextTaskExecutionRevision, type ConditionalTaskExecutionStore, type TaskExecutionPrecondition, normalizeTaskExecutionPreconditions, assertTaskExecutionPreconditions, type TaskExecutionReference, type TaskExecutionMutation, type TaskExecutionState } from "@polpo-ai/core/task-execution";
+import { normalizeTaskApprovalDecision, assertTaskApprovalPreconditions, type TaskApprovalDecision, type TaskApprovalExecutionStore } from "@polpo-ai/core/task-execution";
 import type { RunRecord } from "@polpo-ai/core/run-store";
 import { normalizeRuntimeMetadata } from "@polpo-ai/core";
 import { join } from "node:path";
@@ -12,6 +13,7 @@ import { assertValidTransition, VALID_TRANSITIONS } from "@polpo-ai/core/state-m
 import { admitMissionExecution, normalizeMissionExecutionCommit, validateMissionExecutionKey, validateMissionExecutionFinalStatus, type MissionExecutionFinalStatus,
   MissionExecutionError, type MissionExecutionCommit, type MissionExecutionReceipt, type MissionExecutionStore } from "@polpo-ai/core/mission-store";
 import { withProjectFileTransaction, type ProjectFileTransaction } from "./project-file-transaction.js";
+import { readFileApprovalRequests, writeFileApprovalRequests } from "./file-approval-store.js";
 
 interface MetaState {
   project: string;
@@ -53,7 +55,7 @@ function readJson<T>(tx: ProjectFileTransaction, path: string, fallback: T): T {
  *   .polpo/missions/<missionId>.json
  *   .polpo/_meta.json
  */
-export class FileTaskStore implements TaskStore, MissionExecutionStore, ConditionalTaskExecutionStore {
+export class FileTaskStore implements TaskStore, MissionExecutionStore, ConditionalTaskExecutionStore, TaskApprovalExecutionStore {
   constructor(private readonly polpoDir: string) {
     mkdirSync(join(polpoDir, "tasks"), { recursive: true });
     mkdirSync(join(polpoDir, "missions"), { recursive: true });
@@ -229,18 +231,47 @@ export class FileTaskStore implements TaskStore, MissionExecutionStore, Conditio
     const expected = normalizeTaskExecutionReference(raw), copied = normalizeTaskExecutionMutation(mutation);
     const conditions = normalizeTaskExecutionPreconditions(preconditions);
     return this.transaction(tx => {
-      assertTaskExecutionPreconditions(conditions, id => {
-        const raw = tx.read(this.taskPath(id));
-        if (raw === null) return undefined;
-        let task: Task;
-        try { task = JSON.parse(raw); } catch { throw new TaskExecutionError("task_execution_invalid", "Invalid stored Task"); }
-        if (!task || task.id !== id || !Object.hasOwn(VALID_TRANSITIONS, task.status)) {
-          throw new TaskExecutionError("task_execution_invalid", "Invalid stored Task");
-        }
-        taskExecutionReference(task);
-        return task;
-      });
+      this.checkExecutionConditions(tx, conditions);
       return this.mutateExecution(tx, expected, copied);
+    });
+  }
+
+  private checkExecutionConditions(tx: ProjectFileTransaction, conditions: readonly TaskExecutionPrecondition[]): void {
+    assertTaskExecutionPreconditions(conditions, id => {
+      const raw = tx.read(this.taskPath(id));
+      if (raw === null) return undefined;
+      let task: Task;
+      try { task = JSON.parse(raw); } catch { throw new TaskExecutionError("task_execution_invalid", "Invalid stored Task"); }
+      if (!task || task.id !== id || !Object.hasOwn(VALID_TRANSITIONS, task.status)) {
+        throw new TaskExecutionError("task_execution_invalid", "Invalid stored Task");
+      }
+      taskExecutionReference(task);
+      return task;
+    });
+  }
+
+  async commitTaskApprovalDecision(raw: TaskApprovalDecision): Promise<TaskExecutionState> {
+    const input = normalizeTaskApprovalDecision(raw);
+    return this.transaction(tx => {
+      this.checkExecutionConditions(tx, input.tasks);
+      const requests = new Map(readFileApprovalRequests(tx).map(request => [request.id, request]));
+      assertTaskApprovalPreconditions(input.approvals, id => requests.get(id));
+      const task = this.readTask(tx, input.expected.taskId);
+      const runId = input.operation?.type === "claim" ? input.operation.runId : input.expected.runId;
+      const run = runId === undefined ? undefined : this.executionRun(tx, runId);
+      if (input.operation?.type === "claim" && run) throw new TaskExecutionError("task_execution_conflict", "Run identity is already in use");
+      const now = new Date().toISOString();
+      let state = input.operation?.type === "claim"
+        ? prepareTaskExecutionClaim(task, input.expected, input.operation.runId, now)
+        : prepareTaskExecutionMutation(task, run, input.expected, input.operation ?? { type: "patch", updates: {} }, now);
+      if (input.operation === undefined) state = { task: task!, ...(run ? { run } : {}) };
+      else {
+        this.write(tx, this.taskPath(state.task.id), state.task);
+        if (state.run && state.run !== run) this.write(tx, this.entityPath("runs", state.run.id), state.run);
+      }
+      for (const change of input.approvals) if (change.next !== undefined) requests.set(change.id, change.next);
+      if (input.approvals.some(change => change.next !== undefined)) writeFileApprovalRequests(tx, [...requests.values()]);
+      return state;
     });
   }
 

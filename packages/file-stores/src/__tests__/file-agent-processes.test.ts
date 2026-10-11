@@ -148,6 +148,34 @@ describe("Task execution across real file-store processes", () => {
       : { operation: "claim", expected: taskExecutionReference(task), runId };
     return { dir, tasks, runs, task, runId, input };
   }
+
+  it("recovers Task, Run and approval together after SIGKILL at each durable checkpoint", async () => {
+    const approvalRequest = (task: Task) => ({ id: "approval", taskId: task.id, gateId: "human", gateName: "Review",
+      status: "pending" as const, payload: { task }, requestedAt: "2026-10-11T12:00:00.000Z" });
+    const approvalDecision = (task: Task, expected: null, next: ReturnType<typeof approvalRequest>) => ({
+      expected: taskExecutionReference(task), tasks: [{ taskId: task.id, snapshot: task }],
+      approvals: [{ id: next.id, expected, next }], operation: { type: "transition", status: "awaiting_approval" },
+    });
+    const baseline = await taskFixture(true);
+    const counter = await worker(baseline.dir, "task-approval-count");
+    counter.start(approvalDecision(baseline.task, null, approvalRequest(baseline.task)));
+    const count = await counter.next(m => m.ok || m.error); await counter.closed;
+    expect(count).toMatchObject({ ok: true }); expect(count.checkpoints).toBeGreaterThan(8);
+    for (let index = 1; index <= count.checkpoints; index++) {
+      const f = await taskFixture(true), request = approvalRequest(f.task);
+      const writer = await worker(f.dir, "task-approval-crash", String(index));
+      writer.start(approvalDecision(f.task, null, request));
+      await writer.next(m => m.checkpoint); await writer.kill();
+      const task = (await f.tasks.getTask(f.task.id))!, run = (await f.runs.getRun(f.runId))!;
+      const stored = await new FileApprovalStore(f.dir).get(request.id);
+      if (task.status === "awaiting_approval") {
+        expect(task).toMatchObject({ executionRevision: 2 }); expect(task.activeRunId).toBeUndefined();
+        expect(run.status).toBe("killed"); expect(stored).toEqual(request);
+      } else {
+        expect(task).toEqual(f.task); expect(run.status).toBe("running"); expect(stored).toBeUndefined();
+      }
+    }
+  }, 30_000);
   it("gives separate scheduler processes one claim and one Run", async () => {
     const f = await taskFixture(false);
     const [a, b] = await Promise.all([worker(f.dir, "task-execution"), worker(f.dir, "task-execution")]);

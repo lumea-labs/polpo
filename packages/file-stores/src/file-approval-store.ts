@@ -25,6 +25,17 @@ function parseRequests(raw: string): ApprovalRequest[] {
   return requests as ApprovalRequest[];
 }
 
+/** Internal staged access shared with atomic Task/Run/Approval decisions. */
+export function readFileApprovalRequests(tx: ProjectFileTransaction): ApprovalRequest[] {
+  const raw = tx.read(filePath);
+  return raw === null ? [] : parseRequests(raw);
+}
+export function writeFileApprovalRequests(tx: ProjectFileTransaction, requests: ApprovalRequest[]): void {
+  const raw = JSON.stringify(requests, null, 2);
+  parseRequests(raw);
+  tx.write(filePath, raw);
+}
+
 /**
  * Filesystem-based approval store.
  * Persists the existing JSON array in .polpo/approvals.json. Every operation
@@ -41,8 +52,7 @@ export class FileApprovalStore implements ApprovalStore {
   }
 
   private read(tx: ProjectFileTransaction): ApprovalRequest[] {
-    const raw = tx.read(filePath);
-    return raw === null ? [] : parseRequests(raw);
+    return readFileApprovalRequests(tx);
   }
 
   async upsert(request: ApprovalRequest): Promise<void> {
@@ -54,7 +64,7 @@ export class FileApprovalStore implements ApprovalStore {
       const index = requests.findIndex(r => r.id === snapshot.id);
       if (index < 0) requests.push(snapshot);
       else requests[index] = snapshot;
-      tx.write(filePath, JSON.stringify(requests, null, 2));
+      writeFileApprovalRequests(tx, requests);
     });
   }
 
@@ -78,7 +88,7 @@ export class FileApprovalStore implements ApprovalStore {
       const requests = this.read(tx);
       const remaining = requests.filter(r => r.id !== id);
       if (remaining.length === requests.length) return false;
-      tx.write(filePath, JSON.stringify(remaining, null, 2));
+      writeFileApprovalRequests(tx, remaining);
       return true;
     });
   }

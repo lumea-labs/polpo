@@ -78,6 +78,8 @@ process.stdin.once("data", async data => {
       if (input.operation === "delete") await approvals.delete(input.id);
       else if (input.operation === "list") await approvals.list();
       else await approvals.upsert(input.request);
+    } else if (mode.startsWith("task-approval")) {
+      await new FileTaskStore(directory).commitTaskApprovalDecision(input);
     } else if (mode.startsWith("task-execution")) {
       const tasks = new FileTaskStore(directory);
       if (input.operation === "claim") await tasks.claimTaskExecution(input.expected, input.runId);

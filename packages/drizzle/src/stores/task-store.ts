@@ -1,6 +1,8 @@
 import { normalizeTaskExecutionReference, normalizeTaskExecutionMutation, prepareTaskExecutionClaim, prepareTaskExecutionMutation,
   TaskExecutionError, taskExecutionReference, nextTaskExecutionRevision, type ConditionalTaskExecutionStore, type TaskExecutionPrecondition, normalizeTaskExecutionPreconditions, assertTaskExecutionPreconditions, type TaskExecutionReference, type TaskExecutionMutation, type TaskExecutionState } from "@polpo-ai/core/task-execution";
 import { runRecordFromRow, runRecordToValues } from "./run-store.js";
+import { TaskApprovalError, normalizeTaskApprovalDecision, assertTaskApprovalPreconditions, type TaskApprovalDecision, type TaskApprovalChange, type TaskApprovalExecutionStore } from "@polpo-ai/core/task-execution";
+import { approvalRequestColumns, approvalRequestFromRow, approvalRequestToValues } from "./approval-store.js";
 import { eq, desc, asc, and, or, inArray, notInArray, sql, getTableColumns } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import type { TaskStore } from "@polpo-ai/core/task-store";
@@ -22,13 +24,14 @@ type AnyTable = any;
 export interface TaskStoreSchema {
   tasks: AnyTable;
   runs?: AnyTable;
+  approvals?: AnyTable;
   missions: AnyTable;
   metadata: AnyTable;
   processes: AnyTable;
   missionExecutions?: AnyTable;
 }
 
-export class DrizzleTaskStore implements TaskStore, MissionExecutionStore, ConditionalTaskExecutionStore {
+export class DrizzleTaskStore implements TaskStore, MissionExecutionStore, ConditionalTaskExecutionStore, TaskApprovalExecutionStore {
   constructor(
     private db: any,
     private schema: TaskStoreSchema,
@@ -389,7 +392,14 @@ export class DrizzleTaskStore implements TaskStore, MissionExecutionStore, Condi
     return this.executeTaskMutation(expected, { mutation: copied }, conditions);
   }
 
-  private async executeTaskMutation(expected: TaskExecutionReference, operation: { claim: string } | { mutation: TaskExecutionMutation }, conditions?: TaskExecutionPrecondition[]): Promise<TaskExecutionState> {
+  async commitTaskApprovalDecision(raw: TaskApprovalDecision): Promise<TaskExecutionState> {
+    const input = normalizeTaskApprovalDecision(raw);
+    if (!this.schema.approvals) throw new TaskApprovalError("task_approval_unsupported", "Approval decisions require shared Task, Run and Approval storage");
+    const operation = input.operation?.type === "claim" ? { claim: input.operation.runId } : { mutation: input.operation };
+    return this.executeTaskMutation(input.expected, operation, input.tasks, input.approvals);
+  }
+
+  private async executeTaskMutation(expected: TaskExecutionReference, operation: { claim: string } | { mutation?: TaskExecutionMutation }, conditions?: TaskExecutionPrecondition[], approvalChanges?: TaskApprovalChange[]): Promise<TaskExecutionState> {
     const { tasks, runs } = this.schema;
     if (!runs) throw new TaskExecutionError("task_execution_unsupported", "Task execution requires shared Task and Run storage");
     const runId = "claim" in operation ? operation.claim : expected.runId;
@@ -403,14 +413,23 @@ export class DrizzleTaskStore implements TaskStore, MissionExecutionStore, Condi
       return captured.get(expected.taskId);
     };
     const runQuery = (tx: any) => tx.select().from(runs).where(eq(runs.id, runId));
+    const approvals = this.schema.approvals;
+    const approvalQuery = (tx: any) => tx.select(approvalRequestColumns(approvals, this.dialect)).from(approvals)
+      .where(inArray(approvals.id, approvalChanges!.map(change => change.id))).orderBy(asc(approvals.id));
+    const checkApprovals = (rows: any[]) => {
+      const requests = new Map(rows.map(row => [row.id, approvalRequestFromRow(row)]));
+      assertTaskApprovalPreconditions(approvalChanges!, id => requests.get(id));
+    };
+    const readOnlyTask = !("claim" in operation) && operation.mutation === undefined;
     const prepare = (taskRow: any, runRow: any) => {
       const task = taskRow ? this.rowToTask(taskRow) : undefined;
       const run = runRow ? runRecordFromRow(runRow, this.dialect) : undefined;
       if ("claim" in operation && run) throw new TaskExecutionError("task_execution_conflict", "Run identity is already in use");
       const now = new Date().toISOString();
-      const state = "claim" in operation
+      let state: TaskExecutionState = "claim" in operation
         ? prepareTaskExecutionClaim(task, expected, operation.claim, now)
-        : prepareTaskExecutionMutation(task, run, expected, operation.mutation, now);
+        : prepareTaskExecutionMutation(task, run, expected, operation.mutation ?? { type: "patch", updates: {} }, now);
+      if (readOnlyTask) state = { task: task!, ...(run ? { run } : {}) };
       const values = this.taskToValues(state.task);
       const columns = getTableColumns(tasks);
       for (const [field, value] of Object.entries(state.task)) {
@@ -420,22 +439,42 @@ export class DrizzleTaskStore implements TaskStore, MissionExecutionStore, Condi
       return { state, values, runChanged: state.run !== run };
     };
     const writes = (tx: any, prepared: ReturnType<typeof prepare>) => {
-      const queries = [tx.update(tasks).set(prepared.values).where(eq(tasks.id, expected.taskId))];
+      const queries = readOnlyTask ? [] : [tx.update(tasks).set(prepared.values).where(eq(tasks.id, expected.taskId)).returning({ id: tasks.id })];
       const run = prepared.state.run;
-      if ("claim" in operation) queries.push(tx.insert(runs).values(runRecordToValues(run!, this.dialect)));
+      if ("claim" in operation) queries.push(tx.insert(runs).values(runRecordToValues(run!, this.dialect)).returning({ id: runs.id }));
       else if (run && prepared.runChanged) queries.push(tx.update(runs).set({
         status: run.status, result: serializeJson(run.result, this.dialect), updatedAt: run.updatedAt, completedAt: run.completedAt,
-      }).where(and(eq(runs.id, run.id), eq(runs.status, "running"))));
+      }).where(and(eq(runs.id, run.id), eq(runs.status, "running"))).returning({ id: runs.id }));
+      for (const change of approvalChanges ?? []) {
+        if (change.next === undefined) continue;
+        const values = approvalRequestToValues(change.next, this.dialect);
+        const { id, ...updates } = values;
+        queries.push(tx.insert(approvals).values(values).onConflictDoUpdate({ target: approvals.id, set: updates }).returning({ id: approvals.id }));
+      }
       return queries;
+    };
+    const checkWrite = (result: unknown) => {
+      // A trigger may silently ignore a write without raising a SQL error.
+      // Every query here targets exactly one row; never acknowledge a partial
+      // Task/Run/Approval decision or an unpersisted Run claim.
+      // RETURNING is already part of the store contract and avoids relying on
+      // driver-specific row-count metadata (postgres.js, Neon, PGlite, SQLite).
+      if (!Array.isArray(result) || result.length !== 1) throw new TaskExecutionError("task_execution_conflict", "Task execution write was not persisted");
     };
     if (this.dialect === "sqlite") {
       return this.db.transaction((tx: any) => {
         const prepared = prepare(checkedTaskRow(taskQuery(tx).all()), runId === undefined ? undefined : runQuery(tx).get());
-        for (const query of writes(tx, prepared)) query.run();
+        if (approvalChanges) checkApprovals(approvalQuery(tx).all());
+        for (const query of writes(tx, prepared)) checkWrite(query.all());
         return prepared.state;
       }, { behavior: "immediate" });
     }
     const execute = async (tx: any) => {
+      // Approval decisions are infrequent and bounded. Serialize their read
+      // sets (including absent requests) before any Task/Run row lock, so a
+      // plain approval upsert cannot invalidate consent during the commit.
+      // Use one lock order for admission and resolution to avoid upgrades.
+      if (approvalChanges) await tx.execute(sql`LOCK TABLE ${approvals} IN EXCLUSIVE MODE`);
       // Missing rows cannot be protected with FOR UPDATE. Take this broader
       // lock before row locks only for an absence assertion, excluding existing
       // SELECT FOR UPDATE owners as well as writes to prevent lock upgrades
@@ -448,7 +487,8 @@ export class DrizzleTaskStore implements TaskStore, MissionExecutionStore, Condi
       const taskRow = checkedTaskRow(await taskQuery(tx).for("update"));
       const runRow = runId === undefined ? undefined : (await runQuery(tx).for("update"))[0];
       const prepared = prepare(taskRow, runRow);
-      for (const query of writes(tx, prepared)) await query;
+      if (approvalChanges) checkApprovals(await approvalQuery(tx));
+      for (const query of writes(tx, prepared)) checkWrite(await query);
       return prepared.state;
     };
     if (this.transactionProvider) return this.transactionProvider(execute);
