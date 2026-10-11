@@ -343,6 +343,7 @@ export function createConnectionAccessResolver(options: ConnectionAccessResolver
         }
 
         const authorized: ConnectionRecord[] = [];
+        const connectionSlot = Object.freeze({ name: input.slot, mode: input.spec.mode ?? "legacy_credentials" });
         for (const connection of candidates) {
           if (!hasScopes(connection.grantedScopes, input.spec.scopes)) continue;
           const allowed = await options.policy?.canUseConnection({
@@ -352,6 +353,7 @@ export function createConnectionAccessResolver(options: ConnectionAccessResolver
               : {}),
             scopes: [...input.spec.scopes],
             actionId: input.toolName,
+            connectionSlot,
           }) ?? true;
           if (allowed) authorized.push(connection);
         }
@@ -397,7 +399,7 @@ export function createConnectionAccessResolver(options: ConnectionAccessResolver
               const allowed = hasScopes(found.grantedScopes, capabilityScopes) && (await options.policy?.canUseConnection({
                 connection: found,
                 ...(input.invocation.user ? { subject: { type: "user" as const, id: input.invocation.user } } : {}),
-                scopes: [...capabilityScopes], actionId: input.toolName,
+                scopes: [...capabilityScopes], actionId: input.toolName, connectionSlot,
               }) ?? true);
               if (!allowed || disposed || input.signal?.aborted) throw new ConnectionSelectionError(
                 "connection_scope_denied", "Connection permission is no longer valid", { slot: input.slot },

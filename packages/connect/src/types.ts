@@ -623,6 +623,12 @@ export interface ConnectPolicyDecisionInput {
   subject?: ConnectSubject;
   scopes: string[];
   actionId?: string;
+  /** Present for custom-tool slots. A gateway grant need not authorize exporting
+   * credentials to tool code. Absent for ordinary service/action requests. */
+  connectionSlot?: Readonly<{
+    name: string;
+    mode: import("@polpo-ai/core").ConnectionCapabilityMode;
+  }>;
 }
 
 export interface ConnectPolicy {

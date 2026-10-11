@@ -2,6 +2,15 @@
 
 Shared contracts and client SDK for Polpo Connect.
 
+Custom tool slots support both `gateway` and `legacy_credentials` (the omitted
+mode's compatibility meaning). Gateway code calls `require(slot).request()`;
+approved direct code uses `getToken()`, `getKey()` or `getHeaders()`, for example
+with Git or HMAC libraries. Host policies receive `connectionSlot: { name, mode }`
+on authorization and rechecks and can require separate credential-export consent.
+Declaring a mode never grants access or enables fallback after a denial. Direct
+credentials retain their provider permissions; revocation stops future delivery
+but cannot recall an already copied credential. Keep secrets out of tool results.
+
 Polpo Connect models external service connections as scoped, revocable capabilities that can be assigned to agents without exposing raw access tokens to the model.
 
 This package contains:

@@ -725,13 +725,35 @@ export function registerConnectionsCommand(program: Command): void {
     .requiredOption("--agent <name>", "Exact agent name")
     .requiredOption("--tool <name>", "Exact custom tool name")
     .option("--scope <scope...>", "Scopes the tool may request", [])
+    .option("--credential-slot <slot...>", "Explicitly allow provider credentials in these declared sandbox slots")
+    .option("--clear-credential-access", "Remove credential export permission while preserving gateway access")
     .option("--json", "Print JSON")
     .action((connectionId: string, options: {
       agent: string;
       json?: boolean;
       scope: string[];
       tool: string;
+      credentialSlot?: string[];
+      clearCredentialAccess?: boolean;
     }) => withConnectionClient("Granting a trusted Connection slot", options, async (client, projectId) => {
+      if (options.credentialSlot && options.clearCredentialAccess) {
+        throw new Error("Use either --credential-slot or --clear-credential-access.");
+      }
+      let scopes = options.scope;
+      let preservedPolicy: { binding?: unknown; metadata?: Record<string, unknown> } = {};
+      if (options.clearCredentialAccess) {
+        if (options.scope.length) throw new Error("--clear-credential-access preserves the existing grant; omit --scope.");
+        const query = new URLSearchParams({ agentName: options.agent, status: "active" });
+        const grants = connectionDataFrom(await client.get<ApiEnvelope<Array<{
+          connectionId: string; agentName: string; toolName: string; grantType: string; status: string;
+          scopes: string[]; binding?: unknown; metadata?: Record<string, unknown>;
+        }>>>(`${projectConnectionsPath(projectId, "grants")}?${query}`));
+        const matching = grants.filter(grant => grant.connectionId === connectionId && grant.agentName === options.agent
+          && grant.toolName === options.tool && grant.grantType === "connection_slot" && grant.status === "active");
+        if (matching.length !== 1) throw new Error("An existing active slot grant is required to clear credential access.");
+        scopes = matching[0].scopes;
+        preservedPolicy = { binding: matching[0].binding, metadata: matching[0].metadata };
+      }
       const response = await client.post<ApiEnvelope<unknown>>(
         projectConnectionsPath(projectId, "grants"),
         {
@@ -739,8 +761,11 @@ export function registerConnectionsCommand(program: Command): void {
           agentName: options.agent,
           grantType: "connection_slot",
           toolName: options.tool,
-          scopes: options.scope,
+          scopes,
+          ...(options.clearCredentialAccess ? { credentialSlots: [] }
+            : options.credentialSlot ? { credentialSlots: options.credentialSlot } : {}),
           metadata: { source: "cli" },
+          ...preservedPolicy,
         },
       );
       printResult(connectionDataFrom(response), Boolean(options.json));

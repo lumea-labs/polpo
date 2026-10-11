@@ -85,6 +85,45 @@ const selector = {
 } as const;
 
 describe("protocol-independent host Connection access", () => {
+  it("lets the host authorize credential export separately from gateway access", async () => {
+    let exportAllowed = false;
+    const decisions: unknown[] = [];
+    const materialize = vi.fn(async () => ({ kind: "api_key" as const, value: "private-key",
+      scopes: ["site:read"], connectionId: "selected", providerId: "sitoinchat" }));
+    const resolver = createConnectionCapabilityResolver({ store: store([record("selected")]),
+      resolveSelector: () => selector, materialize,
+      request: async () => ({ status: 200, headers: {}, body: undefined as never }),
+      policy: { canUseConnection: decision => {
+        decisions.push(decision);
+        return decision.connectionSlot?.mode === "gateway"
+          || (exportAllowed && decision.connectionSlot?.name === "siteApi");
+      } },
+    });
+    const gateway = await resolver.resolve(gatewayInput());
+    await expect(gateway.request?.({ method: "GET", path: "/site" })).resolves.toMatchObject({ status: 200 });
+    await expect(resolver.resolve(input())).rejects.toMatchObject({ code: "connection_scope_denied" });
+    expect(materialize).not.toHaveBeenCalled();
+    exportAllowed = true;
+    expect((await resolver.resolve(input())).getKey?.()).toBe("private-key");
+    expect(decisions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ connectionSlot: { name: "siteApi", mode: "gateway" } }),
+      expect.objectContaining({ connectionSlot: { name: "siteApi", mode: "legacy_credentials" } }),
+    ]));
+  });
+
+  it("rechecks credential export authorization after materialization", async () => {
+    let exportAllowed = true;
+    const materialize = vi.fn(async () => { exportAllowed = false; return { kind: "api_key" as const,
+      value: "must-not-escape", scopes: ["site:read"], connectionId: "selected", providerId: "sitoinchat" }; });
+    const resolver = createConnectionCapabilityResolver({ store: store([record("selected")]),
+      resolveSelector: () => selector,
+      policy: { canUseConnection: decision => decision.connectionSlot?.mode === "legacy_credentials" && exportAllowed },
+      materialize,
+    });
+    await expect(resolver.resolve(input())).rejects.toMatchObject({ code: "connection_scope_denied" });
+    expect(materialize).toHaveBeenCalledOnce();
+  });
+
   it("requires the captured identity and rejects a recreated agent despite identical account permissions", async () => {
     let incarnation = "original";
     const getAgentSnapshot = vi.fn(async (name: string) => ({ agent: { name }, teamName: "default", revision: { incarnation, version: 7 } }));

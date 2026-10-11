@@ -21,6 +21,35 @@ async function run(args: string[]) {
 }
 
 describe("Connection management command requests", () => {
+  it("requires a separate explicit choice to grant or clear credential export", async () => {
+    const base = ["grant-slot", "connection/one", "--agent", "support", "--tool", "checkout"];
+    await run(base);
+    expect(api.post).toHaveBeenLastCalledWith(expect.any(String), expect.not.objectContaining({ credentialSlots: expect.anything() }));
+    await run([...base, "--credential-slot", "github"]);
+    expect(api.post).toHaveBeenLastCalledWith(expect.any(String), expect.objectContaining({ credentialSlots: ["github"] }));
+    api.get.mockResolvedValueOnce({ status: 200, data: { ok: true, data: [{
+      connectionId: "connection/one", agentName: "support", toolName: "checkout", grantType: "connection_slot",
+      status: "active", scopes: ["repo"], binding: { tenant: "team-a" },
+    }] } });
+    await run([...base, "--clear-credential-access"]);
+    expect(api.get).toHaveBeenLastCalledWith("/v1/projects/project%2Fone/connect/grants?agentName=support&status=active");
+    expect(api.post).toHaveBeenLastCalledWith(expect.any(String), expect.objectContaining({
+      credentialSlots: [], scopes: ["repo"], binding: { tenant: "team-a" },
+    }));
+  });
+
+  it("never creates a new assignment or changes scopes while clearing credential access", async () => {
+    vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    const base = ["grant-slot", "connection/one", "--agent", "support", "--tool", "checkout", "--clear-credential-access"];
+    api.get.mockResolvedValue({ status: 200, data: { ok: true, data: [] } });
+    await run(base);
+    expect(api.post).not.toHaveBeenCalled();
+    expect(process.exitCode).toBe(1);
+    await run([...base, "--scope", "repo"]);
+    expect(api.post).not.toHaveBeenCalled();
+    expect(process.stderr.write).toHaveBeenLastCalledWith(expect.stringContaining("--scope"));
+  });
+
   it("keeps namespace and exact external account when listing and revoking", async () => {
     await run(["end-users", "list", "user/one", "--namespace", "customer/app & team"]);
     expect(api.get).toHaveBeenCalledWith("/v1/projects/project%2Fone/connect/end-users/user%2Fone/connections?namespace=customer%2Fapp+%26+team");
