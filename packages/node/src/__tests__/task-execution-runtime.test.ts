@@ -14,6 +14,7 @@ import type { OrchestratorContext } from "@polpo-ai/core/orchestrator-context";
 import type { RunnerConfig } from "@polpo-ai/core/types";
 import type { LoopResumeState } from "@polpo-ai/core/loop/run-store";
 import { taskExecutionReference } from "@polpo-ai/core/task-execution";
+import { claimTaskDispatch, authorizeTaskDispatch } from "@polpo-ai/core/task-dispatch";
 
 const roots: string[] = [];
 afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); roots.splice(0).forEach(root => rmSync(root, { recursive: true, force: true })); });
@@ -39,6 +40,87 @@ async function fixture() {
 }
 
 describe("Task execution dispatch and cancellation", () => {
+  it("shares one canonical claim with a direct host and returns durable principal authority", async () => {
+    const f = await fixture();
+    await f.taskStore.updateTask(f.task.id, { user: "current-principal" });
+    const claims = await Promise.allSettled([
+      claimTaskDispatch(f.ctx, f.task, "direct-one"),
+      claimTaskDispatch(f.ctx, f.task, "direct-two"),
+    ]);
+    expect(claims.filter(result => result.status === "fulfilled")).toHaveLength(1);
+    const claimed = claims.find(result => result.status === "fulfilled")!;
+    if (claimed.status !== "fulfilled") throw new Error("Expected successful claim");
+    expect(claimed.value.task.user).toBe("current-principal");
+    expect(claimed.value.task.activeRunId).toBe(claimed.value.run.id);
+    expect(claimed.value.run.taskExecutionRevision).toBe(claimed.value.task.executionRevision);
+  });
+
+  it("rejects a direct host's unrelated Run before hook or provider preparation", async () => {
+    const f = await fixture();
+    const claimed = await claimTaskDispatch(f.ctx, f.task, "direct-one");
+    const hook = vi.fn(), prepare = vi.fn();
+    f.ctx.hooks.register({ hook: "task:spawn", phase: "before", handler: hook });
+    await expect(authorizeTaskDispatch(f.ctx, {
+      source: claimed.task, run: { ...claimed.run, id: "unrelated" },
+      invocation: { task: claimed.task, agent: { name: "support" } }, prepare,
+    })).rejects.toMatchObject({ code: "task_execution_conflict" });
+    expect(hook).not.toHaveBeenCalled();
+    expect(prepare).not.toHaveBeenCalled();
+  });
+
+  it("denies direct admission cancelled during host preparation without altering the cancelled Task", async () => {
+    const f = await fixture();
+    const claimed = await claimTaskDispatch(f.ctx, f.task, "direct-one");
+    let cancelled;
+    const result = await authorizeTaskDispatch(f.ctx, {
+      source: claimed.task, run: claimed.run,
+      invocation: { task: claimed.task, agent: { name: "support" } },
+      prepare: async invocation => {
+        cancelled = await f.taskStore.mutateTaskExecution(taskExecutionReference(claimed.task), { type: "cancel" });
+        return invocation;
+      },
+    });
+    expect(result.allowed).toBe(false);
+    expect(await f.taskStore.getTask(f.task.id)).toEqual(cancelled!.task);
+    expect(await f.runStore.getRun(claimed.run.id)).toMatchObject({ status: "killed" });
+  });
+
+  it("cannot reintroduce a volume removed by the durable Task through a request override", async () => {
+    const f = await fixture();
+    f.ctx.config.settings.sandbox = { volumes: [{ name: "documents", access: "read-write" }] };
+    const task = await f.taskStore.updateTask(f.task.id, { sandbox: { volumes: [] } });
+    await f.runner.spawnForTask(task, { sandbox: { volumes: [{ name: "documents" }] } });
+    expect(f.spawner.spawn).not.toHaveBeenCalled();
+    const current = (await f.taskStore.getTask(f.task.id))!;
+    expect(await f.runStore.getRun(current.activeRunId!)).toMatchObject({ status: "failed" });
+  });
+
+  it("does not requeue a completed owner when a before-hook concurrently vetoes dispatch", async () => {
+    const f = await fixture();
+    f.ctx.hooks.register({ hook: "task:spawn", phase: "before", handler: async context => {
+      await f.runStore.completeRun(context.data.task.activeRunId!, "completed", { exitCode: 0, stdout: "finished", stderr: "", duration: 1 });
+      context.cancel("veto after completion");
+    } });
+    await f.runner.spawnForTask(f.task);
+    const current = (await f.taskStore.getTask(f.task.id))!;
+    expect(current.status).toBe("in_progress");
+    expect(await f.runStore.getRun(current.activeRunId!)).toMatchObject({ status: "completed", result: { stdout: "finished" } });
+    expect(f.spawner.spawn).not.toHaveBeenCalled();
+  });
+
+  it("preserves admitted assignment and approval authority when a hook rewrites Task content", async () => {
+    const f = await fixture();
+    f.ctx.hooks.register({ hook: "task:spawn", phase: "before", handler: context => {
+      context.data.task.assignTo = "other-agent";
+      context.data.task.user = "other-user";
+      context.data.task.approvalState = { batchId: "forged", phase: "claimed", revision: 1 };
+      context.data.task.description = "Reviewed hook content";
+    } });
+    await f.runner.spawnForTask(f.task);
+    const config = f.spawner.spawn.mock.calls[0][0];
+    expect(config.task).toMatchObject({ assignTo: "support", user: "person-a", description: "Reviewed hook content" });
+    expect(config.task.approvalState).toBeUndefined();
+  });
   it.each(["cancelRun", "onExit"] as const)("keeps an owner recoverable when its spawner lacks %s for verified shutdown", async missing => {
     const f = await fixture();
     if (missing === "cancelRun") {

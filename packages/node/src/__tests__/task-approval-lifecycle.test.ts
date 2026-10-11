@@ -13,7 +13,7 @@ import { ApprovalManager } from "@polpo-ai/core/approval-manager";
 import { TaskRunner } from "@polpo-ai/core/task-runner";
 import { AssessmentOrchestrator } from "@polpo-ai/core/assessment-orchestrator";
 import { HookRegistry } from "@polpo-ai/core/hooks";
-import { taskExecutionReference } from "@polpo-ai/core/task-execution";
+import { taskExecutionReference, type TaskDispatchOverrides } from "@polpo-ai/core/task-execution";
 import type { OrchestratorContext } from "@polpo-ai/core/orchestrator-context";
 import type { ApprovalGate, RunnerConfig } from "@polpo-ai/core/types";
 import { approvalRoutes } from "../../../server/src/routes/approvals.js";
@@ -81,6 +81,75 @@ async function fixture(hook = "task:spawn", count = 2) {
     const claims = await Promise.allSettled([f.runner.spawnForTask(ready), f.runner.spawnForTask(ready)]);
     expect(claims.filter(result => result.status === "fulfilled")).toHaveLength(1);
     expect(f.spawner.spawn).toHaveBeenCalledTimes(1); expect(await f.store.list()).toHaveLength(2);
+  });
+
+  it("preserves requested model and sandbox through durable consent and an ordinary queued resume", async () => {
+    const f = await fixture("task:spawn", 1);
+    const overrides: TaskDispatchOverrides = { model: "openai/gpt-4o-mini", sandbox: { isolation: "fresh", lifecycle: { onRelease: "destroy" } } };
+    await f.runner.spawnForTask(f.task, overrides);
+    const [request] = await f.store.list("pending");
+    expect(request.payload).toMatchObject({ agent: { model: overrides.model }, task: { sandbox: overrides.sandbox }, overrides });
+    expect(request.taskExecution.source.sandbox).toBeUndefined();
+    expect(f.spawner.spawn).not.toHaveBeenCalled();
+    await f.manager.approve(request.id);
+    await f.runner.spawnForTask((await f.taskStore.getTask(f.task.id))!);
+    expect(f.spawner.spawn).toHaveBeenCalledOnce();
+    expect(f.spawner.spawn.mock.calls[0][0]).toMatchObject({ agent: { model: overrides.model }, sandbox: overrides.sandbox });
+    expect(await f.store.list()).toHaveLength(1);
+  });
+
+  it("binds inherited effective sandbox policy before requesting approval", async () => {
+    const f = await fixture("task:spawn", 1);
+    f.ctx.config.settings.sandbox = { isolation: "fresh", lifecycle: { onRelease: "destroy" } };
+    await f.runner.spawnForTask(f.task);
+    const [request] = await f.store.list("pending");
+    expect(request.payload.task.sandbox).toEqual(f.ctx.config.settings.sandbox);
+    await f.manager.approve(request.id);
+    f.ctx.config.settings.sandbox = { isolation: "shared", lifecycle: { onRelease: "pool" } };
+    await f.runner.spawnForTask((await f.taskStore.getTask(f.task.id))!);
+    expect(f.spawner.spawn).not.toHaveBeenCalled();
+    expect(await f.store.list("pending")).toHaveLength(1);
+  });
+
+  it("does not execute a retained hook mutation made while approved admission commits", async () => {
+    const f = await fixture("task:spawn", 1);
+    let retained: { model?: unknown } | undefined;
+    f.ctx.hooks.register({ hook: "task:spawn", phase: "before", handler: context => { retained = context.data.agent; } });
+    await f.runner.spawnForTask(f.task, { model: "openai/gpt-4o-mini" });
+    const [request] = await f.store.list("pending");
+    await f.manager.approve(request.id);
+    let enter!: () => void, release!: () => void;
+    const entered = new Promise<void>(resolve => { enter = resolve; });
+    const blocked = new Promise<void>(resolve => { release = resolve; });
+    const commit = f.taskStore.commitTaskApprovalDecision.bind(f.taskStore);
+    vi.spyOn(f.taskStore, "commitTaskApprovalDecision").mockImplementation(async (decision: any) => {
+      if (!decision.operation) { enter(); await blocked; }
+      return commit(decision);
+    });
+    const spawning = f.runner.spawnForTask((await f.taskStore.getTask(f.task.id))!);
+    try {
+      await entered;
+      retained!.model = "openai/gpt-4o";
+      release(); await spawning;
+      expect(f.spawner.spawn).toHaveBeenCalledOnce();
+      expect(f.spawner.spawn.mock.calls[0][0].agent.model).toBe("openai/gpt-4o-mini");
+    } finally { release(); await spawning; }
+  });
+
+  it.each(["empty", "read-only", "manual"] as const)("preserves Task volume restrictions across request overrides and consent (%s)", async restriction => {
+    const f = await fixture("task:spawn", 1);
+    f.ctx.config.settings.sandbox = { volumes: [{ name: "documents", access: "read-write", writeBack: "auto" }] };
+    const volumes = restriction === "empty" ? [] : restriction === "read-only"
+      ? [{ name: "documents", access: "read-only" as const }]
+      : [{ name: "documents", access: "read-write" as const, writeBack: "manual" as const }];
+    const task = await f.taskStore.updateTask(f.task.id, { sandbox: { volumes } });
+    await f.runner.spawnForTask(task, { sandbox: { isolation: "fresh" } });
+    const [request] = await f.store.list("pending");
+    expect(request.payload.task.sandbox).toEqual({ isolation: "fresh", volumes });
+    await f.manager.approve(request.id);
+    await f.runner.spawnForTask((await f.taskStore.getTask(f.task.id))!);
+    expect(f.spawner.spawn).toHaveBeenCalledOnce();
+    expect(f.spawner.spawn.mock.calls[0][0].sandbox).toEqual({ isolation: "fresh", volumes });
   });
 
   it.each(["retry", "edit", "recreate"])("cannot approve a superseded Task after %s", async change => {

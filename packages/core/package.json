@@ -322,6 +322,10 @@
       "types": "./dist/task-execution.d.ts",
       "import": "./dist/task-execution.js"
     },
+    "./task-dispatch": {
+      "types": "./dist/task-dispatch.d.ts",
+      "import": "./dist/task-dispatch.js"
+    },
     "./run-state-monitor": {
       "types": "./dist/run-state-monitor.d.ts",
       "import": "./dist/run-state-monitor.js"

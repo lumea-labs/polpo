@@ -3,7 +3,7 @@ import type { OrchestratorContext } from "./orchestrator-context.js";
 import type { ApprovalGate, ApprovalRequest, Task } from "./types.js";
 import type { RunRecord } from "./run-store.js";
 import { isTaskExecutionStore, isTaskApprovalExecutionStore, taskExecutionReference, nextTaskExecutionRevision, TaskApprovalError,
-  type TaskApprovalBinding, type TaskApprovalDecision, type TaskApprovalExecutionStore, type TaskExecutionState } from "./task-execution.js";
+  type TaskApprovalBinding, type TaskApprovalDecision, type TaskApprovalExecutionStore, type TaskExecutionState, type TaskDispatchClaim } from "./task-execution.js";
 
 function conflict(): never { throw new TaskApprovalError("task_approval_conflict", "Task approval no longer matches this execution"); }
 function key(input: unknown): string {
@@ -115,18 +115,20 @@ export class TaskApprovalCoordinator {
     return { allowed: false, created: requests };
   }
 
-  async claim(task: Task, runId: string): Promise<TaskExecutionState & { run: RunRecord }> {
+  async claim(task: Task, runId: string): Promise<TaskDispatchClaim> {
     if (!task.approvalState && isTaskExecutionStore(this.ctx.taskStore)) return this.ctx.taskStore.claimTaskExecution(taskExecutionReference(task), runId);
     const store = this.executions();
     const batch = await this.batch(task, true);
     if (task.approvalState?.phase !== "ready" || batch.binding.hook !== "task:spawn" || !batch.requests.every(request => this.accepted(request))) conflict();
     const sameInput = key(inputTask(batch.binding.source)) === key(inputTask(task));
-    return await store.commitTaskApprovalDecision({ expected: taskExecutionReference(task), tasks: [{ taskId: task.id, snapshot: task }],
+    const claimed = await store.commitTaskApprovalDecision({ expected: taskExecutionReference(task), tasks: [{ taskId: task.id, snapshot: task }],
       approvals: batch.requests.map(request => ({ id: request.id, expected: request })), operation: { type: "claim", runId },
       // An edited queued Task may make a fresh attempt, but carries no previous
       // consent into it. The runtime gate must review its new effective input.
       approvalState: sameInput ? { batchId: batch.binding.batchId, phase: "claimed", revision: nextTaskExecutionRevision(task), runId } : null,
     }) as TaskExecutionState & { run: RunRecord };
+    return { ...claimed, ...(sameInput && batch.binding.invocation.overrides
+      ? { overrides: structuredClone(batch.binding.invocation.overrides) } : {}) };
   }
 
   async canReject(request: ApprovalRequest): Promise<{ allowed: boolean; rejectionCount: number; maxRejections: number }> {

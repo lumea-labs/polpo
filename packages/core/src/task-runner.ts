@@ -28,7 +28,8 @@ import {
   type ResolvedExecutionRoute,
 } from "./execution-router.js";
 import type { RuntimeGuardrailAuditEvent } from "./guardrails/index.js";
-import { isConditionalTaskExecutionStore, isTaskExecutionStore, taskExecutionReference, TaskExecutionError, type TaskExecutionReference } from "./task-execution.js";
+import { isConditionalTaskExecutionStore, isTaskExecutionStore, taskExecutionReference, TaskExecutionError, type TaskExecutionReference, type TaskDispatchOverrides } from "./task-execution.js";
+import { claimTaskDispatch, authorizeTaskDispatch, isTaskDispatchActive } from "./task-dispatch.js";
 
 /**
  * Durable turns: max age of a resume checkpoint before orphan recovery
@@ -738,15 +739,15 @@ export class TaskRunner {
     });
   }
 
-  spawnForTask(task: Task): Promise<void> {
+  spawnForTask(task: Task, overrides?: TaskDispatchOverrides): Promise<void> {
     if (this.closing) return Promise.reject(new Error("Task runner is closing"));
-    const work = this.dispatchTask(task);
+    const work = this.dispatchTask(task, overrides);
     this.preparations.add(work);
     void work.then(() => this.preparations.delete(work), () => this.preparations.delete(work));
     return work;
   }
 
-  private async dispatchTask(task: Task): Promise<void> {
+  private async dispatchTask(task: Task, overrides?: TaskDispatchOverrides): Promise<void> {
     if (task.missionExecutionId && !this.prepareMissionExecution) {
       throw new MissionExecutionError("mission_execution_unsupported", "Mission execution must be prepared before dispatch");
     }
@@ -758,15 +759,18 @@ export class TaskRunner {
       if (task.activeRunId !== undefined || task.executionRevision !== undefined || task.approvalState !== undefined) {
         throw new TaskExecutionError("task_execution_unsupported", "Task execution persistence is required for this Task");
       }
-      return this.prepareAndSpawn(task);
+      try {
+        await this.prepareAndSpawn(task, undefined, overrides);
+      } catch (error) {
+        await this.failBeforeSpawn(task, error instanceof Error ? error.message : "Task preparation failed");
+      }
+      return;
     }
     // Claim before any asynchronous preparation. The stored Task is the source
     // of the principal, assignment and input; the scheduler's snapshot may lag.
-    const claimed = this.approvals
-      ? await this.approvals.claimTask(task, nanoid())
-      : await executions.claimTaskExecution(taskExecutionReference(task), nanoid());
+    const claimed = await claimTaskDispatch(this.ctx, task, nanoid(), this.approvals);
     try {
-      await this.prepareAndSpawn(claimed.task, claimed.run);
+      await this.prepareAndSpawn(claimed.task, claimed.run, overrides ?? claimed.overrides);
     } catch (error) {
       await this.ctx.runStore.completeRun(claimed.run.id, "failed", {
         exitCode: 1, stdout: "", stderr: error instanceof Error ? error.message : "Task preparation failed", duration: 0,
@@ -775,12 +779,10 @@ export class TaskRunner {
   }
 
   private async claimIsActive(task: Task, run: RunRecord): Promise<boolean> {
-    const current = await this.ctx.taskStore.getTask(task.id);
-    if (!current || current.executionRevision !== task.executionRevision || current.activeRunId !== run.id) return false;
-    return (await this.ctx.runStore.getRun(run.id))?.status === "running";
+    return isTaskDispatchActive(this.ctx, task, run);
   }
 
-  private async prepareAndSpawn(task: Task, initialRun?: RunRecord): Promise<void> {
+  private async prepareAndSpawn(task: Task, initialRun?: RunRecord, overrides?: TaskDispatchOverrides): Promise<void> {
     const claimed = initialRun !== undefined;
     const callerContext = { user: task.user, metadata: normalizeRuntimeMetadata(task.metadata) };
     const executionIdentity = claimed ? { id: task.id, executionRevision: task.executionRevision, activeRunId: task.activeRunId } : {};
@@ -792,7 +794,7 @@ export class TaskRunner {
     const store = this.ctx.agentStore;
     const versioned = isVersionedAgentStore(store);
     const snapshot = versioned ? await store.getAgentSnapshot(task.assignTo) : undefined;
-    const agent = versioned ? snapshot?.agent : await store.getAgent(task.assignTo);
+    let agent = versioned ? snapshot?.agent : await store.getAgent(task.assignTo);
     if (!agent) {
       const message = `No agent "${task.assignTo}" for task "${task.title}"`;
       this.ctx.emitter.emit("log", { level: "error", message });
@@ -810,47 +812,33 @@ export class TaskRunner {
       return;
     }
 
-    // Fail fast if the agent's model provider has no API key
-    if (agent.model && this.ctx.validateProviderKeys) {
-      const resolved = resolveConfiguredModelSelection(
-        agent.model,
-        this.ctx.config.settings,
-        agent.allowedModelProfiles,
-      );
-      const missing = this.ctx.validateProviderKeys([...resolved.policy.candidates]);
-      if (missing.length > 0) {
-        const detail = missing.map(m => `${m.provider} (${m.modelSpec})`).join(", ");
-        this.ctx.emitter.emit("log", {
-          level: "error",
-          message: `[${task.id}] Missing API key for ${detail} — cannot spawn agent "${agent.name}"`,
-        });
-        await this.failBeforeSpawn(task, `Missing API key for ${detail}`, initialRun);
-        return;
-      }
-    }
-
-    // Await durable decisions made by approval hooks before deciding whether
-    // a generic veto should return this attempt to the queue.
-    const approvalSource = structuredClone(task);
-    const hookResult = await this.ctx.hooks.runBefore("task:spawn", { task, agent });
-    // Hooks may rewrite task content, but cannot change the admitted account.
-    task = { ...task, ...callerContext, ...executionIdentity };
-    const approved = !hookResult.cancelled && (!this.approvals || await this.approvals.checkTask("task:spawn", approvalSource, { task, agent, agentIdentity }));
-    if (!approved) {
+    let executionRoute: ResolvedExecutionRoute | undefined;
+    const invocation = await authorizeTaskDispatch(this.ctx, {
+      source: task, run: initialRun, invocation: { task, agent, agentIdentity, overrides },
+      prepare: async effective => {
+        // Resolve the effective model, loop and sandbox BEFORE consent. The
+        // returned values are used unchanged after approval, including resume.
+        if (effective.agent.model && this.ctx.validateProviderKeys) {
+          const resolved = resolveConfiguredModelSelection(effective.agent.model, this.ctx.config.settings, effective.agent.allowedModelProfiles);
+          const missing = this.ctx.validateProviderKeys([...resolved.policy.candidates]);
+          if (missing.length) throw new Error(`Missing API key for ${missing.map(m => `${m.provider} (${m.modelSpec})`).join(", ")}`);
+        }
+        executionRoute = await this.resolveTaskExecutionRoute(effective.task, effective.agent);
+        return { ...effective, task: { ...effective.task,
+          ...(executionRoute?.mode === "loop" ? { loop: executionRoute.loop } : {}),
+          executionMode: resolveExecutionMode(effective.task, effective.agent, this.ctx.config.settings),
+          sandbox: resolveRuntimeSandboxOptions(this.ctx.config.settings, effective.agent, effective.task),
+        } };
+      },
+    }, this.approvals);
+    task = invocation.task;
+    agent = invocation.agent;
+    if (!invocation.allowed) {
       this.ctx.emitter.emit("log", {
         level: "info",
-        message: `[${task.id}] Spawn blocked by hook: ${hookResult.cancelReason ?? "no reason"}`,
+        message: `[${task.id}] Spawn blocked by hook: ${invocation.reason ?? "no reason"}`,
       });
-      if (claimed && isTaskExecutionStore(this.ctx.taskStore)) {
-        const current = await this.ctx.taskStore.getTask(task.id);
-        // Human approval already suspended this attempt in its transaction.
-        if (current && current.activeRunId === task.activeRunId && current.executionRevision === task.executionRevision) {
-          await this.ctx.taskStore.mutateTaskExecution(taskExecutionReference(task), {
-            type: "requeue", countRetry: false, reason: "Spawn blocked by hook",
-          });
-        }
-      }
-      return;  // task stays pending — will be re-evaluated next tick
+      return; // Approval, veto, or cancellation prevents provider execution.
     }
 
     if (!claimed) {
@@ -901,7 +889,6 @@ export class TaskRunner {
         throw new Error("Runtime context retrieval failed");
       }
       if (claimed && !await this.claimIsActive(task, initialRun)) return;
-      const executionRoute = await this.resolveTaskExecutionRoute(task, agent);
 
       const contextTrust = this.ctx.config.settings.contextTrust === "enforce"
         ? "enforce"
@@ -910,12 +897,7 @@ export class TaskRunner {
       // metadata structural; disabled runs preserve the historical task prompt.
       const promptContextSegments: RuntimePromptContextSegment[] = [];
       const legacyContextParts: string[] = [];
-      const taskWithContext = {
-        ...task,
-        ...(executionRoute?.mode === "loop"
-          ? { loop: executionRoute.loop }
-          : {}),
-      };
+      const taskWithContext = task;
 
     // 1. Shared memory (persistent cross-session knowledge, visible to all agents)
     const sharedMemory = replacesLegacySharedMemory(runtimeContext)
@@ -1021,8 +1003,8 @@ export class TaskRunner {
     }
 
     // Adaptive isolation: resolve WHERE this run executes (task > agent > settings)
-    const executionMode = resolveExecutionMode(task, agent, this.ctx.config.settings);
-    const sandbox = resolveRuntimeSandboxOptions(this.ctx.config.settings, agent, task);
+    const executionMode = task.executionMode;
+    const sandbox = task.sandbox;
 
     const runnerConfig: RunnerConfig = {
       runId,

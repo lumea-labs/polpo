@@ -20,7 +20,16 @@ export interface TaskApprovalBinding {
   gates: import("./types.js").ApprovalGate[];
   /** Durable input and the effective post-hook invocation are both bound. */
   source: Task;
-  invocation: { task: Task; agent?: import("./types.js").AgentConfig; agentIdentity?: import("./agent-store.js").AgentIdentity; result?: import("./types.js").TaskResult };
+  invocation: { task: Task; agent?: import("./types.js").AgentConfig; agentIdentity?: import("./agent-store.js").AgentIdentity; result?: import("./types.js").TaskResult; overrides?: TaskDispatchOverrides };
+}
+
+/** Non-secret execution preferences captured separately from durable Task
+ * authority. A ready approval replays them on an ordinary scheduler claim. */
+export interface TaskDispatchOverrides {
+  model?: import("./types/config.js").ProfiledModelSelection;
+  sandbox?: import("./runtime-sandbox.js").RuntimeSandboxOptions;
+  routing?: import("./types.js").RuntimeRoutingOptions;
+  loop?: string;
 }
 
 /** Host-owned identity of one task attempt. Revision zero represents old rows. */
@@ -36,6 +45,10 @@ export type TaskExecutionMutation =
   | { type: "requeue"; countRetry: boolean; reason: string; onlyIfRunRunning?: boolean; updates?: TaskExecutionPatch }
   | { type: "cancel"; reason?: string };
 export interface TaskExecutionState { task: Task; run?: RunRecord }
+export interface TaskDispatchClaim extends TaskExecutionState {
+  run: RunRecord;
+  overrides?: TaskDispatchOverrides;
+}
 
 /** Task and Run changes in these operations form one durable transaction.
  * A stale reference rejects without chasing or modifying a newer attempt. */
