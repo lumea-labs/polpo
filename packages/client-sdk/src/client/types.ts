@@ -524,21 +524,7 @@ export interface LoopRunFilters {
 
 
 
-/** Runtime state of an active delay (timer started, waiting to expire). */
-export interface ActiveDelay {
-  /** Mission group name. */
-  group: string;
-  /** Delay name. */
-  delayName: string;
-  /** Full delay definition. */
-  delay: MissionDelay;
-  /** ISO timestamp when the delay timer started. */
-  startedAt: string;
-  /** ISO timestamp when the delay will expire. */
-  expiresAt: string;
-}
-
-
+export type { ActiveDelay, ActiveCheckpoint, MissionRuntimeIdentity } from "@polpo-ai/core/types";
 
 // === Notifications ===
 

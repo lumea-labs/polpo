@@ -1,3 +1,4 @@
+import type { ActiveCheckpoint, ActiveDelay } from "./types.js";
 import { nanoid } from "nanoid";
 import type { OrchestratorContext } from "./orchestrator-context.js";
 import type { TaskManager } from "./task-manager.js";
@@ -82,6 +83,12 @@ export class MissionExecutor {
     for (const group of groups) {
       try {
         const groupTasks = allTasks.filter(t => (t.missionExecutionId ?? t.group) === group);
+        const persisted = groupTasks[0];
+        // Presentation must retain its durable key even if receipt recovery is
+        // temporarily unavailable. Authorization still requires the receipt below.
+        if (persisted.missionExecutionId) this.gating.setExecutionIdentity({
+          executionId: persisted.missionExecutionId, missionId: persisted.missionId, group: persisted.group ?? group,
+        });
         if (groupTasks.every(t => t.status === "done" || t.status === "failed")) {
           const mission = await resolveMissionForGroup(this.missions, groupTasks, group);
           const receipt = groupTasks[0].missionExecutionId
@@ -147,7 +154,7 @@ export class MissionExecutor {
   }
 
   /** Get all active (unresumed) checkpoints across all mission groups. */
-  getActiveCheckpoints(): Array<{ group: string; checkpointName: string; checkpoint: MissionCheckpoint; reachedAt: string }> {
+  getActiveCheckpoints(): ActiveCheckpoint[] {
     return this.gating.getActiveCheckpoints();
   }
 
@@ -173,7 +180,7 @@ export class MissionExecutor {
   }
 
   /** Get all active (unexpired) delays across all mission groups. */
-  getActiveDelays(): Array<{ group: string; delayName: string; delay: MissionDelay; startedAt: string; expiresAt: string }> {
+  getActiveDelays(): ActiveDelay[] {
     return this.gating.getActiveDelays();
   }
 
@@ -349,6 +356,7 @@ export class MissionExecutor {
           ...item, afterTasks: item.afterTasks.map(title => titles.get(title) ?? title), blocksTasks: item.blocksTasks.map(title => titles.get(title) ?? title),
         }));
         const group = admission.receipt.executionId;
+        this.gating.setExecutionIdentity({ executionId: group, missionId: admission.receipt.missionId, group: admission.receipt.group });
         const aliases = this.groupExecutions.get(admission.receipt.group) ?? new Set<string>();
         aliases.add(group); this.groupExecutions.set(admission.receipt.group, aliases);
         // Definitions already persist in the receipt. Do not rewrite shared

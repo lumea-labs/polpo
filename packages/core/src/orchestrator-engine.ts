@@ -11,6 +11,7 @@
  * OrchestratorContext and the port interfaces defined below.
  */
 
+import type { ActiveCheckpoint, ActiveDelay } from "./types.js";
 import type { OrchestratorContext } from "./orchestrator-context.js";
 import { TickWaiter } from "./tick-waiter.js";
 import { resolveMissionStore, resolveMissionForTask } from "./mission-store.js";
@@ -111,8 +112,8 @@ export interface MissionExecutorPort {
   getBlockingCheckpoint(group: string, taskTitle: string, taskId: string, allTasks: Task[]): Promise<{ checkpoint: MissionCheckpoint; reachedAt: string } | undefined>;
   getDelays(group: string): MissionDelay[];
   getBlockingDelay(group: string, taskTitle: string, taskId: string, allTasks: Task[]): Promise<{ delay: MissionDelay; startedAt: string; expiresAt: string } | undefined>;
-  getActiveCheckpoints(): Array<{ group: string; checkpointName: string; checkpoint: MissionCheckpoint; reachedAt: string }>;
-  getActiveDelays(): Array<{ group: string; delayName: string; delay: MissionDelay; startedAt: string; expiresAt: string }>;
+  getActiveCheckpoints(): ActiveCheckpoint[];
+  getActiveDelays(): ActiveDelay[];
   resumeCheckpoint(group: string, checkpointName: string): Promise<boolean>;
   // Atomic mission data operations
   addMissionTask(missionId: string, task: { title: string; description: string; assignTo?: string; dependsOn?: string[]; expectations?: unknown[]; expectedOutcomes?: unknown[]; maxDuration?: number; retryPolicy?: { escalateAfter?: number; fallbackAgent?: string }; notifications?: unknown }): Promise<Mission>;

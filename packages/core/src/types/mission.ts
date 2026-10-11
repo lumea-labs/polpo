@@ -254,3 +254,24 @@ export interface ScheduleEntry {
   /** Created at. */
   createdAt: string;
 }
+
+/** Public identity of runtime gates. Labels are display-only and may collide. */
+export interface MissionRuntimeIdentity {
+  group: string;
+  missionId?: string;
+  /** Stable accepted execution ID; absent for legacy CRUD-only hosts. */
+  executionId?: string;
+}
+
+export interface ActiveCheckpoint extends MissionRuntimeIdentity {
+  checkpointName: string;
+  checkpoint: MissionCheckpoint;
+  reachedAt: string;
+}
+
+export interface ActiveDelay extends MissionRuntimeIdentity {
+  delayName: string;
+  delay: MissionDelay;
+  startedAt: string;
+  expiresAt: string;
+}

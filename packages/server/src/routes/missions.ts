@@ -404,6 +404,18 @@ export function missionRoutes(getDeps: () => {
     return c.json({ ok: true, data: await deps.getResumableMissions() });
   });
 
+  // GET /missions/checkpoints — list all active checkpoints
+  app.openapi(listCheckpointsRoute, (c) => {
+    const deps = getDeps();
+    return c.json({ ok: true, data: deps.getActiveCheckpoints() });
+  });
+
+  // GET /missions/delays — list active delays
+  app.openapi(listDelaysRoute, (c) => {
+    const deps = getDeps();
+    return c.json({ ok: true, data: deps.getActiveDelays() });
+  });
+
   // GET /missions/:missionId — get mission by ID
   app.openapi(getMissionRoute, async (c) => {
     const deps = getDeps();
@@ -486,12 +498,6 @@ export function missionRoutes(getDeps: () => {
     const body = c.req.valid("json");
     const result = await deps.resumeMission(missionId, body);
     return c.json({ ok: true, data: result });
-  });
-
-  // GET /missions/checkpoints — list all active checkpoints
-  app.openapi(listCheckpointsRoute, (c) => {
-    const deps = getDeps();
-    return c.json({ ok: true, data: deps.getActiveCheckpoints() });
   });
 
   // POST /missions/:missionId/checkpoints/:checkpointName/resume — resume a checkpoint
@@ -606,12 +612,6 @@ export function missionRoutes(getDeps: () => {
     } catch (e: any) {
       return c.json({ ok: false, error: e.message, code: "NOT_FOUND" }, 404);
     }
-  });
-
-  // GET /missions/delays — list active delays
-  app.openapi(listDelaysRoute, (c) => {
-    const deps = getDeps();
-    return c.json({ ok: true, data: deps.getActiveDelays() });
   });
 
   // POST /missions/:missionId/delays — add delay (data-level)

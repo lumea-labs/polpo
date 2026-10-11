@@ -37,6 +37,8 @@ export type {
   WaitForConnectionSetupOptions,
 } from "@polpo-ai/connect/client";
 
+export { activeDelayKey } from "./client/mission-runtime.js";
+
 // ── Store ─────────────────────────────────────────────────────
 export { PolpoStore } from "./store/polpo-store.js";
 export { reduceEvent } from "./store/event-reducer.js";
@@ -118,6 +120,8 @@ export type {
   ProviderConfig,
   SSEEvent,
   ActiveDelay,
+  ActiveCheckpoint,
+  MissionRuntimeIdentity,
   CreateTaskRequest,
   UpdateTaskRequest,
   CreateMissionRequest,

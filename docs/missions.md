@@ -40,6 +40,13 @@ Editing the Mission affects future executions. Hooks are planning hooks and may
 run more than once; admission idempotency does not make external hook side effects
 exactly once.
 
+Runtime checkpoint/delay lists and events preserve `group` as the accepted
+human-readable label and include `missionId` and `executionId` for durable
+executions. Labels may coincide, so clients must identify timers by execution ID
+and delay name. The SDK exports `activeDelayKey()` for the `activeDelays` store;
+legacy hosts without execution receipts use the group label as a fallback. The
+React hook reconciles initial HTTP snapshots with newer SSE starts/expirations.
+
 The built-in file, SQLite and PostgreSQL stores support this contract. Custom
 stores can implement `MissionExecutionStore` from `@polpo-ai/core/mission-store`:
 receipt lookup by key and execution ID, atomic admission and conditional

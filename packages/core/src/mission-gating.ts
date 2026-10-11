@@ -7,6 +7,7 @@
  * stays on MissionExecutor.
  */
 
+import type { ActiveCheckpoint, ActiveDelay, MissionRuntimeIdentity } from "./types.js";
 import type { OrchestratorContext } from "./orchestrator-context.js";
 import type { Mission, Task, MissionCheckpoint, MissionDelay } from "./types.js";
 import type { CheckpointStore, CheckpointState } from "./checkpoint-store.js";
@@ -15,6 +16,16 @@ import { resolveMissionStore, resolveMissionForGroup, type MissionStore } from "
 
 export class MissionGating {
   private missions: MissionStore;
+  /** Recovered from immutable execution receipts; never use labels as keys. */
+  private identities = new Map<string, MissionRuntimeIdentity>();
+
+  setExecutionIdentity(identity: MissionRuntimeIdentity & { executionId: string }): void {
+    this.identities.set(identity.executionId, { ...identity });
+  }
+
+  private identity(key: string): MissionRuntimeIdentity {
+    return this.identities.get(key) ?? { group: key };
+  }
   /** In-memory mirror of persisted checkpoint state (synced on every mutation) */
   private cpState!: CheckpointState;
   /** In-memory mirror of persisted delay state (synced on every mutation) */
@@ -66,6 +77,7 @@ export class MissionGating {
   async removeGroup(group: string): Promise<void> {
     this.cpState = await this.cpStore.removeGroup(this.cpState, group);
     this.delayState = await this.delayStore.removeGroup(this.delayState, group);
+    this.identities.delete(group);
   }
 
   /**
@@ -146,7 +158,7 @@ export class MissionGating {
         // Emit event (picked up by notification router if rules are configured)
         this.ctx.emitter.emit("checkpoint:reached", {
           missionId: mission?.id,
-          group,
+          ...this.identity(group),
           checkpointName: cp.name,
           message: cp.message,
           afterTasks: cp.afterTasks,
@@ -184,7 +196,7 @@ export class MissionGating {
 
     this.ctx.emitter.emit("checkpoint:resumed", {
       missionId: mission?.id,
-      group,
+      ...this.identity(group),
       checkpointName,
     });
 
@@ -192,12 +204,12 @@ export class MissionGating {
   }
 
   /** Get all active (unresumed) checkpoints across all mission groups. */
-  getActiveCheckpoints(): Array<{ group: string; checkpointName: string; checkpoint: MissionCheckpoint; reachedAt: string }> {
-    const result: Array<{ group: string; checkpointName: string; checkpoint: MissionCheckpoint; reachedAt: string }> = [];
+  getActiveCheckpoints(): ActiveCheckpoint[] {
+    const result: ActiveCheckpoint[] = [];
     for (const [cpKey, data] of Object.entries(this.cpState.active)) {
-      const [group, ...nameParts] = cpKey.split(":");
-      const checkpointName = nameParts.join(":");
-      result.push({ group, checkpointName, checkpoint: data.checkpoint, reachedAt: data.reachedAt });
+      const checkpointName = data.checkpoint.name;
+      const group = cpKey.slice(0, -(checkpointName.length + 1));
+      result.push({ ...this.identity(group), checkpointName, checkpoint: data.checkpoint, reachedAt: data.reachedAt });
     }
     return result;
   }
@@ -262,7 +274,7 @@ export class MissionGating {
         const mission = await this.resolveMissionForGroupByName(group);
         this.ctx.emitter.emit("delay:started", {
           missionId: mission?.id,
-          group,
+          ...this.identity(group),
           delayName: dl.name,
           duration: dl.duration,
           message: dl.message,
@@ -284,7 +296,7 @@ export class MissionGating {
         const mission = await this.resolveMissionForGroupByName(group);
         this.ctx.emitter.emit("delay:expired", {
           missionId: mission?.id,
-          group,
+          ...this.identity(group),
           delayName: dl.name,
         });
 
@@ -299,12 +311,12 @@ export class MissionGating {
   }
 
   /** Get all active (unexpired) delays across all mission groups. */
-  getActiveDelays(): Array<{ group: string; delayName: string; delay: MissionDelay; startedAt: string; expiresAt: string }> {
-    const result: Array<{ group: string; delayName: string; delay: MissionDelay; startedAt: string; expiresAt: string }> = [];
+  getActiveDelays(): ActiveDelay[] {
+    const result: ActiveDelay[] = [];
     for (const [dlKey, data] of Object.entries(this.delayState.active)) {
-      const [group, ...nameParts] = dlKey.split(":");
-      const delayName = nameParts.join(":");
-      result.push({ group, delayName, delay: data.delay, startedAt: data.startedAt, expiresAt: data.expiresAt });
+      const delayName = data.delay.name;
+      const group = dlKey.slice(0, -(delayName.length + 1));
+      result.push({ ...this.identity(group), delayName, delay: data.delay, startedAt: data.startedAt, expiresAt: data.expiresAt });
     }
     return result;
   }

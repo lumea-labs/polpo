@@ -45,19 +45,20 @@ export function useActiveDelays(): UseActiveDelaysReturn {
   const refetch = useCallback(() => setFetchCount(c => c + 1), []);
 
   useEffect(() => {
+    let cancelled = false;
+    const snapshot = store.beginActiveDelaysFetch();
     setLoading(true);
     client.listDelays()
       .then((delays) => {
-        setFetchedDelays(delays);
-        // Seed the store via proper setter (triggers notify → subscribers update)
-        const next = new Map(store.getSnapshot().activeDelays);
-        for (const d of delays) {
-          next.set(`${d.group}:${d.delayName}`, d);
-        }
-        store.setActiveDelays(next);
+        if (cancelled) return;
+        if (snapshot.commit(delays)) setFetchedDelays(delays);
       })
       .catch(() => { /* best-effort */ })
-      .finally(() => setLoading(false));
+      .finally(() => {
+        snapshot.dispose();
+        if (!cancelled) setLoading(false);
+      });
+    return () => { cancelled = true; snapshot.dispose(); };
   }, [client, store, fetchCount]);
 
   // Merge: store has real-time data, fetched fills in pre-existing delays

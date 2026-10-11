@@ -57,7 +57,7 @@ export interface StoreState {
   assessmentProgress: Map<string, AssessmentProgressEntry[]>;
   /** Per-check status keyed by taskId. Tracks which expectations are running/done. Cleared on assessment:complete. */
   assessmentChecks: Map<string, AssessmentCheckStatus[]>;
-  /** Active delay timers keyed by "group:delayName". Updated from delay:started/delay:expired SSE events. */
+  /** Active delay timers keyed by activeDelayKey(identity). Updated from delay:started/delay:expired SSE events. */
   activeDelays: Map<string, ActiveDelay>;
   /**
    * Chat sessions keyed by id. Populated by `useSessions()`'s initial fetch

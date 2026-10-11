@@ -35,6 +35,69 @@ const document = () => ({ tasks: [
 ] });
 
 describe("durable Mission execution through the real OSS executor", () => {
+  it("keeps display labels and stable execution identity in gate lists and events after restart", async () => {
+    const f = fixture(); await f.executor.ready;
+    const doc = { ...document(),
+      checkpoints: [{ name: "review:approved", afterTasks: ["First"], blocksTasks: ["Second"] }],
+      delays: [{ name: "cool:down", afterTasks: ["First"], blocksTasks: ["Second"], duration: "PT1M" }] };
+    const a = await f.executor.createMission({ name: "Same:label", data: JSON.stringify(doc) });
+    await f.store.updateMission(a.id, { executionCount: 1 });
+    const b = await f.executor.createMission({ name: "Same:label #2", data: JSON.stringify(doc).replaceAll("First", "Other first").replaceAll("Second", "Other second") });
+    const accepted = [];
+    const events: Array<{ event: string; data: unknown }> = [];
+    for (const event of ["checkpoint:reached", "delay:started"] as const) f.ctx.emitter.on(event, data => events.push({ event, data }));
+    for (const mission of [a, b]) {
+      const execution = await f.executor.executeMission(mission.id);
+      accepted.push({ missionId: mission.id, executionId: execution.executionId, group: execution.group });
+      await f.store.unsafeSetStatus(execution.tasks[0].id, "done", "fixture completion");
+      const tasks = await f.store.listTasks();
+      await f.executor.getBlockingCheckpoint(execution.executionId!, execution.tasks[1].title, execution.tasks[1].id, tasks);
+      await f.executor.getBlockingDelay(execution.executionId!, execution.tasks[1].title, execution.tasks[1].id, tasks);
+    }
+    const restarted = fixture({ checkpointStore: f.ctx.checkpointStore, delayStore: f.ctx.delayStore });
+    await restarted.executor.ready;
+    expect(restarted.executor.getActiveCheckpoints()).toEqual(accepted.map(identity => expect.objectContaining({ ...identity, checkpointName: "review:approved" })));
+    expect(restarted.executor.getActiveDelays()).toEqual(accepted.map(identity => expect.objectContaining({ ...identity, delayName: "cool:down" })));
+    expect(events).toEqual(accepted.flatMap(identity => [
+      { event: "checkpoint:reached", data: expect.objectContaining({ ...identity, checkpointName: "review:approved" }) },
+      { event: "delay:started", data: expect.objectContaining({ ...identity, delayName: "cool:down" }) },
+    ]));
+    const resumed = vi.fn(), expired = vi.fn();
+    restarted.ctx.emitter.on("checkpoint:resumed", resumed);
+    restarted.ctx.emitter.on("delay:expired", expired);
+    await restarted.executor.resumeCheckpointByMissionId(a.id, "review:approved");
+    expect(resumed).toHaveBeenCalledWith({ ...accepted[0], checkpointName: "review:approved" });
+    expect(restarted.executor.getActiveCheckpoints()).toEqual([expect.objectContaining(accepted[1])]);
+    vi.spyOn(Date, "now").mockReturnValue(Date.now() + 61_000);
+    const tasks = await restarted.store.listTasks();
+    const blocked = tasks.find(task => task.missionId === a.id && task.title === "Second")!;
+    await restarted.executor.getBlockingDelay(accepted[0].executionId!, blocked.title, blocked.id, tasks);
+    expect(expired).toHaveBeenCalledWith({ ...accepted[0], delayName: "cool:down" });
+    expect(restarted.executor.getActiveDelays()).toEqual([expect.objectContaining(accepted[1])]);
+  });
+
+  it("keeps the same public delay identity across a deferred receipt recovery and expiry", async () => {
+    const f = fixture(); await f.executor.ready;
+    const mission = await f.executor.createMission({ name: "Readable", data: JSON.stringify({ ...document(),
+      delays: [{ name: "wait", afterTasks: ["First"], blocksTasks: ["Second"], duration: "PT1M" }] }) });
+    const execution = await f.executor.executeMission(mission.id);
+    await f.store.unsafeSetStatus(execution.tasks[0].id, "done", "fixture completion");
+    await f.executor.getBlockingDelay(execution.executionId!, "Second", execution.tasks[1].id, await f.store.listTasks());
+    const restarted = fixture({ checkpointStore: f.ctx.checkpointStore, delayStore: f.ctx.delayStore });
+    vi.spyOn(restarted.store, "getMissionExecutionById").mockRejectedValueOnce(new Error("fixture receipt outage"));
+    await restarted.executor.ready;
+    const identity = { missionId: mission.id, executionId: execution.executionId, group: execution.group, delayName: "wait" };
+    expect(restarted.executor.getActiveDelays()).toEqual([expect.objectContaining(identity)]);
+    const expired = vi.fn(); restarted.ctx.emitter.on("delay:expired", expired);
+    const tasks = await restarted.store.listTasks();
+    const task = tasks.find(task => task.title === "Second")!;
+    await restarted.executor.prepareTaskExecution(task);
+    vi.spyOn(Date, "now").mockReturnValue(Date.now() + 61_000);
+    await restarted.executor.getBlockingDelay(execution.executionId!, task.title, task.id, tasks);
+    expect(expired).toHaveBeenCalledWith(identity);
+    expect(restarted.executor.getActiveDelays()).toEqual([]);
+  });
+
   it("validates every task hook before creating tasks or incrementing the counter", async () => {
     const f = fixture(); await f.executor.ready;
     vi.spyOn(f.ctx.hooks, "runBeforeSync").mockImplementation((name, data: any) => ({ data, cancelled: name === "task:create" && data.title === "Second", cancelReason: "fixture denial" }));

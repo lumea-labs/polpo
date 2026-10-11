@@ -33,3 +33,16 @@ describe("Mission execution API contract", () => {
     expect(await response.json()).toMatchObject({ ok: false, code });
   });
 });
+
+
+describe("Mission runtime collection routes", () => {
+  it.each(["delays", "checkpoints"])("does not interpret /%s as a Mission ID", async kind => {
+    const getMission = vi.fn(async () => undefined);
+    const gate = { group: "Display", executionId: "run", missionId: "mission" };
+    const app = missionRoutes(() => ({ getMission, getActiveDelays: () => [gate], getActiveCheckpoints: () => [gate] }) as any);
+    const response = await app.request(`/${kind}`);
+    expect(response.status).toBe(200);
+    expect((await response.json()).data).toEqual([gate]);
+    expect(getMission).not.toHaveBeenCalled();
+  });
+});
