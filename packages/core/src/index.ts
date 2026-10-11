@@ -340,6 +340,7 @@ export { taskStoreMissionAdapter, resolveMissionStore, resolveMissionForTask } f
 export { validateParams, instantiatePlaybook, validatePlaybookDefinition } from "./playbook-logic.js";
 export type { ValidationResult } from "./playbook-logic.js";
 export type { MissionStore } from "./mission-store.js";
+export * from "./mission-execution.js";
 
 // ── Vault resolver (shared by shell, tools, and the cloud data plane) ────
 export {

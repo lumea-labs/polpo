@@ -1,5 +1,5 @@
-import { sqliteTable, text, integer, index } from "drizzle-orm/sqlite-core";
-import { pgTable, text as pgText, integer as pgInteger, jsonb, varchar, index as pgIndex } from "drizzle-orm/pg-core";
+import { sqliteTable, text, integer, index, primaryKey } from "drizzle-orm/sqlite-core";
+import { pgTable, text as pgText, integer as pgInteger, jsonb, varchar, index as pgIndex, primaryKey as pgPrimaryKey } from "drizzle-orm/pg-core";
 
 // ── SQLite schema ──────────────────────────────────────────────────────
 
@@ -23,6 +23,7 @@ export const tasksSqlite = sqliteTable("tasks", {
   result: text("result"),
   phase: text("phase"),
   fixAttempts: integer("fix_attempts").notNull().default(0),
+  questionRounds: integer("question_rounds").notNull().default(0),
   resolutionAttempts: integer("resolution_attempts").notNull().default(0),
   originalDescription: text("original_description"),
   sessionId: text("session_id"),
@@ -33,6 +34,7 @@ export const tasksSqlite = sqliteTable("tasks", {
   priority: text("priority"),
   sideEffects: integer("side_effects"),
   revisionCount: integer("revision_count"),
+  executionMode: text("execution_mode"),
   sandbox: text("sandbox"),
   /** Bounded caller routing context, serialized as JSON. */
   routing: text("routing"),
@@ -74,6 +76,16 @@ export const metadataSqlite = sqliteTable("metadata", {
   value: text("value").notNull(),
 });
 
+/** Durable admission records survive Mission deletion and task status changes.
+ * No cascading FK: a delivery retry must never recreate accepted work. */
+export const missionExecutionsSqlite = sqliteTable("mission_executions", {
+  missionId: text("mission_id").notNull(),
+  idempotencyKey: text("idempotency_key").notNull(),
+  executionId: text("execution_id").notNull().unique(),
+  admission: text("admission").notNull(),
+  createdAt: text("created_at").notNull(),
+}, (table) => [primaryKey({ columns: [table.missionId, table.idempotencyKey] })]);
+
 export const processesSqlite = sqliteTable("processes", {
   agentName: text("agent_name").notNull(),
   pid: integer("pid").notNull(),
@@ -105,6 +117,7 @@ export const tasksPg = pgTable("tasks", {
   result: jsonb("result"),
   phase: varchar("phase", { length: 32 }),
   fixAttempts: pgInteger("fix_attempts").notNull().default(0),
+  questionRounds: pgInteger("question_rounds").notNull().default(0),
   resolutionAttempts: pgInteger("resolution_attempts").notNull().default(0),
   originalDescription: pgText("original_description"),
   sessionId: pgText("session_id"),
@@ -115,6 +128,7 @@ export const tasksPg = pgTable("tasks", {
   priority: pgText("priority"),
   sideEffects: pgInteger("side_effects"),
   revisionCount: pgInteger("revision_count"),
+  executionMode: pgText("execution_mode"),
   sandbox: jsonb("sandbox"),
   /** Bounded caller routing context. */
   routing: jsonb("routing"),
@@ -155,6 +169,14 @@ export const metadataPg = pgTable("metadata", {
   key: pgText("key").primaryKey(),
   value: jsonb("value").notNull(),
 });
+
+export const missionExecutionsPg = pgTable("mission_executions", {
+  missionId: pgText("mission_id").notNull(),
+  idempotencyKey: pgText("idempotency_key").notNull(),
+  executionId: pgText("execution_id").notNull().unique(),
+  admission: jsonb("admission").notNull(),
+  createdAt: pgText("created_at").notNull(),
+}, (table) => [pgPrimaryKey({ columns: [table.missionId, table.idempotencyKey] })]);
 
 export const processesPg = pgTable("processes", {
   agentName: pgText("agent_name").notNull(),

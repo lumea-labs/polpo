@@ -18,6 +18,7 @@
 
 import type { Mission } from "./types.js";
 import type { TaskStore } from "./task-store.js";
+export * from "./mission-execution.js";
 
 export interface MissionStore {
   createMission(mission: Omit<Mission, "id" | "createdAt" | "updatedAt">): Promise<Mission>;

@@ -131,3 +131,32 @@ These encrypted generic stores do not own the MCP client resolver's configuratio
 database. They enforce persisted setup/state identity; live configuration is
 resolved by the service before commit. A host needing transactionally atomic
 configuration revocation must add that predicate to its managed store adapter.
+
+## Atomic Mission admission
+
+`createPgStores()` and `createSqliteStores()` expose `missionExecutionStore`,
+implementing `MissionExecutionStore` from `@polpo-ai/core/mission-store`. The
+underlying task store implements the same capability. Run the schema migrator
+before use: admission receipts live in the additive `mission_executions` table.
+
+`commitMissionExecution({ expected, receipt })` compares the captured Mission,
+checks task identity/principal/dependency and active-title conflicts, then commits
+the complete task set, Mission activation/counter and receipt together. Reusing
+the Mission ID and occurrence key returns the originally accepted receipt before
+stale-plan checks. Its tasks are creation snapshots; query TaskStore for current
+status. A new occurrence needs a fresh Mission snapshot and a new key.
+
+PostgreSQL uses an interactive transaction, a short exclusive-writer lock on the
+project's task table and a row lock on the Mission. Readers remain available.
+With a primary HTTP driver such as neon-http, supply the existing
+`createPgStores(db, { transaction })` provider backed by a real interactive
+transaction in the same project database/schema. Individual HTTP writes are
+never used as a fallback. SQLite uses a synchronous `BEGIN IMMEDIATE` callback;
+set a suitable busy timeout on each connection. A manually constructed
+`DrizzleTaskStore` needs `schema.missionExecutions` to expose this capability.
+
+Receipts survive task/Mission deletion. Retain them while old deliveries remain
+retryable; do not cascade-delete them or export them as authored configuration.
+This capability is a persistence foundation: executor hooks, volatile agents,
+checkpoint/delay preparation and API/schedule occurrence propagation require
+separate runtime integration. Fence old executors before rollout or rollback.

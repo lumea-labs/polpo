@@ -1,0 +1,105 @@
+import type { Mission, ScopedNotificationRules, Task } from "./types.js";
+
+/** Immutable admission receipt. Task snapshots describe what was created;
+ * callers read TaskStore separately for current execution status. */
+export interface MissionExecutionReceipt {
+  executionId: string;
+  missionId: string;
+  idempotencyKey: string;
+  group: string;
+  sequence: number;
+  user?: string;
+  createdAt: string;
+  tasks: Task[];
+}
+
+export interface MissionExecutionCommit {
+  /** Mission used to plan and authorize all tasks, rechecked at admission. */
+  expected: Mission;
+  receipt: MissionExecutionReceipt;
+  notifications?: ScopedNotificationRules;
+}
+
+/** Capability separate from ordinary Mission CRUD. Implementations must commit
+ * the receipt, all tasks, Mission activation and counter as one durable unit. */
+export interface MissionExecutionStore {
+  getMissionExecution(missionId: string, idempotencyKey: string): Promise<MissionExecutionReceipt | undefined>;
+  commitMissionExecution(input: MissionExecutionCommit): Promise<{ receipt: MissionExecutionReceipt; created: boolean }>;
+}
+
+export class MissionExecutionError extends Error {
+  constructor(readonly code: "mission_execution_invalid" | "mission_execution_conflict" | "mission_execution_unsupported", message: string) {
+    super(message);
+    this.name = "MissionExecutionError";
+  }
+}
+function invalid(): never { throw new MissionExecutionError("mission_execution_invalid", "Invalid Mission execution plan"); }
+function conflict(): never { throw new MissionExecutionError("mission_execution_conflict", "Mission or task state changed before execution admission"); }
+
+function json(value: unknown): unknown {
+  if (value === null || typeof value === "string" || typeof value === "boolean") return value;
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  // Array.from visits holes too: sparse arrays must not silently serialize as
+  // null entries that would make a committed receipt impossible to replay.
+  if (Array.isArray(value)) return Array.from(value, json);
+  if (value && typeof value === "object" && Object.getPrototypeOf(value) === Object.prototype) {
+    const result: Record<string, unknown> = {};
+    for (const key of Object.keys(value).sort()) {
+      const item = (value as Record<string, unknown>)[key];
+      if (item !== undefined) Object.defineProperty(result, key, { value: json(item), enumerable: true });
+    }
+    return result;
+  }
+  return invalid();
+}
+
+export function validateMissionExecutionKey(missionId: string, key: string): void {
+  if (typeof missionId !== "string" || !/^[a-zA-Z0-9_-]{1,200}$/.test(missionId)
+    || typeof key !== "string" || !key.trim() || key !== key.trim() || key.length > 200 || /[\x00-\x1f\x7f]/.test(key)) invalid();
+}
+
+/** Capture a bounded JSON copy before awaiting storage. No caller can mutate
+ * its principal, dependency graph or expected Mission while admission waits. */
+export function normalizeMissionExecutionCommit(input: unknown): MissionExecutionCommit {
+  let copied: MissionExecutionCommit;
+  try { copied = json(input) as MissionExecutionCommit; } catch { return invalid(); }
+  if (!copied || typeof copied !== "object" || Array.isArray(copied)) invalid();
+  if (new TextEncoder().encode(JSON.stringify(copied)).length > 4 * 1024 * 1024) invalid();
+  const { expected, receipt } = copied;
+  if (!expected || !receipt) invalid();
+  validateMissionExecutionKey(receipt.missionId, receipt.idempotencyKey);
+  if (expected.id !== receipt.missionId || typeof expected.name !== "string" || !expected.name.trim()
+    || typeof expected.data !== "string" || (expected.user !== undefined && (typeof expected.user !== "string" || !expected.user.trim()))
+    || typeof receipt.executionId !== "string" || !/^[a-zA-Z0-9_-]{1,200}$/.test(receipt.executionId)
+    || typeof receipt.createdAt !== "string" || !Number.isFinite(Date.parse(receipt.createdAt))
+    || !Number.isSafeInteger(receipt.sequence) || receipt.sequence < 1
+    || receipt.sequence !== (expected.executionCount ?? 0) + 1 || receipt.user !== expected.user
+    || receipt.group !== (receipt.sequence > 1 ? `${expected.name} #${receipt.sequence}` : expected.name)
+    || !Array.isArray(receipt.tasks) || !receipt.tasks.length || receipt.tasks.length > 1000) invalid();
+  const ids = new Set<string>(), titles = new Set<string>();
+  for (const task of receipt.tasks) {
+    if (!task || typeof task.id !== "string" || !/^[a-zA-Z0-9_-]{1,200}$/.test(task.id) || ids.has(task.id)
+      || typeof task.title !== "string" || !task.title.trim() || titles.has(task.title)
+      || typeof task.description !== "string" || typeof task.assignTo !== "string" || !task.assignTo.trim()
+      || task.missionId !== expected.id || task.group !== receipt.group || task.user !== receipt.user
+      || task.status !== "pending" || task.retries !== 0 || !Number.isSafeInteger(task.maxRetries) || task.maxRetries < 0
+      || task.createdAt !== receipt.createdAt || task.updatedAt !== receipt.createdAt || !Array.isArray(task.dependsOn)
+      || task.dependsOn.some(id => !ids.has(id)) || !Array.isArray(task.expectations) || !Array.isArray(task.metrics)) invalid();
+    ids.add(task.id); titles.add(task.title);
+  }
+  return copied;
+}
+
+/** Called under the store's actual transaction/lock, after receipt lookup.
+ * A committed duplicate returns its original receipt before these stale-plan
+ * checks; changed Mission configuration never reauthorizes a replay. */
+export function admitMissionExecution(input: MissionExecutionCommit, current: Mission | undefined, tasks: Task[]): Mission {
+  const state = (mission: Mission) => JSON.stringify(json({ ...mission, executionCount: mission.executionCount ?? 0 }));
+  if (!current || state(input.expected) !== state(current)
+    || !["draft", "scheduled", "recurring", "failed", "cancelled"].includes(current.status)) conflict();
+  const ids = new Set(input.receipt.tasks.map(task => task.id));
+  const titles = new Set(input.receipt.tasks.map(task => task.title));
+  if (tasks.some(task => ids.has(task.id) || (titles.has(task.title) && task.status !== "done" && task.status !== "failed"))) conflict();
+  return { ...current, status: "active", executionCount: input.receipt.sequence, updatedAt: input.receipt.createdAt,
+    ...(input.notifications === undefined ? {} : { notifications: input.notifications }) };
+}

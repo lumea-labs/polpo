@@ -1,24 +1,13 @@
 import { join } from "node:path";
-import {
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  writeFileSync,
-  renameSync,
-  readdirSync,
-  unlinkSync,
-} from "node:fs";
+import { mkdirSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { nanoid } from "nanoid";
-import type {
-  Task,
-  TaskStatus,
-  PolpoState,
-  AgentProcess,
-  Team,
-  Mission,
-} from "@polpo-ai/core/types";
+import type { Task, TaskStatus, PolpoState, AgentProcess, Team, Mission } from "@polpo-ai/core/types";
 import type { TaskStore } from "@polpo-ai/core/task-store";
-import { assertValidTransition } from "@polpo-ai/core/state-machine";
+import { assertValidTransition, VALID_TRANSITIONS } from "@polpo-ai/core/state-machine";
+import { admitMissionExecution, normalizeMissionExecutionCommit, validateMissionExecutionKey,
+  MissionExecutionError, type MissionExecutionCommit, type MissionExecutionReceipt, type MissionExecutionStore } from "@polpo-ai/core/mission-store";
+import { withProjectFileTransaction, type ProjectFileTransaction } from "./project-file-transaction.js";
 
 interface MetaState {
   project: string;
@@ -46,21 +35,9 @@ function safeJsonParse<T>(raw: string, fallback: T): T {
   }
 }
 
-/** Atomic write: write to tmp file then rename. */
-function atomicWrite(filePath: string, data: unknown): void {
-  const tmp = filePath + ".tmp";
-  writeFileSync(tmp, JSON.stringify(data, null, 2), "utf-8");
-  renameSync(tmp, filePath);
-}
-
-/** Read and parse a JSON file, returning fallback if missing or malformed. */
-function readJson<T>(filePath: string, fallback: T): T {
-  if (!existsSync(filePath)) return fallback;
-  try {
-    return safeJsonParse(readFileSync(filePath, "utf-8"), fallback);
-  } catch {
-    return fallback;
-  }
+function readJson<T>(tx: ProjectFileTransaction, path: string, fallback: T): T {
+  const raw = tx.read(path);
+  return raw === null ? fallback : safeJsonParse(raw, fallback);
 }
 
 /**
@@ -72,279 +49,188 @@ function readJson<T>(filePath: string, fallback: T): T {
  *   .polpo/missions/<missionId>.json
  *   .polpo/_meta.json
  */
-export class FileTaskStore implements TaskStore {
-  private tasksDir: string;
-  private missionsDir: string;
-  private metaPath: string;
-
-  constructor(polpoDir: string) {
-    this.tasksDir = join(polpoDir, "tasks");
-    this.missionsDir = join(polpoDir, "missions");
-    this.metaPath = join(polpoDir, "_meta.json");
-
-    if (!existsSync(polpoDir)) mkdirSync(polpoDir, { recursive: true });
-    if (!existsSync(this.tasksDir)) mkdirSync(this.tasksDir, { recursive: true });
-    if (!existsSync(this.missionsDir)) mkdirSync(this.missionsDir, { recursive: true });
+export class FileTaskStore implements TaskStore, MissionExecutionStore {
+  constructor(private readonly polpoDir: string) {
+    mkdirSync(join(polpoDir, "tasks"), { recursive: true });
+    mkdirSync(join(polpoDir, "missions"), { recursive: true });
   }
 
-  // ── Helpers ──
-
-  private taskPath(id: string): string {
-    return join(this.tasksDir, `${id}.json`);
+  private transaction<T>(work: (tx: ProjectFileTransaction) => T): T {
+    return withProjectFileTransaction(this.polpoDir, work);
   }
-
-  private missionPath(id: string): string {
-    return join(this.missionsDir, `${id}.json`);
+  private entityPath(directory: string, id: string): string {
+    if (typeof id !== "string" || !id || /[\\/\x00]/.test(id)) throw new Error("Invalid stored entity identifier");
+    return `${directory}/${id}.json`;
   }
-
-  private readMeta(): MetaState {
-    const raw = readJson<MetaStateRaw>(this.metaPath, {
-      teams: [{ name: "", agents: [] }],
-      processes: [],
-    });
-    // Migrate legacy singular team → teams array
-    const teams = raw.teams && raw.teams.length > 0
-      ? raw.teams
-      : raw.team
-        ? [raw.team]
-        : [{ name: "", agents: [] }];
+  private taskPath(id: string): string { return this.entityPath("tasks", id); }
+  private missionPath(id: string): string { return this.entityPath("missions", id); }
+  private executionPath(missionId: string, key: string): string {
+    validateMissionExecutionKey(missionId, key);
+    const digest = createHash("sha256").update(JSON.stringify([missionId, key])).digest("hex");
+    return `.runtime/mission-executions/${digest}.json`;
+  }
+  private write(tx: ProjectFileTransaction, path: string, value: unknown): void {
+    tx.write(path, JSON.stringify(value, null, 2));
+  }
+  private readMeta(tx: ProjectFileTransaction): MetaState {
+    const raw = readJson<MetaStateRaw>(tx, "_meta.json", { teams: [{ name: "", agents: [] }], processes: [] });
+    const teams = raw.teams?.length ? raw.teams : raw.team ? [raw.team] : [{ name: "", agents: [] }];
     return { project: raw.project ?? "", teams, processes: raw.processes, startedAt: raw.startedAt, completedAt: raw.completedAt };
   }
-
-  private writeMeta(meta: MetaState): void {
-    atomicWrite(this.metaPath, meta);
+  private ids(tx: ProjectFileTransaction, directory: string): string[] {
+    return tx.list(directory).filter(name => name.endsWith(".json") && !name.endsWith(".tmp")).map(name => name.slice(0, -5));
   }
-
-  private readTask(id: string): Task | undefined {
-    return readJson<Task | undefined>(this.taskPath(id), undefined);
+  private readTask(tx: ProjectFileTransaction, id: string): Task | undefined {
+    return readJson<Task | undefined>(tx, this.taskPath(id), undefined);
   }
-
-  private writeTask(task: Task): void {
-    atomicWrite(this.taskPath(task.id), task);
+  private tasks(tx: ProjectFileTransaction): Task[] {
+    return this.ids(tx, "tasks").map(id => this.readTask(tx, id)).filter((t): t is Task => !!t)
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
   }
-
-  private listTaskIds(): string[] {
-    if (!existsSync(this.tasksDir)) return [];
-    return readdirSync(this.tasksDir)
-      .filter(f => f.endsWith(".json") && !f.endsWith(".tmp"))
-      .map(f => f.slice(0, -5));
+  private admissionTasks(tx: ProjectFileTransaction): Task[] {
+    return this.ids(tx, "tasks").map(id => {
+      const raw = tx.read(this.taskPath(id));
+      let task: Task | undefined;
+      try { task = raw === null ? undefined : JSON.parse(raw); } catch { /* fail closed below */ }
+      if (!task || task.id !== id || typeof task.title !== "string" || !task.title.trim()
+        || !Object.hasOwn(VALID_TRANSITIONS, task.status)) {
+        throw new MissionExecutionError("mission_execution_conflict", "Cannot admit a Mission while stored task state is invalid");
+      }
+      return task;
+    });
   }
-
-  private readMission(id: string): Mission | undefined {
-    return readJson<Mission | undefined>(this.missionPath(id), undefined);
+  private readMission(tx: ProjectFileTransaction, id: string): Mission | undefined {
+    return readJson<Mission | undefined>(tx, this.missionPath(id), undefined);
   }
-
-  private writeMission(mission: Mission): void {
-    atomicWrite(this.missionPath(mission.id), mission);
+  private missions(tx: ProjectFileTransaction): Mission[] {
+    return this.ids(tx, "missions").map(id => this.readMission(tx, id)).filter((m): m is Mission => !!m)
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   }
-
-  private listMissionIds(): string[] {
-    if (!existsSync(this.missionsDir)) return [];
-    return readdirSync(this.missionsDir)
-      .filter(f => f.endsWith(".json") && !f.endsWith(".tmp"))
-      .map(f => f.slice(0, -5));
-  }
-
-  // ── TaskStore interface ──
 
   async getState(): Promise<PolpoState> {
-    const meta = this.readMeta();
-    const tasks = await this.listTasks();
-    return {
-      project: meta.project,
-      teams: meta.teams,
-      tasks,
-      processes: meta.processes,
-      startedAt: meta.startedAt,
-      completedAt: meta.completedAt,
-    };
+    return this.transaction(tx => ({ ...this.readMeta(tx), tasks: this.tasks(tx) }));
   }
-
   async setState(partial: Partial<PolpoState>): Promise<void> {
-    const meta = this.readMeta();
-
-    if (partial.project !== undefined) meta.project = partial.project;
-    if (partial.teams !== undefined) meta.teams = partial.teams;
-    if (partial.startedAt !== undefined) meta.startedAt = partial.startedAt;
-    if (partial.completedAt !== undefined) meta.completedAt = partial.completedAt;
-    if (partial.processes !== undefined) meta.processes = partial.processes;
-
-    if (partial.tasks !== undefined) {
-      // Wipe existing tasks and write new ones
-      for (const id of this.listTaskIds()) {
-        try { unlinkSync(this.taskPath(id)); } catch { /* already gone */ }
+    this.transaction(tx => {
+      const meta = this.readMeta(tx);
+      for (const field of ["project", "teams", "startedAt", "completedAt", "processes"] as const) {
+        if (partial[field] !== undefined) (meta as unknown as Record<string, unknown>)[field] = partial[field];
       }
-      for (const task of partial.tasks) {
-        this.writeTask(task);
+      if (partial.tasks !== undefined) {
+        for (const id of this.ids(tx, "tasks")) tx.write(this.taskPath(id), null);
+        for (const task of partial.tasks) this.write(tx, this.taskPath(task.id), task);
       }
-    }
-
-    this.writeMeta(meta);
+      this.write(tx, "_meta.json", meta);
+    });
   }
-
-  async createTask(
-    task: Omit<Task, "id" | "status" | "retries" | "createdAt" | "updatedAt"> & { status?: TaskStatus },
-  ): Promise<Task> {
-    const now = new Date().toISOString();
-    const newTask: Task = {
-      ...task,
-      id: nanoid(),
-      status: task.status ?? "pending",
-      retries: 0,
-      createdAt: now,
-      updatedAt: now,
-    };
-    this.writeTask(newTask);
-    return newTask;
+  async createTask(input: Omit<Task, "id" | "status" | "retries" | "createdAt" | "updatedAt"> & { status?: TaskStatus }): Promise<Task> {
+    return this.transaction(tx => {
+      const now = new Date().toISOString();
+      const task: Task = { ...input, id: nanoid(), status: input.status ?? "pending", retries: 0, createdAt: now, updatedAt: now };
+      this.write(tx, this.taskPath(task.id), task);
+      return task;
+    });
   }
-
-  async getTask(taskId: string): Promise<Task | undefined> {
-    return this.readTask(taskId);
+  async getTask(id: string): Promise<Task | undefined> { return this.transaction(tx => this.readTask(tx, id)); }
+  async listTasks(): Promise<Task[]> { return this.transaction(tx => this.tasks(tx)); }
+  async unsafeSetStatus(id: string, status: TaskStatus, reason: string): Promise<Task> {
+    return this.transaction(tx => {
+      const existing = this.readTask(tx, id);
+      if (!existing) throw new Error(`Task not found: ${id}`);
+      const updated = { ...existing, status, updatedAt: new Date().toISOString() };
+      this.write(tx, this.taskPath(id), updated);
+      console.warn(`[unsafeSetStatus] ${id}: ${existing.status} → ${status} — ${reason}`);
+      return updated;
+    });
   }
-
-  async listTasks(): Promise<Task[]> {
-    const ids = this.listTaskIds();
-    const tasks: Task[] = [];
-    for (const id of ids) {
-      const task = this.readTask(id);
-      if (task) tasks.push(task);
-    }
-    tasks.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
-    return tasks;
+  async updateTask(id: string, updates: Partial<Omit<Task, "id" | "status">>): Promise<Task> {
+    return this.transaction(tx => {
+      const existing = this.readTask(tx, id);
+      if (!existing) throw new Error(`Task not found: ${id}`);
+      const updated = { ...existing, ...updates, id, updatedAt: new Date().toISOString() };
+      this.write(tx, this.taskPath(id), updated);
+      return updated;
+    });
   }
-
-  async unsafeSetStatus(taskId: string, newStatus: TaskStatus, reason: string): Promise<Task> {
-    const existing = this.readTask(taskId);
-    if (!existing) throw new Error(`Task not found: ${taskId}`);
-    const from = existing.status;
-    const updated: Task = { ...existing, status: newStatus, updatedAt: new Date().toISOString() };
-    this.writeTask(updated);
-    console.warn(`[unsafeSetStatus] ${taskId}: ${from} → ${newStatus} — ${reason}`);
-    return updated;
-  }
-
-  async updateTask(taskId: string, updates: Partial<Omit<Task, "id" | "status">>): Promise<Task> {
-    const existing = this.readTask(taskId);
-    if (!existing) throw new Error(`Task not found: ${taskId}`);
-
-    const updated: Task = {
-      ...existing,
-      ...updates,
-      id: taskId,
-      updatedAt: new Date().toISOString(),
-    };
-    this.writeTask(updated);
-    return updated;
-  }
-
-  async deleteTask(taskId: string): Promise<boolean> {
-    const path = this.taskPath(taskId);
-    if (!existsSync(path)) return false;
-    try {
-      unlinkSync(path);
+  async deleteTask(id: string): Promise<boolean> {
+    return this.transaction(tx => {
+      if (!tx.exists(this.taskPath(id))) return false;
+      tx.write(this.taskPath(id), null);
       return true;
-    } catch {
-      return false;
-    }
+    });
   }
-
   async deleteTasks(filter: (task: Task) => boolean): Promise<number> {
-    const all = await this.listTasks();
-    const toRemove = all.filter(filter);
-    for (const task of toRemove) {
-      this.deleteTask(task.id);
-    }
-    return toRemove.length;
+    return this.transaction(tx => {
+      const removed = this.tasks(tx).filter(filter);
+      for (const task of removed) tx.write(this.taskPath(task.id), null);
+      return removed.length;
+    });
+  }
+  async transition(id: string, status: TaskStatus): Promise<Task> {
+    return this.transaction(tx => {
+      const existing = this.readTask(tx, id);
+      if (!existing) throw new Error(`Task not found: ${id}`);
+      assertValidTransition(existing.status, status);
+      const updated = { ...existing, status, updatedAt: new Date().toISOString(),
+        retries: existing.retries + (status === "pending" && existing.status === "failed" ? 1 : 0) };
+      this.write(tx, this.taskPath(id), updated);
+      return updated;
+    });
   }
 
-  async transition(taskId: string, newStatus: TaskStatus): Promise<Task> {
-    const existing = this.readTask(taskId);
-    if (!existing) throw new Error(`Task not found: ${taskId}`);
-
-    assertValidTransition(existing.status, newStatus);
-
-    let retries = existing.retries;
-    if (newStatus === "pending" && existing.status === "failed") {
-      retries += 1;
-    }
-
-    const updated: Task = {
-      ...existing,
-      status: newStatus,
-      retries,
-      updatedAt: new Date().toISOString(),
-    };
-    this.writeTask(updated);
-    return updated;
+  async createMission(input: Omit<Mission, "id" | "createdAt" | "updatedAt">): Promise<Mission> {
+    return this.transaction(tx => {
+      const now = new Date().toISOString();
+      const mission: Mission = { ...input, id: nanoid(), createdAt: now, updatedAt: now };
+      this.write(tx, this.missionPath(mission.id), mission);
+      return mission;
+    });
   }
-
-  // ── Mission persistence ──
-
-  async createMission(mission: Omit<Mission, "id" | "createdAt" | "updatedAt">): Promise<Mission> {
-    const now = new Date().toISOString();
-    const newMission: Mission = {
-      ...mission,
-      id: nanoid(),
-      createdAt: now,
-      updatedAt: now,
-    };
-    this.writeMission(newMission);
-    return newMission;
+  async getMission(id: string): Promise<Mission | undefined> { return this.transaction(tx => this.readMission(tx, id)); }
+  async getMissionByName(name: string): Promise<Mission | undefined> { return this.transaction(tx => this.missions(tx).find(m => m.name === name)); }
+  async listMissions(): Promise<Mission[]> { return this.transaction(tx => this.missions(tx)); }
+  async updateMission(id: string, updates: Partial<Omit<Mission, "id">>): Promise<Mission> {
+    return this.transaction(tx => {
+      const existing = this.readMission(tx, id);
+      if (!existing) throw new Error(`Mission not found: ${id}`);
+      const updated = { ...existing, ...updates, id, updatedAt: new Date().toISOString() };
+      this.write(tx, this.missionPath(id), updated);
+      return updated;
+    });
   }
-
-  async getMission(missionId: string): Promise<Mission | undefined> {
-    return this.readMission(missionId);
-  }
-
-  async getMissionByName(name: string): Promise<Mission | undefined> {
-    for (const id of this.listMissionIds()) {
-      const mission = this.readMission(id);
-      if (mission && mission.name === name) return mission;
-    }
-    return undefined;
-  }
-
-  async listMissions(): Promise<Mission[]> {
-    const missions: Mission[] = [];
-    for (const id of this.listMissionIds()) {
-      const mission = this.readMission(id);
-      if (mission) missions.push(mission);
-    }
-    missions.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-    return missions;
-  }
-
-  async updateMission(missionId: string, updates: Partial<Omit<Mission, "id">>): Promise<Mission> {
-    const existing = this.readMission(missionId);
-    if (!existing) throw new Error(`Mission not found: ${missionId}`);
-
-    const updated: Mission = {
-      ...existing,
-      ...updates,
-      id: missionId,
-      updatedAt: new Date().toISOString(),
-    };
-    this.writeMission(updated);
-    return updated;
-  }
-
-  async deleteMission(missionId: string): Promise<boolean> {
-    const path = this.missionPath(missionId);
-    if (!existsSync(path)) return false;
-    try {
-      unlinkSync(path);
+  async deleteMission(id: string): Promise<boolean> {
+    return this.transaction(tx => {
+      if (!tx.exists(this.missionPath(id))) return false;
+      tx.write(this.missionPath(id), null);
       return true;
-    } catch {
-      return false;
-    }
+    });
   }
+  async nextMissionName(): Promise<string> { return this.transaction(tx => `mission-${this.ids(tx, "missions").length + 1}`); }
 
-  async nextMissionName(): Promise<string> {
-    const count = this.listMissionIds().length;
-    return `mission-${count + 1}`;
+  private receipt(tx: ProjectFileTransaction, missionId: string, key: string): MissionExecutionReceipt | undefined {
+    const raw = tx.read(this.executionPath(missionId, key));
+    if (raw === null) return undefined;
+    const stored = normalizeMissionExecutionCommit(JSON.parse(raw));
+    if (stored.receipt.missionId !== missionId || stored.receipt.idempotencyKey !== key) throw new Error("Invalid stored Mission execution receipt");
+    return stored.receipt;
   }
-
-  async close(): Promise<void> {
-    // No-op for filesystem store
+  async getMissionExecution(missionId: string, key: string): Promise<MissionExecutionReceipt | undefined> {
+    return this.transaction(tx => this.receipt(tx, missionId, key));
   }
+  async commitMissionExecution(request: MissionExecutionCommit): Promise<{ receipt: MissionExecutionReceipt; created: boolean }> {
+    const input = normalizeMissionExecutionCommit(request);
+    return this.transaction(tx => {
+      const receipt = this.receipt(tx, input.receipt.missionId, input.receipt.idempotencyKey);
+      if (receipt) return { receipt, created: false };
+      const identityPath = `.runtime/mission-executions/by-id/${input.receipt.executionId}.json`;
+      if (tx.exists(identityPath)) throw new MissionExecutionError("mission_execution_conflict", "Mission execution identity is already in use");
+      const mission = admitMissionExecution(input, this.readMission(tx, input.expected.id), this.admissionTasks(tx));
+      for (const task of input.receipt.tasks) this.write(tx, this.taskPath(task.id), task);
+      this.write(tx, this.missionPath(mission.id), mission);
+      this.write(tx, this.executionPath(mission.id, input.receipt.idempotencyKey), input);
+      this.write(tx, identityPath, { missionId: mission.id, idempotencyKey: input.receipt.idempotencyKey });
+      return { receipt: input.receipt, created: true };
+    });
+  }
+  async close(): Promise<void> { /* per-operation coordinator connections close synchronously */ }
 }

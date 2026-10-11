@@ -26,8 +26,8 @@ export type { Dialect } from "./utils.js";
 // ── Schema sets ───────────────────────────────────────────────────────
 
 import {
-  tasksPg, missionsPg, metadataPg, processesPg,
-  tasksSqlite, missionsSqlite, metadataSqlite, processesSqlite,
+  tasksPg, missionsPg, missionExecutionsPg, metadataPg, processesPg,
+  tasksSqlite, missionsSqlite, missionExecutionsSqlite, metadataSqlite, processesSqlite,
 } from "./schema/tasks.js";
 import { runsPg, runsSqlite } from "./schema/runs.js";
 import {
@@ -97,7 +97,7 @@ import { DrizzleChannelManagementStore } from "./stores/channel-management-store
 
 // ── Store bundle type ─────────────────────────────────────────────────
 
-import type { MissionStore } from "@polpo-ai/core";
+import type { MissionStore, MissionExecutionStore } from "@polpo-ai/core";
 import type { TaskStore } from "@polpo-ai/core/task-store";
 import type { RunStore } from "@polpo-ai/core/run-store";
 import type {
@@ -124,6 +124,7 @@ import type { ChannelManagementStore } from "@polpo-ai/channels";
 export interface DrizzleStores {
   /** Mission persistence — same instance as taskStore (implements both). */
   missionStore: MissionStore;
+  missionExecutionStore: MissionExecutionStore;
   taskStore: TaskStore;
   runStore: RunStore;
   runEventStore: RunEventStore;
@@ -176,12 +177,13 @@ export function createPgStores(
   options: CreatePgStoresOptions = {},
 ): DrizzleStores {
   const taskStore = new DrizzleTaskStore(db, {
-    tasks: tasksPg, missions: missionsPg, metadata: metadataPg, processes: processesPg,
-  }, "pg");
+    tasks: tasksPg, missions: missionsPg, missionExecutions: missionExecutionsPg, metadata: metadataPg, processes: processesPg,
+  }, "pg", options.transaction);
   return {
     taskStore,
     // Same instance: the Drizzle task store also implements the mission block.
     missionStore: taskStore as unknown as MissionStore,
+    missionExecutionStore: taskStore,
     runStore: new DrizzleRunStore(db, runsPg, "pg"),
     runEventStore: new DrizzleRunEventStore(db, {
       sequences: runEventSequencesPg,
@@ -235,12 +237,13 @@ export function createPgStores(
  */
 export function createSqliteStores(db: any): DrizzleStores {
   const taskStore = new DrizzleTaskStore(db, {
-    tasks: tasksSqlite, missions: missionsSqlite, metadata: metadataSqlite, processes: processesSqlite,
+    tasks: tasksSqlite, missions: missionsSqlite, missionExecutions: missionExecutionsSqlite, metadata: metadataSqlite, processes: processesSqlite,
   }, "sqlite");
   return {
     taskStore,
     // Same instance: the Drizzle task store also implements the mission block.
     missionStore: taskStore as unknown as MissionStore,
+    missionExecutionStore: taskStore,
     runStore: new DrizzleRunStore(db, runsSqlite, "sqlite"),
     runEventStore: new DrizzleRunEventStore(db, {
       sequences: runEventSequencesSqlite,

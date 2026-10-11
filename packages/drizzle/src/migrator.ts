@@ -20,7 +20,7 @@ import { sql } from "drizzle-orm";
 import { getTableConfig } from "drizzle-orm/pg-core";
 import { ensurePgTables, ensurePgIndexes } from "./migrate.js";
 import {
-  tasksPg, missionsPg, metadataPg, processesPg,
+  tasksPg, missionsPg, missionExecutionsPg, metadataPg, processesPg,
   runsPg, loopRunsPg,
   runEventSequencesPg, runStreamEventsPg, runExecutionLeasesPg,
   runCancellationRequestsPg,
@@ -34,7 +34,7 @@ import {
 } from "./schema/index.js";
 
 const PG_TABLES = [
-  tasksPg, missionsPg, metadataPg, processesPg,
+  tasksPg, missionsPg, missionExecutionsPg, metadataPg, processesPg,
   runsPg, loopRunsPg,
   runEventSequencesPg, runStreamEventsPg, runExecutionLeasesPg,
   runCancellationRequestsPg,

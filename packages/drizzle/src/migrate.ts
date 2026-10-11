@@ -65,6 +65,8 @@ export async function ensurePgTables(db: any): Promise<void> {
   await db.execute(sql`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS routing JSONB`);
   // Explicit per-task project loop — additive, idempotent
   await db.execute(sql`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS loop TEXT`);
+  await db.execute(sql`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS execution_mode TEXT`);
+  await db.execute(sql`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS question_rounds INTEGER NOT NULL DEFAULT 0`);
 
   await db.execute(sql`CREATE TABLE IF NOT EXISTS missions (
     id               TEXT PRIMARY KEY,
@@ -83,6 +85,15 @@ export async function ensurePgTables(db: any): Promise<void> {
   )`);
 
   await db.execute(sql`ALTER TABLE missions ADD COLUMN IF NOT EXISTS "user" TEXT`);
+
+  await db.execute(sql`CREATE TABLE IF NOT EXISTS mission_executions (
+    mission_id TEXT NOT NULL,
+    idempotency_key TEXT NOT NULL,
+    execution_id TEXT NOT NULL UNIQUE,
+    admission JSONB NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (mission_id, idempotency_key)
+  )`);
 
   await db.execute(sql`CREATE TABLE IF NOT EXISTS processes (
     agent_name TEXT NOT NULL,

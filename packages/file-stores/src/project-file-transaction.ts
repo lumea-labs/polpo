@@ -123,7 +123,7 @@ function writablePath(root: string, path: string): string {
 }
 
 /** Synchronous staged view. Never retain it across an await or after callback
- * return. All readers and writers of agent/team files share this coordinator. */
+ * return. Agent/team and task/Mission files share this coordinator. */
 export class ProjectFileTransaction {
   private readonly changes = new Map<string, FileChange>();
   private readonly observed = new Map<string, string | null>();
@@ -209,7 +209,7 @@ export function withProjectFileTransaction<T>(polpoDir: string, fn: (transaction
   try { SQLite = require("better-sqlite3") as typeof Database; }
   catch {
     throw new ProjectFileTransactionError("file_coordinator_unavailable",
-      "Agent and team file persistence requires better-sqlite3 for cross-process locking; install optional dependencies");
+      "Project file persistence requires better-sqlite3 for cross-process locking; install optional dependencies");
   }
   durableDirectory(safePath(root, runtime));
   const databasePath = safePath(root, `${runtime}/coordinator.sqlite`);

@@ -4,7 +4,7 @@
 `agents.json` and directory definitions (`agents/<name>/agent.json` plus
 `instructions.md`). `FileTeamStore` shares the same project coordinator.
 
-Agent and team persistence requires the optional `better-sqlite3` dependency.
+Agent, team, task and Mission persistence requires the optional `better-sqlite3` dependency.
 Install optional dependencies on hosts using these stores. If its native binding
 is unavailable, access fails with `file_coordinator_unavailable`; there is no
 unlocked fallback. Other file stores do not acquire this coordinator.
@@ -71,3 +71,27 @@ Direct edits detected without reconciliation fail with
 concurrency protocol; in particular an unobserved delete/recreate with identical
 content cannot be detected automatically. For live edits, use the runtime API or
 coordinated CLI operations.
+
+## Atomic Mission admission
+
+`FileTaskStore` also implements the core `MissionExecutionStore` capability
+(`@polpo-ai/core/mission-store`). `commitMissionExecution()` accepts a captured
+Mission and a complete plan of pending tasks, validates their principal and
+dependencies, then commits all tasks, Mission activation/counter and an immutable
+receipt in one project-file transaction. Ordinary task/Mission reads and writes
+participate in the coordinator, so they recover a committed journal before
+observing task state. No partially published task set is visible to participants.
+
+Retry the same Mission ID and occurrence key after an uncertain acknowledgement.
+The receipt preserves the originally admitted task snapshots and user even if
+the Mission is subsequently edited or completed. Read TaskStore for current task
+status. A new occurrence needs a new key and a fresh Mission snapshot. Receipts
+under `.runtime/mission-executions/` survive task/Mission deletion; retain them
+for as long as old deliveries can be retried. They are private runtime state,
+not authored project configuration.
+
+This is a persistence capability. It does not itself make the Mission executor,
+HTTP routes or schedule delivery idempotent. Those callers must integrate it;
+hooks, volatile agents and checkpoint/delay preparation are separate runtime
+work. Old task/Mission writers must be stopped during rollout or rollback, just
+as old agent writers must be stopped when adopting the coordinator.

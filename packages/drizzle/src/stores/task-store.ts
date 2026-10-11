@@ -1,4 +1,4 @@
-import { eq, desc, asc } from "drizzle-orm";
+import { eq, desc, asc, and, or, inArray, notInArray, sql } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import type { TaskStore } from "@polpo-ai/core/task-store";
 import type {
@@ -6,6 +6,11 @@ import type {
 } from "@polpo-ai/core/types";
 import { assertValidTransition } from "@polpo-ai/core/state-machine";
 import { type Dialect, serializeJson, deserializeJson, extractAffectedRows } from "../utils.js";
+import {
+  admitMissionExecution, normalizeMissionExecutionCommit, validateMissionExecutionKey,
+  MissionExecutionError, type MissionExecutionStore, type MissionExecutionCommit, type MissionExecutionReceipt,
+} from "@polpo-ai/core/mission-store";
+import type { DrizzleTransactionProvider } from "./session-store.js";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyTable = any;
@@ -15,13 +20,15 @@ export interface TaskStoreSchema {
   missions: AnyTable;
   metadata: AnyTable;
   processes: AnyTable;
+  missionExecutions?: AnyTable;
 }
 
-export class DrizzleTaskStore implements TaskStore {
+export class DrizzleTaskStore implements TaskStore, MissionExecutionStore {
   constructor(
     private db: any,
     private schema: TaskStoreSchema,
     private dialect: Dialect,
+    private transactionProvider?: DrizzleTransactionProvider,
   ) {}
 
   // ── Helpers ──────────────────────────────────────────────────────────
@@ -47,6 +54,7 @@ export class DrizzleTaskStore implements TaskStore {
       result: deserializeJson(row.result, undefined, d),
       phase: row.phase ?? undefined,
       fixAttempts: row.fixAttempts ?? 0,
+      questionRounds: row.questionRounds ?? 0,
       resolutionAttempts: row.resolutionAttempts ?? 0,
       originalDescription: row.originalDescription ?? undefined,
       sessionId: row.sessionId ?? undefined,
@@ -54,9 +62,10 @@ export class DrizzleTaskStore implements TaskStore {
       outcomes: deserializeJson(row.outcomes, undefined, d),
       expectedOutcomes: deserializeJson(row.expectedOutcomes, undefined, d),
       deadline: row.deadline ?? undefined,
-      priority: row.priority ? Number(row.priority) : undefined,
-      sideEffects: row.sideEffects ? Boolean(row.sideEffects) : undefined,
+      priority: row.priority != null ? Number(row.priority) : undefined,
+      sideEffects: row.sideEffects != null ? Boolean(row.sideEffects) : undefined,
       revisionCount: row.revisionCount ?? undefined,
+      executionMode: row.executionMode ?? undefined,
       sandbox: deserializeJson(row.sandbox, undefined, d),
       routing: deserializeJson(row.routing, undefined, d),
       user: row.user ?? undefined,
@@ -86,6 +95,7 @@ export class DrizzleTaskStore implements TaskStore {
     if (task.result !== undefined) v.result = serializeJson(task.result, d);
     if (task.phase !== undefined) v.phase = task.phase;
     if (task.fixAttempts !== undefined) v.fixAttempts = task.fixAttempts;
+    if (task.questionRounds !== undefined) v.questionRounds = task.questionRounds;
     if (task.resolutionAttempts !== undefined) v.resolutionAttempts = task.resolutionAttempts;
     if (task.originalDescription !== undefined) v.originalDescription = task.originalDescription;
     if (task.sessionId !== undefined) v.sessionId = task.sessionId;
@@ -96,6 +106,7 @@ export class DrizzleTaskStore implements TaskStore {
     if (task.priority !== undefined) v.priority = String(task.priority);
     if (task.sideEffects !== undefined) v.sideEffects = task.sideEffects ? 1 : 0;
     if (task.revisionCount !== undefined) v.revisionCount = task.revisionCount;
+    if (task.executionMode !== undefined) v.executionMode = task.executionMode;
     if (task.sandbox !== undefined) v.sandbox = serializeJson(task.sandbox, d);
     if (task.routing !== undefined) v.routing = serializeJson(task.routing, d);
     if (task.user !== undefined) v.user = task.user;
@@ -114,7 +125,7 @@ export class DrizzleTaskStore implements TaskStore {
       status: row.status,
       schedule: row.schedule ?? undefined,
       endDate: row.endDate ?? undefined,
-      qualityThreshold: row.qualityThreshold ? Number(row.qualityThreshold) : undefined,
+      qualityThreshold: row.qualityThreshold != null ? Number(row.qualityThreshold) : undefined,
       deadline: row.deadline ?? undefined,
       notifications: deserializeJson(row.notifications, undefined, d),
       executionCount: row.executionCount ?? 0,
@@ -310,6 +321,87 @@ export class DrizzleTaskStore implements TaskStore {
   }
 
   // ── Missions ─────────────────────────────────────────────────────────
+
+  private executionTable(): AnyTable {
+    if (!this.schema.missionExecutions) throw new MissionExecutionError("mission_execution_unsupported", "Mission execution persistence is not configured");
+    return this.schema.missionExecutions;
+  }
+
+  private receiptFromRow(row: any): MissionExecutionReceipt | undefined {
+    if (!row) return undefined;
+    const input = normalizeMissionExecutionCommit(deserializeJson(row.admission, undefined, this.dialect));
+    if (input.receipt.missionId !== row.missionId || input.receipt.idempotencyKey !== row.idempotencyKey
+      || input.receipt.executionId !== row.executionId || input.receipt.createdAt !== row.createdAt) {
+      throw new MissionExecutionError("mission_execution_invalid", "Invalid stored Mission execution");
+    }
+    return input.receipt;
+  }
+
+  async getMissionExecution(missionId: string, idempotencyKey: string): Promise<MissionExecutionReceipt | undefined> {
+    validateMissionExecutionKey(missionId, idempotencyKey);
+    const table = this.executionTable();
+    const rows = await this.db.select().from(table).where(and(eq(table.missionId, missionId), eq(table.idempotencyKey, idempotencyKey)));
+    return this.receiptFromRow(rows[0]);
+  }
+
+  async commitMissionExecution(raw: MissionExecutionCommit): Promise<{ receipt: MissionExecutionReceipt; created: boolean }> {
+    const input = normalizeMissionExecutionCommit(raw);
+    const { receipt } = input, table = this.executionTable(), { tasks, missions } = this.schema;
+    const receiptQuery = (db: any) => db.select().from(table)
+      .where(and(eq(table.missionId, receipt.missionId), eq(table.idempotencyKey, receipt.idempotencyKey)));
+    const identityQuery = (db: any) => db.select({ executionId: table.executionId }).from(table).where(eq(table.executionId, receipt.executionId));
+    const assertUnusedIdentity = (row: unknown) => {
+      if (row) throw new MissionExecutionError("mission_execution_conflict", "Mission execution identity is already in use");
+    };
+    const missionQuery = (db: any) => db.select().from(missions).where(eq(missions.id, receipt.missionId));
+    const conflictsQuery = (db: any) => db.select().from(tasks).where(or(
+      inArray(tasks.id, receipt.tasks.map(task => task.id)),
+      and(inArray(tasks.title, receipt.tasks.map(task => task.title)), notInArray(tasks.status, ["done", "failed"])),
+    ));
+    const missionValues = (current: any, conflicts: any[]) => {
+      const mission = admitMissionExecution(input, current ? this.rowToMission(current) : undefined, conflicts.map(row => this.rowToTask(row)));
+      return { status: mission.status, executionCount: mission.executionCount, updatedAt: mission.updatedAt,
+        ...(input.notifications === undefined ? {} : { notifications: serializeJson(input.notifications, this.dialect) }) };
+    };
+    const record = { missionId: receipt.missionId, idempotencyKey: receipt.idempotencyKey, executionId: receipt.executionId,
+      admission: serializeJson(input, this.dialect), createdAt: receipt.createdAt };
+    const taskValues = receipt.tasks.map(task => this.taskToValues(task));
+
+    if (this.dialect === "sqlite") {
+      // better-sqlite3 requires a synchronous callback. Awaiting a Drizzle query
+      // here would commit before the writes; run/get/all execute inside BEGIN.
+      return this.db.transaction((tx: any) => {
+        const existing = this.receiptFromRow(receiptQuery(tx).get());
+        if (existing) return { receipt: existing, created: false };
+        assertUnusedIdentity(identityQuery(tx).get());
+        const values = missionValues(missionQuery(tx).get(), conflictsQuery(tx).all());
+        // One row at a time stays below SQLite's parameter limit for large plans.
+        for (const task of taskValues) tx.insert(tasks).values(task).run();
+        tx.update(missions).set(values).where(eq(missions.id, receipt.missionId)).run();
+        tx.insert(table).values(record).run();
+        return { receipt, created: true };
+      }, { behavior: "immediate" });
+    }
+
+    const execute = async (tx: any) => {
+      // Serialize admission within this project's task table, including across
+      // different Missions whose active titles could conflict. Ordinary task
+      // writes wait for this short transaction; readers can see committed work.
+      await tx.execute(sql`LOCK TABLE ${tasks} IN SHARE ROW EXCLUSIVE MODE`);
+      const existing = this.receiptFromRow((await receiptQuery(tx))[0]);
+      if (existing) return { receipt: existing, created: false };
+      assertUnusedIdentity((await identityQuery(tx))[0]);
+      const current = (await missionQuery(tx).for("update"))[0];
+      const values = missionValues(current, await conflictsQuery(tx));
+      await tx.insert(tasks).values(taskValues);
+      await tx.update(missions).set(values).where(eq(missions.id, receipt.missionId));
+      await tx.insert(table).values(record);
+      return { receipt, created: true };
+    };
+    if (this.transactionProvider) return this.transactionProvider(execute);
+    if (typeof this.db.transaction !== "function") throw new MissionExecutionError("mission_execution_unsupported", "Mission execution requires an interactive transaction");
+    return this.db.transaction(execute);
+  }
 
   async createMission(input: Omit<Mission, "id" | "createdAt" | "updatedAt">): Promise<Mission> {
     const now = new Date().toISOString();

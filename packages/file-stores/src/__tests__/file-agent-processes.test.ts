@@ -6,6 +6,9 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { FileAgentStore } from "../file-agent-store.js";
+import { FileTaskStore } from "../file-task-store.js";
+import { randomUUID } from "node:crypto";
+import type { Mission, Task } from "@polpo-ai/core/types";
 
 const directories: string[] = [];
 const children = new Set<ChildProcessWithoutNullStreams>();
@@ -57,10 +60,69 @@ async function worker(dir: string, mode: string, parameter = "") {
     kill: async () => { child.kill("SIGKILL"); await closed; } };
 }
 
+async function missionFixture() {
+  const { dir } = await fixture();
+  const store = new FileTaskStore(dir);
+  const mission = await store.createMission({ name: "Process mission", data: '{"tasks":[]}', status: "recurring", user: "customer-a" });
+  return { dir, store, mission };
+}
+function missionPlan(mission: Mission, key = "occurrence") {
+  const createdAt = new Date().toISOString(), id = randomUUID();
+  const task = (taskId: string, title: string, dependsOn: string[]): Task => ({ id: taskId, title, description: title,
+    assignTo: "support", user: mission.user, missionId: mission.id, group: mission.name, status: "pending", retries: 0,
+    maxRetries: 0, dependsOn, expectations: [], metrics: [], createdAt, updatedAt: createdAt });
+  return { expected: mission, receipt: { executionId: randomUUID(), missionId: mission.id, idempotencyKey: key,
+    sequence: 1, group: mission.name, user: mission.user, createdAt, tasks: [task(id, "First", []), task(randomUUID(), "Second", [id])] } };
+}
+
+describe("Mission admission across real file-store processes", () => {
+  it.each([false, true])("serializes concurrent Mission commits (duplicate=%s)", async duplicate => {
+    const f = await missionFixture();
+    const [a, b] = await Promise.all([worker(f.dir, "mission"), worker(f.dir, "mission")]);
+    a.start(missionPlan(f.mission));
+    b.start(missionPlan(f.mission, duplicate ? "occurrence" : "other-occurrence"));
+    const results = await Promise.all([a.next(m => m.ok || m.error), b.next(m => m.ok || m.error)]);
+    await Promise.all([a.closed, b.closed]);
+    expect(results.filter(r => r.created)).toHaveLength(1);
+    if (duplicate) {
+      expect(results.every(r => r.ok)).toBe(true);
+      expect(results[0].receipt).toEqual(results[1].receipt);
+    } else expect(results.filter(r => r.error)).toEqual([{ error: "mission_execution_conflict" }]);
+    expect(await f.store.listTasks()).toHaveLength(2);
+    expect((await f.store.getMission(f.mission.id))?.executionCount).toBe(1);
+  });
+
+  it("recovers all task, Mission and receipt files after a process dies at each durable checkpoint", async () => {
+    const baseline = await missionFixture(), counter = await worker(baseline.dir, "mission-count");
+    counter.start(missionPlan(baseline.mission));
+    const { checkpoints } = await counter.next(m => m.ok);
+    await counter.closed;
+    expect(checkpoints).toBeGreaterThan(10);
+    for (let index = 1; index <= checkpoints; index++) {
+      const f = await missionFixture(), input = missionPlan(f.mission);
+      const crashed = await worker(f.dir, "mission-crash", String(index));
+      crashed.start(input);
+      await crashed.next(m => m.checkpoint);
+      await crashed.kill();
+      // Every ordinary reader participates in recovery; no pending half-plan
+      // may become visible to a queue consumer after a crashed writer.
+      const tasks = await f.store.listTasks();
+      expect([0, 2]).toContain(tasks.length);
+      const current = (await f.store.getMission(f.mission.id))!;
+      expect(current.status).toBe(tasks.length ? "active" : "recurring");
+      expect(current.executionCount ?? 0).toBe(tasks.length ? 1 : 0);
+      const receipt = await f.store.getMissionExecution(f.mission.id, "occurrence");
+      expect(receipt).toEqual(tasks.length ? input.receipt : undefined);
+      expect((await f.store.commitMissionExecution(input)).receipt).toEqual(input.receipt);
+      expect(await f.store.listTasks()).toHaveLength(2);
+    }
+  }, 45_000);
+});
+
 describe("real file-store processes", () => {
-  it("fails explicitly if the OS-lock dependency is unavailable", async () => {
+  it.each(["unavailable", "mission-unavailable"])("fails explicitly if the OS-lock dependency is unavailable (%s)", async mode => {
     const { dir } = await fixture();
-    const child = await worker(dir, "unavailable");
+    const child = await worker(dir, mode);
     child.start({});
     expect(await child.next(m => m.error)).toEqual({ error: "file_coordinator_unavailable" });
     await child.closed;
