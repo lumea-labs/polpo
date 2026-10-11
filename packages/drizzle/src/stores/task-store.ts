@@ -1,8 +1,8 @@
 import { normalizeTaskExecutionReference, normalizeTaskExecutionMutation, prepareTaskExecutionClaim, prepareTaskExecutionMutation,
   TaskExecutionError, taskExecutionReference, nextTaskExecutionRevision, type ConditionalTaskExecutionStore, type TaskExecutionPrecondition, normalizeTaskExecutionPreconditions, assertTaskExecutionPreconditions, type TaskExecutionReference, type TaskExecutionMutation, type TaskExecutionState } from "@polpo-ai/core/task-execution";
 import { runRecordFromRow, runRecordToValues } from "./run-store.js";
-import { TaskApprovalError, normalizeTaskApprovalDecision, assertTaskApprovalPreconditions, type TaskApprovalDecision, type TaskApprovalChange, type TaskApprovalExecutionStore } from "@polpo-ai/core/task-execution";
-import { approvalRequestColumns, approvalRequestFromRow, approvalRequestToValues } from "./approval-store.js";
+import { TaskApprovalError, applyTaskApprovalState, type TaskApprovalState, normalizeTaskApprovalDecision, assertTaskApprovalPreconditions, type TaskApprovalDecision, type TaskApprovalChange, type TaskApprovalExecutionStore } from "@polpo-ai/core/task-execution";
+import { DrizzleApprovalStore, approvalRequestColumns, approvalRequestFromRow, approvalRequestToValues } from "./approval-store.js";
 import { eq, desc, asc, and, or, inArray, notInArray, sql, getTableColumns } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import type { TaskStore } from "@polpo-ai/core/task-store";
@@ -56,6 +56,7 @@ export class DrizzleTaskStore implements TaskStore, MissionExecutionStore, Condi
       status: row.status as TaskStatus,
       ...(row.executionRevision ? { executionRevision: row.executionRevision } : {}),
       ...(row.activeRunId == null ? {} : { activeRunId: row.activeRunId }),
+      approvalState: row.approvalState == null ? undefined : JSON.parse(row.approvalState),
       retries: row.retries,
       maxRetries: row.maxRetries,
       maxDuration: row.maxDuration ?? undefined,
@@ -101,6 +102,7 @@ export class DrizzleTaskStore implements TaskStore, MissionExecutionStore, Condi
     if (task.status !== undefined) v.status = task.status;
     if (task.executionRevision !== undefined) v.executionRevision = task.executionRevision;
     if (task.activeRunId !== undefined) v.activeRunId = task.activeRunId;
+    if (task.approvalState !== undefined) v.approvalState = JSON.stringify(task.approvalState);
     if (task.retries !== undefined) v.retries = task.retries;
     if (task.maxRetries !== undefined) v.maxRetries = task.maxRetries;
     if (task.maxDuration !== undefined) v.maxDuration = task.maxDuration;
@@ -247,7 +249,7 @@ export class DrizzleTaskStore implements TaskStore, MissionExecutionStore, Condi
 
   // ── Task CRUD ────────────────────────────────────────────────────────
 
-  async createTask(input: Omit<Task, "id" | "status" | "retries" | "createdAt" | "updatedAt" | "executionRevision" | "activeRunId"> & { status?: TaskStatus }): Promise<Task> {
+  async createTask(input: Omit<Task, "id" | "status" | "retries" | "createdAt" | "updatedAt" | "executionRevision" | "activeRunId" | "approvalState"> & { status?: TaskStatus }): Promise<Task> {
     input = { ...input, metadata: normalizeRuntimeMetadata(input.metadata) };
     const now = new Date().toISOString();
     const task: Task = {
@@ -260,6 +262,7 @@ export class DrizzleTaskStore implements TaskStore, MissionExecutionStore, Condi
     };
     delete task.executionRevision;
     delete task.activeRunId;
+    delete task.approvalState;
     await this.db.insert(this.schema.tasks).values(this.taskToValues(task));
     return task;
   }
@@ -276,7 +279,7 @@ export class DrizzleTaskStore implements TaskStore, MissionExecutionStore, Condi
     return rows.map((r) => this.rowToTask(r));
   }
 
-  async updateTask(taskId: string, updates: Partial<Omit<Task, "id" | "status" | "executionRevision" | "activeRunId">>): Promise<Task> {
+  async updateTask(taskId: string, updates: Partial<Omit<Task, "id" | "status" | "executionRevision" | "activeRunId" | "approvalState">>): Promise<Task> {
     if (updates.metadata !== undefined) updates = { ...updates, metadata: normalizeRuntimeMetadata(updates.metadata) };
     const existing = await this.getTask(taskId);
     if (!existing) throw new Error(`Task "${taskId}" not found`);
@@ -297,6 +300,7 @@ export class DrizzleTaskStore implements TaskStore, MissionExecutionStore, Condi
     delete values.status;
     delete values.executionRevision;
     delete values.activeRunId;
+    delete values.approvalState;
     const rows: any[] = await this.db.update(this.schema.tasks).set(values)
       .where(eq(this.schema.tasks.id, taskId)).returning();
     if (!rows[0]) throw new Error(`Task "${taskId}" not found`);
@@ -337,6 +341,7 @@ export class DrizzleTaskStore implements TaskStore, MissionExecutionStore, Condi
     if (newStatus === "pending") {
       updates.executionRevision = nextTaskExecutionRevision(task);
       updates.activeRunId = null;
+      updates.approvalState = null;
     }
     // Increment retries on failed → pending
     if (task.status === "failed" && newStatus === "pending") {
@@ -366,7 +371,7 @@ export class DrizzleTaskStore implements TaskStore, MissionExecutionStore, Condi
       return (await this.mutateTaskExecution(taskExecutionReference(task), { type: "requeue", countRetry: false, reason: _reason })).task;
     }
     const now = new Date().toISOString();
-    const execution = newStatus === "pending" ? { executionRevision: nextTaskExecutionRevision(task), activeRunId: null } : {};
+    const execution = newStatus === "pending" ? { executionRevision: nextTaskExecutionRevision(task), activeRunId: null, approvalState: null } : {};
     const rows = await this.db.update(this.schema.tasks)
       .set({ status: newStatus, updatedAt: now, ...execution })
       .where(and(eq(this.schema.tasks.id, taskId), eq(this.schema.tasks.executionRevision, task.executionRevision ?? 0))).returning();
@@ -392,14 +397,19 @@ export class DrizzleTaskStore implements TaskStore, MissionExecutionStore, Condi
     return this.executeTaskMutation(expected, { mutation: copied }, conditions);
   }
 
+  getTaskApprovalStore(): DrizzleApprovalStore {
+    if (!this.schema.approvals) throw new TaskApprovalError("task_approval_unsupported", "Shared approval storage is required");
+    return new DrizzleApprovalStore(this.db, this.schema.approvals, this.dialect);
+  }
+
   async commitTaskApprovalDecision(raw: TaskApprovalDecision): Promise<TaskExecutionState> {
     const input = normalizeTaskApprovalDecision(raw);
     if (!this.schema.approvals) throw new TaskApprovalError("task_approval_unsupported", "Approval decisions require shared Task, Run and Approval storage");
     const operation = input.operation?.type === "claim" ? { claim: input.operation.runId } : { mutation: input.operation };
-    return this.executeTaskMutation(input.expected, operation, input.tasks, input.approvals);
+    return this.executeTaskMutation(input.expected, operation, input.tasks, input.approvals, input.approvalState);
   }
 
-  private async executeTaskMutation(expected: TaskExecutionReference, operation: { claim: string } | { mutation?: TaskExecutionMutation }, conditions?: TaskExecutionPrecondition[], approvalChanges?: TaskApprovalChange[]): Promise<TaskExecutionState> {
+  private async executeTaskMutation(expected: TaskExecutionReference, operation: { claim: string } | { mutation?: TaskExecutionMutation }, conditions?: TaskExecutionPrecondition[], approvalChanges?: TaskApprovalChange[], approvalState?: TaskApprovalState | null): Promise<TaskExecutionState> {
     const { tasks, runs } = this.schema;
     if (!runs) throw new TaskExecutionError("task_execution_unsupported", "Task execution requires shared Task and Run storage");
     const runId = "claim" in operation ? operation.claim : expected.runId;
@@ -420,7 +430,7 @@ export class DrizzleTaskStore implements TaskStore, MissionExecutionStore, Condi
       const requests = new Map(rows.map(row => [row.id, approvalRequestFromRow(row)]));
       assertTaskApprovalPreconditions(approvalChanges!, id => requests.get(id));
     };
-    const readOnlyTask = !("claim" in operation) && operation.mutation === undefined;
+    const readOnlyTask = !("claim" in operation) && operation.mutation === undefined && approvalState === undefined;
     const prepare = (taskRow: any, runRow: any) => {
       const task = taskRow ? this.rowToTask(taskRow) : undefined;
       const run = runRow ? runRecordFromRow(runRow, this.dialect) : undefined;
@@ -430,6 +440,7 @@ export class DrizzleTaskStore implements TaskStore, MissionExecutionStore, Condi
         ? prepareTaskExecutionClaim(task, expected, operation.claim, now)
         : prepareTaskExecutionMutation(task, run, expected, operation.mutation ?? { type: "patch", updates: {} }, now);
       if (readOnlyTask) state = { task: task!, ...(run ? { run } : {}) };
+      state = applyTaskApprovalState(state, approvalState);
       const values = this.taskToValues(state.task);
       const columns = getTableColumns(tasks);
       for (const [field, value] of Object.entries(state.task)) {

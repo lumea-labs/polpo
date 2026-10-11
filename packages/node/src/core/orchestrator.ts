@@ -596,10 +596,10 @@ export class Orchestrator extends TypedEmitter {
     this.assessor = new AssessmentOrchestrator(ctx);
 
     // Initialize approval gates if configured
-    if (this.config.settings.approvalGates && this.config.settings.approvalGates.length > 0) {
+    {
       const approvalStore = ctx.approvalStore ?? new FileApprovalStore(this.polpoDir);
       this.approvalMgr = new ApprovalManager(ctx, approvalStore);
-      this.approvalMgr.init();
+      await this.approvalMgr.init();
     }
 
     // Initialize escalation manager if configured
@@ -997,7 +997,7 @@ export class Orchestrator extends TypedEmitter {
     await this.registry.setState({ processes: [], completedAt: new Date().toISOString() });
     if (this.configReloadTimer) clearTimeout(this.configReloadTimer);
     this.configWatcher?.close();
-    this.approvalMgr?.dispose();
+    await this.approvalMgr?.close();
     this.escalationMgr?.dispose();
     this.slaMonitor?.dispose();
     this.qualityController?.dispose();
@@ -1038,7 +1038,7 @@ export class Orchestrator extends TypedEmitter {
     this.slaMonitor = undefined;
     this.escalationMgr?.dispose();
     this.escalationMgr = undefined;
-    this.approvalMgr?.dispose();
+    await this.approvalMgr?.close();
     this.approvalMgr = undefined;
 
     // 2. Update config in-place (preserves the shared reference in OrchestratorContext)
@@ -1072,10 +1072,10 @@ export class Orchestrator extends TypedEmitter {
     // 4. Re-initialize optional subsystems from new config
 
     // Approval gates
-    if (this.config.settings.approvalGates && this.config.settings.approvalGates.length > 0) {
+    {
       const approvalStore = this.drizzleStores?.approvalStore ?? new FileApprovalStore(this.polpoDir);
       this.approvalMgr = new ApprovalManager(ctx, approvalStore);
-      this.approvalMgr.init();
+      await this.approvalMgr.init();
     }
 
     // Escalation manager

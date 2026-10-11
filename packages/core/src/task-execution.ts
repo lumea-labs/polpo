@@ -2,6 +2,26 @@ import type { ApprovalRequest, Task, TaskStatus } from "./types.js";
 import type { RunRecord } from "./run-store.js";
 import { assertValidTransition } from "./state-machine.js";
 import { normalizeRuntimeMetadata } from "./runtime-metadata.js";
+import type { ApprovalStore } from "./approval-store.js";
+
+/** Host-owned pointer to a durable, single-use approval batch. Never accepted
+ * from authored Tasks, generic patches, or caller metadata. */
+export interface TaskApprovalState {
+  batchId: string;
+  phase: "waiting" | "ready" | "claimed";
+  revision: number;
+  runId?: string;
+}
+export interface TaskApprovalBinding {
+  version: 1;
+  batchId: string;
+  hook: "task:spawn" | "task:complete";
+  requestIds: string[];
+  gates: import("./types.js").ApprovalGate[];
+  /** Durable input and the effective post-hook invocation are both bound. */
+  source: Task;
+  invocation: { task: Task; agent?: import("./types.js").AgentConfig; agentIdentity?: import("./agent-store.js").AgentIdentity; result?: import("./types.js").TaskResult };
+}
 
 /** Host-owned identity of one task attempt. Revision zero represents old rows. */
 export interface TaskExecutionReference {
@@ -9,7 +29,7 @@ export interface TaskExecutionReference {
   revision: number;
   runId?: string;
 }
-export type TaskExecutionPatch = Partial<Omit<Task, "id" | "status" | "executionRevision" | "activeRunId" | "retries">>;
+export type TaskExecutionPatch = Partial<Omit<Task, "id" | "status" | "executionRevision" | "activeRunId" | "retries" | "approvalState">>;
 export type TaskExecutionMutation =
   | { type: "patch"; updates: TaskExecutionPatch }
   | { type: "transition"; status: TaskStatus; updates?: TaskExecutionPatch }
@@ -44,15 +64,20 @@ export interface TaskApprovalDecision {
   approvals: TaskApprovalChange[];
   /** Omit for a partial gate decision which must leave the waiting Task intact. */
   operation?: TaskExecutionMutation | { type: "claim"; runId: string };
+  /** Explicit authority change, separate from the public Task patch surface. */
+  approvalState?: TaskApprovalState | null;
 }
 /** This is a persistence capability, not permission to approve arbitrary work.
  * The runtime must bind gate policy and one-use consent to the execution. */
 export interface TaskApprovalExecutionStore extends ConditionalTaskExecutionStore {
   commitTaskApprovalDecision(decision: TaskApprovalDecision): Promise<TaskExecutionState>;
+  /** The request adapter bound to the SAME durable project as this Task store. */
+  getTaskApprovalStore(): ApprovalStore;
 }
 export function isTaskApprovalExecutionStore(value: unknown): value is TaskApprovalExecutionStore {
   return isConditionalTaskExecutionStore(value)
-    && typeof (value as Partial<TaskApprovalExecutionStore>).commitTaskApprovalDecision === "function";
+    && typeof (value as Partial<TaskApprovalExecutionStore>).commitTaskApprovalDecision === "function"
+    && typeof (value as Partial<TaskApprovalExecutionStore>).getTaskApprovalStore === "function";
 }
 export class TaskApprovalError extends Error {
   constructor(readonly code: "task_approval_invalid" | "task_approval_conflict" | "task_approval_unsupported", message: string) {
@@ -71,8 +96,17 @@ function checkApproval(request: ApprovalRequest, id: string, taskId: string): vo
     || typeof request.gateId !== "string" || typeof request.gateName !== "string" || typeof request.requestedAt !== "string"
     || !["pending", "approved", "rejected", "timeout"].includes(request.status)
     || [request.missionId, request.resolvedAt, request.resolvedBy, request.note].some(value => value !== undefined && typeof value !== "string")) invalidApproval();
-  const fields = new Set(["id", "gateId", "gateName", "taskId", "missionId", "status", "payload", "requestedAt", "resolvedAt", "resolvedBy", "note"]);
+  const fields = new Set(["id", "gateId", "gateName", "taskId", "missionId", "status", "payload", "requestedAt", "resolvedAt", "resolvedBy", "note", "taskExecution"]);
   if (Object.keys(request).some(key => !fields.has(key))) invalidApproval();
+  if (request.taskExecution !== undefined) {
+    const binding = request.taskExecution;
+    if (binding.version !== 1 || !validId(binding.batchId) || !["task:spawn", "task:complete"].includes(binding.hook)
+      || !Array.isArray(binding.requestIds) || !binding.requestIds.includes(id) || binding.requestIds.some(id => !validId(id))
+      || new Set(binding.requestIds).size !== binding.requestIds.length || !binding.requestIds.length || binding.requestIds.length > 1000
+      || !Array.isArray(binding.gates) || binding.gates.length !== binding.requestIds.length
+      || binding.gates[binding.requestIds.indexOf(id)]?.id !== request.gateId
+      || binding.source?.id !== taskId || binding.invocation?.task?.id !== taskId) invalidApproval();
+  }
   approvalSnapshotKey(request);
 }
 export function normalizeTaskApprovalDecision(raw: TaskApprovalDecision): TaskApprovalDecision {
@@ -107,7 +141,25 @@ export function normalizeTaskApprovalDecision(raw: TaskApprovalDecision): TaskAp
     if (input.operation?.type === "claim") normalizeTaskExecutionReference({ taskId: input.operation.runId, revision: 0 });
     else input.operation = normalizeTaskExecutionMutation(input.operation);
   }
+  if (input.approvalState !== undefined && input.approvalState !== null) {
+    const state = input.approvalState;
+    if (!validId(state.batchId) || !["waiting", "ready", "claimed"].includes(state.phase)) invalidApproval();
+    normalizeTaskExecutionReference({ taskId: input.expected.taskId, revision: state.revision, runId: state.runId });
+    if (!input.operation || !input.approvals.every(change => (change.next ?? change.expected)?.taskExecution?.batchId === state.batchId)) invalidApproval();
+  }
   return input;
+}
+/** Apply only inside the same Task/Run/Approval transaction. */
+export function applyTaskApprovalState(state: TaskExecutionState, authority: TaskApprovalState | null | undefined): TaskExecutionState {
+  if (authority === undefined) return state;
+  if (authority !== null) {
+    const ref = taskExecutionReference(state.task);
+    if (authority.revision !== ref.revision || authority.runId !== ref.runId
+      || (authority.phase === "waiting" && state.task.status !== "awaiting_approval")
+      || (authority.phase === "ready" && state.task.status !== "pending")
+      || (authority.phase === "claimed" && (state.task.status !== "in_progress" || !ref.runId))) invalidApproval();
+  }
+  return { ...state, task: { ...state.task, approvalState: authority ?? undefined } };
 }
 /** Call while all approval reads, including absence, are protected until commit. */
 export function assertTaskApprovalPreconditions(changes: readonly TaskApprovalChange[], read: (id: string) => ApprovalRequest | undefined): void {
@@ -179,7 +231,7 @@ export function normalizeTaskExecutionMutation(mutation: TaskExecutionMutation):
     && (typeof copy.reason !== "string" || copy.reason.length > 2000)) invalid();
   if (copy.type !== "cancel" && copy.updates !== undefined) {
     if (!copy.updates || typeof copy.updates !== "object" || Array.isArray(copy.updates)) invalid();
-    for (const field of ["id", "status", "executionRevision", "activeRunId", "retries"]) {
+    for (const field of ["id", "status", "executionRevision", "activeRunId", "retries", "approvalState"]) {
       if (Object.hasOwn(copy.updates, field)) invalid();
     }
     // A required field cannot be removed. Optional counters have a shared zero
@@ -242,7 +294,7 @@ export function prepareTaskExecutionClaim(task: Task | undefined, expected: Task
   if (task.status !== "pending" || task.activeRunId !== undefined) conflict();
   if (!validId(runId)) invalid();
   const claimed: Task = { ...task, executionRevision: nextTaskExecutionRevision(task), activeRunId: runId,
-    status: "in_progress", phase: task.phase ?? "execution", updatedAt: now };
+    status: "in_progress", phase: task.phase ?? "execution", updatedAt: now, approvalState: undefined };
   const run: RunRecord = { id: runId, taskId: task.id, taskExecutionRevision: claimed.executionRevision,
     agentName: task.assignTo, user: task.user, pid: 0, status: "running", startedAt: now, updatedAt: now,
     activity: { filesCreated: [], filesEdited: [], toolCalls: 0, totalTokens: 0, lastUpdate: now },
@@ -274,6 +326,7 @@ export function prepareTaskExecutionMutation(task: Task | undefined, run: RunRec
   if (requeue || awaitingApproval || mutation.type === "cancel") {
     updated.executionRevision = nextTaskExecutionRevision(task);
     updated.activeRunId = undefined;
+    updated.approvalState = undefined;
     if (requeue) {
       updated.status = "pending";
       const countRetry = mutation.type === "requeue" ? mutation.countRetry : task.status === "failed";

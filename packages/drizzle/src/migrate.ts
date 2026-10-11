@@ -64,6 +64,7 @@ export async function ensurePgTables(db: any): Promise<void> {
   await db.execute(sql`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS metadata JSONB`);
   await db.execute(sql`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS execution_revision INTEGER NOT NULL DEFAULT 0`);
   await db.execute(sql`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS active_run_id TEXT`);
+  await db.execute(sql`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS approval_state TEXT`);
   await db.execute(sql`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS sandbox JSONB`);
   await db.execute(sql`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS routing JSONB`);
   // Explicit per-task project loop — additive, idempotent
@@ -355,6 +356,8 @@ export async function ensurePgTables(db: any): Promise<void> {
     note         TEXT
   )`);
 
+
+  await db.execute(sql`ALTER TABLE approvals ADD COLUMN IF NOT EXISTS task_execution TEXT`);
 
   await db.execute(sql`CREATE TABLE IF NOT EXISTS memory (
     key     TEXT PRIMARY KEY,

@@ -1,3 +1,4 @@
+import type { ApprovalManager } from "./approval-manager.js";
 /**
  * AssessmentOrchestrator — handles the full assessment pipeline:
  * result collection → question detection → assessment → auto-correction → judge → fix/retry/fail.
@@ -58,6 +59,8 @@ export interface AssessmentPorts {
  * assessment → auto-correction → judge → fix/retry/fail.
  */
 export class AssessmentOrchestrator {
+  private approvals?: ApprovalManager;
+  setApprovalManager(manager: ApprovalManager | undefined): void { this.approvals = manager; }
   private ports: AssessmentPorts;
   private execution?: TaskExecutionReference;
 
@@ -165,8 +168,13 @@ export class AssessmentOrchestrator {
   private async transitionToDone(
     taskId: string, task: Task, result: TaskResult,
   ): Promise<boolean> {
+    // The assessment has persisted result/phase since the original Task read.
+    // Re-read while preserving this invocation's captured execution reference.
+    const authoritative = await this.readTask(taskId);
+    if (!authoritative) throw new TaskExecutionError("task_execution_conflict", "Assessment Task disappeared");
+    task = structuredClone(authoritative);
     const hookResult = await this.ctx.hooks.runBefore("task:complete", {
-      taskId, task, result,
+      taskId, task, result: structuredClone(authoritative.result ?? result),
     });
     if (hookResult.cancelled) {
       this.ctx.emitter.emit("log", {
@@ -175,6 +183,14 @@ export class AssessmentOrchestrator {
       });
       return false;
     }
+    // Completion hooks can veto, but cannot replace the persisted assessment
+    // or principal. Consent, the done Task and after-hooks expose one output.
+    task = structuredClone(authoritative);
+    result = structuredClone(authoritative.result ?? result);
+    if (!this.approvals && this.ctx.config.settings.approvalGates?.some(gate => gate.hook === "task:complete")) {
+      throw new TaskExecutionError("task_execution_unsupported", "Task approval coordinator is required");
+    }
+    if (this.approvals && !await this.approvals.checkTask("task:complete", authoritative, { task, result })) return false;
     await this.transitionTask(taskId, "done", { phase: undefined });
     this.ctx.emitter.emit("task:transition", {
       taskId,
@@ -203,6 +219,7 @@ export class AssessmentOrchestrator {
     // A separate scope per invocation keeps concurrent assessors from sharing
     // mutable attempt identity across their asynchronous work.
     const scope = new AssessmentOrchestrator(this.ctx, this.ports);
+    scope.setApprovalManager(this.approvals);
     if (execution) {
       scope.execution = normalizeTaskExecutionReference(execution);
       if (execution.taskId !== taskId) throw new TaskExecutionError("task_execution_invalid", "Result Task does not match execution");
@@ -868,6 +885,7 @@ export class AssessmentOrchestrator {
   async retryOrFail(taskId: string, _task: Task, result: TaskResult): Promise<void> {
     if (!this.execution && isTaskExecutionStore(this.ctx.taskStore)) {
       const scope = new AssessmentOrchestrator(this.ctx, this.ports);
+      scope.setApprovalManager(this.approvals);
       scope.execution = taskExecutionReference(_task);
       try { await scope.retryOrFail(taskId, _task, result); }
       catch (error) { if (!isExecutionConflict(error)) throw error; }

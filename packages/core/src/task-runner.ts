@@ -1,3 +1,4 @@
+import type { ApprovalManager } from "./approval-manager.js";
 import { nanoid } from "nanoid";
 import { isVersionedAgentStore, agentIdentityFromSnapshot, assertAgentIdentity, AgentIdentityError, type AgentIdentity } from "./agent-store.js";
 import type { OrchestratorContext } from "./orchestrator-context.js";
@@ -76,6 +77,8 @@ function pathDirname(p: string): string {
  * Spawns, monitors, and collects results from agent runner subprocesses.
  */
 export class TaskRunner {
+  private approvals?: ApprovalManager;
+  setApprovalManager(manager: ApprovalManager | undefined): void { this.approvals = manager; }
   private staleWarned = new Set<string>();
   /** Last known activity snapshot per taskId, used to diff and emit SSE events */
   private lastActivity = new Map<string, string>();
@@ -577,15 +580,20 @@ export class TaskRunner {
       throw new MissionExecutionError("mission_execution_unsupported", "Mission execution must be prepared before dispatch");
     }
     const executions = this.ctx.taskStore;
+    if (!this.approvals && (task.approvalState || this.ctx.config.settings.approvalGates?.some(gate => gate.hook === "task:spawn"))) {
+      throw new TaskExecutionError("task_execution_unsupported", "Task approval coordinator is required");
+    }
     if (!isTaskExecutionStore(executions)) {
-      if (task.activeRunId !== undefined || task.executionRevision !== undefined) {
+      if (task.activeRunId !== undefined || task.executionRevision !== undefined || task.approvalState !== undefined) {
         throw new TaskExecutionError("task_execution_unsupported", "Task execution persistence is required for this Task");
       }
       return this.prepareAndSpawn(task);
     }
     // Claim before any asynchronous preparation. The stored Task is the source
     // of the principal, assignment and input; the scheduler's snapshot may lag.
-    const claimed = await executions.claimTaskExecution(taskExecutionReference(task), nanoid());
+    const claimed = this.approvals
+      ? await this.approvals.claimTask(task, nanoid())
+      : await executions.claimTaskExecution(taskExecutionReference(task), nanoid());
     try {
       await this.prepareAndSpawn(claimed.task, claimed.run);
     } catch (error) {
@@ -652,18 +660,24 @@ export class TaskRunner {
 
     // Await durable decisions made by approval hooks before deciding whether
     // a generic veto should return this attempt to the queue.
+    const approvalSource = structuredClone(task);
     const hookResult = await this.ctx.hooks.runBefore("task:spawn", { task, agent });
     // Hooks may rewrite task content, but cannot change the admitted account.
     task = { ...task, ...callerContext, ...executionIdentity };
-    if (hookResult.cancelled) {
+    const approved = !hookResult.cancelled && (!this.approvals || await this.approvals.checkTask("task:spawn", approvalSource, { task, agent, agentIdentity }));
+    if (!approved) {
       this.ctx.emitter.emit("log", {
         level: "info",
         message: `[${task.id}] Spawn blocked by hook: ${hookResult.cancelReason ?? "no reason"}`,
       });
       if (claimed && isTaskExecutionStore(this.ctx.taskStore)) {
-        await this.ctx.taskStore.mutateTaskExecution(taskExecutionReference(task), {
-          type: "requeue", countRetry: false, reason: "Spawn blocked by hook",
-        });
+        const current = await this.ctx.taskStore.getTask(task.id);
+        // Human approval already suspended this attempt in its transaction.
+        if (current && current.activeRunId === task.activeRunId && current.executionRevision === task.executionRevision) {
+          await this.ctx.taskStore.mutateTaskExecution(taskExecutionReference(task), {
+            type: "requeue", countRetry: false, reason: "Spawn blocked by hook",
+          });
+        }
       }
       return;  // task stays pending — will be re-evaluated next tick
     }

@@ -120,6 +120,7 @@ export function normalizeMissionExecutionCommit(input: unknown): MissionExecutio
       || task.missionId !== expected.id || task.group !== receipt.group || task.user !== receipt.user
       || (task.missionExecutionId !== undefined && task.missionExecutionId !== receipt.executionId)
       || task.status !== "pending" || task.retries !== 0 || !Number.isSafeInteger(task.maxRetries) || task.maxRetries < 0
+      || task.approvalState !== undefined
       || task.createdAt !== receipt.createdAt || task.updatedAt !== receipt.createdAt || !Array.isArray(task.dependsOn)
       || task.dependsOn.some(id => !ids.has(id)) || !Array.isArray(task.expectations) || !Array.isArray(task.metrics)) invalid();
     ids.add(task.id); titles.add(task.title);

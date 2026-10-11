@@ -1,6 +1,6 @@
 import { normalizeTaskExecutionReference, normalizeTaskExecutionMutation, prepareTaskExecutionClaim, prepareTaskExecutionMutation,
   TaskExecutionError, taskExecutionReference, nextTaskExecutionRevision, type ConditionalTaskExecutionStore, type TaskExecutionPrecondition, normalizeTaskExecutionPreconditions, assertTaskExecutionPreconditions, type TaskExecutionReference, type TaskExecutionMutation, type TaskExecutionState } from "@polpo-ai/core/task-execution";
-import { normalizeTaskApprovalDecision, assertTaskApprovalPreconditions, type TaskApprovalDecision, type TaskApprovalExecutionStore } from "@polpo-ai/core/task-execution";
+import { normalizeTaskApprovalDecision, assertTaskApprovalPreconditions, applyTaskApprovalState, type TaskApprovalDecision, type TaskApprovalExecutionStore } from "@polpo-ai/core/task-execution";
 import type { RunRecord } from "@polpo-ai/core/run-store";
 import { normalizeRuntimeMetadata } from "@polpo-ai/core";
 import { join } from "node:path";
@@ -13,7 +13,7 @@ import { assertValidTransition, VALID_TRANSITIONS } from "@polpo-ai/core/state-m
 import { admitMissionExecution, normalizeMissionExecutionCommit, validateMissionExecutionKey, validateMissionExecutionFinalStatus, type MissionExecutionFinalStatus,
   MissionExecutionError, type MissionExecutionCommit, type MissionExecutionReceipt, type MissionExecutionStore } from "@polpo-ai/core/mission-store";
 import { withProjectFileTransaction, type ProjectFileTransaction } from "./project-file-transaction.js";
-import { readFileApprovalRequests, writeFileApprovalRequests } from "./file-approval-store.js";
+import { FileApprovalStore, readFileApprovalRequests, writeFileApprovalRequests } from "./file-approval-store.js";
 
 interface MetaState {
   project: string;
@@ -129,13 +129,14 @@ export class FileTaskStore implements TaskStore, MissionExecutionStore, Conditio
       this.write(tx, "_meta.json", meta);
     });
   }
-  async createTask(input: Omit<Task, "id" | "status" | "retries" | "createdAt" | "updatedAt" | "executionRevision" | "activeRunId"> & { status?: TaskStatus }): Promise<Task> {
+  async createTask(input: Omit<Task, "id" | "status" | "retries" | "createdAt" | "updatedAt" | "executionRevision" | "activeRunId" | "approvalState"> & { status?: TaskStatus }): Promise<Task> {
     input = { ...input, metadata: normalizeRuntimeMetadata(input.metadata) };
     return this.transaction(tx => {
       const now = new Date().toISOString();
       const task: Task = { ...input, id: nanoid(), status: input.status ?? "pending", retries: 0, createdAt: now, updatedAt: now };
       delete task.executionRevision;
       delete task.activeRunId;
+      delete task.approvalState;
       this.write(tx, this.taskPath(task.id), task);
       return task;
     });
@@ -150,19 +151,19 @@ export class FileTaskStore implements TaskStore, MissionExecutionStore, Conditio
         return this.mutateExecution(tx, taskExecutionReference(existing), { type: "requeue", countRetry: false, reason }).task;
       }
       const updated = { ...existing, status, updatedAt: new Date().toISOString(),
-        ...(status === "pending" ? { executionRevision: nextTaskExecutionRevision(existing), activeRunId: undefined } : {}) };
+        ...(status === "pending" ? { executionRevision: nextTaskExecutionRevision(existing), activeRunId: undefined, approvalState: undefined } : {}) };
       this.write(tx, this.taskPath(id), updated);
       console.warn(`[unsafeSetStatus] ${id}: ${existing.status} → ${status} — ${reason}`);
       return updated;
     });
   }
-  async updateTask(id: string, updates: Partial<Omit<Task, "id" | "status" | "executionRevision" | "activeRunId">>): Promise<Task> {
+  async updateTask(id: string, updates: Partial<Omit<Task, "id" | "status" | "executionRevision" | "activeRunId" | "approvalState">>): Promise<Task> {
     if (updates.metadata !== undefined) updates = { ...updates, metadata: normalizeRuntimeMetadata(updates.metadata) };
     return this.transaction(tx => {
       const existing = this.readTask(tx, id);
       if (!existing) throw new Error(`Task not found: ${id}`);
       const updated = { ...existing, ...updates, id, status: existing.status,
-        executionRevision: existing.executionRevision, activeRunId: existing.activeRunId, updatedAt: new Date().toISOString() };
+        executionRevision: existing.executionRevision, activeRunId: existing.activeRunId, approvalState: existing.approvalState, updatedAt: new Date().toISOString() };
       this.write(tx, this.taskPath(id), updated);
       return updated;
     });
@@ -191,7 +192,7 @@ export class FileTaskStore implements TaskStore, MissionExecutionStore, Conditio
       assertValidTransition(existing.status, status);
       const updated = { ...existing, status, updatedAt: new Date().toISOString(),
         retries: existing.retries + (status === "pending" && existing.status === "failed" ? 1 : 0),
-        ...(status === "pending" ? { executionRevision: nextTaskExecutionRevision(existing), activeRunId: undefined } : {}) };
+        ...(status === "pending" ? { executionRevision: nextTaskExecutionRevision(existing), activeRunId: undefined, approvalState: undefined } : {}) };
       this.write(tx, this.taskPath(id), updated);
       return updated;
     });
@@ -250,6 +251,8 @@ export class FileTaskStore implements TaskStore, MissionExecutionStore, Conditio
     });
   }
 
+  getTaskApprovalStore(): FileApprovalStore { return new FileApprovalStore(this.polpoDir); }
+
   async commitTaskApprovalDecision(raw: TaskApprovalDecision): Promise<TaskExecutionState> {
     const input = normalizeTaskApprovalDecision(raw);
     return this.transaction(tx => {
@@ -265,7 +268,8 @@ export class FileTaskStore implements TaskStore, MissionExecutionStore, Conditio
         ? prepareTaskExecutionClaim(task, input.expected, input.operation.runId, now)
         : prepareTaskExecutionMutation(task, run, input.expected, input.operation ?? { type: "patch", updates: {} }, now);
       if (input.operation === undefined) state = { task: task!, ...(run ? { run } : {}) };
-      else {
+      state = applyTaskApprovalState(state, input.approvalState);
+      if (input.operation !== undefined || input.approvalState !== undefined) {
         this.write(tx, this.taskPath(state.task.id), state.task);
         if (state.run && state.run !== run) this.write(tx, this.entityPath("runs", state.run.id), state.run);
       }

@@ -61,6 +61,7 @@ import type {
  * Implemented by TaskRunner in the shell layer.
  */
 export interface TaskRunnerPort {
+  setApprovalManager?(manager: ApprovalManager | undefined): void;
   setMissionExecutionPreparer?(prepare: (task: Task) => Promise<void>): void;
   collectResults(onResult: (taskId: string, result: TaskResult, execution?: import("./task-execution.js").TaskExecutionReference) => Promise<void> | void): Promise<void>;
   enforceHealthChecks(): Promise<void>;
@@ -74,6 +75,7 @@ export interface TaskRunnerPort {
  * Implemented by AssessmentOrchestrator in the shell layer.
  */
 export interface AssessmentOrchestratorPort {
+  setApprovalManager?(manager: ApprovalManager | undefined): void;
   handleResult(taskId: string, result: TaskResult, execution?: import("./task-execution.js").TaskExecutionReference): Promise<void>;
   retryOrFail(taskId: string, task: Task, result: TaskResult): Promise<void>;
 }
@@ -243,7 +245,7 @@ export class OrchestratorEngine {
     this.runner = deps.taskRunner;
     this.runner.setMissionExecutionPreparer?.(task => this.prepareMissionTask(task));
     this.assessor = deps.assessmentOrchestrator;
-    this.approvalMgr = deps.approvalManager;
+    this.setApprovalManager(deps.approvalManager);
     this.scheduler = deps.scheduler;
     this.slaMonitor = deps.slaMonitor;
     this.qualityController = deps.qualityController;
@@ -263,7 +265,11 @@ export class OrchestratorEngine {
   setSLAMonitor(slaMonitor: SLAMonitor | undefined): void { this.slaMonitor = slaMonitor; }
   setQualityController(qualityController: QualityController | undefined): void { this.qualityController = qualityController; }
   setEscalationManager(escalationManager: EscalationManager | undefined): void { this.escalationMgr = escalationManager; }
-  setApprovalManager(approvalManager: ApprovalManager | undefined): void { this.approvalMgr = approvalManager; }
+  setApprovalManager(approvalManager: ApprovalManager | undefined): void {
+    this.approvalMgr = approvalManager;
+    this.runner.setApprovalManager?.(approvalManager);
+    this.assessor.setApprovalManager?.(approvalManager);
+  }
   setDeadlockResolver(deadlockResolver: DeadlockResolverPort | undefined): void { this.deadlockResolver = deadlockResolver; }
 
   // ── Core tick loop ───────────────────────────────────────────────────

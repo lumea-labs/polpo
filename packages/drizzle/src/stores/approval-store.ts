@@ -26,12 +26,14 @@ export function approvalRequestFromRow(row: any): ApprovalRequest {
     id: row.id, gateId: row.gateId, gateName: row.gateName,
     taskId: row.taskId ?? undefined, missionId: row.missionId ?? undefined,
     status: row.status as ApprovalStatus, payload,
+    taskExecution: row.taskExecution == null ? undefined : JSON.parse(row.taskExecution),
     requestedAt: row.requestedAt, resolvedAt: row.resolvedAt ?? undefined,
     resolvedBy: row.resolvedBy ?? undefined, note: row.note ?? undefined,
   };
 }
 export function approvalRequestToValues(request: ApprovalRequest, dialect: Dialect) {
   return {
+    taskExecution: request.taskExecution === undefined ? null : JSON.stringify(request.taskExecution),
     id: request.id, gateId: request.gateId, gateName: request.gateName,
     taskId: request.taskId ?? null, missionId: request.missionId ?? null,
     status: request.status, payload: request.payload === null ? "null" : serializeJson(request.payload, dialect),

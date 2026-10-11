@@ -420,21 +420,24 @@ describe("Task execution dispatch and cancellation", () => {
 
   it("preserves a real human approval gate after slow approval persistence", async () => {
     const f = await fixture(), entered = deferred(), release = deferred();
-    const requests: unknown[] = [];
-    const approvalStore = { list: async () => [], upsert: async (request: unknown) => {
-      entered.resolve(); await release.promise; requests.push(request);
-    } } as unknown as ApprovalStore;
+    const approvalStore = new FileApprovalStore(f.ctx.polpoDir);
+    const commit = f.taskStore.commitTaskApprovalDecision.bind(f.taskStore);
+    vi.spyOn(f.taskStore, "commitTaskApprovalDecision").mockImplementationOnce(async decision => {
+      entered.resolve(); await release.promise; return commit(decision);
+    });
     f.ctx.config.settings.approvalGates = [{ id: "human", name: "Approve access", hook: "task:spawn", handler: "human" }];
     const approvals = new ApprovalManager(f.ctx, approvalStore);
     await approvals.init();
+    f.runner.setApprovalManager(approvals);
     const starting = f.runner.spawnForTask(f.task);
     try {
       await entered.promise; release.resolve(); await starting;
       const current = (await f.taskStore.getTask(f.task.id))!;
       expect(current).toMatchObject({ status: "awaiting_approval", retries: 0, executionRevision: 2 });
       expect(current.activeRunId).toBeUndefined();
-      await expect(new TaskRunner(f.ctx).spawnForTask(current)).rejects.toMatchObject({ code: "task_execution_conflict" });
-      expect(requests).toHaveLength(1); expect(f.spawner.spawn).not.toHaveBeenCalled();
+      const competing = new TaskRunner(f.ctx); competing.setApprovalManager(approvals);
+      await expect(competing.spawnForTask(current)).rejects.toMatchObject({ code: "task_approval_conflict" });
+      expect(await approvalStore.list()).toHaveLength(1); expect(f.spawner.spawn).not.toHaveBeenCalled();
       expect(await f.runStore.getActiveRuns()).toHaveLength(0);
     } finally { release.resolve(); await starting; }
   });

@@ -13,13 +13,13 @@ export interface TaskStore {
   setState(partial: Partial<PolpoState>): Promise<void>;
 
   // Task CRUD
-  createTask(task: Omit<Task, "id" | "status" | "retries" | "createdAt" | "updatedAt" | "executionRevision" | "activeRunId"> & { status?: TaskStatus }): Promise<Task>;
+  createTask(task: Omit<Task, "id" | "status" | "retries" | "createdAt" | "updatedAt" | "executionRevision" | "activeRunId" | "approvalState"> & { status?: TaskStatus }): Promise<Task>;
   getTask(taskId: string): Promise<Task | undefined>;
   listTasks(): Promise<Task[]>;
   /** Patch only the supplied fields; explicit undefined clears optional fields.
    * Never rewrite status from an earlier read.
    * Return the row produced by the write, preserving concurrent unrelated edits. */
-  updateTask(taskId: string, updates: Partial<Omit<Task, "id" | "status" | "executionRevision" | "activeRunId">>): Promise<Task>;
+  updateTask(taskId: string, updates: Partial<Omit<Task, "id" | "status" | "executionRevision" | "activeRunId" | "approvalState">>): Promise<Task>;
   deleteTask(taskId: string): Promise<boolean>;
   deleteTasks(filter: (task: Task) => boolean): Promise<number>;
 

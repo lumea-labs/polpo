@@ -131,6 +131,8 @@ export interface Task {
   executionRevision?: number;
   /** Run currently allowed to mutate this task. Changed only by execution control. */
   activeRunId?: string;
+  /** Runtime-owned approval authority, never an authored Task input. */
+  approvalState?: import("../task-execution.js").TaskApprovalState;
   expectations: TaskExpectation[];
   metrics: TaskMetric[];
   retries: number;

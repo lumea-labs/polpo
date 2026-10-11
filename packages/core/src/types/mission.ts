@@ -120,6 +120,8 @@ export interface ApprovalRequest {
   status: ApprovalStatus;
   /** Hook payload snapshot at time of request. */
   payload: unknown;
+  /** Immutable binding of a Task gate to one invocation and complete gate set. */
+  taskExecution?: import("../task-execution.js").TaskApprovalBinding;
   /** When the request was created. */
   requestedAt: string;
   /** When the request was resolved (approved/rejected/timeout). */
