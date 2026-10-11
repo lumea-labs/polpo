@@ -235,6 +235,10 @@ export class OrchestratorEngine {
   private escalationMgr?: EscalationManager;
   private deadlockResolver?: DeadlockResolverPort;
   private stopped = false;
+  private closed = false;
+  private activeRun?: Promise<void>;
+  private activeTicks = new Set<Promise<boolean>>();
+  private background = new Set<Promise<void>>();
   private readonly waiter = new TickWaiter();
 
   constructor(deps: OrchestratorEngineDeps) {
@@ -282,12 +286,22 @@ export class OrchestratorEngine {
    * @param onBeforeLoop - Shell hook called before the loop starts (e.g. to install process handlers)
    * @param onAfterLoop - Shell hook called after the loop exits (e.g. to clean up process handlers)
    */
-  async run(interactive: boolean, onBeforeLoop?: () => void, onAfterLoop?: () => void): Promise<void> {
+  run(interactive: boolean, onBeforeLoop?: () => void, onAfterLoop?: () => void): Promise<void> {
+    if (this.closed) return Promise.reject(new Error("Orchestrator is closed"));
+    if (this.activeRun) return this.activeRun;
+    const run = this.runLoop(interactive, onBeforeLoop, onAfterLoop);
+    this.activeRun = run;
+    void run.then(() => { this.activeRun = undefined; }, () => { this.activeRun = undefined; });
+    return run;
+  }
+
+  private async runLoop(interactive: boolean, onBeforeLoop?: () => void, onAfterLoop?: () => void): Promise<void> {
     this.ctx.emitter.emit("orchestrator:started", {
       project: this.ctx.config.project,
       agents: (await this.agentMgr.getAgents()).map((a: AgentConfig) => a.name),
     });
 
+    if (this.closed) return;
     this.stopped = false;
     onBeforeLoop?.();
 
@@ -327,11 +341,19 @@ export class OrchestratorEngine {
   /**
    * Single tick of the supervisor loop. Returns true when all work is done.
    */
-  async tick(): Promise<boolean> {
+  tick(): Promise<boolean> {
+    if (this.closed) return Promise.reject(new Error("Orchestrator is closed"));
+    const tick = this.tickOnce();
+    this.activeTicks.add(tick);
+    void tick.then(() => this.activeTicks.delete(tick), () => this.activeTicks.delete(tick));
+    return tick;
+  }
+
+  private async tickOnce(): Promise<boolean> {
     // Scheduler checks FIRST — must run before early-return guards because
     // scheduled/recurring missions have zero tasks until triggered, and the
     // scheduler is what creates them via executeMission.
-    this.scheduler?.check();
+    await this.scheduler?.check();
 
     const tasks = await this.ctx.taskStore.listTasks();
     if (tasks.length === 0) return !this.isStopped();
@@ -454,7 +476,7 @@ export class OrchestratorEngine {
           const facade = this.getDeadlockFacade();
 
           // Async LLM resolution (same pattern as question detection)
-          this.deadlockResolver.resolveDeadlock(analysis, facade).catch(async err => {
+          const resolution = this.deadlockResolver.resolveDeadlock(analysis, facade).catch(async err => {
             this.ctx.emitter.emit("log", { level: "error", message: `Deadlock resolution failed: ${(err as Error).message}` });
             for (const task of pending) {
               try { await this.forceFailCapturedTask(task, tasks); }
@@ -466,6 +488,8 @@ export class OrchestratorEngine {
             }
           });
 
+          this.background.add(resolution);
+          void resolution.then(() => this.background.delete(resolution), () => this.background.delete(resolution));
           return false; // Don't terminate loop — resolution pending
         }
       }
@@ -512,6 +536,7 @@ export class OrchestratorEngine {
         }
       }
 
+      if (this.stopped) break;
       await this.runner.spawnForTask(task);
       totalActive++;
       agentActiveCounts.set(agentName, (agentActiveCounts.get(agentName) ?? 0) + 1);
@@ -560,6 +585,14 @@ export class OrchestratorEngine {
     this.waiter.wake();
   }
   isStopped(): boolean { return this.stopped; }
+
+  /** Terminal admission stop and drain of supervisor-owned work. */
+  async close(): Promise<void> {
+    this.closed = true;
+    this.stop();
+    await Promise.allSettled([...this.activeTicks, ...(this.activeRun ? [this.activeRun] : [])]);
+    await Promise.allSettled([...this.background]);
+  }
 
   // ── Task Management (delegates to TaskManager) ──────────────────────
 

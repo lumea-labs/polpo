@@ -12,6 +12,7 @@ import type { ApprovalStore } from "@polpo-ai/core/approval-store";
 import { HookRegistry } from "@polpo-ai/core/hooks";
 import type { OrchestratorContext } from "@polpo-ai/core/orchestrator-context";
 import type { RunnerConfig } from "@polpo-ai/core/types";
+import type { LoopResumeState } from "@polpo-ai/core/loop/run-store";
 import { taskExecutionReference } from "@polpo-ai/core/task-execution";
 
 const roots: string[] = [];
@@ -38,6 +39,40 @@ async function fixture() {
 }
 
 describe("Task execution dispatch and cancellation", () => {
+  it.each(["cancelRun", "onExit"] as const)("keeps an owner recoverable when its spawner lacks %s for verified shutdown", async missing => {
+    const f = await fixture();
+    if (missing === "cancelRun") {
+      delete (f.spawner as { cancelRun?: unknown }).cancelRun;
+      f.spawner.spawn.mockImplementation(async () => ({ pid: 42, configPath: "local://unsupported", onExit: () => {} }));
+    }
+    await f.runner.spawnForTask(f.task);
+    const task = (await f.taskStore.getTask(f.task.id))!;
+    await expect(f.runner.close()).rejects.toThrow("owner-scoped cancelRun and an onExit receipt");
+    expect(await f.runStore.getRun(task.activeRunId!)).toMatchObject({ status: "running" });
+    expect(f.spawner.kill).not.toHaveBeenCalled();
+    expect(await f.taskStore.getTask(f.task.id)).toEqual(task);
+  });
+
+  it("recovers the checkpoint committed after the orphan scan before recovery wins", async () => {
+    const f = await fixture();
+    await f.runner.spawnForTask(f.task);
+    const task = (await f.taskStore.getTask(f.task.id))!;
+    const now = new Date().toISOString();
+    const first: LoopResumeState = { context: {}, steps: [], loopName: "default", turn: 1,
+      history: [{ role: "user", content: "Read account" }], accumText: "first", createdAt: now, updatedAt: now };
+    const latest = { ...first, turn: 2, accumText: "latest durable output" };
+    await f.runStore.updateResumeState(task.activeRunId!, first);
+    const active = f.runStore.getActiveRuns.bind(f.runStore);
+    vi.spyOn(f.runStore, "getActiveRuns").mockImplementationOnce(async () => {
+      const snapshot = await active();
+      await f.runStore.updateResumeState(task.activeRunId!, latest);
+      return snapshot;
+    });
+    expect(await f.runner.recoverOrphanedTasks()).toBe(1);
+    await f.runner.spawnForTask((await f.taskStore.getTask(f.task.id))!);
+    expect(f.spawner.spawn.mock.calls[1][0].resumeState).toEqual(latest);
+  });
+
   it("fences a legacy result when a new attempt is claimed after its initial task read", async () => {
     const f = await fixture(), entered = deferred(), release = deferred();
     await f.taskStore.transition(f.task.id, "assigned");

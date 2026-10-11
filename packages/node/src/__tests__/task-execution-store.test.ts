@@ -157,7 +157,7 @@ for (const kind of ["file", "sqlite", "pg"] as const) {
     it("invalidates a recovery/fix generation without burning a retry", async () => {
       const first = await a.executions.claimTaskExecution(taskExecutionReference(await create()), randomUUID());
       const pending = (await b.executions.mutateTaskExecution(taskExecutionReference(first.task), {
-        type: "requeue", countRetry: false, reason: "Orphan recovery", updates: { description: "Resume", phase: "execution" },
+        type: "requeue", countRetry: false, reason: "Orphan recovery", onlyIfRunRunning: true, updates: { description: "Resume", phase: "execution" },
       })).task;
       expect(pending).toMatchObject({ status: "pending", retries: 0, executionRevision: 2, description: "Resume" });
       expect(await a.runStore.getRun(first.run.id)).toMatchObject({ status: "killed" });
@@ -165,6 +165,17 @@ for (const kind of ["file", "sqlite", "pg"] as const) {
       await expect(b.executions.mutateTaskExecution(taskExecutionReference(first.task), { type: "patch", updates: { result: { exitCode: 1, stdout: "", stderr: "old", duration: 0 } } }))
         .rejects.toMatchObject({ code: "task_execution_conflict" });
       expect(await b.taskStore.getTask(pending.id)).toEqual(second.task);
+    });
+
+    it.each(["completed", "failed", "killed"] as const)("does not orphan-requeue a Run whose %s result won the race", async status => {
+      const first = await a.executions.claimTaskExecution(taskExecutionReference(await create()), randomUUID());
+      await a.runStore.completeRun(first.run.id, status, { exitCode: status === "completed" ? 0 : 1, stdout: "Saved", stderr: "", duration: 1 });
+      const run = await a.runStore.getRun(first.run.id);
+      await expect(b.executions.mutateTaskExecution(taskExecutionReference(first.task), {
+        type: "requeue", countRetry: false, reason: "Orphan recovery", onlyIfRunRunning: true,
+      })).rejects.toMatchObject({ code: "task_execution_conflict" });
+      expect(await a.taskStore.getTask(first.task.id)).toEqual(first.task);
+      expect(await a.runStore.getRun(first.run.id)).toEqual(run);
     });
 
     it("publishes counted retry input from review in a single conditional mutation", async () => {

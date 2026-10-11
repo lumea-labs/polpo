@@ -10,6 +10,7 @@ import { resolveExecutionMode } from "./execution-mode.js";
 import { resolveRuntimeSandboxOptions } from "./runtime-sandbox.js";
 import { normalizeRuntimeMetadata } from "./runtime-metadata.js";
 import type { RunRecord } from "./run-store.js";
+import type { SpawnResult } from "./spawner.js";
 import type { LoopResumeState } from "./loop/run-store.js";
 import { resolveConfiguredModelSelection } from "./model-profiles.js";
 import { normalizeModelPolicy } from "./model-policy.js";
@@ -27,7 +28,7 @@ import {
   type ResolvedExecutionRoute,
 } from "./execution-router.js";
 import type { RuntimeGuardrailAuditEvent } from "./guardrails/index.js";
-import { isTaskExecutionStore, taskExecutionReference, TaskExecutionError, type TaskExecutionReference } from "./task-execution.js";
+import { isConditionalTaskExecutionStore, isTaskExecutionStore, taskExecutionReference, TaskExecutionError, type TaskExecutionReference } from "./task-execution.js";
 
 /**
  * Durable turns: max age of a resume checkpoint before orphan recovery
@@ -73,10 +74,89 @@ function pathDirname(p: string): string {
   return p.slice(0, idx);
 }
 
+interface OwnedRun {
+  exited?: Promise<void>;
+  exitConfirmed: boolean;
+  shutdownPending: boolean;
+  stopping?: Promise<void>;
+}
+
 /**
  * Spawns, monitors, and collects results from agent runner subprocesses.
  */
 export class TaskRunner {
+  private closing = false;
+  private closePromise?: Promise<void>;
+  private preparations = new Set<Promise<void>>();
+  private owners = new Map<string, OwnedRun>();
+
+  /** Stop admission synchronously; in-flight preparation remains owned. */
+  stop(): void { this.closing = true; }
+
+  /** Drain only locally spawned owners. A terminal store row is not an exit
+   * receipt. Hosts may bound this wait, but must keep stores open on timeout. */
+  close(): Promise<void> {
+    this.stop();
+    if (this.closePromise) return this.closePromise;
+    const drain = this.drainOwners();
+    this.closePromise = drain;
+    void drain.catch(() => { if (this.closePromise === drain) this.closePromise = undefined; });
+    return drain;
+  }
+
+  private async drainOwners(): Promise<void> {
+    const initial = new Set(this.owners.keys());
+    const stopped = await Promise.allSettled([...initial].map(id => this.stopOwner(id)));
+    await Promise.allSettled([...this.preparations]);
+    const late = await Promise.allSettled([...this.owners.keys()].filter(id => !initial.has(id)).map(id => this.stopOwner(id)));
+    const failed = [...stopped, ...late].find(result => result.status === "rejected");
+    if (failed?.status === "rejected") throw failed.reason;
+    const owners = [...this.owners.values()];
+    if (owners.some(owner => !owner.exited)) throw new Error("Runner shutdown requires an onExit receipt from the spawner");
+    await Promise.all(owners.map(owner => owner.exited));
+  }
+
+  private stopOwner(runId: string): Promise<void> {
+    const owner = this.owners.get(runId);
+    if (!owner) return Promise.resolve();
+    if (owner.stopping) return owner.stopping;
+    const stopping = this.drainOwner(runId, owner);
+    owner.stopping = stopping;
+    void stopping.catch(() => { if (owner.stopping === stopping) owner.stopping = undefined; });
+    return stopping;
+  }
+
+  private async drainOwner(runId: string, owner: OwnedRun): Promise<void> {
+    if (!owner.exited || !this.ctx.spawner.cancelRun) {
+      throw new Error("Runner shutdown requires owner-scoped cancelRun and an onExit receipt from the spawner");
+    }
+    // Keep the receipt after exit until post-exit persistence is confirmed.
+    // A failed acknowledgement must be retried before storage can close.
+    owner.shutdownPending = true;
+    await this.ctx.runStore.completeRun(runId, "killed", {
+      exitCode: 1, stdout: "", stderr: "Killed during shutdown", duration: 0,
+    });
+    if (!owner.exitConfirmed) await this.ctx.spawner.cancelRun(runId);
+    await owner.exited;
+    const run = await this.ctx.runStore.getRun(runId);
+    // A competing successful/failed completion wins and remains collectable.
+    if (run?.status === "killed" && run.result?.stderr === "Killed during shutdown") await this.acknowledgeRun(run);
+    if (this.owners.get(runId) === owner) this.owners.delete(runId);
+  }
+
+  private ownSpawn(runId: string, taskId: string, handle: SpawnResult): void {
+    const owner: OwnedRun = { exitConfirmed: false, shutdownPending: false };
+    this.owners.set(runId, owner);
+    if (handle.onExit) owner.exited = new Promise(resolve => {
+      handle.onExit!(() => {
+        owner.exitConfirmed = true;
+        if (!owner.shutdownPending && this.owners.get(runId) === owner) this.owners.delete(runId);
+        try { this.ctx.emitter.emit("run:exited", { taskId, runId, pid: handle.pid }); }
+        finally { resolve(); }
+      });
+    });
+  }
+
   private approvals?: ApprovalManager;
   setApprovalManager(manager: ApprovalManager | undefined): void { this.approvals = manager; }
   private staleWarned = new Set<string>();
@@ -120,8 +200,12 @@ export class TaskRunner {
   async collectResults(
     onResult: (taskId: string, result: TaskResult, execution?: TaskExecutionReference) => Promise<void> | void,
   ): Promise<void> {
+    if (this.closing) return;
     const terminalRuns = await this.ctx.runStore.getTerminalRuns();
     for (const run of terminalRuns) {
+      // Shutdown interruptions belong to recovery, not ordinary assessment.
+      // An assessment already admitted before stop() is still drained by the host.
+      if (this.closing) return;
       let execution: TaskExecutionReference | undefined;
       const sid = run.sessionId ?? run.activity.sessionId;
       if (run.taskExecutionRevision !== undefined) {
@@ -458,9 +542,32 @@ export class TaskRunner {
    * Resets orphaned tasks to pending WITHOUT burning retry count.
    */
   async recoverOrphanedTasks(): Promise<number> {
+    let recovered = 0;
+    const orphanStates: Set<string> = new Set(["assigned", "in_progress", "review"]);
     // Check RunStore active runs first
     const activeRuns = await this.ctx.runStore.getActiveRuns();
     for (const run of activeRuns) {
+      if (run.taskExecutionRevision !== undefined) {
+        const store = this.ctx.taskStore;
+        if (!isTaskExecutionStore(store)) throw new TaskExecutionError("task_execution_unsupported", "Recovery requires execution persistence");
+        const task = await store.getTask(run.taskId);
+        if (!task || task.activeRunId !== run.id || task.executionRevision !== run.taskExecutionRevision
+          || !orphanStates.has(task.status) || this.isProcessAlive(run.pid)) continue;
+        try {
+          const mutation = { type: "requeue" as const, countRetry: false, reason: "Orphan recovery", onlyIfRunRunning: true };
+          const changed = isConditionalTaskExecutionStore(store)
+            ? await store.mutateTaskExecutionConditionally(taskExecutionReference(task), mutation, [{ taskId: task.id, snapshot: task }])
+            : await store.mutateTaskExecution(taskExecutionReference(task), mutation);
+          if (changed.run) await this.acknowledgeRun(changed.run);
+          const checkpoint = usableCheckpoint(changed.run?.resumeState);
+          if (checkpoint) this.pendingResume.set(task.id, { state: checkpoint, agentIdentity: changed.run?.config?.agentIdentity });
+          this.ctx.emitter.emit("task:recovered", { taskId: task.id, title: task.title, previousStatus: task.status });
+          recovered++;
+        } catch (error) {
+          if (!(error instanceof TaskExecutionError) || error.code !== "task_execution_conflict") throw error;
+        }
+        continue;
+      }
       if (this.isProcessAlive(run.pid)) {
         // Runner still alive — leave it running, work is NOT lost!
         this.ctx.emitter.emit("log", { level: "info", message: `Runner PID ${run.pid} still alive for task ${run.taskId} — reconnecting` });
@@ -489,24 +596,23 @@ export class TaskRunner {
       }
     }
 
-    // Backward compat: kill orphan OS processes from old processes table
-    const state = await this.ctx.taskStore.getState();
-    for (const proc of state.processes) {
-      if (proc.pid > 0 && proc.alive) {
-        this.killOrphanProcess(proc.pid, proc.agentName);
-      }
-    }
-
+    // Persisted process-list PIDs are not local ownership receipts. Do not
+    // signal them: a PID may have been reused or belong to another supervisor.
     const tasks = await this.ctx.taskStore.listTasks();
-    const orphanStates: Set<string> = new Set(["assigned", "in_progress", "review"]);
-    let recovered = 0;
 
     for (const task of tasks) {
       if (!orphanStates.has(task.status)) continue;
 
       // Check if there's a live runner for this task
-      const run = await this.ctx.runStore.getRunByTaskId(task.id);
-      if (run && run.status === "running" && this.isProcessAlive(run.pid)) {
+      const run = task.activeRunId ? await this.ctx.runStore.getRun(task.activeRunId)
+        : await this.ctx.runStore.getRunByTaskId(task.id);
+      const matches = run && (run.taskExecutionRevision === undefined
+        ? task.executionRevision === undefined && task.activeRunId === undefined
+        : run.taskExecutionRevision === task.executionRevision && run.id === task.activeRunId);
+      // Completed work must still traverse assessment and completion approvals.
+      // Preserve failed results too: their retry policy is not orphan recovery.
+      if (matches && run.status !== "running" && !run.collectedAt) continue;
+      if (matches && run.status === "running" && this.isProcessAlive(run.pid)) {
         // Runner still working — skip recovery for this task
         continue;
       }
@@ -514,8 +620,24 @@ export class TaskRunner {
       // Recover: reset to pending WITHOUT incrementing retries.
       // Shutdown interrupts are not real failures — unsafeSetStatus bypasses
       // transition(failed → pending) which would burn a retry.
+      const store = this.ctx.taskStore;
+      try {
+        if (isTaskExecutionStore(store)) {
+          const mutation = { type: "requeue" as const, countRetry: false, reason: "Orphan recovery", ...(run?.status === "running" ? { onlyIfRunRunning: true } : {}) };
+          if (isConditionalTaskExecutionStore(store)) await store.mutateTaskExecutionConditionally(taskExecutionReference(task), mutation, [{ taskId: task.id, snapshot: task }]);
+          else await store.mutateTaskExecution(taskExecutionReference(task), mutation);
+        } else {
+          await store.unsafeSetStatus(task.id, "pending", "orphan recovery — shutdown interrupt");
+        }
+      } catch (error) {
+        if (error instanceof TaskExecutionError && error.code === "task_execution_conflict") continue;
+        throw error;
+      }
+      if (matches && run.collectedAt) {
+        const checkpoint = usableCheckpoint(run.resumeState);
+        if (checkpoint) this.pendingResume.set(task.id, { state: checkpoint, agentIdentity: run.config?.agentIdentity });
+      }
       this.ctx.emitter.emit("task:recovered", { taskId: task.id, title: task.title, previousStatus: task.status });
-      await this.ctx.taskStore.unsafeSetStatus(task.id, "pending", "orphan recovery — shutdown interrupt");
       recovered++;
     }
 
@@ -575,7 +697,15 @@ export class TaskRunner {
     });
   }
 
-  async spawnForTask(task: Task): Promise<void> {
+  spawnForTask(task: Task): Promise<void> {
+    if (this.closing) return Promise.reject(new Error("Task runner is closing"));
+    const work = this.dispatchTask(task);
+    this.preparations.add(work);
+    void work.then(() => this.preparations.delete(work), () => this.preparations.delete(work));
+    return work;
+  }
+
+  private async dispatchTask(task: Task): Promise<void> {
     if (task.missionExecutionId && !this.prepareMissionExecution) {
       throw new MissionExecutionError("mission_execution_unsupported", "Mission execution must be prepared before dispatch");
     }
@@ -892,7 +1022,15 @@ export class TaskRunner {
       });
 
       if (claimed && !await this.claimIsActive(task, initialRun)) return;
+      if (this.closing) {
+        await this.ctx.runStore.completeRun(runId, "killed", { exitCode: 1, stdout: "", stderr: "Killed during shutdown", duration: 0 });
+        const interrupted = await this.ctx.runStore.getRun(runId);
+        if (interrupted?.status === "killed" && interrupted.result?.stderr === "Killed during shutdown") await this.acknowledgeRun(interrupted);
+        return;
+      }
       const spawnResult = await this.ctx.spawner.spawn(runnerConfig);
+      this.ownSpawn(runId, task.id, spawnResult);
+      if (this.closing) await this.stopOwner(runId);
 
       // A host may finish acquisition after cancellation. Only this spawn's
       // returned handle is local authority to kill; a persisted foreign PID is not.
@@ -918,13 +1056,6 @@ export class TaskRunner {
         }
       }
 
-      // Wake the supervisor as soon as the runner process exits so results
-      // are collected immediately (poll interval remains the safety net for
-      // spawners that don't track process lifecycle).
-      spawnResult.onExit?.(() => {
-        this.ctx.emitter.emit("run:exited", { taskId: task.id, runId, pid: spawnResult.pid });
-      });
-
       this.ctx.emitter.emit("agent:spawned", {
         taskId: task.id,
         agentName: agent.name,
@@ -942,9 +1073,4 @@ export class TaskRunner {
     }
   }
 
-  private killOrphanProcess(pid: number, agentName: string): void {
-    if (!this.ctx.spawner.isAlive(pid)) return;
-    this.ctx.emitter.emit("log", { level: "warn", message: `Killing orphan process PID ${pid} (${agentName})` });
-    this.ctx.spawner.kill(pid);
-  }
 }

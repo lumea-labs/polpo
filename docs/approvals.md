@@ -39,6 +39,24 @@ can discover all committed requests. `dispose()` stops new work immediately but
 does not await already-started writes. Completion after-hooks run asynchronously
 and may request host shutdown or reload without waiting on themselves.
 
+Node `Orchestrator.gracefulStop()` stops Task dispatch and waits for active
+supervisor work and locally spawned runners before closing storage. It leaves
+uncollected successful and failed results for the normal assessment and approval
+pipeline after restart; shutdown never marks a Task complete directly. A drain
+timeout rejects with storage still open. Retrying waits for the same unfinished
+work, including post-exit persistence, rather than starting a second drain.
+
+A custom spawner needs owner-scoped `cancelRun(runId)` and a `SpawnResult.onExit`
+receipt to drain a live runner. Polling a terminal Run row is not an exit receipt.
+Unsupported spawners fail the drain with storage open. Persisted process-list
+PIDs are never authority to signal processes during shutdown or orphan recovery.
+
+Recovery of a versioned active attempt checks both the captured Task and the
+Run's current status in the storage transaction. A concurrent completion remains
+available to assessment; a replacement attempt is left untouched. Recovery uses
+the checkpoint returned by that transaction, including updates committed after
+the initial orphan scan.
+
 The Task store must implement `TaskApprovalExecutionStore`, including its bound
 `getTaskApprovalStore()` adapter. File, SQLite and PostgreSQL implementations
 commit Task, Run and Approval state together. PostgreSQL hosts may supply an

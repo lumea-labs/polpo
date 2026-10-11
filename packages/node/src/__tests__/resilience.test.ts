@@ -485,7 +485,7 @@ describe("Orchestrator Resilience", () => {
   // ─── Backward Compat: Orphan Process Cleanup ──────────────
 
   describe("Orphan process cleanup (backward compat)", () => {
-    it("attempts to kill orphan processes on recovery", async () => {
+    it("does not signal a PID from the persisted legacy process list", async () => {
       const killCalls: Array<{ pid: number; signal: string | number | undefined }> = [];
       vi.spyOn(process, "kill").mockImplementation(((pid: number, signal?: string | number) => {
         killCalls.push({ pid, signal });
@@ -520,12 +520,8 @@ describe("Orchestrator Resilience", () => {
 
       await orchestrator.engine.recoverOrphanedTasks();
 
-      // Should have called kill(99999, 0) for existence check
-      // then kill(99999, "SIGTERM")
-      const pidCalls = killCalls.filter(c => c.pid === 99999);
-      expect(pidCalls.length).toBeGreaterThanOrEqual(2);
-      expect(pidCalls[0].signal).toBe(0);
-      expect(pidCalls[1].signal).toBe("SIGTERM");
+      // A persisted PID is not proof of ownership and may have been reused.
+      expect(killCalls).toEqual([]);
     });
 
     it("silently skips dead processes", async () => {

@@ -52,7 +52,6 @@ import type { OrchestratorContext } from "@polpo-ai/core/orchestrator-context";
 import {
   buildFixPrompt,
   buildRetryPrompt,
-  sleep,
 } from "@polpo-ai/core/assessment-prompts";
 import type { AssessFn } from "@polpo-ai/core/orchestrator-context";
 import { setProviderOverrides, validateProviderKeys, setModelAllowlist } from "@polpo-ai/llm";
@@ -132,6 +131,7 @@ export class Orchestrator extends TypedEmitter {
   private cachedAgentWorkDir: string | null = null;
   private interactive = false;
   private stopped = false;
+  private shutdownPromise?: Promise<void>;
   private assessFn: AssessFn;
   private spawner: Spawner;
   /** True when the caller injected a spawner — settings never override it. */
@@ -933,65 +933,29 @@ export class Orchestrator extends TypedEmitter {
     this.engine?.stop();
   }
 
-  /**
-   * Graceful shutdown: SIGTERM all runner subprocesses, wait for them to write results,
-   * preserve completed work, leave in-progress tasks for recovery on restart.
-   */
-  async gracefulStop(timeoutMs = 5000): Promise<void> {
+  /** Preserve uncollected results for the normal assessment/approval pipeline.
+   * A timeout rejects without closing stores beneath unfinished owned work. */
+  gracefulStop(timeoutMs = 5000): Promise<void> {
+    if (this.shutdownPromise) return this.shutdownPromise;
+    this.stop();
+    this.runner?.stop();
+    const closing = this.finishShutdown(timeoutMs);
+    this.shutdownPromise = closing;
+    void closing.catch(() => { if (this.shutdownPromise === closing) this.shutdownPromise = undefined; });
+    return closing;
+  }
+
+  private async finishShutdown(timeoutMs: number): Promise<void> {
     await this.hookRegistry.runBefore("orchestrator:shutdown", {});
-    this.stopped = true;
-    const activeRuns = await this.runStore.getActiveRuns();
-
-    if (activeRuns.length > 0) {
-      this.emit("log", { level: "warn", message: `Shutting down ${activeRuns.length} running agent(s)...` });
-
-      // Send SIGTERM to all runner subprocesses; in-process runs (negative
-      // synthetic pids) are aborted through the spawner instead.
-      for (const run of activeRuns) {
-        if (run.pid > 0) {
-          try { process.kill(run.pid, "SIGTERM"); } catch { /* already dead */ }
-        } else if (run.pid < 0) {
-          try { this.spawner.kill(run.pid); } catch { /* already gone */ }
-        }
-      }
-
-      // Wait for runners to write their results
-      const deadline = Date.now() + timeoutMs;
-      while (Date.now() < deadline) {
-        const stillActive = await this.runStore.getActiveRuns();
-        if (stillActive.length === 0) break;
-        await sleep(200);
-      }
-
-      // Force-mark any remaining active runs as killed
-      for (const run of await this.runStore.getActiveRuns()) {
-        await this.runStore.completeRun(run.id, "killed", {
-          exitCode: 1, stdout: "", stderr: "Killed during shutdown", duration: 0,
-        });
-      }
-    }
-
-    // Only save completed work — leave killed/failed tasks in current state for recovery
-    for (const run of await this.runStore.getTerminalRuns()) {
-      const task = await this.registry.getTask(run.taskId);
-      if (run.status === "completed" && run.result?.exitCode === 0 && task && task.status !== "done") {
-        // Agent finished successfully — save result and mark done (skip async assessment)
-        try {
-          await this.registry.updateTask(run.taskId, { result: run.result });
-          if (task.status === "pending") await this.registry.transition(run.taskId, "assigned");
-          if (task.status === "assigned") await this.registry.transition(run.taskId, "in_progress");
-          if (task.status === "in_progress") await this.registry.transition(run.taskId, "review");
-          await this.registry.transition(run.taskId, "done");
-        } catch { /* leave for recovery on restart */ }
-      }
-      // Keep shutdown-interrupted Runs for diagnostics, but acknowledge them:
-      // recoverOrphanedTasks() resets their task without burning a retry.
-      if (this.runStore.markRunCollected) {
-        await this.runStore.markRunCollected(run.id);
-      } else {
-        await this.runStore.deleteRun(run.id);
-      }
-    }
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        Promise.all([this.engine?.close(), this.runner?.close()]),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error("Orchestrator shutdown timed out; owned work is not confirmed stopped and stores remain open")), timeoutMs);
+        }),
+      ]);
+    } finally { if (timer) clearTimeout(timer); }
 
     // Clear process list in state and close stores
     await this.registry.setState({ processes: [], completedAt: new Date().toISOString() });

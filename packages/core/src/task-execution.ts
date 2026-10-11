@@ -33,7 +33,7 @@ export type TaskExecutionPatch = Partial<Omit<Task, "id" | "status" | "execution
 export type TaskExecutionMutation =
   | { type: "patch"; updates: TaskExecutionPatch }
   | { type: "transition"; status: TaskStatus; updates?: TaskExecutionPatch }
-  | { type: "requeue"; countRetry: boolean; reason: string; updates?: TaskExecutionPatch }
+  | { type: "requeue"; countRetry: boolean; reason: string; onlyIfRunRunning?: boolean; updates?: TaskExecutionPatch }
   | { type: "cancel"; reason?: string };
 export interface TaskExecutionState { task: Task; run?: RunRecord }
 
@@ -227,6 +227,7 @@ export function normalizeTaskExecutionMutation(mutation: TaskExecutionMutation):
   try { copy = structuredClone(mutation); } catch { return invalid(); }
   if (!copy || !["patch", "transition", "requeue", "cancel"].includes(copy.type)) invalid();
   if (copy.type === "requeue" && (typeof copy.countRetry !== "boolean" || typeof copy.reason !== "string" || !copy.reason.trim())) invalid();
+  if (copy.type === "requeue" && copy.onlyIfRunRunning !== undefined && typeof copy.onlyIfRunRunning !== "boolean") invalid();
   if ((copy.type === "cancel" || copy.type === "requeue") && copy.reason !== undefined
     && (typeof copy.reason !== "string" || copy.reason.length > 2000)) invalid();
   if (copy.type !== "cancel" && copy.updates !== undefined) {
@@ -315,6 +316,8 @@ export function prepareTaskExecutionMutation(task: Task | undefined, run: RunRec
   const awaitingApproval = mutation.type === "transition" && mutation.status === "awaiting_approval";
   if (mutation.type === "transition") assertValidTransition(task.status, mutation.status);
   if (mutation.type === "requeue") {
+    // Recovery cannot discard a completion which won after its liveness read.
+    if (mutation.onlyIfRunRunning && run?.status !== "running") conflict();
     // Escalation may replace work that is still queued. Publishing its new
     // input also advances the generation so a scheduler holding the previous
     // pending snapshot cannot claim it. Counted retries still require a run.
