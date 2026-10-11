@@ -547,19 +547,28 @@ export async function buildAgentTools(
     allPolpoTools.push(createSandboxVolumeCheckpointTool(ctx.checkpointSandboxVolume));
   }
 
-  const customTools = createLocalCustomToolRuntime({
-    data: ctx?.data,
-    polpoDir: prep.polpoDir,
-    workDir: cwd,
-    fs: prep.fs,
-    shell: prep.shell,
-    connectionCapabilityResolver: ctx?.connectionCapabilityResolver,
-  });
-  allPolpoTools.push(...await customTools.loadAssigned(
-    agentConfig.allowedTools,
-    undefined,
-    ctx?.toolInvocation,
-  ));
+  if (ctx?.resolveCustomTools) {
+    const customTools = await ctx.resolveCustomTools({ agentName: agentConfig.name,
+      allowedTools: agentConfig.allowedTools, invocation: ctx.toolInvocation, signal: options?.signal });
+    // Category wildcards activate built-ins only, matching the local importer.
+    // An empty or failed host result must never fall back to local code loading.
+    allPolpoTools.push(...customTools.filter(tool =>
+      agentConfig.allowedTools?.some(name => name === "*" || name === tool.name)));
+  } else {
+    const customTools = createLocalCustomToolRuntime({
+      data: ctx?.data,
+      polpoDir: prep.polpoDir,
+      workDir: cwd,
+      fs: prep.fs,
+      shell: prep.shell,
+      connectionCapabilityResolver: ctx?.connectionCapabilityResolver,
+    });
+    allPolpoTools.push(...await customTools.loadAssigned(
+      agentConfig.allowedTools,
+      undefined,
+      ctx?.toolInvocation,
+    ));
+  }
 
   const policy = { ...options?.policy, global: agentConfig.allowedTools };
   const mcp = await resolveRuntimeMcpTools({ agentName: agentConfig.name, mcpServers: agentConfig.mcpServers,

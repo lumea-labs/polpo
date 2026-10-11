@@ -32,6 +32,19 @@ import type {
   BrainServiceContext,
 } from "./brain/index.js";
 import type { ToolInvocationContext } from "./tool-invocation.js";
+import type { PolpoTool } from "./tool-types.js";
+
+/** Trusted host port for loading custom tools whose execution is owned by the
+ * host (for example a remote sandbox). Never supplied by agent/tool source.
+ * Presence replaces the local bundle importer, including on empty/error results.
+ * The host owns isolation and per-call authorization; the runtime still applies
+ * exact custom-tool assignment and all narrower execution policies. */
+export type ResolveCustomTools = (input: Readonly<{
+  agentName: string;
+  allowedTools?: readonly string[];
+  invocation?: ToolInvocationContext;
+  signal?: AbortSignal;
+}>) => Promise<readonly PolpoTool[]>;
 
 /**
  * Handle returned by the engine after spawning an agent.
@@ -86,6 +99,8 @@ export interface SpawnContext {
   toolInvocation?: ToolInvocationContext;
   /** Host-owned resolver for invocation-scoped logical Connection slots. */
   connectionCapabilityResolver?: import("./connection-capability.js").ConnectionCapabilityResolver;
+  /** Replaces local custom-tool imports with host-owned execution. */
+  resolveCustomTools?: ResolveCustomTools;
   /** Host-owned MCP inventory and per-operation capability factory. */
   resolveMcpCapabilities?: import("./mcp-capability.js").ResolveMcpRuntimeCapabilities;
   /** Pre-resolved retrieval snapshot rendered into task system prompts. */

@@ -163,6 +163,7 @@ export interface ExecuteRunDeps {
   checkpointSandboxVolume?: (name?: string) => Promise<void>;
   /** Host-owned resolver for strict logical Connection slots. */
   connectionCapabilityResolver?: import("@polpo-ai/core").ConnectionCapabilityResolver;
+  resolveCustomTools?: import("@polpo-ai/core").ResolveCustomTools;
   resolveMcpCapabilities?: import("@polpo-ai/core").ResolveMcpRuntimeCapabilities;
   /** Finalize run-scoped host resources before terminal persistence. */
   finalize?: () => Promise<void>;
@@ -511,6 +512,7 @@ export async function executeRun(config: RunnerConfig, deps: ExecuteRunDeps): Pr
       shell: deps.shell ?? new NodeShell(),
       checkpointSandboxVolume: deps.checkpointSandboxVolume,
       connectionCapabilityResolver: deps.connectionCapabilityResolver,
+      resolveCustomTools: deps.resolveCustomTools,
       resolveMcpCapabilities: deps.resolveMcpCapabilities,
       // Durable turns: resume checkpoint handed over by orphan recovery,
       // and the per-turn checkpoint sink (one RunStore write per turn,

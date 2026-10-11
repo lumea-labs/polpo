@@ -39,6 +39,7 @@ import {
 } from "./helpers/mock-llm.js";
 import { convertArrayToReadableStream } from "ai/test";
 import { jsonSchema } from "ai";
+import { Type } from "@sinclair/typebox";
 
 // ── Mock the LLM module BEFORE any imports that pull it in ──
 
@@ -173,6 +174,27 @@ describe("executeRun — shared run lifecycle", () => {
     expect(resolve.mock.calls[0][0].invocation).toMatchObject({ user: "customer-a", runId: config.runId, surface: "task",
       agent: { name: "lifecycle-agent", incarnation: "original" } });
     expect(dispose).toHaveBeenCalledOnce();
+  });
+  test("carries host custom-tool execution through the task lifecycle with trusted identity", async () => {
+    setMockModel(mockTurnSequenceModel([
+      { type: "tool-call", toolName: "signed_request", args: { user: "forged" } },
+      { type: "text", text: "done" },
+    ]));
+    const execute = vi.fn(async () => ({ content: [{ type: "text" as const, text: "sandbox result" }], details: {} }));
+    const resolveCustomTools = vi.fn<import("@polpo-ai/core").ResolveCustomTools>(async () => [{
+      name: "signed_request", label: "Sign", description: "Host-owned sandbox execution", parameters: Type.Object({ user: Type.String() }), execute,
+    }]);
+    const config = makeConfig({ agent: makeAgent({ allowedTools: ["signed_request"] }), task: makeTask({ user: "customer-a" }),
+      agentIdentity: { name: "lifecycle-agent", incarnation: "original" } });
+    const outcome = await executeRun(config, { runStore: new InMemoryRunStore(), pid: -1,
+      configPath: "memory://custom-tools", resolveCustomTools });
+    expect(outcome.status).toBe("completed");
+    expect(resolveCustomTools).toHaveBeenCalledOnce();
+    expect(resolveCustomTools.mock.calls[0][0]).toMatchObject({ agentName: "lifecycle-agent", allowedTools: ["signed_request"],
+      invocation: { user: "customer-a", runId: config.runId, surface: "task",
+        agent: { name: "lifecycle-agent", incarnation: "original" } } });
+    expect(resolveCustomTools.mock.calls[0][0].signal).toBeInstanceOf(AbortSignal);
+    expect(execute).toHaveBeenCalledOnce();
   });
   test("fails a Connection-backed subprocess configuration without a host resolver instead of using its URL", async () => {
     setMockModel(mockTextModel("must not start"));
