@@ -11,7 +11,8 @@ import type { Task, TaskStatus, PolpoState, AgentProcess, Team, Mission } from "
 import type { TaskStore } from "@polpo-ai/core/task-store";
 import { assertValidTransition, VALID_TRANSITIONS } from "@polpo-ai/core/state-machine";
 import { admitMissionExecution, normalizeMissionExecutionCommit, validateMissionExecutionKey, validateMissionExecutionFinalStatus, type MissionExecutionFinalStatus,
-  MissionExecutionError, type MissionExecutionCommit, type MissionExecutionReceipt, type MissionExecutionStore } from "@polpo-ai/core/mission-store";
+  MissionExecutionError, type MissionExecutionCommit, type MissionExecutionReceipt, type MissionExecutionCancellationStore,
+  normalizeMissionExecutionAbort, prepareMissionExecutionAbort, type MissionExecutionAbortInput, type MissionExecutionAbortResult } from "@polpo-ai/core/mission-store";
 import { withProjectFileTransaction, type ProjectFileTransaction } from "./project-file-transaction.js";
 import { FileApprovalStore, readFileApprovalRequests, writeFileApprovalRequests } from "./file-approval-store.js";
 
@@ -55,7 +56,7 @@ function readJson<T>(tx: ProjectFileTransaction, path: string, fallback: T): T {
  *   .polpo/missions/<missionId>.json
  *   .polpo/_meta.json
  */
-export class FileTaskStore implements TaskStore, MissionExecutionStore, ConditionalTaskExecutionStore, TaskApprovalExecutionStore {
+export class FileTaskStore implements TaskStore, MissionExecutionCancellationStore, ConditionalTaskExecutionStore, TaskApprovalExecutionStore {
   constructor(private readonly polpoDir: string) {
     mkdirSync(join(polpoDir, "tasks"), { recursive: true });
     mkdirSync(join(polpoDir, "missions"), { recursive: true });
@@ -343,6 +344,25 @@ export class FileTaskStore implements TaskStore, MissionExecutionStore, Conditio
   async getMissionExecutionById(executionId: string): Promise<MissionExecutionCommit | undefined> {
     validateMissionExecutionKey(executionId, "lookup");
     return this.transaction(tx => this.admissionById(tx, executionId));
+  }
+  async abortMissionExecution(raw: MissionExecutionAbortInput): Promise<MissionExecutionAbortResult> {
+    const input = normalizeMissionExecutionAbort(raw);
+    return this.transaction(tx => {
+      this.checkExecutionConditions(tx, input.tasks);
+      const receipt = this.admissionById(tx, input.executionId)?.receipt;
+      const tasks = input.tasks.map(p => this.readTask(tx, p.taskId)).filter((task): task is Task => !!task);
+      const runs = tasks.flatMap(task => {
+        const run = task.activeRunId === undefined ? undefined : this.executionRun(tx, task.activeRunId);
+        return run ? [run] : [];
+      });
+      const decision = prepareMissionExecutionAbort(input, receipt, this.readMission(tx, input.missionId), tasks, runs, new Date().toISOString());
+      for (const state of decision.tasks) {
+        this.write(tx, this.taskPath(state.task.id), state.task);
+        if (state.run && state.run !== runs.find(run => run.id === state.run!.id)) this.write(tx, this.entityPath("runs", state.run.id), state.run);
+      }
+      if (decision.mission) this.write(tx, this.missionPath(decision.mission.id), decision.mission);
+      return decision.result;
+    });
   }
   async finalizeMissionExecution(executionId: string, status: MissionExecutionFinalStatus): Promise<boolean> {
     validateMissionExecutionKey(executionId, "finalize");

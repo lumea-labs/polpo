@@ -622,7 +622,7 @@ export class Orchestrator extends TypedEmitter {
     // Initialize scheduler (always available — zero cost when no schedules exist)
     if (this.config.settings.enableScheduler !== false) {
       this.scheduler = new Scheduler(ctx);
-      this.scheduler.setExecutor((missionId, options) => this.missionExec.executeMission(missionId, options));
+      this.scheduler.setExecutor((missionId, options, expected) => this.missionExec.executeMission(missionId, options, expected));
       this.scheduler.init();
     }
 
@@ -1065,7 +1065,7 @@ export class Orchestrator extends TypedEmitter {
     if (this.config.settings.enableScheduler !== false) {
       if (!this.scheduler) {
         this.scheduler = new Scheduler(ctx);
-        this.scheduler.setExecutor((missionId, options) => this.missionExec.executeMission(missionId, options));
+        this.scheduler.setExecutor((missionId, options, expected) => this.missionExec.executeMission(missionId, options, expected));
       }
       this.scheduler.init();
     } else {

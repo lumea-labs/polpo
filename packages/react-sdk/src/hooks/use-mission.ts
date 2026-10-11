@@ -7,7 +7,7 @@ import type {
   AddMissionCheckpointRequest, UpdateMissionCheckpointRequest,
   AddMissionQualityGateRequest, UpdateMissionQualityGateRequest,
   AddMissionTeamMemberRequest, UpdateMissionTeamMemberRequest,
-  UpdateMissionNotificationsRequest,
+  UpdateMissionNotificationsRequest, AbortMissionOptions, AbortMissionResult,
 } from "@polpo-ai/sdk";
 
 export interface UseMissionReturn {
@@ -19,7 +19,7 @@ export interface UseMissionReturn {
   updateMission: (req: UpdateMissionRequest) => Promise<Mission>;
   executeMission: () => Promise<ExecuteMissionResult>;
   resumeMission: (opts?: { retryFailed?: boolean }) => Promise<ResumeMissionResult>;
-  abortMission: () => Promise<{ aborted: number }>;
+  abortMission: (options?: AbortMissionOptions) => Promise<AbortMissionResult>;
   deleteMission: () => Promise<void>;
   // ── Atomic mission data operations ──
   createTask: (req: AddMissionTaskRequest) => Promise<Mission>;
@@ -109,7 +109,7 @@ export function useMission(missionId: string): UseMissionReturn {
   );
 
   const abortMission = useCallback(
-    () => client.abortMission(missionId),
+    (options?: AbortMissionOptions) => client.abortMission(missionId, options),
     [client, missionId],
   );
 

@@ -15,7 +15,7 @@ import type { ActiveCheckpoint, ActiveDelay } from "./types.js";
 import type { OrchestratorContext } from "./orchestrator-context.js";
 import { TickWaiter } from "./tick-waiter.js";
 import { resolveMissionStore, resolveMissionForTask } from "./mission-store.js";
-import { MissionExecutionError, type MissionExecutionOptions, type MissionExecutionResult } from "./mission-execution.js";
+import { MissionExecutionError, type MissionAbortOptions, type MissionAbortResult, type MissionExecutionOptions, type MissionExecutionResult } from "./mission-execution.js";
 import type { TaskManager } from "./task-manager.js";
 import { isConditionalTaskExecutionStore, taskDependencyPreconditions, taskExecutionReference, TaskExecutionError, type TaskExecutionReference, type TaskExecutionMutation, type TaskExecutionPrecondition, type TaskExecutionState } from "./task-execution.js";
 import type { AgentManager } from "./agent-manager.js";
@@ -105,7 +105,8 @@ export interface MissionExecutorPort {
   listMissions(): Promise<Mission[]>;
   updateMission(missionId: string, updates: Partial<Omit<Mission, "id">>): Promise<Mission>;
   deleteMission(missionId: string): Promise<boolean>;
-  executeMission(missionId: string, options?: MissionExecutionOptions): Promise<MissionExecutionResult>;
+  executeMission(missionId: string, options?: MissionExecutionOptions, expectedMission?: Mission): Promise<MissionExecutionResult>;
+  abortMission?(missionId: string, options?: MissionAbortOptions): Promise<MissionAbortResult & { missionCancelled: boolean }>;
   prepareTaskExecution?(task: Task): Promise<void>;
   resumeCheckpointByMissionId?(missionId: string, checkpointName: string): Promise<boolean>;
   resumeMission(missionId: string, opts?: { retryFailed?: boolean }): Promise<{ retried: number; pending: number }>;
@@ -624,6 +625,15 @@ export class OrchestratorEngine {
     const mission = await resolveMissionForTask(resolveMissionStore(this.ctx), { missionId: mid });
     if (mission) this.scheduler?.unregisterMission(mission.id);
     return count;
+  }
+
+  async abortMission(missionId: string, options?: MissionAbortOptions): Promise<MissionAbortResult> {
+    if (!this.missionExec.abortMission) throw new MissionExecutionError("mission_execution_unsupported", "Mission cancellation is unavailable");
+    const result = await this.missionExec.abortMission(missionId, options);
+    // The durable cancelled status fences scheduled admission. Removing a local
+    // entry after this await could instead remove a newer accepted execution's
+    // scheduling, even when the ScheduleEntry object itself has not changed.
+    return { aborted: result.aborted, ...(result.executionId ? { executionId: result.executionId } : {}) };
   }
 
   async clearTasks(filter: (task: Task) => boolean): Promise<number> { return this.taskMgr.clearTasks(filter); }

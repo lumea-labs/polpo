@@ -31,6 +31,38 @@ deleted tasks. Read the task API separately for current status. A task's
 `missionExecutionId` links it to its accepted execution; `group` is a label and
 must not be used as a unique identifier.
 
+Cancel that accepted execution with
+`client.abortMission(mission.id, { executionId: accepted.executionId })`, or
+`POST /missions/:missionId/abort` with `{"executionId":"..."}` under the same API
+prefix. The SDK and React Mission hooks accept these options. Omitting the body
+selects the current accepted execution. The response contains `aborted` (the
+number of nonterminal tasks cancelled) and `executionId`. Renaming a Mission or
+using equal display labels does not change the selected tasks. Passing a historical
+execution ID cancels only that execution, without cancelling a newer one.
+
+Cancellation commits the complete accepted task set, invalidates its active Runs
+and approval authority, and changes the current Mission to `cancelled` in one
+transaction. A concurrent task edit, claim or retry rejects the whole operation
+with `409`; it cannot partially cancel its peers or acquire the replacement Run.
+A fresh repeated API call returns zero once work is cancelled. At the storage
+contract level, reusing stale task snapshots still conflicts: it is not an
+idempotency receipt for the cancellation command. Local owner notification follows
+the durable commit; success does not by itself prove physical sandbox termination.
+
+Cancellation requires `MissionExecutionCancellationStore`, extending the execution
+store with `abortMissionExecution`. A legacy execution without an accepted receipt,
+or a custom store without atomic cancellation, returns `501` rather than inferring
+destructive authority from a group label. A never-executed draft returns zero.
+Migrate or finish legacy work before replacing its runtime. The explicit low-level
+`abortGroup` command remains separate from the Mission HTTP endpoint.
+
+Cold hosts can call `cancelMissionExecution(stores, missionId, options)` from
+`@polpo-ai/core` without constructing an engine. It returns the committed result
+and exact Run IDs for optional owner notification. The runtime delegates to the
+same command. Cancellation does not remove cached execution resources or unregister
+scheduling after awaiting notification: a newer retry or execution may already use
+them. The durable Mission status and admission snapshot enforce cancellation.
+
 The executor validates the complete dependency graph, task hooks, agents and model
 configuration before making tasks runnable. Atomic admission stores all tasks,
 the Mission counter/state and a durable receipt together. Each task inherits the
@@ -86,7 +118,13 @@ the capability is unavailable. API errors distinguish invalid requests (`400`),
 admission conflicts (`409`) and unsupported atomic persistence (`501`).
 
 Local Mission scheduling supplies an occurrence key and awaits asynchronous
-admission. Cloud Schedule `legacy_mission` dispatch supplies a key derived from
+admission. It retains the Mission snapshot captured before the trigger hook until
+atomic admission and abandons a locally removed, replaced or advanced occurrence.
+Hosts wiring `Scheduler.setExecutor` must forward its third, trusted
+`expectedMission` argument to `MissionExecutor.executeMission`; it is not a public
+request option. CRUD-only custom stores retain their legacy scheduling behavior
+without this atomic guard. Cancelling an execution does not disable an independent
+Schedule v2 resource. Cloud Schedule `legacy_mission` dispatch supplies a key derived from
 its durable schedule run and records the returned execution ID. The CLI's authored
 Mission files and deployment format are unchanged; there is no new dedicated CLI
 execute command.

@@ -987,6 +987,8 @@ export interface ExecuteMissionResult {
 }
 
 export interface ExecuteMissionOptions { idempotencyKey?: string }
+export interface AbortMissionOptions { executionId?: string }
+export interface AbortMissionResult { aborted: number; executionId?: string }
 
 export interface ResumeMissionResult {
   retried: number;

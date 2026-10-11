@@ -1,4 +1,4 @@
-import type { MissionExecutionOptions } from "@polpo-ai/core/mission-store";
+import type { MissionAbortOptions, MissionExecutionOptions } from "@polpo-ai/core/mission-store";
 import { getPolpoDir } from "../core/constants.js";
 import { OpenAPIHono } from "@hono/zod-openapi";
 import { readFileSync } from "node:fs";
@@ -556,7 +556,7 @@ export function createApp(orchestrator: Orchestrator, sseBridge: SSEBridge, opts
     deleteMission: (id: string) => o.engine.deleteMission(id),
     executeMission: (id: string, options?: MissionExecutionOptions) => o.engine.executeMission(id, options),
     resumeMission: (id: string, opts?: any) => o.engine.resumeMission(id, opts),
-    abortGroup: (group: string) => o.engine.abortGroup(group),
+    abortMission: (id: string, options?: MissionAbortOptions) => o.engine.abortMission(id, options),
     getActiveCheckpoints: () => o.engine.getActiveCheckpoints(),
     resumeCheckpointByMissionId: (mid: string, cp: string) => o.engine.resumeCheckpointByMissionId(mid, cp),
     getActiveDelays: () => o.engine.getActiveDelays(),

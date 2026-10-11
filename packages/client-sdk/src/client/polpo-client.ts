@@ -40,6 +40,8 @@ import type {
   UpdateTeamRequest,
   ExecuteMissionResult,
   ExecuteMissionOptions,
+  AbortMissionOptions,
+  AbortMissionResult,
   ResumeMissionResult,
   ApiResult,
   LogSession,
@@ -799,8 +801,8 @@ export class PolpoClient {
     return this.post<ResumeMissionResult>(`/missions/${missionId}/resume`, opts);
   }
 
-  abortMission(missionId: string): Promise<{ aborted: number }> {
-    return this.post<{ aborted: number }>(`/missions/${missionId}/abort`);
+  abortMission(missionId: string, options?: AbortMissionOptions): Promise<AbortMissionResult> {
+    return this.post<AbortMissionResult>(`/missions/${encodeURIComponent(missionId)}/abort`, options);
   }
 
   // ── Atomic Mission Data ───────────────────────────────────

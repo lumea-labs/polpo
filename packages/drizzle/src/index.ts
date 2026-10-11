@@ -97,7 +97,7 @@ import { DrizzleChannelManagementStore } from "./stores/channel-management-store
 
 // ── Store bundle type ─────────────────────────────────────────────────
 
-import type { MissionStore, MissionExecutionStore } from "@polpo-ai/core";
+import type { MissionStore, MissionExecutionCancellationStore } from "@polpo-ai/core";
 import type { TaskStore } from "@polpo-ai/core/task-store";
 import type { RunStore } from "@polpo-ai/core/run-store";
 import type {
@@ -126,7 +126,7 @@ import type { TaskApprovalExecutionStore } from "@polpo-ai/core/task-execution";
 export interface DrizzleStores {
   /** Mission persistence — same instance as taskStore (implements both). */
   missionStore: MissionStore;
-  missionExecutionStore: MissionExecutionStore;
+  missionExecutionStore: MissionExecutionCancellationStore;
   taskStore: TaskStore;
   taskExecutionStore: TaskApprovalExecutionStore;
   runStore: RunStore;

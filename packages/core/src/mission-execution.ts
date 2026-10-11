@@ -1,5 +1,8 @@
 import type { AgentConfig, Mission, ScopedNotificationRules, Task } from "./types.js";
 import { normalizeRuntimeMetadata, sameRuntimeMetadata } from "./runtime-metadata.js";
+import { normalizeTaskExecutionPreconditions, assertTaskExecutionPreconditions, prepareTaskExecutionMutation, taskExecutionReference,
+  type TaskExecutionPrecondition, type TaskExecutionState } from "./task-execution.js";
+import type { RunRecord } from "./run-store.js";
 
 /** Immutable admission receipt. Task snapshots describe what was created;
  * callers read TaskStore separately for current execution status. */
@@ -45,12 +48,81 @@ export interface MissionExecutionStore {
 }
 export type MissionExecutionFinalStatus = "completed" | "failed" | "scheduled" | "recurring";
 
+/** Cancellation must commit the complete accepted Task set, its Runs and the
+ * current Mission status together. Per-Task cancellation followed by a separate
+ * finalization lets concurrent cleanup reschedule the interrupted Mission. */
+export interface MissionExecutionAbortInput {
+  missionId: string;
+  executionId: string;
+  tasks: TaskExecutionPrecondition[];
+}
+export interface MissionExecutionAbortResult {
+  executionId: string;
+  aborted: number;
+  /** False when cancelling a historical execution of a newer active Mission. */
+  missionCancelled: boolean;
+  /** Notify only these exact owners, after the durable commit succeeds. */
+  killedRunIds: string[];
+}
+export interface MissionExecutionCancellationStore extends MissionExecutionStore {
+  abortMissionExecution(input: MissionExecutionAbortInput): Promise<MissionExecutionAbortResult>;
+}
+export function isMissionExecutionCancellationStore(value: unknown): value is MissionExecutionCancellationStore {
+  return isMissionExecutionStore(value)
+    && typeof (value as Partial<MissionExecutionCancellationStore>).abortMissionExecution === "function";
+}
+export function normalizeMissionExecutionAbort(input: MissionExecutionAbortInput): MissionExecutionAbortInput {
+  if (!input) invalid();
+  validateMissionExecutionKey(input.missionId, "abort");
+  validateMissionExecutionKey(input.executionId, "abort");
+  const tasks = normalizeTaskExecutionPreconditions(input.tasks);
+  if (tasks.some(task => task.snapshot === null)) invalid();
+  return { missionId: input.missionId, executionId: input.executionId, tasks };
+}
+
+/** Shared decision, called while storage holds all Mission/Task/Run reads stable.
+ * The returned writes must all succeed in the SAME transaction or all roll back. */
+export function prepareMissionExecutionAbort(input: MissionExecutionAbortInput, receipt: MissionExecutionReceipt | undefined,
+  mission: Mission | undefined, tasks: Task[], runs: RunRecord[], now: string): {
+    tasks: TaskExecutionState[]; mission?: Mission; result: MissionExecutionAbortResult;
+  } {
+  if (!receipt || receipt.executionId !== input.executionId || receipt.missionId !== input.missionId
+    || input.tasks.length !== receipt.tasks.length || input.tasks.some(p => !receipt.tasks.some(t => t.id === p.taskId))) {
+    throw new MissionExecutionError("mission_execution_invalid", "Cancellation must match the complete accepted Mission execution");
+  }
+  if (!mission || mission.id !== input.missionId || (mission.executionCount ?? 0) < receipt.sequence) conflict();
+  const current = new Map(tasks.map(task => [task.id, task]));
+  assertTaskExecutionPreconditions(input.tasks, id => current.get(id));
+  const writes: TaskExecutionState[] = [], killedRunIds: string[] = [];
+  let aborted = 0;
+  for (const captured of input.tasks) {
+    const task = current.get(captured.taskId)!;
+    assertMissionExecutionTask(task, receipt);
+    const terminal = task.status === "done" || task.status === "failed";
+    // A terminal Task can still own a Run from an older writer. Invalidate that
+    // ownership too, but do not advance an already-closed Task on replay.
+    if (terminal && task.activeRunId === undefined && task.approvalState === undefined) continue;
+    const run = task.activeRunId === undefined ? undefined : runs.find(run => run.id === task.activeRunId);
+    const state = prepareTaskExecutionMutation(task, run, taskExecutionReference(task), { type: "cancel", reason: "Mission execution aborted" }, now);
+    writes.push(state);
+    if (!terminal) aborted++;
+    if (run?.status === "running" && state.run?.status === "killed") killedRunIds.push(run.id);
+  }
+  const isCurrent = mission.executionCount === receipt.sequence;
+  const cancelMission = isCurrent && ["active", "paused", "scheduled", "recurring"].includes(mission.status);
+  return { tasks: writes, ...(cancelMission ? { mission: { ...mission, status: "cancelled", updatedAt: now } as Mission } : {}),
+    result: { executionId: receipt.executionId, aborted, killedRunIds,
+      missionCancelled: isCurrent && (cancelMission || mission.status === "cancelled") } };
+}
+
 export function validateMissionExecutionFinalStatus(status: MissionExecutionFinalStatus): void {
   if (!["completed", "failed", "scheduled", "recurring"].includes(status)) invalid();
 }
 
 export interface MissionExecutionOptions { idempotencyKey?: string }
 export interface MissionExecutionResult { tasks: Task[]; group: string; executionId?: string }
+export interface MissionAbortOptions { executionId?: string }
+export interface MissionAbortResult { aborted: number; executionId?: string }
 
 export function isMissionExecutionStore(value: unknown): value is MissionExecutionStore {
   const store = value as Partial<MissionExecutionStore> | undefined;

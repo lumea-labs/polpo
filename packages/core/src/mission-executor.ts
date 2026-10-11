@@ -8,7 +8,8 @@ import type { Mission, MissionStatus, MissionReport, Task, TaskExpectation, Miss
 import type { QualityController } from "./quality-controller.js";
 import { sanitizeExpectations, parseMissionDocument, type MissionDocumentParsed } from "./schemas.js";
 import { resolveMissionStore, resolveMissionForGroup, resolveMissionExecutionStore, type MissionStore } from "./mission-store.js";
-import { assertMissionExecutionTask, MissionExecutionError, validateMissionExecutionKey, type MissionExecutionCommit, type MissionExecutionOptions, type MissionExecutionResult } from "./mission-execution.js";
+import { assertMissionExecutionTask, MissionExecutionError, validateMissionExecutionKey, type MissionAbortOptions, type MissionAbortResult, type MissionExecutionCommit, type MissionExecutionOptions, type MissionExecutionResult } from "./mission-execution.js";
+import { cancelMissionExecution } from "./mission-cancellation.js";
 import { InMemoryCheckpointStore, InMemoryDelayStore } from "./in-memory-stores.js";
 import { MissionGating, parseISO8601Duration } from "./mission-gating.js";
 import { resolveConfiguredModelSelection } from "./model-profiles.js";
@@ -308,6 +309,23 @@ export class MissionExecutor {
     return { retried, pending: pendingTasks.length };
   }
 
+  /** Cancel one accepted execution, never a presentation group or a newer Task attempt. */
+  async abortMission(missionId: string, options: MissionAbortOptions = {}): Promise<MissionAbortResult & { missionCancelled: boolean }> {
+    const capturedOptions = { ...options };
+    await this.ready;
+    const result = await cancelMissionExecution({ missionStore: this.missions, taskStore: this.ctx.taskStore,
+      missionExecutionStore: resolveMissionExecutionStore(this.ctx) }, missionId, capturedOptions);
+    // Durable state wins even if an in-process owner or cache is unavailable.
+    for (const runId of result.killedRunIds) {
+      try { await this.ctx.spawner?.cancelRun?.(runId); }
+      catch { this.ctx.emitter.emit("log", { level: "warn", message: `Mission cancellation committed; owner notification deferred for Run ${runId}` }); }
+    }
+    // Do not remove execution resources here: a retry may already be using the
+    // same receipt while owner notification is pending. Normal lifecycle cleanup
+    // owns those resources independently from this captured cancellation.
+    return { aborted: result.aborted, executionId: result.executionId, missionCancelled: result.missionCancelled };
+  }
+
   private async forgetExecution(group: string): Promise<void> {
     // Settle recovery before removing its definitions, so an in-flight load
     // cannot restore a cache that cleanup has just removed.
@@ -367,9 +385,16 @@ export class MissionExecutor {
     }
   }
 
-  async executeMission(missionId: string, options: MissionExecutionOptions = {}): Promise<MissionExecutionResult> {
+  async executeMission(missionId: string, options: MissionExecutionOptions = {}, expectedMission?: Mission): Promise<MissionExecutionResult> {
+    // Trusted scheduler input, never exposed as an authored HTTP option. A
+    // delayed trigger must not obtain fresh authority by re-reading the Mission.
+    const expected = expectedMission === undefined ? undefined : structuredClone(expectedMission);
+    options = { ...options };
     await this.ready;
     const persistence = resolveMissionExecutionStore(this.ctx);
+    if (expected && (!persistence || expected.id !== missionId)) {
+      throw new MissionExecutionError("mission_execution_unsupported", "Guarded Mission execution requires matching atomic persistence");
+    }
     if (options.idempotencyKey !== undefined) {
       validateMissionExecutionKey(missionId, options.idempotencyKey);
       if (!persistence) throw new MissionExecutionError("mission_execution_unsupported", "Idempotent Mission execution requires atomic persistence");
@@ -378,7 +403,7 @@ export class MissionExecutor {
     }
     let admitted = false;
     try {
-      const stored = await this.missions.getMission(missionId);
+      const stored = expected ?? await this.missions.getMission(missionId);
       if (!stored) throw new Error("Mission not found");
       // Some custom stores return mutable objects. Hooks and awaits must not alter
       // the expected snapshot that will be compared during atomic admission.

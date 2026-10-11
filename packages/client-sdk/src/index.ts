@@ -140,6 +140,8 @@ export type {
   UpdateMissionNotificationsRequest,
   ExecuteMissionResult,
   ExecuteMissionOptions,
+  AbortMissionOptions,
+  AbortMissionResult,
   ResumeMissionResult,
   AddAgentRequest,
   UpdateAgentRequest,

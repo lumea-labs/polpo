@@ -14,7 +14,8 @@ import { normalizeRuntimeMetadata } from "@polpo-ai/core";
 import { type Dialect, serializeJson, deserializeJson, extractAffectedRows } from "../utils.js";
 import {
   admitMissionExecution, normalizeMissionExecutionCommit, validateMissionExecutionKey, validateMissionExecutionFinalStatus, type MissionExecutionFinalStatus,
-  MissionExecutionError, type MissionExecutionStore, type MissionExecutionCommit, type MissionExecutionReceipt,
+  MissionExecutionError, type MissionExecutionCancellationStore, type MissionExecutionCommit, type MissionExecutionReceipt,
+  normalizeMissionExecutionAbort, prepareMissionExecutionAbort, type MissionExecutionAbortInput, type MissionExecutionAbortResult,
 } from "@polpo-ai/core/mission-store";
 import type { DrizzleTransactionProvider } from "./session-store.js";
 
@@ -31,7 +32,7 @@ export interface TaskStoreSchema {
   missionExecutions?: AnyTable;
 }
 
-export class DrizzleTaskStore implements TaskStore, MissionExecutionStore, ConditionalTaskExecutionStore, TaskApprovalExecutionStore {
+export class DrizzleTaskStore implements TaskStore, MissionExecutionCancellationStore, ConditionalTaskExecutionStore, TaskApprovalExecutionStore {
   constructor(
     private db: any,
     private schema: TaskStoreSchema,
@@ -441,12 +442,7 @@ export class DrizzleTaskStore implements TaskStore, MissionExecutionStore, Condi
         : prepareTaskExecutionMutation(task, run, expected, operation.mutation ?? { type: "patch", updates: {} }, now);
       if (readOnlyTask) state = { task: task!, ...(run ? { run } : {}) };
       state = applyTaskApprovalState(state, approvalState);
-      const values = this.taskToValues(state.task);
-      const columns = getTableColumns(tasks);
-      for (const [field, value] of Object.entries(state.task)) {
-        if (value === undefined && Object.hasOwn(columns, field) && !columns[field].notNull) values[field] = null;
-      }
-      delete values.id;
+      const values = this.executionTaskValues(state.task);
       return { state, values, runChanged: state.run !== run };
     };
     const writes = (tx: any, prepared: ReturnType<typeof prepare>) => {
@@ -508,6 +504,66 @@ export class DrizzleTaskStore implements TaskStore, MissionExecutionStore, Condi
   }
 
   // ── Missions ─────────────────────────────────────────────────────────
+
+  private executionTaskValues(task: Task): any {
+    const values = this.taskToValues(task), columns = getTableColumns(this.schema.tasks);
+    for (const [field, value] of Object.entries(task)) {
+      if (value === undefined && Object.hasOwn(columns, field) && !columns[field].notNull) values[field] = null;
+    }
+    delete values.id;
+    return values;
+  }
+
+  async abortMissionExecution(raw: MissionExecutionAbortInput): Promise<MissionExecutionAbortResult> {
+    const input = normalizeMissionExecutionAbort(raw), table = this.executionTable();
+    const { tasks, runs, missions } = this.schema;
+    if (!runs) throw new MissionExecutionError("mission_execution_unsupported", "Mission cancellation requires shared Task and Run storage");
+    const admissionQuery = (tx: any) => tx.select().from(table).where(eq(table.executionId, input.executionId));
+    const missionQuery = (tx: any) => tx.select().from(missions).where(eq(missions.id, input.missionId));
+    const taskQuery = (tx: any) => tx.select().from(tasks).where(inArray(tasks.id, input.tasks.map(p => p.taskId))).orderBy(asc(tasks.id));
+    const runIds = (rows: any[]) => rows.flatMap(row => row.activeRunId ? [row.activeRunId as string] : []).sort();
+    const runQuery = (tx: any, ids: string[]) => tx.select().from(runs).where(inArray(runs.id, ids)).orderBy(asc(runs.id));
+    const prepare = (admissionRow: any, missionRow: any, taskRows: any[], runRows: any[]) => {
+      const records = runRows.map(row => runRecordFromRow(row, this.dialect));
+      return { records, decision: prepareMissionExecutionAbort(input, this.receiptFromRow(admissionRow),
+        missionRow ? this.rowToMission(missionRow) : undefined, taskRows.map(row => this.rowToTask(row)), records, new Date().toISOString()) };
+    };
+    const writes = (tx: any, { decision, records }: ReturnType<typeof prepare>) => {
+      const queries: any[] = [];
+      for (const state of decision.tasks) {
+        queries.push(tx.update(tasks).set(this.executionTaskValues(state.task)).where(eq(tasks.id, state.task.id)).returning({ id: tasks.id }));
+        const run = state.run;
+        if (run && run !== records.find(old => old.id === run.id)) queries.push(tx.update(runs).set({
+          status: run.status, result: serializeJson(run.result, this.dialect), updatedAt: run.updatedAt, completedAt: run.completedAt,
+        }).where(and(eq(runs.id, run.id), eq(runs.status, "running"))).returning({ id: runs.id }));
+      }
+      if (decision.mission) queries.push(tx.update(missions).set({ status: decision.mission.status, updatedAt: decision.mission.updatedAt })
+        .where(eq(missions.id, decision.mission.id)).returning({ id: missions.id }));
+      return queries;
+    };
+    const checked = (rows: unknown) => {
+      if (!Array.isArray(rows) || rows.length !== 1) throw new MissionExecutionError("mission_execution_conflict", "Mission cancellation write was not persisted");
+    };
+    if (this.dialect === "sqlite") return this.db.transaction((tx: any) => {
+      const captured = taskQuery(tx).all(), ids = runIds(captured);
+      const prepared = prepare(admissionQuery(tx).get(), missionQuery(tx).get(), captured, ids.length ? runQuery(tx, ids).all() : []);
+      for (const query of writes(tx, prepared)) checked(query.all());
+      return prepared.decision.result;
+    }, { behavior: "immediate" });
+    const execute = async (tx: any) => {
+      // Same order as admission: Tasks before Mission, then exact Run owners.
+      // This also prevents a new claim/approval decision during cancellation.
+      await tx.execute(sql`LOCK TABLE ${tasks} IN EXCLUSIVE MODE`);
+      const missionRow = (await missionQuery(tx).for("update"))[0];
+      const captured = await taskQuery(tx).for("update"), ids = runIds(captured);
+      const prepared = prepare((await admissionQuery(tx))[0], missionRow, captured, ids.length ? await runQuery(tx, ids).for("update") : []);
+      for (const query of writes(tx, prepared)) checked(await query);
+      return prepared.decision.result;
+    };
+    if (this.transactionProvider) return this.transactionProvider(execute);
+    if (typeof this.db.transaction !== "function") throw new MissionExecutionError("mission_execution_unsupported", "Mission cancellation requires an interactive transaction");
+    return this.db.transaction(execute);
+  }
 
   private executionTable(): AnyTable {
     if (!this.schema.missionExecutions) throw new MissionExecutionError("mission_execution_unsupported", "Mission execution persistence is not configured");

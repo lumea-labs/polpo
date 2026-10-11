@@ -16,6 +16,15 @@ describe("PolpoClient queued caller context", () => {
 });
 
 describe("PolpoClient Mission execution", () => {
+  it("targets the accepted execution when aborting a Mission", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>().mockImplementation(async () => Response.json({ ok: true,
+      data: { aborted: 2, executionId: "accepted" } }));
+    const client = new PolpoClient({ baseUrl: "https://api.polpo.sh", fetch });
+    expect(await client.abortMission("mission", { executionId: "accepted" })).toEqual({ aborted: 2, executionId: "accepted" });
+    expect(fetch).toHaveBeenCalledWith("https://api.polpo.sh/v1/missions/mission/abort", expect.objectContaining({
+      method: "POST", body: JSON.stringify({ executionId: "accepted" }),
+    }));
+  });
   it("sends the retry key and retains the returned execution identity", async () => {
     const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(new Response(JSON.stringify({ ok: true,
       data: { tasks: [], group: "Example", executionId: "accepted" } }), { headers: { "content-type": "application/json" } }));

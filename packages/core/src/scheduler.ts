@@ -17,7 +17,7 @@ export class Scheduler {
   private schedules = new Map<string, ScheduleEntry>();
   private lastCheckMs = 0;
   private checkIntervalMs: number;
-  private executeMissionFn?: (missionId: string, options?: MissionExecutionOptions) => unknown;
+  private executeMissionFn?: (missionId: string, options?: MissionExecutionOptions, expectedMission?: Mission) => unknown;
   private missionCompletedHandler?: (evt: { missionId: string }) => void;
 
   constructor(
@@ -46,7 +46,7 @@ export class Scheduler {
     this.ctx.emitter.on("mission:completed", this.missionCompletedHandler);
   }
 
-  setExecutor(fn: (missionId: string, options?: MissionExecutionOptions) => unknown): void {
+  setExecutor(fn: (missionId: string, options?: MissionExecutionOptions, expectedMission?: Mission) => unknown): void {
     this.executeMissionFn = fn;
   }
 
@@ -114,7 +114,11 @@ export class Scheduler {
   }
 
   private async triggerSchedule(schedId: string, entry: ScheduleEntry): Promise<void> {
-    const mission = await resolveMissionStore(this.ctx).getMission(entry.missionId);
+    const occurrence = entry.nextRunAt;
+    const isCurrent = () => this.schedules.get(schedId) === entry && entry.enabled && entry.nextRunAt === occurrence;
+    const stored = await resolveMissionStore(this.ctx).getMission(entry.missionId);
+    if (!isCurrent()) return;
+    const mission = stored ? structuredClone(stored) : undefined;
     if (!mission) {
       entry.enabled = false;
       return;
@@ -148,7 +152,7 @@ export class Scheduler {
       missionId: entry.missionId,
       expression: entry.expression,
     });
-    if (hookResult.cancelled) {
+    if (hookResult.cancelled || !isCurrent()) {
       return;
     }
 
@@ -162,7 +166,7 @@ export class Scheduler {
     try {
       if (this.executeMissionFn) {
         if (resolveMissionExecutionStore(this.ctx)) {
-          await this.executeMissionFn(entry.missionId, { idempotencyKey: `schedule:${entry.missionId}:${entry.nextRunAt}` });
+          await this.executeMissionFn(entry.missionId, { idempotencyKey: `schedule:${entry.missionId}:${occurrence}` }, mission);
         } else {
           await this.executeMissionFn(entry.missionId);
         }

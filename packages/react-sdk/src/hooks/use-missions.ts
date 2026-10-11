@@ -2,7 +2,7 @@ import { useSyncExternalStore, useCallback, useEffect, useRef, useState } from "
 import { usePolpoContext } from "../provider/polpo-context.js";
 import { selectMissions } from "@polpo-ai/sdk";
 import { useMutation } from "./use-mutation.js";
-import type { Mission, CreateMissionRequest, UpdateMissionRequest, ExecuteMissionResult, ResumeMissionResult } from "@polpo-ai/sdk";
+import type { Mission, CreateMissionRequest, UpdateMissionRequest, ExecuteMissionResult, ResumeMissionResult, AbortMissionOptions, AbortMissionResult } from "@polpo-ai/sdk";
 
 export interface UseMissionsReturn {
   missions: Mission[];
@@ -18,7 +18,7 @@ export interface UseMissionsReturn {
   isExecuting: boolean;
   resumeMission: (missionId: string, opts?: { retryFailed?: boolean }) => Promise<ResumeMissionResult>;
   isResuming: boolean;
-  abortMission: (missionId: string) => Promise<{ aborted: number }>;
+  abortMission: (missionId: string, options?: AbortMissionOptions) => Promise<AbortMissionResult>;
   isAborting: boolean;
   refetch: () => Promise<void>;
   invalidate: () => Promise<void>;
@@ -104,7 +104,7 @@ export function useMissions(): UseMissionsReturn {
 
   const { mutate: abortMission, isPending: isAborting } = useMutation(
     useCallback(
-      (missionId: string) => client.abortMission(missionId),
+      (missionId: string, options?: AbortMissionOptions) => client.abortMission(missionId, options),
       [client],
     ),
   );

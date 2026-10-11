@@ -1,4 +1,4 @@
-import type { MissionExecutionOptions } from "@polpo-ai/core/mission-store";
+import type { MissionAbortOptions, MissionAbortResult, MissionExecutionOptions } from "@polpo-ai/core/mission-store";
 /**
  * Route dependency interfaces.
  *
@@ -134,7 +134,7 @@ export interface MissionRouteDeps {
   deleteMission: (missionId: string) => Promise<any>;
   executeMission: (missionId: string, options?: MissionExecutionOptions) => Promise<any>;
   resumeMission: (missionId: string, opts?: any) => Promise<any>;
-  abortGroup: (groupName: string) => Promise<any>;
+  abortMission: (missionId: string, options?: MissionAbortOptions) => Promise<MissionAbortResult>;
   getActiveCheckpoints: () => any[] | Promise<any[]>;
   resumeCheckpointByMissionId: (missionId: string, checkpointName: string) => Promise<any>;
   getActiveDelays: () => any[] | Promise<any[]>;

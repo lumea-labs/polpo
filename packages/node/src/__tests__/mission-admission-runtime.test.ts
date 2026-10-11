@@ -38,6 +38,128 @@ const document = () => ({ tasks: [
 ] });
 
 describe("durable Mission execution through the real OSS executor", () => {
+  it.each([false, true])("aborts the current Mission by identity despite colliding labels (renamed=%s)", async renamed => {
+    const cancelRun = vi.fn();
+    const f = fixture({ spawner: { spawn: vi.fn(), kill: vi.fn(), isAlive: () => true, cancelRun } }); await f.executor.ready;
+    const first = await f.executor.createMission({ name: "Same", data: JSON.stringify(document()), user: "person-a", metadata: { connectionNamespace: "app-a" } });
+    await f.store.updateMission(first.id, { executionCount: 1 });
+    const a = await f.executor.executeMission(first.id, { idempotencyKey: "one" });
+    const other = await f.executor.createMission({ name: "Same #2", data: JSON.stringify({ tasks: [{ title: "Other", description: "Other", assignTo: "support" }] }), user: "person-b", metadata: { connectionNamespace: "app-b" } });
+    const b = await f.executor.executeMission(other.id, { idempotencyKey: "two" });
+    const claimed = await f.store.claimTaskExecution(taskExecutionReference(a.tasks[0]), "target-run");
+    if (renamed) await f.executor.updateMission(first.id, { name: "Renamed" });
+    expect(a.group).toBe(b.group);
+    expect(await f.executor.abortMission(first.id)).toMatchObject({ aborted: 2, executionId: a.executionId, missionCancelled: true });
+    expect(cancelRun).toHaveBeenCalledExactlyOnceWith(claimed.run.id);
+    expect(await f.store.getMission(first.id)).toMatchObject({ status: "cancelled" });
+    expect(await f.store.getMission(other.id)).toMatchObject({ status: "active" });
+    expect(await f.store.getTask(b.tasks[0].id)).toEqual(b.tasks[0]);
+    const restarted = fixture(); await restarted.executor.ready;
+    expect(await restarted.executor.abortMission(first.id, { executionId: a.executionId })).toMatchObject({ aborted: 0 });
+  });
+
+  it("never uses an execution receipt belonging to another Mission", async () => {
+    const f = fixture(); await f.executor.ready;
+    const first = await f.executor.createMission({ name: "First", data: JSON.stringify(document()) });
+    const other = await f.executor.createMission({ name: "Other", data: JSON.stringify(document()) });
+    const execution = await f.executor.executeMission(first.id);
+    await expect(f.executor.abortMission(other.id, { executionId: execution.executionId })).rejects.toMatchObject({ code: "mission_execution_invalid" });
+    expect(await f.store.getTask(execution.tasks[0].id)).toEqual(execution.tasks[0]);
+  });
+
+  it("does not replace captured Task authority while an abort is waiting to commit", async () => {
+    const f = fixture(); await f.executor.ready;
+    const mission = await f.executor.createMission({ data: JSON.stringify(document()) });
+    const execution = await f.executor.executeMission(mission.id);
+    const commit = f.store.abortMissionExecution.bind(f.store);
+    vi.spyOn(f.store, "abortMissionExecution").mockImplementationOnce(async input => {
+      await f.store.claimTaskExecution(taskExecutionReference(execution.tasks[1]), "late-owner");
+      return commit(input);
+    });
+    await expect(f.executor.abortMission(mission.id)).rejects.toMatchObject({ code: "task_execution_conflict" });
+    expect(await f.store.getTask(execution.tasks[0].id)).toEqual(execution.tasks[0]);
+    expect(await f.ctx.runStore.getRun("late-owner")).toMatchObject({ status: "running" });
+    expect(await f.store.getMission(mission.id)).toMatchObject({ status: "active" });
+  });
+
+  it("captures independent snapshots from stores that return mutable Task objects", async () => {
+    const f = fixture(); await f.executor.ready;
+    const mission = await f.executor.createMission({ data: JSON.stringify(document()) });
+    await f.executor.executeMission(mission.id);
+    const objects = await f.store.listTasks();
+    vi.spyOn(f.store, "listTasks").mockResolvedValue(objects);
+    const lookup = f.store.getMissionExecutionById.bind(f.store);
+    vi.spyOn(f.store, "getMissionExecutionById").mockImplementationOnce(async id => {
+      const claimed = await f.store.claimTaskExecution(taskExecutionReference(objects[0]), "new-owner");
+      Object.assign(objects[0], claimed.task);
+      return lookup(id);
+    });
+    await expect(f.executor.abortMission(mission.id)).rejects.toMatchObject({ code: "task_execution_conflict" });
+    expect(await f.ctx.runStore.getRun("new-owner")).toMatchObject({ status: "running" });
+    expect(await f.store.getMission(mission.id)).toMatchObject({ status: "active" });
+  });
+
+  it("keeps a committed abort successful when its local Run owner cannot be notified", async () => {
+    const f = fixture({ spawner: { spawn: vi.fn(), kill: vi.fn(), isAlive: () => true, cancelRun: vi.fn().mockRejectedValue(new Error("owner unavailable")) } });
+    await f.executor.ready;
+    const mission = await f.executor.createMission({ data: JSON.stringify(document()) });
+    const execution = await f.executor.executeMission(mission.id);
+    const claimed = await f.store.claimTaskExecution(taskExecutionReference(execution.tasks[0]), "owner-run");
+    expect(await f.executor.abortMission(mission.id)).toMatchObject({ aborted: 2 });
+    expect(await f.ctx.runStore.getRun(claimed.run.id)).toMatchObject({ status: "killed" });
+    expect(await f.store.getMission(mission.id)).toMatchObject({ status: "cancelled" });
+  });
+
+  it("does not remove resources reused by a retry while cancellation notification is pending", async () => {
+    let entered!: () => void, release!: () => void;
+    const notifying = new Promise<void>(resolve => { entered = resolve; });
+    const released = new Promise<void>(resolve => { release = resolve; });
+    const cancelRun = vi.fn(async () => { entered(); await released; });
+    const f = fixture({ spawner: { spawn: vi.fn(), kill: vi.fn(), isAlive: () => true, cancelRun } });
+    await f.executor.ready;
+    const mission = await f.executor.createMission({ data: JSON.stringify({ ...document(), team: [{ name: "helper" }],
+      checkpoints: [{ name: "review", afterTasks: ["First"], blocksTasks: ["Second"] }] }) });
+    const execution = await f.executor.executeMission(mission.id);
+    const owned = await f.store.claimTaskExecution(taskExecutionReference(execution.tasks[0]), "old-owner");
+    const aborting = f.executor.abortMission(mission.id);
+    try {
+      await notifying;
+      const failed = (await f.store.getTask(owned.task.id))!;
+      const retry = await f.store.mutateTaskExecution(taskExecutionReference(failed), { type: "requeue", countRetry: true, reason: "Explicit retry" });
+      await f.executor.prepareTaskExecution(retry.task);
+      release(); await aborting;
+      expect(await f.store.getTask(retry.task.id)).toEqual(retry.task);
+      expect(f.executor.getCheckpoints(execution.executionId!)).toHaveLength(1);
+      expect((await f.agentManager.getAgents()).some(agent => agent.name === "helper")).toBe(true);
+    } finally { release(); await aborting; }
+  });
+
+  it("does not unregister scheduling for a newer execution admitted during abort notification", async () => {
+    let entered!: () => void, release!: () => void;
+    const notifying = new Promise<void>(resolve => { entered = resolve; });
+    const released = new Promise<void>(resolve => { release = resolve; });
+    const f = fixture({ spawner: { spawn: vi.fn(), kill: vi.fn(), isAlive: () => true, cancelRun: async () => { entered(); await released; } } });
+    await f.executor.ready;
+    const mission = await f.executor.createMission({ data: JSON.stringify(document()), status: "recurring", schedule: "* * * * *" });
+    const first = await f.executor.executeMission(mission.id);
+    await f.store.claimTaskExecution(taskExecutionReference(first.tasks[0]), "old-owner");
+    const scheduler = new Scheduler(f.ctx);
+    const entry = scheduler.registerMission(mission);
+    const engine = new OrchestratorEngine({ ctx: f.ctx, taskManager: f.taskManager, agentManager: f.agentManager,
+      missionExecutor: f.executor, scheduler, assessmentOrchestrator: { handleResult: async () => {}, retryOrFail: async () => {} },
+      taskRunner: { collectResults: async () => {}, enforceHealthChecks: async () => {}, spawnForTask: vi.fn(),
+        syncProcessesFromRunStore: async () => {}, recoverOrphanedTasks: async () => 0 } });
+    const aborting = engine.abortMission(mission.id);
+    try {
+      await notifying;
+      const second = await f.executor.executeMission(mission.id);
+      release(); await aborting;
+      expect(await f.store.getMission(mission.id)).toMatchObject({ status: "active", executionCount: 2 });
+      expect(await f.store.getTask(second.tasks[0].id)).toEqual(second.tasks[0]);
+      expect(scheduler.getScheduleByMissionId(mission.id)).toBe(entry);
+    } finally { release(); await aborting; scheduler.dispose(); }
+  });
+
   it.each([
     { mode: "resolver-rejection", changed: "task" }, { mode: "missing-dependency", changed: "task" },
     { mode: "resolver-rejection", changed: "dependency" }, { mode: "missing-dependency", changed: "dependency" },
@@ -99,7 +221,7 @@ describe("durable Mission execution through the real OSS executor", () => {
     const mission = await f.executor.createMission({ data: JSON.stringify(document()),
       ...(hook === "schedule:trigger" ? { status: "scheduled", schedule: when } : {}) });
     const scheduler = new Scheduler(f.ctx, { checkIntervalMs: 0 });
-    scheduler.setExecutor((id, options) => f.executor.executeMission(id, options));
+    scheduler.setExecutor((id, options, expected) => f.executor.executeMission(id, options, expected));
     await scheduler.init();
     if (hook === "schedule:trigger") vi.spyOn(Date, "now").mockReturnValue(Date.parse(when) + 1);
     let settled = false;
@@ -507,13 +629,38 @@ describe("durable Mission execution through the real OSS executor", () => {
     await expect(resumed.executor.prepareTaskExecution(execution.tasks[0])).resolves.toBeUndefined();
   });
 
+  it.each(["unregister", "replace", "advance", "remote-cancel"])("does not admit a schedule changed during its hook: %s", async change => {
+    const f = fixture(); await f.executor.ready;
+    const when = new Date(Date.now() + 60_000).toISOString();
+    const mission = await f.executor.createMission({ data: JSON.stringify(document()), status: "scheduled", schedule: when });
+    const scheduler = new Scheduler(f.ctx, { checkIntervalMs: 0 });
+    scheduler.setExecutor((id, options, expected) => f.executor.executeMission(id, options, expected));
+    await scheduler.init();
+    let entered!: () => void, release!: () => void;
+    const waiting = new Promise<void>(resolve => { entered = resolve; });
+    const released = new Promise<void>(resolve => { release = resolve; });
+    vi.spyOn(f.ctx.hooks, "runBefore").mockImplementationOnce(async () => { entered(); await released; return { cancelled: false }; });
+    vi.spyOn(Date, "now").mockReturnValue(Date.parse(when) + 1);
+    const checking = scheduler.check();
+    try {
+      await waiting;
+      if (change === "unregister") scheduler.unregisterMission(mission.id);
+      if (change === "replace") scheduler.registerMission(mission);
+      if (change === "advance") scheduler.getScheduleByMissionId(mission.id)!.nextRunAt = new Date(Date.parse(when) + 60_000).toISOString();
+      if (change === "remote-cancel") await f.store.updateMission(mission.id, { status: "cancelled" });
+      release(); await checking;
+      expect(await f.store.listTasks()).toEqual([]);
+      expect((await f.store.getMission(mission.id))?.executionCount ?? 0).toBe(0);
+    } finally { release(); await checking; scheduler.dispose(); }
+  });
+
   it("awaits local scheduled admission and retries its original occurrence after an asynchronous failure", async () => {
     const f = fixture(); await f.executor.ready;
     const when = new Date(Date.now() + 60_000).toISOString();
     const mission = await f.executor.createMission({ data: JSON.stringify(document()), status: "scheduled", schedule: when });
     const scheduler = new Scheduler(f.ctx, { checkIntervalMs: 0 });
     const execute = vi.fn().mockRejectedValueOnce(new Error("fixture asynchronous failure"))
-      .mockImplementation((id, options) => f.executor.executeMission(id, options));
+      .mockImplementation((id, options, expected) => f.executor.executeMission(id, options, expected));
     scheduler.setExecutor(execute);
     await scheduler.init();
     const now = Date.parse(when) + 1;
@@ -522,7 +669,7 @@ describe("durable Mission execution through the real OSS executor", () => {
     expect(await f.store.listTasks()).toEqual([]);
     await scheduler.check();
     expect(execute).toHaveBeenCalledTimes(2);
-    expect(execute.mock.calls[0]).toEqual([mission.id, { idempotencyKey: `schedule:${mission.id}:${when}` }]);
+    expect(execute.mock.calls[0]).toEqual([mission.id, { idempotencyKey: `schedule:${mission.id}:${when}` }, mission]);
     expect(execute.mock.calls[1]).toEqual(execute.mock.calls[0]);
     expect(await f.store.listTasks()).toHaveLength(2);
     scheduler.dispose();

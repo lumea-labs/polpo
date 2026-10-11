@@ -311,7 +311,7 @@ export function prepareTaskExecutionMutation(task: Task | undefined, run: RunRec
     || run.taskExecutionRevision !== task.executionRevision)) invalid();
   if (task.activeRunId === undefined && run !== undefined) invalid();
   const terminalTask = task.status === "done" || task.status === "failed";
-  if (mutation.type === "cancel" && terminalTask && task.activeRunId === undefined) return { task, run };
+  if (mutation.type === "cancel" && terminalTask && task.activeRunId === undefined && task.approvalState === undefined) return { task, run };
   const requeue = mutation.type === "requeue" || (mutation.type === "transition" && mutation.status === "pending");
   const awaitingApproval = mutation.type === "transition" && mutation.status === "awaiting_approval";
   if (mutation.type === "transition") assertValidTransition(task.status, mutation.status);
