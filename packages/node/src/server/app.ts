@@ -541,7 +541,7 @@ export function createApp(orchestrator: Orchestrator, sseBridge: SSEBridge, opts
     retryTask: (id: string) => o.engine.retryTask(id),
     killTask: (id: string) => o.engine.killTask(id),
     reassessTask: (id: string) => o.engine.reassessTask(id),
-    forceFailTask: (id: string) => o.engine.forceFailTask(id),
+    forceFailTask: (id, expected) => o.engine.forceFailTask(id, expected),
     updateTaskDescription: (id: string, desc: string) => o.engine.updateTaskDescription(id, desc),
     updateTaskAssignment: (id: string, agent: string) => o.engine.updateTaskAssignment(id, agent),
     updateTaskExpectations: (id: string, exp: any) => o.engine.updateTaskExpectations(id, exp),

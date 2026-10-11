@@ -337,7 +337,7 @@ describe("Task execution dispatch and cancellation", () => {
     } finally { release.resolve(); await starting; }
   });
 
-  it("does not chase a new attempt when cancellation races a retry", async () => {
+  it.each(["killTask", "forceFailTask"] as const)("%s does not chase a new attempt when cancellation races a retry", async method => {
     const f = await fixture();
     const first = await f.taskStore.claimTaskExecution(taskExecutionReference(f.task), "first-run");
     const read = f.taskStore.getTask.bind(f.taskStore);
@@ -347,10 +347,44 @@ describe("Task execution dispatch and cancellation", () => {
       await f.taskStore.claimTaskExecution(taskExecutionReference(pending), "second-run");
       return first.task;
     });
-    await expect(f.manager.killTask(f.task.id)).rejects.toMatchObject({ code: "task_execution_conflict" });
+    await expect(f.manager[method](f.task.id)).rejects.toMatchObject({ code: "task_execution_conflict" });
     expect(await read(f.task.id)).toMatchObject({ activeRunId: "second-run", status: "in_progress" });
     expect(await f.runStore.getRun("second-run")).toMatchObject({ status: "running" });
     expect(f.spawner.cancelRun).not.toHaveBeenCalled();
+  });
+
+  it.each(["in_progress", "done", "failed"] as const)("force-fail atomically invalidates the active Run on a %s Task", async status => {
+    const f = await fixture();
+    const first = await f.taskStore.claimTaskExecution(taskExecutionReference(f.task), "force-run");
+    if (status !== "in_progress") await f.taskStore.unsafeSetStatus(f.task.id, status, "fixture terminal task with retained owner");
+    await f.manager.forceFailTask(f.task.id);
+    const task = (await f.taskStore.getTask(f.task.id))!;
+    expect(task).toMatchObject({ status: status === "done" ? "done" : "failed", executionRevision: 2 });
+    expect(task.activeRunId).toBeUndefined();
+    expect(await f.runStore.getRun(first.run.id)).toMatchObject({ status: "killed", taskExecutionRevision: 1 });
+    expect(f.spawner.cancelRun).toHaveBeenCalledExactlyOnceWith(first.run.id);
+    expect(f.spawner.kill).not.toHaveBeenCalled();
+  });
+
+  it("does not let a supplied force-fail reference target another Task", async () => {
+    const f = await fixture();
+    const first = await f.taskStore.claimTaskExecution(taskExecutionReference(f.task), "owner-run");
+    await expect(f.manager.forceFailTask("different-task", taskExecutionReference(first.task)))
+      .rejects.toMatchObject({ code: "task_execution_invalid" });
+    expect(await f.taskStore.getTask(f.task.id)).toEqual(first.task);
+    expect(await f.runStore.getRun(first.run.id)).toEqual(first.run);
+    expect(f.spawner.cancelRun).not.toHaveBeenCalled();
+  });
+
+  it("refuses forced status fallback for a versioned Task behind an unsupported store", async () => {
+    const f = await fixture();
+    const first = await f.taskStore.claimTaskExecution(taskExecutionReference(f.task), "owner-run");
+    const transition = vi.fn(), unsafeSetStatus = vi.fn();
+    const manager = new TaskManager({ ...f.ctx, taskStore: { getTask: f.taskStore.getTask.bind(f.taskStore), transition, unsafeSetStatus } } as never);
+    await expect(manager.forceFailTask(f.task.id)).rejects.toMatchObject({ code: "task_execution_unsupported" });
+    expect(await f.taskStore.getTask(f.task.id)).toEqual(first.task);
+    expect(await f.runStore.getRun(first.run.id)).toEqual(first.run);
+    expect(transition).not.toHaveBeenCalled(); expect(unsafeSetStatus).not.toHaveBeenCalled();
   });
 
   it("uses the principal and input of the persisted claim instead of a stale caller snapshot", async () => {

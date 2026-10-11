@@ -15,6 +15,7 @@ import type { OrchestratorContext } from "@polpo-ai/core/orchestrator-context";
 import { InMemoryCheckpointStore, InMemoryDelayStore } from "../../../core/src/in-memory-stores.js";
 import { TypedEmitter } from "../core/events.js";
 import { createMockStores, createTestAgent } from "./fixtures.js";
+import { taskExecutionReference } from "@polpo-ai/core/task-execution";
 
 let root: string;
 beforeEach(() => { root = mkdtempSync(join(tmpdir(), "polpo-mission-runtime-")); });
@@ -37,6 +38,39 @@ const document = () => ({ tasks: [
 ] });
 
 describe("durable Mission execution through the real OSS executor", () => {
+  it.each(["resolver-rejection", "missing-dependency"] as const)("does not cancel a newer attempt from stale %s analysis", async mode => {
+    const cancelRun = vi.fn();
+    const f = fixture({ spawner: { spawn: vi.fn(), kill: vi.fn(), isAlive: () => true, cancelRun } });
+    await f.executor.ready;
+    const task = await f.taskManager.createTask({ title: "Blocked", description: "Wait", assignTo: "support", dependsOn: ["missing"] });
+    let replacement: Awaited<ReturnType<typeof f.store.claimTaskExecution>>;
+    const retry = async () => {
+      await f.taskManager.killTask(task.id);
+      const pending = await f.store.transition(task.id, "pending");
+      replacement = await f.store.claimTaskExecution(taskExecutionReference(pending), "replacement-run");
+    };
+    let reject!: (error: Error) => void, finished!: () => void;
+    const resolving = new Promise<void>((_, fail) => { reject = fail; });
+    const fallbackFinished = new Promise<void>(resolve => { finished = resolve; });
+    const forceFail = f.taskManager.forceFailTask.bind(f.taskManager);
+    vi.spyOn(f.taskManager, "forceFailTask").mockImplementation(async (...args) => {
+      try { await forceFail(...args); } finally { finished(); }
+    });
+    const engine = new OrchestratorEngine({ ctx: f.ctx, taskManager: f.taskManager, agentManager: f.agentManager,
+      missionExecutor: f.executor, assessmentOrchestrator: { handleResult: async () => {}, retryOrFail: async () => {} },
+      taskRunner: { collectResults: async () => {}, enforceHealthChecks: async () => { if (mode === "missing-dependency") await retry(); },
+        spawnForTask: vi.fn(), syncProcessesFromRunStore: async () => {}, recoverOrphanedTasks: async () => 0 },
+      ...(mode === "resolver-rejection" ? { deadlockResolver: { isResolving: () => false,
+        analyzeBlockedTasks: () => ({ resolvable: [task], unresolvable: [] }), resolveDeadlock: () => resolving } } : {}),
+    });
+    const allDone = await engine.tick();
+    if (mode === "resolver-rejection") { await retry(); reject(new Error("fixture delayed analysis failure")); await fallbackFinished; }
+    expect(await f.store.getTask(task.id)).toEqual(replacement!.task);
+    expect(await f.ctx.runStore.getRun(replacement!.run.id)).toMatchObject({ status: "running" });
+    expect(cancelRun).not.toHaveBeenCalled();
+    expect(allDone).toBe(false);
+  });
+
   it.each([
     { hook: "mission:execute", fails: false }, { hook: "mission:execute", fails: true },
     { hook: "schedule:trigger", fails: false }, { hook: "schedule:trigger", fails: true },

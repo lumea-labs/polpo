@@ -17,6 +17,7 @@ import { TickWaiter } from "./tick-waiter.js";
 import { resolveMissionStore, resolveMissionForTask } from "./mission-store.js";
 import { MissionExecutionError, type MissionExecutionOptions, type MissionExecutionResult } from "./mission-execution.js";
 import type { TaskManager } from "./task-manager.js";
+import { isTaskExecutionStore, taskExecutionReference, TaskExecutionError, type TaskExecutionReference } from "./task-execution.js";
 import type { AgentManager } from "./agent-manager.js";
 import type { ApprovalManager } from "./approval-manager.js";
 import type { Scheduler } from "./scheduler.js";
@@ -156,7 +157,7 @@ export interface DeadlockFacade {
   getMemory(): Promise<string>;
   getStore(): TaskStore;
   emit(event: string, payload: unknown): boolean;
-  forceFailTask(taskId: string): Promise<void>;
+  forceFailTask(taskId: string, expected?: TaskExecutionReference): Promise<void>;
   createTask(opts: {
     title: string; description: string; assignTo: string;
     expectations?: TaskExpectation[]; expectedOutcomes?: ExpectedOutcome[];
@@ -447,7 +448,14 @@ export class OrchestratorEngine {
           // Async LLM resolution (same pattern as question detection)
           this.deadlockResolver.resolveDeadlock(analysis, facade).catch(async err => {
             this.ctx.emitter.emit("log", { level: "error", message: `Deadlock resolution failed: ${(err as Error).message}` });
-            for (const t of pending) await this.forceFailTask(t.id);
+            for (const task of pending) {
+              try { await this.forceFailCapturedTask(task); }
+              catch {
+                // The background fallback must not become an unhandled
+                // rejection, nor retry cancellation against a newer owner.
+                this.ctx.emitter.emit("log", { level: "error", message: `Deadlock cancellation could not be persisted for task ${task.id}` });
+              }
+            }
           });
 
           return false; // Don't terminate loop — resolution pending
@@ -456,8 +464,11 @@ export class OrchestratorEngine {
 
       // Only missing deps (unresolvable) → force-fail all
       this.ctx.emitter.emit("orchestrator:deadlock", { taskIds: pending.map(t => t.id) });
-      for (const t of pending) await this.forceFailTask(t.id);
-      return true;
+      let allFailed = true;
+      for (const task of pending) {
+        if (!(await this.forceFailCapturedTask(task))) allFailed = false;
+      }
+      return allFailed;
     }
 
     // Concurrency-aware spawn loop
@@ -527,7 +538,7 @@ export class OrchestratorEngine {
       getMemory: () => this.getMemory(),
       getStore: () => this.getStore(),
       emit: (event: string, payload: unknown) => this.ctx.emitter.emit(event, payload),
-      forceFailTask: (taskId: string) => this.forceFailTask(taskId),
+      forceFailTask: (taskId: string, expected?: TaskExecutionReference) => this.forceFailTask(taskId, expected),
       createTask: (opts) => this.createTask(opts),
     };
   }
@@ -574,7 +585,19 @@ export class OrchestratorEngine {
   }
 
   async clearTasks(filter: (task: Task) => boolean): Promise<number> { return this.taskMgr.clearTasks(filter); }
-  async forceFailTask(taskId: string): Promise<void> { return this.taskMgr.forceFailTask(taskId); }
+  async forceFailTask(taskId: string, expected?: TaskExecutionReference): Promise<void> { return this.taskMgr.forceFailTask(taskId, expected); }
+
+  private async forceFailCapturedTask(task: Task): Promise<boolean> {
+    const expected = isTaskExecutionStore(this.ctx.taskStore) || task.executionRevision !== undefined || task.activeRunId !== undefined
+      ? taskExecutionReference(task) : undefined;
+    try {
+      await this.forceFailTask(task.id, expected);
+      return true;
+    } catch (error) {
+      if (error instanceof TaskExecutionError && error.code === "task_execution_conflict") return false;
+      throw error;
+    }
+  }
 
   // ── Approval Management ─────────────────────────────────────────────
 

@@ -1,5 +1,5 @@
 import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
-import { TaskExecutionError } from "@polpo-ai/core/task-execution";
+import { TaskExecutionError, isTaskExecutionStore, taskExecutionReference, type TaskExecutionReference } from "@polpo-ai/core/task-execution";
 import { CreateTaskSchema, UpdateTaskSchema } from "../schemas.js";
 
 // ── Route definitions ─────────────────────────────────────────────────
@@ -300,7 +300,7 @@ export function taskRoutes(getDeps: () => {
   retryTask: (taskId: string) => Promise<any>;
   killTask: (taskId: string) => Promise<any>;
   reassessTask: (taskId: string) => Promise<any>;
-  forceFailTask: (taskId: string) => Promise<any>;
+  forceFailTask: (taskId: string, expected?: TaskExecutionReference) => Promise<any>;
   updateTaskDescription: (taskId: string, desc: string) => Promise<any>;
   updateTaskAssignment: (taskId: string, agent: string) => Promise<any>;
   updateTaskExpectations: (taskId: string, exp: any) => Promise<any>;
@@ -553,7 +553,9 @@ export function taskRoutes(getDeps: () => {
       return c.json({ ok: false, error: "Task not found", code: "NOT_FOUND" }, 404);
     }
     try {
-      await deps.forceFailTask(taskId);
+      const expected = isTaskExecutionStore(deps.taskStore) || task.executionRevision !== undefined || task.activeRunId !== undefined
+        ? taskExecutionReference(task) : undefined;
+      await deps.forceFailTask(taskId, expected);
       return c.json({ ok: true, data: { failed: true } }, 200);
     } catch (error) {
       if (!(error instanceof TaskExecutionError)) throw error;

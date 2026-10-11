@@ -4,7 +4,7 @@ import type { Task, TaskExpectation, ExpectedOutcome, RetryPolicy, ReviewContext
 import { setAssessment } from "./types.js";
 import { sanitizeExpectations } from "./schemas.js";
 import { normalizeRuntimeMetadata } from "./runtime-metadata.js";
-import { isTaskExecutionStore, taskExecutionReference, TaskExecutionError } from "./task-execution.js";
+import { isTaskExecutionStore, taskExecutionReference, TaskExecutionError, type TaskExecutionReference } from "./task-execution.js";
 
 export type CreateTaskOptions = {
   title: string;
@@ -353,9 +353,27 @@ export class TaskManager {
     }
   }
 
-  /** Force a task through the state machine to failed (used by deadlock resolver). */
-  async forceFailTask(taskId: string): Promise<void> {
+  /** Fail one captured attempt, including its still-owned Run. */
+  async forceFailTask(taskId: string, expected?: TaskExecutionReference): Promise<void> {
+    if (expected && expected.taskId !== taskId) {
+      throw new TaskExecutionError("task_execution_invalid", "Task cancellation identity mismatch");
+    }
+    if (isTaskExecutionStore(this.ctx.taskStore)) {
+      let reference = expected;
+      if (!reference) {
+        const captured = await this.ctx.taskStore.getTask(taskId);
+        if (!captured) return;
+        reference = taskExecutionReference(captured);
+      }
+      const { run } = await this.ctx.taskStore.mutateTaskExecution(reference, { type: "cancel", reason: "Task force-failed" });
+      if (run?.status === "killed") await this.ctx.spawner.cancelRun?.(run.id);
+      return;
+    }
+    if (expected) throw new TaskExecutionError("task_execution_unsupported", "Task cancellation requires execution persistence");
     const task = await this.ctx.taskStore.getTask(taskId);
+    if (task && (task.activeRunId !== undefined || task.executionRevision !== undefined)) {
+      throw new TaskExecutionError("task_execution_unsupported", "Task cancellation requires execution persistence");
+    }
     if (!task || task.status === "done" || task.status === "failed") return;
     try {
       if (task.status === "pending") await this.ctx.taskStore.transition(taskId, "assigned");
