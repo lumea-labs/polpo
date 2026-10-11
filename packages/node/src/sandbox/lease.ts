@@ -91,6 +91,14 @@ export class SandboxLease {
     return this.acquired;
   }
 
+  /** Keep host-specific sandbox work (for example a private stdin session)
+   * inside the same acquisition, resume, suspend and metering lifecycle as
+   * filesystem and shell operations. This does not expose provider secrets. */
+  async withActivity<T>(operation: () => Promise<T>): Promise<T> {
+    if (this.released) throw new Error("Sandbox lease has been released");
+    return this.bracket(() => operation());
+  }
+
   // ── session lifecycle ──────────────────────────────────────────────────
 
   private ensureSession(): Promise<SandboxSession> {

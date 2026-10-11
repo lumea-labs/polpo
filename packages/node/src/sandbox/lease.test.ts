@@ -61,6 +61,27 @@ function fakeProvider(opts: {
 }
 
 describe("SandboxLease", () => {
+  it("keeps a host-owned session operation active and resumes before the next operation", async () => {
+    vi.useFakeTimers();
+    const f = fakeProvider({ withLifecycle: true });
+    const lease = new SandboxLease(f.provider, "host-session", { idleSuspendMs: 10 });
+    try {
+      let finish!: () => void;
+      const operation = lease.withActivity(() => new Promise<string>(resolve => { finish = () => resolve("done"); }));
+      await vi.advanceTimersByTimeAsync(100);
+      expect(f.opens()).toBe(1);
+      expect(f.suspend).not.toHaveBeenCalled();
+      finish();
+      expect(await operation).toBe("done");
+      await vi.advanceTimersByTimeAsync(10);
+      expect(f.suspend).toHaveBeenCalledOnce();
+      await expect(lease.withActivity(async () => { throw new Error("host failure"); })).rejects.toThrow("host failure");
+      expect(f.resume).toHaveBeenCalledOnce();
+      await vi.advanceTimersByTimeAsync(10);
+      expect(f.suspend).toHaveBeenCalledTimes(2);
+    } finally { await lease.dispose(); vi.useRealTimers(); }
+  });
+
   it("emits one ordered lifecycle trace for acquire and release", async () => {
     const onUsage = vi.fn();
     const onEvent = vi.fn();
