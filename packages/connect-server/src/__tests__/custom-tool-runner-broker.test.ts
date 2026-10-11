@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { Type } from "@sinclair/typebox";
 import { createRemoteCustomTools, createToolInvocationContext, type PolpoTool } from "@polpo-ai/core";
 import { createCustomToolRunnerBroker, CustomToolRunnerBrokerError } from "../custom-tool-runner-broker.js";
@@ -7,6 +7,7 @@ const invocation = createToolInvocationContext({ requestId: "request", runId: "r
   agent: { name: "support", incarnation: "original" } });
 const result = { content: [{ type: "text" as const, text: "mail" }], details: null };
 const metadata = () => ({ name: "read_mail", label: "Mail", description: "Read mail", parameters: Type.Object({}) });
+afterEach(() => vi.useRealTimers());
 function fixture() {
   const execute = vi.fn(async () => result);
   const tools: PolpoTool[] = [{ ...metadata(), execute }];
@@ -19,7 +20,7 @@ function fixture() {
   });
   const authorize = vi.fn(async (token: string, sandboxId: string) => {
     if (token !== "private_token" || sandboxId !== "sandbox") throw new CustomToolRunnerBrokerError(401);
-    return { agentName: "support", invocation, inventory: [metadata()], assertActive, claimCall, resolveTools };
+    return { agentName: "support", invocation, inventory: [metadata()], expiresAt: Date.now() + 60_000, assertActive, claimCall, resolveTools };
   });
   const broker = createCustomToolRunnerBroker({ authorize });
   const request = (body: unknown, signal?: AbortSignal) => broker(new Request("https://host.test/custom-tools", {
@@ -96,6 +97,19 @@ describe("custom tool runner broker", () => {
       return new Promise(() => {});
     };
     expect((await f.request(f.call(), controller.signal)).status).toBe(408);
+    expect(signal?.aborted).toBe(true);
+  });
+
+  it("cancels execution at server-side lease expiry even if a caller ignores client limits", async () => {
+    vi.useFakeTimers();
+    const f = fixture();
+    let signal: AbortSignal | undefined;
+    f.tools[0].execute = async (_id, _args, received) => { signal = received; return new Promise(() => {}); };
+    const work = f.request(f.call());
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(signal?.aborted).toBe(false);
+    await vi.advanceTimersByTimeAsync(60_001);
+    expect((await work).status).toBe(408);
     expect(signal?.aborted).toBe(true);
   });
 

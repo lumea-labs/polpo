@@ -19,6 +19,8 @@ export interface AuthorizedCustomToolRunnerLease {
   readonly agentName: string;
   readonly invocation: ToolInvocationContext;
   readonly inventory: Readonly<CustomToolRunnerInventory>;
+  /** Absolute host-stored expiry in epoch milliseconds, never caller input. */
+  readonly expiresAt: number;
   /** The host owns isolated execution and cancellation/cleanup. Its resolver
    * must also call assertActive after asynchronous preparation, immediately
    * before handing any credentials to tool code. */
@@ -44,6 +46,7 @@ export function createCustomToolRunnerBroker(options: {
     const denied = (status: number) => json({ ok: false, error: { code: "custom_tool_broker_denied", message: "Custom tool broker request failed" } }, status);
     if (request.method !== "POST") return denied(405);
     const controller = new AbortController();
+    const startedAt = Date.now();
     const abort = () => controller.abort();
     request.signal.addEventListener("abort", abort, { once: true });
     if (request.signal.aborted) abort();
@@ -62,6 +65,10 @@ export function createCustomToolRunnerBroker(options: {
       const sandboxId = request.headers.get("x-polpo-sandbox-id");
       if (!token || token.length > 512 || !sandboxId || sandboxId.length > 512) throw new CustomToolRunnerBrokerError(401);
       const lease = await bounded(() => options.authorize(token, sandboxId));
+      if (!Number.isFinite(lease.expiresAt) || lease.expiresAt <= Date.now()) throw new CustomToolRunnerBrokerError(401);
+      clearTimeout(timer);
+      timer = setTimeout(abort, Math.max(0, Math.min(lease.expiresAt - Date.now(),
+        CUSTOM_TOOL_RUNNER_INVENTORY_TIMEOUT_MS - (Date.now() - startedAt))));
       await bounded(() => lease.assertActive());
       if (Number(request.headers.get("content-length")) > MAX_CUSTOM_TOOL_RUNNER_REQUEST_BYTES) throw new CustomToolRunnerBrokerError(413);
       if (!request.body) throw new CustomToolRunnerBrokerError(400);
@@ -96,7 +103,7 @@ export function createCustomToolRunnerBroker(options: {
       if (!selected) throw new CustomToolRunnerBrokerError(403);
       await bounded(() => lease.claimCall(operation.toolCallId));
       clearTimeout(timer);
-      timer = setTimeout(abort, CUSTOM_TOOL_RUNNER_CALL_TIMEOUT_MS);
+      timer = setTimeout(abort, Math.max(0, Math.min(CUSTOM_TOOL_RUNNER_CALL_TIMEOUT_MS, lease.expiresAt - Date.now())));
       const tools = await bounded(() => lease.resolveTools({ agentName: lease.agentName, invocation,
         allowedTools: [selected.name], signal: controller.signal }));
       const candidates = tools.filter(tool => tool.name === selected.name);

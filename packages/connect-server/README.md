@@ -219,7 +219,7 @@ bundle imports; an unconfigured standalone OSS runtime retains its local loader.
 `createRemoteCustomTools` implements this port using a run lease, and
 `createCustomToolRunnerBroker` supplies its HTTP-neutral host endpoint. The wire
 contains only `inventory` and `call { toolName, toolCallId, arguments }`.
-The host supplies a frozen inventory, immutable invocation, atomic call-ID
+The host supplies a frozen inventory, immutable invocation, absolute lease expiry, atomic call-ID
 consumption, live lease/run authorization and an isolated tool resolver. The
 broker compares current public metadata with the issued inventory before
 execution. The host must recheck authorization after asynchronous preparation
@@ -230,7 +230,8 @@ remain host-owned. This is an agent-run endpoint, not a public integration API.
 The transport never retries calls or follows redirects, strips raw diagnostic
 errors, and limits requests to 2 MiB and results to 8 MiB. Inventory has a
 30-second deadline; execution allows the existing 30-minute tool ceiling plus
-30 seconds for setup/cleanup, always bounded by lease expiry. The host applies
+30 seconds for setup/cleanup, bounded by lease expiry in both client and server
+even when a caller ignores client limits. The host applies
 each tool's narrower timeout. Neither bearer tokens nor provider credentials
 appear in the model-visible inventory.
 
