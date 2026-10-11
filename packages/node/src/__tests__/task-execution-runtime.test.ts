@@ -99,6 +99,21 @@ describe("Task execution dispatch and cancellation", () => {
     expect(prepare).not.toHaveBeenCalled();
   });
 
+  it("preserves trusted host policy decisions as detached consent replay preferences", async () => {
+    const f = await fixture();
+    const claimed = await claimTaskDispatch(f.ctx, f.task, "direct-one");
+    const preferences = { model: "openai/gpt-4.1-mini", loop: "review-loop" };
+    const result = await authorizeTaskDispatch(f.ctx, { source: claimed.task, run: claimed.run,
+      invocation: { task: claimed.task, agent: { name: "support" } },
+      prepare: async effective => ({ ...effective, agent: { ...effective.agent, model: preferences.model },
+        task: { ...effective.task, loop: preferences.loop }, overrides: preferences }),
+    });
+    preferences.model = "changed-after-consent";
+    expect(result.overrides).toEqual({ model: "openai/gpt-4.1-mini", loop: "review-loop" });
+    expect(result.agent.model).toBe("openai/gpt-4.1-mini");
+    expect(result.allowed).toBe(true);
+  });
+
   it("denies direct admission cancelled during host preparation without altering the cancelled Task", async () => {
     const f = await fixture();
     const claimed = await claimTaskDispatch(f.ctx, f.task, "direct-one");

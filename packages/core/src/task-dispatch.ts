@@ -95,7 +95,7 @@ export async function authorizeTaskDispatch(ctx: TaskDispatchContext, input: {
     throw new TaskExecutionError("task_execution_conflict", "Task dispatch requires its claimed Run");
   }
   const identity = input.invocation.agentIdentity ? structuredClone(input.invocation.agentIdentity) : undefined;
-  const overrides = input.invocation.overrides ? structuredClone(input.invocation.overrides) : undefined;
+  let overrides = input.invocation.overrides ? structuredClone(input.invocation.overrides) : undefined;
   const bind = (invocation: TaskDispatchInvocation): TaskDispatchInvocation => {
     if (invocation.agent.name !== source.assignTo || (identity && identity.name !== source.assignTo)) throw new AgentIdentityError();
     return { task: { ...invocation.task, id: source.id, assignTo: source.assignTo,
@@ -119,7 +119,13 @@ export async function authorizeTaskDispatch(ctx: TaskDispatchContext, input: {
   if (input.run && !await isTaskDispatchActive(ctx, source, input.run)) return { ...invocation, allowed: false };
   const hook = await ctx.hooks.runBefore("task:spawn", { task: invocation.task, agent: invocation.agent });
   invocation = bind({ ...invocation, ...hook.data });
-  if (!hook.cancelled && input.prepare) invocation = bind(await input.prepare(invocation));
+  if (!hook.cancelled && input.prepare) {
+    const prepared = await input.prepare(invocation);
+    // Trusted host policy may freeze a selected model/loop as replay preferences.
+    // Before-hooks cannot change these; consent records the final host decision.
+    if (prepared.overrides) overrides = structuredClone(prepared.overrides);
+    invocation = bind(prepared);
+  }
   // Hooks and host preparation may retain their argument references. Detach
   // the exact effective invocation before any asynchronous consent/CAS work.
   invocation = structuredClone(invocation);
