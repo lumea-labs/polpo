@@ -262,11 +262,30 @@ export class ApprovalManager {
 
   // ─── Helpers ───────────────────────────────────────
 
-  private startTimer(requestId: string, ms: number, gate: ApprovalGate): void {
+  private startTimer(requestId: string, ms: number, gate: ApprovalGate, failures = 0): void {
+    this.clearTimer(requestId);
     const timer = setTimeout(async () => {
-      const request = await this.store.get(requestId);
-      if (request) await this.resolveTimeout(request, gate);
-      this.timers.delete(requestId);
+      try {
+        const request = await this.store.get(requestId);
+        // A dispose or explicit resolution may have cleared this timer while
+        // the durable read was in flight. It no longer owns timeout work.
+        if (this.timers.get(requestId) !== timer) return;
+        if (request?.status === "pending") await this.resolveTimeout(request, gate);
+      } catch {
+        if (this.timers.get(requestId) !== timer) return;
+        // Storage errors can contain connection strings or private payloads.
+        // Retry the durable read with backoff; never infer a successful
+        // resolution from a failed write or its missing acknowledgement.
+        try {
+          this.ctx.emitter.emit("log", { level: "error", message: "Approval timeout could not be processed; retrying" });
+        } catch { /* A logging listener must not create an unhandled rejection. */ }
+        if (this.timers.get(requestId) === timer) {
+          this.startTimer(requestId, Math.min(1_000 * 2 ** failures, 30_000), gate, Math.min(failures + 1, 5));
+        }
+      } finally {
+        // Do not remove the replacement timer installed for a failed attempt.
+        if (this.timers.get(requestId) === timer) this.timers.delete(requestId);
+      }
     }, ms);
     this.timers.set(requestId, timer);
   }

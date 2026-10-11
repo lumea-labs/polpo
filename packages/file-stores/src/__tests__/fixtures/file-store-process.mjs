@@ -8,7 +8,7 @@ if (mode.endsWith("unavailable")) {
 }
 const emit = value => fs.writeSync(1, `${JSON.stringify(value)}\n`);
 const pause = value => { emit(value); Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 30_000); };
-if (mode === "run-contend") {
+if (mode === "run-contend" || mode === "approval-contend") {
   const SQLite = createRequire(import.meta.url)("better-sqlite3");
   const execute = SQLite.prototype.exec;
   SQLite.prototype.exec = function (sql) {
@@ -37,18 +37,19 @@ if (mode.includes("crash") || mode.includes("count")) {
   }
   syncBuiltinESMExports();
 }
-if (mode === "run-pause") {
+if (mode === "run-pause" || mode === "approval-pause") {
   const original = fs.readFileSync;
   let paused = false;
   fs.readFileSync = (...args) => {
     const value = original(...args);
-    if (!paused && String(args[0]).endsWith("/runs/run-1.json")) {
+    const target = mode === "run-pause" ? "/runs/run-1.json" : "/approvals.json";
+    if (!paused && String(args[0]).endsWith(target)) {
       paused = true;
       emit({ read: true });
       // Deterministic process barrier after reading the row, before its write.
       const deadline = Date.now() + 5000;
-      while (!fs.existsSync(`${directory}/release-run-writer`)) {
-        if (Date.now() > deadline) throw new Error("Run writer barrier timed out");
+      while (!fs.existsSync(`${directory}/release-${mode}-writer`)) {
+        if (Date.now() > deadline) throw new Error("File writer barrier timed out");
         Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
       }
     }
@@ -59,9 +60,13 @@ if (mode === "run-pause") {
 const { FileAgentStore } = await import("../../../dist/file-agent-store.js");
 const { FileTaskStore } = await import("../../../dist/file-task-store.js");
 const { FileRunStore } = await import("../../../dist/file-run-store.js");
+const { FileApprovalStore } = await import("../../../dist/file-approval-store.js");
 const { withProjectFileTransaction } = await import("../../../dist/project-file-transaction.js");
 const { migrateProjectLayoutV2 } = await import("../../../dist/project-layout-files.js");
 const store = new FileAgentStore(directory);
+// Construct both contenders before the parent permits either write. This also
+// catches implementations which retain a stale per-process approvals cache.
+const approvals = mode.startsWith("approval") ? new FileApprovalStore(directory) : undefined;
 const assign = mode === "skills" ? (await import("../../../../cli/dist/util/runtime-skills.js")).assignRuntimeSkills : undefined;
 emit({ ready: true });
 process.stdin.once("data", async data => {
@@ -69,7 +74,11 @@ process.stdin.once("data", async data => {
     const input = JSON.parse(data.toString());
     let receipt;
     let created;
-    if (mode.startsWith("task-execution")) {
+    if (mode.startsWith("approval")) {
+      if (input.operation === "delete") await approvals.delete(input.id);
+      else if (input.operation === "list") await approvals.list();
+      else await approvals.upsert(input.request);
+    } else if (mode.startsWith("task-execution")) {
       const tasks = new FileTaskStore(directory);
       if (input.operation === "claim") await tasks.claimTaskExecution(input.expected, input.runId);
       else await tasks.mutateTaskExecution(input.expected, input.mutation);

@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { FileAgentStore } from "../file-agent-store.js";
 import { FileTaskStore } from "../file-task-store.js";
 import { FileRunStore } from "../file-run-store.js";
+import { FileApprovalStore } from "../file-approval-store.js";
 import { randomUUID } from "node:crypto";
 import { taskExecutionReference } from "@polpo-ai/core/task-execution";
 import type { Mission, Task } from "@polpo-ai/core/types";
@@ -68,6 +69,73 @@ async function missionFixture() {
   const mission = await store.createMission({ name: "Process mission", data: '{"tasks":[]}', status: "recurring", user: "customer-a" });
   return { dir, store, mission };
 }
+
+describe("Approval requests across real file-store processes", () => {
+  const approval = (id: string) => ({ id, gateId: "review", gateName: "Review", status: "pending" as const,
+    taskId: "task-a", payload: { description: "Review this work" }, requestedAt: "2026-10-11T12:00:00.000Z" });
+
+  it("keeps requests from two stores constructed before either process writes", async () => {
+    const { dir } = await fixture();
+    const [a, b] = await Promise.all([worker(dir, "approval"), worker(dir, "approval")]);
+    a.start({ request: approval("a") });
+    expect(await a.next(m => m.ok || m.error)).toMatchObject({ ok: true });
+    b.start({ request: approval("b") });
+    expect(await b.next(m => m.ok || m.error)).toMatchObject({ ok: true });
+    await Promise.all([a.closed, b.closed]);
+    expect(await new FileApprovalStore(dir).list()).toEqual([approval("a"), approval("b")]);
+  });
+
+  it("fails before writing when the OS-lock dependency is unavailable", async () => {
+    const { dir } = await fixture(), store = new FileApprovalStore(dir);
+    await store.upsert(approval("existing"));
+    const writer = await worker(dir, "approval-unavailable");
+    writer.start({ request: approval("new") });
+    expect(await writer.next(m => m.ok || m.error)).toEqual({ error: "file_coordinator_unavailable" });
+    await writer.closed;
+    expect(await store.list()).toEqual([approval("existing")]);
+  });
+
+  it("serializes a delete while another process has read the approval file for an insertion", async () => {
+    const { dir } = await fixture(), store = new FileApprovalStore(dir);
+    await store.upsert(approval("existing"));
+    const [writer, remover] = await Promise.all([worker(dir, "approval-pause"), worker(dir, "approval-contend")]);
+    writer.start({ request: approval("new") });
+    await writer.next(m => m.read);
+    remover.start({ operation: "delete", id: "existing" });
+    const blocked = await remover.next(m => m.contended || m.ok || m.error);
+    writeFileSync(join(dir, "release-approval-pause-writer"), "release");
+    expect(blocked).toEqual({ contended: true });
+    const results = await Promise.all([writer.next(m => m.ok || m.error), remover.next(m => m.ok || m.error)]);
+    await Promise.all([writer.closed, remover.closed]);
+    expect(results.every(r => r.ok)).toBe(true);
+    expect(await store.list()).toEqual([approval("new")]);
+  });
+
+  it.each(["upsert", "delete"])("recovers %s after SIGKILL at every durable checkpoint", async operation => {
+    async function prepared() {
+      const { dir } = await fixture(), store = new FileApprovalStore(dir);
+      await store.upsert(approval("existing"));
+      return { dir, store };
+    }
+    const input = { operation, id: "existing", request: approval("new") };
+    const baseline = await prepared(), counter = await worker(baseline.dir, "approval-count");
+    counter.start(input);
+    const count = await counter.next(m => m.ok || m.error); await counter.closed;
+    expect(count).toMatchObject({ ok: true }); expect(count.checkpoints).toBeGreaterThan(3);
+    for (let index = 1; index <= count.checkpoints; index++) {
+      const f = await prepared(), writer = await worker(f.dir, "approval-crash", String(index));
+      writer.start(input); await writer.next(m => m.checkpoint); await writer.kill();
+      const before = [approval("existing")];
+      const after = operation === "delete" ? [] : [...before, approval("new")];
+      const recovered = await f.store.list();
+      expect([before, after]).toContainEqual(recovered);
+      expect(await new FileApprovalStore(f.dir).list()).toEqual(recovered);
+      if (operation === "delete") await f.store.delete("existing");
+      else await f.store.upsert(approval("new"));
+      expect(await f.store.list()).toEqual(after);
+    }
+  }, 30_000);
+});
 
 describe("Task execution across real file-store processes", () => {
   async function taskFixture(claimed: boolean) {
@@ -161,7 +229,7 @@ describe("Run cancellation across real file-store processes", () => {
     // An unlocked writer completes cancellation here. A coordinated writer
     // instead proves SQLITE_BUSY while the other process holds its read.
     await cancel.next(message => message.contended || message.ok || message.error);
-    writeFileSync(join(dir, "release-run-writer"), "release");
+    writeFileSync(join(dir, "release-run-pause-writer"), "release");
     const results = await Promise.all([writer.next(message => message.ok || message.error), cancel.next(message => message.ok || message.error)]);
     await Promise.all([writer.closed, cancel.closed]);
     expect(results.every(result => result.ok)).toBe(true);

@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { FileTaskStore, FileRunStore } from "@polpo-ai/file-stores";
+import { FileTaskStore, FileRunStore, FileApprovalStore } from "@polpo-ai/file-stores";
 import { TaskRunner } from "@polpo-ai/core/task-runner";
 import { TaskManager } from "@polpo-ai/core/task-manager";
 import { AssessmentOrchestrator } from "@polpo-ai/core/assessment-orchestrator";
@@ -437,5 +437,32 @@ describe("Task execution dispatch and cancellation", () => {
       expect(requests).toHaveLength(1); expect(f.spawner.spawn).not.toHaveBeenCalled();
       expect(await f.runStore.getActiveRuns()).toHaveLength(0);
     } finally { release.resolve(); await starting; }
+  });
+
+  it("retries a timed approval after actual file corruption without acknowledging a resolution", async () => {
+    const f = await fixture(); vi.useFakeTimers();
+    const store = new FileApprovalStore(f.ctx.polpoDir);
+    await store.upsert({ id: "approval", gateId: "human", gateName: "Review", status: "pending",
+      payload: { mission: "Review" }, requestedAt: new Date().toISOString() });
+    f.ctx.config.settings.approvalGates = [{ id: "human", name: "Review", hook: "mission:execute", handler: "human", timeoutMs: 10 }];
+    const approvals = new ApprovalManager(f.ctx, store);
+    const path = join(f.ctx.polpoDir, "approvals.json");
+    const original = readFileSync(path, "utf8");
+    try {
+      await approvals.init();
+      writeFileSync(path, "unreadable approval state");
+      await vi.advanceTimersByTimeAsync(10);
+      expect(readFileSync(path, "utf8")).toBe("unreadable approval state");
+      expect(f.ctx.emitter.emit).not.toHaveBeenCalledWith("approval:timeout", expect.anything());
+      expect(f.ctx.emitter.emit).toHaveBeenCalledWith("log", expect.objectContaining({ level: "error" }));
+      expect(await f.taskStore.getTask(f.task.id)).toEqual(f.task);
+      expect(f.spawner.spawn).not.toHaveBeenCalled();
+      // Simulate repair while no store transaction is active. The retry must
+      // read durable state again rather than retaining the failed snapshot.
+      writeFileSync(path, original);
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(await store.get("approval")).toMatchObject({ status: "timeout", resolvedBy: "timeout" });
+      expect(vi.getTimerCount()).toBe(0);
+    } finally { approvals.dispose(); }
   });
 });

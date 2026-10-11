@@ -4,7 +4,7 @@
 `agents.json` and directory definitions (`agents/<name>/agent.json` plus
 `instructions.md`). `FileTeamStore` shares the same project coordinator.
 
-Agent, team, task, Mission and Run persistence requires the optional `better-sqlite3` dependency.
+Agent, team, task, Mission, Run and approval persistence requires the optional `better-sqlite3` dependency.
 Install optional dependencies on hosts using these stores. If its native binding
 is unavailable, access fails with `file_coordinator_unavailable`; there is no
 unlocked fallback. Other file stores do not acquire this coordinator.
@@ -125,3 +125,25 @@ malformed records fail closed instead of being silently replaced.
 Upgrade orchestrators and runner processes together and stop all old file writers
 before using this contract. These persistence guarantees do not themselves stop a
 process or cancel a provider request; the runtime host must also stop execution.
+
+## Approval request persistence
+
+`FileApprovalStore` retains the existing `approvals.json` array format. All reads,
+upserts and deletions share the project coordinator, including journal recovery.
+Each operation reads the current file under the lock; a process cannot erase
+another process's requests by flushing an older cache. Returned values are
+detached snapshots and `close()` does not rewrite persisted requests.
+
+Missing files represent an empty store. Malformed JSON, duplicate request IDs,
+invalid records, unreadable destinations and failed writes reject explicitly;
+they never reset the approval history or acknowledge a lost write. Preserve
+corrupt data for inspection and stop writers before repairing it. As with other
+coordinated stores, all participating processes need the same protocol and the
+native locking dependency; old releases must be stopped during rollout.
+
+These guarantees apply to each store operation. `get()` followed by `upsert()`
+is still an unconditional replacement of that request, not a conditional
+resolution. ApprovalManager must additionally commit the approval decision,
+Task generation and Run ownership together before approval/reject/timeout is
+safe across retries or competing resolvers. File serialization alone does not
+provide that lifecycle guarantee.
