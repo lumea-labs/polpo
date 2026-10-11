@@ -51,6 +51,16 @@ export interface RunStore {
   /** Register/update an active run. Existing terminal records are immutable to
    * this operation; retries require a new run ID. The check must be atomic. */
   upsertRun(run: RunRecord): Promise<void>;
+  /**
+   * Atomically update the configuration of an existing running Run. Returns
+   * false for missing or terminal records and never inserts a record. Updates
+   * only config, configPath, updatedAt and executionMode when provided by config;
+   * claim identity, activity, start time, checkpoints and results are preserved.
+   * Optional for compatibility with third-party stores. Hosts requiring this
+   * update-only fence must reject an unsupported store, never emulate it with
+   * a read followed by upsertRun.
+   */
+  updateRunConfig?(runId: string, config: RunnerConfig, configPath: string): Promise<boolean>;
   updateActivity(runId: string, activity: AgentActivity): Promise<void>;
   /** Store auto-collected outcomes on the run record (called before completeRun). */
   updateOutcomes(runId: string, outcomes: TaskOutcome[]): Promise<void>;

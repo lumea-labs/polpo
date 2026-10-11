@@ -41,3 +41,25 @@ This lifecycle begins at `executeRun`. Host work performed before entering it
 and cancellation propagation. This contract does not establish remote-provider
 termination, managed billing reconciliation or a hard wall-clock bound on
 uncooperative I/O.
+
+TaskRunner stores the complete configuration of a pre-registered Run through
+`RunStore.updateRunConfig(runId, config, configPath)` when available. The built-in
+File, Drizzle (SQLite/PostgreSQL) and Ephemeral stores atomically update only an
+existing `running` record. Missing or terminal records return `false`, which
+prevents spawning without an upsert fallback. The write changes configuration,
+path, update timestamp and the execution mode if specified; it preserves the
+claim revision, start time, activity, checkpoints and result. The port remains
+optional for third-party store compatibility: TaskRunner retains its historical
+registration path only when the method is absent. Hosts requiring the update-only
+guarantee must reject unsupported stores instead of emulating it with read/upsert.
+
+Before calling `Spawner.spawn`, TaskRunner also registers the exact pending
+Run identity locally. Shutdown records interruption and calls `cancelRun(runId)`
+while host acquisition is still pending. A failed cancellation leaves stores
+open and can be retried; other pending cancellations remain owned and are not
+duplicated. Successful notification alone does not finish shutdown: TaskRunner
+still waits for the preparation to settle, transfers a returned handle to its
+real `onExit` receipt, and preserves interruption acknowledgements across errors.
+A spawner must drain its owned preparation effects and cleanup before rejecting
+`spawn`. TaskRunner does not synthesize an exit receipt for a returned handle or
+fall back to killing a persisted PID.

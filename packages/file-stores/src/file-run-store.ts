@@ -1,7 +1,7 @@
 import { join } from "node:path";
 import { mkdirSync } from "node:fs";
 import { withProjectFileTransaction, type ProjectFileTransaction } from "./project-file-transaction.js";
-import type { AgentActivity, TaskResult, TaskOutcome } from "@polpo-ai/core/types";
+import type { AgentActivity, TaskResult, TaskOutcome, RunnerConfig } from "@polpo-ai/core/types";
 import type { RunStore, RunRecord, RunStatus } from "@polpo-ai/core/run-store";
 import type { LoopResumeState } from "@polpo-ai/core/loop-run-store";
 import type { LoopTraceEvent } from "@polpo-ai/core";
@@ -58,6 +58,19 @@ export class FileRunStore implements RunStore {
         completedAt: run.completedAt ?? existing.completedAt,
         collectedAt: run.collectedAt ?? existing.collectedAt,
       } : run);
+    });
+  }
+
+  async updateRunConfig(runId: string, config: RunnerConfig, configPath: string): Promise<boolean> {
+    return this.transaction(tx => {
+      const run = this.readRun(tx, runId);
+      if (run?.status !== "running") return false;
+      run.config = config;
+      run.configPath = configPath;
+      if (config.executionMode !== undefined) run.executionMode = config.executionMode;
+      run.updatedAt = new Date().toISOString();
+      this.writeRun(tx, run);
+      return true;
     });
   }
 

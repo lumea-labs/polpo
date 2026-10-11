@@ -109,6 +109,17 @@ export class DrizzleRunStore implements RunStore {
       });
   }
 
+  async updateRunConfig(runId: string, config: RunnerConfig, configPath: string): Promise<boolean> {
+    const updated = await this.db.update(this.runs).set({
+      config: serializeJson(config, this.dialect),
+      configPath,
+      ...(config.executionMode !== undefined ? { executionMode: config.executionMode } : {}),
+      updatedAt: new Date().toISOString(),
+    }).where(and(eq(this.runs.id, runId), eq(this.runs.status, "running")))
+      .returning({ id: this.runs.id });
+    return updated.length === 1;
+  }
+
   async updateResumeState(runId: string, state: LoopResumeState): Promise<void> {
     await this.db.update(this.runs).set({
       resumeState: serializeJson(state, this.dialect),

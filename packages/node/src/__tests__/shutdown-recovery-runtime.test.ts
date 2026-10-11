@@ -185,14 +185,50 @@ describe("Node shutdown and execution-bound recovery", () => {
     const closeStore = vi.spyOn(f.tasks, "close");
     const closing = f.shell.gracefulStop(2000);
     try {
-      await new Promise(resolve => setImmediate(resolve));
+      const task = (await f.tasks.getTask(f.first.task.id))!;
+      await vi.waitFor(() => expect(f.spawner.cancelRun).toHaveBeenCalledWith(task.activeRunId));
+      expect(await f.runs.getRun(task.activeRunId!)).toMatchObject({ status: "killed" });
       expect(closeStore).not.toHaveBeenCalled();
       release.resolve();
-      await vi.waitFor(() => expect(f.spawner.cancelRun).toHaveBeenCalled());
+      await vi.waitFor(() => expect(exit).toBeTypeOf("function"));
       expect(closeStore).not.toHaveBeenCalled();
       exit(); await tick; await closing;
       expect(closeStore).toHaveBeenCalledOnce();
-    } finally { release.resolve(); exit?.(); await tick; await closing; }
+    } finally {
+      release.resolve();
+      await vi.waitFor(() => expect(exit).toBeTypeOf("function"));
+      exit(); await tick; await closing;
+    }
+  });
+
+  it("retries cancellation of an exact pending spawn after cleanup notification fails", async () => {
+    const f = await fixture(), entered = deferred(), release = deferred();
+    await f.tasks.mutateTaskExecution(taskExecutionReference(f.first.task), { type: "requeue", countRetry: false, reason: "Dispatch fixture" });
+    f.spawner.spawn.mockImplementation(async () => {
+      entered.resolve(); await release.promise;
+      throw new Error("Preparation cancelled after cleanup");
+    });
+    f.spawner.cancelRun.mockRejectedValueOnce(new Error("Cleanup unavailable"))
+      .mockImplementation(async () => { release.resolve(); });
+    const tick = f.shell.tick();
+    await entered.promise;
+    const task = (await f.tasks.getTask(f.first.task.id))!;
+    const closeStore = vi.spyOn(f.tasks, "close");
+    const first = f.shell.gracefulStop(2000).then(() => undefined, error => error as Error);
+    try {
+      expect(await first).toMatchObject({ message: "Cleanup unavailable" });
+      expect(f.spawner.cancelRun).toHaveBeenCalledExactlyOnceWith(task.activeRunId);
+      expect(await f.runs.getRun(task.activeRunId!)).toMatchObject({ status: "killed", result: { stderr: "Killed during shutdown" } });
+      expect((await f.runs.getRun(task.activeRunId!))?.collectedAt).toBeUndefined();
+      expect(closeStore).not.toHaveBeenCalled();
+      await f.shell.gracefulStop(2000);
+      await tick;
+      expect(f.spawner.cancelRun.mock.calls).toEqual([[task.activeRunId], [task.activeRunId]]);
+      expect((await f.runs.getRun(task.activeRunId!))?.collectedAt).toBeTruthy();
+      expect(closeStore).toHaveBeenCalledOnce();
+      expect(f.assess).not.toHaveBeenCalled();
+      expect(f.spawner.kill).not.toHaveBeenCalled();
+    } finally { release.resolve(); await tick; await first; await f.shell.gracefulStop(2000); }
   });
 
   it("keeps a timed-out drain owned until post-exit persistence finishes", async () => {
@@ -220,6 +256,32 @@ describe("Node shutdown and execution-bound recovery", () => {
       release.resolve(); await retry;
       expect(closeStore).toHaveBeenCalledOnce();
     } finally { release.resolve(); exit(); await first; await retry; }
+  });
+
+  it("retains the interrupted preparation receipt until its acknowledgement succeeds", async () => {
+    const f = await fixture(), entered = deferred(), release = deferred();
+    await f.tasks.mutateTaskExecution(taskExecutionReference(f.first.task), { type: "requeue", countRetry: false, reason: "Dispatch fixture" });
+    f.spawner.spawn.mockImplementation(async () => {
+      entered.resolve(); await release.promise;
+      throw new Error("Preparation cancelled after cleanup");
+    });
+    f.spawner.cancelRun.mockImplementation(async () => { release.resolve(); });
+    const tick = f.shell.tick(); await entered.promise;
+    const task = (await f.tasks.getTask(f.first.task.id))!;
+    vi.spyOn(f.runs, "markRunCollected").mockRejectedValueOnce(new Error("Acknowledgement unavailable"));
+    const closeStore = vi.spyOn(f.tasks, "close");
+    try {
+      await expect(f.shell.gracefulStop(2000)).rejects.toThrow("Acknowledgement unavailable");
+      await tick;
+      expect(closeStore).not.toHaveBeenCalled();
+      expect((await f.runs.getRun(task.activeRunId!))?.collectedAt).toBeUndefined();
+      await f.shell.gracefulStop(2000);
+      expect((await f.runs.getRun(task.activeRunId!))?.collectedAt).toBeTruthy();
+      expect(f.spawner.cancelRun).toHaveBeenCalledExactlyOnceWith(task.activeRunId);
+      expect(closeStore).toHaveBeenCalledOnce();
+      await f.start();
+      expect(await f.tasks.getTask(task.id)).toMatchObject({ status: "pending", retries: 0 });
+    } finally { release.resolve(); await tick; await f.shell.gracefulStop(2000); }
   });
 
   it("does not assess shutdown interruption from an already-running collection query", async () => {

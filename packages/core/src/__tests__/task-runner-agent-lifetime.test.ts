@@ -24,6 +24,83 @@ function fixture() {
 }
 
 describe("TaskRunner agent lifetime", () => {
+  it("retries a failed pending cancellation while another pending cancellation remains owned", async () => {
+    const f = fixture();
+    let releaseA!: () => void, releaseB!: () => void;
+    const heldA = new Promise<void>(resolve => { releaseA = resolve; });
+    const heldB = new Promise<void>(resolve => { releaseB = resolve; });
+    f.spawner.spawn.mockImplementation(async config => {
+      await (config.taskId === "a" ? heldA : heldB);
+      throw new Error("Preparation cancelled after cleanup");
+    });
+    const workA = f.runner.spawnForTask({ ...f.task, id: "a" });
+    const workB = f.runner.spawnForTask({ ...f.task, id: "b" });
+    await vi.waitFor(() => expect(f.spawner.spawn).toHaveBeenCalledTimes(2));
+    const runA = f.spawner.spawn.mock.calls.find(([config]) => config.taskId === "a")![0].runId;
+    const runB = f.spawner.spawn.mock.calls.find(([config]) => config.taskId === "b")![0].runId;
+    let attemptsA = 0;
+    const cancelRun = vi.fn(async (runId: string) => {
+      if (runId === runA) {
+        if (++attemptsA === 1) throw new Error("Cleanup unavailable");
+        releaseA();
+      } else await heldB;
+    });
+    Object.assign(f.spawner, { cancelRun });
+    Object.assign(f.runStore, { getRun: async () => undefined });
+    let error: unknown;
+    const first = f.runner.close().catch(value => { error = value; });
+    let retry: Promise<void> | undefined;
+    try {
+      await vi.waitFor(() => expect(error).toMatchObject({ message: "Cleanup unavailable" }));
+      expect(cancelRun.mock.calls).toEqual([[runA], [runB]]);
+      retry = f.runner.close();
+      await vi.waitFor(() => expect(cancelRun.mock.calls).toEqual([[runA], [runB], [runA]]));
+      releaseB();
+      await Promise.all([retry, workA, workB]);
+    } finally {
+      releaseA(); releaseB();
+      await Promise.all([first, retry, workA, workB]);
+      await f.runner.close();
+    }
+  });
+
+  it("updates the pre-registered Run through the atomic configuration port before spawning", async () => {
+    const f = fixture();
+    const updateRunConfig = vi.fn(async () => true);
+    Object.assign(f.runStore, { updateRunConfig });
+    await f.runner.spawnForTask(f.task);
+    const runnerConfig = f.spawner.spawn.mock.calls[0][0];
+    expect(f.runStore.upsertRun).toHaveBeenCalledTimes(1);
+    expect(updateRunConfig).toHaveBeenCalledExactlyOnceWith(runnerConfig.runId, runnerConfig, `pending://${runnerConfig.runId}`);
+  });
+
+  it.each(["missing", "terminal"])("does not spawn or upsert again when the configuration port rejects a %s Run", async () => {
+    const f = fixture();
+    const updateRunConfig = vi.fn(async () => false);
+    Object.assign(f.runStore, { updateRunConfig });
+    await f.runner.spawnForTask(f.task);
+    expect(updateRunConfig).toHaveBeenCalledTimes(1);
+    expect(f.runStore.upsertRun).toHaveBeenCalledTimes(1);
+    expect(f.spawner.spawn).not.toHaveBeenCalled();
+    expect(f.runStore.completeRun).not.toHaveBeenCalled();
+  });
+
+  it("does not fall back to upsert or spawn after a configuration write error", async () => {
+    const f = fixture();
+    Object.assign(f.runStore, { updateRunConfig: vi.fn(async () => { throw new Error("config write failed"); }) });
+    await f.runner.spawnForTask(f.task);
+    expect(f.runStore.upsertRun).toHaveBeenCalledTimes(1);
+    expect(f.spawner.spawn).not.toHaveBeenCalled();
+    expect(f.runStore.completeRun).toHaveBeenCalledWith(expect.any(String), "failed", expect.objectContaining({ stderr: expect.stringContaining("config write failed") }));
+  });
+
+  it("retains the legacy registration path only for a store without the optional port", async () => {
+    const f = fixture();
+    await f.runner.spawnForTask(f.task);
+    expect(f.runStore.upsertRun).toHaveBeenCalledTimes(2);
+    expect(f.spawner.spawn).toHaveBeenCalledTimes(1);
+  });
+
   it("pins config and identity before asynchronous context loading", async () => {
     const f = fixture();
     f.memoryStore.get.mockImplementationOnce(async () => {

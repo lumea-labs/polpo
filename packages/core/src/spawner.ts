@@ -38,6 +38,10 @@ export interface Spawner {
    *   - Persisting the RunnerConfig (to file or DB)
    *   - Starting the runner process
    *   - Returning the PID and config location
+   * The exact runId must be cancellable during asynchronous preparation, before
+   * this promise resolves. Reject only after owned preparation effects and
+   * cleanup have settled; callers keep stores open until this promise settles.
+   * A resolved result still requires onExit to confirm actual runner exit.
    */
   spawn(config: RunnerConfig): Promise<SpawnResult>;
 

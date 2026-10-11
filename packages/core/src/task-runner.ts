@@ -81,6 +81,10 @@ interface OwnedRun {
   stopping?: Promise<void>;
 }
 
+interface PendingSpawn {
+  stopping?: Promise<void>;
+}
+
 /**
  * Spawns, monitors, and collects results from agent runner subprocesses.
  */
@@ -89,6 +93,10 @@ export class TaskRunner {
   private closePromise?: Promise<void>;
   private preparations = new Set<Promise<void>>();
   private owners = new Map<string, OwnedRun>();
+  private pendingSpawns = new Map<string, PendingSpawn>();
+  /** Interrupted preparations retain their receipt until failure persistence
+   * and acknowledgement finish, or ownership transfers to a SpawnResult. */
+  private interruptedPreparations = new Set<string>();
 
   /** Stop admission synchronously; in-flight preparation remains owned. */
   stop(): void { this.closing = true; }
@@ -106,14 +114,47 @@ export class TaskRunner {
 
   private async drainOwners(): Promise<void> {
     const initial = new Set(this.owners.keys());
-    const stopped = await Promise.allSettled([...initial].map(id => this.stopOwner(id)));
+    const stopping = Promise.allSettled([...initial].map(id => this.stopOwner(id)));
+    // A pending spawn may need cancellation to finish acquisition/cleanup. Do
+    // not wait for its preparation before notifying the exact local owner.
+    // Report a failed notification immediately so close() can be retried even
+    // while a sibling cancellation is pending. Each sibling retains its own
+    // single-flight promise; rejecting this drain does not abandon that work.
+    await Promise.all([...this.pendingSpawns.keys()].map(id => this.stopPendingSpawn(id)));
+    const stopped = await stopping;
+    const stopFailure = stopped.find(result => result.status === "rejected");
+    if (stopFailure?.status === "rejected") throw stopFailure.reason;
     await Promise.allSettled([...this.preparations]);
     const late = await Promise.allSettled([...this.owners.keys()].filter(id => !initial.has(id)).map(id => this.stopOwner(id)));
-    const failed = [...stopped, ...late].find(result => result.status === "rejected");
+    const failed = late.find(result => result.status === "rejected");
     if (failed?.status === "rejected") throw failed.reason;
+    // spawn() rejection is a drained preparation, not a fabricated process
+    // exit. The host must settle its owned effects before rejecting spawn().
+    for (const runId of this.interruptedPreparations) {
+      const run = await this.ctx.runStore.getRun(runId);
+      if (run?.status === "killed" && run.result?.stderr === "Killed during shutdown") await this.acknowledgeRun(run);
+      this.interruptedPreparations.delete(runId);
+    }
     const owners = [...this.owners.values()];
     if (owners.some(owner => !owner.exited)) throw new Error("Runner shutdown requires an onExit receipt from the spawner");
     await Promise.all(owners.map(owner => owner.exited));
+  }
+
+  private stopPendingSpawn(runId: string): Promise<void> {
+    const pending = this.pendingSpawns.get(runId);
+    if (!pending) return Promise.resolve();
+    if (pending.stopping) return pending.stopping;
+    const stopping = (async () => {
+      if (!this.ctx.spawner.cancelRun) throw new Error("Pending runner shutdown requires owner-scoped cancelRun from the spawner");
+      this.interruptedPreparations.add(runId);
+      await this.ctx.runStore.completeRun(runId, "killed", {
+        exitCode: 1, stdout: "", stderr: "Killed during shutdown", duration: 0,
+      });
+      await this.ctx.spawner.cancelRun(runId);
+    })();
+    pending.stopping = stopping;
+    void stopping.catch(() => { if (pending.stopping === stopping) pending.stopping = undefined; });
+    return stopping;
   }
 
   private stopOwner(runId: string): Promise<void> {
@@ -145,7 +186,7 @@ export class TaskRunner {
   }
 
   private ownSpawn(runId: string, taskId: string, handle: SpawnResult): void {
-    const owner: OwnedRun = { exitConfirmed: false, shutdownPending: false };
+    const owner: OwnedRun = { exitConfirmed: false, shutdownPending: this.closing };
     this.owners.set(runId, owner);
     if (handle.onExit) owner.exited = new Promise(resolve => {
       handle.onExit!(() => {
@@ -1014,12 +1055,19 @@ export class TaskRunner {
       // Persist the complete input before handing control to the host. This is
       // also the recovery/debug snapshot when host acquisition fails.
       if (claimed && !await this.claimIsActive(task, initialRun)) return;
-      await this.ctx.runStore.upsertRun({
-        ...initialRun,
-        executionMode,
-        config: runnerConfig,
-        updatedAt: new Date().toISOString(),
-      });
+      if (this.ctx.runStore.updateRunConfig) {
+        if (!await this.ctx.runStore.updateRunConfig(runId, runnerConfig, initialRun.configPath)) return;
+      } else {
+        // Compatibility for third-party stores predating updateRunConfig. This
+        // legacy registration path cannot provide the update-only fence; hosts
+        // requiring that guarantee must require the optional store capability.
+        await this.ctx.runStore.upsertRun({
+          ...initialRun,
+          executionMode,
+          config: runnerConfig,
+          updatedAt: new Date().toISOString(),
+        });
+      }
 
       if (claimed && !await this.claimIsActive(task, initialRun)) return;
       if (this.closing) {
@@ -1028,8 +1076,16 @@ export class TaskRunner {
         if (interrupted?.status === "killed" && interrupted.result?.stderr === "Killed during shutdown") await this.acknowledgeRun(interrupted);
         return;
       }
-      const spawnResult = await this.ctx.spawner.spawn(runnerConfig);
-      this.ownSpawn(runId, task.id, spawnResult);
+      const pending: PendingSpawn = {};
+      this.pendingSpawns.set(runId, pending);
+      let spawnResult: SpawnResult;
+      try {
+        spawnResult = await this.ctx.spawner.spawn(runnerConfig);
+        this.ownSpawn(runId, task.id, spawnResult);
+        this.interruptedPreparations.delete(runId);
+      } finally {
+        if (this.pendingSpawns.get(runId) === pending) this.pendingSpawns.delete(runId);
+      }
       if (this.closing) await this.stopOwner(runId);
 
       // A host may finish acquisition after cancellation. Only this spawn's
