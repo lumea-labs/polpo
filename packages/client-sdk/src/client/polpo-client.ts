@@ -1847,6 +1847,7 @@ export class PolpoClient {
         content: req.result,
       }],
       polpo: {
+        ...(req.capabilities ? { capabilities: req.capabilities } : {}),
         ...(req.allowedTools !== undefined
           ? { execution: { allowedTools: req.allowedTools } }
           : {}),

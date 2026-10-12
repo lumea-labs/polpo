@@ -145,6 +145,8 @@ export type {
   ChatSession,
   ChatMessage,
   ChatSuggestion,
+  ChatSuggestionRequestOptions,
+  ChatSuggestionContextValue,
   ChatCompletionMessage,
   TextContentPart,
   ImageUrlContentPart,

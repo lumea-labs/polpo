@@ -640,6 +640,7 @@ describe("PolpoClient structured outputs", () => {
       result: [{ type: "text", text: "configured" }],
       user: "user-1",
       allowedTools: ["site_*"],
+      capabilities: { suggestions: { maxItems: 5, context: { published: false } } },
     });
     await stream.start();
 
@@ -668,6 +669,7 @@ describe("PolpoClient structured outputs", () => {
       messages: [{ role: "tool", tool_call_id: "call-1" }],
       polpo: {
         execution: { allowedTools: ["site_*"] },
+        capabilities: { suggestions: { maxItems: 5, context: { published: false } } },
         continuation: {
           type: "client_tool",
           tool_call_id: "call-1",

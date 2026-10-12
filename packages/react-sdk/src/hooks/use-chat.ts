@@ -14,6 +14,7 @@ import type {
   ToolCallEvent,
   MessageSegment,
   ChatSuggestion,
+  ChatSuggestionRequestOptions,
   RuntimeSandboxOptions,
 } from "@polpo-ai/sdk";
 import { ChatCompletionStream } from "@polpo-ai/sdk";
@@ -21,6 +22,8 @@ import { ChatCompletionStream } from "@polpo-ai/sdk";
 // ── Types ────────────────────────────────────────────────
 
 export interface UseChatOptions {
+  /** Suggestion capability and application hints. Defaults to true. Agent policy still applies. */
+  suggestions?: boolean | ChatSuggestionRequestOptions;
   /** Target a specific agent for direct conversation. Omit for orchestrator mode. */
   agent?: string;
   /** Target a project-level loop assigned to the selected agent. */
@@ -64,6 +67,8 @@ export interface UseChatOptions {
 export type ChatStatus = "idle" | "streaming" | "reconnecting" | "loading" | "error";
 
 export interface SendMessageOptions {
+  /** Override suggestion hints for this turn. Supply fresh application state from a trusted backend. */
+  suggestions?: boolean | ChatSuggestionRequestOptions;
   /** Assigned skills to apply explicitly to this message. Additive, not restrictive. */
   skills?: string[];
 }
@@ -96,7 +101,7 @@ export interface UseChatReturn {
   continueToolResult: (
     toolCallId: string,
     result: string | ContentPart[],
-    options: { loop?: string; idempotencyKey: string },
+    options: { loop?: string; idempotencyKey: string; allowedTools?: string[]; suggestions?: boolean | ChatSuggestionRequestOptions },
   ) => Promise<void>;
   /** Current session ID. `null` until the first response from the server. */
   sessionId: string | null;
@@ -272,7 +277,7 @@ export function useChat(options: UseChatOptions = {}): UseChatReturn {
             : {}),
           capabilities: {
             ask_user_question: true,
-            suggestions: true,
+            suggestions: requestOptions.suggestions ?? optionsRef.current.suggestions ?? true,
           },
           ...(optionsRef.current.durable
             ? { delivery: { onDisconnect: "continue" as const } }
@@ -585,7 +590,7 @@ export function useChat(options: UseChatOptions = {}): UseChatReturn {
     async (
       toolCallId: string,
       result: string | ContentPart[],
-      continuationOptions: { loop?: string; idempotencyKey: string; allowedTools?: string[] },
+      continuationOptions: { loop?: string; idempotencyKey: string; allowedTools?: string[]; suggestions?: boolean | ChatSuggestionRequestOptions },
     ) => {
       if (isStreamingRef.current) return;
       const currentSessionId = sessionIdRef.current;
@@ -618,6 +623,10 @@ export function useChat(options: UseChatOptions = {}): UseChatReturn {
             : {}),
           toolCallId,
           result,
+          capabilities: {
+            ask_user_question: true,
+            suggestions: continuationOptions.suggestions ?? optionsRef.current.suggestions ?? true,
+          },
         });
         await streamResponse([], {}, stream);
       } catch (err) {

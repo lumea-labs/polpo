@@ -4,8 +4,67 @@ import type { AllowedToolsSettings } from "./tool-policy.js";
 
 export const DEFAULT_CHAT_SUGGESTION_COUNT = 3;
 export const MIN_CHAT_SUGGESTION_COUNT = 2;
-export const MAX_CHAT_SUGGESTION_COUNT = 4;
+export const MAX_CHAT_SUGGESTION_COUNT = 5;
 export const MAX_CHAT_SUGGESTION_GUIDANCE_CHARS = 500;
+export const MAX_CHAT_SUGGESTION_CONTEXT_CHARS = 8_192;
+export const MAX_CHAT_SUGGESTION_CONTEXT_DEPTH = 8;
+
+export type ChatSuggestionContextValue = string | number | boolean | null
+  | ChatSuggestionContextValue[] | { [key: string]: ChatSuggestionContextValue };
+
+/** Request-scoped hints supplied by the application; never authorization policy. */
+export interface ChatSuggestionRequestOptions {
+  /** An options object opts in unless explicitly disabled. Agent policy still applies. */
+  enabled?: boolean;
+  /** Override the agent's count for this turn (2-5). */
+  maxItems?: number;
+  /** Phase guidance, used in addition to the agent's static guidance (500 characters). */
+  guidance?: string;
+  /** JSON snapshot of application state, at most 8192 serialized characters / 8 levels. */
+  context?: Record<string, ChatSuggestionContextValue>;
+}
+
+/** Validate bounded JSON before it reaches an auxiliary model or durable request. */
+export function normalizeChatSuggestionRequest(value: unknown): ChatSuggestionRequestOptions & { enabled: boolean } {
+  if (value === undefined || typeof value === "boolean") return { enabled: value === true };
+  const request = asRecord(value, "suggestions");
+  const settings = normalizeChatInteractionSettings({ suggestions: request }).suggestions;
+  let context: Record<string, ChatSuggestionContextValue> | undefined;
+  if (request.context !== undefined) {
+    asRecord(request.context, "suggestions.context");
+    const seen = new Set<object>();
+    let nodes = 0;
+    const check = (item: unknown, depth: number): void => {
+      if (++nodes > 1024 || depth > MAX_CHAT_SUGGESTION_CONTEXT_DEPTH) {
+        throw new TypeError("suggestions.context exceeds the depth or size limit");
+      }
+      if (item === null || typeof item === "boolean") return;
+      if (typeof item === "string" && item.length <= MAX_CHAT_SUGGESTION_CONTEXT_CHARS) return;
+      if (typeof item === "number" && Number.isFinite(item)) return;
+      if (!item || typeof item !== "object" || seen.has(item)) {
+        throw new TypeError("suggestions.context must contain finite, acyclic JSON values");
+      }
+      if (!Array.isArray(item) && Object.getPrototypeOf(item) !== Object.prototype && Object.getPrototypeOf(item) !== null) {
+        throw new TypeError("suggestions.context must contain plain JSON objects");
+      }
+      seen.add(item);
+      for (const nested of Object.values(item)) check(nested, depth + 1);
+      seen.delete(item);
+    };
+    check(request.context, 0);
+    const serialized = JSON.stringify(request.context);
+    if (serialized.length > MAX_CHAT_SUGGESTION_CONTEXT_CHARS) {
+      throw new TypeError(`suggestions.context must be at most ${MAX_CHAT_SUGGESTION_CONTEXT_CHARS} serialized characters`);
+    }
+    context = JSON.parse(serialized);
+  }
+  return {
+    enabled: request.enabled !== false,
+    ...(request.maxItems === undefined ? {} : { maxItems: settings.maxItems }),
+    ...(settings.guidance ? { guidance: settings.guidance } : {}),
+    ...(context === undefined ? {} : { context }),
+  };
+}
 
 export const ASK_USER_QUESTION_TOOL_NAME = "ask_user_question" as const;
 
@@ -33,7 +92,7 @@ export interface ChatSuggestion {
 export interface ChatSuggestionSettings {
   /** Generate suggested next messages after successful text responses. */
   enabled?: boolean;
-  /** Maximum suggestions returned per response. Allowed range: 2-4. */
+  /** Maximum suggestions returned per response. Allowed range: 2-5. */
   maxItems?: number;
   /** Optional agent-specific guidance for suggestion generation. */
   guidance?: string;
@@ -58,7 +117,7 @@ export interface NormalizedChatInteractionSettings {
 
 export interface ChatInteractionClientCapabilities {
   ask_user_question?: boolean;
-  suggestions?: boolean;
+  suggestions?: boolean | ChatSuggestionRequestOptions;
 }
 
 export interface ResolvedChatInteractionCapabilities {
@@ -164,6 +223,6 @@ export function resolveChatInteractionCapabilities(input: {
       && input.client?.ask_user_question !== false,
     suggestions:
       settings.suggestions.enabled
-      && input.client?.suggestions === true,
+      && normalizeChatSuggestionRequest(input.client?.suggestions).enabled,
   };
 }

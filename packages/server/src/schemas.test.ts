@@ -207,7 +207,7 @@ describe("agent chat interaction schema", () => {
       allowUserQuestions: false,
       suggestions: {
         enabled: true,
-        maxItems: 4,
+        maxItems: 5,
         guidance: "Prefer concrete next actions.",
       },
     } as const;
@@ -235,7 +235,7 @@ describe("agent chat interaction schema", () => {
     { suggestions: null },
     { suggestions: { enabled: "yes" } },
     { suggestions: { maxItems: 1 } },
-    { suggestions: { maxItems: 5 } },
+    { suggestions: { maxItems: 6 } },
     { suggestions: { guidance: "x".repeat(501) } },
     { suggestions: { unknown: true } },
   ])("rejects malformed agent chat preferences %#", (chat) => {

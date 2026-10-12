@@ -34,6 +34,7 @@ import {
   type ToolInvocationJsonValue,
 } from "@polpo-ai/core";
 import {
+  type ChatSuggestion,
   normalizeChatInteractionSettings,
   resolveChatInteractionCapabilities,
 } from "@polpo-ai/core/chat-interactions";
@@ -83,6 +84,7 @@ import {
   runChatTurnViaRun,
   type ChatViaRunTurnResult,
 } from "./chat-via-run-handler.js";
+import { suggestionsForProjectLoopCompletion } from "./chat-interaction-runtime.js";
 import { runProjectLoopCompletion } from "./project-loop-runner.js";
 import {
   persistAssistantMessage,
@@ -1510,6 +1512,7 @@ export async function runConversationTurn(
     let resolvedModel;
     let providerMetadata: Record<string, unknown> | undefined;
     let canonicalTurnSucceeded = false;
+    let suggestions: ChatSuggestion[] = [];
     try {
       if (prepared.sessionStore && prepared.sessionId) {
         const placeholder = prepared.turnId
@@ -1570,12 +1573,14 @@ export async function runConversationTurn(
       model = result.model;
       resolvedModel = result.resolvedModel;
       providerMetadata = result.providerMetadata;
+      suggestions = await suggestionsForProjectLoopCompletion(prepared, finalText, assistantMessageId, input.signal);
       canonicalTurnSucceeded = true;
       return {
         completionId: prepared.completionId,
         sessionId: prepared.sessionId,
         ...(sessionVersion !== undefined ? { sessionVersion } : {}),
         text: finalText,
+        ...(suggestions.length ? { suggestions } : {}),
         toolCalls,
         ...(finalReasoning ? { reasoning: finalReasoning } : {}),
         usage,
@@ -1596,6 +1601,7 @@ export async function runConversationTurn(
         toolCalls,
         {
           reasoning: finalReasoning,
+          ...(suggestions.length ? { suggestions } : {}),
           ...(canonicalTurnSucceeded && prepared.canonicalTurn
             ? { canonicalTurn: prepared.canonicalTurn }
             : {}),
