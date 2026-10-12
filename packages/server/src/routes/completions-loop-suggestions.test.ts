@@ -164,10 +164,57 @@ it("bounds stalled model resolution and preserves the successful Loop", async ()
   vi.useFakeTimers();
   try {
     const result = runConversationTurn(deps, { body });
-    await vi.advanceTimersByTimeAsync(4_001);
+    const finished = vi.fn();
+    void result.then(finished);
+    await vi.advanceTimersByTimeAsync(14_999);
+    expect(finished).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
     expect((await result).text).toBe("Your site is ready");
     expect(messages.at(-1).content).toBe("Your site is ready");
     expect(generate).not.toHaveBeenCalled();
+  } finally { vi.useRealTimers(); }
+});
+
+it("allows a slow auxiliary response and persists it on the successful Loop", async () => {
+  const { deps, body, messages, generate } = fixture();
+  const response = await generate();
+  generate.mockImplementation(async () => {
+    await new Promise(resolve => setTimeout(resolve, 5_000));
+    return response;
+  });
+  generate.mockClear();
+  vi.useFakeTimers();
+  try {
+    const pending = runConversationTurn(deps, { body });
+    await vi.advanceTimersByTimeAsync(5_001);
+    const result = await pending;
+    expect(result.text).toBe("Your site is ready");
+    expect(result.suggestions).toHaveLength(5);
+    expect(messages.at(-1).suggestions).toEqual(result.suggestions);
+    expect(generate).toHaveBeenCalledOnce();
+  } finally { vi.useRealTimers(); }
+});
+
+it("shares one deadline across Loop preparation and generation", async () => {
+  const { deps, body, messages, generate } = fixture();
+  const resolve = deps.resolveAgentModel;
+  deps.resolveAgentModel = async (...args) => {
+    await new Promise(resolved => setTimeout(resolved, 10_000));
+    return resolve(...args);
+  };
+  generate.mockImplementation(() => new Promise(() => {}));
+  vi.useFakeTimers();
+  try {
+    const pending = runConversationTurn(deps, { body });
+    const finished = vi.fn();
+    void pending.then(finished);
+    await vi.advanceTimersByTimeAsync(14_999);
+    expect(finished).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect((await pending).text).toBe("Your site is ready");
+    expect(messages.at(-1).content).toBe("Your site is ready");
+    expect(messages.at(-1).suggestions ?? []).toEqual([]);
+    expect(generate).toHaveBeenCalledOnce();
   } finally { vi.useRealTimers(); }
 });
 

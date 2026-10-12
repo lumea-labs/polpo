@@ -94,6 +94,36 @@ describe("generateChatSuggestions", () => {
     expect(result).toEqual({ suggestions: [] });
   });
 
+  it("allows a valid provider response beyond four seconds", async () => {
+    vi.useFakeTimers();
+    try {
+      const pending = generateChatSuggestions({
+        model, messages: [], finalText: "Site ready", maxItems: 3,
+        generate: async () => {
+          await new Promise(resolve => setTimeout(resolve, 5_000));
+          return { output: { suggestions: [{ label: "Add photos", prompt: "Add photos of the restaurant." }] } };
+        },
+      });
+      await vi.advanceTimersByTimeAsync(5_001);
+      expect((await pending).suggestions).toHaveLength(1);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("caps the default provider wait at fifteen seconds even if abort is ignored", async () => {
+    vi.useFakeTimers();
+    try {
+      const finished = vi.fn();
+      const generate = vi.fn(() => new Promise<never>(() => {}));
+      const pending = generateChatSuggestions({ model, messages: [], finalText: "Site ready", maxItems: 3, generate });
+      void pending.then(finished);
+      await vi.advanceTimersByTimeAsync(14_999);
+      expect(finished).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(await pending).toEqual({ suggestions: [] });
+      expect(generate).toHaveBeenCalledOnce();
+    } finally { vi.useRealTimers(); }
+  });
+
   it("skips generation for blank assistant output", async () => {
     const generate = vi.fn();
     const result = await generateChatSuggestions({

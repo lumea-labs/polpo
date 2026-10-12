@@ -6,7 +6,7 @@ import {
 } from "@polpo-ai/core/chat-interactions";
 import { agentConfigForModelPrimary, completionResolvedModelInfo } from "./agent-step-runner.js";
 import type { ChatCompletionExecution } from "./chat-handler.js";
-import { generateChatSuggestions } from "./chat-suggestions.js";
+import { DEFAULT_CHAT_SUGGESTION_TIMEOUT_MS, generateChatSuggestions } from "./chat-suggestions.js";
 import type { ProjectLoopCompletionOptions } from "./project-loop-runner.js";
 import { isStructuredResponseFormat } from "./structured-output.js";
 
@@ -79,7 +79,7 @@ export async function suggestionsForProjectLoopCompletion(
   let finish: (suggestions: ChatSuggestion[]) => void;
   const cancelled = new Promise<ChatSuggestion[]>(resolve => { finish = resolve; });
   const cancel = () => { controller.abort(); finish([]); };
-  const timeout = setTimeout(cancel, 4_000);
+  const timeout = setTimeout(cancel, DEFAULT_CHAT_SUGGESTION_TIMEOUT_MS);
   signal?.addEventListener("abort", cancel, { once: true });
   try {
     return await Promise.race([cancelled, (async () => {

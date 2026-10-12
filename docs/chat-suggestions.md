@@ -14,6 +14,12 @@ user/assistant messages, 7000 characters). With no stored history it falls back
 to request messages. It never receives private Loop context, raw tool output, or
 system messages. The final answer is limited to 4000 characters in this prompt.
 
+The optional pass has a total deadline of 15 seconds, including model and Session
+history resolution for Loops. A timeout or provider failure leaves the final
+answer unchanged. The auxiliary model respects the agent's reasoning override
+before project defaults. Suggestions can therefore arrive after the final text;
+clients should keep consuming the stream until its terminal frame.
+
 The same result is persisted on the assistant message, emitted as a root
 `polpo.suggestions` frame before `stop`/`[DONE]`, and replayed from the durable
 journal. No database migration is needed: all Session stores already persist
