@@ -1,13 +1,19 @@
+import { currentMissionExecutionTasks, resumableMissions } from "./mission-inspection.js";
+import type { ActiveCheckpoint, ActiveDelay } from "./types.js";
+import { nanoid } from "nanoid";
 import type { OrchestratorContext } from "./orchestrator-context.js";
 import type { TaskManager } from "./task-manager.js";
 import type { AgentManager } from "./agent-manager.js";
 import type { Mission, MissionStatus, MissionReport, Task, TaskExpectation, MissionQualityGate, MissionCheckpoint, MissionDelay, ScopedNotificationRules, TaskOutcome } from "./types.js";
 import type { QualityController } from "./quality-controller.js";
 import { sanitizeExpectations, parseMissionDocument, type MissionDocumentParsed } from "./schemas.js";
-import { resolveMissionStore, resolveMissionForGroup, type MissionStore } from "./mission-store.js";
+import { resolveMissionStore, resolveMissionForGroup, resolveMissionExecutionStore, type MissionStore } from "./mission-store.js";
+import { assertMissionExecutionTask, MissionExecutionError, validateMissionExecutionKey, type MissionAbortOptions, type MissionAbortResult, type MissionExecutionCommit, type MissionExecutionOptions, type MissionExecutionResult } from "./mission-execution.js";
+import { cancelMissionExecution } from "./mission-cancellation.js";
 import { InMemoryCheckpointStore, InMemoryDelayStore } from "./in-memory-stores.js";
 import { MissionGating, parseISO8601Duration } from "./mission-gating.js";
 import { resolveConfiguredModelSelection } from "./model-profiles.js";
+import { normalizeRuntimeMetadata } from "./runtime-metadata.js";
 
 /** Mission document keys holding list collections editable via the atomic data operations. */
 type MissionCollectionKey = "tasks" | "checkpoints" | "delays" | "qualityGates" | "team";
@@ -32,6 +38,15 @@ export class MissionExecutor {
   /** Track the pre-execution status for scheduled/recurring missions (by group name).
    *  When a mission completes/fails, this determines whether to return to scheduled/recurring. */
   private scheduledOrigin = new Map<string, "scheduled" | "recurring">();
+  private preparedExecutions = new Map<string, Promise<MissionExecutionCommit>>();
+  private groupExecutions = new Map<string, Set<string>>();
+  private gatingKey(group: string): string {
+    if (this.preparedExecutions.has(group)) return group;
+    const executions = this.groupExecutions.get(group);
+    if (!executions?.size) return group;
+    if (executions.size > 1) throw new MissionExecutionError("mission_execution_conflict", "Ambiguous Mission group; use its execution ID");
+    return [...executions][0];
+  }
 
   constructor(
     private ctx: OrchestratorContext,
@@ -65,12 +80,29 @@ export class MissionExecutor {
     const allTasks = await this.ctx.taskStore.listTasks();
     const groups = new Set<string>();
     for (const t of allTasks) {
-      if (t.group) groups.add(t.group);
+      const group = t.missionExecutionId ?? t.group;
+      if (group) groups.add(group);
     }
     for (const group of groups) {
-      const groupTasks = allTasks.filter(t => t.group === group);
-      if (groupTasks.every(t => t.status === "done" || t.status === "failed")) {
-        this.cleanedGroups.add(group);
+      try {
+        const groupTasks = allTasks.filter(t => (t.missionExecutionId ?? t.group) === group);
+        const persisted = groupTasks[0];
+        // Presentation must retain its durable key even if receipt recovery is
+        // temporarily unavailable. Authorization still requires the receipt below.
+        if (persisted.missionExecutionId) this.gating.setExecutionIdentity({
+          executionId: persisted.missionExecutionId, missionId: persisted.missionId, group: persisted.group ?? group,
+        });
+        if (groupTasks.every(t => t.status === "done" || t.status === "failed")) {
+          const mission = await resolveMissionForGroup(this.missions, groupTasks, group);
+          const receipt = groupTasks[0].missionExecutionId
+            ? (await resolveMissionExecutionStore(this.ctx)?.getMissionExecutionById(groupTasks[0].missionExecutionId))?.receipt : undefined;
+          if (mission?.status !== "active" || (receipt && receipt.sequence !== mission.executionCount)) this.cleanedGroups.add(group);
+        }
+        if (!this.cleanedGroups.has(group) && groupTasks[0].missionExecutionId) await this.prepareTaskExecution(groupTasks[0], false);
+      } catch {
+        // A receipt outage blocks only this execution. The dispatch barrier and
+        // cleanup retry recovery later; unrelated Missions remain available.
+        this.ctx.emitter.emit("log", { level: "warn", message: `Mission execution recovery deferred for ${group}` });
       }
     }
   }
@@ -82,14 +114,14 @@ export class MissionExecutor {
 
   /** Get quality gates for a mission group. Returns empty array if none defined. */
   getQualityGates(group: string): MissionQualityGate[] {
-    return this.gatesByGroup.get(group) ?? [];
+    return this.gatesByGroup.get(this.gatingKey(group)) ?? [];
   }
 
   // ─── Checkpoint/delay gating (delegated to MissionGating) ─────────────
 
   /** Get checkpoints for a mission group. Returns empty array if none defined. */
   getCheckpoints(group: string): MissionCheckpoint[] {
-    return this.gating.getCheckpoints(group);
+    return this.gating.getCheckpoints(this.gatingKey(group));
   }
 
   /**
@@ -102,7 +134,8 @@ export class MissionExecutor {
     taskId: string,
     tasks: Task[],
   ): Promise<{ checkpoint: MissionCheckpoint; reachedAt: string } | undefined> {
-    return this.gating.getBlockingCheckpoint(group, taskTitle, taskId, tasks);
+    const key = this.gatingKey(group);
+    return this.gating.getBlockingCheckpoint(key, taskTitle, taskId, this.preparedExecutions.has(key) ? tasks.filter(task => task.missionExecutionId === key) : tasks);
   }
 
   /**
@@ -110,17 +143,27 @@ export class MissionExecutor {
    * Returns true if the checkpoint was active and is now resumed, false if not found.
    */
   async resumeCheckpoint(group: string, checkpointName: string): Promise<boolean> {
-    return this.gating.resumeCheckpoint(group, checkpointName);
+    return this.gating.resumeCheckpoint(this.gatingKey(group), checkpointName);
+  }
+
+  async resumeCheckpointByMissionId(missionId: string, checkpointName: string): Promise<boolean> {
+    await this.ready;
+    const mission = await this.getMission(missionId);
+    if (!mission) return false;
+    const task = (await this.currentExecutionTasks(mission, await this.ctx.taskStore.listTasks()))[0];
+    if (!task) return false;
+    await this.prepareTaskExecution(task, false);
+    return this.resumeCheckpoint(task.missionExecutionId ?? task.group ?? mission.name, checkpointName);
   }
 
   /** Get all active (unresumed) checkpoints across all mission groups. */
-  getActiveCheckpoints(): Array<{ group: string; checkpointName: string; checkpoint: MissionCheckpoint; reachedAt: string }> {
+  getActiveCheckpoints(): ActiveCheckpoint[] {
     return this.gating.getActiveCheckpoints();
   }
 
   /** Get delays for a mission group. Returns empty array if none defined. */
   getDelays(group: string): MissionDelay[] {
-    return this.gating.getDelays(group);
+    return this.gating.getDelays(this.gatingKey(group));
   }
 
   /**
@@ -135,11 +178,12 @@ export class MissionExecutor {
     taskId: string,
     tasks: Task[],
   ): Promise<{ delay: MissionDelay; startedAt: string; expiresAt: string } | undefined> {
-    return this.gating.getBlockingDelay(group, taskTitle, taskId, tasks);
+    const key = this.gatingKey(group);
+    return this.gating.getBlockingDelay(key, taskTitle, taskId, this.preparedExecutions.has(key) ? tasks.filter(task => task.missionExecutionId === key) : tasks);
   }
 
   /** Get all active (unexpired) delays across all mission groups. */
-  getActiveDelays(): Array<{ group: string; delayName: string; delay: MissionDelay; startedAt: string; expiresAt: string }> {
+  getActiveDelays(): ActiveDelay[] {
     return this.gating.getActiveDelays();
   }
 
@@ -163,7 +207,9 @@ export class MissionExecutor {
     notifications?: ScopedNotificationRules;
     /** Opaque end-user identifier (OpenAI-compat). */
     user?: string;
+    metadata?: Record<string, string>;
   }): Promise<Mission> {
+    const metadata = normalizeRuntimeMetadata(opts.metadata);
     const name = opts.name ?? await this.missions.nextMissionName();
     const mission = await this.missions.createMission({
       name,
@@ -175,6 +221,7 @@ export class MissionExecutor {
       endDate: opts.endDate,
       notifications: opts.notifications,
       user: opts.user,
+      metadata,
     });
     this.ctx.emitter.emit("mission:saved", { missionId: mission.id, name: mission.name, status: mission.status });
     return mission;
@@ -200,37 +247,19 @@ export class MissionExecutor {
     const mission = await this.getMission(missionId);
     if (!mission) return false;
 
-    // ── Cascade cleanup ──────────────────────────────────
-
-    // 1. Kill running processes and remove all tasks belonging to this mission
-    const missionGroup = mission.name;
-    const deletedTasks = await this.taskMgr.clearTasks(
-      t => t.missionId === missionId || t.group === missionGroup,
-    );
-
-    // 2. Clean up volatile agents registered for this mission group
-    await this.agentMgr.cleanupVolatileAgents(missionGroup);
-
-    // 3. Clean up in-memory quality gates
-    this.gatesByGroup.delete(missionGroup);
-    // Also clean numbered groups for recurring missions (e.g. "mission-1 #2", "mission-1 #3")
-    for (const key of this.gatesByGroup.keys()) {
-      if (key.startsWith(missionGroup + " #")) this.gatesByGroup.delete(key);
+    await this.ready;
+    // An explicit Mission ID always wins over the legacy display-label fallback.
+    const belongs = (task: Task) => task.missionId === missionId || (!task.missionId && task.group === mission.name);
+    const tasks = (await this.ctx.taskStore.listTasks()).filter(belongs);
+    const groups = new Set(tasks.map(task => task.missionExecutionId ?? task.group).filter((group): group is string => !!group));
+    for (const [key, pending] of this.preparedExecutions) {
+      if ((await pending).receipt.missionId === missionId) groups.add(key);
     }
-
-    // 4. Clean up persisted checkpoints and delays (incl. numbered recurring-run groups)
-    await this.gating.removeGroupAndRuns(missionGroup);
-
-    // 5. Clean up scheduled origin cache
-    this.scheduledOrigin.delete(missionGroup);
-    for (const key of this.scheduledOrigin.keys()) {
-      if (key.startsWith(missionGroup + " #")) this.scheduledOrigin.delete(key);
-    }
-
-    // 6. Allow re-cleanup if the group is ever recreated
-    this.cleanedGroups.delete(missionGroup);
-    for (const key of this.cleanedGroups) {
-      if (key.startsWith(missionGroup + " #")) this.cleanedGroups.delete(key);
+    const deletedTasks = await this.taskMgr.clearTasks(belongs);
+    for (const group of groups) {
+      await this.agentMgr.cleanupVolatileAgents(group);
+      await this.forgetExecution(group);
+      this.cleanedGroups.delete(group);
     }
 
     // ── Delete the mission record ────────────────────────
@@ -241,211 +270,248 @@ export class MissionExecutor {
     return result;
   }
 
+  private async currentExecutionTasks(mission: Mission, tasks: Task[]): Promise<Task[]> {
+    return currentMissionExecutionTasks(mission, tasks, resolveMissionExecutionStore(this.ctx));
+  }
+
   async getResumableMissions(): Promise<Mission[]> {
-    const missions = await this.listMissions();
-    const state = await this.ctx.taskStore.getState();
-    return missions.filter(m => {
-      // Non-resumable statuses: draft (never executed), scheduled/recurring (scheduler handles),
-      // completed (done), cancelled (aborted)
-      if (m.status === "draft" || m.status === "scheduled" || m.status === "recurring" ||
-          m.status === "completed" || m.status === "cancelled") return false;
-      const tasks = state.tasks.filter(t => t.group === m.name);
-      if (tasks.length === 0) return false;
-      return tasks.some(t => t.status === "pending" || t.status === "failed");
-    });
+    await this.ready;
+    return resumableMissions(await this.listMissions(), await this.ctx.taskStore.listTasks(), resolveMissionExecutionStore(this.ctx));
   }
 
   async resumeMission(missionId: string, opts?: { retryFailed?: boolean }): Promise<{ retried: number; pending: number }> {
+    await this.ready;
     const mission = await this.getMission(missionId);
     if (!mission) throw new Error("Mission not found");
-
-    // Re-register volatile agents if they were cleaned up
-    this.cleanedGroups.delete(mission.name);
-    const enableVolatile = this.ctx.config.settings.enableVolatileTeams !== false;
-    if (enableVolatile && mission.data) {
-      try {
-        const doc = JSON.parse(mission.data) as MissionDocumentParsed;
-        if (doc?.team && Array.isArray(doc.team)) {
-          for (const a of doc.team) {
-            if (!a.name) continue;
-            const { name, ...rest } = a;
-            await this.agentMgr.addVolatileAgent({ name, ...rest }, mission.name);
-          }
-        }
-      } catch (err) {
-        this.ctx.emitter.emit("log", { level: "warn", message: `Failed to re-register volatile agents for ${mission.name}: ${err instanceof Error ? err.message : String(err)}` });
-      }
+    const tasks = await this.currentExecutionTasks(mission, await this.ctx.taskStore.listTasks());
+    for (const task of tasks) this.cleanedGroups.delete(task.missionExecutionId ?? task.group ?? mission.name);
+    // Old CRUD-only executions have no accepted snapshot. Preserve their legacy
+    // resume behavior without letting edited configuration replace durable plans.
+    if (tasks.some(task => !task.missionExecutionId) && this.ctx.config.settings.enableVolatileTeams !== false) {
+      const doc = parseMissionDocument(JSON.parse(mission.data));
+      for (const agent of doc.team ?? []) await this.agentMgr.addVolatileAgent(agent, tasks[0]?.group ?? mission.name);
     }
-
-    const state = await this.ctx.taskStore.getState();
-    const tasks = state.tasks.filter(t => t.group === mission.name);
-    const failedTasks = tasks.filter(t => t.status === "failed");
-    const pendingTasks = tasks.filter(t => t.status === "pending");
-
+    const failedTasks = tasks.filter(task => task.status === "failed");
+    const pendingTasks = tasks.filter(task => task.status === "pending");
     let retried = 0;
     if (opts?.retryFailed) {
       for (const task of failedTasks) {
-        try {
-          await this.taskMgr.retryTask(task.id);
-          retried++;
-        } catch { /* no retries left — skip */
-        }
+        // Validate the receipt before making failed work runnable again.
+        await this.prepareTaskExecution(task);
+        try { await this.taskMgr.retryTask(task.id); retried++; }
+        catch { continue; /* no retries left */ }
+        await this.prepareTaskExecution((await this.ctx.taskStore.getTask(task.id))!);
       }
     }
-
-    if (mission.status === "failed") {
-      await this.updateMission(missionId, { status: "active" });
-    }
-
+    for (const task of pendingTasks) await this.prepareTaskExecution(task);
+    if (mission.status === "failed") await this.updateMission(missionId, { status: "active" });
     this.ctx.emitter.emit("mission:resumed", { missionId, name: mission.name, retried, pending: pendingTasks.length });
     return { retried, pending: pendingTasks.length };
   }
 
-  async executeMission(missionId: string): Promise<{ tasks: Task[]; group: string }> {
-    const mission = await this.missions.getMission(missionId);
-    if (!mission) throw new Error("Mission not found");
-    const executableStates = ["draft", "scheduled", "recurring", "failed", "cancelled"];
-    if (!executableStates.includes(mission.status)) {
-      throw new Error(`Cannot execute mission in "${mission.status}" state`);
+  /** Cancel one accepted execution, never a presentation group or a newer Task attempt. */
+  async abortMission(missionId: string, options: MissionAbortOptions = {}): Promise<MissionAbortResult & { missionCancelled: boolean }> {
+    const capturedOptions = { ...options };
+    await this.ready;
+    const result = await cancelMissionExecution({ missionStore: this.missions, taskStore: this.ctx.taskStore,
+      missionExecutionStore: resolveMissionExecutionStore(this.ctx) }, missionId, capturedOptions);
+    // Durable state wins even if an in-process owner or cache is unavailable.
+    for (const runId of result.killedRunIds) {
+      try { await this.ctx.spawner?.cancelRun?.(runId); }
+      catch { this.ctx.emitter.emit("log", { level: "warn", message: `Mission cancellation committed; owner notification deferred for Run ${runId}` }); }
     }
-    // Remember whether this is a scheduled/recurring mission so we can restore status after completion
-    const scheduledStatus = mission.status === "scheduled" || mission.status === "recurring" ? mission.status : undefined;
+    // Do not remove execution resources here: a retry may already be using the
+    // same receipt while owner notification is pending. Normal lifecycle cleanup
+    // owns those resources independently from this captured cancellation.
+    return { aborted: result.aborted, executionId: result.executionId, missionCancelled: result.missionCancelled };
+  }
 
-    // Increment execution count (tracks how many times this mission has run — useful for recurring)
-    const runNumber = (mission.executionCount ?? 0) + 1;
-    await this.missions.updateMission(missionId, { executionCount: runNumber });
-
-    // Validate mission document through Zod schema — throws with clear error on invalid shape
-    const raw = JSON.parse(mission.data);
-    const doc = parseMissionDocument(raw);
-
-    // For recurring/scheduled missions with multiple runs, disambiguate the group with a run number
-    const group = runNumber > 1 ? `${mission.name} #${runNumber}` : mission.name;
-
-    // Run before:mission:execute hook
-    const hookResult = this.ctx.hooks.runBeforeSync("mission:execute", {
-      missionId,
-      mission,
-      taskCount: doc.tasks.length,
-    });
-    if (hookResult.cancelled) {
-      throw new Error(`Mission execution blocked by hook: ${hookResult.cancelReason ?? "no reason"}`);
+  private async forgetExecution(group: string): Promise<void> {
+    // Settle recovery before removing its definitions, so an in-flight load
+    // cannot restore a cache that cleanup has just removed.
+    await this.preparedExecutions.get(group);
+    this.gatesByGroup.delete(group);
+    this.scheduledOrigin.delete(group);
+    await this.gating.removeGroup(group);
+    this.preparedExecutions.delete(group);
+    for (const [label, aliases] of this.groupExecutions) {
+      aliases.delete(group);
+      if (!aliases.size) this.groupExecutions.delete(label);
     }
+  }
 
-    // Register volatile agents from the mission's team section
-    const enableVolatile = this.ctx.config.settings.enableVolatileTeams !== false;
-    if (enableVolatile && doc.team && Array.isArray(doc.team)) {
-      for (const a of doc.team) {
-        if (!a.name) continue;
-        const { name, ...rest } = a;
-        await this.agentMgr.addVolatileAgent({ name, ...rest }, group);
-      }
-    }
-
-    // Validate API keys for all agents referenced in the mission
-    const allAgents = await this.agentMgr.getAgents();
-    const referencedModels: string[] = [];
-    for (const t of doc.tasks) {
-      const agentName = t.assignTo || allAgents[0]?.name;
-      const agent = allAgents.find(a => a.name === agentName);
-      if (agent?.model) {
-        referencedModels.push(...resolveConfiguredModelSelection(
-          agent.model,
-          this.ctx.config.settings,
-          agent.allowedModelProfiles,
-        ).policy.candidates);
-      } else if (!agent) {
-        throw new Error(
-          `Mission references agent "${agentName}" (task "${t.title}") but no such agent exists. ` +
-          `Available agents: ${allAgents.map(a => a.name).join(", ")}`
-        );
-      }
-    }
-    if (referencedModels.length > 0 && this.ctx.validateProviderKeys) {
-      const missing = this.ctx.validateProviderKeys(referencedModels);
-      if (missing.length > 0) {
-        const details = missing
-          .map(m => `${m.provider} (model: ${m.modelSpec})`)
-          .join(", ");
-        throw new Error(
-          `Missing API keys for providers: ${details}. ` +
-          `Set the corresponding environment variables or add them to the project.json providers section.`
-        );
-      }
-    }
-
-    // Create tasks with dependency resolution
-    const titleToId = new Map<string, string>();
-    const tasks: Task[] = [];
-    for (const t of doc.tasks) {
-      const deps = (t.dependsOn || [])
-        .map((title: string) => titleToId.get(title))
-        .filter((id: string | undefined): id is string => !!id);
-
-      // Validate expectations through Zod schemas
-      let expectations: TaskExpectation[] = [];
-      if (t.expectations && Array.isArray(t.expectations) && t.expectations.length > 0) {
-        const { valid, warnings } = sanitizeExpectations(t.expectations);
-        expectations = valid;
-        for (const w of warnings) {
-          this.ctx.emitter.emit("log", { level: "warn", message: `Mission task "${t.title}": ${w}` });
+  /** Restore accepted runtime definitions before any task can be dispatched.
+   * The durable receipt is authoritative even after Mission edits or a restart. */
+  async prepareTaskExecution(task: Task, restoreAgents = true): Promise<void> {
+    if (!task.missionExecutionId) return;
+    const store = resolveMissionExecutionStore(this.ctx);
+    if (!store) throw new MissionExecutionError("mission_execution_unsupported", "Mission execution recovery is unavailable");
+    let pending = this.preparedExecutions.get(task.missionExecutionId);
+    if (!pending) {
+      pending = (async () => {
+        await this.gating.ready;
+        const admission = await store.getMissionExecutionById(task.missionExecutionId!);
+        if (!admission) throw new MissionExecutionError("mission_execution_invalid", "Mission execution receipt is missing");
+        const doc = parseMissionDocument(JSON.parse(admission.expected.data));
+        const titles = new Map(admission.runtime?.taskTitles?.map(entry => [entry.authored, entry.accepted]));
+        const translate = <T extends { afterTasks: string[]; blocksTasks: string[] }>(items: T[] = []): T[] => items.map(item => ({
+          ...item, afterTasks: item.afterTasks.map(title => titles.get(title) ?? title), blocksTasks: item.blocksTasks.map(title => titles.get(title) ?? title),
+        }));
+        const group = admission.receipt.executionId;
+        this.gating.setExecutionIdentity({ executionId: group, missionId: admission.receipt.missionId, group: admission.receipt.group });
+        const aliases = this.groupExecutions.get(admission.receipt.group) ?? new Set<string>();
+        aliases.add(group); this.groupExecutions.set(admission.receipt.group, aliases);
+        // Definitions already persist in the receipt. Do not rewrite shared
+        // checkpoint state from a second executor during admission recovery.
+        this.gatesByGroup.set(group, translate(doc.qualityGates));
+        await this.gating.setCheckpointDefinitions(group, translate(doc.checkpoints), false);
+        await this.gating.setDelayDefinitions(group, translate(doc.delays), false);
+        if (admission.expected.status === "scheduled" || admission.expected.status === "recurring") {
+          this.scheduledOrigin.set(group, admission.expected.status);
         }
+        return admission;
+      })();
+      this.preparedExecutions.set(task.missionExecutionId, pending);
+      pending.catch(() => this.preparedExecutions.delete(task.missionExecutionId!));
+    }
+    const admission = await pending;
+    assertMissionExecutionTask(task, admission.receipt);
+    // Never recreate volatile agents for historical/terminal work. New active
+    // tasks recover them from the accepted plan, not the edited Mission data.
+    if (restoreAgents && task.status !== "done" && task.status !== "failed") {
+      for (const agent of admission.runtime?.volatileAgents ?? []) {
+        await this.agentMgr.addVolatileAgent(agent, admission.receipt.executionId);
+      }
+    }
+  }
+
+  async executeMission(missionId: string, options: MissionExecutionOptions = {}, expectedMission?: Mission): Promise<MissionExecutionResult> {
+    // Trusted scheduler input, never exposed as an authored HTTP option. A
+    // delayed trigger must not obtain fresh authority by re-reading the Mission.
+    const expected = expectedMission === undefined ? undefined : structuredClone(expectedMission);
+    options = { ...options };
+    await this.ready;
+    const persistence = resolveMissionExecutionStore(this.ctx);
+    if (expected && (!persistence || expected.id !== missionId)) {
+      throw new MissionExecutionError("mission_execution_unsupported", "Guarded Mission execution requires matching atomic persistence");
+    }
+    if (options.idempotencyKey !== undefined) {
+      validateMissionExecutionKey(missionId, options.idempotencyKey);
+      if (!persistence) throw new MissionExecutionError("mission_execution_unsupported", "Idempotent Mission execution requires atomic persistence");
+      const accepted = await persistence.getMissionExecution(missionId, options.idempotencyKey);
+      if (accepted) return { tasks: accepted.tasks, group: accepted.group, executionId: accepted.executionId };
+    }
+    let admitted = false;
+    try {
+      const stored = expected ?? await this.missions.getMission(missionId);
+      if (!stored) throw new Error("Mission not found");
+      // Some custom stores return mutable objects. Hooks and awaits must not alter
+      // the expected snapshot that will be compared during atomic admission.
+      const mission = structuredClone(stored);
+      if (!["draft", "scheduled", "recurring", "failed", "cancelled"].includes(mission.status)) {
+        throw new Error(`Cannot execute mission in "${mission.status}" state`);
+      }
+      const sequence = (mission.executionCount ?? 0) + 1;
+      const group = sequence > 1 ? `${mission.name} #${sequence}` : mission.name;
+      const doc = parseMissionDocument(JSON.parse(mission.data));
+      const hook = await this.ctx.hooks.runBefore("mission:execute", { missionId, mission: structuredClone(mission), taskCount: doc.tasks.length });
+      if (hook.cancelled) throw new Error(`Mission execution blocked by hook: ${hook.cancelReason ?? "no reason"}`);
+
+      const existingAgents = await this.agentMgr.getAgents();
+      const volatileAgents = this.ctx.config.settings.enableVolatileTeams === false ? [] : (doc.team ?? []).filter(agent => {
+        if (!agent || typeof agent.name !== "string" || !agent.name.trim()) throw new Error("Mission team requires valid agent names");
+        return !existingAgents.some(existing => existing.name === agent.name);
+      });
+      const agents = [...existingAgents, ...volatileAgents];
+      // Resolve all dependencies, including forward references, before writing.
+      const byTitle = new Map(doc.tasks.map(task => [task.title, task]));
+      const ordered: typeof doc.tasks = [], visited = new Set<string>(), visiting = new Set<string>();
+      const visit = (title: string): void => {
+        if (visited.has(title)) return;
+        if (visiting.has(title)) throw new Error(`Cyclic Mission dependency at "${title}"`);
+        const task = byTitle.get(title);
+        if (!task) throw new Error(`Unknown Mission dependency "${title}"`);
+        visiting.add(title);
+        for (const dependency of task.dependsOn ?? []) visit(dependency);
+        visiting.delete(title); visited.add(title); ordered.push(task);
+      };
+      for (const task of doc.tasks) visit(task.title);
+
+      const createdAt = new Date().toISOString(), executionId = nanoid();
+      const titleToId = new Map<string, string>(), tasks: Task[] = [];
+      const referencedModels: string[] = [];
+      const taskTitles: Array<{ authored: string; accepted: string }> = [];
+      for (const authored of ordered) {
+        const prepared = await this.taskMgr.prepareTask({
+          title: authored.title, description: authored.description || authored.title,
+          assignTo: authored.assignTo || agents[0]?.name || "default",
+          dependsOn: (authored.dependsOn ?? []).map(title => titleToId.get(title)!),
+          expectations: authored.expectations, expectedOutcomes: authored.expectedOutcomes,
+          group, missionId, user: mission.user, metadata: mission.metadata, maxDuration: authored.maxDuration,
+          retryPolicy: authored.retryPolicy, notifications: authored.notifications, sideEffects: authored.sideEffects,
+        });
+        const agent = agents.find(candidate => candidate.name === prepared.assignTo);
+        if (!agent) throw new Error(`Mission references agent "${prepared.assignTo}" (task "${prepared.title}") but no such agent exists. Available agents: ${agents.map(agent => agent.name).join(", ")}`);
+        if (agent.model) referencedModels.push(...resolveConfiguredModelSelection(agent.model, this.ctx.config.settings, agent.allowedModelProfiles).policy.candidates);
+        const task: Task = { ...prepared, id: nanoid(), status: "pending", retries: 0, createdAt, updatedAt: createdAt,
+          missionId, group, user: mission.user, metadata: normalizeRuntimeMetadata(mission.metadata), ...(persistence ? { missionExecutionId: executionId } : {}) };
+        tasks.push(task); titleToId.set(authored.title, task.id);
+        taskTitles.push({ authored: authored.title, accepted: task.title });
+      }
+      if (referencedModels.length && this.ctx.validateProviderKeys) {
+        const missing = this.ctx.validateProviderKeys(referencedModels);
+        if (missing.length) throw new Error(`Missing API keys for providers: ${missing.map(model => `${model.provider} (model: ${model.modelSpec})`).join(", ")}. Set the corresponding environment variables or add them to the project.json providers section.`);
       }
 
-      const task = await this.taskMgr.createTask({
-        title: t.title,
-        description: t.description || t.title,
-        assignTo: t.assignTo || (await this.agentMgr.getAgents())[0]?.name || "default",
-        dependsOn: deps,
-        expectations,
-        expectedOutcomes: t.expectedOutcomes,
-        group,
-        missionId,
-        maxDuration: t.maxDuration,
-        retryPolicy: t.retryPolicy,
-        notifications: t.notifications,
-        sideEffects: t.sideEffects,
-      });
-      titleToId.set(t.title, task.id);
-      tasks.push(task);
-    }
+      if (persistence) {
+        const result = await persistence.commitMissionExecution({ expected: mission, notifications: doc.notifications,
+          runtime: { volatileAgents, taskTitles }, receipt: { executionId, missionId, idempotencyKey: options.idempotencyKey ?? `execution:${executionId}`,
+            group, sequence, user: mission.user, metadata: normalizeRuntimeMetadata(mission.metadata), createdAt, tasks } });
+        admitted = true;
+        if (result.created) {
+          await this.prepareTaskExecution(result.receipt.tasks[0]);
+          for (const task of result.receipt.tasks) this.taskMgr.notifyTaskCreated(task);
+          this.ctx.emitter.emit("mission:executed", { missionId, group, taskCount: result.receipt.tasks.length });
+        }
+        return { tasks: result.receipt.tasks, group: result.receipt.group, executionId: result.receipt.executionId };
+      }
 
-    // Store quality gates (in-memory) and checkpoints (persisted to disk)
-    if (doc.qualityGates && doc.qualityGates.length > 0) {
-      this.gatesByGroup.set(group, doc.qualityGates as MissionQualityGate[]);
+      // Compatibility for custom stores with only ordinary CRUD. Explicit
+      // idempotency is refused above; these writes do not claim atomic admission.
+      for (const agent of volatileAgents) await this.agentMgr.addVolatileAgent(agent, group);
+      this.gatesByGroup.set(group, doc.qualityGates ?? []);
+      if (doc.checkpoints?.length) await this.gating.setCheckpointDefinitions(group, doc.checkpoints);
+      if (doc.delays?.length) await this.gating.setDelayDefinitions(group, doc.delays);
+      if (mission.status === "scheduled" || mission.status === "recurring") this.scheduledOrigin.set(group, mission.status);
+      const actualIds = new Map<string, string>(), created: Task[] = [];
+      for (const task of tasks) {
+        const storedTask = await this.ctx.taskStore.createTask({ ...task, dependsOn: task.dependsOn.map(id => actualIds.get(id)!) });
+        actualIds.set(task.id, storedTask.id); created.push(storedTask); this.taskMgr.notifyTaskCreated(storedTask);
+      }
+      await this.missions.updateMission(missionId, { status: "active", executionCount: sequence, ...(doc.notifications ? { notifications: doc.notifications } : {}) });
+      this.ctx.emitter.emit("mission:executed", { missionId, group, taskCount: created.length });
+      return { tasks: created, group };
+    } catch (error) {
+      // Another caller may win after our initial lookup but before preflight.
+      // Its accepted receipt also wins over active-state/title/hook conflicts.
+      if (!admitted && persistence && options.idempotencyKey !== undefined) {
+        const accepted = await persistence.getMissionExecution(missionId, options.idempotencyKey);
+        if (accepted) return { tasks: accepted.tasks, group: accepted.group, executionId: accepted.executionId };
+      }
+      throw error;
     }
-    if (doc.checkpoints && doc.checkpoints.length > 0) {
-      await this.gating.setCheckpointDefinitions(group, doc.checkpoints as MissionCheckpoint[]);
-    }
-    if (doc.delays && doc.delays.length > 0) {
-      await this.gating.setDelayDefinitions(group, doc.delays as MissionDelay[]);
-    }
-
-    // Track scheduled origin so we know where to return after completion
-    if (scheduledStatus) {
-      this.scheduledOrigin.set(group, scheduledStatus);
-    }
-
-    // Persist mission-level notifications from document onto the Mission record
-    if (doc.notifications) {
-      await this.missions.updateMission(missionId, { status: "active", notifications: doc.notifications });
-    } else {
-      // Mark mission as active
-      await this.missions.updateMission(missionId, { status: "active" });
-    }
-    this.ctx.emitter.emit("mission:executed", { missionId, group, taskCount: tasks.length });
-
-    return { tasks, group };
   }
 
   /** Check if any mission groups have all tasks terminal, and clean up their volatile agents */
   async cleanupCompletedGroups(tasks: Task[]): Promise<void> {
     const groups = new Set<string>();
     for (const t of tasks) {
-      if (t.group) groups.add(t.group);
+      const group = t.missionExecutionId ?? t.group;
+      if (group) groups.add(group);
     }
     for (const group of groups) {
-      const groupTasks = tasks.filter(t => t.group === group);
+      const groupTasks = tasks.filter(t => (t.missionExecutionId ?? t.group) === group);
+      const label = groupTasks[0]?.group ?? group;
       const allTerminal = groupTasks.every(t => t.status === "done" || t.status === "failed");
 
       // If tasks went back to non-terminal (e.g. individual retry via retryTask),
@@ -457,22 +523,19 @@ export class MissionExecutor {
 
       if (this.cleanedGroups.has(group)) continue;
       if (!allTerminal) continue;
-
-      const cleanupPolicy = this.ctx.config.settings.volatileCleanup ?? "on_complete";
-      if (cleanupPolicy === "on_complete") {
-        await this.agentMgr.cleanupVolatileAgents(group);
-      }
-      this.cleanedGroups.add(group);
+      const capturedTask = groupTasks.find(task => task.missionExecutionId);
+      if (capturedTask) await this.prepareTaskExecution(capturedTask);
 
       // Auto-update mission status
       const mission = await resolveMissionForGroup(this.missions, groupTasks, group);
-      if (mission && mission.status === "active") {
+      const admission = capturedTask ? await resolveMissionExecutionStore(this.ctx)?.getMissionExecutionById(capturedTask.missionExecutionId!) : undefined;
+      if (mission && mission.status === "active" && (!admission || admission.receipt.sequence === mission.executionCount)) {
         let allDone = groupTasks.every(t => t.status === "done");
 
         // Check mission quality threshold (only if all tasks passed structurally)
         if (allDone && this.qualityCtrl) {
           const thresholdResult = this.qualityCtrl.checkMissionThreshold(
-            mission,
+            admission?.expected ?? mission,
             groupTasks,
             this.ctx.config.settings.defaultQualityThreshold,
           );
@@ -498,19 +561,24 @@ export class MissionExecutor {
           // Normal missions or successful one-shot scheduled missions
           finalStatus = allDone ? "completed" : "failed";
         }
-        await this.missions.updateMission(mission.id, { status: finalStatus });
-        const report = await this.buildMissionReport(mission.id, group, groupTasks, allDone);
-        this.ctx.emitter.emit("mission:completed", { missionId: mission.id, group, allPassed: allDone, report });
+        const finalized = admission
+          ? await resolveMissionExecutionStore(this.ctx)!.finalizeMissionExecution(admission.receipt.executionId, finalStatus)
+          : !!await this.missions.updateMission(mission.id, { status: finalStatus });
+        // A retry may have made tasks runnable since this cleanup snapshot.
+        // Keep definitions/agents and retry from fresh state on the next tick.
+        if (!finalized) continue;
+        if (finalized) {
+          const report = await this.buildMissionReport(mission.id, label, groupTasks, allDone);
+          this.ctx.emitter.emit("mission:completed", { missionId: mission.id, group: label, allPassed: allDone, report });
+          this.qualityCtrl?.aggregateMissionMetrics(mission.id, groupTasks);
+        }
 
-        // Aggregate mission metrics
-        this.qualityCtrl?.aggregateMissionMetrics(mission.id, groupTasks);
-
-        // Clean up gate, checkpoint, delay, and scheduled-origin caches
-        this.gatesByGroup.delete(group);
-        this.scheduledOrigin.delete(group);
-        // Clean up persisted checkpoint and delay entries for this group
-        await this.gating.removeGroup(group);
       }
+      if ((this.ctx.config.settings.volatileCleanup ?? "on_complete") === "on_complete") {
+        await this.agentMgr.cleanupVolatileAgents(group);
+      }
+      await this.forgetExecution(group);
+      this.cleanedGroups.add(group);
     }
   }
 

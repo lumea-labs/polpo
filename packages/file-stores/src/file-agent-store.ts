@@ -1,138 +1,143 @@
-import { existsSync, writeFileSync, mkdirSync } from "node:fs";
-import { join, dirname } from "node:path";
+import { randomUUID } from "node:crypto";
 import type { AgentConfig } from "@polpo-ai/core/types";
-import type { AgentStore } from "@polpo-ai/core/agent-store";
 import {
-  deleteProjectAgent,
-  detectAgentLayout,
-  readProjectAgents,
-  writeProjectAgent,
-  type ProjectAgentEntry,
-} from "./project-layout-files.js";
+  AgentMutationError, applyAgentConfigPatch, normalizeAgentMutation,
+  type AgentConfigPatch, type AgentMutation, type AgentMutationReceipt, type AgentRevision,
+  type AgentSnapshot, type VersionedAgentStore,
+} from "@polpo-ai/core/agent-store";
+import { deleteProjectAgent, persistProjectAgents, readAgentFiles } from "./project-layout-files.js";
+import { agentFileSnapshot, fingerprint, loadAgentState, persistAgentState, type AgentFileState } from "./project-agent-state.js";
+import { withProjectFileTransaction } from "./project-file-transaction.js";
 
-/** Persisted agent entry — includes the teamName foreign key. */
-type AgentEntry = ProjectAgentEntry;
-
-/**
- * File-based AgentStore.
- * Persists directory-based agent definitions and reads legacy `agents.json`.
- */
-export class FileAgentStore implements AgentStore {
-  private readonly filePath: string;
-
-  constructor(polpoDir: string) {
-    this.filePath = join(polpoDir, "agents.json");
+const conflict = () => new AgentMutationError("agent_revision_conflict", "The agent changed; reload its configuration before retrying");
+function applyRuntimeFields(state: AgentFileState, patch: AgentConfigPatch): void {
+  if (patch.set && Object.hasOwn(patch.set, "createdAt")) state.createdAt = patch.set.createdAt;
+  if (patch.unset?.includes("createdAt")) delete state.createdAt;
+  if (patch.set && Object.hasOwn(patch.set, "systemPrompt")) {
+    const prompt = patch.set.systemPrompt;
+    if (prompt === "" || prompt === null) state.emptySystemPrompt = prompt;
+    else delete state.emptySystemPrompt;
   }
+  if (patch.unset?.includes("systemPrompt")) delete state.emptySystemPrompt;
+}
 
-  // ── helpers ──────────────────────────────────────────────────────────
-
-  private readAll(): AgentEntry[] {
-    return readProjectAgents(dirname(this.filePath));
-  }
-
-  private writeAll(entries: AgentEntry[]): void {
-    const dir = dirname(this.filePath);
-    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-    writeFileSync(this.filePath, JSON.stringify(entries, null, 2), "utf-8");
-  }
-
-  // ── AgentStore implementation ────────────────────────────────────────
+/** JSON/Markdown definitions with an OS-coordinated revision and recovery journal. */
+export class FileAgentStore implements VersionedAgentStore {
+  constructor(private readonly polpoDir: string) {}
 
   async getAgents(teamName?: string): Promise<AgentConfig[]> {
-    const entries = this.readAll();
-    const filtered = teamName ? entries.filter(e => e.teamName === teamName) : entries;
-    return filtered.map(e => e.agent);
+    return withProjectFileTransaction(this.polpoDir, tx => {
+      const entries = readAgentFiles(tx);
+      const state = loadAgentState(tx, entries);
+      return entries.filter(e => !teamName || e.teamName === teamName).map(e => agentFileSnapshot(e, state).agent);
+    });
   }
-
-  async getAgent(name: string): Promise<AgentConfig | undefined> {
-    return this.readAll().find(e => e.agent.name === name)?.agent;
+  async getAgent(name: string): Promise<AgentConfig | undefined> { return (await this.getAgentSnapshot(name))?.agent; }
+  async getAgentTeam(name: string): Promise<string | undefined> { return (await this.getAgentSnapshot(name))?.teamName; }
+  async getAgentSnapshot(name: string): Promise<AgentSnapshot | undefined> {
+    return withProjectFileTransaction(this.polpoDir, tx => {
+      const entries = readAgentFiles(tx);
+      const state = loadAgentState(tx, entries);
+      const entry = entries.find(e => e.agent.name === name);
+      return entry && agentFileSnapshot(entry, state);
+    });
   }
-
-  async getAgentTeam(name: string): Promise<string | undefined> {
-    return this.readAll().find(e => e.agent.name === name)?.teamName;
-  }
-
   async createAgent(agent: AgentConfig, teamName: string): Promise<AgentConfig> {
-    const entries = this.readAll();
-    if (entries.some(e => e.agent.name === agent.name)) {
-      throw new Error(`Agent "${agent.name}" already exists`);
-    }
-    if (!agent.createdAt) agent.createdAt = new Date().toISOString();
-    if (detectAgentLayout(dirname(this.filePath)) === "directory") {
-      writeProjectAgent(dirname(this.filePath), agent, teamName);
-    } else {
-      entries.push({ agent, teamName });
-      this.writeAll(entries);
-    }
-    return agent;
+    return withProjectFileTransaction(this.polpoDir, tx => {
+      const entries = readAgentFiles(tx);
+      const state = loadAgentState(tx, entries);
+      if (entries.some(e => e.agent.name === agent.name)) throw new Error(`Agent "${agent.name}" already exists`);
+      const copy = JSON.parse(JSON.stringify({ ...agent, createdAt: agent.createdAt ?? new Date().toISOString() })) as AgentConfig;
+      const saved = persistProjectAgents(tx, [...entries, { agent: copy, teamName }], state);
+      // Directory definitions deliberately omit runtime-only creation time.
+      state.get(copy.name)!.createdAt = copy.createdAt;
+      persistAgentState(tx, state);
+      return agentFileSnapshot(saved.find(e => e.agent.name === copy.name)!, state).agent;
+    });
   }
-
-  async updateAgent(name: string, updates: Partial<Omit<AgentConfig, "name">>): Promise<AgentConfig> {
-    const entries = this.readAll();
-    const entry = entries.find(e => e.agent.name === name);
-    if (!entry) throw new Error(`Agent "${name}" not found`);
-    Object.assign(entry.agent, updates);
-    if (detectAgentLayout(dirname(this.filePath)) === "directory") {
-      writeProjectAgent(dirname(this.filePath), entry.agent, entry.teamName);
-    } else {
-      this.writeAll(entries);
-    }
-    return entry.agent;
-  }
-
-  async moveAgent(name: string, newTeamName: string): Promise<AgentConfig> {
-    const entries = this.readAll();
-    const entry = entries.find(e => e.agent.name === name);
-    if (!entry) throw new Error(`Agent "${name}" not found`);
-    entry.teamName = newTeamName;
-    if (detectAgentLayout(dirname(this.filePath)) === "directory") {
-      writeProjectAgent(dirname(this.filePath), entry.agent, entry.teamName);
-    } else {
-      this.writeAll(entries);
-    }
-    return entry.agent;
-  }
-
-  async deleteAgent(name: string): Promise<boolean> {
-    if (detectAgentLayout(dirname(this.filePath)) === "directory") {
-      return deleteProjectAgent(dirname(this.filePath), name);
-    }
-    const entries = this.readAll();
-    const idx = entries.findIndex(e => e.agent.name === name);
-    if (idx < 0) return false;
-    entries.splice(idx, 1);
-    this.writeAll(entries);
-    return true;
-  }
-
-  async cleanupVolatileAgents(missionGroup: string): Promise<number> {
-    const entries = this.readAll();
-    if (detectAgentLayout(dirname(this.filePath)) === "directory") {
-      const matches = entries.filter(e => e.agent.volatile && e.agent.missionGroup === missionGroup);
-      for (const entry of matches) deleteProjectAgent(dirname(this.filePath), entry.agent.name);
-      return matches.length;
-    }
-    const before = entries.length;
-    const filtered = entries.filter(e => !(e.agent.volatile && e.agent.missionGroup === missionGroup));
-    if (filtered.length === before) return 0;
-    this.writeAll(filtered);
-    return before - filtered.length;
-  }
-
-  async seed(agents: Array<AgentConfig & { teamName: string }>): Promise<void> {
-    const existing = this.readAll();
-    const existingNames = new Set(existing.map(e => e.agent.name));
-    let changed = false;
-    for (const { teamName, ...agent } of agents) {
-      if (!existingNames.has(agent.name)) {
-        if (detectAgentLayout(dirname(this.filePath)) === "directory") {
-          writeProjectAgent(dirname(this.filePath), agent as AgentConfig, teamName);
-        } else {
-          existing.push({ agent: agent as AgentConfig, teamName });
+  async compareAndSwapAgent(name: string, request: AgentMutation): Promise<AgentMutationReceipt> {
+    const mutation = normalizeAgentMutation(request);
+    return withProjectFileTransaction(this.polpoDir, tx => {
+      const entries = readAgentFiles(tx);
+      const state = loadAgentState(tx, entries);
+      const index = entries.findIndex(e => e.agent.name === name);
+      if (index < 0) throw new AgentMutationError("agent_not_found", `Agent "${name}" not found`);
+      const current = state.get(name)!;
+      const signature = fingerprint(mutation);
+      const last = current.lastMutation;
+      if (last?.id === mutation.mutationId) {
+        if (last.fingerprint === signature && current.revision.incarnation === mutation.expected.incarnation
+          && current.revision.version === mutation.expected.version + 1) {
+          return { mutationId: mutation.mutationId, previousRevision: mutation.expected, snapshot: agentFileSnapshot(entries[index], state) };
         }
-        changed = true;
+        throw conflict();
       }
+      if (current.revision.incarnation !== mutation.expected.incarnation || current.revision.version !== mutation.expected.version) throw conflict();
+      entries[index] = applyAgentConfigPatch(agentFileSnapshot(entries[index], state), mutation.patch);
+      const saved = persistProjectAgents(tx, entries, state, new Set([name]));
+      applyRuntimeFields(state.get(name)!, mutation.patch);
+      state.get(name)!.lastMutation = { id: mutation.mutationId, expected: mutation.expected, fingerprint: signature };
+      persistAgentState(tx, state);
+      return { mutationId: mutation.mutationId, previousRevision: mutation.expected,
+        snapshot: agentFileSnapshot(saved.find(e => e.agent.name === name)!, state) };
+    });
+  }
+  async updateAgent(name: string, updates: Partial<Omit<AgentConfig, "name">>): Promise<AgentConfig> {
+    const set: Record<string, unknown> = {}, unset: string[] = [];
+    for (const [key, value] of Object.entries(updates)) {
+      if (key === "loops" || key === "pipeline") continue;
+      if (value === undefined) unset.push(key); else set[key] = value;
     }
-    if (changed && detectAgentLayout(dirname(this.filePath)) === "legacy") this.writeAll(existing);
+    return this.mergeCurrent(name, { set: JSON.parse(JSON.stringify(set)), unset } as AgentConfigPatch);
+  }
+  async moveAgent(name: string, teamName: string): Promise<AgentConfig> { return this.mergeCurrent(name, { teamName }); }
+  private mergeCurrent(name: string, patch: AgentConfigPatch): AgentConfig {
+    return withProjectFileTransaction(this.polpoDir, tx => {
+      const entries = readAgentFiles(tx);
+      const state = loadAgentState(tx, entries);
+      const index = entries.findIndex(e => e.agent.name === name);
+      if (index < 0) throw new AgentMutationError("agent_not_found", `Agent "${name}" not found`);
+      const current = agentFileSnapshot(entries[index], state);
+      const mutation = normalizeAgentMutation({ expected: current.revision, mutationId: randomUUID(), patch });
+      entries[index] = applyAgentConfigPatch(current, mutation.patch);
+      const saved = persistProjectAgents(tx, entries, state, new Set([name]));
+      applyRuntimeFields(state.get(name)!, mutation.patch);
+      persistAgentState(tx, state);
+      return agentFileSnapshot(saved.find(e => e.agent.name === name)!, state).agent;
+    });
+  }
+  async deleteAgent(name: string): Promise<boolean> { return deleteProjectAgent(this.polpoDir, name); }
+  async deleteAgentIfRevision(name: string, revision: AgentRevision): Promise<boolean> {
+    const { expected } = normalizeAgentMutation({ expected: revision, mutationId: "delete", patch: {} });
+    return withProjectFileTransaction(this.polpoDir, tx => {
+      const entries = readAgentFiles(tx);
+      const state = loadAgentState(tx, entries);
+      const current = state.get(name);
+      if (!current) return false;
+      if (current.revision.incarnation !== expected.incarnation || current.revision.version !== expected.version) throw conflict();
+      persistProjectAgents(tx, entries.filter(e => e.agent.name !== name), state);
+      return true;
+    });
+  }
+  async cleanupVolatileAgents(missionGroup: string): Promise<number> {
+    return withProjectFileTransaction(this.polpoDir, tx => {
+      const entries = readAgentFiles(tx);
+      const state = loadAgentState(tx, entries);
+      const retained = entries.filter(e => !(e.agent.volatile && e.agent.missionGroup === missionGroup));
+      if (entries.length !== retained.length) persistProjectAgents(tx, retained, state);
+      return entries.length - retained.length;
+    });
+  }
+  async seed(agents: Array<AgentConfig & { teamName: string }>): Promise<void> {
+    withProjectFileTransaction(this.polpoDir, tx => {
+      const entries = readAgentFiles(tx);
+      const state = loadAgentState(tx, entries);
+      const names = new Set(entries.map(e => e.agent.name));
+      for (const { teamName, ...agent } of agents) if (!names.has(agent.name)) {
+        entries.push({ agent: JSON.parse(JSON.stringify(agent)), teamName });
+        names.add(agent.name);
+      }
+      persistProjectAgents(tx, entries, state);
+    });
   }
 }

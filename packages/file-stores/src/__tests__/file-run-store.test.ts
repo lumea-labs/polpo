@@ -5,7 +5,7 @@
  * updateResumeState; orphan recovery reads it back from the active run.
  */
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { RunRecord } from "@polpo-ai/core/run-store";
@@ -122,6 +122,13 @@ describe("FileRunStore durable turns", () => {
     ).resolves.toBeUndefined();
   });
 
+  it.each(["invalid JSON", JSON.stringify(makeRun({ id: "another-run" }))])("does not replace a malformed run record: %s", async raw => {
+    await writeFile(join(dir, "runs/run-1.json"), raw);
+    await expect(store.getRun("run-1")).rejects.toThrow("Invalid stored run record");
+    await expect(store.upsertRun(makeRun())).rejects.toThrow("Invalid stored run record");
+    expect(await readFile(join(dir, "runs/run-1.json"), "utf8")).toBe(raw);
+  });
+
   it("updateActivity preserves an existing checkpoint", async () => {
     await store.upsertRun(makeRun());
     await store.updateResumeState!("run-1", {
@@ -151,6 +158,17 @@ describe("FileRunStore durable turns", () => {
     expect(await store.getTerminalRuns()).toEqual([]);
     expect((await store.getRun("run-1"))?.result?.stderr).toBe("spawn failed");
     expect((await store.getRun("run-1"))?.collectedAt).toBeTruthy();
+  });
+
+  it.each(["completed", "failed", "killed"] as const)("does not reopen a %s run when a delayed runner registers", async status => {
+    const original = makeRun({ id: "terminal-replay" });
+    await store.upsertRun(original);
+    await store.completeRun(original.id, status, { exitCode: 143, stdout: "", stderr: "terminal result", duration: 1 });
+    await store.markRunCollected!(original.id);
+    const terminal = await store.getRun(original.id);
+    await store.upsertRun({ ...original, pid: 9876, updatedAt: new Date().toISOString() });
+    await store.completeRun(original.id, "completed", { exitCode: 0, stdout: "late", stderr: "", duration: 2 });
+    expect(await store.getRun(original.id)).toEqual(terminal);
   });
 
   it("spawn metadata updates cannot resurrect a completed run", async () => {

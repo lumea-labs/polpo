@@ -413,15 +413,15 @@ describe("Checkpoints", () => {
           { name: "review-a", afterTasks: ["Task A"], blocksTasks: ["Task B"] },
         ],
       });
-      const mission = await missionExec.createMission({ data: missionData, name: "my-mission" });
+      const mission = await missionExec.createMission({ data: missionData, name: "my:mission" });
       await missionExec.executeMission(mission.id);
 
       const tasks = [createDoneTask("Task A"), createPendingTask("Task B")];
-      await missionExec.getBlockingCheckpoint("my-mission", "Task B", "id-b", tasks);
+      await missionExec.getBlockingCheckpoint("my:mission", "Task B", "id-b", tasks);
 
       const active = missionExec.getActiveCheckpoints();
       expect(active).toHaveLength(1);
-      expect(active[0].group).toBe("my-mission");
+      expect(active[0].group).toBe("my:mission");
       expect(active[0].checkpointName).toBe("review-a");
     });
 

@@ -8,7 +8,7 @@
  */
 import { join, dirname } from "node:path";
 import { mkdirSync, existsSync, writeFileSync } from "node:fs";
-import { spawn as cpSpawn } from "node:child_process";
+import { spawn as cpSpawn, type ChildProcess } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import type { Spawner, SpawnResult } from "@polpo-ai/core/spawner";
 import type { RunnerConfig } from "@polpo-ai/core/types";
@@ -16,6 +16,7 @@ import type { RunnerConfig } from "@polpo-ai/core/types";
 export class NodeSpawner implements Spawner {
   private polpoDir: string;
   private cwd: string;
+  private runOwners = new Map<string, ChildProcess>();
 
   constructor(opts: { polpoDir: string; cwd: string }) {
     this.polpoDir = opts.polpoDir;
@@ -61,6 +62,7 @@ export class NodeSpawner implements Spawner {
       stdio: "ignore",
       cwd: this.cwd,
     });
+    this.runOwners.set(config.runId, child);
 
     // Track process exit so the orchestrator can collect results
     // immediately instead of waiting out the poll interval. The listener
@@ -69,6 +71,7 @@ export class NodeSpawner implements Spawner {
     const exitCallbacks: Array<() => void> = [];
     child.on("exit", () => {
       exited = true;
+      if (this.runOwners.get(config.runId) === child) this.runOwners.delete(config.runId);
       for (const cb of exitCallbacks.splice(0)) cb();
     });
     child.unref();
@@ -101,5 +104,15 @@ export class NodeSpawner implements Spawner {
         try { process.kill(pid, "SIGKILL"); } catch { /* already dead */ }
       }, 3000);
     } catch { /* process already dead */ }
+  }
+
+  cancelRun(runId: string): void {
+    const child = this.runOwners.get(runId);
+    if (!child) return;
+    child.kill("SIGTERM");
+    const timer = setTimeout(() => {
+      if (this.runOwners.get(runId) === child) child.kill("SIGKILL");
+    }, 3000);
+    timer.unref();
   }
 }

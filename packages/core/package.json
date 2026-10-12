@@ -106,6 +106,10 @@
       "types": "./dist/hooks.d.ts",
       "import": "./dist/hooks.js"
     },
+    "./mission-store": {
+      "types": "./dist/mission-store.d.ts",
+      "import": "./dist/mission-store.js"
+    },
     "./task-store": {
       "types": "./dist/task-store.d.ts",
       "import": "./dist/task-store.js"
@@ -313,6 +317,18 @@
     "./data": {
       "types": "./dist/data/index.d.ts",
       "import": "./dist/data/index.js"
+    },
+    "./task-execution": {
+      "types": "./dist/task-execution.d.ts",
+      "import": "./dist/task-execution.js"
+    },
+    "./task-dispatch": {
+      "types": "./dist/task-dispatch.d.ts",
+      "import": "./dist/task-dispatch.js"
+    },
+    "./run-state-monitor": {
+      "types": "./dist/run-state-monitor.d.ts",
+      "import": "./dist/run-state-monitor.js"
     }
   },
   "sideEffects": false,

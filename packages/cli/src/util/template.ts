@@ -15,7 +15,7 @@ import * as path from "node:path";
 import { exec } from "node:child_process";
 import { promisify } from "node:util";
 import type { AgentConfig } from "@polpo-ai/core/types";
-import { writeProjectAgent, writeProjectTeam } from "@polpo-ai/file-stores";
+import { withProjectFileTransaction, writeProjectAgent, writeProjectTeam } from "@polpo-ai/file-stores";
 import type { Scenario } from "./scenarios.js";
 
 const execAsync = promisify(exec);
@@ -86,20 +86,21 @@ export function findTemplate(id: string): TemplateDefinition | undefined {
  * FileTeamStore, and `polpo deploy`.
  */
 export function writeBlankScaffold(targetDir: string, projectName: string, scenario?: Scenario): void {
-  fs.mkdirSync(path.join(targetDir, ".polpo"), { recursive: true });
+  withProjectFileTransaction(path.join(targetDir, ".polpo"), tx => {
+    fs.mkdirSync(path.join(targetDir, ".polpo"), { recursive: true });
 
-  fs.writeFileSync(
-    path.join(targetDir, ".polpo", "project.json"),
-    JSON.stringify({ schemaVersion: 2, project: projectName }, null, 2) + "\n",
-  );
+    tx.write(
+      "project.json",
+      JSON.stringify({ schemaVersion: 2, project: projectName }, null, 2) + "\n",
+    );
 
-  const polpoDir = path.join(targetDir, ".polpo");
-  fs.mkdirSync(path.join(polpoDir, "agents"), { recursive: true });
-  fs.mkdirSync(path.join(polpoDir, "teams"), { recursive: true });
-  writeProjectTeam(polpoDir, {
-    name: "default",
-    description: "Default team",
-    agents: [],
+    const polpoDir = path.join(targetDir, ".polpo");
+    fs.mkdirSync(path.join(polpoDir, "agents"), { recursive: true });
+    fs.mkdirSync(path.join(polpoDir, "teams"), { recursive: true });
+    writeProjectTeam(polpoDir, {
+      name: "default",
+      description: "Default team",
+      agents: [],
   });
 
   const agentName = scenario?.agent.name ?? "agent-1";
@@ -144,6 +145,7 @@ export function writeBlankScaffold(targetDir: string, projectName: string, scena
   }
 
   writeProjectAgent(polpoDir, agentConfig, "default");
+  });
 
   fs.writeFileSync(
     path.join(targetDir, ".env.local.example"),

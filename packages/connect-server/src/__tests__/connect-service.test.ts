@@ -59,6 +59,169 @@ const mcpProvider: ConnectorProviderDefinition = {
 };
 
 describe("connect service", () => {
+  it("consumes a host dispatch budget after authorization on every API redirect", async () => {
+    const fetchImpl = queueFetch([new Response(null, { status: 307, headers: { location: "/v1/items/next" } }), jsonResponse(200, {})]);
+    const { service } = createHarness({ fetchImpl, providers: [{ ...apiKeyProvider, http: { ...apiKeyProvider.http!, followRedirects: true } }] });
+    const connection = await service.createApiKeyConnection({ providerId: "custom_api", apiKey: "private", scopes: ["use"] });
+    const order: string[] = [];
+    const beforeDispatch = vi.fn(async () => {
+      order.push("budget");
+      if (order.filter(x => x === "budget").length > 1) throw new ConnectError("rate_limited", "Connection request limit exceeded");
+    });
+    await expect(service.request({ connectionId: connection.id, request: { method: "GET", path: "/v1/items" },
+      authorizeDispatch: async () => { order.push("authorize"); }, beforeDispatch,
+    })).rejects.toMatchObject({ code: "rate_limited", status: 429 });
+    expect(order).toEqual(["authorize", "budget", "authorize", "authorize", "budget"]);
+    expect(fetchImpl).toHaveBeenCalledOnce();
+  });
+  it.each(["credential", "grant"])("blocks a %s revoked while the quota is pending", async change => {
+    const fetchImpl = queueFetch([jsonResponse(200, {})]);
+    const { service } = createHarness({ fetchImpl });
+    const connection = await service.createApiKeyConnection({ providerId: "custom_api", apiKey: "private", scopes: ["use"] });
+    let granted = true;
+    const beforeDispatch = vi.fn(async () => {
+      if (change === "credential") await service.revokeConnection({ connectionId: connection.id });
+      else granted = false;
+    });
+    await expect(service.request({ connectionId: connection.id, request: { method: "GET", path: "/v1/items" }, beforeDispatch,
+      authorizeDispatch: async () => { if (!granted) throw new ConnectError("policy_denied", "Grant revoked"); },
+    })).rejects.toMatchObject({ code: change === "credential" ? "connection_revoked" : "policy_denied" });
+    expect(beforeDispatch).toHaveBeenCalledOnce();
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+  it("checks host invocation authority after token refresh and before sending credentials", async () => {
+    let nowMs = Date.UTC(2026, 0, 1, 10, 0, 0);
+    const fetchImpl = queueFetch([
+      jsonResponse(200, { access_token: "old", refresh_token: "refresh", scope: "read", expires_in: 1 }),
+      jsonResponse(200, { access_token: "fresh", scope: "read", expires_in: 3600 }),
+      jsonResponse(200, { mustNotBeCalled: true }),
+    ]);
+    const { service } = createHarness({ providers: [{ ...oauthProvider, http: apiKeyProvider.http }], fetchImpl,
+      now: () => new Date(nowMs), tokenRefreshSkewMs: 0 });
+    const started = await service.startOAuth({ providerId: "test_oauth", scopes: ["read"], redirectUri: "https://app.example/callback" });
+    const connection = await service.completeOAuth({ state: started.state, code: "fixture" });
+    nowMs += 2000;
+    const authorizeDispatch = vi.fn(async () => { throw new ConnectError("policy_denied", "Agent was deleted"); });
+    await expect(service.request({ connectionId: connection.id, scopes: ["read"], request: { method: "GET", path: "/v1/items" }, authorizeDispatch }))
+      .rejects.toMatchObject({ code: "policy_denied" });
+    expect(authorizeDispatch).toHaveBeenCalledOnce();
+    expect(fetchImpl.calls.map(call => call.url)).toEqual(["https://auth.example/token", "https://auth.example/token"]);
+  });
+
+  it("rechecks invocation authority before following an allowed provider redirect", async () => {
+    const fetchImpl = queueFetch([new Response(null, { status: 307, headers: { location: "https://api.example.com/v1/items/next" } }), jsonResponse(200, {})]);
+    const { service } = createHarness({ fetchImpl, providers: [{ ...apiKeyProvider, http: { ...apiKeyProvider.http!, followRedirects: true } }] });
+    const connection = await service.createApiKeyConnection({ providerId: "custom_api", apiKey: "private", scopes: ["use"] });
+    const authorizeDispatch = vi.fn().mockResolvedValueOnce(undefined).mockRejectedValueOnce(new ConnectError("policy_denied", "Revoked during redirect"));
+    await expect(service.request({ connectionId: connection.id, scopes: ["use"], request: { method: "GET", path: "/v1/items" }, authorizeDispatch }))
+      .rejects.toMatchObject({ code: "policy_denied" });
+    expect(authorizeDispatch).toHaveBeenCalledTimes(2); expect(fetchImpl.calls).toHaveLength(1);
+  });
+  it("binds end-user setup to its subject before consent and rejects conflicting identity", async () => {
+    const client = { id: "setup-client", providerId: "test_oauth", clientId: "fixture-client",
+      redirectUris: ["https://host.example/callback"], owner: { type: "instance" as const, id: "instance" } };
+    const { service } = createHarness({ allowedReturnUrlOrigins: ["https://app.example"],
+      oauthClients: { resolve: async () => client, resolveById: async () => client } });
+    const base = { providerId: "test_oauth", projectId: "project", returnUrl: "https://app.example/settings",
+      audience: "end_user" as const, subject: { type: "external_user" as const, namespace: "app", id: "user-a" } };
+    expect(await service.createSetupSession(base)).toMatchObject({
+      binding: { principal: { type: "external_user", namespace: "app", id: "user-a" } },
+    });
+    await expect(service.createSetupSession({ ...base,
+      binding: { principal: { type: "external_user", namespace: "different-app", id: "user-a" } },
+    })).rejects.toMatchObject({ code: "setup_invalid" });
+    await expect(service.createSetupSession({ ...base,
+      binding: { principal: { type: "external_user", id: "user-b" } },
+    })).rejects.toMatchObject({ code: "setup_invalid" });
+    await expect(service.createSetupSession({ ...base, subject: { type: "project", id: "project" } }))
+      .rejects.toMatchObject({ code: "setup_invalid" });
+    await expect(service.createSetupSession({ ...base, audience: "personal" }))
+      .rejects.toMatchObject({ code: "setup_invalid" });
+    expect(await service.createSetupSession({ ...base, audience: "personal", subject: { type: "user", id: "owner" } }))
+      .toMatchObject({ binding: { principal: { type: "user", id: "owner" } } });
+  });
+
+  it.each(["api_key", "mcp"] as const)("retains %s credentials when a write outcome is unknown, even if a read sees no row", async (kind) => {
+    const { service, store, secrets } = createHarness();
+    const save = vi.spyOn(secrets, "setSecret");
+    const persist = vi.spyOn(store, "upsertConnection").mockRejectedValueOnce(new Error("store unavailable"));
+    const creation = kind === "api_key"
+      ? service.createApiKeyConnection({ providerId: "custom_api", apiKey: "secret" })
+      : service.createMcpConnection({ url: "https://mcp.example/mcp", bearerToken: "secret" });
+    await expect(creation).rejects.toThrow("store unavailable");
+    expect(await store.listConnections()).toEqual([]);
+    expect(await secrets.getSecret(save.mock.calls[0]![0])).not.toBeNull();
+    // A timeout can return before the remote writer eventually commits.
+    const delayed = await store.upsertConnection(persist.mock.calls[0][0]);
+    expect(await service.resolveCredential({ connectionId: delayed.id })).toMatchObject({ kind });
+  });
+
+  it.each(["api_key", "mcp"] as const)("recovers a confirmed %s commit after a lost acknowledgement", async (kind) => {
+    const { service, store, secrets } = createHarness();
+    const persist = store.upsertConnection.bind(store);
+    vi.spyOn(store, "upsertConnection").mockImplementationOnce(async record => {
+      await persist(record); throw new Error("acknowledgement lost");
+    });
+    const connection = await (kind === "api_key"
+      ? service.createApiKeyConnection({ providerId: "custom_api", apiKey: "secret" })
+      : service.createMcpConnection({ url: "https://mcp.example/mcp", bearerToken: "secret" }));
+    expect(await store.getConnection(connection.id)).toEqual(connection);
+    expect(await secrets.getSecret(connection.secretRef!)).not.toBeNull();
+    expect(await service.resolveCredential({ connectionId: connection.id })).toMatchObject({ kind });
+  });
+
+  it.each(["read_failed", "revoked"] as const)("does not delete or reactivate a committed credential when recovery is %s", async (failure) => {
+    const { service, store, secrets } = createHarness();
+    const persist = store.upsertConnection.bind(store);
+    vi.spyOn(store, "upsertConnection").mockImplementationOnce(async record => {
+      await persist({ ...record, status: failure === "revoked" ? "revoked" : record.status });
+      if (failure === "read_failed") vi.spyOn(store, "getConnection").mockRejectedValueOnce(new Error("read unavailable"));
+      throw new Error("acknowledgement lost");
+    });
+    await expect(service.createApiKeyConnection({ providerId: "custom_api", apiKey: "secret" })).rejects.toThrow("acknowledgement lost");
+    const [connection] = await store.listConnections();
+    expect(connection.status).toBe(failure === "revoked" ? "revoked" : "active");
+    expect(await secrets.getSecret(connection.secretRef!)).not.toBeNull();
+  });
+
+  it("recovers API OAuth persistence after a lost acknowledgement without deleting its tokens", async () => {
+    const { service, store, secrets } = createHarness({ fetchImpl: queueFetch([
+      jsonResponse(200, { access_token: "private-token", scope: "read" }),
+    ]) });
+    const started = await service.startOAuth({ providerId: "test_oauth", redirectUri: "https://app.example/callback" });
+    const persist = store.upsertConnection.bind(store);
+    vi.spyOn(store, "upsertConnection").mockImplementationOnce(async record => {
+      await persist(record); throw new Error("acknowledgement lost");
+    });
+    const connection = await service.completeOAuth({ state: started.state, code: "one-time-code" });
+    expect(await store.getConnection(connection.id)).toEqual(connection);
+    expect(await secrets.getSecret(connection.secretRef!)).not.toBeNull();
+  });
+
+  it("preserves API OAuth tokens when an uncertain write commits after the callback error", async () => {
+    const { service, store, secrets } = createHarness({ fetchImpl: queueFetch([
+      jsonResponse(200, { access_token: "private-token", scope: "read" }),
+    ]) });
+    const started = await service.startOAuth({ providerId: "test_oauth", redirectUri: "https://app.example/callback" });
+    const persist = vi.spyOn(store, "upsertConnection").mockRejectedValueOnce(new Error("database timeout"));
+    await expect(service.completeOAuth({ state: started.state, code: "one-time-code" })).rejects.toThrow("database timeout");
+    const delayed = await store.upsertConnection(persist.mock.calls[0][0]);
+    expect(await secrets.getSecret(delayed.secretRef!)).not.toBeNull();
+    expect(await service.resolveCredential({ connectionId: delayed.id })).toMatchObject({ kind: "oauth2" });
+  });
+
+  it("denies use after revocation even if secret deletion fails", async () => {
+    const { service, store, secrets } = createHarness();
+    const connection = await service.createApiKeyConnection({ providerId: "custom_api", apiKey: "secret" });
+    vi.spyOn(secrets, "deleteSecret").mockRejectedValueOnce(new Error("vault unavailable"));
+    await expect(service.revokeConnection({ connectionId: connection.id })).rejects.toThrow("vault unavailable");
+    expect(await store.getConnection(connection.id)).toMatchObject({ status: "revoked" });
+    await expect(service.getToken({ connectionId: connection.id })).rejects.toMatchObject({ code: "connection_revoked" });
+    // A subsequent revoke retries secret cleanup.
+    await service.revokeConnection({ connectionId: connection.id });
+    expect(await secrets.getSecret(connection.secretRef!)).toBeNull();
+  });
+
   it("creates API-key connections and returns runtime tokens without leaking metadata", async () => {
     const { service, secrets } = createHarness();
     const connection = await service.createApiKeyConnection({
@@ -503,15 +666,17 @@ describe("connect service", () => {
     }
   });
 
-  it("rejects OAuth tokens that grant scopes outside the curated provider contract", async () => {
-    const { service } = createHarness({
+  it("keeps extra provider token scopes outside the Connection permission ceiling", async () => {
+    const { service, secrets } = createHarness({
       fetchImpl: queueFetch([jsonResponse(200, { access_token: "access_1", scope: "read admin" })]),
     });
     const started = await service.startOAuth({ providerId: "test_oauth", scopes: ["read"], redirectUri: "https://app.example/callback" });
 
-    await expect(service.completeOAuth({ state: started.state, code: "code_123" })).rejects.toMatchObject({
-      code: "invalid_scope",
-    });
+    const connection = await service.completeOAuth({ state: started.state, code: "code_123" });
+    expect(connection.grantedScopes).toEqual(["read"]);
+    expect(await secrets.getSecret(connection.secretRef!)).toMatchObject({ tokens: { scopes: ["admin", "read"] } });
+    await expect(service.getToken({ connectionId: connection.id, scopes: ["admin"] })).rejects.toMatchObject({ code: "invalid_scope" });
+    await expect(service.getToken({ connectionId: connection.id, scopes: ["read"] })).resolves.toMatchObject({ scopes: ["read"] });
   });
 
   it("refreshes expired OAuth tokens, preserves refresh token rotation fallback, and updates stored token", async () => {
@@ -569,6 +734,7 @@ describe("connect service", () => {
       now: () => new Date(nowMs),
       tokenRefreshSkewMs: 0,
       refreshCoordinator,
+      resolveHostname: async () => ["93.184.216.34"],
     };
     const replicaA = createConnectService(options);
     const replicaB = createConnectService(options);

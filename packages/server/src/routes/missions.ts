@@ -1,4 +1,6 @@
+import { TaskExecutionError } from "@polpo-ai/core/task-execution";
 import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
+import { MissionExecutionError, type MissionAbortOptions, type MissionAbortResult, type MissionExecutionOptions } from "@polpo-ai/core/mission-store";
 import {
   CreateMissionSchema, UpdateMissionSchema,
   AddMissionTaskSchema, UpdateMissionTaskSchema, ReorderMissionTasksSchema,
@@ -117,12 +119,18 @@ const executeMissionRoute = createRoute({
   summary: "Execute mission",
   request: {
     params: z.object({ missionId: z.string() }),
+    body: { required: false, content: { "application/json": { schema: z.object({
+      idempotencyKey: z.string().min(1).max(200).refine(key => key === key.trim() && !/[\x00-\x1f\x7f]/.test(key), "Invalid idempotency key").optional(),
+    }).strict() } } },
   },
   responses: {
     200: {
       content: { "application/json": { schema: z.object({ ok: z.boolean(), data: z.any() }) } },
       description: "Mission execution result",
     },
+    400: { description: "Invalid execution request", content: { "application/json": { schema: z.object({ ok: z.boolean(), error: z.string(), code: z.string() }) } } },
+    409: { description: "Mission changed before admission", content: { "application/json": { schema: z.object({ ok: z.boolean(), error: z.string(), code: z.string() }) } } },
+    501: { description: "Store does not support atomic execution", content: { "application/json": { schema: z.object({ ok: z.boolean(), error: z.string(), code: z.string() }) } } },
   },
 });
 
@@ -190,12 +198,18 @@ const abortMissionRoute = createRoute({
   summary: "Abort mission",
   request: {
     params: z.object({ missionId: z.string() }),
+    body: { required: false, content: { "application/json": { schema: z.object({
+      executionId: z.string().regex(/^[a-zA-Z0-9_-]{1,200}$/).optional(),
+    }).strict() } } },
   },
   responses: {
     200: {
-      content: { "application/json": { schema: z.object({ ok: z.boolean(), data: z.object({ aborted: z.number() }) }) } },
+      content: { "application/json": { schema: z.object({ ok: z.boolean(), data: z.object({ aborted: z.number(), executionId: z.string().optional() }) }) } },
       description: "Mission aborted",
     },
+    400: { description: "Invalid cancellation request", content: { "application/json": { schema: z.object({ ok: z.boolean(), error: z.string(), code: z.string() }) } } },
+    409: { description: "Execution changed before cancellation", content: { "application/json": { schema: z.object({ ok: z.boolean(), error: z.string(), code: z.string() }) } } },
+    501: { description: "Atomic cancellation unavailable", content: { "application/json": { schema: z.object({ ok: z.boolean(), error: z.string(), code: z.string() }) } } },
     404: {
       content: { "application/json": { schema: z.object({ ok: z.boolean(), error: z.string(), code: z.string() }) } },
       description: "Mission not found",
@@ -359,9 +373,9 @@ export function missionRoutes(getDeps: () => {
   createMission: (opts: any) => Promise<any>;
   updateMission: (id: string, updates: any) => Promise<any>;
   deleteMission: (id: string) => Promise<boolean>;
-  executeMission: (id: string) => Promise<any>;
+  executeMission: (id: string, options?: MissionExecutionOptions) => Promise<any>;
   resumeMission: (id: string, opts?: any) => Promise<any>;
-  abortGroup: (group: string) => Promise<number>;
+  abortMission: (missionId: string, options?: MissionAbortOptions) => Promise<MissionAbortResult>;
   getActiveCheckpoints: () => any;
   resumeCheckpointByMissionId: (missionId: string, checkpointName: string) => Promise<boolean>;
   getActiveDelays: () => any;
@@ -397,6 +411,18 @@ export function missionRoutes(getDeps: () => {
     return c.json({ ok: true, data: await deps.getResumableMissions() });
   });
 
+  // GET /missions/checkpoints — list all active checkpoints
+  app.openapi(listCheckpointsRoute, async (c) => {
+    const deps = getDeps();
+    return c.json({ ok: true, data: await deps.getActiveCheckpoints() });
+  });
+
+  // GET /missions/delays — list active delays
+  app.openapi(listDelaysRoute, async (c) => {
+    const deps = getDeps();
+    return c.json({ ok: true, data: await deps.getActiveDelays() });
+  });
+
   // GET /missions/:missionId — get mission by ID
   app.openapi(getMissionRoute, async (c) => {
     const deps = getDeps();
@@ -423,6 +449,7 @@ export function missionRoutes(getDeps: () => {
       endDate: body.endDate,
       notifications: body.notifications,
       user: body.user,
+      metadata: body.metadata,
     });
 
     return c.json({ ok: true, data: mission }, 201);
@@ -462,8 +489,14 @@ export function missionRoutes(getDeps: () => {
   app.openapi(executeMissionRoute, async (c) => {
     const deps = getDeps();
     const { missionId } = c.req.valid("param");
-    const result = await deps.executeMission(missionId);
-    return c.json({ ok: true, data: result });
+    try {
+      const result = await deps.executeMission(missionId, c.req.valid("json") ?? {});
+      return c.json({ ok: true, data: result }, 200);
+    } catch (error) {
+      if (!(error instanceof MissionExecutionError)) throw error;
+      const status = error.code === "mission_execution_conflict" ? 409 : error.code === "mission_execution_unsupported" ? 501 : 400;
+      return c.json({ ok: false, error: error.message, code: error.code }, status);
+    }
   });
 
   // POST /missions/:missionId/resume — resume mission
@@ -473,12 +506,6 @@ export function missionRoutes(getDeps: () => {
     const body = c.req.valid("json");
     const result = await deps.resumeMission(missionId, body);
     return c.json({ ok: true, data: result });
-  });
-
-  // GET /missions/checkpoints — list all active checkpoints
-  app.openapi(listCheckpointsRoute, (c) => {
-    const deps = getDeps();
-    return c.json({ ok: true, data: deps.getActiveCheckpoints() });
   });
 
   // POST /missions/:missionId/checkpoints/:checkpointName/resume — resume a checkpoint
@@ -492,7 +519,7 @@ export function missionRoutes(getDeps: () => {
     return c.json({ ok: true, data: { resumed: true } }, 200);
   });
 
-  // POST /missions/:missionId/abort — abort mission group
+  // POST /missions/:missionId/abort — cancel one accepted execution
   app.openapi(abortMissionRoute, async (c) => {
     const deps = getDeps();
     const { missionId } = c.req.valid("param");
@@ -500,8 +527,14 @@ export function missionRoutes(getDeps: () => {
     if (!mission) {
       return c.json({ ok: false, error: "Mission not found", code: "NOT_FOUND" }, 404);
     }
-    const count = await deps.abortGroup(mission.name);
-    return c.json({ ok: true, data: { aborted: count } }, 200);
+    try {
+      const result = await deps.abortMission(missionId, c.req.valid("json") ?? {});
+      return c.json({ ok: true, data: result }, 200);
+    } catch (error) {
+      if (!(error instanceof MissionExecutionError) && !(error instanceof TaskExecutionError)) throw error;
+      const status = error.code.endsWith("_conflict") ? 409 : error.code.endsWith("_unsupported") ? 501 : 400;
+      return c.json({ ok: false, error: error.message, code: error.code }, status);
+    }
   });
 
   // ── Atomic mission data handlers ──────────────────────────────────
@@ -593,12 +626,6 @@ export function missionRoutes(getDeps: () => {
     } catch (e: any) {
       return c.json({ ok: false, error: e.message, code: "NOT_FOUND" }, 404);
     }
-  });
-
-  // GET /missions/delays — list active delays
-  app.openapi(listDelaysRoute, (c) => {
-    const deps = getDeps();
-    return c.json({ ok: true, data: deps.getActiveDelays() });
   });
 
   // POST /missions/:missionId/delays — add delay (data-level)

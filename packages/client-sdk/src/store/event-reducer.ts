@@ -1,3 +1,4 @@
+import { activeDelayKey } from "../client/mission-runtime.js";
 import type {
   Task,
   AgentProcess,
@@ -374,14 +375,14 @@ export function reduceEvent(state: StoreState, sseEvent: SSEEvent): StoreState {
     // ── Delays ────────────────────────────────────────────────
 
     case "delay:started": {
-      const { group, delayName, delay, startedAt, expiresAt } = data as {
-        group: string; delayName: string; delay?: MissionDelay;
+      const { group, executionId, missionId, delayName, delay, startedAt, expiresAt } = data as {
+        executionId?: string; missionId?: string; group: string; delayName: string; delay?: MissionDelay;
         duration: string; message?: string; afterTasks: string[]; blocksTasks: string[];
         startedAt: string; expiresAt: string;
       };
       const activeDelays = new Map(state.activeDelays);
-      activeDelays.set(`${group}:${delayName}`, {
-        group,
+      activeDelays.set(activeDelayKey({ group, executionId, delayName }), {
+        group, executionId, missionId,
         delayName,
         delay: delay ?? { name: delayName, afterTasks: (data as any).afterTasks ?? [], blocksTasks: (data as any).blocksTasks ?? [], duration: (data as any).duration ?? "" },
         startedAt,
@@ -391,9 +392,9 @@ export function reduceEvent(state: StoreState, sseEvent: SSEEvent): StoreState {
     }
 
     case "delay:expired": {
-      const { group, delayName } = data as { group: string; delayName: string };
+      const { group, executionId, delayName } = data as { group: string; executionId?: string; delayName: string };
       const activeDelays = new Map(state.activeDelays);
-      activeDelays.delete(`${group}:${delayName}`);
+      activeDelays.delete(activeDelayKey({ group, executionId, delayName }));
       return { ...next, activeDelays };
     }
 

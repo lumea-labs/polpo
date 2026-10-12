@@ -91,6 +91,21 @@ afterAll(async () => {
 
 // ── Files ──────────────────────────────────────────────────────��──────
 
+describe("Mission admission over real HTTP", () => {
+  it("replays the same SDK request after a Mission edit without duplicating tasks or changing its principal", async () => {
+    const mission = await client.createMission({ name: "SDK admission", user: "customer-a", data: JSON.stringify({ tasks: [
+      { title: "SDK accepted work", description: "Do work", assignTo: "agent-1" },
+    ] }) });
+    const accepted = await client.executeMission(mission.id, { idempotencyKey: "delivery" });
+    expect(accepted.executionId).toBeTruthy();
+    expect(accepted.tasks[0]).toMatchObject({ user: "customer-a", missionExecutionId: accepted.executionId });
+    await client.updateMission(mission.id, { data: JSON.stringify({ tasks: [] }) });
+    expect(await client.executeMission(mission.id, { idempotencyKey: "delivery" })).toEqual(accepted);
+    expect((await client.getTasks()).filter(task => task.missionId === mission.id)).toHaveLength(1);
+    await client.deleteMission(mission.id);
+  });
+});
+
 describe("Files", () => {
   it("getFileRoots returns workspace and polpo roots", async () => {
     const result = await client.getFileRoots();

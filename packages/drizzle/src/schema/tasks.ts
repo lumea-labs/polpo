@@ -1,5 +1,5 @@
-import { sqliteTable, text, integer, index } from "drizzle-orm/sqlite-core";
-import { pgTable, text as pgText, integer as pgInteger, jsonb, varchar, index as pgIndex } from "drizzle-orm/pg-core";
+import { sqliteTable, text, integer, index, primaryKey } from "drizzle-orm/sqlite-core";
+import { pgTable, text as pgText, integer as pgInteger, jsonb, varchar, index as pgIndex, primaryKey as pgPrimaryKey } from "drizzle-orm/pg-core";
 
 // ── SQLite schema ──────────────────────────────────────────────────────
 
@@ -12,8 +12,12 @@ export const tasksSqlite = sqliteTable("tasks", {
   loop: text("loop"),
   group: text("group"),
   missionId: text("mission_id"),
+  missionExecutionId: text("mission_execution_id"),
   dependsOn: text("depends_on").notNull().default("[]"),
   status: text("status").notNull().default("pending"),
+  executionRevision: integer("execution_revision").notNull().default(0),
+  activeRunId: text("active_run_id"),
+  approvalState: text("approval_state"),
   retries: integer("retries").notNull().default(0),
   maxRetries: integer("max_retries").notNull().default(2),
   maxDuration: integer("max_duration"),
@@ -23,6 +27,7 @@ export const tasksSqlite = sqliteTable("tasks", {
   result: text("result"),
   phase: text("phase"),
   fixAttempts: integer("fix_attempts").notNull().default(0),
+  questionRounds: integer("question_rounds").notNull().default(0),
   resolutionAttempts: integer("resolution_attempts").notNull().default(0),
   originalDescription: text("original_description"),
   sessionId: text("session_id"),
@@ -33,11 +38,13 @@ export const tasksSqlite = sqliteTable("tasks", {
   priority: text("priority"),
   sideEffects: integer("side_effects"),
   revisionCount: integer("revision_count"),
+  executionMode: text("execution_mode"),
   sandbox: text("sandbox"),
   /** Bounded caller routing context, serialized as JSON. */
   routing: text("routing"),
   /** OpenAI-compat opaque end-user id. Propagates to runs at spawn time. */
   user: text("user"),
+  metadata: text("metadata"),
   createdAt: text("created_at").notNull(),
   updatedAt: text("updated_at").notNull(),
 }, (table) => [
@@ -62,6 +69,7 @@ export const missionsSqlite = sqliteTable("missions", {
   executionCount: integer("execution_count").notNull().default(0),
   /** OpenAI-compat opaque end-user id. Inherited by tasks created from this mission. */
   user: text("user"),
+  metadata: text("metadata"),
   createdAt: text("created_at").notNull(),
   updatedAt: text("updated_at").notNull(),
 }, (table) => [
@@ -73,6 +81,16 @@ export const metadataSqlite = sqliteTable("metadata", {
   key: text("key").primaryKey(),
   value: text("value").notNull(),
 });
+
+/** Durable admission records survive Mission deletion and task status changes.
+ * No cascading FK: a delivery retry must never recreate accepted work. */
+export const missionExecutionsSqlite = sqliteTable("mission_executions", {
+  missionId: text("mission_id").notNull(),
+  idempotencyKey: text("idempotency_key").notNull(),
+  executionId: text("execution_id").notNull().unique(),
+  admission: text("admission").notNull(),
+  createdAt: text("created_at").notNull(),
+}, (table) => [primaryKey({ columns: [table.missionId, table.idempotencyKey] })]);
 
 export const processesSqlite = sqliteTable("processes", {
   agentName: text("agent_name").notNull(),
@@ -94,8 +112,12 @@ export const tasksPg = pgTable("tasks", {
   loop: pgText("loop"),
   group: pgText("group"),
   missionId: pgText("mission_id"),
+  missionExecutionId: pgText("mission_execution_id"),
   dependsOn: jsonb("depends_on").notNull().default([]),
   status: varchar("status", { length: 32 }).notNull().default("pending"),
+  executionRevision: pgInteger("execution_revision").notNull().default(0),
+  activeRunId: pgText("active_run_id"),
+  approvalState: pgText("approval_state"),
   retries: pgInteger("retries").notNull().default(0),
   maxRetries: pgInteger("max_retries").notNull().default(2),
   maxDuration: pgInteger("max_duration"),
@@ -105,6 +127,7 @@ export const tasksPg = pgTable("tasks", {
   result: jsonb("result"),
   phase: varchar("phase", { length: 32 }),
   fixAttempts: pgInteger("fix_attempts").notNull().default(0),
+  questionRounds: pgInteger("question_rounds").notNull().default(0),
   resolutionAttempts: pgInteger("resolution_attempts").notNull().default(0),
   originalDescription: pgText("original_description"),
   sessionId: pgText("session_id"),
@@ -115,11 +138,13 @@ export const tasksPg = pgTable("tasks", {
   priority: pgText("priority"),
   sideEffects: pgInteger("side_effects"),
   revisionCount: pgInteger("revision_count"),
+  executionMode: pgText("execution_mode"),
   sandbox: jsonb("sandbox"),
   /** Bounded caller routing context. */
   routing: jsonb("routing"),
   /** OpenAI-compat opaque end-user id. Propagates to runs at spawn time. */
   user: pgText("user"),
+  metadata: jsonb("metadata"),
   createdAt: pgText("created_at").notNull(),
   updatedAt: pgText("updated_at").notNull(),
 }, (table) => [
@@ -144,6 +169,7 @@ export const missionsPg = pgTable("missions", {
   executionCount: pgInteger("execution_count").notNull().default(0),
   /** OpenAI-compat opaque end-user id. Inherited by tasks created from this mission. */
   user: pgText("user"),
+  metadata: jsonb("metadata"),
   createdAt: pgText("created_at").notNull(),
   updatedAt: pgText("updated_at").notNull(),
 }, (table) => [
@@ -155,6 +181,14 @@ export const metadataPg = pgTable("metadata", {
   key: pgText("key").primaryKey(),
   value: jsonb("value").notNull(),
 });
+
+export const missionExecutionsPg = pgTable("mission_executions", {
+  missionId: pgText("mission_id").notNull(),
+  idempotencyKey: pgText("idempotency_key").notNull(),
+  executionId: pgText("execution_id").notNull().unique(),
+  admission: jsonb("admission").notNull(),
+  createdAt: pgText("created_at").notNull(),
+}, (table) => [pgPrimaryKey({ columns: [table.missionId, table.idempotencyKey] })]);
 
 export const processesPg = pgTable("processes", {
   agentName: pgText("agent_name").notNull(),

@@ -71,7 +71,8 @@ export interface SteeringController {
    */
   sealIfIdle(): boolean | Promise<boolean>;
   snapshot(): SteeringQueueSnapshot | Promise<SteeringQueueSnapshot>;
-  restore(snapshot: SteeringQueueSnapshot): void | Promise<void>;
+  /** Cooperative initial restore; callers retain ownership until it settles. */
+  restore(snapshot: SteeringQueueSnapshot, context?: { signal: AbortSignal }): void | Promise<void>;
   abort(reason?: SteeringJsonValue): void;
   close(): void;
 }

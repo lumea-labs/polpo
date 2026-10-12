@@ -22,6 +22,8 @@ export interface SpawnResult {
    * spawners that don't track process lifecycle, e.g. sandbox-based ones,
    * simply omit it and callers fall back to poll-based collection).
    * If the process already exited, the callback fires immediately.
+   * TaskRunner.close() requires this receipt for every outstanding local owner;
+   * a terminal Run record alone cannot confirm that its runner has stopped.
    */
   onExit?(cb: () => void): void;
 }
@@ -36,6 +38,10 @@ export interface Spawner {
    *   - Persisting the RunnerConfig (to file or DB)
    *   - Starting the runner process
    *   - Returning the PID and config location
+   * The exact runId must be cancellable during asynchronous preparation, before
+   * this promise resolves. Reject only after owned preparation effects and
+   * cleanup have settled; callers keep stores open until this promise settles.
+   * A resolved result still requires onExit to confirm actual runner exit.
    */
   spawn(config: RunnerConfig): Promise<SpawnResult>;
 
@@ -50,4 +56,11 @@ export interface Spawner {
    * No-op for spawners that don't track OS processes (e.g. sandbox).
    */
   kill(pid: number): void;
+
+  /** Notify the local owner of this exact Run after durable cancellation.
+   * Unknown Run IDs are a no-op; never translate a foreign persisted PID.
+   * Hosts must also observe durable cancellation from other processes.
+   * Required with SpawnResult.onExit for TaskRunner.close() to drain a live
+   * owner. Shutdown never falls back to signaling a persisted numeric PID. */
+  cancelRun?(runId: string): void | Promise<void>;
 }

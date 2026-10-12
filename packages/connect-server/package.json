@@ -25,7 +25,8 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@polpo-ai/connect": "workspace:*",
-    "@polpo-ai/core": "workspace:*"
+    "@polpo-ai/core": "workspace:*",
+    "undici": "^6.28.0"
   },
   "devDependencies": {
     "typescript": "^5.7.3",

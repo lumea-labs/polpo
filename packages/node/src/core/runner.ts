@@ -28,6 +28,8 @@ import type { MemoryStore } from "@polpo-ai/core/memory-store";
 import { NodeFileSystem } from "../adapters/node-filesystem.js";
 import { NodeShell } from "../adapters/node-shell.js";
 import { executeRun } from "./run-lifecycle.js";
+import { RUNNER_CAPABILITY_BOOTSTRAP_ARGUMENT, RUNNER_CAPABILITY_BOOTSTRAP_READY } from "@polpo-ai/core";
+import { readRunnerCapabilities, bindRunnerCapabilities } from "./runner-capability-bootstrap.js";
 
 function readConfigFromFile(): RunnerConfig {
   const idx = process.argv.indexOf("--config");
@@ -115,8 +117,15 @@ async function createStores(config: RunnerConfig): Promise<RunnerStores> {
 }
 
 async function main(): Promise<void> {
+  // Capability delivery precedes config loading and any agent-authored code.
+  // The host sends one stdin frame with echo disabled; the bearer is never an
+  // argv/env/config value and never reaches the model's invocation context.
+  const capabilityBinding = process.argv.includes(RUNNER_CAPABILITY_BOOTSTRAP_ARGUMENT)
+    ? await readRunnerCapabilities(process.stdin, () => process.stdout.write(`${RUNNER_CAPABILITY_BOOTSTRAP_READY}\n`))
+    : undefined;
   const isDbMode = process.argv.includes("--run-id");
   const config = isDbMode ? await readConfigFromDb() : readConfigFromFile();
+  const capabilityPorts = capabilityBinding ? bindRunnerCapabilities(capabilityBinding, config) : {};
 
   // Apply provider overrides from the config (custom baseUrl endpoints).
   // The runner never reads polpo.json, so without this custom-provider
@@ -137,6 +146,7 @@ async function main(): Promise<void> {
 
   const outcome = await executeRun(config, {
     runStore,
+    ...capabilityPorts,
     // The runner owns a private LogStore instance, so a per-run session is
     // simply startSession() on it (postgres/sqlite only — file mode keeps
     // the JSONL activity log as the sole transcript side-channel).

@@ -80,12 +80,12 @@ export default defineTool({
 \`ctx\` injects all capabilities (no other globals):
 - ctx.fs      sandbox filesystem: readFile/writeFile/exists/readdir/mkdir/remove
 - ctx.shell   run commands: await ctx.shell.execute("ls", { cwd })
-- ctx.connections project Connections granted to this tool: ctx.connections.getToken("github") or ctx.connections.getHeaders("github")
+- ctx.connections invocation-scoped capabilities declared in the tool's connections field. For authenticated HTTP, declare e.g. connections: { api: { provider: "your_connector_id", scopes: ["read"], mode: "gateway" } }, then call await ctx.connections.require("api").request({ method: "GET", path: "/contacts" }). The host selects the account and injects authentication.
 - ctx.env     safe environment variables
 - ctx.workDir absolute working directory in the sandbox
 - ctx.polpo   the project's Polpo SDK client
 
-CONSTRAINTS: TypeScript with type annotations only (no enum/namespace). Import ONLY @polpo-ai/tools, @sinclair/typebox and Node built-ins. HTTP via global fetch.
+CONSTRAINTS: TypeScript with type annotations only (no enum/namespace). Import ONLY @polpo-ai/tools, @sinclair/typebox and Node built-ins. Use gateway Connection capabilities for authenticated HTTP, with provider-relative paths and minimal scopes. Do not read credentials, put physical Connection IDs in model arguments, or fall back to global fetch after a gateway denial. Unauthenticated HTTP may use global fetch. Keep identity/tenant selection in trusted invocation context and bindings.
 
 NOW WRITE THE TOOL FOR:
 <<DESCRIBE WHAT YOUR TOOL SHOULD DO — inputs, what it calls/computes, what it returns>>
@@ -108,6 +108,12 @@ declare module "@polpo-ai/tools" {
     fs: { readFile(p: string): Promise<string>; writeFile(p: string, c: string): Promise<void>; exists(p: string): Promise<boolean>; readdir(p: string): Promise<string[]>; mkdir(p: string): Promise<void>; remove(p: string): Promise<void> };
     shell: { execute(cmd: string, opts?: { cwd?: string; timeout?: number }): Promise<{ stdout: string; stderr: string; exitCode: number }> };
     connections: {
+      require(slot: string): {
+        readonly mode: "gateway" | "legacy_credentials";
+        readonly providerId: string;
+        readonly scopes: readonly string[];
+        request<T = unknown>(input: { method: string; path: string; query?: Readonly<Record<string, string | readonly string[]>>; headers?: Readonly<Record<string, string>>; body?: unknown; idempotencyKey?: string; timeoutMs?: number }): Promise<{ status: number; headers: Readonly<Record<string, string>>; body: T; requestId?: string }>;
+      };
       get(ref: string): { id: string; providerId: string; name?: string; authType?: string; kind?: string; scopes?: string[]; grantedScopes?: string[]; tokenType?: string; expiresAt?: string; metadata?: Record<string, unknown> } | undefined;
       getToken(ref: string): string | undefined;
       getKey(ref: string): string | undefined;
@@ -122,6 +128,7 @@ declare module "@polpo-ai/tools" {
   export type ToolResult = { content: ({ type: "text"; text: string } | { type: "image"; data: string; mimeType: string })[]; details?: any };
   export function defineTool<T = any>(spec: {
     name: string; description: string; parameters: any; label?: string; clientSide?: boolean;
+    connections?: Record<string, { provider?: string; scopes: readonly string[]; mode?: "gateway" | "legacy_credentials"; description?: string }>;
     execute: (ctx: CustomToolContext, params: T) => string | ToolResult | Promise<string | ToolResult>;
   }): any;
 }

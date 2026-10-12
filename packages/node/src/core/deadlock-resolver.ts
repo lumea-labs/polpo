@@ -10,6 +10,9 @@
 import type { Task, ModelConfig } from "@polpo-ai/core/types";
 import { resolveConfiguredModelSelection } from "@polpo-ai/core";
 import type { Orchestrator } from "./orchestrator.js";
+import type { DeadlockFacade, DeadlockResolverPort } from "@polpo-ai/core";
+import { taskExecutionReference, taskDependencyPreconditions, TaskExecutionError,
+  type TaskExecutionPrecondition, type TaskExecutionMutation } from "@polpo-ai/core/task-execution";
 import { queryText, resolveModelSpec } from "@polpo-ai/llm";
 import { withRetry } from "../llm/retry.js";
 
@@ -28,6 +31,7 @@ export interface BlockageInfo {
   task: Task;            // the blocked task
   failedDeps: Task[];    // direct or root-cause deps with status "failed"
   missingDeps: string[]; // dep IDs that don't exist in the task list
+  preconditions: TaskExecutionPrecondition[]; // graph captured before asynchronous analysis
 }
 
 export interface BlockageAnalysis {
@@ -41,13 +45,19 @@ interface ResolutionDecision {
   absorbedDescription?: string;
 }
 
-// ── State ─────────────────────────────────────────────
-
-let resolving = false;
-
-/** Whether an async resolution is currently in progress. */
-export function isResolving(): boolean {
-  return resolving;
+/** Resolution ownership belongs to one engine, never the whole Node process. */
+export function createDeadlockResolver(): DeadlockResolverPort {
+  let resolving = false;
+  return {
+    isResolving: () => resolving,
+    analyzeBlockedTasks,
+    resolveDeadlock: async (analysis, facade) => {
+      if (resolving) return;
+      resolving = true;
+      try { await resolveDeadlock(analysis as BlockageAnalysis, facade); }
+      finally { resolving = false; }
+    },
+  };
 }
 
 // ── Analysis ──────────────────────────────────────────
@@ -87,10 +97,11 @@ export function analyzeBlockedTasks(pending: Task[], allTasks: Task[]): Blockage
       // dep.status === "done" → this dep is fine, skip
     }
 
+    const preconditions = taskDependencyPreconditions(task, allTasks);
     if (failedDeps.length > 0) {
-      resolvable.push({ task, failedDeps, missingDeps });
+      resolvable.push({ task, failedDeps, missingDeps, preconditions });
     } else if (missingDeps.length > 0) {
-      unresolvable.push({ task, failedDeps: [], missingDeps });
+      unresolvable.push({ task, failedDeps: [], missingDeps, preconditions });
     }
     // If neither: all deps are done (shouldn't be here) or still running
   }
@@ -124,76 +135,60 @@ function findRootFailure(task: Task, taskMap: Map<string, Task>, visited: Set<st
  * Async deadlock resolution. For each resolvable blockage, calls LLM
  * to decide action (absorb/retry/fail) and applies the decision.
  *
- * Pattern: fire-and-forget from tick(), results applied via registry.updateTask()
+ * Pattern: fire-and-forget from tick(), results committed against captured rows
  * and picked up on next tick.
  */
-export async function resolveDeadlock(
-  analysis: BlockageAnalysis,
-  orchestrator: Orchestrator,
-): Promise<void> {
-  resolving = true;
-  try {
-    const settings = orchestrator.getConfig()?.settings;
-    const maxAttempts = settings?.maxResolutionAttempts ?? 2;
-    const model = settings?.orchestratorModel
-      ? resolveConfiguredModelSelection(
-          settings.orchestratorModel,
-          settings,
-        ).selection
-      : undefined;
-    const memory = await orchestrator.engine.getMemory();
-    const allTasks = await orchestrator.getStore().listTasks();
+let activeResolutions = 0;
+/** @deprecated Process-wide diagnostic only; engines use their own resolver port. */
+export function isResolving(): boolean { return activeResolutions > 0; }
+export async function resolveDeadlock(analysis: BlockageAnalysis, host: DeadlockFacade | Orchestrator): Promise<void> {
+  // Preserve the public shell overload while the engine port uses its facade.
+  const facade = "engine" in host ? host.engine.getDeadlockFacade() : host;
+  activeResolutions++;
+  try { await resolveCapturedDeadlock(analysis, facade); }
+  finally { activeResolutions--; }
+}
+async function resolveCapturedDeadlock(analysis: BlockageAnalysis, facade: DeadlockFacade): Promise<void> {
+  // Caller-owned snapshots must not change while memory or the model is awaited.
+  analysis = structuredClone(analysis);
+  const settings = facade.getConfig()?.settings;
+  const maxAttempts = settings?.maxResolutionAttempts ?? 2;
+  const model = settings?.orchestratorModel
+    ? resolveConfiguredModelSelection(settings.orchestratorModel, settings).selection : undefined;
+  const memory = await facade.getMemory();
+  const allTasks = await facade.getStore().listTasks();
+  const retriedDeps = new Set<string>();
 
-    // Deduplicate: if multiple blocked tasks share the same failed dep,
-    // process each blocked task independently but track retried deps
-    const retriedDeps = new Set<string>();
-
-    for (const blockage of analysis.resolvable) {
-      const task = blockage.task;
-
-      // Guard: max resolution attempts
-      if ((task.resolutionAttempts ?? 0) >= maxAttempts) {
-        orchestrator.emit("deadlock:unresolvable", {
-          taskId: task.id,
-          reason: "max resolution attempts reached",
-        });
-        await forceFailTask(orchestrator, task.id);
-        continue;
+  for (const blockage of analysis.resolvable) {
+    const task = blockage.task, failedDep = blockage.failedDeps[0];
+    // Include completed sibling inputs used by the prompt, without replacing
+    // the dependency snapshots captured when the blockage was detected.
+    for (const sibling of completedSiblings(task, failedDep, allTasks)) {
+      if (!blockage.preconditions.some(condition => condition.taskId === sibling.id)) {
+        blockage.preconditions.push({ taskId: sibling.id, snapshot: sibling });
       }
-
-      // Use the first (most relevant) failed dep for the LLM prompt
-      const failedDep = blockage.failedDeps[0];
-      orchestrator.emit("deadlock:resolving", {
-        taskId: task.id,
-        failedDepId: failedDep.id,
-      });
-
-      let decision: ResolutionDecision;
-      try {
-        decision = await classifyBlockage(task, failedDep, allTasks, memory, model);
-      } catch { /* LLM classification failed */
-        orchestrator.emit("deadlock:unresolvable", {
-          taskId: task.id,
-          reason: "LLM analysis failed",
-        });
-        await forceFailTask(orchestrator, task.id);
-        continue;
-      }
-
-      await applyDecision(decision, task, failedDep, blockage, orchestrator, retriedDeps);
     }
-
-    // Force-fail unresolvable tasks (missing deps)
-    for (const blockage of analysis.unresolvable) {
-      orchestrator.emit("deadlock:unresolvable", {
-        taskId: blockage.task.id,
-        reason: `missing dependencies: ${blockage.missingDeps.join(", ")}`,
-      });
-      await forceFailTask(orchestrator, blockage.task.id);
+    if ((task.resolutionAttempts ?? 0) >= maxAttempts) {
+      await failBlockage(facade, blockage, "max resolution attempts reached");
+      continue;
     }
-  } finally {
-    resolving = false;
+    if (retriedDeps.has(referenceKey(failedDep))) continue;
+    facade.emit("deadlock:resolving", { taskId: task.id, failedDepId: failedDep.id });
+    let decision: ResolutionDecision;
+    try { decision = await classifyBlockage(task, failedDep, allTasks, memory, model); }
+    catch {
+      await failBlockage(facade, blockage, "LLM analysis failed");
+      continue;
+    }
+    await applyDecision(decision, task, failedDep, blockage, facade, retriedDeps);
   }
+  for (const blockage of analysis.unresolvable) {
+    await failBlockage(facade, blockage, `missing dependencies: ${blockage.missingDeps.join(", ")}`);
+  }
+}
+
+function completedSiblings(task: Task, failedDep: Task, tasks: Task[]): Task[] {
+  return task.group ? tasks.filter(value => value.group === task.group && value.id !== task.id && value.id !== failedDep.id && value.status === "done").slice(0, 5) : [];
 }
 
 // ── LLM Classification ───────────────────────────────
@@ -231,9 +226,7 @@ function buildResolutionPrompt(
   allTasks: Task[],
   memory: string,
 ): string {
-  const siblings = blockedTask.group
-    ? allTasks.filter(t => t.group === blockedTask.group && t.id !== blockedTask.id && t.id !== failedDep.id && t.status === "done")
-    : [];
+  const siblings = completedSiblings(blockedTask, failedDep, allTasks);
 
   const errorInfo = failedDep.result
     ? (failedDep.result.stderr || `exit code ${failedDep.result.exitCode}`)
@@ -253,12 +246,12 @@ function buildResolutionPrompt(
     ``,
     `## Failed Task`,
     `Title: ${failedDep.title}`,
-    `Description: ${failedDep.originalDescription || failedDep.description}`,
+    `Description: ${failedDep.description}`,
     `Error: ${errorInfo}${assessmentInfo}${resultExcerpt}`,
     ``,
     `## Blocked Downstream Task`,
     `Title: ${blockedTask.title}`,
-    `Description: ${blockedTask.originalDescription || blockedTask.description}`,
+    `Description: ${blockedTask.description}`,
   ];
 
   if (siblings.length > 0) {
@@ -295,17 +288,14 @@ async function applyDecision(
   blockedTask: Task,
   failedDep: Task,
   blockage: BlockageInfo,
-  orchestrator: Orchestrator,
+  facade: DeadlockFacade,
   retriedDeps: Set<string>,
 ): Promise<void> {
-  const store = orchestrator.getStore();
-
   switch (decision.action) {
     case "absorb": {
-      // Save original description before first resolution
-      if (!blockedTask.originalDescription) {
-        await store.updateTask(blockedTask.id, { originalDescription: blockedTask.description });
-      }
+      // A root failure reached through a pending intermediary cannot be removed
+      // from this task's direct dependencies. Resolve the intermediary first.
+      if (!blockedTask.dependsOn.includes(failedDep.id)) return;
 
       // Build absorbed description
       const errorInfo = failedDep.result
@@ -315,30 +305,29 @@ async function applyDecision(
       const absorbBlock = [
         `[Dependency Resolution]`,
         `The dependency "${failedDep.title}" could not be completed.`,
-        `Original dependency task: ${(failedDep.originalDescription || failedDep.description).slice(0, 500)}`,
+        `Original dependency task: ${failedDep.description}`,
         `Error: ${errorInfo}`,
         `You must handle this work as part of your task.`,
         ``,
         decision.absorbedDescription || "",
         ``,
         `---`,
-        `ORIGINAL TASK: ${blockedTask.originalDescription || blockedTask.description}`,
+        `EXISTING TASK (including previously absorbed work): ${blockedTask.description}`,
       ].join("\n");
 
-      // Remove failed dep from dependsOn
-      const newDeps = blockedTask.dependsOn.filter(id => id !== failedDep.id);
-      // Also remove any other failed deps from this blockage
-      const allFailedIds = new Set(blockage.failedDeps.map(d => d.id));
-      const cleanDeps = newDeps.filter(id => !allFailedIds.has(id));
+      // Only the classified dependency is absorbed. Other failed work must
+      // receive its own decision; removing it here would silently skip work.
+      const committed = await commitDecision(facade, blockedTask, {
+        type: "requeue", countRetry: false, reason: "Deadlock dependency absorbed", updates: {
+          originalDescription: blockedTask.originalDescription || blockedTask.description,
+          dependsOn: blockedTask.dependsOn.filter(id => id !== failedDep.id),
+          description: absorbBlock,
+          resolutionAttempts: (blockedTask.resolutionAttempts ?? 0) + 1,
+        },
+      }, blockage.preconditions);
+      if (!committed) return;
 
-      await store.unsafeSetStatus(blockedTask.id, "pending", "deadlock absorb — failed dep removed");
-      await store.updateTask(blockedTask.id, {
-        dependsOn: cleanDeps,
-        description: absorbBlock,
-        resolutionAttempts: (blockedTask.resolutionAttempts ?? 0) + 1,
-      });
-
-      orchestrator.emit("deadlock:resolved", {
+      facade.emit("deadlock:resolved", {
         taskId: blockedTask.id,
         failedDepId: failedDep.id,
         action: "absorb",
@@ -348,58 +337,38 @@ async function applyDecision(
     }
 
     case "retry": {
-      // Retry the failed dep (if not already retried in this resolution round)
-      if (!retriedDeps.has(failedDep.id)) {
-        const fresh = await store.getTask(failedDep.id);
-        if (fresh && fresh.retries < fresh.maxRetries) {
-          // Use transition to properly increment retries
-          await store.transition(failedDep.id, "pending");
-          retriedDeps.add(failedDep.id);
-
-          orchestrator.emit("deadlock:resolved", {
-            taskId: blockedTask.id,
-            failedDepId: failedDep.id,
-            action: "retry",
-            reason: decision.reason,
-          });
-        } else {
-          // No retries left → force-fail the blocked task
-          orchestrator.emit("deadlock:unresolvable", {
-            taskId: blockedTask.id,
-            reason: `dependency "${failedDep.title}" has no retries remaining`,
-          });
-          await forceFailTask(orchestrator, blockedTask.id);
-        }
+      const key = referenceKey(failedDep);
+      if (retriedDeps.has(key)) return;
+      if (failedDep.retries >= failedDep.maxRetries) {
+        await failBlockage(facade, blockage, `dependency "${failedDep.title}" has no retries remaining`);
+        return;
       }
-      // If already retried: do nothing, next tick will re-evaluate
+      if (!await commitDecision(facade, failedDep, {
+        type: "requeue", countRetry: true, reason: "Deadlock dependency retry",
+      }, blockage.preconditions)) return;
+      // Record only committed retries, keyed by the analyzed execution.
+      retriedDeps.add(key);
+      facade.emit("deadlock:resolved", { taskId: blockedTask.id, failedDepId: failedDep.id, action: "retry", reason: decision.reason });
       break;
     }
-
     case "fail":
-    default: {
-      orchestrator.emit("deadlock:unresolvable", {
-        taskId: blockedTask.id,
-        reason: decision.reason,
-      });
-      await forceFailTask(orchestrator, blockedTask.id);
-      break;
-    }
+    default:
+      await failBlockage(facade, blockage, decision.reason);
   }
 }
 
-// ── Helpers ───────────────────────────────────────────
-
-async function forceFailTask(orchestrator: Orchestrator, taskId: string): Promise<void> {
-  const store = orchestrator.getStore();
+function referenceKey(task: Task): string { return JSON.stringify(taskExecutionReference(task)); }
+async function commitDecision(facade: DeadlockFacade, task: Task, mutation: TaskExecutionMutation,
+  preconditions: TaskExecutionPrecondition[]): Promise<boolean> {
   try {
-    const task = await store.getTask(taskId);
-    if (!task || task.status === "done" || task.status === "failed") return;
-    // Walk through state machine to reach failed
-    if (task.status === "pending") await store.transition(taskId, "assigned");
-    const t2 = await store.getTask(taskId);
-    if (t2 && t2.status === "assigned") await store.transition(taskId, "in_progress");
-    const t3 = await store.getTask(taskId);
-    if (t3 && t3.status === "in_progress") await store.transition(taskId, "failed");
-    else if (t3 && t3.status === "review") await store.transition(taskId, "failed");
-  } catch { /* already terminal or transition error */ }
+    await facade.applyTaskExecutionDecision(taskExecutionReference(task), mutation, preconditions);
+    return true;
+  } catch (error) {
+    if (error instanceof TaskExecutionError && error.code === "task_execution_conflict") return false;
+    throw error;
+  }
+}
+async function failBlockage(facade: DeadlockFacade, blockage: BlockageInfo, reason: string): Promise<void> {
+  if (!await commitDecision(facade, blockage.task, { type: "cancel", reason: "Deadlock could not be resolved" }, blockage.preconditions)) return;
+  facade.emit("deadlock:unresolvable", { taskId: blockage.task.id, reason });
 }

@@ -7,6 +7,8 @@ export type RunStatus = "running" | "completed" | "failed" | "killed";
 export interface RunRecord {
   id: string;
   taskId: string;
+  /** Immutable generation assigned by atomic Task execution claim. */
+  taskExecutionRevision?: number;
   pid: number;
   agentName: string;
   sessionId?: string;
@@ -46,7 +48,19 @@ export interface RunRecord {
 }
 
 export interface RunStore {
+  /** Register/update an active run. Existing terminal records are immutable to
+   * this operation; retries require a new run ID. The check must be atomic. */
   upsertRun(run: RunRecord): Promise<void>;
+  /**
+   * Atomically update the configuration of an existing running Run. Returns
+   * false for missing or terminal records and never inserts a record. Updates
+   * only config, configPath, updatedAt and executionMode when provided by config;
+   * claim identity, activity, start time, checkpoints and results are preserved.
+   * Optional for compatibility with third-party stores. Hosts requiring this
+   * update-only fence must reject an unsupported store, never emulate it with
+   * a read followed by upsertRun.
+   */
+  updateRunConfig?(runId: string, config: RunnerConfig, configPath: string): Promise<boolean>;
   updateActivity(runId: string, activity: AgentActivity): Promise<void>;
   /** Store auto-collected outcomes on the run record (called before completeRun). */
   updateOutcomes(runId: string, outcomes: TaskOutcome[]): Promise<void>;
@@ -59,6 +73,7 @@ export interface RunStore {
   updateResumeState?(runId: string, state: LoopResumeState): Promise<void>;
   /** Update host-assigned spawn metadata without overwriting status or result. */
   updateSpawnInfo?(runId: string, pid: number, configPath: string): Promise<void>;
+  /** Atomically finish a running record. The first terminal status/result wins. */
   completeRun(runId: string, status: RunStatus, result: TaskResult): Promise<void>;
   /** Acknowledge a terminal result while retaining its Run history. */
   markRunCollected?(runId: string): Promise<void>;

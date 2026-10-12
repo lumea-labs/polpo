@@ -332,6 +332,12 @@ export class HookRegistry<HookMap = HookPayloads> {
         const result = reg.handler(ctx);
         if (result instanceof Promise) {
           console.warn(`[HookRegistry] Async handler "${reg.name ?? "anonymous"}" skipped in sync runBefore for ${hook}`);
+          // The legacy synchronous API cannot await the already-started hook,
+          // but must still observe a rejection. Runtime callers use runBefore.
+          void result.catch(err => {
+            const msg = err instanceof Error ? err.message : String(err);
+            console.error(`[HookRegistry] Error in async before:${hook} handler "${reg.name ?? "anonymous"}": ${msg}`);
+          });
         }
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);

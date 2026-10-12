@@ -102,12 +102,12 @@ export interface PolpoEventMap {
   "sla:met": { entityId: string; entityType: "task" | "mission"; deadline: string; marginMs: number };
 
   // Checkpoints (mission-level)
-  "checkpoint:reached": { missionId?: string; group: string; checkpointName: string; message?: string; afterTasks: string[]; blocksTasks: string[]; reachedAt: string };
-  "checkpoint:resumed": { missionId?: string; group: string; checkpointName: string };
+  "checkpoint:reached": { executionId?: string; missionId?: string; group: string; checkpointName: string; message?: string; afterTasks: string[]; blocksTasks: string[]; reachedAt: string };
+  "checkpoint:resumed": { executionId?: string; missionId?: string; group: string; checkpointName: string };
 
   // Delays (mission-level)
-  "delay:started": { missionId?: string; group: string; delayName: string; duration: string; message?: string; afterTasks: string[]; blocksTasks: string[]; startedAt: string; expiresAt: string };
-  "delay:expired": { missionId?: string; group: string; delayName: string };
+  "delay:started": { executionId?: string; missionId?: string; group: string; delayName: string; duration: string; message?: string; afterTasks: string[]; blocksTasks: string[]; startedAt: string; expiresAt: string };
+  "delay:expired": { executionId?: string; missionId?: string; group: string; delayName: string };
 
   // Quality gates (mission-level)
   "quality:gate:passed": { missionId: string; gateName: string; avgScore?: number };

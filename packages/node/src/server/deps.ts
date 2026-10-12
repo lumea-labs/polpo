@@ -1,3 +1,4 @@
+import type { MissionExecutionOptions } from "@polpo-ai/core/mission-store";
 /**
  * Route dependency interfaces.
  *
@@ -66,12 +67,12 @@ export interface MissionRouteDeps {
   createMission: (...args: any[]) => Promise<any>;
   updateMission: (missionId: string, updates: any) => Promise<any>;
   deleteMission: (missionId: string) => Promise<any>;
-  executeMission: (missionId: string) => Promise<any>;
+  executeMission: (missionId: string, options?: MissionExecutionOptions) => Promise<any>;
   resumeMission: (missionId: string, opts?: any) => Promise<any>;
   abortGroup: (groupName: string) => Promise<any>;
-  getActiveCheckpoints: () => any[];
+  getActiveCheckpoints: () => any[] | Promise<any[]>;
   resumeCheckpointByMissionId: (missionId: string, checkpointName: string) => Promise<any>;
-  getActiveDelays: () => any[];
+  getActiveDelays: () => any[] | Promise<any[]>;
   addMissionTask: (missionId: string, task: any) => Promise<any>;
   updateMissionTask: (missionId: string, taskTitle: string, updates: any) => Promise<any>;
   removeMissionTask: (missionId: string, taskTitle: string) => Promise<any>;
@@ -96,7 +97,7 @@ export interface MissionRouteDeps {
 export interface PlaybookRouteDeps {
   playbookStore: PlaybookStore;
   createMission: (...args: any[]) => Promise<any>;
-  executeMission: (missionId: string) => Promise<any>;
+  executeMission: (missionId: string, options?: MissionExecutionOptions) => Promise<any>;
 }
 
 // ── Approval deps ────────────────────────────────────────────────────

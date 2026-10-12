@@ -17,6 +17,7 @@ import type {
 } from "../runtime-context/index.js";
 import type { ResolvedExecutionRoute } from "../execution-router.js";
 import type { ToolInvocationContext } from "../tool-invocation.js";
+import type { AgentIdentity } from "../agent-store.js";
 
 // === Runner Config ===
 
@@ -48,6 +49,8 @@ export interface RunnerConfig {
   runId: string;
   taskId: string;
   agent: AgentConfig;
+  /** Captured with agent from the authoritative store; survives host/runner handoff. */
+  agentIdentity?: AgentIdentity;
   task: Task;
   polpoDir: string;
   cwd: string;

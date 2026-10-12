@@ -8,6 +8,36 @@ Pure business logic, types, schemas, and store interfaces for the [Polpo](https:
 npm install @polpo-ai/core
 ```
 
+## Durable Task execution
+
+First-party file and SQL stores expose `TaskExecutionStore` from
+`@polpo-ai/core/task-execution`. TaskRunner claims a persisted pending Task and
+creates its Run atomically before asynchronous preparation. Configure TaskStore
+and RunStore against the same project/database using the matching store factory.
+A claim uses the persisted input and principal; competing dispatchers cannot both
+start the same pending generation.
+
+Result collection passes a `TaskExecutionReference` to the assessment callback;
+forward that third argument when composing your own engine. Assessment, retry,
+fix, clarification and escalation writes retain that reference through awaits.
+Cancellation or requeue invalidates it. Obsolete results are acknowledged without
+attaching their session, outcomes or completion to the next attempt. Requeue
+publishes its complete input and retry counter in one transaction.
+
+TaskManager cancellation commits the captured Task/Run state before notifying
+`Spawner.cancelRun(runId)`. Node and in-process spawners notify only their local
+owner for that exact Run; they do not infer ownership from a persisted PID.
+Hosts must also observe durable cancellation while executing. Cross-host polling,
+Cloud cold cancellation, approval resolution and Mission abort still need their
+own integration; this contract alone does not prove a remote process has stopped.
+
+Task creation, Mission admission, scheduling and spawning await asynchronous
+before-hooks. A human spawn gate invalidates the claimed attempt and retains
+`awaiting_approval`; a generic veto requeues without consuming a retry. Custom
+stores without execution persistence retain legacy behavior only for unversioned
+Tasks. Stop old writers during upgrade or rollback, and never force a status
+change as a fallback for an execution conflict.
+
 ## Agentic loops
 
 Use `defineProjectLoop` for code-first loop definitions that compile to the same JSON-compatible contract used by the API, CLI, dashboard, and runtime. Project files can live in `.polpo/loops/*.ts`; `polpo deploy` sends the source to the server, which compiles it statically and persists canonical JSON.

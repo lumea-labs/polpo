@@ -4,6 +4,7 @@
  * Uses better-sqlite3 :memory: — no PG required.
  */
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { taskMutationContract } from "./helpers/task-mutation-contract.js";
 import { randomBytes } from "node:crypto";
 import Database from "better-sqlite3";
 import { drizzle } from "drizzle-orm/better-sqlite3";
@@ -38,6 +39,7 @@ afterEach(() => {
 // ═══════════════════════════════════════════════════════════════════════
 
 describe("DrizzleTaskStore", () => {
+  taskMutationContract(() => stores.taskStore);
   it("createTask + getTask round-trip", async () => {
     const task = await stores.taskStore.createTask({
       title: "Fix bug",
@@ -460,6 +462,17 @@ describe("DrizzleRunStore", () => {
     expect((await stores.runStore.getActiveRuns()).map((r) => r.id)).toEqual(["r1"]);
     expect((await stores.runStore.getTerminalRuns()).map((r) => r.id)).toEqual(["r2"]);
     expect(await stores.runStore.getRunByTaskId("looprun-running")).toBeUndefined();
+  });
+
+  it.each(["completed", "failed", "killed"] as const)("does not reopen a %s run when a delayed runner registers", async status => {
+    const original = makeRun("terminal-replay", "task") as any;
+    await stores.runStore.upsertRun(original);
+    await stores.runStore.completeRun(original.id, status, { exitCode: 143, stdout: "", stderr: "terminal result", duration: 1 });
+    await stores.runStore.markRunCollected!(original.id);
+    const terminal = await stores.runStore.getRun(original.id);
+    await stores.runStore.upsertRun({ ...original, pid: 9876, updatedAt: new Date().toISOString() });
+    await stores.runStore.completeRun(original.id, "completed", { exitCode: 0, stdout: "late", stderr: "", duration: 2 });
+    expect(await stores.runStore.getRun(original.id)).toEqual(terminal);
   });
 
   it("completeRun guards against overwriting terminal status", async () => {

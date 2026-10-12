@@ -2,7 +2,7 @@ import * as path from "node:path";
 import type { Command } from "commander";
 import * as clack from "@clack/prompts";
 import pc from "picocolors";
-import { migrateProjectLayoutV2 } from "@polpo-ai/file-stores";
+import { migrateProjectLayoutV2, reconcileProjectAgentFiles } from "@polpo-ai/file-stores";
 
 export function registerMigrateCommand(program: Command): void {
   program
@@ -10,8 +10,14 @@ export function registerMigrateCommand(program: Command): void {
     .description("Migrate the current .polpo project to the latest filesystem layout")
     .option("--dir <path>", "Project directory", ".")
     .option("--dry-run", "Validate and show the migration without writing files")
-    .action((options: { dir: string; dryRun?: boolean }) => {
+    .option("--reconcile-agent-identities", "After offline edits, reset all local agent identities; reassign their Connections (stop runtimes first)")
+    .action((options: { dir: string; dryRun?: boolean; reconcileAgentIdentities?: boolean }) => {
       const polpoDir = path.resolve(options.dir, ".polpo");
+      if (options.reconcileAgentIdentities) {
+        if (options.dryRun) throw new Error("Identity reconciliation cannot be combined with --dry-run");
+        reconcileProjectAgentFiles(polpoDir);
+        clack.log.info("Local agent identities reset. Reassign Connections before resuming runtimes.");
+      }
       const result = migrateProjectLayoutV2(polpoDir, { dryRun: options.dryRun });
       if (!result.changed) {
         clack.outro("Project already uses the current layout.");

@@ -1,5 +1,5 @@
 import type { OrchestratorContext } from "./orchestrator-context.js";
-import { resolveMissionStore } from "./mission-store.js";
+import { resolveMissionStore, resolveMissionExecutionStore, type MissionExecutionOptions } from "./mission-store.js";
 import type { ScheduleEntry, Mission } from "./types.js";
 import { isCronExpression, nextCronOccurrence } from "./cron.js";
 
@@ -17,7 +17,7 @@ export class Scheduler {
   private schedules = new Map<string, ScheduleEntry>();
   private lastCheckMs = 0;
   private checkIntervalMs: number;
-  private executeMissionFn?: (missionId: string) => void;
+  private executeMissionFn?: (missionId: string, options?: MissionExecutionOptions, expectedMission?: Mission) => unknown;
   private missionCompletedHandler?: (evt: { missionId: string }) => void;
 
   constructor(
@@ -46,7 +46,7 @@ export class Scheduler {
     this.ctx.emitter.on("mission:completed", this.missionCompletedHandler);
   }
 
-  setExecutor(fn: (missionId: string) => void): void {
+  setExecutor(fn: (missionId: string, options?: MissionExecutionOptions, expectedMission?: Mission) => unknown): void {
     this.executeMissionFn = fn;
   }
 
@@ -114,7 +114,11 @@ export class Scheduler {
   }
 
   private async triggerSchedule(schedId: string, entry: ScheduleEntry): Promise<void> {
-    const mission = await resolveMissionStore(this.ctx).getMission(entry.missionId);
+    const occurrence = entry.nextRunAt;
+    const isCurrent = () => this.schedules.get(schedId) === entry && entry.enabled && entry.nextRunAt === occurrence;
+    const stored = await resolveMissionStore(this.ctx).getMission(entry.missionId);
+    if (!isCurrent()) return;
+    const mission = stored ? structuredClone(stored) : undefined;
     if (!mission) {
       entry.enabled = false;
       return;
@@ -143,12 +147,12 @@ export class Scheduler {
       }
     }
 
-    const hookResult = this.ctx.hooks.runBeforeSync("schedule:trigger", {
+    const hookResult = await this.ctx.hooks.runBefore("schedule:trigger", {
       scheduleId: schedId,
       missionId: entry.missionId,
       expression: entry.expression,
     });
-    if (hookResult.cancelled) {
+    if (hookResult.cancelled || !isCurrent()) {
       return;
     }
 
@@ -161,7 +165,11 @@ export class Scheduler {
     let executionFailed = false;
     try {
       if (this.executeMissionFn) {
-        this.executeMissionFn(entry.missionId);
+        if (resolveMissionExecutionStore(this.ctx)) {
+          await this.executeMissionFn(entry.missionId, { idempotencyKey: `schedule:${entry.missionId}:${occurrence}` }, mission);
+        } else {
+          await this.executeMissionFn(entry.missionId);
+        }
       }
     } catch (err) {
       executionFailed = true;
@@ -172,7 +180,7 @@ export class Scheduler {
       });
     }
 
-    if (executionFailed && !entry.recurring) {
+    if (executionFailed) {
       return;
     }
 

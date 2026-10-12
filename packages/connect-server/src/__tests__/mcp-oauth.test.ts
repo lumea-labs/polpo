@@ -81,6 +81,40 @@ describe("MCP OAuth protocol", () => {
     expect(startMock).toHaveBeenCalledTimes(2);
   });
 
+  it("leaves authentication undecided when an endpoint has no OAuth metadata", async () => {
+    discoverMock.mockResolvedValueOnce({ authorizationServerUrl: "https://public.example/", authorizationServerMetadata: undefined, resourceMetadata: undefined });
+    const protocol = createMcpOAuthProtocol({ fetch });
+    await expect(protocol.inspect({ url: "https://public.example/mcp" })).resolves.toMatchObject({
+      auth: "unknown", warnings: [expect.stringContaining("choose authentication explicitly")],
+    });
+  });
+
+  it.each(["configuration", "branding", "issuer", "scopes"])("does not reuse a DCR registration after changing %s", async change => {
+    const cache = new Map<string, any>();
+    const registrations = {
+      get: vi.fn(async (input: any) => cache.get(input.registrationKey ?? input.resource) ?? null),
+      set: vi.fn(async (input: any) => { cache.set(input.registrationKey ?? input.resource, input.client); }),
+    };
+    registerMock.mockResolvedValueOnce({ client_id: "first-app", client_secret: "first-secret" })
+      .mockResolvedValueOnce({ client_id: "second-app", client_secret: "second-secret" });
+    const protocol = createMcpOAuthProtocol({ fetch, registrations });
+    const input = { url: "https://mcp.example/mcp", redirectUri: "https://polpo.example/callback", state: "first", mode: "dynamic" as const,
+      clientName: "Polpo", registrationNamespace: "managed-config", scopes: ["read"] };
+    await protocol.start(input);
+    if (change === "issuer") discoverMock.mockResolvedValueOnce({ ...discovery,
+      authorizationServerUrl: "https://other.example/", authorizationServerMetadata: { ...discovery.authorizationServerMetadata,
+        authorization_endpoint: "https://other.example/authorize", token_endpoint: "https://other.example/token", registration_endpoint: "https://other.example/register" } });
+    const second = await protocol.start({ ...input, state: "second",
+      ...(change === "configuration" ? { registrationNamespace: "customer-config" } : {}),
+      ...(change === "branding" ? { clientName: "Customer app" } : {}),
+      ...(change === "scopes" ? { scopes: ["read", "write"] } : {}),
+    });
+    expect(second.material.client.client_id).toBe("second-app");
+    expect(registerMock).toHaveBeenCalledTimes(2);
+    expect(registrations.get.mock.calls.every(([input]) => /^[a-f0-9]{64}$/.test(input.registrationKey))).toBe(true);
+    expect(JSON.stringify(registrations.get.mock.calls)).not.toContain("first-secret");
+  });
+
   it("supports metadata-document and pre-registered clients without DCR", async () => {
     const protocol = createMcpOAuthProtocol({ fetch });
     const common = { url: "https://mcp.example/mcp", redirectUri: "https://polpo.example/v1/connect/oauth/callback", state: "state-1" };
@@ -91,6 +125,16 @@ describe("MCP OAuth protocol", () => {
       material: { client: { client_id: "github-client" } },
     });
     expect(registerMock).not.toHaveBeenCalled();
+  });
+
+  it("passes a host-owned loopback callback through registration, PKCE and code exchange", async () => {
+    const protocol = createMcpOAuthProtocol({ fetch });
+    const redirectUri = "http://localhost:4411/callback";
+    const result = await protocol.start({ url: "https://mcp.example/mcp", redirectUri, state: "local-state", mode: "dynamic" });
+    expect(registerMock.mock.calls[0][1].clientMetadata.redirect_uris).toEqual([redirectUri]);
+    expect(startMock.mock.calls[0][1]).toMatchObject({ redirectUrl: redirectUri, state: "local-state" });
+    await protocol.complete({ material: result.material, code: "code", requestedScopes: [] });
+    expect(exchangeMock.mock.calls[0][1]).toMatchObject({ redirectUri, codeVerifier: "pkce-verifier" });
   });
 
   it("exchanges and refreshes tokens while preserving refresh state", async () => {

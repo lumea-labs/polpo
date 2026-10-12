@@ -663,6 +663,7 @@ describe("runAgentStepCompletion tool validation", () => {
       buildRuntimePrompt: vi.fn(async () => "system"),
     } as unknown as CompletionRouteDeps;
 
+    const controller = new AbortController();
     const toolInvocation = createToolInvocationContext({
       requestId: "request-nested",
       runId: "run-nested",
@@ -679,6 +680,7 @@ describe("runAgentStepCompletion tool validation", () => {
       context: {},
       stepName: "nested",
       toolInvocation,
+      signal: controller.signal,
     });
 
     expect(result.text).toBe("8");
@@ -694,6 +696,7 @@ describe("runAgentStepCompletion tool validation", () => {
       expect.objectContaining({ name: "nested-agent" }),
       undefined,
       toolInvocation,
+      controller.signal,
     );
   });
 

@@ -5,7 +5,8 @@
  * Requires TEST_DATABASE_URL env var (default: postgresql://postgres:postgres@localhost:5432/polpo_test).
  * Skipped when no PG connection is available.
  */
-import { describe, it, expect, beforeAll, beforeEach, afterAll } from "vitest";
+import { describe, it, expect, beforeAll, beforeEach, afterAll, vi } from "vitest";
+import { taskMutationContract } from "./helpers/task-mutation-contract.js";
 import { randomBytes } from "node:crypto";
 import { sql } from "drizzle-orm";
 import postgres from "postgres";
@@ -86,6 +87,8 @@ describe.skipIf(!canConnect)("PostgreSQL Drizzle stores", () => {
     // Recreate stores to reset in-memory state (e.g. LogStore.currentSessionId)
     stores = createPgStores(db);
   });
+
+  taskMutationContract(() => stores.taskStore);
 
   it("ensurePgSchema creates every runs column (F2 migrate.ts drift guard)", async () => {
     // migrate.ts (ensurePgSchema) is hand-maintained ALTER TABLE lines — a
@@ -256,6 +259,44 @@ describe.skipIf(!canConnect)("PostgreSQL Drizzle stores", () => {
       // assigned -> pending is invalid
       await expect(stores.taskStore.transition(task.id, "pending")).rejects.toThrow();
     });
+
+    it.each(["done", "failed"] as const)("the first queued terminal task write wins: %s", async winner => {
+      const task = await stores.taskStore.createTask({ title: "Terminal write race", description: "Task", assignTo: "agent",
+        dependsOn: [], maxRetries: 2, expectations: [], metrics: [] });
+      for (const status of ["assigned", "in_progress", "review"] as const) await stores.taskStore.transition(task.id, status);
+      let release!: () => void, locked!: () => void;
+      const released = new Promise<void>(resolve => { release = resolve; });
+      const ready = new Promise<void>(resolve => { locked = resolve; });
+      const blocker = pgClient.begin(async tx => {
+        await tx.unsafe("SET LOCAL lock_timeout = '3s'");
+        await tx.unsafe("SELECT id FROM tasks WHERE id = $1 FOR UPDATE", [task.id]);
+        locked();
+        await released;
+      });
+      let first: Promise<unknown> | undefined, late: Promise<unknown> | undefined;
+      const waitForWriters = async (count: number) => vi.waitFor(async () => {
+        const rows = await pgClient`SELECT count(*)::int AS waiting FROM pg_stat_activity
+          WHERE datname = current_database() AND wait_event_type = 'Lock'
+          AND query LIKE 'update "tasks"%'`;
+        expect(rows[0].waiting).toBe(count);
+      }, { timeout: 5000, interval: 20 });
+      try {
+        await Promise.race([ready, blocker]);
+        first = stores.taskStore.transition(task.id, winner);
+        await waitForWriters(1);
+        late = stores.taskStore.transition(task.id, winner === "done" ? "failed" : "done")
+          .then(value => ({ value }), error => ({ error }));
+        await waitForWriters(2);
+        release();
+        await blocker;
+        expect(await first).toMatchObject({ status: winner });
+        expect(await late).toHaveProperty("error");
+        expect(await stores.taskStore.getTask(task.id)).toMatchObject({ status: winner });
+      } finally {
+        release();
+        await Promise.allSettled([blocker, first, late]);
+      }
+    }, 15_000);
 
     it("transition increments retries on failed->pending", async () => {
       const task = await stores.taskStore.createTask({
@@ -522,6 +563,17 @@ describe.skipIf(!canConnect)("PostgreSQL Drizzle stores", () => {
       expect(terminal).toHaveLength(2);
     });
 
+    it.each(["completed", "failed", "killed"] as const)("does not reopen a %s run when a delayed runner registers", async status => {
+      const original = makeRun("terminal-replay", "task") as any;
+      await stores.runStore.upsertRun(original);
+      await stores.runStore.completeRun(original.id, status, { exitCode: 143, stdout: "", stderr: "terminal result", duration: 1 });
+      await stores.runStore.markRunCollected!(original.id);
+      const terminal = await stores.runStore.getRun(original.id);
+      await stores.runStore.upsertRun({ ...original, pid: 9876, updatedAt: new Date().toISOString() });
+      await stores.runStore.completeRun(original.id, "completed", { exitCode: 0, stdout: "late", stderr: "", duration: 2 });
+      expect(await stores.runStore.getRun(original.id)).toEqual(terminal);
+    });
+
     it("completeRun guards against overwriting terminal status", async () => {
       await stores.runStore.upsertRun({ ...makeRun("r1", "t1"), status: "completed" as any } as any);
 
@@ -530,6 +582,43 @@ describe.skipIf(!canConnect)("PostgreSQL Drizzle stores", () => {
       const fetched = await stores.runStore.getRun("r1");
       expect(fetched!.status).toBe("completed"); // unchanged
     });
+
+    it("keeps cancellation when a late completion has already read the running row", async () => {
+      await stores.runStore.upsertRun(makeRun("cancel-race", "task") as any);
+      let release!: () => void, locked!: () => void;
+      const released = new Promise<void>(resolve => { release = resolve; });
+      const ready = new Promise<void>(resolve => { locked = resolve; });
+      const blocker = pgClient.begin(async tx => {
+        await tx.unsafe("SET LOCAL lock_timeout = '3s'");
+        await tx.unsafe("SELECT id FROM runs WHERE id = 'cancel-race' FOR UPDATE");
+        locked();
+        await released;
+      });
+      let cancellation: Promise<void> | undefined, completion: Promise<void> | undefined;
+      const waitForWriters = async (count: number) => vi.waitFor(async () => {
+        const rows = await pgClient`SELECT count(*)::int AS waiting FROM pg_stat_activity
+          WHERE datname = current_database() AND wait_event_type = 'Lock'
+          AND query LIKE 'update "runs"%'`;
+        expect(rows[0].waiting).toBe(count);
+      }, { timeout: 5000, interval: 20 });
+      try {
+        // A failed BEGIN/lock must reach cleanup instead of leaving readiness
+        // pending until the outer test timeout.
+        await Promise.race([ready, blocker]);
+        cancellation = stores.runStore.completeRun("cancel-race", "killed", { exitCode: 143, stdout: "", stderr: "cancelled", duration: 1 });
+        await waitForWriters(1);
+        completion = stores.runStore.completeRun("cancel-race", "completed", { exitCode: 0, stdout: "late result", stderr: "", duration: 2 });
+        await waitForWriters(2);
+        release();
+        await Promise.all([blocker, cancellation, completion]);
+        expect(await stores.runStore.getRun("cancel-race")).toMatchObject({
+          status: "killed", result: { exitCode: 143, stderr: "cancelled", stdout: "" },
+        });
+      } finally {
+        release();
+        await Promise.allSettled([blocker, cancellation, completion]);
+      }
+    }, 15_000);
 
     it("updateActivity updates activity and sessionId", async () => {
       await stores.runStore.upsertRun(makeRun("r1", "t1") as any);

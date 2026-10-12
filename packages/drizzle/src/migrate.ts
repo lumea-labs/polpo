@@ -61,10 +61,17 @@ export async function ensurePgTables(db: any): Promise<void> {
 
   // OpenAI-compat user column — additive, idempotent
   await db.execute(sql`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS "user" TEXT`);
+  await db.execute(sql`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS metadata JSONB`);
+  await db.execute(sql`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS execution_revision INTEGER NOT NULL DEFAULT 0`);
+  await db.execute(sql`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS active_run_id TEXT`);
+  await db.execute(sql`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS approval_state TEXT`);
   await db.execute(sql`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS sandbox JSONB`);
   await db.execute(sql`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS routing JSONB`);
   // Explicit per-task project loop — additive, idempotent
   await db.execute(sql`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS loop TEXT`);
+  await db.execute(sql`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS mission_execution_id TEXT`);
+  await db.execute(sql`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS execution_mode TEXT`);
+  await db.execute(sql`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS question_rounds INTEGER NOT NULL DEFAULT 0`);
 
   await db.execute(sql`CREATE TABLE IF NOT EXISTS missions (
     id               TEXT PRIMARY KEY,
@@ -83,6 +90,16 @@ export async function ensurePgTables(db: any): Promise<void> {
   )`);
 
   await db.execute(sql`ALTER TABLE missions ADD COLUMN IF NOT EXISTS "user" TEXT`);
+  await db.execute(sql`ALTER TABLE missions ADD COLUMN IF NOT EXISTS metadata JSONB`);
+
+  await db.execute(sql`CREATE TABLE IF NOT EXISTS mission_executions (
+    mission_id TEXT NOT NULL,
+    idempotency_key TEXT NOT NULL,
+    execution_id TEXT NOT NULL UNIQUE,
+    admission JSONB NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (mission_id, idempotency_key)
+  )`);
 
   await db.execute(sql`CREATE TABLE IF NOT EXISTS processes (
     agent_name TEXT NOT NULL,
@@ -110,6 +127,7 @@ export async function ensurePgTables(db: any): Promise<void> {
     config_path  TEXT NOT NULL
   )`);
 
+  await db.execute(sql`ALTER TABLE runs ADD COLUMN IF NOT EXISTS task_execution_revision INTEGER`);
   await db.execute(sql`ALTER TABLE runs ADD COLUMN IF NOT EXISTS "user" TEXT`);
   await db.execute(sql`ALTER TABLE runs ADD COLUMN IF NOT EXISTS resume_state JSONB`);
   await db.execute(sql`ALTER TABLE runs ADD COLUMN IF NOT EXISTS execution_mode TEXT`);
@@ -339,6 +357,8 @@ export async function ensurePgTables(db: any): Promise<void> {
   )`);
 
 
+  await db.execute(sql`ALTER TABLE approvals ADD COLUMN IF NOT EXISTS task_execution TEXT`);
+
   await db.execute(sql`CREATE TABLE IF NOT EXISTS memory (
     key     TEXT PRIMARY KEY,
     content TEXT NOT NULL DEFAULT ''
@@ -355,9 +375,17 @@ export async function ensurePgTables(db: any): Promise<void> {
     name        TEXT PRIMARY KEY,
     team_name   TEXT NOT NULL,
     config      JSONB NOT NULL,
+    incarnation TEXT,
+    revision    INTEGER NOT NULL DEFAULT 0,
+    last_mutation JSONB,
     created_at  TEXT NOT NULL,
     updated_at  TEXT NOT NULL
   )`);
+  // ensurePgSchema is also the standalone Node startup path. Evolve existing
+  // agent tables here as well as through the schema-derived migrator.
+  await db.execute(sql`ALTER TABLE agents ADD COLUMN IF NOT EXISTS incarnation TEXT`);
+  await db.execute(sql`ALTER TABLE agents ADD COLUMN IF NOT EXISTS revision INTEGER NOT NULL DEFAULT 0`);
+  await db.execute(sql`ALTER TABLE agents ADD COLUMN IF NOT EXISTS last_mutation JSONB`);
 
   await db.execute(sql`CREATE TABLE IF NOT EXISTS vault (
     agent       TEXT NOT NULL,

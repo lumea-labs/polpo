@@ -138,6 +138,25 @@ afterAll(async () => {
 // ── Tests ───────────────────────────────────────────────
 
 describe("InProcessSpawner", () => {
+  test.each([false, true])("streams the real transcript without giving the observer lifecycle authority (throws=%s)", async throws => {
+    setMockModel(mockTextModel("Observer output"));
+    const store = new InMemoryRunStore(), config = makeConfig();
+    const events: Record<string, unknown>[] = [];
+    const finalize = vi.fn(async () => undefined);
+    const spawner = new InProcessSpawner(() => ({ runStore: store, finalize,
+      onEvent: entry => {
+        events.push(entry);
+        if (throws) throw new Error("SSE subscriber disconnected");
+      },
+    }));
+    const handle = await spawner.spawn(config);
+    await onExitPromise(handle);
+    expect(events.some(entry => entry.type === "assistant")).toBe(true);
+    expect((await store.getRun(config.runId))?.status).toBe("completed");
+    expect(finalize).toHaveBeenCalledOnce();
+    expect(spawner.isAlive(handle.pid)).toBe(false);
+  });
+
   test("finalizes exactly once when persistence fails before the engine starts", async () => {
     const store = new InMemoryRunStore();
     vi.spyOn(store, "upsertRun").mockRejectedValue(new Error("database unavailable"));
@@ -149,6 +168,46 @@ describe("InProcessSpawner", () => {
 
     expect(finalize).toHaveBeenCalledTimes(1);
     expect(spawner.isAlive(spawnResult.pid)).toBe(false);
+  });
+
+  test.each(["log", "registration"] as const)("keeps its owner through late initial %s completion and finalizer drain", async stage => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const store = new InMemoryRunStore(), config = makeConfig();
+    let enter!: () => void, release!: () => void, enterFinalize!: () => void, releaseFinalize!: () => void;
+    const entered = new Promise<void>(resolve => { enter = resolve; });
+    const waiting = new Promise<void>(resolve => { release = resolve; });
+    const finalizing = new Promise<void>(resolve => { enterFinalize = resolve; });
+    const cleanup = new Promise<void>(resolve => { releaseFinalize = resolve; });
+    const upsert = store.upsertRun.bind(store);
+    const register = vi.spyOn(store, "upsertRun").mockImplementation(async run => {
+      if (stage === "registration") { enter(); await waiting; }
+      await upsert(run);
+    });
+    const createLogSession = vi.fn(async () => {
+      if (stage === "log") { enter(); await waiting; }
+      return { sessionId: "late-session", append: async () => {} };
+    });
+    const finalize = vi.fn(async () => { enterFinalize(); await cleanup; });
+    const tools = vi.fn(async () => []);
+    const spawner = new InProcessSpawner(() => ({ runStore: store, createLogSession, finalize,
+      resolveCustomTools: tools, preparationTimeoutMs: 100 }));
+    const handle = await spawner.spawn(config);
+    const exited = vi.fn(); handle.onExit!(exited);
+    const drained = onExitPromise(handle);
+    try {
+      await entered;
+      await vi.advanceTimersByTimeAsync(1000);
+      spawner.cancelRun(config.runId);
+      expect(spawner.isAlive(handle.pid)).toBe(true);
+      expect(exited).not.toHaveBeenCalled(); expect(finalize).not.toHaveBeenCalled();
+      release(); await finalizing;
+      expect(spawner.isAlive(handle.pid)).toBe(true); expect(exited).not.toHaveBeenCalled();
+      releaseFinalize(); await drained;
+      expect(finalize).toHaveBeenCalledOnce(); expect(exited).toHaveBeenCalledOnce();
+      expect(tools).not.toHaveBeenCalled(); expect(spawner.isAlive(handle.pid)).toBe(false);
+      expect(register).toHaveBeenCalledTimes(stage === "registration" ? 1 : 0);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally { release(); releaseFinalize(); vi.useRealTimers(); await drained; }
   });
 
   test("E2E: task runs in-process against the injected stores, result + transcript persisted", async () => {
@@ -216,10 +275,12 @@ describe("InProcessSpawner", () => {
     expect(remoteFs.mkdir).not.toHaveBeenCalled();
   });
 
-  test("lifecycle: isAlive during the run, false after; kill() → run killed", async () => {
+  test.each(["pid", "run"])("lifecycle: cancellation by %s → run killed", async kind => {
     // Model blocks until aborted.
+    let modelStarted = false;
     setMockModel(new MockLanguageModelV3({
       doStream: (opts) => new Promise((_resolve, reject) => {
+        modelStarted = true;
         const fail = () => reject(Object.assign(new Error("aborted"), { name: "AbortError" }));
         if (opts.abortSignal?.aborted) return fail();
         opts.abortSignal?.addEventListener("abort", fail, { once: true });
@@ -234,7 +295,11 @@ describe("InProcessSpawner", () => {
     expect(spawner.isAlive(spawnResult.pid)).toBe(true);
 
     // Kill mid-turn — the AbortController reaches the engine.
-    spawner.kill(spawnResult.pid);
+    await vi.waitFor(() => expect(modelStarted).toBe(true));
+    spawner.cancelRun("unknown-run");
+    expect(spawner.isAlive(spawnResult.pid)).toBe(true);
+    if (kind === "pid") spawner.kill(spawnResult.pid);
+    else spawner.cancelRun(config.runId);
     await onExitPromise(spawnResult);
 
     expect(spawner.isAlive(spawnResult.pid)).toBe(false);
@@ -242,6 +307,7 @@ describe("InProcessSpawner", () => {
     expect(run?.status).toBe("killed");
     expect(run?.result?.exitCode).toBe(1);
     expect(run?.result?.stderr).toContain("Killed by SIGTERM (timeout or shutdown)");
+    expect(() => spawner.cancelRun(config.runId)).not.toThrow();
   });
 
   test("kill of an unknown pid is a safe no-op", () => {

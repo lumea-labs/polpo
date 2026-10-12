@@ -85,6 +85,7 @@ export function buildChatRunInjection(execution: ChatCompletionExecution): ChatS
     runtimePlan: execution.runtimePlan,
     contextTrust: execution.contextTrust,
     agent: agentConfig,
+    toolInvocation: execution.toolInvocation,
     title: firstUserText(aiMessages),
     modelSelection,
     model: m as unknown as ChatSessionInjection["model"],

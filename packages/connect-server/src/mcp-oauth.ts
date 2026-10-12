@@ -19,10 +19,20 @@ import {
   type McpOAuthSecretMaterial,
   type TokenSet,
 } from "@polpo-ai/connect";
+import { createHash } from "node:crypto";
+import { normalizeMcpOAuthRedirect } from "./mcp-oauth-redirect.js";
 
+export interface McpOAuthRegistrationLookup {
+  resource: string;
+  redirectUri: string;
+  mode: McpOAuthClientMode;
+  /** Hosts must key on this identity when present and must not fall back to an
+   * unkeyed registration. Includes configuration, issuer and client metadata. */
+  registrationKey?: string;
+}
 export interface McpOAuthClientRegistrationStore {
-  get(input: { resource: string; redirectUri: string; mode: McpOAuthClientMode }): Promise<McpOAuthClientInformation | null>;
-  set(input: { resource: string; redirectUri: string; mode: McpOAuthClientMode; client: McpOAuthClientInformation }): Promise<void>;
+  get(input: McpOAuthRegistrationLookup): Promise<McpOAuthClientInformation | null>;
+  set(input: McpOAuthRegistrationLookup & { client: McpOAuthClientInformation }): Promise<void>;
 }
 
 export interface InspectMcpOAuthInput { url: string; transport?: "http" | "sse" }
@@ -36,6 +46,8 @@ export interface StartMcpOAuthProtocolInput extends InspectMcpOAuthInput {
   clientUri?: string;
   clientMetadataUrl?: string;
   preRegisteredClient?: McpOAuthClientInformation;
+  /** Private host configuration fingerprint/namespace, independent of end-user identity. */
+  registrationNamespace?: string;
 }
 
 export interface StartMcpOAuthProtocolResult {
@@ -56,6 +68,9 @@ export function createMcpOAuthProtocol(options: McpOAuthProtocolOptions) {
     const url = normalizeHttpsUrl(input.url);
     try {
       const discovered = await discoverOAuthServerInfo(url, { fetchFn: options.fetch as any });
+      // An SDK fallback may return an origin without any OAuth metadata for
+      // public or static-key servers. This does not establish an auth method.
+      if (!discovered.authorizationServerMetadata) throw new Error("OAuth metadata unavailable");
       const discovery = normalizeDiscovery(
         url,
         discovered.authorizationServerUrl,
@@ -86,7 +101,7 @@ export function createMcpOAuthProtocol(options: McpOAuthProtocolOptions) {
     if (!inspected.discovery) {
       throw new ConnectError("oauth_discovery_failed", "MCP OAuth metadata could not be discovered");
     }
-    const redirectUri = normalizeHttpsUrl(input.redirectUri);
+    const redirectUri = normalizeMcpOAuthRedirect(input.redirectUri);
     const scopes = normalizeScopes(input.scopes ?? inspected.discovery.scopesSupported ?? []);
     const client = await resolveClient(input, inspected.discovery, redirectUri, scopes);
     const started = await startAuthorization(inspected.discovery.authorizationServer, {
@@ -162,8 +177,6 @@ export function createMcpOAuthProtocol(options: McpOAuthProtocolOptions) {
     if (!discovery.registrationEndpoint) {
       throw new ConnectError("oauth_registration_failed", "MCP authorization server does not support dynamic client registration");
     }
-    const cached = await options.registrations?.get({ resource: discovery.resource, redirectUri, mode: input.mode });
-    if (cached) return cached;
     const metadata: OAuthClientMetadata = {
       client_name: input.clientName ?? "Polpo",
       redirect_uris: [redirectUri],
@@ -172,6 +185,14 @@ export function createMcpOAuthProtocol(options: McpOAuthProtocolOptions) {
       token_endpoint_auth_method: "none",
       ...(input.clientUri ? { client_uri: normalizeHttpsUrl(input.clientUri) } : {}),
     };
+    const registrationKey = createHash("sha256").update(JSON.stringify([
+      input.registrationNamespace ?? null, discovery.resource, discovery.authorizationServer,
+      discovery.authorizationEndpoint, discovery.tokenEndpoint, discovery.registrationEndpoint,
+      redirectUri, input.mode, metadata, [...scopes].sort(),
+    ])).digest("hex");
+    const lookup: McpOAuthRegistrationLookup = { resource: discovery.resource, redirectUri, mode: input.mode, registrationKey };
+    const cached = await options.registrations?.get(lookup);
+    if (cached) return cached;
     try {
       const registered = await registerClient(discovery.authorizationServer, {
         metadata: discovery.rawAuthorizationServerMetadata as AuthorizationServerMetadata,
@@ -180,7 +201,7 @@ export function createMcpOAuthProtocol(options: McpOAuthProtocolOptions) {
         fetchFn: options.fetch as any,
       });
       const client = registered as McpOAuthClientInformation;
-      await options.registrations?.set({ resource: discovery.resource, redirectUri, mode: input.mode, client });
+      await options.registrations?.set({ ...lookup, client });
       return client;
     } catch (error) {
       throw protocolError("oauth_registration_failed", "MCP OAuth dynamic client registration failed", error);
@@ -228,7 +249,7 @@ function normalizeTokens(tokens: Record<string, unknown>, fallbackScopes: string
     refreshToken: text(tokens.refresh_token) ?? fallbackRefreshToken,
     tokenType: text(tokens.token_type) ?? "Bearer",
     expiresAt: expiresIn === undefined ? undefined : new Date(now.getTime() + expiresIn * 1000).toISOString(),
-    scopes: normalizeScopes(text(tokens.scope)?.split(/[,\s]+/) ?? fallbackScopes),
+    scopes: normalizeScopes(typeof tokens.scope === "string" ? tokens.scope.split(/[,\s]+/) : fallbackScopes),
     raw: tokens,
   };
 }

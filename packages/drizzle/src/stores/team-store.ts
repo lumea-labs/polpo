@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import type { TeamStore } from "@polpo-ai/core/team-store";
 import type { Team, AgentConfig } from "@polpo-ai/core/types";
 import { type Dialect, deserializeJson, isUniqueViolation } from "../utils.js";
@@ -83,7 +83,8 @@ export class DrizzleTeamStore implements TeamStore {
       .where(eq(this.teamsTable.name, oldName));
 
     // Update all agent foreign keys
-    await this.db.update(this.agentsTable).set({ teamName: newName, updatedAt: now })
+    await this.db.update(this.agentsTable).set({ teamName: newName, updatedAt: now,
+      revision: sql`${this.agentsTable.revision} + 1`, lastMutation: null })
       .where(eq(this.agentsTable.teamName, oldName));
 
     const team = await this.getTeam(newName);

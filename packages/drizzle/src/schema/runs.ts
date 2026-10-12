@@ -6,6 +6,7 @@ import { pgTable, text as pgText, integer as pgInteger, jsonb, varchar, index as
 export const runsSqlite = sqliteTable("runs", {
   id: text("id").primaryKey(),
   taskId: text("task_id").notNull(),
+  taskExecutionRevision: integer("task_execution_revision"),
   pid: integer("pid").notNull().default(0),
   agentName: text("agent_name").notNull(),
   adapterType: text("adapter_type").notNull(),
@@ -52,6 +53,7 @@ export const runsSqlite = sqliteTable("runs", {
 export const runsPg = pgTable("runs", {
   id: pgText("id").primaryKey(),
   taskId: pgText("task_id").notNull(),
+  taskExecutionRevision: pgInteger("task_execution_revision"),
   pid: pgInteger("pid").notNull().default(0),
   agentName: pgText("agent_name").notNull(),
   adapterType: pgText("adapter_type").notNull(),

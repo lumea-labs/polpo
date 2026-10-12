@@ -1,3 +1,4 @@
+import type { ApprovalManager } from "./approval-manager.js";
 /**
  * AssessmentOrchestrator — handles the full assessment pipeline:
  * result collection → question detection → assessment → auto-correction → judge → fix/retry/fail.
@@ -14,6 +15,13 @@ import { setAssessment } from "./types.js";
 import { buildFixPrompt, buildRetryPrompt, buildSideEffectFixPrompt, buildSideEffectRetryPrompt, buildJudgePrompt, type JudgeVerdict, type JudgeCorrection } from "./assessment-prompts.js";
 import { looksLikeQuestion, classifyAsQuestion } from "./question-detector.js";
 import { resolveConfiguredModelSelection } from "./model-profiles.js";
+import { isTaskExecutionStore, normalizeTaskExecutionReference, taskExecutionReference, TaskExecutionError,
+  type TaskExecutionReference, type TaskExecutionPatch } from "./task-execution.js";
+import type { TaskStatus } from "./types.js";
+
+function isExecutionConflict(error: unknown): boolean {
+  return error instanceof TaskExecutionError && error.code === "task_execution_conflict";
+}
 
 // ── File System Ports ────────────────────────────────────────────────────
 // These optional ports allow the shell to inject Node.js file system operations
@@ -51,10 +59,55 @@ export interface AssessmentPorts {
  * assessment → auto-correction → judge → fix/retry/fail.
  */
 export class AssessmentOrchestrator {
+  private approvals?: ApprovalManager;
+  setApprovalManager(manager: ApprovalManager | undefined): void { this.approvals = manager; }
   private ports: AssessmentPorts;
+  private execution?: TaskExecutionReference;
 
   constructor(private ctx: OrchestratorContext, ports?: AssessmentPorts) {
     this.ports = ports ?? {};
+  }
+
+  private async readTask(taskId: string): Promise<Task | undefined> {
+    const task = await this.ctx.taskStore.getTask(taskId);
+    if (this.execution) {
+      const current = task && taskExecutionReference(task);
+      if (!current || current.taskId !== this.execution.taskId || current.revision !== this.execution.revision || current.runId !== this.execution.runId) {
+        throw new TaskExecutionError("task_execution_conflict", "Assessment execution changed");
+      }
+    }
+    return task;
+  }
+
+  private executionStore() {
+    if (!isTaskExecutionStore(this.ctx.taskStore)) throw new TaskExecutionError("task_execution_unsupported", "Assessment requires execution persistence");
+    return this.ctx.taskStore;
+  }
+
+  private async patchTask(taskId: string, updates: TaskExecutionPatch): Promise<Task> {
+    if (!this.execution) return this.ctx.taskStore.updateTask(taskId, updates);
+    return (await this.executionStore().mutateTaskExecution(this.execution, { type: "patch", updates })).task;
+  }
+
+  private async transitionTask(taskId: string, status: TaskStatus, updates?: TaskExecutionPatch): Promise<Task> {
+    if (this.execution) return (await this.executionStore().mutateTaskExecution(this.execution, { type: "transition", status, updates })).task;
+    const task = await this.ctx.taskStore.transition(taskId, status);
+    return updates ? this.ctx.taskStore.updateTask(taskId, updates) : task;
+  }
+
+  private async requeueTask(taskId: string, countRetry: boolean, reason: string, updates: TaskExecutionPatch): Promise<void> {
+    if (this.execution) {
+      // Publish the next attempt and its complete input together. Once the
+      // revision changes, this assessor must never write through its old scope.
+      await this.executionStore().mutateTaskExecution(this.execution, { type: "requeue", countRetry, reason, updates });
+    } else {
+      if (countRetry) {
+        await this.ctx.taskStore.transition(taskId, "failed");
+        await this.ctx.taskStore.transition(taskId, "pending");
+      }
+      else await this.ctx.taskStore.unsafeSetStatus(taskId, "pending", reason);
+      await this.ctx.taskStore.updateTask(taskId, updates);
+    }
   }
 
   private orchestratorModel(): string | ModelConfig | undefined {
@@ -72,7 +125,7 @@ export class AssessmentOrchestrator {
    * - Task outcomes
    */
   private async buildReviewContext(taskId: string, task: Task, result: TaskResult): Promise<ReviewContext> {
-    const run = await this.ctx.runStore.getRunByTaskId(taskId);
+    const run = await (this.execution?.runId ? this.ctx.runStore.getRun(this.execution.runId) : this.ctx.runStore.getRunByTaskId(taskId));
     const activity = run?.activity;
     const outcomes = run?.outcomes ?? task.outcomes;
 
@@ -88,7 +141,8 @@ export class AssessmentOrchestrator {
           toolsSummary = summaryResult.toolsSummary;
         }
       }
-    } catch { /* best effort — don't fail assessment if log parsing fails */ }
+    } catch (error) {
+      if (isExecutionConflict(error)) throw error; /* best effort — don't fail assessment if log parsing fails */ }
 
     return {
       taskTitle: task.title,
@@ -114,8 +168,13 @@ export class AssessmentOrchestrator {
   private async transitionToDone(
     taskId: string, task: Task, result: TaskResult,
   ): Promise<boolean> {
+    // The assessment has persisted result/phase since the original Task read.
+    // Re-read while preserving this invocation's captured execution reference.
+    const authoritative = await this.readTask(taskId);
+    if (!authoritative) throw new TaskExecutionError("task_execution_conflict", "Assessment Task disappeared");
+    task = structuredClone(authoritative);
     const hookResult = await this.ctx.hooks.runBefore("task:complete", {
-      taskId, task, result,
+      taskId, task, result: structuredClone(authoritative.result ?? result),
     });
     if (hookResult.cancelled) {
       this.ctx.emitter.emit("log", {
@@ -124,15 +183,21 @@ export class AssessmentOrchestrator {
       });
       return false;
     }
+    // Completion hooks can veto, but cannot replace the persisted assessment
+    // or principal. Consent, the done Task and after-hooks expose one output.
+    task = structuredClone(authoritative);
+    result = structuredClone(authoritative.result ?? result);
+    if (!this.approvals && this.ctx.config.settings.approvalGates?.some(gate => gate.hook === "task:complete")) {
+      throw new TaskExecutionError("task_execution_unsupported", "Task approval coordinator is required");
+    }
+    if (this.approvals && !await this.approvals.checkTask("task:complete", authoritative, { task, result })) return false;
+    await this.transitionTask(taskId, "done", { phase: undefined });
     this.ctx.emitter.emit("task:transition", {
       taskId,
       from: task.status,
       to: "done",
       task: { ...task, status: "done" },
     });
-    await this.ctx.taskStore.transition(taskId, "done");
-    await this.ctx.taskStore.updateTask(taskId, { phase: undefined });
-
     // Fire after:task:complete (async, fire-and-forget)
     this.ctx.hooks.runAfter("task:complete", { taskId, task, result }).catch(() => {});
     return true;
@@ -150,9 +215,29 @@ export class AssessmentOrchestrator {
     return task.expectations.some(e => failedTypes.has(e.type) && this.getConfidence(e) === "estimated");
   }
 
-  async handleResult(taskId: string, result: TaskResult): Promise<void> {
-    const task = await this.ctx.taskStore.getTask(taskId);
+  async handleResult(taskId: string, result: TaskResult, execution?: TaskExecutionReference): Promise<void> {
+    // A separate scope per invocation keeps concurrent assessors from sharing
+    // mutable attempt identity across their asynchronous work.
+    const scope = new AssessmentOrchestrator(this.ctx, this.ports);
+    scope.setApprovalManager(this.approvals);
+    if (execution) {
+      scope.execution = normalizeTaskExecutionReference(execution);
+      if (execution.taskId !== taskId) throw new TaskExecutionError("task_execution_invalid", "Result Task does not match execution");
+    }
+    try {
+      await scope.handleExecutionResult(taskId, result);
+    } catch (error) {
+      if (!isExecutionConflict(error)) throw error;
+      // The old Run remains collectable history; the newer attempt is untouched.
+    }
+  }
+
+  private async handleExecutionResult(taskId: string, result: TaskResult): Promise<void> {
+    const task = await this.readTask(taskId);
     if (!task) return;
+    if (!this.execution && (task.activeRunId !== undefined || task.executionRevision !== undefined)) {
+      throw new TaskExecutionError("task_execution_invalid", "Task result requires its execution reference");
+    }
 
     // Skip if already terminal
     if (task.status === "done" || task.status === "failed") return;
@@ -167,8 +252,7 @@ export class AssessmentOrchestrator {
 
     // Ensure we're in review state
     if (task.status === "in_progress") {
-      await this.ctx.taskStore.transition(taskId, "review");
-      await this.ctx.taskStore.updateTask(taskId, { phase: "review" });
+      await this.transitionTask(taskId, "review", { phase: "review" });
     }
 
     // Question detection: intercept before assessment
@@ -176,7 +260,7 @@ export class AssessmentOrchestrator {
     const questionRounds = task.questionRounds ?? 0;
     if (result.exitCode === 0 && questionRounds < maxQRounds) {
       // Get activity from RunStore for richer heuristic
-      const run = await this.ctx.runStore.getRunByTaskId(taskId);
+      const run = await (this.execution?.runId ? this.ctx.runStore.getRun(this.execution.runId) : this.ctx.runStore.getRunByTaskId(taskId));
       const activity = run?.activity;
       if (looksLikeQuestion(result, activity)) {
         await this.handlePossibleQuestion(taskId, task, result);
@@ -208,7 +292,8 @@ export class AssessmentOrchestrator {
       } else {
         await this.proceedToAssessment(taskId, task, result);
       }
-    } catch {
+    } catch (error) {
+      if (isExecutionConflict(error)) throw error;
       // Classification failed → proceed normally
       await this.proceedToAssessment(taskId, task, result);
     }
@@ -232,27 +317,20 @@ export class AssessmentOrchestrator {
 
     try {
       const answer = await answerPromise;
-      this.ctx.emitter.emit("task:answered", { taskId, question, answer });
-
-      const current = await this.ctx.taskStore.getTask(taskId);
+      const current = await this.readTask(taskId);
       if (!current) return;
-
-      // Save original description before first Q&A
-      if (!current.originalDescription) {
-        await this.ctx.taskStore.updateTask(taskId, { originalDescription: current.description });
-      }
-
-      // Clear old outcomes before re-run — the agent will produce fresh ones.
-      await this.ctx.taskStore.updateTask(taskId, { outcomes: [] });
       // Append Q&A to description and re-run (no retry burn)
       const qaBlock = `\n\n[Polpo Clarification]\nQ: ${question}\nA: ${answer}`;
-      await this.ctx.taskStore.unsafeSetStatus(taskId, "pending", "Q&A re-run — no retry burn");
-      await this.ctx.taskStore.updateTask(taskId, {
+      await this.requeueTask(taskId, false, "Q&A re-run — no retry burn", {
+        originalDescription: current.originalDescription ?? current.description,
+        outcomes: [],
         phase: "execution",
         description: current.description + qaBlock,
         questionRounds: (current.questionRounds ?? 0) + 1,
       });
-    } catch {
+      this.ctx.emitter.emit("task:answered", { taskId, question, answer });
+    } catch (error) {
+      if (isExecutionConflict(error)) throw error;
       // Answer generation failed → proceed to assessment normally
       await this.proceedToAssessment(taskId, task, result);
     }
@@ -354,7 +432,8 @@ export class AssessmentOrchestrator {
       let hookResult: Awaited<ReturnType<typeof this.ctx.hooks.runBefore>> | undefined;
       try {
         hookResult = await this.ctx.hooks.runBefore("assessment:run", { taskId, task });
-      } catch {
+      } catch (error) {
+        if (isExecutionConflict(error)) throw error;
         // Hook failures must not detach or suppress the assessment lifecycle.
       }
       if (hookResult?.cancelled) {
@@ -362,7 +441,7 @@ export class AssessmentOrchestrator {
           level: "info",
           message: `[${taskId}] Assessment blocked by hook: ${hookResult.cancelReason ?? "no reason"}`,
         });
-        await this.ctx.taskStore.updateTask(taskId, { result });
+        await this.patchTask(taskId, { result });
         if (result.exitCode === 0) {
           await this.transitionToDone(taskId, task, result);
         } else {
@@ -372,7 +451,7 @@ export class AssessmentOrchestrator {
       }
       await this.runAssessmentFlow(taskId, task, result);
     } else {
-      await this.ctx.taskStore.updateTask(taskId, { result });
+      await this.patchTask(taskId, { result });
       if (result.exitCode === 0) {
         await this.transitionToDone(taskId, task, result);
       } else {
@@ -407,7 +486,7 @@ export class AssessmentOrchestrator {
           checkProgressCb,
         );
         setAssessment(result, assessment, "initial");
-        await this.ctx.taskStore.updateTask(taskId, { result });
+        await this.patchTask(taskId, { result });
 
         if (assessment.passed && result.exitCode === 0) {
           this.ctx.emitter.emit("assessment:complete", {
@@ -429,7 +508,7 @@ export class AssessmentOrchestrator {
             message: exitMsg,
             details: result.stderr || undefined,
           });
-          await this.ctx.taskStore.updateTask(taskId, { result });
+          await this.patchTask(taskId, { result });
           this.ctx.emitter.emit("assessment:complete", {
             taskId,
             passed: false,
@@ -461,7 +540,8 @@ export class AssessmentOrchestrator {
                 if (corrected) return;
                 const judged = await this.judgeExpectations(taskId, task, result, assessment);
                 if (!judged) await this.fixOrRetry(taskId, task, result);
-              } catch {
+              } catch (error) {
+                if (isExecutionConflict(error)) throw error;
                 await this.fixOrRetry(taskId, task, result);
               }
             } else {
@@ -472,9 +552,10 @@ export class AssessmentOrchestrator {
           }
         }
       } catch (err) {
+        if (isExecutionConflict(err)) throw err;
         const message = err instanceof Error ? err.message : String(err);
         this.ctx.emitter.emit("log", { level: "error", message: `[${taskId}] Assessment error: ${message}` });
-        await this.ctx.taskStore.updateTask(taskId, { result });
+        await this.patchTask(taskId, { result });
         await this.retryOrFail(taskId, task, result);
       }
   }
@@ -506,7 +587,7 @@ export class AssessmentOrchestrator {
     if (!fileExists || !baseName) return false;
 
     // Gather agent's actual file list from activity
-    const run = await this.ctx.runStore.getRunByTaskId(taskId);
+    const run = await (this.execution?.runId ? this.ctx.runStore.getRun(this.execution.runId) : this.ctx.runStore.getRunByTaskId(taskId));
     const activity = run?.activity;
     const agentFiles = [
       ...(activity?.filesCreated ?? []),
@@ -566,11 +647,11 @@ export class AssessmentOrchestrator {
       newExpectations[idx] = { ...newExpectations[idx], paths };
     }
 
-    await this.ctx.taskStore.updateTask(taskId, { expectations: newExpectations });
+    await this.patchTask(taskId, { expectations: newExpectations });
     this.ctx.emitter.emit("assessment:corrected", { taskId, corrections: corrections.size });
 
     // Re-assess with corrected expectations
-    const current = await this.ctx.taskStore.getTask(taskId);
+    const current = await this.readTask(taskId);
     if (!current) return false;
 
     try {
@@ -578,7 +659,7 @@ export class AssessmentOrchestrator {
       const reCtx = await this.buildReviewContext(taskId, task, result);
       const newAssessment = await this.ctx.assessFn(current, this.ctx.agentWorkDir, progressCb, reCtx, this.ctx.config.settings.reasoning);
       setAssessment(result, newAssessment, "auto-correct");
-      await this.ctx.taskStore.updateTask(taskId, { result });
+      await this.patchTask(taskId, { result });
 
       if (newAssessment.passed) {
         this.ctx.emitter.emit("assessment:complete", {
@@ -590,7 +671,8 @@ export class AssessmentOrchestrator {
         });
         return this.transitionToDone(taskId, task, result);
       }
-    } catch { /* re-assessment failed */
+    } catch (error) {
+      if (isExecutionConflict(error)) throw error; /* re-assessment failed */
     }
 
     return false;
@@ -643,7 +725,7 @@ export class AssessmentOrchestrator {
     if (!this.ctx.queryLLM) return false;
 
     // Gather context
-    const run = await this.ctx.runStore.getRunByTaskId(taskId);
+    const run = await (this.execution?.runId ? this.ctx.runStore.getRun(this.execution.runId) : this.ctx.runStore.getRunByTaskId(taskId));
     const activity = run?.activity;
 
     const prompt = buildJudgePrompt(task, result, assessment, failedChecks, activity);
@@ -651,7 +733,8 @@ export class AssessmentOrchestrator {
     let response: string;
     try {
       response = (await this.ctx.queryLLM(prompt, this.orchestratorModel())).text;
-    } catch { /* LLM query failed */
+    } catch (error) {
+      if (isExecutionConflict(error)) throw error; /* LLM query failed */
       return false;
     }
 
@@ -661,7 +744,8 @@ export class AssessmentOrchestrator {
       const cleaned = response.replace(/```json?\n?/g, "").replace(/```/g, "").trim();
       verdict = JSON.parse(cleaned);
       if (!verdict.corrections || !Array.isArray(verdict.corrections)) return false;
-    } catch { /* malformed JSON response */
+    } catch (error) {
+      if (isExecutionConflict(error)) throw error; /* malformed JSON response */
       return false;
     }
 
@@ -694,11 +778,11 @@ export class AssessmentOrchestrator {
 
     if (correctionCount === 0) return false;
 
-    await this.ctx.taskStore.updateTask(taskId, { expectations: newExpectations });
+    await this.patchTask(taskId, { expectations: newExpectations });
     this.ctx.emitter.emit("assessment:corrected", { taskId, corrections: correctionCount });
 
     // Re-assess with corrected expectations
-    const current = await this.ctx.taskStore.getTask(taskId);
+    const current = await this.readTask(taskId);
     if (!current) return false;
 
     try {
@@ -706,7 +790,7 @@ export class AssessmentOrchestrator {
       const judgeCtx = await this.buildReviewContext(taskId, task, result);
       const newAssessment = await this.ctx.assessFn(current, this.ctx.agentWorkDir, progressCb, judgeCtx, this.ctx.config.settings.reasoning);
       setAssessment(result, newAssessment, "judge");
-      await this.ctx.taskStore.updateTask(taskId, { result });
+      await this.patchTask(taskId, { result });
 
       if (newAssessment.passed) {
         this.ctx.emitter.emit("assessment:complete", {
@@ -718,7 +802,8 @@ export class AssessmentOrchestrator {
         });
         return this.transitionToDone(taskId, task, result);
       }
-    } catch { /* re-assessment failed */
+    } catch (error) {
+      if (isExecutionConflict(error)) throw error; /* re-assessment failed */
     }
 
     return false;
@@ -741,7 +826,8 @@ export class AssessmentOrchestrator {
           if (found) return found;
         }
       }
-    } catch { /* permission error or missing dir */ }
+    } catch (error) {
+      if (isExecutionConflict(error)) throw error; /* permission error or missing dir */ }
     return null;
   }
 
@@ -750,7 +836,7 @@ export class AssessmentOrchestrator {
    * without burning a full retry. After maxFixAttempts, fall back to full retry.
    */
   private async fixOrRetry(taskId: string, _task: Task, result: TaskResult): Promise<void> {
-    const current = await this.ctx.taskStore.getTask(taskId);
+    const current = await this.readTask(taskId);
     if (!current) return;
 
     // Side-effects guard: block automatic fix/retry for tasks with irreversible actions.
@@ -762,13 +848,13 @@ export class AssessmentOrchestrator {
       this.ctx.emitter.emit("log", { level: "warn", message: `[${taskId}] ${reason}` });
       // Preserve original description and prepare fix prompt for when approval comes
       if (!current.originalDescription) {
-        await this.ctx.taskStore.updateTask(taskId, { originalDescription: current.description });
+        await this.patchTask(taskId, { originalDescription: current.description });
       }
-      await this.ctx.taskStore.updateTask(taskId, {
+      await this.patchTask(taskId, {
         description: buildSideEffectFixPrompt(current, result),
         phase: "fix",
       });
-      await this.ctx.taskStore.transition(taskId, "awaiting_approval");
+      await this.transitionTask(taskId, "awaiting_approval");
       return;
     }
 
@@ -776,26 +862,18 @@ export class AssessmentOrchestrator {
     const fixAttempts = (current.fixAttempts ?? 0) + 1;
 
     if (fixAttempts <= maxFix) {
-      // Save original description before first fix/retry
-      if (!current.originalDescription) {
-        await this.ctx.taskStore.updateTask(taskId, { originalDescription: current.description });
-      }
-
-      this.ctx.emitter.emit("task:fix", { taskId, attempt: fixAttempts, maxFix });
-
-      // Clear old outcomes — the agent will produce fresh ones on re-execution.
-      await this.ctx.taskStore.updateTask(taskId, { outcomes: [] });
-      // unsafeSetStatus bypasses retry increment (fix attempts are NOT real failures)
-      await this.ctx.taskStore.unsafeSetStatus(taskId, "pending", "fix phase — no retry burn");
-      await this.ctx.taskStore.updateTask(taskId, {
+      await this.requeueTask(taskId, false, "fix phase — no retry burn", {
+        originalDescription: current.originalDescription ?? current.description,
+        outcomes: [],
         phase: "fix",
         fixAttempts,
         description: buildFixPrompt(current, result),
       });
+      this.ctx.emitter.emit("task:fix", { taskId, attempt: fixAttempts, maxFix });
     } else {
       // Fix attempts exhausted → full retry (burns 1 retry)
       this.ctx.emitter.emit("log", { level: "warn", message: `[${taskId}] Fix attempts exhausted (${maxFix}), falling back to full retry` });
-      await this.ctx.taskStore.updateTask(taskId, {
+      await this.patchTask(taskId, {
         phase: "execution",
         fixAttempts: 0,
       });
@@ -805,7 +883,15 @@ export class AssessmentOrchestrator {
 
   /** @internal — exposed for test access via Orchestrator facade */
   async retryOrFail(taskId: string, _task: Task, result: TaskResult): Promise<void> {
-    const current = await this.ctx.taskStore.getTask(taskId);
+    if (!this.execution && isTaskExecutionStore(this.ctx.taskStore)) {
+      const scope = new AssessmentOrchestrator(this.ctx, this.ports);
+      scope.setApprovalManager(this.approvals);
+      scope.execution = taskExecutionReference(_task);
+      try { await scope.retryOrFail(taskId, _task, result); }
+      catch (error) { if (!isExecutionConflict(error)) throw error; }
+      return;
+    }
+    const current = await this.readTask(taskId);
     if (!current) return;
 
     // Side-effects guard: block automatic retry for tasks with irreversible actions.
@@ -815,13 +901,13 @@ export class AssessmentOrchestrator {
       this.ctx.emitter.emit("log", { level: "warn", message: `[${taskId}] ${reason}` });
       // Preserve original description and prepare retry prompt for when approval comes
       if (!current.originalDescription) {
-        await this.ctx.taskStore.updateTask(taskId, { originalDescription: current.description });
+        await this.patchTask(taskId, { originalDescription: current.description });
       }
-      await this.ctx.taskStore.updateTask(taskId, {
+      await this.patchTask(taskId, {
         description: buildSideEffectRetryPrompt(current, result),
         phase: "execution",
       });
-      await this.ctx.taskStore.transition(taskId, "awaiting_approval");
+      await this.transitionTask(taskId, "awaiting_approval");
       return;
     }
 
@@ -830,7 +916,7 @@ export class AssessmentOrchestrator {
       const mission = await resolveMissionForTask(resolveMissionStore(this.ctx), current);
       if (mission && mission.status === "cancelled") {
         this.ctx.emitter.emit("log", { level: "debug", message: `[${taskId}] Skipping retry — mission cancelled` });
-        await this.ctx.taskStore.transition(taskId, "failed");
+        await this.transitionTask(taskId, "failed");
         return;
       }
     }
@@ -841,7 +927,7 @@ export class AssessmentOrchestrator {
 
       // Save original description before first retry
       if (!current.originalDescription) {
-        await this.ctx.taskStore.updateTask(taskId, { originalDescription: current.description });
+        await this.patchTask(taskId, { originalDescription: current.description });
       }
 
       // Check if we should escalate to a different agent
@@ -859,18 +945,14 @@ export class AssessmentOrchestrator {
         }
       }
 
-      this.ctx.emitter.emit("task:retry", { taskId, attempt: nextAttempt, maxRetries: current.maxRetries });
-      // Clear old outcomes — the agent will produce fresh ones on re-execution.
-      // Without this, outcomes accumulate across retries and all get re-sent via notifications.
-      await this.ctx.taskStore.updateTask(taskId, { outcomes: [] });
-      await this.ctx.taskStore.transition(taskId, "failed");
-      await this.ctx.taskStore.transition(taskId, "pending");
-      await this.ctx.taskStore.updateTask(taskId, {
+      await this.requeueTask(taskId, true, "Assessment retry", {
+        outcomes: [],
         description: buildRetryPrompt(current, result),
         assignTo,
         phase: "execution",
         fixAttempts: 0,
       });
+      this.ctx.emitter.emit("task:retry", { taskId, attempt: nextAttempt, maxRetries: current.maxRetries });
     } else {
       this.ctx.emitter.emit("task:maxRetries", { taskId });
 
@@ -889,8 +971,7 @@ export class AssessmentOrchestrator {
           });
           return;  // Escalation manager (or other hook) is handling this
         }
-        await this.ctx.taskStore.transition(taskId, "failed");
-        await this.ctx.taskStore.updateTask(taskId, { phase: undefined });
+        await this.transitionTask(taskId, "failed", { phase: undefined });
 
         // Fire after:task:fail
         this.ctx.hooks.runAfter("task:fail", {
@@ -899,10 +980,10 @@ export class AssessmentOrchestrator {
           result,
           reason: "maxRetries",
         }).catch(() => {});
-      } catch {
+      } catch (error) {
+        if (isExecutionConflict(error)) throw error;
         // Hook failed — fail the task normally
-        await this.ctx.taskStore.transition(taskId, "failed");
-        await this.ctx.taskStore.updateTask(taskId, { phase: undefined });
+        await this.transitionTask(taskId, "failed", { phase: undefined });
       }
     }
   }

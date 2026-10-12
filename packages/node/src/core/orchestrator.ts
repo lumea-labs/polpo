@@ -17,7 +17,7 @@ import type { MemoryStore } from "@polpo-ai/core/memory-store";
 import type { MemoryExtractionCandidateStore, MemoryItemStore } from "@polpo-ai/core";
 import type { LogStore } from "@polpo-ai/core/log-store";
 import { assessTask } from "../assessment/assessor.js";
-import { analyzeBlockedTasks, resolveDeadlock, isResolving } from "./deadlock-resolver.js";
+import { createDeadlockResolver } from "./deadlock-resolver.js";
 import {
   CanonicalTurnOutboxDispatcher,
   OrchestratorEngine,
@@ -25,7 +25,7 @@ import {
   resolveConfiguredModelSelection,
   resolveMissionStore,
 } from "@polpo-ai/core";
-import type { DeadlockResolverPort, DeadlockFacade, MemoryExtractor } from "@polpo-ai/core";
+import type { MemoryExtractor } from "@polpo-ai/core";
 import { createLocalMemoryLearningHandler } from "../memory/automatic-learning.js";
 import { TypedEmitter } from "./events.js";
 import type { TaskStore } from "@polpo-ai/core/task-store";
@@ -52,7 +52,6 @@ import type { OrchestratorContext } from "@polpo-ai/core/orchestrator-context";
 import {
   buildFixPrompt,
   buildRetryPrompt,
-  sleep,
 } from "@polpo-ai/core/assessment-prompts";
 import type { AssessFn } from "@polpo-ai/core/orchestrator-context";
 import { setProviderOverrides, validateProviderKeys, setModelAllowlist } from "@polpo-ai/llm";
@@ -106,6 +105,8 @@ export interface OrchestratorOptions {
   spawner?: Spawner;
   runtimeContext?: RuntimeContextProvider;
   connectionCapabilityResolver?: import("@polpo-ai/core").ConnectionCapabilityResolver;
+  resolveCustomTools?: import("@polpo-ai/core").ResolveCustomTools;
+  resolveMcpCapabilities?: import("@polpo-ai/core").ResolveMcpRuntimeCapabilities;
   /** Optional host-selected extractor. Automatic learning stays durable-pending when absent. */
   memoryExtractor?: MemoryExtractor;
   /**
@@ -130,11 +131,14 @@ export class Orchestrator extends TypedEmitter {
   private cachedAgentWorkDir: string | null = null;
   private interactive = false;
   private stopped = false;
+  private shutdownPromise?: Promise<void>;
   private assessFn: AssessFn;
   private spawner: Spawner;
   /** True when the caller injected a spawner — settings never override it. */
   private spawnerInjected = false;
   private connectionCapabilityResolver?: import("@polpo-ai/core").ConnectionCapabilityResolver;
+  private resolveCustomTools?: import("@polpo-ai/core").ResolveCustomTools;
+  private resolveMcpCapabilities?: import("@polpo-ai/core").ResolveMcpRuntimeCapabilities;
   private injectedStore?: TaskStore;
   private injectedRunStore?: RunStore;
   private memoryStore!: MemoryStore;
@@ -253,6 +257,8 @@ export class Orchestrator extends TypedEmitter {
       this.runtimeContext = opts.runtimeContext;
       this.executionRouteClassifierResolver = opts.resolveExecutionRouteClassifier;
       this.connectionCapabilityResolver = opts.connectionCapabilityResolver;
+      this.resolveCustomTools = opts.resolveCustomTools;
+      this.resolveMcpCapabilities = opts.resolveMcpCapabilities;
       this.memoryExtractor = opts.memoryExtractor;
       this.spawnerInjected = !!opts.spawner;
       this.spawner = opts.spawner ?? new NodeSpawner({ polpoDir: this.polpoDir, cwd: this.workDir });
@@ -298,6 +304,8 @@ export class Orchestrator extends TypedEmitter {
         fs: this.fs,
         shell: this.shell,
         connectionCapabilityResolver: this.connectionCapabilityResolver,
+        resolveCustomTools: this.resolveCustomTools,
+        resolveMcpCapabilities: this.resolveMcpCapabilities,
       };
     });
     this.spawner = new CompositeSpawner(this.spawner, inProcess);
@@ -588,10 +596,10 @@ export class Orchestrator extends TypedEmitter {
     this.assessor = new AssessmentOrchestrator(ctx);
 
     // Initialize approval gates if configured
-    if (this.config.settings.approvalGates && this.config.settings.approvalGates.length > 0) {
+    {
       const approvalStore = ctx.approvalStore ?? new FileApprovalStore(this.polpoDir);
       this.approvalMgr = new ApprovalManager(ctx, approvalStore);
-      this.approvalMgr.init();
+      await this.approvalMgr.init();
     }
 
     // Initialize escalation manager if configured
@@ -614,7 +622,7 @@ export class Orchestrator extends TypedEmitter {
     // Initialize scheduler (always available — zero cost when no schedules exist)
     if (this.config.settings.enableScheduler !== false) {
       this.scheduler = new Scheduler(ctx);
-      this.scheduler.setExecutor((missionId) => this.missionExec.executeMission(missionId));
+      this.scheduler.setExecutor((missionId, options, expected) => this.missionExec.executeMission(missionId, options, expected));
       this.scheduler.init();
     }
 
@@ -627,12 +635,7 @@ export class Orchestrator extends TypedEmitter {
     this.watcherMgr.start();
 
     // Build the deadlock resolver port (wraps the shell's deadlock-resolver module)
-    const deadlockResolver: DeadlockResolverPort = {
-      isResolving,
-      analyzeBlockedTasks,
-      resolveDeadlock: (analysis, facade: DeadlockFacade) =>
-        resolveDeadlock(analysis as ReturnType<typeof analyzeBlockedTasks>, this),
-    };
+    const deadlockResolver = createDeadlockResolver();
 
     // Create the pure orchestration engine
     this._engine = new OrchestratorEngine({
@@ -930,71 +933,35 @@ export class Orchestrator extends TypedEmitter {
     this.engine?.stop();
   }
 
-  /**
-   * Graceful shutdown: SIGTERM all runner subprocesses, wait for them to write results,
-   * preserve completed work, leave in-progress tasks for recovery on restart.
-   */
-  async gracefulStop(timeoutMs = 5000): Promise<void> {
+  /** Preserve uncollected results for the normal assessment/approval pipeline.
+   * A timeout rejects without closing stores beneath unfinished owned work. */
+  gracefulStop(timeoutMs = 5000): Promise<void> {
+    if (this.shutdownPromise) return this.shutdownPromise;
+    this.stop();
+    this.runner?.stop();
+    const closing = this.finishShutdown(timeoutMs);
+    this.shutdownPromise = closing;
+    void closing.catch(() => { if (this.shutdownPromise === closing) this.shutdownPromise = undefined; });
+    return closing;
+  }
+
+  private async finishShutdown(timeoutMs: number): Promise<void> {
     await this.hookRegistry.runBefore("orchestrator:shutdown", {});
-    this.stopped = true;
-    const activeRuns = await this.runStore.getActiveRuns();
-
-    if (activeRuns.length > 0) {
-      this.emit("log", { level: "warn", message: `Shutting down ${activeRuns.length} running agent(s)...` });
-
-      // Send SIGTERM to all runner subprocesses; in-process runs (negative
-      // synthetic pids) are aborted through the spawner instead.
-      for (const run of activeRuns) {
-        if (run.pid > 0) {
-          try { process.kill(run.pid, "SIGTERM"); } catch { /* already dead */ }
-        } else if (run.pid < 0) {
-          try { this.spawner.kill(run.pid); } catch { /* already gone */ }
-        }
-      }
-
-      // Wait for runners to write their results
-      const deadline = Date.now() + timeoutMs;
-      while (Date.now() < deadline) {
-        const stillActive = await this.runStore.getActiveRuns();
-        if (stillActive.length === 0) break;
-        await sleep(200);
-      }
-
-      // Force-mark any remaining active runs as killed
-      for (const run of await this.runStore.getActiveRuns()) {
-        await this.runStore.completeRun(run.id, "killed", {
-          exitCode: 1, stdout: "", stderr: "Killed during shutdown", duration: 0,
-        });
-      }
-    }
-
-    // Only save completed work — leave killed/failed tasks in current state for recovery
-    for (const run of await this.runStore.getTerminalRuns()) {
-      const task = await this.registry.getTask(run.taskId);
-      if (run.status === "completed" && run.result?.exitCode === 0 && task && task.status !== "done") {
-        // Agent finished successfully — save result and mark done (skip async assessment)
-        try {
-          await this.registry.updateTask(run.taskId, { result: run.result });
-          if (task.status === "pending") await this.registry.transition(run.taskId, "assigned");
-          if (task.status === "assigned") await this.registry.transition(run.taskId, "in_progress");
-          if (task.status === "in_progress") await this.registry.transition(run.taskId, "review");
-          await this.registry.transition(run.taskId, "done");
-        } catch { /* leave for recovery on restart */ }
-      }
-      // Keep shutdown-interrupted Runs for diagnostics, but acknowledge them:
-      // recoverOrphanedTasks() resets their task without burning a retry.
-      if (this.runStore.markRunCollected) {
-        await this.runStore.markRunCollected(run.id);
-      } else {
-        await this.runStore.deleteRun(run.id);
-      }
-    }
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        Promise.all([this.engine?.close(), this.runner?.close()]),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error("Orchestrator shutdown timed out; owned work is not confirmed stopped and stores remain open")), timeoutMs);
+        }),
+      ]);
+    } finally { if (timer) clearTimeout(timer); }
 
     // Clear process list in state and close stores
     await this.registry.setState({ processes: [], completedAt: new Date().toISOString() });
     if (this.configReloadTimer) clearTimeout(this.configReloadTimer);
     this.configWatcher?.close();
-    this.approvalMgr?.dispose();
+    await this.approvalMgr?.close();
     this.escalationMgr?.dispose();
     this.slaMonitor?.dispose();
     this.qualityController?.dispose();
@@ -1035,7 +1002,7 @@ export class Orchestrator extends TypedEmitter {
     this.slaMonitor = undefined;
     this.escalationMgr?.dispose();
     this.escalationMgr = undefined;
-    this.approvalMgr?.dispose();
+    await this.approvalMgr?.close();
     this.approvalMgr = undefined;
 
     // 2. Update config in-place (preserves the shared reference in OrchestratorContext)
@@ -1069,10 +1036,10 @@ export class Orchestrator extends TypedEmitter {
     // 4. Re-initialize optional subsystems from new config
 
     // Approval gates
-    if (this.config.settings.approvalGates && this.config.settings.approvalGates.length > 0) {
+    {
       const approvalStore = this.drizzleStores?.approvalStore ?? new FileApprovalStore(this.polpoDir);
       this.approvalMgr = new ApprovalManager(ctx, approvalStore);
-      this.approvalMgr.init();
+      await this.approvalMgr.init();
     }
 
     // Escalation manager
@@ -1098,7 +1065,7 @@ export class Orchestrator extends TypedEmitter {
     if (this.config.settings.enableScheduler !== false) {
       if (!this.scheduler) {
         this.scheduler = new Scheduler(ctx);
-        this.scheduler.setExecutor((missionId) => this.missionExec.executeMission(missionId));
+        this.scheduler.setExecutor((missionId, options, expected) => this.missionExec.executeMission(missionId, options, expected));
       }
       this.scheduler.init();
     } else {

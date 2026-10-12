@@ -26,8 +26,8 @@ export type { Dialect } from "./utils.js";
 // ── Schema sets ───────────────────────────────────────────────────────
 
 import {
-  tasksPg, missionsPg, metadataPg, processesPg,
-  tasksSqlite, missionsSqlite, metadataSqlite, processesSqlite,
+  tasksPg, missionsPg, missionExecutionsPg, metadataPg, processesPg,
+  tasksSqlite, missionsSqlite, missionExecutionsSqlite, metadataSqlite, processesSqlite,
 } from "./schema/tasks.js";
 import { runsPg, runsSqlite } from "./schema/runs.js";
 import {
@@ -97,7 +97,7 @@ import { DrizzleChannelManagementStore } from "./stores/channel-management-store
 
 // ── Store bundle type ─────────────────────────────────────────────────
 
-import type { MissionStore } from "@polpo-ai/core";
+import type { MissionStore, MissionExecutionCancellationStore } from "@polpo-ai/core";
 import type { TaskStore } from "@polpo-ai/core/task-store";
 import type { RunStore } from "@polpo-ai/core/run-store";
 import type {
@@ -115,16 +115,20 @@ import type { CheckpointStore } from "@polpo-ai/core/checkpoint-store";
 import type { DelayStore } from "@polpo-ai/core/delay-store";
 import type { ConfigStore } from "@polpo-ai/core/config-store";
 import type { TeamStore } from "@polpo-ai/core/team-store";
-import type { AgentStore } from "@polpo-ai/core/agent-store";
+import type { VersionedAgentStore } from "@polpo-ai/core/agent-store";
 import type { VaultStore } from "@polpo-ai/core/vault-store";
 import type { PlaybookStore } from "@polpo-ai/core/playbook-store";
 import type { SkillStore } from "@polpo-ai/core/skill-store";
 import type { ChannelManagementStore } from "@polpo-ai/channels";
 
+import type { TaskApprovalExecutionStore } from "@polpo-ai/core/task-execution";
+
 export interface DrizzleStores {
   /** Mission persistence — same instance as taskStore (implements both). */
   missionStore: MissionStore;
+  missionExecutionStore: MissionExecutionCancellationStore;
   taskStore: TaskStore;
+  taskExecutionStore: TaskApprovalExecutionStore;
   runStore: RunStore;
   runEventStore: RunEventStore;
   runExecutionLeaseStore: RunExecutionLeaseStore;
@@ -139,7 +143,7 @@ export interface DrizzleStores {
   delayStore: DelayStore;
   configStore: ConfigStore;
   teamStore: TeamStore;
-  agentStore: AgentStore;
+  agentStore: VersionedAgentStore;
   vaultStore: VaultStore;
   playbookStore: PlaybookStore;
   skillStore: SkillStore;
@@ -176,12 +180,14 @@ export function createPgStores(
   options: CreatePgStoresOptions = {},
 ): DrizzleStores {
   const taskStore = new DrizzleTaskStore(db, {
-    tasks: tasksPg, missions: missionsPg, metadata: metadataPg, processes: processesPg,
-  }, "pg");
+    tasks: tasksPg, runs: runsPg, approvals: approvalsPg, missions: missionsPg, missionExecutions: missionExecutionsPg, metadata: metadataPg, processes: processesPg,
+  }, "pg", options.transaction);
   return {
     taskStore,
+    taskExecutionStore: taskStore,
     // Same instance: the Drizzle task store also implements the mission block.
     missionStore: taskStore as unknown as MissionStore,
+    missionExecutionStore: taskStore,
     runStore: new DrizzleRunStore(db, runsPg, "pg"),
     runEventStore: new DrizzleRunEventStore(db, {
       sequences: runEventSequencesPg,
@@ -235,12 +241,14 @@ export function createPgStores(
  */
 export function createSqliteStores(db: any): DrizzleStores {
   const taskStore = new DrizzleTaskStore(db, {
-    tasks: tasksSqlite, missions: missionsSqlite, metadata: metadataSqlite, processes: processesSqlite,
+    tasks: tasksSqlite, runs: runsSqlite, approvals: approvalsSqlite, missions: missionsSqlite, missionExecutions: missionExecutionsSqlite, metadata: metadataSqlite, processes: processesSqlite,
   }, "sqlite");
   return {
     taskStore,
+    taskExecutionStore: taskStore,
     // Same instance: the Drizzle task store also implements the mission block.
     missionStore: taskStore as unknown as MissionStore,
+    missionExecutionStore: taskStore,
     runStore: new DrizzleRunStore(db, runsSqlite, "sqlite"),
     runEventStore: new DrizzleRunEventStore(db, {
       sequences: runEventSequencesSqlite,

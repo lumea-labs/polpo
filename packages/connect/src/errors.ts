@@ -10,6 +10,8 @@ export type ConnectErrorCode =
   | "token_not_available"
   | "token_exchange_failed"
   | "refresh_unavailable"
+  | "rate_limited"
+  | "dispatch_unavailable"
   | "oauth_state_not_found"
   | "oauth_state_expired"
   | "oauth_error"
@@ -67,7 +69,10 @@ function defaultStatus(code: ConnectErrorCode): number {
     case "http_error":
       return 502;
     case "refresh_unavailable":
+    case "dispatch_unavailable":
       return 503;
+    case "rate_limited":
+      return 429;
     default:
       return 500;
   }

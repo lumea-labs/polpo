@@ -26,7 +26,11 @@
 
 import { describe, test, expect, beforeAll, afterAll, vi } from "vitest";
 import { mkdtemp, mkdir, rm, readFile, unlink, writeFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { existsSync } from "node:fs";
+import { FileRunStore } from "@polpo-ai/file-stores";
+import { EphemeralRunStore } from "../server/ephemeral-run-store.js";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ResolvedModel } from "@polpo-ai/llm";
@@ -39,6 +43,7 @@ import {
 } from "./helpers/mock-llm.js";
 import { convertArrayToReadableStream } from "ai/test";
 import { jsonSchema } from "ai";
+import { Type } from "@sinclair/typebox";
 
 // ── Mock the LLM module BEFORE any imports that pull it in ──
 
@@ -75,6 +80,7 @@ import { InMemorySteeringController } from "@polpo-ai/core/steering";
 import {
   RuntimeGuardrailEngine,
   createRunToolMiddleware,
+  createRunPreflightPolicy,
 } from "@polpo-ai/core/guardrails";
 
 // ── Helpers ─────────────────────────────────────────────
@@ -141,6 +147,85 @@ afterAll(async () => {
 // ── Tests ───────────────────────────────────────────────
 
 describe("executeRun — shared run lifecycle", () => {
+  test.each([
+    { agentIdentity: { name: "another-agent", incarnation: "original" } },
+    { agentIdentity: { name: "lifecycle-agent", incarnation: "original" }, toolInvocation: {
+      requestId: "r", runId: "r", surface: "task" as const, metadata: {}, agent: { name: "lifecycle-agent", incarnation: "replacement" },
+    } },
+  ])("refuses inconsistent runner agent identity before creating capabilities: %j", async binding => {
+    const resolveMcpCapabilities = vi.fn();
+    const outcome = await executeRun(makeConfig(binding), { runStore: new InMemoryRunStore(), pid: -1, configPath: "memory://identity",
+      resolveMcpCapabilities });
+    expect(outcome.status).toBe("failed");
+    expect(outcome.result.stderr).toMatch(/identity/i);
+    expect(resolveMcpCapabilities).not.toHaveBeenCalled();
+  });
+  test("carries host MCP capability selection through the real task lifecycle and cleans up each call", async () => {
+    setMockModel(mockTurnSequenceModel([
+      { type: "tool-call", toolName: "mcp__docs__read", args: { user: "forged" } },
+      { type: "text", text: "done" },
+    ]));
+    const dispose = vi.fn();
+    const resolve = vi.fn(async (_input: import("@polpo-ai/core").McpCapabilityResolveInput) => ({
+      call: async () => ({ content: [{ type: "text", text: "private account read" }] }), dispose,
+    }));
+    const config = makeConfig({ agent: makeAgent({ allowedTools: ["mcp__docs__read"] }), task: makeTask({ user: "customer-a", metadata: { connectionNamespace: "app-a" } }),
+      agentIdentity: { name: "lifecycle-agent", incarnation: "original" } });
+    const outcome = await executeRun(config, { runStore: new InMemoryRunStore(), pid: -1, configPath: "memory://mcp",
+      resolveMcpCapabilities: () => ({ docs: { tools: [{ name: "read", inputSchema: { type: "object" } }], resolver: { resolve } } }),
+    });
+    expect(outcome.status).toBe("completed");
+    expect(resolve).toHaveBeenCalledOnce();
+    expect(resolve.mock.calls[0][0].invocation).toMatchObject({ user: "customer-a", metadata: { connectionNamespace: "app-a" }, runId: config.runId, surface: "task",
+      agent: { name: "lifecycle-agent", incarnation: "original" } });
+    expect(dispose).toHaveBeenCalledOnce();
+  });
+  test("carries host custom-tool execution through the task lifecycle with trusted identity", async () => {
+    setMockModel(mockTurnSequenceModel([
+      { type: "tool-call", toolName: "signed_request", args: { user: "forged" } },
+      { type: "text", text: "done" },
+    ]));
+    const execute = vi.fn(async () => ({ content: [{ type: "text" as const, text: "sandbox result" }], details: {} }));
+    const resolveCustomTools = vi.fn<import("@polpo-ai/core").ResolveCustomTools>(async () => [{
+      name: "signed_request", label: "Sign", description: "Host-owned sandbox execution", parameters: Type.Object({ user: Type.String() }), execute,
+    }]);
+    const config = makeConfig({ agent: makeAgent({ allowedTools: ["signed_request"] }), task: makeTask({ user: "customer-a", metadata: { connectionNamespace: "app-a" } }),
+      agentIdentity: { name: "lifecycle-agent", incarnation: "original" } });
+    const outcome = await executeRun(config, { runStore: new InMemoryRunStore(), pid: -1,
+      configPath: "memory://custom-tools", resolveCustomTools });
+    expect(outcome.status).toBe("completed");
+    expect(resolveCustomTools).toHaveBeenCalledOnce();
+    expect(resolveCustomTools.mock.calls[0][0]).toMatchObject({ agentName: "lifecycle-agent", allowedTools: ["signed_request"],
+      invocation: { user: "customer-a", metadata: { connectionNamespace: "app-a" }, runId: config.runId, surface: "task",
+        agent: { name: "lifecycle-agent", incarnation: "original" } } });
+    expect(resolveCustomTools.mock.calls[0][0].signal).toBeInstanceOf(AbortSignal);
+    expect(execute).toHaveBeenCalledOnce();
+  });
+  test.each(["input", "model.preflight"] as const)("keeps the original caller context when %s rewrites task content", async phase => {
+    setMockModel(mockTextModel("done"));
+    const config = makeConfig({ task: makeTask({ user: "customer-a", metadata: { connectionNamespace: "app-a" } }) });
+    const resolveCustomTools = vi.fn<import("@polpo-ai/core").ResolveCustomTools>(async () => []);
+    const policy = new RuntimeGuardrailEngine([{ id: "rewrite-caller", phases: [phase], evaluate: input => {
+      const value = input.value as Record<string, any>;
+      const task = phase === "input" ? value : value.task;
+      const rewritten = { ...task, user: "customer-b", metadata: { connectionNamespace: "app-b" } };
+      return { action: "rewrite", risk: "low", reason: "Fixture content rewrite", value: phase === "input" ? rewritten : { ...value, task: rewritten } };
+    } }]);
+    const outcome = await executeRun(config, { runStore: new InMemoryRunStore(), pid: -1, configPath: "memory://preflight",
+      runPreflightPolicy: createRunPreflightPolicy(policy), resolveCustomTools });
+    expect(outcome.status).toBe("completed");
+    expect(resolveCustomTools).toHaveBeenCalledOnce();
+    expect(resolveCustomTools.mock.calls[0][0].invocation).toMatchObject({ user: "customer-a", metadata: { connectionNamespace: "app-a" } });
+  });
+  test("fails a Connection-backed subprocess configuration without a host resolver instead of using its URL", async () => {
+    setMockModel(mockTextModel("must not start"));
+    const config = makeConfig({ agent: makeAgent({ mcpServers: { docs: {
+      type: "http", url: "https://must-not-be-opened.example/mcp", connectionId: "physical-account",
+    } } }) });
+    const outcome = await executeRun(config, { runStore: new InMemoryRunStore(), pid: 1, configPath: "file://runner" });
+    expect(outcome.status).toBe("failed");
+    expect(outcome.result.stderr).toContain("MCP Connection capability is unavailable");
+  });
   test("local activity logging is best-effort for a non-writable remote polpoDir", async () => {
     const notADirectory = join(tmpRoot, "not-a-directory");
     await import("node:fs/promises").then(({ writeFile }) => writeFile(notADirectory, "file"));
@@ -851,6 +936,200 @@ describe("executeRun — shared run lifecycle", () => {
     expect(run?.result?.stderr).toContain("model exploded");
   });
 
+  test.each(["log-session", "registration", "steering"] as const)("finalizes once when initial %s preparation rejects", async stage => {
+    setMockModel(mockTextModel("must not start"));
+    const store = new EphemeralRunStore(), config = makeConfig();
+    const steering = new InMemorySteeringController();
+    const finalize = vi.fn(async () => {});
+    const resolveCustomTools = vi.fn(async () => []);
+    const createLogSession = vi.fn(async () => ({ sessionId: "fixture", append: async () => {} }));
+    if (stage === "log-session") createLogSession.mockRejectedValueOnce(new Error("initial fixture failure"));
+    if (stage === "registration") vi.spyOn(store, "upsertRun").mockRejectedValueOnce(new Error("initial fixture failure"));
+    if (stage === "steering") {
+      config.resumeState = { steering: steering.snapshot() } as RunnerConfig["resumeState"];
+      vi.spyOn(steering, "restore").mockImplementationOnce(() => { throw new Error("initial fixture failure"); });
+    }
+    const outcome = await executeRun(config, { runStore: store, pid: -1, configPath: "memory://initial-error",
+      steering, createLogSession, finalize, resolveCustomTools });
+    expect(outcome.status).toBe("failed");
+    expect(finalize).toHaveBeenCalledOnce();
+    expect(resolveCustomTools).not.toHaveBeenCalled();
+    expect(() => steering.enqueue({ id: "late", mode: "steer", content: { text: "late" } })).toThrow();
+  });
+
+  test.each(["host", "durable", "deadline", "steering"] as const)("stops cooperative initial log preparation on %s cancellation", async source => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const store = new EphemeralRunStore(), config = makeConfig(), abort = new AbortController();
+    const now = new Date().toISOString();
+    await store.upsertRun({ id: config.runId, taskId: config.taskId, agentName: config.agent.name,
+      pid: 0, status: "running", startedAt: now, updatedAt: now, configPath: "pending://run",
+      activity: { filesCreated: [], filesEdited: [], toolCalls: 0, totalTokens: 0, lastUpdate: now } });
+    const upsert = vi.spyOn(store, "upsertRun"), finalize = vi.fn(async () => {});
+    const steering = new InMemorySteeringController();
+    const tools = vi.fn(async () => []);
+    let enter!: () => void;
+    const entered = new Promise<void>(resolve => { enter = resolve; });
+    let initialSignal: AbortSignal | undefined;
+    const running = executeRun(config, { runStore: store, pid: -1, configPath: "memory://initial-stop",
+      signal: abort.signal, steering, preparationTimeoutMs: source === "deadline" ? 100 : 30_000,
+      finalize, resolveCustomTools: tools,
+      createLogSession: async ({ signal }) => {
+        initialSignal = signal; enter();
+        await new Promise<void>((_, reject) => {
+          const stop = () => reject(new Error("Initial log preparation stopped"));
+          if (signal.aborted) stop(); else signal.addEventListener("abort", stop, { once: true });
+        });
+        throw new Error("Unreachable");
+      },
+    });
+    try {
+      await entered;
+      if (source === "host") abort.abort();
+      if (source === "steering") steering.abort();
+      if (source === "durable") await store.completeRun(config.runId, "killed",
+        { exitCode: 143, stdout: "", stderr: "Stopped by operator", duration: 1 });
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(initialSignal?.aborted).toBe(true);
+      const outcome = await running;
+      expect(outcome.status).toBe("killed");
+      expect(finalize).toHaveBeenCalledOnce();
+      expect(upsert).not.toHaveBeenCalled();
+      expect(tools).not.toHaveBeenCalled();
+      expect(vi.getTimerCount()).toBe(0);
+    } finally { abort.abort(); vi.useRealTimers(); await running; }
+  });
+
+  test("retains a pending initial registration until its late commit and preserves concurrent cancellation", async () => {
+    const store = new EphemeralRunStore(), config = makeConfig(), abort = new AbortController();
+    let enter!: () => void, release!: () => void;
+    const entered = new Promise<void>(resolve => { enter = resolve; });
+    const waiting = new Promise<void>(resolve => { release = resolve; });
+    const upsert = store.upsertRun.bind(store), finalize = vi.fn(async () => {});
+    vi.spyOn(store, "upsertRun").mockImplementation(async run => { enter(); await waiting; await upsert(run); });
+    const tools = vi.fn(async () => []);
+    let settled = false;
+    const running = executeRun(config, { runStore: store, pid: -1, configPath: "memory://late-registration",
+      signal: abort.signal, finalize, resolveCustomTools: tools }).then(value => { settled = true; return value; });
+    try {
+      await entered; abort.abort();
+      await Promise.resolve();
+      expect(settled).toBe(false); expect(finalize).not.toHaveBeenCalled();
+      const result = { exitCode: 143, stdout: "", stderr: "Concurrent cancellation", duration: 1 };
+      const now = new Date().toISOString();
+      await upsert({ id: config.runId, taskId: config.taskId, agentName: config.agent.name,
+        pid: 0, status: "killed", result, startedAt: now, updatedAt: now, configPath: "pending://run",
+        activity: { filesCreated: [], filesEdited: [], toolCalls: 0, totalTokens: 0, lastUpdate: now } });
+      release();
+      expect(await running).toEqual({ status: "killed", result });
+      expect(finalize).toHaveBeenCalledOnce(); expect(tools).not.toHaveBeenCalled();
+      expect((await store.getRun(config.runId))?.result).toEqual(result);
+    } finally { release(); await running; }
+  });
+
+  test("does not register or open a log after a signal was already aborted", async () => {
+    const config = makeConfig(), store = new EphemeralRunStore(), abort = new AbortController();
+    abort.abort();
+    const register = vi.spyOn(store, "upsertRun"), createLogSession = vi.fn(), finalize = vi.fn(async () => {});
+    const outcome = await executeRun(config, { runStore: store, pid: -1, configPath: "memory://already-stopped",
+      signal: abort.signal, createLogSession, finalize });
+    expect(outcome.result.exitCode).toBe(1);
+    expect(register).not.toHaveBeenCalled(); expect(createLogSession).not.toHaveBeenCalled();
+    expect(finalize).toHaveBeenCalledOnce(); expect(await store.getRun(config.runId)).toBeUndefined();
+  });
+
+  test("preparation deadline is disarmed when the engine starts", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const config = makeConfig(), store = new EphemeralRunStore(), abort = new AbortController();
+    let enter!: () => void, release!: () => void;
+    const entered = new Promise<void>(resolve => { enter = resolve; });
+    const waiting = new Promise<void>(resolve => { release = resolve; });
+    const model = mockTextModel("Finished after preparation deadline");
+    setMockModel(new MockLanguageModelV3({ doStream: async options => {
+      enter(); await waiting; return model.doStream(options);
+    } }));
+    let initialSignal: AbortSignal | undefined;
+    const running = executeRun(config, { runStore: store, pid: -1, configPath: "memory://deadline-disarmed",
+      signal: abort.signal, preparationTimeoutMs: 100,
+      createLogSession: async ({ signal }) => {
+        initialSignal = signal; return { sessionId: "fixture", append: async () => {} };
+      },
+    });
+    try {
+      await entered;
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(initialSignal?.aborted).toBe(false);
+      release(); expect((await running).status).toBe("completed");
+      expect(vi.getTimerCount()).toBe(0);
+    } finally { abort.abort(); release(); vi.useRealTimers(); await running; }
+  });
+
+  test("does not repeat registration when the initial commit succeeds but its acknowledgement is lost", async () => {
+    const config = makeConfig(), store = new EphemeralRunStore();
+    const upsert = store.upsertRun.bind(store);
+    const register = vi.spyOn(store, "upsertRun").mockImplementation(async run => {
+      await upsert(run); throw new Error("Initial acknowledgement lost");
+    });
+    const finalize = vi.fn(async () => {}), tools = vi.fn(async () => []);
+    const outcome = await executeRun(config, { runStore: store, pid: -1, configPath: "memory://initial-ack-lost",
+      finalize, resolveCustomTools: tools });
+    expect(register).toHaveBeenCalledOnce(); expect(finalize).toHaveBeenCalledOnce();
+    expect(tools).not.toHaveBeenCalled(); expect(outcome.status).toBe("failed");
+    expect((await store.getRun(config.runId))?.result).toEqual(outcome.result);
+    expect(outcome.result.stderr).toContain("Initial acknowledgement lost");
+  });
+
+  test.each((["before-registration", "during-preflight", "aborted-signal", "abort-during-preflight"] as const).flatMap(when =>
+    [false, true].map(cleanupFailure => ({ when, cleanupFailure }))))("does not create tools after cancellation $when (cleanup failure=$cleanupFailure)", async ({ when, cleanupFailure }) => {
+    setMockModel(mockTextModel("must not start"));
+    const store = new EphemeralRunStore();
+    const config = makeConfig();
+    const result = { exitCode: 143, stdout: "", stderr: "cancelled by operator", duration: 1 };
+    if (when === "before-registration" || when === "aborted-signal") await store.upsertRun({ id: config.runId, taskId: config.taskId,
+      agentName: config.agent.name, pid: 0, status: "killed", result, startedAt: "now", updatedAt: "now",
+      configPath: "pending://run", activity: { filesCreated: [], filesEdited: [], toolCalls: 0, totalTokens: 0, lastUpdate: "now" } });
+    const resolveCustomTools = vi.fn<import("@polpo-ai/core").ResolveCustomTools>(async () => []);
+    const finalize = vi.fn(async () => { if (cleanupFailure) throw new Error("fixture cleanup failed"); });
+    const abort = new AbortController();
+    if (when === "aborted-signal") abort.abort();
+    const steering = new InMemorySteeringController();
+    const policy = new RuntimeGuardrailEngine([{ id: "cancel-during-preparation", phases: ["input"], evaluate: async () => {
+      if (when === "during-preflight") await store.completeRun(config.runId, "killed", result);
+      if (when === "abort-during-preflight") abort.abort();
+      return { action: "allow", risk: "low", reason: "Fixture preparation" };
+    } }]);
+    const outcome = await executeRun(config, { runStore: store, pid: -1, configPath: "memory://cancelled",
+      finalize, steering, resolveCustomTools, runPreflightPolicy: createRunPreflightPolicy(policy),
+      signal: abort.signal,
+    });
+    expect(outcome.status).toBe("killed");
+    expect(resolveCustomTools).not.toHaveBeenCalled();
+    expect(finalize).toHaveBeenCalledOnce();
+    expect((await store.getRun(config.runId))?.status).toBe("killed");
+    expect(outcome.result).toEqual((await store.getRun(config.runId))?.result);
+    if (when === "before-registration" || when === "during-preflight") expect(outcome.result).toEqual(result);
+    expect(() => steering.enqueue({ id: "late", mode: "steer", content: { text: "late" } })).toThrow();
+  });
+
+  test.each(["completed", "killed"] as const)("confirms persisted %s when completion acknowledgement is lost", async status => {
+    setMockModel(mockTextModel("done"));
+    const store = new EphemeralRunStore(), config = makeConfig();
+    const complete = store.completeRun.bind(store);
+    const cancelledResult = { exitCode: 143, stdout: "", stderr: "operator cancelled", duration: 1 };
+    const finalize = vi.fn(async () => {
+      if (status === "killed") await complete(config.runId, "killed", cancelledResult);
+    });
+    vi.spyOn(store, "completeRun").mockImplementation(async (...args) => {
+      await complete(...args);
+      throw new Error("fixture lost acknowledgement after commit");
+    });
+    const outcome = await executeRun(config, { runStore: store, pid: -1, configPath: "memory://ack-lost", finalize });
+    const persisted = (await store.getRun(config.runId))!;
+    expect(outcome.status).toBe(status);
+    expect(outcome.result).toEqual(persisted.result);
+    if (status === "killed") expect(outcome.result).toEqual(cancelledResult);
+    expect(finalize).toHaveBeenCalledTimes(1);
+  });
+
   test("finalizes host resources once before persisting a successful terminal run", async () => {
     setMockModel(mockTextModel("done"));
     const store = new InMemoryRunStore();
@@ -927,12 +1206,127 @@ describe("executeRun — shared run lifecycle", () => {
     })).toThrow(/closed/i);
   });
 
+  test.each([false, true])("observes another owner's persisted cancellation during a model call (cleanup failure=%s)", async cleanupFailure => {
+    let started = false, observedAbort = false;
+    setMockModel(new MockLanguageModelV3({ doStream: async opts => {
+      started = true;
+      await new Promise<void>((_, reject) => {
+        const stop = () => { observedAbort = true; reject(Object.assign(new Error("aborted"), { name: "AbortError" })); };
+        if (opts.abortSignal?.aborted) stop();
+        else opts.abortSignal?.addEventListener("abort", stop, { once: true });
+      });
+      return { stream: new ReadableStream() };
+    } }));
+    const config = makeConfig(), owner = new FileRunStore(polpoDir), operator = new FileRunStore(polpoDir);
+    const cleanupAbort = new AbortController(), finalize = vi.fn(async () => {
+      if (cleanupFailure) throw new Error("fixture finalization failed");
+    });
+    let settled: Awaited<ReturnType<typeof executeRun>> | undefined;
+    const running = executeRun(config, { runStore: owner, pid: -1, configPath: "memory://remote-stop", signal: cleanupAbort.signal, finalize })
+      .then(value => { settled = value; return value; });
+    const result = { exitCode: 143, stdout: "", stderr: "Stopped by a different host", duration: 10 };
+    try {
+      await vi.waitFor(() => expect(started).toBe(true));
+      if (cleanupFailure) await operator.completeRun(config.runId, "killed", result);
+      else {
+        // A different OS process commits cancellation through the real file
+        // coordinator. No local signal or spawner notification reaches us.
+        const module = new URL("../../node_modules/@polpo-ai/file-stores/dist/index.js", import.meta.url).href;
+        await promisify(execFile)(process.execPath, ["--input-type=module", "-e",
+          `import { FileRunStore } from ${JSON.stringify(module)}; await new FileRunStore(${JSON.stringify(polpoDir)}).completeRun(${JSON.stringify(config.runId)}, "killed", ${JSON.stringify(result)});`]);
+      }
+      await vi.waitFor(() => expect(settled).toBeDefined(), { timeout: 2200 });
+      expect(observedAbort).toBe(true);
+      expect(settled).toEqual({ status: "killed", result });
+      expect(await operator.getRun(config.runId)).toMatchObject({ status: "killed", result });
+      expect(finalize).toHaveBeenCalledTimes(1);
+    } finally { cleanupAbort.abort(); await running; }
+  });
+
+  test("observes durable cancellation during cooperative preflight without creating model or tools", async () => {
+    const store = new EphemeralRunStore(), config = makeConfig(), cleanupAbort = new AbortController();
+    let entered = false, settled: Awaited<ReturnType<typeof executeRun>> | undefined;
+    const tools = vi.fn(async () => []), finalize = vi.fn(async () => {});
+    const running = executeRun(config, { runStore: store, pid: -1, configPath: "memory://waiting-preflight",
+      signal: cleanupAbort.signal, resolveCustomTools: tools, finalize,
+      runPreflightPolicy: { evaluate: async input => {
+        entered = true;
+        await new Promise<void>((_, reject) => {
+          const stop = () => reject(new Error("Preflight stopped"));
+          if (input.signal?.aborted) stop(); else input.signal?.addEventListener("abort", stop, { once: true });
+        });
+        return { value: input.value, decisions: [] };
+      } },
+    }).then(value => { settled = value; return value; });
+    const result = { exitCode: 143, stdout: "", stderr: "Stopped during preparation", duration: 1 };
+    try {
+      await vi.waitFor(() => expect(entered).toBe(true));
+      await store.completeRun(config.runId, "killed", result);
+      await vi.waitFor(() => expect(settled).toEqual({ status: "killed", result }), { timeout: 2200 });
+      expect(tools).not.toHaveBeenCalled(); expect(finalize).toHaveBeenCalledTimes(1);
+    } finally { cleanupAbort.abort(); await running; }
+  });
+
+  test("does not report success when finalization removes the authoritative Run", async () => {
+    setMockModel(mockTextModel("Finished"));
+    const config = makeConfig(), store = new FileRunStore(polpoDir), operator = new FileRunStore(polpoDir);
+    const outcome = await executeRun(config, { runStore: store, pid: -1, configPath: "memory://deleted",
+      finalize: () => operator.deleteRun(config.runId) });
+    expect(outcome.status).toBe("failed");
+    expect(outcome.result.exitCode).toBe(1);
+    expect(outcome.result.stderr).toContain("not confirmed");
+    expect(await store.getRun(config.runId)).toBeUndefined();
+  });
+
+  test("cleans up when the first persisted-state lookup never resolves", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const store = new EphemeralRunStore(), config = makeConfig(), finalize = vi.fn(async () => {});
+    let enter!: () => void, release!: () => void;
+    const entered = new Promise<void>(resolve => { enter = resolve; });
+    const waiting = new Promise<void>(resolve => { release = resolve; });
+    const read = store.getRun.bind(store);
+    vi.spyOn(store, "getRun").mockImplementation(async id => { enter(); await waiting; return read(id); });
+    let settled: Awaited<ReturnType<typeof executeRun>> | undefined;
+    const running = executeRun(config, { runStore: store, pid: -1, configPath: "memory://hung", finalize })
+      .then(value => { settled = value; return value; });
+    try {
+      await entered; await vi.advanceTimersByTimeAsync(6000);
+      expect(finalize).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(settled?.status).toBe("failed");
+      expect(settled?.result.stderr).toContain("not confirmed");
+      expect(vi.getTimerCount()).toBe(0);
+    } finally { release(); vi.useRealTimers(); await running; }
+  });
+
+  test.each(["activity", "completion"] as const)("bounds a hung %s flush without retaining the local owner", async operation => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    setMockModel(mockTextModel("Finished"));
+    const store = new EphemeralRunStore(), config = makeConfig(), finalize = vi.fn(async () => {});
+    let enter!: () => void, release!: () => void;
+    const entered = new Promise<void>(resolve => { enter = resolve; });
+    const waiting = new Promise<void>(resolve => { release = resolve; });
+    if (operation === "activity") vi.spyOn(store, "updateActivity").mockImplementation(async () => { enter(); await waiting; });
+    else vi.spyOn(store, "completeRun").mockImplementation(async () => { enter(); await waiting; });
+    let settled: Awaited<ReturnType<typeof executeRun>> | undefined;
+    const running = executeRun(config, { runStore: store, pid: -1, configPath: "memory://hung-flush", finalize })
+      .then(value => { settled = value; return value; });
+    try {
+      await entered; await vi.advanceTimersByTimeAsync(6000);
+      expect(finalize).toHaveBeenCalledTimes(1);
+      expect(settled?.status).toBe(operation === "activity" ? "completed" : "failed");
+      expect(vi.getTimerCount()).toBe(0);
+    } finally { release(); vi.useRealTimers(); await running; }
+  });
+
   test("abort: engine killed, run 'killed', exitCode forced to 1", async () => {
+    let modelStarted = false;
     // A model that never finishes its stream until aborted.
     let releaseStream: (() => void) | undefined;
     const blocked = new Promise<void>((resolve) => { releaseStream = resolve; });
     setMockModel(new MockLanguageModelV3({
       doStream: async (opts) => {
+        modelStarted = true;
         // Block until the abort signal fires, then throw AbortError like a
         // real provider would.
         await new Promise<void>((resolve, reject) => {
@@ -953,9 +1347,10 @@ describe("executeRun — shared run lifecycle", () => {
       runStore: store, pid: 7, configPath: "memory://x", signal: abort.signal,
     });
 
-    // Wait for the run record to appear, then abort mid-turn.
+    // Wait for the actual model turn, rather than only its pre-spawn record.
     await vi.waitFor(async () => {
       expect((await store.getRun(config.runId))?.status).toBe("running");
+      expect(modelStarted).toBe(true);
     });
     abort.abort();
 
@@ -1008,6 +1403,18 @@ describe("executeRun — shared run lifecycle", () => {
     expect(outcome.result.exitCode).toBe(1);
     const log = await readActivityLog(config.runId);
     expect(log.filter((entry) => entry.event === "sigterm")).toHaveLength(1);
+  });
+
+  test("restores the local steering delivery policy before initial preparation", async () => {
+    const snapshot = new InMemorySteeringController({ delivery: "one-at-a-time" }).snapshot();
+    const config = makeConfig({ resumeState: { steering: snapshot } as RunnerConfig["resumeState"] });
+    const store = new EphemeralRunStore(), finalize = vi.fn(async () => {});
+    const preflight = vi.fn(async () => { throw new Error("Reached preflight after restore"); });
+    const outcome = await executeRun(config, { runStore: store, pid: -1, configPath: "memory://restore-policy",
+      runPreflightPolicy: { evaluate: preflight }, finalize });
+    expect(preflight).toHaveBeenCalledOnce(); expect(finalize).toHaveBeenCalledOnce();
+    expect(outcome.result.stderr).toContain("Reached preflight after restore");
+    expect(outcome.result.stderr).not.toContain("delivery policy");
   });
 
   test("durable turns: checkpoints land on the run record, resume skips recorded tools", async () => {
@@ -1128,4 +1535,19 @@ describe("executeRun — shared run lifecycle", () => {
     // Transcript entries flowed through the session.
     expect(appended.some((e) => e.event === "transcript:assistant")).toBe(true);
   });
+});
+
+
+test("explicitly absent host Data capability does not fall back to an environment token", async () => {
+  const previous = process.env.POLPO_DATA_CAPABILITY;
+  process.env.POLPO_DATA_CAPABILITY = "invalid-legacy-value";
+  try {
+    setMockModel(mockTextModel("completed without data"));
+    const result = await executeRun(makeConfig(), { runStore: new InMemoryRunStore(), pid: 1, configPath: "memory://test", data: null });
+    expect(result.status).toBe("completed");
+    expect(process.env.POLPO_DATA_CAPABILITY).toBe("invalid-legacy-value");
+  } finally {
+    if (previous === undefined) delete process.env.POLPO_DATA_CAPABILITY;
+    else process.env.POLPO_DATA_CAPABILITY = previous;
+  }
 });

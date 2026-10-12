@@ -42,7 +42,7 @@ import type {
   BrainReadService,
   BrainServiceContext,
 } from "@polpo-ai/core/brain";
-import { executeRun, errorResult, type TranscriptSession } from "../core/run-lifecycle.js";
+import { executeRun, errorResult, type ExecuteRunDeps } from "../core/run-lifecycle.js";
 
 /**
  * Stores and ports the in-process lifecycle runs against — the
@@ -53,7 +53,10 @@ import { executeRun, errorResult, type TranscriptSession } from "../core/run-lif
  */
 export interface InProcessSpawnerDeps {
   runStore: RunStore;
-  createLogSession?: () => Promise<TranscriptSession>;
+  createLogSession?: ExecuteRunDeps["createLogSession"];
+  /** Host-only live transcript observer; never serialized into RunnerConfig. */
+  onEvent?: ExecuteRunDeps["onEvent"];
+  preparationTimeoutMs?: ExecuteRunDeps["preparationTimeoutMs"];
   vaultStore?: VaultStore;
   memoryStore?: MemoryStore;
   memoryItemStore?: MemoryItemStore;
@@ -65,6 +68,8 @@ export interface InProcessSpawnerDeps {
   /** Optional host checkpoint for manually managed hydrated sandbox volumes. */
   checkpointSandboxVolume?: (name?: string) => Promise<void>;
   connectionCapabilityResolver?: import("@polpo-ai/core").ConnectionCapabilityResolver;
+  resolveCustomTools?: import("@polpo-ai/core").ResolveCustomTools;
+  resolveMcpCapabilities?: import("@polpo-ai/core").ResolveMcpRuntimeCapabilities;
   /** Finalize run-scoped host resources before the run becomes terminal. */
   finalize?: () => Promise<void>;
   /** Optional host-resolved guardrail middleware. */
@@ -81,6 +86,7 @@ export class InProcessSpawner implements Spawner {
   private pidSeq = 0;
   /** Active in-process runs, keyed by synthetic pid. */
   private active = new Map<number, AbortController>();
+  private runOwners = new Map<string, AbortController>();
 
   /**
    * Deps are resolved lazily at spawn() time: the orchestrator constructs
@@ -91,12 +97,8 @@ export class InProcessSpawner implements Spawner {
 
   async spawn(config: RunnerConfig): Promise<SpawnResult> {
     const deps = this.getDeps();
-    let finalized = false;
-    const finalize = async (): Promise<void> => {
-      if (finalized) return;
-      finalized = true;
-      await deps.finalize?.();
-    };
+    let finalization: Promise<void> | undefined;
+    const finalize = (): Promise<void> => finalization ??= Promise.resolve().then(() => deps.finalize?.());
 
     // Parity with NodeSpawner for local execution. When a host injects a
     // remote filesystem (for example a sandbox proxy), config.outputDir is a
@@ -110,6 +112,7 @@ export class InProcessSpawner implements Spawner {
     const pid = --this.pidSeq;
     const abort = new AbortController();
     this.active.set(pid, abort);
+    this.runOwners.set(config.runId, abort);
 
     // Nothing is written to disk — the config only lives on the run record
     // (TaskRunner persists it right after spawn, as with every spawner).
@@ -142,6 +145,7 @@ export class InProcessSpawner implements Spawner {
         }
         exited = true;
         this.active.delete(pid);
+        if (this.runOwners.get(config.runId) === abort) this.runOwners.delete(config.runId);
         for (const cb of exitCallbacks.splice(0)) cb();
       });
 
@@ -161,5 +165,9 @@ export class InProcessSpawner implements Spawner {
 
   kill(pid: number): void {
     this.active.get(pid)?.abort();
+  }
+
+  cancelRun(runId: string): void {
+    this.runOwners.get(runId)?.abort();
   }
 }

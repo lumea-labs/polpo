@@ -201,10 +201,11 @@ describe("useMissions", () => {
 
     let abortPromise: Promise<unknown>;
     act(() => {
-      abortPromise = result.current.abortMission("m1");
+      abortPromise = result.current.abortMission("m1", { executionId: "execution-1" });
     });
 
     expect(result.current.isAborting).toBe(true);
+    expect(client.abortMission).toHaveBeenCalledWith("m1", { executionId: "execution-1" });
 
     await act(async () => {
       resolveAbort({ aborted: 1 });

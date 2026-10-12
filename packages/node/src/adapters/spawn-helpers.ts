@@ -16,6 +16,9 @@ import {
   resolveModelProfileSelection,
   type ModelSelection,
   renderRuntimePromptContextSegments,
+  resolveAllowedToolPolicy,
+  toolNameAllowedByPolicy,
+  type AllowedToolPolicyInput,
   type RuntimeContextTrustMode,
   type RuntimePromptContextSegment,
 } from "@polpo-ai/core";
@@ -37,6 +40,7 @@ import {
   createAllTools,
   createSandboxVolumeCheckpointTool,
   createSystemTools,
+  resolveRuntimeMcpTools,
 } from "@polpo-ai/tools";
 import { NodeFileSystem } from "./node-filesystem.js";
 import { NodeShell } from "./node-shell.js";
@@ -501,7 +505,8 @@ export async function buildAgentTools(
   cwd: string,
   prep: SpawnPrep,
   ctx?: SpawnContext,
-): Promise<PolpoTool[]> {
+  options?: { signal?: AbortSignal; policy?: Omit<AllowedToolPolicyInput, "global"> },
+): Promise<{ tools: PolpoTool[]; cleanup: () => Promise<void> }> {
   const vaultEntries = await ctx?.vaultStore?.getAllForAgent(agentConfig.name);
   const vault = resolveAgentVault(vaultEntries);
 
@@ -542,21 +547,39 @@ export async function buildAgentTools(
     allPolpoTools.push(createSandboxVolumeCheckpointTool(ctx.checkpointSandboxVolume));
   }
 
-  const customTools = createLocalCustomToolRuntime({
-    data: ctx?.data,
-    polpoDir: prep.polpoDir,
-    workDir: cwd,
-    fs: prep.fs,
-    shell: prep.shell,
-    connectionCapabilityResolver: ctx?.connectionCapabilityResolver,
-  });
-  allPolpoTools.push(...await customTools.loadAssigned(
-    agentConfig.allowedTools,
-    undefined,
-    ctx?.toolInvocation,
-  ));
+  if (ctx?.resolveCustomTools) {
+    const customTools = await ctx.resolveCustomTools({ agentName: agentConfig.name,
+      allowedTools: agentConfig.allowedTools, invocation: ctx.toolInvocation, signal: options?.signal });
+    // Category wildcards activate built-ins only, matching the local importer.
+    // An empty or failed host result must never fall back to local code loading.
+    allPolpoTools.push(...customTools.filter(tool =>
+      agentConfig.allowedTools?.some(name => name === "*" || name === tool.name)));
+  } else {
+    const customTools = createLocalCustomToolRuntime({
+      data: ctx?.data,
+      polpoDir: prep.polpoDir,
+      workDir: cwd,
+      fs: prep.fs,
+      shell: prep.shell,
+      connectionCapabilityResolver: ctx?.connectionCapabilityResolver,
+    });
+    allPolpoTools.push(...await customTools.loadAssigned(
+      agentConfig.allowedTools,
+      undefined,
+      ctx?.toolInvocation,
+    ));
+  }
 
-  return allPolpoTools;
+  const policy = { ...options?.policy, global: agentConfig.allowedTools };
+  const mcp = await resolveRuntimeMcpTools({ agentName: agentConfig.name, mcpServers: agentConfig.mcpServers,
+    invocation: ctx?.toolInvocation, resolveCapabilities: ctx?.resolveMcpCapabilities, vault, signal: options?.signal, policy,
+    // Task engines historically did not load legacy MCP transports. Adding
+    // capabilities must not start authored stdio commands in a managed host.
+    allowLegacy: false });
+  // Existing builders own their category/global activation (including internal
+  // skill helpers). Apply additional Loop restrictions to the complete palette.
+  const effectivePolicy = resolveAllowedToolPolicy(options?.policy ?? {});
+  return { tools: [...allPolpoTools, ...mcp.tools].filter(tool => toolNameAllowedByPolicy(tool.name, effectivePolicy)), cleanup: mcp.dispose };
 }
 
 // ─── Outcome Collection ────���────────────────────────

@@ -25,6 +25,9 @@ export type {
   ApplicationCapabilityRequest,
   ConfigureApplicationCapabilityRequest,
   ConfigureCloudOAuthClientRequest,
+  ConfigureMcpOAuthRequest,
+  CloudMcpOAuthConfiguration,
+  McpOAuthConfigurationScope,
   CloudOAuthClientRecord,
   ConnectionEventRecord,
   ConnectionSetupStatus,
@@ -33,6 +36,8 @@ export type {
   PolpoConnectClientOptions,
   WaitForConnectionSetupOptions,
 } from "@polpo-ai/connect/client";
+
+export { activeDelayKey } from "./client/mission-runtime.js";
 
 // ── Store ─────────────────────────────────────────────────────
 export { PolpoStore } from "./store/polpo-store.js";
@@ -115,6 +120,8 @@ export type {
   ProviderConfig,
   SSEEvent,
   ActiveDelay,
+  ActiveCheckpoint,
+  MissionRuntimeIdentity,
   CreateTaskRequest,
   UpdateTaskRequest,
   CreateMissionRequest,
@@ -132,6 +139,9 @@ export type {
   UpdateMissionTeamMemberRequest,
   UpdateMissionNotificationsRequest,
   ExecuteMissionResult,
+  ExecuteMissionOptions,
+  AbortMissionOptions,
+  AbortMissionResult,
   ResumeMissionResult,
   AddAgentRequest,
   UpdateAgentRequest,

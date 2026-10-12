@@ -65,13 +65,13 @@ interface TranscriptEntry {
   [key: string]: unknown;
 }
 
-async function runAgent(agent: AgentConfig, responses: MockResponse[]) {
+async function runAgent(agent: AgentConfig, responses: MockResponse[], context?: Partial<import("@polpo-ai/core").SpawnContext>) {
   activeResolvedModel = mockResolvedModel(mockTurnSequenceModel(responses));
   const transcript: TranscriptEntry[] = [];
   // Loops now run only when the task explicitly requests one. Request the
   // agent's assigned project loop, or its inline loop, by name.
   const loop = agent.assignedLoops?.[0] ?? Object.keys(agent.loops ?? {})[0];
-  const handle = spawnLoopEngine(agent, makeTask({ loop }), cwd, { polpoDir, outputDir });
+  const handle = spawnLoopEngine(agent, makeTask({ loop }), cwd, { polpoDir, outputDir, ...context });
   handle.onTranscript = (entry) => transcript.push(entry as TranscriptEntry);
   const result = await handle.done;
   return { handle, result, transcript };
@@ -98,6 +98,37 @@ afterAll(async () => {
 // ── Tests ───────────────────────────────────────────────
 
 describe("spawnLoopEngine — project loop graphs", () => {
+  test.each([true, false])("applies project tool policy to deterministic MCP calls (allowed=%s)", async allowed => {
+    await writeProjectLoop("mcp-flow", { name: "mcp-flow", allowedTools: allowed ? ["mcp__docs__read"] : [], start: "read",
+      steps: { read: { type: "tool", tool: "mcp__docs__read", input: {}, next: "end" } } });
+    const { createToolInvocationContext } = await import("@polpo-ai/core");
+    const dispose = vi.fn();
+    const resolve = vi.fn(async () => ({ call: async () => ({ content: [{ type: "text", text: "read" }] }), dispose }));
+    const { result } = await runAgent({ name: "loop-agent", role: "reader", allowedTools: ["mcp__docs__*"], assignedLoops: ["mcp-flow"] }, [], {
+      toolInvocation: createToolInvocationContext({ requestId: "req", runId: "run", surface: "task", user: "customer-a" }),
+      resolveMcpCapabilities: () => ({ docs: { tools: [{ name: "read", inputSchema: { type: "object" } }], resolver: { resolve } } }),
+    });
+    expect(result.exitCode).toBe(allowed ? 0 : 1);
+    expect(resolve).toHaveBeenCalledTimes(allowed ? 1 : 0);
+    expect(dispose).toHaveBeenCalledTimes(allowed ? 1 : 0);
+  });
+  test("intersects project and agent-step MCP restrictions before exposing tools to the model", async () => {
+    await writeProjectLoop("mcp-step-flow", { name: "mcp-step-flow", allowedTools: ["mcp__docs__*"], start: "read",
+      steps: { read: { type: "agent", allowedTools: ["mcp__docs__read"], next: "end" } } });
+    const { createToolInvocationContext } = await import("@polpo-ai/core");
+    const model = mockTurnSequenceModel([{ type: "text", text: "done" }]);
+    activeResolvedModel = mockResolvedModel(model);
+    const handle = spawnLoopEngine({ name: "loop-agent", role: "reader", allowedTools: ["mcp__docs__*"], assignedLoops: ["mcp-step-flow"] },
+      makeTask({ loop: "mcp-step-flow" }), cwd, { polpoDir, outputDir,
+        toolInvocation: createToolInvocationContext({ requestId: "req", runId: "run", surface: "task" }),
+        resolveMcpCapabilities: () => ({ docs: {
+          tools: ["read", "write"].map(name => ({ name, inputSchema: { type: "object" } })),
+          resolver: { resolve: async () => { throw new Error("No tool should execute"); } },
+        } }),
+      });
+    expect((await handle.done).exitCode).toBe(0);
+    expect(model.doStreamCalls[0].tools?.map(tool => tool.name)).toEqual(["mcp__docs__read"]);
+  });
   test("runs a two-step agent graph: independent sessions, shared trace, last step wins stdout", async () => {
     await writeProjectLoop("ship-flow", {
       name: "ship-flow",

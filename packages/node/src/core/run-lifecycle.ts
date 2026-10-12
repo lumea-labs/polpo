@@ -20,6 +20,7 @@
  *     the engine, force exitCode 1, mark the run "killed".
  */
 
+import { watchRunState } from "@polpo-ai/core/run-state-monitor";
 import { appendFileSync, mkdirSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { FileMemoryStore } from "@polpo-ai/file-stores";
@@ -41,6 +42,9 @@ import type { VaultStore } from "@polpo-ai/core/vault-store";
 import type { MemoryStore } from "@polpo-ai/core/memory-store";
 import {
   createToolInvocationContext,
+  normalizeRuntimeMetadata,
+  normalizeAgentIdentity,
+  AgentIdentityError,
   normalizeRuntimePromptContextSegments,
   normalizeRuntimeContextTrustMode,
 } from "@polpo-ai/core";
@@ -133,7 +137,8 @@ export interface TranscriptSession {
 }
 
 export interface ExecuteRunDeps {
-  data?: import("@polpo-ai/core/data").DataClient;
+  /** Null explicitly disables environment/local Data fallback for a host-bound runner. */
+  data?: import("@polpo-ai/core/data").DataClient | null;
   /** Run persistence. NOT closed by executeRun — the host owns it. */
   runStore: RunStore;
   /**
@@ -141,7 +146,7 @@ export interface ExecuteRunDeps {
    * mode: the JSONL activity log is the only transcript side-channel,
    * matching the historical subprocess behavior.
    */
-  createLogSession?: () => Promise<TranscriptSession>;
+  createLogSession?: (context: { signal: AbortSignal }) => Promise<TranscriptSession>;
   /** Vault store. Default: EncryptedVaultStore(polpoDir), best-effort. */
   vaultStore?: VaultStore;
   /** Memory store. Default: FileMemoryStore(polpoDir). */
@@ -160,6 +165,8 @@ export interface ExecuteRunDeps {
   checkpointSandboxVolume?: (name?: string) => Promise<void>;
   /** Host-owned resolver for strict logical Connection slots. */
   connectionCapabilityResolver?: import("@polpo-ai/core").ConnectionCapabilityResolver;
+  resolveCustomTools?: import("@polpo-ai/core").ResolveCustomTools;
+  resolveMcpCapabilities?: import("@polpo-ai/core").ResolveMcpRuntimeCapabilities;
   /** Finalize run-scoped host resources before terminal persistence. */
   finalize?: () => Promise<void>;
   /**
@@ -181,6 +188,10 @@ export interface ExecuteRunDeps {
   configPath: string;
   /** Abort = graceful kill (subprocess SIGTERM / in-process spawner.kill). */
   signal?: AbortSignal;
+  /** Deadline for initial preparation/preflight only (default 30 seconds).
+   * Requests cancellation; pending non-cooperative I/O remains owned and awaited.
+   * Hosts must adopt resources inside callbacks before returning them. */
+  preparationTimeoutMs?: number;
   /**
    * Run-scoped steering controller. Hosts expose ingress; executeRun consumes
    * it at model/tool safe points. A local controller is restored from a
@@ -214,6 +225,17 @@ export interface ExecuteRunOutcome {
   spawnError?: boolean;
 }
 
+/** A stalled persistence lookup must not prevent local owner cleanup. */
+async function boundedRunPersistence<T>(work: () => Promise<T>): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([Promise.resolve().then(work), new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error("Run persistence timed out")), 5000);
+      timer.unref?.();
+    })]);
+  } finally { clearTimeout(timer); }
+}
+
 function requestsBrainTools(allowedTools: readonly string[] | undefined): boolean {
   if (!allowedTools?.length) return false;
   return allowedTools.some((pattern) =>
@@ -228,31 +250,70 @@ function requestsBrainTools(allowedTools: readonly string[] | undefined): boolea
  * See module header for the host contract.
  */
 export async function executeRun(config: RunnerConfig, deps: ExecuteRunDeps): Promise<ExecuteRunOutcome> {
-  let finalized = false;
-  const finalize = async (): Promise<void> => {
-    if (finalized) return;
-    finalized = true;
-    await deps.finalize?.();
-  };
+  const abort = new AbortController();
+  const steering = deps.steering ?? new InMemorySteeringController({ delivery: config.resumeState?.steering?.delivery });
+  const onSteeringStop = () => abort.abort(steering.signal.reason);
+  if (steering.signal.aborted) onSteeringStop();
+  else steering.signal.addEventListener("abort", onSteeringStop, { once: true });
+  const onHostAbort = () => abort.abort(deps.signal?.reason);
+  if (deps.signal?.aborted) onHostAbort();
+  else deps.signal?.addEventListener("abort", onHostAbort, { once: true });
+  const timeoutMs = deps.preparationTimeoutMs ?? 30_000;
+  const validTimeout = Number.isSafeInteger(timeoutMs) && timeoutMs > 0 && timeoutMs <= 300_000;
+  const preparationDeadline = validTimeout
+    ? setTimeout(() => abort.abort(new Error("Run preparation timed out")), timeoutMs)
+    : undefined;
+  preparationDeadline?.unref?.();
+  const finishPreparation = () => clearTimeout(preparationDeadline);
+  let monitor: ReturnType<typeof watchRunState> | undefined;
+  const onPersistedStop = () => abort.abort(monitor?.signal.reason);
+  try {
+    return await executeRegisteredRun(config, { ...deps, steering, signal: abort.signal }, () => {
+      if (monitor) return;
+      monitor = watchRunState({ runId: config.runId, runStore: deps.runStore });
+      monitor.signal.addEventListener("abort", onPersistedStop, { once: true });
+    }, finishPreparation);
+  } finally {
+    finishPreparation();
+    monitor?.dispose();
+    monitor?.signal.removeEventListener("abort", onPersistedStop);
+    deps.signal?.removeEventListener("abort", onHostAbort);
+    steering.signal.removeEventListener("abort", onSteeringStop);
+  }
+}
+
+async function executeRegisteredRun(
+  config: RunnerConfig, deps: ExecuteRunDeps, observe: () => void, finishPreparation: () => void,
+): Promise<ExecuteRunOutcome> {
+  let finalization: Promise<void> | undefined;
+  const finalize = (): Promise<void> => finalization ??= Promise.resolve().then(() => deps.finalize?.());
   const { runStore, pid, configPath } = deps;
+  const readRun = () => boundedRunPersistence(() => runStore.getRun(config.runId));
+  const persistOutcome = async (status: RunStatus, result: TaskResult, spawnError = false): Promise<ExecuteRunOutcome> => {
+    // An error or timeout can occur after a successful commit. Always confirm
+    // against durable state, including a cancellation committed by another host.
+    try { await boundedRunPersistence(() => runStore.completeRun(config.runId, status, result)); } catch { /* read below */ }
+    try {
+      const persisted = await readRun();
+      if (!persisted || persisted.status === "running") throw new Error("Unconfirmed run outcome");
+      return { status: persisted.status, result: persisted.result ?? result,
+        ...(spawnError && persisted.status === "failed" ? { spawnError: true } : {}) };
+    } catch {
+      // No success can be inferred from a local result if its authoritative row
+      // disappeared or persistence is unavailable. Never recreate a missing Run.
+      return { status: "failed", result: errorResult(new Error("Run outcome was not confirmed by persistence")),
+        ...(spawnError ? { spawnError: true } : {}) };
+    }
+  };
   const actLog = new RunActivityLog(config.polpoDir, config.runId, config.taskId, config.agent.name, pid);
-  const steering = deps.steering
-    ?? (config.resumeState?.steering
-      ? InMemorySteeringController.fromSnapshot(config.resumeState.steering)
-      : new InMemorySteeringController());
-  if (steering && deps.steering && config.resumeState?.steering) {
-    await steering.restore(config.resumeState.steering);
-  }
-
-  // When a transcript session is available (postgres/sqlite), persist the
-  // transcript to the DB. This ensures it survives sandbox destruction.
+  const steering: SteeringController = deps.steering!;
+  const checkPreparation = () => {
+    deps.signal?.throwIfAborted();
+    steering.signal.throwIfAborted();
+  };
   let logSession: TranscriptSession | undefined;
-  if (deps.createLogSession) {
-    logSession = await deps.createLogSession();
-  }
-
+  let correlatedSessionId = deps.inject?.sessionId;
   const now = new Date().toISOString();
-  const correlatedSessionId = logSession?.sessionId ?? deps.inject?.sessionId;
   const initialRecord: RunRecord = {
     id: config.runId,
     taskId: config.taskId,
@@ -279,14 +340,88 @@ export async function executeRun(config: RunnerConfig, deps: ExecuteRunDeps): Pr
     engine: "agent",
     delivery: deps.inject ? "stream" : "background",
   };
-  // In DB mode, run record already exists (created by spawner) — update it with PID
-  await runStore.upsertRun(initialRecord);
-  actLog.logEvent("spawning", { task: config.task.title });
-
   let handle: AgentHandle;
   const guardrailDecisions: RuntimeGuardrailAuditEvent[] = [];
   let guardrailDecisionsTruncated = false;
+  const stopBeforeSpawn = async (): Promise<ExecuteRunOutcome | undefined> => {
+    let current = await readRun();
+    if (!current) throw new Error("Run record is unavailable before execution");
+    if (current.status === "running" && !deps.signal?.aborted && !steering.signal.aborted) return;
+    finishPreparation();
+    await finalize();
+    steering.close();
+    if (current.status === "running") {
+      actLog.logEvent("sigterm");
+      await boundedRunPersistence(() => runStore.completeRun(config.runId, "killed", errorResult(new Error("Killed by SIGTERM (timeout or shutdown) before engine start"))));
+      current = await readRun();
+      if (!current || current.status === "running") throw new Error("Run cancellation was not persisted");
+    }
+    return { status: current.status, result: current.result ?? {
+      exitCode: current.status === "completed" ? 0 : 1, stdout: "", stderr: "", duration: 0,
+    } };
+  };
   try {
+    const preparationTimeoutMs = deps.preparationTimeoutMs ?? 30_000;
+    if (!Number.isSafeInteger(preparationTimeoutMs) || preparationTimeoutMs < 1 || preparationTimeoutMs > 300_000) {
+      throw new Error("Run preparation requires a bounded positive deadline");
+    }
+    checkPreparation();
+    // TaskRunner already owns a durable Run. Observe it before initial log or
+    // steering I/O. A fresh file-mode run has no row yet, so start its observer
+    // only after registration; missing rows are never given grace afterwards.
+    const existing = await readRun();
+    checkPreparation();
+    if (existing) {
+      observe();
+      const stoppedBeforePreparation = await stopBeforeSpawn();
+      if (stoppedBeforePreparation) return stoppedBeforePreparation;
+    }
+    if (config.resumeState?.steering) {
+      await steering.restore(config.resumeState.steering, { signal: deps.signal! });
+      checkPreparation();
+    }
+    if (deps.createLogSession) {
+      // Do not race this promise against abort: the host may still allocate a
+      // session/resource. Its finalizer retains ownership until it settles.
+      logSession = await deps.createLogSession({ signal: deps.signal! });
+      checkPreparation();
+    }
+    correlatedSessionId = logSession?.sessionId ?? deps.inject?.sessionId;
+    if (correlatedSessionId) {
+      initialRecord.sessionId = correlatedSessionId;
+      initialRecord.activity.sessionId = correlatedSessionId;
+    }
+    if (existing) {
+      const stoppedBeforeRegistration = await stopBeforeSpawn();
+      if (stoppedBeforeRegistration) return stoppedBeforeRegistration;
+    }
+    checkPreparation();
+    // Keep an uncertain/late commit owned until it settles. Never retry this
+    // registration after lost acknowledgement or cancellation.
+    await runStore.upsertRun(initialRecord);
+    observe();
+    checkPreparation();
+    actLog.logEvent("spawning", { task: config.task.title });
+    const stoppedAtRegistration = await stopBeforeSpawn();
+    if (stoppedAtRegistration) return stoppedAtRegistration;
+    const agentIdentity = config.agentIdentity === undefined ? undefined : normalizeAgentIdentity(config.agentIdentity);
+    if ((agentIdentity && agentIdentity.name !== config.agent.name)
+      || (config.toolInvocation?.agent && (config.toolInvocation.agent.name !== agentIdentity?.name
+        || config.toolInvocation.agent.incarnation !== agentIdentity?.incarnation))) throw new AgentIdentityError();
+    // Snapshot host-owned identity before any content guardrail can rewrite it.
+    const toolInvocation = config.toolInvocation ? createToolInvocationContext({
+      ...config.toolInvocation,
+      metadata: { ...config.toolInvocation.metadata },
+      ...(agentIdentity ? { agent: agentIdentity } : {}),
+    }) : createToolInvocationContext({
+      ...(agentIdentity ? { agent: agentIdentity } : {}),
+      requestId: config.runId,
+      runId: config.runId,
+      ...(correlatedSessionId ? { sessionId: correlatedSessionId } : {}),
+      ...(config.task.user ? { user: config.task.user } : {}),
+      metadata: normalizeRuntimeMetadata(config.task.metadata) ?? {},
+      surface: "task",
+    });
     // Use the injected vault store when available (postgres/sqlite or
     // orchestrator-owned), fall back to file-based
     let vaultStore: VaultStore | undefined = deps.vaultStore;
@@ -296,6 +431,7 @@ export async function executeRun(config: RunnerConfig, deps: ExecuteRunDeps): Pr
 
     const memoryStore: MemoryStore = deps.memoryStore ?? new FileMemoryStore(config.polpoDir);
     const { FileMemoryItemStore } = await import("@polpo-ai/file-stores");
+    checkPreparation();
     const memoryItemStore = deps.memoryItemStore
       ?? new FileMemoryItemStore(config.polpoDir);
     const contextTrust = normalizeRuntimeContextTrustMode(
@@ -386,6 +522,7 @@ export async function executeRun(config: RunnerConfig, deps: ExecuteRunDeps): Pr
           guardedInput.decisions,
         );
       }
+      checkPreparation();
       guardedTask = guardedInput.value;
 
       const guardedContext = await runPreflightPolicy.evaluate({
@@ -404,6 +541,7 @@ export async function executeRun(config: RunnerConfig, deps: ExecuteRunDeps): Pr
           guardedContext.decisions,
         );
       }
+      checkPreparation();
       promptContextSegments = normalizeRuntimePromptContextSegments(
         guardedContext.value.promptContextSegments,
       );
@@ -436,6 +574,7 @@ export async function executeRun(config: RunnerConfig, deps: ExecuteRunDeps): Pr
           guardedModelInput.decisions,
         );
       }
+      checkPreparation();
       guardedAgent = guardedModelInput.value.agent;
       guardedTask = guardedModelInput.value.task;
       promptContextSegments = normalizeRuntimePromptContextSegments(
@@ -460,14 +599,7 @@ export async function executeRun(config: RunnerConfig, deps: ExecuteRunDeps): Pr
     const spawnCtx = {
       polpoDir: config.polpoDir,
       runId: config.runId,
-      toolInvocation: config.toolInvocation ?? createToolInvocationContext({
-        requestId: config.runId,
-        runId: config.runId,
-        ...(correlatedSessionId ? { sessionId: correlatedSessionId } : {}),
-        ...(guardedTask.user ? { user: guardedTask.user } : {}),
-        metadata: {},
-        surface: "task",
-      }),
+      toolInvocation,
       outputDir: config.outputDir,
       emailAllowedDomains: config.emailAllowedDomains,
       reasoning: config.reasoning,
@@ -478,7 +610,9 @@ export async function executeRun(config: RunnerConfig, deps: ExecuteRunDeps): Pr
       memoryItemStore,
       brainService,
       brainContext,
-      data: deps.data ?? (await import("../data/index.js")).runnerDataClient(config.polpoDir, config.agent.name),
+      data: deps.data === undefined
+        ? (await import("../data/index.js")).runnerDataClient(config.polpoDir, config.agent.name)
+        : deps.data ?? undefined,
       // Per-tenant gateway for the in-process host (undefined for subprocess,
       // which resolves the gateway from sandbox env).
       gatewayConfig: deps.gatewayConfig,
@@ -496,6 +630,8 @@ export async function executeRun(config: RunnerConfig, deps: ExecuteRunDeps): Pr
       shell: deps.shell ?? new NodeShell(),
       checkpointSandboxVolume: deps.checkpointSandboxVolume,
       connectionCapabilityResolver: deps.connectionCapabilityResolver,
+      resolveCustomTools: deps.resolveCustomTools,
+      resolveMcpCapabilities: deps.resolveMcpCapabilities,
       // Durable turns: resume checkpoint handed over by orphan recovery,
       // and the per-turn checkpoint sink (one RunStore write per turn,
       // best-effort — a flaky store must never fail a healthy run).
@@ -532,7 +668,13 @@ export async function executeRun(config: RunnerConfig, deps: ExecuteRunDeps): Pr
       inject: deps.inject,
       onTranscript: handleTranscript,
     };
+    // Preflight and host preparation can await network work. Recheck after
+    // those waits, before creating model/tool capabilities for this run.
+    const stoppedAfterPreparation = await stopBeforeSpawn();
+    if (stoppedAfterPreparation) return stoppedAfterPreparation;
+    checkPreparation();
     handle = spawnLoopEngine(guardedAgent, guardedTask, config.cwd, spawnCtx);
+    finishPreparation();
     if (config.resumeState) {
       actLog.logEvent("resuming", {
         loopName: config.resumeState.loopName,
@@ -559,31 +701,32 @@ export async function executeRun(config: RunnerConfig, deps: ExecuteRunDeps): Pr
     handle.onTranscript = handleTranscript;
     actLog.logEvent("spawned");
   } catch (err) {
+    finishPreparation();
     const result = errorResult(err);
     actLog.logEvent("error", { message: result.stderr });
     if (guardrailDecisions.length > 0) {
       try {
-        await runStore.updateActivity(config.runId, {
+        await boundedRunPersistence(() => runStore.updateActivity(config.runId, {
           ...initialRecord.activity,
           guardrailDecisions,
           ...(guardrailDecisionsTruncated
             ? { guardrailDecisionsTruncated: true }
             : {}),
-        });
+        }));
       } catch {
         // The runtime failure remains authoritative when audit persistence fails.
       }
     }
     try { await finalize(); } catch { /* preserve the primary spawn error */ }
-    await runStore.completeRun(config.runId, "failed", result);
+    const requestedStatus = deps.signal?.aborted || steering.signal.aborted ? "killed" : "failed";
     steering.close();
-    return { status: "failed", result, spawnError: true };
+    return persistOutcome(requestedStatus, result, true);
   }
 
   // Activity polling + persistent logging
   const poll = setInterval(async () => {
     try {
-      await runStore.updateActivity(config.runId, handle.activity);
+      await boundedRunPersistence(() => runStore.updateActivity(config.runId, handle.activity));
       actLog.logActivity({ ...handle.activity });
     } catch { /* DB temporarily locked */
     }
@@ -611,12 +754,12 @@ export async function executeRun(config: RunnerConfig, deps: ExecuteRunDeps): Pr
       handle.activity.guardrailDecisionsTruncated = true;
     }
     // Final activity + sessionId flush before marking terminal
-    try { await runStore.updateActivity(config.runId, handle.activity); } catch { /* best effort */ }
+    try { await boundedRunPersistence(() => runStore.updateActivity(config.runId, handle.activity)); } catch { /* best effort */ }
     actLog.logActivity({ ...handle.activity });
 
     // Store auto-collected outcomes on the run record
     if (handle.outcomes && handle.outcomes.length > 0) {
-      try { await runStore.updateOutcomes(config.runId, handle.outcomes); } catch { /* best effort */ }
+      try { await boundedRunPersistence(() => runStore.updateOutcomes(config.runId, handle.outcomes!)); } catch { /* best effort */ }
       actLog.logEvent("outcomes", { count: handle.outcomes.length, types: handle.outcomes.map((o: any) => o.type) });
     }
 
@@ -629,18 +772,17 @@ export async function executeRun(config: RunnerConfig, deps: ExecuteRunDeps): Pr
     await finalize();
     const status: RunStatus = aborted ? "killed" : (result.exitCode === 0 ? "completed" : "failed");
     actLog.logEvent("done", { status, exitCode: result.exitCode, duration: result.duration });
-    await runStore.completeRun(config.runId, status, result);
-    return { status, result };
+    return await persistOutcome(status, result);
   } catch (err) {
     clearInterval(poll);
     try { await finalize(); } catch (finalizeError) {
       if (!(err instanceof Error)) err = finalizeError;
     }
-    try { await runStore.updateActivity(config.runId, handle.activity); } catch { /* best effort */ }
+    try { await boundedRunPersistence(() => runStore.updateActivity(config.runId, handle.activity)); } catch { /* best effort */ }
     actLog.logEvent("error", { message: err instanceof Error ? err.message : String(err) });
     const result = errorResult(err);
-    await runStore.completeRun(config.runId, "failed", result);
-    return { status: "failed", result };
+    const requestedStatus = aborted ? "killed" : "failed";
+    return await persistOutcome(requestedStatus, result);
   } finally {
     try { await finalize(); } catch { /* the terminal result already captured finalization */ }
     deps.signal?.removeEventListener("abort", onAbort);

@@ -3,7 +3,7 @@ import {
   type ConnectionRequest,
 } from "@polpo-ai/core";
 
-import type { ConnectorHttpPolicy } from "./types.js";
+import type { ConnectorHttpAuthPolicy, ConnectorHttpPolicy } from "./types.js";
 
 const DEFAULT_METHODS = ["GET"];
 const DEFAULT_MAX_REQUEST_BYTES = 256 * 1024;
@@ -60,6 +60,7 @@ function positiveInteger(
 }
 
 function normalizeOrigin(value: string): string {
+  if (typeof value !== "string") denied("Connector HTTP origin must be a string");
   let url: URL;
   try {
     url = new URL(value);
@@ -94,7 +95,17 @@ function isUnsafeHostname(rawHostname: string): boolean {
     if (hostname === "::" || hostname === "::1") return true;
     if (/^(?:fc|fd|fe[89ab])/i.test(hostname)) return true;
     const mapped = hostname.match(/::ffff:(\d+\.\d+\.\d+\.\d+)$/i)?.[1];
-    return mapped ? isUnsafeIpv4(mapped) : false;
+    if (mapped) return isUnsafeIpv4(mapped);
+    // URL normalizes mapped IPv4 literals to hexadecimal IPv6 groups.
+    let normalized: string;
+    try { normalized = new URL(`https://[${hostname}]/`).hostname.replace(/^\[|\]$/g, ""); }
+    catch { return true; }
+    const hexMapped = normalized.match(/^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i);
+    if (hexMapped) {
+      const high = parseInt(hexMapped[1], 16), low = parseInt(hexMapped[2], 16);
+      return isUnsafeIpv4([high >> 8, high & 255, low >> 8, low & 255].join("."));
+    }
+    return false;
   }
   return /^\d+\.\d+\.\d+\.\d+$/.test(hostname)
     ? isUnsafeIpv4(hostname)
@@ -124,6 +135,7 @@ function isUnsafeIpv4(hostname: string): boolean {
 }
 
 function normalizePathPattern(pattern: string): string {
+  if (typeof pattern !== "string") denied("Connector HTTP path pattern must be a string");
   const normalized = pattern.trim();
   if (
     !normalized.startsWith("/")
@@ -171,7 +183,11 @@ export function normalizeConnectorHttpPolicy(
     denied("Connector HTTP policy must declare between 1 and 16 origins");
   }
   const origins = [...new Set(input.origins.map(normalizeOrigin))];
+  if (input.allowedMethods !== undefined && !Array.isArray(input.allowedMethods)) denied("Connector HTTP methods must be an array");
+  if (input.allowedPathPatterns !== undefined && !Array.isArray(input.allowedPathPatterns)) denied("Connector HTTP path patterns must be an array");
+  if (input.followRedirects !== undefined && typeof input.followRedirects !== "boolean") denied("Connector redirect policy must be a boolean");
   const methods = [...new Set((input.allowedMethods ?? DEFAULT_METHODS).map((method) => {
+    if (typeof method !== "string") denied("Connector HTTP method must be a string");
     const normalized = method.trim().toUpperCase();
     if (!/^[A-Z]+$/.test(normalized)) denied(`Connector HTTP method is invalid: ${method}`);
     return normalized;
@@ -183,40 +199,45 @@ export function normalizeConnectorHttpPolicy(
   if (patterns.length === 0 || patterns.length > 128) {
     denied("Connector HTTP policy must allow between 1 and 128 path patterns");
   }
-  if (!input.auth || !["bearer", "header", "query"].includes(input.auth.mode)) {
-    denied("Connector HTTP auth policy is invalid");
-  }
-  const authName = input.auth.name?.trim();
-  if (
-    (input.auth.mode === "header" || input.auth.mode === "query")
-    && (!authName || !/^[A-Za-z][A-Za-z0-9_-]{0,127}$/.test(authName))
-  ) {
-    denied(`Connector HTTP ${input.auth.mode} auth requires a safe name`);
-  }
+  const auth = normalizeConnectorAuthPolicy(input.auth);
 
   return Object.freeze({
     origins: Object.freeze(origins) as unknown as string[],
     allowedMethods: Object.freeze(methods) as unknown as string[],
     allowedPathPatterns: Object.freeze(patterns) as unknown as string[],
-    auth: Object.freeze({
-      mode: input.auth.mode,
-      ...(authName ? { name: authName } : {}),
-    }),
+    auth,
     followRedirects: input.followRedirects === true,
-    maxRequestBytes: positiveInteger(
-      "maxRequestBytes",
-      input.maxRequestBytes,
-      DEFAULT_MAX_REQUEST_BYTES,
-      MAX_HTTP_BYTES,
-    ),
-    maxResponseBytes: positiveInteger(
-      "maxResponseBytes",
-      input.maxResponseBytes,
-      DEFAULT_MAX_RESPONSE_BYTES,
-      MAX_HTTP_BYTES,
-    ),
+    maxRequestBytes: positiveInteger("maxRequestBytes", input.maxRequestBytes, DEFAULT_MAX_REQUEST_BYTES, MAX_HTTP_BYTES),
+    maxResponseBytes: positiveInteger("maxResponseBytes", input.maxResponseBytes, DEFAULT_MAX_RESPONSE_BYTES, MAX_HTTP_BYTES),
     timeoutMs: positiveInteger("timeoutMs", input.timeoutMs, DEFAULT_TIMEOUT_MS, MAX_TIMEOUT_MS),
   });
+}
+
+/** Shared credential injection validation for API and remote MCP setup. */
+export function normalizeConnectorAuthPolicy(input: ConnectorHttpAuthPolicy): ConnectorHttpAuthPolicy {
+  if (!input || !["bearer", "header", "query", "none"].includes(input.mode)) {
+    denied("Connector HTTP auth policy is invalid");
+  }
+  if (input.name !== undefined && typeof input.name !== "string") denied("Connector HTTP auth name must be a string");
+  const authName = input.name?.trim();
+  if (
+    (input.mode === "header" || input.mode === "query")
+    && (!authName || !/^[A-Za-z][A-Za-z0-9_-]{0,127}$/.test(authName))
+  ) {
+    denied(`Connector HTTP ${input.mode} auth requires a safe name`);
+  }
+  if ((input.mode === "none" || input.mode === "bearer") && authName) {
+    denied(`Connector HTTP ${input.mode} auth cannot declare a name`);
+  }
+  if (input.mode === "header" && authName) {
+    const name = authName.toLowerCase();
+    if ((FORBIDDEN_REQUEST_HEADERS.has(name) && name !== "authorization")
+      || name.startsWith("proxy-") || name.startsWith("sec-")) {
+      denied("Connector HTTP authentication cannot replace transport or cookie headers");
+    }
+  }
+
+  return Object.freeze({ mode: input.mode, ...(authName ? { name: authName } : {}) });
 }
 
 export function resolveConnectorHttpRequest(
@@ -224,7 +245,7 @@ export function resolveConnectorHttpRequest(
   input: ConnectionRequest,
 ): ResolvedConnectorHttpRequest {
   const policy = normalizeConnectorHttpPolicy(rawPolicy);
-  const method = input.method?.trim().toUpperCase();
+  const method = typeof input.method === "string" ? input.method.trim().toUpperCase() : undefined;
   if (!method || !/^[A-Z]+$/.test(method) || !policy.allowedMethods!.includes(method)) {
     denied(`Connection request method is not allowed: ${input.method}`);
   }

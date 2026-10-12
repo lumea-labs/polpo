@@ -123,8 +123,16 @@ export interface Task {
   group?: string;
   /** ID of the mission this task belongs to (set when created via executeMission). */
   missionId?: string;
+  /** Immutable admission this task belongs to; group remains a display label. */
+  missionExecutionId?: string;
   dependsOn: string[];
   status: TaskStatus;
+  /** Host-owned attempt generation; absent on legacy/unclaimed tasks means zero. */
+  executionRevision?: number;
+  /** Run currently allowed to mutate this task. Changed only by execution control. */
+  activeRunId?: string;
+  /** Runtime-owned approval authority, never an authored Task input. */
+  approvalState?: import("../task-execution.js").TaskApprovalState;
   expectations: TaskExpectation[];
   metrics: TaskMetric[];
   retries: number;
@@ -163,6 +171,8 @@ export interface Task {
    * Propagates from Task → Run for per-user attribution and metering.
    */
   user?: string;
+  /** Trusted caller metadata captured at admission; not model-authored task data. */
+  metadata?: Record<string, string>;
   /** Execution mode override for this task (wins over agent and settings). */
   executionMode?: import("./config.js").ExecutionMode;
   /** Runtime sandbox policy override for this task (wins over agent and settings). */

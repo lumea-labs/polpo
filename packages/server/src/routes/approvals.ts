@@ -165,7 +165,12 @@ export function approvalRoutes(getDeps: () => {
       // Empty body or parse error — that's fine, use defaults
     }
 
-    const result = await deps.approveRequest(id, resolvedBy, note);
+    let result;
+    try { result = await deps.approveRequest(id, resolvedBy, note); }
+    catch (error) {
+      if (isApprovalConflict(error)) return c.json({ ok: false, error: "Approval no longer matches the current Task execution", code: "CONFLICT" }, 409);
+      throw error;
+    }
     if (!result) {
       // Could be not found or already resolved
       const existing = await deps.getApprovalRequest(id);
@@ -213,7 +218,12 @@ export function approvalRoutes(getDeps: () => {
       }, 409);
     }
 
-    const result = await deps.rejectRequest(id, body.feedback, body.resolvedBy);
+    let result;
+    try { result = await deps.rejectRequest(id, body.feedback, body.resolvedBy); }
+    catch (error) {
+      if (isApprovalConflict(error)) return c.json({ ok: false, error: "Approval no longer matches the current Task execution", code: "CONFLICT" }, 409);
+      throw error;
+    }
     if (!result) {
       return c.json({ ok: false, error: "Failed to reject request", code: "CONFLICT" }, 409);
     }
@@ -222,4 +232,9 @@ export function approvalRoutes(getDeps: () => {
   });
 
   return app;
+}
+
+function isApprovalConflict(error: unknown): boolean {
+  return !!error && typeof error === "object" && "code" in error
+    && (error.code === "task_approval_conflict" || error.code === "task_execution_conflict");
 }

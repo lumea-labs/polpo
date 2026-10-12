@@ -3,6 +3,11 @@ import type { Task, EscalationPolicy, EscalationLevel } from "./types.js";
 
 import type { ApprovalManager } from "./approval-manager.js";
 import { resolveConfiguredModelSelection } from "./model-profiles.js";
+import { isTaskExecutionStore, taskExecutionReference, TaskExecutionError, type TaskExecutionPatch } from "./task-execution.js";
+
+function isExecutionConflict(error: unknown): boolean {
+  return error instanceof TaskExecutionError && error.code === "task_execution_conflict";
+}
 
 /**
  * Manages the escalation chain when tasks fail repeatedly.
@@ -31,7 +36,7 @@ export class EscalationManager {
       phase: "before",
       priority: 60,
       name: "escalation-manager",
-      handler: (hookCtx) => {
+      handler: async (hookCtx) => {
         const { taskId, task, reason } = hookCtx.data;
         if (reason !== "maxRetries") return;
 
@@ -41,7 +46,8 @@ export class EscalationManager {
 
         hookCtx.cancel(`Escalating to level ${currentLevel}: ${level.handler}`);
 
-        this.escalate(taskId, task, level, policy).catch(err => {
+        await this.escalate(taskId, task, level, policy).catch(err => {
+          if (isExecutionConflict(err)) return;
           const msg = err instanceof Error ? err.message : String(err);
           this.ctx.emitter.emit("log", {
             level: "error",
@@ -50,6 +56,30 @@ export class EscalationManager {
         });
       },
     });
+  }
+
+  private async currentAttempt(task: Task, allowClaim = false): Promise<Task | undefined> {
+    const current = await this.ctx.taskStore.getTask(task.id);
+    if (!isTaskExecutionStore(this.ctx.taskStore) && task.executionRevision === undefined && task.activeRunId === undefined) return current;
+    const expected = taskExecutionReference(task), actual = current && taskExecutionReference(current);
+    // An escalation timer is attached to its published pending generation and
+    // may follow its one immediate claim. Cancel/requeue always advances the
+    // generation too, so it cannot follow an unrelated retry after that claim.
+    const claimed = allowClaim && task.status === "pending" && expected.runId === undefined
+      && actual?.revision === expected.revision + 1 && actual.runId !== undefined;
+    if (!actual || (actual.revision !== expected.revision || actual.runId !== expected.runId) && !claimed) {
+      throw new TaskExecutionError("task_execution_conflict", "Escalation execution changed");
+    }
+    return current;
+  }
+
+  private async requeue(task: Task, updates: TaskExecutionPatch, reason: string): Promise<Task> {
+    if (isTaskExecutionStore(this.ctx.taskStore) || task.executionRevision !== undefined || task.activeRunId !== undefined) {
+      if (!isTaskExecutionStore(this.ctx.taskStore)) throw new TaskExecutionError("task_execution_unsupported", "Escalation requires execution persistence");
+      return (await this.ctx.taskStore.mutateTaskExecution(taskExecutionReference(task), { type: "requeue", countRetry: false, reason, updates })).task;
+    }
+    await this.ctx.taskStore.updateTask(task.id, updates);
+    return this.ctx.taskStore.unsafeSetStatus(task.id, "pending", reason);
   }
 
   private getStartLevel(policy: EscalationPolicy): number {
@@ -65,6 +95,7 @@ export class EscalationManager {
     level: EscalationLevel,
     policy: EscalationPolicy,
   ): Promise<void> {
+    await this.currentAttempt(task);
     this.taskLevels.set(taskId, level.level);
 
     this.ctx.emitter.emit("escalation:triggered", {
@@ -121,8 +152,7 @@ export class EscalationManager {
       return;
     }
 
-    await this.ctx.taskStore.updateTask(taskId, { assignTo: targetAgent });
-    await this.ctx.taskStore.unsafeSetStatus(taskId, "pending", `escalation level ${level.level}: reassign to ${targetAgent}`);
+    const next = await this.requeue(task, { assignTo: targetAgent }, `escalation level ${level.level}: reassign to ${targetAgent}`);
 
     this.ctx.emitter.emit("escalation:resolved", {
       taskId,
@@ -131,7 +161,7 @@ export class EscalationManager {
     });
 
     if (level.timeoutMs) {
-      this.startTimer(taskId, task, level, policy, level.timeoutMs);
+      this.startTimer(taskId, next, level, policy, level.timeoutMs);
     }
   }
 
@@ -182,12 +212,11 @@ export class EscalationManager {
       )).text;
 
       if (newDescription && newDescription.length > 20) {
-        await this.ctx.taskStore.updateTask(taskId, {
+        const next = await this.requeue(task, {
           description: `[Escalation: Reformulated by orchestrator]\n\n${newDescription}`,
           phase: "execution",
           fixAttempts: 0,
-        });
-        await this.ctx.taskStore.unsafeSetStatus(taskId, "pending", `escalation level ${level.level}: orchestrator reformulation`);
+        }, `escalation level ${level.level}: orchestrator reformulation`);
 
         this.ctx.emitter.emit("escalation:resolved", {
           taskId,
@@ -196,12 +225,13 @@ export class EscalationManager {
         });
 
         if (level.timeoutMs) {
-          this.startTimer(taskId, task, level, policy, level.timeoutMs);
+          this.startTimer(taskId, next, level, policy, level.timeoutMs);
         }
       } else {
         await this.advanceLevel(taskId, task, level, policy);
       }
     } catch (err) {
+      if (isExecutionConflict(err)) throw err;
       const msg = err instanceof Error ? err.message : String(err);
       this.ctx.emitter.emit("log", {
         level: "error",
@@ -219,7 +249,10 @@ export class EscalationManager {
   ): Promise<void> {
     const failureContext = this.buildFailureContext(task);
 
-    await this.ctx.taskStore.unsafeSetStatus(taskId, "awaiting_approval", `escalation level ${level.level}: human intervention`);
+    if (isTaskExecutionStore(this.ctx.taskStore) || task.executionRevision !== undefined || task.activeRunId !== undefined) {
+      if (!isTaskExecutionStore(this.ctx.taskStore)) throw new TaskExecutionError("task_execution_unsupported", "Escalation requires execution persistence");
+      await this.ctx.taskStore.mutateTaskExecution(taskExecutionReference(task), { type: "transition", status: "awaiting_approval" });
+    } else await this.ctx.taskStore.unsafeSetStatus(taskId, "awaiting_approval", `escalation level ${level.level}: human intervention`);
 
     this.ctx.emitter.emit("escalation:human", {
       taskId,
@@ -266,23 +299,27 @@ export class EscalationManager {
     if (nextLevel) {
       try {
         await this.escalate(taskId, task, nextLevel, policy);
-      } catch {
-        await this.finalFail(taskId);
+      } catch (error) {
+        if (isExecutionConflict(error)) throw error;
+        await this.finalFail(task);
       }
     } else {
-      await this.finalFail(taskId);
+      await this.finalFail(task);
     }
   }
 
-  private async finalFail(taskId: string): Promise<void> {
+  private async finalFail(captured: Task): Promise<void> {
+    const taskId = captured.id;
+    const task = await this.currentAttempt(captured);
+    if (!task) return;
     this.taskLevels.delete(taskId);
     this.clearTimer(taskId);
 
-    const task = await this.ctx.taskStore.getTask(taskId);
-    if (!task) return;
-
     if (task.status !== "done" && task.status !== "failed" && task.status !== "awaiting_approval") {
-      await this.ctx.taskStore.unsafeSetStatus(taskId, "failed", "escalation exhausted");
+      if (isTaskExecutionStore(this.ctx.taskStore) || task.executionRevision !== undefined || task.activeRunId !== undefined) {
+        if (!isTaskExecutionStore(this.ctx.taskStore)) throw new TaskExecutionError("task_execution_unsupported", "Escalation requires execution persistence");
+        await this.ctx.taskStore.mutateTaskExecution(taskExecutionReference(task), { type: "cancel", reason: "escalation exhausted" });
+      } else await this.ctx.taskStore.unsafeSetStatus(taskId, "failed", "escalation exhausted");
     }
   }
 
@@ -321,14 +358,19 @@ export class EscalationManager {
   ): void {
     this.clearTimer(taskId);
     const timer = setTimeout(async () => {
+      if (this.timers.get(taskId) !== timer) return;
       this.timers.delete(taskId);
-      const currentTask = await this.ctx.taskStore.getTask(taskId);
-      if (currentTask && (currentTask.status === "pending" || currentTask.status === "in_progress" || currentTask.status === "failed")) {
-        this.ctx.emitter.emit("log", {
-          level: "warn",
-          message: `[escalation] Level ${currentLevel.level} timed out for task ${taskId} — advancing`,
-        });
-        await this.advanceLevel(taskId, task, currentLevel, policy);
+      try {
+        const currentTask = await this.currentAttempt(task, true);
+        if (currentTask && (currentTask.status === "pending" || currentTask.status === "in_progress" || currentTask.status === "failed")) {
+          this.ctx.emitter.emit("log", {
+            level: "warn",
+            message: `[escalation] Level ${currentLevel.level} timed out for task ${taskId} — advancing`,
+          });
+          await this.advanceLevel(taskId, currentTask, currentLevel, policy);
+        }
+      } catch (error) {
+        if (!isExecutionConflict(error)) this.ctx.emitter.emit("log", { level: "error", message: `[escalation] Timer failed for task ${taskId}` });
       }
     }, ms);
     this.timers.set(taskId, timer);

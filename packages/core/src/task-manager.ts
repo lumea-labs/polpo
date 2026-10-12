@@ -3,6 +3,30 @@ import { resolveMissionStore, resolveMissionForTask } from "./mission-store.js";
 import type { Task, TaskExpectation, ExpectedOutcome, RetryPolicy, ReviewContext, ScopedNotificationRules, RuntimeRoutingOptions, RuntimeSandboxOptions } from "./types.js";
 import { setAssessment } from "./types.js";
 import { sanitizeExpectations } from "./schemas.js";
+import { normalizeRuntimeMetadata } from "./runtime-metadata.js";
+import { isTaskExecutionStore, taskExecutionReference, TaskExecutionError, type TaskExecutionReference, type TaskExecutionMutation, type TaskExecutionPrecondition, type TaskExecutionState, isConditionalTaskExecutionStore } from "./task-execution.js";
+
+export type CreateTaskOptions = {
+  title: string;
+  description: string;
+  assignTo: string;
+  loop?: string;
+  expectations?: TaskExpectation[];
+  expectedOutcomes?: ExpectedOutcome[];
+  dependsOn?: string[];
+  group?: string;
+  missionId?: string;
+  maxDuration?: number;
+  retryPolicy?: RetryPolicy;
+  notifications?: ScopedNotificationRules;
+  sideEffects?: boolean;
+  executionMode?: import("./types/config.js").ExecutionMode;
+  sandbox?: RuntimeSandboxOptions;
+  routing?: RuntimeRoutingOptions;
+  user?: string;
+  metadata?: Record<string, string>;
+  draft?: boolean;
+};
 
 /**
  * Task CRUD: add, update, retry, reassess, kill, abort, clear.
@@ -12,30 +36,20 @@ export class TaskManager {
 
   constructor(private ctx: OrchestratorContext) {}
 
-  async createTask(opts: {
-    title: string;
-    description: string;
-    assignTo: string;
-    loop?: string;
-    expectations?: TaskExpectation[];
-    expectedOutcomes?: ExpectedOutcome[];
-    dependsOn?: string[];
-    group?: string;
-    missionId?: string;
-    maxDuration?: number;
-    retryPolicy?: RetryPolicy;
-    notifications?: ScopedNotificationRules;
-    sideEffects?: boolean;
-    executionMode?: import("./types/config.js").ExecutionMode;
-    sandbox?: RuntimeSandboxOptions;
-    routing?: RuntimeRoutingOptions;
-    user?: string;
-    draft?: boolean;
-  }): Promise<Task> {
+  async createTask(opts: CreateTaskOptions): Promise<Task> {
+    const prepared = await this.prepareTask(opts);
+    const task = await this.ctx.taskStore.createTask(prepared);
+    this.notifyTaskCreated(task);
+    return task;
+  }
+
+  /** Run planning hooks and validation without publishing a runnable task. */
+  async prepareTask(opts: CreateTaskOptions): Promise<Parameters<OrchestratorContext["taskStore"]["createTask"]>[0]> {
+    const metadata = normalizeRuntimeMetadata(opts.metadata);
     if (!this.ctx.taskStore) throw new Error("Orchestrator not initialized");
 
-    // Run before:task:create hook (sync — createTask is synchronous)
-    const hookResult = this.ctx.hooks.runBeforeSync("task:create", {
+    // Durable approval hooks must settle before admission can continue.
+    const hookResult = await this.ctx.hooks.runBefore("task:create", {
       title: opts.title,
       description: opts.description,
       assignTo: opts.assignTo,
@@ -76,7 +90,7 @@ export class TaskManager {
     const rawExps = hookData.expectations ?? [];
     const { valid: expectations, warnings } = sanitizeExpectations(rawExps);
     for (const w of warnings) this.ctx.emitter.emit("log", { level: "warn", message: `[createTask "${hookData.title}"] ${w}` });
-    const task = await this.ctx.taskStore.createTask({
+    return {
       title: hookData.title,
       description: hookData.description,
       assignTo: hookData.assignTo,
@@ -96,8 +110,13 @@ export class TaskManager {
       sandbox: hookData.sandbox ?? opts.sandbox,
       routing: hookData.routing ?? opts.routing,
       user: hookData.user ?? opts.user,
+      metadata,
       status: hookData.draft ? "draft" : undefined,
-    });
+    };
+  }
+
+  /** Publish only after the task (or whole Mission admission) has committed. */
+  notifyTaskCreated(task: Task): void {
     this.ctx.emitter.emit("task:created", { task });
 
     // Fire after:task:create hook (async, fire-and-forget)
@@ -110,7 +129,6 @@ export class TaskManager {
       group: task.group,
     }).catch(() => { /* hook errors are logged internally */ });
 
-    return task;
   }
 
   async updateTaskDescription(taskId: string, description: string): Promise<void> {
@@ -231,6 +249,18 @@ export class TaskManager {
   }
 
   async killTask(taskId: string): Promise<boolean> {
+    const captured = await this.ctx.taskStore.getTask(taskId);
+    if (!captured) return false;
+    if (isTaskExecutionStore(this.ctx.taskStore)) {
+      const { run } = await this.ctx.taskStore.mutateTaskExecution(taskExecutionReference(captured), { type: "cancel" });
+      // Durable cancellation is authoritative; immediate notification is only
+      // for a host that owns this Run. Never signal a PID read from another host.
+      if (run?.status === "killed") await this.ctx.spawner.cancelRun?.(run.id);
+      return true;
+    }
+    if (captured.activeRunId !== undefined || captured.executionRevision !== undefined) {
+      throw new TaskExecutionError("task_execution_unsupported", "Task cancellation requires execution persistence");
+    }
     const run = await this.ctx.runStore.getRunByTaskId(taskId);
     if (run && run.status === "running" && run.pid > 0) {
       if (this.ctx.killProcess) {
@@ -323,9 +353,46 @@ export class TaskManager {
     }
   }
 
-  /** Force a task through the state machine to failed (used by deadlock resolver). */
-  async forceFailTask(taskId: string): Promise<void> {
+  /** Commit a decision against every row it observed, then notify its Run owner. */
+  async applyTaskExecutionDecision(expected: TaskExecutionReference, mutation: TaskExecutionMutation,
+    preconditions: readonly TaskExecutionPrecondition[]): Promise<TaskExecutionState> {
+    if (!isConditionalTaskExecutionStore(this.ctx.taskStore)) {
+      throw new TaskExecutionError("task_execution_unsupported", "Task decisions require atomic read preconditions");
+    }
+    const state = await this.ctx.taskStore.mutateTaskExecutionConditionally(expected, mutation, preconditions);
+    if (state.run?.status === "killed") {
+      try { await this.ctx.spawner.cancelRun?.(state.run.id); }
+      catch {
+        // Persistence is already committed. A failed local notification cannot
+        // undo it or turn the resolver's other decisions into failures. Remote
+        // owners also observe the durable cancellation independently.
+        this.ctx.emitter.emit("log", { level: "error", message: `Task decision committed; Run cancellation notification failed for ${state.run.id}` });
+      }
+    }
+    return state;
+  }
+
+  /** Fail one captured attempt, including its still-owned Run. */
+  async forceFailTask(taskId: string, expected?: TaskExecutionReference): Promise<void> {
+    if (expected && expected.taskId !== taskId) {
+      throw new TaskExecutionError("task_execution_invalid", "Task cancellation identity mismatch");
+    }
+    if (isTaskExecutionStore(this.ctx.taskStore)) {
+      let reference = expected;
+      if (!reference) {
+        const captured = await this.ctx.taskStore.getTask(taskId);
+        if (!captured) return;
+        reference = taskExecutionReference(captured);
+      }
+      const { run } = await this.ctx.taskStore.mutateTaskExecution(reference, { type: "cancel", reason: "Task force-failed" });
+      if (run?.status === "killed") await this.ctx.spawner.cancelRun?.(run.id);
+      return;
+    }
+    if (expected) throw new TaskExecutionError("task_execution_unsupported", "Task cancellation requires execution persistence");
     const task = await this.ctx.taskStore.getTask(taskId);
+    if (task && (task.activeRunId !== undefined || task.executionRevision !== undefined)) {
+      throw new TaskExecutionError("task_execution_unsupported", "Task cancellation requires execution persistence");
+    }
     if (!task || task.status === "done" || task.status === "failed") return;
     try {
       if (task.status === "pending") await this.ctx.taskStore.transition(taskId, "assigned");

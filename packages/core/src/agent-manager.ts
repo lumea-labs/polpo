@@ -1,5 +1,6 @@
 import type { OrchestratorContext } from "./orchestrator-context.js";
 import type { AgentConfig, Team } from "./types.js";
+import { AgentMutationError, isVersionedAgentStore, normalizeAgentMutation, type AgentMutation, type AgentMutationReceipt, type AgentSnapshot } from "./agent-store.js";
 
 /**
  * Manages multi-team agent topology: CRUD operations on teams and agents,
@@ -156,9 +157,33 @@ export class AgentManager {
     return updated;
   }
 
+  async getAgentSnapshot(name: string): Promise<AgentSnapshot | undefined> {
+    const store = this.ctx.agentStore;
+    if (!isVersionedAgentStore(store)) throw new Error("Agent store does not support revision preconditions");
+    return store.getAgentSnapshot(name);
+  }
+
+  async compareAndSwapAgent(name: string, mutation: AgentMutation): Promise<AgentMutationReceipt> {
+    const store = this.ctx.agentStore;
+    if (!isVersionedAgentStore(store)) throw new Error("Agent store does not support revision preconditions");
+    mutation = normalizeAgentMutation(mutation);
+    if (mutation.patch.teamName !== undefined && !await this.ctx.teamStore.getTeam(mutation.patch.teamName)) {
+      throw new AgentMutationError("invalid_agent_mutation", `Team "${mutation.patch.teamName}" not found`);
+    }
+    const receipt = await store.compareAndSwapAgent(name, mutation);
+    await this.syncConfigCache();
+    this.ctx.emitter.emit("log", { level: "info", message: `Agent updated: ${name}` });
+    return receipt;
+  }
+
   async removeAgent(name: string): Promise<boolean> {
-    const teamName = await this.ctx.agentStore.getAgentTeam(name);
-    const deleted = await this.ctx.agentStore.deleteAgent(name);
+    const store = this.ctx.agentStore;
+    const snapshot = isVersionedAgentStore(store) ? await store.getAgentSnapshot(name) : undefined;
+    if (isVersionedAgentStore(store) && !snapshot) return false;
+    const teamName = snapshot?.teamName ?? await store.getAgentTeam(name);
+    const deleted = isVersionedAgentStore(store)
+      ? await store.deleteAgentIfRevision(name, snapshot!.revision)
+      : await store.deleteAgent(name);
     if (deleted) {
       await this.syncConfigCache();
       this.ctx.emitter.emit("log", { level: "info", message: `Agent removed: ${name}${teamName ? ` (team: ${teamName})` : ""}` });

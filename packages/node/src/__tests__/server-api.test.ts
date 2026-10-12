@@ -786,15 +786,24 @@ describe("Missions Resume/Abort API", () => {
     const created = await createRes.json();
     const missionId = created.data.id;
 
-    await app.request(api(`/missions/${missionId}/execute`), { method: "POST" });
+    const executionResponse = await app.request(api(`/missions/${missionId}/execute`), { method: "POST" });
+    expect(executionResponse.status).toBe(200);
+    const execution = (await executionResponse.json()).data;
+    // Renaming after admission cannot make the accepted work unreachable.
+    await app.request(api(`/missions/${missionId}`), jsonReq("PATCH", { name: "abort-test-renamed" }));
 
     // Abort
     const res = await app.request(api(`/missions/${missionId}/abort`), { method: "POST" });
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.ok).toBe(true);
-    expect(typeof body.data.aborted).toBe("number");
-    expect(body.data.aborted).toBeGreaterThanOrEqual(0);
+    expect(body.data).toEqual({ aborted: 2, executionId: execution.executionId });
+    const missionResponse = await app.request(api(`/missions/${missionId}`));
+    expect((await missionResponse.json()).data.status).toBe("cancelled");
+    for (const task of execution.tasks) {
+      const taskResponse = await app.request(api(`/tasks/${task.id}`));
+      expect((await taskResponse.json()).data.status).toBe("failed");
+    }
   });
 
   test("POST /missions/:id/resume resumes an executed mission", async () => {

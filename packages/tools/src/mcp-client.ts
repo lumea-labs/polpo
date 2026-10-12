@@ -27,7 +27,10 @@
  * allowlist is unset and any host works.
  */
 
-import type { PolpoTool, ToolResult } from "@polpo-ai/core";
+import { ConnectionSelectionError, createToolInvocationContext, resolveAllowedToolPolicy, toolNameAllowedByPolicy,
+  type PolpoTool, type ToolResult, type ToolInvocationContext,
+  type McpRuntimeCapabilities, type ResolvedMcpCapability, type ResolveMcpRuntimeCapabilities,
+  type AllowedToolPolicyInput } from "@polpo-ai/core";
 
 /** A single MCP server config — mirrors the type in `@polpo-ai/sdk`. */
 export type McpServerSpec =
@@ -150,6 +153,7 @@ function adaptMcpTool(
   serverName: string,
   toolName: string,
   aiTool: any,
+  propagateErrors = false,
 ): PolpoTool<any> {
   return {
     name: `mcp__${serverName}__${toolName}`,
@@ -170,6 +174,7 @@ function adaptMcpTool(
         });
         return coerceMcpResult(raw);
       } catch (err) {
+        if (propagateErrors) throw err;
         const message = err instanceof Error ? err.message : String(err);
         return {
           content: [{ type: "text", text: `MCP tool error: ${message}` }],
@@ -218,6 +223,161 @@ function coerceMcpResult(raw: unknown): ToolResult {
   };
 }
 
+/** Build an agent palette from host-verified inventory. Each execution acquires
+ * its own exact-account capability; no URL, token, or account is model-selectable. */
+export function resolveConnectionMcpTools(
+  providers: McpRuntimeCapabilities,
+  invocation: ToolInvocationContext,
+): ResolvedMcpTools {
+  const boundInvocation = createToolInvocationContext(invocation);
+  const tools: PolpoTool<any>[] = [];
+  const names = new Set<string>();
+  const controllers = new Set<AbortController>();
+  const closers = new Set<() => Promise<void>>();
+  let disposed = false;
+  for (const [serverName, provider] of Object.entries(providers)) {
+    for (const descriptor of provider.tools) {
+      const name = `mcp__${serverName}__${descriptor.name}`;
+      if (names.has(name)) throw new ConnectionSelectionError("connection_slot_invalid", `Duplicate MCP tool capability: ${name}`);
+      names.add(name);
+      // Clone only non-secret inventory. Keep the existing MCP result adapter
+      // so text/images/errors retain the same runtime behavior.
+      const toolName = descriptor.name;
+      tools.push(adaptMcpTool(serverName, toolName, {
+        description: descriptor.description,
+        inputSchema: structuredClone(descriptor.inputSchema),
+        execute: async (args: Record<string, unknown>, execution: { toolCallId: string; abortSignal?: AbortSignal }) => {
+          if (disposed) throw new ConnectionSelectionError("connection_scope_denied", "MCP runtime is closed");
+          const controller = new AbortController();
+          controllers.add(controller);
+          const abort = () => controller.abort();
+          execution.abortSignal?.addEventListener("abort", abort, { once: true });
+          if (execution.abortSignal?.aborted) controller.abort();
+          let capability: ResolvedMcpCapability | undefined;
+          const input = { serverName, toolName, toolCallId: execution.toolCallId,
+            invocation: boundInvocation, signal: controller.signal };
+          let closed = false;
+          const close = async () => {
+            if (closed) return;
+            closed = true;
+            await capability?.dispose();
+          };
+          try {
+            capability = await provider.resolver.resolve(input);
+            closers.add(close);
+            if (disposed || controller.signal.aborted) throw new ConnectionSelectionError("connection_scope_denied", "MCP invocation was cancelled");
+            return await capability.call(args);
+          } catch (error) {
+            // Host errors can contain secret references and physical account
+            // IDs. Forward them only to the host observer, never to the model.
+            try { void Promise.resolve(provider.onError?.(error, input)).catch(() => undefined); } catch { /* diagnostic failure */ }
+            if (error && typeof error === "object" && "code" in error && error.code === "rate_limited") {
+              const details = "details" in error && error.details && typeof error.details === "object" ? error.details : undefined;
+              const retry = "retryAfterSeconds" in error ? error.retryAfterSeconds
+                : details && "retryAfterSeconds" in details ? details.retryAfterSeconds : undefined;
+              if (typeof retry === "number" && Number.isSafeInteger(retry) && retry >= 1 && retry <= 86400) {
+                throw Object.assign(new Error(`Connection request limit exceeded; retry after ${retry} seconds`), {
+                  code: "rate_limited", retryAfterSeconds: retry,
+                });
+              }
+            }
+            throw new Error(error instanceof ConnectionSelectionError
+              ? "MCP operation is not authorized or no longer available"
+              : "MCP request failed");
+          } finally {
+            controllers.delete(controller);
+            execution.abortSignal?.removeEventListener("abort", abort);
+            closers.delete(close);
+            // A cleanup failure must not convert a completed side effect into
+            // an apparent tool failure that causes automatic retries.
+            await close().catch(() => undefined);
+          }
+        },
+      }, true));
+    }
+  }
+  return { tools, dispose: async () => {
+    disposed = true;
+    for (const controller of controllers) controller.abort();
+    await Promise.allSettled([...closers].map(close => close()));
+  } };
+}
+
+/** Shared chat/task adapter. Host-claimed namespaces never fall back to URL or
+ * vault execution, including an intentionally empty/denied inventory. */
+export async function resolveRuntimeMcpTools(input: {
+  agentName: string;
+  mcpServers?: Record<string, McpServerSpec>;
+  vault?: VaultLookup;
+  invocation?: ToolInvocationContext;
+  resolveCapabilities?: ResolveMcpRuntimeCapabilities;
+  policy?: AllowedToolPolicyInput;
+  signal?: AbortSignal;
+  /** Background/managed hosts may expose only Connection capabilities. */
+  allowLegacy?: boolean;
+}): Promise<ResolvedMcpTools> {
+  let capabilities: McpRuntimeCapabilities = {};
+  if (input.resolveCapabilities) {
+    if (!input.invocation) throw new ConnectionSelectionError("connection_scope_denied", "MCP capabilities require a trusted invocation");
+    const controller = new AbortController();
+    let rejectWait!: (error: Error) => void;
+    const stopped = new Promise<never>((_, reject) => { rejectWait = reject; });
+    const abort = () => {
+      controller.abort();
+      rejectWait(new ConnectionSelectionError("connection_scope_denied", "MCP inventory loading was cancelled or timed out"));
+    };
+    const timeout = setTimeout(abort, 30_000);
+    input.signal?.addEventListener("abort", abort, { once: true });
+    try {
+      if (input.signal?.aborted) abort();
+      capabilities = await Promise.race([stopped, Promise.resolve().then(() => {
+        if (controller.signal.aborted) throw new ConnectionSelectionError("connection_scope_denied", "MCP inventory loading was cancelled");
+        return input.resolveCapabilities!({ agentName: input.agentName, mcpServers: input.mcpServers,
+          invocation: createToolInvocationContext(input.invocation!), signal: controller.signal });
+      })]);
+    } finally {
+      clearTimeout(timeout);
+      input.signal?.removeEventListener("abort", abort);
+    }
+  }
+  const legacy: Record<string, McpServerSpec> = {};
+  for (const [name, spec] of Object.entries(input.mcpServers ?? {})) {
+    if (Object.hasOwn(capabilities, name)) continue;
+    if (requiresConnectionCapability(spec)) {
+      throw new ConnectionSelectionError("connection_scope_denied", "MCP Connection capability is unavailable in this runtime");
+    }
+    if (input.allowLegacy !== false) legacy[name] = spec;
+  }
+  const policy = resolveAllowedToolPolicy(input.policy ?? {});
+  const managed = Object.keys(capabilities).length > 0
+    ? resolveConnectionMcpTools(capabilities, input.invocation!) : { tools: [], dispose: async () => {} };
+  let compatibility: ResolvedMcpTools | undefined;
+  try {
+    compatibility = await resolveAgentMcpTools(input.agentName, legacy, input.vault);
+    if (input.signal?.aborted) throw new ConnectionSelectionError("connection_scope_denied", "MCP inventory loading was cancelled");
+    const tools = [...managed.tools, ...compatibility.tools].filter(tool => toolNameAllowedByPolicy(tool.name, policy));
+    return { tools, dispose: async () => {
+      await Promise.allSettled([managed.dispose(), compatibility!.dispose()]);
+    } };
+  } catch (error) {
+    await managed.dispose();
+    await compatibility?.dispose();
+    throw error;
+  }
+}
+
+/** Connection references are authority selectors, never direct transport input.
+ * Check every supported string location, including stdio env/args, before any
+ * transport starts. Only a host-claimed namespace may consume these references. */
+function requiresConnectionCapability(spec: McpServerSpec): boolean {
+  const hasPlaceholder = (value: unknown): boolean => typeof value === "string"
+    ? value.includes("${connection:")
+    : Array.isArray(value)
+      ? value.some(hasPlaceholder)
+      : !!value && typeof value === "object" && Object.values(value).some(hasPlaceholder);
+  return "connectionId" in spec || hasPlaceholder(spec);
+}
+
 /**
  * Open every MCP server declared on the agent config. Returns the
  * aggregated Polpo tools + a single `dispose` that closes them all.
@@ -234,6 +394,10 @@ export async function resolveAgentMcpTools(
 ): Promise<ResolvedMcpTools> {
   if (!mcpServers || Object.keys(mcpServers).length === 0) {
     return { tools: [], dispose: async () => {} };
+  }
+
+  if (Object.values(mcpServers).some(requiresConnectionCapability)) {
+    throw new ConnectionSelectionError("connection_scope_denied", "MCP Connections require host capabilities; direct credential materialization is unavailable");
   }
 
   // Lazy-loaded so projects that never use MCP don't pay the import cost

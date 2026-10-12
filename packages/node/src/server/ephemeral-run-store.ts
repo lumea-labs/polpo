@@ -7,7 +7,7 @@
  * the request, so chat runs never touch the project's task run store or disk.
  */
 import type { RunStore, RunRecord, RunStatus } from "@polpo-ai/core/run-store";
-import type { AgentActivity, TaskResult, TaskOutcome } from "@polpo-ai/core/types";
+import type { AgentActivity, TaskResult, TaskOutcome, RunnerConfig } from "@polpo-ai/core/types";
 import type { LoopResumeState } from "@polpo-ai/core/loop-run-store";
 import type { LoopTraceEvent } from "@polpo-ai/core";
 
@@ -16,6 +16,7 @@ export class EphemeralRunStore implements RunStore {
 
   async upsertRun(run: RunRecord): Promise<void> {
     const existing = this.runs.get(run.id);
+    if (existing && existing.status !== "running") return;
     this.runs.set(run.id, existing ? {
       ...existing,
       ...run,
@@ -28,6 +29,16 @@ export class EphemeralRunStore implements RunStore {
       completedAt: run.completedAt ?? existing.completedAt,
       collectedAt: run.collectedAt ?? existing.collectedAt,
     } : { ...run });
+  }
+
+  async updateRunConfig(runId: string, config: RunnerConfig, configPath: string): Promise<boolean> {
+    const run = this.runs.get(runId);
+    if (run?.status !== "running") return false;
+    run.config = config;
+    run.configPath = configPath;
+    if (config.executionMode !== undefined) run.executionMode = config.executionMode;
+    run.updatedAt = new Date().toISOString();
+    return true;
   }
 
   async updateActivity(runId: string, activity: AgentActivity): Promise<void> {
@@ -55,7 +66,7 @@ export class EphemeralRunStore implements RunStore {
 
   async completeRun(runId: string, status: RunStatus, result: TaskResult): Promise<void> {
     const run = this.runs.get(runId);
-    if (run) {
+    if (run?.status === "running") {
       run.status = status;
       run.result = result;
       run.updatedAt = new Date().toISOString();

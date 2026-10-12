@@ -44,6 +44,7 @@ describe("Connections CLI", () => {
     expect(names).toEqual(expect.arrayContaining([
       "catalog",
       "list",
+      "end-users",
       "mcp",
       "grants",
       "links",
@@ -51,6 +52,9 @@ describe("Connections CLI", () => {
       "unlink",
       "setup-session",
       "setup-status",
+      "setup-start",
+      "setup-config",
+      "verify",
       "capabilities",
       "oauth-clients",
       "events",
@@ -63,6 +67,7 @@ describe("Connections CLI", () => {
     ]));
     const mcp = command.commands.find((item) => item.name() === "mcp")!;
     expect(mcp.commands.map((item) => item.name())).toEqual([
+      "configurations",
       "catalog",
       "inspect",
       "connect",

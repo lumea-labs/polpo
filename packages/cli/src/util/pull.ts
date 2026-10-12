@@ -29,6 +29,7 @@ import {
   serializeTeamDefinition,
 } from "@polpo-ai/core/project-layout";
 import type { AgentConfig, Team } from "@polpo-ai/core/types";
+import { captureProjectDefinitionFiles, commitProjectDefinitionFiles } from "@polpo-ai/file-stores";
 
 export interface PullOptions extends ConflictOptions {}
 
@@ -88,47 +89,36 @@ export async function pullProject(
       const agents = res.data?.data ?? res.data ?? [];
       if (Array.isArray(agents) && agents.length > 0) {
         const entries = agents.map((agent: Record<string, unknown>) => cloudAgentForPull(agent));
-        const legacyPath = path.join(polpoDir, "agents.json");
-        if (fs.existsSync(legacyPath)) {
-          const action = await resolveJsonConflict(
-            legacyPath,
-            entries,
-            `agents.json (${agents.length} agents)`,
-            opts,
-          );
+        const snapshot = captureProjectDefinitionFiles(polpoDir, [
+          "agents.json", ...entries.flatMap(({ agent }) => [
+            `agents/${agent.name}/agent.json`, `agents/${agent.name}/instructions.md`,
+          ]),
+        ]);
+        const local = (file: string) => snapshot.files.find(f => f.path === file)!.contents;
+        const updates: Array<{ path: string; contents: string }> = [];
+        const pulled: string[] = [];
+        if (local("agents.json") !== null) {
+          const action = await resolveDataConflict(entries, JSON.parse(local("agents.json")!), `agents.json (${agents.length} agents)`, opts);
           if (action === "write") {
-            writeJson(legacyPath, entries);
-            result.pulled.push(`agents (${agents.length})`);
-          } else {
-            result.skipped.push("agents (local kept)");
-          }
+            updates.push({ path: "agents.json", contents: JSON.stringify(entries, null, 2) + "\n" });
+            pulled.push(`agents (${agents.length})`);
+          } else result.skipped.push("agents (local kept)");
         } else {
           for (const { agent, teamName } of entries) {
             const serialized = serializeAgentDefinition(agent, teamName);
-            const agentDir = path.join(polpoDir, "agents", agent.name);
-            const configPath = path.join(agentDir, "agent.json");
-            const instructionsPath = path.join(agentDir, "instructions.md");
-            const configAction = await resolveJsonConflict(
-              configPath,
-              serialized.definition,
-              `agent "${agent.name}" configuration`,
-              opts,
-            );
-            const instructionsAction = await resolveFileConflict(
-              instructionsPath,
-              serialized.instructions,
-              `agent "${agent.name}" instructions`,
-              opts,
-            );
-            if (configAction === "write") writeJson(configPath, serialized.definition);
-            if (instructionsAction === "write") writeText(instructionsPath, serialized.instructions);
-            if (configAction === "write" || instructionsAction === "write") {
-              result.pulled.push(`agent (${agent.name})`);
-            } else {
-              result.skipped.push(`agent ${agent.name} (local kept)`);
-            }
+            const configPath = `agents/${agent.name}/agent.json`;
+            const instructionsPath = `agents/${agent.name}/instructions.md`;
+            const config = local(configPath);
+            const configAction = await resolveDataConflict(serialized.definition, config === null ? null : JSON.parse(config), `agent "${agent.name}" configuration`, opts);
+            const instructionsAction = await resolveDataConflict(serialized.instructions, local(instructionsPath), `agent "${agent.name}" instructions`, opts);
+            if (configAction === "write") updates.push({ path: configPath, contents: JSON.stringify(serialized.definition, null, 2) + "\n" });
+            if (instructionsAction === "write") updates.push({ path: instructionsPath, contents: serialized.instructions });
+            if (configAction === "write" || instructionsAction === "write") pulled.push(`agent (${agent.name})`);
+            else result.skipped.push(`agent ${agent.name} (local kept)`);
           }
         }
+        if (updates.length) commitProjectDefinitionFiles(polpoDir, snapshot, updates);
+        result.pulled.push(...pulled);
       } else {
         result.unchanged.push("agents (none in cloud)");
       }
@@ -171,39 +161,31 @@ export async function pullProject(
         const clean = JSON.parse(JSON.stringify(
           teams.map((t: any) => ({ name: t.name, description: t.description, agents: [] })),
         )) as Team[];
-        const legacyPath = path.join(polpoDir, "teams.json");
-        if (fs.existsSync(legacyPath)) {
+        const snapshot = captureProjectDefinitionFiles(polpoDir, ["teams.json", ...clean.map(team => `teams/${team.name}.json`)]);
+        const local = (file: string) => snapshot.files.find(f => f.path === file)!.contents;
+        const updates: Array<{ path: string; contents: string }> = [];
+        const pulled: string[] = [];
+        if (local("teams.json") !== null) {
           const legacyTeams = clean.map(({ agents: _agents, ...team }) => team);
-          const action = await resolveJsonConflict(
-            legacyPath,
-            legacyTeams,
-            `teams.json (${teams.length} teams)`,
-            opts,
-          );
+          const action = await resolveDataConflict(legacyTeams, JSON.parse(local("teams.json")!), `teams.json (${teams.length} teams)`, opts);
           if (action === "write") {
-            writeJson(legacyPath, legacyTeams);
-            result.pulled.push(`teams (${teams.length})`);
-          } else {
-            result.skipped.push("teams (local kept)");
-          }
+            updates.push({ path: "teams.json", contents: JSON.stringify(legacyTeams, null, 2) + "\n" });
+            pulled.push(`teams (${teams.length})`);
+          } else result.skipped.push("teams (local kept)");
         } else {
           for (const team of clean) {
-            const filePath = path.join(polpoDir, "teams", `${team.name}.json`);
+            const file = `teams/${team.name}.json`;
             const definition = serializeTeamDefinition(team);
-            const action = await resolveJsonConflict(
-              filePath,
-              definition,
-              `team "${team.name}"`,
-              opts,
-            );
+            const current = local(file);
+            const action = await resolveDataConflict(definition, current === null ? null : JSON.parse(current), `team "${team.name}"`, opts);
             if (action === "write") {
-              writeJson(filePath, definition);
-              result.pulled.push(`team (${team.name})`);
-            } else {
-              result.skipped.push(`team ${team.name} (local kept)`);
-            }
+              updates.push({ path: file, contents: JSON.stringify(definition, null, 2) + "\n" });
+              pulled.push(`team (${team.name})`);
+            } else result.skipped.push(`team ${team.name} (local kept)`);
           }
         }
+        if (updates.length) commitProjectDefinitionFiles(polpoDir, snapshot, updates);
+        result.pulled.push(...pulled);
       } else {
         result.unchanged.push("teams (none in cloud)");
       }

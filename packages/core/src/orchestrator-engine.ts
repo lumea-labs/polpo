@@ -11,10 +11,13 @@
  * OrchestratorContext and the port interfaces defined below.
  */
 
+import type { ActiveCheckpoint, ActiveDelay } from "./types.js";
 import type { OrchestratorContext } from "./orchestrator-context.js";
 import { TickWaiter } from "./tick-waiter.js";
 import { resolveMissionStore, resolveMissionForTask } from "./mission-store.js";
+import { MissionExecutionError, type MissionAbortOptions, type MissionAbortResult, type MissionExecutionOptions, type MissionExecutionResult } from "./mission-execution.js";
 import type { TaskManager } from "./task-manager.js";
+import { isConditionalTaskExecutionStore, taskDependencyPreconditions, taskExecutionReference, TaskExecutionError, type TaskExecutionReference, type TaskExecutionMutation, type TaskExecutionPrecondition, type TaskExecutionState } from "./task-execution.js";
 import type { AgentManager } from "./agent-manager.js";
 import type { ApprovalManager } from "./approval-manager.js";
 import type { Scheduler } from "./scheduler.js";
@@ -27,7 +30,7 @@ import type { MemoryStore } from "./memory-store.js";
 import type { LogStore } from "./log-store.js";
 import type { SessionStore } from "./session-store.js";
 import type { TeamStore } from "./team-store.js";
-import type { AgentStore } from "./agent-store.js";
+import type { AgentStore, AgentMutation, AgentMutationReceipt, AgentSnapshot } from "./agent-store.js";
 import { agentMemoryScope } from "./memory-store.js";
 import type {
   PolpoConfig,
@@ -58,7 +61,9 @@ import type {
  * Implemented by TaskRunner in the shell layer.
  */
 export interface TaskRunnerPort {
-  collectResults(onResult: (taskId: string, result: TaskResult) => Promise<void> | void): Promise<void>;
+  setApprovalManager?(manager: ApprovalManager | undefined): void;
+  setMissionExecutionPreparer?(prepare: (task: Task) => Promise<void>): void;
+  collectResults(onResult: (taskId: string, result: TaskResult, execution?: import("./task-execution.js").TaskExecutionReference) => Promise<void> | void): Promise<void>;
   enforceHealthChecks(): Promise<void>;
   spawnForTask(task: Task): Promise<void>;
   syncProcessesFromRunStore(): Promise<void>;
@@ -70,7 +75,8 @@ export interface TaskRunnerPort {
  * Implemented by AssessmentOrchestrator in the shell layer.
  */
 export interface AssessmentOrchestratorPort {
-  handleResult(taskId: string, result: TaskResult): Promise<void>;
+  setApprovalManager?(manager: ApprovalManager | undefined): void;
+  handleResult(taskId: string, result: TaskResult, execution?: import("./task-execution.js").TaskExecutionReference): Promise<void>;
   retryOrFail(taskId: string, task: Task, result: TaskResult): Promise<void>;
 }
 
@@ -92,13 +98,17 @@ export interface MissionExecutorPort {
     endDate?: string;
     notifications?: ScopedNotificationRules;
     user?: string;
+    metadata?: Record<string, string>;
   }): Promise<Mission>;
   getMission(missionId: string): Promise<Mission | undefined>;
   getMissionByName(name: string): Promise<Mission | undefined>;
   listMissions(): Promise<Mission[]>;
   updateMission(missionId: string, updates: Partial<Omit<Mission, "id">>): Promise<Mission>;
   deleteMission(missionId: string): Promise<boolean>;
-  executeMission(missionId: string): Promise<{ tasks: Task[]; group: string }>;
+  executeMission(missionId: string, options?: MissionExecutionOptions, expectedMission?: Mission): Promise<MissionExecutionResult>;
+  abortMission?(missionId: string, options?: MissionAbortOptions): Promise<MissionAbortResult & { missionCancelled: boolean }>;
+  prepareTaskExecution?(task: Task): Promise<void>;
+  resumeCheckpointByMissionId?(missionId: string, checkpointName: string): Promise<boolean>;
   resumeMission(missionId: string, opts?: { retryFailed?: boolean }): Promise<{ retried: number; pending: number }>;
   getResumableMissions(): Promise<Mission[]>;
   cleanupCompletedGroups(tasks: Task[]): Promise<void>;
@@ -107,8 +117,8 @@ export interface MissionExecutorPort {
   getBlockingCheckpoint(group: string, taskTitle: string, taskId: string, allTasks: Task[]): Promise<{ checkpoint: MissionCheckpoint; reachedAt: string } | undefined>;
   getDelays(group: string): MissionDelay[];
   getBlockingDelay(group: string, taskTitle: string, taskId: string, allTasks: Task[]): Promise<{ delay: MissionDelay; startedAt: string; expiresAt: string } | undefined>;
-  getActiveCheckpoints(): Array<{ group: string; checkpointName: string; checkpoint: MissionCheckpoint; reachedAt: string }>;
-  getActiveDelays(): Array<{ group: string; delayName: string; delay: MissionDelay; startedAt: string; expiresAt: string }>;
+  getActiveCheckpoints(): ActiveCheckpoint[];
+  getActiveDelays(): ActiveDelay[];
   resumeCheckpoint(group: string, checkpointName: string): Promise<boolean>;
   // Atomic mission data operations
   addMissionTask(missionId: string, task: { title: string; description: string; assignTo?: string; dependsOn?: string[]; expectations?: unknown[]; expectedOutcomes?: unknown[]; maxDuration?: number; retryPolicy?: { escalateAfter?: number; fallbackAgent?: string }; notifications?: unknown }): Promise<Mission>;
@@ -150,7 +160,9 @@ export interface DeadlockFacade {
   getMemory(): Promise<string>;
   getStore(): TaskStore;
   emit(event: string, payload: unknown): boolean;
-  forceFailTask(taskId: string): Promise<void>;
+  forceFailTask(taskId: string, expected?: TaskExecutionReference): Promise<void>;
+  applyTaskExecutionDecision(expected: TaskExecutionReference, mutation: TaskExecutionMutation,
+    preconditions: readonly TaskExecutionPrecondition[]): Promise<TaskExecutionState>;
   createTask(opts: {
     title: string; description: string; assignTo: string;
     expectations?: TaskExpectation[]; expectedOutcomes?: ExpectedOutcome[];
@@ -224,6 +236,10 @@ export class OrchestratorEngine {
   private escalationMgr?: EscalationManager;
   private deadlockResolver?: DeadlockResolverPort;
   private stopped = false;
+  private closed = false;
+  private activeRun?: Promise<void>;
+  private activeTicks = new Set<Promise<boolean>>();
+  private background = new Set<Promise<void>>();
   private readonly waiter = new TickWaiter();
 
   constructor(deps: OrchestratorEngineDeps) {
@@ -232,13 +248,20 @@ export class OrchestratorEngine {
     this.agentMgr = deps.agentManager;
     this.missionExec = deps.missionExecutor;
     this.runner = deps.taskRunner;
+    this.runner.setMissionExecutionPreparer?.(task => this.prepareMissionTask(task));
     this.assessor = deps.assessmentOrchestrator;
-    this.approvalMgr = deps.approvalManager;
+    this.setApprovalManager(deps.approvalManager);
     this.scheduler = deps.scheduler;
     this.slaMonitor = deps.slaMonitor;
     this.qualityController = deps.qualityController;
     this.escalationMgr = deps.escalationManager;
     this.deadlockResolver = deps.deadlockResolver;
+  }
+
+  private async prepareMissionTask(task: Task): Promise<void> {
+    if (!task.missionExecutionId) return;
+    if (!this.missionExec.prepareTaskExecution) throw new MissionExecutionError("mission_execution_unsupported", "Mission execution recovery is unavailable");
+    await this.missionExec.prepareTaskExecution(task);
   }
 
   // ── Mutable setters (for hot-reload) ─────────────────────────────────
@@ -247,7 +270,11 @@ export class OrchestratorEngine {
   setSLAMonitor(slaMonitor: SLAMonitor | undefined): void { this.slaMonitor = slaMonitor; }
   setQualityController(qualityController: QualityController | undefined): void { this.qualityController = qualityController; }
   setEscalationManager(escalationManager: EscalationManager | undefined): void { this.escalationMgr = escalationManager; }
-  setApprovalManager(approvalManager: ApprovalManager | undefined): void { this.approvalMgr = approvalManager; }
+  setApprovalManager(approvalManager: ApprovalManager | undefined): void {
+    this.approvalMgr = approvalManager;
+    this.runner.setApprovalManager?.(approvalManager);
+    this.assessor.setApprovalManager?.(approvalManager);
+  }
   setDeadlockResolver(deadlockResolver: DeadlockResolverPort | undefined): void { this.deadlockResolver = deadlockResolver; }
 
   // ── Core tick loop ───────────────────────────────────────────────────
@@ -260,12 +287,22 @@ export class OrchestratorEngine {
    * @param onBeforeLoop - Shell hook called before the loop starts (e.g. to install process handlers)
    * @param onAfterLoop - Shell hook called after the loop exits (e.g. to clean up process handlers)
    */
-  async run(interactive: boolean, onBeforeLoop?: () => void, onAfterLoop?: () => void): Promise<void> {
+  run(interactive: boolean, onBeforeLoop?: () => void, onAfterLoop?: () => void): Promise<void> {
+    if (this.closed) return Promise.reject(new Error("Orchestrator is closed"));
+    if (this.activeRun) return this.activeRun;
+    const run = this.runLoop(interactive, onBeforeLoop, onAfterLoop);
+    this.activeRun = run;
+    void run.then(() => { this.activeRun = undefined; }, () => { this.activeRun = undefined; });
+    return run;
+  }
+
+  private async runLoop(interactive: boolean, onBeforeLoop?: () => void, onAfterLoop?: () => void): Promise<void> {
     this.ctx.emitter.emit("orchestrator:started", {
       project: this.ctx.config.project,
       agents: (await this.agentMgr.getAgents()).map((a: AgentConfig) => a.name),
     });
 
+    if (this.closed) return;
     this.stopped = false;
     onBeforeLoop?.();
 
@@ -305,11 +342,19 @@ export class OrchestratorEngine {
   /**
    * Single tick of the supervisor loop. Returns true when all work is done.
    */
-  async tick(): Promise<boolean> {
+  tick(): Promise<boolean> {
+    if (this.closed) return Promise.reject(new Error("Orchestrator is closed"));
+    const tick = this.tickOnce();
+    this.activeTicks.add(tick);
+    void tick.then(() => this.activeTicks.delete(tick), () => this.activeTicks.delete(tick));
+    return tick;
+  }
+
+  private async tickOnce(): Promise<boolean> {
     // Scheduler checks FIRST — must run before early-return guards because
     // scheduled/recurring missions have zero tasks until triggered, and the
     // scheduler is what creates them via executeMission.
-    this.scheduler?.check();
+    await this.scheduler?.check();
 
     const tasks = await this.ctx.taskStore.listTasks();
     if (tasks.length === 0) return !this.isStopped();
@@ -332,7 +377,8 @@ export class OrchestratorEngine {
     }
 
     // 1. Collect results from finished runners
-    await this.runner.collectResults((id, res) => this.assessor.handleResult(id, res));
+    await this.runner.collectResults((id, res, execution) => execution
+      ? this.assessor.handleResult(id, res, execution) : this.assessor.handleResult(id, res));
 
     // 2. Enforce health checks (timeouts + stale detection)
     await this.runner.enforceHealthChecks();
@@ -342,23 +388,31 @@ export class OrchestratorEngine {
 
     // 3. Spawn agents for ready tasks (skip tasks from cancelled/completed/paused missions)
     const readyList: Task[] = [];
+    let missionPreparationBlocked = false;
     for (const task of pending) {
+      try { await this.prepareMissionTask(task); }
+      catch (error) {
+        missionPreparationBlocked = true;
+        this.ctx.emitter.emit("log", { level: "error", message: `Mission preparation blocked task ${task.id}: ${error instanceof Error ? error.message : "unavailable"}` });
+        continue;
+      }
       let isReady = true;
       if (task.group) {
+        const executionGroup = task.missionExecutionId ?? task.group;
         // Resolve mission via direct ID (preferred) or group name (legacy fallback)
         const mission = await resolveMissionForTask(resolveMissionStore(this.ctx), task);
         if (mission && (mission.status === "cancelled" || mission.status === "completed" || mission.status === "paused")) { isReady = false; }
 
         // Check quality gates — task may be blocked by a gate even if deps are done
         if (isReady && this.qualityController) {
-          const gates = this.missionExec.getQualityGates(task.group);
+          const gates = this.missionExec.getQualityGates(executionGroup);
           if (gates.length > 0) {
             const blocking = this.qualityController.getBlockingGate(
-              mission?.id ?? task.group,
+              task.missionExecutionId ?? mission?.id ?? task.group,
               task.title,
               task.id,
               gates,
-              tasks,
+              task.missionExecutionId ? tasks.filter(candidate => candidate.missionExecutionId === task.missionExecutionId) : tasks,
             );
             if (blocking) isReady = false; // Blocked by quality gate
           }
@@ -366,13 +420,13 @@ export class OrchestratorEngine {
 
         // Check checkpoints — task may be blocked by a checkpoint awaiting human resume
         if (isReady) {
-          const checkpoints = this.missionExec.getCheckpoints(task.group);
+          const checkpoints = this.missionExec.getCheckpoints(executionGroup);
           if (checkpoints.length > 0) {
             const blockingCp = await this.missionExec.getBlockingCheckpoint(
-              task.group,
+              executionGroup,
               task.title,
               task.id,
-              tasks,
+              task.missionExecutionId ? tasks.filter(candidate => candidate.missionExecutionId === task.missionExecutionId) : tasks,
             );
             if (blockingCp) isReady = false; // Blocked by checkpoint
           }
@@ -380,13 +434,13 @@ export class OrchestratorEngine {
 
         // Check delays — task may be blocked by a timed delay
         if (isReady) {
-          const delays = this.missionExec.getDelays(task.group);
+          const delays = this.missionExec.getDelays(executionGroup);
           if (delays.length > 0) {
             const blockingDelay = await this.missionExec.getBlockingDelay(
-              task.group,
+              executionGroup,
               task.title,
               task.id,
-              tasks,
+              task.missionExecutionId ? tasks.filter(candidate => candidate.missionExecutionId === task.missionExecutionId) : tasks,
             );
             if (blockingDelay) isReady = false; // Blocked by delay
           }
@@ -406,7 +460,7 @@ export class OrchestratorEngine {
     // Don't consider it a deadlock if tasks are awaiting approval, blocked by checkpoints, or waiting on delays
     const hasActiveCheckpoints = this.missionExec.getActiveCheckpoints().length > 0;
     const hasActiveDelays = this.missionExec.getActiveDelays().length > 0;
-    if (ready.length === 0 && inProgress.length === 0 && pending.length > 0 && awaitingApproval.length === 0 && !hasActiveCheckpoints && !hasActiveDelays) {
+    if (ready.length === 0 && inProgress.length === 0 && pending.length > 0 && awaitingApproval.length === 0 && !hasActiveCheckpoints && !hasActiveDelays && !missionPreparationBlocked) {
       if (this.deadlockResolver) {
         // Async resolution already in progress — wait for next tick
         if (this.deadlockResolver.isResolving()) return false;
@@ -420,22 +474,34 @@ export class OrchestratorEngine {
           });
 
           // Build the facade that the deadlock resolver needs
-          const facade = this.buildDeadlockFacade();
+          const facade = this.getDeadlockFacade();
 
           // Async LLM resolution (same pattern as question detection)
-          this.deadlockResolver.resolveDeadlock(analysis, facade).catch(async err => {
+          const resolution = this.deadlockResolver.resolveDeadlock(analysis, facade).catch(async err => {
             this.ctx.emitter.emit("log", { level: "error", message: `Deadlock resolution failed: ${(err as Error).message}` });
-            for (const t of pending) await this.forceFailTask(t.id);
+            for (const task of pending) {
+              try { await this.forceFailCapturedTask(task, tasks); }
+              catch {
+                // The background fallback must not become an unhandled
+                // rejection, nor retry cancellation against a newer owner.
+                this.ctx.emitter.emit("log", { level: "error", message: `Deadlock cancellation could not be persisted for task ${task.id}` });
+              }
+            }
           });
 
+          this.background.add(resolution);
+          void resolution.then(() => this.background.delete(resolution), () => this.background.delete(resolution));
           return false; // Don't terminate loop — resolution pending
         }
       }
 
       // Only missing deps (unresolvable) → force-fail all
       this.ctx.emitter.emit("orchestrator:deadlock", { taskIds: pending.map(t => t.id) });
-      for (const t of pending) await this.forceFailTask(t.id);
-      return true;
+      let allFailed = true;
+      for (const task of pending) {
+        if (!(await this.forceFailCapturedTask(task, tasks))) allFailed = false;
+      }
+      return allFailed;
     }
 
     // Concurrency-aware spawn loop
@@ -471,6 +537,7 @@ export class OrchestratorEngine {
         }
       }
 
+      if (this.stopped) break;
       await this.runner.spawnForTask(task);
       totalActive++;
       agentActiveCounts.set(agentName, (agentActiveCounts.get(agentName) ?? 0) + 1);
@@ -499,13 +566,14 @@ export class OrchestratorEngine {
   }
 
   /** Build the minimal facade that the deadlock resolver needs. */
-  private buildDeadlockFacade(): DeadlockFacade {
+  getDeadlockFacade(): DeadlockFacade {
     return {
       getConfig: () => this.getConfig(),
       getMemory: () => this.getMemory(),
       getStore: () => this.getStore(),
       emit: (event: string, payload: unknown) => this.ctx.emitter.emit(event, payload),
-      forceFailTask: (taskId: string) => this.forceFailTask(taskId),
+      forceFailTask: (taskId: string, expected?: TaskExecutionReference) => this.forceFailTask(taskId, expected),
+      applyTaskExecutionDecision: (expected, mutation, preconditions) => this.taskMgr.applyTaskExecutionDecision(expected, mutation, preconditions),
       createTask: (opts) => this.createTask(opts),
     };
   }
@@ -519,6 +587,14 @@ export class OrchestratorEngine {
   }
   isStopped(): boolean { return this.stopped; }
 
+  /** Terminal admission stop and drain of supervisor-owned work. */
+  async close(): Promise<void> {
+    this.closed = true;
+    this.stop();
+    await Promise.allSettled([...this.activeTicks, ...(this.activeRun ? [this.activeRun] : [])]);
+    await Promise.allSettled([...this.background]);
+  }
+
   // ── Task Management (delegates to TaskManager) ──────────────────────
 
   async createTask(opts: {
@@ -529,6 +605,7 @@ export class OrchestratorEngine {
     executionMode?: import("./types/config.js").ExecutionMode;
     sandbox?: RuntimeSandboxOptions;
     user?: string;
+    metadata?: Record<string, string>;
     draft?: boolean;
   }): Promise<Task> { return this.taskMgr.createTask(opts); }
 
@@ -550,8 +627,32 @@ export class OrchestratorEngine {
     return count;
   }
 
+  async abortMission(missionId: string, options?: MissionAbortOptions): Promise<MissionAbortResult> {
+    if (!this.missionExec.abortMission) throw new MissionExecutionError("mission_execution_unsupported", "Mission cancellation is unavailable");
+    const result = await this.missionExec.abortMission(missionId, options);
+    // The durable cancelled status fences scheduled admission. Removing a local
+    // entry after this await could instead remove a newer accepted execution's
+    // scheduling, even when the ScheduleEntry object itself has not changed.
+    return { aborted: result.aborted, ...(result.executionId ? { executionId: result.executionId } : {}) };
+  }
+
   async clearTasks(filter: (task: Task) => boolean): Promise<number> { return this.taskMgr.clearTasks(filter); }
-  async forceFailTask(taskId: string): Promise<void> { return this.taskMgr.forceFailTask(taskId); }
+  async forceFailTask(taskId: string, expected?: TaskExecutionReference): Promise<void> { return this.taskMgr.forceFailTask(taskId, expected); }
+
+  private async forceFailCapturedTask(task: Task, tasks: Task[]): Promise<boolean> {
+    if (!isConditionalTaskExecutionStore(this.ctx.taskStore)) {
+      this.ctx.emitter.emit("log", { level: "error", message: "Deadlock recovery requires atomic dependency checks" });
+      return false;
+    }
+    try {
+      await this.taskMgr.applyTaskExecutionDecision(taskExecutionReference(task),
+        { type: "cancel", reason: "Deadlock could not be resolved" }, taskDependencyPreconditions(task, tasks));
+      return true;
+    } catch (error) {
+      if (error instanceof TaskExecutionError && error.code === "task_execution_conflict") return false;
+      throw error;
+    }
+  }
 
   // ── Approval Management ─────────────────────────────────────────────
 
@@ -597,6 +698,8 @@ export class OrchestratorEngine {
   async addAgent(agent: AgentConfig, teamName?: string): Promise<void> { return this.agentMgr.addAgent(agent, teamName); }
   async removeAgent(name: string): Promise<boolean> { return this.agentMgr.removeAgent(name); }
   async updateAgent(name: string, updates: Partial<Omit<AgentConfig, "name">>): Promise<AgentConfig> { return this.agentMgr.updateAgent(name, updates); }
+  async getAgentSnapshot(name: string): Promise<AgentSnapshot | undefined> { return this.agentMgr.getAgentSnapshot(name); }
+  async compareAndSwapAgent(name: string, mutation: AgentMutation): Promise<AgentMutationReceipt> { return this.agentMgr.compareAndSwapAgent(name, mutation); }
   async findAgentTeam(name: string): Promise<Team | undefined> { return this.agentMgr.findAgentTeam(name); }
   async addVolatileAgent(agent: AgentConfig, group: string): Promise<void> { return this.agentMgr.addVolatileAgent(agent, group); }
   async cleanupVolatileAgents(group: string): Promise<number> { return this.agentMgr.cleanupVolatileAgents(group); }
@@ -615,6 +718,7 @@ export class OrchestratorEngine {
     endDate?: string;
     notifications?: ScopedNotificationRules;
     user?: string;
+    metadata?: Record<string, string>;
   }): Promise<Mission> { return this.missionExec.createMission(opts); }
   async getMission(missionId: string): Promise<Mission | undefined> { return this.missionExec.getMission(missionId); }
   async getMissionByName(name: string): Promise<Mission | undefined> { return this.missionExec.getMissionByName(name); }
@@ -730,7 +834,7 @@ export class OrchestratorEngine {
 
   async getResumableMissions(): Promise<Mission[]> { return this.missionExec.getResumableMissions(); }
   async resumeMission(missionId: string, opts?: { retryFailed?: boolean }): Promise<{ retried: number; pending: number }> { return this.missionExec.resumeMission(missionId, opts); }
-  async executeMission(missionId: string): Promise<{ tasks: Task[]; group: string }> { return this.missionExec.executeMission(missionId); }
+  async executeMission(missionId: string, options?: MissionExecutionOptions): Promise<MissionExecutionResult> { return this.missionExec.executeMission(missionId, options); }
 
   // ── Checkpoints ────────────────────────────────────────────────────
 
@@ -741,6 +845,7 @@ export class OrchestratorEngine {
   }
 
   async resumeCheckpointByMissionId(missionId: string, checkpointName: string): Promise<boolean> {
+    if (this.missionExec.resumeCheckpointByMissionId) return this.missionExec.resumeCheckpointByMissionId(missionId, checkpointName);
     const mission = await this.missionExec.getMission(missionId);
     if (!mission) return false;
     return this.missionExec.resumeCheckpoint(mission.name, checkpointName);

@@ -1,7 +1,7 @@
 {
   "name": "@polpo-ai/file-stores",
   "version": "0.15.144",
-  "description": "File-based store implementations for Polpo — the default zero-dependency persistence backend (JSON/Markdown files)",
+  "description": "File-based store implementations for Polpo with coordinated JSON/Markdown persistence",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -24,6 +24,9 @@
   "dependencies": {
     "@polpo-ai/core": "workspace:*",
     "nanoid": "^5.0.9"
+  },
+  "optionalDependencies": {
+    "better-sqlite3": "^12.6.2"
   },
   "license": "MIT",
   "repository": {

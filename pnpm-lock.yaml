@@ -212,6 +212,9 @@ importers:
       '@polpo-ai/core':
         specifier: workspace:*
         version: link:../core
+      undici:
+        specifier: ^6.28.0
+        version: 6.28.0
     devDependencies:
       typescript:
         specifier: ^5.7.3
@@ -351,6 +354,12 @@ importers:
       '@polpo-ai/channels':
         specifier: workspace:*
         version: link:../channels
+      '@polpo-ai/connect':
+        specifier: workspace:*
+        version: link:../connect
+      '@polpo-ai/connect-server':
+        specifier: workspace:*
+        version: link:../connect-server
       '@polpo-ai/core':
         specifier: workspace:*
         version: link:../core
@@ -391,6 +400,10 @@ importers:
       nanoid:
         specifier: ^5.0.9
         version: 5.1.6
+    optionalDependencies:
+      better-sqlite3:
+        specifier: ^12.6.2
+        version: 12.6.2
 
   packages/llm:
     dependencies:

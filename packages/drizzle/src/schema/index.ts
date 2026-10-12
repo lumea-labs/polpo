@@ -1,6 +1,6 @@
 // SQLite schemas
 export {
-  tasksSqlite, missionsSqlite, metadataSqlite, processesSqlite,
+  tasksSqlite, missionsSqlite, missionExecutionsSqlite, metadataSqlite, processesSqlite,
 } from "./tasks.js";
 export { runsSqlite } from "./runs.js";
 export {
@@ -31,7 +31,7 @@ export {
 
 // PostgreSQL schemas
 export {
-  tasksPg, missionsPg, metadataPg, processesPg,
+  tasksPg, missionsPg, missionExecutionsPg, metadataPg, processesPg,
 } from "./tasks.js";
 export { runsPg } from "./runs.js";
 export {

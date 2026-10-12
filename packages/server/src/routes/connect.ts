@@ -1,5 +1,6 @@
 import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
-import { ConnectError } from "@polpo-ai/connect";
+import { ConnectError, sanitizeConnectorProvider } from "@polpo-ai/connect";
+import { ConnectionSelectionError } from "@polpo-ai/core";
 import type { ConnectSubject, ConnectionListFilter } from "@polpo-ai/connect";
 import type { ConnectService } from "@polpo-ai/connect-server";
 import type { ConnectRouteDeps } from "../deps.js";
@@ -19,7 +20,7 @@ const ownerSchema = z.union([
 ]);
 
 const connectionBindingSchema = z.object({
-  principal: z.object({ type: z.string().min(1), id: z.string().min(1) }).optional(),
+  principal: z.object({ type: z.string().min(1), id: z.string().min(1), namespace: z.string().min(1).optional() }).strict().optional(),
   tenant: z.object({ namespace: z.string().min(1), id: z.string().min(1) }).optional(),
   resource: z.object({
     namespace: z.string().min(1),
@@ -31,17 +32,47 @@ const connectionBindingSchema = z.object({
 
 const createApiKeyConnectionBody = z.object({
   providerId: z.string().min(1),
+  authenticationId: z.string().min(1).max(64).optional(),
   apiKey: z.string().min(1),
   scopes: z.array(z.string()).optional(),
-  subject: subjectSchema.optional(),
+  subject: ownerSchema.optional(),
+  audience: z.enum(["personal", "shared", "end_user"]).optional(),
+  binding: connectionBindingSchema.optional(),
   name: z.string().optional(),
   projectId: z.string().optional(),
   orgId: z.string().optional(),
   metadata: z.record(z.string(), z.unknown()).optional(),
 });
 
+const inspectMcpBody = z.object({
+  url: z.string().url(),
+  transport: z.enum(["http", "sse"]).optional(),
+});
+
+const createMcpBody = createApiKeyConnectionBody.omit({ apiKey: true }).extend({
+  providerId: z.string().min(1).optional(),
+  ...inspectMcpBody.shape,
+  auth: z.enum(["none", "bearer", "header"]).optional(),
+  headerName: z.string().min(1).optional(),
+  apiKey: z.string().min(1).optional(),
+  bearerToken: z.string().min(1).optional(),
+});
+
+const startMcpOAuthBody = createMcpBody.omit({ auth: true, apiKey: true, bearerToken: true, headerName: true }).extend({
+  redirectUri: z.string().url(),
+  mode: z.enum(["dynamic", "pre_registered", "metadata_document"]),
+  clientName: z.string().min(1).optional(),
+  clientUri: z.string().url().optional(),
+  clientMetadataUrl: z.string().url().optional(),
+  preRegisteredClient: z.object({ client_id: z.string().min(1), client_secret: z.string().optional(),
+    client_id_issued_at: z.number().optional(), client_secret_expires_at: z.number().optional(),
+  }).passthrough().optional(),
+});
+
 const startOAuthBody = z.object({
   providerId: z.string().min(1),
+  authenticationId: z.string().min(1).max(64).optional(),
+  oauthClientMode: z.enum(["managed", "customer", "instance"]).optional(),
   scopes: z.array(z.string()).optional(),
   subject: subjectSchema.optional(),
   redirectUri: z.string().url(),
@@ -67,6 +98,8 @@ const getTokenBody = z.object({
 
 const createSetupSessionBody = z.object({
   providerId: z.string().min(1),
+  authenticationId: z.string().min(1).max(64).optional(),
+  configurationId: z.string().min(1).max(256).optional(),
   projectId: z.string().min(1),
   orgId: z.string().min(1).optional(),
   audience: z.enum(["personal", "shared", "end_user"]),
@@ -132,7 +165,86 @@ export function connectRoutes(getDeps: () => ConnectRouteDeps): OpenAPIHono {
         501: { content: { "application/json": { schema: errorSchema } }, description: "Connect service unavailable" },
       },
     }),
-    async (c: any) => withConnect(c, getDeps, async (service) => c.json({ ok: true, data: service.listProviders() }, 200)),
+    async (c: any) => withConnect(c, getDeps, async (service) => c.json({
+      ok: true, data: service.listProviders().map(sanitizeConnectorProvider),
+    }, 200)),
+  );
+
+  openapi(
+    createRoute({
+      method: "get", path: "/catalog", tags: ["Connect"],
+      summary: "List Connectors with protocol and supported authentication methods",
+      responses: {
+        200: { content: { "application/json": { schema: okAnySchema } }, description: "Non-secret Connector catalog" },
+        501: { content: { "application/json": { schema: errorSchema } }, description: "Connect service unavailable" },
+      },
+    }),
+    async (c: any) => withConnect(c, getDeps, async (service) => c.json({ ok: true, data: await service.listCatalog() }, 200)),
+  );
+
+  openapi(
+    createRoute({
+      method: "post", path: "/connections/public", tags: ["Connect"],
+      summary: "Create a Connection to an unauthenticated HTTP API",
+      request: { body: { content: { "application/json": { schema: createApiKeyConnectionBody.omit({ apiKey: true }) } } } },
+      responses: {
+        201: { content: { "application/json": { schema: okAnySchema } }, description: "Public API Connection created" },
+        400: { content: { "application/json": { schema: errorSchema } }, description: "Invalid request or authentication" },
+        501: { content: { "application/json": { schema: errorSchema } }, description: "Connect service unavailable" },
+      },
+    }),
+    async (c: any) => withConnect(c, getDeps, async (service) => c.json({
+      ok: true, data: await service.createPublicConnection(c.req.valid("json")),
+    }, 201)),
+  );
+
+  openapi(
+    createRoute({
+      method: "post", path: "/connectors", tags: ["Connect"],
+      summary: "Register an immutable custom Connector definition",
+      request: { body: { content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } } },
+      responses: {
+        201: { content: { "application/json": { schema: okAnySchema } }, description: "Validated non-secret definition" },
+        400: { content: { "application/json": { schema: errorSchema } }, description: "Invalid or duplicate Connector" },
+        422: { content: { "application/json": { schema: errorSchema } }, description: "Host has no custom definition store" },
+      },
+    }),
+    async (c: any) => withConnect(c, getDeps, async (service) => c.json({
+      ok: true, data: await service.registerConnectorDefinition(c.req.valid("json")),
+    }, 201)),
+  );
+
+  openapi(
+    createRoute({
+      method: "post", path: "/setup-readiness", tags: ["Connect"],
+      summary: "Check local setup prerequisites without testing provider credentials",
+      request: { body: { content: { "application/json": { schema: startOAuthBody.pick({
+        providerId: true, authenticationId: true, oauthClientMode: true, projectId: true, orgId: true,
+      }).extend({ redirectUri: z.string().url().optional() }) } } } },
+      responses: {
+        200: { content: { "application/json": { schema: okAnySchema } }, description: "Configuration readiness; not a live Connection check" },
+        400: { content: { "application/json": { schema: errorSchema } }, description: "Invalid Connector selection" },
+        501: { content: { "application/json": { schema: errorSchema } }, description: "Connect service unavailable" },
+      },
+    }),
+    async (c: any) => withConnect(c, getDeps, async (service) => c.json({
+      ok: true, data: await service.getSetupReadiness(c.req.valid("json")),
+    }, 200)),
+  );
+
+  openapi(
+    createRoute({
+      method: "post", path: "/connectors/{connectorId}/disable", tags: ["Connect"],
+      summary: "Disable a custom Connector and block its existing Connections",
+      request: { params: z.object({ connectorId: z.string().min(1) }) },
+      responses: {
+        200: { content: { "application/json": { schema: okAnySchema } }, description: "Disabled custom definition" },
+        404: { content: { "application/json": { schema: errorSchema } }, description: "Custom Connector not found" },
+      },
+    }),
+    async (c: any) => withConnect(c, getDeps, async (service) => c.json({
+      ok: true, data: await service.disableConnectorDefinition(c.req.valid("param").connectorId),
+    }, 200)),
   );
 
   openapi(
@@ -159,6 +271,22 @@ export function connectRoutes(getDeps: () => ConnectRouteDeps): OpenAPIHono {
       };
       return c.json({ ok: true, data: await service.listConnections(filter) }, 200);
     }),
+  );
+
+  openapi(
+    createRoute({
+      method: "post", path: "/connections/{connectionId}/verify", tags: ["Connect"],
+      summary: "Run a configured non-destructive Connection check",
+      request: { params: z.object({ connectionId: z.string().min(1) }) },
+      responses: {
+        200: { content: { "application/json": { schema: okAnySchema } }, description: "Verification result, distinct from Connection lifecycle status" },
+        404: { content: { "application/json": { schema: errorSchema } }, description: "Connection not found" },
+        501: { content: { "application/json": { schema: errorSchema } }, description: "Connect service unavailable" },
+      },
+    }),
+    async (c: any) => withConnect(c, getDeps, async (service) => c.json({
+      ok: true, data: await service.verifyConnection({ connectionId: c.req.valid("param").connectionId, signal: c.req.raw.signal }),
+    }, 200)),
   );
 
   openapi(
@@ -239,6 +367,51 @@ export function connectRoutes(getDeps: () => ConnectRouteDeps): OpenAPIHono {
 
   openapi(
     createRoute({
+      method: "post", path: "/connections/mcp", tags: ["Connect"],
+      summary: "Create a remote MCP Connection",
+      request: { body: { content: { "application/json": { schema: createMcpBody } } } },
+      responses: {
+        201: { content: { "application/json": { schema: okAnySchema } }, description: "MCP Connection created" },
+        400: { content: { "application/json": { schema: errorSchema } }, description: "Invalid request" },
+      },
+    }),
+    async (c: any) => withConnect(c, getDeps, async (service) => c.json({
+      ok: true, data: await service.createMcpConnection(c.req.valid("json")),
+    }, 201)),
+  );
+
+  openapi(
+    createRoute({
+      method: "post", path: "/mcp/inspect", tags: ["Connect"],
+      summary: "Inspect a remote MCP server's OAuth capabilities",
+      request: { body: { content: { "application/json": { schema: inspectMcpBody } } } },
+      responses: {
+        200: { content: { "application/json": { schema: okAnySchema } }, description: "MCP OAuth configuration" },
+        400: { content: { "application/json": { schema: errorSchema } }, description: "Invalid endpoint" },
+      },
+    }),
+    async (c: any) => withConnect(c, getDeps, async (service) => c.json({
+      ok: true, data: await service.inspectMcpOAuth(c.req.valid("json")),
+    }, 200)),
+  );
+
+  openapi(
+    createRoute({
+      method: "post", path: "/mcp/oauth/start", tags: ["Connect"],
+      summary: "Start MCP OAuth with an explicit host callback",
+      request: { body: { content: { "application/json": { schema: startMcpOAuthBody } } } },
+      responses: {
+        200: { content: { "application/json": { schema: okAnySchema } }, description: "MCP authorization URL" },
+        400: { content: { "application/json": { schema: errorSchema } }, description: "Invalid request" },
+      },
+    }),
+    async (c: any) => withConnect(c, getDeps, async (service) => c.json({
+      ok: true, data: await service.startMcpOAuth(c.req.valid("json")),
+    }, 200)),
+  );
+
+  openapi(
+    createRoute({
       method: "post",
       path: "/oauth/start",
       tags: ["Connect"],
@@ -272,7 +445,7 @@ export function connectRoutes(getDeps: () => ConnectRouteDeps): OpenAPIHono {
       },
     }),
     async (c: any) => withConnect(c, getDeps, async (service) => {
-      const data = await service.completeOAuth(c.req.valid("json"));
+      const { connection: data } = await service.completeOAuthCallback(c.req.valid("json"));
       return c.json({ ok: true, data }, 200);
     }),
   );
@@ -296,6 +469,26 @@ export function connectRoutes(getDeps: () => ConnectRouteDeps): OpenAPIHono {
       return c.json({ ok: true, data }, 201);
     }),
   );
+
+  for (const operation of ["status", "cancel"] as const) {
+    openapi(createRoute({
+      method: operation === "status" ? "get" : "post",
+      path: `/setup/:id/${operation}`,
+      tags: ["Connect"],
+      summary: operation === "status" ? "Observe safe Connection setup status" : "Cancel an unused Connection setup",
+      request: { params: z.object({ id: z.string().min(1) }) },
+      responses: {
+        200: { content: { "application/json": { schema: okAnySchema } }, description: "Setup status" },
+        404: { content: { "application/json": { schema: errorSchema } }, description: "Setup session not found" },
+        410: { content: { "application/json": { schema: errorSchema } }, description: "Setup can no longer be cancelled" },
+        422: { content: { "application/json": { schema: errorSchema } }, description: "Setup lifecycle unavailable" },
+        501: { content: { "application/json": { schema: errorSchema } }, description: "Connect service unavailable" },
+      },
+    }), async (c: any) => withConnect(c, getDeps, async (service) => {
+      const data = operation === "status" ? await service.getSetupStatus(c.req.param("id")) : await service.cancelSetupSession(c.req.param("id"));
+      return data ? c.json({ ok: true, data }, 200) : c.json({ ok: false, error: "Connection setup session not found", code: "SETUP_NOT_FOUND" }, 404);
+    }));
+  }
 
   openapi(
     createRoute({
@@ -408,6 +601,9 @@ async function withConnect(
   } catch (error) {
     if (error instanceof ConnectError) {
       return c.json({ ok: false, error: error.message, code: error.code, details: error.details }, error.status);
+    }
+    if (error instanceof ConnectionSelectionError) {
+      return c.json({ ok: false, error: error.message, code: error.code }, error.status);
     }
     throw error;
   }

@@ -1,11 +1,16 @@
+import type { ApprovalManager } from "./approval-manager.js";
 import { nanoid } from "nanoid";
+import { isVersionedAgentStore, agentIdentityFromSnapshot, assertAgentIdentity, AgentIdentityError, type AgentIdentity } from "./agent-store.js";
 import type { OrchestratorContext } from "./orchestrator-context.js";
-import { resolveMissionStore, resolveMissionForTask } from "./mission-store.js";
+import { resolveMissionStore, resolveMissionForTask, resolveMissionExecutionStore } from "./mission-store.js";
+import { MissionExecutionError } from "./mission-execution.js";
 import type { Task, TaskResult, RunnerConfig } from "./types.js";
 import { agentMemoryScope } from "./memory-store.js";
 import { resolveExecutionMode } from "./execution-mode.js";
 import { resolveRuntimeSandboxOptions } from "./runtime-sandbox.js";
+import { normalizeRuntimeMetadata } from "./runtime-metadata.js";
 import type { RunRecord } from "./run-store.js";
+import type { SpawnResult } from "./spawner.js";
 import type { LoopResumeState } from "./loop/run-store.js";
 import { resolveConfiguredModelSelection } from "./model-profiles.js";
 import { normalizeModelPolicy } from "./model-policy.js";
@@ -23,6 +28,8 @@ import {
   type ResolvedExecutionRoute,
 } from "./execution-router.js";
 import type { RuntimeGuardrailAuditEvent } from "./guardrails/index.js";
+import { isConditionalTaskExecutionStore, isTaskExecutionStore, taskExecutionReference, TaskExecutionError, type TaskExecutionReference, type TaskDispatchOverrides } from "./task-execution.js";
+import { claimTaskDispatch, authorizeTaskDispatch, isTaskDispatchActive } from "./task-dispatch.js";
 
 /**
  * Durable turns: max age of a resume checkpoint before orphan recovery
@@ -68,10 +75,132 @@ function pathDirname(p: string): string {
   return p.slice(0, idx);
 }
 
+interface OwnedRun {
+  exited?: Promise<void>;
+  exitConfirmed: boolean;
+  shutdownPending: boolean;
+  stopping?: Promise<void>;
+}
+
+interface PendingSpawn {
+  stopping?: Promise<void>;
+}
+
 /**
  * Spawns, monitors, and collects results from agent runner subprocesses.
  */
 export class TaskRunner {
+  private closing = false;
+  private closePromise?: Promise<void>;
+  private preparations = new Set<Promise<void>>();
+  private owners = new Map<string, OwnedRun>();
+  private pendingSpawns = new Map<string, PendingSpawn>();
+  /** Interrupted preparations retain their receipt until failure persistence
+   * and acknowledgement finish, or ownership transfers to a SpawnResult. */
+  private interruptedPreparations = new Set<string>();
+
+  /** Stop admission synchronously; in-flight preparation remains owned. */
+  stop(): void { this.closing = true; }
+
+  /** Drain only locally spawned owners. A terminal store row is not an exit
+   * receipt. Hosts may bound this wait, but must keep stores open on timeout. */
+  close(): Promise<void> {
+    this.stop();
+    if (this.closePromise) return this.closePromise;
+    const drain = this.drainOwners();
+    this.closePromise = drain;
+    void drain.catch(() => { if (this.closePromise === drain) this.closePromise = undefined; });
+    return drain;
+  }
+
+  private async drainOwners(): Promise<void> {
+    const initial = new Set(this.owners.keys());
+    const stopping = Promise.allSettled([...initial].map(id => this.stopOwner(id)));
+    // A pending spawn may need cancellation to finish acquisition/cleanup. Do
+    // not wait for its preparation before notifying the exact local owner.
+    // Report a failed notification immediately so close() can be retried even
+    // while a sibling cancellation is pending. Each sibling retains its own
+    // single-flight promise; rejecting this drain does not abandon that work.
+    await Promise.all([...this.pendingSpawns.keys()].map(id => this.stopPendingSpawn(id)));
+    const stopped = await stopping;
+    const stopFailure = stopped.find(result => result.status === "rejected");
+    if (stopFailure?.status === "rejected") throw stopFailure.reason;
+    await Promise.allSettled([...this.preparations]);
+    const late = await Promise.allSettled([...this.owners.keys()].filter(id => !initial.has(id)).map(id => this.stopOwner(id)));
+    const failed = late.find(result => result.status === "rejected");
+    if (failed?.status === "rejected") throw failed.reason;
+    // spawn() rejection is a drained preparation, not a fabricated process
+    // exit. The host must settle its owned effects before rejecting spawn().
+    for (const runId of this.interruptedPreparations) {
+      const run = await this.ctx.runStore.getRun(runId);
+      if (run?.status === "killed" && run.result?.stderr === "Killed during shutdown") await this.acknowledgeRun(run);
+      this.interruptedPreparations.delete(runId);
+    }
+    const owners = [...this.owners.values()];
+    if (owners.some(owner => !owner.exited)) throw new Error("Runner shutdown requires an onExit receipt from the spawner");
+    await Promise.all(owners.map(owner => owner.exited));
+  }
+
+  private stopPendingSpawn(runId: string): Promise<void> {
+    const pending = this.pendingSpawns.get(runId);
+    if (!pending) return Promise.resolve();
+    if (pending.stopping) return pending.stopping;
+    const stopping = (async () => {
+      if (!this.ctx.spawner.cancelRun) throw new Error("Pending runner shutdown requires owner-scoped cancelRun from the spawner");
+      this.interruptedPreparations.add(runId);
+      await this.ctx.runStore.completeRun(runId, "killed", {
+        exitCode: 1, stdout: "", stderr: "Killed during shutdown", duration: 0,
+      });
+      await this.ctx.spawner.cancelRun(runId);
+    })();
+    pending.stopping = stopping;
+    void stopping.catch(() => { if (pending.stopping === stopping) pending.stopping = undefined; });
+    return stopping;
+  }
+
+  private stopOwner(runId: string): Promise<void> {
+    const owner = this.owners.get(runId);
+    if (!owner) return Promise.resolve();
+    if (owner.stopping) return owner.stopping;
+    const stopping = this.drainOwner(runId, owner);
+    owner.stopping = stopping;
+    void stopping.catch(() => { if (owner.stopping === stopping) owner.stopping = undefined; });
+    return stopping;
+  }
+
+  private async drainOwner(runId: string, owner: OwnedRun): Promise<void> {
+    if (!owner.exited || !this.ctx.spawner.cancelRun) {
+      throw new Error("Runner shutdown requires owner-scoped cancelRun and an onExit receipt from the spawner");
+    }
+    // Keep the receipt after exit until post-exit persistence is confirmed.
+    // A failed acknowledgement must be retried before storage can close.
+    owner.shutdownPending = true;
+    await this.ctx.runStore.completeRun(runId, "killed", {
+      exitCode: 1, stdout: "", stderr: "Killed during shutdown", duration: 0,
+    });
+    if (!owner.exitConfirmed) await this.ctx.spawner.cancelRun(runId);
+    await owner.exited;
+    const run = await this.ctx.runStore.getRun(runId);
+    // A competing successful/failed completion wins and remains collectable.
+    if (run?.status === "killed" && run.result?.stderr === "Killed during shutdown") await this.acknowledgeRun(run);
+    if (this.owners.get(runId) === owner) this.owners.delete(runId);
+  }
+
+  private ownSpawn(runId: string, taskId: string, handle: SpawnResult): void {
+    const owner: OwnedRun = { exitConfirmed: false, shutdownPending: this.closing };
+    this.owners.set(runId, owner);
+    if (handle.onExit) owner.exited = new Promise(resolve => {
+      handle.onExit!(() => {
+        owner.exitConfirmed = true;
+        if (!owner.shutdownPending && this.owners.get(runId) === owner) this.owners.delete(runId);
+        try { this.ctx.emitter.emit("run:exited", { taskId, runId, pid: handle.pid }); }
+        finally { resolve(); }
+      });
+    });
+  }
+
+  private approvals?: ApprovalManager;
+  setApprovalManager(manager: ApprovalManager | undefined): void { this.approvals = manager; }
   private staleWarned = new Set<string>();
   /** Last known activity snapshot per taskId, used to diff and emit SSE events */
   private lastActivity = new Map<string, string>();
@@ -84,9 +213,11 @@ export class TaskRunner {
    * respawning tick happen in the same orchestrator process, so in-memory
    * handoff is sufficient — the durable copy lives on the run record.
    */
-  private pendingResume = new Map<string, LoopResumeState>();
+  private pendingResume = new Map<string, { state: LoopResumeState; agentIdentity?: AgentIdentity }>();
 
   constructor(private ctx: OrchestratorContext) {}
+  private prepareMissionExecution?: (task: Task) => Promise<void>;
+  setMissionExecutionPreparer(prepare: (task: Task) => Promise<void>): void { this.prepareMissionExecution = prepare; }
 
   private async resolveTaskExecutionRoute(
     task: Task,
@@ -109,25 +240,62 @@ export class TaskRunner {
    * The callback is typically the assessment pipeline (handleResult).
    */
   async collectResults(
-    onResult: (taskId: string, result: TaskResult) => Promise<void> | void,
+    onResult: (taskId: string, result: TaskResult, execution?: TaskExecutionReference) => Promise<void> | void,
   ): Promise<void> {
+    if (this.closing) return;
     const terminalRuns = await this.ctx.runStore.getTerminalRuns();
     for (const run of terminalRuns) {
+      // Shutdown interruptions belong to recovery, not ordinary assessment.
+      // An assessment already admitted before stop() is still drained by the host.
+      if (this.closing) return;
+      let execution: TaskExecutionReference | undefined;
+      const sid = run.sessionId ?? run.activity.sessionId;
+      if (run.taskExecutionRevision !== undefined) {
+        if (!isTaskExecutionStore(this.ctx.taskStore)) {
+          throw new TaskExecutionError("task_execution_unsupported", "Result collection requires execution persistence");
+        }
+        execution = { taskId: run.taskId, revision: run.taskExecutionRevision, runId: run.id };
+        try {
+          await this.ctx.taskStore.mutateTaskExecution(execution, { type: "patch", updates: {
+            ...(sid ? { sessionId: sid } : {}), ...(run.outcomes ? { outcomes: run.outcomes } : {}),
+          } });
+        } catch (error) {
+          if (!(error instanceof TaskExecutionError) || error.code !== "task_execution_conflict") throw error;
+          await this.acknowledgeRun(run);
+          continue;
+        }
+      } else if (isTaskExecutionStore(this.ctx.taskStore)) {
+        const task = await this.ctx.taskStore.getTask(run.taskId);
+        if (!task || task.executionRevision !== undefined || task.activeRunId !== undefined) {
+          // An old, unversioned writer cannot attach its result to a new attempt.
+          await this.acknowledgeRun(run);
+          continue;
+        }
+        execution = taskExecutionReference(task);
+        try {
+          await this.ctx.taskStore.mutateTaskExecution(execution, { type: "patch", updates: {
+            ...(sid ? { sessionId: sid } : {}), ...(run.outcomes ? { outcomes: run.outcomes } : {}),
+          } });
+        } catch (error) {
+          if (!(error instanceof TaskExecutionError) || error.code !== "task_execution_conflict") throw error;
+          await this.acknowledgeRun(run);
+          continue;
+        }
+      }
       await this.emitGuardrailEvents(run);
       // Persist sessionId on the task before acknowledging the run.
-      const sid = run.sessionId ?? run.activity.sessionId;
-      if (sid) {
+      if (!execution && sid) {
         try { await this.ctx.taskStore.updateTask(run.taskId, { sessionId: sid }); } catch { /* task may already be gone */ }
       }
       // Persist auto-collected outcomes on the task.
       // REPLACE (not append) — each execution produces its own definitive outcomes.
       // Appending caused "exponential outcome" accumulation across retries/fix cycles.
-      if (run.outcomes && run.outcomes.length > 0) {
+      if (!execution && run.outcomes && run.outcomes.length > 0) {
         try {
           await this.ctx.taskStore.updateTask(run.taskId, { outcomes: run.outcomes });
         } catch { /* task may already be gone */ }
       }
-      const result = run.result ?? {
+      const result = run.result ? { ...run.result } : {
         exitCode: 1,
         stdout: "",
         stderr: `Run ${run.id} ended with status ${run.status} without a result`,
@@ -149,17 +317,17 @@ export class TaskRunner {
             result.stderr = (result.stderr ? result.stderr + "\n" : "") + diagnosis;
           }
         }
-        await onResult(run.taskId, result);
+        if (execution) await onResult(run.taskId, result, execution);
+        else await onResult(run.taskId, result);
       }
-      // Keep terminal Runs as durable history. Older/custom stores can keep
-      // their previous consume-and-delete behavior until they implement ack.
-      if (this.ctx.runStore.markRunCollected) {
-        await this.ctx.runStore.markRunCollected(run.id);
-      } else {
-        await this.ctx.runStore.deleteRun(run.id);
-      }
-      this.staleWarned.delete(run.taskId);
+      await this.acknowledgeRun(run);
     }
+  }
+
+  private async acknowledgeRun(run: RunRecord): Promise<void> {
+    if (this.ctx.runStore.markRunCollected) await this.ctx.runStore.markRunCollected(run.id);
+    else await this.ctx.runStore.deleteRun(run.id);
+    this.staleWarned.delete(run.taskId);
   }
 
   private async emitGuardrailEvents(run: RunRecord): Promise<void> {
@@ -416,9 +584,32 @@ export class TaskRunner {
    * Resets orphaned tasks to pending WITHOUT burning retry count.
    */
   async recoverOrphanedTasks(): Promise<number> {
+    let recovered = 0;
+    const orphanStates: Set<string> = new Set(["assigned", "in_progress", "review"]);
     // Check RunStore active runs first
     const activeRuns = await this.ctx.runStore.getActiveRuns();
     for (const run of activeRuns) {
+      if (run.taskExecutionRevision !== undefined) {
+        const store = this.ctx.taskStore;
+        if (!isTaskExecutionStore(store)) throw new TaskExecutionError("task_execution_unsupported", "Recovery requires execution persistence");
+        const task = await store.getTask(run.taskId);
+        if (!task || task.activeRunId !== run.id || task.executionRevision !== run.taskExecutionRevision
+          || !orphanStates.has(task.status) || this.isProcessAlive(run.pid)) continue;
+        try {
+          const mutation = { type: "requeue" as const, countRetry: false, reason: "Orphan recovery", onlyIfRunRunning: true };
+          const changed = isConditionalTaskExecutionStore(store)
+            ? await store.mutateTaskExecutionConditionally(taskExecutionReference(task), mutation, [{ taskId: task.id, snapshot: task }])
+            : await store.mutateTaskExecution(taskExecutionReference(task), mutation);
+          if (changed.run) await this.acknowledgeRun(changed.run);
+          const checkpoint = usableCheckpoint(changed.run?.resumeState);
+          if (checkpoint) this.pendingResume.set(task.id, { state: checkpoint, agentIdentity: changed.run?.config?.agentIdentity });
+          this.ctx.emitter.emit("task:recovered", { taskId: task.id, title: task.title, previousStatus: task.status });
+          recovered++;
+        } catch (error) {
+          if (!(error instanceof TaskExecutionError) || error.code !== "task_execution_conflict") throw error;
+        }
+        continue;
+      }
       if (this.isProcessAlive(run.pid)) {
         // Runner still alive — leave it running, work is NOT lost!
         this.ctx.emitter.emit("log", { level: "info", message: `Runner PID ${run.pid} still alive for task ${run.taskId} — reconnecting` });
@@ -427,7 +618,7 @@ export class TaskRunner {
         // so the respawn resumes at turn + 1 instead of starting over.
         const checkpoint = usableCheckpoint(run.resumeState);
         if (checkpoint) {
-          this.pendingResume.set(run.taskId, checkpoint);
+          this.pendingResume.set(run.taskId, { state: checkpoint, agentIdentity: run.config?.agentIdentity });
           this.ctx.emitter.emit("log", {
             level: "info",
             message: `[${run.taskId}] Runner died mid-run — checkpoint at turn ${checkpoint.turn! + 1} saved for resume`,
@@ -447,24 +638,23 @@ export class TaskRunner {
       }
     }
 
-    // Backward compat: kill orphan OS processes from old processes table
-    const state = await this.ctx.taskStore.getState();
-    for (const proc of state.processes) {
-      if (proc.pid > 0 && proc.alive) {
-        this.killOrphanProcess(proc.pid, proc.agentName);
-      }
-    }
-
+    // Persisted process-list PIDs are not local ownership receipts. Do not
+    // signal them: a PID may have been reused or belong to another supervisor.
     const tasks = await this.ctx.taskStore.listTasks();
-    const orphanStates: Set<string> = new Set(["assigned", "in_progress", "review"]);
-    let recovered = 0;
 
     for (const task of tasks) {
       if (!orphanStates.has(task.status)) continue;
 
       // Check if there's a live runner for this task
-      const run = await this.ctx.runStore.getRunByTaskId(task.id);
-      if (run && run.status === "running" && this.isProcessAlive(run.pid)) {
+      const run = task.activeRunId ? await this.ctx.runStore.getRun(task.activeRunId)
+        : await this.ctx.runStore.getRunByTaskId(task.id);
+      const matches = run && (run.taskExecutionRevision === undefined
+        ? task.executionRevision === undefined && task.activeRunId === undefined
+        : run.taskExecutionRevision === task.executionRevision && run.id === task.activeRunId);
+      // Completed work must still traverse assessment and completion approvals.
+      // Preserve failed results too: their retry policy is not orphan recovery.
+      if (matches && run.status !== "running" && !run.collectedAt) continue;
+      if (matches && run.status === "running" && this.isProcessAlive(run.pid)) {
         // Runner still working — skip recovery for this task
         continue;
       }
@@ -472,8 +662,24 @@ export class TaskRunner {
       // Recover: reset to pending WITHOUT incrementing retries.
       // Shutdown interrupts are not real failures — unsafeSetStatus bypasses
       // transition(failed → pending) which would burn a retry.
+      const store = this.ctx.taskStore;
+      try {
+        if (isTaskExecutionStore(store)) {
+          const mutation = { type: "requeue" as const, countRetry: false, reason: "Orphan recovery", ...(run?.status === "running" ? { onlyIfRunRunning: true } : {}) };
+          if (isConditionalTaskExecutionStore(store)) await store.mutateTaskExecutionConditionally(taskExecutionReference(task), mutation, [{ taskId: task.id, snapshot: task }]);
+          else await store.mutateTaskExecution(taskExecutionReference(task), mutation);
+        } else {
+          await store.unsafeSetStatus(task.id, "pending", "orphan recovery — shutdown interrupt");
+        }
+      } catch (error) {
+        if (error instanceof TaskExecutionError && error.code === "task_execution_conflict") continue;
+        throw error;
+      }
+      if (matches && run.collectedAt) {
+        const checkpoint = usableCheckpoint(run.resumeState);
+        if (checkpoint) this.pendingResume.set(task.id, { state: checkpoint, agentIdentity: run.config?.agentIdentity });
+      }
       this.ctx.emitter.emit("task:recovered", { taskId: task.id, title: task.title, previousStatus: task.status });
-      await this.ctx.taskStore.unsafeSetStatus(task.id, "pending", "orphan recovery — shutdown interrupt");
       recovered++;
     }
 
@@ -498,7 +704,11 @@ export class TaskRunner {
   }
 
   /** Persist failures that happen before a host process/sandbox can start. */
-  private async failBeforeSpawn(task: Task, message: string): Promise<void> {
+  private async failBeforeSpawn(task: Task, message: string, claimedRun?: RunRecord): Promise<void> {
+    if (claimedRun) {
+      await this.ctx.runStore.completeRun(claimedRun.id, "failed", { exitCode: 1, stdout: "", stderr: message, duration: 0 });
+      return;
+    }
     await this.ctx.taskStore.transition(task.id, "assigned");
     await this.ctx.taskStore.transition(task.id, "in_progress");
     await this.ctx.taskStore.updateTask(task.id, { phase: "execution" });
@@ -529,61 +739,123 @@ export class TaskRunner {
     });
   }
 
-  async spawnForTask(task: Task): Promise<void> {
-    const agent = await this.ctx.agentStore.getAgent(task.assignTo);
+  spawnForTask(task: Task, overrides?: TaskDispatchOverrides): Promise<void> {
+    if (this.closing) return Promise.reject(new Error("Task runner is closing"));
+    const work = this.dispatchTask(task, overrides);
+    this.preparations.add(work);
+    void work.then(() => this.preparations.delete(work), () => this.preparations.delete(work));
+    return work;
+  }
+
+  private async dispatchTask(task: Task, overrides?: TaskDispatchOverrides): Promise<void> {
+    if (task.missionExecutionId && !this.prepareMissionExecution) {
+      throw new MissionExecutionError("mission_execution_unsupported", "Mission execution must be prepared before dispatch");
+    }
+    const executions = this.ctx.taskStore;
+    if (!this.approvals && (task.approvalState || this.ctx.config.settings.approvalGates?.some(gate => gate.hook === "task:spawn"))) {
+      throw new TaskExecutionError("task_execution_unsupported", "Task approval coordinator is required");
+    }
+    if (!isTaskExecutionStore(executions)) {
+      if (task.activeRunId !== undefined || task.executionRevision !== undefined || task.approvalState !== undefined) {
+        throw new TaskExecutionError("task_execution_unsupported", "Task execution persistence is required for this Task");
+      }
+      try {
+        await this.prepareAndSpawn(task, undefined, overrides);
+      } catch (error) {
+        await this.failBeforeSpawn(task, error instanceof Error ? error.message : "Task preparation failed");
+      }
+      return;
+    }
+    // Claim before any asynchronous preparation. The stored Task is the source
+    // of the principal, assignment and input; the scheduler's snapshot may lag.
+    const claimed = await claimTaskDispatch(this.ctx, task, nanoid(), this.approvals);
+    try {
+      await this.prepareAndSpawn(claimed.task, claimed.run, overrides ?? claimed.overrides);
+    } catch (error) {
+      await this.ctx.runStore.completeRun(claimed.run.id, "failed", {
+        exitCode: 1, stdout: "", stderr: error instanceof Error ? error.message : "Task preparation failed", duration: 0,
+      });
+    }
+  }
+
+  private async claimIsActive(task: Task, run: RunRecord): Promise<boolean> {
+    return isTaskDispatchActive(this.ctx, task, run);
+  }
+
+  private async prepareAndSpawn(task: Task, initialRun?: RunRecord, overrides?: TaskDispatchOverrides): Promise<void> {
+    const claimed = initialRun !== undefined;
+    const callerContext = { user: task.user, metadata: normalizeRuntimeMetadata(task.metadata) };
+    const executionIdentity = claimed ? { id: task.id, executionRevision: task.executionRevision, activeRunId: task.activeRunId } : {};
+    task = { ...task, ...callerContext, ...executionIdentity };
+    if (task.missionExecutionId) {
+      if (!this.prepareMissionExecution) throw new MissionExecutionError("mission_execution_unsupported", "Mission execution must be prepared before dispatch");
+      await this.prepareMissionExecution(task);
+    }
+    const store = this.ctx.agentStore;
+    const versioned = isVersionedAgentStore(store);
+    const snapshot = versioned ? await store.getAgentSnapshot(task.assignTo) : undefined;
+    let agent = versioned ? snapshot?.agent : await store.getAgent(task.assignTo);
     if (!agent) {
       const message = `No agent "${task.assignTo}" for task "${task.title}"`;
       this.ctx.emitter.emit("log", { level: "error", message });
-      await this.failBeforeSpawn(task, message);
+      await this.failBeforeSpawn(task, message, initialRun);
+      return;
+    }
+    const agentIdentity = snapshot ? agentIdentityFromSnapshot(snapshot) : undefined;
+    const pendingResume = this.pendingResume.get(task.id);
+    try {
+      if (agent.name !== task.assignTo) throw new AgentIdentityError();
+      if (pendingResume && (versioned || pendingResume.agentIdentity)) assertAgentIdentity(pendingResume.agentIdentity, snapshot);
+    } catch (error) {
+      this.pendingResume.delete(task.id);
+      await this.failBeforeSpawn(task, error instanceof Error ? error.message : "Agent identity check failed", initialRun);
       return;
     }
 
-    // Fail fast if the agent's model provider has no API key
-    if (agent.model && this.ctx.validateProviderKeys) {
-      const resolved = resolveConfiguredModelSelection(
-        agent.model,
-        this.ctx.config.settings,
-        agent.allowedModelProfiles,
-      );
-      const missing = this.ctx.validateProviderKeys([...resolved.policy.candidates]);
-      if (missing.length > 0) {
-        const detail = missing.map(m => `${m.provider} (${m.modelSpec})`).join(", ");
-        this.ctx.emitter.emit("log", {
-          level: "error",
-          message: `[${task.id}] Missing API key for ${detail} — cannot spawn agent "${agent.name}"`,
-        });
-        await this.failBeforeSpawn(task, `Missing API key for ${detail}`);
-        return;
-      }
-    }
-
-    // Run before:task:spawn hook (sync — tick loop is synchronous)
-    const hookResult = this.ctx.hooks.runBeforeSync("task:spawn", { task, agent });
-    if (hookResult.cancelled) {
+    let executionRoute: ResolvedExecutionRoute | undefined;
+    const invocation = await authorizeTaskDispatch(this.ctx, {
+      source: task, run: initialRun, invocation: { task, agent, agentIdentity, overrides },
+      prepare: async effective => {
+        // Resolve the effective model, loop and sandbox BEFORE consent. The
+        // returned values are used unchanged after approval, including resume.
+        if (effective.agent.model && this.ctx.validateProviderKeys) {
+          const resolved = resolveConfiguredModelSelection(effective.agent.model, this.ctx.config.settings, effective.agent.allowedModelProfiles);
+          const missing = this.ctx.validateProviderKeys([...resolved.policy.candidates]);
+          if (missing.length) throw new Error(`Missing API key for ${missing.map(m => `${m.provider} (${m.modelSpec})`).join(", ")}`);
+        }
+        executionRoute = await this.resolveTaskExecutionRoute(effective.task, effective.agent);
+        return { ...effective, task: { ...effective.task,
+          ...(executionRoute?.mode === "loop" ? { loop: executionRoute.loop } : {}),
+          executionMode: resolveExecutionMode(effective.task, effective.agent, this.ctx.config.settings),
+          sandbox: resolveRuntimeSandboxOptions(this.ctx.config.settings, effective.agent, effective.task),
+        } };
+      },
+    }, this.approvals);
+    task = invocation.task;
+    agent = invocation.agent;
+    if (!invocation.allowed) {
       this.ctx.emitter.emit("log", {
         level: "info",
-        message: `[${task.id}] Spawn blocked by hook: ${hookResult.cancelReason ?? "no reason"}`,
+        message: `[${task.id}] Spawn blocked by hook: ${invocation.reason ?? "no reason"}`,
       });
-      return;  // task stays pending — will be re-evaluated next tick
+      return; // Approval, veto, or cancellation prevents provider execution.
     }
 
-    await this.ctx.taskStore.transition(task.id, "assigned");
-    await this.ctx.taskStore.transition(task.id, "in_progress");
-
-    // Set phase if not already set (new tasks start in execution phase)
-    if (!task.phase) {
-      await this.ctx.taskStore.updateTask(task.id, { phase: "execution" });
+    if (!claimed) {
+      await this.ctx.taskStore.transition(task.id, "assigned");
+      await this.ctx.taskStore.transition(task.id, "in_progress");
+      if (!task.phase) await this.ctx.taskStore.updateTask(task.id, { phase: "execution" });
     }
 
-    const runId = nanoid();
+    const runId = initialRun?.id ?? nanoid();
 
     // Create per-task output directory for deliverables
     const outputDir = pathJoin(this.ctx.polpoDir, "output", task.id);
 
     // Establish the durable Run before memory, mission context, storage or
     // sandbox preparation. Any subsequent failure is therefore inspectable.
-    const startedAt = new Date().toISOString();
-    const initialRun: RunRecord = {
+    const startedAt = initialRun?.startedAt ?? new Date().toISOString();
+    initialRun ??= {
       id: runId,
       taskId: task.id,
       pid: 0,
@@ -599,9 +871,10 @@ export class TaskRunner {
       engine: "agent",
       delivery: "background",
     };
-    await this.ctx.runStore.upsertRun(initialRun);
+    if (!claimed) await this.ctx.runStore.upsertRun(initialRun);
 
     try {
+      if (claimed && !await this.claimIsActive(task, initialRun)) return;
       let runtimeContext: RuntimeContextResolution | undefined;
       try {
         runtimeContext = await resolveRuntimeContext(this.ctx.runtimeContext, {
@@ -615,7 +888,7 @@ export class TaskRunner {
       } catch {
         throw new Error("Runtime context retrieval failed");
       }
-      const executionRoute = await this.resolveTaskExecutionRoute(task, agent);
+      if (claimed && !await this.claimIsActive(task, initialRun)) return;
 
       const contextTrust = this.ctx.config.settings.contextTrust === "enforce"
         ? "enforce"
@@ -624,12 +897,7 @@ export class TaskRunner {
       // metadata structural; disabled runs preserve the historical task prompt.
       const promptContextSegments: RuntimePromptContextSegment[] = [];
       const legacyContextParts: string[] = [];
-      const taskWithContext = {
-        ...task,
-        ...(executionRoute?.mode === "loop"
-          ? { loop: executionRoute.loop }
-          : {}),
-      };
+      const taskWithContext = task;
 
     // 1. Shared memory (persistent cross-session knowledge, visible to all agents)
     const sharedMemory = replacesLegacySharedMemory(runtimeContext)
@@ -667,7 +935,9 @@ export class TaskRunner {
     if (task.group) {
       try {
         // Resolve mission via direct ID (preferred) or group name (legacy fallback)
-        const mission = await resolveMissionForTask(resolveMissionStore(this.ctx), task);
+        const mission = task.missionExecutionId
+          ? (await resolveMissionExecutionStore(this.ctx)?.getMissionExecutionById(task.missionExecutionId))?.expected
+          : await resolveMissionForTask(resolveMissionStore(this.ctx), task);
         const legacyMissionParts: string[] = [];
         // Original user prompt that generated this mission (the "why")
         if (mission?.prompt) {
@@ -684,7 +954,7 @@ export class TaskRunner {
 
         // Sibling tasks — just titles and statuses for awareness, not full descriptions
         const allTasks = await this.ctx.taskStore.listTasks();
-        const siblings = allTasks.filter(t => t.group === task.group && t.id !== task.id);
+        const siblings = allTasks.filter(t => (task.missionExecutionId ? t.missionExecutionId === task.missionExecutionId : t.group === task.group) && t.id !== task.id);
         if (siblings.length > 0) {
           const missionParts = [`Other tasks in this mission:`];
           for (const s of siblings) {
@@ -720,7 +990,7 @@ export class TaskRunner {
     // Durable turns: consume (one-shot) a checkpoint harvested by orphan
     // recovery — the runner resumes the conversation at turn + 1 instead
     // of redoing completed work. Absent checkpoint = spawn from zero.
-    const resumeState = this.pendingResume.get(task.id);
+    const resumeState = pendingResume?.state;
     if (resumeState) {
       this.pendingResume.delete(task.id);
       const from = resumeState.pipelineName
@@ -733,8 +1003,8 @@ export class TaskRunner {
     }
 
     // Adaptive isolation: resolve WHERE this run executes (task > agent > settings)
-    const executionMode = resolveExecutionMode(task, agent, this.ctx.config.settings);
-    const sandbox = resolveRuntimeSandboxOptions(this.ctx.config.settings, agent, task);
+    const executionMode = task.executionMode;
+    const sandbox = task.sandbox;
 
     const runnerConfig: RunnerConfig = {
       runId,
@@ -748,6 +1018,7 @@ export class TaskRunner {
       runtimeContext,
       executionRoute,
       agent,
+      ...(agentIdentity ? { agentIdentity } : {}),
       task: taskForRun,
       polpoDir: this.ctx.polpoDir,
       cwd: this.ctx.agentWorkDir,
@@ -765,14 +1036,46 @@ export class TaskRunner {
 
       // Persist the complete input before handing control to the host. This is
       // also the recovery/debug snapshot when host acquisition fails.
-      await this.ctx.runStore.upsertRun({
-        ...initialRun,
-        executionMode,
-        config: runnerConfig,
-        updatedAt: new Date().toISOString(),
-      });
+      if (claimed && !await this.claimIsActive(task, initialRun)) return;
+      if (this.ctx.runStore.updateRunConfig) {
+        if (!await this.ctx.runStore.updateRunConfig(runId, runnerConfig, initialRun.configPath)) return;
+      } else {
+        // Compatibility for third-party stores predating updateRunConfig. This
+        // legacy registration path cannot provide the update-only fence; hosts
+        // requiring that guarantee must require the optional store capability.
+        await this.ctx.runStore.upsertRun({
+          ...initialRun,
+          executionMode,
+          config: runnerConfig,
+          updatedAt: new Date().toISOString(),
+        });
+      }
 
-      const spawnResult = await this.ctx.spawner.spawn(runnerConfig);
+      if (claimed && !await this.claimIsActive(task, initialRun)) return;
+      if (this.closing) {
+        await this.ctx.runStore.completeRun(runId, "killed", { exitCode: 1, stdout: "", stderr: "Killed during shutdown", duration: 0 });
+        const interrupted = await this.ctx.runStore.getRun(runId);
+        if (interrupted?.status === "killed" && interrupted.result?.stderr === "Killed during shutdown") await this.acknowledgeRun(interrupted);
+        return;
+      }
+      const pending: PendingSpawn = {};
+      this.pendingSpawns.set(runId, pending);
+      let spawnResult: SpawnResult;
+      try {
+        spawnResult = await this.ctx.spawner.spawn(runnerConfig);
+        this.ownSpawn(runId, task.id, spawnResult);
+        this.interruptedPreparations.delete(runId);
+      } finally {
+        if (this.pendingSpawns.get(runId) === pending) this.pendingSpawns.delete(runId);
+      }
+      if (this.closing) await this.stopOwner(runId);
+
+      // A host may finish acquisition after cancellation. Only this spawn's
+      // returned handle is local authority to kill; a persisted foreign PID is not.
+      if (claimed && (await this.ctx.runStore.getRun(runId))?.status === "killed") {
+        if (this.ctx.spawner.cancelRun) await this.ctx.spawner.cancelRun(runId);
+        else this.ctx.spawner.kill(spawnResult.pid);
+      }
 
       // Never upsert the whole record here: an in-process runner can complete
       // before spawn() returns. Updating only spawn metadata cannot resurrect
@@ -791,13 +1094,6 @@ export class TaskRunner {
         }
       }
 
-      // Wake the supervisor as soon as the runner process exits so results
-      // are collected immediately (poll interval remains the safety net for
-      // spawners that don't track process lifecycle).
-      spawnResult.onExit?.(() => {
-        this.ctx.emitter.emit("run:exited", { taskId: task.id, runId, pid: spawnResult.pid });
-      });
-
       this.ctx.emitter.emit("agent:spawned", {
         taskId: task.id,
         agentName: agent.name,
@@ -815,9 +1111,4 @@ export class TaskRunner {
     }
   }
 
-  private killOrphanProcess(pid: number, agentName: string): void {
-    if (!this.ctx.spawner.isAlive(pid)) return;
-    this.ctx.emitter.emit("log", { level: "warn", message: `Killing orphan process PID ${pid} (${agentName})` });
-    this.ctx.spawner.kill(pid);
-  }
 }

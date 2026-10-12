@@ -110,7 +110,7 @@ function harness(overrides: Record<string, unknown> = {}) {
       }),
     },
     hooks: {
-      runBeforeSync: vi.fn(() => ({ cancelled: false })),
+      runBefore: vi.fn(async () => ({ cancelled: false })),
     },
     spawner: {
       spawn: vi.fn(async (config: RunnerConfig) => {

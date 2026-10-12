@@ -147,6 +147,7 @@ export { VALID_TRANSITIONS, isValidTransition, assertValidTransition } from "./s
 
 // ── Schemas (Zod validation) ─────────────────────────────────────────────
 export * from "./schemas.js";
+export { normalizeRuntimeMetadata, sameRuntimeMetadata } from "./runtime-metadata.js";
 export * from "./project-layout.js";
 
 // ── Hooks ────────────────────────────────────────────────────────────────
@@ -164,6 +165,7 @@ export type {
 // ── Store Interfaces ─────────────────────────────────────────────────────
 export type { TaskStore } from "./task-store.js";
 export type { RunStore, RunRecord, RunStatus } from "./run-store.js";
+export { watchRunState, type RunStateStopReason } from "./run-state-monitor.js";
 // Unified Run — convergence target for chat/task/mission (migration plan F0, additive/unused).
 export type { UnifiedRunStatus, UnifiedRunRecord, RunEngine, RunDelivery } from "./unified-run.js";
 export { isTerminalRunStatus, UNIFIED_RUN_TERMINAL_STATUSES } from "./unified-run.js";
@@ -205,7 +207,9 @@ export type {
 } from "./session-continuation.js";
 export type { ApprovalStore } from "./approval-store.js";
 export type { TeamStore } from "./team-store.js";
-export type { AgentStore } from "./agent-store.js";
+export type { AgentStore, VersionedAgentStore, AgentRevision, AgentSnapshot, AgentIdentity, AgentConfigPatch, AgentMutation, AgentMutationReceipt } from "./agent-store.js";
+export { normalizeAgentIdentity, agentIdentityFromSnapshot, assertAgentIdentity, AgentIdentityError } from "./agent-store.js";
+export { AgentMutationError, isVersionedAgentStore, normalizeAgentMutation, applyAgentConfigPatch } from "./agent-store.js";
 export type { SkillStore, SkillRecord } from "./skill-store.js";
 export {
   SKILL_BUNDLE_MAX_FILES,
@@ -332,12 +336,14 @@ export { OrchestratorEngine } from "./orchestrator-engine.js";
 export { TickWaiter } from "./tick-waiter.js";
 
 // ── Mission store (canonical mission persistence contract) ──────────────
-export { taskStoreMissionAdapter, resolveMissionStore, resolveMissionForTask } from "./mission-store.js";
+export { taskStoreMissionAdapter, resolveMissionStore, resolveMissionForTask, resolveMissionExecutionStore } from "./mission-store.js";
 
 // ── Playbook pure logic (validation + instantiation; file IO lives in @polpo-ai/file-stores) ──
 export { validateParams, instantiatePlaybook, validatePlaybookDefinition } from "./playbook-logic.js";
 export type { ValidationResult } from "./playbook-logic.js";
 export type { MissionStore } from "./mission-store.js";
+export * from "./mission-execution.js";
+export { cancelMissionExecution } from "./mission-cancellation.js";
 
 // ── Vault resolver (shared by shell, tools, and the cloud data plane) ────
 export {
@@ -362,7 +368,7 @@ export { buildFixPrompt, buildRetryPrompt, buildSideEffectFixPrompt, buildSideEf
 export { looksLikeQuestion, classifyAsQuestion } from "./question-detector.js";
 
 // ── Adapter Types ────────────────────────────────────────────────────────
-export type { AgentHandle, SpawnContext, ChatSessionInjection } from "./adapter.js";
+export type { AgentHandle, SpawnContext, ChatSessionInjection, ResolveCustomTools } from "./adapter.js";
 
 // ── Assessment (pure — no Node.js deps) ─────────────────────────────────
 export { assessTask, runCheck, runMetric, type AssessmentDeps, type CheckProgressEvent as AssessorCheckProgressEvent } from "./assessor.js";
@@ -548,6 +554,24 @@ export {
 } from "./loop/run-store.js";
 export { createToolInvocationContext } from "./tool-invocation.js";
 export {
+  createRemoteMcpRuntimeCapabilities, MCP_RUNNER_LEASE_VERSION, McpRunnerLeasePayloadSchema,
+  McpRunnerRequestSchema, McpRunnerInventorySchema,
+  MAX_MCP_RUNNER_REQUEST_BYTES, MAX_MCP_RUNNER_RESPONSE_BYTES, MCP_RUNNER_REQUEST_TIMEOUT_MS,
+} from "./mcp-runner.js";
+export type { McpRunnerLeasePayload, McpRunnerRequest, McpRunnerInventory } from "./mcp-runner.js";
+export {
+  createRemoteCustomTools, CustomToolRunnerLeasePayloadSchema, CustomToolRunnerRequestSchema,
+  CustomToolRunnerInventorySchema, CustomToolRunnerResultSchema, CUSTOM_TOOL_RUNNER_LEASE_VERSION,
+  MAX_CUSTOM_TOOL_RUNNER_REQUEST_BYTES, MAX_CUSTOM_TOOL_RUNNER_RESPONSE_BYTES,
+  CUSTOM_TOOL_RUNNER_INVENTORY_TIMEOUT_MS, CUSTOM_TOOL_RUNNER_CALL_TIMEOUT_MS,
+} from "./custom-tool-runner.js";
+export type { CustomToolRunnerLeasePayload, CustomToolRunnerRequest, CustomToolRunnerInventory } from "./custom-tool-runner.js";
+export type {
+  McpCapabilityTool, McpCapabilityResolveInput, ResolvedMcpCapability,
+  McpCapabilityResolver, McpRuntimeCapabilityProvider, McpRuntimeCapabilities,
+  ResolveMcpRuntimeCapabilities,
+} from "./mcp-capability.js";
+export {
   ALLOWED_TOOL_POLICY_LAYERS,
   ToolPolicyDeniedError,
   assertToolNameAllowedByPolicy,
@@ -605,3 +629,13 @@ export type {
   ProjectLoopRunStatus,
   LoopRunStore,
 } from "./loop/run-store.js";
+
+export { RunnerCapabilityBootstrapPayloadSchema, RUNNER_CAPABILITY_BOOTSTRAP_ARGUMENT,
+  RUNNER_CAPABILITY_BOOTSTRAP_READY, RUNNER_CAPABILITY_BOOTSTRAP_VERSION, MAX_RUNNER_CAPABILITY_BOOTSTRAP_BYTES,
+  RUNNER_CAPABILITY_BOOTSTRAP_TIMEOUT_MS } from "./runner-capability.js";
+export type { RunnerCapabilityBootstrapPayload } from "./runner-capability.js";
+
+export { createMissionRuntimeInspector, currentMissionExecutionTasks, resumableMissions } from "./mission-inspection.js";
+
+export * from "./task-execution.js";
+export * from "./task-dispatch.js";
