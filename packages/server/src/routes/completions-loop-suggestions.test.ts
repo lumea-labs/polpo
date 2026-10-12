@@ -47,6 +47,20 @@ async function post(deps: CompletionRouteDeps, body: unknown) {
 }
 
 describe("Loop completion suggestions", () => {
+  it.each([
+    { agentReasoning: "off", projectReasoning: "high", expected: "off" },
+    { agentReasoning: "low", projectReasoning: "medium", expected: "low" },
+    { agentReasoning: undefined, projectReasoning: "low", expected: "low" },
+  ])("uses the agent reasoning override before project defaults: $expected", async ({ agentReasoning, projectReasoning, expected }) => {
+    const { deps, body, agent } = fixture();
+    Object.assign(agent, { reasoning: agentReasoning });
+    deps.getConfig = () => ({ settings: { reasoning: projectReasoning } } as any);
+    const response = await post(deps, body);
+    expect(response.status).toBe(200);
+    expect((await response.json() as any).polpo.suggestions).toHaveLength(5);
+    expect(deps.resolveAgentModel).toHaveBeenCalledWith(expect.objectContaining({ name: "leo" }), expected);
+  });
+
   it.each([false, true])("returns and persists the same five suggestions, stream=%s", async (stream) => {
     const { deps, body, messages, generate, store } = fixture();
     const res = await post(deps, { ...body, stream });

@@ -86,7 +86,7 @@ export async function suggestionsForProjectLoopCompletion(
       const [resolved, history] = await Promise.all([
         options.deps.resolveAgentModel(
           agentConfigForModelPrimary(options.agentConfig, options.deps.getConfig()?.settings),
-          options.deps.getConfig()?.settings?.reasoning,
+          options.agentConfig?.reasoning ?? options.deps.getConfig()?.settings?.reasoning,
         ),
         options.sessionStore && options.sessionId && assistantMessageId
           ? options.sessionStore.getMessages(options.sessionId)
