@@ -193,6 +193,8 @@ export type {
   ChatCompletionChunk,
   ChatCompletionChunkDelta,
   ChatSuggestion,
+  ChatSuggestionRequestOptions,
+  ChatSuggestionContextValue,
   ChatCompletionPolpoExtensions,
   RunStreamEvent,
   RunEventStreamOptions,

@@ -379,6 +379,55 @@ session, `useChat` restores active suggestions only when that assistant message
 is still the latest message; historical suggestions remain attached to their
 original messages without being offered again after a newer user turn.
 
+Successful Project Loops use the same extension after their final presentation and
+output policy checks. The Loop assistant message is saved before the terminal
+stream frame, so history and reconnect return the same suggestions without
+another generation. Pending client tools, errors, aborted turns, structured
+responses, and Channels do not generate suggestions.
+
+The boolean remains valid. Applications can instead provide per-turn hints:
+
+```ts
+polpo: {
+  capabilities: {
+    suggestions: {
+      enabled: true,
+      maxItems: 5,
+      guidance: "Site just created. Help personalize it.",
+      context: { published: false, unpublishedChanges: true, modificationsLeft: 2 },
+    },
+  },
+}
+```
+
+An options object opts in unless `enabled: false`. The agent must still enable
+`chat.suggestions`, and hosted runtime policy can disable generation. `maxItems`
+overrides the agent's count for this request (2–5, default 3 when neither specifies
+it). Request guidance is added to static agent guidance, not saved as agent
+configuration. Guidance is capped at 500 characters each; context is a JSON object
+bounded to 8192 serialized characters, 8 nesting levels, and 1024 values.
+
+Context is an application snapshot, not an authorization mechanism. Set it in your
+authenticated application backend; never include secrets. It is sent only to the
+auxiliary generator, not echoed in suggestions or assistant messages. It can
+become stale while a long Loop runs: provide the phase/state expected for this
+completion. Natural-language restrictions are best effort; enforce quotas and
+action permissions in the application when the user actually acts. No raw tool
+results or system messages are automatically added to the suggestion prompt.
+
+`continueWithToolResult({ ..., capabilities: { suggestions: { maxItems: 5,
+context: { published: false } } } })` forwards the same contract during a Loop
+handoff. In React, use `useChat({ suggestions: true })` (the default),
+`sendMessage(text, { suggestions: options })`, or
+`continueToolResult(id, result, { idempotencyKey, loop, suggestions: options })`.
+Per-turn options replace the hook defaults; explicit `false` disables them.
+
+The auxiliary pass is fail-open and separately metered. For Loops the four-second
+budget includes model resolution and history lookup; a failure leaves the Loop's
+presentation and result unchanged. Message suggestions remain `{ id, label,
+prompt }`; deterministic action suggestions and Channel buttons are separate,
+subsequent work.
+
 ## Steer an active run
 
 Start a streaming chat request before iterating it to read the active run id

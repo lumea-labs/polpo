@@ -107,3 +107,34 @@ describe("generateChatSuggestions", () => {
     expect(generate).not.toHaveBeenCalled();
   });
 });
+
+
+it("generates up to five and includes request context without exposing system/tool messages", async () => {
+  const generate = vi.fn().mockResolvedValue({ output: { suggestions:
+    Array.from({ length: 5 }, (_, i) => ({ label: `Next ${i}`, prompt: `Do step ${i}` })),
+  } });
+  const result = await generateChatSuggestions({ model, maxItems: 5, finalText: "Site ready",
+    guidance: "Agent guidance", requestGuidance: "Help personalize the site",
+    context: { published: true, modificationsLeft: 0 },
+    messages: [{ role: "user", content: "Make my site" },
+      { role: "system", content: "private system" },
+      ...Array.from({ length: 10 }, () => ({ role: "tool", content: "private tool result" }))],
+    generate,
+  });
+  expect(result.suggestions).toHaveLength(5);
+  const prompt = JSON.parse(generate.mock.calls[0][0].prompt);
+  expect(prompt.context).toEqual({ published: true, modificationsLeft: 0 });
+  expect(prompt.guidance).toBe("Agent guidance");
+  expect(prompt.requestGuidance).toBe("Help personalize the site");
+  expect(prompt.conversation).toEqual([{ role: "user", content: "Make my site" }]);
+});
+
+
+it("returns promptly on abort even when a provider ignores its signal", async () => {
+  const controller = new AbortController();
+  const pending = generateChatSuggestions({ model, messages: [], finalText: "done", maxItems: 3,
+    signal: controller.signal, generate: () => new Promise(() => {}),
+  });
+  controller.abort();
+  expect(await pending).toEqual({ suggestions: [] });
+});

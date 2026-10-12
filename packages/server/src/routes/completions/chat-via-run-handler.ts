@@ -134,6 +134,7 @@ interface DriverState {
 }
 
 export interface ChatViaRunTurnResult {
+  suggestions?: ChatSuggestion[];
   text: string;
   reasoning?: string;
   toolCalls: any[];
@@ -704,6 +705,7 @@ export async function runChatTurnViaRun(
   let assistantMsgId: string | null = null;
   const state = newState();
   const reduceEvent = makeOnEvent(execution, state, () => { /* no SSE in adapter mode */ });
+  let suggestions: ChatSuggestion[] = [];
   let runStatus = "failed";
   let runResult = { exitCode: 1, stdout: "", stderr: "" };
 
@@ -731,6 +733,9 @@ export async function runChatTurnViaRun(
     captureRunFailure(state, outcome);
     if (!state.errorEvent) {
       await applyStateOutputPolicy(execution, state, "enforce", hooks.signal);
+      if (runStatus === "completed" && !state.clientReturn) {
+        suggestions = await suggestionsForCompletion(execution, state.finalText, hooks.signal);
+      }
     }
   } catch (err) {
     const guardrail = guardrailErrorEnvelope(err);
@@ -748,7 +753,7 @@ export async function runChatTurnViaRun(
         execution,
         state,
         assistantMsgId,
-        { emptyFallback: "[Response interrupted]" },
+        { emptyFallback: "[Response interrupted]", ...(suggestions.length ? { suggestions } : {}) },
         runStatus === "completed" && !hooks.signal?.aborted && !state.errorEvent && !state.clientReturn,
       );
     } finally {
@@ -772,6 +777,7 @@ export async function runChatTurnViaRun(
 
   return {
     text: state.finalText,
+    ...(suggestions.length ? { suggestions } : {}),
     ...(state.reasoning ? { reasoning: state.reasoning } : {}),
     toolCalls: state.toolCallsAccum,
     usage: state.totalUsage,

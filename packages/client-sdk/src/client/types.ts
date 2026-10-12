@@ -1,3 +1,5 @@
+import type { ChatSuggestionRequestOptions } from "@polpo-ai/core/chat-interactions";
+export type { ChatSuggestionRequestOptions, ChatSuggestionContextValue } from "@polpo-ai/core/chat-interactions";
 /**
  * OpenPolpo API types — mirrors the server contract.
  * Intentionally decoupled from @polpo-ai/core to avoid pulling
@@ -1376,7 +1378,7 @@ export interface ChatCompletionRequest extends RuntimeCompletionRequestOptions {
     skills?: string[];
     capabilities?: {
       ask_user_question?: boolean;
-      suggestions?: boolean;
+      suggestions?: boolean | ChatSuggestionRequestOptions;
     };
     /** Temporary tool restriction for this execution. Never expands agent policy. */
     execution?: {
@@ -1396,6 +1398,7 @@ export interface ChatCompletionRequest extends RuntimeCompletionRequestOptions {
 }
 
 export interface ContinueClientToolResultRequest {
+  capabilities?: NonNullable<ChatCompletionRequest["polpo"]>["capabilities"];
   sessionId: string;
   sessionVersion: number;
   idempotencyKey: string;

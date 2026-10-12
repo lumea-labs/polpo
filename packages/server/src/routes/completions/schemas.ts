@@ -5,7 +5,13 @@
 
 import { createRoute, z } from "@hono/zod-openapi";
 import { RuntimeRoutingSchema, RuntimeSandboxSchema } from "../../schemas.js";
-import { runtimeMetadataSchema } from "@polpo-ai/core";
+import {
+  normalizeChatSuggestionRequest,
+  MAX_CHAT_SUGGESTION_COUNT,
+  MIN_CHAT_SUGGESTION_COUNT,
+  MAX_CHAT_SUGGESTION_GUIDANCE_CHARS,
+  runtimeMetadataSchema,
+} from "@polpo-ai/core";
 
 // ── Zod Schemas ────────────────────────────────────────────────────────
 
@@ -266,7 +272,15 @@ export const completionRequestSchema = z.object({
     }),
     capabilities: z.object({
       ask_user_question: z.boolean().optional(),
-      suggestions: z.boolean().optional(),
+      suggestions: z.union([z.boolean(), z.object({
+        enabled: z.boolean().optional(),
+        maxItems: z.number().int().min(MIN_CHAT_SUGGESTION_COUNT).max(MAX_CHAT_SUGGESTION_COUNT).optional(),
+        guidance: z.string().max(MAX_CHAT_SUGGESTION_GUIDANCE_CHARS).optional(),
+        context: z.record(z.string(), z.unknown()).superRefine((context, ctx) => {
+          try { normalizeChatSuggestionRequest({ context }); }
+          catch (error) { ctx.addIssue({ code: "custom", message: String(error) }); }
+        }).transform((context) => normalizeChatSuggestionRequest({ context }).context!).optional(),
+      }).strict()]).optional(),
     }).strict().optional(),
     execution: z.object({
       allowedTools: executionAllowedToolsSchema.optional(),

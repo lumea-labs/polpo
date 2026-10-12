@@ -138,6 +138,7 @@ describe("useChat interactions", () => {
     });
 
     expect(continueWithToolResult).toHaveBeenCalledWith({
+      capabilities: { ask_user_question: true, suggestions: true },
       sessionId: "session-1",
       sessionVersion: 2,
       idempotencyKey: "continue-1",
@@ -211,6 +212,7 @@ describe("useChat interactions", () => {
     });
 
     expect(continueWithToolResult).toHaveBeenCalledWith({
+      capabilities: { ask_user_question: true, suggestions: true },
       sessionId: "session-1",
       sessionVersion: 54,
       idempotencyKey: "cancel-1",
@@ -511,4 +513,20 @@ describe("useChat interactions", () => {
     expect(result.current.runId).toBe("run-1");
     expect(result.current.lastEventId).toBe("4");
   });
+});
+
+
+it("allows fresh per-turn suggestion hints and an explicit opt-out", async () => {
+  const chatCompletionsStream = vi.fn(() => ({ abort: vi.fn(), async *[Symbol.asyncIterator]() {} }));
+  const wrapper = createWrapper(createMockClient({ chatCompletionsStream }), createMockStore());
+  const { result } = renderHook(() => useChat({ suggestions: { maxItems: 4 } }), { wrapper });
+  const suggestions = { maxItems: 5, guidance: "Created", context: { published: false } };
+  await act(async () => { await result.current.sendMessage("Build", { suggestions }); });
+  expect(chatCompletionsStream).toHaveBeenLastCalledWith(expect.objectContaining({
+    polpo: { capabilities: { ask_user_question: true, suggestions } },
+  }));
+  await act(async () => { await result.current.sendMessage("Thanks", { suggestions: false }); });
+  expect(chatCompletionsStream).toHaveBeenLastCalledWith(expect.objectContaining({
+    polpo: { capabilities: { ask_user_question: true, suggestions: false } },
+  }));
 });

@@ -61,6 +61,7 @@ import {
   loopRuntimeErrorEnvelope,
   modelNotFoundEnvelope,
   sseChunk,
+  ssePolpoChunk,
 } from "./sse.js";
 import { completionRuntimeErrorEnvelope } from "./runtime-error.js";
 import {
@@ -82,6 +83,9 @@ import {
   applyCompletionOutputPolicy,
   streamingOutputPolicyMode,
 } from "./output-guardrails.js";
+import type { ChatSuggestion } from "@polpo-ai/core/chat-interactions";
+import type { CompletionRequestBody } from "./schemas.js";
+import { suggestionsForProjectLoopCompletion } from "./chat-interaction-runtime.js";
 import type { CompletionSseWriter } from "./chat-handler.js";
 
 export interface ProjectLoopRunResult {
@@ -1034,13 +1038,7 @@ export async function resumeProjectLoopRun(options: {
  */
 export interface ProjectLoopCompletionOptions {
   deps: CompletionRouteDeps;
-  body: {
-    stream?: boolean;
-    agent?: string;
-    user?: string;
-    metadata?: Record<string, string>;
-    parallel_tool_calls?: boolean;
-  };
+  body: Pick<CompletionRequestBody, "stream" | "agent" | "user" | "metadata" | "parallel_tool_calls" | "polpo" | "response_format"> & { messages?: CompletionRequestBody["messages"] };
   completionId: string;
   agentConfig: any;
   agentIdentity?: AgentIdentity;
@@ -1132,6 +1130,8 @@ export async function executeStreamingProjectLoopCompletion(
       let providerMetadata: Record<string, unknown> | undefined;
       let toolCalls: any[] = [];
       let canonicalTurnSucceeded = false;
+      let suggestions: ChatSuggestion[] = [];
+      let assistantPersisted = false;
       const outputMode = streamingOutputPolicyMode(deps.runOutputPolicy);
 
       try {
@@ -1205,7 +1205,19 @@ export async function executeStreamingProjectLoopCompletion(
         if (!signal.aborted && finalText) {
           await stream.writeSSE({ data: sseChunk(completionId, { content: finalText }) });
         }
+        suggestions = await suggestionsForProjectLoopCompletion(options, finalText, assistantMsgId, signal);
         if (!signal.aborted) {
+          canonicalTurnSucceeded = true;
+          const committedTurn = await persistAssistantMessage(sessionStore, sessionId, assistantMsgId, finalText, toolCalls, {
+            reasoning: finalReasoning,
+            ...(suggestions.length ? { suggestions } : {}),
+            ...(options.canonicalTurn ? { canonicalTurn: options.canonicalTurn } : {}),
+          });
+          assistantPersisted = true;
+          notifyCanonicalTurnCommitted(deps.onCanonicalTurnCommitted, committedTurn);
+          if (suggestions.length) {
+            await stream.writeSSE({ data: ssePolpoChunk(completionId, { suggestions }) });
+          }
           await stream.writeSSE({
             data: sseChunk(completionId, {}, "stop", {
               loop_run_id: run.loopRunId,
@@ -1216,7 +1228,6 @@ export async function executeStreamingProjectLoopCompletion(
             }),
           });
           await stream.writeSSE({ data: "[DONE]" });
-          canonicalTurnSucceeded = true;
         }
       } catch (err) {
         if ((err instanceof DOMException && err.name === "AbortError") || signal.aborted) {
@@ -1249,7 +1260,7 @@ export async function executeStreamingProjectLoopCompletion(
         }
         throw err;
       } finally {
-        const committedTurn = await persistAssistantMessage(sessionStore, sessionId, assistantMsgId, finalText, toolCalls, {
+        const committedTurn = assistantPersisted ? undefined : await persistAssistantMessage(sessionStore, sessionId, assistantMsgId, finalText, toolCalls, {
           reasoning: finalReasoning,
           ...(canonicalTurnSucceeded && options.canonicalTurn
             ? { canonicalTurn: options.canonicalTurn }
@@ -1305,6 +1316,7 @@ async function runNonStreamingProjectLoopCompletion(
   let finalText = "";
   let finalReasoning = "";
   let canonicalTurnSucceeded = false;
+  let suggestions: ChatSuggestion[] = [];
   try {
     if (sessionStore && sessionId) {
       const placeholder = options.turnId
@@ -1353,8 +1365,10 @@ async function runNonStreamingProjectLoopCompletion(
       runId: run.loopRunId,
       sessionId,
     });
+    suggestions = await suggestionsForProjectLoopCompletion(options, finalText, assistantMsgId, c.req.raw.signal);
     canonicalTurnSucceeded = true;
     return c.json(completionResponse(completionId, finalText, runUsage, {
+      ...(suggestions.length ? { polpo: { suggestions } } : {}),
       loop_trace: run.trace,
       loop_run_id: run.loopRunId,
       ...(run.loopResult === undefined ? {} : { loop_result: run.loopResult }),
@@ -1394,6 +1408,7 @@ async function runNonStreamingProjectLoopCompletion(
   } finally {
     const committedTurn = await persistAssistantMessage(sessionStore, sessionId, assistantMsgId, finalText, toolCalls, {
       reasoning: finalReasoning,
+      ...(suggestions.length ? { suggestions } : {}),
       ...(canonicalTurnSucceeded && options.canonicalTurn
         ? { canonicalTurn: options.canonicalTurn }
         : {}),
