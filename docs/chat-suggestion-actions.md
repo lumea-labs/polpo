@@ -48,7 +48,8 @@ dispatching a postback requires a user selection in the application.
 The final combined array is stored on the assistant message, streamed once before
 terminal events, and replayed from the durable journal. Request order and IDs are
 preserved through history and replay. Missing IDs receive `action_1`, `action_2`,
-etc. within that request; they are presentation identifiers, not authorization
+etc. within that request, skipping IDs already reserved by the caller or assigned
+to earlier items; they are presentation identifiers, not authorization
 tokens or global identifiers. Existing JSON Session storage needs no migration.
 
 ## OSS implementation and acceptance

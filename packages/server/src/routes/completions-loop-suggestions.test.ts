@@ -96,7 +96,7 @@ describe("deterministic application actions after Loops", () => {
       const pending = runConversationTurn(deps, { body: { ...body, polpo: {
         capabilities: { suggestions: { maxItems: 5, actions: [...applicationActions] } },
       } } });
-      await vi.advanceTimersByTimeAsync(4_001);
+      await vi.advanceTimersByTimeAsync(15_001);
       const result = await pending;
       expect(result.text).toBe("Your site is ready");
       expect(result.suggestions).toEqual(applicationActions);

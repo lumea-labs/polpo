@@ -26,6 +26,16 @@ describe("application-provided suggestion actions", () => {
     });
   });
 
+  it.each([
+    { actions: [{ ...billing, id: "action_2" }, billing], expected: ["action_2", "action_3"] },
+    { actions: [billing, { ...billing, id: "action_1" }], expected: ["action_2", "action_1"] },
+  ])("allocates missing IDs without colliding with caller IDs: $expected", ({ actions, expected }) => {
+    const input = { actions };
+    const first = normalizeChatSuggestionRequest(input);
+    expect(first.actions?.map(action => action.id)).toEqual(expected);
+    expect(normalizeChatSuggestionRequest(input)).toEqual(first);
+  });
+
   it("preserves opaque postback values exactly", () => {
     const value = "  caller-owned payload  ";
     expect(normalizeChatSuggestionRequest({ actions: [{ ...billing, action: { type: "postback", value } }] })

@@ -131,14 +131,25 @@ function normalizeChatSuggestionActions(value: unknown): ChatActionSuggestion[] 
     }
     return result;
   };
-  return value.map((candidate, index) => {
-    const item = record(candidate, ["kind", "id", "label", "action"]);
-    if (item.kind !== "action") throw new TypeError("suggestions.actions kind must be action");
-    const id = text(item.id ?? `action_${index + 1}`, "id", 64);
+  const items = value.map(candidate => record(candidate, ["kind", "id", "label", "action"]));
+  // Reserve caller IDs before assigning any defaults, including IDs supplied
+  // later in the array. Only duplicate explicit IDs are invalid requests.
+  const explicitIds = items.map(item => item.id === undefined ? undefined : text(item.id, "id", 64));
+  for (const id of explicitIds) {
+    if (id === undefined) continue;
     if (!/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$/.test(id) || ids.has(id)) {
       throw new TypeError("suggestions.actions IDs must be valid and unique");
     }
     ids.add(id);
+  }
+  return items.map((item, index) => {
+    if (item.kind !== "action") throw new TypeError("suggestions.actions kind must be action");
+    let id = explicitIds[index];
+    if (id === undefined) {
+      let sequence = index + 1;
+      do { id = `action_${sequence++}`; } while (ids.has(id));
+      ids.add(id);
+    }
     const label = text(item.label, "label", 64);
     const action = asRecord(item.action, "suggestions.actions action");
     if (action.type === "open_url") {
