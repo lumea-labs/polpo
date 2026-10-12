@@ -47,6 +47,20 @@ async function post(deps: CompletionRouteDeps, body: unknown) {
 }
 
 describe("Loop completion suggestions", () => {
+  it.each([
+    { agentReasoning: "off", projectReasoning: "high", expected: "off" },
+    { agentReasoning: "low", projectReasoning: "medium", expected: "low" },
+    { agentReasoning: undefined, projectReasoning: "low", expected: "low" },
+  ])("uses the agent reasoning override before project defaults: $expected", async ({ agentReasoning, projectReasoning, expected }) => {
+    const { deps, body, agent } = fixture();
+    Object.assign(agent, { reasoning: agentReasoning });
+    deps.getConfig = () => ({ settings: { reasoning: projectReasoning } } as any);
+    const response = await post(deps, body);
+    expect(response.status).toBe(200);
+    expect((await response.json() as any).polpo.suggestions).toHaveLength(5);
+    expect(deps.resolveAgentModel).toHaveBeenCalledWith(expect.objectContaining({ name: "leo" }), expected);
+  });
+
   it.each([false, true])("returns and persists the same five suggestions, stream=%s", async (stream) => {
     const { deps, body, messages, generate, store } = fixture();
     const res = await post(deps, { ...body, stream });
@@ -150,10 +164,57 @@ it("bounds stalled model resolution and preserves the successful Loop", async ()
   vi.useFakeTimers();
   try {
     const result = runConversationTurn(deps, { body });
-    await vi.advanceTimersByTimeAsync(4_001);
+    const finished = vi.fn();
+    void result.then(finished);
+    await vi.advanceTimersByTimeAsync(14_999);
+    expect(finished).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
     expect((await result).text).toBe("Your site is ready");
     expect(messages.at(-1).content).toBe("Your site is ready");
     expect(generate).not.toHaveBeenCalled();
+  } finally { vi.useRealTimers(); }
+});
+
+it("allows a slow auxiliary response and persists it on the successful Loop", async () => {
+  const { deps, body, messages, generate } = fixture();
+  const response = await generate();
+  generate.mockImplementation(async () => {
+    await new Promise(resolve => setTimeout(resolve, 5_000));
+    return response;
+  });
+  generate.mockClear();
+  vi.useFakeTimers();
+  try {
+    const pending = runConversationTurn(deps, { body });
+    await vi.advanceTimersByTimeAsync(5_001);
+    const result = await pending;
+    expect(result.text).toBe("Your site is ready");
+    expect(result.suggestions).toHaveLength(5);
+    expect(messages.at(-1).suggestions).toEqual(result.suggestions);
+    expect(generate).toHaveBeenCalledOnce();
+  } finally { vi.useRealTimers(); }
+});
+
+it("shares one deadline across Loop preparation and generation", async () => {
+  const { deps, body, messages, generate } = fixture();
+  const resolve = deps.resolveAgentModel;
+  deps.resolveAgentModel = async (...args) => {
+    await new Promise(resolved => setTimeout(resolved, 10_000));
+    return resolve(...args);
+  };
+  generate.mockImplementation(() => new Promise(() => {}));
+  vi.useFakeTimers();
+  try {
+    const pending = runConversationTurn(deps, { body });
+    const finished = vi.fn();
+    void pending.then(finished);
+    await vi.advanceTimersByTimeAsync(14_999);
+    expect(finished).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect((await pending).text).toBe("Your site is ready");
+    expect(messages.at(-1).content).toBe("Your site is ready");
+    expect(messages.at(-1).suggestions ?? []).toEqual([]);
+    expect(generate).toHaveBeenCalledOnce();
   } finally { vi.useRealTimers(); }
 });
 

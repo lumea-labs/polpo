@@ -13,7 +13,9 @@ const MAX_CONTEXT_CHARS = 7_000;
 const MAX_FINAL_TEXT_CHARS = 4_000;
 const MAX_LABEL_CHARS = 64;
 const MAX_PROMPT_CHARS = 500;
-const DEFAULT_TIMEOUT_MS = 4_000;
+// Real structured responses can exceed four seconds even on a small model.
+// Keep one bounded budget, also used by the Loop's preparation/inference pass.
+export const DEFAULT_CHAT_SUGGESTION_TIMEOUT_MS = 15_000;
 
 const generatedSuggestionsSchema = z.object({
   suggestions: z.array(z.object({
@@ -137,7 +139,7 @@ export async function generateChatSuggestions(
     rejectAbort(new Error("Chat suggestion generation aborted"));
   };
   input.signal?.addEventListener("abort", abortFromParent, { once: true });
-  const timeoutMs = Math.max(1, input.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+  const timeoutMs = Math.max(1, input.timeoutMs ?? DEFAULT_CHAT_SUGGESTION_TIMEOUT_MS);
   let timeoutId: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<never>((_, reject) => {
     timeoutId = setTimeout(() => {
