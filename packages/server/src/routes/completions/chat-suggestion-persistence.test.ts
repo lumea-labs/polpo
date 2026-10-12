@@ -2,8 +2,8 @@ import { describe, expect, it, vi } from "vitest";
 import { MockLanguageModelV3, convertArrayToReadableStream } from "ai/test";
 import { normalizeChatInteractionSettings } from "@polpo-ai/core/chat-interactions";
 import { completionRoutes, type CompletionRouteDeps } from "../completions.js";
-import { executeStreamingChatCompletion, type ChatCompletionExecution } from "./chat-handler.js";
-import { executeStreamingChatViaRun } from "./chat-via-run-handler.js";
+import { executeStreamingChatCompletion, runNonStreamingChatCompletion, type ChatCompletionExecution } from "./chat-handler.js";
+import { executeStreamingChatViaRun, runNonStreamingChatViaRun } from "./chat-via-run-handler.js";
 
 const action = { kind: "action", id: "publish", label: "Publish", action: {
   type: "open_url", url: "https://app.example.test/publish",
@@ -131,6 +131,25 @@ describe.each([
     expect(f.onCompletionFinished).toHaveBeenCalledOnce();
     expect(f.onResponseFinished).toHaveBeenCalledOnce();
   });
+});
+
+it.each([
+  { name: "inline", execute: runNonStreamingChatCompletion },
+  { name: "run-backed", execute: runNonStreamingChatViaRun },
+])("does not commit $name non-streaming success after cancellation during suggestions", async ({ execute }) => {
+  const controller = new AbortController();
+  const generated = vi.fn(() => controller.abort());
+  const f = fixture(false, true, generated);
+  const context = { req: { raw: { signal: controller.signal } }, json: (body: unknown) => body };
+  const response = await execute(context as any, f.execution);
+  expect(response.error).toBeUndefined();
+  expect(generated).toHaveBeenCalledOnce();
+  expect(response.polpo?.suggestions ?? []).toEqual([]);
+  expect(f.store.commitCanonicalTurn).not.toHaveBeenCalled();
+  expect(f.execution.deps.onCanonicalTurnCommitted).not.toHaveBeenCalled();
+  expect(f.store.updateMessage).toHaveBeenCalledOnce();
+  expect(f.onCompletionFinished).toHaveBeenCalledOnce();
+  expect(f.onResponseFinished).toHaveBeenCalledOnce();
 });
 
 it.each(["inline", "run"])("returns and persists mixed actions through the %s non-streaming HTTP route", async mode => {

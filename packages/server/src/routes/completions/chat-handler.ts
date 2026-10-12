@@ -1171,7 +1171,7 @@ export async function runNonStreamingChatCompletion(c: any, exec: ChatCompletion
 
     await finalizeOutput();
     suggestions = await suggestionsForCompletion(exec, finalText, c.req.raw.signal);
-    canonicalTurnSucceeded = true;
+    canonicalTurnSucceeded = !c.req.raw.signal.aborted;
     return c.json(completionResponse(
       completionId,
       finalText,
