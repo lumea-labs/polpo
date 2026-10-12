@@ -174,11 +174,22 @@ export const responseFormatSchema = z.discriminatedUnion("type", [
 
 export type CompletionResponseFormat = z.infer<typeof responseFormatSchema>;
 
-const chatSuggestionSchema = z.object({
+const chatActionSuggestionInputSchema = z.object({
+  kind: z.literal("action"),
+  id: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$/).optional(),
+  label: z.string().trim().min(1).max(64),
+  action: z.discriminatedUnion("type", [
+    z.object({ type: z.literal("open_url"), url: z.string().min(1).max(2048) }).strict(),
+    z.object({ type: z.literal("postback"), value: z.string().min(1).max(2000).refine(value => value.trim().length > 0) }).strict(),
+  ]),
+}).strict();
+
+const chatSuggestionSchema = z.union([z.object({
   id: z.string(),
   label: z.string(),
   prompt: z.string(),
-}).strict();
+  kind: z.literal("message").optional(),
+}).strict(), chatActionSuggestionInputSchema.extend({ id: z.string() })]);
 
 const requestedSkillNameSchema = z.string().trim().min(1).max(256);
 const requestedSkillsSchema = z.array(requestedSkillNameSchema)
@@ -280,6 +291,10 @@ export const completionRequestSchema = z.object({
           try { normalizeChatSuggestionRequest({ context }); }
           catch (error) { ctx.addIssue({ code: "custom", message: String(error) }); }
         }).transform((context) => normalizeChatSuggestionRequest({ context }).context!).optional(),
+        actions: z.array(chatActionSuggestionInputSchema).max(MAX_CHAT_SUGGESTION_COUNT).superRefine((actions, ctx) => {
+          try { normalizeChatSuggestionRequest({ actions }); }
+          catch (error) { ctx.addIssue({ code: "custom", message: String(error) }); }
+        }).optional(),
       }).strict()]).optional(),
     }).strict().optional(),
     execution: z.object({

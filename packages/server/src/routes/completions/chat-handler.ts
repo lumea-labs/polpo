@@ -238,9 +238,25 @@ export async function executeStreamingChatCompletion(
     let lastProviderMetadata: Record<string, unknown> | undefined;
     let outputPolicyApplied = false;
     let suggestions: ChatSuggestion[] = [];
-    let canonicalTurnSucceeded = false;
+    let persistenceAttempted = false;
     let clientToolCallId: string | undefined;
     let structuredStreamed = false;
+    const persistResponse = async (canonicalTurnSucceeded = false) => {
+      persistenceAttempted = true;
+      const committedTurn = await persistAssistantMessage(
+        sessionStore, sessionId, assistantMsgId, finalText, toolCallsAccum,
+        {
+          ...(suggestions.length > 0 ? { suggestions } : {}),
+          reasoning: finalReasoning,
+          requestClientTools: exec.requestClientTools,
+          clientToolCallId,
+          ...(canonicalTurnSucceeded && exec.canonicalTurn
+            ? { canonicalTurn: exec.canonicalTurn }
+            : {}),
+        },
+      );
+      notifyCanonicalTurnCommitted(deps.onCanonicalTurnCommitted, committedTurn);
+    };
     const finalizeOutput = async (validateStructured = true) => {
       if (outputPolicyApplied) return;
       finalText = await applyCompletionOutputPolicy({
@@ -691,6 +707,10 @@ export async function executeStreamingChatCompletion(
       if (!signal.aborted) {
         await finalizeOutput();
         suggestions = await suggestionsForCompletion(exec, finalText, signal);
+        if (signal.aborted) return;
+        // Once terminal events are visible, an immediate history read must
+        // already contain the same final text and suggestion list.
+        await persistResponse(true);
         if (suggestions.length > 0) {
           await stream.writeSSE({
             data: ssePolpoChunk(completionId, { suggestions }),
@@ -698,7 +718,6 @@ export async function executeStreamingChatCompletion(
         }
         await stream.writeSSE({ data: sseChunk(completionId, {}, "stop") });
         await stream.writeSSE({ data: "[DONE]" });
-        canonicalTurnSucceeded = true;
       }
     } catch (err) {
       // Suppress AbortError — expected when client disconnects
@@ -740,40 +759,28 @@ export async function executeStreamingChatCompletion(
     } finally {
       // Always persist the assistant response — even on disconnect.
       // (Vault credentials are redacted inside persistAssistantMessage.)
-      const committedTurn = await persistAssistantMessage(
-        sessionStore,
-        sessionId,
-        assistantMsgId,
-        finalText,
-        toolCallsAccum,
-        {
-          ...(suggestions.length > 0 ? { suggestions } : {}),
-          reasoning: finalReasoning,
-          requestClientTools: exec.requestClientTools,
-          clientToolCallId,
-          ...(canonicalTurnSucceeded && exec.canonicalTurn
-            ? { canonicalTurn: exec.canonicalTurn }
-            : {}),
-        },
-      );
-      notifyCanonicalTurnCommitted(deps.onCanonicalTurnCommitted, committedTurn);
-      // Notify consumer (e.g. metering) — fire-and-forget
+      // Do not retry a failed final commit after exposing its error frame.
       try {
-        deps.onCompletionFinished?.({
-          usage: totalUsage,
-          model: m.id ?? m.provider,
-          resolvedModel: completionResolvedModelInfo(m),
-          agent: body.agent,
-          sessionId: sessionId ?? undefined,
-          user: body.user,
-          providerMetadata: lastProviderMetadata,
-        });
-      } catch { /* never fail on callback */ }
-      // Close per-request resources (MCP transports, etc.). Errors
-      // are intentionally swallowed — a stuck cleanup must not block
-      // the response from finishing.
-      if (onResponseFinished) {
-        onResponseFinished().catch(() => {});
+        if (!persistenceAttempted) await persistResponse();
+      } finally {
+        // Notify consumer (e.g. metering) — fire-and-forget
+        try {
+          deps.onCompletionFinished?.({
+            usage: totalUsage,
+            model: m.id ?? m.provider,
+            resolvedModel: completionResolvedModelInfo(m),
+            agent: body.agent,
+            sessionId: sessionId ?? undefined,
+            user: body.user,
+            providerMetadata: lastProviderMetadata,
+          });
+        } catch { /* never fail on callback */ }
+        // Close per-request resources (MCP transports, etc.). Errors
+        // are intentionally swallowed — a stuck cleanup must not block
+        // the response from finishing.
+        if (onResponseFinished) {
+          onResponseFinished().catch(() => {});
+        }
       }
     }
 }
@@ -1164,7 +1171,7 @@ export async function runNonStreamingChatCompletion(c: any, exec: ChatCompletion
 
     await finalizeOutput();
     suggestions = await suggestionsForCompletion(exec, finalText, c.req.raw.signal);
-    canonicalTurnSucceeded = true;
+    canonicalTurnSucceeded = !c.req.raw.signal.aborted;
     return c.json(completionResponse(
       completionId,
       finalText,

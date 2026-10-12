@@ -364,14 +364,14 @@ function recordPendingClientToolCall(state: DriverState): void {
   });
 }
 
-async function finishCommon(
+async function persistCommon(
   execution: ChatCompletionExecution,
   state: DriverState,
   assistantMsgId: string | null,
   options?: { emptyFallback?: string; suggestions?: ChatSuggestion[] },
   canonicalTurnSucceeded = false,
 ) {
-  const { deps, body, m, sessionStore, sessionId, onResponseFinished } = execution;
+  const { deps, sessionStore, sessionId } = execution;
   recordPendingClientToolCall(state);
   const committedTurn = await persistAssistantMessage(sessionStore, sessionId, assistantMsgId, state.finalText, state.toolCallsAccum, {
     ...options,
@@ -383,6 +383,10 @@ async function finishCommon(
       : {}),
   });
   notifyCanonicalTurnCommitted(deps.onCanonicalTurnCommitted, committedTurn);
+}
+
+function finishAccounting(execution: ChatCompletionExecution, state: DriverState) {
+  const { deps, body, m, sessionId, onResponseFinished } = execution;
   try {
     deps.onCompletionFinished?.({
       usage: state.totalUsage,
@@ -395,6 +399,17 @@ async function finishCommon(
     });
   } catch { /* never fail on callback */ }
   if (onResponseFinished) onResponseFinished().catch(() => {});
+}
+
+async function finishCommon(
+  execution: ChatCompletionExecution,
+  state: DriverState,
+  assistantMsgId: string | null,
+  options?: { emptyFallback?: string; suggestions?: ChatSuggestion[] },
+  canonicalTurnSucceeded = false,
+) {
+  await persistCommon(execution, state, assistantMsgId, options, canonicalTurnSucceeded);
+  finishAccounting(execution, state);
 }
 
 /** Streaming chat completion via executeRun. */
@@ -431,6 +446,7 @@ export async function executeStreamingChatViaRun(
     const outputMode = streamingOutputPolicyMode(deps.runOutputPolicy);
     const structuredResponse = isStructuredResponseFormat(body.response_format);
     let suggestions: ChatSuggestion[] = [];
+    let persistenceAttempted = false;
     let writeChain: Promise<void> = Promise.resolve();
     const write = (data: string) => {
       writeChain = writeChain
@@ -520,6 +536,10 @@ export async function executeStreamingChatViaRun(
           state.finalText,
           signal,
         );
+        if (signal.aborted) return;
+        persistenceAttempted = true;
+        await persistCommon(execution, state, assistantMsgId,
+          suggestions.length > 0 ? { suggestions } : undefined, true);
         if (suggestions.length > 0) {
           await stream.writeSSE({
             data: ssePolpoChunk(completionId, { suggestions }),
@@ -555,7 +575,7 @@ export async function executeStreamingChatViaRun(
       }
     } finally {
       try {
-        await finishCommon(
+        if (!persistenceAttempted) await persistCommon(
           execution,
           state,
           assistantMsgId,
@@ -563,6 +583,7 @@ export async function executeStreamingChatViaRun(
           !signal.aborted && !state.errorEvent && !state.clientReturn,
         );
       } finally {
+        finishAccounting(execution, state);
         await steeringScope.release();
       }
     }

@@ -282,6 +282,26 @@ describe("PolpoClient sandbox volumes", () => {
 });
 
 describe("PolpoClient run steering", () => {
+  it("preserves action suggestions and does not dispatch their URLs or postbacks", async () => {
+    const actions = [
+      { kind: "action" as const, id: "publish", label: "Publish", action: { type: "open_url" as const, url: "https://app.example.test/publish" } },
+      { kind: "action" as const, id: "plan", label: "Plan", action: { type: "postback" as const, value: "billing:open" } },
+    ];
+    const suggestions = [...actions, { kind: "message" as const, id: "next", label: "Next", prompt: "What next?" }];
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(new Response(
+      `data: ${JSON.stringify({ id: "chatcmpl-1", choices: [], polpo: { suggestions } })}\n\ndata: [DONE]\n\n`,
+      { status: 200, headers: { "content-type": "text/event-stream" } },
+    ));
+    const client = new PolpoClient({ baseUrl: "https://api.polpo.sh", fetch });
+    const stream = client.chatCompletionsStream({ messages: [{ role: "user", content: "Build" }],
+      polpo: { capabilities: { suggestions: { maxItems: 5, actions } } },
+    });
+    for await (const _ of stream) { /* consume */ }
+    expect(stream.suggestions).toEqual(suggestions);
+    expect(fetch).toHaveBeenCalledOnce();
+    expect(JSON.parse(String(fetch.mock.calls[0]?.[1]?.body)).polpo.capabilities.suggestions.actions).toEqual(actions);
+  });
+
   it("captures namespaced chat suggestions without requiring a kind", async () => {
     const suggestion = {
       id: "suggestion_tests",
@@ -640,7 +660,10 @@ describe("PolpoClient structured outputs", () => {
       result: [{ type: "text", text: "configured" }],
       user: "user-1",
       allowedTools: ["site_*"],
-      capabilities: { suggestions: { maxItems: 5, context: { published: false } } },
+      capabilities: { suggestions: { maxItems: 5, context: { published: false }, actions: [{
+        kind: "action", id: "publish-after-edit", label: "Publish this revision",
+        action: { type: "postback", value: "revision:2:publish" },
+      }] } },
     });
     await stream.start();
 
@@ -669,7 +692,10 @@ describe("PolpoClient structured outputs", () => {
       messages: [{ role: "tool", tool_call_id: "call-1" }],
       polpo: {
         execution: { allowedTools: ["site_*"] },
-        capabilities: { suggestions: { maxItems: 5, context: { published: false } } },
+        capabilities: { suggestions: { maxItems: 5, context: { published: false }, actions: [{
+          kind: "action", id: "publish-after-edit", label: "Publish this revision",
+          action: { type: "postback", value: "revision:2:publish" },
+        }] } },
         continuation: {
           type: "client_tool",
           tool_call_id: "call-1",

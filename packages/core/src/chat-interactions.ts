@@ -22,6 +22,8 @@ export interface ChatSuggestionRequestOptions {
   guidance?: string;
   /** JSON snapshot of application state, at most 8192 serialized characters / 8 levels. */
   context?: Record<string, ChatSuggestionContextValue>;
+  /** Caller-authored actions, shown first in caller order within maxItems. Never model-generated. */
+  actions?: readonly ChatActionSuggestionInput[];
 }
 
 /** Validate bounded JSON before it reaches an auxiliary model or durable request. */
@@ -63,6 +65,7 @@ export function normalizeChatSuggestionRequest(value: unknown): ChatSuggestionRe
     ...(request.maxItems === undefined ? {} : { maxItems: settings.maxItems }),
     ...(settings.guidance ? { guidance: settings.guidance } : {}),
     ...(context === undefined ? {} : { context }),
+    ...(request.actions === undefined ? {} : { actions: normalizeChatSuggestionActions(request.actions) }),
   };
 }
 
@@ -80,13 +83,125 @@ export function isClientInteractionToolName(
     && (CLIENT_INTERACTION_TOOL_NAMES as readonly string[]).includes(value);
 }
 
-export interface ChatSuggestion {
+export interface ChatMessageSuggestion {
   /** Stable identifier within the assistant message that produced it. */
   id: string;
   /** Short user-facing action label. */
   label: string;
   /** Exact text to send as the next user message when selected. */
   prompt: string;
+  /** Absent in legacy responses/history. Action-capable requests receive an explicit kind. */
+  kind?: "message";
+}
+
+export type ChatSuggestionAction =
+  | { type: "open_url"; url: string }
+  | { type: "postback"; value: string };
+
+export interface ChatActionSuggestionInput {
+  kind: "action";
+  /** Optional stable caller ID; omitted IDs are assigned by request order. */
+  id?: string;
+  label: string;
+  action: ChatSuggestionAction;
+}
+
+export interface ChatActionSuggestion extends ChatActionSuggestionInput {
+  id: string;
+}
+
+export type ChatSuggestion = ChatMessageSuggestion | ChatActionSuggestion;
+
+function normalizeChatSuggestionActions(value: unknown): ChatActionSuggestion[] {
+  if (!Array.isArray(value) || value.length > MAX_CHAT_SUGGESTION_COUNT) {
+    throw new TypeError(`suggestions.actions must be an array of at most ${MAX_CHAT_SUGGESTION_COUNT} actions`);
+  }
+  const ids = new Set<string>();
+  const text = (value: unknown, field: string, max: number): string => {
+    if (typeof value !== "string" || !value.trim() || value.length > max) {
+      throw new TypeError(`suggestions.actions ${field} must be a non-empty string of at most ${max} characters`);
+    }
+    return value.trim();
+  };
+  const record = (value: unknown, fields: readonly string[]): Record<string, unknown> => {
+    const result = asRecord(value, "suggestions.actions item");
+    if (value === undefined || (Object.getPrototypeOf(result) !== Object.prototype && Object.getPrototypeOf(result) !== null)
+      || Object.keys(result).some(key => !fields.includes(key))) {
+      throw new TypeError("suggestions.actions contains unsupported fields");
+    }
+    return result;
+  };
+  const items = value.map(candidate => record(candidate, ["kind", "id", "label", "action"]));
+  // Reserve caller IDs before assigning any defaults, including IDs supplied
+  // later in the array. Only duplicate explicit IDs are invalid requests.
+  const explicitIds = items.map(item => item.id === undefined ? undefined : text(item.id, "id", 64));
+  for (const id of explicitIds) {
+    if (id === undefined) continue;
+    if (!/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$/.test(id) || ids.has(id)) {
+      throw new TypeError("suggestions.actions IDs must be valid and unique");
+    }
+    ids.add(id);
+  }
+  return items.map((item, index) => {
+    if (item.kind !== "action") throw new TypeError("suggestions.actions kind must be action");
+    let id = explicitIds[index];
+    if (id === undefined) {
+      let sequence = index + 1;
+      do { id = `action_${sequence++}`; } while (ids.has(id));
+      ids.add(id);
+    }
+    const label = text(item.label, "label", 64);
+    const action = asRecord(item.action, "suggestions.actions action");
+    if (action.type === "open_url") {
+      record(action, ["type", "url"]);
+      const url = text(action.url, "url", 2048);
+      const parsed = new URL(url);
+      if (!/^https:\/\//i.test(url) || url[8] === "/" || url.includes("\\")
+        || parsed.protocol !== "https:" || parsed.username || parsed.password || /[\u0000-\u0020\u007f]/.test(url)) {
+        throw new TypeError("suggestions.actions URL must be absolute HTTPS without credentials, backslashes or whitespace");
+      }
+      return { kind: "action", id, label, action: { type: "open_url", url } };
+    }
+    if (action.type === "postback") {
+      record(action, ["type", "value"]);
+      text(action.value, "value", 2000);
+      return { kind: "action", id, label, action: { type: "postback", value: action.value as string } };
+    }
+    throw new TypeError("suggestions.actions action must be open_url or postback");
+  });
+}
+
+export interface ChatSuggestionPlan {
+  maxItems: number;
+  generatedCount: number;
+  actions: ChatActionSuggestion[];
+  includeKinds: boolean;
+}
+
+/** Allocate one stable output budget. Eligibility remains an agent/client/host decision. */
+export function resolveChatSuggestionPlan(
+  settings: ChatSuggestionSettings,
+  value: boolean | ChatSuggestionRequestOptions | undefined,
+): ChatSuggestionPlan {
+  const request = normalizeChatSuggestionRequest(value);
+  const maxItems = request.maxItems ?? normalizeChatInteractionSettings({ suggestions: settings }).suggestions.maxItems;
+  const actions = request.enabled ? normalizeChatSuggestionActions(request.actions ?? []).slice(0, maxItems) : [];
+  return { maxItems, actions, generatedCount: request.enabled ? maxItems - actions.length : 0,
+    includeKinds: request.actions !== undefined };
+}
+
+/** Add only model-produced messages; models never supply the action payload. */
+export function combineChatSuggestions(plan: ChatSuggestionPlan, messages: readonly ChatMessageSuggestion[]): ChatSuggestion[] {
+  const result: ChatSuggestion[] = [...plan.actions];
+  const limit = Math.min(plan.maxItems, plan.actions.length + plan.generatedCount);
+  const ids = new Set(result.map(item => item.id));
+  for (const item of messages) {
+    if (result.length >= limit) break;
+    if (ids.has(item.id)) continue;
+    ids.add(item.id);
+    result.push(plan.includeKinds ? { ...item, kind: "message" } : item);
+  }
+  return result;
 }
 
 export interface ChatSuggestionSettings {

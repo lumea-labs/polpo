@@ -366,12 +366,12 @@ const response = await client.chatCompletions({
 });
 
 for (const suggestion of response.polpo?.suggestions ?? []) {
-  console.log(suggestion.label, suggestion.prompt);
+  if (suggestion.kind !== "action") console.log(suggestion.label, suggestion.prompt);
 }
 ```
 
 For streaming requests, `ChatCompletionStream.suggestions` contains the latest
-validated suggestions after the stream completes. Each item has only `id`,
+suggestions after the stream completes. Message-only requests return `id`,
 `label`, and the exact `prompt` to send as the next user message. The React
 `useChat` hook requests both supported interactions, exposes `suggestions`, and
 stores them on the assistant message that produced them. When resuming a
@@ -414,6 +414,40 @@ become stale while a long Loop runs: provide the phase/state expected for this
 completion. Natural-language restrictions are best effort; enforce quotas and
 action permissions in the application when the user actually acts. No raw tool
 results or system messages are automatically added to the suggestion prompt.
+
+To include application actions, set `actions` in the suggestion options:
+
+```ts
+suggestions: {
+  maxItems: 5,
+  actions: [
+    { kind: "action", id: "publish", label: "Publish site",
+      action: { type: "open_url", url: "https://app.example.com/sites/123/publish" } },
+    { kind: "action", id: "plan", label: "View plan",
+      action: { type: "postback", value: "billing:open" } },
+  ],
+}
+```
+
+Caller actions appear first in supplied order, followed by generated messages,
+within the same total `maxItems`. Excess actions are truncated in order. With
+two actions and `maxItems: 5`, at most three messages are generated. If actions
+fill the budget, no auxiliary model is called. Model errors/timeouts preserve
+the deterministic actions. Agent opt-out and hosted policy still apply.
+
+An explicit `actions` list opts into typed items: `kind: "message"` has a `prompt`;
+`kind: "action"` has an `action`. Older messages without `kind` remain valid.
+Narrow `suggestion.kind === "action"` before handling `open_url` or `postback`.
+The SDK forwards and preserves these items; it does not open links or execute
+postbacks. Render an HTTPS link or call your application handler only after the
+user selects it. Recheck current permissions and state in that handler.
+
+URLs must use HTTPS without embedded credentials. Postback values are opaque,
+at most 2000 characters, and are preserved exactly. Supply trusted actions from
+your application backend. Their URL/value payloads are not sent to the model.
+The final combined array is persisted and replayed unchanged. Omitted action IDs
+are assigned by request order; IDs identify an item within a message, not an
+authorization grant. See [the action contract](../../docs/chat-suggestion-actions.md).
 
 `continueWithToolResult({ ..., capabilities: { suggestions: { maxItems: 5,
 context: { published: false } } } })` forwards the same contract during a Loop

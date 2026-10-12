@@ -1,8 +1,7 @@
 import {
   MAX_CHAT_SUGGESTION_COUNT,
-  MIN_CHAT_SUGGESTION_COUNT,
   normalizeChatSuggestionRequest,
-  type ChatSuggestion,
+  type ChatMessageSuggestion,
   type ChatSuggestionRequestOptions,
 } from "@polpo-ai/core/chat-interactions";
 import { generateText, Output, type LanguageModel, type LanguageModelUsage } from "ai";
@@ -49,7 +48,7 @@ export interface GenerateChatSuggestionsInput {
 }
 
 export interface ChatSuggestionGenerationResult {
-  suggestions: ChatSuggestion[];
+  suggestions: ChatMessageSuggestion[];
   usage?: LanguageModelUsage;
   providerMetadata?: Record<string, unknown>;
 }
@@ -102,10 +101,10 @@ function stableSuggestionId(label: string, prompt: string): string {
 function sanitizeSuggestions(
   value: unknown,
   maxItems: number,
-): ChatSuggestion[] {
+): ChatMessageSuggestion[] {
   const parsed = generatedSuggestionsSchema.safeParse(value);
   if (!parsed.success) return [];
-  const suggestions: ChatSuggestion[] = [];
+  const suggestions: ChatMessageSuggestion[] = [];
   const seenPrompts = new Set<string>();
   for (const item of parsed.data.suggestions) {
     const label = compactWhitespace(item.label).slice(0, MAX_LABEL_CHARS);
@@ -130,7 +129,8 @@ export async function generateChatSuggestions(
   const finalText = input.finalText.trim();
   if (!finalText || input.signal?.aborted) return { suggestions: [] };
 
-  const maxItems = Math.max(MIN_CHAT_SUGGESTION_COUNT, Math.min(MAX_CHAT_SUGGESTION_COUNT, Math.trunc(input.maxItems)));
+  // An application action may leave only one slot for a generated message.
+  const maxItems = Math.max(1, Math.min(MAX_CHAT_SUGGESTION_COUNT, Math.trunc(input.maxItems)));
   const controller = new AbortController();
   let rejectAbort: (error: Error) => void;
   const aborted = new Promise<never>((_, reject) => { rejectAbort = reject; });
