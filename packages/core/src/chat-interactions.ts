@@ -156,8 +156,9 @@ function normalizeChatSuggestionActions(value: unknown): ChatActionSuggestion[] 
       record(action, ["type", "url"]);
       const url = text(action.url, "url", 2048);
       const parsed = new URL(url);
-      if (parsed.protocol !== "https:" || parsed.username || parsed.password || /[\u0000-\u0020\u007f]/.test(url)) {
-        throw new TypeError("suggestions.actions URL must use HTTPS without credentials or whitespace");
+      if (!/^https:\/\//i.test(url) || url[8] === "/" || url.includes("\\")
+        || parsed.protocol !== "https:" || parsed.username || parsed.password || /[\u0000-\u0020\u007f]/.test(url)) {
+        throw new TypeError("suggestions.actions URL must be absolute HTTPS without credentials, backslashes or whitespace");
       }
       return { kind: "action", id, label, action: { type: "open_url", url } };
     }

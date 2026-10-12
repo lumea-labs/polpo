@@ -11,6 +11,7 @@ import { drizzle } from "drizzle-orm/better-sqlite3";
 import { migrateSqliteSchema } from "../sqlite-migrator.js";
 import { createSqliteStores, type DrizzleStores } from "../index.js";
 import type { ApprovalRequest } from "@polpo-ai/core/types";
+import type { ChatSuggestion } from "@polpo-ai/core/chat-interactions";
 
 // Provide a deterministic vault key for tests (32 bytes hex-encoded)
 process.env.POLPO_VAULT_KEY = randomBytes(32).toString("hex");
@@ -1013,14 +1014,17 @@ describe("DrizzleSessionStore", () => {
     expect(msgs[0].content).toBe("final");
   });
 
-  it("updateMessage persists assistant suggestions", async () => {
+  it("updateMessage persists legacy messages and typed action suggestions", async () => {
     const sid = await stores.sessionStore.create();
     const msg = await stores.sessionStore.addMessage(sid, "assistant", "draft");
-    const suggestions = [{
+    const suggestions: ChatSuggestion[] = [{
       id: "suggestion_tests",
       label: "Add tests",
       prompt: "Add tests for this change.",
-    }];
+    },
+      { kind: "action", id: "publish", label: "Publish", action: { type: "open_url", url: "https://app.example.test/publish?site=123" } },
+      { kind: "action", id: "billing", label: "View plan", action: { type: "postback", value: "  opaque payload  " } },
+    ];
     const ok = await stores.sessionStore.updateMessage(
       sid,
       msg.id,

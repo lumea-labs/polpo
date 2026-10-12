@@ -707,6 +707,7 @@ export async function executeStreamingChatCompletion(
       if (!signal.aborted) {
         await finalizeOutput();
         suggestions = await suggestionsForCompletion(exec, finalText, signal);
+        if (signal.aborted) return;
         // Once terminal events are visible, an immediate history read must
         // already contain the same final text and suggestion list.
         await persistResponse(true);

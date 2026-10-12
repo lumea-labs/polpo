@@ -65,8 +65,22 @@ describe("application-provided suggestion actions", () => {
   it.each([
     "javascript:alert(1)", "data:text/html,bad", "http://app.example.test", "/relative",
     "https://user:password@app.example.test", "https://app.example.test/\npath",
+    "https:outside.example/path", "https:/outside.example/path",
+    "https:///outside.example/path", "https://outside.example\\path",
   ])("rejects unsafe or ambiguous URL %s", url => {
     expect(() => normalizeChatSuggestionRequest({ actions: [{ ...publish, action: { type: "open_url", url } }] })).toThrow();
+  });
+
+  it.each([
+    "https://outside.example/path?next=1#result",
+    "HTTPS://outside.example:8443/path",
+    "https://münchen.example/straße",
+  ])("preserves the same absolute destination when rendered against a page URL: %s", url => {
+    const result = normalizeChatSuggestionRequest({ actions: [{ ...publish, action: { type: "open_url", url } }] });
+    const action = result.actions?.[0].action;
+    expect(action?.type).toBe("open_url");
+    if (action?.type !== "open_url") throw new Error("missing link action");
+    expect(new URL(action.url, "https://app.example.test/chat/session").href).toBe(new URL(url).href);
   });
 
   it.each([

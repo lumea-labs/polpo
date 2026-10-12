@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { FileSessionStore } from "../file-session-store.js";
+import type { ChatSuggestion } from "@polpo-ai/core/chat-interactions";
 
 const dirs: string[] = [];
 
@@ -33,6 +34,20 @@ async function pendingSession(sessionStore: FileSessionStore): Promise<string> {
 }
 
 describe("FileSessionStore continuation", () => {
+  it("roundtrips legacy messages and typed actions after reopening the store", async () => {
+    const sessionStore = store();
+    const sessionId = await sessionStore.create();
+    const assistant = await sessionStore.addMessage(sessionId, "assistant", "draft");
+    const suggestions: ChatSuggestion[] = [
+      { id: "legacy", label: "Review", prompt: "Review my site." },
+      { kind: "action", id: "publish", label: "Publish", action: { type: "open_url", url: "https://app.example.test/publish?site=123" } },
+      { kind: "action", id: "billing", label: "View plan", action: { type: "postback", value: "  opaque payload  " } },
+    ];
+    await sessionStore.updateMessage(sessionId, assistant.id, "final", undefined, suggestions);
+    const reopened = new FileSessionStore(dirs.at(-1)!);
+    expect((await reopened.getMessages(sessionId))[0]).toMatchObject({ content: "final", suggestions });
+  });
+
   it("persists reasoning separately from assistant content", async () => {
     const sessionStore = store();
     const sessionId = await sessionStore.create();

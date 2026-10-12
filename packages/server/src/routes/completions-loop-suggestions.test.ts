@@ -112,6 +112,22 @@ describe("deterministic application actions after Loops", () => {
     } } });
     expect(result.suggestions ?? []).toEqual([]);
   });
+
+  it("omits all suggestions when the caller aborts during mixed-list inference", async () => {
+    const { deps, body, generate, messages } = fixture();
+    const controller = new AbortController();
+    generate.mockImplementation(() => {
+      queueMicrotask(() => controller.abort());
+      return new Promise(() => {});
+    });
+    const result = await runConversationTurn(deps, { signal: controller.signal, body: {
+      ...body, polpo: { capabilities: { suggestions: { maxItems: 5, actions: [...applicationActions] } } },
+    } });
+    expect(generate).toHaveBeenCalledOnce();
+    expect(result.suggestions ?? []).toEqual([]);
+    expect(messages.at(-1).suggestions ?? []).toEqual([]);
+    expect(result.text).toBe("Your site is ready");
+  });
 });
 
 describe("Loop completion suggestions", () => {
@@ -193,13 +209,14 @@ describe("Loop completion suggestions", () => {
 });
 
 
-it("journals suggestions once before DONE for durable replay", async () => {
+it.each([false, true])("journals suggestions once before DONE for durable replay (actions=%s)", async withActions => {
   const { deps, body, generate, messages } = fixture();
   const scope = { eventStore: new InMemoryRunEventStore(), leaseStore: new InMemoryRunExecutionLeaseStore(),
     cancellationStore: new InMemoryRunCancellationStore(), owner: "test", token: "attempt" };
   deps.createRunDeliveryScope = async () => scope;
   const response = await post(deps, { ...body, stream: true, polpo: {
     ...body.polpo, delivery: { onDisconnect: "continue" },
+    ...(withActions ? { capabilities: { suggestions: { maxItems: 5, actions: [...applicationActions] } } } : {}),
   } });
   const text = await response.text();
   expect(text).toContain('"suggestions"');
@@ -210,11 +227,16 @@ it("journals suggestions once before DONE for durable replay", async () => {
   expect(suggestionEvent).toBeLessThan(events.findIndex(event => event.type === "response.done"));
   const frame = JSON.parse(String(events[suggestionEvent].data.data));
   expect(frame.polpo.suggestions).toEqual(messages.at(-1).suggestions);
+  if (withActions) expect(frame.polpo.suggestions.slice(0, 2)).toEqual(applicationActions);
   const replay = await runDeliveryRoutes(() => ({ resolveRunDelivery: async () => scope })).request(`/${runId}/events`);
   expect(replay.status).toBe(200);
   const replayText = await replay.text();
   expect(replayText).toContain("suggestion_");
   expect(replayText).toContain("run.completed");
+  if (withActions) {
+    expect(replayText).toContain(applicationActions[0].action.url);
+    expect(replayText).toContain(applicationActions[1].action.value);
+  }
   expect(generate).toHaveBeenCalledOnce();
 });
 

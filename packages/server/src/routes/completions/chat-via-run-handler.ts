@@ -536,6 +536,7 @@ export async function executeStreamingChatViaRun(
           state.finalText,
           signal,
         );
+        if (signal.aborted) return;
         persistenceAttempted = true;
         await persistCommon(execution, state, assistantMsgId,
           suggestions.length > 0 ? { suggestions } : undefined, true);
