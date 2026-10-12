@@ -4,6 +4,15 @@ import { generateChatSuggestions } from "./chat-suggestions.js";
 const model = {} as any;
 
 describe("generateChatSuggestions", () => {
+  it("uses a single remaining message slot after deterministic actions", async () => {
+    const generate = vi.fn().mockResolvedValue({ output: { suggestions: [
+      { label: "Next", prompt: "What next?" }, { label: "More", prompt: "Tell me more" },
+    ] } });
+    const result = await generateChatSuggestions({ model, messages: [], finalText: "Ready", maxItems: 1, generate });
+    expect(JSON.parse(String(generate.mock.calls[0][0].prompt)).maxItems).toBe(1);
+    expect(result.suggestions).toHaveLength(1);
+  });
+
   it("returns a bounded, kind-free public primitive", async () => {
     const generate = vi.fn().mockResolvedValue({
       output: {

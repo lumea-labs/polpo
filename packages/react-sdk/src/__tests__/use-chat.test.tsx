@@ -337,12 +337,13 @@ describe("useChat interactions", () => {
     expect(onSuggestions).toHaveBeenCalledWith([suggestion]);
   });
 
-  it("rehydrates active suggestions from the latest assistant message", async () => {
-    const suggestion = {
+  it.each([{
       id: "suggestion_resume",
       label: "Resume",
       prompt: "Resume the previous work.",
-    };
+    }, { kind: "action" as const, id: "publish", label: "Publish",
+      action: { type: "open_url" as const, url: "https://app.example.test/publish" },
+    }])("rehydrates active suggestions from the latest assistant message %#", async suggestion => {
     const messages = [
       { id: "user-1", role: "user" as const, content: "Start", ts: "2026-08-15T10:00:00.000Z" },
       {
@@ -520,7 +521,9 @@ it("allows fresh per-turn suggestion hints and an explicit opt-out", async () =>
   const chatCompletionsStream = vi.fn(() => ({ abort: vi.fn(), async *[Symbol.asyncIterator]() {} }));
   const wrapper = createWrapper(createMockClient({ chatCompletionsStream }), createMockStore());
   const { result } = renderHook(() => useChat({ suggestions: { maxItems: 4 } }), { wrapper });
-  const suggestions = { maxItems: 5, guidance: "Created", context: { published: false } };
+  const suggestions = { maxItems: 5, guidance: "Created", context: { published: false },
+    actions: [{ kind: "action" as const, id: "publish", label: "Publish", action: { type: "open_url" as const, url: "https://app.example.test/publish" } }],
+  };
   await act(async () => { await result.current.sendMessage("Build", { suggestions }); });
   expect(chatCompletionsStream).toHaveBeenLastCalledWith(expect.objectContaining({
     polpo: { capabilities: { ask_user_question: true, suggestions } },

@@ -303,6 +303,17 @@ describe("completion request dynamic client tools", () => {
 });
 
 describe("completion request Polpo chat capabilities", () => {
+  it.each([
+    { kind: "action", label: "Publish", action: { type: "open_url", url: "javascript:alert(1)" } },
+    { kind: "action", label: "Publish", action: { type: "open_url", url: "https://secret@example.test" } },
+    { kind: "action", label: "Execute", action: { type: "execute_tool", value: "publish" } },
+    { kind: "message", label: "Invented action", prompt: "Publish" },
+  ])("rejects unsafe action capability %# before execution", action => {
+    expect(completionRequestSchema.safeParse({ ...request,
+      polpo: { capabilities: { suggestions: { actions: [action] } } },
+    }).success).toBe(false);
+  });
+
   it("accepts explicit ask-user and suggestions support", () => {
     expect(completionRequestSchema.parse({
       ...request,

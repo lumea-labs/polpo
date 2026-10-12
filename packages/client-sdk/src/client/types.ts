@@ -1,5 +1,6 @@
-import type { ChatSuggestionRequestOptions } from "@polpo-ai/core/chat-interactions";
-export type { ChatSuggestionRequestOptions, ChatSuggestionContextValue } from "@polpo-ai/core/chat-interactions";
+import type { ChatSuggestion, ChatSuggestionRequestOptions } from "@polpo-ai/core/chat-interactions";
+export type { ChatSuggestion, ChatMessageSuggestion, ChatActionSuggestion, ChatActionSuggestionInput,
+  ChatSuggestionAction, ChatSuggestionRequestOptions, ChatSuggestionContextValue } from "@polpo-ai/core/chat-interactions";
 /**
  * OpenPolpo API types — mirrors the server contract.
  * Intentionally decoupled from @polpo-ai/core to avoid pulling
@@ -1434,13 +1435,6 @@ export interface CancelRunResult {
 }
 
 export type ChatStreamConnectionState = "streaming" | "reconnecting" | "closed";
-
-/** A user-selectable next message. Intentionally presentation-agnostic. */
-export interface ChatSuggestion {
-  id: string;
-  label: string;
-  prompt: string;
-}
 
 export interface ChatCompletionPolpoExtensions {
   suggestions?: ChatSuggestion[];

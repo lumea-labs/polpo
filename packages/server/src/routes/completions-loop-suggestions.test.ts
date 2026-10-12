@@ -46,6 +46,74 @@ async function post(deps: CompletionRouteDeps, body: unknown) {
   return completionRoutes(() => deps).request("/", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
 }
 
+const applicationActions = [
+  { kind: "action", id: "publish", label: "Publish", action: { type: "open_url", url: "https://app.example.test/private-action-target" } },
+  { kind: "action", id: "billing", label: "View plan", action: { type: "postback", value: "private-action-value" } },
+] as const;
+
+describe("deterministic application actions after Loops", () => {
+  it.each([false, true])("persists the exact ordered mixed list, stream=%s", async stream => {
+    const { deps, body, messages, generate, store } = fixture();
+    const response = await post(deps, { ...body, stream, polpo: {
+      capabilities: { suggestions: { maxItems: 5, actions: applicationActions } },
+    } });
+    expect(response.status).toBe(200);
+    const raw = await response.text();
+    const suggestions = stream
+      ? raw.split("\n").filter(line => line.startsWith("data: ") && !line.includes("[DONE]"))
+        .map(line => JSON.parse(line.slice(6))).find(chunk => chunk.polpo?.suggestions)?.polpo.suggestions
+      : JSON.parse(raw).polpo?.suggestions;
+    expect(suggestions).toHaveLength(5);
+    expect(suggestions.slice(0, 2)).toEqual(applicationActions);
+    expect(suggestions.slice(2).every((item: any) => item.kind === "message" && item.prompt)).toBe(true);
+    expect(messages.at(-1).suggestions).toEqual(suggestions);
+    const history = await chatRoutes(() => ({ sessionStore: store as any })).request("/sessions/session-1/messages");
+    expect((await history.json() as any).data.messages.at(-1).suggestions).toEqual(suggestions);
+    const modelInput = JSON.stringify(generate.mock.calls);
+    expect(modelInput).not.toContain("private-action-target");
+    expect(modelInput).not.toContain("private-action-value");
+    if (stream) expect(raw.indexOf('"suggestions"')).toBeLessThan(raw.indexOf('"finish_reason":"stop"'));
+  });
+
+  it("can return only deterministic actions without resolving an auxiliary model", async () => {
+    const { deps, body, generate, messages } = fixture();
+    const result = await runConversationTurn(deps, { body: { ...body, polpo: {
+      capabilities: { suggestions: { maxItems: 2, actions: [...applicationActions] } },
+    } } });
+    expect(result.suggestions).toEqual(applicationActions);
+    expect(messages.at(-1).suggestions).toEqual(applicationActions);
+    expect(deps.resolveAgentModel).not.toHaveBeenCalled();
+    expect(generate).not.toHaveBeenCalled();
+  });
+
+  it.each(["resolution", "inference", "timeout"])("retains actions when auxiliary %s fails", async failure => {
+    const { deps, body, generate, messages } = fixture();
+    if (failure === "resolution") deps.resolveAgentModel = vi.fn().mockRejectedValue(new Error("offline"));
+    if (failure === "inference") generate.mockRejectedValue(new Error("offline"));
+    if (failure === "timeout") deps.resolveAgentModel = () => new Promise(() => {});
+    vi.useFakeTimers();
+    try {
+      const pending = runConversationTurn(deps, { body: { ...body, polpo: {
+        capabilities: { suggestions: { maxItems: 5, actions: [...applicationActions] } },
+      } } });
+      await vi.advanceTimersByTimeAsync(4_001);
+      const result = await pending;
+      expect(result.text).toBe("Your site is ready");
+      expect(result.suggestions).toEqual(applicationActions);
+      expect(messages.at(-1).suggestions).toEqual(applicationActions);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it.each(["client", "agent"])("honors the %s opt-out even with actions supplied", async policy => {
+    const { deps, body, agent } = fixture();
+    if (policy === "agent") agent.chat.suggestions.enabled = false;
+    const result = await runConversationTurn(deps, { body: { ...body, polpo: {
+      capabilities: { suggestions: { enabled: policy !== "client", actions: [...applicationActions] } },
+    } } });
+    expect(result.suggestions ?? []).toEqual([]);
+  });
+});
+
 describe("Loop completion suggestions", () => {
   it.each([
     { agentReasoning: "off", projectReasoning: "high", expected: "off" },

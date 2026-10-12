@@ -1,6 +1,8 @@
 import {
   normalizeChatInteractionSettings,
   normalizeChatSuggestionRequest,
+  resolveChatSuggestionPlan,
+  combineChatSuggestions,
   resolveChatInteractionCapabilities,
   type ChatSuggestion,
 } from "@polpo-ai/core/chat-interactions";
@@ -27,13 +29,15 @@ export async function suggestionsForCompletion(
 
   const settings = execution.interactionSettings.suggestions;
   const request = normalizeChatSuggestionRequest(execution.body.polpo?.capabilities?.suggestions);
+  const plan = resolveChatSuggestionPlan(settings, request);
+  if (plan.generatedCount === 0) return plan.actions;
 
   const result = await generateChatSuggestions({
     model: execution.m.aiModel,
     providerOptions: execution.providerOpts,
     messages: execution.body.messages ?? [],
     finalText,
-    maxItems: request.maxItems ?? settings.maxItems,
+    maxItems: plan.generatedCount,
     requestGuidance: request.guidance,
     context: request.context,
     guidance: settings.guidance,
@@ -55,7 +59,7 @@ export async function suggestionsForCompletion(
     } catch { /* auxiliary accounting never fails the main response */ }
   }
 
-  return result.suggestions;
+  return signal?.aborted ? [] : combineChatSuggestions(plan, result.suggestions);
 }
 
 
@@ -74,11 +78,13 @@ export async function suggestionsForProjectLoopCompletion(
   });
   if (!interactionCapabilities.suggestions || !finalText.trim() || signal?.aborted
     || isStructuredResponseFormat(options.body.response_format)) return [];
+  const plan = resolveChatSuggestionPlan(interactionSettings.suggestions, options.body.polpo?.capabilities?.suggestions);
+  if (plan.generatedCount === 0) return plan.actions;
 
   const controller = new AbortController();
   let finish: (suggestions: ChatSuggestion[]) => void;
   const cancelled = new Promise<ChatSuggestion[]>(resolve => { finish = resolve; });
-  const cancel = () => { controller.abort(); finish([]); };
+  const cancel = () => { controller.abort(); finish(signal?.aborted ? [] : plan.actions); };
   const timeout = setTimeout(cancel, DEFAULT_CHAT_SUGGESTION_TIMEOUT_MS);
   signal?.addEventListener("abort", cancel, { once: true });
   try {
@@ -105,7 +111,7 @@ export async function suggestionsForProjectLoopCompletion(
         interactionSettings,
         interactionCapabilities,
       }, finalText, controller.signal);
-    })().catch(() => [])]);
+    })().catch(() => signal?.aborted ? [] : plan.actions)]);
   } finally {
     clearTimeout(timeout);
     signal?.removeEventListener("abort", cancel);
