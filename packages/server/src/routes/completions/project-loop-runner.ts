@@ -1038,7 +1038,7 @@ export async function resumeProjectLoopRun(options: {
  */
 export interface ProjectLoopCompletionOptions {
   deps: CompletionRouteDeps;
-  body: Pick<CompletionRequestBody, "stream" | "agent" | "user" | "metadata" | "parallel_tool_calls" | "polpo" | "response_format"> & { messages?: CompletionRequestBody["messages"] };
+  body: Partial<Pick<CompletionRequestBody, "stream" | "agent" | "user" | "metadata" | "parallel_tool_calls" | "polpo" | "response_format">> & { messages?: CompletionRequestBody["messages"] };
   completionId: string;
   agentConfig: any;
   agentIdentity?: AgentIdentity;
