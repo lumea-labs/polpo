@@ -1,4 +1,6 @@
 export { ChannelRuntime } from "./runtime.js";
+export { CHANNEL_SUGGESTION_PREFIX } from "./suggestions.js";
+export { SuggestionWhatsAppAdapter } from "./whatsapp-suggestions.js";
 export * from "./management/index.js";
 export {
   channelProviderCapabilities,
@@ -56,6 +58,12 @@ export {
   type ChannelTurnExecutionContext,
   type ChannelTurnCoordinator,
   type ChannelTurnResult,
+  type ChannelMessageSuggestion,
+  type ChannelSuggestionSource,
+  type ChannelSuggestionPresentation,
+  type ChannelSuggestionSelection,
+  type ChannelSuggestionChoice,
+  type ChannelSuggestionAdapter,
   type ChannelWebhookOptions,
   type ChannelWhatsAppTemplate,
   type ChannelSlashCommandEvent,

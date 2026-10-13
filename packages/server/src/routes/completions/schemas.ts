@@ -478,6 +478,7 @@ export const completionResponseSchema = z.object({
   loop_trace: z.array(z.unknown()).optional(),
   polpo: z.object({
     suggestions: z.array(chatSuggestionSchema).optional(),
+    suggestionsSource: z.object({ assistantMessageId: z.string().min(1) }).optional(),
   }).strict().optional(),
 });
 

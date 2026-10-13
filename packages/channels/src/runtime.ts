@@ -28,6 +28,7 @@ import {
 } from "chat";
 import { createOfficialChannelAdapter } from "./providers.js";
 import { segmentChannelText } from "./response.js";
+import { CHANNEL_SUGGESTION_PREFIX, ChannelSuggestionSets } from "./suggestions.js";
 import type {
   ChannelAuthor,
   ChannelDeliveryMessage,
@@ -41,6 +42,7 @@ import type {
   ChannelRuntimeEvent,
   ChannelRuntimeOptions,
   ChannelStateAdapter,
+  ChannelSuggestionAdapter,
   ChannelTurnResult,
   ChannelWebhookOptions,
 } from "./types.js";
@@ -333,8 +335,9 @@ export class ChannelRuntime {
     chat.onSubscribedMessage(handler);
     chat.onSlashCommand((event) =>
       this.handleSlashCommand(installation, state, event));
+    // The reserved namespace is guarded even after opt-out or without application actions.
+    chat.onAction((event) => this.handleAction(installation, state, event));
     if (this.options.handleEvent) {
-      chat.onAction((event) => this.handleAction(installation, state, event));
       chat.onReaction((event) => this.handleReaction(installation, state, event));
       chat.onModalSubmit((event) => this.handleModalSubmit(installation, state, event));
       chat.onModalClose((event) => this.handleModalClose(installation, state, event));
@@ -514,6 +517,10 @@ export class ChannelRuntime {
       event.user.userId,
       event.value ?? "",
     ]);
+    if (event.actionId.startsWith(CHANNEL_SUGGESTION_PREFIX)) {
+      await this.handleSuggestionSelection(installation, state, event, providerEventId);
+      return;
+    }
     if (!await this.acceptEvent(state, installation, "action", providerEventId)) return;
     await this.executeEvent(
       installation,
@@ -537,6 +544,44 @@ export class ChannelRuntime {
         value: event.value,
       },
     );
+  }
+
+  private async handleSuggestionSelection(
+    installation: ChannelInstallation, state: ChannelStateAdapter, event: ActionEvent, providerEventId: string,
+  ): Promise<void> {
+    const reject = () => this.emit({ installationId: installation.id, provider: installation.provider,
+      name: "suggestions.selection.rejected", details: { reason: "unavailable-or-invalid" } });
+    if (!this.options.suggestions || !event.thread || !event.threadId) { await reject(); return; }
+    const raw = event.raw as { context?: { id?: unknown } } | undefined;
+    const sourceMessageId = installation.provider === "whatsapp"
+      ? (typeof raw?.context?.id === "string" ? raw.context.id : undefined)
+      : event.messageId;
+    // WhatsApp's messageId is the incoming reply, not the original interactive message.
+    if (!sourceMessageId) { await reject(); return; }
+    let selection;
+    try {
+      selection = await new ChannelSuggestionSets(state).claim({
+        actionId: event.actionId, providerEventId, sourceMessageId, provider: installation.provider,
+        installationId: installation.id, credentialRevision: installation.credentialRevision,
+        threadId: event.threadId, recipientId: event.user.userId,
+      });
+    } catch { await reject(); return; }
+    if (!selection) { await reject(); return; }
+    await this.emit({ installationId: installation.id, provider: installation.provider,
+      name: "suggestions.selection.claimed" });
+    const turn: ChannelInboundTurn = {
+      installationId: installation.id, credentialRevision: installation.credentialRevision,
+      provider: installation.provider, providerEventId, channelId: event.thread.channelId,
+      threadId: event.threadId, isDirectMessage: selection.isDirectMessage,
+      coordination: { grouped: false, messageCount: 1, messageIds: [providerEventId],
+        primaryMessageId: providerEventId, strategy: installation.concurrency?.strategy ?? "queue" },
+      messages: [{ id: providerEventId, text: selection.item.prompt, attachments: [], author: mapAuthor(event.user),
+        raw: event.raw, timestamp: new Date(), isMention: false }],
+      suggestionSelection: { item: selection.item, source: selection.source },
+    };
+    await this.executeTurn(installation, state, {
+      channelId: turn.channelId, threadId: turn.threadId, postable: event.thread,
+    }, turn);
   }
 
   private async handleReaction(
@@ -723,7 +768,12 @@ export class ChannelRuntime {
         const result = this.options.handleEvent
           ? await this.options.handleEvent(event, executionContext)
           : await this.options.handleTurn!(turn, executionContext);
-        if (result) await this.deliver(installation, executionTarget, result, messageId);
+        if (result) {
+          await this.deliver(installation, executionTarget, result, messageId);
+          if (this.options.suggestions && result.suggestions?.items.length) {
+            await this.deliverSuggestions(installation, state, executionTarget, turn, result.suggestions);
+          }
+        }
         await this.emit({
           channelId: target.channelId,
           installationId: installation.id,
@@ -1054,6 +1104,38 @@ export class ChannelRuntime {
         threadId: target.threadId,
       });
       throw new ChannelDeliveryFailure(error, deliveredPosts);
+    }
+  }
+
+  private async deliverSuggestions(
+    installation: ChannelInstallation, state: ChannelStateAdapter, target: TurnTarget,
+    turn: ChannelInboundTurn, presentation: NonNullable<ChannelTurnResult["suggestions"]>,
+  ): Promise<void> {
+    try {
+      const recipientId = turn.messages.at(-1)?.author.userId;
+      if (!recipientId || !target.threadId) return;
+      const adapter = this.entries.get(runtimeKey(installation, this.options.concurrency))?.adapter;
+      const specialized = adapter && "postSuggestionChoices" in adapter
+        && typeof adapter.postSuggestionChoices === "function" ? adapter as ChannelSuggestionAdapter : undefined;
+      // Never fall back to WhatsApp's three-button truncation for a list.
+      if (installation.provider === "whatsapp" && !specialized) return;
+      if (!specialized && presentation.items.length > 5) return;
+      const binding = { provider: installation.provider, installationId: installation.id,
+        credentialRevision: installation.credentialRevision, threadId: target.threadId, recipientId,
+        isDirectMessage: turn.isDirectMessage };
+      const sets = new ChannelSuggestionSets(state);
+      const prepared = await sets.prepare(binding, presentation);
+      const sent = specialized
+        ? await specialized.postSuggestionChoices(target.threadId, prepared.choices)
+        : await target.postable.post(Card({ children: [CardText("Suggested next steps"),
+          Actions(prepared.choices.map(choice => Button({ id: choice.id, label: choice.label }))) ] }));
+      if (!await sets.activate(prepared.token, binding, sent.id)) throw new Error("Suggestion activation failed");
+      await this.emit({ installationId: installation.id, provider: installation.provider,
+        name: "suggestions.delivered", details: { count: prepared.choices.length } });
+    } catch {
+      // Optional delivery must neither fail nor replay the completed main operation.
+      await this.emit({ installationId: installation.id, provider: installation.provider,
+        name: "suggestions.delivery.failed" });
     }
   }
 
@@ -1606,6 +1688,9 @@ function hasDeliverableOutput(result: ChannelEventResult): boolean {
 }
 
 function validateTurnResult(result: ChannelTurnResult): void {
+  if (result.actions?.some(action => action.id.startsWith(CHANNEL_SUGGESTION_PREFIX))) {
+    throw new Error("The Channel suggestion action namespace is reserved");
+  }
   if (result.posts?.length && (result.actions?.length || result.text || result.stream || result.files?.length)) {
     throw new Error("Native posts cannot be combined with text, stream, or files");
   }

@@ -124,6 +124,21 @@ Treat the call as successful only when it resolves. A returned message ID means
 the provider accepted the send request; it does not by itself prove that the
 recipient received or read the message.
 
+## Conversation suggestions
+
+Suggestions are opt-in. Set `suggestions: true` in `ChannelRuntime` and in the
+server's `createConversationChannelTurnHandler` options, and enable suggestions
+on the agent. WhatsApp shows up to three reply buttons or a list for four or more
+choices; generation remains capped at five. The main answer is delivered intact
+before the optional controls.
+
+Selections use opaque, single-use state and enter the ordinary turn handler.
+The bridge rechecks the current identity and the exact canonical assistant
+source. Existing application postbacks remain separate. Reserved callbacks stay
+guarded when disabled. Use shared state across replicas and preserve normal
+Session/run coordination. See the [complete contract](../../docs/channel-suggestions.md)
+for custom-handler requirements, expiry, failure behavior, and rollback.
+
 ## Durable state
 
 The default state adapter is in-memory and is appropriate for local development

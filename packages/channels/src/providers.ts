@@ -1,8 +1,8 @@
 import { createDiscordAdapter } from "@chat-adapter/discord";
 import { createSlackAdapter } from "@chat-adapter/slack";
 import { createTelegramAdapter } from "@chat-adapter/telegram";
-import { createWhatsAppAdapter } from "@chat-adapter/whatsapp";
-import type { Adapter } from "chat";
+import { ConsoleLogger, type Adapter } from "chat";
+import { SuggestionWhatsAppAdapter } from "./whatsapp-suggestions.js";
 import type {
   ChannelInstallation,
   ChannelProviderCapabilities,
@@ -105,12 +105,15 @@ export function createOfficialChannelAdapter(
       });
       break;
     case "whatsapp":
-      adapter = createWhatsAppAdapter({
-        accessToken: installation.credentials.accessToken,
-        appSecret: installation.credentials.appSecret,
-        phoneNumberId: installation.credentials.phoneNumberId,
-        userName: installation.userName,
-        verifyToken: installation.credentials.verifyToken,
+      adapter = new SuggestionWhatsAppAdapter({
+        // Preserve the pinned official factory's configuration and validation.
+        accessToken: whatsappSetting(installation.credentials.accessToken, "WHATSAPP_ACCESS_TOKEN", "accessToken"),
+        appSecret: whatsappSetting(installation.credentials.appSecret, "WHATSAPP_APP_SECRET", "appSecret"),
+        phoneNumberId: whatsappSetting(installation.credentials.phoneNumberId, "WHATSAPP_PHONE_NUMBER_ID", "phoneNumberId"),
+        verifyToken: whatsappSetting(installation.credentials.verifyToken, "WHATSAPP_VERIFY_TOKEN", "verifyToken"),
+        apiUrl: process.env.WHATSAPP_API_URL,
+        userName: installation.userName ?? process.env.WHATSAPP_BOT_USERNAME ?? "whatsapp-bot",
+        logger: new ConsoleLogger("info").child("whatsapp"),
       });
       break;
   }
@@ -118,4 +121,12 @@ export function createOfficialChannelAdapter(
     adapter.startTyping = async () => {};
   }
   return adapter;
+}
+
+function whatsappSetting(value: string | undefined, environment: string, field: string): string {
+  const resolved = value ?? process.env[environment];
+  if (!resolved) {
+    throw new Error(`${field} is required. Set ${environment} or provide it in config.`);
+  }
+  return resolved;
 }

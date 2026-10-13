@@ -104,6 +104,7 @@ describe.each([
     await execute(f.writer, f.execution, new AbortController().signal);
     const frame = f.frames.find(data => data.includes('"suggestions"'))!;
     const suggestions = JSON.parse(frame).polpo.suggestions;
+    expect(JSON.parse(frame).polpo.suggestionsSource).toEqual({ assistantMessageId: "assistant" });
     expect(suggestions).toHaveLength(2);
     expect(suggestions[0]).toEqual(action);
     expect(suggestions[1]).toMatchObject({ kind: "message", prompt: "Review my site." });

@@ -78,7 +78,7 @@ describe("resolveChatInteractionCapabilities", () => {
     }).askUserQuestion).toBe(false);
   });
 
-  it("disables interactive chat extensions on channel surfaces", () => {
+  it("allows opted-in Channel suggestions while keeping questions disabled", () => {
     expect(resolveChatInteractionCapabilities({
       surface: "channel",
       settings: {
@@ -91,7 +91,7 @@ describe("resolveChatInteractionCapabilities", () => {
       },
     })).toEqual({
       askUserQuestion: false,
-      suggestions: false,
+      suggestions: true,
     });
   });
 });
@@ -115,11 +115,11 @@ describe("per-request suggestions", () => {
     }).suggestions).toBe(false);
   });
 
-  it("never overrides agent or Channel policy", () => {
+  it("never overrides disabled agent policy, including on Channels", () => {
     const client = { suggestions: { enabled: true, maxItems: 5 } };
     expect(resolveChatInteractionCapabilities({ client }).suggestions).toBe(false);
     expect(resolveChatInteractionCapabilities({ surface: "channel", client,
-      settings: { suggestions: { enabled: true } },
+      settings: { suggestions: { enabled: false } },
     }).suggestions).toBe(false);
   });
 

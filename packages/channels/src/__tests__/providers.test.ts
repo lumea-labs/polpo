@@ -1,9 +1,11 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   channelProviderCapabilities,
   createOfficialChannelAdapter,
 } from "../providers.js";
-import type { ChannelInstallation } from "../types.js";
+import type { ChannelInstallation, ChannelSuggestionAdapter } from "../types.js";
+
+afterEach(() => { vi.unstubAllEnvs(); vi.unstubAllGlobals(); });
 
 const installations: ChannelInstallation[] = [
   {
@@ -42,6 +44,27 @@ const installations: ChannelInstallation[] = [
 ];
 
 describe("createOfficialChannelAdapter", () => {
+  it("preserves the official WhatsApp factory username defaults and API URL override", async () => {
+    vi.stubEnv("WHATSAPP_BOT_USERNAME", undefined);
+    expect(createOfficialChannelAdapter(installations[3]!).userName).toBe("whatsapp-bot");
+    vi.stubEnv("WHATSAPP_BOT_USERNAME", "configured-bot");
+    vi.stubEnv("WHATSAPP_API_URL", "https://graph.test.invalid");
+    const fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({ messages: [{ id: "outbound" }] })));
+    vi.stubGlobal("fetch", fetch);
+    const adapter = createOfficialChannelAdapter(installations[3]!) as ChannelSuggestionAdapter;
+    expect(adapter.userName).toBe("configured-bot");
+    expect(createOfficialChannelAdapter({ ...installations[3]!, userName: "explicit" }).userName).toBe("explicit");
+    await adapter.postSuggestionChoices("whatsapp:123:recipient", [{ id: "choice", label: "Next" }]);
+    expect(String(fetch.mock.calls[0][0])).toMatch(/^https:\/\/graph\.test\.invalid\//);
+  });
+
+  it.each(["accessToken", "appSecret", "phoneNumberId", "verifyToken"])("keeps rejecting empty WhatsApp %s", field => {
+    const installation = installations[3]!;
+    expect(() => createOfficialChannelAdapter({ ...installation,
+      credentials: { ...installation.credentials, [field]: "" },
+    } as ChannelInstallation)).toThrow(`${field} is required`);
+  });
+
   it.each(installations)("creates the official $provider adapter", (installation) => {
     expect(createOfficialChannelAdapter(installation).name).toBe(installation.provider);
   });
