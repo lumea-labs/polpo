@@ -1,5 +1,7 @@
 # Suggestions on messaging Channels
 
+Version boundary: 0.17.1.
+
 Channel hosts can opt into the same agent-owned suggestions used by web chat,
 including the final result of a Project Loop. Agent `chat.suggestions.enabled`
 and the host's capability must both allow generation. Questions stay disabled on

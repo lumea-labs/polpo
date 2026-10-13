@@ -1,6 +1,6 @@
 {
   "name": "@polpo-ai/file-stores",
-  "version": "0.17.0",
+  "version": "0.17.1",
   "description": "File-based store implementations for Polpo with coordinated JSON/Markdown persistence",
   "type": "module",
   "main": "dist/index.js",
