@@ -14,7 +14,7 @@ import {
   type ActionEvent,
   type Logger,
   LinkButton,
-  type Message,
+  Message,
   type MessageContext,
   type ModalCloseEvent,
   type ModalResponse,
@@ -73,6 +73,17 @@ const DEFAULT_CONCURRENCY = {
 const DEFAULT_DEDUPE_TTL_MS = 10 * 60_000;
 const DEFAULT_OBSERVABILITY_TIMEOUT_MS = 1_000;
 const OBSERVABILITY_TIMEOUT_BACKOFF_MS = 30_000;
+const QUEUED_SUGGESTION_TYPE = "polpo.suggestion-selection.v1";
+type QueuedSuggestion = {
+  type: typeof QUEUED_SUGGESTION_TYPE;
+  actionId: string;
+  providerEventId: string;
+  sourceMessageId: string;
+};
+
+function isQueuedSuggestion(message: Message): boolean {
+  return (message.raw as Partial<QueuedSuggestion> | null)?.type === QUEUED_SUGGESTION_TYPE;
+}
 
 class ChannelDeliveryFailure extends Error {
   constructor(
@@ -336,7 +347,7 @@ export class ChannelRuntime {
     chat.onSlashCommand((event) =>
       this.handleSlashCommand(installation, state, event));
     // The reserved namespace is guarded even after opt-out or without application actions.
-    chat.onAction((event) => this.handleAction(installation, state, event));
+    chat.onAction((event) => this.handleAction(installation, state, chat, event));
     if (this.options.handleEvent) {
       chat.onReaction((event) => this.handleReaction(installation, state, event));
       chat.onModalSubmit((event) => this.handleModalSubmit(installation, state, event));
@@ -361,6 +372,37 @@ export class ChannelRuntime {
   }
 
   private async handleMessage(
+    installation: ChannelInstallation,
+    adapterName: string,
+    state: ChannelStateAdapter,
+    thread: Thread,
+    message: Message,
+    context?: MessageContext,
+  ): Promise<void> {
+    const messages = [...(context?.skipped ?? []), message];
+    if (!messages.some(isQueuedSuggestion)) {
+      return this.handleOrdinaryMessage(installation, adapterName, state, thread, message, context);
+    }
+    // The Chat SDK may batch queue/burst/debounce entries across replicas.
+    // Preserve ordering, but never merge a private selection into ordinary text.
+    let ordinary: Message[] = [];
+    const flush = async () => {
+      if (!ordinary.length) return;
+      const group = ordinary;
+      ordinary = [];
+      await this.handleOrdinaryMessage(installation, adapterName, state, thread, group.at(-1)!, {
+        skipped: group.slice(0, -1), totalSinceLastHandler: group.length,
+      });
+    };
+    for (const incoming of messages) {
+      if (!isQueuedSuggestion(incoming)) { ordinary.push(incoming); continue; }
+      await flush();
+      await this.handleQueuedSuggestion(installation, state, thread, incoming);
+    }
+    await flush();
+  }
+
+  private async handleOrdinaryMessage(
     installation: ChannelInstallation,
     adapterName: string,
     state: ChannelStateAdapter,
@@ -508,6 +550,7 @@ export class ChannelRuntime {
   private async handleAction(
     installation: ChannelInstallation,
     state: ChannelStateAdapter,
+    chat: Chat,
     event: ActionEvent,
   ): Promise<void> {
     const providerEventId = providerEventIdFor(event.raw, [
@@ -518,7 +561,7 @@ export class ChannelRuntime {
       event.value ?? "",
     ]);
     if (event.actionId.startsWith(CHANNEL_SUGGESTION_PREFIX)) {
-      await this.handleSuggestionSelection(installation, state, event, providerEventId);
+      await this.handleSuggestionSelection(installation, state, chat, event, providerEventId);
       return;
     }
     if (!await this.acceptEvent(state, installation, "action", providerEventId)) return;
@@ -547,7 +590,8 @@ export class ChannelRuntime {
   }
 
   private async handleSuggestionSelection(
-    installation: ChannelInstallation, state: ChannelStateAdapter, event: ActionEvent, providerEventId: string,
+    installation: ChannelInstallation, state: ChannelStateAdapter, chat: Chat,
+    event: ActionEvent, providerEventId: string,
   ): Promise<void> {
     const reject = () => this.emit({ installationId: installation.id, provider: installation.provider,
       name: "suggestions.selection.rejected", details: { reason: "unavailable-or-invalid" } });
@@ -569,19 +613,57 @@ export class ChannelRuntime {
     if (!selection) { await reject(); return; }
     await this.emit({ installationId: installation.id, provider: installation.provider,
       name: "suggestions.selection.claimed" });
-    const turn: ChannelInboundTurn = {
-      installationId: installation.id, credentialRevision: installation.credentialRevision,
-      provider: installation.provider, providerEventId, channelId: event.thread.channelId,
-      threadId: event.threadId, isDirectMessage: selection.isDirectMessage,
-      coordination: { grouped: false, messageCount: 1, messageIds: [providerEventId],
-        primaryMessageId: providerEventId, strategy: installation.concurrency?.strategy ?? "queue" },
-      messages: [{ id: providerEventId, text: selection.item.prompt, attachments: [], author: mapAuthor(event.user),
-        raw: event.raw, timestamp: new Date(), isMention: false }],
-      suggestionSelection: { item: selection.item, source: selection.source },
-    };
-    await this.executeTurn(installation, state, {
-      channelId: turn.channelId, threadId: turn.threadId, postable: event.thread,
-    }, turn);
+    try {
+      await chat.processMessage(event.adapter, event.threadId, new Message({
+        id: `polpo-selection:${providerEventId}`, threadId: event.threadId,
+        text: "", formatted: markdownAst(""), attachments: [], author: event.user,
+        metadata: { dateSent: new Date(), edited: false },
+        raw: { type: QUEUED_SUGGESTION_TYPE, actionId: event.actionId,
+          providerEventId, sourceMessageId } satisfies QueuedSuggestion,
+      }));
+    } catch {
+      // The original claim stays spent; never bubble the private action reference
+      // into Chat SDK's action-error logging or retry an uncertain dispatch.
+      await reject();
+    }
+  }
+
+  private async handleQueuedSuggestion(
+    installation: ChannelInstallation, state: ChannelStateAdapter, thread: Thread, message: Message,
+  ): Promise<void> {
+    const reject = () => this.emit({ installationId: installation.id, provider: installation.provider,
+      name: "suggestions.selection.rejected", details: { reason: "unavailable-or-invalid" } });
+    const reference = message.raw as Partial<QueuedSuggestion>;
+    if (!this.options.suggestions || typeof reference.actionId !== "string"
+      || typeof reference.providerEventId !== "string" || typeof reference.sourceMessageId !== "string"
+      || message.id !== `polpo-selection:${reference.providerEventId}`) { await reject(); return; }
+    try {
+      const selection = await new ChannelSuggestionSets(state).admit({
+        actionId: reference.actionId, providerEventId: reference.providerEventId,
+        sourceMessageId: reference.sourceMessageId, provider: installation.provider,
+        installationId: installation.id, credentialRevision: installation.credentialRevision,
+        threadId: thread.id, recipientId: message.author.userId,
+      });
+      if (!selection) { await reject(); return; }
+      const providerEventId = reference.providerEventId;
+      const turn: ChannelInboundTurn = {
+        installationId: installation.id, credentialRevision: installation.credentialRevision,
+        provider: installation.provider, providerEventId, channelId: thread.channelId,
+        threadId: thread.id, isDirectMessage: selection.isDirectMessage,
+        coordination: { grouped: false, messageCount: 1, messageIds: [providerEventId],
+          primaryMessageId: providerEventId, strategy: (installation.concurrency ?? this.options.concurrency ?? DEFAULT_CONCURRENCY).strategy },
+        messages: [{ id: providerEventId, text: selection.item.prompt, attachments: [], author: mapAuthor(message.author),
+          raw: { id: providerEventId }, timestamp: message.metadata.dateSent, isMention: false }],
+        suggestionSelection: { item: selection.item, source: selection.source },
+      };
+      await this.executeTurn(installation, state, {
+        channelId: turn.channelId, threadId: turn.threadId, postable: thread,
+      }, turn);
+    } catch {
+      // Selection failure is terminal, and must not discard later ordinary messages
+      // already dequeued in the same burst or clear the admission/dedupe claims.
+      await reject();
+    }
   }
 
   private async handleReaction(
@@ -1433,21 +1515,31 @@ class RuntimeLogger implements Logger {
   }
 
   debug(message: string, ...args: unknown[]): void {
-    this.base.debug(message, ...args);
+    this.base.debug(message, ...redactSuggestionLogArgs(args));
   }
 
   info(message: string, ...args: unknown[]): void {
     this.observeInfo(message, args);
-    this.base.info(message, ...args);
+    this.base.info(message, ...redactSuggestionLogArgs(args));
   }
 
   warn(message: string, ...args: unknown[]): void {
-    this.base.warn(message, ...args);
+    this.base.warn(message, ...redactSuggestionLogArgs(args));
   }
 
   error(message: string, ...args: unknown[]): void {
-    this.base.error(message, ...args);
+    this.base.error(message, ...redactSuggestionLogArgs(args));
   }
+}
+
+/** Chat SDK action diagnostics include actionId even before our handler runs. */
+function redactSuggestionLogArgs(args: unknown[]): unknown[] {
+  return args.map(value => {
+    const record = recordValue(value);
+    return typeof record.actionId === "string" && record.actionId.startsWith(CHANNEL_SUGGESTION_PREFIX)
+      ? { ...record, actionId: "[channel-suggestion]", ...(Object.hasOwn(record, "value") ? { value: "[redacted]" } : {}) }
+      : value;
+  });
 }
 
 function recordValue(value: unknown): Record<string, unknown> {

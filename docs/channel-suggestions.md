@@ -1,6 +1,6 @@
 # Suggestions on messaging Channels
 
-Version boundary: 0.17.1.
+Version boundary: 0.17.1 introduced the contract; use 0.17.2 or later for shared-queue selection admission across replicas.
 
 Channel hosts can opt into the same agent-owned suggestions used by web chat,
 including the final result of a Project Loop. Agent `chat.suggestions.enabled`
@@ -46,8 +46,15 @@ The untouched provider request is authenticated by its official adapter before
 the runtime handles a selection. WhatsApp `context.id` must match the outbound
 controls message; its incoming reply ID is not the source message ID.
 
-After a successful atomic set claim, the selection becomes an ordinary message
-turn through `handleTurn` or a `handleEvent` message event, with progress delivery
+After a successful atomic set claim, a private reference enters the Chat SDK's
+ordinary `processMessage` path and shared thread queue. The queue carries no
+prompt or source authority: admission resolves the original claimed record and
+checks event, item, installation, credential revision, thread and recipient again.
+The reference is removed before exposing a normalized turn to host handlers.
+Queue/burst batches split selections into individual turns in stable order,
+retaining ordinary message groups on either side. A second atomic admission
+claim prevents duplicate dequeue or an uncertain execution from replaying a choice.
+The selection then becomes an ordinary message turn through `handleTurn` or a `handleEvent` message event, with progress delivery
 and normal coordination. The bridge resolves identity, route, Session, and scope
 again. It requires the source answer to remain the latest canonical message and
 compares ID, label, and exact prompt to persisted suggestions. It never creates
@@ -81,11 +88,18 @@ guard remains active when `suggestions` is false. Keep it during rollback while
 previously issued controls remain on devices; older binaries lacking this guard
 are not a safe rollback target without an equivalent host ingress guard.
 
+Keep suggestions disabled during a rolling upgrade until every worker supports
+the 0.17.2 queued-selection format. A binary rollback must preserve both the
+provider callback guard and the internal queued-reference guard; never let a
+queued selection fall back to an ordinary message. Normal queue TTL and overflow
+policies apply, so a dropped or expired choice stays spent rather than bypassing
+admission or being retried as an application action.
+
 ## Validation evidence
 
 The OSS tests exercise the actual pinned WhatsApp adapter, signed webhook bodies,
 and intercepted Graph HTTP requests for both reply-button and list callbacks.
-They also cover shared-state races, identity/scope/route changes, stale/deleted
+They also cover serialized queues across replicas, mixed-message batches, private-reference redaction, shared-state races, identity/scope/route changes, stale/deleted
 Sessions, unknown namespaces, activation/claim failures, provider failures, and
 fresh client-tool continuation capabilities.
 

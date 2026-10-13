@@ -63,6 +63,25 @@ describe("opaque Channel suggestion selections", () => {
     failure.mockRestore();
     expect(await new ChannelSuggestionSets(f.state).claim({ ...f.callback, providerEventId: "retry" })).toBeNull();
   });
+  it("admits a queued claim once across replicas, with the original event binding", async () => {
+    const f = await setup(); await f.sets.activate(f.pending.token, binding, "outbound");
+    expect(await f.sets.admit(f.callback)).toBeNull();
+    await f.sets.claim(f.callback);
+    for (const change of [{ providerEventId: "forged" }, { recipientId: "other" }, { sourceMessageId: "other" },
+      { threadId: "other" }, { credentialRevision: "other" }, { actionId: f.callback.actionId.replace(/:0$/, ":1") }]) {
+      expect(await f.sets.admit({ ...f.callback, ...change })).toBeNull();
+    }
+    const attempts = await Promise.all([f.sets.admit(f.callback), new ChannelSuggestionSets(f.state).admit(f.callback)]);
+    expect(attempts.filter(Boolean)).toHaveLength(1);
+    expect(attempts.find(Boolean)?.item.prompt).toBe("Show my site");
+    expect(await f.sets.admit(f.callback)).toBeNull();
+  });
+  it("rejects a claim that expires while waiting in the queue", async () => {
+    const f = await setup(); await f.sets.activate(f.pending.token, binding, "outbound");
+    await f.sets.claim(f.callback);
+    const clock = vi.spyOn(Date, "now").mockReturnValue(Date.now() + 86_400_001);
+    try { expect(await f.sets.admit(f.callback)).toBeNull(); } finally { clock.mockRestore(); }
+  });
   it("does not admit controls when activation failed after provider acceptance", async () => {
     const f = await setup();
     const failure = vi.spyOn(f.state, "set").mockRejectedValueOnce(new Error("interrupted"));
