@@ -4,3 +4,6 @@
 # Ship the image acceptance checks for build and provider canaries.
 !tests/
 !tests/*.mjs
+!tests/*.py
+!patches/
+!patches/*.py

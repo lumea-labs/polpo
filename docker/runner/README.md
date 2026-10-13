@@ -19,7 +19,7 @@ no Docker needed there).
 | Workspace toolchain | Python venv/dev tools, compilers, archive/file utilities, jq/ripgrep, Pandoc, ImageMagick and FFmpeg |
 | Python document/data modules | pandas/numpy, spreadsheet, Word/PowerPoint/PDF, image and parsing libraries formerly installed by the Daytona v15 overlay |
 | `mountpoint-s3` | R2 FUSE mount (used by cloud sandbox pool) |
-| `edge-tts` (pip) | free TTS fallback for `audio_speak` |
+| `edge-tts` 7.2.8 (pip, endpoint patch) | free Microsoft network TTS for `audio_speak` |
 | `polpo-ai@VERSION` (npm) | the runtime + tool packages |
 | `agent-browser` (npm global) + Chromium | browser_* tools + pdf_create driver |
 
@@ -36,6 +36,28 @@ modules. Provider snapshot registration must preserve this baseline.
 Both checks also run during the Docker build. The image carries the full suite
 at `/opt/polpo-runner/tests/runtime-smoke.mjs` so a disposable sandbox can run
 the same acceptance checks before its snapshot is selected for production.
+
+### Edge TTS compatibility patch (October 2026)
+
+The legacy synthesis endpoint returns HTTP 403 from Daytona and GitHub runners,
+including on the previous production image. The same client still works from
+some other networks. `patches/edge-tts-endpoint.py` changes only the synthesis
+URL to Microsoft's `api.msedgeservices.com` endpoint; the voice list, public
+client token, protocol, voices, defaults and provider choice stay unchanged.
+This is a local compatibility patch based on the endpoint portion of
+[upstream PR 491](https://github.com/rany2/edge-tts/pull/491), commit
+`8a5844c3a1d33e4e8f2f3e14535542c0d75d4248`, which was not merged or released
+when applied. It does not add API keys or a paid-provider fallback.
+
+The patch rejects unexpected package versions or source hashes and is
+idempotent. Offline tests run during the image build; the live Layer-2 tests
+must still synthesize English/default, explicit voice, Italian and long text.
+Retire the patch after an upstream release fixes the endpoint and passes those
+checks. For self-hosted installations outside this image, install edge-tts
+7.2.8 and run the same patch with that Python environment. The `edge-tts` CLI
+runs locally but sends text to Microsoft's online service; it is not offline
+speech synthesis. Channel automatic speech uses its separately configured
+server-side provider, not this CLI.
 
 ## Build
 
