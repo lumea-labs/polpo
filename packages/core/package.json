@@ -22,6 +22,10 @@
       "types": "./dist/project-layout.d.ts",
       "import": "./dist/project-layout.js"
     },
+    "./project-environment": {
+      "types": "./dist/project-environment.d.ts",
+      "import": "./dist/project-environment.js"
+    },
     "./events": {
       "types": "./dist/events.d.ts",
       "import": "./dist/events.js"

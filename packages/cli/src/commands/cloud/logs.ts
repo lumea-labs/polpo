@@ -7,14 +7,16 @@ import { createApiClient } from "./api.js";
 import { loadProjectId } from "./project-context.js";
 import { requireAuth } from "../../util/auth.js";
 import { friendlyError } from "../../util/errors.js";
+import { projectEnvironmentBaseUrl } from "@polpo-ai/core/project-environment";
+import { addEnvironmentOptions, resolveCliEnvironment } from "./environment.js";
 
 export function registerLogsCommand(program: Command): void {
-  program
-    .command("cloud-logs")
+  addEnvironmentOptions(program.command("cloud-logs"))
     .description("View logs or follow live events")
     .option("--follow", "Follow live events via SSE")
     .option("-d, --dir <path>", "Project directory", ".")
     .action(async (opts) => {
+      const environment = resolveCliEnvironment(opts);
       const creds = await requireAuth({
         context: "Viewing logs requires an authenticated session.",
       });
@@ -28,7 +30,7 @@ export function registerLogsCommand(program: Command): void {
 
       if (opts.follow) {
         // SSE streaming
-        const url = `${creds.baseUrl.replace(/\/$/, "")}/v1/events`;
+        const url = `${projectEnvironmentBaseUrl(creds.baseUrl, environment)}/v1/events`;
         try {
           const sseHeaders: Record<string, string> = {
             Authorization: `Bearer ${creds.apiKey}`,
@@ -84,7 +86,7 @@ export function registerLogsCommand(program: Command): void {
         }
       } else {
         // Fetch recent logs
-        const client = createApiClient(creds, projectId);
+        const client = createApiClient(creds, projectId, environment);
 
         try {
           const res = await client.get<any>("/v1/state/logs");

@@ -27,6 +27,23 @@ function makeTextResponse(body: string, status = 200): Response {
 }
 
 describe("createApiClient — URL + headers", () => {
+  it("binds all methods to an explicit environment without changing control-plane clients", async () => {
+    fetchMock.mockImplementation(async () => makeJsonResponse({ ok: true }));
+    const credentials = { apiKey: "sk", baseUrl: "https://api.test" };
+    const dev = createApiClient(credentials, "project-1", "development");
+    const prod = createApiClient(credentials, "project-1", "production");
+    const control = createApiClient(credentials);
+    await dev.post("/v1/agents", { name: "support" });
+    await prod.get("/v1/data");
+    await dev.delete("/v1/tasks/task-1");
+    await control.get("/v1/me");
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+      "https://api.test/environments/development/v1/agents",
+      "https://api.test/environments/production/v1/data",
+      "https://api.test/environments/development/v1/tasks/task-1",
+      "https://api.test/v1/me",
+    ]);
+  });
   it("sets Authorization + Content-Type headers from credentials", async () => {
     fetchMock.mockResolvedValue(makeJsonResponse({ ok: true }));
     const client = createApiClient({ apiKey: "sk_live_abc", baseUrl: "https://api.test" });

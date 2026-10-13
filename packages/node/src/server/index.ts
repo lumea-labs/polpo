@@ -9,6 +9,7 @@ import { Orchestrator } from "../core/orchestrator.js";
 import { SSEBridge } from "./sse-bridge.js";
 import type { Team } from "@polpo-ai/core/types";
 import type { ServerConfig } from "./types.js";
+import { parseProjectEnvironment } from "@polpo-ai/core/project-environment";
 
 /**
  * Polpo HTTP Server.
@@ -30,7 +31,9 @@ export class PolpoServer {
   private server: ReturnType<typeof serve> | null = null;
   private shutdownHandlers: (() => void)[] = [];
 
-  constructor(private config: ServerConfig) {}
+  constructor(private config: ServerConfig) {
+    if (config.environment !== undefined) parseProjectEnvironment(config.environment);
+  }
 
   /** Initialize the orchestrator (called at start or after setup completes). */
   private async initOrchestrator(overrideWorkDir?: string): Promise<void> {
@@ -79,6 +82,7 @@ export class PolpoServer {
     }
 
     const app = createApp(this.orchestrator, this.sseBridge, {
+      environment: this.config.environment,
       apiKeys: this.config.apiKeys,
       corsOrigins: this.config.corsOrigins,
       workDir,
@@ -108,6 +112,7 @@ export class PolpoServer {
 
     console.log(`\n  Listening  ${base}`);
     console.log(`  WorkDir    ${workDir}`);
+    if (this.config.environment) console.log(`  Environment ${this.config.environment}`);
     console.log(`  API        ${base}/api/v1/health`);
     console.log();
 

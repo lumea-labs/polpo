@@ -26,6 +26,17 @@ function mount(fs: FileSystem) {
 }
 
 describe("GET /roots — dirStats size accounting", () => {
+  it("uses the host environment prefix in image preview links", async () => {
+    const { fs } = makeFs({});
+    fs.exists = async () => true;
+    const app = fileRoutes(() => ({
+      workDir: "/work", polpoDir: "/polpo", agentWorkDir: "/work", fs, emit: () => {},
+      publicFileBasePath: "/environments/development/v1/files",
+    }));
+    const response = await app.request("/preview?path=%2Fwork%2Flogo.png");
+    expect(response.status).toBe(200);
+    expect((await response.json()).data.url).toBe("/environments/development/v1/files/read?path=%2Fwork%2Flogo.png");
+  });
   it("sums sizes from the directory listing without a per-file stat", async () => {
     const { fs, stat } = makeFs({
       "/work": [

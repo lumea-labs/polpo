@@ -132,6 +132,8 @@ const previewFileRoute = createRoute({
 // ── Dependencies ─────────────────────────────────────────────────────────────
 
 export interface FileRouteDeps {
+  /** Trusted host path for returned file links, including the environment prefix. */
+  publicFileBasePath?: string;
   polpoDir: string;
   workDir: string;
   agentWorkDir: string;
@@ -321,7 +323,7 @@ export function fileRoutes(getDeps: () => FileRouteDeps): OpenAPIHono {
 
     const mime = guessMime(resolved);
     const fileName = basename(resolved);
-    const fileUrl = `/api/v1/files/read?path=${encodeURIComponent(reqPath)}`;
+    const fileUrl = `${getDeps().publicFileBasePath ?? "/api/v1/files"}/read?path=${encodeURIComponent(reqPath)}`;
 
     let type: "text" | "image" | "pdf" | "audio" | "video" | "binary";
     if (mime.startsWith("text/") || mime === "application/json" || mime === "application/xml" || mime === "application/x-ndjson") {

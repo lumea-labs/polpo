@@ -23,6 +23,22 @@ This package contains:
 
 Server-side OAuth/token lifecycle lives in `@polpo-ai/connect-server`.
 
+## Project environments
+
+`PolpoConnectClient` from `@polpo-ai/connect/client` accepts an optional
+`environment: "development" | "production"`. It binds every project/runtime
+request, including setup status and OAuth/MCP calls, to the corresponding
+`/environments/<name>` endpoint. Authentication still determines access; changing
+the name does not grant permission. Missing or unavailable targets never fall
+back to the other environment. Create a separate client when switching targets.
+
+Without this option, the authenticated key or already bound endpoint determines
+the runtime. There is no implicit Development default in the SDK. Organization
+OAuth app administration uses a separate client without an environment selector;
+an environment-bound client rejects organization configuration calls.
+An OAuth callback's persisted state must still bind the original environment:
+the endpoint alone never authorizes moving consent to another runtime.
+
 ## Domain model
 
 - A version 2 `ConnectorDefinition` declares `http_api` or `mcp`, supported

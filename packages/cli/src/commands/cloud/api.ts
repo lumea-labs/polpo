@@ -7,6 +7,7 @@
  */
 import type { Credentials } from "./config.js";
 import { ApiNetworkError } from "../../util/errors.js";
+import { projectEnvironmentBaseUrl, type ProjectEnvironment } from "@polpo-ai/core/project-environment";
 
 const protectedHeaders = new Set([
   "authorization",
@@ -32,8 +33,11 @@ export interface ApiClient {
   delete<T = unknown>(path: string, options?: ApiRequestOptions): Promise<ApiResponse<T>>;
 }
 
-export function createApiClient(credentials: Credentials, projectId?: string): ApiClient {
-  const { apiKey, baseUrl } = credentials;
+export function createApiClient(credentials: Credentials, projectId?: string, environment?: ProjectEnvironment): ApiClient {
+  const { apiKey } = credentials;
+  const baseUrl = environment === undefined
+    ? credentials.baseUrl
+    : projectEnvironmentBaseUrl(credentials.baseUrl, environment);
 
   const headers: Record<string, string> = {
     Authorization: `Bearer ${apiKey}`,

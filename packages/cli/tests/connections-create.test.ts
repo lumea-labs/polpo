@@ -78,7 +78,7 @@ describe("Connections CLI creation", () => {
     const result = JSON.parse(String(vi.mocked(process.stdout.write).mock.calls[0]![0]));
     const link = new URL(result.setupUrl);
     expect(link.origin).toBe("https://polpo.sh");
-    expect(link.pathname).toBe("/projects/project%2Fone/connections/browse");
+    expect(link.pathname).toBe("/projects/project%2Fone/environments/development/connections/browse");
     expect(link.searchParams.get("provider")).toBe("mcp_url");
     expect(link.searchParams.get(server === "linear" ? "mcpPreset" : "mcpUrl")).toBe(server);
     expect(result.requiresBrowserSession).toBe(true);

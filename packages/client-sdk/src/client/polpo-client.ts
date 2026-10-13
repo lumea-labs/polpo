@@ -1,4 +1,5 @@
 import { PolpoApiError } from "./errors.js";
+import { projectEnvironmentBaseUrl, type ProjectEnvironment } from "@polpo-ai/core/project-environment";
 import { DataResourceClient } from "./data.js";
 import type { CreateDataInput, DataResource } from "@polpo-ai/core/data";
 import type {
@@ -150,6 +151,8 @@ import type {
 
 export interface PolpoClientConfig {
   baseUrl: string;
+  /** Explicit runtime selection. Omit to use the environment of the verified API key/endpoint. */
+  environment?: ProjectEnvironment;
   /** @deprecated No longer used. Kept for backwards compatibility. */
   projectId?: string;
   apiKey?: string;
@@ -584,6 +587,7 @@ export class PolpoClient {
   private readonly apiKey: string | undefined;
   private readonly headers: Record<string, string>;
   private readonly fetchFn: typeof globalThis.fetch;
+  private readonly environment: ProjectEnvironment | undefined;
   /** In-flight GET deduplication */
   private readonly inflight = new Map<string, Promise<unknown>>();
   /**
@@ -594,7 +598,10 @@ export class PolpoClient {
   private defaultUser: string | undefined;
 
   constructor(config: PolpoClientConfig) {
-    this.baseUrl = config.baseUrl.replace(/\/$/, "");
+    this.environment = config.environment;
+    this.baseUrl = config.environment === undefined
+      ? config.baseUrl.replace(/\/$/, "")
+      : projectEnvironmentBaseUrl(config.baseUrl, config.environment);
     // Detect cloud vs self-hosted prefix via proper hostname check
     if (config.apiPrefix) {
       this.apiPrefix = config.apiPrefix;
@@ -685,9 +692,10 @@ export class PolpoClient {
     const existing = this.inflight.get(url);
     if (existing) return existing as Promise<T>;
 
-    const promise = this.request<T>("GET", url);
+    // Return the cleanup chain as well: a detached finally() would create an
+    // unhandled rejection for normal 401/404 responses during target switches.
+    const promise = this.request<T>("GET", url).finally(() => this.inflight.delete(url));
     this.inflight.set(url, promise);
-    promise.finally(() => this.inflight.delete(url));
     return promise;
   }
 
@@ -2023,10 +2031,16 @@ export class PolpoClient {
     return this.get<{ path: string; entries: FileEntry[] }>(`/files/list${qs ? `?${qs}` : ""}`);
   }
 
-  previewFile(path: string, maxLines?: number): Promise<FilePreview> {
+  async previewFile(path: string, maxLines?: number): Promise<FilePreview> {
     const params = new URLSearchParams({ path });
     if (maxLines !== undefined) params.set("maxLines", String(maxLines));
-    return this.get<FilePreview>(`/files/preview?${params.toString()}`);
+    const preview = await this.get<FilePreview>(`/files/preview?${params.toString()}`);
+    // A root-relative link from the runtime would drop the gateway's project
+    // and environment route. Rebuild the read URL from the requested file.
+    if (this.environment !== undefined && preview.url) {
+      return { ...preview, url: this.apiUrl(`/files/read?${new URLSearchParams({ path })}`) };
+    }
+    return preview;
   }
 
   /** Download/read a file. Returns raw Response for binary handling. */
@@ -2089,8 +2103,9 @@ export class PolpoClient {
   /** @deprecated Use runPlaybook instead. */
   runTemplate(name: string, params?: Record<string, string | number | boolean>): Promise<PlaybookRunResult> { return this.runPlaybook(name, params); }
 
-  /** Health check (instance method — uses configured base URL, no auth). */
+  /** Selected runtime health, or the legacy host health endpoint when unscoped. */
   async getHealth(): Promise<HealthResponse> {
+    if (this.environment !== undefined) return this.request("GET", this.apiUrl("/health"));
     const res = await this.fetchFn(`${this.baseUrl}/health`);
     return res.json();
   }

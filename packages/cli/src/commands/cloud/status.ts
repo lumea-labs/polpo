@@ -7,13 +7,14 @@ import * as clack from "@clack/prompts";
 import { createApiClient } from "./api.js";
 import { loadProjectId } from "./project-context.js";
 import { requireAuth } from "../../util/auth.js";
+import { addEnvironmentOptions, resolveCliEnvironment } from "./environment.js";
 
 export function registerStatusCommand(program: Command): void {
-  program
-    .command("cloud-status")
+  addEnvironmentOptions(program.command("cloud-status"))
     .description("Show project status summary")
     .option("-d, --dir <path>", "Project directory", ".")
     .action(async (opts) => {
+      const environment = resolveCliEnvironment(opts);
       clack.intro(pc.bold("Polpo — Project Status"));
 
       const creds = await requireAuth({
@@ -29,9 +30,9 @@ export function registerStatusCommand(program: Command): void {
         process.exit(1);
       }
 
-      const client = createApiClient(creds, projectId);
+      const client = createApiClient(creds, projectId, environment);
       const s = clack.spinner();
-      s.start("Fetching project status");
+      s.start(`Fetching ${environment} status`);
 
       let taskSummary = "";
       try {

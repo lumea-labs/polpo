@@ -70,14 +70,14 @@ describe("cloud deploy dependency order", () => {
       const method = init?.method ?? "GET";
       calls.push(`${method} ${url.pathname}`);
 
-      if (method === "GET" && url.pathname === "/v1/tools") {
+      if (method === "GET" && url.pathname === "/environments/development/v1/tools") {
         return Response.json({ ok: true, data: [] });
       }
-      if (method === "POST" && url.pathname === "/v1/tools") {
+      if (method === "POST" && url.pathname === "/environments/development/v1/tools") {
         toolAvailable = true;
         return Response.json({ ok: true, data: { name: "project_checkout" } });
       }
-      if (method === "POST" && url.pathname === "/v1/loops") {
+      if (method === "POST" && url.pathname === "/environments/development/v1/loops") {
         if (!toolAvailable) {
           return Response.json(
             { ok: false, error: "references unknown tool project_checkout" },
@@ -98,9 +98,9 @@ describe("cloud deploy dependency order", () => {
 
     expect(report.total.failed).toBe(0);
     expect(calls).toEqual([
-      "GET /v1/tools",
-      "POST /v1/tools",
-      "POST /v1/loops",
+      "GET /environments/development/v1/tools",
+      "POST /environments/development/v1/tools",
+      "POST /environments/development/v1/loops",
     ]);
   });
 
@@ -130,16 +130,16 @@ describe("cloud deploy dependency order", () => {
       const method = init?.method ?? "GET";
       calls.push(`${method} ${url.pathname}`);
 
-      if (method === "GET" && url.pathname === "/v1/tools") {
+      if (method === "GET" && url.pathname === "/environments/development/v1/tools") {
         return Response.json({ ok: true, data: [] });
       }
-      if (method === "POST" && url.pathname === "/v1/tools") {
+      if (method === "POST" && url.pathname === "/environments/development/v1/tools") {
         return Response.json(
           { ok: false, error: "tool compilation failed" },
           { status: 400 },
         );
       }
-      if (method === "POST" && url.pathname === "/v1/loops") {
+      if (method === "POST" && url.pathname === "/environments/development/v1/loops") {
         return Response.json(
           { ok: false, error: "references unknown tool project_checkout" },
           { status: 400 },
@@ -156,9 +156,9 @@ describe("cloud deploy dependency order", () => {
     });
 
     expect(calls).toEqual([
-      "GET /v1/tools",
-      "POST /v1/tools",
-      "POST /v1/loops",
+      "GET /environments/development/v1/tools",
+      "POST /environments/development/v1/tools",
+      "POST /environments/development/v1/loops",
     ]);
     expect(report.total.failed).toBe(2);
     expect(report.total.errors).toEqual([
@@ -194,13 +194,13 @@ describe("cloud deploy teams", () => {
         path: url.pathname,
         ...(init?.body ? { body: JSON.parse(String(init.body)) } : {}),
       });
-      if (method === "GET" && url.pathname === "/v1/agents/teams") {
+      if (method === "GET" && url.pathname === "/environments/development/v1/agents/teams") {
         return Response.json({
           ok: true,
           data: [{ name: "product", description: "Old description", agents: [] }],
         });
       }
-      if (method === "PATCH" && url.pathname === "/v1/agents/teams/product") {
+      if (method === "PATCH" && url.pathname === "/environments/development/v1/agents/teams/product") {
         return Response.json({
           ok: true,
           data: { name: "product", description: "Updated description", agents: [] },
@@ -222,10 +222,10 @@ describe("cloud deploy teams", () => {
     expect(report.total.failed).toBe(0);
     expect(report.total.updated).toBe(1);
     expect(requests).toEqual([
-      { method: "GET", path: "/v1/agents/teams" },
+      { method: "GET", path: "/environments/development/v1/agents/teams" },
       {
         method: "PATCH",
-        path: "/v1/agents/teams/product",
+        path: "/environments/development/v1/agents/teams/product",
         body: { description: "Updated description" },
       },
     ]);
@@ -261,10 +261,10 @@ describe("cloud deploy skill bundles", () => {
     vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
       const url = new URL(typeof input === "string" ? input : input instanceof URL ? input : input.url);
       const method = init?.method ?? "GET";
-      if (method === "GET" && url.pathname === "/v1/skills") {
+      if (method === "GET" && url.pathname === "/environments/development/v1/skills") {
         return Response.json({ ok: true, data: [] });
       }
-      if (method === "PUT" && url.pathname === "/v1/skills/frontend-design/bundle") {
+      if (method === "PUT" && url.pathname === "/environments/development/v1/skills/frontend-design/bundle") {
         payload = JSON.parse(String(init?.body));
         return Response.json({ ok: true, data: { name: "frontend-design" } });
       }

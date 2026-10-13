@@ -11,6 +11,7 @@ import {
 import { createApiClient, type ApiClient } from "./api.js";
 import { loadProjectId } from "./project-context.js";
 import { requireAuth } from "../../util/auth.js";
+import { addEnvironmentOptions, resolveCliEnvironment, type EnvironmentOptions } from "./environment.js";
 
 export async function readDataJson(path: string): Promise<unknown> {
   const bytes = await readFile(path);
@@ -23,9 +24,10 @@ export async function readDataJson(path: string): Promise<unknown> {
 }
 async function run(
   action: (client: ApiClient) => Promise<{ status: number; data: any }>,
-  options: { project?: string; url?: string },
+  options: EnvironmentOptions & { project?: string; url?: string },
 ) {
   try {
+    const environment = resolveCliEnvironment(options);
     const credentials =
       process.env.POLPO_API_KEY && options.url
         ? { apiKey: process.env.POLPO_API_KEY, baseUrl: options.url }
@@ -41,6 +43,7 @@ async function run(
       createApiClient(
         options.url ? { ...credentials, baseUrl: options.url } : credentials,
         projectId,
+        environment,
       ),
     );
     if (response.status >= 400 || !response.data?.ok)
@@ -60,8 +63,7 @@ export function registerDataCommand(program: Command): void {
     .command("data")
     .description("Manage application databases, records and SQL migrations");
   const command = (signature: string, description: string) =>
-    data
-      .command(signature)
+    addEnvironmentOptions(data.command(signature))
       .description(description)
       .option("--project <id>", "Project ID")
       .option(

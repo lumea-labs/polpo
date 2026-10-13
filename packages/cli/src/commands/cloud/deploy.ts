@@ -4,16 +4,14 @@
  * Core (always deployed):
  *   - agents/<id>/agent.json + instructions.md (agent definitions)
  *   - teams/<id>.json (team structure)
- *   - memory.md + memory/<agent>.md (knowledge base)
  *   - playbooks/ (mission templates)
  *   - missions/ (mission definitions)
  *   - skills/ (complete Agent Skills bundles)
- *   - vault.enc (encrypted credentials)
  *
  * Opt-in (with flags):
  *   --include-tasks     Deploy tasks
  *   --include-sessions  Deploy chat sessions
- *   --all               Deploy everything (seamless local→cloud migration)
+ *   --all               Also import tasks and sessions (explicit state transfer)
  */
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -21,7 +19,8 @@ import type { Command } from "commander";
 import pc from "picocolors";
 import * as clack from "@clack/prompts";
 import { createApiClient, type ApiClient } from "./api.js";
-import { resolveKey, decrypt } from "@polpo-ai/vault-crypto";
+import { projectEnvironmentBaseUrl, type ProjectEnvironment } from "@polpo-ai/core/project-environment";
+import { addEnvironmentOptions, resolveCliEnvironment, type EnvironmentOptions } from "./environment.js";
 import { AddAgentSchema } from "@polpo-ai/server";
 import { readProjectAgents, readProjectTeams } from "@polpo-ai/file-stores";
 import { friendlyError } from "../../util/errors.js";
@@ -161,12 +160,6 @@ function loadJson(filePath: string): any | null {
     return null;
   }
 }
-
-function loadText(filePath: string): string | null {
-  if (!fs.existsSync(filePath)) return null;
-  return fs.readFileSync(filePath, "utf-8");
-}
-
 function listJsonFiles(dir: string): string[] {
   if (!fs.existsSync(dir)) return [];
   return fs.readdirSync(dir).filter(f => f.endsWith(".json")).map(f => path.join(dir, f));
@@ -399,54 +392,6 @@ async function deployLoops(client: ApiClient, polpoDir: string): Promise<DeployR
   return result;
 }
 
-async function deployMemory(client: ApiClient, polpoDir: string, opts: ConflictOptions): Promise<DeployResult> {
-  const result = emptyResult();
-  const shared = loadText(path.join(polpoDir, "memory.md"));
-  if (shared) {
-    // Fetch existing shared memory for comparison
-    let remoteShared: string | null = null;
-    try {
-      const r = await client.get<any>("/v1/memory");
-      // Server returns { ok, data: { exists, content } } — unwrap both layers.
-      if (r.status === 200) remoteShared = r.data?.data?.content ?? r.data?.content ?? null;
-    } catch {}
-
-    const action = await resolveDeployConflict(shared, remoteShared, "shared memory", opts);
-    if (action === "write") {
-      const res = await client.put("/v1/memory", { content: shared });
-      if (res.status >= 200 && res.status < 300) { result.updated++; }
-      else { result.errors.push(`memory: ${friendlyError(readErrorBody(res.data, res.status))}`); result.failed++; }
-    } else {
-      result.skipped++;
-    }
-  }
-
-  const memDir = path.join(polpoDir, "memory");
-  if (fs.existsSync(memDir)) {
-    for (const file of fs.readdirSync(memDir).filter(f => f.endsWith(".md"))) {
-      const agentName = file.replace(".md", "");
-      const content = loadText(path.join(memDir, file));
-      if (content) {
-        let remoteAgent: string | null = null;
-        try {
-          const r = await client.get<any>(`/v1/memory/agent/${agentName}`);
-          if (r.status === 200) remoteAgent = r.data?.data?.content ?? r.data?.content ?? null;
-        } catch {}
-
-        const action = await resolveDeployConflict(content, remoteAgent, `memory "${agentName}"`, opts);
-        if (action === "write") {
-          const res = await client.put(`/v1/memory/agent/${agentName}`, { content });
-          if (res.status >= 200 && res.status < 300) { result.updated++; }
-          else { result.errors.push(`memory "${agentName}": ${friendlyError(readErrorBody(res.data, res.status))}`); result.failed++; }
-        } else {
-          result.skipped++;
-        }
-      }
-    }
-  }
-  return result;
-}
-
 async function deployMissions(client: ApiClient, polpoDir: string): Promise<DeployResult> {
   const result = emptyResult();
   const files = listJsonFiles(path.join(polpoDir, "missions"));
@@ -595,49 +540,7 @@ async function deploySkills(client: ApiClient, polpoDir: string, opts: ConflictO
   return result;
 }
 
-async function deployVault(client: ApiClient, polpoDir: string): Promise<DeployResult> {
-  const result = emptyResult();
-  const vaultPath = path.join(polpoDir, "vault.enc");
-  if (!fs.existsSync(vaultPath)) return result;
-
-  let key: Buffer;
-  try { key = resolveKey(); }
-  catch (err: any) {
-    result.errors.push(`vault: cannot resolve key — ${err.message}. Set POLPO_VAULT_KEY or ensure ~/.polpo/vault.key exists.`);
-    result.failed++;
-    return result;
-  }
-
-  let vaultData: Record<string, Record<string, any>>;
-  try {
-    const plaintext = decrypt(fs.readFileSync(vaultPath), key);
-    vaultData = JSON.parse(plaintext.toString("utf-8"));
-  } catch (err: any) {
-    result.errors.push(`vault: cannot decrypt — ${err.message}`);
-    result.failed++;
-    return result;
-  }
-
-  for (const [agent, services] of Object.entries(vaultData)) {
-    for (const [service, entry] of Object.entries(services)) {
-      const res = await client.post("/v1/vault/entries", {
-        agent, service,
-        type: entry.type ?? "custom",
-        label: entry.label,
-        credentials: entry.credentials,
-      });
-      if (res.status >= 200 && res.status < 300) { result.created++; }
-      else {
-        const msg = readErrorBody(res.data, res.status);
-        result.errors.push(`vault "${agent}/${service}": ${friendlyError(msg)}`);
-        result.failed++;
-      }
-    }
-  }
-  return result;
-}
-
-async function deployAvatars(client: ApiClient, polpoDir: string, baseUrl: string, apiKey: string): Promise<DeployResult> {
+async function deployAvatars(client: ApiClient, polpoDir: string, baseUrl: string, apiKey: string, projectId: string): Promise<DeployResult> {
   const result = emptyResult();
   const avatarsDir = path.join(polpoDir, "avatars");
   if (!fs.existsSync(avatarsDir)) return result;
@@ -648,11 +551,7 @@ async function deployAvatars(client: ApiClient, polpoDir: string, baseUrl: strin
   if (files.length === 0) return result;
 
   try {
-    await fetch(`${baseUrl}/v1/files/mkdir`, {
-      method: "POST",
-      headers: { "Authorization": `Bearer ${apiKey}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ path: ".polpo/avatars" }),
-    });
+    await client.post("/v1/files/mkdir", { path: ".polpo/avatars" });
   } catch { /* may already exist */ }
 
   for (const file of files) {
@@ -662,7 +561,7 @@ async function deployAvatars(client: ApiClient, polpoDir: string, baseUrl: strin
     try {
       const res = await fetch(`${baseUrl}/v1/files/upload`, {
         method: "POST",
-        headers: { "Authorization": `Bearer ${apiKey}` },
+        headers: { "Authorization": `Bearer ${apiKey}`, "x-project-id": projectId },
         body: formData,
       });
       if (res.ok) { result.created++; }
@@ -777,18 +676,19 @@ async function deploySessions(client: ApiClient, polpoDir: string): Promise<Depl
 // does NOT call clack.intro/outro or process.exit — callers own the
 // framing UI. It throws on fatal errors (no project resolved, etc.).
 
-export interface DeployOptions {
+export interface DeployOptions extends EnvironmentOptions {
   dir: string;
   yes?: boolean;
   force?: boolean;
   includeTasks?: boolean;
   includeSessions?: boolean;
   all?: boolean;
-  /** Suppress the "Push LLM keys?" prompt + resource summary + confirmation. */
+  /** Suppress the resource summary and confirmation. */
   silent?: boolean;
 }
 
 export interface DeployReport {
+  environment: ProjectEnvironment;
   total: DeployResult;
   endpoint?: string;
   projectName: string;
@@ -796,6 +696,7 @@ export interface DeployReport {
 }
 
 export async function runDeploy(opts: DeployOptions): Promise<DeployReport> {
+  const environment = resolveCliEnvironment(opts);
   const creds = await requireAuth({
     context: "Deploying requires an authenticated session.",
   });
@@ -846,7 +747,7 @@ export async function runDeploy(opts: DeployOptions): Promise<DeployReport> {
         } catch {}
       }
 
-      const client = createApiClient(creds, projectId);
+      const client = createApiClient(creds, projectId, environment);
 
       // Persist whichever fields we resolved/discovered for next time.
       if (polpoConfig && (!polpoConfig.projectId || (projectSlug && !polpoConfig.projectSlug))) {
@@ -858,78 +759,14 @@ export async function runDeploy(opts: DeployOptions): Promise<DeployReport> {
         });
       }
 
-      // ── Step 2: Detect LLM keys ────────────────────────
-      const LLM_KEYS: Record<string, string> = {
-        ANTHROPIC_API_KEY: "anthropic",
-        OPENAI_API_KEY: "openai",
-        GEMINI_API_KEY: "google",
-        XAI_API_KEY: "xai",
-        GROQ_API_KEY: "groq",
-        OPENROUTER_API_KEY: "openrouter",
-        MISTRAL_API_KEY: "mistral",
-        CEREBRAS_API_KEY: "cerebras",
-        MINIMAX_API_KEY: "minimax",
-        HF_TOKEN: "huggingface",
-        AZURE_OPENAI_API_KEY: "azure-openai-responses",
-      };
-
-      const detected: { envVar: string; provider: string; value: string }[] = [];
-
-      for (const [envVar, provider] of Object.entries(LLM_KEYS)) {
-        if (process.env[envVar]) {
-          detected.push({ envVar, provider, value: process.env[envVar]! });
-        }
-      }
-
-      const envFile = path.join(polpoDir, ".env");
-      if (fs.existsSync(envFile)) {
-        for (const line of fs.readFileSync(envFile, "utf-8").split("\n")) {
-          const t = line.trim();
-          if (!t || t.startsWith("#")) continue;
-          const eq = t.indexOf("=");
-          if (eq === -1) continue;
-          const k = t.slice(0, eq).trim();
-          const v = t.slice(eq + 1).trim().replace(/^["']|["']$/g, "");
-          if (LLM_KEYS[k] && v && !detected.find(d => d.envVar === k)) {
-            detected.push({ envVar: k, provider: LLM_KEYS[k], value: v });
-          }
-        }
-      }
-
-      if (detected.length > 0 && !opts.silent) {
-        clack.log.info(
-          `Detected LLM keys:\n` +
-          detected.map(({ envVar, value }) =>
-            `  ${pc.dim(envVar.padEnd(25))} ${pc.bold(value.slice(0, 8))}...${value.slice(-4)}`
-          ).join("\n"),
-        );
-
-        let pushKeys = force;
-        if (!pushKeys && interactive) {
-          const answer = await clack.confirm({
-            message: "Push LLM keys to cloud?",
-            initialValue: true,
-          });
-          pushKeys = !clack.isCancel(answer) && !!answer;
-        }
-
-        if (pushKeys) {
-          s.start("Pushing LLM keys...");
-          let n = 0;
-          for (const { provider, value } of detected) {
-            try { await cpClient.post("/v1/byok", { provider, key: value }); n++; } catch {}
-          }
-          s.stop(n > 0 ? `Pushed ${n} LLM key(s)` : "No keys pushed");
-        }
-      }
+      // Deploy definitions only by default. Credentials and accumulated memory
+      // are configured explicitly in each environment, never discovered/uploaded here.
 
       // ── Step 3: Scan & show resources ────────────────────
       const hasTeams = readProjectTeams(polpoDir).length > 0;
       const hasAgents = readProjectAgents(polpoDir).length > 0;
       const loopSources = listLoopSourceFiles(polpoDir);
       const hasLoops = loopSources.length > 0;
-      const hasMemory = fs.existsSync(path.join(polpoDir, "memory.md")) ||
-        fs.existsSync(path.join(polpoDir, "memory"));
       const hasMissions = fs.existsSync(path.join(polpoDir, "missions")) &&
         fs.readdirSync(path.join(polpoDir, "missions")).length > 0;
       const hasPlaybooks = fs.existsSync(path.join(polpoDir, "playbooks"));
@@ -939,7 +776,6 @@ export async function runDeploy(opts: DeployOptions): Promise<DeployReport> {
         );
       const hasSchedules = fs.existsSync(path.join(polpoDir, "schedules")) &&
         fs.readdirSync(path.join(polpoDir, "schedules")).length > 0;
-      const hasVault = fs.existsSync(path.join(polpoDir, "vault.enc"));
       const hasTools = fs.existsSync(path.join(polpoDir, "tools")) &&
         fs.readdirSync(path.join(polpoDir, "tools")).some((f) => f.endsWith(".ts"));
       const hasAvatars = fs.existsSync(path.join(polpoDir, "avatars")) &&
@@ -965,7 +801,6 @@ export async function runDeploy(opts: DeployOptions): Promise<DeployReport> {
       if (hasLoops) {
         resourceLines.push(`  ${pc.bold("Loops")}        ${loopSources.length} ${pc.dim("(beta)")}`);
       }
-      if (hasMemory) resourceLines.push(`  ${pc.bold("Memory")}       ${pc.dim("shared + agent")}`);
       if (hasMissions) {
         const n = fs.readdirSync(path.join(polpoDir, "missions")).filter(f => f.endsWith(".json")).length;
         resourceLines.push(`  ${pc.bold("Missions")}     ${n}`);
@@ -985,13 +820,12 @@ export async function runDeploy(opts: DeployOptions): Promise<DeployReport> {
         const n = fs.readdirSync(path.join(polpoDir, "schedules")).filter(f => f.endsWith(".json")).length;
         resourceLines.push(`  ${pc.bold("Schedules")}    ${n}`);
       }
-      if (hasVault) resourceLines.push(`  ${pc.bold("Vault")}        ${pc.dim("encrypted credentials")}`);
       if (hasAvatars) resourceLines.push(`  ${pc.bold("Avatars")}      yes`);
       if (includeTasks && hasTasks) resourceLines.push(`  ${pc.bold("Tasks")}        yes`);
       if (includeSessions && hasSessions) resourceLines.push(`  ${pc.bold("Sessions")}     yes`);
 
       if (resourceLines.length === 0) {
-        return { total: emptyResult(), projectName, nothingToDeploy: true };
+        return { total: emptyResult(), projectName, environment, nothingToDeploy: true };
       }
 
       if (!opts.silent) {
@@ -1000,7 +834,7 @@ export async function runDeploy(opts: DeployOptions): Promise<DeployReport> {
 
       if (interactive) {
         const ok = await clack.confirm({
-          message: "Deploy these resources to cloud?",
+          message: `Deploy these resources to ${environment}?`,
           initialValue: true,
         });
         if (clack.isCancel(ok) || !ok) {
@@ -1070,13 +904,6 @@ export async function runDeploy(opts: DeployOptions): Promise<DeployReport> {
         stopSpinner(`Agents: ${r.created} created, ${r.updated} updated${r.skipped ? `, ${r.skipped} skipped` : ""}${r.failed ? `, ${r.failed} failed` : ""}`);
       }
 
-      if (hasMemory) {
-        startSpinner("Deploying memory...");
-        const r = await deployMemory(client, polpoDir, conflictOpts);
-        mergeResult(total, r);
-        stopSpinner(`Memory: ${r.updated} updated${r.skipped ? `, ${r.skipped} skipped` : ""}${r.failed ? `, ${r.failed} failed` : ""}`);
-      }
-
       if (hasMissions) {
         s.start("Deploying missions...");
         const r = await deployMissions(client, polpoDir);
@@ -1101,16 +928,9 @@ export async function runDeploy(opts: DeployOptions): Promise<DeployReport> {
         }
       }
 
-      if (hasVault) {
-        s.start("Deploying vault...");
-        const r = await deployVault(client, polpoDir);
-        mergeResult(total, r);
-        s.stop(`Vault: ${r.created} created${r.failed ? `, ${r.failed} failed` : ""}`);
-      }
-
       if (hasAvatars) {
         s.start("Deploying avatars...");
-        const r = await deployAvatars(client, polpoDir, creds.baseUrl, creds.apiKey);
+        const r = await deployAvatars(client, polpoDir, projectEnvironmentBaseUrl(creds.baseUrl, environment), creds.apiKey, projectId);
         mergeResult(total, r);
         s.stop(`Avatars: ${r.created} uploaded${r.failed ? `, ${r.failed} failed` : ""}`);
       }
@@ -1137,22 +957,21 @@ export async function runDeploy(opts: DeployOptions): Promise<DeployReport> {
         );
       }
 
-      const endpoint = projectSlug ? `https://${projectSlug}.polpo.cloud` : undefined;
-      return { total, endpoint, projectName };
+      const endpoint = projectSlug ? projectEnvironmentBaseUrl(`https://${projectSlug}.polpo.cloud`, environment) : undefined;
+      return { total, endpoint, projectName, environment };
 }
 
 // ── Main command ──────────────────────────────────────
 
 export function registerDeployCommand(program: Command): void {
-  program
-    .command("deploy")
+  addEnvironmentOptions(program.command("deploy"))
     .description("Deploy local .polpo/ project to cloud")
     .option("-d, --dir <path>", "Project directory", ".")
     .option("-y, --yes", "Skip all confirmation prompts")
     .option("-f, --force", "Force override existing resources without asking")
     .option("--include-tasks", "Also deploy tasks")
     .option("--include-sessions", "Also deploy chat sessions")
-    .option("--all", "Deploy everything (full local→cloud migration)")
+    .option("--all", "Also import tasks and sessions (explicit state transfer)")
     .action(async (opts) => {
       clack.intro(pc.bold("Polpo — Deploy"));
 
@@ -1160,6 +979,8 @@ export function registerDeployCommand(program: Command): void {
       try {
         report = await runDeploy({
           dir: opts.dir,
+          env: opts.env,
+          prod: opts.prod,
           yes: opts.yes,
           force: opts.force,
           includeTasks: opts.includeTasks,
@@ -1190,7 +1011,7 @@ export function registerDeployCommand(program: Command): void {
 
       const outroLines: string[] = [];
       if (!hasDeployFailures(total)) {
-        outroLines.push(pc.green(`✓ Deployed: ${summaryParts.join(", ")}`));
+        outroLines.push(pc.green(`✓ Deployed to ${report.environment}: ${summaryParts.join(", ")}`));
       } else {
         outroLines.push(pc.yellow(`Deployed with errors: ${summaryParts.join(", ")}`));
       }

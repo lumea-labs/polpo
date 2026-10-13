@@ -1,4 +1,5 @@
 import type { MissionAbortOptions, MissionExecutionOptions } from "@polpo-ai/core/mission-store";
+import { parseProjectEnvironment, type ProjectEnvironment } from "@polpo-ai/core/project-environment";
 import { getPolpoDir } from "../core/constants.js";
 import { OpenAPIHono } from "@hono/zod-openapi";
 import { readFileSync } from "node:fs";
@@ -28,6 +29,7 @@ import { rateLimitMiddleware } from "./middleware/rate-limit.js";
 // Shared routes from @polpo-ai/server (edge-compatible, single source of truth)
 import {
   healthRoutes,
+  routeProjectEnvironment,
   taskRoutes,
   missionRoutes,
   chatRoutes,
@@ -101,6 +103,8 @@ function readRuntimeVersion(): string {
 const runtimeVersion = readRuntimeVersion();
 
 export interface AppOptions {
+  /** Fixed identity of this process; configure separate processes/stores for the other environment. */
+  environment?: ProjectEnvironment;
   /** Explicit operator-configured Connect service; routes use normal control-plane auth. */
   connectService?: ConnectRouteDeps["connectService"];
   data?: NodeDataRuntime;
@@ -147,6 +151,7 @@ export interface AppOptions {
  * without needing the full Orchestrator class.
  */
 export function createApp(orchestrator: Orchestrator, sseBridge: SSEBridge, opts?: AppOptions): OpenAPIHono {
+  const environment = opts?.environment === undefined ? undefined : parseProjectEnvironment(opts.environment);
   const app = new OpenAPIHono();
   const data = opts?.data ?? (process.env.POLPO_DATA_DATABASE_URL ? localDataRuntime(orchestrator.getPolpoDir()) : undefined);
   const steeringRegistry = new InMemorySteeringRunRegistry();
@@ -741,6 +746,7 @@ export function createApp(orchestrator: Orchestrator, sseBridge: SSEBridge, opts
   })));
 
   authed.route("/files", fileRoutes(() => ({
+    publicFileBasePath: environment ? `/environments/${environment}/api/v1/files` : undefined,
     polpoDir: o.getPolpoDir(),
     workDir: o.getWorkDir(),
     agentWorkDir: o.getAgentWorkDir(),
@@ -782,6 +788,13 @@ export function createApp(orchestrator: Orchestrator, sseBridge: SSEBridge, opts
     scheme: "bearer",
     description: "API key passed as a Bearer token. Configure via the apiKeys field in project.json or the POLPO_API_KEY environment variable.",
   });
+
+  // Prefixes are aliases into this already configured instance, never a choice
+  // of database or credentials supplied by the caller. Re-enter the same app so
+  // authentication, rate limits and route validation still run normally.
+  for (const prefix of ["/environments/*", "/api/environments/*"]) {
+    app.all(prefix, (c) => routeProjectEnvironment(c.req.raw, environment, request => app.fetch(request)));
+  }
 
   return app;
 }
