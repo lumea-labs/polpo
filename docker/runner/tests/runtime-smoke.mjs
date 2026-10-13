@@ -23,6 +23,11 @@
 import { mkdtempSync, mkdirSync, rmSync, existsSync, statSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
+// Verify the package manager used by application builds, before optional
+// provider/browser checks. This must run against the actual image binaries.
+await import("./bun-ci-smoke.mjs");
+await import("./toolchain-smoke.mjs");
+
 // Run inside /home/daytona so the staged pdf-render driver script can
 // `import("playwright-core")` — Node walks up looking for node_modules,
 // and playwright-core lives at /home/daytona/node_modules. /tmp would
