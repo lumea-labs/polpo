@@ -12,9 +12,12 @@ no Docker needed there).
 | Layer | Purpose |
 |---|---|
 | `node:22-slim` | Base |
+| Bun 1.4.2 (npm global) | Frozen `bun ci --ignore-scripts` installs and application builds; available in non-interactive shells |
 | apt baseline | git/curl/ca-certs/fuse |
 | apt Chromium libs | exhaustive list — every `.so` agent-browser's bundled Chrome links against |
 | apt extras | poppler (pdf_read full text), python3 (edge-tts), fonts |
+| Workspace toolchain | Python venv/dev tools, compilers, archive/file utilities, jq/ripgrep, Pandoc, ImageMagick and FFmpeg |
+| Python document/data modules | pandas/numpy, spreadsheet, Word/PowerPoint/PDF, image and parsing libraries formerly installed by the Daytona v15 overlay |
 | `mountpoint-s3` | R2 FUSE mount (used by cloud sandbox pool) |
 | `edge-tts` (pip) | free TTS fallback for `audio_speak` |
 | `polpo-ai@VERSION` (npm) | the runtime + tool packages |
@@ -23,6 +26,16 @@ no Docker needed there).
 No `ENTRYPOINT` / `CMD`. Daytona keeps the container alive externally
 and runs every tool call via `docker exec`. The local test rig invokes
 specific commands explicitly.
+
+The Bun smoke uses an isolated local dependency fixture: it verifies a frozen
+install preserves `bun.lock`, lifecycle scripts remain disabled, a browser
+bundle builds, and a mismatched manifest is rejected. It runs as part of the
+image's Layer-2 smoke; no customer project or model inference is involved.
+The same gate checks the historical command inventory and imports the Python
+modules. Provider snapshot registration must preserve this baseline.
+Both checks also run during the Docker build. The image carries the full suite
+at `/opt/polpo-runner/tests/runtime-smoke.mjs` so a disposable sandbox can run
+the same acceptance checks before its snapshot is selected for production.
 
 ## Build
 

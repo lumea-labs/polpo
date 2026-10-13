@@ -1,2 +1,6 @@
 *
 !Dockerfile
+
+# Ship the image acceptance checks for build and provider canaries.
+!tests/
+!tests/*.mjs

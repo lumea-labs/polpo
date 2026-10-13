@@ -16,6 +16,7 @@
 FROM node:22-slim
 
 ARG POLPO_VERSION=0.7.0
+ARG BUN_VERSION=1.4.2
 LABEL org.opencontainers.image.source="https://github.com/Lumea-Technologies/polpo-cloud" \
       org.opencontainers.image.title="polpo-runner" \
       org.opencontainers.image.description="Polpo agent sandbox runtime — Chromium, agent-browser, edge-tts, polpo-ai" \
@@ -43,7 +44,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         # PDF text extraction
         poppler-utils \
         # edge-tts runtime
-        python3 python3-pip \
+        python3 python3-pip python3-venv python3-dev python-is-python3 \
+        # Agent workspace toolchain, historically supplied by Daytona overlays
+        build-essential zip unzip p7zip-full tar gzip bzip2 xz-utils \
+        jq ripgrep tree rsync wget file less pandoc imagemagick ffmpeg \
         # Chromium runtime libs (exhaustive — see comment above)
         libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 libcups2 \
         libxkbcommon0 libxcomposite1 libxdamage1 libxrandr2 libgbm1 \
@@ -72,8 +76,17 @@ RUN curl -sSL https://s3.amazonaws.com/mountpoint-s3-release/latest/x86_64/mount
 # 3. Edge TTS (free voice fallback for audio_speak)
 # ─────────────────────────────────────────────────────────────
 # --break-system-packages because slim is PEP-668-locked. We are
-# intentionally installing a single CLI tool globally.
-RUN pip install --break-system-packages edge-tts
+# installing the shared CLI and document/data modules globally.
+RUN pip install --no-cache-dir --break-system-packages \
+        edge-tts pandas numpy openpyxl xlsxwriter python-docx python-pptx \
+        pypdf pdfplumber Pillow requests beautifulsoup4 lxml markdown \
+        tabulate pyyaml python-dateutil
+
+# Bun is part of the agent sandbox toolchain. Install it in the global bin
+# directory so non-interactive shells and every sandbox user share the same
+# version; do not depend on a Daytona-only overlay or a user's shell profile.
+RUN npm install --global bun@${BUN_VERSION} \
+    && test "$(bun --version)" = "${BUN_VERSION}"
 
 # ─────────────────────────────────────────────────────────────
 # 4. Polpo runtime (npm packages)
@@ -103,6 +116,13 @@ RUN npm init -y \
 # while making the build look successful. All the shared libs
 # Chrome needs are installed in step 1.
 RUN npm install -g agent-browser && agent-browser install
+
+# Carry the acceptance checks with the artifact so provider snapshot creation
+# can verify the exact image it starts, without a separate checkout. Enforce
+# the offline toolchain checks on every build, including release builds.
+COPY tests /opt/polpo-runner/tests
+RUN node /opt/polpo-runner/tests/bun-ci-smoke.mjs \
+    && node /opt/polpo-runner/tests/toolchain-smoke.mjs
 
 # No ENTRYPOINT / CMD on purpose. Daytona keeps the container alive
 # externally and runs every tool call via `docker exec`. The local
