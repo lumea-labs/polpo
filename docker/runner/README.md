@@ -33,6 +33,9 @@ bundle builds, and a mismatched manifest is rejected. It runs as part of the
 image's Layer-2 smoke; no customer project or model inference is involved.
 The same gate checks the historical command inventory and imports the Python
 modules. Provider snapshot registration must preserve this baseline.
+Both checks also run during the Docker build. The image carries the full suite
+at `/opt/polpo-runner/tests/runtime-smoke.mjs` so a disposable sandbox can run
+the same acceptance checks before its snapshot is selected for production.
 
 ## Build
 

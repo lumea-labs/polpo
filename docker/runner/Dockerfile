@@ -117,6 +117,13 @@ RUN npm init -y \
 # Chrome needs are installed in step 1.
 RUN npm install -g agent-browser && agent-browser install
 
+# Carry the acceptance checks with the artifact so provider snapshot creation
+# can verify the exact image it starts, without a separate checkout. Enforce
+# the offline toolchain checks on every build, including release builds.
+COPY tests /opt/polpo-runner/tests
+RUN node /opt/polpo-runner/tests/bun-ci-smoke.mjs \
+    && node /opt/polpo-runner/tests/toolchain-smoke.mjs
+
 # No ENTRYPOINT / CMD on purpose. Daytona keeps the container alive
 # externally and runs every tool call via `docker exec`. The local
 # test rig invokes specific commands explicitly (`docker run …
