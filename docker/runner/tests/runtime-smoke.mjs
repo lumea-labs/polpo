@@ -22,6 +22,7 @@
  */
 import { mkdtempSync, mkdirSync, rmSync, existsSync, statSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { execFileSync } from "node:child_process";
 
 // Verify the package manager used by application builds, before optional
 // provider/browser checks. This must run against the actual image binaries.
@@ -479,6 +480,23 @@ function isAudioFile(buf) {
       || (buf[0] === 0xff && (buf[1] & 0xe0) === 0xe0);
 }
 
+function assertPlayableSpeech(filename, minimumSeconds = 1) {
+  const path = join(CWD, filename);
+  const probe = JSON.parse(execFileSync("ffprobe", [
+    "-v", "error", "-show_entries", "format=duration:stream=codec_name",
+    "-of", "json", path,
+  ], { encoding: "utf8", timeout: 10_000 }));
+  if (!probe.streams?.some((stream) => stream.codec_name === "mp3")
+      || Number(probe.format?.duration) < minimumSeconds
+      || !Number.isFinite(Number(probe.format?.duration))) {
+    throw new Error(`Invalid or truncated speech: ${JSON.stringify(probe)}`);
+  }
+  // Decode the entire file, not just its header, to catch corrupt payloads.
+  execFileSync("ffmpeg", ["-v", "error", "-xerror", "-i", path, "-f", "null", "-"], {
+    timeout: 30_000, stdio: "pipe",
+  });
+}
+
 suite("audio_speak — edge with default voice", async () => {
   const r = await pick("audio_speak").execute("c", {
     text: "Default voice smoke test.",
@@ -488,6 +506,7 @@ suite("audio_speak — edge with default voice", async () => {
   assertOk(r, "audio_speak default");
   const head = readFileSync(join(CWD, "audio-default.mp3")).subarray(0, 3);
   if (!isAudioFile(head)) throw new Error(`not an audio file: ${head.toString("hex")}`);
+  assertPlayableSpeech("audio-default.mp3");
 });
 
 suite("audio_speak — explicit voice (en-US-AriaNeural)", async () => {
@@ -499,6 +518,7 @@ suite("audio_speak — explicit voice (en-US-AriaNeural)", async () => {
   });
   assertOk(r, "audio_speak aria");
   if (statSync(join(CWD, "audio-aria.mp3")).size < 1000) throw new Error("audio too small");
+  assertPlayableSpeech("audio-aria.mp3");
 });
 
 suite("audio_speak — non-ASCII text (Italian + emoji)", async () => {
@@ -509,6 +529,7 @@ suite("audio_speak — non-ASCII text (Italian + emoji)", async () => {
     language: "it",
   });
   assertOk(r, "audio_speak italian");
+  assertPlayableSpeech("audio-it.mp3");
 });
 
 suite("audio_speak — long text (~500 chars) doesn't truncate the file", async () => {
@@ -523,6 +544,7 @@ suite("audio_speak — long text (~500 chars) doesn't truncate the file", async 
   if (statSync(join(CWD, "audio-long.mp3")).size < 5000) {
     throw new Error("long audio truncated");
   }
+  assertPlayableSpeech("audio-long.mp3", 10);
 });
 
 suite("audio_speak — invalid voice name reports error", async () => {

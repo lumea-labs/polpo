@@ -78,9 +78,14 @@ RUN curl -sSL https://s3.amazonaws.com/mountpoint-s3-release/latest/x86_64/mount
 # --break-system-packages because slim is PEP-668-locked. We are
 # installing the shared CLI and document/data modules globally.
 RUN pip install --no-cache-dir --break-system-packages \
-        edge-tts pandas numpy openpyxl xlsxwriter python-docx python-pptx \
+        edge-tts==7.2.8 pandas numpy openpyxl xlsxwriter python-docx python-pptx \
         pypdf pdfplumber Pillow requests beautifulsoup4 lxml markdown \
         tabulate pyyaml python-dateutil
+
+# Temporary compatibility fix for Microsoft's failing legacy synthesis endpoint.
+# Version/source guarded; no floating upstream branch or alternate provider.
+COPY patches /opt/polpo-runner/patches
+RUN python3 /opt/polpo-runner/patches/edge-tts-endpoint.py
 
 # Bun is part of the agent sandbox toolchain. Install it in the global bin
 # directory so non-interactive shells and every sandbox user share the same
@@ -122,7 +127,8 @@ RUN npm install -g agent-browser && agent-browser install
 # the offline toolchain checks on every build, including release builds.
 COPY tests /opt/polpo-runner/tests
 RUN node /opt/polpo-runner/tests/bun-ci-smoke.mjs \
-    && node /opt/polpo-runner/tests/toolchain-smoke.mjs
+    && node /opt/polpo-runner/tests/toolchain-smoke.mjs \
+    && python3 /opt/polpo-runner/tests/edge-tts-patch-test.py
 
 # No ENTRYPOINT / CMD on purpose. Daytona keeps the container alive
 # externally and runs every tool call via `docker exec`. The local
