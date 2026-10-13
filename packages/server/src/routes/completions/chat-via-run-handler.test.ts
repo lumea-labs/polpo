@@ -547,7 +547,7 @@ describe("chat via Run driver", () => {
     });
   });
 
-  it("never generates suggestions for channel turns", async () => {
+  it("keeps Channel suggestions disabled without explicit opt-in", async () => {
     const doGenerate = vi.fn();
     const deps = baseDeps({
       getAgents: async () => [{
@@ -577,7 +577,6 @@ describe("chat via Run driver", () => {
         agent: "agent-1",
         stream: false,
         messages: [{ role: "user", content: "hello" }],
-        polpo: { capabilities: { suggestions: true } },
       },
       runtime: { surface: "channel", source: "channel" },
     });

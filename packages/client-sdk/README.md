@@ -382,8 +382,11 @@ original messages without being offered again after a newer user turn.
 Successful Project Loops use the same extension after their final presentation and
 output policy checks. The Loop assistant message is saved before the terminal
 stream frame, so history and reconnect return the same suggestions without
-another generation. Pending client tools, errors, aborted turns, structured
-responses, and Channels do not generate suggestions.
+another generation. Pending client tools, errors, aborted turns, and structured
+responses do not generate suggestions. Compatible Channel hosts can explicitly
+opt in; Channel questions remain disabled. `polpo.suggestionsSource.assistantMessageId`
+identifies the persisted assistant message owning the returned list when a Session
+is available. See [Channel suggestions](../../docs/channel-suggestions.md).
 
 The boolean remains valid. Applications can instead provide per-turn hints:
 

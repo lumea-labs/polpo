@@ -1216,7 +1216,7 @@ export async function executeStreamingProjectLoopCompletion(
           assistantPersisted = true;
           notifyCanonicalTurnCommitted(deps.onCanonicalTurnCommitted, committedTurn);
           if (suggestions.length) {
-            await stream.writeSSE({ data: ssePolpoChunk(completionId, { suggestions }) });
+            await stream.writeSSE({ data: ssePolpoChunk(completionId, { suggestions, ...(assistantMsgId ? { suggestionsSource: { assistantMessageId: assistantMsgId } } : {}) }) });
           }
           await stream.writeSSE({
             data: sseChunk(completionId, {}, "stop", {
@@ -1368,7 +1368,7 @@ async function runNonStreamingProjectLoopCompletion(
     suggestions = await suggestionsForProjectLoopCompletion(options, finalText, assistantMsgId, c.req.raw.signal);
     canonicalTurnSucceeded = true;
     return c.json(completionResponse(completionId, finalText, runUsage, {
-      ...(suggestions.length ? { polpo: { suggestions } } : {}),
+      ...(suggestions.length ? { polpo: { suggestions, ...(assistantMsgId ? { suggestionsSource: { assistantMessageId: assistantMsgId } } : {}) } } : {}),
       loop_trace: run.trace,
       loop_run_id: run.loopRunId,
       ...(run.loopResult === undefined ? {} : { loop_result: run.loopResult }),

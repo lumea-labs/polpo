@@ -134,6 +134,7 @@ interface DriverState {
 }
 
 export interface ChatViaRunTurnResult {
+  suggestionsSource?: { assistantMessageId: string };
   suggestions?: ChatSuggestion[];
   text: string;
   reasoning?: string;
@@ -542,7 +543,7 @@ export async function executeStreamingChatViaRun(
           suggestions.length > 0 ? { suggestions } : undefined, true);
         if (suggestions.length > 0) {
           await stream.writeSSE({
-            data: ssePolpoChunk(completionId, { suggestions }),
+            data: ssePolpoChunk(completionId, { suggestions, ...(assistantMsgId ? { suggestionsSource: { assistantMessageId: assistantMsgId } } : {}) }),
           });
         }
         await stream.writeSSE({ data: sseChunk(completionId, {}, "stop") });
@@ -669,7 +670,7 @@ export async function runNonStreamingChatViaRun(c: Context, execution: ChatCompl
       completionId,
       state.finalText,
       state.totalUsage as any,
-      suggestions.length > 0 ? { polpo: { suggestions } } : undefined,
+      suggestions.length > 0 ? { polpo: { suggestions, ...(assistantMsgId ? { suggestionsSource: { assistantMessageId: assistantMsgId } } : {}) } } : undefined,
     ));
   } catch (err) {
     const structuredOutput = structuredOutputErrorEnvelope(
@@ -798,7 +799,7 @@ export async function runChatTurnViaRun(
 
   return {
     text: state.finalText,
-    ...(suggestions.length ? { suggestions } : {}),
+    ...(suggestions.length ? { suggestions, ...(assistantMsgId ? { suggestionsSource: { assistantMessageId: assistantMsgId } } : {}) } : {}),
     ...(state.reasoning ? { reasoning: state.reasoning } : {}),
     toolCalls: state.toolCallsAccum,
     usage: state.totalUsage,

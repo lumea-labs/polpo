@@ -67,6 +67,11 @@ describe("deterministic application actions after Loops", () => {
     expect(suggestions.slice(0, 2)).toEqual(applicationActions);
     expect(suggestions.slice(2).every((item: any) => item.kind === "message" && item.prompt)).toBe(true);
     expect(messages.at(-1).suggestions).toEqual(suggestions);
+    const extension = stream
+      ? raw.split("\n").filter(line => line.startsWith("data: ") && !line.includes("[DONE]"))
+        .map(line => JSON.parse(line.slice(6))).find(chunk => chunk.polpo?.suggestions)?.polpo
+      : JSON.parse(raw).polpo;
+    expect(extension.suggestionsSource).toEqual({ assistantMessageId: messages.at(-1).id });
     const history = await chatRoutes(() => ({ sessionStore: store as any })).request("/sessions/session-1/messages");
     expect((await history.json() as any).data.messages.at(-1).suggestions).toEqual(suggestions);
     const modelInput = JSON.stringify(generate.mock.calls);
@@ -81,6 +86,7 @@ describe("deterministic application actions after Loops", () => {
       capabilities: { suggestions: { maxItems: 2, actions: [...applicationActions] } },
     } } });
     expect(result.suggestions).toEqual(applicationActions);
+    expect(result.suggestionsSource).toEqual({ assistantMessageId: messages.at(-1).id });
     expect(messages.at(-1).suggestions).toEqual(applicationActions);
     expect(deps.resolveAgentModel).not.toHaveBeenCalled();
     expect(generate).not.toHaveBeenCalled();
@@ -185,11 +191,19 @@ describe("Loop completion suggestions", () => {
     const { deps, body, agent, generate } = fixture();
     if (policy === "agent") agent.chat.suggestions.enabled = false;
     const result = await runConversationTurn(deps, { body: { ...body,
-      ...(policy === "client" ? { polpo: { capabilities: { suggestions: false } } } : {}),
+      ...(["client", "channel"].includes(policy) ? { polpo: { capabilities: { suggestions: false } } } : {}),
     }, ...(policy === "channel" ? { runtime: { surface: "channel", source: "channel" } as const } : {}) });
     expect(result.suggestions ?? []).toEqual([]);
     expect(generate).not.toHaveBeenCalled();
     expect(deps.resolveAgentModel).not.toHaveBeenCalled();
+  });
+
+  it("generates and persists Channel Loop suggestions when explicitly opted in", async () => {
+    const { deps, body, messages } = fixture();
+    const result = await runConversationTurn(deps, { body, runtime: { surface: "channel", source: "channel" } });
+    expect(result.suggestions).toHaveLength(5);
+    expect(result.suggestionsSource).toEqual({ assistantMessageId: messages.at(-1).id });
+    expect(messages.at(-1).suggestions).toEqual(result.suggestions);
   });
 
   it("fails open when model resolution fails", async () => {

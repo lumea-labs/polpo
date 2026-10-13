@@ -713,7 +713,7 @@ export async function executeStreamingChatCompletion(
         await persistResponse(true);
         if (suggestions.length > 0) {
           await stream.writeSSE({
-            data: ssePolpoChunk(completionId, { suggestions }),
+            data: ssePolpoChunk(completionId, { suggestions, ...(assistantMsgId ? { suggestionsSource: { assistantMessageId: assistantMsgId } } : {}) }),
           });
         }
         await stream.writeSSE({ data: sseChunk(completionId, {}, "stop") });
@@ -1176,7 +1176,7 @@ export async function runNonStreamingChatCompletion(c: any, exec: ChatCompletion
       completionId,
       finalText,
       totalUsage,
-      suggestions.length > 0 ? { polpo: { suggestions } } : undefined,
+      suggestions.length > 0 ? { polpo: { suggestions, ...(assistantMsgId ? { suggestionsSource: { assistantMessageId: assistantMsgId } } : {}) } } : undefined,
     ));
   } catch (err) {
     // Friendly model_not_found surface — gateway returns 404 for

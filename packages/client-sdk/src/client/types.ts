@@ -1437,6 +1437,8 @@ export interface CancelRunResult {
 export type ChatStreamConnectionState = "streaming" | "reconnecting" | "closed";
 
 export interface ChatCompletionPolpoExtensions {
+  /** Exact persisted assistant message that owns this suggestion set. */
+  suggestionsSource?: { assistantMessageId: string };
   suggestions?: ChatSuggestion[];
   /**
    * Streaming `response_format` answers. The raw JSON streams as

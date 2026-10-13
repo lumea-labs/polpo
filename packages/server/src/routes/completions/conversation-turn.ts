@@ -1580,7 +1580,7 @@ export async function runConversationTurn(
         sessionId: prepared.sessionId,
         ...(sessionVersion !== undefined ? { sessionVersion } : {}),
         text: finalText,
-        ...(suggestions.length ? { suggestions } : {}),
+        ...(suggestions.length ? { suggestions, ...(assistantMessageId ? { suggestionsSource: { assistantMessageId } } : {}) } : {}),
         toolCalls,
         ...(finalReasoning ? { reasoning: finalReasoning } : {}),
         usage,

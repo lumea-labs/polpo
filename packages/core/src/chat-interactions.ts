@@ -329,12 +329,10 @@ export function resolveChatInteractionCapabilities(input: {
   client?: ChatInteractionClientCapabilities;
 }): ResolvedChatInteractionCapabilities {
   const settings = normalizeChatInteractionSettings(input.settings);
-  if (input.surface === "channel") {
-    return { askUserQuestion: false, suggestions: false };
-  }
   return {
     askUserQuestion:
-      settings.allowUserQuestions
+      input.surface !== "channel"
+      && settings.allowUserQuestions
       && input.client?.ask_user_question !== false,
     suggestions:
       settings.suggestions.enabled

@@ -4,7 +4,10 @@ import type {
   ChannelInboundTurn,
   ChannelTurnHandler,
   ChannelTurnResult,
+  ChannelSuggestionSource,
+  ChannelSuggestionPresentation,
 } from "@polpo-ai/channels";
+import { normalizeChatSuggestionRequest, type ChatSuggestionRequestOptions } from "@polpo-ai/core/chat-interactions";
 import { createHash } from "node:crypto";
 import type { SessionContentPart, SessionStore } from "@polpo-ai/core/session-store";
 import {
@@ -16,6 +19,7 @@ import {
 } from "@polpo-ai/core";
 import type { CompletionRouteDeps } from "../routes/completions.js";
 import { continuationFingerprint } from "../routes/completions/continuation.js";
+import { DEFAULT_CHAT_SUGGESTION_TIMEOUT_MS } from "../routes/completions/chat-suggestions.js";
 import {
   runConversationTurn,
   type ConversationTurnResult,
@@ -96,6 +100,10 @@ export type ChannelInvocationResolution =
     };
 
 export interface ConversationChannelBridgeOptions {
+  /** Host opt-in, resolved again after each client tool with fresh trusted metadata. */
+  suggestions?: boolean | ChatSuggestionRequestOptions | ((input: {
+    turn: ChannelInboundTurn; invocation?: ToolInvocationContext;
+  }) => boolean | ChatSuggestionRequestOptions | Promise<boolean | ChatSuggestionRequestOptions>);
   agent: string | ((turn: ChannelInboundTurn) => string | Promise<string>);
   /** OpenAI-compatible tools executed by executeClientTool, not by Polpo. */
   clientTools?: readonly ChannelClientToolDefinition[];
@@ -252,6 +260,17 @@ export function createConversationChannelTurnHandler(
     const routeAllowedTools = typeof options.allowedTools === "function"
       ? await options.allowedTools(turn)
       : options.allowedTools;
+    const resolveSuggestions = () => optionalSuggestions(async () => {
+        const value = typeof options.suggestions === "function"
+          ? await options.suggestions({ turn, invocation: trustedInvocation }) : options.suggestions ?? false;
+        if (typeof value === "boolean") return value;
+        const { actions, ...rest } = normalizeChatSuggestionRequest(value);
+        return { ...rest, ...(actions ? { actions: [...actions] } : {}) };
+    }, false);
+    let suggestions = await resolveSuggestions();
+    if (turn.suggestionSelection && !normalizeChatSuggestionRequest(suggestions).enabled) {
+      throw staleSuggestion();
+    }
     const metadata = {
       channel_installation_id: turn.installationId,
       channel_provider: turn.provider,
@@ -278,6 +297,9 @@ export function createConversationChannelTurnHandler(
         user,
       }),
     );
+    if (turn.suggestionSelection) {
+      await validateSuggestionSelection(deps.getSessionStore(), turn, sessionId, agent, user, trustedScope);
+    }
     if (sessionId) await options.onSessionResolved?.(turn, sessionId, trustedScope);
     if (sessionId && options.resolveSessionDisposition) {
       const disposition = await options.resolveSessionDisposition(
@@ -338,6 +360,11 @@ export function createConversationChannelTurnHandler(
           : {}
       ),
     };
+    // Recheck after async Session policy/history resolution, inside the host's
+    // ordinary turn coordinator. This is not a global SessionStore CAS.
+    if (turn.suggestionSelection) {
+      await validateSuggestionSelection(deps.getSessionStore(), turn, sessionId, agent, user, trustedScope);
+    }
     let result = await executeTurn({
       body: {
         agent,
@@ -346,6 +373,7 @@ export function createConversationChannelTurnHandler(
         stream: false,
         user,
         ...clientToolRequestFields(options.clientTools),
+        ...(options.suggestions !== undefined ? { polpo: { capabilities: { suggestions } } } : {}),
       },
       onRunEvent: options.onRunEvent,
       runtime,
@@ -477,6 +505,7 @@ export function createConversationChannelTurnHandler(
           "channel_client_tool_session_required",
         );
       }
+      suggestions = await resolveSuggestions();
       const continuationBody = {
         agent,
         ...(loop ? { loop } : {}),
@@ -489,6 +518,7 @@ export function createConversationChannelTurnHandler(
         stream: true,
         user,
         polpo: {
+          ...(options.suggestions !== undefined ? { capabilities: { suggestions } } : {}),
           continuation: {
             type: "client_tool" as const,
             tool_call_id: toolCall.id,
@@ -533,7 +563,14 @@ export function createConversationChannelTurnHandler(
         result.error,
       );
     }
+    let presentation: ChannelSuggestionPresentation | undefined;
+    if (normalizeChatSuggestionRequest(suggestions).enabled) {
+      presentation = await optionalSuggestions(
+        () => canonicalSuggestions(deps.getSessionStore(), result, agent, user, trustedScope), undefined,
+      );
+    }
     return {
+      ...(presentation ? { suggestions: presentation } : {}),
       ...(result.loopPresentation?.actions?.length
         ? { actions: [...result.loopPresentation.actions] }
         : {}),
@@ -694,6 +731,9 @@ async function resolveOrCreateSession(
     if (existing) return existing.id;
   }
 
+  // An old control must never bootstrap a new identity partition or replacement Session.
+  if (turn.suggestionSelection) throw staleSuggestion();
+
   if (input.options.createSession) {
     return input.options.createSession({
       agent: input.agent,
@@ -710,6 +750,60 @@ async function resolveOrCreateSession(
     title: input.title,
     user: input.user,
   });
+}
+
+function staleSuggestion(): ChannelConversationError {
+  return new ChannelConversationError("This Channel suggestion is no longer available", "channel_suggestion_stale");
+}
+
+/** Bound auxiliary host I/O as well as model generation. Selections still fail closed. */
+async function optionalSuggestions<T>(resolve: () => Promise<T>, fallback: T): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([resolve(), new Promise<T>(finish => {
+      timer = setTimeout(() => finish(fallback), DEFAULT_CHAT_SUGGESTION_TIMEOUT_MS);
+    })]);
+  } catch { return fallback; }
+  finally { if (timer) clearTimeout(timer); }
+}
+
+async function validateSuggestionSelection(
+  store: SessionStore | null | undefined, turn: ChannelInboundTurn, sessionId: string | null,
+  agent: string, user: string, scope?: ToolInvocationScope,
+): Promise<void> {
+  const selection = turn.suggestionSelection!;
+  const source = selection.source;
+  if (!store || !sessionId || sessionId !== source.sessionId || agent !== source.agent || user !== source.user
+    || scope?.key !== source.scope?.key || scope?.version !== source.scope?.version
+    || turn.messages.length !== 1 || turn.messages[0].text !== selection.item.prompt) throw staleSuggestion();
+  const session = await store.getSession(sessionId);
+  const latest = (await store.getRecentMessages(sessionId, 1)).at(-1);
+  if (!session || (session.agent !== undefined && session.agent !== agent)
+    || (session.user !== undefined && session.user !== user)
+    || (source.sessionVersion !== undefined && session.version !== source.sessionVersion)
+    || latest?.role !== "assistant" || latest.id !== source.assistantMessageId
+    || !latest.suggestions?.some(item => item.kind !== "action" && item.id === selection.item.id
+      && item.prompt === selection.item.prompt && item.label === selection.item.label)) throw staleSuggestion();
+}
+
+async function canonicalSuggestions(
+  store: SessionStore | null | undefined, result: ConversationTurnResult,
+  agent: string, user: string, scope?: ToolInvocationScope,
+): Promise<ChannelSuggestionPresentation | undefined> {
+  if (!store || !result.sessionId || !result.suggestionsSource || !result.suggestions?.length) return;
+  const session = await store.getSession(result.sessionId);
+  const latest = (await store.getRecentMessages(result.sessionId, 1)).at(-1);
+  if (!session || latest?.role !== "assistant" || latest.id !== result.suggestionsSource.assistantMessageId) return;
+  const items = result.suggestions.filter(item => item.kind !== "action").filter(item =>
+    latest.suggestions?.some(saved => saved.kind !== "action" && saved.id === item.id
+      && saved.label === item.label && saved.prompt === item.prompt));
+  if (!items.length) return;
+  const source: ChannelSuggestionSource = {
+    sessionId: result.sessionId, assistantMessageId: latest.id, agent, user,
+    ...(session.version === undefined ? {} : { sessionVersion: session.version }),
+    ...(scope ? { scope: { key: scope.key, ...(scope.version ? { version: scope.version } : {}) } } : {}),
+  };
+  return structuredClone({ source, items });
 }
 
 async function loadHistory(

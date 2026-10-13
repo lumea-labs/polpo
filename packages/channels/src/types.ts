@@ -121,6 +121,8 @@ export type ChannelTurnCoordination = {
 };
 
 export type ChannelInboundTurn = {
+  /** Runtime-created provenance of an opaque, verified suggestion selection. */
+  suggestionSelection?: ChannelSuggestionSelection;
   channelId: string;
   coordination: ChannelTurnCoordination;
   credentialRevision: string;
@@ -146,7 +148,32 @@ export type ChannelResponseAction =
   | { id: string; label: string; type: "open_url"; url: string }
   | { id: string; label: string; type: "postback"; value: string };
 
+/** Structural transport view; the canonical suggestion contract lives in core. */
+export type ChannelMessageSuggestion = { id: string; label: string; prompt: string };
+export type ChannelSuggestionSource = {
+  sessionId: string;
+  assistantMessageId: string;
+  sessionVersion?: number;
+  agent: string;
+  user: string;
+  scope?: { key: string; version?: string };
+};
+export type ChannelSuggestionPresentation = {
+  items: ChannelMessageSuggestion[];
+  /** Trusted host binding, never put into the provider callback or model prompt. */
+  source: ChannelSuggestionSource;
+};
+export type ChannelSuggestionSelection = {
+  source: ChannelSuggestionSource;
+  item: ChannelMessageSuggestion;
+};
+export type ChannelSuggestionChoice = { id: string; label: string };
+export type ChannelSuggestionAdapter = Adapter & {
+  postSuggestionChoices(threadId: string, choices: readonly ChannelSuggestionChoice[]): Promise<ChannelDeliveryMessage>;
+};
+
 export type ChannelTurnResult = {
+  suggestions?: ChannelSuggestionPresentation;
   actions?: ChannelResponseAction[];
   files?: ChannelOutputFile[];
   metadata?: Record<string, unknown>;
@@ -337,6 +364,10 @@ export type ChannelRuntimeEvent = {
   installationId: string;
   messageId?: string;
   name:
+    | "suggestions.delivered"
+    | "suggestions.delivery.failed"
+    | "suggestions.selection.rejected"
+    | "suggestions.selection.claimed"
     | "runtime.created"
     | "runtime.evicted"
     | "webhook.received"
@@ -376,6 +407,8 @@ export type ChannelStateFactory = (
 ) => StateAdapter | Promise<StateAdapter>;
 
 export type ChannelRuntimeOptions = {
+  /** Explicit transport opt-in. Reserved callbacks remain guarded when disabled. */
+  suggestions?: boolean;
   adapterFactory?: ChannelAdapterFactory;
   concurrency?: ChannelConcurrencyPolicy;
   coordinateEvent?: ChannelEventCoordinator;
