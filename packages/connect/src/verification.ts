@@ -49,6 +49,7 @@ export interface ConnectionVerificationResult {
 
 export interface ConnectionVerificationStore {
   saveConnectionVerification(result: ConnectionVerificationResult): Promise<void>;
+  getConnectionVerification(connectionId: string): Promise<ConnectionVerificationResult | null>;
 }
 
 function invalid(): never { throw new ConnectError("invalid_provider", "Invalid non-destructive Connector verification probe"); }

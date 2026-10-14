@@ -71,7 +71,12 @@ import {
   type TokenRefreshCoordinator,
 } from "./secrets.js";
 import { createOpaqueToken, createPkcePair, parseScopes } from "./oauth.js";
-import { requestOAuthToken, type ProviderTokenResponse } from "./oauth-token-transport.js";
+import {
+  requestOAuthToken,
+  type OAuthTokenTransport,
+  type OAuthTokenTransportContext,
+  type ProviderTokenResponse,
+} from "./oauth-token-transport.js";
 import { verifyConnectionProbe } from "./verification.js";
 import { assertRefreshAvailable, hasPendingRefresh, refreshConnectionSecret } from "./refresh-lineage.js";
 import { normalizeOAuthTokenScopes, oauthIdentityPolicyFingerprint, resolveOAuthAccountIdentity } from "./oauth-identity.js";
@@ -105,10 +110,17 @@ export interface CreateConnectServiceOptions {
   now?: () => Date;
   tokenRefreshSkewMs?: number;
   oauthStateTtlMs?: number;
+  /** Optional trusted routing hint for opaque browser-facing setup tokens and
+   * OAuth state. It carries no authority; the persisted full token remains the
+   * verifier. Useful when one callback host fronts isolated tenant runtimes. */
+  opaqueTokenPrefix?: string;
   allowInsecureLocalMcpUrls?: boolean;
   refreshCoordinator?: TokenRefreshCoordinator;
   resolveHostname?: (hostname: string) => Promise<readonly string[]>;
   oauthClients?: OAuthClientResolver;
+  /** Keeps managed OAuth application secrets outside a tenant runtime. When
+   * present, every API OAuth code exchange and refresh uses this transport. */
+  oauthTokenTransport?: OAuthTokenTransport;
   mcpOAuthClients?: McpOAuthClientResolver;
   setupSessions?: ConnectionSetupSessionStore;
   links?: ConnectionLinkStore;
@@ -309,11 +321,19 @@ export interface ConnectService {
   resolveCredential(input: ResolveConnectionCredentialInput): Promise<ResolvedConnectionCredential>;
   getToken(input: GetTokenInput): Promise<RuntimeToken>;
   verifyConnection(input: VerifyConnectionInput): Promise<ConnectionVerificationResult>;
+  getConnectionVerification(connectionId: string): Promise<ConnectionVerificationResult | null>;
   request<T = unknown>(input: ConnectionGatewayRequestInput): Promise<ConnectionResponse<T>>;
   revokeConnection(input: RevokeConnectionInput): Promise<ConnectionRecord>;
 }
 
 export function createConnectService(options: CreateConnectServiceOptions): ConnectService {
+  if (options.opaqueTokenPrefix !== undefined
+    && !/^[A-Za-z0-9_-]{1,128}$/.test(options.opaqueTokenPrefix)) {
+    throw new TypeError("Connect opaque token prefix is invalid");
+  }
+  const createRoutedOpaqueToken = () => options.opaqueTokenPrefix
+    ? `${options.opaqueTokenPrefix}.${createOpaqueToken()}`
+    : createOpaqueToken();
   const registry = createConnectorRegistry(options.providers);
   const requireProvider = async (id: string, authenticationId?: string): Promise<ConnectorProviderDefinition> => {
     if (registry.get(id)) return registry.require(id, authenticationId);
@@ -467,7 +487,7 @@ export function createConnectService(options: CreateConnectServiceOptions): Conn
       input.provider,
       [...(input.scopes ?? auth.defaultScopes ?? []), ...(auth.identity?.requiredScopes ?? [])],
     );
-    const state = createOpaqueToken();
+    const state = createRoutedOpaqueToken();
     const pkce = auth.supportsPkce === false ? undefined : createPkcePair();
     await authorizeOAuth("authorize", "api", { ...input, providerId: input.provider.id,
       authenticationId: input.provider.authenticationId, connectionId: input.reconnect?.connectionId });
@@ -621,7 +641,7 @@ export function createConnectService(options: CreateConnectServiceOptions): Conn
     const url = normalizeMcpUrl(input.url, false);
     const transport = input.transport ?? "http";
     const requestedScopes = assertAllowedScopes(provider, input.scopes ?? provider.auth.defaultScopes);
-    const state = createOpaqueToken();
+    const state = createRoutedOpaqueToken();
     const pendingConnectionId = createId("conn");
     const temporarySecretRef = createId("connsec");
     const started = await mcpOAuth.start({
@@ -776,6 +796,12 @@ export function createConnectService(options: CreateConnectServiceOptions): Conn
       }
       await options.verifications?.saveConnectionVerification(result);
       return result;
+    },
+
+    async getConnectionVerification(connectionId) {
+      const connection = await options.store.getConnection(connectionId);
+      if (!connection) throw new ConnectError("connection_not_found", "Connection not found");
+      return options.verifications?.getConnectionVerification(connectionId) ?? null;
     },
 
     listConnections(filter) {
@@ -1124,7 +1150,9 @@ export function createConnectService(options: CreateConnectServiceOptions): Conn
       if (client && client.redirectUris.length === 0) throw new ConnectError("setup_invalid", "OAuth Client has no registered redirect URI");
       const timestamp = now().toISOString();
       const setup: ConnectionSetupSession = {
-        id: createId("connsetup"),
+        id: options.opaqueTokenPrefix
+          ? `${options.opaqueTokenPrefix}.${createId("connsetup")}`
+          : createId("connsetup"),
         providerId: provider.id,
         authenticationId: provider.authenticationId,
         ...(mcp ? { flowKind: "mcp" as const } : {}),
@@ -1324,14 +1352,11 @@ export function createConnectService(options: CreateConnectServiceOptions): Conn
           throw new ConnectError("policy_denied", "Connection changed while reconnecting");
         }
         await authorizeOAuth("callback", "api", state);
-        const tokenSet = await exchangeCode(
-          fetchImpl,
-          resolveHostname,
-          oauthAuth,
-          input.code,
-          state.redirectUri,
-          state.codeVerifier,
-        );
+        const tokenContext = oauthTokenContext(provider, oauthAuth, state.oauthClientId, state.oauthClientFingerprint);
+        const tokenSet = options.oauthTokenTransport
+          ? await options.oauthTokenTransport.exchange({ ...tokenContext, code: input.code,
+              redirectUri: state.redirectUri, codeVerifier: state.codeVerifier })
+          : await exchangeCode(fetchImpl, resolveHostname, oauthAuth, input.code, state.redirectUri, state.codeVerifier);
         const tokenScopes = normalizeOAuthTokenScopes(provider.auth, parseScopes(tokenSet.scope, state.requestedScopes));
         // A provider may include grants from a previous consent on the same OAuth
         // app. Record actual token scopes without expanding this Connection.
@@ -1679,8 +1704,21 @@ export function createConnectService(options: CreateConnectServiceOptions): Conn
                 await authorizeConnection("refresh", connection);
               },
               refresh: async () => {
-                const refreshed = await refreshToken(fetchImpl, resolveHostname, oauthAuth, latestTokens.refreshToken!,
-                  latestTokens.scopes ?? connection.grantedScopes, now());
+                const tokenSet = options.oauthTokenTransport
+                  ? await options.oauthTokenTransport.refresh({
+                      ...oauthTokenContext(provider, oauthAuth, connection.oauthClientId, connection.oauthClientFingerprint),
+                      refreshToken: latestTokens.refreshToken!,
+                    })
+                  : await requestOAuthToken({ fetch: fetchImpl, resolveHostname }, oauthAuth.tokenUrl, {
+                      grant_type: "refresh_token",
+                      refresh_token: latestTokens.refreshToken!,
+                      client_id: oauthAuth.clientId,
+                      client_secret: oauthAuth.clientSecret,
+                      ...oauthAuth.extraTokenParams,
+                    });
+                const refreshed = normalizeTokenSet(tokenSet,
+                  normalizeOAuthTokenScopes(oauthAuth, parseScopes(tokenSet.scope,
+                    latestTokens.scopes ?? connection.grantedScopes)), now(), latestTokens.refreshToken!);
                 if (!versionedStore) await assertConnectionCurrent(connection, scopes, false);
                 return { ...latestSecret, tokens: refreshed };
               },
@@ -2266,15 +2304,23 @@ async function exchangeCode(fetchImpl: typeof fetch, resolveHostname: CreateConn
   });
 }
 
-async function refreshToken(fetchImpl: typeof fetch, resolveHostname: CreateConnectServiceOptions["resolveHostname"] & {}, auth: OAuth2AuthConfig, refreshTokenValue: string, fallbackScopes: string[], now: Date): Promise<TokenSet> {
-  const tokenSet = await requestOAuthToken({ fetch: fetchImpl, resolveHostname }, auth.tokenUrl, {
-    grant_type: "refresh_token",
-    refresh_token: refreshTokenValue,
-    client_id: auth.clientId,
-    client_secret: auth.clientSecret,
-    ...auth.extraTokenParams,
+function oauthTokenContext(
+  provider: ConnectorProviderDefinition,
+  auth: OAuth2AuthConfig,
+  oauthClientId: string | undefined,
+  oauthClientFingerprintValue: string | undefined,
+): OAuthTokenTransportContext {
+  if (!auth.clientId) throw new ConnectError("setup_invalid", "OAuth Client registration is unavailable");
+  return Object.freeze({
+    providerId: provider.id,
+    ...(provider.authenticationId ? { authenticationId: provider.authenticationId } : {}),
+    ...(oauthClientId ? { oauthClientId } : {}),
+    ...(oauthClientFingerprintValue ? { oauthClientFingerprint: oauthClientFingerprintValue } : {}),
+    clientId: auth.clientId,
+    authorizationUrl: auth.authorizationUrl,
+    tokenUrl: auth.tokenUrl,
+    ...(auth.extraTokenParams ? { extraTokenParams: Object.freeze({ ...auth.extraTokenParams }) } : {}),
   });
-  return normalizeTokenSet(tokenSet, normalizeOAuthTokenScopes(auth, parseScopes(tokenSet.scope, fallbackScopes)), now, refreshTokenValue);
 }
 
 function normalizeTokenSet(payload: ProviderTokenResponse, scopes: string[], now: Date, fallbackRefreshToken?: string): TokenSet {

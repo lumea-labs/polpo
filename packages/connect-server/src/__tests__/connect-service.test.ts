@@ -59,6 +59,60 @@ const mcpProvider: ConnectorProviderDefinition = {
 };
 
 describe("connect service", () => {
+  it("delegates API OAuth exchange and refresh without exposing the client secret", async () => {
+    const fetchImpl = queueFetch([]);
+    const exchange = vi.fn(async () => ({ access_token: "runtime-access", refresh_token: "runtime-refresh",
+      token_type: "Bearer", expires_in: 1, scope: "read" }));
+    const refresh = vi.fn(async () => ({ access_token: "runtime-access-2", token_type: "Bearer",
+      expires_in: 3_600, scope: "read" }));
+    let nowMs = Date.UTC(2026, 0, 1, 10, 0, 0);
+    const { service } = createHarness({ fetchImpl, now: () => new Date(nowMs), tokenRefreshSkewMs: 0,
+      oauthTokenTransport: { exchange, refresh } });
+    const started = await service.startOAuth({ providerId: "test_oauth", scopes: ["read"],
+      redirectUri: "https://app.example/callback" });
+    const connection = await service.completeOAuth({ state: started.state, code: "one-time-code" });
+    nowMs += 2_000;
+    await expect(service.resolveCredential({ connectionId: connection.id })).resolves.toMatchObject({
+      kind: "oauth2", accessToken: "runtime-access-2",
+    });
+    expect(exchange).toHaveBeenCalledWith(expect.objectContaining({
+      providerId: "test_oauth", oauthClientId: "legacy:test_oauth", clientId: "client_id",
+      authorizationUrl: "https://auth.example/authorize", tokenUrl: "https://auth.example/token", code: "one-time-code",
+      redirectUri: "https://app.example/callback",
+    }));
+    expect(refresh).toHaveBeenCalledWith(expect.objectContaining({
+      providerId: "test_oauth", oauthClientId: "legacy:test_oauth", clientId: "client_id",
+      refreshToken: "runtime-refresh",
+    }));
+    for (const input of [exchange.mock.calls[0]![0], refresh.mock.calls[0]![0]]) {
+      expect(input).not.toHaveProperty("clientSecret");
+      expect(JSON.stringify(input)).not.toContain("client_secret");
+    }
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("prefixes browser-routable OAuth state and setup tokens without changing connection ids", async () => {
+    const client = { id: "managed-client", providerId: "test_oauth", clientId: "client_id",
+      redirectUris: ["https://app.example/callback"], owner: { type: "instance" as const, id: "instance" } };
+    const { service } = createHarness({ opaqueTokenPrefix: "environment_01",
+      oauthClients: { resolve: async () => client, resolveById: async () => client },
+      allowedReturnUrlOrigins: ["https://app.example"] });
+    const started = await service.startOAuth({ providerId: "test_oauth",
+      redirectUri: "https://app.example/callback" });
+    expect(started.state).toMatch(/^environment_01\.[A-Za-z0-9_-]{43}$/);
+    const setup = await service.createSetupSession({ providerId: "test_oauth", projectId: "project",
+      audience: "shared", subject: { type: "project", id: "project" },
+      returnUrl: "https://app.example/return", oauthClientMode: "managed" });
+    expect(setup.id).toMatch(/^environment_01\.connsetup_/);
+    const api = await service.createApiKeyConnection({ providerId: "custom_api", apiKey: "private" });
+    expect(api.id).toMatch(/^conn_/);
+    expect(api.id).not.toContain("environment_01");
+  });
+
+  it.each(["", "contains.dot", "white space", "x".repeat(129)])("rejects invalid opaque token prefix %j", prefix => {
+    expect(() => createHarness({ opaqueTokenPrefix: prefix })).toThrow("opaque token prefix");
+  });
+
   it("consumes a host dispatch budget after authorization on every API redirect", async () => {
     const fetchImpl = queueFetch([new Response(null, { status: 307, headers: { location: "/v1/items/next" } }), jsonResponse(200, {})]);
     const { service } = createHarness({ fetchImpl, providers: [{ ...apiKeyProvider, http: { ...apiKeyProvider.http!, followRedirects: true } }] });
@@ -926,9 +980,11 @@ function createHarness(input: {
   now?: () => Date;
   tokenRefreshSkewMs?: number;
   oauthStateTtlMs?: number;
+  opaqueTokenPrefix?: string;
   policy?: Parameters<typeof createConnectService>[0]["policy"];
   resolveHostname?: Parameters<typeof createConnectService>[0]["resolveHostname"];
   oauthClients?: Parameters<typeof createConnectService>[0]["oauthClients"];
+  oauthTokenTransport?: Parameters<typeof createConnectService>[0]["oauthTokenTransport"];
   allowedReturnUrlOrigins?: Parameters<typeof createConnectService>[0]["allowedReturnUrlOrigins"];
 } = {}) {
   const store = new MemoryConnectStore();
@@ -941,9 +997,11 @@ function createHarness(input: {
     now: input.now ?? (() => new Date(Date.UTC(2026, 0, 1, 10, 0, 0))),
     tokenRefreshSkewMs: input.tokenRefreshSkewMs,
     oauthStateTtlMs: input.oauthStateTtlMs,
+    opaqueTokenPrefix: input.opaqueTokenPrefix,
     policy: input.policy,
     resolveHostname: input.resolveHostname ?? (async () => ["93.184.216.34"]),
     oauthClients: input.oauthClients,
+    oauthTokenTransport: input.oauthTokenTransport,
     setupSessions: store,
     links: store,
     allowedReturnUrlOrigins: input.allowedReturnUrlOrigins,

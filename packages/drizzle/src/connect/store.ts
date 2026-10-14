@@ -125,6 +125,24 @@ export class DrizzleConnectStores implements ConnectStore, ConnectionLinkStore,
       return { ...value, ...patch, id, createdAt: value.createdAt };
     }))!;
   }
+  async saveMcpDiscovery(
+    expected: ConnectionRecord,
+    inventory: { serverName: string; discoveredTools: unknown[]; lastDiscoveredAt: string },
+  ): Promise<ConnectionRecord> {
+    const row = await this.snapshot<ConnectionRecord>("connection", expected.id);
+    if (!row || !sameMcpDiscoveryAuthority(row.value, expected)) {
+      throw new ConnectError("policy_denied", "MCP Connection changed during discovery; refresh and retry", { status: 409 });
+    }
+    const next: ConnectionRecord = {
+      ...row.value,
+      metadata: { ...(row.value.metadata ?? {}), ...inventory },
+      updatedAt: new Date().toISOString(),
+    };
+    if (!await this.cas("connection", expected.id, row.version, next)) {
+      throw new ConnectError("policy_denied", "MCP Connection changed during discovery; refresh and retry", { status: 409 });
+    }
+    return next;
+  }
   async deleteConnection(id: string): Promise<void> { await this.db.delete(this.table).where(this.where("connection", id)); }
 
   async replaceOAuthCredential(expected: OAuthReconnectSnapshot, replacement: OAuthCredentialReplacement): Promise<ConnectionRecord | null> {
@@ -427,4 +445,22 @@ export class DrizzleConnectStores implements ConnectStore, ConnectionLinkStore,
   compareAndSet(ref: string, version: string, secret: StoredConnectionSecret): Promise<boolean> {
     return this.cas("secret", ref, version, secret);
   }
+}
+
+function sameMcpDiscoveryAuthority(current: ConnectionRecord, expected: ConnectionRecord): boolean {
+  const json = (value: unknown) => JSON.stringify(value ?? null);
+  return current.id === expected.id
+    && current.status === "active"
+    && current.authType === "mcp"
+    && current.providerId === expected.providerId
+    && current.orgId === expected.orgId
+    && current.projectId === expected.projectId
+    && current.authenticationId === expected.authenticationId
+    && current.audience === expected.audience
+    && json(current.owner) === json(expected.owner)
+    && current.secretRef === expected.secretRef
+    && current.credentialVersion === expected.credentialVersion
+    && json(current.binding) === json(expected.binding)
+    && json(current.grantedScopes) === json(expected.grantedScopes)
+    && json(current.metadata) === json(expected.metadata);
 }
