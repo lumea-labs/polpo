@@ -23,6 +23,10 @@ export interface CustomToolMeta {
 }
 
 export interface CustomToolsStore {
+  /** Exclusive mutation for one tool in this runtime. A concurrent mutation
+   * fails with CustomToolBusyError. Multi-process hosts must supply their own
+   * coordinator or ensure the previous process has drained before replacement. */
+  withMutation<T>(name: string, operation: () => Promise<T>): Promise<T>;
   putSource(name: string, source: string): Promise<void>;
   putArtifact(name: string, artifact: CustomToolSourceArtifact): Promise<void>;
   putMeta(name: string, meta: CustomToolMeta): Promise<void>;
@@ -35,6 +39,18 @@ export interface CustomToolsStore {
   has(name: string): Promise<boolean>;
   remove(name: string): Promise<boolean>;
 }
+
+export class CustomToolBusyError extends Error {
+  readonly code = "tool_busy";
+  constructor(name: string) {
+    super(`Tool "${name}" is being updated. Retry after the current operation finishes.`);
+    this.name = "CustomToolBusyError";
+  }
+}
+
+// Wrappers may be reconstructed per request. Ownership belongs to the actual
+// filesystem/root, not the wrapper, and never blocks a different environment.
+const mutations = new WeakMap<FileSystem, Map<string, Set<string>>>();
 
 /**
  * FileSystem-backed custom-tool registry shared by self-hosted and managed
@@ -63,10 +79,10 @@ export function createCustomToolsStore(
   ): Promise<void> => {
     const parsed = parseCustomToolSourceArtifact(artifact);
     await fs.mkdir(root);
-    await Promise.all([
-      fs.writeFile(pathFor(name, "ts"), customToolArtifactEntrySource(parsed)),
-      fs.writeFile(pathFor(name, "source.json"), JSON.stringify(parsed)),
-    ]);
+    // Settle each write before returning an error: a still-running sibling
+    // write must not race a caller's compensating restore.
+    await fs.writeFile(pathFor(name, "ts"), customToolArtifactEntrySource(parsed));
+    await fs.writeFile(pathFor(name, "source.json"), JSON.stringify(parsed));
   };
 
   const getArtifact = async (
@@ -85,6 +101,21 @@ export function createCustomToolsStore(
   };
 
   return {
+    async withMutation(name, operation) {
+      pathFor(name, "ts");
+      let roots = mutations.get(fs);
+      if (!roots) { roots = new Map(); mutations.set(fs, roots); }
+      let active = roots.get(root);
+      if (!active) { active = new Set(); roots.set(root, active); }
+      if (active.has(name)) throw new CustomToolBusyError(name);
+      active.add(name);
+      try { return await operation(); }
+      finally {
+        active.delete(name);
+        if (active.size === 0) roots.delete(root);
+        if (roots.size === 0) mutations.delete(fs);
+      }
+    },
     async putSource(name, source) {
       await putArtifact(name, createSingleFileCustomToolArtifact(name, source));
     },
@@ -127,11 +158,10 @@ export function createCustomToolsStore(
     },
     async remove(name) {
       const existed = await fs.exists(pathFor(name, "ts"));
-      await Promise.all(
-        ["ts", "source.json", "json", "mjs"].map((extension) =>
-          fs.remove(pathFor(name, extension)).catch(() => undefined),
-        ),
-      );
+      for (const extension of ["ts", "source.json", "json", "mjs"]) {
+        const path = pathFor(name, extension);
+        if (await fs.exists(path)) await fs.remove(path);
+      }
       return existed;
     },
   };

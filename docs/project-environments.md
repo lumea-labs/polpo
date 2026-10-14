@@ -71,6 +71,21 @@ Production runtime from being silently relabeled Development.
 
 ## Implementation status
 
+Custom-tool authoring uses the selected runtime's registry. A deployment is
+validated before it replaces the published tool. Mutating the same tool while
+a deployment is in progress returns HTTP 409 with `code: "tool_busy"`; retry
+after that operation finishes. Other tools and environments remain independent.
+Closing the deploy stream does not cancel its mutation or roll back a successful
+publication. Replacing source also clears any obsolete bundle and metadata.
+
+Host adapters implement `CustomToolsStore.withMutation` around deployment,
+publication and deletion. The filesystem adapter coordinates store wrappers
+sharing the same filesystem object and root within one process. It does not
+provide a distributed lock or an atomic multi-file transaction. Hosts sharing
+storage across processes must coordinate writers and drain the retiring runtime
+before allowing its replacement to publish. Provider build cancellation and
+crash recovery remain host responsibilities.
+
 This branch contains the OSS transport, CLI, React and fixed-runtime contracts.
 Cloud provisioning, authenticated routing to dedicated processes, migration of
 existing projects/keys and the dashboard selector are separate required work.

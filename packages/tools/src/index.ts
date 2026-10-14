@@ -133,6 +133,7 @@ export type {
 } from "./custom-tools.js";
 export {
   CUSTOM_TOOL_NAME_RE,
+  CustomToolBusyError,
   createCustomToolsStore,
 } from "./custom-tool-store.js";
 export type {

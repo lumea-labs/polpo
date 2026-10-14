@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import type { FileSystem, FileStat } from "@polpo-ai/core/filesystem";
 import { createCustomToolsStore } from "../custom-tool-store.js";
@@ -83,4 +83,16 @@ describe("createCustomToolsStore", () => {
       files: { "echo.ts": "export default {};" },
     });
   });
+  it("reports a failed file removal instead of leaving a stale bundle behind silently", async () => {
+    const fs = new MemoryFs(), store = createCustomToolsStore(fs, "/tools");
+    await store.putSource("echo", "source");
+    await store.putBundle("echo", "old bundle");
+    const remove = fs.remove.bind(fs);
+    vi.spyOn(fs, "remove").mockImplementation(async path => {
+      if (path.endsWith(".mjs")) throw Error("storage unavailable");
+      await remove(path);
+    });
+    await expect(store.remove("echo")).rejects.toThrow("storage unavailable");
+  });
+
 });

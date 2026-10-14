@@ -191,19 +191,28 @@ export class LocalCustomToolRuntime implements CustomToolDeployer, CustomToolRun
   }
 
   async ensureDeployed(name: string): Promise<string> {
-    const artifact = await this.store.getArtifact(name);
-    if (artifact === null) throw new Error(`Custom tool "${name}" was not found`);
-    const expectedHeader = `${SOURCE_HASH_PREFIX}${sourceHash(JSON.stringify(artifact))}`;
-    const existing = await this.store.getBundle(name);
-    if (existing?.startsWith(expectedHeader)) return existing;
+    const published = await this.store.getArtifact(name);
+    if (published === null) throw new Error(`Custom tool "${name}" was not found`);
+    const cached = await this.store.getBundle(name);
+    if (cached?.startsWith(`${SOURCE_HASH_PREFIX}${sourceHash(JSON.stringify(published))}`)) return cached;
 
-    const deployed = await this.deployArtifact(name, artifact);
-    if (deployed.errors.length > 0 || !deployed.bundle || !deployed.meta) {
-      throw new Error(deployed.errors.join("\n") || `Custom tool "${name}" failed to deploy`);
-    }
-    await this.store.putBundle(name, deployed.bundle);
-    await this.store.putMeta(name, deployed.meta);
-    return deployed.bundle;
+    // Only compilation mutates the registry. Concurrent readers of an already
+    // compiled tool stay independent; recheck after acquiring writer ownership.
+    return this.store.withMutation(name, async () => {
+      const artifact = await this.store.getArtifact(name);
+      if (artifact === null) throw new Error(`Custom tool "${name}" was not found`);
+      const expectedHeader = `${SOURCE_HASH_PREFIX}${sourceHash(JSON.stringify(artifact))}`;
+      const existing = await this.store.getBundle(name);
+      if (existing?.startsWith(expectedHeader)) return existing;
+
+      const deployed = await this.deployArtifact(name, artifact);
+      if (deployed.errors.length > 0 || !deployed.bundle || !deployed.meta) {
+        throw new Error(deployed.errors.join("\n") || `Custom tool "${name}" failed to deploy`);
+      }
+      await this.store.putBundle(name, deployed.bundle);
+      await this.store.putMeta(name, deployed.meta);
+      return deployed.bundle;
+    });
   }
 
   async load(
