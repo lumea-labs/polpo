@@ -707,6 +707,19 @@ The queue stores identifiers and lifecycle facts, not source bodies or provider
 credentials. Hosts own durable payload/object storage and must resolve it again
 under the job's exact scope before parsing or publishing.
 
+## Browser configuration helpers
+
+Browser consumers should import runtime values from their specific public
+subpaths. The root entrypoint also exposes server orchestration and filesystem
+utilities and is not a browser entrypoint.
+
+Use `@polpo-ai/core/project-environment` for environment URLs, `model-policy`
+and `model-profiles` for model selections, `model-router` for routing policies,
+`agent-models` for media model defaults, `runtime-sandbox` for sandbox policy,
+and `memory-settings` for agent memory settings. Types may still use
+`import type` from the root. These helpers do not require Node polyfills or
+provider credentials.
+
 ## License
 
 Apache 2.0

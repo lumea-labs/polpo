@@ -46,6 +46,22 @@
       "types": "./dist/model-profiles.d.ts",
       "import": "./dist/model-profiles.js"
     },
+    "./model-policy": {
+      "types": "./dist/model-policy.d.ts",
+      "import": "./dist/model-policy.js"
+    },
+    "./agent-models": {
+      "types": "./dist/agent-models.d.ts",
+      "import": "./dist/agent-models.js"
+    },
+    "./runtime-sandbox": {
+      "types": "./dist/runtime-sandbox.d.ts",
+      "import": "./dist/runtime-sandbox.js"
+    },
+    "./memory-settings": {
+      "types": "./dist/memory/tool-settings.d.ts",
+      "import": "./dist/memory/tool-settings.js"
+    },
     "./model-router": {
       "types": "./dist/model-router.d.ts",
       "import": "./dist/model-router.js"
