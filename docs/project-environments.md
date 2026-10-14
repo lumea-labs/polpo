@@ -92,7 +92,9 @@ storage across processes must coordinate writers and drain the retiring runtime
 before allowing its replacement to publish. Provider build cancellation and
 crash recovery remain host responsibilities.
 
-This branch contains the OSS transport, CLI, React and fixed-runtime contracts.
-Cloud provisioning, authenticated routing to dedicated processes, migration of
-existing projects/keys and the dashboard selector are separate required work.
-No managed isolation or rollout is implied by installing these packages.
+This repository contains the OSS transport, CLI, React and fixed-runtime
+contracts. The companion Cloud implementation provides dedicated provisioning,
+authenticated routing and dashboard selection. Installing only these packages
+does not provision managed infrastructure. Existing managed projects and legacy
+Live/Test credentials remain on their compatibility path until the Cloud host
+explicitly migrates or replaces them.

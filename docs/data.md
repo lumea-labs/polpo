@@ -54,8 +54,10 @@ The dashboard uses the configured runtime backend. Its server proxy keeps
 configured and authenticated; UI visibility does not enable a backend.
 
 The self-hosted view has no managed environment or provisioning controls. Configure
-agent grants through `POLPO_DATA_AGENT_GRANTS` or the host's grant resolver. Cloud
-provides its own Live/Test selection, managed backend status and agent access UI.
+agent grants through `POLPO_DATA_AGENT_GRANTS` or the host's grant resolver. The
+current Cloud contract binds Data to isolated Development and Production runtimes
+and adds managed backend status and agent access UI; older hosts may still expose
+the legacy Live/Test Data model.
 
 ## SDK
 
