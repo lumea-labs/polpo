@@ -71,6 +71,12 @@ Production runtime from being silently relabeled Development.
 
 ## Implementation status
 
+Hosts can provide a `ModelRuntimeAdapter` from `@polpo-ai/llm` to bind model
+calls to their runtime identity without putting provider keys in that process.
+The adapter's optional embedding and reranking factories use the AI SDK model
+interfaces. A host must implement the capabilities it enables; adding the type
+does not provision a provider, propagate credentials or enable retrieval.
+
 Custom-tool authoring uses the selected runtime's registry. A deployment is
 validated before it replaces the published tool. Mutating the same tool while
 a deployment is in progress returns HTTP 409 with `code: "tool_busy"`; retry

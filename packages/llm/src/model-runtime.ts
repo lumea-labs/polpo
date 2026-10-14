@@ -1,4 +1,4 @@
-import type { EmbeddingModel, LanguageModel } from "ai";
+import type { EmbeddingModel, LanguageModel, RerankingModel } from "ai";
 import type {
   ModelInvocationContext,
   ModelInvocationDetails,
@@ -56,6 +56,10 @@ export interface ModelRuntimeAdapter {
   createEmbeddingModel?(
     input: CreateModelInput,
   ): Promise<EmbeddingModel> | EmbeddingModel;
+  /** Optional host capability used by semantic retrieval after embedding. */
+  createRerankingModel?(
+    input: CreateModelInput,
+  ): Promise<RerankingModel> | RerankingModel;
   createImageModel?(input: CreateModelInput): Promise<unknown> | unknown;
   createVideoModel?(input: CreateModelInput): Promise<unknown> | unknown;
   createTranscriptionModel?(input: CreateModelInput): Promise<unknown> | unknown;
