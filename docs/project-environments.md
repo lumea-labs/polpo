@@ -22,6 +22,13 @@ must make that target explicit when upgrading. `.polpo/project.json` does not
 store a sticky environment; the same definition tree deploys separately to
 either target. Deploy does not transfer credentials or accumulated memory.
 
+Cloud login distinguishes the administrator's CLI authorization from ordinary
+environment keys. CI can validate a key and discover its authorized projects
+without organization-wide administration. A Production key does not change the
+CLI default: `--prod` remains required. The server verifies authority for every
+request; discovery is a local preflight, not a cached permission grant. These
+flows require the matching Cloud implementation and coordinated release.
+
 ## Self-hosted runtime
 
 Bind each process explicitly when constructing a server:

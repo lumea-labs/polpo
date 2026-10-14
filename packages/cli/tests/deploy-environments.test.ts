@@ -38,6 +38,11 @@ describe("environment-bound deploy", () => {
     const calls: Array<{ url: string; init?: RequestInit }> = [];
     vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
       calls.push({ url, init });
+      if (new URL(url).pathname === "/v1/credentials/current") return Response.json({
+        credential: { id: "key", type: "environment", environment },
+        organization: { id: "org", name: "Example", slug: "example" },
+        projects: [{ id: "p1", name: "Example", slug: "example-p1", environments: [{ id: "env", name: environment }] }],
+      });
       return Response.json({ ok: true, data: init?.method === "GET" ? [] : {} });
     }));
     const report = await runDeploy({ dir: root, yes: true, force: true, silent: true, ...options });
@@ -45,6 +50,11 @@ describe("environment-bound deploy", () => {
     expect(report.environment).toBe(environment);
     expect(calls.length).toBeGreaterThanOrEqual(4);
     for (const { url, init } of calls) {
+      if (new URL(url).pathname === "/v1/credentials/current") {
+        expect(init?.method).toBe("GET");
+        expect(new Headers(init?.headers).get("authorization")).toBe("Bearer cli-session");
+        continue;
+      }
       expect(new URL(url).pathname).toMatch(new RegExp(`^/environments/${environment}/v1/(tools|files)(/|$)`));
       expect(new Headers(init?.headers).get("x-project-id")).toBe("p1");
       expect(new Headers(init?.headers).get("authorization")).toBe("Bearer cli-session");
@@ -58,5 +68,29 @@ describe("environment-bound deploy", () => {
   it("rejects conflicting targets before authentication or filesystem writes", async () => {
     await expect(runDeploy({ dir: "/not-read", prod: true, env: "development" })).rejects.toThrow(/conflict/i);
     expect(requireAuth).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["production", "p1", /production.*--prod/i],
+    ["development", "foreign-project", /access.*p1/i],
+    ["test", "p1", /legacy.*migrat/i],
+  ])("rejects a %s credential for %s before writes", async (environment, accessibleProject, error) => {
+    const root = await mkdtemp(join(tmpdir(), "polpo-deploy-auth-"));
+    roots.push(root);
+    await mkdir(join(root, ".polpo"));
+    const config = JSON.stringify({ schemaVersion: 2, project: "example", projectId: "p1" });
+    await writeFile(join(root, ".polpo", "project.json"), config);
+    const fetcher = vi.fn(async () => Response.json({
+      credential: { id: "key", type: environment === "test" ? "legacy" : "environment",
+        environment: environment === "test" ? null : environment,
+        ...(environment === "test" ? { legacyEnvironment: "test" } : {}) },
+      organization: { id: "org", name: "Example", slug: "example" },
+      projects: [{ id: accessibleProject, name: "Example", slug: "example-ref",
+        environments: environment === "test" ? [] : [{ id: "env", name: environment }] }],
+    }));
+    vi.stubGlobal("fetch", fetcher);
+    await expect(runDeploy({ dir: root, yes: true, silent: true })).rejects.toThrow(error);
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(await readFile(join(root, ".polpo", "project.json"), "utf8")).toBe(config);
   });
 });

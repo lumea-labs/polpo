@@ -68,6 +68,8 @@ describe("cloud deploy dependency order", () => {
     vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
       const url = new URL(typeof input === "string" ? input : input instanceof URL ? input : input.url);
       const method = init?.method ?? "GET";
+      // Existing-server fixture: the additive identity endpoint is unavailable.
+      if (url.pathname === "/v1/credentials/current") return new Response(null, { status: 404 });
       calls.push(`${method} ${url.pathname}`);
 
       if (method === "GET" && url.pathname === "/environments/development/v1/tools") {
@@ -128,6 +130,8 @@ describe("cloud deploy dependency order", () => {
     vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
       const url = new URL(typeof input === "string" ? input : input instanceof URL ? input : input.url);
       const method = init?.method ?? "GET";
+      // Existing-server fixture: the additive identity endpoint is unavailable.
+      if (url.pathname === "/v1/credentials/current") return new Response(null, { status: 404 });
       calls.push(`${method} ${url.pathname}`);
 
       if (method === "GET" && url.pathname === "/environments/development/v1/tools") {
@@ -189,6 +193,8 @@ describe("cloud deploy teams", () => {
     vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
       const url = new URL(typeof input === "string" ? input : input instanceof URL ? input : input.url);
       const method = init?.method ?? "GET";
+      // Existing-server fixture: the additive identity endpoint is unavailable.
+      if (url.pathname === "/v1/credentials/current") return new Response(null, { status: 404 });
       requests.push({
         method,
         path: url.pathname,
@@ -261,6 +267,8 @@ describe("cloud deploy skill bundles", () => {
     vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
       const url = new URL(typeof input === "string" ? input : input instanceof URL ? input : input.url);
       const method = init?.method ?? "GET";
+      // Existing-server fixture: the additive identity endpoint is unavailable.
+      if (url.pathname === "/v1/credentials/current") return new Response(null, { status: 404 });
       if (method === "GET" && url.pathname === "/environments/development/v1/skills") {
         return Response.json({ ok: true, data: [] });
       }
@@ -288,7 +296,7 @@ describe("cloud deploy skill bundles", () => {
     const outside = join(root, "secret.txt");
     await writeFile(outside, "do not upload");
     await symlink(outside, join(root, ".polpo", "skills", "frontend-design", "secret.txt"));
-    const fetchMock = vi.fn();
+    const fetchMock = vi.fn(async () => new Response(null, { status: 404 }));
     vi.stubGlobal("fetch", fetchMock);
 
     const report = await runDeploy({ dir: root, yes: true, force: true, silent: true });

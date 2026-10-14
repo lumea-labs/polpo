@@ -6,7 +6,7 @@
  * scaffolded `.env.local`, so the user's app can talk to Polpo Cloud
  * without leaking the user's personal CLI credentials.
  *
- * Request shape verified from the production dashboard caller:
+ * Environment-aware control-plane request (requires the matching Cloud release):
  *   POST /v1/api-keys
  *   { orgId, name, scopes: [{type:"project", projectId}], environment:"development" }
  *

@@ -708,6 +708,9 @@ export async function runDeploy(opts: DeployOptions): Promise<DeployReport> {
   const interactive = !opts.silent && !force && isTTY();
 
   const cpClient = createApiClient(creds);
+  const { readCredentialIdentity, assertCredentialTarget } = await import("../../util/credential-identity.js");
+  const identity = await readCredentialIdentity(cpClient);
+  assertCredentialTarget(identity, environment, polpoConfig?.projectId);
   // When called by an outer flow (e.g. `polpo create`) with `silent: true`,
   // that flow already owns a spinner — opening another here causes terminal
   // flicker (two spinners writing to the same row at the same time). The
@@ -736,6 +739,7 @@ export async function runDeploy(opts: DeployOptions): Promise<DeployReport> {
   if (!projectId) {
     throw new Error("No project resolved. Deploy from a directory with .polpo/project.json");
   }
+  assertCredentialTarget(identity, environment, projectId);
 
       // Backfill `projectSlug` for users with legacy polpo.json (id only).
       if (!projectSlug && projectId) {

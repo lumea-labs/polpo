@@ -8,6 +8,7 @@ import { createApiClient } from "./api.js";
 import { requireAuth } from "../../util/auth.js";
 import { pickOrg } from "../../util/org.js";
 import { friendlyError } from "../../util/errors.js";
+import { listProjects } from "../../util/project.js";
 
 export function registerProjectsCommand(program: Command): void {
   const projects = program
@@ -33,29 +34,18 @@ export function registerProjectsCommand(program: Command): void {
         const orgId = opts.org ?? (await pickOrg(client)).id;
 
         s.start("Fetching projects...");
-        const res = await client.get<any[]>(
-          `/v1/projects?orgId=${encodeURIComponent(orgId)}`,
-        );
-
-        if (res.status === 200) {
-          const list = Array.isArray(res.data) ? res.data : [];
-          if (list.length === 0) {
-            s.stop("No projects found");
-            clack.log.info(
-              pc.dim("Run ") + pc.bold("polpo create") + pc.dim(" to scaffold one."),
-            );
-          } else {
-            s.stop(`Found ${list.length} project${list.length === 1 ? "" : "s"}`);
-            for (const p of list) {
-              const status = p.status ? ` [${p.status}]` : "";
-              clack.log.info(`${p.name ?? p.id}${status}`);
-            }
-          }
+        const list = await listProjects(client, orgId);
+        if (list.length === 0) {
+          s.stop("No projects found");
+          clack.log.info(
+            pc.dim("Run ") + pc.bold("polpo create") + pc.dim(" to scaffold one."),
+          );
         } else {
-          const data = res.data as { error?: string };
-          s.stop("Failed to fetch projects");
-          clack.outro(pc.red(friendlyError(data?.error ?? `HTTP ${res.status}`)));
-          process.exit(1);
+          s.stop(`Found ${list.length} project${list.length === 1 ? "" : "s"}`);
+          for (const p of list) {
+            const status = p.status ? ` [${p.status}]` : "";
+            clack.log.info(`${p.name ?? p.id}${status}`);
+          }
         }
       } catch (err) {
         s.stop("Failed to fetch projects");

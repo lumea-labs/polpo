@@ -7,6 +7,7 @@
 import * as clack from "@clack/prompts";
 import type { ApiClient } from "../commands/cloud/api.js";
 import { slugify } from "./slugify.js";
+import { credentialProjects, isEnvironmentAdminDenied, readCredentialIdentity } from "./credential-identity.js";
 
 export interface CloudProject {
   id: string;
@@ -17,13 +18,23 @@ export interface CloudProject {
 }
 
 export async function listProjects(client: ApiClient, orgId: string): Promise<CloudProject[]> {
-  const res = await client.get<CloudProject[]>(`/v1/projects?orgId=${orgId}`);
+  const res = await client.get<CloudProject[]>(`/v1/projects?orgId=${encodeURIComponent(orgId)}`);
+  if (isEnvironmentAdminDenied(res)) {
+    const identity = await readCredentialIdentity(client);
+    if (identity) return identity.organization.id === orgId ? credentialProjects(identity) : [];
+  }
+  if (res.status !== 200) throw new Error(`Could not list projects (HTTP ${res.status}).`);
   return Array.isArray(res.data) ? res.data : [];
 }
 
 export async function getProject(client: ApiClient, projectId: string): Promise<CloudProject | null> {
   const res = await client.get<CloudProject>(`/v1/projects/${projectId}`);
+  if (isEnvironmentAdminDenied(res)) {
+    const identity = await readCredentialIdentity(client);
+    if (identity) return credentialProjects(identity).find(project => project.id === projectId) ?? null;
+  }
   if (res.status === 404) return null;
+  if (res.status !== 200) throw new Error(`Could not read project (HTTP ${res.status}).`);
   return (res.data ?? null) as CloudProject | null;
 }
 

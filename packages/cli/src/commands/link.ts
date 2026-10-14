@@ -40,6 +40,7 @@ import { isPolpoOnPath, installPolpoGlobally, globalInstallHint } from "../util/
 import { POLPO_API_DOMAIN, dashboardUrlFor } from "../util/base-url.js";
 import * as fs from "node:fs";
 import { addEnvironmentOptions, resolveCliEnvironment } from "./cloud/environment.js";
+import { assertCredentialTarget, readCredentialIdentity, type CredentialIdentity } from "../util/credential-identity.js";
 
 export function registerLinkCommand(program: Command): void {
   addEnvironmentOptions(program.command("link"))
@@ -71,7 +72,10 @@ export function registerLinkCommand(program: Command): void {
       const s = clack.spinner();
       s.start("Verifying project...");
       let project;
+      let identity: CredentialIdentity | null = null;
       try {
+        identity = await readCredentialIdentity(cpClient);
+        assertCredentialTarget(identity, environment, opts.projectId);
         project = await getProject(cpClient, opts.projectId);
         if (!project) {
           s.stop("Project not found.");
@@ -150,15 +154,19 @@ export function registerLinkCommand(program: Command): void {
         ? `https://${project.slug}.${POLPO_API_DOMAIN}`
         : creds.baseUrl;
 
-      s.start("Generating API key...");
       let apiKey;
-      try {
-        apiKey = await createProjectApiKey(cpClient, project.orgId ?? "", project.id, "Created by polpo link", environment);
-        s.stop("API key generated");
-      } catch (err) {
-        s.stop("API key generation failed.");
-        clack.log.warn(`Could not auto-create a project API key: ${(err as Error).message}`);
-        clack.log.info("You can create one later from the dashboard.");
+      if (identity?.credential.type === "environment") {
+        clack.log.info(`Using your existing ${environment} key for CLI access. No additional key was created.`);
+      } else {
+        s.start("Generating API key...");
+        try {
+          apiKey = await createProjectApiKey(cpClient, project.orgId ?? "", project.id, "Created by polpo link", environment);
+          s.stop("API key generated");
+        } catch (err) {
+          s.stop("API key generation failed.");
+          clack.log.warn(`Could not auto-create a project API key: ${(err as Error).message}`);
+          clack.log.info("You can create one later from the dashboard.");
+        }
       }
 
       if (apiKey) {
