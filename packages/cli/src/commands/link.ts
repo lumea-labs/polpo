@@ -15,7 +15,7 @@
  *   9. Outro with next steps (modify, not deploy)
  *
  * The pull step (5) is the key difference from the old link: it
- * downloads agent/team definitions, memory, skills, missions, etc.
+ * downloads agent/team definitions, skills, missions, etc.
  * from the cloud so the user can start modifying immediately.
  * Think of it as `drizzle-kit introspect` — cloud → local filesystem.
  */
@@ -39,16 +39,18 @@ import { promptForUpdateIfAvailable } from "../update-check.js";
 import { isPolpoOnPath, installPolpoGlobally, globalInstallHint } from "../util/install-cli.js";
 import { POLPO_API_DOMAIN, dashboardUrlFor } from "../util/base-url.js";
 import * as fs from "node:fs";
+import { addEnvironmentOptions, resolveCliEnvironment } from "./cloud/environment.js";
+import { assertCredentialTarget, readCredentialIdentity, type CredentialIdentity } from "../util/credential-identity.js";
 
 export function registerLinkCommand(program: Command): void {
-  program
-    .command("link")
+  addEnvironmentOptions(program.command("link"))
     .description("Link the current directory to an existing cloud project")
     .requiredOption("--project-id <id>", "Cloud project UUID")
     .option("-d, --dir <path>", "Working directory", ".")
     .option("--api-url <url>", "Override the API base URL (self-hosted, custom domain, dev)")
     .option("-y, --yes", "Skip confirmations (use defaults)")
     .action(async (opts) => {
+      const environment = resolveCliEnvironment(opts);
       clack.intro(pc.bold("Polpo — Link project"));
 
       // Step 1: Update check
@@ -70,7 +72,10 @@ export function registerLinkCommand(program: Command): void {
       const s = clack.spinner();
       s.start("Verifying project...");
       let project;
+      let identity: CredentialIdentity | null = null;
       try {
+        identity = await readCredentialIdentity(cpClient);
+        assertCredentialTarget(identity, environment, opts.projectId);
         project = await getProject(cpClient, opts.projectId);
         if (!project) {
           s.stop("Project not found.");
@@ -125,10 +130,10 @@ export function registerLinkCommand(program: Command): void {
 
       // Step 5: Pull resources from cloud
       const polpoDir = path.join(cwd, ".polpo");
-      const dpClient = createApiClient(creds, project.id);
+      const dpClient = createApiClient({ ...creds, baseUrl: opts.apiUrl ?? creds.baseUrl }, project.id, environment);
 
       const isInteractive = !opts.yes && !!process.stdin.isTTY;
-      s.start("Pulling resources from cloud...");
+      s.start(`Pulling definitions from ${environment}...`);
       const pullResult = await pullProject(dpClient, polpoDir, {
         force: !!opts.yes,
         interactive: isInteractive,
@@ -149,15 +154,21 @@ export function registerLinkCommand(program: Command): void {
         ? `https://${project.slug}.${POLPO_API_DOMAIN}`
         : creds.baseUrl;
 
-      s.start("Generating API key...");
       let apiKey;
-      try {
-        apiKey = await createProjectApiKey(cpClient, project.orgId ?? "", project.id, "Created by polpo link");
-        s.stop("API key generated");
-      } catch (err) {
-        s.stop("API key generation failed.");
-        clack.log.warn(`Could not auto-create a project API key: ${(err as Error).message}`);
-        clack.log.info("You can create one later from the dashboard.");
+      if (identity?.credential.type === "environment" || (identity?.credential.type === "mixed" && environment === "production"
+        && identity.projects.some(candidate => candidate.id === project.id
+          && candidate.environments.some(target => target.name === environment)))) {
+        clack.log.info(`Using your existing ${environment} key for CLI access. No additional key was created.`);
+      } else {
+        s.start("Generating API key...");
+        try {
+          apiKey = await createProjectApiKey(cpClient, project.orgId ?? "", project.id, "Created by polpo link", environment);
+          s.stop("API key generated");
+        } catch (err) {
+          s.stop("API key generation failed.");
+          clack.log.warn(`Could not auto-create a project API key: ${(err as Error).message}`);
+          clack.log.info("You can create one later from the dashboard.");
+        }
       }
 
       if (apiKey) {
@@ -240,7 +251,7 @@ export function registerLinkCommand(program: Command): void {
       // Step 9: Outro — focus on MODIFY, not deploy
       const polpoRun = cliInstalled ? "polpo" : "npx @polpo-ai/cli";
       const apiUrl = opts.apiUrl ?? creds.baseUrl;
-      const dashboardUrl = `${dashboardUrlFor(apiUrl)}/projects/${project.id}`;
+      const dashboardUrl = `${dashboardUrlFor(apiUrl)}/projects/${project.id}/environments/${environment}`;
       const lines: string[] = [];
       lines.push(pc.green(`✓ Linked to "${project.name}"`));
       lines.push("");

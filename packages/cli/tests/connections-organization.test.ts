@@ -103,7 +103,7 @@ describe("Connection client administration scope", () => {
     expect(process.exitCode).not.toBe(1);
     expect(fetchImpl).toHaveBeenCalledOnce();
     const [url, request] = fetchImpl.mock.calls[0]!;
-    expect(url).toBe(`https://api.polpo.test/v1/projects/project%2Fone/connect${operation.suffix}`);
+    expect(url).toBe(`https://api.polpo.test/environments/development/v1/projects/project%2Fone/connect${operation.suffix}`);
     expect(new Headers(request?.headers).get("x-project-id")).toBe("project/one");
     expect(request?.method).toBe(operation.method);
     expect(request?.body === undefined ? undefined : JSON.parse(String(request.body))).toEqual(operation.body);

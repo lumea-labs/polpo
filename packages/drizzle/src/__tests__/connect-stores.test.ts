@@ -129,6 +129,26 @@ describe("durable Connect stores", () => {
     expect(await store.compareAndSet("secret", snapshot!.version, { kind: "api_key", apiKey: "stale" })).toBe(false);
   });
 
+  it("commits MCP discovery with compare-and-set while preserving a concurrent rename", async () => {
+    const { db, store } = await harness();
+    const replica = createSqliteConnectStores(db, { namespace: "operator", encryptionKey: key });
+    const mcp: ConnectionRecord = { ...connection, id: "mcp", providerId: "mcp_url", authType: "mcp",
+      metadata: { url: "https://mcp.example/mcp", transport: "http", auth: "bearer", serverName: "fixture" } };
+    await store.upsertConnection(mcp);
+    await replica.updateConnection(mcp.id, { name: "Renamed" });
+    const saved = await store.saveMcpDiscovery!(mcp, {
+      serverName: "fixture", discoveredTools: [{ name: "search" }], lastDiscoveredAt: "2026-10-14T00:00:00Z",
+    });
+    expect(saved).toMatchObject({ name: "Renamed", metadata: { discoveredTools: [{ name: "search" }] } });
+
+    const stale = saved;
+    await replica.updateConnection(mcp.id, { metadata: { ...saved.metadata, hostLabel: "changed" } });
+    await expect(store.saveMcpDiscovery!(stale, {
+      serverName: "fixture", discoveredTools: [{ name: "stale" }], lastDiscoveredAt: "2026-10-14T00:00:01Z",
+    })).rejects.toMatchObject({ code: "policy_denied", status: 409 });
+    expect((await store.getConnection(mcp.id))?.metadata).toMatchObject({ hostLabel: "changed", discoveredTools: [{ name: "search" }] });
+  });
+
   it("consumes a setup session once and preserves a concurrent revoke when applying metadata", async () => {
     const { store, db } = await harness();
     const replica = createSqliteConnectStores(db, { namespace: "operator", encryptionKey: key });

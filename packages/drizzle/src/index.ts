@@ -173,6 +173,9 @@ export interface CreatePgStoresOptions {
    * primary database handle cannot run interactive transactions.
    */
   transaction?: DrizzleTransactionProvider;
+  /** Explicit host-owned vault key. Managed runtimes use this instead of a
+   * process-global environment variable or a generated home-directory key. */
+  vaultKey?: Uint8Array;
 }
 
 export function createPgStores(
@@ -222,7 +225,7 @@ export function createPgStores(
     configStore: new DrizzleConfigStore(db, metadataPg, "pg"),
     teamStore: new DrizzleTeamStore(db, teamsPg, agentsPg, "pg"),
     agentStore: new DrizzleAgentStore(db, agentsPg, "pg"),
-    vaultStore: new DrizzleVaultStore(db, vaultPg),
+    vaultStore: new DrizzleVaultStore(db, vaultPg, options.vaultKey),
     playbookStore: new DrizzlePlaybookStore(db, playbooksPg, "pg"),
     skillStore: new DrizzleSkillStore(db, skillsPg, "pg"),
     channelManagementStore: new DrizzleChannelManagementStore(db, {

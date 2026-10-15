@@ -13,6 +13,7 @@
  *   POLPO_API_KEY     Single API key         (optional — no auth if unset)
  *   POLPO_API_KEYS    Comma-separated keys   (optional, for key rotation)
  *   CORS_ORIGINS      Comma-separated list  (optional)
+ *   POLPO_PROJECT_ENVIRONMENT  Fixed development or production identity (optional)
  */
 import { PolpoServer } from "../dist/server/index.js";
 
@@ -29,7 +30,8 @@ const corsOrigins = process.env.CORS_ORIGINS
   ? process.env.CORS_ORIGINS.split(",").map((o) => o.trim()).filter(Boolean)
   : undefined;
 
-const server = new PolpoServer({ port, host, workDir, apiKeys, corsOrigins });
+const server = new PolpoServer({ port, host, workDir, apiKeys, corsOrigins,
+  environment: process.env.POLPO_PROJECT_ENVIRONMENT });
 
 try {
   await server.start();

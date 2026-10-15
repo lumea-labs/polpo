@@ -9,6 +9,7 @@
  */
 
 // Route factories
+export { routeProjectEnvironment } from "./project-environment.js";
 export { dataRoutes, type DataServiceResolver } from "./routes/data.js";
 export { taskRoutes } from "./routes/tasks.js";
 export { missionRoutes } from "./routes/missions.js";

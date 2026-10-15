@@ -1,3 +1,5 @@
+import { addEnvironmentOptionsToActions, resolveCliEnvironment, type EnvironmentOptions } from "./environment.js";
+import { loadProjectId } from "./project-context.js";
 /**
  * polpo byok — manage BYOK (Bring Your Own Key) API keys.
  */
@@ -38,7 +40,7 @@ export function registerByokCommand(program: Command): void {
     .description("Set a BYOK key for a provider")
     .option("--key <key>", "API key for the provider")
     .option("--label <label>", "Optional label")
-    .option("--project <project-id>", "Project ID (if not in credentials)")
+    .option("--project <project-id>", "Project ID (default: linked project)")
     .action(async (provider: string, opts) => {
       clack.intro(pc.bold("polpo byok set"));
 
@@ -66,9 +68,11 @@ export function registerByokCommand(program: Command): void {
 
       const s = clack.spinner();
       s.start(`Setting BYOK key for "${provider}"...`);
-      const client = createApiClient(creds);
+      const projectId = opts.project ?? loadProjectId();
+      if (!projectId) throw new Error("No project linked. Use --project or polpo link first.");
+      const client = createApiClient(creds, projectId, resolveCliEnvironment(opts));
       try {
-        const res = await client.post("/v1/byok", { provider, key, label: opts.label });
+        const res = await client.post(`/v1/byok/${encodeURIComponent(projectId)}`, { provider, key, label: opts.label });
 
         if (res.status >= 200 && res.status < 300) {
           s.stop(`BYOK key set for "${provider}".`);
@@ -89,19 +93,21 @@ export function registerByokCommand(program: Command): void {
   byok
     .command("list")
     .description("List BYOK keys")
-    .option("--project <project-id>", "Project ID (if not in credentials)")
-    .action(async () => {
+    .option("--project <project-id>", "Project ID (default: linked project)")
+    .action(async (opts: EnvironmentOptions & { project?: string }) => {
       clack.intro(pc.bold("polpo byok list"));
 
       const creds = await requireAuth({
         context: "Listing BYOK keys requires an authenticated session.",
       });
-      const client = createApiClient(creds);
+      const projectId = opts.project ?? loadProjectId();
+      if (!projectId) throw new Error("No project linked. Use --project or polpo link first.");
+      const client = createApiClient(creds, projectId, resolveCliEnvironment(opts));
 
       const s = clack.spinner();
       s.start("Fetching BYOK keys...");
       try {
-        const res = await client.get("/v1/byok");
+        const res = await client.get(`/v1/byok/${encodeURIComponent(projectId)}`);
 
         if (res.status >= 200 && res.status < 300) {
           const data = res.data as { data?: Array<{ provider: string; maskedKey: string; label?: string }> };
@@ -135,19 +141,21 @@ export function registerByokCommand(program: Command): void {
   byok
     .command("remove <provider>")
     .description("Remove a BYOK key")
-    .option("--project <project-id>", "Project ID (if not in credentials)")
-    .action(async (provider: string) => {
+    .option("--project <project-id>", "Project ID (default: linked project)")
+    .action(async (provider: string, opts: EnvironmentOptions & { project?: string }) => {
       clack.intro(pc.bold("polpo byok remove"));
 
       const creds = await requireAuth({
         context: "Removing BYOK keys requires an authenticated session.",
       });
-      const client = createApiClient(creds);
+      const projectId = opts.project ?? loadProjectId();
+      if (!projectId) throw new Error("No project linked. Use --project or polpo link first.");
+      const client = createApiClient(creds, projectId, resolveCliEnvironment(opts));
 
       const s = clack.spinner();
       s.start(`Removing BYOK key for "${provider}"...`);
       try {
-        const res = await client.delete(`/v1/byok/${provider}`);
+        const res = await client.delete(`/v1/byok/${encodeURIComponent(projectId)}/${encodeURIComponent(provider)}`);
 
         if (res.status >= 200 && res.status < 300) {
           s.stop(`BYOK key removed for "${provider}".`);
@@ -168,4 +176,5 @@ export function registerByokCommand(program: Command): void {
         process.exit(1);
       }
     });
+  addEnvironmentOptionsToActions(byok);
 }

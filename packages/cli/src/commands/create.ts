@@ -41,8 +41,9 @@ import { installCodingAgentSkills, skillsInstallHint, type SkillsScope } from ".
 import { promptForUpdateIfAvailable } from "../update-check.js";
 import { isPolpoOnPath, installPolpoGlobally, globalInstallHint, detectPackageManager } from "../util/install-cli.js";
 import { POLPO_API_DOMAIN } from "../util/base-url.js";
+import { addEnvironmentOptions, resolveCliEnvironment, type EnvironmentOptions } from "./cloud/environment.js";
 
-interface CreateOptions {
+interface CreateOptions extends EnvironmentOptions {
   name?: string;
   orgId?: string;
   template?: string;
@@ -54,8 +55,7 @@ interface CreateOptions {
 }
 
 export function registerCreateCommand(program: Command): void {
-  program
-    .command("create")
+  addEnvironmentOptions(program.command("create"))
     .description("Create a new cloud project + local scaffold")
     .option("--name <name>", "Project name (default: current dir name)")
     .option("--org-id <id>", "Organization ID")
@@ -73,6 +73,7 @@ export function registerCreateCommand(program: Command): void {
     .option("--install-cli <yes|no>", "Install the polpo CLI globally after scaffold", "")
     .option("-y, --yes", "Skip confirmations (use defaults)")
     .action(async (opts: CreateOptions) => {
+      const environment = resolveCliEnvironment(opts);
       clack.intro(pc.bold("Polpo — Create a new project"));
 
       // Offer an in-flow upgrade before the wizard eats minutes on an
@@ -284,7 +285,7 @@ export function registerCreateCommand(program: Command): void {
       s.start("Generating API key...");
       let apiKey;
       try {
-        apiKey = await createProjectApiKey(client, orgId, project.id, "Created by polpo create");
+        apiKey = await createProjectApiKey(client, orgId, project.id, "Created by polpo create", environment);
         s.stop("API key generated");
       } catch (err) {
         s.stop("API key generation failed.");
@@ -442,6 +443,7 @@ export function registerCreateCommand(program: Command): void {
         const { hasDeployFailures, runDeploy } = await import("./cloud/deploy.js");
         const report = await runDeploy({
           dir: targetDir,
+          env: environment,
           yes: true,
           force: true,
           silent: true,

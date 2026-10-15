@@ -1,6 +1,6 @@
 {
   "name": "@polpo-ai/core",
-  "version": "0.17.2",
+  "version": "0.17.3",
   "description": "Pure business logic, types, schemas, and store interfaces for the Polpo AI agent orchestration platform",
   "type": "module",
   "main": "dist/index.js",
@@ -22,6 +22,10 @@
       "types": "./dist/project-layout.d.ts",
       "import": "./dist/project-layout.js"
     },
+    "./project-environment": {
+      "types": "./dist/project-environment.d.ts",
+      "import": "./dist/project-environment.js"
+    },
     "./events": {
       "types": "./dist/events.d.ts",
       "import": "./dist/events.js"
@@ -41,6 +45,22 @@
     "./model-profiles": {
       "types": "./dist/model-profiles.d.ts",
       "import": "./dist/model-profiles.js"
+    },
+    "./model-policy": {
+      "types": "./dist/model-policy.d.ts",
+      "import": "./dist/model-policy.js"
+    },
+    "./agent-models": {
+      "types": "./dist/agent-models.d.ts",
+      "import": "./dist/agent-models.js"
+    },
+    "./runtime-sandbox": {
+      "types": "./dist/runtime-sandbox.d.ts",
+      "import": "./dist/runtime-sandbox.js"
+    },
+    "./memory-settings": {
+      "types": "./dist/memory/tool-settings.d.ts",
+      "import": "./dist/memory/tool-settings.js"
     },
     "./model-router": {
       "types": "./dist/model-router.d.ts",

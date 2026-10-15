@@ -78,8 +78,20 @@ Root provider component that manages connection and state.
 **Props**:
 - `baseUrl`: OpenPolpo server URL
 - `apiKey?`: Optional API key for authentication
+- `environment?`: `"development"` or `"production"`; when omitted, the credential or endpoint determines the target
 - `autoConnect?`: Auto-connect on mount (default: true)
 - `eventFilter?`: Array of SSE event type patterns to subscribe to
+
+Changing the environment, endpoint, API key, API prefix or authenticated fetch
+function creates a new client and store, disconnects the previous event stream,
+and remounts the provider's children. Hook-local sessions and drafts are reset
+along with the store; late results from the old environment cannot populate the
+new view. Put UI state that should survive this switch above the provider.
+Keep custom fetch functions stable between ordinary renders.
+
+Two providers can target different environments simultaneously. The provider
+does not persist a global environment in a cookie or local storage. Changing
+only `user` retains the existing client, store and stream as before.
 
 ### Hooks
 

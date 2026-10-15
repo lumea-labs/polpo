@@ -1,3 +1,4 @@
+import { addEnvironmentOptionsToActions, resolveCliEnvironment, type EnvironmentOptions } from "./environment.js";
 /**
  * Agent-native conversational Channel management.
  *
@@ -208,14 +209,14 @@ function printResult(value: unknown, json: boolean): void {
 
 async function withChannelClient(
   operation: string,
-  options: { json?: boolean },
+  options: EnvironmentOptions & { json?: boolean },
   action: (client: ApiClient) => Promise<void>,
 ): Promise<void> {
   try {
     const creds = await requireAuth({ context: `${operation} requires an authenticated session.` });
     const projectId = loadProjectId();
     if (!projectId) throw new Error("No project linked. Run polpo create or polpo link first.");
-    await action(createApiClient(creds, projectId));
+    await action(createApiClient(creds, projectId, resolveCliEnvironment(options)));
   } catch (error) {
     if (options.json) {
       process.stderr.write(`${JSON.stringify({
@@ -435,4 +436,5 @@ export function registerChannelsCommand(program: Command): void {
       withChannelClient("Getting Channel setup status", opts, async (client) => {
         printResult(channelDataFrom(await client.get(conversationChannelPath("setups", setupId))), Boolean(opts.json));
       }));
+  addEnvironmentOptionsToActions(channels);
 }

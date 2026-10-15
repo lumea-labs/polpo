@@ -147,6 +147,46 @@ describe("connectRoutes", () => {
     expect((await app.request("/connections/missing/verify", { method: "POST" })).status).toBe(404);
   });
 
+  it("returns the last persisted verification without re-running the provider check", async () => {
+    const { service } = createHarness();
+    const connection = await service.createApiKeyConnection({ providerId: "custom_api", apiKey: "private-test-key" });
+    const verify = vi.spyOn(service, "verifyConnection");
+    const app = connectRoutes(() => ({ connectService: service }));
+
+    const empty = await app.request(`/connections/${connection.id}/verification`);
+    expect(empty.status).toBe(200);
+    expect(await empty.json()).toEqual({ ok: true, data: null });
+
+    await service.verifyConnection({ connectionId: connection.id });
+    verify.mockClear();
+    const response = await app.request(`/connections/${connection.id}/verification`);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ ok: true, data: { connectionId: connection.id, code: "probe_not_configured" } });
+    expect(verify).not.toHaveBeenCalled();
+    expect((await app.request("/connections/missing/verification")).status).toBe(404);
+  });
+
+  it("starts OAuth reconnection through an explicit host callback", async () => {
+    const { service } = createHarness();
+    const connection = await service.createApiKeyConnection({ providerId: "custom_api", apiKey: "private" });
+    const reconnect = vi.spyOn(service, "reconnectOAuth").mockResolvedValue({
+      authorizationUrl: "https://auth.example/authorize",
+      state: "state",
+      expiresAt: "2099-01-01T00:00:00.000Z",
+    });
+    const app = connectRoutes(() => ({ connectService: service }));
+    const response = await app.request(`/connections/${connection.id}/reconnect`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ redirectUri: "https://api.example/v1/connect/oauth/callback", metadata: { returnUrl: "https://app.example/connections" } }),
+    });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ ok: true, data: { state: "state" } });
+    expect(reconnect).toHaveBeenCalledWith({ connectionId: connection.id,
+      redirectUri: "https://api.example/v1/connect/oauth/callback", metadata: { returnUrl: "https://app.example/connections" } });
+    expect((await app.request(`/connections/${connection.id}/reconnect`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" })).status).toBe(400);
+  });
+
   it("does not expose OAuth app credentials in the provider catalog", async () => {
     const app = connectRoutes(() => ({ connectService: createHarness().service }));
     const response = await app.request("/providers");
@@ -424,11 +464,22 @@ describe("connectRoutes", () => {
 function createHarness(input: { fetchImpl?: MockFetch; withOAuthClient?: boolean } = {}) {
   const store = new MemoryConnectStore();
   const secrets = new MemoryConnectionSecretStore();
+  const verificationResults = new Map<string, import("@polpo-ai/connect").ConnectionVerificationResult>();
+  const verifications = {
+    async saveConnectionVerification(result: import("@polpo-ai/connect").ConnectionVerificationResult) {
+      verificationResults.set(result.connectionId, structuredClone(result));
+    },
+    async getConnectionVerification(connectionId: string) {
+      const result = verificationResults.get(connectionId);
+      return result ? structuredClone(result) : null;
+    },
+  };
   const fetchImpl = input.fetchImpl ?? queueFetch([]);
   const service = createConnectService({
     providers: [apiKeyProvider, oauthProvider],
     store,
     secrets,
+    verifications,
     fetch: fetchImpl,
     now: () => new Date(Date.UTC(2026, 0, 1, 10, 0, 0)),
     resolveHostname: async () => ["93.184.216.34"],
@@ -460,7 +511,7 @@ function createHarness(input: { fetchImpl?: MockFetch; withOAuthClient?: boolean
       allowedReturnUrlOrigins: ["https://app.example"],
     } : {}),
   });
-  return { service, store, secrets, fetchImpl };
+  return { service, store, secrets, verifications, fetchImpl };
 }
 
 interface MockFetchCall {

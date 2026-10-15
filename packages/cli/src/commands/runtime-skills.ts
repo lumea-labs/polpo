@@ -1,3 +1,4 @@
+import { addEnvironmentOptionsToActions, type EnvironmentOptions } from "./cloud/environment.js";
 import * as clack from "@clack/prompts";
 import type { Command } from "commander";
 import pc from "picocolors";
@@ -23,9 +24,9 @@ function fail(error: unknown): void {
   process.exitCode = 1;
 }
 
-async function deployIfRequested(projectDir: string, deploy: boolean | undefined): Promise<void> {
+async function deployIfRequested(projectDir: string, deploy: boolean | undefined, options: EnvironmentOptions): Promise<void> {
   if (!deploy) return;
-  const report = await runDeploy({ dir: projectDir, yes: true, silent: true });
+  const report = await runDeploy({ dir: projectDir, yes: true, silent: true, env: options.env, prod: options.prod });
   if (report.total.failed > 0) {
     throw new Error(`Deploy completed with ${report.total.failed} failed resource(s)`);
   }
@@ -76,7 +77,7 @@ function logInstallResult(result: ReturnType<typeof installRuntimeSkills>): void
   }
 }
 
-interface DirectoryOptions { dir: string; deploy?: boolean }
+interface DirectoryOptions extends EnvironmentOptions { dir: string; deploy?: boolean }
 
 export function registerRuntimeSkillsCommand(program: Command): void {
   const skills = program
@@ -126,7 +127,7 @@ export function registerRuntimeSkillsCommand(program: Command): void {
             force: options.force,
           }));
         });
-        await deployIfRequested(options.dir, options.deploy);
+        await deployIfRequested(options.dir, options.deploy, options);
       } catch (error) { fail(error); }
     });
 
@@ -140,7 +141,7 @@ export function registerRuntimeSkillsCommand(program: Command): void {
         const changes = assignRuntimeSkills(options.dir, [skill], options.agent);
         if (changes.length === 0) clack.log.info(`${skill} is already assigned`);
         else for (const change of changes) clack.log.success(`Assigned ${change.skill} to ${change.agent}`);
-        await deployIfRequested(options.dir, options.deploy);
+        await deployIfRequested(options.dir, options.deploy, options);
       } catch (error) { fail(error); }
     });
 
@@ -154,7 +155,7 @@ export function registerRuntimeSkillsCommand(program: Command): void {
         const changes = unassignRuntimeSkills(options.dir, [skill], options.agent);
         if (changes.length === 0) clack.log.info(`${skill} was not assigned`);
         else for (const change of changes) clack.log.success(`Unassigned ${change.skill} from ${change.agent}`);
-        await deployIfRequested(options.dir, options.deploy);
+        await deployIfRequested(options.dir, options.deploy, options);
       } catch (error) { fail(error); }
     });
 
@@ -173,7 +174,7 @@ export function registerRuntimeSkillsCommand(program: Command): void {
         }
         if (removeRuntimeSkill(options.dir, skill)) clack.log.success(`Removed ${skill}`);
         else clack.log.info(`Runtime skill ${skill} is not installed`);
-        await deployIfRequested(options.dir, options.deploy);
+        await deployIfRequested(options.dir, options.deploy, options);
       } catch (error) { fail(error); }
     });
 
@@ -210,7 +211,8 @@ export function registerRuntimeSkillsCommand(program: Command): void {
             }));
           });
         }
-        await deployIfRequested(options.dir, options.deploy);
+        await deployIfRequested(options.dir, options.deploy, options);
       } catch (error) { fail(error); }
     });
+  addEnvironmentOptionsToActions(skills);
 }

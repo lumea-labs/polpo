@@ -59,7 +59,7 @@ describe("Data CLI JSON and HTTP boundary", () => {
     };
     await run("query", "crm", await jsonFile(body));
     expect(fetcher).toHaveBeenCalledExactlyOnceWith(
-      "https://data.example.test/api/v1/data/crm/query",
+      "https://data.example.test/api/environments/development/v1/data/crm/query",
       expect.objectContaining({
         method: "POST",
         body: JSON.stringify(body),
@@ -80,12 +80,12 @@ describe("Data CLI JSON and HTTP boundary", () => {
     };
     await run("migrate-sql", "crm", await jsonFile(body));
     expect(fetcher).toHaveBeenLastCalledWith(
-      "https://data.example.test/api/v1/data/crm/migrations",
+      "https://data.example.test/api/environments/development/v1/data/crm/migrations",
       expect.objectContaining({ method: "POST", body: JSON.stringify(body) }),
     );
     await run("migrations", "crm");
     expect(fetcher).toHaveBeenLastCalledWith(
-      "https://data.example.test/api/v1/data/crm/migrations",
+      "https://data.example.test/api/environments/development/v1/data/crm/migrations",
       expect.objectContaining({ method: "GET" }),
     );
   });
@@ -119,7 +119,7 @@ describe("Data CLI JSON and HTTP boundary", () => {
     process.exitCode = undefined;
     await run("delete", "crm", "--version", "3", "--confirm", "crm");
     expect(fetcher).toHaveBeenCalledExactlyOnceWith(
-      "https://data.example.test/api/v1/data/crm?expectedVersion=3",
+      "https://data.example.test/api/environments/development/v1/data/crm?expectedVersion=3",
       expect.objectContaining({ method: "DELETE" }),
     );
   });

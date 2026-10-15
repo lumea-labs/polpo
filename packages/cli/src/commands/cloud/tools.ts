@@ -1,3 +1,4 @@
+import { addEnvironmentOptionsToActions, resolveCliEnvironment, type EnvironmentOptions } from "./environment.js";
 /**
  * polpo tools — manage custom tools (defineTool). [BETA]
  *
@@ -19,8 +20,10 @@ import {
   extractCustomToolName,
 } from "../../util/custom-tool-source.js";
 
-function clientFor(creds: { apiKey: string; baseUrl: string }) {
-  return createApiClient(creds, loadProjectId());
+function clientFor(creds: { apiKey: string; baseUrl: string }, options: EnvironmentOptions) {
+  const projectId = loadProjectId();
+  if (!projectId) throw new Error("No project linked. Run polpo create or polpo link first.");
+  return createApiClient(creds, projectId, resolveCliEnvironment(options));
 }
 
 export function registerToolsCommand(program: Command): void {
@@ -33,7 +36,7 @@ export function registerToolsCommand(program: Command): void {
     .command("push <file>")
     .description("Upload a custom tool from a .ts file")
     .option("--name <name>", "Tool name (defaults to the `name:` in the source)")
-    .action(async (file: string, opts: { name?: string }) => {
+    .action(async (file: string, opts: EnvironmentOptions & { name?: string }) => {
       clack.intro(pc.bold("polpo tools push") + pc.dim(" (beta)"));
       const creds = await requireAuth({ context: "Pushing a custom tool requires an authenticated session." });
 
@@ -53,7 +56,7 @@ export function registerToolsCommand(program: Command): void {
       s.start(`Pushing "${name}"...`);
       try {
         const artifact = await collectCustomToolSourceArtifact(abs, path.dirname(abs));
-        const res = await clientFor(creds).post<any>("/v1/tools", { name, artifact });
+        const res = await clientFor(creds, opts).post<any>("/v1/tools", { name, artifact });
         if (res.status >= 200 && res.status < 300) {
           s.stop(`Pushed "${name}".`);
           clack.outro(pc.green("Done"));
@@ -74,13 +77,13 @@ export function registerToolsCommand(program: Command): void {
   tools
     .command("list")
     .description("List custom tools")
-    .action(async () => {
+    .action(async (opts: EnvironmentOptions) => {
       clack.intro(pc.bold("polpo tools list") + pc.dim(" (beta)"));
       const creds = await requireAuth({ context: "Listing custom tools requires an authenticated session." });
       const s = clack.spinner();
       s.start("Fetching tools...");
       try {
-        const res = await clientFor(creds).get<any>("/v1/tools");
+        const res = await clientFor(creds, opts).get<any>("/v1/tools");
         if (res.status >= 200 && res.status < 300) {
           const list = (res.data?.data ?? []) as Array<{ name: string; description?: string | null }>;
           s.stop("Fetched tools.");
@@ -106,10 +109,10 @@ export function registerToolsCommand(program: Command): void {
   tools
     .command("get <name>")
     .description("Print a tool's source")
-    .action(async (name: string) => {
+    .action(async (name: string, opts: EnvironmentOptions) => {
       const creds = await requireAuth({ context: "Fetching a custom tool requires an authenticated session." });
       try {
-        const res = await clientFor(creds).get<any>(`/v1/tools/${encodeURIComponent(name)}`);
+        const res = await clientFor(creds, opts).get<any>(`/v1/tools/${encodeURIComponent(name)}`);
         if (res.status >= 200 && res.status < 300) {
           process.stdout.write((res.data?.data?.source ?? "") + "\n");
         } else {
@@ -127,7 +130,7 @@ export function registerToolsCommand(program: Command): void {
     .command("run <name>")
     .description("Run a tool in the sandbox with args (JSON)")
     .option("--args <json>", "Arguments as a JSON object", "{}")
-    .action(async (name: string, opts: { args: string }) => {
+    .action(async (name: string, opts: EnvironmentOptions & { args: string }) => {
       clack.intro(pc.bold("polpo tools run") + pc.dim(" (beta)"));
       const creds = await requireAuth({ context: "Running a custom tool requires an authenticated session." });
       let args: unknown;
@@ -140,7 +143,7 @@ export function registerToolsCommand(program: Command): void {
       const s = clack.spinner();
       s.start(`Running "${name}"...`);
       try {
-        const res = await clientFor(creds).post<any>(`/v1/tools/${encodeURIComponent(name)}/run`, { args });
+        const res = await clientFor(creds, opts).post<any>(`/v1/tools/${encodeURIComponent(name)}/run`, { args });
         if (res.status >= 200 && res.status < 300) {
           const text = (res.data?.data?.content ?? []).map((c: any) => c.text ?? "").join("") || JSON.stringify(res.data?.data);
           s.stop("Ran.");
@@ -163,13 +166,13 @@ export function registerToolsCommand(program: Command): void {
     .command("rm <name>")
     .alias("remove")
     .description("Delete a custom tool")
-    .action(async (name: string) => {
+    .action(async (name: string, opts: EnvironmentOptions) => {
       clack.intro(pc.bold("polpo tools rm") + pc.dim(" (beta)"));
       const creds = await requireAuth({ context: "Deleting a custom tool requires an authenticated session." });
       const s = clack.spinner();
       s.start(`Deleting "${name}"...`);
       try {
-        const res = await clientFor(creds).delete<any>(`/v1/tools/${encodeURIComponent(name)}`);
+        const res = await clientFor(creds, opts).delete<any>(`/v1/tools/${encodeURIComponent(name)}`);
         if (res.status >= 200 && res.status < 300) {
           s.stop(`Deleted "${name}".`);
           clack.outro(pc.green("Done"));
@@ -188,4 +191,5 @@ export function registerToolsCommand(program: Command): void {
         process.exit(1);
       }
     });
+  addEnvironmentOptionsToActions(tools);
 }

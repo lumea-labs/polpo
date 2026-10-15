@@ -1,8 +1,8 @@
-import { useEffect, useMemo, useRef, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { useStableValue } from "../hooks/use-stable-value.js";
 import { PolpoClient } from "@polpo-ai/sdk";
 import { EventSourceManager } from "@polpo-ai/sdk";
-import type { SSEEvent } from "@polpo-ai/sdk";
+import type { PolpoClientConfig, ProjectEnvironment, SSEEvent } from "@polpo-ai/sdk";
 import { PolpoStore } from "@polpo-ai/sdk";
 import { PolpoContext } from "./polpo-context.js";
 
@@ -11,6 +11,8 @@ export interface PolpoProviderProps {
   /** @deprecated No longer used. Kept for backwards compatibility. */
   projectId?: string;
   apiKey?: string;
+  /** Explicit target. Omit to use the environment bound to the credential/endpoint. */
+  environment?: ProjectEnvironment;
   /**
    * Override the fetch implementation used by the underlying `PolpoClient`.
    * Useful for cookie-auth scenarios (`credentials: "include"`), request
@@ -52,6 +54,7 @@ export interface PolpoProviderProps {
 export function PolpoProvider({
   baseUrl,
   apiKey,
+  environment,
   fetch,
   apiPrefix,
   user,
@@ -59,24 +62,19 @@ export function PolpoProvider({
   autoConnect = true,
   eventFilter,
 }: PolpoProviderProps) {
-  // Config key includes fetch identity + apiPrefix so that swapping either
-  // rebuilds the client (same reasoning as baseUrl/apiKey today).
-  // Note: `user` is intentionally NOT in the config key — we update it via
-  // setUser() on the existing client to avoid tearing down SSE on every
-  // login/logout cycle.
-  const configKey = `${baseUrl}|${apiKey ?? ""}|${apiPrefix ?? ""}|${fetch ? "custom-fetch" : "default-fetch"}`;
-  const storeRef = useRef<PolpoStore>(null as unknown as PolpoStore);
-  const clientRef = useRef<PolpoClient>(null as unknown as PolpoClient);
-  const lastConfigKey = useRef("");
-
-  if (lastConfigKey.current !== configKey) {
-    lastConfigKey.current = configKey;
-    clientRef.current = new PolpoClient({ baseUrl, apiKey, fetch, apiPrefix, user });
-    storeRef.current = new PolpoStore();
+  const config = { baseUrl, apiKey, environment, fetch, apiPrefix, user };
+  const [scope, setScope] = useState(() => createScope(config, 0));
+  // Adjust during render so React retries before rendering children with a
+  // mismatched client. A keyed boundary also resets hook-local sessions,
+  // drafts and pending mutations, which are not held in PolpoStore.
+  // User changes deliberately retain the current scope for compatibility.
+  if (scope.config.baseUrl !== baseUrl || scope.config.apiKey !== apiKey
+    || scope.config.environment !== environment || scope.config.fetch !== fetch
+    || scope.config.apiPrefix !== apiPrefix) {
+    setScope(createScope(config, scope.generation + 1));
   }
 
-  const client = clientRef.current!;
-  const store = storeRef.current!;
+  const { client, store } = scope.value;
   const stableEventFilter = useStableValue(eventFilter);
 
   // Sync the default user without rebuilding the client. Cheap; no-op when
@@ -89,10 +87,12 @@ export function PolpoProvider({
   useEffect(() => {
     if (!autoConnect) return;
 
+    let active = true;
     let pendingEvents: SSEEvent[] = [];
     let batchScheduled = false;
 
     const flushBatch = () => {
+      if (!active) return;
       if (pendingEvents.length > 0) {
         store.applyEventBatch(pendingEvents);
         pendingEvents = [];
@@ -103,6 +103,7 @@ export function PolpoProvider({
     const es = new EventSourceManager({
       url: client.getEventsUrl(stableEventFilter),
       onEvent: (event) => {
+        if (!active) return;
         pendingEvents.push(event);
         if (!batchScheduled) {
           batchScheduled = true;
@@ -110,14 +111,15 @@ export function PolpoProvider({
         }
       },
       onStatusChange: (status) => {
+        if (!active) return;
         store.setConnectionStatus(status);
         if (status === "connected") {
           // Re-fetch all resources to fill any SSE gaps
           Promise.all([
-            client.getTasks().then((t) => store.setTasks(t)),
-            client.getMissions().then((m) => store.setMissions(m)),
-            client.getAgents().then((a) => store.setAgents(a)),
-            client.getProcesses().then((p) => store.setProcesses(p)),
+            client.getTasks().then((t) => { if (active) store.setTasks(t); }),
+            client.getMissions().then((m) => { if (active) store.setMissions(m); }),
+            client.getAgents().then((a) => { if (active) store.setAgents(a); }),
+            client.getProcesses().then((p) => { if (active) store.setProcesses(p); }),
           ]).catch(() => {
             /* individual errors handled by hooks */
           });
@@ -126,14 +128,24 @@ export function PolpoProvider({
     });
 
     es.connect();
-    return () => es.disconnect();
-  }, [configKey, autoConnect, stableEventFilter]);
-
-  const value = useMemo(() => ({ client, store }), [client, store]);
+    return () => {
+      active = false;
+      pendingEvents = [];
+      es.disconnect();
+    };
+  }, [client, store, autoConnect, stableEventFilter]);
 
   return (
-    <PolpoContext.Provider value={value}>
+    <PolpoContext.Provider key={scope.generation} value={scope.value}>
       {children}
     </PolpoContext.Provider>
   );
+}
+
+function createScope(config: PolpoClientConfig, generation: number) {
+  return {
+    config,
+    generation,
+    value: { client: new PolpoClient(config), store: new PolpoStore() },
+  };
 }

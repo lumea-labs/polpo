@@ -89,6 +89,13 @@ const completeOAuthBody = z.object({
   errorDescription: z.string().optional(),
 });
 
+const reconnectOAuthBody = z.object({
+  redirectUri: z.string().url(),
+  projectId: z.string().optional(),
+  orgId: z.string().optional(),
+  metadata: z.record(z.string(), z.unknown()).optional(),
+});
+
 const getTokenBody = z.object({
   scopes: z.array(z.string()).optional(),
   subject: subjectSchema.optional(),
@@ -291,6 +298,22 @@ export function connectRoutes(getDeps: () => ConnectRouteDeps): OpenAPIHono {
 
   openapi(
     createRoute({
+      method: "get", path: "/connections/{connectionId}/verification", tags: ["Connect"],
+      summary: "Read the last persisted Connection check without contacting the provider",
+      request: { params: z.object({ connectionId: z.string().min(1) }) },
+      responses: {
+        200: { content: { "application/json": { schema: okAnySchema } }, description: "Last verification result, or null" },
+        404: { content: { "application/json": { schema: errorSchema } }, description: "Connection not found" },
+        501: { content: { "application/json": { schema: errorSchema } }, description: "Connect service unavailable" },
+      },
+    }),
+    async (c: any) => withConnect(c, getDeps, async (service) => c.json({
+      ok: true, data: await service.getConnectionVerification(c.req.valid("param").connectionId),
+    }, 200)),
+  );
+
+  openapi(
+    createRoute({
       method: "get",
       path: "/connection-links",
       tags: ["Connect"],
@@ -427,6 +450,32 @@ export function connectRoutes(getDeps: () => ConnectRouteDeps): OpenAPIHono {
       const data = await service.startOAuth(c.req.valid("json"));
       return c.json({ ok: true, data }, 200);
     }),
+  );
+
+  openapi(
+    createRoute({
+      method: "post",
+      path: "/connections/{connectionId}/reconnect",
+      tags: ["Connect"],
+      summary: "Reauthorize an existing OAuth Connection with its original OAuth Client",
+      request: {
+        params: z.object({ connectionId: z.string().min(1) }),
+        body: { content: { "application/json": { schema: reconnectOAuthBody } } },
+      },
+      responses: {
+        200: { content: { "application/json": { schema: okAnySchema } }, description: "OAuth authorization URL" },
+        400: { content: { "application/json": { schema: errorSchema } }, description: "Invalid callback or request" },
+        404: { content: { "application/json": { schema: errorSchema } }, description: "Connection not found" },
+        501: { content: { "application/json": { schema: errorSchema } }, description: "Connect service unavailable" },
+      },
+    }),
+    async (c: any) => withConnect(c, getDeps, async (service) => c.json({
+      ok: true,
+      data: await service.reconnectOAuth({
+        connectionId: c.req.valid("param").connectionId,
+        ...c.req.valid("json"),
+      }),
+    }, 200)),
   );
 
   openapi(

@@ -3,6 +3,7 @@ import { streamSSE } from "hono/streaming";
 
 import {
   CUSTOM_TOOL_NAME_RE,
+  CustomToolBusyError,
   createSingleFileCustomToolArtifact,
   customToolArtifactEntrySource,
   parseCustomToolSourceArtifact,
@@ -78,6 +79,21 @@ type ValidatedInput = {
   source: string;
   artifact: CustomToolSourceArtifact;
 };
+
+/** The caller retains mutation ownership through publication and rollback.
+ * This compensates failed writes; it is not an atomic filesystem transaction. */
+async function publish(store: CustomToolsStore, input: ValidatedInput, result: CustomToolDeployResult) {
+  const previous = await snapshot(store, input.name);
+  try {
+    await store.remove(input.name);
+    await store.putArtifact(input.name, input.artifact);
+    if (result.meta) await store.putMeta(input.name, result.meta);
+    if (result.bundle) await store.putBundle(input.name, result.bundle);
+  } catch (error) {
+    await restore(store, input.name, previous);
+    throw error;
+  }
+}
 
 function validateInput(body: unknown): ValidatedInput | { error: string; code: string } {
   const input = body as { name?: unknown; source?: unknown; artifact?: unknown } | null;
@@ -155,33 +171,23 @@ export function customToolRoutes(
   app.post("/", async (c) => {
     const input = validateInput(await c.req.json().catch(() => null));
     if ("error" in input) return c.json(input, 400);
-
     const deps = getDeps(c);
-    const previous = await snapshot(deps.store, input.name);
-    await deps.store.putArtifact(input.name, input.artifact);
-    if (!deps.deployer) {
-      return c.json({ ok: true, data: { name: input.name, validated: false, bundled: false } }, 201);
-    }
-
     try {
-      const result = await deployArtifact(deps.deployer, input);
-      if (result.errors.length > 0) {
-        await restore(deps.store, input.name, previous);
-        return c.json({ error: "Tool failed to deploy", code: "invalid_tool", details: result.errors }, 400);
-      }
-      if (result.meta) await deps.store.putMeta(input.name, result.meta);
-      if (result.bundle) await deps.store.putBundle(input.name, result.bundle);
-      return c.json({
-        ok: true,
-        data: {
-          name: input.name,
-          validated: !!result.meta,
-          bundled: !!result.bundle,
-          skipped: !!result.skipped,
-        },
-      }, 201);
+      return await deps.store.withMutation(input.name, async () => {
+        // Validation receives the candidate directly. It must not expose
+        // unvalidated source to agents or replace a working deployment.
+        const result = deps.deployer ? await deployArtifact(deps.deployer, input) : { errors: [] };
+        if (result.errors.length > 0) {
+          return c.json({ error: "Tool failed to deploy", code: "invalid_tool", details: result.errors }, 400);
+        }
+        await publish(deps.store, input, result);
+        return c.json({
+          ok: true,
+          data: { name: input.name, validated: !!result.meta, bundled: !!result.bundle, skipped: !!result.skipped },
+        }, 201);
+      });
     } catch (error) {
-      await restore(deps.store, input.name, previous);
+      if (error instanceof CustomToolBusyError) return c.json({ error: error.message, code: error.code }, 409);
       throw error;
     }
   });
@@ -189,45 +195,42 @@ export function customToolRoutes(
   app.post("/:name/deploy", async (c) => {
     const name = c.req.param("name");
     const body = await c.req.json().catch(() => null);
-    const input = validateInput({
-      name,
-      source: body?.source,
-      artifact: body?.artifact,
-    });
+    const input = validateInput({ name, source: body?.source, artifact: body?.artifact });
     if ("error" in input) return c.json(input, 400);
-
     const deps = getDeps(c);
     if (!deps.deployer) return c.json({ error: "Deploy not available", code: "no_deployer" }, 503);
-    const previous = await snapshot(deps.store, name);
-    await deps.store.putArtifact(name, input.artifact);
 
-    return streamSSE(c, async (stream) => {
-      let writes = Promise.resolve();
-      const send = (event: string, data: unknown) => {
-        writes = writes.then(() => stream.writeSSE({ event, data: JSON.stringify(data) }));
-        return writes;
-      };
+    // Claim ownership before returning SSE, and keep it until the actual work
+    // finishes even when the client stops consuming the response.
+    let begin!: (output: (event: string, data: unknown) => Promise<void>) => void;
+    const output = new Promise<(event: string, data: unknown) => Promise<void>>(resolve => { begin = resolve; });
+    let admitted!: () => void;
+    const admission = new Promise<void>(resolve => { admitted = resolve; });
+    const work = deps.store.withMutation(name, async () => {
+      admitted();
+      const send = await output;
       try {
-        const result = await deployArtifact(deps.deployer!, input, (progress) => {
-          void send("progress", progress);
-        });
-        if (result.errors.length > 0) {
-          await restore(deps.store, name, previous);
-          await send("error", { errors: result.errors });
-          return;
-        }
-        if (result.meta) await deps.store.putMeta(name, result.meta);
-        if (result.bundle) await deps.store.putBundle(name, result.bundle);
-        await send("done", {
-          name,
-          bundled: !!result.bundle,
-          deps: result.deps ?? [],
-          skipped: !!result.skipped,
-        });
+        const result = await deployArtifact(deps.deployer!, input, progress => { void send("progress", progress); });
+        if (result.errors.length > 0) { await send("error", { errors: result.errors }); return; }
+        await publish(deps.store, input, result);
+        await send("done", { name, bundled: !!result.bundle, deps: result.deps ?? [], skipped: !!result.skipped });
       } catch (error) {
-        await restore(deps.store, name, previous).catch(() => undefined);
         await send("error", { errors: [(error as Error).message] });
       }
+    });
+    try { await Promise.race([admission, work]); }
+    catch (error) {
+      if (error instanceof CustomToolBusyError) return c.json({ error: error.message, code: error.code }, 409);
+      throw error;
+    }
+    return streamSSE(c, async stream => {
+      let writes = Promise.resolve();
+      begin((event, data) => {
+        // A disconnected observer cannot roll back an already-published tool.
+        writes = writes.then(() => stream.writeSSE({ event, data: JSON.stringify(data) })).catch(() => undefined);
+        return writes;
+      });
+      await work;
     });
   });
 
@@ -290,9 +293,16 @@ export function customToolRoutes(
 
   app.delete("/:name", async (c) => {
     const name = c.req.param("name");
-    const existed = await getDeps(c).store.remove(name);
-    if (!existed) return c.json({ error: "Tool not found", code: "not_found" }, 404);
-    return c.json({ ok: true });
+    if (!CUSTOM_TOOL_NAME_RE.test(name)) return c.json({ error: "Invalid tool name", code: "invalid_name" }, 400);
+    const { store } = getDeps(c);
+    try {
+      const existed = await store.withMutation(name, () => store.remove(name));
+      if (!existed) return c.json({ error: "Tool not found", code: "not_found" }, 404);
+      return c.json({ ok: true });
+    } catch (error) {
+      if (error instanceof CustomToolBusyError) return c.json({ error: error.message, code: error.code }, 409);
+      throw error;
+    }
   });
 
   return app;

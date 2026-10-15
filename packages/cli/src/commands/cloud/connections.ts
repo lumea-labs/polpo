@@ -1,3 +1,4 @@
+import { addEnvironmentOptionsToActions, resolveCliEnvironment, type EnvironmentOptions } from "./environment.js";
 import { Option, type Command } from "commander";
 import { readFile } from "node:fs/promises";
 import * as clack from "@clack/prompts";
@@ -81,7 +82,7 @@ function printResult(value: unknown, json: boolean): void {
 
 async function withAuthenticatedConnection(
   operation: string,
-  options: { json?: boolean },
+  options: EnvironmentOptions & { json?: boolean },
   action: (credentials: Credentials) => Promise<void>,
 ): Promise<void> {
   try {
@@ -107,7 +108,7 @@ async function withAuthenticatedConnection(
 
 function withConnectionClient(
   operation: string,
-  options: { json?: boolean },
+  options: EnvironmentOptions & { json?: boolean },
   action: (client: ApiClient, projectId: string, apiUrl: string) => Promise<void>,
 ): Promise<void> {
   return withAuthenticatedConnection(operation, options, async credentials => {
@@ -115,18 +116,19 @@ function withConnectionClient(
     if (!projectId) {
       throw new Error("No project linked. Run polpo create or polpo link first.");
     }
-    await action(createApiClient(credentials, projectId), projectId, credentials.baseUrl);
+    await action(createApiClient(credentials, projectId, resolveCliEnvironment(options)), projectId, credentials.baseUrl);
   });
 }
 
 function withScopedConnectionClient(
   operation: string,
-  options: { json?: boolean; organization?: string },
+  options: EnvironmentOptions & { json?: boolean; organization?: string },
   action: (client: ApiClient, connectPath: string) => Promise<void>,
 ): Promise<void> {
   const organization = options.organization;
   if (organization !== undefined) {
     return withAuthenticatedConnection(operation, options, credentials => {
+      if (options.env !== undefined || options.prod) throw new Error("Organization OAuth configuration is shared. Omit --env/--prod, or omit --organization to configure a project environment.");
       if (!organization.trim()) throw new Error("--organization requires a non-empty organization ID.");
       return action(createApiClient(credentials), `/v1/orgs/${encodeURIComponent(organization)}/connect`);
     });
@@ -356,7 +358,7 @@ export function registerConnectionsCommand(program: Command): void {
     .addOption(new Option("--scope <scope...>", "Unsupported in browser setup").default([]).hideHelp())
     .option("--no-open", "Print the setup URL without opening a browser")
     .option("--json", "Print JSON and do not open a browser")
-    .action((server: string, options: {
+    .action((server: string, options: EnvironmentOptions & {
       json?: boolean;
       name?: string;
       dashboardUrl?: string;
@@ -378,7 +380,7 @@ export function registerConnectionsCommand(program: Command): void {
       if ((dashboard.protocol !== "https:" && !localHttp) || dashboard.username || dashboard.password || dashboard.search || dashboard.hash || dashboard.pathname !== "/") {
         throw new Error("Dashboard URL must be an HTTPS origin, or HTTP on localhost.");
       }
-      const link = new URL(`/projects/${encodeURIComponent(projectId)}/connections/browse`, dashboard);
+      const link = new URL(`/projects/${encodeURIComponent(projectId)}/environments/${resolveCliEnvironment(options)}/connections/browse`, dashboard);
       link.searchParams.set("provider", "mcp_url");
       if (/^[a-z0-9][a-z0-9_-]{0,127}$/.test(server)) {
         if (options.transport !== "http") throw new Error("Catalog servers use their configured transport. Use --transport only with a custom endpoint.");
@@ -826,4 +828,5 @@ export function registerConnectionsCommand(program: Command): void {
       );
       printResult(connectionDataFrom(response), Boolean(options.json));
     }));
+  addEnvironmentOptionsToActions(connections);
 }

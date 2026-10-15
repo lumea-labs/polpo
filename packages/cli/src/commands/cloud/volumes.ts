@@ -1,3 +1,4 @@
+import { addEnvironmentOptionsToActions, resolveCliEnvironment, type EnvironmentOptions } from "./environment.js";
 import type { Command } from "commander";
 import * as clack from "@clack/prompts";
 import pc from "picocolors";
@@ -192,14 +193,14 @@ async function getCatalog(client: ApiClient): Promise<VolumeCatalog> {
 
 async function withVolumeClient(
   operation: string,
-  options: { json?: boolean },
+  options: EnvironmentOptions & { json?: boolean },
   action: (client: ApiClient) => Promise<void>,
 ): Promise<void> {
   try {
     const credentials = await requireAuth({ context: `${operation} requires an authenticated session.` });
     const projectId = loadProjectId();
     if (!projectId) throw new Error("No project linked. Run polpo create or polpo link first.");
-    await action(createApiClient(credentials, projectId));
+    await action(createApiClient(credentials, projectId, resolveCliEnvironment(options)));
   } catch (error) {
     if (options.json) {
       process.stderr.write(`${JSON.stringify({
@@ -345,4 +346,5 @@ export function registerVolumesCommand(program: Command): void {
         ));
         printValue({ ...result, agentName: options.agent, volumeName: volume.name }, Boolean(options.json));
       }));
+  addEnvironmentOptionsToActions(volumes);
 }

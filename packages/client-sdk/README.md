@@ -2,6 +2,32 @@
 
 Typed HTTP, SSE, and reactive-store client for Polpo.
 
+## Project environments
+
+An explicit `environment: "development" | "production"` binds a client to that
+environment for every API, including Data, files, chat, run replay and events:
+
+```ts
+const development = new PolpoClient({
+  baseUrl: "https://example.polpo.cloud",
+  apiKey: process.env.POLPO_DEVELOPMENT_KEY,
+  environment: "development",
+});
+```
+
+Use a separate client and credential for Production. The selector does not
+grant access: the server must authorize the key for the requested environment.
+Omitting `environment` follows the credential or an already bound endpoint;
+the SDK does not default to Development. Explicit selection uses the URL prefix
+`/environments/<name>` and requires a server that supports that contract.
+Older servers cannot silently ignore a selector header and run in Production.
+Existing self-hosted single-runtime clients can continue omitting the selector.
+
+Data uses the same Polpo key and target as the rest of the runtime. There is no
+separate Data credential or independent Live/Test selection in this contract.
+
+## Usage
+
 ```ts
 import {
   PolpoClient,

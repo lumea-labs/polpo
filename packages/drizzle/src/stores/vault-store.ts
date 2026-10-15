@@ -22,8 +22,13 @@ export class DrizzleVaultStore implements VaultStore {
   constructor(
     private db: any,
     private vault: AnyTable,
+    key?: Uint8Array,
   ) {
-    this.key = resolveKey();
+    const resolved = key ? Buffer.from(key) : resolveKey();
+    if (resolved.byteLength !== 32) {
+      throw new TypeError("Vault encryption key must be 32 bytes");
+    }
+    this.key = Buffer.from(resolved);
   }
 
   async get(agent: string, service: string): Promise<VaultEntry | undefined> {

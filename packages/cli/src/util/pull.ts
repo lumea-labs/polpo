@@ -1,7 +1,7 @@
 /**
  * polpo pull — download cloud project state into the local .polpo/ directory.
  *
- * The inverse of `polpo deploy`. Fetches agents, teams, memory, skills,
+ * The inverse of `polpo deploy`. Fetches agents, teams, skills,
  * missions, playbooks, and schedules from the data plane API and writes
  * them in the exact format that the CLI and FileStores expect on disk.
  *
@@ -193,54 +193,6 @@ export async function pullProject(
   } catch (err) {
     result.errors.push(`teams: ${(err as Error).message}`);
   }
-
-  // ── Memory (shared) ──────────────────────────────────
-  try {
-    const res = await client.get<any>("/v1/memory");
-    if (res.status === 200) {
-      const content = res.data?.content ?? res.data;
-      if (typeof content === "string" && content.trim()) {
-        const filePath = path.join(polpoDir, "memory.md");
-        const action = await resolveFileConflict(filePath, content, "memory.md (shared)", opts);
-        if (action === "write") {
-          writeText(filePath, content);
-          result.pulled.push("memory (shared)");
-        } else {
-          result.skipped.push("memory (local kept)");
-        }
-      } else {
-        result.unchanged.push("memory (empty)");
-      }
-    }
-  } catch (err) {
-    result.errors.push(`memory: ${(err as Error).message}`);
-  }
-
-  // ── Memory (per-agent) ──────────────────────────────────
-  try {
-    const agentsRes = await client.get<any>("/v1/agents");
-    const agents = agentsRes.data?.data ?? agentsRes.data ?? [];
-    if (Array.isArray(agents)) {
-      for (const a of agents) {
-        try {
-          const memRes = await client.get<any>(`/v1/memory/agent/${encodeURIComponent(a.name)}`);
-          if (memRes.status === 200) {
-            const content = memRes.data?.content ?? memRes.data;
-            if (typeof content === "string" && content.trim()) {
-              const filePath = path.join(polpoDir, "memory", `${a.name}.md`);
-              const action = await resolveFileConflict(filePath, content, `memory/${a.name}.md`, opts);
-              if (action === "write") {
-                writeText(filePath, content);
-                result.pulled.push(`memory (${a.name})`);
-              } else {
-                result.skipped.push(`memory/${a.name} (local kept)`);
-              }
-            }
-          }
-        } catch { /* agent has no memory — skip */ }
-      }
-    }
-  } catch { /* agents list failed — skip agent memories */ }
 
   // ── Skills ──────────────────────────────────
   try {

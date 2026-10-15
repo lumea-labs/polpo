@@ -49,6 +49,7 @@ describe("LocalCustomToolRuntime", () => {
     await runtime.store.putBundle("echo_value", deployed.bundle!);
     await runtime.store.putMeta("echo_value", deployed.meta!);
 
+    expect(await Promise.all(Array.from({ length: 5 }, () => runtime.ensureDeployed("echo_value")))).toHaveLength(5);
     const result = await runtime.run("echo_value", { value: "hello" }) as any;
     expect(result.content[0].text).toBe('{"echoed":"hello"}');
     expect(await runtime.generateExample("echo_value")).toEqual({ value: "text" });

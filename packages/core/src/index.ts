@@ -1,5 +1,6 @@
 // ── Types ────────────────────────────────────────────────────────────────
 export * from "./types.js";
+export * from "./project-environment.js";
 
 export type { PolpoTool, ToolResult, ToolUpdateCallback } from "./tool-types.js";
 export { extractToolUsageRecord } from "./tool-usage.js";

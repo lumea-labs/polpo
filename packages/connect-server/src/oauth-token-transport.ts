@@ -9,6 +9,39 @@ export interface ProviderTokenResponse {
   scope?: string;
 }
 
+/** Public OAuth application identity plus the provider token endpoint. The
+ * application secret is deliberately absent: a managed host can keep it behind
+ * an implementation of OAuthTokenTransport while a tenant runtime stores only
+ * its own authorization tokens. */
+export interface OAuthTokenTransportContext {
+  providerId: string;
+  authenticationId?: string;
+  oauthClientId?: string;
+  oauthClientFingerprint?: string;
+  clientId: string;
+  authorizationUrl: string;
+  tokenUrl: string;
+  extraTokenParams?: Readonly<Record<string, string>>;
+}
+
+export interface OAuthCodeExchangeRequest extends OAuthTokenTransportContext {
+  code: string;
+  redirectUri: string;
+  codeVerifier?: string;
+}
+
+export interface OAuthRefreshRequest extends OAuthTokenTransportContext {
+  refreshToken: string;
+}
+
+/** Optional trust-boundary for OAuth client credentials. Self-hosted Connect
+ * can omit it and exchange directly; managed runtimes can call a signed host
+ * broker so the platform OAuth application secret never enters the runtime. */
+export interface OAuthTokenTransport {
+  exchange(input: Readonly<OAuthCodeExchangeRequest>): Promise<ProviderTokenResponse>;
+  refresh(input: Readonly<OAuthRefreshRequest>): Promise<ProviderTokenResponse>;
+}
+
 export interface TokenTransportOptions {
   fetch: typeof fetch;
   resolveHostname: (hostname: string) => Promise<readonly string[]>;

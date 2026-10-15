@@ -1,4 +1,6 @@
 import { ConnectError } from "../errors.js";
+import { projectEnvironmentBaseUrl, type ProjectEnvironment } from "@polpo-ai/core/project-environment";
+export type { ProjectEnvironment } from "@polpo-ai/core/project-environment";
 import type { ConnectorCatalogEntry, ConnectorDefinition } from "../definitions.js";
 import type { StoredConnectorDefinition } from "../definition-store.js";
 import type { ConnectionVerificationResult, ConnectorSetupReadinessInput, ConnectorSetupReadinessResult } from "../verification.js";
@@ -31,6 +33,8 @@ import type {
 
 export interface PolpoConnectClientOptions {
   baseUrl: string;
+  /** Explicit target. If omitted, the authenticated key or bound endpoint selects the runtime. */
+  environment?: ProjectEnvironment;
   headers?: HeadersInit | (() => HeadersInit | Promise<HeadersInit>);
   fetch?: typeof fetch;
 }
@@ -240,12 +244,16 @@ export interface OpenConnectionSetupOptions {
 }
 
 export class PolpoConnectClient {
+  readonly environment: ProjectEnvironment | undefined;
   private readonly baseUrl: string;
   private readonly fetchImpl: typeof fetch;
   private readonly headers?: PolpoConnectClientOptions["headers"];
 
   constructor(options: PolpoConnectClientOptions) {
-    this.baseUrl = options.baseUrl.replace(/\/+$/, "");
+    this.environment = options.environment;
+    this.baseUrl = options.environment === undefined
+      ? options.baseUrl.replace(/\/+$/, "")
+      : projectEnvironmentBaseUrl(options.baseUrl, options.environment);
     this.fetchImpl = options.fetch ?? fetch;
     this.headers = options.headers;
   }
@@ -628,6 +636,9 @@ export class PolpoConnectClient {
   }
 
   private async request<T>(method: string, path: string, body?: unknown): Promise<T> {
+    if (this.environment !== undefined && path.startsWith("/v1/orgs/")) {
+      throw new TypeError("Organization configuration requires a client without a project environment");
+    }
     const dynamicHeaders = typeof this.headers === "function" ? await this.headers() : this.headers;
     const headers = new Headers(dynamicHeaders);
     if (body !== undefined) headers.set("content-type", "application/json");

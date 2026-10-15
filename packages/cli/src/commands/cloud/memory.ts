@@ -1,3 +1,4 @@
+import { addEnvironmentOptionsToActions, resolveCliEnvironment, type EnvironmentOptions } from "./environment.js";
 import type { Command } from "commander";
 import * as clack from "@clack/prompts";
 import pc from "picocolors";
@@ -215,7 +216,7 @@ function printResult(value: unknown, json: boolean): void {
 
 async function withMemoryClient(
   operation: string,
-  options: { json?: boolean },
+  options: EnvironmentOptions & { json?: boolean },
   action: (client: ApiClient) => Promise<void>,
 ): Promise<void> {
   try {
@@ -224,7 +225,7 @@ async function withMemoryClient(
     });
     const projectId = loadProjectId();
     if (!projectId) throw new Error("No project linked. Run polpo create or polpo link first.");
-    await action(createApiClient(credentials, projectId));
+    await action(createApiClient(credentials, projectId, resolveCliEnvironment(options)));
   } catch (error) {
     if (options.json) {
       process.stderr.write(`${JSON.stringify({
@@ -341,4 +342,5 @@ export function registerMemoryCommands(program: Command): void {
         ));
         printResult(data, Boolean(options.json));
       }));
+  addEnvironmentOptionsToActions(memory);
 }

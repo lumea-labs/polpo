@@ -505,6 +505,13 @@ export interface ConnectStore {
   getConnection(id: string): Promise<ConnectionRecord | null>;
   upsertConnection(record: ConnectionRecord): Promise<ConnectionRecord>;
   updateConnection(id: string, patch: Partial<Omit<ConnectionRecord, "id" | "createdAt">>): Promise<ConnectionRecord>;
+  /** Persist MCP discovery only while the exact account/policy/metadata observed
+   * before the network request is still current. Display-name changes may be
+   * preserved by the adapter. */
+  saveMcpDiscovery?(
+    expected: ConnectionRecord,
+    inventory: { serverName: string; discoveredTools: unknown[]; lastDiscoveredAt: string },
+  ): Promise<ConnectionRecord>;
   /** Atomic authorization CAS. null confirms no replacement; an exception may
    * mean the outcome is unknown. Unsupported hosts must reject reconnect,
    * never use updateConnection as fallback. */

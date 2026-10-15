@@ -2,6 +2,7 @@ import * as clack from "@clack/prompts";
 import pc from "picocolors";
 import type { ApiClient } from "../commands/cloud/api.js";
 import { slugify } from "./slugify.js";
+import { isEnvironmentAdminDenied, readCredentialIdentity } from "./credential-identity.js";
 
 export interface Org {
   id: string;
@@ -11,6 +12,11 @@ export interface Org {
 
 async function listOrgs(client: ApiClient): Promise<Org[]> {
   const res = await client.get<Org[]>("/v1/orgs");
+  if (isEnvironmentAdminDenied(res)) {
+    const identity = await readCredentialIdentity(client);
+    if (identity) return [identity.organization];
+  }
+  if (res.status !== 200) throw new Error(`Could not list organizations (HTTP ${res.status}).`);
   return Array.isArray(res.data) ? res.data : [];
 }
 

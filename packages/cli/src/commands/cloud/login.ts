@@ -12,20 +12,25 @@ import { loadCredentials, saveCredentials } from "./config.js";
 import { createApiClient } from "./api.js";
 import { isTTY } from "./prompt.js";
 import { performDeviceCodeLogin, DeviceCodeError } from "../../util/device-code.js";
+import { readCredentialIdentity, validateApiCredential, type CredentialIdentity } from "../../util/credential-identity.js";
 
 const DEFAULT_API_URL = "https://api.polpo.sh";
 const DEFAULT_DASHBOARD_URL = "https://polpo.sh";
 
 /** After login, try to auto-resolve the project if user has exactly one. */
-async function autoResolveProject(apiKey: string, baseUrl: string): Promise<void> {
+async function autoResolveProject(apiKey: string, baseUrl: string, knownIdentity?: CredentialIdentity | null): Promise<void> {
   try {
     const client = createApiClient({ apiKey, baseUrl });
-    const orgsRes = await client.get<any[]>("/v1/orgs");
-    const orgs = Array.isArray(orgsRes.data) ? orgsRes.data : [];
-    if (orgs.length === 0) return;
-
-    const projRes = await client.get<any[]>(`/v1/projects?orgId=${orgs[0].id}`);
-    const projects = Array.isArray(projRes.data) ? projRes.data : [];
+    const identity = knownIdentity === undefined ? await readCredentialIdentity(client) : knownIdentity;
+    let projects: Array<{ name: string }>;
+    if (identity) projects = identity.projects;
+    else {
+      const orgsRes = await client.get<any[]>("/v1/orgs");
+      const orgs = Array.isArray(orgsRes.data) ? orgsRes.data : [];
+      if (orgs.length === 0) return;
+      const projRes = await client.get<any[]>(`/v1/projects?orgId=${encodeURIComponent(orgs[0].id)}`);
+      projects = Array.isArray(projRes.data) ? projRes.data : [];
+    }
 
     if (projects.length === 1) {
       clack.log.info(`Project: ${pc.bold(projects[0].name)}`);
@@ -33,6 +38,29 @@ async function autoResolveProject(apiKey: string, baseUrl: string): Promise<void
       clack.log.info(`${projects.length} projects found. Deploy will auto-link.`);
     }
   } catch { /* best effort */ }
+}
+
+async function loginWithApiKey(apiKey: string, baseUrl: string): Promise<void> {
+  const s = clack.spinner();
+  s.start("Validating API key...");
+  let identity: CredentialIdentity | null;
+  try {
+    identity = await validateApiCredential(createApiClient({ apiKey, baseUrl }));
+  } catch (error) {
+    s.stop("Validation failed.");
+    clack.outro(pc.red((error as Error).message));
+    process.exit(1);
+  }
+  s.stop("API key validated.");
+  saveCredentials(apiKey, baseUrl);
+  clack.log.success("Credentials saved.");
+  if (identity?.credential.type === "environment") {
+    clack.log.info(`Key environment: ${identity.credential.environment}. CLI commands still default to Development; use --prod for Production.`);
+  } else if (identity?.credential.type === "mixed") {
+    clack.log.info("This legacy key is migrating project by project. It can access Production for migrated projects and legacy Live elsewhere.");
+  }
+  await autoResolveProject(apiKey, baseUrl, identity);
+  clack.outro(pc.green("Logged in."));
 }
 
 export function registerLoginCommand(program: Command): void {
@@ -64,39 +92,7 @@ export function registerLoginCommand(program: Command): void {
 
       // --- Direct API key flow ---
       if (opts.apiKey) {
-        // Validate the key before saving
-        const s = clack.spinner();
-        s.start("Validating API key...");
-        try {
-          const client = createApiClient({ apiKey: opts.apiKey, baseUrl });
-          const res = await client.get<any>("/v1/orgs");
-          if (res.status === 401 || res.status === 403) {
-            s.stop("Validation failed.");
-            clack.outro(pc.red("Invalid API key. Check the key and try again."));
-            process.exit(1);
-          }
-          if (res.status >= 500) {
-            s.stop("Validation failed.");
-            clack.outro(pc.red(`Polpo Cloud is having issues (HTTP ${res.status}). Try again shortly.`));
-            process.exit(1);
-          }
-          if (res.status >= 400) {
-            s.stop("Validation failed.");
-            clack.outro(pc.red(`Could not validate the API key (HTTP ${res.status}).`));
-            process.exit(1);
-          }
-        } catch (err: any) {
-          s.stop("Validation failed.");
-          clack.log.error(`Could not reach the API at ${baseUrl}`);
-          clack.outro(pc.red(err.message));
-          process.exit(1);
-        }
-
-        s.stop("API key validated.");
-        saveCredentials(opts.apiKey, baseUrl);
-        clack.log.success("Credentials saved.");
-        await autoResolveProject(opts.apiKey, baseUrl);
-        clack.outro(pc.green("Logged in."));
+        await loginWithApiKey(opts.apiKey, baseUrl);
         return;
       }
 
@@ -110,9 +106,7 @@ export function registerLoginCommand(program: Command): void {
           process.exit(1);
         }
         if (key) {
-          saveCredentials(key, baseUrl);
-          clack.log.success("Credentials saved.");
-          clack.outro(pc.green("Logged in."));
+          await loginWithApiKey(key, baseUrl);
           return;
         }
         clack.log.error("--api-key is required in non-interactive mode.");

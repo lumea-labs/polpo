@@ -6,6 +6,7 @@ import type {
   MissionStatus,
 } from "@polpo-ai/core/types";
 import type { PolpoEvent } from "../core/events.js";
+import type { ProjectEnvironment } from "@polpo-ai/core/project-environment";
 
 // === API Response Envelope ===
 
@@ -101,6 +102,8 @@ export interface SSEEvent {
 // === Server Config ===
 
 export interface ServerConfig {
+  /** Operator-bound process identity, independent of project definition files. */
+  environment?: ProjectEnvironment;
   port: number;
   host: string;
   workDir: string;

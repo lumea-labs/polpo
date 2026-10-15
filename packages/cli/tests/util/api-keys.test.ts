@@ -25,11 +25,17 @@ const FAKE_KEY: CreatedApiKey = {
   keyPrefix: "sk_live_abc",
   scopes: [{ type: "project", projectId: "proj-1" }],
   rawKey: "sk_live_abc_xyz_raw",
-  environment: "live",
+  environment: "development",
   createdAt: "2026-04-15T00:00:00.000Z",
 };
 
 describe("createApiKey", () => {
+  it("does not accept a credential returned for a different environment", async () => {
+    const post = vi.fn().mockResolvedValue(ok({ ...FAKE_KEY, environment: "production" }));
+    await expect(createApiKey(mockClient(post), {
+      orgId: "org-1", name: "development", scopes: [{ type: "project", projectId: "proj-1" }],
+    })).rejects.toThrow(/different environment/);
+  });
   it("POSTs /v1/api-keys with orgId, name, scopes, environment", async () => {
     const post = vi.fn().mockResolvedValue(ok(FAKE_KEY, 201));
     await createApiKey(mockClient(post), {
@@ -41,29 +47,29 @@ describe("createApiKey", () => {
       orgId: "org-1",
       name: "CI key",
       scopes: [{ type: "project", projectId: "proj-1" }],
-      environment: "live",
+      environment: "development",
     });
   });
 
-  it("defaults environment to 'live' when omitted", async () => {
+  it("defaults environment to 'development' when omitted", async () => {
     const post = vi.fn().mockResolvedValue(ok(FAKE_KEY));
     await createApiKey(mockClient(post), {
       orgId: "org-1",
       name: "CI",
       scopes: [{ type: "platform" }],
     });
-    expect(post.mock.calls[0][1]).toMatchObject({ environment: "live" });
+    expect(post.mock.calls[0][1]).toMatchObject({ environment: "development" });
   });
 
-  it("honors environment='test' override", async () => {
-    const post = vi.fn().mockResolvedValue(ok(FAKE_KEY));
+  it("honors environment='production' override", async () => {
+    const post = vi.fn().mockResolvedValue(ok({ ...FAKE_KEY, environment: "production" }));
     await createApiKey(mockClient(post), {
       orgId: "org-1",
       name: "CI",
       scopes: [{ type: "platform" }],
-      environment: "test",
+      environment: "production",
     });
-    expect(post.mock.calls[0][1]).toMatchObject({ environment: "test" });
+    expect(post.mock.calls[0][1]).toMatchObject({ environment: "production" });
   });
 
   it("returns the full CreatedApiKey including rawKey", async () => {
@@ -125,7 +131,7 @@ describe("createProjectApiKey", () => {
       orgId: "org-1",
       name: "CLI generated",
       scopes: [{ type: "project", projectId: "proj-1" }],
-      environment: "live",
+      environment: "development",
     });
   });
 
