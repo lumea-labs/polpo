@@ -24,7 +24,7 @@ import type {
   ResolvedChatInteractionCapabilities,
 } from "@polpo-ai/core/chat-interactions";
 import type { SessionClientToolDefinition } from "@polpo-ai/core/session-store";
-import { StructuredOutputDeltaGate, runModelPolicyTurn } from "@polpo-ai/llm";
+import { classifyRuntimeError, runModelPolicyTurn } from "@polpo-ai/llm";
 import { Output, type LanguageModelUsage } from "ai";
 import type { CompletionRouteDeps } from "../completions.js";
 import type { CompletionRequestBody } from "./schemas.js";
@@ -61,7 +61,14 @@ import {
   toAITools,
 } from "./tool-mapping.js";
 import { suggestionsForCompletion } from "./chat-interaction-runtime.js";
-import type { CompletionToolExecutor } from "./tool-guardrails.js";
+import type {
+  CompletionToolExecutor,
+  CompletionToolProgressState,
+} from "./tool-guardrails.js";
+import {
+  CompletionRuntimeError,
+  completionRuntimeErrorEnvelope,
+} from "./runtime-error.js";
 import {
   applyCompletionOutputPolicy,
   streamingOutputPolicyMode,
@@ -137,6 +144,8 @@ export interface ChatCompletionExecution {
   runtimeContext?: RuntimeContextResolution;
   /** Validated direct-or-loop decision for audit and downstream propagation. */
   executionRoute?: ResolvedExecutionRoute;
+  /** Shared with the guarded executor so every chat transport stops on livelock. */
+  toolProgressState?: CompletionToolProgressState;
   /**
    * Resource cleanup hook — set when an agent's tool resolver opens
    * long-lived connections (today: MCP transports). Invoked exactly
@@ -145,6 +154,12 @@ export interface ChatCompletionExecution {
    * misbehaving cleanup can't leak the request itself.
    */
   onResponseFinished?: () => Promise<void>;
+}
+
+function assertChatToolProgress(exec: ChatCompletionExecution): void {
+  const stalled = exec.toolProgressState?.stalled;
+  if (!stalled) return;
+  throw new CompletionRuntimeError(stalled.message, stalled.code, 409);
 }
 
 /**
@@ -166,6 +181,125 @@ function mergeAiTools(exec: ChatCompletionExecution): Record<string, any> {
 
 function clientSideToolNames(exec: ChatCompletionExecution): Set<string> {
   return exec.clientSideToolNames ?? CLIENT_SIDE_TOOL_NAMES;
+}
+
+function addChatUsage(a: LanguageModelUsage, b: LanguageModelUsage): LanguageModelUsage {
+  return {
+    inputTokens: (a.inputTokens ?? 0) + (b.inputTokens ?? 0),
+    outputTokens: (a.outputTokens ?? 0) + (b.outputTokens ?? 0),
+    totalTokens: (a.totalTokens ?? 0) + (b.totalTokens ?? 0),
+  } as LanguageModelUsage;
+}
+
+async function runChatTerminalOutputPhase(options: {
+  exec: ChatCompletionExecution;
+  modelSelection: ModelSelection;
+  primaryModel: ResolvedModelInfo;
+  primaryProviderOpts?: Record<string, any>;
+  reasoning?: string;
+  messages: any[];
+  signal?: AbortSignal;
+}) {
+  const {
+    exec, modelSelection, primaryModel, primaryProviderOpts,
+    reasoning, messages, signal,
+  } = options;
+  if (!exec.modelOutput) {
+    throw new Error("Structured response format is missing its model output contract");
+  }
+
+  let originalDiagnostic: ReturnType<typeof classifyRuntimeError> | undefined;
+  for (let attemptIndex = 0; attemptIndex < 2; attemptIndex += 1) {
+    const isRecovery = attemptIndex === 1;
+    if (isRecovery) {
+      const { raw: _raw, ...original } = originalDiagnostic!;
+      exec.deps.emit("runtime:structured-output-recovery", {
+        phase: "started",
+        source: "chat",
+        agent: exec.body.agent,
+        sessionId: exec.sessionId,
+        original,
+      });
+    }
+    const resolvedAttempts = new Map<number, {
+      model: ResolvedModelInfo;
+      providerOptions?: Record<string, any>;
+    }>();
+    try {
+      const result = await runModelPolicyTurn({
+        selection: modelSelection,
+        resolveAttempt: async (attempt) => {
+          const resolvedAttempt = attempt.index === 0 || !exec.agentMode || !exec.agentConfig
+            ? { model: primaryModel, providerOptions: primaryProviderOpts }
+            : await exec.deps.resolveAgentModel(
+                agentConfigForModelAttempt(exec.agentConfig, attempt.model),
+                reasoning,
+              );
+          resolvedAttempts.set(attempt.index, resolvedAttempt);
+          return {
+            model: resolvedAttempt.model.aiModel,
+            maxOutputTokens: resolvedAttempt.model.maxTokens,
+            providerOptions: resolvedAttempt.providerOptions,
+            capabilities: resolvedAttempt.model.capabilities,
+          };
+        },
+        preserveSingleAttemptError: true,
+        allowCommittedFallback: true,
+        maxRecoverableStreamRetries: 0,
+        system: isRecovery
+          ? `${exec.fullSystemPrompt}\n\n## Terminal structured output recovery\n\nOperational work is complete. Produce only the terminal result matching the requested schema from the canonical conversation and tool results. Do not call tools or repeat side effects.`
+          : `${exec.fullSystemPrompt}\n\n## Terminal structured output\n\nOperational work is complete. Produce only the terminal result matching the requested schema from the canonical conversation and tool results.`,
+        messages,
+        output: exec.modelOutput,
+        ...(signal ? { abortSignal: signal } : {}),
+      });
+      if (result.toolCalls.length > 0 || result.output === undefined) {
+        throw new Error(
+          result.toolCalls.length > 0
+            ? "Terminal structured-output phase returned a tool call"
+            : "Terminal structured-output phase completed without structured output",
+        );
+      }
+      for (const warning of result.warnings ?? []) {
+        exec.deps.emit("runtime:model-warning", {
+          source: "chat-terminal-output",
+          agent: exec.body.agent,
+          sessionId: exec.sessionId,
+          warning,
+        });
+      }
+      if (isRecovery) {
+        exec.deps.emit("runtime:structured-output-recovery", {
+          phase: "succeeded",
+          source: "chat",
+          agent: exec.body.agent,
+          sessionId: exec.sessionId,
+        });
+      }
+      return {
+        result,
+        resolved: resolvedAttempts.get(result.selectedAttempt.index),
+      };
+    } catch (error) {
+      const diagnostic = classifyRuntimeError(error);
+      if (!isRecovery) {
+        originalDiagnostic = diagnostic;
+        continue;
+      }
+      const { raw: _originalRaw, ...original } = originalDiagnostic!;
+      const { raw: _recoveryRaw, ...recovery } = diagnostic;
+      exec.deps.emit("runtime:structured-output-recovery", {
+        phase: "failed",
+        source: "chat",
+        agent: exec.body.agent,
+        sessionId: exec.sessionId,
+        original,
+        recovery,
+      });
+      throw error;
+    }
+  }
+  throw new Error("Terminal structured-output phase failed");
 }
 
 /** Streaming chat mode — SSE stream of OpenAI-format chunks. */
@@ -212,9 +346,6 @@ export async function executeStreamingChatCompletion(
   const reasoning = exec.agentConfig?.reasoning ?? deps.getConfig()?.settings?.reasoning;
   const outputMode = streamingOutputPolicyMode(deps.runOutputPolicy);
   const structuredResponse = isStructuredResponseFormat(body.response_format);
-  // Structured answers stream their raw JSON like plain text; the validated,
-  // canonical JSON is confirmed (or the stream fails) once the turn ends.
-  const streamStructured = structuredResponse && outputMode !== "buffer";
 
     await stream.writeSSE({ data: sseChunk(completionId, { role: "assistant" }) });
 
@@ -240,7 +371,7 @@ export async function executeStreamingChatCompletion(
     let suggestions: ChatSuggestion[] = [];
     let persistenceAttempted = false;
     let clientToolCallId: string | undefined;
-    let structuredStreamed = false;
+    let completedStructuredOutput = false;
     const persistResponse = async (canonicalTurnSucceeded = false) => {
       persistenceAttempted = true;
       const committedTurn = await persistAssistantMessage(
@@ -273,19 +404,42 @@ export async function executeStreamingChatCompletion(
       }
       outputPolicyApplied = true;
       if (!finalText) return;
-      if (outputMode === "buffer" || (structuredResponse && !structuredStreamed)) {
+      if (outputMode === "buffer" || structuredResponse) {
         await stream.writeSSE({ data: sseChunk(completionId, { content: finalText }) });
-      } else if (structuredStreamed && validateStructured) {
-        await stream.writeSSE({
-          data: ssePolpoChunk(completionId, {
-            structured_output: { state: "complete", content: finalText },
-          }),
-        });
       }
     };
 
+    const completeTerminalOutput = async () => {
+      const terminal = await runChatTerminalOutputPhase({
+        exec,
+        modelSelection,
+        primaryModel,
+        primaryProviderOpts,
+        reasoning,
+        messages,
+        signal,
+      });
+      if (terminal.resolved) {
+        m = terminal.resolved.model;
+        providerOpts = terminal.resolved.providerOptions;
+      }
+      totalUsage = addChatUsage(totalUsage, terminal.result.usage);
+      finalReasoning = appendReasoningSummary(finalReasoning, terminal.result.reasoning);
+      lastProviderMetadata = terminal.result.providerMetadata as Record<string, unknown> | undefined;
+      finalText = await serializeModelOutput(
+        body.response_format,
+        terminal.result.output,
+        terminal.result.text,
+      );
+      completedStructuredOutput = true;
+    };
+
     try {
-      for (let turn = 0; turn < MAX_TURNS; turn++) {
+      if (structuredResponse && Object.keys(aiTools).length === 0) {
+        await completeTerminalOutput();
+      }
+
+      for (let turn = 0; !completedStructuredOutput && turn < MAX_TURNS; turn++) {
         // Bail out early if the client already disconnected
         if (signal.aborted) break;
 
@@ -327,7 +481,6 @@ export async function executeStreamingChatCompletion(
         // token-by-token input deltas, so the UI can render the call as it
         // builds up instead of waiting for the whole turn to finish.
         const toolCallNames = new Map<string, string>();
-        const structuredGate = streamStructured ? new StructuredOutputDeltaGate() : undefined;
         const resolvedAttempts = new Map<number, { model: ResolvedModelInfo; providerOptions?: Record<string, any> }>();
 
         const result = await runModelPolicyTurn({
@@ -341,6 +494,7 @@ export async function executeStreamingChatCompletion(
               model: resolvedAttempt.model.aiModel,
               maxOutputTokens: resolvedAttempt.model.maxTokens,
               providerOptions: resolvedAttempt.providerOptions,
+              capabilities: resolvedAttempt.model.capabilities,
             };
           },
           preserveSingleAttemptError: true,
@@ -352,21 +506,23 @@ export async function executeStreamingChatCompletion(
           ...(body.parallel_tool_calls !== undefined
             ? { parallelToolCalls: body.parallel_tool_calls }
             : {}),
-          ...(exec.modelOutput ? { output: exec.modelOutput } : {}),
           abortSignal: signal,
         }, async (event) => {
           if (signal.aborted) return;
-          if (event.type === "reasoning-delta") {
+          if (event.type === "warning") {
+            deps.emit("runtime:model-warning", {
+              source: "chat",
+              agent: body.agent,
+              sessionId,
+              warning: event.warning,
+            });
+          } else if (event.type === "reasoning-delta") {
             await stream.writeSSE({ data: sseChunk(completionId, {}, null, { thinking: event.text }) });
           } else if (event.type === "text-delta") {
             turnText += event.text;
             if (!structuredResponse) finalText += event.text;
             if (outputMode !== "buffer" && !structuredResponse) {
               await stream.writeSSE({ data: sseChunk(completionId, { content: event.text }) });
-            }
-            const structuredText = structuredGate?.push(event.text);
-            if (structuredText) {
-              await stream.writeSSE({ data: sseChunk(completionId, { content: structuredText }) });
             }
           } else if (event.type === "tool-input-start") {
             // Emit early "preparing" signal — the LLM has started generating a tool call
@@ -426,32 +582,13 @@ export async function executeStreamingChatCompletion(
         }
 
         const toolCalls = result.toolCalls;
-        structuredStreamed = structuredGate?.streamed === true && toolCalls.length === 0;
-        if (structuredGate?.streamed && toolCalls.length > 0) {
-          // This turn's JSON-looking text was not the answer: withdraw it.
-          await stream.writeSSE({
-            data: ssePolpoChunk(completionId, { structured_output: { state: "reset" } }),
-          });
-        }
-        if (structuredResponse && toolCalls.length === 0) {
-          turnText = await serializeModelOutput(
-            body.response_format,
-            result.output,
-            turnText,
-          );
-          finalText += turnText;
-        }
         const usage = result.usage;
         const selectedResolved = resolvedAttempts.get(result.selectedAttempt.index);
         if (selectedResolved) {
           m = selectedResolved.model;
           providerOpts = selectedResolved.providerOptions;
         }
-        totalUsage = {
-          inputTokens: (totalUsage.inputTokens ?? 0) + (usage.inputTokens ?? 0),
-          outputTokens: (totalUsage.outputTokens ?? 0) + (usage.outputTokens ?? 0),
-          totalTokens: (totalUsage.totalTokens ?? 0) + (usage.totalTokens ?? 0),
-        } as LanguageModelUsage;
+        totalUsage = addChatUsage(totalUsage, usage);
         lastProviderMetadata = result.providerMetadata as Record<string, unknown> | undefined;
 
         await appendModelResponseMessages(
@@ -462,7 +599,10 @@ export async function executeStreamingChatCompletion(
           exec.contextTrust ?? "off",
         );
 
-        if (toolCalls.length === 0) break;
+        if (toolCalls.length === 0) {
+          if (structuredResponse) await completeTerminalOutput();
+          break;
+        }
 
         const dispatchableToolCalls = toolCalls.filter(
           (call) => !isInvalidModelToolCall(call),
@@ -682,6 +822,7 @@ export async function executeStreamingChatCompletion(
             const local = localResults[localResultIndex++]!;
             await appendLocalResult(call, local.input, local.result, local.isError);
           }
+          assertChatToolProgress(exec);
         } else {
           for (const call of dispatchableToolCalls) {
             if (signal.aborted) break;
@@ -700,8 +841,13 @@ export async function executeStreamingChatCompletion(
               signal,
             });
             await appendLocalResult(call, callArgs, toolResult, toolResult.startsWith("Error:"));
+            assertChatToolProgress(exec);
           }
         }
+      }
+
+      if (structuredResponse && !completedStructuredOutput && !signal.aborted) {
+        await completeTerminalOutput();
       }
 
       if (!signal.aborted) {
@@ -729,6 +875,7 @@ export async function executeStreamingChatCompletion(
         // rename). Without this catch the error propagates as a 500.
         const structuredOutputError = structuredOutputErrorEnvelope(err, structuredResponse);
         const guardrailError = guardrailErrorEnvelope(err);
+        const runtimeError = completionRuntimeErrorEnvelope(err);
         const notFound = modelNotFoundEnvelope(err, m?.id, body.agent);
         if (structuredOutputError) {
           await stream.writeSSE({
@@ -740,6 +887,12 @@ export async function executeStreamingChatCompletion(
           outputPolicyApplied = true;
           await stream.writeSSE({
             data: sseChunk(completionId, {}, "stop", { error: guardrailError }),
+          });
+          await stream.writeSSE({ data: "[DONE]" });
+        } else if (runtimeError) {
+          finalText = runtimeError.error.message;
+          await stream.writeSSE({
+            data: sseChunk(completionId, {}, "stop", { error: runtimeError.error }),
           });
           await stream.writeSSE({ data: "[DONE]" });
         } else if (notFound) {
@@ -821,6 +974,7 @@ export async function runNonStreamingChatCompletion(c: any, exec: ChatCompletion
   let suggestions: ChatSuggestion[] = [];
   let canonicalTurnSucceeded = false;
   let clientToolCallId: string | undefined;
+  let completedStructuredOutput = false;
   const finalizeOutput = async (validateStructured = true) => {
     if (outputPolicyApplied) return;
     finalText = await applyCompletionOutputPolicy({
@@ -836,9 +990,37 @@ export async function runNonStreamingChatCompletion(c: any, exec: ChatCompletion
     }
     outputPolicyApplied = true;
   };
+  const completeTerminalOutput = async () => {
+    const terminal = await runChatTerminalOutputPhase({
+      exec,
+      modelSelection,
+      primaryModel,
+      primaryProviderOpts,
+      reasoning,
+      messages,
+      signal: c.req.raw.signal,
+    });
+    if (terminal.resolved) {
+      m = terminal.resolved.model;
+      providerOpts = terminal.resolved.providerOptions;
+    }
+    totalUsage = addChatUsage(totalUsage, terminal.result.usage);
+    finalReasoning = appendReasoningSummary(finalReasoning, terminal.result.reasoning);
+    lastProviderMetadata = terminal.result.providerMetadata as Record<string, unknown> | undefined;
+    finalText = await serializeModelOutput(
+      body.response_format,
+      terminal.result.output,
+      terminal.result.text,
+    );
+    completedStructuredOutput = true;
+  };
 
   try {
-    for (let turn = 0; turn < MAX_TURNS; turn++) {
+    if (structuredResponse && Object.keys(aiTools).length === 0) {
+      await completeTerminalOutput();
+    }
+
+    for (let turn = 0; !completedStructuredOutput && turn < MAX_TURNS; turn++) {
       // Compact context if approaching the model's context window limit.
       // Under threshold this is just a cheap token estimation — zero LLM calls.
       const compactionResult = await compactIfNeeded({
@@ -869,6 +1051,7 @@ export async function runNonStreamingChatCompletion(c: any, exec: ChatCompletion
             model: resolvedAttempt.model.aiModel,
             maxOutputTokens: resolvedAttempt.model.maxTokens,
             providerOptions: resolvedAttempt.providerOptions,
+            capabilities: resolvedAttempt.model.capabilities,
           };
         },
         preserveSingleAttemptError: true,
@@ -880,28 +1063,17 @@ export async function runNonStreamingChatCompletion(c: any, exec: ChatCompletion
         ...(body.parallel_tool_calls !== undefined
           ? { parallelToolCalls: body.parallel_tool_calls }
           : {}),
-        ...(exec.modelOutput ? { output: exec.modelOutput } : {}),
       });
       finalReasoning = appendReasoningSummary(finalReasoning, turnResult.reasoning);
 
-      const turnText = structuredResponse && turnResult.toolCalls.length === 0
-        ? await serializeModelOutput(
-            body.response_format,
-            turnResult.output,
-            turnResult.text,
-          )
-        : turnResult.text;
+      const turnText = turnResult.text;
       const selectedResolved = resolvedAttempts.get(turnResult.selectedAttempt.index);
       if (selectedResolved) {
         m = selectedResolved.model;
         providerOpts = selectedResolved.providerOptions;
       }
       const usage = turnResult.usage;
-      totalUsage = {
-        inputTokens: (totalUsage.inputTokens ?? 0) + (usage.inputTokens ?? 0),
-        outputTokens: (totalUsage.outputTokens ?? 0) + (usage.outputTokens ?? 0),
-        totalTokens: (totalUsage.totalTokens ?? 0) + (usage.totalTokens ?? 0),
-      } as LanguageModelUsage;
+      totalUsage = addChatUsage(totalUsage, usage);
       lastProviderMetadata = turnResult.providerMetadata as Record<string, unknown> | undefined;
 
       await appendModelResponseMessages(
@@ -912,10 +1084,13 @@ export async function runNonStreamingChatCompletion(c: any, exec: ChatCompletion
         exec.contextTrust ?? "off",
       );
 
-      finalText += turnText;
+      if (!structuredResponse) finalText += turnText;
 
       const toolCalls = turnResult.toolCalls;
-      if (toolCalls.length === 0) break;
+      if (toolCalls.length === 0) {
+        if (structuredResponse) await completeTerminalOutput();
+        break;
+      }
 
       const dispatchableToolCalls = toolCalls.filter(
         (call) => !isInvalidModelToolCall(call),
@@ -1153,6 +1328,7 @@ export async function runNonStreamingChatCompletion(c: any, exec: ChatCompletion
           const local = localResults[localResultIndex++]!;
           appendLocalResult(call, local.input, local.result, local.isError);
         }
+        assertChatToolProgress(exec);
       } else {
         for (const call of dispatchableToolCalls) {
           const callArgs = call.input as Record<string, unknown>;
@@ -1165,8 +1341,13 @@ export async function runNonStreamingChatCompletion(c: any, exec: ChatCompletion
             signal: c.req.raw.signal,
           });
           appendLocalResult(call, callArgs, toolResult, toolResult.startsWith("Error:"));
+          assertChatToolProgress(exec);
         }
       }
+    }
+
+    if (structuredResponse && !completedStructuredOutput && !c.req.raw.signal.aborted) {
+      await completeTerminalOutput();
     }
 
     await finalizeOutput();
@@ -1194,6 +1375,11 @@ export async function runNonStreamingChatCompletion(c: any, exec: ChatCompletion
         { error: guardrailError },
         (guardrailError.code === "guardrail_approval_required" ? 409 : 403) as any,
       );
+    }
+    const runtimeError = completionRuntimeErrorEnvelope(err);
+    if (runtimeError) {
+      finalText = runtimeError.error.message;
+      return c.json({ error: runtimeError.error }, runtimeError.status as any);
     }
     const notFound = modelNotFoundEnvelope(err, m?.id, body.agent);
     if (notFound) {

@@ -26,6 +26,7 @@ export interface ModelPolicyAttemptResolution<TOOLS extends ToolSet = ToolSet> {
   model: StreamModelTurnInput<TOOLS>["model"];
   maxOutputTokens?: number;
   providerOptions?: StreamModelTurnInput<TOOLS>["providerOptions"];
+  capabilities?: StreamModelTurnInput<TOOLS>["capabilities"];
   metadata?: Record<string, unknown>;
 }
 
@@ -58,6 +59,8 @@ export interface RunModelPolicyTurnInput<TOOLS extends ToolSet = ToolSet>
   classifyError?: (error: unknown, attempt: ModelPolicyAttempt) => NormalizedModelError;
   onPolicyEvent?: (event: ModelPolicyEvent) => void | Promise<void>;
   preserveSingleAttemptError?: boolean;
+  /** Safe for buffered, side-effect-free phases such as terminal output. */
+  allowCommittedFallback?: boolean;
   /** One replay is safe only before text/reasoning or a validated tool call was emitted. */
   maxRecoverableStreamRetries?: number;
 }
@@ -159,7 +162,13 @@ export async function runModelPolicyTurn<TOOLS extends ToolSet = ToolSet>(
         }
 
         const nextModel = policy.candidates[candidateIndex + 1];
-        if (!committed && classification.retryable && nextModel) {
+        if (
+          nextModel
+          && (
+            (!committed && classification.retryable)
+            || input.allowCommittedFallback === true
+          )
+        ) {
           const next = createAttempt(candidateIndex + 1, 0, nextModel, policy.candidates.length);
           await input.onPolicyEvent?.({
             type: "model-fallback-selected",
@@ -249,5 +258,6 @@ function buildAttemptInput<TOOLS extends ToolSet>(
     model: resolution.model,
     ...(resolution.maxOutputTokens !== undefined ? { maxOutputTokens: resolution.maxOutputTokens } : {}),
     ...(resolution.providerOptions ? { providerOptions: resolution.providerOptions } : {}),
+    ...(resolution.capabilities ? { capabilities: resolution.capabilities } : {}),
   };
 }

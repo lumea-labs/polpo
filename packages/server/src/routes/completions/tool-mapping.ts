@@ -6,6 +6,7 @@
  */
 
 import {
+  markToolStrictness,
   toValidatedToolInputSchema,
 } from "@polpo-ai/llm";
 import { jsonSchema } from "ai";
@@ -254,13 +255,17 @@ export function invalidModelToolCallEvent(call: any): LoopRuntimeToolCall {
  * AI SDK tools: Record<string, { description, inputSchema }>
  * Tools without execute are "manual" — tool calls are returned but not auto-executed.
  */
-export function toAITools(tools: any[]): Record<string, { description?: string; inputSchema: any }> {
+export function toAITools(tools: any[]): Record<string, { description?: string; inputSchema: any; strict?: boolean }> {
   if (!tools.length) return {};
   return Object.fromEntries(
-    tools.map(t => [t.name, {
-      description: t.description,
-      inputSchema: toValidatedToolInputSchema(t.parameters),
-    }]),
+    tools.map(t => [t.name, markToolStrictness({
+        description: t.description,
+        inputSchema: toValidatedToolInputSchema(t.parameters ?? t.inputSchema ?? {
+          type: "object",
+          properties: {},
+          additionalProperties: false,
+        }),
+      }, t.strictness)]),
   );
 }
 

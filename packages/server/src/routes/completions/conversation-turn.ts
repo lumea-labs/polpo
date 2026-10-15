@@ -67,6 +67,7 @@ import {
 import {
   createGuardedCompletionToolExecutor,
   type CompletionToolExecutor,
+  type CompletionToolProgressState,
 } from "./tool-guardrails.js";
 import {
   assertCompletionMessageContent,
@@ -616,6 +617,7 @@ export async function prepareChatCompletionExecution(
   let modelToolChoice: unknown | undefined;
   let effectiveTools: any[];
   let effectiveToolExecutor: CompletionToolExecutor;
+  const toolProgressState: CompletionToolProgressState = {};
   let toolDisclosure: ModelControlledToolDisclosureConfig | undefined;
   let activeToolNames: (() => string[]) | undefined;
   let activeCompactionTools: (() => any[]) | undefined;
@@ -1345,6 +1347,31 @@ export async function prepareChatCompletionExecution(
         agent: resolvedAgentConfig?.name,
         sessionId: sessionId ?? undefined,
       },
+      onProgress: ({ name, decision }) => {
+        if (decision.action === "execute") return;
+        deps.emit("runtime:tool-progress", {
+          action: decision.action,
+          ...(decision.action === "stall" ? { code: decision.code } : {}),
+          tool: name,
+          fingerprint: decision.fingerprint,
+          observation: decision.observation,
+          mode: policyMode,
+          source: runtimePlan?.source,
+          agent: resolvedAgentConfig?.name,
+          requestId: completionId,
+          runId: completionId,
+          sessionId: sessionId ?? undefined,
+        });
+        if (decision.action === "stall") {
+          toolProgressState.stalled = {
+            code: decision.code,
+            toolName: name,
+            fingerprint: decision.fingerprint,
+            observation: decision.observation,
+            message: decision.message,
+          };
+        }
+      },
     });
 
     const toolLoadingDecision = resolveToolLoadingDecision(
@@ -1468,6 +1495,7 @@ export async function prepareChatCompletionExecution(
     contextTrust,
     runtimeContext,
     executionRoute,
+    toolProgressState,
   };
 
   const viaRun =

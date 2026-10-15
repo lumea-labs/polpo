@@ -120,7 +120,10 @@ export function structuredOutputErrorEnvelope(
   const directError = err instanceof CompletionStructuredOutputError ? err : null;
   const noObject = structuredOutputRequested && (
     NoObjectGeneratedError.isInstance(err)
-    || errorObjects(err).some((candidate) => candidate.name === "AI_NoObjectGeneratedError")
+    || errorObjects(err).some((candidate) =>
+      candidate.name === "AI_NoObjectGeneratedError"
+      || candidate.code === "invalid_response_format_output"
+      || candidate.code === "loop_agent_output_invalid")
   );
   if (!directError && !noObject) return null;
   return {

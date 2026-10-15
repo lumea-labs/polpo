@@ -21,6 +21,7 @@ import {
   classifyRuntimeError,
   extractLanguageModelUsage,
 } from "./runtime-normalization.js";
+import { directProviderRuntimeCapabilities } from "./model-runtime-capabilities.js";
 
 export interface ProviderRuntimeAdapterOptions {
   apiKeyResolver?: (provider: string) => string | undefined;
@@ -41,6 +42,10 @@ export function createProviderRuntimeAdapter(options: ProviderRuntimeAdapterOpti
 
   return {
     mode: "provider",
+    resolveCapabilities(input) {
+      const { provider } = splitProviderModelRef(input.ref);
+      return directProviderRuntimeCapabilities(provider);
+    },
     createLanguageModel(input: CreateModelInput) {
       const { provider, modelId } = splitProviderModelRef(input.ref);
       const apiKey = options.apiKeyResolver?.(provider) ?? resolveApiKey(provider);

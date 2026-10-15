@@ -2,8 +2,44 @@
 export * from "./types.js";
 export * from "./project-environment.js";
 
-export type { PolpoTool, ToolResult, ToolUpdateCallback } from "./tool-types.js";
+export type {
+  PolpoTool,
+  PolpoToolAnnotations,
+  PolpoToolStrictness,
+  ToolResult,
+  ToolUpdateCallback,
+} from "./tool-types.js";
+export {
+  admitCanonicalToolContract,
+  canonicalContractFingerprint,
+} from "./canonical-tool-contract.js";
+export type {
+  CanonicalToolContract,
+  CanonicalToolContractInput,
+  CanonicalToolExecution,
+} from "./canonical-tool-contract.js";
 export { extractToolUsageRecord } from "./tool-usage.js";
+export {
+  DEFAULT_TOOL_MAX_IDENTICAL_OBSERVATIONS,
+  ToolProgressStallError,
+  ToolProgressTracker,
+  toolProgressFingerprint,
+} from "./tool-progress.js";
+export {
+  InMemoryToolExecutionReceiptStore,
+  toolArgumentsFingerprint,
+} from "./tool-execution-receipts.js";
+export type {
+  ToolExecutionReceipt,
+  ToolExecutionReceiptClaim,
+  ToolExecutionReceiptState,
+  ToolExecutionReceiptStore,
+} from "./tool-execution-receipts.js";
+export type {
+  ToolProgressCall,
+  ToolProgressDecision,
+  ToolProgressRecord,
+} from "./tool-progress.js";
 
 // ── Model runtime facts (neutral, no provider SDK imports) ───────────────
 export {

@@ -1,0 +1,32 @@
+{
+  "schemaVersion": 1,
+  "id": "HARNESS-001",
+  "classification": "harness_defect",
+  "source": {
+    "artifactSha256": "e22edf81e1f573b77313cd219b083b64e8ac9ef9226d0a69899ed982ba70a194"
+  },
+  "response": {
+    "httpStatus": 200,
+    "suggestions": [
+      { "id": "suggestion-1", "label": "Review copy", "prompt": "Review the site copy." },
+      { "id": "suggestion-2", "label": "Update photos", "prompt": "Update the site photos." },
+      { "id": "suggestion-3", "label": "Choose colors", "prompt": "Choose the site colors." },
+      { "id": "suggestion-4", "label": "Edit hours", "prompt": "Edit the opening hours." },
+      { "id": "suggestion-5", "label": "Update services", "prompt": "Update the listed services." }
+    ],
+    "beforeStop": true,
+    "beforeDone": true,
+    "done": true,
+    "persistedIdentically": true,
+    "replayedIdentically": true
+  },
+  "historicalHarnessAssumption": {
+    "requiredKind": "message",
+    "actualContract": "kind is optional for message suggestions"
+  },
+  "expected": {
+    "runtimeSucceeded": true,
+    "suggestionCount": 5,
+    "harnessMustAcceptOmittedKind": true
+  }
+}

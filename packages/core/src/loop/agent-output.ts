@@ -5,7 +5,8 @@ export const LOOP_AGENT_OUTPUT_MAX_BYTES = 256 * 1024;
 
 export type LoopAgentOutputErrorCode =
   | "loop_agent_output_invalid"
-  | "loop_agent_output_too_large";
+  | "loop_agent_output_too_large"
+  | "tool_loop_stalled";
 
 export class LoopAgentOutputError extends Error {
   constructor(

@@ -434,7 +434,10 @@ export async function runProjectLoopCompletion(options: {
   );
   const executeLoopTool = createGuardedCompletionToolExecutor({
     executor: rootExecutor,
-    tools: deterministicTools,
+    // Validation uses the complete authorized runtime catalog. Policy denial
+    // stays in rootExecutor so a known-but-denied tool returns the typed policy
+    // error instead of being misclassified as an unknown tool.
+    tools: rootResolvedTools,
     middleware: deps.runToolMiddleware,
     context: {
       planId: options.runtimePlan?.id,
@@ -444,6 +447,7 @@ export async function runProjectLoopCompletion(options: {
       runId: loopRunId,
       sessionId: sessionId ?? undefined,
     },
+    receiptStore: toolRunScope?.receiptStore,
   });
   const rootToolSchemas = new Map<string, unknown>(
     deterministicTools

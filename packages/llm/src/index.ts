@@ -150,12 +150,42 @@ export type {
 
 // ─── Portable Tool Schemas ──────────────────────────
 export {
+  MAX_TOOL_INPUT_BYTES,
+  MAX_TOOL_INPUT_DEPTH,
+  MAX_TOOL_INPUT_NODES,
+  MAX_TOOL_SCHEMA_BYTES,
+  MAX_TOOL_SCHEMA_DEPTH,
+  MAX_TOOL_SCHEMA_NODES,
+  assertToolInputSchemasAdmitted,
+  compileToolInputSchemaForRuntime,
   toPortableToolInputSchema,
   toValidatedToolInputSchema,
   validateJsonSchema,
   validateToolInput,
 } from "./tool-schema.js";
 export type { ToolInputValidationResult } from "./tool-schema.js";
+
+// ─── Model Runtime Capabilities ─────────────────────
+export {
+  ToolCapabilityUnsupportedError,
+  ToolChoiceInvalidError,
+  OutputCapabilityUnsupportedError,
+  UNKNOWN_MODEL_RUNTIME_CAPABILITIES,
+  assertModelTurnCapabilityPlan,
+  createEffectiveTurnPlan,
+  directProviderRuntimeCapabilities,
+  markToolStrictness,
+  prepareToolsForRuntimeCapabilities,
+} from "./model-runtime-capabilities.js";
+export type {
+  CombinedToolsOutputCapability,
+  CompiledVisibleTool,
+  EffectiveTurnPlan,
+  ModelRuntimeCapabilities,
+  RuntimeCapabilitySupport,
+  StructuredOutputCapability,
+  ToolCapabilityWarning,
+} from "./model-runtime-capabilities.js";
 
 // ─── Structured Model Outputs ───────────────────────
 export {

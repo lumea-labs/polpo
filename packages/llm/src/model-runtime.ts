@@ -8,6 +8,7 @@ import type {
   NormalizedModelError,
   UsageExtractionInput,
 } from "@polpo-ai/core/model-runtime";
+import type { ModelRuntimeCapabilities } from "./model-runtime-capabilities.js";
 export {
   MODEL_RUNTIME_MODES,
   isModelRuntimeMode,
@@ -52,6 +53,8 @@ export interface ProviderOptionInput extends CreateModelInput {
 
 export interface ModelRuntimeAdapter {
   mode: ModelRuntimeMode;
+  /** Capabilities for the concrete provider/model/endpoint selected by this adapter. */
+  resolveCapabilities?(input: CreateModelInput): ModelRuntimeCapabilities;
   createLanguageModel(input: CreateModelInput): Promise<LanguageModel> | LanguageModel;
   createEmbeddingModel?(
     input: CreateModelInput,

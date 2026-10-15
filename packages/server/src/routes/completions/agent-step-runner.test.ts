@@ -843,7 +843,8 @@ describe("runAgentStepCompletion structured loop output", () => {
     maxTurns = 2,
     recoveryText = finalText,
   ) {
-    let turn = 0;
+    let operationalTurn = 0;
+    let terminalAttempt = 0;
     const responseFormats: unknown[] = [];
     const toolCounts: number[] = [];
     const executeTool = vi.fn(async () => "inspection complete");
@@ -851,8 +852,10 @@ describe("runAgentStepCompletion structured loop output", () => {
       doStream: async (options) => {
         responseFormats.push(options.responseFormat);
         toolCounts.push(options.tools?.length ?? 0);
-        turn += 1;
-        if (turn === 1) {
+        if (!options.responseFormat) {
+          operationalTurn += 1;
+        }
+        if (!options.responseFormat && operationalTurn === 1) {
           return { stream: convertArrayToReadableStream([
             { type: "stream-start", warnings: [] },
             { type: "text-start", id: "preface" },
@@ -862,7 +865,17 @@ describe("runAgentStepCompletion structured loop output", () => {
             { type: "finish", finishReason: { unified: "tool-calls", raw: undefined }, usage },
           ] as any[]) };
         }
-        const terminalText = turn === 2 ? finalText : recoveryText;
+        if (!options.responseFormat) {
+          return { stream: convertArrayToReadableStream([
+            { type: "stream-start", warnings: [] },
+            { type: "text-start", id: "operational-complete" },
+            { type: "text-delta", id: "operational-complete", delta: "Operational work complete." },
+            { type: "text-end", id: "operational-complete" },
+            { type: "finish", finishReason: { unified: "stop", raw: undefined }, usage },
+          ] as any[]) };
+        }
+        terminalAttempt += 1;
+        const terminalText = terminalAttempt === 1 ? finalText : recoveryText;
         return { stream: convertArrayToReadableStream([
           { type: "stream-start", warnings: [] },
           { type: "text-start", id: "final" },
@@ -913,9 +926,11 @@ describe("runAgentStepCompletion structured loop output", () => {
     });
 
     expect(fixture.responseFormats).toEqual([
-      expect.objectContaining({ type: "json" }),
+      undefined,
+      undefined,
       expect.objectContaining({ type: "json" }),
     ]);
+    expect(fixture.toolCounts).toEqual([1, 1, 0]);
     expect(result.output).toEqual({ summary: "implemented", response: "ready" });
     expect(result.text).toBe('{"summary":"implemented","response":"ready"}');
   });
@@ -956,8 +971,9 @@ describe("runAgentStepCompletion structured loop output", () => {
 
     expect(result.output).toEqual({ summary: "implemented", response: "ready" });
     expect(result.text).toBe('{"summary":"implemented","response":"ready"}');
-    expect(fixture.responseFormats).toHaveLength(3);
-    expect(fixture.toolCounts).toEqual([1, 1, 0]);
+    expect(fixture.responseFormats).toHaveLength(4);
+    expect(fixture.responseFormats.slice(0, 2)).toEqual([undefined, undefined]);
+    expect(fixture.toolCounts).toEqual([1, 1, 0, 0]);
     expect(fixture.deps.resolveAgentTools).toHaveBeenCalledTimes(1);
     expect(fixture.executeTool).toHaveBeenCalledTimes(1);
     expect(fixture.deps.emit).toHaveBeenCalledWith(
@@ -988,18 +1004,19 @@ describe("runAgentStepCompletion structured loop output", () => {
     });
 
     expect(fixture.executeTool).toHaveBeenCalledTimes(1);
-    expect(fixture.responseFormats).toHaveLength(3);
-    expect(fixture.toolCounts).toEqual([1, 1, 0]);
+    expect(fixture.responseFormats).toHaveLength(4);
+    expect(fixture.responseFormats.slice(0, 2)).toEqual([undefined, undefined]);
+    expect(fixture.toolCounts).toEqual([1, 1, 0, 0]);
     expect(fixture.deps.emit).toHaveBeenCalledWith(
       "runtime:structured-output-recovery",
       expect.objectContaining({ phase: "failed", step: "implement" }),
     );
   });
 
-  it("rejects max-turn exhaustion before a structured terminal output exists", async () => {
+  it("uses a no-tool terminal turn after maxTurns when completed tool evidence exists", async () => {
     const fixture = structuredStepDeps('{"summary":"unused","response":"unused"}', 1);
 
-    await expect(runAgentStepCompletion({
+    const result = await runAgentStepCompletion({
       deps: fixture.deps,
       agentConfig: { name: "nested-agent", model: "mock/model", maxTurns: fixture.maxTurns },
       aiMessages: [{ role: "user", content: "Implement it" }],
@@ -1007,9 +1024,13 @@ describe("runAgentStepCompletion structured loop output", () => {
       context: {},
       stepName: "implement",
       outputSchema,
-    })).rejects.toMatchObject({
-      code: "loop_agent_output_invalid",
-      stepName: "implement",
     });
+
+    expect(result.output).toEqual({ summary: "unused", response: "unused" });
+    expect(fixture.responseFormats).toEqual([
+      undefined,
+      expect.objectContaining({ type: "json" }),
+    ]);
+    expect(fixture.toolCounts).toEqual([1, 0]);
   });
 });

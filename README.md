@@ -447,6 +447,15 @@ runtime tool is preloaded. Hosts can retain a rollout kill switch and tune the
 automatic catalog limits, but the agent setting remains portable across OSS and
 Polpo Cloud.
 
+Tool input is always validated against its immutable canonical schema at the
+execution boundary. Provider-native strictness is capability-dependent, strict
+terminal output runs in a separate no-tools phase by default, durable Runs can
+bind effects to execution receipts, and repeated stable reads stop with a typed
+`tool_loop_stalled` result. See
+[Tool and structured-output runtime contracts](docs/tool-runtime-contracts.md)
+for annotations, strictness, provider behavior, receipts, errors, and runtime
+diagnostics.
+
 Custom tool entrypoints may import relative TypeScript, JavaScript, TSX, or JSON
 modules kept under the same source directory. Both `polpo tools push <file>` and
 `polpo deploy` collect that local dependency graph and upload it as one versioned

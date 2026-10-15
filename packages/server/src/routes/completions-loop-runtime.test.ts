@@ -36,7 +36,25 @@ describe("completionRoutes project loop runtime", () => {
         throw new Error("tool-only project loop should not resolve a model");
       },
       resolveAgentTools: async () => ({
-        tools: [],
+        tools: [{
+          name: "unix_time",
+          parameters: {
+            type: "object",
+            properties: {},
+            additionalProperties: false,
+          },
+        }, {
+          name: "audit_step",
+          parameters: {
+            type: "object",
+            properties: {
+              source: { type: "string" },
+              guarded: { type: "boolean" },
+            },
+            required: ["source"],
+            additionalProperties: false,
+          },
+        }],
         executor: async (name, args) => {
           if (name === "audit_step") return JSON.stringify({ ok: true, args });
           if (name !== "unix_time") return `Error: Unknown tool "${name}"`;
@@ -685,7 +703,15 @@ describe("completionRoutes project loop runtime", () => {
       },
     });
     deps.resolveAgentTools = async () => ({
-      tools: [],
+      tools: [{
+        name: "project_checkout",
+        parameters: {
+          type: "object",
+          properties: { projectRef: { type: "string" } },
+          required: ["projectRef"],
+          additionalProperties: false,
+        },
+      }],
       executor: execute,
     });
 
@@ -931,6 +957,15 @@ describe("completionRoutes project loop runtime", () => {
       ],
       executor: async (name) =>
         `Error: Tool "${name}" is behind the tool router. Use tool_call with {"name":"${name}","args":{...}}.`,
+      runtimeTools: [{
+        name: "bash",
+        parameters: {
+          type: "object",
+          properties: { command: { type: "string" } },
+          required: ["command"],
+          additionalProperties: false,
+        },
+      }],
       runtimeExecutor: async (name, args) => {
         runtimeCalls += 1;
         if (name !== "bash") return `Error: Unknown tool "${name}"`;
@@ -1090,7 +1125,14 @@ describe("completionRoutes project loop runtime", () => {
       (await originalResolve({})).executor(name, args)
     );
     deps.resolveAgentTools = async () => ({
-      tools: [],
+      tools: [{
+        name: "unix_time",
+        parameters: {
+          type: "object",
+          properties: {},
+          additionalProperties: false,
+        },
+      }],
       executor: dispatch,
     });
     deps.runToolMiddleware = createRunToolMiddleware(new RuntimeGuardrailEngine([{

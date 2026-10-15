@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "status": "classified",
+  "entries": [
+    {
+      "id": "PROD-TOOL-001",
+      "classification": "runtime_failure",
+      "fixture": "prod-tool-001.sanitized.json",
+      "deliveryFixture": "prod-tool-001.delivery.sanitized.json"
+    },
+    {
+      "id": "PROD-NEGATIVE-001",
+      "classification": "expected_api_rejection",
+      "fixture": "prod-negative-001.sanitized.json"
+    },
+    {
+      "id": "HARNESS-001",
+      "classification": "harness_defect",
+      "fixture": "harness-001.sanitized.json"
+    }
+  ]
+}

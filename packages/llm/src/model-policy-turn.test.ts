@@ -68,6 +68,38 @@ describe("runModelPolicyTurn", () => {
     expect(outputs).toEqual([output, output]);
   });
 
+  it("allows buffered terminal output to fall back after invalid committed text", async () => {
+    const attempted: string[] = [];
+
+    const result = await runModelPolicyTurn({
+      selection: {
+        primary: "zai/glm-5.3-flash",
+        fallbacks: ["openai/gpt-5.2"],
+      },
+      messages,
+      output: Output.json(),
+      allowCommittedFallback: true,
+      resolveAttempt: (attempt) => {
+        attempted.push(attempt.model);
+        return { model: fakeModel(attempt.model) };
+      },
+      classifyError: error => ({
+        class: "unknown",
+        retryable: false,
+        message: error instanceof Error ? error.message : "invalid output",
+      }),
+      runAttempt: async (_input, onEvent) => {
+        await onEvent?.({ type: "text-delta", id: "terminal", text: "buffered" });
+        if (attempted.length === 1) throw new Error("schema-invalid terminal output");
+        return { ...fakeResult('{"ok":true}'), output: { ok: true } };
+      },
+    });
+
+    expect(attempted).toEqual(["zai/glm-5.3-flash", "openai/gpt-5.2"]);
+    expect(result.output).toEqual({ ok: true });
+    expect(result.selectedAttempt.model).toBe("openai/gpt-5.2");
+  });
+
   it("preserves active tool selection across provider fallback attempts", async () => {
     const activeToolsByAttempt: Array<readonly string[] | undefined> = [];
     const tools = {

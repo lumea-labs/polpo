@@ -35,6 +35,7 @@ import {
   isClientInteractionToolName,
   LoopInteractiveToolUnsupportedError,
   LoopAgentOutputError,
+  ToolProgressTracker,
   prepareLoopAgentOutput,
   assertToolNameAllowedByPolicy,
 } from "@polpo-ai/core";
@@ -108,6 +109,8 @@ export interface ResolvedModelInfo {
   runtimeMode?: "provider" | "gateway";
   contextWindow: number;
   maxTokens: number;
+  /** Capability proof for the concrete provider/model/adapter/endpoint. */
+  capabilities?: import("@polpo-ai/llm").ModelRuntimeCapabilities;
 }
 
 export interface CompletionResolvedModelInfo {
@@ -437,7 +440,66 @@ export async function runAgentStepCompletion(options: {
       runId: options.runId,
       sessionId: options.sessionId,
     },
+    receiptStore: options.toolRunScope?.receiptStore,
   });
+  const progressTracker = new ToolProgressTracker();
+  const toolAnnotations = new Map(
+    loopTools
+      .filter((tool) => tool && typeof tool.name === "string")
+      .map((tool) => [tool.name, tool.annotations]),
+  );
+  let stalledToolLoop:
+    | { toolName: string; fingerprint: string; observation: number; message: string }
+    | undefined;
+  const guardedExecuteTool = executeTool;
+  executeTool = async (name, args, execution) => {
+    const call = {
+      name,
+      args,
+      annotations: toolAnnotations.get(name),
+    };
+    const progress = progressTracker.inspect(call);
+    if (progress.action === "reuse") {
+      deps.emit("runtime:tool-progress", {
+        action: "reuse",
+        tool: name,
+        fingerprint: progress.fingerprint,
+        observation: progress.observation,
+        step: stepName,
+        agent: agentConfig.name,
+        runId: options.runId,
+        sessionId: options.sessionId,
+      });
+      return progress.result;
+    }
+    if (progress.action === "stall") {
+      stalledToolLoop = {
+        toolName: name,
+        fingerprint: progress.fingerprint,
+        observation: progress.observation,
+        message: progress.message,
+      };
+      deps.emit("runtime:tool-progress", {
+        action: "stall",
+        code: progress.code,
+        tool: name,
+        fingerprint: progress.fingerprint,
+        observation: progress.observation,
+        step: stepName,
+        agent: agentConfig.name,
+        runId: options.runId,
+        sessionId: options.sessionId,
+      });
+      return `Error: ${progress.message}`;
+    }
+    const result = await guardedExecuteTool(name, args, execution);
+    progressTracker.record({
+      ...call,
+      result,
+      isError: result.startsWith("Error:"),
+    });
+    return result;
+  };
   const modelToolChoice = toAIToolChoice(agentConfig.toolChoice);
   let modelTools = loopTools;
   let activeToolNames: (() => string[]) | undefined;
@@ -494,10 +556,142 @@ export async function runAgentStepCompletion(options: {
   let totalUsage: LanguageModelUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 } as LanguageModelUsage;
   let lastProviderMetadata: Record<string, unknown> | undefined;
   const toolCallsAccum: any[] = [];
-  let structuredOutputRecoveryUsed = false;
+
+  const completeTerminalStructuredOutput = async () => {
+    if (modelOutput === undefined) return;
+
+    let originalDiagnostic: ReturnType<typeof classifyRuntimeError> | undefined;
+    for (let attemptIndex = 0; attemptIndex < 2; attemptIndex += 1) {
+      const isRecovery = attemptIndex === 1;
+      if (isRecovery) {
+        const { raw: _raw, ...original } = originalDiagnostic!;
+        deps.emit("runtime:structured-output-recovery", {
+          phase: "started",
+          step: stepName,
+          agent: agentConfig.name,
+          runId: options.runId,
+          sessionId: options.sessionId,
+          original,
+        });
+      }
+
+      const resolvedAttempts = new Map<number, typeof initialResolved>();
+      try {
+        const terminalResult = await runModelPolicyTurn({
+          selection: modelSelection,
+          resolveAttempt: async (attempt) => {
+            const resolvedAttempt = attempt.index === 0
+              ? initialResolved
+              : await deps.resolveAgentModel(
+                  agentConfigForModelAttempt(agentConfig, attempt.model),
+                  reasoning,
+                );
+            resolvedAttempts.set(attempt.index, resolvedAttempt);
+            return {
+              model: resolvedAttempt.model.aiModel,
+              maxOutputTokens: resolvedAttempt.model.maxTokens,
+              providerOptions: resolvedAttempt.providerOptions,
+              capabilities: resolvedAttempt.model.capabilities,
+            };
+          },
+          preserveSingleAttemptError: true,
+          allowCommittedFallback: true,
+          maxRecoverableStreamRetries: 0,
+          system: isRecovery
+            ? `${fullSystemPrompt}\n\n## Terminal structured output recovery\n\nAll operational work is already complete. Produce only the terminal JSON matching the requested schema from the canonical tool results. Do not call tools, modify files, reinterpret the requested scope, or claim work not evidenced by those results.`
+            : `${fullSystemPrompt}\n\n## Terminal structured output\n\nOperational work is complete. Produce only the terminal result matching the requested schema from the canonical conversation and tool results.`,
+          messages,
+          output: modelOutput,
+          ...(options.signal ? { abortSignal: options.signal } : {}),
+        });
+        if (terminalResult.toolCalls.length > 0 || terminalResult.output === undefined) {
+          throw new Error(
+            terminalResult.toolCalls.length > 0
+              ? "Terminal structured-output phase returned a tool call"
+              : "Terminal structured-output phase completed without structured output",
+          );
+        }
+        for (const warning of terminalResult.warnings ?? []) {
+          deps.emit("runtime:model-warning", {
+            source: "loop-step-terminal-output",
+            step: stepName,
+            agent: agentConfig.name,
+            runId: options.runId,
+            sessionId: options.sessionId,
+            warning,
+          });
+        }
+
+        const prepared = prepareLoopAgentOutput(
+          stepName,
+          terminalResult.output,
+          outputSchema,
+        );
+        const selectedResolved = resolvedAttempts.get(terminalResult.selectedAttempt.index);
+        if (selectedResolved) {
+          m = selectedResolved.model;
+          providerOpts = selectedResolved.providerOptions;
+        }
+        totalUsage = addUsage(totalUsage, terminalResult.usage);
+        finalReasoning = appendReasoningSummary(finalReasoning, terminalResult.reasoning);
+        lastProviderMetadata = terminalResult.providerMetadata as Record<string, unknown> | undefined;
+        finalOutput = prepared.value;
+        finalText = prepared.serialized;
+        completedStructuredOutput = true;
+        if (isRecovery) {
+          deps.emit("runtime:structured-output-recovery", {
+            phase: "succeeded",
+            step: stepName,
+            agent: agentConfig.name,
+            runId: options.runId,
+            sessionId: options.sessionId,
+          });
+        }
+        return;
+      } catch (error) {
+        const diagnostic = classifyRuntimeError(error);
+        if (!isRecovery) {
+          originalDiagnostic = diagnostic;
+          continue;
+        }
+
+        const { raw: _originalRaw, ...original } = originalDiagnostic!;
+        const { raw: _recoveryRaw, ...recovery } = diagnostic;
+        deps.emit("runtime:structured-output-recovery", {
+          phase: "failed",
+          step: stepName,
+          agent: agentConfig.name,
+          runId: options.runId,
+          sessionId: options.sessionId,
+          original,
+          recovery,
+        });
+        throw new LoopAgentOutputError(
+          "loop_agent_output_invalid",
+          stepName,
+          `Agent step ${JSON.stringify(stepName)} did not produce valid structured output after one terminal recovery attempt`,
+          {
+            phase: "terminal_output_recovery",
+            original,
+            recovery,
+          },
+          { cause: error },
+        );
+      }
+    }
+  };
 
   try {
-    for (let turn = 0; turn < (agentConfig.maxTurns ?? MAX_TURNS); turn++) {
+    const hasOperationalTools = Object.keys(aiTools).length > 0;
+    if (outputSchema !== undefined && !hasOperationalTools) {
+      await completeTerminalStructuredOutput();
+    }
+
+    for (
+      let turn = 0;
+      !completedStructuredOutput && turn < (agentConfig.maxTurns ?? MAX_TURNS);
+      turn++
+    ) {
       const compactionResult = await compactIfNeeded({
         systemPrompt: fullSystemPrompt,
         messages,
@@ -518,88 +712,6 @@ export async function runAgentStepCompletion(options: {
 
       const toolCallNames = new Map<string, string>();
       const resolvedAttempts = new Map<number, typeof initialResolved>();
-      const recoverTerminalStructuredOutput = async (originalError: unknown) => {
-        const originalClassification = classifyRuntimeError(originalError);
-        const hasCompletedOperationalTool = toolCallsAccum.some(
-          (toolCall) => toolCall?.state === "completed",
-        );
-        if (
-          structuredOutputRecoveryUsed
-          || modelOutput === undefined
-          || !hasCompletedOperationalTool
-          || originalClassification.providerCode === "provider_stream_event_invalid"
-        ) {
-          return undefined;
-        }
-
-        structuredOutputRecoveryUsed = true;
-        const { raw: _originalRaw, ...originalDiagnostic } = originalClassification;
-        deps.emit("runtime:structured-output-recovery", {
-          phase: "started",
-          step: stepName,
-          agent: agentConfig.name,
-          runId: options.runId,
-          sessionId: options.sessionId,
-          original: originalDiagnostic,
-        });
-
-        try {
-          const recoveryResult = await runModelPolicyTurn({
-            selection: modelSelection,
-            resolveAttempt: async (attempt) => {
-              const resolvedAttempt = attempt.index === 0
-                ? initialResolved
-                : await deps.resolveAgentModel(
-                    agentConfigForModelAttempt(agentConfig, attempt.model),
-                    reasoning,
-                  );
-              resolvedAttempts.set(attempt.index, resolvedAttempt);
-              return {
-                model: resolvedAttempt.model.aiModel,
-                maxOutputTokens: resolvedAttempt.model.maxTokens,
-                providerOptions: resolvedAttempt.providerOptions,
-              };
-            },
-            preserveSingleAttemptError: true,
-            maxRecoverableStreamRetries: 0,
-            system: `${fullSystemPrompt}\n\n## Terminal structured output recovery\n\nAll operational work is already complete. Produce only the terminal JSON matching the requested schema from the canonical tool results. Do not call tools, modify files, reinterpret the requested scope, or claim work not evidenced by those results.`,
-            messages,
-            output: modelOutput,
-            ...(options.signal ? { abortSignal: options.signal } : {}),
-          });
-          deps.emit("runtime:structured-output-recovery", {
-            phase: "succeeded",
-            step: stepName,
-            agent: agentConfig.name,
-            runId: options.runId,
-            sessionId: options.sessionId,
-          });
-          return recoveryResult;
-        } catch (recoveryError) {
-          const recoveryClassification = classifyRuntimeError(recoveryError);
-          const { raw: _recoveryRaw, ...recoveryDiagnostic } = recoveryClassification;
-          deps.emit("runtime:structured-output-recovery", {
-            phase: "failed",
-            step: stepName,
-            agent: agentConfig.name,
-            runId: options.runId,
-            sessionId: options.sessionId,
-            original: originalDiagnostic,
-            recovery: recoveryDiagnostic,
-          });
-          throw new LoopAgentOutputError(
-            "loop_agent_output_invalid",
-            stepName,
-            `Agent step ${JSON.stringify(stepName)} did not produce valid structured output after one terminal recovery attempt`,
-            {
-              phase: "terminal_output_recovery",
-              original: originalDiagnostic,
-              recovery: recoveryDiagnostic,
-            },
-            { cause: recoveryError },
-          );
-        }
-      };
       let turnResult;
       try {
         turnResult = await runModelPolicyTurn({
@@ -613,6 +725,7 @@ export async function runAgentStepCompletion(options: {
               model: resolvedAttempt.model.aiModel,
               maxOutputTokens: resolvedAttempt.model.maxTokens,
               providerOptions: resolvedAttempt.providerOptions,
+              capabilities: resolvedAttempt.model.capabilities,
             };
           },
           preserveSingleAttemptError: true,
@@ -624,10 +737,18 @@ export async function runAgentStepCompletion(options: {
           ...(options.parallelToolCalls !== undefined
             ? { parallelToolCalls: options.parallelToolCalls }
             : {}),
-          ...(modelOutput ? { output: modelOutput } : {}),
           ...(options.signal ? { abortSignal: options.signal } : {}),
         }, async (event) => {
-          if (event.type === "tool-input-start") {
+          if (event.type === "warning") {
+            deps.emit("runtime:model-warning", {
+              source: "loop-step",
+              step: stepName,
+              agent: agentConfig.name,
+              runId: options.runId,
+              sessionId: options.sessionId,
+              warning: event.warning,
+            });
+          } else if (event.type === "tool-input-start") {
             toolCallNames.set(event.id, event.name);
             await onToolCall?.({
               id: event.id,
@@ -655,34 +776,15 @@ export async function runAgentStepCompletion(options: {
         });
       } catch (error) {
         if (outputSchema !== undefined && isStructuredModelOutputError(error)) {
-          const recoveryResult = await recoverTerminalStructuredOutput(error);
-          if (recoveryResult) {
-            turnResult = recoveryResult;
-          } else {
-            throw new LoopAgentOutputError(
-              "loop_agent_output_invalid",
-              stepName,
-              `Agent step ${JSON.stringify(stepName)} did not produce valid structured output`,
-              { phase: "model_output" },
-              { cause: error },
-            );
-          }
+          throw new LoopAgentOutputError(
+            "loop_agent_output_invalid",
+            stepName,
+            `Agent step ${JSON.stringify(stepName)} failed during the operational phase`,
+            { phase: "operational" },
+            { cause: error },
+          );
         } else {
           throw error;
-        }
-      }
-
-      if (
-        outputSchema !== undefined
-        && turnResult.toolCalls.length === 0
-        && turnResult.output === undefined
-      ) {
-        const recoveryResult = await recoverTerminalStructuredOutput(
-          new Error("Model completed without structured output"),
-        );
-        if (recoveryResult) {
-          totalUsage = addUsage(totalUsage, turnResult.usage);
-          turnResult = recoveryResult;
         }
       }
 
@@ -707,22 +809,7 @@ export async function runAgentStepCompletion(options: {
 
       if (turnResult.toolCalls.length === 0) {
         if (outputSchema !== undefined) {
-          if (turnResult.output === undefined) {
-            throw new LoopAgentOutputError(
-              "loop_agent_output_invalid",
-              stepName,
-              `Agent step ${JSON.stringify(stepName)} completed without structured output`,
-              { phase: "model_output" },
-            );
-          }
-          const prepared = prepareLoopAgentOutput(
-            stepName,
-            turnResult.output,
-            outputSchema,
-          );
-          finalOutput = prepared.value;
-          finalText = prepared.serialized;
-          completedStructuredOutput = true;
+          await completeTerminalStructuredOutput();
         }
         break;
       }
@@ -826,6 +913,29 @@ export async function runAgentStepCompletion(options: {
           await appendLocalResult(call, callArgs, result, result.startsWith("Error:"));
         }
       }
+      if (stalledToolLoop) break;
+    }
+
+    if (stalledToolLoop) {
+      throw new LoopAgentOutputError(
+        "tool_loop_stalled",
+        stepName,
+        stalledToolLoop.message,
+        {
+          phase: "tool_progress",
+          tool: stalledToolLoop.toolName,
+          fingerprint: stalledToolLoop.fingerprint,
+          observation: stalledToolLoop.observation,
+        },
+      );
+    }
+
+    if (
+      outputSchema !== undefined
+      && !completedStructuredOutput
+      && toolCallsAccum.some((toolCall) => toolCall?.state === "completed")
+    ) {
+      await completeTerminalStructuredOutput();
     }
 
     if (outputSchema !== undefined && !completedStructuredOutput) {
