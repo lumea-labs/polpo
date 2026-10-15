@@ -155,7 +155,9 @@ export function registerLinkCommand(program: Command): void {
         : creds.baseUrl;
 
       let apiKey;
-      if (identity?.credential.type === "environment") {
+      if (identity?.credential.type === "environment" || (identity?.credential.type === "mixed" && environment === "production"
+        && identity.projects.some(candidate => candidate.id === project.id
+          && candidate.environments.some(target => target.name === environment)))) {
         clack.log.info(`Using your existing ${environment} key for CLI access. No additional key was created.`);
       } else {
         s.start("Generating API key...");

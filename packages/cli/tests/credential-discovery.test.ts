@@ -5,6 +5,7 @@ import { createApiClient } from "../src/commands/cloud/api.js";
 import { saveCredentials } from "../src/commands/cloud/config.js";
 import { resolveDefaultOrg } from "../src/util/org.js";
 import { getProject, listProjects } from "../src/util/project.js";
+import { assertCredentialTarget, readCredentialIdentity } from "../src/util/credential-identity.js";
 
 vi.mock("../src/commands/cloud/config.js", () => ({ loadCredentials: () => null, saveCredentials: vi.fn() }));
 vi.mock("../src/commands/cloud/prompt.js", () => ({ isTTY: () => false }));
@@ -36,6 +37,18 @@ describe("CLI credential discovery", () => {
     await login();
     expect(saveCredentials).toHaveBeenCalledWith(credentials.apiKey, credentials.baseUrl);
     expect(fetcher.mock.calls.every(([url]) => url.endsWith("/v1/credentials/current"))).toBe(true);
+  });
+  it("models a shared Live key during a project-by-project Production migration", async () => {
+    const mixed = { ...identity,
+      credential: { id: "shared", type: "mixed", environment: "production", legacyEnvironment: "live" },
+      projects: [{ ...identity.projects[0], environments: [{ id: "prod-one", name: "production" }] },
+        { id: "legacy-project", name: "Legacy", slug: "legacy", environments: [] }] };
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json(mixed)));
+    const parsed = await readCredentialIdentity(createApiClient(credentials));
+    expect(parsed?.credential.type).toBe("mixed");
+    expect(() => assertCredentialTarget(parsed, "production", "project-one")).not.toThrow();
+    expect(() => assertCredentialTarget(parsed, "development", "project-one")).toThrow(/Development key/);
+    expect(() => assertCredentialTarget(parsed, "production", "legacy-project")).toThrow(/has not migrated/);
   });
   it.each([401, 403, 500])("never falls back to account discovery after identity HTTP %s", async status => {
     const fetcher = vi.fn(async () => Response.json({ error: "unavailable" }, { status }));

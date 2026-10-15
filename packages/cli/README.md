@@ -27,8 +27,12 @@ that user's current organization membership on subsequent requests. For CI,
 `polpo login --api-key KEY` accepts an ordinary environment key and discovers
 only its authorized projects; it does not grant organization administration.
 A Production key still requires `--prod`. Deploy and link reject a mismatched
-key before local writes. Existing Live/Test keys need an explicit migration
-or replacement; their names or prefixes never select Development.
+key before local writes. During a gradual Cloud migration, a legacy Live key
+may be reported as `mixed`: it authorizes Production only for projects already
+migrated and remains legacy Live for its other projects. The CLI accepts it with
+`--prod` only for one of those bound projects. It never authorizes Development.
+Existing Test keys need explicit replacement; their names or prefixes never
+select Development.
 
 There is one local definition tree, not one codebase per environment:
 

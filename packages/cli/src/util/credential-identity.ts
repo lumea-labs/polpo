@@ -4,7 +4,7 @@ import type { ApiClient, ApiResponse } from "../commands/cloud/api.js";
 export interface CredentialIdentity {
   credential: {
     id: string;
-    type: "account" | "environment" | "legacy";
+    type: "account" | "environment" | "legacy" | "mixed";
     environment: ProjectEnvironment | null;
     legacyEnvironment?: "live" | "test";
   };
@@ -22,15 +22,15 @@ function parseIdentity(value: unknown): CredentialIdentity {
   const invalid = () => new Error("Invalid credential identity response from the API.");
   if (!record(value) || !record(value.credential) || !record(value.organization) || !Array.isArray(value.projects)) throw invalid();
   const key = value.credential, org = value.organization;
-  if (!string(key.id) || !["account", "environment", "legacy"].includes(String(key.type))
-    || (key.type === "environment" ? !environment(key.environment) : key.environment !== null)
-    || (key.type === "legacy" && key.legacyEnvironment !== "live" && key.legacyEnvironment !== "test")
+  if (!string(key.id) || !["account", "environment", "legacy", "mixed"].includes(String(key.type))
+    || (key.type === "environment" || key.type === "mixed" ? !environment(key.environment) : key.environment !== null)
+    || ((key.type === "legacy" || key.type === "mixed") && key.legacyEnvironment !== "live" && key.legacyEnvironment !== "test")
     || !string(org.id) || !string(org.name) || !string(org.slug)) throw invalid();
   const projects = value.projects.map(project => {
     if (!record(project) || !string(project.id) || !string(project.name) || !string(project.slug) || !Array.isArray(project.environments)) throw invalid();
     const environments = project.environments.map(candidate => {
       if (!record(candidate) || !string(candidate.id) || !environment(candidate.name)
-        || (key.type === "environment" && candidate.name !== key.environment)) throw invalid();
+        || ((key.type === "environment" || key.type === "mixed") && candidate.name !== key.environment)) throw invalid();
       return { id: candidate.id, name: candidate.name };
     });
     if (new Set(environments.map(candidate => candidate.name)).size !== environments.length) throw invalid();
@@ -39,7 +39,7 @@ function parseIdentity(value: unknown): CredentialIdentity {
   if (new Set(projects.map(project => project.id)).size !== projects.length) throw invalid();
   return { credential: { id: key.id, type: key.type as CredentialIdentity["credential"]["type"],
     environment: key.environment as ProjectEnvironment | null,
-    ...(key.type === "legacy" ? { legacyEnvironment: key.legacyEnvironment as "live" | "test" } : {}) },
+    ...(key.type === "legacy" || key.type === "mixed" ? { legacyEnvironment: key.legacyEnvironment as "live" | "test" } : {}) },
     organization: { id: org.id, name: org.name, slug: org.slug }, projects };
 }
 
@@ -75,6 +75,14 @@ export function assertCredentialTarget(identity: CredentialIdentity | null, targ
   if (!identity) return;
   const key = identity.credential;
   if (key.type === "legacy") throw new Error("Legacy API keys require migration before deploying to Development or Production. Run polpo login or create an environment key.");
+  if (key.type === "mixed") {
+    if (target !== "production") throw new Error("This migrating legacy key authorizes Production only; use a Development key for the Development environment.");
+    if (projectId && !identity.projects.some(project => project.id === projectId
+      && project.environments.some(candidate => candidate.name === target))) {
+      throw new Error(`Project ${projectId} has not migrated this credential to Production yet.`);
+    }
+    return;
+  }
   if (key.type !== "environment") return;
   if (key.environment !== target) {
     throw new Error(`This key belongs to ${key.environment}; ${key.environment === "production" ? "use --prod explicitly or a Development key" : "use a Production key for --prod"}.`);

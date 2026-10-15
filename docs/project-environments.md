@@ -25,9 +25,13 @@ either target. Deploy does not transfer credentials or accumulated memory.
 Cloud login distinguishes the administrator's CLI authorization from ordinary
 environment keys. CI can validate a key and discover its authorized projects
 without organization-wide administration. A Production key does not change the
-CLI default: `--prod` remains required. The server verifies authority for every
-request; discovery is a local preflight, not a cached permission grant. These
-flows require the matching Cloud implementation and coordinated release.
+CLI default: `--prod` remains required. During a gradual Cloud migration, the
+same legacy Live key may be `mixed`: Production-bound for migrated projects and
+legacy Live for the remaining ones. It can be used with `--prod` only for a
+project whose returned binding is Production, and never for Development. Test
+keys require replacement. The server verifies authority for every request;
+discovery is a local preflight, not a cached permission grant. These flows
+require the matching Cloud implementation and coordinated release.
 
 ## Self-hosted runtime
 

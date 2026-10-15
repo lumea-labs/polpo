@@ -56,6 +56,8 @@ async function loginWithApiKey(apiKey: string, baseUrl: string): Promise<void> {
   clack.log.success("Credentials saved.");
   if (identity?.credential.type === "environment") {
     clack.log.info(`Key environment: ${identity.credential.environment}. CLI commands still default to Development; use --prod for Production.`);
+  } else if (identity?.credential.type === "mixed") {
+    clack.log.info("This legacy key is migrating project by project. It can access Production for migrated projects and legacy Live elsewhere.");
   }
   await autoResolveProject(apiKey, baseUrl, identity);
   clack.outro(pc.green("Logged in."));
