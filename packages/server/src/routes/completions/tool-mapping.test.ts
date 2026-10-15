@@ -2,6 +2,12 @@ import { describe, expect, it, vi } from "vitest";
 import { generateText } from "ai";
 import { MockLanguageModelV3 } from "ai/test";
 import {
+  MAX_TOOL_INPUT_BYTES,
+  assertToolInputSchemasAdmitted,
+  directProviderRuntimeCapabilities,
+  prepareToolsForRuntimeCapabilities,
+} from "@polpo-ai/llm";
+import {
   persistAssistantMessage,
   toAITools,
   toPortableToolInputSchema,
@@ -685,36 +691,23 @@ describe("toPortableToolInputSchema", () => {
       },
       $schema: "https://json-schema.org/draft/2020-12/schema",
     });
+    await expect(assertToolInputSchemasAdmitted(tools)).rejects.toThrow(
+      'Invalid input schema for tool "malformed"',
+    );
   });
 
-  it("fails closed for unknown schema dialects", async () => {
-    const tools = toAITools([{
+  it("fails admission for unknown schema dialects instead of widening the schema", () => {
+    expect(() => toAITools([{
       name: "unknown_draft",
       parameters: {
         $schema: "https://example.com/unknown-schema-dialect",
         type: "object",
       },
-    }]);
-
-    expect(
-      await (tools.unknown_draft!.inputSchema as any).validate({}),
-    ).toEqual(
-      expect.objectContaining({
-        success: false,
-        error: expect.objectContaining({
-          message: expect.stringContaining("Unsupported JSON Schema dialect"),
-        }),
-      }),
-    );
-    expect((tools.unknown_draft!.inputSchema as any).jsonSchema).toEqual({
-      type: "object",
-      properties: {},
-      additionalProperties: false,
-    });
+    }])).toThrow("Unsupported JSON Schema dialect");
   });
 
-  it("rejects external references before the validator can perform network I/O", async () => {
-    const tools = toAITools([{
+  it("rejects external references during admission before provider network I/O", () => {
+    expect(() => toAITools([{
       name: "external_ref",
       parameters: {
         $schema: "https://json-schema.org/draft/2020-12/schema",
@@ -723,25 +716,27 @@ describe("toPortableToolInputSchema", () => {
           payload: { $ref: "https://attacker.example/schema.json" },
         },
       },
-    }]);
+    }])).toThrow("External tool schema references are not supported");
+  });
 
-    expect(
-      await (tools.external_ref!.inputSchema as any).validate({ payload: {} }),
-    ).toEqual(
-      expect.objectContaining({
-        success: false,
-        error: expect.objectContaining({
-          message: expect.stringContaining(
-            "External tool schema references are not supported",
-          ),
-        }),
-      }),
+  it("defers provider-native strictness to the concrete runtime capability", () => {
+    const tools = toAITools([
+      { name: "local", parameters: { type: "object" }, strictness: "execution" },
+      { name: "preferred", parameters: { type: "object" }, strictness: "provider-preferred" },
+      { name: "required", parameters: { type: "object" }, strictness: "provider-required" },
+    ]);
+
+    expect(tools.local!.strict).toBeUndefined();
+    expect(tools.preferred!.strict).toBeUndefined();
+    expect(tools.required!.strict).toBeUndefined();
+
+    const prepared = prepareToolsForRuntimeCapabilities(
+      tools,
+      directProviderRuntimeCapabilities("openai"),
     );
-    expect((tools.external_ref!.inputSchema as any).jsonSchema).toEqual({
-      type: "object",
-      properties: {},
-      additionalProperties: false,
-    });
+    expect(prepared.tools!.local!.strict).toBeUndefined();
+    expect(prepared.tools!.preferred!.strict).toBe(true);
+    expect(prepared.tools!.required!.strict).toBe(true);
   });
 
   it("does not interpret references embedded in literal instance values", async () => {
@@ -766,7 +761,7 @@ describe("toPortableToolInputSchema", () => {
   });
 
   it("fails closed for non-JSON schema values without poisoning structural cache entries", async () => {
-    const malformed = toAITools([{
+    expect(() => toAITools([{
       name: "malformed_runtime_value",
       parameters: {
         type: "object",
@@ -777,7 +772,7 @@ describe("toPortableToolInputSchema", () => {
           },
         },
       },
-    }]);
+    }])).toThrow("non-JSON function");
     const valid = toAITools([{
       name: "valid_runtime_value",
       parameters: {
@@ -788,18 +783,6 @@ describe("toPortableToolInputSchema", () => {
       },
     }]);
 
-    expect(
-      await (malformed.malformed_runtime_value!.inputSchema as any).validate({
-        value: 1,
-      }),
-    ).toEqual(
-      expect.objectContaining({
-        success: false,
-        error: expect.objectContaining({
-          message: expect.stringContaining("non-JSON function"),
-        }),
-      }),
-    );
     expect(
       await (valid.valid_runtime_value!.inputSchema as any).validate({
         value: 1,
@@ -915,5 +898,43 @@ describe("toPortableToolInputSchema", () => {
         }),
       }),
     ]);
+  });
+
+  it.each([
+    ["non-finite number", { value: Number.NaN }, /finite/],
+    ["prototype pollution key", JSON.parse('{"__proto__":{"polluted":true}}'), /not allowed/],
+  ])("rejects unsafe %s before execution validation", async (_label, value, pattern) => {
+    const tools = toAITools([{
+      name: "safe_input",
+      parameters: { type: "object", additionalProperties: true },
+    }]);
+    const result = await (tools.safe_input!.inputSchema as any).validate(value);
+    expect(result).toMatchObject({ success: false, error: expect.any(Error) });
+    expect(result.error.message).toMatch(pattern as RegExp);
+  });
+
+  it("rejects oversized and excessively deep tool inputs before schema evaluation", async () => {
+    const tools = toAITools([{
+      name: "bounded_input",
+      parameters: { type: "object", additionalProperties: true },
+    }]);
+    const validate = (tools.bounded_input!.inputSchema as any).validate;
+    const oversized = { value: "x".repeat(MAX_TOOL_INPUT_BYTES + 1) };
+    await expect(validate(oversized)).resolves.toMatchObject({
+      success: false,
+      error: expect.objectContaining({ message: expect.stringMatching(/bytes/) }),
+    });
+
+    let deep: Record<string, unknown> = {};
+    const root = deep;
+    for (let depth = 0; depth < 130; depth += 1) {
+      const next: Record<string, unknown> = {};
+      deep.next = next;
+      deep = next;
+    }
+    await expect(validate(root)).resolves.toMatchObject({
+      success: false,
+      error: expect.objectContaining({ message: expect.stringMatching(/depth/) }),
+    });
   });
 });

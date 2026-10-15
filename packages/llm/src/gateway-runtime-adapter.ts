@@ -18,6 +18,7 @@ import {
   extractGatewayMetadataDetails,
   extractLanguageModelUsage,
 } from "./runtime-normalization.js";
+import { UNKNOWN_MODEL_RUNTIME_CAPABILITIES } from "./model-runtime-capabilities.js";
 
 export interface GatewayRuntimeAdapterOptions {
   config?: GatewayConfig;
@@ -34,6 +35,11 @@ export function createGatewayRuntimeAdapter(options: GatewayRuntimeAdapterOption
 
   return {
     mode: "gateway",
+    resolveCapabilities() {
+      // The requested family is known, but the final provider and its handling
+      // of strict fields can change behind the gateway route.
+      return { ...UNKNOWN_MODEL_RUNTIME_CAPABILITIES };
+    },
     createLanguageModel(input: CreateModelInput) {
       const { provider, modelId } = splitGatewayModelRef(input.ref);
       return createGatewayModel(provider, modelId, options.config);

@@ -28,7 +28,17 @@ function isJsonObject(value: unknown): value is JsonObject {
 
 const toolInputValidatorCache = new WeakMap<object, ToolInputValidator>();
 const structuralValidatorCache = new Map<string, ToolInputValidator>();
+const toolSchemaSources = new WeakMap<object, JsonObject>();
+const schemaAdmissionCache = new WeakMap<object, Promise<void>>();
+const structuralAdmissionCache = new Map<string, Promise<void>>();
 const MAX_STRUCTURAL_VALIDATORS = 256;
+export const MAX_TOOL_SCHEMA_BYTES = 256 * 1024;
+export const MAX_TOOL_SCHEMA_DEPTH = 64;
+export const MAX_TOOL_SCHEMA_NODES = 20_000;
+export const MAX_TOOL_INPUT_BYTES = 1024 * 1024;
+export const MAX_TOOL_INPUT_DEPTH = 128;
+export const MAX_TOOL_INPUT_NODES = 100_000;
+const DANGEROUS_INPUT_KEYS = new Set(["__proto__", "prototype", "constructor"]);
 const validatorNamespace =
   typeof globalThis.crypto?.randomUUID === "function"
     ? globalThis.crypto.randomUUID()
@@ -86,11 +96,19 @@ function cloneJsonValue(value: unknown): unknown {
 }
 
 function structuralSchemaKey(schema: JsonObject): string {
-  const pending: unknown[] = [schema];
+  const pending: Array<{ value: unknown; depth: number }> = [{ value: schema, depth: 0 }];
   const visited = new WeakSet<object>();
+  let nodes = 0;
 
   while (pending.length > 0) {
-    const value = pending.pop();
+    const { value, depth } = pending.pop()!;
+    nodes += 1;
+    if (nodes > MAX_TOOL_SCHEMA_NODES) {
+      throw new Error(`JSON Schema exceeds ${MAX_TOOL_SCHEMA_NODES} nodes.`);
+    }
+    if (depth > MAX_TOOL_SCHEMA_DEPTH) {
+      throw new Error(`JSON Schema exceeds depth ${MAX_TOOL_SCHEMA_DEPTH}.`);
+    }
     if (
       value === null ||
       typeof value === "string" ||
@@ -126,10 +144,72 @@ function structuralSchemaKey(schema: JsonObject): string {
       }
     }
 
-    pending.push(...Object.values(value));
+    pending.push(...Object.values(value).map((nested) => ({
+      value: nested,
+      depth: depth + 1,
+    })));
   }
 
-  return JSON.stringify(schema);
+  const serialized = JSON.stringify(schema);
+  if (new TextEncoder().encode(serialized).byteLength > MAX_TOOL_SCHEMA_BYTES) {
+    throw new Error(`JSON Schema exceeds ${MAX_TOOL_SCHEMA_BYTES} bytes.`);
+  }
+  return serialized;
+}
+
+function assertSafeToolInputValue(value: unknown): void {
+  const pending: Array<{ value: unknown; depth: number }> = [{ value, depth: 0 }];
+  const visited = new WeakSet<object>();
+  let nodes = 0;
+  while (pending.length > 0) {
+    const current = pending.pop()!;
+    nodes += 1;
+    if (nodes > MAX_TOOL_INPUT_NODES) {
+      throw new Error(`Tool input exceeds ${MAX_TOOL_INPUT_NODES} nodes.`);
+    }
+    if (current.depth > MAX_TOOL_INPUT_DEPTH) {
+      throw new Error(`Tool input exceeds depth ${MAX_TOOL_INPUT_DEPTH}.`);
+    }
+    const nested = current.value;
+    if (nested === null || typeof nested === "string" || typeof nested === "boolean") continue;
+    if (typeof nested === "number") {
+      if (!Number.isFinite(nested)) throw new Error("Tool input numbers must be finite.");
+      continue;
+    }
+    if (!nested || typeof nested !== "object") {
+      throw new Error(`Tool input contains a non-JSON ${typeof nested} value.`);
+    }
+    if (visited.has(nested)) throw new Error("Tool input must not be cyclic.");
+    visited.add(nested);
+    if (!Array.isArray(nested)) {
+      const prototype = Object.getPrototypeOf(nested);
+      if (prototype !== Object.prototype && prototype !== null) {
+        throw new Error("Tool input must contain only plain JSON objects.");
+      }
+      const descriptors = Object.getOwnPropertyDescriptors(nested);
+      for (const [key, descriptor] of Object.entries(descriptors)) {
+        if (DANGEROUS_INPUT_KEYS.has(key)) {
+          throw new Error(`Tool input key ${JSON.stringify(key)} is not allowed.`);
+        }
+        if ("get" in descriptor || "set" in descriptor) {
+          throw new Error("Tool input must not contain accessors.");
+        }
+      }
+    }
+    pending.push(...Object.values(nested).map((entry) => ({
+      value: entry,
+      depth: current.depth + 1,
+    })));
+  }
+  let serialized: string;
+  try {
+    serialized = JSON.stringify(value);
+  } catch {
+    throw new Error("Tool input must be JSON serializable.");
+  }
+  if (new TextEncoder().encode(serialized).byteLength > MAX_TOOL_INPUT_BYTES) {
+    throw new Error(`Tool input exceeds ${MAX_TOOL_INPUT_BYTES} bytes.`);
+  }
 }
 
 function portableSchemaValue(value: unknown): unknown {
@@ -346,17 +426,13 @@ function validationError(
 
 function modelFacingToolInputSchema(input: unknown): JsonObject {
   if (!isJsonObject(input)) {
-    return { type: "object", properties: {}, additionalProperties: false };
+    throw new Error("Tool input schema must be a JSON object.");
   }
 
-  try {
-    schemaDialect(input);
-    assertSelfContainedSchema(input);
-    structuralSchemaKey(input);
-    return toPortableToolInputSchema(input);
-  } catch {
-    return { type: "object", properties: {}, additionalProperties: false };
-  }
+  schemaDialect(input);
+  assertSelfContainedSchema(input);
+  structuralSchemaKey(input);
+  return toPortableToolInputSchema(input);
 }
 
 async function compileToolInputSchema(
@@ -427,6 +503,14 @@ function toolInputValidator(schema: unknown): ToolInputValidator {
 
   let compiledSchema: Promise<CompiledSchemaValidator> | undefined;
   const validator: ToolInputValidator = async (value) => {
+    try {
+      assertSafeToolInputValue(value);
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error : new Error(String(error)),
+      };
+    }
     compiledSchema ??= compileToolInputSchema(schema);
 
     let schemaValidator: CompiledSchemaValidator;
@@ -465,9 +549,110 @@ function toolInputValidator(schema: unknown): ToolInputValidator {
 }
 
 export function toValidatedToolInputSchema(input: unknown) {
-  return jsonSchema(modelFacingToolInputSchema(input), {
+  const modelFacingSchema = modelFacingToolInputSchema(input);
+  const schema = jsonSchema(modelFacingSchema, {
     validate: toolInputValidator(input),
   });
+  toolSchemaSources.set(schema as object, input as JsonObject);
+  return schema;
+}
+
+/**
+ * Recompile one admitted AI SDK schema for the concrete runtime route.
+ * Verified provider routes receive the untouched canonical schema. Unknown
+ * compatible routes retain the conservative portable form while the same
+ * canonical validator remains attached at the execution boundary.
+ */
+export function compileToolInputSchemaForRuntime(
+  inputSchema: unknown,
+  options: { preserveCanonicalConstraints: boolean },
+): {
+  inputSchema: unknown;
+  constraintsLocalOnly: boolean;
+} {
+  if (!isJsonObject(inputSchema)) {
+    return { inputSchema, constraintsLocalOnly: false };
+  }
+  // Only schemas admitted by toValidatedToolInputSchema carry the canonical
+  // source needed for recompilation. Preserve third-party/custom AI SDK
+  // schema wrappers byte-for-byte, including their custom validator.
+  const canonical = toolSchemaSources.get(inputSchema);
+  if (!canonical) return { inputSchema, constraintsLocalOnly: false };
+
+  const providerSchema = options.preserveCanonicalConstraints
+    ? cloneJsonValue(canonical) as JsonObject
+    : modelFacingToolInputSchema(canonical);
+  const constraintsLocalOnly = structuralSchemaKey(providerSchema)
+    !== structuralSchemaKey(canonical);
+  const compiled = jsonSchema(providerSchema, {
+    validate: toolInputValidator(canonical),
+  });
+  toolSchemaSources.set(compiled as object, canonical);
+  return { inputSchema: compiled, constraintsLocalOnly };
+}
+
+/**
+ * Compile every model-visible function schema before provider inference.
+ * This prevents malformed canonical schemas from being silently widened or
+ * discovered only after a model has already spent a turn generating a call.
+ */
+export async function assertToolInputSchemasAdmitted(
+  tools: Record<string, unknown> | undefined,
+): Promise<void> {
+  for (const [name, rawTool] of Object.entries(tools ?? {})) {
+    if (!isJsonObject(rawTool)) continue;
+    if (
+      typeof rawTool.type === "string"
+      && rawTool.type !== "function"
+      && rawTool.type !== "dynamic"
+    ) {
+      continue;
+    }
+    const inputSchema = rawTool.inputSchema;
+    if (!isJsonObject(inputSchema)) {
+      throw new Error(`Invalid input schema for tool ${JSON.stringify(name)}: schema wrapper is missing.`);
+    }
+    const canonical = toolSchemaSources.get(inputSchema)
+      ?? (isJsonObject(inputSchema.jsonSchema) ? inputSchema.jsonSchema : undefined);
+    if (!canonical) continue;
+
+    try {
+      await admitJsonSchema(canonical);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(
+        `Invalid input schema for tool ${JSON.stringify(name)}: ${message}`,
+        { cause: error },
+      );
+    }
+  }
+}
+
+async function admitJsonSchema(schema: JsonObject): Promise<void> {
+  const cached = schemaAdmissionCache.get(schema);
+  if (cached) return await cached;
+
+  const structuralKey = structuralSchemaKey(schema);
+  const structural = structuralAdmissionCache.get(structuralKey);
+  if (structural) {
+    schemaAdmissionCache.set(schema, structural);
+    return await structural;
+  }
+
+  if (schema.$async === true) {
+    throw new Error("$async is not supported by edge-safe runtime validation.");
+  }
+  const admission = (async () => {
+    await compileToolInputSchema(schema);
+  })();
+  schemaAdmissionCache.set(schema, admission);
+  structuralAdmissionCache.set(structuralKey, admission);
+  try {
+    await admission;
+  } catch (error) {
+    structuralAdmissionCache.delete(structuralKey);
+    throw error;
+  }
 }
 
 /** Validate a deterministic tool call through the same schema path as model calls. */

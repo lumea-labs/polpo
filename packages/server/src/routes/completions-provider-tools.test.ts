@@ -716,7 +716,15 @@ describe("completionRoutes loop agent-step tool streaming", () => {
         providerOptions: undefined,
       }),
       resolveAgentTools: async () => ({
-        tools: [],
+        tools: [{
+          name: "bash",
+          parameters: {
+            type: "object",
+            additionalProperties: false,
+            required: ["command"],
+            properties: { command: { type: "string" } },
+          },
+        }],
         executor: async (name, args) => {
           if (name !== "bash") return `Error: Unknown tool "${name}"`;
           return `ran ${(args as any).command}`;
@@ -791,7 +799,18 @@ describe("completionRoutes loop agent-step tool streaming", () => {
     const executor = vi.fn(async (_name: string, args: Record<string, unknown>) =>
       `ran ${args.command}`
     );
-    deps.resolveAgentTools = async () => ({ tools: [], executor });
+    deps.resolveAgentTools = async () => ({
+      tools: [{
+        name: "bash",
+        parameters: {
+          type: "object",
+          additionalProperties: false,
+          required: ["command"],
+          properties: { command: { type: "string" } },
+        },
+      }],
+      executor,
+    });
     deps.runToolMiddleware = createRunToolMiddleware(new RuntimeGuardrailEngine([{
       id: "rewrite-command",
       phases: ["tool.before"],

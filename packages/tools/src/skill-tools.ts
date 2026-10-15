@@ -30,6 +30,12 @@ export function createSkillListTool(skills: readonly LoadedSkill[]): PolpoTool<a
     label: "List Skills",
     description:
       "List the skills assigned to this agent with compact descriptions. Use this before deciding which skill_read call is needed.",
+    annotations: {
+      readOnlyHint: true,
+      idempotentHint: true,
+      openWorldHint: false,
+      resultStability: "stable",
+    },
     parameters: Type.Object({}, { additionalProperties: false }),
     requiresSandbox: false,
     execute: async () => ({
@@ -57,6 +63,12 @@ export function createSkillReadTool(
     label: "Read Skill",
     description:
       "Read an assigned skill bundle. Omit path or leave it blank to load SKILL.md plus its textual references automatically. Set path only for one exact bundle resource that was omitted or is needed explicitly. Never use workspace file tools for skill resources.",
+    annotations: {
+      readOnlyHint: true,
+      idempotentHint: true,
+      openWorldHint: false,
+      resultStability: "stable",
+    },
     parameters: Type.Object({
       name: Type.String({
         description: `Assigned skill name. Allowed values: ${[...byName.keys()].join(", ")}`,

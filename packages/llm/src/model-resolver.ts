@@ -16,6 +16,8 @@ import { createProviderRuntimeAdapter } from "./provider-runtime-adapter.js";
 import { resolveApiKey, resolveApiKeyAsync, hasOAuthProfiles, PROVIDER_ENV_MAP } from "./api-keys.js";
 import type { GatewayConfig } from "./gateway-config.js";
 import type { ModelRuntimeAdapter, ModelRuntimeMode } from "./model-runtime.js";
+import type { ModelRuntimeCapabilities } from "./model-runtime-capabilities.js";
+import { UNKNOWN_MODEL_RUNTIME_CAPABILITIES } from "./model-runtime-capabilities.js";
 
 // ─── ResolvedModel ───────────────────────────────────
 
@@ -44,6 +46,8 @@ export interface ResolvedModel {
   runtimeMode?: ModelRuntimeMode;
   /** Runtime adapter used to create the model, when resolution went through the adapter boundary. */
   runtimeAdapter?: ModelRuntimeAdapter;
+  /** Capabilities of this concrete runtime route, used before provider I/O. */
+  capabilities?: ModelRuntimeCapabilities;
   /** The AI SDK model instance to pass to generateText/streamText. */
   aiModel: LanguageModel;
 }
@@ -163,6 +167,7 @@ export function resolveModel(spec?: string, opts?: ResolveModelOptions): Resolve
         contextWindow: customDef.contextWindow ?? 200_000,
         maxTokens: customDef.maxTokens ?? 8192,
         runtimeMode: "provider",
+        capabilities: { ...UNKNOWN_MODEL_RUNTIME_CAPABILITIES },
         aiModel,
       };
     }
@@ -178,6 +183,7 @@ export function resolveModel(spec?: string, opts?: ResolveModelOptions): Resolve
       contextWindow: 200_000,
       maxTokens: 8192,
       runtimeMode: "provider",
+      capabilities: { ...UNKNOWN_MODEL_RUNTIME_CAPABILITIES },
       aiModel,
     };
   }
@@ -215,6 +221,10 @@ export function resolveModel(spec?: string, opts?: ResolveModelOptions): Resolve
       maxTokens: 8192,
       runtimeMode: "provider",
       runtimeAdapter: providerAdapter,
+      capabilities: providerAdapter.resolveCapabilities?.({
+        ref: { provider, model: modelId },
+        context: {},
+      }) ?? { ...UNKNOWN_MODEL_RUNTIME_CAPABILITIES },
       aiModel,
     };
   }
@@ -249,6 +259,10 @@ export function resolveModel(spec?: string, opts?: ResolveModelOptions): Resolve
       },
       runtimeMode: "gateway",
       runtimeAdapter: gatewayAdapter,
+      capabilities: gatewayAdapter.resolveCapabilities?.({
+        ref: { provider, model: modelId },
+        context: {},
+      }) ?? { ...UNKNOWN_MODEL_RUNTIME_CAPABILITIES },
       aiModel,
     };
   }
@@ -265,6 +279,10 @@ export function resolveModel(spec?: string, opts?: ResolveModelOptions): Resolve
     maxTokens: 8192,
     runtimeMode: "gateway",
     runtimeAdapter: gatewayAdapter,
+    capabilities: gatewayAdapter.resolveCapabilities?.({
+      ref: { provider, model: modelId },
+      context: {},
+    }) ?? { ...UNKNOWN_MODEL_RUNTIME_CAPABILITIES },
     aiModel,
   };
 }

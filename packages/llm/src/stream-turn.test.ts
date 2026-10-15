@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { jsonSchema, Output } from "ai";
 import { MockLanguageModelV3, convertArrayToReadableStream } from "ai/test";
 import {
@@ -8,6 +8,11 @@ import {
   streamModelTurn,
   type ModelTurnEvent,
 } from "./stream-turn.js";
+import { toValidatedToolInputSchema } from "./tool-schema.js";
+import {
+  directProviderRuntimeCapabilities,
+  markToolStrictness,
+} from "./model-runtime-capabilities.js";
 
 const openAIGatewayTransport = {
   provider: "gateway",
@@ -36,6 +41,138 @@ function mockModel(parts: unknown[]) {
 }
 
 describe("streamModelTurn", () => {
+  it("returns and emits provider warnings instead of dropping them", async () => {
+    const warning = { type: "unsupported-setting", setting: "strict", details: "ignored" };
+    const model = mockModel([
+      { type: "stream-start", warnings: [warning] },
+      { type: "text-start", id: "text" },
+      { type: "text-delta", id: "text", delta: "done" },
+      { type: "text-end", id: "text" },
+      { type: "finish", finishReason: { unified: "stop", raw: undefined }, usage: usage() },
+    ]);
+    const events: ModelTurnEvent[] = [];
+
+    const result = await streamModelTurn({
+      model,
+      messages: [{ role: "user", content: "run" }],
+    }, (event) => { events.push(event); });
+
+    expect(result.warnings).toEqual([warning]);
+    expect(events).toContainEqual({ type: "warning", warning });
+  });
+
+  it("rejects malformed tool schemas before invoking the provider", async () => {
+    const doStream = vi.fn();
+    const model = new MockLanguageModelV3({ doStream });
+
+    await expect(streamModelTurn({
+      model,
+      messages: [{ role: "user", content: "run" }],
+      tools: {
+        malformed: {
+          inputSchema: toValidatedToolInputSchema({
+            type: "object",
+            properties: { value: { type: "number", minimum: "invalid" } },
+          }),
+        },
+      },
+    })).rejects.toThrow('Invalid input schema for tool "malformed"');
+
+    expect(doStream).not.toHaveBeenCalled();
+  });
+
+  it("rejects required provider strictness before invoking an unproved route", async () => {
+    const doStream = vi.fn();
+    const model = new MockLanguageModelV3({ doStream });
+
+    await expect(streamModelTurn({
+      model,
+      messages: [{ role: "user", content: "run" }],
+      tools: {
+        write: markToolStrictness({
+          inputSchema: toValidatedToolInputSchema({ type: "object" }),
+        }, "provider-required"),
+      },
+    })).rejects.toMatchObject({ code: "tool_capability_unsupported" });
+
+    expect(doStream).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    {
+      label: "required choice with no tools",
+      request: { toolChoice: "required" as const },
+      code: "tool_choice_invalid",
+    },
+    {
+      label: "forced invisible tool",
+      request: {
+        tools: { visible: { inputSchema: jsonSchema({ type: "object" }) } },
+        activeTools: ["visible"],
+        toolChoice: { type: "tool" as const, toolName: "hidden" },
+      } as any,
+      code: "tool_choice_invalid",
+    },
+    {
+      label: "combined operational tools and terminal output",
+      request: {
+        tools: { lookup: { inputSchema: jsonSchema({ type: "object" }) } },
+        output: Output.json(),
+      },
+      code: "output_capability_unsupported",
+    },
+  ])("rejects $label before provider I/O", async ({ request, code }) => {
+    const doStream = vi.fn();
+    const model = new MockLanguageModelV3({ doStream });
+
+    await expect(streamModelTurn({
+      model,
+      messages: [{ role: "user", content: "run" }],
+      ...request,
+    } as any)).rejects.toMatchObject({ code });
+
+    expect(doStream).not.toHaveBeenCalled();
+  });
+
+  it("sends native strictness only when the concrete route declares support", async () => {
+    let seenTools: unknown;
+    const model = new MockLanguageModelV3({
+      doStream: async (options) => {
+        seenTools = options.tools;
+        return {
+          stream: convertArrayToReadableStream([
+            { type: "stream-start", warnings: [] },
+            { type: "finish", finishReason: { unified: "stop", raw: undefined }, usage: usage() },
+          ] as any[]),
+        };
+      },
+    });
+
+    await streamModelTurn({
+      model,
+      messages: [{ role: "user", content: "run" }],
+      capabilities: directProviderRuntimeCapabilities("openai"),
+      tools: {
+        lookup: markToolStrictness({
+          inputSchema: toValidatedToolInputSchema({
+            type: "object",
+            properties: { count: { type: "integer", minimum: 2 } },
+            required: ["count"],
+          }),
+        }, "provider-preferred"),
+      },
+    });
+
+    expect(seenTools).toEqual([expect.objectContaining({
+      type: "function",
+      name: "lookup",
+      strict: true,
+      inputSchema: expect.objectContaining({
+        properties: { count: expect.objectContaining({ minimum: 2 }) },
+      }),
+    })]);
+  });
+
   it("drops duplicate and empty tool-call ids before local execution", async () => {
     const model = new MockLanguageModelV3({
       doStream: async () => ({
@@ -1112,7 +1249,7 @@ describe("streamModelTurn", () => {
     expect(result.text).toBe('{"name":"Ada","plan":"pro"}');
   });
 
-  it("does not parse a structured output on an intermediate tool-call turn", async () => {
+  it("does not parse structured output on an explicitly conformant combined tool-call turn", async () => {
     const model = mockModel([
       { type: "stream-start", warnings: [] },
       { type: "tool-call", toolCallId: "call_1", toolName: "lookup", input: "{}" },
@@ -1127,6 +1264,10 @@ describe("streamModelTurn", () => {
           description: "Lookup data",
           inputSchema: jsonSchema({ type: "object", properties: {} }),
         },
+      },
+      capabilities: {
+        ...directProviderRuntimeCapabilities("openai"),
+        combinedToolsAndOutput: "conformant",
       },
       output: Output.object({
         schema: jsonSchema({

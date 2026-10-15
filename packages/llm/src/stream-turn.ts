@@ -15,10 +15,17 @@ import {
   type TypedToolResult,
 } from "ai";
 import type { NormalizedModelError } from "./model-runtime.js";
+import { assertToolInputSchemasAdmitted } from "./tool-schema.js";
+import {
+  createEffectiveTurnPlan,
+  type EffectiveTurnPlan,
+  type ModelRuntimeCapabilities,
+} from "./model-runtime-capabilities.js";
 
 export type ModelTurnErrorInfo = Omit<NormalizedModelError, "raw">;
 
 export type ModelTurnEvent<TOOLS extends ToolSet = ToolSet> =
+  | { type: "warning"; warning: unknown }
   | { type: "reasoning-delta"; id: string; text: string }
   | { type: "text-delta"; id: string; text: string }
   | { type: "tool-input-start"; id: string; name: string; providerExecuted?: boolean; dynamic?: boolean; title?: string }
@@ -53,6 +60,9 @@ export type ModelTurnResult<TOOLS extends ToolSet = ToolSet> = {
   finishReason: FinishReason;
   rawFinishReason?: string;
   providerMetadata?: ProviderMetadata;
+  warnings?: unknown[];
+  /** Immutable plan admitted before the provider request. */
+  plan: EffectiveTurnPlan;
   responseMessages: unknown[];
   response?: Awaited<StreamTextResult<TOOLS, any>["response"]>;
 };
@@ -72,6 +82,10 @@ export type StreamModelTurnInput<TOOLS extends ToolSet = ToolSet> = {
   providerOptions?: Record<string, unknown>;
   abortSignal?: AbortSignal;
   output?: Output.Output<unknown, unknown, unknown>;
+  /** Capability proof for the concrete provider/model/adapter/endpoint. */
+  capabilities?: ModelRuntimeCapabilities;
+  /** Called after local admission and before any provider network I/O. */
+  onPlan?: (plan: EffectiveTurnPlan) => void | Promise<void>;
 };
 
 export function providerOptionsWithParallelToolCalls(
@@ -547,6 +561,12 @@ export async function streamModelTurn<TOOLS extends ToolSet = ToolSet>(
   input: StreamModelTurnInput<TOOLS>,
   onEvent?: (event: ModelTurnEvent<TOOLS>) => void | Promise<void>,
 ): Promise<ModelTurnResult<TOOLS>> {
+  const admitted = createEffectiveTurnPlan(input);
+  await assertToolInputSchemasAdmitted(admitted.preparedTools as Record<string, unknown> | undefined);
+  await input.onPlan?.(admitted.plan);
+  for (const warning of admitted.plan.warnings) {
+    await onEvent?.({ type: "warning", warning });
+  }
   const providerOptions = providerOptionsWithParallelToolCalls(
     input.providerOptions,
     input.parallelToolCalls,
@@ -555,7 +575,7 @@ export async function streamModelTurn<TOOLS extends ToolSet = ToolSet>(
     model: input.model,
     ...(input.system ? { system: input.system } : {}),
     messages: prepareModelMessagesForTransport(input.messages, input.model),
-    ...(input.tools ? { tools: input.tools } : {}),
+    ...(admitted.preparedTools ? { tools: admitted.preparedTools } : {}),
     ...(input.activeTools ? { activeTools: input.activeTools } : {}),
     ...(input.toolChoice ? { toolChoice: input.toolChoice } : {}),
     maxRetries: input.maxRetries ?? 2,
@@ -651,11 +671,14 @@ export async function streamModelTurn<TOOLS extends ToolSet = ToolSet>(
   const providerMetadataPromise = Promise.resolve()
     .then(() => result.providerMetadata)
     .catch(() => undefined);
+  const warningsPromise = Promise.resolve()
+    .then(() => result.warnings)
+    .catch(() => undefined);
   const toolResultsPromise = Promise.resolve()
     .then(() => result.toolResults)
     .catch(() => [] as TypedToolResult<TOOLS>[]);
 
-  const [toolCalls, toolResults, usage, totalUsage, finishReason, rawFinishReason, response, providerMetadata] =
+  const [toolCalls, toolResults, usage, totalUsage, finishReason, rawFinishReason, response, providerMetadata, warnings] =
     await Promise.all([
       result.toolCalls,
       toolResultsPromise,
@@ -665,7 +688,11 @@ export async function streamModelTurn<TOOLS extends ToolSet = ToolSet>(
       result.rawFinishReason,
       responsePromise,
       providerMetadataPromise,
+      warningsPromise,
     ]);
+  for (const warning of warnings ?? []) {
+    await onEvent?.({ type: "warning", warning });
+  }
   const output = input.output && toolCalls.length === 0
     ? await result.output
     : undefined;
@@ -681,6 +708,8 @@ export async function streamModelTurn<TOOLS extends ToolSet = ToolSet>(
     finishReason,
     rawFinishReason,
     providerMetadata,
+    warnings: [...admitted.plan.warnings, ...(warnings ?? [])],
+    plan: admitted.plan,
     responseMessages: normalizeResponseMessagesForHistory(response?.messages ?? []),
     response,
   };

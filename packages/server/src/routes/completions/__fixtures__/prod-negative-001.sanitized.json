@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "id": "PROD-NEGATIVE-001",
+  "classification": "expected_api_rejection",
+  "source": {
+    "artifactSha256": "cdd0a55274922132b68ecfff28025b45e10949f0092eab073a31cc100f7e7875",
+    "harnessSha256": "5c885fb30b717c1dac96531875bbbc21c4995b4e6ad314d18b0bb4fe0a984a44"
+  },
+  "request": {
+    "agent": "fixture-agent",
+    "stream": true,
+    "tool_choice": "none",
+    "messages": [
+      {
+        "role": "user",
+        "content": "Confirm the acceptance test without using tools."
+      }
+    ],
+    "polpo": {
+      "capabilities": {
+        "suggestions": false
+      },
+      "delivery": {
+        "onDisconnect": "continue"
+      }
+    }
+  },
+  "expected": {
+    "httpStatus": 400,
+    "runCreated": false,
+    "message": "tool_choice requires at least one request tool"
+  }
+}

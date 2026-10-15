@@ -302,7 +302,7 @@ describe("F1c parity: inline vs run", () => {
     );
   });
 
-  it("streams json_schema output and confirms the canonical JSON identically", async () => {
+  it("buffers json_schema output and publishes canonical JSON identically", async () => {
     const messages = [{ role: "user", content: "Return a profile" }];
     const response = '\n{\n  "name": "Ada",\n  "tier": "paid"\n}';
 
@@ -314,22 +314,21 @@ describe("F1c parity: inline vs run", () => {
     setMockModel(mockTurnSequenceModel([{ type: "text", text: response }]));
     const viaRun = await postStream({ messages, response_format: profileResponseFormat });
 
-    // Raw JSON streams as OpenAI content deltas (leading whitespace held back).
-    expect(content(inline)).toBe(response.trimStart());
+    // Strict output is invisible until its terminal schema validation succeeds.
+    expect(content(inline)).toBe('{"name":"Ada","tier":"paid"}');
     expect(content(viaRun)).toBe(content(inline));
     expect(inline.filter((chunk) => (chunk.choices as any)?.[0]?.delta?.content).length)
-      .toBeGreaterThan(1);
+      .toBe(1);
     expect(viaRun.filter((chunk) => (chunk.choices as any)?.[0]?.delta?.content).length)
-      .toBeGreaterThan(1);
-    // The validated canonical JSON closes the stream.
-    expect(structuredEvents(inline)).toEqual([
-      { state: "complete", content: '{"name":"Ada","tier":"paid"}' },
-    ]);
+      .toBe(1);
+    // The OpenAI content delta is itself the validated terminal value; no
+    // provisional Polpo extension is needed.
+    expect(structuredEvents(inline)).toEqual([]);
     expect(structuredEvents(viaRun)).toEqual(structuredEvents(inline));
     expect(finishReason(viaRun)).toBe("stop");
   });
 
-  it("withdraws JSON-looking text from a turn that ends in tool calls", async () => {
+  it("never exposes JSON-looking operational text from a turn that ends in tool calls", async () => {
     const messages = [{ role: "user", content: "Use a tool, then return a profile" }];
     const sequence = () => mockTurnSequenceModel([
       {
@@ -349,13 +348,9 @@ describe("F1c parity: inline vs run", () => {
     setMockModel(sequence());
     const viaRun = await postStream({ messages, response_format: profileResponseFormat });
 
-    const expected = [
-      { state: "reset" },
-      { state: "complete", content: '{"name":"Ada","tier":"free"}' },
-    ];
-    expect(structuredEvents(inline)).toEqual(expected);
-    expect(structuredEvents(viaRun)).toEqual(expected);
-    expect(content(inline)).toBe('{"draft":true}{"name":"Ada","tier":"free"}');
+    expect(structuredEvents(inline)).toEqual([]);
+    expect(structuredEvents(viaRun)).toEqual([]);
+    expect(content(inline)).toBe('{"name":"Ada","tier":"free"}');
     expect(content(viaRun)).toBe(content(inline));
   });
 
@@ -407,9 +402,9 @@ describe("F1c parity: inline vs run", () => {
       code: "invalid_response_format_output",
       param: "response_format",
     });
-    // The raw JSON already streamed; the terminal error tells clients to discard it.
-    expect(content(inline)).toBe(invalid);
-    expect(content(viaRun)).toBe(invalid);
+    // Invalid terminal output was buffered and never reached the client.
+    expect(content(inline)).toBe("");
+    expect(content(viaRun)).toBe("");
     expect(structuredEvents(inline)).toEqual([]);
     expect(structuredEvents(viaRun)).toEqual([]);
   });

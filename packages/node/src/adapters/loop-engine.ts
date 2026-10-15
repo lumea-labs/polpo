@@ -41,8 +41,8 @@ import {
   runModelPolicyTurn,
   isStructuredModelOutputError,
   modelOutputForJsonSchema,
-  StructuredOutputDeltaGate,
   classifyRuntimeError,
+  markToolStrictness,
   toValidatedToolInputSchema,
   validateToolInput,
 } from "@polpo-ai/llm";
@@ -98,10 +98,14 @@ import {
 function toToolDeclarations(polpoTools: PolpoTool[]): ToolSet {
   const toolSet: ToolSet = {};
   for (const pt of polpoTools) {
-    toolSet[pt.name] = aiTool({
+    toolSet[pt.name] = markToolStrictness(aiTool({
       description: pt.description,
-      inputSchema: toValidatedToolInputSchema(pt.parameters),
-    });
+      inputSchema: toValidatedToolInputSchema(pt.parameters ?? {
+        type: "object",
+        properties: {},
+        additionalProperties: false,
+      }),
+    }), pt.strictness);
   }
   return toolSet;
 }
@@ -491,6 +495,7 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
     let lastStepText = "";
     let accumText = resume?.accumText ?? "";
     let completedStructuredOutput = false;
+    let interruptedForClientTool = false;
     const providerToolResults = new Map<string, { content: string; isError: boolean }>();
 
     const renderProviderResult = (value: unknown): string => {
@@ -509,6 +514,129 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
         providerOptions,
       });
       return response.text;
+    };
+
+    const completeTerminalStructuredOutput = async () => {
+      if (!modelOutput) return;
+      let originalDiagnostic: ReturnType<typeof classifyRuntimeError> | undefined;
+
+      for (let attemptIndex = 0; attemptIndex < 2; attemptIndex += 1) {
+        const isRecovery = attemptIndex === 1;
+        const resolvedAttempts = new Map<number, Pick<SpawnPrep, "model" | "providerOptions">>();
+        try {
+          const terminal = await runModelPolicyTurn({
+            selection: modelSelection,
+            resolveAttempt: async (attempt) => {
+              const resolvedAttempt = attempt.index === 0
+                ? primaryResolved
+                : inject
+                  ? await inject.resolveModelAttempt?.(attempt.model) as Pick<SpawnPrep, "model" | "providerOptions"> | undefined
+                  : resolveSpawnModelAttempt(sessionAgent, attempt.model, ctx);
+              if (!resolvedAttempt) {
+                throw new Error(`No model resolver is available for fallback "${attempt.model}"`);
+              }
+              resolvedAttempts.set(attempt.index, resolvedAttempt);
+              return {
+                model: resolvedAttempt.model.aiModel,
+                maxOutputTokens: resolvedAttempt.model.maxTokens,
+                providerOptions: resolvedAttempt.providerOptions,
+                capabilities: resolvedAttempt.model.capabilities,
+              };
+            },
+            preserveSingleAttemptError: true,
+            allowCommittedFallback: true,
+            maxRecoverableStreamRetries: 0,
+            system: isRecovery
+              ? `${systemPrompt}\n\n## Terminal structured output recovery\n\nOperational work is complete. Produce only the terminal result matching the requested schema from the canonical conversation and tool results. Do not call tools or repeat side effects.`
+              : `${systemPrompt}\n\n## Terminal structured output\n\nOperational work is complete. Produce only the terminal result matching the requested schema from the canonical conversation and tool results.`,
+            messages,
+            output: modelOutput as any,
+            abortSignal: abortController.signal,
+          });
+          if (terminal.toolCalls.length > 0 || terminal.output === undefined) {
+            throw new Error(
+              terminal.toolCalls.length > 0
+                ? "Terminal structured-output phase returned a tool call"
+                : "Terminal structured-output phase completed without structured output",
+            );
+          }
+          for (const warning of terminal.warnings ?? []) {
+            emitTranscript({
+              type: "model_warning",
+              phase: "terminal-output",
+              warning,
+            });
+          }
+
+          const selectedResolved = resolvedAttempts.get(terminal.selectedAttempt.index);
+          if (selectedResolved) {
+            model = selectedResolved.model;
+            providerOptions = selectedResolved.providerOptions;
+          }
+          activity.totalTokens += terminal.usage.totalTokens ?? 0;
+          activity.lastUpdate = new Date().toISOString();
+
+          const rawText = outputSchema !== undefined
+            ? prepareLoopAgentOutput(loopName, terminal.output, outputSchema).serialized
+            : JSON.stringify(terminal.output);
+          let guardedText = rawText && ctx?.runOutputPolicy
+            ? (await ctx.runOutputPolicy.evaluate({
+                output: rawText,
+                mode: ctx.runOutputPolicyMode ?? "enforce",
+                context: {
+                  agent: sessionAgent.name,
+                  runId: ctx.runId,
+                  source: "task",
+                  surface: "task",
+                },
+                signal: abortController.signal,
+              })).output
+            : rawText;
+          if (outputSchema !== undefined) {
+            guardedText = prepareLoopAgentOutput(
+              loopName,
+              maybeParseJson(guardedText),
+              outputSchema,
+            ).serialized;
+          }
+
+          if (guardedText) {
+            try { ctx?.onDelta?.({ text: guardedText }); } catch { /* subscriber can't sink the run */ }
+            activity.summary = guardedText.slice(0, 200);
+            emitTranscript({ type: "assistant", text: guardedText });
+            accumText += guardedText;
+          }
+          lastStepText = guardedText;
+          completedStructuredOutput = true;
+          if (inject) {
+            emitTranscript({
+              type: "usage",
+              usage: terminal.usage,
+              providerMetadata: terminal.providerMetadata,
+            });
+          }
+          return;
+        } catch (error) {
+          if (!isRecovery) {
+            originalDiagnostic = classifyRuntimeError(error);
+            continue;
+          }
+          const original = originalDiagnostic
+            ? (() => {
+                const { raw: _raw, ...diagnostic } = originalDiagnostic;
+                return diagnostic;
+              })()
+            : undefined;
+          const { raw: _raw, ...recovery } = classifyRuntimeError(error);
+          throw new LoopAgentOutputError(
+            "loop_agent_output_invalid",
+            loopName,
+            `Agent step ${JSON.stringify(loopName)} did not produce valid structured output after one terminal recovery attempt`,
+            { phase: "terminal_output_recovery", original, recovery },
+            { cause: error },
+          );
+        }
+      }
     };
 
     // ── LoopRunner model callback: one model turn per runner step ──
@@ -554,11 +682,6 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
       }
 
       let stepText = "";
-      // Chat injections stream a structured answer's raw JSON as it arrives;
-      // the validated serialization still follows once the step completes.
-      const structuredGate = inject && hasStructuredOutput
-        ? new StructuredOutputDeltaGate()
-        : undefined;
       const toolCalls: LoopToolCall[] = [];
       const seenModelToolCallIds = new Set<string>();
       const resolvedAttempts = new Map<number, Pick<SpawnPrep, "model" | "providerOptions">>();
@@ -580,6 +703,7 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
               model: resolvedAttempt.model.aiModel,
               maxOutputTokens: resolvedAttempt.model.maxTokens,
               providerOptions: resolvedAttempt.providerOptions,
+              capabilities: resolvedAttempt.model.capabilities,
             };
           },
           preserveSingleAttemptError: true,
@@ -591,10 +715,17 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
           ...(inject?.parallelToolCalls !== undefined
             ? { parallelToolCalls: inject.parallelToolCalls }
             : {}),
-          ...(hasStructuredOutput ? { output: modelOutput as any } : {}),
           abortSignal: abortController.signal,
         }, (event) => {
         switch (event.type) {
+          case "warning": {
+            emitTranscript({
+              type: "model_warning",
+              phase: "operational",
+              warning: event.warning,
+            });
+            break;
+          }
           case "reasoning-delta": {
             // Chat parity (F1c): surface model reasoning as a thinking delta.
             if (inject) { try { ctx?.onDelta?.({ text: event.text, kind: "reasoning" }); } catch { /* subscriber can't sink the run */ } }
@@ -606,11 +737,6 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
             // stays turn-granularity for persistence). Best-effort.
             if (!hasStructuredOutput) {
               try { ctx?.onDelta?.({ text: event.text }); } catch { /* a delta subscriber can't sink the run */ }
-            } else {
-              const structuredText = structuredGate?.push(event.text);
-              if (structuredText) {
-                try { ctx?.onDelta?.({ text: structuredText, kind: "structured" }); } catch { /* a delta subscriber can't sink the run */ }
-              }
             }
             break;
           }
@@ -663,6 +789,7 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
             // returned to the caller to execute — never dispatched here. Not
             // pushing it to toolCalls ⇒ the turn ends with no executable tools.
             if (inject && inject.clientSideToolNames.has(event.name)) {
+              interruptedForClientTool = true;
               emitTranscript({
                 type: "client_tool_call",
                 toolId: event.id,
@@ -754,23 +881,9 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
       }
       activity.lastUpdate = new Date().toISOString();
 
-      if (structuredGate?.streamed && toolCalls.length > 0) {
-        try { ctx?.onDelta?.({ text: "", kind: "structured-reset" }); } catch { /* a delta subscriber can't sink the run */ }
-      }
-
       let rawText: string;
       if (hasStructuredOutput) {
-        if (toolCalls.length === 0 && turn.output !== undefined) {
-          if (outputSchema !== undefined) {
-            const prepared = prepareLoopAgentOutput(loopName, turn.output, outputSchema);
-            rawText = prepared.serialized;
-            completedStructuredOutput = true;
-          } else {
-            rawText = JSON.stringify(turn.output);
-          }
-        } else {
-          rawText = "";
-        }
+        rawText = "";
       } else {
         rawText = stepText || (toolCalls.length === 0 ? turn.text : "");
       }
@@ -787,10 +900,6 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
             signal: abortController.signal,
           })).output
         : rawText;
-
-      if (hasStructuredOutput && toolCalls.length === 0 && guardedText) {
-        try { ctx?.onDelta?.({ text: guardedText }); } catch { /* a delta subscriber can't sink the run */ }
-      }
 
       if (guardedText) {
         activity.summary = guardedText.slice(0, 200);
@@ -906,7 +1015,8 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
       : undefined;
 
     const runner = new LoopRunner();
-    await runner.run({
+    if (!(hasStructuredOutput && Object.keys(toolSet).length === 0)) {
+      await runner.run({
       agent: sessionAgent,
       loop: { ...loop, name: loopName },
       maxTurns,
@@ -956,9 +1066,19 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
         }
       },
       onTurnCheckpoint,
-    });
+      });
+    }
 
-    if (outputSchema !== undefined && !completedStructuredOutput) {
+    if (
+      hasStructuredOutput
+      && !completedStructuredOutput
+      && !interruptedForClientTool
+      && !abortController.signal.aborted
+    ) {
+      await completeTerminalStructuredOutput();
+    }
+
+    if (outputSchema !== undefined && !completedStructuredOutput && !interruptedForClientTool) {
       throw new LoopAgentOutputError(
         "loop_agent_output_invalid",
         loopName,

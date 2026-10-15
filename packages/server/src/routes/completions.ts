@@ -118,6 +118,8 @@ export { CompletionRuntimeError } from "./completions/runtime-error.js";
  */
 export interface CompletionToolRunScope {
   id: string;
+  /** Atomic store shared by every tool boundary in this resumable Run. */
+  receiptStore?: import("@polpo-ai/core").ToolExecutionReceiptStore;
   cleanup?: () => Promise<void>;
 }
 

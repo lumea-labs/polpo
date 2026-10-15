@@ -318,14 +318,16 @@ describe("spawnLoopEngine — project loop graphs", () => {
       },
     });
 
-    let turn = 0;
+    let operationalTurn = 0;
     const responseFormats: unknown[] = [];
+    const toolCounts: number[] = [];
     activeResolvedModel = mockResolvedModel(new MockLanguageModelV3({
       doStream: async (options) => {
         responseFormats.push(options.responseFormat);
-        turn += 1;
+        toolCounts.push(options.tools?.length ?? 0);
+        if (!options.responseFormat) operationalTurn += 1;
         return {
-          stream: convertArrayToReadableStream(turn === 1
+          stream: convertArrayToReadableStream(!options.responseFormat && operationalTurn === 1
             ? [
                 { type: "stream-start", warnings: [] },
                 { type: "text-start", id: "preface" },
@@ -339,7 +341,9 @@ describe("spawnLoopEngine — project loop graphs", () => {
             : [
                 { type: "stream-start", warnings: [] },
                 { type: "text-start", id: "final" },
-                { type: "text-delta", id: "final", delta: '{"summary":"implemented","response":"ready"}' },
+                { type: "text-delta", id: "final", delta: options.responseFormat
+                  ? '{"summary":"implemented","response":"ready"}'
+                  : "Operational work complete." },
                 { type: "text-end", id: "final" },
                 { type: "finish", finishReason: { unified: "stop", raw: undefined }, usage: {
                   inputTokens: { total: 1 }, outputTokens: { total: 1 },
@@ -366,9 +370,11 @@ describe("spawnLoopEngine — project loop graphs", () => {
     expect(result.exitCode, result.stderr).toBe(0);
     expect(result.stdout).toBe('{"summary":"implemented","response":"ready"}');
     expect(responseFormats).toEqual([
-      expect.objectContaining({ type: "json" }),
+      undefined,
+      undefined,
       expect.objectContaining({ type: "json" }),
     ]);
+    expect(toolCounts).toEqual([1, 1, 0]);
     expect(transcript.filter((entry) => entry.type === "assistant").map((entry) => entry.text))
       .toEqual(['{"summary":"implemented","response":"ready"}']);
   });
