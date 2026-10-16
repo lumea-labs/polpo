@@ -935,7 +935,7 @@ describe("runAgentStepCompletion structured loop output", () => {
     expect(result.text).toBe('{"summary":"implemented","response":"ready"}');
   });
 
-  it("prevents the production implement-step failure for Anthropic Gateway reasoning", async () => {
+  it("prevents the production implement-step failure when Cloud defaults Anthropic Gateway thinking", async () => {
     let operationalTurn = 0;
     const calls: Array<{
       responseFormat: unknown;
@@ -1013,7 +1013,6 @@ describe("runAgentStepCompletion structured loop output", () => {
       agentConfig: {
         name: "implement-agent",
         model: "anthropic/claude-haiku-4.5",
-        reasoning: "medium",
         maxTurns: 2,
       },
       aiMessages: [{ role: "user", content: "Implement it" }],

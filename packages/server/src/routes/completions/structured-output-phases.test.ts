@@ -162,6 +162,7 @@ describe("chat structured-output phases", () => {
 function anthropicStructuredOutputFixture(options: {
   runtimeMode?: "gateway" | "provider";
   reasoning?: "off" | "medium";
+  omitConfiguredReasoning?: boolean;
 } = {}) {
   const runtimeMode = options.runtimeMode ?? "gateway";
   const reasoning = options.reasoning ?? "medium";
@@ -242,7 +243,7 @@ function anthropicStructuredOutputFixture(options: {
     agentConfig: {
       name: "release-haiku-structured-smoke",
       model: "anthropic/claude-haiku-4.5",
-      reasoning,
+      ...(options.omitConfiguredReasoning ? {} : { reasoning }),
     },
     agentMode: true,
     fullSystemPrompt: "Return the requested structured result.",
@@ -305,6 +306,25 @@ describe("Anthropic Gateway reasoning with structured output", () => {
       .map((choice) => choice.delta?.content)
       .filter(Boolean);
     expect(content).toEqual(['{"answer":"ready"}']);
+  });
+
+  it("separates the schema pass when Cloud defaults thinking outside the agent config", async () => {
+    const f = anthropicStructuredOutputFixture({ omitConfiguredReasoning: true });
+    const response = await runNonStreamingChatCompletion({
+      req: { raw: { signal: new AbortController().signal } },
+      json: (body: unknown) => body,
+    } as any, f.execution) as any;
+
+    expect(f.calls).toHaveLength(2);
+    expect(f.calls[0]?.providerOptions?.anthropic?.thinking).toEqual({
+      type: "enabled",
+      budgetTokens: 4096,
+    });
+    expect(f.calls[1]?.responseFormat).toMatchObject({ type: "json" });
+    expect(f.calls[1]?.providerOptions?.anthropic).toEqual({
+      structuredOutputMode: "auto",
+    });
+    expect(response.choices[0].message.content).toBe('{"answer":"ready"}');
   });
 
   it("keeps direct Anthropic native reasoning and structured output in one turn", async () => {
