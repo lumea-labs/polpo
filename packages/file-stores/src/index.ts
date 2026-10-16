@@ -51,3 +51,4 @@ export { discoverPlaybooks, loadPlaybook, savePlaybook, deletePlaybook } from ".
 
 export { FilePlaybookStore } from "./file-playbook-store.js";
 export { FileSkillStore } from "./file-skill-store.js";
+export { FileRuntimeHookPackStore } from "./file-runtime-hook-store.js";

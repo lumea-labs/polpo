@@ -2,6 +2,7 @@ import { PolpoApiError } from "./errors.js";
 import { projectEnvironmentBaseUrl, type ProjectEnvironment } from "@polpo-ai/core/project-environment";
 import { DataResourceClient } from "./data.js";
 import type { CreateDataInput, DataResource } from "@polpo-ai/core/data";
+import type { RuntimeHookPack } from "@polpo-ai/core/runtime-hooks";
 import type {
   AuthStatusResponse,
   VaultEntryMeta,
@@ -655,6 +656,16 @@ export class PolpoClient {
   }
   listData(): Promise<DataResource[]> { return this.request("GET", this.apiUrl("/data")); }
   createData(input: CreateDataInput): Promise<DataResource> { return this.post("/data", input); }
+
+  /** Project runtime hook packs. Definitions are trusted project configuration, never request input. */
+  listRuntimeHooks(): Promise<RuntimeHookPack[]> { return this.get("/hooks"); }
+  getRuntimeHook(name: string): Promise<RuntimeHookPack> { return this.get(`/hooks/${encodeURIComponent(name)}`); }
+  putRuntimeHook(pack: RuntimeHookPack): Promise<RuntimeHookPack> {
+    return this.put(`/hooks/${encodeURIComponent(pack.name)}`, pack);
+  }
+  deleteRuntimeHook(name: string): Promise<{ deleted: boolean }> {
+    return this.del(`/hooks/${encodeURIComponent(name)}`);
+  }
 
   private async request<T>(
     method: string,

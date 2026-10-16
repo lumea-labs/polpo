@@ -80,6 +80,12 @@ import {
   toolPolicyAuditData,
 } from "./tool-policy-runtime.js";
 import {
+  createRuntimeHookedToolExecutor,
+  dispatchCompletionRuntimeHook,
+  runtimeHookDecisionError,
+  type CompletionRuntimeHookContext,
+} from "./runtime-hooks.js";
+import {
   applyCompletionOutputPolicy,
   streamingOutputPolicyMode,
 } from "./output-guardrails.js";
@@ -369,6 +375,26 @@ export async function runProjectLoopCompletion(options: {
     },
   };
   const loopRunId = resumeRun?.id ?? (loopRunStore ? `looprun-${nanoid(16)}` : undefined);
+  const runtimeHookDispatcher = await deps.resolveRuntimeHooks?.({
+    agentConfig,
+    surface: "loop",
+    runId: loopRunId,
+    sessionId: sessionId ?? undefined,
+    loop: projectLoop.name,
+    activatedSkills,
+  });
+  const runtimeHooks: CompletionRuntimeHookContext | undefined = runtimeHookDispatcher
+    ? {
+        dispatcher: runtimeHookDispatcher,
+        surface: "loop",
+        identity: {
+          runId: loopRunId,
+          sessionId: sessionId ?? undefined,
+          agent: agentConfig.name,
+          loop: projectLoop.name,
+        },
+      }
+    : undefined;
   const agentIdentity = options.agentIdentity === undefined ? providedToolInvocation?.agent : normalizeAgentIdentity(options.agentIdentity);
   if ((agentIdentity && agentIdentity.name !== agentConfig.name)
     || (providedToolInvocation?.agent && (providedToolInvocation.agent.name !== agentIdentity?.name
@@ -432,8 +458,10 @@ export async function runProjectLoopCompletion(options: {
     rootTools.runtimeExecutor ?? rootTools.executor,
     rootPolicy,
   );
-  const executeLoopTool = createGuardedCompletionToolExecutor({
-    executor: rootExecutor,
+  const executeLoopTool = createRuntimeHookedToolExecutor({
+    hooks: runtimeHooks,
+    executor: createGuardedCompletionToolExecutor({
+      executor: rootExecutor,
     // Validation uses the complete authorized runtime catalog. Policy denial
     // stays in rootExecutor so a known-but-denied tool returns the typed policy
     // error instead of being misclassified as an unknown tool.
@@ -447,7 +475,8 @@ export async function runProjectLoopCompletion(options: {
       runId: loopRunId,
       sessionId: sessionId ?? undefined,
     },
-    receiptStore: toolRunScope?.receiptStore,
+      receiptStore: toolRunScope?.receiptStore,
+    }),
   });
   const rootToolSchemas = new Map<string, unknown>(
     deterministicTools
@@ -597,6 +626,16 @@ export async function runProjectLoopCompletion(options: {
   };
 
   try {
+    await dispatchCompletionRuntimeHook(runtimeHooks, "run:start", {
+      loop: projectLoop.name,
+      resumed: Boolean(resumeRun),
+    });
+    const startDecision = await dispatchCompletionRuntimeHook(runtimeHooks, "loop:start", {
+      loop: projectLoop.name,
+      resumed: Boolean(resumeRun),
+    });
+    const startError = runtimeHookDecisionError(startDecision);
+    if (startError) throw startError;
     const result = await executor.execute({
       name: projectLoop.name,
       pipeline: resumeState ? { ...normalized.pipeline, steps: resumeState.steps } : normalized.pipeline,
@@ -643,6 +682,13 @@ export async function runProjectLoopCompletion(options: {
         return { output: maybeParseJson(output) };
       },
       runLoop: async (name, loop, context, _position, agentInput) => {
+        const stepDecision = await dispatchCompletionRuntimeHook(runtimeHooks, "step:before", {
+          loop: projectLoop.name,
+          step: name,
+          kind: "agent",
+        });
+        const stepError = runtimeHookDecisionError(stepDecision);
+        if (stepError) throw stepError;
         const id = `loop-step-${nanoid(12)}`;
         await onToolCall?.({
           id,
@@ -711,6 +757,11 @@ export async function runProjectLoopCompletion(options: {
         };
         toolCallsAccum.push(event);
         await onToolCall?.(event);
+        await dispatchCompletionRuntimeHook(runtimeHooks, "step:after", {
+          loop: projectLoop.name,
+          step: name,
+          kind: "agent",
+        });
         return { output: stepResult.output };
       },
       handleHuman: async (name) => {
@@ -735,6 +786,14 @@ export async function runProjectLoopCompletion(options: {
         completedAt: new Date().toISOString(),
       }, deps.emit, "completed");
     }
+    await dispatchCompletionRuntimeHook(runtimeHooks, "loop:end", {
+      loop: projectLoop.name,
+      status: "completed",
+    });
+    await dispatchCompletionRuntimeHook(runtimeHooks, "run:end", {
+      loop: projectLoop.name,
+      status: "completed",
+    });
     return {
       text: finalText,
       reasoning: finalReasoning,
@@ -752,6 +811,22 @@ export async function runProjectLoopCompletion(options: {
         : { loopPresentation: projectedResult.presentation }),
     };
   } catch (err) {
+    const awaitingApproval = err instanceof LoopApprovalRequiredError || err instanceof LoopPermissionApprovalRequiredError;
+    if (awaitingApproval) {
+      await dispatchCompletionRuntimeHook(runtimeHooks, "loop:stop", {
+        loop: projectLoop.name,
+        status: "awaiting_approval",
+      }).catch(() => {});
+    }
+    await dispatchCompletionRuntimeHook(runtimeHooks, "loop:end", {
+      loop: projectLoop.name,
+      status: awaitingApproval ? "awaiting_approval" : "failed",
+      error: err instanceof Error ? err.message : String(err),
+    }).catch(() => {});
+    await dispatchCompletionRuntimeHook(runtimeHooks, "run:end", {
+      loop: projectLoop.name,
+      status: awaitingApproval ? "awaiting_approval" : "failed",
+    }).catch(() => {});
     if (loopRunStore && loopRunId) {
       (err as any).loopRunId = loopRunId;
       if (err instanceof LoopApprovalRequiredError || err instanceof LoopPermissionApprovalRequiredError) {

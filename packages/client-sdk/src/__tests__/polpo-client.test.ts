@@ -60,6 +60,28 @@ describe("PolpoClient approvals", () => {
   });
 });
 
+describe("PolpoClient runtime hooks", () => {
+  it("manages versioned hook packs on Cloud and self-hosted prefixes", async () => {
+    const pack = { version: 1 as const, name: "quality-check", hooks: [] };
+    const fetch = vi.fn<typeof globalThis.fetch>().mockImplementation(async () => new Response(
+      JSON.stringify({ ok: true, data: pack }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    ));
+    const cloud = new PolpoClient({ baseUrl: "https://api.polpo.sh", fetch });
+    const local = new PolpoClient({ baseUrl: "http://localhost:3890", fetch });
+
+    await cloud.putRuntimeHook(pack);
+    await local.getRuntimeHook(pack.name);
+    await cloud.deleteRuntimeHook(pack.name);
+
+    expect(fetch).toHaveBeenNthCalledWith(1, "https://api.polpo.sh/v1/hooks/quality-check", expect.objectContaining({
+      method: "PUT", body: JSON.stringify(pack),
+    }));
+    expect(fetch).toHaveBeenNthCalledWith(2, "http://localhost:3890/api/v1/hooks/quality-check", expect.objectContaining({ method: "GET" }));
+    expect(fetch).toHaveBeenNthCalledWith(3, "https://api.polpo.sh/v1/hooks/quality-check", expect.objectContaining({ method: "DELETE" }));
+  });
+});
+
 describe("PolpoClient skill bundles", () => {
   it("gets and atomically puts complete binary-safe bundles", async () => {
     const bundle = {

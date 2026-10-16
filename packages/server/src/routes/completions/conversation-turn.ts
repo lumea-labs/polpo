@@ -113,6 +113,10 @@ import {
   toolPolicyAuditData,
   type ExecutionToolPolicyMode,
 } from "./tool-policy-runtime.js";
+import {
+  createRuntimeHookedToolExecutor,
+  type CompletionRuntimeHookContext,
+} from "./runtime-hooks.js";
 
 type PreparedError = {
   kind: "error";
@@ -1461,6 +1465,31 @@ export async function prepareChatCompletionExecution(
     modelToolChoice = requestToolChoiceToAI(body.tool_choice);
   }
 
+  const runtimeHookDispatcher = await deps.resolveRuntimeHooks?.({
+    agentConfig: resolvedAgentConfig,
+    surface: options.runtime?.surface === "channel" ? "channel" : "chat",
+    runId: options.runtime?.runId ?? completionId,
+    sessionId: sessionId ?? undefined,
+    activatedSkills,
+  });
+  const runtimeHooks: CompletionRuntimeHookContext | undefined = runtimeHookDispatcher
+    ? {
+        dispatcher: runtimeHookDispatcher,
+        surface: options.runtime?.surface === "channel" ? "channel" : "chat",
+        identity: {
+          runId: options.runtime?.runId ?? completionId,
+          sessionId: sessionId ?? undefined,
+          turnId,
+          agent: resolvedAgentConfig?.name,
+          externalUserId: options.runtime?.user ?? body.user,
+        },
+      }
+    : undefined;
+  effectiveToolExecutor = createRuntimeHookedToolExecutor({
+    executor: effectiveToolExecutor,
+    hooks: runtimeHooks,
+  });
+
   const execution: ChatCompletionExecution = {
     deps,
     body,
@@ -1496,6 +1525,7 @@ export async function prepareChatCompletionExecution(
     runtimeContext,
     executionRoute,
     toolProgressState,
+    runtimeHooks,
   };
 
   const viaRun =

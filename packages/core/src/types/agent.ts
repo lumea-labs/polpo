@@ -186,6 +186,8 @@ export interface AgentConfig {
   memory?: AgentMemorySettings;
   /** Installed skill names (e.g. "find-skills", "frontend-design") */
   skills?: string[];
+  /** Named runtime hook packs from `.polpo/hooks/<name>.json`. */
+  hooks?: string[];
   /** MCP servers available to this agent. */
   mcpServers?: Record<string, McpServerConfig>;
   /** Max conversation turns before stopping. Default 150 */

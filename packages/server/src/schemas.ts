@@ -948,6 +948,7 @@ export const AddAgentSchema = z.object({
   channels: AgentChannelsSettingsSchema.optional(),
   memory: AgentMemorySettingsSchema.optional(),
   skills: z.array(z.string()).optional(),
+  hooks: z.array(z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/u)).optional(),
   maxTurns: z.number().int().positive().optional(),
   maxConcurrency: z.number().int().positive().optional(),
   // Identity & hierarchy (vault credentials managed via encrypted store)
@@ -985,6 +986,7 @@ const UpdateAgentFieldsSchema = z.object({
   channels: AgentChannelsSettingsSchema.optional(),
   memory: AgentMemorySettingsSchema.optional(),
   skills: z.array(z.string()).optional(),
+  hooks: z.array(z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/u)).optional(),
   maxTurns: z.number().int().positive().optional(),
   maxConcurrency: z.number().int().positive().optional(),
   identity: AgentIdentitySchema.optional(),

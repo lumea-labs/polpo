@@ -73,6 +73,11 @@ import {
 } from "@polpo-ai/core";
 import type { LoopToolCall, LoopConfig, LoopResumeState, ProjectLoopConfig } from "@polpo-ai/core";
 import type { PreparedLoopAgentInput } from "@polpo-ai/core";
+import type {
+  RuntimeHookDecision,
+  RuntimeHookDispatcher,
+  RuntimeHookEventName,
+} from "@polpo-ai/core/runtime-hooks";
 import {
   InMemorySteeringController,
   type SteeringMessage,
@@ -282,6 +287,56 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
     sink?.(entry);
   };
 
+  const runtimeHooks: RuntimeHookDispatcher | undefined = ctx?.inject?.runtimeHooks ?? ctx?.runtimeHooks;
+  const dispatchRuntimeHook = async (
+    event: RuntimeHookEventName,
+    data: Record<string, unknown> = {},
+    identity: Record<string, string | undefined> = {},
+  ): Promise<RuntimeHookDecision> => {
+    if (!runtimeHooks) return { action: "allow" };
+    const result = await runtimeHooks.dispatch({
+      event,
+      surface: ctx?.inject ? "chat" : "task",
+      identity: {
+        runId: ctx?.runId ?? task.id,
+        sessionId: ctx?.inject?.sessionId,
+        agent: agentConfig.name,
+        ...identity,
+      },
+      data,
+    });
+    return result.decision;
+  };
+
+  const decisionError = (decision: RuntimeHookDecision): Error | undefined => {
+    if (decision.action === "allow" || decision.action === "modify") return undefined;
+    const reason = "reason" in decision ? decision.reason : "Runtime hook stopped execution";
+    return new Error(`Runtime hook ${decision.action}: ${reason ?? "stopped"}`);
+  };
+
+  const runHookedModel = async <T>(
+    data: Record<string, unknown>,
+    operation: () => Promise<T>,
+    resultData: (result: T) => Record<string, unknown> = () => ({}),
+  ): Promise<T> => {
+    const before = await dispatchRuntimeHook("model:before", data);
+    const beforeError = decisionError(before);
+    if (beforeError) throw beforeError;
+    try {
+      const result = await operation();
+      const after = await dispatchRuntimeHook("model:after", { ...data, ...resultData(result) });
+      const afterError = decisionError(after);
+      if (afterError) throw afterError;
+      return result;
+    } catch (error) {
+      await dispatchRuntimeHook("model:error", {
+        ...data,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      throw error;
+    }
+  };
+
   /**
    * Execute one tool call: dispatch, activity tracking, outcome collection,
    * toolUsage harvesting, transcript. Shared by LLM-session tool execution
@@ -297,6 +352,24 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
     };
     let isError = false;
     let executionError: Error | undefined;
+
+    const before = await dispatchRuntimeHook("tool:before", {
+      tool: toolCall.name,
+      input: toolCall.args,
+    }, { toolCallId: toolCall.id });
+    const beforeError = decisionError(before);
+    if (beforeError) {
+      isError = true;
+      executionError = beforeError;
+      result = { content: [{ type: "text", text: beforeError.message }], details: {} };
+      return { llmText: beforeError.message, isError, error: executionError };
+    }
+    const effectiveArgs = before.action === "modify"
+      && before.data.input
+      && typeof before.data.input === "object"
+      && !Array.isArray(before.data.input)
+      ? before.data.input as Readonly<Record<string, unknown>>
+      : toolCall.args;
 
     const dispatch = async (args: Readonly<Record<string, unknown>>): Promise<string> => {
       if (!pt) {
@@ -325,9 +398,25 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
           };
         }
       }
-      return result.content
+      let rendered = result.content
         .map((content) => content.type === "text" ? content.text : `[image: ${content.mimeType}]`)
         .join("\n");
+      const after = await dispatchRuntimeHook(isError ? "tool:error" : "tool:after", {
+        tool: toolCall.name,
+        input: args,
+        result: rendered,
+      }, { toolCallId: toolCall.id });
+      const afterError = decisionError(after);
+      if (afterError) {
+        isError = true;
+        executionError = afterError;
+        rendered = afterError.message;
+        result = { content: [{ type: "text", text: rendered }], details: {} };
+      } else if (after.action === "modify" && typeof after.data.result === "string") {
+        rendered = after.data.result;
+        result = { ...result, content: [{ type: "text", text: rendered }] };
+      }
+      return rendered;
     };
 
     const llmText = ctx?.runToolMiddleware
@@ -335,7 +424,7 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
           {
             callId: toolCall.id,
             name: toolCall.name,
-            args: toolCall.args,
+            args: effectiveArgs,
             schema: pt?.parameters,
             context: {
               agent: agentConfig.name,
@@ -348,7 +437,7 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
           },
           (request) => dispatch(request.args),
         )).output
-      : await dispatch(toolCall.args);
+      : await dispatch(effectiveArgs);
 
     activity.lastUpdate = new Date().toISOString();
 
@@ -420,6 +509,17 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
     try {
     const resume = usableResumeState(options.resume, loopName);
     const inject = ctx?.inject;
+    await dispatchRuntimeHook("run:start", { loop: loopName, resumed: Boolean(resume) }, { agent: sessionAgent.name, loop: loopName });
+    await dispatchRuntimeHook(resume ? "session:resume" : "session:start", {
+      loop: loopName,
+      resumed: Boolean(resume),
+    }, { agent: sessionAgent.name, loop: loopName });
+    const inputDecision = await dispatchRuntimeHook("input:before", {
+      loop: loopName,
+      hasProjectedInput: Boolean(options.initialUserMessage),
+    }, { agent: sessionAgent.name, loop: loopName });
+    const inputError = decisionError(inputDecision);
+    if (inputError) throw inputError;
 
     // Inject path (chat-via-executeRun, F1c): use the completions route's
     // already-resolved model/prompt/tools/messages instead of re-resolving from
@@ -460,6 +560,9 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
       toolByName = new Map(allPolpoTools.map((t) => [t.name, t]));
       toolSet = toToolDeclarations(allPolpoTools);
       compactionTools = allPolpoTools.map((t) => ({ description: t.description ?? "" }));
+    }
+    if (inputDecision.action === "modify" && typeof inputDecision.data.context === "string" && inputDecision.data.context.trim()) {
+      systemPrompt += `\n\n## Runtime hook context\n\n${inputDecision.data.context.trim()}`;
     }
     const primaryResolved = { model, providerOptions };
     const modelSelection =
@@ -534,7 +637,9 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
         const isRecovery = attemptIndex === 1;
         const resolvedAttempts = new Map<number, Pick<SpawnPrep, "model" | "providerOptions">>();
         try {
-          const terminal = await runModelPolicyTurn({
+          const terminal = await runHookedModel(
+            { phase: "terminal", recovery: isRecovery, model: model.id ?? model.provider },
+            () => runModelPolicyTurn({
             selection: modelSelection,
             resolveAttempt: async (attempt) => {
               const resolvedAttempt = attempt.index === 0
@@ -560,7 +665,9 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
             messages: terminalMessages(isRecovery),
             output: modelOutput as any,
             abortSignal: abortController.signal,
-          });
+            }),
+            (result: any) => ({ finishReason: result.finishReason, toolCallCount: result.toolCalls?.length ?? 0 }),
+          );
           if (terminal.toolCalls.length > 0 || terminal.output === undefined) {
             throw new Error(
               terminal.toolCalls.length > 0
@@ -657,6 +764,10 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
 
       // Context compaction — same call, same config, same quirks as the
       // legacy engine (see engine-behavior characterization tests).
+      await dispatchRuntimeHook("context:compact:before", {
+        messageCount: messages.length,
+        model: model.id ?? model.provider,
+      });
       const compactionResult = await compactIfNeeded({
         systemPrompt,
         messages,
@@ -683,6 +794,10 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
       });
       if (compactionResult.compacted) {
         messages = normalizeResponseMessagesForHistory(compactionResult.messages);
+        await dispatchRuntimeHook("context:compact:after", {
+          messageCount: messages.length,
+          compacted: true,
+        });
       }
       messages = normalizeResponseMessagesForHistory(messages);
       if (contextTrust === "enforce") {
@@ -695,7 +810,9 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
       const resolvedAttempts = new Map<number, Pick<SpawnPrep, "model" | "providerOptions">>();
       let turn;
       try {
-        turn = await runModelPolicyTurn({
+        turn = await runHookedModel(
+          { phase: "operational", model: model.id ?? model.provider },
+          () => runModelPolicyTurn({
           selection: modelSelection,
           resolveAttempt: async (attempt) => {
             const resolvedAttempt = attempt.index === 0
@@ -864,7 +981,9 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
             break;
           }
         }
-        });
+          }),
+          (result: any) => ({ finishReason: result.finishReason, toolCallCount: result.toolCalls?.length ?? 0 }),
+        );
       } catch (error) {
         if (outputSchema !== undefined && isStructuredModelOutputError(error)) {
           throw new LoopAgentOutputError(
@@ -1095,8 +1214,95 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
       );
     }
 
+    const stopDecision = await dispatchRuntimeHook("turn:stop", {
+      loop: loopName,
+      textLength: lastStepText.length,
+    }, { agent: sessionAgent.name, loop: loopName });
+    const stopError = decisionError(stopDecision);
+    if (stopError && stopDecision.action !== "stop") throw stopError;
+    const stopFeedback = stopDecision.action === "stop" ? stopDecision.feedback?.trim() : undefined;
+    if (stopFeedback && !hasStructuredOutput && !abortController.signal.aborted) {
+      const resolvedAttempts = new Map<number, Pick<SpawnPrep, "model" | "providerOptions">>();
+      const retry = await runHookedModel(
+        { phase: "stop-feedback", retry: 1, model: model.id ?? model.provider },
+        () => runModelPolicyTurn({
+          selection: modelSelection,
+          resolveAttempt: async (attempt) => {
+            const resolvedAttempt = attempt.index === 0
+              ? primaryResolved
+              : inject
+                ? await inject.resolveModelAttempt?.(attempt.model) as Pick<SpawnPrep, "model" | "providerOptions"> | undefined
+                : resolveSpawnModelAttempt(sessionAgent, attempt.model, ctx);
+            if (!resolvedAttempt) throw new Error(`No model resolver is available for fallback "${attempt.model}"`);
+            resolvedAttempts.set(attempt.index, resolvedAttempt);
+            return {
+              model: resolvedAttempt.model.aiModel,
+              maxOutputTokens: resolvedAttempt.model.maxTokens,
+              providerOptions: resolvedAttempt.providerOptions,
+              capabilities: resolvedAttempt.model.capabilities,
+            };
+          },
+          preserveSingleAttemptError: true,
+          system: systemPrompt,
+          messages: [
+            ...messages,
+            {
+              role: "user",
+              content: `A trusted runtime hook rejected ending the turn and returned this feedback:\n\n${stopFeedback}\n\nContinue once and return the corrected final response. Do not repeat completed side effects.`,
+            },
+          ],
+          tools: {},
+          toolChoice: "none",
+          abortSignal: abortController.signal,
+        }),
+        (result: any) => ({ finishReason: result.finishReason, toolCallCount: result.toolCalls?.length ?? 0 }),
+      );
+      if (retry.toolCalls.length > 0) throw new Error("Stop-feedback recovery returned a tool call");
+      const selectedResolved = resolvedAttempts.get(retry.selectedAttempt.index);
+      if (selectedResolved) {
+        model = selectedResolved.model;
+        providerOptions = selectedResolved.providerOptions;
+      }
+      let retryText = retry.text;
+      if (retryText && ctx?.runOutputPolicy) {
+        retryText = (await ctx.runOutputPolicy.evaluate({
+          output: retryText,
+          mode: ctx.runOutputPolicyMode ?? "enforce",
+          context: { agent: sessionAgent.name, runId: ctx.runId, source: "task", surface: "task" },
+          signal: abortController.signal,
+        })).output;
+      }
+      if (retryText) {
+        try { ctx?.onDelta?.({ text: `${lastStepText ? "\n\n" : ""}${retryText}` }); } catch { /* subscriber cannot sink the run */ }
+        emitTranscript({ type: "assistant", text: retryText });
+        accumText += retryText;
+        lastStepText = `${lastStepText ? `${lastStepText}\n\n` : ""}${retryText}`;
+      }
+      if (inject) emitTranscript({ type: "usage", usage: retry.usage, providerMetadata: retry.providerMetadata });
+      const retryStop = await dispatchRuntimeHook("turn:stop", {
+        loop: loopName,
+        textLength: lastStepText.length,
+        stopFeedbackRetry: 1,
+      }, { agent: sessionAgent.name, loop: loopName });
+      const retryStopError = decisionError(retryStop);
+      if (retryStopError && retryStop.action !== "stop") throw retryStopError;
+    }
     return { lastText: lastStepText, accumText };
+    } catch (error) {
+      await dispatchRuntimeHook("turn:error", {
+        loop: loopName,
+        error: error instanceof Error ? error.message : String(error),
+      }, { agent: sessionAgent.name, loop: loopName }).catch(() => {});
+      throw error;
     } finally {
+      await dispatchRuntimeHook("session:end", {
+        loop: loopName,
+        aborted: abortController.signal.aborted,
+      }, { agent: sessionAgent.name, loop: loopName }).catch(() => {});
+      await dispatchRuntimeHook("run:end", {
+        loop: loopName,
+        aborted: abortController.signal.aborted,
+      }, { agent: sessionAgent.name, loop: loopName }).catch(() => {});
       if (sessionCleanup) {
         await sessionCleanup().catch(() => undefined);
         toolCleanups.delete(sessionCleanup);
