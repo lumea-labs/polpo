@@ -256,6 +256,7 @@ export interface RuntimeHookHost {
   trace?(
     execution: RuntimeHookExecution,
     decision?: RuntimeHookDecision,
+    envelope?: RuntimeHookEnvelope,
   ): void | Promise<void>;
 }
 
@@ -273,6 +274,9 @@ export interface RuntimeHookExecution {
   scope: RuntimeHookScope;
   mode: "control" | "observe";
   priority: number;
+  attempt: number;
+  timeoutMs: number;
+  onFailure: "continue" | "block";
   startedAt: string;
   completedAt: string;
   durationMs: number;
@@ -376,14 +380,14 @@ export class RuntimeHookEngine implements RuntimeHookDispatcher {
     for (const { definition } of controlling) {
       const result = await this.execute(definition, envelope);
       executions.push(result.execution);
-      if (!result.replayed) await this.host.trace?.(result.execution, result.decision);
+      if (!result.replayed) await this.host.trace?.(result.execution, result.decision, envelope);
       if (result.decision) decision = composeRuntimeHookDecision(decision, result.decision);
       if (["deny", "ask", "defer", "stop"].includes(decision.action)) break;
     }
 
     const observed = await Promise.all(observing.map(async ({ definition }) => {
       const result = await this.execute(definition, envelope, true);
-      if (!result.replayed) await this.host.trace?.(result.execution);
+      if (!result.replayed) await this.host.trace?.(result.execution, undefined, envelope);
       return result.execution;
     }));
     executions.push(...observed);
@@ -439,6 +443,9 @@ export class RuntimeHookEngine implements RuntimeHookDispatcher {
           scope: hook.scope ?? "project",
           mode: hook.mode ?? "control",
           priority: hook.priority ?? 0,
+          attempt: 1,
+          timeoutMs,
+          onFailure: hook.onFailure ?? "continue",
           startedAt,
           completedAt,
           durationMs: durationBetween(startedAt, completedAt),
@@ -467,6 +474,9 @@ export class RuntimeHookEngine implements RuntimeHookDispatcher {
         scope: hook.scope ?? "project",
         mode: hook.mode ?? "control",
         priority: hook.priority ?? 0,
+        attempt: 1,
+        timeoutMs,
+        onFailure: hook.onFailure ?? "continue",
         startedAt,
         completedAt,
         durationMs: durationBetween(startedAt, completedAt),
