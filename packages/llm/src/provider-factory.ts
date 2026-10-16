@@ -81,6 +81,20 @@ export function mapReasoningToProviderOptions(
   maxTokens: number,
   modelId?: string,
 ): Record<string, Record<string, unknown>> | undefined {
+  // Anthropic's adapter otherwise defaults structured outputs to a forced
+  // synthetic JSON tool. Forced tool choice is incompatible with extended
+  // thinking, while current Claude models (including Haiku 4.5) support the
+  // native output_format contract. `auto` selects that native path when the
+  // concrete model supports it and preserves the JSON-tool fallback for older
+  // non-reasoning models.
+  if (provider === "anthropic" && (!level || level === "off")) {
+    return {
+      anthropic: {
+        structuredOutputMode: "auto",
+      },
+    };
+  }
+
   if (!level || level === "off") return undefined;
 
   // Budget tokens as a fraction of maxTokens, scaling with reasoning level
@@ -107,6 +121,7 @@ export function mapReasoningToProviderOptions(
     if (usesAdaptiveAnthropicThinking(modelId)) {
       return {
         anthropic: {
+          structuredOutputMode: "auto",
           thinking: { type: "adaptive" },
           effort: effortMap[level] ?? "medium",
         },
@@ -115,6 +130,7 @@ export function mapReasoningToProviderOptions(
 
     return {
       anthropic: {
+        structuredOutputMode: "auto",
         thinking: { type: "enabled", budgetTokens },
       },
     };

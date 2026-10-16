@@ -131,6 +131,7 @@ describe("provider runtime adapter", () => {
 
     expect(options).toEqual({
       anthropic: {
+        structuredOutputMode: "auto",
         thinking: { type: "adaptive" },
         effort: "medium",
       },

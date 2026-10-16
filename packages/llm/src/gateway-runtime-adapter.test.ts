@@ -59,6 +59,7 @@ describe("gateway runtime adapter", () => {
 
     expect(options).toEqual({
       anthropic: {
+        structuredOutputMode: "auto",
         thinking: { type: "adaptive" },
         effort: "high",
       },
