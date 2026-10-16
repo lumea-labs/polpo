@@ -8,11 +8,24 @@ export interface StructuredOutputRuntimeRoute {
 export function needsSeparateStructuredOutputReasoningPass(
   route: StructuredOutputRuntimeRoute,
   reasoning: string | undefined,
+  providerOptions?: Record<string, any>,
 ): boolean {
+  const anthropic = providerOptions?.anthropic;
+  const thinking = anthropic && typeof anthropic === "object" && !Array.isArray(anthropic)
+    ? anthropic.thinking
+    : undefined;
+  const hasEffectiveThinking = Boolean(
+    thinking
+    && typeof thinking === "object"
+    && !Array.isArray(thinking)
+    && thinking.type !== "disabled",
+  );
   return route.provider === "anthropic"
     && route.runtimeMode === "gateway"
-    && reasoning !== undefined
-    && reasoning !== "off";
+    && (
+      hasEffectiveThinking
+      || (reasoning !== undefined && reasoning !== "off")
+    );
 }
 
 /**
@@ -27,7 +40,7 @@ export function providerOptionsForStructuredOutputPass(
   reasoning: string | undefined,
   providerOptions: Record<string, any> | undefined,
 ): Record<string, any> | undefined {
-  if (!needsSeparateStructuredOutputReasoningPass(route, reasoning)) {
+  if (!needsSeparateStructuredOutputReasoningPass(route, reasoning, providerOptions)) {
     return providerOptions;
   }
   const anthropic = providerOptions?.anthropic;

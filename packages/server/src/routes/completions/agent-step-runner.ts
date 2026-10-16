@@ -692,7 +692,11 @@ export async function runAgentStepCompletion(options: {
     if (
       outputSchema !== undefined
       && !hasOperationalTools
-      && !needsSeparateStructuredOutputReasoningPass(initialResolved.model, reasoning)
+      && !needsSeparateStructuredOutputReasoningPass(
+        initialResolved.model,
+        reasoning,
+        initialResolved.providerOptions,
+      )
     ) {
       await completeTerminalStructuredOutput();
     }

@@ -447,7 +447,11 @@ export async function executeStreamingChatCompletion(
       if (
         structuredResponse
         && Object.keys(aiTools).length === 0
-        && !needsSeparateStructuredOutputReasoningPass(primaryModel, reasoning)
+        && !needsSeparateStructuredOutputReasoningPass(
+          primaryModel,
+          reasoning,
+          primaryProviderOpts,
+        )
       ) {
         await completeTerminalOutput();
       }
@@ -1032,7 +1036,11 @@ export async function runNonStreamingChatCompletion(c: any, exec: ChatCompletion
     if (
       structuredResponse
       && Object.keys(aiTools).length === 0
-      && !needsSeparateStructuredOutputReasoningPass(primaryModel, reasoning)
+      && !needsSeparateStructuredOutputReasoningPass(
+        primaryModel,
+        reasoning,
+        primaryProviderOpts,
+      )
     ) {
       await completeTerminalOutput();
     }
