@@ -60,6 +60,60 @@ async function deployFixture(): Promise<string> {
 }
 
 describe("cloud deploy dependency order", () => {
+  it("validates and deploys runtime hook packs before agents", async () => {
+    const root = await mkdtemp(join(tmpdir(), "polpo-hooks-deploy-test-"));
+    roots.push(root);
+    const polpoDir = join(root, ".polpo");
+    await mkdir(join(polpoDir, "hooks"), { recursive: true });
+    await writeFile(join(polpoDir, "project.json"), JSON.stringify({
+      schemaVersion: 2, project: "hooks", projectId: "project-1", projectSlug: "hooks-project",
+    }));
+    await writeFile(join(polpoDir, "hooks", "quality.json"), JSON.stringify({
+      version: 1,
+      name: "quality",
+      hooks: [{ id: "guard", event: "tool:before", handler: { type: "http", url: "https://policy.example.test/hook" } }],
+    }));
+    const calls: Array<{ method: string; path: string; body?: unknown }> = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(typeof input === "string" ? input : input instanceof URL ? input : input.url);
+      const method = init?.method ?? "GET";
+      if (url.pathname === "/v1/credentials/current") return new Response(null, { status: 404 });
+      calls.push({ method, path: url.pathname, ...(init?.body ? { body: JSON.parse(String(init.body)) } : {}) });
+      if (method === "GET") return Response.json({ ok: false, code: "HOOK_NOT_FOUND" }, { status: 404 });
+      return Response.json({ ok: true, data: { name: "quality" } });
+    }));
+
+    const report = await runDeploy({ dir: root, yes: true, force: true, silent: true });
+
+    expect(report.total).toMatchObject({ created: 1, failed: 0 });
+    expect(calls).toEqual([
+      { method: "GET", path: "/environments/development/v1/hooks/quality" },
+      { method: "PUT", path: "/environments/development/v1/hooks/quality", body: expect.objectContaining({ name: "quality", version: 1 }) },
+    ]);
+  });
+
+  it("fails deploy locally for an invalid hook pack without calling the Hooks API", async () => {
+    const root = await mkdtemp(join(tmpdir(), "polpo-hooks-invalid-test-"));
+    roots.push(root);
+    const polpoDir = join(root, ".polpo");
+    await mkdir(join(polpoDir, "hooks"), { recursive: true });
+    await writeFile(join(polpoDir, "project.json"), JSON.stringify({
+      schemaVersion: 2, project: "hooks", projectId: "project-1", projectSlug: "hooks-project",
+    }));
+    await writeFile(join(polpoDir, "hooks", "bad.json"), JSON.stringify({
+      version: 1, name: "bad", hooks: [{ id: "broken", event: "tool:before", handler: { type: "command" } }],
+    }));
+    const fetch = vi.fn(async () => new Response(null, { status: 404 }));
+    vi.stubGlobal("fetch", fetch);
+
+    const report = await runDeploy({ dir: root, yes: true, force: true, silent: true });
+
+    expect(report.total.failed).toBe(1);
+    expect(report.total.errors[0]).toContain("handler.command");
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(new URL(String(fetch.mock.calls[0]?.[0])).pathname).toBe("/v1/credentials/current");
+  });
+
   it("deploys custom tools before loops that reference them", async () => {
     const root = await deployFixture();
     const calls: string[] = [];

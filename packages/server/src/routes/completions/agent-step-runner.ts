@@ -79,6 +79,15 @@ import {
   filterToolRecordByPolicy,
   toolPolicyAuditData,
 } from "./tool-policy-runtime.js";
+import {
+  createRuntimeHookedToolExecutor,
+  dispatchCompletionRuntimeHook,
+  runCompletionRuntimeHookOperation,
+  runtimeHookDecisionError,
+  runtimeHookModifiedString,
+  runtimeHookStopFeedback,
+  type CompletionRuntimeHookContext,
+} from "./runtime-hooks.js";
 
 export const MAX_TURNS = 20;
 
@@ -311,6 +320,34 @@ export async function runAgentStepCompletion(options: {
     runtimeContext,
     onToolCall,
   } = options;
+  const runtimeHookDispatcher = await deps.resolveRuntimeHooks?.({
+    agentConfig,
+    surface: "loop",
+    runId: options.runId,
+    sessionId: options.sessionId,
+    step: stepName,
+    activatedSkills: options.activatedSkills,
+  });
+  const runtimeHooks: CompletionRuntimeHookContext | undefined = runtimeHookDispatcher
+    ? {
+        dispatcher: runtimeHookDispatcher,
+        surface: "loop",
+        identity: {
+          runId: options.runId,
+          sessionId: options.sessionId,
+          agent: agentConfig.name,
+          step: stepName,
+        },
+      }
+    : undefined;
+  const inputDecision = await dispatchCompletionRuntimeHook(runtimeHooks, "input:before", {
+    source: "loop-step",
+    messageCount: aiMessages.length,
+    hasProjectedInput: Boolean(options.projectedInput),
+  });
+  const inputError = runtimeHookDecisionError(inputDecision);
+  if (inputError) throw inputError;
+  await dispatchCompletionRuntimeHook(runtimeHooks, "agent:spawn", { source: "loop-step" });
   const settings = deps.getConfig()?.settings;
   const contextTrust = normalizeRuntimeContextTrustMode(
     options.contextTrust ?? settings?.contextTrust,
@@ -334,6 +371,8 @@ export async function runAgentStepCompletion(options: {
     options.activatedSkills,
     Boolean(projectedInput),
   );
+  const inputContext = runtimeHookModifiedString(inputDecision, "context");
+  if (inputContext) fullSystemPrompt += `\n\n## Runtime hook context\n\n${inputContext}`;
   let messages: any[] = projectedInput
     ? [{ role: "user", content: loopAgentInputPrompt(stepName, projectedInput) }]
     : contextTrust === "enforce"
@@ -428,19 +467,22 @@ export async function runAgentStepCompletion(options: {
   const policyExecutor = options.toolPolicy
     ? createPolicyGuardedToolExecutor(resolvedTools.executor, options.toolPolicy)
     : resolvedTools.executor;
-  let executeTool = createGuardedCompletionToolExecutor({
-    executor: policyExecutor,
-    tools: loopTools,
-    middleware: deps.runToolMiddleware,
-    context: {
-      planId: options.runtimePlan?.id,
-      surface: options.runtimePlan?.surface,
-      source: "loop-step",
-      agent: agentConfig.name,
-      runId: options.runId,
-      sessionId: options.sessionId,
-    },
-    receiptStore: options.toolRunScope?.receiptStore,
+  let executeTool = createRuntimeHookedToolExecutor({
+    hooks: runtimeHooks,
+    executor: createGuardedCompletionToolExecutor({
+      executor: policyExecutor,
+      tools: loopTools,
+      middleware: deps.runToolMiddleware,
+      context: {
+        planId: options.runtimePlan?.id,
+        surface: options.runtimePlan?.surface,
+        source: "loop-step",
+        agent: agentConfig.name,
+        runId: options.runId,
+        sessionId: options.sessionId,
+      },
+      receiptStore: options.toolRunScope?.receiptStore,
+    }),
   });
   const progressTracker = new ToolProgressTracker();
   const toolAnnotations = new Map(
@@ -587,7 +629,17 @@ export async function runAgentStepCompletion(options: {
 
       const resolvedAttempts = new Map<number, typeof initialResolved>();
       try {
-        const terminalResult = await runModelPolicyTurn({
+        const terminalResult = await runCompletionRuntimeHookOperation({
+          hooks: runtimeHooks,
+          before: "model:before",
+          after: "model:after",
+          error: "model:error",
+          data: { phase: "terminal", recovery: isRecovery, model: m.id ?? m.provider },
+          resultData: (result: any) => ({
+            finishReason: result.finishReason,
+            toolCallCount: result.toolCalls?.length ?? 0,
+          }),
+          operation: () => runModelPolicyTurn({
           selection: modelSelection,
           resolveAttempt: async (attempt) => {
             const resolvedAttempt = attempt.index === 0
@@ -611,6 +663,7 @@ export async function runAgentStepCompletion(options: {
           messages: terminalMessages(isRecovery),
           output: modelOutput,
           ...(options.signal ? { abortSignal: options.signal } : {}),
+          }),
         });
         if (terminalResult.toolCalls.length > 0 || terminalResult.output === undefined) {
           throw new Error(
@@ -700,6 +753,10 @@ export async function runAgentStepCompletion(options: {
       !completedStructuredOutput && turn < (agentConfig.maxTurns ?? MAX_TURNS);
       turn++
     ) {
+      await dispatchCompletionRuntimeHook(runtimeHooks, "context:compact:before", {
+        messageCount: messages.length,
+        model: m.id ?? m.provider,
+      });
       const compactionResult = await compactIfNeeded({
         systemPrompt: fullSystemPrompt,
         messages,
@@ -716,13 +773,27 @@ export async function runAgentStepCompletion(options: {
           ? protectRuntimeToolResultMessages(compactionResult.messages)
           : compactionResult.messages;
         messages.splice(0, messages.length, ...compacted);
+        await dispatchCompletionRuntimeHook(runtimeHooks, "context:compact:after", {
+          messageCount: messages.length,
+          compacted: true,
+        });
       }
 
       const toolCallNames = new Map<string, string>();
       const resolvedAttempts = new Map<number, typeof initialResolved>();
       let turnResult;
       try {
-        turnResult = await runModelPolicyTurn({
+        turnResult = await runCompletionRuntimeHookOperation({
+          hooks: runtimeHooks,
+          before: "model:before",
+          after: "model:after",
+          error: "model:error",
+          data: { phase: "operational", turn, model: m.id ?? m.provider },
+          resultData: (result: any) => ({
+            finishReason: result.finishReason,
+            toolCallCount: result.toolCalls?.length ?? 0,
+          }),
+          operation: () => runModelPolicyTurn({
           selection: modelSelection,
           resolveAttempt: async (attempt) => {
             const resolvedAttempt = attempt.index === 0
@@ -781,6 +852,7 @@ export async function runAgentStepCompletion(options: {
               result: `Error: ${event.error.message ?? "Model stream interrupted during tool input"}`,
             });
           }
+          }),
         });
       } catch (error) {
         if (outputSchema !== undefined && isStructuredModelOutputError(error)) {
@@ -898,6 +970,10 @@ export async function runAgentStepCompletion(options: {
           const local = localResults[localResultIndex++]!;
           await appendLocalResult(call, local.input, local.result, local.isError);
         }
+        await dispatchCompletionRuntimeHook(runtimeHooks, "tool:batch:after", {
+          count: localResults.length,
+          tools: localCalls.map((call) => call.toolName),
+        });
       } else {
         for (const call of dispatchableToolCalls) {
           const callArgs = call.input as Record<string, unknown>;
@@ -955,6 +1031,71 @@ export async function runAgentStepCompletion(options: {
       );
     }
 
+    const stopDecision = await dispatchCompletionRuntimeHook(runtimeHooks, "turn:stop", {
+      textLength: finalText.length,
+      toolCallCount: toolCallsAccum.length,
+    });
+    const stopError = runtimeHookDecisionError(stopDecision);
+    if (stopError && stopDecision.action !== "stop") throw stopError;
+    const stopFeedback = runtimeHookStopFeedback(stopDecision);
+    if (stopFeedback && outputSchema === undefined) {
+      const resolvedAttempts = new Map<number, typeof initialResolved>();
+      const retry = await runCompletionRuntimeHookOperation({
+        hooks: runtimeHooks,
+        before: "model:before",
+        after: "model:after",
+        error: "model:error",
+        data: { phase: "stop-feedback", retry: 1, model: m.id ?? m.provider },
+        resultData: (result: any) => ({
+          finishReason: result.finishReason,
+          toolCallCount: result.toolCalls?.length ?? 0,
+        }),
+        operation: () => runModelPolicyTurn({
+          selection: modelSelection,
+          resolveAttempt: async (attempt) => {
+            const resolvedAttempt = attempt.index === 0
+              ? initialResolved
+              : await deps.resolveAgentModel(agentConfigForModelAttempt(agentConfig, attempt.model), reasoning);
+            resolvedAttempts.set(attempt.index, resolvedAttempt);
+            return {
+              model: resolvedAttempt.model.aiModel,
+              maxOutputTokens: resolvedAttempt.model.maxTokens,
+              providerOptions: resolvedAttempt.providerOptions,
+              capabilities: resolvedAttempt.model.capabilities,
+            };
+          },
+          preserveSingleAttemptError: true,
+          system: fullSystemPrompt,
+          messages: [
+            ...messages,
+            {
+              role: "user",
+              content: `A trusted runtime hook rejected ending the turn and returned this feedback:\n\n${stopFeedback}\n\nContinue once and return the corrected final response. Do not repeat completed side effects.`,
+            },
+          ],
+          tools: {},
+          toolChoice: "none",
+          ...(options.signal ? { abortSignal: options.signal } : {}),
+        }),
+      });
+      if (retry.toolCalls.length > 0) throw new Error("Stop-feedback recovery returned a tool call");
+      const retryResolved = resolvedAttempts.get(retry.selectedAttempt.index);
+      if (retryResolved) {
+        m = retryResolved.model;
+        providerOpts = retryResolved.providerOptions;
+      }
+      totalUsage = addUsage(totalUsage, retry.usage);
+      finalReasoning = appendReasoningSummary(finalReasoning, retry.reasoning);
+      lastProviderMetadata = retry.providerMetadata as Record<string, unknown> | undefined;
+      if (retry.text) finalText += `${finalText ? "\n\n" : ""}${retry.text}`;
+      const retryStop = await dispatchCompletionRuntimeHook(runtimeHooks, "turn:stop", {
+        textLength: finalText.length,
+        toolCallCount: toolCallsAccum.length,
+        stopFeedbackRetry: 1,
+      });
+      const retryStopError = runtimeHookDecisionError(retryStop);
+      if (retryStopError && retryStop.action !== "stop") throw retryStopError;
+    }
     return {
       text: finalText,
       reasoning: finalReasoning,
@@ -965,7 +1106,15 @@ export async function runAgentStepCompletion(options: {
       providerMetadata: lastProviderMetadata,
       toolCalls: toolCallsAccum,
     };
+  } catch (error) {
+    await dispatchCompletionRuntimeHook(runtimeHooks, "turn:error", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    throw error;
   } finally {
+    await dispatchCompletionRuntimeHook(runtimeHooks, "agent:end", {
+      source: "loop-step",
+    }).catch(() => {});
     if (resolvedTools.cleanup) {
       await resolvedTools.cleanup().catch(() => {});
     }

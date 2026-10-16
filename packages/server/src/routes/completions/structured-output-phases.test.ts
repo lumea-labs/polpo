@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { MockLanguageModelV3, convertArrayToReadableStream } from "ai/test";
 import { normalizeChatInteractionSettings } from "@polpo-ai/core/chat-interactions";
+import { RuntimeHookEngine } from "@polpo-ai/core/runtime-hooks";
 
 import type { CompletionRouteDeps } from "../completions.js";
 import {
@@ -13,6 +14,7 @@ import {
   createGuardedCompletionToolExecutor,
   type CompletionToolProgressState,
 } from "./tool-guardrails.js";
+import { createRuntimeHookedToolExecutor } from "./runtime-hooks.js";
 
 const responseFormat = {
   type: "json_schema" as const,
@@ -175,6 +177,105 @@ describe("chat structured-output phases", () => {
       .map((choice) => choice.delta?.content)
       .filter(Boolean);
     expect(contentFrames).toEqual(['{"answer":"ready"}']);
+  });
+
+  it("applies the same tool:before denial in direct chat before the side effect", async () => {
+    const f = fixture();
+    const host = { execute: vi.fn(async () => ({ decision: { action: "deny" as const, reason: "inspection disabled" } })) };
+    f.execution.runtimeHooks = {
+      dispatcher: new RuntimeHookEngine({
+        definitions: [{
+          id: "deny-inspect",
+          event: "tool:before",
+          matcher: { tools: ["inspect"] },
+          handler: { type: "tool", tool: "policy_check" },
+        }],
+        host,
+      }),
+      surface: "chat",
+      identity: { agent: "test-agent", sessionId: "session-1" },
+    };
+    f.execution.effectiveToolExecutor = createRuntimeHookedToolExecutor({
+      hooks: f.execution.runtimeHooks,
+      executor: f.execution.effectiveToolExecutor,
+    });
+
+    const response = await runNonStreamingChatCompletion({
+      req: { raw: { signal: new AbortController().signal } },
+      json: (body: unknown) => body,
+    } as any, f.execution) as any;
+
+    expect(response.choices[0].message.content).toBe('{"answer":"ready"}');
+    expect(f.executor).not.toHaveBeenCalled();
+    expect(host.execute).toHaveBeenCalledWith(expect.objectContaining({
+      envelope: expect.objectContaining({
+        event: "tool:before",
+        surface: "chat",
+        identity: expect.objectContaining({ agent: "test-agent", sessionId: "session-1", toolCallId: "inspect_1" }),
+      }),
+    }));
+  });
+
+  it("honors one bounded turn:stop feedback recovery before the response is committed", async () => {
+    const f = fixture();
+    delete f.execution.body.response_format;
+    f.execution.modelOutput = undefined;
+    let stopCalls = 0;
+    f.execution.runtimeHooks = {
+      dispatcher: new RuntimeHookEngine({
+        definitions: [{ id: "review-stop", event: "turn:stop", handler: { type: "prompt", prompt: "review" } }],
+        host: {
+          execute: async () => {
+            stopCalls += 1;
+            return stopCalls === 1
+              ? { decision: { action: "stop" as const, feedback: "Include the verified status" } }
+              : { decision: { action: "allow" as const } };
+          },
+        },
+      }),
+      surface: "chat",
+      identity: { agent: "test-agent" },
+    };
+
+    const response = await runNonStreamingChatCompletion({
+      req: { raw: { signal: new AbortController().signal } },
+      json: (body: unknown) => body,
+    } as any, f.execution) as any;
+
+    expect(response.choices[0].message.content).toBe("Operational work complete.\n\nOperational work complete.");
+    expect(f.executor).toHaveBeenCalledOnce();
+    expect(JSON.stringify(f.prompts.at(-1))).toContain("Include the verified status");
+    expect(stopCalls).toBe(2);
+  });
+
+  it("streams bounded turn:stop feedback before the terminal frame", async () => {
+    const f = fixture();
+    delete f.execution.body.response_format;
+    f.execution.modelOutput = undefined;
+    let stopCalls = 0;
+    f.execution.runtimeHooks = {
+      dispatcher: new RuntimeHookEngine({
+        definitions: [{ id: "review-stop", event: "turn:stop", handler: { type: "prompt", prompt: "review" } }],
+        host: { execute: async () => ({
+          decision: stopCalls++ === 0
+            ? { action: "stop" as const, feedback: "Correct the answer" }
+            : { action: "allow" as const },
+        }) },
+      }),
+      surface: "chat",
+      identity: { agent: "test-agent" },
+    };
+    const frames: string[] = [];
+    await executeStreamingChatCompletion({
+      write: vi.fn(async () => {}),
+      writeSSE: vi.fn(async ({ data }: { data: string }) => { frames.push(data); }),
+    }, f.execution, new AbortController().signal);
+
+    expect(frames.at(-1)).toBe("[DONE]");
+    const visible = frames.slice(0, -1).join("\n");
+    expect(visible).toContain("Operational work complete.");
+    expect(JSON.stringify(f.prompts.at(-1))).toContain("Correct the answer");
+    expect(stopCalls).toBe(2);
   });
 });
 

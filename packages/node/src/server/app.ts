@@ -48,14 +48,21 @@ import {
   brainRoutes,
   runDeliveryRoutes,
   runSteeringRoutes,
+  runtimeHookRoutes,
   conversationChannelRoutes,
   connectRoutes,
   connectCallbackRoutes,
   memoryItemRoutes,
   memoryCandidateRoutes,
   type CompletionRuntimeGuardrailsResolver,
+  type CompletionRouteDeps,
   type ConnectRouteDeps,
 } from "@polpo-ai/server";
+import type { RuntimeHookHost, RuntimeHookPackStore } from "@polpo-ai/core/runtime-hooks";
+import {
+  createNodeRuntimeHookHost,
+  createProjectRuntimeHookEngine,
+} from "../runtime-hooks.js";
 // Node.js-only routes (stay in src/server/routes/)
 import { publicConfigRoutes } from "./routes/config.js";
 import { filesystemRoutes } from "./routes/filesystem.js";
@@ -88,6 +95,7 @@ import {
   InMemorySteeringRunRegistry,
   type SteeringController,
 } from "@polpo-ai/core/steering";
+import { FileRuntimeHookPackStore } from "@polpo-ai/file-stores";
 
 function readRuntimeVersion(): string {
   try {
@@ -126,6 +134,12 @@ export interface AppOptions {
    * be allowed to request stricter per-run enforcement.
    */
   resolveRuntimeGuardrails?: CompletionRuntimeGuardrailsResolver;
+  /** Host override for resolving immutable runtime hook snapshots. */
+  resolveRuntimeHooks?: CompletionRouteDeps["resolveRuntimeHooks"];
+  /** Handler adapter for local `.polpo/hooks` packs. Defaults to command + HTTPS handlers. */
+  runtimeHookHost?: RuntimeHookHost;
+  /** Persistence override for runtime hook packs. */
+  runtimeHookStore?: RuntimeHookPackStore;
   brain?: {
     service: BrainManagementService;
     resolveContext: (input?: {
@@ -155,6 +169,11 @@ export function createApp(orchestrator: Orchestrator, sseBridge: SSEBridge, opts
   const app = new OpenAPIHono();
   const data = opts?.data ?? (process.env.POLPO_DATA_DATABASE_URL ? localDataRuntime(orchestrator.getPolpoDir()) : undefined);
   const steeringRegistry = new InMemorySteeringRunRegistry();
+  const projectPolpoDir = typeof (orchestrator as any).getPolpoDir === "function"
+    ? (orchestrator as any).getPolpoDir() as string
+    : undefined;
+  const runtimeHookStore = opts?.runtimeHookStore
+    ?? (projectPolpoDir ? new FileRuntimeHookPackStore(projectPolpoDir) : undefined);
   const runEventNotifier = new InMemoryRunEventNotifier();
   const durableRunOwner = `node-${process.pid}-${randomUUID()}`;
   const knownDurableRuns = new Set<string>();
@@ -320,6 +339,23 @@ export function createApp(orchestrator: Orchestrator, sseBridge: SSEBridge, opts
         : {}
     ),
     emit: (event: string, data: any) => o.emit(event as any, data),
+    resolveRuntimeHooks: opts?.resolveRuntimeHooks ?? (async ({ agentConfig }) => {
+      const names = Array.isArray(agentConfig?.hooks)
+        ? agentConfig.hooks.filter((name: unknown): name is string => typeof name === "string")
+        : [];
+      if (names.length === 0) return undefined;
+      if (!projectPolpoDir) throw new Error("Runtime hook project directory is unavailable");
+      const host = opts?.runtimeHookHost ?? createNodeRuntimeHookHost({
+        shell: o.getShell(),
+        cwd: o.getAgentWorkDir(),
+        trace: (execution) => { o.emit("runtime:hook" as any, execution); },
+      });
+      return await createProjectRuntimeHookEngine({
+        polpoDir: projectPolpoDir,
+        names,
+        host,
+      });
+    }),
     resolveExecutionRouteClassifier: (context) =>
       o.resolveExecutionRouteClassifier(context),
     resolveAgentModel: async (agentConfig: any, reasoning?: string) => {
@@ -485,7 +521,6 @@ export function createApp(orchestrator: Orchestrator, sseBridge: SSEBridge, opts
       return { status: outcome.status, result: outcome.result };
     },
   }), opts?.apiKeys));
-
   app.route("/v1/runs", runDeliveryRoutes(() => ({
     resolveRunDelivery: async (runId) => {
       const stores = o.getRunDeliveryStores();
@@ -536,6 +571,7 @@ export function createApp(orchestrator: Orchestrator, sseBridge: SSEBridge, opts
 
   if (data) authed.route("/data", dataRoutes(request => data.resolveService(request)));
   if (opts?.connectService) authed.route("/connect", connectRoutes(() => ({ connectService: opts.connectService })));
+  authed.route("/hooks", runtimeHookRoutes(() => ({ store: runtimeHookStore })));
 
   authed.route("/tasks", taskRoutes(() => ({
     taskStore: o.getStore(),

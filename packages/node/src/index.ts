@@ -8,6 +8,12 @@ export { FileTaskStore, FileRunStore, JsonTaskStore } from "@polpo-ai/file-store
 
 // Engine
 export { spawnLoopEngine } from "./adapters/loop-engine.js";
+export {
+  createNodeRuntimeHookHost,
+  createProjectRuntimeHookEngine,
+  loadRuntimeHookPacks,
+} from "./runtime-hooks.js";
+export type { NodeRuntimeHookHostOptions } from "./runtime-hooks.js";
 
 // Spawners — subprocess (default) and in-process (settings.taskExecution: "in-process")
 export { NodeSpawner } from "./adapters/node-spawner.js";

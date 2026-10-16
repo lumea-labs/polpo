@@ -1,0 +1,141 @@
+import type {
+  RuntimeHookDecision,
+  RuntimeHookDispatcher,
+  RuntimeHookEventName,
+  RuntimeHookIdentity,
+  RuntimeHookJson,
+  RuntimeHookSurface,
+} from "@polpo-ai/core/runtime-hooks";
+import type { CompletionToolExecutor } from "./tool-guardrails.js";
+
+export interface CompletionRuntimeHookContext {
+  dispatcher?: RuntimeHookDispatcher;
+  surface: RuntimeHookSurface;
+  identity: RuntimeHookIdentity;
+}
+
+export async function dispatchCompletionRuntimeHook(
+  context: CompletionRuntimeHookContext | undefined,
+  event: RuntimeHookEventName,
+  data: Record<string, unknown> = {},
+): Promise<RuntimeHookDecision> {
+  if (!context?.dispatcher) return { action: "allow" };
+  const result = await context.dispatcher.dispatch({
+    event,
+    surface: context.surface,
+    identity: context.identity,
+    data,
+  });
+  return result.decision;
+}
+
+export function createRuntimeHookedToolExecutor(options: {
+  executor: CompletionToolExecutor;
+  hooks?: CompletionRuntimeHookContext;
+}): CompletionToolExecutor {
+  if (!options.hooks?.dispatcher) return options.executor;
+  return async (name, originalArgs, execution) => {
+    const identity = {
+      ...options.hooks!.identity,
+      ...(execution?.callId ? { toolCallId: execution.callId } : {}),
+    };
+    const hookContext = { ...options.hooks!, identity };
+    const before = await dispatchCompletionRuntimeHook(hookContext, "tool:before", {
+      tool: name,
+      input: originalArgs,
+    });
+    const blocked = blockedToolResult(before);
+    if (blocked) return blocked;
+    const args = modifiedObject(before, "input") ?? originalArgs;
+    try {
+      const result = await options.executor(name, args, execution);
+      const event = result.startsWith("Error:") ? "tool:error" : "tool:after";
+      const after = await dispatchCompletionRuntimeHook(hookContext, event, {
+        tool: name,
+        input: args,
+        result,
+      });
+      const afterBlocked = blockedToolResult(after);
+      if (afterBlocked) return afterBlocked;
+      return modifiedString(after, "result") ?? result;
+    } catch (error) {
+      await dispatchCompletionRuntimeHook(hookContext, "tool:error", {
+        tool: name,
+        input: args,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      throw error;
+    }
+  };
+}
+
+export function runtimeHookDecisionError(decision: RuntimeHookDecision): Error | undefined {
+  if (decision.action === "allow" || decision.action === "modify") return undefined;
+  const message = decision.action === "deny"
+    ? decision.reason
+    : decision.action === "ask" || decision.action === "defer"
+      ? decision.reason
+      : decision.reason ?? "Runtime hook stopped execution";
+  return new Error(`Runtime hook ${decision.action}: ${message}`);
+}
+
+export function runtimeHookStopFeedback(decision: RuntimeHookDecision): string | undefined {
+  if (decision.action !== "stop") return undefined;
+  const feedback = decision.feedback?.trim();
+  return feedback ? feedback : undefined;
+}
+
+export function runtimeHookModifiedString(decision: RuntimeHookDecision, key: string): string | undefined {
+  return modifiedString(decision, key);
+}
+
+export async function runCompletionRuntimeHookOperation<T>(options: {
+  hooks?: CompletionRuntimeHookContext;
+  before: RuntimeHookEventName;
+  after: RuntimeHookEventName;
+  error: RuntimeHookEventName;
+  data?: Record<string, unknown>;
+  operation: () => Promise<T>;
+  resultData?: (result: T) => Record<string, unknown>;
+}): Promise<T> {
+  const before = await dispatchCompletionRuntimeHook(options.hooks, options.before, options.data);
+  const blocked = runtimeHookDecisionError(before);
+  if (blocked) throw blocked;
+  try {
+    const result = await options.operation();
+    const after = await dispatchCompletionRuntimeHook(options.hooks, options.after, {
+      ...options.data,
+      ...(options.resultData?.(result) ?? {}),
+    });
+    const afterBlocked = runtimeHookDecisionError(after);
+    if (afterBlocked) throw afterBlocked;
+    return result;
+  } catch (error) {
+    await dispatchCompletionRuntimeHook(options.hooks, options.error, {
+      ...options.data,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    throw error;
+  }
+}
+
+function blockedToolResult(decision: RuntimeHookDecision): string | undefined {
+  const error = runtimeHookDecisionError(decision);
+  return error ? `Error: ${error.message}` : undefined;
+}
+
+function modifiedObject(
+  decision: RuntimeHookDecision,
+  key: string,
+): Record<string, unknown> | undefined {
+  if (decision.action !== "modify") return undefined;
+  const value = decision.data[key];
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  return value as Record<string, unknown>;
+}
+
+function modifiedString(decision: RuntimeHookDecision, key: string): string | undefined {
+  if (decision.action !== "modify") return undefined;
+  const value: RuntimeHookJson | undefined = decision.data[key];
+  return typeof value === "string" ? value : undefined;
+}

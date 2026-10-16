@@ -48,6 +48,7 @@ import {
   type RuntimeSandboxOptions,
   type ToolInvocationContext,
   type ToolInvocationJsonValue,
+  type RuntimeHookDispatcher,
 } from "@polpo-ai/core";
 import type { ApprovalStore } from "@polpo-ai/core/approval-store";
 import type { ChatSessionInjection } from "@polpo-ai/core";
@@ -156,6 +157,16 @@ export interface CompletionRouteDeps {
   getSessionStore: () => any;
   getStore: () => any;
   emit: (event: string, data: any) => void;
+  /** Resolve the immutable hook snapshot for one agentic invocation. */
+  resolveRuntimeHooks?: (input: {
+    agentConfig?: any;
+    surface: "chat" | "loop" | "channel" | "task" | "schedule" | "runtime";
+    runId?: string;
+    sessionId?: string;
+    loop?: string;
+    step?: string;
+    activatedSkills?: readonly string[];
+  }) => RuntimeHookDispatcher | undefined | Promise<RuntimeHookDispatcher | undefined>;
   /**
    * Optional pre-execution planner. The input is already authorized and omits
    * messages, prompts, credentials, headers, and provider secrets. When absent,

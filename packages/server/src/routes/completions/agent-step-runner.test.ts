@@ -6,6 +6,7 @@ import {
   createRunPreflightPolicy,
 } from "@polpo-ai/core/guardrails";
 import { createToolInvocationContext, prepareLoopAgentInput } from "@polpo-ai/core";
+import { RuntimeHookEngine } from "@polpo-ai/core/runtime-hooks";
 import type { CompletionRouteDeps } from "../completions.js";
 import {
   agentConfigForModelPrimary,
@@ -227,6 +228,132 @@ describe("runAgentStepCompletion parallel tool calls", () => {
     expect(maxActive).toBe(2);
     expect(secondPrompt.indexOf("read_slow:done"))
       .toBeLessThan(secondPrompt.indexOf("list_fast:done"));
+  });
+});
+
+describe("runAgentStepCompletion runtime hook parity", () => {
+  it("applies tool:before inside a Loop agent node before the tool side effect", async () => {
+    const usage = {
+      inputTokens: { total: 10 },
+      outputTokens: { total: 5 },
+    };
+    let turn = 0;
+    const model = new MockLanguageModelV3({
+      doStream: async () => {
+        turn += 1;
+        if (turn === 1) {
+          return { stream: convertArrayToReadableStream([
+            { type: "stream-start", warnings: [] },
+            { type: "tool-call", toolCallId: "write-1", toolName: "write_file", input: JSON.stringify({ path: "forbidden" }) },
+            { type: "finish", finishReason: { unified: "tool-calls", raw: undefined }, usage },
+          ] as any[]) };
+        }
+        return { stream: convertArrayToReadableStream([
+          { type: "stream-start", warnings: [] },
+          { type: "text-start", id: "text" },
+          { type: "text-delta", id: "text", delta: "blocked safely" },
+          { type: "text-end", id: "text" },
+          { type: "finish", finishReason: { unified: "stop", raw: undefined }, usage },
+        ] as any[]) };
+      },
+    });
+    const executor = vi.fn(async () => "side effect happened");
+    const hookHost = { execute: vi.fn(async () => ({ decision: { action: "deny" as const, reason: "protected path" } })) };
+    const hooks = new RuntimeHookEngine({
+      definitions: [{
+        id: "deny-protected-write",
+        event: "tool:before",
+        matcher: { tools: ["write_file"] },
+        handler: { type: "tool", tool: "policy_check" },
+      }],
+      host: hookHost,
+    });
+    const deps = {
+      getConfig: () => ({ settings: {} }),
+      getMemoryStore: () => undefined,
+      emit: vi.fn(),
+      resolveRuntimeHooks: vi.fn(async () => hooks),
+      resolveAgentModel: vi.fn(async () => ({
+        model: { id: "mock/model", aiModel: model, provider: "mock", contextWindow: 128_000, maxTokens: 8192 },
+      })),
+      resolveAgentTools: vi.fn(async () => ({
+        tools: [{ name: "write_file", description: "write", parameters: { type: "object", properties: { path: { type: "string" } } } }],
+        executor,
+      })),
+      buildRuntimePrompt: vi.fn(async () => "system"),
+    } as unknown as CompletionRouteDeps;
+
+    const result = await runAgentStepCompletion({
+      deps,
+      agentConfig: { name: "nested-agent", model: "mock/model" },
+      aiMessages: [{ role: "user", content: "Write the file" }],
+      extraSystemParts: [],
+      context: {},
+      stepName: "implement",
+    });
+
+    expect(result.text).toBe("blocked safely");
+    expect(executor).not.toHaveBeenCalled();
+    expect(hookHost.execute).toHaveBeenCalledWith(expect.objectContaining({
+      envelope: expect.objectContaining({
+        event: "tool:before",
+        surface: "loop",
+        identity: expect.objectContaining({ agent: "nested-agent", step: "implement", toolCallId: "write-1" }),
+      }),
+    }));
+  });
+
+  it("honors one bounded turn:stop feedback recovery without replaying tools", async () => {
+    const usage = { inputTokens: { total: 1 }, outputTokens: { total: 1 } };
+    let modelTurn = 0;
+    const prompts: unknown[] = [];
+    const model = new MockLanguageModelV3({
+      doStream: async (options) => {
+        prompts.push(options.prompt);
+        modelTurn += 1;
+        const text = modelTurn === 1 ? "draft" : "corrected";
+        return { stream: convertArrayToReadableStream([
+          { type: "stream-start", warnings: [] },
+          { type: "text-start", id: "text" },
+          { type: "text-delta", id: "text", delta: text },
+          { type: "text-end", id: "text" },
+          { type: "finish", finishReason: { unified: "stop", raw: undefined }, usage },
+        ] as any[]) };
+      },
+    });
+    let stopCalls = 0;
+    const hooks = new RuntimeHookEngine({
+      definitions: [{ id: "review-stop", event: "turn:stop", handler: { type: "prompt", prompt: "review" } }],
+      host: {
+        execute: async () => {
+          stopCalls += 1;
+          return stopCalls === 1
+            ? { decision: { action: "stop" as const, feedback: "Mention the verified result" } }
+            : { decision: { action: "allow" as const } };
+        },
+      },
+    });
+    const executor = vi.fn();
+    const deps = {
+      getConfig: () => ({ settings: {} }), getMemoryStore: () => undefined, emit: vi.fn(),
+      resolveRuntimeHooks: vi.fn(async () => hooks),
+      resolveAgentModel: vi.fn(async () => ({
+        model: { id: "mock/model", aiModel: model, provider: "mock", contextWindow: 128_000, maxTokens: 8192 },
+      })),
+      resolveAgentTools: vi.fn(async () => ({ tools: [], executor })),
+      buildRuntimePrompt: vi.fn(async () => "system"),
+    } as unknown as CompletionRouteDeps;
+
+    const result = await runAgentStepCompletion({
+      deps, agentConfig: { name: "reviewer", model: "mock/model" },
+      aiMessages: [{ role: "user", content: "Answer" }], extraSystemParts: [], context: {}, stepName: "review",
+    });
+
+    expect(result.text).toBe("draft\n\ncorrected");
+    expect(modelTurn).toBe(2);
+    expect(executor).not.toHaveBeenCalled();
+    expect(JSON.stringify(prompts[1])).toContain("Mention the verified result");
+    expect(stopCalls).toBe(2);
   });
 });
 

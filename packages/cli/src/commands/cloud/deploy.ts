@@ -38,6 +38,7 @@ import {
 } from "../../util/custom-tool-source.js";
 import { collectLocalSkillBundle } from "../../util/runtime-skill-bundle.js";
 import type { SkillBundle } from "@polpo-ai/core/skill-bundle";
+import { validateRuntimeHookPack } from "@polpo-ai/core/runtime-hooks";
 
 // ── Deploy result tracking ──────────────────────────────
 
@@ -163,6 +164,37 @@ function loadJson(filePath: string): any | null {
 function listJsonFiles(dir: string): string[] {
   if (!fs.existsSync(dir)) return [];
   return fs.readdirSync(dir).filter(f => f.endsWith(".json")).map(f => path.join(dir, f));
+}
+
+function loadRuntimeHookPacks(polpoDir: string) {
+  return listJsonFiles(path.join(polpoDir, "hooks")).map((file) => {
+    const pack = validateRuntimeHookPack(JSON.parse(fs.readFileSync(file, "utf8")));
+    const filename = path.basename(file, ".json");
+    if (pack.name !== filename) throw new Error(`Hook pack ${file} declares name "${pack.name}"; expected "${filename}"`);
+    return pack;
+  });
+}
+
+async function deployRuntimeHooks(client: ApiClient, polpoDir: string): Promise<DeployResult> {
+  const result = emptyResult();
+  let packs;
+  try { packs = loadRuntimeHookPacks(polpoDir); } catch (error) {
+    result.failed++;
+    result.errors.push(error instanceof Error ? error.message : String(error));
+    return result;
+  }
+  for (const pack of packs) {
+    const existing = await client.get(`/v1/hooks/${encodeURIComponent(pack.name)}`);
+    const response = await client.put(`/v1/hooks/${encodeURIComponent(pack.name)}`, pack);
+    if (response.status >= 200 && response.status < 300) {
+      if (existing.status === 200) result.updated++;
+      else result.created++;
+    } else {
+      result.failed++;
+      result.errors.push(`hook "${pack.name}": ${friendlyError(readErrorBody(response.data, response.status))}`);
+    }
+  }
+  return result;
 }
 
 /**
@@ -778,6 +810,8 @@ export async function runDeploy(opts: DeployOptions): Promise<DeployReport> {
         fs.readdirSync(path.join(polpoDir, "skills")).some(
           (d) => fs.statSync(path.join(polpoDir, "skills", d)).isDirectory()
         );
+      const hasHooks = fs.existsSync(path.join(polpoDir, "hooks")) &&
+        fs.readdirSync(path.join(polpoDir, "hooks")).some((file) => file.endsWith(".json"));
       const hasSchedules = fs.existsSync(path.join(polpoDir, "schedules")) &&
         fs.readdirSync(path.join(polpoDir, "schedules")).length > 0;
       const hasTools = fs.existsSync(path.join(polpoDir, "tools")) &&
@@ -815,6 +849,11 @@ export async function runDeploy(opts: DeployOptions): Promise<DeployReport> {
           (d) => fs.statSync(path.join(polpoDir, "skills", d)).isDirectory()
         ).length;
         resourceLines.push(`  ${pc.bold("Skills")}       ${n}`);
+      }
+
+      if (hasHooks) {
+        const n = fs.readdirSync(path.join(polpoDir, "hooks")).filter((file) => file.endsWith(".json")).length;
+        resourceLines.push(`  ${pc.bold("Hooks")}        ${n}`);
       }
       if (hasTools) {
         const n = fs.readdirSync(path.join(polpoDir, "tools")).filter((f) => f.endsWith(".ts")).length;
@@ -885,6 +924,13 @@ export async function runDeploy(opts: DeployOptions): Promise<DeployReport> {
         const r = await deploySkills(client, polpoDir, conflictOpts);
         mergeResult(total, r);
         stopSpinner(`Skills: ${r.created} created, ${r.updated} updated${r.skipped ? `, ${r.skipped} skipped` : ""}${r.failed ? `, ${r.failed} failed` : ""}`);
+      }
+
+      if (hasHooks) {
+        startSpinner("Deploying runtime hooks...");
+        const r = await deployRuntimeHooks(client, polpoDir);
+        mergeResult(total, r);
+        stopSpinner(`Hooks: ${r.created} created, ${r.updated} updated${r.failed ? `, ${r.failed} failed` : ""}`);
       }
 
       if (hasTools) {
