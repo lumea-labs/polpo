@@ -26,8 +26,6 @@ import type {
 import type { SessionClientToolDefinition } from "@polpo-ai/core/session-store";
 import {
   classifyRuntimeError,
-  needsSeparateStructuredOutputReasoningPass,
-  providerOptionsForStructuredOutputPass,
   runModelPolicyTurn,
 } from "@polpo-ai/llm";
 import { Output, type LanguageModelUsage } from "ai";
@@ -82,7 +80,6 @@ import {
   finalizeResponseFormatText,
   isStructuredResponseFormat,
   serializeModelOutput,
-  terminalJsonInstructionForResponseFormat,
 } from "./structured-output.js";
 import { selectRequestClientToolCall } from "./client-tools.js";
 import { executeCompletionToolBatch } from "./tool-execution-batch.js";
@@ -213,14 +210,16 @@ async function runChatTerminalOutputPhase(options: {
   if (!exec.modelOutput) {
     throw new Error("Structured response format is missing its model output contract");
   }
-  const usesLocallyValidatedJson = needsSeparateStructuredOutputReasoningPass(
-    primaryModel,
-    reasoning,
-    primaryProviderOpts,
-  );
-  const terminalJsonInstruction = usesLocallyValidatedJson
-    ? `\n\n${terminalJsonInstructionForResponseFormat(exec.body.response_format)}`
-    : "";
+
+  const terminalMessages = (isRecovery: boolean) => [
+    ...messages,
+    {
+      role: "user" as const,
+      content: isRecovery
+        ? "The previous terminal response did not satisfy the required output schema. Operational work is already complete. Return only the terminal result required by the configured schema, using the canonical conversation and tool results. Do not call tools or repeat side effects."
+        : "Operational work is complete. Return only the terminal result required by the configured schema, using the canonical conversation and tool results. Do not call tools or repeat side effects.",
+    },
+  ];
 
   let originalDiagnostic: ReturnType<typeof classifyRuntimeError> | undefined;
   for (let attemptIndex = 0; attemptIndex < 2; attemptIndex += 1) {
@@ -253,41 +252,25 @@ async function runChatTerminalOutputPhase(options: {
           return {
             model: resolvedAttempt.model.aiModel,
             maxOutputTokens: resolvedAttempt.model.maxTokens,
-            providerOptions: providerOptionsForStructuredOutputPass(
-              resolvedAttempt.model,
-              reasoning,
-              resolvedAttempt.providerOptions,
-            ),
+            providerOptions: resolvedAttempt.providerOptions,
             capabilities: resolvedAttempt.model.capabilities,
           };
         },
         preserveSingleAttemptError: true,
         allowCommittedFallback: true,
         maxRecoverableStreamRetries: 0,
-        system: isRecovery
-          ? `${exec.fullSystemPrompt}\n\n## Terminal structured output recovery\n\nOperational work is complete. Produce only the terminal result matching the requested schema from the canonical conversation and tool results. Do not call tools or repeat side effects.${terminalJsonInstruction}`
-          : `${exec.fullSystemPrompt}\n\n## Terminal structured output\n\nOperational work is complete. Produce only the terminal result matching the requested schema from the canonical conversation and tool results.${terminalJsonInstruction}`,
-        messages,
-        ...(!usesLocallyValidatedJson ? { output: exec.modelOutput } : {}),
+        system: exec.fullSystemPrompt,
+        messages: terminalMessages(isRecovery),
+        output: exec.modelOutput,
         ...(signal ? { abortSignal: signal } : {}),
       });
-      if (
-        result.toolCalls.length > 0
-        || (!usesLocallyValidatedJson && result.output === undefined)
-      ) {
+      if (result.toolCalls.length > 0 || result.output === undefined) {
         throw new Error(
           result.toolCalls.length > 0
             ? "Terminal structured-output phase returned a tool call"
             : "Terminal structured-output phase completed without structured output",
         );
       }
-      const serializedText = usesLocallyValidatedJson
-        ? await finalizeResponseFormatText(exec.body.response_format, result.text)
-        : await serializeModelOutput(
-            exec.body.response_format,
-            result.output,
-            result.text,
-          );
       for (const warning of result.warnings ?? []) {
         exec.deps.emit("runtime:model-warning", {
           source: "chat-terminal-output",
@@ -306,7 +289,6 @@ async function runChatTerminalOutputPhase(options: {
       }
       return {
         result,
-        serializedText,
         resolved: resolvedAttempts.get(result.selectedAttempt.index),
       };
     } catch (error) {
@@ -455,7 +437,11 @@ export async function executeStreamingChatCompletion(
       totalUsage = addChatUsage(totalUsage, terminal.result.usage);
       finalReasoning = appendReasoningSummary(finalReasoning, terminal.result.reasoning);
       lastProviderMetadata = terminal.result.providerMetadata as Record<string, unknown> | undefined;
-      finalText = terminal.serializedText;
+      finalText = await serializeModelOutput(
+        body.response_format,
+        terminal.result.output,
+        terminal.result.text,
+      );
       completedStructuredOutput = true;
     };
 
@@ -463,11 +449,6 @@ export async function executeStreamingChatCompletion(
       if (
         structuredResponse
         && Object.keys(aiTools).length === 0
-        && !needsSeparateStructuredOutputReasoningPass(
-          primaryModel,
-          reasoning,
-          primaryProviderOpts,
-        )
       ) {
         await completeTerminalOutput();
       }
@@ -1040,7 +1021,11 @@ export async function runNonStreamingChatCompletion(c: any, exec: ChatCompletion
     totalUsage = addChatUsage(totalUsage, terminal.result.usage);
     finalReasoning = appendReasoningSummary(finalReasoning, terminal.result.reasoning);
     lastProviderMetadata = terminal.result.providerMetadata as Record<string, unknown> | undefined;
-    finalText = terminal.serializedText;
+    finalText = await serializeModelOutput(
+      body.response_format,
+      terminal.result.output,
+      terminal.result.text,
+    );
     completedStructuredOutput = true;
   };
 
@@ -1048,11 +1033,6 @@ export async function runNonStreamingChatCompletion(c: any, exec: ChatCompletion
     if (
       structuredResponse
       && Object.keys(aiTools).length === 0
-      && !needsSeparateStructuredOutputReasoningPass(
-        primaryModel,
-        reasoning,
-        primaryProviderOpts,
-      )
     ) {
       await completeTerminalOutput();
     }

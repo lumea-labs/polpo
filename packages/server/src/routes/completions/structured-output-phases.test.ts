@@ -48,6 +48,7 @@ function fixture() {
   const responseFormats: unknown[] = [];
   const toolCounts: number[] = [];
   const providerOptions: unknown[] = [];
+  const prompts: unknown[] = [];
   const executor = vi.fn(async () => "inspected");
   const usage = {
     inputTokens: { total: 4 },
@@ -58,6 +59,7 @@ function fixture() {
       responseFormats.push(options.responseFormat);
       toolCounts.push(options.tools?.length ?? 0);
       providerOptions.push(options.providerOptions);
+      prompts.push(options.prompt);
       if (!options.responseFormat) operationalTurn += 1;
       if (!options.responseFormat && operationalTurn === 1) {
         return { stream: convertArrayToReadableStream([
@@ -66,7 +68,7 @@ function fixture() {
           { type: "finish", finishReason: { unified: "tool-calls", raw: undefined }, usage },
         ] as any[]) };
       }
-      const text = options.responseFormat || (options.tools?.length ?? 0) === 0
+      const text = options.responseFormat
         ? '{"answer":"ready"}'
         : "Operational work complete.";
       return { stream: convertArrayToReadableStream([
@@ -122,7 +124,7 @@ function fixture() {
     sessionStore: null,
     sessionId: null,
   };
-  return { execution, executor, responseFormats, toolCounts, providerOptions };
+  return { execution, executor, responseFormats, toolCounts, providerOptions, prompts };
 }
 
 describe("chat structured-output phases", () => {
@@ -141,6 +143,7 @@ describe("chat structured-output phases", () => {
     ]);
     expect(f.toolCounts).toEqual([1, 1, 0]);
     expect(f.executor).toHaveBeenCalledOnce();
+    expect((f.prompts[2] as Array<{ role?: string }>).at(-1)?.role).toBe("user");
   });
 
   it("buffers and validates terminal output before publishing streaming chat", async () => {
@@ -164,6 +167,7 @@ describe("chat structured-output phases", () => {
     ]);
     expect(f.toolCounts).toEqual([1, 1, 0]);
     expect(f.executor).toHaveBeenCalledOnce();
+    expect((f.prompts[2] as Array<{ role?: string }>).at(-1)?.role).toBe("user");
     const contentFrames = frames
       .filter((frame) => frame !== "[DONE]")
       .map((frame) => JSON.parse(frame))
@@ -197,22 +201,15 @@ function anthropicStructuredOutputFixture(options: {
     doStream: async (options) => {
       const providerOptions = options.providerOptions as Record<string, any> | undefined;
       calls.push({ responseFormat: options.responseFormat, providerOptions, prompt: options.prompt });
-      if (
-        runtimeMode === "gateway"
-        && options.responseFormat
-        && providerOptions?.anthropic?.thinking
-      ) {
+      const prompt = options.prompt as Array<{ role?: string }>;
+      if (options.responseFormat && prompt.at(-1)?.role === "assistant") {
         throw new Error(
-          "toolChoice 'required' is not supported with this model or thinking configuration",
+          "Your API request included an assistant message in the final position, which would pre-fill the assistant response. When using output format, pre-filling the assistant response is not supported.",
         );
       }
-      const gatewayTerminalText = runtimeMode === "gateway"
-        && !options.responseFormat
-        && calls.length > 1;
-      const terminalText = terminalTexts[terminalAttempt]
-        ?? '{"status":"ready"}';
-      if (gatewayTerminalText) terminalAttempt += 1;
-      const content = options.responseFormat || gatewayTerminalText
+      const terminalText = terminalTexts[terminalAttempt] ?? '{"status":"ready"}';
+      if (options.responseFormat) terminalAttempt += 1;
+      const content = options.responseFormat
         ? [
             { type: "text-start", id: "text" },
             { type: "text-delta", id: "text", delta: terminalText },
@@ -287,7 +284,7 @@ function anthropicStructuredOutputFixture(options: {
 }
 
 describe("Anthropic Gateway reasoning with structured output", () => {
-  it("keeps reasoning in the operational turn and removes it from the non-streaming schema turn", async () => {
+  it("uses native structured output with thinking and starts a new user turn", async () => {
     const f = anthropicStructuredOutputFixture();
     const response = await runNonStreamingChatCompletion({
       req: { raw: { signal: new AbortController().signal } },
@@ -295,20 +292,23 @@ describe("Anthropic Gateway reasoning with structured output", () => {
     } as any, f.execution) as any;
 
     expect(response.choices[0].message.content).toBe('{"status":"ready"}');
-    expect(f.calls).toHaveLength(2);
+    expect(f.calls).toHaveLength(1);
     expect(f.calls[0]).toMatchObject({
-      responseFormat: undefined,
-      providerOptions: { anthropic: { thinking: { type: "enabled" } } },
+      responseFormat: { type: "json" },
+      providerOptions: {
+        anthropic: {
+          structuredOutputMode: "auto",
+          thinking: { type: "enabled", budgetTokens: 4096 },
+          effort: "medium",
+        },
+      },
     });
-    expect(f.calls[1]).toMatchObject({
-      responseFormat: undefined,
-      providerOptions: { anthropic: { structuredOutputMode: "auto" } },
-    });
-    expect(f.calls[1]?.providerOptions?.anthropic).not.toHaveProperty("thinking");
-    expect(f.calls[1]?.providerOptions?.anthropic).not.toHaveProperty("effort");
-    const terminalSystem = (f.calls[1]?.prompt as Array<{ role?: string; content?: string }>)
-      .find((message) => message.role === "system")?.content;
-    expect(terminalSystem).toContain('"enum":["ready"]');
+    const prompt = f.calls[0]?.prompt as Array<{
+      role?: string;
+      content?: Array<{ type?: string; text?: string }>;
+    }>;
+    expect(prompt.at(-1)?.role).toBe("user");
+    expect(prompt.at(-1)?.content?.[0]?.text).toContain("Operational work is complete");
   });
 
   it("publishes only the validated schema result while streaming the same production payload", async () => {
@@ -319,22 +319,13 @@ describe("Anthropic Gateway reasoning with structured output", () => {
       writeSSE: vi.fn(async ({ data }: { data: string }) => { frames.push(data); }),
     }, f.execution, new AbortController().signal);
 
-    expect(f.calls).toHaveLength(2);
+    expect(f.calls).toHaveLength(1);
     expect(f.calls[0]?.providerOptions?.anthropic?.thinking).toEqual({
       type: "enabled",
       budgetTokens: 4096,
     });
-    expect(f.calls[1]).toMatchObject({
-      responseFormat: undefined,
-      providerOptions: {
-        anthropic: {
-          structuredOutputMode: "auto",
-        },
-      },
-    });
-    expect(f.calls[1]?.providerOptions?.anthropic).toEqual({
-      structuredOutputMode: "auto",
-    });
+    expect(f.calls[0]?.responseFormat).toMatchObject({ type: "json" });
+    expect((f.calls[0]?.prompt as Array<{ role?: string }>).at(-1)?.role).toBe("user");
     const content = frames
       .filter((frame) => frame !== "[DONE]")
       .map((frame) => JSON.parse(frame))
@@ -344,31 +335,26 @@ describe("Anthropic Gateway reasoning with structured output", () => {
     expect(content).toEqual(['{"status":"ready"}']);
   });
 
-  it("separates the schema pass when Cloud defaults thinking outside the agent config", async () => {
+  it("uses effective Cloud thinking even when it was defaulted outside the agent config", async () => {
     const f = anthropicStructuredOutputFixture({ omitConfiguredReasoning: true });
     const response = await runNonStreamingChatCompletion({
       req: { raw: { signal: new AbortController().signal } },
       json: (body: unknown) => body,
     } as any, f.execution) as any;
 
-    expect(f.calls).toHaveLength(2);
+    expect(f.calls).toHaveLength(1);
     expect(f.calls[0]?.providerOptions?.anthropic?.thinking).toEqual({
       type: "enabled",
       budgetTokens: 4096,
     });
-    expect(f.calls[1]?.responseFormat).toBeUndefined();
-    expect(f.calls[1]?.providerOptions?.anthropic).toEqual({
-      structuredOutputMode: "auto",
-    });
+    expect(f.calls[0]?.responseFormat).toMatchObject({ type: "json" });
+    expect((f.calls[0]?.prompt as Array<{ role?: string }>).at(-1)?.role).toBe("user");
     expect(response.choices[0].message.content).toBe('{"status":"ready"}');
   });
 
-  it("repairs only the terminal JSON when the first real production payload is invalid", async () => {
+  it("recovers the native terminal output without changing thinking or replaying work", async () => {
     const f = anthropicStructuredOutputFixture({
-      terminalTexts: [
-        "The system is ready.",
-        '{"status":"ready"}',
-      ],
+      terminalTexts: ["The system is ready.", '{"status":"ready"}'],
     });
     const response = await runNonStreamingChatCompletion({
       req: { raw: { signal: new AbortController().signal } },
@@ -376,16 +362,19 @@ describe("Anthropic Gateway reasoning with structured output", () => {
     } as any, f.execution) as any;
 
     expect(response.choices[0].message.content).toBe('{"status":"ready"}');
-    expect(f.calls).toHaveLength(3);
-    expect(f.calls.slice(1).every((call) => call.responseFormat === undefined)).toBe(true);
-    expect(f.calls.slice(1).every((call) => !call.providerOptions?.anthropic?.thinking)).toBe(true);
+    expect(f.calls).toHaveLength(2);
+    expect(f.calls.every((call) => call.responseFormat)).toBe(true);
+    expect(f.calls.every((call) => call.providerOptions?.anthropic?.thinking)).toBe(true);
+    expect(f.calls.every((call) =>
+      (call.prompt as Array<{ role?: string }>).at(-1)?.role === "user"
+    )).toBe(true);
     expect(f.execution.deps.emit).toHaveBeenCalledWith(
       "runtime:structured-output-recovery",
       expect.objectContaining({ phase: "succeeded", source: "chat" }),
     );
   });
 
-  it("fails closed after one invalid terminal JSON recovery", async () => {
+  it("fails closed after one invalid native terminal recovery", async () => {
     const f = anthropicStructuredOutputFixture({
       terminalTexts: ["not JSON", '{"status":"wrong"}'],
     });
@@ -397,7 +386,8 @@ describe("Anthropic Gateway reasoning with structured output", () => {
     expect(response).toMatchObject({
       error: { code: "invalid_response_format_output" },
     });
-    expect(f.calls).toHaveLength(3);
+    expect(f.calls).toHaveLength(2);
+    expect(f.calls.every((call) => call.providerOptions?.anthropic?.thinking)).toBe(true);
     expect(f.execution.deps.emit).toHaveBeenCalledWith(
       "runtime:structured-output-recovery",
       expect.objectContaining({ phase: "failed", source: "chat" }),
@@ -439,7 +429,7 @@ describe("Anthropic Gateway reasoning with structured output", () => {
     })]);
   });
 
-  it("removes thinking only from the terminal schema turn after real tool execution", async () => {
+  it("keeps thinking and starts a user turn for native output after real tool execution", async () => {
     const f = fixture();
     const reasoningProviderOptions = {
       anthropic: {
@@ -469,8 +459,10 @@ describe("Anthropic Gateway reasoning with structured output", () => {
     expect(f.providerOptions).toEqual([
       reasoningProviderOptions,
       reasoningProviderOptions,
-      { anthropic: { structuredOutputMode: "auto" } },
+      reasoningProviderOptions,
     ]);
+    expect(f.responseFormats[2]).toMatchObject({ type: "json" });
+    expect((f.prompts[2] as Array<{ role?: string }>).at(-1)?.role).toBe("user");
   });
 });
 

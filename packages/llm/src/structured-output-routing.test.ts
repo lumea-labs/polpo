@@ -15,32 +15,26 @@ describe("structured output runtime routing", () => {
     gateway: { order: ["anthropic"] },
   };
 
-  it("separates Anthropic Gateway reasoning from the terminal schema pass", () => {
-    expect(needsSeparateStructuredOutputReasoningPass(gatewayAnthropic, "medium", reasoning)).toBe(true);
+  it("keeps Anthropic Gateway thinking on native structured-output turns", () => {
+    expect(needsSeparateStructuredOutputReasoningPass(gatewayAnthropic, "medium", reasoning)).toBe(false);
     expect(providerOptionsForStructuredOutputPass(
       gatewayAnthropic,
       "medium",
       reasoning,
-    )).toEqual({
-      anthropic: { structuredOutputMode: "auto" },
-      gateway: { order: ["anthropic"] },
-    });
+    )).toBe(reasoning);
   });
 
-  it("uses the effective provider thinking when reasoning was defaulted by the host", () => {
+  it("keeps effective provider thinking when reasoning was defaulted by the host", () => {
     expect(needsSeparateStructuredOutputReasoningPass(
       gatewayAnthropic,
       undefined,
       reasoning,
-    )).toBe(true);
+    )).toBe(false);
     expect(providerOptionsForStructuredOutputPass(
       gatewayAnthropic,
       undefined,
       reasoning,
-    )).toEqual({
-      anthropic: { structuredOutputMode: "auto" },
-      gateway: { order: ["anthropic"] },
-    });
+    )).toBe(reasoning);
   });
 
   it.each([
