@@ -82,6 +82,7 @@ import {
   finalizeResponseFormatText,
   isStructuredResponseFormat,
   serializeModelOutput,
+  terminalJsonInstructionForResponseFormat,
 } from "./structured-output.js";
 import { selectRequestClientToolCall } from "./client-tools.js";
 import { executeCompletionToolBatch } from "./tool-execution-batch.js";
@@ -212,6 +213,14 @@ async function runChatTerminalOutputPhase(options: {
   if (!exec.modelOutput) {
     throw new Error("Structured response format is missing its model output contract");
   }
+  const usesLocallyValidatedJson = needsSeparateStructuredOutputReasoningPass(
+    primaryModel,
+    reasoning,
+    primaryProviderOpts,
+  );
+  const terminalJsonInstruction = usesLocallyValidatedJson
+    ? `\n\n${terminalJsonInstructionForResponseFormat(exec.body.response_format)}`
+    : "";
 
   let originalDiagnostic: ReturnType<typeof classifyRuntimeError> | undefined;
   for (let attemptIndex = 0; attemptIndex < 2; attemptIndex += 1) {
@@ -256,19 +265,29 @@ async function runChatTerminalOutputPhase(options: {
         allowCommittedFallback: true,
         maxRecoverableStreamRetries: 0,
         system: isRecovery
-          ? `${exec.fullSystemPrompt}\n\n## Terminal structured output recovery\n\nOperational work is complete. Produce only the terminal result matching the requested schema from the canonical conversation and tool results. Do not call tools or repeat side effects.`
-          : `${exec.fullSystemPrompt}\n\n## Terminal structured output\n\nOperational work is complete. Produce only the terminal result matching the requested schema from the canonical conversation and tool results.`,
+          ? `${exec.fullSystemPrompt}\n\n## Terminal structured output recovery\n\nOperational work is complete. Produce only the terminal result matching the requested schema from the canonical conversation and tool results. Do not call tools or repeat side effects.${terminalJsonInstruction}`
+          : `${exec.fullSystemPrompt}\n\n## Terminal structured output\n\nOperational work is complete. Produce only the terminal result matching the requested schema from the canonical conversation and tool results.${terminalJsonInstruction}`,
         messages,
-        output: exec.modelOutput,
+        ...(!usesLocallyValidatedJson ? { output: exec.modelOutput } : {}),
         ...(signal ? { abortSignal: signal } : {}),
       });
-      if (result.toolCalls.length > 0 || result.output === undefined) {
+      if (
+        result.toolCalls.length > 0
+        || (!usesLocallyValidatedJson && result.output === undefined)
+      ) {
         throw new Error(
           result.toolCalls.length > 0
             ? "Terminal structured-output phase returned a tool call"
             : "Terminal structured-output phase completed without structured output",
         );
       }
+      const serializedText = usesLocallyValidatedJson
+        ? await finalizeResponseFormatText(exec.body.response_format, result.text)
+        : await serializeModelOutput(
+            exec.body.response_format,
+            result.output,
+            result.text,
+          );
       for (const warning of result.warnings ?? []) {
         exec.deps.emit("runtime:model-warning", {
           source: "chat-terminal-output",
@@ -287,6 +306,7 @@ async function runChatTerminalOutputPhase(options: {
       }
       return {
         result,
+        serializedText,
         resolved: resolvedAttempts.get(result.selectedAttempt.index),
       };
     } catch (error) {
@@ -435,11 +455,7 @@ export async function executeStreamingChatCompletion(
       totalUsage = addChatUsage(totalUsage, terminal.result.usage);
       finalReasoning = appendReasoningSummary(finalReasoning, terminal.result.reasoning);
       lastProviderMetadata = terminal.result.providerMetadata as Record<string, unknown> | undefined;
-      finalText = await serializeModelOutput(
-        body.response_format,
-        terminal.result.output,
-        terminal.result.text,
-      );
+      finalText = terminal.serializedText;
       completedStructuredOutput = true;
     };
 
@@ -1024,11 +1040,7 @@ export async function runNonStreamingChatCompletion(c: any, exec: ChatCompletion
     totalUsage = addChatUsage(totalUsage, terminal.result.usage);
     finalReasoning = appendReasoningSummary(finalReasoning, terminal.result.reasoning);
     lastProviderMetadata = terminal.result.providerMetadata as Record<string, unknown> | undefined;
-    finalText = await serializeModelOutput(
-      body.response_format,
-      terminal.result.output,
-      terminal.result.text,
-    );
+    finalText = terminal.serializedText;
     completedStructuredOutput = true;
   };
 

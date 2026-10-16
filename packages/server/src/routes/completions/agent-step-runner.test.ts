@@ -937,6 +937,7 @@ describe("runAgentStepCompletion structured loop output", () => {
 
   it("prevents the production implement-step failure when Cloud defaults Anthropic Gateway thinking", async () => {
     let operationalTurn = 0;
+    let terminalAttempt = 0;
     const calls: Array<{
       responseFormat: unknown;
       providerOptions: Record<string, any> | undefined;
@@ -962,9 +963,13 @@ describe("runAgentStepCompletion structured loop output", () => {
             { type: "finish", finishReason: { unified: "tool-calls", raw: undefined }, usage },
           ] as any[]) };
         }
+        const isTerminalText = !options.responseFormat && (options.tools?.length ?? 0) === 0;
+        if (isTerminalText) terminalAttempt += 1;
         const text = options.responseFormat
           ? '{"summary":"implemented","response":"ready"}'
-          : "Implementation complete.";
+          : isTerminalText && terminalAttempt > 1
+            ? '{"summary":"implemented","response":"ready"}'
+            : "Implementation complete.";
         return { stream: convertArrayToReadableStream([
           { type: "stream-start", warnings: [] },
           { type: "text-start", id: "text" },
@@ -1024,17 +1029,23 @@ describe("runAgentStepCompletion structured loop output", () => {
 
     expect(result.output).toEqual({ summary: "implemented", response: "ready" });
     expect(executeTool).toHaveBeenCalledOnce();
-    expect(calls).toHaveLength(3);
+    expect(calls).toHaveLength(4);
     expect(calls.slice(0, 2).every((call) => call.providerOptions?.anthropic?.thinking)).toBe(true);
-    expect(calls[2]).toMatchObject({
-      responseFormat: { type: "json" },
-      providerOptions: { anthropic: { structuredOutputMode: "auto" } },
-    });
-    expect(calls[2]?.providerOptions?.anthropic).not.toHaveProperty("thinking");
-    expect(calls[2]?.providerOptions?.anthropic).not.toHaveProperty("effort");
-    expect(deps.emit).not.toHaveBeenCalledWith(
+    expect(calls.slice(2)).toEqual([
+      expect.objectContaining({
+        responseFormat: undefined,
+        providerOptions: { anthropic: { structuredOutputMode: "auto" } },
+      }),
+      expect.objectContaining({
+        responseFormat: undefined,
+        providerOptions: { anthropic: { structuredOutputMode: "auto" } },
+      }),
+    ]);
+    expect(calls.slice(2).every((call) => !call.providerOptions?.anthropic?.thinking)).toBe(true);
+    expect(calls.slice(2).every((call) => !call.providerOptions?.anthropic?.effort)).toBe(true);
+    expect(deps.emit).toHaveBeenCalledWith(
       "runtime:structured-output-recovery",
-      expect.objectContaining({ phase: "failed", step: "implement" }),
+      expect.objectContaining({ phase: "succeeded", step: "implement" }),
     );
   });
 

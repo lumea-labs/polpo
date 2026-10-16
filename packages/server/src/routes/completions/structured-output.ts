@@ -18,6 +18,23 @@ export function isStructuredResponseFormat(
   return format?.type === "json_object" || format?.type === "json_schema";
 }
 
+/**
+ * Describe the wire-level JSON contract for terminal turns that must be
+ * validated by Polpo instead of delegated to a provider adapter.
+ */
+export function terminalJsonInstructionForResponseFormat(
+  format: CompletionResponseFormat | undefined,
+): string {
+  if (format?.type === "json_schema") {
+    return [
+      "Return exactly one valid JSON value matching this JSON Schema.",
+      "Do not include markdown fences, prose, or any text outside the JSON value.",
+      `JSON Schema: ${JSON.stringify(format.json_schema.schema)}`,
+    ].join("\n");
+  }
+  return "Return exactly one valid JSON object. Do not include markdown fences, prose, or any text outside the JSON object.";
+}
+
 function schemaValidator(schema: Record<string, unknown>) {
   return async (value: unknown) => {
     const result = await validateJsonSchema(schema, value);

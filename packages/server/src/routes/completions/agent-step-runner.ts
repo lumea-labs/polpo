@@ -558,6 +558,19 @@ export async function runAgentStepCompletion(options: {
   let totalUsage: LanguageModelUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 } as LanguageModelUsage;
   let lastProviderMetadata: Record<string, unknown> | undefined;
   const toolCallsAccum: any[] = [];
+  const usesLocallyValidatedJson = outputSchema !== undefined
+    && needsSeparateStructuredOutputReasoningPass(
+      initialResolved.model,
+      reasoning,
+      initialResolved.providerOptions,
+    );
+  const terminalJsonInstruction = usesLocallyValidatedJson
+    ? [
+        "Return exactly one valid JSON value matching this JSON Schema.",
+        "Do not include markdown fences, prose, or any text outside the JSON value.",
+        `JSON Schema: ${JSON.stringify(outputSchema)}`,
+      ].join("\n")
+    : "";
 
   const completeTerminalStructuredOutput = async () => {
     if (modelOutput === undefined) return;
@@ -604,13 +617,16 @@ export async function runAgentStepCompletion(options: {
           allowCommittedFallback: true,
           maxRecoverableStreamRetries: 0,
           system: isRecovery
-            ? `${fullSystemPrompt}\n\n## Terminal structured output recovery\n\nAll operational work is already complete. Produce only the terminal JSON matching the requested schema from the canonical tool results. Do not call tools, modify files, reinterpret the requested scope, or claim work not evidenced by those results.`
-            : `${fullSystemPrompt}\n\n## Terminal structured output\n\nOperational work is complete. Produce only the terminal result matching the requested schema from the canonical conversation and tool results.`,
+            ? `${fullSystemPrompt}\n\n## Terminal structured output recovery\n\nAll operational work is already complete. Produce only the terminal JSON matching the requested schema from the canonical tool results. Do not call tools, modify files, reinterpret the requested scope, or claim work not evidenced by those results}.${terminalJsonInstruction ? `\n\n${terminalJsonInstruction}` : ""}`
+            : `${fullSystemPrompt}\n\n## Terminal structured output\n\nOperational work is complete. Produce only the terminal result matching the requested schema from the canonical conversation and tool results.${terminalJsonInstruction ? `\n\n${terminalJsonInstruction}` : ""}`,
           messages,
-          output: modelOutput,
+          ...(!usesLocallyValidatedJson ? { output: modelOutput } : {}),
           ...(options.signal ? { abortSignal: options.signal } : {}),
         });
-        if (terminalResult.toolCalls.length > 0 || terminalResult.output === undefined) {
+        if (
+          terminalResult.toolCalls.length > 0
+          || (!usesLocallyValidatedJson && terminalResult.output === undefined)
+        ) {
           throw new Error(
             terminalResult.toolCalls.length > 0
               ? "Terminal structured-output phase returned a tool call"
@@ -628,9 +644,12 @@ export async function runAgentStepCompletion(options: {
           });
         }
 
+        const terminalOutput = usesLocallyValidatedJson
+          ? JSON.parse(terminalResult.text)
+          : terminalResult.output;
         const prepared = prepareLoopAgentOutput(
           stepName,
-          terminalResult.output,
+          terminalOutput,
           outputSchema,
         );
         const selectedResolved = resolvedAttempts.get(terminalResult.selectedAttempt.index);
