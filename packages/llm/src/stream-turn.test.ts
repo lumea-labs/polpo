@@ -98,6 +98,42 @@ describe("streamModelTurn", () => {
     expect(doStream).not.toHaveBeenCalled();
   });
 
+  it("compiles toolChoice none with a declared catalog into a tool-free provider request", async () => {
+    let seenTools: unknown = "not-called";
+    let seenToolChoice: unknown = "not-called";
+    const model = new MockLanguageModelV3({
+      doStream: async (options) => {
+        seenTools = options.tools;
+        seenToolChoice = options.toolChoice;
+        return {
+          stream: convertArrayToReadableStream([
+            { type: "stream-start", warnings: [] },
+            { type: "text-start", id: "text" },
+            { type: "text-delta", id: "text", delta: "done" },
+            { type: "text-end", id: "text" },
+            { type: "finish", finishReason: { unified: "stop", raw: undefined }, usage: usage() },
+          ] as any[]),
+        };
+      },
+    });
+
+    const result = await streamModelTurn({
+      model,
+      messages: [{ role: "user", content: "answer without tools" }],
+      tools: {
+        configured_but_disabled: {
+          inputSchema: toValidatedToolInputSchema({ type: "object" }),
+        },
+      },
+      activeTools: ["configured_but_disabled"],
+      toolChoice: "none",
+    });
+
+    expect(result.text).toBe("done");
+    expect(seenTools).toBeUndefined();
+    expect(seenToolChoice).toBeUndefined();
+  });
+
   it.each([
     {
       label: "required choice with no tools",

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   ToolCapabilityUnsupportedError,
+  UNKNOWN_MODEL_RUNTIME_CAPABILITIES,
   createEffectiveTurnPlan,
   directProviderRuntimeCapabilities,
   markToolStrictness,
@@ -132,6 +133,25 @@ describe("model runtime capabilities", () => {
       activeTools: [],
       toolChoice: "none",
       hasOutputContract: true,
+    });
+
+    const disabled = createEffectiveTurnPlan({
+      tools: {
+        stale: markToolStrictness({
+          inputSchema: toValidatedToolInputSchema({ type: "object" }),
+        }, "provider-required"),
+      } as any,
+      activeTools: ["stale"] as any,
+      toolChoice: "none" as any,
+      capabilities: UNKNOWN_MODEL_RUNTIME_CAPABILITIES,
+    });
+    expect(disabled.preparedTools).toBeUndefined();
+    expect(disabled.plan).toMatchObject({
+      phase: "operational",
+      activeTools: [],
+      tools: [],
+      toolChoice: "none",
+      warnings: [],
     });
   });
 });
