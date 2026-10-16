@@ -158,6 +158,9 @@ describe("RuntimeHookEngine", () => {
             scope: "project",
             mode: "control",
             priority: 0,
+            attempt: 1,
+            timeoutMs: 5_000,
+            onFailure: "continue",
             startedAt: "2026-01-01T00:00:00.000Z",
             completedAt: "2026-01-01T00:00:00.010Z",
             durationMs: 10,
@@ -197,8 +200,15 @@ describe("RuntimeHookEngine", () => {
     await engine.dispatch({ event: "tool:before", surface: "chat" });
 
     expect(trace).toHaveBeenCalledWith(
-      expect.objectContaining({ decision: "modify", outcome: "modified" }),
+      expect.objectContaining({
+        decision: "modify",
+        outcome: "modified",
+        attempt: 1,
+        timeoutMs: 5_000,
+        onFailure: "continue",
+      }),
       { action: "modify", data: { input: { approved: true } } },
+      expect.objectContaining({ event: "tool:before", surface: "chat" }),
     );
   });
 
