@@ -151,6 +151,20 @@ describe("Node runtime hooks", () => {
     }), expect.any(AbortSignal));
   });
 
+  it("forwards durable replay lookup and trace callbacks to the core host", async () => {
+    const findCompleted = vi.fn(async () => undefined);
+    const trace = vi.fn(async () => undefined);
+    const host = createNodeRuntimeHookHost({
+      shell: { execute: vi.fn() },
+      cwd: "/work",
+      findCompleted,
+      trace,
+    });
+
+    expect(host.findCompleted).toBe(findCompleted);
+    expect(host.trace).toBe(trace);
+  });
+
   it("constructs one engine from multiple packs with namespaced hook ids", async () => {
     const root = await mkdtemp(join(tmpdir(), "polpo-hooks-"));
     await mkdir(join(root, "hooks"));
