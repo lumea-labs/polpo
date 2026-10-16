@@ -2,6 +2,28 @@ import { describe, expect, it } from "vitest";
 import { mapReasoningToProviderOptions } from "./provider-factory.js";
 
 describe("mapReasoningToProviderOptions", () => {
+  it.each([undefined, "off" as const])(
+    "selects Anthropic's model-aware structured-output transport when reasoning is %s",
+    (level) => {
+      expect(mapReasoningToProviderOptions("anthropic", level, 8192, "claude-haiku-4-5"))
+        .toEqual({
+          anthropic: {
+            structuredOutputMode: "auto",
+          },
+        });
+    },
+  );
+
+  it("combines Haiku thinking with the native structured-output selection", () => {
+    expect(mapReasoningToProviderOptions("anthropic", "medium", 8192, "claude-haiku-4-5"))
+      .toEqual({
+        anthropic: {
+          structuredOutputMode: "auto",
+          thinking: { type: "enabled", budgetTokens: 4096 },
+        },
+      });
+  });
+
   it.each([
     ["minimal", "low"],
     ["low", "low"],
