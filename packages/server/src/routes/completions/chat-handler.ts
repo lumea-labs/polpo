@@ -26,8 +26,6 @@ import type {
 import type { SessionClientToolDefinition } from "@polpo-ai/core/session-store";
 import {
   classifyRuntimeError,
-  needsSeparateStructuredOutputReasoningPass,
-  providerOptionsForStructuredOutputPass,
   runModelPolicyTurn,
 } from "@polpo-ai/llm";
 import { Output, type LanguageModelUsage } from "ai";
@@ -213,6 +211,16 @@ async function runChatTerminalOutputPhase(options: {
     throw new Error("Structured response format is missing its model output contract");
   }
 
+  const terminalMessages = (isRecovery: boolean) => [
+    ...messages,
+    {
+      role: "user" as const,
+      content: isRecovery
+        ? "The previous terminal response did not satisfy the required output schema. Operational work is already complete. Return only the terminal result required by the configured schema, using the canonical conversation and tool results. Do not call tools or repeat side effects."
+        : "Operational work is complete. Return only the terminal result required by the configured schema, using the canonical conversation and tool results. Do not call tools or repeat side effects.",
+    },
+  ];
+
   let originalDiagnostic: ReturnType<typeof classifyRuntimeError> | undefined;
   for (let attemptIndex = 0; attemptIndex < 2; attemptIndex += 1) {
     const isRecovery = attemptIndex === 1;
@@ -244,21 +252,15 @@ async function runChatTerminalOutputPhase(options: {
           return {
             model: resolvedAttempt.model.aiModel,
             maxOutputTokens: resolvedAttempt.model.maxTokens,
-            providerOptions: providerOptionsForStructuredOutputPass(
-              resolvedAttempt.model,
-              reasoning,
-              resolvedAttempt.providerOptions,
-            ),
+            providerOptions: resolvedAttempt.providerOptions,
             capabilities: resolvedAttempt.model.capabilities,
           };
         },
         preserveSingleAttemptError: true,
         allowCommittedFallback: true,
         maxRecoverableStreamRetries: 0,
-        system: isRecovery
-          ? `${exec.fullSystemPrompt}\n\n## Terminal structured output recovery\n\nOperational work is complete. Produce only the terminal result matching the requested schema from the canonical conversation and tool results. Do not call tools or repeat side effects.`
-          : `${exec.fullSystemPrompt}\n\n## Terminal structured output\n\nOperational work is complete. Produce only the terminal result matching the requested schema from the canonical conversation and tool results.`,
-        messages,
+        system: exec.fullSystemPrompt,
+        messages: terminalMessages(isRecovery),
         output: exec.modelOutput,
         ...(signal ? { abortSignal: signal } : {}),
       });
@@ -447,11 +449,6 @@ export async function executeStreamingChatCompletion(
       if (
         structuredResponse
         && Object.keys(aiTools).length === 0
-        && !needsSeparateStructuredOutputReasoningPass(
-          primaryModel,
-          reasoning,
-          primaryProviderOpts,
-        )
       ) {
         await completeTerminalOutput();
       }
@@ -1036,11 +1033,6 @@ export async function runNonStreamingChatCompletion(c: any, exec: ChatCompletion
     if (
       structuredResponse
       && Object.keys(aiTools).length === 0
-      && !needsSeparateStructuredOutputReasoningPass(
-        primaryModel,
-        reasoning,
-        primaryProviderOpts,
-      )
     ) {
       await completeTerminalOutput();
     }

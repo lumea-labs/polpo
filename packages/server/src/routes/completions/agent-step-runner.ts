@@ -46,8 +46,6 @@ import {
   prepareModelMessagesForTransport,
   isStructuredModelOutputError,
   modelOutputForJsonSchema,
-  needsSeparateStructuredOutputReasoningPass,
-  providerOptionsForStructuredOutputPass,
   runModelPolicyTurn,
 } from "@polpo-ai/llm";
 import type {
@@ -559,6 +557,16 @@ export async function runAgentStepCompletion(options: {
   let lastProviderMetadata: Record<string, unknown> | undefined;
   const toolCallsAccum: any[] = [];
 
+  const terminalMessages = (isRecovery: boolean) => [
+    ...messages,
+    {
+      role: "user" as const,
+      content: isRecovery
+        ? "The previous terminal response did not satisfy the required output schema. All operational work is already complete. Return only the terminal result required by the configured schema, using the canonical conversation and tool results. Do not call tools, modify files, repeat side effects, reinterpret the requested scope, or claim work not evidenced by those results."
+        : "Operational work is complete. Return only the terminal result required by the configured schema, using the canonical conversation and tool results. Do not call tools or repeat side effects.",
+    },
+  ];
+
   const completeTerminalStructuredOutput = async () => {
     if (modelOutput === undefined) return;
 
@@ -592,21 +600,15 @@ export async function runAgentStepCompletion(options: {
             return {
               model: resolvedAttempt.model.aiModel,
               maxOutputTokens: resolvedAttempt.model.maxTokens,
-              providerOptions: providerOptionsForStructuredOutputPass(
-                resolvedAttempt.model,
-                reasoning,
-                resolvedAttempt.providerOptions,
-              ),
+              providerOptions: resolvedAttempt.providerOptions,
               capabilities: resolvedAttempt.model.capabilities,
             };
           },
           preserveSingleAttemptError: true,
           allowCommittedFallback: true,
           maxRecoverableStreamRetries: 0,
-          system: isRecovery
-            ? `${fullSystemPrompt}\n\n## Terminal structured output recovery\n\nAll operational work is already complete. Produce only the terminal JSON matching the requested schema from the canonical tool results. Do not call tools, modify files, reinterpret the requested scope, or claim work not evidenced by those results.`
-            : `${fullSystemPrompt}\n\n## Terminal structured output\n\nOperational work is complete. Produce only the terminal result matching the requested schema from the canonical conversation and tool results.`,
-          messages,
+          system: fullSystemPrompt,
+          messages: terminalMessages(isRecovery),
           output: modelOutput,
           ...(options.signal ? { abortSignal: options.signal } : {}),
         });
@@ -689,15 +691,7 @@ export async function runAgentStepCompletion(options: {
 
   try {
     const hasOperationalTools = Object.keys(aiTools).length > 0;
-    if (
-      outputSchema !== undefined
-      && !hasOperationalTools
-      && !needsSeparateStructuredOutputReasoningPass(
-        initialResolved.model,
-        reasoning,
-        initialResolved.providerOptions,
-      )
-    ) {
+    if (outputSchema !== undefined && !hasOperationalTools) {
       await completeTerminalStructuredOutput();
     }
 

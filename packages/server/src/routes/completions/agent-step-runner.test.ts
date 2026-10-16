@@ -847,11 +847,13 @@ describe("runAgentStepCompletion structured loop output", () => {
     let terminalAttempt = 0;
     const responseFormats: unknown[] = [];
     const toolCounts: number[] = [];
+    const prompts: unknown[] = [];
     const executeTool = vi.fn(async () => "inspection complete");
     const model = new MockLanguageModelV3({
       doStream: async (options) => {
         responseFormats.push(options.responseFormat);
         toolCounts.push(options.tools?.length ?? 0);
+        prompts.push(options.prompt);
         if (!options.responseFormat) {
           operationalTurn += 1;
         }
@@ -909,7 +911,7 @@ describe("runAgentStepCompletion structured loop output", () => {
       buildRuntimePrompt: vi.fn(async () => "system"),
     } as unknown as CompletionRouteDeps;
 
-    return { deps, executeTool, maxTurns, responseFormats, toolCounts };
+    return { deps, executeTool, maxTurns, responseFormats, toolCounts, prompts };
   }
 
   it("enforces the schema on the terminal turn after tool use", async () => {
@@ -931,6 +933,7 @@ describe("runAgentStepCompletion structured loop output", () => {
       expect.objectContaining({ type: "json" }),
     ]);
     expect(fixture.toolCounts).toEqual([1, 1, 0]);
+    expect((fixture.prompts[2] as Array<{ role?: string }>).at(-1)?.role).toBe("user");
     expect(result.output).toEqual({ summary: "implemented", response: "ready" });
     expect(result.text).toBe('{"summary":"implemented","response":"ready"}');
   });
@@ -940,15 +943,19 @@ describe("runAgentStepCompletion structured loop output", () => {
     const calls: Array<{
       responseFormat: unknown;
       providerOptions: Record<string, any> | undefined;
+      prompt: unknown;
     }> = [];
     const executeTool = vi.fn(async () => "implementation complete");
     const model = new MockLanguageModelV3({
       doStream: async (options) => {
         const providerOptions = options.providerOptions as Record<string, any> | undefined;
-        calls.push({ responseFormat: options.responseFormat, providerOptions });
-        if (options.responseFormat && providerOptions?.anthropic?.thinking) {
+        calls.push({ responseFormat: options.responseFormat, providerOptions, prompt: options.prompt });
+        if (
+          options.responseFormat
+          && (options.prompt as Array<{ role?: string }>).at(-1)?.role === "assistant"
+        ) {
           throw new Error(
-            "toolChoice 'required' is not supported with this model or thinking configuration",
+            "Your API request included an assistant message in the final position, which would pre-fill the assistant response. When using output format, pre-filling the assistant response is not supported.",
           );
         }
         if (!options.responseFormat) operationalTurn += 1;
@@ -1028,10 +1035,14 @@ describe("runAgentStepCompletion structured loop output", () => {
     expect(calls.slice(0, 2).every((call) => call.providerOptions?.anthropic?.thinking)).toBe(true);
     expect(calls[2]).toMatchObject({
       responseFormat: { type: "json" },
-      providerOptions: { anthropic: { structuredOutputMode: "auto" } },
+      providerOptions: reasoningProviderOptions,
     });
-    expect(calls[2]?.providerOptions?.anthropic).not.toHaveProperty("thinking");
-    expect(calls[2]?.providerOptions?.anthropic).not.toHaveProperty("effort");
+    const terminalPrompt = calls[2]?.prompt as Array<{
+      role?: string;
+      content?: Array<{ type?: string; text?: string }>;
+    }>;
+    expect(terminalPrompt.at(-1)?.role).toBe("user");
+    expect(terminalPrompt.at(-1)?.content?.[0]?.text).toContain("Operational work is complete");
     expect(deps.emit).not.toHaveBeenCalledWith(
       "runtime:structured-output-recovery",
       expect.objectContaining({ phase: "failed", step: "implement" }),
