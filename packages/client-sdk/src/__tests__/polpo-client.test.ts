@@ -73,12 +73,14 @@ describe("PolpoClient runtime hooks", () => {
     await cloud.putRuntimeHook(pack);
     await local.getRuntimeHook(pack.name);
     await cloud.deleteRuntimeHook(pack.name);
+    await cloud.getRuntimeHookCapabilities();
 
     expect(fetch).toHaveBeenNthCalledWith(1, "https://api.polpo.sh/v1/hooks/quality-check", expect.objectContaining({
       method: "PUT", body: JSON.stringify(pack),
     }));
     expect(fetch).toHaveBeenNthCalledWith(2, "http://localhost:3890/api/v1/hooks/quality-check", expect.objectContaining({ method: "GET" }));
     expect(fetch).toHaveBeenNthCalledWith(3, "https://api.polpo.sh/v1/hooks/quality-check", expect.objectContaining({ method: "DELETE" }));
+    expect(fetch).toHaveBeenNthCalledWith(4, "https://api.polpo.sh/v1/hooks/capabilities", expect.objectContaining({ method: "GET" }));
   });
 });
 

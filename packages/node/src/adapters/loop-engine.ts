@@ -541,6 +541,8 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
   }): Promise<{ lastText: string; accumText: string }> {
     const { sessionAgent, loopName, loop, contextPrompt } = options;
     let sessionCleanup: (() => Promise<void>) | undefined;
+    let agentHookStarted = false;
+    let sandboxHookStarted = false;
     try {
     const resume = usableResumeState(options.resume, loopName);
     const inject = ctx?.inject;
@@ -549,6 +551,23 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
       loop: loopName,
       resumed: Boolean(resume),
     }, { agent: sessionAgent.name, loop: loopName });
+    const spawnDecision = await dispatchRuntimeHook("agent:spawn", {
+      loop: loopName,
+      source: inject ? "chat-run" : "task-run",
+    }, { agent: sessionAgent.name, loop: loopName });
+    const spawnError = decisionError(spawnDecision);
+    if (spawnError) throw spawnError;
+    agentHookStarted = true;
+    if (ctx?.fs || ctx?.shell) {
+      const sandboxDecision = await dispatchRuntimeHook("sandbox:start", {
+        cwd,
+        filesystem: Boolean(ctx.fs),
+        shell: Boolean(ctx.shell),
+      }, { agent: sessionAgent.name, loop: loopName });
+      const sandboxError = decisionError(sandboxDecision);
+      if (sandboxError) throw sandboxError;
+      sandboxHookStarted = true;
+    }
     const inputDecision = await dispatchRuntimeHook("input:before", {
       loop: loopName,
       hasProjectedInput: Boolean(options.initialUserMessage),
@@ -1354,6 +1373,19 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
       }, { agent: sessionAgent.name, loop: loopName }).catch(() => {});
       throw error;
     } finally {
+      if (sandboxHookStarted) {
+        await dispatchRuntimeHook("sandbox:end", {
+          cwd,
+          aborted: abortController.signal.aborted,
+        }, { agent: sessionAgent.name, loop: loopName }).catch(() => {});
+      }
+      if (agentHookStarted) {
+        await dispatchRuntimeHook("agent:end", {
+          loop: loopName,
+          source: ctx?.inject ? "chat-run" : "task-run",
+          aborted: abortController.signal.aborted,
+        }, { agent: sessionAgent.name, loop: loopName }).catch(() => {});
+      }
       await dispatchRuntimeHook("session:end", {
         loop: loopName,
         aborted: abortController.signal.aborted,

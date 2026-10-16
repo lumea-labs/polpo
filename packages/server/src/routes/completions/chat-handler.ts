@@ -529,6 +529,7 @@ export async function executeStreamingChatCompletion(
       completedStructuredOutput = true;
     };
 
+    let runtimeAgentStarted = false;
     try {
       await dispatchCompletionRuntimeHook(exec.runtimeHooks, "run:start", { streaming: true });
       await dispatchCompletionRuntimeHook(
@@ -536,6 +537,13 @@ export async function executeStreamingChatCompletion(
         exec.sessionResumed ? "session:resume" : "session:start",
         { streaming: true },
       );
+      const spawnDecision = await dispatchCompletionRuntimeHook(exec.runtimeHooks, "agent:spawn", {
+        source: "direct-chat",
+        streaming: true,
+      });
+      const spawnError = runtimeHookDecisionError(spawnDecision);
+      if (spawnError) throw spawnError;
+      runtimeAgentStarted = true;
       const inputDecision = await dispatchCompletionRuntimeHook(exec.runtimeHooks, "input:before", {
         messageCount: messages.length,
         streaming: true,
@@ -1097,6 +1105,13 @@ export async function executeStreamingChatCompletion(
       try {
         if (!persistenceAttempted) await persistResponse();
       } finally {
+        if (runtimeAgentStarted) {
+          await dispatchCompletionRuntimeHook(exec.runtimeHooks, "agent:end", {
+            source: "direct-chat",
+            streaming: true,
+            aborted: signal.aborted,
+          }).catch(() => {});
+        }
         await dispatchCompletionRuntimeHook(exec.runtimeHooks, "session:end", {
           streaming: true,
           aborted: signal.aborted,
@@ -1206,6 +1221,7 @@ export async function runNonStreamingChatCompletion(c: any, exec: ChatCompletion
     completedStructuredOutput = true;
   };
 
+  let runtimeAgentStarted = false;
   try {
     await dispatchCompletionRuntimeHook(exec.runtimeHooks, "run:start", { streaming: false });
     await dispatchCompletionRuntimeHook(
@@ -1213,6 +1229,13 @@ export async function runNonStreamingChatCompletion(c: any, exec: ChatCompletion
       exec.sessionResumed ? "session:resume" : "session:start",
       { streaming: false },
     );
+    const spawnDecision = await dispatchCompletionRuntimeHook(exec.runtimeHooks, "agent:spawn", {
+      source: "direct-chat",
+      streaming: false,
+    });
+    const spawnError = runtimeHookDecisionError(spawnDecision);
+    if (spawnError) throw spawnError;
+    runtimeAgentStarted = true;
     const inputDecision = await dispatchCompletionRuntimeHook(exec.runtimeHooks, "input:before", {
       messageCount: messages.length,
       streaming: false,
@@ -1659,6 +1682,13 @@ export async function runNonStreamingChatCompletion(c: any, exec: ChatCompletion
     finalText = finalText || `Model request failed: ${error.message}`;
     return c.json({ error }, 400 as any);
   } finally {
+    if (runtimeAgentStarted) {
+      await dispatchCompletionRuntimeHook(exec.runtimeHooks, "agent:end", {
+        source: "direct-chat",
+        streaming: false,
+        aborted: c.req.raw.signal.aborted,
+      }).catch(() => {});
+    }
     await dispatchCompletionRuntimeHook(exec.runtimeHooks, "session:end", {
       streaming: false,
       aborted: c.req.raw.signal.aborted,

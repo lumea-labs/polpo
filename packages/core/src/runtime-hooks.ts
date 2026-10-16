@@ -56,6 +56,47 @@ export type RuntimeHookScope =
   | "loop"
   | "step";
 
+export const RUNTIME_HOOK_EVENT_NAMES = [
+  "session:start", "session:resume", "session:end", "input:before", "turn:stop", "turn:error",
+  "model:before", "model:after", "model:error", "tool:before", "approval:request", "approval:denied",
+  "tool:after", "tool:error", "tool:batch:after", "agent:spawn", "agent:end",
+  "context:compact:before", "context:compact:after", "model:switch:before", "model:switch:after",
+  "loop:start", "step:before", "loop:transition", "step:after", "loop:stop", "loop:end",
+  "sandbox:start", "sandbox:cwd_changed", "sandbox:file_changed", "sandbox:end", "run:start", "run:end",
+] as const satisfies readonly RuntimeHookEventName[];
+
+export const RUNTIME_HOOK_HANDLER_TYPES = [
+  "command", "http", "tool", "mcp_tool", "prompt", "agent",
+] as const satisfies readonly RuntimeHookHandler["type"][];
+
+export const RUNTIME_HOOK_SURFACE_NAMES = [
+  "chat", "loop", "channel", "task", "schedule", "runtime",
+] as const satisfies readonly RuntimeHookSurface[];
+
+export const RUNTIME_HOOK_SCOPE_NAMES = [
+  "platform", "organization", "project", "environment", "agent", "skill", "loop", "step",
+] as const satisfies readonly RuntimeHookScope[];
+
+export interface RuntimeHookCapabilities {
+  contractVersion: typeof RUNTIME_HOOK_CONTRACT_VERSION;
+  events: readonly RuntimeHookEventName[];
+  handlerTypes: readonly RuntimeHookHandler["type"][];
+  surfaces: readonly RuntimeHookSurface[];
+  scopes: readonly RuntimeHookScope[];
+  durableReplay: true;
+  fileEvents: "tool_attributed";
+}
+
+export const PORTABLE_RUNTIME_HOOK_CAPABILITIES: RuntimeHookCapabilities = Object.freeze({
+  contractVersion: RUNTIME_HOOK_CONTRACT_VERSION,
+  events: RUNTIME_HOOK_EVENT_NAMES,
+  handlerTypes: RUNTIME_HOOK_HANDLER_TYPES,
+  surfaces: RUNTIME_HOOK_SURFACE_NAMES,
+  scopes: RUNTIME_HOOK_SCOPE_NAMES,
+  durableReplay: true,
+  fileEvents: "tool_attributed",
+});
+
 export type RuntimeHookJson =
   | string
   | number
@@ -506,7 +547,11 @@ export function validateRuntimeHookDefinition(input: unknown, index = 0): Runtim
   if (typeof input.event !== "string" || !RUNTIME_HOOK_EVENTS.has(input.event as RuntimeHookEventName)) {
     throw new RuntimeHookValidationError(`Hook ${input.id} has an unsupported event`);
   }
-  if (!isRecord(input.handler) || typeof input.handler.type !== "string" || !HANDLER_TYPES.has(input.handler.type)) {
+  if (
+    !isRecord(input.handler)
+    || typeof input.handler.type !== "string"
+    || !HANDLER_TYPES.has(input.handler.type as RuntimeHookHandler["type"])
+  ) {
     throw new RuntimeHookValidationError(`Hook ${input.id} has an unsupported handler`);
   }
   validateRuntimeHookHandler(input.id, input.handler);
@@ -761,14 +806,7 @@ function stableHash(value: string): string {
   return `${hex(a)}${hex(b)}${hex(a ^ b)}${hex(Math.imul(a, b))}`;
 }
 
-const HANDLER_TYPES = new Set(["command", "http", "tool", "mcp_tool", "prompt", "agent"]);
-const RUNTIME_HOOK_EVENTS = new Set<RuntimeHookEventName>([
-  "session:start", "session:resume", "session:end", "input:before", "turn:stop", "turn:error",
-  "model:before", "model:after", "model:error", "tool:before", "approval:request", "approval:denied",
-  "tool:after", "tool:error", "tool:batch:after", "agent:spawn", "agent:end",
-  "context:compact:before", "context:compact:after", "model:switch:before", "model:switch:after",
-  "loop:start", "step:before", "loop:transition", "step:after", "loop:stop", "loop:end",
-  "sandbox:start", "sandbox:cwd_changed", "sandbox:file_changed", "sandbox:end", "run:start", "run:end",
-]);
+const HANDLER_TYPES = new Set<RuntimeHookHandler["type"]>(RUNTIME_HOOK_HANDLER_TYPES);
+const RUNTIME_HOOK_EVENTS = new Set<RuntimeHookEventName>(RUNTIME_HOOK_EVENT_NAMES);
 const RUNTIME_HOOK_SCOPES = new Set<RuntimeHookScope>(Object.keys(SCOPE_ORDER) as RuntimeHookScope[]);
-const RUNTIME_HOOK_SURFACES = new Set<RuntimeHookSurface>(["chat", "loop", "channel", "task", "schedule", "runtime"]);
+const RUNTIME_HOOK_SURFACES = new Set<RuntimeHookSurface>(RUNTIME_HOOK_SURFACE_NAMES);
