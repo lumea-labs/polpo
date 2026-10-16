@@ -46,6 +46,8 @@ import {
   prepareModelMessagesForTransport,
   isStructuredModelOutputError,
   modelOutputForJsonSchema,
+  needsSeparateStructuredOutputReasoningPass,
+  providerOptionsForStructuredOutputPass,
   runModelPolicyTurn,
 } from "@polpo-ai/llm";
 import type {
@@ -590,7 +592,11 @@ export async function runAgentStepCompletion(options: {
             return {
               model: resolvedAttempt.model.aiModel,
               maxOutputTokens: resolvedAttempt.model.maxTokens,
-              providerOptions: resolvedAttempt.providerOptions,
+              providerOptions: providerOptionsForStructuredOutputPass(
+                resolvedAttempt.model,
+                reasoning,
+                resolvedAttempt.providerOptions,
+              ),
               capabilities: resolvedAttempt.model.capabilities,
             };
           },
@@ -683,7 +689,11 @@ export async function runAgentStepCompletion(options: {
 
   try {
     const hasOperationalTools = Object.keys(aiTools).length > 0;
-    if (outputSchema !== undefined && !hasOperationalTools) {
+    if (
+      outputSchema !== undefined
+      && !hasOperationalTools
+      && !needsSeparateStructuredOutputReasoningPass(initialResolved.model, reasoning)
+    ) {
       await completeTerminalStructuredOutput();
     }
 

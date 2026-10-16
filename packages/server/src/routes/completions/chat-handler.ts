@@ -24,7 +24,12 @@ import type {
   ResolvedChatInteractionCapabilities,
 } from "@polpo-ai/core/chat-interactions";
 import type { SessionClientToolDefinition } from "@polpo-ai/core/session-store";
-import { classifyRuntimeError, runModelPolicyTurn } from "@polpo-ai/llm";
+import {
+  classifyRuntimeError,
+  needsSeparateStructuredOutputReasoningPass,
+  providerOptionsForStructuredOutputPass,
+  runModelPolicyTurn,
+} from "@polpo-ai/llm";
 import { Output, type LanguageModelUsage } from "ai";
 import type { CompletionRouteDeps } from "../completions.js";
 import type { CompletionRequestBody } from "./schemas.js";
@@ -239,7 +244,11 @@ async function runChatTerminalOutputPhase(options: {
           return {
             model: resolvedAttempt.model.aiModel,
             maxOutputTokens: resolvedAttempt.model.maxTokens,
-            providerOptions: resolvedAttempt.providerOptions,
+            providerOptions: providerOptionsForStructuredOutputPass(
+              resolvedAttempt.model,
+              reasoning,
+              resolvedAttempt.providerOptions,
+            ),
             capabilities: resolvedAttempt.model.capabilities,
           };
         },
@@ -435,7 +444,11 @@ export async function executeStreamingChatCompletion(
     };
 
     try {
-      if (structuredResponse && Object.keys(aiTools).length === 0) {
+      if (
+        structuredResponse
+        && Object.keys(aiTools).length === 0
+        && !needsSeparateStructuredOutputReasoningPass(primaryModel, reasoning)
+      ) {
         await completeTerminalOutput();
       }
 
@@ -1016,7 +1029,11 @@ export async function runNonStreamingChatCompletion(c: any, exec: ChatCompletion
   };
 
   try {
-    if (structuredResponse && Object.keys(aiTools).length === 0) {
+    if (
+      structuredResponse
+      && Object.keys(aiTools).length === 0
+      && !needsSeparateStructuredOutputReasoningPass(primaryModel, reasoning)
+    ) {
       await completeTerminalOutput();
     }
 

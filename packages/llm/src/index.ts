@@ -193,6 +193,11 @@ export {
   isStructuredModelOutputError,
   modelOutputForJsonSchema,
 } from "./model-output.js";
+export {
+  needsSeparateStructuredOutputReasoningPass,
+  providerOptionsForStructuredOutputPass,
+} from "./structured-output-routing.js";
+export type { StructuredOutputRuntimeRoute } from "./structured-output-routing.js";
 
 // ─── Model Policy Turn Primitive ────────────────────
 export {
