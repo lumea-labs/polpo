@@ -252,7 +252,11 @@ export interface RuntimeHookHost {
   findCompleted?(
     request: RuntimeHookExecutionRequest,
   ): Promise<RuntimeHookReplay | undefined>;
-  trace?(execution: RuntimeHookExecution): void | Promise<void>;
+  /** Persist the redacted terminal record and replayable controlling decision. */
+  trace?(
+    execution: RuntimeHookExecution,
+    decision?: RuntimeHookDecision,
+  ): void | Promise<void>;
 }
 
 export interface RuntimeHookReplay {
@@ -372,7 +376,7 @@ export class RuntimeHookEngine implements RuntimeHookDispatcher {
     for (const { definition } of controlling) {
       const result = await this.execute(definition, envelope);
       executions.push(result.execution);
-      if (!result.replayed) await this.host.trace?.(result.execution);
+      if (!result.replayed) await this.host.trace?.(result.execution, result.decision);
       if (result.decision) decision = composeRuntimeHookDecision(decision, result.decision);
       if (["deny", "ask", "defer", "stop"].includes(decision.action)) break;
     }

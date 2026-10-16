@@ -182,6 +182,26 @@ describe("RuntimeHookEngine", () => {
     expect(trace).not.toHaveBeenCalled();
   });
 
+  it("passes the complete controlling decision to durable trace persistence", async () => {
+    const trace = vi.fn(async () => undefined);
+    const engine = new RuntimeHookEngine({
+      definitions: [hook({ id: "rewrite" })],
+      host: {
+        execute: async () => ({
+          decision: { action: "modify", data: { input: { approved: true } } },
+        }),
+        trace,
+      },
+    });
+
+    await engine.dispatch({ event: "tool:before", surface: "chat" });
+
+    expect(trace).toHaveBeenCalledWith(
+      expect.objectContaining({ decision: "modify", outcome: "modified" }),
+      { action: "modify", data: { input: { approved: true } } },
+    );
+  });
+
   it("validates the versioned JSON pack and every handler family", () => {
     const handlers = [
       { type: "command", command: "true" },
