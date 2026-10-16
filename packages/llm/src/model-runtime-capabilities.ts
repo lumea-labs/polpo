@@ -144,9 +144,14 @@ export function assertModelTurnCapabilityPlan<TOOLS extends ToolSet>(input: {
   capabilities?: ModelRuntimeCapabilities;
 }): void {
   const allNames = Object.keys(input.tools ?? {});
-  const activeNames = input.activeTools
-    ? input.activeTools.map(String)
-    : allNames;
+  // `none` is a valid OpenAI/AI SDK choice even when the caller supplied a
+  // reusable tool catalog. The canonical request compiler removes that
+  // catalog from this model turn, so no tool is active or model-visible.
+  const activeNames = input.toolChoice === "none"
+    ? []
+    : input.activeTools
+      ? input.activeTools.map(String)
+      : allNames;
   const all = new Set(allNames);
   const active = new Set(activeNames);
   for (const name of active) {
@@ -161,11 +166,6 @@ export function assertModelTurnCapabilityPlan<TOOLS extends ToolSet>(input: {
   }
   if (input.toolChoice === "required" && active.size === 0) {
     throw new ToolChoiceInvalidError("toolChoice required needs at least one active tool");
-  }
-  if (input.toolChoice === "none" && active.size > 0) {
-    throw new ToolChoiceInvalidError(
-      "toolChoice none requires an empty model-visible tool inventory",
-    );
   }
   if (input.toolChoice && typeof input.toolChoice === "object") {
     const forced = "toolName" in input.toolChoice
@@ -264,7 +264,13 @@ export function createEffectiveTurnPlan<TOOLS extends ToolSet>(input: {
   output?: unknown;
   capabilities?: ModelRuntimeCapabilities;
 }): { plan: EffectiveTurnPlan; preparedTools: TOOLS | undefined } {
-  const prepared = prepareToolsForRuntimeCapabilities(input.tools, input.capabilities);
+  // A disabled tool turn must not leak a stale catalog to providers. This is
+  // also the portable representation for providers that reject `tool_choice:
+  // none` alongside a non-empty tools payload.
+  const toolsDisabled = input.toolChoice === "none";
+  const prepared = toolsDisabled
+    ? { tools: undefined, warnings: [] as ToolCapabilityWarning[] }
+    : prepareToolsForRuntimeCapabilities(input.tools, input.capabilities);
   assertModelTurnCapabilityPlan({
     ...(prepared.tools ? { tools: prepared.tools } : {}),
     ...(input.activeTools ? { activeTools: input.activeTools } : {}),
@@ -273,7 +279,9 @@ export function createEffectiveTurnPlan<TOOLS extends ToolSet>(input: {
     ...(input.capabilities ? { capabilities: input.capabilities } : {}),
   });
   const allNames = Object.keys(prepared.tools ?? {});
-  const activeTools = input.activeTools?.map(String) ?? allNames;
+  const activeTools = toolsDisabled
+    ? []
+    : input.activeTools?.map(String) ?? allNames;
   const active = new Set(activeTools);
   const visibleTools = Object.entries(prepared.tools ?? {})
     .filter(([name]) => active.has(name))

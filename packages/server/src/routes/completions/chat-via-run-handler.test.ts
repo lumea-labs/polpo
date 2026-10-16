@@ -906,6 +906,76 @@ describe("chat via Run driver", () => {
     },
   );
 
+  it.each([false, true])(
+    "keeps the production tools plus tool_choice none payload tool-free (stream=%s)",
+    async (stream) => {
+      const providerRequests: Array<{ tools: unknown; toolChoice: unknown }> = [];
+      const execute = vi.fn(async () => "must not execute");
+      const model = new MockLanguageModelV3({
+        doStream: async (options) => {
+          providerRequests.push({ tools: options.tools, toolChoice: options.toolChoice });
+          return { stream: convertArrayToReadableStream([
+            { type: "stream-start", warnings: [] },
+            { type: "text-start", id: "text" },
+            { type: "text-delta", id: "text", delta: "No tool needed." },
+            { type: "text-end", id: "text" },
+            { type: "finish", finishReason: { unified: "stop", raw: undefined }, usage: mockUsage },
+          ] as any[]) };
+        },
+      });
+      const deps = baseDeps({
+        getConfig: () => ({ settings: { chatExecution: "inline" } }),
+        getAgents: async () => [{
+          name: "agent-1",
+          role: "Test agent",
+          model: "mock",
+          allowedTools: ["read", "configure_site_module"],
+        }],
+        resolveAgentModel: async () => ({
+          model: {
+            id: "mock-model",
+            provider: "mock",
+            aiModel: model,
+            contextWindow: 200_000,
+            maxTokens: 8192,
+          },
+        }),
+        resolveAgentTools: async () => ({
+          tools: [{
+            name: "read",
+            description: "Read a resource.",
+            parameters: { type: "object", properties: {} },
+          }],
+          executor: execute,
+        }),
+      });
+
+      const response = await completionRoutes(() => deps).request("/", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          agent: "agent-1",
+          stream,
+          messages: [{ role: "user", content: "Answer without using tools." }],
+          tools: [{
+            type: "function",
+            function: {
+              name: "configure_site_module",
+              description: "Open the module configuration UI.",
+              parameters: { type: "object", properties: {}, additionalProperties: false },
+            },
+          }],
+          tool_choice: "none",
+        }),
+      });
+
+      expect(response.status).toBe(200);
+      await response.text();
+      expect(providerRequests).toEqual([{ tools: undefined, toolChoice: undefined }]);
+      expect(execute).not.toHaveBeenCalled();
+    },
+  );
+
   it("rehydrates request-scoped client tools after an ask-user continuation", async () => {
     const visibleTools: string[][] = [];
     const requestClientTools = [{
