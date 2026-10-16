@@ -25,6 +25,7 @@ export interface NodeRuntimeHookHostOptions {
   invokeMcpTool?: (connection: string, name: string, input: Record<string, unknown>, signal: AbortSignal) => Promise<RuntimeHookHandlerResult | void>;
   runPrompt?: (input: { prompt: string; envelope: RuntimeHookEnvelope; model?: string; maxOutputTokens?: number }, signal: AbortSignal) => Promise<RuntimeHookHandlerResult | void>;
   runAgent?: (input: { agent: string; prompt: string; envelope: RuntimeHookEnvelope; allowedTools?: string[]; maxTurns?: number }, signal: AbortSignal) => Promise<RuntimeHookHandlerResult | void>;
+  findCompleted?: RuntimeHookHost["findCompleted"];
   trace?: RuntimeHookHost["trace"];
   maxOutputBytes?: number;
 }
@@ -80,6 +81,7 @@ export async function createProjectRuntimeHookEngine(options: {
 export function createNodeRuntimeHookHost(options: NodeRuntimeHookHostOptions): RuntimeHookHost {
   const maxOutputBytes = options.maxOutputBytes ?? 256 * 1024;
   return {
+    findCompleted: options.findCompleted,
     trace: options.trace,
     execute: async ({ hook, envelope, idempotencyKey, signal }) => {
       const handler = hook.handler;
