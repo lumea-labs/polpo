@@ -935,6 +935,110 @@ describe("runAgentStepCompletion structured loop output", () => {
     expect(result.text).toBe('{"summary":"implemented","response":"ready"}');
   });
 
+  it("prevents the production implement-step failure for Anthropic Gateway reasoning", async () => {
+    let operationalTurn = 0;
+    const calls: Array<{
+      responseFormat: unknown;
+      providerOptions: Record<string, any> | undefined;
+    }> = [];
+    const executeTool = vi.fn(async () => "implementation complete");
+    const model = new MockLanguageModelV3({
+      doStream: async (options) => {
+        const providerOptions = options.providerOptions as Record<string, any> | undefined;
+        calls.push({ responseFormat: options.responseFormat, providerOptions });
+        if (options.responseFormat && providerOptions?.anthropic?.thinking) {
+          throw new Error(
+            "toolChoice 'required' is not supported with this model or thinking configuration",
+          );
+        }
+        if (!options.responseFormat) operationalTurn += 1;
+        if (!options.responseFormat && operationalTurn === 1) {
+          return { stream: convertArrayToReadableStream([
+            { type: "stream-start", warnings: [] },
+            { type: "reasoning-start", id: "reasoning" },
+            { type: "reasoning-delta", id: "reasoning", delta: "Inspect and implement." },
+            { type: "reasoning-end", id: "reasoning" },
+            { type: "tool-call", toolCallId: "implement_1", toolName: "implement_change", input: "{}" },
+            { type: "finish", finishReason: { unified: "tool-calls", raw: undefined }, usage },
+          ] as any[]) };
+        }
+        const text = options.responseFormat
+          ? '{"summary":"implemented","response":"ready"}'
+          : "Implementation complete.";
+        return { stream: convertArrayToReadableStream([
+          { type: "stream-start", warnings: [] },
+          { type: "text-start", id: "text" },
+          { type: "text-delta", id: "text", delta: text },
+          { type: "text-end", id: "text" },
+          { type: "finish", finishReason: { unified: "stop", raw: undefined }, usage },
+        ] as any[]) };
+      },
+    });
+    const reasoningProviderOptions = {
+      anthropic: {
+        structuredOutputMode: "auto",
+        thinking: { type: "enabled", budgetTokens: 4096 },
+        effort: "medium",
+      },
+    };
+    const resolved = {
+      model: {
+        id: "claude-haiku-4.5",
+        aiModel: model,
+        provider: "anthropic",
+        runtimeMode: "gateway" as const,
+        contextWindow: 200_000,
+        maxTokens: 8192,
+      },
+      providerOptions: reasoningProviderOptions,
+    };
+    const deps = {
+      getConfig: () => ({ settings: {} }),
+      getMemoryStore: () => undefined,
+      emit: vi.fn(),
+      resolveAgentModel: vi.fn(async () => resolved),
+      resolveAgentTools: vi.fn(async () => ({
+        tools: [{
+          name: "implement_change",
+          description: "Apply the requested implementation",
+          parameters: { type: "object", properties: {}, additionalProperties: false },
+        }],
+        executor: executeTool,
+      })),
+      buildRuntimePrompt: vi.fn(async () => "system"),
+    } as unknown as CompletionRouteDeps;
+
+    const result = await runAgentStepCompletion({
+      deps,
+      agentConfig: {
+        name: "implement-agent",
+        model: "anthropic/claude-haiku-4.5",
+        reasoning: "medium",
+        maxTurns: 2,
+      },
+      aiMessages: [{ role: "user", content: "Implement it" }],
+      extraSystemParts: [],
+      context: {},
+      stepName: "implement",
+      outputSchema,
+    });
+
+    expect(result.output).toEqual({ summary: "implemented", response: "ready" });
+    expect(executeTool).toHaveBeenCalledOnce();
+    expect(calls).toHaveLength(3);
+    expect(calls.slice(0, 2).every((call) => call.providerOptions?.anthropic?.thinking)).toBe(true);
+    expect(calls[2]).toMatchObject({
+      responseFormat: { type: "json" },
+      providerOptions: { anthropic: { structuredOutputMode: "auto" } },
+    });
+    expect(calls[2]?.providerOptions?.anthropic).not.toHaveProperty("thinking");
+    expect(calls[2]?.providerOptions?.anthropic).not.toHaveProperty("effort");
+    expect(deps.emit).not.toHaveBeenCalledWith(
+      "runtime:structured-output-recovery",
+      expect.objectContaining({ phase: "failed", step: "implement" }),
+    );
+  });
+
   it("rejects markdown instead of completing the structured step", async () => {
     const fixture = structuredStepDeps("**summary:** implemented\n**response:** ready");
 
