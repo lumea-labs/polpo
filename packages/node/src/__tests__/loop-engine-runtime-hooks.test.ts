@@ -73,4 +73,34 @@ describe("loop-engine runtime hooks", () => {
     expect(transcript.filter((entry) => entry.type === "assistant").map((entry) => entry.text)).toEqual(["draft", "corrected"]);
     expect(stopCalls).toBe(2);
   });
+
+  test("emits one tool:batch:after event after each completed Run-backed batch", async () => {
+    activeResolvedModel = mockResolvedModel(mockTurnSequenceModel([
+      { type: "tool-call", toolName: "missing_tool", args: { value: 1 } },
+      { type: "text", text: "done" },
+    ]));
+    const batches: Array<Record<string, unknown>> = [];
+    const hooks = new RuntimeHookEngine({
+      definitions: [{
+        id: "observe-batch",
+        event: "tool:batch:after",
+        mode: "observe",
+        handler: { type: "tool", tool: "audit" },
+      }],
+      host: {
+        execute: async ({ envelope }) => {
+          batches.push(envelope.data);
+        },
+      },
+    });
+    const handle = spawnLoopEngine(agent(), task(), cwd, {
+      polpoDir,
+      runtimeHooks: hooks,
+    });
+
+    const result = await handle.done;
+
+    expect(result.exitCode).toBe(0);
+    expect(batches).toEqual([expect.objectContaining({ count: 1, failed: 1 })]);
+  });
 });

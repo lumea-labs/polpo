@@ -6,6 +6,7 @@ import {
 } from "@polpo-ai/core/runtime-hooks";
 import {
   createRuntimeHookedToolExecutor,
+  dispatchCompletionModelPolicyHook,
   type CompletionRuntimeHookContext,
 } from "./runtime-hooks.js";
 
@@ -69,5 +70,86 @@ describe("createRuntimeHookedToolExecutor", () => {
     const execute = createRuntimeHookedToolExecutor({ executor: async () => "Error: failed", hooks });
     await execute("bash", {});
     expect(events).toEqual(["tool:error"]);
+  });
+
+  it("emits sandbox:file_changed after a successful local file mutation", async () => {
+    const events: Array<{ event: string; data: Record<string, unknown> }> = [];
+    const hooks: CompletionRuntimeHookContext = {
+      surface: "chat",
+      identity: { runId: "run-1", agent: "support" },
+      dispatcher: new RuntimeHookEngine({
+        definitions: [{
+          id: "observe-file",
+          event: "sandbox:file_changed",
+          mode: "observe",
+          handler: { type: "tool", tool: "audit" },
+        }],
+        host: {
+          execute: async ({ envelope }) => {
+            events.push({ event: envelope.event, data: envelope.data });
+          },
+        },
+      }),
+    };
+    const execute = createRuntimeHookedToolExecutor({
+      executor: async () => "written",
+      hooks,
+    });
+
+    await execute("write_file", { path: "src/index.ts" }, { callId: "tool-1" });
+
+    expect(events).toEqual([{
+      event: "sandbox:file_changed",
+      data: {
+        action: "created",
+        path: "src/index.ts",
+        directory: "src",
+        sourceTool: "write_file",
+      },
+    }]);
+  });
+});
+
+describe("dispatchCompletionModelPolicyHook", () => {
+  it("emits controlling before and observable after events for a fallback", async () => {
+    const events: string[] = [];
+    const hooks: CompletionRuntimeHookContext = {
+      surface: "loop",
+      identity: { runId: "run-1", agent: "support", step: "implement" },
+      dispatcher: new RuntimeHookEngine({
+        definitions: [
+          { id: "before", event: "model:switch:before", handler: { type: "tool", tool: "policy" } },
+          { id: "after", event: "model:switch:after", mode: "observe", handler: { type: "tool", tool: "audit" } },
+        ],
+        host: { execute: async ({ envelope }) => { events.push(envelope.event); } },
+      }),
+    };
+
+    await dispatchCompletionModelPolicyHook(hooks, {
+      type: "model-fallback-selected",
+      from: { index: 0, retryIndex: 0, model: "primary", isFallback: false, totalCandidates: 2 },
+      to: { index: 1, retryIndex: 0, model: "fallback", isFallback: true, totalCandidates: 2 },
+      reason: { class: "rate-limit", phase: "request", retryable: true, message: "busy" },
+    });
+
+    expect(events).toEqual(["model:switch:before", "model:switch:after"]);
+  });
+
+  it("blocks a fallback before the next provider attempt", async () => {
+    const hooks: CompletionRuntimeHookContext = {
+      surface: "chat",
+      identity: { runId: "run-1", agent: "support" },
+      dispatcher: new RuntimeHookEngine({
+        definitions: [{ id: "pin", event: "model:switch:before", handler: { type: "tool", tool: "policy" } }],
+        host: { execute: async () => ({ decision: { action: "deny", reason: "model pinned" } }) },
+      }),
+    };
+
+    await expect(dispatchCompletionModelPolicyHook(hooks, {
+      type: "model-fallback-selected",
+      from: { index: 0, retryIndex: 0, model: "primary", isFallback: false, totalCandidates: 2 },
+      to: { index: 1, retryIndex: 0, model: "fallback", isFallback: true, totalCandidates: 2 },
+      reason: { class: "rate-limit", phase: "request", retryable: true, message: "busy" },
+    })).rejects.toThrow("Runtime hook deny: model pinned");
   });
 });

@@ -81,6 +81,7 @@ import {
 } from "./tool-policy-runtime.js";
 import {
   createRuntimeHookedToolExecutor,
+  dispatchCompletionModelPolicyHook,
   dispatchCompletionRuntimeHook,
   runCompletionRuntimeHookOperation,
   runtimeHookDecisionError,
@@ -657,6 +658,7 @@ export async function runAgentStepCompletion(options: {
             };
           },
           preserveSingleAttemptError: true,
+          onPolicyEvent: (event) => dispatchCompletionModelPolicyHook(runtimeHooks, event),
           allowCommittedFallback: true,
           maxRecoverableStreamRetries: 0,
           system: fullSystemPrompt,
@@ -808,6 +810,7 @@ export async function runAgentStepCompletion(options: {
             };
           },
           preserveSingleAttemptError: true,
+          onPolicyEvent: (event) => dispatchCompletionModelPolicyHook(runtimeHooks, event),
           system: fullSystemPrompt,
           messages,
           tools: aiTools,
@@ -1065,6 +1068,7 @@ export async function runAgentStepCompletion(options: {
             };
           },
           preserveSingleAttemptError: true,
+          onPolicyEvent: (event) => dispatchCompletionModelPolicyHook(runtimeHooks, event),
           system: fullSystemPrompt,
           messages: [
             ...messages,

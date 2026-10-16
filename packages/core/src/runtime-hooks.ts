@@ -207,20 +207,34 @@ export interface RuntimeHookExecutionRequest {
 
 export interface RuntimeHookHost {
   execute(request: RuntimeHookExecutionRequest): Promise<RuntimeHookHandlerResult | void>;
+  /** Return a prior terminal execution to make durable Run replay side-effect free. */
+  findCompleted?(
+    request: RuntimeHookExecutionRequest,
+  ): Promise<RuntimeHookReplay | undefined>;
   trace?(execution: RuntimeHookExecution): void | Promise<void>;
 }
 
+export interface RuntimeHookReplay {
+  execution: RuntimeHookExecution;
+  decision?: RuntimeHookDecision;
+}
+
 export interface RuntimeHookExecution {
+  idempotencyKey: string;
   eventId: string;
   hookId: string;
+  handlerType: RuntimeHookHandler["type"];
   event: RuntimeHookEventName;
   scope: RuntimeHookScope;
   mode: "control" | "observe";
+  priority: number;
   startedAt: string;
   completedAt: string;
+  durationMs: number;
   outcome: "allowed" | "denied" | "modified" | "stopped" | "observed" | "failed" | "timed_out";
   decision?: RuntimeHookDecision["action"];
   error?: string;
+  replayed?: boolean;
 }
 
 export interface RuntimeHookDispatchResult {
@@ -317,14 +331,14 @@ export class RuntimeHookEngine implements RuntimeHookDispatcher {
     for (const { definition } of controlling) {
       const result = await this.execute(definition, envelope);
       executions.push(result.execution);
-      await this.host.trace?.(result.execution);
+      if (!result.replayed) await this.host.trace?.(result.execution);
       if (result.decision) decision = composeRuntimeHookDecision(decision, result.decision);
       if (["deny", "ask", "defer", "stop"].includes(decision.action)) break;
     }
 
     const observed = await Promise.all(observing.map(async ({ definition }) => {
       const result = await this.execute(definition, envelope, true);
-      await this.host.trace?.(result.execution);
+      if (!result.replayed) await this.host.trace?.(result.execution);
       return result.execution;
     }));
     executions.push(...observed);
@@ -336,34 +350,53 @@ export class RuntimeHookEngine implements RuntimeHookDispatcher {
     hook: RuntimeHookDefinition,
     envelope: RuntimeHookEnvelope,
     observeOnly = false,
-  ): Promise<{ execution: RuntimeHookExecution; decision?: RuntimeHookDecision }> {
+  ): Promise<{ execution: RuntimeHookExecution; decision?: RuntimeHookDecision; replayed?: boolean }> {
     const startedAt = this.now().toISOString();
     const controller = new AbortController();
     const timeoutMs = hook.handler.timeoutMs ?? DEFAULT_RUNTIME_HOOK_TIMEOUT_MS;
     const timeout = setTimeout(() => controller.abort(new Error("Runtime hook timed out")), timeoutMs);
+    const idempotencyKey = runtimeHookIdempotencyKey(envelope.eventId, hook.id);
+    const request: RuntimeHookExecutionRequest = {
+      hook,
+      envelope,
+      idempotencyKey,
+      signal: controller.signal,
+    };
     try {
+      const replay = await this.host.findCompleted?.(request);
+      if (replay) {
+        assertReplayMatches(replay, request);
+        const decision = observeOnly
+          ? undefined
+          : normalizeRuntimeHookDecision(replay.decision);
+        return {
+          execution: { ...replay.execution, replayed: true },
+          ...(decision ? { decision } : {}),
+          replayed: true,
+        };
+      }
       const result = await Promise.race([
-        this.host.execute({
-          hook,
-          envelope,
-          idempotencyKey: runtimeHookIdempotencyKey(envelope.eventId, hook.id),
-          signal: controller.signal,
-        }),
+        this.host.execute(request),
         new Promise<never>((_, reject) => {
           controller.signal.addEventListener("abort", () => reject(controller.signal.reason), { once: true });
         }),
       ]);
       const decision = observeOnly ? undefined : normalizeRuntimeHookDecision(result?.decision);
+      const completedAt = this.now().toISOString();
       return {
         ...(decision ? { decision } : {}),
         execution: {
+          idempotencyKey,
           eventId: envelope.eventId,
           hookId: hook.id,
+          handlerType: hook.handler.type,
           event: envelope.event,
           scope: hook.scope ?? "project",
           mode: hook.mode ?? "control",
+          priority: hook.priority ?? 0,
           startedAt,
-          completedAt: this.now().toISOString(),
+          completedAt,
+          durationMs: durationBetween(startedAt, completedAt),
           outcome: observeOnly
             ? "observed"
             : decision?.action === "deny"
@@ -379,14 +412,19 @@ export class RuntimeHookEngine implements RuntimeHookDispatcher {
     } catch (error) {
       const timedOut = controller.signal.aborted;
       const message = safeError(error);
+      const completedAt = this.now().toISOString();
       const execution: RuntimeHookExecution = {
+        idempotencyKey,
         eventId: envelope.eventId,
         hookId: hook.id,
+        handlerType: hook.handler.type,
         event: envelope.event,
         scope: hook.scope ?? "project",
         mode: hook.mode ?? "control",
+        priority: hook.priority ?? 0,
         startedAt,
-        completedAt: this.now().toISOString(),
+        completedAt,
+        durationMs: durationBetween(startedAt, completedAt),
         outcome: timedOut ? "timed_out" : "failed",
         error: message,
       };
@@ -401,6 +439,26 @@ export class RuntimeHookEngine implements RuntimeHookDispatcher {
       clearTimeout(timeout);
     }
   }
+}
+
+function assertReplayMatches(
+  replay: RuntimeHookReplay,
+  request: RuntimeHookExecutionRequest,
+): void {
+  const execution = replay.execution;
+  if (
+    execution.idempotencyKey !== request.idempotencyKey
+    || execution.eventId !== request.envelope.eventId
+    || execution.event !== request.envelope.event
+    || execution.hookId !== request.hook.id
+    || execution.handlerType !== request.hook.handler.type
+  ) {
+    throw new RuntimeHookValidationError("Runtime hook replay identity does not match the current execution");
+  }
+}
+
+function durationBetween(startedAt: string, completedAt: string): number {
+  return Math.max(0, Date.parse(completedAt) - Date.parse(startedAt));
 }
 
 export function createRuntimeHookEnvelope(
@@ -601,6 +659,29 @@ export function matchesRuntimeHook(matcher: RuntimeHookMatcher | undefined, enve
   if (matcher.steps && !matchesAny(matcher.steps, envelope.identity.step)) return false;
   if (matcher.tools && !matchesAny(matcher.tools, typeof envelope.data.tool === "string" ? envelope.data.tool : undefined)) return false;
   return true;
+}
+
+/** Normalize file mutations produced by the portable workspace tool contract. */
+export function runtimeHookFileChangeForTool(
+  tool: string,
+  input: Readonly<Record<string, unknown>>,
+  result: string,
+): Record<string, RuntimeHookJson> | undefined {
+  if (result.startsWith("Error:")) return undefined;
+  const action = tool === "write_file"
+    ? "created"
+    : tool === "edit_file"
+      ? "modified"
+      : undefined;
+  const path = typeof input.path === "string" ? input.path.trim() : "";
+  if (!action || !path) return undefined;
+  const slash = path.lastIndexOf("/");
+  return {
+    action,
+    path,
+    directory: slash >= 0 ? path.slice(0, slash) || "/" : ".",
+    sourceTool: tool,
+  };
 }
 
 function normalizeRuntimeHookDecision(decision: RuntimeHookDecision | undefined): RuntimeHookDecision | undefined {

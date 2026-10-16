@@ -1,11 +1,24 @@
 import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
 import type { ApprovalStore } from "@polpo-ai/core/approval-store";
-import type { LoopApprovalSnapshot, LoopApprovedGate, ProjectLoopRunStatus, LoopRunStore } from "@polpo-ai/core/loop-run-store";
+import type {
+  LoopApprovalSnapshot,
+  LoopApprovedGate,
+  LoopRunRecord,
+  ProjectLoopRunStatus,
+  LoopRunStore,
+} from "@polpo-ai/core/loop-run-store";
 
 export interface LoopRunRouteDeps {
   loopRunStore?: LoopRunStore;
   approvalStore?: ApprovalStore;
   resumeLoopRun?: (id: string, opts?: { resolvedBy?: string }) => Promise<unknown>;
+  onApprovalResolved?: (input: {
+    run: LoopRunRecord;
+    decision: "approved" | "rejected";
+    resolvedAt: string;
+    resolvedBy?: string;
+    note?: string;
+  }) => void | Promise<void>;
 }
 
 const statusSchema = z.enum(["running", "completed", "failed", "awaiting_approval", "approval_approved", "approval_rejected", "resuming", "cancelled"]);
@@ -230,7 +243,16 @@ async function resolveLoopApproval(c: any, deps: LoopRunRouteDeps, decision: "ap
     completedAt: now,
   });
 
-  return c.json({ ok: true, data: updated }, 200);
+  const resolvedRun = updated ?? await store.getRun(run.id) ?? run;
+  await deps.onApprovalResolved?.({
+    run: resolvedRun,
+    decision,
+    resolvedAt: now,
+    resolvedBy: body.resolvedBy,
+    note,
+  });
+
+  return c.json({ ok: true, data: resolvedRun }, 200);
 }
 
 function approvalSnapshotToGate(

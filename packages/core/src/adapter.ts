@@ -14,7 +14,7 @@ import type { FileSystem } from "@polpo-ai/core/filesystem";
 import type { Shell } from "@polpo-ai/core/shell";
 import type { LoopResumeState } from "@polpo-ai/core/loop-run-store";
 import type { SteeringController } from "./steering.js";
-import type { RuntimeHookDispatcher } from "./runtime-hooks.js";
+import type { RuntimeHookDispatcher, RuntimeHookSurface } from "./runtime-hooks.js";
 import type { ModelSelection } from "./model-policy.js";
 import type { RuntimePlan } from "./runtime-plan/index.js";
 import type { RuntimeSandboxOptions } from "./runtime-sandbox.js";
@@ -173,6 +173,8 @@ export interface SpawnContext {
   steering?: SteeringController;
   /** Immutable runtime hook snapshot resolved by the trusted host. */
   runtimeHooks?: RuntimeHookDispatcher;
+  /** Trusted invocation surface used by runtime-hook matching and audit. */
+  runtimeHookSurface?: RuntimeHookSurface;
   /**
    * Token-level streaming sink: called for each model text-delta as it arrives,
    * for hosts that stream token-by-token (chat-via-executeRun, migration F1b).
@@ -224,6 +226,8 @@ export interface ChatSessionInjection {
   runtimePlan?: RuntimePlan;
   /** Immutable hook snapshot resolved by the trusted host for this turn. */
   runtimeHooks?: RuntimeHookDispatcher;
+  /** Original invocation surface preserved across the shared Run adapter. */
+  runtimeHookSurface?: RuntimeHookSurface;
   /** Explicit context-trust rollout mode for model-bound history. */
   contextTrust?: RuntimeContextTrustMode;
   /** Resolved agent config (for the RunnerConfig the driver builds). */
