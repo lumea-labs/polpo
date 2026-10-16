@@ -291,7 +291,8 @@ describe("F1c parity: inline vs run", () => {
     const inline = await postNonStream(request);
 
     setChatExecution("run");
-    setMockModel(mockTurnSequenceModel([{ type: "text", text: response }]));
+    const viaRunModel = mockTurnSequenceModel([{ type: "text", text: response }]);
+    setMockModel(viaRunModel);
     const viaRun = await postNonStream(request);
 
     expect(inline.status).toBe(200);
@@ -300,6 +301,21 @@ describe("F1c parity: inline vs run", () => {
     expect(viaRun.body.choices[0].message.content).toBe(
       inline.body.choices[0].message.content,
     );
+
+    const terminalCall = viaRunModel.doStreamCalls.at(-1);
+    expect(terminalCall?.responseFormat).toMatchObject({ type: "json" });
+    expect(terminalCall?.tools).toBeUndefined();
+    expect(terminalCall?.toolChoice).toBeUndefined();
+    const terminalPrompt = terminalCall?.prompt ?? [];
+    expect(terminalPrompt.at(-1)).toMatchObject({
+      role: "user",
+      content: expect.arrayContaining([
+        expect.objectContaining({
+          type: "text",
+          text: expect.stringContaining("Operational work is complete"),
+        }),
+      ]),
+    });
   });
 
   it("buffers json_schema output and publishes canonical JSON identically", async () => {
