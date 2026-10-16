@@ -1,11 +1,14 @@
 import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
 import {
+  PORTABLE_RUNTIME_HOOK_CAPABILITIES,
   validateRuntimeHookPack,
+  type RuntimeHookCapabilities,
   type RuntimeHookPackStore,
 } from "@polpo-ai/core/runtime-hooks";
 
 export interface RuntimeHookRouteDeps {
   store?: RuntimeHookPackStore;
+  capabilities?: RuntimeHookCapabilities | (() => RuntimeHookCapabilities | Promise<RuntimeHookCapabilities>);
 }
 
 const nameSchema = z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/u);
@@ -20,6 +23,10 @@ const errorSchema = z.object({ ok: z.literal(false), error: z.string(), code: z.
 const listRoute = createRoute({
   method: "get", path: "/", tags: ["Hooks"], summary: "List runtime hook packs",
   responses: { 200: { content: { "application/json": { schema: responseSchema } }, description: "Hook packs" }, 501: { content: { "application/json": { schema: errorSchema } }, description: "Unavailable" } },
+});
+const capabilitiesRoute = createRoute({
+  method: "get", path: "/capabilities", tags: ["Hooks"], summary: "Get runtime hook capabilities",
+  responses: { 200: { content: { "application/json": { schema: responseSchema } }, description: "Runtime hook contract capabilities" } },
 });
 const getRoute = createRoute({
   method: "get", path: "/{name}", tags: ["Hooks"], summary: "Get a runtime hook pack",
@@ -44,6 +51,13 @@ export function runtimeHookRoutes(getDeps: () => RuntimeHookRouteDeps): OpenAPIH
     const store = getDeps().store;
     if (!store) return unavailable(c);
     return c.json({ ok: true, data: await store.list() }, 200);
+  });
+  app.openapi(capabilitiesRoute, async (c: any) => {
+    const configured = getDeps().capabilities;
+    const capabilities = typeof configured === "function"
+      ? await configured()
+      : configured ?? PORTABLE_RUNTIME_HOOK_CAPABILITIES;
+    return c.json({ ok: true, data: capabilities }, 200);
   });
   app.openapi(getRoute, async (c: any) => {
     const store = getDeps().store;

@@ -1176,6 +1176,7 @@ export async function prepareChatCompletionExecution(
   }
 
   let sessionId = options.sessionId ?? null;
+  const sessionResumed = Boolean(options.sessionId);
 
   if (sessionStore) {
     if (!sessionId) {
@@ -1517,6 +1518,7 @@ export async function prepareChatCompletionExecution(
     aiMessages,
     sessionStore,
     sessionId,
+    sessionResumed,
     turnId,
     canonicalTurn,
     onResponseFinished,

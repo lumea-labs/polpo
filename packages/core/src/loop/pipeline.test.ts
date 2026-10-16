@@ -240,6 +240,52 @@ describe("PipelineExecutor", () => {
     expect(result.events.every(e => typeof e.ts === "string" && e.id.startsWith("trace-"))).toBe(true);
   });
 
+  it("reports every project-loop lifecycle point to a host runtime adapter", async () => {
+    const executor = new PipelineExecutor();
+    const events: string[] = [];
+
+    await executor.execute({
+      name: "site",
+      loops: { plan: {}, build: {} },
+      pipeline: { steps: [{ loop: "plan" }, { loop: "build" }] },
+      onLifecyclePoint: async (event) => { events.push(event); },
+      runLoop: async (name) => ({ output: { name } }),
+    });
+
+    expect(events).toEqual([
+      "loop:start",
+      "step:before",
+      "model:before",
+      "step:after",
+      "loop:transition",
+      "step:before",
+      "model:before",
+      "step:after",
+      "loop:end",
+    ]);
+  });
+
+  it("lets a host runtime adapter block before the affected side effect", async () => {
+    const executor = new PipelineExecutor();
+    let toolCalls = 0;
+
+    await expect(executor.execute({
+      name: "site",
+      loops: {},
+      pipeline: { steps: [{ tool: "publish" }] },
+      onLifecyclePoint: async (event) => {
+        if (event === "tool:before") throw new Error("blocked by runtime hook");
+      },
+      runLoop: async () => ({ output: {} }),
+      runTool: async () => {
+        toolCalls += 1;
+        return { output: {} };
+      },
+    })).rejects.toThrow("blocked by runtime hook");
+
+    expect(toolCalls).toBe(0);
+  });
+
   it("routes switch branches deterministically from context", async () => {
     const executor = new PipelineExecutor();
     const result = await executor.execute({

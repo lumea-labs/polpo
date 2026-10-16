@@ -30,6 +30,7 @@ import {
   stringifyLoopContext,
   type ContextBag,
   type LoopApprovedGate,
+  type LoopLifecycleHook,
   type LoopRunRecord,
   type LoopRunStore,
   type LoopResumeState,
@@ -107,6 +108,58 @@ export interface ProjectLoopRunResult {
   loopRunId?: string;
   loopResult?: unknown;
   loopPresentation?: LoopPresentation;
+}
+
+const RUNTIME_PROJECT_LOOP_EVENTS = new Set<LoopLifecycleHook>([
+  "loop:start",
+  "step:before",
+  "loop:transition",
+  "step:after",
+  "loop:end",
+]);
+
+function isRuntimeProjectLoopEvent(event: LoopLifecycleHook): event is
+  | "loop:start"
+  | "step:before"
+  | "loop:transition"
+  | "step:after"
+  | "loop:end" {
+  return RUNTIME_PROJECT_LOOP_EVENTS.has(event);
+}
+
+function runtimeProjectLoopEventData(
+  event: "loop:start" | "step:before" | "loop:transition" | "step:after" | "loop:end",
+  data: Readonly<{ context: ContextBag } & Record<string, unknown>>,
+  loop: string,
+  resumed: boolean,
+): Record<string, unknown> {
+  if (event === "loop:start") return { loop, resumed };
+  if (event === "loop:end") {
+    return { loop, status: recordValue(data.loop)?.status ?? data.status ?? "completed" };
+  }
+  if (event === "loop:transition") {
+    const transition = recordValue(data.transition);
+    return {
+      loop,
+      from: transition?.from,
+      to: transition?.to,
+      fromStepKey: transition?.fromStepKey,
+      toStepKey: transition?.toStepKey,
+    };
+  }
+  const step = recordValue(data.step);
+  return {
+    loop,
+    step: step?.name,
+    stepKey: step?.key,
+    kind: step?.type,
+  };
+}
+
+function recordValue(value: unknown): Record<string, unknown> | undefined {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
 }
 
 const runtimeSurfaces = new Set(["agent", "task", "channel", "webhook"]);
@@ -630,12 +683,6 @@ export async function runProjectLoopCompletion(options: {
       loop: projectLoop.name,
       resumed: Boolean(resumeRun),
     });
-    const startDecision = await dispatchCompletionRuntimeHook(runtimeHooks, "loop:start", {
-      loop: projectLoop.name,
-      resumed: Boolean(resumeRun),
-    });
-    const startError = runtimeHookDecisionError(startDecision);
-    if (startError) throw startError;
     const result = await executor.execute({
       name: projectLoop.name,
       pipeline: resumeState ? { ...normalized.pipeline, steps: resumeState.steps } : normalized.pipeline,
@@ -652,6 +699,16 @@ export async function runProjectLoopCompletion(options: {
       } : undefined,
       onTrace: async (event) => {
         await emitTrace(event);
+      },
+      onLifecyclePoint: async (event, data) => {
+        if (!isRuntimeProjectLoopEvent(event)) return;
+        const decision = await dispatchCompletionRuntimeHook(
+          runtimeHooks,
+          event,
+          runtimeProjectLoopEventData(event, data, projectLoop.name, Boolean(resumeRun)),
+        );
+        const error = runtimeHookDecisionError(decision);
+        if (error) throw error;
       },
       validateToolInput: validateDeterministicToolInput,
       runTool: async (name, input) => {
@@ -682,13 +739,6 @@ export async function runProjectLoopCompletion(options: {
         return { output: maybeParseJson(output) };
       },
       runLoop: async (name, loop, context, _position, agentInput) => {
-        const stepDecision = await dispatchCompletionRuntimeHook(runtimeHooks, "step:before", {
-          loop: projectLoop.name,
-          step: name,
-          kind: "agent",
-        });
-        const stepError = runtimeHookDecisionError(stepDecision);
-        if (stepError) throw stepError;
         const id = `loop-step-${nanoid(12)}`;
         await onToolCall?.({
           id,
@@ -757,11 +807,6 @@ export async function runProjectLoopCompletion(options: {
         };
         toolCallsAccum.push(event);
         await onToolCall?.(event);
-        await dispatchCompletionRuntimeHook(runtimeHooks, "step:after", {
-          loop: projectLoop.name,
-          step: name,
-          kind: "agent",
-        });
         return { output: stepResult.output };
       },
       handleHuman: async (name) => {
@@ -786,10 +831,6 @@ export async function runProjectLoopCompletion(options: {
         completedAt: new Date().toISOString(),
       }, deps.emit, "completed");
     }
-    await dispatchCompletionRuntimeHook(runtimeHooks, "loop:end", {
-      loop: projectLoop.name,
-      status: "completed",
-    });
     await dispatchCompletionRuntimeHook(runtimeHooks, "run:end", {
       loop: projectLoop.name,
       status: "completed",
@@ -813,6 +854,15 @@ export async function runProjectLoopCompletion(options: {
   } catch (err) {
     const awaitingApproval = err instanceof LoopApprovalRequiredError || err instanceof LoopPermissionApprovalRequiredError;
     if (awaitingApproval) {
+      await dispatchCompletionRuntimeHook(runtimeHooks, "approval:request", {
+        loop: projectLoop.name,
+        approvalType: err instanceof LoopPermissionApprovalRequiredError ? "permission" : "policy",
+        gateId: err instanceof LoopPermissionApprovalRequiredError
+          ? err.permission.id ?? "anonymous"
+          : err.policy.id ?? "anonymous",
+        lifecycle: err.hook,
+        reason: err.message,
+      }).catch(() => {});
       await dispatchCompletionRuntimeHook(runtimeHooks, "loop:stop", {
         loop: projectLoop.name,
         status: "awaiting_approval",

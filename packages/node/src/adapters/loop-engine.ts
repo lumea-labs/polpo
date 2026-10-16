@@ -45,6 +45,7 @@ import {
   markToolStrictness,
   toValidatedToolInputSchema,
   validateToolInput,
+  type ModelPolicyEvent,
 } from "@polpo-ai/llm";
 import { cleanupAgentBrowserSession } from "@polpo-ai/tools";
 import {
@@ -78,6 +79,7 @@ import type {
   RuntimeHookDispatcher,
   RuntimeHookEventName,
 } from "@polpo-ai/core/runtime-hooks";
+import { runtimeHookFileChangeForTool } from "@polpo-ai/core/runtime-hooks";
 import {
   InMemorySteeringController,
   type SteeringMessage,
@@ -296,7 +298,9 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
     if (!runtimeHooks) return { action: "allow" };
     const result = await runtimeHooks.dispatch({
       event,
-      surface: ctx?.inject ? "chat" : "task",
+      surface: ctx?.inject?.runtimeHookSurface
+        ?? ctx?.runtimeHookSurface
+        ?? (ctx?.inject ? "chat" : "task"),
       identity: {
         runId: ctx?.runId ?? task.id,
         sessionId: ctx?.inject?.sessionId,
@@ -335,6 +339,27 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
       });
       throw error;
     }
+  };
+
+  const dispatchModelPolicyHook = async (
+    event: ModelPolicyEvent,
+    identity: { agent: string; loop: string },
+  ): Promise<void> => {
+    if (event.type !== "model-fallback-selected") return;
+    const { raw: _raw, ...reason } = event.reason;
+    const data = {
+      from: event.from.model,
+      to: event.to.model,
+      fromIndex: event.from.index,
+      toIndex: event.to.index,
+      reason,
+    };
+    const before = await dispatchRuntimeHook("model:switch:before", data, identity);
+    const beforeError = decisionError(before);
+    if (beforeError) throw beforeError;
+    const after = await dispatchRuntimeHook("model:switch:after", data, identity);
+    const afterError = decisionError(after);
+    if (afterError) throw afterError;
   };
 
   /**
@@ -415,6 +440,16 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
       } else if (after.action === "modify" && typeof after.data.result === "string") {
         rendered = after.data.result;
         result = { ...result, content: [{ type: "text", text: rendered }] };
+      }
+      if (!isError) {
+        const fileChange = runtimeHookFileChangeForTool(toolCall.name, args, rendered);
+        if (fileChange) {
+          await dispatchRuntimeHook(
+            "sandbox:file_changed",
+            fileChange,
+            { toolCallId: toolCall.id },
+          );
+        }
       }
       return rendered;
     };
@@ -506,6 +541,8 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
   }): Promise<{ lastText: string; accumText: string }> {
     const { sessionAgent, loopName, loop, contextPrompt } = options;
     let sessionCleanup: (() => Promise<void>) | undefined;
+    let agentHookStarted = false;
+    let sandboxHookStarted = false;
     try {
     const resume = usableResumeState(options.resume, loopName);
     const inject = ctx?.inject;
@@ -514,6 +551,23 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
       loop: loopName,
       resumed: Boolean(resume),
     }, { agent: sessionAgent.name, loop: loopName });
+    const spawnDecision = await dispatchRuntimeHook("agent:spawn", {
+      loop: loopName,
+      source: inject ? "chat-run" : "task-run",
+    }, { agent: sessionAgent.name, loop: loopName });
+    const spawnError = decisionError(spawnDecision);
+    if (spawnError) throw spawnError;
+    agentHookStarted = true;
+    if (ctx?.fs || ctx?.shell) {
+      const sandboxDecision = await dispatchRuntimeHook("sandbox:start", {
+        cwd,
+        filesystem: Boolean(ctx.fs),
+        shell: Boolean(ctx.shell),
+      }, { agent: sessionAgent.name, loop: loopName });
+      const sandboxError = decisionError(sandboxDecision);
+      if (sandboxError) throw sandboxError;
+      sandboxHookStarted = true;
+    }
     const inputDecision = await dispatchRuntimeHook("input:before", {
       loop: loopName,
       hasProjectedInput: Boolean(options.initialUserMessage),
@@ -659,6 +713,10 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
               };
             },
             preserveSingleAttemptError: true,
+            onPolicyEvent: (event) => dispatchModelPolicyHook(event, {
+              agent: sessionAgent.name,
+              loop: loopName,
+            }),
             allowCommittedFallback: true,
             maxRecoverableStreamRetries: 0,
             system: systemPrompt,
@@ -832,6 +890,10 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
             };
           },
           preserveSingleAttemptError: true,
+          onPolicyEvent: (event) => dispatchModelPolicyHook(event, {
+            agent: sessionAgent.name,
+            loop: loopName,
+          }),
           system: systemPrompt,
           messages,
           tools: toolSet,
@@ -1151,7 +1213,7 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
       model: modelStep,
       executeTool,
       parallelToolCalls: inject?.parallelToolCalls,
-      onToolResults: (toolResults) => {
+      onToolResults: async (toolResults) => {
         for (const { toolCall, result, isError } of toolResults) {
           // AI SDK already persisted provider-executed results and invalid
           // argument errors in responseMessages. Only local results belong
@@ -1173,6 +1235,18 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
                 : { type: "text" as const, value: modelResult },
             }],
           });
+        }
+        if (toolResults.length > 0) {
+          await dispatchRuntimeHook("tool:batch:after", {
+            count: toolResults.length,
+            failed: toolResults.filter((result) => result.isError).length,
+            tools: toolResults.map(({ toolCall, isError, skipped }) => ({
+              id: toolCall.id,
+              name: toolCall.name,
+              isError,
+              skipped,
+            })),
+          }, { agent: sessionAgent.name, loop: loopName });
         }
       },
       steering,
@@ -1243,6 +1317,10 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
             };
           },
           preserveSingleAttemptError: true,
+          onPolicyEvent: (event) => dispatchModelPolicyHook(event, {
+            agent: sessionAgent.name,
+            loop: loopName,
+          }),
           system: systemPrompt,
           messages: [
             ...messages,
@@ -1295,6 +1373,19 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
       }, { agent: sessionAgent.name, loop: loopName }).catch(() => {});
       throw error;
     } finally {
+      if (sandboxHookStarted) {
+        await dispatchRuntimeHook("sandbox:end", {
+          cwd,
+          aborted: abortController.signal.aborted,
+        }, { agent: sessionAgent.name, loop: loopName }).catch(() => {});
+      }
+      if (agentHookStarted) {
+        await dispatchRuntimeHook("agent:end", {
+          loop: loopName,
+          source: ctx?.inject ? "chat-run" : "task-run",
+          aborted: abortController.signal.aborted,
+        }, { agent: sessionAgent.name, loop: loopName }).catch(() => {});
+      }
       await dispatchRuntimeHook("session:end", {
         loop: loopName,
         aborted: abortController.signal.aborted,

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { MemoryLoopRunStore } from "@polpo-ai/core";
 import type { ApprovalRequest, ApprovalStatus } from "@polpo-ai/core";
 import type { ApprovalStore } from "@polpo-ai/core/approval-store";
@@ -105,5 +105,41 @@ describe("loopRunRoutes", () => {
     expect(resumeResponse.status).toBe(200);
     expect(resumed).toEqual(["run-1"]);
     expect((await resumeResponse.json()).data.status).toBe("completed");
+  });
+
+  it("reports a rejected approval to the host lifecycle adapter", async () => {
+    const loopRunStore = new MemoryLoopRunStore();
+    const onApprovalResolved = vi.fn(async () => undefined);
+    const app = loopRunRoutes(() => ({ loopRunStore, onApprovalResolved }));
+    await loopRunStore.createRun({
+      id: "run-rejected",
+      loop: { name: "deploy-flow" },
+      agentName: "support",
+    });
+    await loopRunStore.updateRun("run-rejected", {
+      status: "awaiting_approval",
+      approval: {
+        type: "policy",
+        policyId: "deploy-approval",
+        hook: "tool:before",
+        payload: {},
+        context: {},
+        status: "pending",
+      },
+    });
+
+    const response = await app.request("/run-rejected/reject", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ resolvedBy: "security", feedback: "not approved" }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(onApprovalResolved).toHaveBeenCalledWith(expect.objectContaining({
+      decision: "rejected",
+      resolvedBy: "security",
+      note: "not approved",
+      run: expect.objectContaining({ id: "run-rejected", agentName: "support" }),
+    }));
   });
 });

@@ -3,7 +3,11 @@ import * as path from "node:path";
 import type { Command } from "commander";
 import * as clack from "@clack/prompts";
 import pc from "picocolors";
-import { validateRuntimeHookPack, type RuntimeHookPack } from "@polpo-ai/core/runtime-hooks";
+import {
+  validateRuntimeHookPack,
+  type RuntimeHookCapabilities,
+  type RuntimeHookPack,
+} from "@polpo-ai/core/runtime-hooks";
 import { createApiClient } from "./api.js";
 import { addEnvironmentOptions, resolveCliEnvironment } from "./environment.js";
 import { loadProjectId } from "./project-context.js";
@@ -70,5 +74,31 @@ export function registerHooksCommand(program: Command): void {
       const packs = response.data.data ?? [];
       if (packs.length === 0) clack.log.info("No deployed runtime hook packs.");
       for (const pack of packs) clack.log.info(`${pack.name}\t${pack.hooks.length} hooks`);
+    });
+
+  addEnvironmentOptions(hooks.command("capabilities"))
+    .description("Show the runtime hook contract supported by the target environment")
+    .option("-d, --dir <path>", "Project directory", ".")
+    .option("--json", "Print machine-readable JSON")
+    .action(async (opts: { dir: string; json?: boolean; env?: string; prod?: boolean }) => {
+      const credentials = await requireAuth({ context: "Inspecting runtime hook capabilities requires an authenticated session." });
+      const projectId = loadProjectId(opts.dir);
+      if (!projectId) throw new Error("No project linked in this directory");
+      const client = createApiClient(credentials, projectId, resolveCliEnvironment(opts));
+      const response = await client.get<{ ok?: boolean; data?: RuntimeHookCapabilities }>("/v1/hooks/capabilities");
+      if (response.status !== 200 || !response.data.data) {
+        throw new Error(`Hooks capabilities API returned ${response.status}`);
+      }
+      const capabilities = response.data.data;
+      if (opts.json) {
+        process.stdout.write(`${JSON.stringify(capabilities, null, 2)}\n`);
+        return;
+      }
+      clack.log.info(`Contract v${capabilities.contractVersion}`);
+      clack.log.info(`Handlers\t${capabilities.handlerTypes.join(", ")}`);
+      clack.log.info(`Surfaces\t${capabilities.surfaces.join(", ")}`);
+      clack.log.info(`Events\t${capabilities.events.length}`);
+      clack.log.info(`Replay\t${capabilities.durableReplay ? "durable" : "unavailable"}`);
+      clack.log.info(`File events\t${capabilities.fileEvents}`);
     });
 }

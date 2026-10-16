@@ -1,7 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 import { createToolInvocationContext, MemoryLoopRunStore } from "@polpo-ai/core";
+import { RuntimeHookEngine } from "@polpo-ai/core/runtime-hooks";
 import type { CompletionRouteDeps } from "../completions.js";
-import { buildLoopResumeState, resumeProjectLoopRun } from "./project-loop-runner.js";
+import {
+  buildLoopResumeState,
+  resumeProjectLoopRun,
+  runProjectLoopCompletion,
+} from "./project-loop-runner.js";
 
 describe("buildLoopResumeState", () => {
   const continuation = {
@@ -238,5 +243,117 @@ describe("buildLoopResumeState", () => {
       deps,
       runId: "looprun-scope-drift",
     })).rejects.toThrow(/scope does not match/i);
+  });
+});
+
+describe("project-loop Runtime Hooks lifecycle", () => {
+  function deterministicDeps(options: {
+    hooks: RuntimeHookEngine;
+    execute?: (name: string) => Promise<string>;
+  }): CompletionRouteDeps {
+    return {
+      getAgents: async () => [],
+      getConfig: () => ({}),
+      getMemoryStore: () => null,
+      getSessionStore: () => null,
+      getStore: () => null,
+      emit: () => {},
+      resolveRuntimeHooks: async () => options.hooks,
+      resolveAgentTools: async () => ({
+        tools: [
+          { name: "prepare", parameters: { type: "object", properties: {} } },
+          { name: "publish", parameters: { type: "object", properties: {} } },
+        ],
+        executor: async (name: string) => options.execute?.(name) ?? JSON.stringify({ ok: true }),
+      }),
+    } as unknown as CompletionRouteDeps;
+  }
+
+  it("emits outer lifecycle events for deterministic and agent-independent steps", async () => {
+    const events: Array<{ event: string; data: Record<string, unknown> }> = [];
+    const hooks = new RuntimeHookEngine({
+      definitions: [
+        "loop:start",
+        "step:before",
+        "loop:transition",
+        "step:after",
+        "loop:end",
+      ].map((event, index) => ({
+        id: `observe-${index}`,
+        event: event as any,
+        mode: "observe" as const,
+        handler: { type: "tool" as const, tool: "audit" },
+      })),
+      host: {
+        execute: async ({ envelope }) => {
+          events.push({ event: envelope.event, data: envelope.data });
+        },
+      },
+    });
+
+    await runProjectLoopCompletion({
+      deps: deterministicDeps({ hooks }),
+      agentConfig: { name: "support", model: "test" },
+      projectLoop: {
+        name: "site",
+        start: "prepare",
+        steps: {
+          prepare: { type: "tool", tool: "prepare", next: "publish" },
+          publish: { type: "tool", tool: "publish", next: "end" },
+        },
+      } as any,
+      aiMessages: [],
+      extraSystemParts: [],
+    });
+
+    expect(events.map(({ event }) => event)).toEqual([
+      "loop:start",
+      "step:before",
+      "step:after",
+      "loop:transition",
+      "step:before",
+      "step:after",
+      "loop:end",
+    ]);
+    expect(events[4]?.data).toMatchObject({ loop: "site", step: "publish", kind: "tool" });
+  });
+
+  it("blocks a deterministic step before its tool side effect", async () => {
+    const executed: string[] = [];
+    const hooks = new RuntimeHookEngine({
+      definitions: [{
+        id: "protect-publish",
+        event: "step:before",
+        handler: { type: "tool", tool: "policy" },
+      }],
+      host: {
+        execute: async ({ envelope }) => envelope.data.step === "publish"
+          ? { decision: { action: "deny", reason: "publish disabled" } }
+          : { decision: { action: "allow" } },
+      },
+    });
+
+    await expect(runProjectLoopCompletion({
+      deps: deterministicDeps({
+        hooks,
+        execute: async (name) => {
+          executed.push(name);
+          return JSON.stringify({ ok: true });
+        },
+      }),
+      agentConfig: { name: "support", model: "test" },
+      projectLoop: {
+        name: "site",
+        start: "prepare",
+        steps: {
+          prepare: { type: "tool", tool: "prepare", next: "publish" },
+          publish: { type: "tool", tool: "publish", next: "end" },
+        },
+      } as any,
+      aiMessages: [],
+      extraSystemParts: [],
+    })).rejects.toThrow("Runtime hook deny: publish disabled");
+
+    expect(executed).toEqual(["prepare"]);
   });
 });

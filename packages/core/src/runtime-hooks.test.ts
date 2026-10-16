@@ -3,6 +3,7 @@ import {
   RuntimeHookEngine,
   RuntimeHookValidationError,
   createRuntimeHookEnvelope,
+  runtimeHookFileChangeForTool,
   validateRuntimeHookPack,
   type RuntimeHookDefinition,
   type RuntimeHookHandlerResult,
@@ -139,6 +140,68 @@ describe("RuntimeHookEngine", () => {
     expect(replay.eventId).toBe(first.eventId);
   });
 
+  it("reuses a durably completed execution without repeating its handler side effect", async () => {
+    const execute = vi.fn(async () => ({ decision: { action: "deny" as const, reason: "new" } }));
+    const trace = vi.fn();
+    const engine = new RuntimeHookEngine({
+      definitions: [hook({ id: "durable" })],
+      host: {
+        execute,
+        trace,
+        findCompleted: async ({ idempotencyKey, hook: definition, envelope }) => ({
+          execution: {
+            idempotencyKey,
+            eventId: envelope.eventId,
+            hookId: definition.id,
+            handlerType: definition.handler.type,
+            event: envelope.event,
+            scope: "project",
+            mode: "control",
+            priority: 0,
+            startedAt: "2026-01-01T00:00:00.000Z",
+            completedAt: "2026-01-01T00:00:00.010Z",
+            durationMs: 10,
+            outcome: "denied",
+            decision: "deny",
+          },
+          decision: { action: "deny", reason: "persisted" },
+        }),
+      },
+    });
+
+    const result = await engine.dispatch({
+      event: "tool:before",
+      surface: "chat",
+      identity: { runId: "run-1", toolCallId: "call-1" },
+      data: { tool: "write" },
+    });
+
+    expect(result.decision).toEqual({ action: "deny", reason: "persisted" });
+    expect(result.executions[0]).toMatchObject({ hookId: "durable", replayed: true });
+    expect(execute).not.toHaveBeenCalled();
+    expect(trace).not.toHaveBeenCalled();
+  });
+
+  it("passes the complete controlling decision to durable trace persistence", async () => {
+    const trace = vi.fn(async () => undefined);
+    const engine = new RuntimeHookEngine({
+      definitions: [hook({ id: "rewrite" })],
+      host: {
+        execute: async () => ({
+          decision: { action: "modify", data: { input: { approved: true } } },
+        }),
+        trace,
+      },
+    });
+
+    await engine.dispatch({ event: "tool:before", surface: "chat" });
+
+    expect(trace).toHaveBeenCalledWith(
+      expect.objectContaining({ decision: "modify", outcome: "modified" }),
+      { action: "modify", data: { input: { approved: true } } },
+    );
+  });
+
   it("validates the versioned JSON pack and every handler family", () => {
     const handlers = [
       { type: "command", command: "true" },
@@ -209,5 +272,21 @@ describe("RuntimeHookEngine", () => {
         handler: { type: "tool", tool: "read" },
       }],
     })).toThrow("matcher.surfaces");
+  });
+});
+
+describe("runtimeHookFileChangeForTool", () => {
+  it("normalizes successful portable workspace writes and ignores failures", () => {
+    expect(runtimeHookFileChangeForTool("write_file", { path: "src/index.ts" }, "ok"))
+      .toEqual({
+        action: "created",
+        path: "src/index.ts",
+        directory: "src",
+        sourceTool: "write_file",
+      });
+    expect(runtimeHookFileChangeForTool("edit_file", { path: "README.md" }, "Error: denied"))
+      .toBeUndefined();
+    expect(runtimeHookFileChangeForTool("bash", { path: "src/index.ts" }, "ok"))
+      .toBeUndefined();
   });
 });

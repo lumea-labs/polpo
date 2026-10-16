@@ -65,6 +65,7 @@ polpo hooks validate
 polpo hooks list --local
 polpo deploy
 polpo hooks list
+polpo hooks capabilities
 ```
 
 ## Lifecycle events
@@ -86,6 +87,11 @@ step:after           loop:stop            loop:end
 sandbox:start        sandbox:cwd_changed  sandbox:file_changed
 sandbox:end          run:start             run:end
 ```
+
+`sandbox:file_changed` is emitted for mutations performed through the portable
+`write_file` and `edit_file` tools. A host may add external filesystem
+watching, but v1 does not claim that capability. Inspect the exact target with
+`GET /v1/hooks/capabilities` or `polpo hooks capabilities --json`.
 
 Matchers use exact values or `*` globs for surfaces, agents, Loops, steps, and
 tools. Controlling hooks run in stable scope, priority, and declaration order.
@@ -128,3 +134,13 @@ Provider-executed native tools run outside Polpo's local executor. Their results
 can be observed after the provider returns, but a controlling `tool:before`
 hook requires a locally executed Polpo or Connection tool so the runtime can
 enforce the decision before the side effect.
+
+## Durable replay
+
+Each event and matching hook produce a stable idempotency key. A durable host
+stores the terminal execution together with the complete, redacted controlling
+decision. When a Run resumes, the runtime reuses that decision and does not
+execute or trace the completed handler again. HTTP endpoints and other
+side-effecting handlers must still honor the supplied idempotency key because a
+process can crash after the external effect succeeds but before its terminal
+record is stored.

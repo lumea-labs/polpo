@@ -129,6 +129,15 @@ export interface PipelineExecutorOptions {
   };
   onTrace?: (event: LoopTraceEvent) => void | Promise<void>;
   /**
+   * Host runtime lifecycle bridge. It runs after deterministic permissions and
+   * policies, before declarative hook actions or the affected side effect.
+   * Throwing blocks the lifecycle point.
+   */
+  onLifecyclePoint?: (
+    event: LoopLifecycleHook,
+    data: Readonly<{ context: ContextBag } & Record<string, unknown>>,
+  ) => void | Promise<void>;
+  /**
    * Durable checkpoint sink — invoked after every completed step, at
    * switch-branch selection, and at while-iteration boundaries with the
    * composed remaining-steps continuation. Best-effort by contract: errors
@@ -540,6 +549,7 @@ export class PipelineExecutor {
   ): Promise<void> {
     await this.enforcePermissions(hook, context, options.projectPermissions ?? [], payload, state, options.resume?.approvedGates);
     await this.enforcePolicies(hook, context, options.projectPolicies ?? [], payload, state, options.resume?.approvedGates);
+    await options.onLifecyclePoint?.(hook, { context, ...payload });
 
     const actions = options.projectHooks?.[hook] ?? [];
     for (const action of actions) {

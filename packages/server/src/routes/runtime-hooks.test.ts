@@ -11,6 +11,20 @@ class MemoryStore implements RuntimeHookPackStore {
 }
 
 describe("runtimeHookRoutes", () => {
+  it("reports the portable contract capabilities without requiring storage", async () => {
+    const app = runtimeHookRoutes(() => ({}));
+    const response = await app.request("/capabilities");
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      data: {
+        contractVersion: 1,
+        durableReplay: true,
+        fileEvents: "tool_attributed",
+        handlerTypes: ["command", "http", "tool", "mcp_tool", "prompt", "agent"],
+      },
+    });
+  });
+
   it("validates, stores, reads, lists, and deletes packs", async () => {
     const store = new MemoryStore();
     const app = runtimeHookRoutes(() => ({ store }));

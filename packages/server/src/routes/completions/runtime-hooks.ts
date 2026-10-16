@@ -6,6 +6,8 @@ import type {
   RuntimeHookJson,
   RuntimeHookSurface,
 } from "@polpo-ai/core/runtime-hooks";
+import { runtimeHookFileChangeForTool } from "@polpo-ai/core/runtime-hooks";
+import type { ModelPolicyEvent } from "@polpo-ai/llm";
 import type { CompletionToolExecutor } from "./tool-guardrails.js";
 
 export interface CompletionRuntimeHookContext {
@@ -57,7 +59,12 @@ export function createRuntimeHookedToolExecutor(options: {
       });
       const afterBlocked = blockedToolResult(after);
       if (afterBlocked) return afterBlocked;
-      return modifiedString(after, "result") ?? result;
+      const visibleResult = modifiedString(after, "result") ?? result;
+      const fileChange = runtimeHookFileChangeForTool(name, args, visibleResult);
+      if (fileChange) {
+        await dispatchCompletionRuntimeHook(hookContext, "sandbox:file_changed", fileChange);
+      }
+      return visibleResult;
     } catch (error) {
       await dispatchCompletionRuntimeHook(hookContext, "tool:error", {
         tool: name,
@@ -67,6 +74,28 @@ export function createRuntimeHookedToolExecutor(options: {
       throw error;
     }
   };
+}
+
+/** Maps provider fallback selection onto the public Runtime Hooks lifecycle. */
+export async function dispatchCompletionModelPolicyHook(
+  context: CompletionRuntimeHookContext | undefined,
+  event: ModelPolicyEvent,
+): Promise<void> {
+  if (event.type !== "model-fallback-selected") return;
+  const { raw: _raw, ...reason } = event.reason;
+  const data = {
+    from: event.from.model,
+    to: event.to.model,
+    fromIndex: event.from.index,
+    toIndex: event.to.index,
+    reason,
+  };
+  const before = await dispatchCompletionRuntimeHook(context, "model:switch:before", data);
+  const beforeError = runtimeHookDecisionError(before);
+  if (beforeError) throw beforeError;
+  const after = await dispatchCompletionRuntimeHook(context, "model:switch:after", data);
+  const afterError = runtimeHookDecisionError(after);
+  if (afterError) throw afterError;
 }
 
 export function runtimeHookDecisionError(decision: RuntimeHookDecision): Error | undefined {

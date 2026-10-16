@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { lookup as dnsLookup } from "node:dns/promises";
 import { isIP } from "node:net";
+import { request as httpsRequest } from "node:https";
 import { join } from "node:path";
 import {
   RuntimeHookEngine,
@@ -100,30 +101,46 @@ export function createNodeRuntimeHookHost(options: NodeRuntimeHookHostOptions): 
       }
       if (handler.type === "http") {
         const url = safeHookUrl(handler.url);
-        await assertPublicDns(url.hostname, options.lookup ?? dnsLookup);
+        const addresses = await resolvePublicDns(url.hostname, options.lookup ?? dnsLookup);
         const connectionHeaders = handler.connection
           ? await options.resolveHttpHeaders?.(handler.connection, signal)
           : undefined;
         if (handler.connection && !connectionHeaders) {
           throw new Error(`Runtime hook HTTP connection "${handler.connection}" could not be resolved`);
         }
-        const response = await (options.fetch ?? globalThis.fetch)(url, {
-          method: "POST",
-          redirect: "error",
-          headers: {
-            "content-type": "application/json",
-            "x-polpo-hook-event": envelope.event,
-            "x-polpo-hook-idempotency-key": idempotencyKey,
-            ...(connectionHeaders ?? {}),
-            ...(handler.headers ?? {}),
-          },
-          body: JSON.stringify(envelope),
+        const headers = {
+          "content-type": "application/json",
+          "x-polpo-hook-event": envelope.event,
+          "x-polpo-hook-idempotency-key": idempotencyKey,
+          ...(connectionHeaders ?? {}),
+          ...(handler.headers ?? {}),
+        };
+        const body = JSON.stringify(envelope);
+        if (options.fetch) {
+          const response = await options.fetch(url, {
+            method: "POST",
+            redirect: "error",
+            headers,
+            body,
+            signal,
+          });
+          const text = await response.text();
+          assertBounded(text, maxOutputBytes);
+          if (!response.ok) throw new Error(`Hook HTTP endpoint returned ${response.status}`);
+          return parseHandlerResult(text);
+        }
+        const response = await postPinnedPublicJson({
+          url,
+          address: addresses[0]!,
+          headers,
+          body,
           signal,
+          maxOutputBytes,
         });
-        const text = await response.text();
-        assertBounded(text, maxOutputBytes);
-        if (!response.ok) throw new Error(`Hook HTTP endpoint returned ${response.status}`);
-        return parseHandlerResult(text);
+        if (response.status < 200 || response.status >= 300) {
+          throw new Error(`Hook HTTP endpoint returned ${response.status}`);
+        }
+        return parseHandlerResult(response.body);
       }
       if (handler.type === "tool") {
         if (!options.invokeTool) throw new Error("Runtime hook tool adapter is not configured");
@@ -163,10 +180,10 @@ function safeHookUrl(raw: string): URL {
   return url;
 }
 
-async function assertPublicDns(
+async function resolvePublicDns(
   hostname: string,
   lookup: typeof dnsLookup,
-): Promise<void> {
+): Promise<Array<{ address: string; family: number }>> {
   let addresses: Array<{ address: string; family: number }>;
   try {
     addresses = await lookup(hostname, { all: true, verbatim: true });
@@ -176,6 +193,76 @@ async function assertPublicDns(
   if (addresses.length === 0 || addresses.some(({ address }) => !isPublicAddress(address))) {
     throw new Error("Hook HTTP URL must resolve only to public addresses");
   }
+  return addresses;
+}
+
+async function postPinnedPublicJson(options: {
+  url: URL;
+  address: { address: string; family: number };
+  headers: Record<string, string>;
+  body: string;
+  signal: AbortSignal;
+  maxOutputBytes: number;
+}): Promise<{ status: number; body: string }> {
+  if (options.signal.aborted) {
+    throw options.signal.reason instanceof Error
+      ? options.signal.reason
+      : new Error("Runtime hook HTTP request aborted");
+  }
+  return await new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (callback: () => void) => {
+      if (settled) return;
+      settled = true;
+      options.signal.removeEventListener("abort", onAbort);
+      callback();
+    };
+    const request = httpsRequest({
+      protocol: "https:",
+      hostname: options.url.hostname,
+      port: options.url.port ? Number(options.url.port) : 443,
+      path: `${options.url.pathname}${options.url.search}`,
+      method: "POST",
+      headers: {
+        ...options.headers,
+        "content-length": String(Buffer.byteLength(options.body)),
+      },
+      servername: options.url.hostname,
+      lookup: ((_hostname: string, _lookupOptions: unknown, callback: (...args: unknown[]) => void) => {
+        callback(null, options.address.address, options.address.family);
+      }) as any,
+    }, (response) => {
+      const chunks: Buffer[] = [];
+      let bytes = 0;
+      response.on("data", (chunk: Buffer | string) => {
+        const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+        bytes += buffer.byteLength;
+        if (bytes > options.maxOutputBytes) {
+          const error = new Error(`Runtime hook output exceeds ${options.maxOutputBytes} bytes`);
+          response.destroy(error);
+          request.destroy(error);
+          finish(() => reject(error));
+          return;
+        }
+        chunks.push(buffer);
+      });
+      response.on("end", () => finish(() => resolve({
+        status: response.statusCode ?? 500,
+        body: Buffer.concat(chunks).toString("utf8"),
+      })));
+      response.on("error", (error) => finish(() => reject(error)));
+    });
+    const onAbort = () => {
+      const reason = options.signal.reason instanceof Error
+        ? options.signal.reason
+        : new Error("Runtime hook HTTP request aborted");
+      request.destroy(reason);
+      finish(() => reject(reason));
+    };
+    options.signal.addEventListener("abort", onAbort, { once: true });
+    request.on("error", (error) => finish(() => reject(error)));
+    request.end(options.body);
+  });
 }
 
 function isPublicAddress(address: string): boolean {
