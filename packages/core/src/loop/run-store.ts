@@ -119,13 +119,46 @@ export interface LoopRunListFilter {
   limit?: number;
 }
 
+/**
+ * Version observed by a caller before attempting a conditional Loop Run
+ * update. All fields are compared together. `deliveryRunId: undefined`
+ * means the metadata key must be absent or null; it never disables that part
+ * of the comparison.
+ */
+export interface LoopRunExpectedVersion {
+  status: ProjectLoopRunStatus;
+  updatedAt: string;
+  deliveryRunId: string | undefined;
+}
+
+/**
+ * A conditional update always advances `updatedAt` itself so a caller cannot
+ * accidentally preserve the compared version and create an ABA window.
+ */
+export type LoopRunConditionalPatch = Partial<
+  Omit<LoopRunRecord, "id" | "startedAt" | "updatedAt">
+>;
+
 export interface LoopRunStore {
   createRun(input: CreateLoopRunInput): Promise<LoopRunRecord>;
   getRun(id: string): Promise<LoopRunRecord | undefined>;
   listRuns(filter?: LoopRunListFilter): Promise<LoopRunRecord[]>;
   appendTrace(runId: string, event: LoopTraceEvent): Promise<void>;
   updateRun(runId: string, patch: Partial<Omit<LoopRunRecord, "id" | "startedAt">>): Promise<LoopRunRecord | undefined>;
+  updateRunIfCurrent?(
+    runId: string,
+    expected: LoopRunExpectedVersion,
+    patch: LoopRunConditionalPatch,
+  ): Promise<LoopRunRecord | undefined>;
   close?(): Promise<void> | void;
+}
+
+function nextLoopRunUpdatedAt(previous: string): string {
+  const previousMs = Date.parse(previous);
+  const nextMs = Number.isFinite(previousMs)
+    ? Math.max(Date.now(), previousMs + 1)
+    : Date.now();
+  return new Date(nextMs).toISOString();
 }
 
 export class MemoryLoopRunStore implements LoopRunStore {
@@ -182,6 +215,33 @@ export class MemoryLoopRunStore implements LoopRunStore {
       ...run,
       ...patch,
       updatedAt: patch.updatedAt ?? new Date().toISOString(),
+    };
+    this.runs.set(runId, updated);
+    return this.clone(updated);
+  }
+
+  async updateRunIfCurrent(
+    runId: string,
+    expected: LoopRunExpectedVersion,
+    patch: LoopRunConditionalPatch,
+  ): Promise<LoopRunRecord | undefined> {
+    const run = this.runs.get(runId);
+    if (!run) return undefined;
+    const storedDeliveryRunId = run.metadata?.deliveryRunId;
+    const actualDeliveryRunId = storedDeliveryRunId === null || storedDeliveryRunId === undefined
+      ? undefined
+      : storedDeliveryRunId;
+    if (
+      run.status !== expected.status
+      || run.updatedAt !== expected.updatedAt
+      || actualDeliveryRunId !== expected.deliveryRunId
+    ) {
+      return undefined;
+    }
+    const updated: LoopRunRecord = {
+      ...run,
+      ...patch,
+      updatedAt: nextLoopRunUpdatedAt(expected.updatedAt),
     };
     this.runs.set(runId, updated);
     return this.clone(updated);

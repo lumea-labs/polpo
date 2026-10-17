@@ -22,6 +22,41 @@ function cancelRequest(runId: string, body: unknown = {}) {
 }
 
 describe("runDeliveryRoutes", () => {
+  for (const type of ["run.failed", "run.cancelled", "run.completed"] as const) {
+    it(`retries the host projection for generic ${type} without rewriting durable history`, async () => {
+      const runId = `generic-${type}`;
+      const eventStore = new InMemoryRunEventStore();
+      const leaseStore = new InMemoryRunExecutionLeaseStore();
+      const cancellationStore = new InMemoryRunCancellationStore();
+      await eventStore.append(runId, { type: "run.started", data: {} });
+      const terminal = await eventStore.append(runId, { type, data: { message: "Failed query: UPDATE tool_execution_receipts" } });
+      const onTerminal = vi.fn().mockRejectedValueOnce(new Error("projection unavailable")).mockResolvedValue(undefined);
+      const onTerminalError = vi.fn(() => { throw new Error("logger unavailable"); });
+      const onInterrupted = vi.fn();
+      const options = { runId, eventStore, leaseStore, cancellationStore, onTerminal, onTerminalError, onInterrupted };
+      await expect(reconcileInterruptedRun(options)).resolves.toBe("terminal");
+      await expect(reconcileInterruptedRun(options)).resolves.toBe("terminal");
+      expect(onTerminal).toHaveBeenCalledTimes(2);
+      expect(onTerminal).toHaveBeenLastCalledWith(runId, terminal);
+      expect(onTerminalError).toHaveBeenCalledOnce();
+      expect(onInterrupted).not.toHaveBeenCalled();
+      expect((await eventStore.listAfter(runId)).events).toHaveLength(2);
+    });
+  }
+
+  it("projects newly interrupted failures through both compatible host callbacks", async () => {
+    const eventStore = new InMemoryRunEventStore();
+    await eventStore.append("new-orphan", { type: "run.started", data: {} });
+    const onInterrupted = vi.fn().mockRejectedValue(new Error("legacy callback unavailable"));
+    const onTerminal = vi.fn();
+    await expect(reconcileInterruptedRun({
+      runId: "new-orphan", eventStore, leaseStore: new InMemoryRunExecutionLeaseStore(),
+      cancellationStore: new InMemoryRunCancellationStore(), onInterrupted, onTerminal,
+    })).resolves.toBe("interrupted");
+    expect(onInterrupted).toHaveBeenCalledOnce();
+    expect(onTerminal).toHaveBeenCalledWith("new-orphan", expect.objectContaining({ type: "run.failed", data: expect.objectContaining({ code: "run_execution_interrupted" }) }));
+  });
+
   it("requires the configured bearer API key", async () => {
     const app = runDeliveryRoutes(() => ({ resolveRunDelivery: async () => null }), ["secret"]);
     const denied = await app.request("/run-a/events");

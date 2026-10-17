@@ -731,6 +731,202 @@ describe("DrizzleLoopRunStore — dual-write + runs-backed (F2)", () => {
     expect((await store.getRun("lr-flip"))?.status).toBe("completed");
     expect((await store.listRuns()).find((r) => r.id === "lr-flip")?.status).toBe("completed");
   });
+
+  it("CAS: permits one concurrent winner and mirrors the authoritative shadow result", async () => {
+    await stores.loopRunStore.createRun({
+      ...loopInput("looprun-cas-concurrent"),
+      metadata: { deliveryRunId: "delivery-1" },
+    } as any);
+    const snapshot = await stores.loopRunStore.getRun("looprun-cas-concurrent");
+    const expected = {
+      status: snapshot!.status,
+      updatedAt: snapshot!.updatedAt,
+      deliveryRunId: "delivery-1",
+    } as const;
+    const { DrizzleLoopRunStore } = await import("../stores/loop-run-store.js");
+    const { loopRunsSqlite } = await import("../schema/loop-runs.js");
+    const legacy = new DrizzleLoopRunStore(db, loopRunsSqlite, "sqlite");
+    await legacy.updateRun("looprun-cas-concurrent", {
+      updatedAt: "2099-01-01T00:00:00.000Z",
+    });
+
+    const attempts = await Promise.all([
+      stores.loopRunStore.updateRunIfCurrent!("looprun-cas-concurrent", expected, { error: "sweeper-a" }),
+      stores.loopRunStore.updateRunIfCurrent!("looprun-cas-concurrent", expected, { error: "sweeper-b" }),
+    ]);
+
+    expect(attempts.filter(Boolean)).toHaveLength(1);
+    const winner = attempts.find(Boolean)!;
+    expect(winner.updatedAt.localeCompare(snapshot!.updatedAt)).toBe(1);
+
+    expect((await legacy.getRun("looprun-cas-concurrent"))?.error).toBe(winner.error);
+  });
+
+  it("CAS: rejects a delivery-id replacement even when status and timestamp still match", async () => {
+    await stores.loopRunStore.createRun({
+      ...loopInput("looprun-cas-delivery-race"),
+      metadata: { deliveryRunId: "delivery-1" },
+    } as any);
+    const stale = (await stores.loopRunStore.getRun("looprun-cas-delivery-race"))!;
+    await stores.loopRunStore.updateRun("looprun-cas-delivery-race", {
+      metadata: { deliveryRunId: "delivery-2" },
+      updatedAt: stale.updatedAt,
+    });
+
+    await expect(stores.loopRunStore.updateRunIfCurrent!("looprun-cas-delivery-race", {
+      status: stale.status,
+      updatedAt: stale.updatedAt,
+      deliveryRunId: "delivery-1",
+    }, { status: "failed", error: "stale sweep" })).resolves.toBeUndefined();
+    await expect(stores.loopRunStore.getRun("looprun-cas-delivery-race")).resolves.toMatchObject({
+      status: "running",
+      metadata: { deliveryRunId: "delivery-2" },
+    });
+  });
+
+  it("CAS: rejects a status change even when timestamp and delivery id still match", async () => {
+    await stores.loopRunStore.createRun({
+      ...loopInput("looprun-cas-status-race"),
+      metadata: { deliveryRunId: "delivery-1" },
+    } as any);
+    const stale = (await stores.loopRunStore.getRun("looprun-cas-status-race"))!;
+    await stores.loopRunStore.updateRun("looprun-cas-status-race", {
+      status: "resuming",
+      updatedAt: stale.updatedAt,
+    });
+
+    await expect(stores.loopRunStore.updateRunIfCurrent!("looprun-cas-status-race", {
+      status: stale.status,
+      updatedAt: stale.updatedAt,
+      deliveryRunId: "delivery-1",
+    }, { status: "failed", error: "stale sweep" })).resolves.toBeUndefined();
+    expect((await stores.loopRunStore.getRun("looprun-cas-status-race"))?.status).toBe("resuming");
+  });
+
+  it("CAS: never overwrites a mirror that is ahead of the authoritative runs row", async () => {
+    const { DrizzleLoopRunStore, DualWriteLoopRunStore } = await import("../stores/loop-run-store.js");
+    const { loopRunsSqlite } = await import("../schema/loop-runs.js");
+    const { runsSqlite } = await import("../schema/runs.js");
+    const legacy = new DrizzleLoopRunStore(db, loopRunsSqlite, "sqlite");
+    const shadow = new DrizzleLoopRunStore(db, runsSqlite, "sqlite", true);
+    const store = new DualWriteLoopRunStore(legacy, shadow, "shadow");
+    await store.createRun({
+      ...loopInput("looprun-cas-mirror-ahead"),
+      metadata: { deliveryRunId: "delivery-1" },
+    } as any);
+    const authoritativeSnapshot = (await store.getRun("looprun-cas-mirror-ahead"))!;
+
+    await legacy.updateRun("looprun-cas-mirror-ahead", {
+      status: "completed",
+      metadata: { deliveryRunId: "delivery-2" },
+      completedAt: "2026-08-25T19:40:00.000Z",
+    });
+    const advancedMirror = (await legacy.getRun("looprun-cas-mirror-ahead"))!;
+    expect(advancedMirror.updatedAt).not.toBe(authoritativeSnapshot.updatedAt);
+
+    await expect(store.updateRunIfCurrent("looprun-cas-mirror-ahead", {
+      status: authoritativeSnapshot.status,
+      updatedAt: authoritativeSnapshot.updatedAt,
+      deliveryRunId: "delivery-1",
+    }, { status: "failed", error: "orphaned delivery" })).resolves.toMatchObject({
+      status: "failed",
+    });
+    await expect(legacy.getRun("looprun-cas-mirror-ahead")).resolves.toMatchObject({
+      status: "completed",
+      metadata: { deliveryRunId: "delivery-2" },
+      completedAt: "2026-08-25T19:40:00.000Z",
+    });
+  });
+
+  it("CAS: scopes runs-backed updates to graph rows", async () => {
+    const { DrizzleLoopRunStore } = await import("../stores/loop-run-store.js");
+    const { runsSqlite } = await import("../schema/runs.js");
+    const runsBacked = new DrizzleLoopRunStore(db, runsSqlite, "sqlite", true);
+    await stores.runStore.upsertRun({
+      id: "task-cas-isolation", taskId: "task-cas-isolation", pid: 0, agentName: "agent", status: "running",
+      startedAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z",
+      activity: { filesCreated: [], filesEdited: [], toolCalls: 0, totalTokens: 0, lastUpdate: "" },
+      configPath: "/tmp/task.json",
+    } as any);
+
+    await expect(runsBacked.updateRunIfCurrent("task-cas-isolation", {
+      status: "running",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+      deliveryRunId: undefined,
+    }, { status: "failed", error: "must-not-touch-task" })).resolves.toBeUndefined();
+    await expect(stores.runStore.getRun("task-cas-isolation")).resolves.toMatchObject({
+      status: "running",
+    });
+  });
+
+  it("CAS: preserves legacy raw result shapes when adding a presentation", async () => {
+    const { DrizzleLoopRunStore } = await import("../stores/loop-run-store.js");
+    const { runsSqlite } = await import("../schema/runs.js");
+    const { eq } = await import("drizzle-orm");
+    const runsBacked = new DrizzleLoopRunStore(db, runsSqlite, "sqlite", true);
+    const cases: Array<[string, unknown]> = [
+      ["object", { revision: 3 }],
+      ["array", ["a", 2]],
+      ["string", "legacy text"],
+      ["number", 42],
+      ["boolean", true],
+      ["null", null],
+    ];
+
+    for (const [label, rawResult] of cases) {
+      const id = `looprun-cas-legacy-${label}`;
+      await runsBacked.createRun({
+        ...loopInput(id),
+        metadata: { deliveryRunId: "delivery-1" },
+      } as any);
+      await db.update(runsSqlite)
+        .set({ result: JSON.stringify(rawResult) })
+        .where(eq(runsSqlite.id, id));
+      const snapshot = (await runsBacked.getRun(id))!;
+      expect(snapshot.result).toEqual(rawResult);
+
+      const updated = await runsBacked.updateRunIfCurrent(id, {
+        status: snapshot.status,
+        updatedAt: snapshot.updatedAt,
+        deliveryRunId: "delivery-1",
+      }, { presentation: { text: `Presentation for ${label}` } });
+
+      expect(updated?.result).toEqual(rawResult);
+      expect(updated?.presentation).toEqual({ text: `Presentation for ${label}` });
+    }
+  });
+
+  it("CAS: preserves the other projection field for an existing result envelope", async () => {
+    const { DrizzleLoopRunStore } = await import("../stores/loop-run-store.js");
+    const { runsSqlite } = await import("../schema/runs.js");
+    const runsBacked = new DrizzleLoopRunStore(db, runsSqlite, "sqlite", true);
+    const id = "looprun-cas-envelope";
+    await runsBacked.createRun({
+      ...loopInput(id),
+      metadata: { deliveryRunId: "delivery-1" },
+    } as any);
+    await runsBacked.updateRun(id, {
+      result: { revision: 1 },
+      presentation: { text: "First presentation" },
+    });
+
+    const beforeResult = (await runsBacked.getRun(id))!;
+    const afterResult = (await runsBacked.updateRunIfCurrent(id, {
+      status: beforeResult.status,
+      updatedAt: beforeResult.updatedAt,
+      deliveryRunId: "delivery-1",
+    }, { result: { revision: 2 } }))!;
+    expect(afterResult.result).toEqual({ revision: 2 });
+    expect(afterResult.presentation).toEqual({ text: "First presentation" });
+
+    const afterPresentation = await runsBacked.updateRunIfCurrent(id, {
+      status: afterResult.status,
+      updatedAt: afterResult.updatedAt,
+      deliveryRunId: "delivery-1",
+    }, { presentation: { text: "Second presentation" } });
+    expect(afterPresentation?.result).toEqual({ revision: 2 });
+    expect(afterPresentation?.presentation).toEqual({ text: "Second presentation" });
+  });
 });
 
 // ═══════════════════════════════════════════════════════════════════════
