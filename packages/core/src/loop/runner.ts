@@ -169,11 +169,11 @@ export class LoopRunner {
       throw new Error("LoopRunner steering requires an onSteering adapter");
     }
     if (options.steering) {
-      options.steering.configure(options.steeringPolicy ?? {
+      await options.steering.configure(options.steeringPolicy ?? {
         acceptance: "best_effort",
         source: "platform",
       });
-      options.steering.setBoundary({ open: startTurn < maxTurns, reservable: startTurn < maxTurns });
+      await options.steering.setBoundary({ open: startTurn < maxTurns, reservable: startTurn < maxTurns });
     }
 
     const deliverSteering = async (includeFollowUps: boolean): Promise<SteeringMessage[]> => {
@@ -202,7 +202,7 @@ export class LoopRunner {
       reasonCode: string,
     ): Promise<void> => {
       if (!options.steering) return;
-      options.steering.setBoundary({ open: false, reservable: false });
+      await options.steering.setBoundary({ open: false, reservable: false });
       if (options.retainPendingSteeringOnFinish) return;
       await options.steering.settlePending(delivery, reasonCode);
       await options.steering.sealIfIdle();
@@ -233,7 +233,7 @@ export class LoopRunner {
 
     for (let turn = startTurn; turn < maxTurns; turn++) {
       throwIfSteeringAborted(options.steering);
-      options.steering?.setBoundary({ open: true, reservable: true });
+      await options.steering?.setBoundary({ open: true, reservable: true });
       // Catch messages accepted while start/stop hooks were running. Draining
       // here keeps every accepted steer ahead of the next model invocation.
       await deliverSteering(false);
@@ -289,7 +289,7 @@ export class LoopRunner {
         activeTools: modelBefore.data.activeTools,
         toolChoice: modelBefore.data.toolChoice,
       };
-      options.steering?.setBoundary({
+      await options.steering?.setBoundary({
         open: true,
         reservable: turn + 1 < maxTurns,
       });

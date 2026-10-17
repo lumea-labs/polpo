@@ -214,7 +214,7 @@ describe("InMemorySteeringRunRegistry", () => {
   it("routes messages and aborts to the controller registered for one run", async () => {
     const registry = new InMemorySteeringRunRegistry();
     const controller = new InMemorySteeringController();
-    const unregister = registry.register("run-1", controller);
+    const unregister = await registry.register("run-1", controller);
 
     await expect(registry.enqueue("run-1", {
       id: "message-1",
@@ -223,9 +223,9 @@ describe("InMemorySteeringRunRegistry", () => {
     })).resolves.toMatchObject({ accepted: true });
     expect(controller.snapshot().pending).toMatchObject([{ id: "message-1" }]);
 
-    registry.abort("run-1", "stop now");
+    await registry.abort("run-1", "stop now");
     expect(controller.signal.reason).toBe("stop now");
-    unregister();
+    await unregister();
     await expect(registry.enqueue("run-1", {
       id: "late",
       mode: "steer",
@@ -236,15 +236,15 @@ describe("InMemorySteeringRunRegistry", () => {
   it("rejects run-id collisions and stale unregister callbacks cannot remove replacements", async () => {
     const registry = new InMemorySteeringRunRegistry();
     const first = new InMemorySteeringController();
-    const unregisterFirst = registry.register("same-run", first);
+    const unregisterFirst = await registry.register("same-run", first);
 
-    expect(() => registry.register("same-run", new InMemorySteeringController()))
-      .toThrow(SteeringRunConflictError);
-    unregisterFirst();
+    await expect(registry.register("same-run", new InMemorySteeringController()))
+      .rejects.toBeInstanceOf(SteeringRunConflictError);
+    await unregisterFirst();
 
     const second = new InMemorySteeringController();
-    registry.register("same-run", second);
-    unregisterFirst();
+    await registry.register("same-run", second);
+    await unregisterFirst();
     await registry.enqueue("same-run", {
       id: "current",
       mode: "steer",
@@ -253,17 +253,17 @@ describe("InMemorySteeringRunRegistry", () => {
     expect(second.snapshot().pending).toMatchObject([{ id: "current" }]);
   });
 
-  it("bounds active runs", () => {
+  it("bounds active runs", async () => {
     const registry = new InMemorySteeringRunRegistry({ maxActiveRuns: 1 });
-    registry.register("run-1", new InMemorySteeringController());
-    expect(() => registry.register("run-2", new InMemorySteeringController()))
-      .toThrow(SteeringRunConflictError);
+    await registry.register("run-1", new InMemorySteeringController());
+    await expect(registry.register("run-2", new InMemorySteeringController()))
+      .rejects.toBeInstanceOf(SteeringRunConflictError);
   });
 
   it("keeps settled receipts readable after the active owner unregisters", async () => {
     const registry = new InMemorySteeringRunRegistry();
     const controller = new InMemorySteeringController();
-    const unregister = registry.register("run-archive", controller);
+    const unregister = await registry.register("run-archive", controller);
     const result = await registry.enqueue("run-archive", {
       id: "message-1",
       mode: "steer",

@@ -351,7 +351,7 @@ async function executeRegisteredRun(
     if (current.status === "running" && !deps.signal?.aborted && !steering.signal.aborted) return;
     finishPreparation();
     await finalize();
-    steering.close();
+    await steering.close();
     if (current.status === "running") {
       actLog.logEvent("sigterm");
       await boundedRunPersistence(() => runStore.completeRun(config.runId, "killed", errorResult(new Error("Killed by SIGTERM (timeout or shutdown) before engine start"))));
@@ -722,7 +722,7 @@ async function executeRegisteredRun(
     }
     try { await finalize(); } catch { /* preserve the primary spawn error */ }
     const requestedStatus = deps.signal?.aborted || steering.signal.aborted ? "killed" : "failed";
-    steering.close();
+    await steering.close();
     return persistOutcome(requestedStatus, result, true);
   }
 
@@ -790,6 +790,6 @@ async function executeRegisteredRun(
     try { await finalize(); } catch { /* the terminal result already captured finalization */ }
     deps.signal?.removeEventListener("abort", onAbort);
     steering?.signal.removeEventListener("abort", onSteeringAbort);
-    steering?.close();
+    await steering?.close();
   }
 }

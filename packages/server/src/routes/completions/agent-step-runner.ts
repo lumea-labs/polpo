@@ -628,7 +628,7 @@ export async function runAgentStepCompletion(options: {
   const toolCallsAccum: any[] = [];
   const maxTurns = agentConfig.maxTurns ?? MAX_TURNS;
   if (options.steering) {
-    options.steering.configure(options.steeringPolicy ?? {
+    await options.steering.configure(options.steeringPolicy ?? {
       acceptance: "best_effort",
       source: "platform",
     });
@@ -798,7 +798,7 @@ export async function runAgentStepCompletion(options: {
   try {
     const hasOperationalTools = Object.keys(aiTools).length > 0;
     if (outputSchema !== undefined && !hasOperationalTools) {
-      options.steering?.setBoundary({ open: false, reservable: false });
+      await options.steering?.setBoundary({ open: false, reservable: false });
       await completeTerminalStructuredOutput();
     }
 
@@ -807,7 +807,7 @@ export async function runAgentStepCompletion(options: {
       !completedStructuredOutput && turn < maxTurns;
       turn++
     ) {
-      options.steering?.setBoundary({ open: true, reservable: true });
+      await options.steering?.setBoundary({ open: true, reservable: true });
       await deliverSteering(false);
       await dispatchCompletionRuntimeHook(runtimeHooks, "context:compact:before", {
         messageCount: messages.length,
@@ -838,7 +838,7 @@ export async function runAgentStepCompletion(options: {
       const toolCallNames = new Map<string, string>();
       const resolvedAttempts = new Map<number, typeof initialResolved>();
       let turnResult;
-      options.steering?.setBoundary({
+      await options.steering?.setBoundary({
         open: true,
         reservable: turn + 1 < maxTurns,
       });
@@ -953,7 +953,7 @@ export async function runAgentStepCompletion(options: {
           ? await deliverSteering(true)
           : [];
         if (delivered.length > 0) continue;
-        options.steering?.setBoundary({ open: false, reservable: false });
+        await options.steering?.setBoundary({ open: false, reservable: false });
         if (outputSchema !== undefined) {
           await completeTerminalStructuredOutput();
         }
@@ -1066,7 +1066,7 @@ export async function runAgentStepCompletion(options: {
       if (stalledToolLoop) break;
     }
 
-    options.steering?.setBoundary({ open: false, reservable: false });
+    await options.steering?.setBoundary({ open: false, reservable: false });
 
     if (stalledToolLoop) {
       throw new LoopAgentOutputError(
@@ -1181,7 +1181,7 @@ export async function runAgentStepCompletion(options: {
     });
     throw error;
   } finally {
-    options.steering?.setBoundary({ open: false, reservable: false });
+    await options.steering?.setBoundary({ open: false, reservable: false });
     await dispatchCompletionRuntimeHook(runtimeHooks, "agent:end", {
       source: "loop-step",
     }).catch(() => {});

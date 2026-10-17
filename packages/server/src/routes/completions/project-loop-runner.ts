@@ -687,7 +687,7 @@ export async function runProjectLoopCompletion(options: {
   let lastProviderMetadata: Record<string, unknown> | undefined;
   const toolCallsAccum: any[] = [];
   const events: LoopTraceEvent[] = [];
-  options.steering?.setBoundary({ open: false, reservable: false });
+  await options.steering?.setBoundary({ open: false, reservable: false });
 
   const emitTrace = async (event: LoopTraceEvent) => {
     events.push(event);
@@ -1016,7 +1016,7 @@ export async function runProjectLoopCompletion(options: {
     }
     throw err;
   } finally {
-    options.steering?.setBoundary({ open: false, reservable: false });
+    await options.steering?.setBoundary({ open: false, reservable: false });
     await cleanupToolRun();
   }
 }

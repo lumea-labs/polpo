@@ -123,15 +123,15 @@ export interface SteeringController {
   snapshot(): SteeringQueueSnapshot | Promise<SteeringQueueSnapshot>;
   /** Cooperative initial restore; callers retain ownership until it settles. */
   restore(snapshot: SteeringQueueSnapshot, context?: { signal: AbortSignal }): void | Promise<void>;
-  bindRun(runId: string): void;
-  configure(policy: ResolvedSteeringPolicy): void;
-  setBoundary(input: { open: boolean; reservable: boolean }): void;
+  bindRun(runId: string): void | Promise<void>;
+  configure(policy: ResolvedSteeringPolicy): void | Promise<void>;
+  setBoundary(input: { open: boolean; reservable: boolean }): void | Promise<void>;
   settle(messageIds: readonly string[], delivery: Exclude<SteeringDelivery, "pending">, reasonCode?: string): void | Promise<void>;
   settlePending(delivery: Exclude<SteeringDelivery, "pending">, reasonCode?: string): void | Promise<void>;
   getReceipt(messageId: string): SteeringReceipt | undefined | Promise<SteeringReceipt | undefined>;
   listReceipts(): SteeringReceipt[] | Promise<SteeringReceipt[]>;
-  abort(reason?: SteeringJsonValue): void;
-  close(delivery?: Exclude<SteeringDelivery, "pending">, reasonCode?: string): void;
+  abort(reason?: SteeringJsonValue): void | Promise<void>;
+  close(delivery?: Exclude<SteeringDelivery, "pending">, reasonCode?: string): void | Promise<void>;
 }
 
 export interface InMemorySteeringControllerOptions {
@@ -900,7 +900,7 @@ export class InMemorySteeringRunRegistry implements SteeringRunRegistry {
     assertFinitePositiveInteger(this.maxArchivedReceipts, "maxArchivedReceipts");
   }
 
-  register(runId: string, controller: SteeringController): () => void | Promise<void> {
+  async register(runId: string, controller: SteeringController): Promise<() => Promise<void>> {
     const id = normalizeRunId(runId);
     const existing = this.controllers.get(id);
     if (existing && existing !== controller) {
@@ -909,19 +909,15 @@ export class InMemorySteeringRunRegistry implements SteeringRunRegistry {
     if (!existing && this.controllers.size >= this.maxActiveRuns) {
       throw new SteeringRunConflictError(`Steering registry is full (max ${this.maxActiveRuns})`);
     }
-    controller.bindRun(id);
+    await controller.bindRun(id);
     this.controllers.set(id, controller);
 
-    return () => {
+    return async () => {
       if (this.controllers.get(id) !== controller) return;
-      const archiveAndRemove = (receipts: SteeringReceipt[]) => {
-        if (this.controllers.get(id) !== controller) return;
-        for (const receipt of receipts) this.archive(receipt);
-        this.controllers.delete(id);
-      };
-      const receipts = controller.listReceipts();
-      if (receipts instanceof Promise) return receipts.then(archiveAndRemove);
-      archiveAndRemove(receipts);
+      const receipts = await controller.listReceipts();
+      if (this.controllers.get(id) !== controller) return;
+      for (const receipt of receipts) this.archive(receipt);
+      this.controllers.delete(id);
     };
   }
 
@@ -940,8 +936,8 @@ export class InMemorySteeringRunRegistry implements SteeringRunRegistry {
     return receipt ? jsonClone(receipt) : undefined;
   }
 
-  abort(runId: string, reason?: SteeringJsonValue): void {
-    this.require(runId).abort(reason);
+  async abort(runId: string, reason?: SteeringJsonValue): Promise<void> {
+    await this.require(runId).abort(reason);
   }
 
   has(runId: string): boolean {

@@ -1691,7 +1691,7 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
       await Promise.allSettled([...toolCleanups].map(cleanup => cleanup()));
       toolCleanups.clear();
       steering.signal.removeEventListener("abort", onSteeringAbort);
-      steering.close();
+      await steering.close();
       // Close agent-browser session (profile data auto-persisted by --profile).
       // Chat (inject) keeps its session — the server driver owns cleanup via
       // onResponseFinished, matching the inline chat handler.
