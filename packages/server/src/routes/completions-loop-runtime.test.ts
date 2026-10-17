@@ -4,6 +4,7 @@ import {
   InMemorySteeringController,
   MemoryLoopRunStore,
   RuntimeGuardrailEngine,
+  SteeringClosedError,
   createRunOutputPolicy,
   createRunToolMiddleware,
   type LoopTraceEvent,
@@ -124,9 +125,16 @@ describe("completionRoutes project loop runtime", () => {
 
   it("exposes the Project Loop completion id as its steering run and releases it", async () => {
     const deps = makeDeps();
-    const release = vi.fn();
+    const steering = new InMemorySteeringController();
+    const release = vi.fn(() => {
+      expect(() => steering.enqueue({
+        id: "release-race",
+        mode: "steer",
+        content: { text: "arrived during release" },
+      })).toThrow(SteeringClosedError);
+    });
     deps.createRunSteeringScope = vi.fn(async () => ({
-      steering: new InMemorySteeringController(),
+      steering,
       release,
     }));
 
