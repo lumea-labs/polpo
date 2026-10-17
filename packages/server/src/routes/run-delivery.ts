@@ -24,6 +24,7 @@ export interface ResolvedRunDelivery {
   cancellationStore: RunCancellationStore;
   notifier?: RunEventNotifier;
   onInterrupted?: (runId: string) => Promise<void>;
+  onInterruptedError?: (error: unknown, runId: string) => void;
 }
 
 export interface RunDeliveryRouteDeps {
@@ -123,6 +124,7 @@ export function runDeliveryRoutes(
           cancellationStore: resolved.cancellationStore,
           notifier: resolved.notifier,
           onInterrupted: resolved.onInterrupted,
+          onInterruptedError: resolved.onInterruptedError,
           now: deps.now,
         })
       : Promise.resolve<InterruptedRunReconciliationResult>("unsupported");
@@ -241,6 +243,7 @@ export interface ReconcileInterruptedRunOptions {
   cancellationStore: RunCancellationStore;
   notifier?: RunEventNotifier;
   onInterrupted?: (runId: string) => Promise<void>;
+  onInterruptedError?: (error: unknown, runId: string) => void;
   now?: () => Date;
   createToken?: () => string;
 }
@@ -253,7 +256,10 @@ export async function reconcileInterruptedRun(
   options: ReconcileInterruptedRunOptions,
 ): Promise<InterruptedRunReconciliationResult> {
   const terminal = await lastRunEvent(options.eventStore, options.runId);
-  if (terminal && isTerminalRunStreamEvent(terminal)) return "terminal";
+  if (terminal && isTerminalRunStreamEvent(terminal)) {
+    await reconcileInterruptedHostProjection(options, terminal);
+    return "terminal";
+  }
 
   const firstPage = await options.eventStore.listAfter(options.runId, undefined, 10);
   if (!firstPage.events.some((event) => event.type === "run.started")) {
@@ -280,7 +286,10 @@ export async function reconcileInterruptedRun(
 
   try {
     const last = await lastRunEvent(options.eventStore, options.runId);
-    if (last && isTerminalRunStreamEvent(last)) return "terminal";
+    if (last && isTerminalRunStreamEvent(last)) {
+      await reconcileInterruptedHostProjection(options, last);
+      return "terminal";
+    }
     const journal = new RunEventJournal(options.eventStore, options.notifier);
     await journal.append(options.runId, {
       id: "run.failed:execution-interrupted",
@@ -292,10 +301,36 @@ export async function reconcileInterruptedRun(
       },
     });
     await options.cancellationStore.clear(options.runId).catch(() => false);
-    await options.onInterrupted?.(options.runId).catch(() => undefined);
+    await notifyInterruptedHost(options);
     return "interrupted";
   } finally {
     await options.leaseStore.release(options.runId, recoveryLease).catch(() => false);
+  }
+}
+
+async function reconcileInterruptedHostProjection(
+  options: ReconcileInterruptedRunOptions,
+  terminal: Awaited<ReturnType<typeof lastRunEvent>>,
+): Promise<void> {
+  if (
+    terminal?.type === "run.failed"
+    && terminal.data.code === "run_execution_interrupted"
+  ) {
+    await notifyInterruptedHost(options);
+  }
+}
+
+async function notifyInterruptedHost(
+  options: ReconcileInterruptedRunOptions,
+): Promise<void> {
+  try {
+    await options.onInterrupted?.(options.runId);
+  } catch (error) {
+    try {
+      options.onInterruptedError?.(error, options.runId);
+    } catch {
+      // Host observability must not make the durable terminal event unreadable.
+    }
   }
 }
 

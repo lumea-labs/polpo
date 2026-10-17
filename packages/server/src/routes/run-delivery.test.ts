@@ -300,7 +300,7 @@ describe("runDeliveryRoutes", () => {
     expect(onInterrupted).toHaveBeenCalledOnce();
   });
 
-  it("keeps the terminal event readable when host reconciliation fails", async () => {
+  it("retries host reconciliation from the durable terminal event without duplicating it", async () => {
     let now = new Date("2026-08-21T00:00:00.000Z");
     const eventStore = new InMemoryRunEventStore({ now: () => now });
     const leaseStore = new InMemoryRunExecutionLeaseStore({ now: () => now });
@@ -312,6 +312,11 @@ describe("runDeliveryRoutes", () => {
     await eventStore.append("run-host-failure", { type: "run.started", data: {} });
     now = new Date("2026-08-21T00:00:02.000Z");
 
+    const onInterrupted = vi.fn()
+      .mockRejectedValueOnce(new Error("host store unavailable"))
+      .mockResolvedValueOnce(undefined);
+    const onInterruptedError = vi.fn();
+
     await expect(reconcileInterruptedRun({
       runId: "run-host-failure",
       eventStore,
@@ -319,9 +324,28 @@ describe("runDeliveryRoutes", () => {
       cancellationStore: new InMemoryRunCancellationStore(),
       now: () => now,
       createToken: () => "recovery",
-      onInterrupted: async () => { throw new Error("host store unavailable"); },
+      onInterrupted,
+      onInterruptedError,
     })).resolves.toBe("interrupted");
-    expect((await eventStore.listAfter("run-host-failure")).events.at(-1)?.type)
-      .toBe("run.failed");
+
+    await expect(reconcileInterruptedRun({
+      runId: "run-host-failure",
+      eventStore,
+      leaseStore,
+      cancellationStore: new InMemoryRunCancellationStore(),
+      now: () => now,
+      createToken: () => "recovery-retry",
+      onInterrupted,
+      onInterruptedError,
+    })).resolves.toBe("terminal");
+
+    expect(onInterrupted).toHaveBeenCalledTimes(2);
+    expect(onInterruptedError).toHaveBeenCalledOnce();
+    expect(onInterruptedError).toHaveBeenCalledWith(
+      expect.objectContaining({ message: "host store unavailable" }),
+      "run-host-failure",
+    );
+    expect((await eventStore.listAfter("run-host-failure")).events.map((event) => event.type))
+      .toEqual(["run.started", "run.failed"]);
   });
 });
