@@ -137,7 +137,18 @@ export async function createCompletionRunSteeringScope(
     release: async () => {
       if (released) return;
       released = true;
-      await scope.release();
+      let closeError: unknown;
+      try {
+        await scope.steering?.close("too_late", "run_scope_released");
+      } catch (error) {
+        closeError = error;
+      }
+      try {
+        await scope.release();
+      } catch (error) {
+        if (closeError === undefined) closeError = error;
+      }
+      if (closeError !== undefined) throw closeError;
     },
   };
 }
@@ -879,7 +890,7 @@ export async function runProjectLoopCompletion(options: {
       loop: projectLoop.name,
       status: "completed",
     });
-    await options.steering?.settlePending("too_late", "graph_finished");
+    await options.steering?.close("too_late", "graph_finished");
     return {
       text: finalText,
       reasoning: finalReasoning,
@@ -898,7 +909,7 @@ export async function runProjectLoopCompletion(options: {
     };
   } catch (err) {
     const awaitingApproval = err instanceof LoopApprovalRequiredError || err instanceof LoopPermissionApprovalRequiredError;
-    await options.steering?.settlePending(
+    await options.steering?.close(
       options.signal?.aborted ? "cancelled" : awaitingApproval ? "cancelled" : "failed",
       options.signal?.aborted
         ? "graph_cancelled"
@@ -1016,7 +1027,7 @@ export async function runProjectLoopCompletion(options: {
     }
     throw err;
   } finally {
-    await options.steering?.setBoundary({ open: false, reservable: false });
+    await options.steering?.close("too_late", "graph_scope_released");
     await cleanupToolRun();
   }
 }
