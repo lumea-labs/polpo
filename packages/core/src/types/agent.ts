@@ -20,6 +20,7 @@ import type { RuntimeGuardrailAuditEvent } from "../guardrails/types.js";
 import type { ChatInteractionSettings } from "../chat-interactions.js";
 import type { AllowedToolsSettings } from "../tool-policy.js";
 import type { AgentMemorySettings } from "../memory/tool-settings.js";
+import type { SteeringPolicy } from "../steering.js";
 
 // === Reasoning / Thinking ===
 
@@ -188,6 +189,8 @@ export interface AgentConfig {
   skills?: string[];
   /** Named runtime hook packs from `.polpo/hooks/<name>.json`. */
   hooks?: string[];
+  /** Default active-Run steering behavior for direct chat and agentic nodes. */
+  steering?: SteeringPolicy;
   /** MCP servers available to this agent. */
   mcpServers?: Record<string, McpServerConfig>;
   /** Max conversation turns before stopping. Default 150 */

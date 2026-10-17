@@ -167,6 +167,7 @@ import type {
   SteeringJsonValue,
   SteeringMessageInput,
   SteeringMode,
+  SteeringReceipt,
   SwitchCase,
   SwitchDefault,
   Task,
@@ -335,6 +336,7 @@ export interface SteerRunResult {
   id: string;
   accepted: boolean;
   duplicate: boolean;
+  receipt: SteeringReceipt;
 }
 
 export interface AbortRunResult {

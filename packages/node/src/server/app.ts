@@ -458,9 +458,9 @@ export function createApp(orchestrator: Orchestrator, sseBridge: SSEBridge, opts
       };
     },
     getProjectLoop: (name: string) => o.getProjectLoop(name),
-    createRunSteeringScope: (runId: string) => {
+    createRunSteeringScope: async (runId: string) => {
       const steering = new InMemorySteeringController();
-      const release = steeringRegistry.register(runId, steering);
+      const release = await steeringRegistry.register(runId, steering);
       return { steering, release };
     },
     // Run chat completions through the shared executeRun lifecycle +

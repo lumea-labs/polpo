@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { LoopHookRegistry } from "./hooks.js";
 import { LoopRunner } from "./runner.js";
-import { InMemorySteeringController, SteeringClosedError } from "../steering.js";
+import {
+  InMemorySteeringController,
+  SteeringClosedError,
+  type SteeringController,
+} from "../steering.js";
 
 const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
@@ -426,6 +430,47 @@ describe("LoopRunner steering", () => {
     expect(events).toEqual(["model:1", "steering:mid-turn", "model:2"]);
   });
 
+  it("awaits asynchronous policy and boundary persistence before model work", async () => {
+    const base = new InMemorySteeringController();
+    const events: string[] = [];
+    const steering = new Proxy(base, {
+      get(target, property) {
+        if (property === "configure") {
+          return async (...args: Parameters<InMemorySteeringController["configure"]>) => {
+            await delay(5);
+            target.configure(...args);
+            events.push("configured");
+          };
+        }
+        if (property === "setBoundary") {
+          return async (...args: Parameters<InMemorySteeringController["setBoundary"]>) => {
+            await delay(5);
+            target.setBoundary(...args);
+            events.push(`boundary:${args[0].open}`);
+          };
+        }
+        const value = Reflect.get(target, property, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    }) as unknown as SteeringController;
+
+    await new LoopRunner().run({
+      loop: { name: "default" },
+      maxTurns: 1,
+      steering,
+      onSteering: () => undefined,
+      model: async () => {
+        events.push("model");
+        return { text: "done" };
+      },
+      executeTool: async () => "unused",
+    });
+
+    expect(events.indexOf("configured")).toBeLessThan(events.indexOf("model"));
+    expect(events.indexOf("boundary:true")).toBeLessThan(events.indexOf("model"));
+    expect(events.at(-1)).toBe("boundary:false");
+  });
+
   it("waits to deliver follow-ups until the run would otherwise stop", async () => {
     const steering = new InMemorySteeringController();
     steering.enqueue({ id: "follow", mode: "follow_up", content: { text: "one more thing" } });
@@ -451,7 +496,7 @@ describe("LoopRunner steering", () => {
     expect(result.text).toBe("workingdonefollowed up");
   });
 
-  it("does not consume messages when the max-turn budget cannot execute them", async () => {
+  it("settles messages as too late when the max-turn budget cannot execute them", async () => {
     const steering = new InMemorySteeringController();
 
     await new LoopRunner().run({
@@ -466,7 +511,12 @@ describe("LoopRunner steering", () => {
       executeTool: async () => "unused",
     });
 
-    expect(steering.snapshot().pending.map((message) => message.id)).toEqual(["late"]);
+    expect(steering.snapshot().pending).toEqual([]);
+    expect(steering.getReceipt("late")).toMatchObject({
+      admission: "accepted",
+      delivery: "too_late",
+      reasonCode: "agentic_scope_finished",
+    });
   });
 
   it("includes the steering snapshot in durable turn checkpoints", async () => {

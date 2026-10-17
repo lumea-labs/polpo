@@ -60,6 +60,7 @@ import type {
   ResolvedModelInfo,
 } from "./completions/agent-step-runner.js";
 import {
+  createCompletionRunSteeringScope,
   executeStreamingProjectLoopCompletion,
   handleProjectLoopCompletion,
   type ProjectLoopCompletionOptions,
@@ -524,6 +525,7 @@ export function completionRoutes(getDeps: () => CompletionRouteDeps, apiKeys?: s
     }
 
     if (prepared.kind === "project-loop") {
+      c.header("x-polpo-run-id", prepared.completionId);
       const loopOptions: ProjectLoopCompletionOptions = {
         deps: prepared.deps,
         body: prepared.body,
@@ -551,9 +553,25 @@ export function completionRoutes(getDeps: () => CompletionRouteDeps, apiKeys?: s
           agent: body.agent,
         });
         if ("response" in scope) return scope.response(c) as any;
-        c.header("x-polpo-run-id", prepared.completionId);
-        return streamDurableCompletion(c, prepared.completionId, scope.value, ({ writer, signal }) =>
-          executeStreamingProjectLoopCompletion(writer, loopOptions, signal)) as any;
+        const steeringScope = await createCompletionRunSteeringScope(
+          deps,
+          prepared.completionId,
+        );
+        try {
+          return streamDurableCompletion(
+            c,
+            prepared.completionId,
+            scope.value,
+            ({ writer, signal }) => executeStreamingProjectLoopCompletion(
+              writer,
+              { ...loopOptions, steeringScope },
+              signal,
+            ),
+          ) as any;
+        } catch (error) {
+          await steeringScope.release();
+          throw error;
+        }
       }
       return await handleProjectLoopCompletion(c, loopOptions) as any;
     }

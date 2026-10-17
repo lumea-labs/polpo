@@ -11,6 +11,7 @@ import { MODEL_PROFILE_NAME_PATTERN } from "./model-profiles.js";
 import { assertLoopAgentInputSchema } from "./loop/agent-input.js";
 import { assertLoopAgentOutputSchema } from "./loop/agent-output.js";
 import { normalizeRuntimeMetadata } from "./runtime-metadata.js";
+import { normalizeSteeringLocale } from "./steering.js";
 
 /** Bounded caller metadata, shared by API schemas and queued runtime validation. */
 export const runtimeMetadataSchema = z.record(z.string(), z.string()).superRefine((value, ctx) => {
@@ -270,6 +271,26 @@ export const loopToolChoiceSchema = z.union([
   }),
 ]);
 
+export const steeringOutcomeBehaviorSchema = z.object({
+  action: z.enum(["reply", "return"]),
+  messages: z.record(
+    z.string().min(1).max(35).refine((locale) => {
+      try { normalizeSteeringLocale(locale); return true; } catch { return false; }
+    }, "steering outcome locale must be a valid BCP 47 language tag"),
+    z.string().min(1).max(2_000),
+  ).refine((messages) => Object.keys(messages).length <= 32, {
+    message: "steering outcome messages support at most 32 locales",
+  }),
+});
+
+export const steeringPolicySchema = z.object({
+  acceptance: z.enum(["accept", "reject", "best_effort"]).optional(),
+  outcomes: z.object({
+    rejected: steeringOutcomeBehaviorSchema.optional(),
+    too_late: steeringOutcomeBehaviorSchema.optional(),
+  }).optional(),
+});
+
 const loopDisplayMetadataShape = {
   label: z.string().min(1).optional(),
   description: z.string().min(1).optional(),
@@ -301,6 +322,7 @@ export const loopConfigSchema = z.object({
   output: z.object({
     schema: z.unknown().optional(),
   }).optional(),
+  steering: steeringPolicySchema.optional(),
 }).superRefine((loop, ctx) => {
   if (loop.allowedTools !== undefined && loop.tools !== undefined) {
     ctx.addIssue({
@@ -448,6 +470,7 @@ export const projectLoopConfigSchema = z.object({
   groups: loopGroupsSchema.optional(),
   allowedTools: z.array(z.string().min(1)).optional(),
   context: z.literal("shared").optional(),
+  steering: steeringPolicySchema.optional(),
   hooks: projectLoopHooksSchema.optional(),
   permissions: z.array(projectLoopPermissionSchema).optional(),
   policies: z.array(projectLoopPolicySchema).optional(),
@@ -678,6 +701,7 @@ export const agentLoopConfigSchema = z.object({
   name: z.string().min(1).optional(),
   model: modelSelectionSchema.optional(),
   runtime: z.string().optional(),
+  steering: steeringPolicySchema.optional(),
   loops: z.record(z.string().min(1), loopConfigSchema),
   pipeline: pipelineSchema.optional(),
 }).superRefine((config, ctx) => {

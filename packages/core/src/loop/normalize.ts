@@ -137,6 +137,7 @@ export function normalizeProjectLoop(loop: ProjectLoopConfig): AgentLoopConfig {
 
   return {
     name: loop.name,
+    ...(loop.steering ? { steering: loop.steering } : {}),
     loops,
     pipeline,
   };

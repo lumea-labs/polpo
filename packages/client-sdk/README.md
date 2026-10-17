@@ -505,7 +505,7 @@ const stream = client.chatCompletionsStream({
 await stream.start();
 if (!stream.runId) throw new Error("This execution does not support steering");
 
-await client.steerRun(stream.runId, {
+const admission = await client.steerRun(stream.runId, {
   id: crypto.randomUUID(),
   mode: "steer",
   content: {
@@ -518,6 +518,9 @@ await client.steerRun(stream.runId, {
   },
 });
 
+const receipt = await client.getSteeringReceipt(stream.runId, admission.id);
+console.log(receipt.admission, receipt.delivery);
+
 for await (const chunk of stream) {
   // Consume the response normally.
 }
@@ -528,7 +531,9 @@ otherwise stop. Use `client.abortRun(stream.runId, "Cancelled by user")` for the
 existing steering abort endpoint. On a durable completion, `stream.cancel()` is
 the acknowledged cancellation API and `stream.detach()` is the local-only
 transport operation. Steering is available on Run-backed execution and never
-interrupts an individual tool call in progress.
+interrupts an individual tool call in progress. `steerRun` returns the resolved
+acceptance policy and admission receipt; `getSteeringReceipt` exposes the
+eventual `delivered`, `too_late`, `cancelled`, or `failed` outcome.
 
 ## Application databases
 

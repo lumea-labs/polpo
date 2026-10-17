@@ -40,6 +40,12 @@ import {
   assertToolNameAllowedByPolicy,
 } from "@polpo-ai/core";
 import { generateText, type LanguageModel, type LanguageModelUsage } from "ai";
+import type { ModelMessage, UserContent } from "ai";
+import type {
+  ResolvedSteeringPolicy,
+  SteeringController,
+  SteeringMessage,
+} from "@polpo-ai/core/steering";
 import {
   classifyRuntimeError,
   prepareModelMessagesForProvider,
@@ -139,6 +145,25 @@ export interface AgentStepRunResult {
   resolvedModel?: CompletionResolvedModelInfo;
   providerMetadata?: Record<string, unknown>;
   toolCalls: any[];
+}
+
+function steeringModelMessage(message: SteeringMessage): ModelMessage {
+  const content: UserContent = [];
+  if (message.content.text !== undefined) content.push({ type: "text", text: message.content.text });
+  for (const attachment of message.content.attachments ?? []) {
+    const url = new URL(attachment.url);
+    if (attachment.type === "image") {
+      content.push({ type: "image", image: url, ...(attachment.mediaType ? { mediaType: attachment.mediaType } : {}) });
+    } else {
+      content.push({
+        type: "file",
+        data: url,
+        mediaType: attachment.mediaType ?? (attachment.type === "audio" ? "audio/mpeg" : "application/octet-stream"),
+        ...(attachment.name ? { filename: attachment.name } : {}),
+      });
+    }
+  }
+  return { role: "user", content };
 }
 
 export function completionResolvedModelInfo(model: ResolvedModelInfo): CompletionResolvedModelInfo {
@@ -310,6 +335,8 @@ export async function runAgentStepCompletion(options: {
   projectedInput?: PreparedLoopAgentInput;
   /** JSON Schema enforced on the terminal, non-tool model turn. */
   outputSchema?: unknown;
+  steering?: SteeringController;
+  steeringPolicy?: ResolvedSteeringPolicy;
 }): Promise<AgentStepRunResult> {
   const {
     deps,
@@ -599,6 +626,30 @@ export async function runAgentStepCompletion(options: {
   let totalUsage: LanguageModelUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 } as LanguageModelUsage;
   let lastProviderMetadata: Record<string, unknown> | undefined;
   const toolCallsAccum: any[] = [];
+  const maxTurns = agentConfig.maxTurns ?? MAX_TURNS;
+  if (options.steering) {
+    await options.steering.configure(options.steeringPolicy ?? {
+      acceptance: "best_effort",
+      source: "platform",
+    });
+  }
+  const deliverSteering = async (includeFollowUps: boolean): Promise<SteeringMessage[]> => {
+    if (!options.steering) return [];
+    const steeringMessages = await options.steering.drain({ includeFollowUps });
+    if (steeringMessages.length === 0) return [];
+    try {
+      messages.push(...steeringMessages.map(steeringModelMessage));
+      await options.steering.settle(steeringMessages.map((message) => message.id), "delivered");
+      return steeringMessages;
+    } catch (error) {
+      await options.steering.settle(
+        steeringMessages.map((message) => message.id),
+        "failed",
+        "model_message_adapter_failed",
+      );
+      throw error;
+    }
+  };
 
   const terminalMessages = (isRecovery: boolean) => [
     ...messages,
@@ -747,14 +798,17 @@ export async function runAgentStepCompletion(options: {
   try {
     const hasOperationalTools = Object.keys(aiTools).length > 0;
     if (outputSchema !== undefined && !hasOperationalTools) {
+      await options.steering?.setBoundary({ open: false, reservable: false });
       await completeTerminalStructuredOutput();
     }
 
     for (
       let turn = 0;
-      !completedStructuredOutput && turn < (agentConfig.maxTurns ?? MAX_TURNS);
+      !completedStructuredOutput && turn < maxTurns;
       turn++
     ) {
+      await options.steering?.setBoundary({ open: true, reservable: true });
+      await deliverSteering(false);
       await dispatchCompletionRuntimeHook(runtimeHooks, "context:compact:before", {
         messageCount: messages.length,
         model: m.id ?? m.provider,
@@ -784,6 +838,10 @@ export async function runAgentStepCompletion(options: {
       const toolCallNames = new Map<string, string>();
       const resolvedAttempts = new Map<number, typeof initialResolved>();
       let turnResult;
+      await options.steering?.setBoundary({
+        open: true,
+        reservable: turn + 1 < maxTurns,
+      });
       try {
         turnResult = await runCompletionRuntimeHookOperation({
           hooks: runtimeHooks,
@@ -891,6 +949,11 @@ export async function runAgentStepCompletion(options: {
       if (outputSchema === undefined) finalText += turnText;
 
       if (turnResult.toolCalls.length === 0) {
+        const delivered = turn + 1 < maxTurns
+          ? await deliverSteering(true)
+          : [];
+        if (delivered.length > 0) continue;
+        await options.steering?.setBoundary({ open: false, reservable: false });
         if (outputSchema !== undefined) {
           await completeTerminalStructuredOutput();
         }
@@ -1002,6 +1065,8 @@ export async function runAgentStepCompletion(options: {
       }
       if (stalledToolLoop) break;
     }
+
+    await options.steering?.setBoundary({ open: false, reservable: false });
 
     if (stalledToolLoop) {
       throw new LoopAgentOutputError(
@@ -1116,6 +1181,7 @@ export async function runAgentStepCompletion(options: {
     });
     throw error;
   } finally {
+    await options.steering?.setBoundary({ open: false, reservable: false });
     await dispatchCompletionRuntimeHook(runtimeHooks, "agent:end", {
       source: "loop-step",
     }).catch(() => {});

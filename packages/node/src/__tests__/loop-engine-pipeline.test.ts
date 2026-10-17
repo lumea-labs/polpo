@@ -38,6 +38,7 @@ vi.mock("@polpo-ai/llm", async (importOriginal) => {
 
 import { spawnLoopEngine } from "../adapters/loop-engine.js";
 import type { AgentConfig, Task } from "@polpo-ai/core/types";
+import { InMemorySteeringController } from "@polpo-ai/core/steering";
 
 // ── Setup ───────────────────────────────────────────────
 
@@ -165,6 +166,56 @@ describe("spawnLoopEngine — project loop graphs", () => {
     const traceTypes = traces.map((t) => (t.trace as { type: string }).type);
     expect(traceTypes).toContain("step.start");
     expect(traceTypes).toContain("step.end");
+  });
+
+  test("keeps a best-effort steer across agent nodes and records its final delivery", async () => {
+    await writeProjectLoop("steered-flow", {
+      name: "steered-flow",
+      steering: { acceptance: "best_effort" },
+      start: "plan",
+      steps: {
+        plan: { maxTurns: 1, next: "build" },
+        build: { next: "end" },
+      },
+    });
+    const controller = new InMemorySteeringController({ runId: "steered-flow-run" });
+    const prompts: unknown[][] = [];
+    const inner = mockTurnSequenceModel([
+      { type: "text", text: "PLAN" },
+      { type: "text", text: "BUILT WITH STEER" },
+    ]);
+    let calls = 0;
+    activeResolvedModel = mockResolvedModel(new MockLanguageModelV3({
+      doStream: (options) => {
+        prompts.push(options.prompt as unknown[]);
+        if (calls++ === 0) {
+          controller.enqueue({
+            id: "between-nodes",
+            mode: "steer",
+            content: { text: "Use the green design in the build step" },
+          });
+        }
+        return inner.doStream(options);
+      },
+    }));
+
+    const handle = spawnLoopEngine(
+      { name: "loop-agent", role: "developer", assignedLoops: ["steered-flow"] },
+      makeTask({ loop: "steered-flow" }),
+      cwd,
+      { polpoDir, outputDir, steering: controller },
+    );
+    const result = await handle.done;
+
+    expect(result.exitCode).toBe(0);
+    expect(prompts).toHaveLength(2);
+    expect(JSON.stringify(prompts[0])).not.toContain("green design");
+    expect(JSON.stringify(prompts[1])).toContain("green design");
+    expect(controller.getReceipt("between-nodes")).toMatchObject({
+      admission: "accepted",
+      delivery: "delivered",
+      policySource: "loop",
+    });
   });
 
   test("tool steps execute deterministically without an LLM turn", async () => {

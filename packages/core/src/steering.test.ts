@@ -8,6 +8,8 @@ import {
   SteeringRunConflictError,
   SteeringRunNotFoundError,
   SteeringValidationError,
+  resolveSteeringOutcomeMessage,
+  resolveSteeringPolicy,
 } from "./steering.js";
 
 describe("InMemorySteeringController", () => {
@@ -26,17 +28,19 @@ describe("InMemorySteeringController", () => {
   it("deduplicates message ids across delivery and restore", () => {
     const controller = new InMemorySteeringController();
     const first = controller.enqueue({ id: "same", mode: "steer", content: { text: "first" } });
-    const duplicate = controller.enqueue({ id: "same", mode: "steer", content: { text: "second" } });
+    const duplicate = controller.enqueue({ id: "same", mode: "steer", content: { text: "first" } });
 
     expect(first.accepted).toBe(true);
     expect(duplicate).toMatchObject({ accepted: false, duplicate: true });
     controller.drain({ includeFollowUps: false });
 
     const restored = InMemorySteeringController.fromSnapshot(controller.snapshot());
-    expect(restored.enqueue({ id: "same", mode: "steer", content: { text: "third" } })).toMatchObject({
+    expect(restored.enqueue({ id: "same", mode: "steer", content: { text: "first" } })).toMatchObject({
       accepted: false,
       duplicate: true,
     });
+    expect(() => restored.enqueue({ id: "same", mode: "steer", content: { text: "different" } }))
+      .toThrow(SteeringValidationError);
   });
 
   it("supports one-at-a-time delivery without reordering the queue", () => {
@@ -148,13 +152,69 @@ describe("InMemorySteeringController", () => {
     expect(() => controller.enqueue({ id: "late", mode: "steer", content: { text: "too late" } }))
       .toThrow(SteeringClosedError);
   });
+
+  it("applies reject, strict accept, and best-effort admission at safe boundaries", () => {
+    const rejected = new InMemorySteeringController({
+      runId: "reject-run",
+      policy: { acceptance: "reject", source: "node" },
+    });
+    expect(rejected.enqueue({ id: "no", mode: "steer", content: { text: "change" } }).receipt)
+      .toMatchObject({ admission: "rejected", delivery: "cancelled", reasonCode: "policy_rejected" });
+
+    const strict = new InMemorySteeringController({
+      runId: "strict-run",
+      policy: { acceptance: "accept", source: "loop" },
+    });
+    expect(strict.enqueue({ id: "late", mode: "steer", content: { text: "change" } }).receipt)
+      .toMatchObject({ admission: "too_late", delivery: "too_late", reasonCode: "no_reservable_boundary" });
+    strict.setBoundary({ open: true, reservable: true });
+    expect(strict.enqueue({ id: "yes", mode: "steer", content: { text: "change" } }).receipt)
+      .toMatchObject({ admission: "accepted", delivery: "pending" });
+
+    const bestEffort = new InMemorySteeringController({
+      policy: { acceptance: "best_effort", source: "platform" },
+    });
+    expect(bestEffort.enqueue({ id: "queued", mode: "steer", content: { text: "change" } }).receipt)
+      .toMatchObject({ admission: "accepted", delivery: "pending" });
+  });
+
+  it("settles delivery receipts and preserves them across snapshots", () => {
+    const controller = new InMemorySteeringController({ runId: "run-1" });
+    controller.enqueue({ id: "delivered", mode: "steer", content: { text: "one" } });
+    controller.enqueue({ id: "late", mode: "follow_up", content: { text: "two" } });
+    controller.settle(["delivered"], "delivered");
+    controller.settle(["late"], "too_late", "graph_finished");
+
+    const restored = InMemorySteeringController.fromSnapshot(controller.snapshot(), { runId: "run-1" });
+    expect(restored.getReceipt("delivered")).toMatchObject({ delivery: "delivered", deliveredAt: expect.any(String) });
+    expect(restored.getReceipt("late")).toMatchObject({ delivery: "too_late", reasonCode: "graph_finished" });
+  });
+
+  it("resolves locale fallbacks and policy precedence deterministically", () => {
+    const messages = { "pt-BR": "Tarde", en: "Late", it: "Tardi" };
+    expect(resolveSteeringOutcomeMessage(messages, "pt-BR", "too_late"))
+      .toEqual({ locale: "pt-BR", text: "Tarde" });
+    expect(resolveSteeringOutcomeMessage({ pt: "Tarde", en: "Late" }, "pt-PT", "too_late"))
+      .toEqual({ locale: "pt", text: "Tarde" });
+    expect(resolveSteeringOutcomeMessage(messages, "de-DE", "too_late"))
+      .toEqual({ locale: "en", text: "Late" });
+    expect(resolveSteeringOutcomeMessage({ it: "Tardi" }, "de-DE", "too_late"))
+      .toEqual({ locale: "it", text: "Tardi" });
+    expect(() => resolveSteeringOutcomeMessage(messages, "not_a_locale", "too_late"))
+      .toThrow(SteeringValidationError);
+
+    expect(resolveSteeringPolicy([
+      { policy: { acceptance: "accept" }, source: "node" },
+      { policy: { acceptance: "reject" }, source: "agent" },
+    ])).toMatchObject({ acceptance: "accept", source: "node" });
+  });
 });
 
 describe("InMemorySteeringRunRegistry", () => {
   it("routes messages and aborts to the controller registered for one run", async () => {
     const registry = new InMemorySteeringRunRegistry();
     const controller = new InMemorySteeringController();
-    const unregister = registry.register("run-1", controller);
+    const unregister = await registry.register("run-1", controller);
 
     await expect(registry.enqueue("run-1", {
       id: "message-1",
@@ -163,9 +223,9 @@ describe("InMemorySteeringRunRegistry", () => {
     })).resolves.toMatchObject({ accepted: true });
     expect(controller.snapshot().pending).toMatchObject([{ id: "message-1" }]);
 
-    registry.abort("run-1", "stop now");
+    await registry.abort("run-1", "stop now");
     expect(controller.signal.reason).toBe("stop now");
-    unregister();
+    await unregister();
     await expect(registry.enqueue("run-1", {
       id: "late",
       mode: "steer",
@@ -176,15 +236,15 @@ describe("InMemorySteeringRunRegistry", () => {
   it("rejects run-id collisions and stale unregister callbacks cannot remove replacements", async () => {
     const registry = new InMemorySteeringRunRegistry();
     const first = new InMemorySteeringController();
-    const unregisterFirst = registry.register("same-run", first);
+    const unregisterFirst = await registry.register("same-run", first);
 
-    expect(() => registry.register("same-run", new InMemorySteeringController()))
-      .toThrow(SteeringRunConflictError);
-    unregisterFirst();
+    await expect(registry.register("same-run", new InMemorySteeringController()))
+      .rejects.toBeInstanceOf(SteeringRunConflictError);
+    await unregisterFirst();
 
     const second = new InMemorySteeringController();
-    registry.register("same-run", second);
-    unregisterFirst();
+    await registry.register("same-run", second);
+    await unregisterFirst();
     await registry.enqueue("same-run", {
       id: "current",
       mode: "steer",
@@ -193,10 +253,27 @@ describe("InMemorySteeringRunRegistry", () => {
     expect(second.snapshot().pending).toMatchObject([{ id: "current" }]);
   });
 
-  it("bounds active runs", () => {
+  it("bounds active runs", async () => {
     const registry = new InMemorySteeringRunRegistry({ maxActiveRuns: 1 });
-    registry.register("run-1", new InMemorySteeringController());
-    expect(() => registry.register("run-2", new InMemorySteeringController()))
-      .toThrow(SteeringRunConflictError);
+    await registry.register("run-1", new InMemorySteeringController());
+    await expect(registry.register("run-2", new InMemorySteeringController()))
+      .rejects.toBeInstanceOf(SteeringRunConflictError);
+  });
+
+  it("keeps settled receipts readable after the active owner unregisters", async () => {
+    const registry = new InMemorySteeringRunRegistry();
+    const controller = new InMemorySteeringController();
+    const unregister = await registry.register("run-archive", controller);
+    const result = await registry.enqueue("run-archive", {
+      id: "message-1",
+      mode: "steer",
+      content: { text: "change" },
+    });
+    controller.settle(["message-1"], "delivered");
+    await unregister();
+
+    expect(result.receipt.runId).toBe("run-archive");
+    await expect(registry.getReceipt("run-archive", "message-1"))
+      .resolves.toMatchObject({ delivery: "delivered" });
   });
 });

@@ -82,7 +82,9 @@ import type {
 import { runtimeHookFileChangeForTool } from "@polpo-ai/core/runtime-hooks";
 import {
   InMemorySteeringController,
+  resolveSteeringPolicy,
   type SteeringMessage,
+  type SteeringPolicy,
   type SteeringQueueSnapshot,
 } from "@polpo-ai/core/steering";
 import { projectLoopConfigSchema } from "@polpo-ai/core/schemas";
@@ -538,6 +540,10 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
     /** Durable-turns checkpoint sink — wired to RunStore.updateResumeState by the runner. */
     onCheckpoint?: (state: LoopResumeState) => void | Promise<void>;
     projectAllowedTools?: string[];
+    /** Graph/project fallback, below the current node and above the agent default. */
+    graphSteeringPolicy?: SteeringPolicy;
+    /** A Project Loop keeps best-effort messages alive for a later agentic node. */
+    retainPendingSteeringOnFinish?: boolean;
   }): Promise<{ lastText: string; accumText: string }> {
     const { sessionAgent, loopName, loop, contextPrompt } = options;
     let sessionCleanup: (() => Promise<void>) | undefined;
@@ -1250,6 +1256,13 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
         }
       },
       steering,
+      steeringPolicy: resolveSteeringPolicy([
+        { policy: loop.steering, source: options.graphSteeringPolicy ? "node" : "loop" },
+        { policy: options.graphSteeringPolicy, source: "loop" },
+        { policy: sessionAgent.steering, source: "agent" },
+        { policy: ctx?.steeringPolicy, source: "project" },
+      ]),
+      retainPendingSteeringOnFinish: options.retainPendingSteeringOnFinish,
       onSteering: async (steeringMessages) => {
         for (const message of steeringMessages) {
           messages.push(toSteeringModelMessage(message));
@@ -1528,6 +1541,8 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
           projectAllowedTools: projectLoop.allowedTools,
           loopName: name,
           loop,
+          graphSteeringPolicy: projectLoop.steering,
+          retainPendingSteeringOnFinish: true,
           contextPrompt: agentInput
             ? undefined
             : loopContextPrompt(
@@ -1676,7 +1691,7 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
       await Promise.allSettled([...toolCleanups].map(cleanup => cleanup()));
       toolCleanups.clear();
       steering.signal.removeEventListener("abort", onSteeringAbort);
-      steering.close();
+      await steering.close();
       // Close agent-browser session (profile data auto-persisted by --profile).
       // Chat (inject) keeps its session — the server driver owns cleanup via
       // onResponseFinished, matching the inline chat handler.

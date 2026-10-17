@@ -7,6 +7,50 @@ export const DEFAULT_STEERING_MAX_ATTACHMENTS = 16;
 export type SteeringMode = "steer" | "follow_up";
 export type SteeringDeliveryPolicy = "all" | "one-at-a-time";
 export type SteeringAttachmentType = "image" | "audio" | "file";
+export type SteeringAcceptance = "accept" | "reject" | "best_effort";
+export type SteeringAdmission = "accepted" | "duplicate" | "rejected" | "too_late";
+export type SteeringDelivery = "pending" | "delivered" | "too_late" | "cancelled" | "failed";
+export type SteeringPolicySource = "node" | "loop" | "agent" | "project" | "platform";
+
+export interface SteeringOutcomeBehavior {
+  action: "reply" | "return";
+  messages: Record<string, string>;
+}
+
+export interface SteeringPolicy {
+  acceptance?: SteeringAcceptance;
+  outcomes?: Partial<Record<"rejected" | "too_late", SteeringOutcomeBehavior>>;
+}
+
+export interface ResolvedSteeringPolicy {
+  acceptance: SteeringAcceptance;
+  source: SteeringPolicySource;
+  outcomes?: SteeringPolicy["outcomes"];
+}
+
+export interface SteeringLocalizedResponse {
+  action: "reply" | "return";
+  text: string;
+  locale: string;
+}
+
+export interface SteeringReceipt {
+  version: 1;
+  runId: string;
+  messageId: string;
+  mode: SteeringMode;
+  acceptance: SteeringAcceptance;
+  policySource: SteeringPolicySource;
+  admission: SteeringAdmission;
+  delivery: SteeringDelivery;
+  locale?: string;
+  selectedLocale?: string;
+  response?: SteeringLocalizedResponse;
+  admittedAt: string;
+  deliveredAt?: string;
+  settledAt?: string;
+  reasonCode?: string;
+}
 
 export type SteeringJsonValue =
   | string
@@ -31,6 +75,7 @@ export interface SteeringContent {
 export interface SteeringMessageInput {
   id: string;
   mode: SteeringMode;
+  locale?: string;
   content: SteeringContent;
   metadata?: Record<string, SteeringJsonValue>;
 }
@@ -45,6 +90,10 @@ export interface SteeringQueueSnapshot {
   pending: SteeringMessage[];
   /** Recently accepted ids, including delivered messages, for retry idempotency. */
   seenIds: string[];
+  /** Additive v1 receipt state. Older snapshots legitimately omit it. */
+  receipts?: SteeringReceipt[];
+  fingerprints?: Record<string, string>;
+  policy?: ResolvedSteeringPolicy;
   aborted?: boolean;
   abortReason?: SteeringJsonValue;
 }
@@ -58,6 +107,7 @@ export interface SteeringEnqueueResult {
   accepted: boolean;
   duplicate: boolean;
   message?: SteeringMessage;
+  receipt: SteeringReceipt;
 }
 
 export interface SteeringController {
@@ -73,8 +123,15 @@ export interface SteeringController {
   snapshot(): SteeringQueueSnapshot | Promise<SteeringQueueSnapshot>;
   /** Cooperative initial restore; callers retain ownership until it settles. */
   restore(snapshot: SteeringQueueSnapshot, context?: { signal: AbortSignal }): void | Promise<void>;
-  abort(reason?: SteeringJsonValue): void;
-  close(): void;
+  bindRun(runId: string): void | Promise<void>;
+  configure(policy: ResolvedSteeringPolicy): void | Promise<void>;
+  setBoundary(input: { open: boolean; reservable: boolean }): void | Promise<void>;
+  settle(messageIds: readonly string[], delivery: Exclude<SteeringDelivery, "pending">, reasonCode?: string): void | Promise<void>;
+  settlePending(delivery: Exclude<SteeringDelivery, "pending">, reasonCode?: string): void | Promise<void>;
+  getReceipt(messageId: string): SteeringReceipt | undefined | Promise<SteeringReceipt | undefined>;
+  listReceipts(): SteeringReceipt[] | Promise<SteeringReceipt[]>;
+  abort(reason?: SteeringJsonValue): void | Promise<void>;
+  close(delivery?: Exclude<SteeringDelivery, "pending">, reasonCode?: string): void | Promise<void>;
 }
 
 export interface InMemorySteeringControllerOptions {
@@ -83,6 +140,9 @@ export interface InMemorySteeringControllerOptions {
   maxPending?: number;
   maxSeenIds?: number;
   maxAttachments?: number;
+  policy?: ResolvedSteeringPolicy;
+  runId?: string;
+  onReceipt?: (receipt: SteeringReceipt) => void;
   now?: () => Date;
 }
 
@@ -174,18 +234,155 @@ function assertFinitePositiveInteger(value: number, field: string): void {
   }
 }
 
+const DEFAULT_STEERING_OUTCOME_MESSAGES = {
+  rejected: "This step cannot accept new instructions.",
+  too_late: "The step had already finished.",
+} as const;
+
+export function normalizeSteeringLocale(locale: string): string {
+  if (typeof locale !== "string") throw new SteeringValidationError("Steering locale must be a string");
+  const candidate = locale.trim();
+  if (!candidate || candidate.length > 35 || /[\u0000-\u001f\u007f]/u.test(candidate)) {
+    throw new SteeringValidationError("Steering locale must be a valid BCP 47 language tag");
+  }
+  try {
+    const [normalized] = Intl.getCanonicalLocales(candidate);
+    if (!normalized) throw new Error("missing locale");
+    return normalized;
+  } catch {
+    throw new SteeringValidationError("Steering locale must be a valid BCP 47 language tag");
+  }
+}
+
+export function resolveSteeringOutcomeMessage(
+  messages: Record<string, string>,
+  requestedLocale: string | undefined,
+  outcome: "rejected" | "too_late",
+): { locale: string; text: string } {
+  const entries = Object.entries(messages ?? {});
+  if (entries.length > 32) throw new SteeringValidationError("Steering outcome messages support at most 32 locales");
+  const normalized = new Map<string, string>();
+  for (const [locale, text] of entries) {
+    const key = normalizeSteeringLocale(locale);
+    if (typeof text !== "string" || !text.trim() || text.length > 2_000) {
+      throw new SteeringValidationError("Steering outcome messages must contain 1-2000 characters");
+    }
+    normalized.set(key, text);
+  }
+  const requested = requestedLocale ? normalizeSteeringLocale(requestedLocale) : "en";
+  const primary = requested.split("-")[0]!;
+  for (const candidate of [requested, primary, "en"]) {
+    const text = normalized.get(candidate);
+    if (text !== undefined) return { locale: candidate, text };
+  }
+  const first = normalized.entries().next().value as [string, string] | undefined;
+  if (first) return { locale: first[0], text: first[1] };
+  return { locale: "en", text: DEFAULT_STEERING_OUTCOME_MESSAGES[outcome] };
+}
+
+export function resolveSteeringPolicy(
+  candidates: readonly { policy?: SteeringPolicy; source: SteeringPolicySource }[],
+): ResolvedSteeringPolicy {
+  const selected = candidates.find((candidate) => candidate.policy !== undefined);
+  return normalizeResolvedSteeringPolicy(selected
+    ? {
+        acceptance: selected.policy?.acceptance ?? "best_effort",
+        source: selected.source,
+        ...(selected.policy?.outcomes ? { outcomes: selected.policy.outcomes } : {}),
+      }
+    : { acceptance: "best_effort", source: "platform" });
+}
+
+function normalizeResolvedSteeringPolicy(policy: ResolvedSteeringPolicy): ResolvedSteeringPolicy {
+  if (!["accept", "reject", "best_effort"].includes(policy.acceptance)) {
+    throw new SteeringValidationError("Steering acceptance must be accept, reject, or best_effort");
+  }
+  if (!["node", "loop", "agent", "project", "platform"].includes(policy.source)) {
+    throw new SteeringValidationError("Steering policy source is invalid");
+  }
+  const outcomes: SteeringPolicy["outcomes"] = {};
+  for (const outcome of ["rejected", "too_late"] as const) {
+    const behavior = policy.outcomes?.[outcome];
+    if (!behavior) continue;
+    if (behavior.action !== "reply" && behavior.action !== "return") {
+      throw new SteeringValidationError("Steering outcome action must be reply or return");
+    }
+    // Validate and canonicalize keys while retaining every configured message.
+    const messages: Record<string, string> = {};
+    for (const [locale, text] of Object.entries(behavior.messages ?? {})) {
+      const normalizedLocale = normalizeSteeringLocale(locale);
+      if (typeof text !== "string" || !text.trim() || text.length > 2_000) {
+        throw new SteeringValidationError("Steering outcome messages must contain 1-2000 characters");
+      }
+      messages[normalizedLocale] = text;
+    }
+    if (Object.keys(messages).length > 32) {
+      throw new SteeringValidationError("Steering outcome messages support at most 32 locales");
+    }
+    outcomes[outcome] = { action: behavior.action, messages };
+  }
+  return jsonClone({
+    acceptance: policy.acceptance,
+    source: policy.source,
+    ...(Object.keys(outcomes).length > 0 ? { outcomes } : {}),
+  });
+}
+
+function steeringMessageFingerprint(message: SteeringMessage): string {
+  return JSON.stringify({
+    id: message.id,
+    mode: message.mode,
+    locale: message.locale,
+    content: message.content,
+    metadata: message.metadata,
+  });
+}
+
+function normalizeSteeringReceipts(receipts: SteeringReceipt[], runId: string): SteeringReceipt[] {
+  if (!Array.isArray(receipts)) throw new SteeringValidationError("Malformed steering snapshot receipts");
+  return receipts.map((receipt) => {
+    if (!receipt || receipt.version !== 1 || typeof receipt.messageId !== "string") {
+      throw new SteeringValidationError("Malformed steering receipt");
+    }
+    if (!["accepted", "duplicate", "rejected", "too_late"].includes(receipt.admission)
+      || !["pending", "delivered", "too_late", "cancelled", "failed"].includes(receipt.delivery)) {
+      throw new SteeringValidationError("Malformed steering receipt state");
+    }
+    return jsonClone({ ...receipt, runId: receipt.runId === "unbound" ? runId : normalizeRunId(receipt.runId) });
+  });
+}
+
+function normalizeSteeringFingerprints(input: Record<string, string>): Map<string, string> {
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    throw new SteeringValidationError("Malformed steering snapshot fingerprints");
+  }
+  const result = new Map<string, string>();
+  for (const [id, fingerprint] of Object.entries(input)) {
+    if (!id || typeof fingerprint !== "string") throw new SteeringValidationError("Malformed steering fingerprint");
+    result.set(id, fingerprint);
+  }
+  return result;
+}
+
 export class InMemorySteeringController implements SteeringController {
   private readonly abortController = new AbortController();
   private readonly pending: SteeringMessage[] = [];
   private readonly seen = new Set<string>();
   private readonly seenOrder: string[] = [];
+  private readonly receipts = new Map<string, SteeringReceipt>();
+  private readonly fingerprints = new Map<string, string>();
   private readonly delivery: SteeringDeliveryPolicy;
   private readonly maxContentBytes: number;
   private readonly maxPending: number;
   private readonly maxSeenIds: number;
   private readonly maxAttachments: number;
   private readonly now: () => Date;
+  private readonly onReceipt?: (receipt: SteeringReceipt) => void;
   private abortReason: SteeringJsonValue | undefined;
+  private runId: string;
+  private policy: ResolvedSteeringPolicy;
+  private boundaryOpen = false;
+  private boundaryReservable = false;
   private closed = false;
 
   constructor(options: InMemorySteeringControllerOptions = {}) {
@@ -195,6 +392,12 @@ export class InMemorySteeringController implements SteeringController {
     this.maxSeenIds = options.maxSeenIds ?? DEFAULT_STEERING_MAX_SEEN_IDS;
     this.maxAttachments = options.maxAttachments ?? DEFAULT_STEERING_MAX_ATTACHMENTS;
     this.now = options.now ?? (() => new Date());
+    this.runId = options.runId === undefined ? "unbound" : normalizeRunId(options.runId);
+    this.policy = normalizeResolvedSteeringPolicy(options.policy ?? {
+      acceptance: "best_effort",
+      source: "platform",
+    });
+    this.onReceipt = options.onReceipt;
 
     assertFinitePositiveInteger(this.maxContentBytes, "maxContentBytes");
     assertFinitePositiveInteger(this.maxPending, "maxPending");
@@ -225,14 +428,57 @@ export class InMemorySteeringController implements SteeringController {
       throw new SteeringValidationError("Steering message id must be a string");
     }
     const message = this.normalizeMessage(input);
-    if (this.seen.has(message.id)) return { accepted: false, duplicate: true };
+    const fingerprint = steeringMessageFingerprint(message);
+    if (this.seen.has(message.id)) {
+      const existingFingerprint = this.fingerprints.get(message.id);
+      if (existingFingerprint !== undefined && existingFingerprint !== fingerprint) {
+        throw new SteeringValidationError(`Steering message id "${message.id}" was already used with different content`);
+      }
+      const existing = this.receipts.get(message.id);
+      if (!existing) {
+        throw new SteeringValidationError(`Steering message id "${message.id}" has no recoverable receipt`);
+      }
+      return {
+        accepted: false,
+        duplicate: true,
+        receipt: jsonClone({ ...existing, admission: "duplicate" as const }),
+      };
+    }
+
+    const immediate = this.immediateAdmission(message);
+    if (immediate) {
+      this.remember(message.id);
+      this.fingerprints.set(message.id, fingerprint);
+      this.recordReceipt(immediate);
+      return {
+        accepted: false,
+        duplicate: false,
+        message: jsonClone(message),
+        receipt: jsonClone(immediate),
+      };
+    }
     if (this.pending.length >= this.maxPending) {
       throw new SteeringQueueFullError(`Steering queue is full (max ${this.maxPending})`);
     }
 
     this.pending.push(message);
     this.remember(message.id);
-    return { accepted: true, duplicate: false, message: jsonClone(message) };
+    this.fingerprints.set(message.id, fingerprint);
+    const admittedAt = this.now().toISOString();
+    const receipt: SteeringReceipt = {
+      version: 1,
+      runId: this.runId,
+      messageId: message.id,
+      mode: message.mode,
+      acceptance: this.policy.acceptance,
+      policySource: this.policy.source,
+      admission: "accepted",
+      delivery: "pending",
+      ...(message.locale ? { locale: message.locale } : {}),
+      admittedAt,
+    };
+    this.recordReceipt(receipt);
+    return { accepted: true, duplicate: false, message: jsonClone(message), receipt: jsonClone(receipt) };
   }
 
   drain(options: SteeringDrainOptions): SteeringMessage[] {
@@ -261,6 +507,8 @@ export class InMemorySteeringController implements SteeringController {
     if (this.signal.aborted) throw new SteeringAbortError(this.signal.reason);
     if (this.pending.length > 0) return false;
     this.closed = true;
+    this.boundaryOpen = false;
+    this.boundaryReservable = false;
     return true;
   }
 
@@ -270,6 +518,9 @@ export class InMemorySteeringController implements SteeringController {
       delivery: this.delivery,
       pending: this.pending,
       seenIds: this.seenOrder,
+      receipts: [...this.receipts.values()],
+      fingerprints: Object.fromEntries(this.fingerprints),
+      policy: this.policy,
       ...(this.signal.aborted
         ? {
             aborted: true,
@@ -316,6 +567,13 @@ export class InMemorySteeringController implements SteeringController {
     const abortReason = snapshot.abortReason === undefined
       ? undefined
       : jsonClone(snapshot.abortReason, "abortReason");
+    const receipts = normalizeSteeringReceipts(snapshot.receipts ?? [], this.runId);
+    const fingerprints = snapshot.fingerprints === undefined
+      ? new Map<string, string>()
+      : normalizeSteeringFingerprints(snapshot.fingerprints);
+    const policy = snapshot.policy === undefined
+      ? this.policy
+      : normalizeResolvedSteeringPolicy(snapshot.policy);
 
     const existingById = new Map(
       this.pending.map((message) => [message.id, JSON.stringify(message)]),
@@ -337,7 +595,88 @@ export class InMemorySteeringController implements SteeringController {
       if (!existingById.has(message.id)) this.pending.push(message);
       this.remember(message.id);
     }
+    for (const receipt of receipts) this.receipts.set(receipt.messageId, receipt);
+    for (const [id, fingerprint] of fingerprints) this.fingerprints.set(id, fingerprint);
+    for (const message of pending) {
+      if (!this.fingerprints.has(message.id)) this.fingerprints.set(message.id, steeringMessageFingerprint(message));
+      if (!this.receipts.has(message.id)) {
+        this.receipts.set(message.id, {
+          version: 1,
+          runId: this.runId,
+          messageId: message.id,
+          mode: message.mode,
+          acceptance: policy.acceptance,
+          policySource: policy.source,
+          admission: "accepted",
+          delivery: "pending",
+          ...(message.locale ? { locale: message.locale } : {}),
+          admittedAt: message.createdAt,
+        });
+      }
+    }
+    this.policy = policy;
     if (snapshot.aborted) this.abort(abortReason);
+  }
+
+  bindRun(runId: string): void {
+    const normalized = normalizeRunId(runId);
+    if (this.runId !== "unbound" && this.runId !== normalized) {
+      throw new SteeringRunConflictError(`Steering controller is already bound to run "${this.runId}"`);
+    }
+    this.runId = normalized;
+    for (const [id, receipt] of this.receipts) {
+      this.receipts.set(id, { ...receipt, runId: normalized });
+    }
+  }
+
+  configure(policy: ResolvedSteeringPolicy): void {
+    this.policy = normalizeResolvedSteeringPolicy(policy);
+  }
+
+  setBoundary(input: { open: boolean; reservable: boolean }): void {
+    this.boundaryOpen = input.open && !this.closed && !this.signal.aborted;
+    this.boundaryReservable = this.boundaryOpen && input.reservable;
+  }
+
+  settle(
+    messageIds: readonly string[],
+    delivery: Exclude<SteeringDelivery, "pending">,
+    reasonCode?: string,
+  ): void {
+    const settledIds = new Set(messageIds);
+    for (let index = this.pending.length - 1; index >= 0; index--) {
+      if (settledIds.has(this.pending[index]!.id)) this.pending.splice(index, 1);
+    }
+    const now = this.now().toISOString();
+    for (const messageId of messageIds) {
+      const receipt = this.receipts.get(messageId);
+      if (!receipt || receipt.delivery !== "pending") continue;
+      const next: SteeringReceipt = {
+        ...receipt,
+        delivery,
+        ...(delivery === "delivered" ? { deliveredAt: now } : {}),
+        settledAt: now,
+        ...(reasonCode ? { reasonCode } : {}),
+        ...(delivery === "too_late" ? this.localizedResponse(receipt.locale, "too_late") : {}),
+      };
+      this.recordReceipt(next);
+    }
+    this.pruneSeen();
+  }
+
+  settlePending(delivery: Exclude<SteeringDelivery, "pending">, reasonCode?: string): void {
+    const ids = this.pending.map((message) => message.id);
+    this.pending.splice(0, this.pending.length);
+    this.settle(ids, delivery, reasonCode);
+  }
+
+  getReceipt(messageId: string): SteeringReceipt | undefined {
+    const receipt = this.receipts.get(messageId);
+    return receipt ? jsonClone(receipt) : undefined;
+  }
+
+  listReceipts(): SteeringReceipt[] {
+    return jsonClone([...this.receipts.values()]);
   }
 
   abort(reason?: SteeringJsonValue): void {
@@ -346,11 +685,17 @@ export class InMemorySteeringController implements SteeringController {
         ? "Run aborted through steering"
         : jsonClone(reason, "abortReason");
       this.abortController.abort(this.abortReason);
+      this.boundaryOpen = false;
+      this.boundaryReservable = false;
+      this.settlePending("cancelled", "run_aborted");
     }
   }
 
-  close(): void {
+  close(delivery: Exclude<SteeringDelivery, "pending"> = "too_late", reasonCode = "run_closed"): void {
+    if (!this.closed) this.settlePending(delivery, reasonCode);
     this.closed = true;
+    this.boundaryOpen = false;
+    this.boundaryReservable = false;
   }
 
   private normalizeMessage(input: SteeringMessageInput | SteeringMessage): SteeringMessage {
@@ -416,6 +761,7 @@ export class InMemorySteeringController implements SteeringController {
     const metadata = input.metadata === undefined
       ? undefined
       : jsonClone(input.metadata, "metadata");
+    const locale = input.locale === undefined ? undefined : normalizeSteeringLocale(input.locale);
 
     const content = jsonClone({
       ...(text !== undefined ? { text } : {}),
@@ -434,6 +780,7 @@ export class InMemorySteeringController implements SteeringController {
     return {
       id,
       mode: input.mode,
+      ...(locale ? { locale } : {}),
       content,
       ...(metadata !== undefined ? { metadata } : {}),
       createdAt,
@@ -444,12 +791,72 @@ export class InMemorySteeringController implements SteeringController {
     if (this.seen.has(id)) return;
     this.seen.add(id);
     this.seenOrder.push(id);
+    this.pruneSeen(id);
+  }
+
+  private pruneSeen(protectedId?: string): void {
     while (this.seenOrder.length > this.maxSeenIds) {
-      const oldest = this.seenOrder.shift();
-      if (oldest !== undefined && !this.pending.some((message) => message.id === oldest)) {
-        this.seen.delete(oldest);
-      }
+      const index = this.seenOrder.findIndex((candidate) =>
+        candidate !== protectedId
+        && !this.pending.some((message) => message.id === candidate));
+      if (index < 0) break;
+      const [oldest] = this.seenOrder.splice(index, 1);
+      if (oldest === undefined) break;
+      this.seen.delete(oldest);
+      this.fingerprints.delete(oldest);
+      this.receipts.delete(oldest);
     }
+  }
+
+  private immediateAdmission(message: SteeringMessage): SteeringReceipt | undefined {
+    let admission: "rejected" | "too_late" | undefined;
+    let delivery: Exclude<SteeringDelivery, "pending"> | undefined;
+    let reasonCode: string | undefined;
+    if (this.policy.acceptance === "reject") {
+      admission = "rejected";
+      delivery = "cancelled";
+      reasonCode = "policy_rejected";
+    } else if (this.policy.acceptance === "accept" && (!this.boundaryOpen || !this.boundaryReservable)) {
+      admission = "too_late";
+      delivery = "too_late";
+      reasonCode = "no_reservable_boundary";
+    }
+    if (!admission || !delivery) return undefined;
+    const admittedAt = this.now().toISOString();
+    return {
+      version: 1,
+      runId: this.runId,
+      messageId: message.id,
+      mode: message.mode,
+      acceptance: this.policy.acceptance,
+      policySource: this.policy.source,
+      admission,
+      delivery,
+      ...(message.locale ? { locale: message.locale } : {}),
+      admittedAt,
+      settledAt: admittedAt,
+      reasonCode,
+      ...this.localizedResponse(message.locale, admission),
+    };
+  }
+
+  private localizedResponse(
+    locale: string | undefined,
+    outcome: "rejected" | "too_late",
+  ): Pick<SteeringReceipt, "selectedLocale" | "response"> {
+    const behavior = this.policy.outcomes?.[outcome];
+    if (!behavior) return {};
+    const selected = resolveSteeringOutcomeMessage(behavior.messages, locale, outcome);
+    return {
+      selectedLocale: selected.locale,
+      response: { action: behavior.action, text: selected.text, locale: selected.locale },
+    };
+  }
+
+  private recordReceipt(receipt: SteeringReceipt): void {
+    const stored = jsonClone(receipt);
+    this.receipts.set(receipt.messageId, stored);
+    try { this.onReceipt?.(jsonClone(stored)); } catch { /* observability cannot change steering */ }
   }
 }
 
@@ -465,12 +872,14 @@ export interface SteeringRunRegistry {
     controller: SteeringController,
   ): (() => void | Promise<void>) | Promise<() => void | Promise<void>>;
   enqueue(runId: string, input: SteeringMessageInput): Promise<SteeringEnqueueResult>;
+  getReceipt(runId: string, messageId: string): Promise<SteeringReceipt | undefined>;
   abort(runId: string, reason?: SteeringJsonValue): void | Promise<void>;
   has(runId: string): boolean | Promise<boolean>;
 }
 
 export interface InMemorySteeringRunRegistryOptions {
   maxActiveRuns?: number;
+  maxArchivedReceipts?: number;
 }
 
 /**
@@ -480,14 +889,18 @@ export interface InMemorySteeringRunRegistryOptions {
  */
 export class InMemorySteeringRunRegistry implements SteeringRunRegistry {
   private readonly controllers = new Map<string, SteeringController>();
+  private readonly archivedReceipts = new Map<string, SteeringReceipt>();
   private readonly maxActiveRuns: number;
+  private readonly maxArchivedReceipts: number;
 
   constructor(options: InMemorySteeringRunRegistryOptions = {}) {
     this.maxActiveRuns = options.maxActiveRuns ?? 10_000;
+    this.maxArchivedReceipts = options.maxArchivedReceipts ?? 10_000;
     assertFinitePositiveInteger(this.maxActiveRuns, "maxActiveRuns");
+    assertFinitePositiveInteger(this.maxArchivedReceipts, "maxArchivedReceipts");
   }
 
-  register(runId: string, controller: SteeringController): () => void {
+  async register(runId: string, controller: SteeringController): Promise<() => Promise<void>> {
     const id = normalizeRunId(runId);
     const existing = this.controllers.get(id);
     if (existing && existing !== controller) {
@@ -496,10 +909,15 @@ export class InMemorySteeringRunRegistry implements SteeringRunRegistry {
     if (!existing && this.controllers.size >= this.maxActiveRuns) {
       throw new SteeringRunConflictError(`Steering registry is full (max ${this.maxActiveRuns})`);
     }
+    await controller.bindRun(id);
     this.controllers.set(id, controller);
 
-    return () => {
-      if (this.controllers.get(id) === controller) this.controllers.delete(id);
+    return async () => {
+      if (this.controllers.get(id) !== controller) return;
+      const receipts = await controller.listReceipts();
+      if (this.controllers.get(id) !== controller) return;
+      for (const receipt of receipts) this.archive(receipt);
+      this.controllers.delete(id);
     };
   }
 
@@ -507,8 +925,19 @@ export class InMemorySteeringRunRegistry implements SteeringRunRegistry {
     return await this.require(runId).enqueue(input);
   }
 
-  abort(runId: string, reason?: SteeringJsonValue): void {
-    this.require(runId).abort(reason);
+  async getReceipt(runId: string, messageId: string): Promise<SteeringReceipt | undefined> {
+    const id = normalizeRunId(runId);
+    if (typeof messageId !== "string" || !messageId.trim()) {
+      throw new SteeringValidationError("Steering message id must contain 1-128 characters");
+    }
+    const controller = this.controllers.get(id);
+    const active = controller ? await controller.getReceipt(messageId) : undefined;
+    const receipt = active ?? this.archivedReceipts.get(`${id}\u0000${messageId}`);
+    return receipt ? jsonClone(receipt) : undefined;
+  }
+
+  async abort(runId: string, reason?: SteeringJsonValue): Promise<void> {
+    await this.require(runId).abort(reason);
   }
 
   has(runId: string): boolean {
@@ -520,6 +949,17 @@ export class InMemorySteeringRunRegistry implements SteeringRunRegistry {
     const controller = this.controllers.get(id);
     if (!controller) throw new SteeringRunNotFoundError(`Active run "${id}" was not found`);
     return controller;
+  }
+
+  private archive(receipt: SteeringReceipt): void {
+    const key = `${receipt.runId}\u0000${receipt.messageId}`;
+    this.archivedReceipts.delete(key);
+    this.archivedReceipts.set(key, jsonClone(receipt));
+    while (this.archivedReceipts.size > this.maxArchivedReceipts) {
+      const oldest = this.archivedReceipts.keys().next().value as string | undefined;
+      if (oldest === undefined) break;
+      this.archivedReceipts.delete(oldest);
+    }
   }
 }
 

@@ -1718,6 +1718,13 @@ export class PolpoClient {
     );
   }
 
+  /** Read the admission/delivery receipt after the active owner has finished. */
+  getSteeringReceipt(runId: string, messageId: string): Promise<SteerRunResult["receipt"]> {
+    return this.get<{ runId: string; id: string; receipt: SteerRunResult["receipt"] }>(
+      `/runs/${encodeURIComponent(runId)}/steering/${encodeURIComponent(messageId)}`,
+    ).then((result) => result.receipt);
+  }
+
   /** Abort an active run through the same run-scoped steering controller. */
   abortRun(runId: string, reason?: SteeringJsonValue): Promise<AbortRunResult> {
     return this.post<AbortRunResult>(

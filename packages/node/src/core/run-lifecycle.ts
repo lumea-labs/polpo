@@ -139,6 +139,8 @@ export interface TranscriptSession {
 export interface ExecuteRunDeps {
   /** Null explicitly disables environment/local Data fallback for a host-bound runner. */
   data?: import("@polpo-ai/core/data").DataClient | null;
+  /** Trusted project/platform steering fallback for this execution. */
+  steeringPolicy?: import("@polpo-ai/core/steering").SteeringPolicy;
   /** Run persistence. NOT closed by executeRun — the host owns it. */
   runStore: RunStore;
   /**
@@ -349,7 +351,7 @@ async function executeRegisteredRun(
     if (current.status === "running" && !deps.signal?.aborted && !steering.signal.aborted) return;
     finishPreparation();
     await finalize();
-    steering.close();
+    await steering.close();
     if (current.status === "running") {
       actLog.logEvent("sigterm");
       await boundedRunPersistence(() => runStore.completeRun(config.runId, "killed", errorResult(new Error("Killed by SIGTERM (timeout or shutdown) before engine start"))));
@@ -637,6 +639,7 @@ async function executeRegisteredRun(
       // best-effort — a flaky store must never fail a healthy run).
       resumeState: config.resumeState,
       steering,
+      steeringPolicy: deps.steeringPolicy,
       // Chat injection already carries its fully assembled system prompt.
       // Task runs receive the immutable snapshot through prepareSpawn.
       runtimeContext: deps.inject ? undefined : guardedRuntimeContext,
@@ -719,7 +722,7 @@ async function executeRegisteredRun(
     }
     try { await finalize(); } catch { /* preserve the primary spawn error */ }
     const requestedStatus = deps.signal?.aborted || steering.signal.aborted ? "killed" : "failed";
-    steering.close();
+    await steering.close();
     return persistOutcome(requestedStatus, result, true);
   }
 
@@ -787,6 +790,6 @@ async function executeRegisteredRun(
     try { await finalize(); } catch { /* the terminal result already captured finalization */ }
     deps.signal?.removeEventListener("abort", onAbort);
     steering?.signal.removeEventListener("abort", onSteeringAbort);
-    steering?.close();
+    await steering?.close();
   }
 }

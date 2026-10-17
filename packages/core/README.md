@@ -173,7 +173,10 @@ boundaries:
 import { LoopRunner } from "@polpo-ai/core";
 import { InMemorySteeringController } from "@polpo-ai/core/steering";
 
-const steering = new InMemorySteeringController();
+const steering = new InMemorySteeringController({
+  runId: "run-42",
+  policy: { acceptance: "best_effort", source: "agent" },
+});
 const run = new LoopRunner().run({
   loop: { name: "default" },
   steering,
@@ -184,11 +187,12 @@ const run = new LoopRunner().run({
   executeTool: runTool,
 });
 
-await steering.enqueue({
+const admission = await steering.enqueue({
   id: "request-42-message-1",
   mode: "steer",
   content: { text: "Use the existing database schema." },
 });
+console.log(admission.receipt.admission, admission.receipt.delivery);
 
 await run;
 ```
@@ -198,7 +202,11 @@ until the run would otherwise stop. The controller provides FIFO delivery,
 idempotent message ids, bounded queues, cancellation, JSON snapshots, and an
 atomic final-boundary seal so an accepted message cannot disappear while a run
 is finishing. Hosts persist `SteeringQueueSnapshot` with their normal run
-checkpoint and restore it on resume.
+checkpoint and restore it on resume. The controller records admission and
+delivery separately; callers can query receipts after `delivered`, `too_late`,
+`cancelled`, or `failed` settlement. `accept` requires a reservable future
+boundary, `reject` declines immediately, and `best_effort` is the compatibility
+default.
 
 The built-in `InMemorySteeringRunRegistry` is intended for a single-process OSS
 host. Distributed deployments should implement `SteeringRunRegistry` with an

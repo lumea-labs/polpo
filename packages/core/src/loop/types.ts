@@ -1,4 +1,5 @@
 import type { ProfiledModelSelection } from "../types/config.js";
+import type { SteeringPolicy } from "../steering.js";
 import type {
   SandboxAcquisitionSource,
   SandboxReleaseOutcome,
@@ -194,6 +195,8 @@ export interface LoopConfig extends LoopDisplayMetadata {
   stopWhen?: Condition;
   /** Structured output contract — the loop's typed deliverable. */
   output?: { schema?: unknown };
+  /** Node-level steering behavior. Overrides graph and agent defaults. */
+  steering?: SteeringPolicy;
 }
 
 export interface AgentLoopStep extends LoopConfig {
@@ -292,6 +295,8 @@ export interface ProjectLoopConfig {
   /** Tool subset available to every step in this Project Loop. */
   allowedTools?: string[];
   context?: "shared";
+  /** Graph-level steering behavior used when an agent node does not override it. */
+  steering?: SteeringPolicy;
   hooks?: ProjectLoopHooks;
   permissions?: ProjectLoopPermission[];
   policies?: ProjectLoopPolicy[];
@@ -350,6 +355,8 @@ export interface AgentLoopConfig {
   model?: ProfiledModelSelection;
   /** Out-of-scope runtime/environment ref (default polpo-runner; custom image later). */
   runtime?: string;
+  /** Graph-level steering behavior inherited by agentic nodes. */
+  steering?: SteeringPolicy;
   loops: Record<string, LoopConfig>;
   pipeline?: Pipeline;
 }
