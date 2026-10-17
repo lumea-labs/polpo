@@ -49,4 +49,87 @@ describe("MemoryLoopRunStore", () => {
     expect(fetched?.context).toEqual({ build: { passed: true } });
     expect(await store.listRuns({ status: "completed" })).toHaveLength(1);
   });
+
+  it("allows exactly one concurrent conditional update for the same run version", async () => {
+    const store = new MemoryLoopRunStore();
+    const created = await store.createRun({
+      id: "run-cas",
+      loop: { name: "coding-flow" },
+      metadata: { deliveryRunId: "delivery-1" },
+    });
+    const expected = {
+      status: created.status,
+      updatedAt: created.updatedAt,
+      deliveryRunId: "delivery-1",
+    } as const;
+
+    const attempts = await Promise.all([
+      store.updateRunIfCurrent("run-cas", expected, { error: "sweeper-a" }),
+      store.updateRunIfCurrent("run-cas", expected, { error: "sweeper-b" }),
+    ]);
+
+    expect(attempts.filter(Boolean)).toHaveLength(1);
+    expect(attempts.filter(Boolean)[0]?.updatedAt.localeCompare(created.updatedAt)).toBe(1);
+    expect(["sweeper-a", "sweeper-b"]).toContain((await store.getRun("run-cas"))?.error);
+  });
+
+  it("rejects a stale conditional update after status changes", async () => {
+    const store = new MemoryLoopRunStore();
+    const created = await store.createRun({
+      id: "run-status",
+      loop: { name: "coding-flow" },
+      metadata: { deliveryRunId: "delivery-1" },
+    });
+    await store.updateRun("run-status", { status: "completed" });
+
+    await expect(store.updateRunIfCurrent("run-status", {
+      status: created.status,
+      updatedAt: created.updatedAt,
+      deliveryRunId: "delivery-1",
+    }, { status: "failed", error: "stale sweep" })).resolves.toBeUndefined();
+    expect((await store.getRun("run-status"))?.status).toBe("completed");
+  });
+
+  it("rejects a stale conditional update after delivery ownership changes", async () => {
+    const store = new MemoryLoopRunStore();
+    const created = await store.createRun({
+      id: "run-delivery",
+      loop: { name: "coding-flow" },
+      metadata: { deliveryRunId: "delivery-1" },
+    });
+    await store.updateRun("run-delivery", {
+      metadata: { deliveryRunId: "delivery-2" },
+    });
+
+    await expect(store.updateRunIfCurrent("run-delivery", {
+      status: created.status,
+      updatedAt: created.updatedAt,
+      deliveryRunId: "delivery-1",
+    }, { status: "failed", error: "stale sweep" })).resolves.toBeUndefined();
+    expect((await store.getRun("run-delivery"))?.metadata?.deliveryRunId).toBe("delivery-2");
+  });
+
+  it("treats an undefined expected delivery id as absent rather than unconstrained", async () => {
+    const store = new MemoryLoopRunStore();
+    const absent = await store.createRun({
+      id: "run-no-delivery",
+      loop: { name: "coding-flow" },
+    });
+    const present = await store.createRun({
+      id: "run-with-delivery",
+      loop: { name: "coding-flow" },
+      metadata: { deliveryRunId: "delivery-1" },
+    });
+
+    await expect(store.updateRunIfCurrent("run-no-delivery", {
+      status: absent.status,
+      updatedAt: absent.updatedAt,
+      deliveryRunId: undefined,
+    }, { error: "claimed" })).resolves.toMatchObject({ error: "claimed" });
+    await expect(store.updateRunIfCurrent("run-with-delivery", {
+      status: present.status,
+      updatedAt: present.updatedAt,
+      deliveryRunId: undefined,
+    }, { error: "must-not-win" })).resolves.toBeUndefined();
+  });
 });

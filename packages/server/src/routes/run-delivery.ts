@@ -9,6 +9,7 @@ import {
   type RunCancellationStore,
   type RunEventStore,
   type RunExecutionLeaseStore,
+  type RunStreamEvent,
 } from "@polpo-ai/core/run-delivery";
 import {
   RunEventJournal,
@@ -25,6 +26,9 @@ export interface ResolvedRunDelivery {
   notifier?: RunEventNotifier;
   onInterrupted?: (runId: string) => Promise<void>;
   onInterruptedError?: (error: unknown, runId: string) => void;
+  /** Retryable host projection. Must be idempotent and guard against stale state. */
+  onTerminal?: (runId: string, event: RunStreamEvent) => Promise<void>;
+  onTerminalError?: (error: unknown, runId: string) => void;
 }
 
 export interface RunDeliveryRouteDeps {
@@ -125,6 +129,8 @@ export function runDeliveryRoutes(
           notifier: resolved.notifier,
           onInterrupted: resolved.onInterrupted,
           onInterruptedError: resolved.onInterruptedError,
+          onTerminal: resolved.onTerminal,
+          onTerminalError: resolved.onTerminalError,
           now: deps.now,
         })
       : Promise.resolve<InterruptedRunReconciliationResult>("unsupported");
@@ -244,6 +250,9 @@ export interface ReconcileInterruptedRunOptions {
   notifier?: RunEventNotifier;
   onInterrupted?: (runId: string) => Promise<void>;
   onInterruptedError?: (error: unknown, runId: string) => void;
+  /** Runs for both existing and newly persisted terminal events; may be retried. */
+  onTerminal?: (runId: string, event: RunStreamEvent) => Promise<void>;
+  onTerminalError?: (error: unknown, runId: string) => void;
   now?: () => Date;
   createToken?: () => string;
 }
@@ -291,7 +300,7 @@ export async function reconcileInterruptedRun(
       return "terminal";
     }
     const journal = new RunEventJournal(options.eventStore, options.notifier);
-    await journal.append(options.runId, {
+    const terminal = await journal.append(options.runId, {
       id: "run.failed:execution-interrupted",
       type: "run.failed",
       data: {
@@ -301,7 +310,7 @@ export async function reconcileInterruptedRun(
       },
     });
     await options.cancellationStore.clear(options.runId).catch(() => false);
-    await notifyInterruptedHost(options);
+    await reconcileInterruptedHostProjection(options, terminal);
     return "interrupted";
   } finally {
     await options.leaseStore.release(options.runId, recoveryLease).catch(() => false);
@@ -317,6 +326,17 @@ async function reconcileInterruptedHostProjection(
     && terminal.data.code === "run_execution_interrupted"
   ) {
     await notifyInterruptedHost(options);
+  }
+  if (terminal) {
+    try {
+      await options.onTerminal?.(options.runId, terminal);
+    } catch (error) {
+      try {
+        options.onTerminalError?.(error, options.runId);
+      } catch {
+        // A failed projection remains retryable even if its logger also fails.
+      }
+    }
   }
 }
 

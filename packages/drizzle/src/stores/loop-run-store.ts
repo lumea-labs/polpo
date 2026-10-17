@@ -1,6 +1,8 @@
 import { and, desc, eq, sql } from "drizzle-orm";
 import type {
   CreateLoopRunInput,
+  LoopRunConditionalPatch,
+  LoopRunExpectedVersion,
   LoopRunListFilter,
   LoopRunRecord,
   ProjectLoopRunStatus,
@@ -27,6 +29,14 @@ function isLoopResultEnvelope(value: unknown): value is LoopResultEnvelope {
   );
 }
 
+function nextLoopRunUpdatedAt(previous: string): string {
+  const previousMs = Date.parse(previous);
+  const nextMs = Number.isFinite(previousMs)
+    ? Math.max(Date.now(), previousMs + 1)
+    : Date.now();
+  return new Date(nextMs).toISOString();
+}
+
 export class DrizzleLoopRunStore implements LoopRunStore {
   constructor(
     private db: any,
@@ -40,7 +50,10 @@ export class DrizzleLoopRunStore implements LoopRunStore {
   ) {}
 
   private rowToRecord(row: any): LoopRunRecord {
-    const storedResult = deserializeJson<unknown>(row.result, undefined, this.dialect);
+    // `runs.result` can contain a pre-envelope legacy JSON scalar. Preserve a
+    // raw string if the driver already decoded JSONB to that scalar; using an
+    // `undefined` fallback here would silently discard it.
+    const storedResult = deserializeJson<unknown>(row.result, row.result, this.dialect);
     const resultEnvelope = this.targetsRuns && isLoopResultEnvelope(storedResult)
       ? storedResult
       : undefined;
@@ -187,6 +200,27 @@ export class DrizzleLoopRunStore implements LoopRunStore {
     return this.getRun(runId);
   }
 
+  async updateRunIfCurrent(
+    runId: string,
+    expected: LoopRunExpectedVersion,
+    patch: LoopRunConditionalPatch,
+  ): Promise<LoopRunRecord | undefined> {
+    const values = this.patchToValues({
+      ...patch,
+      updatedAt: nextLoopRunUpdatedAt(expected.updatedAt),
+    }, true);
+    const rows: any[] = await this.db.update(this.loopRuns)
+      .set(values)
+      .where(and(
+        this.runWhere(runId),
+        eq(this.loopRuns.status, expected.status),
+        eq(this.loopRuns.updatedAt, expected.updatedAt),
+        this.deliveryRunIdWhere(expected.deliveryRunId),
+      ))
+      .returning();
+    return rows[0] ? this.rowToRecord(rows[0]) : undefined;
+  }
+
   async close(): Promise<void> {
     // Connection lifecycle managed externally.
   }
@@ -242,8 +276,29 @@ export class DrizzleLoopRunStore implements LoopRunStore {
       : eq(this.loopRuns.id, runId);
   }
 
+  private deliveryRunIdWhere(expected: string | undefined): any {
+    if (this.dialect === "pg") {
+      const metadata = sql`case
+        when ${this.loopRuns.metadata} is null then '{}'::jsonb
+        when jsonb_typeof(${this.loopRuns.metadata}) = 'object' then ${this.loopRuns.metadata}
+        when jsonb_typeof(${this.loopRuns.metadata}) = 'string'
+          and left(ltrim(${this.loopRuns.metadata} #>> '{}'), 1) = '{'
+          and right(rtrim(${this.loopRuns.metadata} #>> '{}'), 1) = '}'
+          then (${this.loopRuns.metadata} #>> '{}')::jsonb
+        else '{}'::jsonb
+      end`;
+      return expected === undefined
+        ? sql`(${metadata} ->> 'deliveryRunId') is null`
+        : sql`(${metadata} ->> 'deliveryRunId') = ${expected}`;
+    }
+    return expected === undefined
+      ? sql`json_extract(${this.loopRuns.metadata}, '$.deliveryRunId') is null`
+      : sql`json_extract(${this.loopRuns.metadata}, '$.deliveryRunId') = ${expected}`;
+  }
+
   private patchToValues(
     patch: Partial<Omit<LoopRunRecord, "id" | "startedAt">>,
+    preserveProjectedPair: boolean = false,
   ): Record<string, unknown> {
     const values: Record<string, unknown> = {
       updatedAt: patch.updatedAt ?? new Date().toISOString(),
@@ -264,11 +319,13 @@ export class DrizzleLoopRunStore implements LoopRunStore {
     if (owns("metadata")) values.metadata = serializeJson(patch.metadata, this.dialect);
     if (owns("result") || owns("presentation")) {
       if (this.targetsRuns) {
-        values.result = serializeJson({
-          __polpoLoopResult: LOOP_RESULT_ENVELOPE_VERSION,
-          data: patch.result,
-          presentation: patch.presentation,
-        }, this.dialect);
+        values.result = preserveProjectedPair
+          ? this.atomicProjectedResult(patch, owns("result"), owns("presentation"))
+          : serializeJson({
+              __polpoLoopResult: LOOP_RESULT_ENVELOPE_VERSION,
+              data: patch.result,
+              presentation: patch.presentation,
+            }, this.dialect);
       } else {
         if (owns("result")) values.result = serializeJson(patch.result, this.dialect);
         if (owns("presentation")) {
@@ -284,6 +341,77 @@ export class DrizzleLoopRunStore implements LoopRunStore {
       );
     }
     return values;
+  }
+
+  private atomicProjectedResult(
+    patch: Partial<Omit<LoopRunRecord, "id" | "startedAt">>,
+    ownsResult: boolean,
+    ownsPresentation: boolean,
+  ): any {
+    const encodedResult = JSON.stringify(patch.result) ?? "null";
+    const encodedPresentation = JSON.stringify(patch.presentation) ?? "null";
+    if (this.dialect === "pg") {
+      const current = sql`case
+        when ${this.loopRuns.result} is null then 'null'::jsonb
+        when jsonb_typeof(${this.loopRuns.result}) = 'string'
+          and (
+            (left(ltrim(${this.loopRuns.result} #>> '{}'), 1) = '{'
+              and right(rtrim(${this.loopRuns.result} #>> '{}'), 1) = '}')
+            or (left(ltrim(${this.loopRuns.result} #>> '{}'), 1) = '['
+              and right(rtrim(${this.loopRuns.result} #>> '{}'), 1) = ']')
+            or (left(ltrim(${this.loopRuns.result} #>> '{}'), 1) = '"'
+              and right(rtrim(${this.loopRuns.result} #>> '{}'), 1) = '"')
+            or trim(${this.loopRuns.result} #>> '{}') in ('null', 'true', 'false')
+            or trim(${this.loopRuns.result} #>> '{}') ~
+              '^-?(0|[1-9][0-9]*)([.][0-9]+)?([eE][+-]?[0-9]+)?$'
+          )
+          then (${this.loopRuns.result} #>> '{}')::jsonb
+        else ${this.loopRuns.result}
+      end`;
+      const result = ownsResult
+        ? sql`${encodedResult}::jsonb`
+        : sql`case
+            when (${current} ->> '__polpoLoopResult') = ${String(LOOP_RESULT_ENVELOPE_VERSION)}
+              then ${current} -> 'data'
+            else ${current}
+          end`;
+      const presentation = ownsPresentation
+        ? sql`${encodedPresentation}::jsonb`
+        : sql`case
+            when (${current} ->> '__polpoLoopResult') = ${String(LOOP_RESULT_ENVELOPE_VERSION)}
+              then ${current} -> 'presentation'
+            else 'null'::jsonb
+          end`;
+      return sql`jsonb_build_object(
+        '__polpoLoopResult', ${LOOP_RESULT_ENVELOPE_VERSION}::int,
+        'data', ${result},
+        'presentation', ${presentation}
+      )`;
+    }
+    const current = sql`case
+      when ${this.loopRuns.result} is not null and json_valid(${this.loopRuns.result})
+        then ${this.loopRuns.result}
+      else 'null'
+    end`;
+    const result = ownsResult
+      ? sql`json(${encodedResult})`
+      : sql`json(case
+          when json_extract(${current}, '$.__polpoLoopResult') = ${LOOP_RESULT_ENVELOPE_VERSION}
+            then ${current} -> '$.data'
+          else ${current}
+        end)`;
+    const presentation = ownsPresentation
+      ? sql`json(${encodedPresentation})`
+      : sql`json(case
+          when json_extract(${current}, '$.__polpoLoopResult') = ${LOOP_RESULT_ENVELOPE_VERSION}
+            then ${current} -> '$.presentation'
+          else 'null'
+        end)`;
+    return sql`json_object(
+      '__polpoLoopResult', ${LOOP_RESULT_ENVELOPE_VERSION},
+      'data', ${result},
+      'presentation', ${presentation}
+    )`;
   }
 }
 
@@ -306,6 +434,13 @@ export class DualWriteLoopRunStore implements LoopRunStore {
     try { await op(); } catch { /* shadow write must never fail the request */ }
   }
 
+  private conditionalUpdate(store: LoopRunStore): NonNullable<LoopRunStore["updateRunIfCurrent"]> {
+    if (!store.updateRunIfCurrent) {
+      throw new Error("LoopRunStore does not support atomic conditional updates");
+    }
+    return store.updateRunIfCurrent.bind(store);
+  }
+
   async createRun(input: CreateLoopRunInput): Promise<LoopRunRecord> {
     const run = await this.legacy.createRun(input);
     await this.shadowBestEffort(() => this.shadow.createRun(input));
@@ -320,6 +455,38 @@ export class DualWriteLoopRunStore implements LoopRunStore {
   async updateRun(runId: string, patch: Partial<Omit<LoopRunRecord, "id" | "startedAt">>): Promise<LoopRunRecord | undefined> {
     const updated = await this.legacy.updateRun(runId, patch);
     await this.shadowBestEffort(() => this.shadow.updateRun(runId, patch));
+    return updated;
+  }
+
+  async updateRunIfCurrent(
+    runId: string,
+    expected: LoopRunExpectedVersion,
+    patch: LoopRunConditionalPatch,
+  ): Promise<LoopRunRecord | undefined> {
+    const authority = this.readFrom === "shadow" ? this.shadow : this.legacy;
+    const mirror = this.readFrom === "shadow" ? this.legacy : this.shadow;
+    const updated = await this.conditionalUpdate(authority)(runId, expected, patch);
+    if (!updated) return undefined;
+
+    await this.shadowBestEffort(async () => {
+      const mirrorCurrent = await mirror.getRun(runId);
+      if (!mirrorCurrent) return;
+      const mirrorDeliveryRunId = mirrorCurrent.metadata?.deliveryRunId;
+      const normalizedMirrorDeliveryRunId = mirrorDeliveryRunId === null || mirrorDeliveryRunId === undefined
+        ? undefined
+        : mirrorDeliveryRunId;
+      if (
+        mirrorCurrent.status !== expected.status
+        || normalizedMirrorDeliveryRunId !== expected.deliveryRunId
+      ) {
+        return;
+      }
+      await this.conditionalUpdate(mirror)(runId, {
+        status: expected.status,
+        updatedAt: mirrorCurrent.updatedAt,
+        deliveryRunId: expected.deliveryRunId,
+      }, patch);
+    });
     return updated;
   }
 

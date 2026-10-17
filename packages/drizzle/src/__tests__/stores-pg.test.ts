@@ -34,6 +34,7 @@ const ALL_TABLES = [
   "canonical_turn_outbox",
   "messages",
   "approvals",
+  "loop_runs",
   "runs",
   "tasks",
   "missions",
@@ -90,6 +91,99 @@ describe.skipIf(!canConnect)("PostgreSQL Drizzle stores", () => {
   });
 
   taskMutationContract(() => stores.taskStore);
+
+  it("LoopRunStore CAS has one winner and rejects changed status or delivery ownership", async () => {
+    await stores.loopRunStore.createRun({
+      id: "pg-loop-cas",
+      loop: { name: "review" },
+      agentName: "chat",
+      metadata: { deliveryRunId: "delivery-1" },
+    });
+    const snapshot = (await stores.loopRunStore.getRun("pg-loop-cas"))!;
+    const expected = {
+      status: snapshot.status,
+      updatedAt: snapshot.updatedAt,
+      deliveryRunId: "delivery-1",
+    } as const;
+
+    const attempts = await Promise.all([
+      stores.loopRunStore.updateRunIfCurrent!("pg-loop-cas", expected, { error: "sweeper-a" }),
+      stores.loopRunStore.updateRunIfCurrent!("pg-loop-cas", expected, { error: "sweeper-b" }),
+    ]);
+    expect(attempts.filter(Boolean)).toHaveLength(1);
+
+    const current = (await stores.loopRunStore.getRun("pg-loop-cas"))!;
+    await stores.loopRunStore.updateRun("pg-loop-cas", {
+      status: "resuming",
+      metadata: { deliveryRunId: "delivery-2" },
+    });
+    await expect(stores.loopRunStore.updateRunIfCurrent!("pg-loop-cas", {
+      status: current.status,
+      updatedAt: current.updatedAt,
+      deliveryRunId: "delivery-1",
+    }, { status: "failed", error: "stale sweep" })).resolves.toBeUndefined();
+    await expect(stores.loopRunStore.getRun("pg-loop-cas")).resolves.toMatchObject({
+      status: "resuming",
+      metadata: { deliveryRunId: "delivery-2" },
+    });
+  });
+
+  it("runs-backed LoopRunStore CAS cannot mutate an agent-engine row", async () => {
+    const { DrizzleLoopRunStore } = await import("../stores/loop-run-store.js");
+    const { runsPg } = await import("../schema/runs.js");
+    const runsBacked = new DrizzleLoopRunStore(db, runsPg, "pg", true);
+    await stores.runStore.upsertRun({
+      id: "pg-task-cas-isolation", taskId: "pg-task-cas-isolation", pid: 0, agentName: "agent", status: "running",
+      startedAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z",
+      activity: { filesCreated: [], filesEdited: [], toolCalls: 0, totalTokens: 0, lastUpdate: "" },
+      configPath: "/tmp/task.json",
+    } as any);
+
+    await expect(runsBacked.updateRunIfCurrent("pg-task-cas-isolation", {
+      status: "running",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+      deliveryRunId: undefined,
+    }, { status: "failed", error: "must-not-touch-task" })).resolves.toBeUndefined();
+    await expect(stores.runStore.getRun("pg-task-cas-isolation")).resolves.toMatchObject({
+      status: "running",
+    });
+  });
+
+  it("runs-backed LoopRunStore CAS preserves legacy raw results when adding presentation", async () => {
+    const { DrizzleLoopRunStore } = await import("../stores/loop-run-store.js");
+    const { runsPg } = await import("../schema/runs.js");
+    const { eq } = await import("drizzle-orm");
+    const runsBacked = new DrizzleLoopRunStore(db, runsPg, "pg", true);
+    const cases: Array<[string, unknown]> = [
+      ["object", { revision: 3 }],
+      ["array", ["a", 2]],
+      ["string", "legacy text"],
+      ["number", 42],
+      ["boolean", true],
+      ["null", null],
+    ];
+
+    for (const [label, rawResult] of cases) {
+      const id = `pg-loop-cas-legacy-${label}`;
+      await runsBacked.createRun({
+        id,
+        loop: { name: "review" },
+        agentName: "chat",
+        metadata: { deliveryRunId: "delivery-1" },
+      });
+      await db.update(runsPg).set({ result: rawResult }).where(eq(runsPg.id, id));
+      const snapshot = (await runsBacked.getRun(id))!;
+      expect(snapshot.result).toEqual(rawResult);
+
+      const updated = await runsBacked.updateRunIfCurrent(id, {
+        status: snapshot.status,
+        updatedAt: snapshot.updatedAt,
+        deliveryRunId: "delivery-1",
+      }, { presentation: { text: `Presentation for ${label}` } });
+      expect(updated?.result).toEqual(rawResult);
+      expect(updated?.presentation).toEqual({ text: `Presentation for ${label}` });
+    }
+  });
 
   it("ensurePgSchema creates every runs column (F2 migrate.ts drift guard)", async () => {
     // migrate.ts (ensurePgSchema) is hand-maintained ALTER TABLE lines — a
