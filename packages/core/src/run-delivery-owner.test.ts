@@ -6,6 +6,7 @@ import {
 } from "./run-delivery.js";
 import { RunEventJournal } from "./run-delivery-follower.js";
 import { executeOwnedRun } from "./run-delivery-owner.js";
+import { ToolReceiptSettlementError } from "./tool-execution-receipts.js";
 
 const lease = {
   owner: "worker-a",
@@ -79,6 +80,40 @@ describe("executeOwnedRun", () => {
     expect(persisted.map((event) => event.type)).toEqual(["run.started", "run.failed"]);
     expect(persisted[1]?.data).toEqual({ message: "provider unavailable" });
     expect(await leases.get("run-a")).toBeNull();
+  });
+
+  it("records structured receipt diagnostics without SQL, parameters, or tool output", async () => {
+    const events = new InMemoryRunEventStore();
+    const leases = new InMemoryRunExecutionLeaseStore();
+    const databaseCause = Object.assign(
+      new Error("UPDATE tool_execution_receipts params: secret tool result", {
+        cause: Object.assign(new Error("serialization failure"), { code: "40001" }),
+      }),
+      { query: "UPDATE tool_execution_receipts", params: ["secret tool result"] },
+    );
+    const result = await executeOwnedRun({
+      runId: "run-receipt-failure",
+      ...lease,
+      journal: new RunEventJournal(events),
+      leaseStore: leases,
+      producer: async () => { throw new ToolReceiptSettlementError(3, databaseCause); },
+    });
+
+    expect(result).toEqual({ status: "failed", error: "Tool receipt settlement failed" });
+    const failure = (await events.listAfter("run-receipt-failure")).events.at(-1);
+    expect(failure).toMatchObject({
+      type: "run.failed",
+      data: {
+        message: "Tool receipt settlement failed",
+        code: "tool_receipt_settlement_failed",
+        causeCode: "40001",
+        errorClass: "ToolReceiptSettlementError",
+        operation: "tool_receipt_settle",
+        attempts: 3,
+      },
+    });
+    expect(JSON.stringify(failure)).not.toContain("secret tool result");
+    expect(JSON.stringify(failure)).not.toContain("UPDATE tool_execution_receipts");
   });
 
   it("turns an explicit cancellation request into producer abort and run.cancelled", async () => {

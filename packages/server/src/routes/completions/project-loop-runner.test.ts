@@ -1,5 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
-import { createToolInvocationContext, MemoryLoopRunStore } from "@polpo-ai/core";
+import {
+  createToolInvocationContext,
+  InMemoryToolExecutionReceiptStore,
+  MemoryLoopRunStore,
+  type ToolExecutionReceiptStore,
+} from "@polpo-ai/core";
 import { RuntimeHookEngine } from "@polpo-ai/core/runtime-hooks";
 import type { CompletionRouteDeps } from "../completions.js";
 import {
@@ -250,6 +255,7 @@ describe("project-loop Runtime Hooks lifecycle", () => {
   function deterministicDeps(options: {
     hooks: RuntimeHookEngine;
     execute?: (name: string) => Promise<string>;
+    receiptStore?: ToolExecutionReceiptStore;
   }): CompletionRouteDeps {
     return {
       getAgents: async () => [],
@@ -258,6 +264,9 @@ describe("project-loop Runtime Hooks lifecycle", () => {
       getSessionStore: () => null,
       getStore: () => null,
       emit: () => {},
+      ...(options.receiptStore
+        ? { createToolRunScope: async () => ({ id: "tool-run-scope", receiptStore: options.receiptStore }) }
+        : {}),
       resolveRuntimeHooks: async () => options.hooks,
       resolveAgentTools: async () => ({
         tools: [
@@ -355,5 +364,41 @@ describe("project-loop Runtime Hooks lifecycle", () => {
     })).rejects.toThrow("Runtime hook deny: publish disabled");
 
     expect(executed).toEqual(["prepare"]);
+  });
+
+  it("completes a deterministic Loop after a transient receipt settlement failure", async () => {
+    const durableStore = new InMemoryToolExecutionReceiptStore();
+    const settle = vi.fn()
+      .mockRejectedValueOnce(new Error("temporary receipt write failure"))
+      .mockImplementation(durableStore.settle.bind(durableStore));
+    const execute = vi.fn(async () => JSON.stringify({ ok: true }));
+    const hooks = new RuntimeHookEngine({
+      definitions: [],
+      host: { execute: async () => ({}) },
+    });
+
+    await expect(runProjectLoopCompletion({
+      deps: deterministicDeps({
+        hooks,
+        execute,
+        receiptStore: {
+          claim: durableStore.claim.bind(durableStore),
+          settle,
+        },
+      }),
+      agentConfig: { name: "support", model: "test" },
+      projectLoop: {
+        name: "site",
+        start: "prepare",
+        steps: {
+          prepare: { type: "tool", tool: "prepare", next: "end" },
+        },
+      } as any,
+      aiMessages: [],
+      extraSystemParts: [],
+    })).resolves.toBeDefined();
+
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(settle).toHaveBeenCalledTimes(2);
   });
 });

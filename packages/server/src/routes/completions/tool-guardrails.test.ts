@@ -4,6 +4,7 @@ import {
   RuntimeGuardrailEngine,
   createRunToolMiddleware,
   type RuntimeGuardrailEvaluationInput,
+  type ToolExecutionReceiptStore,
 } from "@polpo-ai/core";
 import { createGuardedCompletionToolExecutor } from "./tool-guardrails.js";
 
@@ -216,6 +217,54 @@ describe("createGuardedCompletionToolExecutor", () => {
     release("charged");
     await expect(first).resolves.toBe("charged");
     expect(executor).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns a successful tool result after retrying only its receipt settlement", async () => {
+    const durableStore = new InMemoryToolExecutionReceiptStore();
+    const settle = vi.fn()
+      .mockRejectedValueOnce(new Error("temporary receipt write failure"))
+      .mockImplementation(durableStore.settle.bind(durableStore));
+    const receiptStore: ToolExecutionReceiptStore = {
+      claim: durableStore.claim.bind(durableStore),
+      settle,
+    };
+    const executor = vi.fn(async () => "created");
+    const guarded = createGuardedCompletionToolExecutor({
+      executor,
+      tools: [{ name: "create_record", parameters: { type: "object" } }],
+      context: {},
+      receiptStore,
+    });
+
+    await expect(guarded("create_record", {}, { callId: "call-1" }))
+      .resolves.toBe("created");
+    expect(executor).toHaveBeenCalledTimes(1);
+    expect(settle).toHaveBeenCalledTimes(2);
+    expect(settle.mock.calls[0]?.[0]).toEqual(settle.mock.calls[1]?.[0]);
+  });
+
+  it("keeps the original executor failure when outcome-unknown settlement exhausts retries", async () => {
+    const original = new Error("provider may have accepted the write");
+    const durableStore = new InMemoryToolExecutionReceiptStore();
+    const settle = vi.fn(async () => { throw new Error("receipt database unavailable"); });
+    const executor = vi.fn(async () => { throw original; });
+    const guarded = createGuardedCompletionToolExecutor({
+      executor,
+      tools: [{ name: "charge", parameters: { type: "object" } }],
+      context: {},
+      receiptStore: {
+        claim: durableStore.claim.bind(durableStore),
+        settle,
+      },
+    });
+
+    await expect(guarded("charge", {}, { callId: "call-charge" })).rejects.toBe(original);
+    expect(executor).toHaveBeenCalledTimes(1);
+    expect(settle).toHaveBeenCalledTimes(3);
+    expect(settle).toHaveBeenCalledWith({
+      callId: "call-charge",
+      state: "outcome-unknown",
+    });
   });
 
   it("provides the actual schema, call id, signal, and runtime context to policies", async () => {

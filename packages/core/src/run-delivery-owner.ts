@@ -2,10 +2,12 @@ import {
   RunDeliveryValidationError,
   type RunCancellationStore,
   type RunEventStore,
+  type RunEventJsonValue,
   type RunExecutionLease,
   type RunExecutionLeaseStore,
 } from "./run-delivery.js";
 import { RunEventJournal } from "./run-delivery-follower.js";
+import { ToolReceiptSettlementError } from "./tool-execution-receipts.js";
 
 export interface OwnedRunProducerContext {
   runId: string;
@@ -142,14 +144,14 @@ export async function executeOwnedRun(
     } catch (error) {
       if (lostLease) return { status: "lost-lease" };
       if (!cancellationObserved) {
-        const message = safeErrorMessage(error);
+        const failure = safeRunFailure(error);
         if (!await renewLease()) return { status: "lost-lease" };
         await options.journal.append(options.runId, {
           id: "run.failed",
           type: "run.failed",
-          data: { message },
+          data: failure,
         });
-        return { status: "failed", error: message };
+        return { status: "failed", error: failure.message };
       }
     }
 
@@ -196,4 +198,20 @@ function safeErrorMessage(error: unknown): string {
     ? error.message.trim()
     : "Run execution failed";
   return message.slice(0, 2_000);
+}
+
+type SafeRunFailure = Record<string, RunEventJsonValue> & { message: string };
+
+function safeRunFailure(error: unknown): SafeRunFailure {
+  if (error instanceof ToolReceiptSettlementError) {
+    return {
+      message: error.message,
+      code: error.code,
+      errorClass: error.name,
+      operation: error.operation,
+      attempts: error.attempts,
+      ...(error.causeCode ? { causeCode: error.causeCode } : {}),
+    };
+  }
+  return { message: safeErrorMessage(error) };
 }
