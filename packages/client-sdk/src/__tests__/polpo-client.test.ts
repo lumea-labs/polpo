@@ -1,6 +1,127 @@
 import { describe, expect, it, vi } from "vitest";
 import { PolpoClient } from "../client/polpo-client.js";
 
+describe("PolpoClient client-tool settlement", () => {
+  it("uses the public /v1 resource, API key, encoded ids, and default user", async () => {
+    const resolution = {
+      sessionId: "session/a",
+      toolCallId: "call 1",
+      sessionVersion: 2,
+      status: "pending" as const,
+      continuationAccepted: false as const,
+    };
+    const receipt = {
+      id: "settlement-1",
+      sessionId: "session/a",
+      toolCallId: "call 1",
+      sourceAssistantMessageId: "assistant-1",
+      resultMessageId: "tool-1",
+      outcome: "success" as const,
+      sessionVersion: 3,
+      settledAt: "2026-10-17T10:00:00.000Z",
+    };
+    const fetch = vi.fn<typeof globalThis.fetch>()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true, data: resolution }), {
+        headers: { "content-type": "application/json" },
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        ok: true,
+        data: { status: "settled", receipt },
+      }), { headers: { "content-type": "application/json" } }));
+    const client = new PolpoClient({
+      baseUrl: "http://localhost:3890",
+      apiKey: "project-key",
+      user: "customer/1",
+      fetch,
+    });
+
+    await expect(client.getClientToolResolution({
+      sessionId: "session/a",
+      toolCallId: "call 1",
+      agent: "support bot",
+    })).resolves.toEqual(resolution);
+    await expect(client.settleClientTool({
+      sessionId: "session/a",
+      toolCallId: "call 1",
+      agent: "support bot",
+      sessionVersion: 2,
+      idempotencyKey: "settle-1",
+      outcome: "success",
+      result: "[1,2,3]",
+    })).resolves.toEqual({ status: "settled", receipt });
+
+    expect(fetch).toHaveBeenNthCalledWith(
+      1,
+      "http://localhost:3890/v1/chat/sessions/session%2Fa/tool-calls/call%201?agent=support+bot&user=customer%2F1",
+      expect.objectContaining({
+        method: "GET",
+        headers: expect.objectContaining({ Authorization: "Bearer project-key" }),
+      }),
+    );
+    expect(fetch).toHaveBeenNthCalledWith(
+      2,
+      "http://localhost:3890/v1/chat/sessions/session%2Fa/tool-calls/call%201/settlement",
+      expect.objectContaining({
+        method: "PUT",
+        headers: expect.objectContaining({
+          Authorization: "Bearer project-key",
+          "Idempotency-Key": "settle-1",
+        }),
+        body: JSON.stringify({
+          agent: "support bot",
+          user: "customer/1",
+          expectedSessionVersion: 2,
+          outcome: "success",
+          result: "[1,2,3]",
+        }),
+      }),
+    );
+  });
+
+  it("supports exact userless Sessions and lets null override a default user", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>()
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        ok: true,
+        data: {
+          sessionId: "session-1",
+          toolCallId: "call-1",
+          sessionVersion: 1,
+          status: "pending",
+          continuationAccepted: false,
+        },
+      }), { headers: { "content-type": "application/json" } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        ok: true,
+        data: { status: "settled", receipt: { outcome: "cancelled" } },
+      }), { headers: { "content-type": "application/json" } }));
+    const client = new PolpoClient({
+      baseUrl: "https://api.polpo.sh",
+      user: "default-user",
+      fetch,
+    });
+    await client.getClientToolResolution({
+      sessionId: "session-1",
+      toolCallId: "call-1",
+      user: null,
+    });
+    await client.settleClientTool({
+      sessionId: "session-1",
+      toolCallId: "call-1",
+      user: null,
+      sessionVersion: 1,
+      idempotencyKey: "settle-1",
+      outcome: "cancelled",
+    });
+    expect(fetch.mock.calls[0]?.[0]).toBe(
+      "https://api.polpo.sh/v1/chat/sessions/session-1/tool-calls/call-1",
+    );
+    expect(JSON.parse(fetch.mock.calls[1]?.[1]?.body as string)).toEqual({
+      expectedSessionVersion: 1,
+      outcome: "cancelled",
+    });
+  });
+});
+
 describe("PolpoClient queued caller context", () => {
   it("sends application namespace and user on both task and Mission creation", async () => {
     const fetch = vi.fn<typeof globalThis.fetch>().mockImplementation(async () => Response.json({ ok: true, data: {} }));

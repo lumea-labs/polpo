@@ -5,6 +5,13 @@ import type {
   SessionContinuationScope,
 } from "./session-continuation.js";
 import type { CanonicalTurnCommitted } from "./canonical-turn.js";
+import type {
+  ClientToolSettlementOutcome,
+  ClientToolResolutionInput,
+  ClientToolResolution,
+  SettleClientToolInput,
+  SettledClientTool,
+} from "./session-client-tool-settlement.js";
 
 /**
  * Chat session storage — persists conversation threads across TUI restarts.
@@ -49,6 +56,8 @@ export interface ToolCallInfo {
    * continuation; callers cannot redeclare or widen this catalog.
    */
   continuationClientTools?: SessionClientToolDefinition[];
+  /** Exact application outcome of a settlement-only operation. */
+  settlementOutcome?: ClientToolSettlementOutcome;
 }
 
 export interface Message {
@@ -209,6 +218,10 @@ export interface SessionStore {
   prepareContinuation?(
     input: PrepareSessionContinuationInput,
   ): Promise<PreparedSessionContinuation>;
+  /** Atomic receipt/state lookup; it must never admit or execute work. */
+  getClientToolResolution?(input: ClientToolResolutionInput): Promise<ClientToolResolution>;
+  /** Atomically close an unaccepted client call without invoking model, handler, or Loop. */
+  settleClientTool?(input: SettleClientToolInput): Promise<SettledClientTool>;
   /** Atomically finalize the assistant message and insert one durable turn outbox record. */
   commitCanonicalTurn?(
     input: CommitCanonicalTurnInput,

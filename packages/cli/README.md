@@ -61,6 +61,34 @@ These commands require an environment-aware server: they send requests through
 `/environments/<name>`. An unavailable or unauthorized target is an error;
 there is no retry against Production or an unscoped endpoint.
 
+## Client-tool recovery
+
+Inspect a durable Session client tool before deciding how to recover it:
+
+```sh
+polpo sessions tool-call SESSION_ID TOOL_CALL_ID \
+  --agent leo --user CUSTOMER_ID --json
+```
+
+If the call is still pending and no continuation was accepted, close it without
+starting a model, handler, tool executor, or Project Loop:
+
+```sh
+polpo sessions settle-tool-call SESSION_ID TOOL_CALL_ID \
+  --agent leo --user CUSTOMER_ID \
+  --outcome cancelled \
+  --reason "The browser closed before returning a result" \
+  --session-version 12 \
+  --idempotency-key incident-2026-10-17-call-42
+```
+
+For `--outcome success`, pass the exact UTF-8 result with `--result-file`.
+Retain the same idempotency key for an exact manual retry. The CLI submits once;
+it does not retry automatically or continue the agent. Both commands target
+Development unless `--prod` or `--env production` is explicit. `--agent` and
+`--user` are exact identity selectors: omit them only for a Session where that
+identity is absent.
+
 ```sh
 polpo --help
 polpo deploy --help

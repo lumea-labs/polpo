@@ -32,6 +32,7 @@ const ALL_TABLES = [
   "log_entries",
   "model_invocation_logs",
   "canonical_turn_outbox",
+  "session_client_tool_settlements",
   "messages",
   "approvals",
   "loop_runs",
@@ -229,7 +230,12 @@ describe.skipIf(!canConnect)("PostgreSQL Drizzle stores", () => {
   });
 
   it("ensurePgSchema provisions canonical turn persistence", async () => {
-    const expected = ["sessions", "messages", "canonical_turn_outbox"];
+    const expected = [
+      "sessions",
+      "messages",
+      "canonical_turn_outbox",
+      "session_client_tool_settlements",
+    ];
     for (const table of expected) {
       const rows: any[] = await db.execute(sql.raw(
         `SELECT to_regclass('public.${table}') AS name`,

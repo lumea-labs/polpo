@@ -663,6 +663,19 @@ export interface UpdateTeamRequest {
 
 export type ErrorCode =
   | import("@polpo-ai/core/data").DataErrorCode
+  | "invalid_api_key"
+  | "invalid_client_tool_settlement"
+  | "session_not_found"
+  | "session_version_conflict"
+  | "client_tool_settlement_scope_mismatch"
+  | "client_tool_call_not_found"
+  | "client_tool_call_not_pending"
+  | "client_tool_call_unverifiable"
+  | "client_tool_settlement_conflict"
+  | "continuation_already_accepted"
+  | "idempotency_conflict"
+  | "client_tool_settlement_corrupt"
+  | "client_tool_settlement_unavailable"
   | "NOT_FOUND"
   | "INVALID_STATE"
   | "VALIDATION_ERROR"
@@ -681,6 +694,8 @@ export interface ApiError {
   error: string;
   code: ErrorCode;
   details?: unknown;
+  /** Some conflict resources return their durable recovery representation. */
+  data?: unknown;
 }
 
 export type ApiResult<T> = ApiResponse<T> | ApiError;
@@ -1416,6 +1431,78 @@ export interface ContinueClientToolResultRequest {
   metadata?: Record<string, string>;
 }
 
+export type ClientToolSettlementOutcome = "success" | "failed" | "cancelled";
+
+export interface ClientToolSettlementReceipt {
+  id: string;
+  sessionId: string;
+  toolCallId: string;
+  sourceAssistantMessageId: string;
+  resultMessageId: string;
+  outcome: ClientToolSettlementOutcome;
+  sessionVersion: number;
+  settledAt: string;
+}
+
+export interface ClientToolContinuationReceipt {
+  sessionId: string;
+  toolCallId: string;
+  /** Identity of the accepted continuation execution, never the originating Run. */
+  runId: string;
+  sessionVersion: number;
+  acceptedAt?: string;
+}
+
+export type ClientToolContinuationRunStatus =
+  | "accepted"
+  | "running"
+  | "completed"
+  | "failed"
+  | "cancelled"
+  | "unknown";
+
+export type ClientToolResolution = {
+  sessionId: string;
+  toolCallId: string;
+  sessionVersion: number;
+} & (
+  | { status: "pending"; continuationAccepted: false }
+  | {
+      status: "settled";
+      continuationAccepted: false;
+      receipt: ClientToolSettlementReceipt;
+    }
+  | {
+      status: "continuation";
+      continuationAccepted: true;
+      receipt: ClientToolContinuationReceipt;
+      /** Best-effort observation; `unknown` never means the call is pending. */
+      runStatus: ClientToolContinuationRunStatus;
+    }
+);
+
+export interface GetClientToolResolutionRequest {
+  sessionId: string;
+  toolCallId: string;
+  /** Omit only when the persisted Session has no agent. */
+  agent?: string;
+  /** Defaults to the PolpoClient user; null explicitly targets a userless Session. */
+  user?: string | null;
+}
+
+export type SettleClientToolRequest = GetClientToolResolutionRequest & {
+  sessionVersion: number;
+  idempotencyKey: string;
+} & (
+  | { outcome: "success"; result: string; reason?: never }
+  | { outcome: "failed" | "cancelled"; result?: string; reason?: string }
+);
+
+export interface SettledClientTool {
+  status: "settled" | "replay";
+  receipt: ClientToolSettlementReceipt;
+}
+
 export interface RunStreamEvent<TData extends Record<string, unknown> = Record<string, unknown>> {
   id: string;
   runId: string;
@@ -1537,6 +1624,11 @@ export interface ToolCallEvent {
   result?: string;
   /** Current state of the tool call */
   state: ToolCallState;
+  /**
+   * Exact settlement-only outcome. `failed` and `cancelled` both retain the
+   * legacy `error` ToolCallState for compatibility.
+   */
+  settlementOutcome?: ClientToolSettlementOutcome;
 }
 
 export interface ChatCompletionChunk {

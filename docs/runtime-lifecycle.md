@@ -109,3 +109,7 @@ This is retry protection for an accepted continuation. It does not settle a
 client-tool call that was never continued, and does not provide exactly-once
 external side effects across arbitrary crashes. The continuation endpoint
 starts model or Loop work; it is not a settlement-only repair API.
+
+For a call that was never continued, use the separate
+[client-tool settlement API](client-tool-settlement.md). It persists a terminal
+application outcome and receipt in the same Session without admitting execution.

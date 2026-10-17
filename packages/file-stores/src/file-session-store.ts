@@ -9,7 +9,7 @@ import {
   unlinkSync,
   statSync,
 } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { nanoid } from "nanoid";
 import type {
   SessionStore,
@@ -33,12 +33,25 @@ import {
   type CanonicalTurnCommitted,
 } from "@polpo-ai/core/canonical-turn";
 import {
-  projectResolvedClientToolCalls,
   resolvePendingClientToolCall,
   SessionContinuationError,
   type PreparedSessionContinuation,
   type PrepareSessionContinuationInput,
 } from "@polpo-ai/core/session-continuation";
+import {
+  assertClientToolSettlementScope,
+  ClientToolSettlementError,
+  normalizeClientToolSettlement,
+  projectClientToolSettlements,
+  publicClientToolSettlementReceipt,
+  resolveClientToolSettlementTarget,
+  type ClientToolContinuationReceipt,
+  type ClientToolResolution,
+  type ClientToolResolutionInput,
+  type SettleClientToolInput,
+  type SettledClientTool,
+  type StoredClientToolSettlement,
+} from "@polpo-ai/core/session-client-tool-settlement";
 
 /**
  * File-backed SessionStore.
@@ -52,7 +65,7 @@ export class FileSessionStore implements SessionStore {
   private readonly sessionsDir: string;
 
   constructor(polpoDir: string) {
-    this.sessionsDir = join(polpoDir, "sessions");
+    this.sessionsDir = resolve(polpoDir, "sessions");
   }
 
   async create(arg1?: string | SessionCreateOptions, arg2?: string): Promise<string> {
@@ -112,53 +125,36 @@ export class FileSessionStore implements SessionStore {
     suggestions?: ChatSuggestion[],
     reasoning?: PersistedReasoning,
   ): Promise<boolean> {
-    const file = this.sessionFile(sessionId);
-    if (!existsSync(file)) return false;
-    try {
-      const raw = readFileSync(file, "utf-8");
-      const lines = raw.split("\n").filter(Boolean);
-      let found = false;
-      const updated = lines.map((line) => {
-        const obj = JSON.parse(line);
-        if (!obj._session && obj.id === messageId) {
-          found = true;
-          const patched: Record<string, unknown> = { ...obj, content };
-          if (toolCalls && toolCalls.length > 0) {
-            patched.toolCalls = toolCalls;
-          }
-          if (suggestions && suggestions.length > 0) {
-            patched.suggestions = suggestions;
-          }
-          if (reasoning?.text) {
-            patched.reasoning = reasoning.text;
-            if (reasoning.truncated) patched.reasoningTruncated = true;
-          }
-          return JSON.stringify(patched);
-        }
-        return line;
-      });
-      if (!found) return false;
-      writeFileSync(file, updated.join("\n") + "\n", "utf-8");
-      return true;
-    } catch {
-      return false;
-    }
+    return this.withSessionLock(sessionId, () => {
+      if (!existsSync(this.sessionFile(sessionId))) return false;
+      try {
+        const state = this.readSessionFile(sessionId);
+        const index = state.messages.findIndex(message => message.id === messageId);
+        if (index < 0) return false;
+        const original = state.messages[index]!;
+        const patched: Message = { ...original, content,
+          ...(toolCalls?.length ? { toolCalls } : {}),
+          ...(suggestions?.length ? { suggestions } : {}),
+          ...(reasoning?.text ? { reasoning: reasoning.text, ...(reasoning.truncated ? { reasoningTruncated: true } : {}) } : {}),
+        };
+        state.messages[index] = this.protectSettledMessage(state, original, patched);
+        this.writeSessionFileAtomic(sessionId, state.header, state.messages);
+        return true;
+      } catch (error) {
+        if (error instanceof ClientToolSettlementError) throw error;
+        return false;
+      }
+    });
   }
 
   async getMessages(sessionId: string): Promise<Message[]> {
     const file = this.sessionFile(sessionId);
     if (!existsSync(file)) return [];
     try {
-      const lines = readFileSync(file, "utf-8").split("\n").filter(Boolean);
-      const messages: Message[] = [];
-      for (const line of lines) {
-        const obj = JSON.parse(line);
-        // Skip session header
-        if (obj._session) continue;
-        messages.push(obj as Message);
-      }
-      return projectResolvedClientToolCalls(messages);
-    } catch { /* unreadable session file */
+      const state = this.readSessionFile(sessionId);
+      return this.projectMessages(state);
+    } catch (error) { /* unreadable legacy session file */
+      if (error instanceof ClientToolSettlementError) throw error;
       return [];
     }
   }
@@ -213,7 +209,15 @@ export class FileSessionStore implements SessionStore {
         runId: string;
         sessionVersion: number;
       }>;
-      const existing = continuations[input.idempotencyKey];
+      const settlements = this.settlements(state.header);
+      this.projectMessages(state);
+      if (settlements.some(receipt => receipt.toolCallId === input.toolCallId)) {
+        throw new SessionContinuationError("client_tool_call_not_pending", "Client tool call was already settled");
+      }
+      if (settlements.some(receipt => receipt.idempotencyKey === input.idempotencyKey)) {
+        throw new SessionContinuationError("idempotency_conflict", "Idempotency key was already used for settlement");
+      }
+      const existing = Object.hasOwn(continuations, input.idempotencyKey) ? continuations[input.idempotencyKey] : undefined;
       if (existing) {
         if (existing.fingerprint !== input.fingerprint) {
           throw new SessionContinuationError(
@@ -227,7 +231,7 @@ export class FileSessionStore implements SessionStore {
           sessionVersion: existing.sessionVersion,
           runId: existing.runId,
           ...(turnId ? { turnId } : {}),
-          messages: projectResolvedClientToolCalls(state.messages),
+          messages: this.projectMessages(state),
         };
       }
 
@@ -238,7 +242,7 @@ export class FileSessionStore implements SessionStore {
         );
       }
       resolvePendingClientToolCall(
-        projectResolvedClientToolCalls(state.messages),
+        this.projectMessages(state),
         input.toolCallId,
       );
       const turnId = this.continuationTurnId(state.messages, input.toolCallId);
@@ -260,6 +264,7 @@ export class FileSessionStore implements SessionStore {
           toolCallId: input.toolCallId,
           runId: input.runId,
           sessionVersion: nextVersion,
+          acceptedAt: message.ts,
         },
       };
       state.messages.push(message);
@@ -270,8 +275,73 @@ export class FileSessionStore implements SessionStore {
         sessionVersion: nextVersion,
         runId: input.runId,
         ...(turnId ? { turnId } : {}),
-        messages: projectResolvedClientToolCalls(state.messages),
+        messages: this.projectMessages(state),
       };
+    });
+  }
+
+  async getClientToolResolution(input: ClientToolResolutionInput): Promise<ClientToolResolution> {
+    return this.withSessionLock(input.sessionId, () => {
+      const state = this.readSettlementSession(input.sessionId);
+      const session = this.headerToSession(state.header, this.sessionFile(input.sessionId), input.sessionId);
+      assertClientToolSettlementScope(session, input);
+      const resolution = this.existingClientToolResolution(state, input);
+      if (resolution) return resolution;
+      resolveClientToolSettlementTarget(state.messages, input.toolCallId);
+      return { sessionId: input.sessionId, toolCallId: input.toolCallId, sessionVersion: session.version ?? 0,
+        status: "pending", continuationAccepted: false };
+    });
+  }
+
+  async settleClientTool(input: SettleClientToolInput): Promise<SettledClientTool> {
+    const normalized = await normalizeClientToolSettlement(input);
+    return this.withSessionLock(input.sessionId, () => {
+      const state = this.readSettlementSession(input.sessionId);
+      const session = this.headerToSession(state.header, this.sessionFile(input.sessionId), input.sessionId);
+      assertClientToolSettlementScope(session, input);
+      const resolution = this.existingClientToolResolution(state, input);
+      const receipts = this.settlements(state.header);
+      const byKey = receipts.find(receipt => receipt.idempotencyKey === input.idempotencyKey);
+      if (byKey && byKey.fingerprint !== normalized.fingerprint) {
+        throw new ClientToolSettlementError("idempotency_conflict", "Idempotency key was already used for a different settlement");
+      }
+      if (resolution?.status !== "continuation" && Object.hasOwn(state.header.continuations ?? {}, input.idempotencyKey)) {
+        throw new ClientToolSettlementError("idempotency_conflict", "Idempotency key was already used for continuation");
+      }
+      if (resolution?.status === "settled") {
+        const existing = receipts.find(receipt => receipt.toolCallId === input.toolCallId)!;
+        if (existing.fingerprint !== normalized.fingerprint) {
+          throw new ClientToolSettlementError("client_tool_settlement_conflict", "Client tool call was already settled differently");
+        }
+        return { status: "replay", receipt: resolution.receipt };
+      }
+      if (resolution?.status === "continuation") {
+        throw new ClientToolSettlementError("continuation_already_accepted", "Continuation was already accepted", resolution.receipt);
+      }
+      if (Object.hasOwn(state.header.continuations ?? {}, input.idempotencyKey)) {
+        throw new ClientToolSettlementError("idempotency_conflict", "Idempotency key was already used for continuation");
+      }
+      if (session.version !== input.expectedSessionVersion) {
+        throw new ClientToolSettlementError("session_version_conflict", "Session version does not match");
+      }
+      const target = resolveClientToolSettlementTarget(state.messages, input.toolCallId);
+      const now = new Date().toISOString();
+      const message: Message = { id: nanoid(10), role: "tool", content: normalized.content, ts: now,
+        toolCallId: input.toolCallId, ...(target.message.turnId ? { turnId: target.message.turnId } : {}) };
+      const receipt: StoredClientToolSettlement = {
+        id: nanoid(20), sessionId: input.sessionId, toolCallId: input.toolCallId,
+        sourceAssistantMessageId: target.message.id, resultMessageId: message.id,
+        outcome: input.outcome, sessionVersion: input.expectedSessionVersion + 1, settledAt: now,
+        idempotencyKey: input.idempotencyKey, fingerprint: normalized.fingerprint,
+      };
+      state.header.clientToolSettlements = [...receipts, receipt];
+      state.header.version = receipt.sessionVersion;
+      state.messages.push(message);
+      // Persist the terminal source as well as the receipt, protecting older readers.
+      const projected = this.projectMessages(state);
+      state.messages = state.messages.map(existing => projected.find(item => item.id === existing.id)!);
+      this.writeSessionFileAtomic(input.sessionId, state.header, state.messages);
+      return { status: "settled", receipt: publicClientToolSettlementReceipt(receipt) };
     });
   }
 
@@ -308,7 +378,7 @@ export class FileSessionStore implements SessionStore {
         throw new Error("Canonical turn messages do not match the committed turn");
       }
 
-      state.messages[assistantIndex] = {
+      const patched: Message = {
         ...assistant,
         content: input.assistant.content,
         ...(input.assistant.toolCalls?.length
@@ -326,6 +396,7 @@ export class FileSessionStore implements SessionStore {
             }
           : { reasoning: undefined, reasoningTruncated: undefined }),
       };
+      state.messages[assistantIndex] = this.protectSettledMessage(state, assistant, patched);
       state.header.canonicalTurnOutbox = {
         ...outbox,
         [turn.turnId]: {
@@ -466,21 +537,15 @@ export class FileSessionStore implements SessionStore {
   }
 
   async renameSession(sessionId: string, title: string): Promise<boolean> {
-    const file = this.sessionFile(sessionId);
-    if (!existsSync(file)) return false;
-    try {
-      const raw = readFileSync(file, "utf-8");
-      const lines = raw.split("\n").filter(Boolean);
-      if (lines.length === 0) return false;
-      const header = JSON.parse(lines[0]);
-      if (!header._session) return false;
-      header.title = title;
-      lines[0] = JSON.stringify(header);
-      writeFileSync(file, lines.join("\n") + "\n", "utf-8");
-      return true;
-    } catch {
-      return false;
-    }
+    return this.withSessionLock(sessionId, () => {
+      if (!existsSync(this.sessionFile(sessionId))) return false;
+      try {
+        const state = this.readSessionFile(sessionId);
+        state.header.title = title;
+        this.writeSessionFileAtomic(sessionId, state.header, state.messages);
+        return true;
+      } catch { return false; }
+    });
   }
 
   async deleteSession(sessionId: string): Promise<boolean> {
@@ -513,7 +578,77 @@ export class FileSessionStore implements SessionStore {
   }
 
   private sessionFile(sessionId: string): string {
+    if (!/^[A-Za-z0-9_-]{1,256}$/.test(sessionId)) {
+      throw new ClientToolSettlementError("invalid_client_tool_settlement", "Invalid sessionId");
+    }
     return join(this.sessionsDir, `${sessionId}.jsonl`);
+  }
+
+  private settlements(header: any): StoredClientToolSettlement[] {
+    const value = header.clientToolSettlements;
+    if (value === undefined) return [];
+    if (!Array.isArray(value) || value.some(receipt => !receipt || typeof receipt !== "object"
+      || receipt.sessionId !== header.id || typeof receipt.fingerprint !== "string"
+      || typeof receipt.idempotencyKey !== "string")) {
+      throw new ClientToolSettlementError("client_tool_settlement_corrupt", "Settlement receipt is invalid");
+    }
+    return value;
+  }
+
+  private projectMessages(state: { header: any; messages: Message[] }): Message[] {
+    return projectClientToolSettlements(state.messages, this.settlements(state.header));
+  }
+
+  private readSettlementSession(sessionId: string): { header: any; messages: Message[] } {
+    if (!existsSync(this.sessionFile(sessionId))) throw new ClientToolSettlementError("session_not_found", "Session not found");
+    try { return this.readSessionFile(sessionId); }
+    catch { throw new ClientToolSettlementError("client_tool_settlement_corrupt", "Session history is unreadable"); }
+  }
+
+  private existingClientToolResolution(
+    state: { header: any; messages: Message[] }, input: ClientToolResolutionInput,
+  ): ClientToolResolution | undefined {
+    this.projectMessages(state);
+    const settled = this.settlements(state.header).filter(receipt => receipt.toolCallId === input.toolCallId);
+    const accepted = Object.values(state.header.continuations ?? {}).filter((receipt: any) => receipt.toolCallId === input.toolCallId) as any[];
+    if (settled.length > 1 || accepted.length > 1 || (settled.length && accepted.length)) {
+      throw new ClientToolSettlementError("client_tool_settlement_corrupt", "Client tool has conflicting receipts");
+    }
+    const common = { sessionId: input.sessionId, toolCallId: input.toolCallId, sessionVersion: Number(state.header.version ?? 0) };
+    if (settled[0]) return { ...common, status: "settled", continuationAccepted: false,
+      receipt: publicClientToolSettlementReceipt(settled[0]) };
+    if (accepted[0]) {
+      const stored = accepted[0];
+      if (typeof stored.runId !== "string" || !stored.runId.trim() || !Number.isSafeInteger(stored.sessionVersion)
+        || stored.sessionVersion < 0 || (stored.acceptedAt !== undefined
+          && (typeof stored.acceptedAt !== "string" || !Number.isFinite(Date.parse(stored.acceptedAt))))) {
+        throw new ClientToolSettlementError("client_tool_settlement_corrupt", "Accepted continuation receipt is invalid");
+      }
+      const receipt: ClientToolContinuationReceipt = { sessionId: input.sessionId, toolCallId: input.toolCallId,
+        runId: stored.runId, sessionVersion: stored.sessionVersion,
+        ...(stored.acceptedAt ? { acceptedAt: stored.acceptedAt } : {}) };
+      return { ...common, status: "continuation", continuationAccepted: true, receipt };
+    }
+    return undefined;
+  }
+
+  private protectSettledMessage(state: { header: any; messages: Message[] }, original: Message, patched: Message): Message {
+    const receipts = this.settlements(state.header);
+    if (!receipts.length) return patched;
+    const canonical = this.projectMessages(state).find(message => message.id === original.id)!;
+    if (receipts.some(receipt => receipt.resultMessageId === original.id)) {
+      if (JSON.stringify(patched) !== JSON.stringify(original)) {
+        throw new ClientToolSettlementError("client_tool_settlement_conflict", "Settlement result is immutable");
+      }
+      return original;
+    }
+    const protectedIds = new Set(receipts.filter(receipt => receipt.sourceAssistantMessageId === original.id).map(receipt => receipt.toolCallId));
+    if (!protectedIds.size) return patched;
+    // The authoritative source declaration cannot be removed/reordered by a stale finalizer.
+    const toolCalls = (canonical.toolCalls ?? []).map(call => protectedIds.has(call.id)
+      ? call : (patched.toolCalls?.find(candidate => candidate.id === call.id) ?? call));
+    for (const call of patched.toolCalls ?? []) if (!toolCalls.some(existing => existing.id === call.id)) toolCalls.push(call);
+    return { ...patched, toolCalls };
   }
 
   private readSessionFile(sessionId: string): { header: any; messages: Message[] } {

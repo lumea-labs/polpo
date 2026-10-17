@@ -33,6 +33,7 @@ import {
   taskRoutes,
   missionRoutes,
   chatRoutes,
+  clientToolResolutionRoutes,
   approvalRoutes,
   playbookRoutes,
   stateRoutes,
@@ -215,7 +216,7 @@ export function createApp(orchestrator: Orchestrator, sseBridge: SSEBridge, opts
   app.use("/api/*", rateLimitMiddleware());
   app.use("/v1/*", rateLimitMiddleware());
 
-  const corsExposeHeaders = ["x-session-id", "x-polpo-run-id", "x-polpo-run-terminal", "ETag"];
+  const corsExposeHeaders = ["x-session-id", "x-polpo-run-id", "x-polpo-run-terminal", "ETag", "Location"];
   if (opts?.corsOrigins && opts.corsOrigins.length > 0) {
     app.use("*", cors({ origin: opts.corsOrigins, exposeHeaders: corsExposeHeaders }));
   } else {
@@ -520,6 +521,15 @@ export function createApp(orchestrator: Orchestrator, sseBridge: SSEBridge, opts
       );
       return { status: outcome.status, result: outcome.result };
     },
+  }), opts?.apiKeys));
+  app.route("/v1/chat", clientToolResolutionRoutes(() => ({
+    sessionStore: o.getSessionStore(),
+    runStore: o.getRunStore(),
+    // A self-hosted process is its own trusted project/environment boundary.
+    // The Session store still enforces the exact persisted agent and user.
+    ...(opts?.apiKeys && opts.apiKeys.length > 0
+      ? { authorizeClientToolSettlement: () => orchestrator.isInitialized }
+      : {}),
   }), opts?.apiKeys));
   app.route("/v1/runs", runDeliveryRoutes(() => ({
     resolveRunDelivery: async (runId) => {

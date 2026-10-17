@@ -28,6 +28,20 @@ import {
   type PreparedSessionContinuation,
   type PrepareSessionContinuationInput,
 } from "@polpo-ai/core/session-continuation";
+import {
+  assertClientToolSettlementScope,
+  ClientToolSettlementError,
+  normalizeClientToolSettlement,
+  projectClientToolSettlements,
+  publicClientToolSettlementReceipt,
+  resolveClientToolSettlementTarget,
+  type ClientToolContinuationReceipt,
+  type ClientToolResolution,
+  type ClientToolResolutionInput,
+  type SettleClientToolInput,
+  type SettledClientTool,
+  type StoredClientToolSettlement,
+} from "@polpo-ai/core/session-client-tool-settlement";
 import type { ChatSuggestion } from "@polpo-ai/core/chat-interactions";
 import { type Dialect, deserializeJson, extractAffectedRows } from "../utils.js";
 
@@ -46,6 +60,7 @@ export class DrizzleSessionStore implements SessionStore {
     private dialect: Dialect,
     private transactionProvider?: DrizzleTransactionProvider,
     private canonicalTurnOutbox?: AnyTable,
+    private clientToolSettlements?: AnyTable,
   ) {}
 
   /** Serialize content for DB TEXT column: arrays → JSON string, plain strings → as-is. */
@@ -117,6 +132,143 @@ export class DrizzleSessionStore implements SessionStore {
     };
   }
 
+  private rowToStoredClientToolSettlement(row: any): StoredClientToolSettlement {
+    if (
+      !row
+      || !["success", "failed", "cancelled"].includes(row.outcome)
+      || !Number.isSafeInteger(Number(row.sessionVersion))
+    ) {
+      throw new ClientToolSettlementError(
+        "client_tool_settlement_corrupt",
+        "Stored client-tool settlement is corrupt",
+      );
+    }
+    return {
+      id: row.id,
+      sessionId: row.sessionId,
+      idempotencyKey: row.idempotencyKey,
+      fingerprint: row.fingerprint,
+      toolCallId: row.toolCallId,
+      sourceAssistantMessageId: row.sourceAssistantMessageId,
+      resultMessageId: row.resultMessageId,
+      outcome: row.outcome,
+      sessionVersion: Number(row.sessionVersion),
+      settledAt: row.settledAt,
+    };
+  }
+
+  private rowToClientToolContinuation(row: any): ClientToolContinuationReceipt {
+    return {
+      sessionId: row.sessionId,
+      toolCallId: row.toolCallId,
+      runId: row.runId,
+      sessionVersion: Number(row.sessionVersion),
+      ...(row.createdAt ? { acceptedAt: row.createdAt } : {}),
+    };
+  }
+
+  private requireClientToolSettlements(): AnyTable {
+    if (!this.clientToolSettlements) {
+      throw new ClientToolSettlementError(
+        "client_tool_settlement_unavailable",
+        "Client-tool settlement persistence is not configured",
+      );
+    }
+    return this.clientToolSettlements;
+  }
+
+  private projectSessionMessages(
+    messages: readonly Message[],
+    receipts: readonly StoredClientToolSettlement[],
+  ): Message[] {
+    return projectClientToolSettlements(messages, receipts);
+  }
+
+  private materializeSettledToolCall(
+    call: ToolCallInfo,
+    outcome: StoredClientToolSettlement["outcome"],
+    content: string,
+  ): ToolCallInfo {
+    const { continuationClientTools: _continuationClientTools, ...terminal } = call;
+    return {
+      ...terminal,
+      state: outcome === "success" ? "completed" : "error",
+      result: content,
+      settlementOutcome: outcome,
+    };
+  }
+
+  private clientToolResolutionFromRows(
+    input: ClientToolResolutionInput,
+    sessionRow: any,
+    messageRows: readonly any[],
+    receiptRows: readonly any[],
+    continuationRows: readonly any[],
+  ): ClientToolResolution {
+    const session = this.rowToSession(sessionRow, 0);
+    assertClientToolSettlementScope(session, input);
+    const receipts = receiptRows.map((row) => this.rowToStoredClientToolSettlement(row));
+    const canonical = this.projectSessionMessages(
+      messageRows.map((row) => this.rowToMessage(row)),
+      receipts,
+    );
+    const matchingReceipts = receipts.filter((receipt) => receipt.toolCallId === input.toolCallId);
+    const matchingContinuations = continuationRows.filter(
+      (continuation) => continuation.toolCallId === input.toolCallId,
+    );
+    if (matchingReceipts.length > 1 || matchingContinuations.length > 1) {
+      throw new ClientToolSettlementError(
+        "client_tool_settlement_corrupt",
+        "Client tool call has ambiguous terminal state",
+      );
+    }
+    if (matchingReceipts[0] && matchingContinuations[0]) {
+      throw new ClientToolSettlementError(
+        "client_tool_settlement_corrupt",
+        "Client tool call has both a settlement and an accepted continuation",
+      );
+    }
+    const sessionVersion = Number(sessionRow.version ?? 0);
+    if (matchingReceipts[0]) {
+      return {
+        status: "settled",
+        continuationAccepted: false,
+        sessionId: input.sessionId,
+        toolCallId: input.toolCallId,
+        sessionVersion,
+        receipt: publicClientToolSettlementReceipt(matchingReceipts[0]),
+      };
+    }
+    if (matchingContinuations[0]) {
+      return {
+        status: "continuation",
+        continuationAccepted: true,
+        sessionId: input.sessionId,
+        toolCallId: input.toolCallId,
+        sessionVersion,
+        receipt: this.rowToClientToolContinuation(matchingContinuations[0]),
+      };
+    }
+    resolveClientToolSettlementTarget(canonical, input.toolCallId);
+    return {
+      status: "pending",
+      continuationAccepted: false,
+      sessionId: input.sessionId,
+      toolCallId: input.toolCallId,
+      sessionVersion,
+    };
+  }
+
+  private validateSettlementHistory(
+    messageRows: readonly any[],
+    receiptRows: readonly any[],
+  ): void {
+    this.projectSessionMessages(
+      messageRows.map((row) => this.rowToMessage(row)),
+      receiptRows.map((row) => this.rowToStoredClientToolSettlement(row)),
+    );
+  }
+
   async create(arg1?: string | SessionCreateOptions, arg2?: string): Promise<string> {
     const opts = normalizeSessionCreateArgs(arg1, arg2);
     const id = nanoid(10);
@@ -184,9 +336,6 @@ export class DrizzleSessionStore implements SessionStore {
     }
     const serializedEvent = JSON.stringify(turn);
     const serializedContent = this.serializeContent(input.assistant.content);
-    const serializedToolCalls = input.assistant.toolCalls?.length
-      ? JSON.stringify(input.assistant.toolCalls)
-      : null;
     const serializedSuggestions = input.assistant.suggestions?.length
       ? JSON.stringify(input.assistant.suggestions)
       : null;
@@ -196,6 +345,11 @@ export class DrizzleSessionStore implements SessionStore {
         throw new Error("Canonical turn persistence requires transactional database support");
       }
       return this.db.transaction((db: any) => {
+        const session = db.select().from(this.sessions)
+          .where(eq(this.sessions.id, turn.sessionId))
+          .limit(1)
+          .all()[0];
+        if (!session) throw new Error("Canonical turn session not found");
         const existing = db.select().from(this.canonicalTurnOutbox)
           .where(eq(this.canonicalTurnOutbox.turnId, turn.turnId))
           .limit(1)
@@ -205,9 +359,27 @@ export class DrizzleSessionStore implements SessionStore {
           return { turn, created: false };
         }
         this.assertCanonicalTurnMessagesSync(db, turn);
+        let protectedToolCalls = input.assistant.toolCalls
+          ? [...input.assistant.toolCalls]
+          : undefined;
+        if (this.clientToolSettlements) {
+          const messageRows = db.select().from(this.messages)
+            .where(eq(this.messages.sessionId, turn.sessionId))
+            .orderBy(asc(this.messages.ts))
+            .all();
+          const receiptRows = db.select().from(this.clientToolSettlements)
+            .where(eq(this.clientToolSettlements.sessionId, turn.sessionId))
+            .all();
+          protectedToolCalls = this.protectSettledSourceToolCalls(
+            messageRows.map((row: any) => this.rowToMessage(row)),
+            receiptRows.map((row: any) => this.rowToStoredClientToolSettlement(row)),
+            input.assistant.messageId,
+            protectedToolCalls,
+          );
+        }
         const updated = db.update(this.messages).set({
           content: serializedContent,
-          toolCalls: serializedToolCalls,
+          toolCalls: protectedToolCalls?.length ? JSON.stringify(protectedToolCalls) : null,
           suggestions: serializedSuggestions,
           reasoning: input.assistant.reasoning?.text ?? null,
           reasoningTruncated: input.assistant.reasoning?.truncated ?? false,
@@ -235,6 +407,12 @@ export class DrizzleSessionStore implements SessionStore {
     }
 
     const execute = async (db: any): Promise<CommitCanonicalTurnResult> => {
+      let sessionQuery = db.select().from(this.sessions)
+        .where(eq(this.sessions.id, turn.sessionId))
+        .limit(1);
+      if (typeof sessionQuery.for === "function") sessionQuery = sessionQuery.for("update");
+      const sessionRows: any[] = await sessionQuery;
+      if (!sessionRows[0]) throw new Error("Canonical turn session not found");
       const existingRows = await db.select().from(this.canonicalTurnOutbox)
         .where(eq(this.canonicalTurnOutbox.turnId, turn.turnId))
         .limit(1);
@@ -243,9 +421,25 @@ export class DrizzleSessionStore implements SessionStore {
         return { turn, created: false };
       }
       await this.assertCanonicalTurnMessages(db, turn);
+      let protectedToolCalls = input.assistant.toolCalls
+        ? [...input.assistant.toolCalls]
+        : undefined;
+      if (this.clientToolSettlements) {
+        const messageRows: any[] = await db.select().from(this.messages)
+          .where(eq(this.messages.sessionId, turn.sessionId))
+          .orderBy(asc(this.messages.ts));
+        const receiptRows: any[] = await db.select().from(this.clientToolSettlements)
+          .where(eq(this.clientToolSettlements.sessionId, turn.sessionId));
+        protectedToolCalls = this.protectSettledSourceToolCalls(
+          messageRows.map((row) => this.rowToMessage(row)),
+          receiptRows.map((row) => this.rowToStoredClientToolSettlement(row)),
+          input.assistant.messageId,
+          protectedToolCalls,
+        );
+      }
       const updated = await db.update(this.messages).set({
         content: serializedContent,
-        toolCalls: serializedToolCalls,
+        toolCalls: protectedToolCalls?.length ? JSON.stringify(protectedToolCalls) : null,
         suggestions: serializedSuggestions,
         reasoning: input.assistant.reasoning?.text ?? null,
         reasoningTruncated: input.assistant.reasoning?.truncated ?? false,
@@ -388,6 +582,56 @@ export class DrizzleSessionStore implements SessionStore {
     }
   }
 
+  private protectSettledSourceToolCalls(
+    messages: readonly Message[],
+    receipts: readonly StoredClientToolSettlement[],
+    messageId: string,
+    incoming: readonly ToolCallInfo[] | undefined,
+  ): ToolCallInfo[] | undefined {
+    if (receipts.some((receipt) => receipt.resultMessageId === messageId)) {
+      throw new ClientToolSettlementError(
+        "client_tool_settlement_conflict",
+        "Settlement result messages are immutable",
+      );
+    }
+    const sourceReceipts = receipts.filter(
+      (receipt) => receipt.sourceAssistantMessageId === messageId,
+    );
+    if (sourceReceipts.length === 0) return incoming ? [...incoming] : undefined;
+    const canonical = this.projectSessionMessages(messages, receipts);
+    const source = canonical.find((message) => message.id === messageId);
+    if (!source || source.role !== "assistant" || !source.toolCalls?.length) {
+      throw new ClientToolSettlementError(
+        "client_tool_settlement_corrupt",
+        "Settled client tool source message is missing",
+      );
+    }
+    const settledIds = new Set(sourceReceipts.map((receipt) => receipt.toolCallId));
+    const protectedCalls = new Map(
+      source.toolCalls
+        .filter((call) => settledIds.has(call.id))
+        .map((call) => [call.id, call] as const),
+    );
+    if (protectedCalls.size !== settledIds.size) {
+      throw new ClientToolSettlementError(
+        "client_tool_settlement_corrupt",
+        "Settled client tool call is missing from its source message",
+      );
+    }
+    // Preserve the authoritative declaration order and every existing sibling.
+    // A late finalizer may refresh an ordinary call, but it cannot reorder or
+    // silently remove calls around a receipt-backed terminal call.
+    const next = source.toolCalls.map((call) =>
+      protectedCalls.get(call.id)
+      ?? incoming?.find((candidate) => candidate.id === call.id)
+      ?? call
+    );
+    for (const call of incoming ?? []) {
+      if (!next.some((candidate) => candidate.id === call.id)) next.push(call);
+    }
+    return next.length > 0 ? next : undefined;
+  }
+
   async updateMessage(
     sessionId: string,
     messageId: string,
@@ -397,41 +641,148 @@ export class DrizzleSessionStore implements SessionStore {
     reasoning?: PersistedReasoning,
   ): Promise<boolean> {
     const now = new Date().toISOString();
-    const tcValue = toolCalls ? JSON.stringify(toolCalls) : null;
     const serialized = this.serializeContent(content);
 
-    const result = await this.db.update(this.messages)
-      .set({
+    if (this.dialect === "sqlite") {
+      if (typeof this.db.transaction !== "function") {
+        throw new Error("Session message updates require transactional database support");
+      }
+      return this.db.transaction((db: any) => {
+        const session = db.select().from(this.sessions)
+          .where(eq(this.sessions.id, sessionId))
+          .limit(1)
+          .all()[0];
+        if (!session) return false;
+        let protectedToolCalls = toolCalls;
+        if (this.clientToolSettlements) {
+          const messageRows = db.select().from(this.messages)
+            .where(eq(this.messages.sessionId, sessionId))
+            .orderBy(asc(this.messages.ts))
+            .all();
+          const receiptRows = db.select().from(this.clientToolSettlements)
+            .where(eq(this.clientToolSettlements.sessionId, sessionId))
+            .all();
+          protectedToolCalls = this.protectSettledSourceToolCalls(
+            messageRows.map((row: any) => this.rowToMessage(row)),
+            receiptRows.map((row: any) => this.rowToStoredClientToolSettlement(row)),
+            messageId,
+            toolCalls,
+          );
+        }
+        const result = db.update(this.messages).set({
+          content: serialized,
+          toolCalls: protectedToolCalls ? JSON.stringify(protectedToolCalls) : null,
+          suggestions: suggestions?.length ? JSON.stringify(suggestions) : null,
+          reasoning: reasoning?.text ?? null,
+          reasoningTruncated: reasoning?.truncated ?? false,
+        }).where(and(
+          eq(this.messages.id, messageId),
+          eq(this.messages.sessionId, sessionId),
+        )).run();
+        const changed = extractAffectedRows(result) > 0;
+        if (changed) {
+          db.update(this.sessions).set({ updatedAt: now })
+            .where(eq(this.sessions.id, sessionId)).run();
+        }
+        return changed;
+      });
+    }
+
+    const execute = async (db: any): Promise<boolean> => {
+      let sessionQuery = db.select().from(this.sessions)
+        .where(eq(this.sessions.id, sessionId))
+        .limit(1);
+      if (typeof sessionQuery.for === "function") sessionQuery = sessionQuery.for("update");
+      const sessionRows: any[] = await sessionQuery;
+      if (!sessionRows[0]) return false;
+      let protectedToolCalls = toolCalls;
+      if (this.clientToolSettlements) {
+        const messageRows: any[] = await db.select().from(this.messages)
+          .where(eq(this.messages.sessionId, sessionId))
+          .orderBy(asc(this.messages.ts));
+        const receiptRows: any[] = await db.select().from(this.clientToolSettlements)
+          .where(eq(this.clientToolSettlements.sessionId, sessionId));
+        protectedToolCalls = this.protectSettledSourceToolCalls(
+          messageRows.map((row) => this.rowToMessage(row)),
+          receiptRows.map((row) => this.rowToStoredClientToolSettlement(row)),
+          messageId,
+          toolCalls,
+        );
+      }
+      const result = await db.update(this.messages).set({
         content: serialized,
-        toolCalls: tcValue,
+        toolCalls: protectedToolCalls ? JSON.stringify(protectedToolCalls) : null,
         suggestions: suggestions?.length ? JSON.stringify(suggestions) : null,
         reasoning: reasoning?.text ?? null,
         reasoningTruncated: reasoning?.truncated ?? false,
-      })
-      .where(eq(this.messages.id, messageId));
-
-    const changed = extractAffectedRows(result) > 0;
-    if (changed) {
-      await this.db.update(this.sessions)
-        .set({ updatedAt: now })
-        .where(eq(this.sessions.id, sessionId));
+      }).where(and(
+        eq(this.messages.id, messageId),
+        eq(this.messages.sessionId, sessionId),
+      ));
+      const changed = extractAffectedRows(result) > 0;
+      if (changed) {
+        await db.update(this.sessions).set({ updatedAt: now })
+          .where(eq(this.sessions.id, sessionId));
+      }
+      return changed;
+    };
+    if (this.transactionProvider) return this.transactionProvider(execute);
+    if (typeof this.db.transaction !== "function") {
+      throw new Error("Session message updates require transactional database support");
     }
-    return changed;
+    return this.db.transaction(execute);
   }
 
   async getMessages(sessionId: string): Promise<Message[]> {
-    const rows: any[] = await this.db.select().from(this.messages)
-      .where(eq(this.messages.sessionId, sessionId))
-      .orderBy(asc(this.messages.ts));
-    return projectResolvedClientToolCalls(rows.map((r) => this.rowToMessage(r)));
+    if (!this.clientToolSettlements) {
+      const rows: any[] = await this.db.select().from(this.messages)
+        .where(eq(this.messages.sessionId, sessionId))
+        .orderBy(asc(this.messages.ts));
+      return projectResolvedClientToolCalls(rows.map((r) => this.rowToMessage(r)));
+    }
+    // Some supported drivers (notably neon-http) cannot open an interactive
+    // transaction on the primary handle. Fence the two reads with the Session
+    // version instead: every settlement commits its receipt/result and version
+    // atomically, so an unchanged version proves a coherent snapshot. This
+    // avoids both a global transaction requirement and a messages×receipts join.
+    for (let attempt = 0; attempt < 4; attempt++) {
+      const beforeRows: any[] = await this.db.select({ version: this.sessions.version })
+        .from(this.sessions)
+        .where(eq(this.sessions.id, sessionId))
+        .limit(1);
+      const rows: any[] = await this.db.select().from(this.messages)
+        .where(eq(this.messages.sessionId, sessionId))
+        .orderBy(asc(this.messages.ts));
+      const receiptRows: any[] = await this.db.select().from(this.clientToolSettlements)
+        .where(eq(this.clientToolSettlements.sessionId, sessionId));
+      const afterRows: any[] = await this.db.select({ version: this.sessions.version })
+        .from(this.sessions)
+        .where(eq(this.sessions.id, sessionId))
+        .limit(1);
+      const before = beforeRows[0]?.version;
+      const after = afterRows[0]?.version;
+      if (before === undefined || after === undefined) {
+        if (before === undefined && after === undefined && rows.length === 0 && receiptRows.length === 0) {
+          return [];
+        }
+        continue;
+      }
+      if (Number(before) === Number(after)) {
+        return this.projectSessionMessages(
+          rows.map((row) => this.rowToMessage(row)),
+          receiptRows.map((row) => this.rowToStoredClientToolSettlement(row)),
+        );
+      }
+    }
+    throw new ClientToolSettlementError(
+      "client_tool_settlement_unavailable",
+      "Session changed repeatedly while reading settlement history",
+    );
   }
 
   async getRecentMessages(sessionId: string, limit: number): Promise<Message[]> {
-    const rows: any[] = await this.db.select().from(this.messages)
-      .where(eq(this.messages.sessionId, sessionId))
-      .orderBy(desc(this.messages.ts))
-      .limit(limit);
-    return projectResolvedClientToolCalls(rows.reverse().map((r) => this.rowToMessage(r)));
+    if (limit <= 0) return [];
+    return (await this.getMessages(sessionId)).slice(-limit);
   }
 
   async listSessions(filter?: SessionListFilter): Promise<Session[]> {
@@ -567,6 +918,484 @@ export class DrizzleSessionStore implements SessionStore {
     return deleted;
   }
 
+  async getClientToolResolution(
+    input: ClientToolResolutionInput,
+  ): Promise<ClientToolResolution> {
+    const settlements = this.requireClientToolSettlements();
+    if (this.dialect === "sqlite") {
+      if (typeof this.db.transaction !== "function") {
+        throw new ClientToolSettlementError(
+          "client_tool_settlement_unavailable",
+          "Client-tool resolution requires transactional database support",
+        );
+      }
+      return this.db.transaction((db: any) => {
+        const sessionRow = db.select().from(this.sessions)
+          .where(eq(this.sessions.id, input.sessionId))
+          .limit(1)
+          .all()[0];
+        if (!sessionRow) {
+          throw new ClientToolSettlementError("session_not_found", "Session not found");
+        }
+        const messageRows = db.select().from(this.messages)
+          .where(eq(this.messages.sessionId, input.sessionId))
+          .orderBy(asc(this.messages.ts))
+          .all();
+        const receiptRows = db.select().from(settlements)
+          .where(eq(settlements.sessionId, input.sessionId))
+          .all();
+        const continuationRows = db.select().from(this.continuations)
+          .where(and(
+            eq(this.continuations.sessionId, input.sessionId),
+            eq(this.continuations.toolCallId, input.toolCallId),
+          ))
+          .limit(2)
+          .all();
+        return this.clientToolResolutionFromRows(
+          input,
+          sessionRow,
+          messageRows,
+          receiptRows,
+          continuationRows,
+        );
+      });
+    }
+
+    const execute = async (db: any): Promise<ClientToolResolution> => {
+      let sessionQuery = db.select().from(this.sessions)
+        .where(eq(this.sessions.id, input.sessionId))
+        .limit(1);
+      if (typeof sessionQuery.for === "function") sessionQuery = sessionQuery.for("update");
+      const sessionRows: any[] = await sessionQuery;
+      const sessionRow = sessionRows[0];
+      if (!sessionRow) {
+        throw new ClientToolSettlementError("session_not_found", "Session not found");
+      }
+      const messageRows: any[] = await db.select().from(this.messages)
+        .where(eq(this.messages.sessionId, input.sessionId))
+        .orderBy(asc(this.messages.ts));
+      const receiptRows: any[] = await db.select().from(settlements)
+        .where(eq(settlements.sessionId, input.sessionId));
+      const continuationRows: any[] = await db.select().from(this.continuations)
+        .where(and(
+          eq(this.continuations.sessionId, input.sessionId),
+          eq(this.continuations.toolCallId, input.toolCallId),
+        ))
+        .limit(2);
+      return this.clientToolResolutionFromRows(
+        input,
+        sessionRow,
+        messageRows,
+        receiptRows,
+        continuationRows,
+      );
+    };
+    if (this.transactionProvider) return this.transactionProvider(execute);
+    if (typeof this.db.transaction !== "function") {
+      throw new ClientToolSettlementError(
+        "client_tool_settlement_unavailable",
+        "Client-tool resolution requires transactional database support",
+      );
+    }
+    return this.db.transaction(execute);
+  }
+
+  async settleClientTool(input: SettleClientToolInput): Promise<SettledClientTool> {
+    const settlements = this.requireClientToolSettlements();
+    const normalized = await normalizeClientToolSettlement(input);
+
+    if (this.dialect === "sqlite") {
+      if (typeof this.db.transaction !== "function") {
+        throw new ClientToolSettlementError(
+          "client_tool_settlement_unavailable",
+          "Client-tool settlement requires transactional database support",
+        );
+      }
+      return this.db.transaction((db: any) => {
+        const sessionRow = db.select().from(this.sessions)
+          .where(eq(this.sessions.id, input.sessionId))
+          .limit(1)
+          .all()[0];
+        if (!sessionRow) {
+          throw new ClientToolSettlementError("session_not_found", "Session not found");
+        }
+        assertClientToolSettlementScope(this.rowToSession(sessionRow, 0), input);
+
+        const existingByKey = db.select().from(settlements).where(and(
+          eq(settlements.sessionId, input.sessionId),
+          eq(settlements.idempotencyKey, input.idempotencyKey),
+        )).limit(1).all()[0];
+        const continuationByKey = db.select().from(this.continuations).where(and(
+          eq(this.continuations.sessionId, input.sessionId),
+          eq(this.continuations.idempotencyKey, input.idempotencyKey),
+        )).limit(1).all()[0];
+        const existingByCall = db.select().from(settlements).where(and(
+          eq(settlements.sessionId, input.sessionId),
+          eq(settlements.toolCallId, input.toolCallId),
+        )).limit(1).all()[0];
+        const continuation = db.select().from(this.continuations).where(and(
+          eq(this.continuations.sessionId, input.sessionId),
+          eq(this.continuations.toolCallId, input.toolCallId),
+        )).limit(2).all();
+        if (continuation.length > 1) {
+          throw new ClientToolSettlementError(
+            "client_tool_settlement_corrupt",
+            "Client tool call has ambiguous continuation state",
+          );
+        }
+        if (existingByCall && continuation[0]) {
+          throw new ClientToolSettlementError(
+            "client_tool_settlement_corrupt",
+            "Client tool call has both a settlement and an accepted continuation",
+          );
+        }
+        if (continuationByKey) {
+          if (continuationByKey.toolCallId === input.toolCallId) {
+            throw new ClientToolSettlementError(
+              "continuation_already_accepted",
+              "A continuation was already accepted for this client tool call",
+              this.rowToClientToolContinuation(continuationByKey),
+            );
+          }
+          throw new ClientToolSettlementError(
+            "idempotency_conflict",
+            "Idempotency key was already used for a client-tool continuation",
+          );
+        }
+        if (existingByKey) {
+          const stored = this.rowToStoredClientToolSettlement(existingByKey);
+          if (stored.fingerprint !== normalized.fingerprint) {
+            throw new ClientToolSettlementError(
+              "idempotency_conflict",
+              "Idempotency key was already used for a different client-tool settlement",
+            );
+          }
+          const messageRows = db.select().from(this.messages)
+            .where(eq(this.messages.sessionId, input.sessionId))
+            .orderBy(asc(this.messages.ts))
+            .all();
+          const receiptRows = db.select().from(settlements)
+            .where(eq(settlements.sessionId, input.sessionId))
+            .all();
+          this.validateSettlementHistory(messageRows, receiptRows);
+          return {
+            status: "replay" as const,
+            receipt: publicClientToolSettlementReceipt(stored),
+          };
+        }
+        if (existingByCall) {
+          const stored = this.rowToStoredClientToolSettlement(existingByCall);
+          if (stored.fingerprint !== normalized.fingerprint) {
+            throw new ClientToolSettlementError(
+              "client_tool_settlement_conflict",
+              "Client tool call was already settled with a different result",
+            );
+          }
+          const messageRows = db.select().from(this.messages)
+            .where(eq(this.messages.sessionId, input.sessionId))
+            .orderBy(asc(this.messages.ts))
+            .all();
+          const receiptRows = db.select().from(settlements)
+            .where(eq(settlements.sessionId, input.sessionId))
+            .all();
+          this.validateSettlementHistory(messageRows, receiptRows);
+          return {
+            status: "replay" as const,
+            receipt: publicClientToolSettlementReceipt(stored),
+          };
+        }
+        if (continuation[0]) {
+          throw new ClientToolSettlementError(
+            "continuation_already_accepted",
+            "A continuation was already accepted for this client tool call",
+            this.rowToClientToolContinuation(continuation[0]),
+          );
+        }
+
+        if (Number(sessionRow.version ?? 0) !== input.expectedSessionVersion) {
+          throw new ClientToolSettlementError(
+            "session_version_conflict",
+            "Session version does not match",
+          );
+        }
+
+        const messageRows = db.select().from(this.messages)
+          .where(eq(this.messages.sessionId, input.sessionId))
+          .orderBy(asc(this.messages.ts))
+          .all();
+        const storedMessages = messageRows.map((row: any) => this.rowToMessage(row));
+        const target = resolveClientToolSettlementTarget(storedMessages, input.toolCallId);
+        const now = new Date().toISOString();
+        const nextVersion = input.expectedSessionVersion + 1;
+        const resultMessageId = nanoid();
+        const receiptId = nanoid();
+        const updatedSession = db.update(this.sessions).set({
+          updatedAt: now,
+          version: nextVersion,
+        }).where(and(
+          eq(this.sessions.id, input.sessionId),
+          eq(this.sessions.version, input.expectedSessionVersion),
+        )).run();
+        if (extractAffectedRows(updatedSession) !== 1) {
+          throw new ClientToolSettlementError(
+            "session_version_conflict",
+            "Session version changed while settling the client tool call",
+          );
+        }
+
+        const terminalCalls = target.message.toolCalls!.map((call) =>
+          call.id === input.toolCallId
+            ? this.materializeSettledToolCall(call, input.outcome, normalized.content)
+            : call
+        );
+        const updatedSource = db.update(this.messages).set({
+          toolCalls: JSON.stringify(terminalCalls),
+        }).where(and(
+          eq(this.messages.id, target.message.id),
+          eq(this.messages.sessionId, input.sessionId),
+        )).run();
+        if (extractAffectedRows(updatedSource) !== 1) {
+          throw new ClientToolSettlementError(
+            "client_tool_call_not_pending",
+            "Client tool call changed while it was being settled",
+          );
+        }
+
+        db.insert(this.messages).values({
+          id: resultMessageId,
+          sessionId: input.sessionId,
+          role: "tool",
+          content: normalized.content,
+          ts: now,
+          toolCalls: null,
+          suggestions: null,
+          toolCallId: input.toolCallId,
+          reasoning: null,
+          reasoningTruncated: false,
+          turnId: target.message.turnId ?? null,
+        }).run();
+        db.insert(settlements).values({
+          id: receiptId,
+          sessionId: input.sessionId,
+          idempotencyKey: input.idempotencyKey,
+          fingerprint: normalized.fingerprint,
+          toolCallId: input.toolCallId,
+          sourceAssistantMessageId: target.message.id,
+          resultMessageId,
+          outcome: input.outcome,
+          sessionVersion: nextVersion,
+          settledAt: now,
+        }).run();
+        const stored: StoredClientToolSettlement = {
+          id: receiptId,
+          sessionId: input.sessionId,
+          idempotencyKey: input.idempotencyKey,
+          fingerprint: normalized.fingerprint,
+          toolCallId: input.toolCallId,
+          sourceAssistantMessageId: target.message.id,
+          resultMessageId,
+          outcome: input.outcome,
+          sessionVersion: nextVersion,
+          settledAt: now,
+        };
+        return {
+          status: "settled" as const,
+          receipt: publicClientToolSettlementReceipt(stored),
+        };
+      });
+    }
+
+    const execute = async (db: any): Promise<SettledClientTool> => {
+      let sessionQuery = db.select().from(this.sessions)
+        .where(eq(this.sessions.id, input.sessionId))
+        .limit(1);
+      if (typeof sessionQuery.for === "function") sessionQuery = sessionQuery.for("update");
+      const sessionRows: any[] = await sessionQuery;
+      const sessionRow = sessionRows[0];
+      if (!sessionRow) {
+        throw new ClientToolSettlementError("session_not_found", "Session not found");
+      }
+      assertClientToolSettlementScope(this.rowToSession(sessionRow, 0), input);
+
+      const existingKeyRows: any[] = await db.select().from(settlements).where(and(
+        eq(settlements.sessionId, input.sessionId),
+        eq(settlements.idempotencyKey, input.idempotencyKey),
+      )).limit(1);
+      const continuationKeyRows: any[] = await db.select().from(this.continuations).where(and(
+        eq(this.continuations.sessionId, input.sessionId),
+        eq(this.continuations.idempotencyKey, input.idempotencyKey),
+      )).limit(1);
+      const existingCallRows: any[] = await db.select().from(settlements).where(and(
+        eq(settlements.sessionId, input.sessionId),
+        eq(settlements.toolCallId, input.toolCallId),
+      )).limit(1);
+      const continuationRows: any[] = await db.select().from(this.continuations).where(and(
+        eq(this.continuations.sessionId, input.sessionId),
+        eq(this.continuations.toolCallId, input.toolCallId),
+      )).limit(2);
+      if (continuationRows.length > 1) {
+        throw new ClientToolSettlementError(
+          "client_tool_settlement_corrupt",
+          "Client tool call has ambiguous continuation state",
+        );
+      }
+      if (existingCallRows[0] && continuationRows[0]) {
+        throw new ClientToolSettlementError(
+          "client_tool_settlement_corrupt",
+          "Client tool call has both a settlement and an accepted continuation",
+        );
+      }
+      if (continuationKeyRows[0]) {
+        if (continuationKeyRows[0].toolCallId === input.toolCallId) {
+          throw new ClientToolSettlementError(
+            "continuation_already_accepted",
+            "A continuation was already accepted for this client tool call",
+            this.rowToClientToolContinuation(continuationKeyRows[0]),
+          );
+        }
+        throw new ClientToolSettlementError(
+          "idempotency_conflict",
+          "Idempotency key was already used for a client-tool continuation",
+        );
+      }
+      if (existingKeyRows[0]) {
+        const stored = this.rowToStoredClientToolSettlement(existingKeyRows[0]);
+        if (stored.fingerprint !== normalized.fingerprint) {
+          throw new ClientToolSettlementError(
+            "idempotency_conflict",
+            "Idempotency key was already used for a different client-tool settlement",
+          );
+        }
+        const messageRows: any[] = await db.select().from(this.messages)
+          .where(eq(this.messages.sessionId, input.sessionId))
+          .orderBy(asc(this.messages.ts));
+        const receiptRows: any[] = await db.select().from(settlements)
+          .where(eq(settlements.sessionId, input.sessionId));
+        this.validateSettlementHistory(messageRows, receiptRows);
+        return { status: "replay", receipt: publicClientToolSettlementReceipt(stored) };
+      }
+      if (existingCallRows[0]) {
+        const stored = this.rowToStoredClientToolSettlement(existingCallRows[0]);
+        if (stored.fingerprint !== normalized.fingerprint) {
+          throw new ClientToolSettlementError(
+            "client_tool_settlement_conflict",
+            "Client tool call was already settled with a different result",
+          );
+        }
+        const messageRows: any[] = await db.select().from(this.messages)
+          .where(eq(this.messages.sessionId, input.sessionId))
+          .orderBy(asc(this.messages.ts));
+        const receiptRows: any[] = await db.select().from(settlements)
+          .where(eq(settlements.sessionId, input.sessionId));
+        this.validateSettlementHistory(messageRows, receiptRows);
+        return { status: "replay", receipt: publicClientToolSettlementReceipt(stored) };
+      }
+      if (continuationRows[0]) {
+        throw new ClientToolSettlementError(
+          "continuation_already_accepted",
+          "A continuation was already accepted for this client tool call",
+          this.rowToClientToolContinuation(continuationRows[0]),
+        );
+      }
+
+      if (Number(sessionRow.version ?? 0) !== input.expectedSessionVersion) {
+        throw new ClientToolSettlementError(
+          "session_version_conflict",
+          "Session version does not match",
+        );
+      }
+
+      const messageRows: any[] = await db.select().from(this.messages)
+        .where(eq(this.messages.sessionId, input.sessionId))
+        .orderBy(asc(this.messages.ts));
+      const storedMessages = messageRows.map((row) => this.rowToMessage(row));
+      const target = resolveClientToolSettlementTarget(storedMessages, input.toolCallId);
+      const now = new Date().toISOString();
+      const nextVersion = input.expectedSessionVersion + 1;
+      const resultMessageId = nanoid();
+      const receiptId = nanoid();
+      const updatedSession = await db.update(this.sessions).set({
+        updatedAt: now,
+        version: nextVersion,
+      }).where(and(
+        eq(this.sessions.id, input.sessionId),
+        eq(this.sessions.version, input.expectedSessionVersion),
+      ));
+      if (extractAffectedRows(updatedSession) !== 1) {
+        throw new ClientToolSettlementError(
+          "session_version_conflict",
+          "Session version changed while settling the client tool call",
+        );
+      }
+
+      const terminalCalls = target.message.toolCalls!.map((call) =>
+        call.id === input.toolCallId
+          ? this.materializeSettledToolCall(call, input.outcome, normalized.content)
+          : call
+      );
+      const updatedSource = await db.update(this.messages).set({
+        toolCalls: JSON.stringify(terminalCalls),
+      }).where(and(
+        eq(this.messages.id, target.message.id),
+        eq(this.messages.sessionId, input.sessionId),
+      ));
+      if (extractAffectedRows(updatedSource) !== 1) {
+        throw new ClientToolSettlementError(
+          "client_tool_call_not_pending",
+          "Client tool call changed while it was being settled",
+        );
+      }
+
+      await db.insert(this.messages).values({
+        id: resultMessageId,
+        sessionId: input.sessionId,
+        role: "tool",
+        content: normalized.content,
+        ts: now,
+        toolCalls: null,
+        suggestions: null,
+        toolCallId: input.toolCallId,
+        reasoning: null,
+        reasoningTruncated: false,
+        turnId: target.message.turnId ?? null,
+      });
+      await db.insert(settlements).values({
+        id: receiptId,
+        sessionId: input.sessionId,
+        idempotencyKey: input.idempotencyKey,
+        fingerprint: normalized.fingerprint,
+        toolCallId: input.toolCallId,
+        sourceAssistantMessageId: target.message.id,
+        resultMessageId,
+        outcome: input.outcome,
+        sessionVersion: nextVersion,
+        settledAt: now,
+      });
+      const stored: StoredClientToolSettlement = {
+        id: receiptId,
+        sessionId: input.sessionId,
+        idempotencyKey: input.idempotencyKey,
+        fingerprint: normalized.fingerprint,
+        toolCallId: input.toolCallId,
+        sourceAssistantMessageId: target.message.id,
+        resultMessageId,
+        outcome: input.outcome,
+        sessionVersion: nextVersion,
+        settledAt: now,
+      };
+      return { status: "settled", receipt: publicClientToolSettlementReceipt(stored) };
+    };
+
+    if (this.transactionProvider) return this.transactionProvider(execute);
+    if (typeof this.db.transaction !== "function") {
+      throw new ClientToolSettlementError(
+        "client_tool_settlement_unavailable",
+        "Client-tool settlement requires transactional database support",
+      );
+    }
+    return this.db.transaction(execute);
+  }
+
   async prepareContinuation(
     input: PrepareSessionContinuationInput,
   ): Promise<PreparedSessionContinuation> {
@@ -604,7 +1433,18 @@ export class DrizzleSessionStore implements SessionStore {
             .where(eq(this.messages.sessionId, input.sessionId))
             .orderBy(asc(this.messages.ts))
             .all();
-          const messages = rows.map((row) => this.rowToMessage(row));
+          const rawMessages = rows.map((row) => this.rowToMessage(row));
+          const receiptRows = this.clientToolSettlements
+            ? db.select().from(this.clientToolSettlements)
+                .where(eq(this.clientToolSettlements.sessionId, input.sessionId))
+                .all()
+            : [];
+          const messages = this.clientToolSettlements
+            ? this.projectSessionMessages(
+                rawMessages,
+                receiptRows.map((row: any) => this.rowToStoredClientToolSettlement(row)),
+              )
+            : projectResolvedClientToolCalls(rawMessages);
           const turnId = this.continuationTurnId(messages, input.toolCallId);
           const requestClientTools = requestClientToolsForContinuation(messages, input.toolCallId);
           return {
@@ -613,8 +1453,31 @@ export class DrizzleSessionStore implements SessionStore {
             runId: existing.runId,
             ...(turnId ? { turnId } : {}),
             ...(requestClientTools ? { requestClientTools } : {}),
-            messages: projectResolvedClientToolCalls(messages),
+            messages,
           };
+        }
+
+        if (this.clientToolSettlements) {
+          const settlementByKey = db.select().from(this.clientToolSettlements).where(and(
+            eq(this.clientToolSettlements.sessionId, input.sessionId),
+            eq(this.clientToolSettlements.idempotencyKey, input.idempotencyKey),
+          )).limit(1).all()[0];
+          if (settlementByKey) {
+            throw new SessionContinuationError(
+              "idempotency_conflict",
+              "Idempotency key was already used for a client-tool settlement",
+            );
+          }
+          const settlement = db.select().from(this.clientToolSettlements).where(and(
+            eq(this.clientToolSettlements.sessionId, input.sessionId),
+            eq(this.clientToolSettlements.toolCallId, input.toolCallId),
+          )).limit(1).all()[0];
+          if (settlement) {
+            throw new SessionContinuationError(
+              "client_tool_call_not_pending",
+              "Client tool call was already settled",
+            );
+          }
         }
 
         if (Number(session.version ?? 0) !== input.expectedSessionVersion) {
@@ -700,9 +1563,11 @@ export class DrizzleSessionStore implements SessionStore {
     }
 
     const execute = async (db: any): Promise<PreparedSessionContinuation> => {
-      const sessionRows: any[] = await db.select().from(this.sessions)
+      let sessionQuery = db.select().from(this.sessions)
         .where(eq(this.sessions.id, input.sessionId))
         .limit(1);
+      if (typeof sessionQuery.for === "function") sessionQuery = sessionQuery.for("update");
+      const sessionRows: any[] = await sessionQuery;
       const session = sessionRows[0];
       if (!session) {
         throw new SessionContinuationError("session_not_found", "Session not found");
@@ -728,7 +1593,17 @@ export class DrizzleSessionStore implements SessionStore {
         const rows: any[] = await db.select().from(this.messages)
           .where(eq(this.messages.sessionId, input.sessionId))
           .orderBy(asc(this.messages.ts));
-        const messages = rows.map((row) => this.rowToMessage(row));
+        const rawMessages = rows.map((row) => this.rowToMessage(row));
+        const receiptRows: any[] = this.clientToolSettlements
+          ? await db.select().from(this.clientToolSettlements)
+              .where(eq(this.clientToolSettlements.sessionId, input.sessionId))
+          : [];
+        const messages = this.clientToolSettlements
+          ? this.projectSessionMessages(
+              rawMessages,
+              receiptRows.map((row) => this.rowToStoredClientToolSettlement(row)),
+            )
+          : projectResolvedClientToolCalls(rawMessages);
         const turnId = this.continuationTurnId(messages, input.toolCallId);
         const requestClientTools = requestClientToolsForContinuation(messages, input.toolCallId);
         return {
@@ -737,8 +1612,35 @@ export class DrizzleSessionStore implements SessionStore {
           runId: existing.runId,
           ...(turnId ? { turnId } : {}),
           ...(requestClientTools ? { requestClientTools } : {}),
-          messages: projectResolvedClientToolCalls(messages),
+          messages,
         };
+      }
+
+      if (this.clientToolSettlements) {
+        const settlementKeyRows: any[] = await db.select().from(this.clientToolSettlements)
+          .where(and(
+            eq(this.clientToolSettlements.sessionId, input.sessionId),
+            eq(this.clientToolSettlements.idempotencyKey, input.idempotencyKey),
+          ))
+          .limit(1);
+        if (settlementKeyRows[0]) {
+          throw new SessionContinuationError(
+            "idempotency_conflict",
+            "Idempotency key was already used for a client-tool settlement",
+          );
+        }
+        const settlementRows: any[] = await db.select().from(this.clientToolSettlements)
+          .where(and(
+            eq(this.clientToolSettlements.sessionId, input.sessionId),
+            eq(this.clientToolSettlements.toolCallId, input.toolCallId),
+          ))
+          .limit(1);
+        if (settlementRows[0]) {
+          throw new SessionContinuationError(
+            "client_tool_call_not_pending",
+            "Client tool call was already settled",
+          );
+        }
       }
 
       if (Number(session.version ?? 0) !== input.expectedSessionVersion) {

@@ -63,6 +63,24 @@ export const sessionContinuationsSqlite = sqliteTable("session_continuations", {
   uniqueIndex("uq_session_continuations_call").on(table.sessionId, table.toolCallId),
 ]);
 
+export const sessionClientToolSettlementsSqlite = sqliteTable("session_client_tool_settlements", {
+  id: text("id").primaryKey(),
+  sessionId: text("session_id").notNull().references(() => sessionsSqlite.id, { onDelete: "cascade" }),
+  idempotencyKey: text("idempotency_key").notNull(),
+  fingerprint: text("fingerprint").notNull(),
+  toolCallId: text("tool_call_id").notNull(),
+  sourceAssistantMessageId: text("source_assistant_message_id").notNull(),
+  resultMessageId: text("result_message_id").notNull(),
+  outcome: text("outcome").notNull(),
+  sessionVersion: integer("session_version").notNull(),
+  settledAt: text("settled_at").notNull(),
+}, (table) => [
+  uniqueIndex("uq_session_client_tool_settlements_key").on(table.sessionId, table.idempotencyKey),
+  uniqueIndex("uq_session_client_tool_settlements_call").on(table.sessionId, table.toolCallId),
+  uniqueIndex("uq_session_client_tool_settlements_result").on(table.resultMessageId),
+  index("idx_session_client_tool_settlements_source").on(table.sessionId, table.sourceAssistantMessageId),
+]);
+
 // ── PostgreSQL schema ──────────────────────────────────────────────────
 
 export const sessionsPg = pgTable("sessions", {
@@ -123,4 +141,22 @@ export const sessionContinuationsPg = pgTable("session_continuations", {
 }, (table) => [
   pgUniqueIndex("uq_pg_session_continuations_key").on(table.sessionId, table.idempotencyKey),
   pgUniqueIndex("uq_pg_session_continuations_call").on(table.sessionId, table.toolCallId),
+]);
+
+export const sessionClientToolSettlementsPg = pgTable("session_client_tool_settlements", {
+  id: pgText("id").primaryKey(),
+  sessionId: pgText("session_id").notNull().references(() => sessionsPg.id, { onDelete: "cascade" }),
+  idempotencyKey: pgText("idempotency_key").notNull(),
+  fingerprint: pgText("fingerprint").notNull(),
+  toolCallId: pgText("tool_call_id").notNull(),
+  sourceAssistantMessageId: pgText("source_assistant_message_id").notNull(),
+  resultMessageId: pgText("result_message_id").notNull(),
+  outcome: pgText("outcome").notNull(),
+  sessionVersion: pgInteger("session_version").notNull(),
+  settledAt: pgText("settled_at").notNull(),
+}, (table) => [
+  pgUniqueIndex("uq_pg_session_client_tool_settlements_key").on(table.sessionId, table.idempotencyKey),
+  pgUniqueIndex("uq_pg_session_client_tool_settlements_call").on(table.sessionId, table.toolCallId),
+  pgUniqueIndex("uq_pg_session_client_tool_settlements_result").on(table.resultMessageId),
+  pgIndex("idx_pg_session_client_tool_settlements_source").on(table.sessionId, table.sourceAssistantMessageId),
 ]);

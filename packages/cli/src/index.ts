@@ -64,6 +64,7 @@ import { registerStatusCommand as registerCloudStatusCommand } from "./commands/
 import { registerLogsCommand as registerCloudLogsCommand } from "./commands/cloud/logs.js";
 import { registerRuntimeDiagnosticsCommands } from "./commands/cloud/runtime-diagnostics.js";
 import { registerRunsCommands } from "./commands/cloud/runs.js";
+import { registerSessionCommands } from "./commands/cloud/sessions.js";
 import { registerLinkCommand } from "./commands/link.js";
 import { registerCreateCommand } from "./commands/create.js";
 import { registerInstallCommand } from "./commands/install.js";
@@ -150,6 +151,7 @@ registerCloudStatusCommand(program);
 registerCloudLogsCommand(program);
 registerRuntimeDiagnosticsCommands(program);
 registerRunsCommands(program);
+registerSessionCommands(program);
 registerLinkCommand(program);
 registerCreateCommand(program);
 registerInstallCommand(program);

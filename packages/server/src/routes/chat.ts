@@ -1,6 +1,18 @@
 import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
+import type { MiddlewareHandler } from "hono";
 import type { RunRecord } from "@polpo-ai/core/run-store";
-import type { ChatRouteDeps } from "../deps.js";
+import {
+  ClientToolSettlementError,
+  MAX_CLIENT_TOOL_SETTLEMENT_CONTENT_BYTES,
+  MAX_CLIENT_TOOL_SETTLEMENT_REASON_BYTES,
+  MAX_CLIENT_TOOL_SETTLEMENT_RESULT_BYTES,
+  type ClientToolResolution,
+  type SettleClientToolInput,
+} from "@polpo-ai/core/session-client-tool-settlement";
+import type {
+  ChatRouteDeps,
+  ClientToolContinuationRunStatus,
+} from "../deps.js";
 
 const TRANSIENT_SESSION_READ_CODES = new Set([
   "EAI_AGAIN",
@@ -19,8 +31,187 @@ const TRANSIENT_SESSION_READ_CODES = new Set([
 ]);
 const DEFAULT_SESSION_READ_HEDGE_AFTER_MS = 750;
 const DEFAULT_SESSION_READ_RESPONSE_TIMEOUT_MS = 5_000;
+const CLIENT_TOOL_SETTLEMENT_REQUEST_METADATA_BYTES = 16 * 1024;
 
 type SessionHistoryReadPolicy = NonNullable<ChatRouteDeps["sessionHistoryReadPolicy"]>;
+
+const clientToolParamsSchema = z.object({
+  id: z.string().min(1).max(256),
+  toolCallId: z.string().min(1).max(256),
+});
+
+const clientToolIdentitySchema = z.object({
+  agent: z.string().min(1).max(1024).optional(),
+  user: z.string().min(1).max(1024).optional(),
+}).strict();
+
+const clientToolSettlementBodySchema = z.discriminatedUnion("outcome", [
+  clientToolIdentitySchema.extend({
+    expectedSessionVersion: z.number().int().nonnegative(),
+    outcome: z.literal("success"),
+    result: z.string(),
+  }).strict(),
+  clientToolIdentitySchema.extend({
+    expectedSessionVersion: z.number().int().nonnegative(),
+    outcome: z.literal("failed"),
+    result: z.string().optional(),
+    reason: z.string().optional(),
+  }).strict(),
+  clientToolIdentitySchema.extend({
+    expectedSessionVersion: z.number().int().nonnegative(),
+    outcome: z.literal("cancelled"),
+    result: z.string().optional(),
+    reason: z.string().optional(),
+  }).strict(),
+]);
+
+const clientToolErrorSchema = z.object({
+  ok: z.literal(false),
+  error: z.string(),
+  code: z.string(),
+  data: z.any().optional(),
+});
+
+const clientToolSettlementReceiptSchema = z.object({
+  id: z.string(),
+  sessionId: z.string(),
+  toolCallId: z.string(),
+  sourceAssistantMessageId: z.string(),
+  resultMessageId: z.string(),
+  outcome: z.enum(["success", "failed", "cancelled"]),
+  sessionVersion: z.number().int().nonnegative(),
+  settledAt: z.string(),
+});
+
+const clientToolContinuationReceiptSchema = z.object({
+  sessionId: z.string(),
+  toolCallId: z.string(),
+  runId: z.string(),
+  sessionVersion: z.number().int().nonnegative(),
+  acceptedAt: z.string().optional(),
+});
+
+const clientToolResolutionSchema = z.discriminatedUnion("status", [
+  z.object({
+    sessionId: z.string(),
+    toolCallId: z.string(),
+    sessionVersion: z.number().int().nonnegative(),
+    status: z.literal("pending"),
+    continuationAccepted: z.literal(false),
+  }),
+  z.object({
+    sessionId: z.string(),
+    toolCallId: z.string(),
+    sessionVersion: z.number().int().nonnegative(),
+    status: z.literal("settled"),
+    continuationAccepted: z.literal(false),
+    receipt: clientToolSettlementReceiptSchema,
+  }),
+  z.object({
+    sessionId: z.string(),
+    toolCallId: z.string(),
+    sessionVersion: z.number().int().nonnegative(),
+    status: z.literal("continuation"),
+    continuationAccepted: z.literal(true),
+    receipt: clientToolContinuationReceiptSchema,
+    runStatus: z.enum(["accepted", "running", "completed", "failed", "cancelled", "unknown"]),
+  }),
+]);
+
+const settledClientToolSchema = z.object({
+  status: z.enum(["settled", "replay"]),
+  receipt: clientToolSettlementReceiptSchema,
+});
+
+const clientToolSettlementBodyLimit: MiddlewareHandler = async (c, next) => {
+  const maxSize = MAX_CLIENT_TOOL_SETTLEMENT_CONTENT_BYTES
+    + CLIENT_TOOL_SETTLEMENT_REQUEST_METADATA_BYTES;
+  const body = c.req.raw.body;
+  if (!body) return next();
+  const reader = body.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > maxSize) {
+        await reader.cancel("Client-tool settlement request is too large");
+        return c.json({
+          ok: false,
+          error: "Client-tool settlement request is too large",
+          code: "invalid_client_tool_settlement",
+        }, 413);
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  const buffered = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) {
+    buffered.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  const headers = new Headers(c.req.raw.headers);
+  headers.delete("content-length");
+  headers.delete("transfer-encoding");
+  c.req.raw = new Request(c.req.raw, {
+    body: buffered,
+    headers,
+    duplex: "half",
+  } as RequestInit & { duplex: "half" });
+  return next();
+};
+
+const getClientToolResolutionRoute = createRoute({
+  method: "get",
+  path: "/sessions/{id}/tool-calls/{toolCallId}",
+  tags: ["Chat Sessions"],
+  summary: "Inspect a client-side tool call resolution",
+  description: "Reads whether a frozen client-side tool call is still pending, was settled without execution, or already accepted a continuation. This endpoint never invokes a model, handler, tool, or Loop.",
+  request: {
+    params: clientToolParamsSchema,
+    query: clientToolIdentitySchema,
+  },
+  responses: {
+    200: { content: { "application/json": { schema: z.object({ ok: z.literal(true), data: clientToolResolutionSchema }) } }, description: "Current durable resolution" },
+    400: { content: { "application/json": { schema: clientToolErrorSchema } }, description: "Invalid request" },
+    401: { content: { "application/json": { schema: clientToolErrorSchema } }, description: "Invalid API key" },
+    403: { content: { "application/json": { schema: clientToolErrorSchema } }, description: "Session identity or scope mismatch" },
+    404: { content: { "application/json": { schema: clientToolErrorSchema } }, description: "Session or client tool call not found" },
+    409: { content: { "application/json": { schema: clientToolErrorSchema } }, description: "Stored client tool state is ambiguous or corrupt" },
+    501: { content: { "application/json": { schema: clientToolErrorSchema } }, description: "The Session store does not support client-tool resolution" },
+  },
+});
+
+const settleClientToolRoute = createRoute({
+  method: "put",
+  path: "/sessions/{id}/tool-calls/{toolCallId}/settlement",
+  middleware: clientToolSettlementBodyLimit,
+  tags: ["Chat Sessions"],
+  summary: "Settle a client-side tool call without continuing the agent",
+  description: "Atomically closes a never-accepted client-side tool call. It writes canonical history but never invokes a model, handler, tool, or Loop. Exact idempotent replays return the original receipt.",
+  request: {
+    params: clientToolParamsSchema,
+    headers: z.object({
+      "idempotency-key": z.string().trim().min(1).max(256),
+    }),
+    body: { content: { "application/json": { schema: clientToolSettlementBodySchema } } },
+  },
+  responses: {
+    200: { content: { "application/json": { schema: z.object({ ok: z.literal(true), data: settledClientToolSchema }) } }, description: "Settlement receipt or exact replay" },
+    400: { content: { "application/json": { schema: clientToolErrorSchema } }, description: "Invalid request or result exceeds the UTF-8 byte limit" },
+    401: { content: { "application/json": { schema: clientToolErrorSchema } }, description: "Invalid API key" },
+    403: { content: { "application/json": { schema: clientToolErrorSchema } }, description: "Write denied, or session identity/scope mismatch" },
+    404: { content: { "application/json": { schema: clientToolErrorSchema } }, description: "Session or client tool call not found" },
+    409: { content: { "application/json": { schema: clientToolErrorSchema } }, description: "Continuation already accepted, stale version, or conflicting replay" },
+    413: { content: { "application/json": { schema: clientToolErrorSchema } }, description: "Settlement request body exceeds the bounded envelope" },
+    501: { content: { "application/json": { schema: clientToolErrorSchema } }, description: "Settlement is disabled or unsupported by the Session store" },
+  },
+});
 
 class SessionHistoryReadTimeoutError extends Error {
   readonly code = "SESSION_READ_DEADLINE_EXCEEDED";
@@ -285,6 +476,245 @@ const deleteSessionRoute = createRoute({
   },
 });
 
+function clientToolSettlementHttpStatus(
+  code: ClientToolSettlementError["code"],
+): 400 | 403 | 404 | 409 | 501 {
+  switch (code) {
+    case "invalid_client_tool_settlement":
+      return 400;
+    case "client_tool_settlement_scope_mismatch":
+      return 403;
+    case "session_not_found":
+    case "client_tool_call_not_found":
+      return 404;
+    case "client_tool_settlement_unavailable":
+      return 501;
+    default:
+      return 409;
+  }
+}
+
+function publicClientToolSettlementError(
+  c: any,
+  error: ClientToolSettlementError,
+  identity?: { agent?: string; user?: string },
+) {
+  const status = clientToolSettlementHttpStatus(error.code);
+  if (error.code === "continuation_already_accepted" && error.continuation) {
+    const { sessionId, toolCallId, sessionVersion } = error.continuation;
+    const params = new URLSearchParams();
+    if (identity?.agent !== undefined) params.set("agent", identity.agent);
+    if (identity?.user !== undefined) params.set("user", identity.user);
+    const query = params.size > 0 ? `?${params.toString()}` : "";
+    // Relative to `.../{toolCallId}/settlement`, so explicit environment
+    // prefixes survive hosts that internally rewrite the request path.
+    c.header("Location", `../${encodeURIComponent(toolCallId)}${query}`);
+    return c.json({
+      ok: false,
+      error: error.message,
+      code: error.code,
+      data: {
+        sessionId,
+        toolCallId,
+        sessionVersion,
+        status: "continuation",
+        continuationAccepted: true,
+        receipt: error.continuation,
+        runStatus: "unknown",
+      },
+    }, status);
+  }
+  return c.json({ ok: false, error: error.message, code: error.code }, status);
+}
+
+function utf8Bytes(value: string): number {
+  return new TextEncoder().encode(value).byteLength;
+}
+
+async function enrichClientToolResolution(
+  resolution: ClientToolResolution,
+  deps: ChatRouteDeps,
+  requestContext: unknown,
+): Promise<ClientToolResolution & { runStatus?: ClientToolContinuationRunStatus }> {
+  if (resolution.status !== "continuation") return resolution;
+  let runStatus: ClientToolContinuationRunStatus = "unknown";
+  try {
+    if (deps.resolveClientToolContinuationRunStatus) {
+      runStatus = await deps.resolveClientToolContinuationRunStatus({
+        sessionId: resolution.sessionId,
+        toolCallId: resolution.toolCallId,
+        runId: resolution.receipt.runId,
+        requestContext,
+      }) ?? "unknown";
+    } else if (deps.runStore) {
+      const run = await deps.runStore.getRun(resolution.receipt.runId);
+      if (run) {
+        runStatus = run.status === "killed" ? "cancelled" : run.status;
+      }
+    }
+  } catch {
+    // The accepted continuation receipt is authoritative. Observability is
+    // intentionally fail-open and must never rewrite it as pending.
+    runStatus = "unknown";
+  }
+  return { ...resolution, runStatus };
+}
+
+/**
+ * Public Session client-tool resolution routes. Kept separate from the
+ * control-plane chat routes so hosts can mount only this surface at /v1/chat
+ * with its own API-key boundary.
+ */
+export function clientToolResolutionRoutes(
+  getDeps: () => ChatRouteDeps,
+  apiKeys?: string[],
+): OpenAPIHono {
+  const app = new OpenAPIHono({
+    defaultHook: (result, c) => {
+      if (result.success) return;
+      return c.json({
+        ok: false as const,
+        error: "Invalid client-tool settlement request",
+        code: "invalid_client_tool_settlement" as const,
+      }, 400);
+    },
+  });
+
+  app.use("*", async (c, next) => {
+    c.header("Cache-Control", "no-store");
+    await next();
+  });
+
+  if (apiKeys && apiKeys.length > 0) {
+    app.use("*", async (c, next) => {
+      const authorization = c.req.header("authorization");
+      const bearer = authorization?.match(/^Bearer\s+(.+)$/i)?.[1]?.trim();
+      const key = bearer || c.req.header("x-api-key")?.trim();
+      if (!key || !apiKeys.includes(key)) {
+        return c.json({
+          ok: false,
+          error: "Invalid API key",
+          code: "invalid_api_key",
+        }, 401);
+      }
+      await next();
+    });
+  }
+
+  app.openapi(getClientToolResolutionRoute, async (c: any) => {
+    const deps = getDeps();
+    if (!deps.sessionStore?.getClientToolResolution) {
+      return c.json({
+        ok: false,
+        error: "Client-tool resolution is not supported by this Session store",
+        code: "client_tool_settlement_unavailable",
+      }, 501);
+    }
+    const { id: sessionId, toolCallId } = c.req.valid("param");
+    const { agent, user } = c.req.valid("query");
+    try {
+      const scope = await deps.resolveClientToolResolutionScope?.(c);
+      const resolution = await deps.sessionStore.getClientToolResolution({
+        sessionId,
+        toolCallId,
+        agent,
+        user,
+        ...(scope ? { scope } : {}),
+      });
+      return c.json({
+        ok: true,
+        data: await enrichClientToolResolution(resolution, deps, c),
+      }, 200);
+    } catch (error) {
+      if (error instanceof ClientToolSettlementError) {
+        return publicClientToolSettlementError(c, error);
+      }
+      throw error;
+    }
+  });
+
+  app.openapi(settleClientToolRoute, async (c: any) => {
+    const deps = getDeps();
+    if (!deps.sessionStore?.settleClientTool || !deps.authorizeClientToolSettlement) {
+      return c.json({
+        ok: false,
+        error: "Client-tool settlement is not enabled by this host",
+        code: "client_tool_settlement_unavailable",
+      }, 501);
+    }
+    const { id: sessionId, toolCallId } = c.req.valid("param");
+    const body = c.req.valid("json");
+    const idempotencyKey = c.req.header("idempotency-key")?.trim();
+    if (!idempotencyKey) {
+      return c.json({
+        ok: false,
+        error: "Idempotency-Key is required",
+        code: "invalid_client_tool_settlement",
+      }, 400);
+    }
+    if (body.result !== undefined && utf8Bytes(body.result) > MAX_CLIENT_TOOL_SETTLEMENT_RESULT_BYTES) {
+      return c.json({
+        ok: false,
+        error: `result exceeds ${MAX_CLIENT_TOOL_SETTLEMENT_RESULT_BYTES} UTF-8 bytes`,
+        code: "invalid_client_tool_settlement",
+      }, 400);
+    }
+    if (body.reason !== undefined && utf8Bytes(body.reason) > MAX_CLIENT_TOOL_SETTLEMENT_REASON_BYTES) {
+      return c.json({
+        ok: false,
+        error: `reason exceeds ${MAX_CLIENT_TOOL_SETTLEMENT_REASON_BYTES} UTF-8 bytes`,
+        code: "invalid_client_tool_settlement",
+      }, 400);
+    }
+    const authorized = await deps.authorizeClientToolSettlement({
+      sessionId,
+      toolCallId,
+      agent: body.agent,
+      user: body.user,
+      requestContext: c,
+    });
+    if (!authorized) {
+      return c.json({
+        ok: false,
+        error: "Client-tool settlement is not authorized",
+        code: "client_tool_settlement_scope_mismatch",
+      }, 403);
+    }
+    try {
+      const scope = await deps.resolveClientToolResolutionScope?.(c);
+      const common = {
+        sessionId,
+        toolCallId,
+        agent: body.agent,
+        user: body.user,
+        ...(scope ? { scope } : {}),
+        expectedSessionVersion: body.expectedSessionVersion,
+        idempotencyKey,
+      };
+      const input: SettleClientToolInput = body.outcome === "success"
+        ? { ...common, outcome: "success", result: body.result }
+        : {
+            ...common,
+            outcome: body.outcome,
+            ...(body.result !== undefined ? { result: body.result } : {}),
+            ...(body.reason !== undefined ? { reason: body.reason } : {}),
+          };
+      const result = await deps.sessionStore.settleClientTool(input);
+      return c.json({ ok: true, data: result }, 200);
+    } catch (error) {
+      if (error instanceof ClientToolSettlementError) {
+        return publicClientToolSettlementError(c, error, {
+          agent: body.agent,
+          user: body.user,
+        });
+      }
+      throw error;
+    }
+  });
+
+  return app;
+}
+
 /* ── Handlers ──────────────────────────────────────────────────────── */
 
 /**
@@ -541,7 +971,16 @@ export function chatRoutes(getDeps: () => ChatRouteDeps): OpenAPIHono {
     for (const msg of body.messages) {
       const added = await sessionStore.addMessage(sessionId, msg.role, msg.content);
       if (msg.toolCalls && msg.toolCalls.length > 0) {
-        await sessionStore.updateMessage(sessionId, added.id, msg.content, msg.toolCalls as any);
+        const safeToolCalls = msg.toolCalls.map((toolCall) => {
+          if (!toolCall || typeof toolCall !== "object" || Array.isArray(toolCall)) return toolCall;
+          const {
+            continuationClientTools: _continuationClientTools,
+            settlementOutcome: _settlementOutcome,
+            ...safe
+          } = toolCall as Record<string, unknown>;
+          return safe;
+        });
+        await sessionStore.updateMessage(sessionId, added.id, msg.content, safeToolCalls as any);
       }
       imported++;
     }
