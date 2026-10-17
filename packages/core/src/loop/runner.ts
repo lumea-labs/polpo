@@ -471,6 +471,7 @@ export class LoopRunner {
         });
       }
       if (stopResult.data.shouldStop) {
+        let steeringSealed = false;
         if (hasAnotherTurn && options.steering && !options.retainPendingSteeringOnFinish) {
           const sealed = await options.steering.sealIfIdle();
           if (!sealed) {
@@ -483,8 +484,14 @@ export class LoopRunner {
             await checkpointTurn();
             continue;
           }
+          steeringSealed = true;
         }
-        await finishSteering("too_late", "agentic_scope_finished");
+        // sealIfIdle is the atomic terminal transition. Durable controllers
+        // reject later mutations once it succeeds, so finalization must not
+        // try to close or settle the same steering run a second time.
+        if (!steeringSealed) {
+          await finishSteering("too_late", "agentic_scope_finished");
+        }
         return this.finish(hooks, {
           agent: options.agent,
           loop,

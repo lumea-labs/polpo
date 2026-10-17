@@ -471,6 +471,40 @@ describe("LoopRunner steering", () => {
     expect(events.at(-1)).toBe("boundary:false");
   });
 
+  it("does not mutate a durable steering controller after atomically sealing it", async () => {
+    const base = new InMemorySteeringController();
+    let sealed = false;
+    const calls: string[] = [];
+    const steering = new Proxy(base, {
+      get(target, property) {
+        const value = Reflect.get(target, property, target);
+        if (typeof value !== "function") return value;
+        return (...args: unknown[]) => {
+          if (sealed && (property === "setBoundary" || property === "settlePending" || property === "sealIfIdle")) {
+            throw new Error(`Active run was not found after ${String(property)}`);
+          }
+          calls.push(String(property));
+          const result = Reflect.apply(value, target, args);
+          if (property === "sealIfIdle" && result === true) sealed = true;
+          return result;
+        };
+      },
+    }) as unknown as SteeringController;
+
+    const result = await new LoopRunner().run({
+      loop: { name: "default" },
+      maxTurns: 2,
+      steering,
+      onSteering: () => undefined,
+      model: async () => ({ text: "done" }),
+      executeTool: async () => "unused",
+    });
+
+    expect(result).toMatchObject({ status: "completed", reason: "completed", text: "done" });
+    expect(calls.filter((call) => call === "sealIfIdle")).toHaveLength(1);
+    expect(sealed).toBe(true);
+  });
+
   it("waits to deliver follow-ups until the run would otherwise stop", async () => {
     const steering = new InMemorySteeringController();
     steering.enqueue({ id: "follow", mode: "follow_up", content: { text: "one more thing" } });
