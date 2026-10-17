@@ -27,9 +27,12 @@ export {
 } from "./tool-progress.js";
 export {
   InMemoryToolExecutionReceiptStore,
+  ToolReceiptSettlementError,
+  settleToolExecutionReceiptWithRetry,
   toolArgumentsFingerprint,
 } from "./tool-execution-receipts.js";
 export type {
+  SettleToolExecutionReceiptOptions,
   ToolExecutionReceipt,
   ToolExecutionReceiptClaim,
   ToolExecutionReceiptState,

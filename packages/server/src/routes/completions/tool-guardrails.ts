@@ -2,6 +2,7 @@ import {
   InMemoryToolExecutionReceiptStore,
   admitCanonicalToolContract,
   inferToolSideEffect,
+  settleToolExecutionReceiptWithRetry,
   toolArgumentsFingerprint,
   ToolProgressTracker,
   type ToolExecutionReceiptStore,
@@ -136,19 +137,32 @@ export function createGuardedCompletionToolExecutor(options: {
         );
       } catch (error) {
         if (request.callId) {
-          await receiptStore.settle({
-            callId: request.callId,
-            state: "outcome-unknown",
-          });
+          try {
+            await settleToolExecutionReceiptWithRetry(
+              receiptStore,
+              {
+                callId: request.callId,
+                state: "outcome-unknown",
+              },
+              { signal: request.signal },
+            );
+          } catch {
+            // The executor failure is authoritative. A receipt write failure
+            // must not replace it with a secondary persistence error.
+          }
         }
         throw error;
       }
       if (request.callId) {
-        await receiptStore.settle({
-          callId: request.callId,
-          state: result.startsWith("Error:") ? "failed" : "completed",
-          result,
-        });
+        await settleToolExecutionReceiptWithRetry(
+          receiptStore,
+          {
+            callId: request.callId,
+            state: result.startsWith("Error:") ? "failed" : "completed",
+            result,
+          },
+          { signal: request.signal },
+        );
       }
       progressTracker.record({
         ...progressCall,
