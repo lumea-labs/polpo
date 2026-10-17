@@ -15,6 +15,21 @@ export interface CompletionToolBatchResult extends CompletionToolBatchCall {
   isError: boolean;
 }
 
+export async function executeCompletionToolCall(options: {
+  call: CompletionToolBatchCall;
+  executor: CompletionToolExecutor;
+  signal?: AbortSignal;
+  onCalling?: (call: CompletionToolBatchCall) => void | Promise<void>;
+}): Promise<CompletionToolBatchResult> {
+  const [result] = await executeCompletionToolBatch({
+    calls: [options.call],
+    executor: options.executor,
+    signal: options.signal,
+    onCalling: options.onCalling,
+  });
+  return result!;
+}
+
 export async function executeCompletionToolBatch(options: {
   calls: readonly CompletionToolBatchCall[];
   executor: CompletionToolExecutor;
@@ -31,11 +46,23 @@ export async function executeCompletionToolBatch(options: {
         callId: call.toolCallId,
         signal: options.signal,
       });
-      return { ...call, result, isError: result.startsWith("Error:") };
+      return {
+        toolCallId: call.toolCallId,
+        toolName: call.toolName,
+        input: call.input,
+        result,
+        isError: result.startsWith("Error:"),
+      };
     },
     onError: (error, call) => {
       const result = normalizeToolExecutionError(error);
-      return { ...call, result, isError: true };
+      return {
+        toolCallId: call.toolCallId,
+        toolName: call.toolName,
+        input: call.input,
+        result,
+        isError: true,
+      };
     },
   });
 }
