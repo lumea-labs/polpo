@@ -7,6 +7,7 @@ import {
   runNonStreamingChatViaRun,
 } from "./chat-via-run-handler.js";
 import { executeStreamingChatCompletion, type ChatCompletionExecution } from "./chat-handler.js";
+import { TerminationGateError } from "@polpo-ai/core/runtime-hooks";
 
 const failure = 'Active run "chatcmpl-ZIMLVXC2vzsak4n2in-2Wdk8" was not found';
 type FailureMode = "event" | "outcome" | "throw";
@@ -60,6 +61,31 @@ function fixture(id: string, mode: FailureMode, fragments: string[], clientTool 
 }
 
 describe("Run-backed completion failure invariants", () => {
+  it.each(["stream", "nonstream", "channel"] as const)("preserves typed termination failures on %s", async surface => {
+    for (const thrown of [false, true]) {
+      const f = fixture(`gate-${surface}-${thrown}`, "event", []);
+      f.execution.deps.runChatViaRun = async (_inject, hooks) => {
+        const error = new TerminationGateError("termination_gate_cycles_exhausted", "Validation repair limit reached");
+        if (thrown) throw error;
+        hooks.onEvent({ type: "error", error: { name: error.name, code: error.code, message: error.message } });
+        return { status: "failed", result: { exitCode: 1, stdout: "", stderr: error.message } };
+      };
+      const signal = new AbortController().signal;
+      let result: any;
+      if (surface === "stream") {
+        const frames: string[] = [];
+        await executeStreamingChatViaRun({ write: async () => {}, writeSSE: async ({ data }) => { frames.push(data); } }, f.execution, signal);
+        result = frames.join("\n");
+      } else if (surface === "nonstream") {
+        let status: number | undefined;
+        await runNonStreamingChatViaRun({ req: { raw: { signal } }, json: (body: any, code: number) => { result = JSON.stringify(body); status = code; return new Response(); } } as any, f.execution);
+        expect(status).toBe(409);
+      } else result = JSON.stringify(await runChatTurnViaRun(f.execution, { signal }));
+      expect(result).toContain("termination_gate_cycles_exhausted");
+      expect(result).toContain("runtime_error");
+      expect(f.release).toHaveBeenCalledTimes(1);
+    }
+  });
   for (const surface of ["stream", "nonstream", "channel"] as const) {
     it(`does not let a throwing host response callback skip ${surface} steering release`, async () => {
       const f = fixture(`throwing-observer-${surface}`, "throw", ["partial"]);
