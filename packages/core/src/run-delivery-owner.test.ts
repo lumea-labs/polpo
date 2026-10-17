@@ -385,6 +385,225 @@ describe("executeOwnedRun", () => {
     expect(await cancellations.get("run-a")).toBeNull();
   });
 
+  it("contains a heartbeat transport failure, aborts the producer and writes one retryable terminal", async () => {
+    const events = new InMemoryRunEventStore();
+    const baseLeases = new InMemoryRunExecutionLeaseStore();
+    let renewCount = 0;
+    const release = vi.fn(baseLeases.release.bind(baseLeases));
+    const leaseStore = {
+      claim: baseLeases.claim.bind(baseLeases),
+      get: baseLeases.get.bind(baseLeases),
+      release,
+      renew: async (...args: Parameters<typeof baseLeases.renew>) => {
+        renewCount += 1;
+        if (renewCount === 2) {
+          throw new Error("secret postgres heartbeat diagnostics");
+        }
+        return baseLeases.renew(...args);
+      },
+    };
+    let abortReason: unknown;
+
+    const result = await executeOwnedRun({
+      runId: "run-heartbeat-failure",
+      ...lease,
+      journal: new RunEventJournal(events),
+      leaseStore,
+      heartbeatIntervalMs: 5,
+      leaseDurationMs: 50,
+      producer: async ({ signal }) => {
+        await new Promise<void>((resolve) => signal.addEventListener("abort", () => {
+          abortReason = signal.reason;
+          resolve();
+        }, { once: true }));
+      },
+    });
+
+    expect(result).toEqual({
+      status: "failed",
+      error: "Run execution heartbeat failed",
+    });
+    expect(abortReason).toBe("run_heartbeat_failed");
+    const history = (await events.listAfter("run-heartbeat-failure")).events;
+    expect(history.map((event) => event.type)).toEqual(["run.started", "run.failed"]);
+    expect(history.at(-1)).toMatchObject({
+      data: {
+        code: "run_heartbeat_failed",
+        message: "Run execution heartbeat failed",
+        retryable: true,
+      },
+    });
+    expect(JSON.stringify(history)).not.toContain("secret postgres heartbeat diagnostics");
+    expect(release).toHaveBeenCalledOnce();
+    expect(await baseLeases.get("run-heartbeat-failure")).toBeNull();
+  });
+
+  it("fails closed when cancellation polling throws during a heartbeat", async () => {
+    const events = new InMemoryRunEventStore();
+    const leases = new InMemoryRunExecutionLeaseStore();
+    const baseCancellations = new InMemoryRunCancellationStore();
+    let pollCount = 0;
+    const cancellations = {
+      request: baseCancellations.request.bind(baseCancellations),
+      clear: baseCancellations.clear.bind(baseCancellations),
+      get: async (...args: Parameters<typeof baseCancellations.get>) => {
+        pollCount += 1;
+        if (pollCount === 2) throw new Error("cancellation backend unavailable");
+        return baseCancellations.get(...args);
+      },
+    };
+
+    const result = await executeOwnedRun({
+      runId: "run-cancellation-poll-failure",
+      ...lease,
+      journal: new RunEventJournal(events),
+      leaseStore: leases,
+      cancellationStore: cancellations,
+      heartbeatIntervalMs: 5,
+      leaseDurationMs: 50,
+      producer: async ({ signal }) => {
+        await new Promise<void>((resolve) =>
+          signal.addEventListener("abort", () => resolve(), { once: true })
+        );
+      },
+    });
+
+    expect(result).toEqual({
+      status: "failed",
+      error: "Run execution heartbeat failed",
+    });
+    expect((await events.listAfter("run-cancellation-poll-failure")).events)
+      .toMatchObject([
+        { type: "run.started" },
+        { type: "run.failed", data: { code: "run_heartbeat_failed", retryable: true } },
+      ]);
+    expect(await leases.get("run-cancellation-poll-failure")).toBeNull();
+  });
+
+  it("drains an in-flight heartbeat failure before choosing run.completed", async () => {
+    const events = new InMemoryRunEventStore();
+    const leases = new InMemoryRunExecutionLeaseStore();
+    const baseCancellations = new InMemoryRunCancellationStore();
+    let pollCount = 0;
+    let heartbeatPollStarted!: () => void;
+    const heartbeatPoll = new Promise<void>((resolve) => { heartbeatPollStarted = resolve; });
+    let rejectHeartbeatPoll!: (reason?: unknown) => void;
+    const pendingHeartbeatPoll = new Promise<null>((_resolve, reject) => {
+      rejectHeartbeatPoll = reject;
+    });
+    const cancellations = {
+      request: baseCancellations.request.bind(baseCancellations),
+      clear: baseCancellations.clear.bind(baseCancellations),
+      get: async (...args: Parameters<typeof baseCancellations.get>) => {
+        pollCount += 1;
+        if (pollCount === 2) {
+          heartbeatPollStarted();
+          return pendingHeartbeatPoll;
+        }
+        return baseCancellations.get(...args);
+      },
+    };
+    let finishProducer!: () => void;
+    const producerMayFinish = new Promise<void>((resolve) => { finishProducer = resolve; });
+
+    const execution = executeOwnedRun({
+      runId: "run-heartbeat-finalization-race",
+      ...lease,
+      journal: new RunEventJournal(events),
+      leaseStore: leases,
+      cancellationStore: cancellations,
+      heartbeatIntervalMs: 5,
+      leaseDurationMs: 50,
+      producer: async () => producerMayFinish,
+    });
+
+    await heartbeatPoll;
+    finishProducer();
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    rejectHeartbeatPoll(new Error("late private database failure"));
+
+    await expect(execution).resolves.toEqual({
+      status: "failed",
+      error: "Run execution heartbeat failed",
+    });
+    const history = (await events.listAfter("run-heartbeat-finalization-race")).events;
+    expect(history.map((event) => event.type)).toEqual(["run.started", "run.failed"]);
+    expect(JSON.stringify(history)).not.toContain("late private database failure");
+  });
+
+  it("does not terminalize a heartbeat failure after ownership moved", async () => {
+    const events = new InMemoryRunEventStore();
+    const baseLeases = new InMemoryRunExecutionLeaseStore();
+    let renewCount = 0;
+    const leaseStore = {
+      claim: baseLeases.claim.bind(baseLeases),
+      get: baseLeases.get.bind(baseLeases),
+      release: baseLeases.release.bind(baseLeases),
+      renew: async (...args: Parameters<typeof baseLeases.renew>) => {
+        renewCount += 1;
+        if (renewCount === 2) {
+          const current = await baseLeases.get(args[0]);
+          if (current) await baseLeases.release(args[0], current);
+          await baseLeases.claim(args[0], {
+            owner: "replacement-worker",
+            token: "replacement-token",
+            expiresAt: new Date(Date.now() + 60_000).toISOString(),
+          });
+          throw new Error("heartbeat acknowledgement lost during owner replacement");
+        }
+        return baseLeases.renew(...args);
+      },
+    };
+
+    const result = await executeOwnedRun({
+      runId: "run-heartbeat-owner-replaced",
+      ...lease,
+      journal: new RunEventJournal(events),
+      leaseStore,
+      heartbeatIntervalMs: 5,
+      leaseDurationMs: 50,
+      producer: async ({ signal }) => {
+        await new Promise<void>((resolve) =>
+          signal.addEventListener("abort", () => resolve(), { once: true })
+        );
+      },
+    });
+
+    expect(result).toEqual({ status: "lost-lease" });
+    expect((await events.listAfter("run-heartbeat-owner-replaced")).events.map(
+      (event) => event.type,
+    )).toEqual(["run.started"]);
+    await expect(baseLeases.get("run-heartbeat-owner-replaced")).resolves.toMatchObject({
+      owner: "replacement-worker",
+      token: "replacement-token",
+    });
+  });
+
+  it("does not turn a durable completion into a request failure when lease release fails", async () => {
+    const events = new InMemoryRunEventStore();
+    const baseLeases = new InMemoryRunExecutionLeaseStore();
+    const leaseStore = {
+      claim: baseLeases.claim.bind(baseLeases),
+      get: baseLeases.get.bind(baseLeases),
+      renew: baseLeases.renew.bind(baseLeases),
+      release: vi.fn(async () => {
+        throw new Error("release acknowledgement lost");
+      }),
+    };
+
+    await expect(executeOwnedRun({
+      runId: "run-release-ack-lost",
+      ...lease,
+      journal: new RunEventJournal(events),
+      leaseStore,
+      producer: async () => undefined,
+    })).resolves.toEqual({ status: "completed" });
+    expect((await events.listAfter("run-release-ack-lost")).events.map(
+      (event) => event.type,
+    )).toEqual(["run.started", "run.completed"]);
+    expect(leaseStore.release).toHaveBeenCalledOnce();
+  });
+
   it("does not terminalize after losing its lease to another owner", async () => {
     let renewCount = 0;
     const baseLeases = new InMemoryRunExecutionLeaseStore();

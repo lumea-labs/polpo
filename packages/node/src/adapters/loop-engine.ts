@@ -281,7 +281,20 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
     done: null as any, // set below
     isAlive: () => alive,
     kill: () => {
-      steering.abort("Run killed");
+      // AgentHandle.kill is intentionally synchronous, while a durable
+      // SteeringController may persist abort asynchronously. Abort the local
+      // execution immediately and observe the persistence Promise at creation
+      // time so a closed/missing steering row cannot become an unhandled
+      // rejection that terminates the Node host.
+      abortController.abort("Run killed");
+      try {
+        const abortResult = steering.abort("Run killed");
+        if (abortResult && typeof (abortResult as PromiseLike<void>).then === "function") {
+          void Promise.resolve(abortResult).catch(() => undefined);
+        }
+      } catch {
+        // The local abort remains authoritative for this in-process handle.
+      }
       alive = false;
     },
   };

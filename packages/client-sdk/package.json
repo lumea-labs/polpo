@@ -1,6 +1,6 @@
 {
   "name": "@polpo-ai/sdk",
-  "version": "0.18.16",
+  "version": "0.18.17",
   "description": "Polpo SDK \u2014 typed HTTP client, SSE streaming, and reactive store for AI agent orchestration",
   "type": "module",
   "main": "dist/index.js",

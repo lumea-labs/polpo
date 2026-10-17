@@ -248,6 +248,7 @@ describe("runDeliveryRoutes", () => {
     });
     const original = (await eventStore.listAfter("run-polluted")).events;
     const onTerminal = vi.fn();
+    const resolveTerminalEvent = vi.fn(async () => ({ type: "run.failed" as const, data: {} }));
 
     await expect(reconcileInterruptedRun({
       runId: "run-polluted",
@@ -255,9 +256,11 @@ describe("runDeliveryRoutes", () => {
       leaseStore,
       cancellationStore,
       onTerminal,
+      resolveTerminalEvent,
     })).resolves.toBe("terminal");
 
     expect(onTerminal).toHaveBeenCalledWith("run-polluted", terminal);
+    expect(resolveTerminalEvent).not.toHaveBeenCalled();
     expect((await eventStore.listAfter("run-polluted")).events).toEqual(original);
     expect(await leaseStore.get("run-polluted")).toBeNull();
   });
@@ -311,6 +314,7 @@ describe("runDeliveryRoutes", () => {
     });
     await eventStore.append("run-live", { type: "run.started", data: {} });
 
+    const resolveTerminalEvent = vi.fn(async () => ({ type: "run.completed" as const, data: {} }));
     await expect(reconcileInterruptedRun({
       runId: "run-live",
       eventStore,
@@ -318,8 +322,143 @@ describe("runDeliveryRoutes", () => {
       cancellationStore: new InMemoryRunCancellationStore(),
       now: () => now,
       createToken: () => "must-not-claim",
+      resolveTerminalEvent,
     })).resolves.toBe("active");
+    expect(resolveTerminalEvent).not.toHaveBeenCalled();
     expect((await eventStore.listAfter("run-live")).events).toHaveLength(1);
+  });
+
+  it("uses one host-authoritative terminal under the recovery lease", async () => {
+    const now = new Date("2026-08-21T00:00:00.000Z");
+    const eventStore = new InMemoryRunEventStore({ now: () => now });
+    const leaseStore = new InMemoryRunExecutionLeaseStore({ now: () => now });
+    const cancellationStore = new InMemoryRunCancellationStore();
+    await eventStore.append("run-host-terminal", { type: "run.started", data: {} });
+    const resolveTerminalEvent = vi.fn(async () => ({
+      id: "run.completed:host-recovered",
+      type: "run.completed" as const,
+      data: {},
+      createdAt: now.toISOString(),
+    }));
+
+    const results = await Promise.all([
+      reconcileInterruptedRun({
+        runId: "run-host-terminal",
+        eventStore,
+        leaseStore,
+        cancellationStore,
+        now: () => now,
+        createToken: () => "recovery-host-a",
+        resolveTerminalEvent,
+      }),
+      reconcileInterruptedRun({
+        runId: "run-host-terminal",
+        eventStore,
+        leaseStore,
+        cancellationStore,
+        now: () => now,
+        createToken: () => "recovery-host-b",
+        resolveTerminalEvent,
+      }),
+    ]);
+
+    expect(results).toContain("terminal");
+    expect(results.every((result) => result === "terminal" || result === "contended")).toBe(true);
+    expect(resolveTerminalEvent).toHaveBeenCalledOnce();
+    expect((await eventStore.listAfter("run-host-terminal")).events.map(
+      (event) => event.type,
+    )).toEqual(["run.started", "run.completed"]);
+  });
+
+  it("does not append when the host terminal resolver fails", async () => {
+    const eventStore = new InMemoryRunEventStore();
+    const leaseStore = new InMemoryRunExecutionLeaseStore();
+    await eventStore.append("run-host-resolver-failure", { type: "run.started", data: {} });
+
+    await expect(reconcileInterruptedRun({
+      runId: "run-host-resolver-failure",
+      eventStore,
+      leaseStore,
+      cancellationStore: new InMemoryRunCancellationStore(),
+      createToken: () => "recovery-host-failure",
+      resolveTerminalEvent: async () => { throw new Error("host authority unavailable"); },
+    })).rejects.toThrow("host authority unavailable");
+
+    expect((await eventStore.listAfter("run-host-resolver-failure")).events.map(
+      (event) => event.type,
+    )).toEqual(["run.started"]);
+    expect(await leaseStore.get("run-host-resolver-failure")).toBeNull();
+  });
+
+  it("revalidates recovery ownership after a delayed host terminal resolver", async () => {
+    let now = new Date("2026-08-21T00:00:00.000Z");
+    const eventStore = new InMemoryRunEventStore({ now: () => now });
+    const leaseStore = new InMemoryRunExecutionLeaseStore({ now: () => now });
+    await eventStore.append("run-host-owner-race", { type: "run.started", data: {} });
+    let resolverEntered!: () => void;
+    const entered = new Promise<void>((resolve) => { resolverEntered = resolve; });
+    let releaseResolver!: () => void;
+    const released = new Promise<void>((resolve) => { releaseResolver = resolve; });
+
+    const reconciliation = reconcileInterruptedRun({
+      runId: "run-host-owner-race",
+      eventStore,
+      leaseStore,
+      cancellationStore: new InMemoryRunCancellationStore(),
+      now: () => now,
+      createToken: () => "recovery-delayed",
+      resolveTerminalEvent: async () => {
+        resolverEntered();
+        await released;
+        return { type: "run.completed", data: {} };
+      },
+    });
+
+    await entered;
+    now = new Date("2026-08-21T00:00:11.000Z");
+    await expect(leaseStore.claim("run-host-owner-race", {
+      owner: "replacement-owner",
+      token: "replacement-token",
+      expiresAt: "2026-08-21T00:00:30.000Z",
+    })).resolves.toBe(true);
+    releaseResolver();
+
+    await expect(reconciliation).resolves.toBe("contended");
+    expect((await eventStore.listAfter("run-host-owner-race")).events.map(
+      (event) => event.type,
+    )).toEqual(["run.started"]);
+    await expect(leaseStore.get("run-host-owner-race")).resolves.toMatchObject({
+      owner: "replacement-owner",
+      token: "replacement-token",
+    });
+  });
+
+  it("passes the host terminal resolver through the events route", async () => {
+    const now = new Date("2026-08-21T00:00:00.000Z");
+    const eventStore = new InMemoryRunEventStore({ now: () => now });
+    const leaseStore = new InMemoryRunExecutionLeaseStore({ now: () => now });
+    const cancellationStore = new InMemoryRunCancellationStore();
+    await eventStore.append("run-route-host-terminal", { type: "run.started", data: {} });
+    const resolveTerminalEvent = vi.fn(async () => ({
+      id: "run.completed:route-host",
+      type: "run.completed" as const,
+      data: {},
+      createdAt: now.toISOString(),
+    }));
+    const app = runDeliveryRoutes(() => ({
+      now: () => now,
+      resolveRunDelivery: async () => ({
+        eventStore,
+        leaseStore,
+        cancellationStore,
+        resolveTerminalEvent,
+      }),
+    }));
+
+    const response = await app.request("http://localhost/run-route-host-terminal/events");
+    expect(response.status).toBe(200);
+    expect(await response.text()).toContain('"type":"run.completed"');
+    expect(resolveTerminalEvent).toHaveBeenCalledOnce();
   });
 
   it("does not terminalize event history that never reached run.started", async () => {
