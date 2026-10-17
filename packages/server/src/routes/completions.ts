@@ -171,6 +171,8 @@ export interface CompletionRouteDeps {
     loop?: string;
     step?: string;
     activatedSkills?: readonly string[];
+    toolRunScope?: CompletionToolRunScope;
+    getToolExecutor?: () => CompletionToolExecutor | undefined;
   }) => RuntimeHookDispatcher | undefined | Promise<RuntimeHookDispatcher | undefined>;
   /**
    * Optional pre-execution planner. The input is already authorized and omits

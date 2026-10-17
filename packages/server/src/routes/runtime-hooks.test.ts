@@ -56,3 +56,16 @@ describe("runtimeHookRoutes", () => {
     expect(invalid.status).toBe(400);
   });
 });
+
+
+it("round-trips a bounded termination gate and advertises its capability", async () => {
+  const store = new MemoryStore();
+  const app = runtimeHookRoutes(() => ({ store }));
+  const pack = { version: 1, name: "validate", hooks: [{ id: "before-done", event: "turn:stop", terminationGate: { maxCycles: 2, maxDurationMs: 30000, maxTokens: 10000 }, handler: { type: "tool", tool: "site_validate" } }] };
+  const response = await app.request("/validate", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(pack) });
+  expect(response.status).toBe(200);
+  expect((await response.json()).data).toEqual(pack);
+  expect((await (await app.request("/validate")).json()).data).toEqual(pack);
+  const capabilities = await app.request("/capabilities");
+  expect((await capabilities.json()).data.terminationGate).toBe(true);
+});

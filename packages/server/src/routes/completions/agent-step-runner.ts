@@ -1,3 +1,4 @@
+import type { CompletionToolExecutor } from "./tool-guardrails.js";
 /**
  * Single agent-step execution for the loop runtimes.
  *
@@ -40,6 +41,7 @@ import {
   assertToolNameAllowedByPolicy,
 } from "@polpo-ai/core";
 import { generateText, type LanguageModel, type LanguageModelUsage } from "ai";
+import { TerminationGate, TerminationGateError, type TerminationGateState } from "@polpo-ai/core/runtime-hooks";
 import type { ModelMessage, UserContent } from "ai";
 import type {
   ResolvedSteeringPolicy,
@@ -150,6 +152,24 @@ export interface AgentStepRunResult {
   toolCalls: any[];
 }
 
+export interface AgentStepCheckpoint {
+  version: 1;
+  step: string;
+  invocationId: string;
+  configuration: string;
+  systemPrompt: string;
+  nextTurn: number;
+  phase: "operational" | "in_flight" | "validating" | "accepted";
+  history: any[];
+  text: string;
+  reasoning: string;
+  output?: unknown;
+  structured: boolean;
+  usage: LanguageModelUsage;
+  toolCalls: any[];
+  terminationGate: TerminationGateState;
+}
+
 function steeringModelMessage(message: SteeringMessage): ModelMessage {
   const content: UserContent = [];
   if (message.content.text !== undefined) content.push({ type: "text", text: message.content.text });
@@ -237,14 +257,20 @@ export function addUsage(a: LanguageModelUsage, b: LanguageModelUsage): Language
 export function buildSummarizeFn(
   m: ResolvedModelInfo,
   providerOptions?: Record<string, any>,
+  budget?: { gate?: TerminationGate; signal?: AbortSignal; onUsage?: (usage: LanguageModelUsage) => void },
 ): SummarizeFn {
   return async (msgs: any[], prompt: string): Promise<string> => {
+    budget?.gate?.assertAvailable();
     const result = await generateText({
       model: m.aiModel,
       system: prompt,
       messages: prepareModelMessagesForTransport(msgs, m.aiModel),
       providerOptions,
+      ...(budget?.gate ? { maxOutputTokens: Math.min(m.maxTokens, budget.gate.remainingTokens) } : {}),
+      ...(budget?.signal ? { abortSignal: budget.signal } : {}),
     });
+    budget?.gate?.recordUsage(result.usage);
+    budget?.onUsage?.(result.usage);
     return result.text.trim();
   };
 }
@@ -340,6 +366,10 @@ export async function runAgentStepCompletion(options: {
   outputSchema?: unknown;
   steering?: SteeringController;
   steeringPolicy?: ResolvedSteeringPolicy;
+  loopName?: string;
+  resume?: AgentStepCheckpoint;
+  checkpointAvailable?: boolean;
+  onCheckpoint?: (checkpoint: AgentStepCheckpoint) => Promise<void>;
 }): Promise<AgentStepRunResult> {
   const {
     deps,
@@ -351,13 +381,20 @@ export async function runAgentStepCompletion(options: {
     runtimeContext,
     onToolCall,
   } = options;
+  let runtimeHookToolExecutor: CompletionToolExecutor | undefined;
+  const callerSignal = options.signal;
+  const configuration = JSON.stringify({ agentConfig, outputSchema: options.outputSchema, toolPolicy: options.toolPolicy });
+  const invocationId = options.resume?.invocationId ?? `gate-${crypto.randomUUID()}`;
   const runtimeHookDispatcher = await deps.resolveRuntimeHooks?.({
     agentConfig,
     surface: "loop",
     runId: options.runId,
     sessionId: options.sessionId,
     step: stepName,
+    loop: options.loopName,
     activatedSkills: options.activatedSkills,
+    toolRunScope: options.toolRunScope,
+    getToolExecutor: () => runtimeHookToolExecutor,
   });
   const runtimeHooks: CompletionRuntimeHookContext | undefined = runtimeHookDispatcher
     ? {
@@ -368,9 +405,36 @@ export async function runAgentStepCompletion(options: {
           sessionId: options.sessionId,
           agent: agentConfig.name,
           step: stepName,
+          turnId: invocationId,
+          loop: options.loopName,
         },
       }
     : undefined;
+  const gatePolicy = runtimeHooks?.dispatcher?.getTerminationGatePolicy?.(runtimeHooks);
+  if (options.resume && (!gatePolicy || options.resume.version !== 1 || options.resume.step !== stepName)) {
+    throw new TerminationGateError("termination_gate_checkpoint_invalid", "Agent checkpoint does not match this configured gate");
+  }
+  if (options.resume) {
+    const r = options.resume;
+    if (r.configuration !== configuration || typeof r.systemPrompt !== "string" || !r.invocationId || !Number.isSafeInteger(r.nextTurn) || r.nextTurn < 0 || !Array.isArray(r.history)
+      || !Array.isArray(r.toolCalls) || !["operational", "validating", "accepted", "in_flight"].includes(r.phase)
+      || typeof r.text !== "string" || typeof r.reasoning !== "string" || typeof r.structured !== "boolean"
+      || !r.usage || (r.phase === "validating") !== Boolean(r.terminationGate?.pending)
+      || (r.phase === "accepted") !== Boolean(r.terminationGate?.accepted)) {
+      throw new TerminationGateError("termination_gate_checkpoint_invalid", "Invalid agent termination checkpoint");
+    }
+    if (r.phase === "in_flight") throw new TerminationGateError("termination_gate_effect_unconfirmed", "An interrupted model/tool operation may have committed effects; reconcile before retrying");
+  }
+  const gate = gatePolicy ? new TerminationGate(gatePolicy, options.resume?.terminationGate) : undefined;
+  if (gate) {
+    if (options.checkpointAvailable === false) throw new TerminationGateError("termination_gate_parallel_unsupported", "Durable termination gates require a sequential agent step");
+    if (options.resume?.phase !== "accepted") {
+      gate.assertAvailable();
+      const deadline = AbortSignal.timeout(gate.remainingMs);
+      options = { ...options, signal: options.signal ? AbortSignal.any([options.signal, deadline]) : deadline };
+    }
+  }
+  if (gate && runtimeHooks) runtimeHooks.signal = options.signal;
   const inputDecision = await dispatchCompletionRuntimeHook(runtimeHooks, "input:before", {
     source: "loop-step",
     messageCount: aiMessages.length,
@@ -404,6 +468,7 @@ export async function runAgentStepCompletion(options: {
   );
   const inputContext = runtimeHookModifiedString(inputDecision, "context");
   if (inputContext) fullSystemPrompt += `\n\n## Runtime hook context\n\n${inputContext}`;
+  if (options.resume) fullSystemPrompt = options.resume.systemPrompt;
   let messages: any[] = projectedInput
     ? [{ role: "user", content: loopAgentInputPrompt(stepName, projectedInput) }]
     : contextTrust === "enforce"
@@ -498,9 +563,7 @@ export async function runAgentStepCompletion(options: {
   const policyExecutor = options.toolPolicy
     ? createPolicyGuardedToolExecutor(resolvedTools.executor, options.toolPolicy)
     : resolvedTools.executor;
-  let executeTool = createRuntimeHookedToolExecutor({
-    hooks: runtimeHooks,
-    executor: createGuardedCompletionToolExecutor({
+  runtimeHookToolExecutor = createGuardedCompletionToolExecutor({
       executor: policyExecutor,
       tools: loopTools,
       middleware: deps.runToolMiddleware,
@@ -513,8 +576,8 @@ export async function runAgentStepCompletion(options: {
         sessionId: options.sessionId,
       },
       receiptStore: options.toolRunScope?.receiptStore,
-    }),
   });
+  let executeTool = createRuntimeHookedToolExecutor({ hooks: runtimeHooks, executor: runtimeHookToolExecutor });
   const progressTracker = new ToolProgressTracker();
   const toolAnnotations = new Map(
     loopTools
@@ -630,6 +693,25 @@ export async function runAgentStepCompletion(options: {
   let lastProviderMetadata: Record<string, unknown> | undefined;
   const toolCallsAccum: any[] = [];
   const maxTurns = agentConfig.maxTurns ?? MAX_TURNS;
+  let nextTurn = options.resume?.nextTurn ?? 0;
+  let gatePhase: AgentStepCheckpoint["phase"] = options.resume?.phase ?? "operational";
+  if (options.resume) {
+    messages = structuredClone(options.resume.history);
+    finalText = options.resume.text;
+    finalReasoning = options.resume.reasoning;
+    finalOutput = options.resume.output;
+    completedStructuredOutput = options.resume.structured;
+    totalUsage = options.resume.usage;
+    toolCallsAccum.push(...options.resume.toolCalls);
+  }
+  const checkpoint = async () => {
+    if (!gate || !options.onCheckpoint) return;
+    // A failed durable write must stop before starting another repair/model call.
+    await options.onCheckpoint(structuredClone({ version: 1, step: stepName, invocationId, configuration, systemPrompt: fullSystemPrompt, nextTurn,
+      phase: gatePhase, history: messages, text: finalText, reasoning: finalReasoning,
+      output: finalOutput, structured: completedStructuredOutput, usage: totalUsage,
+      toolCalls: toolCallsAccum, terminationGate: gate.snapshot() }));
+  };
   if (options.steering) {
     await options.steering.configure(options.steeringPolicy ?? {
       acceptance: "best_effort",
@@ -669,6 +751,8 @@ export async function runAgentStepCompletion(options: {
 
     let originalDiagnostic: ReturnType<typeof classifyRuntimeError> | undefined;
     for (let attemptIndex = 0; attemptIndex < 2; attemptIndex += 1) {
+      gate?.assertAvailable();
+      options.signal?.throwIfAborted();
       const isRecovery = attemptIndex === 1;
       if (isRecovery) {
         const { raw: _raw, ...original } = originalDiagnostic!;
@@ -706,7 +790,7 @@ export async function runAgentStepCompletion(options: {
             resolvedAttempts.set(attempt.index, resolvedAttempt);
             return {
               model: resolvedAttempt.model.aiModel,
-              maxOutputTokens: resolvedAttempt.model.maxTokens,
+              maxOutputTokens: gate ? Math.min(resolvedAttempt.model.maxTokens, gate.remainingTokens) : resolvedAttempt.model.maxTokens,
               providerOptions: resolvedAttempt.providerOptions,
               capabilities: resolvedAttempt.model.capabilities,
             };
@@ -721,6 +805,8 @@ export async function runAgentStepCompletion(options: {
           ...(options.signal ? { abortSignal: options.signal } : {}),
           }),
         });
+        gate?.recordUsage(terminalResult.usage);
+        totalUsage = addUsage(totalUsage, terminalResult.usage);
         if (terminalResult.toolCalls.length > 0 || terminalResult.output === undefined) {
           throw new Error(
             terminalResult.toolCalls.length > 0
@@ -749,12 +835,12 @@ export async function runAgentStepCompletion(options: {
           m = selectedResolved.model;
           providerOpts = selectedResolved.providerOptions;
         }
-        totalUsage = addUsage(totalUsage, terminalResult.usage);
         finalReasoning = appendReasoningSummary(finalReasoning, terminalResult.reasoning);
         lastProviderMetadata = terminalResult.providerMetadata as Record<string, unknown> | undefined;
         finalOutput = prepared.value;
         finalText = prepared.serialized;
         completedStructuredOutput = true;
+        if (gate) await appendModelResponseMessages(messages, terminalResult, finalText, [], contextTrust);
         if (isRecovery) {
           deps.emit("runtime:structured-output-recovery", {
             phase: "succeeded",
@@ -766,6 +852,7 @@ export async function runAgentStepCompletion(options: {
         }
         return;
       } catch (error) {
+        if (error instanceof TerminationGateError || options.signal?.aborted) throw error;
         const diagnostic = classifyRuntimeError(error);
         if (!isRecovery) {
           originalDiagnostic = diagnostic;
@@ -799,315 +886,356 @@ export async function runAgentStepCompletion(options: {
   };
 
   try {
-    const hasOperationalTools = Object.keys(aiTools).length > 0;
-    if (outputSchema !== undefined && !hasOperationalTools) {
-      await options.steering?.setBoundary({ open: false, reservable: false });
-      await completeTerminalStructuredOutput();
-    }
-
-    for (
-      let turn = 0;
-      !completedStructuredOutput && turn < maxTurns;
-      turn++
-    ) {
-      await options.steering?.setBoundary({ open: true, reservable: true });
-      await deliverSteering(false);
-      await dispatchCompletionRuntimeHook(runtimeHooks, "context:compact:before", {
-        messageCount: messages.length,
-        model: m.id ?? m.provider,
-      });
-      const compactionResult = await compactIfNeeded({
-        systemPrompt: fullSystemPrompt,
-        messages,
-        tools: activeCompactionTools?.() ?? modelTools,
-        config: {
-          contextWindow: m.contextWindow ?? 200_000,
-          maxOutputTokens: m.maxTokens ?? 8192,
-        },
-        summarize: buildSummarizeFn(m, providerOpts),
-        mode: "chat",
-      });
-      if (compactionResult.compacted) {
-        const compacted = contextTrust === "enforce"
-          ? protectRuntimeToolResultMessages(compactionResult.messages)
-          : compactionResult.messages;
-        messages.splice(0, messages.length, ...compacted);
-        await dispatchCompletionRuntimeHook(runtimeHooks, "context:compact:after", {
-          messageCount: messages.length,
-          compacted: true,
-        });
-      }
-
-      const toolCallNames = new Map<string, string>();
-      const resolvedAttempts = new Map<number, typeof initialResolved>();
-      let turnResult;
-      await options.steering?.setBoundary({
-        open: true,
-        reservable: turn + 1 < maxTurns,
-      });
-      try {
-        turnResult = await runCompletionRuntimeHookOperation({
-          hooks: runtimeHooks,
-          before: "model:before",
-          after: "model:after",
-          error: "model:error",
-          data: { phase: "operational", turn, model: m.id ?? m.provider },
-          resultData: (result: any) => ({
-            finishReason: result.finishReason,
-            toolCallCount: result.toolCalls?.length ?? 0,
-          }),
-          operation: () => runModelPolicyTurn({
-          selection: modelSelection,
-          resolveAttempt: async (attempt) => {
-            const resolvedAttempt = attempt.index === 0
-              ? initialResolved
-              : await deps.resolveAgentModel(agentConfigForModelAttempt(agentConfig, attempt.model), reasoning);
-            resolvedAttempts.set(attempt.index, resolvedAttempt);
-            return {
-              model: resolvedAttempt.model.aiModel,
-              maxOutputTokens: resolvedAttempt.model.maxTokens,
-              providerOptions: resolvedAttempt.providerOptions,
-              capabilities: resolvedAttempt.model.capabilities,
-            };
-          },
-          preserveSingleAttemptError: true,
-          onPolicyEvent: (event) => dispatchCompletionModelPolicyHook(runtimeHooks, event),
-          system: fullSystemPrompt,
-          messages,
-          tools: aiTools,
-          ...(activeToolNames ? { activeTools: activeToolNames() } : {}),
-          ...(modelToolChoice ? { toolChoice: modelToolChoice as any } : {}),
-          ...(options.parallelToolCalls !== undefined
-            ? { parallelToolCalls: options.parallelToolCalls }
-            : {}),
-          ...(options.signal ? { abortSignal: options.signal } : {}),
-        }, async (event) => {
-          if (event.type === "warning") {
-            deps.emit("runtime:model-warning", {
-              source: "loop-step",
-              step: stepName,
-              agent: agentConfig.name,
-              runId: options.runId,
-              sessionId: options.sessionId,
-              warning: event.warning,
-            });
-          } else if (event.type === "tool-input-start") {
-            toolCallNames.set(event.id, event.name);
-            await onToolCall?.({
-              id: event.id,
-              name: event.name,
-              state: "preparing",
-            });
-          } else if (event.type === "reasoning-delta") {
-            await options.onReasoning?.(event.text);
-          } else if (event.type === "tool-input-delta") {
-            await onToolCall?.({
-              id: event.id,
-              name: toolCallNames.get(event.id) ?? "",
-              state: "preparing",
-              argumentsDelta: event.delta,
-            });
-          } else if (event.type === "tool-input-aborted") {
-            toolCallNames.delete(event.id);
-            await onToolCall?.({
-              id: event.id,
-              name: event.name,
-              state: "interrupted",
-              result: `Error: ${event.error.message ?? "Model stream interrupted during tool input"}`,
-            });
-          }
-          }),
-        });
-      } catch (error) {
-        if (outputSchema !== undefined && isStructuredModelOutputError(error)) {
-          throw new LoopAgentOutputError(
-            "loop_agent_output_invalid",
-            stepName,
-            `Agent step ${JSON.stringify(stepName)} failed during the operational phase`,
-            { phase: "operational" },
-            { cause: error },
-          );
-        } else {
-          throw error;
-        }
-      }
-
-      const turnText = turnResult.text;
-      finalReasoning = appendReasoningSummary(finalReasoning, turnResult.reasoning);
-      const selectedResolved = resolvedAttempts.get(turnResult.selectedAttempt.index);
-      if (selectedResolved) {
-        m = selectedResolved.model;
-        providerOpts = selectedResolved.providerOptions;
-      }
-      totalUsage = addUsage(totalUsage, turnResult.usage);
-      lastProviderMetadata = turnResult.providerMetadata as Record<string, unknown> | undefined;
-
-      await appendModelResponseMessages(
-        messages,
-        turnResult,
-        turnText,
-        turnResult.toolCalls,
-        contextTrust,
-      );
-      if (outputSchema === undefined) finalText += turnText;
-
-      if (turnResult.toolCalls.length === 0) {
-        const delivered = turn + 1 < maxTurns
-          ? await deliverSteering(true)
-          : [];
-        if (delivered.length > 0) continue;
+    if (gate) await checkpoint();
+    gateLoop: while (true) {
+      const hasOperationalTools = Object.keys(aiTools).length > 0;
+      if (outputSchema !== undefined && !hasOperationalTools && gatePhase === "operational") {
+        nextTurn += 1;
+        if (gate) { gatePhase = "in_flight"; await checkpoint(); }
         await options.steering?.setBoundary({ open: false, reservable: false });
-        if (outputSchema !== undefined) {
-          await completeTerminalStructuredOutput();
-        }
-        break;
+        await completeTerminalStructuredOutput();
       }
 
-      const dispatchableToolCalls = turnResult.toolCalls.filter(
-        (call) => !isInvalidModelToolCall(call),
-      );
-      for (const call of turnResult.toolCalls.filter(isInvalidModelToolCall)) {
-        const event = invalidModelToolCallEvent(call);
-        toolCallsAccum.push(event);
-        await onToolCall?.(event);
-      }
-      if (dispatchableToolCalls.length === 0) continue;
-
-      const providerToolResults = indexToolResultsByCallId(turnResult.toolResults as any[] | undefined);
-
-      const appendLocalResult = async (
-        call: { toolCallId: string; toolName: string },
-        callArgs: Record<string, unknown>,
-        result: string,
-        isError: boolean,
-      ) => {
-        emitFileChanged(call.toolName, callArgs, result, deps.emit);
-        const event = {
-          id: call.toolCallId,
-          name: call.toolName,
-          arguments: callArgs,
-          result,
-          state: isError ? "error" : "completed",
-        } satisfies LoopRuntimeToolCall;
-        toolCallsAccum.push(event);
-        await onToolCall?.(event);
-        const modelResult = contextTrust === "enforce"
-          ? renderRuntimeToolResult(call.toolName, call.toolCallId, result)
-          : result;
-        messages.push({
-          role: "tool",
-          content: [{
-            type: "tool-result",
-            toolCallId: call.toolCallId,
-            toolName: call.toolName,
-            output: isError
-              ? { type: "error-text" as const, value: modelResult }
-              : { type: "text" as const, value: modelResult },
-          }],
+      for (
+        ;
+        gatePhase === "operational" && !completedStructuredOutput && nextTurn < maxTurns;
+      ) {
+        const turn = nextTurn++;
+        if (gate) { gatePhase = "in_flight"; await checkpoint(); }
+        gate?.assertAvailable();
+        options.signal?.throwIfAborted();
+        await options.steering?.setBoundary({ open: true, reservable: true });
+        await deliverSteering(false);
+        await dispatchCompletionRuntimeHook(runtimeHooks, "context:compact:before", {
+          messageCount: messages.length,
+          model: m.id ?? m.provider,
         });
-      };
-
-      if (options.parallelToolCalls === true) {
-        const localCalls = dispatchableToolCalls
-          .filter((call) => !providerToolNames.has(call.toolName))
-          .map((call) => ({
-            toolCallId: call.toolCallId,
-            toolName: call.toolName,
-            input: call.input as Record<string, unknown>,
-          }));
-        const localResults = await executeCompletionToolBatch({
-          calls: localCalls,
-          executor: executeTool,
-          signal: options.signal,
-          onCalling: async (call) => {
-            await onToolCall?.({
-              id: call.toolCallId,
-              name: call.toolName,
-              arguments: call.input,
-              state: "calling",
-            });
+        const compactionResult = await compactIfNeeded({
+          systemPrompt: fullSystemPrompt,
+          messages,
+          tools: activeCompactionTools?.() ?? modelTools,
+          config: {
+            contextWindow: m.contextWindow ?? 200_000,
+            maxOutputTokens: m.maxTokens ?? 8192,
           },
+          summarize: buildSummarizeFn(m, providerOpts, { gate, signal: options.signal, onUsage: (usage) => { totalUsage = addUsage(totalUsage, usage); } }),
+          mode: "chat",
         });
-        let localResultIndex = 0;
-        for (const call of dispatchableToolCalls) {
-          if (providerToolNames.has(call.toolName)) {
-            const event = providerToolCallEvent(call, providerToolResults);
-            toolCallsAccum.push(event);
-            await onToolCall?.(event);
-            continue;
-          }
-          const local = localResults[localResultIndex++]!;
-          await appendLocalResult(call, local.input, local.result, local.isError);
+        if (compactionResult.compacted) {
+          const compacted = contextTrust === "enforce"
+            ? protectRuntimeToolResultMessages(compactionResult.messages)
+            : compactionResult.messages;
+          messages.splice(0, messages.length, ...compacted);
+          await dispatchCompletionRuntimeHook(runtimeHooks, "context:compact:after", {
+            messageCount: messages.length,
+            compacted: true,
+          });
         }
-        await dispatchCompletionRuntimeHook(runtimeHooks, "tool:batch:after", {
-          count: localResults.length,
-          tools: localCalls.map((call) => call.toolName),
-        });
-      } else {
-        for (const call of dispatchableToolCalls) {
-          const callArgs = call.input as Record<string, unknown>;
-          if (providerToolNames.has(call.toolName)) {
-            const event = providerToolCallEvent(call, providerToolResults);
-            toolCallsAccum.push(event);
-            await onToolCall?.(event);
-            continue;
-          }
 
-          await onToolCall?.({
+        const toolCallNames = new Map<string, string>();
+        const resolvedAttempts = new Map<number, typeof initialResolved>();
+        let turnResult;
+        await options.steering?.setBoundary({
+          open: true,
+          reservable: turn + 1 < maxTurns,
+        });
+        try {
+          turnResult = await runCompletionRuntimeHookOperation({
+            hooks: runtimeHooks,
+            before: "model:before",
+            after: "model:after",
+            error: "model:error",
+            data: { phase: "operational", turn, model: m.id ?? m.provider },
+            resultData: (result: any) => ({
+              finishReason: result.finishReason,
+              toolCallCount: result.toolCalls?.length ?? 0,
+            }),
+            operation: () => runModelPolicyTurn({
+            selection: modelSelection,
+            resolveAttempt: async (attempt) => {
+              const resolvedAttempt = attempt.index === 0
+                ? initialResolved
+                : await deps.resolveAgentModel(agentConfigForModelAttempt(agentConfig, attempt.model), reasoning);
+              resolvedAttempts.set(attempt.index, resolvedAttempt);
+              return {
+                model: resolvedAttempt.model.aiModel,
+                maxOutputTokens: gate ? Math.min(resolvedAttempt.model.maxTokens, gate.remainingTokens) : resolvedAttempt.model.maxTokens,
+                providerOptions: resolvedAttempt.providerOptions,
+                capabilities: resolvedAttempt.model.capabilities,
+              };
+            },
+            preserveSingleAttemptError: true,
+            onPolicyEvent: (event) => dispatchCompletionModelPolicyHook(runtimeHooks, event),
+            system: fullSystemPrompt,
+            messages,
+            tools: aiTools,
+            ...(activeToolNames ? { activeTools: activeToolNames() } : {}),
+            ...(modelToolChoice ? { toolChoice: modelToolChoice as any } : {}),
+            ...(options.parallelToolCalls !== undefined
+              ? { parallelToolCalls: options.parallelToolCalls }
+              : {}),
+            ...(options.signal ? { abortSignal: options.signal } : {}),
+          }, async (event) => {
+            if (event.type === "warning") {
+              deps.emit("runtime:model-warning", {
+                source: "loop-step",
+                step: stepName,
+                agent: agentConfig.name,
+                runId: options.runId,
+                sessionId: options.sessionId,
+                warning: event.warning,
+              });
+            } else if (event.type === "tool-input-start") {
+              toolCallNames.set(event.id, event.name);
+              await onToolCall?.({
+                id: event.id,
+                name: event.name,
+                state: "preparing",
+              });
+            } else if (event.type === "reasoning-delta") {
+              await options.onReasoning?.(event.text);
+            } else if (event.type === "tool-input-delta") {
+              await onToolCall?.({
+                id: event.id,
+                name: toolCallNames.get(event.id) ?? "",
+                state: "preparing",
+                argumentsDelta: event.delta,
+              });
+            } else if (event.type === "tool-input-aborted") {
+              toolCallNames.delete(event.id);
+              await onToolCall?.({
+                id: event.id,
+                name: event.name,
+                state: "interrupted",
+                result: `Error: ${event.error.message ?? "Model stream interrupted during tool input"}`,
+              });
+            }
+            }),
+          });
+        } catch (error) {
+          if (outputSchema !== undefined && isStructuredModelOutputError(error)) {
+            throw new LoopAgentOutputError(
+              "loop_agent_output_invalid",
+              stepName,
+              `Agent step ${JSON.stringify(stepName)} failed during the operational phase`,
+              { phase: "operational" },
+              { cause: error },
+            );
+          } else {
+            throw error;
+          }
+        }
+
+        const turnText = turnResult.text;
+        finalReasoning = appendReasoningSummary(finalReasoning, turnResult.reasoning);
+        const selectedResolved = resolvedAttempts.get(turnResult.selectedAttempt.index);
+        if (selectedResolved) {
+          m = selectedResolved.model;
+          providerOpts = selectedResolved.providerOptions;
+        }
+        totalUsage = addUsage(totalUsage, turnResult.usage);
+        gate?.recordUsage(turnResult.usage);
+        lastProviderMetadata = turnResult.providerMetadata as Record<string, unknown> | undefined;
+
+        await appendModelResponseMessages(
+          messages,
+          turnResult,
+          turnText,
+          turnResult.toolCalls,
+          contextTrust,
+        );
+        if (outputSchema === undefined) finalText += turnText;
+
+        if (turnResult.toolCalls.length === 0) {
+          const delivered = turn + 1 < maxTurns
+            ? await deliverSteering(true)
+            : [];
+          if (delivered.length > 0) { gatePhase = "operational"; await checkpoint(); continue; }
+          await options.steering?.setBoundary({ open: false, reservable: false });
+          if (outputSchema !== undefined) {
+            await completeTerminalStructuredOutput();
+          }
+          break;
+        }
+
+        const dispatchableToolCalls = turnResult.toolCalls.filter(
+          (call) => !isInvalidModelToolCall(call),
+        );
+        for (const call of turnResult.toolCalls.filter(isInvalidModelToolCall)) {
+          const event = invalidModelToolCallEvent(call);
+          toolCallsAccum.push(event);
+          await onToolCall?.(event);
+        }
+        if (dispatchableToolCalls.length === 0) { gatePhase = "operational"; await checkpoint(); continue; }
+
+        const providerToolResults = indexToolResultsByCallId(turnResult.toolResults as any[] | undefined);
+
+        const appendLocalResult = async (
+          call: { toolCallId: string; toolName: string },
+          callArgs: Record<string, unknown>,
+          result: string,
+          isError: boolean,
+        ) => {
+          emitFileChanged(call.toolName, callArgs, result, deps.emit);
+          const event = {
             id: call.toolCallId,
             name: call.toolName,
             arguments: callArgs,
-            state: "calling",
-          });
-          const local = await executeCompletionToolCall({
-            call: {
+            result,
+            state: isError ? "error" : "completed",
+          } satisfies LoopRuntimeToolCall;
+          toolCallsAccum.push(event);
+          await onToolCall?.(event);
+          const modelResult = contextTrust === "enforce"
+            ? renderRuntimeToolResult(call.toolName, call.toolCallId, result)
+            : result;
+          messages.push({
+            role: "tool",
+            content: [{
+              type: "tool-result",
               toolCallId: call.toolCallId,
               toolName: call.toolName,
-              input: callArgs,
-            },
+              output: isError
+                ? { type: "error-text" as const, value: modelResult }
+                : { type: "text" as const, value: modelResult },
+            }],
+          });
+        };
+
+        if (options.parallelToolCalls === true) {
+          const localCalls = dispatchableToolCalls
+            .filter((call) => !providerToolNames.has(call.toolName))
+            .map((call) => ({
+              toolCallId: call.toolCallId,
+              toolName: call.toolName,
+              input: call.input as Record<string, unknown>,
+            }));
+          const localResults = await executeCompletionToolBatch({
+            calls: localCalls,
             executor: executeTool,
             signal: options.signal,
+            onCalling: async (call) => {
+              await onToolCall?.({
+                id: call.toolCallId,
+                name: call.toolName,
+                arguments: call.input,
+                state: "calling",
+              });
+            },
           });
-          await appendLocalResult(call, callArgs, local.result, local.isError);
+          let localResultIndex = 0;
+          for (const call of dispatchableToolCalls) {
+            if (providerToolNames.has(call.toolName)) {
+              const event = providerToolCallEvent(call, providerToolResults);
+              toolCallsAccum.push(event);
+              await onToolCall?.(event);
+              continue;
+            }
+            const local = localResults[localResultIndex++]!;
+            await appendLocalResult(call, local.input, local.result, local.isError);
+          }
+          await dispatchCompletionRuntimeHook(runtimeHooks, "tool:batch:after", {
+            count: localResults.length,
+            tools: localCalls.map((call) => call.toolName),
+          });
+        } else {
+          for (const call of dispatchableToolCalls) {
+            const callArgs = call.input as Record<string, unknown>;
+            if (providerToolNames.has(call.toolName)) {
+              const event = providerToolCallEvent(call, providerToolResults);
+              toolCallsAccum.push(event);
+              await onToolCall?.(event);
+              continue;
+            }
+
+            await onToolCall?.({
+              id: call.toolCallId,
+              name: call.toolName,
+              arguments: callArgs,
+              state: "calling",
+            });
+            const local = await executeCompletionToolCall({
+              call: {
+                toolCallId: call.toolCallId,
+                toolName: call.toolName,
+                input: callArgs,
+              },
+              executor: executeTool,
+              signal: options.signal,
+            });
+            await appendLocalResult(call, callArgs, local.result, local.isError);
+          }
         }
+        gatePhase = "operational";
+        await checkpoint();
+        if (stalledToolLoop) break;
       }
-      if (stalledToolLoop) break;
+
+      await options.steering?.setBoundary({ open: false, reservable: false });
+
+      if (stalledToolLoop) {
+        throw new LoopAgentOutputError(
+          "tool_loop_stalled",
+          stepName,
+          stalledToolLoop.message,
+          {
+            phase: "tool_progress",
+            tool: stalledToolLoop.toolName,
+            fingerprint: stalledToolLoop.fingerprint,
+            observation: stalledToolLoop.observation,
+          },
+        );
+      }
+
+      if (
+        outputSchema !== undefined
+        && !completedStructuredOutput
+        && toolCallsAccum.some((toolCall) => toolCall?.state === "completed")
+      ) {
+        await completeTerminalStructuredOutput();
+      }
+
+      if (outputSchema !== undefined && !completedStructuredOutput) {
+        throw new LoopAgentOutputError(
+          "loop_agent_output_invalid",
+          stepName,
+          `Agent step ${JSON.stringify(stepName)} exhausted maxTurns before producing structured output`,
+          { phase: "max_turns" },
+        );
+      }
+
+      if (gate) {
+        if (gatePhase === "accepted") break gateLoop;
+        const attempt = gate.beginAttempt();
+        gatePhase = "validating";
+        await checkpoint();
+        deps.emit("runtime:termination-gate", { runId: options.runId, sessionId: options.sessionId, step: stepName, attempt, phase: "validating" });
+        const decision = await dispatchCompletionRuntimeHook(runtimeHooks, "turn:stop", {
+          terminationAttempt: attempt, correctionCycle: gate.snapshot().cycles,
+          textLength: finalText.length, toolCallCount: toolCallsAccum.length,
+          candidate: { text: finalText, ...(outputSchema !== undefined ? { output: finalOutput } : {}) },
+        });
+        options.signal?.throwIfAborted();
+        const feedback = gate.decide(decision, maxTurns - nextTurn);
+        if (feedback !== undefined) {
+          messages.push({ role: "user", content: feedback });
+          finalText = "";
+          finalOutput = undefined;
+          completedStructuredOutput = false;
+          gatePhase = "operational";
+          await checkpoint();
+          deps.emit("runtime:termination-gate", { runId: options.runId, sessionId: options.sessionId, step: stepName, attempt, phase: "continuing" });
+          continue gateLoop;
+        }
+        gatePhase = "accepted";
+        await checkpoint();
+        deps.emit("runtime:termination-gate", { runId: options.runId, sessionId: options.sessionId, step: stepName, attempt, phase: "accepted" });
+        break gateLoop;
+      }
+      break gateLoop;
     }
 
-    await options.steering?.setBoundary({ open: false, reservable: false });
-
-    if (stalledToolLoop) {
-      throw new LoopAgentOutputError(
-        "tool_loop_stalled",
-        stepName,
-        stalledToolLoop.message,
-        {
-          phase: "tool_progress",
-          tool: stalledToolLoop.toolName,
-          fingerprint: stalledToolLoop.fingerprint,
-          observation: stalledToolLoop.observation,
-        },
-      );
-    }
-
-    if (
-      outputSchema !== undefined
-      && !completedStructuredOutput
-      && toolCallsAccum.some((toolCall) => toolCall?.state === "completed")
-    ) {
-      await completeTerminalStructuredOutput();
-    }
-
-    if (outputSchema !== undefined && !completedStructuredOutput) {
-      throw new LoopAgentOutputError(
-        "loop_agent_output_invalid",
-        stepName,
-        `Agent step ${JSON.stringify(stepName)} exhausted maxTurns before producing structured output`,
-        { phase: "max_turns" },
-      );
-    }
-
-    const stopDecision = await dispatchCompletionRuntimeHook(runtimeHooks, "turn:stop", {
+    const stopDecision = gate ? { action: "allow" as const } : await dispatchCompletionRuntimeHook(runtimeHooks, "turn:stop", {
       textLength: finalText.length,
       toolCallCount: toolCallsAccum.length,
     });
@@ -1177,16 +1305,22 @@ export async function runAgentStepCompletion(options: {
       text: finalText,
       reasoning: finalReasoning,
       output: outputSchema !== undefined ? finalOutput : maybeParseJson(finalText),
-      usage: totalUsage,
+      usage: options.resume ? {
+        inputTokens: Math.max(0, (totalUsage.inputTokens ?? 0) - (options.resume.usage.inputTokens ?? 0)),
+        outputTokens: Math.max(0, (totalUsage.outputTokens ?? 0) - (options.resume.usage.outputTokens ?? 0)),
+        totalTokens: Math.max(0, (totalUsage.totalTokens ?? 0) - (options.resume.usage.totalTokens ?? 0)),
+      } as LanguageModelUsage : totalUsage,
       model: m.id ?? m.provider,
       resolvedModel: completionResolvedModelInfo(m),
       providerMetadata: lastProviderMetadata,
       toolCalls: toolCallsAccum,
     };
   } catch (error) {
+    if (gate) deps.emit("runtime:termination-gate", { runId: options.runId, sessionId: options.sessionId, step: stepName, attempt: gate.snapshot().attempts, phase: "failed", code: error instanceof TerminationGateError ? error.code : "execution_failed" });
     await dispatchCompletionRuntimeHook(runtimeHooks, "turn:error", {
       error: error instanceof Error ? error.message : String(error),
-    });
+    }).catch(() => {});
+    if (gate && options.signal?.aborted && !callerSignal?.aborted) throw new TerminationGateError("termination_gate_time_exhausted", "Termination gate time limit exhausted");
     throw error;
   } finally {
     await options.steering?.setBoundary({ open: false, reservable: false });

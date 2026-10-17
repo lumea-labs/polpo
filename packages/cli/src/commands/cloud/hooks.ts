@@ -99,6 +99,7 @@ export function registerHooksCommand(program: Command): void {
       clack.log.info(`Surfaces\t${capabilities.surfaces.join(", ")}`);
       clack.log.info(`Events\t${capabilities.events.length}`);
       clack.log.info(`Replay\t${capabilities.durableReplay ? "durable" : "unavailable"}`);
+      clack.log.info(`Termination gate\t${capabilities.terminationGate ? "supported (check managed rollout in --json)" : "unavailable"}`);
       clack.log.info(`File events\t${capabilities.fileEvents}`);
     });
 }

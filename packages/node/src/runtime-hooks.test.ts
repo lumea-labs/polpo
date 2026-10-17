@@ -2,7 +2,7 @@ import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { RuntimeHookValidationError } from "@polpo-ai/core/runtime-hooks";
+import { RuntimeHookValidationError, createRuntimeHookEnvelope } from "@polpo-ai/core/runtime-hooks";
 import {
   createNodeRuntimeHookHost,
   createProjectRuntimeHookEngine,
@@ -139,8 +139,8 @@ describe("Node runtime hooks", () => {
     await host.execute({ ...base, hook: { id: "mcp", event: "tool:before", handler: { type: "mcp_tool", connection: "drive", tool: "inspect" } } });
     await host.execute({ ...base, hook: { id: "prompt", event: "tool:before", handler: { type: "prompt", prompt: "Review", maxOutputTokens: 128 } } });
     await host.execute({ ...base, hook: { id: "agent", event: "tool:before", handler: { type: "agent", agent: "reviewer", prompt: "Review", allowedTools: ["read"], maxTurns: 2 } } });
-    expect(invokeTool).toHaveBeenCalledWith("policy", expect.objectContaining({ level: "strict", hook: envelope }), expect.any(AbortSignal));
-    expect(invokeMcpTool).toHaveBeenCalledWith("drive", "inspect", expect.objectContaining({ hook: envelope }), expect.any(AbortSignal));
+    expect(invokeTool).toHaveBeenCalledWith("policy", expect.objectContaining({ level: "strict", hook: envelope }), expect.any(AbortSignal), { idempotencyKey: "idem-1" });
+    expect(invokeMcpTool).toHaveBeenCalledWith("drive", "inspect", expect.objectContaining({ hook: envelope }), expect.any(AbortSignal), { idempotencyKey: "idem-1" });
     expect(runPrompt).toHaveBeenCalledWith(expect.objectContaining({
       prompt: "Review", model: undefined, maxOutputTokens: 128,
       envelope: expect.objectContaining({ event: "tool:before" }),
@@ -184,4 +184,22 @@ describe("Node runtime hooks", () => {
     await engine!.dispatch({ event: "input:before", surface: "chat" });
     expect(calls).toEqual(["one/same", "two/same"]);
   });
+});
+
+
+it("uses trusted invocation resources instead of resolving a second tool or sandbox", async () => {
+  const defaultShell = { execute: vi.fn() };
+  const activeShell = { execute: vi.fn(async () => ({ stdout: '{"decision":{"action":"allow"}}', stderr: "", exitCode: 0 })) };
+  const invokeTool = vi.fn();
+  const activeTool = vi.fn(async () => '{"decision":{"action":"continue","feedback":{"errors":["fix"]}}}');
+  const host = createNodeRuntimeHookHost({ shell: defaultShell, cwd: "/default", invokeTool });
+  const envelope = createRuntimeHookEnvelope({ event: "turn:stop", surface: "loop", identity: { runId: "same-run" }, data: { terminationAttempt: 1 } });
+  const common = { envelope, idempotencyKey: "same-attempt", signal: new AbortController().signal, resources: { shell: activeShell, cwd: "/working-copy", executeTool: activeTool } };
+  const result = await host.execute({ ...common, hook: { id: "validator", event: "turn:stop", handler: { type: "tool", tool: "validate" } } });
+  expect(result).toMatchObject({ decision: { action: "continue" } });
+  expect(activeTool).toHaveBeenCalledWith("validate", { hook: envelope }, expect.objectContaining({ callId: "same-attempt" }));
+  expect(invokeTool).not.toHaveBeenCalled();
+  await host.execute({ ...common, hook: { id: "command-validator", event: "turn:stop", handler: { type: "command", command: "validate" } } });
+  expect(activeShell.execute).toHaveBeenCalledWith("validate", expect.objectContaining({ cwd: "/working-copy" }));
+  expect(defaultShell.execute).not.toHaveBeenCalled();
 });

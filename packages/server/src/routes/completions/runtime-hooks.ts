@@ -14,6 +14,7 @@ export interface CompletionRuntimeHookContext {
   dispatcher?: RuntimeHookDispatcher;
   surface: RuntimeHookSurface;
   identity: RuntimeHookIdentity;
+  signal?: AbortSignal;
 }
 
 export async function dispatchCompletionRuntimeHook(
@@ -26,6 +27,7 @@ export async function dispatchCompletionRuntimeHook(
     event,
     surface: context.surface,
     identity: context.identity,
+    signal: context.signal,
     data,
   });
   return result.decision;
@@ -104,7 +106,7 @@ export function runtimeHookDecisionError(decision: RuntimeHookDecision): Error |
     ? decision.reason
     : decision.action === "ask" || decision.action === "defer"
       ? decision.reason
-      : decision.reason ?? "Runtime hook stopped execution";
+      : "reason" in decision ? decision.reason ?? "Runtime hook stopped execution" : "Continuation requires an active termination gate";
   return new Error(`Runtime hook ${decision.action}: ${message}`);
 }
 
