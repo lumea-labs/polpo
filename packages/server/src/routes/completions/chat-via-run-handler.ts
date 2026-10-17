@@ -16,6 +16,7 @@
  * recorded for session observability but never surfaced as local execution.
  */
 import type { Context } from "hono";
+import { completionRuntimeErrorEnvelope } from "./runtime-error.js";
 import { streamSSE } from "hono/streaming";
 import type { ChatSessionInjection } from "@polpo-ai/core";
 import type { ChatSuggestion } from "@polpo-ai/core/chat-interactions";
@@ -494,7 +495,7 @@ export async function executeStreamingChatViaRun(
         const structuredOutput = structuredOutputErrorEnvelope(state.errorEvent, structuredResponse);
         const guardrail = guardrailErrorEnvelope(state.errorEvent);
         const notFound = modelNotFoundEnvelope(state.errorEvent, m?.id, body.agent);
-        const error = structuredOutput ?? guardrail ?? notFound ?? modelErrorEnvelope(state.errorEvent);
+        const error = completionRuntimeErrorEnvelope(state.errorEvent)?.error ?? structuredOutput ?? guardrail ?? notFound ?? modelErrorEnvelope(state.errorEvent);
         await stream.writeSSE({ data: sseChunk(completionId, {}, "stop", { error }) });
         await stream.writeSSE({ data: "[DONE]" });
       } else if (state.clientReturn) {
@@ -563,7 +564,11 @@ export async function executeStreamingChatViaRun(
         const structuredOutput = structuredOutputErrorEnvelope(err, structuredResponse);
         const guardrail = guardrailErrorEnvelope(err);
         const notFound = modelNotFoundEnvelope(err, m?.id, body.agent);
-        if (structuredOutput) {
+        const runtimeError = completionRuntimeErrorEnvelope(err);
+        if (runtimeError) {
+          await stream.writeSSE({ data: sseChunk(completionId, {}, "stop", { error: runtimeError.error }) });
+          await stream.writeSSE({ data: "[DONE]" });
+        } else if (structuredOutput) {
           await stream.writeSSE({ data: sseChunk(completionId, {}, "stop", { error: structuredOutput }) });
           await stream.writeSSE({ data: "[DONE]" });
         } else if (guardrail) {
@@ -649,6 +654,8 @@ export async function runNonStreamingChatViaRun(c: Context, execution: ChatCompl
       });
     }
     if (state.errorEvent) {
+      const runtimeError = completionRuntimeErrorEnvelope(state.errorEvent);
+      if (runtimeError) return c.json({ error: runtimeError.error }, runtimeError.status as any);
       const structuredOutput = structuredOutputErrorEnvelope(
         state.errorEvent,
         isStructuredResponseFormat(body.response_format),
@@ -678,6 +685,8 @@ export async function runNonStreamingChatViaRun(c: Context, execution: ChatCompl
     ));
   } catch (err) {
     state.errorEvent ??= { message: err instanceof Error ? err.message : String(err) };
+    const runtimeError = completionRuntimeErrorEnvelope(err);
+    if (runtimeError) return c.json({ error: runtimeError.error }, runtimeError.status as any);
     const structuredOutput = structuredOutputErrorEnvelope(
       err,
       isStructuredResponseFormat(body.response_format),
@@ -797,7 +806,7 @@ export async function runChatTurnViaRun(
     );
     const guardrail = guardrailErrorEnvelope(state.errorEvent);
     const notFound = modelNotFoundEnvelope(state.errorEvent, m?.id, body.agent);
-    error = structuredOutput ?? guardrail ?? notFound ?? modelErrorEnvelope(state.errorEvent);
+    error = completionRuntimeErrorEnvelope(state.errorEvent)?.error ?? structuredOutput ?? guardrail ?? notFound ?? modelErrorEnvelope(state.errorEvent);
   }
 
   return {

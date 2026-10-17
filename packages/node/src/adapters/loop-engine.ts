@@ -72,6 +72,7 @@ import {
   type ToolResult,
   extractToolUsageRecord,
 } from "@polpo-ai/core";
+import { TerminationGate, TerminationGateError } from "@polpo-ai/core/runtime-hooks";
 import type { LoopToolCall, LoopConfig, LoopResumeState, ProjectLoopConfig } from "@polpo-ai/core";
 import type { PreparedLoopAgentInput } from "@polpo-ai/core";
 import type {
@@ -230,7 +231,7 @@ function usableResumeState(resume: LoopResumeState | undefined, loopName: string
   if (!resume) return undefined;
   if (resume.pipelineName) return undefined;
   if (resume.loopName !== loopName) return undefined;
-  if (typeof resume.turn !== "number" || resume.turn < 0) return undefined;
+  if (!Number.isSafeInteger(resume.turn) || resume.turn! < (resume.terminationGate ? -1 : 0)) return undefined;
   if (!Array.isArray(resume.history) || resume.history.length === 0) return undefined;
   return resume;
 }
@@ -385,6 +386,7 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
   async function performToolCall(
     pt: PolpoTool | undefined,
     toolCall: LoopToolCall,
+    signal = abortController.signal,
   ): Promise<{ llmText: string; isError: boolean; error?: Error }> {
     let result: ToolResult = {
       content: [{ type: "text", text: `Unknown tool: ${toolCall.name}` }],
@@ -427,7 +429,7 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
           result = await pt.execute(
             toolCall.id,
             validation.value as Record<string, unknown>,
-            abortController.signal,
+            signal,
           );
         } catch (err) {
           isError = true;
@@ -557,14 +559,40 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
     graphSteeringPolicy?: SteeringPolicy;
     /** A Project Loop keeps best-effort messages alive for a later agentic node. */
     retainPendingSteeringOnFinish?: boolean;
+    requireGateCheckpoint?: boolean;
+    projectLoopName?: string;
+    onGateActivated?: () => void;
   }): Promise<{ lastText: string; accumText: string }> {
     const { sessionAgent, loopName, loop, contextPrompt } = options;
     let sessionCleanup: (() => Promise<void>) | undefined;
     let agentHookStarted = false;
     let sandboxHookStarted = false;
+    let sessionSignal = abortController.signal;
     try {
     const resume = usableResumeState(options.resume, loopName);
+    if (options.resume?.terminationGate && !resume) throw new TerminationGateError("termination_gate_checkpoint_invalid", "Invalid termination checkpoint; refusing to restart the agent");
+    if (resume?.terminationGate && (!resume.terminationInvocationId || !["operational", "validating", "accepted", "in_flight"].includes(resume.terminationPhase ?? "")
+      || (resume.terminationPhase === "validating") !== Boolean(resume.terminationGate.pending)
+      || (resume.terminationPhase === "accepted") !== Boolean(resume.terminationGate.accepted))) {
+      throw new TerminationGateError("termination_gate_checkpoint_invalid", "Inconsistent termination checkpoint");
+    }
+    if (resume?.terminationPhase === "in_flight") throw new TerminationGateError("termination_gate_effect_unconfirmed", "An interrupted model/tool operation may have committed effects; reconcile before retrying");
     const inject = ctx?.inject;
+    const invocationId = resume?.terminationInvocationId ?? crypto.randomUUID();
+    const gateIdentity = { turnId: invocationId, runId: ctx?.runId ?? task.id, sessionId: inject?.sessionId, agent: sessionAgent.name, loop: options.projectLoopName ?? loopName, step: loopName };
+    const gatePolicy = runtimeHooks?.getTerminationGatePolicy?.({
+      surface: inject?.runtimeHookSurface ?? ctx?.runtimeHookSurface ?? (inject ? "chat" : "task"), identity: gateIdentity,
+    });
+    if (resume?.terminationGate && !gatePolicy) throw new TerminationGateError("termination_gate_checkpoint_invalid", "Cannot resume a termination gate without its policy");
+    const gate = gatePolicy ? new TerminationGate(gatePolicy, resume?.terminationGate) : undefined;
+    if (gate && options.requireGateCheckpoint && !options.onCheckpoint) throw new TerminationGateError("termination_gate_parallel_unsupported", "Durable termination gates require a sequential agent step");
+    if (gate) options.onGateActivated?.();
+    if (gate && resume?.terminationPhase !== "accepted") {
+      gate.assertAvailable();
+      sessionSignal = AbortSignal.any([abortController.signal, AbortSignal.timeout(gate.remainingMs)]);
+    }
+    let gatePhase: NonNullable<LoopResumeState["terminationPhase"]> = resume?.terminationPhase ?? "operational";
+    let lastCompletedTurn = resume?.turn ?? -1;
     await dispatchRuntimeHook("run:start", { loop: loopName, resumed: Boolean(resume) }, { agent: sessionAgent.name, loop: loopName });
     await dispatchRuntimeHook(resume ? "session:resume" : "session:start", {
       loop: loopName,
@@ -625,7 +653,7 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
         ? `${prep.systemPrompt}\n\n${contextPrompt}`
         : prep.systemPrompt;
       maxTurns = loop.maxTurns ?? prep.maxTurns;
-      const resolved = await buildAgentTools(sessionAgent, cwd, prep, ctx, { signal: abortController.signal,
+      const resolved = await buildAgentTools(sessionAgent, cwd, prep, ctx, { signal: sessionSignal,
         policy: { loop: options.projectAllowedTools, step: loop.allowedTools ?? loop.tools } });
       toolCleanups.add(resolved.cleanup);
       sessionCleanup = resolved.cleanup;
@@ -636,6 +664,11 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
     }
     if (inputDecision.action === "modify" && typeof inputDecision.data.context === "string" && inputDecision.data.context.trim()) {
       systemPrompt += `\n\n## Runtime hook context\n\n${inputDecision.data.context.trim()}`;
+    }
+    const gateConfiguration = JSON.stringify({ sessionAgent, loop, toolNames: Object.keys(toolSet).sort() });
+    if (gate && resume?.terminationGate) {
+      if (resume.terminationConfiguration !== gateConfiguration || typeof resume.terminationSystemPrompt !== "string") throw new TerminationGateError("termination_gate_checkpoint_invalid", "Agent configuration changed since its termination checkpoint");
+      systemPrompt = resume.terminationSystemPrompt;
     }
     const primaryResolved = { model, providerOptions };
     const modelSelection =
@@ -653,10 +686,10 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
     // On resume the recorded history (already containing tool-call and
     // tool-result pairs from completed turns) replaces the fresh prompt —
     // side-effects replay from recorded results, they never re-execute.
-    let messages: ModelMessage[] = normalizeResponseMessagesForHistory(inject
-      ? [...(inject.seedMessages as ModelMessage[])]
-      : resume
-        ? [...(resume.history as ModelMessage[])]
+    let messages: ModelMessage[] = normalizeResponseMessagesForHistory(resume
+      ? [...(resume.history as ModelMessage[])]
+      : inject
+        ? [...(inject.seedMessages as ModelMessage[])]
         : [{
             role: "user",
             content: options.initialUserMessage ?? buildPrompt(
@@ -668,9 +701,9 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
     if (contextTrust === "enforce") {
       messages = protectRuntimeToolResultMessages(messages);
     }
-    let lastStepText = "";
+    let lastStepText = resume?.terminalCandidate ?? "";
     let accumText = resume?.accumText ?? "";
-    let completedStructuredOutput = false;
+    let completedStructuredOutput = Boolean(gate && gatePhase !== "operational" && hasStructuredOutput);
     let interruptedForClientTool = false;
     const providerToolResults = new Map<string, { content: string; isError: boolean }>();
 
@@ -681,14 +714,16 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
     };
 
     const summarize: SummarizeFn = async (msgs, compactionPrompt) => {
+      gate?.assertAvailable();
       const response = await generateText({
         model: model.aiModel,
         system: compactionPrompt,
         messages: prepareModelMessagesForTransport(msgs, model.aiModel),
-        maxOutputTokens: model.maxTokens,
-        abortSignal: abortController.signal,
+        maxOutputTokens: gate ? Math.min(model.maxTokens, gate.remainingTokens) : model.maxTokens,
+        abortSignal: sessionSignal,
         providerOptions,
       });
+      gate?.recordUsage(response.usage);
       return response.text;
     };
 
@@ -707,6 +742,8 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
       let originalDiagnostic: ReturnType<typeof classifyRuntimeError> | undefined;
 
       for (let attemptIndex = 0; attemptIndex < 2; attemptIndex += 1) {
+        gate?.assertAvailable();
+        sessionSignal.throwIfAborted();
         const isRecovery = attemptIndex === 1;
         const resolvedAttempts = new Map<number, Pick<SpawnPrep, "model" | "providerOptions">>();
         try {
@@ -726,7 +763,7 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
               resolvedAttempts.set(attempt.index, resolvedAttempt);
               return {
                 model: resolvedAttempt.model.aiModel,
-                maxOutputTokens: resolvedAttempt.model.maxTokens,
+                maxOutputTokens: gate ? Math.min(resolvedAttempt.model.maxTokens, gate.remainingTokens) : resolvedAttempt.model.maxTokens,
                 providerOptions: resolvedAttempt.providerOptions,
                 capabilities: resolvedAttempt.model.capabilities,
               };
@@ -741,10 +778,11 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
             system: systemPrompt,
             messages: terminalMessages(isRecovery),
             output: modelOutput as any,
-            abortSignal: abortController.signal,
+            abortSignal: sessionSignal,
             }),
             (result: any) => ({ finishReason: result.finishReason, toolCallCount: result.toolCalls?.length ?? 0 }),
           );
+          gate?.recordUsage(terminal.usage);
           if (terminal.toolCalls.length > 0 || terminal.output === undefined) {
             throw new Error(
               terminal.toolCalls.length > 0
@@ -781,7 +819,7 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
                   source: "task",
                   surface: "task",
                 },
-                signal: abortController.signal,
+                signal: sessionSignal,
               })).output
             : rawText;
           if (outputSchema !== undefined) {
@@ -792,7 +830,8 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
             ).serialized;
           }
 
-          if (guardedText) {
+          if (gate && guardedText) messages.push({ role: "assistant", content: guardedText });
+          if (guardedText && !gate) {
             try { ctx?.onDelta?.({ text: guardedText }); } catch { /* subscriber can't sink the run */ }
             activity.summary = guardedText.slice(0, 200);
             emitTranscript({ type: "assistant", text: guardedText });
@@ -809,6 +848,7 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
           }
           return;
         } catch (error) {
+          if (error instanceof TerminationGateError || sessionSignal.aborted) throw error;
           if (!isRecovery) {
             originalDiagnostic = classifyRuntimeError(error);
             continue;
@@ -833,9 +873,15 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
 
     // ── LoopRunner model callback: one model turn per runner step ──
     const modelStep = async (): Promise<LoopModelResult> => {
+      gate?.assertAvailable();
+      if (gate) {
+        sessionSignal.throwIfAborted();
+        gatePhase = "in_flight";
+        await writeSessionCheckpoint?.({ turn: lastCompletedTurn });
+      }
       // Abort between turns mirrors the legacy `if (aborted) break`:
       // report no tool calls so the runner stops cleanly (exit 0).
-      if (abortController.signal.aborted) {
+      if (sessionSignal.aborted) {
         return { text: "", toolCalls: [] };
       }
 
@@ -903,7 +949,7 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
             resolvedAttempts.set(attempt.index, resolvedAttempt);
             return {
               model: resolvedAttempt.model.aiModel,
-              maxOutputTokens: resolvedAttempt.model.maxTokens,
+              maxOutputTokens: gate ? Math.min(resolvedAttempt.model.maxTokens, gate.remainingTokens) : resolvedAttempt.model.maxTokens,
               providerOptions: resolvedAttempt.providerOptions,
               capabilities: resolvedAttempt.model.capabilities,
             };
@@ -921,7 +967,7 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
           ...(inject?.parallelToolCalls !== undefined
             ? { parallelToolCalls: inject.parallelToolCalls }
             : {}),
-          abortSignal: abortController.signal,
+          abortSignal: sessionSignal,
         }, (event) => {
         switch (event.type) {
           case "warning": {
@@ -941,7 +987,7 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
             stepText += event.text;
             // F1b: token-level streaming sink (separate from onTranscript, which
             // stays turn-granularity for persistence). Best-effort.
-            if (!hasStructuredOutput) {
+            if (!hasStructuredOutput && !gate) {
               try { ctx?.onDelta?.({ text: event.text }); } catch { /* a delta subscriber can't sink the run */ }
             }
             break;
@@ -1079,6 +1125,7 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
       }
 
       const stepUsage = turn.usage;
+      gate?.recordUsage(stepUsage);
       const selectedResolved = resolvedAttempts.get(turn.selectedAttempt.index);
       if (selectedResolved) {
         model = selectedResolved.model;
@@ -1105,11 +1152,11 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
               source: "task",
               surface: "task",
             },
-            signal: abortController.signal,
+            signal: sessionSignal,
           })).output
         : rawText;
 
-      if (guardedText) {
+      if (guardedText && !gate) {
         activity.summary = guardedText.slice(0, 200);
         emitTranscript({ type: "assistant", text: guardedText });
         accumText += guardedText;
@@ -1183,12 +1230,12 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
         });
         llmText = await inject.executor(toolCall.name, toolCall.args, {
           callId: toolCall.id,
-          signal: abortController.signal,
+          signal: sessionSignal,
         });
         isError = llmText.startsWith("Error:");
         emitTranscript({ type: "tool_result", toolId: toolCall.id, tool: toolCall.name, content: llmText, isError });
       } else {
-        ({ llmText, isError } = await performToolCall(toolByName.get(toolCall.name), toolCall));
+        ({ llmText, isError } = await performToolCall(toolByName.get(toolCall.name), toolCall, sessionSignal));
       }
 
       return llmText;
@@ -1200,15 +1247,18 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
     // the START of a model step). The JSON round-trip here pins store
     // fidelity: what a resumed run sees is exactly what survives JSON.
     const checkpointCreatedAt = resume?.createdAt ?? new Date().toISOString();
-    const onTurnCheckpoint = options.onCheckpoint
+    const writeSessionCheckpoint = options.onCheckpoint
       ? async ({ turn, steering }: { turn: number; steering?: SteeringQueueSnapshot }) => {
           const serialized = JSON.stringify({ messages, steering });
-          if (serialized.length > MAX_CHECKPOINT_BYTES) return; // keep the previous checkpoint
+          if (serialized.length > MAX_CHECKPOINT_BYTES) {
+            if (gate) throw new TerminationGateError("termination_gate_checkpoint_too_large", "Termination gate history exceeds the checkpoint limit");
+            return;
+          }
           const checkpoint = JSON.parse(serialized) as {
             messages: unknown[];
             steering?: SteeringQueueSnapshot;
           };
-          await options.onCheckpoint!({
+          const state: LoopResumeState = {
             context: {},
             steps: [],
             loopName,
@@ -1216,14 +1266,61 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
             history: checkpoint.messages,
             accumText,
             steering: checkpoint.steering,
+            ...(gate ? { terminationGate: gate.snapshot(), terminationPhase: gatePhase, terminalCandidate: lastStepText, terminationInvocationId: invocationId, terminationConfiguration: gateConfiguration, terminationSystemPrompt: systemPrompt } : {}),
             createdAt: checkpointCreatedAt,
             updatedAt: new Date().toISOString(),
-          });
+          };
+          if (gate && JSON.stringify(state).length > MAX_CHECKPOINT_BYTES) throw new TerminationGateError("termination_gate_checkpoint_too_large", "Termination gate checkpoint exceeds the persistence limit");
+          await options.onCheckpoint!(state);
         }
       : undefined;
 
+    const onTurnCheckpoint = writeSessionCheckpoint ? async (state: { turn: number; steering?: SteeringQueueSnapshot }) => {
+      lastCompletedTurn = state.turn;
+      if (gatePhase === "in_flight") gatePhase = "operational";
+      await writeSessionCheckpoint(state);
+    } : undefined;
+
+    const evaluateGate = async ({ turn, remainingTurns }: { turn: number; remainingTurns: number }): Promise<boolean> => {
+      if (!gate) return true;
+      sessionSignal.throwIfAborted();
+      if (hasStructuredOutput && !completedStructuredOutput) {
+        gatePhase = "in_flight";
+        await writeSessionCheckpoint?.({ turn });
+        await completeTerminalStructuredOutput();
+      }
+      const attempt = gate.beginAttempt();
+      gatePhase = "validating";
+      await writeSessionCheckpoint?.({ turn });
+      emitTranscript({ type: "termination_gate", phase: "validating", attempt, loop: loopName });
+      const decision = (await runtimeHooks!.dispatch({ event: "turn:stop", signal: sessionSignal, surface: inject?.runtimeHookSurface ?? ctx?.runtimeHookSurface ?? (inject ? "chat" : "task"), identity: gateIdentity,
+        // Injected chat owns its tools/sandbox in the host adapter. ctx.shell
+        // may only be executeRun's local fallback, never override that host.
+        resources: { ...(!inject ? { shell: ctx?.shell, cwd } : {}), executeTool: async (name, input, execution) => {
+          if (inject) {
+            if (inject.clientSideToolNames.has(name)) throw new Error("A termination validator must be a server-side tool");
+            return inject.executor(name, input, execution);
+          }
+          return (await performToolCall(toolByName.get(name), { id: execution.callId, name, args: input }, execution.signal)).llmText;
+        } }, data: {
+        terminationAttempt: attempt, correctionCycle: gate.snapshot().cycles,
+        loop: loopName, textLength: lastStepText.length, candidate: { text: lastStepText, ...(hasStructuredOutput ? { output: JSON.parse(lastStepText) } : {}) },
+      } })).decision;
+      sessionSignal.throwIfAborted();
+      const feedback = gate.decide(decision, remainingTurns);
+      if (feedback !== undefined) {
+        messages.push({ role: "user", content: feedback });
+        lastStepText = "";
+        completedStructuredOutput = false;
+        gatePhase = "operational";
+      } else gatePhase = "accepted";
+      await writeSessionCheckpoint?.({ turn });
+      emitTranscript({ type: "termination_gate", phase: feedback === undefined ? "accepted" : "continuing", attempt, loop: loopName });
+      return feedback === undefined;
+    };
+    if (gatePhase === "validating") await evaluateGate({ turn: lastCompletedTurn, remainingTurns: maxTurns - lastCompletedTurn - 1 });
     const runner = new LoopRunner();
-    if (!(hasStructuredOutput && Object.keys(toolSet).length === 0)) {
+    if (gatePhase !== "accepted" && (gate || !(hasStructuredOutput && Object.keys(toolSet).length === 0))) {
       await runner.run({
       agent: sessionAgent,
       loop: { ...loop, name: loopName },
@@ -1277,6 +1374,12 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
       ]),
       retainPendingSteeringOnFinish: options.retainPendingSteeringOnFinish,
       onSteering: async (steeringMessages) => {
+        if (gate && gatePhase === "accepted") {
+          gate.resumeWork();
+          gatePhase = "operational";
+          completedStructuredOutput = false;
+          lastStepText = "";
+        }
         for (const message of steeringMessages) {
           messages.push(toSteeringModelMessage(message));
           emitTranscript({
@@ -1293,6 +1396,8 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
         }
       },
       onTurnCheckpoint,
+      checkpointRequired: Boolean(gate),
+      beforeStop: gate && !interruptedForClientTool ? async input => interruptedForClientTool ? true : evaluateGate(input) : undefined,
       });
     }
 
@@ -1300,7 +1405,7 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
       hasStructuredOutput
       && !completedStructuredOutput
       && !interruptedForClientTool
-      && !abortController.signal.aborted
+      && !sessionSignal.aborted
     ) {
       await completeTerminalStructuredOutput();
     }
@@ -1314,14 +1419,22 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
       );
     }
 
-    const stopDecision = await dispatchRuntimeHook("turn:stop", {
+    if (gate && !interruptedForClientTool) {
+      if (gatePhase !== "accepted") throw new TerminationGateError("termination_gate_turns_exhausted", "Agent ended without passing its termination gate");
+      accumText = lastStepText;
+      if (lastStepText) {
+        try { ctx?.onDelta?.({ text: lastStepText }); } catch { /* subscriber cannot sink the run */ }
+        emitTranscript({ type: "assistant", text: lastStepText });
+      }
+    }
+    const stopDecision = gate ? { action: "allow" as const } : await dispatchRuntimeHook("turn:stop", {
       loop: loopName,
       textLength: lastStepText.length,
     }, { agent: sessionAgent.name, loop: loopName });
     const stopError = decisionError(stopDecision);
     if (stopError && stopDecision.action !== "stop") throw stopError;
     const stopFeedback = stopDecision.action === "stop" ? stopDecision.feedback?.trim() : undefined;
-    if (stopFeedback && !hasStructuredOutput && !abortController.signal.aborted) {
+    if (stopFeedback && !hasStructuredOutput && !sessionSignal.aborted) {
       const resolvedAttempts = new Map<number, Pick<SpawnPrep, "model" | "providerOptions">>();
       const retry = await runHookedModel(
         { phase: "stop-feedback", retry: 1, model: model.id ?? model.provider },
@@ -1337,7 +1450,7 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
             resolvedAttempts.set(attempt.index, resolvedAttempt);
             return {
               model: resolvedAttempt.model.aiModel,
-              maxOutputTokens: resolvedAttempt.model.maxTokens,
+              maxOutputTokens: gate ? Math.min(resolvedAttempt.model.maxTokens, gate.remainingTokens) : resolvedAttempt.model.maxTokens,
               providerOptions: resolvedAttempt.providerOptions,
               capabilities: resolvedAttempt.model.capabilities,
             };
@@ -1357,7 +1470,7 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
           ],
           tools: {},
           toolChoice: "none",
-          abortSignal: abortController.signal,
+          abortSignal: sessionSignal,
         }),
         (result: any) => ({ finishReason: result.finishReason, toolCallCount: result.toolCalls?.length ?? 0 }),
       );
@@ -1373,7 +1486,7 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
           output: retryText,
           mode: ctx.runOutputPolicyMode ?? "enforce",
           context: { agent: sessionAgent.name, runId: ctx.runId, source: "task", surface: "task" },
-          signal: abortController.signal,
+          signal: sessionSignal,
         })).output;
       }
       if (retryText) {
@@ -1393,32 +1506,34 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
     }
     return { lastText: lastStepText, accumText };
     } catch (error) {
+      if (error instanceof TerminationGateError) emitTranscript({ type: "termination_gate", phase: "failed", loop: loopName, code: error.code });
       await dispatchRuntimeHook("turn:error", {
         loop: loopName,
         error: error instanceof Error ? error.message : String(error),
       }, { agent: sessionAgent.name, loop: loopName }).catch(() => {});
+      if (sessionSignal.aborted && !abortController.signal.aborted) throw new TerminationGateError("termination_gate_time_exhausted", "Termination gate time limit exhausted");
       throw error;
     } finally {
       if (sandboxHookStarted) {
         await dispatchRuntimeHook("sandbox:end", {
           cwd,
-          aborted: abortController.signal.aborted,
+          aborted: sessionSignal.aborted,
         }, { agent: sessionAgent.name, loop: loopName }).catch(() => {});
       }
       if (agentHookStarted) {
         await dispatchRuntimeHook("agent:end", {
           loop: loopName,
           source: ctx?.inject ? "chat-run" : "task-run",
-          aborted: abortController.signal.aborted,
+          aborted: sessionSignal.aborted,
         }, { agent: sessionAgent.name, loop: loopName }).catch(() => {});
       }
       await dispatchRuntimeHook("session:end", {
         loop: loopName,
-        aborted: abortController.signal.aborted,
+        aborted: sessionSignal.aborted,
       }, { agent: sessionAgent.name, loop: loopName }).catch(() => {});
       await dispatchRuntimeHook("run:end", {
         loop: loopName,
-        aborted: abortController.signal.aborted,
+        aborted: sessionSignal.aborted,
       }, { agent: sessionAgent.name, loop: loopName }).catch(() => {});
       if (sessionCleanup) {
         await sessionCleanup().catch(() => undefined);
@@ -1468,6 +1583,7 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
     // recorded continuation; anything else (absent, other pipeline, old
     // gate/session formats) starts fresh.
     const resume = usablePipelineResumeState(ctx?.resumeState, projectLoop.name);
+    if (ctx?.resumeState?.terminationGate && !resume) throw new TerminationGateError("termination_gate_checkpoint_invalid", "Termination checkpoint belongs to a different pipeline");
     // One-shot in-flight session resume: only the FIRST agent step the
     // resumed pipeline reaches may consume the turn-level fields (it is
     // steps[0] of the recorded continuation); runLoopSession re-validates
@@ -1476,6 +1592,7 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
       resume && typeof resume.turn === "number" && Array.isArray(resume.history) && resume.history.length > 0
         ? { ...resume, pipelineName: undefined }
         : undefined;
+    if (resume?.terminationGate && (!pendingSessionResume || (resume.steps[0] as any)?.loop !== resume.loopName)) throw new TerminationGateError("termination_gate_checkpoint_invalid", "Missing or mismatched in-flight agent checkpoint");
 
     // Composed checkpoint sink → ctx.onTurnCheckpoint (the runner wires it
     // to RunStore.updateResumeState). Same cap and JSON round-trip rules as
@@ -1486,7 +1603,10 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
     const writeCheckpoint = sink
       ? async (state: LoopResumeState): Promise<void> => {
           const serialized = JSON.stringify(state);
-          if (serialized.length > MAX_CHECKPOINT_BYTES) return; // keep the previous checkpoint
+          if (serialized.length > MAX_CHECKPOINT_BYTES) {
+            if (state.terminationGate) throw new TerminationGateError("termination_gate_checkpoint_too_large", "Termination gate checkpoint exceeds the pipeline limit");
+            return;
+          }
           await sink(JSON.parse(serialized) as LoopResumeState);
         }
       : undefined;
@@ -1499,6 +1619,7 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
     });
 
     let finalText = "";
+    let gateCheckpointRequired = Boolean(resume?.terminationGate);
     let toolStepSeq = 0;
     const executor = new PipelineExecutor();
 
@@ -1517,6 +1638,7 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
             approvedGates: resume.approvedGates,
           }
         : undefined,
+      checkpointRequired: () => gateCheckpointRequired,
       // (a) Step-boundary checkpoint: pure pipeline position, no session.
       onCheckpoint: writeCheckpoint
         ? async (checkpoint) => {
@@ -1556,6 +1678,9 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
           loop,
           graphSteeringPolicy: projectLoop.steering,
           retainPendingSteeringOnFinish: true,
+          requireGateCheckpoint: Boolean(writeCheckpoint),
+          projectLoopName: projectLoop.name,
+          onGateActivated: () => { gateCheckpointRequired = true; },
           contextPrompt: agentInput
             ? undefined
             : loopContextPrompt(

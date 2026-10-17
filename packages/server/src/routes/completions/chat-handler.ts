@@ -7,6 +7,7 @@
  * compaction, session persistence, and metering callbacks.
  */
 
+import { TerminationGate, TerminationGateError } from "@polpo-ai/core/runtime-hooks";
 import { streamSSE } from "hono/streaming";
 import {
   compactIfNeeded,
@@ -224,6 +225,8 @@ async function runChatTerminalOutputPhase(options: {
   systemPrompt?: string;
   messages: any[];
   signal?: AbortSignal;
+  gate?: TerminationGate;
+  onUsage?: (usage: LanguageModelUsage) => void;
 }) {
   const {
     exec, modelSelection, primaryModel, primaryProviderOpts,
@@ -245,6 +248,8 @@ async function runChatTerminalOutputPhase(options: {
 
   let originalDiagnostic: ReturnType<typeof classifyRuntimeError> | undefined;
   for (let attemptIndex = 0; attemptIndex < 2; attemptIndex += 1) {
+    options.gate?.assertAvailable();
+    signal?.throwIfAborted();
     const isRecovery = attemptIndex === 1;
     if (isRecovery) {
       const { raw: _raw, ...original } = originalDiagnostic!;
@@ -283,7 +288,7 @@ async function runChatTerminalOutputPhase(options: {
           resolvedAttempts.set(attempt.index, resolvedAttempt);
           return {
             model: resolvedAttempt.model.aiModel,
-            maxOutputTokens: resolvedAttempt.model.maxTokens,
+            maxOutputTokens: options.gate ? Math.min(resolvedAttempt.model.maxTokens, options.gate.remainingTokens) : resolvedAttempt.model.maxTokens,
             providerOptions: resolvedAttempt.providerOptions,
             capabilities: resolvedAttempt.model.capabilities,
           };
@@ -298,6 +303,8 @@ async function runChatTerminalOutputPhase(options: {
         ...(signal ? { abortSignal: signal } : {}),
         }),
       });
+      options.gate?.recordUsage(result.usage);
+      options.onUsage?.(result.usage);
       if (result.toolCalls.length > 0 || result.output === undefined) {
         throw new Error(
           result.toolCalls.length > 0
@@ -326,6 +333,7 @@ async function runChatTerminalOutputPhase(options: {
         resolved: resolvedAttempts.get(result.selectedAttempt.index),
       };
     } catch (error) {
+      if (error instanceof TerminationGateError || signal?.aborted) throw error;
       const diagnostic = classifyRuntimeError(error);
       if (!isRecovery) {
         originalDiagnostic = diagnostic;
@@ -434,6 +442,7 @@ export async function executeStreamingChatCompletion(
   exec: ChatCompletionExecution,
   signal: AbortSignal,
 ): Promise<void> {
+  const callerSignal = signal;
   const {
     deps, body, completionId, agentMode, fullSystemPrompt: initialSystemPrompt,
     m: primaryModel, providerOpts: primaryProviderOpts,
@@ -446,7 +455,14 @@ export async function executeStreamingChatCompletion(
   let providerOpts = primaryProviderOpts;
   const modelSelection = exec.modelSelection ?? modelSelectionForResolvedModel(primaryModel);
   const reasoning = exec.agentConfig?.reasoning ?? deps.getConfig()?.settings?.reasoning;
-  const outputMode = streamingOutputPolicyMode(deps.runOutputPolicy);
+  const outputMode = exec.runtimeHooks?.dispatcher?.getTerminationGatePolicy?.(exec.runtimeHooks) ? "buffer" : streamingOutputPolicyMode(deps.runOutputPolicy);
+  const gatePolicy = exec.runtimeHooks?.dispatcher?.getTerminationGatePolicy?.(exec.runtimeHooks);
+  const gate = gatePolicy ? new TerminationGate(gatePolicy) : undefined;
+  if (gate) signal = AbortSignal.any([callerSignal, AbortSignal.timeout(gate.remainingMs)]);
+  if (gate && exec.runtimeHooks) exec = { ...exec, runtimeHooks: { ...exec.runtimeHooks, signal } };
+  let gateAccepted = false;
+  let nextTurn = 0;
+  const maxTurns = exec.agentConfig?.maxTurns ?? MAX_TURNS;
   const structuredResponse = isStructuredResponseFormat(body.response_format);
 
     await stream.writeSSE({ data: sseChunk(completionId, { role: "assistant" }) });
@@ -521,13 +537,15 @@ export async function executeStreamingChatCompletion(
         reasoning,
         systemPrompt: fullSystemPrompt,
         messages,
+        gate,
+        onUsage: (usage) => { totalUsage = addChatUsage(totalUsage, usage); },
         signal,
       });
       if (terminal.resolved) {
         m = terminal.resolved.model;
         providerOpts = terminal.resolved.providerOptions;
       }
-      totalUsage = addChatUsage(totalUsage, terminal.result.usage);
+      if (gate) await appendModelResponseMessages(messages, terminal.result, terminal.result.text, [], exec.contextTrust);
       finalReasoning = appendReasoningSummary(finalReasoning, terminal.result.reasoning);
       lastProviderMetadata = terminal.result.providerMetadata as Record<string, unknown> | undefined;
       finalText = await serializeModelOutput(
@@ -561,14 +579,19 @@ export async function executeStreamingChatCompletion(
       if (inputError) throw inputError;
       const inputContext = runtimeHookModifiedString(inputDecision, "context");
       if (inputContext) fullSystemPrompt += `\n\n## Runtime hook context\n\n${inputContext}`;
+    gateLoop: while (true) {
       if (
         structuredResponse
         && Object.keys(aiTools).length === 0
       ) {
+        nextTurn += 1;
         await completeTerminalOutput();
       }
 
-      for (let turn = 0; !completedStructuredOutput && turn < MAX_TURNS; turn++) {
+      for (; !completedStructuredOutput && nextTurn < maxTurns;) {
+        const turn = nextTurn++;
+        gate?.assertAvailable();
+        signal.throwIfAborted();
         // Bail out early if the client already disconnected
         if (signal.aborted) break;
 
@@ -586,7 +609,7 @@ export async function executeStreamingChatCompletion(
             contextWindow: m.contextWindow ?? 200_000,
             maxOutputTokens: m.maxTokens ?? 8192,
           },
-          summarize: buildSummarizeFn(m, providerOpts),
+          summarize: buildSummarizeFn(m, providerOpts, { gate, signal, onUsage: (usage) => { totalUsage = addChatUsage(totalUsage, usage); } }),
           mode: "chat",
           onCompaction: async (event: CompactionEvent) => {
             await stream.writeSSE({
@@ -639,7 +662,7 @@ export async function executeStreamingChatCompletion(
             resolvedAttempts.set(attempt.index, resolvedAttempt);
             return {
               model: resolvedAttempt.model.aiModel,
-              maxOutputTokens: resolvedAttempt.model.maxTokens,
+              maxOutputTokens: gate ? Math.min(resolvedAttempt.model.maxTokens, gate.remainingTokens) : resolvedAttempt.model.maxTokens,
               providerOptions: resolvedAttempt.providerOptions,
               capabilities: resolvedAttempt.model.capabilities,
             };
@@ -738,6 +761,7 @@ export async function executeStreamingChatCompletion(
           providerOpts = selectedResolved.providerOptions;
         }
         totalUsage = addChatUsage(totalUsage, usage);
+        gate?.recordUsage(usage);
         lastProviderMetadata = result.providerMetadata as Record<string, unknown> | undefined;
 
         await appendModelResponseMessages(
@@ -1014,8 +1038,32 @@ export async function executeStreamingChatCompletion(
         await completeTerminalOutput();
       }
 
+      if (gate) {
+        signal.throwIfAborted();
+        const attempt = gate.beginAttempt();
+        deps.emit("runtime:termination-gate", { runId: completionId, sessionId, attempt, phase: "validating" });
+        const decision = await dispatchCompletionRuntimeHook(exec.runtimeHooks, "turn:stop", {
+          terminationAttempt: attempt, correctionCycle: gate.snapshot().cycles,
+          textLength: finalText.length, toolCallCount: toolCallsAccum.length,
+          candidate: { text: finalText, ...(structuredResponse ? { output: JSON.parse(finalText) } : {}) },
+        });
+        signal.throwIfAborted();
+        const feedback = gate.decide(decision, maxTurns - nextTurn);
+        if (feedback !== undefined) {
+          messages.push({ role: "user", content: feedback });
+          finalText = "";
+          completedStructuredOutput = false;
+          deps.emit("runtime:termination-gate", { runId: completionId, sessionId, attempt, phase: "continuing" });
+          continue gateLoop;
+        }
+        gateAccepted = true;
+        deps.emit("runtime:termination-gate", { runId: completionId, sessionId, attempt, phase: "accepted" });
+      }
+      break gateLoop;
+    }
+
       if (!signal.aborted) {
-        const stopDecision = await dispatchCompletionRuntimeHook(exec.runtimeHooks, "turn:stop", {
+        const stopDecision = gate ? { action: "allow" as const } : await dispatchCompletionRuntimeHook(exec.runtimeHooks, "turn:stop", {
           textLength: finalText.length,
           toolCallCount: toolCallsAccum.length,
         });
@@ -1072,11 +1120,16 @@ export async function executeStreamingChatCompletion(
         await stream.writeSSE({ data: "[DONE]" });
       }
     } catch (err) {
+    if (gate && !gateAccepted) {
+      finalText = "";
+      deps.emit("runtime:termination-gate", { runId: completionId, sessionId, attempt: gate.snapshot().attempts, phase: callerSignal.aborted ? "cancelled" : "failed", code: err instanceof TerminationGateError ? err.code : "execution_failed" });
+    }
+    if (gate && signal.aborted && !callerSignal.aborted) err = new TerminationGateError("termination_gate_time_exhausted", "Termination gate time limit exhausted");
       await dispatchCompletionRuntimeHook(exec.runtimeHooks, "turn:error", {
         error: err instanceof Error ? err.message : String(err),
       }).catch(() => {});
       // Suppress AbortError — expected when client disconnects
-      if ((err instanceof DOMException && err.name === "AbortError") || signal.aborted) {
+      if ((err instanceof DOMException && err.name === "AbortError") || callerSignal.aborted) {
         // fall through to finally — no SSE error event needed
       } else {
         // Friendly model_not_found surface — gateway returns 404 for
@@ -1086,7 +1139,10 @@ export async function executeStreamingChatCompletion(
         const guardrailError = guardrailErrorEnvelope(err);
         const runtimeError = completionRuntimeErrorEnvelope(err);
         const notFound = modelNotFoundEnvelope(err, m?.id, body.agent);
-        if (structuredOutputError) {
+        if (err instanceof TerminationGateError) {
+          await stream.writeSSE({ data: sseChunk(completionId, {}, "stop", { error: { code: err.code, message: err.message, type: "runtime_error" } }) });
+          await stream.writeSSE({ data: "[DONE]" });
+        } else if (structuredOutputError) {
           await stream.writeSSE({
             data: sseChunk(completionId, {}, "stop", { error: structuredOutputError }),
           });
@@ -1162,6 +1218,8 @@ export async function executeStreamingChatCompletion(
 
 /** Non-streaming chat mode — single OpenAI-format JSON response. */
 export async function runNonStreamingChatCompletion(c: any, exec: ChatCompletionExecution): Promise<any> {
+  const callerSignal: AbortSignal = c.req.raw.signal;
+  let signal = callerSignal;
   const {
     deps, body, completionId, agentMode, fullSystemPrompt: initialSystemPrompt,
     m: primaryModel, providerOpts: primaryProviderOpts,
@@ -1174,6 +1232,13 @@ export async function runNonStreamingChatCompletion(c: any, exec: ChatCompletion
   let providerOpts = primaryProviderOpts;
   const modelSelection = exec.modelSelection ?? modelSelectionForResolvedModel(primaryModel);
   const reasoning = exec.agentConfig?.reasoning ?? deps.getConfig()?.settings?.reasoning;
+  const gatePolicy = exec.runtimeHooks?.dispatcher?.getTerminationGatePolicy?.(exec.runtimeHooks);
+  const gate = gatePolicy ? new TerminationGate(gatePolicy) : undefined;
+  if (gate) signal = AbortSignal.any([callerSignal, AbortSignal.timeout(gate.remainingMs)]);
+  if (gate && exec.runtimeHooks) exec = { ...exec, runtimeHooks: { ...exec.runtimeHooks, signal } };
+  let gateAccepted = false;
+  let nextTurn = 0;
+  const maxTurns = exec.agentConfig?.maxTurns ?? MAX_TURNS;
   const structuredResponse = isStructuredResponseFormat(body.response_format);
 
   // Reserve placeholder so the message is visible even if the request is interrupted
@@ -1207,12 +1272,12 @@ export async function runNonStreamingChatCompletion(c: any, exec: ChatCompletion
       runtimePlan: exec.runtimePlan,
       agent: body.agent,
       sessionId,
-      signal: c.req.raw.signal,
+      signal: signal,
     });
     if (validateStructured) {
       finalText = await finalizeResponseFormatText(body.response_format, finalText);
     }
-    c.req.raw.signal.throwIfAborted();
+    signal.throwIfAborted();
     outputPolicyApplied = true;
   };
   const completeTerminalOutput = async () => {
@@ -1224,13 +1289,15 @@ export async function runNonStreamingChatCompletion(c: any, exec: ChatCompletion
       reasoning,
       systemPrompt: fullSystemPrompt,
       messages,
-      signal: c.req.raw.signal,
+      gate,
+      onUsage: (usage) => { totalUsage = addChatUsage(totalUsage, usage); },
+      signal: signal,
     });
     if (terminal.resolved) {
       m = terminal.resolved.model;
       providerOpts = terminal.resolved.providerOptions;
     }
-    totalUsage = addChatUsage(totalUsage, terminal.result.usage);
+    if (gate) await appendModelResponseMessages(messages, terminal.result, terminal.result.text, [], exec.contextTrust);
     finalReasoning = appendReasoningSummary(finalReasoning, terminal.result.reasoning);
     lastProviderMetadata = terminal.result.providerMetadata as Record<string, unknown> | undefined;
     finalText = await serializeModelOutput(
@@ -1264,377 +1331,407 @@ export async function runNonStreamingChatCompletion(c: any, exec: ChatCompletion
     if (inputError) throw inputError;
     const inputContext = runtimeHookModifiedString(inputDecision, "context");
     if (inputContext) fullSystemPrompt += `\n\n## Runtime hook context\n\n${inputContext}`;
-    if (
-      structuredResponse
-      && Object.keys(aiTools).length === 0
-    ) {
-      await completeTerminalOutput();
-    }
+    gateLoop: while (true) {
+      if (
+        structuredResponse
+        && Object.keys(aiTools).length === 0
+      ) {
+        nextTurn += 1;
+          await completeTerminalOutput();
+      }
 
-    for (let turn = 0; !completedStructuredOutput && turn < MAX_TURNS; turn++) {
-      // Compact context if approaching the model's context window limit.
-      // Under threshold this is just a cheap token estimation — zero LLM calls.
-      await dispatchCompletionRuntimeHook(exec.runtimeHooks, "context:compact:before", {
-        messageCount: messages.length,
-        model: m.id ?? m.provider,
-      });
-      const compactionResult = await compactIfNeeded({
-        systemPrompt: fullSystemPrompt,
-        messages,
-        tools: exec.activeCompactionTools?.() ?? effectiveTools,
-        config: {
-          contextWindow: m.contextWindow ?? 200_000,
-          maxOutputTokens: m.maxTokens ?? 8192,
-        },
-        summarize: buildSummarizeFn(m, providerOpts),
-        mode: "chat",
-        // Non-streaming: no SSE to write to, compaction is silent
-      });
-      if (compactionResult.compacted) {
-        messages.splice(0, messages.length, ...compactionResult.messages);
-        await dispatchCompletionRuntimeHook(exec.runtimeHooks, "context:compact:after", {
+      for (; !completedStructuredOutput && nextTurn < maxTurns;) {
+          const turn = nextTurn++;
+          gate?.assertAvailable();
+          signal.throwIfAborted();
+        // Compact context if approaching the model's context window limit.
+        // Under threshold this is just a cheap token estimation — zero LLM calls.
+        await dispatchCompletionRuntimeHook(exec.runtimeHooks, "context:compact:before", {
           messageCount: messages.length,
-          compacted: true,
+          model: m.id ?? m.provider,
         });
-      }
+        const compactionResult = await compactIfNeeded({
+          systemPrompt: fullSystemPrompt,
+          messages,
+          tools: exec.activeCompactionTools?.() ?? effectiveTools,
+          config: {
+            contextWindow: m.contextWindow ?? 200_000,
+            maxOutputTokens: m.maxTokens ?? 8192,
+          },
+          summarize: buildSummarizeFn(m, providerOpts, { gate, signal, onUsage: (usage) => { totalUsage = addChatUsage(totalUsage, usage); } }),
+          mode: "chat",
+          // Non-streaming: no SSE to write to, compaction is silent
+        });
+        if (compactionResult.compacted) {
+          messages.splice(0, messages.length, ...compactionResult.messages);
+          await dispatchCompletionRuntimeHook(exec.runtimeHooks, "context:compact:after", {
+            messageCount: messages.length,
+            compacted: true,
+          });
+        }
 
-      const resolvedAttempts = new Map<number, { model: ResolvedModelInfo; providerOptions?: Record<string, any> }>();
-      const turnResult = await runCompletionRuntimeHookOperation({
-        hooks: exec.runtimeHooks,
-        before: "model:before",
-        after: "model:after",
-        error: "model:error",
-        data: { phase: "operational", turn, model: m.id ?? m.provider },
-        resultData: (modelResult: any) => ({
-          finishReason: modelResult.finishReason,
-          toolCallCount: modelResult.toolCalls?.length ?? 0,
-        }),
-        operation: () => runModelPolicyTurn({
-        selection: modelSelection,
-        resolveAttempt: async (attempt) => {
-          const resolvedAttempt = attempt.index === 0 || !agentMode || !exec.agentConfig
-            ? { model: primaryModel, providerOptions: primaryProviderOpts }
-            : await deps.resolveAgentModel(agentConfigForModelAttempt(exec.agentConfig, attempt.model), reasoning);
-          resolvedAttempts.set(attempt.index, resolvedAttempt);
-          return {
-            model: resolvedAttempt.model.aiModel,
-            maxOutputTokens: resolvedAttempt.model.maxTokens,
-            providerOptions: resolvedAttempt.providerOptions,
-            capabilities: resolvedAttempt.model.capabilities,
+        const resolvedAttempts = new Map<number, { model: ResolvedModelInfo; providerOptions?: Record<string, any> }>();
+        const turnResult = await runCompletionRuntimeHookOperation({
+          hooks: exec.runtimeHooks,
+          before: "model:before",
+          after: "model:after",
+          error: "model:error",
+          data: { phase: "operational", turn, model: m.id ?? m.provider },
+          resultData: (modelResult: any) => ({
+            finishReason: modelResult.finishReason,
+            toolCallCount: modelResult.toolCalls?.length ?? 0,
+          }),
+          operation: () => runModelPolicyTurn({
+          selection: modelSelection,
+          resolveAttempt: async (attempt) => {
+            const resolvedAttempt = attempt.index === 0 || !agentMode || !exec.agentConfig
+              ? { model: primaryModel, providerOptions: primaryProviderOpts }
+              : await deps.resolveAgentModel(agentConfigForModelAttempt(exec.agentConfig, attempt.model), reasoning);
+            resolvedAttempts.set(attempt.index, resolvedAttempt);
+            return {
+              model: resolvedAttempt.model.aiModel,
+              maxOutputTokens: gate ? Math.min(resolvedAttempt.model.maxTokens, gate.remainingTokens) : resolvedAttempt.model.maxTokens,
+              providerOptions: resolvedAttempt.providerOptions,
+              capabilities: resolvedAttempt.model.capabilities,
+            };
+          },
+          preserveSingleAttemptError: true,
+          onPolicyEvent: (event) => dispatchCompletionModelPolicyHook(exec.runtimeHooks, event),
+          system: fullSystemPrompt,
+          messages,
+          tools: aiTools,
+          ...(exec.activeToolNames ? { activeTools: exec.activeToolNames() } : {}),
+          ...(modelToolChoice ? { toolChoice: modelToolChoice as any } : {}),
+          ...(body.parallel_tool_calls !== undefined
+            ? { parallelToolCalls: body.parallel_tool_calls }
+            : {}),
+          abortSignal: signal,
+          }),
+        });
+        signal.throwIfAborted();
+        finalReasoning = appendReasoningSummary(finalReasoning, turnResult.reasoning);
+
+        const turnText = turnResult.text;
+        const selectedResolved = resolvedAttempts.get(turnResult.selectedAttempt.index);
+        if (selectedResolved) {
+          m = selectedResolved.model;
+          providerOpts = selectedResolved.providerOptions;
+        }
+        const usage = turnResult.usage;
+        totalUsage = addChatUsage(totalUsage, usage);
+          gate?.recordUsage(usage);
+        lastProviderMetadata = turnResult.providerMetadata as Record<string, unknown> | undefined;
+
+        await appendModelResponseMessages(
+          messages,
+          turnResult,
+          turnText,
+          turnResult.toolCalls,
+          exec.contextTrust ?? "off",
+        );
+
+        if (!structuredResponse) finalText += turnText;
+
+        const toolCalls = turnResult.toolCalls;
+        if (toolCalls.length === 0) {
+          if (structuredResponse) await completeTerminalOutput();
+          break;
+        }
+
+        const dispatchableToolCalls = toolCalls.filter(
+          (call) => !isInvalidModelToolCall(call),
+        );
+        for (const call of toolCalls.filter(isInvalidModelToolCall)) {
+          toolCallsAccum.push(invalidModelToolCallEvent(call));
+        }
+        if (dispatchableToolCalls.length === 0) continue;
+
+        // ── Client-side tools — return to client as standard tool_calls ──
+        const clientSideCall = selectRequestClientToolCall(
+          dispatchableToolCalls,
+          clientSideToolNames(exec),
+        );
+        if (clientSideCall) {
+          await finalizeOutput(false);
+          signal.throwIfAborted();
+          clientToolCallId = clientSideCall.toolCallId;
+          toolCallsAccum.push({
+            id: clientSideCall.toolCallId,
+            name: clientSideCall.toolName,
+            arguments: clientSideCall.input,
+            state: "interrupted",
+          });
+          return c.json({
+            id: completionId,
+            object: "chat.completion",
+            created: Math.floor(Date.now() / 1000),
+            model: "polpo",
+            choices: [{
+              index: 0,
+              message: {
+                role: "assistant",
+                content: finalText || null,
+                tool_calls: [{
+                  id: clientSideCall.toolCallId,
+                  type: "function",
+                  function: {
+                    name: clientSideCall.toolName,
+                    arguments: JSON.stringify(clientSideCall.input),
+                  },
+                }],
+              },
+              finish_reason: "tool_calls",
+            }],
+            usage: {
+              prompt_tokens: totalUsage.inputTokens ?? 0,
+              completion_tokens: totalUsage.outputTokens ?? 0,
+              total_tokens: totalUsage.totalTokens ?? 0,
+            },
+          });
+        }
+
+        // Check for interactive tools — only in orchestrator mode (agents don't have interactive tools)
+        const interactiveCall = agentMode ? undefined : dispatchableToolCalls.find((tc: any) => isInteractiveFn?.(tc.toolName));
+        if (interactiveCall) {
+          await finalizeOutput(false);
+          signal.throwIfAborted();
+          // Persisted by finally before this async function resolves.
+          toolCallsAccum.push({
+            id: interactiveCall.toolCallId,
+            name: interactiveCall.toolName,
+            arguments: interactiveCall.input,
+            state: "interrupted",
+          });
+
+          const baseResponse = {
+            id: completionId,
+            object: "chat.completion" as const,
+            created: Math.floor(Date.now() / 1000),
+            model: "polpo" as const,
+            usage: {
+              prompt_tokens: totalUsage.inputTokens ?? 0,
+              completion_tokens: totalUsage.outputTokens ?? 0,
+              total_tokens: totalUsage.totalTokens ?? 0,
+            },
           };
-        },
-        preserveSingleAttemptError: true,
-        onPolicyEvent: (event) => dispatchCompletionModelPolicyHook(exec.runtimeHooks, event),
-        system: fullSystemPrompt,
-        messages,
-        tools: aiTools,
-        ...(exec.activeToolNames ? { activeTools: exec.activeToolNames() } : {}),
-        ...(modelToolChoice ? { toolChoice: modelToolChoice as any } : {}),
-        ...(body.parallel_tool_calls !== undefined
-          ? { parallelToolCalls: body.parallel_tool_calls }
-          : {}),
-        abortSignal: c.req.raw.signal,
-        }),
-      });
-      c.req.raw.signal.throwIfAborted();
-      finalReasoning = appendReasoningSummary(finalReasoning, turnResult.reasoning);
 
-      const turnText = turnResult.text;
-      const selectedResolved = resolvedAttempts.get(turnResult.selectedAttempt.index);
-      if (selectedResolved) {
-        m = selectedResolved.model;
-        providerOpts = selectedResolved.providerOptions;
-      }
-      const usage = turnResult.usage;
-      totalUsage = addChatUsage(totalUsage, usage);
-      lastProviderMetadata = turnResult.providerMetadata as Record<string, unknown> | undefined;
+          if (interactiveCall.toolName === "ask_user") {
+            const questions = (interactiveCall.input as any)?.questions as any[] ?? [];
+            return c.json({
+              ...baseResponse,
+              choices: [{
+                index: 0,
+                message: { role: "assistant" as const, content: finalText },
+                finish_reason: "ask_user" as const,
+                ask_user: { questions },
+              }],
+            });
+          }
 
-      await appendModelResponseMessages(
-        messages,
-        turnResult,
-        turnText,
-        turnResult.toolCalls,
-        exec.contextTrust ?? "off",
-      );
-
-      if (!structuredResponse) finalText += turnText;
-
-      const toolCalls = turnResult.toolCalls;
-      if (toolCalls.length === 0) {
-        if (structuredResponse) await completeTerminalOutput();
-        break;
-      }
-
-      const dispatchableToolCalls = toolCalls.filter(
-        (call) => !isInvalidModelToolCall(call),
-      );
-      for (const call of toolCalls.filter(isInvalidModelToolCall)) {
-        toolCallsAccum.push(invalidModelToolCallEvent(call));
-      }
-      if (dispatchableToolCalls.length === 0) continue;
-
-      // ── Client-side tools — return to client as standard tool_calls ──
-      const clientSideCall = selectRequestClientToolCall(
-        dispatchableToolCalls,
-        clientSideToolNames(exec),
-      );
-      if (clientSideCall) {
-        await finalizeOutput(false);
-        c.req.raw.signal.throwIfAborted();
-        clientToolCallId = clientSideCall.toolCallId;
-        toolCallsAccum.push({
-          id: clientSideCall.toolCallId,
-          name: clientSideCall.toolName,
-          arguments: clientSideCall.input,
-          state: "interrupted",
-        });
-        return c.json({
-          id: completionId,
-          object: "chat.completion",
-          created: Math.floor(Date.now() / 1000),
-          model: "polpo",
-          choices: [{
-            index: 0,
-            message: {
-              role: "assistant",
-              content: finalText || null,
-              tool_calls: [{
-                id: clientSideCall.toolCallId,
-                type: "function",
-                function: {
-                  name: clientSideCall.toolName,
-                  arguments: JSON.stringify(clientSideCall.input),
+          if (interactiveCall.toolName === "create_mission") {
+            const args = interactiveCall.input as Record<string, unknown>;
+            let missionData: unknown;
+            try { missionData = JSON.parse(args.data as string); } catch { missionData = args.data; }
+            return c.json({
+              ...baseResponse,
+              choices: [{
+                index: 0,
+                message: { role: "assistant" as const, content: finalText },
+                finish_reason: "mission_preview" as const,
+                mission_preview: {
+                  name: args.name as string,
+                  data: missionData,
+                  prompt: args.prompt as string | undefined,
                 },
               }],
-            },
-            finish_reason: "tool_calls",
-          }],
-          usage: {
-            prompt_tokens: totalUsage.inputTokens ?? 0,
-            completion_tokens: totalUsage.outputTokens ?? 0,
-            total_tokens: totalUsage.totalTokens ?? 0,
-          },
-        });
-      }
-
-      // Check for interactive tools — only in orchestrator mode (agents don't have interactive tools)
-      const interactiveCall = agentMode ? undefined : dispatchableToolCalls.find((tc: any) => isInteractiveFn?.(tc.toolName));
-      if (interactiveCall) {
-        await finalizeOutput(false);
-        c.req.raw.signal.throwIfAborted();
-        // Persisted by finally before this async function resolves.
-        toolCallsAccum.push({
-          id: interactiveCall.toolCallId,
-          name: interactiveCall.toolName,
-          arguments: interactiveCall.input,
-          state: "interrupted",
-        });
-
-        const baseResponse = {
-          id: completionId,
-          object: "chat.completion" as const,
-          created: Math.floor(Date.now() / 1000),
-          model: "polpo" as const,
-          usage: {
-            prompt_tokens: totalUsage.inputTokens ?? 0,
-            completion_tokens: totalUsage.outputTokens ?? 0,
-            total_tokens: totalUsage.totalTokens ?? 0,
-          },
-        };
-
-        if (interactiveCall.toolName === "ask_user") {
-          const questions = (interactiveCall.input as any)?.questions as any[] ?? [];
-          return c.json({
-            ...baseResponse,
-            choices: [{
-              index: 0,
-              message: { role: "assistant" as const, content: finalText },
-              finish_reason: "ask_user" as const,
-              ask_user: { questions },
-            }],
-          });
-        }
-
-        if (interactiveCall.toolName === "create_mission") {
-          const args = interactiveCall.input as Record<string, unknown>;
-          let missionData: unknown;
-          try { missionData = JSON.parse(args.data as string); } catch { missionData = args.data; }
-          return c.json({
-            ...baseResponse,
-            choices: [{
-              index: 0,
-              message: { role: "assistant" as const, content: finalText },
-              finish_reason: "mission_preview" as const,
-              mission_preview: {
-                name: args.name as string,
-                data: missionData,
-                prompt: args.prompt as string | undefined,
-              },
-            }],
-          });
-        }
-
-        if (interactiveCall.toolName === "set_vault_entry") {
-          const args = interactiveCall.input as Record<string, unknown>;
-          return c.json({
-            ...baseResponse,
-            choices: [{
-              index: 0,
-              message: { role: "assistant" as const, content: finalText },
-              finish_reason: "vault_preview" as const,
-              vault_preview: {
-                agent: args.agent as string,
-                service: args.service as string,
-                type: args.type as string,
-                label: args.label as string | undefined,
-                credentials: args.credentials as Record<string, string>,
-              },
-            }],
-          });
-        }
-
-        if (interactiveCall.toolName === "open_file") {
-          const args = interactiveCall.input as Record<string, unknown>;
-          return c.json({
-            ...baseResponse,
-            choices: [{
-              index: 0,
-              message: { role: "assistant" as const, content: finalText },
-              finish_reason: "open_file" as const,
-              open_file: {
-                path: args.path as string,
-              },
-            }],
-          });
-        }
-
-        if (interactiveCall.toolName === "navigate_to") {
-          const args = interactiveCall.input as Record<string, unknown>;
-          return c.json({
-            ...baseResponse,
-            choices: [{
-              index: 0,
-              message: { role: "assistant" as const, content: finalText },
-              finish_reason: "navigate_to" as const,
-              navigate_to: {
-                target: args.target as string,
-                id: args.id as string | undefined,
-                name: args.name as string | undefined,
-                path: args.path as string | undefined,
-                highlight: args.highlight as string | undefined,
-              },
-            }],
-          });
-        }
-
-        if (interactiveCall.toolName === "open_tab") {
-          const args = interactiveCall.input as Record<string, unknown>;
-          return c.json({
-            ...baseResponse,
-            choices: [{
-              index: 0,
-              message: { role: "assistant" as const, content: finalText },
-              finish_reason: "open_tab" as const,
-              open_tab: {
-                url: args.url as string,
-                label: args.label as string | undefined,
-              },
-            }],
-          });
-        }
-        // Note: finally block persists finalText + toolCallsAccum
-      }
-
-      // Provider tools (extraAiTools) are executed by the SDK / gateway.
-      // Their tool results are already preserved in responseMessages,
-      // so only record them for observability and skip local dispatch.
-      const providerToolNames = new Set(Object.keys(extraAiTools ?? {}));
-      const providerToolResults = indexToolResultsByCallId(turnResult.toolResults as any[] | undefined);
-
-      const appendLocalResult = (
-        call: { toolCallId: string; toolName: string },
-        callArgs: Record<string, unknown>,
-        toolResult: string,
-        isError: boolean,
-      ) => {
-        emitFileChanged(call.toolName, callArgs, toolResult, deps.emit);
-        toolCallsAccum.push({
-          id: call.toolCallId,
-          name: call.toolName,
-          arguments: callArgs,
-          result: toolResult,
-          state: isError ? "error" : "completed",
-        });
-        const modelResult = exec.contextTrust === "enforce"
-          ? renderRuntimeToolResult(call.toolName, call.toolCallId, toolResult)
-          : toolResult;
-        messages.push({
-          role: "tool",
-          content: [{
-            type: "tool-result",
-            toolCallId: call.toolCallId,
-            toolName: call.toolName,
-            output: isError
-              ? { type: "error-text" as const, value: modelResult }
-              : { type: "text" as const, value: modelResult },
-          }],
-        });
-      };
-
-      if (body.parallel_tool_calls === true) {
-        const localCalls = dispatchableToolCalls
-          .filter((call) => !providerToolNames.has(call.toolName))
-          .map((call) => ({
-            toolCallId: call.toolCallId,
-            toolName: call.toolName,
-            input: call.input as Record<string, unknown>,
-          }));
-        const localResults = await executeCompletionToolBatch({
-          calls: localCalls,
-          executor: effectiveToolExecutor,
-          signal: c.req.raw.signal,
-        });
-        let localResultIndex = 0;
-        for (const call of dispatchableToolCalls) {
-          if (providerToolNames.has(call.toolName)) {
-            recordProviderToolCall(toolCallsAccum, call, providerToolResults);
-            continue;
+            });
           }
-          const local = localResults[localResultIndex++]!;
-          appendLocalResult(call, local.input, local.result, local.isError);
-        }
-        await dispatchCompletionRuntimeHook(exec.runtimeHooks, "tool:batch:after", {
-          count: localResults.length,
-          tools: localCalls.map((call) => call.toolName),
-        });
-        assertChatToolProgress(exec);
-      } else {
-        for (const call of dispatchableToolCalls) {
-          const callArgs = call.input as Record<string, unknown>;
-          if (providerToolNames.has(call.toolName)) {
-            recordProviderToolCall(toolCallsAccum, call, providerToolResults);
-            continue;
+
+          if (interactiveCall.toolName === "set_vault_entry") {
+            const args = interactiveCall.input as Record<string, unknown>;
+            return c.json({
+              ...baseResponse,
+              choices: [{
+                index: 0,
+                message: { role: "assistant" as const, content: finalText },
+                finish_reason: "vault_preview" as const,
+                vault_preview: {
+                  agent: args.agent as string,
+                  service: args.service as string,
+                  type: args.type as string,
+                  label: args.label as string | undefined,
+                  credentials: args.credentials as Record<string, string>,
+                },
+              }],
+            });
           }
-          const local = await executeCompletionToolCall({
-            call: {
+
+          if (interactiveCall.toolName === "open_file") {
+            const args = interactiveCall.input as Record<string, unknown>;
+            return c.json({
+              ...baseResponse,
+              choices: [{
+                index: 0,
+                message: { role: "assistant" as const, content: finalText },
+                finish_reason: "open_file" as const,
+                open_file: {
+                  path: args.path as string,
+                },
+              }],
+            });
+          }
+
+          if (interactiveCall.toolName === "navigate_to") {
+            const args = interactiveCall.input as Record<string, unknown>;
+            return c.json({
+              ...baseResponse,
+              choices: [{
+                index: 0,
+                message: { role: "assistant" as const, content: finalText },
+                finish_reason: "navigate_to" as const,
+                navigate_to: {
+                  target: args.target as string,
+                  id: args.id as string | undefined,
+                  name: args.name as string | undefined,
+                  path: args.path as string | undefined,
+                  highlight: args.highlight as string | undefined,
+                },
+              }],
+            });
+          }
+
+          if (interactiveCall.toolName === "open_tab") {
+            const args = interactiveCall.input as Record<string, unknown>;
+            return c.json({
+              ...baseResponse,
+              choices: [{
+                index: 0,
+                message: { role: "assistant" as const, content: finalText },
+                finish_reason: "open_tab" as const,
+                open_tab: {
+                  url: args.url as string,
+                  label: args.label as string | undefined,
+                },
+              }],
+            });
+          }
+          // Note: finally block persists finalText + toolCallsAccum
+        }
+
+        // Provider tools (extraAiTools) are executed by the SDK / gateway.
+        // Their tool results are already preserved in responseMessages,
+        // so only record them for observability and skip local dispatch.
+        const providerToolNames = new Set(Object.keys(extraAiTools ?? {}));
+        const providerToolResults = indexToolResultsByCallId(turnResult.toolResults as any[] | undefined);
+
+        const appendLocalResult = (
+          call: { toolCallId: string; toolName: string },
+          callArgs: Record<string, unknown>,
+          toolResult: string,
+          isError: boolean,
+        ) => {
+          emitFileChanged(call.toolName, callArgs, toolResult, deps.emit);
+          toolCallsAccum.push({
+            id: call.toolCallId,
+            name: call.toolName,
+            arguments: callArgs,
+            result: toolResult,
+            state: isError ? "error" : "completed",
+          });
+          const modelResult = exec.contextTrust === "enforce"
+            ? renderRuntimeToolResult(call.toolName, call.toolCallId, toolResult)
+            : toolResult;
+          messages.push({
+            role: "tool",
+            content: [{
+              type: "tool-result",
               toolCallId: call.toolCallId,
               toolName: call.toolName,
-              input: callArgs,
-            },
-            executor: effectiveToolExecutor,
-            signal: c.req.raw.signal,
+              output: isError
+                ? { type: "error-text" as const, value: modelResult }
+                : { type: "text" as const, value: modelResult },
+            }],
           });
-          appendLocalResult(call, callArgs, local.result, local.isError);
+        };
+
+        if (body.parallel_tool_calls === true) {
+          const localCalls = dispatchableToolCalls
+            .filter((call) => !providerToolNames.has(call.toolName))
+            .map((call) => ({
+              toolCallId: call.toolCallId,
+              toolName: call.toolName,
+              input: call.input as Record<string, unknown>,
+            }));
+          const localResults = await executeCompletionToolBatch({
+            calls: localCalls,
+            executor: effectiveToolExecutor,
+            signal: signal,
+          });
+          let localResultIndex = 0;
+          for (const call of dispatchableToolCalls) {
+            if (providerToolNames.has(call.toolName)) {
+              recordProviderToolCall(toolCallsAccum, call, providerToolResults);
+              continue;
+            }
+            const local = localResults[localResultIndex++]!;
+            appendLocalResult(call, local.input, local.result, local.isError);
+          }
+          await dispatchCompletionRuntimeHook(exec.runtimeHooks, "tool:batch:after", {
+            count: localResults.length,
+            tools: localCalls.map((call) => call.toolName),
+          });
           assertChatToolProgress(exec);
+        } else {
+          for (const call of dispatchableToolCalls) {
+            const callArgs = call.input as Record<string, unknown>;
+            if (providerToolNames.has(call.toolName)) {
+              recordProviderToolCall(toolCallsAccum, call, providerToolResults);
+              continue;
+            }
+            const local = await executeCompletionToolCall({
+              call: {
+                toolCallId: call.toolCallId,
+                toolName: call.toolName,
+                input: callArgs,
+              },
+              executor: effectiveToolExecutor,
+              signal: signal,
+            });
+            appendLocalResult(call, callArgs, local.result, local.isError);
+            assertChatToolProgress(exec);
+          }
         }
       }
+
+      if (structuredResponse && !completedStructuredOutput && !signal.aborted) {
+        await completeTerminalOutput();
+      }
+
+      if (gate) {
+        signal.throwIfAborted();
+        const attempt = gate.beginAttempt();
+        deps.emit("runtime:termination-gate", { runId: completionId, sessionId, attempt, phase: "validating" });
+        const decision = await dispatchCompletionRuntimeHook(exec.runtimeHooks, "turn:stop", {
+          terminationAttempt: attempt, correctionCycle: gate.snapshot().cycles,
+          textLength: finalText.length, toolCallCount: toolCallsAccum.length,
+          candidate: { text: finalText, ...(structuredResponse ? { output: JSON.parse(finalText) } : {}) },
+        });
+        signal.throwIfAborted();
+        const feedback = gate.decide(decision, maxTurns - nextTurn);
+        if (feedback !== undefined) {
+          messages.push({ role: "user", content: feedback });
+          finalText = "";
+          completedStructuredOutput = false;
+          deps.emit("runtime:termination-gate", { runId: completionId, sessionId, attempt, phase: "continuing" });
+          continue gateLoop;
+        }
+        gateAccepted = true;
+        deps.emit("runtime:termination-gate", { runId: completionId, sessionId, attempt, phase: "accepted" });
+      }
+      break gateLoop;
     }
 
-    if (structuredResponse && !completedStructuredOutput && !c.req.raw.signal.aborted) {
-      await completeTerminalOutput();
-    }
-
-    const stopDecision = await dispatchCompletionRuntimeHook(exec.runtimeHooks, "turn:stop", {
+    const stopDecision = gate ? { action: "allow" as const } : await dispatchCompletionRuntimeHook(exec.runtimeHooks, "turn:stop", {
       textLength: finalText.length,
       toolCallCount: toolCallsAccum.length,
     });
@@ -1651,7 +1748,7 @@ export async function runNonStreamingChatCompletion(c: any, exec: ChatCompletion
         systemPrompt: fullSystemPrompt,
         messages,
         feedback: stopFeedback,
-        signal: c.req.raw.signal,
+        signal: signal,
       });
       if (retry.resolved) {
         m = retry.resolved.model;
@@ -1670,8 +1767,8 @@ export async function runNonStreamingChatCompletion(c: any, exec: ChatCompletion
       if (retryStopError && retryStop.action !== "stop") throw retryStopError;
     }
     await finalizeOutput();
-    suggestions = await suggestionsForCompletion(exec, finalText, c.req.raw.signal);
-    canonicalTurnSucceeded = !c.req.raw.signal.aborted;
+    suggestions = await suggestionsForCompletion(exec, finalText, signal);
+    canonicalTurnSucceeded = !signal.aborted;
     return c.json(completionResponse(
       completionId,
       finalText,
@@ -1679,6 +1776,11 @@ export async function runNonStreamingChatCompletion(c: any, exec: ChatCompletion
       suggestions.length > 0 ? { polpo: { suggestions, ...(assistantMsgId ? { suggestionsSource: { assistantMessageId: assistantMsgId } } : {}) } } : undefined,
     ));
   } catch (err) {
+    if (gate && !gateAccepted) {
+      finalText = "";
+      deps.emit("runtime:termination-gate", { runId: completionId, sessionId, attempt: gate.snapshot().attempts, phase: callerSignal.aborted ? "cancelled" : "failed", code: err instanceof TerminationGateError ? err.code : "execution_failed" });
+    }
+    if (gate && signal.aborted && !callerSignal.aborted) err = new TerminationGateError("termination_gate_time_exhausted", "Termination gate time limit exhausted");
     await dispatchCompletionRuntimeHook(exec.runtimeHooks, "turn:error", {
       error: err instanceof Error ? err.message : String(err),
     }).catch(() => {});
@@ -1686,6 +1788,7 @@ export async function runNonStreamingChatCompletion(c: any, exec: ChatCompletion
     // renamed/deprecated SKUs (e.g. xai/grok-4-fast after the 4.1
     // rename). Without this catch the error propagates as a 500.
     const structuredOutputError = structuredOutputErrorEnvelope(err, structuredResponse);
+    if (err instanceof TerminationGateError) return c.json({ error: { code: err.code, message: err.message, type: "runtime_error" } }, 409);
     if (structuredOutputError) {
       return c.json({ error: structuredOutputError }, 400 as any);
     }
@@ -1713,16 +1816,16 @@ export async function runNonStreamingChatCompletion(c: any, exec: ChatCompletion
       await dispatchCompletionRuntimeHook(exec.runtimeHooks, "agent:end", {
         source: "direct-chat",
         streaming: false,
-        aborted: c.req.raw.signal.aborted,
+        aborted: signal.aborted,
       }).catch(() => {});
     }
     await dispatchCompletionRuntimeHook(exec.runtimeHooks, "session:end", {
       streaming: false,
-      aborted: c.req.raw.signal.aborted,
+      aborted: signal.aborted,
     }).catch(() => {});
     await dispatchCompletionRuntimeHook(exec.runtimeHooks, "run:end", {
       streaming: false,
-      aborted: c.req.raw.signal.aborted,
+      aborted: signal.aborted,
     }).catch(() => {});
     try {
       // Always persist the final text + tool calls — even on early return

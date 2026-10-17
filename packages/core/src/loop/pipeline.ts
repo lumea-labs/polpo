@@ -149,6 +149,7 @@ export interface PipelineExecutorOptions {
    * re-executes every branch (see the parallel handler below).
    */
   onCheckpoint?: (checkpoint: PipelineCheckpoint) => void | Promise<void>;
+  checkpointRequired?: boolean | (() => boolean);
   runLoop: (
     name: string,
     loop: LoopConfig,
@@ -264,7 +265,12 @@ export class PipelineExecutor {
           previousNode: position.node,
           previousStepKey: position.stepKey,
         });
-      } catch { /* checkpoint persistence is best-effort */ }
+      } catch (error) {
+        const required = typeof options.checkpointRequired === "function"
+          ? options.checkpointRequired()
+          : options.checkpointRequired;
+        if (required) throw error;
+      }
     };
 
     for (let i = 0; i < steps.length; i++) {

@@ -1,3 +1,8 @@
+import type { Shell } from "./shell.js";
+import { intersectTerminationGatePolicies, validateTerminationGatePolicy, type TerminationGatePolicy } from "./termination-gate.js";
+export { TerminationGate, TerminationGateError, validateTerminationGatePolicy } from "./termination-gate.js";
+export type { TerminationGatePolicy, TerminationGateState } from "./termination-gate.js";
+
 export const RUNTIME_HOOK_CONTRACT_VERSION = 1 as const;
 export const DEFAULT_RUNTIME_HOOK_TIMEOUT_MS = 5_000;
 export const DEFAULT_RUNTIME_HOOK_MAX_PAYLOAD_BYTES = 256 * 1024;
@@ -84,6 +89,7 @@ export interface RuntimeHookCapabilities {
   surfaces: readonly RuntimeHookSurface[];
   scopes: readonly RuntimeHookScope[];
   durableReplay: true;
+  terminationGate: true;
   fileEvents: "tool_attributed";
 }
 
@@ -94,6 +100,7 @@ export const PORTABLE_RUNTIME_HOOK_CAPABILITIES: RuntimeHookCapabilities = Objec
   surfaces: RUNTIME_HOOK_SURFACE_NAMES,
   scopes: RUNTIME_HOOK_SCOPE_NAMES,
   durableReplay: true,
+  terminationGate: true,
   fileEvents: "tool_attributed",
 });
 
@@ -211,6 +218,8 @@ export interface RuntimeHookDefinition {
   enabled?: boolean;
   /** Recursive hook execution is denied unless explicitly enabled and bounded. */
   allowRecursive?: boolean;
+  /** Opt-in pre-completion validation with bounded same-agent continuation. */
+  terminationGate?: TerminationGatePolicy;
 }
 
 export interface RuntimeHookPack {
@@ -232,11 +241,19 @@ export type RuntimeHookDecision =
   | { action: "ask"; reason: string; prompt?: string }
   | { action: "defer"; reason: string }
   | { action: "modify"; data: Record<string, RuntimeHookJson>; message?: string }
-  | { action: "stop"; reason?: string; feedback?: string };
+  | { action: "stop"; reason?: string; feedback?: string }
+  | { action: "continue"; feedback: RuntimeHookJson };
 
 export interface RuntimeHookHandlerResult {
   decision?: RuntimeHookDecision;
   output?: RuntimeHookJson;
+}
+
+/** Trusted live resources, never serialized into hook envelopes or model context. */
+export interface RuntimeHookResources {
+  shell?: Shell;
+  cwd?: string;
+  executeTool?: (name: string, input: Record<string, unknown>, execution: { callId: string; signal: AbortSignal }) => Promise<string>;
 }
 
 export interface RuntimeHookExecutionRequest {
@@ -244,6 +261,7 @@ export interface RuntimeHookExecutionRequest {
   envelope: RuntimeHookEnvelope;
   idempotencyKey: string;
   signal: AbortSignal;
+  resources?: RuntimeHookResources;
 }
 
 export interface RuntimeHookHost {
@@ -280,7 +298,7 @@ export interface RuntimeHookExecution {
   startedAt: string;
   completedAt: string;
   durationMs: number;
-  outcome: "allowed" | "denied" | "modified" | "stopped" | "observed" | "failed" | "timed_out";
+  outcome: "allowed" | "denied" | "modified" | "stopped" | "continued" | "observed" | "failed" | "timed_out";
   decision?: RuntimeHookDecision["action"];
   error?: string;
   replayed?: boolean;
@@ -298,12 +316,15 @@ export interface RuntimeHookDispatchInput {
   identity?: RuntimeHookIdentity;
   data?: Record<string, unknown>;
   eventId?: string;
+  signal?: AbortSignal;
+  resources?: RuntimeHookResources;
   occurredAt?: string;
   origin?: RuntimeHookOrigin;
 }
 
 export interface RuntimeHookDispatcher {
   dispatch(input: RuntimeHookDispatchInput): Promise<RuntimeHookDispatchResult>;
+  getTerminationGatePolicy?(input: Pick<RuntimeHookDispatchInput, "surface" | "identity">): TerminationGatePolicy | undefined;
 }
 
 export interface RuntimeHookEngineOptions {
@@ -358,7 +379,15 @@ export class RuntimeHookEngine implements RuntimeHookDispatcher {
       validateRuntimeHookDefinition(definition, index));
   }
 
+  getTerminationGatePolicy(input: Pick<RuntimeHookDispatchInput, "surface" | "identity">): TerminationGatePolicy | undefined {
+    const envelope = createRuntimeHookEnvelope({ ...input, event: "turn:stop" }, this.now, this.maxPayloadBytes);
+    return intersectTerminationGatePolicies(this.definitions
+      .filter(hook => hook.enabled !== false && hook.terminationGate && matchesRuntimeHook(hook.matcher, envelope))
+      .map(hook => hook.terminationGate!));
+  }
+
   async dispatch(input: RuntimeHookDispatchInput): Promise<RuntimeHookDispatchResult> {
+    input.signal?.throwIfAborted();
     const envelope = createRuntimeHookEnvelope(input, this.now, this.maxPayloadBytes);
     const matching = this.definitions
       .map((definition, declarationOrder) => ({ definition, declarationOrder }))
@@ -378,15 +407,15 @@ export class RuntimeHookEngine implements RuntimeHookDispatcher {
     let decision: RuntimeHookDecision = { action: "allow" };
 
     for (const { definition } of controlling) {
-      const result = await this.execute(definition, envelope);
+      const result = await this.execute(definition, envelope, false, input.signal, input.resources);
       executions.push(result.execution);
       if (!result.replayed) await this.host.trace?.(result.execution, result.decision, envelope);
       if (result.decision) decision = composeRuntimeHookDecision(decision, result.decision);
-      if (["deny", "ask", "defer", "stop"].includes(decision.action)) break;
+      if (["deny", "ask", "defer", "stop", "continue"].includes(decision.action)) break;
     }
 
     const observed = await Promise.all(observing.map(async ({ definition }) => {
-      const result = await this.execute(definition, envelope, true);
+      const result = await this.execute(definition, envelope, true, input.signal, input.resources);
       if (!result.replayed) await this.host.trace?.(result.execution, undefined, envelope);
       return result.execution;
     }));
@@ -399,17 +428,24 @@ export class RuntimeHookEngine implements RuntimeHookDispatcher {
     hook: RuntimeHookDefinition,
     envelope: RuntimeHookEnvelope,
     observeOnly = false,
+    parentSignal?: AbortSignal,
+    resources?: RuntimeHookResources,
   ): Promise<{ execution: RuntimeHookExecution; decision?: RuntimeHookDecision; replayed?: boolean }> {
     const startedAt = this.now().toISOString();
+    parentSignal?.throwIfAborted();
     const controller = new AbortController();
+    const abort = () => controller.abort(parentSignal?.reason);
+    parentSignal?.addEventListener("abort", abort, { once: true });
     const timeoutMs = hook.handler.timeoutMs ?? DEFAULT_RUNTIME_HOOK_TIMEOUT_MS;
     const timeout = setTimeout(() => controller.abort(new Error("Runtime hook timed out")), timeoutMs);
     const idempotencyKey = runtimeHookIdempotencyKey(envelope.eventId, hook.id);
+    const attempt = hook.terminationGate && Number.isSafeInteger(envelope.data.terminationAttempt) && Number(envelope.data.terminationAttempt) > 0 ? Number(envelope.data.terminationAttempt) : 1;
     const request: RuntimeHookExecutionRequest = {
       hook,
       envelope,
       idempotencyKey,
       signal: controller.signal,
+      ...(resources ? { resources } : {}),
     };
     try {
       const replay = await this.host.findCompleted?.(request);
@@ -418,19 +454,20 @@ export class RuntimeHookEngine implements RuntimeHookDispatcher {
         const decision = observeOnly
           ? undefined
           : normalizeRuntimeHookDecision(replay.decision);
+        validateGateDecision(hook, envelope.event, decision, observeOnly);
         return {
           execution: { ...replay.execution, replayed: true },
           ...(decision ? { decision } : {}),
           replayed: true,
         };
       }
-      const result = await Promise.race([
-        this.host.execute(request),
-        new Promise<never>((_, reject) => {
-          controller.signal.addEventListener("abort", () => reject(controller.signal.reason), { once: true });
-        }),
-      ]);
+      controller.signal.throwIfAborted();
+      const aborted = new Promise<never>((_, reject) => {
+        controller.signal.addEventListener("abort", () => reject(controller.signal.reason), { once: true });
+      });
+      const result = await Promise.race([aborted, this.host.execute(request)]);
       const decision = observeOnly ? undefined : normalizeRuntimeHookDecision(result?.decision);
+      validateGateDecision(hook, envelope.event, decision, observeOnly);
       const completedAt = this.now().toISOString();
       return {
         ...(decision ? { decision } : {}),
@@ -443,7 +480,7 @@ export class RuntimeHookEngine implements RuntimeHookDispatcher {
           scope: hook.scope ?? "project",
           mode: hook.mode ?? "control",
           priority: hook.priority ?? 0,
-          attempt: 1,
+          attempt,
           timeoutMs,
           onFailure: hook.onFailure ?? "continue",
           startedAt,
@@ -455,9 +492,9 @@ export class RuntimeHookEngine implements RuntimeHookDispatcher {
               ? "denied"
               : decision?.action === "modify"
                 ? "modified"
-                : decision?.action === "stop"
-                  ? "stopped"
-                  : "allowed",
+                : decision?.action === "continue" || (hook.terminationGate && decision?.action === "stop" && Boolean(decision.feedback?.trim()))
+                  ? "continued"
+                  : decision?.action === "stop" ? "stopped" : "allowed",
           ...(decision ? { decision: decision.action } : {}),
         },
       };
@@ -474,7 +511,7 @@ export class RuntimeHookEngine implements RuntimeHookDispatcher {
         scope: hook.scope ?? "project",
         mode: hook.mode ?? "control",
         priority: hook.priority ?? 0,
-        attempt: 1,
+        attempt,
         timeoutMs,
         onFailure: hook.onFailure ?? "continue",
         startedAt,
@@ -483,7 +520,7 @@ export class RuntimeHookEngine implements RuntimeHookDispatcher {
         outcome: timedOut ? "timed_out" : "failed",
         error: message,
       };
-      if (!observeOnly && (hook.onFailure ?? "continue") === "block") {
+      if (!observeOnly && (error instanceof RuntimeHookBlockedError || hook.terminationGate || (hook.onFailure ?? "continue") === "block")) {
         return {
           execution,
           decision: { action: "deny", reason: message, code: timedOut ? "runtime_hook_timeout" : "runtime_hook_failed" },
@@ -492,7 +529,16 @@ export class RuntimeHookEngine implements RuntimeHookDispatcher {
       return { execution };
     } finally {
       clearTimeout(timeout);
+      parentSignal?.removeEventListener("abort", abort);
     }
+  }
+}
+
+function validateGateDecision(hook: RuntimeHookDefinition, event: RuntimeHookEventName, decision: RuntimeHookDecision | undefined, observeOnly: boolean): void {
+  if (observeOnly) return;
+  if (hook.terminationGate && (!decision || decision.action === "modify")) throw new RuntimeHookBlockedError("Termination validator must return an explicit decision", hook.id);
+  if (decision?.action === "continue" && (!hook.terminationGate || event !== "turn:stop")) {
+    throw new RuntimeHookBlockedError("Continuation requires a configured turn:stop termination gate", hook.id);
   }
 }
 
@@ -555,6 +601,11 @@ export function validateRuntimeHookPack(input: unknown): RuntimeHookPack {
 
 export function validateRuntimeHookDefinition(input: unknown, index = 0): RuntimeHookDefinition {
   if (!isRecord(input)) throw new RuntimeHookValidationError(`Hook ${index} must be an object`);
+  if (input.terminationGate !== undefined) {
+    if (input.event !== "turn:stop" || input.mode === "observe") throw new RuntimeHookValidationError("terminationGate is only valid for controlling turn:stop hooks");
+    validateTerminationGatePolicy(input.terminationGate);
+    if (input.handler?.type === "prompt" || input.handler?.type === "agent") throw new RuntimeHookValidationError("terminationGate requires a deterministic command, HTTP, tool or MCP validator");
+  }
   if (typeof input.id !== "string" || !input.id.trim() || input.id.length > 128) {
     throw new RuntimeHookValidationError(`Hook ${index} id must contain 1-128 characters`);
   }
@@ -698,6 +749,7 @@ export function composeRuntimeHookDecision(
     defer: 2,
     ask: 3,
     stop: 4,
+    continue: 4,
     deny: 5,
   };
   if (current.action === "modify" && next.action === "modify") {
@@ -745,8 +797,11 @@ export function runtimeHookFileChangeForTool(
 
 function normalizeRuntimeHookDecision(decision: RuntimeHookDecision | undefined): RuntimeHookDecision | undefined {
   if (!decision) return undefined;
-  if (!["allow", "deny", "ask", "defer", "modify", "stop"].includes(decision.action)) {
+  if (!["allow", "deny", "ask", "defer", "modify", "stop", "continue"].includes(decision.action)) {
     throw new RuntimeHookValidationError("Hook returned an unsupported decision");
+  }
+  if (decision.action === "continue" && (decision.feedback === undefined || decision.feedback === null || decision.feedback === "")) {
+    throw new RuntimeHookValidationError("Continuation requires non-empty validation feedback");
   }
   return sanitizeRuntimeHookValue(decision, 64 * 1024) as unknown as RuntimeHookDecision;
 }

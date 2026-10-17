@@ -1,3 +1,5 @@
+import type { RuntimeHookDispatcher } from "@polpo-ai/core/runtime-hooks";
+import type { CompletionToolRunScope } from "../completions.js";
 import { nanoid } from "nanoid";
 import {
   agentMemoryScope,
@@ -1304,17 +1306,25 @@ export async function prepareChatCompletionExecution(
       runtime: options.runtime,
       sessionId,
     }) : undefined;
+  let hookToolRunScope: CompletionToolRunScope | undefined;
   if (deferredAgentTools) {
-    const resolvedTools = await deps.resolveAgentTools(
-      resolvedAgentConfig,
-      undefined,
-      toolInvocation,
-      options.signal,
-    );
+    if (!projectLoopRuntime && resolvedAgentConfig?.hooks?.length) {
+      hookToolRunScope = await deps.createToolRunScope?.({ agentConfig: resolvedAgentConfig, runId: options.runtime?.runId ?? completionId, sessionId: sessionId ?? undefined, signal: options.signal });
+    }
+    let resolvedTools;
+    try {
+      resolvedTools = await deps.resolveAgentTools(resolvedAgentConfig, hookToolRunScope, toolInvocation, options.signal);
+    } catch (error) {
+      await hookToolRunScope?.cleanup?.();
+      throw error;
+    }
     effectiveTools = resolvedTools.tools;
     effectiveToolExecutor = resolvedTools.executor;
     toolDisclosure = resolvedTools.disclosure;
-    onResponseFinished = resolvedTools.cleanup;
+    onResponseFinished = async () => {
+      try { await resolvedTools.cleanup?.(); }
+      finally { await hookToolRunScope?.cleanup?.(); }
+    };
     extraAiTools = resolvedTools.extraAiTools;
   }
 
@@ -1514,13 +1524,22 @@ export async function prepareChatCompletionExecution(
     modelToolChoice = requestToolChoiceToAI(body.tool_choice);
   }
 
-  const runtimeHookDispatcher = await deps.resolveRuntimeHooks?.({
-    agentConfig: resolvedAgentConfig,
-    surface: options.runtime?.surface === "channel" ? "channel" : "chat",
-    runId: options.runtime?.runId ?? completionId,
-    sessionId: sessionId ?? undefined,
-    activatedSkills,
-  });
+  const runtimeHookToolExecutor = effectiveToolExecutor;
+  let runtimeHookDispatcher: RuntimeHookDispatcher | undefined;
+  try {
+    runtimeHookDispatcher = await deps.resolveRuntimeHooks?.({
+      agentConfig: resolvedAgentConfig,
+      surface: options.runtime?.surface === "channel" ? "channel" : "chat",
+      runId: options.runtime?.runId ?? completionId,
+      sessionId: sessionId ?? undefined,
+      activatedSkills,
+      toolRunScope: hookToolRunScope,
+      getToolExecutor: () => runtimeHookToolExecutor,
+    });
+  } catch (error) {
+    await cleanupFailedPreparation(onResponseFinished);
+    throw error;
+  }
   const runtimeHooks: CompletionRuntimeHookContext | undefined = runtimeHookDispatcher
     ? {
         dispatcher: runtimeHookDispatcher,

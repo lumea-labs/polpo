@@ -117,6 +117,10 @@ export interface LoopRunnerOptions {
    * Core stays pure — wiring to a store lives in the host (loop-engine/runner).
    */
   onTurnCheckpoint?: (checkpoint: LoopTurnCheckpoint) => void | Promise<void>;
+  /** Pre-terminal gate. False continues the SAME loop before steering is sealed. */
+  beforeStop?: (input: { turn: number; turns: number; reason: LoopStopReason; remainingTurns: number }) => Promise<boolean>;
+  /** Gates must not continue after losing their durable continuation checkpoint. */
+  checkpointRequired?: boolean;
 }
 
 const DEFAULT_MAX_TURNS = 20;
@@ -445,9 +449,9 @@ export class LoopRunner {
             toolResults,
             steering,
           });
-        } catch { /* checkpoint persistence is best-effort */ }
+        } catch (error) { if (options.checkpointRequired) throw error; }
       };
-      await checkpointTurn();
+      if (!options.beforeStop) await checkpointTurn();
 
       const stopResult = await hooks.runBefore("loop:stop", {
         agent: options.agent,
@@ -471,6 +475,14 @@ export class LoopRunner {
         });
       }
       if (stopResult.data.shouldStop) {
+        if (options.beforeStop) {
+          const accepted = await options.beforeStop({ turn, turns, reason: stopResult.data.reason, remainingTurns: maxTurns - turns });
+          await checkpointTurn();
+          if (!accepted) {
+            if (!hasAnotherTurn) throw new Error("Termination gate requested continuation after maxTurns");
+            continue;
+          }
+        }
         let steeringSealed = false;
         if (hasAnotherTurn && options.steering && !options.retainPendingSteeringOnFinish) {
           const sealed = await options.steering.sealIfIdle();
@@ -503,6 +515,7 @@ export class LoopRunner {
           toolResults: allToolResults,
         });
       }
+      if (options.beforeStop) await checkpointTurn();
     }
 
     await finishSteering("too_late", "max_turns_reached");

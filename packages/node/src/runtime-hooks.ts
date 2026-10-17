@@ -21,8 +21,8 @@ export interface NodeRuntimeHookHostOptions {
   fetch?: typeof globalThis.fetch;
   lookup?: typeof dnsLookup;
   resolveHttpHeaders?: (connection: string, signal: AbortSignal) => Promise<Record<string, string>>;
-  invokeTool?: (name: string, input: Record<string, unknown>, signal: AbortSignal) => Promise<RuntimeHookHandlerResult | void>;
-  invokeMcpTool?: (connection: string, name: string, input: Record<string, unknown>, signal: AbortSignal) => Promise<RuntimeHookHandlerResult | void>;
+  invokeTool?: (name: string, input: Record<string, unknown>, signal: AbortSignal, invocation?: { idempotencyKey: string }) => Promise<RuntimeHookHandlerResult | void>;
+  invokeMcpTool?: (connection: string, name: string, input: Record<string, unknown>, signal: AbortSignal, invocation?: { idempotencyKey: string }) => Promise<RuntimeHookHandlerResult | void>;
   runPrompt?: (input: { prompt: string; envelope: RuntimeHookEnvelope; model?: string; maxOutputTokens?: number }, signal: AbortSignal) => Promise<RuntimeHookHandlerResult | void>;
   runAgent?: (input: { agent: string; prompt: string; envelope: RuntimeHookEnvelope; allowedTools?: string[]; maxTurns?: number }, signal: AbortSignal) => Promise<RuntimeHookHandlerResult | void>;
   findCompleted?: RuntimeHookHost["findCompleted"];
@@ -83,12 +83,12 @@ export function createNodeRuntimeHookHost(options: NodeRuntimeHookHostOptions): 
   return {
     findCompleted: options.findCompleted,
     trace: options.trace,
-    execute: async ({ hook, envelope, idempotencyKey, signal }) => {
+    execute: async ({ hook, envelope, idempotencyKey, signal, resources }) => {
       const handler = hook.handler;
       if (handler.type === "command") {
         const command = [handler.command, ...(handler.args ?? []).map(shellQuote)].join(" ");
-        const result = await options.shell.execute(command, {
-          cwd: handler.cwd ?? options.cwd,
+        const result = await (resources?.shell ?? options.shell).execute(command, {
+          cwd: handler.cwd ?? resources?.cwd ?? options.cwd,
           env: {
             ...(handler.env ?? {}),
             POLPO_HOOK_EVENT: envelope.event,
@@ -145,12 +145,14 @@ export function createNodeRuntimeHookHost(options: NodeRuntimeHookHostOptions): 
         return parseHandlerResult(response.body);
       }
       if (handler.type === "tool") {
+        if (resources?.executeTool) return parseHandlerResult(await resources.executeTool(handler.tool, mergeInput(handler.input, envelope), { callId: idempotencyKey, signal }));
         if (!options.invokeTool) throw new Error("Runtime hook tool adapter is not configured");
-        return await options.invokeTool(handler.tool, mergeInput(handler.input, envelope), signal);
+        return await options.invokeTool(handler.tool, mergeInput(handler.input, envelope), signal, { idempotencyKey });
       }
       if (handler.type === "mcp_tool") {
+        if (resources?.executeTool) return parseHandlerResult(await resources.executeTool(`mcp__${handler.connection}__${handler.tool}`, mergeInput(handler.input, envelope), { callId: idempotencyKey, signal }));
         if (!options.invokeMcpTool) throw new Error("Runtime hook MCP adapter is not configured");
-        return await options.invokeMcpTool(handler.connection, handler.tool, mergeInput(handler.input, envelope), signal);
+        return await options.invokeMcpTool(handler.connection, handler.tool, mergeInput(handler.input, envelope), signal, { idempotencyKey });
       }
       if (handler.type === "prompt") {
         if (!options.runPrompt) throw new Error("Runtime hook prompt adapter is not configured");

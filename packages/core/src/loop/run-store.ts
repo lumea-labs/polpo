@@ -1,5 +1,6 @@
 import type { ContextBag, LoopLifecycleHook, LoopPresentation, LoopTraceEvent, ProjectLoopConfig, ProjectLoopPermission, ProjectLoopPolicy, Step } from "./types.js";
 import type { SteeringQueueSnapshot } from "../steering.js";
+import type { TerminationGateState } from "../termination-gate.js";
 
 export type ProjectLoopRunStatus =
   | "running"
@@ -63,6 +64,13 @@ export interface LoopResumeState {
   accumText?: string;
   /** Undelivered run-scoped steering messages and recent idempotency ids. */
   steering?: SteeringQueueSnapshot;
+  /** Persisted with history; budgets and validation attempts never reset on resume. */
+  terminationGate?: TerminationGateState;
+  terminationPhase?: "operational" | "in_flight" | "validating" | "accepted";
+  terminationInvocationId?: string;
+  terminationConfiguration?: string;
+  terminationSystemPrompt?: string;
+  terminalCandidate?: string;
 }
 
 export interface LoopApprovalSnapshot {

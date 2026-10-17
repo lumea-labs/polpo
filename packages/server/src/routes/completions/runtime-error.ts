@@ -1,3 +1,5 @@
+import { TerminationGateError } from "@polpo-ai/core/runtime-hooks";
+
 /**
  * A host-authorized runtime failure that is safe to expose to API clients.
  *
@@ -24,6 +26,12 @@ export function completionRuntimeErrorEnvelope(error: unknown): {
     code: string;
   };
 } | null {
+  // Run-backed hosts serialize errors into trusted runtime transcript events.
+  const gate = error && typeof error === "object" ? error as Record<string, unknown> : undefined;
+  if (error instanceof TerminationGateError || (gate?.name === "TerminationGateError"
+    && typeof gate.code === "string" && /^termination_gate_[a-z_]+$/.test(gate.code) && typeof gate.message === "string")) {
+    return { status: 409, error: { type: "runtime_error", code: gate!.code as string, message: gate!.message as string } };
+  }
   if (!(error instanceof CompletionRuntimeError)) return null;
   const status = Number.isInteger(error.status) && error.status >= 400 && error.status <= 599
     ? error.status

@@ -44,6 +44,8 @@ import {
   type ToolInvocationContext,
   type ToolInvocationJsonValue,
 } from "@polpo-ai/core";
+import { TerminationGateError } from "@polpo-ai/core/runtime-hooks";
+import type { AgentStepCheckpoint } from "./agent-step-runner.js";
 import { validateToolInput } from "@polpo-ai/llm";
 import type { LanguageModelUsage } from "ai";
 import type {
@@ -469,6 +471,8 @@ export async function runProjectLoopCompletion(options: {
 
   const loopRunStore = deps.getLoopRunStore?.();
   const resumeState = resumeRun?.resume;
+  const agentCheckpoint = resumeState?.runtime?.agentStep as AgentStepCheckpoint | undefined;
+  if (agentCheckpoint && (resumeState?.steps[0] as any)?.loop !== agentCheckpoint.step) throw new TerminationGateError("termination_gate_checkpoint_invalid", "Agent checkpoint does not match the pipeline cursor");
   const initialContext: ContextBag = resumeState?.context ?? {
     request: {
       metadata: { ...(options.requestMetadata ?? {}) },
@@ -698,6 +702,18 @@ export async function runProjectLoopCompletion(options: {
   let lastProviderMetadata: Record<string, unknown> | undefined;
   const toolCallsAccum: any[] = [];
   const events: LoopTraceEvent[] = [];
+  let pendingAgentCheckpoint = agentCheckpoint;
+  const persistCheckpoint = async (position: { steps: any[]; previousNode?: string; previousStepKey?: string }, context: Readonly<ContextBag>, agentStep?: AgentStepCheckpoint) => {
+    if (!loopRunStore || !loopRunId) return;
+    const resume = buildLoopResumeState({ ...position, context: { ...context } }, aiMessages, extraSystemParts,
+      resumeState?.approvedGates, contextTrust, activatedSkills, options.parallelToolCalls,
+      options.requestAllowedTools, options.executionAllowedTools, options.grantAllowedTools)!;
+    if (agentStep) resume.runtime = { ...resume.runtime, agentStep };
+    const serialized = JSON.stringify(resume);
+    if (Buffer.byteLength(serialized, "utf8") > 2 * 1024 * 1024) throw new TerminationGateError("termination_gate_checkpoint_too_large", "Agent checkpoint exceeds 2 MiB; execution stopped before another operation");
+    await persistLoopRunUpdate(loopRunStore, loopRunId, { resume: JSON.parse(serialized) }, deps.emit, "checkpoint");
+  };
+
   await options.steering?.setBoundary({ open: false, reservable: false });
 
   const emitTrace = async (event: LoopTraceEvent) => {
@@ -745,6 +761,8 @@ export async function runProjectLoopCompletion(options: {
         previousStepKey: resumeState.previousStepKey,
         approvedGates: resumeState.approvedGates,
       } : undefined,
+      checkpointRequired: true,
+      onCheckpoint: loopRunStore ? async checkpoint => persistCheckpoint(checkpoint, checkpoint.context) : undefined,
       onTrace: async (event) => {
         await emitTrace(event);
       },
@@ -786,7 +804,7 @@ export async function runProjectLoopCompletion(options: {
         if (isError) throw new Error(output);
         return { output: maybeParseJson(output) };
       },
-      runLoop: async (name, loop, context, _position, agentInput) => {
+      runLoop: async (name, loop, context, position, agentInput) => {
         const id = `loop-step-${nanoid(12)}`;
         await onToolCall?.({
           id,
@@ -815,6 +833,8 @@ export async function runProjectLoopCompletion(options: {
         const stepActivatedSkills = activatedSkills.filter((skill) =>
           stepSkillNames.has(skill)
         );
+        const stepResume = pendingAgentCheckpoint;
+        pendingAgentCheckpoint = undefined;
         const stepResult = await runAgentStepCompletion({
           deps,
           agentConfig: stepAgent,
@@ -822,6 +842,13 @@ export async function runProjectLoopCompletion(options: {
           extraSystemParts,
           context,
           stepName: name,
+          loopName: projectLoop.name,
+          resume: stepResume,
+          checkpointAvailable: !loopRunStore || Boolean(position),
+          onCheckpoint: loopRunStore ? async checkpoint => {
+            if (!position) throw new TerminationGateError("termination_gate_parallel_unsupported", "Durable termination gates require a sequential agent step; parallel checkpoint/resume is not supported");
+            await persistCheckpoint(position, context, checkpoint);
+          } : undefined,
           contextTrust,
           runtimePlan: options.runtimePlan,
           signal: options.signal,
