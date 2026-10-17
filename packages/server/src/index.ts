@@ -89,7 +89,10 @@ export {
   type RuntimeHookRouteDeps,
 } from "./routes/runtime-hooks.js";
 export {
+  reconcileInterruptedRun,
   runDeliveryRoutes,
+  type InterruptedRunReconciliationResult,
+  type ReconcileInterruptedRunOptions,
   type ResolvedRunDelivery,
   type RunDeliveryRouteDeps,
 } from "./routes/run-delivery.js";
