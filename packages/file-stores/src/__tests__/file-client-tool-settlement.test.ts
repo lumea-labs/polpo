@@ -55,6 +55,31 @@ describe("FileSessionStore settlement", () => {
     expect(await store.getMessages(input.sessionId)).toHaveLength(2);
   });
 
+  it("preserves the frozen tool catalog on acceptance, replay and stale source writes", async () => {
+    const { store, dir, input, assistant, toolCalls } = await fixture();
+    const accepted = continuation(input);
+    expect(await store.prepareContinuation(accepted)).toMatchObject({
+      status: "prepared", requestClientTools: toolCalls[0]!.continuationClientTools,
+    });
+    await store.updateMessage(input.sessionId, assistant.id, "stale finalizer", []);
+    const reopened = new FileSessionStore(dir);
+    const replay = await reopened.prepareContinuation(accepted);
+    expect(replay).toMatchObject({
+      status: "replay", runId: accepted.runId,
+      requestClientTools: toolCalls[0]!.continuationClientTools,
+    });
+    expect(replay.messages[0]!.toolCalls![0]).toMatchObject({ state: "completed", result: "executed" });
+    expect(replay.messages[0]!.toolCalls![0]).not.toHaveProperty("continuationClientTools");
+    expect(await reopened.getClientToolResolution(input)).toMatchObject({ status: "continuation" });
+
+    const later = await reopened.addMessage(input.sessionId, "assistant", "next call");
+    await reopened.updateMessage(input.sessionId, later.id, "next call", [{ ...toolCalls[0]!, id: "later-call" }]);
+    await reopened.settleClientTool({ ...input, toolCallId: "later-call", expectedSessionVersion: 3, idempotencyKey: "later-settlement" });
+    expect(await reopened.prepareContinuation(accepted)).toMatchObject({
+      status: "replay", requestClientTools: toolCalls[0]!.continuationClientTools,
+    });
+  });
+
   it("serializes competing outcomes and accepts exactly one receipt", async () => {
     const { store, dir, input } = await fixture();
     const other = new FileSessionStore(dir);

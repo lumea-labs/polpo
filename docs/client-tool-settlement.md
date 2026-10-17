@@ -124,6 +124,10 @@ strips internal continuation and settlement fields. Stores without the atomic
 capability return an unsupported error; hosts must not emulate settlement using
 separate read/update calls. File persistence coordinates a single writer process;
 use transactional database storage for multiple server processes.
+When the Drizzle settlement capability is configured, message writers also use
+transactions to protect terminal calls from stale updates. HTTP-only PostgreSQL
+drivers must provide the factory's `transaction` adapter; a non-transactional
+read/update fallback cannot provide this guarantee.
 
 ## SDK and CLI
 

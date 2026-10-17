@@ -338,6 +338,53 @@ describe("DrizzleSessionStore client-tool settlement (SQLite)", () => {
     expect(call).not.toHaveProperty("continuationClientTools");
   });
 
+  it("keeps the accepted continuation catalog across a stale source update", async () => {
+    const { sessionId, assistant, version } = await pendingCall();
+    const input = {
+      sessionId,
+      agent: "leo",
+      user: "user-1",
+      scope: { key: "site-1", version: "4" },
+      toolCallId: "call-publish",
+      result: '{"published":true}',
+      expectedSessionVersion: version,
+      idempotencyKey: "continue-publish-1",
+      fingerprint: "sha256:continue-publish-1",
+      runId: "run-publish-1",
+    } as const;
+
+    await expect(stores.sessionStore.prepareContinuation!(input)).resolves.toMatchObject({
+      status: "prepared",
+      requestClientTools: [{
+        type: "function",
+        function: { name: "publish_site" },
+      }],
+    });
+    await stores.sessionStore.updateMessage(sessionId, assistant.id, "late finalizer", [{
+      id: "call-publish",
+      name: "publish_site",
+      state: "completed",
+      result: '{"published":true}',
+    }]);
+
+    await expect(stores.sessionStore.prepareContinuation!(input)).resolves.toMatchObject({
+      status: "replay",
+      runId: "run-publish-1",
+      requestClientTools: [{
+        type: "function",
+        function: { name: "publish_site" },
+      }],
+    });
+    const call = (await stores.sessionStore.getMessages(sessionId))
+      .find((message) => message.id === assistant.id)?.toolCalls?.[0];
+    expect(call).toMatchObject({
+      id: "call-publish",
+      state: "completed",
+      result: '{"published":true}',
+    });
+    expect(call).not.toHaveProperty("continuationClientTools");
+  });
+
   it("preserves source declaration order and ordinary siblings across stale updates", async () => {
     const { sessionId, assistant, version } = await pendingCall();
     const ordinary = {

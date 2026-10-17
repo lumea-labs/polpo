@@ -11,7 +11,14 @@ import { randomBytes } from "node:crypto";
 import { sql } from "drizzle-orm";
 import postgres from "postgres";
 import { drizzle } from "drizzle-orm/postgres-js";
-import { createPgStores, type DrizzleStores } from "../index.js";
+import {
+  createPgStores,
+  DrizzleSessionStore,
+  messagesPg,
+  sessionContinuationsPg,
+  sessionsPg,
+  type DrizzleStores,
+} from "../index.js";
 import { ensurePgSchema } from "../migrate.js";
 import type { ApprovalRequest } from "@polpo-ai/core/types";
 import type { ChatSuggestion } from "@polpo-ai/core/chat-interactions";
@@ -1005,6 +1012,17 @@ describe.skipIf(!canConnect)("PostgreSQL Drizzle stores", () => {
           function: { name: "configure_site_module" },
         }],
       });
+      await expect(stores.sessionStore.updateMessage(
+        sid,
+        assistant.id,
+        "late finalizer",
+        [{
+          id: "call-1",
+          name: "ask_user_question",
+          state: "completed",
+          result: "configured",
+        }],
+      )).resolves.toBe(true);
       await expect(stores.sessionStore.prepareContinuation!(input)).resolves.toMatchObject({
         status: "replay",
         runId: "looprun-1",
@@ -1083,11 +1101,25 @@ describe.skipIf(!canConnect)("PostgreSQL Drizzle stores", () => {
         "assistant",
         "Choose",
       );
+      const legacyStore = new DrizzleSessionStore(
+        nonTransactionalDb,
+        sessionsPg,
+        messagesPg,
+        sessionContinuationsPg,
+        "pg",
+      );
+      await expect(legacyStore.updateMessage(sid, assistant.id, "Legacy update", [{
+        id: "call-1",
+        name: "configure",
+        state: "interrupted",
+      }])).resolves.toBe(true);
+      expect(transactionCalls).toHaveLength(0);
       await storesWithProvider.sessionStore.updateMessage(sid, assistant.id, "Choose", [{
         id: "call-1",
         name: "configure",
         state: "interrupted",
       }]);
+      expect(transactionCalls).toHaveLength(1);
       const input = {
         sessionId: sid,
         agent: "leo",
@@ -1106,13 +1138,14 @@ describe.skipIf(!canConnect)("PostgreSQL Drizzle stores", () => {
         sessionVersion: 2,
         runId: "looprun-1",
       });
+      expect(transactionCalls).toHaveLength(2);
       await expect(
         storesWithProvider.sessionStore.prepareContinuation!(input),
       ).resolves.toMatchObject({
         status: "replay",
         runId: "looprun-1",
       });
-      expect(transactionCalls).toHaveLength(2);
+      expect(transactionCalls).toHaveLength(3);
       expect(await storesWithProvider.sessionStore.getMessages(sid)).toHaveLength(2);
     });
   });

@@ -370,9 +370,13 @@ export class DrizzleSessionStore implements SessionStore {
           const receiptRows = db.select().from(this.clientToolSettlements)
             .where(eq(this.clientToolSettlements.sessionId, turn.sessionId))
             .all();
-          protectedToolCalls = this.protectSettledSourceToolCalls(
+          const continuationRows = db.select().from(this.continuations)
+            .where(eq(this.continuations.sessionId, turn.sessionId))
+            .all();
+          protectedToolCalls = this.protectTerminalSourceToolCalls(
             messageRows.map((row: any) => this.rowToMessage(row)),
             receiptRows.map((row: any) => this.rowToStoredClientToolSettlement(row)),
+            continuationRows,
             input.assistant.messageId,
             protectedToolCalls,
           );
@@ -430,9 +434,12 @@ export class DrizzleSessionStore implements SessionStore {
           .orderBy(asc(this.messages.ts));
         const receiptRows: any[] = await db.select().from(this.clientToolSettlements)
           .where(eq(this.clientToolSettlements.sessionId, turn.sessionId));
-        protectedToolCalls = this.protectSettledSourceToolCalls(
+        const continuationRows: any[] = await db.select().from(this.continuations)
+          .where(eq(this.continuations.sessionId, turn.sessionId));
+        protectedToolCalls = this.protectTerminalSourceToolCalls(
           messageRows.map((row) => this.rowToMessage(row)),
           receiptRows.map((row) => this.rowToStoredClientToolSettlement(row)),
+          continuationRows,
           input.assistant.messageId,
           protectedToolCalls,
         );
@@ -582,9 +589,10 @@ export class DrizzleSessionStore implements SessionStore {
     }
   }
 
-  private protectSettledSourceToolCalls(
+  private protectTerminalSourceToolCalls(
     messages: readonly Message[],
     receipts: readonly StoredClientToolSettlement[],
+    continuationRows: readonly any[],
     messageId: string,
     incoming: readonly ToolCallInfo[] | undefined,
   ): ToolCallInfo[] | undefined {
@@ -597,35 +605,57 @@ export class DrizzleSessionStore implements SessionStore {
     const sourceReceipts = receipts.filter(
       (receipt) => receipt.sourceAssistantMessageId === messageId,
     );
-    if (sourceReceipts.length === 0) return incoming ? [...incoming] : undefined;
+    const acceptedToolCallIds = new Set(
+      continuationRows.map((continuation) => continuation.toolCallId),
+    );
+    const rawSource = messages.find((message) => message.id === messageId);
+    const acceptedSourceIds = new Set(
+      rawSource?.role === "assistant"
+        ? (rawSource.toolCalls ?? [])
+          .filter((call) => acceptedToolCallIds.has(call.id))
+          .map((call) => call.id)
+        : [],
+    );
+    if (sourceReceipts.length === 0 && acceptedSourceIds.size === 0) {
+      return incoming ? [...incoming] : undefined;
+    }
     const canonical = this.projectSessionMessages(messages, receipts);
-    const source = canonical.find((message) => message.id === messageId);
-    if (!source || source.role !== "assistant" || !source.toolCalls?.length) {
+    const canonicalSource = canonical.find((message) => message.id === messageId);
+    if (
+      !rawSource
+      || rawSource.role !== "assistant"
+      || !rawSource.toolCalls?.length
+      || !canonicalSource
+      || canonicalSource.role !== "assistant"
+      || !canonicalSource.toolCalls?.length
+    ) {
       throw new ClientToolSettlementError(
         "client_tool_settlement_corrupt",
-        "Settled client tool source message is missing",
+        "Terminal client tool source message is missing",
       );
     }
     const settledIds = new Set(sourceReceipts.map((receipt) => receipt.toolCallId));
-    const protectedCalls = new Map(
-      source.toolCalls
+    const settledCalls = new Map(
+      canonicalSource.toolCalls
         .filter((call) => settledIds.has(call.id))
         .map((call) => [call.id, call] as const),
     );
-    if (protectedCalls.size !== settledIds.size) {
+    if (settledCalls.size !== settledIds.size) {
       throw new ClientToolSettlementError(
         "client_tool_settlement_corrupt",
         "Settled client tool call is missing from its source message",
       );
     }
     // Preserve the authoritative declaration order and every existing sibling.
-    // A late finalizer may refresh an ordinary call, but it cannot reorder or
-    // silently remove calls around a receipt-backed terminal call.
-    const next = source.toolCalls.map((call) =>
-      protectedCalls.get(call.id)
-      ?? incoming?.find((candidate) => candidate.id === call.id)
-      ?? call
-    );
+    // Receipt-backed calls use their canonical terminal projection. Accepted
+    // continuations retain the raw interrupted call because its hidden tool
+    // catalog is required to reproduce an idempotent continuation replay.
+    const next = rawSource.toolCalls.map((call) => {
+      const settled = settledCalls.get(call.id);
+      if (settled) return settled;
+      if (acceptedSourceIds.has(call.id)) return call;
+      return incoming?.find((candidate) => candidate.id === call.id) ?? call;
+    });
     for (const call of incoming ?? []) {
       if (!next.some((candidate) => candidate.id === call.id)) next.push(call);
     }
@@ -642,6 +672,29 @@ export class DrizzleSessionStore implements SessionStore {
   ): Promise<boolean> {
     const now = new Date().toISOString();
     const serialized = this.serializeContent(content);
+
+    // Legacy constructors without settlement persistence keep the historical
+    // direct-update behavior. Once the settlement capability is enabled, a
+    // Session lock is mandatory to serialize late writers with settlement and
+    // continuation acceptance.
+    if (!this.clientToolSettlements) {
+      const result = await this.db.update(this.messages).set({
+        content: serialized,
+        toolCalls: toolCalls ? JSON.stringify(toolCalls) : null,
+        suggestions: suggestions?.length ? JSON.stringify(suggestions) : null,
+        reasoning: reasoning?.text ?? null,
+        reasoningTruncated: reasoning?.truncated ?? false,
+      }).where(and(
+        eq(this.messages.id, messageId),
+        eq(this.messages.sessionId, sessionId),
+      ));
+      const changed = extractAffectedRows(result) > 0;
+      if (changed) {
+        await this.db.update(this.sessions).set({ updatedAt: now })
+          .where(eq(this.sessions.id, sessionId));
+      }
+      return changed;
+    }
 
     if (this.dialect === "sqlite") {
       if (typeof this.db.transaction !== "function") {
@@ -662,9 +715,13 @@ export class DrizzleSessionStore implements SessionStore {
           const receiptRows = db.select().from(this.clientToolSettlements)
             .where(eq(this.clientToolSettlements.sessionId, sessionId))
             .all();
-          protectedToolCalls = this.protectSettledSourceToolCalls(
+          const continuationRows = db.select().from(this.continuations)
+            .where(eq(this.continuations.sessionId, sessionId))
+            .all();
+          protectedToolCalls = this.protectTerminalSourceToolCalls(
             messageRows.map((row: any) => this.rowToMessage(row)),
             receiptRows.map((row: any) => this.rowToStoredClientToolSettlement(row)),
+            continuationRows,
             messageId,
             toolCalls,
           );
@@ -702,9 +759,12 @@ export class DrizzleSessionStore implements SessionStore {
           .orderBy(asc(this.messages.ts));
         const receiptRows: any[] = await db.select().from(this.clientToolSettlements)
           .where(eq(this.clientToolSettlements.sessionId, sessionId));
-        protectedToolCalls = this.protectSettledSourceToolCalls(
+        const continuationRows: any[] = await db.select().from(this.continuations)
+          .where(eq(this.continuations.sessionId, sessionId));
+        protectedToolCalls = this.protectTerminalSourceToolCalls(
           messageRows.map((row) => this.rowToMessage(row)),
           receiptRows.map((row) => this.rowToStoredClientToolSettlement(row)),
+          continuationRows,
           messageId,
           toolCalls,
         );
@@ -1446,7 +1506,10 @@ export class DrizzleSessionStore implements SessionStore {
               )
             : projectResolvedClientToolCalls(rawMessages);
           const turnId = this.continuationTurnId(messages, input.toolCallId);
-          const requestClientTools = requestClientToolsForContinuation(messages, input.toolCallId);
+          const requestClientTools = requestClientToolsForContinuation(
+            rawMessages,
+            input.toolCallId,
+          );
           return {
             status: "replay" as const,
             sessionVersion: Number(existing.sessionVersion),
@@ -1605,7 +1668,10 @@ export class DrizzleSessionStore implements SessionStore {
             )
           : projectResolvedClientToolCalls(rawMessages);
         const turnId = this.continuationTurnId(messages, input.toolCallId);
-        const requestClientTools = requestClientToolsForContinuation(messages, input.toolCallId);
+        const requestClientTools = requestClientToolsForContinuation(
+          rawMessages,
+          input.toolCallId,
+        );
         return {
           status: "replay",
           sessionVersion: Number(existing.sessionVersion),

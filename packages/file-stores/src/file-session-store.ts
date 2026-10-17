@@ -33,6 +33,7 @@ import {
   type CanonicalTurnCommitted,
 } from "@polpo-ai/core/canonical-turn";
 import {
+  requestClientToolsForContinuation,
   resolvePendingClientToolCall,
   SessionContinuationError,
   type PreparedSessionContinuation,
@@ -226,11 +227,13 @@ export class FileSessionStore implements SessionStore {
           );
         }
         const turnId = this.continuationTurnId(state.messages, input.toolCallId);
+        const requestClientTools = requestClientToolsForContinuation(state.messages, input.toolCallId);
         return {
           status: "replay",
           sessionVersion: existing.sessionVersion,
           runId: existing.runId,
           ...(turnId ? { turnId } : {}),
+          ...(requestClientTools ? { requestClientTools } : {}),
           messages: this.projectMessages(state),
         };
       }
@@ -246,6 +249,7 @@ export class FileSessionStore implements SessionStore {
         input.toolCallId,
       );
       const turnId = this.continuationTurnId(state.messages, input.toolCallId);
+      const requestClientTools = requestClientToolsForContinuation(state.messages, input.toolCallId);
 
       const nextVersion = input.expectedSessionVersion + 1;
       const message: Message = {
@@ -275,6 +279,7 @@ export class FileSessionStore implements SessionStore {
         sessionVersion: nextVersion,
         runId: input.runId,
         ...(turnId ? { turnId } : {}),
+        ...(requestClientTools ? { requestClientTools } : {}),
         messages: this.projectMessages(state),
       };
     });
@@ -337,9 +342,14 @@ export class FileSessionStore implements SessionStore {
       state.header.clientToolSettlements = [...receipts, receipt];
       state.header.version = receipt.sessionVersion;
       state.messages.push(message);
-      // Persist the terminal source as well as the receipt, protecting older readers.
-      const projected = this.projectMessages(state);
-      state.messages = state.messages.map(existing => projected.find(item => item.id === existing.id)!);
+      // Persist only this terminal call, leaving the raw catalogs of accepted
+      // continuations intact for their replay path.
+      const { continuationClientTools: _catalog, ...terminal } = target.call;
+      target.message.toolCalls = target.message.toolCalls!.map(call => call.id === input.toolCallId
+        ? { ...terminal, state: input.outcome === "success" ? "completed" : "error",
+          settlementOutcome: input.outcome, result: normalized.content }
+        : call);
+      this.projectMessages(state);
       this.writeSessionFileAtomic(input.sessionId, state.header, state.messages);
       return { status: "settled", receipt: publicClientToolSettlementReceipt(receipt) };
     });
@@ -634,7 +644,9 @@ export class FileSessionStore implements SessionStore {
 
   private protectSettledMessage(state: { header: any; messages: Message[] }, original: Message, patched: Message): Message {
     const receipts = this.settlements(state.header);
-    if (!receipts.length) return patched;
+    const acceptedIds = new Set(Object.values(state.header.continuations ?? {})
+      .map((receipt: any) => receipt.toolCallId as string));
+    if (!receipts.length && !acceptedIds.size) return patched;
     const canonical = this.projectMessages(state).find(message => message.id === original.id)!;
     if (receipts.some(receipt => receipt.resultMessageId === original.id)) {
       if (JSON.stringify(patched) !== JSON.stringify(original)) {
@@ -643,10 +655,14 @@ export class FileSessionStore implements SessionStore {
       return original;
     }
     const protectedIds = new Set(receipts.filter(receipt => receipt.sourceAssistantMessageId === original.id).map(receipt => receipt.toolCallId));
-    if (!protectedIds.size) return patched;
+    const acceptedCalls = new Map((original.toolCalls ?? []).filter(call => acceptedIds.has(call.id))
+      .map(call => [call.id, call] as const));
+    if (!protectedIds.size && !acceptedCalls.size) return patched;
     // The authoritative source declaration cannot be removed/reordered by a stale finalizer.
+    // Keep accepted calls raw internally: their frozen catalog is needed for a
+    // replay, while canonical history projects the existing tool result.
     const toolCalls = (canonical.toolCalls ?? []).map(call => protectedIds.has(call.id)
-      ? call : (patched.toolCalls?.find(candidate => candidate.id === call.id) ?? call));
+      ? call : (acceptedCalls.get(call.id) ?? patched.toolCalls?.find(candidate => candidate.id === call.id) ?? call));
     for (const call of patched.toolCalls ?? []) if (!toolCalls.some(existing => existing.id === call.id)) toolCalls.push(call);
     return { ...patched, toolCalls };
   }
