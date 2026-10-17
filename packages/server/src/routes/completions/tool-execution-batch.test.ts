@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
-import { executeCompletionToolBatch } from "./tool-execution-batch.js";
+import {
+  executeCompletionToolBatch,
+  executeCompletionToolCall,
+} from "./tool-execution-batch.js";
 
 const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
@@ -50,5 +53,26 @@ describe("executeCompletionToolBatch", () => {
       { toolCallId: "ok", result: "ok", isError: false },
       { toolCallId: "bad", result: "Error: provider unavailable", isError: true },
     ]);
+  });
+
+  it("gives sequential callers the same recoverable error contract", async () => {
+    const result = await executeCompletionToolCall({
+      call: {
+        toolCallId: "site-platform-1",
+        toolName: "site_platform",
+        input: { action: "inspect" },
+      },
+      executor: async () => {
+        throw new Error("Custom tool failed: site_platform_agent_tool_unavailable");
+      },
+    });
+
+    expect(result).toEqual({
+      toolCallId: "site-platform-1",
+      toolName: "site_platform",
+      input: { action: "inspect" },
+      result: "Error: Custom tool failed: site_platform_agent_tool_unavailable",
+      isError: true,
+    });
   });
 });

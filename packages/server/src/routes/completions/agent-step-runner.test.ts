@@ -313,6 +313,86 @@ describe("runAgentStepCompletion parallel tool calls", () => {
     expect(secondPrompt.indexOf("read_slow:done"))
       .toBeLessThan(secondPrompt.indexOf("list_fast:done"));
   });
+
+  it("returns a real custom-tool failure to the model so the agent can recover", async () => {
+    const usage = {
+      inputTokens: { total: 10, noCache: undefined, cacheRead: undefined, cacheWrite: undefined },
+      outputTokens: { total: 5, text: undefined, reasoning: undefined },
+    };
+    let turn = 0;
+    let recoveryPrompt = "";
+    const model = new MockLanguageModelV3({
+      doStream: async (options) => {
+        turn += 1;
+        if (turn === 1) {
+          return { stream: convertArrayToReadableStream([
+            { type: "stream-start", warnings: [] },
+            {
+              type: "tool-call",
+              toolCallId: "site-platform-1",
+              toolName: "site_platform",
+              input: JSON.stringify({ action: "inspect" }),
+            },
+            { type: "finish", finishReason: { unified: "tool-calls", raw: undefined }, usage },
+          ] as any[]) };
+        }
+        recoveryPrompt = JSON.stringify(options.prompt);
+        return { stream: convertArrayToReadableStream([
+          { type: "stream-start", warnings: [] },
+          { type: "text-start", id: "txt" },
+          { type: "text-delta", id: "txt", delta: "I will use the available project tools instead." },
+          { type: "text-end", id: "txt" },
+          { type: "finish", finishReason: { unified: "stop", raw: undefined }, usage },
+        ] as any[]) };
+      },
+    });
+    const executor = vi.fn(async () => {
+      throw new Error("Custom tool failed: site_platform_agent_tool_unavailable");
+    });
+    const onToolCall = vi.fn();
+    const deps = {
+      getConfig: () => ({ settings: {} }),
+      getMemoryStore: () => undefined,
+      emit: vi.fn(),
+      resolveAgentModel: vi.fn(async () => ({
+        model: {
+          id: "mock/model",
+          aiModel: model,
+          provider: "mock",
+          contextWindow: 128_000,
+          maxTokens: 8192,
+        },
+      })),
+      resolveAgentTools: vi.fn(async () => ({
+        tools: [{
+          name: "site_platform",
+          description: "Inspect the site platform",
+          parameters: { type: "object", properties: { action: { type: "string" } } },
+        }],
+        executor,
+      })),
+      buildRuntimePrompt: vi.fn(async () => "system"),
+    } as unknown as CompletionRouteDeps;
+
+    const result = await runAgentStepCompletion({
+      deps,
+      agentConfig: { name: "nested-agent", model: "mock/model", maxTurns: 2 },
+      aiMessages: [{ role: "user", content: "Inspect the site" }],
+      extraSystemParts: [],
+      context: {},
+      stepName: "implement",
+      onToolCall,
+    });
+
+    expect(result.text).toBe("I will use the available project tools instead.");
+    expect(recoveryPrompt).toContain("Error: Custom tool failed: site_platform_agent_tool_unavailable");
+    expect(onToolCall).toHaveBeenCalledWith(expect.objectContaining({
+      id: "site-platform-1",
+      name: "site_platform",
+      state: "error",
+      result: "Error: Custom tool failed: site_platform_agent_tool_unavailable",
+    }));
+  });
 });
 
 describe("runAgentStepCompletion runtime hook parity", () => {

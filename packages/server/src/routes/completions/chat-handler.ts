@@ -82,7 +82,10 @@ import {
   serializeModelOutput,
 } from "./structured-output.js";
 import { selectRequestClientToolCall } from "./client-tools.js";
-import { executeCompletionToolBatch } from "./tool-execution-batch.js";
+import {
+  executeCompletionToolBatch,
+  executeCompletionToolCall,
+} from "./tool-execution-batch.js";
 import type { CompletionRuntimeHookContext } from "./runtime-hooks.js";
 import {
   dispatchCompletionModelPolicyHook,
@@ -980,11 +983,16 @@ export async function executeStreamingChatCompletion(
                 tool_call: { id: call.toolCallId, name: call.toolName, arguments: callArgs, state: "calling" },
               }),
             });
-            const toolResult = await effectiveToolExecutor(call.toolName, callArgs, {
-              callId: call.toolCallId,
+            const local = await executeCompletionToolCall({
+              call: {
+                toolCallId: call.toolCallId,
+                toolName: call.toolName,
+                input: callArgs,
+              },
+              executor: effectiveToolExecutor,
               signal,
             });
-            await appendLocalResult(call, callArgs, toolResult, toolResult.startsWith("Error:"));
+            await appendLocalResult(call, callArgs, local.result, local.isError);
             assertChatToolProgress(exec);
           }
         }
@@ -1591,11 +1599,16 @@ export async function runNonStreamingChatCompletion(c: any, exec: ChatCompletion
             recordProviderToolCall(toolCallsAccum, call, providerToolResults);
             continue;
           }
-          const toolResult = await effectiveToolExecutor(call.toolName, callArgs, {
-            callId: call.toolCallId,
+          const local = await executeCompletionToolCall({
+            call: {
+              toolCallId: call.toolCallId,
+              toolName: call.toolName,
+              input: callArgs,
+            },
+            executor: effectiveToolExecutor,
             signal: c.req.raw.signal,
           });
-          appendLocalResult(call, callArgs, toolResult, toolResult.startsWith("Error:"));
+          appendLocalResult(call, callArgs, local.result, local.isError);
           assertChatToolProgress(exec);
         }
       }

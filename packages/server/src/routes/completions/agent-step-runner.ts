@@ -78,7 +78,10 @@ import {
   forcedModelToolName,
   resolveToolLoadingDecision,
 } from "./tool-disclosure.js";
-import { executeCompletionToolBatch } from "./tool-execution-batch.js";
+import {
+  executeCompletionToolCall,
+  executeCompletionToolBatch,
+} from "./tool-execution-batch.js";
 import {
   createPolicyGuardedToolExecutor,
   filterToolDefinitionsByPolicy,
@@ -1056,11 +1059,16 @@ export async function runAgentStepCompletion(options: {
             arguments: callArgs,
             state: "calling",
           });
-          const result = await executeTool(call.toolName, callArgs, {
-            callId: call.toolCallId,
+          const local = await executeCompletionToolCall({
+            call: {
+              toolCallId: call.toolCallId,
+              toolName: call.toolName,
+              input: callArgs,
+            },
+            executor: executeTool,
             signal: options.signal,
           });
-          await appendLocalResult(call, callArgs, result, result.startsWith("Error:"));
+          await appendLocalResult(call, callArgs, local.result, local.isError);
         }
       }
       if (stalledToolLoop) break;
