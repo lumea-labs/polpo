@@ -41,7 +41,7 @@ export interface ExecuteOwnedRunOptions {
   now?: () => Date;
 }
 
-/** Execute one run under a renewable lease. Only explicit cancellation aborts an owner. */
+/** Execute one run under a renewable lease with cooperative abort on cancellation or lost ownership. */
 export async function executeOwnedRun(
   options: ExecuteOwnedRunOptions,
 ): Promise<OwnedRunExecutionResult> {
@@ -120,6 +120,15 @@ export async function executeOwnedRun(
   };
 
   let heartbeatPromise: Promise<void> | undefined;
+  let heartbeatFailed = false;
+  const stopAndDrainHeartbeat = async (): Promise<void> => {
+    stopHeartbeat = true;
+    releaseHeartbeatWait?.();
+    // Do not detach an in-flight store operation: it could otherwise renew or
+    // observe cancellation after a terminal event has already been written.
+    // Store implementations remain responsible for bounding their own I/O.
+    await heartbeatPromise;
+  };
   try {
     const history = await inspectOwnedRunHistory(options.journal.store, options.runId);
     if (history.terminal) {
@@ -157,9 +166,17 @@ export async function executeOwnedRun(
       });
       controller.abort("run_cancelled");
     } else {
-      heartbeatPromise = heartbeat();
+      // Observe background failures immediately. Leaving this Promise without
+      // a handler until producer completion lets Node treat a transient store
+      // rejection as an uncaught exception and terminate the whole host.
+      heartbeatPromise = heartbeat().catch(() => {
+        heartbeatFailed = true;
+        controller.abort("run_heartbeat_failed");
+      });
     }
 
+    let producerFailed = false;
+    let producerFailure: unknown;
     try {
       await options.producer({
         runId: options.runId,
@@ -167,20 +184,43 @@ export async function executeOwnedRun(
         journal: options.journal,
       });
     } catch (error) {
-      if (lostLease) return { status: "lost-lease" };
-      if (!cancellationObserved) {
-        const failure = safeRunFailure(error);
-        if (!await renewLease()) return { status: "lost-lease" };
-        await options.journal.append(options.runId, {
-          id: "run.failed",
-          type: "run.failed",
-          data: failure,
-        });
-        return { status: "failed", error: failure.message };
-      }
+      producerFailed = true;
+      producerFailure = error;
     }
 
+    // Settle every in-flight heartbeat read/renewal before choosing a terminal
+    // event. In particular, a late store rejection must never race with and
+    // follow a successful run.completed append.
+    await stopAndDrainHeartbeat();
+
     if (lostLease) return { status: "lost-lease" };
+    if (heartbeatFailed) {
+      // A store transport failure means ownership is uncertain. Revalidate
+      // before terminalizing; if that proof is unavailable, fail closed and
+      // let durable reconnect/background reconciliation recover the journal.
+      try {
+        if (!await renewLease()) return { status: "lost-lease" };
+      } catch {
+        return { status: "lost-lease" };
+      }
+      const failure = heartbeatRunFailure();
+      await options.journal.append(options.runId, {
+        id: "run.failed:heartbeat",
+        type: "run.failed",
+        data: failure,
+      });
+      return { status: "failed", error: failure.message };
+    }
+    if (producerFailed && !cancellationObserved) {
+      const failure = safeRunFailure(producerFailure);
+      if (!await renewLease()) return { status: "lost-lease" };
+      await options.journal.append(options.runId, {
+        id: "run.failed",
+        type: "run.failed",
+        data: failure,
+      });
+      return { status: "failed", error: failure.message };
+    }
     if (cancellationObserved) {
       if (!await renewLease()) return { status: "lost-lease" };
       await options.journal.append(options.runId, {
@@ -199,10 +239,19 @@ export async function executeOwnedRun(
     });
     return { status: "completed" };
   } finally {
-    stopHeartbeat = true;
-    releaseHeartbeatWait?.();
-    await heartbeatPromise;
-    await options.leaseStore.release(options.runId, activeLease);
+    try {
+      await stopAndDrainHeartbeat();
+    } catch {
+      // heartbeatPromise installs its rejection handler when it is created;
+      // this guard also keeps a cleanup defect from replacing the primary
+      // producer/lifecycle result.
+    }
+    try {
+      await options.leaseStore.release(options.runId, activeLease);
+    } catch {
+      // A release acknowledgement failure cannot invalidate an already
+      // durable terminal result. The bounded lease remains the recovery fence.
+    }
   }
 }
 
@@ -257,6 +306,16 @@ function safeErrorMessage(error: unknown): string {
 }
 
 type SafeRunFailure = Record<string, RunEventJsonValue> & { message: string };
+
+function heartbeatRunFailure(): SafeRunFailure {
+  // Store errors may contain SQL, credentials or transport internals. The
+  // durable journal exposes only a stable retryable classification.
+  return {
+    message: "Run execution heartbeat failed",
+    code: "run_heartbeat_failed",
+    retryable: true,
+  };
+}
 
 function safeRunFailure(error: unknown): SafeRunFailure {
   if (error instanceof ToolReceiptSettlementError) {

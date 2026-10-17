@@ -22,7 +22,10 @@ vi.mock("@polpo-ai/llm", async (importOriginal) => {
   };
 });
 
-import { InMemorySteeringController } from "@polpo-ai/core/steering";
+import {
+  InMemorySteeringController,
+  type SteeringController,
+} from "@polpo-ai/core/steering";
 import type { AgentConfig, Task } from "@polpo-ai/core/types";
 import { spawnLoopEngine, toSteeringModelMessage } from "../adapters/loop-engine.js";
 
@@ -73,6 +76,85 @@ describe("loop-engine steering adapter", () => {
       mode: "steer",
       content: { text: "late" },
     })).toThrow(/closed/i);
+  });
+
+  test("kill contains an asynchronous durable steering abort rejection", async () => {
+    activeResolvedModel = mockResolvedModel(mockTextModel("must not run"));
+    const local = new InMemorySteeringController();
+    const abort = vi.fn(async () => {
+      throw new Error("Active run was not found");
+    });
+    const steering = new Proxy(local, {
+      get(target, property) {
+        if (property === "abort") return abort;
+        const value = Reflect.get(target, property, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    }) as SteeringController;
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => { unhandled.push(reason); };
+    process.on("unhandledRejection", onUnhandled);
+
+    try {
+      const handle = spawnLoopEngine(agent(), task(), cwd, { polpoDir, steering });
+      expect(() => handle.kill()).not.toThrow();
+      await expect(handle.done).resolves.toMatchObject({ exitCode: 0, stdout: "" });
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+      expect(abort).toHaveBeenCalledOnce();
+      expect(unhandled).toEqual([]);
+      expect(handle.isAlive()).toBe(false);
+    } finally {
+      process.removeListener("unhandledRejection", onUnhandled);
+    }
+  });
+
+  test("kill aborts an active model call even when durable steering abort rejects", async () => {
+    let modelStarted = false;
+    let modelObservedAbort = false;
+    activeResolvedModel = mockResolvedModel(new MockLanguageModelV3({
+      doStream: async (options) => {
+        modelStarted = true;
+        await new Promise<void>((_resolve, reject) => {
+          const stop = () => {
+            modelObservedAbort = true;
+            reject(Object.assign(new Error("model aborted"), { name: "AbortError" }));
+          };
+          if (options.abortSignal?.aborted) stop();
+          else options.abortSignal?.addEventListener("abort", stop, { once: true });
+        });
+        return { stream: new ReadableStream() };
+      },
+    }));
+    const local = new InMemorySteeringController();
+    const abort = vi.fn(async () => {
+      throw new Error("Active run was not found");
+    });
+    const steering = new Proxy(local, {
+      get(target, property) {
+        if (property === "abort") return abort;
+        const value = Reflect.get(target, property, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    }) as SteeringController;
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => { unhandled.push(reason); };
+    process.on("unhandledRejection", onUnhandled);
+
+    try {
+      const handle = spawnLoopEngine(agent(), task(), cwd, { polpoDir, steering });
+      await vi.waitFor(() => expect(modelStarted).toBe(true));
+      handle.kill();
+      await expect(handle.done).resolves.toMatchObject({ exitCode: 0, stdout: "" });
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+      expect(modelObservedAbort).toBe(true);
+      expect(abort).toHaveBeenCalledOnce();
+      expect(unhandled).toEqual([]);
+      expect(handle.isAlive()).toBe(false);
+    } finally {
+      process.removeListener("unhandledRejection", onUnhandled);
+    }
   });
 
   test("maps provider-neutral text and attachments in one user message", () => {
