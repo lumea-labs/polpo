@@ -7,6 +7,7 @@ import {
   RunEventCursorAheadError,
   RunEventCursorExpiredError,
   parseRunEventCursor,
+  type AppendRunStreamEvent,
   type RunCancellationStore,
   type RunEventStore,
   type RunExecutionLeaseStore,
@@ -27,6 +28,13 @@ export interface ResolvedRunDelivery {
   notifier?: RunEventNotifier;
   onInterrupted?: (runId: string) => Promise<void>;
   onInterruptedError?: (error: unknown, runId: string) => void;
+  /**
+   * Resolve an authoritative host terminal after the recovery lease is held.
+   * Returning null/undefined retains the default interrupted failure.
+   */
+  resolveTerminalEvent?: (
+    runId: string,
+  ) => Promise<AppendRunStreamEvent | null | undefined>;
   /** Retryable host projection. Must be idempotent and guard against stale state. */
   onTerminal?: (runId: string, event: RunStreamEvent) => Promise<void>;
   onTerminalError?: (error: unknown, runId: string) => void;
@@ -130,6 +138,7 @@ export function runDeliveryRoutes(
           notifier: resolved.notifier,
           onInterrupted: resolved.onInterrupted,
           onInterruptedError: resolved.onInterruptedError,
+          resolveTerminalEvent: resolved.resolveTerminalEvent,
           onTerminal: resolved.onTerminal,
           onTerminalError: resolved.onTerminalError,
           now: deps.now,
@@ -251,6 +260,9 @@ export interface ReconcileInterruptedRunOptions {
   notifier?: RunEventNotifier;
   onInterrupted?: (runId: string) => Promise<void>;
   onInterruptedError?: (error: unknown, runId: string) => void;
+  resolveTerminalEvent?: (
+    runId: string,
+  ) => Promise<AppendRunStreamEvent | null | undefined>;
   /** Runs for both existing and newly persisted terminal events; may be retried. */
   onTerminal?: (runId: string, event: RunStreamEvent) => Promise<void>;
   onTerminalError?: (error: unknown, runId: string) => void;
@@ -283,7 +295,7 @@ export async function reconcileInterruptedRun(
     return "active";
   }
 
-  const recoveryLease = {
+  let recoveryLease = {
     owner: "run-delivery-reconciler",
     token: options.createToken?.() ?? nanoid(24),
     expiresAt: new Date(now.getTime() + 10_000).toISOString(),
@@ -298,22 +310,53 @@ export async function reconcileInterruptedRun(
       await reconcileInterruptedHostProjection(options, claimedHistory.terminal);
       return "terminal";
     }
+    const resolvedTerminal = await options.resolveTerminalEvent?.(options.runId);
+    if (resolvedTerminal && !isTerminalRunEventInput(resolvedTerminal)) {
+      throw new RunDeliveryValidationError(
+        "Run delivery terminal resolver must return run.completed, run.failed, or run.cancelled",
+      );
+    }
+    // Host resolution may perform I/O. Renew with a fresh clock immediately
+    // before append so a replacement owner can fence a delayed resolver.
+    const appendTime = options.now?.() ?? new Date();
+    if (!(appendTime instanceof Date) || !Number.isFinite(appendTime.getTime())) {
+      throw new RunDeliveryValidationError("Run delivery clock returned an invalid date");
+    }
+    const renewedLease = {
+      ...recoveryLease,
+      expiresAt: new Date(appendTime.getTime() + 10_000).toISOString(),
+    };
+    if (!await options.leaseStore.renew(options.runId, renewedLease)) {
+      return "contended";
+    }
+    recoveryLease = renewedLease;
     const journal = new RunEventJournal(options.eventStore, options.notifier);
-    const terminal = await journal.append(options.runId, {
-      id: "run.failed:execution-interrupted",
-      type: "run.failed",
-      data: {
-        code: "run_execution_interrupted",
-        message: "Run execution was interrupted before completion",
-        retryable: true,
-      },
-    });
+    const terminalInput = resolvedTerminal ?? interruptedTerminalEvent();
+    const terminal = await journal.append(options.runId, terminalInput);
     await options.cancellationStore.clear(options.runId).catch(() => false);
     await reconcileInterruptedHostProjection(options, terminal);
-    return "interrupted";
+    return resolvedTerminal ? "terminal" : "interrupted";
   } finally {
     await options.leaseStore.release(options.runId, recoveryLease).catch(() => false);
   }
+}
+
+function interruptedTerminalEvent(): AppendRunStreamEvent {
+  return {
+    id: "run.failed:execution-interrupted",
+    type: "run.failed",
+    data: {
+      code: "run_execution_interrupted",
+      message: "Run execution was interrupted before completion",
+      retryable: true,
+    },
+  };
+}
+
+function isTerminalRunEventInput(input: AppendRunStreamEvent): boolean {
+  return input.type === "run.completed"
+    || input.type === "run.failed"
+    || input.type === "run.cancelled";
 }
 
 async function reconcileInterruptedHostProjection(
