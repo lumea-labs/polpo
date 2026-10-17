@@ -155,4 +155,76 @@ describe("tool execution receipts", () => {
     )).resolves.toMatchObject({ state: "completed", result: "created" });
     expect(settle).toHaveBeenCalledOnce();
   });
+
+  it("rechecks abort immediately before a retry after its timer resolves", async () => {
+    let abortReads = 0;
+    const signal = {
+      get aborted() {
+        abortReads += 1;
+        return abortReads >= 3;
+      },
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    } as unknown as AbortSignal;
+    const settle = vi.fn()
+      .mockRejectedValueOnce(new Error("temporary write failure"))
+      .mockResolvedValueOnce({ state: "completed", result: "created" });
+
+    const failure = await settleToolExecutionReceiptWithRetry(
+      { claim: vi.fn(), settle },
+      { callId: "call-1", state: "completed", result: "created" },
+      { signal },
+    ).catch((error: unknown) => error);
+
+    expect(settle).toHaveBeenCalledOnce();
+    expect(failure).toMatchObject({
+      code: "tool_receipt_settlement_failed",
+      attempts: 1,
+    });
+  });
+
+  it("does not expose arbitrary alphanumeric error codes", async () => {
+    const controller = new AbortController();
+    controller.abort("run_lease_lost");
+    const settle = vi.fn(async () => {
+      throw Object.assign(new Error("database failure"), { code: "INTERNAL42" });
+    });
+
+    const failure = await settleToolExecutionReceiptWithRetry(
+      { claim: vi.fn(), settle },
+      { callId: "call-1", state: "completed", result: "secret" },
+      { signal: controller.signal },
+    ).catch((error: unknown) => error);
+
+    expect(failure).toMatchObject({
+      code: "tool_receipt_settlement_failed",
+      attempts: 1,
+    });
+    expect((failure as ToolReceiptSettlementError).causeCode).toBeUndefined();
+    expect(JSON.stringify(failure)).not.toContain("INTERNAL42");
+  });
+
+  it("keeps diagnostic extraction best-effort when code and cause getters throw", async () => {
+    const controller = new AbortController();
+    controller.abort("run_lease_lost");
+    const hostile = new Error("database failure");
+    Object.defineProperties(hostile, {
+      code: { get: () => { throw new Error("code getter failure"); } },
+      cause: { get: () => { throw new Error("cause getter failure"); } },
+    });
+    const settle = vi.fn(async () => { throw hostile; });
+
+    const failure = await settleToolExecutionReceiptWithRetry(
+      { claim: vi.fn(), settle },
+      { callId: "call-1", state: "completed", result: "secret" },
+      { signal: controller.signal },
+    ).catch((error: unknown) => error);
+
+    expect(failure).toMatchObject({
+      message: "Tool receipt settlement failed",
+      code: "tool_receipt_settlement_failed",
+      attempts: 1,
+    });
+    expect((failure as ToolReceiptSettlementError).causeCode).toBeUndefined();
+  });
 });

@@ -42,7 +42,19 @@ export interface SettleToolExecutionReceiptOptions {
 
 const TOOL_RECEIPT_SETTLEMENT_MAX_ATTEMPTS = 3;
 const TOOL_RECEIPT_SETTLEMENT_RETRY_DELAYS_MS = [50, 150] as const;
-const SAFE_CAUSE_CODE = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$/;
+const SQLSTATE_CAUSE_CODE = /^[0-9A-Z]{5}$/;
+const SAFE_TRANSPORT_CAUSE_CODES = new Set([
+  "EAI_AGAIN",
+  "ECONNREFUSED",
+  "ECONNRESET",
+  "ENOTFOUND",
+  "EPIPE",
+  "ETIMEDOUT",
+  "UND_ERR_BODY_TIMEOUT",
+  "UND_ERR_CONNECT_TIMEOUT",
+  "UND_ERR_HEADERS_TIMEOUT",
+  "UND_ERR_SOCKET",
+]);
 
 /**
  * Safe terminal error for a tool whose result exists but whose durable receipt
@@ -76,6 +88,9 @@ export async function settleToolExecutionReceiptWithRetry(
 ): Promise<ToolExecutionReceipt> {
   let lastError: unknown;
   for (let attempt = 1; attempt <= TOOL_RECEIPT_SETTLEMENT_MAX_ATTEMPTS; attempt += 1) {
+    if (attempt > 1 && options.signal?.aborted) {
+      throw new ToolReceiptSettlementError(attempt - 1, lastError);
+    }
     try {
       return await store.settle(input);
     } catch (error) {
@@ -118,10 +133,23 @@ function safeCauseCode(error: unknown): string | undefined {
     if (seen.has(current)) return undefined;
     seen.add(current);
     const candidate = current as { code?: unknown; cause?: unknown };
-    if (typeof candidate.code === "string" && SAFE_CAUSE_CODE.test(candidate.code)) {
-      return candidate.code;
+    let code: unknown;
+    try {
+      code = candidate.code;
+    } catch {
+      // Diagnostic extraction must never replace the settlement failure.
     }
-    current = candidate.cause;
+    if (
+      typeof code === "string"
+      && (SQLSTATE_CAUSE_CODE.test(code) || SAFE_TRANSPORT_CAUSE_CODES.has(code))
+    ) {
+      return code;
+    }
+    try {
+      current = candidate.cause;
+    } catch {
+      return undefined;
+    }
   }
   return undefined;
 }
