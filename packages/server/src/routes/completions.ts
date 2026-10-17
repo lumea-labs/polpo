@@ -54,6 +54,7 @@ import type { ApprovalStore } from "@polpo-ai/core/approval-store";
 import type { ChatSessionInjection } from "@polpo-ai/core";
 import type { SteeringController } from "@polpo-ai/core/steering";
 import type { CanonicalTurnCommitted } from "@polpo-ai/core/canonical-turn";
+import { RunEventJournal } from "@polpo-ai/core/run-delivery-follower";
 import { chatCompletionsRoute } from "./completions/schemas.js";
 import type {
   CompletionResolvedModelInfo,
@@ -63,6 +64,7 @@ import {
   createCompletionRunSteeringScope,
   executeStreamingProjectLoopCompletion,
   handleProjectLoopCompletion,
+  type CompletionRunSteeringScope,
   type ProjectLoopCompletionOptions,
 } from "./completions/project-loop-runner.js";
 import {
@@ -93,6 +95,7 @@ import type { ModelControlledToolDisclosureConfig } from "./completions/tool-dis
 import {
   completionRuntimeErrorEnvelope,
 } from "./completions/runtime-error.js";
+import { reconcileInterruptedRun } from "./run-delivery.js";
 
 export { resumeProjectLoopRun } from "./completions/project-loop-runner.js";
 export {
@@ -101,6 +104,7 @@ export {
   type ChatViaRunTurnResult,
 } from "./completions/chat-via-run-handler.js";
 export {
+  ConversationTurnReplayError,
   createCompletionToolInvocation,
   prepareChatCompletionExecution,
   runConversationTurn,
@@ -552,26 +556,58 @@ export function completionRoutes(getDeps: () => CompletionRouteDeps, apiKeys?: s
           sessionId: prepared.sessionId,
           agent: body.agent,
         });
-        if ("response" in scope) return scope.response(c) as any;
-        const steeringScope = await createCompletionRunSteeringScope(
-          deps,
-          prepared.completionId,
-        );
+        if ("response" in scope) {
+          await releasePreparedResources(prepared.onResponseFinished);
+          return scope.response(c) as any;
+        }
+        let produce: boolean;
         try {
-          return streamDurableCompletion(
+          produce = await shouldProduceDurableContinuation(
+            prepared.continuationState?.status,
+            prepared.completionId,
+            scope.value,
+          );
+        } catch (error) {
+          await releasePreparedResources(prepared.onResponseFinished);
+          throw error;
+        }
+        if (!produce) {
+          await releasePreparedResources(prepared.onResponseFinished);
+          return streamExistingDurableCompletion(
             c,
             prepared.completionId,
             scope.value,
-            ({ writer, signal }) => executeStreamingProjectLoopCompletion(
-              writer,
-              { ...loopOptions, steeringScope },
-              signal,
-            ),
           ) as any;
-        } catch (error) {
-          await steeringScope.release();
-          throw error;
         }
+        return streamDurableCompletion(
+          c,
+          prepared.completionId,
+          scope.value,
+          async ({ writer, signal }) => {
+            let steeringScope: CompletionRunSteeringScope;
+            try {
+              steeringScope = await createCompletionRunSteeringScope(
+                deps,
+                prepared.completionId,
+              );
+            } catch (error) {
+              await releasePreparedResources(prepared.onResponseFinished);
+              throw error;
+            }
+            try {
+              await executeStreamingProjectLoopCompletion(
+                writer,
+                { ...loopOptions, steeringScope },
+                signal,
+              );
+            } finally {
+              // The Loop runner releases this scope on its normal/error paths.
+              // Keep the owner wrapper as a final idempotent cleanup boundary.
+              await steeringScope.release();
+            }
+          },
+          () => releasePreparedResources(prepared.onResponseFinished),
+        ) as any;
       }
       return await handleProjectLoopCompletion(c, loopOptions) as any;
     }
@@ -585,9 +621,36 @@ export function completionRoutes(getDeps: () => CompletionRouteDeps, apiKeys?: s
           sessionId: execution.sessionId,
           agent: body.agent,
         });
-        if ("response" in scope) return scope.response(c) as any;
-        return streamDurableCompletion(c, execution.completionId, scope.value, ({ writer, signal }) =>
-          executeStreamingChatViaRun(writer, execution, signal)) as any;
+        if ("response" in scope) {
+          await releasePreparedChatResources(execution);
+          return scope.response(c) as any;
+        }
+        let produce: boolean;
+        try {
+          produce = await shouldProduceDurableContinuation(
+            execution.continuationState?.status,
+            execution.completionId,
+            scope.value,
+          );
+        } catch (error) {
+          await releasePreparedChatResources(execution);
+          throw error;
+        }
+        if (!produce) {
+          await releasePreparedChatResources(execution);
+          return streamExistingDurableCompletion(
+            c,
+            execution.completionId,
+            scope.value,
+          ) as any;
+        }
+        return streamDurableCompletion(
+          c,
+          execution.completionId,
+          scope.value,
+          ({ writer, signal }) => executeStreamingChatViaRun(writer, execution, signal),
+          () => releasePreparedChatResources(execution),
+        ) as any;
       }
       return (body.stream
         ? await streamChatViaRun(c, execution)
@@ -602,10 +665,37 @@ export function completionRoutes(getDeps: () => CompletionRouteDeps, apiKeys?: s
           sessionId: execution.sessionId,
           agent: body.agent,
         });
-        if ("response" in scope) return scope.response(c) as any;
+        if ("response" in scope) {
+          await releasePreparedChatResources(execution);
+          return scope.response(c) as any;
+        }
         c.header("x-polpo-run-id", execution.completionId);
-        return streamDurableCompletion(c, execution.completionId, scope.value, ({ writer, signal }) =>
-          executeStreamingChatCompletion(writer, execution, signal)) as any;
+        let produce: boolean;
+        try {
+          produce = await shouldProduceDurableContinuation(
+            execution.continuationState?.status,
+            execution.completionId,
+            scope.value,
+          );
+        } catch (error) {
+          await releasePreparedChatResources(execution);
+          throw error;
+        }
+        if (!produce) {
+          await releasePreparedChatResources(execution);
+          return streamExistingDurableCompletion(
+            c,
+            execution.completionId,
+            scope.value,
+          ) as any;
+        }
+        return streamDurableCompletion(
+          c,
+          execution.completionId,
+          scope.value,
+          ({ writer, signal }) => executeStreamingChatCompletion(writer, execution, signal),
+          () => releasePreparedChatResources(execution),
+        ) as any;
       }
       return streamChatCompletion(c, execution) as any;
     }
@@ -621,6 +711,7 @@ function streamDurableCompletion(
   runId: string,
   scope: CompletionRunDeliveryScope,
   producer: Parameters<typeof startDurableCompletion>[0]["producer"],
+  onProducerSkipped?: Parameters<typeof startDurableCompletion>[0]["onProducerSkipped"],
 ) {
   return streamSSE(c, async (stream) => {
     const follower = new AbortController();
@@ -633,6 +724,7 @@ function streamDurableCompletion(
       runId,
       scope,
       producer,
+      onProducerSkipped,
     });
     owner.catch(() => {});
     try {
@@ -652,6 +744,80 @@ function streamDurableCompletion(
       clearInterval(heartbeat);
     }
   });
+}
+
+function streamExistingDurableCompletion(
+  c: any,
+  runId: string,
+  scope: CompletionRunDeliveryScope,
+) {
+  return streamSSE(c, async (stream) => {
+    const follower = new AbortController();
+    stream.onAbort(() => follower.abort());
+    const heartbeat = setInterval(() => {
+      if (follower.signal.aborted) return;
+      stream.write(": ping\n\n").catch(() => follower.abort());
+    }, 20_000);
+    try {
+      await streamDurableCompletionFrames({
+        runId,
+        scope,
+        signal: follower.signal,
+        write: async (frame) => {
+          await stream.writeSSE({
+            data: frame.data,
+            id: frame.cursor,
+            ...(frame.event ? { event: frame.event } : {}),
+          });
+        },
+      });
+    } finally {
+      clearInterval(heartbeat);
+    }
+  });
+}
+
+async function shouldProduceDurableContinuation(
+  status: "prepared" | "replay" | undefined,
+  runId: string,
+  scope: CompletionRunDeliveryScope,
+): Promise<boolean> {
+  if (status === undefined) return true;
+  const journal = new RunEventJournal(scope.eventStore, scope.notifier);
+  const state = await reconcileInterruptedRun({
+    runId,
+    eventStore: scope.eventStore,
+    leaseStore: scope.leaseStore,
+    cancellationStore: scope.cancellationStore,
+    notifier: scope.notifier,
+  });
+  // The Session transaction may commit before the first owner begins. No
+  // run.started means no model or tool work was admitted, so either the
+  // original request or a retry may start the exact reserved Run. The owner
+  // repeats this check after acquiring its lease to close admission races.
+  if (state !== "not-started") return false;
+  await journal.append(runId, {
+    id: "run.accepted",
+    type: "run.accepted",
+    data: {},
+  });
+  return true;
+}
+
+async function releasePreparedChatResources(
+  execution: { onResponseFinished?: () => Promise<void> },
+): Promise<void> {
+  await releasePreparedResources(execution.onResponseFinished);
+}
+
+async function releasePreparedResources(
+  release: (() => Promise<void>) | undefined,
+): Promise<void> {
+  try {
+    await release?.();
+  } catch {
+    // A replay never transfers these request-scoped resources to a producer.
+  }
 }
 
 function durableDeliveryRequested(body: { polpo?: { delivery?: { onDisconnect: string } } }): boolean {

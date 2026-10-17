@@ -63,3 +63,49 @@ real `onExit` receipt, and preserves interruption acknowledgements across errors
 A spawner must drain its owned preparation effects and cleanup before rejecting
 `spawn`. TaskRunner does not synthesize an exit receipt for a returned handle or
 fall back to killing a persisted PID.
+
+## Durable client-tool continuation retries
+
+A client-tool continuation atomically records its tool result and reserves a Run
+in the canonical Session. It requires streaming durable delivery. An identical
+retry uses the same reservation and Run ID; it does not create another Run.
+Changed payloads or conflicting idempotency keys are rejected by the Session
+store.
+
+Continuation routing is explicit and replay-stable. Supplying a fixed authorized
+`loop` continues in that Project Loop; omitting `loop` continues direct chat.
+The automatic execution router is not invoked for either the first continuation
+request or an identical retry.
+
+The HTTP completion route follows an already active or terminal Run's stored
+stream. An accepted reservation that has not admitted any execution can start
+that same Run, covering a crash between the Session transaction and owner
+startup. Admission is rechecked after acquiring the execution lease, so two
+requests that both initially observe an unstarted reservation cannot execute it
+sequentially after the first owner finishes.
+
+For durable Project Loops, the winning owner registers its steering scope only
+after lease admission. A replay follower that loses admission never registers
+or releases steering state, so it cannot replace or close the active owner's
+scope.
+
+A previous `run.started` without a terminal event or a live owner is interrupted,
+not silently executed again. A lost acknowledgement of `run.started` is treated
+conservatively the same way. Retained history with a missing prefix cannot prove
+that execution never started and must also fail closed. Existing terminal events
+remain authoritative even if a legacy writer appended something after them.
+
+Non-HTTP adapters using `runConversationTurn` receive
+`ConversationTurnReplayError` for an accepted retry, with
+`code: "continuation_replay_requires_run_resume"`, `status: "replay"`, `runId`,
+and `toolCallId`. Adapters must treat it as a recoverable conflict and must not
+invoke the model again. This signal does not promise that a non-HTTP adapter can
+replay a stored response stream or resume automatically; the HTTP durable-run
+surface owns that behavior today. Request-scoped resources acquired by a
+skipped producer are released without cancelling the winning owner.
+Disconnecting a stream follower does not stop a durable execution.
+
+This is retry protection for an accepted continuation. It does not settle a
+client-tool call that was never continued, and does not provide exactly-once
+external side effects across arbitrary crashes. The continuation endpoint
+starts model or Loop work; it is not a settlement-only repair API.
