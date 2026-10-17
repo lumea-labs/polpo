@@ -20,6 +20,7 @@ import { InMemorySteeringController } from "@polpo-ai/core/steering";
 import { RuntimeHookEngine } from "@polpo-ai/core/runtime-hooks";
 import type { AgentConfig, Task } from "@polpo-ai/core/types";
 import { spawnLoopEngine } from "../adapters/loop-engine.js";
+import { createNodeRuntimeHookHost } from "../runtime-hooks.js";
 
 let root: string;
 let cwd: string;
@@ -45,6 +46,19 @@ function task(): Task {
 }
 
 describe("loop-engine runtime hooks", () => {
+  test("injected chat commands use the host sandbox, never the engine's local fallback shell", async () => {
+    const hostShell = { execute: vi.fn(async () => ({ stdout: '{"decision":{"action":"allow"}}', stderr: "", exitCode: 0 })) };
+    const localShell = { execute: vi.fn(async () => { throw new Error("Must not execute a managed hook on the server host"); }) };
+    const hooks = new RuntimeHookEngine({ definitions: [{ id: "validate", event: "turn:stop", terminationGate: { maxCycles: 1, maxDurationMs: 30000, maxTokens: 10000 }, handler: { type: "command", command: "validate" } }], host: createNodeRuntimeHookHost({ shell: hostShell, cwd: "/sandbox/workspace" }) });
+    const result = await spawnLoopEngine(agent(), task(), cwd, { polpoDir, shell: localShell, inject: {
+      agent: agent(), runtimeHooks: hooks, model: mockResolvedModel(mockTextModel("done")), systemPrompt: "Test", maxTurns: 2,
+      seedMessages: [{ role: "user", content: "Finish" }], toolSet: {}, executor: vi.fn(), clientSideToolNames: new Set(), providerToolNames: new Set(), compactionTools: [], compactionMode: "chat",
+    } }).done;
+    expect(result.exitCode, JSON.stringify(result)).toBe(0);
+    expect(localShell.execute).not.toHaveBeenCalled();
+    expect(hostShell.execute).toHaveBeenCalledExactlyOnceWith("validate", expect.objectContaining({ cwd: "/sandbox/workspace" }));
+  });
+
   test("a termination gate continues the same durable agent before sealing steering", async () => {
     activeResolvedModel = mockResolvedModel(mockTurnSequenceModel([
       { type: "text", text: "unvalidated draft" },

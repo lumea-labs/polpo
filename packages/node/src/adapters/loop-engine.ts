@@ -1294,7 +1294,9 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
       await writeSessionCheckpoint?.({ turn });
       emitTranscript({ type: "termination_gate", phase: "validating", attempt, loop: loopName });
       const decision = (await runtimeHooks!.dispatch({ event: "turn:stop", signal: sessionSignal, surface: inject?.runtimeHookSurface ?? ctx?.runtimeHookSurface ?? (inject ? "chat" : "task"), identity: gateIdentity,
-        resources: { shell: ctx?.shell, cwd, executeTool: async (name, input, execution) => {
+        // Injected chat owns its tools/sandbox in the host adapter. ctx.shell
+        // may only be executeRun's local fallback, never override that host.
+        resources: { ...(!inject ? { shell: ctx?.shell, cwd } : {}), executeTool: async (name, input, execution) => {
           if (inject) {
             if (inject.clientSideToolNames.has(name)) throw new Error("A termination validator must be a server-side tool");
             return inject.executor(name, input, execution);
