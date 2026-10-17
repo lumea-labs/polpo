@@ -343,6 +343,7 @@ async function applyStateOutputPolicy(
       state.finalText,
     );
   }
+  signal?.throwIfAborted();
   state.outputPolicyApplied = true;
 }
 
@@ -401,7 +402,7 @@ function finishAccounting(execution: ChatCompletionExecution, state: DriverState
       providerMetadata: state.lastProviderMetadata,
     });
   } catch { /* never fail on callback */ }
-  if (onResponseFinished) onResponseFinished().catch(() => {});
+  if (onResponseFinished) void Promise.resolve().then(onResponseFinished).catch(() => {});
 }
 
 async function finishCommon(
@@ -411,8 +412,12 @@ async function finishCommon(
   options?: { emptyFallback?: string; suggestions?: ChatSuggestion[] },
   canonicalTurnSucceeded = false,
 ) {
-  await persistCommon(execution, state, assistantMsgId, options, canonicalTurnSucceeded);
-  finishAccounting(execution, state);
+  try {
+    await persistCommon(execution, state, assistantMsgId, options, canonicalTurnSucceeded);
+  } finally {
+    // Usage was incurred even if the transcript store is temporarily unavailable.
+    finishAccounting(execution, state);
+  }
 }
 
 /** Streaming chat completion via executeRun. */
@@ -482,6 +487,7 @@ export async function executeStreamingChatViaRun(
         steering: steeringScope.steering,
       });
       captureRunFailure(state, outcome);
+      signal.throwIfAborted();
       await writeChain;
 
       if (state.errorEvent && !signal.aborted) {
@@ -489,13 +495,6 @@ export async function executeStreamingChatViaRun(
         const guardrail = guardrailErrorEnvelope(state.errorEvent);
         const notFound = modelNotFoundEnvelope(state.errorEvent, m?.id, body.agent);
         const error = structuredOutput ?? guardrail ?? notFound ?? modelErrorEnvelope(state.errorEvent);
-        const text = structuredOutput || guardrail || notFound
-          ? ""
-          : `Model request failed: ${error.message}`;
-        if (text) {
-          state.finalText += text;
-          await stream.writeSSE({ data: sseChunk(completionId, { content: text }) });
-        }
         await stream.writeSSE({ data: sseChunk(completionId, {}, "stop", { error }) });
         await stream.writeSSE({ data: "[DONE]" });
       } else if (state.clientReturn) {
@@ -513,6 +512,10 @@ export async function executeStreamingChatViaRun(
           await stream.writeSSE({ data: sseChunk(completionId, { content: state.finalText }) });
         }
         recordPendingClientToolCall(state);
+        // The client may submit its result as soon as it receives this frame.
+        // Make the continuation discoverable before handing off execution.
+        persistenceAttempted = true;
+        await persistCommon(execution, state, assistantMsgId);
         await stream.writeSSE({ data: clientToolFinishChunk(completionId, state.clientReturn) });
         await stream.writeSSE({ data: "[DONE]" });
       } else if (!signal.aborted) {
@@ -552,6 +555,10 @@ export async function executeStreamingChatViaRun(
         await stream.writeSSE({ data: "[DONE]" });
       }
     } catch (err) {
+      // Failure is authoritative for persistence and client-tool handoff too.
+      // Drain already queued deltas before publishing the terminal error.
+      state.errorEvent ??= { message: err instanceof Error ? err.message : String(err) };
+      await writeChain;
       if (!((err instanceof DOMException && err.name === "AbortError") || signal.aborted)) {
         const structuredOutput = structuredOutputErrorEnvelope(err, structuredResponse);
         const guardrail = guardrailErrorEnvelope(err);
@@ -569,9 +576,6 @@ export async function executeStreamingChatViaRun(
           await stream.writeSSE({ data: "[DONE]" });
         } else {
           const error = modelErrorEnvelope(err);
-          const text = `Model request failed: ${error.message}`;
-          state.finalText += text;
-          await stream.writeSSE({ data: sseChunk(completionId, { content: text }) });
           await stream.writeSSE({ data: sseChunk(completionId, {}, "stop", { error }) });
           await stream.writeSSE({ data: "[DONE]" });
         }
@@ -620,17 +624,18 @@ export async function runNonStreamingChatViaRun(c: Context, execution: ChatCompl
       steering: steeringScope.steering,
     });
     captureRunFailure(state, outcome);
+    c.req.raw.signal.throwIfAborted();
 
     if (!state.errorEvent) {
       await applyStateOutputPolicy(
         execution,
         state,
         "enforce",
-        undefined,
+        c.req.raw.signal,
         !state.clientReturn,
       );
     }
-    if (state.clientReturn) {
+    if (state.clientReturn && !state.errorEvent) {
       return c.json({
         id: completionId,
         object: "chat.completion",
@@ -658,9 +663,6 @@ export async function runNonStreamingChatViaRun(c: Context, execution: ChatCompl
       const notFound = modelNotFoundEnvelope(state.errorEvent, m?.id, body.agent);
       if (notFound) return c.json({ error: notFound }, 400 as any);
       const error = structuredOutput ?? modelErrorEnvelope(state.errorEvent);
-      if (!structuredOutput) {
-        state.finalText = state.finalText || `Model request failed: ${error.message}`;
-      }
       return c.json({ error }, 400 as any);
     }
     suggestions = await suggestionsForCompletion(
@@ -675,6 +677,7 @@ export async function runNonStreamingChatViaRun(c: Context, execution: ChatCompl
       suggestions.length > 0 ? { polpo: { suggestions, ...(assistantMsgId ? { suggestionsSource: { assistantMessageId: assistantMsgId } } : {}) } } : undefined,
     ));
   } catch (err) {
+    state.errorEvent ??= { message: err instanceof Error ? err.message : String(err) };
     const structuredOutput = structuredOutputErrorEnvelope(
       err,
       isStructuredResponseFormat(body.response_format),
@@ -694,7 +697,6 @@ export async function runNonStreamingChatViaRun(c: Context, execution: ChatCompl
     const notFound = modelNotFoundEnvelope(err, m?.id, body.agent);
     if (notFound) return c.json({ error: notFound }, 400 as any);
     const error = modelErrorEnvelope(err);
-    state.finalText = state.finalText || `Model request failed: ${error.message}`;
     return c.json({ error }, 400 as any);
   } finally {
     try {
@@ -755,6 +757,7 @@ export async function runChatTurnViaRun(
     runStatus = outcome.status;
     runResult = outcome.result;
     captureRunFailure(state, outcome);
+    hooks.signal?.throwIfAborted();
     if (!state.errorEvent) {
       await applyStateOutputPolicy(execution, state, "enforce", hooks.signal);
       if (runStatus === "completed" && !state.clientReturn) {
@@ -762,13 +765,14 @@ export async function runChatTurnViaRun(
       }
     }
   } catch (err) {
+    state.errorEvent = (err as Record<string, unknown> | undefined) ?? { message: String(err) };
+    runStatus = hooks.signal?.aborted ? "killed" : "failed";
     const guardrail = guardrailErrorEnvelope(err);
     if (guardrail) {
       state.finalText = guardrail.message;
       state.outputPolicyApplied = true;
       throw err;
     }
-    state.errorEvent = (err as Record<string, unknown> | undefined) ?? { message: String(err) };
     const message = err instanceof Error ? err.message : String(err);
     runResult = { exitCode: 1, stdout: "", stderr: message };
   } finally {
@@ -794,9 +798,6 @@ export async function runChatTurnViaRun(
     const guardrail = guardrailErrorEnvelope(state.errorEvent);
     const notFound = modelNotFoundEnvelope(state.errorEvent, m?.id, body.agent);
     error = structuredOutput ?? guardrail ?? notFound ?? modelErrorEnvelope(state.errorEvent);
-    if (!structuredOutput && !guardrail && !notFound && !state.finalText) {
-      state.finalText = `Model request failed: ${error.message}`;
-    }
   }
 
   return {

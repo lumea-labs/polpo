@@ -499,6 +499,7 @@ export async function executeStreamingChatCompletion(
       if (validateStructured) {
         finalText = await finalizeResponseFormatText(body.response_format, finalText);
       }
+      signal.throwIfAborted();
       outputPolicyApplied = true;
       if (!finalText) return;
       if (outputMode === "buffer" || structuredResponse) {
@@ -767,15 +768,18 @@ export async function executeStreamingChatCompletion(
           clientSideToolNames(exec),
         );
         if (clientSideCall) {
+          await finalizeOutput(false);
+          signal.throwIfAborted();
           clientToolCallId = clientSideCall.toolCallId;
-          // Persist for session history
+          // Persist for session history only after output policy accepts the
+          // turn. A rejected or cancelled handoff must not leave a pending tool.
           toolCallsAccum.push({
             id: clientSideCall.toolCallId,
             name: clientSideCall.toolName,
             arguments: clientSideCall.input,
             state: "interrupted",
           });
-          await finalizeOutput(false);
+          await persistResponse();
           // Send as standard OpenAI tool_calls finish reason
           await stream.writeSSE({
             data: JSON.stringify({
@@ -806,14 +810,17 @@ export async function executeStreamingChatCompletion(
         // Check for interactive tools — only in orchestrator mode (agents don't have interactive tools)
         const interactiveCall = agentMode ? undefined : dispatchableToolCalls.find((tc: any) => isInteractiveFn?.(tc.toolName));
         if (interactiveCall) {
-          // Persist the interactive tool call so it survives session reload
+          await finalizeOutput(false);
+          signal.throwIfAborted();
+          // Persist before publishing the interaction. The user may respond as
+          // soon as the frame arrives and that continuation must see this call.
           toolCallsAccum.push({
             id: interactiveCall.toolCallId,
             name: interactiveCall.toolName,
             arguments: interactiveCall.input,
             state: "interrupted",
           });
-          await finalizeOutput(false);
+          await persistResponse();
 
           if (interactiveCall.toolName === "ask_user") {
             const questions = (interactiveCall.input as any)?.questions as any[] ?? [];
@@ -880,7 +887,7 @@ export async function executeStreamingChatCompletion(
             });
           }
           await stream.writeSSE({ data: "[DONE]" });
-          return; // finally block will persist whatever finalText we have
+          return; // the interaction and current text are already durable
         }
 
         // Provider tools (extraAiTools) are executed by the SDK / gateway.
@@ -1087,7 +1094,6 @@ export async function executeStreamingChatCompletion(
           });
           await stream.writeSSE({ data: "[DONE]" });
         } else if (runtimeError) {
-          finalText = runtimeError.error.message;
           await stream.writeSSE({
             data: sseChunk(completionId, {}, "stop", { error: runtimeError.error }),
           });
@@ -1099,9 +1105,6 @@ export async function executeStreamingChatCompletion(
           await stream.writeSSE({ data: "[DONE]" });
         } else {
           const error = modelErrorEnvelope(err);
-          const text = `Model request failed: ${error.message}`;
-          finalText = outputMode === "buffer" ? text : finalText + text;
-          await stream.writeSSE({ data: sseChunk(completionId, { content: text }) });
           await stream.writeSSE({ data: sseChunk(completionId, {}, "stop", { error }) });
           await stream.writeSSE({ data: "[DONE]" });
         }
@@ -1144,7 +1147,9 @@ export async function executeStreamingChatCompletion(
         // are intentionally swallowed — a stuck cleanup must not block
         // the response from finishing.
         if (onResponseFinished) {
-          onResponseFinished().catch(() => {});
+          try {
+            onResponseFinished().catch(() => {});
+          } catch { /* never fail on cleanup callback */ }
         }
       }
     }
@@ -1197,10 +1202,12 @@ export async function runNonStreamingChatCompletion(c: any, exec: ChatCompletion
       runtimePlan: exec.runtimePlan,
       agent: body.agent,
       sessionId,
+      signal: c.req.raw.signal,
     });
     if (validateStructured) {
       finalText = await finalizeResponseFormatText(body.response_format, finalText);
     }
+    c.req.raw.signal.throwIfAborted();
     outputPolicyApplied = true;
   };
   const completeTerminalOutput = async () => {
@@ -1321,8 +1328,10 @@ export async function runNonStreamingChatCompletion(c: any, exec: ChatCompletion
         ...(body.parallel_tool_calls !== undefined
           ? { parallelToolCalls: body.parallel_tool_calls }
           : {}),
+        abortSignal: c.req.raw.signal,
         }),
       });
+      c.req.raw.signal.throwIfAborted();
       finalReasoning = appendReasoningSummary(finalReasoning, turnResult.reasoning);
 
       const turnText = turnResult.text;
@@ -1365,6 +1374,8 @@ export async function runNonStreamingChatCompletion(c: any, exec: ChatCompletion
         clientSideToolNames(exec),
       );
       if (clientSideCall) {
+        await finalizeOutput(false);
+        c.req.raw.signal.throwIfAborted();
         clientToolCallId = clientSideCall.toolCallId;
         toolCallsAccum.push({
           id: clientSideCall.toolCallId,
@@ -1372,7 +1383,6 @@ export async function runNonStreamingChatCompletion(c: any, exec: ChatCompletion
           arguments: clientSideCall.input,
           state: "interrupted",
         });
-        await finalizeOutput(false);
         return c.json({
           id: completionId,
           object: "chat.completion",
@@ -1405,14 +1415,15 @@ export async function runNonStreamingChatCompletion(c: any, exec: ChatCompletion
       // Check for interactive tools — only in orchestrator mode (agents don't have interactive tools)
       const interactiveCall = agentMode ? undefined : dispatchableToolCalls.find((tc: any) => isInteractiveFn?.(tc.toolName));
       if (interactiveCall) {
-        // Persist the interactive tool call so it survives session reload
+        await finalizeOutput(false);
+        c.req.raw.signal.throwIfAborted();
+        // Persisted by finally before this async function resolves.
         toolCallsAccum.push({
           id: interactiveCall.toolCallId,
           name: interactiveCall.toolName,
           arguments: interactiveCall.input,
           state: "interrupted",
         });
-        await finalizeOutput(false);
 
         const baseResponse = {
           id: completionId,
@@ -1684,7 +1695,6 @@ export async function runNonStreamingChatCompletion(c: any, exec: ChatCompletion
     }
     const runtimeError = completionRuntimeErrorEnvelope(err);
     if (runtimeError) {
-      finalText = runtimeError.error.message;
       return c.json({ error: runtimeError.error }, runtimeError.status as any);
     }
     const notFound = modelNotFoundEnvelope(err, m?.id, body.agent);
@@ -1692,7 +1702,6 @@ export async function runNonStreamingChatCompletion(c: any, exec: ChatCompletion
       return c.json({ error: notFound }, 400 as any);
     }
     const error = modelErrorEnvelope(err);
-    finalText = finalText || `Model request failed: ${error.message}`;
     return c.json({ error }, 400 as any);
   } finally {
     if (runtimeAgentStarted) {
@@ -1710,33 +1719,39 @@ export async function runNonStreamingChatCompletion(c: any, exec: ChatCompletion
       streaming: false,
       aborted: c.req.raw.signal.aborted,
     }).catch(() => {});
-    // Always persist the final text + tool calls — even on early return (ask_user) or error.
-    // (Vault credentials are redacted inside persistAssistantMessage.)
-    const committedTurn = await persistAssistantMessage(sessionStore, sessionId, assistantMsgId, finalText, toolCallsAccum, {
-      emptyFallback: "[Response interrupted]",
-      ...(suggestions.length > 0 ? { suggestions } : {}),
-      reasoning: finalReasoning,
-      requestClientTools: exec.requestClientTools,
-      clientToolCallId,
-      ...(canonicalTurnSucceeded && exec.canonicalTurn
-        ? { canonicalTurn: exec.canonicalTurn }
-        : {}),
-    });
-    notifyCanonicalTurnCommitted(deps.onCanonicalTurnCommitted, committedTurn);
-    // Notify consumer (e.g. metering) — fire-and-forget
     try {
-      deps.onCompletionFinished?.({
-        usage: totalUsage,
-        model: m.id ?? m.provider,
-        resolvedModel: completionResolvedModelInfo(m),
-        agent: body.agent,
-        sessionId: sessionId ?? undefined,
-        user: body.user,
-        providerMetadata: lastProviderMetadata,
+      // Always persist the final text + tool calls — even on early return
+      // (ask_user) or error. Vault credentials are redacted inside the helper.
+      const committedTurn = await persistAssistantMessage(sessionStore, sessionId, assistantMsgId, finalText, toolCallsAccum, {
+        emptyFallback: "[Response interrupted]",
+        ...(suggestions.length > 0 ? { suggestions } : {}),
+        reasoning: finalReasoning,
+        requestClientTools: exec.requestClientTools,
+        clientToolCallId,
+        ...(canonicalTurnSucceeded && exec.canonicalTurn
+          ? { canonicalTurn: exec.canonicalTurn }
+          : {}),
       });
-    } catch { /* never fail on callback */ }
-    if (onResponseFinished) {
-      onResponseFinished().catch(() => {});
+      notifyCanonicalTurnCommitted(deps.onCanonicalTurnCommitted, committedTurn);
+    } finally {
+      // Usage and per-request resources must be finalized even if transcript
+      // persistence is temporarily unavailable.
+      try {
+        deps.onCompletionFinished?.({
+          usage: totalUsage,
+          model: m.id ?? m.provider,
+          resolvedModel: completionResolvedModelInfo(m),
+          agent: body.agent,
+          sessionId: sessionId ?? undefined,
+          user: body.user,
+          providerMetadata: lastProviderMetadata,
+        });
+      } catch { /* never fail on callback */ }
+      if (onResponseFinished) {
+        try {
+          onResponseFinished().catch(() => {});
+        } catch { /* never fail on cleanup callback */ }
+      }
     }
   }
 }

@@ -2177,7 +2177,7 @@ describe("chat via Run driver", () => {
     });
     const chunks = parseSse(await response.text());
     expect(chunks.map((chunk) => chunk.choices?.[0]?.delta?.content).filter(Boolean).join(""))
-      .toContain("sandbox acquisition timed out");
+      .toBe("");
     expect(chunks.find((chunk) => chunk.choices?.[0]?.error)?.choices[0].error).toMatchObject({
       type: "model_error",
       code: "model_request_failed",
