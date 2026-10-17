@@ -52,6 +52,10 @@ import type {
   ChatMessage,
   ChatCompletionRequest,
   ContinueClientToolResultRequest,
+  GetClientToolResolutionRequest,
+  SettleClientToolRequest,
+  ClientToolResolution,
+  SettledClientTool,
   ChatCompletionResponse,
   ChatCompletionChunk,
   ChatSuggestion,
@@ -694,7 +698,7 @@ export class PolpoClient {
     }
     const json = (await res.json()) as ApiResult<T>;
     if (!json.ok) {
-      throw new PolpoApiError(json.error, json.code, res.status, json.details);
+      throw new PolpoApiError(json.error, json.code, res.status, json.details ?? json.data);
     }
     return json.data;
   }
@@ -1886,6 +1890,37 @@ export class PolpoClient {
         delivery: { onDisconnect: "continue" },
       },
     });
+  }
+
+  /** Inspect one durable client-side tool call without executing any work. */
+  getClientToolResolution(req: GetClientToolResolutionRequest): Promise<ClientToolResolution> {
+    const user = req.user === null ? undefined : (req.user ?? this.defaultUser);
+    const query = new URLSearchParams();
+    if (req.agent !== undefined) query.set("agent", req.agent);
+    if (user !== undefined) query.set("user", user);
+    const url = `${this.baseUrl}/v1/chat/sessions/${encodeURIComponent(req.sessionId)}`
+      + `/tool-calls/${encodeURIComponent(req.toolCallId)}`
+      + (query.size > 0 ? `?${query.toString()}` : "");
+    return this.request<ClientToolResolution>("GET", url);
+  }
+
+  /**
+   * Atomically settle a never-accepted client-side tool call. This endpoint
+   * records canonical history only; it never invokes a model, tool, handler,
+   * or Project Loop.
+   */
+  settleClientTool(req: SettleClientToolRequest): Promise<SettledClientTool> {
+    const user = req.user === null ? undefined : (req.user ?? this.defaultUser);
+    const url = `${this.baseUrl}/v1/chat/sessions/${encodeURIComponent(req.sessionId)}`
+      + `/tool-calls/${encodeURIComponent(req.toolCallId)}/settlement`;
+    return this.request<SettledClientTool>("PUT", url, {
+      ...(req.agent !== undefined ? { agent: req.agent } : {}),
+      ...(user !== undefined ? { user } : {}),
+      expectedSessionVersion: req.sessionVersion,
+      outcome: req.outcome,
+      ...(req.result !== undefined ? { result: req.result } : {}),
+      ...(req.reason !== undefined ? { reason: req.reason } : {}),
+    }, { "Idempotency-Key": req.idempotencyKey });
   }
 
   // ── Sessions ────────────────────────────────────────────

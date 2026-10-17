@@ -259,6 +259,19 @@ export async function ensurePgTables(db: any): Promise<void> {
   await db.execute(sql`CREATE UNIQUE INDEX IF NOT EXISTS uq_pg_session_continuations_key ON session_continuations(session_id, idempotency_key)`);
   await db.execute(sql`CREATE UNIQUE INDEX IF NOT EXISTS uq_pg_session_continuations_call ON session_continuations(session_id, tool_call_id)`);
 
+  await db.execute(sql`CREATE TABLE IF NOT EXISTS session_client_tool_settlements (
+    id                          TEXT PRIMARY KEY,
+    session_id                  TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    idempotency_key             TEXT NOT NULL,
+    fingerprint                 TEXT NOT NULL,
+    tool_call_id                TEXT NOT NULL,
+    source_assistant_message_id TEXT NOT NULL,
+    result_message_id           TEXT NOT NULL,
+    outcome                     TEXT NOT NULL CHECK (outcome IN ('success', 'failed', 'cancelled')),
+    session_version             INTEGER NOT NULL,
+    settled_at                  TEXT NOT NULL
+  )`);
+
   await db.execute(sql`CREATE TABLE IF NOT EXISTS conversation_channels (
     id                  TEXT PRIMARY KEY,
     org_id              TEXT NOT NULL DEFAULT '',
@@ -457,6 +470,10 @@ export async function ensurePgIndexes(db: any): Promise<void> {
   await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_pg_loop_runs_user ON loop_runs("user")`);
   await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_pg_sessions_user ON sessions("user")`);
   await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_pg_messages_session ON messages(session_id, ts)`);
+  await db.execute(sql`CREATE UNIQUE INDEX IF NOT EXISTS uq_pg_session_client_tool_settlements_key ON session_client_tool_settlements(session_id, idempotency_key)`);
+  await db.execute(sql`CREATE UNIQUE INDEX IF NOT EXISTS uq_pg_session_client_tool_settlements_call ON session_client_tool_settlements(session_id, tool_call_id)`);
+  await db.execute(sql`CREATE UNIQUE INDEX IF NOT EXISTS uq_pg_session_client_tool_settlements_result ON session_client_tool_settlements(result_message_id)`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_pg_session_client_tool_settlements_source ON session_client_tool_settlements(session_id, source_assistant_message_id)`);
   await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_pg_log_entries_session ON log_entries(session_id)`);
   await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_pg_log_entries_ts ON log_entries(ts)`);
   await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_pg_model_invocations_project_created ON model_invocation_logs(project_id, created_at)`);

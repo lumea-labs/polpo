@@ -1050,7 +1050,8 @@ describe("DrizzleSessionStore", () => {
       assistant: { messageId: assistant.id, content: "must not persist" },
     })).rejects.toThrow("Canonical turn messages do not match");
 
-    expect((await stores.sessionStore.getMessages(sid))[1]?.content).toBe("draft");
+    expect((await stores.sessionStore.getMessages(sid))
+      .find((message) => message.id === assistant.id)?.content).toBe("draft");
     expect(await stores.sessionStore.getCanonicalTurn!("turn-2")).toBeUndefined();
   });
 

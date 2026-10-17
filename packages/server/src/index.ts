@@ -15,7 +15,7 @@ export { taskRoutes } from "./routes/tasks.js";
 export { missionRoutes } from "./routes/missions.js";
 export { playbookRoutes } from "./routes/playbooks.js";
 export { approvalRoutes } from "./routes/approvals.js";
-export { chatRoutes } from "./routes/chat.js";
+export { chatRoutes, clientToolResolutionRoutes } from "./routes/chat.js";
 export { vaultRoutes } from "./routes/vault.js";
 export { scheduleRoutes } from "./routes/schedules.js";
 export {
@@ -120,6 +120,7 @@ export type {
   PlaybookRouteDeps,
   ApprovalRouteDeps,
   ChatRouteDeps,
+  ClientToolContinuationRunStatus,
   VaultRouteDeps,
   ScheduleRouteDeps,
   WatcherRouteDeps,

@@ -14,6 +14,7 @@ import type { LogStore } from "@polpo-ai/core/log-store";
 import type { VaultStore } from "@polpo-ai/core/vault-store";
 import type { PlaybookStore } from "@polpo-ai/core/playbook-store";
 import type { SessionStore } from "@polpo-ai/core/session-store";
+import type { SessionContinuationScope } from "@polpo-ai/core/session-continuation";
 import type { ConnectService } from "@polpo-ai/connect-server";
 import type {
   MemoryExtractionCandidateStore,
@@ -38,6 +39,36 @@ export interface ChatRouteDeps {
   sessionStore?: SessionStore;
   runStore?: RunStore;
   /**
+   * Trusted host partition for client-tool resolution. Public request data can
+   * never declare or widen this scope.
+   */
+  resolveClientToolResolutionScope?: (
+    requestContext: unknown,
+  ) => SessionContinuationScope | undefined | Promise<SessionContinuationScope | undefined>;
+  /**
+   * Host-owned write gate. Omit it to keep settlement-only writes disabled.
+   * Returning false denies the write; returning true authorizes only the
+   * already-authenticated agent/user and host-resolved scope.
+   */
+  authorizeClientToolSettlement?: (
+    input: {
+      sessionId: string;
+      toolCallId: string;
+      agent?: string;
+      user?: string;
+      requestContext: unknown;
+    },
+  ) => boolean | Promise<boolean>;
+  /** Optional read-only host lookup used to enrich accepted continuations. */
+  resolveClientToolContinuationRunStatus?: (
+    input: {
+      sessionId: string;
+      toolCallId: string;
+      runId: string;
+      requestContext: unknown;
+    },
+  ) => ClientToolContinuationRunStatus | undefined | Promise<ClientToolContinuationRunStatus | undefined>;
+  /**
    * Tail-latency policy for read-only Session history requests.
    * One hedge is shared by all concurrent callers for the same store/session;
    * the response deadline never cancels or replays mutations.
@@ -47,6 +78,14 @@ export interface ChatRouteDeps {
     responseTimeoutMs?: number;
   };
 }
+
+export type ClientToolContinuationRunStatus =
+  | "accepted"
+  | "running"
+  | "completed"
+  | "failed"
+  | "cancelled"
+  | "unknown";
 
 export interface LoopRunRouteDeps {
   loopRunStore?: LoopRunStore;

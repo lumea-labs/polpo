@@ -14,6 +14,7 @@ export {
   sessionsSqlite,
   messagesSqlite,
   sessionContinuationsSqlite,
+  sessionClientToolSettlementsSqlite,
   canonicalTurnOutboxSqlite,
 } from "./sessions.js";
 export { logSessionsSqlite, logEntriesSqlite } from "./logs.js";
@@ -45,6 +46,7 @@ export {
   sessionsPg,
   messagesPg,
   sessionContinuationsPg,
+  sessionClientToolSettlementsPg,
   canonicalTurnOutboxPg,
 } from "./sessions.js";
 export { logSessionsPg, logEntriesPg } from "./logs.js";

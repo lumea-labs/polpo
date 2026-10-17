@@ -375,6 +375,56 @@ tool call in the request history or `polpo.continuation`, Polpo rejects it with
 `continueWithToolResult()` so session versioning, idempotency, canonical history
 reconstruction, and durable delivery are applied together.
 
+If the application must close the client tool call without asking the agent to
+continue, settle it instead. Settlement writes the canonical tool-result
+message and advances the Session version, but never calls a model, server
+handler, tool executor, or Project Loop:
+
+```ts
+const resolution = await client.getClientToolResolution({
+  sessionId,
+  toolCallId,
+  agent: "leo",
+  // `user` defaults to the value configured on PolpoClient.
+});
+
+if (resolution.status === "pending") {
+  const settled = await client.settleClientTool({
+    sessionId,
+    toolCallId,
+    agent: "leo",
+    sessionVersion: resolution.sessionVersion,
+    idempotencyKey: crypto.randomUUID(), // retain for exact retries
+    outcome: "cancelled",
+    reason: "The user closed the browser",
+  });
+  console.log(settled.receipt);
+}
+```
+
+The public outcomes are `success`, `failed`, and `cancelled`. `success`
+requires a string `result`; the other outcomes accept an optional `result` and
+`reason`. Results are limited to 64 KiB measured as UTF-8. Caller strings are
+preserved inside the model-visible settlement envelope, including JSON arrays
+or scalars. Session history keeps the established tool-call state vocabulary:
+`success` appears as `state: "completed"`, while `failed` and `cancelled` both
+appear as `state: "error"`. Read `settlementOutcome` to distinguish the exact
+outcome; there is no separate legacy `state: "cancelled"` value.
+
+Both methods require the exact persisted `agent` and `user` when the Session
+has them. Omission means the Session must also have that identity absent; it is
+never a wildcard. In the SDK, `user` inherits the client default while
+`user: null` explicitly targets a userless Session. The raw resources
+are `GET /v1/chat/sessions/{sessionId}/tool-calls/{toolCallId}` and
+`PUT /v1/chat/sessions/{sessionId}/tool-calls/{toolCallId}/settlement`; PUT also
+requires `Idempotency-Key`. An exact retry returns the original receipt. If a
+continuation was already accepted, PUT returns `409
+continuation_already_accepted` and a `Location` header for GET. A continuation
+`runStatus` of `unknown` means only that current Run observability was
+unavailable; it never changes the durable resolution back to `pending`.
+The self-hosted Node server enables settlement writes only when project API
+keys are configured; hosts can keep the write gate disabled independently.
+
 ## Chat interactions
 
 Enable only interactions your client can render:
