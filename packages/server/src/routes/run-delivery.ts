@@ -2,6 +2,7 @@ import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
 import { streamSSE } from "hono/streaming";
 import { nanoid } from "nanoid";
 import {
+  MAX_RUN_EVENT_PAGE_SIZE,
   RunDeliveryValidationError,
   RunEventCursorAheadError,
   RunEventCursorExpiredError,
@@ -264,14 +265,12 @@ export interface ReconcileInterruptedRunOptions {
 export async function reconcileInterruptedRun(
   options: ReconcileInterruptedRunOptions,
 ): Promise<InterruptedRunReconciliationResult> {
-  const terminal = await lastRunEvent(options.eventStore, options.runId);
-  if (terminal && isTerminalRunStreamEvent(terminal)) {
-    await reconcileInterruptedHostProjection(options, terminal);
+  const history = await inspectRunLifecycle(options.eventStore, options.runId);
+  if (history.terminal) {
+    await reconcileInterruptedHostProjection(options, history.terminal);
     return "terminal";
   }
-
-  const firstPage = await options.eventStore.listAfter(options.runId, undefined, 10);
-  if (!firstPage.events.some((event) => event.type === "run.started")) {
+  if (!history.started) {
     return "not-started";
   }
 
@@ -294,9 +293,9 @@ export async function reconcileInterruptedRun(
   }
 
   try {
-    const last = await lastRunEvent(options.eventStore, options.runId);
-    if (last && isTerminalRunStreamEvent(last)) {
-      await reconcileInterruptedHostProjection(options, last);
+    const claimedHistory = await inspectRunLifecycle(options.eventStore, options.runId);
+    if (claimedHistory.terminal) {
+      await reconcileInterruptedHostProjection(options, claimedHistory.terminal);
       return "terminal";
     }
     const journal = new RunEventJournal(options.eventStore, options.notifier);
@@ -319,7 +318,7 @@ export async function reconcileInterruptedRun(
 
 async function reconcileInterruptedHostProjection(
   options: ReconcileInterruptedRunOptions,
-  terminal: Awaited<ReturnType<typeof lastRunEvent>>,
+  terminal: RunStreamEvent,
 ): Promise<void> {
   if (
     terminal?.type === "run.failed"
@@ -355,17 +354,38 @@ async function notifyInterruptedHost(
 }
 
 async function hasTerminalRunEvent(eventStore: RunEventStore, runId: string): Promise<boolean> {
-  const lastEvent = await lastRunEvent(eventStore, runId);
-  return lastEvent ? isTerminalRunStreamEvent(lastEvent) : false;
+  return (await inspectRunLifecycle(eventStore, runId)).terminal !== undefined;
 }
 
-async function lastRunEvent(eventStore: RunEventStore, runId: string) {
+async function inspectRunLifecycle(
+  eventStore: RunEventStore,
+  runId: string,
+): Promise<{ started: boolean; terminal?: RunStreamEvent }> {
   const bounds = await eventStore.bounds(runId);
-  if (!bounds) return undefined;
-  const lastSequence = Number(bounds.lastCursor);
-  if (!Number.isSafeInteger(lastSequence) || lastSequence < 1) return undefined;
-  const page = await eventStore.listAfter(runId, String(lastSequence - 1), 1);
-  return page.events[0];
+  if (bounds && parseRunEventCursor(bounds.firstCursor) !== 1) {
+    throw new RunEventCursorExpiredError(
+      "Run lifecycle history is incomplete; reconciliation cannot continue safely",
+    );
+  }
+  let cursor: string | undefined;
+  let started = false;
+  let executionObserved = false;
+  while (true) {
+    const page = await eventStore.listAfter(runId, cursor, MAX_RUN_EVENT_PAGE_SIZE);
+    for (const event of page.events) {
+      if (event.type === "run.started") started = true;
+      else if (event.type !== "run.accepted") executionObserved = true;
+      if (isTerminalRunStreamEvent(event)) return { started, terminal: event };
+    }
+    if (!page.hasMore) {
+      if (started || executionObserved) return { started: true };
+      return { started: false };
+    }
+    if (page.nextCursor === cursor) {
+      throw new RunDeliveryValidationError("Run event store did not advance its cursor");
+    }
+    cursor = page.nextCursor;
+  }
 }
 
 function unavailable(c: any) {

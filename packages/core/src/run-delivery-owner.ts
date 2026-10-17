@@ -1,12 +1,18 @@
 import {
+  MAX_RUN_EVENT_PAGE_SIZE,
   RunDeliveryValidationError,
+  RunEventCursorExpiredError,
+  parseRunEventCursor,
   type RunCancellationStore,
   type RunEventStore,
   type RunEventJsonValue,
   type RunExecutionLease,
   type RunExecutionLeaseStore,
 } from "./run-delivery.js";
-import { RunEventJournal } from "./run-delivery-follower.js";
+import {
+  RunEventJournal,
+  isTerminalRunStreamEvent,
+} from "./run-delivery-follower.js";
 import { ToolReceiptSettlementError } from "./tool-execution-receipts.js";
 
 export interface OwnedRunProducerContext {
@@ -115,6 +121,25 @@ export async function executeOwnedRun(
 
   let heartbeatPromise: Promise<void> | undefined;
   try {
+    const history = await inspectOwnedRunHistory(options.journal.store, options.runId);
+    if (history.terminal) {
+      return { status: "not-owner" };
+    }
+    if (!await renewLease()) return { status: "lost-lease" };
+    if (history.started) {
+      const error = "Run execution was interrupted before completion";
+      await options.journal.append(options.runId, {
+        id: "run.failed:execution-interrupted",
+        type: "run.failed",
+        data: {
+          code: "run_execution_interrupted",
+          message: error,
+          retryable: true,
+        },
+      });
+      await options.cancellationStore?.clear(options.runId).catch(() => false);
+      return { status: "failed", error };
+    }
     await options.journal.append(options.runId, {
       id: "run.started",
       type: "run.started",
@@ -178,6 +203,37 @@ export async function executeOwnedRun(
     releaseHeartbeatWait?.();
     await heartbeatPromise;
     await options.leaseStore.release(options.runId, activeLease);
+  }
+}
+
+async function inspectOwnedRunHistory(
+  store: RunEventStore,
+  runId: string,
+): Promise<{ started: boolean; terminal: boolean }> {
+  const bounds = await store.bounds(runId);
+  if (bounds && parseRunEventCursor(bounds.firstCursor) !== 1) {
+    throw new RunEventCursorExpiredError(
+      "Run lifecycle history is incomplete; producer execution cannot be admitted safely",
+    );
+  }
+  let cursor: string | undefined;
+  let started = false;
+  let executionObserved = false;
+  while (true) {
+    const page = await store.listAfter(runId, cursor, MAX_RUN_EVENT_PAGE_SIZE);
+    for (const event of page.events) {
+      if (event.type === "run.started") started = true;
+      else if (event.type !== "run.accepted") executionObserved = true;
+      if (isTerminalRunStreamEvent(event)) return { started, terminal: true };
+    }
+    if (!page.hasMore) {
+      if (started || executionObserved) return { started: true, terminal: false };
+      return { started: false, terminal: false };
+    }
+    if (page.nextCursor === cursor) {
+      throw new RunDeliveryValidationError("Run event store did not advance its cursor");
+    }
+    cursor = page.nextCursor;
   }
 }
 

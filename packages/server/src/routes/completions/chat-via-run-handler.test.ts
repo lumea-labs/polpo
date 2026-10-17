@@ -59,6 +59,94 @@ function baseDeps(overrides: Partial<CompletionRouteDeps> = {}): CompletionRoute
 }
 
 describe("chat via Run driver", () => {
+  it("fails closed on an internal replay instead of executing the continuation twice", async () => {
+    let reservedRunId: string | undefined;
+    const prepareContinuation = vi.fn(async (input: any) => {
+      const status = reservedRunId === undefined ? "prepared" as const : "replay" as const;
+      reservedRunId ??= input.runId;
+      return {
+        status,
+        sessionVersion: 2,
+        runId: reservedRunId,
+        messages: [
+          { id: "u1", role: "user", content: "Continue", ts: "2026-01-01T00:00:00Z" },
+          {
+            id: "a1",
+            role: "assistant",
+            content: "",
+            ts: "2026-01-01T00:00:01Z",
+            toolCalls: [{
+              id: "call-1",
+              name: "client_action",
+              arguments: {},
+              state: "completed",
+              result: "done",
+            }],
+          },
+          {
+            id: "t1",
+            role: "tool",
+            content: "done",
+            ts: "2026-01-01T00:00:02Z",
+            toolCallId: "call-1",
+          },
+        ],
+      };
+    });
+    const runChatViaRun = vi.fn(async (_inject: unknown, hooks: any) => {
+      hooks.onEvent({ type: "text-delta", text: "continued" });
+      return {
+        status: "completed",
+        result: { exitCode: 0, stdout: "continued", stderr: "" },
+      };
+    });
+    const deps = baseDeps({
+      getSessionStore: () => ({
+        prepareContinuation,
+        addMessage: vi.fn(async (_sessionId, role, content) => ({
+          id: `message-${role}`,
+          role,
+          content,
+          ts: new Date().toISOString(),
+        })),
+        updateMessage: vi.fn(async () => true),
+      } as any),
+      runChatViaRun,
+    });
+    const input = {
+      body: {
+        agent: "agent-1",
+        stream: true,
+        messages: [{ role: "tool", tool_call_id: "call-1", content: "done" }],
+        polpo: {
+          continuation: {
+            type: "client_tool",
+            tool_call_id: "call-1",
+            expected_session_version: 1,
+          },
+          delivery: { onDisconnect: "continue" },
+        },
+      } as CompletionRequestBody,
+      sessionId: "session-1",
+      continuation: {
+        idempotencyKey: "continue-1",
+        fingerprint: "sha256:continuation",
+      },
+    };
+
+    const first = await runConversationTurn(deps, input);
+    expect(first).toMatchObject({
+      completionId: reservedRunId,
+      text: "continued",
+    });
+    await expect(runConversationTurn(deps, input)).rejects.toMatchObject({
+      code: "continuation_replay_requires_run_resume",
+      runId: reservedRunId,
+      toolCallId: "call-1",
+    });
+    expect(runChatViaRun).toHaveBeenCalledOnce();
+  });
+
   it("filters server and OpenAI-compatible client tools by the active mode", async () => {
     const visibleTools: string[][] = [];
     const emit = vi.fn();

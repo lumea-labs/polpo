@@ -109,6 +109,33 @@ describe("durable completion stream", () => {
     await expect(execution).resolves.toEqual({ status: "completed" });
   });
 
+  it("releases request resources exactly once when the owner fence skips its producer", async () => {
+    const delivery = scope();
+    await delivery.eventStore.append("run-terminal", {
+      id: "run.started",
+      type: "run.started",
+      data: {},
+    });
+    await delivery.eventStore.append("run-terminal", {
+      id: "run.completed",
+      type: "run.completed",
+      data: {},
+    });
+    const producer = vi.fn(async () => undefined);
+    const onProducerSkipped = vi.fn(async () => undefined);
+
+    const execution = startDurableCompletion({
+      runId: "run-terminal",
+      scope: delivery,
+      producer,
+      onProducerSkipped,
+    });
+
+    await expect(execution).resolves.toEqual({ status: "not-owner" });
+    expect(producer).not.toHaveBeenCalled();
+    expect(onProducerSkipped).toHaveBeenCalledOnce();
+  });
+
   it("serializes concurrent writer calls in invocation order", async () => {
     const delivery = scope();
     const appendMany = vi.spyOn(

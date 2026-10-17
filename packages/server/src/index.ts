@@ -50,6 +50,7 @@ export {
   runConversationTurn,
   runChatTurnViaRun,
   CompletionRuntimeError,
+  ConversationTurnReplayError,
   type ConversationTurnResult,
   type RunConversationTurnInput,
   type ChatViaRunTurnResult,

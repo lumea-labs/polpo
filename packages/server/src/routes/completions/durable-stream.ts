@@ -172,13 +172,16 @@ export interface StartDurableCompletionOptions {
   runId: string;
   scope: CompletionRunDeliveryScope;
   producer: (context: DurableCompletionProducerContext) => Promise<void>;
+  /** Releases request-scoped resources when admission fencing skips producer execution. */
+  onProducerSkipped?: () => Promise<void> | void;
 }
 
 export function startDurableCompletion(
   options: StartDurableCompletionOptions,
 ): Promise<OwnedRunExecutionResult> {
   const journal = new RunEventJournal(options.scope.eventStore, options.scope.notifier);
-  const execution = executeOwnedRun({
+  let producerStarted = false;
+  const ownedExecution = executeOwnedRun({
     runId: options.runId,
     owner: options.scope.owner,
     token: options.scope.token,
@@ -186,6 +189,7 @@ export function startDurableCompletion(
     leaseStore: options.scope.leaseStore,
     cancellationStore: options.scope.cancellationStore,
     producer: async ({ signal }) => {
+      producerStarted = true;
       const writer = createDurableCompletionWriter(options.runId, options.scope);
       try {
         await options.producer({ signal, writer });
@@ -194,8 +198,28 @@ export function startDurableCompletion(
       }
     },
   });
+  const execution = ownedExecution.then(
+    async (result) => {
+      if (!producerStarted) await runSkippedProducerCleanup(options.onProducerSkipped);
+      return result;
+    },
+    async (error) => {
+      if (!producerStarted) await runSkippedProducerCleanup(options.onProducerSkipped);
+      throw error;
+    },
+  );
   options.scope.trackExecution?.(options.runId, execution);
   return execution;
+}
+
+async function runSkippedProducerCleanup(
+  cleanup: (() => Promise<void> | void) | undefined,
+): Promise<void> {
+  try {
+    await cleanup?.();
+  } catch {
+    // Cleanup cannot change the durable outcome selected by the owner fence.
+  }
 }
 
 export interface DurableCompletionFrame {

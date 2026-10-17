@@ -6,6 +6,7 @@ import {
 } from "@polpo-ai/core/run-delivery";
 import { InMemoryRunEventNotifier } from "@polpo-ai/core/run-delivery-follower";
 import { MemoryLoopRunStore } from "@polpo-ai/core/loop-run-store";
+import { InMemorySteeringController } from "@polpo-ai/core/steering";
 import { MockLanguageModelV3, convertArrayToReadableStream } from "ai/test";
 import {
   completionRoutes,
@@ -55,6 +56,7 @@ function viaRunDeps(overrides: Partial<CompletionRouteDeps> = {}): CompletionRou
 function loopDeps(
   scope: CompletionRunDeliveryScope,
   loopRunStore?: MemoryLoopRunStore,
+  executedTools?: string[],
 ): CompletionRouteDeps {
   let time = 100;
   return {
@@ -79,7 +81,10 @@ function loopDeps(
         description: "Return the current time",
         inputSchema: { type: "object", properties: {}, additionalProperties: false },
       }],
-      executor: async () => String(time++),
+      executor: async (name) => {
+        executedTools?.push(name);
+        return String(time++);
+      },
     }),
     createRunDeliveryScope: async () => scope,
     ...(loopRunStore ? { getLoopRunStore: () => loopRunStore } : {}),
@@ -278,6 +283,7 @@ describe("completion durable delivery routing", () => {
 
   it("atomically continues canonical session history into one durable loop run", async () => {
     const scope = deliveryScope();
+    const executedTools: string[] = [];
     let reservedRunId: string | undefined;
     const prepareContinuation = vi.fn(async (input: any) => {
       reservedRunId ??= input.runId;
@@ -321,7 +327,7 @@ describe("completion durable delivery routing", () => {
       addMessage,
       updateMessage: vi.fn(async () => true),
     };
-    const deps = loopDeps(scope);
+    const deps = loopDeps(scope, undefined, executedTools);
     deps.getSessionStore = () => sessionStore;
 
     const continuationRequest = () => ({
@@ -370,6 +376,679 @@ describe("completion durable delivery routing", () => {
       idempotencyKey: "continue-1",
     }));
     expect(addMessage.mock.calls.every((call) => call[1] === "assistant")).toBe(true);
+    expect(executedTools).toEqual(["unix_time"]);
+  });
+
+  it("replays a terminal continuation without starting its producer again", async () => {
+    const scope = deliveryScope();
+    const classify = vi.fn();
+    const resolveExecutionRouteClassifier = vi.fn(async () => ({ classify }));
+    let reservedRunId: string | undefined;
+    const prepareContinuation = vi.fn(async (input: any) => {
+      const status = reservedRunId === undefined ? "prepared" as const : "replay" as const;
+      reservedRunId ??= input.runId;
+      return {
+        status,
+        sessionVersion: 3,
+        runId: reservedRunId,
+        messages: [
+          { id: "u1", role: "user", content: "Continue", ts: "2026-01-01T00:00:00Z" },
+          {
+            id: "a1",
+            role: "assistant",
+            content: "",
+            ts: "2026-01-01T00:00:01Z",
+            toolCalls: [{
+              id: "call-1",
+              name: "client_action",
+              arguments: {},
+              state: "completed",
+              result: "done",
+            }],
+          },
+          {
+            id: "t1",
+            role: "tool",
+            content: "done",
+            ts: "2026-01-01T00:00:02Z",
+            toolCallId: "call-1",
+          },
+        ],
+      };
+    });
+    const runChatViaRun = vi.fn(async (_inject: unknown, hooks: any) => {
+      hooks.onEvent({ type: "text-delta", text: "continued" });
+      return {
+        status: "completed",
+        result: { exitCode: 0, stdout: "continued", stderr: "" },
+      };
+    });
+    const deps = viaRunDeps({
+      getAgents: async () => [{
+        name: "agent-1",
+        role: "Test agent",
+        model: "mock",
+        assignedLoops: ["research"],
+        executionRouter: { mode: "auto", allowedLoops: ["research"] },
+      }],
+      getProjectLoop: async (name) => ({
+        name,
+        start: "run",
+        steps: { run: { type: "agent", next: "end" } },
+      }),
+      resolveExecutionRouteClassifier,
+      createRunDeliveryScope: async () => ({
+        ...scope,
+        token: `attempt-${Math.random()}`,
+      }),
+      getSessionStore: () => ({
+        prepareContinuation,
+        addMessage: vi.fn(async (_sessionId, role, content) => ({
+          id: `message-${role}`,
+          role,
+          content,
+          ts: new Date().toISOString(),
+        })),
+        updateMessage: vi.fn(async () => true),
+      } as any),
+      runChatViaRun,
+    });
+    const continuationRequest = () => ({
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-session-id": "session-1",
+        "idempotency-key": "continue-1",
+      },
+      body: JSON.stringify({
+        agent: "agent-1",
+        stream: true,
+        messages: [{ role: "tool", tool_call_id: "call-1", content: "done" }],
+        polpo: {
+          continuation: {
+            type: "client_tool",
+            tool_call_id: "call-1",
+            expected_session_version: 2,
+          },
+          delivery: { onDisconnect: "continue" },
+        },
+      }),
+    });
+
+    const first = await completionRoutes(() => deps).request("/", continuationRequest());
+    expect(first.status).toBe(200);
+    expect(await first.text()).toContain("[DONE]");
+    const runId = first.headers.get("x-polpo-run-id")!;
+    const firstEvents = (await scope.eventStore.listAfter(runId)).events;
+    expect(firstEvents.at(-1)?.type).toBe("run.completed");
+
+    const replay = await completionRoutes(() => deps).request("/", continuationRequest());
+    expect(replay.status).toBe(200);
+    expect(replay.headers.get("x-polpo-run-id")).toBe(runId);
+    expect(await replay.text()).toContain("[DONE]");
+    await vi.waitFor(() => expect(runChatViaRun).toHaveBeenCalledTimes(1));
+
+    const replayedEvents = (await scope.eventStore.listAfter(runId)).events;
+    expect(replayedEvents).toEqual(firstEvents);
+    expect(replayedEvents.findIndex((event) => event.type === "run.completed"))
+      .toBe(replayedEvents.length - 1);
+    expect(resolveExecutionRouteClassifier).not.toHaveBeenCalled();
+    expect(classify).not.toHaveBeenCalled();
+  });
+
+  it("fences a prepared request delayed behind a concurrent replay of the same reserved run", async () => {
+    const baseScope = deliveryScope();
+    const baseLeases = baseScope.leaseStore;
+    let claimCalls = 0;
+    let secondClaimEntered!: () => void;
+    const secondClaimWaiting = new Promise<void>((resolve) => { secondClaimEntered = resolve; });
+    let releaseSecondClaim!: () => void;
+    const secondClaimReleased = new Promise<void>((resolve) => { releaseSecondClaim = resolve; });
+    const leaseStore = {
+      get: baseLeases.get.bind(baseLeases),
+      renew: baseLeases.renew.bind(baseLeases),
+      release: baseLeases.release.bind(baseLeases),
+      claim: async (...args: Parameters<typeof baseLeases.claim>) => {
+        const call = ++claimCalls;
+        if (call === 1) await secondClaimWaiting;
+        if (call === 2) {
+          secondClaimEntered();
+          await secondClaimReleased;
+        }
+        return baseLeases.claim(...args);
+      },
+    };
+    const executions: Promise<unknown>[] = [];
+    const requestCleanups: Array<ReturnType<typeof vi.fn>> = [];
+    const scope: CompletionRunDeliveryScope = {
+      ...baseScope,
+      leaseStore,
+      trackExecution: (_runId, execution) => { executions.push(execution); },
+    };
+    let reservedRunId: string | undefined;
+    const prepareContinuation = vi.fn(async (input: any) => {
+      const status = reservedRunId === undefined ? "prepared" as const : "replay" as const;
+      reservedRunId ??= input.runId;
+      return {
+        status,
+        sessionVersion: 3,
+        runId: reservedRunId,
+        messages: [
+          { id: "u1", role: "user", content: "Continue", ts: "2026-01-01T00:00:00Z" },
+          {
+            id: "a1",
+            role: "assistant",
+            content: "",
+            ts: "2026-01-01T00:00:01Z",
+            toolCalls: [{ id: "call-1", name: "client_action", state: "completed", result: "done" }],
+          },
+          { id: "t1", role: "tool", content: "done", ts: "2026-01-01T00:00:02Z", toolCallId: "call-1" },
+        ],
+      };
+    });
+    const runChatViaRun = vi.fn(async (_inject: unknown, hooks: any) => {
+      hooks.onEvent({ type: "text-delta", text: "continued once" });
+      return {
+        status: "completed",
+        result: { exitCode: 0, stdout: "continued once", stderr: "" },
+      };
+    });
+    const deps = viaRunDeps({
+      createRunDeliveryScope: async () => ({
+        ...scope,
+        token: `attempt-${Math.random()}`,
+      }),
+      getSessionStore: () => ({
+        prepareContinuation,
+        addMessage: vi.fn(async (_sessionId, role, content) => ({
+          id: `message-${role}`,
+          role,
+          content,
+          ts: new Date().toISOString(),
+        })),
+        updateMessage: vi.fn(async () => true),
+      } as any),
+      resolveAgentTools: async () => {
+        const cleanup = vi.fn(async () => undefined);
+        requestCleanups.push(cleanup);
+        return { tools: [], executor: async () => "ok", cleanup };
+      },
+      runChatViaRun,
+    });
+    const continuationRequest = () => ({
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-session-id": "session-1",
+        "idempotency-key": "continue-1",
+      },
+      body: JSON.stringify({
+        agent: "agent-1",
+        stream: true,
+        messages: [{ role: "tool", tool_call_id: "call-1", content: "done" }],
+        polpo: {
+          continuation: {
+            type: "client_tool",
+            tool_call_id: "call-1",
+            expected_session_version: 2,
+          },
+          delivery: { onDisconnect: "continue" },
+        },
+      }),
+    });
+
+    const first = await completionRoutes(() => deps).request("/", continuationRequest());
+    const second = await completionRoutes(() => deps).request("/", continuationRequest());
+    const firstBodyPromise = first.text();
+    const secondBodyPromise = second.text();
+    await secondClaimWaiting;
+    const firstBody = await firstBodyPromise;
+    const secondBody = await secondBodyPromise;
+    expect(firstBody).toContain("continued once");
+    expect(secondBody).toContain("continued once");
+    releaseSecondClaim();
+    await Promise.all(executions);
+
+    expect(runChatViaRun).toHaveBeenCalledOnce();
+    await vi.waitFor(() => {
+      expect(requestCleanups).toHaveLength(2);
+      expect(requestCleanups.every((cleanup) => cleanup.mock.calls.length === 1)).toBe(true);
+    });
+    expect(first.headers.get("x-polpo-run-id")).toBe(reservedRunId);
+    expect(second.headers.get("x-polpo-run-id")).toBe(reservedRunId);
+    expect((await scope.eventStore.listAfter(reservedRunId!)).events.map(
+      (event) => event.type,
+    ).at(-1)).toBe("run.completed");
+  });
+
+  it("registers Project Loop steering only after the durable owner wins admission", async () => {
+    const baseScope = deliveryScope();
+    const baseLeases = baseScope.leaseStore;
+    let claimCalls = 0;
+    let secondClaimEntered!: () => void;
+    const secondClaimWaiting = new Promise<void>((resolve) => { secondClaimEntered = resolve; });
+    let winnerProducerEntered!: () => void;
+    const winnerProducerActive = new Promise<void>((resolve) => { winnerProducerEntered = resolve; });
+    let losingClaimFinished!: () => void;
+    const losingClaimSettled = new Promise<void>((resolve) => { losingClaimFinished = resolve; });
+    const leaseStore = {
+      get: baseLeases.get.bind(baseLeases),
+      renew: baseLeases.renew.bind(baseLeases),
+      release: baseLeases.release.bind(baseLeases),
+      claim: async (...args: Parameters<typeof baseLeases.claim>) => {
+        const call = ++claimCalls;
+        if (call === 1) await secondClaimWaiting;
+        if (call === 2) {
+          secondClaimEntered();
+          await winnerProducerActive;
+          const claimed = await baseLeases.claim(...args);
+          losingClaimFinished();
+          return claimed;
+        }
+        return baseLeases.claim(...args);
+      },
+    };
+    const executions: Promise<unknown>[] = [];
+    const scope: CompletionRunDeliveryScope = {
+      ...baseScope,
+      leaseStore,
+      trackExecution: (_runId, execution) => { executions.push(execution); },
+    };
+    let reservedRunId: string | undefined;
+    const prepareContinuation = vi.fn(async (input: any) => {
+      const status = reservedRunId === undefined ? "prepared" as const : "replay" as const;
+      reservedRunId ??= input.runId;
+      return {
+        status,
+        sessionVersion: 3,
+        runId: reservedRunId,
+        messages: [
+          { id: "u1", role: "user", content: "Build a site", ts: "2026-01-01T00:00:00Z" },
+          {
+            id: "a1",
+            role: "assistant",
+            content: "",
+            ts: "2026-01-01T00:00:01Z",
+            toolCalls: [{ id: "call-1", name: "client_action", state: "completed", result: "done" }],
+          },
+          { id: "t1", role: "tool", content: "done", ts: "2026-01-01T00:00:02Z", toolCallId: "call-1" },
+        ],
+      };
+    });
+    let finishWinner!: () => void;
+    const winnerCanFinish = new Promise<void>((resolve) => { finishWinner = resolve; });
+    const executedTools: string[] = [];
+    const deps = loopDeps(scope, undefined, executedTools);
+    deps.createRunDeliveryScope = async () => ({
+      ...scope,
+      token: `attempt-${Math.random()}`,
+    });
+    const steering = new InMemorySteeringController();
+    const closeSteering = vi.spyOn(steering, "close");
+    const releaseSteering = vi.fn(async () => undefined);
+    const createRunSteeringScope = vi.fn(async () => ({
+      steering,
+      release: releaseSteering,
+    }));
+    deps.createRunSteeringScope = createRunSteeringScope;
+    deps.resolveAgentTools = async () => ({
+      tools: [{
+        name: "unix_time",
+        description: "Return the current time",
+        inputSchema: { type: "object", properties: {}, additionalProperties: false },
+      }],
+      executor: async (name) => {
+        executedTools.push(name);
+        winnerProducerEntered();
+        await winnerCanFinish;
+        return "100";
+      },
+    });
+    deps.getSessionStore = () => ({
+      prepareContinuation,
+      addMessage: vi.fn(async (_sessionId, role, content) => ({
+        id: `message-${role}`,
+        role,
+        content,
+        ts: new Date().toISOString(),
+      })),
+      updateMessage: vi.fn(async () => true),
+    } as any);
+    const continuationRequest = () => ({
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-session-id": "session-1",
+        "idempotency-key": "continue-loop-1",
+      },
+      body: JSON.stringify({
+        agent: "timer",
+        loop: "time-tracker",
+        stream: true,
+        messages: [{ role: "tool", tool_call_id: "call-1", content: "done" }],
+        polpo: {
+          continuation: {
+            type: "client_tool",
+            tool_call_id: "call-1",
+            expected_session_version: 2,
+          },
+          delivery: { onDisconnect: "continue" },
+        },
+      }),
+    });
+
+    const first = await completionRoutes(() => deps).request("/", continuationRequest());
+    const second = await completionRoutes(() => deps).request("/", continuationRequest());
+    const firstBody = first.text();
+    const secondBody = second.text();
+    await winnerProducerActive;
+    await losingClaimSettled;
+
+    expect(createRunSteeringScope).toHaveBeenCalledOnce();
+    expect(closeSteering).not.toHaveBeenCalled();
+    expect(releaseSteering).not.toHaveBeenCalled();
+
+    finishWinner();
+    await expect(firstBody).resolves.toContain("[DONE]");
+    await expect(secondBody).resolves.toContain("[DONE]");
+    await Promise.all(executions);
+
+    expect(executedTools).toEqual(["unix_time"]);
+    expect(releaseSteering).toHaveBeenCalledOnce();
+    expect((await scope.eventStore.listAfter(reservedRunId!)).events.at(-1)?.type)
+      .toBe("run.completed");
+  });
+
+  it.each(["run.failed", "run.cancelled"] as const)(
+    "does not restart a continuation whose delivery ended with %s",
+    async (terminalType) => {
+      const scope = deliveryScope();
+      const runId = `chatcmpl-${terminalType}`;
+      await scope.eventStore.append(runId, {
+        id: "run.started",
+        type: "run.started",
+        data: {},
+      });
+      await scope.eventStore.append(runId, {
+        id: terminalType,
+        type: terminalType,
+        data: terminalType === "run.failed" ? { message: "failed" } : {},
+      });
+      const originalEvents = (await scope.eventStore.listAfter(runId)).events;
+      const runChatViaRun = vi.fn();
+      const deps = viaRunDeps({
+        createRunDeliveryScope: async () => ({
+          ...scope,
+          token: `attempt-${Math.random()}`,
+        }),
+        getSessionStore: () => ({
+          prepareContinuation: vi.fn(async () => ({
+            status: "replay",
+            sessionVersion: 3,
+            runId,
+            messages: [
+              { id: "u1", role: "user", content: "Continue", ts: "2026-01-01T00:00:00Z" },
+              {
+                id: "a1",
+                role: "assistant",
+                content: "",
+                ts: "2026-01-01T00:00:01Z",
+                toolCalls: [{ id: "call-1", name: "client_action", state: "completed", result: "done" }],
+              },
+              { id: "t1", role: "tool", content: "done", ts: "2026-01-01T00:00:02Z", toolCallId: "call-1" },
+            ],
+          })),
+        } as any),
+        runChatViaRun,
+      });
+
+      const response = await completionRoutes(() => deps).request("/", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-session-id": "session-1",
+          "idempotency-key": "continue-1",
+        },
+        body: JSON.stringify({
+          agent: "agent-1",
+          stream: true,
+          messages: [{ role: "tool", tool_call_id: "call-1", content: "done" }],
+          polpo: {
+            continuation: { type: "client_tool", tool_call_id: "call-1", expected_session_version: 2 },
+            delivery: { onDisconnect: "continue" },
+          },
+        }),
+      });
+
+      expect(response.status).toBe(200);
+      await response.text();
+      expect(runChatViaRun).not.toHaveBeenCalled();
+      expect((await scope.eventStore.listAfter(runId)).events).toEqual(originalEvents);
+    },
+  );
+
+  it("starts the reserved continuation when admission committed before run.started", async () => {
+    const scope = deliveryScope();
+    const runId = "chatcmpl-accepted-without-start";
+    const runChatViaRun = vi.fn(async (_inject: unknown, hooks: any) => {
+      hooks.onEvent({ type: "text-delta", text: "recovered" });
+      return {
+        status: "completed",
+        result: { exitCode: 0, stdout: "recovered", stderr: "" },
+      };
+    });
+    const deps = viaRunDeps({
+      createRunDeliveryScope: async () => ({
+        ...scope,
+        token: `attempt-${Math.random()}`,
+      }),
+      getSessionStore: () => ({
+        prepareContinuation: vi.fn(async () => ({
+          status: "replay",
+          sessionVersion: 3,
+          runId,
+          messages: [
+            { id: "u1", role: "user", content: "Continue", ts: "2026-01-01T00:00:00Z" },
+            {
+              id: "a1",
+              role: "assistant",
+              content: "",
+              ts: "2026-01-01T00:00:01Z",
+              toolCalls: [{ id: "call-1", name: "client_action", state: "completed", result: "done" }],
+            },
+            { id: "t1", role: "tool", content: "done", ts: "2026-01-01T00:00:02Z", toolCallId: "call-1" },
+          ],
+        })),
+        addMessage: vi.fn(async (_sessionId, role, content) => ({
+          id: `message-${role}`,
+          role,
+          content,
+          ts: new Date().toISOString(),
+        })),
+        updateMessage: vi.fn(async () => true),
+      } as any),
+      runChatViaRun,
+    });
+
+    const response = await completionRoutes(() => deps).request("/", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-session-id": "session-1",
+        "idempotency-key": "continue-1",
+      },
+      body: JSON.stringify({
+        agent: "agent-1",
+        stream: true,
+        messages: [{ role: "tool", tool_call_id: "call-1", content: "done" }],
+        polpo: {
+          continuation: { type: "client_tool", tool_call_id: "call-1", expected_session_version: 2 },
+          delivery: { onDisconnect: "continue" },
+        },
+      }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(await response.text()).toContain("recovered");
+    expect(runChatViaRun).toHaveBeenCalledOnce();
+    expect((await scope.eventStore.listAfter(runId)).events.at(-1)?.type)
+      .toBe("run.completed");
+  });
+
+  it("terminalizes an ownerless started continuation without replaying it", async () => {
+    const scope = deliveryScope();
+    const runId = "chatcmpl-ownerless-started";
+    await scope.eventStore.append(runId, {
+      id: "run.started",
+      type: "run.started",
+      data: {},
+    });
+    const runChatViaRun = vi.fn();
+    const deps = viaRunDeps({
+      createRunDeliveryScope: async () => ({
+        ...scope,
+        token: `attempt-${Math.random()}`,
+      }),
+      getSessionStore: () => ({
+        prepareContinuation: vi.fn(async () => ({
+          status: "replay",
+          sessionVersion: 3,
+          runId,
+          messages: [
+            { id: "u1", role: "user", content: "Continue", ts: "2026-01-01T00:00:00Z" },
+            {
+              id: "a1",
+              role: "assistant",
+              content: "",
+              ts: "2026-01-01T00:00:01Z",
+              toolCalls: [{ id: "call-1", name: "client_action", state: "completed", result: "done" }],
+            },
+            { id: "t1", role: "tool", content: "done", ts: "2026-01-01T00:00:02Z", toolCallId: "call-1" },
+          ],
+        })),
+      } as any),
+      runChatViaRun,
+    });
+
+    const response = await completionRoutes(() => deps).request("/", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-session-id": "session-1",
+        "idempotency-key": "continue-1",
+      },
+      body: JSON.stringify({
+        agent: "agent-1",
+        stream: true,
+        messages: [{ role: "tool", tool_call_id: "call-1", content: "done" }],
+        polpo: {
+          continuation: { type: "client_tool", tool_call_id: "call-1", expected_session_version: 2 },
+          delivery: { onDisconnect: "continue" },
+        },
+      }),
+    });
+
+    expect(response.status).toBe(200);
+    await response.text();
+    expect(runChatViaRun).not.toHaveBeenCalled();
+    expect((await scope.eventStore.listAfter(runId)).events.at(-1)).toMatchObject({
+      type: "run.failed",
+      data: { code: "run_execution_interrupted" },
+    });
+  });
+
+  it("follows an active continuation owner without starting a competing producer", async () => {
+    const scope = deliveryScope();
+    const runId = "chatcmpl-active-owner";
+    await scope.leaseStore.claim(runId, {
+      owner: "original-worker",
+      token: "original-attempt",
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+    });
+    await scope.eventStore.append(runId, {
+      id: "run.started",
+      type: "run.started",
+      data: {},
+    });
+    const runChatViaRun = vi.fn();
+    const classify = vi.fn();
+    const resolveExecutionRouteClassifier = vi.fn(async () => ({ classify }));
+    const deps = viaRunDeps({
+      getAgents: async () => [{
+        name: "agent-1",
+        role: "Test agent",
+        model: "mock",
+        assignedLoops: ["research"],
+        executionRouter: { mode: "auto", allowedLoops: ["research"] },
+      }],
+      getProjectLoop: async (name) => ({
+        name,
+        start: "run",
+        steps: { run: { type: "agent", next: "end" } },
+      }),
+      resolveExecutionRouteClassifier,
+      createRunDeliveryScope: async () => ({
+        ...scope,
+        token: `attempt-${Math.random()}`,
+      }),
+      getSessionStore: () => ({
+        prepareContinuation: vi.fn(async () => ({
+          status: "replay",
+          sessionVersion: 3,
+          runId,
+          messages: [
+            { id: "u1", role: "user", content: "Continue", ts: "2026-01-01T00:00:00Z" },
+            {
+              id: "a1",
+              role: "assistant",
+              content: "",
+              ts: "2026-01-01T00:00:01Z",
+              toolCalls: [{ id: "call-1", name: "client_action", state: "completed", result: "done" }],
+            },
+            { id: "t1", role: "tool", content: "done", ts: "2026-01-01T00:00:02Z", toolCallId: "call-1" },
+          ],
+        })),
+      } as any),
+      runChatViaRun,
+    });
+
+    const response = await completionRoutes(() => deps).request("/", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-session-id": "session-1",
+        "idempotency-key": "continue-1",
+      },
+      body: JSON.stringify({
+        agent: "agent-1",
+        stream: true,
+        messages: [{ role: "tool", tool_call_id: "call-1", content: "done" }],
+        polpo: {
+          continuation: { type: "client_tool", tool_call_id: "call-1", expected_session_version: 2 },
+          delivery: { onDisconnect: "continue" },
+        },
+      }),
+    });
+    const body = response.text();
+    await scope.eventStore.append(runId, {
+      type: "response.done",
+      data: { data: "[DONE]" },
+    });
+    await scope.eventStore.append(runId, {
+      id: "run.completed",
+      type: "run.completed",
+      data: {},
+    });
+    await scope.notifier?.publish(runId, "3");
+
+    expect(await body).toContain("[DONE]");
+    expect(runChatViaRun).not.toHaveBeenCalled();
+    expect(resolveExecutionRouteClassifier).not.toHaveBeenCalled();
+    expect(classify).not.toHaveBeenCalled();
+    await expect(scope.leaseStore.get(runId)).resolves.toMatchObject({
+      owner: "original-worker",
+      token: "original-attempt",
+    });
   });
 
   it("atomically continues a cancelled client tool in direct chat", async () => {

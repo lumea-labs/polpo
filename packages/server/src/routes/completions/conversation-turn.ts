@@ -54,6 +54,7 @@ import {
   sessionMessagesToCompletionMessages,
 } from "./message-mapping.js";
 import { SessionContinuationError } from "@polpo-ai/core/session-continuation";
+import type { SessionClientToolDefinition } from "@polpo-ai/core/session-store";
 import {
   clientSideToolsForCapabilities,
   toAIToolChoice,
@@ -140,6 +141,11 @@ type PreparedProjectLoop = {
   contextTrust: RuntimeContextTrustMode;
   sessionStore: any;
   sessionId: string | null;
+  onResponseFinished?: () => Promise<void>;
+  continuationState?: {
+    status: "prepared" | "replay";
+    toolCallId: string;
+  };
   turnId?: string;
   canonicalTurn?: CanonicalTurnPersistenceContext;
   runtimePlan?: RuntimePlan;
@@ -197,6 +203,23 @@ export type ConversationTurnResult = ChatViaRunTurnResult & {
   completionId: string;
   sessionVersion?: number;
 };
+
+/**
+ * A non-HTTP caller retried a continuation whose durable Run was already
+ * reserved. Adapters must resume that Run instead of invoking the model again.
+ */
+export class ConversationTurnReplayError extends Error {
+  readonly code = "continuation_replay_requires_run_resume";
+  readonly status = "replay";
+
+  constructor(
+    readonly runId: string,
+    readonly toolCallId: string,
+  ) {
+    super("Client-tool continuation was already accepted; resume its durable Run");
+    this.name = "ConversationTurnReplayError";
+  }
+}
 
 function completionError(
   message: string,
@@ -641,6 +664,11 @@ export async function prepareChatCompletionExecution(
   let deferredAgentTools = false;
   let completionId = options.completionId ?? `chatcmpl-${nanoid(24)}`;
   let turnId: string | undefined;
+  let continuationState: {
+    status: "prepared" | "replay";
+    toolCallId: string;
+  } | undefined;
+  let continuationClientTools: SessionClientToolDefinition[] | undefined;
   let userMessageId: string | undefined;
   const sessionStore = deps.getSessionStore();
 
@@ -688,6 +716,7 @@ export async function prepareChatCompletionExecution(
 
   if (agentMode) {
     let agentConfig = initialAgentConfig;
+    const continuation = body.polpo?.continuation;
 
     if (body.loop) {
       try {
@@ -725,7 +754,86 @@ export async function prepareChatCompletionExecution(
         const msg = loopErr instanceof Error ? loopErr.message : String(loopErr);
         return completionError(msg, 400, "loop_not_found");
       }
-    } else if (agentConfig.executionRouter?.mode === "auto") {
+    }
+    if (continuation && body.loop && !projectLoopRuntime) {
+      return completionError(
+        "The selected loop is not available as a Project Loop",
+        422,
+        "loop_not_available",
+      );
+    }
+
+    // Resolve the canonical Session transaction before selecting execution.
+    // Continuations have an explicit route contract: a fixed `loop` resumes in
+    // that Project Loop, while an omitted `loop` resumes direct chat. They must
+    // never invoke the automatic classifier on a tool-result-only request or
+    // choose a different route on retry.
+    if (continuation) {
+      if (!options.sessionId || !options.continuation) {
+        return completionError(
+          "Client-tool continuation requires an existing session and Idempotency-Key",
+          400,
+          "invalid_continuation_request",
+        );
+      }
+      if (!sessionStore?.prepareContinuation) {
+        return completionError(
+          "Session continuation is not supported by the configured store",
+          501,
+          "session_continuation_unavailable",
+        );
+      }
+      const toolResult = body.messages[0]!;
+      try {
+        const prepared = await sessionStore.prepareContinuation({
+          sessionId: options.sessionId,
+          agent: body.agent,
+          user: options.runtime?.user ?? body.user,
+          ...(options.runtime?.scope ? { scope: options.runtime.scope } : {}),
+          toolCallId: continuation.tool_call_id,
+          result: toolResult.content,
+          expectedSessionVersion: continuation.expected_session_version,
+          idempotencyKey: options.continuation.idempotencyKey,
+          fingerprint: options.continuation.fingerprint,
+          runId: completionId,
+        });
+        completionId = prepared.runId;
+        continuationState = {
+          status: prepared.status,
+          toolCallId: continuation.tool_call_id,
+        };
+        continuationClientTools = prepared.requestClientTools;
+        turnId = prepared.turnId;
+        userMessageId = turnId
+          ? prepared.messages.find(
+              (message: any) => message.role === "user" && message.turnId === turnId,
+            )?.id
+          : undefined;
+        const canonicalMessages = sessionMessagesToCompletionMessages(prepared.messages);
+        body = { ...body, messages: canonicalMessages } as CompletionRequestBody;
+        const canonical = convertMessages(body.messages, contextTrust);
+        aiMessages = canonical.aiMessages;
+        extraSystemParts = canonical.extraSystemParts;
+        promptContextSegments = canonical.promptContextSegments;
+        callerSystemParts = contextTrust === "enforce" && promptContextSegments.length > 0
+          ? [renderRuntimePromptContextSegments(promptContextSegments)]
+          : extraSystemParts;
+        options.setHeader?.("x-polpo-run-id", completionId);
+        options.setHeader?.("x-session-version", String(prepared.sessionVersion + 1));
+      } catch (error) {
+        if (error instanceof SessionContinuationError) {
+          const status = error.code === "session_not_found"
+            ? 404
+            : error.code === "continuation_scope_mismatch"
+              ? 403
+              : 409;
+          return completionError(error.message, status, error.code);
+        }
+        throw error;
+      }
+    }
+
+    if (!continuation && !body.loop && agentConfig.executionRouter?.mode === "auto") {
       try {
         const routed = await resolveAutomaticExecutionRoute(
           deps,
@@ -769,103 +877,38 @@ export async function prepareChatCompletionExecution(
       }
     }
     resolvedAgentConfig = agentConfig;
-    const continuation = body.polpo?.continuation;
     if (continuation) {
-      if (body.loop && !projectLoopRuntime) {
-        return completionError(
-          "The selected loop is not available as a Project Loop",
-          422,
-          "loop_not_available",
-        );
-      }
-      if (!options.sessionId || !options.continuation) {
-        return completionError(
-          "Client-tool continuation requires an existing session and Idempotency-Key",
-          400,
-          "invalid_continuation_request",
-        );
-      }
-      if (!sessionStore?.prepareContinuation) {
-        return completionError(
-          "Session continuation is not supported by the configured store",
-          501,
-          "session_continuation_unavailable",
-        );
-      }
-      const toolResult = body.messages[0]!;
-      try {
-        const prepared = await sessionStore.prepareContinuation({
-          sessionId: options.sessionId,
-          agent: body.agent,
-          user: options.runtime?.user ?? body.user,
-          ...(options.runtime?.scope ? { scope: options.runtime.scope } : {}),
-          toolCallId: continuation.tool_call_id,
-          result: toolResult.content,
-          expectedSessionVersion: continuation.expected_session_version,
-          idempotencyKey: options.continuation.idempotencyKey,
-          fingerprint: options.continuation.fingerprint,
-          runId: completionId,
+      if (!projectLoopRuntime && continuationClientTools?.length) {
+        const restored = completionRequestSchema.safeParse({
+          messages: [{ role: "user", content: "continuation catalog validation" }],
+          tools: continuationClientTools,
+          parallel_tool_calls: false,
         });
-        completionId = prepared.runId;
-        turnId = prepared.turnId;
-        if (!projectLoopRuntime && prepared.requestClientTools?.length) {
-          const restored = completionRequestSchema.safeParse({
-            messages: [{ role: "user", content: "continuation catalog validation" }],
-            tools: prepared.requestClientTools,
-            parallel_tool_calls: false,
-          });
-          if (!restored.success) {
-            return completionError(
-              "The stored client-tool continuation catalog is invalid",
-              409,
-              "client_tool_continuation_catalog_invalid",
-            );
-          }
-          requestClientTools = restored.data.tools;
-          try {
-            assertRequestClientToolNamesAvailable(
-              requestClientTools,
-              Object.keys(builtInClientSideTools),
-            );
-          } catch (error) {
-            if (error instanceof RequestClientToolError) {
-              return completionError(error.message, 409, error.code);
-            }
-            throw error;
-          }
-          requestClientSideTools = createRequestClientTools(requestClientTools);
-          clientSideTools = {
-            ...builtInClientSideTools,
-            ...requestClientSideTools,
-          };
-          clientSideToolNames = new Set(Object.keys(clientSideTools));
+        if (!restored.success) {
+          return completionError(
+            "The stored client-tool continuation catalog is invalid",
+            409,
+            "client_tool_continuation_catalog_invalid",
+          );
         }
-        userMessageId = turnId
-          ? prepared.messages.find(
-              (message: any) => message.role === "user" && message.turnId === turnId,
-            )?.id
-          : undefined;
-        const canonicalMessages = sessionMessagesToCompletionMessages(prepared.messages);
-        body = { ...body, messages: canonicalMessages } as CompletionRequestBody;
-        const canonical = convertMessages(body.messages, contextTrust);
-        aiMessages = canonical.aiMessages;
-        extraSystemParts = canonical.extraSystemParts;
-        promptContextSegments = canonical.promptContextSegments;
-        callerSystemParts = contextTrust === "enforce" && promptContextSegments.length > 0
-          ? [renderRuntimePromptContextSegments(promptContextSegments)]
-          : extraSystemParts;
-        options.setHeader?.("x-polpo-run-id", completionId);
-        options.setHeader?.("x-session-version", String(prepared.sessionVersion + 1));
-      } catch (error) {
-        if (error instanceof SessionContinuationError) {
-          const status = error.code === "session_not_found"
-            ? 404
-            : error.code === "continuation_scope_mismatch"
-              ? 403
-              : 409;
-          return completionError(error.message, status, error.code);
+        requestClientTools = restored.data.tools;
+        try {
+          assertRequestClientToolNamesAvailable(
+            requestClientTools,
+            Object.keys(builtInClientSideTools),
+          );
+        } catch (error) {
+          if (error instanceof RequestClientToolError) {
+            return completionError(error.message, 409, error.code);
+          }
+          throw error;
         }
-        throw error;
+        requestClientSideTools = createRequestClientTools(requestClientTools);
+        clientSideTools = {
+          ...builtInClientSideTools,
+          ...requestClientSideTools,
+        };
+        clientSideToolNames = new Set(Object.keys(clientSideTools));
       }
     }
     if (!continuation) {
@@ -1452,6 +1495,8 @@ export async function prepareChatCompletionExecution(
       contextTrust,
       sessionStore,
       sessionId,
+      onResponseFinished,
+      continuationState,
       ...(turnId ? { turnId } : {}),
       ...(canonicalTurn ? { canonicalTurn } : {}),
       runtimePlan,
@@ -1522,6 +1567,7 @@ export async function prepareChatCompletionExecution(
     sessionStore,
     sessionId,
     sessionResumed,
+    continuationState,
     turnId,
     canonicalTurn,
     onResponseFinished,
@@ -1564,6 +1610,22 @@ export async function runConversationTurn(
 
   if (prepared.kind === "error") {
     throw new Error(prepared.body.error.message);
+  }
+  const continuationState = prepared.kind === "project-loop"
+    ? prepared.continuationState
+    : prepared.execution.continuationState;
+  if (continuationState?.status === "replay") {
+    await cleanupFailedPreparation(
+      prepared.kind === "chat"
+        ? prepared.execution.onResponseFinished
+        : prepared.onResponseFinished,
+    );
+    throw new ConversationTurnReplayError(
+      prepared.kind === "project-loop"
+        ? prepared.completionId
+        : prepared.execution.completionId,
+      continuationState.toolCallId,
+    );
   }
   if (prepared.kind === "project-loop") {
     const steeringScope = await createCompletionRunSteeringScope(

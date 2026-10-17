@@ -149,6 +149,11 @@ export interface ChatCompletionExecution {
   sessionId: string | null;
   /** The request joined an existing durable Session rather than creating one. */
   sessionResumed?: boolean;
+  /** Atomic admission result for a delayed client-tool continuation. */
+  continuationState?: {
+    status: "prepared" | "replay";
+    toolCallId: string;
+  };
   /** Logical request turn shared by user, tool continuation, and assistant messages. */
   turnId?: string;
   /** Present only when automatic/suggest learning is enabled for this surface. */

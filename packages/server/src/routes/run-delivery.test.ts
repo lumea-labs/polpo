@@ -3,6 +3,7 @@ import {
   InMemoryRunCancellationStore,
   InMemoryRunEventStore,
   InMemoryRunExecutionLeaseStore,
+  RunEventCursorExpiredError,
 } from "@polpo-ai/core/run-delivery";
 import {
   InMemoryRunEventNotifier,
@@ -232,6 +233,35 @@ describe("runDeliveryRoutes", () => {
     expect(await leaseStore.get("run-orphan")).toBeNull();
   });
 
+  it("does not rewrite legacy history when an earlier terminal event has late events after it", async () => {
+    const eventStore = new InMemoryRunEventStore();
+    const leaseStore = new InMemoryRunExecutionLeaseStore();
+    const cancellationStore = new InMemoryRunCancellationStore();
+    await eventStore.append("run-polluted", { type: "run.started", data: {} });
+    const terminal = await eventStore.append("run-polluted", {
+      type: "run.completed",
+      data: {},
+    });
+    await eventStore.append("run-polluted", {
+      type: "output.text.delta",
+      data: { text: "legacy late write" },
+    });
+    const original = (await eventStore.listAfter("run-polluted")).events;
+    const onTerminal = vi.fn();
+
+    await expect(reconcileInterruptedRun({
+      runId: "run-polluted",
+      eventStore,
+      leaseStore,
+      cancellationStore,
+      onTerminal,
+    })).resolves.toBe("terminal");
+
+    expect(onTerminal).toHaveBeenCalledWith("run-polluted", terminal);
+    expect((await eventStore.listAfter("run-polluted")).events).toEqual(original);
+    expect(await leaseStore.get("run-polluted")).toBeNull();
+  });
+
   it("serializes concurrent orphan reconcilers without duplicate terminal events", async () => {
     let now = new Date("2026-08-21T00:00:00.000Z");
     const eventStore = new InMemoryRunEventStore({ now: () => now });
@@ -303,6 +333,31 @@ describe("runDeliveryRoutes", () => {
       cancellationStore: new InMemoryRunCancellationStore(),
       createToken: () => "must-not-claim",
     })).resolves.toBe("not-started");
+  });
+
+  it("does not reconcile or append when only a retained lifecycle suffix remains", async () => {
+    const retained = new InMemoryRunEventStore();
+    await retained.append("run-retained-suffix", {
+      type: "run.accepted",
+      data: {},
+    });
+    const eventStore = {
+      append: retained.append.bind(retained),
+      appendMany: retained.appendMany.bind(retained),
+      listAfter: retained.listAfter.bind(retained),
+      bounds: async () => ({ firstCursor: "5", lastCursor: "5", count: 1 }),
+    };
+    const leaseStore = new InMemoryRunExecutionLeaseStore();
+
+    await expect(reconcileInterruptedRun({
+      runId: "run-retained-suffix",
+      eventStore,
+      leaseStore,
+      cancellationStore: new InMemoryRunCancellationStore(),
+    })).rejects.toBeInstanceOf(RunEventCursorExpiredError);
+
+    expect((await retained.listAfter("run-retained-suffix")).events).toHaveLength(1);
+    expect(await leaseStore.get("run-retained-suffix")).toBeNull();
   });
 
   it("runs host reconciliation after persisting the interrupted terminal event", async () => {

@@ -1,8 +1,9 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   InMemoryRunCancellationStore,
   InMemoryRunEventStore,
   InMemoryRunExecutionLeaseStore,
+  RunEventCursorExpiredError,
 } from "./run-delivery.js";
 import { RunEventJournal } from "./run-delivery-follower.js";
 import { executeOwnedRun } from "./run-delivery-owner.js";
@@ -62,6 +63,240 @@ describe("executeOwnedRun", () => {
     expect(result).toEqual({ status: "not-owner" });
     expect(called).toBe(false);
     expect((await events.listAfter("run-a")).events).toEqual([]);
+  });
+
+  it("rechecks terminal history after acquiring a lease and never executes a replayed producer", async () => {
+    const events = new InMemoryRunEventStore();
+    const leases = new InMemoryRunExecutionLeaseStore();
+    const journal = new RunEventJournal(events);
+    await journal.append("run-terminal", {
+      id: "run.started",
+      type: "run.started",
+      data: {},
+    });
+    await journal.append("run-terminal", {
+      id: "run.completed",
+      type: "run.completed",
+      data: {},
+    });
+    const original = (await events.listAfter("run-terminal")).events;
+    let producerCalls = 0;
+
+    const result = await executeOwnedRun({
+      runId: "run-terminal",
+      ...lease,
+      journal,
+      leaseStore: leases,
+      producer: async () => { producerCalls += 1; },
+    });
+
+    expect(result).toEqual({ status: "not-owner" });
+    expect(producerCalls).toBe(0);
+    expect((await events.listAfter("run-terminal")).events).toEqual(original);
+    expect(await leases.get("run-terminal")).toBeNull();
+  });
+
+  it("does not append after an earlier terminal event even when legacy history is polluted", async () => {
+    const events = new InMemoryRunEventStore();
+    const leases = new InMemoryRunExecutionLeaseStore();
+    const journal = new RunEventJournal(events);
+    await journal.append("run-polluted", {
+      id: "run.started",
+      type: "run.started",
+      data: {},
+    });
+    await journal.append("run-polluted", {
+      id: "run.completed",
+      type: "run.completed",
+      data: {},
+    });
+    await journal.append("run-polluted", {
+      type: "output.text.delta",
+      data: { text: "legacy late write" },
+    });
+    const original = (await events.listAfter("run-polluted")).events;
+    let producerCalls = 0;
+
+    const result = await executeOwnedRun({
+      runId: "run-polluted",
+      ...lease,
+      journal,
+      leaseStore: leases,
+      producer: async () => { producerCalls += 1; },
+    });
+
+    expect(result).toEqual({ status: "not-owner" });
+    expect(producerCalls).toBe(0);
+    expect((await events.listAfter("run-polluted")).events).toEqual(original);
+  });
+
+  it("terminalizes a started ownerless run instead of reexecuting its producer", async () => {
+    const events = new InMemoryRunEventStore();
+    const leases = new InMemoryRunExecutionLeaseStore();
+    const journal = new RunEventJournal(events);
+    await journal.append("run-ownerless", {
+      id: "run.started",
+      type: "run.started",
+      data: {},
+    });
+    let producerCalls = 0;
+
+    const result = await executeOwnedRun({
+      runId: "run-ownerless",
+      ...lease,
+      journal,
+      leaseStore: leases,
+      producer: async () => { producerCalls += 1; },
+    });
+
+    expect(result).toEqual({
+      status: "failed",
+      error: "Run execution was interrupted before completion",
+    });
+    expect(producerCalls).toBe(0);
+    expect((await events.listAfter("run-ownerless")).events).toMatchObject([
+      { type: "run.started" },
+      {
+        id: "run.failed:execution-interrupted",
+        type: "run.failed",
+        data: {
+          code: "run_execution_interrupted",
+          message: "Run execution was interrupted before completion",
+          retryable: true,
+        },
+      },
+    ]);
+    expect(await leases.get("run-ownerless")).toBeNull();
+  });
+
+  it("fences a delayed second claimant after the first claimant completes", async () => {
+    const events = new InMemoryRunEventStore();
+    const baseLeases = new InMemoryRunExecutionLeaseStore();
+    let claimCalls = 0;
+    let secondClaimEntered!: () => void;
+    const secondClaimWaiting = new Promise<void>((resolve) => { secondClaimEntered = resolve; });
+    let releaseSecondClaim!: () => void;
+    const secondClaimReleased = new Promise<void>((resolve) => { releaseSecondClaim = resolve; });
+    const leaseStore = {
+      get: baseLeases.get.bind(baseLeases),
+      renew: baseLeases.renew.bind(baseLeases),
+      release: baseLeases.release.bind(baseLeases),
+      claim: async (...args: Parameters<typeof baseLeases.claim>) => {
+        claimCalls += 1;
+        if (claimCalls === 2) {
+          secondClaimEntered();
+          await secondClaimReleased;
+        }
+        return baseLeases.claim(...args);
+      },
+    };
+    let finishFirst!: () => void;
+    const firstMayFinish = new Promise<void>((resolve) => { finishFirst = resolve; });
+    let producerCalls = 0;
+    const first = executeOwnedRun({
+      runId: "run-concurrent-replay",
+      owner: "worker-a",
+      token: "token-a",
+      journal: new RunEventJournal(events),
+      leaseStore,
+      producer: async () => {
+        producerCalls += 1;
+        await firstMayFinish;
+      },
+    });
+    const second = executeOwnedRun({
+      runId: "run-concurrent-replay",
+      owner: "worker-b",
+      token: "token-b",
+      journal: new RunEventJournal(events),
+      leaseStore,
+      producer: async () => { producerCalls += 1; },
+    });
+
+    await secondClaimWaiting;
+    finishFirst();
+    await expect(first).resolves.toEqual({ status: "completed" });
+    releaseSecondClaim();
+    await expect(second).resolves.toEqual({ status: "not-owner" });
+
+    expect(producerCalls).toBe(1);
+    expect((await events.listAfter("run-concurrent-replay")).events.map(
+      (event) => event.type,
+    )).toEqual(["run.started", "run.completed"]);
+  });
+
+  it("fails closed when run.started committed but its acknowledgement was lost", async () => {
+    const persistedEvents = new InMemoryRunEventStore();
+    let loseStartedAcknowledgement = true;
+    const events = {
+      bounds: persistedEvents.bounds.bind(persistedEvents),
+      listAfter: persistedEvents.listAfter.bind(persistedEvents),
+      appendMany: persistedEvents.appendMany.bind(persistedEvents),
+      append: async (...args: Parameters<typeof persistedEvents.append>) => {
+        const event = await persistedEvents.append(...args);
+        if (event.type === "run.started" && loseStartedAcknowledgement) {
+          loseStartedAcknowledgement = false;
+          throw new Error("run.started acknowledgement lost");
+        }
+        return event;
+      },
+    };
+    const leases = new InMemoryRunExecutionLeaseStore();
+    let producerCalls = 0;
+
+    await expect(executeOwnedRun({
+      runId: "run-started-ack-lost",
+      ...lease,
+      journal: new RunEventJournal(events),
+      leaseStore: leases,
+      producer: async () => { producerCalls += 1; },
+    })).rejects.toThrow("run.started acknowledgement lost");
+    expect(await leases.get("run-started-ack-lost")).toBeNull();
+
+    await expect(executeOwnedRun({
+      runId: "run-started-ack-lost",
+      owner: "worker-b",
+      token: "token-b",
+      journal: new RunEventJournal(events),
+      leaseStore: leases,
+      producer: async () => { producerCalls += 1; },
+    })).resolves.toEqual({
+      status: "failed",
+      error: "Run execution was interrupted before completion",
+    });
+
+    expect(producerCalls).toBe(0);
+    expect((await persistedEvents.listAfter("run-started-ack-lost")).events.map(
+      (event) => event.type,
+    )).toEqual(["run.started", "run.failed"]);
+  });
+
+  it("fails closed when retained history no longer proves whether execution started", async () => {
+    const retained = new InMemoryRunEventStore();
+    await retained.append("run-retained-suffix", {
+      type: "run.accepted",
+      data: {},
+    });
+    const eventStore = {
+      append: retained.append.bind(retained),
+      appendMany: retained.appendMany.bind(retained),
+      listAfter: retained.listAfter.bind(retained),
+      bounds: async () => ({ firstCursor: "5", lastCursor: "5", count: 1 }),
+    };
+    const leases = new InMemoryRunExecutionLeaseStore();
+    const producer = vi.fn(async () => undefined);
+
+    await expect(executeOwnedRun({
+      runId: "run-retained-suffix",
+      ...lease,
+      journal: new RunEventJournal(eventStore),
+      leaseStore: leases,
+      producer,
+    })).rejects.toBeInstanceOf(RunEventCursorExpiredError);
+
+    expect(producer).not.toHaveBeenCalled();
+    expect((await retained.listAfter("run-retained-suffix")).events).toHaveLength(1);
+    expect(await leases.get("run-retained-suffix")).toBeNull();
   });
 
   it("records a safe failure event and still releases the lease", async () => {
@@ -159,7 +394,7 @@ describe("executeOwnedRun", () => {
       release: baseLeases.release.bind(baseLeases),
       renew: async (...args: Parameters<typeof baseLeases.renew>) => {
         renewCount += 1;
-        if (renewCount === 1) return false;
+        if (renewCount === 2) return false;
         return baseLeases.renew(...args);
       },
     };
@@ -184,11 +419,16 @@ describe("executeOwnedRun", () => {
 
   it("revalidates lease ownership before writing a terminal event", async () => {
     const baseLeases = new InMemoryRunExecutionLeaseStore();
+    let renewCount = 0;
     const leaseStore = {
       claim: baseLeases.claim.bind(baseLeases),
       get: baseLeases.get.bind(baseLeases),
       release: baseLeases.release.bind(baseLeases),
-      renew: async () => false,
+      renew: async (...args: Parameters<typeof baseLeases.renew>) => {
+        renewCount += 1;
+        if (renewCount === 2) return false;
+        return baseLeases.renew(...args);
+      },
     };
     const events = new InMemoryRunEventStore();
 
