@@ -684,11 +684,14 @@ const stream = polpo.chatCompletionsStream({
 await stream.start();
 if (!stream.runId) throw new Error("Run steering is unavailable");
 
-await polpo.steerRun(stream.runId, {
+const admission = await polpo.steerRun(stream.runId, {
   id: crypto.randomUUID(),
   mode: "steer",
   content: { text: "Use PostgreSQL and keep the existing visual system." },
 });
+
+const receipt = await polpo.getSteeringReceipt(stream.runId, admission.id);
+console.log(receipt.admission, receipt.delivery);
 
 for await (const chunk of stream) {
   // Render the normal OpenAI-compatible stream.
@@ -698,9 +701,14 @@ for await (const chunk of stream) {
 `steer` is delivered before the next model invocation at a safe boundary.
 `follow_up` waits until the run would otherwise finish and then starts another
 turn. Messages may include HTTPS or data-URL image, audio, and file
-attachments. Message ids are idempotency keys; retries with the same id do not
-enqueue duplicate work. `abortRun(runId, reason)` cancels the same run-scoped
+attachments and an optional BCP 47 `locale`. Message ids are idempotency keys;
+retries with the same payload do not enqueue duplicate work, while conflicting
+reuse is rejected. Admission and eventual delivery are separate receipt states.
+`abortRun(runId, reason)` cancels the same run-scoped
 model and tool lifecycle. Steering never interrupts a tool call in progress.
+
+Agents and Loops can choose `accept`, `reject`, or the compatible default
+`best_effort`. See [the complete policy and receipt contract](docs/runtime-steering.md).
 
 Pending steering is included in durable turn checkpoints and survives resume.
 The built-in OSS host keeps the active-run index in process; distributed hosts

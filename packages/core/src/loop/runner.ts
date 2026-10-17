@@ -6,6 +6,7 @@ import {
   type SteeringController,
   type SteeringMessage,
   type SteeringQueueSnapshot,
+  type ResolvedSteeringPolicy,
 } from "../steering.js";
 import {
   LoopHookRegistry,
@@ -97,6 +98,10 @@ export interface LoopRunnerOptions {
   ) => void | Promise<void>;
   /** Run-scoped steering queue. Hosts own ingress and persistence. */
   steering?: SteeringController;
+  /** Acceptance policy resolved for the active direct-chat or Project Loop node. */
+  steeringPolicy?: ResolvedSteeringPolicy;
+  /** Keep best-effort messages eligible for a later agentic node in the same graph. */
+  retainPendingSteeringOnFinish?: boolean;
   /**
    * Host adapter invoked at a safe boundary, after the current model/tool
    * batch and before another model turn. It normally appends the messages to
@@ -163,16 +168,44 @@ export class LoopRunner {
     if (options.steering && !options.onSteering) {
       throw new Error("LoopRunner steering requires an onSteering adapter");
     }
+    if (options.steering) {
+      options.steering.configure(options.steeringPolicy ?? {
+        acceptance: "best_effort",
+        source: "platform",
+      });
+      options.steering.setBoundary({ open: startTurn < maxTurns, reservable: startTurn < maxTurns });
+    }
 
     const deliverSteering = async (includeFollowUps: boolean): Promise<SteeringMessage[]> => {
       throwIfSteeringAborted(options.steering);
       if (!options.steering) return [];
       const messages = await options.steering.drain({ includeFollowUps });
       if (messages.length > 0) {
-        await options.onSteering!(messages);
+        try {
+          await options.onSteering!(messages);
+          await options.steering.settle(messages.map((message) => message.id), "delivered");
+        } catch (error) {
+          await options.steering.settle(
+            messages.map((message) => message.id),
+            "failed",
+            "delivery_adapter_failed",
+          );
+          throw error;
+        }
       }
       throwIfSteeringAborted(options.steering);
       return messages;
+    };
+
+    const finishSteering = async (
+      delivery: "too_late" | "cancelled" | "failed",
+      reasonCode: string,
+    ): Promise<void> => {
+      if (!options.steering) return;
+      options.steering.setBoundary({ open: false, reservable: false });
+      if (options.retainPendingSteeringOnFinish) return;
+      await options.steering.settlePending(delivery, reasonCode);
+      await options.steering.sealIfIdle();
     };
 
     // A message accepted before execution is part of the first user turn.
@@ -185,6 +218,7 @@ export class LoopRunner {
       input: options.input,
     });
     if (start.cancelled) {
+      await finishSteering("cancelled", "loop_start_cancelled");
       return this.finish(hooks, {
         agent: options.agent,
         loop,
@@ -199,6 +233,7 @@ export class LoopRunner {
 
     for (let turn = startTurn; turn < maxTurns; turn++) {
       throwIfSteeringAborted(options.steering);
+      options.steering?.setBoundary({ open: true, reservable: true });
       // Catch messages accepted while start/stop hooks were running. Draining
       // here keeps every accepted steer ahead of the next model invocation.
       await deliverSteering(false);
@@ -211,6 +246,7 @@ export class LoopRunner {
         activeTools: loop.tools,
       });
       if (step.cancelled) {
+        await finishSteering("cancelled", "step_cancelled");
         return this.finish(hooks, {
           agent: options.agent,
           loop,
@@ -232,6 +268,7 @@ export class LoopRunner {
         toolChoice: step.data.toolChoice,
       });
       if (modelBefore.cancelled) {
+        await finishSteering("cancelled", "model_cancelled");
         return this.finish(hooks, {
           agent: options.agent,
           loop,
@@ -252,6 +289,10 @@ export class LoopRunner {
         activeTools: modelBefore.data.activeTools,
         toolChoice: modelBefore.data.toolChoice,
       };
+      options.steering?.setBoundary({
+        open: true,
+        reservable: turn + 1 < maxTurns,
+      });
       const modelResult = await options.model(modelInput);
       throwIfSteeringAborted(options.steering);
       finalText += modelResult.text;
@@ -417,6 +458,7 @@ export class LoopRunner {
         shouldStop: stop.shouldStop,
       });
       if (stopResult.cancelled) {
+        await finishSteering("cancelled", "loop_stop_cancelled");
         return this.finish(hooks, {
           agent: options.agent,
           loop,
@@ -429,7 +471,7 @@ export class LoopRunner {
         });
       }
       if (stopResult.data.shouldStop) {
-        if (hasAnotherTurn && options.steering) {
+        if (hasAnotherTurn && options.steering && !options.retainPendingSteeringOnFinish) {
           const sealed = await options.steering.sealIfIdle();
           if (!sealed) {
             const delivered = await deliverSteering(true);
@@ -442,6 +484,7 @@ export class LoopRunner {
             continue;
           }
         }
+        await finishSteering("too_late", "agentic_scope_finished");
         return this.finish(hooks, {
           agent: options.agent,
           loop,
@@ -455,6 +498,7 @@ export class LoopRunner {
       }
     }
 
+    await finishSteering("too_late", "max_turns_reached");
     return this.finish(hooks, {
       agent: options.agent,
       loop,

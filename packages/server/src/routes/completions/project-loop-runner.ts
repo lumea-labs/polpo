@@ -91,6 +91,11 @@ import {
   streamingOutputPolicyMode,
 } from "./output-guardrails.js";
 import type { ChatSuggestion } from "@polpo-ai/core/chat-interactions";
+import {
+  resolveSteeringPolicy,
+  type SteeringController,
+  type SteeringPolicy,
+} from "@polpo-ai/core/steering";
 import type { CompletionRequestBody } from "./schemas.js";
 import { suggestionsForProjectLoopCompletion } from "./chat-interaction-runtime.js";
 import type { CompletionSseWriter } from "./chat-handler.js";
@@ -108,6 +113,33 @@ export interface ProjectLoopRunResult {
   loopRunId?: string;
   loopResult?: unknown;
   loopPresentation?: LoopPresentation;
+}
+
+export interface CompletionRunSteeringScope {
+  steering?: SteeringController;
+  release: () => void | Promise<void>;
+}
+
+/**
+ * Register the public completion id before the response becomes observable.
+ * The idempotent release wrapper lets every transport close the scope from its
+ * own terminal path without leaking or double-unregistering the run.
+ */
+export async function createCompletionRunSteeringScope(
+  deps: CompletionRouteDeps,
+  runId: string,
+): Promise<CompletionRunSteeringScope> {
+  const scope: CompletionRunSteeringScope = await deps.createRunSteeringScope?.(runId)
+    ?? { steering: undefined, release: () => {} };
+  let released = false;
+  return {
+    steering: scope.steering,
+    release: async () => {
+      if (released) return;
+      released = true;
+      await scope.release();
+    },
+  };
 }
 
 const RUNTIME_PROJECT_LOOP_EVENTS = new Set<LoopLifecycleHook>([
@@ -393,6 +425,10 @@ export async function runProjectLoopCompletion(options: {
   requestAllowedTools?: readonly string[];
   executionAllowedTools?: readonly string[];
   grantAllowedTools?: readonly string[];
+  /** Public completion-Run steering scope shared by every agentic graph node. */
+  steering?: SteeringController;
+  /** Trusted project fallback, below the graph/agent declarations. */
+  steeringPolicy?: SteeringPolicy;
 }): Promise<ProjectLoopRunResult> {
   const {
     deps,
@@ -651,6 +687,7 @@ export async function runProjectLoopCompletion(options: {
   let lastProviderMetadata: Record<string, unknown> | undefined;
   const toolCallsAccum: any[] = [];
   const events: LoopTraceEvent[] = [];
+  options.steering?.setBoundary({ open: false, reservable: false });
 
   const emitTrace = async (event: LoopTraceEvent) => {
     events.push(event);
@@ -789,6 +826,13 @@ export async function runProjectLoopCompletion(options: {
           toolPolicy: stepToolPolicy,
           projectedInput: agentInput,
           outputSchema: loop.output?.schema,
+          steering: options.steering,
+          steeringPolicy: resolveSteeringPolicy([
+            { policy: loop.steering, source: "node" },
+            { policy: projectLoop.steering, source: "loop" },
+            { policy: agentConfig.steering, source: "agent" },
+            { policy: options.steeringPolicy, source: "project" },
+          ]),
         });
         finalText = stepResult.text || finalText;
         finalReasoning = appendReasoningSummary(finalReasoning, stepResult.reasoning);
@@ -835,6 +879,7 @@ export async function runProjectLoopCompletion(options: {
       loop: projectLoop.name,
       status: "completed",
     });
+    await options.steering?.settlePending("too_late", "graph_finished");
     return {
       text: finalText,
       reasoning: finalReasoning,
@@ -853,6 +898,14 @@ export async function runProjectLoopCompletion(options: {
     };
   } catch (err) {
     const awaitingApproval = err instanceof LoopApprovalRequiredError || err instanceof LoopPermissionApprovalRequiredError;
+    await options.steering?.settlePending(
+      options.signal?.aborted ? "cancelled" : awaitingApproval ? "cancelled" : "failed",
+      options.signal?.aborted
+        ? "graph_cancelled"
+        : awaitingApproval
+          ? "graph_suspended_for_approval"
+          : "graph_failed",
+    );
     if (awaitingApproval) {
       await dispatchCompletionRuntimeHook(runtimeHooks, "approval:request", {
         loop: projectLoop.name,
@@ -963,6 +1016,7 @@ export async function runProjectLoopCompletion(options: {
     }
     throw err;
   } finally {
+    options.steering?.setBoundary({ open: false, reservable: false });
     await cleanupToolRun();
   }
 }
@@ -1187,38 +1241,48 @@ export interface ProjectLoopCompletionOptions {
   requestAllowedTools?: readonly string[];
   executionAllowedTools?: readonly string[];
   grantAllowedTools?: readonly string[];
+  /** Scope registered under completionId before response headers are exposed. */
+  steeringScope?: CompletionRunSteeringScope;
 }
 
 export async function handleProjectLoopCompletion(
   c: any,
   options: ProjectLoopCompletionOptions,
 ): Promise<any> {
+  const steeringScope = options.steeringScope
+    ?? await createCompletionRunSteeringScope(options.deps, options.completionId);
+  const scopedOptions = { ...options, steeringScope };
   if (options.body.stream) {
-    return streamSSE(c, async (stream) => {
-      const abortController = new AbortController();
-      stream.onAbort(() => { abortController.abort(); });
-      const heartbeatInterval = setInterval(() => {
-        if (abortController.signal.aborted) {
+    try {
+      return streamSSE(c, async (stream) => {
+        const abortController = new AbortController();
+        stream.onAbort(() => { abortController.abort(); });
+        const heartbeatInterval = setInterval(() => {
+          if (abortController.signal.aborted) {
+            clearInterval(heartbeatInterval);
+            return;
+          }
+          stream.write(": ping\n\n").catch(() => {
+            clearInterval(heartbeatInterval);
+          });
+        }, 20_000);
+        try {
+          await executeStreamingProjectLoopCompletion(
+            stream,
+            scopedOptions,
+            abortController.signal,
+          );
+        } finally {
           clearInterval(heartbeatInterval);
-          return;
         }
-        stream.write(": ping\n\n").catch(() => {
-          clearInterval(heartbeatInterval);
-        });
-      }, 20_000);
-      try {
-        await executeStreamingProjectLoopCompletion(
-          stream,
-          options,
-          abortController.signal,
-        );
-      } finally {
-        clearInterval(heartbeatInterval);
-      }
-    }) as any;
+      }) as any;
+    } catch (error) {
+      await steeringScope.release();
+      throw error;
+    }
   }
 
-  return runNonStreamingProjectLoopCompletion(c, options);
+  return runNonStreamingProjectLoopCompletion(c, scopedOptions);
 }
 
 /** Transport-independent loop producer used by attached and durable followers. */
@@ -1246,6 +1310,8 @@ export async function executeStreamingProjectLoopCompletion(
   const contextTrust = normalizeRuntimeContextTrustMode(
     options.contextTrust ?? deps.getConfig()?.settings?.contextTrust,
   );
+  const steeringScope = options.steeringScope
+    ?? await createCompletionRunSteeringScope(deps, completionId);
 
       let assistantMsgId: string | null = null;
       let finalText = "";
@@ -1296,6 +1362,7 @@ export async function executeStreamingProjectLoopCompletion(
           requestAllowedTools: options.requestAllowedTools,
           executionAllowedTools: options.executionAllowedTools,
           grantAllowedTools: options.grantAllowedTools,
+          steering: steeringScope.steering,
           onToolCall: async (toolCall) => {
             if (signal.aborted) return;
             await stream.writeSSE({
@@ -1407,6 +1474,7 @@ export async function executeStreamingProjectLoopCompletion(
             providerMetadata,
           });
         } catch { /* never fail on callback */ }
+        await steeringScope.release();
       }
 }
 
@@ -1433,6 +1501,8 @@ async function runNonStreamingProjectLoopCompletion(
   const contextTrust = normalizeRuntimeContextTrustMode(
     options.contextTrust ?? deps.getConfig()?.settings?.contextTrust,
   );
+  const steeringScope = options.steeringScope
+    ?? await createCompletionRunSteeringScope(deps, completionId);
   let assistantMsgId: string | null = null;
   let runUsage: LanguageModelUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 } as LanguageModelUsage;
   let runModel = agentConfigForModelPrimary(
@@ -1477,6 +1547,7 @@ async function runNonStreamingProjectLoopCompletion(
       requestAllowedTools: options.requestAllowedTools,
       executionAllowedTools: options.executionAllowedTools,
       grantAllowedTools: options.grantAllowedTools,
+      steering: steeringScope.steering,
     });
     finalText = run.text;
     finalReasoning = run.reasoning;
@@ -1554,5 +1625,6 @@ async function runNonStreamingProjectLoopCompletion(
         providerMetadata,
       });
     } catch { /* never fail on callback */ }
+    await steeringScope.release();
   }
 }

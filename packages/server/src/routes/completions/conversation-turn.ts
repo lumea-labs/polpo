@@ -86,7 +86,10 @@ import {
   type ChatViaRunTurnResult,
 } from "./chat-via-run-handler.js";
 import { suggestionsForProjectLoopCompletion } from "./chat-interaction-runtime.js";
-import { runProjectLoopCompletion } from "./project-loop-runner.js";
+import {
+  createCompletionRunSteeringScope,
+  runProjectLoopCompletion,
+} from "./project-loop-runner.js";
 import {
   persistAssistantMessage,
   notifyCanonicalTurnCommitted,
@@ -1563,6 +1566,10 @@ export async function runConversationTurn(
     throw new Error(prepared.body.error.message);
   }
   if (prepared.kind === "project-loop") {
+    const steeringScope = await createCompletionRunSteeringScope(
+      prepared.deps,
+      prepared.completionId,
+    );
     let assistantMessageId: string | null = null;
     let finalText = "";
     let finalReasoning = "";
@@ -1610,6 +1617,7 @@ export async function runConversationTurn(
         requestAllowedTools: prepared.requestAllowedTools,
         executionAllowedTools: prepared.executionAllowedTools,
         grantAllowedTools: prepared.grantAllowedTools,
+        steering: steeringScope.steering,
       });
       finalText = await applyCompletionOutputPolicy({
         outputPolicy: prepared.deps.runOutputPolicy,
@@ -1653,33 +1661,37 @@ export async function runConversationTurn(
         runResult: { exitCode: 0, stdout: finalText, stderr: "" },
       };
     } finally {
-      const committedTurn = await persistAssistantMessage(
-        prepared.sessionStore,
-        prepared.sessionId,
-        assistantMessageId,
-        finalText,
-        toolCalls,
-        {
-          reasoning: finalReasoning,
-          ...(suggestions.length ? { suggestions } : {}),
-          ...(canonicalTurnSucceeded && prepared.canonicalTurn
-            ? { canonicalTurn: prepared.canonicalTurn }
-            : {}),
-        },
-      );
-      notifyCanonicalTurnCommitted(
-        prepared.deps.onCanonicalTurnCommitted,
-        committedTurn,
-      );
-      prepared.deps.onCompletionFinished?.({
-        usage,
-        model,
-        resolvedModel,
-        agent: prepared.body.agent,
-        sessionId: prepared.sessionId ?? undefined,
-        user: prepared.body.user,
-        providerMetadata,
-      });
+      try {
+        const committedTurn = await persistAssistantMessage(
+          prepared.sessionStore,
+          prepared.sessionId,
+          assistantMessageId,
+          finalText,
+          toolCalls,
+          {
+            reasoning: finalReasoning,
+            ...(suggestions.length ? { suggestions } : {}),
+            ...(canonicalTurnSucceeded && prepared.canonicalTurn
+              ? { canonicalTurn: prepared.canonicalTurn }
+              : {}),
+          },
+        );
+        notifyCanonicalTurnCommitted(
+          prepared.deps.onCanonicalTurnCommitted,
+          committedTurn,
+        );
+        prepared.deps.onCompletionFinished?.({
+          usage,
+          model,
+          resolvedModel,
+          agent: prepared.body.agent,
+          sessionId: prepared.sessionId ?? undefined,
+          user: prepared.body.user,
+          providerMetadata,
+        });
+      } finally {
+        await steeringScope.release();
+      }
     }
   }
   if (!prepared.execution.agentMode) {

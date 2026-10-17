@@ -25,6 +25,7 @@ const attachmentSchema = z.object({
 const steeringBodySchema = z.object({
   id: z.string().min(1).max(128),
   mode: z.enum(["steer", "follow_up"]),
+  locale: z.string().min(1).max(35).optional(),
   content: z.object({
     text: z.string().optional(),
     attachments: z.array(attachmentSchema).max(16).optional(),
@@ -44,6 +45,27 @@ const successSchema = z.object({
     accepted: z.boolean().optional(),
     duplicate: z.boolean().optional(),
     aborted: z.boolean().optional(),
+    receipt: z.object({
+      version: z.literal(1),
+      runId: z.string(),
+      messageId: z.string(),
+      mode: z.enum(["steer", "follow_up"]),
+      acceptance: z.enum(["accept", "reject", "best_effort"]),
+      policySource: z.enum(["node", "loop", "agent", "project", "platform"]),
+      admission: z.enum(["accepted", "duplicate", "rejected", "too_late"]),
+      delivery: z.enum(["pending", "delivered", "too_late", "cancelled", "failed"]),
+      locale: z.string().optional(),
+      selectedLocale: z.string().optional(),
+      response: z.object({
+        action: z.enum(["reply", "return"]),
+        text: z.string(),
+        locale: z.string(),
+      }).optional(),
+      admittedAt: z.string(),
+      deliveredAt: z.string().optional(),
+      settledAt: z.string().optional(),
+      reasonCode: z.string().optional(),
+    }).optional(),
   }),
 });
 
@@ -65,7 +87,10 @@ const steeringRoute = createRoute({
     body: { content: { "application/json": { schema: steeringBodySchema } } },
   },
   responses: {
-    200: { content: { "application/json": { schema: successSchema } }, description: "Duplicate message already accepted" },
+    200: {
+      content: { "application/json": { schema: successSchema } },
+      description: "Message was already known, rejected by policy, or arrived after the run could accept it",
+    },
     202: { content: { "application/json": { schema: successSchema } }, description: "Message accepted" },
     400: { content: { "application/json": { schema: errorSchema } }, description: "Invalid steering message" },
     404: { content: { "application/json": { schema: errorSchema } }, description: "Active run not found" },
@@ -92,6 +117,25 @@ const abortRoute = createRoute({
   },
 });
 
+const receiptRoute = createRoute({
+  method: "get",
+  path: "/{runId}/steering/{messageId}",
+  tags: ["Runs"],
+  summary: "Get a steering receipt",
+  description: "Return the durable admission and delivery outcome for one steering message.",
+  request: {
+    params: z.object({
+      runId: z.string().min(1).max(128),
+      messageId: z.string().min(1).max(128),
+    }),
+  },
+  responses: {
+    200: { content: { "application/json": { schema: successSchema } }, description: "Steering receipt" },
+    404: { content: { "application/json": { schema: errorSchema } }, description: "Steering receipt not found" },
+    501: { content: { "application/json": { schema: errorSchema } }, description: "Host does not support steering" },
+  },
+});
+
 export function runSteeringRoutes(getDeps: () => RunSteeringRouteDeps): OpenAPIHono {
   const app = new OpenAPIHono();
 
@@ -109,8 +153,28 @@ export function runSteeringRoutes(getDeps: () => RunSteeringRouteDeps): OpenAPIH
           id: input.id,
           accepted: result.accepted,
           duplicate: result.duplicate,
+          receipt: result.receipt,
         },
-      }, result.duplicate ? 200 : 202);
+      }, result.receipt.admission === "accepted" ? 202 : 200);
+    } catch (error) {
+      return steeringError(c, error);
+    }
+  });
+
+  app.openapi(receiptRoute, async (c: any) => {
+    const registry = getDeps().steeringRegistry;
+    if (!registry) return unavailable(c);
+    const { runId, messageId } = c.req.valid("param") as { runId: string; messageId: string };
+    try {
+      const receipt = await registry.getReceipt(runId, messageId);
+      if (!receipt) {
+        return c.json({
+          ok: false,
+          error: `Steering receipt "${messageId}" was not found for run "${runId}"`,
+          code: "STEERING_RECEIPT_NOT_FOUND",
+        }, 404);
+      }
+      return c.json({ ok: true, data: { runId, id: messageId, receipt } }, 200);
     } catch (error) {
       return steeringError(c, error);
     }

@@ -13,7 +13,7 @@ import type { MemoryItemStore } from "./memory/index.js";
 import type { FileSystem } from "@polpo-ai/core/filesystem";
 import type { Shell } from "@polpo-ai/core/shell";
 import type { LoopResumeState } from "@polpo-ai/core/loop-run-store";
-import type { SteeringController } from "./steering.js";
+import type { SteeringController, SteeringPolicy } from "./steering.js";
 import type { RuntimeHookDispatcher, RuntimeHookSurface } from "./runtime-hooks.js";
 import type { ModelSelection } from "./model-policy.js";
 import type { RuntimePlan } from "./runtime-plan/index.js";
@@ -171,6 +171,8 @@ export interface SpawnContext {
   onTurnCheckpoint?: (state: LoopResumeState) => void | Promise<void>;
   /** Run-scoped steering inbox shared by every session in this execution. */
   steering?: SteeringController;
+  /** Trusted project/platform fallback used when neither the node nor agent declares steering policy. */
+  steeringPolicy?: SteeringPolicy;
   /** Immutable runtime hook snapshot resolved by the trusted host. */
   runtimeHooks?: RuntimeHookDispatcher;
   /** Trusted invocation surface used by runtime-hook matching and audit. */

@@ -7,6 +7,7 @@ import {
 } from "@polpo-ai/core/guardrails";
 import { createToolInvocationContext, prepareLoopAgentInput } from "@polpo-ai/core";
 import { RuntimeHookEngine } from "@polpo-ai/core/runtime-hooks";
+import { InMemorySteeringController } from "@polpo-ai/core/steering";
 import type { CompletionRouteDeps } from "../completions.js";
 import {
   agentConfigForModelPrimary,
@@ -149,6 +150,89 @@ describe("buildRuntimeAgentPrompt", () => {
         includeSharedMemory: false,
       },
     );
+  });
+});
+
+describe("runAgentStepCompletion steering", () => {
+  it("delivers steering accepted during a model turn at the next safe boundary", async () => {
+    const usage = {
+      inputTokens: { total: 2, noCache: undefined, cacheRead: undefined, cacheWrite: undefined },
+      outputTokens: { total: 1, text: undefined, reasoning: undefined },
+    };
+    let turn = 0;
+    let releaseFirstTurn!: () => void;
+    let markFirstTurnStarted!: () => void;
+    const firstTurnStarted = new Promise<void>((resolve) => { markFirstTurnStarted = resolve; });
+    const firstTurnGate = new Promise<void>((resolve) => { releaseFirstTurn = resolve; });
+    let secondPrompt = "";
+    const model = new MockLanguageModelV3({
+      doStream: async (options) => {
+        turn += 1;
+        if (turn === 1) {
+          markFirstTurnStarted();
+          await firstTurnGate;
+        } else {
+          secondPrompt = JSON.stringify(options.prompt);
+        }
+        const text = turn === 1 ? "draft" : "updated";
+        return { stream: convertArrayToReadableStream([
+          { type: "stream-start", warnings: [] },
+          { type: "text-start", id: `text-${turn}` },
+          { type: "text-delta", id: `text-${turn}`, delta: text },
+          { type: "text-end", id: `text-${turn}` },
+          { type: "finish", finishReason: { unified: "stop", raw: undefined }, usage },
+        ] as any[]) };
+      },
+    });
+    const deps = {
+      getConfig: () => ({ settings: {} }),
+      getMemoryStore: () => undefined,
+      emit: vi.fn(),
+      buildAgentPrompt: () => "You are a test agent.",
+      resolveAgentModel: vi.fn(async () => ({
+        model: {
+          id: "mock/model",
+          aiModel: model,
+          provider: "mock",
+          contextWindow: 128_000,
+          maxTokens: 8192,
+        },
+      })),
+      resolveAgentTools: vi.fn(async () => ({
+        tools: [],
+        executor: async () => "ok",
+      })),
+    } as unknown as CompletionRouteDeps;
+    const steering = new InMemorySteeringController();
+
+    const pending = runAgentStepCompletion({
+      deps,
+      agentConfig: { name: "builder", model: "mock", maxTurns: 2 },
+      aiMessages: [{ role: "user", content: "Build the page" }],
+      extraSystemParts: [],
+      context: {},
+      stepName: "implement",
+      steering,
+      steeringPolicy: { acceptance: "best_effort", source: "node" },
+    });
+    await firstTurnStarted;
+    const admission = await steering.enqueue({
+      id: "steer-title",
+      mode: "steer",
+      content: { text: "Change the title to Acme" },
+    });
+    releaseFirstTurn();
+
+    const result = await pending;
+
+    expect(admission.receipt.admission).toBe("accepted");
+    expect(secondPrompt).toContain("Change the title to Acme");
+    expect(result.text).toBe("draftupdated");
+    expect(steering.getReceipt("steer-title")).toMatchObject({
+      admission: "accepted",
+      delivery: "delivered",
+      policySource: "node",
+    });
   });
 });
 

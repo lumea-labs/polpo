@@ -10,6 +10,7 @@ import {
   RUNTIME_SURFACES,
   runtimeMetadataSchema,
 } from "@polpo-ai/core";
+import { steeringPolicySchema } from "@polpo-ai/core/schemas";
 import { TOOL_CATALOG, matchToolPattern } from "@polpo-ai/tools";
 import { ApiHttpError } from "./errors.js";
 
@@ -949,6 +950,7 @@ export const AddAgentSchema = z.object({
   memory: AgentMemorySettingsSchema.optional(),
   skills: z.array(z.string()).optional(),
   hooks: z.array(z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/u)).optional(),
+  steering: steeringPolicySchema.optional(),
   maxTurns: z.number().int().positive().optional(),
   maxConcurrency: z.number().int().positive().optional(),
   // Identity & hierarchy (vault credentials managed via encrypted store)
@@ -987,6 +989,7 @@ const UpdateAgentFieldsSchema = z.object({
   memory: AgentMemorySettingsSchema.optional(),
   skills: z.array(z.string()).optional(),
   hooks: z.array(z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/u)).optional(),
+  steering: steeringPolicySchema.optional(),
   maxTurns: z.number().int().positive().optional(),
   maxConcurrency: z.number().int().positive().optional(),
   identity: AgentIdentitySchema.optional(),

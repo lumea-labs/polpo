@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   createToolInvocationContext,
+  InMemorySteeringController,
   MemoryLoopRunStore,
   RuntimeGuardrailEngine,
   createRunOutputPolicy,
@@ -119,6 +120,58 @@ describe("completionRoutes project loop runtime", () => {
       "loop.end",
     ]);
     expect(json.loop_trace[0]).toMatchObject({ loop: "time-tracker", status: "started" });
+  });
+
+  it("exposes the Project Loop completion id as its steering run and releases it", async () => {
+    const deps = makeDeps();
+    const release = vi.fn();
+    deps.createRunSteeringScope = vi.fn(async () => ({
+      steering: new InMemorySteeringController(),
+      release,
+    }));
+
+    const res = await completionRoutes(() => deps).request("/", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        agent: "timer",
+        loop: "time-tracker",
+        messages: [{ role: "user", content: "track it" }],
+      }),
+    });
+    const runId = res.headers.get("x-polpo-run-id");
+
+    expect(res.status).toBe(200);
+    expect(runId).toMatch(/^chatcmpl-/);
+    expect(deps.createRunSteeringScope).toHaveBeenCalledWith(runId);
+    expect(release).toHaveBeenCalledOnce();
+  });
+
+  it("keeps the Project Loop steering scope through streaming completion", async () => {
+    const deps = makeDeps();
+    const release = vi.fn();
+    deps.createRunSteeringScope = vi.fn(async () => ({
+      steering: new InMemorySteeringController(),
+      release,
+    }));
+
+    const res = await completionRoutes(() => deps).request("/", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        agent: "timer",
+        loop: "time-tracker",
+        stream: true,
+        messages: [{ role: "user", content: "track it" }],
+      }),
+    });
+    const runId = res.headers.get("x-polpo-run-id");
+    const stream = await res.text();
+
+    expect(runId).toMatch(/^chatcmpl-/);
+    expect(stream).toContain("[DONE]");
+    expect(deps.createRunSteeringScope).toHaveBeenCalledWith(runId);
+    expect(release).toHaveBeenCalledOnce();
   });
 
   it("projects a deterministic structured result and Channel presentation", async () => {

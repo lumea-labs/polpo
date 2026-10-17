@@ -139,6 +139,8 @@ export interface TranscriptSession {
 export interface ExecuteRunDeps {
   /** Null explicitly disables environment/local Data fallback for a host-bound runner. */
   data?: import("@polpo-ai/core/data").DataClient | null;
+  /** Trusted project/platform steering fallback for this execution. */
+  steeringPolicy?: import("@polpo-ai/core/steering").SteeringPolicy;
   /** Run persistence. NOT closed by executeRun — the host owns it. */
   runStore: RunStore;
   /**
@@ -637,6 +639,7 @@ async function executeRegisteredRun(
       // best-effort — a flaky store must never fail a healthy run).
       resumeState: config.resumeState,
       steering,
+      steeringPolicy: deps.steeringPolicy,
       // Chat injection already carries its fully assembled system prompt.
       // Task runs receive the immutable snapshot through prepareSpawn.
       runtimeContext: deps.inject ? undefined : guardedRuntimeContext,

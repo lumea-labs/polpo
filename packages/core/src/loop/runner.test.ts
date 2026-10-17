@@ -451,7 +451,7 @@ describe("LoopRunner steering", () => {
     expect(result.text).toBe("workingdonefollowed up");
   });
 
-  it("does not consume messages when the max-turn budget cannot execute them", async () => {
+  it("settles messages as too late when the max-turn budget cannot execute them", async () => {
     const steering = new InMemorySteeringController();
 
     await new LoopRunner().run({
@@ -466,7 +466,12 @@ describe("LoopRunner steering", () => {
       executeTool: async () => "unused",
     });
 
-    expect(steering.snapshot().pending.map((message) => message.id)).toEqual(["late"]);
+    expect(steering.snapshot().pending).toEqual([]);
+    expect(steering.getReceipt("late")).toMatchObject({
+      admission: "accepted",
+      delivery: "too_late",
+      reasonCode: "agentic_scope_finished",
+    });
   });
 
   it("includes the steering snapshot in durable turn checkpoints", async () => {

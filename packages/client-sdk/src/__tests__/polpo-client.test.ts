@@ -365,8 +365,44 @@ describe("PolpoClient run steering", () => {
     const fetch = vi.fn<typeof globalThis.fetch>()
       .mockResolvedValueOnce(new Response(JSON.stringify({
         ok: true,
-        data: { runId: "chatcmpl/a", id: "msg-1", accepted: true, duplicate: false },
+        data: {
+          runId: "chatcmpl/a",
+          id: "msg-1",
+          accepted: true,
+          duplicate: false,
+          receipt: {
+            version: 1,
+            runId: "chatcmpl/a",
+            messageId: "msg-1",
+            mode: "follow_up",
+            acceptance: "best_effort",
+            policySource: "platform",
+            admission: "accepted",
+            delivery: "pending",
+            admittedAt: "2026-10-17T00:00:00.000Z",
+          },
+        },
       }), { status: 202, headers: { "content-type": "application/json" } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        ok: true,
+        data: {
+          runId: "chatcmpl/a",
+          id: "msg-1",
+          receipt: {
+            version: 1,
+            runId: "chatcmpl/a",
+            messageId: "msg-1",
+            mode: "follow_up",
+            acceptance: "best_effort",
+            policySource: "platform",
+            admission: "accepted",
+            delivery: "delivered",
+            admittedAt: "2026-10-17T00:00:00.000Z",
+            deliveredAt: "2026-10-17T00:00:01.000Z",
+            settledAt: "2026-10-17T00:00:01.000Z",
+          },
+        },
+      }), { status: 200, headers: { "content-type": "application/json" } }))
       .mockResolvedValueOnce(new Response(JSON.stringify({
         ok: true,
         data: { runId: "chatcmpl/a", aborted: true },
@@ -382,6 +418,8 @@ describe("PolpoClient run steering", () => {
       mode: "follow_up",
       content: { text: "Then summarize" },
     });
+    await expect(client.getSteeringReceipt("chatcmpl/a", "msg/1"))
+      .resolves.toMatchObject({ messageId: "msg-1", delivery: "delivered" });
     await client.abortRun("chatcmpl/a", "user cancelled");
 
     expect(fetch).toHaveBeenNthCalledWith(
@@ -399,6 +437,11 @@ describe("PolpoClient run steering", () => {
     );
     expect(fetch).toHaveBeenNthCalledWith(
       2,
+      "https://api.polpo.sh/v1/runs/chatcmpl%2Fa/steering/msg%2F1",
+      expect.objectContaining({ method: "GET" }),
+    );
+    expect(fetch).toHaveBeenNthCalledWith(
+      3,
       "https://api.polpo.sh/v1/runs/chatcmpl%2Fa/abort",
       expect.objectContaining({
         method: "POST",
