@@ -84,6 +84,14 @@ export async function executeOwnedRun(
     return true;
   };
 
+  const holdsLiveLease = async (): Promise<boolean> => {
+    const current = await options.leaseStore.get(options.runId);
+    return current !== null
+      && current.owner === activeLease.owner
+      && current.token === activeLease.token
+      && Date.parse(current.expiresAt) > currentTime().getTime();
+  };
+
   const waitForHeartbeat = () => new Promise<void>((resolve) => {
     let settled = false;
     const finish = () => {
@@ -154,6 +162,11 @@ export async function executeOwnedRun(
       type: "run.started",
       data: {},
     });
+    // Admission fence: a reconciler may terminalize an expired, never-started
+    // lease between the renewal above and this append. Observing our own,
+    // still-live lease afterwards proves no reconciler replaced it, so producer
+    // side effects only begin under an owner nobody has superseded.
+    if (!await holdsLiveLease()) return { status: "lost-lease" };
     const existingCancellation = await options.cancellationStore?.get(options.runId);
     if (existingCancellation) {
       cancellationObserved = true;

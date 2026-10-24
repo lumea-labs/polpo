@@ -146,7 +146,12 @@ export interface CompletionRunDeliveryScopeInput {
   runId: string;
   sessionId?: string;
   agent?: string;
-  onDisconnect: "continue";
+  /**
+   * "continue" scopes a durable follower-delivered run. "cancel" scopes an
+   * attached Project Loop run: it is fenced and journaled for crash recovery,
+   * but still ends when its request disconnects.
+   */
+  onDisconnect: "continue" | "cancel";
 }
 
 /**

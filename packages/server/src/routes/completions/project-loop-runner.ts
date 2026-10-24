@@ -105,6 +105,10 @@ import {
 import type { CompletionRequestBody } from "./schemas.js";
 import { suggestionsForProjectLoopCompletion } from "./chat-interaction-runtime.js";
 import type { CompletionSseWriter } from "./chat-handler.js";
+import {
+  AttachedRunAdmissionError,
+  runAttachedLoopExecution,
+} from "./attached-run-owner.js";
 
 export interface ProjectLoopRunResult {
   text: string;
@@ -622,6 +626,10 @@ export async function runProjectLoopCompletion(options: {
       completedAt: undefined,
       metadata: {
         ...resumeRun.metadata,
+        // A resume is a new admission. Correlate the record with its own
+        // delivery run so reconciliation never applies the original (already
+        // terminal) delivery outcome to this live attempt.
+        ...(options.deliveryRunId ? { deliveryRunId: options.deliveryRunId } : {}),
         resumedAt: new Date().toISOString(),
         resumeAttempts: (resumeState?.attempts ?? 0) + 1,
       },
@@ -1235,28 +1243,36 @@ export async function resumeProjectLoopRun(options: {
     }
   }
 
-  await runProjectLoopCompletion({
+  await runAttachedLoopExecution({
     deps: options.deps,
-    agentConfig,
-    agentIdentity,
-    projectLoop,
-    aiMessages,
-    extraSystemParts,
-    contextTrust,
-    runtimeContext,
-    runtimeInvocation: runtimeInvocationMetadata(
-      run.metadata?.runtimeInvocation,
-    ),
-    toolInvocation,
+    runId: `${run.id}-resume-${nanoid(12)}`,
     sessionId: run.sessionId,
-    user: run.user,
-    requestMetadata: loopRequestMetadata(run),
-    activatedSkills,
-    parallelToolCalls,
-    requestAllowedTools,
-    executionAllowedTools,
-    grantAllowedTools,
-    resumeRun: run,
+    agent: run.agentName,
+    execute: (signal, deliveryRunId) => runProjectLoopCompletion({
+      deps: options.deps,
+      agentConfig,
+      agentIdentity,
+      projectLoop,
+      aiMessages,
+      extraSystemParts,
+      contextTrust,
+      runtimeContext,
+      runtimeInvocation: runtimeInvocationMetadata(
+        run.metadata?.runtimeInvocation,
+      ),
+      toolInvocation,
+      sessionId: run.sessionId,
+      user: run.user,
+      requestMetadata: loopRequestMetadata(run),
+      activatedSkills,
+      parallelToolCalls,
+      requestAllowedTools,
+      executionAllowedTools,
+      grantAllowedTools,
+      resumeRun: run,
+      ...(signal ? { signal } : {}),
+      ...(deliveryRunId ? { deliveryRunId } : {}),
+    }),
   });
 
   const updated = await loopRunStore.getRun(run.id);
@@ -1317,11 +1333,25 @@ export async function handleProjectLoopCompletion(
           });
         }, 20_000);
         try {
-          await executeStreamingProjectLoopCompletion(
-            stream,
-            scopedOptions,
-            abortController.signal,
-          );
+          await runAttachedLoopExecution({
+            deps: options.deps,
+            runId: options.completionId,
+            sessionId: options.sessionId,
+            agent: options.body.agent,
+            signal: abortController.signal,
+            execute: (signal) => executeStreamingProjectLoopCompletion(
+              stream,
+              scopedOptions,
+              signal ?? abortController.signal,
+            ),
+          });
+        } catch (error) {
+          if (!(error instanceof AttachedRunAdmissionError)) throw error;
+          await steeringScope.release();
+          await stream.writeSSE({
+            data: sseChunk(options.completionId, {}, "stop", { error: error.envelope }),
+          });
+          await stream.writeSSE({ data: "[DONE]" });
         } finally {
           clearInterval(heartbeatInterval);
         }
@@ -1332,7 +1362,24 @@ export async function handleProjectLoopCompletion(
     }
   }
 
-  return runNonStreamingProjectLoopCompletion(c, scopedOptions);
+  try {
+    return await runAttachedLoopExecution({
+      deps: options.deps,
+      runId: options.completionId,
+      sessionId: options.sessionId,
+      agent: options.body.agent,
+      signal: c.req.raw.signal,
+      execute: (signal) => runNonStreamingProjectLoopCompletion(
+        c,
+        scopedOptions,
+        signal ?? c.req.raw.signal,
+      ),
+    });
+  } catch (error) {
+    if (!(error instanceof AttachedRunAdmissionError)) throw error;
+    await steeringScope.release();
+    return c.json({ error: error.envelope }, 409);
+  }
 }
 
 /** Transport-independent loop producer used by attached and durable followers. */
@@ -1534,6 +1581,7 @@ export async function executeStreamingProjectLoopCompletion(
 async function runNonStreamingProjectLoopCompletion(
   c: any,
   options: ProjectLoopCompletionOptions,
+  signal: AbortSignal = c.req.raw.signal,
 ): Promise<any> {
   const {
     deps,
@@ -1593,7 +1641,7 @@ async function runNonStreamingProjectLoopCompletion(
       user: body.user,
       requestMetadata: body.metadata,
       runtimePlan,
-      signal: c.req.raw.signal,
+      signal,
       executionRoute,
       activatedSkills,
       deliveryRunId: completionId,
@@ -1620,7 +1668,7 @@ async function runNonStreamingProjectLoopCompletion(
       runId: run.loopRunId,
       sessionId,
     });
-    suggestions = await suggestionsForProjectLoopCompletion(options, finalText, assistantMsgId, c.req.raw.signal);
+    suggestions = await suggestionsForProjectLoopCompletion(options, finalText, assistantMsgId, signal);
     canonicalTurnSucceeded = true;
     return c.json(completionResponse(completionId, finalText, runUsage, {
       ...(suggestions.length ? { polpo: { suggestions, ...(assistantMsgId ? { suggestionsSource: { assistantMessageId: assistantMsgId } } : {}) } } : {}),
