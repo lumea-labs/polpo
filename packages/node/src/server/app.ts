@@ -112,6 +112,29 @@ function readRuntimeVersion(): string {
 
 const runtimeVersion = readRuntimeVersion();
 
+/**
+ * Explicit allowlist of /api/* routes reachable without an API key when keys
+ * are configured. Everything else is denied by default.
+ *
+ * - health: liveness probes, no data. (The OpenAPI document stays behind the
+ *   key, as it always was via the `authed` sub-app middleware.)
+ * - Connect OAuth callback: the provider redirects the user's browser here;
+ *   it is bound to a single-use server-side state, not to the API key.
+ * - /api/environments/*: only rewrites the path and re-enters the app, where
+ *   this gate runs again on the rewritten path.
+ */
+export function isPublicApiPath(
+  method: string,
+  path: string,
+  options: { connectCallbackEnabled: boolean },
+): boolean {
+  const normalized = path.length > 1 ? path.replace(/\/+$/, "") : path;
+  if (normalized === "/api/environments" || normalized.startsWith("/api/environments/")) return true;
+  if (method !== "GET" && method !== "HEAD") return false;
+  if (normalized === "/api/v1/health") return true;
+  return options.connectCallbackEnabled && normalized === "/api/v1/connect/oauth/callback";
+}
+
 export interface AppOptions {
   /** Fixed identity of this process; configure separate processes/stores for the other environment. */
   environment?: ProjectEnvironment;
@@ -235,6 +258,24 @@ export function createApp(orchestrator: Orchestrator, sseBridge: SSEBridge, opts
     }));
   }
 
+  // ── Default-deny authentication for the control API ───────────────────
+  //
+  // When API keys are configured, every /api/* route requires a key unless it
+  // is on the explicit public allowlist below. Routes mounted directly on
+  // `app` (setup wizard, filesystem browser, provider key management) used to
+  // run before the `authed` sub-app middleware and were therefore reachable
+  // without credentials. /v1/* routes authenticate themselves (completions,
+  // client-tool resolution, run delivery) or verify provider signatures
+  // (channel webhooks).
+  if (opts?.apiKeys && opts.apiKeys.length > 0) {
+    const requireApiKey = authMiddleware(opts.apiKeys);
+    const connectCallbackEnabled = Boolean(opts.connectService);
+    app.use("/api/*", (c, next) =>
+      isPublicApiPath(c.req.method, c.req.path, { connectCallbackEnabled })
+        ? next()
+        : requireApiKey(c, next));
+  }
+
   // ── Public routes (no auth) ───────────────────────────────────────────
 
   app.route("/api/v1/health", healthRoutes(runtimeVersion));
@@ -262,15 +303,18 @@ export function createApp(orchestrator: Orchestrator, sseBridge: SSEBridge, opts
     app.all("/v1/channel-webhooks/:provider/:routeKey", handleChannelWebhook);
   }
 
-  // Config status + initialize — always available so setup wizard works
+  // Setup routes below do not require an initialized orchestrator, but they
+  // DO require an API key when keys are configured (default-deny gate above).
+
+  // Config status + initialize — available before initialization so the setup wizard works
   if (opts?.workDir) {
     app.route("/api/v1/config", publicConfigRoutes(orchestrator, opts.workDir, opts.onInitialize));
   }
 
-  // Filesystem browsing — always available (used by setup wizard path picker)
+  // Filesystem browsing — available before initialization (setup wizard path picker)
   app.route("/api/v1/filesystem", filesystemRoutes());
 
-  // Provider management — always available (API key CRUD, model listing)
+  // Provider management — available before initialization (API key CRUD, model listing)
   if (opts?.workDir) {
     const polpoDir = getPolpoDir(opts.workDir);
     app.route("/api/v1/providers", providerRoutes(polpoDir));

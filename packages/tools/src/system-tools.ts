@@ -14,6 +14,7 @@ import { Type } from "@sinclair/typebox";
 import type { PolpoTool, SearchProvider } from "@polpo-ai/core";
 import { normalizeToolOutputText } from "@polpo-ai/core";
 import { resolveAllowedPaths, assertPathAllowed } from "./path-sandbox.js";
+import { shellQuote } from "./shell-quote.js";
 import { createOutcomeTools as createOutcomeToolsCore } from "./outcome-tools.js";
 import { createHttpTools as createHttpToolsCore, ALL_HTTP_TOOL_NAMES as CORE_HTTP_TOOL_NAMES } from "./http-tools.js";
 import { createVaultToolsCore } from "./vault-tools.js";
@@ -179,10 +180,39 @@ function createEditTool(cwd: string, sandbox: string[], fs: FileSystem): PolpoTo
 
 // === Bash Tool ===
 
+const BASH_DEFAULT_TIMEOUT_MS = 120_000;
+const BASH_MAX_TIMEOUT_MS = 600_000;
+
 const BashSchema = Type.Object({
   command: Type.String({ description: "Shell command to execute" }),
-  timeout: Type.Optional(Type.Number({ description: "Timeout in milliseconds (default: 120000)" })),
+  timeout: Type.Optional(Type.Number({ description: "Timeout in milliseconds (default: 120000, max: 600000)" })),
 });
+
+/** Missing, zero, negative or non-finite → default; anything above the cap → cap. */
+function normalizeBashTimeout(timeout: number | undefined): number {
+  if (timeout === undefined || !Number.isFinite(timeout) || timeout <= 0) return BASH_DEFAULT_TIMEOUT_MS;
+  return Math.min(Math.floor(timeout), BASH_MAX_TIMEOUT_MS);
+}
+
+const ABORTED = Symbol("aborted");
+
+/**
+ * Resolve as soon as the signal aborts, even if the Shell implementation does
+ * not honour `ShellOptions.signal` (remote/proxy shells). Process-backed
+ * shells (NodeShell) also kill the process tree on abort.
+ */
+function untilAborted<T>(promise: Promise<T>, signal: AbortSignal | undefined): Promise<T | typeof ABORTED> {
+  if (!signal) return promise;
+  if (signal.aborted) return Promise.resolve(ABORTED);
+  return new Promise((resolvePromise, reject) => {
+    const onAbort = () => resolvePromise(ABORTED);
+    signal.addEventListener("abort", onAbort, { once: true });
+    promise.then(
+      (value) => { signal.removeEventListener("abort", onAbort); resolvePromise(value); },
+      (err) => { signal.removeEventListener("abort", onAbort); reject(err); },
+    );
+  });
+}
 
 function createBashTool(cwd: string, shell: Shell): PolpoTool<typeof BashSchema> {
   return {
@@ -190,10 +220,22 @@ function createBashTool(cwd: string, shell: Shell): PolpoTool<typeof BashSchema>
     label: "Execute Shell",
     description: "Execute a shell command and return its output. Use for running tests, installing packages, git operations, etc.",
     parameters: BashSchema,
-    async execute(_toolCallId, params) {
-      const timeout = params.timeout ?? 120_000;
+    async execute(_toolCallId, params, signal) {
+      const timeout = normalizeBashTimeout(params.timeout);
+      if (signal?.aborted) {
+        return {
+          content: [{ type: "text", text: "Error: Command aborted before start" }],
+          details: { command: params.command, error: "aborted", aborted: true },
+        };
+      }
       try {
-        const result = await shell.execute(params.command, { cwd, timeout });
+        const result = await untilAborted(shell.execute(params.command, { cwd, timeout, signal }), signal);
+        if (result === ABORTED) {
+          return {
+            content: [{ type: "text", text: "Error: Command aborted" }],
+            details: { command: params.command, error: "aborted", aborted: true },
+          };
+        }
         let output = result.stdout + (result.stderr ? "\n" + result.stderr : "");
         if (output.length > MAX_OUTPUT_BYTES) {
           output = output.slice(-MAX_OUTPUT_BYTES) + "\n[truncated to last 30KB]";
@@ -277,37 +319,104 @@ function createGrepTool(cwd: string, sandbox: string[], shell: Shell): PolpoTool
     async execute(_toolCallId, params) {
       const searchPath = params.path ? resolve(cwd, params.path) : cwd;
       assertPathAllowed(searchPath, sandbox, "grep");
-      const includeFlag = params.include ? `--include=${JSON.stringify(params.include)}` : "";
-      try {
-        // -P selects PCRE (Perl regex). Matches what an LLM trained on
-        // JS/Python regex expects: `\d`, `\w`, `\s`, lookahead/behind,
-        // non-greedy quantifiers. -E (POSIX ERE) was the previous
-        // setting and silently rejected all of those.
-        // -a forces text mode so binary files with the right bytes
-        // don't dominate the output.
-        const r = await shell.execute(
-          `grep -arn ${includeFlag} -P ${JSON.stringify(params.pattern)} ${JSON.stringify(searchPath)} 2>/dev/null | head -100`,
-          { cwd, timeout: 15_000 },
-        );
-        const result = r.stdout.trim();
-        if (!result) {
-          return {
-            content: [{ type: "text", text: "No matches found" }],
-            details: { pattern: params.pattern, count: 0 },
-          };
-        }
-        const lines = result.split("\n");
+      if ([params.pattern, params.include ?? "", searchPath].some((value) => value.includes("\0"))) {
         return {
-          content: [{ type: "text", text: result }],
-          details: { pattern: params.pattern, count: lines.length },
+          content: [{ type: "text", text: "Error: grep arguments must not contain NUL bytes" }],
+          details: { pattern: params.pattern, count: 0, error: "invalid_argument" },
         };
-      } catch {
+      }
+      // Every model-controlled value is single-quoted (no `$()`, backtick or
+      // `$VAR` expansion). `-e` keeps a pattern starting with `-` from being
+      // parsed as an option and `--` does the same for the path.
+      const includeFlag = params.include ? ` --include=${shellQuote(params.include)}` : "";
+      // -P selects PCRE (Perl regex). Matches what an LLM trained on
+      // JS/Python regex expects: `\d`, `\w`, `\s`, lookahead/behind,
+      // non-greedy quantifiers. -a forces text mode so binary files with
+      // the right bytes don't dominate the output. grep's own exit status
+      // is reported on stderr because the pipeline status belongs to head.
+      const command =
+        `(grep -arn${includeFlag} -P -e ${shellQuote(params.pattern)} -- ${shellQuote(searchPath)}; ` +
+        `echo "${GREP_EXIT_MARKER}$?" >&2) | head -n ${GREP_MAX_LINES + 1}`;
+      try {
+        const r = await shell.execute(command, { cwd, timeout: GREP_TIMEOUT_MS });
+        return formatGrepResult(params.pattern, r);
+      } catch (err: any) {
+        const message = err?.message ?? String(err);
         return {
-          content: [{ type: "text", text: "No matches found" }],
-          details: { pattern: params.pattern, count: 0 },
+          content: [{ type: "text", text: `Error: grep failed: ${message}` }],
+          details: { pattern: params.pattern, count: 0, error: message },
         };
       }
     },
+  };
+}
+
+const GREP_MAX_LINES = 100;
+const GREP_TIMEOUT_MS = 15_000;
+const GREP_EXIT_MARKER = "__polpo_grep_exit=";
+
+function formatGrepResult(
+  pattern: string,
+  r: { stdout: string; stderr: string; exitCode: number },
+): { content: Array<{ type: "text"; text: string }>; details: Record<string, unknown> } {
+  const markerMatch = r.stderr.match(new RegExp(`${GREP_EXIT_MARKER}(\\d+)`));
+  const grepExit = markerMatch ? Number(markerMatch[1]) : undefined;
+  const stderr = r.stderr
+    .split("\n")
+    .filter((line) => !line.includes(GREP_EXIT_MARKER))
+    .join("\n")
+    .trim()
+    .slice(0, 1_000);
+  const allLines = r.stdout.split("\n").filter((line) => line.length > 0);
+  const truncated = allLines.length > GREP_MAX_LINES;
+  const lines = allLines.slice(0, GREP_MAX_LINES);
+  const output = lines.join("\n");
+
+  // The shell itself failed (timeout, kill, missing grep) before grep could
+  // report a status. Never disguise that as an empty result.
+  if (grepExit === undefined && !truncated) {
+    const reason = stderr || `shell exited with code ${r.exitCode}`;
+    const timedOut = r.exitCode === 124 || /timed out/i.test(stderr);
+    const message = timedOut ? `grep timed out after ${GREP_TIMEOUT_MS / 1000}s` : `grep failed: ${reason}`;
+    return {
+      content: [{ type: "text", text: `Error: ${message}${output ? `\nPartial output:\n${output}` : ""}` }],
+      details: { pattern, count: lines.length, error: message, timedOut },
+    };
+  }
+
+  if (truncated) {
+    return {
+      content: [{ type: "text", text: `${output}\n[truncated — showing first ${GREP_MAX_LINES} matching lines]` }],
+      details: { pattern, count: lines.length, truncated: true },
+    };
+  }
+
+  // grep: 0 = matches, 1 = no matches, >1 = error (bad regex, unreadable path…).
+  // `grep -r` also exits 2 when it found matches but could not read some
+  // files: keep the matches and surface the warning instead of failing.
+  if (grepExit !== 0 && grepExit !== 1 && output) {
+    return {
+      content: [{ type: "text", text: `${output}\n[grep reported errors: ${stderr || `exit ${grepExit}`}]` }],
+      details: { pattern, count: lines.length, warning: stderr || `exit ${grepExit}` },
+    };
+  }
+  if (grepExit !== 0 && grepExit !== 1) {
+    const message = `grep failed (exit ${grepExit})${stderr ? `: ${stderr}` : ""}`;
+    return {
+      content: [{ type: "text", text: `Error: ${message}` }],
+      details: { pattern, count: 0, error: message },
+    };
+  }
+
+  if (!output) {
+    return {
+      content: [{ type: "text", text: "No matches found" }],
+      details: { pattern, count: 0 },
+    };
+  }
+  return {
+    content: [{ type: "text", text: output }],
+    details: { pattern, count: lines.length },
   };
 }
 

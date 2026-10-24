@@ -16,10 +16,39 @@ import type { PolpoTool, ToolResult } from "@polpo-ai/core";
 import type { FileSystem } from "@polpo-ai/core/filesystem";
 import { resolveAllowedPaths, assertPathAllowed } from "./path-sandbox.js";
 import { assertUrlAllowed } from "./ssrf-guard.js";
+import { fetchErrorMessage, isSsrfBlocked, readBodyCapped, safeFetch } from "./safe-fetch.js";
 import { NodeFileSystem } from "./adapters/node-filesystem.js";
 
 const MAX_RESPONSE_BYTES = 100_000;
 const DEFAULT_TIMEOUT = 30_000;
+const MAX_TIMEOUT = 300_000;
+const DOWNLOAD_TIMEOUT = 120_000;
+const MAX_DOWNLOAD_BYTES = 100 * 1024 * 1024;
+
+/** Missing, zero, negative or non-finite → default; anything above the cap → cap. */
+function normalizeTimeout(timeout: number | undefined): number {
+  if (timeout === undefined || !Number.isFinite(timeout) || timeout <= 0) return DEFAULT_TIMEOUT;
+  return Math.min(Math.floor(timeout), MAX_TIMEOUT);
+}
+
+/**
+ * One AbortController for the whole operation (every redirect hop AND the
+ * body read), linked to the caller's signal. `timedOut()` tells a timeout
+ * apart from a caller abort.
+ */
+function operationDeadline(timeoutMs: number, signal?: AbortSignal) {
+  const controller = new AbortController();
+  let timedOut = false;
+  const timer = setTimeout(() => { timedOut = true; controller.abort(); }, timeoutMs);
+  const onAbort = () => controller.abort();
+  if (signal?.aborted) controller.abort();
+  else signal?.addEventListener("abort", onAbort, { once: true });
+  return {
+    signal: controller.signal,
+    timedOut: () => timedOut,
+    dispose: () => { clearTimeout(timer); signal?.removeEventListener("abort", onAbort); },
+  };
+}
 
 // ─── Tool: http_fetch ───
 
@@ -36,7 +65,7 @@ const HttpFetchSchema = Type.Object({
   ], { description: "HTTP method (default: GET)" })),
   headers: Type.Optional(Type.Record(Type.String(), Type.String(), { description: "Request headers as key-value pairs" })),
   body: Type.Optional(Type.String({ description: "Request body (for POST/PUT/PATCH). Use JSON string for JSON APIs." })),
-  timeout: Type.Optional(Type.Number({ description: "Timeout in milliseconds (default: 30000)" })),
+  timeout: Type.Optional(Type.Number({ description: "Overall timeout in milliseconds, including redirects and reading the body (default: 30000, max: 300000)" })),
 });
 
 function createHttpFetchTool(): PolpoTool<typeof HttpFetchSchema> {
@@ -65,42 +94,34 @@ function createHttpFetchTool(): PolpoTool<typeof HttpFetchSchema> {
       }
 
       const method = params.method ?? "GET";
-      const timeout = params.timeout ?? DEFAULT_TIMEOUT;
+      const timeout = normalizeTimeout(params.timeout);
+      const deadline = operationDeadline(timeout, signal);
 
       try {
-        const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), timeout);
-
-        // Combine external signal with timeout
-        if (signal) {
-          signal.addEventListener("abort", () => controller.abort(), { once: true });
-        }
-
-        const response = await fetch(url, {
+        const { response, url: finalUrl, redirects } = await safeFetch(url, {
           method,
           headers: params.headers,
           body: params.body,
-          signal: controller.signal,
-          redirect: "follow",
+          signal: deadline.signal,
         });
 
-        clearTimeout(timer);
-
         const contentType = response.headers.get("content-type") ?? "";
+        const contentLength = response.headers.get("content-length");
         const isText = contentType.includes("text") || contentType.includes("json") ||
           contentType.includes("xml") || contentType.includes("javascript") ||
           contentType.includes("html") || contentType.includes("css") ||
           contentType.includes("svg");
 
+        const { bytes, truncated } = await readBodyCapped(response, MAX_RESPONSE_BYTES);
         let body: string;
         if (isText) {
-          const text = await response.text();
-          body = text.length > MAX_RESPONSE_BYTES
-            ? text.slice(0, MAX_RESPONSE_BYTES) + `\n[truncated — ${text.length} total bytes]`
+          const text = new TextDecoder().decode(bytes);
+          body = truncated
+            ? text + `\n[truncated — response body exceeded ${MAX_RESPONSE_BYTES} bytes${contentLength ? `; content-length: ${contentLength}` : ""}]`
             : text;
         } else {
-          const buffer = await response.arrayBuffer();
-          body = `[Binary response: ${buffer.byteLength} bytes, content-type: ${contentType}]`;
+          const size = truncated ? `more than ${MAX_RESPONSE_BYTES}` : String(bytes.byteLength);
+          body = `[Binary response: ${size} bytes, content-type: ${contentType}]`;
         }
 
         // Extract relevant response headers
@@ -114,6 +135,7 @@ function createHttpFetchTool(): PolpoTool<typeof HttpFetchSchema> {
 
         const resultText = [
           `Status: ${response.status} ${response.statusText}`,
+          ...(redirects > 0 ? [`Final URL: ${finalUrl} (after ${redirects} redirect${redirects === 1 ? "" : "s"})`] : []),
           `Headers: ${JSON.stringify(responseHeaders)}`,
           ``,
           body,
@@ -123,19 +145,32 @@ function createHttpFetchTool(): PolpoTool<typeof HttpFetchSchema> {
           content: [{ type: "text", text: resultText }],
           details: {
             url,
+            ...(redirects > 0 ? { finalUrl, redirects } : {}),
             method,
             status: response.status,
             statusText: response.statusText,
             headers: responseHeaders,
             bodyLength: body.length,
+            ...(truncated ? { truncated: true } : {}),
           },
         };
       } catch (err: any) {
-        const message = err.name === "AbortError" ? "Request timed out" : err.message;
+        if (isSsrfBlocked(err)) {
+          const message = fetchErrorMessage(err);
+          return {
+            content: [{ type: "text", text: `Error: ${message}` }],
+            details: { url, method, error: "ssrf_blocked", message },
+          };
+        }
+        const message = deadline.timedOut()
+          ? `Request timed out after ${timeout}ms`
+          : err?.name === "AbortError" ? "Request aborted" : fetchErrorMessage(err);
         return {
           content: [{ type: "text", text: `HTTP error: ${message}` }],
           details: { url, method, error: message },
         };
+      } finally {
+        deadline.dispose();
       }
     },
   };
@@ -176,30 +211,28 @@ function createHttpDownloadTool(cwd: string, sandbox: string[], fs: FileSystem):
       const filePath = resolve(cwd, params.path);
       assertPathAllowed(filePath, sandbox, "http_download");
 
+      const deadline = operationDeadline(DOWNLOAD_TIMEOUT, signal);
       try {
-        const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), 120_000); // 2 min for downloads
-
-        if (signal) {
-          signal.addEventListener("abort", () => controller.abort(), { once: true });
-        }
-
-        const response = await fetch(url, {
+        const { response } = await safeFetch(url, {
           headers: params.headers,
-          signal: controller.signal,
-          redirect: "follow",
+          signal: deadline.signal,
         });
 
-        clearTimeout(timer);
-
         if (!response.ok) {
+          await response.body?.cancel().catch(() => undefined);
           return {
             content: [{ type: "text", text: `Download failed: ${response.status} ${response.statusText}` }],
             details: { url, status: response.status, error: "http_error" },
           };
         }
 
-        const buffer = new Uint8Array(await response.arrayBuffer());
+        const { bytes: buffer, truncated } = await readBodyCapped(response, MAX_DOWNLOAD_BYTES);
+        if (truncated) {
+          return {
+            content: [{ type: "text", text: `Download failed: response exceeds the ${MAX_DOWNLOAD_BYTES} byte limit` }],
+            details: { url, error: "too_large", limit: MAX_DOWNLOAD_BYTES },
+          };
+        }
         if (!fs.writeFileBuffer) {
           return {
             content: [{ type: "text", text: "Error: FileSystem.writeFileBuffer required for binary downloads" }],
@@ -214,11 +247,22 @@ function createHttpDownloadTool(cwd: string, sandbox: string[], fs: FileSystem):
           details: { url, path: filePath, bytes: buffer.byteLength },
         };
       } catch (err: any) {
-        const message = err.name === "AbortError" ? "Download timed out" : err.message;
+        if (isSsrfBlocked(err)) {
+          const message = fetchErrorMessage(err);
+          return {
+            content: [{ type: "text", text: `Error: ${message}` }],
+            details: { url, error: "ssrf_blocked", message },
+          };
+        }
+        const message = deadline.timedOut()
+          ? "Download timed out"
+          : err?.name === "AbortError" ? "Download aborted" : fetchErrorMessage(err);
         return {
           content: [{ type: "text", text: `Download error: ${message}` }],
           details: { url, error: message },
         };
+      } finally {
+        deadline.dispose();
       }
     },
   };

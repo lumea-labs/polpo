@@ -19,6 +19,11 @@ export interface ShellOptions {
   env?: Record<string, string>;
   /** Timeout in milliseconds. */
   timeout?: number;
+  /**
+   * Cancels the command. Implementations should terminate the whole process
+   * tree and resolve (not reject) with a non-zero exit code.
+   */
+  signal?: AbortSignal;
 }
 
 export interface ShellResult {

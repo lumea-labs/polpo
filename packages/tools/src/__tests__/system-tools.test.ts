@@ -24,7 +24,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import {
   mkdtempSync, rmSync, writeFileSync, mkdirSync,
-  readFileSync, statSync, symlinkSync,
+  readFileSync, statSync, symlinkSync, existsSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -438,6 +438,69 @@ describe("bash — happy path", () => {
   });
 });
 
+describe("bash — cancellation and timeout bounds", () => {
+  function isAlive(pid: number): boolean {
+    try { process.kill(pid, 0); return true; } catch { return false; }
+  }
+
+  it("kills the whole process tree when the abort signal fires", { timeout: 20_000 }, async () => {
+    const pidFile = join(cwd, "child.pid");
+    const controller = new AbortController();
+    const t0 = Date.now();
+    const pending = tool("bash").execute(
+      "c1",
+      // The background child survives a kill of the top-level shell alone.
+      { command: `sleep 60 & echo $! > ${pidFile}; wait` },
+      controller.signal,
+    );
+    for (let i = 0; i < 200 && !(existsSync(pidFile) && readFileSync(pidFile, "utf8").trim()); i++) await new Promise((r) => setTimeout(r, 20));
+    const childPid = Number(readFileSync(pidFile, "utf8").trim());
+    expect(isAlive(childPid)).toBe(true);
+
+    controller.abort();
+    const result = await pending;
+    expect(Date.now() - t0).toBeLessThan(10_000);
+    expect(text(result)).toMatch(/abort/i);
+    for (let i = 0; i < 50 && isAlive(childPid); i++) await new Promise((r) => setTimeout(r, 20));
+    expect(isAlive(childPid)).toBe(false);
+  });
+
+  it("does not start the command when the signal is already aborted", async () => {
+    const marker = join(cwd, "should-not-exist");
+    const controller = new AbortController();
+    controller.abort();
+    const result = await tool("bash").execute("c1", { command: `touch ${marker}` }, controller.signal);
+    expect(text(result)).toMatch(/abort/i);
+    expect(existsSync(marker)).toBe(false);
+  });
+
+  it("returns on abort even when the Shell implementation ignores the signal", async () => {
+    const shell = { execute: vi.fn(() => new Promise<never>(() => undefined)) };
+    const bash = createSystemTools(cwd, ["bash"], [cwd], undefined, undefined, new NodeFileSystem(), shell)
+      .find((candidate) => candidate.name === "bash")!;
+    const controller = new AbortController();
+    const pending = bash.execute("c1", { command: "sleep 60" }, controller.signal);
+    controller.abort();
+    expect(text(await pending)).toMatch(/abort/i);
+    expect((shell.execute.mock.calls[0] as unknown[])[1]).toMatchObject({ signal: controller.signal });
+  });
+
+  it.each([
+    [undefined, 120_000],
+    [0, 120_000],
+    [-5, 120_000],
+    [Number.NaN, 120_000],
+    [5_000, 5_000],
+    [86_400_000, 600_000],
+  ])("normalizes timeout %s to %s ms", async (timeout, expected) => {
+    const shell = { execute: vi.fn(async () => ({ stdout: "", stderr: "", exitCode: 0 })) };
+    const bash = createSystemTools(cwd, ["bash"], [cwd], undefined, undefined, new NodeFileSystem(), shell)
+      .find((candidate) => candidate.name === "bash")!;
+    await bash.execute("c1", { command: "true", ...(timeout === undefined ? {} : { timeout }) });
+    expect((shell.execute.mock.calls[0] as unknown[])[1]).toMatchObject({ timeout: expected });
+  });
+});
+
 describe("bash — adversarial", () => {
   it("surfaces a non-zero exit clearly", async () => {
     const result = await tool("bash").execute("c1", { command: "false" });
@@ -598,6 +661,71 @@ describe("grep — adversarial", () => {
     writeFileSync(join(cwd, "real.txt"), "needle\n");
     const result = await tool("grep").execute("c1", { pattern: "needle" });
     expect(text(result)).toContain("real.txt");
+  });
+});
+
+describe("grep — shell injection and error reporting", () => {
+  it("does not execute command substitution in the pattern", async () => {
+    writeFileSync(join(cwd, "f.txt"), "needle\n");
+    const marker = join(cwd, "pwned-pattern");
+    const result = await tool("grep").execute("c1", { pattern: `$(touch ${marker})needle` });
+    expect(existsSync(marker)).toBe(false);
+    expect(text(result)).not.toContain("f.txt");
+  });
+
+  it("does not execute command substitution or backticks in include and path", async () => {
+    writeFileSync(join(cwd, "f.txt"), "needle\n");
+    const includeMarker = join(cwd, "pwned-include");
+    const pathMarker = join(cwd, "pwned-path");
+    await tool("grep").execute("c1", { pattern: "needle", include: `*.txt$(touch ${includeMarker})` });
+    await tool("grep").execute("c2", { pattern: "needle", path: `\`touch ${pathMarker}\`` }).catch(() => undefined);
+    expect(existsSync(includeMarker)).toBe(false);
+    expect(existsSync(pathMarker)).toBe(false);
+  });
+
+  it("matches patterns containing single quotes and shell metacharacters literally", async () => {
+    writeFileSync(join(cwd, "q.txt"), "it's $HOME; `x` | y\n");
+    expect(text(await tool("grep").execute("c1", { pattern: "it's" }))).toContain("q.txt");
+    expect(text(await tool("grep").execute("c2", { pattern: "\\$HOME; `x` \\| y" }))).toContain("q.txt");
+  });
+
+  it.skipIf(process.getuid?.() === 0)("keeps matches when some files are unreadable (grep exit 2)", async () => {
+    writeFileSync(join(cwd, "ok.txt"), "needle\n");
+    writeFileSync(join(cwd, "locked.txt"), "needle\n", { mode: 0o000 });
+    const result = await tool("grep").execute("c1", { pattern: "needle" });
+    expect(text(result)).toContain("ok.txt");
+    expect(text(result)).not.toMatch(/^Error:/);
+    expect(text(result)).toMatch(/grep reported errors/);
+  });
+
+  it("treats a pattern that starts with a dash as a pattern, not an option", async () => {
+    writeFileSync(join(cwd, "f.txt"), "a --version b\n");
+    const result = await tool("grep").execute("c1", { pattern: "--version" });
+    expect(text(result)).toContain("f.txt");
+  });
+
+  it("reports an invalid regex as an error instead of 'No matches found'", async () => {
+    writeFileSync(join(cwd, "f.txt"), "needle\n");
+    const result = await tool("grep").execute("c1", { pattern: "(unclosed" });
+    expect(text(result)).toMatch(/^Error:/);
+    expect(text(result)).not.toMatch(/No matches found/);
+  });
+
+  it("reports a shell failure (e.g. timeout) as an error instead of 'No matches found'", async () => {
+    const shell = { execute: vi.fn(async () => ({ stdout: "", stderr: "Command timed out after 15000ms (SIGKILL).", exitCode: 124 })) };
+    const grep = createSystemTools(cwd, ["grep"], [cwd], undefined, undefined, new NodeFileSystem(), shell)
+      .find((candidate) => candidate.name === "grep")!;
+    const result = await grep.execute("c1", { pattern: "needle" });
+    expect(text(result)).toMatch(/^Error:.*timed out/i);
+  });
+
+  it("flags truncated output when more than 100 lines match", async () => {
+    writeFileSync(join(cwd, "many.txt"), Array.from({ length: 250 }, (_, i) => `needle ${i}`).join("\n"));
+    const result = await tool("grep").execute("c1", { pattern: "needle" });
+    const lines = text(result).split("\n");
+    expect(lines.filter((line) => line.includes("many.txt"))).toHaveLength(100);
+    expect(text(result)).toMatch(/truncated/i);
+    expect(result.details).toMatchObject({ truncated: true });
   });
 });
 
