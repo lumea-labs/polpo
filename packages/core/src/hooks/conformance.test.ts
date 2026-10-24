@@ -390,7 +390,7 @@ describe("engine", () => {
       sources: [{ source: "project", name: "p", hooks: { PreToolUse: [{ matcher: "Bash", hooks: [{ type: "command", command: "node", args: ["${CLAUDE_PROJECT_DIR}/check.js"] }] }] } }],
     });
     await engine.dispatch("PreToolUse", { ...baseInput, tool_name: "Bash", tool_input: { command: "ls" }, tool_use_id: "t1" });
-    const request = runCommand.mock.calls[0]![0];
+    const request = (runCommand.mock.calls as unknown as [import("./engine.js").CommandHookRequest][])[0]![0];
     expect(JSON.parse(request.stdin)).toMatchObject({ hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command: "ls" }, session_id: "s1" });
     expect(request.argv).toEqual(["/repo/check.js"]);
     expect(request.env.CLAUDE_PROJECT_DIR).toBe("/repo");
@@ -538,7 +538,7 @@ describe("engine", () => {
     });
     await engine.dispatch("Stop", { ...baseInput, stop_hook_active: false, last_assistant_message: "x" });
     expect(runCommand).toHaveBeenCalledTimes(1);
-    expect(runCommand.mock.calls[0]![0].command).toBe("managed");
+    expect((runCommand.mock.calls as unknown as [{ command: string }][])[0]![0].command).toBe("managed");
   });
 });
 
