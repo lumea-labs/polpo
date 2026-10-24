@@ -82,6 +82,14 @@ export interface HookPack {
   hooks: HooksConfig;
 }
 
+/** Named pack storage (project files, Cloud database). */
+export interface HookPackStore {
+  list(): Promise<HookPack[]>;
+  get(name: string): Promise<HookPack | undefined>;
+  put(pack: HookPack): Promise<void>;
+  delete(name: string): Promise<boolean>;
+}
+
 /** Where a hook was declared. Order is precedence/declaration order. */
 export type HookSource =
   | "policy"

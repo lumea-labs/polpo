@@ -100,6 +100,16 @@ describe("Stop continuation controller", () => {
     expect((await hookRuntime.stop("c", { attempt: 3 })).action).toBe("continue");
   });
 
+  it("keeps stop_hook_active true through a repair that calls tools", async () => {
+    const { hookRuntime, stdin } = runtime({ Stop: [{ hooks: [{ type: "command", command: "validate" }] }] },
+      (request) => JSON.parse(request.stdin).last_assistant_message === "fixed" ? {} : { exitCode: 2, stderr: "fix it" });
+    expect((await hookRuntime.stop("draft", { attempt: 1 })).action).toBe("continue");
+    hookRuntime.noteToolCall();
+    expect((await hookRuntime.stop("fixed", { attempt: 2 })).action).toBe("accept");
+    expect(stdin(1).stop_hook_active).toBe(true);
+    expect(hookRuntime.stopState()).toEqual({ consecutiveStopContinuations: 0, stopHookActive: true });
+  });
+
   it("continue: false halts instead of continuing", async () => {
     const { hookRuntime } = runtime({ Stop: [{ hooks: [{ type: "command", command: "halt" }] }] },
       () => ({ stdout: JSON.stringify({ continue: false, stopReason: "Budget exhausted" }) }));
@@ -111,5 +121,16 @@ describe("Stop continuation controller", () => {
       () => ({ exitCode: 2, stderr: "again" }), 3);
     hookRuntime.restoreStopState({ consecutiveStopContinuations: 3 });
     expect((await hookRuntime.stop("x", { attempt: 4 })).action).toBe("accept");
+  });
+
+  it("restores stop_hook_active from a checkpoint, including legacy ones without the flag", async () => {
+    const { hookRuntime, stdin } = runtime({ Stop: [{ hooks: [{ type: "command", command: "log" }] }] }, () => ({}));
+    hookRuntime.restoreStopState({ consecutiveStopContinuations: 0, stopHookActive: true });
+    await hookRuntime.stop("x", { attempt: 2 });
+    expect(stdin(0).stop_hook_active).toBe(true);
+    const legacy = runtime({ Stop: [{ hooks: [{ type: "command", command: "log" }] }] }, () => ({}));
+    legacy.hookRuntime.restoreStopState({ consecutiveStopContinuations: 2 });
+    await legacy.hookRuntime.stop("x", { attempt: 3 });
+    expect(legacy.stdin(0).stop_hook_active).toBe(true);
   });
 });

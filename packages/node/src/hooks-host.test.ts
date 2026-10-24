@@ -3,7 +3,7 @@ import { createServer, type Server } from "node:http";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { HookEngine } from "@polpo-ai/core/runtime-hooks/contract";
+import { HookEngine } from "@polpo-ai/core/runtime-hooks";
 import { createNodeHookHost, isPublicAddress, runCommandThroughShell, runHttpHook, runLocalCommand } from "./hooks-host.js";
 
 const dirs: string[] = [];

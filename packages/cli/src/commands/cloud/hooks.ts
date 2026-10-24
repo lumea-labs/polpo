@@ -4,9 +4,10 @@ import type { Command } from "commander";
 import * as clack from "@clack/prompts";
 import pc from "picocolors";
 import {
-  validateRuntimeHookPack,
-  type RuntimeHookCapabilities,
-  type RuntimeHookPack,
+  hooksFromClaudeSettings,
+  validateHookPack,
+  type HookCapabilities,
+  type HookPack,
 } from "@polpo-ai/core/runtime-hooks";
 import { createApiClient } from "./api.js";
 import { addEnvironmentOptions, resolveCliEnvironment } from "./environment.js";
@@ -22,8 +23,13 @@ function hookFiles(root: string): string[] {
     .map((name) => path.join(directory, name));
 }
 
-function loadHookPack(file: string): RuntimeHookPack {
-  const pack = validateRuntimeHookPack(JSON.parse(fs.readFileSync(file, "utf8")));
+/** Number of handlers across every event and matcher group. */
+function handlerCount(pack: HookPack): number {
+  return Object.values(pack.hooks).reduce((total, groups) => total + (groups ?? []).reduce((sum, group) => sum + group.hooks.length, 0), 0);
+}
+
+function loadHookPack(file: string): HookPack {
+  const pack = validateHookPack(JSON.parse(fs.readFileSync(file, "utf8")));
   const expected = path.basename(file, ".json");
   if (pack.name !== expected) throw new Error(`Pack name ${JSON.stringify(pack.name)} must match ${JSON.stringify(expected)}`);
   return pack;
@@ -45,13 +51,29 @@ export function registerHooksCommand(program: Command): void {
       for (const file of files) {
         try {
           const pack = loadHookPack(file);
-          clack.log.success(`${path.relative(opts.dir, file)} ${pc.dim(`(${pack.hooks.length} hooks)`)}`);
+          clack.log.success(`${path.relative(opts.dir, file)} ${pc.dim(`(${handlerCount(pack)} hooks)`)}`);
         } catch (error) {
           failures += 1;
           clack.log.error(`${path.relative(opts.dir, file)} — ${error instanceof Error ? error.message : String(error)}`);
         }
       }
       if (failures > 0) process.exitCode = 1;
+    });
+
+  hooks.command("import <settings>")
+    .description("Import the hooks block of a Claude Code settings file as a named pack")
+    .requiredOption("-n, --name <name>", "Pack name (file .polpo/hooks/<name>.json)")
+    .option("-d, --dir <path>", "Project directory", ".")
+    .option("--force", "Replace an existing pack")
+    .action((settings: string, opts: { name: string; dir: string; force?: boolean }) => {
+      const hooksBlock = hooksFromClaudeSettings(JSON.parse(fs.readFileSync(settings, "utf8")));
+      const pack = validateHookPack({ name: opts.name, hooks: hooksBlock });
+      const target = path.resolve(opts.dir, ".polpo", "hooks", `${pack.name}.json`);
+      if (fs.existsSync(target) && !opts.force) throw new Error(`${path.relative(opts.dir, target)} exists; pass --force to replace it`);
+      fs.mkdirSync(path.dirname(target), { recursive: true });
+      fs.writeFileSync(target, `${JSON.stringify(pack, null, 2)}\n`);
+      clack.log.success(`${path.relative(opts.dir, target)} ${pc.dim(`(${handlerCount(pack)} hooks)`)}`);
+      clack.log.info("Assign the pack to an agent with \"hooks\": [\"" + pack.name + "\"] and deploy.");
     });
 
   addEnvironmentOptions(hooks.command("list"))
@@ -62,18 +84,18 @@ export function registerHooksCommand(program: Command): void {
       if (opts.local) {
         const packs = hookFiles(opts.dir).map(loadHookPack);
         if (packs.length === 0) clack.log.info("No local runtime hook packs.");
-        for (const pack of packs) clack.log.info(`${pack.name}\t${pack.hooks.length} hooks`);
+        for (const pack of packs) clack.log.info(`${pack.name}\t${handlerCount(pack)} hooks`);
         return;
       }
       const credentials = await requireAuth({ context: "Listing runtime hooks requires an authenticated session." });
       const projectId = loadProjectId(opts.dir);
       if (!projectId) throw new Error("No project linked in this directory");
       const client = createApiClient(credentials, projectId, resolveCliEnvironment(opts));
-      const response = await client.get<{ ok?: boolean; data?: RuntimeHookPack[] }>("/v1/hooks");
+      const response = await client.get<{ ok?: boolean; data?: HookPack[] }>("/v1/hooks");
       if (response.status !== 200) throw new Error(`Hooks API returned ${response.status}`);
       const packs = response.data.data ?? [];
       if (packs.length === 0) clack.log.info("No deployed runtime hook packs.");
-      for (const pack of packs) clack.log.info(`${pack.name}\t${pack.hooks.length} hooks`);
+      for (const pack of packs) clack.log.info(`${pack.name}\t${handlerCount(pack)} hooks`);
     });
 
   addEnvironmentOptions(hooks.command("capabilities"))
@@ -85,7 +107,7 @@ export function registerHooksCommand(program: Command): void {
       const projectId = loadProjectId(opts.dir);
       if (!projectId) throw new Error("No project linked in this directory");
       const client = createApiClient(credentials, projectId, resolveCliEnvironment(opts));
-      const response = await client.get<{ ok?: boolean; data?: RuntimeHookCapabilities }>("/v1/hooks/capabilities");
+      const response = await client.get<{ ok?: boolean; data?: HookCapabilities }>("/v1/hooks/capabilities");
       if (response.status !== 200 || !response.data.data) {
         throw new Error(`Hooks capabilities API returned ${response.status}`);
       }
@@ -94,12 +116,9 @@ export function registerHooksCommand(program: Command): void {
         process.stdout.write(`${JSON.stringify(capabilities, null, 2)}\n`);
         return;
       }
-      clack.log.info(`Contract v${capabilities.contractVersion}`);
+      clack.log.info(`Reference\t${capabilities.reference}`);
       clack.log.info(`Handlers\t${capabilities.handlerTypes.join(", ")}`);
-      clack.log.info(`Surfaces\t${capabilities.surfaces.join(", ")}`);
-      clack.log.info(`Events\t${capabilities.events.length}`);
-      clack.log.info(`Replay\t${capabilities.durableReplay ? "durable" : "unavailable"}`);
-      clack.log.info(`Termination gate\t${capabilities.terminationGate ? "supported (check managed rollout in --json)" : "unavailable"}`);
-      clack.log.info(`File events\t${capabilities.fileEvents}`);
+      clack.log.info(`Emitted events\t${capabilities.emittedEvents.join(", ")}`);
+      clack.log.info(`Stop continuation cap\t${capabilities.stopHookBlockCap}`);
     });
 }

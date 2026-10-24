@@ -1,3 +1,4 @@
+import type { HookRuntime } from "@polpo-ai/core/runtime-hooks";
 /**
  * OpenAI-compatible chat completions endpoint.
  *
@@ -48,7 +49,6 @@ import {
   type RuntimeSandboxOptions,
   type ToolInvocationContext,
   type ToolInvocationJsonValue,
-  type RuntimeHookDispatcher,
 } from "@polpo-ai/core";
 import type { ApprovalStore } from "@polpo-ai/core/approval-store";
 import type { ChatSessionInjection } from "@polpo-ai/core";
@@ -183,7 +183,9 @@ export interface CompletionRouteDeps {
     activatedSkills?: readonly string[];
     toolRunScope?: CompletionToolRunScope;
     getToolExecutor?: () => CompletionToolExecutor | undefined;
-  }) => RuntimeHookDispatcher | undefined | Promise<RuntimeHookDispatcher | undefined>;
+    /** Stable identity of this agent invocation (Stop occurrence ids, polpo.turn_id). */
+    turnId?: string;
+  }) => HookRuntime | undefined | Promise<HookRuntime | undefined>;
   /**
    * Optional pre-execution planner. The input is already authorized and omits
    * messages, prompts, credentials, headers, and provider secrets. When absent,

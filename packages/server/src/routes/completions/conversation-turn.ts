@@ -1,4 +1,4 @@
-import type { RuntimeHookDispatcher } from "@polpo-ai/core/runtime-hooks";
+import type { HookRuntime } from "@polpo-ai/core/runtime-hooks";
 import type { CompletionToolRunScope } from "../completions.js";
 import { nanoid } from "nanoid";
 import {
@@ -1527,9 +1527,9 @@ export async function prepareChatCompletionExecution(
   }
 
   const runtimeHookToolExecutor = effectiveToolExecutor;
-  let runtimeHookDispatcher: RuntimeHookDispatcher | undefined;
+  let hookRuntime: HookRuntime | undefined;
   try {
-    runtimeHookDispatcher = await deps.resolveRuntimeHooks?.({
+    hookRuntime = await deps.resolveRuntimeHooks?.({
       agentConfig: resolvedAgentConfig,
       surface: options.runtime?.surface === "channel" ? "channel" : "chat",
       runId: options.runtime?.runId ?? completionId,
@@ -1537,23 +1537,14 @@ export async function prepareChatCompletionExecution(
       activatedSkills,
       toolRunScope: hookToolRunScope,
       getToolExecutor: () => runtimeHookToolExecutor,
+      turnId,
     });
   } catch (error) {
     await cleanupFailedPreparation(onResponseFinished);
     throw error;
   }
-  const runtimeHooks: CompletionRuntimeHookContext | undefined = runtimeHookDispatcher
-    ? {
-        dispatcher: runtimeHookDispatcher,
-        surface: options.runtime?.surface === "channel" ? "channel" : "chat",
-        identity: {
-          runId: options.runtime?.runId ?? completionId,
-          sessionId: sessionId ?? undefined,
-          turnId,
-          agent: resolvedAgentConfig?.name,
-          externalUserId: options.runtime?.user ?? body.user,
-        },
-      }
+  const runtimeHooks: CompletionRuntimeHookContext | undefined = hookRuntime
+    ? { runtime: hookRuntime, surface: options.runtime?.surface === "channel" ? "channel" : "chat" }
     : undefined;
   effectiveToolExecutor = createRuntimeHookedToolExecutor({
     executor: effectiveToolExecutor,

@@ -1,155 +1,98 @@
 import { describe, expect, it, vi } from "vitest";
-import {
-  RuntimeHookEngine,
-  type RuntimeHookDefinition,
-  type RuntimeHookHandlerResult,
-} from "@polpo-ai/core/runtime-hooks";
+import { createScriptedHookRuntime, type HooksConfig } from "@polpo-ai/core/runtime-hooks";
 import {
   createRuntimeHookedToolExecutor,
   dispatchCompletionModelPolicyHook,
+  takePendingHookContext,
   type CompletionRuntimeHookContext,
 } from "./runtime-hooks.js";
 
-function context(definitions: RuntimeHookDefinition[]): CompletionRuntimeHookContext {
-  return {
-    surface: "chat",
-    identity: { runId: "run-1", agent: "support" },
-    dispatcher: new RuntimeHookEngine({
-      definitions,
-      host: {
-        execute: async ({ hook }): Promise<RuntimeHookHandlerResult> => {
-          if (hook.id === "deny-write") return { decision: { action: "deny", reason: "read only" } };
-          if (hook.id === "rewrite") return { decision: { action: "modify", data: { input: { path: "safe.txt" } } } };
-          if (hook.id === "redact") return { decision: { action: "modify", data: { result: "redacted" } } };
-          return { decision: { action: "allow" } };
-        },
-      },
-    }),
-  };
+function context(hooks: HooksConfig, respond: Parameters<typeof createScriptedHookRuntime>[0]["respond"]): CompletionRuntimeHookContext {
+  return { surface: "chat", runtime: createScriptedHookRuntime({ hooks, respond, context: { cwd: "/workspace" } }) };
 }
 
+const fallback = {
+  type: "model-fallback-selected" as const,
+  from: { index: 0, retryIndex: 0, model: "anthropic/claude-sonnet-5", isFallback: false, totalCandidates: 2 },
+  to: { index: 1, retryIndex: 0, model: "openai/gpt-6.1", isFallback: true, totalCandidates: 2 },
+  reason: { class: "rate-limit" as const, phase: "request" as const, retryable: true, message: "busy" },
+};
+
 describe("createRuntimeHookedToolExecutor", () => {
-  it("denies before the tool side effect in direct chat", async () => {
+  it("denies before the tool side effect with the hook's reason as the tool error", async () => {
     const sideEffect = vi.fn(async () => "written");
     const execute = createRuntimeHookedToolExecutor({
       executor: sideEffect,
-      hooks: context([{
-        id: "deny-write",
-        event: "tool:before",
-        matcher: { tools: ["write"] },
-        handler: { type: "tool", tool: "policy" },
-      }]),
+      hooks: context({ PreToolUse: [{ matcher: "Write", hooks: [{ type: "command", command: "policy" }] }] },
+        () => ({ stdout: JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: "read only" } }) })),
     });
-    await expect(execute("write", { path: "unsafe.txt" })).resolves.toBe("Error: Runtime hook deny: read only");
+    await expect(execute("write", { path: "unsafe.txt", content: "x" })).resolves.toBe("Error: read only");
     expect(sideEffect).not.toHaveBeenCalled();
   });
 
-  it("passes modified input through the ordinary executor and can modify its result", async () => {
-    const sideEffect = vi.fn(async (_name, args) => `read:${args.path}`);
+  it("applies updatedInput in the Claude shape and updatedToolOutput to the result", async () => {
+    const sideEffect = vi.fn(async (_name: string, args: Record<string, unknown>) => `ran:${args.command}`);
     const execute = createRuntimeHookedToolExecutor({
       executor: sideEffect,
-      hooks: context([
-        { id: "rewrite", event: "tool:before", handler: { type: "tool", tool: "policy" } },
-        { id: "redact", event: "tool:after", handler: { type: "tool", tool: "policy" } },
-      ]),
+      hooks: context({
+        PreToolUse: [{ matcher: "Bash", hooks: [{ type: "command", command: "rewrite" }] }],
+        PostToolUse: [{ matcher: "Bash", hooks: [{ type: "command", command: "redact" }] }],
+      }, (input) => input.hook_event_name === "PreToolUse"
+        ? { stdout: JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "allow", updatedInput: { command: "npm run lint" } } }) }
+        : { stdout: JSON.stringify({ hookSpecificOutput: { hookEventName: "PostToolUse", updatedToolOutput: { stdout: "[redacted]", stderr: "", interrupted: false, isImage: false } } }) }),
     });
-    await expect(execute("read", { path: "private.txt" })).resolves.toBe("redacted");
-    expect(sideEffect).toHaveBeenCalledWith("read", { path: "safe.txt" }, undefined);
+    await expect(execute("bash", { command: "npm run lint -- --fix" })).resolves.toBe("[redacted]");
+    expect(sideEffect).toHaveBeenCalledWith("bash", { command: "npm run lint" }, undefined);
   });
 
-  it("emits tool:error for normalized executor failures", async () => {
+  it("routes failed results to PostToolUseFailure and shows exit-2 feedback to the model", async () => {
     const events: string[] = [];
-    const hooks: CompletionRuntimeHookContext = {
-      surface: "loop",
-      identity: { step: "implement" },
-      dispatcher: new RuntimeHookEngine({
-        definitions: [{ id: "observe-error", event: "tool:error", mode: "observe", handler: { type: "tool", tool: "audit" } }],
-        host: { execute: async ({ envelope }) => { events.push(envelope.event); } },
+    const execute = createRuntimeHookedToolExecutor({
+      executor: async () => "Error: Exit code 1",
+      hooks: context({ PostToolUseFailure: [{ hooks: [{ type: "command", command: "advise" }] }] }, (input) => {
+        events.push(input.hook_event_name);
+        return { exitCode: 2, stderr: "install dependencies first" };
       }),
-    };
-    const execute = createRuntimeHookedToolExecutor({ executor: async () => "Error: failed", hooks });
-    await execute("bash", {});
-    expect(events).toEqual(["tool:error"]);
+    });
+    const result = await execute("bash", { command: "npm test" });
+    expect(events).toEqual(["PostToolUseFailure"]);
+    expect(result).toContain("Error: Exit code 1");
+    expect(result).toContain("install dependencies first");
   });
 
-  it("emits sandbox:file_changed after a successful local file mutation", async () => {
-    const events: Array<{ event: string; data: Record<string, unknown> }> = [];
-    const hooks: CompletionRuntimeHookContext = {
-      surface: "chat",
-      identity: { runId: "run-1", agent: "support" },
-      dispatcher: new RuntimeHookEngine({
-        definitions: [{
-          id: "observe-file",
-          event: "sandbox:file_changed",
-          mode: "observe",
-          handler: { type: "tool", tool: "audit" },
-        }],
-        host: {
-          execute: async ({ envelope }) => {
-            events.push({ event: envelope.event, data: envelope.data });
-          },
-        },
-      }),
-    };
+  it("fires FileChanged for a watched file written by a workspace tool", async () => {
+    const seen: Record<string, any>[] = [];
     const execute = createRuntimeHookedToolExecutor({
       executor: async () => "written",
-      hooks,
+      hooks: context({ FileChanged: [{ matcher: ".envrc|.env", hooks: [{ type: "command", command: "reload-env" }] }] }, (input) => {
+        seen.push(input);
+        return {};
+      }),
     });
+    await execute("write", { path: "src/index.ts", content: "x" });
+    await execute("write", { path: ".env", content: "A=1" });
+    expect(seen).toEqual([expect.objectContaining({ hook_event_name: "FileChanged", file_path: "/workspace/.env", event: "add" })]);
+  });
 
-    await execute("write_file", { path: "src/index.ts" }, { callId: "tool-1" });
-
-    expect(events).toEqual([{
-      event: "sandbox:file_changed",
-      data: {
-        action: "created",
-        path: "src/index.ts",
-        directory: "src",
-        sourceTool: "write_file",
-      },
-    }]);
+  it("continue: false from a tool hook records a stop for the next boundary", async () => {
+    const hooks = context({ PostToolUse: [{ hooks: [{ type: "command", command: "halt" }] }] },
+      () => ({ stdout: JSON.stringify({ continue: false, stopReason: "Build failed" }) }));
+    const execute = createRuntimeHookedToolExecutor({ executor: async () => "ok", hooks });
+    await execute("bash", { command: "make" });
+    expect(hooks.runtime.pendingStop).toEqual({ reason: "Build failed" });
   });
 });
 
 describe("dispatchCompletionModelPolicyHook", () => {
-  it("emits controlling before and observable after events for a fallback", async () => {
-    const events: string[] = [];
-    const hooks: CompletionRuntimeHookContext = {
-      surface: "loop",
-      identity: { runId: "run-1", agent: "support", step: "implement" },
-      dispatcher: new RuntimeHookEngine({
-        definitions: [
-          { id: "before", event: "model:switch:before", handler: { type: "tool", tool: "policy" } },
-          { id: "after", event: "model:switch:after", mode: "observe", handler: { type: "tool", tool: "audit" } },
-        ],
-        host: { execute: async ({ envelope }) => { events.push(envelope.event); } },
-      }),
-    };
-
-    await dispatchCompletionModelPolicyHook(hooks, {
-      type: "model-fallback-selected",
-      from: { index: 0, retryIndex: 0, model: "primary", isFallback: false, totalCandidates: 2 },
-      to: { index: 1, retryIndex: 0, model: "fallback", isFallback: true, totalCandidates: 2 },
-      reason: { class: "rate-limit", phase: "request", retryable: true, message: "busy" },
+  it("an automatic fallback fires PostModelSwitch with source auto and queues its context", async () => {
+    const seen: Record<string, any>[] = [];
+    const hooks = context({ PostModelSwitch: [{ matcher: ".*gpt.*", hooks: [{ type: "command", command: "guidance" }] }] }, (input) => {
+      seen.push(input);
+      return { stdout: "On GPT, keep answers short." };
     });
-
-    expect(events).toEqual(["model:switch:before", "model:switch:after"]);
-  });
-
-  it("blocks a fallback before the next provider attempt", async () => {
-    const hooks: CompletionRuntimeHookContext = {
-      surface: "chat",
-      identity: { runId: "run-1", agent: "support" },
-      dispatcher: new RuntimeHookEngine({
-        definitions: [{ id: "pin", event: "model:switch:before", handler: { type: "tool", tool: "policy" } }],
-        host: { execute: async () => ({ decision: { action: "deny", reason: "model pinned" } }) },
-      }),
-    };
-
-    await expect(dispatchCompletionModelPolicyHook(hooks, {
-      type: "model-fallback-selected",
-      from: { index: 0, retryIndex: 0, model: "primary", isFallback: false, totalCandidates: 2 },
-      to: { index: 1, retryIndex: 0, model: "fallback", isFallback: true, totalCandidates: 2 },
-      reason: { class: "rate-limit", phase: "request", retryable: true, message: "busy" },
-    })).rejects.toThrow("Runtime hook deny: model pinned");
+    await dispatchCompletionModelPolicyHook(hooks, fallback);
+    expect(seen[0]).toMatchObject({ hook_event_name: "PostModelSwitch", from_model: "anthropic/claude-sonnet-5", to_model: "openai/gpt-6.1", source: "auto", requested_model: null });
+    expect(takePendingHookContext(hooks)?.content).toContain("On GPT, keep answers short.");
+    expect(takePendingHookContext(hooks)).toBeUndefined();
   });
 });

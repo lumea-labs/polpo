@@ -60,11 +60,11 @@ import {
   type CompletionRouteDeps,
   type ConnectRouteDeps,
 } from "@polpo-ai/server";
-import type { RuntimeHookHost, RuntimeHookPackStore } from "@polpo-ai/core/runtime-hooks";
+import type { HookHost, HookPackStore } from "@polpo-ai/core/runtime-hooks";
 import {
-  createNodeRuntimeHookHost,
-  createProjectRuntimeHookEngine,
+  createProjectHookRuntime,
 } from "../runtime-hooks.js";
+import { createNodeHookHost } from "../hooks-host.js";
 // Node.js-only routes (stay in src/server/routes/)
 import { publicConfigRoutes } from "./routes/config.js";
 import { filesystemRoutes } from "./routes/filesystem.js";
@@ -162,9 +162,9 @@ export interface AppOptions {
   /** Host override for resolving immutable runtime hook snapshots. */
   resolveRuntimeHooks?: CompletionRouteDeps["resolveRuntimeHooks"];
   /** Handler adapter for local `.polpo/hooks` packs. Defaults to command + HTTPS handlers. */
-  runtimeHookHost?: RuntimeHookHost;
+  runtimeHookHost?: HookHost;
   /** Persistence override for runtime hook packs. */
-  runtimeHookStore?: RuntimeHookPackStore;
+  runtimeHookStore?: HookPackStore;
   brain?: {
     service: BrainManagementService;
     resolveContext: (input?: {
@@ -385,21 +385,34 @@ export function createApp(orchestrator: Orchestrator, sseBridge: SSEBridge, opts
         : {}
     ),
     emit: (event: string, data: any) => o.emit(event as any, data),
-    resolveRuntimeHooks: opts?.resolveRuntimeHooks ?? (async ({ agentConfig }) => {
+    resolveRuntimeHooks: opts?.resolveRuntimeHooks ?? (async ({ agentConfig, surface, runId, sessionId, loop, step, turnId }) => {
       const names = Array.isArray(agentConfig?.hooks)
         ? agentConfig.hooks.filter((name: unknown): name is string => typeof name === "string")
         : [];
       if (names.length === 0) return undefined;
       if (!projectPolpoDir) throw new Error("Runtime hook project directory is unavailable");
-      const host = opts?.runtimeHookHost ?? createNodeRuntimeHookHost({
-        shell: o.getShell(),
-        cwd: o.getAgentWorkDir(),
-        trace: (execution) => { o.emit("runtime:hook" as any, execution); },
+      const host = opts?.runtimeHookHost ?? createNodeHookHost({
+        record: async (execution) => { o.emit("runtime:hook" as any, execution); },
       });
-      return await createProjectRuntimeHookEngine({
+      const cwd = o.getAgentWorkDir();
+      return await createProjectHookRuntime({
         polpoDir: projectPolpoDir,
         names,
         host,
+        context: {
+          sessionId: sessionId ?? runId ?? "polpo",
+          cwd,
+          projectDir: opts?.workDir ?? cwd,
+          permissionMode: "default",
+          ...(agentConfig?.name ? { agentType: agentConfig.name } : {}),
+          polpo: {
+            ...(runId ? { run_id: runId } : {}),
+            ...(turnId ? { turn_id: turnId } : {}),
+            ...(loop ? { loop } : {}),
+            ...(step ? { step } : {}),
+            surface,
+          },
+        },
       });
     }),
     resolveExecutionRouteClassifier: (context) =>

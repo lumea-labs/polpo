@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { MockLanguageModelV3, convertArrayToReadableStream } from "ai/test";
 import { MemoryLoopRunStore } from "@polpo-ai/core";
 import { runProjectLoopCompletion } from "./project-loop-runner.js";
-import { RuntimeHookEngine } from "@polpo-ai/core/runtime-hooks";
+import { createScriptedHookRuntime } from "@polpo-ai/core/runtime-hooks";
 import { normalizeChatInteractionSettings } from "@polpo-ai/core/chat-interactions";
 import { executeStreamingChatCompletion, runNonStreamingChatCompletion, type ChatCompletionExecution } from "./chat-handler.js";
 import { modelOutputForResponseFormat } from "./structured-output.js";
@@ -12,13 +12,15 @@ import type { CompletionRouteDeps } from "../completions.js";
 function fixture(structured = false) {
   let repaired = false;
   const calls: any[] = [];
-  const validate = vi.fn(async () => repaired
-    ? { decision: { action: "allow" as const } }
-    : { decision: { action: "continue" as const, feedback: { valid: false, failures: [{ phase: "build", code: "missing_import", diagnostics: "Add the missing import to src/app.ts" }] } } });
+  // A copied Claude Code Stop hook: exit 2 with diagnostics until the repair lands.
+  const validate = vi.fn(async (_input: Record<string, any>) => repaired
+    ? { exitCode: 0 }
+    : { exitCode: 2, stderr: JSON.stringify({ valid: false, failures: [{ phase: "build", code: "missing_import", diagnostics: "Add the missing import to src/app.ts" }] }) });
   const ledger = new Map<string, any>();
-  const hooks = new RuntimeHookEngine({
-    definitions: [{ id: "validate", event: "turn:stop", terminationGate: { maxCycles: 2, maxDurationMs: 30_000, maxTokens: 10_000 }, onFailure: "block", handler: { type: "tool", tool: "site_validate" } }],
-    host: { execute: validate, findCompleted: async request => ledger.get(request.idempotencyKey), trace: async (execution, decision) => { ledger.set(execution.idempotencyKey, { execution, decision }); } },
+  const hooks = createScriptedHookRuntime({
+    hooks: { Stop: [{ hooks: [{ type: "command", command: "./scripts/site-validate.sh" }] }] },
+    respond: (input) => validate(input),
+    ledger,
   });
   const model = new MockLanguageModelV3({ doStream: async (options) => {
     calls.push(options);
@@ -48,7 +50,7 @@ function fixture(structured = false) {
   return { options, calls, validate, executor, cleanup, resolveAgentTools, hooks, model };
 }
 
-describe("Project Loop termination gate", () => {
+describe("Project Loop Stop hook continuation", () => {
   it.each([false, true])("repairs in the same agent conversation with authorized tools (structured=%s)", async structured => {
     const f = fixture(structured);
     const result = await runAgentStepCompletion(f.options);
@@ -56,6 +58,8 @@ describe("Project Loop termination gate", () => {
     expect(f.resolveAgentTools).toHaveBeenCalledTimes(1);
     expect(f.cleanup).toHaveBeenCalledTimes(1);
     expect(f.validate).toHaveBeenCalledTimes(2);
+    expect(f.validate.mock.calls[0]![0]).toMatchObject({ hook_event_name: "Stop", stop_hook_active: false });
+    expect(f.validate.mock.calls[1]![0]).toMatchObject({ hook_event_name: "Stop", stop_hook_active: true });
     const repair = f.calls.find(call => JSON.stringify(call.prompt).includes("missing_import"));
     expect(repair.tools).toEqual(expect.arrayContaining([expect.objectContaining({ name: "edit_file" })]));
     expect(JSON.stringify(repair.prompt)).toContain("Work is complete");
@@ -73,7 +77,7 @@ describe("Project Loop termination gate", () => {
 });
 
 
-describe("direct chat termination gate", () => {
+describe("direct chat Stop hook continuation", () => {
   it.each([[false, false], [false, true], [true, false], [true, true]])("retains tools and history (stream=%s, structured=%s)", async (stream, structured) => {
     const f = fixture(structured);
     const resolved = await f.options.deps.resolveAgentModel(f.options.agentConfig);
@@ -86,7 +90,7 @@ describe("direct chat termination gate", () => {
       effectiveTools: (await f.resolveAgentTools()).tools, effectiveToolExecutor: f.executor,
       clientSideTools: {}, interactionSettings: normalizeChatInteractionSettings({}),
       aiMessages: f.options.aiMessages, sessionStore: null, sessionId: null,
-      runtimeHooks: { dispatcher: f.hooks, surface: "chat", identity: { runId: "same-run", agent: "leo" } },
+      runtimeHooks: { runtime: f.hooks, surface: "chat" },
     };
     const signal = new AbortController().signal;
     const chunks: any[] = [];
@@ -107,7 +111,7 @@ describe("direct chat termination gate", () => {
 });
 
 
-describe("termination checkpoint recovery", () => {
+describe("Stop continuation checkpoint recovery", () => {
   it("replays the persisted validation decision, preserving feedback and limits", async () => {
     const f = fixture(true);
     let saved: any;
@@ -167,7 +171,7 @@ describe("termination checkpoint recovery", () => {
 });
 
 
-describe("Managed Project Loop gate adapter", () => {
+describe("Managed Project Loop Stop hook adapter", () => {
   it("persists real graph checkpoints and reuses the same run tool scope during repairs", async () => {
     const f = fixture(true);
     const store = new MemoryLoopRunStore();
@@ -196,20 +200,3 @@ describe("Managed Project Loop gate adapter", () => {
   });
 });
 
-
-it("exposes the already resolved tool executor to a validator without recursive hook dispatch", async () => {
-  const f = fixture();
-  const originalExecutor = f.executor;
-  let validations = 0;
-  const validate = { name: "site_validate", description: "Validate the working copy", parameters: { type: "object", properties: { hook: { type: "object", additionalProperties: true } }, additionalProperties: true } };
-  f.options.deps.resolveAgentTools = async () => ({ tools: [...(await f.resolveAgentTools()).tools, validate], executor: async (name, args) => {
-    if (name !== "site_validate") return originalExecutor();
-    validations++;
-    return JSON.stringify({ decision: originalExecutor.mock.calls.length ? { action: "allow" } : { action: "continue", feedback: { failures: ["missing_import"] } } });
-  } });
-  f.options.deps.resolveRuntimeHooks = async input => new RuntimeHookEngine({ definitions: [{ id: "validate", event: "turn:stop", terminationGate: { maxCycles: 2, maxDurationMs: 30000, maxTokens: 10000 }, handler: { type: "tool", tool: "site_validate" } }], host: { execute: async request => JSON.parse(await input.getToolExecutor!()!("site_validate", { hook: request.envelope }, { callId: request.idempotencyKey, signal: request.signal })) } });
-  await runAgentStepCompletion(f.options);
-  expect(validations).toBe(2);
-  expect(originalExecutor).toHaveBeenCalledTimes(1);
-  expect(f.resolveAgentTools).toHaveBeenCalledTimes(1);
-});

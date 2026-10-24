@@ -15,7 +15,7 @@ import type {
   HookHost,
   HttpHookRequest,
   HttpRunResult,
-} from "@polpo-ai/core/runtime-hooks/contract";
+} from "@polpo-ai/core/runtime-hooks";
 
 /** Captured stdout/stderr bound per stream; output beyond it is discarded. */
 export const HOOK_PROCESS_OUTPUT_LIMIT_BYTES = 1024 * 1024;

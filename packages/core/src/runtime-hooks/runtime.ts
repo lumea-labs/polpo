@@ -77,7 +77,15 @@ export interface StopOutcome {
 }
 
 export class HookRuntime {
+  /** `continue: false` from any hook during this invocation: stop at the next boundary. */
+  pendingStop?: { reason?: string };
+  /** Context for the next model request (PostModelSwitch, PostToolBatch, async hooks). */
+  readonly pendingContext: string[] = [];
+  /** User-facing hook messages (`systemMessage`) collected during this invocation. */
+  readonly systemMessages: string[] = [];
   private consecutiveStopContinuations = 0;
+  /** The turn is continuing because a Stop hook kept it going; tool calls don't clear it. */
+  private stopHookActive = false;
   private readonly stopCap: number;
 
   constructor(
@@ -93,6 +101,10 @@ export class HookRuntime {
   /** Update mutable fields (cwd after `cd`, prompt id per turn, permission mode). */
   update(patch: Partial<HookRuntimeContext>): void {
     this.context = { ...this.context, ...patch };
+  }
+
+  get cwd(): string {
+    return this.context.cwd;
   }
 
   has(event: HookEventName): boolean {
@@ -183,7 +195,7 @@ export class HookRuntime {
     }, options);
   }
 
-  /** A real tool call resets the consecutive Stop-continuation counter. */
+  /** A real tool call resets the consecutive Stop-continuation counter (not `stop_hook_active`). */
   noteToolCall(): void {
     this.consecutiveStopContinuations = 0;
   }
@@ -204,9 +216,8 @@ export class HookRuntime {
   } = {}): Promise<StopOutcome> {
     const event = options.event ?? "Stop";
     if (!this.engine.has(event)) return { action: "accept", systemMessages: [] };
-    const stopHookActive = this.consecutiveStopContinuations > 0;
     const result = await this.dispatch(event, {
-      stop_hook_active: stopHookActive,
+      stop_hook_active: this.stopHookActive,
       last_assistant_message: lastAssistantMessage,
       background_tasks: options.backgroundTasks ?? [],
       session_crons: options.sessionCrons ?? [],
@@ -225,6 +236,7 @@ export class HookRuntime {
       return { action: "accept", reason: `Stop hook continuation cap (${this.stopCap}) reached`, systemMessages: result.systemMessages };
     }
     this.consecutiveStopContinuations += 1;
+    this.stopHookActive = true;
     return {
       action: "continue",
       feedback: result.continuation.feedback,
@@ -234,13 +246,15 @@ export class HookRuntime {
   }
 
   /** Snapshot for durable checkpoints. */
-  stopState(): { consecutiveStopContinuations: number } {
-    return { consecutiveStopContinuations: this.consecutiveStopContinuations };
+  stopState(): { consecutiveStopContinuations: number; stopHookActive: boolean } {
+    return { consecutiveStopContinuations: this.consecutiveStopContinuations, stopHookActive: this.stopHookActive };
   }
 
-  restoreStopState(state: { consecutiveStopContinuations?: number } | undefined): void {
+  restoreStopState(state: { consecutiveStopContinuations?: number; stopHookActive?: boolean } | undefined): void {
     const value = state?.consecutiveStopContinuations;
     if (Number.isSafeInteger(value) && value! >= 0) this.consecutiveStopContinuations = value!;
+    // Checkpoints written before the flag existed: any recorded continuation means active.
+    this.stopHookActive = state?.stopHookActive ?? this.consecutiveStopContinuations > 0;
   }
 
   // ─── Internals ───────────────────────────────────────────────────────────

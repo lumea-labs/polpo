@@ -69,9 +69,8 @@ describe("cloud deploy dependency order", () => {
       schemaVersion: 2, project: "hooks", projectId: "project-1", projectSlug: "hooks-project",
     }));
     await writeFile(join(polpoDir, "hooks", "quality.json"), JSON.stringify({
-      version: 1,
       name: "quality",
-      hooks: [{ id: "guard", event: "tool:before", handler: { type: "http", url: "https://policy.example.test/hook" } }],
+      hooks: { PreToolUse: [{ matcher: "Bash", hooks: [{ type: "http", url: "https://policy.example.test/hook" }] }] },
     }));
     const calls: Array<{ method: string; path: string; body?: unknown }> = [];
     vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
@@ -88,7 +87,7 @@ describe("cloud deploy dependency order", () => {
     expect(report.total).toMatchObject({ created: 1, failed: 0 });
     expect(calls).toEqual([
       { method: "GET", path: "/environments/development/v1/hooks/quality" },
-      { method: "PUT", path: "/environments/development/v1/hooks/quality", body: expect.objectContaining({ name: "quality", version: 1 }) },
+      { method: "PUT", path: "/environments/development/v1/hooks/quality", body: expect.objectContaining({ name: "quality", hooks: expect.objectContaining({ PreToolUse: expect.any(Array) }) }) },
     ]);
   });
 
@@ -101,7 +100,7 @@ describe("cloud deploy dependency order", () => {
       schemaVersion: 2, project: "hooks", projectId: "project-1", projectSlug: "hooks-project",
     }));
     await writeFile(join(polpoDir, "hooks", "bad.json"), JSON.stringify({
-      version: 1, name: "bad", hooks: [{ id: "broken", event: "tool:before", handler: { type: "command" } }],
+      name: "bad", hooks: { PreToolUse: [{ hooks: [{ type: "command" }] }] },
     }));
     const fetch = vi.fn(async () => new Response(null, { status: 404 }));
     vi.stubGlobal("fetch", fetch);
@@ -109,7 +108,7 @@ describe("cloud deploy dependency order", () => {
     const report = await runDeploy({ dir: root, yes: true, force: true, silent: true });
 
     expect(report.total.failed).toBe(1);
-    expect(report.total.errors[0]).toContain("handler.command");
+    expect(report.total.errors[0]).toContain("command must be a non-empty string");
     expect(fetch).toHaveBeenCalledTimes(1);
     expect(new URL(String(fetch.mock.calls[0]?.[0])).pathname).toBe("/v1/credentials/current");
   });

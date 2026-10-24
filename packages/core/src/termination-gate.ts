@@ -1,10 +1,18 @@
-import type { RuntimeHookDecision, RuntimeHookJson } from "./runtime-hooks.js";
+/** Outcome of the Stop hooks for one terminal candidate. */
+export type TerminationDecision =
+  | { action: "allow" }
+  | { action: "continue"; feedback: string };
 
-/** Explicit, cumulative limits for one agent invocation, including its repairs. */
+/**
+ * Optional cumulative limits for one agent invocation, including its Stop-hook
+ * continuations. An omitted limit is not enforced: Stop hooks are then bounded
+ * by the consecutive-continuation cap, max turns and cancellation, as in the
+ * reference contract.
+ */
 export interface TerminationGatePolicy {
-  maxCycles: number;
-  maxDurationMs: number;
-  maxTokens: number;
+  maxCycles?: number;
+  maxDurationMs?: number;
+  maxTokens?: number;
 }
 
 export interface TerminationGateState {
@@ -23,24 +31,34 @@ export class TerminationGateError extends Error {
   constructor(readonly code: string, message: string) { super(message); }
 }
 
+const POLICY_CEILINGS = [["maxCycles", 1_000], ["maxDurationMs", 24 * 3_600_000], ["maxTokens", 1_000_000_000]] as const;
+
 export function validateTerminationGatePolicy(value: unknown): TerminationGatePolicy {
-  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("terminationGate requires explicit limits");
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Termination policy must be an object");
   const p = value as Record<string, unknown>;
-  for (const [key, ceiling] of [["maxCycles", 20], ["maxDurationMs", 3_600_000], ["maxTokens", 10_000_000]] as const) {
+  const policy: TerminationGatePolicy = {};
+  for (const [key, ceiling] of POLICY_CEILINGS) {
+    if (p[key] === undefined) continue;
     if (!Number.isSafeInteger(p[key]) || Number(p[key]) < 1 || Number(p[key]) > ceiling) {
-      throw new Error(`terminationGate.${key} must be an integer between 1 and ${ceiling}`);
+      throw new Error(`Termination policy ${key} must be an integer between 1 and ${ceiling}`);
     }
+    policy[key] = p[key] as number;
   }
-  return { maxCycles: p.maxCycles as number, maxDurationMs: p.maxDurationMs as number, maxTokens: p.maxTokens as number };
+  return policy;
 }
 
 export function intersectTerminationGatePolicies(policies: readonly TerminationGatePolicy[]): TerminationGatePolicy | undefined {
   if (!policies.length) return undefined;
-  return {
-    maxCycles: Math.min(...policies.map(p => p.maxCycles)),
-    maxDurationMs: Math.min(...policies.map(p => p.maxDurationMs)),
-    maxTokens: Math.min(...policies.map(p => p.maxTokens)),
+  const min = (key: keyof TerminationGatePolicy) => {
+    const values = policies.map((policy) => policy[key]).filter((value): value is number => value !== undefined);
+    return values.length ? Math.min(...values) : undefined;
   };
+  const policy: TerminationGatePolicy = {};
+  for (const [key] of POLICY_CEILINGS) {
+    const value = min(key);
+    if (value !== undefined) policy[key] = value;
+  }
+  return policy;
 }
 
 /** Provider-neutral gate state. Hosts persist it together with conversation history. */
@@ -64,15 +82,24 @@ export class TerminationGate {
   }
   resumeWork(): void { this.state.accepted = false; this.state.pending = false; }
   snapshot(): TerminationGateState { return structuredClone(this.state); }
-  get remainingMs(): number { return Math.max(0, this.policy.maxDurationMs - (this.now() - this.state.startedAt)); }
-  get remainingTokens(): number { return Math.max(0, this.policy.maxTokens - this.state.tokens); }
+  /** Infinity when the policy sets no time limit. */
+  get remainingMs(): number {
+    return this.policy.maxDurationMs === undefined ? Infinity : Math.max(0, this.policy.maxDurationMs - (this.now() - this.state.startedAt));
+  }
+  /** Infinity when the policy sets no token limit. */
+  get remainingTokens(): number {
+    return this.policy.maxTokens === undefined ? Infinity : Math.max(0, this.policy.maxTokens - this.state.tokens);
+  }
   assertAvailable(): void {
     if (this.remainingMs <= 0) throw new TerminationGateError("termination_gate_time_exhausted", "Termination gate time limit exhausted");
     if (this.remainingTokens <= 0) throw new TerminationGateError("termination_gate_tokens_exhausted", "Termination gate tokens limit exhausted");
   }
   recordUsage(usage: { totalTokens?: number; inputTokens?: number; outputTokens?: number }): void {
     const count = usage.totalTokens ?? (usage.inputTokens !== undefined && usage.outputTokens !== undefined ? usage.inputTokens + usage.outputTokens : undefined);
-    if (count === undefined || !Number.isSafeInteger(count) || count < 0) throw new TerminationGateError("termination_gate_usage_unknown", "Cannot enforce termination gate token budget without usage");
+    if (count === undefined || !Number.isSafeInteger(count) || count < 0) {
+      if (this.policy.maxTokens === undefined) return;
+      throw new TerminationGateError("termination_gate_usage_unknown", "Cannot enforce termination gate token budget without usage");
+    }
     this.state.tokens += count;
   }
   beginAttempt(): number {
@@ -82,21 +109,16 @@ export class TerminationGate {
     this.state.accepted = false;
     return this.state.attempts;
   }
-  decide(decision: RuntimeHookDecision, remainingTurns: number): string | undefined {
+  decide(decision: TerminationDecision, remainingTurns: number): string | undefined {
     this.assertAvailable();
     if (!this.state.pending) throw new TerminationGateError("termination_gate_checkpoint_invalid", "No pending termination attempt");
-    const feedback = decision.action === "continue" ? decision.feedback
-      : decision.action === "stop" && decision.feedback?.trim() ? decision.feedback : undefined;
-    if (feedback !== undefined) {
-      if (this.state.cycles >= this.policy.maxCycles) throw new TerminationGateError("termination_gate_cycles_exhausted", "Termination gate cycles limit exhausted");
-      if (remainingTurns <= 0) throw new TerminationGateError("termination_gate_turns_exhausted", "Termination gate cannot continue: agent turns exhausted");
+    if (decision.action === "continue") {
+      if (this.policy.maxCycles !== undefined && this.state.cycles >= this.policy.maxCycles) throw new TerminationGateError("termination_gate_cycles_exhausted", "Termination gate cycles limit exhausted");
+      if (remainingTurns <= 0) throw new TerminationGateError("termination_gate_turns_exhausted", "Stop hook feedback cannot continue: agent turns exhausted");
       this.state.cycles += 1;
       this.state.pending = false;
       this.state.accepted = false;
-      return renderTerminationGateFeedback(feedback);
-    }
-    if (decision.action !== "allow") {
-      throw new TerminationGateError("termination_gate_rejected", `Termination gate rejected completion: ${"reason" in decision ? decision.reason ?? decision.action : decision.action}`);
+      return renderTerminationGateFeedback(decision.feedback);
     }
     this.state.pending = false;
     this.state.accepted = true;
@@ -104,6 +126,7 @@ export class TerminationGate {
   }
 }
 
-export function renderTerminationGateFeedback(feedback: RuntimeHookJson): string {
-  return `A trusted termination validator rejected this completion. Correct the reported problems in this same conversation using your authorized tools. Preserve completed work and do not repeat already committed side effects. Attempt completion again only after correction.\n\nValidation diagnostics:\n${typeof feedback === "string" ? feedback : JSON.stringify(feedback)}`;
+/** Stop-hook feedback delivered to the same agent as its next instruction. */
+export function renderTerminationGateFeedback(feedback: string): string {
+  return `Stop hook feedback:\n${feedback}`;
 }

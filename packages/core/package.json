@@ -99,10 +99,6 @@
       "import": "./dist/steering.js"
     },
     "./runtime-hooks": {
-      "types": "./dist/runtime-hooks.d.ts",
-      "import": "./dist/runtime-hooks.js"
-    },
-    "./runtime-hooks/contract": {
       "types": "./dist/runtime-hooks/index.d.ts",
       "import": "./dist/runtime-hooks/index.js"
     },

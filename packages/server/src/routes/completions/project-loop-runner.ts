@@ -30,7 +30,6 @@ import {
   stringifyLoopContext,
   type ContextBag,
   type LoopApprovedGate,
-  type LoopLifecycleHook,
   type LoopRunRecord,
   type LoopRunStore,
   type LoopResumeState,
@@ -88,8 +87,6 @@ import {
 } from "./tool-policy-runtime.js";
 import {
   createRuntimeHookedToolExecutor,
-  dispatchCompletionRuntimeHook,
-  runtimeHookDecisionError,
   type CompletionRuntimeHookContext,
 } from "./runtime-hooks.js";
 import {
@@ -163,52 +160,6 @@ export async function createCompletionRunSteeringScope(
       }
       if (closeError !== undefined) throw closeError;
     },
-  };
-}
-
-const RUNTIME_PROJECT_LOOP_EVENTS = new Set<LoopLifecycleHook>([
-  "loop:start",
-  "step:before",
-  "loop:transition",
-  "step:after",
-  "loop:end",
-]);
-
-function isRuntimeProjectLoopEvent(event: LoopLifecycleHook): event is
-  | "loop:start"
-  | "step:before"
-  | "loop:transition"
-  | "step:after"
-  | "loop:end" {
-  return RUNTIME_PROJECT_LOOP_EVENTS.has(event);
-}
-
-function runtimeProjectLoopEventData(
-  event: "loop:start" | "step:before" | "loop:transition" | "step:after" | "loop:end",
-  data: Readonly<{ context: ContextBag } & Record<string, unknown>>,
-  loop: string,
-  resumed: boolean,
-): Record<string, unknown> {
-  if (event === "loop:start") return { loop, resumed };
-  if (event === "loop:end") {
-    return { loop, status: recordValue(data.loop)?.status ?? data.status ?? "completed" };
-  }
-  if (event === "loop:transition") {
-    const transition = recordValue(data.transition);
-    return {
-      loop,
-      from: transition?.from,
-      to: transition?.to,
-      fromStepKey: transition?.fromStepKey,
-      toStepKey: transition?.toStepKey,
-    };
-  }
-  const step = recordValue(data.step);
-  return {
-    loop,
-    step: step?.name,
-    stepKey: step?.key,
-    kind: step?.type,
   };
 }
 
@@ -492,7 +443,7 @@ export async function runProjectLoopCompletion(options: {
     },
   };
   const loopRunId = resumeRun?.id ?? (loopRunStore ? `looprun-${nanoid(16)}` : undefined);
-  const runtimeHookDispatcher = await deps.resolveRuntimeHooks?.({
+  const hookRuntime = await deps.resolveRuntimeHooks?.({
     agentConfig,
     surface: "loop",
     runId: loopRunId,
@@ -500,17 +451,11 @@ export async function runProjectLoopCompletion(options: {
     loop: projectLoop.name,
     activatedSkills,
   });
-  const runtimeHooks: CompletionRuntimeHookContext | undefined = runtimeHookDispatcher
-    ? {
-        dispatcher: runtimeHookDispatcher,
-        surface: "loop",
-        identity: {
-          runId: loopRunId,
-          sessionId: sessionId ?? undefined,
-          agent: agentConfig.name,
-          loop: projectLoop.name,
-        },
-      }
+  // Graph orchestration has no Claude Code lifecycle counterpart; deterministic
+  // tool steps are tool calls (PreToolUse/PostToolUse) and agent nodes run the
+  // full agent lifecycle in runAgentStepCompletion.
+  const runtimeHooks: CompletionRuntimeHookContext | undefined = hookRuntime
+    ? { runtime: hookRuntime, surface: "loop" }
     : undefined;
   const agentIdentity = options.agentIdentity === undefined ? providedToolInvocation?.agent : normalizeAgentIdentity(options.agentIdentity);
   if ((agentIdentity && agentIdentity.name !== agentConfig.name)
@@ -761,10 +706,6 @@ export async function runProjectLoopCompletion(options: {
   };
 
   try {
-    await dispatchCompletionRuntimeHook(runtimeHooks, "run:start", {
-      loop: projectLoop.name,
-      resumed: Boolean(resumeRun),
-    });
     const result = await executor.execute({
       name: projectLoop.name,
       pipeline: resumeState ? { ...normalized.pipeline, steps: resumeState.steps } : normalized.pipeline,
@@ -783,16 +724,6 @@ export async function runProjectLoopCompletion(options: {
       onCheckpoint: loopRunStore ? async checkpoint => persistCheckpoint(checkpoint, checkpoint.context) : undefined,
       onTrace: async (event) => {
         await emitTrace(event);
-      },
-      onLifecyclePoint: async (event, data) => {
-        if (!isRuntimeProjectLoopEvent(event)) return;
-        const decision = await dispatchCompletionRuntimeHook(
-          runtimeHooks,
-          event,
-          runtimeProjectLoopEventData(event, data, projectLoop.name, Boolean(resumeRun)),
-        );
-        const error = runtimeHookDecisionError(decision);
-        if (error) throw error;
       },
       validateToolInput: validateDeterministicToolInput,
       runTool: async (name, input) => {
@@ -932,10 +863,6 @@ export async function runProjectLoopCompletion(options: {
         completedAt: new Date().toISOString(),
       }, deps.emit, "completed");
     }
-    await dispatchCompletionRuntimeHook(runtimeHooks, "run:end", {
-      loop: projectLoop.name,
-      status: "completed",
-    });
     await options.steering?.close("too_late", "graph_finished");
     return {
       text: finalText,
@@ -964,30 +891,6 @@ export async function runProjectLoopCompletion(options: {
           ? "graph_suspended_for_approval"
           : "graph_failed",
     );
-    if (awaitingApproval) {
-      await dispatchCompletionRuntimeHook(runtimeHooks, "approval:request", {
-        loop: projectLoop.name,
-        approvalType: err instanceof LoopPermissionApprovalRequiredError ? "permission" : "policy",
-        gateId: err instanceof LoopPermissionApprovalRequiredError
-          ? err.permission.id ?? "anonymous"
-          : err.policy.id ?? "anonymous",
-        lifecycle: err.hook,
-        reason: err.message,
-      }).catch(() => {});
-      await dispatchCompletionRuntimeHook(runtimeHooks, "loop:stop", {
-        loop: projectLoop.name,
-        status: "awaiting_approval",
-      }).catch(() => {});
-    }
-    await dispatchCompletionRuntimeHook(runtimeHooks, "loop:end", {
-      loop: projectLoop.name,
-      status: awaitingApproval ? "awaiting_approval" : "failed",
-      error: err instanceof Error ? err.message : String(err),
-    }).catch(() => {});
-    await dispatchCompletionRuntimeHook(runtimeHooks, "run:end", {
-      loop: projectLoop.name,
-      status: awaitingApproval ? "awaiting_approval" : "failed",
-    }).catch(() => {});
     if (loopRunStore && loopRunId) {
       (err as any).loopRunId = loopRunId;
       if (err instanceof LoopApprovalRequiredError || err instanceof LoopPermissionApprovalRequiredError) {

@@ -287,3 +287,39 @@ export function hookTimeoutMs(event: HookEventName, type: HookHandlerType, confi
   if (type === "agent") return AGENT_HOOK_DEFAULT_TIMEOUT_SECONDS * 1000;
   return Math.round(HOOK_EVENTS[event].defaultTimeoutSeconds * 1000);
 }
+
+/** What a host supports: the reference baseline, which events it emits and which handler types run. */
+export interface HookCapabilities {
+  reference: typeof HOOK_REFERENCE_BASELINE;
+  /** Every reference event is accepted in configuration. */
+  events: readonly HookEventName[];
+  /** Events this host fires at a lifecycle boundary. Others are accepted but never fire here. */
+  emittedEvents: readonly HookEventName[];
+  /** Handler types this host can execute. Configured types it cannot run fail as hook errors. */
+  handlerTypes: readonly HookHandlerType[];
+  stopHookBlockCap: number;
+}
+
+/** Lifecycle boundaries the portable runtime emits today. */
+export const PORTABLE_EMITTED_HOOK_EVENTS: readonly HookEventName[] = [
+  "SessionStart",
+  "UserPromptSubmit",
+  "PreToolUse",
+  "PostToolUse",
+  "PostToolUseFailure",
+  "PostToolBatch",
+  "Stop",
+  "StopFailure",
+  "PreCompact",
+  "PostCompact",
+  "PostModelSwitch",
+  "SessionEnd",
+];
+
+export const PORTABLE_HOOK_CAPABILITIES: HookCapabilities = Object.freeze({
+  reference: HOOK_REFERENCE_BASELINE,
+  events: HOOK_EVENT_NAMES,
+  emittedEvents: PORTABLE_EMITTED_HOOK_EVENTS,
+  handlerTypes: ["command", "http"] as const,
+  stopHookBlockCap: DEFAULT_STOP_HOOK_BLOCK_CAP,
+});

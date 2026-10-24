@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { MockLanguageModelV3, convertArrayToReadableStream } from "ai/test";
 import { normalizeChatInteractionSettings } from "@polpo-ai/core/chat-interactions";
-import { RuntimeHookEngine } from "@polpo-ai/core/runtime-hooks";
+import { createScriptedHookRuntime } from "@polpo-ai/core/runtime-hooks";
 
 import type { CompletionRouteDeps } from "../completions.js";
 import {
@@ -181,19 +181,16 @@ describe("chat structured-output phases", () => {
 
   it("applies the same tool:before denial in direct chat before the side effect", async () => {
     const f = fixture();
-    const host = { execute: vi.fn(async () => ({ decision: { action: "deny" as const, reason: "inspection disabled" } })) };
+    const hookInputs: Record<string, any>[] = [];
     f.execution.runtimeHooks = {
-      dispatcher: new RuntimeHookEngine({
-        definitions: [{
-          id: "deny-inspect",
-          event: "tool:before",
-          matcher: { tools: ["inspect"] },
-          handler: { type: "tool", tool: "policy_check" },
-        }],
-        host,
+      runtime: createScriptedHookRuntime({
+        hooks: { PreToolUse: [{ matcher: "inspect", hooks: [{ type: "command", command: "policy-check" }] }] },
+        respond: (input) => {
+          hookInputs.push(input);
+          return { stdout: JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: "inspection disabled" } }) };
+        },
       }),
       surface: "chat",
-      identity: { agent: "test-agent", sessionId: "session-1" },
     };
     f.execution.effectiveToolExecutor = createRuntimeHookedToolExecutor({
       hooks: f.execution.runtimeHooks,
@@ -207,34 +204,20 @@ describe("chat structured-output phases", () => {
 
     expect(response.choices[0].message.content).toBe('{"answer":"ready"}');
     expect(f.executor).not.toHaveBeenCalled();
-    expect(host.execute).toHaveBeenCalledWith(expect.objectContaining({
-      envelope: expect.objectContaining({
-        event: "tool:before",
-        surface: "chat",
-        identity: expect.objectContaining({ agent: "test-agent", sessionId: "session-1", toolCallId: "inspect_1" }),
-      }),
-    }));
+    expect(hookInputs).toEqual([expect.objectContaining({ hook_event_name: "PreToolUse", tool_name: "inspect", tool_use_id: "inspect_1" })]);
   });
 
-  it("honors one bounded turn:stop feedback recovery before the response is committed", async () => {
+  it("continues the same agent on a Stop hook block before the response is committed", async () => {
     const f = fixture();
     delete f.execution.body.response_format;
     f.execution.modelOutput = undefined;
     let stopCalls = 0;
     f.execution.runtimeHooks = {
-      dispatcher: new RuntimeHookEngine({
-        definitions: [{ id: "review-stop", event: "turn:stop", handler: { type: "prompt", prompt: "review" } }],
-        host: {
-          execute: async () => {
-            stopCalls += 1;
-            return stopCalls === 1
-              ? { decision: { action: "stop" as const, feedback: "Include the verified status" } }
-              : { decision: { action: "allow" as const } };
-          },
-        },
+      runtime: createScriptedHookRuntime({
+        hooks: { Stop: [{ hooks: [{ type: "command", command: "review" }] }] },
+        respond: () => (++stopCalls === 1 ? { exitCode: 2, stderr: "Include the verified status" } : { exitCode: 0 }),
       }),
       surface: "chat",
-      identity: { agent: "test-agent" },
     };
 
     const response = await runNonStreamingChatCompletion({
@@ -242,28 +225,24 @@ describe("chat structured-output phases", () => {
       json: (body: unknown) => body,
     } as any, f.execution) as any;
 
-    expect(response.choices[0].message.content).toBe("Operational work complete.\n\nOperational work complete.");
+    // The rejected candidate is replaced, never appended as a second answer.
+    expect(response.choices[0].message.content).toBe("Operational work complete.");
     expect(f.executor).toHaveBeenCalledOnce();
     expect(JSON.stringify(f.prompts.at(-1))).toContain("Include the verified status");
     expect(stopCalls).toBe(2);
   });
 
-  it("streams bounded turn:stop feedback before the terminal frame", async () => {
+  it("streams only the accepted candidate after Stop hook feedback", async () => {
     const f = fixture();
     delete f.execution.body.response_format;
     f.execution.modelOutput = undefined;
     let stopCalls = 0;
     f.execution.runtimeHooks = {
-      dispatcher: new RuntimeHookEngine({
-        definitions: [{ id: "review-stop", event: "turn:stop", handler: { type: "prompt", prompt: "review" } }],
-        host: { execute: async () => ({
-          decision: stopCalls++ === 0
-            ? { action: "stop" as const, feedback: "Correct the answer" }
-            : { action: "allow" as const },
-        }) },
+      runtime: createScriptedHookRuntime({
+        hooks: { Stop: [{ hooks: [{ type: "command", command: "review" }] }] },
+        respond: () => (stopCalls++ === 0 ? { exitCode: 2, stderr: "Correct the answer" } : { exitCode: 0 }),
       }),
       surface: "chat",
-      identity: { agent: "test-agent" },
     };
     const frames: string[] = [];
     await executeStreamingChatCompletion({

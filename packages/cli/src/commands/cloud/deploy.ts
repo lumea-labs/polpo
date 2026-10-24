@@ -38,7 +38,7 @@ import {
 } from "../../util/custom-tool-source.js";
 import { collectLocalSkillBundle } from "../../util/runtime-skill-bundle.js";
 import type { SkillBundle } from "@polpo-ai/core/skill-bundle";
-import { validateRuntimeHookPack } from "@polpo-ai/core/runtime-hooks";
+import { validateHookPack } from "@polpo-ai/core/runtime-hooks";
 
 // ── Deploy result tracking ──────────────────────────────
 
@@ -168,7 +168,7 @@ function listJsonFiles(dir: string): string[] {
 
 function loadRuntimeHookPacks(polpoDir: string) {
   return listJsonFiles(path.join(polpoDir, "hooks")).map((file) => {
-    const pack = validateRuntimeHookPack(JSON.parse(fs.readFileSync(file, "utf8")));
+    const pack = validateHookPack(JSON.parse(fs.readFileSync(file, "utf8")));
     const filename = path.basename(file, ".json");
     if (pack.name !== filename) throw new Error(`Hook pack ${file} declares name "${pack.name}"; expected "${filename}"`);
     return pack;
