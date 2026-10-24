@@ -141,10 +141,39 @@ function createEditTool(cwd: string, sandbox: string[], fs: FileSystem): PolpoTo
 
 // === Bash Tool ===
 
+const BASH_DEFAULT_TIMEOUT_MS = 120_000;
+const BASH_MAX_TIMEOUT_MS = 600_000;
+
 const BashSchema = Type.Object({
   command: Type.String({ description: "Shell command to execute" }),
-  timeout: Type.Optional(Type.Number({ description: "Timeout in milliseconds (default: 120000)" })),
+  timeout: Type.Optional(Type.Number({ description: "Timeout in milliseconds (default: 120000, max: 600000)" })),
 });
+
+/** Missing, zero, negative or non-finite → default; anything above the cap → cap. */
+function normalizeBashTimeout(timeout: number | undefined): number {
+  if (timeout === undefined || !Number.isFinite(timeout) || timeout <= 0) return BASH_DEFAULT_TIMEOUT_MS;
+  return Math.min(Math.floor(timeout), BASH_MAX_TIMEOUT_MS);
+}
+
+const ABORTED = Symbol("aborted");
+
+/**
+ * Resolve as soon as the signal aborts, even if the Shell implementation does
+ * not honour `ShellOptions.signal` (remote/proxy shells). Process-backed
+ * shells (NodeShell) also kill the process tree on abort.
+ */
+function untilAborted<T>(promise: Promise<T>, signal: AbortSignal | undefined): Promise<T | typeof ABORTED> {
+  if (!signal) return promise;
+  if (signal.aborted) return Promise.resolve(ABORTED);
+  return new Promise((resolvePromise, reject) => {
+    const onAbort = () => resolvePromise(ABORTED);
+    signal.addEventListener("abort", onAbort, { once: true });
+    promise.then(
+      (value) => { signal.removeEventListener("abort", onAbort); resolvePromise(value); },
+      (err) => { signal.removeEventListener("abort", onAbort); reject(err); },
+    );
+  });
+}
 
 function createBashTool(cwd: string, shell: Shell): PolpoTool<typeof BashSchema> {
   return {
@@ -152,10 +181,22 @@ function createBashTool(cwd: string, shell: Shell): PolpoTool<typeof BashSchema>
     label: "Execute Shell",
     description: "Execute a shell command and return its output. Use for running tests, installing packages, git operations, etc.",
     parameters: BashSchema,
-    async execute(_toolCallId, params) {
-      const timeout = params.timeout ?? 120_000;
+    async execute(_toolCallId, params, signal) {
+      const timeout = normalizeBashTimeout(params.timeout);
+      if (signal?.aborted) {
+        return {
+          content: [{ type: "text", text: "Error: Command aborted before start" }],
+          details: { command: params.command, error: "aborted", aborted: true },
+        };
+      }
       try {
-        const result = await shell.execute(params.command, { cwd, timeout });
+        const result = await untilAborted(shell.execute(params.command, { cwd, timeout, signal }), signal);
+        if (result === ABORTED) {
+          return {
+            content: [{ type: "text", text: "Error: Command aborted" }],
+            details: { command: params.command, error: "aborted", aborted: true },
+          };
+        }
         let output = result.stdout + (result.stderr ? "\n" + result.stderr : "");
         if (output.length > MAX_OUTPUT_BYTES) {
           output = output.slice(-MAX_OUTPUT_BYTES) + "\n[truncated to last 30KB]";

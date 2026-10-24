@@ -1,34 +1,18 @@
 /**
- * Node.js Shell implementation — wraps execa.
+ * Node.js Shell implementation for the self-hosted runtime.
  *
- * Default implementation for self-hosted mode. Executes real shell commands.
- * Drop-in replacement pattern: swap with JustBashShell, SandboxProxyShell, etc.
+ * Delegates to the `@polpo-ai/tools` implementation, which runs the command
+ * in its own process group and kills the whole tree (SIGKILL) on timeout or
+ * when the caller's AbortSignal fires. execa's built-in `timeout` only
+ * signalled the top-level shell, leaving children running, and reported a
+ * timed-out command as exit code 0.
+ *
+ * Commands keep running under `/bin/sh -c` as before.
  */
-import { execaCommand } from "execa";
-import type { Shell, ShellOptions, ShellResult } from "@polpo-ai/core/shell";
-import { bashSafeEnv } from "@polpo-ai/tools";
+import { NodeShell as ProcessGroupShell } from "@polpo-ai/tools";
 
-export class NodeShell implements Shell {
-  async execute(command: string, options?: ShellOptions): Promise<ShellResult> {
-    try {
-      const result = await execaCommand(command, {
-        shell: true,
-        cwd: options?.cwd,
-        env: { ...bashSafeEnv(), ...options?.env },
-        timeout: options?.timeout,
-        reject: false,
-      });
-      return {
-        stdout: result.stdout,
-        stderr: result.stderr,
-        exitCode: result.exitCode ?? 0,
-      };
-    } catch (err: any) {
-      return {
-        stdout: "",
-        stderr: err.message ?? String(err),
-        exitCode: 1,
-      };
-    }
+export class NodeShell extends ProcessGroupShell {
+  constructor() {
+    super({ shellPath: "/bin/sh" });
   }
 }

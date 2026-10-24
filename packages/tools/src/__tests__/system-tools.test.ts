@@ -411,6 +411,69 @@ describe("bash — happy path", () => {
   });
 });
 
+describe("bash — cancellation and timeout bounds", () => {
+  function isAlive(pid: number): boolean {
+    try { process.kill(pid, 0); return true; } catch { return false; }
+  }
+
+  it("kills the whole process tree when the abort signal fires", { timeout: 20_000 }, async () => {
+    const pidFile = join(cwd, "child.pid");
+    const controller = new AbortController();
+    const t0 = Date.now();
+    const pending = tool("bash").execute(
+      "c1",
+      // The background child survives a kill of the top-level shell alone.
+      { command: `sleep 60 & echo $! > ${pidFile}; wait` },
+      controller.signal,
+    );
+    for (let i = 0; i < 200 && !(existsSync(pidFile) && readFileSync(pidFile, "utf8").trim()); i++) await new Promise((r) => setTimeout(r, 20));
+    const childPid = Number(readFileSync(pidFile, "utf8").trim());
+    expect(isAlive(childPid)).toBe(true);
+
+    controller.abort();
+    const result = await pending;
+    expect(Date.now() - t0).toBeLessThan(10_000);
+    expect(text(result)).toMatch(/abort/i);
+    for (let i = 0; i < 50 && isAlive(childPid); i++) await new Promise((r) => setTimeout(r, 20));
+    expect(isAlive(childPid)).toBe(false);
+  });
+
+  it("does not start the command when the signal is already aborted", async () => {
+    const marker = join(cwd, "should-not-exist");
+    const controller = new AbortController();
+    controller.abort();
+    const result = await tool("bash").execute("c1", { command: `touch ${marker}` }, controller.signal);
+    expect(text(result)).toMatch(/abort/i);
+    expect(existsSync(marker)).toBe(false);
+  });
+
+  it("returns on abort even when the Shell implementation ignores the signal", async () => {
+    const shell = { execute: vi.fn(() => new Promise<never>(() => undefined)) };
+    const bash = createSystemTools(cwd, ["bash"], [cwd], undefined, undefined, new NodeFileSystem(), shell)
+      .find((candidate) => candidate.name === "bash")!;
+    const controller = new AbortController();
+    const pending = bash.execute("c1", { command: "sleep 60" }, controller.signal);
+    controller.abort();
+    expect(text(await pending)).toMatch(/abort/i);
+    expect((shell.execute.mock.calls[0] as unknown[])[1]).toMatchObject({ signal: controller.signal });
+  });
+
+  it.each([
+    [undefined, 120_000],
+    [0, 120_000],
+    [-5, 120_000],
+    [Number.NaN, 120_000],
+    [5_000, 5_000],
+    [86_400_000, 600_000],
+  ])("normalizes timeout %s to %s ms", async (timeout, expected) => {
+    const shell = { execute: vi.fn(async () => ({ stdout: "", stderr: "", exitCode: 0 })) };
+    const bash = createSystemTools(cwd, ["bash"], [cwd], undefined, undefined, new NodeFileSystem(), shell)
+      .find((candidate) => candidate.name === "bash")!;
+    await bash.execute("c1", { command: "true", ...(timeout === undefined ? {} : { timeout }) });
+    expect((shell.execute.mock.calls[0] as unknown[])[1]).toMatchObject({ timeout: expected });
+  });
+});
+
 describe("bash — adversarial", () => {
   it("surfaces a non-zero exit clearly", async () => {
     const result = await tool("bash").execute("c1", { command: "false" });
