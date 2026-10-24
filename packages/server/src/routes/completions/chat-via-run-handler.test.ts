@@ -1707,6 +1707,78 @@ describe("chat via Run driver", () => {
     expect(sessionStore.updateMessage).toHaveBeenCalledOnce();
   });
 
+  it("reports every billed call of a chat-via-run turn to the host meter", async () => {
+    const onCompletionFinished = vi.fn();
+    const gateway = (generationId: string) => ({ gateway: { generationId, marketCost: "0.01" } });
+    const sessionStore = {
+      addMessage: vi.fn(async (_sessionId: string, role: string, content: unknown) => ({
+        id: role === "assistant" ? "assistant-message" : "user-message",
+        role,
+        content,
+      })),
+      updateMessage: vi.fn(async () => true),
+    };
+    const deps = baseDeps({
+      getSessionStore: () => sessionStore,
+      onCompletionFinished,
+      runChatViaRun: async (_inject, hooks) => {
+        const usage = { inputTokens: 10, outputTokens: 5, totalTokens: 15 };
+        hooks.onEvent({ type: "usage", phase: "compaction", usage, providerMetadata: gateway("gen_compact") });
+        hooks.onEvent({ type: "usage", phase: "operational", status: "failed", model: "mock/primary", usage, providerMetadata: gateway("gen_failed") });
+        hooks.onEvent({ type: "usage", phase: "operational", usage, providerMetadata: gateway("gen_1") });
+        hooks.onEvent({ type: "usage", phase: "operational", usage, providerMetadata: gateway("gen_2") });
+        hooks.onEvent({ type: "text-delta", text: "done" });
+        hooks.onEvent({ type: "usage", phase: "operational", usage, providerMetadata: gateway("gen_3") });
+        return { status: "completed", result: { exitCode: 0, stdout: "done", stderr: "" } };
+      },
+    });
+
+    const result = await runChatTurnViaRun({
+      deps,
+      body: { agent: "agent-1" },
+      completionId: "chatcmpl-metered",
+      agentConfig: { name: "agent-1", role: "Test agent", model: "mock" },
+      agentMode: true,
+      fullSystemPrompt: "You are a test agent.",
+      m: {
+        id: "mock-model",
+        name: "Mock Model",
+        provider: "mock",
+        runtimeMode: "gateway",
+        aiModel: {} as any,
+        contextWindow: 200_000,
+        maxTokens: 8192,
+      },
+      modelSelection: { primary: "mock-model", fallbacks: [] },
+      effectiveTools: [],
+      effectiveToolExecutor: async () => "ok",
+      interactionSettings: {
+        allowUserQuestions: true,
+        suggestions: { enabled: false, maxItems: 3 },
+      },
+      aiMessages: [{ role: "user", content: "hello" }],
+      sessionStore,
+      sessionId: "metered-session",
+    });
+
+    const info = onCompletionFinished.mock.calls[0]![0];
+    expect(info.invocations.map((entry: any) => [entry.phase, entry.status, entry.providerMetadata.gateway.generationId])).toEqual([
+      ["compaction", "succeeded", "gen_compact"],
+      ["operational", "failed", "gen_failed"],
+      ["operational", "succeeded", "gen_1"],
+      ["operational", "succeeded", "gen_2"],
+      ["operational", "succeeded", "gen_3"],
+    ]);
+    const operationalCost = info.invocations
+      .filter((entry: any) => entry.phase === "operational" && entry.status === "succeeded")
+      .reduce((sum: number, entry: any) => sum + Math.round(Number(entry.providerMetadata.gateway.marketCost) * 100), 0) / 100;
+    expect(operationalCost).toBe(0.03);
+    // Failed attempts are billed via `invocations` but stay out of token totals.
+    expect(info.usage).toEqual({ inputTokens: 40, outputTokens: 20, totalTokens: 60 });
+    expect(info.providerMetadata).toEqual(gateway("gen_3"));
+    expect(result.invocations).toHaveLength(5);
+  });
+
   it("runs a non-HTTP chat turn through the same Run lifecycle", async () => {
     const onCompletionFinished = vi.fn();
     const updateMessage = vi.fn(async () => true);

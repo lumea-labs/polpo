@@ -6,11 +6,12 @@ import type {
 import { normalizeModelPolicy } from "@polpo-ai/core";
 
 import type {
+  ModelTurnBilling,
   ModelTurnEvent,
   ModelTurnResult,
   StreamModelTurnInput,
 } from "./stream-turn.js";
-import { streamModelTurn } from "./stream-turn.js";
+import { modelTurnBillingFromError, streamModelTurn } from "./stream-turn.js";
 import type { NormalizedModelError } from "./model-runtime.js";
 import { classifyRuntimeError } from "./runtime-normalization.js";
 
@@ -35,6 +36,10 @@ export interface ModelPolicyAttemptFailure {
   error: unknown;
   classification: NormalizedModelError;
   committed: boolean;
+  /** Usage the provider reported before the attempt failed; present only when billed. */
+  usage?: ModelTurnBilling["usage"];
+  /** Provider metadata (e.g. gateway cost) reported before the attempt failed. */
+  providerMetadata?: ModelTurnBilling["providerMetadata"];
 }
 
 export type ModelPolicyEvent =
@@ -144,7 +149,15 @@ export async function runModelPolicyTurn<TOOLS extends ToolSet = ToolSet>(
         const classification: NormalizedModelError = openToolInputs.size > 0
           ? { ...baseClassification, phase: "tool-input" }
           : baseClassification;
-        const failure: ModelPolicyAttemptFailure = { attempt, error, classification, committed };
+        const billing = modelTurnBillingFromError(error);
+        const failure: ModelPolicyAttemptFailure = {
+          attempt,
+          error,
+          classification,
+          committed,
+          ...(billing?.usage !== undefined ? { usage: billing.usage } : {}),
+          ...(billing?.providerMetadata !== undefined ? { providerMetadata: billing.providerMetadata } : {}),
+        };
         failures.push(failure);
         await input.onPolicyEvent?.({ type: "model-attempt-failed", failure });
 

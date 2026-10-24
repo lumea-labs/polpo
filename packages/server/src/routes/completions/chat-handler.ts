@@ -40,6 +40,7 @@ import {
   modelSelectionForResolvedModel,
   type ResolvedModelInfo,
 } from "./agent-step-runner.js";
+import { CompletionModelInvocationLedger } from "./model-invocations.js";
 import { appendModelResponseMessages } from "./message-mapping.js";
 import {
   completionResponse,
@@ -227,6 +228,7 @@ async function runChatTerminalOutputPhase(options: {
   signal?: AbortSignal;
   gate?: TerminationGate;
   onUsage?: (usage: LanguageModelUsage) => void;
+  invocations?: CompletionModelInvocationLedger;
 }) {
   const {
     exec, modelSelection, primaryModel, primaryProviderOpts,
@@ -294,7 +296,10 @@ async function runChatTerminalOutputPhase(options: {
           };
         },
         preserveSingleAttemptError: true,
-        onPolicyEvent: (event) => dispatchCompletionModelPolicyHook(exec.runtimeHooks, event),
+        onPolicyEvent: (event) => {
+          options.invocations?.observePolicyEvent("terminal", event);
+          return dispatchCompletionModelPolicyHook(exec.runtimeHooks, event);
+        },
         allowCommittedFallback: true,
         maxRecoverableStreamRetries: 0,
         system: systemPrompt ?? exec.fullSystemPrompt,
@@ -305,6 +310,7 @@ async function runChatTerminalOutputPhase(options: {
       });
       options.gate?.recordUsage(result.usage);
       options.onUsage?.(result.usage);
+      options.invocations?.record("terminal", result);
       if (result.toolCalls.length > 0 || result.output === undefined) {
         throw new Error(
           result.toolCalls.length > 0
@@ -365,6 +371,7 @@ async function runChatStopFeedbackPhase(options: {
   messages: any[];
   feedback: string;
   signal?: AbortSignal;
+  invocations?: CompletionModelInvocationLedger;
 }) {
   const { exec, modelSelection, primaryModel, primaryProviderOpts, reasoning, systemPrompt, messages, feedback, signal } = options;
   const resolvedAttempts = new Map<number, { model: ResolvedModelInfo; providerOptions?: Record<string, any> }>();
@@ -393,7 +400,10 @@ async function runChatStopFeedbackPhase(options: {
         };
       },
       preserveSingleAttemptError: true,
-      onPolicyEvent: (event) => dispatchCompletionModelPolicyHook(exec.runtimeHooks, event),
+      onPolicyEvent: (event) => {
+        options.invocations?.observePolicyEvent("stop-feedback", event);
+        return dispatchCompletionModelPolicyHook(exec.runtimeHooks, event);
+      },
       system: systemPrompt ?? exec.fullSystemPrompt,
       messages: [
         ...messages,
@@ -407,6 +417,7 @@ async function runChatStopFeedbackPhase(options: {
       ...(signal ? { abortSignal: signal } : {}),
     }),
   });
+  options.invocations?.record("stop-feedback", result);
   if (result.toolCalls.length > 0) throw new Error("Stop-feedback recovery returned a tool call");
   return { result, resolved: resolvedAttempts.get(result.selectedAttempt.index) };
 }
@@ -485,6 +496,7 @@ export async function executeStreamingChatCompletion(
     let totalUsage: LanguageModelUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 } as LanguageModelUsage;
     const toolCallsAccum: any[] = [];
     let lastProviderMetadata: Record<string, unknown> | undefined;
+    const invocations = new CompletionModelInvocationLedger();
     let outputPolicyApplied = false;
     let suggestions: ChatSuggestion[] = [];
     let persistenceAttempted = false;
@@ -539,6 +551,7 @@ export async function executeStreamingChatCompletion(
         messages,
         gate,
         onUsage: (usage) => { totalUsage = addChatUsage(totalUsage, usage); },
+        invocations,
         signal,
       });
       if (terminal.resolved) {
@@ -609,7 +622,7 @@ export async function executeStreamingChatCompletion(
             contextWindow: m.contextWindow ?? 200_000,
             maxOutputTokens: m.maxTokens ?? 8192,
           },
-          summarize: buildSummarizeFn(m, providerOpts, { gate, signal, onUsage: (usage) => { totalUsage = addChatUsage(totalUsage, usage); } }),
+          summarize: buildSummarizeFn(m, providerOpts, { gate, signal, invocations, onUsage: (usage) => { totalUsage = addChatUsage(totalUsage, usage); } }),
           mode: "chat",
           onCompaction: async (event: CompactionEvent) => {
             await stream.writeSSE({
@@ -668,7 +681,10 @@ export async function executeStreamingChatCompletion(
             };
           },
           preserveSingleAttemptError: true,
-          onPolicyEvent: (event) => dispatchCompletionModelPolicyHook(exec.runtimeHooks, event),
+          onPolicyEvent: (event) => {
+            invocations.observePolicyEvent("operational", event);
+            return dispatchCompletionModelPolicyHook(exec.runtimeHooks, event);
+          },
           system: fullSystemPrompt,
           messages,
           tools: aiTools,
@@ -738,6 +754,9 @@ export async function executeStreamingChatCompletion(
           }
           }),
         });
+        // The provider billed this call even if the client aborted or the
+        // stream finished with an error, so meter it before bailing out.
+        invocations.record("operational", result);
         finalReasoning = appendReasoningSummary(finalReasoning, result.reasoning);
 
         // If aborted, stop the loop — skip error/tool processing
@@ -1081,6 +1100,7 @@ export async function executeStreamingChatCompletion(
             messages,
             feedback: stopFeedback,
             signal,
+            invocations,
           });
           if (retry.resolved) {
             m = retry.resolved.model;
@@ -1202,6 +1222,7 @@ export async function executeStreamingChatCompletion(
             sessionId: sessionId ?? undefined,
             user: body.user,
             providerMetadata: lastProviderMetadata,
+            invocations: invocations.list(),
           });
         } catch { /* never fail on callback */ }
         // Close per-request resources (MCP transports, etc.). Errors
@@ -1258,6 +1279,7 @@ export async function runNonStreamingChatCompletion(c: any, exec: ChatCompletion
   let totalUsage: LanguageModelUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 } as LanguageModelUsage;
   const toolCallsAccum: any[] = [];
   let lastProviderMetadata: Record<string, unknown> | undefined;
+  const invocations = new CompletionModelInvocationLedger();
   let outputPolicyApplied = false;
   let suggestions: ChatSuggestion[] = [];
   let canonicalTurnSucceeded = false;
@@ -1291,6 +1313,7 @@ export async function runNonStreamingChatCompletion(c: any, exec: ChatCompletion
       messages,
       gate,
       onUsage: (usage) => { totalUsage = addChatUsage(totalUsage, usage); },
+      invocations,
       signal: signal,
     });
     if (terminal.resolved) {
@@ -1358,7 +1381,7 @@ export async function runNonStreamingChatCompletion(c: any, exec: ChatCompletion
             contextWindow: m.contextWindow ?? 200_000,
             maxOutputTokens: m.maxTokens ?? 8192,
           },
-          summarize: buildSummarizeFn(m, providerOpts, { gate, signal, onUsage: (usage) => { totalUsage = addChatUsage(totalUsage, usage); } }),
+          summarize: buildSummarizeFn(m, providerOpts, { gate, signal, invocations, onUsage: (usage) => { totalUsage = addChatUsage(totalUsage, usage); } }),
           mode: "chat",
           // Non-streaming: no SSE to write to, compaction is silent
         });
@@ -1396,7 +1419,10 @@ export async function runNonStreamingChatCompletion(c: any, exec: ChatCompletion
             };
           },
           preserveSingleAttemptError: true,
-          onPolicyEvent: (event) => dispatchCompletionModelPolicyHook(exec.runtimeHooks, event),
+          onPolicyEvent: (event) => {
+            invocations.observePolicyEvent("operational", event);
+            return dispatchCompletionModelPolicyHook(exec.runtimeHooks, event);
+          },
           system: fullSystemPrompt,
           messages,
           tools: aiTools,
@@ -1408,6 +1434,7 @@ export async function runNonStreamingChatCompletion(c: any, exec: ChatCompletion
           abortSignal: signal,
           }),
         });
+        invocations.record("operational", turnResult);
         signal.throwIfAborted();
         finalReasoning = appendReasoningSummary(finalReasoning, turnResult.reasoning);
 
@@ -1749,6 +1776,7 @@ export async function runNonStreamingChatCompletion(c: any, exec: ChatCompletion
         messages,
         feedback: stopFeedback,
         signal: signal,
+        invocations,
       });
       if (retry.resolved) {
         m = retry.resolved.model;
@@ -1853,6 +1881,7 @@ export async function runNonStreamingChatCompletion(c: any, exec: ChatCompletion
           sessionId: sessionId ?? undefined,
           user: body.user,
           providerMetadata: lastProviderMetadata,
+          invocations: invocations.list(),
         });
       } catch { /* never fail on callback */ }
       if (onResponseFinished) {

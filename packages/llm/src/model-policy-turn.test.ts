@@ -1,14 +1,16 @@
 import { Output, TypeValidationError, type ModelMessage, type ToolSet } from "ai";
 import { describe, expect, it } from "vitest";
 
-import type {
-  ModelTurnEvent,
-  ModelTurnResult,
-  StreamModelTurnInput,
+import {
+  attachModelTurnBilling,
+  type ModelTurnEvent,
+  type ModelTurnResult,
+  type StreamModelTurnInput,
 } from "./stream-turn.js";
 import {
   ModelPolicyTurnError,
   type ModelPolicyAttempt,
+  type ModelPolicyAttemptFailure,
   runModelPolicyTurn,
 } from "./model-policy-turn.js";
 
@@ -567,6 +569,73 @@ describe("runModelPolicyTurn", () => {
     });
 
     expect(attempted).toEqual(["anthropic/claude-sonnet-5"]);
+  });
+
+  it("reports provider-billed usage and metadata on failed fallback attempts", async () => {
+    const failures: ModelPolicyAttemptFailure[] = [];
+    const billedMetadata = { gateway: { marketCost: "0.01", generationId: "gen_failed" } };
+
+    const result = await runModelPolicyTurn({
+      selection: {
+        primary: "zai/glm-5.3-flash",
+        fallbacks: ["openai/gpt-5.2"],
+      },
+      messages,
+      output: Output.json(),
+      allowCommittedFallback: true,
+      resolveAttempt: (attempt) => ({ model: fakeModel(attempt.model) }),
+      classifyError: error => ({
+        class: "unknown",
+        retryable: false,
+        message: error instanceof Error ? error.message : "invalid output",
+      }),
+      onPolicyEvent: (event) => {
+        if (event.type === "model-attempt-failed") failures.push(event.failure);
+      },
+      runAttempt: async () => {
+        if (failures.length === 0) {
+          throw attachModelTurnBilling(new Error("schema-invalid terminal output"), {
+            usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15 } as any,
+            providerMetadata: billedMetadata as any,
+          });
+        }
+        return { ...fakeResult('{"ok":true}'), output: { ok: true } };
+      },
+    });
+
+    expect(result.output).toEqual({ ok: true });
+    expect(failures).toHaveLength(1);
+    expect(failures[0]).toMatchObject({
+      usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15 },
+      providerMetadata: billedMetadata,
+    });
+    expect(result.failedAttempts[0]?.providerMetadata).toEqual(billedMetadata);
+  });
+
+  it("omits billing facts for failed attempts the provider never finished", async () => {
+    const failures: ModelPolicyAttemptFailure[] = [];
+
+    await runModelPolicyTurn({
+      selection: { primary: "anthropic/claude-sonnet-5", fallbacks: ["openai/gpt-4o"] },
+      messages,
+      resolveAttempt: (attempt) => ({ model: fakeModel(attempt.model) }),
+      classifyError: error => ({
+        class: "overloaded",
+        retryable: true,
+        message: error instanceof Error ? error.message : "error",
+      }),
+      onPolicyEvent: (event) => {
+        if (event.type === "model-attempt-failed") failures.push(event.failure);
+      },
+      runAttempt: async () => {
+        if (failures.length === 0) throw new Error("503 overloaded");
+        return fakeResult("ok");
+      },
+    });
+
+    expect(failures).toHaveLength(1);
+    expect(failures[0]).not.toHaveProperty("usage");
+    expect(failures[0]).not.toHaveProperty("providerMetadata");
   });
 });
 
