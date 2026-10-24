@@ -240,6 +240,64 @@ describe("completion usage metering", () => {
     });
   }
 
+  for (const stream of [false, true]) {
+    it(`bills compaction and a failed fallback attempt in one completion (stream=${stream})`, async () => {
+      generateTextMock.mockResolvedValueOnce({
+        text: "summary of the earlier conversation",
+        usage: { inputTokens: 900, outputTokens: 40, totalTokens: 940 },
+        providerMetadata: gatewayMetadata("gen_compaction"),
+      });
+      streamTextMock
+        .mockReturnValueOnce(mockStreamResult({
+          parts: [
+            {
+              type: "finish-step",
+              usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15 },
+              providerMetadata: gatewayMetadata("gen_failed"),
+            },
+            { type: "error", error: new Error("503 overloaded") },
+          ],
+        }))
+        .mockReturnValueOnce(finalTurn("gen_ok"));
+      const onCompletionFinished = vi.fn();
+      const baseDeps = makeDeps();
+      // A small context window forces the summarizer before the first turn.
+      const history = Array.from({ length: 8 }, (_, index) => ({
+        role: index % 2 === 0 ? "user" : "assistant",
+        content: `${index}: ${"long earlier context ".repeat(200)}`,
+      }));
+
+      const res = await postCompletion(makeDeps({
+        onCompletionFinished,
+        getAgents: async () => [{
+          name: "researcher",
+          model: { primary: "test/primary", fallbacks: ["test/fallback"] },
+          allowedTools: [],
+        }],
+        resolveAgentModel: async (agentConfig: any, ...rest: any[]) => {
+          const resolved = await (baseDeps.resolveAgentModel as any)(agentConfig, ...rest);
+          return { ...resolved, model: { ...resolved.model, contextWindow: 4_000, maxTokens: 500 } };
+        },
+      }), {
+        agent: "researcher",
+        stream,
+        messages: [...history, { role: "user", content: "continue" }],
+      });
+
+      expect(res.status).toBe(200);
+      expect(generateTextMock).toHaveBeenCalledOnce();
+      const info = onCompletionFinished.mock.calls[0]![0];
+      expect(info.invocations).toEqual([
+        expect.objectContaining({ phase: "compaction", status: "succeeded", providerMetadata: gatewayMetadata("gen_compaction") }),
+        expect.objectContaining({ phase: "operational", status: "failed", model: "test/primary", providerMetadata: gatewayMetadata("gen_failed") }),
+        expect.objectContaining({ phase: "operational", status: "succeeded", model: "test/fallback", providerMetadata: gatewayMetadata("gen_ok") }),
+      ]);
+      expect(marketCostSum(info.invocations)).toBe(0.03);
+      // Legacy metadata only ever described the last call.
+      expect(marketCostSum([{ providerMetadata: info.providerMetadata }])).toBe(0.01);
+    });
+  }
+
   it("records compaction summarizer calls as billed invocations", async () => {
     generateTextMock.mockResolvedValueOnce({
       text: "summary",

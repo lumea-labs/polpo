@@ -97,4 +97,55 @@ describe("loop-engine usage metering", () => {
     const cents = usageEntries.reduce((sum, entry) => sum + Math.round(Number(entry.providerMetadata.gateway.marketCost) * 100), 0);
     expect(cents / 100).toBe(0.03);
   });
+
+  test("run-backed chat reports the compaction summarizer call as billed usage", async () => {
+    const model = new MockLanguageModelV3({
+      doGenerate: async () => ({
+        content: [{ type: "text", text: "summary of the earlier conversation" }],
+        finishReason: { unified: "stop", raw: undefined },
+        usage,
+        providerMetadata: gateway("gen_compaction"),
+        warnings: [],
+      }) as any,
+      doStream: async () => ({ stream: convertArrayToReadableStream([
+        { type: "stream-start", warnings: [] },
+        { type: "text-start", id: "t" },
+        { type: "text-delta", id: "t", delta: "done" },
+        { type: "text-end", id: "t" },
+        { type: "finish", finishReason: { unified: "stop", raw: undefined }, usage, providerMetadata: gateway("gen_turn") },
+      ] as any[]) }),
+    });
+    // A small context window forces the summarizer before the first turn.
+    const history = Array.from({ length: 8 }, (_, index) => ({
+      role: index % 2 === 0 ? "user" as const : "assistant" as const,
+      content: `${index}: ${"long earlier context ".repeat(200)}`,
+    }));
+    const transcript: Record<string, any>[] = [];
+
+    const result = await spawnLoopEngine(agent(), task(), cwd, {
+      polpoDir,
+      onTranscript: (entry) => transcript.push(entry as Record<string, any>),
+      inject: {
+        agent: agent(),
+        model: { id: "test-model", provider: "test", aiModel: model, contextWindow: 4_000, maxTokens: 500 } as any,
+        systemPrompt: "Answer briefly.",
+        maxTurns: 5,
+        seedMessages: [...history, { role: "user", content: "continue" }],
+        toolSet: {},
+        executor: vi.fn(async () => "unused"),
+        clientSideToolNames: new Set(),
+        providerToolNames: new Set(),
+        compactionTools: [],
+        compactionMode: "chat",
+      },
+    }).done;
+
+    expect(result.exitCode, JSON.stringify(result)).toBe(0);
+    expect(model.doGenerateCalls).toHaveLength(1);
+    const usageEntries = transcript.filter((entry) => entry.type === "usage");
+    expect(usageEntries.map((entry) => [entry.phase, entry.status, entry.providerMetadata?.gateway?.generationId])).toEqual([
+      ["compaction", undefined, "gen_compaction"],
+      ["operational", undefined, "gen_turn"],
+    ]);
+  });
 });
