@@ -1,3 +1,5 @@
+import { normalizeToolOutputText } from "./tool-result.js";
+
 export type ToolExecutionReceiptState =
   | "proposed"
   | "validated"
@@ -86,6 +88,7 @@ export async function settleToolExecutionReceiptWithRetry(
   input: Parameters<ToolExecutionReceiptStore["settle"]>[0],
   options: SettleToolExecutionReceiptOptions = {},
 ): Promise<ToolExecutionReceipt> {
+  input = { ...input, ...(input.result !== undefined ? { result: normalizeToolOutputText(input.result) } : {}) };
   let lastError: unknown;
   for (let attempt = 1; attempt <= TOOL_RECEIPT_SETTLEMENT_MAX_ATTEMPTS; attempt += 1) {
     if (attempt > 1 && options.signal?.aborted) {

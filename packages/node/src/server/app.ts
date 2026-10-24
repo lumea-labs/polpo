@@ -17,6 +17,7 @@ import { isVersionedAgentStore, type AgentMutation } from "@polpo-ai/core/agent-
 import { projectLoopConfigSchema } from "@polpo-ai/core/schemas";
 import {
   resolveConfiguredModelSelection,
+  renderToolResult,
   type ConnectionCapabilityResolver,
 } from "@polpo-ai/core";
 import { buildSystemPrompt } from "../adapters/spawn-helpers.js";
@@ -446,7 +447,7 @@ export function createApp(orchestrator: Orchestrator, sseBridge: SSEBridge, opts
         if (!tool) return `Error: Unknown tool "${name}"`;
         try {
           const result = await tool.execute(execution?.callId ?? nanoid(), args as any, execution?.signal);
-          return result.content.map((c: any) => c.text ?? "").join("");
+          return renderToolResult(result);
         } catch (err: any) {
           return `Error: ${err.message}`;
         }

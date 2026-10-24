@@ -4,6 +4,8 @@
 import type { TSchema, Static } from "@sinclair/typebox";
 
 export interface ToolResult<TDetails = any> {
+  /** Explicit execution failure, compatible with MCP CallToolResult. */
+  isError?: boolean;
   content: ({ type: "text"; text: string } | { type: "image"; data: string; mimeType: string })[];
   details: TDetails;
 }
