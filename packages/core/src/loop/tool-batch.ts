@@ -1,4 +1,6 @@
 import { inferToolSideEffect } from "../guardrails/tool-middleware.js";
+import { ToolReceiptSettlementError } from "../tool-execution-receipts.js";
+import { normalizeToolOutputText } from "../tool-result.js";
 import type { RuntimeToolSideEffect } from "../guardrails/types.js";
 
 export const DEFAULT_MAX_PARALLEL_TOOL_CALLS = 4;
@@ -36,6 +38,9 @@ async function executeOne<TCall extends ToolBatchCall, TResult>(
   try {
     return await options.execute(call, index);
   } catch (error) {
+    // The side effect may have happened. Let the run owner record its safe,
+    // typed failure; asking the model to retry could execute the effect twice.
+    if (error instanceof ToolReceiptSettlementError) throw error;
     return options.onError(error, call, index);
   }
 }
@@ -70,17 +75,26 @@ export async function executeToolBatch<TCall extends ToolBatchCall, TResult>(
 
   const results = new Array<TResult>(options.calls.length);
   let cursor = 0;
+  let failed = false;
   const workerCount = Math.min(maxConcurrency, options.calls.length);
   const worker = async (): Promise<void> => {
-    while (cursor < options.calls.length) {
+    while (!failed && cursor < options.calls.length) {
       const index = cursor;
       cursor += 1;
       const call = options.calls[index]!;
-      results[index] = await executeOne(options, call, index);
+      try {
+        results[index] = await executeOne(options, call, index);
+      } catch (error) {
+        failed = true;
+        throw error;
+      }
     }
   };
 
-  await Promise.all(Array.from({ length: workerCount }, () => worker()));
+  // Drain work already in flight before the owner releases sandbox/leases.
+  const workers = await Promise.allSettled(Array.from({ length: workerCount }, () => worker()));
+  const rejected = workers.find(worker => worker.status === "rejected");
+  if (rejected?.status === "rejected") throw rejected.reason;
   return results;
 }
 
@@ -90,5 +104,5 @@ export function normalizeToolExecutionError(error: unknown): string {
     : typeof error === "string"
       ? error
       : "Tool execution failed";
-  return message.startsWith("Error:") ? message : `Error: ${message}`;
+  return normalizeToolOutputText(message.startsWith("Error:") ? message : `Error: ${message}`);
 }

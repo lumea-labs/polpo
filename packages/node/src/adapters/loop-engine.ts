@@ -50,6 +50,8 @@ import {
 import { cleanupAgentBrowserSession } from "@polpo-ai/tools";
 import {
   LoopRunner,
+  renderToolResult,
+  normalizeToolOutputText,
   LoopToolInputValidationError,
   PipelineExecutor,
   buildLoopStepAgent,
@@ -471,9 +473,8 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
           };
         }
       }
-      let rendered = result.content
-        .map((content) => content.type === "text" ? content.text : `[image: ${content.mimeType}]`)
-        .join("\n");
+      let rendered = renderToolResult(result);
+      isError ||= rendered.startsWith("Error:");
       const after = await dispatchRuntimeHook(isError ? "tool:error" : "tool:after", {
         tool: toolCall.name,
         input: args,
@@ -486,7 +487,7 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
         rendered = afterError.message;
         result = { content: [{ type: "text", text: rendered }], details: {} };
       } else if (after.action === "modify" && typeof after.data.result === "string") {
-        rendered = after.data.result;
+        rendered = normalizeToolOutputText(after.data.result);
         result = { ...result, content: [{ type: "text", text: rendered }] };
       }
       if (!isError) {
@@ -554,9 +555,7 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
     }
 
     // Emit tool result transcript
-    const resultText = result.content
-      .map((c: any) => c.text ?? "")
-      .join("");
+    const resultText = renderToolResult(result);
     emitTranscript({
       type: "tool_result",
       toolId: toolCall.id,

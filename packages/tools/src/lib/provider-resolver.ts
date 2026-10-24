@@ -135,6 +135,15 @@ export async function resolveManagedVideoProvider(
   return { video: (modelId: string) => gw.video(modelId) };
 }
 
+/** Build a managed vision provider routed through the Vercel AI Gateway, so
+ *  image_analyze follows the same managed credential path as agent turns. */
+export async function resolveManagedVisionProvider(): Promise<VisionProvider> {
+  const mod = await loadOptional("@ai-sdk/gateway", "managed image_analyze");
+  // @ts-ignore — mod typed as `any` from the dynamic import helper
+  const gw = mod.createGatewayProvider();
+  return (modelId: string) => gw.languageModel(modelId);
+}
+
 /** Build a speech-to-text (transcription) provider. */
 export async function resolveTranscribeProvider(
   name: TranscribeProviderName,

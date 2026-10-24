@@ -5,13 +5,14 @@
  * The bash tool runs with cwd set to the agent's primary working directory.
  */
 
-import { join, dirname, resolve } from "node:path";
+import { join, dirname, resolve, extname } from "node:path";
 import type { FileSystem } from "@polpo-ai/core/filesystem";
 import type { Shell } from "@polpo-ai/core/shell";
 // NodeFileSystem and NodeShell are loaded lazily to avoid pulling in
 // node:fs and execa when the consumer provides their own implementations.
 import { Type } from "@sinclair/typebox";
 import type { PolpoTool, SearchProvider } from "@polpo-ai/core";
+import { normalizeToolOutputText } from "@polpo-ai/core";
 import { resolveAllowedPaths, assertPathAllowed } from "./path-sandbox.js";
 import { createOutcomeTools as createOutcomeToolsCore } from "./outcome-tools.js";
 import { createHttpTools as createHttpToolsCore, ALL_HTTP_TOOL_NAMES as CORE_HTTP_TOOL_NAMES } from "./http-tools.js";
@@ -46,6 +47,31 @@ const ReadSchema = Type.Object({
   limit: Type.Optional(Type.Number({ description: "Max number of lines to read" })),
 });
 
+const BINARY_SNIFF_CHARS = 8_000;
+const IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".avif", ".ico", ".bmp", ".tiff"]);
+const BINARY_EXTENSIONS = new Set([
+  ...IMAGE_EXTENSIONS, ".pdf", ".zip", ".gz", ".tgz", ".bz2", ".xz", ".7z", ".rar", ".jar", ".wasm",
+  ".exe", ".dll", ".so", ".dylib", ".o", ".class", ".pyc", ".sqlite", ".db",
+  ".mp3", ".mp4", ".mov", ".wav", ".ogg", ".webm", ".m4a", ".flac", ".woff", ".woff2", ".ttf", ".otf",
+  ".docx", ".xlsx", ".pptx", ".odt", ".ods",
+]);
+// Magic numbers as they appear after lossy UTF-8 decoding (0x80+ bytes become U+FFFD).
+const BINARY_MAGIC = ["\uFFFDPNG\r\n\u001a\n", "PK\u0003\u0004", "%PDF-", "\u007fELF", "GIF87a", "GIF89a", "\u001f\uFFFD\b"];
+
+/**
+ * The read tool returns text to the model. Binary content decoded as UTF-8 is
+ * meaningless to it and, before normalization, broke result persistence. A
+ * text file with a stray NUL (seen in production HTML) still reads.
+ */
+function looksBinary(raw: string, filePath: string): boolean {
+  if (BINARY_MAGIC.some(magic => raw.startsWith(magic))) return true;
+  const head = raw.slice(0, BINARY_SNIFF_CHARS);
+  if (!/[\u0000\uFFFD]/.test(head)) return false;
+  if (BINARY_EXTENSIONS.has(extname(filePath).toLowerCase())) return true;
+  const suspicious = head.match(/[\u0000-\u0007\u000e-\u001a\u001c-\u001f\uFFFD]/g)?.length ?? 0;
+  return suspicious / head.length > 0.1;
+}
+
 function createReadTool(cwd: string, sandbox: string[], fs: FileSystem): PolpoTool<typeof ReadSchema> {
   return {
     name: "read",
@@ -56,6 +82,19 @@ function createReadTool(cwd: string, sandbox: string[], fs: FileSystem): PolpoTo
       const filePath = resolve(cwd, params.path);
       assertPathAllowed(filePath, sandbox, "read");
       const raw = await fs.readFile(filePath);
+      if (looksBinary(raw, filePath)) {
+        const image = IMAGE_EXTENSIONS.has(extname(filePath).toLowerCase());
+        return {
+          isError: true,
+          content: [{
+            type: "text",
+            text: image
+              ? "Error: This is a binary image, not a text file. Use image_analyze to inspect it."
+              : "Error: This is a binary file, not a text file. Use a tool for this file format, or inspect it with bash (e.g. file, xxd).",
+          }],
+          details: { error: "binary_file", path: filePath },
+        };
+      }
       const allLines = raw.split("\n");
       const offset = (params.offset ?? 1) - 1;
       const limit = params.limit ?? MAX_READ_LINES;
@@ -64,7 +103,7 @@ function createReadTool(cwd: string, sandbox: string[], fs: FileSystem): PolpoTo
       const truncated = allLines.length > offset + limit;
       const suffix = truncated ? `\n... (${allLines.length - offset - limit} more lines)` : "";
       return {
-        content: [{ type: "text", text: numbered + suffix }],
+        content: [{ type: "text", text: normalizeToolOutputText(numbered + suffix) }],
         details: { path: filePath, lines: lines.length, total: allLines.length },
       };
     },

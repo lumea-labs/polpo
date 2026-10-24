@@ -815,6 +815,9 @@ describe("DrizzleLoopRunStore — dual-write + runs-backed (F2)", () => {
       metadata: { deliveryRunId: "delivery-1" },
     } as any);
     const authoritativeSnapshot = (await store.getRun("looprun-cas-mirror-ahead"))!;
+    // updatedAt has millisecond resolution: make sure the mirror write lands later.
+    const createdAtMs = Date.parse(authoritativeSnapshot.updatedAt);
+    while (Date.now() <= createdAtMs) await new Promise((resolve) => setTimeout(resolve, 1));
 
     await legacy.updateRun("looprun-cas-mirror-ahead", {
       status: "completed",

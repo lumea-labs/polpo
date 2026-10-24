@@ -1,5 +1,6 @@
 import {
   InMemoryToolExecutionReceiptStore,
+  normalizeToolOutputText,
   admitCanonicalToolContract,
   inferToolSideEffect,
   settleToolExecutionReceiptWithRetry,
@@ -127,14 +128,14 @@ export function createGuardedCompletionToolExecutor(options: {
 
       let result: string;
       try {
-        result = await options.executor(
+        result = normalizeToolOutputText(await options.executor(
           request.name,
           validatedArgs,
           {
             callId: request.callId,
             signal: request.signal,
           },
-        );
+        ));
       } catch (error) {
         if (request.callId) {
           try {

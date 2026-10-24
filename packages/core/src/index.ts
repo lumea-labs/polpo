@@ -19,6 +19,7 @@ export type {
   CanonicalToolExecution,
 } from "./canonical-tool-contract.js";
 export { extractToolUsageRecord } from "./tool-usage.js";
+export { normalizeToolOutputText, renderToolResult } from "./tool-result.js";
 export {
   DEFAULT_TOOL_MAX_IDENTICAL_OBSERVATIONS,
   ToolProgressStallError,

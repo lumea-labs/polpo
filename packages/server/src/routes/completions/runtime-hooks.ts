@@ -7,6 +7,7 @@ import type {
   RuntimeHookSurface,
 } from "@polpo-ai/core/runtime-hooks";
 import { runtimeHookFileChangeForTool } from "@polpo-ai/core/runtime-hooks";
+import { normalizeToolOutputText } from "@polpo-ai/core";
 import type { ModelPolicyEvent } from "@polpo-ai/llm";
 import type { CompletionToolExecutor } from "./tool-guardrails.js";
 
@@ -61,7 +62,8 @@ export function createRuntimeHookedToolExecutor(options: {
       });
       const afterBlocked = blockedToolResult(after);
       if (afterBlocked) return afterBlocked;
-      const visibleResult = modifiedString(after, "result") ?? result;
+      const modifiedResult = modifiedString(after, "result");
+      const visibleResult = modifiedResult === undefined ? result : normalizeToolOutputText(modifiedResult);
       const fileChange = runtimeHookFileChangeForTool(name, args, visibleResult);
       if (fileChange) {
         await dispatchCompletionRuntimeHook(hookContext, "sandbox:file_changed", fileChange);

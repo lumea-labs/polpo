@@ -61,6 +61,33 @@ afterEach(() => {
 });
 
 describe("runtime requirements", () => {
+  it("rejects binary PNG content before returning it as line-numbered model text", async () => {
+    writeFileSync(join(cwd, "mockup.png"), Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13]));
+    const result = await tool("read").execute("png-production-regression", { path: "mockup.png" });
+    expect(result).toMatchObject({ isError: true, details: { error: "binary_file" } });
+    expect(text(result)).toContain("image_analyze");
+    expect(text(result)).not.toContain("\u0000");
+  });
+
+  it("rejects any binary file by magic number or content, not only images", async () => {
+    writeFileSync(join(cwd, "archive.zip"), Buffer.from([0x50, 0x4b, 0x03, 0x04, 0x14, 0x00, 0x00, 0x00, 0x08, 0x00]));
+    const result = await tool("read").execute("zip-binary", { path: "archive.zip" });
+    expect(result).toMatchObject({ isError: true, details: { error: "binary_file" } });
+    expect(text(result)).toMatch(/^Error: This is a binary file/);
+    const noExtension = Buffer.alloc(256);
+    for (let i = 0; i < noExtension.length; i++) noExtension[i] = (i * 37) % 256;
+    writeFileSync(join(cwd, "blob"), noExtension);
+    expect(await tool("read").execute("blob", { path: "blob" })).toMatchObject({ isError: true, details: { error: "binary_file" } });
+  });
+
+  it("still reads a text page with a stray NUL far into it, normalized for persistence", async () => {
+    // Production case: an HTML page with one U+0000 at offset 34236.
+    writeFileSync(join(cwd, "page.html"), `${"<p>pasta</p>\n".repeat(2_500)}x\u0000y\n`);
+    const result = await tool("read").execute("late-nul", { path: "page.html", offset: 2_501, limit: 1 });
+    expect(result.isError).toBeUndefined();
+    expect(text(result)).toBe("2501\tx\\u0000y\n... (1 more lines)");
+  });
+
   it("annotates the tools returned to the runtime", () => {
     expect(tool("read").requiresSandbox).toBe(true);
     expect(tool("bash").requiresSandbox).toBe(true);

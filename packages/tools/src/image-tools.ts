@@ -37,6 +37,7 @@ import {
   resolveVisionProvider,
   resolveManagedImageProvider,
   resolveManagedVideoProvider,
+  resolveManagedVisionProvider,
   type ImageProviderName,
   type VideoProviderName,
   type VisionProviderName,
@@ -513,14 +514,19 @@ async function analyzeWithSdk(
 ): Promise<ToolResult> {
   const { generateText } = await import("ai");
 
-  const apiKey = resolveProviderKey(parsed.provider, vault);
-  const provider = await resolveVisionProvider(parsed.provider as VisionProviderName, apiKey);
+  // Same credential policy as image_generate/video_generate: an agent/provider
+  // key stays direct (BYOK); otherwise the configured AI Gateway pays and meters.
+  const managed = shouldUseGateway(parsed.provider, vault);
+  const modelId = `${parsed.provider}/${parsed.model}`;
+  const provider = managed
+    ? await resolveManagedVisionProvider()
+    : await resolveVisionProvider(parsed.provider as VisionProviderName, resolveProviderKey(parsed.provider, vault));
 
   const ext = extname(filePath).toLowerCase();
   const mediaType = imageMime(ext);
 
   const result = await generateText({
-    model: provider(parsed.model) as any,
+    model: provider(managed ? modelId : parsed.model) as any,
     maxOutputTokens: params.max_tokens ?? 1024,
     messages: [{
       role: "user",
@@ -535,13 +541,15 @@ async function analyzeWithSdk(
   return {
     content: [{ type: "text", text: result.text }],
     details: {
-      provider: parsed.provider,
+      provider: managed ? "gateway" : parsed.provider,
       model: parsed.model,
       path: filePath,
       imageSize: fileBuffer.byteLength,
       tokens: result.usage?.totalTokens,
       promptTokens: result.usage?.inputTokens,
       completionTokens: result.usage?.outputTokens,
+      // Billable cost (managed/gateway only) — harvested by the runner.
+      ...(managed ? { usage: extractGatewayUsage(result, modelId, "image.analyze") } : {}),
     },
   };
 }
