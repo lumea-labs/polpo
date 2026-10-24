@@ -26,6 +26,7 @@ import type {
   CompletionSseWriter,
 } from "./chat-handler.js";
 import { agentConfigForModelAttempt, completionResolvedModelInfo, MAX_TURNS } from "./agent-step-runner.js";
+import { invocationFromUsageEvent, type CompletionModelInvocation } from "./model-invocations.js";
 import {
   completionResponse,
   guardrailErrorEnvelope,
@@ -129,6 +130,8 @@ interface DriverState {
   toolCallsAccum: any[];
   totalUsage: { inputTokens: number; outputTokens: number; totalTokens: number };
   lastProviderMetadata: Record<string, unknown> | undefined;
+  /** One entry per provider call reported by the run's `usage` events. */
+  invocations: CompletionModelInvocation[];
   clientReturn: { id: string; name: string; arguments: unknown } | undefined;
   errorEvent: Record<string, unknown> | undefined;
   outputPolicyApplied: boolean;
@@ -143,7 +146,9 @@ export interface ChatViaRunTurnResult {
   reasoning?: string;
   toolCalls: any[];
   usage: { inputTokens: number; outputTokens: number; totalTokens: number };
+  /** Metadata of the last model call; use `invocations` for billing. */
   providerMetadata?: Record<string, unknown>;
+  invocations?: CompletionModelInvocation[];
   clientToolCall?: { id: string; name: string; arguments: unknown };
   error?: { message: string; type: string; code?: string; param?: unknown };
   runStatus: string;
@@ -276,6 +281,11 @@ function makeOnEvent(
         break;
       }
       case "usage": {
+        const invocation = invocationFromUsageEvent(e);
+        state.invocations.push(invocation);
+        // Failed attempts are billed but, like direct chat, stay out of the
+        // reported token totals and the legacy last-call metadata.
+        if (invocation.status === "failed") break;
         const u = (e.usage ?? {}) as { inputTokens?: number; outputTokens?: number; totalTokens?: number };
         state.totalUsage.inputTokens += u.inputTokens ?? 0;
         state.totalUsage.outputTokens += u.outputTokens ?? 0;
@@ -314,6 +324,7 @@ function newState(): DriverState {
     toolCallsAccum: [],
     totalUsage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
     lastProviderMetadata: undefined,
+    invocations: [],
     clientReturn: undefined,
     errorEvent: undefined,
     outputPolicyApplied: false,
@@ -401,6 +412,7 @@ function finishAccounting(execution: ChatCompletionExecution, state: DriverState
       sessionId: sessionId ?? undefined,
       user: body.user,
       providerMetadata: state.lastProviderMetadata,
+      invocations: state.invocations.map((invocation) => ({ ...invocation })),
     });
   } catch { /* never fail on callback */ }
   if (onResponseFinished) void Promise.resolve().then(onResponseFinished).catch(() => {});
@@ -816,6 +828,7 @@ export async function runChatTurnViaRun(
     toolCalls: state.toolCallsAccum,
     usage: state.totalUsage,
     providerMetadata: state.lastProviderMetadata,
+    invocations: state.invocations.map((invocation) => ({ ...invocation })),
     clientToolCall: error ? undefined : state.clientReturn,
     error,
     runStatus,

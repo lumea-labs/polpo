@@ -378,6 +378,37 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
     if (afterError) throw afterError;
   };
 
+  // Chat parity: one `usage` transcript entry per billed provider call so the
+  // chat driver can meter every call, not just the last one.
+  type BilledModelPhase = "operational" | "terminal" | "stop-feedback" | "compaction";
+  const emitModelUsage = (
+    phase: BilledModelPhase,
+    result: { usage?: unknown; providerMetadata?: unknown; selectedAttempt?: { model?: string } },
+    modelRef?: string,
+  ) => {
+    if (!ctx?.inject) return;
+    emitTranscript({
+      type: "usage",
+      phase,
+      usage: result.usage,
+      providerMetadata: result.providerMetadata,
+      ...(result.selectedAttempt?.model ?? modelRef ? { model: result.selectedAttempt?.model ?? modelRef } : {}),
+    });
+  };
+  const emitBilledFailedAttempt = (phase: BilledModelPhase, event: ModelPolicyEvent) => {
+    if (!ctx?.inject || event.type !== "model-attempt-failed") return;
+    const { failure } = event;
+    if (failure.usage === undefined && failure.providerMetadata === undefined) return;
+    emitTranscript({
+      type: "usage",
+      phase,
+      status: "failed",
+      usage: failure.usage,
+      providerMetadata: failure.providerMetadata,
+      model: failure.attempt.model,
+    });
+  };
+
   /**
    * Execute one tool call: dispatch, activity tracking, outcome collection,
    * toolUsage harvesting, transcript. Shared by LLM-session tool execution
@@ -724,6 +755,7 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
         providerOptions,
       });
       gate?.recordUsage(response.usage);
+      emitModelUsage("compaction", response, model.id ?? model.provider);
       return response.text;
     };
 
@@ -769,10 +801,13 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
               };
             },
             preserveSingleAttemptError: true,
-            onPolicyEvent: (event) => dispatchModelPolicyHook(event, {
-              agent: sessionAgent.name,
-              loop: loopName,
-            }),
+            onPolicyEvent: (event) => {
+              emitBilledFailedAttempt("terminal", event);
+              return dispatchModelPolicyHook(event, {
+                agent: sessionAgent.name,
+                loop: loopName,
+              });
+            },
             allowCommittedFallback: true,
             maxRecoverableStreamRetries: 0,
             system: systemPrompt,
@@ -783,6 +818,7 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
             (result: any) => ({ finishReason: result.finishReason, toolCallCount: result.toolCalls?.length ?? 0 }),
           );
           gate?.recordUsage(terminal.usage);
+          emitModelUsage("terminal", terminal);
           if (terminal.toolCalls.length > 0 || terminal.output === undefined) {
             throw new Error(
               terminal.toolCalls.length > 0
@@ -839,13 +875,6 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
           }
           lastStepText = guardedText;
           completedStructuredOutput = true;
-          if (inject) {
-            emitTranscript({
-              type: "usage",
-              usage: terminal.usage,
-              providerMetadata: terminal.providerMetadata,
-            });
-          }
           return;
         } catch (error) {
           if (error instanceof TerminationGateError || sessionSignal.aborted) throw error;
@@ -955,10 +984,13 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
             };
           },
           preserveSingleAttemptError: true,
-          onPolicyEvent: (event) => dispatchModelPolicyHook(event, {
-            agent: sessionAgent.name,
-            loop: loopName,
-          }),
+          onPolicyEvent: (event) => {
+            emitBilledFailedAttempt("operational", event);
+            return dispatchModelPolicyHook(event, {
+              agent: sessionAgent.name,
+              loop: loopName,
+            });
+          },
           system: systemPrompt,
           messages,
           tools: toolSet,
@@ -1126,6 +1158,7 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
 
       const stepUsage = turn.usage;
       gate?.recordUsage(stepUsage);
+      emitModelUsage("operational", turn);
       const selectedResolved = resolvedAttempts.get(turn.selectedAttempt.index);
       if (selectedResolved) {
         model = selectedResolved.model;
@@ -1172,16 +1205,6 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
       messages.push(...(contextTrust === "enforce"
         ? protectRuntimeToolResultMessages(responseMessages)
         : responseMessages));
-
-      // Chat parity (F1c): surface per-turn usage + provider metadata so the
-      // driver can accumulate them for onCompletionFinished, matching chat.
-      if (inject) {
-        emitTranscript({
-          type: "usage",
-          usage: stepUsage,
-          providerMetadata: turn.providerMetadata,
-        });
-      }
 
       return { text: guardedText, toolCalls, usage: stepUsage };
     };
@@ -1456,10 +1479,13 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
             };
           },
           preserveSingleAttemptError: true,
-          onPolicyEvent: (event) => dispatchModelPolicyHook(event, {
-            agent: sessionAgent.name,
-            loop: loopName,
-          }),
+          onPolicyEvent: (event) => {
+            emitBilledFailedAttempt("stop-feedback", event);
+            return dispatchModelPolicyHook(event, {
+              agent: sessionAgent.name,
+              loop: loopName,
+            });
+          },
           system: systemPrompt,
           messages: [
             ...messages,
@@ -1474,6 +1500,7 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
         }),
         (result: any) => ({ finishReason: result.finishReason, toolCallCount: result.toolCalls?.length ?? 0 }),
       );
+      emitModelUsage("stop-feedback", retry);
       if (retry.toolCalls.length > 0) throw new Error("Stop-feedback recovery returned a tool call");
       const selectedResolved = resolvedAttempts.get(retry.selectedAttempt.index);
       if (selectedResolved) {
@@ -1495,7 +1522,6 @@ export function spawnLoopEngine(agentConfig: AgentConfig, task: Task, cwd: strin
         accumText += retryText;
         lastStepText = `${lastStepText ? `${lastStepText}\n\n` : ""}${retryText}`;
       }
-      if (inject) emitTranscript({ type: "usage", usage: retry.usage, providerMetadata: retry.providerMetadata });
       const retryStop = await dispatchRuntimeHook("turn:stop", {
         loop: loopName,
         textLength: lastStepText.length,

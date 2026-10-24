@@ -60,6 +60,7 @@ import type {
   CompletionRouteDeps,
   CompletionToolRunScope,
 } from "../completions.js";
+import { CompletionModelInvocationLedger, type CompletionModelInvocation } from "./model-invocations.js";
 import { appendModelResponseMessages } from "./message-mapping.js";
 import {
   appendReasoningSummary,
@@ -148,7 +149,10 @@ export interface AgentStepRunResult {
   usage: LanguageModelUsage;
   model: string;
   resolvedModel?: CompletionResolvedModelInfo;
+  /** Metadata of the step's last model call; use `invocations` for billing. */
   providerMetadata?: Record<string, unknown>;
+  /** Every provider call this step made in this process (never replayed from a checkpoint). */
+  invocations: CompletionModelInvocation[];
   toolCalls: any[];
 }
 
@@ -257,7 +261,12 @@ export function addUsage(a: LanguageModelUsage, b: LanguageModelUsage): Language
 export function buildSummarizeFn(
   m: ResolvedModelInfo,
   providerOptions?: Record<string, any>,
-  budget?: { gate?: TerminationGate; signal?: AbortSignal; onUsage?: (usage: LanguageModelUsage) => void },
+  budget?: {
+    gate?: TerminationGate;
+    signal?: AbortSignal;
+    onUsage?: (usage: LanguageModelUsage) => void;
+    invocations?: CompletionModelInvocationLedger;
+  },
 ): SummarizeFn {
   return async (msgs: any[], prompt: string): Promise<string> => {
     budget?.gate?.assertAvailable();
@@ -271,6 +280,7 @@ export function buildSummarizeFn(
     });
     budget?.gate?.recordUsage(result.usage);
     budget?.onUsage?.(result.usage);
+    budget?.invocations?.record("compaction", result, m.id ?? m.provider);
     return result.text.trim();
   };
 }
@@ -370,6 +380,8 @@ export async function runAgentStepCompletion(options: {
   resume?: AgentStepCheckpoint;
   checkpointAvailable?: boolean;
   onCheckpoint?: (checkpoint: AgentStepCheckpoint) => Promise<void>;
+  /** Shared per-completion ledger; provider calls are recorded even if the step throws. */
+  invocations?: CompletionModelInvocationLedger;
 }): Promise<AgentStepRunResult> {
   const {
     deps,
@@ -691,6 +703,10 @@ export async function runAgentStepCompletion(options: {
   let completedStructuredOutput = false;
   let totalUsage: LanguageModelUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 } as LanguageModelUsage;
   let lastProviderMetadata: Record<string, unknown> | undefined;
+  // Step-local ledger (mirrored into the completion's ledger). Resumed
+  // checkpoints carry token totals but never invocations, so only calls made
+  // by this process are reported and earlier calls are never billed twice.
+  const invocations = new CompletionModelInvocationLedger(options.invocations);
   const toolCallsAccum: any[] = [];
   const maxTurns = agentConfig.maxTurns ?? MAX_TURNS;
   let nextTurn = options.resume?.nextTurn ?? 0;
@@ -796,7 +812,10 @@ export async function runAgentStepCompletion(options: {
             };
           },
           preserveSingleAttemptError: true,
-          onPolicyEvent: (event) => dispatchCompletionModelPolicyHook(runtimeHooks, event),
+          onPolicyEvent: (event) => {
+            invocations.observePolicyEvent("terminal", event);
+            return dispatchCompletionModelPolicyHook(runtimeHooks, event);
+          },
           allowCommittedFallback: true,
           maxRecoverableStreamRetries: 0,
           system: fullSystemPrompt,
@@ -807,6 +826,7 @@ export async function runAgentStepCompletion(options: {
         });
         gate?.recordUsage(terminalResult.usage);
         totalUsage = addUsage(totalUsage, terminalResult.usage);
+        invocations.record("terminal", terminalResult);
         if (terminalResult.toolCalls.length > 0 || terminalResult.output === undefined) {
           throw new Error(
             terminalResult.toolCalls.length > 0
@@ -918,7 +938,7 @@ export async function runAgentStepCompletion(options: {
             contextWindow: m.contextWindow ?? 200_000,
             maxOutputTokens: m.maxTokens ?? 8192,
           },
-          summarize: buildSummarizeFn(m, providerOpts, { gate, signal: options.signal, onUsage: (usage) => { totalUsage = addUsage(totalUsage, usage); } }),
+          summarize: buildSummarizeFn(m, providerOpts, { gate, signal: options.signal, invocations, onUsage: (usage) => { totalUsage = addUsage(totalUsage, usage); } }),
           mode: "chat",
         });
         if (compactionResult.compacted) {
@@ -965,7 +985,10 @@ export async function runAgentStepCompletion(options: {
               };
             },
             preserveSingleAttemptError: true,
-            onPolicyEvent: (event) => dispatchCompletionModelPolicyHook(runtimeHooks, event),
+            onPolicyEvent: (event) => {
+              invocations.observePolicyEvent("operational", event);
+              return dispatchCompletionModelPolicyHook(runtimeHooks, event);
+            },
             system: fullSystemPrompt,
             messages,
             tools: aiTools,
@@ -1035,6 +1058,7 @@ export async function runAgentStepCompletion(options: {
         }
         totalUsage = addUsage(totalUsage, turnResult.usage);
         gate?.recordUsage(turnResult.usage);
+        invocations.record("operational", turnResult);
         lastProviderMetadata = turnResult.providerMetadata as Record<string, unknown> | undefined;
 
         await appendModelResponseMessages(
@@ -1269,7 +1293,10 @@ export async function runAgentStepCompletion(options: {
             };
           },
           preserveSingleAttemptError: true,
-          onPolicyEvent: (event) => dispatchCompletionModelPolicyHook(runtimeHooks, event),
+          onPolicyEvent: (event) => {
+            invocations.observePolicyEvent("stop-feedback", event);
+            return dispatchCompletionModelPolicyHook(runtimeHooks, event);
+          },
           system: fullSystemPrompt,
           messages: [
             ...messages,
@@ -1283,6 +1310,7 @@ export async function runAgentStepCompletion(options: {
           ...(options.signal ? { abortSignal: options.signal } : {}),
         }),
       });
+      invocations.record("stop-feedback", retry);
       if (retry.toolCalls.length > 0) throw new Error("Stop-feedback recovery returned a tool call");
       const retryResolved = resolvedAttempts.get(retry.selectedAttempt.index);
       if (retryResolved) {
@@ -1313,6 +1341,7 @@ export async function runAgentStepCompletion(options: {
       model: m.id ?? m.provider,
       resolvedModel: completionResolvedModelInfo(m),
       providerMetadata: lastProviderMetadata,
+      invocations: invocations.list(),
       toolCalls: toolCallsAccum,
     };
   } catch (error) {

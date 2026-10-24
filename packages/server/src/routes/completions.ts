@@ -60,6 +60,7 @@ import type {
   CompletionResolvedModelInfo,
   ResolvedModelInfo,
 } from "./completions/agent-step-runner.js";
+import type { CompletionModelInvocation } from "./completions/model-invocations.js";
 import {
   createCompletionRunSteeringScope,
   executeStreamingProjectLoopCompletion,
@@ -113,6 +114,10 @@ export {
   type PreparedConversationTurn,
 } from "./completions/conversation-turn.js";
 export { CompletionRuntimeError } from "./completions/runtime-error.js";
+export type {
+  CompletionModelInvocation,
+  CompletionModelInvocationPhase,
+} from "./completions/model-invocations.js";
 
 // ── Route factory ──────────────────────────────────────────────────────
 
@@ -317,6 +322,7 @@ export interface CompletionRouteDeps {
   getApprovalStore?: () => ApprovalStore | undefined;
   /** Called after each completion finishes (streaming or non-streaming). Receives usage, model info, and provider metadata. Fire-and-forget — errors are silently ignored. */
   onCompletionFinished?: (info: {
+    /** Token usage summed across the completion's successful model calls. */
     usage: { inputTokens?: number; outputTokens?: number; totalTokens?: number };
     model: string;
     resolvedModel?: CompletionResolvedModelInfo;
@@ -325,7 +331,18 @@ export interface CompletionRouteDeps {
     /** OpenAI-compat opaque end-user id from the request, when set. Lets the
      *  cloud meter attribute the usage row to the dev's authenticated user. */
     user?: string;
+    /**
+     * Provider metadata of the LAST model call only. Kept for backward
+     * compatibility; billing must use `invocations` instead.
+     */
     providerMetadata?: Record<string, unknown>;
+    /**
+     * Every provider call made while serving this completion (operational
+     * turns, terminal structured output, stop-feedback retry, compaction and
+     * provider-billed failed fallback attempts), each with its own usage and
+     * provider metadata. Meter the sum of these.
+     */
+    invocations?: CompletionModelInvocation[];
   }) => void;
   /** Best-effort wake-up after an atomically committed, durable canonical turn. */
   onCanonicalTurnCommitted?: (

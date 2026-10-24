@@ -67,6 +67,54 @@ export type ModelTurnResult<TOOLS extends ToolSet = ToolSet> = {
   response?: Awaited<StreamTextResult<TOOLS, any>["response"]>;
 };
 
+/**
+ * Provider-billed facts of a model turn that failed after the provider had
+ * already finished generating (for example a structured-output parse failure
+ * or a stream error after the final step). Hosts meter these so failed or
+ * fallback attempts the provider charged for are not silently dropped.
+ */
+export type ModelTurnBilling = {
+  usage?: LanguageModelUsage;
+  providerMetadata?: ProviderMetadata;
+};
+
+const modelTurnBillingByError = new WeakMap<object, ModelTurnBilling>();
+
+/** Associate provider-billed facts with a thrown turn error (first writer wins). */
+export function attachModelTurnBilling<E>(error: E, billing: ModelTurnBilling): E {
+  if (
+    error !== null
+    && (typeof error === "object" || typeof error === "function")
+    && (billing.usage !== undefined || billing.providerMetadata !== undefined)
+    && !modelTurnBillingByError.has(error as object)
+  ) {
+    modelTurnBillingByError.set(error as object, billing);
+  }
+  return error;
+}
+
+function billedModelTurnStep(
+  usage: LanguageModelUsage | undefined,
+  providerMetadata: ProviderMetadata | undefined,
+): ModelTurnBilling | undefined {
+  // The SDK also emits a synthetic empty step when the provider fails before
+  // finishing; only steps that reported tokens or metadata were billed.
+  const hasMetadata = providerMetadata !== undefined && Object.keys(providerMetadata).length > 0;
+  const hasUsage = usage !== undefined
+    && [usage.inputTokens, usage.outputTokens, usage.totalTokens].some((value) => typeof value === "number" && value > 0);
+  if (!hasMetadata && !hasUsage) return undefined;
+  return {
+    ...(hasUsage ? { usage } : {}),
+    ...(hasMetadata ? { providerMetadata } : {}),
+  };
+}
+
+/** Provider-billed facts captured for a failed turn, when the provider finished. */
+export function modelTurnBillingFromError(error: unknown): ModelTurnBilling | undefined {
+  if (error === null || (typeof error !== "object" && typeof error !== "function")) return undefined;
+  return modelTurnBillingByError.get(error as object);
+}
+
 export type StreamModelTurnInput<TOOLS extends ToolSet = ToolSet> = {
   model: LanguageModel;
   system?: string;
@@ -589,128 +637,136 @@ export async function streamModelTurn<TOOLS extends ToolSet = ToolSet>(
   let text = "";
   let reasoning = "";
   let streamError: unknown;
+  let billedStep: ModelTurnBilling | undefined;
 
-  for await (const part of result.fullStream) {
-    switch (part.type) {
-      case "reasoning-delta":
-        reasoning += part.text;
-        await onEvent?.({ type: "reasoning-delta", id: part.id, text: part.text });
-        break;
-      case "text-delta":
-        text += part.text;
-        await onEvent?.({ type: "text-delta", id: part.id, text: part.text });
-        break;
-      case "tool-input-start":
-        await onEvent?.({
-          type: "tool-input-start",
-          id: part.id,
-          name: part.toolName,
-          providerExecuted: part.providerExecuted,
-          dynamic: part.dynamic,
-          title: part.title,
-        });
-        break;
-      case "tool-input-delta":
-        await onEvent?.({ type: "tool-input-delta", id: part.id, delta: part.delta });
-        break;
-      case "tool-input-end":
-        await onEvent?.({ type: "tool-input-end", id: part.id });
-        break;
-      case "tool-call":
-        await onEvent?.({
-          type: "tool-call",
-          id: part.toolCallId,
-          name: part.toolName,
-          args: part.input,
-          providerExecuted: part.providerExecuted,
-          dynamic: part.dynamic,
-          invalid: part.invalid,
-          error: part.error,
-        });
-        break;
-      case "tool-result":
-        await onEvent?.({
-          type: "tool-result",
-          id: part.toolCallId,
-          name: part.toolName,
-          output: (part as TypedToolResult<TOOLS>).output,
-        });
-        break;
-      case "tool-error":
-        await onEvent?.({
-          type: "tool-error",
-          id: part.toolCallId,
-          name: part.toolName,
-          error: (part as TypedToolError<TOOLS>).error,
-        });
-        break;
-      case "finish":
-        await onEvent?.({
-          type: "finish",
-          finishReason: part.finishReason,
-          rawFinishReason: part.rawFinishReason,
-          totalUsage: part.totalUsage,
-        });
-        break;
-      case "error":
-        streamError ??= part.error;
-        await onEvent?.({ type: "error", error: part.error });
-        break;
+  try {
+    for await (const part of result.fullStream) {
+      switch (part.type) {
+        case "reasoning-delta":
+          reasoning += part.text;
+          await onEvent?.({ type: "reasoning-delta", id: part.id, text: part.text });
+          break;
+        case "text-delta":
+          text += part.text;
+          await onEvent?.({ type: "text-delta", id: part.id, text: part.text });
+          break;
+        case "tool-input-start":
+          await onEvent?.({
+            type: "tool-input-start",
+            id: part.id,
+            name: part.toolName,
+            providerExecuted: part.providerExecuted,
+            dynamic: part.dynamic,
+            title: part.title,
+          });
+          break;
+        case "tool-input-delta":
+          await onEvent?.({ type: "tool-input-delta", id: part.id, delta: part.delta });
+          break;
+        case "tool-input-end":
+          await onEvent?.({ type: "tool-input-end", id: part.id });
+          break;
+        case "tool-call":
+          await onEvent?.({
+            type: "tool-call",
+            id: part.toolCallId,
+            name: part.toolName,
+            args: part.input,
+            providerExecuted: part.providerExecuted,
+            dynamic: part.dynamic,
+            invalid: part.invalid,
+            error: part.error,
+          });
+          break;
+        case "tool-result":
+          await onEvent?.({
+            type: "tool-result",
+            id: part.toolCallId,
+            name: part.toolName,
+            output: (part as TypedToolResult<TOOLS>).output,
+          });
+          break;
+        case "tool-error":
+          await onEvent?.({
+            type: "tool-error",
+            id: part.toolCallId,
+            name: part.toolName,
+            error: (part as TypedToolError<TOOLS>).error,
+          });
+          break;
+        case "finish-step":
+          billedStep = billedModelTurnStep(part.usage, part.providerMetadata) ?? billedStep;
+          break;
+        case "finish":
+          await onEvent?.({
+            type: "finish",
+            finishReason: part.finishReason,
+            rawFinishReason: part.rawFinishReason,
+            totalUsage: part.totalUsage,
+          });
+          break;
+        case "error":
+          streamError ??= part.error;
+          await onEvent?.({ type: "error", error: part.error });
+          break;
+      }
     }
+
+    // AI SDK reports transport/provider failures as stream parts instead of
+    // throwing them. Preserve that original error before accessing derived
+    // promises such as `output`, which otherwise replace it with a generic
+    // NoOutputGeneratedError and discard the actionable provider diagnostic.
+    if (streamError !== undefined) throw streamError;
+
+    const responsePromise = Promise.resolve()
+      .then(() => result.response)
+      .catch(() => undefined);
+    const providerMetadataPromise = Promise.resolve()
+      .then(() => result.providerMetadata)
+      .catch(() => undefined);
+    const warningsPromise = Promise.resolve()
+      .then(() => result.warnings)
+      .catch(() => undefined);
+    const toolResultsPromise = Promise.resolve()
+      .then(() => result.toolResults)
+      .catch(() => [] as TypedToolResult<TOOLS>[]);
+
+    const [toolCalls, toolResults, usage, totalUsage, finishReason, rawFinishReason, response, providerMetadata, warnings] =
+      await Promise.all([
+        result.toolCalls,
+        toolResultsPromise,
+        result.usage,
+        result.totalUsage,
+        result.finishReason,
+        result.rawFinishReason,
+        responsePromise,
+        providerMetadataPromise,
+        warningsPromise,
+      ]);
+    for (const warning of warnings ?? []) {
+      await onEvent?.({ type: "warning", warning });
+    }
+    const output = input.output && toolCalls.length === 0
+      ? await result.output
+      : undefined;
+
+    return {
+      text,
+      reasoning,
+      ...(output !== undefined ? { output } : {}),
+      toolCalls: normalizeExecutableToolCalls(toolCalls),
+      toolResults,
+      usage,
+      totalUsage,
+      finishReason,
+      rawFinishReason,
+      providerMetadata,
+      warnings: [...admitted.plan.warnings, ...(warnings ?? [])],
+      plan: admitted.plan,
+      responseMessages: normalizeResponseMessagesForHistory(response?.messages ?? []),
+      response,
+    };
+  } catch (error) {
+    throw billedStep ? attachModelTurnBilling(error, billedStep) : error;
   }
-
-  // AI SDK reports transport/provider failures as stream parts instead of
-  // throwing them. Preserve that original error before accessing derived
-  // promises such as `output`, which otherwise replace it with a generic
-  // NoOutputGeneratedError and discard the actionable provider diagnostic.
-  if (streamError !== undefined) throw streamError;
-
-  const responsePromise = Promise.resolve()
-    .then(() => result.response)
-    .catch(() => undefined);
-  const providerMetadataPromise = Promise.resolve()
-    .then(() => result.providerMetadata)
-    .catch(() => undefined);
-  const warningsPromise = Promise.resolve()
-    .then(() => result.warnings)
-    .catch(() => undefined);
-  const toolResultsPromise = Promise.resolve()
-    .then(() => result.toolResults)
-    .catch(() => [] as TypedToolResult<TOOLS>[]);
-
-  const [toolCalls, toolResults, usage, totalUsage, finishReason, rawFinishReason, response, providerMetadata, warnings] =
-    await Promise.all([
-      result.toolCalls,
-      toolResultsPromise,
-      result.usage,
-      result.totalUsage,
-      result.finishReason,
-      result.rawFinishReason,
-      responsePromise,
-      providerMetadataPromise,
-      warningsPromise,
-    ]);
-  for (const warning of warnings ?? []) {
-    await onEvent?.({ type: "warning", warning });
-  }
-  const output = input.output && toolCalls.length === 0
-    ? await result.output
-    : undefined;
-
-  return {
-    text,
-    reasoning,
-    ...(output !== undefined ? { output } : {}),
-    toolCalls: normalizeExecutableToolCalls(toolCalls),
-    toolResults,
-    usage,
-    totalUsage,
-    finishReason,
-    rawFinishReason,
-    providerMetadata,
-    warnings: [...admitted.plan.warnings, ...(warnings ?? [])],
-    plan: admitted.plan,
-    responseMessages: normalizeResponseMessagesForHistory(response?.messages ?? []),
-    response,
-  };
 }

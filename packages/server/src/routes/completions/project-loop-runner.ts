@@ -46,6 +46,10 @@ import {
 } from "@polpo-ai/core";
 import { TerminationGateError } from "@polpo-ai/core/runtime-hooks";
 import type { AgentStepCheckpoint } from "./agent-step-runner.js";
+import {
+  CompletionModelInvocationLedger,
+  type CompletionModelInvocation,
+} from "./model-invocations.js";
 import { validateToolInput } from "@polpo-ai/llm";
 import type { LanguageModelUsage } from "ai";
 import type {
@@ -108,7 +112,10 @@ export interface ProjectLoopRunResult {
   usage: LanguageModelUsage;
   model: string;
   resolvedModel?: CompletionResolvedModelInfo;
+  /** Metadata of the last model call; use `invocations` for billing. */
   providerMetadata?: Record<string, unknown>;
+  /** Every provider call made by this loop run's agent steps. */
+  invocations: CompletionModelInvocation[];
   toolCalls: any[];
   context: ContextBag;
   trace: LoopTraceEvent[];
@@ -442,6 +449,8 @@ export async function runProjectLoopCompletion(options: {
   steering?: SteeringController;
   /** Trusted project fallback, below the graph/agent declarations. */
   steeringPolicy?: SteeringPolicy;
+  /** Completion ledger; provider calls are recorded even if the loop throws. */
+  invocations?: CompletionModelInvocationLedger;
 }): Promise<ProjectLoopRunResult> {
   const {
     deps,
@@ -700,6 +709,7 @@ export async function runProjectLoopCompletion(options: {
   let lastModel = initialModel;
   let lastResolvedModel: CompletionResolvedModelInfo | undefined;
   let lastProviderMetadata: Record<string, unknown> | undefined;
+  const invocations = new CompletionModelInvocationLedger(options.invocations);
   const toolCallsAccum: any[] = [];
   const events: LoopTraceEvent[] = [];
   let pendingAgentCheckpoint = agentCheckpoint;
@@ -864,6 +874,7 @@ export async function runProjectLoopCompletion(options: {
           toolPolicy: stepToolPolicy,
           projectedInput: agentInput,
           outputSchema: loop.output?.schema,
+          invocations,
           steering: options.steering,
           steeringPolicy: resolveSteeringPolicy([
             { policy: loop.steering, source: "node" },
@@ -925,6 +936,7 @@ export async function runProjectLoopCompletion(options: {
       model: lastModel,
       resolvedModel: lastResolvedModel,
       providerMetadata: lastProviderMetadata,
+      invocations: invocations.list(),
       toolCalls: toolCallsAccum,
       context: result.context,
       trace: result.events,
@@ -1361,6 +1373,7 @@ export async function executeStreamingProjectLoopCompletion(
       ).model ?? "polpo";
       let resolvedModel: CompletionResolvedModelInfo | undefined;
       let providerMetadata: Record<string, unknown> | undefined;
+      const invocations = new CompletionModelInvocationLedger();
       let toolCalls: any[] = [];
       let canonicalTurnSucceeded = false;
       let suggestions: ChatSuggestion[] = [];
@@ -1401,6 +1414,7 @@ export async function executeStreamingProjectLoopCompletion(
           executionAllowedTools: options.executionAllowedTools,
           grantAllowedTools: options.grantAllowedTools,
           steering: steeringScope.steering,
+          invocations,
           onToolCall: async (toolCall) => {
             if (signal.aborted) return;
             await stream.writeSSE({
@@ -1510,6 +1524,7 @@ export async function executeStreamingProjectLoopCompletion(
             sessionId: sessionId ?? undefined,
             user: body.user,
             providerMetadata,
+            invocations: invocations.list(),
           });
         } catch { /* never fail on callback */ }
         await steeringScope.release();
@@ -1549,6 +1564,7 @@ async function runNonStreamingProjectLoopCompletion(
   ).model ?? "polpo";
   let resolvedModel: CompletionResolvedModelInfo | undefined;
   let providerMetadata: Record<string, unknown> | undefined;
+  const invocations = new CompletionModelInvocationLedger();
   let toolCalls: any[] = [];
   let finalText = "";
   let finalReasoning = "";
@@ -1586,6 +1602,7 @@ async function runNonStreamingProjectLoopCompletion(
       executionAllowedTools: options.executionAllowedTools,
       grantAllowedTools: options.grantAllowedTools,
       steering: steeringScope.steering,
+      invocations,
     });
     finalText = run.text;
     finalReasoning = run.reasoning;
@@ -1661,6 +1678,7 @@ async function runNonStreamingProjectLoopCompletion(
         sessionId: sessionId ?? undefined,
         user: body.user,
         providerMetadata,
+        invocations: invocations.list(),
       });
     } catch { /* never fail on callback */ }
     await steeringScope.release();

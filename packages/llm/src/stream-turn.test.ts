@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { jsonSchema, Output } from "ai";
 import { MockLanguageModelV3, convertArrayToReadableStream } from "ai/test";
 import {
+  modelTurnBillingFromError,
   prepareModelMessagesForProvider,
   prepareModelMessagesForTransport,
   normalizeResponseMessagesForHistory,
@@ -370,6 +371,50 @@ describe("streamModelTurn", () => {
     })).rejects.toBe(providerError);
 
     expect(events).toContainEqual({ type: "error", error: providerError });
+  });
+
+  it("keeps provider-billed usage and metadata on a turn that fails after the provider finished", async () => {
+    const providerMetadata = { gateway: { marketCost: "0.01", cost: "0.008", generationId: "gen_invalid" } };
+    const model = mockModel([
+      { type: "stream-start", warnings: [] },
+      { type: "text-start", id: "text" },
+      { type: "text-delta", id: "text", delta: "not json" },
+      { type: "text-end", id: "text" },
+      { type: "finish", finishReason: { unified: "stop", raw: undefined }, usage: usage(), providerMetadata },
+    ]);
+
+    const error = await streamModelTurn({
+      model,
+      messages: [{ role: "user", content: "Create a structured response" }],
+      output: Output.object({
+        schema: jsonSchema({
+          type: "object",
+          properties: { ok: { type: "boolean" } },
+          required: ["ok"],
+          additionalProperties: false,
+        }),
+      }),
+    }).then(() => undefined, (failure: unknown) => failure);
+
+    expect(error).toBeInstanceOf(Error);
+    expect(modelTurnBillingFromError(error)).toMatchObject({
+      usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15 },
+      providerMetadata,
+    });
+  });
+
+  it("does not invent billing facts for a stream that failed before finishing", async () => {
+    const providerError = new Error("socket hang up");
+    const model = mockModel([
+      { type: "stream-start", warnings: [] },
+      { type: "error", error: providerError },
+    ]);
+
+    await expect(streamModelTurn({
+      model,
+      messages: [{ role: "user", content: "hi" }],
+    })).rejects.toBe(providerError);
+    expect(modelTurnBillingFromError(providerError)).toBeUndefined();
   });
 
   it("only sends active tools to the model provider", async () => {

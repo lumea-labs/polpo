@@ -84,6 +84,7 @@ import {
   modelSelectionForResolvedModel,
   type ResolvedModelInfo,
 } from "./agent-step-runner.js";
+import { CompletionModelInvocationLedger } from "./model-invocations.js";
 import {
   runChatTurnViaRun,
   type ChatViaRunTurnResult,
@@ -1659,6 +1660,7 @@ export async function runConversationTurn(
     let model = "polpo";
     let resolvedModel;
     let providerMetadata: Record<string, unknown> | undefined;
+    const invocations = new CompletionModelInvocationLedger();
     let canonicalTurnSucceeded = false;
     let suggestions: ChatSuggestion[] = [];
     try {
@@ -1699,6 +1701,7 @@ export async function runConversationTurn(
         executionAllowedTools: prepared.executionAllowedTools,
         grantAllowedTools: prepared.grantAllowedTools,
         steering: steeringScope.steering,
+        invocations,
       });
       finalText = await applyCompletionOutputPolicy({
         outputPolicy: prepared.deps.runOutputPolicy,
@@ -1769,6 +1772,7 @@ export async function runConversationTurn(
           sessionId: prepared.sessionId ?? undefined,
           user: prepared.body.user,
           providerMetadata,
+          invocations: invocations.list(),
         });
       } finally {
         await steeringScope.release();

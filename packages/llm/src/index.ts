@@ -136,12 +136,15 @@ export {
 // ─── Model Turn Primitive ───────────────────────────
 export {
   streamModelTurn,
+  attachModelTurnBilling,
+  modelTurnBillingFromError,
   providerOptionsWithParallelToolCalls,
   normalizeResponseMessagesForHistory,
   prepareModelMessagesForProvider,
   prepareModelMessagesForTransport,
 } from "./stream-turn.js";
 export type {
+  ModelTurnBilling,
   ModelTurnErrorInfo,
   ModelTurnEvent,
   ModelTurnResult,
