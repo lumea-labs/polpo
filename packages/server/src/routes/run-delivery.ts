@@ -271,7 +271,8 @@ export interface ReconcileInterruptedRunOptions {
 }
 
 /**
- * Converts an ownerless started run into one durable retryable failure. A
+ * Converts an ownerless admitted run (started, or claimed by an owner whose
+ * lease expired before run.started) into one durable retryable failure. A
  * recovery lease serializes concurrent reconnects and fences the old owner.
  */
 export async function reconcileInterruptedRun(
@@ -282,16 +283,21 @@ export async function reconcileInterruptedRun(
     await reconcileInterruptedHostProjection(options, history.terminal);
     return "terminal";
   }
-  if (!history.started) {
-    return "not-started";
-  }
-
   const now = options.now?.() ?? new Date();
   if (!(now instanceof Date) || !Number.isFinite(now.getTime())) {
     throw new RunDeliveryValidationError("Run delivery clock returned an invalid date");
   }
   const currentLease = await options.leaseStore.get(options.runId);
-  if (currentLease && Date.parse(currentLease.expiresAt) > now.getTime()) {
+  if (!history.started) {
+    // Without run.started, only an expired owner lease proves admission: an
+    // owner claimed the run and died before (or while) recording its start.
+    // Nothing else will ever finish it, and it must never be admitted again,
+    // so it is terminalized below exactly like a started orphan. A run that
+    // was never claimed, or whose owner is still renewing, stays untouched.
+    if (!currentLease || Date.parse(currentLease.expiresAt) > now.getTime()) {
+      return "not-started";
+    }
+  } else if (currentLease && Date.parse(currentLease.expiresAt) > now.getTime()) {
     return "active";
   }
 

@@ -15,6 +15,44 @@ const lease = {
 };
 
 describe("executeOwnedRun", () => {
+  it("does not admit the producer when a reconciler superseded its lease around run.started", async () => {
+    const base = new InMemoryRunEventStore();
+    const leases = new InMemoryRunExecutionLeaseStore();
+    const events = {
+      append: async (runId: string, event: Parameters<typeof base.append>[1]) => {
+        const appended = await base.append(runId, event);
+        if (event.type === "run.started") {
+          // The owner stalled past its lease; a reconciler fenced it out.
+          const stalled = await leases.get(runId);
+          if (stalled) await leases.release(runId, stalled);
+          await leases.claim(runId, {
+            owner: "run-delivery-reconciler",
+            token: "recovery",
+            expiresAt: new Date(Date.now() + 10_000).toISOString(),
+          });
+        }
+        return appended;
+      },
+      listAfter: base.listAfter.bind(base),
+      bounds: base.bounds.bind(base),
+    };
+    const producer = vi.fn();
+
+    const result = await executeOwnedRun({
+      runId: "run-superseded",
+      ...lease,
+      journal: new RunEventJournal(events),
+      leaseStore: leases,
+      producer,
+    });
+
+    expect(result).toEqual({ status: "lost-lease" });
+    expect(producer).not.toHaveBeenCalled();
+    await expect(leases.get("run-superseded")).resolves.toMatchObject({
+      owner: "run-delivery-reconciler",
+    });
+  });
+
   it("claims one owner, journals lifecycle events, and releases its lease", async () => {
     const events = new InMemoryRunEventStore();
     const leases = new InMemoryRunExecutionLeaseStore();

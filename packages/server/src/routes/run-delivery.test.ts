@@ -461,6 +461,40 @@ describe("runDeliveryRoutes", () => {
     expect(resolveTerminalEvent).toHaveBeenCalledOnce();
   });
 
+  it("terminalizes a claimed run whose owner lease expired before run.started", async () => {
+    let now = new Date("2026-08-21T00:00:00.000Z");
+    const eventStore = new InMemoryRunEventStore({ now: () => now });
+    const leaseStore = new InMemoryRunExecutionLeaseStore({ now: () => now });
+    const cancellationStore = new InMemoryRunCancellationStore();
+    await eventStore.append("run-claimed", { type: "run.accepted", data: {} });
+    await leaseStore.claim("run-claimed", {
+      owner: "worker-old",
+      token: "attempt-old",
+      expiresAt: "2026-08-21T00:00:30.000Z",
+    });
+    const reconcile = (token: string) => reconcileInterruptedRun({
+      runId: "run-claimed",
+      eventStore,
+      leaseStore,
+      cancellationStore,
+      now: () => now,
+      createToken: () => token,
+    });
+
+    await expect(reconcile("must-not-claim")).resolves.toBe("not-started");
+    expect(await leaseStore.get("run-claimed")).toMatchObject({ owner: "worker-old" });
+
+    now = new Date("2026-08-21T00:00:31.000Z");
+    const results = await Promise.all([reconcile("recovery-a"), reconcile("recovery-b")]);
+
+    expect(results).toContain("interrupted");
+    expect(results.filter((result) => result === "interrupted")).toHaveLength(1);
+    expect((await eventStore.listAfter("run-claimed")).events.map((event) => event.type))
+      .toEqual(["run.accepted", "run.failed"]);
+    expect(await leaseStore.get("run-claimed")).toBeNull();
+    await expect(reconcile("recovery-c")).resolves.toBe("terminal");
+  });
+
   it("does not terminalize event history that never reached run.started", async () => {
     const eventStore = new InMemoryRunEventStore();
     await eventStore.append("run-accepted", { type: "run.accepted", data: {} });
