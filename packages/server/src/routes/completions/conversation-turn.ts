@@ -94,6 +94,7 @@ import {
   createCompletionRunSteeringScope,
   runProjectLoopCompletion,
 } from "./project-loop-runner.js";
+import { runAttachedLoopExecution } from "./attached-run-owner.js";
 import {
   persistAssistantMessage,
   notifyCanonicalTurnCommitted,
@@ -1679,29 +1680,37 @@ export async function runConversationTurn(
             );
         assistantMessageId = placeholder.id;
       }
-      const result = await runProjectLoopCompletion({
+      const result = await runAttachedLoopExecution({
         deps: prepared.deps,
-        agentConfig: prepared.agentConfig,
-        agentIdentity: prepared.agentIdentity,
-        projectLoop: prepared.projectLoop,
-        aiMessages: prepared.aiMessages,
-        extraSystemParts: prepared.extraSystemParts,
-        contextTrust: prepared.contextTrust,
-        runtimeContext: prepared.runtimeContext,
-        runtimeInvocation: prepared.runtimeInvocation,
+        runId: prepared.completionId,
         sessionId: prepared.sessionId,
-        user: prepared.body.user,
-        requestMetadata: prepared.body.metadata,
-        runtimePlan: prepared.runtimePlan,
+        agent: prepared.body.agent,
         signal: input.signal,
-        executionRoute: prepared.executionRoute,
-        activatedSkills: prepared.activatedSkills,
-        parallelToolCalls: prepared.body.parallel_tool_calls,
-        requestAllowedTools: prepared.requestAllowedTools,
-        executionAllowedTools: prepared.executionAllowedTools,
-        grantAllowedTools: prepared.grantAllowedTools,
-        steering: steeringScope.steering,
-        invocations,
+        execute: (signal, deliveryRunId) => runProjectLoopCompletion({
+          deps: prepared.deps,
+          agentConfig: prepared.agentConfig,
+          agentIdentity: prepared.agentIdentity,
+          projectLoop: prepared.projectLoop,
+          aiMessages: prepared.aiMessages,
+          extraSystemParts: prepared.extraSystemParts,
+          contextTrust: prepared.contextTrust,
+          runtimeContext: prepared.runtimeContext,
+          runtimeInvocation: prepared.runtimeInvocation,
+          sessionId: prepared.sessionId,
+          user: prepared.body.user,
+          requestMetadata: prepared.body.metadata,
+          runtimePlan: prepared.runtimePlan,
+          signal,
+          executionRoute: prepared.executionRoute,
+          activatedSkills: prepared.activatedSkills,
+          parallelToolCalls: prepared.body.parallel_tool_calls,
+          requestAllowedTools: prepared.requestAllowedTools,
+          executionAllowedTools: prepared.executionAllowedTools,
+          grantAllowedTools: prepared.grantAllowedTools,
+          steering: steeringScope.steering,
+          invocations,
+          ...(deliveryRunId ? { deliveryRunId } : {}),
+        }),
       });
       finalText = await applyCompletionOutputPolicy({
         outputPolicy: prepared.deps.runOutputPolicy,
