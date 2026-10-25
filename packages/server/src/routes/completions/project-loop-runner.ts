@@ -443,20 +443,6 @@ export async function runProjectLoopCompletion(options: {
     },
   };
   const loopRunId = resumeRun?.id ?? (loopRunStore ? `looprun-${nanoid(16)}` : undefined);
-  const hookRuntime = await deps.resolveRuntimeHooks?.({
-    agentConfig,
-    surface: "loop",
-    runId: loopRunId,
-    sessionId: sessionId ?? undefined,
-    loop: projectLoop.name,
-    activatedSkills,
-  });
-  // Graph orchestration has no Claude Code lifecycle counterpart; deterministic
-  // tool steps are tool calls (PreToolUse/PostToolUse) and agent nodes run the
-  // full agent lifecycle in runAgentStepCompletion.
-  const runtimeHooks: CompletionRuntimeHookContext | undefined = hookRuntime
-    ? { runtime: hookRuntime, surface: "loop" }
-    : undefined;
   const agentIdentity = options.agentIdentity === undefined ? providedToolInvocation?.agent : normalizeAgentIdentity(options.agentIdentity);
   if ((agentIdentity && agentIdentity.name !== agentConfig.name)
     || (providedToolInvocation?.agent && (providedToolInvocation.agent.name !== agentIdentity?.name
@@ -496,6 +482,30 @@ export async function runProjectLoopCompletion(options: {
     await rootTools.cleanup?.().catch(() => {});
     await toolRunScope?.cleanup?.().catch(() => {});
   };
+  // Hooks of deterministic tool steps run on the Run's own tool scope (same
+  // sandbox and working copy as the steps they validate).
+  let hookRuntime: Awaited<ReturnType<NonNullable<CompletionRouteDeps["resolveRuntimeHooks"]>>>;
+  try {
+    hookRuntime = await deps.resolveRuntimeHooks?.({
+      agentConfig,
+      surface: "loop",
+      runId: loopRunId,
+      sessionId: sessionId ?? undefined,
+      loop: projectLoop.name,
+      activatedSkills,
+      toolRunScope,
+      ...(loopRunId ? { turnId: loopRunId } : {}),
+    });
+  } catch (error) {
+    await cleanupToolRun();
+    throw error;
+  }
+  // Graph orchestration has no Claude Code lifecycle counterpart; deterministic
+  // tool steps are tool calls (PreToolUse/PostToolUse) and agent nodes run the
+  // full agent lifecycle in runAgentStepCompletion.
+  const runtimeHooks: CompletionRuntimeHookContext | undefined = hookRuntime
+    ? { runtime: hookRuntime, surface: "loop" }
+    : undefined;
   const rootPolicy = resolveExecutionToolPolicy({
     agent: agentConfig,
     mode: "loop",

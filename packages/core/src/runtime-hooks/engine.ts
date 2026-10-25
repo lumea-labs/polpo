@@ -119,7 +119,13 @@ export interface HookExecutionRecord {
   completedAt: string;
   durationMs: number;
   outcome: HookRunOutcome;
+  /** What the matcher saw (tool name, source, agent type...), for audit. */
+  matcherSubject?: string;
+  /** Tool call the hook ran for, on tool events. */
+  toolUseId?: string;
 }
+
+type RecordSubject = Pick<HookExecutionRecord, "matcherSubject" | "toolUseId">;
 
 /** Host capabilities. A missing handler family yields a non-blocking error, never silent success. */
 export interface HookHost {
@@ -315,11 +321,18 @@ export class HookEngine {
     const key = stableHash(`${occurrenceId}\u0000${registration.key}`);
     const replay = await this.host.findCompleted?.(key);
     if (replay) return replay;
+    const matcherField = HOOK_EVENTS[event].matcherField;
+    const matcherSubject = options.matcherSubject ?? (matcherField ? stringValue(input[matcherField]) : undefined);
+    const toolUseId = stringValue(input.tool_use_id);
+    const subject: RecordSubject = {
+      ...(matcherSubject ? { matcherSubject } : {}),
+      ...(toolUseId ? { toolUseId } : {}),
+    };
 
     const handler = registration.handler;
     const spec = HOOK_EVENTS[event];
     if (spec.skippedHandlers?.includes(handler.type)) {
-      return this.finish(key, occurrenceId, event, registration, this.now(), {
+      return this.finish(key, occurrenceId, event, registration, subject, this.now(), {
         status: "skipped", failed: false, timedOut: false,
         message: `${handler.type} hooks are not available for the '${event}' hook event`,
       }, false);
@@ -341,11 +354,11 @@ export class HookEngine {
       try {
         const raw = await this.invoke(event, registration, input, stdin, timeoutMs, controller.signal, options);
         const result = controller.signal.reason instanceof HookTimeoutError ? markTimedOut(raw) : raw;
-        return await this.finish(key, occurrenceId, event, registration, startedAt, interpretHookRun(event, result), async);
+        return await this.finish(key, occurrenceId, event, registration, subject, startedAt, interpretHookRun(event, result), async);
       } catch (error) {
         if (options.signal?.aborted && !(controller.signal.reason instanceof HookTimeoutError)) throw error;
         const timedOut = controller.signal.reason instanceof HookTimeoutError;
-        return await this.finish(key, occurrenceId, event, registration, startedAt, {
+        return await this.finish(key, occurrenceId, event, registration, subject, startedAt, {
           status: "non_blocking_error",
           failed: true,
           timedOut,
@@ -364,7 +377,7 @@ export class HookEngine {
         const rewake = handler.type === "command" && handler.asyncRewake === true && record.outcome.status === "blocking";
         await this.host.deliverAsync?.(record, composed, rewake);
       }).catch(() => {});
-      return { ...placeholderRecord(key, occurrenceId, event, registration, startedAt), async: true };
+      return { ...placeholderRecord(key, occurrenceId, event, registration, subject, startedAt), async: true };
     }
     return execute();
   }
@@ -450,6 +463,7 @@ export class HookEngine {
     occurrenceId: string,
     event: HookEventName,
     registration: Registration,
+    subject: RecordSubject,
     startedAt: Date,
     outcome: HookRunOutcome,
     async: boolean,
@@ -471,6 +485,7 @@ export class HookEngine {
       completedAt: completedAt.toISOString(),
       durationMs: Math.max(0, completedAt.getTime() - startedAt.getTime()),
       outcome,
+      ...subject,
     };
     // A decision must not take effect before its receipt is durable.
     await this.host.record?.(record);
@@ -487,7 +502,7 @@ function markTimedOut(result: HookRunResult): HookRunResult {
   return { ...result, timedOut: true } as HookRunResult;
 }
 
-function placeholderRecord(key: string, occurrenceId: string, event: HookEventName, registration: Registration, startedAt: Date): HookExecutionRecord {
+function placeholderRecord(key: string, occurrenceId: string, event: HookEventName, registration: Registration, subject: RecordSubject, startedAt: Date): HookExecutionRecord {
   const at = startedAt.toISOString();
   return {
     key, occurrenceId, event,
@@ -496,6 +511,7 @@ function placeholderRecord(key: string, occurrenceId: string, event: HookEventNa
     status: "success", failed: false, timedOut: false, async: true,
     startedAt: at, completedAt: at, durationMs: 0,
     outcome: { status: "success", failed: false, timedOut: false },
+    ...subject,
   };
 }
 

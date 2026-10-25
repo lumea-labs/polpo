@@ -1,6 +1,6 @@
 {
   "name": "@polpo-ai/server",
-  "version": "0.18.19",
+  "version": "0.18.20",
   "description": "Polpo API route factories \u2014 edge-compatible Hono routes for tasks, agents, missions, vault, and more",
   "type": "module",
   "main": "dist/index.js",

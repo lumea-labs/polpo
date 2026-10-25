@@ -313,6 +313,7 @@ export const PORTABLE_EMITTED_HOOK_EVENTS: readonly HookEventName[] = [
   "PreCompact",
   "PostCompact",
   "PostModelSwitch",
+  "FileChanged",
   "SessionEnd",
 ];
 

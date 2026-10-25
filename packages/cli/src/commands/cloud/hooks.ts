@@ -24,9 +24,12 @@ function hookFiles(root: string): string[] {
 }
 
 /** Number of handlers across every event and matcher group. */
-function handlerCount(pack: HookPack): number {
-  return Object.values(pack.hooks).reduce((total, groups) => total + (groups ?? []).reduce((sum, group) => sum + group.hooks.length, 0), 0);
+function handlerCount(pack: Pick<HookPack, "hooks">): number {
+  return Object.values(pack.hooks ?? {}).reduce((total, groups) => total + (groups ?? []).reduce((sum, group) => sum + (group.hooks?.length ?? 0), 0), 0);
 }
+
+/** A deployed entry: a pack, or a stored pack the host flags (e.g. a legacy format to recreate). */
+type DeployedHookPack = Partial<HookPack> & { name: string; status?: string; error?: string };
 
 function loadHookPack(file: string): HookPack {
   const pack = validateHookPack(JSON.parse(fs.readFileSync(file, "utf8")));
@@ -91,11 +94,17 @@ export function registerHooksCommand(program: Command): void {
       const projectId = loadProjectId(opts.dir);
       if (!projectId) throw new Error("No project linked in this directory");
       const client = createApiClient(credentials, projectId, resolveCliEnvironment(opts));
-      const response = await client.get<{ ok?: boolean; data?: HookPack[] }>("/v1/hooks");
+      const response = await client.get<{ ok?: boolean; data?: DeployedHookPack[] }>("/v1/hooks");
       if (response.status !== 200) throw new Error(`Hooks API returned ${response.status}`);
       const packs = response.data.data ?? [];
       if (packs.length === 0) clack.log.info("No deployed runtime hook packs.");
-      for (const pack of packs) clack.log.info(`${pack.name}\t${handlerCount(pack)} hooks`);
+      for (const pack of packs) {
+        if (pack.status && pack.status !== "ok") {
+          clack.log.warn(`${pack.name}\t${pack.status}${pack.error ? ` — ${pack.error}` : ""}`);
+        } else {
+          clack.log.info(`${pack.name}\t${handlerCount({ hooks: pack.hooks ?? {} })} hooks`);
+        }
+      }
     });
 
   addEnvironmentOptions(hooks.command("capabilities"))

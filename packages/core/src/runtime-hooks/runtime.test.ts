@@ -71,6 +71,27 @@ describe("tool boundary", () => {
   });
 });
 
+describe("durable execution records", () => {
+  it("scopes tool occurrences to the Run and records the tool they ran for", async () => {
+    const records: any[] = [];
+    const build = (runId: string) => new HookRuntime(new HookEngine({
+      projectDir: "/work",
+      sources: [{ source: "project", name: "p", hooks: { PreToolUse: [{ matcher: "Bash", hooks: [{ type: "command", command: "audit" }] }] } }],
+      host: {
+        runCommand: async () => ({ kind: "command", exitCode: 0, stdout: "", stderr: "" }),
+        findCompleted: async (key) => records.find((record) => record.key === key),
+        record: async (record) => { records.push(record); },
+      },
+    }), { sessionId: "sess", cwd: "/work", projectDir: "/work", transcriptPath: "/t", permissionMode: "default", polpo: { run_id: runId, surface: "chat" } });
+    await build("run-a").preToolUse("bash", { command: "ls" }, "call-1");
+    await build("run-b").preToolUse("bash", { command: "ls" }, "call-1");
+    await build("run-a").preToolUse("bash", { command: "ls" }, "call-1");
+    expect(records).toHaveLength(2);
+    expect(new Set(records.map((record) => record.key)).size).toBe(2);
+    expect(records[0]).toMatchObject({ matcherSubject: "Bash", toolUseId: "call-1" });
+  });
+});
+
 describe("Stop continuation controller", () => {
   it("continues the same agent with feedback and marks stop_hook_active on the next attempt", async () => {
     const { hookRuntime, stdin } = runtime({ Stop: [{ hooks: [{ type: "command", command: "validate" }] }] },

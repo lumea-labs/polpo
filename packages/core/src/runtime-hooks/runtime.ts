@@ -129,7 +129,7 @@ export class HookRuntime {
       tool_name: call.toolName,
       tool_input: call.toolInput,
       ...(toolUseId ? { tool_use_id: toolUseId } : {}),
-    }, { ...(toolUseId ? { occurrenceId: `PreToolUse:${toolUseId}` } : {}), ...options });
+    }, { ...(toolUseId ? { occurrenceId: `PreToolUse:${this.occurrenceScope()}:${toolUseId}` } : {}), ...options });
     const decision = result.permissionDecision;
     const input = result.updatedInput && decision !== "deny" && decision !== "defer"
       ? polpoToolInput(name, result.updatedInput)
@@ -166,7 +166,7 @@ export class HookRuntime {
         ? { error: rendered.replace(/^Error:\s*/, ""), is_interrupt: false }
         : { tool_response: canonicalToolResponse(name, args, rendered, this.context.cwd) }),
       ...(durationMs !== undefined ? { duration_ms: durationMs } : {}),
-    }, { ...(toolUseId ? { occurrenceId: `${event}:${toolUseId}` } : {}), ...options });
+    }, { ...(toolUseId ? { occurrenceId: `${event}:${this.occurrenceScope()}:${toolUseId}` } : {}), ...options });
     let visible = rendered;
     if (!failed && result.updatedToolOutput) {
       visible = updatedToolResult(name, result.updatedToolOutput.value) ?? rendered;
@@ -227,7 +227,7 @@ export class HookRuntime {
         ...(options.agentTranscriptPath ? { agent_transcript_path: options.agentTranscriptPath } : {}),
       } : {}),
     }, {
-      ...(options.attempt !== undefined ? { occurrenceId: `${event}:${this.context.polpo?.run_id ?? this.context.sessionId}:${this.context.polpo?.turn_id ?? ""}:${options.attempt}` } : {}),
+      ...(options.attempt !== undefined ? { occurrenceId: `${event}:${this.occurrenceScope()}:${options.attempt}` } : {}),
       ...options,
     });
     if (result.stop) return { action: "halt", ...(result.stop.reason ? { reason: result.stop.reason } : {}), systemMessages: result.systemMessages };
@@ -258,6 +258,11 @@ export class HookRuntime {
   }
 
   // ─── Internals ───────────────────────────────────────────────────────────
+
+  /** Tool call ids and attempts repeat across Runs: occurrence keys carry the Run and turn. */
+  private occurrenceScope(): string {
+    return `${this.context.polpo?.run_id ?? this.context.sessionId}:${this.context.polpo?.turn_id ?? ""}`;
+  }
 
   private input(event: HookEventName, fields: Record<string, unknown>): HookInput {
     const context = this.context;
