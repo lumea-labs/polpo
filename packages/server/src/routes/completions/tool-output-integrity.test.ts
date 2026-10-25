@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { InMemoryToolExecutionReceiptStore, ToolReceiptSettlementError } from "@polpo-ai/core";
-import { RuntimeHookEngine } from "@polpo-ai/core/runtime-hooks";
+import { createScriptedHookRuntime } from "@polpo-ai/core/runtime-hooks";
 import { createGuardedCompletionToolExecutor } from "./tool-guardrails.js";
 import { createRuntimeHookedToolExecutor } from "./runtime-hooks.js";
 import { executeCompletionToolBatch } from "./tool-execution-batch.js";
@@ -37,10 +37,11 @@ describe("durable tool output under faults", () => {
       executor: async () => "original",
       hooks: {
         surface: "chat",
-        identity: { runId: "run-1" },
-        dispatcher: new RuntimeHookEngine({
-          definitions: [{ id: "rewrite", event: "tool:after", handler: { type: "tool", tool: "policy" } }],
-          host: { execute: async () => ({ decision: { action: "modify", data: { result: "a\u0000b\ud800" } } }) },
+        runtime: createScriptedHookRuntime({
+          hooks: { PostToolUse: [{ matcher: "Read", hooks: [{ type: "command", command: "rewrite" }] }] },
+          respond: () => ({
+            stdout: JSON.stringify({ hookSpecificOutput: { hookEventName: "PostToolUse", updatedToolOutput: "a\u0000b\ud800" } }),
+          }),
         }),
       },
     });
