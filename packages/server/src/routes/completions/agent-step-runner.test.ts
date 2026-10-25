@@ -6,7 +6,7 @@ import {
   createRunPreflightPolicy,
 } from "@polpo-ai/core/guardrails";
 import { createToolInvocationContext, prepareLoopAgentInput } from "@polpo-ai/core";
-import { RuntimeHookEngine } from "@polpo-ai/core/runtime-hooks";
+import { createScriptedHookRuntime } from "@polpo-ai/core/runtime-hooks";
 import { InMemorySteeringController } from "@polpo-ai/core/steering";
 import type { CompletionRouteDeps } from "../completions.js";
 import {
@@ -422,15 +422,13 @@ describe("runAgentStepCompletion runtime hook parity", () => {
       },
     });
     const executor = vi.fn(async () => "side effect happened");
-    const hookHost = { execute: vi.fn(async () => ({ decision: { action: "deny" as const, reason: "protected path" } })) };
-    const hooks = new RuntimeHookEngine({
-      definitions: [{
-        id: "deny-protected-write",
-        event: "tool:before",
-        matcher: { tools: ["write_file"] },
-        handler: { type: "tool", tool: "policy_check" },
-      }],
-      host: hookHost,
+    const hookInputs: Record<string, any>[] = [];
+    const hooks = createScriptedHookRuntime({
+      hooks: { PreToolUse: [{ matcher: "write_file", hooks: [{ type: "command", command: "policy-check" }] }] },
+      respond: (input) => {
+        hookInputs.push(input);
+        return { exitCode: 2, stderr: "protected path" };
+      },
     });
     const deps = {
       getConfig: () => ({ settings: {} }),
@@ -458,16 +456,16 @@ describe("runAgentStepCompletion runtime hook parity", () => {
 
     expect(result.text).toBe("blocked safely");
     expect(executor).not.toHaveBeenCalled();
-    expect(hookHost.execute).toHaveBeenCalledWith(expect.objectContaining({
-      envelope: expect.objectContaining({
-        event: "tool:before",
-        surface: "loop",
-        identity: expect.objectContaining({ agent: "nested-agent", step: "implement", toolCallId: "write-1" }),
-      }),
-    }));
+    expect(hookInputs).toEqual([expect.objectContaining({
+      hook_event_name: "PreToolUse",
+      tool_name: "write_file",
+      tool_input: { path: "forbidden" },
+      tool_use_id: "write-1",
+    })]);
+    expect(deps.resolveRuntimeHooks).toHaveBeenCalledWith(expect.objectContaining({ surface: "loop", step: "implement" }));
   });
 
-  it("honors one bounded turn:stop feedback recovery without replaying tools", async () => {
+  it("continues the same agent when a Stop hook blocks, replacing the candidate", async () => {
     const usage = { inputTokens: { total: 1 }, outputTokens: { total: 1 } };
     let modelTurn = 0;
     const prompts: unknown[] = [];
@@ -486,15 +484,11 @@ describe("runAgentStepCompletion runtime hook parity", () => {
       },
     });
     let stopCalls = 0;
-    const hooks = new RuntimeHookEngine({
-      definitions: [{ id: "review-stop", event: "turn:stop", handler: { type: "prompt", prompt: "review" } }],
-      host: {
-        execute: async () => {
-          stopCalls += 1;
-          return stopCalls === 1
-            ? { decision: { action: "stop" as const, feedback: "Mention the verified result" } }
-            : { decision: { action: "allow" as const } };
-        },
+    const hooks = createScriptedHookRuntime({
+      hooks: { Stop: [{ hooks: [{ type: "command", command: "review" }] }] },
+      respond: () => {
+        stopCalls += 1;
+        return stopCalls === 1 ? { exitCode: 2, stderr: "Mention the verified result" } : { exitCode: 0 };
       },
     });
     const executor = vi.fn();
@@ -513,7 +507,7 @@ describe("runAgentStepCompletion runtime hook parity", () => {
       aiMessages: [{ role: "user", content: "Answer" }], extraSystemParts: [], context: {}, stepName: "review",
     });
 
-    expect(result.text).toBe("draft\n\ncorrected");
+    expect(result.text).toBe("corrected");
     expect(modelTurn).toBe(2);
     expect(executor).not.toHaveBeenCalled();
     expect(JSON.stringify(prompts[1])).toContain("Mention the verified result");
@@ -1053,10 +1047,16 @@ describe("runAgentStepCompletion tool validation", () => {
     });
     const executor = vi.fn(async () => "must not execute");
     const onToolCall = vi.fn();
+    const batches: Record<string, any>[] = [];
+    const hooks = createScriptedHookRuntime({
+      hooks: { PostToolBatch: [{ hooks: [{ type: "command", command: "audit" }] }] },
+      respond: (input) => { batches.push(input); return {}; },
+    });
     const deps = {
       getConfig: () => ({ settings: {} }),
       getMemoryStore: () => undefined,
       emit: vi.fn(),
+      resolveRuntimeHooks: vi.fn(async () => hooks),
       resolveAgentModel: vi.fn(async () => ({
         model: {
           id: "xai/grok-4.1-fast-non-reasoning",
@@ -1111,6 +1111,11 @@ describe("runAgentStepCompletion tool validation", () => {
         state: "error",
       }),
     );
+    // A rejected call still resolved, with its error, in the batch (reference behavior).
+    expect(batches).toEqual([expect.objectContaining({
+      hook_event_name: "PostToolBatch",
+      tool_calls: [expect.objectContaining({ tool_name: "calculate", tool_use_id: "call_invalid" })],
+    })]);
   });
 });
 

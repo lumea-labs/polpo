@@ -4,10 +4,11 @@ export type { DataResource, DataSchemaDefinition, DataColumn, DataTable, DataGra
 export type { PolpoClientConfig } from "./polpo-client.js";
 export type { ProjectEnvironment } from "@polpo-ai/core/project-environment";
 export type {
-  RuntimeHookCapabilities,
-  RuntimeHookPack,
-  RuntimeHookDefinition,
-  RuntimeHookEventName,
+  HookCapabilities as RuntimeHookCapabilities,
+  HookPack as RuntimeHookPack,
+  HooksConfig as RuntimeHooksConfig,
+  HookHandler as RuntimeHookHandler,
+  HookEventName as RuntimeHookEventName,
 } from "@polpo-ai/core/runtime-hooks";
 export { EventSourceManager, POLPO_SSE_EVENT_NAMES } from "./event-source.js";
 export type { ConnectionStatus, EventSourceConfig } from "./event-source.js";

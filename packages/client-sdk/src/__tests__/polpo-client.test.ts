@@ -183,7 +183,7 @@ describe("PolpoClient approvals", () => {
 
 describe("PolpoClient runtime hooks", () => {
   it("manages versioned hook packs on Cloud and self-hosted prefixes", async () => {
-    const pack = { version: 1 as const, name: "quality-check", hooks: [] };
+    const pack = { name: "quality-check", hooks: {} };
     const fetch = vi.fn<typeof globalThis.fetch>().mockImplementation(async () => new Response(
       JSON.stringify({ ok: true, data: pack }),
       { status: 200, headers: { "content-type": "application/json" } },

@@ -5,7 +5,7 @@ import {
   MemoryLoopRunStore,
   type ToolExecutionReceiptStore,
 } from "@polpo-ai/core";
-import { RuntimeHookEngine } from "@polpo-ai/core/runtime-hooks";
+import { createScriptedHookRuntime, type HookRuntime } from "@polpo-ai/core/runtime-hooks";
 import type { CompletionRouteDeps } from "../completions.js";
 import {
   buildLoopResumeState,
@@ -251,9 +251,9 @@ describe("buildLoopResumeState", () => {
   });
 });
 
-describe("project-loop Runtime Hooks lifecycle", () => {
+describe("project-loop Runtime Hooks", () => {
   function deterministicDeps(options: {
-    hooks: RuntimeHookEngine;
+    hooks: HookRuntime;
     execute?: (name: string) => Promise<string>;
     receiptStore?: ToolExecutionReceiptStore;
   }): CompletionRouteDeps {
@@ -278,70 +278,43 @@ describe("project-loop Runtime Hooks lifecycle", () => {
     } as unknown as CompletionRouteDeps;
   }
 
-  it("emits outer lifecycle events for deterministic and agent-independent steps", async () => {
-    const events: Array<{ event: string; data: Record<string, unknown> }> = [];
-    const hooks = new RuntimeHookEngine({
-      definitions: [
-        "loop:start",
-        "step:before",
-        "loop:transition",
-        "step:after",
-        "loop:end",
-      ].map((event, index) => ({
-        id: `observe-${index}`,
-        event: event as any,
-        mode: "observe" as const,
-        handler: { type: "tool" as const, tool: "audit" },
-      })),
-      host: {
-        execute: async ({ envelope }) => {
-          events.push({ event: envelope.event, data: envelope.data });
-        },
+  const twoSteps = {
+    name: "site",
+    start: "prepare",
+    steps: {
+      prepare: { type: "tool", tool: "prepare", next: "publish" },
+      publish: { type: "tool", tool: "publish", next: "end" },
+    },
+  } as any;
+
+  it("fires PreToolUse and PostToolUse for deterministic tool steps", async () => {
+    const events: string[] = [];
+    const hooks = createScriptedHookRuntime({
+      hooks: {
+        PreToolUse: [{ hooks: [{ type: "command", command: "audit" }] }],
+        PostToolUse: [{ hooks: [{ type: "command", command: "audit" }] }],
+      },
+      respond: (input) => {
+        events.push(`${input.hook_event_name}:${input.tool_name}`);
+        return {};
       },
     });
-
     await runProjectLoopCompletion({
       deps: deterministicDeps({ hooks }),
       agentConfig: { name: "support", model: "test" },
-      projectLoop: {
-        name: "site",
-        start: "prepare",
-        steps: {
-          prepare: { type: "tool", tool: "prepare", next: "publish" },
-          publish: { type: "tool", tool: "publish", next: "end" },
-        },
-      } as any,
+      projectLoop: twoSteps,
       aiMessages: [],
       extraSystemParts: [],
     });
-
-    expect(events.map(({ event }) => event)).toEqual([
-      "loop:start",
-      "step:before",
-      "step:after",
-      "loop:transition",
-      "step:before",
-      "step:after",
-      "loop:end",
-    ]);
-    expect(events[4]?.data).toMatchObject({ loop: "site", step: "publish", kind: "tool" });
+    expect(events).toEqual(["PreToolUse:prepare", "PostToolUse:prepare", "PreToolUse:publish", "PostToolUse:publish"]);
   });
 
   it("blocks a deterministic step before its tool side effect", async () => {
     const executed: string[] = [];
-    const hooks = new RuntimeHookEngine({
-      definitions: [{
-        id: "protect-publish",
-        event: "step:before",
-        handler: { type: "tool", tool: "policy" },
-      }],
-      host: {
-        execute: async ({ envelope }) => envelope.data.step === "publish"
-          ? { decision: { action: "deny", reason: "publish disabled" } }
-          : { decision: { action: "allow" } },
-      },
+    const hooks = createScriptedHookRuntime({
+      hooks: { PreToolUse: [{ matcher: "publish", hooks: [{ type: "command", command: "policy" }] }] },
+      respond: () => ({ exitCode: 2, stderr: "publish disabled" }),
     });
-
     await expect(runProjectLoopCompletion({
       deps: deterministicDeps({
         hooks,
@@ -351,18 +324,10 @@ describe("project-loop Runtime Hooks lifecycle", () => {
         },
       }),
       agentConfig: { name: "support", model: "test" },
-      projectLoop: {
-        name: "site",
-        start: "prepare",
-        steps: {
-          prepare: { type: "tool", tool: "prepare", next: "publish" },
-          publish: { type: "tool", tool: "publish", next: "end" },
-        },
-      } as any,
+      projectLoop: twoSteps,
       aiMessages: [],
       extraSystemParts: [],
-    })).rejects.toThrow("Runtime hook deny: publish disabled");
-
+    })).rejects.toThrow("publish disabled");
     expect(executed).toEqual(["prepare"]);
   });
 
@@ -372,10 +337,7 @@ describe("project-loop Runtime Hooks lifecycle", () => {
       .mockRejectedValueOnce(new Error("temporary receipt write failure"))
       .mockImplementation(durableStore.settle.bind(durableStore));
     const execute = vi.fn(async () => JSON.stringify({ ok: true }));
-    const hooks = new RuntimeHookEngine({
-      definitions: [],
-      host: { execute: async () => ({}) },
-    });
+    const hooks = createScriptedHookRuntime({ hooks: {}, respond: () => ({}) });
 
     await expect(runProjectLoopCompletion({
       deps: deterministicDeps({

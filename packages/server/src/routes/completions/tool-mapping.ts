@@ -249,6 +249,28 @@ export function invalidModelToolCallEvent(call: any): LoopRuntimeToolCall {
   };
 }
 
+/** A PostToolBatch entry: the call as the model made it and the response it got. */
+export interface ToolBatchEntry {
+  name: string;
+  input: Record<string, unknown>;
+  toolUseId: string;
+  result: string;
+}
+
+/** Calls rejected before dispatch still resolve in the batch, with their error. */
+export function invalidToolBatchEntries(toolCalls: readonly unknown[]): ToolBatchEntry[] {
+  return toolCalls.filter(isInvalidModelToolCall).map((call) => {
+    const event = invalidModelToolCallEvent(call);
+    return { name: event.name, input: { ...event.arguments }, toolUseId: event.id, result: String(event.result ?? "") };
+  });
+}
+
+/** PostToolBatch lists the calls in the order the model emitted them. */
+export function inToolCallOrder(toolCalls: readonly any[], entries: readonly ToolBatchEntry[]): ToolBatchEntry[] {
+  const order = new Map(toolCalls.map((call, index) => [call?.toolCallId, index]));
+  return [...entries].sort((a, b) => (order.get(a.toolUseId) ?? Infinity) - (order.get(b.toolUseId) ?? Infinity));
+}
+
 /**
  * Convert Polpo tools to AI SDK tool format (without execute functions).
  *

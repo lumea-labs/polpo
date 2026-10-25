@@ -2,29 +2,29 @@ import { mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promise
 import { join } from "node:path";
 import { nanoid } from "nanoid";
 import {
-  validateRuntimeHookPack,
-  type RuntimeHookPack,
-  type RuntimeHookPackStore,
+  validateHookPack,
+  type HookPack,
+  type HookPackStore,
 } from "@polpo-ai/core/runtime-hooks";
 
-export class FileRuntimeHookPackStore implements RuntimeHookPackStore {
+export class FileRuntimeHookPackStore implements HookPackStore {
   private readonly directory: string;
 
   constructor(polpoDir: string) {
     this.directory = join(polpoDir, "hooks");
   }
 
-  async list(): Promise<RuntimeHookPack[]> {
+  async list(): Promise<HookPack[]> {
     let files: string[];
     try { files = await readdir(this.directory); } catch { return []; }
-    const packs: RuntimeHookPack[] = [];
+    const packs: HookPack[] = [];
     for (const file of files.filter((name) => name.endsWith(".json")).sort()) {
       packs.push(await this.readFile(join(this.directory, file)));
     }
     return packs;
   }
 
-  async get(name: string): Promise<RuntimeHookPack | undefined> {
+  async get(name: string): Promise<HookPack | undefined> {
     const safe = safeName(name);
     try { return await this.readFile(join(this.directory, `${safe}.json`)); } catch (error: any) {
       if (error?.code === "ENOENT") return undefined;
@@ -32,8 +32,8 @@ export class FileRuntimeHookPackStore implements RuntimeHookPackStore {
     }
   }
 
-  async put(pack: RuntimeHookPack): Promise<void> {
-    const validated = validateRuntimeHookPack(pack);
+  async put(pack: HookPack): Promise<void> {
+    const validated = validateHookPack(pack);
     const name = safeName(validated.name);
     await mkdir(this.directory, { recursive: true });
     const target = join(this.directory, `${name}.json`);
@@ -50,8 +50,8 @@ export class FileRuntimeHookPackStore implements RuntimeHookPackStore {
     }
   }
 
-  private async readFile(path: string): Promise<RuntimeHookPack> {
-    return validateRuntimeHookPack(JSON.parse(await readFile(path, "utf8")));
+  private async readFile(path: string): Promise<HookPack> {
+    return validateHookPack(JSON.parse(await readFile(path, "utf8")));
   }
 }
 

@@ -1,71 +1,54 @@
 import { describe, expect, it } from "vitest";
-import type { RuntimeHookPack, RuntimeHookPackStore } from "@polpo-ai/core/runtime-hooks";
+import type { HookPack, HookPackStore } from "@polpo-ai/core/runtime-hooks";
 import { runtimeHookRoutes } from "./runtime-hooks.js";
 
-class MemoryStore implements RuntimeHookPackStore {
-  packs = new Map<string, RuntimeHookPack>();
+class MemoryStore implements HookPackStore {
+  packs = new Map<string, HookPack>();
   async list() { return [...this.packs.values()]; }
   async get(name: string) { return this.packs.get(name); }
-  async put(pack: RuntimeHookPack) { this.packs.set(pack.name, pack); }
+  async put(pack: HookPack) { this.packs.set(pack.name, pack); }
   async delete(name: string) { return this.packs.delete(name); }
 }
 
+const put = (app: ReturnType<typeof runtimeHookRoutes>, name: string, body: unknown) =>
+  app.request(`/${name}`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+
 describe("runtimeHookRoutes", () => {
-  it("reports the portable contract capabilities without requiring storage", async () => {
-    const app = runtimeHookRoutes(() => ({}));
-    const response = await app.request("/capabilities");
+  it("reports the Claude Code reference baseline and the events this host emits", async () => {
+    const response = await runtimeHookRoutes(() => ({})).request("/capabilities");
     expect(response.status).toBe(200);
-    expect(await response.json()).toMatchObject({
-      data: {
-        contractVersion: 1,
-        durableReplay: true,
-        fileEvents: "tool_attributed",
-        handlerTypes: ["command", "http", "tool", "mcp_tool", "prompt", "agent"],
-      },
-    });
+    const { data } = await response.json();
+    expect(data.reference).toBe("claude-code-hooks@2026-10-24");
+    expect(data.events).toHaveLength(33);
+    expect(data.emittedEvents).toEqual(expect.arrayContaining(["PreToolUse", "PostToolUse", "Stop", "UserPromptSubmit", "SessionStart"]));
+    expect(data.stopHookBlockCap).toBe(8);
   });
 
-  it("validates, stores, reads, lists, and deletes packs", async () => {
+  it("stores a Claude Code hooks block unchanged and round-trips it exactly", async () => {
     const store = new MemoryStore();
     const app = runtimeHookRoutes(() => ({ store }));
     const pack = {
-      version: 1,
       name: "quality",
-      hooks: [{ id: "guard", event: "tool:before", handler: { type: "command", command: "check" } }],
+      hooks: {
+        PreToolUse: [{ matcher: "Bash", hooks: [{ type: "command", if: "Bash(rm *)", command: "${CLAUDE_PROJECT_DIR}/.claude/hooks/block-rm.sh", args: [] }] }],
+        Stop: [{ hooks: [{ type: "command", command: "./scripts/validate.sh", timeout: 120 }] }],
+      },
     };
-    const put = await app.request("/quality", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(pack) });
-    expect(put.status).toBe(200);
-    expect((await app.request("/quality")).status).toBe(200);
+    const response = await put(app, "quality", pack);
+    expect(response.status).toBe(200);
+    expect((await (await app.request("/quality")).json()).data).toEqual(pack);
     expect(await (await app.request("/")).json()).toMatchObject({ data: [{ name: "quality" }] });
     expect((await app.request("/quality", { method: "DELETE" })).status).toBe(200);
     expect((await app.request("/quality")).status).toBe(404);
   });
 
-  it("rejects mismatched names and invalid handler definitions", async () => {
-    const store = new MemoryStore();
-    const app = runtimeHookRoutes(() => ({ store }));
-    const mismatch = await app.request("/expected", {
-      method: "PUT", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ version: 1, name: "other", hooks: [] }),
-    });
-    const invalid = await app.request("/bad", {
-      method: "PUT", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ version: 1, name: "bad", hooks: [{ id: "x", event: "unknown", handler: { type: "command", command: "true" } }] }),
-    });
-    expect(mismatch.status).toBe(400);
-    expect(invalid.status).toBe(400);
+  it("rejects mismatched names, unknown events, ineligible handlers and the removed array dialect", async () => {
+    const app = runtimeHookRoutes(() => ({ store: new MemoryStore() }));
+    expect((await put(app, "expected", { name: "other", hooks: {} })).status).toBe(400);
+    expect((await put(app, "bad", { name: "bad", hooks: { Bogus: [] } })).status).toBe(400);
+    expect((await put(app, "bad", { name: "bad", hooks: { SessionStart: [{ hooks: [{ type: "prompt", prompt: "x" }] }] } })).status).toBe(400);
+    const legacy = await put(app, "old", { version: 1, name: "old", hooks: [{ id: "guard", event: "tool:before", handler: { type: "command", command: "check" } }] });
+    expect(legacy.status).toBe(400);
+    expect((await legacy.json()).error).toMatch(/removed array format/);
   });
-});
-
-
-it("round-trips a bounded termination gate and advertises its capability", async () => {
-  const store = new MemoryStore();
-  const app = runtimeHookRoutes(() => ({ store }));
-  const pack = { version: 1, name: "validate", hooks: [{ id: "before-done", event: "turn:stop", terminationGate: { maxCycles: 2, maxDurationMs: 30000, maxTokens: 10000 }, handler: { type: "tool", tool: "site_validate" } }] };
-  const response = await app.request("/validate", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(pack) });
-  expect(response.status).toBe(200);
-  expect((await response.json()).data).toEqual(pack);
-  expect((await (await app.request("/validate")).json()).data).toEqual(pack);
-  const capabilities = await app.request("/capabilities");
-  expect((await capabilities.json()).data.terminationGate).toBe(true);
 });

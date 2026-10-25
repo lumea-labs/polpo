@@ -85,7 +85,7 @@ export function buildChatRunInjection(execution: ChatCompletionExecution): ChatS
   return {
     sessionId: execution.sessionId ?? undefined,
     runtimePlan: execution.runtimePlan,
-    runtimeHooks: execution.runtimeHooks?.dispatcher,
+    runtimeHooks: execution.runtimeHooks?.runtime,
     runtimeHookSurface: execution.runtimeHooks?.surface,
     contextTrust: execution.contextTrust,
     agent: agentConfig,

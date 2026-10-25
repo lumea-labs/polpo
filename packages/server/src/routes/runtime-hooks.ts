@@ -1,21 +1,23 @@
 import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
 import {
-  PORTABLE_RUNTIME_HOOK_CAPABILITIES,
-  validateRuntimeHookPack,
-  type RuntimeHookCapabilities,
-  type RuntimeHookPackStore,
+  HookConfigError,
+  PORTABLE_HOOK_CAPABILITIES,
+  validateHookPack,
+  type HookCapabilities,
+  type HookPackStore,
 } from "@polpo-ai/core/runtime-hooks";
 
 export interface RuntimeHookRouteDeps {
-  store?: RuntimeHookPackStore;
-  capabilities?: RuntimeHookCapabilities | (() => RuntimeHookCapabilities | Promise<RuntimeHookCapabilities>);
+  store?: HookPackStore;
+  capabilities?: HookCapabilities | (() => HookCapabilities | Promise<HookCapabilities>);
 }
 
 const nameSchema = z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/u);
+// Structural envelope only; validateHookPack enforces the Claude Code contract.
 const hookPackSchema = z.object({
-  version: z.literal(1),
   name: nameSchema,
-  hooks: z.array(z.record(z.string(), z.unknown())),
+  description: z.string().optional(),
+  hooks: z.unknown(),
 }).passthrough();
 const responseSchema = z.object({ ok: z.literal(true), data: z.unknown() });
 const errorSchema = z.object({ ok: z.literal(false), error: z.string(), code: z.string() });
@@ -56,7 +58,7 @@ export function runtimeHookRoutes(getDeps: () => RuntimeHookRouteDeps): OpenAPIH
     const configured = getDeps().capabilities;
     const capabilities = typeof configured === "function"
       ? await configured()
-      : configured ?? PORTABLE_RUNTIME_HOOK_CAPABILITIES;
+      : configured ?? PORTABLE_HOOK_CAPABILITIES;
     return c.json({ ok: true, data: capabilities }, 200);
   });
   app.openapi(getRoute, async (c: any) => {
@@ -71,12 +73,13 @@ export function runtimeHookRoutes(getDeps: () => RuntimeHookRouteDeps): OpenAPIH
     if (!store) return unavailable(c);
     const name = c.req.valid("param").name;
     try {
-      const pack = validateRuntimeHookPack(c.req.valid("json"));
+      const pack = validateHookPack(c.req.valid("json"));
       if (pack.name !== name) return c.json({ ok: false, error: "Hook pack name must match the URL", code: "INVALID_HOOK_PACK" }, 400);
       await store.put(pack);
       return c.json({ ok: true, data: pack }, 200);
     } catch (error) {
-      return c.json({ ok: false, error: error instanceof Error ? error.message : String(error), code: "INVALID_HOOK_PACK" }, 400);
+      if (!(error instanceof HookConfigError)) throw error;
+      return c.json({ ok: false, error: error.message, code: "INVALID_HOOK_PACK" }, 400);
     }
   });
   app.openapi(deleteRoute, async (c: any) => {

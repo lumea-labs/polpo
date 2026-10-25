@@ -70,6 +70,8 @@ export interface LoopResumeState {
   terminationInvocationId?: string;
   terminationConfiguration?: string;
   terminationSystemPrompt?: string;
+  /** Consecutive Stop-hook continuations, restored so the cap survives a resume. */
+  stopHooks?: { consecutiveStopContinuations: number; stopHookActive?: boolean };
   terminalCandidate?: string;
 }
 

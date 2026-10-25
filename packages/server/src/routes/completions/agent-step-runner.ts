@@ -68,6 +68,9 @@ import {
   indexToolResultsByCallId,
   invalidModelToolCallEvent,
   isInvalidModelToolCall,
+  invalidToolBatchEntries,
+  inToolCallOrder,
+  type ToolBatchEntry,
   providerToolCallEvent,
   toAITools,
   toAIToolChoice,
@@ -92,13 +95,20 @@ import {
   toolPolicyAuditData,
 } from "./tool-policy-runtime.js";
 import {
+  RuntimeHookPromptBlockedError,
+  RuntimeHookStopError,
   createRuntimeHookedToolExecutor,
   dispatchCompletionModelPolicyHook,
-  dispatchCompletionRuntimeHook,
-  runCompletionRuntimeHookOperation,
-  runtimeHookDecisionError,
-  runtimeHookModifiedString,
-  runtimeHookStopFeedback,
+  hookContextMessage,
+  hookContextSection,
+  latestUserPrompt,
+  runPostCompactHooks,
+  runPostToolBatchHooks,
+  runPreCompactHooks,
+  runSessionEndHooks,
+  runSessionStartHooks,
+  runStopFailureHooks,
+  runUserPromptSubmitHooks,
   type CompletionRuntimeHookContext,
 } from "./runtime-hooks.js";
 
@@ -172,6 +182,8 @@ export interface AgentStepCheckpoint {
   usage: LanguageModelUsage;
   toolCalls: any[];
   terminationGate: TerminationGateState;
+  /** Consecutive Stop-hook continuations, restored so the cap survives a resume. */
+  stopHooks?: { consecutiveStopContinuations: number; stopHookActive?: boolean };
 }
 
 function steeringModelMessage(message: SteeringMessage): ModelMessage {
@@ -397,7 +409,7 @@ export async function runAgentStepCompletion(options: {
   const callerSignal = options.signal;
   const configuration = JSON.stringify({ agentConfig, outputSchema: options.outputSchema, toolPolicy: options.toolPolicy });
   const invocationId = options.resume?.invocationId ?? `gate-${crypto.randomUUID()}`;
-  const runtimeHookDispatcher = await deps.resolveRuntimeHooks?.({
+  const hookRuntime = await deps.resolveRuntimeHooks?.({
     agentConfig,
     surface: "loop",
     runId: options.runId,
@@ -407,23 +419,13 @@ export async function runAgentStepCompletion(options: {
     activatedSkills: options.activatedSkills,
     toolRunScope: options.toolRunScope,
     getToolExecutor: () => runtimeHookToolExecutor,
+    turnId: invocationId,
   });
-  const runtimeHooks: CompletionRuntimeHookContext | undefined = runtimeHookDispatcher
-    ? {
-        dispatcher: runtimeHookDispatcher,
-        surface: "loop",
-        identity: {
-          runId: options.runId,
-          sessionId: options.sessionId,
-          agent: agentConfig.name,
-          step: stepName,
-          turnId: invocationId,
-          loop: options.loopName,
-        },
-      }
+  const runtimeHooks: CompletionRuntimeHookContext | undefined = hookRuntime
+    ? { runtime: hookRuntime, surface: "loop" }
     : undefined;
-  const gatePolicy = runtimeHooks?.dispatcher?.getTerminationGatePolicy?.(runtimeHooks);
-  if (options.resume && (!gatePolicy || options.resume.version !== 1 || options.resume.step !== stepName)) {
+  const stopHooks = Boolean(runtimeHooks?.runtime.has("Stop"));
+  if (options.resume && (!stopHooks || options.resume.version !== 1 || options.resume.step !== stepName)) {
     throw new TerminationGateError("termination_gate_checkpoint_invalid", "Agent checkpoint does not match this configured gate");
   }
   if (options.resume) {
@@ -437,24 +439,19 @@ export async function runAgentStepCompletion(options: {
     }
     if (r.phase === "in_flight") throw new TerminationGateError("termination_gate_effect_unconfirmed", "An interrupted model/tool operation may have committed effects; reconcile before retrying");
   }
-  const gate = gatePolicy ? new TerminationGate(gatePolicy, options.resume?.terminationGate) : undefined;
+  const gate = stopHooks ? new TerminationGate(runtimeHooks!.stopPolicy ?? {}, options.resume?.terminationGate) : undefined;
+  if (stopHooks) runtimeHooks!.runtime.restoreStopState(options.resume?.stopHooks);
   if (gate) {
     if (options.checkpointAvailable === false) throw new TerminationGateError("termination_gate_parallel_unsupported", "Durable termination gates require a sequential agent step");
     if (options.resume?.phase !== "accepted") {
       gate.assertAvailable();
-      const deadline = AbortSignal.timeout(gate.remainingMs);
-      options = { ...options, signal: options.signal ? AbortSignal.any([options.signal, deadline]) : deadline };
+      if (Number.isFinite(gate.remainingMs)) {
+        const deadline = AbortSignal.timeout(gate.remainingMs);
+        options = { ...options, signal: options.signal ? AbortSignal.any([options.signal, deadline]) : deadline };
+      }
     }
   }
-  if (gate && runtimeHooks) runtimeHooks.signal = options.signal;
-  const inputDecision = await dispatchCompletionRuntimeHook(runtimeHooks, "input:before", {
-    source: "loop-step",
-    messageCount: aiMessages.length,
-    hasProjectedInput: Boolean(options.projectedInput),
-  });
-  const inputError = runtimeHookDecisionError(inputDecision);
-  if (inputError) throw inputError;
-  await dispatchCompletionRuntimeHook(runtimeHooks, "agent:spawn", { source: "loop-step" });
+  if (runtimeHooks) runtimeHooks.signal = options.signal;
   const settings = deps.getConfig()?.settings;
   const contextTrust = normalizeRuntimeContextTrustMode(
     options.contextTrust ?? settings?.contextTrust,
@@ -478,8 +475,17 @@ export async function runAgentStepCompletion(options: {
     options.activatedSkills,
     Boolean(projectedInput),
   );
-  const inputContext = runtimeHookModifiedString(inputDecision, "context");
-  if (inputContext) fullSystemPrompt += `\n\n## Runtime hook context\n\n${inputContext}`;
+  if (!options.resume && runtimeHooks) {
+    // Each agent node is one headless invocation: SessionStart, then the
+    // step input is the submitted prompt. A resumed checkpoint already holds
+    // the prompt and context it was started with.
+    const sessionContext = await runSessionStartHooks(runtimeHooks, "startup");
+    const promptContext = await runUserPromptSubmitHooks(
+      runtimeHooks,
+      projectedInput ? loopAgentInputPrompt(stepName, projectedInput) : latestUserPrompt(aiMessages),
+    );
+    fullSystemPrompt += hookContextSection("SessionStart", sessionContext) + hookContextSection("UserPromptSubmit", promptContext);
+  }
   if (options.resume) fullSystemPrompt = options.resume.systemPrompt;
   let messages: any[] = projectedInput
     ? [{ role: "user", content: loopAgentInputPrompt(stepName, projectedInput) }]
@@ -698,6 +704,7 @@ export async function runAgentStepCompletion(options: {
     ? modelOutputForJsonSchema(outputSchema, `loop_${stepName}_output`)
     : undefined;
   let finalText = "";
+  let haltedByHook: string | undefined;
   let finalReasoning = "";
   let finalOutput: unknown;
   let completedStructuredOutput = false;
@@ -726,7 +733,7 @@ export async function runAgentStepCompletion(options: {
     await options.onCheckpoint(structuredClone({ version: 1, step: stepName, invocationId, configuration, systemPrompt: fullSystemPrompt, nextTurn,
       phase: gatePhase, history: messages, text: finalText, reasoning: finalReasoning,
       output: finalOutput, structured: completedStructuredOutput, usage: totalUsage,
-      toolCalls: toolCallsAccum, terminationGate: gate.snapshot() }));
+      toolCalls: toolCallsAccum, terminationGate: gate.snapshot(), stopHooks: runtimeHooks!.runtime.stopState() }));
   };
   if (options.steering) {
     await options.steering.configure(options.steeringPolicy ?? {
@@ -784,17 +791,7 @@ export async function runAgentStepCompletion(options: {
 
       const resolvedAttempts = new Map<number, typeof initialResolved>();
       try {
-        const terminalResult = await runCompletionRuntimeHookOperation({
-          hooks: runtimeHooks,
-          before: "model:before",
-          after: "model:after",
-          error: "model:error",
-          data: { phase: "terminal", recovery: isRecovery, model: m.id ?? m.provider },
-          resultData: (result: any) => ({
-            finishReason: result.finishReason,
-            toolCallCount: result.toolCalls?.length ?? 0,
-          }),
-          operation: () => runModelPolicyTurn({
+        const terminalResult = await runModelPolicyTurn({
           selection: modelSelection,
           resolveAttempt: async (attempt) => {
             const resolvedAttempt = attempt.index === 0
@@ -822,8 +819,7 @@ export async function runAgentStepCompletion(options: {
           messages: terminalMessages(isRecovery),
           output: modelOutput,
           ...(options.signal ? { abortSignal: options.signal } : {}),
-          }),
-        });
+          });
         gate?.recordUsage(terminalResult.usage);
         totalUsage = addUsage(totalUsage, terminalResult.usage);
         invocations.record("terminal", terminalResult);
@@ -926,10 +922,6 @@ export async function runAgentStepCompletion(options: {
         options.signal?.throwIfAborted();
         await options.steering?.setBoundary({ open: true, reservable: true });
         await deliverSteering(false);
-        await dispatchCompletionRuntimeHook(runtimeHooks, "context:compact:before", {
-          messageCount: messages.length,
-          model: m.id ?? m.provider,
-        });
         const compactionResult = await compactIfNeeded({
           systemPrompt: fullSystemPrompt,
           messages,
@@ -940,16 +932,14 @@ export async function runAgentStepCompletion(options: {
           },
           summarize: buildSummarizeFn(m, providerOpts, { gate, signal: options.signal, invocations, onUsage: (usage) => { totalUsage = addUsage(totalUsage, usage); } }),
           mode: "chat",
+          beforeCompact: () => runPreCompactHooks(runtimeHooks),
         });
         if (compactionResult.compacted) {
           const compacted = contextTrust === "enforce"
             ? protectRuntimeToolResultMessages(compactionResult.messages)
             : compactionResult.messages;
           messages.splice(0, messages.length, ...compacted);
-          await dispatchCompletionRuntimeHook(runtimeHooks, "context:compact:after", {
-            messageCount: messages.length,
-            compacted: true,
-          });
+          await runPostCompactHooks(runtimeHooks, compactionResult.summary);
         }
 
         const toolCallNames = new Map<string, string>();
@@ -960,17 +950,7 @@ export async function runAgentStepCompletion(options: {
           reservable: turn + 1 < maxTurns,
         });
         try {
-          turnResult = await runCompletionRuntimeHookOperation({
-            hooks: runtimeHooks,
-            before: "model:before",
-            after: "model:after",
-            error: "model:error",
-            data: { phase: "operational", turn, model: m.id ?? m.provider },
-            resultData: (result: any) => ({
-              finishReason: result.finishReason,
-              toolCallCount: result.toolCalls?.length ?? 0,
-            }),
-            operation: () => runModelPolicyTurn({
+          turnResult = await runModelPolicyTurn({
             selection: modelSelection,
             resolveAttempt: async (attempt) => {
               const resolvedAttempt = attempt.index === 0
@@ -1033,8 +1013,7 @@ export async function runAgentStepCompletion(options: {
                 result: `Error: ${event.error.message ?? "Model stream interrupted during tool input"}`,
               });
             }
-            }),
-          });
+            });
         } catch (error) {
           if (outputSchema !== undefined && isStructuredModelOutputError(error)) {
             throw new LoopAgentOutputError(
@@ -1090,16 +1069,28 @@ export async function runAgentStepCompletion(options: {
           toolCallsAccum.push(event);
           await onToolCall?.(event);
         }
-        if (dispatchableToolCalls.length === 0) { gatePhase = "operational"; await checkpoint(); continue; }
+        if (dispatchableToolCalls.length === 0) {
+          gatePhase = "operational";
+          await checkpoint();
+          const batch = await runPostToolBatchHooks(runtimeHooks, invalidToolBatchEntries(turnResult.toolCalls));
+          if (batch.context.length) messages.push(hookContextMessage(batch.context));
+          if (batch.stop !== undefined) {
+            haltedByHook = batch.stop;
+            break;
+          }
+          continue;
+        }
 
         const providerToolResults = indexToolResultsByCallId(turnResult.toolResults as any[] | undefined);
 
+        const batchCalls: ToolBatchEntry[] = invalidToolBatchEntries(turnResult.toolCalls);
         const appendLocalResult = async (
           call: { toolCallId: string; toolName: string },
           callArgs: Record<string, unknown>,
           result: string,
           isError: boolean,
         ) => {
+          batchCalls.push({ name: call.toolName, input: callArgs, toolUseId: call.toolCallId, result });
           emitFileChanged(call.toolName, callArgs, result, deps.emit);
           const event = {
             id: call.toolCallId,
@@ -1158,10 +1149,6 @@ export async function runAgentStepCompletion(options: {
             const local = localResults[localResultIndex++]!;
             await appendLocalResult(call, local.input, local.result, local.isError);
           }
-          await dispatchCompletionRuntimeHook(runtimeHooks, "tool:batch:after", {
-            count: localResults.length,
-            tools: localCalls.map((call) => call.toolName),
-          });
         } else {
           for (const call of dispatchableToolCalls) {
             const callArgs = call.input as Record<string, unknown>;
@@ -1193,6 +1180,12 @@ export async function runAgentStepCompletion(options: {
         gatePhase = "operational";
         await checkpoint();
         if (stalledToolLoop) break;
+        const batch = await runPostToolBatchHooks(runtimeHooks, inToolCallOrder(turnResult.toolCalls, batchCalls));
+        if (batch.context.length) messages.push(hookContextMessage(batch.context));
+        if (batch.stop !== undefined) {
+          haltedByHook = batch.stop;
+          break;
+        }
       }
 
       await options.steering?.setBoundary({ open: false, reservable: false });
@@ -1228,19 +1221,15 @@ export async function runAgentStepCompletion(options: {
         );
       }
 
-      if (gate) {
+      if (gate && haltedByHook === undefined) {
         if (gatePhase === "accepted") break gateLoop;
         const attempt = gate.beginAttempt();
         gatePhase = "validating";
         await checkpoint();
         deps.emit("runtime:termination-gate", { runId: options.runId, sessionId: options.sessionId, step: stepName, attempt, phase: "validating" });
-        const decision = await dispatchCompletionRuntimeHook(runtimeHooks, "turn:stop", {
-          terminationAttempt: attempt, correctionCycle: gate.snapshot().cycles,
-          textLength: finalText.length, toolCallCount: toolCallsAccum.length,
-          candidate: { text: finalText, ...(outputSchema !== undefined ? { output: finalOutput } : {}) },
-        });
+        const stop = await runtimeHooks!.runtime.stop(finalText, { attempt, ...(options.signal ? { signal: options.signal } : {}) });
         options.signal?.throwIfAborted();
-        const feedback = gate.decide(decision, maxTurns - nextTurn);
+        const feedback = gate.decide(stop.action === "continue" ? { action: "continue", feedback: stop.feedback! } : { action: "allow" }, maxTurns - nextTurn);
         if (feedback !== undefined) {
           messages.push({ role: "user", content: feedback });
           finalText = "";
@@ -1259,76 +1248,6 @@ export async function runAgentStepCompletion(options: {
       break gateLoop;
     }
 
-    const stopDecision = gate ? { action: "allow" as const } : await dispatchCompletionRuntimeHook(runtimeHooks, "turn:stop", {
-      textLength: finalText.length,
-      toolCallCount: toolCallsAccum.length,
-    });
-    const stopError = runtimeHookDecisionError(stopDecision);
-    if (stopError && stopDecision.action !== "stop") throw stopError;
-    const stopFeedback = runtimeHookStopFeedback(stopDecision);
-    if (stopFeedback && outputSchema === undefined) {
-      const resolvedAttempts = new Map<number, typeof initialResolved>();
-      const retry = await runCompletionRuntimeHookOperation({
-        hooks: runtimeHooks,
-        before: "model:before",
-        after: "model:after",
-        error: "model:error",
-        data: { phase: "stop-feedback", retry: 1, model: m.id ?? m.provider },
-        resultData: (result: any) => ({
-          finishReason: result.finishReason,
-          toolCallCount: result.toolCalls?.length ?? 0,
-        }),
-        operation: () => runModelPolicyTurn({
-          selection: modelSelection,
-          resolveAttempt: async (attempt) => {
-            const resolvedAttempt = attempt.index === 0
-              ? initialResolved
-              : await deps.resolveAgentModel(agentConfigForModelAttempt(agentConfig, attempt.model), reasoning);
-            resolvedAttempts.set(attempt.index, resolvedAttempt);
-            return {
-              model: resolvedAttempt.model.aiModel,
-              maxOutputTokens: resolvedAttempt.model.maxTokens,
-              providerOptions: resolvedAttempt.providerOptions,
-              capabilities: resolvedAttempt.model.capabilities,
-            };
-          },
-          preserveSingleAttemptError: true,
-          onPolicyEvent: (event) => {
-            invocations.observePolicyEvent("stop-feedback", event);
-            return dispatchCompletionModelPolicyHook(runtimeHooks, event);
-          },
-          system: fullSystemPrompt,
-          messages: [
-            ...messages,
-            {
-              role: "user",
-              content: `A trusted runtime hook rejected ending the turn and returned this feedback:\n\n${stopFeedback}\n\nContinue once and return the corrected final response. Do not repeat completed side effects.`,
-            },
-          ],
-          tools: {},
-          toolChoice: "none",
-          ...(options.signal ? { abortSignal: options.signal } : {}),
-        }),
-      });
-      invocations.record("stop-feedback", retry);
-      if (retry.toolCalls.length > 0) throw new Error("Stop-feedback recovery returned a tool call");
-      const retryResolved = resolvedAttempts.get(retry.selectedAttempt.index);
-      if (retryResolved) {
-        m = retryResolved.model;
-        providerOpts = retryResolved.providerOptions;
-      }
-      totalUsage = addUsage(totalUsage, retry.usage);
-      finalReasoning = appendReasoningSummary(finalReasoning, retry.reasoning);
-      lastProviderMetadata = retry.providerMetadata as Record<string, unknown> | undefined;
-      if (retry.text) finalText += `${finalText ? "\n\n" : ""}${retry.text}`;
-      const retryStop = await dispatchCompletionRuntimeHook(runtimeHooks, "turn:stop", {
-        textLength: finalText.length,
-        toolCallCount: toolCallsAccum.length,
-        stopFeedbackRetry: 1,
-      });
-      const retryStopError = runtimeHookDecisionError(retryStop);
-      if (retryStopError && retryStop.action !== "stop") throw retryStopError;
-    }
     return {
       text: finalText,
       reasoning: finalReasoning,
@@ -1346,16 +1265,12 @@ export async function runAgentStepCompletion(options: {
     };
   } catch (error) {
     if (gate) deps.emit("runtime:termination-gate", { runId: options.runId, sessionId: options.sessionId, step: stepName, attempt: gate.snapshot().attempts, phase: "failed", code: error instanceof TerminationGateError ? error.code : "execution_failed" });
-    await dispatchCompletionRuntimeHook(runtimeHooks, "turn:error", {
-      error: error instanceof Error ? error.message : String(error),
-    }).catch(() => {});
+    if (!(error instanceof RuntimeHookPromptBlockedError) && !(error instanceof RuntimeHookStopError) && !callerSignal?.aborted) await runStopFailureHooks(runtimeHooks, error, finalText);
     if (gate && options.signal?.aborted && !callerSignal?.aborted) throw new TerminationGateError("termination_gate_time_exhausted", "Termination gate time limit exhausted");
     throw error;
   } finally {
     await options.steering?.setBoundary({ open: false, reservable: false });
-    await dispatchCompletionRuntimeHook(runtimeHooks, "agent:end", {
-      source: "loop-step",
-    }).catch(() => {});
+    await runSessionEndHooks(runtimeHooks);
     if (resolvedTools.cleanup) {
       await resolvedTools.cleanup().catch(() => {});
     }

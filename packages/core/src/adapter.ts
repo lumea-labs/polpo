@@ -14,7 +14,9 @@ import type { FileSystem } from "@polpo-ai/core/filesystem";
 import type { Shell } from "@polpo-ai/core/shell";
 import type { LoopResumeState } from "@polpo-ai/core/loop-run-store";
 import type { SteeringController, SteeringPolicy } from "./steering.js";
-import type { RuntimeHookDispatcher, RuntimeHookSurface } from "./runtime-hooks.js";
+import type { HookRuntime } from "./runtime-hooks/runtime.js";
+
+export type RuntimeHookSurface = "chat" | "loop" | "channel" | "task" | "schedule" | "runtime";
 import type { ModelSelection } from "./model-policy.js";
 import type { RuntimePlan } from "./runtime-plan/index.js";
 import type { RuntimeSandboxOptions } from "./runtime-sandbox.js";
@@ -72,7 +74,7 @@ export interface AgentHandle {
    */
   steering?: SteeringController;
   /** Immutable runtime hook snapshot resolved by the trusted host. */
-  runtimeHooks?: RuntimeHookDispatcher;
+  runtimeHooks?: HookRuntime;
   /** Check if the agent is still running */
   isAlive(): boolean;
   /** Kill the agent process */
@@ -174,7 +176,7 @@ export interface SpawnContext {
   /** Trusted project/platform fallback used when neither the node nor agent declares steering policy. */
   steeringPolicy?: SteeringPolicy;
   /** Immutable runtime hook snapshot resolved by the trusted host. */
-  runtimeHooks?: RuntimeHookDispatcher;
+  runtimeHooks?: HookRuntime;
   /** Trusted invocation surface used by runtime-hook matching and audit. */
   runtimeHookSurface?: RuntimeHookSurface;
   /**
@@ -227,7 +229,7 @@ export interface ChatSessionInjection {
   /** Frozen, secret-free planning decision for this invocation. */
   runtimePlan?: RuntimePlan;
   /** Immutable hook snapshot resolved by the trusted host for this turn. */
-  runtimeHooks?: RuntimeHookDispatcher;
+  runtimeHooks?: HookRuntime;
   /** Original invocation surface preserved across the shared Run adapter. */
   runtimeHookSurface?: RuntimeHookSurface;
   /** Explicit context-trust rollout mode for model-bound history. */

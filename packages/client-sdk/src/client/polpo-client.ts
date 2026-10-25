@@ -2,7 +2,7 @@ import { PolpoApiError } from "./errors.js";
 import { projectEnvironmentBaseUrl, type ProjectEnvironment } from "@polpo-ai/core/project-environment";
 import { DataResourceClient } from "./data.js";
 import type { CreateDataInput, DataResource } from "@polpo-ai/core/data";
-import type { RuntimeHookCapabilities, RuntimeHookPack } from "@polpo-ai/core/runtime-hooks";
+import type { HookCapabilities as RuntimeHookCapabilities, HookPack as RuntimeHookPack } from "@polpo-ai/core/runtime-hooks";
 import type {
   AuthStatusResponse,
   VaultEntryMeta,

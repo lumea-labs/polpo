@@ -80,6 +80,11 @@ export interface CompactionInput {
   mode: "task" | "chat";
   /** Called when compaction occurs — use for logging, events, UI updates */
   onCompaction?: OnCompactionFn;
+  /**
+   * Called once the threshold is exceeded, before anything is pruned or
+   * summarized (PreCompact). Returning false skips this compaction.
+   */
+  beforeCompact?: () => Promise<boolean>;
 }
 
 export interface CompactionResult {
@@ -370,6 +375,16 @@ export async function compactIfNeeded(input: CompactionInput): Promise<Compactio
 
   // Not over threshold — nothing to do
   if (tokensBefore < usable * threshold) {
+    return {
+      messages,
+      compacted: false,
+      pruned: false,
+      tokensBefore,
+      tokensAfter: tokensBefore,
+    };
+  }
+
+  if (input.beforeCompact && !(await input.beforeCompact())) {
     return {
       messages,
       compacted: false,

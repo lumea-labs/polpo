@@ -11,7 +11,7 @@ import {
 } from "@polpo-ai/core/run-delivery-follower";
 import { executeOwnedRun } from "@polpo-ai/core/run-delivery-owner";
 import { MemoryLoopRunStore } from "@polpo-ai/core/loop-run-store";
-import { RuntimeHookEngine } from "@polpo-ai/core/runtime-hooks";
+import { createScriptedHookRuntime } from "@polpo-ai/core/runtime-hooks";
 import { completionRoutes, type CompletionRouteDeps } from "../completions.js";
 import { reconcileInterruptedRun } from "../run-delivery.js";
 import { resumeProjectLoopRun } from "./project-loop-runner.js";
@@ -57,18 +57,13 @@ function harness(options: {
   const loopRunStore = new MemoryLoopRunStore();
   const executed: string[] = [];
   let attempt = 0;
+  // Loop tool steps run through PreToolUse, so it marks the boundary before a step.
   const hooks = options.stepBefore
-    ? new RuntimeHookEngine({
-        definitions: [{
-          id: "observe-step",
-          event: "step:before",
-          mode: "observe",
-          handler: { type: "tool", tool: "audit" },
-        }],
-        host: {
-          execute: async ({ envelope }) => {
-            await options.stepBefore!(envelope.data.step);
-          },
+    ? createScriptedHookRuntime({
+        hooks: { PreToolUse: [{ hooks: [{ type: "command", command: "observe-step" }] }] },
+        respond: async (input) => {
+          await options.stepBefore!(input.tool_name);
+          return {};
         },
       })
     : undefined;
