@@ -1,6 +1,7 @@
 import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
 import { join, extname } from "node:path";
 import type { FileSystem } from "@polpo-ai/core";
+import { normalizeSessionTitleSettings } from "@polpo-ai/core/session-titles";
 import { AgentMutationError, normalizeAgentMutation, type AgentSnapshot, type AgentMutation, type AgentMutationReceipt, type AgentRevision } from "@polpo-ai/core/agent-store";
 import {
   AddAgentSchema,
@@ -125,6 +126,7 @@ export function agentRoutes(getDeps: () => {
       allowedPaths: body.allowedPaths,
       systemPrompt: body.systemPrompt,
       chat: body.chat,
+      ...(body.sessionTitles != null && { sessionTitles: normalizeSessionTitleSettings(body.sessionTitles) }),
       channels: body.channels,
       memory: body.memory,
       skills: body.skills,
@@ -497,6 +499,7 @@ export function agentRoutes(getDeps: () => {
       ...(body.search_provider  !== undefined && { search_provider:  body.search_provider }),
       ...(body.systemPrompt !== undefined && { systemPrompt: body.systemPrompt }),
       ...(body.chat !== undefined && { chat: body.chat }),
+      ...(body.sessionTitles !== undefined && { sessionTitles: body.sessionTitles === null ? undefined : normalizeSessionTitleSettings({ ...existing.sessionTitles, ...body.sessionTitles }) }),
       ...(body.channels !== undefined && { channels: body.channels }),
       ...(body.memory !== undefined && { memory: body.memory }),
       ...(body.skills !== undefined && { skills: body.skills }),

@@ -123,6 +123,18 @@ function routeDeps() {
 }
 
 describe("agent chat preferences routes", () => {
+  it("persists automatic-title settings on creation and merges/reset overrides on PATCH", async () => {
+    const deps = routeDeps(); const app = agentRoutes(deps.getDeps);
+    expect((await app.request("/", json({ name: "support", sessionTitles: { model: "test/small", language: "it", enabled: false } }))).status).toBe(201);
+    expect(deps.addAgent).toHaveBeenCalledWith(expect.objectContaining({ sessionTitles: { model: "test/small", language: "it", enabled: false } }), undefined);
+    deps.agents.push({ name: "support", sessionTitles: { model: "test/small", language: "it", enabled: false } });
+    const patch = (sessionTitles: unknown) => app.request("/support", { ...json({ sessionTitles }), method: "PATCH" });
+    expect((await patch({ language: "en-US", model: null })).status).toBe(200);
+    expect(deps.updateAgent).toHaveBeenLastCalledWith("support", { sessionTitles: { language: "en-US", enabled: false } });
+    expect((await patch(null)).status).toBe(200);
+    expect(deps.updateAgent).toHaveBeenLastCalledWith("support", { sessionTitles: undefined });
+    expect((await patch({ maxLength: 201 })).status).toBe(400);
+  });
   it("persists chat preferences when creating an agent", async () => {
     const deps = routeDeps();
     const app = agentRoutes(deps.getDeps);
