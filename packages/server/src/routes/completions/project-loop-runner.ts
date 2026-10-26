@@ -1,3 +1,4 @@
+import { withSessionTitleStream, completionSessionTitleMetadata } from "./session-titles.js";
 /**
  * Project loop runtime for the chat completions endpoint.
  *
@@ -1296,7 +1297,7 @@ export async function handleProjectLoopCompletion(
 }
 
 /** Transport-independent loop producer used by attached and durable followers. */
-export async function executeStreamingProjectLoopCompletion(
+async function executeStreamingProjectLoopCompletionInner(
   stream: CompletionSseWriter,
   options: ProjectLoopCompletionOptions,
   signal: AbortSignal,
@@ -1584,7 +1585,7 @@ async function runNonStreamingProjectLoopCompletion(
     suggestions = await suggestionsForProjectLoopCompletion(options, finalText, assistantMsgId, signal);
     canonicalTurnSucceeded = true;
     return c.json(completionResponse(completionId, finalText, runUsage, {
-      ...(suggestions.length ? { polpo: { suggestions, ...(assistantMsgId ? { suggestionsSource: { assistantMessageId: assistantMsgId } } : {}) } } : {}),
+      polpo: { ...await completionSessionTitleMetadata(deps, sessionId), ...(suggestions.length ? { suggestions, ...(assistantMsgId ? { suggestionsSource: { assistantMessageId: assistantMsgId } } : {}) } : {}) },
       loop_trace: run.trace,
       loop_run_id: run.loopRunId,
       ...(run.loopResult === undefined ? {} : { loop_result: run.loopResult }),
@@ -1644,4 +1645,8 @@ async function runNonStreamingProjectLoopCompletion(
     } catch { /* never fail on callback */ }
     await steeringScope.release();
   }
+}
+
+export async function executeStreamingProjectLoopCompletion(stream: CompletionSseWriter, options: ProjectLoopCompletionOptions, signal: AbortSignal): Promise<void> {
+  return withSessionTitleStream(stream, options, writer => executeStreamingProjectLoopCompletionInner(writer, options, signal));
 }

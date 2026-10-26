@@ -6,6 +6,17 @@ import { useChat } from "../hooks/use-chat.js";
 import { createMockClient, createMockStore, createWrapper } from "./helpers.js";
 
 describe("useChat interactions", () => {
+  it("applies late title metadata once and unsubscribes on unmount", async () => {
+    let listener!: (session: any) => void;
+    const stop = vi.fn(), onSessionUpdated = vi.fn(), store = createMockStore();
+    const client = createMockClient({ watchSessionTitle: vi.fn((_id, callback) => { listener = callback; return stop; }), getSessionMessages: vi.fn().mockResolvedValue({ session: { id: "s", version: 1 }, messages: [] }) });
+    const hook = renderHook(() => useChat({ sessionId: "s", onSessionUpdated }), { wrapper: createWrapper(client, store) });
+    await waitFor(() => expect(client.watchSessionTitle).toHaveBeenCalled());
+    const title = { id: "s", title: "Generated", titleRevision: 2, titleSource: "generated", titleGenerationStatus: "completed", titleUpdatedAt: new Date().toISOString() };
+    act(() => { listener(title); listener({ ...title, title: "Old", titleRevision: 1 }); listener({ ...title, id: "other" }); });
+    expect(onSessionUpdated).toHaveBeenCalledOnce(); expect(store.patchSessionTitle).toHaveBeenCalledWith(title);
+    hook.unmount(); expect(stop).toHaveBeenCalledOnce();
+  });
   it("accumulates live reasoning separately and never sends it back in history", async () => {
     const stream = {
       abort: vi.fn(),

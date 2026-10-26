@@ -67,4 +67,6 @@ export interface StoreState {
    * `session:started` upsert here too.
    */
   sessions: Map<string, ChatSession>;
+  /** Bounded metadata updates awaiting an authorized list row; never confer membership. */
+  sessionTitleUpdates?: Map<string, import("../client/types.js").SessionTitleSnapshot>;
 }

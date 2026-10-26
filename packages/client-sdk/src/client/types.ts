@@ -1,3 +1,5 @@
+import type { SessionTitleSnapshot, SessionTitleSettings } from "@polpo-ai/core/session-titles";
+export type { SessionTitleSnapshot, SessionTitleSettings } from "@polpo-ai/core/session-titles";
 import type { ChatSuggestion, ChatSuggestionRequestOptions } from "@polpo-ai/core/chat-interactions";
 export type { ChatSuggestion, ChatMessageSuggestion, ChatActionSuggestion, ChatActionSuggestionInput,
   ChatSuggestionAction, ChatSuggestionRequestOptions, ChatSuggestionContextValue } from "@polpo-ai/core/chat-interactions";
@@ -896,6 +898,7 @@ export interface AddAgentRequest {
   sandbox?: RuntimeSandboxOptions;
   allowedTools?: string[];
   chat?: AgentConfig["chat"];
+  sessionTitles?: SessionTitleSettings | null;
   channels?: AgentConfig["channels"];
   systemPrompt?: string;
   skills?: string[];
@@ -940,6 +943,7 @@ export interface UpdateAgentRequest {
   sandbox?: RuntimeSandboxOptions;
   allowedTools?: string[];
   chat?: AgentConfig["chat"];
+  sessionTitles?: SessionTitleSettings | null;
   channels?: AgentConfig["channels"];
   allowedPaths?: string[];
   systemPrompt?: string;
@@ -962,6 +966,7 @@ export interface UpdateAgentRequest {
 }
 
 export interface UpdateSettingsRequest {
+  sessionTitles?: SessionTitleSettings | null;
   orchestratorModel?: ProfiledModelSelection;
   modelProfiles?: ModelProfileRegistry;
   imageModel?: string | null;
@@ -1232,7 +1237,7 @@ export interface CreatePlaybookRequest {
 
 // === Chat Session types ===
 
-export interface ChatSession {
+export interface ChatSession extends Partial<Omit<SessionTitleSnapshot, "id" | "title">> {
   id: string;
   title?: string;
   createdAt: string;
@@ -1526,6 +1531,7 @@ export interface CancelRunResult {
 export type ChatStreamConnectionState = "streaming" | "reconnecting" | "closed";
 
 export interface ChatCompletionPolpoExtensions {
+  session?: SessionTitleSnapshot;
   /** Exact persisted assistant message that owns this suggestion set. */
   suggestionsSource?: { assistantMessageId: string };
   suggestions?: ChatSuggestion[];

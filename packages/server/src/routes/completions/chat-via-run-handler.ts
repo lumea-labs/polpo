@@ -1,3 +1,4 @@
+import { withSessionTitleStream, completionSessionTitleMetadata } from "./session-titles.js";
 /**
  * chat-via-executeRun driver (migration F1c).
  *
@@ -453,7 +454,7 @@ export async function streamChatViaRun(c: Context, execution: ChatCompletionExec
   });
 }
 
-export async function executeStreamingChatViaRun(
+async function executeStreamingChatViaRunInner(
   stream: CompletionSseWriter,
   execution: ChatCompletionExecution,
   signal: AbortSignal,
@@ -693,7 +694,7 @@ export async function runNonStreamingChatViaRun(c: Context, execution: ChatCompl
       completionId,
       state.finalText,
       state.totalUsage as any,
-      suggestions.length > 0 ? { polpo: { suggestions, ...(assistantMsgId ? { suggestionsSource: { assistantMessageId: assistantMsgId } } : {}) } } : undefined,
+      { polpo: { ...await completionSessionTitleMetadata(deps, sessionId), ...(suggestions.length ? { suggestions, ...(assistantMsgId ? { suggestionsSource: { assistantMessageId: assistantMsgId } } : {}) } : {}) } },
     ));
   } catch (err) {
     state.errorEvent ??= { message: err instanceof Error ? err.message : String(err) };
@@ -834,4 +835,8 @@ export async function runChatTurnViaRun(
     runStatus,
     runResult,
   };
+}
+
+export async function executeStreamingChatViaRun(stream: CompletionSseWriter, exec: ChatCompletionExecution, signal: AbortSignal): Promise<void> {
+  return withSessionTitleStream(stream, exec, writer => executeStreamingChatViaRunInner(writer, exec, signal));
 }

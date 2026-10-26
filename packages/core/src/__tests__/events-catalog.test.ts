@@ -48,7 +48,7 @@ describe("EVENT_CATALOG", () => {
   it("publishes a stable, intentional count of events", () => {
     // Pin the total. Bump this number in the same PR that adds/removes
     // events from the catalog so reviewers can spot drift.
-    const EXPECTED_TOTAL = 12;
+    const EXPECTED_TOTAL = 13;
     const actual = EVENT_CATALOG.reduce((sum, g) => sum + g.events.length, 0);
     expect(actual).toBe(EXPECTED_TOTAL);
   });

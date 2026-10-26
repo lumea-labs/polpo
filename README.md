@@ -1222,3 +1222,5 @@ is available through HTTP, the SDK, `polpo data` and the self-hosted dashboard's
 `/data` page. Applications use the normal Polpo API key; agent permissions are
 configured separately. The first OSS provider is PostgreSQL; managed Cloud
 provisions Neon behind the same Data contracts.
+
+Automatic conversation names: see [Session titles](docs/session-titles.md) for configuration, streaming updates and manual renaming.

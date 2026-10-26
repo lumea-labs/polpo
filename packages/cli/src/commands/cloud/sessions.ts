@@ -25,7 +25,7 @@ type SessionOptions = EnvironmentOptions & {
 
 async function context(opts: SessionOptions): Promise<ApiClient> {
   const credentials = await requireAuth({
-    context: "Session client-tool inspection requires an authenticated session.",
+    context: "Session operations require an authenticated session.",
   });
   const projectId = loadProjectId(opts.dir ?? ".");
   if (!projectId) throw new Error("No project linked. Run polpo create or polpo link first.");
@@ -107,7 +107,32 @@ function printSettlement(value: SettledClientTool, json?: boolean): void {
 
 export function registerSessionCommands(program: Command): void {
   const sessions = program.command("sessions")
-    .description("Inspect or settle durable Session client-tool calls");
+    .description("Inspect Sessions, rename titles, or settle durable client-tool calls");
+
+  addEnvironmentOptions(sessions.command("show <session-id>"))
+    .description("Read Session metadata, including automatic title state, without loading messages")
+    .option("-d, --dir <path>", "Project directory", ".")
+    .action(async (id: string, opts: SessionOptions) => {
+      try {
+        const response = await (await context(opts)).get<any>(`/v1/chat/sessions/${encodeURIComponent(id)}`);
+        if (response.status !== 200 || !response.data?.data) throw responseFailure(response);
+        console.log(JSON.stringify(response.data.data, null, 2));
+      } catch (error) { console.error(pc.red(friendlyError(error instanceof Error ? error.message : String(error)))); process.exitCode = 1; }
+    });
+
+  addEnvironmentOptions(sessions.command("rename <session-id> <title>"))
+    .description("Set a manual Session title; automatic generation will never overwrite it")
+    .option("--title-revision <revision>", "Expected title revision (independent from conversation version)")
+    .option("-d, --dir <path>", "Project directory", ".")
+    .action(async (id: string, title: string, opts: SessionOptions & { titleRevision?: string }) => {
+      try {
+        if (!title.trim()) throw new Error("Title must not be empty");
+        const expectedTitleRevision = opts.titleRevision === undefined ? undefined : parseSessionVersion(opts.titleRevision);
+        const response = await (await context(opts)).patch<any>(`/v1/chat/sessions/${encodeURIComponent(id)}`, { title, ...(expectedTitleRevision === undefined ? {} : { expectedTitleRevision }) });
+        if (response.status !== 200 || !response.data?.data) throw responseFailure(response);
+        console.log(JSON.stringify(response.data.data, null, 2));
+      } catch (error) { console.error(pc.red(friendlyError(error instanceof Error ? error.message : String(error)))); process.exitCode = 1; }
+    });
 
   addEnvironmentOptions(sessions.command("tool-call <session-id> <tool-call-id>"))
     .description("Inspect one client-tool resolution without executing work")

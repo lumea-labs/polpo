@@ -135,7 +135,11 @@ export function isPublicApiPath(
   return options.connectCallbackEnabled && normalized === "/api/v1/connect/oauth/callback";
 }
 
+const sessionTitleRecoveryDeps = new WeakMap<OpenAPIHono, () => CompletionRouteDeps | undefined>();
+export function getSessionTitleRecoveryDeps(app: OpenAPIHono): (() => CompletionRouteDeps | undefined) | undefined { return sessionTitleRecoveryDeps.get(app); }
+
 export interface AppOptions {
+  sessionTitles?: CompletionRouteDeps["sessionTitles"];
   /** Fixed identity of this process; configure separate processes/stores for the other environment. */
   environment?: ProjectEnvironment;
   /** Explicit operator-configured Connect service; routes use normal control-plane auth. */
@@ -321,7 +325,8 @@ export function createApp(orchestrator: Orchestrator, sseBridge: SSEBridge, opts
   }
 
   // OpenAI-compatible chat completions
-  app.route("/v1/chat/completions", completionRoutes(() => ({
+  const getCompletionDeps = (): CompletionRouteDeps => ({
+    sessionTitles: opts?.sessionTitles,
     getAgents: () => o.engine.getAgents(),
     ...(isVersionedAgentStore(o.getAgentStore()) ? {
       getAgentSnapshot: (name: string) => o.engine.getAgentSnapshot(name),
@@ -579,7 +584,9 @@ export function createApp(orchestrator: Orchestrator, sseBridge: SSEBridge, opts
       );
       return { status: outcome.status, result: outcome.result };
     },
-  }), opts?.apiKeys));
+  });
+  app.route("/v1/chat/completions", completionRoutes(getCompletionDeps, opts?.apiKeys));
+  sessionTitleRecoveryDeps.set(app, () => orchestrator.isInitialized ? getCompletionDeps() : undefined);
   app.route("/v1/chat", clientToolResolutionRoutes(() => ({
     sessionStore: o.getSessionStore(),
     runStore: o.getRunStore(),
@@ -717,6 +724,7 @@ export function createApp(orchestrator: Orchestrator, sseBridge: SSEBridge, opts
   authed.route("/events", eventRoutes(sseBridge));
 
   authed.route("/chat", chatRoutes(() => ({
+    emit: (event, data) => o.emit(event as any, data as any),
     sessionStore: o.getSessionStore(),
     runStore: o.getRunStore(),
   })));

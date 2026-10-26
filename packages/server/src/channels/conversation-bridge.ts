@@ -115,6 +115,7 @@ export interface ConversationChannelBridgeOptions {
       | Promise<readonly string[] | undefined>
   );
   createSession?: (input: {
+    titleSource?: "provisional";
     agent: string;
     metadata: Record<string, string>;
     scope?: ToolInvocationScope;
@@ -736,6 +737,7 @@ async function resolveOrCreateSession(
 
   if (input.options.createSession) {
     return input.options.createSession({
+      titleSource: "provisional",
       agent: input.agent,
       metadata: input.metadata,
       scope: input.scope,
@@ -745,6 +747,7 @@ async function resolveOrCreateSession(
   }
   if (!store) return null;
   return store.create({
+    titleSource: "provisional",
     agent: input.agent,
     metadata: input.metadata,
     title: input.title,

@@ -132,6 +132,18 @@ export const modelSelectionSchema = z.union([
   profiledModelConfigSchema,
 ]);
 
+export const sessionTitleSettingsSchema = z.object({
+  enabled: z.boolean().nullable().optional(),
+  model: modelSelectionSchema.nullable().optional(),
+  language: z.string().refine(value => {
+    if (value === "auto") return true;
+    try { return Intl.getCanonicalLocales(value).length === 1; } catch { return false; }
+  }, "Use auto or a BCP 47 language tag").nullable().optional(),
+  maxLength: z.number().int().min(1).max(200).nullable().optional(),
+  maxOutputTokens: z.number().int().min(1).max(512).nullable().optional(),
+  timeoutMs: z.number().int().min(1).max(15000).nullable().optional(),
+}).strict();
+
 export const modelProfileRegistrySchema = z.record(
   z.string().regex(MODEL_PROFILE_NAME_PATTERN),
   modelSelectionSchema,

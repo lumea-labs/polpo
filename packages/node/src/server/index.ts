@@ -1,3 +1,5 @@
+import { startSessionTitleRecovery } from "@polpo-ai/server";
+import { getSessionTitleRecoveryDeps } from "./app.js";
 import { existsSync } from "node:fs";
 import { resolve, basename, join } from "node:path";
 import { getPolpoDir } from "../core/constants.js";
@@ -26,6 +28,7 @@ import { parseProjectEnvironment } from "@polpo-ai/core/project-environment";
  *   await server.start();
  */
 export class PolpoServer {
+  private stopSessionTitleRecovery?: () => Promise<void>;
   private orchestrator!: Orchestrator;
   private sseBridge!: SSEBridge;
   private server: ReturnType<typeof serve> | null = null;
@@ -93,6 +96,9 @@ export class PolpoServer {
       resolveMcpCapabilities: this.config.resolveMcpCapabilities,
     });
 
+    const titleDeps = getSessionTitleRecoveryDeps(app);
+    if (titleDeps) this.stopSessionTitleRecovery = startSessionTitleRecovery(titleDeps);
+
     this.server = serve({
       fetch: app.fetch,
       port: this.config.port,
@@ -128,6 +134,8 @@ export class PolpoServer {
 
   /** Graceful shutdown: stop orchestrator, close HTTP server. */
   async stop(): Promise<void> {
+    await this.stopSessionTitleRecovery?.();
+    this.stopSessionTitleRecovery = undefined;
     console.log("\nShutting down Polpo Server...");
     this.sseBridge?.dispose();
     if (this.orchestrator?.isInitialized) {

@@ -1,3 +1,6 @@
+import { SessionTitleWatchRegistry } from "./session-title-watch.js";
+import { isSessionTitleSnapshot } from "../store/session-titles.js";
+import type { SessionTitleSnapshot } from "./types.js";
 import { PolpoApiError } from "./errors.js";
 import { projectEnvironmentBaseUrl, type ProjectEnvironment } from "@polpo-ai/core/project-environment";
 import { DataResourceClient } from "./data.js";
@@ -186,6 +189,9 @@ export class ChatCompletionStream implements AsyncIterable<ChatCompletionChunk> 
 
   /** Monotonic transcript version after this completion is persisted. */
   sessionVersion: number | null = null;
+
+  /** Latest monotonic Session title metadata received in this stream. */
+  session: SessionTitleSnapshot | null = null;
 
   /** Active Run id used by steering APIs. Available after start() or first next(). */
   runId: string | null = null;
@@ -406,6 +412,7 @@ export class ChatCompletionStream implements AsyncIterable<ChatCompletionChunk> 
             }
             continue;
           }
+          if (isSessionTitleSnapshot(chunk.polpo?.session) && (!this.session || chunk.polpo.session.titleRevision > this.session.titleRevision)) this.session = chunk.polpo.session;
           if (chunk.polpo?.suggestions) {
             this.suggestions = chunk.polpo.suggestions;
           }
@@ -587,6 +594,7 @@ function revisionHeaders(
 }
 
 export class PolpoClient {
+  private readonly titleWatches = new SessionTitleWatchRegistry((id, signal) => this.getSessionMetadata(id, { signal }));
   private readonly baseUrl: string;
   private readonly apiPrefix: string;
   private readonly apiKey: string | undefined;
@@ -640,6 +648,7 @@ export class PolpoClient {
    * to clear (e.g. on logout) so further calls go un-scoped.
    */
   setUser(user: string | undefined): void {
+    if (this.defaultUser !== user) this.titleWatches.clear();
     this.defaultUser = user;
   }
 
@@ -677,6 +686,7 @@ export class PolpoClient {
     url: string,
     body?: unknown,
     requestHeaders: Record<string, string> = {},
+    signal?: AbortSignal,
   ): Promise<T> {
     const res = await this.fetchFn(url, {
       method,
@@ -686,6 +696,7 @@ export class PolpoClient {
         ...requestHeaders,
       },
       body: body !== undefined ? JSON.stringify(body) : undefined,
+      signal,
     });
     const contentType = res.headers.get("content-type") ?? "";
     if (!contentType.includes("application/json")) {
@@ -1933,8 +1944,17 @@ export class PolpoClient {
     return this.get<{ session: ChatSession; messages: ChatMessage[] }>(`/chat/sessions/${sessionId}/messages`);
   }
 
-  renameSession(sessionId: string, title: string): Promise<{ renamed: boolean }> {
-    return this.patch<{ renamed: boolean }>(`/chat/sessions/${sessionId}`, { title });
+  getSessionMetadata(sessionId: string, options?: { signal?: AbortSignal }): Promise<ChatSession> {
+    return this.request<ChatSession>("GET", this.apiUrl(`/chat/sessions/${encodeURIComponent(sessionId)}`), undefined, {}, options?.signal);
+  }
+
+  /** Stops automatically at a terminal title, after 60 seconds, or when all consumers unsubscribe. */
+  watchSessionTitle(sessionId: string, onUpdate: (session: ChatSession) => void): () => void {
+    return this.titleWatches.watch(sessionId, onUpdate);
+  }
+
+  renameSession(sessionId: string, title: string, expectedTitleRevision?: number): Promise<{ renamed: boolean; session?: SessionTitleSnapshot }> {
+    return this.patch(`/chat/sessions/${encodeURIComponent(sessionId)}`, { title, ...(expectedTitleRevision === undefined ? {} : { expectedTitleRevision }) });
   }
 
   deleteSession(sessionId: string): Promise<{ deleted: boolean }> {

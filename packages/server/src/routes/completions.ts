@@ -163,6 +163,7 @@ export interface CompletionRunDeliveryScopeInput {
  * LLM streaming is handled directly via AI SDK streamText/generateText.
  */
 export interface CompletionRouteDeps {
+  sessionTitles?: import("./completions/session-titles.js").CompletionSessionTitles;
   getAgents: () => Promise<any[]>;
   /** Atomically load execution config and creation identity. When provided,
    * absence never falls back to an unversioned lookup. */
@@ -357,7 +358,9 @@ export interface CompletionRouteDeps {
   ) => void | Promise<void>;
   /** Meter or audit an auxiliary model call without emitting a second user completion. */
   onAuxiliaryModelFinished?: (info: {
-    operation: "chat_suggestions";
+    operation: "chat_suggestions" | "session_title";
+    purpose?: "session.title";
+    invocationId?: string;
     usage: { inputTokens?: number; outputTokens?: number; totalTokens?: number };
     model: string;
     resolvedModel?: CompletionResolvedModelInfo;

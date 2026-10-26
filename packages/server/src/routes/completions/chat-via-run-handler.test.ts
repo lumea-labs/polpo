@@ -1552,6 +1552,7 @@ describe("chat via Run driver", () => {
     });
     expect(sessionStore.create).toHaveBeenCalledWith({
       title: "hello from slack",
+      titleSource: "provisional",
       agent: "agent-1",
       user: "slack:T1:U1",
       metadata: {

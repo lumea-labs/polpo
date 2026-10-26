@@ -1,3 +1,5 @@
+import { withProjectFileTransaction } from "./project-file-transaction.js";
+import { admittedSessionTitleState, initialSessionTitleState, manualSessionTitleState, sessionTitleSnapshot, sessionTitleWorkPending, sessionTitleInput, type SessionTitleState, type SessionTitleAdmission } from "@polpo-ai/core/session-titles";
 import {
   existsSync,
   mkdirSync,
@@ -65,7 +67,7 @@ export class FileSessionStore implements SessionStore {
   private static readonly sessionLocks = new Map<string, Promise<void>>();
   private readonly sessionsDir: string;
 
-  constructor(polpoDir: string) {
+  constructor(private readonly polpoDir: string) {
     this.sessionsDir = resolve(polpoDir, "sessions");
   }
 
@@ -82,6 +84,7 @@ export class FileSessionStore implements SessionStore {
       createdAt: new Date().toISOString(),
       version: 0,
     };
+    header.titleState = initialSessionTitleState(sessionId, opts.title, opts.titleSource ?? "manual", header.createdAt as string);
     if (opts.agent) header.agent = opts.agent;
     if (opts.user) header.user = opts.user;
     if (opts.metadata) header.metadata = opts.metadata;
@@ -111,6 +114,11 @@ export class FileSessionStore implements SessionStore {
       try {
         const state = this.readSessionFile(sessionId);
         state.header.version = Number(state.header.version ?? 0) + 1;
+        if (role === "user" && options?.sessionTitle && !state.messages.some(m => m.role === "user")) {
+          state.header.titleState = admittedSessionTitleState(this.titleStateFromHeader(state.header), {
+            ...options.sessionTitle, sessionId, messageId: message.id, text: sessionTitleInput(content), createdAt: message.ts,
+          });
+        }
         state.messages.push(message);
         this.writeSessionFileAtomic(sessionId, state.header, state.messages);
       } catch { /* best-effort: non-critical */ }
@@ -167,10 +175,9 @@ export class FileSessionStore implements SessionStore {
 
   /** Build a Session out of a session file's first line + mtime. */
   private headerToSession(header: any, filePath: string, fallbackId: string): Session {
-    const updatedAt = new Date(statSync(filePath).mtimeMs).toISOString();
+    const updatedAt = header.updatedAt ?? new Date(statSync(filePath).mtimeMs).toISOString();
     return {
-      id: header.id ?? fallbackId,
-      title: header.title,
+      ...sessionTitleSnapshot(this.titleStateFromHeader({ ...header, id: header.id ?? fallbackId })),
       createdAt: header.createdAt ?? updatedAt,
       updatedAt,
       messageCount: 0,
@@ -514,7 +521,7 @@ export class FileSessionStore implements SessionStore {
       } catch { /* skip corrupt file */
       }
     }
-    return sessions;
+    return sessions.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   }
 
   async getSession(sessionId: string): Promise<Session | undefined> {
@@ -546,27 +553,61 @@ export class FileSessionStore implements SessionStore {
     return sessions.find(s => s.agent === agent);
   }
 
+  private titleStateFromHeader(header: any): SessionTitleState {
+    return header.titleState ?? initialSessionTitleState(header.id, header.title, "legacy", header.createdAt);
+  }
+
+  async getSessionTitleState(sessionId: string): Promise<SessionTitleState | undefined> {
+    if (!existsSync(this.sessionFile(sessionId))) return undefined;
+    return this.titleStateFromHeader(this.readSessionFile(sessionId).header);
+  }
+
+  async compareAndSetSessionTitleState(sessionId: string, expected: SessionTitleState, next: SessionTitleState): Promise<boolean> {
+    return this.withSessionLock(sessionId, () => {
+      if (!existsSync(this.sessionFile(sessionId))) return false;
+      const state = this.readSessionFile(sessionId);
+      if (JSON.stringify(this.titleStateFromHeader(state.header)) !== JSON.stringify(expected)) return false;
+      state.header.title = next.snapshot.title;
+      state.header.titleState = next;
+      const manual = next.snapshot.titleSource === "manual" && next.snapshot.titleRevision > expected.snapshot.titleRevision;
+      if (!manual) state.header.updatedAt ??= new Date(statSync(this.sessionFile(sessionId)).mtimeMs).toISOString();
+      this.writeSessionFileAtomic(sessionId, state.header, state.messages, !manual);
+      return true;
+    });
+  }
+
+  async listPendingSessionTitles(limit = 32): Promise<string[]> {
+    if (!existsSync(this.sessionsDir)) return [];
+    const pending: string[] = [];
+    for (const file of readdirSync(this.sessionsDir).filter(f => f.endsWith(".jsonl"))) {
+      const id = file.slice(0, -6);
+      try {
+        const state = this.readSessionFile(id);
+        if (sessionTitleWorkPending(this.titleStateFromHeader(state.header))) pending.push(id);
+      } catch { /* Deleted/unreadable unrelated sessions do not block recovery. */ }
+      if (pending.length >= limit) break;
+    }
+    return pending;
+  }
+
   async renameSession(sessionId: string, title: string): Promise<boolean> {
     return this.withSessionLock(sessionId, () => {
       if (!existsSync(this.sessionFile(sessionId))) return false;
-      try {
-        const state = this.readSessionFile(sessionId);
-        state.header.title = title;
-        this.writeSessionFileAtomic(sessionId, state.header, state.messages);
-        return true;
-      } catch { return false; }
+      const state = this.readSessionFile(sessionId);
+      state.header.titleState = manualSessionTitleState(this.titleStateFromHeader(state.header), title);
+      state.header.title = title;
+      this.writeSessionFileAtomic(sessionId, state.header, state.messages);
+      return true;
     });
   }
 
   async deleteSession(sessionId: string): Promise<boolean> {
-    const file = this.sessionFile(sessionId);
-    if (!existsSync(file)) return false;
-    try {
+    return this.withSessionLock(sessionId, () => {
+      const file = this.sessionFile(sessionId);
+      if (!existsSync(file)) return false;
       unlinkSync(file);
       return true;
-    } catch { /* file already removed */
-      return false;
-    }
+    });
   }
 
   async prune(keepSessions: number): Promise<number> {
@@ -576,8 +617,7 @@ export class FileSessionStore implements SessionStore {
     let removed = 0;
     for (const s of toRemove) {
       try {
-        unlinkSync(this.sessionFile(s.id));
-        removed++;
+        if (await this.deleteSession(s.id)) removed++;
       } catch { /* file already removed */ }
     }
     return removed;
@@ -678,7 +718,8 @@ export class FileSessionStore implements SessionStore {
     };
   }
 
-  private writeSessionFileAtomic(sessionId: string, header: any, messages: Message[]): void {
+  private writeSessionFileAtomic(sessionId: string, header: any, messages: Message[], preserveActivity = false): void {
+    if (!preserveActivity) header.updatedAt = new Date().toISOString();
     const file = this.sessionFile(sessionId);
     const temporary = `${file}.${process.pid}.${nanoid(6)}.tmp`;
     const content = [header, ...messages].map((entry) => JSON.stringify(entry)).join("\n") + "\n";
@@ -735,7 +776,7 @@ export class FileSessionStore implements SessionStore {
     });
   }
 
-  private async withSessionLock<T>(sessionId: string, operation: () => T | Promise<T>): Promise<T> {
+  private async withSessionLock<T>(sessionId: string, operation: () => T): Promise<T> {
     const key = this.sessionFile(sessionId);
     const previous = FileSessionStore.sessionLocks.get(key) ?? Promise.resolve();
     let release!: () => void;
@@ -743,7 +784,7 @@ export class FileSessionStore implements SessionStore {
     FileSessionStore.sessionLocks.set(key, current);
     await previous;
     try {
-      return await operation();
+      return withProjectFileTransaction(this.polpoDir, () => operation());
     } finally {
       release();
       if (FileSessionStore.sessionLocks.get(key) === current) {

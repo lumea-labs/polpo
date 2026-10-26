@@ -1,3 +1,5 @@
+import { completionSessionTitlePolicy, getSessionTitleRuntime } from "./session-titles.js";
+import { resolveSessionTitleSettings } from "@polpo-ai/core/session-titles";
 import type { HookRuntime } from "@polpo-ai/core/runtime-hooks";
 import type { CompletionToolRunScope } from "../completions.js";
 import { nanoid } from "nanoid";
@@ -1236,6 +1238,7 @@ export async function prepareChatCompletionExecution(
 
       sessionId = await sessionStore.create({
         title: sessionTitle,
+        titleSource: (invocation.surface === "agent" || invocation.surface === "channel") && (invocation.source === "request" || invocation.source === "channel") ? "provisional" : "manual",
         agent: agentScope ?? undefined,
         user: options.runtime?.user ?? body.user,
         metadata: body.metadata,
@@ -1245,14 +1248,27 @@ export async function prepareChatCompletionExecution(
 
     const lastUserMsg = [...body.messages].reverse().find((message) => message.role === "user");
     if (!body.polpo?.continuation && lastUserMsg && sessionId) {
-      const userMessage = turnId
-        ? await sessionStore.addMessage(
-            sessionId,
-            "user",
-            lastUserMsg.content,
-            { turnId },
-          )
+      let titleRequest;
+      const titleRuntime = getSessionTitleRuntime(deps);
+      try {
+        const current = await titleRuntime?.store.getSessionTitleState(sessionId);
+        if (current?.snapshot.titleSource === "provisional" && current.snapshot.titleGenerationStatus === "pending" && !current.job) {
+          titleRequest = { policy: completionSessionTitlePolicy(deps, resolvedAgentConfig, m), agentName: resolvedAgentConfig?.name, agentIncarnation: agentIdentity?.incarnation };
+          if (deps.sessionTitles?.prepare) {
+            try { await deps.sessionTitles.prepare(sessionId); }
+            catch { titleRequest.policy.enabled = false; }
+          }
+        }
+      } catch {
+        // Invalid optional settings terminate naming, not the user's conversation.
+        titleRequest = { policy: resolveSessionTitleSettings(undefined, undefined, { enabled: false }, modelSelectionForResolvedModel(m)), agentName: resolvedAgentConfig?.name, agentIncarnation: agentIdentity?.incarnation };
+      }
+      const userMessage = turnId || titleRequest
+        ? await sessionStore.addMessage(sessionId, "user", lastUserMsg.content, {
+          ...(turnId ? { turnId } : {}), ...(titleRequest ? { sessionTitle: titleRequest } : {}),
+        })
         : await sessionStore.addMessage(sessionId, "user", lastUserMsg.content);
+      if (titleRequest) titleRuntime?.kick(sessionId);
       if (turnId) {
         if (!userMessage || typeof userMessage.id !== "string" || !userMessage.id) {
           throw new Error("Session store did not return the canonical user message identity");

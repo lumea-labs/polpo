@@ -6,6 +6,8 @@ import { pgTable, text as pgText, integer as pgInteger, boolean as pgBoolean, js
 export const sessionsSqlite = sqliteTable("sessions", {
   id: text("id").primaryKey(),
   title: text("title"),
+  titleState: text("title_state"),
+  titleWorkPending: integer("title_work_pending", { mode: "boolean" }).notNull().default(false),
   agent: text("agent"),
   /** OpenAI-compat opaque end-user id. Set by integrators, never verified. */
   user: text("user"),
@@ -18,6 +20,7 @@ export const sessionsSqlite = sqliteTable("sessions", {
   updatedAt: text("updated_at").notNull(),
 }, (table) => [
   index("idx_sessions_user").on(table.user),
+  index("idx_sessions_title_work").on(table.titleWorkPending),
 ]);
 
 export const messagesSqlite = sqliteTable("messages", {
@@ -86,6 +89,8 @@ export const sessionClientToolSettlementsSqlite = sqliteTable("session_client_to
 export const sessionsPg = pgTable("sessions", {
   id: pgText("id").primaryKey(),
   title: pgText("title"),
+  titleState: pgText("title_state"),
+  titleWorkPending: pgBoolean("title_work_pending").notNull().default(false),
   agent: pgText("agent"),
   /** OpenAI-compat opaque end-user id. Set by integrators, never verified. */
   user: pgText("user"),
@@ -98,6 +103,7 @@ export const sessionsPg = pgTable("sessions", {
   updatedAt: pgText("updated_at").notNull(),
 }, (table) => [
   pgIndex("idx_pg_sessions_user").on(table.user),
+  pgIndex("idx_pg_sessions_title_work").on(table.titleWorkPending),
 ]);
 
 export const messagesPg = pgTable("messages", {

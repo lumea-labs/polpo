@@ -149,3 +149,6 @@ export { compileLoopSource, LoopDslCompileError } from "./loop-dsl-compiler.js";
 // Playbook utilities (pure logic, edge-compatible)
 export { validateParams, instantiatePlaybook } from "./playbook-utils.js";
 export type { PlaybookParameter, PlaybookDefinition, ValidationResult } from "./playbook-utils.js";
+
+export { getSessionTitleRuntime, recoverSessionTitles, startSessionTitleRecovery } from "./routes/completions/session-titles.js";
+export type { CompletionSessionTitles } from "./routes/completions/session-titles.js";

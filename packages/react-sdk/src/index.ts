@@ -220,3 +220,5 @@ export type {
   AssessmentCheckStatus,
   TaskFilter,
 } from "@polpo-ai/sdk";
+
+export type { SessionTitleSnapshot, SessionTitleSettings } from "@polpo-ai/sdk";

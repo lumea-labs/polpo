@@ -1,3 +1,4 @@
+import { withSessionTitleStream, completionSessionTitleMetadata } from "./session-titles.js";
 /**
  * Standard chat-mode execution for the completions endpoint.
  *
@@ -387,7 +388,7 @@ export interface CompletionSseWriter {
 }
 
 /** Transport-independent producer used by attached and durable followers. */
-export async function executeStreamingChatCompletion(
+async function executeStreamingChatCompletionInner(
   stream: CompletionSseWriter,
   exec: ChatCompletionExecution,
   signal: AbortSignal,
@@ -1598,7 +1599,7 @@ export async function runNonStreamingChatCompletion(c: any, exec: ChatCompletion
       completionId,
       finalText,
       totalUsage,
-      suggestions.length > 0 ? { polpo: { suggestions, ...(assistantMsgId ? { suggestionsSource: { assistantMessageId: assistantMsgId } } : {}) } } : undefined,
+      { polpo: { ...await completionSessionTitleMetadata(deps, sessionId), ...(suggestions.length ? { suggestions, ...(assistantMsgId ? { suggestionsSource: { assistantMessageId: assistantMsgId } } : {}) } : {}) } },
     ));
   } catch (err) {
     if (gate && !gateAccepted) {
@@ -1675,4 +1676,8 @@ export async function runNonStreamingChatCompletion(c: any, exec: ChatCompletion
       }
     }
   }
+}
+
+export async function executeStreamingChatCompletion(stream: CompletionSseWriter, exec: ChatCompletionExecution, signal: AbortSignal): Promise<void> {
+  return withSessionTitleStream(stream, exec, writer => executeStreamingChatCompletionInner(writer, exec, signal));
 }

@@ -1,3 +1,4 @@
+import { sessionTitleSettingsSchema } from "@polpo-ai/core/schemas";
 import { z } from "@hono/zod-openapi";
 import {
   MAX_CHAT_SUGGESTION_GUIDANCE_CHARS,
@@ -404,6 +405,7 @@ export const UpdateMissionNotificationsSchema = z.object({
 // ── Settings schema ───────────────────────────────────────────────────
 
 export const UpdateSettingsSchema = z.object({
+  sessionTitles: sessionTitleSettingsSchema.nullable().optional(),
   orchestratorModel: ModelSelectionSchema.optional(),
   modelProfiles: ModelProfileRegistrySchema.optional(),
   imageModel: z.string().nullable().optional(),
@@ -946,6 +948,7 @@ export const AddAgentSchema = z.object({
   allowedPaths: z.array(z.string()).optional(),
   systemPrompt: z.string().optional(),
   chat: AgentChatSettingsSchema.optional(),
+  sessionTitles: sessionTitleSettingsSchema.nullable().optional(),
   channels: AgentChannelsSettingsSchema.optional(),
   memory: AgentMemorySettingsSchema.optional(),
   skills: z.array(z.string()).optional(),
@@ -985,6 +988,7 @@ const UpdateAgentFieldsSchema = z.object({
   allowedPaths: z.array(z.string()).optional(),
   systemPrompt: z.string().optional(),
   chat: AgentChatSettingsSchema.optional(),
+  sessionTitles: sessionTitleSettingsSchema.nullable().optional(),
   channels: AgentChannelsSettingsSchema.optional(),
   memory: AgentMemorySettingsSchema.optional(),
   skills: z.array(z.string()).optional(),

@@ -181,6 +181,8 @@ export interface AgentConfig {
   systemPrompt?: string;
   /** Client-facing conversational behavior for this agent. */
   chat?: ChatInteractionSettings;
+  /** Overrides for automatic Session titles, inherited field by field. */
+  sessionTitles?: import("../session-titles.js").SessionTitleSettings;
   /** Tool capability restriction for provider Channels such as WhatsApp or Telegram. */
   channels?: AllowedToolsSettings;
   /** Portable typed Memory tool capability. Omitted exposes no new Memory tools. */
