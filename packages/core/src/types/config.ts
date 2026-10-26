@@ -195,6 +195,8 @@ export interface PolpoConfig {
 export type ExecutionMode = "subprocess" | "in-process";
 
 export interface PolpoSettings {
+  /** Auxiliary first-message Session naming; inherits the conversational model by default. */
+  sessionTitles?: import("../session-titles.js").SessionTitleSettings;
   maxRetries: number;
   workDir: string;
   logLevel: "quiet" | "normal" | "verbose";

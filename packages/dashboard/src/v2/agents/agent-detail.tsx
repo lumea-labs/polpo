@@ -1,5 +1,7 @@
 "use client";
 
+import { AgentSessionTitlePreferences } from "./session-title-preferences";
+
 import { useEffect, useState, type ComponentType } from "react";
 import { useQuery } from "../host";
 import { Link } from "../host";
@@ -67,6 +69,7 @@ import { CopyButton } from "../ui/copy-button";
 import { PromptPreviewDialog } from "./prompt-preview-dialog";
 
 export type AgentDetailData = {
+  sessionTitles?: import("@polpo-ai/core/session-titles").SessionTitleSettings;
   name: string;
   role?: string;
   model?: string;
@@ -976,6 +979,7 @@ function AgentSettingsPanel({
         <CodeBlock code={agentConfigCode(agent)} lang="json" showCopy={false} />
       </section>
 
+      <AgentSessionTitlePreferences key={JSON.stringify(agent.sessionTitles ?? {})} projectId={projectId} agentName={agent.name} initial={agent.sessionTitles} available />
       <AgentDangerZone projectId={projectId} agentName={agent.name} />
     </div>
   );

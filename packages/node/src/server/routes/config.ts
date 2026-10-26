@@ -1,3 +1,4 @@
+import { normalizeSessionTitleSettings } from "@polpo-ai/core/session-titles";
 import { existsSync } from "node:fs";
 import { resolve, basename, join } from "node:path";
 import { getPolpoDir } from "../../core/constants.js";
@@ -306,6 +307,7 @@ export function configRoutes(getDeps: () => {
     const result = await mutateConfig(deps, (fileConfig) => {
       const settings = fileConfig.settings ?? {} as any;
       if (body.orchestratorModel !== undefined) settings.orchestratorModel = body.orchestratorModel;
+      if (body.sessionTitles !== undefined) settings.sessionTitles = body.sessionTitles === null ? undefined : normalizeSessionTitleSettings({ ...settings.sessionTitles, ...body.sessionTitles });
       if (body.modelProfiles !== undefined) settings.modelProfiles = body.modelProfiles;
       if (body.imageModel !== undefined) settings.imageModel = body.imageModel === null ? undefined : body.imageModel;
       if (body.reasoning !== undefined) settings.reasoning = body.reasoning;

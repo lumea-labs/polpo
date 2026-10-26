@@ -1,3 +1,4 @@
+import { admittedSessionTitleState, initialSessionTitleState, manualSessionTitleState, sessionTitleSnapshot, sessionTitleWorkPending, sessionTitleInput, type SessionTitleState, type SessionTitleAdmission } from "@polpo-ai/core/session-titles";
 import { eq, desc, asc, count as drizzleCount, isNull, and, sql } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import type {
@@ -97,8 +98,7 @@ export class DrizzleSessionStore implements SessionStore {
   private rowToSession(row: any, messageCount: number): Session {
     const metadata = this.parseMetadata(row.metadata);
     return {
-      id: row.id,
-      title: row.title ?? undefined,
+      ...sessionTitleSnapshot(this.titleStateFromRow(row)),
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
       messageCount,
@@ -276,6 +276,8 @@ export class DrizzleSessionStore implements SessionStore {
     await this.db.insert(this.sessions).values({
       id,
       title: opts.title ?? null,
+      titleState: JSON.stringify(initialSessionTitleState(id, opts.title, opts.titleSource ?? "manual", now)),
+      titleWorkPending: false,
       agent: opts.agent ?? null,
       user: opts.user ?? null,
       metadata: this.serializeMetadata(opts.metadata),
@@ -297,7 +299,7 @@ export class DrizzleSessionStore implements SessionStore {
     const id = nanoid();
     const ts = new Date().toISOString();
     const serialized = this.serializeContent(content);
-    await this.db.insert(this.messages).values({
+    const values = {
       id,
       sessionId,
       role,
@@ -309,11 +311,17 @@ export class DrizzleSessionStore implements SessionStore {
       reasoning: null,
       reasoningTruncated: false,
       turnId: options?.turnId ?? null,
-    });
+
+    };
+    if (role === "user" && options?.sessionTitle) {
+      await this.insertTitleUserMessage(values, content, options.sessionTitle);
+    } else {
+    await this.db.insert(this.messages).values(values);
     await this.db.update(this.sessions)
       .set({ updatedAt: ts, version: sql`${this.sessions.version} + 1` })
       .where(eq(this.sessions.id, sessionId));
 
+    }
     return {
       id,
       role,
@@ -850,6 +858,7 @@ export class DrizzleSessionStore implements SessionStore {
       .select({
         id: this.sessions.id,
         title: this.sessions.title,
+        titleState: this.sessions.titleState,
         agent: this.sessions.agent,
         user: this.sessions.user,
         metadata: this.sessions.metadata,
@@ -893,6 +902,7 @@ export class DrizzleSessionStore implements SessionStore {
       .select({
         id: this.sessions.id,
         title: this.sessions.title,
+        titleState: this.sessions.titleState,
         agent: this.sessions.agent,
         user: this.sessions.user,
         metadata: this.sessions.metadata,
@@ -916,6 +926,7 @@ export class DrizzleSessionStore implements SessionStore {
       .select({
         id: this.sessions.id,
         title: this.sessions.title,
+        titleState: this.sessions.titleState,
         agent: this.sessions.agent,
         user: this.sessions.user,
         metadata: this.sessions.metadata,
@@ -947,12 +958,68 @@ export class DrizzleSessionStore implements SessionStore {
     return rows.length > 0 ? this.rowToSession(rows[0], Number(rows[0].messageCount)) : undefined;
   }
 
+  private titleStateFromRow(row: any): SessionTitleState {
+    return row.titleState ? JSON.parse(row.titleState) : initialSessionTitleState(row.id, row.title ?? undefined, "legacy", row.createdAt);
+  }
+
+  async getSessionTitleState(sessionId: string): Promise<SessionTitleState | undefined> {
+    const [row] = await this.db.select().from(this.sessions).where(eq(this.sessions.id, sessionId)).limit(1);
+    return row ? this.titleStateFromRow(row) : undefined;
+  }
+
+  async compareAndSetSessionTitleState(sessionId: string, expected: SessionTitleState, next: SessionTitleState): Promise<boolean> {
+    const expectedState = expected.snapshot.titleSource === "legacy"
+      ? and(isNull(this.sessions.titleState), expected.snapshot.title === undefined ? isNull(this.sessions.title) : eq(this.sessions.title, expected.snapshot.title))
+      : eq(this.sessions.titleState, JSON.stringify(expected));
+    const rows = await this.db.update(this.sessions).set({
+      title: next.snapshot.title ?? null, titleState: JSON.stringify(next), titleWorkPending: sessionTitleWorkPending(next),
+      ...(next.snapshot.titleSource === "manual" && next.snapshot.titleRevision > expected.snapshot.titleRevision ? { updatedAt: next.snapshot.titleUpdatedAt } : {}),
+    }).where(and(eq(this.sessions.id, sessionId), expectedState)).returning({ id: this.sessions.id });
+    return rows.length === 1;
+  }
+
+  private async insertTitleUserMessage(values: any, content: string | SessionContentPart[], request: NonNullable<SessionMessageOptions["sessionTitle"]>): Promise<void> {
+    const nextState = (row: any, hasUser: boolean): SessionTitleState | undefined => {
+      if (!row || hasUser) return undefined;
+      const before = this.titleStateFromRow(row);
+      const after = admittedSessionTitleState(before, { ...request, sessionId: values.sessionId, messageId: values.id, text: sessionTitleInput(content), createdAt: values.ts });
+      return after === before ? undefined : after;
+    };
+    const updates = (state?: SessionTitleState) => ({ updatedAt: values.ts, version: sql`${this.sessions.version} + 1`,
+      ...(state ? { titleState: JSON.stringify(state), titleWorkPending: sessionTitleWorkPending(state) } : {}) });
+    if (this.dialect === "sqlite") {
+      this.db.transaction((db: any) => {
+        const row = db.select().from(this.sessions).where(eq(this.sessions.id, values.sessionId)).get();
+        const user = db.select({ id: this.messages.id }).from(this.messages).where(and(eq(this.messages.sessionId, values.sessionId), eq(this.messages.role, "user"))).limit(1).get();
+        db.insert(this.messages).values(values).run();
+        db.update(this.sessions).set(updates(nextState(row, !!user))).where(eq(this.sessions.id, values.sessionId)).run();
+      });
+      return;
+    }
+    const execute = async (db: any) => {
+      const [row] = await db.select().from(this.sessions).where(eq(this.sessions.id, values.sessionId)).for("update");
+      const [user] = await db.select({ id: this.messages.id }).from(this.messages).where(and(eq(this.messages.sessionId, values.sessionId), eq(this.messages.role, "user"))).limit(1);
+      await db.insert(this.messages).values(values);
+      await db.update(this.sessions).set(updates(nextState(row, !!user))).where(eq(this.sessions.id, values.sessionId));
+    };
+    if (this.transactionProvider) await this.transactionProvider(execute);
+    else await this.db.transaction(execute);
+  }
+
+  async listPendingSessionTitles(limit = 32): Promise<string[]> {
+    const rows = await this.db.select({ id: this.sessions.id }).from(this.sessions)
+      .where(eq(this.sessions.titleWorkPending, true))
+      .orderBy(asc(this.sessions.createdAt)).limit(limit);
+    return rows.map((row: { id: string }) => row.id);
+  }
+
   async renameSession(sessionId: string, title: string): Promise<boolean> {
-    const now = new Date().toISOString();
-    const result = await this.db.update(this.sessions)
-      .set({ title, updatedAt: now })
-      .where(eq(this.sessions.id, sessionId));
-    return extractAffectedRows(result) > 0;
+    for (let attempt = 0; attempt < 8; attempt++) {
+      const state = await this.getSessionTitleState(sessionId);
+      if (!state) return false;
+      if (await this.compareAndSetSessionTitleState(sessionId, state, manualSessionTitleState(state, title))) return true;
+    }
+    throw new Error("Session title changed repeatedly while renaming");
   }
 
   async deleteSession(sessionId: string): Promise<boolean> {

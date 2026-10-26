@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { usePolpoContext } from "../provider/polpo-context.js";
 import type {
   ChatMessage,
+  SessionTitleSnapshot,
   ChatCompletionChunk,
   ChatCompletionMessage,
   ContentPart,
@@ -22,6 +23,8 @@ import { ChatCompletionStream } from "@polpo-ai/sdk";
 // ── Types ────────────────────────────────────────────────
 
 export interface UseChatOptions {
+  /** Authoritative title updates, during streaming or scoped late readback. */
+  onSessionUpdated?: (session: SessionTitleSnapshot) => void;
   /** Suggestion capability and application hints. Defaults to true. Agent policy still applies. */
   suggestions?: boolean | ChatSuggestionRequestOptions;
   /** Target a specific agent for direct conversation. Omit for orchestrator mode. */
@@ -162,6 +165,20 @@ export function useChat(options: UseChatOptions = {}): UseChatReturn {
   messagesRef.current = messages;
   const optionsRef = useRef(options);
   optionsRef.current = options;
+
+  const lastTitle = useRef<{ id: string; revision: number } | null>(null);
+  const applyTitle = useCallback((snapshot: SessionTitleSnapshot) => {
+    if (snapshot.id !== sessionIdRef.current || (lastTitle.current?.id === snapshot.id && lastTitle.current.revision >= snapshot.titleRevision)) return;
+    lastTitle.current = { id: snapshot.id, revision: snapshot.titleRevision };
+    store.patchSessionTitle(snapshot);
+    optionsRef.current.onSessionUpdated?.(snapshot);
+  }, [store]);
+  useEffect(() => {
+    if (!sessionId) return;
+    return client.watchSessionTitle(sessionId, session => {
+      if (session.titleRevision !== undefined) applyTitle(session as SessionTitleSnapshot);
+    });
+  }, [client, sessionId, applyTitle]);
 
   const applySessionMessages = useCallback((nextMessages: ChatMessage[]) => {
     const activeSuggestions = activeSuggestionsFromHistory(nextMessages);
@@ -328,6 +345,8 @@ export function useChat(options: UseChatOptions = {}): UseChatReturn {
           }
           optionsRef.current.onSessionCreated?.(stream.sessionId);
         }
+
+        if (chunk.polpo?.session) applyTitle(chunk.polpo.session);
 
         if (chunk.polpo?.suggestions) {
           const nextSuggestions = chunk.polpo.suggestions;

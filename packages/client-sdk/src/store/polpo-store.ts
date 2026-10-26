@@ -1,3 +1,4 @@
+import { mergeSessionTitle, isSessionTitleSnapshot } from "./session-titles.js";
 import { activeDelayKey } from "../client/mission-runtime.js";
 import type {
   ActiveDelay,
@@ -203,7 +204,7 @@ export class PolpoStore {
     }
     this.state = {
       ...this.state,
-      sessions: new Map(sessions.map((s) => [s.id, s])),
+      sessions: new Map(sessions.map((s) => [s.id, mergeSessionTitle(mergeSessionTitle(prev.get(s.id), s), this.state.sessionTitleUpdates?.get(s.id) ?? {})])),
     };
     this.notify();
   }
@@ -214,7 +215,7 @@ export class PolpoStore {
     const prev = this.state.sessions.get(session.id);
     if (prev === session) return;
     const sessions = new Map(this.state.sessions);
-    sessions.set(session.id, session);
+    sessions.set(session.id, mergeSessionTitle(mergeSessionTitle(prev, session), this.state.sessionTitleUpdates?.get(session.id) ?? {}));
     this.state = { ...this.state, sessions };
     this.notify();
   }
@@ -223,18 +224,24 @@ export class PolpoStore {
   patchSession(sessionId: string, patch: Partial<ChatSession>): void {
     const prev = this.state.sessions.get(sessionId);
     if (!prev) return;
-    const merged = { ...prev, ...patch, id: prev.id };
+    const merged = mergeSessionTitle(prev, { ...patch, id: prev.id });
     const sessions = new Map(this.state.sessions);
     sessions.set(sessionId, merged);
     this.state = { ...this.state, sessions };
     this.notify();
   }
 
+  patchSessionTitle(snapshot: import("../client/types.js").SessionTitleSnapshot): void {
+    if (!isSessionTitleSnapshot(snapshot)) return;
+    this.applyEvent({ event: "session:updated", data: { session: snapshot }, id: `title-${snapshot.id}-${snapshot.titleRevision}`, timestamp: snapshot.titleUpdatedAt });
+  }
+
   removeSession(sessionId: string): void {
     if (!this.state.sessions.has(sessionId)) return;
     const sessions = new Map(this.state.sessions);
     sessions.delete(sessionId);
-    this.state = { ...this.state, sessions };
+    const sessionTitleUpdates = new Map(this.state.sessionTitleUpdates); sessionTitleUpdates.delete(sessionId);
+    this.state = { ...this.state, sessions, sessionTitleUpdates };
     this.notify();
   }
 

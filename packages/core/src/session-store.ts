@@ -1,4 +1,5 @@
 import type { ChatSuggestion } from "./chat-interactions.js";
+import type { SessionTitleSnapshot, SessionTitleStore, ResolvedSessionTitleSettings } from "./session-titles.js";
 import type {
   PreparedSessionContinuation,
   PrepareSessionContinuationInput,
@@ -106,7 +107,7 @@ export function preparePersistedReasoning(
   return text ? { text, truncated: true } : undefined;
 }
 
-export interface Session {
+export interface Session extends Partial<Omit<SessionTitleSnapshot, "id" | "title">> {
   id: string;              // nanoid(10)
   title?: string;          // first 60 chars of first message
   createdAt: string;       // ISO timestamp
@@ -133,6 +134,8 @@ export interface Session {
 
 export interface SessionCreateOptions {
   title?: string;
+  /** Internal provenance. Explicit application titles remain manual by default. */
+  titleSource?: "provisional" | "manual";
   agent?: string;
   user?: string;
   metadata?: Record<string, string>;
@@ -142,6 +145,8 @@ export interface SessionCreateOptions {
 export interface SessionMessageOptions {
   toolCallId?: string;
   turnId?: string;
+  /** Trusted runtime policy retained with the first canonical user message. */
+  sessionTitle?: { policy: ResolvedSessionTitleSettings; agentName?: string; agentIncarnation?: string };
 }
 
 export interface CommitCanonicalTurnInput {
@@ -178,7 +183,7 @@ export interface SessionListFilter {
   metadata?: Record<string, string>;
 }
 
-export interface SessionStore {
+export interface SessionStore extends Partial<SessionTitleStore> {
   /**
    * Create a new session. Pass an options object to scope it to an end-user
    * (`user`) or attach `metadata`. Backward-compatible with the legacy

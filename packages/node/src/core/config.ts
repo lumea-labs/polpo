@@ -1,3 +1,4 @@
+import { normalizeSessionTitleSettings } from "@polpo-ai/core/session-titles";
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { resolve, join } from "node:path";
 import type {
@@ -197,6 +198,7 @@ function parseSettings(raw: any): PolpoSettings {
   if (raw?.orchestratorModel !== undefined) {
     settings.orchestratorModel = parseOrchestratorModel(raw.orchestratorModel);
   }
+  if (raw?.sessionTitles !== undefined) settings.sessionTitles = normalizeSessionTitleSettings(raw.sessionTitles);
   if (raw?.modelProfiles !== undefined) settings.modelProfiles = parseModelProfiles(raw.modelProfiles);
   if (raw?.imageModel && typeof raw.imageModel === "string") settings.imageModel = raw.imageModel;
   if (raw?.modelAllowlist && typeof raw.modelAllowlist === "object") settings.modelAllowlist = raw.modelAllowlist;

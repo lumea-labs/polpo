@@ -1,3 +1,4 @@
+import { mergeSessionTitle, isSessionTitleSnapshot } from "./session-titles.js";
 import { activeDelayKey } from "../client/mission-runtime.js";
 import type {
   Task,
@@ -403,6 +404,20 @@ export function reduceEvent(state: StoreState, sseEvent: SSEEvent): StoreState {
     // session. Mirrors into the store so `useSessions()` consumers see it
     // without needing a manual refetch.
 
+    case "session:updated": {
+      const snapshot = (data as { session?: unknown })?.session;
+      if (!isSessionTitleSnapshot(snapshot)) return next;
+      const updates = new Map(state.sessionTitleUpdates);
+      const prior = updates.get(snapshot.id);
+      if (prior && prior.titleRevision >= snapshot.titleRevision) return next;
+      updates.set(snapshot.id, snapshot);
+      if (updates.size > 200) updates.delete(updates.keys().next().value!);
+      const sessions = new Map(state.sessions);
+      const current = sessions.get(snapshot.id);
+      if (current) sessions.set(snapshot.id, mergeSessionTitle(current, snapshot));
+      return { ...next, sessions, sessionTitleUpdates: updates };
+    }
+
     case "session:started": {
       const d = data as {
         sessionId: string;
@@ -414,7 +429,7 @@ export function reduceEvent(state: StoreState, sseEvent: SSEEvent): StoreState {
       if (state.sessions.has(d.sessionId)) return next;
       const now = new Date().toISOString();
       const sessions = new Map(state.sessions);
-      sessions.set(d.sessionId, {
+      const session = {
         id: d.sessionId,
         title: d.title,
         createdAt: now,
@@ -422,7 +437,9 @@ export function reduceEvent(state: StoreState, sseEvent: SSEEvent): StoreState {
         messageCount: 0,
         agent: d.agent,
         user: d.user,
-      });
+      };
+      const titleUpdate = state.sessionTitleUpdates?.get(d.sessionId);
+      sessions.set(d.sessionId, titleUpdate ? mergeSessionTitle(session, titleUpdate) : session);
       return { ...next, sessions };
     }
 

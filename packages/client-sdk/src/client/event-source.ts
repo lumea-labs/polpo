@@ -29,7 +29,7 @@ export const POLPO_SSE_EVENT_NAMES = [
   // Missions
   "mission:saved", "mission:executed", "mission:completed", "mission:resumed", "mission:deleted",
   // Chat sessions
-  "session:created", "message:added",
+  "session:created", "session:updated", "message:added",
   // Runtime decisions
   "runtime:plan",
   // Approval gates

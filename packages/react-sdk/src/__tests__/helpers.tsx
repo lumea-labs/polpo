@@ -99,6 +99,7 @@ export function createMockStore(initialState?: Partial<StoreState>): PolpoStore 
   const listeners = new Set<() => void>();
 
   const store = {
+    patchSessionTitle: vi.fn(),
     subscribe: (listener: () => void) => {
       listeners.add(listener);
       return () => listeners.delete(listener);
@@ -185,6 +186,7 @@ import { vi } from "vitest";
 
 export function createMockClient(overrides: Record<string, unknown> = {}): PolpoClient {
   const client = {
+    watchSessionTitle: vi.fn(() => () => {}),
     // Tasks
     getTasks: vi.fn().mockResolvedValue([]),
     getTask: vi.fn().mockResolvedValue(fakeTask()),

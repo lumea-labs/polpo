@@ -34,6 +34,9 @@ export interface EventCatalogGroup {
 }
 
 export const EVENT_CATALOG: ReadonlyArray<EventCatalogGroup> = [
+  { ns: "session", label: "Sessions", description: "Session metadata updates.", events: [
+    { key: "updated", description: "A session title or title generation state changed." },
+  ] },
   {
     ns: "task",
     label: "Tasks",

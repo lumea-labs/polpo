@@ -51,6 +51,7 @@ describe("project layout v2 agent definitions", () => {
           guidance: "Suggest concrete next actions.",
         },
       },
+      sessionTitles: { enabled: true, model: { profile: "fast" }, language: "it", maxLength: 60 },
       allowedTools: ["bash", "read"],
       memory: {
         tools: {

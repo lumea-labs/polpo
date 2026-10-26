@@ -214,6 +214,9 @@ export async function ensurePgTables(db: any): Promise<void> {
   await db.execute(sql`ALTER TABLE sessions ADD COLUMN IF NOT EXISTS version INTEGER NOT NULL DEFAULT 0`);
   await db.execute(sql`ALTER TABLE sessions ADD COLUMN IF NOT EXISTS scope_key TEXT`);
   await db.execute(sql`ALTER TABLE sessions ADD COLUMN IF NOT EXISTS scope_version TEXT`);
+  await db.execute(sql`ALTER TABLE sessions ADD COLUMN IF NOT EXISTS title_state TEXT`);
+  await db.execute(sql`ALTER TABLE sessions ADD COLUMN IF NOT EXISTS title_work_pending BOOLEAN NOT NULL DEFAULT FALSE`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_pg_sessions_title_work ON sessions(title_work_pending)`);
 
   await db.execute(sql`CREATE TABLE IF NOT EXISTS messages (
     id         TEXT PRIMARY KEY,

@@ -62,6 +62,12 @@ export function useSessions(): UseSessionsReturn {
     };
   }, [refetch]);
 
+  const pendingTitleIds = JSON.stringify(sessions.filter(session => session.titleGenerationStatus === "pending").map(session => session.id).sort());
+  useEffect(() => {
+    const stops = (JSON.parse(pendingTitleIds) as string[]).map(id => client.watchSessionTitle(id, session => store.patchSession(id, session)));
+    return () => stops.forEach(stop => stop());
+  }, [client, store, pendingTitleIds]);
+
   const getMessages = useCallback(
     async (sessionId: string) => {
       const data = await client.getSessionMessages(sessionId);
@@ -72,8 +78,14 @@ export function useSessions(): UseSessionsReturn {
 
   const renameSession = useCallback(
     async (sessionId: string, title: string) => {
-      await client.renameSession(sessionId, title);
-      store.patchSession(sessionId, { title, updatedAt: new Date().toISOString() });
+      try {
+        const result = await client.renameSession(sessionId, title);
+        if (result.session) store.patchSessionTitle(result.session);
+        else store.patchSession(sessionId, { title, updatedAt: new Date().toISOString() });
+      } catch (error) {
+        try { store.patchSession(sessionId, await client.getSessionMetadata(sessionId)); } catch { /* Preserve the original rename error. */ }
+        throw error;
+      }
     },
     [client, store],
   );

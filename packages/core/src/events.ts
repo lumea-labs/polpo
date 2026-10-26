@@ -72,6 +72,7 @@ export interface PolpoEventMap {
   "mission:deleted": { missionId: string; deletedTasks?: number };
 
   // Chat sessions
+  "session:updated": { session: import("./session-titles.js").SessionTitleSnapshot };
   "session:created": { sessionId: string; title?: string };
   "message:added": { sessionId: string; messageId: string; role: "user" | "assistant" };
 

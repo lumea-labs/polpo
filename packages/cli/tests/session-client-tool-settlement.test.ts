@@ -53,6 +53,16 @@ afterEach(() => {
 });
 
 describe("Session client-tool commands", () => {
+  it("reads title metadata and renames with a title revision in the selected environment", async () => {
+    const get = vi.fn().mockResolvedValue({ status: 200, data: { data: { id: "s/1", titleRevision: 2 } } });
+    const patch = vi.fn().mockResolvedValue({ status: 200, data: { data: { renamed: true, session: { titleRevision: 3 } } } });
+    mocks.createApiClient.mockReturnValue({ get, patch });
+    await program().parseAsync(["node", "polpo", "sessions", "show", "s/1", "--prod"]);
+    await program().parseAsync(["node", "polpo", "sessions", "rename", "s/1", "Manual title", "--title-revision", "2", "--prod"]);
+    expect(get).toHaveBeenCalledWith("/v1/chat/sessions/s%2F1");
+    expect(patch).toHaveBeenCalledWith("/v1/chat/sessions/s%2F1", { title: "Manual title", expectedTitleRevision: 2 });
+    expect(mocks.createApiClient).toHaveBeenLastCalledWith(expect.anything(), "project-1", "production");
+  });
   it("encodes resource identities and omits absent exact identity selectors", () => {
     expect(sessionToolCallPath("session/one", "call?one"))
       .toBe("/v1/chat/sessions/session%2Fone/tool-calls/call%3Fone");

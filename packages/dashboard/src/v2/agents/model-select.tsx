@@ -117,7 +117,7 @@ export function ModelSelect({
   agentName,
   currentModel,
   field = "model",
-  options,
+  options, onModelSelect,
 }: {
   projectId: string;
   agentName: string;
@@ -126,6 +126,7 @@ export function ModelSelect({
   field?: string;
   /** Static catalog. When provided, the gateway is not queried. */
   options?: GatewayModel[];
+  onModelSelect?: (model: string) => void | Promise<void>;
 }) {
   const router = useRouter();
   const queryClient = useQueryClient();
@@ -162,7 +163,7 @@ export function ModelSelect({
   const isLoading = !options && fetching;
 
   const save = useMutation({
-    mutationFn: (model: string) =>
+    mutationFn: async (model: string) => onModelSelect ? onModelSelect(model) :
       mutateDataPlane(projectId, `/v1/agents/${encodeURIComponent(agentName)}`, {
         method: "PATCH",
         body: { [field]: model },

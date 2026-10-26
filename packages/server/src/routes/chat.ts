@@ -1,3 +1,4 @@
+import { manualSessionTitleState, sessionTitleSnapshot } from "@polpo-ai/core/session-titles";
 import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
 import type { MiddlewareHandler } from "hono";
 import type { RunRecord } from "@polpo-ai/core/run-store";
@@ -401,6 +402,12 @@ const getSessionMessagesRoute = createRoute({
   },
 });
 
+const getSessionMetadataRoute = createRoute({
+  ...getSessionMessagesRoute,
+  path: "/sessions/{id}",
+  summary: "Get session metadata without loading messages",
+});
+
 const getSessionActivityRoute = createRoute({
   method: "get",
   path: "/sessions/{id}/activity",
@@ -433,13 +440,17 @@ const renameSessionRoute = createRoute({
   request: {
     params: z.object({ id: z.string() }),
     body: {
-      content: { "application/json": { schema: z.object({ title: z.string().min(1) }) } },
+      content: { "application/json": { schema: z.object({ title: z.string().min(1), expectedTitleRevision: z.number().int().nonnegative().optional() }) } },
     },
   },
   responses: {
     200: {
       content: { "application/json": { schema: z.object({ ok: z.boolean(), data: z.any() }) } },
       description: "Session renamed",
+    },
+    409: {
+      content: { "application/json": { schema: z.object({ ok: z.boolean(), error: z.string(), code: z.string(), titleRevision: z.number().optional() }) } },
+      description: "Title revision conflict",
     },
     404: {
       content: { "application/json": { schema: z.object({ ok: z.boolean(), error: z.string(), code: z.string() }) } },
@@ -839,6 +850,14 @@ export function chatRoutes(getDeps: () => ChatRouteDeps): OpenAPIHono {
     return c.json({ ok: true, data: { sessions } });
   });
 
+  app.openapi(getSessionMetadataRoute, async (c) => {
+    const { sessionStore } = getDeps();
+    if (!sessionStore) return c.json({ ok: false, error: "Session store not available", code: "NOT_AVAILABLE" }, 503);
+    const session = await sessionStore.getSession(c.req.valid("param").id);
+    if (!session) return c.json({ ok: false, error: "Session not found", code: "NOT_FOUND" }, 404);
+    return c.json({ ok: true, data: session }, 200);
+  });
+
   // GET /chat/sessions/:id/messages — get messages for a session
   app.openapi(getSessionMessagesRoute, async (c) => {
     const { sessionHistoryReadPolicy, sessionStore } = getDeps();
@@ -919,11 +938,25 @@ export function chatRoutes(getDeps: () => ChatRouteDeps): OpenAPIHono {
       return c.json({ ok: false, error: "Session store not available", code: "NOT_AVAILABLE" }, 503);
     }
     const { id } = c.req.valid("param");
-    const { title } = c.req.valid("json");
-    const renamed = await sessionStore.renameSession(id, title);
-    if (!renamed) {
-      return c.json({ ok: false, error: "Session not found", code: "NOT_FOUND" }, 404);
+    const { title, expectedTitleRevision } = c.req.valid("json");
+    if (sessionStore.getSessionTitleState && sessionStore.compareAndSetSessionTitleState) {
+      for (let attempt = 0; attempt < 8; attempt++) {
+        const current = await sessionStore.getSessionTitleState(id);
+        if (!current) return c.json({ ok: false, error: "Session not found", code: "NOT_FOUND" }, 404);
+        if (expectedTitleRevision !== undefined && current.snapshot.titleRevision !== expectedTitleRevision) {
+          return c.json({ ok: false, error: "Session title revision changed", code: "SESSION_TITLE_REVISION_CONFLICT", titleRevision: current.snapshot.titleRevision }, 409);
+        }
+        const next = manualSessionTitleState(current, title);
+        if (!await sessionStore.compareAndSetSessionTitleState(id, current, next)) continue;
+        const session = sessionTitleSnapshot(next);
+        try { getDeps().emit?.("session:updated", { session }); } catch { /* Durable notification remains pending. */ }
+        return c.json({ ok: true, data: { renamed: true, session } }, 200);
+      }
+      return c.json({ ok: false, error: "Session title changed repeatedly", code: "SESSION_TITLE_REVISION_CONFLICT" }, 409);
     }
+    if (expectedTitleRevision !== undefined) return c.json({ ok: false, error: "Session store does not support title revisions", code: "NOT_AVAILABLE" }, 503);
+    const renamed = await sessionStore.renameSession(id, title);
+    if (!renamed) return c.json({ ok: false, error: "Session not found", code: "NOT_FOUND" }, 404);
     return c.json({ ok: true, data: { renamed: true } }, 200);
   });
 

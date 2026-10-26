@@ -36,6 +36,7 @@ export interface VaultRouteDeps {
 }
 
 export interface ChatRouteDeps {
+  emit?: (event: string, data: unknown) => void;
   sessionStore?: SessionStore;
   runStore?: RunStore;
   /**

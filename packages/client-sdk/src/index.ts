@@ -338,3 +338,5 @@ export type {
 
 export type { StoreState, PolpoStats, AssessmentProgressEntry, AssessmentCheckStatus } from "./store/types.js";
 export type { TaskFilter } from "./store/selectors.js";
+
+export type { SessionTitleSnapshot, SessionTitleSettings } from "./client/types.js";

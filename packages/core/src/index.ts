@@ -166,6 +166,7 @@ export * from "./run-delivery-owner.js";
 
 // ── Chat interaction capabilities and suggestions ─────────────────────
 export * from "./chat-interactions.js";
+export * from "./session-titles.js";
 export * from "./canonical-turn.js";
 export * from "./canonical-turn-dispatcher.js";
 
