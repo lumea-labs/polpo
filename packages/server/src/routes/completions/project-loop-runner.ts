@@ -479,6 +479,7 @@ export async function runProjectLoopCompletion(options: {
     sessionId: sessionId ?? undefined,
     runtimePlan,
     signal: options.signal,
+    ...(activatedSkillReferences.length > 0 ? { activatedSkillReferences } : {}),
   });
   let rootTools: Awaited<ReturnType<CompletionRouteDeps["resolveAgentTools"]>>;
   try {

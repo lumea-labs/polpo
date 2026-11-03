@@ -1353,8 +1353,17 @@ export async function prepareChatCompletionExecution(
     }) : undefined;
   let hookToolRunScope: CompletionToolRunScope | undefined;
   if (deferredAgentTools) {
-    if (!projectLoopRuntime && resolvedAgentConfig?.hooks?.length) {
-      hookToolRunScope = await deps.createToolRunScope?.({ agentConfig: resolvedAgentConfig, runId: options.runtime?.runId ?? completionId, sessionId: sessionId ?? undefined, signal: options.signal });
+    if (
+      !projectLoopRuntime
+      && (resolvedAgentConfig?.hooks?.length || activatedSkillReferences.length > 0)
+    ) {
+      hookToolRunScope = await deps.createToolRunScope?.({
+        agentConfig: resolvedAgentConfig,
+        runId: options.runtime?.runId ?? completionId,
+        sessionId: sessionId ?? undefined,
+        signal: options.signal,
+        ...(activatedSkillReferences.length > 0 ? { activatedSkillReferences } : {}),
+      });
     }
     let resolvedTools;
     try {

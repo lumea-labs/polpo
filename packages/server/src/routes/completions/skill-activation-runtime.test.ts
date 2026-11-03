@@ -115,6 +115,42 @@ describe("per-request skill activation", () => {
     );
   });
 
+  it("binds immutable skill references to the shared tool run scope", async () => {
+    const digest = `sha256:${"c".repeat(64)}`;
+    const createToolRunScope = vi.fn(async (input: any) => ({
+      id: "scope-1",
+      activatedSkillReferences: input.activatedSkillReferences,
+    }));
+    const resolveAgentTools = vi.fn(async () => ({
+      tools: [],
+      executor: async () => "ok",
+    }));
+
+    const prepared = await prepareChatCompletionExecution(deps({
+      resolveSkillActivations: async () => [{ name: "frontend-design", digest }],
+      createToolRunScope,
+      resolveAgentTools,
+    }), {
+      ...requestBase,
+      agent: "builder",
+      polpo: { skills: ["frontend-design"] },
+    });
+
+    expect(prepared.kind).toBe("chat");
+    expect(createToolRunScope).toHaveBeenCalledWith(expect.objectContaining({
+      activatedSkillReferences: [{ name: "frontend-design", digest }],
+    }));
+    expect(resolveAgentTools).toHaveBeenCalledWith(
+      expect.any(Object),
+      expect.objectContaining({
+        id: "scope-1",
+        activatedSkillReferences: [{ name: "frontend-design", digest }],
+      }),
+      expect.any(Object),
+      undefined,
+    );
+  });
+
   it("rejects a skill that is not assigned to the effective agent", async () => {
     const buildRuntimePrompt = vi.fn(async () => "must not run");
     const prepared = await prepareChatCompletionExecution(deps({ buildRuntimePrompt }), {

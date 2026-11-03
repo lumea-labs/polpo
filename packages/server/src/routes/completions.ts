@@ -130,6 +130,8 @@ export type {
  */
 export interface CompletionToolRunScope {
   id: string;
+  /** Immutable skills frozen when this outer run was admitted. */
+  activatedSkillReferences?: readonly ActivatedSkillReference[];
   /** Atomic store shared by every tool boundary in this resumable Run. */
   receiptStore?: import("@polpo-ai/core").ToolExecutionReceiptStore;
   cleanup?: () => Promise<void>;
@@ -141,6 +143,7 @@ export interface CompletionToolRunScopeInput {
   sessionId?: string;
   runtimePlan?: RuntimePlan;
   signal?: AbortSignal;
+  activatedSkillReferences?: readonly ActivatedSkillReference[];
 }
 
 export interface CompletionRunDeliveryScopeInput {
