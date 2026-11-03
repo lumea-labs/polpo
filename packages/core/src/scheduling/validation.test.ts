@@ -112,6 +112,7 @@ describe("schedule invocation validation", () => {
         loop: " review ",
         model: " openai/gpt-5 ",
         sandbox: {
+          image: "polpo/reporting@1",
           isolation: "fresh",
           lifecycle: { onRelease: "pool", idleTtlMinutes: 30 },
         },
@@ -131,6 +132,7 @@ describe("schedule invocation validation", () => {
         loop: "review",
         model: "openai/gpt-5",
         sandbox: {
+          image: "polpo/reporting@1",
           isolation: "fresh",
           lifecycle: { onRelease: "pool", idleTtlMinutes: 30 },
         },

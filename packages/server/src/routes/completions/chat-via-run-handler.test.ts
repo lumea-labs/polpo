@@ -2170,6 +2170,7 @@ describe("chat via Run driver", () => {
   it("passes request sandbox policy into chat Run injection", async () => {
     const runChatViaRun = vi.fn(async (inject: any, hooks: any) => {
       expect(inject.sandbox).toEqual({
+        image: "polpo/chat@1",
         isolation: "fresh",
         lifecycle: { onRelease: "pool", idleTtlMinutes: 30 },
       });
@@ -2185,6 +2186,7 @@ describe("chat via Run driver", () => {
         agent: "agent-1",
         stream: true,
         sandbox: {
+          image: "polpo/chat@1",
           isolation: "fresh",
           lifecycle: { onRelease: "pool", idleTtlMinutes: 30 },
         },

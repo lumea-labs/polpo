@@ -5,10 +5,12 @@ import {
   MAX_CHAT_SUGGESTION_COUNT,
   MIN_CHAT_SUGGESTION_COUNT,
   MAX_MODEL_FALLBACKS,
+  isSandboxImageIdentifier,
   MEMORY_KINDS,
   MODEL_PROFILE_NAME_PATTERN,
   RUNTIME_INVOCATION_SOURCES,
   RUNTIME_SURFACES,
+  SANDBOX_IMAGE_IDENTIFIER_MAX,
   runtimeMetadataSchema,
 } from "@polpo-ai/core";
 import { steeringPolicySchema } from "@polpo-ai/core/schemas";
@@ -120,6 +122,12 @@ const RuntimeSandboxLifecycleSchema = z.object({
 });
 
 export const RuntimeSandboxSchema = z.object({
+  image: z.string().max(SANDBOX_IMAGE_IDENTIFIER_MAX).refine(
+    isSandboxImageIdentifier,
+    "Invalid sandbox image identifier",
+  ).optional().openapi({
+    description: "Provider-neutral host-defined sandbox image identifier. Managed hosts resolve it against an allowlist; omission selects the host default.",
+  }),
   isolation: z.enum(["reuse", "fresh", "shared"]).optional().openapi({
     description: "Sandbox isolation policy. `reuse` leases warm state exclusively, `fresh` requests one clean outer-run sandbox, and `shared` explicitly permits concurrent project-scoped use.",
   }),
