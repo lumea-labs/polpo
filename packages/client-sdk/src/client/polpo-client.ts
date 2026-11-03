@@ -1681,6 +1681,8 @@ export class PolpoClient {
     options: {
       filename?: string;
       conflict?: "error" | "replace";
+      /** Compare-and-swap guard for conflict-safe replacement. */
+      expectedDigest?: string;
       assignTo?: string;
       signal?: AbortSignal;
     } = {},
@@ -1695,6 +1697,7 @@ export class PolpoClient {
       : new Blob([Uint8Array.from(archive)], { type: "application/zip" });
     form.set("archive", blob, filename);
     if (options.conflict) form.set("conflict", options.conflict);
+    if (options.expectedDigest) form.set("expectedDigest", options.expectedDigest);
     if (options.assignTo) form.set("assignTo", options.assignTo);
     const response = await this.fetchFn(this.apiUrl("/skills/import"), {
       method: "POST",
