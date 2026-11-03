@@ -10,6 +10,7 @@ export const tasksSqlite = sqliteTable("tasks", {
   assignTo: text("assign_to").notNull(),
   /** Explicit project loop this task runs (name in the agent's assignedLoops). */
   loop: text("loop"),
+  skills: text("skills"),
   group: text("group"),
   missionId: text("mission_id"),
   missionExecutionId: text("mission_execution_id"),
@@ -110,6 +111,7 @@ export const tasksPg = pgTable("tasks", {
   assignTo: pgText("assign_to").notNull(),
   /** Explicit project loop this task runs (name in the agent's assignedLoops). */
   loop: pgText("loop"),
+  skills: jsonb("skills"),
   group: pgText("group"),
   missionId: pgText("mission_id"),
   missionExecutionId: pgText("mission_execution_id"),

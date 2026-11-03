@@ -309,6 +309,7 @@ export type {
   CreateSkillRequest,
   SkillBundle,
   SkillBundleFile,
+  SkillBundleReceipt,
   InstallSkillsResult,
   InstallSkillsOptions,
   TemplateParameter,

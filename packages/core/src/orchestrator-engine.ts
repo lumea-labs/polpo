@@ -165,6 +165,7 @@ export interface DeadlockFacade {
     preconditions: readonly TaskExecutionPrecondition[]): Promise<TaskExecutionState>;
   createTask(opts: {
     title: string; description: string; assignTo: string;
+    loop?: string; skills?: string[];
     expectations?: TaskExpectation[]; expectedOutcomes?: ExpectedOutcome[];
     dependsOn?: string[]; group?: string;
   }): Promise<Task>;
@@ -599,6 +600,7 @@ export class OrchestratorEngine {
 
   async createTask(opts: {
     title: string; description: string; assignTo: string;
+    loop?: string; skills?: string[];
     expectations?: TaskExpectation[]; expectedOutcomes?: ExpectedOutcome[];
     dependsOn?: string[]; group?: string; maxDuration?: number; retryPolicy?: RetryPolicy;
     notifications?: ScopedNotificationRules; sideEffects?: boolean;

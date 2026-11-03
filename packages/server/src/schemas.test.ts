@@ -32,6 +32,29 @@ describe("queued invocation metadata", () => {
   });
 });
 
+describe("task skill activation", () => {
+  const task = { title: "Build", description: "Build the app", assignTo: "builder" };
+
+  it("accepts an explicit additive skill selection on create and update", () => {
+    expect(CreateTaskSchema.parse({
+      ...task,
+      skills: [" frontend-design ", "testing"],
+    }).skills).toEqual(["frontend-design", "testing"]);
+    expect(UpdateTaskSchema.parse({ skills: ["testing"] }).skills).toEqual(["testing"]);
+    expect(UpdateTaskSchema.parse({ skills: null }).skills).toBeNull();
+  });
+
+  it.each([
+    { skills: [] },
+    { skills: [""] },
+    { skills: ["testing", " testing "] },
+    { skills: Array.from({ length: 17 }, (_, index) => `skill-${index}`) },
+  ])("rejects invalid task skill activation: $skills", ({ skills }) => {
+    expect(CreateTaskSchema.safeParse({ ...task, skills }).success).toBe(false);
+    expect(UpdateTaskSchema.safeParse({ skills }).success).toBe(false);
+  });
+});
+
 describe("shared runtime sandbox schema", () => {
   it("is reused by agent and task mutation surfaces", () => {
     expect(AddAgentSchema.parse({ name: "builder", sandbox: lifecycle }).sandbox)

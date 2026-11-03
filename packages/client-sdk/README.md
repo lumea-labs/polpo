@@ -166,16 +166,24 @@ including `references/`, `scripts/`, and `assets/`:
 ```ts
 const bundle = await client.getSkillBundle("frontend-design");
 await client.putSkillBundle(bundle);
+
+const receipt = await client.importSkillArchive(archiveBytes, {
+  filename: "frontend-design.skill",
+  conflict: "replace",
+  assignTo: "builder",
+});
+const portableArchive = await client.downloadSkillArchive(receipt.name);
 ```
 
 For project-local installation and assignment, use `polpo skills add` and
 `polpo deploy`; these preserve the same complete bundle contract.
 
 The runtime consumes that contract directly: `skill_read({ name })` returns
-the skill entrypoint together with its textual `references/` resources, while
-`skill_read({ name, path })` reads one exact bundle-relative resource. Clients
-do not need to rewrite imported skills or instruct the model to use workspace
-file tools for bundle content. Assigned skills implicitly authorize
+the skill entrypoint, its textual `references/`, the complete resource
+inventory, and the installed bundle root. `skill_read({ name, path })` reads
+one exact bundle-relative resource. Scripts and assets are not executed
+automatically and do not grant capabilities; they can be used only through
+filesystem or shell tools already authorized for the run. Assigned skills implicitly authorize
 `skill_list` and `skill_read` through static agent and Loop allowlists;
 request, route, execution, and trusted-grant restrictions remain
 authoritative.
@@ -199,6 +207,31 @@ configuration is not changed. Polpo rejects skills that are not assigned to
 the effective agent or loop. Slash commands are a client-side convenience:
 clients should translate `/frontend-design` into `polpo.skills` rather than
 expecting the server to parse message text.
+
+The same selection is available on durable Tasks and Schedules:
+
+```ts
+await client.createTask({
+  title: "Build settings",
+  description: "Implement and test the settings page.",
+  assignTo: "builder",
+  skills: ["frontend-design"],
+});
+
+await client.createScheduleV2({
+  timing: { kind: "cron", expression: "0 9 * * 1-5", timezone: "Europe/Rome" },
+  invocation: {
+    surface: "task",
+    agentName: "builder",
+    title: "Daily review",
+    prompt: "Review the current interface.",
+    execution: { skills: ["frontend-design"] },
+  },
+});
+```
+
+Task selections are persisted and validated again immediately before runtime
+spawn. Set `skills: null` in `updateTask` to clear a previous selection.
 
 With the React SDK, pass the selection to the individual message:
 

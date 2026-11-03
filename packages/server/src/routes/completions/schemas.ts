@@ -10,6 +10,8 @@ import {
   MAX_CHAT_SUGGESTION_COUNT,
   MIN_CHAT_SUGGESTION_COUNT,
   MAX_CHAT_SUGGESTION_GUIDANCE_CHARS,
+  MAX_ACTIVATED_SKILLS,
+  MAX_ACTIVATED_SKILL_NAME_LENGTH,
   runtimeMetadataSchema,
 } from "@polpo-ai/core";
 
@@ -191,10 +193,10 @@ const chatSuggestionSchema = z.union([z.object({
   kind: z.literal("message").optional(),
 }).strict(), chatActionSuggestionInputSchema.extend({ id: z.string() })]);
 
-const requestedSkillNameSchema = z.string().trim().min(1).max(256);
+const requestedSkillNameSchema = z.string().trim().min(1).max(MAX_ACTIVATED_SKILL_NAME_LENGTH);
 const requestedSkillsSchema = z.array(requestedSkillNameSchema)
   .min(1)
-  .max(16)
+  .max(MAX_ACTIVATED_SKILLS)
   .superRefine((skills, ctx) => {
     const seen = new Set<string>();
     for (const [index, skill] of skills.entries()) {

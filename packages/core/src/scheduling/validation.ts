@@ -18,6 +18,7 @@ import {
   SANDBOX_VOLUMES_MAX,
   type RuntimeSandboxVolumeSelection,
 } from "../runtime-sandbox.js";
+import { normalizeActivatedSkills } from "../skill-activation.js";
 
 export const SCHEDULE_LIMITS = Object.freeze({
   idLength: 256,
@@ -610,7 +611,7 @@ function normalizeExecution(value: unknown): ScheduleExecutionOptions {
   const execution = record(value, "Schedule execution options");
   assertKnownKeys(
     execution,
-    ["loop", "model", "sandbox", "guardrails", "metadata"],
+    ["loop", "model", "skills", "sandbox", "guardrails", "metadata"],
     "Schedule execution options",
   );
   const normalized: ScheduleExecutionOptions = {};
@@ -628,6 +629,9 @@ function normalizeExecution(value: unknown): ScheduleExecutionOptions {
       "Schedule execution model",
       SCHEDULE_LIMITS.idLength,
     );
+  }
+  if (execution.skills !== undefined) {
+    normalized.skills = normalizeActivatedSkills(execution.skills);
   }
   if (execution.sandbox !== undefined) {
     const sandbox = record(execution.sandbox, "Schedule execution sandbox");

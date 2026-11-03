@@ -5,6 +5,8 @@ import {
   MAX_CHAT_SUGGESTION_COUNT,
   MIN_CHAT_SUGGESTION_COUNT,
   MAX_MODEL_FALLBACKS,
+  MAX_ACTIVATED_SKILLS,
+  MAX_ACTIVATED_SKILL_NAME_LENGTH,
   isSandboxImageIdentifier,
   MEMORY_KINDS,
   MODEL_PROFILE_NAME_PATTERN,
@@ -181,6 +183,25 @@ export const RuntimeRoutingSchema = z.object({
 
 // ── Task schemas ──────────────────────────────────────────────────────
 
+const ActivatedSkillsSchema = z.array(
+  z.string().trim().min(1).max(MAX_ACTIVATED_SKILL_NAME_LENGTH),
+)
+  .min(1)
+  .max(MAX_ACTIVATED_SKILLS)
+  .superRefine((skills, ctx) => {
+    const seen = new Set<string>();
+    for (const [index, skill] of skills.entries()) {
+      if (seen.has(skill)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `Duplicate activated skill: ${skill}`,
+          path: [index],
+        });
+      }
+      seen.add(skill);
+    }
+  });
+
 export const CreateTaskSchema = z.object({
   executionMode: z.enum(["subprocess", "in-process"]).optional(),
   sandbox: RuntimeSandboxSchema.optional(),
@@ -190,6 +211,7 @@ export const CreateTaskSchema = z.object({
   assignTo: z.string().min(1),
   /** Explicit project loop this task runs (a name in the agent's assignedLoops). */
   loop: z.string().min(1).optional(),
+  skills: ActivatedSkillsSchema.optional(),
   /** Create task as draft (won't be picked up by orchestrator until moved to pending). Default: false. */
   draft: z.boolean().optional(),
   expectations: z.array(z.any()).optional(),
@@ -220,6 +242,7 @@ export const UpdateTaskSchema = z.object({
   description: z.string().min(1).optional(),
   assignTo: z.string().min(1).optional(),
   loop: z.string().min(1).optional(),
+  skills: ActivatedSkillsSchema.nullable().optional(),
   sandbox: RuntimeSandboxSchema.optional(),
   routing: RuntimeRoutingSchema.optional(),
   status: z.enum(["draft", "pending", "awaiting_approval", "assigned", "in_progress", "review", "done", "failed"]).optional(),

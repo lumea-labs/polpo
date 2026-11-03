@@ -6,6 +6,7 @@ import {
   type SkillBundle,
   type SkillBundleFile,
 } from "@polpo-ai/core/skill-bundle";
+import { packSkillArchive } from "@polpo-ai/core/skill-archive";
 
 export function collectLocalSkillBundle(skillDir: string, name = path.basename(skillDir)): SkillBundle {
   const nameError = validateSkillName(name);
@@ -92,4 +93,15 @@ export function replaceLocalSkillBundle(skillDir: string, bundle: SkillBundle): 
   } finally {
     if (!preserveTransaction) fs.rmSync(transactionRoot, { recursive: true, force: true });
   }
+}
+
+/** Pack one local skill directory as a deterministic portable .skill archive. */
+export async function packLocalSkillBundle(skillDir: string): Promise<Uint8Array> {
+  return packSkillArchive(collectLocalSkillBundle(skillDir));
+}
+
+export async function writeLocalSkillArchive(skillDir: string, outputPath: string): Promise<void> {
+  const bytes = await packLocalSkillBundle(skillDir);
+  fs.mkdirSync(path.dirname(outputPath), { recursive: true });
+  fs.writeFileSync(outputPath, bytes);
 }

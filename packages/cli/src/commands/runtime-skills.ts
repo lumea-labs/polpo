@@ -14,6 +14,8 @@ import {
   type DiscoveredRuntimeSkill,
 } from "../util/runtime-skills.js";
 import { withRuntimeSkillSource } from "../util/runtime-skill-source.js";
+import * as path from "node:path";
+import { writeLocalSkillArchive } from "../util/runtime-skill-bundle.js";
 
 function collectOption(value: string, previous: string[]): string[] {
   return [...previous, value];
@@ -105,7 +107,7 @@ export function registerRuntimeSkillsCommand(program: Command): void {
     });
 
   skills.command("add <source>")
-    .description("Add complete Agent Skills bundles from a local directory or Git repository")
+    .description("Add Agent Skills from a directory, .skill/.zip archive, or Git repository")
     .option("--skill <name>", "Install a named skill (repeatable)", collectOption, [])
     .option("--all", "Install every skill found in the source")
     .option("--agent <name>", "Assign installed skills to an agent (repeatable)", collectOption, [])
@@ -128,6 +130,20 @@ export function registerRuntimeSkillsCommand(program: Command): void {
           }));
         });
         await deployIfRequested(options.dir, options.deploy, options);
+      } catch (error) { fail(error); }
+    });
+
+  skills.command("pack <skill>")
+    .description("Pack one local runtime skill as a portable .skill archive")
+    .option("-o, --output <path>", "Output archive path")
+    .option("-d, --dir <path>", "Project directory", ".")
+    .action(async (skill: string, options: { dir: string; output?: string }) => {
+      try {
+        const projectDir = path.resolve(options.dir);
+        const skillDir = path.join(projectDir, ".polpo", "skills", skill);
+        const output = path.resolve(projectDir, options.output ?? `${skill}.skill`);
+        await writeLocalSkillArchive(skillDir, output);
+        clack.log.success(`Packed ${pc.bold(skill)} to ${output}`);
       } catch (error) { fail(error); }
     });
 

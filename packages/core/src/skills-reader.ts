@@ -11,6 +11,7 @@
 
 import { resolve, join, sep } from "node:path";
 import type { FileSystem } from "./filesystem.js";
+import { parseSkillManifest } from "./skill-manifest.js";
 
 // ── Types ──
 
@@ -22,6 +23,8 @@ export interface SkillInfo {
   path: string;
   tags?: string[];
   category?: string;
+  /** Canonical immutable bundle digest when the backing store provides one. */
+  digest?: string;
 }
 
 export interface LoadedSkill extends SkillInfo {
@@ -57,7 +60,16 @@ export interface AssembledSkillRead {
   entrypoint: SkillResource;
   references: LoadedSkillReference[];
   omitted: OmittedSkillReference[];
+  resources: SkillBundleResource[];
   totalReferenceBytes: number;
+}
+
+export type SkillBundleResourceKind = "reference" | "script" | "asset" | "other";
+
+export interface SkillBundleResource {
+  path: string;
+  kind: SkillBundleResourceKind;
+  bytes: number;
 }
 
 export interface AssembleSkillReadOptions {
@@ -98,44 +110,12 @@ export interface SkillWithAssignment extends SkillInfo {
  * Inlined minimal YAML parser for the simple key:value frontmatter format.
  */
 export function parseSkillFrontmatter(content: string): { name?: string; description: string; allowedTools?: string[] } | null {
-  const match = content.match(/^---\n([\s\S]*?)\n---/);
-  if (!match) return null;
   try {
-    // Simple YAML-like parsing for flat frontmatter (no nested objects)
-    const lines = match[1].split("\n");
-    const fm: Record<string, unknown> = {};
-    let currentArray: string[] | null = null;
-    let currentKey: string | null = null;
-
-    for (const line of lines) {
-      const arrayItemMatch = line.match(/^\s+-\s+(.+)/);
-      if (arrayItemMatch && currentKey) {
-        if (!currentArray) currentArray = [];
-        currentArray.push(arrayItemMatch[1].trim());
-        fm[currentKey] = currentArray;
-        continue;
-      }
-
-      if (currentArray) {
-        currentArray = null;
-        currentKey = null;
-      }
-
-      const kvMatch = line.match(/^(\w[\w-]*)\s*:\s*(.+)?/);
-      if (kvMatch) {
-        currentKey = kvMatch[1] === "allowed-tools" ? "allowedTools" : kvMatch[1];
-        const val = kvMatch[2]?.trim();
-        if (val) {
-          fm[currentKey] = val;
-        }
-      }
-    }
-
-    if (!fm.name && !fm.description) return null;
+    const parsed = parseSkillManifest(content, { mode: "compatibility" });
     return {
-      name: fm.name as string | undefined,
-      description: (fm.description as string) ?? "",
-      allowedTools: fm.allowedTools as string[] | undefined,
+      name: parsed.manifest.name,
+      description: parsed.manifest.description,
+      allowedTools: parsed.manifest.allowedTools,
     };
   } catch { return null; }
 }
@@ -312,6 +292,66 @@ async function listBundledReferences(
   return { paths, omitted };
 }
 
+/** Inventory every regular supporting file without loading its content. */
+export async function listSkillResources(
+  fs: FileSystem,
+  skill: LoadedSkill,
+): Promise<SkillBundleResource[]> {
+  const root = resolve(skill.path);
+  const resources: SkillBundleResource[] = [];
+
+  const visit = async (directory: string, relativeDirectory: string): Promise<void> => {
+    if (resources.length >= SKILL_AUTO_REFERENCE_MAX_FILES) return;
+    let entries: Array<{ name: string; isDirectory: boolean; isFile: boolean }>;
+    try {
+      if (fs.readdirWithTypes) {
+        entries = await fs.readdirWithTypes(directory);
+      } else {
+        const names = await fs.readdir(directory);
+        entries = await Promise.all(names.map(async (name) => {
+          const stat = await fs.stat(resolve(directory, name));
+          return { name, isDirectory: stat.isDirectory, isFile: stat.isFile };
+        }));
+      }
+    } catch {
+      return;
+    }
+
+    entries.sort((left, right) => comparePaths(left.name, right.name));
+    for (const entry of entries) {
+      if (resources.length >= SKILL_AUTO_REFERENCE_MAX_FILES) break;
+      const relativePath = relativeDirectory ? `${relativeDirectory}/${entry.name}` : entry.name;
+      const absolutePath = resolve(directory, entry.name);
+      if (entry.isDirectory) {
+        await visit(absolutePath, relativePath);
+        continue;
+      }
+      if (!entry.isFile || relativePath === "SKILL.md") continue;
+      try {
+        const stat = await fs.stat(absolutePath);
+        resources.push({
+          path: relativePath,
+          kind: skillResourceKind(relativePath),
+          bytes: stat.size,
+        });
+      } catch {
+        // A disappearing file is omitted from the inventory. An exact read still
+        // returns the stable read_failed/not_found contract.
+      }
+    }
+  };
+
+  await visit(root, "");
+  return resources.sort((left, right) => comparePaths(left.path, right.path));
+}
+
+function skillResourceKind(path: string): SkillBundleResourceKind {
+  if (path.startsWith("references/")) return "reference";
+  if (path.startsWith("scripts/")) return "script";
+  if (path.startsWith("assets/")) return "asset";
+  return "other";
+}
+
 /**
  * Build the model-facing view of one assigned skill. The entrypoint is always
  * loaded first; textual references are included deterministically so skill
@@ -323,6 +363,7 @@ export async function assembleSkillRead(
   options: AssembleSkillReadOptions = {},
 ): Promise<AssembledSkillRead> {
   const entrypoint = await readSkillResource(fs, skill);
+  const resources = await listSkillResources(fs, skill);
   const configuredBudget = options.maxReferenceBytes;
   const maxReferenceBytes = typeof configuredBudget === "number" && Number.isFinite(configuredBudget)
     ? Math.max(0, Math.floor(configuredBudget))
@@ -364,6 +405,7 @@ export async function assembleSkillRead(
     entrypoint,
     references,
     omitted: omitted.sort((left, right) => comparePaths(left.path, right.path)),
+    resources,
     totalReferenceBytes,
   };
 }
@@ -413,8 +455,10 @@ export function buildProgressiveSkillPrompt(
     `Assigned skill names: ${available.map((skill) => `\`${skill.name}\``).join(", ")}.`,
     "Always use `skill_read` for assigned skill instructions and resources.",
     "Calling `skill_read` with only `name` loads SKILL.md and automatically includes the textual files bundled under `references/`.",
-    "Use its optional bundle-relative `path` only for a resource reported as omitted or when you need one exact bundle file.",
-    "Do not use workspace file tools or shell commands to read SKILL.md, references, scripts, or assets from an assigned skill bundle.",
+    "It also inventories bundled scripts, assets, and other resources and discloses their immutable bundle root.",
+    "Use its optional bundle-relative `path` only when you need one exact textual bundle file.",
+    "After `skill_read`, you may use already-authorized filesystem or shell tools against the disclosed bundle root when the skill instructions require a script or asset.",
+    "A skill never executes automatically and does not grant any tool, filesystem, network, Connection, or credential capability.",
   ];
 
   if (activated.length === 0) {

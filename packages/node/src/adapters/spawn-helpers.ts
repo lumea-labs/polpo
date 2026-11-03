@@ -256,6 +256,14 @@ export function buildSystemPrompt(
   const skills = polpoDir
     ? loadAgentSkills(cwd, polpoDir, agent.name, agent.skills)
     : [];
+  const missingActivatedSkill = activatedSkills?.find(
+    (name) => !skills.some((skill) => skill.name === name),
+  );
+  if (missingActivatedSkill) {
+    throw new Error(
+      `Activated skill "${missingActivatedSkill}" is assigned but its bundle is not installed`,
+    );
+  }
 
   // Core prompt: identity, responsibilities, tone, personality, hierarchy, systemPrompt, skills
   // Shared agent loop logic (lives in @polpo-ai/core).
@@ -478,6 +486,7 @@ export function prepareSpawn(agentConfig: AgentConfig, cwd: string, ctx?: SpawnC
     ctx?.polpoDir,
     outputDir,
     effectiveAllowedPaths,
+    ctx?.activatedSkills?.filter((name) => agentConfig.skills?.includes(name)),
   );
   const runtimeContextPrompt = renderRuntimeContextPrompt(ctx?.runtimeContext);
   const systemPrompt = runtimeContextPrompt

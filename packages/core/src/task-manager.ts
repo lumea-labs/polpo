@@ -4,6 +4,7 @@ import type { Task, TaskExpectation, ExpectedOutcome, RetryPolicy, ReviewContext
 import { setAssessment } from "./types.js";
 import { sanitizeExpectations } from "./schemas.js";
 import { normalizeRuntimeMetadata } from "./runtime-metadata.js";
+import { normalizeActivatedSkills } from "./skill-activation.js";
 import { isTaskExecutionStore, taskExecutionReference, TaskExecutionError, type TaskExecutionReference, type TaskExecutionMutation, type TaskExecutionPrecondition, type TaskExecutionState, isConditionalTaskExecutionStore } from "./task-execution.js";
 
 export type CreateTaskOptions = {
@@ -11,6 +12,7 @@ export type CreateTaskOptions = {
   description: string;
   assignTo: string;
   loop?: string;
+  skills?: string[];
   expectations?: TaskExpectation[];
   expectedOutcomes?: ExpectedOutcome[];
   dependsOn?: string[];
@@ -54,6 +56,7 @@ export class TaskManager {
       description: opts.description,
       assignTo: opts.assignTo,
       loop: opts.loop,
+      skills: opts.skills,
       expectations: opts.expectations,
       expectedOutcomes: opts.expectedOutcomes,
       dependsOn: opts.dependsOn,
@@ -95,6 +98,7 @@ export class TaskManager {
       description: hookData.description,
       assignTo: hookData.assignTo,
       loop: hookData.loop ?? opts.loop,
+      skills: normalizeActivatedSkills(hookData.skills ?? opts.skills),
       group: hookData.group,
       missionId: hookData.missionId ?? opts.missionId,
       dependsOn: hookData.dependsOn ?? [],

@@ -50,6 +50,7 @@ export class DrizzleTaskStore implements TaskStore, MissionExecutionCancellation
       description: row.description,
       assignTo: row.assignTo,
       loop: row.loop ?? undefined,
+      skills: deserializeJson(row.skills, undefined, d),
       group: row.group ?? undefined,
       missionId: row.missionId ?? undefined,
       missionExecutionId: row.missionExecutionId ?? undefined,
@@ -96,6 +97,7 @@ export class DrizzleTaskStore implements TaskStore, MissionExecutionCancellation
     if (task.description !== undefined) v.description = task.description;
     if (task.assignTo !== undefined) v.assignTo = task.assignTo;
     if (task.loop !== undefined) v.loop = task.loop;
+    if (task.skills !== undefined) v.skills = serializeJson(task.skills, d);
     if (task.group !== undefined) v.group = task.group;
     if (task.missionId !== undefined) v.missionId = task.missionId;
     if (task.missionExecutionId !== undefined) v.missionExecutionId = task.missionExecutionId;

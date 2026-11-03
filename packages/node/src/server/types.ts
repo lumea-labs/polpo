@@ -41,6 +41,8 @@ export interface CreateTaskRequest {
   title: string;
   description: string;
   assignTo: string;
+  loop?: string;
+  skills?: string[];
   expectations?: TaskExpectation[];
   expectedOutcomes?: ExpectedOutcome[];
   dependsOn?: string[];

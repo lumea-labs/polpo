@@ -1,6 +1,7 @@
 import { dirname } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { FileEntry, FileStat, FileSystem } from "@polpo-ai/core";
+import { packSkillArchive } from "@polpo-ai/core/skill-archive";
 import { skillRoutes } from "./skills.js";
 
 class MemoryFileSystem implements FileSystem {
@@ -107,6 +108,119 @@ class MemoryFileSystem implements FileSystem {
 }
 
 describe("skillRoutes", () => {
+  it("rejects oversized archive requests before multipart parsing", async () => {
+    const app = skillRoutes(() => ({
+      polpoDir: "/project/.polpo",
+      fs: new MemoryFileSystem(),
+      getAgents: async () => [],
+    }));
+    const response = await app.request("/import", {
+      method: "POST",
+      headers: {
+        "content-type": "multipart/form-data; boundary=oversized",
+        "content-length": String(31 * 1024 * 1024 + 1_048_576),
+      },
+      body: "--oversized--\r\n",
+    });
+    expect(response.status).toBe(413);
+    expect((await response.json()).code).toBe("archive_limit_exceeded");
+  });
+
+  it("imports and exports a portable .skill archive with an idempotent receipt", async () => {
+    const fs = new MemoryFileSystem();
+    const onSkillChanged = vi.fn(async () => {});
+    const app = skillRoutes(() => ({
+      polpoDir: "/project/.polpo",
+      fs,
+      getAgents: async () => [],
+      onSkillChanged,
+    }));
+    const files = [{
+      path: "SKILL.md",
+      content: Buffer.from("---\nname: portable-skill\ndescription: Portable\n---\n\nUse it.").toString("base64"),
+      encoding: "base64" as const,
+    }, {
+      path: "assets/data.bin",
+      content: Buffer.from([0, 1, 2, 255]).toString("base64"),
+      encoding: "base64" as const,
+    }];
+    const archive = await packSkillArchive({ name: "portable-skill", files });
+    const form = new FormData();
+    form.set("archive", new File([Uint8Array.from(archive)], "portable-skill.skill", { type: "application/zip" }));
+
+    const imported = await app.request("/import", { method: "POST", body: form });
+    expect(imported.status).toBe(201);
+    const receipt = (await imported.json()).data;
+    expect(receipt).toMatchObject({
+      name: "portable-skill",
+      changed: true,
+      files: 2,
+      source: "archive",
+    });
+    expect(receipt.digest).toMatch(/^sha256:/);
+    expect(onSkillChanged).toHaveBeenCalledWith("portable-skill", receipt.digest);
+
+    const replayForm = new FormData();
+    replayForm.set("archive", new File([Uint8Array.from(archive)], "portable-skill.skill"));
+    const replay = await app.request("/import", { method: "POST", body: replayForm });
+    expect(replay.status).toBe(200);
+    expect((await replay.json()).data).toMatchObject({ digest: receipt.digest, changed: false });
+
+    const exported = await app.request("/portable-skill/archive");
+    expect(exported.status).toBe(200);
+    expect(exported.headers.get("content-disposition")).toContain("portable-skill.skill");
+    const exportedArchive = new Uint8Array(await exported.arrayBuffer());
+    expect(exportedArchive).toEqual(archive);
+
+    const restoredFs = new MemoryFileSystem();
+    const updateAgentSkills = vi.fn(async () => {});
+    const restoredApp = skillRoutes(() => ({
+      polpoDir: "/restored/.polpo",
+      fs: restoredFs,
+      getAgents: async () => [{ name: "consumer", skills: [] }],
+      updateAgentSkills,
+    }));
+    const restoreForm = new FormData();
+    restoreForm.set("archive", new File([Uint8Array.from(exportedArchive)], "portable-skill.skill"));
+    restoreForm.set("assignTo", "consumer");
+    const restored = await restoredApp.request("/import", { method: "POST", body: restoreForm });
+    expect(restored.status).toBe(201);
+    expect((await restored.json()).data).toMatchObject({
+      digest: receipt.digest,
+      assignedTo: ["consumer"],
+    });
+    expect(updateAgentSkills).toHaveBeenCalledWith("consumer", ["portable-skill"]);
+    expect([...await restoredFs.readFileBuffer("/restored/.polpo/skills/portable-skill/assets/data.bin")])
+      .toEqual([0, 1, 2, 255]);
+  });
+
+  it("requires explicit archive replacement and preserves the old bundle on conflict", async () => {
+    const fs = new MemoryFileSystem();
+    const app = skillRoutes(() => ({ polpoDir: "/project/.polpo", fs, getAgents: async () => [] }));
+    const archive = async (body: string) => packSkillArchive({
+      name: "conflict-skill",
+      files: [{
+        path: "SKILL.md",
+        content: Buffer.from(`---\nname: conflict-skill\ndescription: Conflict\n---\n\n${body}`).toString("base64"),
+        encoding: "base64",
+      }],
+    });
+    const send = async (bytes: Uint8Array, conflict?: "replace") => {
+      const form = new FormData();
+      form.set("archive", new File([Uint8Array.from(bytes)], "conflict-skill.skill"));
+      if (conflict) form.set("conflict", conflict);
+      return app.request("/import", { method: "POST", body: form });
+    };
+
+    expect((await send(await archive("Old"))).status).toBe(201);
+    const conflict = await send(await archive("New"));
+    expect(conflict.status).toBe(409);
+    expect((await conflict.json()).code).toBe("skill_conflict");
+    expect(await fs.readFile("/project/.polpo/skills/conflict-skill/SKILL.md")).toContain("Old");
+    expect((await send(await archive("New"), "replace")).status).toBe(200);
+    expect(await fs.readFile("/project/.polpo/skills/conflict-skill/SKILL.md")).toContain("New");
+  });
+
   it("installs the complete skill bundle, not only SKILL.md", async () => {
     const sourceFs = new MemoryFileSystem();
     const targetFs = new MemoryFileSystem();
@@ -186,6 +300,65 @@ describe("skillRoutes", () => {
     expect((await get.json()).data.files).toEqual(
       [...files].sort((a, b) => a.path.localeCompare(b.path)),
     );
+  });
+
+  it("rejects unsafe builder names and assignments to missing skills", async () => {
+    const fs = new MemoryFileSystem();
+    const updateAgentSkills = vi.fn(async () => {});
+    const app = skillRoutes(() => ({
+      polpoDir: "/project/.polpo",
+      fs,
+      getAgents: async () => [{ name: "support", skills: [] }],
+      updateAgentSkills,
+    }));
+
+    const create = await app.request("/create", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name: "../escape", description: "Unsafe", content: "No" }),
+    });
+    expect(create.status).toBe(400);
+    expect(await fs.exists("/project/escape")).toBe(false);
+
+    const assign = await app.request("/missing-skill/assign", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ agent: "support" }),
+    });
+    expect(assign.status).toBe(404);
+    expect(updateAgentSkills).not.toHaveBeenCalled();
+  });
+
+  it("removes all assignments before deleting a skill", async () => {
+    const fs = new MemoryFileSystem();
+    await fs.writeFile(
+      "/project/.polpo/skills/reviewer/SKILL.md",
+      "---\nname: reviewer\ndescription: Review\n---\n",
+    );
+    const agents = [
+      { name: "one", skills: ["reviewer", "other"] },
+      { name: "two", skills: ["reviewer"] },
+    ];
+    const updateAgentSkills = vi.fn(async (name: string, skills: string[]) => {
+      const agent = agents.find((candidate) => candidate.name === name)!;
+      agent.skills = skills;
+    });
+    const onSkillChanged = vi.fn(async () => {});
+    const app = skillRoutes(() => ({
+      polpoDir: "/project/.polpo",
+      fs,
+      getAgents: async () => agents,
+      updateAgentSkills,
+      onSkillChanged,
+    }));
+
+    const response = await app.request("/reviewer", { method: "DELETE" });
+
+    expect(response.status).toBe(200);
+    expect(updateAgentSkills).toHaveBeenCalledWith("one", ["other"]);
+    expect(updateAgentSkills).toHaveBeenCalledWith("two", []);
+    expect(onSkillChanged).toHaveBeenCalledWith("reviewer", null);
+    expect(await fs.exists("/project/.polpo/skills/reviewer")).toBe(false);
   });
 
   it("replaces a bundle and removes files absent from the new version", async () => {
