@@ -1,6 +1,16 @@
 import { dirname } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import type { FileEntry, FileStat, FileSystem } from "@polpo-ai/core";
+import {
+  SkillBundleStoreConflictError,
+  type FileEntry,
+  type FileStat,
+  type FileSystem,
+  type SkillBundleStore,
+  type SkillBundleReceipt,
+  type StoredSkillBundle,
+  type StoredSkillSummary,
+  type ValidatedSkillBundle,
+} from "@polpo-ai/core";
 import { packSkillArchive } from "@polpo-ai/core/skill-archive";
 import { skillRoutes } from "./skills.js";
 
@@ -107,7 +117,117 @@ class MemoryFileSystem implements FileSystem {
   }
 }
 
+class MemorySkillBundleStore implements SkillBundleStore {
+  private readonly active = new Map<string, string>();
+  private readonly versions = new Map<string, StoredSkillBundle>();
+
+  private key(name: string, digest: string): string { return `${name}:${digest}`; }
+
+  async get(name: string, digest?: string): Promise<StoredSkillBundle | null> {
+    const resolved = digest ?? this.active.get(name);
+    return resolved ? this.versions.get(this.key(name, resolved)) ?? null : null;
+  }
+
+  async put(input: ValidatedSkillBundle, options: { conflict: "error" | "replace"; expectedDigest?: string }): Promise<SkillBundleReceipt> {
+    const currentDigest = this.active.get(input.bundle.name);
+    if (currentDigest === input.digest) {
+      return this.receipt(input, false);
+    }
+    if (options.expectedDigest !== undefined && currentDigest !== options.expectedDigest) {
+      throw new SkillBundleStoreConflictError("skill_digest_conflict", "stale digest", currentDigest);
+    }
+    if (currentDigest && options.conflict === "error") {
+      throw new SkillBundleStoreConflictError("skill_conflict", "already exists", currentDigest);
+    }
+    this.versions.set(this.key(input.bundle.name, input.digest), { ...input, root: `/immutable/${input.digest}` });
+    this.active.set(input.bundle.name, input.digest);
+    return this.receipt(input, true);
+  }
+
+  async delete(name: string): Promise<boolean> { return this.active.delete(name); }
+
+  async list(): Promise<StoredSkillSummary[]> {
+    const rows: StoredSkillSummary[] = [];
+    for (const [name, digest] of this.active) {
+      const stored = this.versions.get(this.key(name, digest))!;
+      rows.push({
+        name,
+        description: stored.manifest.description,
+        digest,
+        files: stored.bundle.files.length,
+        uncompressedBytes: stored.uncompressedBytes,
+        source: stored.source,
+        allowedTools: stored.manifest.allowedTools,
+        root: stored.root,
+      });
+    }
+    return rows;
+  }
+
+  private receipt(input: ValidatedSkillBundle, changed: boolean): SkillBundleReceipt {
+    return {
+      name: input.bundle.name,
+      digest: input.digest,
+      files: input.bundle.files.length,
+      uncompressedBytes: input.uncompressedBytes,
+      changed,
+      source: input.source,
+      warnings: [],
+    };
+  }
+}
+
 describe("skillRoutes", () => {
+  it("uses a content-addressed store without mutating the compatibility filesystem", async () => {
+    const fs = new MemoryFileSystem();
+    const skillBundleStore = new MemorySkillBundleStore();
+    const app = skillRoutes(() => ({
+      polpoDir: "/project/.polpo",
+      fs,
+      skillBundleStore,
+      getAgents: async () => [],
+    }));
+    const files = [{
+      path: "SKILL.md",
+      content: Buffer.from("---\nname: immutable-skill\ndescription: Immutable\n---\n\nFirst").toString("base64"),
+      encoding: "base64",
+    }];
+
+    const first = await app.request("/immutable-skill/bundle", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ files }),
+    });
+    expect(first.status).toBe(200);
+    const firstReceipt = (await first.json()).data;
+    expect(await fs.exists("/project/.polpo/skills/immutable-skill")).toBe(false);
+    expect((await app.request("/immutable-skill/bundle")).status).toBe(200);
+    expect((await app.request("/immutable-skill/archive")).status).toBe(200);
+
+    const replacement = [{
+      ...files[0],
+      content: Buffer.from("---\nname: immutable-skill\ndescription: Immutable\n---\n\nSecond").toString("base64"),
+    }];
+    const stale = await app.request("/immutable-skill/bundle", {
+      method: "PUT",
+      headers: { "content-type": "application/json", "if-match": "\"sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\"" },
+      body: JSON.stringify({ files: replacement }),
+    });
+    expect(stale.status).toBe(409);
+    expect((await stale.json()).code).toBe("skill_digest_conflict");
+
+    const replaced = await app.request("/immutable-skill/bundle", {
+      method: "PUT",
+      headers: { "content-type": "application/json", "if-match": `"${firstReceipt.digest}"` },
+      body: JSON.stringify({ files: replacement }),
+    });
+    expect(replaced.status).toBe(200);
+    const secondDigest = (await replaced.json()).data.digest;
+    expect(secondDigest).not.toBe(firstReceipt.digest);
+    expect((await skillBundleStore.get("immutable-skill", firstReceipt.digest))?.digest).toBe(firstReceipt.digest);
+    expect((await skillBundleStore.get("immutable-skill"))?.digest).toBe(secondDigest);
+  });
+
   it("rejects oversized archive requests before multipart parsing", async () => {
     const app = skillRoutes(() => ({
       polpoDir: "/project/.polpo",

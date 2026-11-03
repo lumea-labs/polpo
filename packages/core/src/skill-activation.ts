@@ -4,6 +4,38 @@ export const MAX_ACTIVATED_SKILLS = 16;
 /** Maximum length of a skill identifier accepted by runtime surfaces. */
 export const MAX_ACTIVATED_SKILL_NAME_LENGTH = 256;
 
+/** Immutable skill identity frozen at outer-run admission. */
+export interface ActivatedSkillReference {
+  name: string;
+  /** Absent only for legacy hosts that have not wired a content-addressed store. */
+  digest?: string;
+}
+
+/** Reject malformed persisted or host-resolved activation snapshots. */
+export function normalizeActivatedSkillReferences(value: unknown): ActivatedSkillReference[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || value.length > MAX_ACTIVATED_SKILLS) {
+    throw new SkillActivationError("Activated skill references are invalid");
+  }
+  const seen = new Set<string>();
+  return value.map((item, index) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) {
+      throw new SkillActivationError(`Activated skill reference at index ${index} must be an object`);
+    }
+    const name = (item as { name?: unknown }).name;
+    const digest = (item as { digest?: unknown }).digest;
+    if (typeof name !== "string" || name.length === 0 || name.length > MAX_ACTIVATED_SKILL_NAME_LENGTH) {
+      throw new SkillActivationError(`Activated skill reference at index ${index} has an invalid name`);
+    }
+    if (digest !== undefined && (typeof digest !== "string" || !/^sha256:[a-f0-9]{64}$/.test(digest))) {
+      throw new SkillActivationError(`Activated skill reference "${name}" has an invalid digest`);
+    }
+    if (seen.has(name)) throw new SkillActivationError(`Duplicate activated skill reference: ${name}`);
+    seen.add(name);
+    return digest === undefined ? { name } : { name, digest };
+  });
+}
+
 export class SkillActivationError extends Error {
   readonly code = "skill_activation_invalid";
 

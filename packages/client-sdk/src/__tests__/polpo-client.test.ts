@@ -285,6 +285,7 @@ describe("PolpoClient skill bundles", () => {
     await expect(client.importSkillArchive(archive, {
       filename: "frontend-design.skill",
       conflict: "replace",
+      expectedDigest: `sha256:${"b".repeat(64)}`,
       assignTo: "support",
     })).resolves.toEqual(receipt);
     await expect(client.downloadSkillArchive("frontend-design")).resolves.toEqual(archive);
@@ -296,6 +297,7 @@ describe("PolpoClient skill bundles", () => {
     const form = upload[1]?.body as FormData;
     expect(form.get("archive")).toBeInstanceOf(File);
     expect(form.get("conflict")).toBe("replace");
+    expect(form.get("expectedDigest")).toBe(`sha256:${"b".repeat(64)}`);
     expect(form.get("assignTo")).toBe("support");
     expect(fetch).toHaveBeenNthCalledWith(2, "https://api.polpo.sh/v1/skills/frontend-design/archive", expect.objectContaining({
       method: "GET",

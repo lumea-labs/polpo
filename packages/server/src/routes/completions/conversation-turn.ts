@@ -6,6 +6,8 @@ import { nanoid } from "nanoid";
 import {
   agentMemoryScope,
   agentIdentityFromSnapshot,
+  normalizeActivatedSkillReferences,
+  type ActivatedSkillReference,
   type AgentIdentity,
   createToolInvocationContext,
   createRuntimePromptContextSegment,
@@ -159,6 +161,7 @@ type PreparedProjectLoop = {
   runtimeInvocation?: CompletionRuntimeInvocation;
   executionRoute?: ResolvedExecutionRoute;
   activatedSkills: string[];
+  activatedSkillReferences: ActivatedSkillReference[];
   requestAllowedTools?: readonly string[];
   executionAllowedTools?: readonly string[];
   grantAllowedTools?: readonly string[];
@@ -667,6 +670,7 @@ export async function prepareChatCompletionExecution(
   let executionRoute: ResolvedExecutionRoute | undefined;
   let selectedLoopAllowedTools: readonly string[] | undefined;
   let activatedSkills: string[] = [];
+  let activatedSkillReferences: ActivatedSkillReference[] = [];
   let deferredAgentTools = false;
   let completionId = options.completionId ?? `chatcmpl-${nanoid(24)}`;
   let turnId: string | undefined;
@@ -991,6 +995,28 @@ export async function prepareChatCompletionExecution(
       }
       activatedSkills = [...requestedSkills];
     }
+    if (activatedSkills.length > 0) {
+      try {
+        activatedSkillReferences = deps.resolveSkillActivations
+          ? normalizeActivatedSkillReferences(await deps.resolveSkillActivations({
+              agentConfig: resolvedAgentConfig,
+              names: activatedSkills,
+            }))
+          : activatedSkills.map((name) => ({ name }));
+        if (
+          activatedSkillReferences.length !== activatedSkills.length
+          || activatedSkillReferences.some((reference, index) => reference.name !== activatedSkills[index])
+        ) {
+          throw new Error("Skill activation resolver changed the requested skill order or cardinality");
+        }
+      } catch (error) {
+        return completionError(
+          error instanceof Error ? error.message : "Skill version resolution failed",
+          409,
+          "skill_version_unavailable",
+        );
+      }
+    }
     modelToolChoice = toAIToolChoice(agentConfig.toolChoice);
 
     try {
@@ -1075,11 +1101,12 @@ export async function prepareChatCompletionExecution(
           includeAgentMemory: !replacesLegacyAgentMemory(runtimeContext),
           includeSharedMemory: !replacesLegacySharedMemory(runtimeContext),
           ...(activatedSkills.length > 0 ? { activatedSkills } : {}),
+          ...(activatedSkillReferences.length > 0 ? { activatedSkillReferences } : {}),
         });
       } else {
         const agentSystemPrompt = await deps.buildAgentPrompt(
           agentConfig,
-          activatedSkills.length > 0 ? { activatedSkills } : undefined,
+          activatedSkills.length > 0 ? { activatedSkills, activatedSkillReferences } : undefined,
         );
         const conversationalPreamble = [
           "You are now in interactive conversation mode with the user.",
@@ -1326,8 +1353,17 @@ export async function prepareChatCompletionExecution(
     }) : undefined;
   let hookToolRunScope: CompletionToolRunScope | undefined;
   if (deferredAgentTools) {
-    if (!projectLoopRuntime && resolvedAgentConfig?.hooks?.length) {
-      hookToolRunScope = await deps.createToolRunScope?.({ agentConfig: resolvedAgentConfig, runId: options.runtime?.runId ?? completionId, sessionId: sessionId ?? undefined, signal: options.signal });
+    if (
+      !projectLoopRuntime
+      && (resolvedAgentConfig?.hooks?.length || activatedSkillReferences.length > 0)
+    ) {
+      hookToolRunScope = await deps.createToolRunScope?.({
+        agentConfig: resolvedAgentConfig,
+        runId: options.runtime?.runId ?? completionId,
+        sessionId: sessionId ?? undefined,
+        signal: options.signal,
+        ...(activatedSkillReferences.length > 0 ? { activatedSkillReferences } : {}),
+      });
     }
     let resolvedTools;
     try {
@@ -1532,6 +1568,7 @@ export async function prepareChatCompletionExecution(
       runtimeInvocation: options.runtime,
       executionRoute,
       activatedSkills,
+      activatedSkillReferences,
       requestAllowedTools: body.polpo?.execution?.allowedTools,
       executionAllowedTools: options.runtime?.toolPolicy?.executionAllowedTools,
       grantAllowedTools: options.runtime?.toolPolicy?.grantAllowedTools,
@@ -1710,6 +1747,7 @@ export async function runConversationTurn(
           signal,
           executionRoute: prepared.executionRoute,
           activatedSkills: prepared.activatedSkills,
+          activatedSkillReferences: prepared.activatedSkillReferences,
           parallelToolCalls: prepared.body.parallel_tool_calls,
           requestAllowedTools: prepared.requestAllowedTools,
           executionAllowedTools: prepared.executionAllowedTools,
