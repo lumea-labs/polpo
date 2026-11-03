@@ -20,6 +20,8 @@ import {
   normalizeAgentIdentity,
   assertAgentIdentity,
   AgentIdentityError,
+  normalizeActivatedSkillReferences,
+  type ActivatedSkillReference,
   type AgentIdentity,
   maybeParseJson,
   normalizeProjectLoop,
@@ -396,6 +398,7 @@ export async function runProjectLoopCompletion(options: {
   resumeRun?: LoopRunRecord;
   executionRoute?: ResolvedExecutionRoute;
   activatedSkills?: readonly string[];
+  activatedSkillReferences?: readonly ActivatedSkillReference[];
   deliveryRunId?: string;
   parallelToolCalls?: boolean;
   requestAllowedTools?: readonly string[];
@@ -426,6 +429,16 @@ export async function runProjectLoopCompletion(options: {
     executionRoute,
   } = options;
   const activatedSkills = [...(options.activatedSkills ?? [])];
+  const activatedSkillReferences = normalizeActivatedSkillReferences(
+    options.activatedSkillReferences
+      ?? activatedSkills.map((name) => ({ name })),
+  );
+  if (
+    activatedSkillReferences.length !== activatedSkills.length
+    || activatedSkillReferences.some((reference, index) => reference.name !== activatedSkills[index])
+  ) {
+    throw new Error("Resolved skill versions do not match the activated skill selection");
+  }
   const contextTrust = normalizeRuntimeContextTrustMode(
     options.contextTrust
       ?? resumeRun?.resume?.runtime?.contextTrust
@@ -681,7 +694,8 @@ export async function runProjectLoopCompletion(options: {
     if (!loopRunStore || !loopRunId) return;
     const resume = buildLoopResumeState({ ...position, context: { ...context } }, aiMessages, extraSystemParts,
       resumeState?.approvedGates, contextTrust, activatedSkills, options.parallelToolCalls,
-      options.requestAllowedTools, options.executionAllowedTools, options.grantAllowedTools)!;
+      options.requestAllowedTools, options.executionAllowedTools, options.grantAllowedTools,
+      activatedSkillReferences)!;
     if (agentStep) resume.runtime = { ...resume.runtime, agentStep };
     const serialized = JSON.stringify(resume);
     if (Buffer.byteLength(serialized, "utf8") > 2 * 1024 * 1024) throw new TerminationGateError("termination_gate_checkpoint_too_large", "Agent checkpoint exceeds 2 MiB; execution stopped before another operation");
@@ -793,6 +807,9 @@ export async function runProjectLoopCompletion(options: {
         const stepActivatedSkills = activatedSkills.filter((skill) =>
           stepSkillNames.has(skill)
         );
+        const stepActivatedSkillReferences = activatedSkillReferences.filter((skill) =>
+          stepSkillNames.has(skill.name)
+        );
         const stepResume = pendingAgentCheckpoint;
         pendingAgentCheckpoint = undefined;
         const stepResult = await runAgentStepCompletion({
@@ -816,6 +833,7 @@ export async function runProjectLoopCompletion(options: {
           sessionId: sessionId ?? undefined,
           runtimeContext,
           activatedSkills: stepActivatedSkills,
+          activatedSkillReferences: stepActivatedSkillReferences,
           toolRunScope,
           toolInvocation,
           onToolCall,
@@ -963,6 +981,7 @@ export async function runProjectLoopCompletion(options: {
             options.requestAllowedTools,
             options.executionAllowedTools,
             options.grantAllowedTools,
+            activatedSkillReferences,
           ),
           error: err.message,
         }, deps.emit, "awaiting_approval");
@@ -1009,6 +1028,7 @@ export function buildLoopResumeState(
   requestAllowedTools?: readonly string[],
   executionAllowedTools?: readonly string[],
   grantAllowedTools?: readonly string[],
+  activatedSkillReferences: readonly ActivatedSkillReference[] = [],
 ): LoopResumeState | undefined {
   if (!continuation) return undefined;
   return {
@@ -1023,6 +1043,9 @@ export function buildLoopResumeState(
       ...(contextTrust === "enforce" ? { contextTrust } : {}),
       ...(activatedSkills.length > 0
         ? { activatedSkills: [...activatedSkills] }
+        : {}),
+      ...(activatedSkillReferences.length > 0
+        ? { activatedSkillReferences: normalizeActivatedSkillReferences(activatedSkillReferences) }
         : {}),
       ...(parallelToolCalls !== undefined ? { parallelToolCalls } : {}),
       ...(requestAllowedTools !== undefined
@@ -1086,6 +1109,9 @@ export async function resumeProjectLoopRun(options: {
         (skill): skill is string => typeof skill === "string" && skill.length > 0,
       )
     : [];
+  const pinnedSkillReferences = normalizeActivatedSkillReferences(
+    run.resume.runtime?.activatedSkillReferences,
+  );
   const parallelToolCalls = typeof run.resume.runtime?.parallelToolCalls === "boolean"
     ? run.resume.runtime.parallelToolCalls
     : undefined;
@@ -1113,6 +1139,24 @@ export async function resumeProjectLoopRun(options: {
     throw new Error(
       `Cannot resume loop: skill "${removedSkill}" is no longer assigned to agent "${agentConfig.name}"`,
     );
+  }
+  const activatedSkillReferences: ActivatedSkillReference[] = options.deps.resolveSkillActivations
+    ? normalizeActivatedSkillReferences(await options.deps.resolveSkillActivations({
+        agentConfig,
+        names: activatedSkills,
+        ...(pinnedSkillReferences.length > 0 ? { pinned: pinnedSkillReferences } : {}),
+      }))
+    : pinnedSkillReferences.length > 0
+      ? pinnedSkillReferences
+      : activatedSkills.map((name) => ({ name }));
+  if (
+    activatedSkillReferences.length !== activatedSkills.length
+    || activatedSkillReferences.some((reference, index) => reference.name !== activatedSkills[index])
+    || pinnedSkillReferences.some((pinned, index) =>
+      pinned.digest !== undefined && activatedSkillReferences[index]?.digest !== pinned.digest
+    )
+  ) {
+    throw new Error("Cannot resume loop: resolved skill versions do not match the checkpoint");
   }
   const runtimeContext = await resolveProjectLoopResumeRuntimeContext(
     options.deps,
@@ -1179,6 +1223,7 @@ export async function resumeProjectLoopRun(options: {
       user: run.user,
       requestMetadata: loopRequestMetadata(run),
       activatedSkills,
+      activatedSkillReferences,
       parallelToolCalls,
       requestAllowedTools,
       executionAllowedTools,
@@ -1218,6 +1263,7 @@ export interface ProjectLoopCompletionOptions {
   runtimePlan?: RuntimePlan;
   executionRoute?: ResolvedExecutionRoute;
   activatedSkills?: readonly string[];
+  activatedSkillReferences?: readonly ActivatedSkillReference[];
   requestAllowedTools?: readonly string[];
   executionAllowedTools?: readonly string[];
   grantAllowedTools?: readonly string[];
@@ -1317,6 +1363,7 @@ async function executeStreamingProjectLoopCompletionInner(
     runtimePlan,
     executionRoute,
     activatedSkills,
+    activatedSkillReferences,
   } = options;
   const contextTrust = normalizeRuntimeContextTrustMode(
     options.contextTrust ?? deps.getConfig()?.settings?.contextTrust,
@@ -1369,6 +1416,7 @@ async function executeStreamingProjectLoopCompletionInner(
           signal,
           executionRoute,
           activatedSkills,
+          activatedSkillReferences,
           deliveryRunId: completionId,
           parallelToolCalls: body.parallel_tool_calls,
           requestAllowedTools: options.requestAllowedTools,
@@ -1512,6 +1560,7 @@ async function runNonStreamingProjectLoopCompletion(
     runtimePlan,
     executionRoute,
     activatedSkills,
+    activatedSkillReferences,
   } = options;
   const contextTrust = normalizeRuntimeContextTrustMode(
     options.contextTrust ?? deps.getConfig()?.settings?.contextTrust,
@@ -1558,6 +1607,7 @@ async function runNonStreamingProjectLoopCompletion(
       signal,
       executionRoute,
       activatedSkills,
+      activatedSkillReferences,
       deliveryRunId: completionId,
       parallelToolCalls: body.parallel_tool_calls,
       requestAllowedTools: options.requestAllowedTools,

@@ -24,6 +24,7 @@ import {
   replacesLegacyAgentMemory,
   replacesLegacySharedMemory,
   type ContextBag,
+  type ActivatedSkillReference,
   type ModelSelection,
   type RuntimeContextResolution,
   resolveConfiguredModelSelection,
@@ -305,6 +306,7 @@ export async function buildRuntimeAgentPrompt(
   contextTrust: RuntimeContextTrustMode = "off",
   runtimeContext?: RuntimeContextResolution,
   activatedSkills: readonly string[] = [],
+  activatedSkillReferences: readonly ActivatedSkillReference[] = [],
   isolateModelContext = false,
 ): Promise<string> {
   let fullSystemPrompt: string;
@@ -316,11 +318,12 @@ export async function buildRuntimeAgentPrompt(
       includeAgentMemory: !isolateModelContext && !replacesLegacyAgentMemory(runtimeContext),
       includeSharedMemory: !isolateModelContext && !replacesLegacySharedMemory(runtimeContext),
       ...(activatedSkills.length > 0 ? { activatedSkills } : {}),
+      ...(activatedSkillReferences.length > 0 ? { activatedSkillReferences } : {}),
     });
   } else {
     const agentSystemPrompt = await deps.buildAgentPrompt(
       agentConfig,
-      activatedSkills.length > 0 ? { activatedSkills } : undefined,
+      activatedSkills.length > 0 ? { activatedSkills, activatedSkillReferences } : undefined,
     );
     const conversationalPreamble = isolateModelContext ? "" : [
       "You are now in interactive conversation mode with the user.",
@@ -377,6 +380,7 @@ export async function runAgentStepCompletion(options: {
   sessionId?: string;
   runtimeContext?: RuntimeContextResolution;
   activatedSkills?: readonly string[];
+  activatedSkillReferences?: readonly ActivatedSkillReference[];
   toolRunScope?: CompletionToolRunScope;
   toolInvocation?: ToolInvocationContext;
   onToolCall?: (toolCall: LoopRuntimeToolCall) => Promise<void>;
@@ -473,6 +477,7 @@ export async function runAgentStepCompletion(options: {
     contextTrust,
     runtimeContext,
     options.activatedSkills,
+    options.activatedSkillReferences,
     Boolean(projectedInput),
   );
   if (!options.resume && runtimeHooks) {

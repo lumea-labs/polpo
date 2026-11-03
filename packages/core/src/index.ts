@@ -267,6 +267,16 @@ export {
   validateSkillName,
 } from "./skill-bundle.js";
 export type { SkillBundle, SkillBundleFile, SkillBundleReceipt, SkillBundleSource } from "./skill-bundle.js";
+export type {
+  SkillBundleStore,
+  SkillBundlePutOptions,
+  SkillBundleDeleteOptions,
+  StoredSkillBundle,
+  StoredSkillSummary,
+  ValidatedSkillBundle,
+  SkillBundleStoreConflictCode,
+} from "./skill-bundle-store.js";
+export { SkillBundleStoreConflictError } from "./skill-bundle-store.js";
 export {
   AGENT_SKILL_COMPATIBILITY_MAX,
   AGENT_SKILL_DESCRIPTION_MAX,
@@ -404,9 +414,11 @@ export {
   MAX_ACTIVATED_SKILLS,
   MAX_ACTIVATED_SKILL_NAME_LENGTH,
   SkillActivationError,
+  normalizeActivatedSkillReferences,
   normalizeActivatedSkills,
   requireAssignedActivatedSkills,
 } from "./skill-activation.js";
+export type { ActivatedSkillReference } from "./skill-activation.js";
 
 // ── OrchestratorEngine ──────────────────────────────────────────────────
 export { OrchestratorEngine } from "./orchestrator-engine.js";

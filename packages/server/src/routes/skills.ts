@@ -15,6 +15,12 @@ import { resolve, join, basename, dirname } from "node:path";
 import type { FileSystem } from "@polpo-ai/core";
 import type { Shell } from "@polpo-ai/core";
 import {
+  SkillBundleStoreConflictError,
+  type SkillBundleStore,
+  type StoredSkillBundle,
+  type ValidatedSkillBundle,
+} from "@polpo-ai/core";
+import {
   decodeBase64,
   digestSkillBundle,
   validateSkillBundleFiles,
@@ -189,16 +195,16 @@ export interface SkillRouteDeps {
   /** Optional metadata index. When provided, list/install/remove mirror
    *  through it so GET /skills can answer from a fast lookup. */
   skillStore?: import("@polpo-ai/core").SkillStore;
+  /** Optional content-addressed store. Managed hosts use this instead of
+   *  emulating atomic directory renames on object storage. */
+  skillBundleStore?: SkillBundleStore;
   /** Invalidate host runtime caches after a durable bundle mutation. */
   onSkillChanged?: (name: string, digest: string | null) => Promise<void> | void;
 }
 
-interface ValidatedBundle {
-  bundle: SkillBundle;
-  manifest: SkillManifest;
-  digest: string;
+type ValidatedBundle = Omit<ValidatedSkillBundle, "source" | "uncompressedBytes"> & {
   bytes: number;
-}
+};
 
 async function validateBundle(name: string, files: SkillBundleFile[]): Promise<ValidatedBundle> {
   const nameError = validateSkillName(name);
@@ -222,27 +228,42 @@ async function validateBundle(name: string, files: SkillBundleFile[]): Promise<V
 }
 
 async function currentBundle(
-  fs: FileSystem,
-  polpoDir: string,
+  deps: SkillRouteDeps,
   name: string,
-): Promise<{ bundle: SkillBundle; digest: string } | null> {
-  const target = join(polpoDir, "skills", name);
-  if (!(await fs.exists(target))) return null;
-  const bundle = await readSkillBundle(fs, target, name);
+  digest?: string,
+): Promise<{ bundle: SkillBundle; digest: string; stored?: StoredSkillBundle } | null> {
+  if (deps.skillBundleStore) {
+    const stored = await deps.skillBundleStore.get(name, digest);
+    return stored ? { bundle: stored.bundle, digest: stored.digest, stored } : null;
+  }
+  if (digest !== undefined) return null;
+  const target = join(deps.polpoDir, "skills", name);
+  if (!(await deps.fs.exists(target))) return null;
+  const bundle = await readSkillBundle(deps.fs, target, name);
   return { bundle, digest: await digestSkillBundle(bundle) };
 }
 
 async function persistValidatedBundle(
   deps: SkillRouteDeps,
   input: ValidatedBundle,
-  options: { conflict: "error" | "replace"; source: string },
+  options: { conflict: "error" | "replace"; source: string; expectedDigest?: string },
 ): Promise<{ receipt: Record<string, unknown>; created: boolean; conflict: boolean }> {
-  const existing = await currentBundle(deps.fs, deps.polpoDir, input.bundle.name);
+  const existing = await currentBundle(deps, input.bundle.name);
   if (existing?.digest === input.digest) {
     return {
       receipt: skillReceipt(input, options.source, false),
       created: false,
       conflict: false,
+    };
+  }
+  if (options.expectedDigest !== undefined && existing?.digest !== options.expectedDigest) {
+    return {
+      receipt: {
+        ...skillReceipt(input, options.source, false),
+        ...(existing?.digest ? { currentDigest: existing.digest } : {}),
+      },
+      created: false,
+      conflict: true,
     };
   }
   if (existing && options.conflict === "error") {
@@ -254,6 +275,35 @@ async function persistValidatedBundle(
       created: false,
       conflict: true,
     };
+  }
+
+  if (deps.skillBundleStore) {
+    try {
+      const receipt = await deps.skillBundleStore.put({
+        bundle: input.bundle,
+        manifest: input.manifest,
+        digest: input.digest,
+        uncompressedBytes: input.bytes,
+        source: options.source,
+      }, {
+        conflict: options.conflict,
+        ...(options.expectedDigest ? { expectedDigest: options.expectedDigest } : {}),
+      });
+      await deps.onSkillChanged?.(input.bundle.name, input.digest);
+      return { receipt: { ...receipt }, created: !existing, conflict: false };
+    } catch (error) {
+      if (error instanceof SkillBundleStoreConflictError) {
+        return {
+          receipt: {
+            ...skillReceipt(input, options.source, false),
+            ...(error.currentDigest ? { currentDigest: error.currentDigest } : {}),
+          },
+          created: false,
+          conflict: true,
+        };
+      }
+      throw error;
+    }
   }
 
   await replaceSkillBundle(
@@ -330,12 +380,26 @@ export function skillRoutes(getDeps: () => SkillRouteDeps): OpenAPIHono {
       responses: { 200: { content: { "application/json": { schema: z.object({ ok: z.boolean(), data: z.array(z.any()) }) } }, description: "Skills list" } },
     }),
     async (c) => {
-      const { fs, polpoDir, getAgents, skillStore } = getDeps();
+      const { fs, polpoDir, getAgents, skillStore, skillBundleStore } = getDeps();
       const agents = await getAgents();
       const agentNames = agents.map((a) => a.name);
       const configSkills = new Map<string, string[]>();
       for (const a of agents) {
         if (a.skills?.length) configSkills.set(a.name, a.skills);
+      }
+
+      if (skillBundleStore) {
+        const records = await skillBundleStore.list();
+        const data = records.map((record) => ({
+          name: record.name,
+          description: record.description,
+          source: "project" as const,
+          path: record.root ?? resolve(polpoDir, "skills", record.name),
+          digest: record.digest,
+          allowedTools: record.allowedTools,
+          assignedTo: agentNames.filter((name) => configSkills.get(name)?.includes(record.name)),
+        }));
+        return c.json({ ok: true, data });
       }
 
       // Fast path: read from the indexed SkillStore and compute
@@ -376,8 +440,25 @@ export function skillRoutes(getDeps: () => SkillRouteDeps): OpenAPIHono {
       },
     }),
     async (c: any) => {
-      const { fs, polpoDir } = getDeps();
+      const deps = getDeps();
       const name = c.req.param("name");
+      if (deps.skillBundleStore) {
+        const stored = await deps.skillBundleStore.get(name);
+        if (!stored) return c.json({ ok: false, error: "Skill not found" }, 404);
+        const skillFile = stored.bundle.files.find((file) => file.path === "SKILL.md");
+        if (!skillFile) return c.json({ ok: false, error: "Could not load skill content" }, 404);
+        const raw = new TextDecoder().decode(decodeBase64(skillFile.content));
+        return c.json({ ok: true, data: {
+          name,
+          description: stored.manifest.description,
+          allowedTools: stored.manifest.allowedTools,
+          source: "project",
+          path: stored.root ?? resolve(deps.polpoDir, "skills", name),
+          digest: stored.digest,
+          content: (await coreImport()).extractSkillBody(raw),
+        } });
+      }
+      const { fs, polpoDir } = deps;
       const core = await coreImport();
       const pool = await core.discoverSkills(fs, polpoDir) as SkillInfo[];
       const info = pool.find((s) => s.name === name);
@@ -400,14 +481,14 @@ export function skillRoutes(getDeps: () => SkillRouteDeps): OpenAPIHono {
       },
     }),
     async (c: any) => {
-      const { fs, polpoDir } = getDeps();
+      const deps = getDeps();
       const name = c.req.param("name");
       const nameError = validateSkillName(name);
       if (nameError) return c.json({ ok: false, error: nameError }, 400);
-      const target = join(polpoDir, "skills", name);
-      if (!(await fs.exists(target))) return c.json({ ok: false, error: "Skill not found" }, 404);
       try {
-        return c.json({ ok: true, data: await readSkillBundle(fs, target, name) }, 200);
+        const current = await currentBundle(deps, name);
+        if (!current) return c.json({ ok: false, error: "Skill not found" }, 404);
+        return c.json({ ok: true, data: current.bundle }, 200);
       } catch (error) {
         return c.json({ ok: false, error: error instanceof Error ? error.message : String(error) }, 400);
       }
@@ -443,6 +524,9 @@ export function skillRoutes(getDeps: () => SkillRouteDeps): OpenAPIHono {
       return c.json({ ok: false, error: "conflict must be error or replace", code: "invalid_request" }, 400);
     }
     const assignTo = typeof form.assignTo === "string" && form.assignTo.trim() ? form.assignTo.trim() : undefined;
+    const expectedDigest = typeof form.expectedDigest === "string" && form.expectedDigest.trim()
+      ? form.expectedDigest.trim()
+      : undefined;
     let assignment: { name: string; skills: string[] } | undefined;
     if (assignTo) {
       if (!deps.updateAgentSkills) {
@@ -456,12 +540,18 @@ export function skillRoutes(getDeps: () => SkillRouteDeps): OpenAPIHono {
     try {
       const imported = await unpackSkillArchive(new Uint8Array(await archive.arrayBuffer()));
       const validated = await validateBundle(imported.bundle.name, imported.bundle.files);
-      const stored = await persistValidatedBundle(deps, validated, { conflict, source: "archive" });
+      const stored = await persistValidatedBundle(deps, validated, {
+        conflict,
+        source: "archive",
+        ...(expectedDigest ? { expectedDigest } : {}),
+      });
       if (stored.conflict) {
         return c.json({
           ok: false,
-          error: `Skill "${imported.bundle.name}" already exists with different content`,
-          code: "skill_conflict",
+          error: expectedDigest
+            ? `Skill "${imported.bundle.name}" changed since it was read`
+            : `Skill "${imported.bundle.name}" already exists with different content`,
+          code: expectedDigest ? "skill_digest_conflict" : "skill_conflict",
           data: stored.receipt,
         }, 409);
       }
@@ -488,14 +578,14 @@ export function skillRoutes(getDeps: () => SkillRouteDeps): OpenAPIHono {
       },
     }),
     async (c: any) => {
-      const { fs, polpoDir } = getDeps();
+      const deps = getDeps();
       const name = c.req.param("name");
       const nameError = validateSkillName(name);
       if (nameError) return c.json({ ok: false, error: nameError, code: "invalid_skill_name" }, 400);
-      const target = join(polpoDir, "skills", name);
-      if (!(await fs.exists(target))) return c.json({ ok: false, error: "Skill not found", code: "skill_not_found" }, 404);
       try {
-        const archive = await packSkillArchive(await readSkillBundle(fs, target, name));
+        const current = await currentBundle(deps, name);
+        if (!current) return c.json({ ok: false, error: "Skill not found", code: "skill_not_found" }, 404);
+        const archive = await packSkillArchive(current.bundle);
         const body = new ArrayBuffer(archive.byteLength);
         new Uint8Array(body).set(archive);
         return new Response(body, {
@@ -530,10 +620,18 @@ export function skillRoutes(getDeps: () => SkillRouteDeps): OpenAPIHono {
       const deps = getDeps();
       const name = c.req.param("name");
       const { files } = await c.req.json() as { files: SkillBundleFile[] };
+      const ifMatch = c.req.header("if-match")?.replace(/^W\//, "").replace(/^"|"$/g, "");
 
       try {
         const validated = await validateBundle(name, files);
-        const stored = await persistValidatedBundle(deps, validated, { conflict: "replace", source: "bundle" });
+        const stored = await persistValidatedBundle(deps, validated, {
+          conflict: "replace",
+          source: "bundle",
+          ...(ifMatch ? { expectedDigest: ifMatch } : {}),
+        });
+        if (stored.conflict) {
+          return c.json({ ok: false, error: `Skill "${name}" changed since it was read`, code: "skill_digest_conflict", data: stored.receipt }, 409);
+        }
         return c.json({ ok: true, data: stored.receipt }, 200);
       } catch (error) {
         const status = error instanceof TypeError ? 400 : 500;
@@ -620,7 +718,7 @@ export function skillRoutes(getDeps: () => SkillRouteDeps): OpenAPIHono {
       const nameError = validateSkillName(name);
       if (nameError) return c.json({ ok: false, error: nameError, code: "invalid_skill_name" }, 400);
       const targetDir = join(deps.polpoDir, "skills", name);
-      if (await deps.fs.exists(targetDir)) {
+      if (await currentBundle(deps, name)) {
         return c.json({ ok: false, error: `Skill "${name}" already exists` }, 400);
       }
       const skillContent = [
@@ -658,12 +756,13 @@ export function skillRoutes(getDeps: () => SkillRouteDeps): OpenAPIHono {
       },
     }),
     async (c: any) => {
-      const { fs, polpoDir, skillStore, getAgents, updateAgentSkills, onSkillChanged } = getDeps();
+      const deps = getDeps();
+      const { fs, polpoDir, skillStore, skillBundleStore, getAgents, updateAgentSkills, onSkillChanged } = deps;
       const name = c.req.param("name");
       const nameError = validateSkillName(name);
       if (nameError) return c.json({ ok: false, error: nameError, code: "invalid_skill_name" }, 400);
       const targetDir = join(polpoDir, "skills", name);
-      if (!(await fs.exists(targetDir))) {
+      if (!(await currentBundle(deps, name))) {
         return c.json({ ok: false, error: "Skill not found" }, 404);
       }
       const assigned = (await getAgents()).filter((agent) => agent.skills?.includes(name));
@@ -673,7 +772,8 @@ export function skillRoutes(getDeps: () => SkillRouteDeps): OpenAPIHono {
       for (const agent of assigned) {
         await updateAgentSkills!(agent.name, (agent.skills ?? []).filter((skill) => skill !== name));
       }
-      await fs.remove(targetDir);
+      if (skillBundleStore) await skillBundleStore.delete(name);
+      else await fs.remove(targetDir);
       await skillStore?.remove(name);
       await onSkillChanged?.(name, null);
       return c.json({ ok: true, data: { removed: true, name } });
@@ -694,7 +794,8 @@ export function skillRoutes(getDeps: () => SkillRouteDeps): OpenAPIHono {
       },
     }),
     async (c: any) => {
-      const { fs, polpoDir, getAgents, updateAgentSkills } = getDeps();
+      const deps = getDeps();
+      const { getAgents, updateAgentSkills } = deps;
       const skillName = c.req.param("name");
       const { agent: agentName } = await c.req.json();
 
@@ -703,7 +804,7 @@ export function skillRoutes(getDeps: () => SkillRouteDeps): OpenAPIHono {
       }
       const nameError = validateSkillName(skillName);
       if (nameError) return c.json({ ok: false, error: nameError, code: "invalid_skill_name" }, 400);
-      if (!(await fs.exists(join(polpoDir, "skills", skillName)))) {
+      if (!(await currentBundle(deps, skillName))) {
         return c.json({ ok: false, error: `Skill "${skillName}" not found`, code: "skill_not_found" }, 404);
       }
 
@@ -894,8 +995,7 @@ export function skillRoutes(getDeps: () => SkillRouteDeps): OpenAPIHono {
       const errors: string[] = [];
 
       for (const skill of toInstall) {
-        const targetDir = join(targetBase, skill.name);
-        if (await fs.exists(targetDir) && !force) {
+        if (await currentBundle(deps, skill.name) && !force) {
           skipped.push(skill.name);
           continue;
         }

@@ -34,6 +34,7 @@ import { OpenAPIHono } from "@hono/zod-openapi";
 import { streamSSE } from "hono/streaming";
 import {
   type ExecutionRouteClassifier,
+  type ActivatedSkillReference,
   type ExecutionRouteClassifierResolverContext,
   type LoopRunRecord,
   type LoopRunStore,
@@ -241,8 +242,18 @@ export interface CompletionRouteDeps {
   /** Build agent system prompt for conversational mode. */
   buildAgentPrompt: (
     agentConfig: any,
-    options?: { activatedSkills?: readonly string[] },
+    options?: {
+      activatedSkills?: readonly string[];
+      activatedSkillReferences?: readonly ActivatedSkillReference[];
+    },
   ) => string | Promise<string>;
+  /** Resolve and freeze immutable skill identities at outer-run admission.
+   *  On resume, `pinned` must be verified and returned unchanged or rejected. */
+  resolveSkillActivations?: (input: {
+    agentConfig: any;
+    names: readonly string[];
+    pinned?: readonly ActivatedSkillReference[];
+  }) => Promise<readonly ActivatedSkillReference[]>;
   /**
    * Optionally assemble the complete host-specific runtime prompt. Hosts use
    * this to inject shared memory, agent memory, skills, workspace policy, and
@@ -259,6 +270,8 @@ export interface CompletionRouteDeps {
       includeSharedMemory: boolean;
       /** Assigned skills explicitly requested for this execution. */
       activatedSkills?: readonly string[];
+      /** Immutable identities resolved once for this outer run. */
+      activatedSkillReferences?: readonly ActivatedSkillReference[];
     },
   ) => string | Promise<string>;
   /** Create tools + executor for the agent. Return empty arrays for chat-only.

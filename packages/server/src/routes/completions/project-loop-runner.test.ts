@@ -82,6 +82,28 @@ describe("buildLoopResumeState", () => {
     });
   });
 
+  it("pins immutable skill digests across approval checkpoints", () => {
+    const digest = `sha256:${"b".repeat(64)}`;
+    const state = buildLoopResumeState(
+      continuation,
+      [],
+      [],
+      undefined,
+      "off",
+      ["frontend-design"],
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      [{ name: "frontend-design", digest }],
+    );
+
+    expect(state?.runtime).toMatchObject({
+      activatedSkills: ["frontend-design"],
+      activatedSkillReferences: [{ name: "frontend-design", digest }],
+    });
+  });
+
   it("pins the parallel tool preference across approval checkpoints", () => {
     const state = buildLoopResumeState(
       continuation,
@@ -194,6 +216,55 @@ describe("buildLoopResumeState", () => {
     });
     const updated = await store.getRun("looprun-1");
     expect(JSON.stringify(updated)).not.toContain("secret-grant");
+  });
+
+  it("fails closed when an immutable skill digest drifts across loop resume", async () => {
+    const store = new MemoryLoopRunStore();
+    const pinnedDigest = `sha256:${"1".repeat(64)}`;
+    await store.createRun({
+      id: "looprun-skill-drift",
+      loop: { name: "resume-loop" },
+      agentName: "assistant",
+      context: {},
+    });
+    await store.updateRun("looprun-skill-drift", {
+      status: "approval_approved",
+      resume: {
+        context: {},
+        steps: [{ type: "tool", tool: "probe", next: "end" } as any],
+        runtime: {
+          activatedSkills: ["reviewer"],
+          activatedSkillReferences: [{ name: "reviewer", digest: pinnedDigest }],
+        },
+        createdAt: new Date().toISOString(),
+      },
+    });
+    const deps = {
+      getAgents: async () => [{ name: "assistant", model: "test", skills: ["reviewer"] }],
+      getConfig: () => ({}),
+      getMemoryStore: () => null,
+      getSessionStore: () => null,
+      getStore: () => null,
+      emit: () => {},
+      getLoopRunStore: () => store,
+      getProjectLoop: async () => ({
+        name: "resume-loop",
+        start: "probe",
+        steps: { probe: { type: "tool", tool: "probe", next: "end" } },
+      }),
+      resolveSkillActivations: vi.fn(async () => [{
+        name: "reviewer",
+        digest: `sha256:${"2".repeat(64)}`,
+      }]),
+    } as unknown as CompletionRouteDeps;
+
+    await expect(resumeProjectLoopRun({ deps, runId: "looprun-skill-drift" }))
+      .rejects.toThrow(/skill versions do not match/i);
+    expect(deps.resolveSkillActivations).toHaveBeenCalledWith({
+      agentConfig: expect.objectContaining({ name: "assistant" }),
+      names: ["reviewer"],
+      pinned: [{ name: "reviewer", digest: pinnedDigest }],
+    });
   });
 
   it("fails closed when trusted scope changes across a loop resume", async () => {

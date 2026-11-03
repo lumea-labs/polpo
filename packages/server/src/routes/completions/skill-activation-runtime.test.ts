@@ -88,6 +88,33 @@ describe("per-request skill activation", () => {
     );
   });
 
+  it("freezes host-resolved skill digests before prompt or loop execution", async () => {
+    const digest = `sha256:${"a".repeat(64)}`;
+    const resolveSkillActivations = vi.fn(async () => [{ name: "frontend-design", digest }]);
+    const buildRuntimePrompt = vi.fn(async () => "runtime prompt");
+    const prepared = await prepareChatCompletionExecution(deps({
+      resolveSkillActivations,
+      buildRuntimePrompt,
+    }), {
+      ...requestBase,
+      agent: "builder",
+      polpo: { skills: ["frontend-design"] },
+    });
+
+    expect(prepared.kind).toBe("chat");
+    expect(resolveSkillActivations).toHaveBeenCalledWith({
+      agentConfig: expect.objectContaining({ name: "builder" }),
+      names: ["frontend-design"],
+    });
+    expect(buildRuntimePrompt).toHaveBeenCalledWith(
+      expect.any(Object),
+      expect.objectContaining({
+        activatedSkills: ["frontend-design"],
+        activatedSkillReferences: [{ name: "frontend-design", digest }],
+      }),
+    );
+  });
+
   it("rejects a skill that is not assigned to the effective agent", async () => {
     const buildRuntimePrompt = vi.fn(async () => "must not run");
     const prepared = await prepareChatCompletionExecution(deps({ buildRuntimePrompt }), {
@@ -153,6 +180,7 @@ describe("per-request skill activation", () => {
     expect(prepared.kind).toBe("project-loop");
     if (prepared.kind !== "project-loop") throw new Error("Expected project loop");
     expect(prepared.activatedSkills).toEqual(["accessibility-audit"]);
+    expect(prepared.activatedSkillReferences).toEqual([{ name: "accessibility-audit" }]);
   });
 
   it("does not infer skills from slash-prefixed message text", async () => {
