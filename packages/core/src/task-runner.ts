@@ -30,6 +30,7 @@ import {
 import type { RuntimeGuardrailAuditEvent } from "./guardrails/index.js";
 import { isConditionalTaskExecutionStore, isTaskExecutionStore, taskExecutionReference, TaskExecutionError, type TaskExecutionReference, type TaskDispatchOverrides } from "./task-execution.js";
 import { claimTaskDispatch, authorizeTaskDispatch, isTaskDispatchActive } from "./task-dispatch.js";
+import { requireAssignedActivatedSkills } from "./skill-activation.js";
 
 /**
  * Durable turns: max age of a resume checkpoint before orphan recovery
@@ -816,6 +817,10 @@ export class TaskRunner {
     const invocation = await authorizeTaskDispatch(this.ctx, {
       source: task, run: initialRun, invocation: { task, agent, agentIdentity, overrides },
       prepare: async effective => {
+        const skills = requireAssignedActivatedSkills(
+          effective.task.skills,
+          effective.agent.skills,
+        );
         // Resolve the effective model, loop and sandbox BEFORE consent. The
         // returned values are used unchanged after approval, including resume.
         if (effective.agent.model && this.ctx.validateProviderKeys) {
@@ -825,6 +830,7 @@ export class TaskRunner {
         }
         executionRoute = await this.resolveTaskExecutionRoute(effective.task, effective.agent);
         return { ...effective, task: { ...effective.task,
+          ...(skills ? { skills } : {}),
           ...(executionRoute?.mode === "loop" ? { loop: executionRoute.loop } : {}),
           executionMode: resolveExecutionMode(effective.task, effective.agent, this.ctx.config.settings),
           sandbox: resolveRuntimeSandboxOptions(this.ctx.config.settings, effective.agent, effective.task),

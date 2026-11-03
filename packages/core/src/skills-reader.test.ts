@@ -3,6 +3,7 @@ import {
   assembleSkillRead,
   buildProgressiveSkillPrompt,
   buildSkillPrompt,
+  listSkillResources,
   normalizeSkillResourcePath,
   readSkillResource,
   SkillResourceError,
@@ -59,7 +60,8 @@ describe("buildProgressiveSkillPrompt", () => {
     const prompt = buildProgressiveSkillPrompt(skills);
 
     expect(prompt).toContain("Always use `skill_read` for assigned skill instructions and resources");
-    expect(prompt).toContain("Do not use workspace file tools or shell commands");
+    expect(prompt).toContain("may use already-authorized filesystem or shell tools");
+    expect(prompt).toContain("does not grant any tool");
     expect(prompt).toContain("automatically includes the textual files bundled under `references/`");
     expect(prompt).toContain("`frontend-design`");
     expect(prompt).not.toContain("Use the established design system.");
@@ -169,6 +171,23 @@ describe("skill bundle resource reading", () => {
       path: "references/design-system.md",
       content: "Use the project tokens.",
     });
+  });
+
+  it("inventories references, scripts, assets, and other regular files", async () => {
+    const fs = createTreeFs({
+      "/project/.polpo/skills/frontend-design/SKILL.md": "Instructions",
+      "/project/.polpo/skills/frontend-design/references/guide.md": "Guide",
+      "/project/.polpo/skills/frontend-design/scripts/check.mjs": "run()",
+      "/project/.polpo/skills/frontend-design/assets/logo.bin": "\u0000\u0001",
+      "/project/.polpo/skills/frontend-design/LICENSE": "Apache-2.0",
+    });
+
+    await expect(listSkillResources(fs, skill)).resolves.toEqual([
+      { path: "LICENSE", kind: "other", bytes: 10 },
+      { path: "assets/logo.bin", kind: "asset", bytes: 2 },
+      { path: "references/guide.md", kind: "reference", bytes: 5 },
+      { path: "scripts/check.mjs", kind: "script", bytes: 5 },
+    ]);
   });
 
   it.each([

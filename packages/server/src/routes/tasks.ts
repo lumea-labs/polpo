@@ -343,6 +343,7 @@ export function taskRoutes(getDeps: () => {
       description: body.description,
       assignTo: body.assignTo,
       loop: body.loop,
+      skills: body.skills,
       expectations: body.expectations,
       expectedOutcomes: body.expectedOutcomes,
       dependsOn: body.dependsOn,
@@ -384,6 +385,9 @@ export function taskRoutes(getDeps: () => {
     }
     if (body.loop !== undefined) {
       await deps.taskStore.updateTask(taskId, { loop: body.loop });
+    }
+    if (body.skills !== undefined) {
+      await deps.taskStore.updateTask(taskId, { skills: body.skills ?? undefined });
     }
     if (body.expectations !== undefined) {
       await deps.updateTaskExpectations(taskId, body.expectations);

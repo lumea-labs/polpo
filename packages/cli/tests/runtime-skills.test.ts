@@ -2,6 +2,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { digestSkillBundle } from "@polpo-ai/core/skill-bundle";
 import {
   assignRuntimeSkills,
   discoverRuntimeSkills,
@@ -9,6 +10,7 @@ import {
   listLocalRuntimeSkills,
   readRuntimeSkillsLock,
   removeRuntimeSkill,
+  skillBundleDigest,
   unassignRuntimeSkills,
 } from "../src/util/runtime-skills.js";
 import { withRuntimeSkillSource } from "../src/util/runtime-skill-source.js";
@@ -38,6 +40,17 @@ beforeEach(() => {
 afterEach(() => fs.rmSync(root, { recursive: true, force: true }));
 
 describe("runtime skill management", () => {
+  it("uses the same canonical bundle digest as the management API", async () => {
+    const bundle = {
+      name: "testing",
+      files: [
+        { path: "SKILL.md", content: Buffer.from("skill").toString("base64"), encoding: "base64" as const },
+        { path: "assets/data.bin", content: Buffer.from([0, 1, 2]).toString("base64"), encoding: "base64" as const },
+      ],
+    };
+    expect(skillBundleDigest(bundle)).toBe(await digestSkillBundle(bundle));
+  });
+
   it("discovers complete bundles and installs every resource binary-safely", () => {
     const skillDir = path.join(sourceDir, "skills", "frontend-design");
     write(path.join(skillDir, "SKILL.md"), skillMarkdown("frontend-design"));
@@ -123,8 +136,8 @@ describe("runtime skill management", () => {
   });
 
   it("rejects duplicate skill names before installation", () => {
-    write(path.join(sourceDir, "one", "SKILL.md"), skillMarkdown("duplicate"));
-    write(path.join(sourceDir, "two", "SKILL.md"), skillMarkdown("duplicate"));
+    write(path.join(sourceDir, "one", "duplicate", "SKILL.md"), skillMarkdown("duplicate"));
+    write(path.join(sourceDir, "two", "duplicate", "SKILL.md"), skillMarkdown("duplicate"));
     expect(() => discoverRuntimeSkills(sourceDir)).toThrow('Duplicate skill name "duplicate"');
   });
 });

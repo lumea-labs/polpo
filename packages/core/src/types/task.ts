@@ -120,6 +120,8 @@ export interface Task {
   /** Project loop this task runs (a name in the agent's assignedLoops, or an
    *  inline loop). Explicit — omitted means the agent runs as-is, no loop. */
   loop?: string;
+  /** Assigned skills to apply explicitly for this execution. Additive: other assigned skills remain discoverable. */
+  skills?: string[];
   group?: string;
   /** ID of the mission this task belongs to (set when created via executeMission). */
   missionId?: string;

@@ -76,6 +76,7 @@ import type {
   SkillIndexEntry,
   SkillIndex,
   SkillBundle,
+  SkillBundleReceipt,
   NotificationChannelConfig,
   NotificationRecord,
   NotificationStats,
@@ -1668,10 +1669,60 @@ export class PolpoClient {
   }
 
   /** Atomically replace every file in a skill directory. */
-  putSkillBundle(bundle: SkillBundle): Promise<{ name: string; files: number }> {
-    return this.put<{ name: string; files: number }>(`/skills/${encodeURIComponent(bundle.name)}/bundle`, {
+  putSkillBundle(bundle: SkillBundle): Promise<SkillBundleReceipt> {
+    return this.put<SkillBundleReceipt>(`/skills/${encodeURIComponent(bundle.name)}/bundle`, {
       files: bundle.files,
     });
+  }
+
+  /** Import one portable .skill/.zip archive without encoding its bytes in JSON. */
+  async importSkillArchive(
+    archive: Blob | Uint8Array,
+    options: {
+      filename?: string;
+      conflict?: "error" | "replace";
+      assignTo?: string;
+      signal?: AbortSignal;
+    } = {},
+  ): Promise<SkillBundleReceipt> {
+    const filename = options.filename ?? "skill.skill";
+    if (!filename.toLocaleLowerCase("en-US").match(/\.(?:skill|zip)$/u)) {
+      throw new TypeError("Skill archive filename must end in .skill or .zip");
+    }
+    const form = new FormData();
+    const blob = archive instanceof Blob
+      ? archive
+      : new Blob([Uint8Array.from(archive)], { type: "application/zip" });
+    form.set("archive", blob, filename);
+    if (options.conflict) form.set("conflict", options.conflict);
+    if (options.assignTo) form.set("assignTo", options.assignTo);
+    const response = await this.fetchFn(this.apiUrl("/skills/import"), {
+      method: "POST",
+      headers: { ...this.headers },
+      body: form,
+      signal: options.signal,
+    });
+    const json = await response.json().catch(() => null) as ApiResult<SkillBundleReceipt> | null;
+    if (!response.ok || !json?.ok) {
+      throw new PolpoApiError(
+        json && !json.ok ? json.error : `Skill import failed with status ${response.status}`,
+        json && !json.ok ? json.code : "INTERNAL_ERROR",
+        response.status,
+        json && !json.ok ? json.details ?? json.data : undefined,
+      );
+    }
+    return json.data;
+  }
+
+  /** Download one deterministic portable .skill archive. */
+  async downloadSkillArchive(name: string, options?: { signal?: AbortSignal }): Promise<Uint8Array<ArrayBuffer>> {
+    const response = await this.fetchFn(this.apiUrl(`/skills/${encodeURIComponent(name)}/archive`), {
+      method: "GET",
+      headers: { ...this.headers },
+      signal: options?.signal,
+    });
+    if (!response.ok) throw await responseError(response, "Skill archive download failed");
+    return new Uint8Array(await response.arrayBuffer());
   }
 
   /** Get the full content of an orchestrator skill by name. */

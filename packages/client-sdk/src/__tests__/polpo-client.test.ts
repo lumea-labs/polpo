@@ -134,6 +134,26 @@ describe("PolpoClient queued caller context", () => {
       { url: "https://api.polpo.sh/v1/missions", body: expect.objectContaining(context) },
     ]);
   });
+
+  it("forwards explicit skill activation on Task create and update", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>()
+      .mockImplementation(async () => Response.json({ ok: true, data: { id: "task-1" } }));
+    const client = new PolpoClient({ baseUrl: "https://api.polpo.sh", fetch });
+
+    await client.createTask({
+      title: "Build",
+      description: "Build the app",
+      assignTo: "builder",
+      skills: ["frontend-design"],
+    });
+    await client.updateTask("task-1", { skills: ["testing"] });
+
+    expect(fetch.mock.calls.map(([, init]) => JSON.parse(init!.body as string)))
+      .toEqual([
+        expect.objectContaining({ skills: ["frontend-design"] }),
+        expect.objectContaining({ skills: ["testing"] }),
+      ]);
+  });
 });
 
 describe("PolpoClient Mission execution", () => {
@@ -238,6 +258,49 @@ describe("PolpoClient skill bundles", () => {
       "https://api.polpo.sh/v1/skills/frontend-design/bundle",
       expect.objectContaining({ method: "PUT", body: JSON.stringify({ files: bundle.files }) }),
     );
+  });
+
+  it("imports and downloads portable skill archives without JSON base64", async () => {
+    const receipt = {
+      name: "frontend-design",
+      digest: `sha256:${"a".repeat(64)}`,
+      files: 2,
+      uncompressedBytes: 42,
+      changed: true,
+      source: "archive",
+      warnings: [],
+    };
+    const archive = new Uint8Array([80, 75, 3, 4]);
+    const fetch = vi.fn<typeof globalThis.fetch>()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true, data: receipt }), {
+        status: 201,
+        headers: { "content-type": "application/json" },
+      }))
+      .mockResolvedValueOnce(new Response(archive, {
+        status: 200,
+        headers: { "content-type": "application/zip" },
+      }));
+    const client = new PolpoClient({ baseUrl: "https://api.polpo.sh", apiKey: "secret", fetch });
+
+    await expect(client.importSkillArchive(archive, {
+      filename: "frontend-design.skill",
+      conflict: "replace",
+      assignTo: "support",
+    })).resolves.toEqual(receipt);
+    await expect(client.downloadSkillArchive("frontend-design")).resolves.toEqual(archive);
+
+    const upload = fetch.mock.calls[0];
+    expect(upload[0]).toBe("https://api.polpo.sh/v1/skills/import");
+    expect(upload[1]).toMatchObject({ method: "POST", headers: { Authorization: "Bearer secret" } });
+    expect(upload[1]?.headers).not.toHaveProperty("Content-Type");
+    const form = upload[1]?.body as FormData;
+    expect(form.get("archive")).toBeInstanceOf(File);
+    expect(form.get("conflict")).toBe("replace");
+    expect(form.get("assignTo")).toBe("support");
+    expect(fetch).toHaveBeenNthCalledWith(2, "https://api.polpo.sh/v1/skills/frontend-design/archive", expect.objectContaining({
+      method: "GET",
+      headers: { Authorization: "Bearer secret" },
+    }));
   });
 });
 

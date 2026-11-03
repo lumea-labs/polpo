@@ -98,6 +98,8 @@ export interface SpawnContext {
   data?: import("./data/index.js").DataClient;
   /** Absolute path to the .polpo directory. Used for skill loading, logs, etc. */
   polpoDir: string;
+  /** Assigned skills explicitly selected for this execution. Additive only. */
+  activatedSkills?: readonly string[];
   /** Current logical run id, when the host has allocated one. */
   runId?: string;
   /** Host-owned immutable identity supplied to custom tools for this run. */

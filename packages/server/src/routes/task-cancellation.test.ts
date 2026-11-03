@@ -29,6 +29,42 @@ describe.each(["kill", "force-fail"])("Task %s execution errors", endpoint => {
   });
 });
 
+it("forwards explicit skill activation through Task create and update", async () => {
+  const createTask = vi.fn(async (input) => ({ id: "task-1", ...input }));
+  const updateTask = vi.fn(async () => undefined);
+  const taskStore = {
+    getTask: vi.fn(async () => ({ id: "task-1" })),
+    updateTask,
+  };
+  const app = taskRoutes(() => ({
+    taskStore,
+    createTask,
+  } as never));
+
+  const created = await app.request("/", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      title: "Build",
+      description: "Build the app",
+      assignTo: "builder",
+      skills: ["frontend-design"],
+    }),
+  });
+  expect(created.status).toBe(201);
+  expect(createTask).toHaveBeenCalledWith(expect.objectContaining({
+    skills: ["frontend-design"],
+  }));
+
+  const updated = await app.request("/task-1", {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ skills: ["testing"] }),
+  });
+  expect(updated.status).toBe(200);
+  expect(updateTask).toHaveBeenCalledWith("task-1", { skills: ["testing"] });
+});
+
 it("force-fail retains the attempt captured by its HTTP existence check", async () => {
   const root = mkdtempSync(join(tmpdir(), "polpo-http-cancel-"));
   const taskStore = new FileTaskStore(root), runStore = new FileRunStore(root);

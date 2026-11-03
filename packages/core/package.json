@@ -230,6 +230,14 @@
       "types": "./dist/skill-bundle.d.ts",
       "import": "./dist/skill-bundle.js"
     },
+    "./skill-archive": {
+      "types": "./dist/skill-archive.d.ts",
+      "import": "./dist/skill-archive.js"
+    },
+    "./skill-manifest": {
+      "types": "./dist/skill-manifest.d.ts",
+      "import": "./dist/skill-manifest.js"
+    },
     "./adapter": {
       "types": "./dist/adapter.d.ts",
       "import": "./dist/adapter.js"
@@ -373,7 +381,9 @@
     "@sinclair/typebox": "^0.34.0",
     "ajv": "^8.20.0",
     "cron-parser": "^5.6.2",
+    "fflate": "^0.8.2",
     "nanoid": "^5.1.2",
+    "yaml": "^2.8.2",
     "zod": "^4.3.6"
   },
   "devDependencies": {

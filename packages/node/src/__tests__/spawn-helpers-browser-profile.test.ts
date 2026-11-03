@@ -1,4 +1,6 @@
 import { describe, it, expect, afterEach } from "vitest";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { prepareSpawn } from "../adapters/spawn-helpers.js";
 import type { AgentConfig } from "@polpo-ai/core";
@@ -66,6 +68,44 @@ describe("runtime context prompt", () => {
     expect(withContext).toContain("## Retrieved Memory");
     expect(withContext.match(/## Retrieved Memory/g)).toHaveLength(1);
     expect(withContext).toContain("preferred report format");
+  });
+});
+
+describe("task skill activation prompt", () => {
+  it("prioritizes only explicitly selected skills without hiding other assignments", () => {
+    const root = mkdtempSync(join(tmpdir(), "polpo-task-skills-"));
+    const polpoDir = join(root, ".polpo");
+    try {
+      for (const [name, marker] of [["general", "GENERAL_MARKER"], ["testing", "TESTING_MARKER"]]) {
+        const directory = join(polpoDir, "skills", name);
+        mkdirSync(directory, { recursive: true });
+        writeFileSync(join(directory, "SKILL.md"), `---\nname: ${name}\ndescription: ${name}\n---\n${marker}\n`);
+      }
+      const skillAgent = {
+        ...agent,
+        skills: ["general", "testing"],
+      } as unknown as AgentConfig;
+      const prompt = prepareSpawn(skillAgent, root, {
+        polpoDir,
+        activatedSkills: ["testing"],
+      }).systemPrompt;
+
+      expect(prompt).toContain("TESTING_MARKER");
+      expect(prompt).toContain("GENERAL_MARKER");
+      expect(prompt.indexOf("TESTING_MARKER")).toBeLessThan(prompt.indexOf("GENERAL_MARKER"));
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("fails before model setup when an activated assignment has no installed bundle", () => {
+    expect(() => prepareSpawn({
+      ...agent,
+      skills: ["missing-skill"],
+    } as unknown as AgentConfig, "/proj", {
+      ...ctx,
+      activatedSkills: ["missing-skill"],
+    })).toThrow(/bundle is not installed/i);
   });
 });
 

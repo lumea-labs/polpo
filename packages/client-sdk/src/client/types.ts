@@ -158,6 +158,7 @@ import type {
   SkillIndexEntry,
   SkillBundle,
   SkillBundleFile,
+  SkillBundleReceipt,
   SkillInfo,
   SkillWithAssignment,
   LoopDisplayMetadata,
@@ -308,6 +309,7 @@ export type {
   SkillIndexEntry,
   SkillBundle,
   SkillBundleFile,
+  SkillBundleReceipt,
   SkillInfo,
   SkillWithAssignment,
   LoopDisplayMetadata,
@@ -708,6 +710,10 @@ export interface CreateTaskRequest {
   title: string;
   description: string;
   assignTo: string;
+  /** Explicit project loop for this task. */
+  loop?: string;
+  /** Assigned skills to prioritize for this execution. Other assigned skills remain discoverable. */
+  skills?: string[];
   /** Runtime sandbox policy for this task. */
   sandbox?: RuntimeSandboxOptions;
   /** Create task as draft (won't be picked up until queued). Default: false. */
@@ -728,6 +734,9 @@ export interface CreateTaskRequest {
 export interface UpdateTaskRequest {
   description?: string;
   assignTo?: string;
+  loop?: string;
+  /** Set null to clear a previously persisted explicit selection. */
+  skills?: string[] | null;
   sandbox?: RuntimeSandboxOptions;
   status?: TaskStatus;
   expectations?: TaskExpectation[];

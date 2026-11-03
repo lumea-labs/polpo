@@ -273,6 +273,12 @@ polpo skills add owner/repository --skill frontend-design --agent builder
 # Local custom bundles work the same way.
 polpo skills add ./my-skill --agent builder
 
+# Portable Agent Skills archives are accepted directly (.skill is ZIP).
+polpo skills add ./frontend-design.skill --agent builder
+
+# Export a deterministic archive for another project or surface.
+polpo skills pack frontend-design -o frontend-design.skill
+
 # Inspect, update, or deploy the project explicitly.
 polpo skills list
 polpo skills update frontend-design
@@ -283,7 +289,9 @@ polpo deploy
 the selected agents' `skills` arrays, and records source provenance in
 `.polpo/skills.lock.json`. It does not deploy unless `--deploy` is present.
 `polpo deploy` and `polpo pull` preserve all nested text and binary files.
-Symlinks are rejected rather than followed outside the bundle.
+Archive import is atomic. Traversal paths, duplicate or case-colliding paths,
+symlinks, encrypted archives, ZIP bombs, malformed manifests, and oversized
+bundles are rejected before the installed directory is replaced.
 
 At runtime, `skill_list` exposes only the compact assigned-skill index.
 `skill_read({ name })` loads the selected `SKILL.md` and automatically
@@ -293,7 +301,10 @@ path. An explicit `path: "SKILL.md"` reads only the entrypoint without assemblin
 references. Skill authors can use ordinary bundle-relative references without
 adding Polpo-specific reading instructions. Use
 `skill_read({ name, path })` for an exact resource that was not loaded
-automatically; skill resources are never read through workspace file tools.
+automatically. The default read also returns a complete resource inventory and
+the installed bundle root. Scripts and assets are never executed automatically
+and never grant tools; an agent may use them only through filesystem or shell
+tools that were already authorized for that execution.
 Assigning at least one skill also makes `skill_list` and `skill_read`
 available through the agent's static agent, chat, channel, Loop, and step
 allowlists without repeating those tool names. Request-scoped restrictions,
@@ -308,6 +319,21 @@ polpo skills unassign frontend-design --agent builder
 polpo skills remove frontend-design
 polpo skills update --all
 ```
+
+The management API supports the same portable format without JSON/base64
+wrapping:
+
+```ts
+const receipt = await client.importSkillArchive(archiveBytes, {
+  filename: "frontend-design.skill",
+  conflict: "replace",
+  assignTo: "builder",
+});
+const exported = await client.downloadSkillArchive(receipt.name);
+```
+
+Every mutation returns a SHA-256 content digest. Importing identical bytes is
+idempotent; importing different content requires an explicit `replace` policy.
 
 Custom tools can keep host identity out of the model-visible parameter schema.
 Declare a separate binding schema and map it only to immutable invocation

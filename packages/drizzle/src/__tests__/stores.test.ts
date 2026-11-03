@@ -102,6 +102,26 @@ describe("DrizzleTaskStore", () => {
     });
   });
 
+  it("persists additive task skill activation", async () => {
+    const task = await stores.taskStore.createTask({
+      title: "Skill task",
+      description: "Apply the assigned skill",
+      assignTo: "claude",
+      skills: ["frontend-design", "testing"],
+      dependsOn: [],
+      maxRetries: 2,
+      expectations: [],
+      metrics: [],
+    });
+
+    expect((await stores.taskStore.getTask(task.id))?.skills).toEqual([
+      "frontend-design",
+      "testing",
+    ]);
+    expect((await stores.taskStore.updateTask(task.id, { skills: ["testing"] })).skills)
+      .toEqual(["testing"]);
+  });
+
   it("createTask persists bounded runtime routing labels", async () => {
     const task = await stores.taskStore.createTask({
       title: "Paid export",

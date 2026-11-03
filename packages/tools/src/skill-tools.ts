@@ -62,7 +62,7 @@ export function createSkillReadTool(
     name: "skill_read",
     label: "Read Skill",
     description:
-      "Read an assigned skill bundle. Omit path or leave it blank to load SKILL.md plus its textual references automatically. Set path only for one exact bundle resource that was omitted or is needed explicitly. Never use workspace file tools for skill resources.",
+      "Read an assigned skill bundle. Omit path to load SKILL.md, bounded textual references, and the complete supporting-resource inventory. Set path only for one exact textual resource. Scripts and assets may be used from the disclosed bundle root only through already-authorized tools.",
     annotations: {
       readOnlyHint: true,
       idempotentHint: true,
@@ -127,8 +127,21 @@ export function createSkillReadTool(
             if (assembled.omitted.some((item) => item.reason === "budget_exceeded" || item.reason === "read_failed")) {
               parts.push(
                 "",
-                "Use `skill_read` with this skill name and the exact bundle-relative `path` for a required textual resource listed above. Do not use workspace file tools.",
+                "Use `skill_read` with this skill name and the exact bundle-relative `path` for a required textual resource listed above.",
               );
+            }
+          }
+          if (assembled.resources.length > 0) {
+            parts.push(
+              "",
+              "## Bundled resource inventory",
+              "",
+              `Bundle root: ${skill.path}`,
+              "",
+              "A skill does not grant tools. Use these paths only with already-authorized filesystem or shell tools when the skill instructions require them.",
+            );
+            for (const resource of assembled.resources) {
+              parts.push(`- ${resource.path} (${resource.kind}, ${resource.bytes} bytes)`);
             }
           }
 
@@ -144,6 +157,9 @@ export function createSkillReadTool(
                 bytes: reference.bytes,
               })),
               omitted: assembled.omitted,
+              resources: assembled.resources,
+              bundleRoot: skill.path,
+              digest: skill.digest,
               totalReferenceBytes: assembled.totalReferenceBytes,
             },
           };

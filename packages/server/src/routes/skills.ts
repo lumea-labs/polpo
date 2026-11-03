@@ -15,11 +15,20 @@ import { resolve, join, basename, dirname } from "node:path";
 import type { FileSystem } from "@polpo-ai/core";
 import type { Shell } from "@polpo-ai/core";
 import {
+  decodeBase64,
+  digestSkillBundle,
   validateSkillBundleFiles,
   validateSkillName,
   type SkillBundle,
   type SkillBundleFile,
 } from "@polpo-ai/core/skill-bundle";
+import {
+  packSkillArchive,
+  SKILL_ARCHIVE_MAX_COMPRESSED_BYTES,
+  SkillArchiveError,
+  unpackSkillArchive,
+} from "@polpo-ai/core/skill-archive";
+import { parseSkillManifest, type SkillManifest } from "@polpo-ai/core/skill-manifest";
 // Dynamic import to work around workspace version resolution.
 // At publish time, @polpo-ai/core@^0.3.5 will be resolved correctly.
 // @ts-ignore — resolved at publish time with @polpo-ai/core@^0.3.5
@@ -118,6 +127,7 @@ async function replaceSkillBundle(
   polpoDir: string,
   name: string,
   files: readonly SkillBundleFile[],
+  finalize?: () => Promise<void>,
 ): Promise<void> {
   const target = join(polpoDir, "skills", name);
   const transactionRoot = join(polpoDir, ".skill-bundle-staging", `${name}-${randomUUID()}`);
@@ -133,6 +143,7 @@ async function replaceSkillBundle(
     if (targetExists) await fs.rename(target, backup);
     try {
       await fs.rename(staged, target);
+      await finalize?.();
     } catch (error) {
       try {
         if (await fs.exists(target)) await fs.remove(target);
@@ -178,6 +189,106 @@ export interface SkillRouteDeps {
   /** Optional metadata index. When provided, list/install/remove mirror
    *  through it so GET /skills can answer from a fast lookup. */
   skillStore?: import("@polpo-ai/core").SkillStore;
+  /** Invalidate host runtime caches after a durable bundle mutation. */
+  onSkillChanged?: (name: string, digest: string | null) => Promise<void> | void;
+}
+
+interface ValidatedBundle {
+  bundle: SkillBundle;
+  manifest: SkillManifest;
+  digest: string;
+  bytes: number;
+}
+
+async function validateBundle(name: string, files: SkillBundleFile[]): Promise<ValidatedBundle> {
+  const nameError = validateSkillName(name);
+  if (nameError) throw new TypeError(nameError);
+  const validationError = validateSkillBundleFiles(files);
+  if (validationError) throw new TypeError(validationError);
+  const skillFile = files.find((file) => file.path === "SKILL.md")!;
+  let raw: string;
+  try {
+    raw = new TextDecoder("utf-8", { fatal: true }).decode(decodeBase64(skillFile.content));
+  } catch {
+    throw new TypeError("SKILL.md must be valid UTF-8");
+  }
+  const parsed = parseSkillManifest(raw, { mode: "strict", directoryName: name });
+  return {
+    bundle: { name, files },
+    manifest: parsed.manifest,
+    digest: await digestSkillBundle({ name, files }),
+    bytes: files.reduce((total, file) => total + decodeBase64(file.content).byteLength, 0),
+  };
+}
+
+async function currentBundle(
+  fs: FileSystem,
+  polpoDir: string,
+  name: string,
+): Promise<{ bundle: SkillBundle; digest: string } | null> {
+  const target = join(polpoDir, "skills", name);
+  if (!(await fs.exists(target))) return null;
+  const bundle = await readSkillBundle(fs, target, name);
+  return { bundle, digest: await digestSkillBundle(bundle) };
+}
+
+async function persistValidatedBundle(
+  deps: SkillRouteDeps,
+  input: ValidatedBundle,
+  options: { conflict: "error" | "replace"; source: string },
+): Promise<{ receipt: Record<string, unknown>; created: boolean; conflict: boolean }> {
+  const existing = await currentBundle(deps.fs, deps.polpoDir, input.bundle.name);
+  if (existing?.digest === input.digest) {
+    return {
+      receipt: skillReceipt(input, options.source, false),
+      created: false,
+      conflict: false,
+    };
+  }
+  if (existing && options.conflict === "error") {
+    return {
+      receipt: {
+        ...skillReceipt(input, options.source, false),
+        currentDigest: existing.digest,
+      },
+      created: false,
+      conflict: true,
+    };
+  }
+
+  await replaceSkillBundle(
+    deps.fs,
+    deps.polpoDir,
+    input.bundle.name,
+    input.bundle.files,
+    async () => {
+      await deps.skillStore?.upsert({
+        name: input.bundle.name,
+        description: input.manifest.description,
+        source: options.source,
+        installedAt: new Date().toISOString(),
+        allowedTools: input.manifest.allowedTools,
+      });
+    },
+  );
+  await deps.onSkillChanged?.(input.bundle.name, input.digest);
+  return {
+    receipt: skillReceipt(input, options.source, true),
+    created: !existing,
+    conflict: false,
+  };
+}
+
+function skillReceipt(input: ValidatedBundle, source: string, changed: boolean): Record<string, unknown> {
+  return {
+    name: input.bundle.name,
+    digest: input.digest,
+    files: input.bundle.files.length,
+    uncompressedBytes: input.bytes,
+    changed,
+    source,
+    warnings: [],
+  };
 }
 
 // ── Helpers ──
@@ -303,6 +414,104 @@ export function skillRoutes(getDeps: () => SkillRouteDeps): OpenAPIHono {
     },
   );
 
+  // POST /import — import one portable .skill/.zip archive.
+  app.post("/import", async (c: any) => {
+    const deps = getDeps();
+    const contentLength = Number(c.req.header("content-length"));
+    if (Number.isFinite(contentLength) && contentLength > SKILL_ARCHIVE_MAX_COMPRESSED_BYTES + 1_048_576) {
+      return c.json({ ok: false, error: "Skill archive request is too large", code: "archive_limit_exceeded" }, 413);
+    }
+    let form: Record<string, string | File>;
+    try {
+      form = await c.req.parseBody();
+    } catch {
+      return c.json({ ok: false, error: "Invalid multipart skill archive", code: "invalid_archive" }, 400);
+    }
+    const archive = form.archive;
+    if (!(archive instanceof File)) {
+      return c.json({ ok: false, error: "Multipart field archive must contain a .skill or .zip file", code: "invalid_archive" }, 400);
+    }
+    if (archive.size === 0 || archive.size > SKILL_ARCHIVE_MAX_COMPRESSED_BYTES) {
+      return c.json({ ok: false, error: "Skill archive compressed size is outside the supported limit", code: "archive_limit_exceeded" }, 413);
+    }
+    const filename = archive.name.toLocaleLowerCase("en-US");
+    if (!filename.endsWith(".skill") && !filename.endsWith(".zip")) {
+      return c.json({ ok: false, error: "Skill archive filename must end in .skill or .zip", code: "invalid_archive" }, 400);
+    }
+    const conflict = form.conflict === undefined ? "error" : form.conflict;
+    if (conflict !== "error" && conflict !== "replace") {
+      return c.json({ ok: false, error: "conflict must be error or replace", code: "invalid_request" }, 400);
+    }
+    const assignTo = typeof form.assignTo === "string" && form.assignTo.trim() ? form.assignTo.trim() : undefined;
+    let assignment: { name: string; skills: string[] } | undefined;
+    if (assignTo) {
+      if (!deps.updateAgentSkills) {
+        return c.json({ ok: false, error: "Skill assignment not supported", code: "assignment_unsupported" }, 400);
+      }
+      const agent = (await deps.getAgents()).find((candidate) => candidate.name === assignTo);
+      if (!agent) return c.json({ ok: false, error: `Agent "${assignTo}" not found`, code: "agent_not_found" }, 400);
+      assignment = { name: agent.name, skills: agent.skills ?? [] };
+    }
+
+    try {
+      const imported = await unpackSkillArchive(new Uint8Array(await archive.arrayBuffer()));
+      const validated = await validateBundle(imported.bundle.name, imported.bundle.files);
+      const stored = await persistValidatedBundle(deps, validated, { conflict, source: "archive" });
+      if (stored.conflict) {
+        return c.json({
+          ok: false,
+          error: `Skill "${imported.bundle.name}" already exists with different content`,
+          code: "skill_conflict",
+          data: stored.receipt,
+        }, 409);
+      }
+      if (assignment && !assignment.skills.includes(imported.bundle.name)) {
+        await deps.updateAgentSkills!(assignment.name, [...assignment.skills, imported.bundle.name]);
+        stored.receipt.assignedTo = [assignment.name];
+      }
+      return c.json({ ok: true, data: stored.receipt }, stored.created ? 201 : 200);
+    } catch (error) {
+      const code = error instanceof SkillArchiveError ? error.code : "invalid_skill";
+      return c.json({ ok: false, error: error instanceof Error ? error.message : String(error), code }, 400);
+    }
+  });
+
+  // GET /:name/archive — deterministic portable .skill archive.
+  app.openapi(
+    createRoute({
+      method: "get", path: "/:name/archive", tags: ["Skills"], summary: "Download a portable .skill archive",
+      request: { params: z.object({ name: z.string() }) },
+      responses: {
+        200: { content: { "application/zip": { schema: z.any() } }, description: "Portable skill archive" },
+        400: { content: { "application/json": { schema: z.object({ ok: z.literal(false), error: z.string() }) } }, description: "Invalid skill" },
+        404: { content: { "application/json": { schema: z.object({ ok: z.literal(false), error: z.string() }) } }, description: "Not found" },
+      },
+    }),
+    async (c: any) => {
+      const { fs, polpoDir } = getDeps();
+      const name = c.req.param("name");
+      const nameError = validateSkillName(name);
+      if (nameError) return c.json({ ok: false, error: nameError, code: "invalid_skill_name" }, 400);
+      const target = join(polpoDir, "skills", name);
+      if (!(await fs.exists(target))) return c.json({ ok: false, error: "Skill not found", code: "skill_not_found" }, 404);
+      try {
+        const archive = await packSkillArchive(await readSkillBundle(fs, target, name));
+        const body = new ArrayBuffer(archive.byteLength);
+        new Uint8Array(body).set(archive);
+        return new Response(body, {
+          status: 200,
+          headers: {
+            "content-type": "application/zip",
+            "content-disposition": `attachment; filename="${name}.skill"`,
+            "cache-control": "private, no-store",
+          },
+        });
+      } catch (error) {
+        return c.json({ ok: false, error: error instanceof Error ? error.message : String(error), code: "invalid_skill" }, 400);
+      }
+    },
+  );
+
   // PUT /:name/bundle — atomically create or replace a complete skill directory
   app.openapi(
     createRoute({
@@ -318,38 +527,17 @@ export function skillRoutes(getDeps: () => SkillRouteDeps): OpenAPIHono {
       },
     }),
     async (c: any) => {
-      const { fs, polpoDir, skillStore } = getDeps();
+      const deps = getDeps();
       const name = c.req.param("name");
-      const nameError = validateSkillName(name);
-      if (nameError) return c.json({ ok: false, error: nameError }, 400);
-
       const { files } = await c.req.json() as { files: SkillBundleFile[] };
-      const validationError = validateSkillBundleFiles(files);
-      if (validationError) return c.json({ ok: false, error: validationError }, 400);
-
-      const skillFile = files.find((file) => file.path === "SKILL.md")!;
-      const rawSkill = Buffer.from(skillFile.content, "base64").toString("utf8");
-      const core = await coreImport();
-      const frontmatter = core.parseSkillFrontmatter(rawSkill);
-      if (!frontmatter?.name || frontmatter.name !== name) {
-        return c.json({ ok: false, error: `SKILL.md name must match directory name "${name}"` }, 400);
-      }
-      if (!frontmatter.description) {
-        return c.json({ ok: false, error: "SKILL.md must contain a description" }, 400);
-      }
 
       try {
-        await replaceSkillBundle(fs, polpoDir, name, files);
-        await skillStore?.upsert({
-          name,
-          description: frontmatter.description,
-          source: "local",
-          installedAt: new Date().toISOString(),
-          allowedTools: frontmatter.allowedTools,
-        });
-        return c.json({ ok: true, data: { name, files: files.length } }, 200);
+        const validated = await validateBundle(name, files);
+        const stored = await persistValidatedBundle(deps, validated, { conflict: "replace", source: "bundle" });
+        return c.json({ ok: true, data: stored.receipt }, 200);
       } catch (error) {
-        return c.json({ ok: false, error: error instanceof Error ? error.message : String(error) }, 500);
+        const status = error instanceof TypeError ? 400 : 500;
+        return c.json({ ok: false, error: error instanceof Error ? error.message : String(error) }, status);
       }
     },
   );
@@ -427,35 +615,35 @@ export function skillRoutes(getDeps: () => SkillRouteDeps): OpenAPIHono {
       },
     }),
     async (c: any) => {
-      const { fs, polpoDir, skillStore } = getDeps();
+      const deps = getDeps();
       const { name, description, content, allowedTools } = await c.req.json();
-
-      const targetDir = join(polpoDir, "skills", name);
-      if (await fs.exists(targetDir)) {
+      const nameError = validateSkillName(name);
+      if (nameError) return c.json({ ok: false, error: nameError, code: "invalid_skill_name" }, 400);
+      const targetDir = join(deps.polpoDir, "skills", name);
+      if (await deps.fs.exists(targetDir)) {
         return c.json({ ok: false, error: `Skill "${name}" already exists` }, 400);
       }
-
-      await fs.mkdir(targetDir);
-
-      const fmLines = [`---`, `name: ${name}`, `description: ${description}`];
-      if (allowedTools?.length) {
-        fmLines.push(`allowed-tools:`);
-        for (const t of allowedTools) fmLines.push(`  - ${t}`);
+      const skillContent = [
+        "---",
+        `name: ${name}`,
+        `description: ${JSON.stringify(description)}`,
+        ...(allowedTools?.length ? [`allowed-tools: ${JSON.stringify(allowedTools.join(" "))}`] : []),
+        "---",
+        "",
+        content,
+      ].join("\n");
+      const files: SkillBundleFile[] = [{
+        path: "SKILL.md",
+        content: Buffer.from(skillContent).toString("base64"),
+        encoding: "base64",
+      }];
+      try {
+        const validated = await validateBundle(name, files);
+        const stored = await persistValidatedBundle(deps, validated, { conflict: "error", source: "builder" });
+        return c.json({ ok: true, data: { ...stored.receipt, path: targetDir } });
+      } catch (error) {
+        return c.json({ ok: false, error: error instanceof Error ? error.message : String(error), code: "invalid_skill" }, 400);
       }
-      fmLines.push(`---`, ``);
-
-      await fs.writeFile(join(targetDir, "SKILL.md"), fmLines.join("\n") + content);
-
-      // Mirror to skillStore if wired.
-      await skillStore?.upsert({
-        name,
-        description,
-        source: "local",
-        installedAt: new Date().toISOString(),
-        allowedTools,
-      });
-
-      return c.json({ ok: true, data: { name, path: targetDir } });
     },
   );
 
@@ -470,14 +658,24 @@ export function skillRoutes(getDeps: () => SkillRouteDeps): OpenAPIHono {
       },
     }),
     async (c: any) => {
-      const { fs, polpoDir, skillStore } = getDeps();
+      const { fs, polpoDir, skillStore, getAgents, updateAgentSkills, onSkillChanged } = getDeps();
       const name = c.req.param("name");
+      const nameError = validateSkillName(name);
+      if (nameError) return c.json({ ok: false, error: nameError, code: "invalid_skill_name" }, 400);
       const targetDir = join(polpoDir, "skills", name);
       if (!(await fs.exists(targetDir))) {
         return c.json({ ok: false, error: "Skill not found" }, 404);
       }
+      const assigned = (await getAgents()).filter((agent) => agent.skills?.includes(name));
+      if (assigned.length > 0 && !updateAgentSkills) {
+        return c.json({ ok: false, error: "Skill is assigned and assignment updates are not supported", code: "assignment_unsupported" }, 400);
+      }
+      for (const agent of assigned) {
+        await updateAgentSkills!(agent.name, (agent.skills ?? []).filter((skill) => skill !== name));
+      }
       await fs.remove(targetDir);
       await skillStore?.remove(name);
+      await onSkillChanged?.(name, null);
       return c.json({ ok: true, data: { removed: true, name } });
     },
   );
@@ -496,12 +694,17 @@ export function skillRoutes(getDeps: () => SkillRouteDeps): OpenAPIHono {
       },
     }),
     async (c: any) => {
-      const { getAgents, updateAgentSkills } = getDeps();
+      const { fs, polpoDir, getAgents, updateAgentSkills } = getDeps();
       const skillName = c.req.param("name");
       const { agent: agentName } = await c.req.json();
 
       if (!updateAgentSkills) {
         return c.json({ ok: false, error: "Skill assignment not supported" }, 400);
+      }
+      const nameError = validateSkillName(skillName);
+      if (nameError) return c.json({ ok: false, error: nameError, code: "invalid_skill_name" }, 400);
+      if (!(await fs.exists(join(polpoDir, "skills", skillName)))) {
+        return c.json({ ok: false, error: `Skill "${skillName}" not found`, code: "skill_not_found" }, 404);
       }
 
       const agents = await getAgents();
@@ -574,7 +777,8 @@ export function skillRoutes(getDeps: () => SkillRouteDeps): OpenAPIHono {
       },
     }),
     async (c: any) => {
-      const { fs, shell, polpoDir, getAgents, updateAgentSkills, skillStore, installFs } = getDeps();
+      const deps = getDeps();
+      const { fs, shell, polpoDir, getAgents, updateAgentSkills, installFs } = deps;
       if (!shell) {
         return c.json({ ok: false, error: "Skill installation not available (no shell)" }, 400);
       }
@@ -697,29 +901,16 @@ export function skillRoutes(getDeps: () => SkillRouteDeps): OpenAPIHono {
         }
         try {
           const bundle = await readSkillBundle(scanFs, skill.path, skill.name);
-          const skillFile = bundle.files.find((file) => file.path === "SKILL.md")!;
-          const raw = Buffer.from(skillFile.content, "base64").toString("utf8");
-          const core = await coreImport();
-          const metadata = core.parseSkillFrontmatter(raw);
-          if (!metadata?.name || metadata.name !== skill.name || !metadata.description) {
-            throw new Error(`SKILL.md must define name "${skill.name}" and a description`);
-          }
-          await replaceSkillBundle(fs, polpoDir, skill.name, bundle.files);
-          skill.description = metadata.description;
-          (skill as any).allowedTools = metadata.allowedTools;
+          const validated = await validateBundle(skill.name, bundle.files);
+          const stored = await persistValidatedBundle(deps, validated, { conflict: "replace", source });
+          skill.description = validated.manifest.description;
+          (skill as any).allowedTools = validated.manifest.allowedTools;
+          if (!stored.receipt.changed) skipped.push(skill.name);
         } catch (err) {
           errors.push(`${skill.name}: ${err instanceof Error ? err.message : String(err)}`);
           continue;
         }
         installed.push(skill.name);
-        // Mirror to skillStore for fast-path list reads.
-        await skillStore?.upsert({
-          name: skill.name,
-          description: skill.description,
-          source,
-          installedAt: new Date().toISOString(),
-          allowedTools: (skill as any).allowedTools,
-        }).catch(() => { /* best-effort — fs write already succeeded */ });
       }
 
       // Cleanup cloned repo

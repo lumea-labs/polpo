@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import {
-  parseSkillFrontmatter,
+  parseSkillManifest,
   validateSkillName,
   type SkillBundle,
 } from "@polpo-ai/core";
@@ -124,14 +124,18 @@ export function writeRuntimeSkillsLock(projectDir: string, lock: RuntimeSkillsLo
 }
 
 export function skillBundleDigest(bundle: SkillBundle): string {
-  const hash = createHash("sha256");
-  for (const file of [...bundle.files].sort((a, b) => a.path.localeCompare(b.path))) {
-    hash.update(file.path);
-    hash.update("\0");
-    hash.update(file.content);
-    hash.update("\0");
-  }
-  return `sha256:${hash.digest("hex")}`;
+  const files = [...bundle.files]
+    .sort((left, right) => left.path < right.path ? -1 : left.path > right.path ? 1 : 0)
+    .map((file) => {
+      const bytes = Buffer.from(file.content, "base64");
+      return {
+        path: file.path,
+        bytes: bytes.byteLength,
+        sha256: createHash("sha256").update(bytes).digest("hex"),
+      };
+    });
+  const canonical = JSON.stringify({ version: 1, name: bundle.name, files });
+  return `sha256:${createHash("sha256").update(canonical).digest("hex")}`;
 }
 
 /** Discover valid Agent Skills bundles without following symlinks. */
@@ -151,10 +155,14 @@ export function discoverRuntimeSkills(sourceRoot: string): DiscoveredRuntimeSkil
         throw new Error(`SKILL.md must be a regular file: ${skillFile}`);
       }
       const raw = normalizeSkillMarkdown(fs.readFileSync(skillFile, "utf-8"));
-      const metadata = parseSkillFrontmatter(raw);
-      if (!metadata?.name || !metadata.description) {
-        throw new Error(`SKILL.md must define name and description: ${skillFile}`);
-      }
+      const metadata = parseSkillManifest(raw, {
+        mode: "strict",
+        // A repository checkout is mounted at an implementation-defined root
+        // (for example a temporary "source" directory). Nested bundles retain
+        // the Agent Skills name/directory invariant; a root bundle has no
+        // stable source-directory name to compare.
+        ...(directory === root ? {} : { directoryName: path.basename(directory) }),
+      }).manifest;
       const nameError = validateSkillName(metadata.name);
       if (nameError) throw new Error(`${nameError}: ${metadata.name}`);
       if (found.has(metadata.name)) {

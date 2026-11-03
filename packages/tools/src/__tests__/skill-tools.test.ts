@@ -169,6 +169,28 @@ describe("runtime skill tools", () => {
     expect(result.details).toMatchObject({ references: [], omitted: [] });
   });
 
+  it("discloses the immutable bundle root and every supporting resource without auto-running scripts", async () => {
+    const fs = createFs({
+      [`${skillRoot}/SKILL.md`]: "Use scripts/audit.mjs with assets/template.bin.",
+      [`${skillRoot}/scripts/audit.mjs`]: "console.log('audit')",
+      [`${skillRoot}/assets/template.bin`]: "\u0000\u0001binary",
+    });
+    const result = await pick(createSkillTools(fs, [skill]), "skill_read")
+      .execute("call-1", { name: skill.name });
+
+    expect(firstText(result)).toContain(`Bundle root: ${skillRoot}`);
+    expect(firstText(result)).toContain("scripts/audit.mjs (script");
+    expect(firstText(result)).toContain("assets/template.bin (asset");
+    expect(firstText(result)).toContain("already-authorized filesystem or shell tools");
+    expect(result.details).toMatchObject({
+      bundleRoot: skillRoot,
+      resources: [
+        { path: "assets/template.bin", kind: "asset" },
+        { path: "scripts/audit.mjs", kind: "script" },
+      ],
+    });
+  });
+
   it("omits binary-looking references without failing the skill", async () => {
     const fs = createFs({
       [`${skillRoot}/SKILL.md`]: "Use the bundled reference.",

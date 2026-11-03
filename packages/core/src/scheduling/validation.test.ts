@@ -111,6 +111,7 @@ describe("schedule invocation validation", () => {
       execution: {
         loop: " review ",
         model: " openai/gpt-5 ",
+        skills: [" reporting ", "charts"],
         sandbox: {
           image: "polpo/reporting@1",
           isolation: "fresh",
@@ -131,6 +132,7 @@ describe("schedule invocation validation", () => {
       execution: {
         loop: "review",
         model: "openai/gpt-5",
+        skills: ["reporting", "charts"],
         sandbox: {
           image: "polpo/reporting@1",
           isolation: "fresh",
@@ -464,6 +466,21 @@ describe("schedule invocation validation", () => {
       input: { prompt: "run" },
       execution: { temperature: 0.2 },
     })).toThrow(/temperature/);
+  });
+
+  it.each([
+    { skills: [] },
+    { skills: [""] },
+    { skills: ["reporting", " reporting "] },
+    { skills: Array.from({ length: 17 }, (_, index) => `skill-${index}`) },
+  ])("rejects invalid scheduled skill activation: $skills", ({ skills }) => {
+    expect(() => normalizeScheduleInvocation({
+      surface: "task",
+      agentName: "assistant",
+      title: "task",
+      prompt: "run",
+      execution: { skills },
+    })).toThrow(/skill/i);
   });
 });
 

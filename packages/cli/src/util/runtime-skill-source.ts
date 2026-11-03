@@ -2,12 +2,15 @@ import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { unpackSkillArchive } from "@polpo-ai/core/skill-archive";
+import { replaceLocalSkillBundle } from "./runtime-skill-bundle.js";
 
 export interface RuntimeSkillSourceCheckout {
   root: string;
   source: string;
   revision?: string;
   remote: boolean;
+  archive?: boolean;
 }
 
 export interface RuntimeSkillSourceDependencies {
@@ -34,8 +37,20 @@ export async function withRuntimeSkillSource<T>(
 ): Promise<T> {
   const local = path.resolve(cwd, source);
   if (fs.existsSync(local)) {
-    if (!fs.statSync(local).isDirectory()) throw new Error(`Skill source is not a directory: ${local}`);
-    return action({ root: local, source: local, remote: false });
+    const stat = fs.statSync(local);
+    if (stat.isDirectory()) return action({ root: local, source: local, remote: false });
+    if (!stat.isFile() || !/\.(?:skill|zip)$/iu.test(local)) {
+      throw new Error(`Skill source must be a directory, .skill archive, .zip archive, owner/repository, or Git URL: ${local}`);
+    }
+    const temporary = fs.mkdtempSync(path.join(dependencies.temporaryRoot ?? os.tmpdir(), "polpo-skills-"));
+    try {
+      const unpacked = await unpackSkillArchive(new Uint8Array(fs.readFileSync(local)));
+      const root = path.join(temporary, "source", unpacked.bundle.name);
+      replaceLocalSkillBundle(root, unpacked.bundle);
+      return await action({ root, source: local, revision: unpacked.digest, remote: false, archive: true });
+    } finally {
+      fs.rmSync(temporary, { recursive: true, force: true });
+    }
   }
 
   const temporary = fs.mkdtempSync(path.join(dependencies.temporaryRoot ?? os.tmpdir(), "polpo-skills-"));

@@ -47,6 +47,7 @@ import {
   AgentIdentityError,
   normalizeRuntimePromptContextSegments,
   normalizeRuntimeContextTrustMode,
+  requireAssignedActivatedSkills,
 } from "@polpo-ai/core";
 import {
   GuardrailBlockedError,
@@ -643,6 +644,9 @@ async function executeRegisteredRun(
       // Chat injection already carries its fully assembled system prompt.
       // Task runs receive the immutable snapshot through prepareSpawn.
       runtimeContext: deps.inject ? undefined : guardedRuntimeContext,
+      activatedSkills: deps.inject
+        ? undefined
+        : requireAssignedActivatedSkills(guardedTask.skills, guardedAgent.skills),
       onTurnCheckpoint: async (state: LoopResumeState) => {
         try {
           await runStore.updateResumeState?.(config.runId, state);

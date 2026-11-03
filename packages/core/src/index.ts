@@ -260,10 +260,35 @@ export {
   SKILL_BUNDLE_MAX_TOTAL_BYTES,
   SKILL_BUNDLE_MAX_PATH_LENGTH,
   decodedBase64Size,
+  decodeBase64,
+  digestSkillBundle,
+  encodeBase64,
   validateSkillBundleFiles,
   validateSkillName,
 } from "./skill-bundle.js";
-export type { SkillBundle, SkillBundleFile } from "./skill-bundle.js";
+export type { SkillBundle, SkillBundleFile, SkillBundleReceipt, SkillBundleSource } from "./skill-bundle.js";
+export {
+  AGENT_SKILL_COMPATIBILITY_MAX,
+  AGENT_SKILL_DESCRIPTION_MAX,
+  AGENT_SKILL_NAME_MAX,
+  parseSkillManifest,
+  SkillManifestValidationError,
+  validateAgentSkillName,
+} from "./skill-manifest.js";
+export type {
+  ParsedSkillManifest,
+  ParseSkillManifestOptions,
+  SkillDiagnostic,
+  SkillManifest,
+} from "./skill-manifest.js";
+export {
+  packSkillArchive,
+  SKILL_ARCHIVE_MAX_COMPRESSED_BYTES,
+  SKILL_ARCHIVE_MAX_COMPRESSION_RATIO,
+  SkillArchiveError,
+  unpackSkillArchive,
+} from "./skill-archive.js";
+export type { SkillArchiveErrorCode, UnpackedSkillArchive } from "./skill-archive.js";
 export type { VaultStore } from "./vault-store.js";
 export type { PlaybookStore } from "./playbook-store.js";
 
@@ -375,6 +400,13 @@ export { MissionExecutor } from "./mission-executor.js";
 
 // ── TaskRunner ──────────────────────────────────────────────────────────
 export { TaskRunner } from "./task-runner.js";
+export {
+  MAX_ACTIVATED_SKILLS,
+  MAX_ACTIVATED_SKILL_NAME_LENGTH,
+  SkillActivationError,
+  normalizeActivatedSkills,
+  requireAssignedActivatedSkills,
+} from "./skill-activation.js";
 
 // ── OrchestratorEngine ──────────────────────────────────────────────────
 export { OrchestratorEngine } from "./orchestrator-engine.js";

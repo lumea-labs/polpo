@@ -32,6 +32,8 @@ export interface ScheduleMessage {
 export interface ScheduleExecutionOptions {
   loop?: string;
   model?: string;
+  /** Assigned skills to apply explicitly for each scheduled execution. */
+  skills?: string[];
   sandbox?: RuntimeSandboxOptions;
   guardrails?: {
     mode?: string;

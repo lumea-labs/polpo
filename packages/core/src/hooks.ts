@@ -33,6 +33,7 @@ export interface HookPayloads {
     description: string;
     assignTo: string;
     loop?: string;
+    skills?: string[];
     expectations?: TaskExpectation[];
     expectedOutcomes?: ExpectedOutcome[];
     dependsOn?: string[];
