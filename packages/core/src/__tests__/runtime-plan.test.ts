@@ -362,6 +362,40 @@ describe("createRuntimePlan", () => {
     });
   });
 
+  it("records and revalidates an immutable sandbox image selection", () => {
+    const plan = createRuntimePlan({
+      surface: "agent",
+      source: "request",
+      model: { selection: "openai/gpt-5", source: "default" },
+      sandbox: {
+        image: "polpo/site-builder@2026.11.03",
+        isolation: "reuse",
+        source: "agent",
+      },
+    }, fixedFactory);
+
+    expect(plan.sandbox.image).toBe("polpo/site-builder@2026.11.03");
+    expect(normalizeRuntimePlan(plan)).toEqual(plan);
+  });
+
+  it.each([
+    "",
+    " image",
+    "image with spaces",
+    "../image",
+    "image/../tag",
+    "image//tag",
+    "image/",
+    "a".repeat(257),
+  ])("rejects malformed sandbox image %j", (image) => {
+    expect(() => createRuntimePlan({
+      surface: "agent",
+      source: "request",
+      model: { selection: "openai/gpt-5", source: "default" },
+      sandbox: { image },
+    }, fixedFactory)).toThrow(/sandbox image/i);
+  });
+
   it("records and revalidates secret-free sandbox volume selections", () => {
     const plan = createRuntimePlan({
       surface: "agent",

@@ -92,6 +92,19 @@ describe("resolveRuntimeSandboxOptions — runtime sandbox precedence", () => {
     });
   });
 
+  it("resolves image with settings, agent, and request precedence", () => {
+    expect(resolveRuntimeSandboxOptions(
+      { sandbox: { image: "polpo/base@1" } },
+      { sandbox: { image: "polpo/builder@2" } },
+      { sandbox: { image: "polpo/request@3" } },
+    )).toEqual({ image: "polpo/request@3" });
+
+    expect(resolveRuntimeSandboxOptions(
+      { sandbox: { image: "polpo/base@1" } },
+      { sandbox: { image: "image with spaces" as any } },
+    )).toEqual({ image: "polpo/base@1" });
+  });
+
   it("invalid upper tiers fall through to lower valid policy", () => {
     expect(resolveRuntimeSandboxOptions(
       { sandbox: { isolation: "reuse" } },

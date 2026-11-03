@@ -13,6 +13,29 @@ export type SandboxVolumeWriteBack = "auto" | "manual";
 
 export const SANDBOX_VOLUME_NAME_PATTERN = /^[a-z][a-z0-9_-]{1,62}$/;
 export const SANDBOX_VOLUMES_MAX = 32;
+export const SANDBOX_IMAGE_IDENTIFIER_MAX = 256;
+
+/**
+ * Validate a provider-neutral, opaque sandbox image identifier.
+ *
+ * The runtime deliberately does not interpret registries, tags, or digests;
+ * hosts map this identifier to an allowlisted provider image. Path traversal,
+ * empty path segments, whitespace, and control characters are rejected at the
+ * public contract boundary.
+ */
+export function isSandboxImageIdentifier(value: unknown): value is string {
+  if (
+    typeof value !== "string"
+    || value.length < 1
+    || value.length > SANDBOX_IMAGE_IDENTIFIER_MAX
+    || !/^[A-Za-z0-9][A-Za-z0-9._/@:-]*$/.test(value)
+    || value.endsWith("/")
+    || value.includes("//")
+  ) {
+    return false;
+  }
+  return value.split("/").every((segment) => segment !== "." && segment !== "..");
+}
 
 /**
  * A caller-visible selection of a host-defined persistent volume.
@@ -52,6 +75,12 @@ export interface RuntimeSandboxLifecycleOptions {
 }
 
 export interface RuntimeSandboxOptions {
+  /**
+   * Host-defined sandbox image selection. Managed hosts must resolve this
+   * opaque identifier against an allowlist; omitting it selects the host
+   * default.
+   */
+  image?: string;
   /**
    * `reuse` lets the host reuse a warm project sandbox when available.
    * `fresh` requests one clean sandbox for the outer run. `shared` opts into
@@ -133,6 +162,10 @@ function normalizeRuntimeSandboxOptions(value: unknown): RuntimeSandboxOptions |
   const isolation = (value as { isolation?: unknown }).isolation;
   const rawLifecycle = (value as { lifecycle?: unknown }).lifecycle;
   const normalized: RuntimeSandboxOptions = {};
+
+  if (isSandboxImageIdentifier(value.image)) {
+    normalized.image = value.image;
+  }
 
   if (typeof isolation === "string" && VALID_ISOLATION.has(isolation)) {
     normalized.isolation = isolation as SandboxIsolation;
@@ -231,6 +264,7 @@ export function resolveRuntimeSandboxOptions(
   const merged: RuntimeSandboxOptions = {};
   for (const source of [settings?.sandbox, agent?.sandbox, request?.sandbox]) {
     const normalized = normalizeRuntimeSandboxOptions(source);
+    if (normalized?.image !== undefined) merged.image = normalized.image;
     if (normalized?.isolation !== undefined) merged.isolation = normalized.isolation;
     if (normalized?.volumes !== undefined) {
       merged.volumes = merged.volumes === undefined

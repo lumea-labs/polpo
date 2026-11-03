@@ -1,6 +1,8 @@
 import { nanoid } from "nanoid";
 import { normalizeModelPolicy, type ModelSelection } from "../model-policy.js";
 import {
+  isSandboxImageIdentifier,
+  SANDBOX_IMAGE_IDENTIFIER_MAX,
   SANDBOX_VOLUME_NAME_PATTERN,
   SANDBOX_VOLUMES_MAX,
   type RuntimeSandboxVolumeSelection,
@@ -105,6 +107,16 @@ function runtimePlanVolumes(value: unknown): RuntimeSandboxVolumeSelection[] | u
       ...(writeBack === undefined ? {} : { writeBack }),
     } as RuntimeSandboxVolumeSelection;
   });
+}
+
+function runtimePlanImage(value: unknown): string | undefined {
+  if (value === undefined) return undefined;
+  if (!isSandboxImageIdentifier(value)) {
+    throw new Error(
+      `Runtime plan sandbox image must be a valid identifier with at most ${SANDBOX_IMAGE_IDENTIFIER_MAX} characters`,
+    );
+  }
+  return value;
 }
 
 function normalizeLatencyMap(
@@ -317,6 +329,7 @@ export function createRuntimePlan(
     input.sandbox?.lifecycle?.onRelease
     ?? RUNTIME_PLAN_DEFAULTS.sandboxReleasePolicy;
   const sandboxVolumes = runtimePlanVolumes(input.sandbox?.volumes);
+  const sandboxImage = runtimePlanImage(input.sandbox?.image);
   if (sandboxReleasePolicy !== "pool" && sandboxReleasePolicy !== "destroy") {
     throw new Error("Runtime plan sandbox release policy must be one of: pool, destroy");
   }
@@ -436,6 +449,7 @@ export function createRuntimePlan(
       source: modelSource,
     },
     sandbox: {
+      ...(sandboxImage === undefined ? {} : { image: sandboxImage }),
       isolation: sandboxIsolation,
       source: sandboxSource,
       ...(sandboxVolumes === undefined ? {} : { volumes: sandboxVolumes }),
@@ -534,6 +548,7 @@ export function normalizeRuntimePlan(value: unknown): RuntimePlan {
         source: requiredValue(model.source, "Runtime plan model source"),
       },
       sandbox: {
+        ...(sandbox.image !== undefined ? { image: sandbox.image } : {}),
         isolation: requiredValue(
           sandbox.isolation,
           "Runtime plan sandbox isolation",

@@ -275,7 +275,9 @@ export type { Shell, ShellOptions, ShellResult } from "./shell.js";
 export type { Spawner, SpawnResult } from "./spawner.js";
 export { resolveExecutionMode } from "./execution-mode.js";
 export {
+  isSandboxImageIdentifier,
   resolveRuntimeSandboxOptions,
+  SANDBOX_IMAGE_IDENTIFIER_MAX,
   SANDBOX_IDLE_TTL_MINUTES_MAX,
   SANDBOX_VOLUME_NAME_PATTERN,
   SANDBOX_VOLUMES_MAX,

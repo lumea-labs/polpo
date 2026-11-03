@@ -52,6 +52,33 @@ describe("shared runtime sandbox schema", () => {
     });
   });
 
+  it("accepts a bounded provider-neutral image identifier on every mutation surface", () => {
+    const sandbox = { image: "polpo/site-builder@2026.11.03" };
+    expect(RuntimeSandboxSchema.parse(sandbox)).toEqual(sandbox);
+    expect(AddAgentSchema.parse({ name: "builder", sandbox }).sandbox).toEqual(sandbox);
+    expect(UpdateAgentSchema.parse({ sandbox }).sandbox).toEqual(sandbox);
+    expect(CreateTaskSchema.parse({
+      title: "Build",
+      description: "Build the app",
+      assignTo: "builder",
+      sandbox,
+    }).sandbox).toEqual(sandbox);
+    expect(UpdateTaskSchema.parse({ sandbox }).sandbox).toEqual(sandbox);
+  });
+
+  it.each([
+    "",
+    " image",
+    "image with spaces",
+    "../image",
+    "image/../tag",
+    "image//tag",
+    "image/",
+    "a".repeat(257),
+  ])("rejects malformed sandbox image %j", (image) => {
+    expect(RuntimeSandboxSchema.safeParse({ image }).success).toBe(false);
+  });
+
   it("accepts strict named volume selections", () => {
     expect(RuntimeSandboxSchema.parse({
       volumes: [

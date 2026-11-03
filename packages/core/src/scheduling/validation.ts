@@ -12,6 +12,8 @@ import type {
   UpdateScheduleInput,
 } from "./types.js";
 import {
+  isSandboxImageIdentifier,
+  SANDBOX_IMAGE_IDENTIFIER_MAX,
   SANDBOX_VOLUME_NAME_PATTERN,
   SANDBOX_VOLUMES_MAX,
   type RuntimeSandboxVolumeSelection,
@@ -629,7 +631,15 @@ function normalizeExecution(value: unknown): ScheduleExecutionOptions {
   }
   if (execution.sandbox !== undefined) {
     const sandbox = record(execution.sandbox, "Schedule execution sandbox");
-    assertKnownKeys(sandbox, ["isolation", "lifecycle", "volumes"], "Schedule execution sandbox");
+    assertKnownKeys(sandbox, ["image", "isolation", "lifecycle", "volumes"], "Schedule execution sandbox");
+    if (
+      sandbox.image !== undefined
+      && !isSandboxImageIdentifier(sandbox.image)
+    ) {
+      throw new Error(
+        `Schedule sandbox image must be a valid identifier with at most ${SANDBOX_IMAGE_IDENTIFIER_MAX} characters`,
+      );
+    }
     if (
       sandbox.isolation !== undefined
       && sandbox.isolation !== "reuse"
@@ -776,6 +786,7 @@ function normalizeExecution(value: unknown): ScheduleExecutionOptions {
       };
     }
     normalized.sandbox = {
+      ...(sandbox.image === undefined ? {} : { image: sandbox.image }),
       ...(sandbox.isolation === undefined ? {} : { isolation: sandbox.isolation }),
       ...(lifecycle === undefined ? {} : { lifecycle }),
       ...(volumes === undefined ? {} : { volumes }),

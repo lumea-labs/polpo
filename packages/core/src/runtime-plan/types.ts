@@ -98,6 +98,7 @@ export interface RuntimePlan {
     source: RuntimeDecisionSource;
   }>;
   readonly sandbox: Readonly<{
+    image?: string;
     isolation: SandboxIsolation;
     source: Extract<RuntimeDecisionSource, "request" | "agent" | "default">;
     volumes?: readonly Readonly<RuntimeSandboxVolumeSelection>[];
@@ -134,6 +135,7 @@ export interface CreateRuntimePlanInput {
     source?: RuntimeDecisionSource;
   }>;
   readonly sandbox?: Readonly<{
+    image?: string;
     isolation?: SandboxIsolation;
     source?: Extract<RuntimeDecisionSource, "request" | "agent" | "default">;
     volumes?: readonly Readonly<RuntimeSandboxVolumeSelection>[];
