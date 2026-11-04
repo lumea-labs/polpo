@@ -382,6 +382,97 @@ describe("skillRoutes", () => {
     ]));
   });
 
+  it("installs a project-local skill path without acquiring a shell", async () => {
+    const fs = new MemoryFileSystem();
+    await fs.writeFile(
+      "/project/imports/local-skill/SKILL.md",
+      "---\nname: local-skill\ndescription: Local project skill\n---\n\nUse it.",
+    );
+    const app = skillRoutes(() => ({
+      polpoDir: "/project/.polpo",
+      fs,
+      getAgents: async () => [],
+    }));
+
+    const response = await app.request("/add", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ source: "/project/imports" }),
+    });
+
+    expect(response.status).toBe(200);
+    expect((await response.json()).data.installed).toEqual(["local-skill"]);
+    expect(await fs.readFile("/project/.polpo/skills/local-skill/SKILL.md"))
+      .toContain("Local project skill");
+  });
+
+  it("installs a .skill archive data URL without acquiring a shell", async () => {
+    const fs = new MemoryFileSystem();
+    const updateAgentSkills = vi.fn(async () => {});
+    const archive = await packSkillArchive({
+      name: "mcp-portable",
+      files: [{
+        path: "SKILL.md",
+        content: Buffer.from(
+          "---\nname: mcp-portable\ndescription: Imported through MCP\n---\n\nUse it.",
+        ).toString("base64"),
+        encoding: "base64",
+      }, {
+        path: "references/guide.md",
+        content: Buffer.from("# Guide\n\nPortable reference.").toString("base64"),
+        encoding: "base64",
+      }],
+    });
+    const source = `data:application/zip;base64,${Buffer.from(archive).toString("base64")}`;
+    const app = skillRoutes(() => ({
+      polpoDir: "/project/.polpo",
+      fs,
+      getAgents: async () => [{ name: "consumer", skills: [] }],
+      updateAgentSkills,
+    }));
+
+    const response = await app.request("/add", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ source, assignTo: "consumer" }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      ok: true,
+      data: {
+        installed: ["mcp-portable"],
+        skipped: [],
+        errors: [],
+        source: "archive:data-url",
+        assigned: ["mcp-portable"],
+      },
+    });
+    expect(updateAgentSkills).toHaveBeenCalledWith("consumer", ["mcp-portable"]);
+    expect(await fs.readFile("/project/.polpo/skills/mcp-portable/references/guide.md"))
+      .toContain("Portable reference");
+  });
+
+  it("rejects malformed archive data URLs before shell acquisition", async () => {
+    const execute = vi.fn(async () => ({ exitCode: 0, stdout: "", stderr: "" }));
+    const app = skillRoutes(() => ({
+      polpoDir: "/project/.polpo",
+      fs: new MemoryFileSystem(),
+      shell: { execute },
+      getAgents: async () => [],
+    }));
+
+    const response = await app.request("/add", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ source: "data:text/plain;base64,bm90IGEgc2tpbGw=" }),
+    });
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({ ok: false, code: "invalid_archive" });
+    expect(execute).not.toHaveBeenCalled();
+  });
+
   it("round-trips complete skill bundles through the management API", async () => {
     const fs = new MemoryFileSystem();
     const app = skillRoutes(() => ({
