@@ -49,6 +49,58 @@ describe("parseSkillManifest", () => {
     expect(result.diagnostics).toContainEqual(expect.objectContaining({ code: "legacy_allowed_tools_array" }));
   });
 
+  it("parses an official quoted description containing a colon in strict mode", () => {
+    const result = parseSkillManifest([
+      "---",
+      "name: sitoinchat-sales",
+      "description: \"Staff tools: only for internal users.\"",
+      "---",
+      "# Instructions",
+    ].join("\n"), { mode: "strict", directoryName: "sitoinchat-sales" });
+
+    expect(result.manifest.description).toBe("Staff tools: only for internal users.");
+    expect(result.diagnostics).toEqual([]);
+  });
+
+  it("recovers old flat Polpo frontmatter only in compatibility mode", () => {
+    const legacy = [
+      "---",
+      "name: sitoinchat-sales",
+      "description: Strumenti staff: solo per utenti interni.\"",
+      "---",
+      "# Instructions",
+    ].join("\n");
+
+    const result = parseSkillManifest(legacy, {
+      mode: "compatibility",
+      directoryName: "sitoinchat-sales",
+    });
+    expect(result.manifest.description).toBe("Strumenti staff: solo per utenti interni.");
+    expect(result.diagnostics.map(({ code }) => code)).toEqual([
+      "legacy_invalid_yaml_recovered",
+      "legacy_unbalanced_quote_recovered",
+    ]);
+    expect(() => parseSkillManifest(legacy, {
+      mode: "strict",
+      directoryName: "sitoinchat-sales",
+    })).toThrow(expect.objectContaining<Partial<SkillManifestValidationError>>({ code: "invalid_yaml" }));
+  });
+
+  it.each([
+    "description:\n  nested: value",
+    "description: [unterminated",
+    "description: &anchor value",
+    "description: !custom value",
+  ])("does not use legacy recovery for structured or unsafe YAML: %s", (description) => {
+    expect(() => parseSkillManifest([
+      "---",
+      "name: valid-name",
+      description,
+      "---",
+    ].join("\n"), { mode: "compatibility", directoryName: "valid-name" }))
+      .toThrow(SkillManifestValidationError);
+  });
+
   it.each([
     ["Uppercase", "description: Test", "invalid_name"],
     ["wrong-name", "description: Test", "name_mismatch"],

@@ -65,30 +65,43 @@ export function parseSkillManifest(
   const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/);
   if (!match) throw new SkillManifestValidationError("missing_frontmatter", "SKILL.md must start with YAML frontmatter");
 
+  const diagnostics: SkillDiagnostic[] = [];
   const document = parseDocument(match[1], {
     schema: "core",
     uniqueKeys: true,
     prettyErrors: false,
   });
+  let raw: Record<string, unknown>;
   if (document.errors.length > 0) {
-    throw new SkillManifestValidationError("invalid_yaml", `Invalid SKILL.md frontmatter: ${document.errors[0].message}`);
-  }
-  let unsafeYaml = false;
-  visit(document, (_key, node) => {
-    if (isAlias(node) || (isNode(node) && (node.anchor || node.tag))) unsafeYaml = true;
-  });
-  if (unsafeYaml) {
-    throw new SkillManifestValidationError("unsafe_yaml", "SKILL.md frontmatter must not use aliases, anchors, or custom tags");
-  }
-  if (!isMap(document.contents)) {
-    throw new SkillManifestValidationError("invalid_frontmatter", "SKILL.md frontmatter must be a mapping");
+    const recovered = mode === "compatibility" ? parseLegacyFlatFrontmatter(match[1]) : null;
+    if (!recovered) {
+      throw new SkillManifestValidationError("invalid_yaml", `Invalid SKILL.md frontmatter: ${document.errors[0].message}`);
+    }
+    raw = recovered.raw;
+    diagnostics.push({
+      code: "legacy_invalid_yaml_recovered",
+      message: "Recovered invalid legacy flat frontmatter; replace or save the skill to normalize it",
+      severity: "warning",
+    }, ...recovered.diagnostics);
+  } else {
+    let unsafeYaml = false;
+    visit(document, (_key, node) => {
+      if (isAlias(node) || (isNode(node) && (node.anchor || node.tag))) unsafeYaml = true;
+    });
+    if (unsafeYaml) {
+      throw new SkillManifestValidationError("unsafe_yaml", "SKILL.md frontmatter must not use aliases, anchors, or custom tags");
+    }
+    if (!isMap(document.contents)) {
+      throw new SkillManifestValidationError("invalid_frontmatter", "SKILL.md frontmatter must be a mapping");
+    }
+
+    const parsed = document.toJS({ maxAliasCount: 0 }) as unknown;
+    if (!isPlainRecord(parsed)) {
+      throw new SkillManifestValidationError("invalid_frontmatter", "SKILL.md frontmatter must be a plain mapping");
+    }
+    raw = parsed;
   }
 
-  const raw = document.toJS({ maxAliasCount: 0 }) as unknown;
-  if (!isPlainRecord(raw)) {
-    throw new SkillManifestValidationError("invalid_frontmatter", "SKILL.md frontmatter must be a plain mapping");
-  }
-  const diagnostics: SkillDiagnostic[] = [];
   const unknown = Object.keys(raw).filter((key) => !ALLOWED_FIELDS.has(key));
   if (unknown.length > 0) {
     if (mode === "strict") {
@@ -143,6 +156,43 @@ export function parseSkillManifest(
     body,
     diagnostics,
   };
+}
+
+interface RecoveredLegacyFrontmatter {
+  raw: Record<string, unknown>;
+  diagnostics: SkillDiagnostic[];
+}
+
+/**
+ * Recovers only the flat `key: value` format written by early Polpo versions.
+ * It is intentionally not a second YAML parser: nested values and YAML
+ * collection/tag syntax remain invalid, and strict imports never use it.
+ */
+function parseLegacyFlatFrontmatter(source: string): RecoveredLegacyFrontmatter | null {
+  const raw: Record<string, unknown> = {};
+  const diagnostics: SkillDiagnostic[] = [];
+  for (const line of source.split(/\r?\n/u)) {
+    if (!line.trim() || line.trimStart().startsWith("#")) continue;
+    if (/^\s/u.test(line)) return null;
+    const field = line.match(/^([a-zA-Z][a-zA-Z0-9_-]*)\s*:\s*(.*)$/u);
+    if (!field || Object.hasOwn(raw, field[1])) return null;
+
+    let value = field[2].trim();
+    if (!value || /^[\[\]{}&*!|>]/u.test(value)) return null;
+    const startsWithQuote = value.startsWith('"');
+    const endsWithQuote = value.endsWith('"');
+    if (startsWithQuote !== endsWithQuote) {
+      value = startsWithQuote ? value.slice(1) : value.slice(0, -1);
+      diagnostics.push({
+        code: "legacy_unbalanced_quote_recovered",
+        message: `Recovered an unmatched quote in legacy frontmatter field: ${field[1]}`,
+        severity: "warning",
+      });
+    }
+    if (!value) return null;
+    raw[field[1]] = value;
+  }
+  return Object.keys(raw).length > 0 ? { raw, diagnostics } : null;
 }
 
 function requiredString(value: unknown, field: string, code: string): string {
